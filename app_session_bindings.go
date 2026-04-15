@@ -1,8 +1,11 @@
 package main
 
 import (
+	"fmt"
 	"log"
+	"time"
 
+	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 )
 
@@ -22,6 +25,7 @@ func (a *App) SwitchThread(threadID string) (store.Thread, error) {
 		go func() {
 			if err := a.startSession(threadID); err != nil {
 				log.Printf("app: auto-resume failed for %s: %v", threadID, err)
+				a.emitAutoResumeError(threadID, err)
 			}
 		}()
 	}
@@ -50,4 +54,23 @@ func (a *App) stopSession(threadID string) error {
 		return a.stopSessionFn(threadID)
 	}
 	return a.StopSession(threadID)
+}
+
+func (a *App) emitAutoResumeError(threadID string, err error) {
+	evt := provider.ProviderEvent{
+		Kind:      provider.EventError,
+		ThreadID:  threadID,
+		Content:   fmt.Sprintf("auto-resume failed: %v", err),
+		Timestamp: time.Now(),
+	}
+
+	if a.triage != nil {
+		if handleErr := a.triage.Handle(evt); handleErr != nil {
+			log.Printf("app: emit auto-resume error for %s: %v", threadID, handleErr)
+		}
+		return
+	}
+	if a.app != nil {
+		a.app.Event.Emit("provider:event", evt)
+	}
 }
