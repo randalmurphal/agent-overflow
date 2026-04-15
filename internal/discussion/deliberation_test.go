@@ -16,8 +16,16 @@ func TestDeliberationRecordPostAlternatesAndConcludes(t *testing.T) {
 	}
 
 	next, conclude = d.RecordPost("thread-a")
-	if next != "thread-b" || !conclude {
-		t.Fatalf("third post = (%q,%v), want (thread-b,true)", next, conclude)
+	if next != "" || !conclude {
+		t.Fatalf("third post = (%q,%v), want (\"\",true)", next, conclude)
+	}
+
+	state := d.State()
+	if !state.Concluded {
+		t.Fatal("expected deliberation state to be concluded at max turns")
+	}
+	if state.CurrentSpeaker != "" {
+		t.Fatalf("CurrentSpeaker = %q, want empty after conclusion", state.CurrentSpeaker)
 	}
 }
 

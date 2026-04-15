@@ -13,6 +13,11 @@ func (a *App) sessionEventHandler(threadID, sessionToken string) func(provider.P
 				log.Printf("triage: %v", err)
 			}
 		}
+		if evt.Kind == provider.EventTurnComplete {
+			if err := a.syncDiscussionTurn(threadID); err != nil {
+				log.Printf("discussion runtime: %v", err)
+			}
+		}
 
 		if evt.Kind == provider.EventSessionStatus && evt.Content == "disconnected" {
 			a.unregisterSession(threadID, sessionToken)

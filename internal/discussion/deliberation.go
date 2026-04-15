@@ -43,11 +43,17 @@ func (d *Deliberation) RecordPost(participantThreadID string) (nextSpeaker strin
 	}
 
 	d.rememberParticipant(participantThreadID)
-	d.state.CurrentSpeaker = participantThreadID
 	d.state.TurnCount++
-	nextSpeaker = d.nextSpeakerAfter(participantThreadID)
 	shouldConclude = d.state.TurnCount >= d.state.MaxTurns
-	return nextSpeaker, shouldConclude
+	if shouldConclude {
+		d.state.Concluded = true
+		d.state.CurrentSpeaker = ""
+		return "", true
+	}
+
+	nextSpeaker = d.nextSpeakerAfter(participantThreadID)
+	d.state.CurrentSpeaker = nextSpeaker
+	return nextSpeaker, false
 }
 
 // ProposeConclusionFrom tracks a participant conclusion proposal.
@@ -66,6 +72,7 @@ func (d *Deliberation) ProposeConclusionFrom(threadID, summary string) (allAgree
 		}
 	}
 	d.state.Concluded = true
+	d.state.CurrentSpeaker = ""
 	return true
 }
 

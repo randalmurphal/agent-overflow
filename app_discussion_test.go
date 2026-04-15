@@ -9,6 +9,7 @@ import (
 	"agent-overflow/internal/discussion"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/triage"
 )
 
 var errDiscussionStartFailed = errors.New("discussion start failed")
@@ -331,5 +332,146 @@ func TestDeleteThreadRemovesDiscussionChildrenAndRuntimeState(t *testing.T) {
 	}
 	if len(app.deliberations) != 0 {
 		t.Fatalf("deliberations = %v, want empty after delete", app.deliberations)
+	}
+}
+
+func TestSessionEventHandlerMirrorsDiscussionTurnsIntoChannelAndConcludes(t *testing.T) {
+	app := newTestAppWithStore(t)
+	app.channels = discussion.NewChannelService(app.store)
+	app.triage = triage.NewRouter(app.store, func(string, any) {})
+
+	now := time.Now().UnixMilli()
+	parent := store.Thread{
+		ID:              "thread-parent",
+		Title:           "Architecture Review",
+		Provider:        string(provider.Codex),
+		WorkspacePath:   "/tmp/workspace",
+		ProjectPath:     "/tmp/project",
+		Model:           "gpt-5.4",
+		InteractionMode: "discussion",
+		DiscussionID:    "channel-1",
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}
+	if err := app.store.CreateThread(parent); err != nil {
+		t.Fatalf("CreateThread(parent) error = %v", err)
+	}
+
+	children := []store.Thread{
+		{
+			ID:              "thread-child-a",
+			Title:           "Architecture Review - Architect",
+			Provider:        string(provider.Codex),
+			WorkspacePath:   parent.WorkspacePath,
+			ProjectPath:     parent.ProjectPath,
+			Model:           parent.Model,
+			InteractionMode: "discussion",
+			DiscussionID:    parent.DiscussionID,
+			ParentThreadID:  parent.ID,
+			CreatedAt:       now,
+			UpdatedAt:       now,
+		},
+		{
+			ID:              "thread-child-b",
+			Title:           "Architecture Review - Reviewer",
+			Provider:        string(provider.Codex),
+			WorkspacePath:   parent.WorkspacePath,
+			ProjectPath:     parent.ProjectPath,
+			Model:           parent.Model,
+			InteractionMode: "discussion",
+			DiscussionID:    parent.DiscussionID,
+			ParentThreadID:  parent.ID,
+			CreatedAt:       now + 1,
+			UpdatedAt:       now + 1,
+		},
+	}
+	for _, child := range children {
+		if err := app.store.CreateThread(child); err != nil {
+			t.Fatalf("CreateThread(%s) error = %v", child.ID, err)
+		}
+	}
+
+	if err := app.store.CreateChannel(store.Channel{
+		ID:        parent.DiscussionID,
+		ThreadID:  parent.ID,
+		Type:      "deliberation",
+		Status:    "open",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("CreateChannel() error = %v", err)
+	}
+	app.installDeliberation(parent.DiscussionID, 2)
+
+	firstHandler := app.sessionEventHandler(children[0].ID, "session-a")
+	firstHandler(provider.ProviderEvent{
+		Kind:      provider.EventTextDelta,
+		ThreadID:  children[0].ID,
+		Content:   "Start with a bounded migration.",
+		Timestamp: time.UnixMilli(now),
+	})
+	firstHandler(provider.ProviderEvent{
+		Kind:      provider.EventTurnComplete,
+		ThreadID:  children[0].ID,
+		Timestamp: time.UnixMilli(now + 5),
+	})
+
+	messages, err := app.GetChannelMessages(parent.DiscussionID, -1, 10)
+	if err != nil {
+		t.Fatalf("GetChannelMessages(first) error = %v", err)
+	}
+	if len(messages) != 1 {
+		t.Fatalf("len(messages) after first turn = %d, want 1", len(messages))
+	}
+	if messages[0].FromType != "agent" || messages[0].FromID != children[0].ID {
+		t.Fatalf("first mirrored message = %+v, want agent post from first child", messages[0])
+	}
+	if messages[0].FromRole != "Architect" {
+		t.Fatalf("first mirrored role = %q, want Architect", messages[0].FromRole)
+	}
+	if messages[0].Content != "Start with a bounded migration." {
+		t.Fatalf("first mirrored content = %q", messages[0].Content)
+	}
+
+	state := app.deliberations[parent.DiscussionID].State()
+	if state.TurnCount != 1 || state.Concluded {
+		t.Fatalf("state after first turn = %+v, want turnCount=1 and not concluded", state)
+	}
+
+	secondHandler := app.sessionEventHandler(children[1].ID, "session-b")
+	secondHandler(provider.ProviderEvent{
+		Kind:      provider.EventTextDelta,
+		ThreadID:  children[1].ID,
+		Content:   "Agreed, and the rollout should stay incremental.",
+		Timestamp: time.UnixMilli(now + 10),
+	})
+	secondHandler(provider.ProviderEvent{
+		Kind:      provider.EventTurnComplete,
+		ThreadID:  children[1].ID,
+		Timestamp: time.UnixMilli(now + 15),
+	})
+
+	messages, err = app.GetChannelMessages(parent.DiscussionID, -1, 10)
+	if err != nil {
+		t.Fatalf("GetChannelMessages(second) error = %v", err)
+	}
+	if len(messages) != 2 {
+		t.Fatalf("len(messages) after second turn = %d, want 2", len(messages))
+	}
+	if messages[1].FromRole != "Reviewer" {
+		t.Fatalf("second mirrored role = %q, want Reviewer", messages[1].FromRole)
+	}
+
+	channel, err := app.store.GetChannel(parent.DiscussionID)
+	if err != nil {
+		t.Fatalf("GetChannel() error = %v", err)
+	}
+	if channel.Status != "concluded" {
+		t.Fatalf("channel.Status = %q, want concluded", channel.Status)
+	}
+
+	state = app.deliberations[parent.DiscussionID].State()
+	if !state.Concluded || state.TurnCount != 2 {
+		t.Fatalf("state after second turn = %+v, want concluded after 2 turns", state)
 	}
 }
