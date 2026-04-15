@@ -6,6 +6,7 @@
 
 - `internal/store/migrate.go` owns schema setup through ordered `Migration` entries plus small helper functions; legacy pre-version databases are backfilled into `migration_versions` before newer migrations run.
 - `internal/git/core.go` centralizes bounded command execution while `internal/git/status.go` keeps git porcelain parsing and repository queries separate from process management.
+- `internal/discussion/registry.go` owns discussion-definition validation and persistence rules, while `internal/discussion/channel.go` and `internal/discussion/deliberation.go` keep channel lifecycle and turn-state logic split into separate services.
 
 ## Known Issues
 
@@ -36,6 +37,10 @@
 - `WI-2.6: Thread title auto-generation`
 - `WI-2.7: Updated Wails bindings`
 - `WI-4.1: Discussion store operations`
+- `WI-4.2: Discussion registry`
+- `WI-4.3: Channel service`
+- `WI-4.4: Deliberation engine`
+- `WI-4.5: Discussion Wails bindings`
 
 ## Iteration Log
 
@@ -57,6 +62,7 @@
 - 2026-04-15: Completed `WI-2.7` by replacing the app-level approval binding with the structured `provider.ApprovalResponse` contract, wiring `GetSettings`/`UpdateSettings`/`GetModelsForProvider` plus `SwitchThread` and `ReconnectSession`, and teaching Codex approval responses to serialize user-input and permission resolutions in Forge-compatible JSON-RPC shapes. `go build ./...`, `go vet ./...`, and `go test -coverprofile=coverage.out ./... -count=1` all passed, with `internal/provider` at 86.4% coverage and `internal/provider/codex` at 85.7%.
 - 2026-04-15: Completed `WI-3.5` by adding Wails git bindings for status/diff/branch/action/worktree flows, resolving repo-level vs workspace-level paths from thread metadata with sensible fallbacks, and covering branch-path resolution plus worktree lifecycle in app-level tests. `go build ./...`, `go vet ./...`, and `go test -coverprofile=coverage.out ./... -count=1` all passed, with `internal/git` at 80.6% coverage.
 - 2026-04-15: Completed `WI-4.1` by adding store-layer discussion/channel types plus SQLite CRUD/query methods for discussion definitions, channels, and ordered channel messages, including monotonic channel status timestamps and regression coverage for discussion CRUD plus message ordering/filtering. `go build ./...`, `go vet ./...`, and `go test -coverprofile=coverage.out ./... -count=1` all passed, with `internal/store` at 83.0% coverage.
+- 2026-04-15: Completed `WI-4.2` through `WI-4.5` by adding the discussion registry validation layer, a channel service with ordered human/agent posting and close semantics, an in-memory deliberation engine for turn alternation and unanimous conclusion tracking, and app bindings for discussion CRUD/start/message flows. `go build ./...`, `go vet ./...`, and `go test -coverprofile=coverage.out ./... -count=1` all passed, with `internal/discussion` at 84.2% coverage.
 
 ## Review Log
 

@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/discussion"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/store"
@@ -164,8 +165,9 @@ func newTestAppWithStore(t *testing.T) *App {
 	})
 
 	return &App{
-		store:    st,
-		sessions: make(map[string]session),
+		store:         st,
+		sessions:      make(map[string]session),
+		deliberations: make(map[string]*discussion.Deliberation),
 	}
 }
 

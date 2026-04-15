@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"agent-overflow/internal/discussion"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/codex"
@@ -26,8 +27,12 @@ type App struct {
 	store    *store.Store
 	settings *settings.Service
 	triage   *triage.Router
+	registry *discussion.Registry
+	channels *discussion.ChannelService
 	mu       sync.Mutex
 	sessions map[string]session // threadID → active session
+	// channelID → active deliberation state
+	deliberations map[string]*discussion.Deliberation
 	// Test-only injection points for binding helpers that need to observe start/stop.
 	startSessionFn func(string) error
 	stopSessionFn  func(string) error
@@ -43,7 +48,8 @@ type session struct {
 
 func NewApp() *App {
 	return &App{
-		sessions: make(map[string]session),
+		sessions:      make(map[string]session),
+		deliberations: make(map[string]*discussion.Deliberation),
 	}
 }
 
@@ -72,6 +78,8 @@ func (a *App) ServiceStartup(ctx context.Context, options application.ServiceOpt
 	a.triage = triage.NewRouter(st, func(eventName string, data any) {
 		a.app.Event.Emit(eventName, data)
 	})
+	a.registry = discussion.NewRegistry(st)
+	a.channels = discussion.NewChannelService(st)
 
 	return nil
 }
