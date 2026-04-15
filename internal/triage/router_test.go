@@ -357,6 +357,91 @@ func TestThreadRenamedUpdatesThread(t *testing.T) {
 	}
 }
 
+func TestTokenUsageAddsCalculatedCost(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	now := time.Now().UnixMilli()
+	if err := st.CreateThread(store.Thread{
+		ID:            "t1",
+		Title:         "Cost Test",
+		Provider:      "codex",
+		WorkspacePath: "/tmp",
+		Model:         "gpt-5.4",
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+
+	meta, err := json.Marshal(provider.TokenUsage{
+		InputTokens:  2_000_000,
+		OutputTokens: 1_000_000,
+	})
+	if err != nil {
+		t.Fatalf("marshal usage: %v", err)
+	}
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTokenUsage,
+		ThreadID:  "t1",
+		Meta:      meta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle: %v", err)
+	}
+
+	evt := emittedProviderEvent(t, emissions)
+	var usage provider.TokenUsage
+	if err := json.Unmarshal(evt.Meta, &usage); err != nil {
+		t.Fatalf("unmarshal emitted usage: %v", err)
+	}
+	if usage.TotalCostUSD != 17.5 {
+		t.Fatalf("totalCostUsd: got %f, want 17.5", usage.TotalCostUSD)
+	}
+}
+
+func TestTokenUsageLeavesUnknownModelUnchanged(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	now := time.Now().UnixMilli()
+	if err := st.CreateThread(store.Thread{
+		ID:            "t1",
+		Title:         "Unknown Model",
+		Provider:      "claude",
+		WorkspacePath: "/tmp",
+		Model:         "unknown-model",
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+
+	original := provider.TokenUsage{InputTokens: 123, OutputTokens: 456}
+	meta, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("marshal usage: %v", err)
+	}
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTokenUsage,
+		ThreadID:  "t1",
+		Meta:      meta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle: %v", err)
+	}
+
+	evt := emittedProviderEvent(t, emissions)
+	var usage provider.TokenUsage
+	if err := json.Unmarshal(evt.Meta, &usage); err != nil {
+		t.Fatalf("unmarshal emitted usage: %v", err)
+	}
+	if usage.TotalCostUSD != 0 {
+		t.Fatalf("totalCostUsd: got %f, want 0", usage.TotalCostUSD)
+	}
+	if usage.InputTokens != original.InputTokens || usage.OutputTokens != original.OutputTokens {
+		t.Fatalf("usage changed unexpectedly: got %+v, want %+v", usage, original)
+	}
+}
+
 func TestInlineEventDoesNotCallStore(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 
@@ -434,6 +519,22 @@ func TestTextDeltaAccumulation(t *testing.T) {
 	if acc.String() != "hello world!" {
 		t.Errorf("accumulated text: got %q, want %q", acc.String(), "hello world!")
 	}
+}
+
+func emittedProviderEvent(t *testing.T, emissions *[]emitted) provider.ProviderEvent {
+	t.Helper()
+	if len(*emissions) != 1 {
+		t.Fatalf("expected 1 emission, got %d", len(*emissions))
+	}
+	if (*emissions)[0].eventName != "provider:event" {
+		t.Fatalf("eventName: got %q, want provider:event", (*emissions)[0].eventName)
+	}
+
+	evt, ok := (*emissions)[0].data.(provider.ProviderEvent)
+	if !ok {
+		t.Fatalf("emitted data type = %T, want provider.ProviderEvent", (*emissions)[0].data)
+	}
+	return evt
 }
 
 func TestBackgroundDeltaNotEmitted(t *testing.T) {

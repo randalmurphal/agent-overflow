@@ -49,10 +49,11 @@ func (r *Router) Handle(evt provider.ProviderEvent) error {
 		provider.EventToolProgress,
 		provider.EventCompactBoundary,
 		provider.EventRateLimits,
-		provider.EventTokenUsage,
 		provider.EventError,
 		provider.EventBackgroundStart:
 		return r.emitInline(evt)
+	case provider.EventTokenUsage:
+		return r.handleTokenUsage(evt)
 	case provider.EventInit:
 		return r.handleInit(evt)
 	case provider.EventModelRerouted:
@@ -152,9 +153,59 @@ func (r *Router) handleThinking(evt provider.ProviderEvent) error {
 	return nil
 }
 
+func (r *Router) handleTokenUsage(evt provider.ProviderEvent) error {
+	usage, ok := parseTokenUsage(evt.Meta)
+	if !ok {
+		return r.emitInline(evt)
+	}
+
+	model, err := r.lookupThreadModel(evt.ThreadID)
+	if err != nil {
+		log.Printf("triage: lookup thread model: %v", err)
+		return r.emitInline(evt)
+	}
+	if model == "" {
+		return r.emitInline(evt)
+	}
+
+	usage.TotalCostUSD = provider.CalculateCost(model, usage)
+	if usage.TotalCostUSD == 0 {
+		return r.emitInline(evt)
+	}
+
+	meta, err := json.Marshal(usage)
+	if err != nil {
+		log.Printf("triage: marshal token usage: %v", err)
+		return r.emitInline(evt)
+	}
+
+	evt.Meta = meta
+	return r.emitInline(evt)
+}
+
 func (r *Router) emitInline(evt provider.ProviderEvent) error {
 	r.emit("provider:event", evt)
 	return nil
+}
+
+func parseTokenUsage(meta json.RawMessage) (provider.TokenUsage, bool) {
+	if len(meta) == 0 {
+		return provider.TokenUsage{}, false
+	}
+
+	var usage provider.TokenUsage
+	if err := json.Unmarshal(meta, &usage); err != nil {
+		return provider.TokenUsage{}, false
+	}
+	return usage, true
+}
+
+func (r *Router) lookupThreadModel(threadID string) (string, error) {
+	thread, err := r.store.GetThread(threadID)
+	if err != nil {
+		return "", err
+	}
+	return thread.Model, nil
 }
 
 func (r *Router) accumulate(target map[string]*strings.Builder, threadID, content string) {
