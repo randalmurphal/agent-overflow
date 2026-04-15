@@ -155,6 +155,33 @@ func TestGitCreateAndRemoveWorktree(t *testing.T) {
 	}
 }
 
+func TestGitCheckoutUpdatesStoredBranch(t *testing.T) {
+	app := newTestAppWithStore(t)
+	repo := initAppGitRepo(t)
+
+	runGitCommand(t, repo, "branch", "feature/checkout")
+
+	thread := testThread("thread-checkout")
+	thread.ProjectPath = repo
+	thread.WorkspacePath = repo
+	thread.Branch = "main"
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+
+	if err := app.GitCheckout(thread.ID, "feature/checkout"); err != nil {
+		t.Fatalf("GitCheckout() error = %v", err)
+	}
+
+	stored, err := app.store.GetThread(thread.ID)
+	if err != nil {
+		t.Fatalf("GetThread() error = %v", err)
+	}
+	if stored.Branch != "feature/checkout" {
+		t.Fatalf("stored Branch = %q, want feature/checkout", stored.Branch)
+	}
+}
+
 func containsBranch(branches []gitops.GitBranch, want string) bool {
 	for _, branch := range branches {
 		if branch.Name == want {

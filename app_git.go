@@ -141,7 +141,14 @@ func (a *App) GitCheckout(threadID, branch string) error {
 		return err
 	}
 
-	return gitops.NewCore().Checkout(workspace, branch)
+	core := gitops.NewCore()
+	if err := core.Checkout(workspace, branch); err != nil {
+		return err
+	}
+
+	thread.Branch = currentGitBranch(core, workspace)
+	thread.UpdatedAt = time.Now().UnixMilli()
+	return a.store.UpdateThread(thread)
 }
 
 // GitCreateBranch creates a branch in the thread's repository.
