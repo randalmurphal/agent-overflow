@@ -178,7 +178,7 @@ func TestConcurrentReadWrite(t *testing.T) {
 	}
 
 	// Spin up writers.
-	themes := []string{"dark", "light", "system", "solarized"}
+	themes := []string{"dark", "light", "system"}
 	for i := range writers {
 		wg.Add(1)
 		go func() {

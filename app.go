@@ -156,6 +156,9 @@ func (a *App) CreateThread(providerName string, workspacePath string, model stri
 	if err := a.store.CreateThread(t); err != nil {
 		return store.Thread{}, err
 	}
+	if a.settings != nil {
+		a.settings.AddRecentWorkspace(workspacePath)
+	}
 	return t, nil
 }
 

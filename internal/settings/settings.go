@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -113,6 +114,10 @@ func (s *Service) Update(patch map[string]any) (Settings, error) {
 	if err != nil {
 		return Settings{}, fmt.Errorf("settings: apply patch: %w", err)
 	}
+	patched, err = validateSettings(patched)
+	if err != nil {
+		return Settings{}, fmt.Errorf("settings: validate: %w", err)
+	}
 
 	if err := s.writeSparse(patched); err != nil {
 		return Settings{}, err
@@ -126,6 +131,11 @@ func (s *Service) Update(patch map[string]any) (Settings, error) {
 // AddRecentWorkspace pushes a workspace path to the front of the recent list,
 // deduplicating and capping at 10 entries.
 func (s *Service) AddRecentWorkspace(path string) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -171,7 +181,7 @@ func (s *Service) loadFromFile() Settings {
 		log.Printf("settings: malformed JSON in %s, using defaults: %v", s.path, err)
 		return copyDefaults()
 	}
-	return result
+	return sanitizeLoadedSettings(result)
 }
 
 // writeSparse persists only the fields that differ from DefaultSettings.

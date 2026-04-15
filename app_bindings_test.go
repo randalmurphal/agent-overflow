@@ -120,6 +120,28 @@ func TestCreateThreadDetectsGitProjectPath(t *testing.T) {
 	}
 }
 
+func TestCreateThreadAddsRecentWorkspace(t *testing.T) {
+	app := newTestAppWithStore(t)
+	app.settings = settings.NewService(t.TempDir())
+
+	workspace := filepath.Join(t.TempDir(), "workspace")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+
+	if _, err := app.CreateThread(string(provider.Codex), workspace, "gpt-5.4"); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+
+	got := app.settings.Get()
+	if len(got.RecentWorkspaces) != 1 {
+		t.Fatalf("len(RecentWorkspaces) = %d, want 1", len(got.RecentWorkspaces))
+	}
+	if !samePath(got.RecentWorkspaces[0], workspace) {
+		t.Fatalf("RecentWorkspaces[0] = %q, want %q", got.RecentWorkspaces[0], workspace)
+	}
+}
+
 func TestSwitchThreadAutoResumesStoredSession(t *testing.T) {
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-auto")
