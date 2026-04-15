@@ -88,8 +88,8 @@ func (cs *ChannelService) PostMessage(input PostMessageInput) (store.ChannelMess
 	if err != nil {
 		return store.ChannelMessage{}, err
 	}
-	if channel.Status == "closed" {
-		return store.ChannelMessage{}, fmt.Errorf("channel %s is closed", input.ChannelID)
+	if channel.Status != "open" {
+		return store.ChannelMessage{}, fmt.Errorf("channel %s is not open", input.ChannelID)
 	}
 
 	sequence, err := cs.nextSequence(input.ChannelID)

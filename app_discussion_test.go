@@ -474,4 +474,8 @@ func TestSessionEventHandlerMirrorsDiscussionTurnsIntoChannelAndConcludes(t *tes
 	if !state.Concluded || state.TurnCount != 2 {
 		t.Fatalf("state after second turn = %+v, want concluded after 2 turns", state)
 	}
+
+	if err := app.PostChannelMessage(parent.DiscussionID, "Can we keep going?"); err == nil {
+		t.Fatal("expected posting to concluded discussion channel to fail")
+	}
 }

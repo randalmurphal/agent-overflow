@@ -78,6 +78,42 @@ func TestChannelServiceOrdersMessagesAndCloses(t *testing.T) {
 	}
 }
 
+func TestChannelServiceRejectsPostingToConcludedChannel(t *testing.T) {
+	st := newDiscussionTestStore(t)
+	channelSvc := NewChannelService(st)
+	thread := store.Thread{
+		ID:              "thread-concluded",
+		Title:           "Discussion Thread",
+		Provider:        "codex",
+		WorkspacePath:   "/tmp/workspace",
+		ProjectPath:     "/tmp/project",
+		Model:           "gpt-5.4",
+		InteractionMode: "discussion",
+		CreatedAt:       time.Now().UnixMilli(),
+		UpdatedAt:       time.Now().UnixMilli(),
+	}
+	if err := st.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+
+	channel, err := channelSvc.Create(thread.ID, "deliberation")
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if err := st.UpdateChannelStatus(channel.ID, "concluded"); err != nil {
+		t.Fatalf("UpdateChannelStatus(concluded) error = %v", err)
+	}
+
+	if _, err := channelSvc.PostMessage(PostMessageInput{
+		ChannelID: channel.ID,
+		FromType:  "human",
+		FromID:    "user",
+		Content:   "after conclusion",
+	}); err == nil {
+		t.Fatal("expected posting to concluded channel to fail")
+	}
+}
+
 func TestChannelServiceDefaultsAndValidation(t *testing.T) {
 	st := newDiscussionTestStore(t)
 	channelSvc := NewChannelService(st)
