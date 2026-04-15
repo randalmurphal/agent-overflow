@@ -20,6 +20,7 @@
 
 - `WI-0.1: Database migration system`
 - `WI-0.2: Backend file reorganization`
+- `WI-1.3: Structured approval types`
 - `WI-1.4: Codex structured user-input and permission handling`
 - `WI-1.5: Diff accumulation fix`
 - `WI-1.6: Triage router updates`
@@ -37,6 +38,7 @@
 - `WI-2.5: Session lifecycle improvements`
 - `WI-2.6: Thread title auto-generation`
 - `WI-2.7: Updated Wails bindings`
+- `WI-2.8: Thread struct expansion`
 - `WI-4.1: Discussion store operations`
 - `WI-4.2: Discussion registry`
 - `WI-4.3: Channel service`
@@ -48,6 +50,7 @@
 
 ## Iteration Log
 
+- 2026-04-15: Completed `WI-2.8` by normalizing empty thread `InteractionMode` values to the spec-required `"default"` in store writes and `App.CreateThread`, correcting the thread CRUD/default-path tests, and adding an app-level binding regression for returned/stored defaults. Also recorded the already-implemented `WI-1.3` structured approval types in the tracker after re-reading the Forge contract and rerunning `go test ./internal/provider/... -count=1`. `go build ./...`, `go vet ./...`, and `go test -coverprofile=coverage.out ./... -count=1` all passed, with `internal/store` at 83.0% coverage and `internal/provider` at 90.5% coverage.
 - 2026-04-15: Completed `WI-5.2` by adding the backend design-system prompt loader with a bundled default prompt and `configDir/prompts/design-mode.md` override support, plus direct tests for default and override resolution. `go build ./...`, `go vet ./...`, and `go test -coverprofile=coverage.out ./... -count=1` all passed, with `internal/design` at 95.7% coverage.
 - 2026-04-15: Completed `WI-2.3` by filling the provider model registry with Forge-aligned capability tags (`fast_mode`, `thinking`), returning defensive copies from `ModelsForProvider`, and extending provider tests to lock down capability metadata plus copy semantics. `go build ./...`, `go vet ./...`, and `go test -coverprofile=coverage.out ./... -count=1` all passed, with `internal/provider` at 90.5% coverage.
 - 2026-04-15: Completed `WI-0.1` by wiring `store.New` through a versioned migration runner, adding legacy v1 seeding for pre-version databases, and expanding migration tests to cover fresh, versioned, and legacy upgrade paths. `internal/store` coverage is now 85.4%.

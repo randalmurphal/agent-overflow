@@ -3,6 +3,7 @@ package store
 import "fmt"
 
 func (s *Store) CreateThread(t Thread) error {
+	t.InteractionMode = normalizeInteractionMode(t.InteractionMode)
 	_, err := s.db.Exec(
 		`INSERT INTO threads (id, title, provider, session_ref, workspace_path, model,
 		    project_path, worktree_path, branch, interaction_mode, discussion_id, parent_thread_id,
@@ -70,6 +71,7 @@ func (s *Store) ListThreads() ([]Thread, error) {
 }
 
 func (s *Store) UpdateThread(t Thread) error {
+	t.InteractionMode = normalizeInteractionMode(t.InteractionMode)
 	_, err := s.db.Exec(
 		`UPDATE threads SET title=?, provider=?, session_ref=?, workspace_path=?, model=?,
 		    project_path=?, worktree_path=?, branch=?, interaction_mode=?,
@@ -129,4 +131,11 @@ func (s *Store) UpdateModel(threadID, model string) error {
 		return fmt.Errorf("store: update model for %s: %w", threadID, err)
 	}
 	return nil
+}
+
+func normalizeInteractionMode(mode string) string {
+	if mode == "" {
+		return "default"
+	}
+	return mode
 }

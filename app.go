@@ -117,13 +117,14 @@ func (a *App) ServiceShutdown() error {
 func (a *App) CreateThread(providerName string, workspacePath string, model string) (store.Thread, error) {
 	now := time.Now().UnixMilli()
 	t := store.Thread{
-		ID:            uuid.New().String(),
-		Title:         "New Thread",
-		Provider:      providerName,
-		WorkspacePath: workspacePath,
-		Model:         model,
-		CreatedAt:     now,
-		UpdatedAt:     now,
+		ID:              uuid.New().String(),
+		Title:           "New Thread",
+		Provider:        providerName,
+		WorkspacePath:   workspacePath,
+		Model:           model,
+		InteractionMode: "default",
+		CreatedAt:       now,
+		UpdatedAt:       now,
 	}
 	if err := a.store.CreateThread(t); err != nil {
 		return store.Thread{}, err

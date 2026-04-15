@@ -97,9 +97,8 @@ func TestCreateThreadDefaultValues(t *testing.T) {
 		t.Fatalf("get: %v", err)
 	}
 
-	// Non-nullable with defaults: empty string is what Go sends when unset.
-	if got.InteractionMode != "" {
-		t.Errorf("InteractionMode: got %q, want empty string", got.InteractionMode)
+	if got.InteractionMode != "default" {
+		t.Errorf("InteractionMode: got %q, want default", got.InteractionMode)
 	}
 	if got.ProjectPath != "" {
 		t.Errorf("ProjectPath: got %q, want empty string", got.ProjectPath)
@@ -206,7 +205,7 @@ func TestListThreadsIncludesNewFields(t *testing.T) {
 		Model:           "opus-4",
 		ProjectPath:     "/home/user/proj",
 		Branch:          "main",
-		InteractionMode: "code",
+		InteractionMode: "design",
 		CreatedAt:       now,
 		UpdatedAt:       now,
 	}
@@ -230,8 +229,8 @@ func TestListThreadsIncludesNewFields(t *testing.T) {
 	if got.Branch != "main" {
 		t.Errorf("Branch: got %q, want %q", got.Branch, "main")
 	}
-	if got.InteractionMode != "code" {
-		t.Errorf("InteractionMode: got %q, want %q", got.InteractionMode, "code")
+	if got.InteractionMode != "design" {
+		t.Errorf("InteractionMode: got %q, want %q", got.InteractionMode, "design")
 	}
 	// Unset nullable fields should be empty.
 	if got.WorktreePath != "" {
