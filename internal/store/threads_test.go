@@ -243,3 +243,44 @@ func TestListThreadsIncludesNewFields(t *testing.T) {
 		t.Errorf("ParentThreadID: got %q, want empty", got.ParentThreadID)
 	}
 }
+
+func TestListChildThreadsReturnsOnlyDirectChildren(t *testing.T) {
+	s := newTestStore(t)
+
+	parent := makeThread("parent-thread", "claude")
+	if err := s.CreateThread(parent); err != nil {
+		t.Fatalf("CreateThread(parent): %v", err)
+	}
+
+	childA := makeThread("child-a", "claude")
+	childA.ParentThreadID = parent.ID
+	childA.CreatedAt = parent.CreatedAt + 1
+	childA.UpdatedAt = childA.CreatedAt
+	if err := s.CreateThread(childA); err != nil {
+		t.Fatalf("CreateThread(childA): %v", err)
+	}
+
+	childB := makeThread("child-b", "codex")
+	childB.ParentThreadID = parent.ID
+	childB.CreatedAt = parent.CreatedAt + 2
+	childB.UpdatedAt = childB.CreatedAt
+	if err := s.CreateThread(childB); err != nil {
+		t.Fatalf("CreateThread(childB): %v", err)
+	}
+
+	other := makeThread("other-thread", "claude")
+	if err := s.CreateThread(other); err != nil {
+		t.Fatalf("CreateThread(other): %v", err)
+	}
+
+	children, err := s.ListChildThreads(parent.ID)
+	if err != nil {
+		t.Fatalf("ListChildThreads(): %v", err)
+	}
+	if len(children) != 2 {
+		t.Fatalf("len(children) = %d, want 2", len(children))
+	}
+	if children[0].ID != childA.ID || children[1].ID != childB.ID {
+		t.Fatalf("children order/IDs = %q, %q; want %q, %q", children[0].ID, children[1].ID, childA.ID, childB.ID)
+	}
+}

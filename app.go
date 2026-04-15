@@ -161,9 +161,7 @@ func (a *App) GetThread(id string) (store.Thread, error) {
 }
 
 func (a *App) DeleteThread(id string) error {
-	a.StopSession(id)
-	a.clearThreadSystemPrompt(id)
-	return a.store.DeleteThread(id)
+	return a.deleteThreadTree(id)
 }
 
 func (a *App) ArchiveThread(id string) error {

@@ -255,3 +255,81 @@ func TestPostChannelMessageAndGetChannelMessages(t *testing.T) {
 		t.Fatalf("message = %+v, want human intervention", messages[0])
 	}
 }
+
+func TestDeleteThreadRemovesDiscussionChildrenAndRuntimeState(t *testing.T) {
+	app := newTestAppWithStore(t)
+	app.registry = discussion.NewRegistry(app.store)
+	app.channels = discussion.NewChannelService(app.store)
+
+	thread := testThread("thread-discussion-delete")
+	thread.ProjectPath = "/tmp/project"
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+	if err := app.store.CreateDiscussionDef(store.DiscussionDefinition{
+		ID:        "def-delete",
+		Name:      "Architects",
+		Scope:     "project",
+		ProjectID: thread.ProjectPath,
+		Participants: []store.DiscussionParticipant{
+			{Role: "architect", System: "Design the change"},
+			{Role: "reviewer", System: "Review the change"},
+		},
+		Settings:  store.DiscussionSettings{MaxTurns: 6},
+		CreatedAt: time.Now().UnixMilli(),
+		UpdatedAt: time.Now().UnixMilli(),
+	}); err != nil {
+		t.Fatalf("CreateDiscussionDef() error = %v", err)
+	}
+
+	app.startSessionFn = func(threadID string) error { return nil }
+	if err := app.StartDiscussion(thread.ID, "Architects"); err != nil {
+		t.Fatalf("StartDiscussion() error = %v", err)
+	}
+
+	parent, err := app.store.GetThread(thread.ID)
+	if err != nil {
+		t.Fatalf("GetThread(parent): %v", err)
+	}
+	children, err := app.store.ListChildThreads(parent.ID)
+	if err != nil {
+		t.Fatalf("ListChildThreads(): %v", err)
+	}
+	if len(children) != 2 {
+		t.Fatalf("len(children) = %d, want 2", len(children))
+	}
+
+	app.mu.Lock()
+	for _, child := range children {
+		app.sessions[child.ID] = session{provider: child.Provider}
+	}
+	app.mu.Unlock()
+
+	if err := app.DeleteThread(parent.ID); err != nil {
+		t.Fatalf("DeleteThread() error = %v", err)
+	}
+
+	threads, err := app.store.ListThreads()
+	if err != nil {
+		t.Fatalf("ListThreads() error = %v", err)
+	}
+	if len(threads) != 0 {
+		t.Fatalf("len(threads) = %d, want 0 after parent deletion", len(threads))
+	}
+
+	if _, err := app.store.GetChannel(parent.DiscussionID); err == nil {
+		t.Fatal("expected discussion channel to be deleted with parent thread")
+	}
+	if len(app.threadSystemPrompts) != 0 {
+		t.Fatalf("threadSystemPrompts = %v, want empty after delete", app.threadSystemPrompts)
+	}
+
+	app.mu.Lock()
+	defer app.mu.Unlock()
+	if len(app.sessions) != 0 {
+		t.Fatalf("sessions = %v, want empty after delete", app.sessions)
+	}
+	if len(app.deliberations) != 0 {
+		t.Fatalf("deliberations = %v, want empty after delete", app.deliberations)
+	}
+}
