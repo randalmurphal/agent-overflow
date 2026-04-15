@@ -35,6 +35,7 @@
 - `WI-2.5: Session lifecycle improvements`
 - `WI-2.6: Thread title auto-generation`
 - `WI-2.7: Updated Wails bindings`
+- `WI-4.1: Discussion store operations`
 
 ## Iteration Log
 
@@ -55,6 +56,7 @@
 - 2026-04-15: Completed `WI-2.6` by generating Claude thread titles from the first persisted user message when the default `"New Thread"` title survives the first turn, reusing the existing rename event path so the store and frontend update together. `go build ./...`, `go vet ./...`, and `go test -coverprofile=coverage.out ./... -count=1` all passed, with `internal/triage` at 85.7% coverage and `internal/store` at 83.9% coverage.
 - 2026-04-15: Completed `WI-2.7` by replacing the app-level approval binding with the structured `provider.ApprovalResponse` contract, wiring `GetSettings`/`UpdateSettings`/`GetModelsForProvider` plus `SwitchThread` and `ReconnectSession`, and teaching Codex approval responses to serialize user-input and permission resolutions in Forge-compatible JSON-RPC shapes. `go build ./...`, `go vet ./...`, and `go test -coverprofile=coverage.out ./... -count=1` all passed, with `internal/provider` at 86.4% coverage and `internal/provider/codex` at 85.7%.
 - 2026-04-15: Completed `WI-3.5` by adding Wails git bindings for status/diff/branch/action/worktree flows, resolving repo-level vs workspace-level paths from thread metadata with sensible fallbacks, and covering branch-path resolution plus worktree lifecycle in app-level tests. `go build ./...`, `go vet ./...`, and `go test -coverprofile=coverage.out ./... -count=1` all passed, with `internal/git` at 80.6% coverage.
+- 2026-04-15: Completed `WI-4.1` by adding store-layer discussion/channel types plus SQLite CRUD/query methods for discussion definitions, channels, and ordered channel messages, including monotonic channel status timestamps and regression coverage for discussion CRUD plus message ordering/filtering. `go build ./...`, `go vet ./...`, and `go test -coverprofile=coverage.out ./... -count=1` all passed, with `internal/store` at 83.0% coverage.
 
 ## Review Log
 
