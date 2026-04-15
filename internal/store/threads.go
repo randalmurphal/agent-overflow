@@ -4,9 +4,14 @@ import "fmt"
 
 func (s *Store) CreateThread(t Thread) error {
 	_, err := s.db.Exec(
-		`INSERT INTO threads (id, title, provider, session_ref, workspace_path, model, created_at, updated_at, archived)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		t.ID, t.Title, t.Provider, nilIfEmpty(t.SessionRef), t.WorkspacePath, t.Model, t.CreatedAt, t.UpdatedAt, boolToInt(t.Archived),
+		`INSERT INTO threads (id, title, provider, session_ref, workspace_path, model,
+		    project_path, worktree_path, branch, interaction_mode, discussion_id, parent_thread_id,
+		    created_at, updated_at, archived)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		t.ID, t.Title, t.Provider, nilIfEmpty(t.SessionRef), t.WorkspacePath, t.Model,
+		t.ProjectPath, nilIfEmpty(t.WorktreePath), nilIfEmpty(t.Branch), t.InteractionMode,
+		nilIfEmpty(t.DiscussionID), nilIfEmpty(t.ParentThreadID),
+		t.CreatedAt, t.UpdatedAt, boolToInt(t.Archived),
 	)
 	if err != nil {
 		return fmt.Errorf("store: create thread: %w", err)
@@ -16,12 +21,18 @@ func (s *Store) CreateThread(t Thread) error {
 
 func (s *Store) GetThread(id string) (Thread, error) {
 	row := s.db.QueryRow(
-		`SELECT id, title, provider, COALESCE(session_ref, ''), workspace_path, model, created_at, updated_at, archived
+		`SELECT id, title, provider, COALESCE(session_ref, ''), workspace_path, model,
+		    project_path, COALESCE(worktree_path, ''), COALESCE(branch, ''),
+		    interaction_mode, COALESCE(discussion_id, ''), COALESCE(parent_thread_id, ''),
+		    created_at, updated_at, archived
 		 FROM threads WHERE id = ?`, id,
 	)
 	var t Thread
 	var archived int
-	err := row.Scan(&t.ID, &t.Title, &t.Provider, &t.SessionRef, &t.WorkspacePath, &t.Model, &t.CreatedAt, &t.UpdatedAt, &archived)
+	err := row.Scan(&t.ID, &t.Title, &t.Provider, &t.SessionRef, &t.WorkspacePath, &t.Model,
+		&t.ProjectPath, &t.WorktreePath, &t.Branch,
+		&t.InteractionMode, &t.DiscussionID, &t.ParentThreadID,
+		&t.CreatedAt, &t.UpdatedAt, &archived)
 	if err != nil {
 		return Thread{}, fmt.Errorf("store: get thread %s: %w", id, err)
 	}
@@ -31,7 +42,10 @@ func (s *Store) GetThread(id string) (Thread, error) {
 
 func (s *Store) ListThreads() ([]Thread, error) {
 	rows, err := s.db.Query(
-		`SELECT id, title, provider, COALESCE(session_ref, ''), workspace_path, model, created_at, updated_at, archived
+		`SELECT id, title, provider, COALESCE(session_ref, ''), workspace_path, model,
+		    project_path, COALESCE(worktree_path, ''), COALESCE(branch, ''),
+		    interaction_mode, COALESCE(discussion_id, ''), COALESCE(parent_thread_id, ''),
+		    created_at, updated_at, archived
 		 FROM threads WHERE archived = 0 ORDER BY updated_at DESC`,
 	)
 	if err != nil {
@@ -43,7 +57,10 @@ func (s *Store) ListThreads() ([]Thread, error) {
 	for rows.Next() {
 		var t Thread
 		var archived int
-		if err := rows.Scan(&t.ID, &t.Title, &t.Provider, &t.SessionRef, &t.WorkspacePath, &t.Model, &t.CreatedAt, &t.UpdatedAt, &archived); err != nil {
+		if err := rows.Scan(&t.ID, &t.Title, &t.Provider, &t.SessionRef, &t.WorkspacePath, &t.Model,
+			&t.ProjectPath, &t.WorktreePath, &t.Branch,
+			&t.InteractionMode, &t.DiscussionID, &t.ParentThreadID,
+			&t.CreatedAt, &t.UpdatedAt, &archived); err != nil {
 			return nil, fmt.Errorf("store: scan thread row: %w", err)
 		}
 		t.Archived = archived != 0
@@ -54,9 +71,15 @@ func (s *Store) ListThreads() ([]Thread, error) {
 
 func (s *Store) UpdateThread(t Thread) error {
 	_, err := s.db.Exec(
-		`UPDATE threads SET title=?, provider=?, session_ref=?, workspace_path=?, model=?, updated_at=?, archived=?
+		`UPDATE threads SET title=?, provider=?, session_ref=?, workspace_path=?, model=?,
+		    project_path=?, worktree_path=?, branch=?, interaction_mode=?,
+		    discussion_id=?, parent_thread_id=?,
+		    updated_at=?, archived=?
 		 WHERE id=?`,
-		t.Title, t.Provider, nilIfEmpty(t.SessionRef), t.WorkspacePath, t.Model, t.UpdatedAt, boolToInt(t.Archived), t.ID,
+		t.Title, t.Provider, nilIfEmpty(t.SessionRef), t.WorkspacePath, t.Model,
+		t.ProjectPath, nilIfEmpty(t.WorktreePath), nilIfEmpty(t.Branch), t.InteractionMode,
+		nilIfEmpty(t.DiscussionID), nilIfEmpty(t.ParentThreadID),
+		t.UpdatedAt, boolToInt(t.Archived), t.ID,
 	)
 	if err != nil {
 		return fmt.Errorf("store: update thread %s: %w", t.ID, err)

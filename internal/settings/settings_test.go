@@ -1,0 +1,232 @@
+package settings
+
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"sync"
+	"testing"
+)
+
+func TestGetReturnsDefaultsOnMissingFile(t *testing.T) {
+	svc := NewService(t.TempDir())
+	got := svc.Get()
+
+	if got.Theme != "system" {
+		t.Errorf("Theme = %q, want %q", got.Theme, "system")
+	}
+	if got.DefaultProvider != "claude" {
+		t.Errorf("DefaultProvider = %q, want %q", got.DefaultProvider, "claude")
+	}
+	if got.StreamingEnabled != true {
+		t.Error("StreamingEnabled = false, want true")
+	}
+	if got.ClaudeEnabled != true {
+		t.Error("ClaudeEnabled = false, want true")
+	}
+	if got.CodexEnabled != true {
+		t.Error("CodexEnabled = false, want true")
+	}
+	if got.DefaultModelClaude != "claude-sonnet-4-6" {
+		t.Errorf("DefaultModelClaude = %q, want %q", got.DefaultModelClaude, "claude-sonnet-4-6")
+	}
+	if got.DefaultModelCodex != "gpt-5.4" {
+		t.Errorf("DefaultModelCodex = %q, want %q", got.DefaultModelCodex, "gpt-5.4")
+	}
+	if got.RecentWorkspaces != nil {
+		t.Errorf("RecentWorkspaces = %v, want nil", got.RecentWorkspaces)
+	}
+}
+
+func TestGetReturnsDefaultsOnMalformedJSON(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+	if err := os.WriteFile(path, []byte("{not valid json!!!"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	svc := NewService(dir)
+	got := svc.Get()
+
+	if got.Theme != "system" {
+		t.Errorf("Theme = %q, want %q", got.Theme, "system")
+	}
+	if got.StreamingEnabled != true {
+		t.Error("StreamingEnabled = false, want true")
+	}
+	if got.ConfirmDelete != true {
+		t.Error("ConfirmDelete = false, want true")
+	}
+}
+
+func TestUpdatePersistsAndSparseSerializes(t *testing.T) {
+	dir := t.TempDir()
+	svc := NewService(dir)
+
+	updated, err := svc.Update(map[string]any{"theme": "dark"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Theme != "dark" {
+		t.Errorf("Theme = %q, want %q", updated.Theme, "dark")
+	}
+
+	// Read the file directly to verify sparse serialization.
+	data, err := os.ReadFile(filepath.Join(dir, "settings.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var fileMap map[string]any
+	if err := json.Unmarshal(data, &fileMap); err != nil {
+		t.Fatalf("unmarshal settings file: %v", err)
+	}
+
+	// Only "theme" should be in the file (everything else matches defaults).
+	if len(fileMap) != 1 {
+		t.Errorf("file contains %d keys, want 1; contents: %s", len(fileMap), string(data))
+	}
+	if fileMap["theme"] != "dark" {
+		t.Errorf("file theme = %v, want %q", fileMap["theme"], "dark")
+	}
+}
+
+func TestUpdateMergesOverDefaults(t *testing.T) {
+	dir := t.TempDir()
+	svc := NewService(dir)
+
+	updated, err := svc.Update(map[string]any{"theme": "dark"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Changed field.
+	if updated.Theme != "dark" {
+		t.Errorf("Theme = %q, want %q", updated.Theme, "dark")
+	}
+	// All other fields should still be defaults.
+	if updated.DefaultProvider != "claude" {
+		t.Errorf("DefaultProvider = %q, want %q", updated.DefaultProvider, "claude")
+	}
+	if updated.StreamingEnabled != true {
+		t.Error("StreamingEnabled = false, want true")
+	}
+	if updated.ConfirmArchive != true {
+		t.Error("ConfirmArchive = false, want true")
+	}
+	if updated.ClaudeBinaryPath != "claude" {
+		t.Errorf("ClaudeBinaryPath = %q, want %q", updated.ClaudeBinaryPath, "claude")
+	}
+
+	// Read it back via Get to ensure cache and file are consistent.
+	svc2 := NewService(dir)
+	got := svc2.Get()
+	if got.Theme != "dark" {
+		t.Errorf("re-read Theme = %q, want %q", got.Theme, "dark")
+	}
+	if got.StreamingEnabled != true {
+		t.Error("re-read StreamingEnabled = false, want true")
+	}
+}
+
+func TestConcurrentReadWrite(t *testing.T) {
+	dir := t.TempDir()
+	svc := NewService(dir)
+
+	var wg sync.WaitGroup
+	const readers = 20
+	const writers = 10
+
+	// Spin up readers.
+	for range readers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range 50 {
+				got := svc.Get()
+				// Just verify no panic and we get a valid theme.
+				if got.Theme == "" {
+					t.Error("Get returned empty theme")
+				}
+			}
+		}()
+	}
+
+	// Spin up writers.
+	themes := []string{"dark", "light", "system", "solarized"}
+	for i := range writers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := range 20 {
+				theme := themes[(i+j)%len(themes)]
+				_, err := svc.Update(map[string]any{"theme": theme})
+				if err != nil {
+					t.Errorf("Update failed: %v", err)
+				}
+			}
+		}()
+	}
+
+	wg.Wait()
+
+	// Final read should return a valid settings object.
+	final := svc.Get()
+	if final.Theme == "" {
+		t.Error("final Get returned empty theme")
+	}
+}
+
+func TestAddRecentWorkspaceDeduplicatesAndCaps(t *testing.T) {
+	dir := t.TempDir()
+	svc := NewService(dir)
+
+	// Add 12 workspaces.
+	for i := range 12 {
+		svc.AddRecentWorkspace(filepath.Join("/projects", string(rune('a'+i))))
+	}
+
+	got := svc.Get()
+	if len(got.RecentWorkspaces) != 10 {
+		t.Fatalf("RecentWorkspaces length = %d, want 10", len(got.RecentWorkspaces))
+	}
+
+	// Most recent should be the last added (index 11 -> 'l').
+	if got.RecentWorkspaces[0] != filepath.Join("/projects", "l") {
+		t.Errorf("first workspace = %q, want %q", got.RecentWorkspaces[0], filepath.Join("/projects", "l"))
+	}
+
+	// Oldest surviving should be index 2 -> 'c' (a and b were evicted).
+	if got.RecentWorkspaces[9] != filepath.Join("/projects", "c") {
+		t.Errorf("last workspace = %q, want %q", got.RecentWorkspaces[9], filepath.Join("/projects", "c"))
+	}
+
+	// Add a duplicate that's already in the list (e.g., 'f' at index 6 from original).
+	svc.AddRecentWorkspace(filepath.Join("/projects", "f"))
+	got = svc.Get()
+
+	if len(got.RecentWorkspaces) != 10 {
+		t.Fatalf("after dedup, RecentWorkspaces length = %d, want 10", len(got.RecentWorkspaces))
+	}
+	if got.RecentWorkspaces[0] != filepath.Join("/projects", "f") {
+		t.Errorf("after dedup, first = %q, want %q", got.RecentWorkspaces[0], filepath.Join("/projects", "f"))
+	}
+
+	// Verify no duplicates.
+	seen := make(map[string]bool)
+	for _, ws := range got.RecentWorkspaces {
+		if seen[ws] {
+			t.Errorf("duplicate workspace: %q", ws)
+		}
+		seen[ws] = true
+	}
+}
+
+func TestPathAccessor(t *testing.T) {
+	dir := "/some/config/dir"
+	svc := NewService(dir)
+	want := filepath.Join(dir, "settings.json")
+	if svc.Path() != want {
+		t.Errorf("Path() = %q, want %q", svc.Path(), want)
+	}
+}

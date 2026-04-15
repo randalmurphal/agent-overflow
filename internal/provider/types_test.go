@@ -13,6 +13,8 @@ func TestEventKindUniqueness(t *testing.T) {
 		EventApprovalResolved, EventSessionStatus, EventTokenUsage,
 		EventError, EventBackgroundStart, EventBackgroundDelta,
 		EventBackgroundComplete, EventDiff, EventCommandOutput, EventThinking,
+		EventToolProgress, EventCompactBoundary, EventRateLimits,
+		EventModelRerouted, EventThreadRenamed,
 	}
 
 	seen := make(map[EventKind]bool, len(kinds))
@@ -26,8 +28,8 @@ func TestEventKindUniqueness(t *testing.T) {
 		seen[k] = true
 	}
 
-	if len(seen) != 17 {
-		t.Errorf("expected 17 unique EventKind values, got %d", len(seen))
+	if len(seen) != 22 {
+		t.Errorf("expected 22 unique EventKind values, got %d", len(seen))
 	}
 }
 
@@ -344,5 +346,214 @@ func TestProviderKindValues(t *testing.T) {
 	}
 	if Codex != "codex" {
 		t.Errorf("Codex: got %q, want %q", Codex, "codex")
+	}
+}
+
+func TestApprovalRequestStructuredFields(t *testing.T) {
+	enabled := true
+	req := ApprovalRequest{
+		RequestID:   "req-002",
+		ThreadID:    "t1",
+		ToolName:    "ask",
+		Description: "User input needed",
+		Kind:        "user-input",
+		Questions: []UserInputQuestion{
+			{
+				ID:       "q1",
+				Header:   "Choose framework",
+				Question: "Which framework?",
+				Options: []UserInputQuestionOption{
+					{Label: "React", Description: "React.js"},
+					{Label: "Vue", Description: "Vue.js"},
+				},
+				MultiSelect: false,
+			},
+		},
+		Permissions: &PermissionProfile{
+			Network: &NetworkPermissions{Enabled: &enabled},
+			FileSystem: &FileSystemPermissions{
+				Read:  []string{"/tmp"},
+				Write: []string{"/tmp/out"},
+			},
+		},
+	}
+
+	data, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var decoded ApprovalRequest
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	if decoded.Kind != "user-input" {
+		t.Errorf("Kind: got %q, want user-input", decoded.Kind)
+	}
+	if len(decoded.Questions) != 1 {
+		t.Fatalf("Questions len: got %d, want 1", len(decoded.Questions))
+	}
+	if decoded.Questions[0].ID != "q1" {
+		t.Errorf("Question ID: got %q, want q1", decoded.Questions[0].ID)
+	}
+	if len(decoded.Questions[0].Options) != 2 {
+		t.Errorf("Options len: got %d, want 2", len(decoded.Questions[0].Options))
+	}
+	if decoded.Permissions == nil {
+		t.Fatal("Permissions is nil")
+	}
+	if decoded.Permissions.Network == nil || decoded.Permissions.Network.Enabled == nil || !*decoded.Permissions.Network.Enabled {
+		t.Error("Network.Enabled should be true")
+	}
+	if len(decoded.Permissions.FileSystem.Read) != 1 || decoded.Permissions.FileSystem.Read[0] != "/tmp" {
+		t.Errorf("FileSystem.Read: got %v", decoded.Permissions.FileSystem.Read)
+	}
+}
+
+func TestApprovalResponseStructuredFields(t *testing.T) {
+	resp := ApprovalResponse{
+		RequestID:   "req-003",
+		Decision:    "allow",
+		Answers:     map[string]string{"q1": "React"},
+		Permissions: &PermissionProfile{Network: &NetworkPermissions{}},
+		Scope:       "session",
+	}
+
+	data, err := json.Marshal(resp)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var decoded ApprovalResponse
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	if decoded.Answers["q1"] != "React" {
+		t.Errorf("Answers[q1]: got %q, want React", decoded.Answers["q1"])
+	}
+	if decoded.Scope != "session" {
+		t.Errorf("Scope: got %q, want session", decoded.Scope)
+	}
+	if decoded.Permissions == nil {
+		t.Error("Permissions is nil")
+	}
+}
+
+func TestApprovalResponseOmitsStructuredFieldsWhenEmpty(t *testing.T) {
+	resp := ApprovalResponse{
+		RequestID: "req-004",
+		Decision:  "deny",
+	}
+
+	data, err := json.Marshal(resp)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("unmarshal to map: %v", err)
+	}
+
+	for _, field := range []string{"answers", "permissions", "scope"} {
+		if _, ok := raw[field]; ok {
+			t.Errorf("expected field %q to be omitted when empty, but it was present", field)
+		}
+	}
+}
+
+func TestContextWindowJSON(t *testing.T) {
+	cw := ContextWindow{
+		UsedTokens:     50000,
+		MaxTokens:      200000,
+		UsedPercentage: 25.0,
+		TotalProcessed: 120000,
+	}
+
+	data, err := json.Marshal(cw)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var decoded ContextWindow
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	if decoded.UsedTokens != 50000 {
+		t.Errorf("UsedTokens: got %d, want 50000", decoded.UsedTokens)
+	}
+	if decoded.MaxTokens != 200000 {
+		t.Errorf("MaxTokens: got %d, want 200000", decoded.MaxTokens)
+	}
+}
+
+func TestRateLimitsSnapshotJSON(t *testing.T) {
+	snap := RateLimitsSnapshot{
+		Provider: "claude",
+		Limits: []RateLimitEntry{
+			{LimitID: "5h", LimitName: "5 Hour", UsedPercent: 42.5, WindowMins: 300, ResetsAt: 1700000000000},
+		},
+		UpdatedAt: 1700000000000,
+	}
+
+	data, err := json.Marshal(snap)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var decoded RateLimitsSnapshot
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	if decoded.Provider != "claude" {
+		t.Errorf("Provider: got %q, want claude", decoded.Provider)
+	}
+	if len(decoded.Limits) != 1 {
+		t.Fatalf("Limits len: got %d, want 1", len(decoded.Limits))
+	}
+	if decoded.Limits[0].UsedPercent != 42.5 {
+		t.Errorf("UsedPercent: got %f, want 42.5", decoded.Limits[0].UsedPercent)
+	}
+}
+
+func TestProviderEventReplaceField(t *testing.T) {
+	evt := ProviderEvent{
+		Kind:      EventDiff,
+		ThreadID:  "t1",
+		Replace:   true,
+		Timestamp: time.Now(),
+	}
+
+	data, err := json.Marshal(evt)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var decoded ProviderEvent
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	if !decoded.Replace {
+		t.Error("Replace should be true")
+	}
+
+	// When Replace is false, it should be omitted.
+	evt.Replace = false
+	data, err = json.Marshal(evt)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("unmarshal to map: %v", err)
+	}
+	if _, ok := raw["replace"]; ok {
+		t.Error("replace should be omitted when false")
 	}
 }

@@ -1,0 +1,154 @@
+package provider
+
+import (
+	"math"
+	"testing"
+)
+
+// almostEqual checks whether two floats are within a small tolerance.
+func almostEqual(a, b, tolerance float64) bool {
+	return math.Abs(a-b) < tolerance
+}
+
+func TestCalculateCost_ClaudeSonnet(t *testing.T) {
+	usage := TokenUsage{
+		InputTokens:  1_000_000,
+		OutputTokens: 500_000,
+	}
+	// claude-sonnet: $3.00/M input + $15.00/M output
+	// 1M input * $3.00 = $3.00; 0.5M output * $15.00 = $7.50
+	want := 10.50
+	got := CalculateCost("claude-sonnet-4-6", usage)
+	if !almostEqual(got, want, 0.001) {
+		t.Errorf("CalculateCost(claude-sonnet-4-6) = %f, want %f", got, want)
+	}
+}
+
+func TestCalculateCost_GPT54(t *testing.T) {
+	usage := TokenUsage{
+		InputTokens:  2_000_000,
+		OutputTokens: 1_000_000,
+	}
+	// gpt-5.4 -> gpt-5.4 key: $1.75/M input + $14.00/M output
+	// 2M input * $1.75 = $3.50; 1M output * $14.00 = $14.00
+	want := 17.50
+	got := CalculateCost("gpt-5.4", usage)
+	if !almostEqual(got, want, 0.001) {
+		t.Errorf("CalculateCost(gpt-5.4) = %f, want %f", got, want)
+	}
+}
+
+func TestCalculateCost_GPT54Mini(t *testing.T) {
+	usage := TokenUsage{
+		InputTokens:  1_000_000,
+		OutputTokens: 1_000_000,
+	}
+	// gpt-5.4-mini key: $0.25/M input + $2.00/M output
+	want := 2.25
+	got := CalculateCost("gpt-5.4-mini", usage)
+	if !almostEqual(got, want, 0.001) {
+		t.Errorf("CalculateCost(gpt-5.4-mini) = %f, want %f", got, want)
+	}
+}
+
+func TestCalculateCost_UnknownModel(t *testing.T) {
+	usage := TokenUsage{
+		InputTokens:  1_000_000,
+		OutputTokens: 500_000,
+	}
+	got := CalculateCost("totally-unknown-model", usage)
+	if got != 0 {
+		t.Errorf("CalculateCost(unknown) = %f, want 0", got)
+	}
+}
+
+func TestCalculateCost_WithCacheReadTokens(t *testing.T) {
+	usage := TokenUsage{
+		InputTokens:          500_000,
+		OutputTokens:         200_000,
+		CacheReadInputTokens: 1_000_000,
+	}
+	// claude-opus: $5.00/M input, $25.00/M output, $0.50/M cache read
+	// 0.5M * $5.00 = $2.50; 0.2M * $25.00 = $5.00; 1M * $0.50 = $0.50
+	want := 8.00
+	got := CalculateCost("claude-opus-4-6", usage)
+	if !almostEqual(got, want, 0.001) {
+		t.Errorf("CalculateCost(claude-opus-4-6 with cache) = %f, want %f", got, want)
+	}
+}
+
+func TestCalculateCost_ZeroTokens(t *testing.T) {
+	usage := TokenUsage{}
+	got := CalculateCost("claude-sonnet-4-6", usage)
+	if got != 0 {
+		t.Errorf("CalculateCost(zero tokens) = %f, want 0", got)
+	}
+}
+
+func TestCalculateCost_O3(t *testing.T) {
+	usage := TokenUsage{
+		InputTokens:  1_000_000,
+		OutputTokens: 1_000_000,
+	}
+	// o3: $1.75/M input + $14.00/M output
+	want := 15.75
+	got := CalculateCost("o3", usage)
+	if !almostEqual(got, want, 0.001) {
+		t.Errorf("CalculateCost(o3) = %f, want %f", got, want)
+	}
+}
+
+func TestCalculateCost_O4Mini(t *testing.T) {
+	usage := TokenUsage{
+		InputTokens:  1_000_000,
+		OutputTokens: 1_000_000,
+	}
+	// o4-mini: $0.25/M input + $2.00/M output
+	want := 2.25
+	got := CalculateCost("o4-mini", usage)
+	if !almostEqual(got, want, 0.001) {
+		t.Errorf("CalculateCost(o4-mini) = %f, want %f", got, want)
+	}
+}
+
+func TestCalculateCost_HaikuWithCacheRead(t *testing.T) {
+	usage := TokenUsage{
+		InputTokens:          100_000,
+		OutputTokens:         50_000,
+		CacheReadInputTokens: 500_000,
+	}
+	// claude-haiku: $1.00/M input, $5.00/M output, $0.10/M cache read
+	// 0.1M * $1.00 = $0.10; 0.05M * $5.00 = $0.25; 0.5M * $0.10 = $0.05
+	want := 0.40
+	got := CalculateCost("claude-haiku-4-5", usage)
+	if !almostEqual(got, want, 0.001) {
+		t.Errorf("CalculateCost(claude-haiku-4-5 with cache) = %f, want %f", got, want)
+	}
+}
+
+func TestMatchPricing_ExactMatch(t *testing.T) {
+	p, ok := matchPricing("o3")
+	if !ok {
+		t.Fatal("expected match for exact key o3")
+	}
+	if p.InputPerMToken != 1.75 {
+		t.Errorf("InputPerMToken = %f, want 1.75", p.InputPerMToken)
+	}
+}
+
+func TestMatchPricing_PrefixMatch(t *testing.T) {
+	p, ok := matchPricing("claude-opus-4-6")
+	if !ok {
+		t.Fatal("expected match for claude-opus-4-6 via prefix")
+	}
+	if p.InputPerMToken != 5.00 {
+		t.Errorf("InputPerMToken = %f, want 5.00", p.InputPerMToken)
+	}
+}
+
+func TestMatchPricing_NoMatch(t *testing.T) {
+	_, ok := matchPricing("gemini-pro")
+	if ok {
+		t.Error("expected no match for gemini-pro")
+	}
+}

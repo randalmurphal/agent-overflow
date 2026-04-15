@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	_ "modernc.org/sqlite"
+	_ "modernc.org/sqlite" // SQLite driver
 )
 
 // Store wraps SQLite and provides all persistence operations.
@@ -35,76 +35,25 @@ func (s *Store) Close() error {
 	return s.db.Close()
 }
 
-// runMigrations executes the DDL from Section 3 as a single transaction.
-func runMigrations(db *sql.DB) error {
-	// PRAGMAs must execute outside the transaction.
-	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
-		return err
-	}
-	if _, err := db.Exec("PRAGMA foreign_keys=ON"); err != nil {
-		return err
-	}
-
-	tx, err := db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-
-	stmts := []string{
-		`CREATE TABLE IF NOT EXISTS threads (
-			id             TEXT PRIMARY KEY,
-			title          TEXT NOT NULL DEFAULT 'New Thread',
-			provider       TEXT NOT NULL CHECK(provider IN ('claude', 'codex')),
-			session_ref    TEXT,
-			workspace_path TEXT NOT NULL,
-			model          TEXT NOT NULL DEFAULT '',
-			created_at     INTEGER NOT NULL,
-			updated_at     INTEGER NOT NULL,
-			archived       INTEGER NOT NULL DEFAULT 0
-		)`,
-		`CREATE INDEX IF NOT EXISTS idx_threads_updated ON threads(updated_at DESC)`,
-		`CREATE TABLE IF NOT EXISTS payloads (
-			id         TEXT PRIMARY KEY,
-			kind       TEXT NOT NULL,
-			meta       TEXT NOT NULL DEFAULT '{}',
-			data       BLOB NOT NULL,
-			created_at INTEGER NOT NULL
-		)`,
-		`CREATE TABLE IF NOT EXISTS items (
-			id          TEXT PRIMARY KEY,
-			thread_id   TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
-			turn_index  INTEGER NOT NULL,
-			item_index  INTEGER NOT NULL,
-			kind        TEXT NOT NULL,
-			role        TEXT NOT NULL DEFAULT 'assistant',
-			summary     TEXT NOT NULL DEFAULT '',
-			payload_id  TEXT REFERENCES payloads(id),
-			created_at  INTEGER NOT NULL
-		)`,
-		`CREATE INDEX IF NOT EXISTS idx_items_thread ON items(thread_id, turn_index, item_index)`,
-	}
-
-	for _, stmt := range stmts {
-		if _, err := tx.Exec(stmt); err != nil {
-			return fmt.Errorf("migration failed on %q: %w", stmt[:40], err)
-		}
-	}
-
-	return tx.Commit()
-}
+// runMigrations is defined in migrate.go.
 
 // Thread represents a conversation thread.
 type Thread struct {
-	ID            string `json:"id"`
-	Title         string `json:"title"`
-	Provider      string `json:"provider"`
-	SessionRef    string `json:"sessionRef,omitempty"`
-	WorkspacePath string `json:"workspacePath"`
-	Model         string `json:"model"`
-	CreatedAt     int64  `json:"createdAt"`
-	UpdatedAt     int64  `json:"updatedAt"`
-	Archived      bool   `json:"archived"`
+	ID              string `json:"id"`
+	Title           string `json:"title"`
+	Provider        string `json:"provider"`
+	SessionRef      string `json:"sessionRef,omitempty"`
+	WorkspacePath   string `json:"workspacePath"`
+	Model           string `json:"model"`
+	ProjectPath     string `json:"projectPath"`
+	WorktreePath    string `json:"worktreePath,omitempty"`
+	Branch          string `json:"branch,omitempty"`
+	InteractionMode string `json:"interactionMode"`
+	DiscussionID    string `json:"discussionId,omitempty"`
+	ParentThreadID  string `json:"parentThreadId,omitempty"`
+	CreatedAt       int64  `json:"createdAt"`
+	UpdatedAt       int64  `json:"updatedAt"`
+	Archived        bool   `json:"archived"`
 }
 
 // Item represents a persisted timeline entry.
