@@ -2,6 +2,9 @@ package main
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -100,7 +103,7 @@ func TestServiceShutdownClosesSessionsWithoutDeadlock(t *testing.T) {
 		context.Background(),
 		thread.ID,
 		claude.Config{
-			Binary:  "cat",
+			Binary:  writeClaudePassthroughBinary(t),
 			WorkDir: thread.WorkspacePath,
 		},
 		app.sessionEventHandler(thread.ID, "shutdown-token"),
@@ -128,4 +131,53 @@ func TestServiceShutdownClosesSessionsWithoutDeadlock(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for ServiceShutdown")
 	}
+}
+
+func TestServiceShutdownReturnsSessionCloseErrors(t *testing.T) {
+	app := newTestAppWithStore(t)
+	thread := testThread("thread-shutdown-error")
+	thread.Provider = string(provider.Claude)
+	thread.WorkspacePath = t.TempDir()
+	thread.ProjectPath = thread.WorkspacePath
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+
+	sess, err := claude.NewSession(
+		context.Background(),
+		thread.ID,
+		claude.Config{
+			Binary:  "false",
+			WorkDir: thread.WorkspacePath,
+		},
+		app.sessionEventHandler(thread.ID, "shutdown-error-token"),
+	)
+	if err != nil {
+		t.Fatalf("NewSession() error = %v", err)
+	}
+
+	app.sessions[thread.ID] = session{
+		provider: string(provider.Claude),
+		token:    "shutdown-error-token",
+		claude:   sess,
+	}
+
+	err = app.ServiceShutdown()
+	if err == nil {
+		t.Fatal("ServiceShutdown() error = nil, want provider close error")
+	}
+	if !strings.Contains(err.Error(), "close claude session for thread "+thread.ID) {
+		t.Fatalf("ServiceShutdown() error = %v, want thread-scoped close context", err)
+	}
+}
+
+func writeClaudePassthroughBinary(t *testing.T) string {
+	t.Helper()
+
+	path := filepath.Join(t.TempDir(), "claude-passthrough.sh")
+	script := "#!/bin/sh\ncat >/dev/null\n"
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	return path
 }

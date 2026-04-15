@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -93,8 +94,11 @@ func (a *App) ServiceStartup(ctx context.Context, options application.ServiceOpt
 	a.settings = settings.NewService(dbDir)
 	a.logger, err = newProviderEventLogger(dbDir)
 	if err != nil {
-		_ = st.Close()
-		return fmt.Errorf("failed to initialize provider event logger: %w", err)
+		closeErr := st.Close()
+		return errors.Join(
+			fmt.Errorf("failed to initialize provider event logger: %w", err),
+			wrapLifecycleError("close store after logger initialization failure", closeErr),
+		)
 	}
 	a.triage = triage.NewRouter(st, func(eventName string, data any) {
 		a.app.Event.Emit(eventName, data)
@@ -121,25 +125,32 @@ func (a *App) ServiceShutdown() error {
 	a.sessions = make(map[string]session)
 	a.mu.Unlock()
 
+	var errs []error
 	for threadID, s := range sessions {
 		a.teardownDesignThread(threadID)
 		if s.claude != nil {
-			_ = s.claude.Close()
+			errs = appendError(errs, wrapLifecycleError(
+				fmt.Sprintf("close claude session for thread %s", threadID),
+				s.claude.Close(),
+			))
 		}
 		if s.codex != nil {
-			_ = s.codex.Close()
+			errs = appendError(errs, wrapLifecycleError(
+				fmt.Sprintf("close codex session for thread %s", threadID),
+				s.codex.Close(),
+			))
 		}
 	}
 	if a.store != nil {
-		_ = a.store.Close()
+		errs = appendError(errs, wrapLifecycleError("close store", a.store.Close()))
 	}
 	if a.logger != nil {
-		_ = a.logger.Close()
+		errs = appendError(errs, wrapLifecycleError("close logger", a.logger.Close()))
 	}
 	if a.designMCP != nil {
-		_ = a.designMCP.Close()
+		errs = appendError(errs, wrapLifecycleError("close design MCP server", a.designMCP.Close()))
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // --- Thread operations ---
