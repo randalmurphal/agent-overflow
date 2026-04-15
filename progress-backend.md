@@ -32,6 +32,7 @@
 - `WI-3.5: Git Wails bindings`
 - `WI-2.1: Provider binary detection`
 - `WI-2.2: Settings service (JSON file)`
+- `WI-2.3: Model registry`
 - `WI-2.4: Cost calculation`
 - `WI-2.5: Session lifecycle improvements`
 - `WI-2.6: Thread title auto-generation`
@@ -46,6 +47,7 @@
 
 ## Iteration Log
 
+- 2026-04-15: Completed `WI-2.3` by filling the provider model registry with Forge-aligned capability tags (`fast_mode`, `thinking`), returning defensive copies from `ModelsForProvider`, and extending provider tests to lock down capability metadata plus copy semantics. `go build ./...`, `go vet ./...`, and `go test -coverprofile=coverage.out ./... -count=1` all passed, with `internal/provider` at 90.5% coverage.
 - 2026-04-15: Completed `WI-0.1` by wiring `store.New` through a versioned migration runner, adding legacy v1 seeding for pre-version databases, and expanding migration tests to cover fresh, versioned, and legacy upgrade paths. `internal/store` coverage is now 85.4%.
 - 2026-04-15: Completed `WI-0.2` by verifying the parity directory layout, confirming the provider/session and triage/router renames are wired, and adding the missing `internal/settings/doc.go` package documentation file. `go build ./...`, `go vet ./...`, and `go test -coverprofile=coverage.out ./... -count=1` all passed.
 - 2026-04-15: Completed `WI-1.5` by marking Codex `turn/diff/updated` notifications as replaceable, adding turn-scoped payload upsert/update paths in store+triage, and covering both replace and append diff persistence flows with regression tests. `go build ./...`, `go vet ./...`, and `go test -coverprofile=coverage.out ./... -count=1` all passed, with `internal/store` now at 84.2% coverage.

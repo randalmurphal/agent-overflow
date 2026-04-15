@@ -2,6 +2,7 @@ package provider
 
 import (
 	"encoding/json"
+	"slices"
 	"testing"
 )
 
@@ -19,6 +20,9 @@ func TestModelsForProvider_Claude(t *testing.T) {
 		}
 		if m.Provider != "claude" {
 			t.Errorf("model[%d].Provider = %q, want %q", i, m.Provider, "claude")
+		}
+		if !slices.Equal(m.Capabilities, ClaudeModels[i].Capabilities) {
+			t.Errorf("model[%d].Capabilities = %v, want %v", i, m.Capabilities, ClaudeModels[i].Capabilities)
 		}
 	}
 }
@@ -38,6 +42,9 @@ func TestModelsForProvider_Codex(t *testing.T) {
 		if m.Provider != "codex" {
 			t.Errorf("model[%d].Provider = %q, want %q", i, m.Provider, "codex")
 		}
+		if !slices.Equal(m.Capabilities, CodexModels[i].Capabilities) {
+			t.Errorf("model[%d].Capabilities = %v, want %v", i, m.Capabilities, CodexModels[i].Capabilities)
+		}
 	}
 }
 
@@ -45,6 +52,24 @@ func TestModelsForProvider_Unknown(t *testing.T) {
 	models := ModelsForProvider("unknown")
 	if models != nil {
 		t.Errorf("expected nil for unknown provider, got %v", models)
+	}
+}
+
+func TestModelsForProviderReturnsCopy(t *testing.T) {
+	models := ModelsForProvider("codex")
+	if len(models) == 0 {
+		t.Fatal("expected codex models")
+	}
+
+	models[0].Name = "mutated"
+	models[0].Capabilities[0] = "mutated"
+
+	fresh := ModelsForProvider("codex")
+	if fresh[0].Name != CodexModels[0].Name {
+		t.Fatalf("name mutation leaked into registry: got %q, want %q", fresh[0].Name, CodexModels[0].Name)
+	}
+	if !slices.Equal(fresh[0].Capabilities, CodexModels[0].Capabilities) {
+		t.Fatalf("capability mutation leaked into registry: got %v, want %v", fresh[0].Capabilities, CodexModels[0].Capabilities)
 	}
 }
 
