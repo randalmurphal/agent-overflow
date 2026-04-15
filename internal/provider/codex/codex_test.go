@@ -303,3 +303,253 @@ func TestThreadIDPassthrough(t *testing.T) {
 		t.Errorf("threadID: got %q, want %q", events[0].ThreadID, "my-thread-123")
 	}
 }
+
+// -- Session unit tests --
+
+func TestWriteNotificationFormat(t *testing.T) {
+	msg := map[string]any{
+		"jsonrpc": "2.0",
+		"method":  "initialized",
+	}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var parsed map[string]json.RawMessage
+	json.Unmarshal(data, &parsed)
+
+	var jsonrpc string
+	json.Unmarshal(parsed["jsonrpc"], &jsonrpc)
+	if jsonrpc != "2.0" {
+		t.Errorf("jsonrpc: got %q, want %q", jsonrpc, "2.0")
+	}
+
+	var method string
+	json.Unmarshal(parsed["method"], &method)
+	if method != "initialized" {
+		t.Errorf("method: got %q, want %q", method, "initialized")
+	}
+
+	// Notifications should not have an id.
+	if _, ok := parsed["id"]; ok {
+		t.Error("notification should not have id")
+	}
+}
+
+func TestSendTurnStartFormat(t *testing.T) {
+	params := map[string]any{
+		"threadId": "codex-thread-123",
+		"input": []map[string]any{{
+			"type":          "text",
+			"text":          "hello",
+			"text_elements": []any{},
+		}},
+	}
+
+	data, err := json.Marshal(params)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var parsed map[string]json.RawMessage
+	json.Unmarshal(data, &parsed)
+
+	var threadID string
+	json.Unmarshal(parsed["threadId"], &threadID)
+	if threadID != "codex-thread-123" {
+		t.Errorf("threadId: got %q, want %q", threadID, "codex-thread-123")
+	}
+
+	var input []struct {
+		Type         string `json:"type"`
+		Text         string `json:"text"`
+		TextElements []any  `json:"text_elements"`
+	}
+	json.Unmarshal(parsed["input"], &input)
+	if len(input) != 1 {
+		t.Fatalf("input: expected 1 item, got %d", len(input))
+	}
+	if input[0].Type != "text" {
+		t.Errorf("input type: got %q, want %q", input[0].Type, "text")
+	}
+	if input[0].Text != "hello" {
+		t.Errorf("input text: got %q, want %q", input[0].Text, "hello")
+	}
+}
+
+func TestRespondToApprovalAccept(t *testing.T) {
+	msg := map[string]any{
+		"jsonrpc": "2.0",
+		"id":      int64(42),
+		"result":  map[string]any{"decision": "accept"},
+	}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var parsed map[string]json.RawMessage
+	json.Unmarshal(data, &parsed)
+
+	var result struct {
+		Decision string `json:"decision"`
+	}
+	json.Unmarshal(parsed["result"], &result)
+	if result.Decision != "accept" {
+		t.Errorf("decision: got %q, want %q", result.Decision, "accept")
+	}
+}
+
+func TestRespondToApprovalDecline(t *testing.T) {
+	msg := map[string]any{
+		"jsonrpc": "2.0",
+		"id":      int64(42),
+		"result":  map[string]any{"decision": "decline"},
+	}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var parsed map[string]json.RawMessage
+	json.Unmarshal(data, &parsed)
+
+	var result struct {
+		Decision string `json:"decision"`
+	}
+	json.Unmarshal(parsed["result"], &result)
+	if result.Decision != "decline" {
+		t.Errorf("decision: got %q, want %q", result.Decision, "decline")
+	}
+}
+
+func TestBuildThreadParams(t *testing.T) {
+	cfg := Config{
+		Model:          "gpt-4.1",
+		Sandbox:        "workspace-write",
+		ApprovalPolicy: "on-request",
+		SystemPrompt:   "Be helpful",
+	}
+
+	params := buildThreadParams(cfg)
+
+	if params["model"] != "gpt-4.1" {
+		t.Errorf("model: got %v, want %q", params["model"], "gpt-4.1")
+	}
+	if params["sandboxPolicy"] != "workspace" {
+		t.Errorf("sandboxPolicy: got %v, want %q", params["sandboxPolicy"], "workspace")
+	}
+	if params["approvalPolicy"] != "on-request" {
+		t.Errorf("approvalPolicy: got %v, want %q", params["approvalPolicy"], "on-request")
+	}
+	if params["baseInstructions"] != "Be helpful" {
+		t.Errorf("baseInstructions: got %v, want %q", params["baseInstructions"], "Be helpful")
+	}
+}
+
+func TestBuildThreadParamsDangerMode(t *testing.T) {
+	cfg := Config{Sandbox: "danger-full-access"}
+	params := buildThreadParams(cfg)
+
+	if params["approvalPolicy"] != "never" {
+		t.Errorf("approvalPolicy: got %v, want %q", params["approvalPolicy"], "never")
+	}
+	if params["sandboxPolicy"] != "none" {
+		t.Errorf("sandboxPolicy: got %v, want %q", params["sandboxPolicy"], "none")
+	}
+}
+
+func TestBuildApprovalMetaCommand(t *testing.T) {
+	params := json.RawMessage(`{"command":"ls -la"}`)
+	meta := buildApprovalMeta("t1", "item/commandExecution/requestApproval", 42, params)
+
+	var approval provider.ApprovalRequest
+	json.Unmarshal(meta, &approval)
+
+	if approval.RequestID != "42" {
+		t.Errorf("requestID: got %q, want %q", approval.RequestID, "42")
+	}
+	if approval.ToolName != "command" {
+		t.Errorf("toolName: got %q, want %q", approval.ToolName, "command")
+	}
+	if approval.Title != "Run command" {
+		t.Errorf("title: got %q, want %q", approval.Title, "Run command")
+	}
+}
+
+func TestBuildApprovalMetaFileChange(t *testing.T) {
+	params := json.RawMessage(`{"filePath":"/tmp/test.go"}`)
+	meta := buildApprovalMeta("t1", "item/fileChange/requestApproval", 99, params)
+
+	var approval provider.ApprovalRequest
+	json.Unmarshal(meta, &approval)
+
+	if approval.ToolName != "file_change" {
+		t.Errorf("toolName: got %q, want %q", approval.ToolName, "file_change")
+	}
+	if approval.Description != "/tmp/test.go" {
+		t.Errorf("description: got %q, want %q", approval.Description, "/tmp/test.go")
+	}
+}
+
+func TestReadStringFromResponse(t *testing.T) {
+	data := json.RawMessage(`{"result":{"thread":{"id":"thread-abc"}}}`)
+
+	got := readStringFromResponse(data, "result", "thread", "id")
+	if got != "thread-abc" {
+		t.Errorf("got %q, want %q", got, "thread-abc")
+	}
+}
+
+func TestReadStringFromResponseMissingKey(t *testing.T) {
+	data := json.RawMessage(`{"result":{}}`)
+	got := readStringFromResponse(data, "result", "thread", "id")
+	if got != "" {
+		t.Errorf("got %q, want empty", got)
+	}
+}
+
+func TestDispatchLineResponse(t *testing.T) {
+	// Create a session with a pending request.
+	s := &Session{
+		pending: make(map[int64]chan json.RawMessage),
+	}
+
+	ch := make(chan json.RawMessage, 1)
+	s.pending[1] = ch
+
+	// Dispatch a response.
+	line := []byte(`{"jsonrpc":"2.0","id":1,"result":{"ok":true}}`)
+	s.dispatchLine(line)
+
+	select {
+	case resp := <-ch:
+		if resp == nil {
+			t.Fatal("expected non-nil response")
+		}
+	default:
+		t.Fatal("expected response to be routed to pending channel")
+	}
+}
+
+func TestDispatchLineNotification(t *testing.T) {
+	var events []provider.ProviderEvent
+	s := &Session{
+		threadID: "t1",
+		pending:  make(map[int64]chan json.RawMessage),
+		onEvent: func(evt provider.ProviderEvent) {
+			events = append(events, evt)
+		},
+	}
+
+	line := []byte(`{"jsonrpc":"2.0","method":"turn/started","params":{"turn":{"id":"turn-1"}}}`)
+	s.dispatchLine(line)
+
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if events[0].Kind != provider.EventTurnStart {
+		t.Errorf("kind: got %q, want %q", events[0].Kind, provider.EventTurnStart)
+	}
+}

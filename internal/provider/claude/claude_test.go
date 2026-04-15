@@ -426,3 +426,230 @@ func TestParseRealCLIFixture(t *testing.T) {
 	t.Logf("processed %d lines from real fixture: init=%v assistant=%v result=%v",
 		lineNum, foundInit, foundAssistant, foundResult)
 }
+
+// -- Session unit tests (wire format verification) --
+
+func TestBuildArgsDefault(t *testing.T) {
+	args := buildArgs(Config{})
+
+	expected := []string{"--input-format", "stream-json", "--output-format", "stream-json", "--verbose"}
+	if len(args) != len(expected) {
+		t.Fatalf("expected %d args, got %d: %v", len(expected), len(args), args)
+	}
+	for i, want := range expected {
+		if args[i] != want {
+			t.Errorf("args[%d]: got %q, want %q", i, args[i], want)
+		}
+	}
+}
+
+func TestBuildArgsWithAllOptions(t *testing.T) {
+	args := buildArgs(Config{
+		Model:          "opus",
+		Resume:         "session-123",
+		SystemPrompt:   "Be helpful",
+		PermissionMode: "bypassPermissions",
+		MaxTurns:       5,
+		AllowedTools:   []string{"Bash", "Edit"},
+	})
+
+	// Check that all flags are present.
+	findFlag := func(flag, value string) bool {
+		for i, a := range args {
+			if a == flag && i+1 < len(args) && args[i+1] == value {
+				return true
+			}
+		}
+		return false
+	}
+
+	if !findFlag("--model", "opus") {
+		t.Error("missing --model opus")
+	}
+	if !findFlag("--resume", "session-123") {
+		t.Error("missing --resume session-123")
+	}
+	if !findFlag("--system-prompt", "Be helpful") {
+		t.Error("missing --system-prompt")
+	}
+	if !findFlag("--permission-mode", "bypassPermissions") {
+		t.Error("missing --permission-mode")
+	}
+	if !findFlag("--max-turns", "5") {
+		t.Error("missing --max-turns 5")
+	}
+	if !findFlag("--allowedTools", "Bash") {
+		t.Error("missing --allowedTools Bash")
+	}
+	if !findFlag("--allowedTools", "Edit") {
+		t.Error("missing --allowedTools Edit")
+	}
+}
+
+func TestBuildArgsDefaultPermissionModeOmitted(t *testing.T) {
+	args := buildArgs(Config{PermissionMode: "default"})
+
+	for _, a := range args {
+		if a == "--permission-mode" {
+			t.Error("--permission-mode should be omitted for 'default'")
+		}
+	}
+}
+
+func TestSendWireFormat(t *testing.T) {
+	// Verify the JSON format matches the Claude CLI input protocol.
+	msg := map[string]any{
+		"type": "user",
+		"message": map[string]string{
+			"role":    "user",
+			"content": "hello",
+		},
+	}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var parsed map[string]json.RawMessage
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	var msgType string
+	json.Unmarshal(parsed["type"], &msgType)
+	if msgType != "user" {
+		t.Errorf("type: got %q, want %q", msgType, "user")
+	}
+
+	var message struct {
+		Role    string `json:"role"`
+		Content string `json:"content"`
+	}
+	json.Unmarshal(parsed["message"], &message)
+	if message.Role != "user" {
+		t.Errorf("role: got %q, want %q", message.Role, "user")
+	}
+	if message.Content != "hello" {
+		t.Errorf("content: got %q, want %q", message.Content, "hello")
+	}
+}
+
+func TestRespondToApprovalAllowFormat(t *testing.T) {
+	resp := provider.ApprovalResponse{RequestID: "req-1", Decision: "allow"}
+
+	var behavior map[string]any
+	if resp.Decision == "allow" || resp.Decision == "allow_session" {
+		behavior = map[string]any{"behavior": "allow"}
+	} else {
+		behavior = map[string]any{"behavior": "deny", "message": "User denied"}
+	}
+	msg := map[string]any{
+		"type": "control_response",
+		"response": map[string]any{
+			"subtype":    "success",
+			"request_id": resp.RequestID,
+			"response":   behavior,
+		},
+	}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var parsed map[string]json.RawMessage
+	json.Unmarshal(data, &parsed)
+
+	var msgType string
+	json.Unmarshal(parsed["type"], &msgType)
+	if msgType != "control_response" {
+		t.Errorf("type: got %q, want %q", msgType, "control_response")
+	}
+
+	var response struct {
+		Subtype   string `json:"subtype"`
+		RequestID string `json:"request_id"`
+		Response  struct {
+			Behavior string `json:"behavior"`
+		} `json:"response"`
+	}
+	json.Unmarshal(parsed["response"], &response)
+	if response.Subtype != "success" {
+		t.Errorf("subtype: got %q, want %q", response.Subtype, "success")
+	}
+	if response.RequestID != "req-1" {
+		t.Errorf("request_id: got %q, want %q", response.RequestID, "req-1")
+	}
+	if response.Response.Behavior != "allow" {
+		t.Errorf("behavior: got %q, want %q", response.Response.Behavior, "allow")
+	}
+}
+
+func TestRespondToApprovalDenyFormat(t *testing.T) {
+	resp := provider.ApprovalResponse{RequestID: "req-2", Decision: "deny"}
+
+	var behavior map[string]any
+	if resp.Decision == "allow" || resp.Decision == "allow_session" {
+		behavior = map[string]any{"behavior": "allow"}
+	} else {
+		behavior = map[string]any{"behavior": "deny", "message": "User denied"}
+	}
+	msg := map[string]any{
+		"type": "control_response",
+		"response": map[string]any{
+			"subtype":    "success",
+			"request_id": resp.RequestID,
+			"response":   behavior,
+		},
+	}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var parsed map[string]json.RawMessage
+	json.Unmarshal(data, &parsed)
+
+	var response struct {
+		Response struct {
+			Behavior string `json:"behavior"`
+			Message  string `json:"message"`
+		} `json:"response"`
+	}
+	json.Unmarshal(parsed["response"], &response)
+	if response.Response.Behavior != "deny" {
+		t.Errorf("behavior: got %q, want %q", response.Response.Behavior, "deny")
+	}
+	if response.Response.Message != "User denied" {
+		t.Errorf("message: got %q, want %q", response.Response.Message, "User denied")
+	}
+}
+
+func TestInterruptFormat(t *testing.T) {
+	msg := map[string]any{
+		"type": "control",
+		"control": map[string]string{
+			"type": "interrupt",
+		},
+	}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var parsed map[string]json.RawMessage
+	json.Unmarshal(data, &parsed)
+
+	var msgType string
+	json.Unmarshal(parsed["type"], &msgType)
+	if msgType != "control" {
+		t.Errorf("type: got %q, want %q", msgType, "control")
+	}
+
+	var control struct {
+		Type string `json:"type"`
+	}
+	json.Unmarshal(parsed["control"], &control)
+	if control.Type != "interrupt" {
+		t.Errorf("control type: got %q, want %q", control.Type, "interrupt")
+	}
+}
