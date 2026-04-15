@@ -7,6 +7,17 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+func openSQLiteDB(t *testing.T) *sql.DB {
+	t.Helper()
+
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	return db
+}
+
 func TestMigrationFreshDB(t *testing.T) {
 	s := newTestStore(t)
 
@@ -63,11 +74,7 @@ func TestMigrationVersionTracking(t *testing.T) {
 }
 
 func TestMigrationIdempotent(t *testing.T) {
-	// Open a DB, run migrations, close, reopen — should not fail.
-	db, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
+	db := openSQLiteDB(t)
 
 	if err := runMigrations(db); err != nil {
 		t.Fatalf("first migration run: %v", err)
@@ -86,8 +93,144 @@ func TestMigrationIdempotent(t *testing.T) {
 	if count != 2 {
 		t.Errorf("expected 2 version rows after idempotent re-run, got %d", count)
 	}
+}
 
-	db.Close()
+func TestMigrationExistingVersionedDBSkipsAppliedV1(t *testing.T) {
+	db := openSQLiteDB(t)
+
+	if _, err := db.Exec(createMigrationVersionsTableSQL); err != nil {
+		t.Fatalf("create migration_versions table: %v", err)
+	}
+	if _, err := db.Exec(migrations[0].SQL); err != nil {
+		t.Fatalf("apply legacy v1 schema: %v", err)
+	}
+	if _, err := db.Exec(
+		"INSERT INTO migration_versions (version, name) VALUES (?, ?)",
+		migrations[0].Version,
+		migrations[0].Name,
+	); err != nil {
+		t.Fatalf("record v1 version: %v", err)
+	}
+
+	if err := runMigrations(db); err != nil {
+		t.Fatalf("run migrations on existing versioned db: %v", err)
+	}
+
+	var count int
+	if err := db.QueryRow("SELECT COUNT(*) FROM migration_versions WHERE version = 1").Scan(&count); err != nil {
+		t.Fatalf("count v1 version rows: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("expected exactly 1 v1 row, got %d", count)
+	}
+
+	var appliedVersions int
+	if err := db.QueryRow("SELECT COUNT(*) FROM migration_versions").Scan(&appliedVersions); err != nil {
+		t.Fatalf("count migration rows: %v", err)
+	}
+	if appliedVersions != 2 {
+		t.Fatalf("expected 2 applied migrations, got %d", appliedVersions)
+	}
+}
+
+func TestMigrationExistingLegacyDBSeedsTrackingAndAppliesV2(t *testing.T) {
+	db := openSQLiteDB(t)
+
+	if _, err := db.Exec(migrations[0].SQL); err != nil {
+		t.Fatalf("apply legacy schema: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO threads (id, title, provider, workspace_path, model, created_at, updated_at)
+		VALUES ('legacy-thread', 'Legacy', 'claude', '/tmp', '', 1000, 1000)
+	`); err != nil {
+		t.Fatalf("insert legacy thread: %v", err)
+	}
+
+	if err := runMigrations(db); err != nil {
+		t.Fatalf("run migrations on legacy db: %v", err)
+	}
+
+	rows, err := db.Query("SELECT version, name FROM migration_versions ORDER BY version")
+	if err != nil {
+		t.Fatalf("query migration versions: %v", err)
+	}
+	defer rows.Close()
+
+	var versions []int
+	for rows.Next() {
+		var version int
+		var name string
+		if err := rows.Scan(&version, &name); err != nil {
+			t.Fatalf("scan migration row: %v", err)
+		}
+		versions = append(versions, version)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read migration rows: %v", err)
+	}
+
+	if len(versions) != 2 {
+		t.Fatalf("expected 2 applied migrations, got %d", len(versions))
+	}
+	if versions[0] != 1 || versions[1] != 2 {
+		t.Fatalf("unexpected migration versions: %v", versions)
+	}
+
+	var threadCount int
+	if err := db.QueryRow("SELECT COUNT(*) FROM threads WHERE id = 'legacy-thread'").Scan(&threadCount); err != nil {
+		t.Fatalf("count legacy thread: %v", err)
+	}
+	if threadCount != 1 {
+		t.Fatalf("expected legacy thread to survive migration, got %d rows", threadCount)
+	}
+}
+
+func TestCurrentMigrationVersionEmptyTable(t *testing.T) {
+	db := openSQLiteDB(t)
+
+	if err := ensureMigrationTable(db); err != nil {
+		t.Fatalf("ensure migration table: %v", err)
+	}
+
+	version, err := currentMigrationVersion(db)
+	if err != nil {
+		t.Fatalf("current migration version: %v", err)
+	}
+	if version != 0 {
+		t.Fatalf("expected version 0 for empty tracking table, got %d", version)
+	}
+}
+
+func TestSeedLegacyMigrationVersionNoLegacySchema(t *testing.T) {
+	db := openSQLiteDB(t)
+
+	if err := ensureMigrationTable(db); err != nil {
+		t.Fatalf("ensure migration table: %v", err)
+	}
+
+	if err := seedLegacyMigrationVersion(db); err != nil {
+		t.Fatalf("seed legacy migration version: %v", err)
+	}
+
+	version, err := currentMigrationVersion(db)
+	if err != nil {
+		t.Fatalf("current migration version: %v", err)
+	}
+	if version != 0 {
+		t.Fatalf("expected version 0 when no legacy schema is present, got %d", version)
+	}
+}
+
+func TestTableExistsReturnsFalseForMissingTable(t *testing.T) {
+	db := openSQLiteDB(t)
+
+	exists, err := tableExists(db, "missing_table")
+	if err != nil {
+		t.Fatalf("table exists lookup: %v", err)
+	}
+	if exists {
+		t.Fatal("expected missing_table to be absent")
+	}
 }
 
 func TestMigrationV2NewColumns(t *testing.T) {

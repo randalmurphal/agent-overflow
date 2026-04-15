@@ -6,6 +6,12 @@ import (
 	"log"
 )
 
+const createMigrationVersionsTableSQL = `CREATE TABLE IF NOT EXISTS migration_versions (
+	version  INTEGER PRIMARY KEY,
+	name     TEXT    NOT NULL,
+	applied  INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000)
+)`
+
 // Migration represents a versioned schema change.
 type Migration struct {
 	Version int
@@ -116,64 +122,144 @@ CREATE INDEX IF NOT EXISTS idx_design_artifacts_thread ON design_artifacts(threa
 // runMigrations sets PRAGMAs, creates the version tracking table, and applies
 // any unapplied migrations in order.
 func runMigrations(db *sql.DB) error {
+	if err := configureDatabase(db); err != nil {
+		return err
+	}
+	if err := ensureMigrationTable(db); err != nil {
+		return err
+	}
+	if err := seedLegacyMigrationVersion(db); err != nil {
+		return err
+	}
+
+	applied, err := currentMigrationVersion(db)
+	if err != nil {
+		return err
+	}
+
+	return applyPendingMigrations(db, applied)
+}
+
+func configureDatabase(db *sql.DB) error {
 	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
 		return fmt.Errorf("set WAL mode: %w", err)
 	}
 	if _, err := db.Exec("PRAGMA foreign_keys=ON"); err != nil {
 		return fmt.Errorf("enable foreign keys: %w", err)
 	}
+	return nil
+}
 
-	// Create the tracking table (outside any migration transaction).
-	_, err := db.Exec(`CREATE TABLE IF NOT EXISTS migration_versions (
-		version  INTEGER PRIMARY KEY,
-		name     TEXT    NOT NULL,
-		applied  INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000)
-	)`)
-	if err != nil {
+func ensureMigrationTable(db *sql.DB) error {
+	if _, err := db.Exec(createMigrationVersionsTableSQL); err != nil {
 		return fmt.Errorf("create migration_versions table: %w", err)
 	}
+	return nil
+}
 
-	// Find the highest applied version.
-	var maxVersion sql.NullInt64
-	err = db.QueryRow("SELECT MAX(version) FROM migration_versions").Scan(&maxVersion)
+func seedLegacyMigrationVersion(db *sql.DB) error {
+	applied, err := currentMigrationVersion(db)
 	if err != nil {
-		return fmt.Errorf("query max migration version: %w", err)
+		return err
 	}
-	applied := 0
-	if maxVersion.Valid {
-		applied = int(maxVersion.Int64)
+	if applied != 0 {
+		return nil
 	}
 
-	// Apply each unapplied migration inside its own transaction.
+	legacySchema, err := hasLegacyV1Schema(db)
+	if err != nil {
+		return fmt.Errorf("detect legacy schema: %w", err)
+	}
+	if !legacySchema {
+		return nil
+	}
+
+	log.Printf("store: detected legacy schema; recording migration v1")
+	if _, err := db.Exec(
+		"INSERT INTO migration_versions (version, name) VALUES (?, ?)",
+		migrations[0].Version,
+		migrations[0].Name,
+	); err != nil {
+		return fmt.Errorf("record legacy migration v1: %w", err)
+	}
+	return nil
+}
+
+func currentMigrationVersion(db *sql.DB) (int, error) {
+	var maxVersion sql.NullInt64
+	if err := db.QueryRow("SELECT MAX(version) FROM migration_versions").Scan(&maxVersion); err != nil {
+		return 0, fmt.Errorf("query max migration version: %w", err)
+	}
+	if !maxVersion.Valid {
+		return 0, nil
+	}
+	return int(maxVersion.Int64), nil
+}
+
+func hasLegacyV1Schema(db *sql.DB) (bool, error) {
+	for _, table := range []string{"threads", "payloads", "items"} {
+		exists, err := tableExists(db, table)
+		if err != nil {
+			return false, err
+		}
+		if !exists {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+func tableExists(db *sql.DB, table string) (bool, error) {
+	var name string
+	err := db.QueryRow(
+		"SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+		table,
+	).Scan(&name)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("lookup table %s: %w", table, err)
+	}
+	return true, nil
+}
+
+func applyPendingMigrations(db *sql.DB, applied int) error {
 	for _, m := range migrations {
 		if m.Version <= applied {
 			continue
 		}
-		log.Printf("store: applying migration v%d: %s", m.Version, m.Name)
-
-		tx, err := db.Begin()
-		if err != nil {
-			return fmt.Errorf("begin migration v%d: %w", m.Version, err)
+		if err := applyMigration(db, m); err != nil {
+			return err
 		}
+	}
+	return nil
+}
 
-		if _, err := tx.Exec(m.SQL); err != nil {
-			tx.Rollback()
-			return fmt.Errorf("migration v%d (%s) failed: %w", m.Version, m.Name, err)
-		}
+func applyMigration(db *sql.DB, m Migration) error {
+	log.Printf("store: applying migration v%d: %s", m.Version, m.Name)
 
-		if _, err := tx.Exec(
-			"INSERT INTO migration_versions (version, name) VALUES (?, ?)",
-			m.Version, m.Name,
-		); err != nil {
-			tx.Rollback()
-			return fmt.Errorf("record migration v%d: %w", m.Version, err)
-		}
-
-		if err := tx.Commit(); err != nil {
-			return fmt.Errorf("commit migration v%d: %w", m.Version, err)
-		}
-		log.Printf("store: migration v%d applied", m.Version)
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin migration v%d: %w", m.Version, err)
 	}
 
+	if _, err := tx.Exec(m.SQL); err != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("migration v%d (%s) failed: %w", m.Version, m.Name, err)
+	}
+	if _, err := tx.Exec(
+		"INSERT INTO migration_versions (version, name) VALUES (?, ?)",
+		m.Version,
+		m.Name,
+	); err != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("record migration v%d: %w", m.Version, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit migration v%d: %w", m.Version, err)
+	}
+
+	log.Printf("store: migration v%d applied", m.Version)
 	return nil
 }
