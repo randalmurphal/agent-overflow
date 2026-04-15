@@ -52,8 +52,14 @@ func Spawn(ctx context.Context, cfg SpawnConfig) (*Process, error) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	// Build env: inherit current env + overrides.
+	// PATH is treated as additive (prepend to existing PATH) rather than replacing it.
 	env := os.Environ()
 	for k, v := range cfg.Env {
+		if strings.ToUpper(k) == "PATH" {
+			if existing := os.Getenv("PATH"); existing != "" {
+				v = v + string(os.PathListSeparator) + existing
+			}
+		}
 		env = append(env, k+"="+v)
 	}
 	cmd.Env = env

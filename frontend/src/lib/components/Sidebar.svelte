@@ -27,6 +27,7 @@
         await StartSession(thread.id);
       } catch (err) {
         console.error('Failed to start session:', err);
+        pane.setError(`Failed to start session: ${err}`);
       }
 
       // Reset form.
@@ -35,6 +36,7 @@
       model = '';
     } catch (err) {
       console.error('Failed to create thread:', err);
+      pane.setError(`Failed to create thread: ${err}`);
     } finally {
       creating = false;
     }

@@ -1,4 +1,4 @@
-import { EventsOn } from '../../../wailsjs/runtime/runtime';
+import { EventsOn, EventsOff } from '../../../wailsjs/runtime/runtime';
 import type { ProviderEvent, ApprovalRequest, TokenUsage } from '../types/events';
 import type { PayloadMeta } from '../types/models';
 import type { ThreadPane } from './thread.svelte';
@@ -7,6 +7,8 @@ import { getAllPanes } from './panes.svelte';
 /**
  * Route a provider event to the correct pane mutation.
  * Called once per pane that matches the event's threadId.
+ *
+ * Every EventKind has an explicit case -- nothing falls through to default.
  */
 function routeEventToPane(pane: ThreadPane, evt: ProviderEvent): void {
   switch (evt.kind) {
@@ -19,16 +21,9 @@ function routeEventToPane(pane: ThreadPane, evt: ProviderEvent): void {
       break;
 
     case 'tool_complete':
-      pane.completeToolCall(evt.itemId ?? '', {
-        id: evt.itemId ?? '',
-        threadId: evt.threadId,
-        turnIndex: 0,
-        itemIndex: 0,
-        kind: evt.itemType ?? 'tool_result',
-        role: 'assistant',
-        summary: evt.content ?? '',
-        createdAt: Date.now(),
-      });
+      // Don't fabricate an item -- just mark the tool call done.
+      // The persisted item arrives via finalizeTurn's DB reload.
+      pane.completeToolCall(evt.itemId ?? '');
       break;
 
     case 'turn_start':
@@ -65,6 +60,7 @@ function routeEventToPane(pane: ThreadPane, evt: ProviderEvent): void {
     case 'error':
       console.error('Provider error:', evt.content);
       pane.setSessionStatus('error');
+      pane.setError(evt.content ?? 'Unknown provider error');
       break;
 
     case 'init':
@@ -75,14 +71,37 @@ function routeEventToPane(pane: ThreadPane, evt: ProviderEvent): void {
       pane.addBackgroundTask(evt.itemId ?? '', evt.meta);
       break;
 
+    case 'background_delta':
+      // Background deltas are accumulated server-side. No frontend action needed.
+      break;
+
     case 'background_complete':
       pane.completeBackgroundTask(evt.itemId ?? '');
+      break;
+
+    case 'diff':
+      // Diff events are persisted as heavy payloads by the backend.
+      // The item and payload meta arrive separately. Nothing to do inline.
+      break;
+
+    case 'command_output':
+      // Command output events are persisted as heavy payloads by the backend.
+      // The item and payload meta arrive separately. Nothing to do inline.
+      break;
+
+    case 'thinking':
+      // Thinking events are persisted as heavy payloads by the backend.
+      // The item and payload meta arrive separately. Nothing to do inline.
       break;
   }
 }
 
-export function setupEventListeners(): void {
-  EventsOn('provider:event', (evt: ProviderEvent) => {
+/**
+ * Set up Wails event listeners for provider events.
+ * Returns a cleanup function that removes all listeners.
+ */
+export function setupEventListeners(): () => void {
+  const cancelEvent = EventsOn('provider:event', (evt: ProviderEvent) => {
     for (const pane of getAllPanes().values()) {
       if (pane.threadId === evt.threadId) {
         routeEventToPane(pane, evt);
@@ -90,13 +109,31 @@ export function setupEventListeners(): void {
     }
   });
 
-  EventsOn('provider:meta', (meta: PayloadMeta) => {
+  const cancelMeta = EventsOn('provider:meta', (meta: PayloadMeta) => {
     for (const pane of getAllPanes().values()) {
+      // Only push meta to the pane that owns this thread.
+      // If the backend includes a threadId, filter by it.
+      // If threadId is absent (legacy), fall back to broadcasting to all panes.
+      if (meta.threadId && pane.threadId !== meta.threadId) {
+        continue;
+      }
       pane.addPayloadMeta(meta);
     }
   });
 
-  EventsOn('provider:error', (evt: ProviderEvent) => {
+  const cancelError = EventsOn('provider:error', (evt: ProviderEvent) => {
     console.error('Provider error event:', evt.content);
+    for (const pane of getAllPanes().values()) {
+      if (pane.threadId === evt.threadId) {
+        pane.setError(evt.content ?? 'Unknown provider error');
+      }
+    }
   });
+
+  return () => {
+    cancelEvent();
+    cancelMeta();
+    cancelError();
+    EventsOff('provider:event', 'provider:meta', 'provider:error');
+  };
 }

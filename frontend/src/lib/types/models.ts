@@ -24,6 +24,7 @@ export interface Item {
 
 export interface PayloadMeta {
   id: string;
+  threadId?: string;
   kind: string;
   meta: string; // JSON string — parse based on kind
   createdAt: number;

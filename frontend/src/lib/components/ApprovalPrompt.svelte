@@ -12,6 +12,7 @@
       await RespondToApproval(threadId, requestId, decision);
     } catch (err) {
       console.error('Failed to respond to approval:', err);
+      pane.setError(`Failed to respond to approval: ${err}`);
     }
   }
 </script>

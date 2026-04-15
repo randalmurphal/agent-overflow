@@ -18,6 +18,7 @@ type Session struct {
 	proc          *provider.Process
 	threadID      string // our internal thread ID
 	codexThreadID string // the Codex app-server's thread ID from thread/start
+	activeTurnID  string // current active turn ID from turn/started; cleared on turn/completed
 	nextID        atomic.Int64
 	mu            sync.Mutex
 	pending       map[int64]chan json.RawMessage
@@ -108,19 +109,23 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 	// Extract the Codex thread ID from response.
 	s.threadID = threadID // our internal ID
 	s.codexThreadID = readStringFromResponse(resp, "thread", "id")
-	if s.codexThreadID != "" {
-		meta, _ := json.Marshal(provider.SessionInfo{
-			SessionID: s.codexThreadID,
-			Model:     cfg.Model,
-			CWD:       cfg.WorkDir,
-		})
-		s.onEvent(provider.ProviderEvent{
-			Kind:      provider.EventInit,
-			ThreadID:  threadID,
-			Meta:      meta,
-			Timestamp: time.Now(),
-		})
+	if s.codexThreadID == "" {
+		log.Printf("codex: %s response missing thread.id; response: %s", method, string(resp))
+		s.Close()
+		return nil, fmt.Errorf("codex: %s: response did not contain a thread ID", method)
 	}
+
+	meta, _ := json.Marshal(provider.SessionInfo{
+		SessionID: s.codexThreadID,
+		Model:     cfg.Model,
+		CWD:       cfg.WorkDir,
+	})
+	s.onEvent(provider.ProviderEvent{
+		Kind:      provider.EventInit,
+		ThreadID:  threadID,
+		Meta:      meta,
+		Timestamp: time.Now(),
+	})
 
 	return s, nil
 }
@@ -154,8 +159,17 @@ func (s *Session) Send(ctx context.Context, content string) error {
 	return nil
 }
 
-// Interrupt sends turn/interrupt for the given turn.
-func (s *Session) Interrupt(ctx context.Context, turnID string) error {
+// Interrupt sends turn/interrupt for the active turn.
+// Returns an error if no turn is currently active.
+func (s *Session) Interrupt(ctx context.Context) error {
+	s.mu.Lock()
+	turnID := s.activeTurnID
+	s.mu.Unlock()
+
+	if turnID == "" {
+		return fmt.Errorf("codex: no active turn to interrupt")
+	}
+
 	_, err := s.sendRequest(ctx, "turn/interrupt", map[string]any{
 		"turnId": turnID,
 	})
@@ -183,9 +197,11 @@ func (s *Session) ThreadID() string {
 }
 
 // Close shuts down the app-server process.
+// Closes stdin first for graceful shutdown, then cancels the context as fallback.
 func (s *Session) Close() error {
+	err := s.proc.Close()
 	s.cancel()
-	return s.proc.Close()
+	return err
 }
 
 // -- Internal methods --
@@ -341,7 +357,12 @@ func (s *Session) dispatchLine(line []byte) {
 		ch, ok := s.pending[id]
 		s.mu.Unlock()
 		if ok {
-			ch <- line
+			// Non-blocking send: if the request already timed out and the channel
+			// was removed or is full, drop the response silently.
+			select {
+			case ch <- line:
+			default:
+			}
 		}
 		return
 	}
@@ -356,6 +377,19 @@ func (s *Session) dispatchLine(line []byte) {
 	if msg.Method != "" {
 		events := ClassifyNotification(s.threadID, msg.Method, msg.Params)
 		for _, evt := range events {
+			// Track active turn ID for Interrupt.
+			switch evt.Kind {
+			case provider.EventTurnStart:
+				if evt.TurnID != "" {
+					s.mu.Lock()
+					s.activeTurnID = evt.TurnID
+					s.mu.Unlock()
+				}
+			case provider.EventTurnComplete:
+				s.mu.Lock()
+				s.activeTurnID = ""
+				s.mu.Unlock()
+			}
 			s.onEvent(evt)
 		}
 		return
@@ -406,6 +440,10 @@ func (s *Session) handleServerRequest(method string, id *json.Number, params jso
 
 func buildThreadParams(cfg Config) map[string]any {
 	params := map[string]any{}
+
+	if cfg.WorkDir != "" {
+		params["cwd"] = cfg.WorkDir
+	}
 
 	if cfg.Model != "" {
 		params["model"] = cfg.Model

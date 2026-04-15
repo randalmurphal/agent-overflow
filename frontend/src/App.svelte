@@ -9,8 +9,12 @@
   const pane = getMainPane();
 
   onMount(() => {
-    setupEventListeners();
+    const cleanupEvents = setupEventListeners();
     refreshThreads();
+
+    return () => {
+      cleanupEvents();
+    };
   });
 </script>
 

@@ -160,9 +160,11 @@ func (s *Session) SessionID() string {
 }
 
 // Close shuts down the CLI process gracefully.
+// Closes stdin first for graceful shutdown, then cancels the context as fallback.
 func (s *Session) Close() error {
+	err := s.proc.Close()
 	s.cancel()
-	return s.proc.Close()
+	return err
 }
 
 // readLoop reads stdout NDJSON lines and dispatches them as ProviderEvents.

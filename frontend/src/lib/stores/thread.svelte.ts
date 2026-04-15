@@ -17,6 +17,15 @@ export function createThreadPane() {
   let backgroundTasks: Map<string, unknown> = $state(new Map());
   let sessionStatus: string = $state('disconnected');
   let tokenUsage: TokenUsage | null = $state(null);
+  let error: string | null = $state(null);
+  let loading: boolean = $state(false);
+  let pendingMessage: string | null = $state(null);
+
+  /**
+   * Generation counter for finalizeTurn. Incremented each time finalizeTurn
+   * starts so that stale async DB responses don't overwrite newer state.
+   */
+  let turnGeneration = 0;
 
   return {
     // --- Getters (reactive reads) ---
@@ -30,6 +39,9 @@ export function createThreadPane() {
     get backgroundTasks() { return backgroundTasks; },
     get sessionStatus() { return sessionStatus; },
     get tokenUsage() { return tokenUsage; },
+    get error() { return error; },
+    get loading() { return loading; },
+    get pendingMessage() { return pendingMessage; },
 
     // --- Thread switching ---
 
@@ -40,14 +52,20 @@ export function createThreadPane() {
       backgroundTasks = new Map();
       tokenUsage = null;
       sessionStatus = 'disconnected';
+      error = null;
+      pendingMessage = null;
+      loading = true;
 
       thread = newThread;
+      // Bump generation so any in-flight finalizeTurn from prior thread is discarded.
+      turnGeneration++;
 
       try {
         items = await ListItems(newThread.id) as Item[];
       } catch (err) {
         console.error('Failed to load items:', err);
         items = [];
+        error = `Failed to load thread items: ${err}`;
       }
 
       try {
@@ -57,6 +75,8 @@ export function createThreadPane() {
         console.error('Failed to load payload metas:', err);
         payloadMetas = new Map();
       }
+
+      loading = false;
     },
 
     clear(): void {
@@ -69,6 +89,10 @@ export function createThreadPane() {
       backgroundTasks = new Map();
       sessionStatus = 'disconnected';
       tokenUsage = null;
+      error = null;
+      loading = false;
+      pendingMessage = null;
+      turnGeneration++;
     },
 
     // --- Mutations (called by event router) ---
@@ -80,9 +104,15 @@ export function createThreadPane() {
     finalizeTurn(): void {
       streamingContent = '';
       activeToolCalls = new Map();
+      pendingMessage = null;
       if (thread) {
-        ListItems(thread.id).then((loaded) => {
-          items = loaded as Item[];
+        const gen = ++turnGeneration;
+        const threadId = thread.id;
+        ListItems(threadId).then((loaded) => {
+          // Only apply if no newer finalizeTurn or state change has started.
+          if (turnGeneration === gen) {
+            items = loaded as Item[];
+          }
         }).catch((err) => {
           console.error('Failed to reload items after turn:', err);
         });
@@ -93,11 +123,15 @@ export function createThreadPane() {
       activeToolCalls = new Map(activeToolCalls).set(id, data);
     },
 
-    completeToolCall(id: string, item: Item): void {
+    /**
+     * Mark a tool call as complete. The actual completed item will arrive
+     * from the DB via finalizeTurn -- we just remove the in-progress entry here.
+     * No fabricated items are appended to the items array.
+     */
+    completeToolCall(id: string): void {
       const next = new Map(activeToolCalls);
       next.delete(id);
       activeToolCalls = next;
-      items = [...items, item];
     },
 
     addApproval(approval: ApprovalRequest): void {
@@ -128,6 +162,22 @@ export function createThreadPane() {
 
     addPayloadMeta(meta: PayloadMeta): void {
       payloadMetas = new Map(payloadMetas).set(meta.id, meta);
+    },
+
+    setError(message: string | null): void {
+      error = message;
+    },
+
+    clearError(): void {
+      error = null;
+    },
+
+    setLoading(value: boolean): void {
+      loading = value;
+    },
+
+    setPendingMessage(text: string | null): void {
+      pendingMessage = text;
     },
   };
 }

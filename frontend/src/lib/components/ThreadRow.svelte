@@ -23,6 +23,7 @@
       }
     } catch (err) {
       console.error('Failed to archive thread:', err);
+      pane.setError(`Failed to archive thread: ${err}`);
     }
   }
 </script>

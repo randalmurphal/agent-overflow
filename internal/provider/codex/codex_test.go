@@ -874,16 +874,34 @@ func TestCodexSend(t *testing.T) {
 	}
 }
 
-func TestCodexInterrupt(t *testing.T) {
+func TestCodexInterruptNoActiveTurn(t *testing.T) {
 	s, _ := newTestCodexSession(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	err := s.Interrupt(ctx, "turn-1")
-	// Expected to fail because cat echo + handleServerRequest produces error response.
+	err := s.Interrupt(ctx)
 	if err == nil {
-		t.Fatal("expected error from Interrupt via cat echo")
+		t.Fatal("expected error when no active turn")
+	}
+}
+
+func TestCodexInterruptWithActiveTurn(t *testing.T) {
+	s, _ := newTestCodexSession(t)
+
+	// Simulate turn/started by setting activeTurnID.
+	s.mu.Lock()
+	s.activeTurnID = "turn-1"
+	s.mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	err := s.Interrupt(ctx)
+	// Expected to fail because cat echo + handleServerRequest produces error response,
+	// but it should NOT fail with "no active turn".
+	if err != nil && err.Error() == "codex: no active turn to interrupt" {
+		t.Fatal("should have attempted RPC, not returned no-active-turn error")
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"agent-overflow/internal/provider"
@@ -19,7 +20,8 @@ import (
 type Router struct {
 	store            *store.Store
 	emit             func(eventName string, data any) // wraps runtime.EventsEmit
-	textAccumulators map[string]*strings.Builder       // threadID → accumulated assistant text
+	mu               sync.Mutex
+	textAccumulators map[string]*strings.Builder // threadID → accumulated assistant text
 }
 
 // NewRouter creates a triage router.
@@ -39,12 +41,14 @@ func (r *Router) Handle(evt provider.ProviderEvent) error {
 
 	case provider.EventTextDelta:
 		// Accumulate text for persistence and emit to frontend.
+		r.mu.Lock()
 		acc, ok := r.textAccumulators[evt.ThreadID]
 		if !ok {
 			acc = &strings.Builder{}
 			r.textAccumulators[evt.ThreadID] = acc
 		}
 		acc.WriteString(evt.Content)
+		r.mu.Unlock()
 		r.emit("provider:event", evt)
 		return nil
 
@@ -75,8 +79,16 @@ func (r *Router) Handle(evt provider.ProviderEvent) error {
 
 	case provider.EventTurnComplete:
 		// If text was accumulated during this turn, persist it as an assistant message item.
-		if acc, ok := r.textAccumulators[evt.ThreadID]; ok && acc.Len() > 0 {
-			content := acc.String()
+		r.mu.Lock()
+		acc, ok := r.textAccumulators[evt.ThreadID]
+		var content string
+		if ok && acc.Len() > 0 {
+			content = acc.String()
+			acc.Reset()
+		}
+		r.mu.Unlock()
+
+		if content != "" {
 			now := time.Now().UnixMilli()
 			turnIndex, err := r.store.LastTurnIndex(evt.ThreadID)
 			if err != nil {
@@ -102,7 +114,6 @@ func (r *Router) Handle(evt provider.ProviderEvent) error {
 				r.emit("provider:event", evt)
 				return fmt.Errorf("persist assistant text: %w", err)
 			}
-			acc.Reset()
 		}
 		r.emit("provider:event", evt)
 		return nil
@@ -170,8 +181,16 @@ func (r *Router) persistHeavy(evt provider.ProviderEvent, payloadKind string, it
 	}
 
 	// Emit meta to frontend first (regardless of persistence outcome).
-	r.emit("provider:meta", store.PayloadMeta{
+	// Include threadId so the frontend can filter by thread.
+	r.emit("provider:meta", struct {
+		ID        string `json:"id"`
+		ThreadID  string `json:"threadId"`
+		Kind      string `json:"kind"`
+		Meta      string `json:"meta"`
+		CreatedAt int64  `json:"createdAt"`
+	}{
 		ID:        payloadID,
+		ThreadID:  evt.ThreadID,
 		Kind:      payloadKind,
 		Meta:      metaJSON,
 		CreatedAt: now,

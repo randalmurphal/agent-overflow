@@ -29,18 +29,26 @@ func ClassifyNotification(threadID, method string, params json.RawMessage) []pro
 		turnID := readNestedString(params, "turn", "id")
 		status := readNestedString(params, "turn", "status")
 		errorMsg := readNestedString(params, "turn", "error", "message")
+
+		var events []provider.ProviderEvent
+
 		if status == "failed" && errorMsg != "" {
-			return []provider.ProviderEvent{
-				{Kind: provider.EventError, ThreadID: threadID, TurnID: turnID, Content: errorMsg, Timestamp: now},
-				{Kind: provider.EventTurnComplete, ThreadID: threadID, TurnID: turnID, Timestamp: now},
-			}
+			events = append(events, provider.ProviderEvent{
+				Kind: provider.EventError, ThreadID: threadID, TurnID: turnID, Content: errorMsg, Timestamp: now,
+			})
 		}
-		return []provider.ProviderEvent{{
-			Kind:      provider.EventTurnComplete,
-			ThreadID:  threadID,
-			TurnID:    turnID,
-			Timestamp: now,
-		}}
+
+		// Extract usage data if present in the turn/completed notification.
+		if usageData := extractUsageFromTurn(params); usageData != nil {
+			events = append(events, provider.ProviderEvent{
+				Kind: provider.EventTokenUsage, ThreadID: threadID, TurnID: turnID, Meta: usageData, Timestamp: now,
+			})
+		}
+
+		events = append(events, provider.ProviderEvent{
+			Kind: provider.EventTurnComplete, ThreadID: threadID, TurnID: turnID, Timestamp: now,
+		})
+		return events
 
 	case "turn/diff/updated":
 		return []provider.ProviderEvent{{
@@ -179,6 +187,33 @@ func readTopLevelString(data json.RawMessage, key string) string {
 		return ""
 	}
 	return s
+}
+
+// extractUsageFromTurn checks for usage/cost data in a turn/completed notification.
+// It looks for turn.usage or top-level usage fields.
+// Returns nil if no usage data is found.
+func extractUsageFromTurn(params json.RawMessage) json.RawMessage {
+	var m map[string]json.RawMessage
+	if json.Unmarshal(params, &m) != nil {
+		return nil
+	}
+
+	// Check top-level "usage" field.
+	if raw, ok := m["usage"]; ok {
+		return raw
+	}
+
+	// Check nested turn.usage field.
+	if turnRaw, ok := m["turn"]; ok {
+		var turn map[string]json.RawMessage
+		if json.Unmarshal(turnRaw, &turn) == nil {
+			if raw, ok := turn["usage"]; ok {
+				return raw
+			}
+		}
+	}
+
+	return nil
 }
 
 // readNestedString reads a string by walking through nested object keys.

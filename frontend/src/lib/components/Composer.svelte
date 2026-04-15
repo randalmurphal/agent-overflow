@@ -14,6 +14,9 @@
     const text = message.trim();
     if (!text || !pane.threadId) return;
 
+    // Optimistic: show the pending message immediately and clear the input.
+    pane.setPendingMessage(text);
+    const savedText = message;
     message = '';
 
     // Reset textarea height after clearing.
@@ -25,6 +28,10 @@
       await SendMessage(pane.threadId, text);
     } catch (err) {
       console.error('Failed to send message:', err);
+      // Restore input text and remove optimistic pending message on failure.
+      message = savedText;
+      pane.setPendingMessage(null);
+      pane.setError(`Failed to send message: ${err}`);
     }
   }
 
@@ -35,6 +42,7 @@
       await InterruptTurn(pane.threadId);
     } catch (err) {
       console.error('Failed to interrupt turn:', err);
+      pane.setError(`Failed to interrupt: ${err}`);
     }
   }
 

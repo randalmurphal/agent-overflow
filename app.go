@@ -215,14 +215,17 @@ func (a *App) StartSession(threadID string) error {
 func (a *App) SendMessage(threadID string, content string) error {
 	a.mu.Lock()
 	sess, ok := a.sessions[threadID]
-	a.mu.Unlock()
 	if !ok {
+		a.mu.Unlock()
 		return fmt.Errorf("no active session for thread %s", threadID)
 	}
 
 	// Persist user message before sending to provider.
+	// Hold the mutex across the read-increment-write to prevent concurrent
+	// SendMessage calls from getting the same turn index.
 	turnIndex, err := a.store.LastTurnIndex(threadID)
 	if err != nil {
+		a.mu.Unlock()
 		return fmt.Errorf("send message: get turn index: %w", err)
 	}
 	turnIndex++ // new turn starts with user message
@@ -238,8 +241,10 @@ func (a *App) SendMessage(threadID string, content string) error {
 		CreatedAt: now,
 	}
 	if err := a.store.InsertItem(userItem); err != nil {
+		a.mu.Unlock()
 		return fmt.Errorf("send message: persist user message: %w", err)
 	}
+	a.mu.Unlock()
 
 	switch {
 	case sess.claude != nil:
@@ -263,7 +268,7 @@ func (a *App) InterruptTurn(threadID string) error {
 	case sess.claude != nil:
 		return sess.claude.Interrupt(a.ctx)
 	case sess.codex != nil:
-		return sess.codex.Interrupt(a.ctx, "")
+		return sess.codex.Interrupt(a.ctx)
 	default:
 		return fmt.Errorf("session has no provider")
 	}

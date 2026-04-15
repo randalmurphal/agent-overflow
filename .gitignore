@@ -20,3 +20,9 @@ Thumbs.db
 *.exe
 *.test
 *.out
+
+# Ralph loop logs
+ralph-*.log
+
+# Build artifacts
+frontend/package.json.md5
