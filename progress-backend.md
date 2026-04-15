@@ -19,6 +19,7 @@
 
 - `WI-0.1: Database migration system`
 - `WI-0.2: Backend file reorganization`
+- `WI-1.4: Codex structured user-input and permission handling`
 - `WI-1.5: Diff accumulation fix`
 - `WI-1.6: Triage router updates`
 - `WI-3.1: Git core`
@@ -36,6 +37,7 @@
 - 2026-04-15: Completed `WI-3.2` by adding `internal/git/actions.go` for commit/push/pull/checkout/create-branch flows, including upstream-aware push behavior and input validation, and covering the actions with temp-repo tests. `go build ./...`, `go vet ./...`, and `go test -coverprofile=coverage.out ./... -count=1` all passed, with `internal/git` at 82.1% coverage.
 - 2026-04-15: Completed `WI-3.3` by adding worktree create/remove/list support to `internal/git/core.go`, parsing `git worktree list --porcelain`, and covering the flow with parser assertions plus temp-repo create/list/remove tests. `go build ./...`, `go vet ./...`, and `go test -coverprofile=coverage.out ./... -count=1` all passed, with `internal/git` at 82.2% coverage.
 - 2026-04-15: Completed `WI-3.4` by adding `internal/git/github.go` for `gh pr create` and `gh pr list` flows, reusing the new list path for status open-PR lookup, and covering JSON parsing, URL returns, and missing-`gh` behavior with mocked CLI tests. `go build ./...`, `go vet ./...`, and `go test -coverprofile=coverage.out ./... -count=1` all passed, with `internal/git` at 80.6% coverage.
+- 2026-04-15: Completed `WI-1.4` by normalizing Codex `item/tool/requestUserInput` and `item/permissions/requestApproval` server requests into structured `ApprovalRequest` payloads, propagating request route metadata (`turnId`/`itemId`), and adding direct/meta + session-dispatch tests for both flows. `go build ./...`, `go vet ./...`, and `go test -coverprofile=coverage.out ./... -count=1` all passed, with `internal/provider/codex` at 87.5% coverage.
 
 ## Review Log
 

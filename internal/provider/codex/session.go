@@ -404,35 +404,43 @@ func (s *Session) handleServerRequest(method string, id *json.Number, params jso
 		return
 	}
 
+	turnID, itemID := readRouteFields(params)
+
 	switch method {
 	case "item/commandExecution/requestApproval",
 		"item/fileChange/requestApproval",
 		"item/fileRead/requestApproval":
 
-		meta := buildApprovalMeta(s.threadID, method, rpcID, params)
+		meta := buildApprovalMeta(s.threadID, turnID, method, rpcID, params)
 		s.onEvent(provider.ProviderEvent{
 			Kind:      provider.EventApprovalRequest,
 			ThreadID:  s.threadID,
+			TurnID:    turnID,
+			ItemID:    itemID,
 			Meta:      meta,
 			Timestamp: time.Now(),
 			Raw:       line,
 		})
 
 	case "item/tool/requestUserInput":
-		meta := buildUserInputMeta(s.threadID, rpcID, params)
+		meta := buildUserInputMeta(s.threadID, turnID, rpcID, params)
 		s.onEvent(provider.ProviderEvent{
 			Kind:      provider.EventApprovalRequest,
 			ThreadID:  s.threadID,
+			TurnID:    turnID,
+			ItemID:    itemID,
 			Meta:      meta,
 			Timestamp: time.Now(),
 			Raw:       line,
 		})
 
 	case "item/permissions/requestApproval":
-		meta := buildPermissionMeta(s.threadID, rpcID, params)
+		meta := buildPermissionMeta(s.threadID, turnID, rpcID, params)
 		s.onEvent(provider.ProviderEvent{
 			Kind:      provider.EventApprovalRequest,
 			ThreadID:  s.threadID,
+			TurnID:    turnID,
+			ItemID:    itemID,
 			Meta:      meta,
 			Timestamp: time.Now(),
 			Raw:       line,
@@ -488,7 +496,21 @@ func buildThreadParams(cfg Config) map[string]any {
 	return params
 }
 
-func buildApprovalMeta(threadID, method string, rpcID int64, params json.RawMessage) json.RawMessage {
+func readRouteFields(params json.RawMessage) (string, string) {
+	turnID := readTopLevelString(params, "turnId")
+	if turnID == "" {
+		turnID = readNestedString(params, "turn", "id")
+	}
+
+	itemID := readTopLevelString(params, "itemId")
+	if itemID == "" {
+		itemID = readNestedString(params, "item", "id")
+	}
+
+	return turnID, itemID
+}
+
+func buildApprovalMeta(threadID, turnID, method string, rpcID int64, params json.RawMessage) json.RawMessage {
 	var parsed map[string]json.RawMessage
 	_ = json.Unmarshal(params, &parsed)
 
@@ -519,6 +541,7 @@ func buildApprovalMeta(threadID, method string, rpcID int64, params json.RawMess
 	approval := provider.ApprovalRequest{
 		RequestID:   fmt.Sprintf("%d", rpcID),
 		ThreadID:    threadID,
+		TurnID:      turnID,
 		ToolName:    toolName,
 		Description: description,
 		Input:       input,
@@ -529,19 +552,15 @@ func buildApprovalMeta(threadID, method string, rpcID int64, params json.RawMess
 	return data
 }
 
-func buildUserInputMeta(threadID string, rpcID int64, params json.RawMessage) json.RawMessage {
-	var parsed map[string]json.RawMessage
-	_ = json.Unmarshal(params, &parsed)
-
-	var questions []provider.UserInputQuestion
-	if raw, ok := parsed["questions"]; ok {
-		_ = json.Unmarshal(raw, &questions)
-	}
+func buildUserInputMeta(threadID, turnID string, rpcID int64, params json.RawMessage) json.RawMessage {
+	questions := parseUserInputQuestions(params)
 
 	approval := provider.ApprovalRequest{
 		RequestID: fmt.Sprintf("%d", rpcID),
 		ThreadID:  threadID,
+		TurnID:    turnID,
 		ToolName:  "user_input",
+		Input:     params,
 		Kind:      "user-input",
 		Questions: questions,
 		Title:     "User Input Required",
@@ -550,32 +569,43 @@ func buildUserInputMeta(threadID string, rpcID int64, params json.RawMessage) js
 	return data
 }
 
-func buildPermissionMeta(threadID string, rpcID int64, params json.RawMessage) json.RawMessage {
-	var parsed map[string]json.RawMessage
-	_ = json.Unmarshal(params, &parsed)
-
-	reason := ""
-	if raw, ok := parsed["reason"]; ok {
-		_ = json.Unmarshal(raw, &reason)
-	}
-
-	var perms *provider.PermissionProfile
-	if raw, ok := parsed["permissions"]; ok {
-		perms = &provider.PermissionProfile{}
-		_ = json.Unmarshal(raw, perms)
-	}
+func buildPermissionMeta(threadID, turnID string, rpcID int64, params json.RawMessage) json.RawMessage {
+	reason, perms := parsePermissionRequest(params)
 
 	approval := provider.ApprovalRequest{
 		RequestID:   fmt.Sprintf("%d", rpcID),
 		ThreadID:    threadID,
+		TurnID:      turnID,
 		ToolName:    "permissions",
 		Kind:        "permission",
+		Input:       params,
 		Description: reason,
 		Permissions: perms,
 		Title:       "Permission Required",
 	}
 	data, _ := json.Marshal(approval)
 	return data
+}
+
+func parseUserInputQuestions(params json.RawMessage) []provider.UserInputQuestion {
+	var payload struct {
+		Questions []provider.UserInputQuestion `json:"questions"`
+	}
+	if err := json.Unmarshal(params, &payload); err != nil {
+		return nil
+	}
+	return payload.Questions
+}
+
+func parsePermissionRequest(params json.RawMessage) (string, *provider.PermissionProfile) {
+	var payload struct {
+		Reason      string                      `json:"reason"`
+		Permissions *provider.PermissionProfile `json:"permissions"`
+	}
+	if err := json.Unmarshal(params, &payload); err != nil {
+		return "", nil
+	}
+	return payload.Reason, payload.Permissions
 }
 
 // readStringFromResponse is an alias for readNestedString (protocol.go)

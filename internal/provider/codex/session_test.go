@@ -622,7 +622,7 @@ func TestBuildThreadParamsDangerMode(t *testing.T) {
 
 func TestBuildApprovalMetaCommand(t *testing.T) {
 	params := json.RawMessage(`{"command":"ls -la"}`)
-	meta := buildApprovalMeta("t1", "item/commandExecution/requestApproval", 42, params)
+	meta := buildApprovalMeta("t1", "", "item/commandExecution/requestApproval", 42, params)
 
 	var approval provider.ApprovalRequest
 	json.Unmarshal(meta, &approval)
@@ -640,7 +640,7 @@ func TestBuildApprovalMetaCommand(t *testing.T) {
 
 func TestBuildApprovalMetaFileChange(t *testing.T) {
 	params := json.RawMessage(`{"filePath":"/tmp/test.go"}`)
-	meta := buildApprovalMeta("t1", "item/fileChange/requestApproval", 99, params)
+	meta := buildApprovalMeta("t1", "", "item/fileChange/requestApproval", 99, params)
 
 	var approval provider.ApprovalRequest
 	json.Unmarshal(meta, &approval)
@@ -650,6 +650,88 @@ func TestBuildApprovalMetaFileChange(t *testing.T) {
 	}
 	if approval.Description != "/tmp/test.go" {
 		t.Errorf("description: got %q, want %q", approval.Description, "/tmp/test.go")
+	}
+}
+
+func TestReadRouteFields(t *testing.T) {
+	params := json.RawMessage(`{"turn":{"id":"turn-7"},"item":{"id":"item-4"}}`)
+	turnID, itemID := readRouteFields(params)
+
+	if turnID != "turn-7" {
+		t.Errorf("turnID: got %q, want %q", turnID, "turn-7")
+	}
+	if itemID != "item-4" {
+		t.Errorf("itemID: got %q, want %q", itemID, "item-4")
+	}
+}
+
+func TestReadRouteFieldsTopLevelFallback(t *testing.T) {
+	params := json.RawMessage(`{"turnId":"turn-9","itemId":"item-2"}`)
+	turnID, itemID := readRouteFields(params)
+
+	if turnID != "turn-9" {
+		t.Errorf("turnID: got %q, want %q", turnID, "turn-9")
+	}
+	if itemID != "item-2" {
+		t.Errorf("itemID: got %q, want %q", itemID, "item-2")
+	}
+}
+
+func TestBuildUserInputMeta(t *testing.T) {
+	params := json.RawMessage(`{"turn":{"id":"turn-2"},"questions":[{"id":"sandbox_mode","header":"Sandbox","question":"Which mode should be used?","options":[{"label":"workspace-write","description":"Allow workspace writes only"}],"multiSelect":true}]}`)
+	meta := buildUserInputMeta("t1", "turn-2", 42, params)
+
+	var approval provider.ApprovalRequest
+	if err := json.Unmarshal(meta, &approval); err != nil {
+		t.Fatalf("unmarshal approval: %v", err)
+	}
+
+	if approval.Kind != "user-input" {
+		t.Errorf("kind: got %q, want %q", approval.Kind, "user-input")
+	}
+	if approval.TurnID != "turn-2" {
+		t.Errorf("turnID: got %q, want %q", approval.TurnID, "turn-2")
+	}
+	if approval.ToolName != "user_input" {
+		t.Errorf("toolName: got %q, want %q", approval.ToolName, "user_input")
+	}
+	if len(approval.Questions) != 1 {
+		t.Fatalf("questions len: got %d, want 1", len(approval.Questions))
+	}
+	if !approval.Questions[0].MultiSelect {
+		t.Fatal("expected multiSelect=true")
+	}
+	if string(approval.Input) != string(params) {
+		t.Errorf("input: got %s, want %s", approval.Input, params)
+	}
+}
+
+func TestBuildPermissionMeta(t *testing.T) {
+	params := json.RawMessage(`{"turnId":"turn-5","reason":"Need broader write access","permissions":{"network":{"enabled":true},"fileSystem":{"read":["/tmp/project/src"],"write":["/tmp/project/out"]}}}`)
+	meta := buildPermissionMeta("t1", "turn-5", 77, params)
+
+	var approval provider.ApprovalRequest
+	if err := json.Unmarshal(meta, &approval); err != nil {
+		t.Fatalf("unmarshal approval: %v", err)
+	}
+
+	if approval.Kind != "permission" {
+		t.Errorf("kind: got %q, want %q", approval.Kind, "permission")
+	}
+	if approval.Description != "Need broader write access" {
+		t.Errorf("description: got %q, want %q", approval.Description, "Need broader write access")
+	}
+	if approval.Permissions == nil || approval.Permissions.Network == nil || approval.Permissions.FileSystem == nil {
+		t.Fatal("expected permission profile to be populated")
+	}
+	if approval.Permissions.Network.Enabled == nil || !*approval.Permissions.Network.Enabled {
+		t.Fatal("expected network enabled=true")
+	}
+	if got := approval.Permissions.FileSystem.Write[0]; got != "/tmp/project/out" {
+		t.Errorf("fileSystem.write[0]: got %q, want %q", got, "/tmp/project/out")
+	}
+	if string(approval.Input) != string(params) {
+		t.Errorf("input: got %s, want %s", approval.Input, params)
 	}
 }
 
@@ -971,6 +1053,74 @@ func TestCodexHandleServerRequestFileApproval(t *testing.T) {
 	evt := codexWaitEvent(t, eventCh)
 	if evt.Kind != provider.EventApprovalRequest {
 		t.Errorf("kind: got %q, want %q", evt.Kind, provider.EventApprovalRequest)
+	}
+}
+
+func TestCodexHandleServerRequestUserInput(t *testing.T) {
+	s, eventCh := newTestCodexSession(t)
+
+	line := []byte(`{"jsonrpc":"2.0","id":3,"method":"item/tool/requestUserInput","params":{"turn":{"id":"turn-3"},"item":{"id":"item-8"},"questions":[{"id":"scope","header":"Scope","question":"Choose a scope","options":[{"label":"turn","description":"Apply only to this turn"},{"label":"session","description":"Apply for the whole session"}],"multiSelect":false}]}}`)
+	if err := s.proc.WriteLine(line); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	evt := codexWaitEvent(t, eventCh)
+	if evt.Kind != provider.EventApprovalRequest {
+		t.Fatalf("kind: got %q, want %q", evt.Kind, provider.EventApprovalRequest)
+	}
+	if evt.TurnID != "turn-3" {
+		t.Errorf("turnID: got %q, want %q", evt.TurnID, "turn-3")
+	}
+	if evt.ItemID != "item-8" {
+		t.Errorf("itemID: got %q, want %q", evt.ItemID, "item-8")
+	}
+
+	var approval provider.ApprovalRequest
+	if err := json.Unmarshal(evt.Meta, &approval); err != nil {
+		t.Fatalf("unmarshal approval: %v", err)
+	}
+	if approval.Kind != "user-input" {
+		t.Errorf("kind: got %q, want %q", approval.Kind, "user-input")
+	}
+	if len(approval.Questions) != 1 {
+		t.Fatalf("questions len: got %d, want 1", len(approval.Questions))
+	}
+	if approval.Questions[0].ID != "scope" {
+		t.Errorf("question id: got %q, want %q", approval.Questions[0].ID, "scope")
+	}
+}
+
+func TestCodexHandleServerRequestPermission(t *testing.T) {
+	s, eventCh := newTestCodexSession(t)
+
+	line := []byte(`{"jsonrpc":"2.0","id":4,"method":"item/permissions/requestApproval","params":{"turnId":"turn-4","itemId":"item-9","reason":"Need broader write access","permissions":{"network":{"enabled":true},"fileSystem":{"read":["/tmp/project/src"],"write":["/tmp/project/out"]}}}}`)
+	if err := s.proc.WriteLine(line); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	evt := codexWaitEvent(t, eventCh)
+	if evt.Kind != provider.EventApprovalRequest {
+		t.Fatalf("kind: got %q, want %q", evt.Kind, provider.EventApprovalRequest)
+	}
+	if evt.TurnID != "turn-4" {
+		t.Errorf("turnID: got %q, want %q", evt.TurnID, "turn-4")
+	}
+	if evt.ItemID != "item-9" {
+		t.Errorf("itemID: got %q, want %q", evt.ItemID, "item-9")
+	}
+
+	var approval provider.ApprovalRequest
+	if err := json.Unmarshal(evt.Meta, &approval); err != nil {
+		t.Fatalf("unmarshal approval: %v", err)
+	}
+	if approval.Kind != "permission" {
+		t.Errorf("kind: got %q, want %q", approval.Kind, "permission")
+	}
+	if approval.Permissions == nil || approval.Permissions.FileSystem == nil {
+		t.Fatal("expected filesystem permissions to be populated")
+	}
+	if approval.Permissions.FileSystem.Read[0] != "/tmp/project/src" {
+		t.Errorf("fileSystem.read[0]: got %q, want %q", approval.Permissions.FileSystem.Read[0], "/tmp/project/src")
 	}
 }
 
