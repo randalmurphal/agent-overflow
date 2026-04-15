@@ -21,6 +21,13 @@ type commandResult struct {
 	exitCode int
 }
 
+// Worktree describes a git worktree attached to a repository.
+type Worktree struct {
+	Path   string `json:"path"`
+	Branch string `json:"branch,omitempty"`
+	HEAD   string `json:"head"`
+}
+
 // Core wraps git command execution with timeouts and bounded output capture.
 type Core struct {
 	timeout        time.Duration
@@ -49,6 +56,55 @@ func (c *Core) Execute(cwd string, args ...string) (stdout, stderr string, err e
 		)
 	}
 	return result.stdout, result.stderr, nil
+}
+
+// CreateWorktree creates a new worktree backed by a new branch.
+func (c *Core) CreateWorktree(cwd, path, branch string) error {
+	if strings.TrimSpace(path) == "" {
+		return errors.New("git worktree path is required")
+	}
+	if strings.TrimSpace(branch) == "" {
+		return errors.New("git worktree branch is required")
+	}
+
+	_, stderr, err := c.Execute(cwd, "worktree", "add", "-b", branch, path)
+	if err != nil {
+		message := strings.TrimSpace(stderr)
+		if message == "" {
+			message = err.Error()
+		}
+		return fmt.Errorf("git worktree add failed: %s", message)
+	}
+	return nil
+}
+
+// RemoveWorktree removes a worktree from a repository.
+func (c *Core) RemoveWorktree(cwd, path string) error {
+	if strings.TrimSpace(path) == "" {
+		return errors.New("git worktree path is required")
+	}
+
+	_, stderr, err := c.Execute(cwd, "worktree", "remove", path)
+	if err != nil {
+		message := strings.TrimSpace(stderr)
+		if message == "" {
+			message = err.Error()
+		}
+		return fmt.Errorf("git worktree remove failed: %s", message)
+	}
+	return nil
+}
+
+// ListWorktrees returns all worktrees attached to the repository.
+func (c *Core) ListWorktrees(cwd string) ([]Worktree, error) {
+	result, err := c.run(cwd, "worktree", "list", "--porcelain")
+	if err != nil {
+		return nil, err
+	}
+	if result.exitCode != 0 {
+		return nil, fmt.Errorf("git worktree list failed: %s", strings.TrimSpace(result.stderr))
+	}
+	return parseWorktreeList(result.stdout), nil
 }
 
 func (c *Core) run(cwd string, args ...string) (commandResult, error) {
@@ -110,6 +166,44 @@ func (c *Core) runBinary(binary, cwd string, args ...string) (commandResult, err
 func formatCommand(binary string, args ...string) string {
 	parts := append([]string{binary}, args...)
 	return strings.Join(parts, " ")
+}
+
+func parseWorktreeList(stdout string) []Worktree {
+	var worktrees []Worktree
+	current := Worktree{}
+
+	flush := func() {
+		if strings.TrimSpace(current.Path) == "" {
+			return
+		}
+		worktrees = append(worktrees, current)
+		current = Worktree{}
+	}
+
+	for _, rawLine := range strings.Split(stdout, "\n") {
+		line := strings.TrimSpace(rawLine)
+		if line == "" {
+			flush()
+			continue
+		}
+
+		switch {
+		case strings.HasPrefix(line, "worktree "):
+			flush()
+			current.Path = strings.TrimSpace(strings.TrimPrefix(line, "worktree "))
+		case strings.HasPrefix(line, "HEAD "):
+			current.HEAD = strings.TrimSpace(strings.TrimPrefix(line, "HEAD "))
+		case strings.HasPrefix(line, "branch "):
+			current.Branch = trimBranchRef(strings.TrimSpace(strings.TrimPrefix(line, "branch ")))
+		}
+	}
+
+	flush()
+	return worktrees
+}
+
+func trimBranchRef(ref string) string {
+	return strings.TrimPrefix(ref, "refs/heads/")
 }
 
 type limitedBuffer struct {

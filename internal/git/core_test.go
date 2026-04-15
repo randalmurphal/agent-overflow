@@ -62,6 +62,92 @@ func TestExecuteReturnsStdoutAndStderrOnNonZeroExit(t *testing.T) {
 	}
 }
 
+func TestParseWorktreeList(t *testing.T) {
+	worktrees := parseWorktreeList(
+		"worktree /tmp/repo\nHEAD abc123\nbranch refs/heads/main\n\nworktree /tmp/repo-feature\nHEAD def456\nbranch refs/heads/feature/demo\n",
+	)
+
+	if len(worktrees) != 2 {
+		t.Fatalf("len(worktrees) = %d, want 2", len(worktrees))
+	}
+	if worktrees[0].Path != "/tmp/repo" {
+		t.Fatalf("worktrees[0].Path = %q, want /tmp/repo", worktrees[0].Path)
+	}
+	if worktrees[0].Branch != "main" {
+		t.Fatalf("worktrees[0].Branch = %q, want main", worktrees[0].Branch)
+	}
+	if worktrees[1].Branch != "feature/demo" {
+		t.Fatalf("worktrees[1].Branch = %q, want feature/demo", worktrees[1].Branch)
+	}
+	if worktrees[1].HEAD != "def456" {
+		t.Fatalf("worktrees[1].HEAD = %q, want def456", worktrees[1].HEAD)
+	}
+}
+
+func TestCreateListAndRemoveWorktree(t *testing.T) {
+	repo := initGitRepo(t)
+	core := NewCore()
+	worktreePath := filepath.Join(t.TempDir(), "feature-demo")
+
+	if err := core.CreateWorktree(repo, worktreePath, "feature/demo"); err != nil {
+		t.Fatalf("CreateWorktree returned error: %v", err)
+	}
+
+	if _, err := os.Stat(worktreePath); err != nil {
+		t.Fatalf("expected worktree path to exist: %v", err)
+	}
+	expectedPath := canonicalPath(t, worktreePath)
+
+	worktrees, err := core.ListWorktrees(repo)
+	if err != nil {
+		t.Fatalf("ListWorktrees returned error: %v", err)
+	}
+
+	found := false
+	for _, worktree := range worktrees {
+		if canonicalPath(t, worktree.Path) != expectedPath {
+			continue
+		}
+		found = true
+		if worktree.Branch != "feature/demo" {
+			t.Fatalf("worktree.Branch = %q, want feature/demo", worktree.Branch)
+		}
+		if worktree.HEAD == "" {
+			t.Fatal("expected worktree HEAD to be populated")
+		}
+	}
+	if !found {
+		t.Fatalf("expected worktree %q in list", worktreePath)
+	}
+
+	if err := core.RemoveWorktree(repo, worktreePath); err != nil {
+		t.Fatalf("RemoveWorktree returned error: %v", err)
+	}
+
+	worktrees, err = core.ListWorktrees(repo)
+	if err != nil {
+		t.Fatalf("ListWorktrees after remove returned error: %v", err)
+	}
+	for _, worktree := range worktrees {
+		if canonicalPath(t, worktree.Path) == expectedPath {
+			t.Fatalf("worktree %q still present after removal", worktreePath)
+		}
+	}
+	if _, err := os.Stat(worktreePath); !os.IsNotExist(err) {
+		t.Fatalf("expected worktree path to be removed, stat err = %v", err)
+	}
+}
+
+func canonicalPath(t *testing.T, path string) string {
+	t.Helper()
+
+	resolved, err := filepath.EvalSymlinks(path)
+	if err == nil {
+		return filepath.Clean(resolved)
+	}
+	return filepath.Clean(path)
+}
+
 func TestLimitedBufferTruncates(t *testing.T) {
 	buf := newLimitedBuffer(4)
 
