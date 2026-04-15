@@ -13,8 +13,8 @@ Both providers are subprocesses:
   `--output-format stream-json --input-format stream-json --verbose`.
   NDJSON over stdin/stdout. User authenticates via their Claude subscription
   (CLI handles OAuth).
-- **Codex app-server**: singleton process, multiplexes threads via
-  `thread/start`/`thread/resume`. JSON-RPC 2.0 over stdin/stdout.
+- **Codex app-server**: one process per active thread (matching forge's
+  proven model). JSON-RPC 2.0 over stdin/stdout.
 
 The provider process is the source of truth during a turn. We don't duplicate
 its state. Provider session files (`~/.claude/`, `~/.codex/`) are the
@@ -91,7 +91,7 @@ payloads  — id, kind, meta (JSON preview/stats), data (BLOB full content), tim
 
 ## Process Management
 
-- Codex: singleton `codex app-server` process, shared across threads.
+- Codex: one `codex app-server` process per active thread.
 - Claude: one `claude` CLI process per active thread. Inactive threads have
   no process; spawn on resume.
 - Approval requests are bidirectional: provider → Go → frontend → user →
@@ -110,13 +110,19 @@ Events are classified by type, not size:
 ## Guiding Principles
 
 1. Provider process is the source of truth during a turn.
-2. Go is triage + pipe. No orchestration, no event sourcing, no derived state.
+2. Go is triage + pipe. No event sourcing, no derived state projection.
+   Exception: lightweight coordination (deliberation turn tracking, design
+   option flow) lives in Go when it brokers between multiple provider
+   processes and the frontend. This is coordination, not orchestration.
 3. One mutable head, everything else frozen.
 4. SQLite is a history cache, not an event store. Provider sessions are authoritative.
 5. Frontend memory bounded by visible thread. Heavy payloads always on-demand.
 6. Errors are user-facing state, not log entries.
 7. Process model matches the provider — don't abstract real differences.
 8. Persist per-item on completion, not per-turn.
+9. Project ≠ workspace. A project is the git repo / root directory. A workspace
+   is where the provider operates — either the project root (local mode) or a
+   separate git worktree. Threads track both.
 
 ## Stack
 
