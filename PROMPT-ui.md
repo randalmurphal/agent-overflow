@@ -28,7 +28,7 @@ Deliverables:
 
 Build a polished, fully-functional frontend where:
 - All components use the ThreadPane factory pattern (props: pane)
-- Wails bindings handle all backend communication (RPC via auto-generated bindings, push via EventsOn)
+- Wails bindings handle all backend communication (RPC via auto-generated bindings, push via Events.On)
 - Heavy payloads load on-demand via GetPayloadData (not inlined in events)
 - Settings persist via GetSettings/UpdateSettings bindings (backend handles JSON file)
 - Git operations go through thread-scoped bindings (GitCommit, GitPush, etc.)
@@ -44,7 +44,7 @@ Build a polished, fully-functional frontend where:
 4. Use Svelte 5 runes exclusively ($state, $derived, $effect, $props) -- no Svelte 4 patterns (no `$:`, no `export let`, no `on:click`)
 5. Tailwind CSS 4 with @theme directives -- no tailwind.config.js
 6. All components must work with the ThreadPane factory pattern -- receive `pane: ThreadPane` as prop where applicable
-7. Use Wails `runtime.EventsOn` for push events, auto-generated bindings from `wailsjs/go/main/App` for RPC
+7. Use `Events.On` from `@wailsio/runtime` for push events, auto-generated bindings from `bindings/agent-overflow` for RPC
 8. Max ~300 lines per Svelte component. Split into named sub-components when exceeding.
 9. Use Playwright MCP to test UI changes in the browser when `wails dev` is running
 10. Run quality gate (`npm run build && npm run check`) before every commit
@@ -63,14 +63,14 @@ Build a polished, fully-functional frontend where:
 - Barrel exports (index.ts re-exporting everything)
 - Console.log for error handling -- use `pane.setError()` for user-facing errors, `console.error()` for developer diagnostics
 - Global mutable state -- all thread state lives on the ThreadPane instance
-- Guessing at Wails binding signatures -- check `wailsjs/go/main/App.d.ts`
+- Guessing at Wails binding signatures -- check `bindings/agent-overflow/` generated types
 
 ## Environment
 
 - Framework: Svelte 5, Vite 8, Tailwind CSS 4, TypeScript
 - Working directory: `/Users/randy/repos/agent-overflow/frontend`
-- Wails bindings: `frontend/wailsjs/go/main/App.{js,d.ts}` (auto-generated from Go)
-- Wails runtime: `frontend/wailsjs/runtime/runtime.js` (EventsOn, EventsOff, etc.)
+- Wails bindings: `frontend/bindings/agent-overflow/` (auto-generated from Go)
+- Wails runtime: `@wailsio/runtime` (Events.On, Events.Off, Dialogs, etc.)
 - Existing stores: `stores/thread.svelte.ts` (ThreadPane factory), `stores/panes.svelte.ts`, `stores/threads.svelte.ts`, `stores/events.ts`, `stores/bindings.ts`
 - Existing types: `types/events.ts`, `types/models.ts`
 - Existing components: `ChatView.svelte`, `MessageTimeline.svelte`, `Composer.svelte`, `Sidebar.svelte`, `Markdown.svelte`, etc.
@@ -152,7 +152,7 @@ Export ALL new Wails bindings from `stores/bindings.ts`:
 - Discussion: `ListDiscussions`, `GetDiscussion`, `CreateDiscussion`, `UpdateDiscussion`, `DeleteDiscussion`, `StartDiscussion`, `GetChannelMessages`, `PostChannelMessage`
 - Design: `ListDesignArtifacts`, `GetDesignArtifactHTML`, `ChooseDesignOption`
 
-All imported from `wailsjs/go/main/App`.
+All imported from `bindings/agent-overflow`.
 
 **Spec refs**: IMPLEMENTATION-PARITY.md sections 7.3, 9.5, 10.4, 11.4
 **Tests**: TypeScript compiles
@@ -405,7 +405,7 @@ Create `components/composer/ProviderPicker.svelte`:
 Create `components/sidebar/WorkspacePicker.svelte`:
 - Props: `value: string`, `onSelect: (path: string) => void`, `recentWorkspaces: string[]`
 - Text input for manual path entry
-- "Browse" button: calls Wails `runtime.OpenDirectoryDialog()` for native folder picker
+- "Browse" button: calls `Dialogs.OpenDirectory()` from `@wailsio/runtime` for native folder picker
 - Dropdown of recent workspaces (from settings) shown on focus
 - Click a recent workspace to select it
 
@@ -674,7 +674,7 @@ When all work items are complete, enter the Review Phase. This is NOT optional. 
 
 - **Svelte 5 runes exclusively.** `$state`, `$derived`, `$effect`, `$props`. No `$:`, no `export let`, no `on:click`.
 - **ThreadPane factory pattern is the state model.** Components receive `pane: ThreadPane` as a prop. They do NOT import global pane getters. The event router fans out to all panes. This enables future tiling.
-- **Events arrive via Wails EventsOn** on channels: `provider:event`, `provider:meta`, `provider:error`. Route by event kind in `stores/events.ts`.
+- **Events arrive via Wails Events.On** on channels: `provider:event`, `provider:meta`, `provider:error`. Route by event kind in `stores/events.ts`.
 - **Heavy payloads are NOT in events.** Load via `GetPayloadData(payloadId)` binding on user expand. Meta previews arrive with items.
 - **Settings are a JSON file** (backend handles persistence). Frontend calls `GetSettings`/`UpdateSettings` bindings only.
 - **Project path is not workspace path** (ARCHITECTURE.md principle 9). Worktree threads have different workspace and project paths.

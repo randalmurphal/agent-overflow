@@ -10,11 +10,13 @@
     "sourceMap": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
+    "allowJs": true,
+    "checkJs": false,
     "types": ["svelte"],
     "paths": {
       "~/*": ["./src/*"]
     }
   },
-  "include": ["src/**/*", "src/**/*.svelte"],
+  "include": ["src/**/*", "src/**/*.svelte", "bindings/**/*"],
   "exclude": ["node_modules"]
 }

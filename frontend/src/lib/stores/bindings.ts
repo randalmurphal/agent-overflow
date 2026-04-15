@@ -1,4 +1,4 @@
-// Re-export Wails-generated bindings used by components.
+// Re-export Wails v3 generated bindings used by components.
 export {
   CreateThread,
   ArchiveThread,
@@ -7,4 +7,4 @@ export {
   SendMessage,
   InterruptTurn,
   RespondToApproval,
-} from '../../../wailsjs/go/main/App';
+} from '../../../bindings/agent-overflow/app.js';

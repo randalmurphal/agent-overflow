@@ -17,12 +17,12 @@ import (
 	"agent-overflow/internal/triage"
 
 	"github.com/google/uuid"
-	"github.com/wailsapp/wails/v2/pkg/runtime"
+	"github.com/wailsapp/wails/v3/pkg/application"
 )
 
-// App is the primary Wails-bound struct.
+// App is the primary Wails-bound struct, registered as a v3 service.
 type App struct {
-	ctx      context.Context
+	app      *application.App
 	store    *store.Store
 	settings *settings.Service
 	triage   *triage.Router
@@ -47,8 +47,9 @@ func NewApp() *App {
 	}
 }
 
-func (a *App) startup(ctx context.Context) {
-	a.ctx = ctx
+// ServiceStartup is called by Wails v3 when the service is initialised.
+func (a *App) ServiceStartup(ctx context.Context, options application.ServiceOptions) error {
+	a.app = application.Get()
 
 	// Open SQLite database in the app data directory.
 	dataDir, err := os.UserConfigDir()
@@ -57,26 +58,26 @@ func (a *App) startup(ctx context.Context) {
 	}
 	dbDir := filepath.Join(dataDir, "agent-overflow")
 	if err := os.MkdirAll(dbDir, 0755); err != nil {
-		runtime.LogFatalf(ctx, "Failed to create data directory %s: %v", dbDir, err)
-		return
+		return fmt.Errorf("failed to create data directory %s: %w", dbDir, err)
 	}
 	dbPath := filepath.Join(dbDir, "agent-overflow.db")
 
 	st, err := store.New(dbPath)
 	if err != nil {
-		runtime.LogFatalf(ctx, "Failed to open database: %v", err)
-		return
+		return fmt.Errorf("failed to open database: %w", err)
 	}
 
 	a.store = st
 	a.settings = settings.NewService(dbDir)
 	a.triage = triage.NewRouter(st, func(eventName string, data any) {
-		runtime.EventsEmit(ctx, eventName, data)
+		a.app.Event.Emit(eventName, data)
 	})
+
+	return nil
 }
 
-// shutdown is called by Wails on app close.
-func (a *App) shutdown(ctx context.Context) {
+// ServiceShutdown is called by Wails v3 when the service is torn down.
+func (a *App) ServiceShutdown() error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	for _, s := range a.sessions {
@@ -90,6 +91,7 @@ func (a *App) shutdown(ctx context.Context) {
 	if a.store != nil {
 		a.store.Close()
 	}
+	return nil
 }
 
 // --- Thread operations ---
@@ -193,7 +195,7 @@ func (a *App) StartSession(threadID string) error {
 			WorkDir: t.WorkspacePath,
 			Resume:  t.SessionRef,
 		}
-		sess, err := claude.NewSession(a.ctx, threadID, cfg, onEvent)
+		sess, err := claude.NewSession(context.Background(), threadID, cfg, onEvent)
 		if err != nil {
 			return fmt.Errorf("start session: %w", err)
 		}
@@ -205,7 +207,7 @@ func (a *App) StartSession(threadID string) error {
 			WorkDir:        t.WorkspacePath,
 			ResumeThreadID: t.SessionRef,
 		}
-		sess, err := codex.NewSession(a.ctx, threadID, cfg, onEvent)
+		sess, err := codex.NewSession(context.Background(), threadID, cfg, onEvent)
 		if err != nil {
 			return fmt.Errorf("start session: %w", err)
 		}
@@ -254,9 +256,9 @@ func (a *App) SendMessage(threadID string, content string) error {
 
 	switch {
 	case sess.claude != nil:
-		return sess.claude.Send(a.ctx, content)
+		return sess.claude.Send(context.Background(), content)
 	case sess.codex != nil:
-		return sess.codex.Send(a.ctx, content)
+		return sess.codex.Send(context.Background(), content)
 	default:
 		return fmt.Errorf("session has no provider")
 	}
@@ -272,9 +274,9 @@ func (a *App) InterruptTurn(threadID string) error {
 
 	switch {
 	case sess.claude != nil:
-		return sess.claude.Interrupt(a.ctx)
+		return sess.claude.Interrupt(context.Background())
 	case sess.codex != nil:
-		return sess.codex.Interrupt(a.ctx)
+		return sess.codex.Interrupt(context.Background())
 	default:
 		return fmt.Errorf("session has no provider")
 	}

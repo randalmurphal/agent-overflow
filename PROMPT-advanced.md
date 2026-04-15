@@ -197,7 +197,7 @@ For frontend items, also verify with Playwright MCP by navigating to the dev ser
 
 **Target files**: discussion coordination logic, `frontend/src/lib/stores/events.ts`
 **Deliver**:
-- When a channel message is posted (via ChannelService.PostMessage), emit `provider:channel` event via EventsEmit with the ChannelMessage payload
+- When a channel message is posted (via ChannelService.PostMessage), emit `provider:channel` event via app.Event.Emit with the ChannelMessage payload
 - Frontend event listener subscribes to `provider:channel` and routes messages to the discussion store
 - Discussion store appends new messages and triggers reactive updates in ChannelView
 - Also emit deliberation state changes (turn count update, conclusion proposals) via `provider:channel` with a distinct type field

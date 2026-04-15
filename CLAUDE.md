@@ -2,14 +2,14 @@
 
 ## Project: Agent Overflow
 
-Go + Wails v2 + Svelte 5 desktop app for using coding agents (Codex, Claude Code).
+Go + Wails v3 + Svelte 5 desktop app for using coding agents (Codex, Claude Code).
 See `ARCHITECTURE.md` for the full design rationale.
 
 ## Stack
 
-- **Backend**: Go 1.25, Wails v2.12 bindings + event system, SQLite (WAL mode)
+- **Backend**: Go 1.25, Wails v3 bindings + event system, SQLite (WAL mode)
 - **Frontend**: Svelte 5 (runes), Vite 8 (Rolldown), Tailwind CSS 4, TypeScript
-- **IPC**: Wails bindings (auto-generated TS from Go structs) + `runtime.EventsEmit` for push
+- **IPC**: Wails bindings (auto-generated TS from Go structs) + `app.Event.Emit` for push
 - **Providers**: Claude Code CLI (NDJSON over stdio) + Codex app-server (JSON-RPC 2.0 over stdio)
 
 ## Core Principles
@@ -42,7 +42,7 @@ See `ARCHITECTURE.md` for the full design rationale.
 - Go: `internal/` for all non-main packages. No `pkg/`.
 - Svelte: Runes only (`$state`, `$derived`, `$effect`, `$props`). No legacy syntax.
 - Tailwind: v4 CSS-native config via `@theme` in `app.css`. No `tailwind.config.js`.
-- Events flow Go → frontend via `runtime.EventsEmit`. Frontend calls Go via bindings in `wailsjs/go/`.
+- Events flow Go → frontend via `app.Event.Emit`. Frontend calls Go via bindings in `bindings/`.
 - Provider-specific code stays in provider-specific packages. Don't force a unified abstraction.
 
 ## Origin

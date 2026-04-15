@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 
 	"agent-overflow/internal/provider"
@@ -17,9 +18,9 @@ func (a *App) RespondToApproval(threadID string, response provider.ApprovalRespo
 
 	switch {
 	case sess.claude != nil:
-		return sess.claude.RespondToApproval(a.ctx, response)
+		return sess.claude.RespondToApproval(context.Background(), response)
 	case sess.codex != nil:
-		return sess.codex.RespondToApproval(a.ctx, response)
+		return sess.codex.RespondToApproval(context.Background(), response)
 	default:
 		return fmt.Errorf("session has no provider")
 	}

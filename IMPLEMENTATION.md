@@ -42,7 +42,7 @@ agent-overflow/
 │   │   │   │   ├── thread.svelte.ts     # ThreadPane factory (per-pane state, tiling-ready)
 │   │   │   │   ├── panes.svelte.ts      # Active panes registry (v1: single "main" pane)
 │   │   │   │   ├── threads.svelte.ts    # Thread list for sidebar
-│   │   │   │   ├── events.ts            # Wails EventsOn listener, fans out to panes
+│   │   │   │   ├── events.ts            # Wails Events.On listener, fans out to panes
 │   │   │   │   └── bindings.ts          # Typed wrappers around Wails Go bindings
 │   │   │   ├── components/
 │   │   │   │   ├── Sidebar.svelte
@@ -90,7 +90,7 @@ agent-overflow/
 
 | Package | Version | Purpose |
 |---------|---------|---------|
-| `github.com/wailsapp/wails/v2` | `v2.12.0` | Desktop app framework (already in go.mod) |
+| `github.com/wailsapp/wails/v3` | `v3.0.0` | Desktop app framework (already in go.mod) |
 | `github.com/google/uuid` | `v1.6.0` | ID generation (already indirect in go.mod) |
 | `modernc.org/sqlite` | latest | Pure-Go SQLite driver — no CGO, no C toolchain |
 
@@ -184,7 +184,7 @@ const (
 type EventKind string
 
 const (
-	// Inline events — forwarded directly to frontend via EventsEmit.
+	// Inline events — forwarded directly to frontend via app.Event.Emit.
 	EventInit             EventKind = "init"
 	EventTextDelta        EventKind = "text_delta"
 	EventToolStart        EventKind = "tool_start"
@@ -2192,7 +2192,7 @@ import (
 // Router classifies provider events and routes them.
 type Router struct {
 	store            *store.Store
-	emit             func(eventName string, data any) // wraps runtime.EventsEmit
+	emit             func(eventName string, data any) // wraps app.Event.Emit
 	textAccumulators map[string]*strings.Builder       // threadID → accumulated assistant text
 }
 
@@ -2579,12 +2579,12 @@ import (
 	"agent-overflow/internal/triage"
 
 	"github.com/google/uuid"
-	"github.com/wailsapp/wails/v2/pkg/runtime"
+	"github.com/wailsapp/wails/v3/pkg/application"
 )
 
-// App is the primary Wails-bound struct.
+// App is the primary Wails-bound service.
 type App struct {
-	ctx     context.Context
+	app     *application.App
 	store   *store.Store
 	triage  *triage.Router
 	mu      sync.Mutex
@@ -2605,8 +2605,9 @@ func NewApp() *App {
 	}
 }
 
-func (a *App) startup(ctx context.Context) {
-	a.ctx = ctx
+// ServiceStartup is called by Wails v3 when the service is initialized.
+func (a *App) ServiceStartup(ctx context.Context, options application.ServiceOptions) error {
+	a.app = application.Get()
 
 	// Open SQLite database in the app data directory.
 	dataDir, err := os.UserConfigDir()
@@ -2619,18 +2620,18 @@ func (a *App) startup(ctx context.Context) {
 
 	st, err := store.New(dbPath)
 	if err != nil {
-		runtime.LogFatalf(ctx, "Failed to open database: %v", err)
-		return
+		return fmt.Errorf("failed to open database: %w", err)
 	}
 
 	a.store = st
 	a.triage = triage.NewRouter(st, func(eventName string, data any) {
-		runtime.EventsEmit(ctx, eventName, data)
+		a.app.Event.Emit(eventName, data)
 	})
+	return nil
 }
 
-// shutdown is called by Wails on app close.
-func (a *App) shutdown(ctx context.Context) {
+// ServiceShutdown is called by Wails v3 on app close.
+func (a *App) ServiceShutdown() error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	for _, s := range a.sessions {
@@ -2878,11 +2879,13 @@ func (a *App) GetSettings() (map[string]any, error) {
 }
 ```
 
-Update `main.go` to register the `shutdown` callback:
+In `main.go`, register the App as a Wails v3 service:
 
 ```go
-// In the wails.Run options, add:
-OnShutdown: app.shutdown,
+// In the application.New options, add:
+Services: []application.Service{
+	application.NewService(app),
+},
 ```
 
 ### Wails event names
@@ -3022,7 +3025,7 @@ Uses Svelte 5 runes. Per-pane instance, not module singleton.
 ```typescript
 import type { Item, PayloadMeta, Thread } from '../types/models';
 import type { ApprovalRequest, TokenUsage } from '../types/events';
-import { ListItems, ListPayloadMetas } from '../../wailsjs/go/main/App';
+import { ListItems, ListPayloadMetas } from '../../bindings/agent-overflow';
 
 /**
  * Creates a self-contained thread pane state instance.
@@ -3191,7 +3194,7 @@ export function getAllPanes(): Map<string, ThreadPane> {
 
 ```typescript
 import type { Thread } from '../types/models';
-import { ListThreads } from '../../wailsjs/go/main/App';
+import { ListThreads } from '../../bindings/agent-overflow';
 
 let threads: Thread[] = $state([]);
 
@@ -3225,7 +3228,7 @@ export function updateThreadInList(updated: Thread): void {
 The event router fans out to all active panes showing the relevant thread. This supports future tiling where multiple panes may show different (or the same) thread.
 
 ```typescript
-import { EventsOn } from '../../wailsjs/runtime/runtime';
+import { Events } from '@wailsio/runtime';
 import type { ProviderEvent, ApprovalRequest, TokenUsage } from '../types/events';
 import type { PayloadMeta } from '../types/models';
 import type { ThreadPane } from './thread.svelte';
@@ -3307,8 +3310,9 @@ function routeEventToPane(pane: ThreadPane, evt: ProviderEvent): void {
   }
 }
 
-export function setupEventListeners(): void {
-  EventsOn('provider:event', (evt: ProviderEvent) => {
+export function setupEventListeners(): () => void {
+  const cancelEvent = Events.On('provider:event', (ev) => {
+    const evt = ev.data as ProviderEvent;
     // Fan out to all panes showing this thread.
     for (const pane of getAllPanes().values()) {
       if (pane.threadId === evt.threadId) {
@@ -3317,18 +3321,20 @@ export function setupEventListeners(): void {
     }
   });
 
-  EventsOn('provider:meta', (meta: PayloadMeta) => {
-    // Payload metas are thread-scoped — route to matching panes.
-    // meta doesn't carry threadId directly, so broadcast to all panes.
-    // Panes will have it in their payloadMetas map keyed by payload id.
+  const cancelMeta = Events.On('provider:meta', (ev) => {
+    const meta = ev.data as PayloadMeta;
     for (const pane of getAllPanes().values()) {
+      if (meta.threadId && pane.threadId !== meta.threadId) continue;
       pane.addPayloadMeta(meta);
     }
   });
 
-  EventsOn('provider:error', (evt: ProviderEvent) => {
+  const cancelError = Events.On('provider:error', (ev) => {
+    const evt = ev.data as ProviderEvent;
     console.error('Provider error event:', evt.content);
   });
+
+  return () => { cancelEvent(); cancelMeta(); cancelError(); };
 }
 ```
 
@@ -3338,7 +3344,7 @@ Typed wrappers around the auto-generated Wails Go bindings.
 
 ```typescript
 // Re-export Wails-generated bindings with explicit types for convenience.
-// The actual generated bindings live in wailsjs/go/main/App.ts.
+// The actual generated bindings live in bindings/agent-overflow/.
 export {
   CreateThread,
   ListThreads,
@@ -3355,7 +3361,7 @@ export {
   StopSession,
   RespondToApproval,
   GetSettings,
-} from '../../wailsjs/go/main/App';
+} from '../../bindings/agent-overflow';
 ```
 
 ---
@@ -3383,7 +3389,7 @@ Returned as Go `error` which Wails serializes as a string to the frontend. The f
 
 ### Startup errors
 
-If the database fails to open, `App.startup` logs a fatal error via `runtime.LogFatalf`. This crashes the app intentionally — the database is required.
+If the database fails to open, `App.ServiceStartup` returns an error. Wails v3 surfaces this as a startup failure, crashing the app intentionally — the database is required.
 
 ---
 

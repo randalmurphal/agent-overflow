@@ -25,12 +25,12 @@ authoritative history for crash recovery.
 ```
 Provider stdout
   │
-  ├── small event (delta, notification, approval) → EventsEmit → Frontend
+  ├── small event (delta, notification, approval) → app.Event.Emit → Frontend
   │
   └── heavy payload (diff, command output, thinking)
         ├── extract preview/stats → meta
         ├── store meta + full content → SQLite payloads table
-        └── EventsEmit meta only → Frontend
+        └── app.Event.Emit meta only → Frontend
         
   Item completes → write to SQLite items table
 
@@ -126,7 +126,7 @@ Events are classified by type, not size:
 
 ## Stack
 
-- Go 1.25, Wails v2.12 (system webview, no Chromium)
+- Go 1.25, Wails v3 (system webview, no Chromium)
 - Svelte 5 (runes), Vite 8 (Rolldown), Tailwind CSS 4, TypeScript
 - SQLite (WAL mode) for persistence
-- IPC: Wails bindings (Go→TS auto-generated) + EventsEmit (push)
+- IPC: Wails bindings (Go→TS auto-generated) + app.Event.Emit (push)

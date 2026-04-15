@@ -1,5 +1,5 @@
 import type { Thread } from '../types/models';
-import { ListThreads } from '../../../wailsjs/go/main/App';
+import { ListThreads } from '../../../bindings/agent-overflow/app.js';
 
 let threads: Thread[] = $state([]);
 

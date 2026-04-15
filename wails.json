@@ -1,5 +1,5 @@
 {
-  "$schema": "https://wails.io/schemas/config.v2.json",
+  "$schema": "https://wails.io/schemas/config.v3.json",
   "name": "agent-overflow",
   "outputfilename": "agent-overflow",
   "frontend:install": "npm install",

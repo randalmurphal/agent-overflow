@@ -1,4 +1,4 @@
-import { EventsOn, EventsOff } from '../../../wailsjs/runtime/runtime';
+import { Events } from '@wailsio/runtime';
 import type { ProviderEvent, ApprovalRequest, TokenUsage } from '../types/events';
 import type { PayloadMeta } from '../types/models';
 import type { ThreadPane } from './thread.svelte';
@@ -101,7 +101,8 @@ function routeEventToPane(pane: ThreadPane, evt: ProviderEvent): void {
  * Returns a cleanup function that removes all listeners.
  */
 export function setupEventListeners(): () => void {
-  const cancelEvent = EventsOn('provider:event', (evt: ProviderEvent) => {
+  const cancelEvent = Events.On('provider:event', (ev) => {
+    const evt = ev.data as ProviderEvent;
     for (const pane of getAllPanes().values()) {
       if (pane.threadId === evt.threadId) {
         routeEventToPane(pane, evt);
@@ -109,7 +110,8 @@ export function setupEventListeners(): () => void {
     }
   });
 
-  const cancelMeta = EventsOn('provider:meta', (meta: PayloadMeta) => {
+  const cancelMeta = Events.On('provider:meta', (ev) => {
+    const meta = ev.data as PayloadMeta;
     for (const pane of getAllPanes().values()) {
       // Only push meta to the pane that owns this thread.
       // If the backend includes a threadId, filter by it.
@@ -121,7 +123,8 @@ export function setupEventListeners(): () => void {
     }
   });
 
-  const cancelError = EventsOn('provider:error', (evt: ProviderEvent) => {
+  const cancelError = Events.On('provider:error', (ev) => {
+    const evt = ev.data as ProviderEvent;
     console.error('Provider error event:', evt.content);
     for (const pane of getAllPanes().values()) {
       if (pane.threadId === evt.threadId) {
@@ -134,6 +137,5 @@ export function setupEventListeners(): () => void {
     cancelEvent();
     cancelMeta();
     cancelError();
-    EventsOff('provider:event', 'provider:meta', 'provider:error');
   };
 }

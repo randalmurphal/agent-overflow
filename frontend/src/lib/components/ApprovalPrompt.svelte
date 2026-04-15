@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { ThreadPane } from '../stores/thread.svelte';
   import { RespondToApproval } from '../stores/bindings';
+  import { ApprovalResponse } from '../../../bindings/agent-overflow/internal/provider/models.js';
 
   let { pane }: { pane: ThreadPane } = $props();
 
@@ -9,7 +10,7 @@
     if (!threadId) return;
 
     try {
-      await RespondToApproval(threadId, requestId, decision);
+      await RespondToApproval(threadId, new ApprovalResponse({ requestId, decision }));
     } catch (err) {
       console.error('Failed to respond to approval:', err);
       pane.setError(`Failed to respond to approval: ${err}`);

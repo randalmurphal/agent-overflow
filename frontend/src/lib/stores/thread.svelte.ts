@@ -1,6 +1,6 @@
 import type { Item, PayloadMeta, Thread } from '../types/models';
 import type { ApprovalRequest, TokenUsage } from '../types/events';
-import { ListItems, ListPayloadMetas } from '../../../wailsjs/go/main/App';
+import { ListItems, ListPayloadMetas } from '../../../bindings/agent-overflow/app.js';
 
 /**
  * Creates a self-contained thread pane state instance.

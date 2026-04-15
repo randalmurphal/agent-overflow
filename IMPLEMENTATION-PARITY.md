@@ -1324,7 +1324,7 @@ func (a *App) ChooseDesignOption(threadID, requestID, optionID string) error
 
 **ProviderPicker.svelte**: Toggle or dropdown for switching between Claude and Codex. Shows provider status dot. Disabled providers are grayed out with tooltip.
 
-**WorkspacePicker.svelte**: Uses Wails `runtime.OpenDirectoryDialog` for native folder picker. Shows recent workspaces as dropdown. Text input for manual path entry.
+**WorkspacePicker.svelte**: Uses `Dialogs.OpenDirectory` from `@wailsio/runtime` for native folder picker. Shows recent workspaces as dropdown. Text input for manual path entry.
 
 **ApprovalPrompt.svelte enhancements**:
 - Show full tool input (command text, file path, file content preview)

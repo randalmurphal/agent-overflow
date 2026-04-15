@@ -408,7 +408,7 @@ Standard: read progress -> pick item -> read specs -> implement -> test -> quali
 **Files**: `app.go`
 **Deliver**:
 - App struct with ctx, store, triage router, sessions map, mutex
-- startup: open SQLite in user config dir, create triage router with EventsEmit wrapper
+- ServiceStartup: open SQLite in user config dir, create triage router with app.Event.Emit wrapper
 - shutdown: close all sessions, close store
 - Thread operations: CreateThread, ListThreads, GetThread, DeleteThread, ArchiveThread, RenameThread
 - Item operations: ListItems, ListPayloadMetas
@@ -426,7 +426,7 @@ Standard: read progress -> pick item -> read specs -> implement -> test -> quali
 **Package**: main (root)
 **Files**: `main.go`
 **Deliver**:
-- Register OnShutdown callback
+- Register App as a Wails v3 service via application.NewService
 - Verify wails.json frontend commands work
 - Run `wails dev` and verify the app launches with the frontend
 - Add modernc.org/sqlite to go.mod: `go get modernc.org/sqlite`
@@ -459,7 +459,7 @@ Standard: read progress -> pick item -> read specs -> implement -> test -> quali
 **Package**: frontend
 **Files**: `frontend/src/lib/stores/events.ts`
 **Deliver**:
-- setupEventListeners function using Wails EventsOn
+- setupEventListeners function using Wails Events.On from @wailsio/runtime
 - Event router fans out to ALL active panes matching the event's threadId (not a single active thread)
 - Route provider:event by kind to correct pane mutation via `routeEventToPane(pane, evt)`
 - Route provider:meta to all panes (broadcast — meta doesn't carry threadId)
