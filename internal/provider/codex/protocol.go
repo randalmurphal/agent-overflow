@@ -141,26 +141,79 @@ func ClassifyNotification(threadID, method string, params json.RawMessage) []pro
 			Timestamp: now,
 		}}
 
+	case "item/reasoning/textDelta", "item/reasoning/summaryTextDelta":
+		delta := readTopLevelString(params, "delta")
+		if delta == "" {
+			delta = readTopLevelString(params, "text")
+		}
+		if delta == "" {
+			delta = readNestedString(params, "content", "text")
+		}
+		if delta == "" {
+			return nil
+		}
+		return []provider.ProviderEvent{{
+			Kind:      provider.EventThinking,
+			ThreadID:  threadID,
+			Content:   delta,
+			Timestamp: now,
+		}}
+
+	case "thread/name/updated":
+		name := readTopLevelString(params, "threadName")
+		if name == "" {
+			name = readTopLevelString(params, "name")
+		}
+		meta, _ := json.Marshal(map[string]string{"newTitle": name})
+		return []provider.ProviderEvent{{
+			Kind:      provider.EventThreadRenamed,
+			ThreadID:  threadID,
+			Content:   name,
+			Meta:      meta,
+			Timestamp: now,
+		}}
+
+	case "account/rateLimits/updated":
+		return []provider.ProviderEvent{{
+			Kind:      provider.EventRateLimits,
+			ThreadID:  threadID,
+			Meta:      params,
+			Timestamp: now,
+		}}
+
+	case "model/rerouted":
+		toModel := readTopLevelString(params, "toModel")
+		meta, _ := json.Marshal(map[string]string{"newModel": toModel})
+		return []provider.ProviderEvent{{
+			Kind:      provider.EventModelRerouted,
+			ThreadID:  threadID,
+			Content:   toModel,
+			Meta:      meta,
+			Timestamp: now,
+		}}
+
+	case "thread/compacted":
+		return []provider.ProviderEvent{{
+			Kind:      provider.EventCompactBoundary,
+			ThreadID:  threadID,
+			Meta:      params,
+			Timestamp: now,
+		}}
+
 	// --- Explicitly skipped notifications ---
 
 	case "thread/started",
 		"thread/status/changed",
-		"thread/name/updated",
 		"thread/archived",
 		"thread/unarchived",
 		"thread/closed",
-		"thread/compacted",
 		"item/autoApprovalReview/started",
 		"item/autoApprovalReview/completed",
-		"item/reasoning/textDelta",
-		"item/reasoning/summaryTextDelta",
 		"item/reasoning/summaryPartAdded",
 		"item/mcpToolCall/progress",
 		"serverRequest/resolved",
 		"account/updated",
-		"account/rateLimits/updated",
 		"account/login/completed",
-		"model/rerouted",
 		"configWarning",
 		"deprecationNotice":
 		return nil

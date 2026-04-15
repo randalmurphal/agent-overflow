@@ -70,11 +70,47 @@ func parseSystem(threadID string, raw map[string]json.RawMessage, now time.Time,
 			Timestamp: now,
 		}}, nil
 
+	case "tool_progress":
+		meta := raw["content"]
+		if meta == nil {
+			meta = json.RawMessage("{}")
+		}
+		itemID := ""
+		if v, ok := raw["item_id"]; ok {
+			json.Unmarshal(v, &itemID)
+		}
+		return []provider.ProviderEvent{{
+			Kind:      provider.EventToolProgress,
+			ThreadID:  threadID,
+			ItemID:    itemID,
+			Meta:      meta,
+			Timestamp: now,
+		}}, nil
+
+	case "compact_boundary":
+		var meta json.RawMessage
+		if v, ok := raw["data"]; ok {
+			meta = v
+		}
+		return []provider.ProviderEvent{{
+			Kind:      provider.EventCompactBoundary,
+			ThreadID:  threadID,
+			Meta:      meta,
+			Timestamp: now,
+		}}, nil
+
+	case "api_retry":
+		meta := raw["data"]
+		return []provider.ProviderEvent{{
+			Kind:      provider.EventSessionStatus,
+			ThreadID:  threadID,
+			Content:   "retrying",
+			Meta:      meta,
+			Timestamp: now,
+		}}, nil
+
 	// Explicitly skipped subtypes — no action, no error.
-	case "compact_boundary",
-		"api_retry",
-		"hook_started", "hook_progress", "hook_response",
-		"tool_progress",
+	case "hook_started", "hook_progress", "hook_response",
 		"notification",
 		"files_persisted",
 		"tool_use_summary",

@@ -187,9 +187,8 @@ func TestParseAssistantMultipleBlocks(t *testing.T) {
 
 func TestParseSystemSkippedSubtypes(t *testing.T) {
 	skipped := []string{
-		"compact_boundary", "api_retry",
 		"hook_started", "hook_progress", "hook_response",
-		"tool_progress", "notification", "files_persisted",
+		"notification", "files_persisted",
 		"tool_use_summary", "memory_recall", "local_command_output",
 	}
 
@@ -202,6 +201,147 @@ func TestParseSystemSkippedSubtypes(t *testing.T) {
 		if len(events) != 0 {
 			t.Errorf("subtype %q: expected 0 events, got %d", subtype, len(events))
 		}
+	}
+}
+
+func TestParseToolProgress(t *testing.T) {
+	line := []byte(`{"type":"system","subtype":"tool_progress","item_id":"item-1","content":{"progress":{"current":5,"total":10,"message":"Reading..."}}}`)
+
+	events, err := ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+
+	evt := events[0]
+	if evt.Kind != provider.EventToolProgress {
+		t.Errorf("kind: got %q, want %q", evt.Kind, provider.EventToolProgress)
+	}
+	if evt.ItemID != "item-1" {
+		t.Errorf("itemID: got %q, want %q", evt.ItemID, "item-1")
+	}
+	if evt.ThreadID != testThread {
+		t.Errorf("threadID: got %q, want %q", evt.ThreadID, testThread)
+	}
+
+	var meta map[string]any
+	if err := json.Unmarshal(evt.Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	progress, ok := meta["progress"].(map[string]any)
+	if !ok {
+		t.Fatal("meta missing progress field")
+	}
+	if progress["message"] != "Reading..." {
+		t.Errorf("progress message: got %v, want %q", progress["message"], "Reading...")
+	}
+}
+
+func TestParseToolProgressNoContent(t *testing.T) {
+	line := []byte(`{"type":"system","subtype":"tool_progress"}`)
+
+	events, err := ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+
+	evt := events[0]
+	if evt.Kind != provider.EventToolProgress {
+		t.Errorf("kind: got %q, want %q", evt.Kind, provider.EventToolProgress)
+	}
+	// When content is nil, Meta should default to "{}".
+	if string(evt.Meta) != "{}" {
+		t.Errorf("meta: got %s, want {}", evt.Meta)
+	}
+	if evt.ItemID != "" {
+		t.Errorf("itemID: got %q, want empty", evt.ItemID)
+	}
+}
+
+func TestParseCompactBoundary(t *testing.T) {
+	line := []byte(`{"type":"system","subtype":"compact_boundary","data":{"usedTokens":50000}}`)
+
+	events, err := ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+
+	evt := events[0]
+	if evt.Kind != provider.EventCompactBoundary {
+		t.Errorf("kind: got %q, want %q", evt.Kind, provider.EventCompactBoundary)
+	}
+	if evt.ThreadID != testThread {
+		t.Errorf("threadID: got %q, want %q", evt.ThreadID, testThread)
+	}
+
+	var meta map[string]any
+	if err := json.Unmarshal(evt.Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if meta["usedTokens"] != float64(50000) {
+		t.Errorf("usedTokens: got %v, want 50000", meta["usedTokens"])
+	}
+}
+
+func TestParseCompactBoundaryNoData(t *testing.T) {
+	line := []byte(`{"type":"system","subtype":"compact_boundary"}`)
+
+	events, err := ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+
+	evt := events[0]
+	if evt.Kind != provider.EventCompactBoundary {
+		t.Errorf("kind: got %q, want %q", evt.Kind, provider.EventCompactBoundary)
+	}
+	if evt.Meta != nil {
+		t.Errorf("meta: got %s, want nil", evt.Meta)
+	}
+}
+
+func TestParseApiRetry(t *testing.T) {
+	line := []byte(`{"type":"system","subtype":"api_retry","data":{"delay":5000,"attempt":2}}`)
+
+	events, err := ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+
+	evt := events[0]
+	if evt.Kind != provider.EventSessionStatus {
+		t.Errorf("kind: got %q, want %q", evt.Kind, provider.EventSessionStatus)
+	}
+	if evt.Content != "retrying" {
+		t.Errorf("content: got %q, want %q", evt.Content, "retrying")
+	}
+	if evt.ThreadID != testThread {
+		t.Errorf("threadID: got %q, want %q", evt.ThreadID, testThread)
+	}
+
+	var meta map[string]any
+	if err := json.Unmarshal(evt.Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if meta["delay"] != float64(5000) {
+		t.Errorf("delay: got %v, want 5000", meta["delay"])
+	}
+	if meta["attempt"] != float64(2) {
+		t.Errorf("attempt: got %v, want 2", meta["attempt"])
 	}
 }
 

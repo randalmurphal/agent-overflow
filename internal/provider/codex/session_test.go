@@ -256,26 +256,180 @@ func TestTurnPlanUpdated(t *testing.T) {
 	}
 }
 
+func TestClassifyReasoningTextDelta(t *testing.T) {
+	params := json.RawMessage(`{"delta":"thinking about this..."}`)
+	events := ClassifyNotification(testThread, "item/reasoning/textDelta", params)
+
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if events[0].Kind != provider.EventThinking {
+		t.Errorf("kind: got %q, want %q", events[0].Kind, provider.EventThinking)
+	}
+	if events[0].Content != "thinking about this..." {
+		t.Errorf("content: got %q, want %q", events[0].Content, "thinking about this...")
+	}
+	if events[0].ThreadID != testThread {
+		t.Errorf("threadID: got %q, want %q", events[0].ThreadID, testThread)
+	}
+}
+
+func TestClassifyReasoningTextDeltaFallbackKeys(t *testing.T) {
+	// Falls back to "text" key when "delta" is missing.
+	params := json.RawMessage(`{"text":"via text key"}`)
+	events := ClassifyNotification(testThread, "item/reasoning/textDelta", params)
+
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if events[0].Content != "via text key" {
+		t.Errorf("content: got %q, want %q", events[0].Content, "via text key")
+	}
+
+	// Falls back to "content.text" when both "delta" and "text" are missing.
+	params2 := json.RawMessage(`{"content":{"text":"nested fallback"}}`)
+	events2 := ClassifyNotification(testThread, "item/reasoning/textDelta", params2)
+
+	if len(events2) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events2))
+	}
+	if events2[0].Content != "nested fallback" {
+		t.Errorf("content: got %q, want %q", events2[0].Content, "nested fallback")
+	}
+
+	// Returns nil when all keys are missing.
+	params3 := json.RawMessage(`{"other":"value"}`)
+	events3 := ClassifyNotification(testThread, "item/reasoning/textDelta", params3)
+	if len(events3) != 0 {
+		t.Errorf("expected 0 events for empty delta, got %d", len(events3))
+	}
+}
+
+func TestClassifyReasoningSummaryTextDelta(t *testing.T) {
+	params := json.RawMessage(`{"delta":"summarizing..."}`)
+	events := ClassifyNotification(testThread, "item/reasoning/summaryTextDelta", params)
+
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if events[0].Kind != provider.EventThinking {
+		t.Errorf("kind: got %q, want %q", events[0].Kind, provider.EventThinking)
+	}
+	if events[0].Content != "summarizing..." {
+		t.Errorf("content: got %q, want %q", events[0].Content, "summarizing...")
+	}
+}
+
+func TestClassifyThreadNameUpdated(t *testing.T) {
+	params := json.RawMessage(`{"threadName":"My New Thread"}`)
+	events := ClassifyNotification(testThread, "thread/name/updated", params)
+
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if events[0].Kind != provider.EventThreadRenamed {
+		t.Errorf("kind: got %q, want %q", events[0].Kind, provider.EventThreadRenamed)
+	}
+	if events[0].Content != "My New Thread" {
+		t.Errorf("content: got %q, want %q", events[0].Content, "My New Thread")
+	}
+
+	var meta map[string]string
+	if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if meta["newTitle"] != "My New Thread" {
+		t.Errorf("meta newTitle: got %q, want %q", meta["newTitle"], "My New Thread")
+	}
+}
+
+func TestClassifyThreadNameUpdatedFallback(t *testing.T) {
+	// Falls back to "name" key when "threadName" is missing.
+	params := json.RawMessage(`{"name":"Fallback Name"}`)
+	events := ClassifyNotification(testThread, "thread/name/updated", params)
+
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if events[0].Content != "Fallback Name" {
+		t.Errorf("content: got %q, want %q", events[0].Content, "Fallback Name")
+	}
+}
+
+func TestClassifyRateLimitsUpdated(t *testing.T) {
+	params := json.RawMessage(`{"limits":[{"limitId":"req","usedPercent":50}]}`)
+	events := ClassifyNotification(testThread, "account/rateLimits/updated", params)
+
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if events[0].Kind != provider.EventRateLimits {
+		t.Errorf("kind: got %q, want %q", events[0].Kind, provider.EventRateLimits)
+	}
+	if events[0].ThreadID != testThread {
+		t.Errorf("threadID: got %q, want %q", events[0].ThreadID, testThread)
+	}
+	// Meta should be the raw params.
+	if string(events[0].Meta) != string(params) {
+		t.Errorf("meta: got %s, want %s", string(events[0].Meta), string(params))
+	}
+}
+
+func TestClassifyModelRerouted(t *testing.T) {
+	params := json.RawMessage(`{"toModel":"gpt-4.1-mini"}`)
+	events := ClassifyNotification(testThread, "model/rerouted", params)
+
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if events[0].Kind != provider.EventModelRerouted {
+		t.Errorf("kind: got %q, want %q", events[0].Kind, provider.EventModelRerouted)
+	}
+	if events[0].Content != "gpt-4.1-mini" {
+		t.Errorf("content: got %q, want %q", events[0].Content, "gpt-4.1-mini")
+	}
+
+	var meta map[string]string
+	if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if meta["newModel"] != "gpt-4.1-mini" {
+		t.Errorf("meta newModel: got %q, want %q", meta["newModel"], "gpt-4.1-mini")
+	}
+}
+
+func TestClassifyThreadCompacted(t *testing.T) {
+	params := json.RawMessage(`{"compactionId":"c1","tokensRemoved":500}`)
+	events := ClassifyNotification(testThread, "thread/compacted", params)
+
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if events[0].Kind != provider.EventCompactBoundary {
+		t.Errorf("kind: got %q, want %q", events[0].Kind, provider.EventCompactBoundary)
+	}
+	if events[0].ThreadID != testThread {
+		t.Errorf("threadID: got %q, want %q", events[0].ThreadID, testThread)
+	}
+	if string(events[0].Meta) != string(params) {
+		t.Errorf("meta: got %s, want %s", string(events[0].Meta), string(params))
+	}
+}
+
 func TestSkippedMethods(t *testing.T) {
 	skipped := []string{
 		"thread/started",
 		"thread/status/changed",
-		"thread/name/updated",
 		"thread/archived",
 		"thread/unarchived",
 		"thread/closed",
-		"thread/compacted",
 		"item/autoApprovalReview/started",
 		"item/autoApprovalReview/completed",
-		"item/reasoning/textDelta",
-		"item/reasoning/summaryTextDelta",
 		"item/reasoning/summaryPartAdded",
 		"item/mcpToolCall/progress",
 		"serverRequest/resolved",
 		"account/updated",
-		"account/rateLimits/updated",
 		"account/login/completed",
-		"model/rerouted",
 		"configWarning",
 		"deprecationNotice",
 	}

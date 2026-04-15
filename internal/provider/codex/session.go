@@ -407,11 +407,29 @@ func (s *Session) handleServerRequest(method string, id *json.Number, params jso
 	switch method {
 	case "item/commandExecution/requestApproval",
 		"item/fileChange/requestApproval",
-		"item/fileRead/requestApproval",
-		"item/tool/requestUserInput",
-		"item/permissions/requestApproval":
+		"item/fileRead/requestApproval":
 
 		meta := buildApprovalMeta(s.threadID, method, rpcID, params)
+		s.onEvent(provider.ProviderEvent{
+			Kind:      provider.EventApprovalRequest,
+			ThreadID:  s.threadID,
+			Meta:      meta,
+			Timestamp: time.Now(),
+			Raw:       line,
+		})
+
+	case "item/tool/requestUserInput":
+		meta := buildUserInputMeta(s.threadID, rpcID, params)
+		s.onEvent(provider.ProviderEvent{
+			Kind:      provider.EventApprovalRequest,
+			ThreadID:  s.threadID,
+			Meta:      meta,
+			Timestamp: time.Now(),
+			Raw:       line,
+		})
+
+	case "item/permissions/requestApproval":
+		meta := buildPermissionMeta(s.threadID, rpcID, params)
 		s.onEvent(provider.ProviderEvent{
 			Kind:      provider.EventApprovalRequest,
 			ThreadID:  s.threadID,
@@ -507,6 +525,55 @@ func buildApprovalMeta(threadID, method string, rpcID int64, params json.RawMess
 		Title:       title,
 	}
 
+	data, _ := json.Marshal(approval)
+	return data
+}
+
+func buildUserInputMeta(threadID string, rpcID int64, params json.RawMessage) json.RawMessage {
+	var parsed map[string]json.RawMessage
+	_ = json.Unmarshal(params, &parsed)
+
+	var questions []provider.UserInputQuestion
+	if raw, ok := parsed["questions"]; ok {
+		_ = json.Unmarshal(raw, &questions)
+	}
+
+	approval := provider.ApprovalRequest{
+		RequestID: fmt.Sprintf("%d", rpcID),
+		ThreadID:  threadID,
+		ToolName:  "user_input",
+		Kind:      "user-input",
+		Questions: questions,
+		Title:     "User Input Required",
+	}
+	data, _ := json.Marshal(approval)
+	return data
+}
+
+func buildPermissionMeta(threadID string, rpcID int64, params json.RawMessage) json.RawMessage {
+	var parsed map[string]json.RawMessage
+	_ = json.Unmarshal(params, &parsed)
+
+	reason := ""
+	if raw, ok := parsed["reason"]; ok {
+		_ = json.Unmarshal(raw, &reason)
+	}
+
+	var perms *provider.PermissionProfile
+	if raw, ok := parsed["permissions"]; ok {
+		perms = &provider.PermissionProfile{}
+		_ = json.Unmarshal(raw, perms)
+	}
+
+	approval := provider.ApprovalRequest{
+		RequestID:   fmt.Sprintf("%d", rpcID),
+		ThreadID:    threadID,
+		ToolName:    "permissions",
+		Kind:        "permission",
+		Description: reason,
+		Permissions: perms,
+		Title:       "Permission Required",
+	}
 	data, _ := json.Marshal(approval)
 	return data
 }
