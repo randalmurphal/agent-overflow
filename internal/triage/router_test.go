@@ -280,6 +280,83 @@ func TestInlineEventEmit(t *testing.T) {
 	}
 }
 
+func TestNewInlineEventsEmit(t *testing.T) {
+	router, _, emissions := newTestRouter(t)
+
+	events := []provider.ProviderEvent{
+		{Kind: provider.EventToolProgress, ThreadID: "t1", Content: "progress", Timestamp: time.Now()},
+		{Kind: provider.EventCompactBoundary, ThreadID: "t1", Timestamp: time.Now()},
+		{Kind: provider.EventRateLimits, ThreadID: "t1", Timestamp: time.Now()},
+	}
+
+	for _, evt := range events {
+		if err := router.Handle(evt); err != nil {
+			t.Fatalf("handle %s: %v", evt.Kind, err)
+		}
+	}
+
+	if len(*emissions) != len(events) {
+		t.Fatalf("expected %d emissions, got %d", len(events), len(*emissions))
+	}
+	for i, em := range *emissions {
+		if em.eventName != "provider:event" {
+			t.Fatalf("emission %d eventName: got %q, want provider:event", i, em.eventName)
+		}
+	}
+}
+
+func TestModelReroutedUpdatesThread(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	evt := provider.ProviderEvent{
+		Kind:      provider.EventModelRerouted,
+		ThreadID:  "t1",
+		Content:   "gpt-5.4",
+		Timestamp: time.Now(),
+	}
+	if err := router.Handle(evt); err != nil {
+		t.Fatalf("handle: %v", err)
+	}
+
+	thread, err := st.GetThread("t1")
+	if err != nil {
+		t.Fatalf("get thread: %v", err)
+	}
+	if thread.Model != "gpt-5.4" {
+		t.Fatalf("expected updated model, got %q", thread.Model)
+	}
+	if len(*emissions) != 1 || (*emissions)[0].eventName != "provider:event" {
+		t.Fatalf("expected inline emission for model reroute, got %+v", *emissions)
+	}
+}
+
+func TestThreadRenamedUpdatesThread(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	evt := provider.ProviderEvent{
+		Kind:      provider.EventThreadRenamed,
+		ThreadID:  "t1",
+		Content:   "New Title",
+		Timestamp: time.Now(),
+	}
+	if err := router.Handle(evt); err != nil {
+		t.Fatalf("handle: %v", err)
+	}
+
+	thread, err := st.GetThread("t1")
+	if err != nil {
+		t.Fatalf("get thread: %v", err)
+	}
+	if thread.Title != "New Title" {
+		t.Fatalf("expected updated title, got %q", thread.Title)
+	}
+	if len(*emissions) != 1 || (*emissions)[0].eventName != "provider:event" {
+		t.Fatalf("expected inline emission for thread rename, got %+v", *emissions)
+	}
+}
+
 func TestInlineEventDoesNotCallStore(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 
@@ -561,6 +638,7 @@ func TestThinkingPersistsHeavy(t *testing.T) {
 	evt := provider.ProviderEvent{
 		Kind:      provider.EventThinking,
 		ThreadID:  "t1",
+		ItemID:    "claude-thinking-1",
 		Content:   "Let me think about this carefully...",
 		Timestamp: time.Now(),
 	}
@@ -578,6 +656,77 @@ func TestThinkingPersistsHeavy(t *testing.T) {
 	}
 	if items[0].Kind != "thinking" {
 		t.Errorf("item kind: got %q, want %q", items[0].Kind, "thinking")
+	}
+}
+
+func TestReasoningDeltasPersistOnTurnComplete(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	for _, chunk := range []string{"Need ", "more ", "analysis"} {
+		err := router.Handle(provider.ProviderEvent{
+			Kind:      provider.EventThinking,
+			ThreadID:  "t1",
+			Content:   chunk,
+			Timestamp: time.Now(),
+		})
+		if err != nil {
+			t.Fatalf("handle reasoning delta: %v", err)
+		}
+	}
+
+	items, err := st.ListItems("t1")
+	if err != nil {
+		t.Fatalf("list items before turn complete: %v", err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("expected no persisted items before turn complete, got %d", len(items))
+	}
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTurnComplete,
+		ThreadID:  "t1",
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle turn complete: %v", err)
+	}
+
+	items, err = st.ListItems("t1")
+	if err != nil {
+		t.Fatalf("list items after turn complete: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("expected 1 persisted thinking item, got %d", len(items))
+	}
+	if items[0].Kind != "thinking" {
+		t.Fatalf("expected thinking item, got %q", items[0].Kind)
+	}
+
+	metas, err := st.ListPayloadMetas("t1")
+	if err != nil {
+		t.Fatalf("list payload metas: %v", err)
+	}
+	if len(metas) != 1 {
+		t.Fatalf("expected 1 payload meta after turn complete, got %d", len(metas))
+	}
+
+	data, err := st.GetPayloadData(metas[0].ID)
+	if err != nil {
+		t.Fatalf("get payload data: %v", err)
+	}
+	if string(data) != "Need more analysis" {
+		t.Fatalf("expected accumulated reasoning, got %q", string(data))
+	}
+
+	if acc := router.reasoningAccumulators["t1"]; acc.Len() != 0 {
+		t.Fatalf("expected reasoning accumulator to be cleared, got %q", acc.String())
+	}
+
+	if len(*emissions) != 2 {
+		t.Fatalf("expected meta + turn complete emissions, got %d", len(*emissions))
+	}
+	if (*emissions)[0].eventName != "provider:meta" || (*emissions)[1].eventName != "provider:event" {
+		t.Fatalf("unexpected emissions order: %+v", *emissions)
 	}
 }
 

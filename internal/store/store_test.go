@@ -266,6 +266,56 @@ func TestUpdateSessionRef(t *testing.T) {
 	}
 }
 
+func TestUpdateTitle(t *testing.T) {
+	s := newTestStore(t)
+
+	thr := makeThread("t1", "claude")
+	thr.UpdatedAt = 1000
+	if err := s.CreateThread(thr); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	if err := s.UpdateTitle("t1", "Renamed Thread"); err != nil {
+		t.Fatalf("update title: %v", err)
+	}
+
+	got, err := s.GetThread("t1")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Title != "Renamed Thread" {
+		t.Fatalf("expected updated title, got %q", got.Title)
+	}
+	if got.UpdatedAt <= 1000 {
+		t.Fatalf("expected updated_at to be bumped from 1000, got %d", got.UpdatedAt)
+	}
+}
+
+func TestUpdateModel(t *testing.T) {
+	s := newTestStore(t)
+
+	thr := makeThread("t1", "codex")
+	thr.UpdatedAt = 1000
+	if err := s.CreateThread(thr); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	if err := s.UpdateModel("t1", "gpt-5.4"); err != nil {
+		t.Fatalf("update model: %v", err)
+	}
+
+	got, err := s.GetThread("t1")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Model != "gpt-5.4" {
+		t.Fatalf("expected updated model, got %q", got.Model)
+	}
+	if got.UpdatedAt <= 1000 {
+		t.Fatalf("expected updated_at to be bumped from 1000, got %d", got.UpdatedAt)
+	}
+}
+
 func TestGetThreadNonexistent(t *testing.T) {
 	s := newTestStore(t)
 

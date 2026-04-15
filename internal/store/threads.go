@@ -112,3 +112,21 @@ func (s *Store) UpdateSessionRef(threadID, ref string) error {
 	}
 	return nil
 }
+
+func (s *Store) UpdateTitle(threadID, title string) error {
+	_, err := s.db.Exec(`UPDATE threads SET title = ?, updated_at = ? WHERE id = ?`,
+		title, nowMillis(), threadID)
+	if err != nil {
+		return fmt.Errorf("store: update title for %s: %w", threadID, err)
+	}
+	return nil
+}
+
+func (s *Store) UpdateModel(threadID, model string) error {
+	_, err := s.db.Exec(`UPDATE threads SET model = ?, updated_at = ? WHERE id = ?`,
+		model, nowMillis(), threadID)
+	if err != nil {
+		return fmt.Errorf("store: update model for %s: %w", threadID, err)
+	}
+	return nil
+}

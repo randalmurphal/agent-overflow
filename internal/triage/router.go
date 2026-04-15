@@ -18,129 +18,198 @@ import (
 
 // Router classifies provider events and routes them.
 type Router struct {
-	store            *store.Store
-	emit             func(eventName string, data any) // wraps runtime.EventsEmit
-	mu               sync.Mutex
-	textAccumulators map[string]*strings.Builder // threadID → accumulated assistant text
+	store                 *store.Store
+	emit                  func(eventName string, data any) // wraps runtime.EventsEmit
+	mu                    sync.Mutex
+	textAccumulators      map[string]*strings.Builder // threadID → accumulated assistant text
+	reasoningAccumulators map[string]*strings.Builder // threadID → accumulated Codex reasoning
 }
 
 // NewRouter creates a triage router.
 func NewRouter(st *store.Store, emit func(eventName string, data any)) *Router {
 	return &Router{
-		store:            st,
-		emit:             emit,
-		textAccumulators: make(map[string]*strings.Builder),
+		store:                 st,
+		emit:                  emit,
+		textAccumulators:      make(map[string]*strings.Builder),
+		reasoningAccumulators: make(map[string]*strings.Builder),
 	}
 }
 
 // Handle processes a provider event: persists heavy payloads, forwards inline events.
 func (r *Router) Handle(evt provider.ProviderEvent) error {
 	switch evt.Kind {
-
-	// --- Inline events: forward directly ---
-
 	case provider.EventTextDelta:
-		// Accumulate text for persistence and emit to frontend.
-		r.mu.Lock()
-		acc, ok := r.textAccumulators[evt.ThreadID]
-		if !ok {
-			acc = &strings.Builder{}
-			r.textAccumulators[evt.ThreadID] = acc
-		}
-		acc.WriteString(evt.Content)
-		r.mu.Unlock()
-		r.emit("provider:event", evt)
-		return nil
-
+		return r.handleTextDelta(evt)
 	case provider.EventToolStart,
 		provider.EventToolComplete,
 		provider.EventTurnStart,
 		provider.EventApprovalRequest,
 		provider.EventApprovalResolved,
 		provider.EventSessionStatus,
+		provider.EventToolProgress,
+		provider.EventCompactBoundary,
+		provider.EventRateLimits,
 		provider.EventTokenUsage,
 		provider.EventError,
 		provider.EventBackgroundStart:
-		r.emit("provider:event", evt)
-		return nil
-
+		return r.emitInline(evt)
 	case provider.EventInit:
-		r.emit("provider:event", evt)
-		// Update thread session_ref from init metadata.
-		if evt.Meta != nil {
-			var info provider.SessionInfo
-			if json.Unmarshal(evt.Meta, &info) == nil && info.SessionID != "" {
-				if err := r.store.UpdateSessionRef(evt.ThreadID, info.SessionID); err != nil {
-					log.Printf("triage: update session ref: %v", err)
-				}
-			}
-		}
-		return nil
-
+		return r.handleInit(evt)
+	case provider.EventModelRerouted:
+		return r.handleThreadModelUpdate(evt)
+	case provider.EventThreadRenamed:
+		return r.handleThreadRename(evt)
 	case provider.EventTurnComplete:
-		// If text was accumulated during this turn, persist it as an assistant message item.
-		r.mu.Lock()
-		acc, ok := r.textAccumulators[evt.ThreadID]
-		var content string
-		if ok && acc.Len() > 0 {
-			content = acc.String()
-			acc.Reset()
-		}
-		r.mu.Unlock()
-
-		if content != "" {
-			now := time.Now().UnixMilli()
-			turnIndex, err := r.store.LastTurnIndex(evt.ThreadID)
-			if err != nil {
-				log.Printf("triage: last turn index: %v (defaulting to 0)", err)
-				turnIndex = 0
-			}
-			itemIndex, err := r.store.NextItemIndex(evt.ThreadID, turnIndex)
-			if err != nil {
-				log.Printf("triage: next item index: %v (defaulting to 0)", err)
-				itemIndex = 0
-			}
-			item := store.Item{
-				ID:        uuid.New().String(),
-				ThreadID:  evt.ThreadID,
-				TurnIndex: turnIndex,
-				ItemIndex: itemIndex,
-				Kind:      string(provider.ItemText),
-				Role:      "assistant",
-				Summary:   content,
-				CreatedAt: now,
-			}
-			if err := r.store.InsertItem(item); err != nil {
-				r.emit("provider:event", evt)
-				return fmt.Errorf("persist assistant text: %w", err)
-			}
-		}
-		r.emit("provider:event", evt)
-		return nil
-
+		return r.handleTurnComplete(evt)
 	case provider.EventBackgroundDelta:
-		// Accumulate in memory — do not emit per-delta.
 		return nil
-
 	case provider.EventBackgroundComplete:
 		return r.persistHeavy(evt, "full_text", string(provider.ItemBackgroundDone))
-
-	// --- Heavy events: extract meta, persist, emit meta ---
-
 	case provider.EventDiff:
 		return r.persistHeavy(evt, "diff", string(provider.ItemDiff))
-
 	case provider.EventCommandOutput:
 		return r.persistHeavy(evt, "command_output", string(provider.ItemCommandExecution))
-
 	case provider.EventThinking:
-		return r.persistHeavy(evt, "thinking", string(provider.ItemThinking))
-
+		return r.handleThinking(evt)
 	default:
 		log.Printf("triage: unhandled event kind: %s", evt.Kind)
 		r.emit("provider:event", evt)
 		return nil
 	}
+}
+
+func (r *Router) handleTextDelta(evt provider.ProviderEvent) error {
+	r.accumulate(r.textAccumulators, evt.ThreadID, evt.Content)
+	return r.emitInline(evt)
+}
+
+func (r *Router) handleInit(evt provider.ProviderEvent) error {
+	r.emit("provider:event", evt)
+	if evt.Meta == nil {
+		return nil
+	}
+
+	var info provider.SessionInfo
+	if json.Unmarshal(evt.Meta, &info) == nil && info.SessionID != "" {
+		if err := r.store.UpdateSessionRef(evt.ThreadID, info.SessionID); err != nil {
+			log.Printf("triage: update session ref: %v", err)
+		}
+	}
+	return nil
+}
+
+func (r *Router) handleThreadModelUpdate(evt provider.ProviderEvent) error {
+	r.emit("provider:event", evt)
+	if evt.Content == "" {
+		return nil
+	}
+	if err := r.store.UpdateModel(evt.ThreadID, evt.Content); err != nil {
+		return fmt.Errorf("update thread model: %w", err)
+	}
+	return nil
+}
+
+func (r *Router) handleThreadRename(evt provider.ProviderEvent) error {
+	r.emit("provider:event", evt)
+	if evt.Content == "" {
+		return nil
+	}
+	if err := r.store.UpdateTitle(evt.ThreadID, evt.Content); err != nil {
+		return fmt.Errorf("update thread title: %w", err)
+	}
+	return nil
+}
+
+func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
+	text := r.drain(r.textAccumulators, evt.ThreadID)
+	reasoning := r.drain(r.reasoningAccumulators, evt.ThreadID)
+
+	var persistErr error
+	if text != "" {
+		persistErr = r.persistTurnText(evt.ThreadID, text)
+	}
+	if reasoning != "" {
+		err := r.persistHeavy(provider.ProviderEvent{
+			Kind:      provider.EventThinking,
+			ThreadID:  evt.ThreadID,
+			Content:   reasoning,
+			Timestamp: evt.Timestamp,
+		}, "thinking", string(provider.ItemThinking))
+		if persistErr == nil && err != nil {
+			persistErr = fmt.Errorf("persist reasoning: %w", err)
+		}
+	}
+
+	r.emit("provider:event", evt)
+	return persistErr
+}
+
+func (r *Router) handleThinking(evt provider.ProviderEvent) error {
+	if evt.ItemID != "" {
+		return r.persistHeavy(evt, "thinking", string(provider.ItemThinking))
+	}
+	r.accumulate(r.reasoningAccumulators, evt.ThreadID, evt.Content)
+	return nil
+}
+
+func (r *Router) emitInline(evt provider.ProviderEvent) error {
+	r.emit("provider:event", evt)
+	return nil
+}
+
+func (r *Router) accumulate(target map[string]*strings.Builder, threadID, content string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	acc, ok := target[threadID]
+	if !ok {
+		acc = &strings.Builder{}
+		target[threadID] = acc
+	}
+	acc.WriteString(content)
+}
+
+func (r *Router) drain(target map[string]*strings.Builder, threadID string) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	acc, ok := target[threadID]
+	if !ok || acc.Len() == 0 {
+		return ""
+	}
+	content := acc.String()
+	acc.Reset()
+	return content
+}
+
+func (r *Router) persistTurnText(threadID, content string) error {
+	now := time.Now().UnixMilli()
+	turnIndex, err := r.store.LastTurnIndex(threadID)
+	if err != nil {
+		log.Printf("triage: last turn index: %v (defaulting to 0)", err)
+		turnIndex = 0
+	}
+
+	itemIndex, err := r.store.NextItemIndex(threadID, turnIndex)
+	if err != nil {
+		log.Printf("triage: next item index: %v (defaulting to 0)", err)
+		itemIndex = 0
+	}
+
+	item := store.Item{
+		ID:        uuid.New().String(),
+		ThreadID:  threadID,
+		TurnIndex: turnIndex,
+		ItemIndex: itemIndex,
+		Kind:      string(provider.ItemText),
+		Role:      "assistant",
+		Summary:   content,
+		CreatedAt: now,
+	}
+	if err := r.store.InsertItem(item); err != nil {
+		return fmt.Errorf("persist assistant text: %w", err)
+	}
+	return nil
 }
 
 // persistHeavy extracts meta, stores payload + item, emits meta to frontend.
