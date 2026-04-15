@@ -39,9 +39,10 @@ agent-overflow/
 │   │   ├── App.svelte                   # Root: sidebar + main content
 │   │   ├── lib/
 │   │   │   ├── stores/
-│   │   │   │   ├── thread.svelte.ts     # Active thread state ($state runes)
+│   │   │   │   ├── thread.svelte.ts     # ThreadPane factory (per-pane state, tiling-ready)
+│   │   │   │   ├── panes.svelte.ts      # Active panes registry (v1: single "main" pane)
 │   │   │   │   ├── threads.svelte.ts    # Thread list for sidebar
-│   │   │   │   ├── events.ts            # Wails EventsOn listener setup
+│   │   │   │   ├── events.ts            # Wails EventsOn listener, fans out to panes
 │   │   │   │   └── bindings.ts          # Typed wrappers around Wails Go bindings
 │   │   │   ├── components/
 │   │   │   │   ├── Sidebar.svelte
@@ -3008,159 +3009,182 @@ export interface ThinkingMeta {
 
 ## 14. Frontend State Management
 
+### Design: Per-Pane Thread State (tiling-ready)
+
+Thread state is a **factory function**, not a module singleton. Each pane (currently one, future: multiple via tiling/splitting) gets its own `ThreadPane` instance with independent reactive state. This means components receive a `pane` prop instead of importing global getters, and the event router fans out to all active panes.
+
+This enables future tiling (e.g., dockview-core) as a purely additive change — create a new pane per split, hand it to a ChatView. No refactoring of components or stores.
+
 ### File: `frontend/src/lib/stores/thread.svelte.ts`
 
-Uses Svelte 5 runes. One active thread at a time. Thread switch replaces all state.
+Uses Svelte 5 runes. Per-pane instance, not module singleton.
 
 ```typescript
 import type { Item, PayloadMeta, Thread } from '../types/models';
 import type { ApprovalRequest, TokenUsage } from '../types/events';
 import { ListItems, ListPayloadMetas } from '../../wailsjs/go/main/App';
 
-// Active thread state
-let activeThread: Thread | null = $state(null);
-let items: Item[] = $state([]);
-let payloadMetas: Map<string, PayloadMeta> = $state(new Map());
-let streamingContent: string = $state('');
-let activeToolCalls: Map<string, unknown> = $state(new Map());
-let pendingApprovals: ApprovalRequest[] = $state([]);
-let backgroundTasks: Map<string, unknown> = $state(new Map());
-let sessionStatus: string = $state('disconnected');
-let tokenUsage: TokenUsage | null = $state(null);
+/**
+ * Creates a self-contained thread pane state instance.
+ * Each pane tracks its own thread, items, streaming state, approvals, etc.
+ * Components receive a ThreadPane as a prop.
+ */
+export function createThreadPane() {
+  let thread: Thread | null = $state(null);
+  let items: Item[] = $state([]);
+  let payloadMetas: Map<string, PayloadMeta> = $state(new Map());
+  let streamingContent: string = $state('');
+  let activeToolCalls: Map<string, unknown> = $state(new Map());
+  let pendingApprovals: ApprovalRequest[] = $state([]);
+  let backgroundTasks: Map<string, unknown> = $state(new Map());
+  let sessionStatus: string = $state('disconnected');
+  let tokenUsage: TokenUsage | null = $state(null);
 
-export function getActiveThread(): Thread | null {
-  return activeThread;
+  return {
+    // --- Getters (reactive reads) ---
+    get thread() { return thread; },
+    get threadId() { return thread?.id ?? null; },
+    get items() { return items; },
+    get payloadMetas() { return payloadMetas; },
+    get streamingContent() { return streamingContent; },
+    get activeToolCalls() { return activeToolCalls; },
+    get pendingApprovals() { return pendingApprovals; },
+    get backgroundTasks() { return backgroundTasks; },
+    get sessionStatus() { return sessionStatus; },
+    get tokenUsage() { return tokenUsage; },
+
+    // --- Thread switching ---
+
+    async switchThread(newThread: Thread): Promise<void> {
+      // Clear streaming state.
+      streamingContent = '';
+      activeToolCalls = new Map();
+      pendingApprovals = [];
+      backgroundTasks = new Map();
+      tokenUsage = null;
+      sessionStatus = 'disconnected';
+
+      thread = newThread;
+
+      // Load persisted items from SQLite.
+      try {
+        items = await ListItems(newThread.id);
+      } catch (err) {
+        console.error('Failed to load items:', err);
+        items = [];
+      }
+
+      // Load payload metas for all items in this thread.
+      try {
+        const metas = await ListPayloadMetas(newThread.id);
+        payloadMetas = new Map((metas ?? []).map((m: PayloadMeta) => [m.id, m]));
+      } catch (err) {
+        console.error('Failed to load payload metas:', err);
+        payloadMetas = new Map();
+      }
+    },
+
+    clear(): void {
+      thread = null;
+      items = [];
+      payloadMetas = new Map();
+      streamingContent = '';
+      activeToolCalls = new Map();
+      pendingApprovals = [];
+      backgroundTasks = new Map();
+      sessionStatus = 'disconnected';
+      tokenUsage = null;
+    },
+
+    // --- Mutations (called by event router) ---
+
+    appendTextDelta(delta: string): void {
+      streamingContent += delta;
+    },
+
+    freezeStreamingContent(item: Item): void {
+      items = [...items, item];
+      streamingContent = '';
+    },
+
+    addToolCall(id: string, data: unknown): void {
+      activeToolCalls = new Map(activeToolCalls).set(id, data);
+    },
+
+    completeToolCall(id: string, item: Item): void {
+      const next = new Map(activeToolCalls);
+      next.delete(id);
+      activeToolCalls = next;
+      items = [...items, item];
+    },
+
+    addApproval(approval: ApprovalRequest): void {
+      pendingApprovals = [...pendingApprovals, approval];
+    },
+
+    removeApproval(requestId: string): void {
+      pendingApprovals = pendingApprovals.filter((a) => a.requestId !== requestId);
+    },
+
+    addBackgroundTask(id: string, data: unknown): void {
+      backgroundTasks = new Map(backgroundTasks).set(id, data);
+    },
+
+    completeBackgroundTask(id: string): void {
+      const next = new Map(backgroundTasks);
+      next.delete(id);
+      backgroundTasks = next;
+    },
+
+    setSessionStatus(status: string): void {
+      sessionStatus = status;
+    },
+
+    setTokenUsage(usage: TokenUsage): void {
+      tokenUsage = usage;
+    },
+
+    addPayloadMeta(meta: PayloadMeta): void {
+      payloadMetas = new Map(payloadMetas).set(meta.id, meta);
+    },
+
+    appendItem(item: Item): void {
+      items = [...items, item];
+    },
+  };
 }
 
-export function getItems(): Item[] {
-  return items;
+export type ThreadPane = ReturnType<typeof createThreadPane>;
+```
+
+### File: `frontend/src/lib/stores/panes.svelte.ts`
+
+Manages active panes. For v1, there's always exactly one pane. The structure supports future tiling.
+
+```typescript
+import { createThreadPane, type ThreadPane } from './thread.svelte';
+
+// Active panes, keyed by pane ID. v1 has exactly one pane ("main").
+let panes: Map<string, ThreadPane> = $state(new Map());
+
+export function getPane(id: string): ThreadPane | undefined {
+  return panes.get(id);
 }
 
-export function getStreamingContent(): string {
-  return streamingContent;
-}
-
-export function getActiveToolCalls(): Map<string, unknown> {
-  return activeToolCalls;
-}
-
-export function getPendingApprovals(): ApprovalRequest[] {
-  return pendingApprovals;
-}
-
-export function getBackgroundTasks(): Map<string, unknown> {
-  return backgroundTasks;
-}
-
-export function getSessionStatus(): string {
-  return sessionStatus;
-}
-
-export function getTokenUsage(): TokenUsage | null {
-  return tokenUsage;
-}
-
-export function getPayloadMetas(): Map<string, PayloadMeta> {
-  return payloadMetas;
-}
-
-// Switch to a different thread — full state replacement.
-export async function switchThread(thread: Thread): Promise<void> {
-  // Clear streaming state.
-  streamingContent = '';
-  activeToolCalls = new Map();
-  pendingApprovals = [];
-  backgroundTasks = new Map();
-  tokenUsage = null;
-  sessionStatus = 'disconnected';
-
-  activeThread = thread;
-
-  // Load persisted items from SQLite.
-  try {
-    items = await ListItems(thread.id);
-  } catch (err) {
-    console.error('Failed to load items:', err);
-    items = [];
+export function getMainPane(): ThreadPane {
+  let main = panes.get('main');
+  if (!main) {
+    main = createThreadPane();
+    panes = new Map(panes).set('main', main);
   }
-
-  // Load payload metas for all items in this thread.
-  try {
-    const metas = await ListPayloadMetas(thread.id);
-    payloadMetas = new Map((metas ?? []).map((m: PayloadMeta) => [m.id, m]));
-  } catch (err) {
-    console.error('Failed to load payload metas:', err);
-    payloadMetas = new Map();
-  }
+  return main;
 }
 
-export function clearThread(): void {
-  activeThread = null;
-  items = [];
-  payloadMetas = new Map();
-  streamingContent = '';
-  activeToolCalls = new Map();
-  pendingApprovals = [];
-  backgroundTasks = new Map();
-  sessionStatus = 'disconnected';
-  tokenUsage = null;
+export function getAllPanes(): Map<string, ThreadPane> {
+  return panes;
 }
 
-// Mutation functions called by event handlers.
-
-export function appendTextDelta(delta: string): void {
-  streamingContent += delta;
-}
-
-export function freezeStreamingContent(item: Item): void {
-  items = [...items, item];
-  streamingContent = '';
-}
-
-export function addToolCall(id: string, data: unknown): void {
-  activeToolCalls = new Map(activeToolCalls).set(id, data);
-}
-
-export function completeToolCall(id: string, item: Item): void {
-  const next = new Map(activeToolCalls);
-  next.delete(id);
-  activeToolCalls = next;
-  items = [...items, item];
-}
-
-export function addApproval(approval: ApprovalRequest): void {
-  pendingApprovals = [...pendingApprovals, approval];
-}
-
-export function removeApproval(requestId: string): void {
-  pendingApprovals = pendingApprovals.filter((a) => a.requestId !== requestId);
-}
-
-export function addBackgroundTask(id: string, data: unknown): void {
-  backgroundTasks = new Map(backgroundTasks).set(id, data);
-}
-
-export function completeBackgroundTask(id: string): void {
-  const next = new Map(backgroundTasks);
-  next.delete(id);
-  backgroundTasks = next;
-}
-
-export function setSessionStatus(status: string): void {
-  sessionStatus = status;
-}
-
-export function setTokenUsage(usage: TokenUsage): void {
-  tokenUsage = usage;
-}
-
-export function addPayloadMeta(meta: PayloadMeta): void {
-  payloadMetas = new Map(payloadMetas).set(meta.id, meta);
-}
-
-export function appendItem(item: Item): void {
-  items = [...items, item];
-}
+// Future: createPane, removePane, etc. for tiling support.
 ```
 
 ### File: `frontend/src/lib/stores/threads.svelte.ts`
@@ -3198,104 +3222,108 @@ export function updateThreadInList(updated: Thread): void {
 
 ### File: `frontend/src/lib/stores/events.ts`
 
+The event router fans out to all active panes showing the relevant thread. This supports future tiling where multiple panes may show different (or the same) thread.
+
 ```typescript
 import { EventsOn } from '../../wailsjs/runtime/runtime';
 import type { ProviderEvent, ApprovalRequest, TokenUsage } from '../types/events';
 import type { PayloadMeta } from '../types/models';
-import {
-  appendTextDelta,
-  addToolCall,
-  completeToolCall,
-  addApproval,
-  removeApproval,
-  setSessionStatus,
-  setTokenUsage,
-  addPayloadMeta,
-  addBackgroundTask,
-  completeBackgroundTask,
-  getActiveThread,
-} from './thread.svelte';
+import type { ThreadPane } from './thread.svelte';
+import { getAllPanes } from './panes.svelte';
+
+/**
+ * Route a provider event to the correct pane mutation.
+ * Called once per pane that matches the event's threadId.
+ */
+function routeEventToPane(pane: ThreadPane, evt: ProviderEvent): void {
+  switch (evt.kind) {
+    case 'text_delta':
+      pane.appendTextDelta(evt.content ?? '');
+      break;
+
+    case 'tool_start':
+      pane.addToolCall(evt.itemId ?? '', evt.meta);
+      break;
+
+    case 'tool_complete':
+      pane.completeToolCall(evt.itemId ?? '', {
+        id: evt.itemId ?? '',
+        threadId: evt.threadId,
+        turnIndex: 0,
+        itemIndex: 0,
+        kind: evt.itemType ?? 'tool_result',
+        role: 'assistant',
+        summary: evt.content ?? '',
+        createdAt: Date.now(),
+      });
+      break;
+
+    case 'turn_start':
+      pane.setSessionStatus('running');
+      break;
+
+    case 'turn_complete':
+      pane.setSessionStatus('ready');
+      break;
+
+    case 'approval_request':
+      if (evt.meta) {
+        pane.addApproval(evt.meta as ApprovalRequest);
+      }
+      break;
+
+    case 'approval_resolved':
+      if (evt.itemId) {
+        pane.removeApproval(evt.itemId);
+      }
+      break;
+
+    case 'session_status':
+      pane.setSessionStatus(evt.content ?? 'unknown');
+      break;
+
+    case 'token_usage':
+      if (evt.meta) {
+        pane.setTokenUsage(evt.meta as TokenUsage);
+      }
+      break;
+
+    case 'error':
+      console.error('Provider error:', evt.content);
+      pane.setSessionStatus('error');
+      break;
+
+    case 'init':
+      pane.setSessionStatus('connected');
+      break;
+
+    case 'background_start':
+      pane.addBackgroundTask(evt.itemId ?? '', evt.meta);
+      break;
+
+    case 'background_complete':
+      pane.completeBackgroundTask(evt.itemId ?? '');
+      break;
+  }
+}
 
 export function setupEventListeners(): void {
   EventsOn('provider:event', (evt: ProviderEvent) => {
-    const active = getActiveThread();
-    if (!active || evt.threadId !== active.id) return;
-
-    switch (evt.kind) {
-      case 'text_delta':
-        appendTextDelta(evt.content ?? '');
-        break;
-
-      case 'tool_start':
-        addToolCall(evt.itemId ?? '', evt.meta);
-        break;
-
-      case 'tool_complete':
-        // Tool complete comes with the finished item data.
-        // The item is persisted server-side; we just update UI state.
-        completeToolCall(evt.itemId ?? '', {
-          id: evt.itemId ?? '',
-          threadId: evt.threadId,
-          turnIndex: 0,
-          itemIndex: 0,
-          kind: evt.itemType ?? 'tool_result',
-          role: 'assistant',
-          summary: evt.content ?? '',
-          createdAt: Date.now(),
-        });
-        break;
-
-      case 'turn_start':
-        setSessionStatus('running');
-        break;
-
-      case 'turn_complete':
-        setSessionStatus('ready');
-        break;
-
-      case 'approval_request':
-        if (evt.meta) {
-          addApproval(evt.meta as ApprovalRequest);
-        }
-        break;
-
-      case 'approval_resolved':
-        if (evt.itemId) {
-          removeApproval(evt.itemId);
-        }
-        break;
-
-      case 'session_status':
-        setSessionStatus(evt.content ?? 'unknown');
-        break;
-
-      case 'token_usage':
-        if (evt.meta) {
-          setTokenUsage(evt.meta as TokenUsage);
-        }
-        break;
-
-      case 'error':
-        console.error('Provider error:', evt.content);
-        setSessionStatus('error');
-        break;
-
-      case 'init':
-        setSessionStatus('connected');
-        break;
-
-      case 'background_start':
-        addBackgroundTask(evt.itemId ?? '', evt.meta);
-        break;
-
-      case 'background_complete':
-        completeBackgroundTask(evt.itemId ?? '');
-        break;
+    // Fan out to all panes showing this thread.
+    for (const pane of getAllPanes().values()) {
+      if (pane.threadId === evt.threadId) {
+        routeEventToPane(pane, evt);
+      }
     }
   });
 
   EventsOn('provider:meta', (meta: PayloadMeta) => {
-    addPayloadMeta(meta);
+    // Payload metas are thread-scoped — route to matching panes.
+    // meta doesn't carry threadId directly, so broadcast to all panes.
+    // Panes will have it in their payloadMetas map keyed by payload id.
+    for (const pane of getAllPanes().values()) {
+      pane.addPayloadMeta(meta);
+    }
   });
 
   EventsOn('provider:error', (evt: ProviderEvent) => {

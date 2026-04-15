@@ -441,12 +441,14 @@ Standard: read progress -> pick item -> read specs -> implement -> test -> quali
 
 **Spec sections**: IMPLEMENTATION.md Sections 13, 14
 **Package**: frontend
-**Files**: `frontend/src/lib/types/events.ts`, `frontend/src/lib/types/models.ts`, `frontend/src/lib/stores/thread.svelte.ts`, `frontend/src/lib/stores/threads.svelte.ts`, `frontend/src/lib/stores/bindings.ts`
+**Files**: `frontend/src/lib/types/events.ts`, `frontend/src/lib/types/models.ts`, `frontend/src/lib/stores/thread.svelte.ts`, `frontend/src/lib/stores/panes.svelte.ts`, `frontend/src/lib/stores/threads.svelte.ts`, `frontend/src/lib/stores/bindings.ts`
 **Deliver**:
 - All TypeScript types matching Go types exactly (ProviderEvent, EventKind, ApprovalRequest, TokenUsage, Thread, Item, PayloadMeta, DiffMeta, CommandOutputMeta, ThinkingMeta)
-- thread.svelte.ts: all state variables with $state runes, all mutation functions (appendTextDelta, freezeStreamingContent, addToolCall, completeToolCall, addApproval, removeApproval, addBackgroundTask, completeBackgroundTask, setSessionStatus, setTokenUsage, addPayloadMeta, appendItem, switchThread, clearThread)
+- thread.svelte.ts: `createThreadPane()` factory function returning a `ThreadPane` instance with $state runes. NOT a module singleton. Each pane gets its own items, streamingContent, approvals, etc. Export `ThreadPane` type. All mutations are methods on the pane instance (appendTextDelta, freezeStreamingContent, addToolCall, completeToolCall, addApproval, removeApproval, addBackgroundTask, completeBackgroundTask, setSessionStatus, setTokenUsage, addPayloadMeta, appendItem, switchThread, clear).
+- panes.svelte.ts: pane registry with `getMainPane()` (creates on first access), `getAllPanes()`. v1 has one "main" pane. Structure supports future tiling.
 - threads.svelte.ts: thread list state, refreshThreads, prependThread, removeThread, updateThreadInList
 - bindings.ts: re-export all Wails-generated bindings
+- **CRITICAL**: Components receive `pane: ThreadPane` as a prop. They do NOT import global getters. This is the tiling-ready pattern.
 **Tests**:
 - `npm run check` passes (svelte-check + TypeScript)
 **Done when**: all types defined, stores compile, svelte-check passes
@@ -458,10 +460,11 @@ Standard: read progress -> pick item -> read specs -> implement -> test -> quali
 **Files**: `frontend/src/lib/stores/events.ts`
 **Deliver**:
 - setupEventListeners function using Wails EventsOn
-- Route provider:event by kind to correct store mutation
-- Route provider:meta to addPayloadMeta
-- Route provider:error to console.error + setSessionStatus('error')
-- Filter events by active thread ID (ignore events for non-active threads)
+- Event router fans out to ALL active panes matching the event's threadId (not a single active thread)
+- Route provider:event by kind to correct pane mutation via `routeEventToPane(pane, evt)`
+- Route provider:meta to all panes (broadcast — meta doesn't carry threadId)
+- Route provider:error to console.error
+- Uses `getAllPanes()` from panes.svelte.ts to iterate over active panes
 **Tests**:
 - `npm run check` passes
 - Verify with Playwright MCP: navigate to app, check console for no errors on load
@@ -477,8 +480,8 @@ Standard: read progress -> pick item -> read specs -> implement -> test -> quali
 - ThreadList: renders threads from threads store, ordered by updated_at
 - ThreadRow: shows title, provider icon (C for Claude, X for Codex), relative time, archive button on hover
 - New thread button: opens a form/dialog to pick provider, workspace path, model
-- Click thread -> switchThread, load items
-- App.svelte: sidebar + main content layout, call setupEventListeners and refreshThreads on mount
+- Click thread -> call `getMainPane().switchThread(thread)`, load items
+- App.svelte: sidebar + main content layout, call setupEventListeners and refreshThreads on mount, create main pane via `getMainPane()` and pass it as `pane` prop to ChatView
 **Tests**:
 - `npm run check` passes
 - Playwright MCP: navigate to dev server, verify sidebar renders, click "new thread" button, verify form appears
@@ -490,7 +493,7 @@ Standard: read progress -> pick item -> read specs -> implement -> test -> quali
 **Package**: frontend
 **Files**: `frontend/src/lib/components/ChatView.svelte`, `frontend/src/lib/components/MessageTimeline.svelte`, `frontend/src/lib/components/UserMessage.svelte`, `frontend/src/lib/components/AssistantMessage.svelte`, `frontend/src/lib/components/Markdown.svelte`
 **Deliver**:
-- ChatView: container with MessageTimeline + Composer, starts session on mount if not already active
+- ChatView: takes `pane: ThreadPane` as prop. Container with MessageTimeline + Composer, starts session on mount if not already active. Passes pane down to all child components.
 - MessageTimeline: renders items from store, keyed by id, append-only with auto-scroll
 - UserMessage: right-aligned bubble with user text
 - AssistantMessage: left-aligned with Markdown rendering, shows streaming content for active turn
@@ -643,6 +646,7 @@ When all work items are complete, enter the Review Phase. This is NOT optional. 
 - **Use Playwright MCP for frontend testing.** Don't just assume components render -- navigate to the dev server, take snapshots, click elements.
 - **Reference llmkit at /Users/randy/repos/llmkit/ for protocol implementations.** Port what's valuable, don't copy blindly.
 - **Reference forge at /Users/randy/repos/forge/ for UI patterns.** Copy the visual approach, not the architecture.
+- **Thread state is per-pane, NOT a singleton.** Components receive `pane: ThreadPane` as a prop. They do NOT import global state getters. The event router fans out to all panes, not one active thread. This pattern enables future tiling/splitting without refactoring. See IMPLEMENTATION.md Section 14.
 - **Read progress.md.** Every iteration. No exceptions.
 - **Known Issues in progress.md are your #1 priority.**
 - **If you build it, wire it.** No dead code.
