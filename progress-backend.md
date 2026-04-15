@@ -42,6 +42,7 @@
 - `WI-4.4: Deliberation engine`
 - `WI-4.5: Discussion Wails bindings`
 - `WI-5.1: Design artifact storage`
+- `WI-6.2: Provider event logging`
 
 ## Iteration Log
 
@@ -65,6 +66,7 @@
 - 2026-04-15: Completed `WI-4.1` by adding store-layer discussion/channel types plus SQLite CRUD/query methods for discussion definitions, channels, and ordered channel messages, including monotonic channel status timestamps and regression coverage for discussion CRUD plus message ordering/filtering. `go build ./...`, `go vet ./...`, and `go test -coverprofile=coverage.out ./... -count=1` all passed, with `internal/store` at 83.0% coverage.
 - 2026-04-15: Completed `WI-4.2` through `WI-4.5` by adding the discussion registry validation layer, a channel service with ordered human/agent posting and close semantics, an in-memory deliberation engine for turn alternation and unanimous conclusion tracking, and app bindings for discussion CRUD/start/message flows. `go build ./...`, `go vet ./...`, and `go test -coverprofile=coverage.out ./... -count=1` all passed, with `internal/discussion` at 84.2% coverage.
 - 2026-04-15: Completed `WI-5.1` by adding SQLite-backed design artifact metadata operations in `internal/store`, a filesystem-backed `design.ArtifactStore` that writes `<baseDir>/<threadID>/<artifactID>.html` and rolls back orphaned files on metadata failures, plus regression tests for round-trip reads, kind filtering, validation, and cleanup/error paths. `go build ./...`, `go vet ./...`, and `go test -coverprofile=coverage.out ./... -count=1` all passed, with `internal/design` at 95.1% coverage and `internal/store` at 82.8% coverage.
+- 2026-04-15: Completed `WI-6.2` by adding a dedicated NDJSON provider-event log schema, wiring per-session raw stdin/stdout logging through `provider.Spawn`, and enabling the logger from app startup when `AGENT_OVERFLOW_DEBUG` includes `provider` or `all`. `go build ./...`, `go vet ./...`, and `go test -coverprofile=coverage.out ./... -count=1` all passed, with `internal/provider` at 90.1% coverage and `internal/logging` at 86.2% coverage.
 
 ## Review Log
 

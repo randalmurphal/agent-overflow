@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"agent-overflow/internal/logging"
 	"agent-overflow/internal/provider"
 )
 
@@ -36,6 +37,7 @@ type Config struct {
 	Sandbox        string // "read-only", "workspace-write", "danger-full-access"
 	ResumeThreadID string // thread ID to resume, empty for new
 	SystemPrompt   string
+	EventLogger    *logging.Logger
 }
 
 // NewSession spawns codex app-server, performs the initialize handshake,
@@ -49,9 +51,12 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 	childCtx, cancel := context.WithCancel(ctx)
 
 	proc, err := provider.Spawn(childCtx, provider.SpawnConfig{
-		Binary: binary,
-		Args:   []string{"app-server"},
-		Dir:    cfg.WorkDir,
+		Binary:      binary,
+		Args:        []string{"app-server"},
+		Dir:         cfg.WorkDir,
+		EventLogger: cfg.EventLogger,
+		ThreadID:    threadID,
+		Provider:    string(provider.Codex),
 	})
 	if err != nil {
 		cancel()

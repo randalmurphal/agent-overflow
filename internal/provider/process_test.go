@@ -5,8 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"agent-overflow/internal/logging"
 )
 
 func TestSpawnAndEcho(t *testing.T) {
@@ -217,6 +222,90 @@ func TestSpawnInvalidBinary(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for nonexistent binary, got nil")
 	}
+}
+
+func TestProviderEventLoggingCapturesInputAndOutput(t *testing.T) {
+	ctx := context.Background()
+	logPath := filepath.Join(t.TempDir(), "provider-events.ndjson")
+	logger, err := logging.NewLogger(logPath, 0)
+	if err != nil {
+		t.Fatalf("NewLogger: %v", err)
+	}
+	defer logger.Close()
+
+	p, err := Spawn(ctx, SpawnConfig{
+		Binary:      "cat",
+		EventLogger: logger,
+		ThreadID:    "thread-123",
+		Provider:    "claude",
+	})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	defer p.Kill()
+
+	if err := p.WriteLine([]byte(`{"hello":"world"}`)); err != nil {
+		t.Fatalf("WriteLine: %v", err)
+	}
+	if _, err := p.ReadLine(); err != nil {
+		t.Fatalf("ReadLine: %v", err)
+	}
+
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+
+	lines := splitNonEmptyLines(string(data))
+	if len(lines) != 2 {
+		t.Fatalf("log lines = %d, want 2", len(lines))
+	}
+
+	var first, second logging.ProviderEventEntry
+	if err := json.Unmarshal([]byte(lines[0]), &first); err != nil {
+		t.Fatalf("unmarshal first log entry: %v", err)
+	}
+	if err := json.Unmarshal([]byte(lines[1]), &second); err != nil {
+		t.Fatalf("unmarshal second log entry: %v", err)
+	}
+
+	if first.Direction != "out" || second.Direction != "in" {
+		t.Fatalf("directions = %q then %q, want out then in", first.Direction, second.Direction)
+	}
+	if first.ThreadID != "thread-123" || second.ThreadID != "thread-123" {
+		t.Fatalf("thread IDs = %q and %q, want thread-123", first.ThreadID, second.ThreadID)
+	}
+	if first.Provider != "claude" || second.Provider != "claude" {
+		t.Fatalf("providers = %q and %q, want claude", first.Provider, second.Provider)
+	}
+}
+
+func TestProviderEventLoggingDisabledWithoutLogger(t *testing.T) {
+	ctx := context.Background()
+	p, err := Spawn(ctx, SpawnConfig{Binary: "cat"})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	defer p.Kill()
+
+	if err := p.WriteLine([]byte("hello")); err != nil {
+		t.Fatalf("WriteLine: %v", err)
+	}
+	if _, err := p.ReadLine(); err != nil {
+		t.Fatalf("ReadLine: %v", err)
+	}
+}
+
+func splitNonEmptyLines(data string) []string {
+	raw := strings.Split(data, "\n")
+	lines := make([]string, 0, len(raw))
+	for _, line := range raw {
+		if line == "" {
+			continue
+		}
+		lines = append(lines, line)
+	}
+	return lines
 }
 
 func TestReadLineReturnsCopy(t *testing.T) {

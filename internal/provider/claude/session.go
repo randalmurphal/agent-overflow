@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"agent-overflow/internal/logging"
 	"agent-overflow/internal/provider"
 )
 
@@ -34,6 +35,7 @@ type Config struct {
 	AllowedTools   []string
 	PermissionMode string // "default", "acceptEdits", "bypassPermissions"
 	MaxTurns       int
+	EventLogger    *logging.Logger
 }
 
 // NewSession spawns a Claude CLI process and starts the stdout reader goroutine.
@@ -49,9 +51,12 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 	childCtx, cancel := context.WithCancel(ctx)
 
 	proc, err := provider.Spawn(childCtx, provider.SpawnConfig{
-		Binary: binary,
-		Args:   args,
-		Dir:    cfg.WorkDir,
+		Binary:      binary,
+		Args:        args,
+		Dir:         cfg.WorkDir,
+		EventLogger: cfg.EventLogger,
+		ThreadID:    threadID,
+		Provider:    string(provider.Claude),
 	})
 	if err != nil {
 		cancel()

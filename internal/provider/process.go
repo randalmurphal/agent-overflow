@@ -5,12 +5,15 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
+
+	"agent-overflow/internal/logging"
 )
 
 const (
@@ -27,20 +30,26 @@ const (
 
 // Process manages a subprocess with stdin/stdout pipes.
 type Process struct {
-	cmd    *exec.Cmd
-	stdin  io.WriteCloser
-	stdout *bufio.Scanner
-	done   chan struct{}
-	err    error
-	mu     sync.Mutex
+	cmd         *exec.Cmd
+	stdin       io.WriteCloser
+	stdout      *bufio.Scanner
+	done        chan struct{}
+	err         error
+	mu          sync.Mutex
+	eventLogger *logging.Logger
+	threadID    string
+	provider    string
 }
 
 // SpawnConfig configures subprocess creation.
 type SpawnConfig struct {
-	Binary string
-	Args   []string
-	Dir    string
-	Env    map[string]string
+	Binary      string
+	Args        []string
+	Dir         string
+	Env         map[string]string
+	EventLogger *logging.Logger
+	ThreadID    string
+	Provider    string
 }
 
 // Spawn starts a subprocess with stdin/stdout pipes and process group isolation.
@@ -85,10 +94,13 @@ func Spawn(ctx context.Context, cfg SpawnConfig) (*Process, error) {
 	scanner.Buffer(make([]byte, 0, 64*1024), maxLineSize)
 
 	p := &Process{
-		cmd:    cmd,
-		stdin:  stdin,
-		stdout: scanner,
-		done:   make(chan struct{}),
+		cmd:         cmd,
+		stdin:       stdin,
+		stdout:      scanner,
+		done:        make(chan struct{}),
+		eventLogger: cfg.EventLogger,
+		threadID:    cfg.ThreadID,
+		provider:    cfg.Provider,
 	}
 
 	// Wait goroutine: detect process exit.
@@ -118,6 +130,7 @@ func (p *Process) WriteLine(data []byte) error {
 	if err != nil {
 		return fmt.Errorf("provider: write to stdin: %w", err)
 	}
+	p.logEvent("out", data)
 	return nil
 }
 
@@ -128,6 +141,7 @@ func (p *Process) ReadLine() ([]byte, error) {
 		line := p.stdout.Bytes()
 		out := make([]byte, len(line))
 		copy(out, line)
+		p.logEvent("in", out)
 		return out, nil
 	}
 	if err := p.stdout.Err(); err != nil {
@@ -201,4 +215,19 @@ func (p *Process) signalGroup(sig syscall.Signal) {
 	}
 	// Negative PID sends to the process group.
 	_ = syscall.Kill(-p.cmd.Process.Pid, sig)
+}
+
+func (p *Process) logEvent(direction string, data []byte) {
+	if p.eventLogger == nil || p.threadID == "" || p.provider == "" {
+		return
+	}
+
+	if err := p.eventLogger.LogProviderEvent(logging.ProviderEventEntry{
+		ThreadID:  p.threadID,
+		Direction: direction,
+		Provider:  p.provider,
+		Data:      string(data),
+	}); err != nil {
+		log.Printf("provider: raw event log failed: %v", err)
+	}
 }

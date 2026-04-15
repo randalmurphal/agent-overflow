@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/discussion"
+	"agent-overflow/internal/logging"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/codex"
@@ -29,6 +30,7 @@ type App struct {
 	triage   *triage.Router
 	registry *discussion.Registry
 	channels *discussion.ChannelService
+	logger   *logging.Logger
 	mu       sync.Mutex
 	sessions map[string]session // threadID → active session
 	// channelID → active deliberation state
@@ -75,6 +77,11 @@ func (a *App) ServiceStartup(ctx context.Context, options application.ServiceOpt
 
 	a.store = st
 	a.settings = settings.NewService(dbDir)
+	a.logger, err = newProviderEventLogger(dbDir)
+	if err != nil {
+		_ = st.Close()
+		return fmt.Errorf("failed to initialize provider event logger: %w", err)
+	}
 	a.triage = triage.NewRouter(st, func(eventName string, data any) {
 		a.app.Event.Emit(eventName, data)
 	})
@@ -98,6 +105,9 @@ func (a *App) ServiceShutdown() error {
 	}
 	if a.store != nil {
 		a.store.Close()
+	}
+	if a.logger != nil {
+		_ = a.logger.Close()
 	}
 	return nil
 }
@@ -199,9 +209,10 @@ func (a *App) StartSession(threadID string) error {
 	switch t.Provider {
 	case string(provider.Claude):
 		cfg := claude.Config{
-			Model:   t.Model,
-			WorkDir: t.WorkspacePath,
-			Resume:  t.SessionRef,
+			Model:       t.Model,
+			WorkDir:     t.WorkspacePath,
+			Resume:      t.SessionRef,
+			EventLogger: a.logger,
 		}
 		sess, err := claude.NewSession(context.Background(), threadID, cfg, onEvent)
 		if err != nil {
@@ -214,6 +225,7 @@ func (a *App) StartSession(threadID string) error {
 			Model:          t.Model,
 			WorkDir:        t.WorkspacePath,
 			ResumeThreadID: t.SessionRef,
+			EventLogger:    a.logger,
 		}
 		sess, err := codex.NewSession(context.Background(), threadID, cfg, onEvent)
 		if err != nil {

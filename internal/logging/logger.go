@@ -70,32 +70,7 @@ func (l *Logger) Log(entry LogEntry) error {
 		entry.Timestamp = time.Now().UTC().Format(time.RFC3339)
 	}
 
-	data, err := json.Marshal(entry)
-	if err != nil {
-		return fmt.Errorf("logging: marshal entry: %w", err)
-	}
-	// Append newline to form one NDJSON line.
-	data = append(data, '\n')
-
-	l.mu.Lock()
-	defer l.mu.Unlock()
-
-	if l.file == nil {
-		return fmt.Errorf("logging: logger is closed")
-	}
-
-	n, err := l.file.Write(data)
-	l.written += int64(n)
-	if err != nil {
-		return fmt.Errorf("logging: write: %w", err)
-	}
-
-	if l.written >= l.maxBytes {
-		if err := l.rotate(); err != nil {
-			return fmt.Errorf("logging: rotate: %w", err)
-		}
-	}
-	return nil
+	return l.logValue(entry)
 }
 
 // Close flushes and closes the underlying file. Subsequent Log calls will
@@ -133,9 +108,9 @@ func (l *Logger) rotate() error {
 	backup2 := l.path + ".2"
 	backup1 := l.path + ".1"
 
-	_ = os.Remove(backup3)             // delete .3 (may not exist)
-	_ = os.Rename(backup2, backup3)    // .2 -> .3 (may not exist)
-	_ = os.Rename(backup1, backup2)    // .1 -> .2 (may not exist)
+	_ = os.Remove(backup3)          // delete .3 (may not exist)
+	_ = os.Rename(backup2, backup3) // .2 -> .3 (may not exist)
+	_ = os.Rename(backup1, backup2) // .1 -> .2 (may not exist)
 	if err := os.Rename(l.path, backup1); err != nil {
 		// If renaming current file fails, try to reopen it anyway so the
 		// logger remains usable.
@@ -155,5 +130,33 @@ func (l *Logger) rotate() error {
 	}
 	l.file = f
 	l.written = 0
+	return nil
+}
+
+func (l *Logger) logValue(value any) error {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return fmt.Errorf("logging: marshal entry: %w", err)
+	}
+	data = append(data, '\n')
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	if l.file == nil {
+		return fmt.Errorf("logging: logger is closed")
+	}
+
+	n, err := l.file.Write(data)
+	l.written += int64(n)
+	if err != nil {
+		return fmt.Errorf("logging: write: %w", err)
+	}
+
+	if l.written >= l.maxBytes {
+		if err := l.rotate(); err != nil {
+			return fmt.Errorf("logging: rotate: %w", err)
+		}
+	}
 	return nil
 }
