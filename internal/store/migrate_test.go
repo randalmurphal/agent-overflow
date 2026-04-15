@@ -201,15 +201,15 @@ func TestCurrentMigrationVersionEmptyTable(t *testing.T) {
 	}
 }
 
-func TestSeedLegacyMigrationVersionNoLegacySchema(t *testing.T) {
+func TestBackfillLegacyMigrationVersionsNoLegacySchema(t *testing.T) {
 	db := openSQLiteDB(t)
 
 	if err := ensureMigrationTable(db); err != nil {
 		t.Fatalf("ensure migration table: %v", err)
 	}
 
-	if err := seedLegacyMigrationVersion(db); err != nil {
-		t.Fatalf("seed legacy migration version: %v", err)
+	if err := backfillLegacyMigrationVersions(db); err != nil {
+		t.Fatalf("backfill legacy migration versions: %v", err)
 	}
 
 	version, err := currentMigrationVersion(db)
@@ -218,6 +218,69 @@ func TestSeedLegacyMigrationVersionNoLegacySchema(t *testing.T) {
 	}
 	if version != 0 {
 		t.Fatalf("expected version 0 when no legacy schema is present, got %d", version)
+	}
+}
+
+func TestMigrationExistingLegacyParityDBBackfillsVersionHistory(t *testing.T) {
+	db := openSQLiteDB(t)
+
+	if _, err := db.Exec(migrations[0].SQL); err != nil {
+		t.Fatalf("apply legacy v1 schema: %v", err)
+	}
+	if _, err := db.Exec(migrations[1].SQL); err != nil {
+		t.Fatalf("apply legacy v2 schema: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO threads (
+			id, title, provider, workspace_path, model, created_at, updated_at,
+			interaction_mode, branch, worktree_path, project_path, discussion_id, parent_thread_id
+		) VALUES (
+			'legacy-parity-thread', 'Legacy Parity', 'claude', '/tmp/workspace', 'sonnet', 1000, 1000,
+			'design', 'feature/parity', '/tmp/worktree', '/tmp/project', 'discussion-1', NULL
+		)
+	`); err != nil {
+		t.Fatalf("insert legacy parity thread: %v", err)
+	}
+
+	if err := runMigrations(db); err != nil {
+		t.Fatalf("run migrations on legacy parity db: %v", err)
+	}
+
+	rows, err := db.Query("SELECT version, name FROM migration_versions ORDER BY version")
+	if err != nil {
+		t.Fatalf("query migration versions: %v", err)
+	}
+	defer rows.Close()
+
+	type versionRow struct {
+		version int
+		name    string
+	}
+	var versions []versionRow
+	for rows.Next() {
+		var row versionRow
+		if err := rows.Scan(&row.version, &row.name); err != nil {
+			t.Fatalf("scan migration version: %v", err)
+		}
+		versions = append(versions, row)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read migration versions: %v", err)
+	}
+
+	if len(versions) != 2 {
+		t.Fatalf("expected 2 backfilled migration rows, got %d", len(versions))
+	}
+	if versions[0].version != 1 || versions[1].version != 2 {
+		t.Fatalf("unexpected backfilled versions: %+v", versions)
+	}
+
+	var count int
+	if err := db.QueryRow("SELECT COUNT(*) FROM threads WHERE id = 'legacy-parity-thread'").Scan(&count); err != nil {
+		t.Fatalf("count legacy parity thread: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("expected legacy parity thread to survive migration, got %d rows", count)
 	}
 }
 

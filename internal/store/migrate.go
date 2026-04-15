@@ -128,7 +128,7 @@ func runMigrations(db *sql.DB) error {
 	if err := ensureMigrationTable(db); err != nil {
 		return err
 	}
-	if err := seedLegacyMigrationVersion(db); err != nil {
+	if err := backfillLegacyMigrationVersions(db); err != nil {
 		return err
 	}
 
@@ -157,7 +157,7 @@ func ensureMigrationTable(db *sql.DB) error {
 	return nil
 }
 
-func seedLegacyMigrationVersion(db *sql.DB) error {
+func backfillLegacyMigrationVersions(db *sql.DB) error {
 	applied, err := currentMigrationVersion(db)
 	if err != nil {
 		return err
@@ -166,21 +166,34 @@ func seedLegacyMigrationVersion(db *sql.DB) error {
 		return nil
 	}
 
-	legacySchema, err := hasLegacyV1Schema(db)
+	legacyVersion, err := detectLegacyMigrationVersion(db)
 	if err != nil {
-		return fmt.Errorf("detect legacy schema: %w", err)
+		return fmt.Errorf("detect legacy schema version: %w", err)
 	}
-	if !legacySchema {
+	if legacyVersion == 0 {
 		return nil
 	}
 
-	log.Printf("store: detected legacy schema; recording migration v1")
-	if _, err := db.Exec(
-		"INSERT INTO migration_versions (version, name) VALUES (?, ?)",
-		migrations[0].Version,
-		migrations[0].Name,
-	); err != nil {
-		return fmt.Errorf("record legacy migration v1: %w", err)
+	log.Printf("store: detected legacy schema at v%d; backfilling migration history", legacyVersion)
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin legacy migration backfill: %w", err)
+	}
+	for _, migration := range migrations {
+		if migration.Version > legacyVersion {
+			break
+		}
+		if _, err := tx.Exec(
+			"INSERT INTO migration_versions (version, name) VALUES (?, ?)",
+			migration.Version,
+			migration.Name,
+		); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("record legacy migration v%d: %w", migration.Version, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit legacy migration backfill: %w", err)
 	}
 	return nil
 }
@@ -209,6 +222,55 @@ func hasLegacyV1Schema(db *sql.DB) (bool, error) {
 	return true, nil
 }
 
+func detectLegacyMigrationVersion(db *sql.DB) (int, error) {
+	legacyV2, err := hasLegacyV2Schema(db)
+	if err != nil {
+		return 0, err
+	}
+	if legacyV2 {
+		return 2, nil
+	}
+
+	legacyV1, err := hasLegacyV1Schema(db)
+	if err != nil {
+		return 0, err
+	}
+	if legacyV1 {
+		return 1, nil
+	}
+	return 0, nil
+}
+
+func hasLegacyV2Schema(db *sql.DB) (bool, error) {
+	for _, table := range []string{"channels", "channel_messages", "discussion_definitions", "design_artifacts"} {
+		exists, err := tableExists(db, table)
+		if err != nil {
+			return false, err
+		}
+		if !exists {
+			return false, nil
+		}
+	}
+
+	threadColumns, err := tableColumns(db, "threads")
+	if err != nil {
+		return false, err
+	}
+	for _, column := range []string{
+		"interaction_mode",
+		"branch",
+		"worktree_path",
+		"project_path",
+		"discussion_id",
+		"parent_thread_id",
+	} {
+		if !threadColumns[column] {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
 func tableExists(db *sql.DB, table string) (bool, error) {
 	var name string
 	err := db.QueryRow(
@@ -222,6 +284,34 @@ func tableExists(db *sql.DB, table string) (bool, error) {
 		return false, fmt.Errorf("lookup table %s: %w", table, err)
 	}
 	return true, nil
+}
+
+func tableColumns(db *sql.DB, table string) (map[string]bool, error) {
+	rows, err := db.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return nil, fmt.Errorf("pragma table_info(%s): %w", table, err)
+	}
+	defer rows.Close()
+
+	columns := make(map[string]bool)
+	for rows.Next() {
+		var (
+			cid        int
+			name       string
+			columnType string
+			notNull    int
+			defaultVal sql.NullString
+			pk         int
+		)
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultVal, &pk); err != nil {
+			return nil, fmt.Errorf("scan table_info(%s): %w", table, err)
+		}
+		columns[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate table_info(%s): %w", table, err)
+	}
+	return columns, nil
 }
 
 func applyPendingMigrations(db *sql.DB, applied int) error {
