@@ -179,11 +179,6 @@ func (s *Session) ThreadID() string {
 	return s.threadID
 }
 
-// CodexThreadID returns the Codex app-server's thread identifier.
-func (s *Session) CodexThreadID() string {
-	return s.codexThreadID
-}
-
 // Close shuts down the app-server process.
 func (s *Session) Close() error {
 	s.cancel()

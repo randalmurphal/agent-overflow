@@ -22,3 +22,19 @@ export function relativeTime(timestampMs: number): string {
   const months = Math.floor(days / 30);
   return `${months}mo ago`;
 }
+
+/**
+ * Format a token count for display (e.g., 1500 -> "1.5k", 2000000 -> "2.0M").
+ */
+export function formatTokens(n: number): string {
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
+  if (n >= 1_000) return (n / 1_000).toFixed(1) + 'k';
+  return String(n);
+}
+
+/**
+ * Format a USD cost for display.
+ */
+export function formatCost(usd: number): string {
+  return '$' + usd.toFixed(4);
+}

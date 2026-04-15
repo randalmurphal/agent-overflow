@@ -181,8 +181,9 @@ func parseAssistant(threadID string, raw map[string]json.RawMessage, now time.Ti
 
 func parseResult(threadID string, raw map[string]json.RawMessage, now time.Time, line []byte) ([]provider.ProviderEvent, error) {
 	var result struct {
-		IsError bool   `json:"is_error"`
-		Error   string `json:"error,omitempty"`
+		IsError   bool   `json:"is_error"`
+		Error     string `json:"error,omitempty"`
+		SessionID string `json:"session_id,omitempty"`
 	}
 
 	data, _ := json.Marshal(raw)

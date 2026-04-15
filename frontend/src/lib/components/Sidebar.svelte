@@ -1,4 +1,5 @@
 <script lang="ts">
+  import type { Thread } from '../types/models';
   import type { ThreadPane } from '../stores/thread.svelte';
   import { CreateThread, StartSession } from '../stores/bindings';
   import { prependThread } from '../stores/threads.svelte';
@@ -17,7 +18,7 @@
 
     creating = true;
     try {
-      const thread = await CreateThread(provider, workspacePath.trim(), model.trim());
+      const thread = await CreateThread(provider, workspacePath.trim(), model.trim()) as Thread;
       prependThread(thread);
       pane.switchThread(thread);
 

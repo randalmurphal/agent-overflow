@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { ThreadPane } from '../stores/thread.svelte';
+  import { formatTokens, formatCost } from '../utils/format';
 
   let { pane }: { pane: ThreadPane } = $props();
 
@@ -12,16 +13,6 @@
       default: return 'bg-text-secondary/50';
     }
   });
-
-  function formatTokens(n: number): string {
-    if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
-    if (n >= 1_000) return (n / 1_000).toFixed(1) + 'k';
-    return String(n);
-  }
-
-  function formatCost(usd: number): string {
-    return '$' + usd.toFixed(4);
-  }
 </script>
 
 <div class="border-t border-border bg-surface-0 px-4 py-1.5 flex items-center gap-4 text-xs text-text-secondary">

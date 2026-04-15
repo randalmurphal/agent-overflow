@@ -3,7 +3,7 @@
   import type { ThreadPane } from '../stores/thread.svelte';
   import { ArchiveThread } from '../stores/bindings';
   import { removeThread } from '../stores/threads.svelte';
-  import { relativeTime } from '../utils/time';
+  import { relativeTime } from '../utils/format';
 
   let { thread, pane }: { thread: Thread; pane: ThreadPane } = $props();
 

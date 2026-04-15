@@ -9,7 +9,7 @@ export function getThreads(): Thread[] {
 
 export async function refreshThreads(): Promise<void> {
   try {
-    threads = await ListThreads();
+    threads = await ListThreads() as Thread[];
   } catch (err) {
     console.error('Failed to load threads:', err);
   }

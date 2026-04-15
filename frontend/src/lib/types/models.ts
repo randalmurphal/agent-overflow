@@ -1,11 +1,34 @@
-// Re-export Wails-generated types for convenience.
-// These are the canonical types matching Go structs exactly.
-export { store } from '../../../wailsjs/go/models';
-export type Thread = import('../../../wailsjs/go/models').store.Thread;
-export type Item = import('../../../wailsjs/go/models').store.Item;
-export type PayloadMeta = import('../../../wailsjs/go/models').store.PayloadMeta;
+export interface Thread {
+  id: string;
+  title: string;
+  provider: 'claude' | 'codex';
+  sessionRef?: string;
+  workspacePath: string;
+  model: string;
+  createdAt: number;
+  updatedAt: number;
+  archived: boolean;
+}
 
-// Meta types parsed from PayloadMeta.meta JSON string.
+export interface Item {
+  id: string;
+  threadId: string;
+  turnIndex: number;
+  itemIndex: number;
+  kind: string;
+  role: string;
+  summary: string;
+  payloadId?: string;
+  createdAt: number;
+}
+
+export interface PayloadMeta {
+  id: string;
+  kind: string;
+  meta: string; // JSON string — parse based on kind
+  createdAt: number;
+}
+
 export interface DiffMeta {
   filePath: string;
   changeKind: 'added' | 'modified' | 'deleted' | 'renamed';

@@ -44,14 +44,14 @@ export function createThreadPane() {
       thread = newThread;
 
       try {
-        items = await ListItems(newThread.id);
+        items = await ListItems(newThread.id) as Item[];
       } catch (err) {
         console.error('Failed to load items:', err);
         items = [];
       }
 
       try {
-        const metas = await ListPayloadMetas(newThread.id);
+        const metas = await ListPayloadMetas(newThread.id) as PayloadMeta[];
         payloadMetas = new Map((metas ?? []).map((m: PayloadMeta) => [m.id, m]));
       } catch (err) {
         console.error('Failed to load payload metas:', err);

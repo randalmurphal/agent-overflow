@@ -2,7 +2,9 @@
   import type { ThreadPane } from '../stores/thread.svelte';
   import MessageTimeline from './MessageTimeline.svelte';
   import ApprovalPrompt from './ApprovalPrompt.svelte';
+  import BackgroundTray from './BackgroundTray.svelte';
   import Composer from './Composer.svelte';
+  import ComposerControls from './ComposerControls.svelte';
   import StatusBar from './StatusBar.svelte';
 
   let { pane }: { pane: ThreadPane } = $props();
@@ -20,6 +22,8 @@
 
     <MessageTimeline {pane} />
     <ApprovalPrompt {pane} />
+    <BackgroundTray {pane} />
+    <ComposerControls {pane} />
     <Composer {pane} />
     <StatusBar {pane} />
   </div>
