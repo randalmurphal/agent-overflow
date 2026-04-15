@@ -1,8 +1,11 @@
 package codex
 
 import (
+	"context"
 	"encoding/json"
+	"os"
 	"testing"
+	"time"
 
 	"agent-overflow/internal/provider"
 )
@@ -494,19 +497,34 @@ func TestBuildApprovalMetaFileChange(t *testing.T) {
 }
 
 func TestReadStringFromResponse(t *testing.T) {
-	data := json.RawMessage(`{"result":{"thread":{"id":"thread-abc"}}}`)
-
-	got := readStringFromResponse(data, "result", "thread", "id")
+	// sendRequest returns just the result payload, not the full JSON-RPC envelope.
+	data := json.RawMessage(`{"thread":{"id":"thread-abc"}}`)
+	got := readStringFromResponse(data, "thread", "id")
 	if got != "thread-abc" {
 		t.Errorf("got %q, want %q", got, "thread-abc")
 	}
 }
 
 func TestReadStringFromResponseMissingKey(t *testing.T) {
-	data := json.RawMessage(`{"result":{}}`)
-	got := readStringFromResponse(data, "result", "thread", "id")
+	data := json.RawMessage(`{}`)
+	got := readStringFromResponse(data, "thread", "id")
 	if got != "" {
 		t.Errorf("got %q, want empty", got)
+	}
+}
+
+func TestReadStringFromResponseInvalidJSON(t *testing.T) {
+	got := readStringFromResponse(json.RawMessage(`not json`), "key")
+	if got != "" {
+		t.Errorf("got %q, want empty", got)
+	}
+}
+
+func TestReadStringFromResponseNonStringValue(t *testing.T) {
+	data := json.RawMessage(`{"count": 42}`)
+	got := readStringFromResponse(data, "count")
+	if got != "" {
+		t.Errorf("got %q, want empty for non-string value", got)
 	}
 }
 
@@ -551,5 +569,450 @@ func TestDispatchLineNotification(t *testing.T) {
 	}
 	if events[0].Kind != provider.EventTurnStart {
 		t.Errorf("kind: got %q, want %q", events[0].Kind, provider.EventTurnStart)
+	}
+}
+
+func TestDispatchLineInvalidJSON(t *testing.T) {
+	s := &Session{
+		pending: make(map[int64]chan json.RawMessage),
+		onEvent: func(evt provider.ProviderEvent) {},
+	}
+	// Should not panic — logs and returns.
+	s.dispatchLine([]byte(`not valid json`))
+}
+
+func TestDispatchLineResponseNonIntegerID(t *testing.T) {
+	s := &Session{
+		pending: make(map[int64]chan json.RawMessage),
+		onEvent: func(evt provider.ProviderEvent) {},
+	}
+	// Float ID — Int64() fails, logged and returned.
+	s.dispatchLine([]byte(`{"jsonrpc":"2.0","id":1.5,"result":{}}`))
+}
+
+func TestDispatchLineResponseNoMatchingPending(t *testing.T) {
+	s := &Session{
+		pending: make(map[int64]chan json.RawMessage),
+		onEvent: func(evt provider.ProviderEvent) {},
+	}
+	// Valid response but no pending channel for id=999 — silently ignored.
+	s.dispatchLine([]byte(`{"jsonrpc":"2.0","id":999,"result":{}}`))
+}
+
+func TestDispatchLineServerRequest(t *testing.T) {
+	var events []provider.ProviderEvent
+	s := &Session{
+		threadID: "t1",
+		pending:  make(map[int64]chan json.RawMessage),
+		onEvent: func(evt provider.ProviderEvent) {
+			events = append(events, evt)
+		},
+	}
+
+	// Server request with id + method — routes to handleServerRequest.
+	ctx, cancel := context.WithCancel(context.Background())
+	proc, err := provider.Spawn(ctx, provider.SpawnConfig{Binary: "cat"})
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+	defer func() {
+		cancel()
+		proc.Close()
+	}()
+	s.proc = proc
+
+	line := []byte(`{"jsonrpc":"2.0","id":1,"method":"item/commandExecution/requestApproval","params":{"command":"ls"}}`)
+	s.dispatchLine(line)
+
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if events[0].Kind != provider.EventApprovalRequest {
+		t.Errorf("kind: got %q, want %q", events[0].Kind, provider.EventApprovalRequest)
+	}
+}
+
+func TestDispatchLineServerRequestNonIntegerID(t *testing.T) {
+	s := &Session{
+		pending: make(map[int64]chan json.RawMessage),
+		onEvent: func(evt provider.ProviderEvent) {},
+	}
+	// Server request with float ID — logged and returned.
+	s.dispatchLine([]byte(`{"jsonrpc":"2.0","id":1.5,"method":"item/commandExecution/requestApproval","params":{}}`))
+}
+
+// -- Session lifecycle tests using cat subprocess --
+
+// newTestCodexSession creates a Session backed by `cat`, which echoes
+// stdin to stdout. readLoop is started, enabling end-to-end testing of
+// dispatch, notifications, responses, and server requests.
+func newTestCodexSession(t *testing.T) (*Session, <-chan provider.ProviderEvent) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	proc, err := provider.Spawn(ctx, provider.SpawnConfig{Binary: "cat"})
+	if err != nil {
+		t.Fatalf("spawn cat: %v", err)
+	}
+	eventCh := make(chan provider.ProviderEvent, 100)
+	s := &Session{
+		proc:          proc,
+		threadID:      testThread,
+		codexThreadID: "codex-thread-1",
+		pending:       make(map[int64]chan json.RawMessage),
+		onEvent: func(evt provider.ProviderEvent) {
+			eventCh <- evt
+		},
+		cancel: cancel,
+	}
+	go s.readLoop()
+	t.Cleanup(func() {
+		cancel()
+		proc.Close()
+	})
+	return s, eventCh
+}
+
+func codexWaitEvent(t *testing.T, ch <-chan provider.ProviderEvent) provider.ProviderEvent {
+	t.Helper()
+	select {
+	case evt := <-ch:
+		return evt
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for event")
+		return provider.ProviderEvent{}
+	}
+}
+
+func TestCodexWriteNotification(t *testing.T) {
+	s, _ := newTestCodexSession(t)
+
+	if err := s.writeNotification("initialized", nil); err != nil {
+		t.Fatalf("writeNotification: %v", err)
+	}
+	if err := s.writeNotification("test/method", map[string]any{"key": "value"}); err != nil {
+		t.Fatalf("writeNotification with params: %v", err)
+	}
+}
+
+func TestCodexWriteResponse(t *testing.T) {
+	s, _ := newTestCodexSession(t)
+
+	if err := s.writeResponse(42, map[string]any{"ok": true}); err != nil {
+		t.Fatalf("writeResponse: %v", err)
+	}
+}
+
+func TestCodexRespondToApprovalMethod(t *testing.T) {
+	s, _ := newTestCodexSession(t)
+
+	tests := []struct {
+		name     string
+		decision string
+	}{
+		{"allow", "allow"},
+		{"deny", "deny"},
+		{"allow_session", "allow_session"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := s.RespondToApproval(context.Background(), 42, tt.decision)
+			if err != nil {
+				t.Fatalf("RespondToApproval(%s): %v", tt.decision, err)
+			}
+		})
+	}
+}
+
+func TestCodexThreadIDAccessor(t *testing.T) {
+	s, _ := newTestCodexSession(t)
+	if got := s.ThreadID(); got != testThread {
+		t.Errorf("ThreadID: got %q, want %q", got, testThread)
+	}
+}
+
+func TestCodexReadLoopDispatchesNotification(t *testing.T) {
+	s, eventCh := newTestCodexSession(t)
+
+	// Write a turn/started notification through cat.
+	line := []byte(`{"jsonrpc":"2.0","method":"turn/started","params":{"turn":{"id":"turn-1"}}}`)
+	if err := s.proc.WriteLine(line); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	evt := codexWaitEvent(t, eventCh)
+	if evt.Kind != provider.EventTurnStart {
+		t.Errorf("kind: got %q, want %q", evt.Kind, provider.EventTurnStart)
+	}
+	if evt.TurnID != "turn-1" {
+		t.Errorf("turnID: got %q, want %q", evt.TurnID, "turn-1")
+	}
+}
+
+func TestCodexReadLoopRoutesResponseToPending(t *testing.T) {
+	s, _ := newTestCodexSession(t)
+
+	// Set up a pending request.
+	ch := make(chan json.RawMessage, 1)
+	s.mu.Lock()
+	s.pending[42] = ch
+	s.mu.Unlock()
+
+	// Write a response with id=42 through cat.
+	respLine := []byte(`{"jsonrpc":"2.0","id":42,"result":{"ok":true}}`)
+	if err := s.proc.WriteLine(respLine); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	select {
+	case resp := <-ch:
+		if resp == nil {
+			t.Fatal("expected non-nil response")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for response on pending channel")
+	}
+
+	s.mu.Lock()
+	delete(s.pending, 42)
+	s.mu.Unlock()
+}
+
+func TestCodexHandleServerRequestApproval(t *testing.T) {
+	s, eventCh := newTestCodexSession(t)
+
+	// Write an approval server request through cat.
+	line := []byte(`{"jsonrpc":"2.0","id":1,"method":"item/commandExecution/requestApproval","params":{"command":"rm -rf /"}}`)
+	if err := s.proc.WriteLine(line); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	evt := codexWaitEvent(t, eventCh)
+	if evt.Kind != provider.EventApprovalRequest {
+		t.Errorf("kind: got %q, want %q", evt.Kind, provider.EventApprovalRequest)
+	}
+
+	var approval provider.ApprovalRequest
+	if err := json.Unmarshal(evt.Meta, &approval); err != nil {
+		t.Fatalf("unmarshal approval: %v", err)
+	}
+	if approval.RequestID != "1" {
+		t.Errorf("requestID: got %q, want %q", approval.RequestID, "1")
+	}
+	if approval.ToolName != "command" {
+		t.Errorf("toolName: got %q, want %q", approval.ToolName, "command")
+	}
+}
+
+func TestCodexHandleServerRequestFileApproval(t *testing.T) {
+	s, eventCh := newTestCodexSession(t)
+
+	line := []byte(`{"jsonrpc":"2.0","id":2,"method":"item/fileChange/requestApproval","params":{"filePath":"/tmp/test.go"}}`)
+	if err := s.proc.WriteLine(line); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	evt := codexWaitEvent(t, eventCh)
+	if evt.Kind != provider.EventApprovalRequest {
+		t.Errorf("kind: got %q, want %q", evt.Kind, provider.EventApprovalRequest)
+	}
+}
+
+func TestCodexHandleServerRequestUnknown(t *testing.T) {
+	s, _ := newTestCodexSession(t)
+
+	// Unknown server request — should send error response.
+	// With cat, the error response echoes back. We just verify no crash.
+	line := []byte(`{"jsonrpc":"2.0","id":1,"method":"unknown/request","params":{}}`)
+	if err := s.proc.WriteLine(line); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	// Give readLoop time to process both the original and echo.
+	time.Sleep(200 * time.Millisecond)
+}
+
+func TestCodexSendRequestViaCat(t *testing.T) {
+	s, _ := newTestCodexSession(t)
+
+	// With cat: request echoes -> dispatchLine sees server request (id + method) ->
+	// handleServerRequest sends JSON-RPC error (unknown method) -> error echoes ->
+	// dispatchLine sees response -> routes to pending -> sendRequest receives it.
+	// After the handleServerRequest fix, error is at top level, so sendRequest returns error.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := s.sendRequest(ctx, "test/method", map[string]any{"key": "value"})
+	if err == nil {
+		t.Fatal("expected error from sendRequest (unknown method)")
+	}
+}
+
+func TestCodexSendRequestContextCancel(t *testing.T) {
+	s, _ := newTestCodexSession(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately
+
+	_, err := s.sendRequest(ctx, "test/method", nil)
+	if err == nil {
+		t.Fatal("expected context canceled error")
+	}
+}
+
+func TestCodexSend(t *testing.T) {
+	s, _ := newTestCodexSession(t)
+
+	// Send calls sendRequest("turn/start"). With cat, this goes through the
+	// echo cycle and returns an error (unknown method). Send propagates it.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	err := s.Send(ctx, "hello world")
+	// Expected to fail because cat echo + handleServerRequest produces error response.
+	if err == nil {
+		t.Fatal("expected error from Send via cat echo")
+	}
+}
+
+func TestCodexInterrupt(t *testing.T) {
+	s, _ := newTestCodexSession(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	err := s.Interrupt(ctx, "turn-1")
+	// Expected to fail because cat echo + handleServerRequest produces error response.
+	if err == nil {
+		t.Fatal("expected error from Interrupt via cat echo")
+	}
+}
+
+func TestCodexReadLoopEmitsDisconnectedOnExit(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	proc, err := provider.Spawn(ctx, provider.SpawnConfig{Binary: "cat"})
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+	eventCh := make(chan provider.ProviderEvent, 100)
+	s := &Session{
+		proc:          proc,
+		threadID:      testThread,
+		codexThreadID: "test",
+		pending:       make(map[int64]chan json.RawMessage),
+		onEvent: func(evt provider.ProviderEvent) {
+			eventCh <- evt
+		},
+		cancel: cancel,
+	}
+	go s.readLoop()
+
+	s.Close()
+
+	var gotDisconnected bool
+	timeout := time.After(5 * time.Second)
+	for !gotDisconnected {
+		select {
+		case evt := <-eventCh:
+			if evt.Kind == provider.EventSessionStatus && evt.Content == "disconnected" {
+				gotDisconnected = true
+			}
+		case <-timeout:
+			t.Fatal("timeout waiting for disconnected event")
+		}
+	}
+}
+
+func TestCodexReadLoopCleansPendingOnExit(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	proc, err := provider.Spawn(ctx, provider.SpawnConfig{Binary: "cat"})
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+	eventCh := make(chan provider.ProviderEvent, 100)
+	s := &Session{
+		proc:          proc,
+		threadID:      testThread,
+		codexThreadID: "test",
+		pending:       make(map[int64]chan json.RawMessage),
+		onEvent: func(evt provider.ProviderEvent) {
+			eventCh <- evt
+		},
+		cancel: cancel,
+	}
+
+	// Add a pending request before readLoop starts.
+	pendingCh := make(chan json.RawMessage, 1)
+	s.mu.Lock()
+	s.pending[99] = pendingCh
+	s.mu.Unlock()
+
+	go s.readLoop()
+
+	// Kill the process — readLoop should clean up pending.
+	s.Close()
+
+	// The pending channel should be closed.
+	select {
+	case _, ok := <-pendingCh:
+		if ok {
+			t.Error("expected pending channel to be closed, got a value")
+		}
+		// Channel was closed — correct.
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for pending channel to be closed")
+	}
+}
+
+func TestCodexNewSessionWithMock(t *testing.T) {
+	// Create a mock Codex app-server script that responds to JSON-RPC requests.
+	script := `#!/bin/bash
+while IFS= read -r line; do
+    id=$(echo "$line" | grep -o '"id":[0-9]*' | head -1 | grep -o '[0-9]*')
+    if [ -n "$id" ]; then
+        echo "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"thread\":{\"id\":\"mock-thread-123\"}}}"
+    fi
+done
+`
+	scriptDir := t.TempDir()
+	scriptPath := scriptDir + "/codex"
+	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
+		t.Fatalf("write mock script: %v", err)
+	}
+
+	ctx := context.Background()
+	eventCh := make(chan provider.ProviderEvent, 100)
+	s, err := NewSession(ctx, testThread, Config{
+		Binary:  scriptPath,
+		Model:   "test-model",
+		WorkDir: "/tmp",
+	}, func(evt provider.ProviderEvent) {
+		eventCh <- evt
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer s.Close()
+
+	if s.threadID != testThread {
+		t.Errorf("threadID: got %q, want %q", s.threadID, testThread)
+	}
+	if s.codexThreadID != "mock-thread-123" {
+		t.Errorf("codexThreadID: got %q, want %q", s.codexThreadID, "mock-thread-123")
+	}
+
+	// EventInit should have been emitted.
+	evt := codexWaitEvent(t, eventCh)
+	if evt.Kind != provider.EventInit {
+		t.Errorf("kind: got %q, want %q", evt.Kind, provider.EventInit)
+	}
+	var info provider.SessionInfo
+	if err := json.Unmarshal(evt.Meta, &info); err != nil {
+		t.Fatalf("unmarshal session info: %v", err)
+	}
+	if info.SessionID != "mock-thread-123" {
+		t.Errorf("sessionID: got %q, want %q", info.SessionID, "mock-thread-123")
+	}
+	if info.Model != "test-model" {
+		t.Errorf("model: got %q, want %q", info.Model, "test-model")
 	}
 }

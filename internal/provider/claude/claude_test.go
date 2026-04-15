@@ -2,9 +2,11 @@ package claude
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"os"
 	"testing"
+	"time"
 
 	"agent-overflow/internal/provider"
 )
@@ -651,5 +653,247 @@ func TestInterruptFormat(t *testing.T) {
 	json.Unmarshal(parsed["control"], &control)
 	if control.Type != "interrupt" {
 		t.Errorf("control type: got %q, want %q", control.Type, "interrupt")
+	}
+}
+
+// -- Session lifecycle tests using cat subprocess --
+
+// newTestClaudeSession creates a Session backed by `cat`, which echoes
+// stdin to stdout. This lets us exercise readLoop, Send, etc. without
+// a real Claude CLI binary.
+func newTestClaudeSession(t *testing.T) (*Session, <-chan provider.ProviderEvent) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	proc, err := provider.Spawn(ctx, provider.SpawnConfig{Binary: "cat"})
+	if err != nil {
+		t.Fatalf("spawn cat: %v", err)
+	}
+	eventCh := make(chan provider.ProviderEvent, 100)
+	s := &Session{
+		proc:     proc,
+		threadID: testThread,
+		onEvent: func(evt provider.ProviderEvent) {
+			eventCh <- evt
+		},
+		cancel: cancel,
+	}
+	go s.readLoop()
+	t.Cleanup(func() {
+		cancel()
+		proc.Close()
+	})
+	return s, eventCh
+}
+
+func waitEvent(t *testing.T, ch <-chan provider.ProviderEvent) provider.ProviderEvent {
+	t.Helper()
+	select {
+	case evt := <-ch:
+		return evt
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for event")
+		return provider.ProviderEvent{}
+	}
+}
+
+func TestNewSessionWithMock(t *testing.T) {
+	// NewSession passes CLI flags (--input-format, --output-format, --verbose)
+	// that real `cat` rejects. Use a bash one-liner that ignores args and echoes.
+	ctx := context.Background()
+	eventCh := make(chan provider.ProviderEvent, 100)
+	s, err := NewSession(ctx, testThread, Config{
+		Binary: "bash",
+		Model:  "", // keep args minimal
+	}, func(evt provider.ProviderEvent) {
+		eventCh <- evt
+	})
+
+	// NewSession spawns bash with args: --input-format stream-json --output-format stream-json --verbose
+	// bash doesn't understand these either. Use a different approach:
+	// override the binary to a script that ignores args.
+	if err != nil {
+		// Expected: bash doesn't understand Claude CLI flags.
+		// Test NewSession more directly via the helper instead.
+		t.Skipf("NewSession with bash fails as expected: %v", err)
+	}
+	defer s.Close()
+
+	if s.threadID != testThread {
+		t.Errorf("threadID: got %q, want %q", s.threadID, testThread)
+	}
+}
+
+func TestNewSessionSpawnsAndRunsReadLoop(t *testing.T) {
+	// Create a script that ignores args and acts like cat.
+	scriptDir := t.TempDir()
+	scriptPath := scriptDir + "/mock-claude"
+	if err := os.WriteFile(scriptPath, []byte("#!/bin/bash\nexec cat\n"), 0755); err != nil {
+		t.Fatalf("write mock script: %v", err)
+	}
+
+	ctx := context.Background()
+	eventCh := make(chan provider.ProviderEvent, 100)
+	s, err := NewSession(ctx, testThread, Config{Binary: scriptPath}, func(evt provider.ProviderEvent) {
+		eventCh <- evt
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer s.Close()
+
+	if s.threadID != testThread {
+		t.Errorf("threadID: got %q, want %q", s.threadID, testThread)
+	}
+	if s.proc == nil {
+		t.Fatal("proc is nil")
+	}
+
+	// readLoop should be running — verify by writing an init event.
+	initLine := []byte(`{"type":"system","subtype":"init","session_id":"cat-sess","model":"opus","cwd":"/tmp","tools":[],"claude_code_version":"1.0"}`)
+	if err := s.proc.WriteLine(initLine); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	evt := waitEvent(t, eventCh)
+	if evt.Kind != provider.EventInit {
+		t.Errorf("kind: got %q, want %q", evt.Kind, provider.EventInit)
+	}
+	if s.SessionID() != "cat-sess" {
+		t.Errorf("sessionID: got %q, want %q", s.SessionID(), "cat-sess")
+	}
+}
+
+func TestSessionSend(t *testing.T) {
+	s, _ := newTestClaudeSession(t)
+	if err := s.Send(context.Background(), "hello world"); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+}
+
+func TestSessionInterrupt(t *testing.T) {
+	s, _ := newTestClaudeSession(t)
+	if err := s.Interrupt(context.Background()); err != nil {
+		t.Fatalf("Interrupt: %v", err)
+	}
+}
+
+func TestSessionRespondToApproval(t *testing.T) {
+	s, _ := newTestClaudeSession(t)
+
+	decisions := []string{"allow", "deny", "allow_session"}
+	for _, d := range decisions {
+		t.Run(d, func(t *testing.T) {
+			err := s.RespondToApproval(context.Background(), provider.ApprovalResponse{
+				RequestID: "req-1",
+				Decision:  d,
+			})
+			if err != nil {
+				t.Fatalf("RespondToApproval(%s): %v", d, err)
+			}
+		})
+	}
+}
+
+func TestSessionIDAccessor(t *testing.T) {
+	s, eventCh := newTestClaudeSession(t)
+
+	// Before init, session ID should be empty.
+	if s.SessionID() != "" {
+		t.Errorf("SessionID should be empty before init, got %q", s.SessionID())
+	}
+
+	// Write init to set it.
+	initLine := []byte(`{"type":"system","subtype":"init","session_id":"test-sid","model":"opus","cwd":"/","tools":[],"claude_code_version":"1.0"}`)
+	if err := s.proc.WriteLine(initLine); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	waitEvent(t, eventCh) // wait for init event to be processed
+
+	if s.SessionID() != "test-sid" {
+		t.Errorf("SessionID: got %q, want %q", s.SessionID(), "test-sid")
+	}
+}
+
+func TestReadLoopDispatchesTextDelta(t *testing.T) {
+	s, eventCh := newTestClaudeSession(t)
+
+	line := []byte(`{"type":"assistant","message":{"id":"msg-1","role":"assistant","content":[{"type":"text","text":"streaming text"}]}}`)
+	if err := s.proc.WriteLine(line); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	evt := waitEvent(t, eventCh)
+	if evt.Kind != provider.EventTextDelta {
+		t.Errorf("kind: got %q, want %q", evt.Kind, provider.EventTextDelta)
+	}
+	if evt.Content != "streaming text" {
+		t.Errorf("content: got %q, want %q", evt.Content, "streaming text")
+	}
+}
+
+func TestReadLoopDispatchesTurnComplete(t *testing.T) {
+	s, eventCh := newTestClaudeSession(t)
+
+	line := []byte(`{"type":"result","subtype":"success","is_error":false,"result":"Done","session_id":"s1"}`)
+	if err := s.proc.WriteLine(line); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	evt := waitEvent(t, eventCh)
+	if evt.Kind != provider.EventTurnComplete {
+		t.Errorf("kind: got %q, want %q", evt.Kind, provider.EventTurnComplete)
+	}
+}
+
+func TestReadLoopContinuesOnParseError(t *testing.T) {
+	s, eventCh := newTestClaudeSession(t)
+
+	// Write invalid JSON — readLoop should log and continue.
+	if err := s.proc.WriteLine([]byte(`not valid json at all`)); err != nil {
+		t.Fatalf("write bad line: %v", err)
+	}
+
+	// Write valid event after — readLoop should still be running.
+	if err := s.proc.WriteLine([]byte(`{"type":"result","subtype":"success","is_error":false}`)); err != nil {
+		t.Fatalf("write good line: %v", err)
+	}
+
+	evt := waitEvent(t, eventCh)
+	if evt.Kind != provider.EventTurnComplete {
+		t.Errorf("expected turn_complete after parse error recovery, got %q", evt.Kind)
+	}
+}
+
+func TestReadLoopEmitsDisconnectedOnExit(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	proc, err := provider.Spawn(ctx, provider.SpawnConfig{Binary: "cat"})
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+	eventCh := make(chan provider.ProviderEvent, 100)
+	s := &Session{
+		proc:     proc,
+		threadID: testThread,
+		onEvent: func(evt provider.ProviderEvent) {
+			eventCh <- evt
+		},
+		cancel: cancel,
+	}
+	go s.readLoop()
+
+	// Close the session — should emit disconnected.
+	s.Close()
+
+	var gotDisconnected bool
+	timeout := time.After(5 * time.Second)
+	for !gotDisconnected {
+		select {
+		case evt := <-eventCh:
+			if evt.Kind == provider.EventSessionStatus && evt.Content == "disconnected" {
+				gotDisconnected = true
+			}
+		case <-timeout:
+			t.Fatal("timeout waiting for disconnected event")
+		}
 	}
 }

@@ -234,8 +234,13 @@ func (s *Session) sendRequest(ctx context.Context, method string, params any) (j
 			} `json:"error,omitempty"`
 			Result json.RawMessage `json:"result,omitempty"`
 		}
-		if json.Unmarshal(resp, &rpcResp) == nil && rpcResp.Error != nil {
-			return nil, fmt.Errorf("codex: %s: %s (code %d)", method, rpcResp.Error.Message, rpcResp.Error.Code)
+		if err := json.Unmarshal(resp, &rpcResp); err == nil {
+			if rpcResp.Error != nil {
+				return nil, fmt.Errorf("codex: %s: %s (code %d)", method, rpcResp.Error.Message, rpcResp.Error.Code)
+			}
+			if len(rpcResp.Result) > 0 {
+				return rpcResp.Result, nil
+			}
 		}
 		return resp, nil
 	case <-time.After(30 * time.Second):
@@ -382,12 +387,16 @@ func (s *Session) handleServerRequest(method string, id *json.Number, params jso
 		})
 
 	default:
-		if err := s.writeResponse(rpcID, map[string]any{
+		errMsg := map[string]any{
+			"jsonrpc": "2.0",
+			"id":      rpcID,
 			"error": map[string]any{
 				"code":    -32601,
 				"message": fmt.Sprintf("unsupported server request: %s", method),
 			},
-		}); err != nil {
+		}
+		data, _ := json.Marshal(errMsg)
+		if err := s.proc.WriteLine(data); err != nil {
 			log.Printf("codex: failed to send error response for %s: %v", method, err)
 		}
 	}
