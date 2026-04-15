@@ -3,11 +3,13 @@ package main
 import (
 	"context"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
 	"agent-overflow/internal/design"
 	"agent-overflow/internal/provider/codex"
+	"agent-overflow/internal/settings"
 	"agent-overflow/internal/store"
 )
 
@@ -92,6 +94,39 @@ func TestDesignSessionConfigRegistersCodexMCP(t *testing.T) {
 	}
 }
 
+func TestStartSessionCleansUpDesignMCPRegistrationOnFailure(t *testing.T) {
+	app := newTestAppWithDesign(t)
+	app.settings = settings.NewService(t.TempDir())
+
+	thread, err := app.store.GetThread("thread-design")
+	if err != nil {
+		t.Fatalf("GetThread() error = %v", err)
+	}
+	thread.WorkspacePath = t.TempDir()
+	thread.ProjectPath = thread.WorkspacePath
+	if err := app.store.UpdateThread(thread); err != nil {
+		t.Fatalf("UpdateThread() error = %v", err)
+	}
+
+	if _, err := app.settings.Update(map[string]any{
+		"codexBinaryPath": filepath.Join(t.TempDir(), "missing-codex"),
+	}); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+
+	if got := designMCPRegistrationCount(app.designMCP); got != 0 {
+		t.Fatalf("registration count before StartSession = %d, want 0", got)
+	}
+
+	if err := app.StartSession(thread.ID); err == nil {
+		t.Fatal("StartSession() error = nil, want failure")
+	}
+
+	if got := designMCPRegistrationCount(app.designMCP); got != 0 {
+		t.Fatalf("registration count after failed StartSession = %d, want 0", got)
+	}
+}
+
 func newTestAppWithDesign(t *testing.T) *App {
 	t.Helper()
 
@@ -129,4 +164,11 @@ func waitForAppDesignRequest(t *testing.T, app *App) design.DesignOptionsRequest
 	}
 	t.Fatal("timed out waiting for design request")
 	return design.DesignOptionsRequest{}
+}
+
+func designMCPRegistrationCount(server *codex.DesignMCPServer) int {
+	if server == nil {
+		return 0
+	}
+	return reflect.ValueOf(server).Elem().FieldByName("threadToToken").Len()
 }

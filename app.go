@@ -211,17 +211,22 @@ func (a *App) StartSession(threadID string) error {
 	threadPrompt := a.threadSystemPrompt(threadID)
 
 	a.mu.Lock()
-	defer a.mu.Unlock()
+	existing, ok := a.sessions[threadID]
+	if ok {
+		delete(a.sessions, threadID)
+	}
+	a.mu.Unlock()
 
-	// Stop existing session if any.
-	if existing, ok := a.sessions[threadID]; ok {
+	// Stop the old runtime before starting a replacement so thread-scoped
+	// design state does not leak across reconnects or restart attempts.
+	if ok {
+		a.teardownDesignThread(threadID)
 		if existing.claude != nil {
 			existing.claude.Close()
 		}
 		if existing.codex != nil {
 			existing.codex.Close()
 		}
-		delete(a.sessions, threadID)
 	}
 
 	switch t.Provider {
@@ -241,13 +246,16 @@ func (a *App) StartSession(threadID string) error {
 		}
 		sess, err := claude.NewSession(context.Background(), threadID, cfg, onEvent)
 		if err != nil {
+			a.teardownDesignThread(threadID)
 			return fmt.Errorf("start session: %w", err)
 		}
+		a.mu.Lock()
 		a.sessions[threadID] = session{
 			provider: string(provider.Claude),
 			token:    sessionToken,
 			claude:   sess,
 		}
+		a.mu.Unlock()
 
 	case string(provider.Codex):
 		designCfg, err := a.designSessionConfig(t)
@@ -266,13 +274,16 @@ func (a *App) StartSession(threadID string) error {
 		}
 		sess, err := codex.NewSession(context.Background(), threadID, cfg, onEvent)
 		if err != nil {
+			a.teardownDesignThread(threadID)
 			return fmt.Errorf("start session: %w", err)
 		}
+		a.mu.Lock()
 		a.sessions[threadID] = session{
 			provider: string(provider.Codex),
 			token:    sessionToken,
 			codex:    sess,
 		}
+		a.mu.Unlock()
 
 	default:
 		return fmt.Errorf("unknown provider: %s", t.Provider)
