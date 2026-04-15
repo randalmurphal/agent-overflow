@@ -43,10 +43,12 @@
 - `WI-4.4: Deliberation engine`
 - `WI-4.5: Discussion Wails bindings`
 - `WI-5.1: Design artifact storage`
+- `WI-5.2: Design system prompt`
 - `WI-6.2: Provider event logging`
 
 ## Iteration Log
 
+- 2026-04-15: Completed `WI-5.2` by adding the backend design-system prompt loader with a bundled default prompt and `configDir/prompts/design-mode.md` override support, plus direct tests for default and override resolution. `go build ./...`, `go vet ./...`, and `go test -coverprofile=coverage.out ./... -count=1` all passed, with `internal/design` at 95.7% coverage.
 - 2026-04-15: Completed `WI-2.3` by filling the provider model registry with Forge-aligned capability tags (`fast_mode`, `thinking`), returning defensive copies from `ModelsForProvider`, and extending provider tests to lock down capability metadata plus copy semantics. `go build ./...`, `go vet ./...`, and `go test -coverprofile=coverage.out ./... -count=1` all passed, with `internal/provider` at 90.5% coverage.
 - 2026-04-15: Completed `WI-0.1` by wiring `store.New` through a versioned migration runner, adding legacy v1 seeding for pre-version databases, and expanding migration tests to cover fresh, versioned, and legacy upgrade paths. `internal/store` coverage is now 85.4%.
 - 2026-04-15: Completed `WI-0.2` by verifying the parity directory layout, confirming the provider/session and triage/router renames are wired, and adding the missing `internal/settings/doc.go` package documentation file. `go build ./...`, `go vet ./...`, and `go test -coverprofile=coverage.out ./... -count=1` all passed.
