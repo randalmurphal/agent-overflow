@@ -88,6 +88,26 @@ func TestDetectProviderVersionError(t *testing.T) {
 	}
 }
 
+func TestDetectProviderCodexUnsupportedVersion(t *testing.T) {
+	script := createMockBinary(t, "#!/bin/sh\necho 'codex 0.36.0'")
+
+	status := DetectProvider("codex", script)
+
+	if !status.Installed {
+		t.Fatal("expected Installed=true when binary exists")
+	}
+	if status.Status != "error" {
+		t.Fatalf("expected Status 'error' for unsupported Codex CLI, got %q", status.Status)
+	}
+	if status.Version != "codex 0.36.0" {
+		t.Fatalf("expected raw Version to be preserved, got %q", status.Version)
+	}
+	wantMessage := "Codex CLI v0.36.0 is too old for Agent Overflow. Upgrade to v0.37.0 or newer and restart the app."
+	if status.Message != wantMessage {
+		t.Fatalf("Message = %q, want %q", status.Message, wantMessage)
+	}
+}
+
 func TestProviderStatusJSON(t *testing.T) {
 	original := ProviderStatus{
 		Provider:   "claude",

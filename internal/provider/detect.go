@@ -16,7 +16,7 @@ type ProviderStatus struct {
 	Installed  bool   `json:"installed"`
 	Version    string `json:"version,omitempty"`
 	BinaryPath string `json:"binaryPath"`
-	Status     string `json:"status"`           // "ready", "not_found", "error"
+	Status     string `json:"status"` // "ready", "not_found", "error"
 	Message    string `json:"message,omitempty"`
 }
 
@@ -60,6 +60,15 @@ func DetectProvider(name, binaryPath string) ProviderStatus {
 
 	if versionErr != nil {
 		status.Message = fmt.Sprintf("version check failed: %v", versionErr)
+		return status
+	}
+
+	if name == string(Codex) {
+		parsedVersion := parseCodexCLIVersion(version)
+		if parsedVersion != "" && !isCodexCLIVersionSupported(parsedVersion) {
+			status.Status = "error"
+			status.Message = formatCodexCLIUpgradeMessage(parsedVersion)
+		}
 	}
 
 	return status

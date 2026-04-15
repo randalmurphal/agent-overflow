@@ -118,6 +118,46 @@ func TestGetProviderStatusesDefaultsBlankConfiguredBinaryPaths(t *testing.T) {
 	}
 }
 
+func TestGetProviderStatusesFlagsUnsupportedCodexVersion(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("mock shell scripts require unix")
+	}
+
+	configDir := t.TempDir()
+	app := &App{
+		settings: settings.NewService(configDir),
+	}
+
+	claudeBinary := createMockBinary(t, "claude-mock 1.2.3")
+	codexBinary := createMockBinary(t, "codex 0.36.0")
+
+	if _, err := app.settings.Update(map[string]any{
+		"claudeBinaryPath": claudeBinary,
+		"codexBinaryPath":  codexBinary,
+	}); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+
+	statuses, err := app.GetProviderStatuses()
+	if err != nil {
+		t.Fatalf("GetProviderStatuses() error = %v", err)
+	}
+	if len(statuses) != 2 {
+		t.Fatalf("len(statuses) = %d, want 2", len(statuses))
+	}
+
+	if statuses[1].Provider != "codex" {
+		t.Fatalf("statuses[1].Provider = %q, want codex", statuses[1].Provider)
+	}
+	if statuses[1].Status != "error" {
+		t.Fatalf("statuses[1].Status = %q, want error", statuses[1].Status)
+	}
+	wantMessage := "Codex CLI v0.36.0 is too old for Agent Overflow. Upgrade to v0.37.0 or newer and restart the app."
+	if statuses[1].Message != wantMessage {
+		t.Fatalf("statuses[1].Message = %q, want %q", statuses[1].Message, wantMessage)
+	}
+}
+
 func TestStartSessionUsesConfiguredClaudeBinaryPath(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("mock shell scripts require unix")
