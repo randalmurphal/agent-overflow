@@ -88,6 +88,12 @@ func normalizeDiscussionDefinition(def store.DiscussionDefinition, createdAt int
 	if len(def.Participants) < 2 {
 		return store.DiscussionDefinition{}, fmt.Errorf("discussion requires at least 2 participants")
 	}
+	if def.Scope == "project" && def.ProjectID == "" {
+		return store.DiscussionDefinition{}, fmt.Errorf("project-scoped discussion requires project ID")
+	}
+	if def.Scope != "project" {
+		def.ProjectID = ""
+	}
 
 	for i := range def.Participants {
 		def.Participants[i].Role = strings.TrimSpace(def.Participants[i].Role)

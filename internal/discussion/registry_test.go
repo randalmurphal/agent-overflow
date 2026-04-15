@@ -115,6 +115,17 @@ func TestRegistryValidation(t *testing.T) {
 				},
 			},
 		},
+		{
+			name: "project scope missing project id",
+			def: store.DiscussionDefinition{
+				Name:  "Project Missing ID",
+				Scope: "project",
+				Participants: []store.DiscussionParticipant{
+					{Role: "a", System: "x"},
+					{Role: "b", System: "y"},
+				},
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -217,6 +228,31 @@ func TestRegistryDefaultsScopeAndMaxTurns(t *testing.T) {
 	}
 	if got.Settings.MaxTurns != 8 {
 		t.Fatalf("MaxTurns = %d, want 8", got.Settings.MaxTurns)
+	}
+}
+
+func TestRegistryClearsProjectIDForGlobalScope(t *testing.T) {
+	st := newDiscussionTestStore(t)
+	registry := NewRegistry(st)
+
+	if err := registry.Create(store.DiscussionDefinition{
+		Name:      "Global Defaults",
+		Scope:     "global",
+		ProjectID: "project-a",
+		Participants: []store.DiscussionParticipant{
+			{Role: "proposer", System: "Lead"},
+			{Role: "reviewer", System: "Challenge"},
+		},
+	}); err != nil {
+		t.Fatalf("Create(global) error = %v", err)
+	}
+
+	got, err := registry.Get("Global Defaults", "global")
+	if err != nil {
+		t.Fatalf("Get(global) error = %v", err)
+	}
+	if got.ProjectID != "" {
+		t.Fatalf("ProjectID = %q, want empty for global scope", got.ProjectID)
 	}
 }
 
