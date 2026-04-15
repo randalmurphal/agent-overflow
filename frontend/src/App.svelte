@@ -1,7 +1,7 @@
 <script lang="ts">
-  import ChatView from "./lib/ChatView.svelte";
+  // Components will be added by the ralph loop.
 </script>
 
 <main class="h-screen w-screen bg-surface-0 text-text-primary flex">
-  <ChatView />
+  <p class="m-auto text-text-secondary">Agent Overflow</p>
 </main>

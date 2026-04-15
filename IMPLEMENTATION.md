@@ -1089,12 +1089,7 @@ func (s *Session) readLoop() {
 	}
 }
 
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
+// Note: Go 1.21+ has a built-in min() function. Do not define a custom one.
 ```
 
 ---
