@@ -175,10 +175,11 @@ func ClassifyNotification(threadID, method string, params json.RawMessage) []pro
 		}}
 
 	case "account/rateLimits/updated":
+		meta := normalizeRateLimitsMeta(params, now)
 		return []provider.ProviderEvent{{
 			Kind:      provider.EventRateLimits,
 			ThreadID:  threadID,
-			Meta:      params,
+			Meta:      meta,
 			Timestamp: now,
 		}}
 

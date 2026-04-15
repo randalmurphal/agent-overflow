@@ -22,6 +22,8 @@
 - `WI-1.4: Codex structured user-input and permission handling`
 - `WI-1.5: Diff accumulation fix`
 - `WI-1.6: Triage router updates`
+- `WI-1.1: Claude protocol additions`
+- `WI-1.2: Codex protocol additions`
 - `WI-3.1: Git core`
 - `WI-3.2: Git actions`
 - `WI-3.3: Git worktree operations`
@@ -38,6 +40,7 @@
 - 2026-04-15: Completed `WI-3.3` by adding worktree create/remove/list support to `internal/git/core.go`, parsing `git worktree list --porcelain`, and covering the flow with parser assertions plus temp-repo create/list/remove tests. `go build ./...`, `go vet ./...`, and `go test -coverprofile=coverage.out ./... -count=1` all passed, with `internal/git` at 82.2% coverage.
 - 2026-04-15: Completed `WI-3.4` by adding `internal/git/github.go` for `gh pr create` and `gh pr list` flows, reusing the new list path for status open-PR lookup, and covering JSON parsing, URL returns, and missing-`gh` behavior with mocked CLI tests. `go build ./...`, `go vet ./...`, and `go test -coverprofile=coverage.out ./... -count=1` all passed, with `internal/git` at 80.6% coverage.
 - 2026-04-15: Completed `WI-1.4` by normalizing Codex `item/tool/requestUserInput` and `item/permissions/requestApproval` server requests into structured `ApprovalRequest` payloads, propagating request route metadata (`turnId`/`itemId`), and adding direct/meta + session-dispatch tests for both flows. `go build ./...`, `go vet ./...`, and `go test -coverprofile=coverage.out ./... -count=1` all passed, with `internal/provider/codex` at 87.5% coverage.
+- 2026-04-15: Completed `WI-1.1` and `WI-1.2` by normalizing Claude `tool_progress` and `compact_boundary` metadata into contract-shaped payloads, flattening Codex `account/rateLimits/updated` notifications into `RateLimitsSnapshot` entries, and tightening provider protocol tests around the new event metadata contracts. `go build ./...`, `go vet ./...`, and `go test -coverprofile=coverage.out ./... -count=1` all passed, with `internal/provider` at 84.8% coverage, `internal/provider/claude` at 87.1%, and `internal/provider/codex` at 85.3%.
 
 ## Review Log
 

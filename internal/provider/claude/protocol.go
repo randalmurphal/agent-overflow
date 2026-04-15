@@ -71,10 +71,7 @@ func parseSystem(threadID string, raw map[string]json.RawMessage, now time.Time,
 		}}, nil
 
 	case "tool_progress":
-		meta := raw["content"]
-		if meta == nil {
-			meta = json.RawMessage("{}")
-		}
+		meta := extractToolProgressMeta(raw)
 		itemID := ""
 		if v, ok := raw["item_id"]; ok {
 			json.Unmarshal(v, &itemID)
@@ -88,10 +85,7 @@ func parseSystem(threadID string, raw map[string]json.RawMessage, now time.Time,
 		}}, nil
 
 	case "compact_boundary":
-		var meta json.RawMessage
-		if v, ok := raw["data"]; ok {
-			meta = v
-		}
+		meta := extractCompactBoundaryMeta(raw)
 		return []provider.ProviderEvent{{
 			Kind:      provider.EventCompactBoundary,
 			ThreadID:  threadID,

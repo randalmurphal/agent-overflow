@@ -230,12 +230,14 @@ func TestParseToolProgress(t *testing.T) {
 	if err := json.Unmarshal(evt.Meta, &meta); err != nil {
 		t.Fatalf("unmarshal meta: %v", err)
 	}
-	progress, ok := meta["progress"].(map[string]any)
-	if !ok {
-		t.Fatal("meta missing progress field")
+	if meta["current"] != float64(5) {
+		t.Errorf("current: got %v, want 5", meta["current"])
 	}
-	if progress["message"] != "Reading..." {
-		t.Errorf("progress message: got %v, want %q", progress["message"], "Reading...")
+	if meta["total"] != float64(10) {
+		t.Errorf("total: got %v, want 10", meta["total"])
+	}
+	if meta["message"] != "Reading..." {
+		t.Errorf("message: got %v, want %q", meta["message"], "Reading...")
 	}
 }
 
@@ -264,7 +266,7 @@ func TestParseToolProgressNoContent(t *testing.T) {
 }
 
 func TestParseCompactBoundary(t *testing.T) {
-	line := []byte(`{"type":"system","subtype":"compact_boundary","data":{"usedTokens":50000}}`)
+	line := []byte(`{"type":"system","subtype":"compact_boundary","data":{"context_window":{"used_tokens":50000,"max_tokens":200000,"used_percentage":25,"total_processed":120000}}}`)
 
 	events, err := ParseLine(testThread, line)
 	if err != nil {
@@ -282,12 +284,21 @@ func TestParseCompactBoundary(t *testing.T) {
 		t.Errorf("threadID: got %q, want %q", evt.ThreadID, testThread)
 	}
 
-	var meta map[string]any
+	var meta provider.ContextWindow
 	if err := json.Unmarshal(evt.Meta, &meta); err != nil {
 		t.Fatalf("unmarshal meta: %v", err)
 	}
-	if meta["usedTokens"] != float64(50000) {
-		t.Errorf("usedTokens: got %v, want 50000", meta["usedTokens"])
+	if meta.UsedTokens != 50000 {
+		t.Errorf("UsedTokens: got %d, want 50000", meta.UsedTokens)
+	}
+	if meta.MaxTokens != 200000 {
+		t.Errorf("MaxTokens: got %d, want 200000", meta.MaxTokens)
+	}
+	if meta.UsedPercentage != 25 {
+		t.Errorf("UsedPercentage: got %f, want 25", meta.UsedPercentage)
+	}
+	if meta.TotalProcessed != 120000 {
+		t.Errorf("TotalProcessed: got %d, want 120000", meta.TotalProcessed)
 	}
 }
 

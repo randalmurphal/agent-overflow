@@ -360,7 +360,28 @@ func TestClassifyThreadNameUpdatedFallback(t *testing.T) {
 }
 
 func TestClassifyRateLimitsUpdated(t *testing.T) {
-	params := json.RawMessage(`{"limits":[{"limitId":"req","usedPercent":50}]}`)
+	params := json.RawMessage(`{
+		"rateLimits": {
+			"limitId": "codex",
+			"limitName": "Codex",
+			"primary": {"usedPercent": 5, "windowDurationMins": 300, "resetsAt": 1775803864},
+			"secondary": {"usedPercent": 3, "windowDurationMins": 10080, "resetsAt": 1776372636}
+		},
+		"rateLimitsByLimitId": {
+			"codex": {
+				"limitId": "codex",
+				"limitName": "Codex",
+				"primary": {"usedPercent": 5, "windowDurationMins": 300, "resetsAt": 1775803864},
+				"secondary": {"usedPercent": 3, "windowDurationMins": 10080, "resetsAt": 1776372636}
+			},
+			"spark": {
+				"limitId": "spark",
+				"limitName": "GPT-5.3-Codex-Spark",
+				"primary": {"usedPercent": 0, "windowDurationMins": 300, "resetsAt": 1775809666},
+				"secondary": {"usedPercent": 0, "windowDurationMins": 10080, "resetsAt": 1776396466}
+			}
+		}
+	}`)
 	events := ClassifyNotification(testThread, "account/rateLimits/updated", params)
 
 	if len(events) != 1 {
@@ -372,9 +393,31 @@ func TestClassifyRateLimitsUpdated(t *testing.T) {
 	if events[0].ThreadID != testThread {
 		t.Errorf("threadID: got %q, want %q", events[0].ThreadID, testThread)
 	}
-	// Meta should be the raw params.
-	if string(events[0].Meta) != string(params) {
-		t.Errorf("meta: got %s, want %s", string(events[0].Meta), string(params))
+
+	var snapshot provider.RateLimitsSnapshot
+	if err := json.Unmarshal(events[0].Meta, &snapshot); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if snapshot.Provider != string(provider.Codex) {
+		t.Errorf("provider: got %q, want %q", snapshot.Provider, provider.Codex)
+	}
+	if snapshot.UpdatedAt == 0 {
+		t.Fatal("expected UpdatedAt to be populated")
+	}
+	if len(snapshot.Limits) != 4 {
+		t.Fatalf("limits len: got %d, want 4", len(snapshot.Limits))
+	}
+	if snapshot.Limits[0].LimitID != "codex" || snapshot.Limits[0].WindowMins != 300 {
+		t.Errorf("limits[0]: got %+v", snapshot.Limits[0])
+	}
+	if snapshot.Limits[1].LimitID != "codex" || snapshot.Limits[1].WindowMins != 10080 {
+		t.Errorf("limits[1]: got %+v", snapshot.Limits[1])
+	}
+	if snapshot.Limits[2].LimitID != "spark" || snapshot.Limits[2].WindowMins != 300 {
+		t.Errorf("limits[2]: got %+v", snapshot.Limits[2])
+	}
+	if snapshot.Limits[3].LimitID != "spark" || snapshot.Limits[3].WindowMins != 10080 {
+		t.Errorf("limits[3]: got %+v", snapshot.Limits[3])
 	}
 }
 
