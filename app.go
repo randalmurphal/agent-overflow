@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"sync"
@@ -48,6 +47,7 @@ type App struct {
 // session wraps a provider session regardless of type.
 type session struct {
 	provider string
+	token    string
 	// Exactly one of these is non-nil.
 	claude *claude.Session
 	codex  *codex.Session
@@ -203,11 +203,8 @@ func (a *App) StartSession(threadID string) error {
 		return fmt.Errorf("start session: %w", err)
 	}
 
-	onEvent := func(evt provider.ProviderEvent) {
-		if err := a.triage.Handle(evt); err != nil {
-			log.Printf("triage: %v", err)
-		}
-	}
+	sessionToken := uuid.NewString()
+	onEvent := a.sessionEventHandler(threadID, sessionToken)
 
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -240,7 +237,11 @@ func (a *App) StartSession(threadID string) error {
 		if err != nil {
 			return fmt.Errorf("start session: %w", err)
 		}
-		a.sessions[threadID] = session{provider: string(provider.Claude), claude: sess}
+		a.sessions[threadID] = session{
+			provider: string(provider.Claude),
+			token:    sessionToken,
+			claude:   sess,
+		}
 
 	case string(provider.Codex):
 		designCfg, err := a.designSessionConfig(t)
@@ -259,7 +260,11 @@ func (a *App) StartSession(threadID string) error {
 		if err != nil {
 			return fmt.Errorf("start session: %w", err)
 		}
-		a.sessions[threadID] = session{provider: string(provider.Codex), codex: sess}
+		a.sessions[threadID] = session{
+			provider: string(provider.Codex),
+			token:    sessionToken,
+			codex:    sess,
+		}
 
 	default:
 		return fmt.Errorf("unknown provider: %s", t.Provider)
