@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 )
 
 // Settings holds all user-configurable preferences.
@@ -46,9 +47,16 @@ var DefaultSettings = Settings{
 
 // Service manages reading and writing the settings JSON file.
 type Service struct {
-	path   string
-	mu     sync.RWMutex
-	cached *Settings
+	path        string
+	mu          sync.RWMutex
+	cached      *Settings
+	cachedState fileState
+}
+
+type fileState struct {
+	exists  bool
+	modTime time.Time
+	size    int64
 }
 
 // NewService creates a settings service that reads/writes configDir/settings.json.
@@ -67,8 +75,10 @@ func (s *Service) Path() string {
 // Get returns the current settings, merging file contents over defaults.
 // If the file is missing or malformed, defaults are returned.
 func (s *Service) Get() Settings {
+	currentState := readFileState(s.path)
+
 	s.mu.RLock()
-	if s.cached != nil {
+	if s.cached != nil && s.cachedState.equal(currentState) {
 		result := *s.cached
 		s.mu.RUnlock()
 		return result
@@ -80,12 +90,14 @@ func (s *Service) Get() Settings {
 	defer s.mu.Unlock()
 
 	// Double-check after acquiring write lock.
-	if s.cached != nil {
+	currentState = readFileState(s.path)
+	if s.cached != nil && s.cachedState.equal(currentState) {
 		return *s.cached
 	}
 
 	loaded := s.loadFromFile()
 	s.cached = &loaded
+	s.cachedState = currentState
 	return loaded
 }
 
@@ -107,6 +119,7 @@ func (s *Service) Update(patch map[string]any) (Settings, error) {
 	}
 
 	s.cached = &patched
+	s.cachedState = readFileState(s.path)
 	return patched, nil
 }
 
@@ -139,6 +152,7 @@ func (s *Service) AddRecentWorkspace(path string) {
 	}
 
 	s.cached = &current
+	s.cachedState = readFileState(s.path)
 }
 
 // loadFromFile reads the settings file and merges over defaults.
@@ -278,4 +292,20 @@ func copyDefaults() Settings {
 	d := DefaultSettings
 	d.RecentWorkspaces = nil
 	return d
+}
+
+func readFileState(path string) fileState {
+	info, err := os.Stat(path)
+	if err != nil {
+		return fileState{}
+	}
+	return fileState{
+		exists:  true,
+		modTime: info.ModTime(),
+		size:    info.Size(),
+	}
+}
+
+func (s fileState) equal(other fileState) bool {
+	return s.exists == other.exists && s.modTime.Equal(other.modTime) && s.size == other.size
 }

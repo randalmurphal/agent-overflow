@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestGetReturnsDefaultsOnMissingFile(t *testing.T) {
@@ -126,6 +127,30 @@ func TestUpdateMergesOverDefaults(t *testing.T) {
 	}
 	if got.StreamingEnabled != true {
 		t.Error("re-read StreamingEnabled = false, want true")
+	}
+}
+
+func TestGetReloadsWhenFileChangesOnDisk(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+	svc := NewService(dir)
+
+	if got := svc.Get(); got.Theme != "system" {
+		t.Fatalf("initial Theme = %q, want %q", got.Theme, "system")
+	}
+
+	data := []byte("{\n  \"theme\": \"dark\"\n}\n")
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	later := time.Now().Add(2 * time.Second)
+	if err := os.Chtimes(path, later, later); err != nil {
+		t.Fatalf("Chtimes() error = %v", err)
+	}
+
+	got := svc.Get()
+	if got.Theme != "dark" {
+		t.Fatalf("Theme after external edit = %q, want %q", got.Theme, "dark")
 	}
 }
 
