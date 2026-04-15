@@ -103,6 +103,18 @@ func (c *Core) ListBranches(cwd string) ([]GitBranch, error) {
 	return parseBranchList(result.stdout, defaultBranch, c.listRemoteNames(cwd)), nil
 }
 
+// RepositoryRoot resolves the canonical git top-level directory for cwd.
+func (c *Core) RepositoryRoot(cwd string) (string, error) {
+	result, err := c.run(cwd, "rev-parse", "--show-toplevel")
+	if err != nil {
+		return "", err
+	}
+	if result.exitCode != 0 {
+		return "", fmt.Errorf("git rev-parse --show-toplevel failed: %s", strings.TrimSpace(result.stderr))
+	}
+	return strings.TrimSpace(result.stdout), nil
+}
+
 func parseStatusOutput(statusStdout, unstagedNumstat, stagedNumstat string) GitStatus {
 	var status GitStatus
 	paths := make(map[string]struct{})

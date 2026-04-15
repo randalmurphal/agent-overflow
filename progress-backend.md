@@ -16,6 +16,8 @@
 
 (Issues moved here after being fixed and committed.)
 
+- 2026-04-15: Review sweep fixed git/thread metadata drift: `CreateThread` now initializes `ProjectPath` from the git root when available (falling back to the workspace path), and worktree bindings now keep thread `WorkspacePath`/`WorktreePath`/`Branch` metadata in sync on create/remove so repo-level and worktree-level backend bindings operate on consistent thread state.
+
 ## Completed Work Items
 
 - `WI-0.1: Database migration system`
@@ -84,3 +86,5 @@
 ## Review Log
 
 (Entries added during review phase.)
+
+- 2026-04-15: Completed an integration-wiring sweep over git/thread workspace metadata, fixing empty `ProjectPath` initialization for newly created threads and synchronizing persisted worktree metadata during `GitCreateWorktree` / `GitRemoveWorktree`. Added app-level regressions for git-root detection plus create/remove worktree state transitions, plus direct `internal/git` coverage for repository-root resolution so the package stays above the policy floor. `go build ./...`, `go vet ./...`, and `go test -coverprofile=coverage.out ./... -count=1` all passed, with `internal/git` at 80.7% coverage and all other `internal/` packages remaining at or above the 80% floor.

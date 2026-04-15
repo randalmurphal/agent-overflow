@@ -119,11 +119,18 @@ func TestGitCreateAndRemoveWorktree(t *testing.T) {
 		t.Fatalf("expected worktree %q in list: %+v", worktreePath, worktrees)
 	}
 
-	thread.WorktreePath = worktreePath
-	thread.WorkspacePath = worktreePath
-	thread.Branch = "feature/worktree"
-	if err := app.store.UpdateThread(thread); err != nil {
-		t.Fatalf("UpdateThread() error = %v", err)
+	stored, err := app.store.GetThread(thread.ID)
+	if err != nil {
+		t.Fatalf("GetThread() error = %v", err)
+	}
+	if !samePath(stored.WorktreePath, worktreePath) {
+		t.Fatalf("stored WorktreePath = %q, want %q", stored.WorktreePath, worktreePath)
+	}
+	if !samePath(stored.WorkspacePath, worktreePath) {
+		t.Fatalf("stored WorkspacePath = %q, want %q", stored.WorkspacePath, worktreePath)
+	}
+	if stored.Branch != "feature/worktree" {
+		t.Fatalf("stored Branch = %q, want feature/worktree", stored.Branch)
 	}
 
 	if err := app.GitRemoveWorktree(thread.ID); err != nil {
@@ -131,6 +138,20 @@ func TestGitCreateAndRemoveWorktree(t *testing.T) {
 	}
 	if _, err := os.Stat(worktreePath); !os.IsNotExist(err) {
 		t.Fatalf("expected worktree path removal, stat err = %v", err)
+	}
+
+	stored, err = app.store.GetThread(thread.ID)
+	if err != nil {
+		t.Fatalf("GetThread() error = %v", err)
+	}
+	if stored.WorktreePath != "" {
+		t.Fatalf("stored WorktreePath after removal = %q, want empty", stored.WorktreePath)
+	}
+	if !samePath(stored.WorkspacePath, repo) {
+		t.Fatalf("stored WorkspacePath after removal = %q, want %q", stored.WorkspacePath, repo)
+	}
+	if stored.Branch != "main" {
+		t.Fatalf("stored Branch after removal = %q, want main", stored.Branch)
 	}
 }
 

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -86,6 +87,34 @@ func TestCreateThreadDefaultsInteractionMode(t *testing.T) {
 	}
 	if stored.InteractionMode != "default" {
 		t.Fatalf("stored InteractionMode = %q, want default", stored.InteractionMode)
+	}
+	if stored.ProjectPath != "/tmp/workspace" {
+		t.Fatalf("stored ProjectPath = %q, want /tmp/workspace", stored.ProjectPath)
+	}
+}
+
+func TestCreateThreadDetectsGitProjectPath(t *testing.T) {
+	app := newTestAppWithStore(t)
+	repo := initAppGitRepo(t)
+	workspace := filepath.Join(repo, "nested", "workspace")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+
+	thread, err := app.CreateThread(string(provider.Codex), workspace, "gpt-5.4")
+	if err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+	if !samePath(thread.ProjectPath, repo) {
+		t.Fatalf("returned ProjectPath = %q, want %q", thread.ProjectPath, repo)
+	}
+
+	stored, err := app.store.GetThread(thread.ID)
+	if err != nil {
+		t.Fatalf("GetThread() error = %v", err)
+	}
+	if !samePath(stored.ProjectPath, repo) {
+		t.Fatalf("stored ProjectPath = %q, want %q", stored.ProjectPath, repo)
 	}
 }
 

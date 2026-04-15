@@ -130,11 +130,13 @@ func (a *App) ServiceShutdown() error {
 
 func (a *App) CreateThread(providerName string, workspacePath string, model string) (store.Thread, error) {
 	now := time.Now().UnixMilli()
+	projectPath := detectProjectPath(workspacePath)
 	t := store.Thread{
 		ID:              uuid.New().String(),
 		Title:           "New Thread",
 		Provider:        providerName,
 		WorkspacePath:   workspacePath,
+		ProjectPath:     projectPath,
 		Model:           model,
 		InteractionMode: "default",
 		CreatedAt:       now,

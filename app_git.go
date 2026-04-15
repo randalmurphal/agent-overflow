@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/store"
@@ -200,6 +201,14 @@ func (a *App) GitCreateWorktree(threadID, branch string) (string, error) {
 	if err := gitops.NewCore().CreateWorktree(project, worktreePath, branch); err != nil {
 		return "", err
 	}
+	thread.ProjectPath = project
+	thread.WorktreePath = worktreePath
+	thread.WorkspacePath = worktreePath
+	thread.Branch = strings.TrimSpace(branch)
+	thread.UpdatedAt = time.Now().UnixMilli()
+	if err := a.store.UpdateThread(thread); err != nil {
+		return "", err
+	}
 	return worktreePath, nil
 }
 
@@ -220,7 +229,18 @@ func (a *App) GitRemoveWorktree(threadID string) error {
 		return fmt.Errorf("thread %s has no worktree path", threadID)
 	}
 
-	return gitops.NewCore().RemoveWorktree(project, worktreePath)
+	core := gitops.NewCore()
+	if err := core.RemoveWorktree(project, worktreePath); err != nil {
+		return err
+	}
+
+	thread.WorktreePath = ""
+	if sameFilesystemPath(thread.WorkspacePath, worktreePath) {
+		thread.WorkspacePath = project
+		thread.Branch = currentGitBranch(core, project)
+	}
+	thread.UpdatedAt = time.Now().UnixMilli()
+	return a.store.UpdateThread(thread)
 }
 
 // GitListWorktrees lists worktrees for the thread's repository.
@@ -252,6 +272,31 @@ func resolveGitPaths(thread store.Thread) (project string, workspace string, err
 	}
 
 	return project, workspace, nil
+}
+
+func detectProjectPath(workspacePath string) string {
+	workspacePath = strings.TrimSpace(workspacePath)
+	if workspacePath == "" {
+		return ""
+	}
+
+	root, err := gitops.NewCore().RepositoryRoot(workspacePath)
+	if err == nil && strings.TrimSpace(root) != "" {
+		return root
+	}
+	return workspacePath
+}
+
+func sameFilesystemPath(left, right string) bool {
+	return canonicalGitPath(left) == canonicalGitPath(right)
+}
+
+func canonicalGitPath(path string) string {
+	resolved, err := filepath.EvalSymlinks(path)
+	if err == nil {
+		return filepath.Clean(resolved)
+	}
+	return filepath.Clean(path)
 }
 
 func currentGitBranch(core *gitops.Core, cwd string) string {
