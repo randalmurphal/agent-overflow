@@ -49,10 +49,12 @@
 - `WI-5.3: Design reactor`
 - `WI-5.4: Codex MCP server for design tools`
 - `WI-5.5: Design Wails bindings`
+- `WI-6.1: Structured logging`
 - `WI-6.2: Provider event logging`
 
 ## Iteration Log
 
+- 2026-04-15: Completed `WI-6.1` by verifying the existing structured NDJSON logger against `IMPLEMENTATION-PARITY.md` Section 13.1, confirming size-based rotation with three retained backups plus concurrency/error-path coverage in `internal/logging`, and rerunning `go test ./internal/logging/... -count=1` followed by the full quality gate. `go build ./...`, `go vet ./...`, and `go test -coverprofile=coverage.out ./... -count=1` all passed, with `internal/logging` at 86.2% coverage.
 - 2026-04-15: Completed `WI-2.8` by normalizing empty thread `InteractionMode` values to the spec-required `"default"` in store writes and `App.CreateThread`, correcting the thread CRUD/default-path tests, and adding an app-level binding regression for returned/stored defaults. Also recorded the already-implemented `WI-1.3` structured approval types in the tracker after re-reading the Forge contract and rerunning `go test ./internal/provider/... -count=1`. `go build ./...`, `go vet ./...`, and `go test -coverprofile=coverage.out ./... -count=1` all passed, with `internal/store` at 83.0% coverage and `internal/provider` at 90.5% coverage.
 - 2026-04-15: Completed `WI-5.2` by adding the backend design-system prompt loader with a bundled default prompt and `configDir/prompts/design-mode.md` override support, plus direct tests for default and override resolution. `go build ./...`, `go vet ./...`, and `go test -coverprofile=coverage.out ./... -count=1` all passed, with `internal/design` at 95.7% coverage.
 - 2026-04-15: Completed `WI-2.3` by filling the provider model registry with Forge-aligned capability tags (`fast_mode`, `thinking`), returning defensive copies from `ModelsForProvider`, and extending provider tests to lock down capability metadata plus copy semantics. `go build ./...`, `go vet ./...`, and `go test -coverprofile=coverage.out ./... -count=1` all passed, with `internal/provider` at 90.5% coverage.
