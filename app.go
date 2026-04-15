@@ -253,11 +253,8 @@ func (a *App) startSessionNow(threadID string) error {
 	// design state does not leak across reconnects or restart attempts.
 	if ok {
 		a.teardownDesignThread(threadID)
-		if existing.claude != nil {
-			existing.claude.Close()
-		}
-		if existing.codex != nil {
-			existing.codex.Close()
+		if err := closeProviderSession(threadID, existing); err != nil {
+			return fmt.Errorf("start session: %w", err)
 		}
 	}
 
@@ -360,12 +357,5 @@ func (a *App) StopSession(threadID string) error {
 	}
 
 	a.teardownDesignThread(threadID)
-
-	if sess.claude != nil {
-		return sess.claude.Close()
-	}
-	if sess.codex != nil {
-		return sess.codex.Close()
-	}
-	return nil
+	return closeProviderSession(threadID, sess)
 }

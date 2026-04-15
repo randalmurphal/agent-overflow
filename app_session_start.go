@@ -1,5 +1,7 @@
 package main
 
+import "fmt"
+
 type sessionStart struct {
 	done chan struct{}
 	err  error
@@ -38,4 +40,19 @@ func (a *App) finishSessionStart(threadID string, startState *sessionStart) {
 	delete(a.startingSessions, threadID)
 	a.mu.Unlock()
 	close(startState.done)
+}
+
+func closeProviderSession(threadID string, sess session) error {
+	switch {
+	case sess.claude != nil:
+		if err := sess.claude.Close(); err != nil {
+			return fmt.Errorf("close claude session for thread %s: %w", threadID, err)
+		}
+	case sess.codex != nil:
+		if err := sess.codex.Close(); err != nil {
+			return fmt.Errorf("close codex session for thread %s: %w", threadID, err)
+		}
+	}
+
+	return nil
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
+	"agent-overflow/internal/settings"
 )
 
 func TestSwitchThreadAutoResumesAfterSessionDisconnect(t *testing.T) {
@@ -171,6 +173,63 @@ func TestServiceShutdownReturnsSessionCloseErrors(t *testing.T) {
 	}
 }
 
+func TestStartSessionReturnsExistingSessionCloseError(t *testing.T) {
+	app := newTestAppWithStore(t)
+	app.settings = settings.NewService(t.TempDir())
+
+	thread := testThread("thread-start-replace-close-error")
+	thread.Provider = string(provider.Claude)
+	thread.WorkspacePath = t.TempDir()
+	thread.ProjectPath = thread.WorkspacePath
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+
+	startMarker := filepath.Join(t.TempDir(), "replacement-started")
+	replacementBinary := writeClaudeMarkerBinary(t, startMarker)
+	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": replacementBinary}); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+
+	existing, err := claude.NewSession(
+		context.Background(),
+		thread.ID,
+		claude.Config{
+			Binary:  writeClaudeFailOnCloseBinary(t),
+			WorkDir: thread.WorkspacePath,
+		},
+		app.sessionEventHandler(thread.ID, "replace-close-error-token"),
+	)
+	if err != nil {
+		t.Fatalf("NewSession() error = %v", err)
+	}
+
+	app.sessions[thread.ID] = session{
+		provider: string(provider.Claude),
+		token:    "replace-close-error-token",
+		claude:   existing,
+	}
+
+	err = app.startSessionNow(thread.ID)
+	if err == nil {
+		t.Fatal("startSessionNow() error = nil, want existing session close failure")
+	}
+	if !strings.Contains(err.Error(), "close claude session for thread "+thread.ID) {
+		t.Fatalf("startSessionNow() error = %v, want existing-session close context", err)
+	}
+
+	if _, statErr := os.Stat(startMarker); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("replacement session start marker error = %v, want not exist", statErr)
+	}
+
+	app.mu.Lock()
+	_, ok := app.sessions[thread.ID]
+	app.mu.Unlock()
+	if ok {
+		t.Fatalf("sessions[%s] still present after failed replacement start", thread.ID)
+	}
+}
+
 func writeClaudePassthroughBinary(t *testing.T) string {
 	t.Helper()
 
@@ -180,4 +239,30 @@ func writeClaudePassthroughBinary(t *testing.T) string {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 	return path
+}
+
+func writeClaudeFailOnCloseBinary(t *testing.T) string {
+	t.Helper()
+
+	path := filepath.Join(t.TempDir(), "claude-fail-on-close.sh")
+	script := "#!/bin/sh\ncat >/dev/null\nexit 1\n"
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	return path
+}
+
+func writeClaudeMarkerBinary(t *testing.T, markerPath string) string {
+	t.Helper()
+
+	path := filepath.Join(t.TempDir(), "claude-marker.sh")
+	script := "#!/bin/sh\nprintf started >" + shellQuote(markerPath) + "\ncat >/dev/null\n"
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	return path
+}
+
+func shellQuote(path string) string {
+	return "'" + strings.ReplaceAll(path, "'", `'\''`) + "'"
 }
