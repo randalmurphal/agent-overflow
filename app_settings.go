@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"strings"
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/settings"
@@ -40,4 +41,23 @@ func (a *App) UpdateSettings(patch map[string]any) (settings.Settings, error) {
 // GetModelsForProvider returns the known model registry for the given provider.
 func (a *App) GetModelsForProvider(providerName string) ([]provider.ModelInfo, error) {
 	return provider.ModelsForProvider(providerName), nil
+}
+
+func (a *App) providerBinaryPath(providerName string) string {
+	cfg := a.currentSettings()
+
+	switch providerName {
+	case string(provider.Claude):
+		if path := strings.TrimSpace(cfg.ClaudeBinaryPath); path != "" {
+			return path
+		}
+		return settings.DefaultSettings.ClaudeBinaryPath
+	case string(provider.Codex):
+		if path := strings.TrimSpace(cfg.CodexBinaryPath); path != "" {
+			return path
+		}
+		return settings.DefaultSettings.CodexBinaryPath
+	default:
+		return ""
+	}
 }

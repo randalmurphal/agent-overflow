@@ -227,6 +227,7 @@ func (a *App) StartSession(threadID string) error {
 			return fmt.Errorf("start session: %w", err)
 		}
 		cfg := claude.Config{
+			Binary:       a.providerBinaryPath(t.Provider),
 			Model:        t.Model,
 			WorkDir:      t.WorkspacePath,
 			Resume:       t.SessionRef,
@@ -249,6 +250,7 @@ func (a *App) StartSession(threadID string) error {
 			return fmt.Errorf("start session: %w", err)
 		}
 		cfg := codex.Config{
+			Binary:         a.providerBinaryPath(t.Provider),
 			Model:          t.Model,
 			WorkDir:        t.WorkspacePath,
 			ResumeThreadID: t.SessionRef,

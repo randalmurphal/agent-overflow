@@ -1,11 +1,14 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"testing"
+	"time"
 
+	"agent-overflow/internal/provider"
 	"agent-overflow/internal/settings"
 )
 
@@ -84,6 +87,48 @@ func TestGetProviderStatusesFallsBackToDefaultsWithoutSettingsService(t *testing
 	}
 }
 
+func TestStartSessionUsesConfiguredClaudeBinaryPath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("mock shell scripts require unix")
+	}
+
+	app := newTestAppWithStore(t)
+	app.settings = settings.NewService(t.TempDir())
+
+	markerPath := filepath.Join(t.TempDir(), "claude-started")
+	claudeBinary := createKeepAliveBinary(t, markerPath)
+	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": claudeBinary}); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+
+	thread := testThread("thread-start-session-binary")
+	thread.Provider = string(provider.Claude)
+	thread.WorkspacePath = t.TempDir()
+	thread.ProjectPath = thread.WorkspacePath
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+
+	if err := app.StartSession(thread.ID); err != nil {
+		t.Fatalf("StartSession() error = %v", err)
+	}
+	defer func() {
+		if err := app.StopSession(thread.ID); err != nil {
+			t.Fatalf("StopSession() error = %v", err)
+		}
+	}()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(markerPath); err == nil {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+
+	t.Fatalf("configured Claude binary was not executed; marker %s was never created", markerPath)
+}
+
 func createMockBinary(t *testing.T, version string) string {
 	t.Helper()
 
@@ -91,6 +136,17 @@ func createMockBinary(t *testing.T, version string) string {
 	contents := "#!/bin/sh\necho '" + version + "'\n"
 	if err := os.WriteFile(script, []byte(contents), 0o755); err != nil {
 		t.Fatalf("failed to create mock binary: %v", err)
+	}
+	return script
+}
+
+func createKeepAliveBinary(t *testing.T, markerPath string) string {
+	t.Helper()
+
+	script := filepath.Join(t.TempDir(), "mock-provider")
+	contents := fmt.Sprintf("#!/bin/sh\ntouch '%s'\ncat\n", markerPath)
+	if err := os.WriteFile(script, []byte(contents), 0o755); err != nil {
+		t.Fatalf("failed to create keepalive binary: %v", err)
 	}
 	return script
 }
