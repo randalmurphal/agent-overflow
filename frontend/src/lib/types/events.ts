@@ -32,7 +32,7 @@ export interface ProviderEvent {
 export interface ApprovalRequest {
   requestId: string;
   threadId: string;
-  turnId: string;
+  turnId?: string;
   toolName: string;
   description: string;
   input: unknown;

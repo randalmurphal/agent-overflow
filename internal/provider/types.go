@@ -72,7 +72,7 @@ type ProviderEvent struct {
 type ApprovalRequest struct {
 	RequestID   string          `json:"requestId"`
 	ThreadID    string          `json:"threadId"`
-	TurnID      string          `json:"turnId"`
+	TurnID      string          `json:"turnId,omitempty"`
 	ToolName    string          `json:"toolName"`
 	Description string          `json:"description"`
 	Input       json.RawMessage `json:"input"`

@@ -189,7 +189,7 @@ func (a *App) StartSession(threadID string) error {
 		}
 		sess, err := claude.NewSession(a.ctx, threadID, cfg, onEvent)
 		if err != nil {
-			return err
+			return fmt.Errorf("start session: %w", err)
 		}
 		a.sessions[threadID] = session{provider: "claude", claude: sess}
 
@@ -201,7 +201,7 @@ func (a *App) StartSession(threadID string) error {
 		}
 		sess, err := codex.NewSession(a.ctx, threadID, cfg, onEvent)
 		if err != nil {
-			return err
+			return fmt.Errorf("start session: %w", err)
 		}
 		a.sessions[threadID] = session{provider: "codex", codex: sess}
 

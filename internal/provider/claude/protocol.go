@@ -18,7 +18,7 @@ func ParseLine(threadID string, line []byte) ([]provider.ProviderEvent, error) {
 
 	var msgType string
 	if err := json.Unmarshal(raw["type"], &msgType); err != nil {
-		return nil, fmt.Errorf("missing or invalid type field")
+		return nil, fmt.Errorf("missing or invalid type field: %w", err)
 	}
 
 	now := time.Now()
@@ -257,7 +257,10 @@ func parseControlRequest(threadID string, raw map[string]json.RawMessage, now ti
 		} `json:"request"`
 	}
 
-	data, _ := json.Marshal(raw)
+	data, err := json.Marshal(raw)
+	if err != nil {
+		return nil, fmt.Errorf("parse control request: marshal: %w", err)
+	}
 	if err := json.Unmarshal(data, &msg); err != nil {
 		return nil, nil
 	}

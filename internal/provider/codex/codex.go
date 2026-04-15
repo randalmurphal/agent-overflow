@@ -473,26 +473,8 @@ func buildApprovalMeta(threadID, method string, rpcID int64, params json.RawMess
 	return data
 }
 
+// readStringFromResponse is an alias for readNestedString (protocol.go)
+// to maintain backward compatibility for tests that reference this name.
 func readStringFromResponse(data json.RawMessage, keys ...string) string {
-	var m map[string]json.RawMessage
-	if err := json.Unmarshal(data, &m); err != nil {
-		return ""
-	}
-	for i, key := range keys {
-		raw, ok := m[key]
-		if !ok {
-			return ""
-		}
-		if i == len(keys)-1 {
-			var s string
-			if json.Unmarshal(raw, &s) == nil {
-				return s
-			}
-			return ""
-		}
-		if err := json.Unmarshal(raw, &m); err != nil {
-			return ""
-		}
-	}
-	return ""
+	return readNestedString(data, keys...)
 }

@@ -1,8 +1,7 @@
 <script lang="ts">
-  import type { ThreadPane } from '../stores/thread.svelte';
   import WorkEntry, { type WorkEntryData } from './WorkEntry.svelte';
 
-  let { entries, pane }: { entries: WorkEntryData[]; pane: ThreadPane } = $props();
+  let { entries }: { entries: WorkEntryData[] } = $props();
 
   let hasRunning = $derived(entries.some((e) => e.status === 'running'));
   let completedCount = $derived(entries.filter((e) => e.status === 'completed').length);
