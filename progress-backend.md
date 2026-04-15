@@ -24,6 +24,7 @@
 - `WI-3.1: Git core`
 - `WI-3.2: Git actions`
 - `WI-3.3: Git worktree operations`
+- `WI-3.4: GitHub CLI integration`
 
 ## Iteration Log
 
@@ -34,6 +35,7 @@
 - 2026-04-15: Completed `WI-3.1` by adding `internal/git` command execution with timeout and output limits, implementing status/diff/branch queries, and adding repo-backed tests plus command-mock coverage. `internal/git` coverage is now 82.7%.
 - 2026-04-15: Completed `WI-3.2` by adding `internal/git/actions.go` for commit/push/pull/checkout/create-branch flows, including upstream-aware push behavior and input validation, and covering the actions with temp-repo tests. `go build ./...`, `go vet ./...`, and `go test -coverprofile=coverage.out ./... -count=1` all passed, with `internal/git` at 82.1% coverage.
 - 2026-04-15: Completed `WI-3.3` by adding worktree create/remove/list support to `internal/git/core.go`, parsing `git worktree list --porcelain`, and covering the flow with parser assertions plus temp-repo create/list/remove tests. `go build ./...`, `go vet ./...`, and `go test -coverprofile=coverage.out ./... -count=1` all passed, with `internal/git` at 82.2% coverage.
+- 2026-04-15: Completed `WI-3.4` by adding `internal/git/github.go` for `gh pr create` and `gh pr list` flows, reusing the new list path for status open-PR lookup, and covering JSON parsing, URL returns, and missing-`gh` behavior with mocked CLI tests. `go build ./...`, `go vet ./...`, and `go test -coverprofile=coverage.out ./... -count=1` all passed, with `internal/git` at 80.6% coverage.
 
 ## Review Log
 

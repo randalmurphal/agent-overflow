@@ -1,10 +1,7 @@
 package git
 
 import (
-	"encoding/json"
-	"errors"
 	"fmt"
-	"os/exec"
 	"strconv"
 	"strings"
 )
@@ -322,34 +319,8 @@ func isRemoteBranchName(name string, remoteNames []string) bool {
 }
 
 func (c *Core) lookupOpenPR(cwd, branch string) (string, int) {
-	result, err := c.runBinary(
-		"gh",
-		cwd,
-		"pr",
-		"list",
-		"--head",
-		branch,
-		"--json",
-		"url,number",
-		"--limit",
-		"1",
-	)
-	if err != nil {
-		var execErr *exec.Error
-		if errors.As(err, &execErr) || errors.Is(err, exec.ErrNotFound) {
-			return "", 0
-		}
-		return "", 0
-	}
-	if result.exitCode != 0 {
-		return "", 0
-	}
-
-	var pulls []struct {
-		URL    string `json:"url"`
-		Number int    `json:"number"`
-	}
-	if err := json.Unmarshal([]byte(result.stdout), &pulls); err != nil || len(pulls) == 0 {
+	pulls, err := c.ListOpenPRs(cwd, branch)
+	if err != nil || len(pulls) == 0 {
 		return "", 0
 	}
 	return pulls[0].URL, pulls[0].Number

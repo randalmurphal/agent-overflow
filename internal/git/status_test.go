@@ -175,7 +175,7 @@ func TestLookupOpenPRUsesGHWhenAvailable(t *testing.T) {
 
 	binDir := t.TempDir()
 	ghPath := filepath.Join(binDir, "gh")
-	script := "#!/bin/sh\necho '[{\"url\":\"https://example.com/pr/7\",\"number\":7}]'\n"
+	script := "#!/bin/sh\necho '[{\"url\":\"https://example.com/pr/7\",\"number\":7,\"title\":\"Demo PR\",\"state\":\"OPEN\"}]'\n"
 	if err := os.WriteFile(ghPath, []byte(script), 0o755); err != nil {
 		t.Fatalf("write mock gh: %v", err)
 	}
