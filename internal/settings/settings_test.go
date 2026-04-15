@@ -255,3 +255,35 @@ func TestPathAccessor(t *testing.T) {
 		t.Errorf("Path() = %q, want %q", svc.Path(), want)
 	}
 }
+
+func TestBlankBinaryPathsSerializeAsDefaults(t *testing.T) {
+	dir := t.TempDir()
+	svc := NewService(dir)
+
+	updated, err := svc.Update(map[string]any{
+		"claudeBinaryPath": "   ",
+		"codexBinaryPath":  "",
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if updated.ClaudeBinaryPath != DefaultSettings.ClaudeBinaryPath {
+		t.Fatalf("ClaudeBinaryPath = %q, want %q", updated.ClaudeBinaryPath, DefaultSettings.ClaudeBinaryPath)
+	}
+	if updated.CodexBinaryPath != DefaultSettings.CodexBinaryPath {
+		t.Fatalf("CodexBinaryPath = %q, want %q", updated.CodexBinaryPath, DefaultSettings.CodexBinaryPath)
+	}
+
+	data, err := os.ReadFile(filepath.Join(dir, "settings.json"))
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+
+	var fileMap map[string]any
+	if err := json.Unmarshal(data, &fileMap); err != nil {
+		t.Fatalf("unmarshal settings file: %v", err)
+	}
+	if len(fileMap) != 0 {
+		t.Fatalf("settings file = %s, want empty sparse object", string(data))
+	}
+}

@@ -87,6 +87,37 @@ func TestGetProviderStatusesFallsBackToDefaultsWithoutSettingsService(t *testing
 	}
 }
 
+func TestGetProviderStatusesDefaultsBlankConfiguredBinaryPaths(t *testing.T) {
+	app := &App{
+		settings: settings.NewService(t.TempDir()),
+	}
+
+	if _, err := app.settings.Update(map[string]any{
+		"claudeBinaryPath": "   ",
+		"codexBinaryPath":  "",
+	}); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+
+	statuses, err := app.GetProviderStatuses()
+	if err != nil {
+		t.Fatalf("GetProviderStatuses() error = %v", err)
+	}
+	if len(statuses) != 2 {
+		t.Fatalf("len(statuses) = %d, want 2", len(statuses))
+	}
+
+	wantClaude := provider.DetectProvider(string(provider.Claude), settings.DefaultSettings.ClaudeBinaryPath)
+	wantCodex := provider.DetectProvider(string(provider.Codex), settings.DefaultSettings.CodexBinaryPath)
+
+	if statuses[0] != wantClaude {
+		t.Fatalf("claude status = %+v, want %+v", statuses[0], wantClaude)
+	}
+	if statuses[1] != wantCodex {
+		t.Fatalf("codex status = %+v, want %+v", statuses[1], wantCodex)
+	}
+}
+
 func TestStartSessionUsesConfiguredClaudeBinaryPath(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("mock shell scripts require unix")

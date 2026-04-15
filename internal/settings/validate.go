@@ -49,8 +49,8 @@ func validateSettings(current Settings) (Settings, error) {
 		return Settings{}, err
 	}
 
-	current.ClaudeBinaryPath = strings.TrimSpace(current.ClaudeBinaryPath)
-	current.CodexBinaryPath = strings.TrimSpace(current.CodexBinaryPath)
+	current.ClaudeBinaryPath = normalizeBinaryPath(current.ClaudeBinaryPath, DefaultSettings.ClaudeBinaryPath)
+	current.CodexBinaryPath = normalizeBinaryPath(current.CodexBinaryPath, DefaultSettings.CodexBinaryPath)
 	current.RecentWorkspaces = normalizeRecentWorkspaces(current.RecentWorkspaces)
 	return current, nil
 }
@@ -79,8 +79,16 @@ func sanitizeLoadedSettings(current Settings) Settings {
 		current.DefaultModelCodex,
 		DefaultSettings.DefaultModelCodex,
 	)
-	current.ClaudeBinaryPath = strings.TrimSpace(current.ClaudeBinaryPath)
-	current.CodexBinaryPath = strings.TrimSpace(current.CodexBinaryPath)
+	current.ClaudeBinaryPath = sanitizeBinaryPath(
+		"claudeBinaryPath",
+		current.ClaudeBinaryPath,
+		DefaultSettings.ClaudeBinaryPath,
+	)
+	current.CodexBinaryPath = sanitizeBinaryPath(
+		"codexBinaryPath",
+		current.CodexBinaryPath,
+		DefaultSettings.CodexBinaryPath,
+	)
 	current.RecentWorkspaces = normalizeRecentWorkspaces(current.RecentWorkspaces)
 	return current
 }
@@ -116,6 +124,23 @@ func sanitizeRequiredString(field, value, fallback string) string {
 	}
 	log.Printf("settings: empty %s, using default %q", field, fallback)
 	return fallback
+}
+
+func sanitizeBinaryPath(field, value, fallback string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed != "" {
+		return trimmed
+	}
+	log.Printf("settings: empty %s, using default %q", field, fallback)
+	return fallback
+}
+
+func normalizeBinaryPath(value, fallback string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return fallback
+	}
+	return trimmed
 }
 
 func normalizeRecentWorkspaces(paths []string) []string {

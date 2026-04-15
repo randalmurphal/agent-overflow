@@ -54,6 +54,7 @@ func TestGetSanitizesInvalidLoadedValues(t *testing.T) {
   "defaultModelClaude": "   ",
   "defaultModelCodex": "",
   "claudeBinaryPath": " /custom/claude ",
+  "codexBinaryPath": "   ",
   "recentWorkspaces": ["", " /tmp/one ", "/tmp/one", "/tmp/two"]
 }
 `)
@@ -80,6 +81,9 @@ func TestGetSanitizesInvalidLoadedValues(t *testing.T) {
 	}
 	if got.ClaudeBinaryPath != "/custom/claude" {
 		t.Fatalf("ClaudeBinaryPath = %q, want /custom/claude", got.ClaudeBinaryPath)
+	}
+	if got.CodexBinaryPath != DefaultSettings.CodexBinaryPath {
+		t.Fatalf("CodexBinaryPath = %q, want %q", got.CodexBinaryPath, DefaultSettings.CodexBinaryPath)
 	}
 	if len(got.RecentWorkspaces) != 2 {
 		t.Fatalf("len(RecentWorkspaces) = %d, want 2", len(got.RecentWorkspaces))
@@ -132,5 +136,24 @@ func TestAddRecentWorkspaceIgnoresEmptyPaths(t *testing.T) {
 
 	if got := svc.Get(); len(got.RecentWorkspaces) != 0 {
 		t.Fatalf("RecentWorkspaces = %v, want empty list", got.RecentWorkspaces)
+	}
+}
+
+func TestUpdateDefaultsBlankBinaryPaths(t *testing.T) {
+	svc := NewService(t.TempDir())
+
+	got, err := svc.Update(map[string]any{
+		"claudeBinaryPath": "   ",
+		"codexBinaryPath":  "",
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+
+	if got.ClaudeBinaryPath != DefaultSettings.ClaudeBinaryPath {
+		t.Fatalf("ClaudeBinaryPath = %q, want %q", got.ClaudeBinaryPath, DefaultSettings.ClaudeBinaryPath)
+	}
+	if got.CodexBinaryPath != DefaultSettings.CodexBinaryPath {
+		t.Fatalf("CodexBinaryPath = %q, want %q", got.CodexBinaryPath, DefaultSettings.CodexBinaryPath)
 	}
 }
