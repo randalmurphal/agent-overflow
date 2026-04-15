@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"agent-overflow/internal/design"
 	"agent-overflow/internal/discussion"
 	"agent-overflow/internal/logging"
 	"agent-overflow/internal/provider"
@@ -24,15 +25,19 @@ import (
 
 // App is the primary Wails-bound struct, registered as a v3 service.
 type App struct {
-	app      *application.App
-	store    *store.Store
-	settings *settings.Service
-	triage   *triage.Router
-	registry *discussion.Registry
-	channels *discussion.ChannelService
-	logger   *logging.Logger
-	mu       sync.Mutex
-	sessions map[string]session // threadID → active session
+	app       *application.App
+	store     *store.Store
+	settings  *settings.Service
+	triage    *triage.Router
+	registry  *discussion.Registry
+	channels  *discussion.ChannelService
+	artifacts *design.ArtifactStore
+	reactor   *design.Reactor
+	designMCP *codex.DesignMCPServer
+	logger    *logging.Logger
+	configDir string
+	mu        sync.Mutex
+	sessions  map[string]session // threadID → active session
 	// channelID → active deliberation state
 	deliberations map[string]*discussion.Deliberation
 	// Test-only injection points for binding helpers that need to observe start/stop.
@@ -87,6 +92,12 @@ func (a *App) ServiceStartup(ctx context.Context, options application.ServiceOpt
 	})
 	a.registry = discussion.NewRegistry(st)
 	a.channels = discussion.NewChannelService(st)
+	a.artifacts = design.NewArtifactStore(filepath.Join(dbDir, "design-artifacts"), st)
+	a.reactor = design.NewReactor(a.artifacts, func(eventName string, data any) {
+		a.app.Event.Emit(eventName, data)
+	})
+	a.designMCP = codex.NewDesignMCPServer(a.reactor)
+	a.configDir = dbDir
 
 	return nil
 }
@@ -108,6 +119,9 @@ func (a *App) ServiceShutdown() error {
 	}
 	if a.logger != nil {
 		_ = a.logger.Close()
+	}
+	if a.designMCP != nil {
+		_ = a.designMCP.Close()
 	}
 	return nil
 }
@@ -209,11 +223,16 @@ func (a *App) StartSession(threadID string) error {
 
 	switch t.Provider {
 	case string(provider.Claude):
+		designCfg, err := a.designSessionConfig(t)
+		if err != nil {
+			return fmt.Errorf("start session: %w", err)
+		}
 		cfg := claude.Config{
-			Model:       t.Model,
-			WorkDir:     t.WorkspacePath,
-			Resume:      t.SessionRef,
-			EventLogger: a.logger,
+			Model:        t.Model,
+			WorkDir:      t.WorkspacePath,
+			Resume:       t.SessionRef,
+			SystemPrompt: designCfg.Prompt,
+			EventLogger:  a.logger,
 		}
 		sess, err := claude.NewSession(context.Background(), threadID, cfg, onEvent)
 		if err != nil {
@@ -222,10 +241,16 @@ func (a *App) StartSession(threadID string) error {
 		a.sessions[threadID] = session{provider: string(provider.Claude), claude: sess}
 
 	case string(provider.Codex):
+		designCfg, err := a.designSessionConfig(t)
+		if err != nil {
+			return fmt.Errorf("start session: %w", err)
+		}
 		cfg := codex.Config{
 			Model:          t.Model,
 			WorkDir:        t.WorkspacePath,
 			ResumeThreadID: t.SessionRef,
+			SystemPrompt:   designCfg.Prompt,
+			MCPServers:     designCfg.MCPServers,
 			EventLogger:    a.logger,
 		}
 		sess, err := codex.NewSession(context.Background(), threadID, cfg, onEvent)
@@ -312,8 +337,11 @@ func (a *App) StopSession(threadID string) error {
 	a.mu.Unlock()
 
 	if !ok {
+		a.teardownDesignThread(threadID)
 		return nil
 	}
+
+	a.teardownDesignThread(threadID)
 
 	if sess.claude != nil {
 		return sess.claude.Close()

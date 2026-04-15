@@ -37,6 +37,7 @@ type Config struct {
 	Sandbox        string // "read-only", "workspace-write", "danger-full-access"
 	ResumeThreadID string // thread ID to resume, empty for new
 	SystemPrompt   string
+	MCPServers     map[string]any
 	EventLogger    *logging.Logger
 }
 
@@ -496,6 +497,11 @@ func buildThreadParams(cfg Config) map[string]any {
 
 	if cfg.SystemPrompt != "" {
 		params["baseInstructions"] = cfg.SystemPrompt
+	}
+	if len(cfg.MCPServers) > 0 {
+		params["config"] = map[string]any{
+			"mcp_servers": cfg.MCPServers,
+		}
 	}
 
 	return params
