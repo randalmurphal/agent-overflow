@@ -48,6 +48,7 @@ type App struct {
 	// Test-only injection points for binding helpers that need to observe start/stop.
 	startSessionFn func(string) error
 	stopSessionFn  func(string) error
+	sendMessageFn  func(string, string) error
 }
 
 // session wraps a provider session regardless of type.
@@ -313,47 +314,7 @@ func (a *App) startSessionNow(threadID string) error {
 }
 
 func (a *App) SendMessage(threadID string, content string) error {
-	a.mu.Lock()
-	sess, ok := a.sessions[threadID]
-	if !ok {
-		a.mu.Unlock()
-		return fmt.Errorf("no active session for thread %s", threadID)
-	}
-
-	// Persist user message before sending to provider.
-	// Hold the mutex across the read-increment-write to prevent concurrent
-	// SendMessage calls from getting the same turn index.
-	turnIndex, err := a.store.LastTurnIndex(threadID)
-	if err != nil {
-		a.mu.Unlock()
-		return fmt.Errorf("send message: get turn index: %w", err)
-	}
-	turnIndex++ // new turn starts with user message
-	now := time.Now().UnixMilli()
-	userItem := store.Item{
-		ID:        uuid.New().String(),
-		ThreadID:  threadID,
-		TurnIndex: turnIndex,
-		ItemIndex: 0,
-		Kind:      "text",
-		Role:      "user",
-		Summary:   content,
-		CreatedAt: now,
-	}
-	if err := a.store.InsertItem(userItem); err != nil {
-		a.mu.Unlock()
-		return fmt.Errorf("send message: persist user message: %w", err)
-	}
-	a.mu.Unlock()
-
-	switch {
-	case sess.claude != nil:
-		return sess.claude.Send(context.Background(), content)
-	case sess.codex != nil:
-		return sess.codex.Send(context.Background(), content)
-	default:
-		return fmt.Errorf("session has no provider")
-	}
+	return a.sendMessage(threadID, content)
 }
 
 func (a *App) InterruptTurn(threadID string) error {

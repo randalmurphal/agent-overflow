@@ -8,6 +8,8 @@ import (
 
 func (a *App) sessionEventHandler(threadID, sessionToken string) func(provider.ProviderEvent) {
 	return func(evt provider.ProviderEvent) {
+		a.handleClaudeDesignTool(evt)
+
 		if a.triage != nil {
 			if err := a.triage.Handle(evt); err != nil {
 				log.Printf("triage: %v", err)
