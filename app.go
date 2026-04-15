@@ -51,7 +51,10 @@ func (a *App) startup(ctx context.Context) {
 		dataDir = os.TempDir()
 	}
 	dbDir := filepath.Join(dataDir, "agent-overflow")
-	os.MkdirAll(dbDir, 0755)
+	if err := os.MkdirAll(dbDir, 0755); err != nil {
+		runtime.LogFatalf(ctx, "Failed to create data directory %s: %v", dbDir, err)
+		return
+	}
 	dbPath := filepath.Join(dbDir, "agent-overflow.db")
 
 	st, err := store.New(dbPath)
@@ -158,7 +161,9 @@ func (a *App) StartSession(threadID string) error {
 	}
 
 	onEvent := func(evt provider.ProviderEvent) {
-		a.triage.Handle(evt)
+		if err := a.triage.Handle(evt); err != nil {
+			log.Printf("triage: %v", err)
+		}
 	}
 
 	a.mu.Lock()
@@ -216,22 +221,24 @@ func (a *App) SendMessage(threadID string, content string) error {
 	}
 
 	// Persist user message before sending to provider.
-	turnIndex, _ := a.store.LastTurnIndex(threadID)
+	turnIndex, err := a.store.LastTurnIndex(threadID)
+	if err != nil {
+		return fmt.Errorf("send message: get turn index: %w", err)
+	}
 	turnIndex++ // new turn starts with user message
-	itemIndex := 0
 	now := time.Now().UnixMilli()
 	userItem := store.Item{
 		ID:        uuid.New().String(),
 		ThreadID:  threadID,
 		TurnIndex: turnIndex,
-		ItemIndex: itemIndex,
+		ItemIndex: 0,
 		Kind:      "text",
 		Role:      "user",
 		Summary:   content,
 		CreatedAt: now,
 	}
 	if err := a.store.InsertItem(userItem); err != nil {
-		log.Printf("failed to persist user message: %v", err)
+		return fmt.Errorf("send message: persist user message: %w", err)
 	}
 
 	switch {
@@ -299,7 +306,9 @@ func (a *App) RespondToApproval(threadID string, requestID string, decision stri
 		})
 	case sess.codex != nil:
 		var rpcID int64
-		fmt.Sscanf(requestID, "%d", &rpcID)
+		if _, err := fmt.Sscanf(requestID, "%d", &rpcID); err != nil {
+			return fmt.Errorf("respond to approval: invalid codex request ID %q: %w", requestID, err)
+		}
 		return sess.codex.RespondToApproval(a.ctx, rpcID, decision)
 	default:
 		return fmt.Errorf("session has no provider")

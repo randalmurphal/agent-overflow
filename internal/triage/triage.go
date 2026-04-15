@@ -80,10 +80,12 @@ func (r *Router) Handle(evt provider.ProviderEvent) error {
 			now := time.Now().UnixMilli()
 			turnIndex, err := r.store.LastTurnIndex(evt.ThreadID)
 			if err != nil {
+				log.Printf("triage: last turn index: %v (defaulting to 0)", err)
 				turnIndex = 0
 			}
 			itemIndex, err := r.store.NextItemIndex(evt.ThreadID, turnIndex)
 			if err != nil {
+				log.Printf("triage: next item index: %v (defaulting to 0)", err)
 				itemIndex = 0
 			}
 			item := store.Item{
@@ -97,7 +99,8 @@ func (r *Router) Handle(evt provider.ProviderEvent) error {
 				CreatedAt: now,
 			}
 			if err := r.store.InsertItem(item); err != nil {
-				log.Printf("triage: persist assistant text: %v", err)
+				r.emit("provider:event", evt)
+				return fmt.Errorf("persist assistant text: %w", err)
 			}
 			acc.Reset()
 		}
@@ -166,6 +169,14 @@ func (r *Router) persistHeavy(evt provider.ProviderEvent, payloadKind string, it
 		metaJSON = "{}"
 	}
 
+	// Emit meta to frontend first (regardless of persistence outcome).
+	r.emit("provider:meta", store.PayloadMeta{
+		ID:        payloadID,
+		Kind:      payloadKind,
+		Meta:      metaJSON,
+		CreatedAt: now,
+	})
+
 	// Persist payload.
 	payload := store.Payload{
 		ID:        payloadID,
@@ -175,16 +186,18 @@ func (r *Router) persistHeavy(evt provider.ProviderEvent, payloadKind string, it
 		CreatedAt: now,
 	}
 	if err := r.store.InsertPayload(payload); err != nil {
-		log.Printf("triage: persist payload: %v", err)
+		return fmt.Errorf("persist payload: %w", err)
 	}
 
 	// Determine turn/item indices.
 	turnIndex, err := r.store.LastTurnIndex(evt.ThreadID)
 	if err != nil {
+		log.Printf("triage: last turn index: %v (defaulting to 0)", err)
 		turnIndex = 0
 	}
 	itemIndex, err := r.store.NextItemIndex(evt.ThreadID, turnIndex)
 	if err != nil {
+		log.Printf("triage: next item index: %v (defaulting to 0)", err)
 		itemIndex = 0
 	}
 
@@ -203,16 +216,8 @@ func (r *Router) persistHeavy(evt provider.ProviderEvent, payloadKind string, it
 		CreatedAt: now,
 	}
 	if err := r.store.InsertItem(item); err != nil {
-		log.Printf("triage: persist item: %v", err)
+		return fmt.Errorf("persist item: %w", err)
 	}
-
-	// Emit meta to frontend (not the full content).
-	r.emit("provider:meta", store.PayloadMeta{
-		ID:        payloadID,
-		Kind:      payloadKind,
-		Meta:      metaJSON,
-		CreatedAt: now,
-	})
 
 	return nil
 }

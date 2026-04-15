@@ -589,6 +589,75 @@ func TestBackgroundCompletePersists(t *testing.T) {
 	}
 }
 
+// -- Error propagation tests --
+
+func TestPersistHeavyReturnsErrorOnClosedStore(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	// Close the store to force insertion failures.
+	st.Close()
+
+	evt := provider.ProviderEvent{
+		Kind:      provider.EventDiff,
+		ThreadID:  "t1",
+		Content:   "+added line",
+		Timestamp: time.Now(),
+	}
+
+	err := router.Handle(evt)
+	if err == nil {
+		t.Fatal("expected error from Handle when store is closed")
+	}
+
+	// Meta should still be emitted even when persistence fails.
+	if len(*emissions) != 1 {
+		t.Fatalf("expected 1 emission (meta), got %d", len(*emissions))
+	}
+	if (*emissions)[0].eventName != "provider:meta" {
+		t.Errorf("eventName: got %q, want %q", (*emissions)[0].eventName, "provider:meta")
+	}
+}
+
+func TestTurnCompleteReturnsErrorOnClosedStore(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	// Accumulate text before closing the store.
+	router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTextDelta,
+		ThreadID:  "t1",
+		Content:   "hello",
+		Timestamp: time.Now(),
+	})
+
+	// Close the store to force insertion failure.
+	st.Close()
+
+	err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTurnComplete,
+		ThreadID:  "t1",
+		Timestamp: time.Now(),
+	})
+
+	if err == nil {
+		t.Fatal("expected error from Handle when store is closed and text accumulated")
+	}
+
+	// Turn complete should still be emitted even when persistence fails.
+	found := false
+	for _, em := range *emissions {
+		if em.eventName == "provider:event" {
+			if evt, ok := em.data.(provider.ProviderEvent); ok && evt.Kind == provider.EventTurnComplete {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Error("expected turn_complete event to be emitted even on persistence failure")
+	}
+}
+
 // -- buildSummary tests --
 
 func TestBuildSummaryDiff(t *testing.T) {

@@ -186,8 +186,13 @@ func parseResult(threadID string, raw map[string]json.RawMessage, now time.Time,
 		SessionID string `json:"session_id,omitempty"`
 	}
 
-	data, _ := json.Marshal(raw)
-	_ = json.Unmarshal(data, &result)
+	data, err := json.Marshal(raw)
+	if err != nil {
+		return nil, fmt.Errorf("parse result: marshal: %w", err)
+	}
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, fmt.Errorf("parse result: unmarshal: %w", err)
+	}
 
 	if result.IsError {
 		return []provider.ProviderEvent{{
@@ -219,8 +224,13 @@ func parseStreamEvent(threadID string, raw map[string]json.RawMessage, now time.
 		} `json:"data,omitempty"`
 	}
 
-	data, _ := json.Marshal(raw)
-	_ = json.Unmarshal(data, &evt)
+	data, err := json.Marshal(raw)
+	if err != nil {
+		return nil, fmt.Errorf("parse stream event: marshal: %w", err)
+	}
+	if err := json.Unmarshal(data, &evt); err != nil {
+		return nil, fmt.Errorf("parse stream event: unmarshal: %w", err)
+	}
 
 	if evt.Data.Delta.Text != "" {
 		return []provider.ProviderEvent{{

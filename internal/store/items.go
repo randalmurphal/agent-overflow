@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"fmt"
+	"log"
 )
 
 func (s *Store) InsertItem(item Item) error {
@@ -16,7 +17,9 @@ func (s *Store) InsertItem(item Item) error {
 		return fmt.Errorf("store: insert item: %w", err)
 	}
 	// Touch the parent thread's updated_at.
-	_, _ = s.db.Exec(`UPDATE threads SET updated_at = ? WHERE id = ?`, item.CreatedAt, item.ThreadID)
+	if _, err := s.db.Exec(`UPDATE threads SET updated_at = ? WHERE id = ?`, item.CreatedAt, item.ThreadID); err != nil {
+		log.Printf("store: touch thread updated_at for %s: %v", item.ThreadID, err)
+	}
 	return nil
 }
 

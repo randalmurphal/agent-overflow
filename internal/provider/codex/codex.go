@@ -84,7 +84,10 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 	}
 
 	// Send initialized notification (no id, no response expected).
-	s.writeNotification("initialized", nil)
+	if err := s.writeNotification("initialized", nil); err != nil {
+		s.Close()
+		return nil, fmt.Errorf("codex: send initialized notification: %w", err)
+	}
 
 	// Start or resume thread.
 	threadParams := buildThreadParams(cfg)
@@ -326,6 +329,7 @@ func (s *Session) dispatchLine(line []byte) {
 	if msg.ID != nil && msg.Method == "" {
 		id, err := msg.ID.Int64()
 		if err != nil {
+			log.Printf("codex: response has non-integer ID %q: %v", msg.ID.String(), err)
 			return
 		}
 		s.mu.Lock()
@@ -355,7 +359,11 @@ func (s *Session) dispatchLine(line []byte) {
 
 // handleServerRequest processes server-initiated requests (approvals).
 func (s *Session) handleServerRequest(method string, id *json.Number, params json.RawMessage, line []byte) {
-	rpcID, _ := id.Int64()
+	rpcID, err := id.Int64()
+	if err != nil {
+		log.Printf("codex: server request has non-integer ID %q: %v", id.String(), err)
+		return
+	}
 
 	switch method {
 	case "item/commandExecution/requestApproval",
@@ -374,12 +382,14 @@ func (s *Session) handleServerRequest(method string, id *json.Number, params jso
 		})
 
 	default:
-		s.writeResponse(rpcID, map[string]any{
+		if err := s.writeResponse(rpcID, map[string]any{
 			"error": map[string]any{
 				"code":    -32601,
 				"message": fmt.Sprintf("unsupported server request: %s", method),
 			},
-		})
+		}); err != nil {
+			log.Printf("codex: failed to send error response for %s: %v", method, err)
+		}
 	}
 }
 

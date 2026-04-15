@@ -189,3 +189,42 @@
 
 **Quality gate**: go build ✅, go vet ✅, go test ✅, npm run check ✅ (0 errors, 0 warnings, 111 files), vite build ✅  
 **Coverage**: provider 84.2%, claude 57.1%, codex 48.9%, store 82.4%, triage 92.0%
+
+### Review 2 — Error Handling
+**Category**: Find every discarded error, every `_ = err`. Only acceptable for: error unwind cleanup, documented stdlib idioms, spec-designated non-critical (cite section)  
+**Scope**: All 14 Go source files  
+**Findings** (21 total — 7 bugs, 8 potential issues, 6 acceptable):
+
+**Bugs fixed:**
+1. `app.go:54` — `os.MkdirAll` error discarded; directory creation failure would cause confusing DB open error. Now checked and fatal.
+2. `app.go:219` — `LastTurnIndex` error assigned to `_` in `SendMessage`; could cause duplicate turn indices. Now returns error.
+3. `app.go:233` — `SendMessage` logged but didn't return error on user message persistence failure; user messages would be lost on disk full. Now returns error (blocks send to provider).
+4. `app.go:302` — `fmt.Sscanf` error unchecked in `RespondToApproval`; invalid Codex request ID would silently send response with ID 0. Now returns error.
+5. `claude/protocol.go:189-190` — `parseResult` double marshal/unmarshal with both errors discarded; malformed result would emit false `TurnComplete`. Now returns error.
+6. `claude/protocol.go:222-224` — `parseStreamEvent` same pattern; malformed stream events silently dropped. Now returns error.
+7. `triage/triage.go:177-207` — `persistHeavy` logged payload insertion failure but continued to insert item with orphaned payload reference; item insertion failure also logged but `persistHeavy` always returned `nil`. Now returns error on payload failure (preventing orphaned items) and on item failure. Meta emit moved before persistence so frontend still gets preview.
+
+**Potential issues fixed:**
+8. `main.go:32` — `println` without `os.Exit(1)` on `wails.Run` error; app would exit with code 0 on startup failure. Now uses `fmt.Fprintf(os.Stderr)` + `os.Exit(1)`.
+9. `codex/codex.go:87` — `writeNotification("initialized")` error discarded; broken pipe during handshake would cause confusing thread/start failure. Now checked with cleanup on failure.
+10. `codex/codex.go:358` — `handleServerRequest` discarded `id.Int64()` error; non-integer JSON-RPC IDs would silently produce rpcID=0. Now logs and returns.
+11. `codex/codex.go:328` — `dispatchLine` silently dropped responses with non-integer IDs; pending requests would timeout. Now logs the error.
+12. `codex/codex.go:377` — `writeResponse` error discarded for unknown server requests. Now logs the failure.
+13. `store/items.go:19` — `InsertItem` discarded error from thread `updated_at` touch. Now logs the error.
+14. `triage/triage.go:82-88` — `EventTurnComplete` and `persistHeavy` silently defaulted to index 0 on `LastTurnIndex`/`NextItemIndex` failure. Now logs with context before defaulting.
+15. `app.go:162` — `triage.Handle` return value discarded in provider onEvent callback. Now logged.
+
+**Acceptable patterns (with justification):**
+- `json.Marshal` on plain structs/maps (`_ =` or `_, _`): `json.Marshal` only fails for channels, funcs, or cycles — all inputs are serializable types. (10+ instances across protocol.go, codex.go)
+- `extractSessionInfo` discarding `json.Unmarshal` errors on individual fields: defensive parsing of external protocol; partial `SessionInfo` is better than failing the entire init event.
+- `buildApprovalMeta` discarding `json.Unmarshal` on params: fallback to method name as tool description is reasonable.
+- `stdin.Close()` in process shutdown: pipe close errors are always benign (broken pipe from exited process).
+- `syscall.Kill` in `signalGroup`: ESRCH race is unavoidable during process cleanup; function falls through to SIGKILL.
+- `readLoop` continue on parse errors: resilient streaming — one bad line should not kill the session.
+
+**New tests added:**
+- `TestPersistHeavyReturnsErrorOnClosedStore` — verifies `Handle` returns error when persistence fails and meta is still emitted
+- `TestTurnCompleteReturnsErrorOnClosedStore` — verifies turn_complete event is still emitted even when text persistence fails
+
+**Quality gate**: go build ✅, go vet ✅, go test ✅, npm run check ✅ (0 errors, 0 warnings, 111 files)  
+**Coverage**: provider 84.2%, claude 56.2%, codex 47.5%, store 81.7%, triage 93.7%
