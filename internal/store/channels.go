@@ -43,6 +43,14 @@ func (s *Store) UpdateChannelStatus(id, status string) error {
 	return nil
 }
 
+func (s *Store) DeleteChannel(id string) error {
+	_, err := s.db.Exec(`DELETE FROM channels WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("store: delete channel %s: %w", id, err)
+	}
+	return nil
+}
+
 func (s *Store) InsertChannelMessage(msg ChannelMessage) error {
 	_, err := s.db.Exec(
 		`INSERT INTO channel_messages (

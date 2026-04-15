@@ -50,37 +50,7 @@ func (a *App) DeleteDiscussion(name, scope string) error {
 
 // StartDiscussion creates a deliberation channel and marks the thread as operating in discussion mode.
 func (a *App) StartDiscussion(threadID, discussionName string) error {
-	if a.store == nil || a.channels == nil {
-		return fmt.Errorf("discussion services unavailable")
-	}
-
-	thread, err := a.store.GetThread(threadID)
-	if err != nil {
-		return err
-	}
-	def, err := a.resolveDiscussionDefinition(thread, discussionName)
-	if err != nil {
-		return err
-	}
-	channel, err := a.channels.Create(threadID, "deliberation")
-	if err != nil {
-		return err
-	}
-
-	thread.InteractionMode = "discussion"
-	thread.DiscussionID = channel.ID
-	thread.UpdatedAt = maxInt64(thread.UpdatedAt+1, channel.CreatedAt)
-	if err := a.store.UpdateThread(thread); err != nil {
-		return err
-	}
-
-	a.mu.Lock()
-	if a.deliberations == nil {
-		a.deliberations = make(map[string]*discussion.Deliberation)
-	}
-	a.deliberations[channel.ID] = discussion.NewDeliberation(channel.ID, def.Settings.MaxTurns)
-	a.mu.Unlock()
-	return nil
+	return a.startDiscussion(threadID, discussionName)
 }
 
 // GetChannelMessages returns ordered messages for a discussion channel.

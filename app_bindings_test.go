@@ -214,9 +214,10 @@ func newTestAppWithStore(t *testing.T) *App {
 	})
 
 	return &App{
-		store:         st,
-		sessions:      make(map[string]session),
-		deliberations: make(map[string]*discussion.Deliberation),
+		store:               st,
+		sessions:            make(map[string]session),
+		threadSystemPrompts: make(map[string]string),
+		deliberations:       make(map[string]*discussion.Deliberation),
 	}
 }
 

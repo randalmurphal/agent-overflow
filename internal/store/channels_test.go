@@ -88,3 +88,51 @@ func TestChannelCRUDAndMessageOrdering(t *testing.T) {
 		t.Fatalf("closedChannel.UpdatedAt = %d, want > %d", closedChannel.UpdatedAt, channel.UpdatedAt)
 	}
 }
+
+func TestDeleteChannelRemovesChannelAndMessages(t *testing.T) {
+	s := newTestStore(t)
+
+	thread := makeThread("thread-delete-channel", "codex")
+	if err := s.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+
+	now := time.Now().UnixMilli()
+	channel := Channel{
+		ID:        "channel-delete",
+		ThreadID:  thread.ID,
+		Type:      "deliberation",
+		Status:    "open",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := s.CreateChannel(channel); err != nil {
+		t.Fatalf("CreateChannel: %v", err)
+	}
+	if err := s.InsertChannelMessage(ChannelMessage{
+		ID:        "msg-delete",
+		ChannelID: channel.ID,
+		Sequence:  0,
+		FromType:  "human",
+		FromID:    "user",
+		Content:   "cleanup",
+		CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("InsertChannelMessage: %v", err)
+	}
+
+	if err := s.DeleteChannel(channel.ID); err != nil {
+		t.Fatalf("DeleteChannel: %v", err)
+	}
+	if _, err := s.GetChannel(channel.ID); err == nil {
+		t.Fatal("expected deleted channel lookup to fail")
+	}
+
+	messages, err := s.ListChannelMessages(channel.ID, -1, 0)
+	if err != nil {
+		t.Fatalf("ListChannelMessages(after delete): %v", err)
+	}
+	if len(messages) != 0 {
+		t.Fatalf("len(messages) = %d, want 0 after channel delete", len(messages))
+	}
+}

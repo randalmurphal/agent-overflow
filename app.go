@@ -37,6 +37,9 @@ type App struct {
 	configDir string
 	mu        sync.Mutex
 	sessions  map[string]session // threadID → active session
+	// threadID → persisted in-process system prompt overrides used for
+	// discussion participants and other non-default session starts.
+	threadSystemPrompts map[string]string
 	// channelID → active deliberation state
 	deliberations map[string]*discussion.Deliberation
 	// Test-only injection points for binding helpers that need to observe start/stop.
@@ -55,8 +58,9 @@ type session struct {
 
 func NewApp() *App {
 	return &App{
-		sessions:      make(map[string]session),
-		deliberations: make(map[string]*discussion.Deliberation),
+		sessions:            make(map[string]session),
+		threadSystemPrompts: make(map[string]string),
+		deliberations:       make(map[string]*discussion.Deliberation),
 	}
 }
 
@@ -158,6 +162,7 @@ func (a *App) GetThread(id string) (store.Thread, error) {
 
 func (a *App) DeleteThread(id string) error {
 	a.StopSession(id)
+	a.clearThreadSystemPrompt(id)
 	return a.store.DeleteThread(id)
 }
 
@@ -205,6 +210,7 @@ func (a *App) StartSession(threadID string) error {
 
 	sessionToken := uuid.NewString()
 	onEvent := a.sessionEventHandler(threadID, sessionToken)
+	threadPrompt := a.threadSystemPrompt(threadID)
 
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -226,12 +232,13 @@ func (a *App) StartSession(threadID string) error {
 		if err != nil {
 			return fmt.Errorf("start session: %w", err)
 		}
+		systemPrompt := joinSystemPrompts(designCfg.Prompt, threadPrompt)
 		cfg := claude.Config{
 			Binary:       a.providerBinaryPath(t.Provider),
 			Model:        t.Model,
 			WorkDir:      t.WorkspacePath,
 			Resume:       t.SessionRef,
-			SystemPrompt: designCfg.Prompt,
+			SystemPrompt: systemPrompt,
 			EventLogger:  a.logger,
 		}
 		sess, err := claude.NewSession(context.Background(), threadID, cfg, onEvent)
@@ -249,12 +256,13 @@ func (a *App) StartSession(threadID string) error {
 		if err != nil {
 			return fmt.Errorf("start session: %w", err)
 		}
+		systemPrompt := joinSystemPrompts(designCfg.Prompt, threadPrompt)
 		cfg := codex.Config{
 			Binary:         a.providerBinaryPath(t.Provider),
 			Model:          t.Model,
 			WorkDir:        t.WorkspacePath,
 			ResumeThreadID: t.SessionRef,
-			SystemPrompt:   designCfg.Prompt,
+			SystemPrompt:   systemPrompt,
 			MCPServers:     designCfg.MCPServers,
 			EventLogger:    a.logger,
 		}
