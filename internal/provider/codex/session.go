@@ -26,6 +26,7 @@ type Session struct {
 	onEvent       func(provider.ProviderEvent)
 	cancel        context.CancelFunc
 	closing       atomic.Bool
+	readDone      chan struct{}
 }
 
 // Config for creating a Codex session.
@@ -70,6 +71,7 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 		pending:  make(map[int64]chan json.RawMessage),
 		onEvent:  onEvent,
 		cancel:   cancel,
+		readDone: make(chan struct{}),
 	}
 
 	// Start stdout reader goroutine before sending any requests.
@@ -194,6 +196,9 @@ func (s *Session) Close() error {
 	s.closing.Store(true)
 	err := s.proc.Close()
 	s.cancel()
+	if s.readDone != nil {
+		<-s.readDone
+	}
 	return err
 }
 
@@ -290,6 +295,10 @@ func (s *Session) writeResponse(id int64, result any) error {
 // readLoop reads stdout and dispatches JSON-RPC messages.
 func (s *Session) readLoop() {
 	defer func() {
+		if s.readDone != nil {
+			defer close(s.readDone)
+		}
+
 		// Unblock all pending requests.
 		s.mu.Lock()
 		for id, ch := range s.pending {

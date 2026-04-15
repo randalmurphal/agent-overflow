@@ -1,10 +1,12 @@
 package main
 
 import (
+	"context"
 	"testing"
 	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/claude"
 )
 
 func TestSwitchThreadAutoResumesAfterSessionDisconnect(t *testing.T) {
@@ -81,5 +83,49 @@ func TestStaleSessionDisconnectDoesNotRemoveReplacement(t *testing.T) {
 	case threadID := <-started:
 		t.Fatalf("unexpected auto-resume after stale disconnect for %s", threadID)
 	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+func TestServiceShutdownClosesSessionsWithoutDeadlock(t *testing.T) {
+	app := newTestAppWithStore(t)
+	thread := testThread("thread-shutdown")
+	thread.Provider = string(provider.Claude)
+	thread.WorkspacePath = t.TempDir()
+	thread.ProjectPath = thread.WorkspacePath
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+
+	sess, err := claude.NewSession(
+		context.Background(),
+		thread.ID,
+		claude.Config{
+			Binary:  "cat",
+			WorkDir: thread.WorkspacePath,
+		},
+		app.sessionEventHandler(thread.ID, "shutdown-token"),
+	)
+	if err != nil {
+		t.Fatalf("NewSession() error = %v", err)
+	}
+
+	app.sessions[thread.ID] = session{
+		provider: string(provider.Claude),
+		token:    "shutdown-token",
+		claude:   sess,
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- app.ServiceShutdown()
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("ServiceShutdown() error = %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for ServiceShutdown")
 	}
 }

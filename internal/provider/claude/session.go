@@ -23,6 +23,7 @@ type Session struct {
 	onEvent   func(provider.ProviderEvent)
 	cancel    context.CancelFunc
 	closing   atomic.Bool
+	readDone  chan struct{}
 }
 
 // Config for creating a Claude session.
@@ -69,6 +70,7 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 		model:    cfg.Model,
 		onEvent:  onEvent,
 		cancel:   cancel,
+		readDone: make(chan struct{}),
 	}
 
 	go s.readLoop()
@@ -172,12 +174,19 @@ func (s *Session) Close() error {
 	s.closing.Store(true)
 	err := s.proc.Close()
 	s.cancel()
+	if s.readDone != nil {
+		<-s.readDone
+	}
 	return err
 }
 
 // readLoop reads stdout NDJSON lines and dispatches them as ProviderEvents.
 func (s *Session) readLoop() {
 	defer func() {
+		if s.readDone != nil {
+			defer close(s.readDone)
+		}
+
 		if !s.closing.Load() {
 			exitErr := provider.WaitProcessExitErr(s.proc)
 			if exitErr != nil {

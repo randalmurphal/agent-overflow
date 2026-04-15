@@ -109,17 +109,24 @@ func (a *App) ServiceStartup(ctx context.Context, options application.ServiceOpt
 // ServiceShutdown is called by Wails v3 when the service is torn down.
 func (a *App) ServiceShutdown() error {
 	a.mu.Lock()
-	defer a.mu.Unlock()
-	for _, s := range a.sessions {
+	sessions := make(map[string]session, len(a.sessions))
+	for threadID, sess := range a.sessions {
+		sessions[threadID] = sess
+	}
+	a.sessions = make(map[string]session)
+	a.mu.Unlock()
+
+	for threadID, s := range sessions {
+		a.teardownDesignThread(threadID)
 		if s.claude != nil {
-			s.claude.Close()
+			_ = s.claude.Close()
 		}
 		if s.codex != nil {
-			s.codex.Close()
+			_ = s.codex.Close()
 		}
 	}
 	if a.store != nil {
-		a.store.Close()
+		_ = a.store.Close()
 	}
 	if a.logger != nil {
 		_ = a.logger.Close()
