@@ -176,21 +176,6 @@ func (s *Session) Interrupt(ctx context.Context) error {
 	return err
 }
 
-// RespondToApproval responds to a server approval request by sending a JSON-RPC response.
-func (s *Session) RespondToApproval(ctx context.Context, jsonRpcID int64, decision string) error {
-	var result any
-	switch decision {
-	case "allow":
-		result = map[string]any{"decision": "accept"}
-	case "allow_session":
-		result = map[string]any{"decision": "acceptForSession"}
-	default:
-		result = map[string]any{"decision": "decline"}
-	}
-
-	return s.writeResponse(jsonRpcID, result)
-}
-
 // ThreadID returns our internal thread identifier.
 func (s *Session) ThreadID() string {
 	return s.threadID

@@ -28,6 +28,9 @@ type App struct {
 	triage   *triage.Router
 	mu       sync.Mutex
 	sessions map[string]session // threadID → active session
+	// Test-only injection points for binding helpers that need to observe start/stop.
+	startSessionFn func(string) error
+	stopSessionFn  func(string) error
 }
 
 // session wraps a provider session regardless of type.
@@ -296,35 +299,4 @@ func (a *App) StopSession(threadID string) error {
 		return sess.codex.Close()
 	}
 	return nil
-}
-
-func (a *App) RespondToApproval(threadID string, requestID string, decision string) error {
-	a.mu.Lock()
-	sess, ok := a.sessions[threadID]
-	a.mu.Unlock()
-	if !ok {
-		return fmt.Errorf("no active session for thread %s", threadID)
-	}
-
-	switch {
-	case sess.claude != nil:
-		return sess.claude.RespondToApproval(a.ctx, provider.ApprovalResponse{
-			RequestID: requestID,
-			Decision:  decision,
-		})
-	case sess.codex != nil:
-		var rpcID int64
-		if _, err := fmt.Sscanf(requestID, "%d", &rpcID); err != nil {
-			return fmt.Errorf("respond to approval: invalid codex request ID %q: %w", requestID, err)
-		}
-		return sess.codex.RespondToApproval(a.ctx, rpcID, decision)
-	default:
-		return fmt.Errorf("session has no provider")
-	}
-}
-
-// --- Settings (stub) ---
-
-func (a *App) GetSettings() (map[string]any, error) {
-	return map[string]any{}, nil
 }

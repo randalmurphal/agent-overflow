@@ -30,6 +30,7 @@
 - `WI-3.4: GitHub CLI integration`
 - `WI-2.1: Provider binary detection`
 - `WI-2.2: Settings service (JSON file)`
+- `WI-2.7: Updated Wails bindings`
 
 ## Iteration Log
 
@@ -45,6 +46,7 @@
 - 2026-04-15: Completed `WI-1.1` and `WI-1.2` by normalizing Claude `tool_progress` and `compact_boundary` metadata into contract-shaped payloads, flattening Codex `account/rateLimits/updated` notifications into `RateLimitsSnapshot` entries, and tightening provider protocol tests around the new event metadata contracts. `go build ./...`, `go vet ./...`, and `go test -coverprofile=coverage.out ./... -count=1` all passed, with `internal/provider` at 84.8% coverage, `internal/provider/claude` at 87.1%, and `internal/provider/codex` at 85.3%.
 - 2026-04-15: Completed `WI-2.1` by wiring `App` startup to initialize the settings service, exposing a real `GetProviderStatuses` binding that detects Claude and Codex using configured binary paths, and adding app-level tests to verify both configured-path and default-path detection flows. `go build ./...`, `go vet ./...`, and `go test -coverprofile=coverage.out ./... -count=1` all passed, with `internal/provider` at 84.8% coverage.
 - 2026-04-15: Completed `WI-2.2` by fixing the settings service cache to reload after external file edits/deletes using file-state checks, preserving sparse atomic writes, and extending settings tests to cover on-disk invalidation. `go build ./...`, `go vet ./...`, and `go test -coverprofile=coverage.out ./... -count=1` all passed, with `internal/settings` at 80.6% coverage.
+- 2026-04-15: Completed `WI-2.7` by replacing the app-level approval binding with the structured `provider.ApprovalResponse` contract, wiring `GetSettings`/`UpdateSettings`/`GetModelsForProvider` plus `SwitchThread` and `ReconnectSession`, and teaching Codex approval responses to serialize user-input and permission resolutions in Forge-compatible JSON-RPC shapes. `go build ./...`, `go vet ./...`, and `go test -coverprofile=coverage.out ./... -count=1` all passed, with `internal/provider` at 86.4% coverage and `internal/provider/codex` at 85.7%.
 
 ## Review Log
 

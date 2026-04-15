@@ -2,6 +2,7 @@ package provider
 
 import (
 	"encoding/json"
+	"fmt"
 	"time"
 )
 
@@ -18,19 +19,19 @@ type EventKind string
 
 const (
 	// Inline events — forwarded directly to frontend via EventsEmit.
-	EventInit             EventKind = "init"
-	EventTextDelta        EventKind = "text_delta"
-	EventToolStart        EventKind = "tool_start"
-	EventToolComplete     EventKind = "tool_complete"
-	EventTurnStart        EventKind = "turn_start"
-	EventTurnComplete     EventKind = "turn_complete"
-	EventApprovalRequest  EventKind = "approval_request"
-	EventApprovalResolved EventKind = "approval_resolved"
-	EventSessionStatus    EventKind = "session_status"
-	EventTokenUsage       EventKind = "token_usage"
-	EventError            EventKind = "error"
-	EventBackgroundStart  EventKind = "background_start"
-	EventBackgroundDelta  EventKind = "background_delta"
+	EventInit               EventKind = "init"
+	EventTextDelta          EventKind = "text_delta"
+	EventToolStart          EventKind = "tool_start"
+	EventToolComplete       EventKind = "tool_complete"
+	EventTurnStart          EventKind = "turn_start"
+	EventTurnComplete       EventKind = "turn_complete"
+	EventApprovalRequest    EventKind = "approval_request"
+	EventApprovalResolved   EventKind = "approval_resolved"
+	EventSessionStatus      EventKind = "session_status"
+	EventTokenUsage         EventKind = "token_usage"
+	EventError              EventKind = "error"
+	EventBackgroundStart    EventKind = "background_start"
+	EventBackgroundDelta    EventKind = "background_delta"
 	EventBackgroundComplete EventKind = "background_complete"
 
 	// New inline events for feature parity.
@@ -93,11 +94,11 @@ type ApprovalRequest struct {
 
 // ApprovalResponse is sent back to the provider.
 type ApprovalResponse struct {
-	RequestID   string             `json:"requestId"`
-	Decision    string             `json:"decision"` // "allow", "deny", "allow_session"
-	Answers     map[string]string  `json:"answers,omitempty"`     // for user-input responses
-	Permissions *PermissionProfile `json:"permissions,omitempty"` // for granted permissions
-	Scope       string             `json:"scope,omitempty"`       // "turn"|"session" for permissions
+	RequestID   string                     `json:"requestId"`
+	Decision    string                     `json:"decision"`              // "allow", "deny", "allow_session"
+	Answers     map[string]UserInputAnswer `json:"answers,omitempty"`     // for user-input responses
+	Permissions *PermissionProfile         `json:"permissions,omitempty"` // for granted permissions
+	Scope       string                     `json:"scope,omitempty"`       // "turn"|"session" for permissions
 }
 
 // UserInputQuestionOption is a selectable option in a user-input question.
@@ -113,6 +114,42 @@ type UserInputQuestion struct {
 	Question    string                    `json:"question"`
 	Options     []UserInputQuestionOption `json:"options,omitempty"`
 	MultiSelect bool                      `json:"multiSelect,omitempty"`
+}
+
+// UserInputAnswer stores one or more selected answers for a question.
+// It marshals as a string for single-select answers and a string array for
+// multi-select answers to match the frontend/Forge contract.
+type UserInputAnswer []string
+
+// SingleUserInputAnswer constructs a single-answer response value.
+func SingleUserInputAnswer(value string) UserInputAnswer {
+	return UserInputAnswer{value}
+}
+
+// MarshalJSON emits a bare string for single answers and an array for
+// multi-select answers.
+func (a UserInputAnswer) MarshalJSON() ([]byte, error) {
+	if len(a) == 1 {
+		return json.Marshal(a[0])
+	}
+	return json.Marshal([]string(a))
+}
+
+// UnmarshalJSON accepts either a single string or an array of strings.
+func (a *UserInputAnswer) UnmarshalJSON(data []byte) error {
+	var single string
+	if err := json.Unmarshal(data, &single); err == nil {
+		*a = UserInputAnswer{single}
+		return nil
+	}
+
+	var multiple []string
+	if err := json.Unmarshal(data, &multiple); err == nil {
+		*a = UserInputAnswer(multiple)
+		return nil
+	}
+
+	return fmt.Errorf("user input answer must be a string or []string")
 }
 
 // PermissionProfile describes requested or granted permissions.

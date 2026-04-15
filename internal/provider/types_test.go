@@ -2,6 +2,7 @@ package provider
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 )
@@ -413,9 +414,12 @@ func TestApprovalRequestStructuredFields(t *testing.T) {
 
 func TestApprovalResponseStructuredFields(t *testing.T) {
 	resp := ApprovalResponse{
-		RequestID:   "req-003",
-		Decision:    "allow",
-		Answers:     map[string]string{"q1": "React"},
+		RequestID: "req-003",
+		Decision:  "allow",
+		Answers: map[string]UserInputAnswer{
+			"q1": SingleUserInputAnswer("React"),
+			"q2": UserInputAnswer{"turn", "session"},
+		},
 		Permissions: &PermissionProfile{Network: &NetworkPermissions{}},
 		Scope:       "session",
 	}
@@ -430,14 +434,60 @@ func TestApprovalResponseStructuredFields(t *testing.T) {
 		t.Fatalf("unmarshal: %v", err)
 	}
 
-	if decoded.Answers["q1"] != "React" {
-		t.Errorf("Answers[q1]: got %q, want React", decoded.Answers["q1"])
+	if got := decoded.Answers["q1"]; len(got) != 1 || got[0] != "React" {
+		t.Errorf("Answers[q1]: got %v, want [React]", got)
+	}
+	if got := decoded.Answers["q2"]; len(got) != 2 || got[0] != "turn" || got[1] != "session" {
+		t.Errorf("Answers[q2]: got %v, want [turn session]", got)
 	}
 	if decoded.Scope != "session" {
 		t.Errorf("Scope: got %q, want session", decoded.Scope)
 	}
 	if decoded.Permissions == nil {
 		t.Error("Permissions is nil")
+	}
+}
+
+func TestUserInputAnswerJSON(t *testing.T) {
+	tests := []struct {
+		name    string
+		answer  UserInputAnswer
+		want    string
+		wantLen int
+	}{
+		{name: "single", answer: SingleUserInputAnswer("React"), want: `"React"`, wantLen: 1},
+		{name: "multi", answer: UserInputAnswer{"turn", "session"}, want: `["turn","session"]`, wantLen: 2},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data, err := json.Marshal(tt.answer)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			if string(data) != tt.want {
+				t.Fatalf("marshal = %s, want %s", data, tt.want)
+			}
+
+			var decoded UserInputAnswer
+			if err := json.Unmarshal(data, &decoded); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if len(decoded) != tt.wantLen {
+				t.Fatalf("len(decoded) = %d, want %d", len(decoded), tt.wantLen)
+			}
+		})
+	}
+}
+
+func TestUserInputAnswerRejectsInvalidJSON(t *testing.T) {
+	var answer UserInputAnswer
+	err := json.Unmarshal([]byte(`{"invalid":true}`), &answer)
+	if err == nil {
+		t.Fatal("expected error for invalid answer JSON")
+	}
+	if !strings.Contains(err.Error(), "user input answer") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

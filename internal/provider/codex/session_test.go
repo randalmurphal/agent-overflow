@@ -984,24 +984,116 @@ func TestCodexWriteResponse(t *testing.T) {
 	}
 }
 
-func TestCodexRespondToApprovalMethod(t *testing.T) {
-	s, _ := newTestCodexSession(t)
-
+func TestBuildApprovalResponseResultDecision(t *testing.T) {
 	tests := []struct {
 		name     string
 		decision string
+		want     string
 	}{
-		{"allow", "allow"},
-		{"deny", "deny"},
-		{"allow_session", "allow_session"},
+		{name: "allow", decision: "allow", want: "accept"},
+		{name: "deny", decision: "deny", want: "decline"},
+		{name: "allow_session", decision: "allow_session", want: "acceptForSession"},
 	}
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := s.RespondToApproval(context.Background(), 42, tt.decision)
+			rpcID, result, err := buildApprovalResponseResult(provider.ApprovalResponse{
+				RequestID: "42",
+				Decision:  tt.decision,
+			})
 			if err != nil {
-				t.Fatalf("RespondToApproval(%s): %v", tt.decision, err)
+				t.Fatalf("buildApprovalResponseResult(%s): %v", tt.decision, err)
+			}
+			if rpcID != 42 {
+				t.Fatalf("rpcID = %d, want 42", rpcID)
+			}
+
+			payload, ok := result.(map[string]any)
+			if !ok {
+				t.Fatalf("result type = %T, want map[string]any", result)
+			}
+			if got := payload["decision"]; got != tt.want {
+				t.Fatalf("decision = %v, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestBuildApprovalResponseResultUserInput(t *testing.T) {
+	rpcID, result, err := buildApprovalResponseResult(provider.ApprovalResponse{
+		RequestID: "7",
+		Answers: map[string]provider.UserInputAnswer{
+			"framework": provider.SingleUserInputAnswer("React"),
+			"scope":     provider.UserInputAnswer{"turn", "session"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildApprovalResponseResult(): %v", err)
+	}
+	if rpcID != 7 {
+		t.Fatalf("rpcID = %d, want 7", rpcID)
+	}
+
+	payload, ok := result.(map[string]any)
+	if !ok {
+		t.Fatalf("result type = %T, want map[string]any", result)
+	}
+	answers, ok := payload["answers"].(map[string]codexUserInputAnswer)
+	if !ok {
+		t.Fatalf("answers type = %T, want map[string]codexUserInputAnswer", payload["answers"])
+	}
+	if got := answers["framework"].Answers; len(got) != 1 || got[0] != "React" {
+		t.Fatalf("framework answers = %v, want [React]", got)
+	}
+	if got := answers["scope"].Answers; len(got) != 2 || got[0] != "turn" || got[1] != "session" {
+		t.Fatalf("scope answers = %v, want [turn session]", got)
+	}
+}
+
+func TestBuildApprovalResponseResultPermission(t *testing.T) {
+	enabled := true
+	rpcID, result, err := buildApprovalResponseResult(provider.ApprovalResponse{
+		RequestID: "9",
+		Scope:     "session",
+		Permissions: &provider.PermissionProfile{
+			Network: &provider.NetworkPermissions{Enabled: &enabled},
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildApprovalResponseResult(): %v", err)
+	}
+	if rpcID != 9 {
+		t.Fatalf("rpcID = %d, want 9", rpcID)
+	}
+
+	payload, ok := result.(map[string]any)
+	if !ok {
+		t.Fatalf("result type = %T, want map[string]any", result)
+	}
+	if got := payload["scope"]; got != "session" {
+		t.Fatalf("scope = %v, want session", got)
+	}
+	if payload["permissions"] == nil {
+		t.Fatal("permissions should be present")
+	}
+}
+
+func TestBuildApprovalResponseResultInvalidRequestID(t *testing.T) {
+	_, _, err := buildApprovalResponseResult(provider.ApprovalResponse{RequestID: "not-a-number"})
+	if err == nil {
+		t.Fatal("expected invalid request ID error")
+	}
+}
+
+func TestCodexRespondToApprovalMethod(t *testing.T) {
+	s, _ := newTestCodexSession(t)
+
+	err := s.RespondToApproval(context.Background(), provider.ApprovalResponse{
+		RequestID: "42",
+		Decision:  "allow",
+	})
+	if err != nil {
+		t.Fatalf("RespondToApproval(): %v", err)
 	}
 }
 
