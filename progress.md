@@ -17,6 +17,8 @@
 
 ## Resolved Issues
 
+- **sendRequest returned full JSON-RPC envelope** instead of just the result — callers `readStringFromResponse(resp, "thread", "id")` could never find the thread ID because it was nested under "result". Fixed to return `rpcResp.Result`.
+- **handleServerRequest put error inside "result"** instead of at JSON-RPC top level — violated JSON-RPC 2.0 spec. Fixed to write proper `{"error":{...}}` at top level.
 - **7 missing frontend components** (WorkEntry, WorkGroup, DiffPreview, CommandOutput, BackgroundTray, ComposerControls, Markdown) — created and wired into ChatView
 - **2 missing utility files** (format.ts, diff.ts) — created; time.ts consolidated into format.ts
 - **models.ts used auto-generated re-exports** — replaced with explicit interfaces per spec; Thread.provider now typed as `'claude' | 'codex'`
@@ -228,3 +230,25 @@
 
 **Quality gate**: go build ✅, go vet ✅, go test ✅, npm run check ✅ (0 errors, 0 warnings, 111 files)  
 **Coverage**: provider 84.2%, claude 56.2%, codex 47.5%, store 81.7%, triage 93.7%
+
+### Review 3 — Test Coverage
+**Category**: Functions below 80%, missing edge case tests  
+**Scope**: All 6 Go packages (provider, claude, codex, store, triage, root)  
+**Findings** (2 packages below 80%, 2 bugs found during test writing):
+
+**Coverage before**: claude 56.2%, codex 47.5% — both failing the 80% threshold  
+**Root cause**: Session lifecycle methods (NewSession, Send, Interrupt, RespondToApproval, readLoop, Close, sendRequest, writeNotification, writeResponse, handleServerRequest) had 0% coverage because they require subprocess interaction
+
+**Approach**: Used `cat` as a mock subprocess for both providers. Cat echoes stdin to stdout, letting tests exercise readLoop dispatch, write verification, and close/disconnect flows. For Codex NewSession, created a bash mock script that responds to JSON-RPC requests with proper results.
+
+**Bugs found and fixed:**
+1. `codex/codex.go:sendRequest` — returned the full JSON-RPC envelope (`{"jsonrpc":"2.0","id":1,"result":{...}}`) instead of just the result. All callers (`readStringFromResponse(resp, "thread", "id")`) could never find nested keys because they weren't prefixing with "result". Fixed sendRequest to extract and return `rpcResp.Result`.
+2. `codex/codex.go:handleServerRequest` — for unknown server requests, put the error inside the `result` field (`{"result":{"error":{...}}}`) instead of at the JSON-RPC top level (`{"error":{...}}`). This violates JSON-RPC 2.0 spec. Fixed to write proper error response directly.
+
+**Tests added:**
+- Claude (12 new tests): NewSessionSpawnsAndRunsReadLoop, SessionSend, SessionInterrupt, SessionRespondToApproval (3 subtests), SessionIDAccessor, ReadLoopDispatchesTextDelta, ReadLoopDispatchesTurnComplete, ReadLoopContinuesOnParseError, ReadLoopEmitsDisconnectedOnExit
+- Codex (19 new tests): DispatchLineInvalidJSON, DispatchLineResponseNonIntegerID, DispatchLineResponseNoMatchingPending, DispatchLineServerRequest, DispatchLineServerRequestNonIntegerID, WriteNotification, WriteResponse, RespondToApprovalMethod (3 subtests), ThreadIDAccessor, ReadLoopDispatchesNotification, ReadLoopRoutesResponseToPending, HandleServerRequestApproval, HandleServerRequestFileApproval, HandleServerRequestUnknown, SendRequestViaCat, SendRequestContextCancel, Send, Interrupt, ReadLoopEmitsDisconnectedOnExit, ReadLoopCleansPendingOnExit, NewSessionWithMock
+- Codex (2 new tests): ReadStringFromResponseInvalidJSON, ReadStringFromResponseNonStringValue
+
+**Coverage after**: provider 84.2%, claude 87.0%, codex 87.8%, store 81.7%, triage 93.7% — all >= 80%  
+**Quality gate**: go build ✅, go vet ✅, go test ✅, npm run check ✅ (0 errors, 0 warnings, 111 files)
