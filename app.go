@@ -12,6 +12,7 @@ import (
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/codex"
+	"agent-overflow/internal/settings"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/triage"
 
@@ -23,6 +24,7 @@ import (
 type App struct {
 	ctx      context.Context
 	store    *store.Store
+	settings *settings.Service
 	triage   *triage.Router
 	mu       sync.Mutex
 	sessions map[string]session // threadID → active session
@@ -64,6 +66,7 @@ func (a *App) startup(ctx context.Context) {
 	}
 
 	a.store = st
+	a.settings = settings.NewService(dbDir)
 	a.triage = triage.NewRouter(st, func(eventName string, data any) {
 		runtime.EventsEmit(ctx, eventName, data)
 	})

@@ -28,6 +28,7 @@
 - `WI-3.2: Git actions`
 - `WI-3.3: Git worktree operations`
 - `WI-3.4: GitHub CLI integration`
+- `WI-2.1: Provider binary detection`
 
 ## Iteration Log
 
@@ -41,6 +42,7 @@
 - 2026-04-15: Completed `WI-3.4` by adding `internal/git/github.go` for `gh pr create` and `gh pr list` flows, reusing the new list path for status open-PR lookup, and covering JSON parsing, URL returns, and missing-`gh` behavior with mocked CLI tests. `go build ./...`, `go vet ./...`, and `go test -coverprofile=coverage.out ./... -count=1` all passed, with `internal/git` at 80.6% coverage.
 - 2026-04-15: Completed `WI-1.4` by normalizing Codex `item/tool/requestUserInput` and `item/permissions/requestApproval` server requests into structured `ApprovalRequest` payloads, propagating request route metadata (`turnId`/`itemId`), and adding direct/meta + session-dispatch tests for both flows. `go build ./...`, `go vet ./...`, and `go test -coverprofile=coverage.out ./... -count=1` all passed, with `internal/provider/codex` at 87.5% coverage.
 - 2026-04-15: Completed `WI-1.1` and `WI-1.2` by normalizing Claude `tool_progress` and `compact_boundary` metadata into contract-shaped payloads, flattening Codex `account/rateLimits/updated` notifications into `RateLimitsSnapshot` entries, and tightening provider protocol tests around the new event metadata contracts. `go build ./...`, `go vet ./...`, and `go test -coverprofile=coverage.out ./... -count=1` all passed, with `internal/provider` at 84.8% coverage, `internal/provider/claude` at 87.1%, and `internal/provider/codex` at 85.3%.
+- 2026-04-15: Completed `WI-2.1` by wiring `App` startup to initialize the settings service, exposing a real `GetProviderStatuses` binding that detects Claude and Codex using configured binary paths, and adding app-level tests to verify both configured-path and default-path detection flows. `go build ./...`, `go vet ./...`, and `go test -coverprofile=coverage.out ./... -count=1` all passed, with `internal/provider` at 84.8% coverage.
 
 ## Review Log
 

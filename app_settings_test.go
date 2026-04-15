@@ -1,0 +1,96 @@
+package main
+
+import (
+	"os"
+	"path/filepath"
+	"runtime"
+	"testing"
+
+	"agent-overflow/internal/settings"
+)
+
+func TestGetProviderStatusesUsesConfiguredBinaryPaths(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("mock shell scripts require unix")
+	}
+
+	configDir := t.TempDir()
+	app := &App{
+		settings: settings.NewService(configDir),
+	}
+
+	claudeBinary := createMockBinary(t, "claude-mock 1.2.3")
+	codexBinary := createMockBinary(t, "codex-mock 4.5.6")
+
+	if _, err := app.settings.Update(map[string]any{
+		"claudeBinaryPath": claudeBinary,
+		"codexBinaryPath":  codexBinary,
+	}); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+
+	statuses, err := app.GetProviderStatuses()
+	if err != nil {
+		t.Fatalf("GetProviderStatuses() error = %v", err)
+	}
+	if len(statuses) != 2 {
+		t.Fatalf("len(statuses) = %d, want 2", len(statuses))
+	}
+
+	if statuses[0].Provider != "claude" {
+		t.Fatalf("statuses[0].Provider = %q, want claude", statuses[0].Provider)
+	}
+	if statuses[0].BinaryPath != claudeBinary {
+		t.Fatalf("statuses[0].BinaryPath = %q, want %q", statuses[0].BinaryPath, claudeBinary)
+	}
+	if statuses[0].Version != "claude-mock 1.2.3" {
+		t.Fatalf("statuses[0].Version = %q, want %q", statuses[0].Version, "claude-mock 1.2.3")
+	}
+
+	if statuses[1].Provider != "codex" {
+		t.Fatalf("statuses[1].Provider = %q, want codex", statuses[1].Provider)
+	}
+	if statuses[1].BinaryPath != codexBinary {
+		t.Fatalf("statuses[1].BinaryPath = %q, want %q", statuses[1].BinaryPath, codexBinary)
+	}
+	if statuses[1].Version != "codex-mock 4.5.6" {
+		t.Fatalf("statuses[1].Version = %q, want %q", statuses[1].Version, "codex-mock 4.5.6")
+	}
+}
+
+func TestGetProviderStatusesFallsBackToDefaultsWithoutSettingsService(t *testing.T) {
+	app := &App{}
+
+	statuses, err := app.GetProviderStatuses()
+	if err != nil {
+		t.Fatalf("GetProviderStatuses() error = %v", err)
+	}
+	if len(statuses) != 2 {
+		t.Fatalf("len(statuses) = %d, want 2", len(statuses))
+	}
+
+	if statuses[0].Provider != "claude" {
+		t.Fatalf("statuses[0].Provider = %q, want claude", statuses[0].Provider)
+	}
+	if statuses[0].BinaryPath == "" {
+		t.Fatal("statuses[0].BinaryPath is empty")
+	}
+
+	if statuses[1].Provider != "codex" {
+		t.Fatalf("statuses[1].Provider = %q, want codex", statuses[1].Provider)
+	}
+	if statuses[1].BinaryPath == "" {
+		t.Fatal("statuses[1].BinaryPath is empty")
+	}
+}
+
+func createMockBinary(t *testing.T, version string) string {
+	t.Helper()
+
+	script := filepath.Join(t.TempDir(), "mock-binary")
+	contents := "#!/bin/sh\necho '" + version + "'\n"
+	if err := os.WriteFile(script, []byte(contents), 0o755); err != nil {
+		t.Fatalf("failed to create mock binary: %v", err)
+	}
+	return script
+}
