@@ -1,81 +1,313 @@
 package main
 
-import "context"
+import (
+	"context"
+	"fmt"
+	"log"
+	"os"
+	"path/filepath"
+	"sync"
+	"time"
 
-// App is the primary Wails-bound struct. Its public methods are callable from the frontend.
-// Stub methods generate Wails JS/TS bindings. Implementations come from the ralph loop.
+	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/claude"
+	"agent-overflow/internal/provider/codex"
+	"agent-overflow/internal/store"
+	"agent-overflow/internal/triage"
+
+	"github.com/google/uuid"
+	"github.com/wailsapp/wails/v2/pkg/runtime"
+)
+
+// App is the primary Wails-bound struct.
 type App struct {
-	ctx context.Context
+	ctx      context.Context
+	store    *store.Store
+	triage   *triage.Router
+	mu       sync.Mutex
+	sessions map[string]session // threadID → active session
+}
+
+// session wraps a provider session regardless of type.
+type session struct {
+	provider string
+	// Exactly one of these is non-nil.
+	claude *claude.Session
+	codex  *codex.Session
 }
 
 func NewApp() *App {
-	return &App{}
+	return &App{
+		sessions: make(map[string]session),
+	}
 }
 
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
+
+	// Open SQLite database in the app data directory.
+	dataDir, err := os.UserConfigDir()
+	if err != nil {
+		dataDir = os.TempDir()
+	}
+	dbDir := filepath.Join(dataDir, "agent-overflow")
+	os.MkdirAll(dbDir, 0755)
+	dbPath := filepath.Join(dbDir, "agent-overflow.db")
+
+	st, err := store.New(dbPath)
+	if err != nil {
+		runtime.LogFatalf(ctx, "Failed to open database: %v", err)
+		return
+	}
+
+	a.store = st
+	a.triage = triage.NewRouter(st, func(eventName string, data any) {
+		runtime.EventsEmit(ctx, eventName, data)
+	})
 }
 
-// --- Stubs for Wails binding generation ---
-// These produce the wailsjs/go/main/App.{js,d.ts} files.
-// The ralph loop replaces them with real implementations.
-
-func (a *App) CreateThread(provider string, workspacePath string, model string) (map[string]any, error) {
-	return nil, nil
+// shutdown is called by Wails on app close.
+func (a *App) shutdown(ctx context.Context) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for _, s := range a.sessions {
+		if s.claude != nil {
+			s.claude.Close()
+		}
+		if s.codex != nil {
+			s.codex.Close()
+		}
+	}
+	if a.store != nil {
+		a.store.Close()
+	}
 }
 
-func (a *App) ListThreads() ([]map[string]any, error) {
-	return nil, nil
+// --- Thread operations ---
+
+func (a *App) CreateThread(providerName string, workspacePath string, model string) (store.Thread, error) {
+	now := time.Now().UnixMilli()
+	t := store.Thread{
+		ID:            uuid.New().String(),
+		Title:         "New Thread",
+		Provider:      providerName,
+		WorkspacePath: workspacePath,
+		Model:         model,
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}
+	if err := a.store.CreateThread(t); err != nil {
+		return store.Thread{}, err
+	}
+	return t, nil
 }
 
-func (a *App) GetThread(id string) (map[string]any, error) {
-	return nil, nil
+func (a *App) ListThreads() ([]store.Thread, error) {
+	return a.store.ListThreads()
+}
+
+func (a *App) GetThread(id string) (store.Thread, error) {
+	return a.store.GetThread(id)
 }
 
 func (a *App) DeleteThread(id string) error {
-	return nil
+	a.StopSession(id)
+	return a.store.DeleteThread(id)
 }
 
 func (a *App) ArchiveThread(id string) error {
-	return nil
+	return a.store.ArchiveThread(id)
 }
 
 func (a *App) RenameThread(id string, title string) error {
-	return nil
+	t, err := a.store.GetThread(id)
+	if err != nil {
+		return err
+	}
+	t.Title = title
+	t.UpdatedAt = time.Now().UnixMilli()
+	return a.store.UpdateThread(t)
 }
 
-func (a *App) ListItems(threadID string) ([]map[string]any, error) {
-	return nil, nil
+// --- Item operations ---
+
+func (a *App) ListItems(threadID string) ([]store.Item, error) {
+	return a.store.ListItems(threadID)
 }
 
-func (a *App) ListPayloadMetas(threadID string) ([]map[string]any, error) {
-	return nil, nil
-}
+// --- Payload operations ---
 
 func (a *App) GetPayloadData(payloadID string) (string, error) {
-	return "", nil
+	data, err := a.store.GetPayloadData(payloadID)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
 }
 
+func (a *App) ListPayloadMetas(threadID string) ([]store.PayloadMeta, error) {
+	return a.store.ListPayloadMetas(threadID)
+}
+
+// --- Session operations ---
+
 func (a *App) StartSession(threadID string) error {
+	t, err := a.store.GetThread(threadID)
+	if err != nil {
+		return fmt.Errorf("start session: %w", err)
+	}
+
+	onEvent := func(evt provider.ProviderEvent) {
+		a.triage.Handle(evt)
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	// Stop existing session if any.
+	if existing, ok := a.sessions[threadID]; ok {
+		if existing.claude != nil {
+			existing.claude.Close()
+		}
+		if existing.codex != nil {
+			existing.codex.Close()
+		}
+		delete(a.sessions, threadID)
+	}
+
+	switch t.Provider {
+	case "claude":
+		cfg := claude.Config{
+			Model:   t.Model,
+			WorkDir: t.WorkspacePath,
+			Resume:  t.SessionRef,
+		}
+		sess, err := claude.NewSession(a.ctx, threadID, cfg, onEvent)
+		if err != nil {
+			return err
+		}
+		a.sessions[threadID] = session{provider: "claude", claude: sess}
+
+	case "codex":
+		cfg := codex.Config{
+			Model:          t.Model,
+			WorkDir:        t.WorkspacePath,
+			ResumeThreadID: t.SessionRef,
+		}
+		sess, err := codex.NewSession(a.ctx, threadID, cfg, onEvent)
+		if err != nil {
+			return err
+		}
+		a.sessions[threadID] = session{provider: "codex", codex: sess}
+
+	default:
+		return fmt.Errorf("unknown provider: %s", t.Provider)
+	}
+
 	return nil
 }
 
 func (a *App) SendMessage(threadID string, content string) error {
-	return nil
+	a.mu.Lock()
+	sess, ok := a.sessions[threadID]
+	a.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("no active session for thread %s", threadID)
+	}
+
+	// Persist user message before sending to provider.
+	turnIndex, _ := a.store.LastTurnIndex(threadID)
+	turnIndex++ // new turn starts with user message
+	itemIndex := 0
+	now := time.Now().UnixMilli()
+	userItem := store.Item{
+		ID:        uuid.New().String(),
+		ThreadID:  threadID,
+		TurnIndex: turnIndex,
+		ItemIndex: itemIndex,
+		Kind:      "text",
+		Role:      "user",
+		Summary:   content,
+		CreatedAt: now,
+	}
+	if err := a.store.InsertItem(userItem); err != nil {
+		log.Printf("failed to persist user message: %v", err)
+	}
+
+	switch {
+	case sess.claude != nil:
+		return sess.claude.Send(a.ctx, content)
+	case sess.codex != nil:
+		return sess.codex.Send(a.ctx, content)
+	default:
+		return fmt.Errorf("session has no provider")
+	}
 }
 
 func (a *App) InterruptTurn(threadID string) error {
-	return nil
+	a.mu.Lock()
+	sess, ok := a.sessions[threadID]
+	a.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("no active session for thread %s", threadID)
+	}
+
+	switch {
+	case sess.claude != nil:
+		return sess.claude.Interrupt(a.ctx)
+	case sess.codex != nil:
+		return sess.codex.Interrupt(a.ctx, "")
+	default:
+		return fmt.Errorf("session has no provider")
+	}
 }
 
 func (a *App) StopSession(threadID string) error {
+	a.mu.Lock()
+	sess, ok := a.sessions[threadID]
+	if ok {
+		delete(a.sessions, threadID)
+	}
+	a.mu.Unlock()
+
+	if !ok {
+		return nil
+	}
+
+	if sess.claude != nil {
+		return sess.claude.Close()
+	}
+	if sess.codex != nil {
+		return sess.codex.Close()
+	}
 	return nil
 }
 
 func (a *App) RespondToApproval(threadID string, requestID string, decision string) error {
-	return nil
+	a.mu.Lock()
+	sess, ok := a.sessions[threadID]
+	a.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("no active session for thread %s", threadID)
+	}
+
+	switch {
+	case sess.claude != nil:
+		return sess.claude.RespondToApproval(a.ctx, provider.ApprovalResponse{
+			RequestID: requestID,
+			Decision:  decision,
+		})
+	case sess.codex != nil:
+		var rpcID int64
+		fmt.Sscanf(requestID, "%d", &rpcID)
+		return sess.codex.RespondToApproval(a.ctx, rpcID, decision)
+	default:
+		return fmt.Errorf("session has no provider")
+	}
 }
 
+// --- Settings (stub) ---
+
 func (a *App) GetSettings() (map[string]any, error) {
-	return nil, nil
+	return map[string]any{}, nil
 }
