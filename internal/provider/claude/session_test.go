@@ -1048,3 +1048,53 @@ func TestReadLoopEmitsDisconnectedOnExit(t *testing.T) {
 		}
 	}
 }
+
+func TestReadLoopEmitsErrorStatusOnUnexpectedExit(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	proc, err := provider.Spawn(ctx, provider.SpawnConfig{
+		Binary: "sh",
+		Args:   []string{"-c", "sleep 0.05; exit 7"},
+	})
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+
+	eventCh := make(chan provider.ProviderEvent, 100)
+	s := &Session{
+		proc:     proc,
+		threadID: testThread,
+		onEvent: func(evt provider.ProviderEvent) {
+			eventCh <- evt
+		},
+		cancel: cancel,
+	}
+	go s.readLoop()
+
+	var gotError, gotDisconnected bool
+	timeout := time.After(5 * time.Second)
+	for !(gotError && gotDisconnected) {
+		select {
+		case evt := <-eventCh:
+			if evt.Kind != provider.EventSessionStatus {
+				continue
+			}
+			switch evt.Content {
+			case "error":
+				gotError = true
+				var meta provider.ProcessExitInfo
+				if err := json.Unmarshal(evt.Meta, &meta); err != nil {
+					t.Fatalf("unmarshal exit meta: %v", err)
+				}
+				if meta.ExitCode != 7 {
+					t.Fatalf("exitCode = %d, want 7", meta.ExitCode)
+				}
+			case "disconnected":
+				gotDisconnected = true
+			}
+		case <-timeout:
+			t.Fatal("timeout waiting for unexpected-exit events")
+		}
+	}
+}

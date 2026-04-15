@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	"agent-overflow/internal/provider"
@@ -20,14 +21,15 @@ type Session struct {
 	model     string
 	onEvent   func(provider.ProviderEvent)
 	cancel    context.CancelFunc
+	closing   atomic.Bool
 }
 
 // Config for creating a Claude session.
 type Config struct {
-	Binary         string   // default: "claude"
+	Binary         string // default: "claude"
 	Model          string
 	WorkDir        string
-	Resume         string   // session ID to resume, empty for new
+	Resume         string // session ID to resume, empty for new
 	SystemPrompt   string
 	AllowedTools   []string
 	PermissionMode string // "default", "acceptEdits", "bypassPermissions"
@@ -162,6 +164,7 @@ func (s *Session) SessionID() string {
 // Close shuts down the CLI process gracefully.
 // Closes stdin first for graceful shutdown, then cancels the context as fallback.
 func (s *Session) Close() error {
+	s.closing.Store(true)
 	err := s.proc.Close()
 	s.cancel()
 	return err
@@ -170,6 +173,19 @@ func (s *Session) Close() error {
 // readLoop reads stdout NDJSON lines and dispatches them as ProviderEvents.
 func (s *Session) readLoop() {
 	defer func() {
+		if !s.closing.Load() {
+			exitErr := provider.WaitProcessExitErr(s.proc)
+			if exitErr != nil {
+				s.onEvent(provider.ProviderEvent{
+					Kind:      provider.EventSessionStatus,
+					ThreadID:  s.threadID,
+					Content:   "error",
+					Meta:      provider.MarshalProcessExitMeta(exitErr),
+					Timestamp: time.Now(),
+				})
+			}
+		}
+
 		s.onEvent(provider.ProviderEvent{
 			Kind:      provider.EventSessionStatus,
 			ThreadID:  s.threadID,

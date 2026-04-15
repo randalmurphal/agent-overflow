@@ -243,3 +243,120 @@ func TestConcurrentLogging(t *testing.T) {
 		t.Errorf("line count = %d, want %d", lineCount, expected)
 	}
 }
+
+func TestNewLoggerUsesDefaultMaxBytesAndExistingSize(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "existing.log")
+	if err := os.WriteFile(path, []byte("seed"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	lg, err := NewLogger(path, 0)
+	if err != nil {
+		t.Fatalf("NewLogger: %v", err)
+	}
+	defer lg.Close()
+
+	if lg.maxBytes != defaultMaxBytes {
+		t.Fatalf("maxBytes = %d, want %d", lg.maxBytes, defaultMaxBytes)
+	}
+	if lg.written != 4 {
+		t.Fatalf("written = %d, want 4", lg.written)
+	}
+}
+
+func TestNewLoggerReturnsDirectoryCreationError(t *testing.T) {
+	dir := t.TempDir()
+	blocker := filepath.Join(dir, "blocker")
+	if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	_, err := NewLogger(filepath.Join(blocker, "child.log"), 0)
+	if err == nil {
+		t.Fatal("expected directory creation error")
+	}
+	if !strings.Contains(err.Error(), "create parent dirs") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestLogReturnsMarshalError(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "marshal.log")
+	lg, err := NewLogger(path, 0)
+	if err != nil {
+		t.Fatalf("NewLogger: %v", err)
+	}
+	defer lg.Close()
+
+	err = lg.Log(LogEntry{
+		Level:     "info",
+		Component: "test",
+		Message:   "bad data",
+		Data:      func() {},
+	})
+	if err == nil {
+		t.Fatal("expected marshal error")
+	}
+	if !strings.Contains(err.Error(), "marshal entry") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRotateReopensLoggerWhenRenameFails(t *testing.T) {
+	dir := t.TempDir()
+	actualPath := filepath.Join(dir, "actual.log")
+	file, err := os.OpenFile(actualPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		t.Fatalf("OpenFile: %v", err)
+	}
+	defer file.Close()
+
+	lg := &Logger{
+		file:     file,
+		maxBytes: 1,
+		path:     filepath.Join(dir, "missing.log"),
+	}
+
+	err = lg.rotate()
+	if err == nil {
+		t.Fatal("expected rotate error")
+	}
+	if !strings.Contains(err.Error(), "rename current to .1") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if lg.file == nil {
+		t.Fatal("logger should reopen a usable file after rename failure")
+	}
+	defer lg.Close()
+
+	if _, statErr := os.Stat(filepath.Join(dir, "missing.log")); statErr != nil {
+		t.Fatalf("expected reopened log file: %v", statErr)
+	}
+}
+
+func TestRotateReturnsErrorWhenRenameAndReopenFail(t *testing.T) {
+	dir := t.TempDir()
+	actualPath := filepath.Join(dir, "actual.log")
+	file, err := os.OpenFile(actualPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		t.Fatalf("OpenFile: %v", err)
+	}
+	defer file.Close()
+
+	lg := &Logger{
+		file:     file,
+		maxBytes: 1,
+		path:     filepath.Join(dir, "missing", "test.log"),
+	}
+
+	err = lg.rotate()
+	if err == nil {
+		t.Fatal("expected rotate error")
+	}
+	if !strings.Contains(err.Error(), "rename current and reopen") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if lg.file != nil {
+		t.Fatal("logger file should be nil when reopen fails")
+	}
+}

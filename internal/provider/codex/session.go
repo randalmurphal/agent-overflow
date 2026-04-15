@@ -24,6 +24,7 @@ type Session struct {
 	pending       map[int64]chan json.RawMessage
 	onEvent       func(provider.ProviderEvent)
 	cancel        context.CancelFunc
+	closing       atomic.Bool
 }
 
 // Config for creating a Codex session.
@@ -184,6 +185,7 @@ func (s *Session) ThreadID() string {
 // Close shuts down the app-server process.
 // Closes stdin first for graceful shutdown, then cancels the context as fallback.
 func (s *Session) Close() error {
+	s.closing.Store(true)
 	err := s.proc.Close()
 	s.cancel()
 	return err
@@ -289,6 +291,19 @@ func (s *Session) readLoop() {
 			delete(s.pending, id)
 		}
 		s.mu.Unlock()
+
+		if !s.closing.Load() {
+			exitErr := provider.WaitProcessExitErr(s.proc)
+			if exitErr != nil {
+				s.onEvent(provider.ProviderEvent{
+					Kind:      provider.EventSessionStatus,
+					ThreadID:  s.threadID,
+					Content:   "error",
+					Meta:      provider.MarshalProcessExitMeta(exitErr),
+					Timestamp: time.Now(),
+				})
+			}
+		}
 
 		s.onEvent(provider.ProviderEvent{
 			Kind:      provider.EventSessionStatus,

@@ -2,6 +2,8 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"io"
 	"testing"
 	"time"
@@ -279,5 +281,101 @@ func TestErrAccessor(t *testing.T) {
 	// `false` exits with code 1, so Err should be non-nil.
 	if p.Err() == nil {
 		t.Error("expected non-nil error from `false`, got nil")
+	}
+}
+
+func TestMarshalProcessExitMetaForExitCode(t *testing.T) {
+	ctx := context.Background()
+	p, err := Spawn(ctx, SpawnConfig{Binary: "false"})
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+
+	<-p.Done()
+
+	data := MarshalProcessExitMeta(p.Err())
+	var meta ProcessExitInfo
+	if err := json.Unmarshal(data, &meta); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	if meta.ExitCode != 1 {
+		t.Fatalf("ExitCode = %d, want 1", meta.ExitCode)
+	}
+	if meta.Reason == "" {
+		t.Fatal("Reason should not be empty")
+	}
+}
+
+func TestMarshalProcessExitMetaForSignal(t *testing.T) {
+	ctx := context.Background()
+	p, err := Spawn(ctx, SpawnConfig{
+		Binary: "sh",
+		Args:   []string{"-c", "kill -TERM $$"},
+	})
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+
+	<-p.Done()
+
+	data := MarshalProcessExitMeta(p.Err())
+	var meta ProcessExitInfo
+	if err := json.Unmarshal(data, &meta); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	if meta.Signal == "" {
+		t.Fatal("Signal should not be empty")
+	}
+	if meta.Reason == "" {
+		t.Fatal("Reason should not be empty")
+	}
+}
+
+func TestWaitProcessExitErr(t *testing.T) {
+	ctx := context.Background()
+	p, err := Spawn(ctx, SpawnConfig{Binary: "false"})
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+
+	if WaitProcessExitErr(p) == nil {
+		t.Fatal("expected non-nil exit error")
+	}
+}
+
+func TestIsClosedPipeErr(t *testing.T) {
+	if !isClosedPipeErr(errors.New("read |0: file already closed")) {
+		t.Fatal("expected file already closed to be treated as closed pipe")
+	}
+	if !isClosedPipeErr(errors.New("write broken pipe")) {
+		t.Fatal("expected broken pipe to be treated as closed pipe")
+	}
+	if isClosedPipeErr(errors.New("permission denied")) {
+		t.Fatal("unexpected closed-pipe match")
+	}
+}
+
+func TestCloseEscalatesToSignal(t *testing.T) {
+	ctx := context.Background()
+	p, err := Spawn(ctx, SpawnConfig{Binary: "sleep", Args: []string{"60"}})
+	if err != nil {
+		t.Fatalf("spawn sleep: %v", err)
+	}
+
+	start := time.Now()
+	err = p.Close()
+	if err == nil {
+		t.Fatal("expected non-nil exit error after terminating sleep")
+	}
+	if elapsed := time.Since(start); elapsed > 6*time.Second {
+		t.Fatalf("Close took %v, want under 6s", elapsed)
+	}
+
+	select {
+	case <-p.Done():
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("Done channel should be closed after Close")
 	}
 }
