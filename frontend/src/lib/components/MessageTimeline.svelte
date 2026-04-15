@@ -1,20 +1,48 @@
 <script lang="ts">
   import type { ThreadPane } from '../stores/thread.svelte';
+  import type { DiffMeta, CommandOutputMeta } from '../types/models';
   import UserMessage from './UserMessage.svelte';
   import AssistantMessage from './AssistantMessage.svelte';
+  import DiffPreview from './DiffPreview.svelte';
+  import CommandOutput from './CommandOutput.svelte';
+  import WorkEntry, { type WorkEntryData } from './WorkEntry.svelte';
 
   let { pane }: { pane: ThreadPane } = $props();
 
   let scrollContainer: HTMLDivElement | undefined = $state(undefined);
 
+  // Active tool calls as WorkEntryData for rendering.
+  let activeToolEntries = $derived<WorkEntryData[]>(
+    [...pane.activeToolCalls.entries()].map(([id, data]) => {
+      const meta = data as Record<string, unknown> | null;
+      return {
+        id,
+        type: (meta && typeof meta.toolName === 'string') ? meta.toolName : 'tool',
+        name: (meta && typeof meta.toolName === 'string') ? meta.toolName : undefined,
+        status: 'running' as const,
+        meta: data,
+      };
+    })
+  );
+
+  function parseMeta<T>(payloadId: string | undefined): T | null {
+    if (!payloadId) return null;
+    const pm = pane.payloadMetas.get(payloadId);
+    if (!pm) return null;
+    try {
+      return JSON.parse(pm.meta) as T;
+    } catch {
+      return null;
+    }
+  }
+
   // Auto-scroll when items change or streaming content updates.
   $effect(() => {
-    // Touch reactive values to track them.
     pane.items.length;
     pane.streamingContent;
+    pane.activeToolCalls.size;
 
     if (scrollContainer) {
-      // Use requestAnimationFrame so DOM has updated before scrolling.
       requestAnimationFrame(() => {
         scrollContainer!.scrollTop = scrollContainer!.scrollHeight;
       });
@@ -26,10 +54,36 @@
   {#each pane.items as item (item.id)}
     {#if item.role === 'user'}
       <UserMessage {item} />
+    {:else if item.kind === 'diff' && item.payloadId}
+      {@const diffMeta = parseMeta<DiffMeta>(item.payloadId)}
+      {#if diffMeta}
+        <DiffPreview meta={diffMeta} payloadId={item.payloadId} />
+      {:else}
+        <AssistantMessage {item} />
+      {/if}
+    {:else if item.kind === 'command_execution' && item.payloadId}
+      {@const cmdMeta = parseMeta<CommandOutputMeta>(item.payloadId)}
+      {#if cmdMeta}
+        <CommandOutput meta={cmdMeta} payloadId={item.payloadId} />
+      {:else}
+        <AssistantMessage {item} />
+      {/if}
+    {:else if item.kind === 'thinking'}
+      <div class="mb-2 px-3 py-2 bg-surface-1 rounded border border-border text-xs text-text-secondary italic">
+        Thinking: {item.summary}
+      </div>
     {:else}
       <AssistantMessage {item} />
     {/if}
   {/each}
+
+  {#if activeToolEntries.length > 0}
+    <div class="mb-3 flex flex-col gap-1">
+      {#each activeToolEntries as entry (entry.id)}
+        <WorkEntry {entry} />
+      {/each}
+    </div>
+  {/if}
 
   {#if pane.streamingContent}
     <div class="flex justify-start mb-3">
@@ -40,7 +94,7 @@
     </div>
   {/if}
 
-  {#if pane.items.length === 0 && !pane.streamingContent}
+  {#if pane.items.length === 0 && !pane.streamingContent && activeToolEntries.length === 0}
     <div class="flex items-center justify-center h-full text-text-secondary text-sm">
       No messages yet. Send a message to get started.
     </div>

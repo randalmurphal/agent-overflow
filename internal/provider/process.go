@@ -7,15 +7,16 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
 )
 
 const (
-	// MaxLineSize is the max stdout line buffer: 10 MB.
+	// maxLineSize is the max stdout line buffer: 10 MB.
 	// Diffs and command outputs can be large.
-	MaxLineSize = 10 * 1024 * 1024
+	maxLineSize = 10 * 1024 * 1024
 
 	// shutdownGrace is how long to wait after closing stdin before sending SIGTERM.
 	shutdownGrace = 3 * time.Second
@@ -75,7 +76,7 @@ func Spawn(ctx context.Context, cfg SpawnConfig) (*Process, error) {
 	}
 
 	scanner := bufio.NewScanner(stdoutPipe)
-	scanner.Buffer(make([]byte, 0, 64*1024), MaxLineSize)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxLineSize)
 
 	p := &Process{
 		cmd:    cmd,
@@ -124,9 +125,21 @@ func (p *Process) ReadLine() ([]byte, error) {
 		return out, nil
 	}
 	if err := p.stdout.Err(); err != nil {
+		// cmd.Wait() closes the stdout pipe, which can race with Scan().
+		// Treat a closed-pipe error as EOF — the process is gone either way.
+		if isClosedPipeErr(err) {
+			return nil, io.EOF
+		}
 		return nil, err
 	}
 	return nil, io.EOF
+}
+
+// isClosedPipeErr returns true if err indicates a closed pipe or file descriptor.
+// This happens when cmd.Wait() closes stdout before the scanner finishes reading.
+func isClosedPipeErr(err error) bool {
+	return strings.Contains(err.Error(), "file already closed") ||
+		strings.Contains(err.Error(), "broken pipe")
 }
 
 // Done returns a channel that closes when the process exits.

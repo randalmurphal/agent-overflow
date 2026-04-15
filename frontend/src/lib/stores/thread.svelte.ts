@@ -77,9 +77,16 @@ export function createThreadPane() {
       streamingContent += delta;
     },
 
-    freezeStreamingContent(item: Item): void {
-      items = [...items, item];
+    finalizeTurn(): void {
       streamingContent = '';
+      activeToolCalls = new Map();
+      if (thread) {
+        ListItems(thread.id).then((loaded) => {
+          items = loaded as Item[];
+        }).catch((err) => {
+          console.error('Failed to reload items after turn:', err);
+        });
+      }
     },
 
     addToolCall(id: string, data: unknown): void {
@@ -121,10 +128,6 @@ export function createThreadPane() {
 
     addPayloadMeta(meta: PayloadMeta): void {
       payloadMetas = new Map(payloadMetas).set(meta.id, meta);
-    },
-
-    appendItem(item: Item): void {
-      items = [...items, item];
     },
   };
 }

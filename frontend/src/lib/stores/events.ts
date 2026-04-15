@@ -37,6 +37,7 @@ function routeEventToPane(pane: ThreadPane, evt: ProviderEvent): void {
 
     case 'turn_complete':
       pane.setSessionStatus('ready');
+      pane.finalizeTurn();
       break;
 
     case 'approval_request':

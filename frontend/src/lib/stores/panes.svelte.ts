@@ -3,10 +3,6 @@ import { createThreadPane, type ThreadPane } from './thread.svelte';
 // Active panes, keyed by pane ID. v1 has exactly one pane ("main").
 let panes: Map<string, ThreadPane> = $state(new Map());
 
-export function getPane(id: string): ThreadPane | undefined {
-  return panes.get(id);
-}
-
 export function getMainPane(): ThreadPane {
   let main = panes.get('main');
   if (!main) {

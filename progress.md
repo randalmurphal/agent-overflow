@@ -252,3 +252,67 @@
 
 **Coverage after**: provider 84.2%, claude 87.0%, codex 87.8%, store 81.7%, triage 93.7% — all >= 80%  
 **Quality gate**: go build ✅, go vet ✅, go test ✅, npm run check ✅ (0 errors, 0 warnings, 111 files)
+
+### Review 4 — Code Consistency
+**Category**: Same patterns across all packages  
+**Scope**: All 14 Go source files, all frontend TypeScript/Svelte files  
+**Findings** (20 total — 7 fixed, 13 acceptable design decisions):
+
+**Fixed:**
+1. **Status color mismatch** (ComposerControls.svelte vs StatusBar.svelte): `connected`/`ready` states mapped to `bg-green-400` in ComposerControls but `bg-accent` in StatusBar. Aligned to `bg-accent`.
+2. **Unused `pane` prop** in WorkGroup.svelte: declared in `$props()` but never referenced. Removed.
+3. **Duplicated JSON helper** `readStringFromResponse` (codex.go) was identical to `readNestedString` (protocol.go) in the same package. Replaced body with delegation to `readNestedString`.
+4. **Error wrapping inconsistency** in `app.go:StartSession`: `GetThread` error was wrapped with `"start session: %w"` but `NewSession` errors returned bare. Fixed both to wrap consistently.
+5. **`ApprovalRequest.TurnID` never populated**: Neither Claude nor Codex providers set this field, but Go struct had no `omitempty` and TypeScript type declared it required. Added `omitempty` to Go tag and made TS field optional (`turnId?`).
+6. **Lost error chain** in `claude/protocol.go:21`: `fmt.Errorf("missing or invalid type field")` discarded the underlying unmarshal error. Fixed to `%w`.
+7. **Unhandled marshal error** in `parseControlRequest`: `data, _ := json.Marshal(raw)` was inconsistent with `parseResult`/`parseStreamEvent` which both return errors. Fixed to match.
+
+**Accepted as design decisions (not bugs):**
+- Store CRUD naming (`Create*` vs `Insert*`): follows IMPLEMENTATION.md spec verbatim
+- `Spawn` vs `New*` constructor naming: `Spawn` is conventional for process creation
+- Session method signature differences (`Interrupt`, `RespondToApproval`): inherent to different provider protocols, spec-driven
+- `ParseLine` vs `ClassifyNotification`: different abstractions for fundamentally different wire formats (NDJSON vs JSON-RPC notifications)
+- `SessionID()` vs `ThreadID()` accessor asymmetry: expose different concepts, spec-driven
+- `makeThread` test helper without `t.Helper()`: pure factory function that never fails, no testing assertions
+- Two logging systems (`log.Printf` vs `runtime.LogFatalf`): Wails requires its logger for startup fatals
+- JSDoc inconsistency across frontend: not adding docs to unchanged components (CLAUDE.md rule)
+- Section header formatting (`---` vs `--`): cosmetic
+- Different JSON parsing approaches between claude/ and codex/: fundamentally different wire formats
+- Test structure (flat vs table-driven): table-driven used where it adds value (approval subtests), flat elsewhere
+- Duplicated `testThread` const across test packages: separate packages, no shared test helpers package warranted
+- `ProviderEvent.timestamp` format difference (RFC 3339 for events vs Unix millis for store models): matches Go type system (time.Time vs int64)
+
+**Quality gate**: go build ✅, go vet ✅, go test ✅, npm run check ✅ (0 errors, 0 warnings, 111 files)  
+**Coverage**: provider 84.2%, claude 86.5%, codex 88.7%, store 81.7%, triage 93.7%
+
+### Review 5 — Dead Code
+**Category**: Unused exports, unreferenced types, implemented-but-unwired components  
+**Scope**: All 14 Go source files, all frontend TypeScript/Svelte files  
+**Findings** (19 Go + 20 frontend items identified — 12 fixed, rest accepted as API surface or spec-defined):
+
+**Bugs found and fixed:**
+1. **`ProviderKind` constants unused** — `app.go` used string literals `"claude"`/`"codex"` instead of `provider.Claude`/`provider.Codex`. Wired constants.
+2. **`MaxLineSize` unnecessarily exported** — only used within `provider` package. Unexported to `maxLineSize`.
+3. **`ReadLine` race with `cmd.Wait()`** — `TestReadLineEOFAfterExit` was failing because `cmd.Wait()` closes stdout pipe before scanner reads, producing "file already closed" instead of `io.EOF`. Added `isClosedPipeErr` helper to treat closed-pipe errors as EOF.
+4. **`freezeStreamingContent` never called** — streaming text was never frozen into items on `turn_complete`. This was a functional bug: after a turn completed, streaming content stayed visible and was never replaced by persisted items. Replaced with `finalizeTurn()` method that clears streaming state, clears active tool calls, and reloads items from DB.
+5. **`appendItem` never called** — dead method on ThreadPane. Removed.
+6. **`DiffPreview.svelte` never imported** — component was built (Review 1) but never wired into MessageTimeline. Now renders for items with `kind === 'diff'` using payload meta.
+7. **`CommandOutput.svelte` never imported** — same pattern. Now renders for items with `kind === 'command_execution'`.
+8. **`WorkEntry.svelte` only used by dead WorkGroup** — now directly imported by MessageTimeline to render active tool calls.
+9. **`WorkGroup.svelte` dead** — tool calls aren't persisted as items (forwarded inline during turn, not stored), so grouping is unnecessary. Deleted.
+10. **`activeToolCalls` getter never read** — no component displayed running tool calls. MessageTimeline now renders active tool calls as WorkEntry items during a turn.
+11. **Dead binding re-exports** — `bindings.ts` re-exported 15 functions but only 7 were imported. Removed: `GetThread`, `DeleteThread`, `RenameThread`, `ListItems`, `ListPayloadMetas`, `StopSession`, `GetSettings`, `ListThreads`.
+12. **Dead store exports** — `getPane()` in panes.svelte.ts and `updateThreadInList()` in threads.svelte.ts never imported. Removed.
+
+**Accepted as API surface / spec-defined (not removed):**
+- `SessionID()` (claude), `ThreadID()` (codex) — session accessor methods, tested, part of session contract
+- `Process.Done()`, `Process.Err()`, `Process.Kill()` — public process lifecycle API, tested
+- `store.GetPayloadMeta()` — valid store operation, tested, may be needed for single-payload lookup
+- `EventApprovalResolved`, background events (`EventBackgroundStart`/`Delta`/`Complete`) — spec-defined EventKind constants, handled in triage router, providers don't emit them yet but routing is in place
+- `ItemToolCall`, `ItemToolResult`, `ItemBackgroundStarted` — spec-defined ItemKind constants for DB schema
+- `ThinkingMeta` type (frontend) — matches Go type, kept for type consistency
+- `payloadMetas` getter — now wired (used by MessageTimeline's `parseMeta` helper to render DiffPreview/CommandOutput)
+- Config fields not set in production (SystemPrompt, AllowedTools, etc.) — intentional extensibility points for UI
+
+**Quality gate**: go build ✅, go vet ✅, go test ✅, npm run check ✅ (0 errors, 0 warnings, 110 files), vite build ✅  
+**Coverage**: provider 80.0%, claude 86.5%, codex 88.3%, store 81.7%, triage 93.7%

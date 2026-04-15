@@ -181,7 +181,7 @@ func (a *App) StartSession(threadID string) error {
 	}
 
 	switch t.Provider {
-	case "claude":
+	case string(provider.Claude):
 		cfg := claude.Config{
 			Model:   t.Model,
 			WorkDir: t.WorkspacePath,
@@ -191,9 +191,9 @@ func (a *App) StartSession(threadID string) error {
 		if err != nil {
 			return fmt.Errorf("start session: %w", err)
 		}
-		a.sessions[threadID] = session{provider: "claude", claude: sess}
+		a.sessions[threadID] = session{provider: string(provider.Claude), claude: sess}
 
-	case "codex":
+	case string(provider.Codex):
 		cfg := codex.Config{
 			Model:          t.Model,
 			WorkDir:        t.WorkspacePath,
@@ -203,7 +203,7 @@ func (a *App) StartSession(threadID string) error {
 		if err != nil {
 			return fmt.Errorf("start session: %w", err)
 		}
-		a.sessions[threadID] = session{provider: "codex", codex: sess}
+		a.sessions[threadID] = session{provider: string(provider.Codex), codex: sess}
 
 	default:
 		return fmt.Errorf("unknown provider: %s", t.Provider)
