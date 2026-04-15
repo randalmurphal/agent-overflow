@@ -59,6 +59,38 @@ func TestReadTopLevelStringInvalidJSON(t *testing.T) {
 	}
 }
 
+func TestReadTopLevelIDString(t *testing.T) {
+	tests := []struct {
+		name string
+		data json.RawMessage
+		want string
+	}{
+		{
+			name: "string id",
+			data: json.RawMessage(`{"requestId":"req-1"}`),
+			want: "req-1",
+		},
+		{
+			name: "numeric id",
+			data: json.RawMessage(`{"requestId":91}`),
+			want: "91",
+		},
+		{
+			name: "missing id",
+			data: json.RawMessage(`{"other":true}`),
+			want: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := readTopLevelIDString(tt.data, "requestId"); got != tt.want {
+				t.Errorf("got %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestReadNestedStringInvalidJSON(t *testing.T) {
 	if got := readNestedString(json.RawMessage(`not json`), "key"); got != "" {
 		t.Errorf("got %q, want empty string", got)
@@ -462,6 +494,36 @@ func TestClassifyThreadCompacted(t *testing.T) {
 	}
 }
 
+func TestClassifyServerRequestResolved(t *testing.T) {
+	params := json.RawMessage(`{"requestId":91,"resolution":{"scope":"turn"}}`)
+	events := ClassifyNotification(testThread, "serverRequest/resolved", params)
+
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if events[0].Kind != provider.EventApprovalResolved {
+		t.Errorf("kind: got %q, want %q", events[0].Kind, provider.EventApprovalResolved)
+	}
+	if events[0].ItemID != "91" {
+		t.Errorf("itemID: got %q, want %q", events[0].ItemID, "91")
+	}
+	if string(events[0].Meta) != string(params) {
+		t.Errorf("meta: got %s, want %s", string(events[0].Meta), string(params))
+	}
+}
+
+func TestClassifyServerRequestResolvedPrefersProviderRequestID(t *testing.T) {
+	params := json.RawMessage(`{"requestId":"interactive-1","providerRequestId":"91"}`)
+	events := ClassifyNotification(testThread, "serverRequest/resolved", params)
+
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if events[0].ItemID != "91" {
+		t.Errorf("itemID: got %q, want %q", events[0].ItemID, "91")
+	}
+}
+
 func TestSkippedMethods(t *testing.T) {
 	skipped := []string{
 		"thread/started",
@@ -473,7 +535,6 @@ func TestSkippedMethods(t *testing.T) {
 		"item/autoApprovalReview/completed",
 		"item/reasoning/summaryPartAdded",
 		"item/mcpToolCall/progress",
-		"serverRequest/resolved",
 		"account/updated",
 		"account/login/completed",
 		"configWarning",

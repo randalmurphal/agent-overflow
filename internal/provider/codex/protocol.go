@@ -142,6 +142,19 @@ func ClassifyNotification(threadID, method string, params json.RawMessage) []pro
 			Timestamp: now,
 		}}
 
+	case "serverRequest/resolved":
+		requestID := readTopLevelIDString(params, "providerRequestId")
+		if requestID == "" {
+			requestID = readTopLevelIDString(params, "requestId")
+		}
+		return []provider.ProviderEvent{{
+			Kind:      provider.EventApprovalResolved,
+			ThreadID:  threadID,
+			ItemID:    requestID,
+			Meta:      params,
+			Timestamp: now,
+		}}
+
 	case "item/reasoning/textDelta", "item/reasoning/summaryTextDelta":
 		delta := readTopLevelString(params, "delta")
 		if delta == "" {
@@ -213,7 +226,6 @@ func ClassifyNotification(threadID, method string, params json.RawMessage) []pro
 		"item/autoApprovalReview/completed",
 		"item/reasoning/summaryPartAdded",
 		"item/mcpToolCall/progress",
-		"serverRequest/resolved",
 		"account/updated",
 		"account/login/completed",
 		"configWarning",
@@ -242,6 +254,26 @@ func readTopLevelString(data json.RawMessage, key string) string {
 		return ""
 	}
 	return s
+}
+
+func readTopLevelIDString(data json.RawMessage, key string) string {
+	var m map[string]json.RawMessage
+	if json.Unmarshal(data, &m) != nil {
+		return ""
+	}
+	raw, ok := m[key]
+	if !ok {
+		return ""
+	}
+	var str string
+	if json.Unmarshal(raw, &str) == nil {
+		return str
+	}
+	var num json.Number
+	if json.Unmarshal(raw, &num) == nil {
+		return num.String()
+	}
+	return ""
 }
 
 // extractUsageFromTurn checks for usage/cost data in a turn/completed notification.
