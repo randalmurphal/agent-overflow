@@ -604,6 +604,142 @@ func TestGetPayloadData(t *testing.T) {
 	}
 }
 
+func TestUpsertTurnPayloadReplacesExistingPayload(t *testing.T) {
+	s := newTestStore(t)
+
+	thr := makeThread("t1", "codex")
+	if err := s.CreateThread(thr); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+
+	original := Payload{
+		ID:        "payload-1",
+		Kind:      "diff",
+		Meta:      `{"preview":"old"}`,
+		Data:      []byte("old diff"),
+		CreatedAt: 1000,
+	}
+	if err := s.InsertPayload(original); err != nil {
+		t.Fatalf("insert original payload: %v", err)
+	}
+
+	item := Item{
+		ID:        "item-1",
+		ThreadID:  "t1",
+		TurnIndex: 0,
+		ItemIndex: 0,
+		Kind:      "diff",
+		Role:      "assistant",
+		Summary:   "old diff",
+		PayloadID: original.ID,
+		CreatedAt: 1000,
+	}
+	if err := s.InsertItem(item); err != nil {
+		t.Fatalf("insert item: %v", err)
+	}
+
+	replacement := Payload{
+		ID:        "payload-2",
+		Kind:      "diff",
+		Meta:      `{"preview":"new"}`,
+		Data:      []byte("new diff"),
+		CreatedAt: 2000,
+	}
+	if err := s.UpsertTurnPayload("t1", 0, "diff", replacement); err != nil {
+		t.Fatalf("upsert turn payload: %v", err)
+	}
+
+	metas, err := s.ListPayloadMetas("t1")
+	if err != nil {
+		t.Fatalf("list payload metas: %v", err)
+	}
+	if len(metas) != 1 {
+		t.Fatalf("expected 1 payload meta after replace, got %d", len(metas))
+	}
+	if metas[0].ID != original.ID {
+		t.Fatalf("expected existing payload id %q to be reused, got %q", original.ID, metas[0].ID)
+	}
+	if metas[0].Meta != replacement.Meta {
+		t.Fatalf("expected payload meta %q, got %q", replacement.Meta, metas[0].Meta)
+	}
+
+	data, err := s.GetPayloadData(original.ID)
+	if err != nil {
+		t.Fatalf("get payload data: %v", err)
+	}
+	if string(data) != "new diff" {
+		t.Fatalf("expected updated payload data, got %q", string(data))
+	}
+}
+
+func TestFindTurnItemReturnsFalseWhenMissing(t *testing.T) {
+	s := newTestStore(t)
+
+	item, found, err := s.FindTurnItem("missing-thread", 0, "diff")
+	if err != nil {
+		t.Fatalf("find turn item: %v", err)
+	}
+	if found {
+		t.Fatal("expected missing turn item lookup to return found=false")
+	}
+	if item.ID != "" {
+		t.Fatalf("expected zero item for missing lookup, got %+v", item)
+	}
+}
+
+func TestUpdateItemPayloadUpdatesLinkedItem(t *testing.T) {
+	s := newTestStore(t)
+
+	thr := makeThread("t1", "codex")
+	if err := s.CreateThread(thr); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+
+	payload := Payload{
+		ID:        "payload-1",
+		Kind:      "diff",
+		Meta:      `{"preview":"before"}`,
+		Data:      []byte("before"),
+		CreatedAt: 1000,
+	}
+	if err := s.InsertPayload(payload); err != nil {
+		t.Fatalf("insert payload: %v", err)
+	}
+
+	item := Item{
+		ID:        "item-1",
+		ThreadID:  "t1",
+		TurnIndex: 0,
+		ItemIndex: 0,
+		Kind:      "diff",
+		Role:      "assistant",
+		Summary:   "before",
+		PayloadID: payload.ID,
+		CreatedAt: 1000,
+	}
+	if err := s.InsertItem(item); err != nil {
+		t.Fatalf("insert item: %v", err)
+	}
+
+	if err := s.UpdateItemPayload(item.ID, "payload-1", "after", 2000); err != nil {
+		t.Fatalf("update item payload: %v", err)
+	}
+
+	updated, found, err := s.FindTurnItem("t1", 0, "diff")
+	if err != nil {
+		t.Fatalf("find turn item: %v", err)
+	}
+	if !found {
+		t.Fatal("expected updated item to be found")
+	}
+	if updated.Summary != "after" {
+		t.Fatalf("expected updated summary, got %q", updated.Summary)
+	}
+	if updated.CreatedAt != 2000 {
+		t.Fatalf("expected updated created_at, got %d", updated.CreatedAt)
+	}
+}
+
 func TestListPayloadMetas(t *testing.T) {
 	s := newTestStore(t)
 

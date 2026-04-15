@@ -427,6 +427,100 @@ func TestDiffPersistsHeavy(t *testing.T) {
 	}
 }
 
+func TestDiffReplaceUpsertsExistingPayload(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	first := provider.ProviderEvent{
+		Kind:      provider.EventDiff,
+		ThreadID:  "t1",
+		Content:   "diff --git a/main.go b/main.go\n--- a/main.go\n+++ b/main.go\n@@ -1 +1 @@\n-old\n+new\n",
+		Timestamp: time.Now(),
+	}
+	if err := router.Handle(first); err != nil {
+		t.Fatalf("handle first diff: %v", err)
+	}
+
+	second := provider.ProviderEvent{
+		Kind:      provider.EventDiff,
+		ThreadID:  "t1",
+		Content:   "diff --git a/main.go b/main.go\n--- a/main.go\n+++ b/main.go\n@@ -1 +1,2 @@\n-old\n+new\n+newer\n",
+		Replace:   true,
+		Timestamp: time.Now(),
+	}
+	if err := router.Handle(second); err != nil {
+		t.Fatalf("handle replacement diff: %v", err)
+	}
+
+	metas, err := st.ListPayloadMetas("t1")
+	if err != nil {
+		t.Fatalf("list payload metas: %v", err)
+	}
+	if len(metas) != 1 {
+		t.Fatalf("expected 1 payload meta after replacement, got %d", len(metas))
+	}
+
+	data, err := st.GetPayloadData(metas[0].ID)
+	if err != nil {
+		t.Fatalf("get payload data: %v", err)
+	}
+	if !strings.Contains(string(data), "+newer") {
+		t.Fatalf("expected replacement diff content, got %q", string(data))
+	}
+
+	items, err := st.ListItems("t1")
+	if err != nil {
+		t.Fatalf("list items: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("expected 1 diff item after replacement, got %d", len(items))
+	}
+	if len(*emissions) != 2 {
+		t.Fatalf("expected 2 meta emissions, got %d", len(*emissions))
+	}
+}
+
+func TestDiffWithoutReplaceAppendsPayloads(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	first := provider.ProviderEvent{
+		Kind:      provider.EventDiff,
+		ThreadID:  "t1",
+		Content:   "first diff",
+		Timestamp: time.Now(),
+	}
+	second := provider.ProviderEvent{
+		Kind:      provider.EventDiff,
+		ThreadID:  "t1",
+		Content:   "second diff",
+		Timestamp: time.Now(),
+	}
+
+	if err := router.Handle(first); err != nil {
+		t.Fatalf("handle first diff: %v", err)
+	}
+	if err := router.Handle(second); err != nil {
+		t.Fatalf("handle second diff: %v", err)
+	}
+
+	metas, err := st.ListPayloadMetas("t1")
+	if err != nil {
+		t.Fatalf("list payload metas: %v", err)
+	}
+	if len(metas) != 2 {
+		t.Fatalf("expected 2 payload metas without replace, got %d", len(metas))
+	}
+
+	items, err := st.ListItems("t1")
+	if err != nil {
+		t.Fatalf("list items: %v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("expected 2 diff items without replace, got %d", len(items))
+	}
+}
+
 func TestCommandOutputPersistsHeavy(t *testing.T) {
 	router, st, emissions := newTestRouter(t)
 	createTestThread(t, st, "t1")

@@ -56,6 +56,7 @@ func ClassifyNotification(threadID, method string, params json.RawMessage) []pro
 			ThreadID:  threadID,
 			Content:   readTopLevelString(params, "diff"),
 			Meta:      params,
+			Replace:   true,
 			Timestamp: now,
 		}}
 

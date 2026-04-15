@@ -146,19 +146,127 @@ func (r *Router) Handle(evt provider.ProviderEvent) error {
 // persistHeavy extracts meta, stores payload + item, emits meta to frontend.
 func (r *Router) persistHeavy(evt provider.ProviderEvent, payloadKind string, itemKind string) error {
 	now := time.Now().UnixMilli()
+	metaJSON := buildPayloadMeta(payloadKind, evt)
+	turnIndex, err := r.store.LastTurnIndex(evt.ThreadID)
+	if err != nil {
+		log.Printf("triage: last turn index: %v (defaulting to 0)", err)
+		turnIndex = 0
+	}
+
 	payloadID := uuid.New().String()
 	itemID := evt.ItemID
 	if itemID == "" {
 		itemID = uuid.New().String()
 	}
 
-	// Extract meta based on payload kind.
-	var metaJSON string
+	var hasExisting bool
+	if evt.Replace {
+		existing, found, findErr := r.store.FindTurnItem(evt.ThreadID, turnIndex, itemKind)
+		if findErr != nil {
+			log.Printf("triage: find turn item: %v", findErr)
+		} else if found && existing.PayloadID != "" {
+			hasExisting = true
+			payloadID = existing.PayloadID
+			itemID = existing.ID
+		} else if found && existing.ID != "" {
+			hasExisting = true
+			itemID = existing.ID
+		}
+	}
+
+	r.emitPayloadMeta(payloadID, evt.ThreadID, payloadKind, metaJSON, now)
+
+	payload := store.Payload{
+		ID:        payloadID,
+		Kind:      payloadKind,
+		Meta:      metaJSON,
+		Data:      []byte(evt.Content),
+		CreatedAt: now,
+	}
+	if evt.Replace {
+		return r.replaceHeavy(evt, payloadKind, itemKind, payload, itemID, metaJSON, now, turnIndex, hasExisting)
+	}
+	if err := r.store.InsertPayload(payload); err != nil {
+		return fmt.Errorf("persist payload: %w", err)
+	}
+	return r.insertHeavyItem(evt, payloadKind, itemKind, payloadID, itemID, metaJSON, now, turnIndex)
+}
+
+func (r *Router) replaceHeavy(
+	evt provider.ProviderEvent,
+	payloadKind, itemKind string,
+	payload store.Payload,
+	itemID, metaJSON string,
+	now int64,
+	turnIndex int,
+	hasExisting bool,
+) error {
+	if err := r.store.UpsertTurnPayload(evt.ThreadID, turnIndex, payloadKind, payload); err != nil {
+		return fmt.Errorf("persist payload: %w", err)
+	}
+
+	summary := buildSummary(payloadKind, metaJSON)
+	if hasExisting {
+		if err := r.store.UpdateItemPayload(itemID, payload.ID, summary, now); err != nil {
+			return fmt.Errorf("persist item: %w", err)
+		}
+		return nil
+	}
+	return r.insertHeavyItem(evt, payloadKind, itemKind, payload.ID, itemID, metaJSON, now, turnIndex)
+}
+
+func (r *Router) insertHeavyItem(
+	evt provider.ProviderEvent,
+	payloadKind, itemKind, payloadID, itemID, metaJSON string,
+	now int64,
+	turnIndex int,
+) error {
+	itemIndex, err := r.store.NextItemIndex(evt.ThreadID, turnIndex)
+	if err != nil {
+		log.Printf("triage: next item index: %v (defaulting to 0)", err)
+		itemIndex = 0
+	}
+
+	item := store.Item{
+		ID:        itemID,
+		ThreadID:  evt.ThreadID,
+		TurnIndex: turnIndex,
+		ItemIndex: itemIndex,
+		Kind:      itemKind,
+		Role:      "assistant",
+		Summary:   buildSummary(payloadKind, metaJSON),
+		PayloadID: payloadID,
+		CreatedAt: now,
+	}
+	if err := r.store.InsertItem(item); err != nil {
+		return fmt.Errorf("persist item: %w", err)
+	}
+
+	return nil
+}
+
+func (r *Router) emitPayloadMeta(payloadID, threadID, kind, meta string, createdAt int64) {
+	r.emit("provider:meta", struct {
+		ID        string `json:"id"`
+		ThreadID  string `json:"threadId"`
+		Kind      string `json:"kind"`
+		Meta      string `json:"meta"`
+		CreatedAt int64  `json:"createdAt"`
+	}{
+		ID:        payloadID,
+		ThreadID:  threadID,
+		Kind:      kind,
+		Meta:      meta,
+		CreatedAt: createdAt,
+	})
+}
+
+func buildPayloadMeta(payloadKind string, evt provider.ProviderEvent) string {
 	switch payloadKind {
 	case "diff":
 		dm := ExtractDiffMeta(evt.Content)
 		data, _ := json.Marshal(dm)
-		metaJSON = string(data)
+		return string(data)
 	case "command_output":
 		cm := ExtractCommandOutputMeta(evt.Content, "", 0)
 		if evt.Meta != nil {
@@ -171,74 +279,14 @@ func (r *Router) persistHeavy(evt provider.ProviderEvent, payloadKind string, it
 			}
 		}
 		data, _ := json.Marshal(cm)
-		metaJSON = string(data)
+		return string(data)
 	case "thinking":
 		tm := ExtractThinkingMeta(evt.Content)
 		data, _ := json.Marshal(tm)
-		metaJSON = string(data)
+		return string(data)
 	default:
-		metaJSON = "{}"
+		return "{}"
 	}
-
-	// Emit meta to frontend first (regardless of persistence outcome).
-	// Include threadId so the frontend can filter by thread.
-	r.emit("provider:meta", struct {
-		ID        string `json:"id"`
-		ThreadID  string `json:"threadId"`
-		Kind      string `json:"kind"`
-		Meta      string `json:"meta"`
-		CreatedAt int64  `json:"createdAt"`
-	}{
-		ID:        payloadID,
-		ThreadID:  evt.ThreadID,
-		Kind:      payloadKind,
-		Meta:      metaJSON,
-		CreatedAt: now,
-	})
-
-	// Persist payload.
-	payload := store.Payload{
-		ID:        payloadID,
-		Kind:      payloadKind,
-		Meta:      metaJSON,
-		Data:      []byte(evt.Content),
-		CreatedAt: now,
-	}
-	if err := r.store.InsertPayload(payload); err != nil {
-		return fmt.Errorf("persist payload: %w", err)
-	}
-
-	// Determine turn/item indices.
-	turnIndex, err := r.store.LastTurnIndex(evt.ThreadID)
-	if err != nil {
-		log.Printf("triage: last turn index: %v (defaulting to 0)", err)
-		turnIndex = 0
-	}
-	itemIndex, err := r.store.NextItemIndex(evt.ThreadID, turnIndex)
-	if err != nil {
-		log.Printf("triage: next item index: %v (defaulting to 0)", err)
-		itemIndex = 0
-	}
-
-	summary := buildSummary(payloadKind, metaJSON)
-
-	// Persist item.
-	item := store.Item{
-		ID:        itemID,
-		ThreadID:  evt.ThreadID,
-		TurnIndex: turnIndex,
-		ItemIndex: itemIndex,
-		Kind:      itemKind,
-		Role:      "assistant",
-		Summary:   summary,
-		PayloadID: payloadID,
-		CreatedAt: now,
-	}
-	if err := r.store.InsertItem(item); err != nil {
-		return fmt.Errorf("persist item: %w", err)
-	}
-
-	return nil
 }
 
 // buildSummary creates a short human-readable summary from meta.

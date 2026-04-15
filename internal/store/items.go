@@ -72,3 +72,45 @@ func (s *Store) LastTurnIndex(threadID string) (int, error) {
 	}
 	return int(maxIndex.Int64), nil
 }
+
+func (s *Store) FindTurnItem(threadID string, turnIndex int, kind string) (Item, bool, error) {
+	row := s.db.QueryRow(
+		`SELECT id, thread_id, turn_index, item_index, kind, role, summary,
+		    COALESCE(payload_id, ''), created_at
+		 FROM items
+		 WHERE thread_id = ? AND turn_index = ? AND kind = ?
+		 ORDER BY item_index DESC
+		 LIMIT 1`,
+		threadID, turnIndex, kind,
+	)
+
+	var item Item
+	err := row.Scan(
+		&item.ID, &item.ThreadID, &item.TurnIndex, &item.ItemIndex, &item.Kind,
+		&item.Role, &item.Summary, &item.PayloadID, &item.CreatedAt,
+	)
+	if err == sql.ErrNoRows {
+		return Item{}, false, nil
+	}
+	if err != nil {
+		return Item{}, false, fmt.Errorf("store: find turn item: %w", err)
+	}
+	return item, true, nil
+}
+
+func (s *Store) UpdateItemPayload(id, payloadID, summary string, createdAt int64) error {
+	_, err := s.db.Exec(
+		`UPDATE items SET payload_id = ?, summary = ?, created_at = ? WHERE id = ?`,
+		nilIfEmpty(payloadID), summary, createdAt, id,
+	)
+	if err != nil {
+		return fmt.Errorf("store: update item payload %s: %w", id, err)
+	}
+
+	if _, err := s.db.Exec(`UPDATE threads SET updated_at = ? WHERE id = (
+		SELECT thread_id FROM items WHERE id = ?
+	)`, createdAt, id); err != nil {
+		log.Printf("store: touch thread updated_at for item %s: %v", id, err)
+	}
+	return nil
+}

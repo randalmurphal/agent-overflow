@@ -200,6 +200,9 @@ func TestTurnDiffUpdated(t *testing.T) {
 	if events[0].Content != "--- a/main.go\n+++ b/main.go\n" {
 		t.Errorf("content: got %q", events[0].Content)
 	}
+	if !events[0].Replace {
+		t.Fatal("expected turn/diff/updated to mark replace=true")
+	}
 }
 
 func TestFileChangeOutputDelta(t *testing.T) {

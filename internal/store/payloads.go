@@ -1,6 +1,9 @@
 package store
 
-import "fmt"
+import (
+	"database/sql"
+	"fmt"
+)
 
 func (s *Store) InsertPayload(p Payload) error {
 	_, err := s.db.Exec(
@@ -10,6 +13,26 @@ func (s *Store) InsertPayload(p Payload) error {
 	)
 	if err != nil {
 		return fmt.Errorf("store: insert payload: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) UpsertTurnPayload(threadID string, turnIndex int, kind string, payload Payload) error {
+	existingID, err := s.turnPayloadID(threadID, turnIndex, kind)
+	if err != nil {
+		return fmt.Errorf("store: upsert turn payload lookup: %w", err)
+	}
+	if existingID != "" {
+		payload.ID = existingID
+	}
+
+	_, err = s.db.Exec(
+		`INSERT OR REPLACE INTO payloads (id, kind, meta, data, created_at)
+		 VALUES (?, ?, ?, ?, ?)`,
+		payload.ID, payload.Kind, payload.Meta, payload.Data, payload.CreatedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("store: upsert turn payload: %w", err)
 	}
 	return nil
 }
@@ -57,4 +80,23 @@ func (s *Store) ListPayloadMetas(threadID string) ([]PayloadMeta, error) {
 		metas = append(metas, pm)
 	}
 	return metas, rows.Err()
+}
+
+func (s *Store) turnPayloadID(threadID string, turnIndex int, kind string) (string, error) {
+	var payloadID string
+	err := s.db.QueryRow(
+		`SELECT payload_id
+		 FROM items
+		 WHERE thread_id = ? AND turn_index = ? AND kind = ? AND payload_id IS NOT NULL
+		 ORDER BY item_index DESC
+		 LIMIT 1`,
+		threadID, turnIndex, kind,
+	).Scan(&payloadID)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("store: query turn payload id: %w", err)
+	}
+	return payloadID, nil
 }
