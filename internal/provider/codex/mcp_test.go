@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -126,6 +127,18 @@ func TestBuildThreadParamsIncludesMCPServers(t *testing.T) {
 	}
 	if config["mcp_servers"] == nil {
 		t.Fatal("expected mcp_servers config override")
+	}
+}
+
+func TestDesignMCPServerUsesOpaqueThreadToken(t *testing.T) {
+	server, threadURL, _ := newTestDesignMCPServer(t)
+
+	if strings.HasSuffix(threadURL, "/mcp/thread-mcp") {
+		t.Fatalf("thread URL %q exposes raw thread ID", threadURL)
+	}
+
+	if err := server.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
 	}
 }
 

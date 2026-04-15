@@ -1,12 +1,15 @@
 package design
 
 import (
+	"database/sql"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"agent-overflow/internal/store"
+
+	_ "modernc.org/sqlite"
 )
 
 func newArtifactStore(t *testing.T) (*ArtifactStore, *store.Store, string) {
@@ -221,5 +224,62 @@ func TestArtifactStoreReturnsWriteErrorWhenBaseDirIsAFile(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "create artifact directory") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestArtifactStoreRejectsPathTraversalOnWrite(t *testing.T) {
+	as, st, _ := newArtifactStore(t)
+	createThread(t, st, "../thread-escape")
+
+	_, err := as.Store("../thread-escape", "<html>bad</html>", "Escape", "", "render")
+	if err == nil {
+		t.Fatal("expected Store to reject path traversal thread ID")
+	}
+	if !strings.Contains(err.Error(), "escapes base directory") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestArtifactStoreIgnoresTamperedHTMLPathOnRead(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "artifacts.db")
+	st, err := store.New(dbPath)
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	defer st.Close()
+
+	as := NewArtifactStore(filepath.Join(t.TempDir(), "design-artifacts"), st)
+	createThread(t, st, "thread-safe-read")
+
+	artifact, err := as.Store("thread-safe-read", "<html>safe</html>", "Safe", "", "render")
+	if err != nil {
+		t.Fatalf("Store: %v", err)
+	}
+
+	outsidePath := filepath.Join(t.TempDir(), "outside.html")
+	if err := os.WriteFile(outsidePath, []byte("<html>outside</html>"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	rawDB, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer rawDB.Close()
+
+	if _, err := rawDB.Exec(
+		`UPDATE design_artifacts SET html_path = ? WHERE id = ?`,
+		outsidePath,
+		artifact.ID,
+	); err != nil {
+		t.Fatalf("tamper html_path: %v", err)
+	}
+
+	gotHTML, err := as.Get("thread-safe-read", artifact.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if gotHTML != "<html>safe</html>" {
+		t.Fatalf("html mismatch: got %q", gotHTML)
 	}
 }

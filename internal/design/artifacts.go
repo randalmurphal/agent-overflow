@@ -58,7 +58,11 @@ func (as *ArtifactStore) Store(threadID, html, title, description, kind string) 
 		Kind:        kind,
 		CreatedAt:   time.Now().UnixMilli(),
 	}
-	artifact.HTMLPath = filepath.Join(as.baseDir, threadID, fmt.Sprintf("%s.html", artifact.ID))
+	artifactPath, err := as.artifactPath(threadID, artifact.ID)
+	if err != nil {
+		return DesignArtifact{}, err
+	}
+	artifact.HTMLPath = artifactPath
 
 	if err := as.writeHTML(artifact.HTMLPath, html); err != nil {
 		return DesignArtifact{}, err
@@ -76,13 +80,20 @@ func (as *ArtifactStore) Get(threadID, artifactID string) (string, error) {
 		return "", fmt.Errorf("artifact store unavailable")
 	}
 
-	artifact, err := as.store.GetDesignArtifact(strings.TrimSpace(threadID), strings.TrimSpace(artifactID))
+	threadID = strings.TrimSpace(threadID)
+	artifactID = strings.TrimSpace(artifactID)
+
+	if _, err := as.store.GetDesignArtifact(threadID, artifactID); err != nil {
+		return "", err
+	}
+
+	artifactPath, err := as.artifactPath(threadID, artifactID)
 	if err != nil {
 		return "", err
 	}
-	data, err := os.ReadFile(artifact.HTMLPath)
+	data, err := os.ReadFile(artifactPath)
 	if err != nil {
-		return "", fmt.Errorf("read design artifact %s: %w", artifact.ID, err)
+		return "", fmt.Errorf("read design artifact %s: %w", artifactID, err)
 	}
 	return string(data), nil
 }
@@ -104,4 +115,43 @@ func (as *ArtifactStore) writeHTML(path, html string) error {
 		return fmt.Errorf("write artifact html: %w", err)
 	}
 	return nil
+}
+
+func (as *ArtifactStore) artifactPath(threadID, artifactID string) (string, error) {
+	threadID = strings.TrimSpace(threadID)
+	artifactID = strings.TrimSpace(artifactID)
+	if threadID == "" {
+		return "", fmt.Errorf("thread ID is required")
+	}
+	if artifactID == "" {
+		return "", fmt.Errorf("artifact ID is required")
+	}
+	return as.resolveWithinBase(threadID, fmt.Sprintf("%s.html", artifactID))
+}
+
+func (as *ArtifactStore) resolveWithinBase(parts ...string) (string, error) {
+	baseDir := strings.TrimSpace(as.baseDir)
+	if baseDir == "" {
+		return "", fmt.Errorf("artifact base directory is required")
+	}
+
+	basePath, err := filepath.Abs(baseDir)
+	if err != nil {
+		return "", fmt.Errorf("resolve artifact base directory: %w", err)
+	}
+
+	targetPath, err := filepath.Abs(filepath.Join(append([]string{basePath}, parts...)...))
+	if err != nil {
+		return "", fmt.Errorf("resolve artifact path: %w", err)
+	}
+	if !pathWithinBase(basePath, targetPath) {
+		return "", fmt.Errorf("artifact path escapes base directory")
+	}
+	return targetPath, nil
+}
+
+func pathWithinBase(basePath, targetPath string) bool {
+	basePath = filepath.Clean(basePath)
+	targetPath = filepath.Clean(targetPath)
+	return targetPath == basePath || strings.HasPrefix(targetPath, basePath+string(os.PathSeparator))
 }

@@ -10,6 +10,8 @@ import (
 	"sync"
 
 	"agent-overflow/internal/design"
+
+	"github.com/google/uuid"
 )
 
 const designMCPProtocolVersion = "2025-03-26"
@@ -55,7 +57,7 @@ func (s *DesignMCPServer) RegisterThread(threadID string) (map[string]any, error
 
 	token := s.threadToToken[threadID]
 	if token == "" {
-		token = threadID
+		token = uuid.NewString()
 		s.threadToToken[threadID] = token
 		s.tokenToThread[token] = threadID
 	}
