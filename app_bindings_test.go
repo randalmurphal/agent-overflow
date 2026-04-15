@@ -174,6 +174,48 @@ func TestSwitchThreadAutoResumesStoredSession(t *testing.T) {
 	}
 }
 
+func TestSwitchThreadCoalescesConcurrentAutoResume(t *testing.T) {
+	app := newTestAppWithStore(t)
+	thread := testThread("thread-auto-coalesce")
+	thread.SessionRef = "provider-session-1"
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+
+	started := make(chan string, 2)
+	release := make(chan struct{})
+	app.startSessionFn = func(threadID string) error {
+		started <- threadID
+		<-release
+		return nil
+	}
+
+	if _, err := app.SwitchThread(thread.ID); err != nil {
+		t.Fatalf("first SwitchThread() error = %v", err)
+	}
+
+	select {
+	case threadID := <-started:
+		if threadID != thread.ID {
+			t.Fatalf("startSession thread = %q, want %q", threadID, thread.ID)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for first auto-resume")
+	}
+
+	if _, err := app.SwitchThread(thread.ID); err != nil {
+		t.Fatalf("second SwitchThread() error = %v", err)
+	}
+
+	select {
+	case threadID := <-started:
+		t.Fatalf("unexpected duplicate auto-resume for %s", threadID)
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	close(release)
+}
+
 func TestSwitchThreadSkipsAutoResumeWithoutSessionRef(t *testing.T) {
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-no-resume")
@@ -282,6 +324,7 @@ func newTestAppWithStore(t *testing.T) *App {
 	return &App{
 		store:               st,
 		sessions:            make(map[string]session),
+		startingSessions:    make(map[string]*sessionStart),
 		threadSystemPrompts: make(map[string]string),
 		deliberations:       make(map[string]*discussion.Deliberation),
 	}

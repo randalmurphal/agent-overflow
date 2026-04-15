@@ -37,6 +37,9 @@ type App struct {
 	configDir string
 	mu        sync.Mutex
 	sessions  map[string]session // threadID → active session
+	// threadID → in-flight session start. Concurrent callers wait for the
+	// first start attempt instead of spawning duplicate provider runtimes.
+	startingSessions map[string]*sessionStart
 	// threadID → persisted in-process system prompt overrides used for
 	// discussion participants and other non-default session starts.
 	threadSystemPrompts map[string]string
@@ -59,6 +62,7 @@ type session struct {
 func NewApp() *App {
 	return &App{
 		sessions:            make(map[string]session),
+		startingSessions:    make(map[string]*sessionStart),
 		threadSystemPrompts: make(map[string]string),
 		deliberations:       make(map[string]*discussion.Deliberation),
 	}
@@ -211,6 +215,12 @@ func (a *App) ListPayloadMetas(threadID string) ([]store.PayloadMeta, error) {
 // --- Session operations ---
 
 func (a *App) StartSession(threadID string) error {
+	return a.runSessionStart(threadID, func() error {
+		return a.startSessionNow(threadID)
+	})
+}
+
+func (a *App) startSessionNow(threadID string) error {
 	t, err := a.store.GetThread(threadID)
 	if err != nil {
 		return fmt.Errorf("start session: %w", err)

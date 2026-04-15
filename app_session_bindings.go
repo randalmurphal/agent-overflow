@@ -43,10 +43,12 @@ func (a *App) ReconnectSession(threadID string) error {
 }
 
 func (a *App) startSession(threadID string) error {
-	if a.startSessionFn != nil {
-		return a.startSessionFn(threadID)
-	}
-	return a.StartSession(threadID)
+	return a.runSessionStart(threadID, func() error {
+		if a.startSessionFn != nil {
+			return a.startSessionFn(threadID)
+		}
+		return a.startSessionNow(threadID)
+	})
 }
 
 func (a *App) stopSession(threadID string) error {
