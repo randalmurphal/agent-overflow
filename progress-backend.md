@@ -22,6 +22,7 @@
 - `WI-1.5: Diff accumulation fix`
 - `WI-1.6: Triage router updates`
 - `WI-3.1: Git core`
+- `WI-3.2: Git actions`
 
 ## Iteration Log
 
@@ -30,6 +31,7 @@
 - 2026-04-15: Completed `WI-1.5` by marking Codex `turn/diff/updated` notifications as replaceable, adding turn-scoped payload upsert/update paths in store+triage, and covering both replace and append diff persistence flows with regression tests. `go build ./...`, `go vet ./...`, and `go test -coverprofile=coverage.out ./... -count=1` all passed, with `internal/store` now at 84.2% coverage.
 - 2026-04-15: Completed `WI-1.6` by routing the new inline event kinds in triage, adding thread title/model store updates for rename and reroute events, and buffering Codex reasoning deltas until turn completion while keeping Claude thinking persistence immediate. `go build ./...`, `go vet ./...`, and `go test -coverprofile=coverage.out ./... -count=1` all passed, with `internal/store` at 83.9% coverage and `internal/triage` at 90.2%.
 - 2026-04-15: Completed `WI-3.1` by adding `internal/git` command execution with timeout and output limits, implementing status/diff/branch queries, and adding repo-backed tests plus command-mock coverage. `internal/git` coverage is now 82.7%.
+- 2026-04-15: Completed `WI-3.2` by adding `internal/git/actions.go` for commit/push/pull/checkout/create-branch flows, including upstream-aware push behavior and input validation, and covering the actions with temp-repo tests. `go build ./...`, `go vet ./...`, and `go test -coverprofile=coverage.out ./... -count=1` all passed, with `internal/git` at 82.1% coverage.
 
 ## Review Log
 
