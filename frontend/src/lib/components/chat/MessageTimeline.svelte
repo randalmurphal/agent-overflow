@@ -113,7 +113,8 @@
 
     if (scrollContainer && userNearBottom) {
       requestAnimationFrame(() => {
-        scrollContainer!.scrollTop = scrollContainer!.scrollHeight;
+        if (!scrollContainer) return;
+        scrollContainer.scrollTop = scrollContainer.scrollHeight;
       });
     }
   });
