@@ -34,10 +34,13 @@
   async function handleReconnect() {
     if (!pane.threadId || reconnecting) return;
     reconnecting = true;
+    pane.clearError();
+    pane.setSessionStatus('retrying');
     try {
       await ReconnectSession(pane.threadId);
     } catch (err) {
       console.error('Failed to reconnect:', err);
+      pane.setSessionStatus('error');
       pane.setError(`Failed to reconnect: ${err}`);
     } finally {
       reconnecting = false;

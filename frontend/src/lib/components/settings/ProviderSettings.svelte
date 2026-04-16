@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
   import { GetProviderStatuses, GetModelsForProvider } from '../../stores/bindings';
   import { getSettings, updateSetting } from '../../stores/settings.svelte';
   import { addToast } from '../../stores/toast.svelte';
@@ -10,27 +9,42 @@
   let statuses = $state<ProviderStatus[]>([]);
   let claudeModels = $state<ModelInfo[]>([]);
   let codexModels = $state<ModelInfo[]>([]);
+  let loadGeneration = 0;
 
-  onMount(async () => {
-    try {
-      const result = await GetProviderStatuses();
-      statuses = (result ?? []) as ProviderStatus[];
-    } catch (err) {
-      console.error('Failed to load provider statuses:', err);
-      addToast('error', 'Failed to load provider statuses');
-    }
-    try {
-      claudeModels = (await GetModelsForProvider('claude') ?? []) as ModelInfo[];
-    } catch (err) {
-      console.error('Failed to load Claude models:', err);
-      addToast('error', 'Failed to load Claude models');
-    }
-    try {
-      codexModels = (await GetModelsForProvider('codex') ?? []) as ModelInfo[];
-    } catch (err) {
-      console.error('Failed to load Codex models:', err);
-      addToast('error', 'Failed to load Codex models');
-    }
+  $effect(() => {
+    settings.claudeBinaryPath;
+    settings.codexBinaryPath;
+
+    const generation = ++loadGeneration;
+    void (async () => {
+      try {
+        const result = await GetProviderStatuses();
+        if (generation !== loadGeneration) return;
+        statuses = (result ?? []) as ProviderStatus[];
+      } catch (err) {
+        if (generation !== loadGeneration) return;
+        console.error('Failed to load provider statuses:', err);
+        addToast('error', 'Failed to load provider statuses');
+      }
+      try {
+        const result = await GetModelsForProvider('claude');
+        if (generation !== loadGeneration) return;
+        claudeModels = (result ?? []) as ModelInfo[];
+      } catch (err) {
+        if (generation !== loadGeneration) return;
+        console.error('Failed to load Claude models:', err);
+        addToast('error', 'Failed to load Claude models');
+      }
+      try {
+        const result = await GetModelsForProvider('codex');
+        if (generation !== loadGeneration) return;
+        codexModels = (result ?? []) as ModelInfo[];
+      } catch (err) {
+        if (generation !== loadGeneration) return;
+        console.error('Failed to load Codex models:', err);
+        addToast('error', 'Failed to load Codex models');
+      }
+    })();
   });
 
   function getStatus(provider: string): ProviderStatus | undefined {

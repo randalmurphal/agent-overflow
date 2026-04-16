@@ -1,9 +1,10 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
   import { fade, fly } from 'svelte/transition';
-  import { GetGitStatus, GitPush, GitPull, GitCreatePR, GitRemoveWorktree } from '../../stores/bindings';
+  import { GetGitStatus, GetThread, GitPush, GitPull, GitCreatePR, GitRemoveWorktree } from '../../stores/bindings';
   import type { ThreadPane } from '../../stores/thread.svelte';
+  import { replaceThread } from '../../stores/threads.svelte';
   import { addToast } from '../../stores/toast.svelte';
+  import type { Thread } from '../../types/models';
   import type { GitActionResult, GitStatus } from '../../types/git';
   import CommitDialog from './CommitDialog.svelte';
   import ConfirmDialog from '../shared/ConfirmDialog.svelte';
@@ -18,29 +19,44 @@
   let showRemoveWorktreeConfirm = $state(false);
   let menuTriggerEl: HTMLButtonElement | undefined = $state(undefined);
   let menuEl: HTMLDivElement | undefined = $state(undefined);
+  let statusLoadGeneration = 0;
 
   let isWorktree = $derived(!!pane.thread?.worktreePath);
   let canCreatePR = $derived(
     status !== null && status.hasUpstream && !status.openPrUrl && !status.isDefaultBranch
   );
 
-  onMount(() => {
-    refreshStatus();
-  });
-
-  async function refreshStatus() {
-    if (!pane.threadId) return;
+  async function refreshStatus(threadId: string | null = pane.threadId) {
+    if (!threadId) return;
+    const generation = ++statusLoadGeneration;
     try {
-      const result = await GetGitStatus(pane.threadId);
+      const result = await GetGitStatus(threadId);
+      if (generation !== statusLoadGeneration) return;
       status = result as GitStatus;
       statusError = false;
     } catch (err) {
+      if (generation !== statusLoadGeneration) return;
       console.error('Failed to get git status:', err);
       status = null;
       statusError = true;
       pane.setError(`Failed to load git status: ${err}`);
     }
   }
+
+  $effect(() => {
+    const threadId = pane.threadId;
+    status = null;
+    statusError = false;
+    showDropdown = false;
+    showCommit = false;
+    showRemoveWorktreeConfirm = false;
+
+    if (!threadId) {
+      return;
+    }
+
+    void refreshStatus(threadId);
+  });
 
   let primaryAction = $derived.by((): { label: string; action: string; disabled: boolean; tooltip: string } => {
     if (!status) return { label: 'Commit', action: 'commit', disabled: true, tooltip: 'Loading...' };
@@ -133,6 +149,9 @@
     actionLoading = true;
     try {
       await GitRemoveWorktree(pane.threadId);
+      const refreshedThread = await GetThread(pane.threadId) as Thread;
+      pane.replaceThread(refreshedThread);
+      replaceThread(refreshedThread);
       addToast('success', 'Worktree removed');
       await refreshStatus();
     } catch (err) {

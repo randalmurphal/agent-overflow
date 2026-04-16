@@ -32,3 +32,7 @@ export function updateThreadTitle(id: string, title: string): void {
 export function updateThreadModel(id: string, model: string): void {
   threads = threads.map((t) => t.id === id ? { ...t, model } : t);
 }
+
+export function replaceThread(thread: Thread): void {
+  threads = threads.map((t) => t.id === thread.id ? thread : t);
+}

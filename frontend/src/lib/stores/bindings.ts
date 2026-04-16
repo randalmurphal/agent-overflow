@@ -4,6 +4,7 @@ export {
   CreateThread,
   ArchiveThread,
   DeleteThread,
+  GetThread,
   ListThreads,
   RenameThread,
   SwitchThread,

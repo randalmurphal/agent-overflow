@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
   import { fade, fly } from 'svelte/transition';
   import { GetGitStatus, GitListBranches, GitCheckout, GitCreateBranch } from '../../stores/bindings';
   import type { ThreadPane } from '../../stores/thread.svelte';
@@ -17,6 +16,7 @@
   let creating = $state(false);
   let triggerEl: HTMLButtonElement | undefined = $state(undefined);
   let filterInputEl: HTMLInputElement | undefined = $state(undefined);
+  let statusLoadGeneration = 0;
 
   let filteredBranches = $derived(
     filter
@@ -24,17 +24,31 @@
       : branches,
   );
 
-  onMount(async () => {
-    if (!pane.threadId) return;
-    try {
-      const status = await GetGitStatus(pane.threadId);
-      if (status) {
-        currentBranch = (status as GitStatus).branch;
-      }
-    } catch (err) {
-      console.error('Failed to get git status:', err);
-      pane.setError('Failed to load branch info');
+  $effect(() => {
+    const threadId = pane.threadId;
+    currentBranch = '';
+    branches = [];
+    filter = '';
+    open = false;
+    showCreateInput = false;
+    newBranchName = '';
+
+    if (!threadId) {
+      return;
     }
+
+    const generation = ++statusLoadGeneration;
+    void (async () => {
+      try {
+        const status = await GetGitStatus(threadId);
+        if (generation !== statusLoadGeneration) return;
+        currentBranch = (status as GitStatus).branch;
+      } catch (err) {
+        if (generation !== statusLoadGeneration) return;
+        console.error('Failed to get git status:', err);
+        pane.setError('Failed to load branch info');
+      }
+    })();
   });
 
   // Focus the filter input once the dropdown opens and loads

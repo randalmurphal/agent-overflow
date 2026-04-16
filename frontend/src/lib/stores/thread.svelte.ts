@@ -232,6 +232,10 @@ export function createThreadPane() {
         thread = { ...thread, model };
       }
     },
+
+    replaceThread(nextThread: Thread): void {
+      thread = nextThread;
+    },
   };
 }
 

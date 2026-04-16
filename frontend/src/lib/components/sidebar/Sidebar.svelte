@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { CreateThread, StartSession, GitCreateWorktree } from '../../stores/bindings';
-  import { getSettings } from '../../stores/settings.svelte';
+  import { CreateThread, StartSession, GitCreateWorktree, GetThread } from '../../stores/bindings';
+  import { getSettings, loadSettings } from '../../stores/settings.svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { prependThread } from '../../stores/threads.svelte';
   import { addToast } from '../../stores/toast.svelte';
@@ -23,26 +23,46 @@
   let worktreeBranch = $state('');
   let creating = $state(false);
 
+  function resetForm() {
+    showForm = false;
+    provider = getSettings().defaultProvider as 'claude' | 'codex';
+    workspacePath = '';
+    model = '';
+    worktreeMode = false;
+    worktreeBranch = '';
+  }
+
+  function openForm() {
+    provider = getSettings().defaultProvider as 'claude' | 'codex';
+    workspacePath = '';
+    model = '';
+    worktreeMode = false;
+    worktreeBranch = '';
+    showForm = true;
+  }
+
   async function handleCreate() {
     if (!workspacePath.trim()) return;
 
     creating = true;
     try {
       const effectiveModel = model.trim() || defaultModel;
-      const thread = await CreateThread(provider, workspacePath.trim(), effectiveModel) as Thread;
-      prependThread(thread);
-      pane.switchThread(thread);
+      let thread = await CreateThread(provider, workspacePath.trim(), effectiveModel) as Thread;
 
       // Create worktree if in worktree mode
       if (worktreeMode && worktreeBranch.trim()) {
         try {
           await GitCreateWorktree(thread.id, worktreeBranch.trim());
+          thread = await GetThread(thread.id) as Thread;
           addToast('info', `Worktree created on branch ${worktreeBranch.trim()}`);
         } catch (err) {
           console.error('Failed to create worktree:', err);
           pane.setError(`Failed to create worktree: ${err}`);
         }
       }
+
+      prependThread(thread);
+      await pane.switchThread(thread);
 
       // Start the provider session for this thread.
       try {
@@ -52,12 +72,8 @@
         pane.setError(`Failed to start session: ${err}`);
       }
 
-      // Reset form.
-      showForm = false;
-      workspacePath = '';
-      model = '';
-      worktreeMode = false;
-      worktreeBranch = '';
+      await loadSettings();
+      resetForm();
     } catch (err) {
       console.error('Failed to create thread:', err);
       pane.setError(`Failed to create thread: ${err}`);
@@ -67,11 +83,7 @@
   }
 
   function handleCancel() {
-    showForm = false;
-    workspacePath = '';
-    model = '';
-    worktreeMode = false;
-    worktreeBranch = '';
+    resetForm();
   }
 
   function handleFormKeydown(e: KeyboardEvent) {
@@ -146,7 +158,7 @@
       </form>
     {:else}
       <button
-        onclick={() => showForm = true}
+        onclick={openForm}
         class="w-full rounded-xl bg-accent px-4 py-3 text-sm font-semibold text-surface-0 shadow-[0_12px_24px_-18px_var(--accent)] hover:opacity-90 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:ring-offset-2 focus-visible:ring-offset-surface-1"
       >
         + New Thread
