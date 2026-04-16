@@ -14,6 +14,8 @@
   let body = $state('');
   let committing = $state(false);
   let error = $state<string | null>(null);
+  let dialogEl: HTMLDivElement | undefined = $state(undefined);
+  let previousFocus: Element | null = null;
 
   async function handleCommit() {
     if (!subject.trim() || !pane.threadId || committing) return;
@@ -28,7 +30,7 @@
         addToast('success', `Committed ${r.commitSha?.slice(0, 7) ?? ''}`);
         subject = '';
         body = '';
-        onClose();
+        close();
       }
     } catch (err) {
       error = err instanceof Error ? err.message : String(err);
@@ -39,15 +41,48 @@
 
   function handleKeydown(e: KeyboardEvent) {
     if (e.key === 'Escape') {
-      onClose();
+      e.preventDefault();
+      close();
+      return;
     }
+    if (e.key === 'Tab' && dialogEl) {
+      const focusable = dialogEl.querySelectorAll<HTMLElement>(
+        'input:not([disabled]), textarea:not([disabled]), button:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      );
+      if (focusable.length === 0) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    }
+  }
+
+  function close() {
+    if (previousFocus instanceof HTMLElement) {
+      previousFocus.focus();
+    }
+    previousFocus = null;
+    onClose();
   }
 
   function handleBackdropClick(e: MouseEvent) {
     if (e.target === e.currentTarget) {
-      onClose();
+      close();
     }
   }
+
+  $effect(() => {
+    if (open && dialogEl) {
+      previousFocus = document.activeElement;
+      const subjectInput = dialogEl.querySelector<HTMLElement>('#commit-subject');
+      subjectInput?.focus();
+    }
+  });
 </script>
 
 {#if open}
@@ -57,8 +92,14 @@
     onclick={handleBackdropClick}
     onkeydown={handleKeydown}
   >
-    <div class="bg-surface-1 border border-border rounded-lg shadow-xl max-w-lg w-full mx-4 p-5">
-      <h2 class="text-base font-semibold text-text-primary mb-4">Commit Changes</h2>
+    <div
+      bind:this={dialogEl}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="commit-dialog-title"
+      class="bg-surface-1 border border-border rounded-lg shadow-xl max-w-lg w-full mx-4 p-5"
+    >
+      <h2 id="commit-dialog-title" class="text-base font-semibold text-text-primary mb-4">Commit Changes</h2>
 
       <div class="space-y-3">
         <div>
@@ -92,7 +133,7 @@
 
       <div class="flex justify-end gap-2 mt-5">
         <button
-          onclick={onClose}
+          onclick={close}
           class="px-4 py-2 text-sm rounded-md border border-border text-text-secondary hover:text-text-primary cursor-pointer"
         >
           Cancel

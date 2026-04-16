@@ -21,7 +21,7 @@
     <button
       onclick={onClose}
       class="ml-auto text-text-secondary hover:text-text-primary cursor-pointer p-1"
-      title="Close settings"
+      aria-label="Close settings"
     >
       <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
         <path d="M18 6L6 18M6 6l12 12" />
@@ -30,10 +30,13 @@
   </div>
 
   <div class="flex flex-1 min-h-0">
-    <nav class="w-40 shrink-0 border-r border-border bg-surface-0 py-2">
+    <div class="w-40 shrink-0 border-r border-border bg-surface-0 py-2" role="tablist" aria-label="Settings sections">
       {#each sections as section}
         <button
           onclick={() => activeSection = section.id}
+          role="tab"
+          aria-selected={activeSection === section.id}
+          aria-controls="settings-panel-{section.id}"
           class="w-full text-left px-4 py-1.5 text-sm cursor-pointer
             {activeSection === section.id
               ? 'text-accent font-medium bg-accent/10'
@@ -42,9 +45,9 @@
           {section.label}
         </button>
       {/each}
-    </nav>
+    </div>
 
-    <div class="flex-1 overflow-y-auto p-6">
+    <div class="flex-1 overflow-y-auto p-6" role="tabpanel" id="settings-panel-{activeSection}" aria-label="{activeSection} settings">
       {#if activeSection === 'general'}
         <GeneralSettings />
       {:else if activeSection === 'providers'}

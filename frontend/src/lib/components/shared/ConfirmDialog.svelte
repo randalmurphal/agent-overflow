@@ -20,11 +20,29 @@
   } = $props();
 
   let dialogEl: HTMLDivElement | undefined = $state(undefined);
+  let previousFocus: Element | null = null;
+
+  function restoreFocus() {
+    if (previousFocus instanceof HTMLElement) {
+      previousFocus.focus();
+    }
+    previousFocus = null;
+  }
+
+  function handleConfirm() {
+    restoreFocus();
+    onConfirm();
+  }
+
+  function handleCancel() {
+    restoreFocus();
+    onCancel();
+  }
 
   function handleKeydown(e: KeyboardEvent) {
     if (e.key === 'Escape') {
       e.preventDefault();
-      onCancel();
+      handleCancel();
       return;
     }
     if (e.key === 'Tab' && dialogEl) {
@@ -46,12 +64,13 @@
 
   function handleBackdropClick(e: MouseEvent) {
     if (e.target === e.currentTarget) {
-      onCancel();
+      handleCancel();
     }
   }
 
   $effect(() => {
     if (open && dialogEl) {
+      previousFocus = document.activeElement;
       const confirm = dialogEl.querySelector<HTMLElement>('[data-confirm]');
       confirm?.focus();
     }
@@ -68,6 +87,7 @@
     <div
       bind:this={dialogEl}
       role="dialog"
+      aria-modal="true"
       aria-labelledby="confirm-title"
       aria-describedby="confirm-desc"
       class="bg-surface-1 border border-border rounded-lg shadow-xl max-w-md w-full mx-4 p-5"
@@ -80,14 +100,14 @@
       </p>
       <div class="flex justify-end gap-2">
         <button
-          onclick={onCancel}
+          onclick={handleCancel}
           class="px-4 py-2 text-sm rounded-md border border-border text-text-secondary hover:text-text-primary hover:border-text-secondary cursor-pointer"
         >
           {cancelLabel}
         </button>
         <button
           data-confirm
-          onclick={onConfirm}
+          onclick={handleConfirm}
           class="px-4 py-2 text-sm rounded-md font-medium cursor-pointer
             {destructive
               ? 'bg-red-700 text-red-100 hover:bg-red-600'

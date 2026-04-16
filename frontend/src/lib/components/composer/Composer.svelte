@@ -69,6 +69,7 @@
       oninput={handleInput}
       disabled={isDisabled}
       placeholder={isDisabled ? 'Select or create a thread to start' : 'Send a message... (Shift+Enter for newline)'}
+      aria-label="Message input"
       rows={1}
       class="flex-1 resize-none rounded-lg border border-border bg-surface-0 px-3 py-2.5 text-sm text-text-primary placeholder:text-text-secondary/50 focus:outline-none focus:border-accent disabled:opacity-40 disabled:cursor-not-allowed"
     ></textarea>

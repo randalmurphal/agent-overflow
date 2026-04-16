@@ -101,6 +101,9 @@
   <div class="relative">
     <button
       onclick={openPicker}
+      aria-label="Switch branch: {currentBranch}"
+      aria-expanded={open}
+      aria-haspopup="listbox"
       class="flex items-center gap-1.5 text-xs px-2 py-1 rounded border border-border text-text-secondary hover:text-text-primary hover:border-text-secondary cursor-pointer"
     >
       <svg class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
@@ -118,16 +121,19 @@
             type="text"
             bind:value={filter}
             placeholder="Filter branches..."
+            aria-label="Filter branches"
             class="w-full text-xs rounded border border-border bg-surface-0 px-2 py-1 text-text-primary placeholder:text-text-secondary/40 focus:outline-none focus:border-accent"
           />
         </div>
-        <div class="overflow-y-auto flex-1">
+        <div class="overflow-y-auto flex-1" role="listbox" aria-label="Branches">
           {#if loading}
             <div class="px-3 py-2 text-xs text-text-secondary animate-pulse">Loading branches...</div>
           {:else}
             {#each filteredBranches as branch}
               <button
                 onclick={() => selectBranch(branch.name)}
+                role="option"
+                aria-selected={branch.isCurrent}
                 class="w-full text-left px-3 py-1.5 text-xs hover:bg-surface-2/50 cursor-pointer flex items-center gap-2
                   {branch.isCurrent ? 'text-accent font-medium' : 'text-text-secondary hover:text-text-primary'}"
               >
@@ -152,6 +158,7 @@
                 type="text"
                 bind:value={newBranchName}
                 placeholder="new-branch-name"
+                aria-label="New branch name"
                 onkeydown={(e) => { if (e.key === 'Enter') { e.preventDefault(); createBranch(); } if (e.key === 'Escape') { showCreateInput = false; } }}
                 class="flex-1 text-xs rounded border border-border bg-surface-0 px-2 py-1 text-text-primary placeholder:text-text-secondary/40 focus:outline-none focus:border-accent min-w-0"
               />

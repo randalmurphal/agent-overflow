@@ -25,11 +25,14 @@
   let displayPct = $derived(Math.round(percentage));
 </script>
 
-<!-- svelte-ignore a11y_no_static_element_interactions -->
-<div
-  class="relative inline-flex items-center"
+<button
+  type="button"
+  class="relative inline-flex items-center bg-transparent border-none p-0 cursor-default"
+  aria-label="Context window: {displayPct}% used"
   onmouseenter={() => showPopover = true}
   onmouseleave={() => showPopover = false}
+  onfocus={() => showPopover = true}
+  onblur={() => showPopover = false}
 >
   <svg class="w-6 h-6 -rotate-90" viewBox="0 0 24 24">
     <circle
@@ -64,4 +67,4 @@
       </div>
     </div>
   {/if}
-</div>
+</button>

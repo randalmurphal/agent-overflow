@@ -40,7 +40,7 @@
       <div class="pb-2">
         {#each taskEntries as [id] (id)}
           <div class="px-4 py-1 text-xs text-text-secondary flex items-center gap-2">
-            <span class="w-1.5 h-1.5 rounded-full bg-accent animate-pulse shrink-0"></span>
+            <span class="w-1.5 h-1.5 rounded-full bg-accent animate-pulse shrink-0" aria-hidden="true"></span>
             <span class="truncate">{id}</span>
           </div>
         {/each}

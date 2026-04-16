@@ -59,7 +59,9 @@
   <button
     onclick={openPicker}
     class="text-xs px-2 py-1 rounded border border-border text-text-secondary hover:text-text-primary hover:border-text-secondary cursor-pointer truncate max-w-[150px]"
-    title="Change model"
+    aria-label="Change model"
+    aria-expanded={open}
+    aria-haspopup="listbox"
   >
     {currentModel || 'Select model'}
   </button>
@@ -67,13 +69,15 @@
   {#if open}
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div class="fixed inset-0 z-40" onclick={handleBackdropClick} onkeydown={handleKeydown}></div>
-    <div class="absolute top-full left-0 mt-1 z-50 bg-surface-1 border border-border rounded-lg shadow-xl min-w-[200px] max-h-[280px] overflow-y-auto">
+    <div class="absolute top-full left-0 mt-1 z-50 bg-surface-1 border border-border rounded-lg shadow-xl min-w-[200px] max-h-[280px] overflow-y-auto" role="listbox" aria-label="Available models">
       {#if loading}
         <div class="px-3 py-2 text-xs text-text-secondary animate-pulse">Loading models...</div>
       {:else}
         {#each models as model}
           <button
             onclick={() => selectModel(model.slug)}
+            role="option"
+            aria-selected={model.slug === currentModel}
             class="w-full text-left px-3 py-1.5 text-xs hover:bg-surface-2/50 cursor-pointer flex items-center gap-2
               {model.slug === currentModel ? 'text-accent font-medium' : 'text-text-secondary hover:text-text-primary'}"
           >

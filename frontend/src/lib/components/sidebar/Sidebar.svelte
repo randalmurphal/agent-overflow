@@ -95,6 +95,7 @@
           type="text"
           bind:value={model}
           placeholder="Model (optional)"
+          aria-label="Model"
           class="w-full text-xs rounded border border-border bg-surface-0 px-2 py-1.5 text-text-primary placeholder:text-text-secondary/50 focus:outline-none focus:border-accent"
         />
         <label class="flex items-center gap-2 text-xs text-text-secondary cursor-pointer">
@@ -106,6 +107,7 @@
             type="text"
             bind:value={worktreeBranch}
             placeholder="Branch name for worktree"
+            aria-label="Branch name for worktree"
             class="w-full text-xs rounded border border-border bg-surface-0 px-2 py-1.5 text-text-primary placeholder:text-text-secondary/50 focus:outline-none focus:border-accent"
           />
         {/if}

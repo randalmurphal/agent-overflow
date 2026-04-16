@@ -27,7 +27,7 @@
 </script>
 
 {#if toasts.length > 0}
-  <div class="fixed bottom-4 right-4 z-50 flex flex-col gap-2 max-w-sm">
+  <div class="fixed bottom-4 right-4 z-50 flex flex-col gap-2 max-w-sm" aria-live="polite" aria-relevant="additions">
     {#each toasts as toast (toast.id)}
       <div
         class="flex items-start gap-2.5 rounded-lg border px-3.5 py-2.5 shadow-lg backdrop-blur-sm text-sm {colorClasses(toast.type)}"

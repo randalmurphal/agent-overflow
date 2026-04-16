@@ -60,6 +60,12 @@
       onfocus={handleFocus}
       onblur={handleBlur}
       placeholder="Workspace path"
+      aria-label="Workspace path"
+      role="combobox"
+      aria-expanded={showRecent && recentWorkspaces.length > 0}
+      aria-controls="workspace-recent-list"
+      aria-haspopup="listbox"
+      aria-autocomplete="list"
       class="flex-1 text-xs rounded border border-border bg-surface-0 px-2 py-1.5 text-text-primary placeholder:text-text-secondary/50 focus:outline-none focus:border-accent min-w-0"
     />
     <button
@@ -73,10 +79,12 @@
   </div>
 
   {#if showRecent && recentWorkspaces.length > 0}
-    <div class="absolute top-full left-0 right-0 mt-1 z-50 bg-surface-1 border border-border rounded shadow-lg max-h-[160px] overflow-y-auto">
+    <div id="workspace-recent-list" class="absolute top-full left-0 right-0 mt-1 z-50 bg-surface-1 border border-border rounded shadow-lg max-h-[160px] overflow-y-auto" role="listbox" aria-label="Recent workspaces">
       {#each recentWorkspaces as ws}
         <button
           onclick={() => selectRecent(ws)}
+          role="option"
+          aria-selected={ws === value}
           class="w-full text-left px-2 py-1.5 text-xs font-mono text-text-secondary hover:text-text-primary hover:bg-surface-2/50 cursor-pointer truncate"
         >
           {ws}

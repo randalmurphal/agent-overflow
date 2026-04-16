@@ -106,7 +106,9 @@
     </button>
     <button
       onclick={() => showDropdown = !showDropdown}
-      title="More git actions"
+      aria-label="More git actions"
+      aria-expanded={showDropdown}
+      aria-haspopup="menu"
       class="text-xs px-1 py-1 rounded-r border border-l-0 border-border text-text-secondary hover:text-text-primary hover:border-text-secondary cursor-pointer"
     >
       <svg class="w-3 h-3" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5">
@@ -117,10 +119,11 @@
     {#if showDropdown}
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div class="fixed inset-0 z-40" onclick={() => showDropdown = false} onkeydown={(e) => { if (e.key === 'Escape') showDropdown = false; }}></div>
-      <div class="absolute top-full right-0 mt-1 z-50 bg-surface-1 border border-border rounded shadow-lg min-w-[120px]">
+      <div class="absolute top-full right-0 mt-1 z-50 bg-surface-1 border border-border rounded shadow-lg min-w-[120px]" role="menu" aria-label="Git actions">
         <button
           onclick={() => { showDropdown = false; showCommit = true; }}
           disabled={!status.hasChanges}
+          role="menuitem"
           class="w-full text-left px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary hover:bg-surface-2/50 cursor-pointer disabled:opacity-40"
         >
           Commit
@@ -128,6 +131,7 @@
         <button
           onclick={() => { showDropdown = false; doPush(); }}
           disabled={status.aheadCount === 0}
+          role="menuitem"
           class="w-full text-left px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary hover:bg-surface-2/50 cursor-pointer disabled:opacity-40"
         >
           Push
@@ -135,6 +139,7 @@
         <button
           onclick={() => { showDropdown = false; doPull(); }}
           disabled={status.behindCount === 0}
+          role="menuitem"
           class="w-full text-left px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary hover:bg-surface-2/50 cursor-pointer disabled:opacity-40"
         >
           Pull

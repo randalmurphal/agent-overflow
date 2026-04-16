@@ -10,10 +10,11 @@
     <div class="space-y-3">
       <div class="flex items-center justify-between">
         <div>
-          <p class="text-sm text-text-primary">Theme</p>
+          <label for="theme-select" class="text-sm text-text-primary block">Theme</label>
           <p class="text-xs text-text-secondary/60">Choose your preferred color scheme</p>
         </div>
         <select
+          id="theme-select"
           value={settings.theme}
           onchange={(e) => updateSetting('theme', (e.target as HTMLSelectElement).value as 'system' | 'light' | 'dark')}
           class="text-xs rounded border border-border bg-surface-0 px-2 py-1.5 text-text-primary focus:outline-none focus:border-accent cursor-pointer"
@@ -26,10 +27,11 @@
 
       <div class="flex items-center justify-between">
         <div>
-          <p class="text-sm text-text-primary">Timestamp format</p>
+          <label for="timestamp-select" class="text-sm text-text-primary block">Timestamp format</label>
           <p class="text-xs text-text-secondary/60">How timestamps appear in the chat</p>
         </div>
         <select
+          id="timestamp-select"
           value={settings.timestampFormat}
           onchange={(e) => updateSetting('timestampFormat', (e.target as HTMLSelectElement).value as 'locale' | '12-hour' | '24-hour')}
           class="text-xs rounded border border-border bg-surface-0 px-2 py-1.5 text-text-primary focus:outline-none focus:border-accent cursor-pointer"
