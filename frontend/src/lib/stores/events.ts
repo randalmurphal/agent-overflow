@@ -5,6 +5,8 @@ import type { ThreadPane } from './thread.svelte';
 import { getAllPanes } from './panes.svelte';
 import { addToast } from './toast.svelte';
 import { updateThreadTitle } from './threads.svelte';
+import { RespondToApproval } from './bindings';
+import { ApprovalResponse } from '../../../bindings/agent-overflow/internal/provider/models.js';
 
 /**
  * Route a provider event to the correct pane mutation.
@@ -39,7 +41,20 @@ function routeEventToPane(pane: ThreadPane, evt: ProviderEvent): void {
 
     case 'approval_request':
       if (evt.meta) {
-        pane.addApproval(evt.meta as ApprovalRequest);
+        const approval = evt.meta as ApprovalRequest;
+        if (pane.isToolSessionApproved(approval.toolName)) {
+          const threadId = pane.threadId;
+          if (threadId) {
+            RespondToApproval(threadId, new ApprovalResponse({
+              requestId: approval.requestId,
+              decision: 'allow',
+            })).catch((err) => {
+              console.error('Failed to auto-resolve approval:', err);
+            });
+          }
+        } else {
+          pane.addApproval(approval);
+        }
       }
       break;
 

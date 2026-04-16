@@ -19,6 +19,7 @@ export function createThreadPane() {
   let tokenUsage: TokenUsage | null = $state(null);
   let contextWindow: ContextWindow | null = $state(null);
   let rateLimits: RateLimitEntry[] = $state([]);
+  let sessionApprovedTools: Set<string> = $state(new Set());
   let error: string | null = $state(null);
   let loading: boolean = $state(false);
   let pendingMessage: string | null = $state(null);
@@ -57,6 +58,7 @@ export function createThreadPane() {
       tokenUsage = null;
       contextWindow = null;
       rateLimits = [];
+      sessionApprovedTools = new Set();
       sessionStatus = 'disconnected';
       error = null;
       pendingMessage = null;
@@ -97,6 +99,7 @@ export function createThreadPane() {
       tokenUsage = null;
       contextWindow = null;
       rateLimits = [];
+      sessionApprovedTools = new Set();
       error = null;
       loading = false;
       pendingMessage = null;
@@ -194,6 +197,14 @@ export function createThreadPane() {
 
     setRateLimits(limits: RateLimitEntry[]): void {
       rateLimits = limits;
+    },
+
+    addSessionApprovedTool(toolName: string): void {
+      sessionApprovedTools = new Set(sessionApprovedTools).add(toolName);
+    },
+
+    isToolSessionApproved(toolName: string): boolean {
+      return sessionApprovedTools.has(toolName);
     },
   };
 }
