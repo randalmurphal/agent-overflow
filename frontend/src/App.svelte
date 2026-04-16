@@ -5,6 +5,7 @@
   import { refreshThreads } from './lib/stores/threads.svelte';
   import Sidebar from './lib/components/sidebar/Sidebar.svelte';
   import ChatView from './lib/components/chat/ChatView.svelte';
+  import Toast from './lib/components/shared/Toast.svelte';
 
   const pane = getMainPane();
 
@@ -24,3 +25,4 @@
     <ChatView {pane} />
   </div>
 </main>
+<Toast />
