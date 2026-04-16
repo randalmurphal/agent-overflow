@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount, onDestroy } from 'svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import MessageTimeline from './MessageTimeline.svelte';
   import ApprovalPrompt from '../composer/ApprovalPrompt.svelte';
@@ -11,8 +12,25 @@
   import ContextWindowMeter from './ContextWindowMeter.svelte';
   import RateLimitsMeter from './RateLimitsMeter.svelte';
   import ModelPicker from '../composer/ModelPicker.svelte';
+  import ThreadTerminalDrawer from '../terminal/ThreadTerminalDrawer.svelte';
 
   let { pane }: { pane: ThreadPane } = $props();
+
+  function handleKeydown(e: KeyboardEvent) {
+    const isToggleShortcut = (e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'j';
+    if (!isToggleShortcut) return;
+    if (!pane.thread) return;
+    e.preventDefault();
+    pane.toggleTerminal();
+  }
+
+  onMount(() => {
+    window.addEventListener('keydown', handleKeydown);
+  });
+
+  onDestroy(() => {
+    window.removeEventListener('keydown', handleKeydown);
+  });
 </script>
 
 {#if pane.thread}
@@ -41,6 +59,11 @@
     <BackgroundTray {pane} />
     <Composer {pane} />
     <StatusBar {pane} />
+    {#if pane.showTerminal && pane.thread}
+      {#key pane.thread.id}
+        <ThreadTerminalDrawer {pane} />
+      {/key}
+    {/if}
   </div>
 {:else}
   <div class="flex items-center justify-center h-full">

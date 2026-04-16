@@ -523,3 +523,72 @@ const $$createType19 = $Create.Array($$createType18);
 const $$createType20 = store$0.PayloadMeta.createFrom;
 const $$createType21 = $Create.Array($$createType20);
 const $$createType22 = $Create.Array($$createType0);
+
+/**
+ * CloseTerminal kills the terminal's process group and removes the session.
+ * @param {string} terminalID
+ * @returns {$CancellablePromise<void>}
+ */
+export function CloseTerminal(terminalID) {
+    return $Call.ByID(2702963191, terminalID);
+}
+
+/**
+ * GetTerminalReplay returns the base64-encoded replay buffer for a terminal.
+ * @param {string} terminalID
+ * @returns {$CancellablePromise<string>}
+ */
+export function GetTerminalReplay(terminalID) {
+    return $Call.ByID(2329592604, terminalID);
+}
+
+/**
+ * ListTerminals returns a summary per active terminal for the given thread.
+ * @param {string} threadID
+ * @returns {$CancellablePromise<any[]>}
+ */
+export function ListTerminals(threadID) {
+    return $Call.ByID(2445206506, threadID);
+}
+
+/**
+ * OpenTerminal starts a new PTY-backed terminal session bound to the given thread.
+ * @param {string} threadID
+ * @param {any} opts
+ * @returns {$CancellablePromise<any>}
+ */
+export function OpenTerminal(threadID, opts) {
+    return $Call.ByID(2247958725, threadID, opts);
+}
+
+/**
+ * ResizeTerminal forwards a winsize change to the PTY.
+ * @param {string} terminalID
+ * @param {number} rows
+ * @param {number} cols
+ * @returns {$CancellablePromise<void>}
+ */
+export function ResizeTerminal(terminalID, rows, cols) {
+    return $Call.ByID(1887984285, terminalID, rows, cols);
+}
+
+/**
+ * RestartTerminal kills the given terminal and spawns a fresh replacement
+ * with the same configuration.
+ * @param {string} terminalID
+ * @returns {$CancellablePromise<any>}
+ */
+export function RestartTerminal(terminalID) {
+    return $Call.ByID(4152403588, terminalID);
+}
+
+/**
+ * WriteTerminal writes base64-encoded data to the given terminal.
+ * @param {string} terminalID
+ * @param {string} dataB64
+ * @returns {$CancellablePromise<void>}
+ */
+export function WriteTerminal(terminalID, dataB64) {
+    return $Call.ByID(146795716, terminalID, dataB64);
+}
+

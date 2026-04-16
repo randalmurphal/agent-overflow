@@ -46,6 +46,15 @@ export {
   GitCreatePR,
   GitCreateWorktree,
   GitRemoveWorktree,
+
+  // Terminal operations
+  CloseTerminal,
+  GetTerminalReplay,
+  ListTerminals,
+  OpenTerminal,
+  ResizeTerminal,
+  RestartTerminal,
+  WriteTerminal,
 } from '../../../bindings/agent-overflow/app.js';
 
 // Model classes needed for constructing RPC parameters.

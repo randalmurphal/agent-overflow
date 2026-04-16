@@ -24,6 +24,7 @@ export function createThreadPane() {
   let error: string | null = $state(null);
   let loading: boolean = $state(false);
   let pendingMessage: string | null = $state(null);
+  let showTerminal: boolean = $state(false);
 
   /**
    * Generation counter for finalizeTurn. Incremented each time finalizeTurn
@@ -48,6 +49,7 @@ export function createThreadPane() {
     get error() { return error; },
     get loading() { return loading; },
     get pendingMessage() { return pendingMessage; },
+    get showTerminal() { return showTerminal; },
 
     // --- Thread switching ---
 
@@ -114,6 +116,7 @@ export function createThreadPane() {
       error = null;
       loading = false;
       pendingMessage = null;
+      showTerminal = false;
       turnGeneration++;
     },
 
@@ -235,6 +238,14 @@ export function createThreadPane() {
 
     replaceThread(nextThread: Thread): void {
       thread = nextThread;
+    },
+
+    toggleTerminal(): void {
+      showTerminal = !showTerminal;
+    },
+
+    setShowTerminal(value: boolean): void {
+      showTerminal = value;
     },
   };
 }
