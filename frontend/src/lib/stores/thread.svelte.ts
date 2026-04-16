@@ -74,6 +74,7 @@ export function createThreadPane() {
         await SwitchThread(newThread.id);
       } catch (err) {
         console.error('Failed to notify backend of thread switch:', err);
+        addToast('warning', 'Backend was not notified of thread switch');
       }
 
       try {

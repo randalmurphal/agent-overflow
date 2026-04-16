@@ -48,7 +48,8 @@
     if (!pm) return null;
     try {
       return JSON.parse(pm.meta) as T;
-    } catch {
+    } catch (err) {
+      console.error('Failed to parse payload meta:', payloadId, err);
       return null;
     }
   }

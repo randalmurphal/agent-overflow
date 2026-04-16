@@ -36,7 +36,7 @@
       console.error('Failed to get git status:', err);
       status = null;
       statusError = true;
-      addToast('error', 'Failed to load git status');
+      pane.setError(`Failed to load git status: ${err}`);
     }
   }
 

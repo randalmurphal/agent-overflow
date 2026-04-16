@@ -74,7 +74,10 @@
   async function doArchive() {
     try {
       // Stop the session before archiving so the provider process is cleaned up.
-      await StopSession(thread.id).catch(() => {});
+      // Best-effort: log if it fails but proceed with archive.
+      await StopSession(thread.id).catch((err) => {
+        console.error('Failed to stop session before archive:', err);
+      });
       await ArchiveThread(thread.id);
       removeThread(thread.id);
       if (isActive) {
@@ -98,7 +101,10 @@
   async function doDelete() {
     try {
       // Stop the session before deleting so the provider process is cleaned up.
-      await StopSession(thread.id).catch(() => {});
+      // Best-effort: log if it fails but proceed with delete.
+      await StopSession(thread.id).catch((err) => {
+        console.error('Failed to stop session before delete:', err);
+      });
       await DeleteThread(thread.id);
       removeThread(thread.id);
       if (isActive) {
