@@ -29,14 +29,20 @@
   });
 </script>
 
-<main class="h-screen w-screen bg-surface-0 text-text-primary flex overflow-hidden">
-  <Sidebar {pane} onOpenSettings={() => showSettings = true} />
-  <div class="flex-1 flex flex-col min-w-0">
-    {#if showSettings}
-      <SettingsView onClose={() => showSettings = false} />
-    {:else}
-      <ChatView {pane} />
-    {/if}
+<main class="app-shell relative h-screen w-screen overflow-hidden text-text-primary">
+  <div class="pointer-events-none absolute inset-0 opacity-70">
+    <div class="absolute left-[-12rem] top-[-10rem] h-[28rem] w-[28rem] rounded-full bg-accent/12 blur-3xl"></div>
+    <div class="absolute bottom-[-14rem] right-[-10rem] h-[24rem] w-[24rem] rounded-full bg-provider-codex/10 blur-3xl"></div>
+  </div>
+  <div class="relative flex h-full w-full">
+    <Sidebar {pane} onOpenSettings={() => showSettings = true} />
+    <div class="flex-1 flex flex-col min-w-0">
+      {#if showSettings}
+        <SettingsView onClose={() => showSettings = false} />
+      {:else}
+        <ChatView {pane} />
+      {/if}
+    </div>
   </div>
 </main>
 <Toast />

@@ -6,6 +6,7 @@
   import { addToast } from '../../stores/toast.svelte';
   import type { Thread } from '../../types/models';
   import ProviderPicker from '../composer/ProviderPicker.svelte';
+  import ToggleSwitch from '../shared/ToggleSwitch.svelte';
   import ThreadList from './ThreadList.svelte';
   import WorkspacePicker from './WorkspacePicker.svelte';
 
@@ -14,6 +15,9 @@
   let showForm = $state(false);
   let provider = $state<'claude' | 'codex'>(getSettings().defaultProvider as 'claude' | 'codex');
   let workspacePath = $state('');
+  let defaultModel = $derived(
+    provider === 'claude' ? getSettings().defaultModelClaude : getSettings().defaultModelCodex
+  );
   let model = $state('');
   let worktreeMode = $state(false);
   let worktreeBranch = $state('');
@@ -24,7 +28,8 @@
 
     creating = true;
     try {
-      const thread = await CreateThread(provider, workspacePath.trim(), model.trim()) as Thread;
+      const effectiveModel = model.trim() || defaultModel;
+      const thread = await CreateThread(provider, workspacePath.trim(), effectiveModel) as Thread;
       prependThread(thread);
       pane.switchThread(thread);
 
@@ -80,11 +85,15 @@
   }
 </script>
 
-<aside class="w-[280px] shrink-0 bg-surface-1 border-r border-border flex flex-col h-full">
-  <div class="p-3 border-b border-border">
+<aside class="w-[292px] shrink-0 border-r border-border/70 bg-surface-1/70 backdrop-blur-md flex flex-col h-full">
+  <div class="border-b border-border/70 p-3">
     {#if showForm}
       <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-      <form onsubmit={(e) => { e.preventDefault(); handleCreate(); }} onkeydown={handleFormKeydown} class="space-y-2">
+      <form onsubmit={(e) => { e.preventDefault(); handleCreate(); }} onkeydown={handleFormKeydown} class="space-y-3 rounded-2xl border border-border/70 bg-surface-0/45 p-3 shadow-[0_10px_40px_-24px_rgba(0,0,0,0.45)]">
+        <div>
+          <p class="text-[11px] font-semibold uppercase tracking-[0.22em] text-text-secondary/70">New Session</p>
+          <p class="mt-1 text-sm text-text-primary">Create a thread and choose where it should run.</p>
+        </div>
         <ProviderPicker currentProvider={provider} onSelect={(p) => provider = p as 'claude' | 'codex'} />
         <WorkspacePicker
           value={workspacePath}
@@ -94,35 +103,42 @@
         <input
           type="text"
           bind:value={model}
-          placeholder="Model (optional)"
+          placeholder={defaultModel ? `Model (default: ${defaultModel})` : 'Model (optional)'}
           aria-label="Model"
-          class="w-full text-xs rounded border border-border bg-surface-0 px-2 py-1.5 text-text-primary placeholder:text-text-secondary/50 focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/50 transition-colors"
+          class="w-full text-xs rounded-xl border border-border bg-surface-0 px-3 py-2 text-text-primary placeholder:text-text-secondary/50 shadow-sm focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/50 transition-colors"
         />
-        <label class="flex items-center gap-2 text-xs text-text-secondary cursor-pointer">
-          <input type="checkbox" bind:checked={worktreeMode} class="w-3 h-3 rounded cursor-pointer" />
-          Worktree mode
-        </label>
+        <div class="flex items-center justify-between gap-3 rounded-2xl border border-border/55 bg-surface-0/55 px-3 py-2.5">
+          <div>
+            <p class="text-xs font-medium text-text-primary">Worktree mode</p>
+            <p class="text-[11px] text-text-secondary/70">Create an isolated git worktree for this thread.</p>
+          </div>
+          <ToggleSwitch
+            checked={worktreeMode}
+            ariaLabel="Toggle worktree mode"
+            onToggle={(value) => worktreeMode = value}
+          />
+        </div>
         {#if worktreeMode}
           <input
             type="text"
             bind:value={worktreeBranch}
             placeholder="Branch name for worktree"
             aria-label="Branch name for worktree"
-            class="w-full text-xs rounded border border-border bg-surface-0 px-2 py-1.5 text-text-primary placeholder:text-text-secondary/50 focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/50 transition-colors"
+            class="w-full text-xs rounded-xl border border-border bg-surface-0 px-3 py-2 text-text-primary placeholder:text-text-secondary/50 shadow-sm focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/50 transition-colors"
           />
         {/if}
         <div class="flex gap-2">
           <button
             type="submit"
             disabled={!workspacePath.trim() || creating}
-            class="flex-1 text-xs py-1.5 rounded bg-accent text-surface-0 font-medium hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+            class="flex-1 rounded-xl bg-accent px-3 py-2 text-xs font-semibold text-surface-0 shadow-[0_12px_24px_-18px_var(--accent)] hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
           >
             {creating ? 'Creating...' : 'Create'}
           </button>
           <button
             type="button"
             onclick={handleCancel}
-            class="text-xs py-1.5 px-3 rounded border border-border text-text-secondary hover:text-text-primary cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+            class="rounded-xl border border-border px-3 py-2 text-xs text-text-secondary hover:text-text-primary cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
           >
             Cancel
           </button>
@@ -131,7 +147,7 @@
     {:else}
       <button
         onclick={() => showForm = true}
-        class="w-full text-sm py-2 rounded-md bg-accent text-surface-0 font-medium hover:opacity-90 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:ring-offset-2 focus-visible:ring-offset-surface-1"
+        class="w-full rounded-xl bg-accent px-4 py-3 text-sm font-semibold text-surface-0 shadow-[0_12px_24px_-18px_var(--accent)] hover:opacity-90 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:ring-offset-2 focus-visible:ring-offset-surface-1"
       >
         + New Thread
       </button>
@@ -141,10 +157,10 @@
   <ThreadList {pane} />
 
   {#if onOpenSettings}
-    <div class="border-t border-border p-2 shrink-0">
+    <div class="border-t border-border/70 p-2 shrink-0">
       <button
         onclick={onOpenSettings}
-        class="w-full flex items-center gap-2 px-2 py-1.5 text-xs text-text-secondary hover:text-text-primary hover:bg-surface-2/50 rounded cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+        class="w-full flex items-center gap-2 rounded-xl px-3 py-2 text-xs text-text-secondary hover:text-text-primary hover:bg-surface-2/50 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
       >
         <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <circle cx="12" cy="12" r="3" />

@@ -1,16 +1,102 @@
 @import "tailwindcss";
 
+:root {
+  --surface-0: oklch(0.145 0.014 285.82);
+  --surface-1: oklch(0.178 0.014 285.82);
+  --surface-2: oklch(0.215 0.014 285.82);
+  --border: oklch(0.3 0.014 285.82);
+  --text-primary: oklch(0.95 0.006 285.82);
+  --text-secondary: oklch(0.7 0.006 285.82);
+  --accent: oklch(0.65 0.15 250);
+  --success: oklch(0.7 0.17 150);
+  --error: oklch(0.63 0.2 25);
+  --warning: oklch(0.75 0.15 75);
+  --provider-codex: oklch(0.72 0.15 55);
+  --overlay: oklch(0 0 0 / 60%);
+}
+
+html {
+  color-scheme: dark;
+}
+
+html.dark {
+  color-scheme: dark;
+  --surface-0: oklch(0.145 0.014 285.82);
+  --surface-1: oklch(0.178 0.014 285.82);
+  --surface-2: oklch(0.215 0.014 285.82);
+  --border: oklch(0.3 0.014 285.82);
+  --text-primary: oklch(0.95 0.006 285.82);
+  --text-secondary: oklch(0.7 0.006 285.82);
+  --accent: oklch(0.65 0.15 250);
+  --success: oklch(0.7 0.17 150);
+  --error: oklch(0.63 0.2 25);
+  --warning: oklch(0.75 0.15 75);
+  --provider-codex: oklch(0.72 0.15 55);
+  --overlay: oklch(0 0 0 / 60%);
+}
+
+html.light {
+  color-scheme: light;
+  --surface-0: oklch(0.985 0.004 255);
+  --surface-1: oklch(0.968 0.008 255);
+  --surface-2: oklch(0.935 0.012 255);
+  --border: oklch(0.86 0.014 255);
+  --text-primary: oklch(0.23 0.014 255);
+  --text-secondary: oklch(0.48 0.018 255);
+  --accent: oklch(0.61 0.17 247);
+  --success: oklch(0.66 0.16 155);
+  --error: oklch(0.61 0.19 27);
+  --warning: oklch(0.78 0.16 78);
+  --provider-codex: oklch(0.74 0.16 55);
+  --overlay: oklch(0.22 0.01 255 / 28%);
+}
+
 @theme {
-  --color-surface-0: oklch(0.145 0.014 285.82);
-  --color-surface-1: oklch(0.178 0.014 285.82);
-  --color-surface-2: oklch(0.215 0.014 285.82);
-  --color-border: oklch(0.3 0.014 285.82);
-  --color-text-primary: oklch(0.95 0.006 285.82);
-  --color-text-secondary: oklch(0.7 0.006 285.82);
-  --color-accent: oklch(0.65 0.15 250);
-  --color-success: oklch(0.7 0.17 150);
-  --color-error: oklch(0.63 0.2 25);
-  --color-warning: oklch(0.75 0.15 75);
-  --color-provider-codex: oklch(0.72 0.15 55);
-  --color-overlay: oklch(0 0 0 / 60%);
+  --color-surface-0: var(--surface-0);
+  --color-surface-1: var(--surface-1);
+  --color-surface-2: var(--surface-2);
+  --color-border: var(--border);
+  --color-text-primary: var(--text-primary);
+  --color-text-secondary: var(--text-secondary);
+  --color-accent: var(--accent);
+  --color-success: var(--success);
+  --color-error: var(--error);
+  --color-warning: var(--warning);
+  --color-provider-codex: var(--provider-codex);
+  --color-overlay: var(--overlay);
+}
+
+html,
+body,
+#app {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background:
+    radial-gradient(circle at top left, color-mix(in oklab, var(--accent) 16%, transparent) 0%, transparent 34%),
+    radial-gradient(circle at bottom right, color-mix(in oklab, var(--provider-codex) 10%, transparent) 0%, transparent 28%),
+    linear-gradient(180deg, color-mix(in oklab, var(--surface-1) 72%, transparent), var(--surface-0));
+  color: var(--text-primary);
+}
+
+body::selection {
+  background: color-mix(in oklab, var(--accent) 28%, transparent);
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: color-mix(in oklab, var(--border) 78%, transparent);
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
 }
