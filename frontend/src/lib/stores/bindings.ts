@@ -44,3 +44,8 @@ export {
   GitRemoveWorktree,
   GitListWorktrees,
 } from '../../../bindings/agent-overflow/app.js';
+
+// Model classes needed for constructing RPC parameters.
+export {
+  ApprovalResponse,
+} from '../../../bindings/agent-overflow/internal/provider/models.js';

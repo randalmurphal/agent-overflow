@@ -7,11 +7,15 @@
   let timer: ReturnType<typeof setTimeout> | undefined;
 
   async function handleCopy() {
-    const ok = await copyToClipboard(text);
-    if (ok) {
-      copied = true;
-      clearTimeout(timer);
-      timer = setTimeout(() => { copied = false; }, 2000);
+    try {
+      const ok = await copyToClipboard(text);
+      if (ok) {
+        copied = true;
+        clearTimeout(timer);
+        timer = setTimeout(() => { copied = false; }, 2000);
+      }
+    } catch (err) {
+      console.error('Clipboard copy failed:', err);
     }
   }
 </script>

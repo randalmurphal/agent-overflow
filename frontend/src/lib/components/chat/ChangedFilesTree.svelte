@@ -1,14 +1,6 @@
 <script lang="ts">
   import DiffPreview from './DiffPreview.svelte';
-  import type { DiffMeta } from '../../types/models';
-
-  interface ChangedFile {
-    path: string;
-    insertions: number;
-    deletions: number;
-    kind: string;
-    payloadId: string;
-  }
+  import type { DiffMeta, ChangedFile } from '../../types/models';
 
   interface DirGroup {
     dir: string;

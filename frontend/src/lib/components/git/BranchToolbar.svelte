@@ -1,13 +1,15 @@
 <script lang="ts">
   import type { ThreadPane } from '../../stores/thread.svelte';
+  import type { GitStatus, GitBranch } from '../../types/git';
   import { GetGitStatus, GitListBranches, GitCheckout, GitCreateBranch } from '../../stores/bindings';
+  import { addToast } from '../../stores/toast.svelte';
   import { onMount } from 'svelte';
 
   let { pane }: { pane: ThreadPane } = $props();
 
   let currentBranch = $state('');
   let open = $state(false);
-  let branches = $state<Array<{ name: string; isCurrent: boolean; isRemote: boolean }>>([]);
+  let branches = $state<GitBranch[]>([]);
   let filter = $state('');
   let loading = $state(false);
   let showCreateInput = $state(false);
@@ -25,10 +27,11 @@
     try {
       const status = await GetGitStatus(pane.threadId);
       if (status) {
-        currentBranch = (status as { branch: string }).branch;
+        currentBranch = (status as GitStatus).branch;
       }
     } catch (err) {
       console.error('Failed to get git status:', err);
+      addToast('error', 'Failed to load branch info');
     }
   });
 
@@ -38,9 +41,10 @@
     loading = true;
     try {
       const result = await GitListBranches(pane.threadId);
-      branches = (result ?? []) as Array<{ name: string; isCurrent: boolean; isRemote: boolean }>;
+      branches = (result ?? []) as GitBranch[];
     } catch (err) {
       console.error('Failed to list branches:', err);
+      addToast('error', 'Failed to list branches');
       branches = [];
     } finally {
       loading = false;

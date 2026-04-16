@@ -1,11 +1,13 @@
 <script lang="ts">
   import type { ThreadPane } from '../../stores/thread.svelte';
+  import type { ModelInfo } from '../../types/settings';
   import { GetModelsForProvider } from '../../stores/bindings';
+  import { addToast } from '../../stores/toast.svelte';
 
   let { pane }: { pane: ThreadPane } = $props();
 
   let open = $state(false);
-  let models = $state<Array<{ slug: string; name: string }>>([]);
+  let models = $state<ModelInfo[]>([]);
   let loading = $state(false);
   let customModel = $state('');
 
@@ -17,9 +19,10 @@
     loading = true;
     try {
       const result = await GetModelsForProvider(provider);
-      models = (result ?? []) as Array<{ slug: string; name: string }>;
+      models = (result ?? []) as ModelInfo[];
     } catch (err) {
       console.error('Failed to load models:', err);
+      addToast('error', 'Failed to load models');
       models = [];
     } finally {
       loading = false;

@@ -5,8 +5,7 @@ import type { ThreadPane } from './thread.svelte';
 import { getAllPanes } from './panes.svelte';
 import { addToast } from './toast.svelte';
 import { updateThreadTitle } from './threads.svelte';
-import { RespondToApproval } from './bindings';
-import { ApprovalResponse } from '../../../bindings/agent-overflow/internal/provider/models.js';
+import { RespondToApproval, ApprovalResponse } from './bindings';
 
 /**
  * Route a provider event to the correct pane mutation.

@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { ThreadPane } from '../../stores/thread.svelte';
+  import type { GitStatus, GitActionResult } from '../../types/git';
   import { GetGitStatus, GitPush, GitPull } from '../../stores/bindings';
   import { addToast } from '../../stores/toast.svelte';
   import CommitDialog from './CommitDialog.svelte';
@@ -7,14 +8,7 @@
 
   let { pane }: { pane: ThreadPane } = $props();
 
-  interface Status {
-    hasChanges: boolean;
-    aheadCount: number;
-    behindCount: number;
-    hasUpstream: boolean;
-  }
-
-  let status = $state<Status | null>(null);
+  let status = $state<GitStatus | null>(null);
   let actionLoading = $state(false);
   let showCommit = $state(false);
   let showDropdown = $state(false);
@@ -27,7 +21,7 @@
     if (!pane.threadId) return;
     try {
       const result = await GetGitStatus(pane.threadId);
-      status = result as Status;
+      status = result as GitStatus;
     } catch (err) {
       console.error('Failed to get git status:', err);
       status = null;
@@ -61,7 +55,7 @@
     actionLoading = true;
     try {
       const result = await GitPush(pane.threadId);
-      const r = result as { error?: string };
+      const r = result as GitActionResult;
       if (r.error) {
         pane.setError(`Push failed: ${r.error}`);
       } else {
@@ -80,7 +74,7 @@
     actionLoading = true;
     try {
       const result = await GitPull(pane.threadId);
-      const r = result as { error?: string };
+      const r = result as GitActionResult;
       if (r.error) {
         pane.setError(`Pull failed: ${r.error}`);
       } else {

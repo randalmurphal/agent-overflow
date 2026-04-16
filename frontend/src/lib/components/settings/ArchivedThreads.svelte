@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import { ListThreads, ArchiveThread, DeleteThread } from '../../stores/bindings';
   import type { Thread } from '../../types/models';
+  import { addToast } from '../../stores/toast.svelte';
   import ConfirmDialog from '../shared/ConfirmDialog.svelte';
   import { relativeTime } from '../../utils/format';
 
@@ -20,6 +21,7 @@
       archived = all.filter((t) => t.archived);
     } catch (err) {
       console.error('Failed to load archived threads:', err);
+      addToast('error', 'Failed to load archived threads');
     } finally {
       loading = false;
     }
@@ -31,6 +33,7 @@
       archived = archived.filter((t) => t.id !== thread.id);
     } catch (err) {
       console.error('Failed to unarchive thread:', err);
+      addToast('error', 'Failed to unarchive thread');
     }
   }
 
@@ -41,6 +44,7 @@
       archived = archived.filter((t) => t.id !== deleteTarget!.id);
     } catch (err) {
       console.error('Failed to delete thread:', err);
+      addToast('error', 'Failed to delete thread');
     } finally {
       deleteTarget = null;
     }

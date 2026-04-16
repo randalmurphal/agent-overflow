@@ -1,5 +1,6 @@
 <script lang="ts">
   import { Dialogs } from '@wailsio/runtime';
+  import { addToast } from '../../stores/toast.svelte';
 
   let { value, onSelect, recentWorkspaces = [] }: {
     value: string;
@@ -28,6 +29,7 @@
       }
     } catch (err) {
       console.error('Failed to open directory picker:', err);
+      addToast('error', 'Failed to open directory picker');
     }
   }
 

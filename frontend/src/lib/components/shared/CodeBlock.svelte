@@ -12,6 +12,9 @@
     highlightCode(code, lang).then((result) => {
       html = result;
       loading = false;
+    }).catch((err) => {
+      console.error('Syntax highlighting failed:', err);
+      loading = false;
     });
   });
 </script>

@@ -2,40 +2,37 @@
   import { onMount } from 'svelte';
   import { getSettings, updateSetting } from '../../stores/settings.svelte';
   import { GetProviderStatuses, GetModelsForProvider } from '../../stores/bindings';
-
-  interface Status {
-    provider: string;
-    status: string;
-    version: string;
-    binaryPath: string;
-    message: string;
-  }
+  import { addToast } from '../../stores/toast.svelte';
+  import type { ProviderStatus, ModelInfo } from '../../types/settings';
 
   let settings = $derived(getSettings());
-  let statuses = $state<Status[]>([]);
-  let claudeModels = $state<Array<{ slug: string; name: string }>>([]);
-  let codexModels = $state<Array<{ slug: string; name: string }>>([]);
+  let statuses = $state<ProviderStatus[]>([]);
+  let claudeModels = $state<ModelInfo[]>([]);
+  let codexModels = $state<ModelInfo[]>([]);
 
   onMount(async () => {
     try {
       const result = await GetProviderStatuses();
-      statuses = (result ?? []) as Status[];
+      statuses = (result ?? []) as ProviderStatus[];
     } catch (err) {
       console.error('Failed to load provider statuses:', err);
+      addToast('error', 'Failed to load provider statuses');
     }
     try {
-      claudeModels = (await GetModelsForProvider('claude') ?? []) as Array<{ slug: string; name: string }>;
+      claudeModels = (await GetModelsForProvider('claude') ?? []) as ModelInfo[];
     } catch (err) {
       console.error('Failed to load Claude models:', err);
+      addToast('error', 'Failed to load Claude models');
     }
     try {
-      codexModels = (await GetModelsForProvider('codex') ?? []) as Array<{ slug: string; name: string }>;
+      codexModels = (await GetModelsForProvider('codex') ?? []) as ModelInfo[];
     } catch (err) {
       console.error('Failed to load Codex models:', err);
+      addToast('error', 'Failed to load Codex models');
     }
   });
 
-  function getStatus(provider: string): Status | undefined {
+  function getStatus(provider: string): ProviderStatus | undefined {
     return statuses.find((s) => s.provider === provider);
   }
 

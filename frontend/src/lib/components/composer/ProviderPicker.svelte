@@ -1,5 +1,7 @@
 <script lang="ts">
   import { GetProviderStatuses } from '../../stores/bindings';
+  import { addToast } from '../../stores/toast.svelte';
+  import type { ProviderStatus } from '../../types/settings';
   import { onMount } from 'svelte';
 
   let { currentProvider, onSelect }: {
@@ -7,19 +9,19 @@
     onSelect: (provider: string) => void;
   } = $props();
 
-  let statuses = $state<Map<string, { status: string }>>(new Map());
+  let statuses = $state<Map<string, ProviderStatus>>(new Map());
 
   onMount(async () => {
     try {
       const result = await GetProviderStatuses();
-      const map = new Map<string, { status: string }>();
-      for (const s of result ?? []) {
-        const entry = s as { provider: string; status: string };
-        map.set(entry.provider, { status: entry.status });
+      const map = new Map<string, ProviderStatus>();
+      for (const s of (result ?? []) as ProviderStatus[]) {
+        map.set(s.provider, s);
       }
       statuses = map;
     } catch (err) {
       console.error('Failed to fetch provider statuses:', err);
+      addToast('error', 'Failed to load provider statuses');
     }
   });
 

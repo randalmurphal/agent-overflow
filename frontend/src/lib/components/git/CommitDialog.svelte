@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { ThreadPane } from '../../stores/thread.svelte';
+  import type { GitActionResult } from '../../types/git';
   import { GitCommit } from '../../stores/bindings';
   import { addToast } from '../../stores/toast.svelte';
 
@@ -20,7 +21,7 @@
     error = null;
     try {
       const result = await GitCommit(pane.threadId, subject.trim(), body.trim());
-      const r = result as { commitSha?: string; error?: string };
+      const r = result as GitActionResult;
       if (r.error) {
         error = r.error;
       } else {
