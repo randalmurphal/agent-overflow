@@ -4,7 +4,6 @@
   import ApprovalPrompt from '../composer/ApprovalPrompt.svelte';
   import BackgroundTray from '../shared/BackgroundTray.svelte';
   import Composer from '../composer/Composer.svelte';
-  import ComposerControls from '../composer/ComposerControls.svelte';
   import StatusBar from '../shared/StatusBar.svelte';
   import ProviderStatusBanner from './ProviderStatusBanner.svelte';
   import BranchToolbar from '../git/BranchToolbar.svelte';
@@ -40,7 +39,6 @@
     <MessageTimeline {pane} />
     <ApprovalPrompt {pane} />
     <BackgroundTray {pane} />
-    <ComposerControls {pane} />
     <Composer {pane} />
     <StatusBar {pane} />
   </div>

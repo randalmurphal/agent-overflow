@@ -6,7 +6,6 @@ export {
   DeleteThread,
   ListThreads,
   RenameThread,
-  GetThread,
   SwitchThread,
 
   // Session management
@@ -19,7 +18,6 @@ export {
 
   // Data access
   GetPayloadData,
-  GetWorkingTreeDiff,
   ListItems,
   ListPayloadMetas,
 
@@ -41,7 +39,6 @@ export {
   GitCreateBranch,
   GitCreatePR,
   GitCreateWorktree,
-  GitListWorktrees,
   GitRemoveWorktree,
 } from '../../../bindings/agent-overflow/app.js';
 

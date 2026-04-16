@@ -51,11 +51,6 @@ export interface CommandOutputMeta {
   preview: string;
 }
 
-export interface ThinkingMeta {
-  tokenCount: number;
-  preview: string;
-}
-
 export interface ChangedFile {
   path: string;
   insertions: number;

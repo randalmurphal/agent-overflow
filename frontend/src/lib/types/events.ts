@@ -1,4 +1,4 @@
-export type EventKind =
+type EventKind =
   | 'init'
   | 'text_delta'
   | 'tool_start'
