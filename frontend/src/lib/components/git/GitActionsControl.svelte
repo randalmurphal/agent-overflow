@@ -1,12 +1,12 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { fade, fly } from 'svelte/transition';
-  import type { ThreadPane } from '../../stores/thread.svelte';
-  import type { GitStatus, GitActionResult } from '../../types/git';
   import { GetGitStatus, GitPush, GitPull, GitCreatePR, GitRemoveWorktree } from '../../stores/bindings';
+  import type { ThreadPane } from '../../stores/thread.svelte';
   import { addToast } from '../../stores/toast.svelte';
+  import type { GitActionResult, GitStatus } from '../../types/git';
   import CommitDialog from './CommitDialog.svelte';
   import ConfirmDialog from '../shared/ConfirmDialog.svelte';
-  import { onMount } from 'svelte';
 
   let { pane }: { pane: ThreadPane } = $props();
 
@@ -180,7 +180,7 @@
     {#if showDropdown}
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div transition:fade={{ duration: 100 }} class="fixed inset-0 z-40" onclick={() => showDropdown = false} onkeydown={(e) => { if (e.key === 'Escape') showDropdown = false; }}></div>
-      <div transition:fly={{ y: -4, duration: 120 }} class="absolute top-full right-0 mt-1 z-50 bg-surface-1 border border-border rounded shadow-lg min-w-[140px]" role="menu" aria-label="Git actions">
+      <div transition:fly={{ y: -4, duration: 120 }} class="absolute top-full right-0 mt-1 z-50 bg-surface-1 border border-border rounded-lg shadow-lg min-w-[140px]" role="menu" aria-label="Git actions">
         <button
           onclick={() => { showDropdown = false; showCommit = true; }}
           disabled={!status.hasChanges}

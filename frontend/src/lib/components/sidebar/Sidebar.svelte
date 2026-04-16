@@ -1,13 +1,13 @@
 <script lang="ts">
-  import type { Thread } from '../../types/models';
-  import type { ThreadPane } from '../../stores/thread.svelte';
   import { CreateThread, StartSession, GitCreateWorktree } from '../../stores/bindings';
+  import { getSettings } from '../../stores/settings.svelte';
+  import type { ThreadPane } from '../../stores/thread.svelte';
   import { prependThread } from '../../stores/threads.svelte';
   import { addToast } from '../../stores/toast.svelte';
+  import type { Thread } from '../../types/models';
+  import ProviderPicker from '../composer/ProviderPicker.svelte';
   import ThreadList from './ThreadList.svelte';
   import WorkspacePicker from './WorkspacePicker.svelte';
-  import ProviderPicker from '../composer/ProviderPicker.svelte';
-  import { getSettings } from '../../stores/settings.svelte';
 
   let { pane, onOpenSettings }: { pane: ThreadPane; onOpenSettings?: () => void } = $props();
 

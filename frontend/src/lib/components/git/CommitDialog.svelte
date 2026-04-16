@@ -125,7 +125,7 @@
             bind:value={body}
             rows={4}
             placeholder="Extended description..."
-            class="w-full text-sm rounded border border-border bg-surface-0 px-3 py-2 text-text-primary placeholder:text-text-secondary/40 focus:outline-none focus:border-accent resize-none"
+            class="w-full text-sm rounded border border-border bg-surface-0 px-3 py-2 text-text-primary placeholder:text-text-secondary/40 focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/50 transition-colors resize-none"
           ></textarea>
         </div>
 

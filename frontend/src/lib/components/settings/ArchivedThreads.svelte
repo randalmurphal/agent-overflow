@@ -1,11 +1,11 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { ListThreads, ArchiveThread, DeleteThread } from '../../stores/bindings';
-  import type { Thread } from '../../types/models';
+  import { getSettings } from '../../stores/settings.svelte';
   import { addToast } from '../../stores/toast.svelte';
+  import type { Thread } from '../../types/models';
   import ConfirmDialog from '../shared/ConfirmDialog.svelte';
   import { relativeTime } from '../../utils/format';
-  import { getSettings } from '../../stores/settings.svelte';
 
   let archived = $state<Thread[]>([]);
   let loading = $state(true);

@@ -1,9 +1,9 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { getSettings, updateSetting } from '../../stores/settings.svelte';
   import { GetProviderStatuses, GetModelsForProvider } from '../../stores/bindings';
+  import { getSettings, updateSetting } from '../../stores/settings.svelte';
   import { addToast } from '../../stores/toast.svelte';
-  import type { ProviderStatus, ModelInfo } from '../../types/settings';
+  import type { ModelInfo, ProviderStatus } from '../../types/settings';
 
   let settings = $derived(getSettings());
   let statuses = $state<ProviderStatus[]>([]);

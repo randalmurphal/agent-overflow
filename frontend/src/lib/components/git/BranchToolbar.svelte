@@ -1,10 +1,9 @@
 <script lang="ts">
-  import { fade, fly } from 'svelte/transition';
-  import type { ThreadPane } from '../../stores/thread.svelte';
-  import type { GitStatus, GitBranch } from '../../types/git';
-  import { GetGitStatus, GitListBranches, GitCheckout, GitCreateBranch } from '../../stores/bindings';
-  import { addToast } from '../../stores/toast.svelte';
   import { onMount } from 'svelte';
+  import { fade, fly } from 'svelte/transition';
+  import { GetGitStatus, GitListBranches, GitCheckout, GitCreateBranch } from '../../stores/bindings';
+  import type { ThreadPane } from '../../stores/thread.svelte';
+  import type { GitBranch, GitStatus } from '../../types/git';
 
   let { pane }: { pane: ThreadPane } = $props();
 
@@ -32,7 +31,7 @@
       }
     } catch (err) {
       console.error('Failed to get git status:', err);
-      addToast('error', 'Failed to load branch info');
+      pane.setError('Failed to load branch info');
     }
   });
 
@@ -45,7 +44,7 @@
       branches = (result ?? []) as GitBranch[];
     } catch (err) {
       console.error('Failed to list branches:', err);
-      addToast('error', 'Failed to list branches');
+      pane.setError('Failed to list branches');
       branches = [];
     } finally {
       loading = false;

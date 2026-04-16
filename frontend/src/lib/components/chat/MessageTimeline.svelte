@@ -1,15 +1,15 @@
 <script lang="ts">
+  import { getSettings } from '../../stores/settings.svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
-  import type { DiffMeta, CommandOutputMeta, ChangedFile, Item, WorkEntryData } from '../../types/models';
-  import UserMessage from './UserMessage.svelte';
+  import type { ChangedFile, CommandOutputMeta, DiffMeta, Item, WorkEntryData } from '../../types/models';
   import AssistantMessage from './AssistantMessage.svelte';
-  import DiffPreview from './DiffPreview.svelte';
+  import ChangedFilesTree from './ChangedFilesTree.svelte';
   import CommandOutput from './CommandOutput.svelte';
-  import WorkEntry from './WorkEntry.svelte';
+  import DiffPreview from './DiffPreview.svelte';
   import StreamingMessage from './StreamingMessage.svelte';
   import ThinkingBlock from './ThinkingBlock.svelte';
-  import ChangedFilesTree from './ChangedFilesTree.svelte';
-  import { getSettings } from '../../stores/settings.svelte';
+  import UserMessage from './UserMessage.svelte';
+  import WorkEntry from './WorkEntry.svelte';
 
   let { pane }: { pane: ThreadPane } = $props();
 

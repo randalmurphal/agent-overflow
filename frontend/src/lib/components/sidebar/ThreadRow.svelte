@@ -1,11 +1,11 @@
 <script lang="ts">
-  import type { Thread } from '../../types/models';
-  import type { ThreadPane } from '../../stores/thread.svelte';
   import { ArchiveThread, DeleteThread, RenameThread, StopSession } from '../../stores/bindings';
-  import { removeThread, updateThreadTitle } from '../../stores/threads.svelte';
-  import { relativeTime } from '../../utils/format';
   import { getSettings } from '../../stores/settings.svelte';
+  import type { ThreadPane } from '../../stores/thread.svelte';
+  import { removeThread, updateThreadTitle } from '../../stores/threads.svelte';
+  import type { Thread } from '../../types/models';
   import ConfirmDialog from '../shared/ConfirmDialog.svelte';
+  import { relativeTime } from '../../utils/format';
 
   let { thread, pane }: { thread: Thread; pane: ThreadPane } = $props();
 
