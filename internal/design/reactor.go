@@ -27,6 +27,13 @@ type choiceResolution struct {
 	err    error
 }
 
+type validatedPresentOption struct {
+	ID          string
+	Title       string
+	Description string
+	HTML        string
+}
+
 // Reactor coordinates design-mode tool calls, artifact storage, and pending
 // user option requests.
 type Reactor struct {
@@ -211,37 +218,32 @@ func (r *Reactor) storeOptions(threadID string, input PresentOptionsInput) (Desi
 		return DesignOptionsRequest{}, fmt.Errorf("at least 2 options are required")
 	}
 
+	validated, err := validatePresentOptions(input.Options)
+	if err != nil {
+		return DesignOptionsRequest{}, err
+	}
+
 	request := DesignOptionsRequest{
 		RequestID: uuid.New().String(),
 		ThreadID:  threadID,
 		Prompt:    prompt,
-		Options:   make([]DesignOption, 0, len(input.Options)),
+		Options:   make([]DesignOption, 0, len(validated)),
 	}
 
-	seenIDs := make(map[string]struct{}, len(input.Options))
-	for _, option := range input.Options {
-		optionID := strings.TrimSpace(option.ID)
-		if optionID == "" {
-			return DesignOptionsRequest{}, fmt.Errorf("option ID is required")
-		}
-		if _, exists := seenIDs[optionID]; exists {
-			return DesignOptionsRequest{}, fmt.Errorf("duplicate option ID %s", optionID)
-		}
-		seenIDs[optionID] = struct{}{}
-
-		artifact, err := r.artifacts.Store(
+	for _, option := range validated {
+		artifact, storeErr := r.artifacts.Store(
 			threadID,
-			strings.TrimSpace(option.HTML),
-			strings.TrimSpace(option.Title),
-			strings.TrimSpace(option.Description),
+			option.HTML,
+			option.Title,
+			option.Description,
 			"option",
 		)
-		if err != nil {
-			return DesignOptionsRequest{}, err
+		if storeErr != nil {
+			return DesignOptionsRequest{}, storeErr
 		}
 
 		request.Options = append(request.Options, DesignOption{
-			ID:          optionID,
+			ID:          option.ID,
 			Title:       artifact.Title,
 			Description: artifact.Description,
 			ArtifactID:  artifact.ID,
@@ -249,6 +251,44 @@ func (r *Reactor) storeOptions(threadID string, input PresentOptionsInput) (Desi
 	}
 
 	return request, nil
+}
+
+func validatePresentOptions(options []PresentOptionInput) ([]validatedPresentOption, error) {
+	validated := make([]validatedPresentOption, 0, len(options))
+	seenIDs := make(map[string]struct{}, len(options))
+
+	for _, option := range options {
+		next, err := validatePresentOption(option)
+		if err != nil {
+			return nil, err
+		}
+		if _, exists := seenIDs[next.ID]; exists {
+			return nil, fmt.Errorf("duplicate option ID %s", next.ID)
+		}
+		seenIDs[next.ID] = struct{}{}
+		validated = append(validated, next)
+	}
+
+	return validated, nil
+}
+
+func validatePresentOption(option PresentOptionInput) (validatedPresentOption, error) {
+	validated := validatedPresentOption{
+		ID:          strings.TrimSpace(option.ID),
+		Title:       strings.TrimSpace(option.Title),
+		Description: strings.TrimSpace(option.Description),
+		HTML:        strings.TrimSpace(option.HTML),
+	}
+	if validated.ID == "" {
+		return validatedPresentOption{}, fmt.Errorf("option ID is required")
+	}
+	if validated.Title == "" {
+		return validatedPresentOption{}, fmt.Errorf("title is required")
+	}
+	if validated.HTML == "" {
+		return validatedPresentOption{}, fmt.Errorf("html is required")
+	}
+	return validated, nil
 }
 
 func (r *Reactor) resolveRequest(requestID string, resolution choiceResolution) {

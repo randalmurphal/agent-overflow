@@ -213,6 +213,17 @@ func TestReactorValidationErrors(t *testing.T) {
 	}); err == nil {
 		t.Fatal("expected duplicate option ID error")
 	}
+	assertOptionArtifactCount(t, reactor, "thread-options", 0)
+	if _, err := reactor.PresentOptions(context.Background(), "thread-options", PresentOptionsInput{
+		Prompt: "Choose",
+		Options: []PresentOptionInput{
+			{ID: "a", Title: "A", Description: "Alpha", HTML: "<html>A</html>"},
+			{ID: "b", Title: "", Description: "Beta", HTML: "<html>B</html>"},
+		},
+	}); err == nil {
+		t.Fatal("expected missing title error")
+	}
+	assertOptionArtifactCount(t, reactor, "thread-options", 0)
 	if err := reactor.ChooseOption("thread-options", "missing", "a"); err == nil {
 		t.Fatal("expected missing request error")
 	}
@@ -301,4 +312,16 @@ func waitForPendingRequest(t *testing.T, reactor *Reactor, threadID string) Desi
 	}
 	t.Fatal("timed out waiting for pending design request")
 	return DesignOptionsRequest{}
+}
+
+func assertOptionArtifactCount(t *testing.T, reactor *Reactor, threadID string, want int) {
+	t.Helper()
+
+	artifacts, err := reactor.artifacts.List(threadID, "option")
+	if err != nil {
+		t.Fatalf("List(%s, option) error = %v", threadID, err)
+	}
+	if len(artifacts) != want {
+		t.Fatalf("option artifact count for %s = %d, want %d", threadID, len(artifacts), want)
+	}
 }
