@@ -55,8 +55,10 @@
   <button
     class="w-full px-3 py-2 flex items-center gap-2 text-sm cursor-pointer hover:bg-surface-2/40"
     onclick={toggle}
+    aria-expanded={expanded}
+    aria-label="Toggle diff: {meta.filePath}"
   >
-    <span class="text-xs text-text-secondary select-none">{expanded ? '▼' : '▶'}</span>
+    <span class="text-xs text-text-secondary select-none" aria-hidden="true">{expanded ? '▼' : '▶'}</span>
     <span class="font-mono text-xs text-text-primary truncate">{meta.filePath}</span>
     <span class="px-1.5 py-0.5 rounded-full text-xs {badgeClasses}">{meta.changeKind}</span>
     <span class="ml-auto flex gap-2 text-xs shrink-0">

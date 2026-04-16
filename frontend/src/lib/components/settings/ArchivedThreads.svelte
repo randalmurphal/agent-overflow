@@ -73,7 +73,7 @@
         </div>
         <button
           onclick={() => handleUnarchive(thread)}
-          class="text-xs px-2 py-1 rounded border border-border text-text-secondary hover:text-text-primary cursor-pointer"
+          class="text-xs px-2 py-1 rounded border border-border text-text-secondary hover:text-text-primary cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
         >
           Unarchive
         </button>

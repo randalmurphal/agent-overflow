@@ -46,20 +46,21 @@
 </script>
 
 {#if visible && pane.thread}
-  <div transition:slide={{ duration: 150 }} class="border-b {bannerClasses} px-4 py-2 flex items-center gap-2 shrink-0">
+  <div transition:slide={{ duration: 150 }} role="alert" aria-live="assertive" class="border-b {bannerClasses} px-4 py-2 flex items-center gap-2 shrink-0">
     <p class="text-xs flex-1 truncate" title={message}>{message}</p>
     {#if pane.sessionStatus !== 'retrying'}
       <button
         onclick={handleReconnect}
         disabled={reconnecting}
-        class="text-xs px-2 py-0.5 rounded border border-current/30 hover:bg-white/5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
+        class="text-xs px-2 py-0.5 rounded border border-current/30 hover:bg-white/5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
       >
         {reconnecting ? 'Reconnecting...' : 'Reconnect'}
       </button>
     {/if}
     <button
       onclick={() => pane.clearError()}
-      class="text-xs hover:opacity-70 cursor-pointer shrink-0 px-1"
+      class="text-xs hover:opacity-70 cursor-pointer shrink-0 px-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 rounded"
+      aria-label="Dismiss banner"
     >
       Dismiss
     </button>

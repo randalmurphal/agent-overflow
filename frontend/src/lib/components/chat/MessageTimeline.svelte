@@ -173,7 +173,7 @@
       {#if getSettings().streamingEnabled}
         <StreamingMessage content={pane.streamingContent} />
       {:else}
-        <div class="flex justify-start mb-3">
+        <div class="flex justify-start mb-3" role="status" aria-live="polite">
           <div class="max-w-[85%] rounded-lg px-4 py-2.5 bg-surface-1 text-text-secondary text-sm">
             <span class="animate-pulse">Thinking...</span>
           </div>

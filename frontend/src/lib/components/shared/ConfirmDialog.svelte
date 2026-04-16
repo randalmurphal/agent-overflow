@@ -23,6 +23,7 @@
 
   let dialogEl: HTMLDivElement | undefined = $state(undefined);
   let previousFocus: Element | null = null;
+  const dialogId = crypto.randomUUID().slice(0, 8);
 
   function restoreFocus() {
     if (previousFocus instanceof HTMLElement) {
@@ -92,14 +93,14 @@
       transition:scale={{ start: 0.95, duration: 150 }}
       role="dialog"
       aria-modal="true"
-      aria-labelledby="confirm-title"
-      aria-describedby="confirm-desc"
+      aria-labelledby="confirm-title-{dialogId}"
+      aria-describedby="confirm-desc-{dialogId}"
       class="bg-surface-1 border border-border rounded-lg shadow-xl max-w-md w-full mx-4 p-5"
     >
-      <h2 id="confirm-title" class="text-base font-semibold text-text-primary mb-1.5">
+      <h2 id="confirm-title-{dialogId}" class="text-base font-semibold text-text-primary mb-1.5">
         {title}
       </h2>
-      <p id="confirm-desc" class="text-sm text-text-secondary mb-5">
+      <p id="confirm-desc-{dialogId}" class="text-sm text-text-secondary mb-5">
         {description}
       </p>
       <div class="flex justify-end gap-2">

@@ -77,8 +77,10 @@
     <button
       class="w-full px-3 py-1.5 flex items-center gap-1.5 text-left cursor-pointer hover:bg-surface-2/40 border-b border-border/50"
       onclick={() => toggleDir(group.dir)}
+      aria-expanded={expandedDirs.has(group.dir)}
+      aria-label="Toggle directory: {group.dir}"
     >
-      <span class="text-xs text-text-secondary select-none">{expandedDirs.has(group.dir) ? '▼' : '▶'}</span>
+      <span class="text-xs text-text-secondary select-none" aria-hidden="true">{expandedDirs.has(group.dir) ? '▼' : '▶'}</span>
       <span class="text-xs font-mono text-text-secondary truncate">{group.dir}/</span>
       <span class="ml-auto text-xs text-text-secondary/60">{group.files.length}</span>
     </button>
@@ -89,6 +91,7 @@
         <button
           class="w-full pl-7 pr-3 py-1 flex items-center gap-2 text-left cursor-pointer hover:bg-surface-2/30"
           onclick={() => toggleFile(file.path)}
+          aria-expanded={expandedFile === file.path}
         >
           <span class="text-xs font-mono text-text-primary truncate flex-1">{fileName(file.path)}</span>
           <span class="px-1.5 py-0.5 rounded-full text-[10px] {kindBadge(file.kind)}">{file.kind}</span>

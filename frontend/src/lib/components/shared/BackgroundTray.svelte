@@ -22,6 +22,8 @@
     <button
       type="button"
       onclick={() => expanded = !expanded}
+      aria-expanded={expanded}
+      aria-label="Background tasks: {taskCount} running"
       class="w-full px-4 py-2 text-xs text-text-secondary flex items-center justify-between cursor-pointer hover:bg-surface-2/40"
     >
       <span>Background ({taskCount} running)</span>
@@ -32,6 +34,7 @@
         fill="none"
         stroke="currentColor"
         stroke-width="1.5"
+        aria-hidden="true"
       >
         <path d="M3 5l3 3 3-3" />
       </svg>

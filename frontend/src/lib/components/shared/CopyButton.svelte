@@ -27,16 +27,16 @@
 
 <button
   onclick={handleCopy}
-  class="inline-flex items-center gap-1 text-text-secondary hover:text-text-primary cursor-pointer p-1 rounded hover:bg-surface-2/50"
+  class="inline-flex items-center gap-1 text-text-secondary hover:text-text-primary cursor-pointer p-1 rounded hover:bg-surface-2/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
   title={label ?? 'Copy to clipboard'}
   aria-label={label ?? 'Copy to clipboard'}
 >
   {#if copied}
-    <svg in:fade={{ duration: 120 }} class="w-3.5 h-3.5 text-success" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+    <svg in:fade={{ duration: 120 }} class="w-3.5 h-3.5 text-success" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
       <path d="M20 6L9 17l-5-5" />
     </svg>
   {:else}
-    <svg in:fade={{ duration: 120 }} class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <svg in:fade={{ duration: 120 }} class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
       <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
       <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
     </svg>

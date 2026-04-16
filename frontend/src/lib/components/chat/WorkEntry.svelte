@@ -37,6 +37,9 @@
 </script>
 
 <div
+  role="status"
+  aria-live="polite"
+  aria-label="{entry.name ?? entry.type}: {entry.status}"
   class="bg-surface-1 rounded border border-border px-3 py-2 text-sm
     {isRunning ? 'border-l-2 border-l-accent' : ''}"
 >

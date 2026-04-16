@@ -160,7 +160,7 @@
       onclick={executePrimary}
       disabled={primaryAction.disabled || actionLoading}
       title={primaryAction.tooltip}
-      class="text-xs px-2.5 py-1 rounded-l border border-border text-text-secondary hover:text-text-primary hover:border-text-secondary cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+      class="text-xs px-2.5 py-1 rounded-l border border-border text-text-secondary hover:text-text-primary hover:border-text-secondary cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
     >
       {actionLoading ? '...' : primaryAction.label}
     </button>
@@ -171,7 +171,7 @@
       aria-haspopup="menu"
       class="text-xs px-1 py-1 rounded-r border border-l-0 border-border text-text-secondary hover:text-text-primary hover:border-text-secondary cursor-pointer"
     >
-      <svg class="w-3 h-3" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5">
+      <svg class="w-3 h-3" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
         <path d="M3 5l3 3 3-3" />
       </svg>
     </button>

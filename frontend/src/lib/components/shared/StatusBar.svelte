@@ -16,8 +16,8 @@
 </script>
 
 <div class="border-t border-border bg-surface-0 px-4 py-1.5 flex items-center gap-4 text-xs text-text-secondary">
-  <div class="flex items-center gap-1.5">
-    <span class="w-1.5 h-1.5 rounded-full {statusColor}"></span>
+  <div class="flex items-center gap-1.5" role="status" aria-live="polite">
+    <span class="w-1.5 h-1.5 rounded-full {statusColor}" aria-hidden="true"></span>
     <span>{pane.sessionStatus}</span>
   </div>
 

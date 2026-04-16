@@ -111,7 +111,7 @@
 </script>
 
 {#if pane.pendingApprovals.length > 0}
-  <div class="border-t border-border bg-surface-1 px-4 py-3 space-y-2">
+  <div role="alertdialog" aria-live="assertive" aria-label="Tool approval required" class="border-t border-border bg-surface-1 px-4 py-3 space-y-2">
     {#each pane.pendingApprovals as approval (approval.requestId)}
       <div class="rounded border border-accent/40 bg-surface-0 px-3 py-2.5">
         <div class="flex items-start justify-between gap-3">

@@ -40,8 +40,10 @@
   <button
     class="w-full px-3 py-2 flex items-center gap-2 text-left cursor-pointer hover:bg-surface-2/40"
     onclick={toggle}
+    aria-expanded={expanded}
+    aria-label="Toggle thinking block"
   >
-    <span class="text-xs text-text-secondary select-none">{expanded ? '▼' : '▶'}</span>
+    <span class="text-xs text-text-secondary select-none" aria-hidden="true">{expanded ? '▼' : '▶'}</span>
     <span class="text-xs text-text-secondary font-medium">Thinking</span>
     {#if !expanded}
       <span class="text-xs text-text-secondary/60 truncate flex-1 italic">{preview}</span>
