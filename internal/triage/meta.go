@@ -28,6 +28,14 @@ type ThinkingMeta struct {
 	Preview    string `json:"preview"`
 }
 
+// ProposedPlanMeta is the JSON structure for proposed plan payloads.
+type ProposedPlanMeta struct {
+	Title     string `json:"title"`
+	LineCount int    `json:"lineCount"`
+	CharCount int    `json:"charCount"`
+	Preview   string `json:"preview"`
+}
+
 // ExtractDiffMeta parses a unified diff string and returns structured meta.
 func ExtractDiffMeta(patch string) DiffMeta {
 	dm := DiffMeta{ChangeKind: "modified"}
@@ -128,4 +136,83 @@ func ExtractThinkingMeta(content string) ThinkingMeta {
 	}
 
 	return tm
+}
+
+// ExtractProposedPlanMeta builds lightweight metadata for proposed plan cards.
+func ExtractProposedPlanMeta(planMarkdown string) ProposedPlanMeta {
+	trimmed := strings.TrimSpace(planMarkdown)
+	lines := strings.Split(strings.TrimRight(trimmed, "\n"), "\n")
+	if len(lines) == 1 && lines[0] == "" {
+		lines = nil
+	}
+
+	return ProposedPlanMeta{
+		Title:     proposedPlanTitle(trimmed),
+		LineCount: len(lines),
+		CharCount: len(trimmed),
+		Preview:   buildCollapsedPlanPreview(trimmed, 10),
+	}
+}
+
+func proposedPlanTitle(planMarkdown string) string {
+	for _, line := range strings.Split(planMarkdown, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "#") {
+			title := strings.TrimSpace(strings.TrimLeft(line, "#"))
+			if title != "" {
+				return title
+			}
+		}
+	}
+	return "Proposed plan"
+}
+
+func buildCollapsedPlanPreview(planMarkdown string, maxLines int) string {
+	sourceLines := strings.Split(strings.TrimRight(stripDisplayedPlanMarkdown(planMarkdown), "\n"), "\n")
+	var preview []string
+	visibleLines := 0
+	hasMore := false
+
+	for _, line := range sourceLines {
+		isVisible := strings.TrimSpace(line) != ""
+		if isVisible && visibleLines >= maxLines {
+			hasMore = true
+			break
+		}
+		preview = append(preview, strings.TrimRight(line, " "))
+		if isVisible {
+			visibleLines++
+		}
+	}
+
+	for len(preview) > 0 && strings.TrimSpace(preview[len(preview)-1]) == "" {
+		preview = preview[:len(preview)-1]
+	}
+	if len(preview) == 0 {
+		return proposedPlanTitle(planMarkdown)
+	}
+	if hasMore {
+		preview = append(preview, "", "...")
+	}
+	return strings.Join(preview, "\n")
+}
+
+func stripDisplayedPlanMarkdown(planMarkdown string) string {
+	lines := strings.Split(strings.TrimRight(planMarkdown, "\n"), "\n")
+	if len(lines) == 0 {
+		return ""
+	}
+	if strings.HasPrefix(strings.TrimSpace(lines[0]), "#") {
+		lines = lines[1:]
+	}
+	for len(lines) > 0 && strings.TrimSpace(lines[0]) == "" {
+		lines = lines[1:]
+	}
+	if len(lines) > 0 && strings.EqualFold(strings.TrimSpace(strings.TrimLeft(lines[0], "# ")), "summary") {
+		lines = lines[1:]
+		for len(lines) > 0 && strings.TrimSpace(lines[0]) == "" {
+			lines = lines[1:]
+		}
+	}
+	return strings.Join(lines, "\n")
 }

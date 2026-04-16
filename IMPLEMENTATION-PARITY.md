@@ -301,6 +301,7 @@ const (
     EventRateLimits      EventKind = "rate_limits"
     EventModelRerouted   EventKind = "model_rerouted"
     EventThreadRenamed   EventKind = "thread_renamed"
+    EventProposedPlan    EventKind = "proposed_plan"
     // NOTE: Codex reasoning deltas reuse EventThinking (existing).
     // No separate EventReasoning — both providers produce ItemThinking items.
 )
@@ -811,6 +812,7 @@ Currently skipped system subtypes to NOW HANDLE:
 | `tool_progress` | Emit `EventToolProgress` with progress data from the message. Include `itemId` if present. |
 | `compact_boundary` | Emit `EventCompactBoundary`. Extract context window data if present in the message body. |
 | `api_retry` | Emit `EventSessionStatus` with status `"retrying"` and retry metadata. |
+| `assistant` `tool_use` named `ExitPlanMode` | Emit `EventProposedPlan` with the captured markdown and do not render it as a normal tool call. |
 
 Reference: Read `claude --output-format stream-json --verbose` output samples. The `system` message with subtype `tool_progress` carries `{ content: { progress: {current, total, message} } }`.
 
@@ -835,6 +837,7 @@ Currently skipped notifications to NOW HANDLE:
 |--------|----------|
 | `item/reasoning/textDelta` | Emit `EventThinking` with delta text in `Content`. These are Codex's equivalent of Claude's thinking blocks. Accumulate in a per-thread reasoning buffer (like text accumulation). On turn complete, persist as an `ItemThinking` item. |
 | `item/reasoning/summaryTextDelta` | Same as `textDelta` — accumulate into the same reasoning buffer. |
+| `item/completed` where `item.type == "plan"` | Emit `EventProposedPlan` carrying the final markdown and persist it as a dedicated `proposed_plan` payload/item so the timeline renders a plan card instead of a plain assistant message. |
 | `thread/name/updated` | Emit `EventThreadRenamed` with new title extracted from params. Call back to update thread title in store. |
 | `account/rateLimits/updated` | Emit `EventRateLimits` with parsed rate limit entries. |
 | `model/rerouted` | Emit `EventModelRerouted` with new model name. |
@@ -880,6 +883,9 @@ Add routing for new event kinds:
   persist accumulated reasoning as an `ItemThinking` payload. This unifies Codex
   reasoning deltas with Claude's complete thinking blocks — both produce the same
   item kind. Claude thinking still goes through `persistHeavy` (complete blocks).
+- `EventProposedPlan` → persist as a heavy `proposed_plan` payload with preview
+  metadata so the frontend can render a lightweight expandable plan card with
+  copy/download/save actions.
 - `EventRateLimits` → emit inline (frontend updates rate limits display)
 - `EventModelRerouted` → emit inline + update thread model in store
 - `EventThreadRenamed` → emit inline + update thread title in store

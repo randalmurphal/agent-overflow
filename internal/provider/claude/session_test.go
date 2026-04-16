@@ -110,6 +110,26 @@ func TestParseAssistantToolUseBlock(t *testing.T) {
 	}
 }
 
+func TestParseAssistantExitPlanModeBlock(t *testing.T) {
+	line := []byte(`{"type":"assistant","message":{"id":"msg-1","role":"assistant","content":[{"type":"tool_use","id":"tool-plan-1","name":"ExitPlanMode","input":{"plan":"# Final plan\n\n- ship it"}}]}}`)
+
+	events, err := ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+
+	evt := events[0]
+	if evt.Kind != provider.EventProposedPlan {
+		t.Fatalf("kind: got %q, want %q", evt.Kind, provider.EventProposedPlan)
+	}
+	if evt.Content != "# Final plan\n\n- ship it" {
+		t.Fatalf("content: got %q, want %q", evt.Content, "# Final plan\n\n- ship it")
+	}
+}
+
 func TestParseAssistantThinkingBlock(t *testing.T) {
 	line := []byte(`{"type":"assistant","message":{"id":"msg-1","role":"assistant","content":[{"type":"thinking","thinking":"Let me consider..."}]}}`)
 

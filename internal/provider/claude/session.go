@@ -225,6 +225,14 @@ func (s *Session) readLoop() {
 			return
 		}
 
+		handled, err := s.maybeHandleExitPlanModeRequest(line)
+		if err != nil {
+			log.Printf("claude: exit plan mode handling error: %v", err)
+		}
+		if handled {
+			continue
+		}
+
 		events, err := ParseLine(s.threadID, line)
 		if err != nil {
 			log.Printf("claude: parse error: %v (line: %s)", err, string(line[:min(len(line), 200)]))
@@ -241,4 +249,54 @@ func (s *Session) readLoop() {
 			s.onEvent(evt)
 		}
 	}
+}
+
+func (s *Session) maybeHandleExitPlanModeRequest(line []byte) (bool, error) {
+	var raw struct {
+		Type      string `json:"type"`
+		RequestID string `json:"request_id"`
+		Request   struct {
+			Subtype  string          `json:"subtype"`
+			ToolName string          `json:"tool_name"`
+			Input    json.RawMessage `json:"input"`
+		} `json:"request"`
+	}
+	if err := json.Unmarshal(line, &raw); err != nil {
+		return false, err
+	}
+	if raw.Type != "control_request" || raw.Request.Subtype != "can_use_tool" || raw.Request.ToolName != "ExitPlanMode" {
+		return false, nil
+	}
+
+	planMarkdown := extractExitPlanModePlan(raw.Request.Input)
+	if planMarkdown != "" {
+		s.onEvent(provider.ProviderEvent{
+			Kind:      provider.EventProposedPlan,
+			ThreadID:  s.threadID,
+			ItemID:    raw.RequestID,
+			ItemType:  raw.Request.ToolName,
+			Content:   planMarkdown,
+			Timestamp: time.Now(),
+		})
+	}
+
+	msg := map[string]any{
+		"type": "control_response",
+		"response": map[string]any{
+			"subtype":    "success",
+			"request_id": raw.RequestID,
+			"response": map[string]any{
+				"behavior": "deny",
+				"message":  "The client captured your proposed plan. Stop here and wait for follow-up.",
+			},
+		},
+	}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return true, fmt.Errorf("claude: marshal exit plan mode response: %w", err)
+	}
+	if err := s.proc.WriteLine(data); err != nil {
+		return true, fmt.Errorf("claude: send exit plan mode response: %w", err)
+	}
+	return true, nil
 }

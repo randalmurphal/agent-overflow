@@ -1,6 +1,6 @@
 # Advanced Features + Parity Loop — Progress Tracker
 
-## Status: NOT STARTED
+## Status: IN PROGRESS
 
 ## Codebase Patterns
 
@@ -12,7 +12,6 @@
 
 ### From Parity Audit (pre-populated)
 
-- CRITICAL: No proposed plan rendering or handling (forge has ProposedPlanCard with expandable markdown, copy, save, download)
 - CRITICAL: No thread forking support (forge forkThread creates new session with resumeCursor)
 - CRITICAL: No AI-generated worktree branch names (forge generates descriptive names on first user message)
 - CRITICAL: No AI-generated thread titles for Claude sessions (Codex sends thread/name/updated but Claude doesn't — forge generates titles for both)
@@ -28,13 +27,15 @@
 
 (Issues moved here after being fixed and committed.)
 
+- CRITICAL: Proposed plans are now first-class items. Codex `item/completed` plan items and Claude `ExitPlanMode` tool uses emit dedicated `proposed_plan` payloads, triage persists lightweight preview metadata, and the frontend renders an expandable plan card with copy, download, and workspace save actions.
+
 ## Completed Work Items
 
-(None yet.)
+- 2026-04-16: Fixed the top critical known issue: proposed plan rendering and handling parity.
 
 ## Iteration Log
 
-(Entries added after each commit.)
+- 2026-04-16: Implemented proposed-plan parity ahead of the scheduled phase work because Known Issues take priority. Backend now normalizes Codex plan completions and Claude ExitPlanMode into `proposed_plan` events, strips embedded `<proposed_plan>` blocks from assistant text on turn completion, persists plan preview metadata, and exposes a thread-scoped workspace file write binding for save-to-workspace. Frontend now renders a dedicated `ProposedPlanCard` with forge-style collapse/expand behavior plus copy, download, and save actions. Verification: `go build ./...`, `go vet ./...`, `go test ./... -count=1`, `cd frontend && npm run build && npm run check`. Playwright UI verification was not run because `wails dev` was not running in this iteration.
 
 ## Review Log
 

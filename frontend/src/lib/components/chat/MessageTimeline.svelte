@@ -1,11 +1,12 @@
 <script lang="ts">
   import { getSettings } from '../../stores/settings.svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
-  import type { ChangedFile, CommandOutputMeta, DiffMeta, Item, WorkEntryData } from '../../types/models';
+  import type { ChangedFile, CommandOutputMeta, DiffMeta, Item, ProposedPlanMeta, WorkEntryData } from '../../types/models';
   import AssistantMessage from './AssistantMessage.svelte';
   import ChangedFilesTree from './ChangedFilesTree.svelte';
   import CommandOutput from './CommandOutput.svelte';
   import DiffPreview from './DiffPreview.svelte';
+  import ProposedPlanCard from './ProposedPlanCard.svelte';
   import StreamingMessage from './StreamingMessage.svelte';
   import ThinkingBlock from './ThinkingBlock.svelte';
   import UserMessage from './UserMessage.svelte';
@@ -137,6 +138,13 @@
         {@const cmdMeta = parseMeta<CommandOutputMeta>(item.payloadId)}
         {#if cmdMeta}
           <CommandOutput meta={cmdMeta} payloadId={item.payloadId} />
+        {:else}
+          <AssistantMessage {item} />
+        {/if}
+      {:else if item.kind === 'proposed_plan' && item.payloadId}
+        {@const planMeta = parseMeta<ProposedPlanMeta>(item.payloadId)}
+        {#if planMeta}
+          <ProposedPlanCard {pane} payloadId={item.payloadId} meta={planMeta} />
         {:else}
           <AssistantMessage {item} />
         {/if}

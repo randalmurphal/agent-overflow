@@ -168,6 +168,22 @@ func parseAssistant(threadID string, raw map[string]json.RawMessage, now time.Ti
 			})
 
 		case "tool_use":
+			if block.Name == "ExitPlanMode" {
+				planMarkdown := extractExitPlanModePlan(block.Input)
+				if planMarkdown == "" {
+					continue
+				}
+				events = append(events, provider.ProviderEvent{
+					Kind:      provider.EventProposedPlan,
+					ThreadID:  threadID,
+					ItemID:    block.ID,
+					ItemType:  block.Name,
+					Content:   planMarkdown,
+					Timestamp: now,
+				})
+				continue
+			}
+
 			meta, _ := json.Marshal(map[string]any{
 				"toolName": block.Name,
 				"input":    block.Input,
@@ -389,6 +405,16 @@ func parseControlRequest(threadID string, raw map[string]json.RawMessage, now ti
 		Timestamp: now,
 		Raw:       line,
 	}}, nil
+}
+
+func extractExitPlanModePlan(input json.RawMessage) string {
+	var payload struct {
+		Plan string `json:"plan"`
+	}
+	if err := json.Unmarshal(input, &payload); err != nil {
+		return ""
+	}
+	return payload.Plan
 }
 
 // parseRateLimitEvent handles Claude's rate_limit_event message type.

@@ -45,6 +45,7 @@ const (
 	EventDiff          EventKind = "diff"
 	EventCommandOutput EventKind = "command_output"
 	EventThinking      EventKind = "thinking"
+	EventProposedPlan  EventKind = "proposed_plan"
 )
 
 // ItemKind for persisted items in the database.
@@ -57,6 +58,7 @@ const (
 	ItemThinking          ItemKind = "thinking"
 	ItemDiff              ItemKind = "diff"
 	ItemCommandExecution  ItemKind = "command_execution"
+	ItemProposedPlan      ItemKind = "proposed_plan"
 	ItemBackgroundStarted ItemKind = "background_started"
 	ItemBackgroundDone    ItemKind = "background_done"
 )
@@ -101,12 +103,12 @@ type ElicitationResolution struct {
 
 // ApprovalResponse is sent back to the provider.
 type ApprovalResponse struct {
-	RequestID    string                     `json:"requestId"`
-	Decision     string                     `json:"decision"`              // Codex-native: "accept", "acceptForSession", "decline", "cancel"
-	Answers      map[string]UserInputAnswer `json:"answers,omitempty"`     // for user-input responses
-	Permissions  *PermissionProfile         `json:"permissions,omitempty"` // for granted permissions
-	Scope        string                     `json:"scope,omitempty"`       // "turn"|"session" for permissions
-	Elicitation  *ElicitationResolution     `json:"elicitation,omitempty"` // for MCP elicitation responses
+	RequestID   string                     `json:"requestId"`
+	Decision    string                     `json:"decision"`              // Codex-native: "accept", "acceptForSession", "decline", "cancel"
+	Answers     map[string]UserInputAnswer `json:"answers,omitempty"`     // for user-input responses
+	Permissions *PermissionProfile         `json:"permissions,omitempty"` // for granted permissions
+	Scope       string                     `json:"scope,omitempty"`       // "turn"|"session" for permissions
+	Elicitation *ElicitationResolution     `json:"elicitation,omitempty"` // for MCP elicitation responses
 }
 
 // UserInputQuestionOption is a selectable option in a user-input question.

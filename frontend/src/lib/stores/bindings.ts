@@ -1,3 +1,5 @@
+import { Call } from '@wailsio/runtime';
+
 // Re-export Wails v3 generated bindings used by components.
 export {
   // Thread management
@@ -49,3 +51,11 @@ export {
   ApprovalResponse,
   PermissionProfile,
 } from '../../../bindings/agent-overflow/internal/provider/models.js';
+
+export function WriteThreadWorkspaceFile(
+  threadID: string,
+  relativePath: string,
+  content: string
+): Promise<string> {
+  return Call.ByName('main.App.WriteThreadWorkspaceFile', threadID, relativePath, content);
+}

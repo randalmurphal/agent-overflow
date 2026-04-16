@@ -75,6 +75,21 @@ func ClassifyNotification(threadID, method string, params json.RawMessage) []pro
 	case "item/completed":
 		itemID := readNestedString(params, "item", "id")
 		itemType := readNestedString(params, "item", "type")
+		if itemType == "plan" {
+			planMarkdown := extractCodexPlanMarkdown(params)
+			if planMarkdown == "" {
+				return nil
+			}
+			return []provider.ProviderEvent{{
+				Kind:      provider.EventProposedPlan,
+				ThreadID:  threadID,
+				ItemID:    itemID,
+				ItemType:  itemType,
+				Content:   planMarkdown,
+				Meta:      params,
+				Timestamp: now,
+			}}
+		}
 		return []provider.ProviderEvent{{
 			Kind:      provider.EventToolComplete,
 			ThreadID:  threadID,
@@ -412,4 +427,53 @@ func readNestedString(data json.RawMessage, keys ...string) string {
 		}
 	}
 	return ""
+}
+
+func extractCodexPlanMarkdown(data json.RawMessage) string {
+	var payload map[string]json.RawMessage
+	if json.Unmarshal(data, &payload) != nil {
+		return ""
+	}
+
+	candidates := []string{
+		readNestedString(data, "item", "text"),
+		readNestedString(data, "item", "summary"),
+		readNestedString(data, "item", "title"),
+		readNestedString(data, "item", "result", "text"),
+		readNestedString(data, "item", "result", "summary"),
+		readTopLevelString(data, "text"),
+		readTopLevelString(data, "summary"),
+		readTopLevelString(data, "message"),
+	}
+	for _, candidate := range candidates {
+		if candidate != "" {
+			return candidate
+		}
+	}
+
+	var item map[string]json.RawMessage
+	if rawItem, ok := payload["item"]; ok && json.Unmarshal(rawItem, &item) == nil {
+		if rawResult, ok := item["result"]; ok {
+			var result map[string]json.RawMessage
+			if json.Unmarshal(rawResult, &result) == nil {
+				if command := readRawString(result, "command"); command != "" {
+					return command
+				}
+			}
+		}
+	}
+
+	return ""
+}
+
+func readRawString(m map[string]json.RawMessage, key string) string {
+	raw, ok := m[key]
+	if !ok {
+		return ""
+	}
+	var s string
+	if json.Unmarshal(raw, &s) != nil {
+		return ""
+	}
+	return s
 }

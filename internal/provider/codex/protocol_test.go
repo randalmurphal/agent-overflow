@@ -119,6 +119,25 @@ func TestClassifyNotification_ItemUpdated(t *testing.T) {
 	}
 }
 
+func TestClassifyNotification_ItemCompletedPlan(t *testing.T) {
+	params := `{"item":{"id":"plan-1","type":"plan","text":"# Ship it\n\n- one\n- two"}}`
+	events := ClassifyNotification("t1", "item/completed", json.RawMessage(params))
+
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	evt := events[0]
+	if evt.Kind != provider.EventProposedPlan {
+		t.Fatalf("kind: got %q, want %q", evt.Kind, provider.EventProposedPlan)
+	}
+	if evt.ItemID != "plan-1" {
+		t.Fatalf("itemID: got %q, want %q", evt.ItemID, "plan-1")
+	}
+	if evt.Content != "# Ship it\n\n- one\n- two" {
+		t.Fatalf("content: got %q, want %q", evt.Content, "# Ship it\n\n- one\n- two")
+	}
+}
+
 func TestClassifyNotification_ErrorWithWillRetry(t *testing.T) {
 	params := `{"error":{"message":"Reconnecting... 2/5"},"willRetry":true}`
 	events := ClassifyNotification("t1", "error", json.RawMessage(params))

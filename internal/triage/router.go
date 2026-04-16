@@ -72,6 +72,8 @@ func (r *Router) Handle(evt provider.ProviderEvent) error {
 		return r.persistHeavy(evt, "command_output", string(provider.ItemCommandExecution))
 	case provider.EventThinking:
 		return r.handleThinking(evt)
+	case provider.EventProposedPlan:
+		return r.persistHeavy(evt, "proposed_plan", string(provider.ItemProposedPlan))
 	default:
 		log.Printf("triage: unhandled event kind: %s", evt.Kind)
 		r.emit("provider:event", evt)
@@ -129,8 +131,23 @@ func (r *Router) handleThreadRename(evt provider.ProviderEvent) error {
 
 func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 	text, reasoning := r.drainBoth(evt.ThreadID)
+	planMarkdown := provider.ExtractProposedPlanMarkdown(text)
+	if planMarkdown != "" {
+		text = provider.StripProposedPlanBlocks(text)
+	}
 
 	var persistErr error
+	if planMarkdown != "" {
+		err := r.persistHeavy(provider.ProviderEvent{
+			Kind:      provider.EventProposedPlan,
+			ThreadID:  evt.ThreadID,
+			Content:   planMarkdown,
+			Timestamp: evt.Timestamp,
+		}, "proposed_plan", string(provider.ItemProposedPlan))
+		if persistErr == nil && err != nil {
+			persistErr = fmt.Errorf("persist proposed plan: %w", err)
+		}
+	}
 	if text != "" {
 		persistErr = r.persistTurnText(evt.ThreadID, text)
 	}
@@ -508,6 +525,14 @@ func buildPayloadMeta(payloadKind string, evt provider.ProviderEvent) string {
 			return "{}"
 		}
 		return string(data)
+	case "proposed_plan":
+		pm := ExtractProposedPlanMeta(evt.Content)
+		data, err := json.Marshal(pm)
+		if err != nil {
+			log.Printf("triage: marshal proposed plan meta: %v", err)
+			return "{}"
+		}
+		return string(data)
 	default:
 		return "{}"
 	}
@@ -530,6 +555,11 @@ func buildSummary(payloadKind, metaJSON string) string {
 		var tm ThinkingMeta
 		if json.Unmarshal([]byte(metaJSON), &tm) == nil {
 			return tm.Preview
+		}
+	case "proposed_plan":
+		var pm ProposedPlanMeta
+		if json.Unmarshal([]byte(metaJSON), &pm) == nil && pm.Title != "" {
+			return pm.Title
 		}
 	}
 	return ""

@@ -760,6 +760,86 @@ func TestThinkingPersistsHeavy(t *testing.T) {
 	}
 }
 
+func TestProposedPlanPersistsHeavy(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	evt := provider.ProviderEvent{
+		Kind:      provider.EventProposedPlan,
+		ThreadID:  "t1",
+		ItemID:    "plan-1",
+		Content:   "# Ship it\n\n- one\n- two",
+		Timestamp: time.Now(),
+	}
+
+	if err := router.Handle(evt); err != nil {
+		t.Fatalf("handle: %v", err)
+	}
+
+	metas, err := st.ListPayloadMetas("t1")
+	if err != nil {
+		t.Fatalf("list payload metas: %v", err)
+	}
+	if len(metas) != 1 {
+		t.Fatalf("expected 1 payload meta, got %d", len(metas))
+	}
+	if metas[0].Kind != "proposed_plan" {
+		t.Fatalf("payload kind: got %q, want proposed_plan", metas[0].Kind)
+	}
+
+	items, err := st.ListItems("t1")
+	if err != nil {
+		t.Fatalf("list items: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(items))
+	}
+	if items[0].Kind != "proposed_plan" {
+		t.Fatalf("item kind: got %q, want proposed_plan", items[0].Kind)
+	}
+	if items[0].Summary != "Ship it" {
+		t.Fatalf("item summary: got %q, want %q", items[0].Summary, "Ship it")
+	}
+
+	if len(*emissions) != 1 || (*emissions)[0].eventName != "provider:meta" {
+		t.Fatalf("expected a single provider:meta emission, got %+v", *emissions)
+	}
+}
+
+func TestTurnCompleteExtractsProposedPlanFromAssistantText(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTextDelta,
+		ThreadID:  "t1",
+		Content:   "<proposed_plan>\n# Ship it\n\n- one\n- two\n</proposed_plan>",
+		Timestamp: time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("handle text delta: %v", err)
+	}
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTurnComplete,
+		ThreadID:  "t1",
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle turn complete: %v", err)
+	}
+
+	items, err := st.ListItems("t1")
+	if err != nil {
+		t.Fatalf("list items: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(items))
+	}
+	if items[0].Kind != "proposed_plan" {
+		t.Fatalf("item kind: got %q, want proposed_plan", items[0].Kind)
+	}
+}
+
 func TestReasoningDeltasPersistOnTurnComplete(t *testing.T) {
 	router, st, emissions := newTestRouter(t)
 	createTestThread(t, st, "t1")

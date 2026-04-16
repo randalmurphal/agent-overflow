@@ -51,6 +51,13 @@ export interface CommandOutputMeta {
   preview: string;
 }
 
+export interface ProposedPlanMeta {
+  title: string;
+  lineCount: number;
+  charCount: number;
+  preview: string;
+}
+
 export interface ChangedFile {
   path: string;
   insertions: number;
