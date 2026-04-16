@@ -63,3 +63,11 @@ export interface ChangedFile {
   kind: string;
   payloadId: string;
 }
+
+export interface WorkEntryData {
+  id: string;
+  type: string;
+  name?: string;
+  status: 'running' | 'completed';
+  meta?: unknown;
+}

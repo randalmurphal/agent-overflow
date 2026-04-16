@@ -68,12 +68,14 @@
       const result = await GitPush(pane.threadId);
       const r = result as GitActionResult;
       if (r.error) {
+        console.error('Push failed:', r.error);
         pane.setError(`Push failed: ${r.error}`);
       } else {
         addToast('success', 'Pushed successfully');
         await refreshStatus();
       }
     } catch (err) {
+      console.error('Push failed:', err);
       pane.setError(`Push failed: ${err}`);
     } finally {
       actionLoading = false;
@@ -87,12 +89,14 @@
       const result = await GitPull(pane.threadId);
       const r = result as GitActionResult;
       if (r.error) {
+        console.error('Pull failed:', r.error);
         pane.setError(`Pull failed: ${r.error}`);
       } else {
         addToast('success', 'Pulled successfully');
         await refreshStatus();
       }
     } catch (err) {
+      console.error('Pull failed:', err);
       pane.setError(`Pull failed: ${err}`);
     } finally {
       actionLoading = false;
@@ -106,6 +110,7 @@
       const result = await GitCreatePR(pane.threadId, '', '');
       const r = result as GitActionResult;
       if (r.error) {
+        console.error('Create PR failed:', r.error);
         pane.setError(`Create PR failed: ${r.error}`);
       } else {
         const msg = r.prUrl ? `PR created: ${r.prUrl}` : 'PR created';
@@ -113,6 +118,7 @@
         await refreshStatus();
       }
     } catch (err) {
+      console.error('Create PR failed:', err);
       pane.setError(`Create PR failed: ${err}`);
     } finally {
       actionLoading = false;
@@ -127,6 +133,7 @@
       addToast('success', 'Worktree removed');
       await refreshStatus();
     } catch (err) {
+      console.error('Remove worktree failed:', err);
       pane.setError(`Remove worktree failed: ${err}`);
     } finally {
       actionLoading = false;

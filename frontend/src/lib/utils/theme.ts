@@ -1,4 +1,6 @@
-type Theme = 'system' | 'light' | 'dark';
+import type { Settings } from '../types/settings';
+
+type Theme = Settings['theme'];
 
 let mediaQuery: MediaQueryList | null = null;
 let currentListener: (() => void) | null = null;

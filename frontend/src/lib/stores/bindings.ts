@@ -48,4 +48,5 @@ export {
 // Model classes needed for constructing RPC parameters.
 export {
   ApprovalResponse,
+  PermissionProfile,
 } from '../../../bindings/agent-overflow/internal/provider/models.js';

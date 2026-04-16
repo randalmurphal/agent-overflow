@@ -1,11 +1,5 @@
 <script lang="ts">
-  export interface WorkEntryData {
-    id: string;
-    type: string;
-    name?: string;
-    status: 'running' | 'completed';
-    meta?: unknown;
-  }
+  import type { WorkEntryData } from '../../types/models';
 
   let { entry }: { entry: WorkEntryData } = $props();
 

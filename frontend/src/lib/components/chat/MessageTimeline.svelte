@@ -1,11 +1,11 @@
 <script lang="ts">
   import type { ThreadPane } from '../../stores/thread.svelte';
-  import type { DiffMeta, CommandOutputMeta, ChangedFile, Item } from '../../types/models';
+  import type { DiffMeta, CommandOutputMeta, ChangedFile, Item, WorkEntryData } from '../../types/models';
   import UserMessage from './UserMessage.svelte';
   import AssistantMessage from './AssistantMessage.svelte';
   import DiffPreview from './DiffPreview.svelte';
   import CommandOutput from './CommandOutput.svelte';
-  import WorkEntry, { type WorkEntryData } from './WorkEntry.svelte';
+  import WorkEntry from './WorkEntry.svelte';
   import StreamingMessage from './StreamingMessage.svelte';
   import ThinkingBlock from './ThinkingBlock.svelte';
   import ChangedFilesTree from './ChangedFilesTree.svelte';

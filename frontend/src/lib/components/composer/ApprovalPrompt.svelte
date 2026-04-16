@@ -1,8 +1,7 @@
 <script lang="ts">
   import type { ThreadPane } from '../../stores/thread.svelte';
   import type { ApprovalRequest } from '../../types/events';
-  import { RespondToApproval, ApprovalResponse } from '../../stores/bindings';
-  import { PermissionProfile } from '../../../../bindings/agent-overflow/internal/provider/models.js';
+  import { RespondToApproval, ApprovalResponse, PermissionProfile } from '../../stores/bindings';
 
   let { pane }: { pane: ThreadPane } = $props();
 

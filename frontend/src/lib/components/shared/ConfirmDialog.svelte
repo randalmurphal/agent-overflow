@@ -114,7 +114,7 @@
           onclick={handleConfirm}
           class="px-4 py-2 text-sm rounded-md font-medium cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50
             {destructive
-              ? 'bg-error text-red-100 hover:bg-red-600'
+              ? 'bg-error text-surface-0 hover:opacity-90'
               : 'bg-accent text-surface-0 hover:opacity-90'}"
         >
           {confirmLabel}

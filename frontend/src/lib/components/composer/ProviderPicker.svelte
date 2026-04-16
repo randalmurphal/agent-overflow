@@ -1,8 +1,8 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
+  import type { ProviderStatus } from '../../types/settings';
   import { GetProviderStatuses } from '../../stores/bindings';
   import { addToast } from '../../stores/toast.svelte';
-  import type { ProviderStatus } from '../../types/settings';
-  import { onMount } from 'svelte';
 
   let { currentProvider, onSelect }: {
     currentProvider: 'claude' | 'codex';

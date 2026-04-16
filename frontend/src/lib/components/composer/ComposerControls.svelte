@@ -5,10 +5,10 @@
 
   let statusColor = $derived.by(() => {
     switch (pane.sessionStatus) {
-      case 'running': return 'bg-green-400';
+      case 'running': return 'bg-success';
       case 'connected':
       case 'ready': return 'bg-accent';
-      case 'error': return 'bg-red-400';
+      case 'error': return 'bg-error';
       default: return 'bg-text-secondary/50';
     }
   });
