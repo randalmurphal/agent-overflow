@@ -22,6 +22,16 @@ func wrapLifecycleError(action string, err error) error {
 	return fmt.Errorf("%s: %w", action, err)
 }
 
+func (a *App) emitProviderEvent(evt provider.ProviderEvent) {
+	if a.emitProviderEventFn != nil {
+		a.emitProviderEventFn(evt)
+		return
+	}
+	if a.app != nil {
+		a.app.Event.Emit("provider:event", evt)
+	}
+}
+
 // emitErrorToThread sends a provider error event for the given thread through
 // the triage layer if available, falling back to direct Wails event emission.
 func (a *App) emitErrorToThread(threadID, content string) {
@@ -38,7 +48,5 @@ func (a *App) emitErrorToThread(threadID, content string) {
 		}
 		return
 	}
-	if a.app != nil {
-		a.app.Event.Emit("provider:event", evt)
-	}
+	a.emitProviderEvent(evt)
 }

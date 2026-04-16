@@ -129,6 +129,138 @@ func TestSendMessageIncrementsTurnIndex(t *testing.T) {
 	}
 }
 
+func TestSendMessageGeneratesClaudeThreadTitleOnFirstTurn(t *testing.T) {
+	app := newTestAppWithStore(t)
+	thread := testThread("thread-send-title")
+	thread.Title = "New Thread"
+	thread.Provider = string(provider.Claude)
+	thread.WorkspacePath = t.TempDir()
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+
+	app.generateThreadTitleFn = func(thread store.Thread, message string) (string, error) {
+		if message != "Fix reconnect spinner on resume" {
+			t.Fatalf("message = %q, want first user turn", message)
+		}
+		return ` "Reconnect spinner resume fix" `, nil
+	}
+
+	emitted := make(chan provider.ProviderEvent, 1)
+	app.emitProviderEventFn = func(evt provider.ProviderEvent) {
+		if evt.Kind == provider.EventThreadRenamed {
+			emitted <- evt
+		}
+	}
+
+	sess, err := claude.NewSession(
+		context.Background(),
+		thread.ID,
+		claude.Config{
+			Binary:  writeClaudePassthroughBinary(t),
+			WorkDir: thread.WorkspacePath,
+		},
+		func(provider.ProviderEvent) {},
+	)
+	if err != nil {
+		t.Fatalf("NewSession() error = %v", err)
+	}
+	t.Cleanup(func() { _ = sess.Close() })
+
+	app.sessions[thread.ID] = session{
+		provider: string(provider.Claude),
+		token:    "test-token",
+		claude:   sess,
+	}
+
+	if err := app.SendMessage(thread.ID, "Fix reconnect spinner on resume"); err != nil {
+		t.Fatalf("SendMessage() error = %v", err)
+	}
+
+	select {
+	case evt := <-emitted:
+		if evt.Content != "Reconnect spinner resume fix" {
+			t.Fatalf("rename event content = %q", evt.Content)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for thread rename event")
+	}
+
+	stored, err := app.store.GetThread(thread.ID)
+	if err != nil {
+		t.Fatalf("GetThread() error = %v", err)
+	}
+	if stored.Title != "Reconnect spinner resume fix" {
+		t.Fatalf("stored title = %q, want generated title", stored.Title)
+	}
+}
+
+func TestSendMessageDoesNotOverwriteRenamedThreadTitle(t *testing.T) {
+	app := newTestAppWithStore(t)
+	thread := testThread("thread-send-title-custom")
+	thread.Title = "New Thread"
+	thread.Provider = string(provider.Claude)
+	thread.WorkspacePath = t.TempDir()
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+
+	app.generateThreadTitleFn = func(store.Thread, string) (string, error) {
+		time.Sleep(100 * time.Millisecond)
+		return "Generated title", nil
+	}
+
+	renamed := make(chan provider.ProviderEvent, 1)
+	app.emitProviderEventFn = func(evt provider.ProviderEvent) {
+		if evt.Kind == provider.EventThreadRenamed {
+			renamed <- evt
+		}
+	}
+
+	sess, err := claude.NewSession(
+		context.Background(),
+		thread.ID,
+		claude.Config{
+			Binary:  writeClaudePassthroughBinary(t),
+			WorkDir: thread.WorkspacePath,
+		},
+		func(provider.ProviderEvent) {},
+	)
+	if err != nil {
+		t.Fatalf("NewSession() error = %v", err)
+	}
+	t.Cleanup(func() { _ = sess.Close() })
+
+	app.sessions[thread.ID] = session{
+		provider: string(provider.Claude),
+		token:    "test-token",
+		claude:   sess,
+	}
+
+	if err := app.SendMessage(thread.ID, "Fix reconnect spinner on resume"); err != nil {
+		t.Fatalf("SendMessage() error = %v", err)
+	}
+	if err := app.RenameThread(thread.ID, "Keep this custom title"); err != nil {
+		t.Fatalf("RenameThread() error = %v", err)
+	}
+
+	time.Sleep(250 * time.Millisecond)
+
+	select {
+	case evt := <-renamed:
+		t.Fatalf("unexpected rename event: %+v", evt)
+	default:
+	}
+
+	stored, err := app.store.GetThread(thread.ID)
+	if err != nil {
+		t.Fatalf("GetThread() error = %v", err)
+	}
+	if stored.Title != "Keep this custom title" {
+		t.Fatalf("stored title = %q, want custom title", stored.Title)
+	}
+}
+
 func TestSendMessageRenamesTemporaryWorktreeBranchOnFirstTurn(t *testing.T) {
 	app := newTestAppWithStore(t)
 	repo := testutil.InitGitRepo(t)

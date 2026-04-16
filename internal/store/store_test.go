@@ -291,6 +291,40 @@ func TestUpdateTitle(t *testing.T) {
 	}
 }
 
+func TestUpdateTitleIfCurrent(t *testing.T) {
+	s := newTestStore(t)
+
+	thr := makeThread("t1", "claude")
+	thr.Title = "New Thread"
+	if err := s.CreateThread(thr); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	updated, err := s.UpdateTitleIfCurrent("t1", "New Thread", "Generated title")
+	if err != nil {
+		t.Fatalf("compare-and-swap title: %v", err)
+	}
+	if !updated {
+		t.Fatal("expected title compare-and-swap to update")
+	}
+
+	got, err := s.GetThread("t1")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Title != "Generated title" {
+		t.Fatalf("expected updated title, got %q", got.Title)
+	}
+
+	updated, err = s.UpdateTitleIfCurrent("t1", "New Thread", "Should not apply")
+	if err != nil {
+		t.Fatalf("compare-and-swap stale title: %v", err)
+	}
+	if updated {
+		t.Fatal("expected stale compare-and-swap to report no update")
+	}
+}
+
 func TestUpdateModel(t *testing.T) {
 	s := newTestStore(t)
 
@@ -557,6 +591,43 @@ func TestLastTurnIndex(t *testing.T) {
 	}
 	if idx != 5 {
 		t.Errorf("expected 5, got %d", idx)
+	}
+}
+
+func TestHasItems(t *testing.T) {
+	s := newTestStore(t)
+
+	thr := makeThread("t1", "claude")
+	if err := s.CreateThread(thr); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+
+	hasItems, err := s.HasItems("t1")
+	if err != nil {
+		t.Fatalf("has items (empty): %v", err)
+	}
+	if hasItems {
+		t.Fatal("expected empty thread to report no items")
+	}
+
+	if err := s.InsertItem(Item{
+		ID:        "i1",
+		ThreadID:  "t1",
+		TurnIndex: 0,
+		ItemIndex: 0,
+		Kind:      "text",
+		Role:      "user",
+		CreatedAt: time.Now().UnixMilli(),
+	}); err != nil {
+		t.Fatalf("insert item: %v", err)
+	}
+
+	hasItems, err = s.HasItems("t1")
+	if err != nil {
+		t.Fatalf("has items (non-empty): %v", err)
+	}
+	if !hasItems {
+		t.Fatal("expected non-empty thread to report items")
 	}
 }
 

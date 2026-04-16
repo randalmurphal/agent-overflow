@@ -150,6 +150,21 @@ func (s *Store) UpdateTitle(threadID, title string) error {
 	return requireRowsAffected(result, fmt.Sprintf("store: update title for %s", threadID))
 }
 
+func (s *Store) UpdateTitleIfCurrent(threadID, currentTitle, newTitle string) (bool, error) {
+	result, err := s.db.Exec(
+		`UPDATE threads SET title = ?, updated_at = ? WHERE id = ? AND title = ?`,
+		newTitle, nowMillis(), threadID, currentTitle,
+	)
+	if err != nil {
+		return false, fmt.Errorf("store: compare-and-swap title for %s: %w", threadID, err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("store: compare-and-swap title rows affected for %s: %w", threadID, err)
+	}
+	return rows > 0, nil
+}
+
 func (s *Store) UpdateModel(threadID, model string) error {
 	result, err := s.db.Exec(`UPDATE threads SET model = ?, updated_at = ? WHERE id = ?`,
 		model, nowMillis(), threadID)

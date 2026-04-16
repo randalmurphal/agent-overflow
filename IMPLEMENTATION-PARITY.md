@@ -962,9 +962,11 @@ Two approaches depending on provider:
 
 **Codex**: Handle `thread/name/updated` notification → update thread title in store + emit event.
 
-**Claude**: No auto-title event. Generate title from first user message:
-- After first turn completes, if thread title is still "New Thread", generate a title from the first user message content (truncate to 50 chars, take first sentence or line).
-- Simple heuristic, no LLM call needed for v1.
+**Claude**: No auto-title event. Generate a title on the first user turn with the Claude CLI:
+- When the first user message is sent and the thread title is still the default `"New Thread"`, run a one-shot Claude structured-output prompt to produce a concise title.
+- Sanitize the returned title to a single-line sidebar-safe label (trim quotes/whitespace, collapse spaces, cap at 50 characters).
+- Apply the rename only if the title is still the default when the result comes back, so a user rename is never overwritten.
+- Emit the same `thread_renamed` provider event after the store update so the active pane and thread list refresh immediately.
 
 ### 6.5 Codex Process Model — Per-Thread (Matching Forge)
 

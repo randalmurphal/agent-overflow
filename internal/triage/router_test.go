@@ -986,7 +986,7 @@ func TestTurnCompleteWithoutAccumulatedText(t *testing.T) {
 	}
 }
 
-func TestTurnCompleteGeneratesClaudeThreadTitleFromFirstUserMessage(t *testing.T) {
+func TestTurnCompleteDoesNotAutoRenameClaudeThread(t *testing.T) {
 	router, st, emissions := newTestRouter(t)
 	now := time.Now().UnixMilli()
 	if err := st.CreateThread(store.Thread{
@@ -1025,67 +1025,10 @@ func TestTurnCompleteGeneratesClaudeThreadTitleFromFirstUserMessage(t *testing.T
 	if err != nil {
 		t.Fatalf("get thread: %v", err)
 	}
-	if thread.Title != "Fix flaky reconnect logic after sleep resumes." {
+	if thread.Title != "New Thread" {
 		t.Fatalf("thread title: got %q", thread.Title)
 	}
 
-	if len(*emissions) != 2 {
-		t.Fatalf("expected rename + turn complete emissions, got %d", len(*emissions))
-	}
-	rename, ok := (*emissions)[0].data.(provider.ProviderEvent)
-	if !ok {
-		t.Fatalf("rename emission type = %T", (*emissions)[0].data)
-	}
-	if rename.Kind != provider.EventThreadRenamed {
-		t.Fatalf("rename kind: got %q, want %q", rename.Kind, provider.EventThreadRenamed)
-	}
-	if rename.Content != thread.Title {
-		t.Fatalf("rename content: got %q, want %q", rename.Content, thread.Title)
-	}
-}
-
-func TestTurnCompleteDoesNotOverwriteCustomTitle(t *testing.T) {
-	router, st, emissions := newTestRouter(t)
-	now := time.Now().UnixMilli()
-	if err := st.CreateThread(store.Thread{
-		ID:            "t1",
-		Title:         "Custom Title",
-		Provider:      "claude",
-		WorkspacePath: "/tmp",
-		CreatedAt:     now,
-		UpdatedAt:     now,
-	}); err != nil {
-		t.Fatalf("create thread: %v", err)
-	}
-
-	if err := st.InsertItem(store.Item{
-		ID:        "user-1",
-		ThreadID:  "t1",
-		TurnIndex: 1,
-		ItemIndex: 0,
-		Kind:      "text",
-		Role:      "user",
-		Summary:   "This should not replace the custom title.",
-		CreatedAt: now,
-	}); err != nil {
-		t.Fatalf("insert user item: %v", err)
-	}
-
-	if err := router.Handle(provider.ProviderEvent{
-		Kind:      provider.EventTurnComplete,
-		ThreadID:  "t1",
-		Timestamp: time.Now(),
-	}); err != nil {
-		t.Fatalf("handle turn complete: %v", err)
-	}
-
-	thread, err := st.GetThread("t1")
-	if err != nil {
-		t.Fatalf("get thread: %v", err)
-	}
-	if thread.Title != "Custom Title" {
-		t.Fatalf("thread title: got %q, want %q", thread.Title, "Custom Title")
-	}
 	if len(*emissions) != 1 {
 		t.Fatalf("expected only turn complete emission, got %d", len(*emissions))
 	}

@@ -33,6 +33,16 @@ func (a *App) sendMessage(threadID string, content string) error {
 
 	// DB operations happen outside a.mu so other App methods are not blocked.
 	sendMu.Lock()
+	thread, err := a.store.GetThread(threadID)
+	if err != nil {
+		sendMu.Unlock()
+		return fmt.Errorf("send message: get thread: %w", err)
+	}
+	hasPriorItems, err := a.store.HasItems(threadID)
+	if err != nil {
+		sendMu.Unlock()
+		return fmt.Errorf("send message: check prior items: %w", err)
+	}
 	turnIndex, err := a.store.LastTurnIndex(threadID)
 	if err != nil {
 		sendMu.Unlock()
@@ -57,6 +67,7 @@ func (a *App) sendMessage(threadID string, content string) error {
 		return fmt.Errorf("send message: persist user message: %w", err)
 	}
 	sendMu.Unlock()
+	a.maybeGenerateThreadTitle(thread, content, hasPriorItems)
 
 	switch {
 	case sess.claude != nil:

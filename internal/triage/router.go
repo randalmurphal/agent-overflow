@@ -162,9 +162,6 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 			persistErr = fmt.Errorf("persist reasoning: %w", err)
 		}
 	}
-	if err := r.maybeGenerateClaudeTitle(evt.ThreadID, evt.Timestamp); persistErr == nil && err != nil {
-		persistErr = fmt.Errorf("generate thread title: %w", err)
-	}
 
 	r.emit("provider:event", evt)
 	return persistErr
@@ -176,36 +173,6 @@ func (r *Router) handleThinking(evt provider.ProviderEvent) error {
 	}
 	r.accumulate(r.reasoningAccumulators, evt.ThreadID, evt.Content)
 	return nil
-}
-
-func (r *Router) maybeGenerateClaudeTitle(threadID string, timestamp time.Time) error {
-	thread, err := r.store.GetThread(threadID)
-	if err != nil {
-		return err
-	}
-	if thread.Provider != string(provider.Claude) || thread.Title != "New Thread" {
-		return nil
-	}
-
-	title, err := r.generatedThreadTitle(threadID)
-	if err != nil {
-		return err
-	}
-	if title == "" {
-		return nil
-	}
-
-	meta, err := json.Marshal(map[string]string{"newTitle": title})
-	if err != nil {
-		return fmt.Errorf("marshal thread title meta: %w", err)
-	}
-	return r.handleThreadRename(provider.ProviderEvent{
-		Kind:      provider.EventThreadRenamed,
-		ThreadID:  threadID,
-		Content:   title,
-		Meta:      meta,
-		Timestamp: timestamp,
-	})
 }
 
 func (r *Router) handleTokenUsage(evt provider.ProviderEvent) error {
@@ -253,42 +220,6 @@ func parseTokenUsage(meta json.RawMessage) (provider.TokenUsage, bool) {
 		return provider.TokenUsage{}, false
 	}
 	return usage, true
-}
-
-func (r *Router) generatedThreadTitle(threadID string) (string, error) {
-	summary, err := r.store.FirstUserMessage(threadID)
-	if err != nil {
-		return "", err
-	}
-	return titleFromUserMessage(summary), nil
-}
-
-func titleFromUserMessage(content string) string {
-	title := strings.TrimSpace(content)
-	if title == "" {
-		return ""
-	}
-
-	if line, _, ok := strings.Cut(title, "\n"); ok {
-		title = line
-	}
-
-	title = firstSentence(title)
-	title = strings.Join(strings.Fields(title), " ")
-	if len(title) <= 50 {
-		return title
-	}
-	return strings.TrimSpace(title[:47]) + "..."
-}
-
-func firstSentence(content string) string {
-	for i, r := range content {
-		if r != '.' && r != '!' && r != '?' {
-			continue
-		}
-		return strings.TrimSpace(content[:i+1])
-	}
-	return content
 }
 
 func (r *Router) lookupThreadModel(threadID string) (string, error) {
