@@ -203,7 +203,7 @@
 <ConfirmDialog
   open={showArchiveConfirm}
   title="Archive thread"
-  description="This will archive the thread and remove it from the sidebar. The current build cannot restore archived threads until backend support lands."
+  description="This will hide the thread from the sidebar immediately. The current backend only exposes one-way archive, so restore is unavailable in this build."
   confirmLabel="Archive anyway"
   onConfirm={() => { showArchiveConfirm = false; doArchive(); }}
   onCancel={() => { showArchiveConfirm = false; }}
