@@ -40,12 +40,9 @@ func (a *App) startDiscussion(threadID, discussionName string) error {
 		return err
 	}
 
-	channel, err := a.createDiscussionRuntime(parent, plans)
-	if err != nil {
+	if _, err := a.createDiscussionRuntime(parent, plans, def.Settings.MaxTurns); err != nil {
 		return err
 	}
-
-	a.installDeliberation(channel.ID, def.Settings.MaxTurns)
 	return nil
 }
 
@@ -110,23 +107,30 @@ func buildDiscussionParticipantPlans(
 func (a *App) createDiscussionRuntime(
 	parent store.Thread,
 	plans []discussionParticipantPlan,
+	maxTurns int,
 ) (store.Channel, error) {
 	createdIDs, err := a.createDiscussionParticipantThreads(plans)
 	if err != nil {
 		return store.Channel{}, err
 	}
 
-	startedIDs, err := a.startDiscussionParticipantSessions(plans)
-	if err != nil {
-		return store.Channel{}, a.cleanupDiscussionSetup("", startedIDs, createdIDs, err)
-	}
-
 	channel, err := a.channels.Create(parent.ID, "deliberation")
 	if err != nil {
-		return store.Channel{}, a.cleanupDiscussionSetup("", startedIDs, createdIDs, err)
+		return store.Channel{}, a.cleanupDiscussionSetup("", nil, createdIDs, err)
 	}
 
-	if err := a.persistDiscussionRuntime(parent, channel, plans); err != nil {
+	if err := a.linkDiscussionParticipants(channel.ID, plans); err != nil {
+		return store.Channel{}, a.cleanupDiscussionSetup(channel.ID, nil, createdIDs, err)
+	}
+
+	a.installDeliberation(channel.ID, maxTurns)
+
+	startedIDs, err := a.startDiscussionParticipantSessions(plans)
+	if err != nil {
+		return store.Channel{}, a.cleanupDiscussionSetup(channel.ID, startedIDs, createdIDs, err)
+	}
+
+	if err := a.persistDiscussionParent(parent, channel); err != nil {
 		return store.Channel{}, a.cleanupDiscussionSetup(channel.ID, startedIDs, createdIDs, err)
 	}
 
@@ -158,20 +162,19 @@ func (a *App) startDiscussionParticipantSessions(plans []discussionParticipantPl
 	return started, nil
 }
 
-func (a *App) persistDiscussionRuntime(
-	parent store.Thread,
-	channel store.Channel,
-	plans []discussionParticipantPlan,
-) error {
+func (a *App) linkDiscussionParticipants(channelID string, plans []discussionParticipantPlan) error {
 	for _, plan := range plans {
 		child := plan.thread
-		child.DiscussionID = channel.ID
-		child.UpdatedAt = maxInt64(child.UpdatedAt+1, channel.CreatedAt)
+		child.DiscussionID = channelID
+		child.UpdatedAt = maxInt64(child.UpdatedAt+1, time.Now().UnixMilli())
 		if err := a.store.UpdateThread(child); err != nil {
 			return err
 		}
 	}
+	return nil
+}
 
+func (a *App) persistDiscussionParent(parent store.Thread, channel store.Channel) error {
 	parent.InteractionMode = "discussion"
 	parent.DiscussionID = channel.ID
 	parent.UpdatedAt = maxInt64(parent.UpdatedAt+1, channel.CreatedAt)
@@ -185,6 +188,10 @@ func (a *App) cleanupDiscussionSetup(
 	cause error,
 ) error {
 	var errs []error
+
+	if channelID != "" {
+		a.removeDeliberationByID(channelID)
+	}
 
 	for _, threadID := range startedIDs {
 		if err := a.stopSession(threadID); err != nil {
@@ -208,7 +215,6 @@ func (a *App) cleanupDiscussionSetup(
 	errs = append([]error{cause}, errs...)
 	return errors.Join(errs...)
 }
-
 func (a *App) installDeliberation(channelID string, maxTurns int) {
 	a.mu.Lock()
 	defer a.mu.Unlock()

@@ -37,7 +37,14 @@ func (a *App) removeDeliberation(thread store.Thread) {
 		return
 	}
 
+	a.removeDeliberationByID(thread.DiscussionID)
+}
+
+func (a *App) removeDeliberationByID(channelID string) {
+	if channelID == "" {
+		return
+	}
 	a.mu.Lock()
-	delete(a.deliberations, thread.DiscussionID)
+	delete(a.deliberations, channelID)
 	a.mu.Unlock()
 }

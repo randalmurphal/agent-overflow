@@ -215,6 +215,92 @@ func TestStartDiscussionCleansUpOnParticipantSessionFailure(t *testing.T) {
 	if len(app.threadSystemPrompts) != 0 {
 		t.Fatalf("threadSystemPrompts = %v, want empty after cleanup", app.threadSystemPrompts)
 	}
+	if len(app.deliberations) != 0 {
+		t.Fatalf("deliberations = %v, want empty after cleanup", app.deliberations)
+	}
+}
+
+func TestStartDiscussionMirrorsEarlyParticipantTurnDuringStartup(t *testing.T) {
+	app := newTestAppWithStore(t)
+	app.registry = discussion.NewRegistry(app.store)
+	app.channels = discussion.NewChannelService(app.store)
+	app.triage = triage.NewRouter(app.store, func(string, any) {})
+
+	thread := testThread("thread-discussion-early-turn")
+	thread.ProjectPath = "/tmp/project"
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+	if err := app.store.CreateDiscussionDef(store.DiscussionDefinition{
+		ID:        "def-early-turn",
+		Name:      "Architects",
+		Scope:     "project",
+		ProjectID: thread.ProjectPath,
+		Participants: []store.DiscussionParticipant{
+			{Role: "architect", System: "Design the change"},
+			{Role: "reviewer", System: "Review the change"},
+		},
+		Settings:  store.DiscussionSettings{MaxTurns: 6},
+		CreatedAt: time.Now().UnixMilli(),
+		UpdatedAt: time.Now().UnixMilli(),
+	}); err != nil {
+		t.Fatalf("CreateDiscussionDef() error = %v", err)
+	}
+
+	startCount := 0
+	app.startSessionFn = func(threadID string) error {
+		startCount++
+		if startCount != 1 {
+			return nil
+		}
+
+		now := time.Now().UnixMilli()
+		if err := app.store.InsertItem(store.Item{
+			ID:        "early-turn-item",
+			ThreadID:  threadID,
+			TurnIndex: 0,
+			ItemIndex: 0,
+			Kind:      string(provider.ItemText),
+			Role:      "assistant",
+			Summary:   "Lead with the migration boundary before branching out.",
+			CreatedAt: now,
+		}); err != nil {
+			return err
+		}
+
+		app.sessionEventHandler(threadID, "session-"+threadID)(provider.ProviderEvent{
+			Kind:      provider.EventTurnComplete,
+			ThreadID:  threadID,
+			Timestamp: time.UnixMilli(now),
+		})
+		return nil
+	}
+
+	if err := app.StartDiscussion(thread.ID, "Architects"); err != nil {
+		t.Fatalf("StartDiscussion() error = %v", err)
+	}
+
+	parent, err := app.store.GetThread(thread.ID)
+	if err != nil {
+		t.Fatalf("GetThread() error = %v", err)
+	}
+	if parent.DiscussionID == "" {
+		t.Fatal("expected discussion channel ID on parent thread")
+	}
+
+	messages, err := app.GetChannelMessages(parent.DiscussionID, -1, 10)
+	if err != nil {
+		t.Fatalf("GetChannelMessages() error = %v", err)
+	}
+	if len(messages) != 1 {
+		t.Fatalf("len(messages) = %d, want 1 mirrored early-turn message", len(messages))
+	}
+	if messages[0].FromRole != "Architect" {
+		t.Fatalf("messages[0].FromRole = %q, want Architect", messages[0].FromRole)
+	}
+	if messages[0].Content != "Lead with the migration boundary before branching out." {
+		t.Fatalf("messages[0].Content = %q", messages[0].Content)
+	}
 }
 
 func TestPostChannelMessageAndGetChannelMessages(t *testing.T) {
