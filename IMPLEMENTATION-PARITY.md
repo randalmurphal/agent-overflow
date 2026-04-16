@@ -938,6 +938,17 @@ func (a *App) ReconnectSession(threadID string) error {
 }
 ```
 
+Add `UpdateThreadModel` binding:
+```go
+func (a *App) UpdateThreadModel(threadID string, model string) (store.Thread, error)
+```
+
+Behavior:
+- Trim and validate the requested model slug.
+- If the thread has no active session, update the stored thread model only.
+- If the thread has an active session, restart it with the stored resume reference so the conversation continues on the new model.
+- If the restart fails, roll the stored model back to the previous value and return the restart error.
+
 ### 6.3 Provider Binary Detection
 
 **File**: `provider/detect.go`
@@ -1336,7 +1347,7 @@ func (a *App) ChooseDesignOption(threadID, requestID, optionID string) error
 
 ### 12.3 Composer Improvements
 
-**ModelPicker.svelte**: Dropdown showing models for the current provider. Groups by provider if provider switching is enabled. Selected model highlighted. Custom model slug input at bottom.
+**ModelPicker.svelte**: Dropdown showing models for the current thread provider. Selected model highlighted. Choosing a model updates the active thread immediately and restarts the provider session so the new model takes effect mid-conversation. Custom model slug input at bottom.
 
 **ProviderPicker.svelte**: Toggle or dropdown for switching between Claude and Codex. Shows provider status dot. Disabled providers are grayed out with tooltip.
 

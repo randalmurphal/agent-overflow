@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -307,6 +308,111 @@ func TestReconnectSessionStopsThenStarts(t *testing.T) {
 		if calls[i] != want[i] {
 			t.Fatalf("calls[%d] = %q, want %q", i, calls[i], want[i])
 		}
+	}
+}
+
+func TestUpdateThreadModelUpdatesStoredModelWithoutRestartWhenSessionInactive(t *testing.T) {
+	app := newTestAppWithStore(t)
+	thread := testThread("thread-model-inactive")
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+
+	started := false
+	app.startSessionFn = func(string) error {
+		started = true
+		return nil
+	}
+
+	updated, err := app.UpdateThreadModel(thread.ID, "gpt-5.4-mini")
+	if err != nil {
+		t.Fatalf("UpdateThreadModel() error = %v", err)
+	}
+	if started {
+		t.Fatal("UpdateThreadModel() unexpectedly restarted an inactive thread")
+	}
+	if updated.Model != "gpt-5.4-mini" {
+		t.Fatalf("returned model = %q, want %q", updated.Model, "gpt-5.4-mini")
+	}
+
+	stored, err := app.store.GetThread(thread.ID)
+	if err != nil {
+		t.Fatalf("GetThread() error = %v", err)
+	}
+	if stored.Model != "gpt-5.4-mini" {
+		t.Fatalf("stored model = %q, want %q", stored.Model, "gpt-5.4-mini")
+	}
+}
+
+func TestUpdateThreadModelRestartsActiveSession(t *testing.T) {
+	app := newTestAppWithStore(t)
+	thread := testThread("thread-model-active")
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+
+	app.sessions[thread.ID] = session{provider: string(provider.Codex), token: "active-model-token"}
+
+	var started []string
+	app.startSessionFn = func(threadID string) error {
+		started = append(started, threadID)
+		return nil
+	}
+
+	updated, err := app.UpdateThreadModel(thread.ID, "gpt-5.4-mini")
+	if err != nil {
+		t.Fatalf("UpdateThreadModel() error = %v", err)
+	}
+	if len(started) != 1 || started[0] != thread.ID {
+		t.Fatalf("startSession calls = %v, want [%s]", started, thread.ID)
+	}
+	if updated.Model != "gpt-5.4-mini" {
+		t.Fatalf("returned model = %q, want %q", updated.Model, "gpt-5.4-mini")
+	}
+}
+
+func TestUpdateThreadModelRollsBackOnRestartFailure(t *testing.T) {
+	app := newTestAppWithStore(t)
+	thread := testThread("thread-model-rollback")
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+
+	app.sessions[thread.ID] = session{provider: string(provider.Codex), token: "active-model-token"}
+	app.startSessionFn = func(string) error {
+		return fmt.Errorf("restart boom")
+	}
+
+	_, err := app.UpdateThreadModel(thread.ID, "gpt-5.4-mini")
+	if err == nil {
+		t.Fatal("UpdateThreadModel() error = nil, want restart failure")
+	}
+	if !strings.Contains(err.Error(), "restart session with updated model") {
+		t.Fatalf("UpdateThreadModel() error = %v, want restart context", err)
+	}
+
+	stored, getErr := app.store.GetThread(thread.ID)
+	if getErr != nil {
+		t.Fatalf("GetThread() error = %v", getErr)
+	}
+	if stored.Model != thread.Model {
+		t.Fatalf("stored model = %q, want rollback to %q", stored.Model, thread.Model)
+	}
+}
+
+func TestUpdateThreadModelRejectsBlankModel(t *testing.T) {
+	app := newTestAppWithStore(t)
+	thread := testThread("thread-model-blank")
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+
+	_, err := app.UpdateThreadModel(thread.ID, "   ")
+	if err == nil {
+		t.Fatal("UpdateThreadModel() error = nil, want blank model validation error")
+	}
+	if !strings.Contains(err.Error(), "cannot be empty") {
+		t.Fatalf("UpdateThreadModel() error = %v, want empty-model message", err)
 	}
 }
 

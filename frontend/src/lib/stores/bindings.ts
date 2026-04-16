@@ -1,4 +1,5 @@
 import { Call } from '@wailsio/runtime';
+import type { Thread } from '../types/models';
 
 // Re-export Wails v3 generated bindings used by components.
 export {
@@ -59,4 +60,8 @@ export function WriteThreadWorkspaceFile(
   content: string
 ): Promise<string> {
   return Call.ByName('main.App.WriteThreadWorkspaceFile', threadID, relativePath, content);
+}
+
+export function UpdateThreadModel(threadID: string, model: string): Promise<Thread> {
+  return Call.ByName('main.App.UpdateThreadModel', threadID, model) as Promise<Thread>;
 }

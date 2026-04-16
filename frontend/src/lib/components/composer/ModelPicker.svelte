@@ -1,9 +1,10 @@
 <script lang="ts">
   import { fade, fly } from 'svelte/transition';
   import type { ThreadPane } from '../../stores/thread.svelte';
+  import type { Thread } from '../../types/models';
   import type { ModelInfo } from '../../types/settings';
-  import { GetModelsForProvider } from '../../stores/bindings';
-  import { getSettings, updateSetting } from '../../stores/settings.svelte';
+  import { GetModelsForProvider, UpdateThreadModel } from '../../stores/bindings';
+  import { replaceThread } from '../../stores/threads.svelte';
   import { addToast } from '../../stores/toast.svelte';
 
   let { pane }: { pane: ThreadPane } = $props();
@@ -11,15 +12,14 @@
   let open = $state(false);
   let models = $state<ModelInfo[]>([]);
   let loading = $state(false);
+  let applying = $state(false);
   let customModel = $state('');
   let triggerEl: HTMLButtonElement | undefined = $state(undefined);
   let listboxEl: HTMLDivElement | undefined = $state(undefined);
 
+  let threadId = $derived(pane.thread?.id ?? '');
   let threadModel = $derived(pane.thread?.model ?? '');
   let provider = $derived(pane.thread?.provider ?? 'claude');
-  let defaultModel = $derived(
-    provider === 'codex' ? getSettings().defaultModelCodex : getSettings().defaultModelClaude,
-  );
 
   async function openPicker() {
     open = true;
@@ -45,19 +45,28 @@
   });
 
   async function selectModel(slug: string) {
+    if (!threadId) return;
+    const nextModel = slug.trim();
+    if (!nextModel) return;
+    if (threadModel === nextModel) {
+      open = false;
+      triggerEl?.focus();
+      return;
+    }
+
+    applying = true;
     open = false;
     triggerEl?.focus();
-    const settingKey = provider === 'codex' ? 'defaultModelCodex' : 'defaultModelClaude';
     try {
-      await updateSetting(settingKey, slug);
-      if (threadModel && threadModel !== slug) {
-        addToast('info', `Default ${provider} model set to ${slug}. This thread stays on ${threadModel}.`);
-      } else {
-        addToast('info', `Default ${provider} model set to ${slug}.`);
-      }
+      const updated = await UpdateThreadModel(threadId, nextModel) as Thread;
+      pane.replaceThread(updated);
+      replaceThread(updated);
+      addToast('info', `Switched ${provider} thread to ${updated.model}.`);
     } catch (err) {
-      console.error('Failed to set model:', err);
-      addToast('error', 'Failed to set model');
+      console.error('Failed to switch model:', err);
+      addToast('error', 'Failed to switch thread model');
+    } finally {
+      applying = false;
     }
   }
 
@@ -92,12 +101,13 @@
   <button
     bind:this={triggerEl}
     onclick={openPicker}
-    class="max-w-[220px] truncate rounded-full border border-border px-2.5 py-1 text-[11px] text-text-secondary transition-colors hover:border-text-secondary hover:text-text-primary cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
-    aria-label="Change default model for new threads"
+    disabled={applying}
+    class="max-w-[220px] truncate rounded-full border border-border px-2.5 py-1 text-[11px] text-text-secondary transition-colors hover:border-text-secondary hover:text-text-primary cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 disabled:cursor-not-allowed disabled:opacity-60"
+    aria-label="Change thread model"
     aria-expanded={open}
     aria-haspopup="listbox"
   >
-    Default: {defaultModel || 'Select model'}
+    {applying ? 'Switching...' : 'Change model'}
   </button>
 
   {#if open}
@@ -109,12 +119,8 @@
         <p class="mt-1 truncate text-xs font-medium text-text-primary" title={threadModel || 'No active thread model'}>
           {threadModel || 'No model'}
         </p>
-        <p class="mt-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-text-secondary/70">Default for new {provider} threads</p>
-        <p class="mt-1 truncate text-xs text-text-secondary" title={defaultModel || 'No default model'}>
-          {defaultModel || 'Not set'}
-        </p>
         <p class="mt-2 text-[11px] leading-4 text-text-secondary/75">
-          This control updates settings for future threads. The active thread model is fixed by the backend session.
+          Changing the model restarts the active session and resumes the conversation when the provider supports it.
         </p>
       </div>
       {#if loading}
@@ -124,12 +130,12 @@
           <button
             onclick={() => selectModel(model.slug)}
             role="option"
-            aria-selected={model.slug === defaultModel}
+            aria-selected={model.slug === threadModel}
             class="w-full text-left px-3 py-1.5 text-xs hover:bg-surface-2/50 cursor-pointer flex items-center gap-2
-              {model.slug === defaultModel ? 'text-accent font-medium' : 'text-text-secondary hover:text-text-primary'}"
+              {model.slug === threadModel ? 'text-accent font-medium' : 'text-text-secondary hover:text-text-primary'}"
           >
             {model.name || model.slug}
-            {#if model.slug === defaultModel}
+            {#if model.slug === threadModel}
               <span class="ml-auto text-accent">&#10003;</span>
             {/if}
           </button>
