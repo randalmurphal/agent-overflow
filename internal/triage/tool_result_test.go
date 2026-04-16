@@ -2,6 +2,7 @@ package triage
 
 import (
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -202,6 +203,173 @@ func TestExtractFileChangeToolResultNormalizesAbsoluteWorkspacePaths(t *testing.
 	}
 	if meta.InlineDiff.Files[0].Path != "src/app.ts" {
 		t.Fatalf("expected normalized relative path, got %+v", meta.InlineDiff.Files[0])
+	}
+}
+
+func TestCommandExecutionToolResultPersistsExactDeletePatch(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	workspace := t.TempDir()
+	createToolResultThread(t, st, "t1", workspace)
+
+	path := filepath.Join(workspace, "src", "remove.ts")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("export const removed = true;\n"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	startMeta := json.RawMessage(`{
+		"item": {
+			"id": "item-command-rm",
+			"type": "command_execution",
+			"title": "Run command",
+			"data": {
+				"item": {
+					"command": "/usr/bin/zsh -lc 'rm src/remove.ts'"
+				}
+			}
+		}
+	}`)
+	completeMeta := json.RawMessage(`{
+		"item": {
+			"id": "item-command-rm",
+			"type": "command_execution",
+			"title": "Run command",
+			"data": {
+				"item": {
+					"command": "/usr/bin/zsh -lc 'rm src/remove.ts'",
+					"exitCode": 0
+				}
+			}
+		}
+	}`)
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventToolStart,
+		ThreadID:  "t1",
+		ItemID:    "item-command-rm",
+		ItemType:  "command_execution",
+		Meta:      startMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle tool start: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventToolComplete,
+		ThreadID:  "t1",
+		ItemID:    "item-command-rm",
+		ItemType:  "command_execution",
+		Meta:      completeMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle tool complete: %v", err)
+	}
+
+	meta := readToolResultMeta(t, st, "tool-result:item-command-rm")
+	if meta.InlineDiff == nil || meta.InlineDiff.Availability != "exact_patch" {
+		t.Fatalf("expected exact_patch inline diff, got %+v", meta.InlineDiff)
+	}
+	if len(meta.InlineDiff.Files) != 1 || meta.InlineDiff.Files[0].Path != "src/remove.ts" {
+		t.Fatalf("unexpected inline diff files: %+v", meta.InlineDiff.Files)
+	}
+
+	data, err := st.GetPayloadData("tool-result:item-command-rm")
+	if err != nil {
+		t.Fatalf("get payload data: %v", err)
+	}
+	if !strings.Contains(string(data), "deleted file mode 100644") {
+		t.Fatalf("expected delete patch, got %q", string(data))
+	}
+}
+
+func TestCommandExecutionToolResultSkipsDependentAndFailedCommands(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	workspace := t.TempDir()
+	createToolResultThread(t, st, "t1", workspace)
+
+	oldPath := filepath.Join(workspace, "src", "old.ts")
+	if err := os.MkdirAll(filepath.Dir(oldPath), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(oldPath, []byte("export const oldName = true;\n"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	dependentStart := json.RawMessage(`{
+		"item": {
+			"id": "item-command-dependent",
+			"type": "command_execution",
+			"title": "Run command",
+			"data": {
+				"item": {
+					"command": "mv src/old.ts src/new.ts && rm src/new.ts"
+				}
+			}
+		}
+	}`)
+	failedStart := json.RawMessage(`{
+		"item": {
+			"id": "item-command-failed",
+			"type": "command_execution",
+			"title": "Run command",
+			"data": {
+				"item": {
+					"command": "rm src/old.ts"
+				}
+			}
+		}
+	}`)
+	failedComplete := json.RawMessage(`{
+		"item": {
+			"id": "item-command-failed",
+			"type": "command_execution",
+			"title": "Run command",
+			"data": {
+				"item": {
+					"command": "rm src/old.ts",
+					"exitCode": 1
+				}
+			}
+		}
+	}`)
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventToolStart,
+		ThreadID:  "t1",
+		ItemID:    "item-command-dependent",
+		ItemType:  "command_execution",
+		Meta:      dependentStart,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle dependent start: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventToolStart,
+		ThreadID:  "t1",
+		ItemID:    "item-command-failed",
+		ItemType:  "command_execution",
+		Meta:      failedStart,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle failed start: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventToolComplete,
+		ThreadID:  "t1",
+		ItemID:    "item-command-failed",
+		ItemType:  "command_execution",
+		Meta:      failedComplete,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle failed complete: %v", err)
+	}
+
+	if _, err := st.GetPayloadMeta("tool-result:item-command-dependent"); err == nil {
+		t.Fatal("expected no payload for dependent command")
+	}
+	if _, err := st.GetPayloadMeta("tool-result:item-command-failed"); err == nil {
+		t.Fatal("expected no payload for failed command")
 	}
 }
 

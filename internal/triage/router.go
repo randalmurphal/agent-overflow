@@ -23,6 +23,7 @@ type Router struct {
 	mu                    sync.Mutex
 	textAccumulators      map[string]*strings.Builder // threadID → accumulated assistant text
 	reasoningAccumulators map[string]*strings.Builder // threadID → accumulated Codex reasoning
+	pendingCommandDiffs   map[string]pendingCommandInlineDiff
 }
 
 // NewRouter creates a triage router.
@@ -32,6 +33,7 @@ func NewRouter(st *store.Store, emit func(eventName string, data any)) *Router {
 		emit:                  emit,
 		textAccumulators:      make(map[string]*strings.Builder),
 		reasoningAccumulators: make(map[string]*strings.Builder),
+		pendingCommandDiffs:   make(map[string]pendingCommandInlineDiff),
 	}
 }
 
@@ -87,11 +89,17 @@ func (r *Router) handleToolStart(evt provider.ProviderEvent) error {
 	if err := r.persistFileChangeToolResult(evt); err != nil {
 		return err
 	}
+	if err := r.capturePendingCommandInlineDiff(evt); err != nil {
+		return err
+	}
 	return r.emitInline(evt)
 }
 
 func (r *Router) handleToolComplete(evt provider.ProviderEvent) error {
 	if err := r.persistFileChangeToolResult(evt); err != nil {
+		return err
+	}
+	if err := r.persistCommandInlineDiffToolResult(evt); err != nil {
 		return err
 	}
 	return r.emitInline(evt)
@@ -299,6 +307,11 @@ func (r *Router) CleanupThread(threadID string) {
 
 	delete(r.textAccumulators, threadID)
 	delete(r.reasoningAccumulators, threadID)
+	for key, pending := range r.pendingCommandDiffs {
+		if pending.ThreadID == threadID {
+			delete(r.pendingCommandDiffs, key)
+		}
+	}
 }
 
 func (r *Router) persistTurnText(threadID, content string) error {

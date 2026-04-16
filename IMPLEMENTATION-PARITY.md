@@ -913,6 +913,23 @@ Persist lightweight payload metadata for the row:
   `exact_patch`.
 - Never overwrite an existing exact inline diff with a later native turn diff.
 
+**Command mutation inline diff capture**:
+Forge also snapshots supported shell mutation commands before they run so successful command rows
+can surface inline file effects without waiting for a later native turn diff. The helper only
+covers delete and rename mutations, not `cp`.
+
+- On `item.started` for `command_execution`, inspect the normalized command from the provider
+  payload and only continue for supported `rm` / `git rm` and `mv` / `git mv` forms.
+- Support quoted paths and simple `;` / `&&` command chains, but reject pipes, `||`, subshells,
+  variable expansion, globs, recursive deletes, dependent path chains, directory deletes/renames,
+  and overwrite targets.
+- Capture pre-command filesystem state from the workspace on start. Missing file contents or
+  non-regular rename sources downgrade the artifact to `summary_only`; successful file deletes and
+  file renames can produce `exact_patch`.
+- On successful `item.completed`, persist the captured artifact as a stable `tool_result` row
+  keyed by the command item ID. Failed commands clear the pending capture without persisting
+  anything.
+
 ---
 
 ## 6. Session Lifecycle
@@ -1358,8 +1375,8 @@ func (a *App) ChooseDesignOption(threadID, requestID, optionID string) error
 
 **ChangedFilesTree.svelte**: File tree showing all files changed in a turn. Grouped by directory. Each file shows +/- counts with green/red badges. Click to expand that file's diff preview.
 
-**ToolResultCard.svelte**: Persisted file-change tool row. Shows file badges immediately from
-summary metadata and exposes an exact-patch expander when the backend has upgraded the row to an
+**ToolResultCard.svelte**: Persisted file-change / command-mutation tool row. Shows file badges
+immediately from summary metadata and exposes an exact-patch expander when the backend has an
 exact inline diff.
 
 **ContextWindowMeter.svelte**: Circular SVG ring meter. Shows usage percentage in center. Hover popover with detailed token counts.

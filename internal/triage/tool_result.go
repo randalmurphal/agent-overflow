@@ -53,61 +53,7 @@ func (r *Router) persistFileChangeToolResult(evt provider.ProviderEvent) error {
 	if !ok {
 		return nil
 	}
-
-	now := evt.Timestamp.UnixMilli()
-	if now == 0 {
-		now = time.Now().UnixMilli()
-	}
-
-	turnIndex, err := r.store.LastTurnIndex(evt.ThreadID)
-	if err != nil {
-		return fmt.Errorf("tool result turn index: %w", err)
-	}
-
-	payloadID := toolResultPayloadID(evt.ItemID)
-	meta, diffData = r.mergeToolResultPayload(payloadID, meta, diffData)
-	metaJSON, err := json.Marshal(meta)
-	if err != nil {
-		return fmt.Errorf("marshal tool result meta: %w", err)
-	}
-
-	payload := store.Payload{
-		ID:        payloadID,
-		Kind:      toolResultPayloadKind,
-		Meta:      string(metaJSON),
-		Data:      diffData,
-		CreatedAt: now,
-	}
-	if err := r.store.UpsertPayload(payload); err != nil {
-		return fmt.Errorf("persist tool result payload: %w", err)
-	}
-	r.emitPayloadMeta(payloadID, evt.ThreadID, toolResultPayloadKind, string(metaJSON), now)
-
-	item, found, err := r.store.GetItem(evt.ItemID)
-	if err != nil {
-		return fmt.Errorf("lookup tool result item: %w", err)
-	}
-	summary := summarizeToolResult(meta)
-	if found {
-		return r.store.UpdateItemPayload(item.ID, payloadID, summary, now)
-	}
-
-	itemIndex, err := r.store.NextItemIndex(evt.ThreadID, turnIndex)
-	if err != nil {
-		return fmt.Errorf("tool result item index: %w", err)
-	}
-
-	return r.store.InsertItem(store.Item{
-		ID:        evt.ItemID,
-		ThreadID:  evt.ThreadID,
-		TurnIndex: turnIndex,
-		ItemIndex: itemIndex,
-		Kind:      toolResultItemKind,
-		Role:      "assistant",
-		Summary:   summary,
-		PayloadID: payloadID,
-		CreatedAt: now,
-	})
+	return r.persistToolResult(evt, meta, diffData)
 }
 
 func (r *Router) mergeToolResultPayload(payloadID string, next ToolResultMeta, nextDiff []byte) (ToolResultMeta, []byte) {
