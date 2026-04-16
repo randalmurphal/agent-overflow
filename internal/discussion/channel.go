@@ -92,23 +92,20 @@ func (cs *ChannelService) PostMessage(input PostMessageInput) (store.ChannelMess
 		return store.ChannelMessage{}, fmt.Errorf("channel %s is not open", input.ChannelID)
 	}
 
-	sequence, err := cs.nextSequence(input.ChannelID)
-	if err != nil {
-		return store.ChannelMessage{}, err
-	}
 	msg := store.ChannelMessage{
 		ID:        uuid.New().String(),
 		ChannelID: input.ChannelID,
-		Sequence:  sequence,
 		FromType:  input.FromType,
 		FromID:    input.FromID,
 		FromRole:  input.FromRole,
 		Content:   input.Content,
 		CreatedAt: time.Now().UnixMilli(),
 	}
-	if err := cs.store.InsertChannelMessage(msg); err != nil {
+	sequence, err := cs.store.InsertChannelMessageAtomic(msg)
+	if err != nil {
 		return store.ChannelMessage{}, err
 	}
+	msg.Sequence = sequence
 	return msg, nil
 }
 
@@ -128,13 +125,3 @@ func (cs *ChannelService) Close(channelID string) error {
 	return cs.store.UpdateChannelStatus(strings.TrimSpace(channelID), "closed")
 }
 
-func (cs *ChannelService) nextSequence(channelID string) (int, error) {
-	messages, err := cs.store.ListChannelMessages(channelID, -1, 0)
-	if err != nil {
-		return 0, err
-	}
-	if len(messages) == 0 {
-		return 0, nil
-	}
-	return messages[len(messages)-1].Sequence + 1, nil
-}

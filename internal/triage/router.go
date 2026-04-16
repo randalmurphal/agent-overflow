@@ -122,8 +122,7 @@ func (r *Router) handleThreadRename(evt provider.ProviderEvent) error {
 }
 
 func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
-	text := r.drain(r.textAccumulators, evt.ThreadID)
-	reasoning := r.drain(r.reasoningAccumulators, evt.ThreadID)
+	text, reasoning := r.drainBoth(evt.ThreadID)
 
 	var persistErr error
 	if text != "" {
@@ -234,19 +233,11 @@ func parseTokenUsage(meta json.RawMessage) (provider.TokenUsage, bool) {
 }
 
 func (r *Router) generatedThreadTitle(threadID string) (string, error) {
-	items, err := r.store.ListItems(threadID)
+	summary, err := r.store.FirstUserMessage(threadID)
 	if err != nil {
 		return "", err
 	}
-
-	for _, item := range items {
-		if item.Role != "user" || item.Kind != string(provider.ItemText) {
-			continue
-		}
-		return titleFromUserMessage(item.Summary), nil
-	}
-
-	return "", nil
+	return titleFromUserMessage(summary), nil
 }
 
 func titleFromUserMessage(content string) string {
@@ -272,7 +263,7 @@ func firstSentence(content string) string {
 		if r != '.' && r != '!' && r != '?' {
 			continue
 		}
-		return strings.TrimSpace(content[:i])
+		return strings.TrimSpace(content[:i+1])
 	}
 	return content
 }
@@ -303,11 +294,43 @@ func (r *Router) drain(target map[string]*strings.Builder, threadID string) stri
 
 	acc, ok := target[threadID]
 	if !ok || acc.Len() == 0 {
+		delete(target, threadID)
 		return ""
 	}
 	content := acc.String()
-	acc.Reset()
+	delete(target, threadID)
 	return content
+}
+
+// drainBoth atomically drains both text and reasoning accumulators in a single
+// critical section. This prevents a concurrent handleThinking from writing
+// between two separate drain calls, which would attribute reasoning to the
+// wrong turn.
+func (r *Router) drainBoth(threadID string) (text, reasoning string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if acc, ok := r.textAccumulators[threadID]; ok && acc.Len() > 0 {
+		text = acc.String()
+	}
+	delete(r.textAccumulators, threadID)
+
+	if acc, ok := r.reasoningAccumulators[threadID]; ok && acc.Len() > 0 {
+		reasoning = acc.String()
+	}
+	delete(r.reasoningAccumulators, threadID)
+
+	return text, reasoning
+}
+
+// CleanupThread removes all accumulator state for a thread. Call this when a
+// session ends or disconnects to prevent memory leaks.
+func (r *Router) CleanupThread(threadID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	delete(r.textAccumulators, threadID)
+	delete(r.reasoningAccumulators, threadID)
 }
 
 func (r *Router) persistTurnText(threadID, content string) error {
@@ -462,7 +485,11 @@ func buildPayloadMeta(payloadKind string, evt provider.ProviderEvent) string {
 	switch payloadKind {
 	case "diff":
 		dm := ExtractDiffMeta(evt.Content)
-		data, _ := json.Marshal(dm)
+		data, err := json.Marshal(dm)
+		if err != nil {
+			log.Printf("triage: marshal diff meta: %v", err)
+			return "{}"
+		}
 		return string(data)
 	case "command_output":
 		cm := ExtractCommandOutputMeta(evt.Content, "", 0)
@@ -475,11 +502,19 @@ func buildPayloadMeta(payloadKind string, evt provider.ProviderEvent) string {
 				cm = ExtractCommandOutputMeta(evt.Content, parsed.Command, parsed.ExitCode)
 			}
 		}
-		data, _ := json.Marshal(cm)
+		data, err := json.Marshal(cm)
+		if err != nil {
+			log.Printf("triage: marshal command output meta: %v", err)
+			return "{}"
+		}
 		return string(data)
 	case "thinking":
 		tm := ExtractThinkingMeta(evt.Content)
-		data, _ := json.Marshal(tm)
+		data, err := json.Marshal(tm)
+		if err != nil {
+			log.Printf("triage: marshal thinking meta: %v", err)
+			return "{}"
+		}
 		return string(data)
 	default:
 		return "{}"

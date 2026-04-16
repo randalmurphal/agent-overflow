@@ -14,19 +14,26 @@ import (
 	"agent-overflow/internal/provider"
 )
 
+// DynamicToolHandler is called when the provider invokes a dynamic tool (item/tool/call
+// or dynamicToolCall). The handler receives the tool name and arguments, and returns
+// the result content and a success flag.
+type DynamicToolHandler func(toolName string, args map[string]any) (content string, success bool, err error)
+
 // Session manages a Codex app-server subprocess.
 type Session struct {
-	proc          *provider.Process
-	threadID      string // our internal thread ID
-	codexThreadID string // the Codex app-server's thread ID from thread/start
-	activeTurnID  string // current active turn ID from turn/started; cleared on turn/completed
-	nextID        atomic.Int64
-	mu            sync.Mutex
-	pending       map[int64]chan json.RawMessage
-	onEvent       func(provider.ProviderEvent)
-	cancel        context.CancelFunc
-	closing       atomic.Bool
-	readDone      chan struct{}
+	proc               *provider.Process
+	threadID           string // our internal thread ID
+	codexThreadID      string // the Codex app-server's thread ID from thread/start
+	activeTurnID       string // current active turn ID from turn/started; cleared on turn/completed
+	model              string // model name for cost calculation
+	nextID             atomic.Int64
+	mu                 sync.Mutex
+	pending            map[int64]chan json.RawMessage
+	onEvent            func(provider.ProviderEvent)
+	dynamicToolHandler DynamicToolHandler
+	cancel             context.CancelFunc
+	closing            atomic.Bool
+	readDone           chan struct{}
 }
 
 // Config for creating a Codex session.
@@ -68,6 +75,7 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 	s := &Session{
 		proc:     proc,
 		threadID: threadID,
+		model:    cfg.Model,
 		pending:  make(map[int64]chan json.RawMessage),
 		onEvent:  onEvent,
 		cancel:   cancel,
@@ -190,6 +198,52 @@ func (s *Session) ThreadID() string {
 	return s.threadID
 }
 
+// SetDynamicToolHandler registers a handler for dynamic tool calls (item/tool/call,
+// dynamicToolCall). If nil, those requests are rejected with -32601.
+func (s *Session) SetDynamicToolHandler(h DynamicToolHandler) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.dynamicToolHandler = h
+}
+
+// handleDynamicToolCall invokes the registered dynamic tool handler and sends the
+// JSON-RPC response back to the app-server.
+func (s *Session) handleDynamicToolCall(rpcID int64, handler DynamicToolHandler, params json.RawMessage) {
+	var parsed struct {
+		Tool      string         `json:"tool"`
+		ToolName  string         `json:"toolName"`
+		Arguments map[string]any `json:"arguments"`
+	}
+	_ = json.Unmarshal(params, &parsed)
+
+	toolName := parsed.Tool
+	if toolName == "" {
+		toolName = parsed.ToolName
+	}
+	args := parsed.Arguments
+	if args == nil {
+		args = make(map[string]any)
+	}
+
+	go func() {
+		content, success, err := handler(toolName, args)
+		if err != nil {
+			content = fmt.Sprintf("Error: %v", err)
+			success = false
+		}
+		result := map[string]any{
+			"contentItems": []map[string]string{{
+				"type": "inputText",
+				"text": content,
+			}},
+			"success": success,
+		}
+		if writeErr := s.writeResponse(rpcID, result); writeErr != nil {
+			log.Printf("codex: failed to send dynamic tool result for %q: %v", toolName, writeErr)
+		}
+	}()
+}
+
 // Close shuts down the app-server process.
 // Closes stdin first for graceful shutdown, then cancels the context as fallback.
 func (s *Session) Close() error {
@@ -261,6 +315,11 @@ func (s *Session) sendRequest(ctx context.Context, method string, params any) (j
 		}
 		return resp, nil
 	case <-time.After(30 * time.Second):
+		// Drain the channel so any late response is consumed and the channel can be GC'd.
+		select {
+		case <-ch:
+		default:
+		}
 		return nil, fmt.Errorf("codex: %s: timeout", method)
 	}
 }
@@ -277,6 +336,23 @@ func (s *Session) writeNotification(method string, params any) error {
 	data, err := json.Marshal(msg)
 	if err != nil {
 		return fmt.Errorf("codex: marshal notification: %w", err)
+	}
+	return s.proc.WriteLine(data)
+}
+
+// writeErrorResponse sends a JSON-RPC error response with the given code and message.
+func (s *Session) writeErrorResponse(id int64, code int, message string) error {
+	msg := map[string]any{
+		"jsonrpc": "2.0",
+		"id":      id,
+		"error": map[string]any{
+			"code":    code,
+			"message": message,
+		},
+	}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("codex: marshal error response: %w", err)
 	}
 	return s.proc.WriteLine(data)
 }
@@ -427,7 +503,9 @@ func (s *Session) handleServerRequest(method string, id *json.Number, params jso
 	switch method {
 	case "item/commandExecution/requestApproval",
 		"item/fileChange/requestApproval",
-		"item/fileRead/requestApproval":
+		"item/fileRead/requestApproval",
+		"applyPatchApproval",
+		"execCommandApproval":
 
 		meta := buildApprovalMeta(s.threadID, turnID, method, rpcID, params)
 		s.onEvent(provider.ProviderEvent{
@@ -439,6 +517,31 @@ func (s *Session) handleServerRequest(method string, id *json.Number, params jso
 			Timestamp: time.Now(),
 			Raw:       line,
 		})
+
+	case "mcpServer/elicitation/request":
+		meta := buildElicitationMeta(s.threadID, turnID, rpcID, params)
+		s.onEvent(provider.ProviderEvent{
+			Kind:      provider.EventApprovalRequest,
+			ThreadID:  s.threadID,
+			TurnID:    turnID,
+			ItemID:    itemID,
+			Meta:      meta,
+			Timestamp: time.Now(),
+			Raw:       line,
+		})
+
+	case "item/tool/call", "dynamicToolCall":
+		s.mu.Lock()
+		handler := s.dynamicToolHandler
+		s.mu.Unlock()
+
+		if handler != nil {
+			s.handleDynamicToolCall(rpcID, handler, params)
+		} else {
+			if err := s.writeErrorResponse(rpcID, -32601, fmt.Sprintf("no handler registered for dynamic tool call: %s", method)); err != nil {
+				log.Printf("codex: failed to send error response for %s: %v", method, err)
+			}
+		}
 
 	case "item/tool/requestUserInput":
 		meta := buildUserInputMeta(s.threadID, turnID, rpcID, params)
@@ -465,16 +568,7 @@ func (s *Session) handleServerRequest(method string, id *json.Number, params jso
 		})
 
 	default:
-		errMsg := map[string]any{
-			"jsonrpc": "2.0",
-			"id":      rpcID,
-			"error": map[string]any{
-				"code":    -32601,
-				"message": fmt.Sprintf("unsupported server request: %s", method),
-			},
-		}
-		data, _ := json.Marshal(errMsg)
-		if err := s.proc.WriteLine(data); err != nil {
+		if err := s.writeErrorResponse(rpcID, -32601, fmt.Sprintf("unsupported server request: %s", method)); err != nil {
 			log.Printf("codex: failed to send error response for %s: %v", method, err)
 		}
 	}
@@ -541,6 +635,7 @@ func buildApprovalMeta(threadID, turnID, method string, rpcID int64, params json
 	description := method
 	var input json.RawMessage
 	title := method
+	kind := approvalKindForMethod(method)
 
 	if cmd, ok := parsed["command"]; ok {
 		var cmdStr string
@@ -554,9 +649,14 @@ func buildApprovalMeta(threadID, turnID, method string, rpcID int64, params json
 	if filePath, ok := parsed["filePath"]; ok {
 		var fp string
 		if json.Unmarshal(filePath, &fp) == nil {
-			toolName = "file_change"
+			if kind == "file-read" {
+				toolName = "file_read"
+				title = "File read"
+			} else {
+				toolName = "file_change"
+				title = "File change"
+			}
 			description = fp
-			title = "File change"
 			input = params
 		}
 	}
@@ -569,8 +669,53 @@ func buildApprovalMeta(threadID, turnID, method string, rpcID int64, params json
 		Description: description,
 		Input:       input,
 		Title:       title,
+		Kind:        kind,
 	}
 
+	data, _ := json.Marshal(approval)
+	return data
+}
+
+// approvalKindForMethod derives the approval kind from the JSON-RPC method name.
+func approvalKindForMethod(method string) string {
+	switch method {
+	case "item/commandExecution/requestApproval", "execCommandApproval":
+		return "command"
+	case "item/fileRead/requestApproval":
+		return "file-read"
+	case "item/fileChange/requestApproval", "applyPatchApproval":
+		return "file-change"
+	default:
+		return ""
+	}
+}
+
+func buildElicitationMeta(threadID, turnID string, rpcID int64, params json.RawMessage) json.RawMessage {
+	var parsed struct {
+		ServerName string          `json:"serverName"`
+		Message    string          `json:"message"`
+		Schema     json.RawMessage `json:"requestedSchema"`
+	}
+	_ = json.Unmarshal(params, &parsed)
+
+	description := "MCP server elicitation"
+	if parsed.ServerName != "" {
+		description = fmt.Sprintf("MCP server %q requests user consent", parsed.ServerName)
+	}
+	if parsed.Message != "" {
+		description = parsed.Message
+	}
+
+	approval := provider.ApprovalRequest{
+		RequestID:   fmt.Sprintf("%d", rpcID),
+		ThreadID:    threadID,
+		TurnID:      turnID,
+		ToolName:    "mcp_elicitation",
+		Description: description,
+		Input:       params,
+		Kind:        "mcp-elicitation",
+		Title:       "MCP Server Consent",
+	}
 	data, _ := json.Marshal(approval)
 	return data
 }

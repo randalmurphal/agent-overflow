@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"agent-overflow/internal/testutil"
 )
 
 func TestExecuteTimeout(t *testing.T) {
@@ -85,7 +87,7 @@ func TestParseWorktreeList(t *testing.T) {
 }
 
 func TestCreateListAndRemoveWorktree(t *testing.T) {
-	repo := initGitRepo(t)
+	repo := testutil.InitGitRepo(t)
 	core := NewCore()
 	worktreePath := filepath.Join(t.TempDir(), "feature-demo")
 
@@ -96,7 +98,7 @@ func TestCreateListAndRemoveWorktree(t *testing.T) {
 	if _, err := os.Stat(worktreePath); err != nil {
 		t.Fatalf("expected worktree path to exist: %v", err)
 	}
-	expectedPath := canonicalPath(t, worktreePath)
+	expectedPath := testutil.CanonicalPath(t, worktreePath)
 
 	worktrees, err := core.ListWorktrees(repo)
 	if err != nil {
@@ -105,7 +107,7 @@ func TestCreateListAndRemoveWorktree(t *testing.T) {
 
 	found := false
 	for _, worktree := range worktrees {
-		if canonicalPath(t, worktree.Path) != expectedPath {
+		if testutil.CanonicalPath(t, worktree.Path) != expectedPath {
 			continue
 		}
 		found = true
@@ -129,23 +131,13 @@ func TestCreateListAndRemoveWorktree(t *testing.T) {
 		t.Fatalf("ListWorktrees after remove returned error: %v", err)
 	}
 	for _, worktree := range worktrees {
-		if canonicalPath(t, worktree.Path) == expectedPath {
+		if testutil.CanonicalPath(t, worktree.Path) == expectedPath {
 			t.Fatalf("worktree %q still present after removal", worktreePath)
 		}
 	}
 	if _, err := os.Stat(worktreePath); !os.IsNotExist(err) {
 		t.Fatalf("expected worktree path to be removed, stat err = %v", err)
 	}
-}
-
-func canonicalPath(t *testing.T, path string) string {
-	t.Helper()
-
-	resolved, err := filepath.EvalSymlinks(path)
-	if err == nil {
-		return filepath.Clean(resolved)
-	}
-	return filepath.Clean(path)
 }
 
 func TestLimitedBufferTruncates(t *testing.T) {

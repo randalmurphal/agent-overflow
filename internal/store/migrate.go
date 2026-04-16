@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"regexp"
 )
 
 const createMigrationVersionsTableSQL = `CREATE TABLE IF NOT EXISTS migration_versions (
@@ -286,7 +287,12 @@ func tableExists(db *sql.DB, table string) (bool, error) {
 	return true, nil
 }
 
+var validTableName = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
+
 func tableColumns(db *sql.DB, table string) (map[string]bool, error) {
+	if !validTableName.MatchString(table) {
+		return nil, fmt.Errorf("invalid table name: %q", table)
+	}
 	rows, err := db.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
 	if err != nil {
 		return nil, fmt.Errorf("pragma table_info(%s): %w", table, err)

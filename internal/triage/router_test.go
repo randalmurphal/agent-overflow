@@ -819,8 +819,8 @@ func TestReasoningDeltasPersistOnTurnComplete(t *testing.T) {
 		t.Fatalf("expected accumulated reasoning, got %q", string(data))
 	}
 
-	if acc := router.reasoningAccumulators["t1"]; acc.Len() != 0 {
-		t.Fatalf("expected reasoning accumulator to be cleared, got %q", acc.String())
+	if acc, ok := router.reasoningAccumulators["t1"]; ok {
+		t.Fatalf("expected reasoning accumulator entry to be removed, got %q", acc.String())
 	}
 
 	if len(*emissions) != 2 {
@@ -870,9 +870,9 @@ func TestTurnCompleteWithAccumulatedText(t *testing.T) {
 		t.Errorf("item summary: got %q, want %q", items[0].Summary, "Hello world!")
 	}
 
-	// Accumulator should be cleared.
-	if acc := router.textAccumulators["t1"]; acc.Len() != 0 {
-		t.Errorf("accumulator not cleared, has %q", acc.String())
+	// Accumulator entry should be removed (not just reset) to prevent memory leaks.
+	if acc, ok := router.textAccumulators["t1"]; ok {
+		t.Errorf("expected text accumulator entry to be removed, got %q", acc.String())
 	}
 
 	// Should have emitted 3 events: 2 text deltas + 1 turn complete.
@@ -945,7 +945,7 @@ func TestTurnCompleteGeneratesClaudeThreadTitleFromFirstUserMessage(t *testing.T
 	if err != nil {
 		t.Fatalf("get thread: %v", err)
 	}
-	if thread.Title != "Fix flaky reconnect logic after sleep resumes" {
+	if thread.Title != "Fix flaky reconnect logic after sleep resumes." {
 		t.Fatalf("thread title: got %q", thread.Title)
 	}
 

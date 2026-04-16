@@ -7,10 +7,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"agent-overflow/internal/testutil"
 )
 
-func TestCommitStagesAllChangesAndReturnsSHA(t *testing.T) {
-	repo := initGitRepo(t)
+func TestCommitOnlyStagedChanges(t *testing.T) {
+	repo := testutil.InitGitRepo(t)
 	core := NewCore()
 
 	if err := os.WriteFile(filepath.Join(repo, "README.txt"), []byte("hello\nupdated\n"), 0o644); err != nil {
@@ -20,7 +22,10 @@ func TestCommitStagesAllChangesAndReturnsSHA(t *testing.T) {
 		t.Fatalf("write new file: %v", err)
 	}
 
-	sha, err := core.Commit(repo, "add files", "body text")
+	// Stage only README.txt -- new.txt should remain untracked.
+	testutil.RunGit(t, repo, "add", "README.txt")
+
+	sha, err := core.Commit(repo, "update readme", "body text")
 	if err != nil {
 		t.Fatalf("Commit returned error: %v", err)
 	}
@@ -33,14 +38,44 @@ func TestCommitStagesAllChangesAndReturnsSHA(t *testing.T) {
 		t.Fatalf("commit SHA = %q, want %q", sha, head)
 	}
 
+	// new.txt should still be untracked.
+	status := strings.TrimSpace(runGitStdout(t, repo, "status", "--short"))
+	if !strings.Contains(status, "new.txt") {
+		t.Fatalf("expected new.txt to remain untracked, status = %q", status)
+	}
+}
+
+func TestStageAllThenCommit(t *testing.T) {
+	repo := testutil.InitGitRepo(t)
+	core := NewCore()
+
+	if err := os.WriteFile(filepath.Join(repo, "README.txt"), []byte("hello\nupdated\n"), 0o644); err != nil {
+		t.Fatalf("update tracked file: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "new.txt"), []byte("new file\n"), 0o644); err != nil {
+		t.Fatalf("write new file: %v", err)
+	}
+
+	if err := core.StageAll(repo); err != nil {
+		t.Fatalf("StageAll returned error: %v", err)
+	}
+
+	sha, err := core.Commit(repo, "add files", "body text")
+	if err != nil {
+		t.Fatalf("Commit returned error: %v", err)
+	}
+	if len(sha) != 40 {
+		t.Fatalf("commit SHA length = %d, want 40", len(sha))
+	}
+
 	status := strings.TrimSpace(runGitStdout(t, repo, "status", "--short"))
 	if status != "" {
-		t.Fatalf("expected clean working tree after commit, got %q", status)
+		t.Fatalf("expected clean working tree after stage-all + commit, got %q", status)
 	}
 }
 
 func TestCommitRequiresSubject(t *testing.T) {
-	repo := initGitRepo(t)
+	repo := testutil.InitGitRepo(t)
 	core := NewCore()
 
 	if _, err := core.Commit(repo, "   ", "body"); err == nil {
@@ -49,10 +84,10 @@ func TestCommitRequiresSubject(t *testing.T) {
 }
 
 func TestPushSetsUpstreamWhenMissing(t *testing.T) {
-	repo := initGitRepo(t)
+	repo := testutil.InitGitRepo(t)
 	remote := filepath.Join(t.TempDir(), "origin.git")
-	runGit(t, t.TempDir(), "init", "--bare", remote)
-	runGit(t, repo, "remote", "add", "origin", remote)
+	testutil.RunGit(t, t.TempDir(), "init", "--bare", remote)
+	testutil.RunGit(t, repo, "remote", "add", "origin", remote)
 
 	core := NewCore()
 	if err := core.Push(repo); err != nil {
@@ -66,7 +101,7 @@ func TestPushSetsUpstreamWhenMissing(t *testing.T) {
 }
 
 func TestPushWithoutRemoteReturnsError(t *testing.T) {
-	repo := initGitRepo(t)
+	repo := testutil.InitGitRepo(t)
 	core := NewCore()
 
 	err := core.Push(repo)
@@ -79,7 +114,7 @@ func TestPushWithoutRemoteReturnsError(t *testing.T) {
 }
 
 func TestPullWithoutUpstreamReturnsError(t *testing.T) {
-	repo := initGitRepo(t)
+	repo := testutil.InitGitRepo(t)
 	core := NewCore()
 
 	err := core.Pull(repo)
@@ -92,7 +127,7 @@ func TestPullWithoutUpstreamReturnsError(t *testing.T) {
 }
 
 func TestCreateBranchAndCheckout(t *testing.T) {
-	repo := initGitRepo(t)
+	repo := testutil.InitGitRepo(t)
 	core := NewCore()
 
 	if err := core.CreateBranch(repo, "feature/demo"); err != nil {
@@ -109,7 +144,7 @@ func TestCreateBranchAndCheckout(t *testing.T) {
 }
 
 func TestCreateBranchRequiresName(t *testing.T) {
-	repo := initGitRepo(t)
+	repo := testutil.InitGitRepo(t)
 	core := NewCore()
 
 	if err := core.CreateBranch(repo, "  "); err == nil {

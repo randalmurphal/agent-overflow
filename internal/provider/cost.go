@@ -31,6 +31,9 @@ var KnownPricing = map[string]ModelPricing{
 		CacheCreationPerMToken: 1.25,
 		CacheReadPerMToken:     0.10,
 	},
+	// "gpt-5" also serves as a prefix fallback for any gpt-5-* variant via
+	// matchPricing's progressive prefix stripping (e.g. "gpt-5-turbo" would
+	// match here after failing exact lookup).
 	"gpt-5": {
 		InputPerMToken:     1.75,
 		OutputPerMToken:    14.00,

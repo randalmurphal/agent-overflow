@@ -216,6 +216,11 @@ func (s *Service) writeSparse(current Settings) error {
 		os.Remove(tmpPath)
 		return fmt.Errorf("settings: write temp file: %w", err)
 	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		os.Remove(tmpPath)
+		return fmt.Errorf("settings: sync temp file: %w", err)
+	}
 	if err := tmp.Close(); err != nil {
 		os.Remove(tmpPath)
 		return fmt.Errorf("settings: close temp file: %w", err)

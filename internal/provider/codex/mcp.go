@@ -110,11 +110,11 @@ func (s *DesignMCPServer) Close() error {
 
 func (s *DesignMCPServer) ensureStarted() error {
 	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	if s.server != nil {
-		s.mu.Unlock()
 		return nil
 	}
-	s.mu.Unlock()
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -125,13 +125,6 @@ func (s *DesignMCPServer) ensureStarted() error {
 	go func() {
 		_ = server.Serve(listener)
 	}()
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.server != nil {
-		_ = listener.Close()
-		return nil
-	}
 
 	s.server = server
 	s.listener = listener

@@ -2,17 +2,17 @@ package main
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	gitops "agent-overflow/internal/git"
+	"agent-overflow/internal/testutil"
 )
 
 func TestGetGitStatusUsesWorkspacePath(t *testing.T) {
 	app := newTestAppWithStore(t)
-	repo := initAppGitRepo(t)
+	repo := testutil.InitGitRepo(t)
 
 	thread := testThread("thread-status")
 	thread.ProjectPath = t.TempDir()
@@ -35,7 +35,7 @@ func TestGetGitStatusUsesWorkspacePath(t *testing.T) {
 
 func TestGitListBranchesUsesProjectPath(t *testing.T) {
 	app := newTestAppWithStore(t)
-	repo := initAppGitRepo(t)
+	repo := testutil.InitGitRepo(t)
 
 	thread := testThread("thread-branches")
 	thread.ProjectPath = repo
@@ -60,7 +60,7 @@ func TestGitListBranchesUsesProjectPath(t *testing.T) {
 
 func TestGitCommitReturnsCommitSHA(t *testing.T) {
 	app := newTestAppWithStore(t)
-	repo := initAppGitRepo(t)
+	repo := testutil.InitGitRepo(t)
 
 	thread := testThread("thread-commit")
 	thread.ProjectPath = repo
@@ -91,7 +91,7 @@ func TestGitCommitReturnsCommitSHA(t *testing.T) {
 
 func TestGitCreateAndRemoveWorktree(t *testing.T) {
 	app := newTestAppWithStore(t)
-	repo := initAppGitRepo(t)
+	repo := testutil.InitGitRepo(t)
 
 	thread := testThread("thread-worktree")
 	thread.ProjectPath = repo
@@ -157,9 +157,9 @@ func TestGitCreateAndRemoveWorktree(t *testing.T) {
 
 func TestGitCheckoutUpdatesStoredBranch(t *testing.T) {
 	app := newTestAppWithStore(t)
-	repo := initAppGitRepo(t)
+	repo := testutil.InitGitRepo(t)
 
-	runGitCommand(t, repo, "branch", "feature/checkout")
+	testutil.RunGit(t, repo,"branch", "feature/checkout")
 
 	thread := testThread("thread-checkout")
 	thread.ProjectPath = repo
@@ -201,41 +201,6 @@ func containsWorktree(worktrees []gitops.Worktree, want string) bool {
 }
 
 func samePath(left, right string) bool {
-	return canonicalAppPath(left) == canonicalAppPath(right)
+	return testutil.CanonicalPath(nil, left) == testutil.CanonicalPath(nil, right)
 }
 
-func canonicalAppPath(path string) string {
-	resolved, err := filepath.EvalSymlinks(path)
-	if err == nil {
-		return filepath.Clean(resolved)
-	}
-	return filepath.Clean(path)
-}
-
-func initAppGitRepo(t *testing.T) string {
-	t.Helper()
-
-	repo := t.TempDir()
-	runGitCommand(t, repo, "init", "-b", "main")
-	runGitCommand(t, repo, "config", "user.name", "Agent Overflow")
-	runGitCommand(t, repo, "config", "user.email", "agent-overflow@example.com")
-
-	readme := filepath.Join(repo, "README.txt")
-	if err := os.WriteFile(readme, []byte("hello\n"), 0o644); err != nil {
-		t.Fatalf("WriteFile() error = %v", err)
-	}
-	runGitCommand(t, repo, "add", "README.txt")
-	runGitCommand(t, repo, "commit", "-m", "initial commit")
-
-	return repo
-}
-
-func runGitCommand(t *testing.T, cwd string, args ...string) {
-	t.Helper()
-
-	cmd := exec.Command("git", args...)
-	cmd.Dir = cwd
-	if output, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("git %v failed: %v\n%s", args, err, string(output))
-	}
-}

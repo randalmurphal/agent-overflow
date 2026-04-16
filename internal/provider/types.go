@@ -92,13 +92,21 @@ type ApprovalRequest struct {
 	Permissions *PermissionProfile  `json:"permissions,omitempty"` // populated for permission kind
 }
 
+// ElicitationResolution carries the MCP elicitation response fields.
+type ElicitationResolution struct {
+	Action  string          `json:"action"`
+	Content json.RawMessage `json:"content,omitempty"`
+	Meta    json.RawMessage `json:"meta,omitempty"`
+}
+
 // ApprovalResponse is sent back to the provider.
 type ApprovalResponse struct {
-	RequestID   string                     `json:"requestId"`
-	Decision    string                     `json:"decision"`              // "allow", "deny", "allow_session"
-	Answers     map[string]UserInputAnswer `json:"answers,omitempty"`     // for user-input responses
-	Permissions *PermissionProfile         `json:"permissions,omitempty"` // for granted permissions
-	Scope       string                     `json:"scope,omitempty"`       // "turn"|"session" for permissions
+	RequestID    string                     `json:"requestId"`
+	Decision     string                     `json:"decision"`              // Codex-native: "accept", "acceptForSession", "decline", "cancel"
+	Answers      map[string]UserInputAnswer `json:"answers,omitempty"`     // for user-input responses
+	Permissions  *PermissionProfile         `json:"permissions,omitempty"` // for granted permissions
+	Scope        string                     `json:"scope,omitempty"`       // "turn"|"session" for permissions
+	Elicitation  *ElicitationResolution     `json:"elicitation,omitempty"` // for MCP elicitation responses
 }
 
 // UserInputQuestionOption is a selectable option in a user-input question.

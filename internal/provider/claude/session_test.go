@@ -485,7 +485,7 @@ func TestParseControlRequestUnknownSubtype(t *testing.T) {
 }
 
 func TestParseUnknownType(t *testing.T) {
-	line := []byte(`{"type":"rate_limit_event","rate_limit_info":{"status":"allowed"}}`)
+	line := []byte(`{"type":"some_future_event","data":{}}`)
 
 	events, err := ParseLine(testThread, line)
 	if err != nil {
@@ -493,6 +493,38 @@ func TestParseUnknownType(t *testing.T) {
 	}
 	if len(events) != 0 {
 		t.Errorf("expected 0 events for unknown type, got %d", len(events))
+	}
+}
+
+func TestParseRateLimitEvent(t *testing.T) {
+	line := []byte(`{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","resetsAt":1776283200,"rateLimitType":"five_hour"}}`)
+
+	events, err := ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if events[0].Kind != provider.EventRateLimits {
+		t.Errorf("kind: got %q, want %q", events[0].Kind, provider.EventRateLimits)
+	}
+
+	var snapshot provider.RateLimitsSnapshot
+	if err := json.Unmarshal(events[0].Meta, &snapshot); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if snapshot.Provider != "claude" {
+		t.Errorf("provider: got %q, want claude", snapshot.Provider)
+	}
+	if len(snapshot.Limits) != 1 {
+		t.Fatalf("limits len: got %d, want 1", len(snapshot.Limits))
+	}
+	if snapshot.Limits[0].LimitID != "five_hour" {
+		t.Errorf("limitId: got %q, want five_hour", snapshot.Limits[0].LimitID)
+	}
+	if snapshot.Limits[0].ResetsAt != 1776283200 {
+		t.Errorf("resetsAt: got %d, want 1776283200", snapshot.Limits[0].ResetsAt)
 	}
 }
 

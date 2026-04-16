@@ -64,6 +64,25 @@ func (s *Store) InsertChannelMessage(msg ChannelMessage) error {
 	return nil
 }
 
+// InsertChannelMessageAtomic inserts a channel message with an atomically
+// computed sequence number. Returns the assigned sequence. This avoids the
+// race where two concurrent PostMessage calls read the same max sequence
+// and the second INSERT fails on the UNIQUE(channel_id, sequence) constraint.
+func (s *Store) InsertChannelMessageAtomic(msg ChannelMessage) (int, error) {
+	var sequence int
+	err := s.db.QueryRow(
+		`INSERT INTO channel_messages (id, channel_id, sequence, from_type, from_id, from_role, content, created_at)
+		 SELECT ?, ?, COALESCE(MAX(sequence), -1) + 1, ?, ?, ?, ?, ?
+		 FROM channel_messages WHERE channel_id = ?
+		 RETURNING sequence`,
+		msg.ID, msg.ChannelID, msg.FromType, msg.FromID, nilIfEmpty(msg.FromRole), msg.Content, msg.CreatedAt, msg.ChannelID,
+	).Scan(&sequence)
+	if err != nil {
+		return 0, fmt.Errorf("store: insert channel message atomic %s: %w", msg.ID, err)
+	}
+	return sequence, nil
+}
+
 func (s *Store) ListChannelMessages(channelID string, afterSeq, limit int) ([]ChannelMessage, error) {
 	baseQuery := `SELECT id, channel_id, sequence, from_type, from_id, COALESCE(from_role, ''), content, created_at
 		FROM channel_messages WHERE channel_id = ? AND sequence > ? ORDER BY sequence ASC`

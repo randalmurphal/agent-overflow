@@ -28,6 +28,8 @@ func main() {
 		Title:            "Agent Overflow",
 		Width:            1280,
 		Height:           800,
+		MinWidth:         800,
+		MinHeight:        600,
 		BackgroundColour: application.NewRGBA(22, 22, 30, 255),
 	})
 

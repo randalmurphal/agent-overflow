@@ -11,6 +11,7 @@ import (
 
 	"agent-overflow/internal/design"
 	"agent-overflow/internal/discussion"
+	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/logging"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
@@ -27,6 +28,7 @@ import (
 type App struct {
 	app       *application.App
 	store     *store.Store
+	git       *gitops.Core
 	settings  *settings.Service
 	triage    *triage.Router
 	registry  *discussion.Registry
@@ -77,7 +79,13 @@ func (a *App) ServiceStartup(ctx context.Context, options application.ServiceOpt
 	// Open SQLite database in the app data directory.
 	dataDir, err := os.UserConfigDir()
 	if err != nil {
-		dataDir = os.TempDir()
+		// Fall back to ~/.agent-overflow/ which persists across reboots,
+		// unlike os.TempDir() which is cleaned on reboot and would lose data.
+		homeDir, homeErr := os.UserHomeDir()
+		if homeErr != nil {
+			return fmt.Errorf("cannot determine config directory: %w (home dir also unavailable: %v)", err, homeErr)
+		}
+		dataDir = homeDir
 	}
 	dbDir := filepath.Join(dataDir, "agent-overflow")
 	if err := os.MkdirAll(dbDir, 0755); err != nil {
@@ -91,6 +99,7 @@ func (a *App) ServiceStartup(ctx context.Context, options application.ServiceOpt
 	}
 
 	a.store = st
+	a.git = gitops.NewCore()
 	a.settings = settings.NewService(dbDir)
 	a.logger, err = newProviderEventLogger(dbDir)
 	if err != nil {
@@ -157,7 +166,7 @@ func (a *App) ServiceShutdown() error {
 
 func (a *App) CreateThread(providerName string, workspacePath string, model string) (store.Thread, error) {
 	now := time.Now().UnixMilli()
-	projectPath := detectProjectPath(workspacePath)
+	projectPath := a.detectProjectPath(workspacePath)
 	t := store.Thread{
 		ID:              uuid.New().String(),
 		Title:           "New Thread",

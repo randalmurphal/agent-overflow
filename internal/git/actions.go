@@ -3,17 +3,23 @@ package git
 import (
 	"fmt"
 	"strings"
+	"unicode"
 )
 
-// Commit stages all changes and creates a commit, returning the new commit SHA.
+// StageAll runs `git add -A` to stage all tracked and untracked changes.
+// Callers should be aware this stages everything, including untracked files.
+func (c *Core) StageAll(cwd string) error {
+	_, _, err := c.Execute(cwd, "add", "-A")
+	return err
+}
+
+// Commit creates a commit from whatever is currently staged, returning the new
+// commit SHA. It does NOT stage changes automatically -- call StageAll first if
+// the intent is to commit everything.
 func (c *Core) Commit(cwd, subject, body string) (string, error) {
 	subject = strings.TrimSpace(subject)
 	if subject == "" {
 		return "", fmt.Errorf("git commit subject is required")
-	}
-
-	if _, _, err := c.Execute(cwd, "add", "-A"); err != nil {
-		return "", err
 	}
 
 	if _, _, err := c.Execute(cwd, commitArgs(subject, body)...); err != nil {
@@ -64,6 +70,9 @@ func (c *Core) Checkout(cwd, branch string) error {
 	if branch == "" {
 		return fmt.Errorf("git checkout branch is required")
 	}
+	if err := validateBranchName(branch); err != nil {
+		return err
+	}
 
 	_, _, err := c.Execute(cwd, "checkout", branch)
 	return err
@@ -74,6 +83,9 @@ func (c *Core) CreateBranch(cwd, name string) error {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return fmt.Errorf("git branch name is required")
+	}
+	if err := validateBranchName(name); err != nil {
+		return err
 	}
 
 	_, _, err := c.Execute(cwd, "branch", name)
@@ -110,6 +122,26 @@ func (c *Core) branchHasUpstream(cwd string) (bool, error) {
 		return false, nil
 	}
 	return strings.TrimSpace(result.stdout) != "", nil
+}
+
+// validateBranchName rejects branch names that could be misinterpreted as
+// flags or contain sequences unsafe for git ref names.
+func validateBranchName(name string) error {
+	if strings.HasPrefix(name, "-") {
+		return fmt.Errorf("invalid branch name %q: must not start with -", name)
+	}
+	if strings.Contains(name, "..") {
+		return fmt.Errorf("invalid branch name %q: must not contain ..", name)
+	}
+	if strings.ContainsRune(name, 0) {
+		return fmt.Errorf("invalid branch name %q: must not contain NUL", name)
+	}
+	for _, r := range name {
+		if unicode.IsControl(r) {
+			return fmt.Errorf("invalid branch name %q: must not contain control characters", name)
+		}
+	}
+	return nil
 }
 
 func (c *Core) pushRemoteName(cwd string) (string, error) {

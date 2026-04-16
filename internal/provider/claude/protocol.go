@@ -38,8 +38,10 @@ func ParseLine(threadID string, line []byte) ([]provider.ProviderEvent, error) {
 		return parseStreamEvent(threadID, raw, now)
 	case "control_request":
 		return parseControlRequest(threadID, raw, now, line)
+	case "rate_limit_event":
+		return parseRateLimitEvent(threadID, raw, now)
 	default:
-		// Unknown type (e.g. rate_limit_event) — skip gracefully.
+		// Unknown type — skip gracefully.
 		return nil, nil
 	}
 }
@@ -210,63 +212,132 @@ func parseAssistant(threadID string, raw map[string]json.RawMessage, now time.Ti
 }
 
 func parseResult(threadID string, raw map[string]json.RawMessage, now time.Time, line []byte) ([]provider.ProviderEvent, error) {
-	var result struct {
-		IsError   bool   `json:"is_error"`
-		Error     string `json:"error,omitempty"`
-		SessionID string `json:"session_id,omitempty"`
+	var isError bool
+	if v, ok := raw["is_error"]; ok {
+		_ = json.Unmarshal(v, &isError)
 	}
 
-	data, err := json.Marshal(raw)
-	if err != nil {
-		return nil, fmt.Errorf("parse result: marshal: %w", err)
-	}
-	if err := json.Unmarshal(data, &result); err != nil {
-		return nil, fmt.Errorf("parse result: unmarshal: %w", err)
-	}
-
-	if result.IsError {
+	if isError {
+		var errMsg string
+		if v, ok := raw["error"]; ok {
+			_ = json.Unmarshal(v, &errMsg)
+		}
 		return []provider.ProviderEvent{{
 			Kind:      provider.EventError,
 			ThreadID:  threadID,
-			Content:   result.Error,
+			Content:   errMsg,
 			Timestamp: now,
 			Raw:       line,
 		}}, nil
 	}
 
-	return []provider.ProviderEvent{{
+	var events []provider.ProviderEvent
+
+	// Extract usage/cost data from the result summary.
+	usage := extractResultUsage(raw)
+	if usage.InputTokens > 0 || usage.OutputTokens > 0 {
+		usageMeta, _ := json.Marshal(usage)
+		events = append(events, provider.ProviderEvent{
+			Kind:      provider.EventTokenUsage,
+			ThreadID:  threadID,
+			Meta:      usageMeta,
+			Timestamp: now,
+		})
+	}
+
+	events = append(events, provider.ProviderEvent{
 		Kind:      provider.EventTurnComplete,
 		ThreadID:  threadID,
 		Timestamp: now,
 		Raw:       line,
-	}}, nil
+	})
+
+	return events, nil
+}
+
+// extractResultUsage parses token usage from a Claude result message.
+// It checks both "usage" (flat format) and "modelUsage" (per-model format)
+// and aggregates total_cost_usd when present.
+func extractResultUsage(raw map[string]json.RawMessage) provider.TokenUsage {
+	var usage provider.TokenUsage
+
+	// Try flat "usage" object first.
+	if v, ok := raw["usage"]; ok {
+		var u struct {
+			InputTokens              int `json:"input_tokens"`
+			OutputTokens             int `json:"output_tokens"`
+			CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+			CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+		}
+		if json.Unmarshal(v, &u) == nil {
+			usage.InputTokens = u.InputTokens
+			usage.OutputTokens = u.OutputTokens
+			usage.CacheReadInputTokens = u.CacheReadInputTokens
+			usage.CacheCreationInputTokens = u.CacheCreationInputTokens
+		}
+	}
+
+	// Aggregate from "modelUsage" if flat usage was empty.
+	if usage.InputTokens == 0 && usage.OutputTokens == 0 {
+		if v, ok := raw["modelUsage"]; ok {
+			var models map[string]struct {
+				InputTokens              int     `json:"inputTokens"`
+				OutputTokens             int     `json:"outputTokens"`
+				CacheReadInputTokens     int     `json:"cacheReadInputTokens"`
+				CacheCreationInputTokens int     `json:"cacheCreationInputTokens"`
+				CostUSD                  float64 `json:"costUSD"`
+			}
+			if json.Unmarshal(v, &models) == nil {
+				for _, m := range models {
+					usage.InputTokens += m.InputTokens
+					usage.OutputTokens += m.OutputTokens
+					usage.CacheReadInputTokens += m.CacheReadInputTokens
+					usage.CacheCreationInputTokens += m.CacheCreationInputTokens
+					usage.TotalCostUSD += m.CostUSD
+				}
+			}
+		}
+	}
+
+	// Override cost with explicit total_cost_usd if present.
+	if v, ok := raw["total_cost_usd"]; ok {
+		var cost float64
+		if json.Unmarshal(v, &cost) == nil && cost > 0 {
+			usage.TotalCostUSD = cost
+		}
+	}
+
+	return usage
 }
 
 func parseStreamEvent(threadID string, raw map[string]json.RawMessage, now time.Time) ([]provider.ProviderEvent, error) {
-	var evt struct {
-		Event string `json:"event"`
-		Data  struct {
-			Type  string `json:"type"`
-			Delta struct {
-				Type string `json:"type"`
-				Text string `json:"text"`
-			} `json:"delta,omitempty"`
-		} `json:"data,omitempty"`
+	dataRaw, ok := raw["data"]
+	if !ok {
+		return nil, nil
 	}
 
-	data, err := json.Marshal(raw)
-	if err != nil {
-		return nil, fmt.Errorf("parse stream event: marshal: %w", err)
-	}
-	if err := json.Unmarshal(data, &evt); err != nil {
-		return nil, fmt.Errorf("parse stream event: unmarshal: %w", err)
+	var dataObj map[string]json.RawMessage
+	if json.Unmarshal(dataRaw, &dataObj) != nil {
+		return nil, nil
 	}
 
-	if evt.Data.Delta.Text != "" {
+	deltaRaw, ok := dataObj["delta"]
+	if !ok {
+		return nil, nil
+	}
+
+	var delta struct {
+		Text string `json:"text"`
+	}
+	if json.Unmarshal(deltaRaw, &delta) != nil {
+		return nil, nil
+	}
+
+	if delta.Text != "" {
 		return []provider.ProviderEvent{{
 			Kind:      provider.EventTextDelta,
 			ThreadID:  threadID,
-			Content:   evt.Data.Delta.Text,
+			Content:   delta.Text,
 			Role:      "assistant",
 			Timestamp: now,
 		}}, nil
@@ -278,43 +349,85 @@ func parseStreamEvent(threadID string, raw map[string]json.RawMessage, now time.
 // parseControlRequest handles the wire format:
 // {"type":"control_request","request_id":"req_1_abc","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"ls"}}}
 func parseControlRequest(threadID string, raw map[string]json.RawMessage, now time.Time, line []byte) ([]provider.ProviderEvent, error) {
-	var msg struct {
-		RequestID string `json:"request_id"`
-		Request   struct {
-			Subtype  string          `json:"subtype"`
-			ToolName string          `json:"tool_name"`
-			Input    json.RawMessage `json:"input"`
-		} `json:"request"`
+	var requestID string
+	if v, ok := raw["request_id"]; ok {
+		_ = json.Unmarshal(v, &requestID)
 	}
 
-	data, err := json.Marshal(raw)
-	if err != nil {
-		return nil, fmt.Errorf("parse control request: marshal: %w", err)
-	}
-	if err := json.Unmarshal(data, &msg); err != nil {
+	reqRaw, ok := raw["request"]
+	if !ok {
 		return nil, nil
 	}
 
-	if msg.Request.Subtype != "can_use_tool" {
+	var req struct {
+		Subtype  string          `json:"subtype"`
+		ToolName string          `json:"tool_name"`
+		Input    json.RawMessage `json:"input"`
+	}
+	if err := json.Unmarshal(reqRaw, &req); err != nil {
+		return nil, nil
+	}
+
+	if req.Subtype != "can_use_tool" {
 		return nil, nil
 	}
 
 	approvalMeta, _ := json.Marshal(provider.ApprovalRequest{
-		RequestID:   msg.RequestID,
+		RequestID:   requestID,
 		ThreadID:    threadID,
-		ToolName:    msg.Request.ToolName,
-		Description: fmt.Sprintf("Allow %s?", msg.Request.ToolName),
-		Input:       msg.Request.Input,
-		Title:       msg.Request.ToolName,
+		ToolName:    req.ToolName,
+		Description: fmt.Sprintf("Allow %s?", req.ToolName),
+		Input:       req.Input,
+		Title:       req.ToolName,
 	})
 
 	return []provider.ProviderEvent{{
 		Kind:      provider.EventApprovalRequest,
 		ThreadID:  threadID,
-		ItemID:    msg.RequestID,
+		ItemID:    requestID,
 		Meta:      approvalMeta,
 		Timestamp: now,
 		Raw:       line,
+	}}, nil
+}
+
+// parseRateLimitEvent handles Claude's rate_limit_event message type.
+func parseRateLimitEvent(threadID string, raw map[string]json.RawMessage, now time.Time) ([]provider.ProviderEvent, error) {
+	infoRaw, ok := raw["rate_limit_info"]
+	if !ok {
+		return nil, nil
+	}
+
+	var info struct {
+		Status        string `json:"status"`
+		ResetsAt      int64  `json:"resetsAt"`
+		RateLimitType string `json:"rateLimitType"`
+	}
+	if json.Unmarshal(infoRaw, &info) != nil {
+		return nil, nil
+	}
+
+	entry := provider.RateLimitEntry{
+		LimitID:   info.RateLimitType,
+		LimitName: info.RateLimitType,
+		ResetsAt:  info.ResetsAt,
+	}
+	if info.Status != "allowed" {
+		entry.UsedPercent = 100
+	}
+
+	snapshot := provider.RateLimitsSnapshot{
+		Provider:  string(provider.Claude),
+		Limits:    []provider.RateLimitEntry{entry},
+		UpdatedAt: now.UnixMilli(),
+	}
+	meta, _ := json.Marshal(snapshot)
+
+	return []provider.ProviderEvent{{
+		Kind:      provider.EventRateLimits,
+		ThreadID:  threadID,
+		Meta:      meta,
+		Timestamp: now,
 	}}, nil
 }
 

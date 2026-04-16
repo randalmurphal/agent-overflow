@@ -1,12 +1,12 @@
 package git
 
 import (
-	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"agent-overflow/internal/testutil"
 )
 
 func TestParseStatusOutput(t *testing.T) {
@@ -84,7 +84,7 @@ func TestStatusReturnsNotRepoForNonGitDirectory(t *testing.T) {
 }
 
 func TestListBranchesOnRepository(t *testing.T) {
-	repo := initGitRepo(t)
+	repo := testutil.InitGitRepo(t)
 	core := NewCore()
 
 	branches, err := core.ListBranches(repo)
@@ -100,7 +100,7 @@ func TestListBranchesOnRepository(t *testing.T) {
 }
 
 func TestRepositoryRootReturnsGitTopLevel(t *testing.T) {
-	repo := initGitRepo(t)
+	repo := testutil.InitGitRepo(t)
 	workspace := filepath.Join(repo, "nested", "workspace")
 	if err := os.MkdirAll(workspace, 0o755); err != nil {
 		t.Fatalf("MkdirAll() error = %v", err)
@@ -110,7 +110,7 @@ func TestRepositoryRootReturnsGitTopLevel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RepositoryRoot() error = %v", err)
 	}
-	if canonicalPath(t, root) != canonicalPath(t, repo) {
+	if testutil.CanonicalPath(t,root) != testutil.CanonicalPath(t,repo) {
 		t.Fatalf("root = %q, want %q", root, repo)
 	}
 }
@@ -126,11 +126,11 @@ func TestRepositoryRootReturnsErrorForNonRepo(t *testing.T) {
 }
 
 func TestStatusOnRepositoryWithOrigin(t *testing.T) {
-	repo := initGitRepo(t)
+	repo := testutil.InitGitRepo(t)
 	remote := filepath.Join(t.TempDir(), "origin.git")
-	runGit(t, t.TempDir(), "init", "--bare", remote)
-	runGit(t, repo, "remote", "add", "origin", remote)
-	runGit(t, repo, "push", "-u", "origin", "main")
+	testutil.RunGit(t,t.TempDir(), "init", "--bare", remote)
+	testutil.RunGit(t,repo, "remote", "add", "origin", remote)
+	testutil.RunGit(t,repo, "push", "-u", "origin", "main")
 
 	readmePath := filepath.Join(repo, "README.txt")
 	if err := os.WriteFile(readmePath, []byte("hello\nworld\n"), 0o644); err != nil {
@@ -173,13 +173,13 @@ func TestStatusOnRepositoryWithOrigin(t *testing.T) {
 }
 
 func TestWorkingTreeDiff(t *testing.T) {
-	repo := initGitRepo(t)
+	repo := testutil.InitGitRepo(t)
 	readmePath := filepath.Join(repo, "README.txt")
 
 	if err := os.WriteFile(readmePath, []byte("hello\nstaged\n"), 0o644); err != nil {
 		t.Fatalf("write staged version: %v", err)
 	}
-	runGit(t, repo, "add", "README.txt")
+	testutil.RunGit(t,repo, "add", "README.txt")
 	if err := os.WriteFile(readmePath, []byte("hello\nstaged\nunstaged\n"), 0o644); err != nil {
 		t.Fatalf("write unstaged version: %v", err)
 	}
@@ -228,7 +228,7 @@ func TestHelperFunctions(t *testing.T) {
 	if got := parsePorcelainPath("2 R. N... 100644 100644 100644 abc abc R100\tnew.txt\told.txt"); got != "new.txt" {
 		t.Fatalf("parsePorcelainPath for rename returned %q", got)
 	}
-	if got := combineDiffs("one", "two"); got != "one\n\ntwo" {
+	if got := combineDiffs("one", "two"); got != "one\ntwo" {
 		t.Fatalf("combineDiffs returned %q", got)
 	}
 	if got := parseNumstatCount("-"); got != 0 {
@@ -239,40 +239,3 @@ func TestHelperFunctions(t *testing.T) {
 	}
 }
 
-func initGitRepo(t *testing.T) string {
-	t.Helper()
-
-	repo := t.TempDir()
-	if err := runGitAllowError(repo, "init", "-b", "main"); err != nil {
-		runGit(t, repo, "init")
-		runGit(t, repo, "checkout", "-b", "main")
-	}
-	runGit(t, repo, "config", "user.name", "Agent Overflow")
-	runGit(t, repo, "config", "user.email", "agent-overflow@example.com")
-
-	filePath := filepath.Join(repo, "README.txt")
-	if err := os.WriteFile(filePath, []byte("hello\n"), 0o644); err != nil {
-		t.Fatalf("write repo file: %v", err)
-	}
-	runGit(t, repo, "add", "README.txt")
-	runGit(t, repo, "commit", "-m", "initial commit")
-
-	return repo
-}
-
-func runGit(t *testing.T, cwd string, args ...string) {
-	t.Helper()
-
-	if err := runGitAllowError(cwd, args...); err != nil {
-		t.Fatalf("git %v failed: %v", args, err)
-	}
-}
-
-func runGitAllowError(cwd string, args ...string) error {
-	cmd := exec.Command("git", args...)
-	cmd.Dir = cwd
-	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("%w\n%s", err, string(output))
-	}
-	return nil
-}

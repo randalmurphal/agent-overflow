@@ -111,8 +111,31 @@ func (as *ArtifactStore) writeHTML(path, html string) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("create artifact directory: %w", err)
 	}
-	if err := os.WriteFile(path, []byte(html), 0o644); err != nil {
+
+	// Atomic write: write to temp file, sync, rename. Prevents partial reads
+	// if the process crashes mid-write.
+	tmp := path + ".tmp"
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	if err != nil {
+		return fmt.Errorf("create artifact temp file: %w", err)
+	}
+	if _, err := f.WriteString(html); err != nil {
+		f.Close()
+		os.Remove(tmp)
 		return fmt.Errorf("write artifact html: %w", err)
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		os.Remove(tmp)
+		return fmt.Errorf("sync artifact html: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(tmp)
+		return fmt.Errorf("close artifact temp file: %w", err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		os.Remove(tmp)
+		return fmt.Errorf("rename artifact html: %w", err)
 	}
 	return nil
 }

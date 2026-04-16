@@ -150,7 +150,10 @@ func (r *Reactor) ChooseOption(threadID, requestID, optionID string) error {
 		Chosen: option.ID,
 		Title:  option.Title,
 	}
-	pending.resultCh <- choiceResolution{result: result}
+	select {
+	case pending.resultCh <- choiceResolution{result: result}:
+	default:
+	}
 	r.emitEvent(optionChosenEvent, map[string]string{
 		"threadId":  threadID,
 		"requestId": requestID,
@@ -160,7 +163,7 @@ func (r *Reactor) ChooseOption(threadID, requestID, optionID string) error {
 	return nil
 }
 
-// PendingRequest returns the oldest pending design-choice request for a thread.
+// PendingRequest returns a pending design-choice request for the thread, if any.
 func (r *Reactor) PendingRequest(threadID string) (DesignOptionsRequest, bool) {
 	threadID = strings.TrimSpace(threadID)
 	if threadID == "" {
@@ -198,7 +201,10 @@ func (r *Reactor) TeardownThread(threadID string) {
 	r.mu.Unlock()
 
 	for _, request := range pending {
-		request.resultCh <- choiceResolution{err: fmt.Errorf("design mode session ended")}
+		select {
+		case request.resultCh <- choiceResolution{err: fmt.Errorf("design mode session ended")}:
+		default:
+		}
 	}
 }
 

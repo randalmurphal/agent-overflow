@@ -1047,14 +1047,16 @@ func TestCodexWriteResponse(t *testing.T) {
 }
 
 func TestBuildApprovalResponseResultDecision(t *testing.T) {
+	// Codex-native decision values are passed through directly -- no translation.
 	tests := []struct {
 		name     string
 		decision string
 		want     string
 	}{
-		{name: "allow", decision: "allow", want: "accept"},
-		{name: "deny", decision: "deny", want: "decline"},
-		{name: "allow_session", decision: "allow_session", want: "acceptForSession"},
+		{name: "accept", decision: "accept", want: "accept"},
+		{name: "decline", decision: "decline", want: "decline"},
+		{name: "acceptForSession", decision: "acceptForSession", want: "acceptForSession"},
+		{name: "cancel", decision: "cancel", want: "cancel"},
 	}
 
 	for _, tt := range tests {

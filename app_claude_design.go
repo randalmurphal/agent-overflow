@@ -77,7 +77,10 @@ func (a *App) runClaudeDesignOptions(threadID string, rawInput json.RawMessage) 
 		return
 	}
 
-	result, err := a.reactor.PresentOptions(context.Background(), threadID, input)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	defer cancel()
+
+	result, err := a.reactor.PresentOptions(ctx, threadID, input)
 	if err != nil {
 		if err.Error() != "design mode session ended" {
 			a.emitProviderErrorEvent(threadID, fmt.Sprintf("design tool %s: %v", claudeDesignOptionsTool, err))

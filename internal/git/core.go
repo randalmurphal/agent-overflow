@@ -66,6 +66,9 @@ func (c *Core) CreateWorktree(cwd, path, branch string) error {
 	if strings.TrimSpace(branch) == "" {
 		return errors.New("git worktree branch is required")
 	}
+	if err := validateBranchName(branch); err != nil {
+		return err
+	}
 
 	_, stderr, err := c.Execute(cwd, "worktree", "add", "-b", branch, path)
 	if err != nil {
@@ -164,7 +167,15 @@ func (c *Core) runBinary(binary, cwd string, args ...string) (commandResult, err
 }
 
 func formatCommand(binary string, args ...string) string {
-	parts := append([]string{binary}, args...)
+	parts := make([]string, 0, 1+len(args))
+	parts = append(parts, binary)
+	for _, arg := range args {
+		if strings.ContainsAny(arg, " \t\"'\\") {
+			parts = append(parts, fmt.Sprintf("%q", arg))
+		} else {
+			parts = append(parts, arg)
+		}
+	}
 	return strings.Join(parts, " ")
 }
 

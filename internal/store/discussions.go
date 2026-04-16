@@ -7,8 +7,20 @@ import (
 
 const discussionProjectIDExpr = "COALESCE(project_id, '')"
 
+// discussionDefinitionPayload contains only the fields that belong in the
+// serialized JSON blob. The remaining fields (id, name, description, scope,
+// projectId, timestamps) are stored in their own columns and should not be
+// duplicated into the blob.
+type discussionDefinitionPayload struct {
+	Participants []DiscussionParticipant `json:"participants"`
+	Settings     DiscussionSettings      `json:"settings"`
+}
+
 func (s *Store) CreateDiscussionDef(def DiscussionDefinition) error {
-	definition, err := json.Marshal(def)
+	definition, err := json.Marshal(discussionDefinitionPayload{
+		Participants: def.Participants,
+		Settings:     def.Settings,
+	})
 	if err != nil {
 		return fmt.Errorf("store: marshal discussion definition %s: %w", def.Name, err)
 	}
@@ -73,7 +85,10 @@ func (s *Store) ListDiscussionDefs(scope, projectID string) ([]DiscussionDefinit
 }
 
 func (s *Store) UpdateDiscussionDef(previousName, previousScope, previousProjectID string, def DiscussionDefinition) error {
-	definition, err := json.Marshal(def)
+	definition, err := json.Marshal(discussionDefinitionPayload{
+		Participants: def.Participants,
+		Settings:     def.Settings,
+	})
 	if err != nil {
 		return fmt.Errorf("store: marshal discussion definition %s: %w", def.Name, err)
 	}

@@ -39,7 +39,18 @@ func buildApprovalResponseResult(resp provider.ApprovalResponse) (int64, any, er
 		}, nil
 	}
 
-	return rpcID, mapDecisionResult(resp.Decision), nil
+	// MCP elicitation responses use { action, content, _meta } format.
+	if resp.Elicitation != nil {
+		return rpcID, map[string]any{
+			"action":  resp.Elicitation.Action,
+			"content": resp.Elicitation.Content,
+			"_meta":   resp.Elicitation.Meta,
+		}, nil
+	}
+
+	// Codex expects native decision values directly: accept, acceptForSession,
+	// decline, cancel. No translation needed.
+	return rpcID, map[string]any{"decision": resp.Decision}, nil
 }
 
 func parseApprovalRequestID(requestID string) (int64, error) {
@@ -58,13 +69,3 @@ func buildCodexUserInputAnswers(answers map[string]provider.UserInputAnswer) map
 	return result
 }
 
-func mapDecisionResult(decision string) map[string]any {
-	switch decision {
-	case "allow":
-		return map[string]any{"decision": "accept"}
-	case "allow_session":
-		return map[string]any{"decision": "acceptForSession"}
-	default:
-		return map[string]any{"decision": "decline"}
-	}
-}

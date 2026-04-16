@@ -230,16 +230,13 @@ func combineDiffs(headDiff, cachedDiff string) string {
 	headDiff = strings.TrimSpace(headDiff)
 	cachedDiff = strings.TrimSpace(cachedDiff)
 
-	switch {
-	case headDiff == "":
-		return cachedDiff
-	case cachedDiff == "":
+	if cachedDiff == "" {
 		return headDiff
-	case strings.Contains(headDiff, cachedDiff):
-		return headDiff
-	default:
-		return headDiff + "\n\n" + cachedDiff
 	}
+	if headDiff == "" {
+		return cachedDiff
+	}
+	return headDiff + "\n" + cachedDiff
 }
 
 func parseBranchList(stdout, defaultBranch string, remoteNames []string) []GitBranch {

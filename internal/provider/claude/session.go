@@ -140,11 +140,14 @@ func (s *Session) Interrupt(ctx context.Context) error {
 }
 
 // RespondToApproval sends a tool-use approval decision back to the CLI.
+// Accepts both Codex-native values (accept, acceptForSession, decline, cancel)
+// and legacy values (allow, allow_session, deny) for backward compatibility.
 func (s *Session) RespondToApproval(ctx context.Context, resp provider.ApprovalResponse) error {
 	var behavior map[string]any
-	if resp.Decision == "allow" || resp.Decision == "allow_session" {
+	switch resp.Decision {
+	case "allow", "allow_session", "accept", "acceptForSession":
 		behavior = map[string]any{"behavior": "allow"}
-	} else {
+	default:
 		behavior = map[string]any{"behavior": "deny", "message": "User denied"}
 	}
 	msg := map[string]any{

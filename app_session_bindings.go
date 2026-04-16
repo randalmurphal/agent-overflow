@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"time"
@@ -23,8 +24,27 @@ func (a *App) SwitchThread(threadID string) (store.Thread, error) {
 
 	if !hasSession && thread.SessionRef != "" {
 		go func() {
-			if err := a.startSession(threadID); err != nil {
-				log.Printf("app: auto-resume failed for %s: %v", threadID, err)
+			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer cancel()
+
+			errCh := make(chan error, 1)
+			// The inner goroutine is intentionally not cancelled by the timeout.
+			// Session startup should run to completion to avoid orphaned provider
+			// state. The timeout only controls how long we wait before reporting
+			// failure to the user.
+			go func() {
+				errCh <- a.startSession(threadID)
+			}()
+
+			select {
+			case err := <-errCh:
+				if err != nil {
+					log.Printf("app: auto-resume failed for %s: %v", threadID, err)
+					a.emitAutoResumeError(threadID, err)
+				}
+			case <-ctx.Done():
+				err := fmt.Errorf("auto-resume timed out after 60s")
+				log.Printf("app: %v for %s", err, threadID)
 				a.emitAutoResumeError(threadID, err)
 			}
 		}()

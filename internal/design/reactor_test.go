@@ -3,6 +3,7 @@ package design
 import (
 	"context"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,7 +16,7 @@ type designEmission struct {
 }
 
 func TestReactorRenderStoresArtifactAndEmitsEvent(t *testing.T) {
-	reactor, emissions := newTestReactor(t)
+	reactor, collector := newTestReactor(t)
 
 	artifact, err := reactor.Render("thread-render", RenderInput{
 		HTML:        "<html><body>render</body></html>",
@@ -29,16 +30,17 @@ func TestReactorRenderStoresArtifactAndEmitsEvent(t *testing.T) {
 	if artifact.Kind != "render" {
 		t.Fatalf("artifact kind = %q, want render", artifact.Kind)
 	}
-	if len(*emissions) != 1 {
-		t.Fatalf("emissions len = %d, want 1", len(*emissions))
+	emissions := collector.getEmissions()
+	if len(emissions) != 1 {
+		t.Fatalf("emissions len = %d, want 1", len(emissions))
 	}
-	if (*emissions)[0].name != artifactRenderedEvent {
-		t.Fatalf("event name = %q, want %q", (*emissions)[0].name, artifactRenderedEvent)
+	if emissions[0].name != artifactRenderedEvent {
+		t.Fatalf("event name = %q, want %q", emissions[0].name, artifactRenderedEvent)
 	}
 
-	storedArtifact, ok := (*emissions)[0].data.(DesignArtifact)
+	storedArtifact, ok := emissions[0].data.(DesignArtifact)
 	if !ok {
-		t.Fatalf("event payload type = %T, want DesignArtifact", (*emissions)[0].data)
+		t.Fatalf("event payload type = %T, want DesignArtifact", emissions[0].data)
 	}
 	if storedArtifact.ID != artifact.ID {
 		t.Fatalf("emitted artifact ID = %q, want %q", storedArtifact.ID, artifact.ID)
@@ -46,7 +48,7 @@ func TestReactorRenderStoresArtifactAndEmitsEvent(t *testing.T) {
 }
 
 func TestReactorPresentOptionsCreatesInteractiveRequest(t *testing.T) {
-	reactor, emissions := newTestReactor(t)
+	reactor, collector := newTestReactor(t)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -78,7 +80,7 @@ func TestReactorPresentOptionsCreatesInteractiveRequest(t *testing.T) {
 		resultCh <- result
 	}()
 
-	request := waitForOptionsRequest(t, emissions)
+	request := waitForOptionsRequest(t, collector)
 	if request.ThreadID != "thread-options" {
 		t.Fatalf("ThreadID = %q, want thread-options", request.ThreadID)
 	}
@@ -229,18 +231,35 @@ func TestReactorValidationErrors(t *testing.T) {
 	}
 }
 
-func newTestReactor(t *testing.T) (*Reactor, *[]designEmission) {
+type emissionCollector struct {
+	mu        sync.Mutex
+	emissions []designEmission
+}
+
+func (ec *emissionCollector) append(name string, data any) {
+	ec.mu.Lock()
+	defer ec.mu.Unlock()
+	ec.emissions = append(ec.emissions, designEmission{name: name, data: data})
+}
+
+func (ec *emissionCollector) getEmissions() []designEmission {
+	ec.mu.Lock()
+	defer ec.mu.Unlock()
+	out := make([]designEmission, len(ec.emissions))
+	copy(out, ec.emissions)
+	return out
+}
+
+func newTestReactor(t *testing.T) (*Reactor, *emissionCollector) {
 	t.Helper()
 
 	st := newDesignTestStore(t)
-	var emissions []designEmission
+	collector := &emissionCollector{}
 	reactor := NewReactor(
 		NewArtifactStore(filepath.Join(t.TempDir(), "artifacts"), st),
-		func(eventName string, data any) {
-			emissions = append(emissions, designEmission{name: eventName, data: data})
-		},
+		collector.append,
 	)
-	return reactor, &emissions
+	return reactor, collector
 }
 
 func newDesignTestStore(t *testing.T) *store.Store {
@@ -279,12 +298,12 @@ func newDesignTestStore(t *testing.T) *store.Store {
 	return st
 }
 
-func waitForOptionsRequest(t *testing.T, emissions *[]designEmission) DesignOptionsRequest {
+func waitForOptionsRequest(t *testing.T, collector *emissionCollector) DesignOptionsRequest {
 	t.Helper()
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		for _, emission := range *emissions {
+		for _, emission := range collector.getEmissions() {
 			if emission.name != optionsPresentedEvent {
 				continue
 			}

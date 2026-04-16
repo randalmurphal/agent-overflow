@@ -7,7 +7,13 @@ import (
 )
 
 func (s *Store) InsertItem(item Item) error {
-	_, err := s.db.Exec(
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("store: begin insert item tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	_, err = tx.Exec(
 		`INSERT INTO items (id, thread_id, turn_index, item_index, kind, role, summary, payload_id, created_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		item.ID, item.ThreadID, item.TurnIndex, item.ItemIndex, item.Kind, item.Role, item.Summary,
@@ -17,8 +23,11 @@ func (s *Store) InsertItem(item Item) error {
 		return fmt.Errorf("store: insert item: %w", err)
 	}
 	// Touch the parent thread's updated_at.
-	if _, err := s.db.Exec(`UPDATE threads SET updated_at = ? WHERE id = ?`, item.CreatedAt, item.ThreadID); err != nil {
-		log.Printf("store: touch thread updated_at for %s: %v", item.ThreadID, err)
+	if _, err := tx.Exec(`UPDATE threads SET updated_at = ? WHERE id = ?`, item.CreatedAt, item.ThreadID); err != nil {
+		return fmt.Errorf("store: touch thread updated_at for %s: %w", item.ThreadID, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("store: commit insert item tx: %w", err)
 	}
 	return nil
 }
@@ -96,6 +105,23 @@ func (s *Store) FindTurnItem(threadID string, turnIndex int, kind string) (Item,
 		return Item{}, false, fmt.Errorf("store: find turn item: %w", err)
 	}
 	return item, true, nil
+}
+
+// FirstUserMessage returns the summary of the first user text message in the
+// given thread, or empty string if none exists.
+func (s *Store) FirstUserMessage(threadID string) (string, error) {
+	var summary string
+	err := s.db.QueryRow(
+		`SELECT summary FROM items WHERE thread_id = ? AND role = 'user' AND kind = 'text' ORDER BY turn_index, item_index LIMIT 1`,
+		threadID,
+	).Scan(&summary)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("store: first user message for thread %s: %w", threadID, err)
+	}
+	return summary, nil
 }
 
 func (s *Store) UpdateItemPayload(id, payloadID, summary string, createdAt int64) error {

@@ -11,6 +11,7 @@ import (
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/triage"
 )
 
@@ -97,7 +98,7 @@ func TestCreateThreadDefaultsInteractionMode(t *testing.T) {
 
 func TestCreateThreadDetectsGitProjectPath(t *testing.T) {
 	app := newTestAppWithStore(t)
-	repo := initAppGitRepo(t)
+	repo := testutil.InitGitRepo(t)
 	workspace := filepath.Join(repo, "nested", "workspace")
 	if err := os.MkdirAll(workspace, 0o755); err != nil {
 		t.Fatalf("MkdirAll() error = %v", err)

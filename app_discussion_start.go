@@ -166,7 +166,7 @@ func (a *App) linkDiscussionParticipants(channelID string, plans []discussionPar
 	for _, plan := range plans {
 		child := plan.thread
 		child.DiscussionID = channelID
-		child.UpdatedAt = maxInt64(child.UpdatedAt+1, time.Now().UnixMilli())
+		child.UpdatedAt = max(child.UpdatedAt+1, time.Now().UnixMilli())
 		if err := a.store.UpdateThread(child); err != nil {
 			return err
 		}
@@ -177,7 +177,7 @@ func (a *App) linkDiscussionParticipants(channelID string, plans []discussionPar
 func (a *App) persistDiscussionParent(parent store.Thread, channel store.Channel) error {
 	parent.InteractionMode = "discussion"
 	parent.DiscussionID = channel.ID
-	parent.UpdatedAt = maxInt64(parent.UpdatedAt+1, channel.CreatedAt)
+	parent.UpdatedAt = max(parent.UpdatedAt+1, channel.CreatedAt)
 	return a.store.UpdateThread(parent)
 }
 

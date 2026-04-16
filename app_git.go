@@ -22,7 +22,7 @@ func (a *App) GetGitStatus(threadID string) (gitops.GitStatus, error) {
 		return gitops.GitStatus{}, err
 	}
 
-	return gitops.NewCore().Status(workspace)
+	return a.gitCore().Status(workspace)
 }
 
 // GetWorkingTreeDiff returns the current combined staged and unstaged diff.
@@ -37,7 +37,7 @@ func (a *App) GetWorkingTreeDiff(threadID string) (string, error) {
 		return "", err
 	}
 
-	return gitops.NewCore().WorkingTreeDiff(workspace)
+	return a.gitCore().WorkingTreeDiff(workspace)
 }
 
 // GitListBranches lists repository branches from the thread's project root.
@@ -52,10 +52,12 @@ func (a *App) GitListBranches(threadID string) ([]gitops.GitBranch, error) {
 		return nil, err
 	}
 
-	return gitops.NewCore().ListBranches(project)
+	return a.gitCore().ListBranches(project)
 }
 
-// GitCommit stages and commits workspace changes.
+// GitCommit stages all changes and commits workspace changes.
+// WARNING: This stages everything (git add -A) before committing, including
+// untracked files. Use GitStageAll + a direct Commit call for more control.
 func (a *App) GitCommit(threadID, subject, body string) (gitops.GitActionResult, error) {
 	thread, err := a.store.GetThread(threadID)
 	if err != nil {
@@ -67,7 +69,10 @@ func (a *App) GitCommit(threadID, subject, body string) (gitops.GitActionResult,
 		return gitops.GitActionResult{}, err
 	}
 
-	core := gitops.NewCore()
+	core := a.gitCore()
+	if err := core.StageAll(workspace); err != nil {
+		return gitops.GitActionResult{}, err
+	}
 	sha, err := core.Commit(workspace, subject, body)
 	if err != nil {
 		return gitops.GitActionResult{}, err
@@ -79,6 +84,22 @@ func (a *App) GitCommit(threadID, subject, body string) (gitops.GitActionResult,
 		Commit:  sha,
 		Message: "Committed changes",
 	}, nil
+}
+
+// GitStageAll runs `git add -A` in the thread's workspace, staging all changes
+// including untracked files. Use before GitCommit when explicit staging is desired.
+func (a *App) GitStageAll(threadID string) error {
+	thread, err := a.store.GetThread(threadID)
+	if err != nil {
+		return err
+	}
+
+	_, workspace, err := resolveGitPaths(thread)
+	if err != nil {
+		return err
+	}
+
+	return a.gitCore().StageAll(workspace)
 }
 
 // GitPush pushes the workspace's current branch.
@@ -93,7 +114,7 @@ func (a *App) GitPush(threadID string) (gitops.GitActionResult, error) {
 		return gitops.GitActionResult{}, err
 	}
 
-	core := gitops.NewCore()
+	core := a.gitCore()
 	if err := core.Push(workspace); err != nil {
 		return gitops.GitActionResult{}, err
 	}
@@ -117,7 +138,7 @@ func (a *App) GitPull(threadID string) (gitops.GitActionResult, error) {
 		return gitops.GitActionResult{}, err
 	}
 
-	core := gitops.NewCore()
+	core := a.gitCore()
 	if err := core.Pull(workspace); err != nil {
 		return gitops.GitActionResult{}, err
 	}
@@ -141,7 +162,7 @@ func (a *App) GitCheckout(threadID, branch string) error {
 		return err
 	}
 
-	core := gitops.NewCore()
+	core := a.gitCore()
 	if err := core.Checkout(workspace, branch); err != nil {
 		return err
 	}
@@ -163,7 +184,7 @@ func (a *App) GitCreateBranch(threadID, name string) error {
 		return err
 	}
 
-	return gitops.NewCore().CreateBranch(project, name)
+	return a.gitCore().CreateBranch(project, name)
 }
 
 // GitCreatePR opens a pull request for the workspace's current branch.
@@ -178,7 +199,7 @@ func (a *App) GitCreatePR(threadID, title, body string) (gitops.GitActionResult,
 		return gitops.GitActionResult{}, err
 	}
 
-	core := gitops.NewCore()
+	core := a.gitCore()
 	url, err := core.CreatePR(workspace, title, body)
 	if err != nil {
 		return gitops.GitActionResult{}, err
@@ -205,7 +226,7 @@ func (a *App) GitCreateWorktree(threadID, branch string) (string, error) {
 	}
 
 	worktreePath := defaultWorktreePath(project, branch)
-	if err := gitops.NewCore().CreateWorktree(project, worktreePath, branch); err != nil {
+	if err := a.gitCore().CreateWorktree(project, worktreePath, branch); err != nil {
 		return "", err
 	}
 	thread.ProjectPath = project
@@ -236,7 +257,7 @@ func (a *App) GitRemoveWorktree(threadID string) error {
 		return fmt.Errorf("thread %s has no worktree path", threadID)
 	}
 
-	core := gitops.NewCore()
+	core := a.gitCore()
 	if err := core.RemoveWorktree(project, worktreePath); err != nil {
 		return err
 	}
@@ -262,7 +283,7 @@ func (a *App) GitListWorktrees(threadID string) ([]gitops.Worktree, error) {
 		return nil, err
 	}
 
-	return gitops.NewCore().ListWorktrees(project)
+	return a.gitCore().ListWorktrees(project)
 }
 
 func resolveGitPaths(thread store.Thread) (project string, workspace string, err error) {
@@ -281,17 +302,26 @@ func resolveGitPaths(thread store.Thread) (project string, workspace string, err
 	return project, workspace, nil
 }
 
-func detectProjectPath(workspacePath string) string {
+func (a *App) detectProjectPath(workspacePath string) string {
 	workspacePath = strings.TrimSpace(workspacePath)
 	if workspacePath == "" {
 		return ""
 	}
 
-	root, err := gitops.NewCore().RepositoryRoot(workspacePath)
+	root, err := a.gitCore().RepositoryRoot(workspacePath)
 	if err == nil && strings.TrimSpace(root) != "" {
 		return root
 	}
 	return workspacePath
+}
+
+// gitCore returns the shared Core instance, lazily creating one if ServiceStartup
+// has not run (e.g. in tests).
+func (a *App) gitCore() *gitops.Core {
+	if a.git != nil {
+		return a.git
+	}
+	return gitops.NewCore()
 }
 
 func sameFilesystemPath(left, right string) bool {

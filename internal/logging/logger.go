@@ -148,10 +148,10 @@ func (l *Logger) logValue(value any) error {
 	}
 
 	n, err := l.file.Write(data)
-	l.written += int64(n)
 	if err != nil {
 		return fmt.Errorf("logging: write: %w", err)
 	}
+	l.written += int64(n)
 
 	if l.written >= l.maxBytes {
 		if err := l.rotate(); err != nil {

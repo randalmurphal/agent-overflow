@@ -125,11 +125,49 @@ func ClassifyNotification(threadID, method string, params json.RawMessage) []pro
 
 	case "error":
 		errorMsg := readNestedString(params, "error", "message")
+		willRetry := readTopLevelBool(params, "willRetry")
+		if willRetry {
+			meta, _ := json.Marshal(map[string]any{
+				"willRetry": true,
+				"error":     json.RawMessage(params),
+			})
+			return []provider.ProviderEvent{{
+				Kind:      provider.EventSessionStatus,
+				ThreadID:  threadID,
+				Content:   "retrying",
+				Meta:      meta,
+				Timestamp: now,
+			}}
+		}
 		return []provider.ProviderEvent{{
 			Kind:      provider.EventError,
 			ThreadID:  threadID,
 			Content:   errorMsg,
 			Meta:      params,
+			Timestamp: now,
+		}}
+
+	case "turn/aborted":
+		turnID := readNestedString(params, "turn", "id")
+		meta, _ := json.Marshal(map[string]any{"aborted": true})
+		return []provider.ProviderEvent{{
+			Kind:      provider.EventTurnComplete,
+			ThreadID:  threadID,
+			TurnID:    turnID,
+			Meta:      meta,
+			Timestamp: now,
+		}}
+
+	case "item/updated":
+		itemID := readNestedString(params, "item", "id")
+		itemType := readNestedString(params, "item", "type")
+		return []provider.ProviderEvent{{
+			Kind:      provider.EventToolStart,
+			ThreadID:  threadID,
+			ItemID:    itemID,
+			ItemType:  itemType,
+			Meta:      params,
+			Replace:   true,
 			Timestamp: now,
 		}}
 
@@ -278,6 +316,7 @@ func readTopLevelIDString(data json.RawMessage, key string) string {
 
 // extractUsageFromTurn checks for usage/cost data in a turn/completed notification.
 // It looks for turn.usage or top-level usage fields.
+// When usage is found, it computes cost using the model from the turn metadata.
 // Returns nil if no usage data is found.
 func extractUsageFromTurn(params json.RawMessage) json.RawMessage {
 	var m map[string]json.RawMessage
@@ -285,22 +324,68 @@ func extractUsageFromTurn(params json.RawMessage) json.RawMessage {
 		return nil
 	}
 
+	var usageRaw json.RawMessage
+	var model string
+
 	// Check top-level "usage" field.
 	if raw, ok := m["usage"]; ok {
-		return raw
+		usageRaw = raw
 	}
 
 	// Check nested turn.usage field.
-	if turnRaw, ok := m["turn"]; ok {
-		var turn map[string]json.RawMessage
-		if json.Unmarshal(turnRaw, &turn) == nil {
-			if raw, ok := turn["usage"]; ok {
-				return raw
+	if usageRaw == nil {
+		if turnRaw, ok := m["turn"]; ok {
+			var turn map[string]json.RawMessage
+			if json.Unmarshal(turnRaw, &turn) == nil {
+				if raw, ok := turn["usage"]; ok {
+					usageRaw = raw
+				}
 			}
 		}
 	}
 
-	return nil
+	if usageRaw == nil {
+		return nil
+	}
+
+	// Extract model name for cost calculation.
+	model = readTopLevelString(params, "model")
+	if model == "" {
+		model = readNestedString(params, "turn", "model")
+	}
+
+	// Parse usage, compute cost, and enrich the data.
+	var usage provider.TokenUsage
+	if json.Unmarshal(usageRaw, &usage) == nil && model != "" {
+		cost := provider.CalculateCost(model, usage)
+		if cost > 0 {
+			usage.TotalCostUSD = cost
+			enriched, err := json.Marshal(usage)
+			if err == nil {
+				return enriched
+			}
+		}
+	}
+
+	return usageRaw
+}
+
+// readTopLevelBool reads a boolean from the top level of a JSON object.
+// Returns false if the key is missing or the value is not a boolean.
+func readTopLevelBool(data json.RawMessage, key string) bool {
+	var m map[string]json.RawMessage
+	if json.Unmarshal(data, &m) != nil {
+		return false
+	}
+	raw, ok := m[key]
+	if !ok {
+		return false
+	}
+	var b bool
+	if json.Unmarshal(raw, &b) != nil {
+		return false
+	}
+	return b
 }
 
 // readNestedString reads a string by walking through nested object keys.

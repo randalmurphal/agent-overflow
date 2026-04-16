@@ -2,6 +2,7 @@ package triage
 
 import (
 	"strings"
+	"unicode/utf8"
 )
 
 // DiffMeta is the JSON structure stored in payloads.meta for diffs.
@@ -113,13 +114,15 @@ func ExtractCommandOutputMeta(output string, command string, exitCode int) Comma
 // ExtractThinkingMeta extracts preview from a thinking block.
 func ExtractThinkingMeta(content string) ThinkingMeta {
 	tm := ThinkingMeta{
-		// Rough token estimate: chars / 4.
-		TokenCount: len(content) / 4,
+		// Rough token estimate: runes / 4.
+		TokenCount: utf8.RuneCountInString(content) / 4,
 	}
 
-	// Preview: first ~200 chars.
-	if len(content) > 200 {
-		tm.Preview = content[:200] + "..."
+	// Preview: first ~200 runes (truncating at byte boundaries can split
+	// multi-byte UTF-8 characters and produce invalid output).
+	runes := []rune(content)
+	if len(runes) > 200 {
+		tm.Preview = string(runes[:200]) + "..."
 	} else {
 		tm.Preview = content
 	}
