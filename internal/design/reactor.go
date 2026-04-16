@@ -2,12 +2,17 @@ package design
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
 
 	"github.com/google/uuid"
 )
+
+// ErrDesignSessionEnded is returned when a pending design-choice request is
+// cancelled because the design-mode session was torn down.
+var ErrDesignSessionEnded = errors.New("design mode session ended")
 
 const (
 	artifactRenderedEvent = "design:artifact"
@@ -202,7 +207,7 @@ func (r *Reactor) TeardownThread(threadID string) {
 
 	for _, request := range pending {
 		select {
-		case request.resultCh <- choiceResolution{err: fmt.Errorf("design mode session ended")}:
+		case request.resultCh <- choiceResolution{err: ErrDesignSessionEnded}:
 		default:
 		}
 	}
@@ -306,7 +311,10 @@ func (r *Reactor) resolveRequest(requestID string, resolution choiceResolution) 
 	r.mu.Unlock()
 
 	if ok {
-		request.resultCh <- resolution
+		select {
+		case request.resultCh <- resolution:
+		default:
+		}
 	}
 }
 

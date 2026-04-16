@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"log"
 
 	"agent-overflow/internal/provider"
@@ -18,6 +19,10 @@ func (a *App) sessionEventHandler(threadID, sessionToken string) func(provider.P
 		if evt.Kind == provider.EventTurnComplete {
 			if err := a.syncDiscussionTurn(threadID); err != nil {
 				log.Printf("discussion runtime: %v", err)
+				// Emit an error event so the UI knows the discussion sync
+				// failed. The turn-complete event still propagates (we can't
+				// block it), but the error should be visible.
+				a.emitErrorToThread(threadID, fmt.Sprintf("discussion sync failed: %v", err))
 			}
 		}
 

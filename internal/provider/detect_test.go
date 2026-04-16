@@ -47,7 +47,7 @@ func TestDetectProviderWithRealBinary(t *testing.T) {
 func TestDetectClaudeVersionWithMock(t *testing.T) {
 	script := createMockBinary(t, "#!/bin/sh\necho 'claude-code 1.2.3'")
 
-	version, err := DetectClaudeVersion(script)
+	version, err := detectClaudeVersion(script)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -59,7 +59,7 @@ func TestDetectClaudeVersionWithMock(t *testing.T) {
 func TestDetectCodexVersionWithMock(t *testing.T) {
 	script := createMockBinary(t, "#!/bin/sh\necho 'codex 0.9.1'")
 
-	version, err := DetectCodexVersion(script)
+	version, err := detectCodexVersion(script)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

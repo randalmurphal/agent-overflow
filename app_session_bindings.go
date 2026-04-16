@@ -1,12 +1,9 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"log"
-	"time"
 
-	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 )
 
@@ -23,29 +20,17 @@ func (a *App) SwitchThread(threadID string) (store.Thread, error) {
 	a.mu.Unlock()
 
 	if !hasSession && thread.SessionRef != "" {
+		// Auto-resume runs in a single goroutine without a wrapping timeout.
+		// The provider's own connect timeout handles the slow-start case.
+		// A previous implementation wrapped startSession in an inner goroutine
+		// with a separate timeout select — that caused the inner goroutine to
+		// keep running after the timeout fired, leaving a session in the map
+		// that the UI believed was dead. Retries could then deadlock on the
+		// sessionStart.done channel. Keeping it simple avoids both problems.
 		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-			defer cancel()
-
-			errCh := make(chan error, 1)
-			// The inner goroutine is intentionally not cancelled by the timeout.
-			// Session startup should run to completion to avoid orphaned provider
-			// state. The timeout only controls how long we wait before reporting
-			// failure to the user.
-			go func() {
-				errCh <- a.startSession(threadID)
-			}()
-
-			select {
-			case err := <-errCh:
-				if err != nil {
-					log.Printf("app: auto-resume failed for %s: %v", threadID, err)
-					a.emitAutoResumeError(threadID, err)
-				}
-			case <-ctx.Done():
-				err := fmt.Errorf("auto-resume timed out after 60s")
-				log.Printf("app: %v for %s", err, threadID)
-				a.emitAutoResumeError(threadID, err)
+			if err := a.startSession(threadID); err != nil {
+				log.Printf("app: auto-resume failed for %s: %v", threadID, err)
+				a.emitErrorToThread(threadID, fmt.Sprintf("auto-resume failed: %v", err))
 			}
 		}()
 	}
@@ -78,21 +63,3 @@ func (a *App) stopSession(threadID string) error {
 	return a.StopSession(threadID)
 }
 
-func (a *App) emitAutoResumeError(threadID string, err error) {
-	evt := provider.ProviderEvent{
-		Kind:      provider.EventError,
-		ThreadID:  threadID,
-		Content:   fmt.Sprintf("auto-resume failed: %v", err),
-		Timestamp: time.Now(),
-	}
-
-	if a.triage != nil {
-		if handleErr := a.triage.Handle(evt); handleErr != nil {
-			log.Printf("app: emit auto-resume error for %s: %v", threadID, handleErr)
-		}
-		return
-	}
-	if a.app != nil {
-		a.app.Event.Emit("provider:event", evt)
-	}
-}

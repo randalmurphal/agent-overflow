@@ -95,22 +95,3 @@ func (s *Store) ListPayloadMetas(threadID string) ([]PayloadMeta, error) {
 	}
 	return metas, rows.Err()
 }
-
-func (s *Store) turnPayloadID(threadID string, turnIndex int, kind string) (string, error) {
-	var payloadID string
-	err := s.db.QueryRow(
-		`SELECT payload_id
-		 FROM items
-		 WHERE thread_id = ? AND turn_index = ? AND kind = ? AND payload_id IS NOT NULL
-		 ORDER BY item_index DESC
-		 LIMIT 1`,
-		threadID, turnIndex, kind,
-	).Scan(&payloadID)
-	if err == sql.ErrNoRows {
-		return "", nil
-	}
-	if err != nil {
-		return "", fmt.Errorf("store: query turn payload id: %w", err)
-	}
-	return payloadID, nil
-}

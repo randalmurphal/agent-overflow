@@ -1,6 +1,12 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"log"
+	"time"
+
+	"agent-overflow/internal/provider"
+)
 
 func appendError(errs []error, err error) []error {
 	if err == nil {
@@ -14,4 +20,25 @@ func wrapLifecycleError(action string, err error) error {
 		return nil
 	}
 	return fmt.Errorf("%s: %w", action, err)
+}
+
+// emitErrorToThread sends a provider error event for the given thread through
+// the triage layer if available, falling back to direct Wails event emission.
+func (a *App) emitErrorToThread(threadID, content string) {
+	evt := provider.ProviderEvent{
+		Kind:      provider.EventError,
+		ThreadID:  threadID,
+		Content:   content,
+		Timestamp: time.Now(),
+	}
+
+	if a.triage != nil {
+		if err := a.triage.Handle(evt); err != nil {
+			log.Printf("emit error to thread %s: %v", threadID, err)
+		}
+		return
+	}
+	if a.app != nil {
+		a.app.Event.Emit("provider:event", evt)
+	}
 }

@@ -2,6 +2,26 @@ package store
 
 import "fmt"
 
+const threadColumns = `id, title, provider, COALESCE(session_ref, ''), workspace_path, model,
+    project_path, COALESCE(worktree_path, ''), COALESCE(branch, ''),
+    interaction_mode, COALESCE(discussion_id, ''), COALESCE(parent_thread_id, ''),
+    created_at, updated_at, archived`
+
+func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
+	var t Thread
+	var archived int
+	if err := scanner.Scan(
+		&t.ID, &t.Title, &t.Provider, &t.SessionRef, &t.WorkspacePath, &t.Model,
+		&t.ProjectPath, &t.WorktreePath, &t.Branch,
+		&t.InteractionMode, &t.DiscussionID, &t.ParentThreadID,
+		&t.CreatedAt, &t.UpdatedAt, &archived,
+	); err != nil {
+		return Thread{}, err
+	}
+	t.Archived = archived != 0
+	return t, nil
+}
+
 func (s *Store) CreateThread(t Thread) error {
 	t.InteractionMode = normalizeInteractionMode(t.InteractionMode)
 	_, err := s.db.Exec(
@@ -22,32 +42,18 @@ func (s *Store) CreateThread(t Thread) error {
 
 func (s *Store) GetThread(id string) (Thread, error) {
 	row := s.db.QueryRow(
-		`SELECT id, title, provider, COALESCE(session_ref, ''), workspace_path, model,
-		    project_path, COALESCE(worktree_path, ''), COALESCE(branch, ''),
-		    interaction_mode, COALESCE(discussion_id, ''), COALESCE(parent_thread_id, ''),
-		    created_at, updated_at, archived
-		 FROM threads WHERE id = ?`, id,
+		`SELECT `+threadColumns+` FROM threads WHERE id = ?`, id,
 	)
-	var t Thread
-	var archived int
-	err := row.Scan(&t.ID, &t.Title, &t.Provider, &t.SessionRef, &t.WorkspacePath, &t.Model,
-		&t.ProjectPath, &t.WorktreePath, &t.Branch,
-		&t.InteractionMode, &t.DiscussionID, &t.ParentThreadID,
-		&t.CreatedAt, &t.UpdatedAt, &archived)
+	t, err := scanThread(row)
 	if err != nil {
 		return Thread{}, fmt.Errorf("store: get thread %s: %w", id, err)
 	}
-	t.Archived = archived != 0
 	return t, nil
 }
 
 func (s *Store) ListThreads() ([]Thread, error) {
 	rows, err := s.db.Query(
-		`SELECT id, title, provider, COALESCE(session_ref, ''), workspace_path, model,
-		    project_path, COALESCE(worktree_path, ''), COALESCE(branch, ''),
-		    interaction_mode, COALESCE(discussion_id, ''), COALESCE(parent_thread_id, ''),
-		    created_at, updated_at, archived
-		 FROM threads WHERE archived = 0 ORDER BY updated_at DESC`,
+		`SELECT ` + threadColumns + ` FROM threads WHERE archived = 0 ORDER BY updated_at DESC`,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("store: list threads: %w", err)
@@ -56,15 +62,10 @@ func (s *Store) ListThreads() ([]Thread, error) {
 
 	var threads []Thread
 	for rows.Next() {
-		var t Thread
-		var archived int
-		if err := rows.Scan(&t.ID, &t.Title, &t.Provider, &t.SessionRef, &t.WorkspacePath, &t.Model,
-			&t.ProjectPath, &t.WorktreePath, &t.Branch,
-			&t.InteractionMode, &t.DiscussionID, &t.ParentThreadID,
-			&t.CreatedAt, &t.UpdatedAt, &archived); err != nil {
+		t, err := scanThread(rows)
+		if err != nil {
 			return nil, fmt.Errorf("store: scan thread row: %w", err)
 		}
-		t.Archived = archived != 0
 		threads = append(threads, t)
 	}
 	return threads, rows.Err()
@@ -72,11 +73,7 @@ func (s *Store) ListThreads() ([]Thread, error) {
 
 func (s *Store) ListChildThreads(parentID string) ([]Thread, error) {
 	rows, err := s.db.Query(
-		`SELECT id, title, provider, COALESCE(session_ref, ''), workspace_path, model,
-		    project_path, COALESCE(worktree_path, ''), COALESCE(branch, ''),
-		    interaction_mode, COALESCE(discussion_id, ''), COALESCE(parent_thread_id, ''),
-		    created_at, updated_at, archived
-		 FROM threads WHERE parent_thread_id = ? ORDER BY created_at ASC`,
+		`SELECT `+threadColumns+` FROM threads WHERE parent_thread_id = ? ORDER BY created_at ASC`,
 		parentID,
 	)
 	if err != nil {
@@ -86,15 +83,10 @@ func (s *Store) ListChildThreads(parentID string) ([]Thread, error) {
 
 	var threads []Thread
 	for rows.Next() {
-		var t Thread
-		var archived int
-		if err := rows.Scan(&t.ID, &t.Title, &t.Provider, &t.SessionRef, &t.WorkspacePath, &t.Model,
-			&t.ProjectPath, &t.WorktreePath, &t.Branch,
-			&t.InteractionMode, &t.DiscussionID, &t.ParentThreadID,
-			&t.CreatedAt, &t.UpdatedAt, &archived); err != nil {
+		t, err := scanThread(rows)
+		if err != nil {
 			return nil, fmt.Errorf("store: scan child thread row: %w", err)
 		}
-		t.Archived = archived != 0
 		threads = append(threads, t)
 	}
 	return threads, rows.Err()

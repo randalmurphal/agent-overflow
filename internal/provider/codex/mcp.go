@@ -87,6 +87,13 @@ func (s *DesignMCPServer) UnregisterThread(threadID string) {
 	}
 }
 
+// RegisteredThreadCount returns the number of threads with active MCP registrations.
+func (s *DesignMCPServer) RegisteredThreadCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.threadToToken)
+}
+
 // Close shuts down the HTTP server.
 func (s *DesignMCPServer) Close() error {
 	s.mu.Lock()

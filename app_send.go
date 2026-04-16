@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"agent-overflow/internal/store"
@@ -10,23 +11,30 @@ import (
 	"github.com/google/uuid"
 )
 
+// sendMu serialises the read-turn-index / insert-item sequence so concurrent
+// sends on different threads don't block unrelated App operations behind a.mu.
+// SQLite itself serialises the INSERT (SetMaxOpenConns(1)), but this mutex
+// keeps the read+write atomic from our side.
+var sendMu sync.Mutex
+
 func (a *App) sendMessage(threadID string, content string) error {
 	if a.sendMessageFn != nil {
 		return a.sendMessageFn(threadID, content)
 	}
 
+	// Grab the session reference under a.mu (fast), then release immediately.
 	a.mu.Lock()
 	sess, ok := a.sessions[threadID]
+	a.mu.Unlock()
 	if !ok {
-		a.mu.Unlock()
 		return fmt.Errorf("no active session for thread %s", threadID)
 	}
 
-	// Hold the mutex across the turn-index read/update so concurrent sends do
-	// not persist duplicate user item positions.
+	// DB operations happen outside a.mu so other App methods are not blocked.
+	sendMu.Lock()
 	turnIndex, err := a.store.LastTurnIndex(threadID)
 	if err != nil {
-		a.mu.Unlock()
+		sendMu.Unlock()
 		return fmt.Errorf("send message: get turn index: %w", err)
 	}
 	turnIndex++
@@ -43,10 +51,10 @@ func (a *App) sendMessage(threadID string, content string) error {
 		CreatedAt: now,
 	}
 	if err := a.store.InsertItem(userItem); err != nil {
-		a.mu.Unlock()
+		sendMu.Unlock()
 		return fmt.Errorf("send message: persist user message: %w", err)
 	}
-	a.mu.Unlock()
+	sendMu.Unlock()
 
 	switch {
 	case sess.claude != nil:

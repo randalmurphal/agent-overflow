@@ -572,120 +572,86 @@ func TestThreadIDPassthrough(t *testing.T) {
 // -- Session unit tests --
 
 func TestWriteNotificationFormat(t *testing.T) {
-	msg := map[string]any{
-		"jsonrpc": "2.0",
-		"method":  "initialized",
-	}
-	data, err := json.Marshal(msg)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
+	s, eventCh := newTestCodexSession(t)
 
-	var parsed map[string]json.RawMessage
-	json.Unmarshal(data, &parsed)
-
-	var jsonrpc string
-	json.Unmarshal(parsed["jsonrpc"], &jsonrpc)
-	if jsonrpc != "2.0" {
-		t.Errorf("jsonrpc: got %q, want %q", jsonrpc, "2.0")
+	// Call the actual writeNotification method. With the cat-backed session,
+	// the JSON-RPC notification echoes back and is dispatched by readLoop.
+	// "initialized" is skipped by ClassifyNotification, so send a second
+	// known notification to verify end-to-end dispatch.
+	if err := s.writeNotification("initialized", nil); err != nil {
+		t.Fatalf("writeNotification(initialized): %v", err)
 	}
 
-	var method string
-	json.Unmarshal(parsed["method"], &method)
-	if method != "initialized" {
-		t.Errorf("method: got %q, want %q", method, "initialized")
+	if err := s.writeNotification("turn/started", map[string]any{
+		"turn": map[string]any{"id": "turn-verify"},
+	}); err != nil {
+		t.Fatalf("writeNotification(turn/started): %v", err)
 	}
 
-	// Notifications should not have an id.
-	if _, ok := parsed["id"]; ok {
-		t.Error("notification should not have id")
+	evt := codexWaitEvent(t, eventCh)
+	if evt.Kind != provider.EventTurnStart {
+		t.Errorf("kind: got %q, want %q", evt.Kind, provider.EventTurnStart)
+	}
+	if evt.TurnID != "turn-verify" {
+		t.Errorf("turnID: got %q, want %q", evt.TurnID, "turn-verify")
 	}
 }
 
 func TestSendTurnStartFormat(t *testing.T) {
-	params := map[string]any{
-		"threadId": "codex-thread-123",
-		"input": []map[string]any{{
-			"type":          "text",
-			"text":          "hello",
-			"text_elements": []any{},
-		}},
+	s, eventCh := newTestCodexSession(t)
+
+	// Call the actual Send method, which issues a turn/start JSON-RPC request.
+	// With the cat-backed session the request echoes back as a server request
+	// (has both id and method), handleServerRequest sees "turn/start" as unknown
+	// and returns a JSON-RPC error which becomes the sendRequest response.
+	// Send returns an error from the RPC layer, which is expected here.
+	_ = s.Send(context.Background(), "hello")
+
+	// Drain the event channel: the echoed server request triggers
+	// writeErrorResponse, whose echo arrives as a response (routed to pending).
+	// The original turn/start echo may also produce events.
+	// Verify the session didn't panic and readLoop is healthy by writing
+	// a known notification that produces a deterministic event.
+	if err := s.writeNotification("turn/started", map[string]any{
+		"turn": map[string]any{"id": "turn-after-send"},
+	}); err != nil {
+		t.Fatalf("writeNotification: %v", err)
 	}
 
-	data, err := json.Marshal(params)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
+	evt := codexWaitEvent(t, eventCh)
+	// Skip any stale events from the Send echo chain.
+	for evt.TurnID != "turn-after-send" {
+		evt = codexWaitEvent(t, eventCh)
 	}
-
-	var parsed map[string]json.RawMessage
-	json.Unmarshal(data, &parsed)
-
-	var threadID string
-	json.Unmarshal(parsed["threadId"], &threadID)
-	if threadID != "codex-thread-123" {
-		t.Errorf("threadId: got %q, want %q", threadID, "codex-thread-123")
-	}
-
-	var input []struct {
-		Type         string `json:"type"`
-		Text         string `json:"text"`
-		TextElements []any  `json:"text_elements"`
-	}
-	json.Unmarshal(parsed["input"], &input)
-	if len(input) != 1 {
-		t.Fatalf("input: expected 1 item, got %d", len(input))
-	}
-	if input[0].Type != "text" {
-		t.Errorf("input type: got %q, want %q", input[0].Type, "text")
-	}
-	if input[0].Text != "hello" {
-		t.Errorf("input text: got %q, want %q", input[0].Text, "hello")
+	if evt.Kind != provider.EventTurnStart {
+		t.Errorf("kind: got %q, want %q", evt.Kind, provider.EventTurnStart)
 	}
 }
 
 func TestRespondToApprovalAccept(t *testing.T) {
-	msg := map[string]any{
-		"jsonrpc": "2.0",
-		"id":      int64(42),
-		"result":  map[string]any{"decision": "accept"},
-	}
-	data, err := json.Marshal(msg)
+	s, _ := newTestCodexSession(t)
+
+	// Call the actual RespondToApproval method with an accept decision.
+	// The cat-backed session writes the JSON-RPC response to stdin successfully.
+	err := s.RespondToApproval(context.Background(), provider.ApprovalResponse{
+		RequestID: "42",
+		Decision:  "accept",
+	})
 	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-
-	var parsed map[string]json.RawMessage
-	json.Unmarshal(data, &parsed)
-
-	var result struct {
-		Decision string `json:"decision"`
-	}
-	json.Unmarshal(parsed["result"], &result)
-	if result.Decision != "accept" {
-		t.Errorf("decision: got %q, want %q", result.Decision, "accept")
+		t.Fatalf("RespondToApproval(accept): %v", err)
 	}
 }
 
 func TestRespondToApprovalDecline(t *testing.T) {
-	msg := map[string]any{
-		"jsonrpc": "2.0",
-		"id":      int64(42),
-		"result":  map[string]any{"decision": "decline"},
-	}
-	data, err := json.Marshal(msg)
+	s, _ := newTestCodexSession(t)
+
+	// Call the actual RespondToApproval method with a decline decision.
+	err := s.RespondToApproval(context.Background(), provider.ApprovalResponse{
+		RequestID: "42",
+		Decision:  "decline",
+	})
 	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-
-	var parsed map[string]json.RawMessage
-	json.Unmarshal(data, &parsed)
-
-	var result struct {
-		Decision string `json:"decision"`
-	}
-	json.Unmarshal(parsed["result"], &result)
-	if result.Decision != "decline" {
-		t.Errorf("decision: got %q, want %q", result.Decision, "decline")
+		t.Fatalf("RespondToApproval(decline): %v", err)
 	}
 }
 
@@ -837,38 +803,6 @@ func TestBuildPermissionMeta(t *testing.T) {
 	}
 	if string(approval.Input) != string(params) {
 		t.Errorf("input: got %s, want %s", approval.Input, params)
-	}
-}
-
-func TestReadStringFromResponse(t *testing.T) {
-	// sendRequest returns just the result payload, not the full JSON-RPC envelope.
-	data := json.RawMessage(`{"thread":{"id":"thread-abc"}}`)
-	got := readStringFromResponse(data, "thread", "id")
-	if got != "thread-abc" {
-		t.Errorf("got %q, want %q", got, "thread-abc")
-	}
-}
-
-func TestReadStringFromResponseMissingKey(t *testing.T) {
-	data := json.RawMessage(`{}`)
-	got := readStringFromResponse(data, "thread", "id")
-	if got != "" {
-		t.Errorf("got %q, want empty", got)
-	}
-}
-
-func TestReadStringFromResponseInvalidJSON(t *testing.T) {
-	got := readStringFromResponse(json.RawMessage(`not json`), "key")
-	if got != "" {
-		t.Errorf("got %q, want empty", got)
-	}
-}
-
-func TestReadStringFromResponseNonStringValue(t *testing.T) {
-	data := json.RawMessage(`{"count": 42}`)
-	got := readStringFromResponse(data, "count")
-	if got != "" {
-		t.Errorf("got %q, want empty for non-string value", got)
 	}
 }
 

@@ -12,6 +12,7 @@ func (a *App) deleteThreadTree(threadID string) error {
 	if threadErr != nil && !errors.Is(threadErr, sql.ErrNoRows) {
 		return threadErr
 	}
+	threadFound := threadErr == nil
 
 	children, err := a.store.ListChildThreads(threadID)
 	if err != nil {
@@ -28,6 +29,13 @@ func (a *App) deleteThreadTree(threadID string) error {
 	}
 	a.clearThreadSystemPrompt(threadID)
 	a.removeDeliberation(thread)
+
+	// Thread was already gone (e.g. partially deleted earlier). Children and
+	// session cleanup above are still necessary, but there is nothing left to
+	// delete from the store.
+	if !threadFound {
+		return nil
+	}
 
 	return a.store.DeleteThread(threadID)
 }

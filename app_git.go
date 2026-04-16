@@ -226,7 +226,8 @@ func (a *App) GitCreateWorktree(threadID, branch string) (string, error) {
 	}
 
 	worktreePath := defaultWorktreePath(project, branch)
-	if err := a.gitCore().CreateWorktree(project, worktreePath, branch); err != nil {
+	core := a.gitCore()
+	if err := core.CreateWorktree(project, worktreePath, branch); err != nil {
 		return "", err
 	}
 	thread.ProjectPath = project
@@ -235,6 +236,9 @@ func (a *App) GitCreateWorktree(threadID, branch string) (string, error) {
 	thread.Branch = strings.TrimSpace(branch)
 	thread.UpdatedAt = time.Now().UnixMilli()
 	if err := a.store.UpdateThread(thread); err != nil {
+		// Worktree was created on disk but the store update failed. Clean up
+		// so we don't leak a worktree directory.
+		_ = core.RemoveWorktree(project, worktreePath)
 		return "", err
 	}
 	return worktreePath, nil
@@ -263,7 +267,7 @@ func (a *App) GitRemoveWorktree(threadID string) error {
 	}
 
 	thread.WorktreePath = ""
-	if sameFilesystemPath(thread.WorkspacePath, worktreePath) {
+	if gitops.SameFilesystemPath(thread.WorkspacePath, worktreePath) {
 		thread.WorkspacePath = project
 		thread.Branch = currentGitBranch(core, project)
 	}
@@ -322,18 +326,6 @@ func (a *App) gitCore() *gitops.Core {
 		return a.git
 	}
 	return gitops.NewCore()
-}
-
-func sameFilesystemPath(left, right string) bool {
-	return canonicalGitPath(left) == canonicalGitPath(right)
-}
-
-func canonicalGitPath(path string) string {
-	resolved, err := filepath.EvalSymlinks(path)
-	if err == nil {
-		return filepath.Clean(resolved)
-	}
-	return filepath.Clean(path)
 }
 
 func currentGitBranch(core *gitops.Core, cwd string) string {

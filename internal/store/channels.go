@@ -51,6 +51,10 @@ func (s *Store) DeleteChannel(id string) error {
 	return requireRowsAffected(result, fmt.Sprintf("store: delete channel %s", id))
 }
 
+// InsertChannelMessage inserts a message with a caller-supplied sequence number.
+// Production code should use InsertChannelMessageAtomic instead to avoid
+// sequence collisions under concurrency. This method is retained for tests that
+// need deterministic sequence values.
 func (s *Store) InsertChannelMessage(msg ChannelMessage) error {
 	_, err := s.db.Exec(
 		`INSERT INTO channel_messages (

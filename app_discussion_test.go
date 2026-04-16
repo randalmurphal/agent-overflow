@@ -681,3 +681,34 @@ func TestSessionEventHandlerMirrorsDiscussionTurnsIntoChannelAndConcludes(t *tes
 		t.Fatal("expected posting to concluded discussion channel to fail")
 	}
 }
+
+func TestStartDiscussionRejectsEmptyName(t *testing.T) {
+	app := newTestAppWithStore(t)
+	app.registry = discussion.NewRegistry(app.store)
+	app.channels = discussion.NewChannelService(app.store)
+
+	thread := testThread("thread-discussion-empty-name")
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{name: "empty string", input: ""},
+		{name: "whitespace only", input: "   "},
+		{name: "tabs and spaces", input: "\t  \t"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := app.StartDiscussion(thread.ID, tt.input)
+			if err == nil {
+				t.Fatal("StartDiscussion() error = nil, want error for empty name")
+			}
+			if !strings.Contains(err.Error(), "discussion name is required") {
+				t.Fatalf("StartDiscussion() error = %v, want 'discussion name is required'", err)
+			}
+		})
+	}
+}

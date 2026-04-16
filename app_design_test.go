@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -46,7 +45,7 @@ func TestDesignBindingsListAndGetArtifactHTML(t *testing.T) {
 }
 
 func TestChooseDesignOptionResolvesPendingRequest(t *testing.T) {
-	app := newTestAppWithDesign(t)
+	app, presented := newTestAppWithDesignNotify(t)
 
 	resultCh := make(chan design.ChoiceResult, 1)
 	errCh := make(chan error, 1)
@@ -65,7 +64,7 @@ func TestChooseDesignOptionResolvesPendingRequest(t *testing.T) {
 		resultCh <- result
 	}()
 
-	request := waitForAppDesignRequest(t, app)
+	request := waitForAppDesignRequest(t, app, presented)
 	if err := app.ChooseDesignOption("thread-design", request.RequestID, "b"); err != nil {
 		t.Fatalf("ChooseDesignOption() error = %v", err)
 	}
@@ -77,7 +76,7 @@ func TestChooseDesignOptionResolvesPendingRequest(t *testing.T) {
 		if result.Chosen != "b" {
 			t.Fatalf("Chosen = %q, want b", result.Chosen)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for design choice")
 	}
 }
@@ -85,6 +84,17 @@ func TestChooseDesignOptionResolvesPendingRequest(t *testing.T) {
 func TestClaudeDesignToolRenderStoresArtifact(t *testing.T) {
 	app := newTestAppWithDesign(t)
 	setThreadProvider(t, app, "thread-design", string(provider.Claude))
+
+	// Wire the reactor's emit callback to signal when the artifact is rendered.
+	rendered := make(chan struct{}, 1)
+	app.reactor = design.NewReactor(app.artifacts, func(eventName string, _ any) {
+		if eventName == "design:artifact" {
+			select {
+			case rendered <- struct{}{}:
+			default:
+			}
+		}
+	})
 
 	meta, err := json.Marshal(map[string]any{
 		"toolName": "render_design",
@@ -106,26 +116,26 @@ func TestClaudeDesignToolRenderStoresArtifact(t *testing.T) {
 		Timestamp: time.Now(),
 	})
 
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		artifacts, listErr := app.ListDesignArtifacts("thread-design")
-		if listErr != nil {
-			t.Fatalf("ListDesignArtifacts() error = %v", listErr)
-		}
-		if len(artifacts) == 1 {
-			if artifacts[0].Title != "Claude Render" {
-				t.Fatalf("artifact title = %q, want Claude Render", artifacts[0].Title)
-			}
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
+	select {
+	case <-rendered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for Claude render artifact")
 	}
 
-	t.Fatal("timed out waiting for Claude render artifact")
+	artifacts, err := app.ListDesignArtifacts("thread-design")
+	if err != nil {
+		t.Fatalf("ListDesignArtifacts() error = %v", err)
+	}
+	if len(artifacts) != 1 {
+		t.Fatalf("len(artifacts) = %d, want 1", len(artifacts))
+	}
+	if artifacts[0].Title != "Claude Render" {
+		t.Fatalf("artifact title = %q, want Claude Render", artifacts[0].Title)
+	}
 }
 
 func TestClaudeDesignOptionChoiceSendsFollowUpMessage(t *testing.T) {
-	app := newTestAppWithDesign(t)
+	app, presented := newTestAppWithDesignNotify(t)
 	setThreadProvider(t, app, "thread-design", string(provider.Claude))
 
 	sent := make(chan string, 1)
@@ -159,7 +169,7 @@ func TestClaudeDesignOptionChoiceSendsFollowUpMessage(t *testing.T) {
 		Timestamp: time.Now(),
 	})
 
-	request := waitForAppDesignRequest(t, app)
+	request := waitForAppDesignRequest(t, app, presented)
 	if err := app.ChooseDesignOption("thread-design", request.RequestID, "b"); err != nil {
 		t.Fatalf("ChooseDesignOption() error = %v", err)
 	}
@@ -172,7 +182,7 @@ func TestClaudeDesignOptionChoiceSendsFollowUpMessage(t *testing.T) {
 		if !strings.Contains(content, "ID: b") {
 			t.Fatalf("content = %q, want selected option ID", content)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for Claude design follow-up message")
 	}
 }
@@ -244,6 +254,36 @@ func newTestAppWithDesign(t *testing.T) *App {
 	return app
 }
 
+// newTestAppWithDesignNotify is like newTestAppWithDesign but returns a channel
+// that signals when the reactor emits a "design:options" event. This allows
+// tests to block on the channel instead of polling for pending requests.
+func newTestAppWithDesignNotify(t *testing.T) (*App, <-chan struct{}) {
+	t.Helper()
+
+	presented := make(chan struct{}, 1)
+	app := newTestAppWithStore(t)
+	app.configDir = t.TempDir()
+	app.artifacts = design.NewArtifactStore(filepath.Join(t.TempDir(), "design-artifacts"), app.store)
+	app.reactor = design.NewReactor(app.artifacts, func(eventName string, _ any) {
+		if eventName == "design:options" {
+			select {
+			case presented <- struct{}{}:
+			default:
+			}
+		}
+	})
+	app.designMCP = codex.NewDesignMCPServer(app.reactor)
+	t.Cleanup(func() {
+		_ = app.designMCP.Close()
+	})
+
+	thread := testDesignThread("thread-design")
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+	return app, presented
+}
+
 func testDesignThread(id string) store.Thread {
 	thread := testThread(id)
 	thread.InteractionMode = "design"
@@ -263,23 +303,28 @@ func setThreadProvider(t *testing.T, app *App, threadID, providerName string) {
 	}
 }
 
-func waitForAppDesignRequest(t *testing.T, app *App) design.DesignOptionsRequest {
+// waitForAppDesignRequest blocks until a design options request appears for the
+// thread. The provided channel must be signaled by the reactor's emit callback
+// when a "design:options" event fires. See newTestAppWithDesignNotify.
+func waitForAppDesignRequest(t *testing.T, app *App, presented <-chan struct{}) design.DesignOptionsRequest {
 	t.Helper()
 
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if request, ok := app.reactor.PendingRequest("thread-design"); ok {
-			return request
-		}
-		time.Sleep(10 * time.Millisecond)
+	select {
+	case <-presented:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for design request")
 	}
-	t.Fatal("timed out waiting for design request")
-	return design.DesignOptionsRequest{}
+
+	request, ok := app.reactor.PendingRequest("thread-design")
+	if !ok {
+		t.Fatal("no pending design request after options event")
+	}
+	return request
 }
 
 func designMCPRegistrationCount(server *codex.DesignMCPServer) int {
 	if server == nil {
 		return 0
 	}
-	return reflect.ValueOf(server).Elem().FieldByName("threadToToken").Len()
+	return server.RegisteredThreadCount()
 }

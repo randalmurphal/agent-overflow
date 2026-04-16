@@ -53,11 +53,15 @@ func RunGitAllowError(cwd string, args ...string) error {
 
 // CanonicalPath resolves symlinks and cleans the path, suitable for comparing
 // filesystem paths that may go through /tmp symlinks on macOS.
+//
+// This duplicates git.CanonicalPath intentionally to avoid a circular import
+// (internal/git test files import testutil, so testutil cannot import
+// internal/git). Production code should use git.CanonicalPath or
+// git.SameFilesystemPath directly.
 func CanonicalPath(t *testing.T, path string) string {
 	if t != nil {
 		t.Helper()
 	}
-
 	resolved, err := filepath.EvalSymlinks(path)
 	if err == nil {
 		return filepath.Clean(resolved)

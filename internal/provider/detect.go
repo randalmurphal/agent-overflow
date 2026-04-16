@@ -43,9 +43,9 @@ func DetectProvider(name, binaryPath string) ProviderStatus {
 
 	switch name {
 	case string(Claude):
-		version, versionErr = DetectClaudeVersion(resolvedPath)
+		version, versionErr = detectClaudeVersion(resolvedPath)
 	case string(Codex):
-		version, versionErr = DetectCodexVersion(resolvedPath)
+		version, versionErr = detectCodexVersion(resolvedPath)
 	default:
 		version, versionErr = runVersionCommand(resolvedPath, "--version")
 	}
@@ -74,13 +74,13 @@ func DetectProvider(name, binaryPath string) ProviderStatus {
 	return status
 }
 
-// DetectClaudeVersion runs "<binaryPath> --version" and returns the trimmed output.
-func DetectClaudeVersion(binaryPath string) (string, error) {
+// detectClaudeVersion runs "<binaryPath> --version" and returns the trimmed output.
+func detectClaudeVersion(binaryPath string) (string, error) {
 	return runVersionCommand(binaryPath, "--version")
 }
 
-// DetectCodexVersion runs "<binaryPath> --version" and returns the trimmed output.
-func DetectCodexVersion(binaryPath string) (string, error) {
+// detectCodexVersion runs "<binaryPath> --version" and returns the trimmed output.
+func detectCodexVersion(binaryPath string) (string, error) {
 	return runVersionCommand(binaryPath, "--version")
 }
 

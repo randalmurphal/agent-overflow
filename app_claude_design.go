@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -43,11 +44,11 @@ func (a *App) handleClaudeDesignTool(evt provider.ProviderEvent) {
 
 	var meta providerToolStartMeta
 	if err := json.Unmarshal(evt.Meta, &meta); err != nil {
-		a.emitProviderErrorEvent(evt.ThreadID, fmt.Sprintf("design tool %s: invalid input: %v", toolName, err))
+		a.emitErrorToThread(evt.ThreadID, fmt.Sprintf("design tool %s: invalid input: %v", toolName, err))
 		return
 	}
 	if len(meta.Input) == 0 {
-		a.emitProviderErrorEvent(evt.ThreadID, fmt.Sprintf("design tool %s: missing input", toolName))
+		a.emitErrorToThread(evt.ThreadID, fmt.Sprintf("design tool %s: missing input", toolName))
 		return
 	}
 
@@ -62,18 +63,18 @@ func (a *App) handleClaudeDesignTool(evt provider.ProviderEvent) {
 func (a *App) runClaudeDesignRender(threadID string, rawInput json.RawMessage) {
 	var input design.RenderInput
 	if err := json.Unmarshal(rawInput, &input); err != nil {
-		a.emitProviderErrorEvent(threadID, fmt.Sprintf("design tool %s: %v", claudeDesignRenderTool, err))
+		a.emitErrorToThread(threadID, fmt.Sprintf("design tool %s: %v", claudeDesignRenderTool, err))
 		return
 	}
 	if _, err := a.reactor.Render(threadID, input); err != nil {
-		a.emitProviderErrorEvent(threadID, fmt.Sprintf("design tool %s: %v", claudeDesignRenderTool, err))
+		a.emitErrorToThread(threadID, fmt.Sprintf("design tool %s: %v", claudeDesignRenderTool, err))
 	}
 }
 
 func (a *App) runClaudeDesignOptions(threadID string, rawInput json.RawMessage) {
 	var input design.PresentOptionsInput
 	if err := json.Unmarshal(rawInput, &input); err != nil {
-		a.emitProviderErrorEvent(threadID, fmt.Sprintf("design tool %s: %v", claudeDesignOptionsTool, err))
+		a.emitErrorToThread(threadID, fmt.Sprintf("design tool %s: %v", claudeDesignOptionsTool, err))
 		return
 	}
 
@@ -82,33 +83,14 @@ func (a *App) runClaudeDesignOptions(threadID string, rawInput json.RawMessage) 
 
 	result, err := a.reactor.PresentOptions(ctx, threadID, input)
 	if err != nil {
-		if err.Error() != "design mode session ended" {
-			a.emitProviderErrorEvent(threadID, fmt.Sprintf("design tool %s: %v", claudeDesignOptionsTool, err))
+		if !errors.Is(err, design.ErrDesignSessionEnded) {
+			a.emitErrorToThread(threadID, fmt.Sprintf("design tool %s: %v", claudeDesignOptionsTool, err))
 		}
 		return
 	}
 
 	if err := a.sendMessage(threadID, formatClaudeDesignChoice(result)); err != nil {
-		a.emitProviderErrorEvent(threadID, fmt.Sprintf("design option selection: %v", err))
-	}
-}
-
-func (a *App) emitProviderErrorEvent(threadID, content string) {
-	evt := provider.ProviderEvent{
-		Kind:      provider.EventError,
-		ThreadID:  threadID,
-		Content:   content,
-		Timestamp: time.Now(),
-	}
-
-	if a.triage != nil {
-		if err := a.triage.Handle(evt); err != nil {
-			log.Printf("provider error emit for %s: %v", threadID, err)
-		}
-		return
-	}
-	if a.app != nil {
-		a.app.Event.Emit("provider:event", evt)
+		a.emitErrorToThread(threadID, fmt.Sprintf("design option selection: %v", err))
 	}
 }
 
