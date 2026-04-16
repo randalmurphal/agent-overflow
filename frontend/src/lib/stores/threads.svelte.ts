@@ -22,3 +22,7 @@ export function prependThread(thread: Thread): void {
 export function removeThread(id: string): void {
   threads = threads.filter((t) => t.id !== id);
 }
+
+export function updateThreadTitle(id: string, title: string): void {
+  threads = threads.map((t) => t.id === id ? { ...t, title } : t);
+}

@@ -1,8 +1,10 @@
 import { Events } from '@wailsio/runtime';
-import type { ProviderEvent, ApprovalRequest, TokenUsage } from '../types/events';
+import type { ProviderEvent, ApprovalRequest, ContextWindow, RateLimitEntry, TokenUsage } from '../types/events';
 import type { PayloadMeta } from '../types/models';
 import type { ThreadPane } from './thread.svelte';
 import { getAllPanes } from './panes.svelte';
+import { addToast } from './toast.svelte';
+import { updateThreadTitle } from './threads.svelte';
 
 /**
  * Route a provider event to the correct pane mutation.
@@ -92,6 +94,39 @@ function routeEventToPane(pane: ThreadPane, evt: ProviderEvent): void {
     case 'thinking':
       // Thinking events are persisted as heavy payloads by the backend.
       // The item and payload meta arrive separately. Nothing to do inline.
+      break;
+
+    case 'tool_progress':
+      if (evt.itemId && evt.meta) {
+        pane.addToolCall(evt.itemId, evt.meta);
+      }
+      break;
+
+    case 'compact_boundary':
+      if (evt.meta) {
+        pane.setContextWindow(evt.meta as ContextWindow);
+      }
+      break;
+
+    case 'rate_limits':
+      if (evt.meta) {
+        const data = evt.meta as { limits: RateLimitEntry[] };
+        pane.setRateLimits(data.limits ?? []);
+      }
+      break;
+
+    case 'model_rerouted':
+      if (evt.meta) {
+        const data = evt.meta as { newModel: string };
+        addToast('info', `Model rerouted to ${data.newModel}`);
+      }
+      break;
+
+    case 'thread_renamed':
+      if (evt.meta) {
+        const data = evt.meta as { newTitle: string };
+        updateThreadTitle(evt.threadId, data.newTitle);
+      }
       break;
   }
 }
