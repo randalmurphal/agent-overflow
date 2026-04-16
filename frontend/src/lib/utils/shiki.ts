@@ -20,6 +20,11 @@ async function getHighlighter(): Promise<HighlighterGeneric<BundledLanguage, Bun
     });
     highlighter = hl;
     return hl;
+  }).catch((err) => {
+    console.error('Failed to initialize shiki highlighter:', err);
+    // Reset so the next call retries instead of returning the rejected promise forever.
+    initPromise = null;
+    throw err;
   });
 
   return initPromise;
@@ -41,7 +46,8 @@ export async function highlightCode(code: string, lang: string): Promise<string>
       return `<pre><code>${escapeHtml(code)}</code></pre>`;
     }
     return hl.codeToHtml(code, { lang, theme: 'github-dark' });
-  } catch {
+  } catch (err) {
+    console.error('Syntax highlighting failed:', err);
     return `<pre><code>${escapeHtml(code)}</code></pre>`;
   }
 }

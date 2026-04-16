@@ -41,6 +41,7 @@ export async function updateSetting<K extends keyof Settings>(
   key: K,
   value: Settings[K],
 ): Promise<void> {
+  const previous = { ...settings };
   settings = { ...settings, [key]: value };
   try {
     const result = await UpdateSettings({ [key]: value });
@@ -49,6 +50,7 @@ export async function updateSetting<K extends keyof Settings>(
     }
   } catch (err) {
     console.error('Failed to update setting:', err);
+    settings = previous;
     addToast('error', 'Failed to save setting');
   }
 }

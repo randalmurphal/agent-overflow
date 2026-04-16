@@ -1,5 +1,6 @@
 <script lang="ts">
   import { copyToClipboard } from '../../utils/clipboard';
+  import { addToast } from '../../stores/toast.svelte';
 
   let { text, label }: { text: string; label?: string } = $props();
 
@@ -13,9 +14,12 @@
         copied = true;
         clearTimeout(timer);
         timer = setTimeout(() => { copied = false; }, 2000);
+      } else {
+        addToast('error', 'Failed to copy to clipboard');
       }
     } catch (err) {
       console.error('Clipboard copy failed:', err);
+      addToast('error', 'Failed to copy to clipboard');
     }
   }
 </script>

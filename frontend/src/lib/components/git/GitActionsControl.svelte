@@ -10,6 +10,7 @@
   let { pane }: { pane: ThreadPane } = $props();
 
   let status = $state<GitStatus | null>(null);
+  let statusError = $state(false);
   let actionLoading = $state(false);
   let showCommit = $state(false);
   let showDropdown = $state(false);
@@ -29,9 +30,12 @@
     try {
       const result = await GetGitStatus(pane.threadId);
       status = result as GitStatus;
+      statusError = false;
     } catch (err) {
       console.error('Failed to get git status:', err);
       status = null;
+      statusError = true;
+      addToast('error', 'Failed to load git status');
     }
   }
 
@@ -135,7 +139,15 @@
   }
 </script>
 
-{#if status}
+{#if statusError}
+  <button
+    onclick={() => refreshStatus()}
+    class="text-xs px-2 py-1 rounded border border-red-700/40 text-red-400/80 hover:text-red-400 cursor-pointer"
+    title="Failed to load git status. Click to retry."
+  >
+    Git: error
+  </button>
+{:else if status}
   <div class="relative flex">
     <button
       onclick={executePrimary}

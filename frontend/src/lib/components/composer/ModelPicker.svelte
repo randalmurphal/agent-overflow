@@ -33,8 +33,13 @@
   async function selectModel(slug: string) {
     open = false;
     const settingKey = provider === 'codex' ? 'defaultModelCodex' : 'defaultModelClaude';
-    await updateSetting(settingKey, slug);
-    addToast('info', `Default ${provider} model set to ${slug}`);
+    try {
+      await updateSetting(settingKey, slug);
+      addToast('info', `Default ${provider} model set to ${slug}`);
+    } catch (err) {
+      console.error('Failed to set model:', err);
+      addToast('error', 'Failed to set model');
+    }
   }
 
   function handleCustomSubmit() {

@@ -84,6 +84,7 @@ export function createThreadPane() {
       } catch (err) {
         console.error('Failed to load payload metas:', err);
         payloadMetas = new Map();
+        addToast('warning', 'Failed to load payload previews');
       }
 
       loading = false;
