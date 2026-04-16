@@ -12,7 +12,7 @@
     "skipLibCheck": true,
     "allowJs": true,
     "checkJs": false,
-    "types": ["svelte"],
+    "types": ["svelte", "vitest/globals", "@testing-library/jest-dom", "node"],
     "paths": {
       "~/*": ["./src/*"]
     }
