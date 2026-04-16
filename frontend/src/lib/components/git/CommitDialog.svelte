@@ -90,7 +90,7 @@
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
     transition:fade={{ duration: 150 }}
-    class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+    class="fixed inset-0 z-[60] flex items-center justify-center bg-overlay backdrop-blur-sm"
     onclick={handleBackdropClick}
     onkeydown={handleKeydown}
   >
@@ -113,7 +113,7 @@
             bind:value={subject}
             maxlength={72}
             placeholder="Brief description of changes"
-            class="w-full text-sm rounded border border-border bg-surface-0 px-3 py-2 text-text-primary placeholder:text-text-secondary/40 focus:outline-none focus:border-accent"
+            class="w-full text-sm rounded border border-border bg-surface-0 px-3 py-2 text-text-primary placeholder:text-text-secondary/40 focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/50 transition-colors"
           />
           <span class="text-[10px] text-text-secondary/40 mt-0.5 block text-right">{subject.length}/72</span>
         </div>
@@ -130,7 +130,7 @@
         </div>
 
         {#if error}
-          <p class="text-xs text-error">{error}</p>
+          <p class="text-xs text-error break-words">{error}</p>
         {/if}
       </div>
 

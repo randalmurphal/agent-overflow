@@ -132,7 +132,7 @@
 >
   <div class="flex items-center gap-2">
     <span class="text-[10px] font-bold px-1 py-0.5 rounded shrink-0
-      {thread.provider === 'claude' ? 'bg-accent/20 text-accent' : 'bg-orange-900/30 text-orange-300'}">
+      {thread.provider === 'claude' ? 'bg-accent/20 text-accent' : 'bg-provider-codex/20 text-provider-codex'}">
       {thread.provider === 'claude' ? 'C' : 'X'}
     </span>
 
@@ -158,7 +158,7 @@
     {#if !editing}
       <button
         onclick={handleDelete}
-        class="opacity-0 group-hover:opacity-100 text-error/60 hover:text-error text-xs px-1 shrink-0 cursor-pointer focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/50 rounded"
+        class="opacity-0 group-hover:opacity-100 transition-opacity duration-150 text-error/60 hover:text-error text-xs px-1 shrink-0 cursor-pointer focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/50 rounded"
         aria-label="Delete thread"
       >
         <svg class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
@@ -167,7 +167,7 @@
       </button>
       <button
         onclick={handleArchive}
-        class="opacity-0 group-hover:opacity-100 text-text-secondary hover:text-text-primary text-xs px-1 shrink-0 cursor-pointer focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/50 rounded"
+        class="opacity-0 group-hover:opacity-100 transition-opacity duration-150 text-text-secondary hover:text-text-primary text-xs px-1 shrink-0 cursor-pointer focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/50 rounded"
         aria-label="Archive thread"
       >
         <svg class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">

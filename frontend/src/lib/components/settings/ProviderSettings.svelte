@@ -82,7 +82,7 @@
             value={settings[provider.pathKey]}
             onchange={(e) => updateSetting(provider.pathKey, (e.target as HTMLInputElement).value)}
             placeholder="Auto-detect"
-            class="w-full text-xs rounded border border-border bg-surface-0 px-2 py-1.5 text-text-primary placeholder:text-text-secondary/40 focus:outline-none focus:border-accent"
+            class="w-full text-xs rounded border border-border bg-surface-0 px-2 py-1.5 text-text-primary placeholder:text-text-secondary/40 focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/50 transition-colors"
           />
         </div>
 
@@ -90,7 +90,7 @@
           <p class="text-xs text-text-secondary">Version: {status.version}</p>
         {/if}
         {#if status?.message}
-          <p class="text-xs text-text-secondary/60">{status.message}</p>
+          <p class="text-xs text-text-secondary/60 break-words">{status.message}</p>
         {/if}
 
         {#if provider.models.length > 0}

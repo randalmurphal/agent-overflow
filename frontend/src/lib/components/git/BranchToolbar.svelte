@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { fade, fly } from 'svelte/transition';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import type { GitStatus, GitBranch } from '../../types/git';
   import { GetGitStatus, GitListBranches, GitCheckout, GitCreateBranch } from '../../stores/bindings';
@@ -114,15 +115,15 @@
 
     {#if open}
       <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <div class="fixed inset-0 z-40" onclick={handleBackdropClick} onkeydown={handleKeydown}></div>
-      <div class="absolute top-full left-0 mt-1 z-50 bg-surface-1 border border-border rounded-lg shadow-xl min-w-[220px] max-h-[300px] overflow-hidden flex flex-col">
+      <div transition:fade={{ duration: 100 }} class="fixed inset-0 z-40" onclick={handleBackdropClick} onkeydown={handleKeydown}></div>
+      <div transition:fly={{ y: -4, duration: 120 }} class="absolute top-full left-0 mt-1 z-50 bg-surface-1 border border-border rounded-lg shadow-xl min-w-[220px] max-h-[300px] overflow-hidden flex flex-col">
         <div class="p-2 border-b border-border">
           <input
             type="text"
             bind:value={filter}
             placeholder="Filter branches..."
             aria-label="Filter branches"
-            class="w-full text-xs rounded border border-border bg-surface-0 px-2 py-1 text-text-primary placeholder:text-text-secondary/40 focus:outline-none focus:border-accent"
+            class="w-full text-xs rounded border border-border bg-surface-0 px-2 py-1 text-text-primary placeholder:text-text-secondary/40 focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/50 transition-colors"
           />
         </div>
         <div class="overflow-y-auto flex-1" role="listbox" aria-label="Branches">
@@ -165,7 +166,7 @@
               <button
                 onclick={createBranch}
                 disabled={!newBranchName.trim() || creating}
-                class="text-xs px-2 py-1 rounded bg-accent text-surface-0 font-medium hover:opacity-90 disabled:opacity-40 cursor-pointer"
+                class="text-xs px-2 py-1 rounded bg-accent text-surface-0 font-medium hover:opacity-90 disabled:opacity-40 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
               >
                 {creating ? '...' : 'Create'}
               </button>
@@ -173,7 +174,7 @@
           {:else}
             <button
               onclick={() => showCreateInput = true}
-              class="w-full text-left text-xs text-accent hover:text-accent/80 cursor-pointer px-1 py-0.5"
+              class="w-full text-left text-xs text-accent hover:text-accent/80 cursor-pointer px-1 py-0.5 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
             >
               + Create new branch
             </button>

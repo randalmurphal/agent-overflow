@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { fade } from 'svelte/transition';
   import type { ContextWindow } from '../../types/events';
   import { formatTokens } from '../../utils/format';
 
@@ -56,7 +57,7 @@
   </span>
 
   {#if showPopover}
-    <div class="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 z-50 bg-surface-1 border border-border rounded-md shadow-lg px-3 py-2 min-w-[160px]">
+    <div transition:fade={{ duration: 100 }} class="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 z-30 bg-surface-1 border border-border rounded-md shadow-lg px-3 py-2 min-w-[160px]">
       <p class="text-[10px] font-semibold text-text-secondary uppercase tracking-wider mb-1.5">Context window</p>
       <div class="space-y-0.5 text-xs text-text-secondary">
         <p>{displayPct}% used</p>

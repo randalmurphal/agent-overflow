@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { fly } from 'svelte/transition';
   import { Dialogs } from '@wailsio/runtime';
   import { addToast } from '../../stores/toast.svelte';
 
@@ -66,12 +67,12 @@
       aria-controls="workspace-recent-list"
       aria-haspopup="listbox"
       aria-autocomplete="list"
-      class="flex-1 text-xs rounded border border-border bg-surface-0 px-2 py-1.5 text-text-primary placeholder:text-text-secondary/50 focus:outline-none focus:border-accent min-w-0"
+      class="flex-1 text-xs rounded border border-border bg-surface-0 px-2 py-1.5 text-text-primary placeholder:text-text-secondary/50 focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/50 transition-colors min-w-0"
     />
     <button
       onclick={handleBrowse}
       type="button"
-      class="text-xs px-2 py-1.5 rounded border border-border text-text-secondary hover:text-text-primary hover:border-text-secondary cursor-pointer shrink-0"
+      class="text-xs px-2 py-1.5 rounded border border-border text-text-secondary hover:text-text-primary hover:border-text-secondary cursor-pointer shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
       title="Browse for folder"
     >
       Browse
@@ -79,7 +80,7 @@
   </div>
 
   {#if showRecent && recentWorkspaces.length > 0}
-    <div id="workspace-recent-list" class="absolute top-full left-0 right-0 mt-1 z-50 bg-surface-1 border border-border rounded shadow-lg max-h-[160px] overflow-y-auto" role="listbox" aria-label="Recent workspaces">
+    <div transition:fly={{ y: -4, duration: 120 }} id="workspace-recent-list" class="absolute top-full left-0 right-0 mt-1 z-50 bg-surface-1 border border-border rounded shadow-lg max-h-[160px] overflow-y-auto" role="listbox" aria-label="Recent workspaces">
       {#each recentWorkspaces as ws}
         <button
           onclick={() => selectRecent(ws)}

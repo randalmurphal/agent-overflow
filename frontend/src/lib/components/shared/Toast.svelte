@@ -28,7 +28,7 @@
 </script>
 
 {#if toasts.length > 0}
-  <div class="fixed bottom-4 right-4 z-50 flex flex-col gap-2 max-w-sm" aria-live="polite" aria-relevant="additions">
+  <div class="fixed bottom-4 right-4 z-[80] flex flex-col gap-2 max-w-sm" aria-live="polite" aria-relevant="additions">
     {#each toasts as toast (toast.id)}
       <div
         in:fly={{ x: 80, duration: 200 }}
@@ -39,7 +39,7 @@
         <svg class="w-4 h-4 mt-0.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d={iconPath(toast.type)} />
         </svg>
-        <span class="flex-1 leading-snug">{toast.message}</span>
+        <span class="flex-1 leading-snug line-clamp-3">{toast.message}</span>
         <button
           onclick={() => removeToast(toast.id)}
           class="shrink-0 opacity-60 hover:opacity-100 cursor-pointer rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"

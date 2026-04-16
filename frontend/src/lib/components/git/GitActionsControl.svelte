@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { fade, fly } from 'svelte/transition';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import type { GitStatus, GitActionResult } from '../../types/git';
   import { GetGitStatus, GitPush, GitPull, GitCreatePR, GitRemoveWorktree } from '../../stores/bindings';
@@ -169,7 +170,7 @@
       aria-label="More git actions"
       aria-expanded={showDropdown}
       aria-haspopup="menu"
-      class="text-xs px-1 py-1 rounded-r border border-l-0 border-border text-text-secondary hover:text-text-primary hover:border-text-secondary cursor-pointer"
+      class="text-xs px-1 py-1 rounded-r border border-l-0 border-border text-text-secondary hover:text-text-primary hover:border-text-secondary cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
     >
       <svg class="w-3 h-3" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
         <path d="M3 5l3 3 3-3" />
@@ -178,8 +179,8 @@
 
     {#if showDropdown}
       <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <div class="fixed inset-0 z-40" onclick={() => showDropdown = false} onkeydown={(e) => { if (e.key === 'Escape') showDropdown = false; }}></div>
-      <div class="absolute top-full right-0 mt-1 z-50 bg-surface-1 border border-border rounded shadow-lg min-w-[140px]" role="menu" aria-label="Git actions">
+      <div transition:fade={{ duration: 100 }} class="fixed inset-0 z-40" onclick={() => showDropdown = false} onkeydown={(e) => { if (e.key === 'Escape') showDropdown = false; }}></div>
+      <div transition:fly={{ y: -4, duration: 120 }} class="absolute top-full right-0 mt-1 z-50 bg-surface-1 border border-border rounded shadow-lg min-w-[140px]" role="menu" aria-label="Git actions">
         <button
           onclick={() => { showDropdown = false; showCommit = true; }}
           disabled={!status.hasChanges}

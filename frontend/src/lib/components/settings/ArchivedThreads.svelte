@@ -64,7 +64,7 @@
     {#each archived as thread (thread.id)}
       <div class="flex items-center gap-3 px-3 py-2 rounded border border-border bg-surface-0">
         <span class="text-[10px] font-bold px-1 py-0.5 rounded shrink-0
-          {thread.provider === 'claude' ? 'bg-accent/20 text-accent' : 'bg-orange-900/30 text-orange-300'}">
+          {thread.provider === 'claude' ? 'bg-accent/20 text-accent' : 'bg-provider-codex/20 text-provider-codex'}">
           {thread.provider === 'claude' ? 'C' : 'X'}
         </span>
         <div class="flex-1 min-w-0">

@@ -47,7 +47,7 @@
 
 {#if visible && pane.thread}
   <div transition:slide={{ duration: 150 }} role="alert" aria-live="assertive" class="border-b {bannerClasses} px-4 py-2 flex items-center gap-2 shrink-0">
-    <p class="text-xs flex-1 truncate" title={message}>{message}</p>
+    <p class="text-xs flex-1 line-clamp-2" title={message}>{message}</p>
     {#if pane.sessionStatus !== 'retrying'}
       <button
         onclick={handleReconnect}

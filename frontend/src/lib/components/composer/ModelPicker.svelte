@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { fade, fly } from 'svelte/transition';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import type { ModelInfo } from '../../types/settings';
   import { GetModelsForProvider } from '../../stores/bindings';
@@ -75,8 +76,8 @@
 
   {#if open}
     <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div class="fixed inset-0 z-40" onclick={handleBackdropClick} onkeydown={handleKeydown}></div>
-    <div class="absolute top-full left-0 mt-1 z-50 bg-surface-1 border border-border rounded-lg shadow-xl min-w-[200px] max-h-[280px] overflow-y-auto" role="listbox" aria-label="Available models">
+    <div transition:fade={{ duration: 100 }} class="fixed inset-0 z-40" onclick={handleBackdropClick} onkeydown={handleKeydown}></div>
+    <div transition:fly={{ y: -4, duration: 120 }} class="absolute top-full left-0 mt-1 z-50 bg-surface-1 border border-border rounded-lg shadow-xl min-w-[200px] max-h-[280px] overflow-y-auto" role="listbox" aria-label="Available models">
       {#if loading}
         <div class="px-3 py-2 text-xs text-text-secondary animate-pulse">Loading models...</div>
       {:else}
@@ -107,7 +108,7 @@
             bind:value={customModel}
             onkeydown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleCustomSubmit(); } }}
             placeholder="model-slug"
-            class="w-full text-xs rounded border border-border bg-surface-0 px-2 py-1 text-text-primary placeholder:text-text-secondary/40 focus:outline-none focus:border-accent"
+            class="w-full text-xs rounded border border-border bg-surface-0 px-2 py-1 text-text-primary placeholder:text-text-secondary/40 focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/50 transition-colors"
           />
         </div>
       {/if}

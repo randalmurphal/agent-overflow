@@ -96,7 +96,7 @@
           bind:value={model}
           placeholder="Model (optional)"
           aria-label="Model"
-          class="w-full text-xs rounded border border-border bg-surface-0 px-2 py-1.5 text-text-primary placeholder:text-text-secondary/50 focus:outline-none focus:border-accent"
+          class="w-full text-xs rounded border border-border bg-surface-0 px-2 py-1.5 text-text-primary placeholder:text-text-secondary/50 focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/50 transition-colors"
         />
         <label class="flex items-center gap-2 text-xs text-text-secondary cursor-pointer">
           <input type="checkbox" bind:checked={worktreeMode} class="w-3 h-3 rounded cursor-pointer" />
@@ -108,21 +108,21 @@
             bind:value={worktreeBranch}
             placeholder="Branch name for worktree"
             aria-label="Branch name for worktree"
-            class="w-full text-xs rounded border border-border bg-surface-0 px-2 py-1.5 text-text-primary placeholder:text-text-secondary/50 focus:outline-none focus:border-accent"
+            class="w-full text-xs rounded border border-border bg-surface-0 px-2 py-1.5 text-text-primary placeholder:text-text-secondary/50 focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/50 transition-colors"
           />
         {/if}
         <div class="flex gap-2">
           <button
             type="submit"
             disabled={!workspacePath.trim() || creating}
-            class="flex-1 text-xs py-1.5 rounded bg-accent text-surface-0 font-medium hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+            class="flex-1 text-xs py-1.5 rounded bg-accent text-surface-0 font-medium hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
           >
             {creating ? 'Creating...' : 'Create'}
           </button>
           <button
             type="button"
             onclick={handleCancel}
-            class="text-xs py-1.5 px-3 rounded border border-border text-text-secondary hover:text-text-primary cursor-pointer"
+            class="text-xs py-1.5 px-3 rounded border border-border text-text-secondary hover:text-text-primary cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
           >
             Cancel
           </button>

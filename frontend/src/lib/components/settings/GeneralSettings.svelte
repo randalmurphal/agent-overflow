@@ -17,7 +17,7 @@
           id="theme-select"
           value={settings.theme}
           onchange={(e) => updateSetting('theme', (e.target as HTMLSelectElement).value as 'system' | 'light' | 'dark')}
-          class="text-xs rounded border border-border bg-surface-0 px-2 py-1.5 text-text-primary focus:outline-none focus:border-accent cursor-pointer"
+          class="text-xs rounded border border-border bg-surface-0 px-2 py-1.5 text-text-primary focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/50 transition-colors cursor-pointer"
         >
           <option value="system">System</option>
           <option value="light">Light</option>
@@ -34,7 +34,7 @@
           id="timestamp-select"
           value={settings.timestampFormat}
           onchange={(e) => updateSetting('timestampFormat', (e.target as HTMLSelectElement).value as 'locale' | '12-hour' | '24-hour')}
-          class="text-xs rounded border border-border bg-surface-0 px-2 py-1.5 text-text-primary focus:outline-none focus:border-accent cursor-pointer"
+          class="text-xs rounded border border-border bg-surface-0 px-2 py-1.5 text-text-primary focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/50 transition-colors cursor-pointer"
         >
           <option value="locale">System locale</option>
           <option value="12-hour">12-hour</option>
@@ -56,7 +56,7 @@
           id="provider-select"
           value={settings.defaultProvider}
           onchange={(e) => updateSetting('defaultProvider', (e.target as HTMLSelectElement).value as 'claude' | 'codex')}
-          class="text-xs rounded border border-border bg-surface-0 px-2 py-1.5 text-text-primary focus:outline-none focus:border-accent cursor-pointer"
+          class="text-xs rounded border border-border bg-surface-0 px-2 py-1.5 text-text-primary focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/50 transition-colors cursor-pointer"
         >
           <option value="claude">Claude</option>
           <option value="codex">Codex</option>
