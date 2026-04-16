@@ -27,6 +27,11 @@ func (a *App) deleteThreadTree(threadID string) error {
 	if err := a.stopSession(threadID); err != nil {
 		return err
 	}
+	if a.terminals != nil {
+		if err := a.terminals.CloseThread(threadID); err != nil {
+			return err
+		}
+	}
 	a.clearThreadSystemPrompt(threadID)
 	a.removeDeliberation(thread)
 

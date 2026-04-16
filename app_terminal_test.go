@@ -1,0 +1,202 @@
+package main
+
+import (
+	"encoding/base64"
+	"errors"
+	"strings"
+	"testing"
+	"time"
+
+	"agent-overflow/internal/terminal"
+)
+
+// newAppWithTerminals constructs an App with a live terminal manager but no
+// Wails runtime, so output/exit callbacks become no-ops (they guard on
+// a.app == nil).
+func newAppWithTerminals() *App {
+	app := NewApp()
+	app.terminals = terminal.NewManager(app.terminalOutputCallback, app.terminalExitCallback)
+	return app
+}
+
+func TestOpenTerminalRequiresCwd(t *testing.T) {
+	app := newAppWithTerminals()
+	_, err := app.OpenTerminal("thread-a", TerminalOpenOptions{})
+	if err == nil {
+		t.Fatal("expected error for missing cwd")
+	}
+}
+
+func TestOpenTerminalReturnsHandle(t *testing.T) {
+	app := newAppWithTerminals()
+	t.Cleanup(func() { _ = app.terminals.Shutdown() })
+
+	handle, err := app.OpenTerminal("thread-a", TerminalOpenOptions{
+		Cwd:   t.TempDir(),
+		Shell: "/bin/sh",
+	})
+	if err != nil {
+		t.Fatalf("OpenTerminal: %v", err)
+	}
+	if handle.TerminalID == "" {
+		t.Fatal("expected non-empty terminal ID")
+	}
+	if handle.ThreadID != "thread-a" {
+		t.Fatalf("ThreadID = %q", handle.ThreadID)
+	}
+	if handle.Summary.Shell == "" {
+		t.Error("expected summary to include resolved shell")
+	}
+}
+
+func TestWriteTerminalDecodesBase64(t *testing.T) {
+	app := newAppWithTerminals()
+	t.Cleanup(func() { _ = app.terminals.Shutdown() })
+
+	handle, err := app.OpenTerminal("thread-w", TerminalOpenOptions{
+		Cwd:   t.TempDir(),
+		Shell: "/bin/sh",
+	})
+	if err != nil {
+		t.Fatalf("OpenTerminal: %v", err)
+	}
+
+	payload := base64.StdEncoding.EncodeToString([]byte("echo hi\n"))
+	if err := app.WriteTerminal(handle.TerminalID, payload); err != nil {
+		t.Fatalf("WriteTerminal: %v", err)
+	}
+}
+
+func TestWriteTerminalRejectsBadBase64(t *testing.T) {
+	app := newAppWithTerminals()
+	t.Cleanup(func() { _ = app.terminals.Shutdown() })
+
+	handle, err := app.OpenTerminal("thread-b", TerminalOpenOptions{
+		Cwd:   t.TempDir(),
+		Shell: "/bin/sh",
+	})
+	if err != nil {
+		t.Fatalf("OpenTerminal: %v", err)
+	}
+	err = app.WriteTerminal(handle.TerminalID, "not base64!")
+	if err == nil {
+		t.Fatal("expected WriteTerminal to reject invalid base64")
+	}
+	if !strings.Contains(err.Error(), "decode write payload") {
+		t.Fatalf("expected decode error, got %v", err)
+	}
+}
+
+func TestResizeAndCloseTerminal(t *testing.T) {
+	app := newAppWithTerminals()
+	t.Cleanup(func() { _ = app.terminals.Shutdown() })
+
+	handle, err := app.OpenTerminal("thread-r", TerminalOpenOptions{
+		Cwd:   t.TempDir(),
+		Shell: "/bin/sh",
+		Rows:  24,
+		Cols:  80,
+	})
+	if err != nil {
+		t.Fatalf("OpenTerminal: %v", err)
+	}
+
+	if err := app.ResizeTerminal(handle.TerminalID, 40, 140); err != nil {
+		t.Fatalf("ResizeTerminal: %v", err)
+	}
+	list, err := app.ListTerminals("thread-r")
+	if err != nil {
+		t.Fatalf("ListTerminals: %v", err)
+	}
+	if len(list) != 1 || list[0].Rows != 40 || list[0].Cols != 140 {
+		t.Fatalf("unexpected list: %+v", list)
+	}
+
+	if err := app.CloseTerminal(handle.TerminalID); err != nil {
+		t.Fatalf("CloseTerminal: %v", err)
+	}
+	list, err = app.ListTerminals("thread-r")
+	if err != nil {
+		t.Fatalf("ListTerminals after close: %v", err)
+	}
+	if len(list) != 0 {
+		t.Fatalf("expected no terminals after close, got %d", len(list))
+	}
+}
+
+func TestRestartTerminalReturnsNewHandle(t *testing.T) {
+	app := newAppWithTerminals()
+	t.Cleanup(func() { _ = app.terminals.Shutdown() })
+
+	handle, err := app.OpenTerminal("thread-rs", TerminalOpenOptions{
+		Cwd:   t.TempDir(),
+		Shell: "/bin/sh",
+	})
+	if err != nil {
+		t.Fatalf("OpenTerminal: %v", err)
+	}
+	restarted, err := app.RestartTerminal(handle.TerminalID)
+	if err != nil {
+		t.Fatalf("RestartTerminal: %v", err)
+	}
+	if restarted.TerminalID == handle.TerminalID {
+		t.Fatal("expected restart to yield a different terminal ID")
+	}
+}
+
+func TestGetTerminalReplayReturnsBase64(t *testing.T) {
+	app := newAppWithTerminals()
+	t.Cleanup(func() { _ = app.terminals.Shutdown() })
+
+	handle, err := app.OpenTerminal("thread-g", TerminalOpenOptions{
+		Cwd:   t.TempDir(),
+		Shell: "/bin/sh",
+	})
+	if err != nil {
+		t.Fatalf("OpenTerminal: %v", err)
+	}
+	t.Cleanup(func() { _ = app.CloseTerminal(handle.TerminalID) })
+
+	if err := app.WriteTerminal(handle.TerminalID, base64.StdEncoding.EncodeToString([]byte("printf HELLO\n"))); err != nil {
+		t.Fatalf("WriteTerminal: %v", err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		replayB64, err := app.GetTerminalReplay(handle.TerminalID)
+		if err != nil {
+			t.Fatalf("GetTerminalReplay: %v", err)
+		}
+		raw, decodeErr := base64.StdEncoding.DecodeString(replayB64)
+		if decodeErr != nil {
+			t.Fatalf("bad base64 from GetTerminalReplay: %v", decodeErr)
+		}
+		if strings.Contains(string(raw), "HELLO") {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatal("did not observe HELLO in replay within timeout")
+}
+
+func TestWriteTerminalMissingBindingFails(t *testing.T) {
+	// When terminal manager isn't initialized, every binding should report that.
+	app := &App{}
+	_, err := app.OpenTerminal("t", TerminalOpenOptions{Cwd: t.TempDir()})
+	if err == nil {
+		t.Fatal("expected error when manager not initialized")
+	}
+	if !strings.Contains(err.Error(), "terminal manager not initialized") {
+		t.Fatalf("unexpected error %v", err)
+	}
+}
+
+func TestResizeTerminalOnMissingIsErrorFromManager(t *testing.T) {
+	app := newAppWithTerminals()
+	t.Cleanup(func() { _ = app.terminals.Shutdown() })
+
+	err := app.ResizeTerminal("does-not-exist", 24, 80)
+	if !errors.Is(err, terminal.ErrTerminalNotFound) {
+		t.Fatalf("expected ErrTerminalNotFound, got %v", err)
+	}
+}

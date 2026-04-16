@@ -18,6 +18,7 @@ import (
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/terminal"
 	"agent-overflow/internal/triage"
 
 	"github.com/google/uuid"
@@ -36,6 +37,7 @@ type App struct {
 	artifacts *design.ArtifactStore
 	reactor   *design.Reactor
 	designMCP *codex.DesignMCPServer
+	terminals *terminal.Manager
 	logger    *logging.Logger
 	configDir string
 	mu        sync.Mutex
@@ -122,6 +124,7 @@ func (a *App) ServiceStartup(ctx context.Context, options application.ServiceOpt
 		a.app.Event.Emit(eventName, data)
 	})
 	a.designMCP = codex.NewDesignMCPServer(a.reactor)
+	a.terminals = terminal.NewManager(a.terminalOutputCallback, a.terminalExitCallback)
 	a.configDir = dbDir
 
 	return nil
@@ -152,6 +155,9 @@ func (a *App) ServiceShutdown() error {
 				s.codex.Close(),
 			))
 		}
+	}
+	if a.terminals != nil {
+		errs = appendError(errs, wrapLifecycleError("close terminal sessions", a.terminals.Shutdown()))
 	}
 	if a.store != nil {
 		errs = appendError(errs, wrapLifecycleError("close store", a.store.Close()))
