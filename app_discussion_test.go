@@ -1,8 +1,11 @@
 package main
 
 import (
+	"database/sql"
 	"errors"
+	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -58,6 +61,119 @@ func TestDiscussionBindingsCRUD(t *testing.T) {
 	}
 	if _, err := app.GetDiscussion("Critics", "global"); err == nil {
 		t.Fatal("expected deleted discussion lookup to fail")
+	}
+}
+
+func TestResolveDiscussionDefinitionFallsBackToGlobalWhenProjectDefinitionMissing(t *testing.T) {
+	app := newTestAppWithStore(t)
+	app.registry = discussion.NewRegistry(app.store)
+
+	thread := testThread("thread-discussion-fallback")
+	thread.ProjectPath = "/tmp/project-fallback"
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+
+	global := store.DiscussionDefinition{
+		Name:  "Architects",
+		Scope: "global",
+		Participants: []store.DiscussionParticipant{
+			{Role: "architect", System: "Design the change"},
+			{Role: "reviewer", System: "Review the change"},
+		},
+		Settings:  store.DiscussionSettings{MaxTurns: 5},
+		CreatedAt: time.Now().UnixMilli(),
+		UpdatedAt: time.Now().UnixMilli(),
+	}
+	if err := app.store.CreateDiscussionDef(global); err != nil {
+		t.Fatalf("CreateDiscussionDef() error = %v", err)
+	}
+
+	def, err := app.resolveDiscussionDefinition(thread, "Architects")
+	if err != nil {
+		t.Fatalf("resolveDiscussionDefinition() error = %v", err)
+	}
+	if def.Scope != "global" {
+		t.Fatalf("resolved scope = %q, want global", def.Scope)
+	}
+}
+
+func TestResolveDiscussionDefinitionDoesNotHideProjectDefinitionErrors(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "agent-overflow.db")
+
+	st, err := store.New(dbPath)
+	if err != nil {
+		t.Fatalf("store.New() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if closeErr := st.Close(); closeErr != nil {
+			t.Fatalf("Store.Close() error = %v", closeErr)
+		}
+	})
+
+	rawDB, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("sql.Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if closeErr := rawDB.Close(); closeErr != nil {
+			t.Fatalf("rawDB.Close() error = %v", closeErr)
+		}
+	})
+
+	app := &App{
+		store:    st,
+		registry: discussion.NewRegistry(st),
+	}
+
+	thread := testThread("thread-discussion-project-error")
+	thread.ProjectPath = "/tmp/project-a"
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+
+	global := store.DiscussionDefinition{
+		Name:  "Architects",
+		Scope: "global",
+		Participants: []store.DiscussionParticipant{
+			{Role: "architect", System: "Design the change"},
+			{Role: "reviewer", System: "Review the change"},
+		},
+		Settings:  store.DiscussionSettings{MaxTurns: 5},
+		CreatedAt: time.Now().UnixMilli(),
+		UpdatedAt: time.Now().UnixMilli(),
+	}
+	if err := app.store.CreateDiscussionDef(global); err != nil {
+		t.Fatalf("CreateDiscussionDef(global) error = %v", err)
+	}
+
+	if _, err := rawDB.Exec(`
+		INSERT INTO discussion_definitions (
+			id, name, description, scope, project_id, definition, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`,
+		"def-project-bad",
+		"Architects",
+		"Broken project definition",
+		"project",
+		thread.ProjectPath,
+		"{bad json",
+		time.Now().UnixMilli(),
+		time.Now().UnixMilli(),
+	); err != nil {
+		t.Fatalf("insert malformed project discussion: %v", err)
+	}
+
+	_, err = app.resolveDiscussionDefinition(thread, "Architects")
+	if err == nil {
+		t.Fatal("resolveDiscussionDefinition() error = nil, want project definition decode error")
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("resolveDiscussionDefinition() error = %v, want decode error not not-found", err)
+	}
+	if got := err.Error(); got == "" || !strings.Contains(got, "decode discussion definition") || !strings.Contains(got, "Architects") {
+		t.Fatalf("resolveDiscussionDefinition() error = %v, want decode discussion definition context", err)
 	}
 }
 

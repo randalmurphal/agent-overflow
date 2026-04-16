@@ -1,6 +1,8 @@
 package main
 
 import (
+	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -85,6 +87,9 @@ func (a *App) resolveDiscussionDefinition(thread store.Thread, discussionName st
 		def, err := a.store.GetDiscussionDef(discussionName, "project", thread.ProjectPath)
 		if err == nil {
 			return def, nil
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return store.DiscussionDefinition{}, err
 		}
 	}
 	if a.registry == nil {
