@@ -7,6 +7,7 @@
   import ComposerControls from '../composer/ComposerControls.svelte';
   import StatusBar from '../shared/StatusBar.svelte';
   import ProviderStatusBanner from './ProviderStatusBanner.svelte';
+  import BranchToolbar from '../git/BranchToolbar.svelte';
 
   let { pane }: { pane: ThreadPane } = $props();
 </script>
@@ -18,6 +19,7 @@
         {pane.thread.provider === 'claude' ? 'C' : 'X'}
       </span>
       <h2 class="text-sm font-medium text-text-primary truncate">{pane.thread.title}</h2>
+      <BranchToolbar {pane} />
       <span class="ml-auto text-xs text-text-secondary truncate max-w-[200px]">{pane.thread.workspacePath}</span>
     </div>
 
