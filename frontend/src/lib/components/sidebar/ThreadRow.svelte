@@ -130,7 +130,7 @@
 <div
   onclick={handleClick}
   ondblclick={startRename}
-  onkeydown={(e) => { if (!editing && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); handleClick(); } }}
+  onkeydown={(e) => { if (!editing && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); handleClick(); } if (!editing && e.key === 'F2') { e.preventDefault(); startRename(); } }}
   role="button"
   tabindex={0}
   class="group w-full text-left px-3 py-2 rounded-md cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50
@@ -138,7 +138,7 @@
 >
   <div class="flex items-center gap-2">
     <span class="text-[10px] font-bold px-1 py-0.5 rounded shrink-0
-      {thread.provider === 'claude' ? 'bg-accent/20 text-accent' : 'bg-provider-codex/20 text-provider-codex'}">
+      {thread.provider === 'claude' ? 'bg-accent/20 text-accent' : 'bg-provider-codex/20 text-provider-codex'}" aria-hidden="true">
       {thread.provider === 'claude' ? 'C' : 'X'}
     </span>
 

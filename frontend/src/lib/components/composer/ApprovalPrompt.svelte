@@ -5,6 +5,21 @@
 
   let { pane }: { pane: ThreadPane } = $props();
 
+  let containerEl: HTMLDivElement | undefined = $state(undefined);
+  let previousFocus: Element | null = null;
+
+  // Move focus into the alertdialog when approvals appear; restore on dismiss
+  $effect(() => {
+    if (pane.pendingApprovals.length > 0 && containerEl) {
+      previousFocus = document.activeElement;
+      const first = containerEl.querySelector<HTMLElement>('button, input, select, textarea');
+      first?.focus();
+    } else if (pane.pendingApprovals.length === 0 && previousFocus instanceof HTMLElement) {
+      previousFocus.focus();
+      previousFocus = null;
+    }
+  });
+
   // Per-approval answer state for user-input kind
   let answers: Map<string, Record<string, string>> = $state(new Map());
   // Per-approval permission scope for permission kind
@@ -111,7 +126,7 @@
 </script>
 
 {#if pane.pendingApprovals.length > 0}
-  <div role="alertdialog" aria-live="assertive" aria-label="Tool approval required" class="border-t border-border bg-surface-1 px-4 py-3 space-y-2">
+  <div bind:this={containerEl} role="alertdialog" aria-live="assertive" aria-label="Tool approval required" class="border-t border-border bg-surface-1 px-4 py-3 space-y-2">
     {#each pane.pendingApprovals as approval (approval.requestId)}
       <div class="rounded border border-accent/40 bg-surface-0 px-3 py-2.5">
         <div class="flex items-start justify-between gap-3">

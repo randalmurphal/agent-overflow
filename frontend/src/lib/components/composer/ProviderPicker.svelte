@@ -41,19 +41,25 @@
   }
 </script>
 
-<div class="flex gap-1">
+<div class="flex gap-1" role="radiogroup" aria-label="Provider">
   {#each ['claude', 'codex'] as provider}
+    {@const label = provider === 'claude' ? 'Claude' : 'Codex'}
+    {@const s = statuses.get(provider)}
+    {@const statusText = s ? s.status : 'unknown'}
     <button
       onclick={() => { if (!isDisabled(provider)) onSelect(provider); }}
       disabled={isDisabled(provider)}
+      role="radio"
+      aria-checked={currentProvider === provider}
+      aria-label="{label} — {statusText}"
       class="flex-1 flex items-center justify-center gap-1.5 text-xs py-1.5 rounded cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50
         {currentProvider === provider
           ? 'bg-accent text-surface-0 font-medium'
           : 'bg-surface-2 text-text-secondary hover:text-text-primary'}
         {isDisabled(provider) ? 'opacity-30 cursor-not-allowed' : ''}"
     >
-      <span class="w-1.5 h-1.5 rounded-full {statusDotColor(provider)} shrink-0"></span>
-      {provider === 'claude' ? 'Claude' : 'Codex'}
+      <span class="w-1.5 h-1.5 rounded-full {statusDotColor(provider)} shrink-0" aria-hidden="true"></span>
+      {label}
     </button>
   {/each}
 </div>

@@ -12,6 +12,8 @@
   let models = $state<ModelInfo[]>([]);
   let loading = $state(false);
   let customModel = $state('');
+  let triggerEl: HTMLButtonElement | undefined = $state(undefined);
+  let listboxEl: HTMLDivElement | undefined = $state(undefined);
 
   let currentModel = $derived(pane.thread?.model ?? '');
   let provider = $derived(pane.thread?.provider ?? 'claude');
@@ -31,8 +33,17 @@
     }
   }
 
+  // Focus the first option or custom input once models load
+  $effect(() => {
+    if (open && !loading && listboxEl) {
+      const first = listboxEl.querySelector<HTMLElement>('button[role="option"], input');
+      first?.focus();
+    }
+  });
+
   async function selectModel(slug: string) {
     open = false;
+    triggerEl?.focus();
     const settingKey = provider === 'codex' ? 'defaultModelCodex' : 'defaultModelClaude';
     try {
       await updateSetting(settingKey, slug);
@@ -53,6 +64,7 @@
   function handleKeydown(e: KeyboardEvent) {
     if (e.key === 'Escape') {
       open = false;
+      triggerEl?.focus();
     }
   }
 
@@ -65,6 +77,7 @@
 
 <div class="relative">
   <button
+    bind:this={triggerEl}
     onclick={openPicker}
     class="text-xs px-2 py-1 rounded border border-border text-text-secondary hover:text-text-primary hover:border-text-secondary cursor-pointer truncate max-w-[180px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
     aria-label="Change model"
@@ -77,7 +90,7 @@
   {#if open}
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div transition:fade={{ duration: 100 }} class="fixed inset-0 z-40" onclick={handleBackdropClick} onkeydown={handleKeydown}></div>
-    <div transition:fly={{ y: -4, duration: 120 }} class="absolute top-full left-0 mt-1 z-50 bg-surface-1 border border-border rounded-lg shadow-xl min-w-[200px] max-h-[280px] overflow-y-auto" role="listbox" aria-label="Available models">
+    <div bind:this={listboxEl} transition:fly={{ y: -4, duration: 120 }} class="absolute top-full left-0 mt-1 z-50 bg-surface-1 border border-border rounded-lg shadow-xl min-w-[200px] max-h-[280px] overflow-y-auto" role="listbox" aria-label="Available models">
       {#if loading}
         <div class="px-3 py-2 text-xs text-text-secondary animate-pulse">Loading models...</div>
       {:else}

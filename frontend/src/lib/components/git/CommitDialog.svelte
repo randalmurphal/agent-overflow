@@ -130,7 +130,7 @@
         </div>
 
         {#if error}
-          <p class="text-xs text-error break-words">{error}</p>
+          <p class="text-xs text-error break-words" role="alert">{error}</p>
         {/if}
       </div>
 

@@ -8,9 +8,11 @@
   let threads = $derived(getThreads());
 </script>
 
-<div class="flex-1 overflow-y-auto px-2 py-1 space-y-0.5">
+<div class="flex-1 overflow-y-auto px-2 py-1 space-y-0.5" role="list" aria-label="Threads">
   {#each threads as thread (thread.id)}
-    <ThreadRow {thread} {pane} />
+    <div role="listitem">
+      <ThreadRow {thread} {pane} />
+    </div>
   {/each}
 
   {#if threads.length === 0}

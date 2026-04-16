@@ -35,7 +35,7 @@
   onfocus={() => showPopover = true}
   onblur={() => showPopover = false}
 >
-  <svg class="w-6 h-6 -rotate-90" viewBox="0 0 24 24">
+  <svg class="w-6 h-6 -rotate-90" viewBox="0 0 24 24" aria-hidden="true">
     <circle
       cx="12" cy="12" r={RADIUS}
       fill="none"
@@ -52,12 +52,12 @@
       class={strokeColor}
     />
   </svg>
-  <span class="absolute inset-0 flex items-center justify-center text-[7px] font-medium text-text-secondary rotate-0">
+  <span class="absolute inset-0 flex items-center justify-center text-[7px] font-medium text-text-secondary rotate-0" aria-hidden="true">
     {displayPct}
   </span>
 
   {#if showPopover}
-    <div transition:fade={{ duration: 100 }} class="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 z-30 bg-surface-1 border border-border rounded-md shadow-lg px-3 py-2 min-w-[160px]">
+    <div role="tooltip" transition:fade={{ duration: 100 }} class="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 z-30 bg-surface-1 border border-border rounded-md shadow-lg px-3 py-2 min-w-[160px]">
       <p class="text-[10px] font-semibold text-text-secondary uppercase tracking-wider mb-1.5">Context window</p>
       <div class="space-y-0.5 text-xs text-text-secondary">
         <p>{displayPct}% used</p>

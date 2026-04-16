@@ -15,6 +15,8 @@
   let showCreateInput = $state(false);
   let newBranchName = $state('');
   let creating = $state(false);
+  let triggerEl: HTMLButtonElement | undefined = $state(undefined);
+  let filterInputEl: HTMLInputElement | undefined = $state(undefined);
 
   let filteredBranches = $derived(
     filter
@@ -32,6 +34,13 @@
     } catch (err) {
       console.error('Failed to get git status:', err);
       pane.setError('Failed to load branch info');
+    }
+  });
+
+  // Focus the filter input once the dropdown opens and loads
+  $effect(() => {
+    if (open && !loading && filterInputEl) {
+      filterInputEl.focus();
     }
   });
 
@@ -54,6 +63,7 @@
   async function selectBranch(name: string) {
     if (!pane.threadId || name === currentBranch) {
       open = false;
+      triggerEl?.focus();
       return;
     }
     try {
@@ -64,6 +74,7 @@
       pane.setError(`Failed to checkout: ${err}`);
     }
     open = false;
+    triggerEl?.focus();
   }
 
   async function createBranch() {
@@ -87,6 +98,7 @@
   function handleKeydown(e: KeyboardEvent) {
     if (e.key === 'Escape') {
       open = false;
+      triggerEl?.focus();
     }
   }
 
@@ -100,6 +112,7 @@
 {#if currentBranch}
   <div class="relative">
     <button
+      bind:this={triggerEl}
       onclick={openPicker}
       aria-label="Switch branch: {currentBranch}"
       aria-expanded={open}
@@ -118,6 +131,7 @@
       <div transition:fly={{ y: -4, duration: 120 }} class="absolute top-full left-0 mt-1 z-50 bg-surface-1 border border-border rounded-lg shadow-xl min-w-[220px] max-h-[300px] overflow-hidden flex flex-col">
         <div class="p-2 border-b border-border">
           <input
+            bind:this={filterInputEl}
             type="text"
             bind:value={filter}
             placeholder="Filter branches..."

@@ -22,10 +22,10 @@
   </div>
 
   {#if pane.thread}
-    <span class="text-text-secondary/50">|</span>
+    <span class="text-text-secondary/50" aria-hidden="true">|</span>
     <span>{pane.thread.provider}</span>
     {#if pane.thread.model}
-      <span class="text-text-secondary/50">|</span>
+      <span class="text-text-secondary/50" aria-hidden="true">|</span>
       <span>{pane.thread.model}</span>
     {/if}
   {/if}

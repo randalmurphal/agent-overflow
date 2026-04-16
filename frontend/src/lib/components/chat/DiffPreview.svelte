@@ -56,6 +56,7 @@
     class="w-full px-3 py-2 flex items-center gap-2 text-sm cursor-pointer hover:bg-surface-2/40"
     onclick={toggle}
     aria-expanded={expanded}
+    aria-controls="diff-content-{payloadId}"
     aria-label="Toggle diff: {meta.filePath}"
   >
     <span class="text-xs text-text-secondary select-none" aria-hidden="true">{expanded ? '▼' : '▶'}</span>
@@ -73,11 +74,11 @@
 
   <!-- Diff content -->
   {#if displayLines.length > 0}
-    <div transition:slide={{ duration: 150 }} class="border-t border-border bg-surface-0 px-3 py-2 overflow-x-auto">
+    <div id="diff-content-{payloadId}" transition:slide={{ duration: 150 }} class="border-t border-border bg-surface-0 px-3 py-2 overflow-x-auto">
       {#if loading}
-        <p class="text-xs text-text-secondary">Loading full diff…</p>
+        <p class="text-xs text-text-secondary" role="status" aria-live="polite">Loading full diff…</p>
       {:else if loadError}
-        <p class="text-xs text-error">Failed to load diff: {loadError}</p>
+        <p class="text-xs text-error" role="alert">Failed to load diff: {loadError}</p>
       {/if}
 
       <pre class="font-mono text-xs leading-tight {wrapClass}">{#each displayLines as line}<span

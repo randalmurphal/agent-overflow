@@ -41,6 +41,7 @@
     class="w-full px-3 py-2 flex items-center gap-2 text-left cursor-pointer hover:bg-surface-2/40"
     onclick={toggle}
     aria-expanded={expanded}
+    aria-controls="thinking-{item.id}"
     aria-label="Toggle thinking block"
   >
     <span class="text-xs text-text-secondary select-none" aria-hidden="true">{expanded ? '▼' : '▶'}</span>
@@ -51,11 +52,12 @@
   </button>
 
   {#if expanded}
-    <div transition:slide={{ duration: 150 }} class="border-t border-border px-3 py-2 max-h-80 overflow-y-auto">
+    <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+    <div id="thinking-{item.id}" transition:slide={{ duration: 150 }} class="border-t border-border px-3 py-2 max-h-80 overflow-y-auto" tabindex="0" role="region" aria-label="Thinking content">
       {#if loading}
-        <p class="text-xs text-text-secondary animate-pulse">Loading thinking content...</p>
+        <p class="text-xs text-text-secondary animate-pulse" role="status" aria-live="polite">Loading thinking content...</p>
       {:else if loadError}
-        <p class="text-xs text-error">Failed to load: {loadError}</p>
+        <p class="text-xs text-error" role="alert">Failed to load: {loadError}</p>
       {:else if fullContent}
         <pre class="text-xs text-text-secondary whitespace-pre-wrap font-mono leading-relaxed">{fullContent}</pre>
       {:else}

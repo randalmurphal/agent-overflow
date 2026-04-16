@@ -117,9 +117,9 @@
   });
 </script>
 
-<div bind:this={scrollContainer} onscroll={handleScroll} class="flex-1 overflow-y-auto px-4 py-4">
+<div bind:this={scrollContainer} onscroll={handleScroll} class="flex-1 overflow-y-auto px-4 py-4" role="log" aria-label="Message history">
   {#if pane.loading}
-    <div class="flex items-center justify-center h-full text-text-secondary text-sm">
+    <div class="flex items-center justify-center h-full text-text-secondary text-sm" role="status" aria-live="polite">
       <span class="animate-pulse">Loading thread...</span>
     </div>
   {:else}
@@ -163,7 +163,7 @@
     {/if}
 
     {#if activeToolEntries.length > 0}
-      <div class="mb-3 flex flex-col gap-1">
+      <div class="mb-3 flex flex-col gap-1" role="group" aria-label="Active tool calls">
         {#each activeToolEntries as entry (entry.id)}
           <WorkEntry {entry} />
         {/each}

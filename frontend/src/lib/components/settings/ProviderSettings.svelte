@@ -57,7 +57,7 @@
           <h3 class="text-sm font-medium text-text-primary">{provider.label}</h3>
           {#if status}
             <span class="flex items-center gap-1 text-xs text-text-secondary">
-              <span class="w-1.5 h-1.5 rounded-full {statusDotColor(status.status)}"></span>
+              <span class="w-1.5 h-1.5 rounded-full {statusDotColor(status.status)}" aria-hidden="true"></span>
               {status.status}
             </span>
           {/if}

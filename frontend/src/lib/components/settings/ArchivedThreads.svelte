@@ -60,9 +60,9 @@
     <p class="text-xs text-text-secondary/60 mt-1">Archived threads will appear here</p>
   </div>
 {:else}
-  <div class="space-y-1">
+  <div class="space-y-1" role="list" aria-label="Archived threads">
     {#each archived as thread (thread.id)}
-      <div class="flex items-center gap-3 px-3 py-2 rounded border border-border bg-surface-0">
+      <div role="listitem" class="flex items-center gap-3 px-3 py-2 rounded border border-border bg-surface-0">
         <span class="text-[10px] font-bold px-1 py-0.5 rounded shrink-0
           {thread.provider === 'claude' ? 'bg-accent/20 text-accent' : 'bg-provider-codex/20 text-provider-codex'}">
           {thread.provider === 'claude' ? 'C' : 'X'}
@@ -73,12 +73,14 @@
         </div>
         <button
           onclick={() => handleUnarchive(thread)}
+          aria-label="Unarchive {thread.title || 'Untitled'}"
           class="text-xs px-2 py-1 rounded border border-border text-text-secondary hover:text-text-primary cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
         >
           Unarchive
         </button>
         <button
           onclick={() => { deleteTarget = thread; }}
+          aria-label="Delete {thread.title || 'Untitled'}"
           class="text-xs px-2 py-1 rounded border border-error/40 text-error hover:bg-error/10 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
         >
           Delete

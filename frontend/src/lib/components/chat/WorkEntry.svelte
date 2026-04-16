@@ -45,7 +45,7 @@
     {isRunning ? 'border-l-2 border-l-accent' : ''}"
 >
   <div class="flex items-center gap-2">
-    <span class="font-mono text-xs text-text-secondary shrink-0">{typeLabel}</span>
+    <span class="font-mono text-xs text-text-secondary shrink-0" aria-hidden="true">{typeLabel}</span>
     <span class="font-medium text-text-primary truncate">
       {entry.name ?? entry.type}
     </span>

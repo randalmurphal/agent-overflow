@@ -91,6 +91,7 @@
           class="w-full pl-7 pr-3 py-1 flex items-center gap-2 text-left cursor-pointer hover:bg-surface-2/30"
           onclick={() => toggleFile(file.path)}
           aria-expanded={expandedFile === file.path}
+          aria-label="Toggle diff: {fileName(file.path)}, {file.kind}, +{file.insertions} -{file.deletions}"
         >
           <span class="text-xs font-mono text-text-primary truncate flex-1">{fileName(file.path)}</span>
           <span class="px-1.5 py-0.5 rounded-full text-[10px] {kindBadge(file.kind)}">{file.kind}</span>

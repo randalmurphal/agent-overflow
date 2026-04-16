@@ -16,6 +16,8 @@
   let showCommit = $state(false);
   let showDropdown = $state(false);
   let showRemoveWorktreeConfirm = $state(false);
+  let menuTriggerEl: HTMLButtonElement | undefined = $state(undefined);
+  let menuEl: HTMLDivElement | undefined = $state(undefined);
 
   let isWorktree = $derived(!!pane.thread?.worktreePath);
   let canCreatePR = $derived(
@@ -141,6 +143,33 @@
     }
   }
 
+  // Focus the first enabled menuitem when dropdown opens
+  $effect(() => {
+    if (showDropdown && menuEl) {
+      const first = menuEl.querySelector<HTMLElement>('button[role="menuitem"]:not([disabled])');
+      first?.focus();
+    }
+  });
+
+  function handleMenuKeydown(e: KeyboardEvent) {
+    if (e.key === 'Escape') {
+      showDropdown = false;
+      menuTriggerEl?.focus();
+      return;
+    }
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (!menuEl) return;
+      const items = [...menuEl.querySelectorAll<HTMLElement>('button[role="menuitem"]:not([disabled])')];
+      if (items.length === 0) return;
+      const current = items.indexOf(document.activeElement as HTMLElement);
+      const next = e.key === 'ArrowDown'
+        ? (current + 1) % items.length
+        : (current - 1 + items.length) % items.length;
+      items[next].focus();
+    }
+  }
+
   function handleCommitClose() {
     showCommit = false;
     refreshStatus();
@@ -166,6 +195,7 @@
       {actionLoading ? '...' : primaryAction.label}
     </button>
     <button
+      bind:this={menuTriggerEl}
       onclick={() => showDropdown = !showDropdown}
       aria-label="More git actions"
       aria-expanded={showDropdown}
@@ -179,8 +209,9 @@
 
     {#if showDropdown}
       <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <div transition:fade={{ duration: 100 }} class="fixed inset-0 z-40" onclick={() => showDropdown = false} onkeydown={(e) => { if (e.key === 'Escape') showDropdown = false; }}></div>
-      <div transition:fly={{ y: -4, duration: 120 }} class="absolute top-full right-0 mt-1 z-50 bg-surface-1 border border-border rounded-lg shadow-lg min-w-[140px]" role="menu" aria-label="Git actions">
+      <div transition:fade={{ duration: 100 }} class="fixed inset-0 z-40" onclick={() => { showDropdown = false; menuTriggerEl?.focus(); }} onkeydown={(e) => { if (e.key === 'Escape') { showDropdown = false; menuTriggerEl?.focus(); } }}></div>
+      <!-- svelte-ignore a11y_interactive_supports_focus -->
+      <div bind:this={menuEl} onkeydown={handleMenuKeydown} transition:fly={{ y: -4, duration: 120 }} class="absolute top-full right-0 mt-1 z-50 bg-surface-1 border border-border rounded-lg shadow-lg min-w-[140px]" role="menu" aria-label="Git actions">
         <button
           onclick={() => { showDropdown = false; showCommit = true; }}
           disabled={!status.hasChanges}
