@@ -152,6 +152,101 @@ func TestCreateBranchRequiresName(t *testing.T) {
 	}
 }
 
+func TestCheckoutRequiresBranchName(t *testing.T) {
+	repo := testutil.InitGitRepo(t)
+	core := NewCore()
+
+	if err := core.Checkout(repo, "  "); err == nil {
+		t.Fatal("expected error for empty branch name")
+	}
+}
+
+func TestCheckoutRejectsInvalidBranchName(t *testing.T) {
+	repo := testutil.InitGitRepo(t)
+	core := NewCore()
+
+	if err := core.Checkout(repo, "--flag"); err == nil {
+		t.Fatal("expected error for flag-like branch name")
+	}
+}
+
+func TestCreateBranchRejectsInvalidName(t *testing.T) {
+	repo := testutil.InitGitRepo(t)
+	core := NewCore()
+
+	if err := core.CreateBranch(repo, "--malicious"); err == nil {
+		t.Fatal("expected error for flag-like branch name")
+	}
+}
+
+func TestValidateBranchName(t *testing.T) {
+	tests := []struct {
+		name    string
+		branch  string
+		wantErr bool
+	}{
+		{"valid simple name", "feature", false},
+		{"valid with slash", "feature/demo", false},
+		{"starts with dash", "-bad", true},
+		{"contains double dot", "a..b", true},
+		{"contains NUL", "a\x00b", true},
+		{"contains tab control char", "a\tb", true},
+		{"valid with hyphen", "my-branch", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateBranchName(tt.branch)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("validateBranchName(%q) error = %v, wantErr = %v", tt.branch, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestCommitBodyOmittedWhenEmpty(t *testing.T) {
+	args := commitArgs("subject only", "")
+	if len(args) != 3 {
+		t.Fatalf("len(args) = %d, want 3 (no body -m flag)", len(args))
+	}
+}
+
+func TestCommitBodyIncludedWhenPresent(t *testing.T) {
+	args := commitArgs("subject", "body text")
+	if len(args) != 5 {
+		t.Fatalf("len(args) = %d, want 5 (subject + body -m flags)", len(args))
+	}
+	if args[4] != "body text" {
+		t.Fatalf("body arg = %q, want body text", args[4])
+	}
+}
+
+func TestPushUsesExistingUpstream(t *testing.T) {
+	repo := testutil.InitGitRepo(t)
+	remote := filepath.Join(t.TempDir(), "origin.git")
+	testutil.RunGit(t, t.TempDir(), "init", "--bare", remote)
+	testutil.RunGit(t, repo, "remote", "add", "origin", remote)
+	testutil.RunGit(t, repo, "push", "-u", "origin", "main")
+
+	// Second push should use the existing upstream, not set-upstream again.
+	core := NewCore()
+	if err := core.Push(repo); err != nil {
+		t.Fatalf("Push with existing upstream returned error: %v", err)
+	}
+}
+
+func TestPushSelectsNonOriginRemote(t *testing.T) {
+	repo := testutil.InitGitRepo(t)
+	remote := filepath.Join(t.TempDir(), "upstream.git")
+	testutil.RunGit(t, t.TempDir(), "init", "--bare", remote)
+	testutil.RunGit(t, repo, "remote", "add", "upstream", remote)
+
+	core := NewCore()
+	if err := core.Push(repo); err != nil {
+		t.Fatalf("Push with non-origin remote returned error: %v", err)
+	}
+}
+
 func runGitStdout(t *testing.T, cwd string, args ...string) string {
 	t.Helper()
 

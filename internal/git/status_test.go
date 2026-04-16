@@ -218,6 +218,172 @@ func TestLookupOpenPRUsesGHWhenAvailable(t *testing.T) {
 	}
 }
 
+func TestWorkingTreeDiffReturnsEmptyForCleanRepo(t *testing.T) {
+	repo := testutil.InitGitRepo(t)
+	core := NewCore()
+
+	diff, err := core.WorkingTreeDiff(repo)
+	if err != nil {
+		t.Fatalf("WorkingTreeDiff returned error: %v", err)
+	}
+	if diff != "" {
+		t.Fatalf("expected empty diff for clean repo, got %q", diff)
+	}
+}
+
+func TestWorkingTreeDiffCachedOnly(t *testing.T) {
+	repo := testutil.InitGitRepo(t)
+	readmePath := filepath.Join(repo, "README.txt")
+
+	if err := os.WriteFile(readmePath, []byte("hello\nstaged change\n"), 0o644); err != nil {
+		t.Fatalf("write staged version: %v", err)
+	}
+	testutil.RunGit(t, repo, "add", "README.txt")
+
+	core := NewCore()
+	diff, err := core.WorkingTreeDiff(repo)
+	if err != nil {
+		t.Fatalf("WorkingTreeDiff returned error: %v", err)
+	}
+	if !strings.Contains(diff, "staged change") {
+		t.Fatalf("expected diff to contain staged content, got %q", diff)
+	}
+}
+
+func TestWorkingTreeDiffOnNonRepo(t *testing.T) {
+	core := NewCore()
+
+	_, err := core.WorkingTreeDiff(t.TempDir())
+	if err == nil {
+		t.Fatal("expected error for non-repo directory")
+	}
+}
+
+func TestListBranchesIncludesNewBranch(t *testing.T) {
+	repo := testutil.InitGitRepo(t)
+	testutil.RunGit(t, repo, "branch", "feature/test")
+
+	core := NewCore()
+	branches, err := core.ListBranches(repo)
+	if err != nil {
+		t.Fatalf("ListBranches returned error: %v", err)
+	}
+
+	found := false
+	for _, b := range branches {
+		if b.Name == "feature/test" {
+			found = true
+			if b.IsCurrent {
+				t.Fatal("feature/test should not be current")
+			}
+		}
+	}
+	if !found {
+		t.Fatal("expected feature/test in branch list")
+	}
+}
+
+func TestCombineDiffsEdgeCases(t *testing.T) {
+	if got := combineDiffs("", "cached"); got != "cached" {
+		t.Fatalf("combineDiffs empty+cached = %q, want cached", got)
+	}
+	if got := combineDiffs("head", ""); got != "head" {
+		t.Fatalf("combineDiffs head+empty = %q, want head", got)
+	}
+	if got := combineDiffs("", ""); got != "" {
+		t.Fatalf("combineDiffs empty+empty = %q, want empty", got)
+	}
+}
+
+func TestIsDefaultBranchNameEdgeCases(t *testing.T) {
+	tests := []struct {
+		branch  string
+		dflt    string
+		want    bool
+	}{
+		{"", "main", false},
+		{"main", "", true},
+		{"master", "", true},
+		{"origin/main", "", true},
+		{"origin/master", "", true},
+		{"develop", "", false},
+		{"develop", "develop", true},
+		{"origin/develop", "develop", true},
+		{"feature/develop", "develop", true}, // HasSuffix("/develop") matches remote-like patterns
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.branch+"/"+tt.dflt, func(t *testing.T) {
+			got := isDefaultBranchName(tt.branch, tt.dflt)
+			if got != tt.want {
+				t.Fatalf("isDefaultBranchName(%q, %q) = %v, want %v", tt.branch, tt.dflt, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseAheadBehindMalformed(t *testing.T) {
+	ahead, behind := parseAheadBehind("invalid")
+	if ahead != 0 || behind != 0 {
+		t.Fatalf("parseAheadBehind(invalid) = %d/%d, want 0/0", ahead, behind)
+	}
+}
+
+func TestParseNumstatCountMalformed(t *testing.T) {
+	if got := parseNumstatCount("abc"); got != 0 {
+		t.Fatalf("parseNumstatCount(abc) = %d, want 0", got)
+	}
+}
+
+func TestParsePorcelainPathIgnoredPrefix(t *testing.T) {
+	if got := parsePorcelainPath("! ignored.txt"); got != "ignored.txt" {
+		t.Fatalf("parsePorcelainPath for ignored = %q, want ignored.txt", got)
+	}
+}
+
+func TestParsePorcelainPathEmptyFields(t *testing.T) {
+	if got := parsePorcelainPath(""); got != "" {
+		t.Fatalf("parsePorcelainPath for empty = %q, want empty", got)
+	}
+}
+
+func TestParseStatusOutputDetachedHead(t *testing.T) {
+	status := parseStatusOutput(
+		"# branch.oid abcdef\n# branch.head (HEAD detached)\n",
+		"",
+		"",
+	)
+	if status.Branch != "" {
+		t.Fatalf("Branch = %q, want empty for detached HEAD", status.Branch)
+	}
+}
+
+func TestParseNumstatSkipsShortLines(t *testing.T) {
+	entries := parseNumstat("incomplete\ttwo\n")
+	if len(entries) != 0 {
+		t.Fatalf("expected no entries for incomplete numstat line, got %d", len(entries))
+	}
+}
+
+func TestStatusOnCleanRepository(t *testing.T) {
+	repo := testutil.InitGitRepo(t)
+	core := NewCore()
+
+	status, err := core.Status(repo)
+	if err != nil {
+		t.Fatalf("Status returned error: %v", err)
+	}
+	if !status.IsRepo {
+		t.Fatal("expected IsRepo=true")
+	}
+	if status.HasChanges {
+		t.Fatal("expected HasChanges=false for clean repo")
+	}
+	if status.FileCount != 0 {
+		t.Fatalf("FileCount = %d, want 0", status.FileCount)
+	}
+}
+
 func TestHelperFunctions(t *testing.T) {
 	if got := normalizeNumstatPath("old/name.txt => new/name.txt"); got != "new/name.txt" {
 		t.Fatalf("normalizeNumstatPath returned %q", got)

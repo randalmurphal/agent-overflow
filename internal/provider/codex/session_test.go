@@ -3,6 +3,7 @@ package codex
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -1591,6 +1592,303 @@ func TestCodexReadLoopCleansPendingOnExit(t *testing.T) {
 		// Channel was closed — correct.
 	case <-time.After(5 * time.Second):
 		t.Fatal("timeout waiting for pending channel to be closed")
+	}
+}
+
+// -- SetDynamicToolHandler / handleDynamicToolCall tests --
+
+func TestSetDynamicToolHandler(t *testing.T) {
+	s, _ := newTestCodexSession(t)
+
+	called := false
+	handler := func(toolName string, args map[string]any) (string, bool, error) {
+		called = true
+		return "result", true, nil
+	}
+
+	s.SetDynamicToolHandler(handler)
+
+	s.mu.Lock()
+	h := s.dynamicToolHandler
+	s.mu.Unlock()
+	if h == nil {
+		t.Fatal("expected non-nil handler after SetDynamicToolHandler")
+	}
+
+	// Invoke the handler to confirm it's the right one.
+	_, _, _ = h("test", nil)
+	if !called {
+		t.Error("expected handler to be called")
+	}
+}
+
+func TestSetDynamicToolHandlerNil(t *testing.T) {
+	s, _ := newTestCodexSession(t)
+
+	s.SetDynamicToolHandler(func(string, map[string]any) (string, bool, error) {
+		return "", false, nil
+	})
+	s.SetDynamicToolHandler(nil)
+
+	s.mu.Lock()
+	h := s.dynamicToolHandler
+	s.mu.Unlock()
+	if h != nil {
+		t.Error("expected nil handler after SetDynamicToolHandler(nil)")
+	}
+}
+
+func TestHandleDynamicToolCall(t *testing.T) {
+	s, eventCh := newTestCodexSession(t)
+
+	resultCh := make(chan string, 1)
+	s.SetDynamicToolHandler(func(toolName string, args map[string]any) (string, bool, error) {
+		resultCh <- toolName
+		return "tool output", true, nil
+	})
+
+	line := []byte(`{"jsonrpc":"2.0","id":10,"method":"item/tool/call","params":{"tool":"my_tool","arguments":{"key":"value"}}}`)
+	if err := s.proc.WriteLine(line); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	// The handler runs asynchronously. Wait for it.
+	select {
+	case name := <-resultCh:
+		if name != "my_tool" {
+			t.Errorf("toolName: got %q, want %q", name, "my_tool")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for dynamic tool handler invocation")
+	}
+
+	// Drain any events from the echo.
+	_ = eventCh
+}
+
+func TestHandleDynamicToolCallToolNameField(t *testing.T) {
+	s, _ := newTestCodexSession(t)
+
+	resultCh := make(chan string, 1)
+	s.SetDynamicToolHandler(func(toolName string, args map[string]any) (string, bool, error) {
+		resultCh <- toolName
+		return "ok", true, nil
+	})
+
+	// Use "toolName" field instead of "tool".
+	line := []byte(`{"jsonrpc":"2.0","id":11,"method":"dynamicToolCall","params":{"toolName":"alt_tool","arguments":{}}}`)
+	if err := s.proc.WriteLine(line); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	select {
+	case name := <-resultCh:
+		if name != "alt_tool" {
+			t.Errorf("toolName: got %q, want %q", name, "alt_tool")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for dynamic tool handler invocation")
+	}
+}
+
+func TestHandleDynamicToolCallHandlerError(t *testing.T) {
+	s, _ := newTestCodexSession(t)
+
+	doneCh := make(chan struct{}, 1)
+	s.SetDynamicToolHandler(func(toolName string, args map[string]any) (string, bool, error) {
+		defer func() { doneCh <- struct{}{} }()
+		return "", false, fmt.Errorf("simulated tool error")
+	})
+
+	line := []byte(`{"jsonrpc":"2.0","id":12,"method":"item/tool/call","params":{"tool":"fail_tool","arguments":{}}}`)
+	if err := s.proc.WriteLine(line); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	select {
+	case <-doneCh:
+		// Handler ran and returned error -- the session formats it as "Error: ..."
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for handler to complete")
+	}
+}
+
+func TestHandleDynamicToolCallNilArguments(t *testing.T) {
+	s, _ := newTestCodexSession(t)
+
+	resultCh := make(chan map[string]any, 1)
+	s.SetDynamicToolHandler(func(toolName string, args map[string]any) (string, bool, error) {
+		resultCh <- args
+		return "ok", true, nil
+	})
+
+	// No "arguments" field in params -- should default to empty map.
+	line := []byte(`{"jsonrpc":"2.0","id":13,"method":"item/tool/call","params":{"tool":"noargs_tool"}}`)
+	if err := s.proc.WriteLine(line); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	select {
+	case args := <-resultCh:
+		if args == nil {
+			t.Error("expected non-nil args map")
+		}
+		if len(args) != 0 {
+			t.Errorf("expected empty args, got %v", args)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for handler")
+	}
+}
+
+func TestHandleDynamicToolCallNoHandler(t *testing.T) {
+	s, _ := newTestCodexSession(t)
+	// No handler set -- should send error response.
+
+	line := []byte(`{"jsonrpc":"2.0","id":14,"method":"item/tool/call","params":{"tool":"orphan_tool"}}`)
+	if err := s.proc.WriteLine(line); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	// Give readLoop time to process. With cat, the error response echoes back.
+	time.Sleep(200 * time.Millisecond)
+}
+
+// -- handleServerRequest: elicitation branch --
+
+func TestCodexHandleServerRequestElicitation(t *testing.T) {
+	s, eventCh := newTestCodexSession(t)
+
+	line := []byte(`{"jsonrpc":"2.0","id":5,"method":"mcpServer/elicitation/request","params":{"serverName":"my-mcp","message":"Please authorize","requestedSchema":{"type":"string"}}}`)
+	if err := s.proc.WriteLine(line); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	evt := codexWaitEvent(t, eventCh)
+	if evt.Kind != provider.EventApprovalRequest {
+		t.Fatalf("kind: got %q, want %q", evt.Kind, provider.EventApprovalRequest)
+	}
+
+	var approval provider.ApprovalRequest
+	if err := json.Unmarshal(evt.Meta, &approval); err != nil {
+		t.Fatalf("unmarshal approval: %v", err)
+	}
+	if approval.Kind != "mcp-elicitation" {
+		t.Errorf("kind: got %q, want %q", approval.Kind, "mcp-elicitation")
+	}
+	if approval.RequestID != "5" {
+		t.Errorf("requestID: got %q, want %q", approval.RequestID, "5")
+	}
+	if approval.Description != "Please authorize" {
+		t.Errorf("description: got %q, want %q", approval.Description, "Please authorize")
+	}
+}
+
+// -- handleServerRequest: legacy approval methods --
+
+func TestCodexHandleServerRequestApplyPatchApproval(t *testing.T) {
+	s, eventCh := newTestCodexSession(t)
+
+	line := []byte(`{"jsonrpc":"2.0","id":6,"method":"applyPatchApproval","params":{"filePath":"/tmp/foo.go"}}`)
+	if err := s.proc.WriteLine(line); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	evt := codexWaitEvent(t, eventCh)
+	if evt.Kind != provider.EventApprovalRequest {
+		t.Fatalf("kind: got %q, want %q", evt.Kind, provider.EventApprovalRequest)
+	}
+
+	var approval provider.ApprovalRequest
+	if err := json.Unmarshal(evt.Meta, &approval); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if approval.Kind != "file-change" {
+		t.Errorf("kind: got %q, want %q", approval.Kind, "file-change")
+	}
+}
+
+func TestCodexHandleServerRequestExecCommandApproval(t *testing.T) {
+	s, eventCh := newTestCodexSession(t)
+
+	line := []byte(`{"jsonrpc":"2.0","id":7,"method":"execCommandApproval","params":{"command":"npm test"}}`)
+	if err := s.proc.WriteLine(line); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	evt := codexWaitEvent(t, eventCh)
+	if evt.Kind != provider.EventApprovalRequest {
+		t.Fatalf("kind: got %q, want %q", evt.Kind, provider.EventApprovalRequest)
+	}
+
+	var approval provider.ApprovalRequest
+	if err := json.Unmarshal(evt.Meta, &approval); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if approval.Kind != "command" {
+		t.Errorf("kind: got %q, want %q", approval.Kind, "command")
+	}
+	if approval.ToolName != "command" {
+		t.Errorf("toolName: got %q, want %q", approval.ToolName, "command")
+	}
+}
+
+// -- handleServerRequest: file read approval --
+
+func TestCodexHandleServerRequestFileReadApproval(t *testing.T) {
+	s, eventCh := newTestCodexSession(t)
+
+	line := []byte(`{"jsonrpc":"2.0","id":8,"method":"item/fileRead/requestApproval","params":{"filePath":"/etc/passwd"}}`)
+	if err := s.proc.WriteLine(line); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	evt := codexWaitEvent(t, eventCh)
+	if evt.Kind != provider.EventApprovalRequest {
+		t.Fatalf("kind: got %q, want %q", evt.Kind, provider.EventApprovalRequest)
+	}
+
+	var approval provider.ApprovalRequest
+	if err := json.Unmarshal(evt.Meta, &approval); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if approval.Kind != "file-read" {
+		t.Errorf("kind: got %q, want %q", approval.Kind, "file-read")
+	}
+	if approval.ToolName != "file_read" {
+		t.Errorf("toolName: got %q, want %q", approval.ToolName, "file_read")
+	}
+}
+
+// -- buildApprovalResponseResult: elicitation branch --
+
+func TestBuildApprovalResponseResultElicitation(t *testing.T) {
+	rpcID, result, err := buildApprovalResponseResult(provider.ApprovalResponse{
+		RequestID: "15",
+		Elicitation: &provider.ElicitationResolution{
+			Action:  "confirm",
+			Content: json.RawMessage(`{"key":"value"}`),
+			Meta:    json.RawMessage(`{"source":"test"}`),
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildApprovalResponseResult(): %v", err)
+	}
+	if rpcID != 15 {
+		t.Fatalf("rpcID = %d, want 15", rpcID)
+	}
+	payload, ok := result.(map[string]any)
+	if !ok {
+		t.Fatalf("result type = %T", result)
+	}
+	if payload["action"] != "confirm" {
+		t.Errorf("action: got %v, want confirm", payload["action"])
+	}
+	if payload["content"] == nil {
+		t.Error("expected non-nil content")
+	}
+	if payload["_meta"] == nil {
+		t.Error("expected non-nil _meta")
 	}
 }
 

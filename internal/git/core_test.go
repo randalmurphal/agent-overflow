@@ -140,6 +140,136 @@ func TestCreateListAndRemoveWorktree(t *testing.T) {
 	}
 }
 
+func TestCreateWorktreeRequiresPath(t *testing.T) {
+	repo := testutil.InitGitRepo(t)
+	core := NewCore()
+
+	err := core.CreateWorktree(repo, "  ", "feature/x")
+	if err == nil {
+		t.Fatal("expected error for empty worktree path")
+	}
+	if !strings.Contains(err.Error(), "path is required") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestCreateWorktreeRequiresBranch(t *testing.T) {
+	repo := testutil.InitGitRepo(t)
+	core := NewCore()
+
+	err := core.CreateWorktree(repo, filepath.Join(t.TempDir(), "wt"), "  ")
+	if err == nil {
+		t.Fatal("expected error for empty worktree branch")
+	}
+	if !strings.Contains(err.Error(), "branch is required") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestCreateWorktreeRejectsInvalidBranch(t *testing.T) {
+	repo := testutil.InitGitRepo(t)
+	core := NewCore()
+
+	err := core.CreateWorktree(repo, filepath.Join(t.TempDir(), "wt"), "--bad")
+	if err == nil {
+		t.Fatal("expected error for invalid branch name")
+	}
+	if !strings.Contains(err.Error(), "must not start with -") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestCreateWorktreeFailsOnConflictingBranch(t *testing.T) {
+	repo := testutil.InitGitRepo(t)
+	core := NewCore()
+
+	// "main" already exists, so creating a worktree with branch "main" fails.
+	err := core.CreateWorktree(repo, filepath.Join(t.TempDir(), "wt"), "main")
+	if err == nil {
+		t.Fatal("expected error for duplicate branch name")
+	}
+	if !strings.Contains(err.Error(), "worktree add failed") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRemoveWorktreeRequiresPath(t *testing.T) {
+	repo := testutil.InitGitRepo(t)
+	core := NewCore()
+
+	err := core.RemoveWorktree(repo, "  ")
+	if err == nil {
+		t.Fatal("expected error for empty worktree path")
+	}
+	if !strings.Contains(err.Error(), "path is required") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRemoveWorktreeFailsOnNonExistent(t *testing.T) {
+	repo := testutil.InitGitRepo(t)
+	core := NewCore()
+
+	err := core.RemoveWorktree(repo, filepath.Join(t.TempDir(), "no-such-wt"))
+	if err == nil {
+		t.Fatal("expected error for non-existent worktree")
+	}
+	if !strings.Contains(err.Error(), "worktree remove failed") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestListWorktreesOnNonRepo(t *testing.T) {
+	core := NewCore()
+
+	_, err := core.ListWorktrees(t.TempDir())
+	if err == nil {
+		t.Fatal("expected error for non-repo directory")
+	}
+}
+
+func TestFormatCommandQuotesSpecialChars(t *testing.T) {
+	got := formatCommand("git", "commit", "-m", "hello world")
+	if !strings.Contains(got, `"hello world"`) {
+		t.Fatalf("expected quoted arg, got %q", got)
+	}
+}
+
+func TestLimitedBufferMultipleWritesBeyondLimit(t *testing.T) {
+	buf := newLimitedBuffer(6)
+
+	if _, err := buf.Write([]byte("abc")); err != nil {
+		t.Fatalf("first Write: %v", err)
+	}
+	if buf.Truncated() {
+		t.Fatal("should not be truncated after first write")
+	}
+	if _, err := buf.Write([]byte("defgh")); err != nil {
+		t.Fatalf("second Write: %v", err)
+	}
+	if !buf.Truncated() {
+		t.Fatal("should be truncated after second write exceeds limit")
+	}
+	if got := buf.String(); got != "abcdef" {
+		t.Fatalf("String() = %q, want abcdef", got)
+	}
+}
+
+func TestLimitedBufferZeroMaxDropsEverything(t *testing.T) {
+	buf := newLimitedBuffer(0)
+
+	n, err := buf.Write([]byte("data"))
+	if err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if n != 4 {
+		t.Fatalf("Write returned %d, want 4", n)
+	}
+	if got := buf.String(); got != "" {
+		t.Fatalf("String() = %q, want empty", got)
+	}
+}
+
 func TestLimitedBufferTruncates(t *testing.T) {
 	buf := newLimitedBuffer(4)
 
