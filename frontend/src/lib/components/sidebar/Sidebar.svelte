@@ -131,7 +131,7 @@
     {:else}
       <button
         onclick={() => showForm = true}
-        class="w-full text-sm py-2 rounded-md bg-accent text-surface-0 font-medium hover:opacity-90 cursor-pointer"
+        class="w-full text-sm py-2 rounded-md bg-accent text-surface-0 font-medium hover:opacity-90 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:ring-offset-2 focus-visible:ring-offset-surface-1"
       >
         + New Thread
       </button>
@@ -144,7 +144,7 @@
     <div class="border-t border-border p-2 shrink-0">
       <button
         onclick={onOpenSettings}
-        class="w-full flex items-center gap-2 px-2 py-1.5 text-xs text-text-secondary hover:text-text-primary hover:bg-surface-2/50 rounded cursor-pointer"
+        class="w-full flex items-center gap-2 px-2 py-1.5 text-xs text-text-secondary hover:text-text-primary hover:bg-surface-2/50 rounded cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
       >
         <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <circle cx="12" cy="12" r="3" />

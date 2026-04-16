@@ -38,8 +38,8 @@
 
   function statusDotColor(status: string): string {
     switch (status) {
-      case 'ready': return 'bg-green-400';
-      case 'error': return 'bg-red-400';
+      case 'ready': return 'bg-success';
+      case 'error': return 'bg-error';
       default: return 'bg-text-secondary/30';
     }
   }

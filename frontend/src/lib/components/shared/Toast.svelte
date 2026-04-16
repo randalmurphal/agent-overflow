@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { fly, fade } from 'svelte/transition';
   import { getToasts, removeToast, type ToastType } from '../../stores/toast.svelte';
 
   let toasts = $derived(getToasts());
@@ -18,10 +19,10 @@
 
   function colorClasses(type: ToastType): string {
     switch (type) {
-      case 'success': return 'bg-green-900/80 border-green-700/50 text-green-200';
-      case 'error':   return 'bg-red-900/80 border-red-700/50 text-red-200';
-      case 'warning': return 'bg-amber-900/80 border-amber-700/50 text-amber-200';
-      case 'info':    return 'bg-blue-900/80 border-blue-700/50 text-blue-200';
+      case 'success': return 'bg-success/15 border-success/30 text-success';
+      case 'error':   return 'bg-error/15 border-error/30 text-error';
+      case 'warning': return 'bg-warning/15 border-warning/30 text-warning';
+      case 'info':    return 'bg-accent/15 border-accent/30 text-accent';
     }
   }
 </script>
@@ -30,6 +31,8 @@
   <div class="fixed bottom-4 right-4 z-50 flex flex-col gap-2 max-w-sm" aria-live="polite" aria-relevant="additions">
     {#each toasts as toast (toast.id)}
       <div
+        in:fly={{ x: 80, duration: 200 }}
+        out:fade={{ duration: 150 }}
         class="flex items-start gap-2.5 rounded-lg border px-3.5 py-2.5 shadow-lg backdrop-blur-sm text-sm {colorClasses(toast.type)}"
         role="alert"
       >

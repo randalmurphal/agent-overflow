@@ -55,7 +55,7 @@
       {#if isRunning}
         <span class="text-accent animate-pulse">running</span>
       {:else}
-        <span class="text-green-400">done</span>
+        <span class="text-success">done</span>
       {/if}
     </span>
   </div>

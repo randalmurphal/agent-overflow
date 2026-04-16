@@ -6,10 +6,10 @@
 
   let statusColor = $derived.by(() => {
     switch (pane.sessionStatus) {
-      case 'running': return 'bg-green-400';
+      case 'running': return 'bg-success';
       case 'connected':
       case 'ready': return 'bg-accent';
-      case 'error': return 'bg-red-400';
+      case 'error': return 'bg-error';
       default: return 'bg-text-secondary/50';
     }
   });
@@ -31,7 +31,7 @@
   {/if}
 
   {#if pane.tokenUsage}
-    <span class="ml-auto flex items-center gap-3">
+    <span class="ml-auto flex items-center gap-3 min-w-0 shrink truncate">
       <span>{formatTokens(pane.tokenUsage.inputTokens)} in / {formatTokens(pane.tokenUsage.outputTokens)} out</span>
       {#if pane.tokenUsage.totalCostUsd != null}
         <span>{formatCost(pane.tokenUsage.totalCostUsd)}</span>

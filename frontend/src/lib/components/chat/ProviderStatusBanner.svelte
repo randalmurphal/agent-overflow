@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { slide } from 'svelte/transition';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { ReconnectSession } from '../../stores/bindings';
 
@@ -14,9 +15,9 @@
 
   let bannerClasses = $derived.by(() => {
     switch (pane.sessionStatus) {
-      case 'error': return 'bg-red-900/30 border-red-800/40 text-red-300';
-      case 'retrying': return 'bg-amber-900/30 border-amber-800/40 text-amber-300';
-      case 'disconnected': return 'bg-amber-900/30 border-amber-800/40 text-amber-300';
+      case 'error': return 'bg-error/15 border-error/30 text-error';
+      case 'retrying': return 'bg-warning/15 border-warning/30 text-warning';
+      case 'disconnected': return 'bg-warning/15 border-warning/30 text-warning';
       default: return '';
     }
   });
@@ -45,8 +46,8 @@
 </script>
 
 {#if visible && pane.thread}
-  <div class="border-b {bannerClasses} px-4 py-2 flex items-center gap-2 shrink-0">
-    <p class="text-xs flex-1 truncate">{message}</p>
+  <div transition:slide={{ duration: 150 }} class="border-b {bannerClasses} px-4 py-2 flex items-center gap-2 shrink-0">
+    <p class="text-xs flex-1 truncate" title={message}>{message}</p>
     {#if pane.sessionStatus !== 'retrying'}
       <button
         onclick={handleReconnect}

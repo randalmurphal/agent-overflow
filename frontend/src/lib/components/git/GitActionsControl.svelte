@@ -142,7 +142,7 @@
 {#if statusError}
   <button
     onclick={() => refreshStatus()}
-    class="text-xs px-2 py-1 rounded border border-red-700/40 text-red-400/80 hover:text-red-400 cursor-pointer"
+    class="text-xs px-2 py-1 rounded border border-error/40 text-error/80 hover:text-error cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
     title="Failed to load git status. Click to retry."
   >
     Git: error
@@ -177,7 +177,7 @@
           onclick={() => { showDropdown = false; showCommit = true; }}
           disabled={!status.hasChanges}
           role="menuitem"
-          class="w-full text-left px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary hover:bg-surface-2/50 cursor-pointer disabled:opacity-40"
+          class="w-full text-left px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary hover:bg-surface-2/50 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
         >
           Commit
         </button>
@@ -185,7 +185,7 @@
           onclick={() => { showDropdown = false; doPush(); }}
           disabled={status.aheadCount === 0}
           role="menuitem"
-          class="w-full text-left px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary hover:bg-surface-2/50 cursor-pointer disabled:opacity-40"
+          class="w-full text-left px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary hover:bg-surface-2/50 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
         >
           Push
         </button>
@@ -193,7 +193,7 @@
           onclick={() => { showDropdown = false; doPull(); }}
           disabled={status.behindCount === 0}
           role="menuitem"
-          class="w-full text-left px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary hover:bg-surface-2/50 cursor-pointer disabled:opacity-40"
+          class="w-full text-left px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary hover:bg-surface-2/50 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
         >
           Pull
         </button>
@@ -201,7 +201,7 @@
           onclick={() => { showDropdown = false; doCreatePR(); }}
           disabled={!canCreatePR}
           role="menuitem"
-          class="w-full text-left px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary hover:bg-surface-2/50 cursor-pointer disabled:opacity-40"
+          class="w-full text-left px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary hover:bg-surface-2/50 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
         >
           Create PR
         </button>
@@ -210,7 +210,7 @@
           <button
             onclick={() => { showDropdown = false; showRemoveWorktreeConfirm = true; }}
             role="menuitem"
-            class="w-full text-left px-3 py-1.5 text-xs text-red-400/80 hover:text-red-400 hover:bg-surface-2/50 cursor-pointer"
+            class="w-full text-left px-3 py-1.5 text-xs text-error/80 hover:text-error hover:bg-surface-2/50 cursor-pointer"
           >
             Remove Worktree
           </button>

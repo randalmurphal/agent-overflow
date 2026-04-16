@@ -18,7 +18,7 @@
 
 {#if pane.thread}
   <div class="flex flex-col h-full">
-    <div class="border-b border-border bg-surface-1 px-4 py-2.5 flex items-center gap-2 shrink-0">
+    <div class="border-b border-border bg-surface-1 px-4 py-2.5 flex items-center gap-2 shrink-0 flex-wrap min-w-0">
       <span class="text-xs font-medium px-1.5 py-0.5 rounded bg-accent/20 text-accent">
         {pane.thread.provider === 'claude' ? 'C' : 'X'}
       </span>
@@ -32,7 +32,7 @@
       {#if pane.rateLimits.length > 0}
         <RateLimitsMeter limits={pane.rateLimits} />
       {/if}
-      <span class="ml-auto text-xs text-text-secondary truncate max-w-[200px]">{pane.thread.workspacePath}</span>
+      <span class="ml-auto text-xs text-text-secondary truncate min-w-0 shrink" title={pane.thread.workspacePath}>{pane.thread.workspacePath}</span>
     </div>
 
     <ProviderStatusBanner {pane} />

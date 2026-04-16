@@ -77,7 +77,7 @@
     {#if isRunning}
       <button
         onclick={stop}
-        class="shrink-0 rounded-lg px-4 py-2.5 text-sm font-medium bg-red-900/60 text-red-200 hover:bg-red-900/80 cursor-pointer"
+        class="shrink-0 rounded-lg px-4 py-2.5 text-sm font-medium bg-error/30 text-error hover:bg-error/40 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-error/50"
       >
         Stop
       </button>
@@ -85,7 +85,7 @@
       <button
         onclick={send}
         disabled={isDisabled || !message.trim()}
-        class="shrink-0 rounded-lg px-4 py-2.5 text-sm font-medium bg-accent text-surface-0 hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+        class="shrink-0 rounded-lg px-4 py-2.5 text-sm font-medium bg-accent text-surface-0 hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
       >
         Send
       </button>

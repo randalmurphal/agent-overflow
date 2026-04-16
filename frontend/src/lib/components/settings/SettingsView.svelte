@@ -37,7 +37,7 @@
           role="tab"
           aria-selected={activeSection === section.id}
           aria-controls="settings-panel-{section.id}"
-          class="w-full text-left px-4 py-1.5 text-sm cursor-pointer
+          class="w-full text-left px-4 py-1.5 text-sm cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/50
             {activeSection === section.id
               ? 'text-accent font-medium bg-accent/10'
               : 'text-text-secondary hover:text-text-primary hover:bg-surface-2/50'}"

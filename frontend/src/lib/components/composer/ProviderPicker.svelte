@@ -29,8 +29,8 @@
     const s = statuses.get(provider);
     if (!s) return 'bg-text-secondary/30';
     switch (s.status) {
-      case 'ready': return 'bg-green-400';
-      case 'error': return 'bg-red-400';
+      case 'ready': return 'bg-success';
+      case 'error': return 'bg-error';
       default: return 'bg-text-secondary/30';
     }
   }
@@ -46,7 +46,7 @@
     <button
       onclick={() => { if (!isDisabled(provider)) onSelect(provider); }}
       disabled={isDisabled(provider)}
-      class="flex-1 flex items-center justify-center gap-1.5 text-xs py-1.5 rounded cursor-pointer
+      class="flex-1 flex items-center justify-center gap-1.5 text-xs py-1.5 rounded cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50
         {currentProvider === provider
           ? 'bg-accent text-surface-0 font-medium'
           : 'bg-surface-2 text-text-secondary hover:text-text-primary'}

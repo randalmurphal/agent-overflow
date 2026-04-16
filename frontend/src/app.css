@@ -8,4 +8,7 @@
   --color-text-primary: oklch(0.95 0.006 285.82);
   --color-text-secondary: oklch(0.7 0.006 285.82);
   --color-accent: oklch(0.65 0.15 250);
+  --color-success: oklch(0.7 0.17 150);
+  --color-error: oklch(0.63 0.2 25);
+  --color-warning: oklch(0.75 0.15 75);
 }

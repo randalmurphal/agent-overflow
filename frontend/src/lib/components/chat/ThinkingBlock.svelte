@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { slide } from 'svelte/transition';
   import type { Item } from '../../types/models';
   import { GetPayloadData } from '../../stores/bindings';
 
@@ -48,11 +49,11 @@
   </button>
 
   {#if expanded}
-    <div class="border-t border-border px-3 py-2 max-h-80 overflow-y-auto">
+    <div transition:slide={{ duration: 150 }} class="border-t border-border px-3 py-2 max-h-80 overflow-y-auto">
       {#if loading}
         <p class="text-xs text-text-secondary animate-pulse">Loading thinking content...</p>
       {:else if loadError}
-        <p class="text-xs text-red-400">Failed to load: {loadError}</p>
+        <p class="text-xs text-error">Failed to load: {loadError}</p>
       {:else if fullContent}
         <pre class="text-xs text-text-secondary whitespace-pre-wrap font-mono leading-relaxed">{fullContent}</pre>
       {:else}

@@ -78,7 +78,7 @@
         </button>
         <button
           onclick={() => { deleteTarget = thread; }}
-          class="text-xs px-2 py-1 rounded border border-red-700/40 text-red-400 hover:bg-red-900/20 cursor-pointer"
+          class="text-xs px-2 py-1 rounded border border-error/40 text-error hover:bg-error/10 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
         >
           Delete
         </button>

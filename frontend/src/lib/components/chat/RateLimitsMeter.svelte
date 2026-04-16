@@ -4,14 +4,14 @@
   let { limits }: { limits: RateLimitEntry[] } = $props();
 
   function barColor(pct: number): string {
-    if (pct > 95) return 'bg-red-500';
-    if (pct > 80) return 'bg-amber-400';
+    if (pct > 95) return 'bg-error';
+    if (pct > 80) return 'bg-warning';
     return 'bg-accent';
   }
 
   function textColor(pct: number): string {
-    if (pct > 95) return 'text-red-400';
-    if (pct > 80) return 'text-amber-400';
+    if (pct > 95) return 'text-error';
+    if (pct > 80) return 'text-warning';
     return 'text-text-secondary';
   }
 

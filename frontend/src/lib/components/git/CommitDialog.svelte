@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { fade, scale } from 'svelte/transition';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import type { GitActionResult } from '../../types/git';
   import { GitCommit } from '../../stores/bindings';
@@ -88,12 +89,14 @@
 {#if open}
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
+    transition:fade={{ duration: 150 }}
     class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
     onclick={handleBackdropClick}
     onkeydown={handleKeydown}
   >
     <div
       bind:this={dialogEl}
+      transition:scale={{ start: 0.95, duration: 150 }}
       role="dialog"
       aria-modal="true"
       aria-labelledby="commit-dialog-title"
@@ -127,21 +130,21 @@
         </div>
 
         {#if error}
-          <p class="text-xs text-red-400">{error}</p>
+          <p class="text-xs text-error">{error}</p>
         {/if}
       </div>
 
       <div class="flex justify-end gap-2 mt-5">
         <button
           onclick={close}
-          class="px-4 py-2 text-sm rounded-md border border-border text-text-secondary hover:text-text-primary cursor-pointer"
+          class="px-4 py-2 text-sm rounded-md border border-border text-text-secondary hover:text-text-primary cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
         >
           Cancel
         </button>
         <button
           onclick={handleCommit}
           disabled={!subject.trim() || committing}
-          class="px-4 py-2 text-sm rounded-md font-medium bg-accent text-surface-0 hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+          class="px-4 py-2 text-sm rounded-md font-medium bg-accent text-surface-0 hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
         >
           {committing ? 'Committing...' : 'Commit'}
         </button>

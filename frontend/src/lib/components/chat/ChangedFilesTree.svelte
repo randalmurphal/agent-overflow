@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { slide } from 'svelte/transition';
   import DiffPreview from './DiffPreview.svelte';
   import type { DiffMeta, ChangedFile } from '../../types/models';
 
@@ -48,9 +49,9 @@
 
   function kindBadge(kind: string): string {
     switch (kind) {
-      case 'added': return 'bg-green-700/50 text-green-300';
-      case 'modified': return 'bg-yellow-700/50 text-yellow-300';
-      case 'deleted': return 'bg-red-700/50 text-red-300';
+      case 'added': return 'bg-success/20 text-success';
+      case 'modified': return 'bg-warning/20 text-warning';
+      case 'deleted': return 'bg-error/20 text-error';
       case 'renamed': return 'bg-accent/30 text-accent';
       default: return 'bg-surface-2 text-text-secondary';
     }
@@ -83,6 +84,7 @@
     </button>
 
     {#if expandedDirs.has(group.dir)}
+      <div transition:slide={{ duration: 150 }}>
       {#each group.files as file}
         <button
           class="w-full pl-7 pr-3 py-1 flex items-center gap-2 text-left cursor-pointer hover:bg-surface-2/30"
@@ -92,20 +94,21 @@
           <span class="px-1.5 py-0.5 rounded-full text-[10px] {kindBadge(file.kind)}">{file.kind}</span>
           <span class="flex gap-1.5 text-[10px] tabular-nums shrink-0">
             {#if file.insertions > 0}
-              <span class="text-green-400">+{file.insertions}</span>
+              <span class="text-success">+{file.insertions}</span>
             {/if}
             {#if file.deletions > 0}
-              <span class="text-red-400">-{file.deletions}</span>
+              <span class="text-error">-{file.deletions}</span>
             {/if}
           </span>
         </button>
 
         {#if expandedFile === file.path}
-          <div class="pl-7 pr-3 pb-2">
+          <div transition:slide={{ duration: 150 }} class="pl-7 pr-3 pb-2">
             <DiffPreview meta={diffMeta(file)} payloadId={file.payloadId} />
           </div>
         {/if}
       {/each}
+      </div>
     {/if}
   {/each}
 </div>

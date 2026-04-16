@@ -123,7 +123,7 @@
   onkeydown={(e) => { if (!editing && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); handleClick(); } }}
   role="button"
   tabindex={0}
-  class="group w-full text-left px-3 py-2 rounded-md cursor-pointer transition-colors
+  class="group w-full text-left px-3 py-2 rounded-md cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50
     {isActive ? 'bg-accent/15 text-text-primary' : 'text-text-secondary hover:bg-surface-2 hover:text-text-primary'}"
 >
   <div class="flex items-center gap-2">
@@ -153,7 +153,7 @@
     {#if !editing}
       <button
         onclick={handleDelete}
-        class="opacity-0 group-hover:opacity-100 text-red-400/60 hover:text-red-400 text-xs px-1 shrink-0 cursor-pointer"
+        class="opacity-0 group-hover:opacity-100 text-error/60 hover:text-error text-xs px-1 shrink-0 cursor-pointer focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/50 rounded"
         aria-label="Delete thread"
       >
         <svg class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
@@ -162,7 +162,7 @@
       </button>
       <button
         onclick={handleArchive}
-        class="opacity-0 group-hover:opacity-100 text-text-secondary hover:text-text-primary text-xs px-1 shrink-0 cursor-pointer"
+        class="opacity-0 group-hover:opacity-100 text-text-secondary hover:text-text-primary text-xs px-1 shrink-0 cursor-pointer focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/50 rounded"
         aria-label="Archive thread"
       >
         <svg class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">

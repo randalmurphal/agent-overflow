@@ -65,7 +65,7 @@
 <div class="relative">
   <button
     onclick={openPicker}
-    class="text-xs px-2 py-1 rounded border border-border text-text-secondary hover:text-text-primary hover:border-text-secondary cursor-pointer truncate max-w-[150px]"
+    class="text-xs px-2 py-1 rounded border border-border text-text-secondary hover:text-text-primary hover:border-text-secondary cursor-pointer truncate max-w-[180px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
     aria-label="Change model"
     aria-expanded={open}
     aria-haspopup="listbox"
@@ -94,7 +94,9 @@
             {/if}
           </button>
         {/each}
-        {#if models.length > 0}
+        {#if models.length === 0}
+          <div class="px-3 py-2 text-xs text-text-secondary/60">No models found</div>
+        {:else}
           <div class="border-t border-border my-1"></div>
         {/if}
         <div class="px-3 py-2">

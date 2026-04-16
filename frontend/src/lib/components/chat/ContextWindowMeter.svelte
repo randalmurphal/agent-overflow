@@ -19,7 +19,7 @@
   let dashOffset = $derived(CIRCUMFERENCE - (percentage / 100) * CIRCUMFERENCE);
 
   let strokeColor = $derived(
-    percentage > 80 ? 'stroke-amber-400' : 'stroke-text-secondary',
+    percentage > 80 ? 'stroke-warning' : 'stroke-text-secondary',
   );
 
   let displayPct = $derived(Math.round(percentage));
@@ -27,7 +27,7 @@
 
 <button
   type="button"
-  class="relative inline-flex items-center bg-transparent border-none p-0 cursor-default"
+  class="relative inline-flex items-center bg-transparent border-none p-0 cursor-help focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 rounded-full"
   aria-label="Context window: {displayPct}% used"
   onmouseenter={() => showPopover = true}
   onmouseleave={() => showPopover = false}

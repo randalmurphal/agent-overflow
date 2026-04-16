@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { fade, scale } from 'svelte/transition';
+
   let {
     open,
     title,
@@ -80,12 +82,14 @@
 {#if open}
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
+    transition:fade={{ duration: 150 }}
     class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
     onclick={handleBackdropClick}
     onkeydown={handleKeydown}
   >
     <div
       bind:this={dialogEl}
+      transition:scale={{ start: 0.95, duration: 150 }}
       role="dialog"
       aria-modal="true"
       aria-labelledby="confirm-title"
@@ -101,16 +105,16 @@
       <div class="flex justify-end gap-2">
         <button
           onclick={handleCancel}
-          class="px-4 py-2 text-sm rounded-md border border-border text-text-secondary hover:text-text-primary hover:border-text-secondary cursor-pointer"
+          class="px-4 py-2 text-sm rounded-md border border-border text-text-secondary hover:text-text-primary hover:border-text-secondary cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
         >
           {cancelLabel}
         </button>
         <button
           data-confirm
           onclick={handleConfirm}
-          class="px-4 py-2 text-sm rounded-md font-medium cursor-pointer
+          class="px-4 py-2 text-sm rounded-md font-medium cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50
             {destructive
-              ? 'bg-red-700 text-red-100 hover:bg-red-600'
+              ? 'bg-error text-red-100 hover:bg-red-600'
               : 'bg-accent text-surface-0 hover:opacity-90'}"
         >
           {confirmLabel}
