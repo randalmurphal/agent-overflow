@@ -153,18 +153,27 @@ func parseAssistant(threadID string, raw map[string]json.RawMessage, now time.Ti
 		}
 	}
 
+	// Top-level parent_tool_use_id links subagent (Task-tool) child messages
+	// to their parent Task tool use. It's not always present, and only a
+	// string when it is.
+	var parentToolUseID string
+	if v, ok := raw["parent_tool_use_id"]; ok {
+		_ = json.Unmarshal(v, &parentToolUseID)
+	}
+
 	var events []provider.ProviderEvent
 
 	for _, block := range msg.Content {
 		switch block.Type {
 		case "text":
 			events = append(events, provider.ProviderEvent{
-				Kind:      provider.EventTextDelta,
-				ThreadID:  threadID,
-				ItemID:    msg.ID,
-				Content:   block.Text,
-				Role:      "assistant",
-				Timestamp: now,
+				Kind:            provider.EventTextDelta,
+				ThreadID:        threadID,
+				ItemID:          msg.ID,
+				Content:         block.Text,
+				Role:            "assistant",
+				ParentToolUseID: parentToolUseID,
+				Timestamp:       now,
 			})
 
 		case "tool_use":
@@ -174,12 +183,13 @@ func parseAssistant(threadID string, raw map[string]json.RawMessage, now time.Ti
 					continue
 				}
 				events = append(events, provider.ProviderEvent{
-					Kind:      provider.EventProposedPlan,
-					ThreadID:  threadID,
-					ItemID:    block.ID,
-					ItemType:  block.Name,
-					Content:   planMarkdown,
-					Timestamp: now,
+					Kind:            provider.EventProposedPlan,
+					ThreadID:        threadID,
+					ItemID:          block.ID,
+					ItemType:        block.Name,
+					Content:         planMarkdown,
+					ParentToolUseID: parentToolUseID,
+					Timestamp:       now,
 				})
 				continue
 			}
@@ -189,21 +199,23 @@ func parseAssistant(threadID string, raw map[string]json.RawMessage, now time.Ti
 				"input":    block.Input,
 			})
 			events = append(events, provider.ProviderEvent{
-				Kind:      provider.EventToolStart,
-				ThreadID:  threadID,
-				ItemID:    block.ID,
-				ItemType:  block.Name,
-				Meta:      meta,
-				Timestamp: now,
+				Kind:            provider.EventToolStart,
+				ThreadID:        threadID,
+				ItemID:          block.ID,
+				ItemType:        block.Name,
+				Meta:            meta,
+				ParentToolUseID: parentToolUseID,
+				Timestamp:       now,
 			})
 
 		case "thinking":
 			events = append(events, provider.ProviderEvent{
-				Kind:      provider.EventThinking,
-				ThreadID:  threadID,
-				ItemID:    msg.ID,
-				Content:   block.Thinking,
-				Timestamp: now,
+				Kind:            provider.EventThinking,
+				ThreadID:        threadID,
+				ItemID:          msg.ID,
+				Content:         block.Thinking,
+				ParentToolUseID: parentToolUseID,
+				Timestamp:       now,
 			})
 		}
 	}
@@ -217,10 +229,11 @@ func parseAssistant(threadID string, raw map[string]json.RawMessage, now time.Ti
 			CacheCreationInputTokens: msg.Usage.CacheCreationInputTokens,
 		})
 		events = append(events, provider.ProviderEvent{
-			Kind:      provider.EventTokenUsage,
-			ThreadID:  threadID,
-			Meta:      usageMeta,
-			Timestamp: now,
+			Kind:            provider.EventTokenUsage,
+			ThreadID:        threadID,
+			Meta:            usageMeta,
+			ParentToolUseID: parentToolUseID,
+			Timestamp:       now,
 		})
 	}
 

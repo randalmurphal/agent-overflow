@@ -127,6 +127,14 @@ ALTER TABLE threads ADD COLUMN forked_from_thread_id TEXT REFERENCES threads(id)
 CREATE INDEX IF NOT EXISTS idx_threads_forked_from_thread ON threads(forked_from_thread_id);
 `,
 	},
+	{
+		Version: 4,
+		Name:    "subagent_correlation",
+		SQL: `
+ALTER TABLE items ADD COLUMN parent_tool_use_id TEXT NOT NULL DEFAULT '';
+CREATE INDEX IF NOT EXISTS idx_items_parent_tool_use ON items(thread_id, parent_tool_use_id) WHERE parent_tool_use_id <> '';
+`,
+	},
 }
 
 // runMigrations sets PRAGMAs, creates the version tracking table, and applies

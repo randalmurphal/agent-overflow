@@ -14,10 +14,10 @@ func (s *Store) InsertItem(item Item) error {
 	defer tx.Rollback()
 
 	_, err = tx.Exec(
-		`INSERT INTO items (id, thread_id, turn_index, item_index, kind, role, summary, payload_id, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO items (id, thread_id, turn_index, item_index, kind, role, summary, payload_id, parent_tool_use_id, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		item.ID, item.ThreadID, item.TurnIndex, item.ItemIndex, item.Kind, item.Role, item.Summary,
-		nilIfEmpty(item.PayloadID), item.CreatedAt,
+		nilIfEmpty(item.PayloadID), item.ParentToolUseID, item.CreatedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("store: insert item: %w", err)
@@ -34,7 +34,7 @@ func (s *Store) InsertItem(item Item) error {
 
 func (s *Store) ListItems(threadID string) ([]Item, error) {
 	rows, err := s.db.Query(
-		`SELECT id, thread_id, turn_index, item_index, kind, role, summary, COALESCE(payload_id, ''), created_at
+		`SELECT id, thread_id, turn_index, item_index, kind, role, summary, COALESCE(payload_id, ''), parent_tool_use_id, created_at
 		 FROM items WHERE thread_id = ? ORDER BY turn_index, item_index`, threadID,
 	)
 	if err != nil {
@@ -45,7 +45,7 @@ func (s *Store) ListItems(threadID string) ([]Item, error) {
 	var items []Item
 	for rows.Next() {
 		var it Item
-		if err := rows.Scan(&it.ID, &it.ThreadID, &it.TurnIndex, &it.ItemIndex, &it.Kind, &it.Role, &it.Summary, &it.PayloadID, &it.CreatedAt); err != nil {
+		if err := rows.Scan(&it.ID, &it.ThreadID, &it.TurnIndex, &it.ItemIndex, &it.Kind, &it.Role, &it.Summary, &it.PayloadID, &it.ParentToolUseID, &it.CreatedAt); err != nil {
 			return nil, fmt.Errorf("store: scan item row: %w", err)
 		}
 		items = append(items, it)
@@ -96,7 +96,7 @@ func (s *Store) HasItems(threadID string) (bool, error) {
 func (s *Store) FindTurnItem(threadID string, turnIndex int, kind string) (Item, bool, error) {
 	row := s.db.QueryRow(
 		`SELECT id, thread_id, turn_index, item_index, kind, role, summary,
-		    COALESCE(payload_id, ''), created_at
+		    COALESCE(payload_id, ''), parent_tool_use_id, created_at
 		 FROM items
 		 WHERE thread_id = ? AND turn_index = ? AND kind = ?
 		 ORDER BY item_index DESC
@@ -107,7 +107,7 @@ func (s *Store) FindTurnItem(threadID string, turnIndex int, kind string) (Item,
 	var item Item
 	err := row.Scan(
 		&item.ID, &item.ThreadID, &item.TurnIndex, &item.ItemIndex, &item.Kind,
-		&item.Role, &item.Summary, &item.PayloadID, &item.CreatedAt,
+		&item.Role, &item.Summary, &item.PayloadID, &item.ParentToolUseID, &item.CreatedAt,
 	)
 	if err == sql.ErrNoRows {
 		return Item{}, false, nil
@@ -121,7 +121,7 @@ func (s *Store) FindTurnItem(threadID string, turnIndex int, kind string) (Item,
 func (s *Store) GetItem(id string) (Item, bool, error) {
 	row := s.db.QueryRow(
 		`SELECT id, thread_id, turn_index, item_index, kind, role, summary,
-		    COALESCE(payload_id, ''), created_at
+		    COALESCE(payload_id, ''), parent_tool_use_id, created_at
 		 FROM items
 		 WHERE id = ?`,
 		id,
@@ -130,7 +130,7 @@ func (s *Store) GetItem(id string) (Item, bool, error) {
 	var item Item
 	err := row.Scan(
 		&item.ID, &item.ThreadID, &item.TurnIndex, &item.ItemIndex, &item.Kind,
-		&item.Role, &item.Summary, &item.PayloadID, &item.CreatedAt,
+		&item.Role, &item.Summary, &item.PayloadID, &item.ParentToolUseID, &item.CreatedAt,
 	)
 	if err == sql.ErrNoRows {
 		return Item{}, false, nil
@@ -143,7 +143,7 @@ func (s *Store) GetItem(id string) (Item, bool, error) {
 
 func (s *Store) ListTurnItems(threadID string, turnIndex int) ([]Item, error) {
 	rows, err := s.db.Query(
-		`SELECT id, thread_id, turn_index, item_index, kind, role, summary, COALESCE(payload_id, ''), created_at
+		`SELECT id, thread_id, turn_index, item_index, kind, role, summary, COALESCE(payload_id, ''), parent_tool_use_id, created_at
 		 FROM items
 		 WHERE thread_id = ? AND turn_index = ?
 		 ORDER BY item_index`,
@@ -157,7 +157,7 @@ func (s *Store) ListTurnItems(threadID string, turnIndex int) ([]Item, error) {
 	var items []Item
 	for rows.Next() {
 		var it Item
-		if err := rows.Scan(&it.ID, &it.ThreadID, &it.TurnIndex, &it.ItemIndex, &it.Kind, &it.Role, &it.Summary, &it.PayloadID, &it.CreatedAt); err != nil {
+		if err := rows.Scan(&it.ID, &it.ThreadID, &it.TurnIndex, &it.ItemIndex, &it.Kind, &it.Role, &it.Summary, &it.PayloadID, &it.ParentToolUseID, &it.CreatedAt); err != nil {
 			return nil, fmt.Errorf("store: scan turn item row: %w", err)
 		}
 		items = append(items, it)

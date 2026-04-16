@@ -175,24 +175,26 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 	var persistErr error
 	if planMarkdown != "" {
 		err := r.persistHeavy(provider.ProviderEvent{
-			Kind:      provider.EventProposedPlan,
-			ThreadID:  evt.ThreadID,
-			Content:   planMarkdown,
-			Timestamp: evt.Timestamp,
+			Kind:            provider.EventProposedPlan,
+			ThreadID:        evt.ThreadID,
+			Content:         planMarkdown,
+			ParentToolUseID: evt.ParentToolUseID,
+			Timestamp:       evt.Timestamp,
 		}, "proposed_plan", string(provider.ItemProposedPlan))
 		if persistErr == nil && err != nil {
 			persistErr = fmt.Errorf("persist proposed plan: %w", err)
 		}
 	}
 	if text != "" {
-		persistErr = r.persistTurnText(evt.ThreadID, text)
+		persistErr = r.persistTurnText(evt.ThreadID, text, evt.ParentToolUseID)
 	}
 	if reasoning != "" {
 		err := r.persistHeavy(provider.ProviderEvent{
-			Kind:      provider.EventThinking,
-			ThreadID:  evt.ThreadID,
-			Content:   reasoning,
-			Timestamp: evt.Timestamp,
+			Kind:            provider.EventThinking,
+			ThreadID:        evt.ThreadID,
+			Content:         reasoning,
+			ParentToolUseID: evt.ParentToolUseID,
+			Timestamp:       evt.Timestamp,
 		}, "thinking", string(provider.ItemThinking))
 		if persistErr == nil && err != nil {
 			persistErr = fmt.Errorf("persist reasoning: %w", err)
@@ -314,7 +316,7 @@ func (r *Router) CleanupThread(threadID string) {
 	}
 }
 
-func (r *Router) persistTurnText(threadID, content string) error {
+func (r *Router) persistTurnText(threadID, content, parentToolUseID string) error {
 	now := time.Now().UnixMilli()
 	turnIndex, err := r.store.LastTurnIndex(threadID)
 	if err != nil {
@@ -329,14 +331,15 @@ func (r *Router) persistTurnText(threadID, content string) error {
 	}
 
 	item := store.Item{
-		ID:        uuid.New().String(),
-		ThreadID:  threadID,
-		TurnIndex: turnIndex,
-		ItemIndex: itemIndex,
-		Kind:      string(provider.ItemText),
-		Role:      "assistant",
-		Summary:   content,
-		CreatedAt: now,
+		ID:              uuid.New().String(),
+		ThreadID:        threadID,
+		TurnIndex:       turnIndex,
+		ItemIndex:       itemIndex,
+		Kind:            string(provider.ItemText),
+		Role:            "assistant",
+		Summary:         content,
+		ParentToolUseID: parentToolUseID,
+		CreatedAt:       now,
 	}
 	if err := r.store.InsertItem(item); err != nil {
 		return fmt.Errorf("persist assistant text: %w", err)
@@ -429,15 +432,16 @@ func (r *Router) insertHeavyItem(
 	}
 
 	item := store.Item{
-		ID:        itemID,
-		ThreadID:  evt.ThreadID,
-		TurnIndex: turnIndex,
-		ItemIndex: itemIndex,
-		Kind:      itemKind,
-		Role:      "assistant",
-		Summary:   buildSummary(payloadKind, metaJSON),
-		PayloadID: payloadID,
-		CreatedAt: now,
+		ID:              itemID,
+		ThreadID:        evt.ThreadID,
+		TurnIndex:       turnIndex,
+		ItemIndex:       itemIndex,
+		Kind:            itemKind,
+		Role:            "assistant",
+		Summary:         buildSummary(payloadKind, metaJSON),
+		PayloadID:       payloadID,
+		ParentToolUseID: evt.ParentToolUseID,
+		CreatedAt:       now,
 	}
 	if err := r.store.InsertItem(item); err != nil {
 		return fmt.Errorf("persist item: %w", err)

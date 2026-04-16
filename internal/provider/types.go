@@ -76,7 +76,11 @@ type ProviderEvent struct {
 	Meta      json.RawMessage `json:"meta,omitempty"`
 	Timestamp time.Time       `json:"timestamp"`
 	Replace   bool            `json:"replace,omitempty"` // when true, triage upserts instead of inserting
-	Raw       json.RawMessage `json:"-"`
+	// ParentToolUseID links a subagent-emitted event to its parent Task-tool
+	// use. Claude surfaces this on assistant messages when the message is
+	// produced inside a Task (Agent) tool call. Empty for top-level events.
+	ParentToolUseID string          `json:"parentToolUseId,omitempty"`
+	Raw             json.RawMessage `json:"-"`
 }
 
 // ApprovalRequest is sent when a provider needs user permission.

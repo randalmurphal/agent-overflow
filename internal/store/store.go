@@ -69,7 +69,11 @@ type Item struct {
 	Role      string `json:"role"`
 	Summary   string `json:"summary"`
 	PayloadID string `json:"payloadId,omitempty"`
-	CreatedAt int64  `json:"createdAt"`
+	// ParentToolUseID links this item to a Task-tool parent when the item
+	// was produced by a subagent (Claude's Agent/Task tool). Empty for
+	// top-level turn items.
+	ParentToolUseID string `json:"parentToolUseId,omitempty"`
+	CreatedAt       int64  `json:"createdAt"`
 }
 
 // Payload represents heavy content stored for on-demand loading.
