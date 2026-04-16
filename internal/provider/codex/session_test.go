@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -1359,6 +1360,73 @@ func TestCodexSendRequestContextCancel(t *testing.T) {
 	_, err := s.sendRequest(ctx, "test/method", nil)
 	if err == nil {
 		t.Fatal("expected context canceled error")
+	}
+}
+
+func TestCodexSendRequestReturnsErrorWhenSessionStops(t *testing.T) {
+	ctx, cancelProc := context.WithCancel(context.Background())
+	proc, err := provider.Spawn(ctx, provider.SpawnConfig{
+		Binary: "sh",
+		Args:   []string{"-c", "cat >/dev/null"},
+	})
+	if err != nil {
+		t.Fatalf("spawn quiet process: %v", err)
+	}
+
+	s := &Session{
+		proc:          proc,
+		threadID:      testThread,
+		codexThreadID: "codex-thread-1",
+		pending:       make(map[int64]chan json.RawMessage),
+		onEvent:       func(provider.ProviderEvent) {},
+		cancel:        cancelProc,
+	}
+	go s.readLoop()
+
+	t.Cleanup(func() {
+		cancelProc()
+		_ = proc.Close()
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := s.sendRequest(ctx, "test/method", map[string]any{"key": "value"})
+		errCh <- err
+	}()
+
+	deadline := time.Now().Add(2 * time.Second)
+	observedPending := false
+	for time.Now().Before(deadline) {
+		s.mu.Lock()
+		pendingCount := len(s.pending)
+		s.mu.Unlock()
+		if pendingCount == 1 {
+			observedPending = true
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !observedPending {
+		t.Fatal("timed out waiting for pending request registration")
+	}
+
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close(): %v", err)
+	}
+
+	select {
+	case err := <-errCh:
+		if err == nil {
+			t.Fatal("expected session stop error")
+		}
+		if !strings.Contains(err.Error(), "session stopped before request completed") {
+			t.Fatalf("error = %v, want session stop message", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for sendRequest to fail")
 	}
 }
 

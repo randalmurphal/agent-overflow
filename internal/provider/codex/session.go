@@ -240,7 +240,10 @@ func (s *Session) sendRequest(ctx context.Context, method string, params any) (j
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
-	case resp := <-ch:
+	case resp, ok := <-ch:
+		if !ok {
+			return nil, fmt.Errorf("codex: %s: session stopped before request completed", method)
+		}
 		var rpcResp struct {
 			Error *struct {
 				Code    int    `json:"code"`
