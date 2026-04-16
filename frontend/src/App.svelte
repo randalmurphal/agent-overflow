@@ -3,8 +3,8 @@
   import { getMainPane } from './lib/stores/panes.svelte';
   import { setupEventListeners } from './lib/stores/events';
   import { refreshThreads } from './lib/stores/threads.svelte';
-  import Sidebar from './lib/components/Sidebar.svelte';
-  import ChatView from './lib/components/ChatView.svelte';
+  import Sidebar from './lib/components/sidebar/Sidebar.svelte';
+  import ChatView from './lib/components/chat/ChatView.svelte';
 
   const pane = getMainPane();
 

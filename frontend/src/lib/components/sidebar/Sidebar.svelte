@@ -1,8 +1,8 @@
 <script lang="ts">
-  import type { Thread } from '../types/models';
-  import type { ThreadPane } from '../stores/thread.svelte';
-  import { CreateThread, StartSession } from '../stores/bindings';
-  import { prependThread } from '../stores/threads.svelte';
+  import type { Thread } from '../../types/models';
+  import type { ThreadPane } from '../../stores/thread.svelte';
+  import { CreateThread, StartSession } from '../../stores/bindings';
+  import { prependThread } from '../../stores/threads.svelte';
   import ThreadList from './ThreadList.svelte';
 
   let { pane }: { pane: ThreadPane } = $props();

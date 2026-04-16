@@ -1,7 +1,7 @@
 <script lang="ts">
-  import type { DiffMeta } from '../types/models';
-  import { GetPayloadData } from '../stores/bindings';
-  import { parseDiffLines, type DiffLine } from '../utils/diff';
+  import type { DiffMeta } from '../../types/models';
+  import { GetPayloadData } from '../../stores/bindings';
+  import { parseDiffLines, type DiffLine } from '../../utils/diff';
 
   let { meta, payloadId }: { meta: DiffMeta; payloadId: string } = $props();
 

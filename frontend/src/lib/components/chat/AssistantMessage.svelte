@@ -1,6 +1,6 @@
 <script lang="ts">
-  import type { Item } from '../types/models';
-  import Markdown from './Markdown.svelte';
+  import type { Item } from '../../types/models';
+  import Markdown from '../shared/Markdown.svelte';
 
   let { item }: { item: Item } = $props();
 </script>

@@ -1,6 +1,6 @@
 <script lang="ts">
-  import type { ThreadPane } from '../stores/thread.svelte';
-  import { SendMessage, InterruptTurn } from '../stores/bindings';
+  import type { ThreadPane } from '../../stores/thread.svelte';
+  import { SendMessage, InterruptTurn } from '../../stores/bindings';
 
   let { pane }: { pane: ThreadPane } = $props();
 

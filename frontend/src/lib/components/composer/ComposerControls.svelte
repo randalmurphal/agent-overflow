@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { ThreadPane } from '../stores/thread.svelte';
+  import type { ThreadPane } from '../../stores/thread.svelte';
 
   let { pane }: { pane: ThreadPane } = $props();
 

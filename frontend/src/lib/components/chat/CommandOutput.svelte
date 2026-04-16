@@ -1,6 +1,6 @@
 <script lang="ts">
-  import type { CommandOutputMeta } from '../types/models';
-  import { GetPayloadData } from '../stores/bindings';
+  import type { CommandOutputMeta } from '../../types/models';
+  import { GetPayloadData } from '../../stores/bindings';
 
   let { meta, payloadId }: { meta: CommandOutputMeta; payloadId: string } = $props();
 

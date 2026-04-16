@@ -1,6 +1,6 @@
 <script lang="ts">
-  import type { ThreadPane } from '../stores/thread.svelte';
-  import type { DiffMeta, CommandOutputMeta } from '../types/models';
+  import type { ThreadPane } from '../../stores/thread.svelte';
+  import type { DiffMeta, CommandOutputMeta } from '../../types/models';
   import UserMessage from './UserMessage.svelte';
   import AssistantMessage from './AssistantMessage.svelte';
   import DiffPreview from './DiffPreview.svelte';

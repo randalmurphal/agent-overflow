@@ -1,11 +1,11 @@
 <script lang="ts">
-  import type { ThreadPane } from '../stores/thread.svelte';
+  import type { ThreadPane } from '../../stores/thread.svelte';
   import MessageTimeline from './MessageTimeline.svelte';
-  import ApprovalPrompt from './ApprovalPrompt.svelte';
-  import BackgroundTray from './BackgroundTray.svelte';
-  import Composer from './Composer.svelte';
-  import ComposerControls from './ComposerControls.svelte';
-  import StatusBar from './StatusBar.svelte';
+  import ApprovalPrompt from '../composer/ApprovalPrompt.svelte';
+  import BackgroundTray from '../shared/BackgroundTray.svelte';
+  import Composer from '../composer/Composer.svelte';
+  import ComposerControls from '../composer/ComposerControls.svelte';
+  import StatusBar from '../shared/StatusBar.svelte';
 
   let { pane }: { pane: ThreadPane } = $props();
 </script>

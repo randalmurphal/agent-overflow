@@ -1,6 +1,6 @@
 <script lang="ts">
-  import type { ThreadPane } from '../stores/thread.svelte';
-  import { getThreads } from '../stores/threads.svelte';
+  import type { ThreadPane } from '../../stores/thread.svelte';
+  import { getThreads } from '../../stores/threads.svelte';
   import ThreadRow from './ThreadRow.svelte';
 
   let { pane }: { pane: ThreadPane } = $props();
