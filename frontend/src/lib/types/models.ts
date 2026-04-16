@@ -4,7 +4,12 @@ export interface Thread {
   provider: 'claude' | 'codex';
   sessionRef?: string;
   workspacePath: string;
+  projectPath: string;
   worktreePath?: string;
+  branch?: string;
+  interactionMode: string;
+  discussionId?: string;
+  parentThreadId?: string;
   model: string;
   createdAt: number;
   updatedAt: number;

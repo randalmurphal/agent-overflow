@@ -9,8 +9,11 @@
   const RADIUS = 9.75;
   const CIRCUMFERENCE = 2 * Math.PI * RADIUS;
 
+  let maxTokens = $derived(data.maxTokens ?? 0);
+  let totalProcessed = $derived(data.totalProcessed ?? 0);
+
   let percentage = $derived(
-    data.usedPercentage ?? (data.maxTokens > 0 ? (data.usedTokens / data.maxTokens) * 100 : 0),
+    data.usedPercentage ?? (maxTokens > 0 ? (data.usedTokens / maxTokens) * 100 : 0),
   );
 
   let dashOffset = $derived(CIRCUMFERENCE - (percentage / 100) * CIRCUMFERENCE);
@@ -54,9 +57,9 @@
       <p class="text-[10px] font-semibold text-text-secondary uppercase tracking-wider mb-1.5">Context window</p>
       <div class="space-y-0.5 text-xs text-text-secondary">
         <p>{displayPct}% used</p>
-        <p>{formatTokens(data.usedTokens)}{data.maxTokens > 0 ? ` / ${formatTokens(data.maxTokens)}` : ''} tokens</p>
-        {#if data.totalProcessed > data.usedTokens}
-          <p class="text-text-secondary/60">Total processed: {formatTokens(data.totalProcessed)}</p>
+        <p>{formatTokens(data.usedTokens)}{maxTokens > 0 ? ` / ${formatTokens(maxTokens)}` : ''} tokens</p>
+        {#if totalProcessed > data.usedTokens}
+          <p class="text-text-secondary/60">Total processed: {formatTokens(totalProcessed)}</p>
         {/if}
       </div>
     </div>

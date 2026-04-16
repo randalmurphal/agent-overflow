@@ -42,6 +42,9 @@ export interface ApprovalRequest {
   description: string;
   input: unknown;
   title: string;
+  kind?: string;
+  questions?: Array<{ id: string; text: string; type: string }>;
+  permissions?: Record<string, unknown>;
 }
 
 export interface TokenUsage {
@@ -54,17 +57,17 @@ export interface TokenUsage {
 
 export interface ContextWindow {
   usedTokens: number;
-  maxTokens: number;
-  usedPercentage: number;
-  totalProcessed: number;
+  maxTokens?: number;
+  usedPercentage?: number;
+  totalProcessed?: number;
 }
 
 export interface RateLimitEntry {
-  name: string;
-  window: string;
-  used: number;
-  limit: number;
-  percentage: number;
+  limitId: string;
+  limitName: string;
+  usedPercent: number;
+  windowMins: number;
+  resetsAt: number;
 }
 
 export interface ToolProgressMeta {
