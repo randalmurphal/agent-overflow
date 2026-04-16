@@ -47,6 +47,22 @@
   <div class="border-t border-border pt-6">
     <h3 class="text-sm font-medium text-text-primary mb-3">Behavior</h3>
     <div class="space-y-3">
+      <div class="flex items-center justify-between">
+        <div>
+          <label for="provider-select" class="text-sm text-text-primary block">Default provider</label>
+          <p class="text-xs text-text-secondary/60">Provider selected when creating new threads</p>
+        </div>
+        <select
+          id="provider-select"
+          value={settings.defaultProvider}
+          onchange={(e) => updateSetting('defaultProvider', (e.target as HTMLSelectElement).value as 'claude' | 'codex')}
+          class="text-xs rounded border border-border bg-surface-0 px-2 py-1.5 text-text-primary focus:outline-none focus:border-accent cursor-pointer"
+        >
+          <option value="claude">Claude</option>
+          <option value="codex">Codex</option>
+        </select>
+      </div>
+
       <label class="flex items-center justify-between cursor-pointer">
         <div>
           <p class="text-sm text-text-primary">Diff word wrap</p>
