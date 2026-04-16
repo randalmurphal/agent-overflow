@@ -4,6 +4,7 @@ export interface Thread {
   provider: 'claude' | 'codex';
   sessionRef?: string;
   workspacePath: string;
+  worktreePath?: string;
   model: string;
   createdAt: number;
   updatedAt: number;

@@ -1,8 +1,9 @@
 <script lang="ts">
   import type { Thread } from '../../types/models';
   import type { ThreadPane } from '../../stores/thread.svelte';
-  import { CreateThread, StartSession } from '../../stores/bindings';
+  import { CreateThread, StartSession, GitCreateWorktree } from '../../stores/bindings';
   import { prependThread } from '../../stores/threads.svelte';
+  import { addToast } from '../../stores/toast.svelte';
   import ThreadList from './ThreadList.svelte';
 
   let { pane, onOpenSettings }: { pane: ThreadPane; onOpenSettings?: () => void } = $props();
@@ -11,6 +12,8 @@
   let provider = $state<'claude' | 'codex'>('claude');
   let workspacePath = $state('');
   let model = $state('');
+  let worktreeMode = $state(false);
+  let worktreeBranch = $state('');
   let creating = $state(false);
 
   async function handleCreate() {
@@ -21,6 +24,17 @@
       const thread = await CreateThread(provider, workspacePath.trim(), model.trim()) as Thread;
       prependThread(thread);
       pane.switchThread(thread);
+
+      // Create worktree if in worktree mode
+      if (worktreeMode && worktreeBranch.trim()) {
+        try {
+          await GitCreateWorktree(thread.id, worktreeBranch.trim());
+          addToast('info', `Worktree created on branch ${worktreeBranch.trim()}`);
+        } catch (err) {
+          console.error('Failed to create worktree:', err);
+          pane.setError(`Failed to create worktree: ${err}`);
+        }
+      }
 
       // Start the provider session for this thread.
       try {
@@ -34,6 +48,8 @@
       showForm = false;
       workspacePath = '';
       model = '';
+      worktreeMode = false;
+      worktreeBranch = '';
     } catch (err) {
       console.error('Failed to create thread:', err);
       pane.setError(`Failed to create thread: ${err}`);
@@ -46,6 +62,8 @@
     showForm = false;
     workspacePath = '';
     model = '';
+    worktreeMode = false;
+    worktreeBranch = '';
   }
 
   function handleFormKeydown(e: KeyboardEvent) {
@@ -94,6 +112,18 @@
           placeholder="Model (optional)"
           class="w-full text-xs rounded border border-border bg-surface-0 px-2 py-1.5 text-text-primary placeholder:text-text-secondary/50 focus:outline-none focus:border-accent"
         />
+        <label class="flex items-center gap-2 text-xs text-text-secondary cursor-pointer">
+          <input type="checkbox" bind:checked={worktreeMode} class="w-3 h-3 rounded cursor-pointer" />
+          Worktree mode
+        </label>
+        {#if worktreeMode}
+          <input
+            type="text"
+            bind:value={worktreeBranch}
+            placeholder="Branch name for worktree"
+            class="w-full text-xs rounded border border-border bg-surface-0 px-2 py-1.5 text-text-primary placeholder:text-text-secondary/50 focus:outline-none focus:border-accent"
+          />
+        {/if}
         <div class="flex gap-2">
           <button
             type="submit"

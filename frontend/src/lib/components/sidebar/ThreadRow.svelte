@@ -139,6 +139,9 @@
       />
     {:else}
       <span class="text-sm truncate flex-1">{thread.title || 'Untitled'}</span>
+      {#if thread.worktreePath}
+        <span class="text-[9px] px-1 py-0.5 rounded bg-accent/15 text-accent/70 shrink-0" title="Worktree: {thread.worktreePath}">WT</span>
+      {/if}
     {/if}
 
     {#if !editing}
