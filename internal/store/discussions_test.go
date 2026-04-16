@@ -1,6 +1,8 @@
 package store
 
 import (
+	"database/sql"
+	"errors"
 	"testing"
 	"time"
 )
@@ -144,6 +146,32 @@ func TestListDiscussionDefsFiltersByScopeAndProject(t *testing.T) {
 	}
 	if globalDefs[0].Name != "Global Review" {
 		t.Fatalf("globalDefs[0].Name = %q, want %q", globalDefs[0].Name, "Global Review")
+	}
+}
+
+func TestDiscussionDefinitionMutationsReturnNotFoundForMissingRows(t *testing.T) {
+	s := newTestStore(t)
+
+	now := time.Now().UnixMilli()
+	def := DiscussionDefinition{
+		ID:          "missing-def",
+		Name:        "Missing",
+		Description: "not present",
+		Scope:       "global",
+		Participants: []DiscussionParticipant{
+			{Role: "a", System: "a"},
+			{Role: "b", System: "b"},
+		},
+		Settings:  DiscussionSettings{MaxTurns: 8},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+
+	if err := s.UpdateDiscussionDef("Missing", "global", "", def); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("UpdateDiscussionDef() error = %v, want sql.ErrNoRows", err)
+	}
+	if err := s.DeleteDiscussionDef("Missing", "global", ""); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("DeleteDiscussionDef() error = %v, want sql.ErrNoRows", err)
 	}
 }
 

@@ -102,7 +102,7 @@ func (s *Store) ListChildThreads(parentID string) ([]Thread, error) {
 
 func (s *Store) UpdateThread(t Thread) error {
 	t.InteractionMode = normalizeInteractionMode(t.InteractionMode)
-	_, err := s.db.Exec(
+	result, err := s.db.Exec(
 		`UPDATE threads SET title=?, provider=?, session_ref=?, workspace_path=?, model=?,
 		    project_path=?, worktree_path=?, branch=?, interaction_mode=?,
 		    discussion_id=?, parent_thread_id=?,
@@ -116,51 +116,51 @@ func (s *Store) UpdateThread(t Thread) error {
 	if err != nil {
 		return fmt.Errorf("store: update thread %s: %w", t.ID, err)
 	}
-	return nil
+	return requireRowsAffected(result, fmt.Sprintf("store: update thread %s", t.ID))
 }
 
 func (s *Store) DeleteThread(id string) error {
-	_, err := s.db.Exec(`DELETE FROM threads WHERE id = ?`, id)
+	result, err := s.db.Exec(`DELETE FROM threads WHERE id = ?`, id)
 	if err != nil {
 		return fmt.Errorf("store: delete thread %s: %w", id, err)
 	}
-	return nil
+	return requireRowsAffected(result, fmt.Sprintf("store: delete thread %s", id))
 }
 
 func (s *Store) ArchiveThread(id string) error {
-	_, err := s.db.Exec(`UPDATE threads SET archived = 1, updated_at = ? WHERE id = ?`,
+	result, err := s.db.Exec(`UPDATE threads SET archived = 1, updated_at = ? WHERE id = ?`,
 		nowMillis(), id)
 	if err != nil {
 		return fmt.Errorf("store: archive thread %s: %w", id, err)
 	}
-	return nil
+	return requireRowsAffected(result, fmt.Sprintf("store: archive thread %s", id))
 }
 
 func (s *Store) UpdateSessionRef(threadID, ref string) error {
-	_, err := s.db.Exec(`UPDATE threads SET session_ref = ?, updated_at = ? WHERE id = ?`,
+	result, err := s.db.Exec(`UPDATE threads SET session_ref = ?, updated_at = ? WHERE id = ?`,
 		ref, nowMillis(), threadID)
 	if err != nil {
 		return fmt.Errorf("store: update session ref for %s: %w", threadID, err)
 	}
-	return nil
+	return requireRowsAffected(result, fmt.Sprintf("store: update session ref for %s", threadID))
 }
 
 func (s *Store) UpdateTitle(threadID, title string) error {
-	_, err := s.db.Exec(`UPDATE threads SET title = ?, updated_at = ? WHERE id = ?`,
+	result, err := s.db.Exec(`UPDATE threads SET title = ?, updated_at = ? WHERE id = ?`,
 		title, nowMillis(), threadID)
 	if err != nil {
 		return fmt.Errorf("store: update title for %s: %w", threadID, err)
 	}
-	return nil
+	return requireRowsAffected(result, fmt.Sprintf("store: update title for %s", threadID))
 }
 
 func (s *Store) UpdateModel(threadID, model string) error {
-	_, err := s.db.Exec(`UPDATE threads SET model = ?, updated_at = ? WHERE id = ?`,
+	result, err := s.db.Exec(`UPDATE threads SET model = ?, updated_at = ? WHERE id = ?`,
 		model, nowMillis(), threadID)
 	if err != nil {
 		return fmt.Errorf("store: update model for %s: %w", threadID, err)
 	}
-	return nil
+	return requireRowsAffected(result, fmt.Sprintf("store: update model for %s", threadID))
 }
 
 func normalizeInteractionMode(mode string) string {

@@ -1,6 +1,8 @@
 package store
 
 import (
+	"database/sql"
+	"errors"
 	"testing"
 	"time"
 )
@@ -282,5 +284,39 @@ func TestListChildThreadsReturnsOnlyDirectChildren(t *testing.T) {
 	}
 	if children[0].ID != childA.ID || children[1].ID != childB.ID {
 		t.Fatalf("children order/IDs = %q, %q; want %q, %q", children[0].ID, children[1].ID, childA.ID, childB.ID)
+	}
+}
+
+func TestThreadMutationsReturnNotFoundForMissingRows(t *testing.T) {
+	s := newTestStore(t)
+
+	now := time.Now().UnixMilli()
+	thread := Thread{
+		ID:            "missing-thread",
+		Title:         "Missing",
+		Provider:      "claude",
+		WorkspacePath: "/tmp/workspace",
+		Model:         "claude-sonnet-4-6",
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}
+
+	if err := s.UpdateThread(thread); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("UpdateThread() error = %v, want sql.ErrNoRows", err)
+	}
+	if err := s.DeleteThread(thread.ID); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("DeleteThread() error = %v, want sql.ErrNoRows", err)
+	}
+	if err := s.ArchiveThread(thread.ID); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("ArchiveThread() error = %v, want sql.ErrNoRows", err)
+	}
+	if err := s.UpdateSessionRef(thread.ID, "session-ref"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("UpdateSessionRef() error = %v, want sql.ErrNoRows", err)
+	}
+	if err := s.UpdateTitle(thread.ID, "Renamed"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("UpdateTitle() error = %v, want sql.ErrNoRows", err)
+	}
+	if err := s.UpdateModel(thread.ID, "claude-opus-4-6"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("UpdateModel() error = %v, want sql.ErrNoRows", err)
 	}
 }

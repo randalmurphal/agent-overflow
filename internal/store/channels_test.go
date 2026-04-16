@@ -1,6 +1,8 @@
 package store
 
 import (
+	"database/sql"
+	"errors"
 	"testing"
 	"time"
 )
@@ -134,5 +136,16 @@ func TestDeleteChannelRemovesChannelAndMessages(t *testing.T) {
 	}
 	if len(messages) != 0 {
 		t.Fatalf("len(messages) = %d, want 0 after channel delete", len(messages))
+	}
+}
+
+func TestChannelMutationsReturnNotFoundForMissingRows(t *testing.T) {
+	s := newTestStore(t)
+
+	if err := s.UpdateChannelStatus("missing-channel", "closed"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("UpdateChannelStatus() error = %v, want sql.ErrNoRows", err)
+	}
+	if err := s.DeleteChannel("missing-channel"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("DeleteChannel() error = %v, want sql.ErrNoRows", err)
 	}
 }

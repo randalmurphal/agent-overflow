@@ -30,7 +30,7 @@ func (s *Store) GetChannel(id string) (Channel, error) {
 
 func (s *Store) UpdateChannelStatus(id, status string) error {
 	updatedAt := nowMillis()
-	_, err := s.db.Exec(
+	result, err := s.db.Exec(
 		`UPDATE channels
 		 SET status = ?,
 		     updated_at = CASE WHEN updated_at >= ? THEN updated_at + 1 ELSE ? END
@@ -40,15 +40,15 @@ func (s *Store) UpdateChannelStatus(id, status string) error {
 	if err != nil {
 		return fmt.Errorf("store: update channel status %s: %w", id, err)
 	}
-	return nil
+	return requireRowsAffected(result, fmt.Sprintf("store: update channel status %s", id))
 }
 
 func (s *Store) DeleteChannel(id string) error {
-	_, err := s.db.Exec(`DELETE FROM channels WHERE id = ?`, id)
+	result, err := s.db.Exec(`DELETE FROM channels WHERE id = ?`, id)
 	if err != nil {
 		return fmt.Errorf("store: delete channel %s: %w", id, err)
 	}
-	return nil
+	return requireRowsAffected(result, fmt.Sprintf("store: delete channel %s", id))
 }
 
 func (s *Store) InsertChannelMessage(msg ChannelMessage) error {

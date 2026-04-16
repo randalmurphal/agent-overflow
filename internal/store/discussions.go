@@ -78,7 +78,7 @@ func (s *Store) UpdateDiscussionDef(previousName, previousScope, previousProject
 		return fmt.Errorf("store: marshal discussion definition %s: %w", def.Name, err)
 	}
 
-	_, err = s.db.Exec(
+	result, err := s.db.Exec(
 		fmt.Sprintf(`UPDATE discussion_definitions
 			SET id = ?, name = ?, description = ?, scope = ?, project_id = ?, definition = ?, updated_at = ?
 			WHERE name = ? AND scope = ? AND %s = ?`, discussionProjectIDExpr),
@@ -88,11 +88,11 @@ func (s *Store) UpdateDiscussionDef(previousName, previousScope, previousProject
 	if err != nil {
 		return fmt.Errorf("store: update discussion definition %s: %w", previousName, err)
 	}
-	return nil
+	return requireRowsAffected(result, fmt.Sprintf("store: update discussion definition %s", previousName))
 }
 
 func (s *Store) DeleteDiscussionDef(name, scope, projectID string) error {
-	_, err := s.db.Exec(
+	result, err := s.db.Exec(
 		fmt.Sprintf(`DELETE FROM discussion_definitions
 			WHERE name = ? AND scope = ? AND %s = ?`, discussionProjectIDExpr),
 		name, scope, projectID,
@@ -100,7 +100,7 @@ func (s *Store) DeleteDiscussionDef(name, scope, projectID string) error {
 	if err != nil {
 		return fmt.Errorf("store: delete discussion definition %s: %w", name, err)
 	}
-	return nil
+	return requireRowsAffected(result, fmt.Sprintf("store: delete discussion definition %s", name))
 }
 
 type discussionDefinitionScanner interface {
