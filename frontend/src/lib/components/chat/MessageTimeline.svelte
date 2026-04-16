@@ -1,7 +1,7 @@
 <script lang="ts">
   import { getSettings } from '../../stores/settings.svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
-  import type { ChangedFile, CommandOutputMeta, DiffMeta, Item, ProposedPlanMeta, WorkEntryData } from '../../types/models';
+  import type { ChangedFile, CommandOutputMeta, DiffMeta, Item, ProposedPlanMeta, ToolResultMeta, WorkEntryData } from '../../types/models';
   import AssistantMessage from './AssistantMessage.svelte';
   import ChangedFilesTree from './ChangedFilesTree.svelte';
   import CommandOutput from './CommandOutput.svelte';
@@ -9,6 +9,7 @@
   import ProposedPlanCard from './ProposedPlanCard.svelte';
   import StreamingMessage from './StreamingMessage.svelte';
   import ThinkingBlock from './ThinkingBlock.svelte';
+  import ToolResultCard from './ToolResultCard.svelte';
   import UserMessage from './UserMessage.svelte';
   import WorkEntry from './WorkEntry.svelte';
 
@@ -138,6 +139,13 @@
         {@const cmdMeta = parseMeta<CommandOutputMeta>(item.payloadId)}
         {#if cmdMeta}
           <CommandOutput meta={cmdMeta} payloadId={item.payloadId} />
+        {:else}
+          <AssistantMessage {item} />
+        {/if}
+      {:else if item.kind === 'tool_result' && item.payloadId}
+        {@const toolMeta = parseMeta<ToolResultMeta>(item.payloadId)}
+        {#if toolMeta}
+          <ToolResultCard {item} meta={toolMeta} payloadId={item.payloadId} />
         {:else}
           <AssistantMessage {item} />
         {/if}

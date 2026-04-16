@@ -894,6 +894,25 @@ Add routing for new event kinds:
 - `EventModelRerouted` → emit inline + update thread model in store
 - `EventThreadRenamed` → emit inline + update thread title in store
 
+**File-change tool result persistence**:
+Codex `item/updated` / `item/completed` events for `item.type == "file_change"` should not stay
+ephemeral-only. Persist a stable `tool_result` row keyed by the provider item ID so repeated
+updates mutate the same timeline entry instead of creating duplicates.
+
+Persist lightweight payload metadata for the row:
+- `itemType`, `title`, `detail`, `preview`
+- `inlineDiff`
+
+`inlineDiff` behavior:
+- When the provider includes per-file hunks, persist `availability: "exact_patch"` and store the
+  normalized unified diff as the payload data blob.
+- When only file metadata is available, persist `availability: "summary_only"` with file paths and
+  kinds but no patch blob yet.
+- When a later `turn/diff/updated` arrives, filter that turn diff down to the row's file paths.
+  If the filtered diff is non-empty and the row is still `summary_only`, upgrade it in place to
+  `exact_patch`.
+- Never overwrite an existing exact inline diff with a later native turn diff.
+
 ---
 
 ## 6. Session Lifecycle
@@ -1338,6 +1357,10 @@ func (a *App) ChooseDesignOption(threadID, requestID, optionID string) error
 **ThinkingBlock.svelte**: Expandable thinking/reasoning display. Shows preview (first 200 chars) collapsed. Click to expand and load full content from payload via `GetPayloadData`. Animated collapse/expand.
 
 **ChangedFilesTree.svelte**: File tree showing all files changed in a turn. Grouped by directory. Each file shows +/- counts with green/red badges. Click to expand that file's diff preview.
+
+**ToolResultCard.svelte**: Persisted file-change tool row. Shows file badges immediately from
+summary metadata and exposes an exact-patch expander when the backend has upgraded the row to an
+exact inline diff.
 
 **ContextWindowMeter.svelte**: Circular SVG ring meter. Shows usage percentage in center. Hover popover with detailed token counts.
 

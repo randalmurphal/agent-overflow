@@ -118,6 +118,53 @@ func (s *Store) FindTurnItem(threadID string, turnIndex int, kind string) (Item,
 	return item, true, nil
 }
 
+func (s *Store) GetItem(id string) (Item, bool, error) {
+	row := s.db.QueryRow(
+		`SELECT id, thread_id, turn_index, item_index, kind, role, summary,
+		    COALESCE(payload_id, ''), created_at
+		 FROM items
+		 WHERE id = ?`,
+		id,
+	)
+
+	var item Item
+	err := row.Scan(
+		&item.ID, &item.ThreadID, &item.TurnIndex, &item.ItemIndex, &item.Kind,
+		&item.Role, &item.Summary, &item.PayloadID, &item.CreatedAt,
+	)
+	if err == sql.ErrNoRows {
+		return Item{}, false, nil
+	}
+	if err != nil {
+		return Item{}, false, fmt.Errorf("store: get item %s: %w", id, err)
+	}
+	return item, true, nil
+}
+
+func (s *Store) ListTurnItems(threadID string, turnIndex int) ([]Item, error) {
+	rows, err := s.db.Query(
+		`SELECT id, thread_id, turn_index, item_index, kind, role, summary, COALESCE(payload_id, ''), created_at
+		 FROM items
+		 WHERE thread_id = ? AND turn_index = ?
+		 ORDER BY item_index`,
+		threadID, turnIndex,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: list turn items for thread %s turn %d: %w", threadID, turnIndex, err)
+	}
+	defer rows.Close()
+
+	var items []Item
+	for rows.Next() {
+		var it Item
+		if err := rows.Scan(&it.ID, &it.ThreadID, &it.TurnIndex, &it.ItemIndex, &it.Kind, &it.Role, &it.Summary, &it.PayloadID, &it.CreatedAt); err != nil {
+			return nil, fmt.Errorf("store: scan turn item row: %w", err)
+		}
+		items = append(items, it)
+	}
+	return items, rows.Err()
+}
+
 func (s *Store) UpdateItemPayload(id, payloadID, summary string, createdAt int64) error {
 	_, err := s.db.Exec(
 		`UPDATE items SET payload_id = ?, summary = ?, created_at = ? WHERE id = ?`,

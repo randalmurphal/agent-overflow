@@ -17,6 +17,18 @@ func (s *Store) InsertPayload(p Payload) error {
 	return nil
 }
 
+func (s *Store) UpsertPayload(p Payload) error {
+	_, err := s.db.Exec(
+		`INSERT OR REPLACE INTO payloads (id, kind, meta, data, created_at)
+		 VALUES (?, ?, ?, ?, ?)`,
+		p.ID, p.Kind, p.Meta, p.Data, p.CreatedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("store: upsert payload %s: %w", p.ID, err)
+	}
+	return nil
+}
+
 func (s *Store) UpsertTurnPayload(threadID string, turnIndex int, kind string, payload Payload) error {
 	tx, err := s.db.Begin()
 	if err != nil {

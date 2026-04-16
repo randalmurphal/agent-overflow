@@ -40,9 +40,11 @@ func (r *Router) Handle(evt provider.ProviderEvent) error {
 	switch evt.Kind {
 	case provider.EventTextDelta:
 		return r.handleTextDelta(evt)
-	case provider.EventToolStart,
-		provider.EventToolComplete,
-		provider.EventTurnStart,
+	case provider.EventToolStart:
+		return r.handleToolStart(evt)
+	case provider.EventToolComplete:
+		return r.handleToolComplete(evt)
+	case provider.EventTurnStart,
 		provider.EventApprovalRequest,
 		provider.EventApprovalResolved,
 		provider.EventSessionStatus,
@@ -67,7 +69,7 @@ func (r *Router) Handle(evt provider.ProviderEvent) error {
 	case provider.EventBackgroundComplete:
 		return r.persistHeavy(evt, "full_text", string(provider.ItemBackgroundDone))
 	case provider.EventDiff:
-		return r.persistHeavy(evt, "diff", string(provider.ItemDiff))
+		return r.handleDiff(evt)
 	case provider.EventCommandOutput:
 		return r.persistHeavy(evt, "command_output", string(provider.ItemCommandExecution))
 	case provider.EventThinking:
@@ -79,6 +81,32 @@ func (r *Router) Handle(evt provider.ProviderEvent) error {
 		r.emit("provider:event", evt)
 		return nil
 	}
+}
+
+func (r *Router) handleToolStart(evt provider.ProviderEvent) error {
+	if err := r.persistFileChangeToolResult(evt); err != nil {
+		return err
+	}
+	return r.emitInline(evt)
+}
+
+func (r *Router) handleToolComplete(evt provider.ProviderEvent) error {
+	if err := r.persistFileChangeToolResult(evt); err != nil {
+		return err
+	}
+	return r.emitInline(evt)
+}
+
+func (r *Router) handleDiff(evt provider.ProviderEvent) error {
+	if err := r.persistHeavy(evt, "diff", string(provider.ItemDiff)); err != nil {
+		return err
+	}
+
+	turnIndex, err := r.store.LastTurnIndex(evt.ThreadID)
+	if err != nil {
+		return nil
+	}
+	return r.upgradeSummaryOnlyToolResults(evt.ThreadID, turnIndex, evt.Content)
 }
 
 func (r *Router) handleTextDelta(evt provider.ProviderEvent) error {
