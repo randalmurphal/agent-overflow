@@ -1,8 +1,9 @@
 <script lang="ts">
-  import { ArchiveThread, DeleteThread, GitRemoveWorktree, RenameThread, StopSession } from '../../stores/bindings';
+  import { ArchiveThread, DeleteThread, ForkThread, GitRemoveWorktree, RenameThread, StopSession } from '../../stores/bindings';
   import { getSettings } from '../../stores/settings.svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
-  import { removeThread, updateThreadTitle } from '../../stores/threads.svelte';
+  import { prependThread, removeThread, updateThreadTitle } from '../../stores/threads.svelte';
+  import { addToast } from '../../stores/toast.svelte';
   import type { Thread } from '../../types/models';
   import ConfirmDialog from '../shared/ConfirmDialog.svelte';
   import { relativeTime } from '../../utils/format';
@@ -127,6 +128,19 @@
       doDelete();
     }
   }
+
+  async function handleFork(e: MouseEvent) {
+    e.stopPropagation();
+    try {
+      const forked = await ForkThread(thread.id) as Thread;
+      prependThread(forked);
+      await pane.switchThread(forked);
+      addToast('info', `Forked "${thread.title}" into a new thread`);
+    } catch (err) {
+      console.error('Failed to fork thread:', err);
+      pane.setError(`Failed to fork thread: ${err}`);
+    }
+  }
 </script>
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -165,6 +179,22 @@
     {/if}
 
     {#if !editing}
+      <button
+        onclick={handleFork}
+        disabled={!thread.sessionRef}
+        class="opacity-0 group-hover:opacity-100 transition-opacity duration-150 text-text-secondary hover:text-text-primary text-xs px-1 shrink-0 cursor-pointer disabled:cursor-not-allowed disabled:opacity-0 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/50 rounded"
+        aria-label="Fork thread"
+        title={thread.sessionRef ? 'Fork thread' : 'Fork available after the thread has provider state'}
+      >
+        <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="6" cy="6" r="2" />
+          <circle cx="18" cy="6" r="2" />
+          <circle cx="18" cy="18" r="2" />
+          <path d="M8 6h7" />
+          <path d="M18 8v8" />
+          <path d="M8 7.5c4 1 7 4 8 8" />
+        </svg>
+      </button>
       <button
         onclick={handleDelete}
         class="opacity-0 group-hover:opacity-100 transition-opacity duration-150 text-error/60 hover:text-error text-xs px-1 shrink-0 cursor-pointer focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/50 rounded"

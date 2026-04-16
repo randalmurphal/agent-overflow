@@ -274,11 +274,18 @@ func (a *App) startSessionNow(threadID string) error {
 			return fmt.Errorf("start session: %w", err)
 		}
 		systemPrompt := joinSystemPrompts(designCfg.Prompt, threadPrompt)
+		resumeRef := t.SessionRef
+		forkSession := false
+		if t.PendingForkRef != "" {
+			resumeRef = t.PendingForkRef
+			forkSession = true
+		}
 		cfg := claude.Config{
 			Binary:       a.providerBinaryPath(t.Provider),
 			Model:        t.Model,
 			WorkDir:      t.WorkspacePath,
-			Resume:       t.SessionRef,
+			Resume:       resumeRef,
+			ForkSession:  forkSession,
 			SystemPrompt: systemPrompt,
 			EventLogger:  a.logger,
 		}

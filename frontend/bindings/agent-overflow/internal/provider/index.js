@@ -4,6 +4,7 @@
 
 export {
     ApprovalResponse,
+    ElicitationResolution,
     FileSystemPermissions,
     ModelInfo,
     NetworkPermissions,

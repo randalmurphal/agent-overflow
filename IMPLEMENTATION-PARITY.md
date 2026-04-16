@@ -251,6 +251,8 @@ ALTER TABLE threads ADD COLUMN worktree_path TEXT;
 ALTER TABLE threads ADD COLUMN project_path TEXT NOT NULL DEFAULT '';
 ALTER TABLE threads ADD COLUMN discussion_id TEXT;
 ALTER TABLE threads ADD COLUMN parent_thread_id TEXT REFERENCES threads(id) ON DELETE SET NULL;
+ALTER TABLE threads ADD COLUMN pending_fork_session_ref TEXT;
+ALTER TABLE threads ADD COLUMN forked_from_thread_id TEXT REFERENCES threads(id) ON DELETE SET NULL;
 ```
 
 `interaction_mode`: `"default"` | `"plan"` | `"design"` | `"discussion"`
@@ -271,6 +273,7 @@ type Thread struct {
     Provider        string `json:"provider"`
     Model           string `json:"model"`
     SessionRef      string `json:"sessionRef"`
+    PendingForkRef  string `json:"pendingForkRef,omitempty"`
     ProjectPath     string `json:"projectPath"`
     WorkspacePath   string `json:"workspacePath"`
     WorktreePath    string `json:"worktreePath,omitempty"`
@@ -278,6 +281,7 @@ type Thread struct {
     InteractionMode string `json:"interactionMode"`
     DiscussionID    string `json:"discussionId,omitempty"`
     ParentThreadID  string `json:"parentThreadId,omitempty"`
+    ForkedFromThreadID string `json:"forkedFromThreadId,omitempty"`
     CreatedAt       int64  `json:"createdAt"`
     UpdatedAt       int64  `json:"updatedAt"`
     Archived        bool   `json:"archived"`
@@ -898,7 +902,7 @@ Add routing for new event kinds:
 
 **File**: `app.go`
 
-When `switchThread` is called from the frontend (via a new binding `SwitchThread`), if the thread has a `session_ref` but no active session in the `sessions` map, automatically call `StartSession`. The session will use the stored `session_ref` for resume.
+When `switchThread` is called from the frontend (via a new binding `SwitchThread`), if the thread has a `session_ref` or a `pending_fork_session_ref` but no active session in the `sessions` map, automatically call `StartSession`. The session will use the stored `session_ref` for resume, or perform a Claude `--fork-session` resume when `pending_fork_session_ref` is populated.
 
 ```go
 func (a *App) SwitchThread(threadID string) (store.Thread, error) {

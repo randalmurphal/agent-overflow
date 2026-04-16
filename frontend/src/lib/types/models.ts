@@ -3,6 +3,7 @@ export interface Thread {
   title: string;
   provider: 'claude' | 'codex';
   sessionRef?: string;
+  pendingForkRef?: string;
   workspacePath: string;
   projectPath: string;
   worktreePath?: string;
@@ -10,6 +11,7 @@ export interface Thread {
   interactionMode: 'default' | 'plan' | 'design' | 'discussion';
   discussionId?: string;
   parentThreadId?: string;
+  forkedFromThreadId?: string;
   model: string;
   createdAt: number;
   updatedAt: number;

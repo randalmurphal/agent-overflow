@@ -19,21 +19,23 @@ func TestCreateThreadWithNewFields(t *testing.T) {
 
 	now := time.Now().UnixMilli()
 	thr := Thread{
-		ID:              "thread-new-fields",
-		Title:           "Full Thread",
-		Provider:        "claude",
-		SessionRef:      "sess-123",
-		WorkspacePath:   "/home/user/project",
-		Model:           "opus-4",
-		ProjectPath:     "/home/user/project/sub",
-		WorktreePath:    "/home/user/.worktrees/feat-x",
-		Branch:          "feat-x",
-		InteractionMode: "plan",
-		DiscussionID:    "disc-abc",
-		ParentThreadID:  "parent-1",
-		CreatedAt:       now,
-		UpdatedAt:       now,
-		Archived:        false,
+		ID:                 "thread-new-fields",
+		Title:              "Full Thread",
+		Provider:           "claude",
+		SessionRef:         "sess-123",
+		PendingForkRef:     "sess-pending",
+		WorkspacePath:      "/home/user/project",
+		Model:              "opus-4",
+		ProjectPath:        "/home/user/project/sub",
+		WorktreePath:       "/home/user/.worktrees/feat-x",
+		Branch:             "feat-x",
+		InteractionMode:    "plan",
+		DiscussionID:       "disc-abc",
+		ParentThreadID:     "parent-1",
+		ForkedFromThreadID: "parent-1",
+		CreatedAt:          now,
+		UpdatedAt:          now,
+		Archived:           false,
 	}
 
 	if err := s.CreateThread(thr); err != nil {
@@ -71,8 +73,14 @@ func TestCreateThreadWithNewFields(t *testing.T) {
 	if got.SessionRef != thr.SessionRef {
 		t.Errorf("SessionRef: got %q, want %q", got.SessionRef, thr.SessionRef)
 	}
+	if got.PendingForkRef != thr.PendingForkRef {
+		t.Errorf("PendingForkRef: got %q, want %q", got.PendingForkRef, thr.PendingForkRef)
+	}
 	if got.Provider != thr.Provider {
 		t.Errorf("Provider: got %q, want %q", got.Provider, thr.Provider)
+	}
+	if got.ForkedFromThreadID != thr.ForkedFromThreadID {
+		t.Errorf("ForkedFromThreadID: got %q, want %q", got.ForkedFromThreadID, thr.ForkedFromThreadID)
 	}
 }
 
@@ -119,6 +127,12 @@ func TestCreateThreadDefaultValues(t *testing.T) {
 	if got.ParentThreadID != "" {
 		t.Errorf("ParentThreadID: got %q, want empty string", got.ParentThreadID)
 	}
+	if got.PendingForkRef != "" {
+		t.Errorf("PendingForkRef: got %q, want empty string", got.PendingForkRef)
+	}
+	if got.ForkedFromThreadID != "" {
+		t.Errorf("ForkedFromThreadID: got %q, want empty string", got.ForkedFromThreadID)
+	}
 }
 
 func TestUpdateThreadNewFields(t *testing.T) {
@@ -145,7 +159,14 @@ func TestUpdateThreadNewFields(t *testing.T) {
 	thr.Branch = "fix-123"
 	thr.InteractionMode = "plan"
 	thr.DiscussionID = "disc-xyz"
+	thr.PendingForkRef = "fork-pending"
+	thr.ForkedFromThreadID = "thread-upd-parent"
 	thr.UpdatedAt = now + 5000
+
+	parent := makeThread("thread-upd-parent", "claude")
+	if err := s.CreateThread(parent); err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
 
 	if err := s.UpdateThread(thr); err != nil {
 		t.Fatalf("update: %v", err)
@@ -174,6 +195,12 @@ func TestUpdateThreadNewFields(t *testing.T) {
 	if got.DiscussionID != "disc-xyz" {
 		t.Errorf("DiscussionID: got %q, want %q", got.DiscussionID, "disc-xyz")
 	}
+	if got.PendingForkRef != "fork-pending" {
+		t.Errorf("PendingForkRef: got %q, want %q", got.PendingForkRef, "fork-pending")
+	}
+	if got.ForkedFromThreadID != "thread-upd-parent" {
+		t.Errorf("ForkedFromThreadID: got %q, want %q", got.ForkedFromThreadID, "thread-upd-parent")
+	}
 
 	// Verify clearing a nullable field back to empty works.
 	thr.WorktreePath = ""
@@ -192,6 +219,31 @@ func TestUpdateThreadNewFields(t *testing.T) {
 	}
 	if got2.Branch != "" {
 		t.Errorf("Branch after clear: got %q, want empty", got2.Branch)
+	}
+}
+
+func TestUpdateSessionRefClearsPendingForkRef(t *testing.T) {
+	s := newTestStore(t)
+
+	thread := makeThread("thread-clear-pending", "claude")
+	thread.PendingForkRef = "pending-123"
+	if err := s.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+
+	if err := s.UpdateSessionRef(thread.ID, "session-456"); err != nil {
+		t.Fatalf("UpdateSessionRef() error = %v", err)
+	}
+
+	got, err := s.GetThread(thread.ID)
+	if err != nil {
+		t.Fatalf("GetThread() error = %v", err)
+	}
+	if got.SessionRef != "session-456" {
+		t.Fatalf("SessionRef = %q, want %q", got.SessionRef, "session-456")
+	}
+	if got.PendingForkRef != "" {
+		t.Fatalf("PendingForkRef = %q, want empty", got.PendingForkRef)
 	}
 }
 

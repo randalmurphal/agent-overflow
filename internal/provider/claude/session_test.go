@@ -652,6 +652,7 @@ func TestBuildArgsWithAllOptions(t *testing.T) {
 	args := buildArgs(Config{
 		Model:          "opus",
 		Resume:         "session-123",
+		ForkSession:    true,
 		SystemPrompt:   "Be helpful",
 		PermissionMode: "bypassPermissions",
 		MaxTurns:       5,
@@ -673,6 +674,16 @@ func TestBuildArgsWithAllOptions(t *testing.T) {
 	}
 	if !findFlag("--resume", "session-123") {
 		t.Error("missing --resume session-123")
+	}
+	foundForkFlag := false
+	for _, arg := range args {
+		if arg == "--fork-session" {
+			foundForkFlag = true
+			break
+		}
+	}
+	if !foundForkFlag {
+		t.Error("missing --fork-session")
 	}
 	if !findFlag("--system-prompt", "Be helpful") {
 		t.Error("missing --system-prompt")

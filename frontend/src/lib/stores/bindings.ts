@@ -6,6 +6,7 @@ export {
   CreateThread,
   ArchiveThread,
   DeleteThread,
+  ForkThread,
   GetThread,
   ListThreads,
   RenameThread,

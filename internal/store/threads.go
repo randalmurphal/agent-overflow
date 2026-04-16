@@ -2,18 +2,18 @@ package store
 
 import "fmt"
 
-const threadColumns = `id, title, provider, COALESCE(session_ref, ''), workspace_path, model,
+const threadColumns = `id, title, provider, COALESCE(session_ref, ''), COALESCE(pending_fork_session_ref, ''), workspace_path, model,
     project_path, COALESCE(worktree_path, ''), COALESCE(branch, ''),
-    interaction_mode, COALESCE(discussion_id, ''), COALESCE(parent_thread_id, ''),
+    interaction_mode, COALESCE(discussion_id, ''), COALESCE(parent_thread_id, ''), COALESCE(forked_from_thread_id, ''),
     created_at, updated_at, archived`
 
 func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
 	var t Thread
 	var archived int
 	if err := scanner.Scan(
-		&t.ID, &t.Title, &t.Provider, &t.SessionRef, &t.WorkspacePath, &t.Model,
+		&t.ID, &t.Title, &t.Provider, &t.SessionRef, &t.PendingForkRef, &t.WorkspacePath, &t.Model,
 		&t.ProjectPath, &t.WorktreePath, &t.Branch,
-		&t.InteractionMode, &t.DiscussionID, &t.ParentThreadID,
+		&t.InteractionMode, &t.DiscussionID, &t.ParentThreadID, &t.ForkedFromThreadID,
 		&t.CreatedAt, &t.UpdatedAt, &archived,
 	); err != nil {
 		return Thread{}, err
@@ -25,13 +25,13 @@ func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
 func (s *Store) CreateThread(t Thread) error {
 	t.InteractionMode = normalizeInteractionMode(t.InteractionMode)
 	_, err := s.db.Exec(
-		`INSERT INTO threads (id, title, provider, session_ref, workspace_path, model,
+		`INSERT INTO threads (id, title, provider, session_ref, pending_fork_session_ref, workspace_path, model,
 		    project_path, worktree_path, branch, interaction_mode, discussion_id, parent_thread_id,
-		    created_at, updated_at, archived)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		t.ID, t.Title, t.Provider, nilIfEmpty(t.SessionRef), t.WorkspacePath, t.Model,
+		    forked_from_thread_id, created_at, updated_at, archived)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		t.ID, t.Title, t.Provider, nilIfEmpty(t.SessionRef), nilIfEmpty(t.PendingForkRef), t.WorkspacePath, t.Model,
 		t.ProjectPath, nilIfEmpty(t.WorktreePath), nilIfEmpty(t.Branch), t.InteractionMode,
-		nilIfEmpty(t.DiscussionID), nilIfEmpty(t.ParentThreadID),
+		nilIfEmpty(t.DiscussionID), nilIfEmpty(t.ParentThreadID), nilIfEmpty(t.ForkedFromThreadID),
 		t.CreatedAt, t.UpdatedAt, boolToInt(t.Archived),
 	)
 	if err != nil {
@@ -95,14 +95,14 @@ func (s *Store) ListChildThreads(parentID string) ([]Thread, error) {
 func (s *Store) UpdateThread(t Thread) error {
 	t.InteractionMode = normalizeInteractionMode(t.InteractionMode)
 	result, err := s.db.Exec(
-		`UPDATE threads SET title=?, provider=?, session_ref=?, workspace_path=?, model=?,
+		`UPDATE threads SET title=?, provider=?, session_ref=?, pending_fork_session_ref=?, workspace_path=?, model=?,
 		    project_path=?, worktree_path=?, branch=?, interaction_mode=?,
-		    discussion_id=?, parent_thread_id=?,
+		    discussion_id=?, parent_thread_id=?, forked_from_thread_id=?,
 		    updated_at=?, archived=?
 		 WHERE id=?`,
-		t.Title, t.Provider, nilIfEmpty(t.SessionRef), t.WorkspacePath, t.Model,
+		t.Title, t.Provider, nilIfEmpty(t.SessionRef), nilIfEmpty(t.PendingForkRef), t.WorkspacePath, t.Model,
 		t.ProjectPath, nilIfEmpty(t.WorktreePath), nilIfEmpty(t.Branch), t.InteractionMode,
-		nilIfEmpty(t.DiscussionID), nilIfEmpty(t.ParentThreadID),
+		nilIfEmpty(t.DiscussionID), nilIfEmpty(t.ParentThreadID), nilIfEmpty(t.ForkedFromThreadID),
 		t.UpdatedAt, boolToInt(t.Archived), t.ID,
 	)
 	if err != nil {
@@ -129,8 +129,12 @@ func (s *Store) ArchiveThread(id string) error {
 }
 
 func (s *Store) UpdateSessionRef(threadID, ref string) error {
-	result, err := s.db.Exec(`UPDATE threads SET session_ref = ?, updated_at = ? WHERE id = ?`,
-		ref, nowMillis(), threadID)
+	result, err := s.db.Exec(
+		`UPDATE threads
+		 SET session_ref = ?, pending_fork_session_ref = NULL, updated_at = ?
+		 WHERE id = ?`,
+		ref, nowMillis(), threadID,
+	)
 	if err != nil {
 		return fmt.Errorf("store: update session ref for %s: %w", threadID, err)
 	}

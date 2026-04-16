@@ -32,6 +32,7 @@ type Config struct {
 	Model          string
 	WorkDir        string
 	Resume         string // session ID to resume, empty for new
+	ForkSession    bool
 	SystemPrompt   string
 	AllowedTools   []string
 	PermissionMode string // "default", "acceptEdits", "bypassPermissions"
@@ -91,6 +92,9 @@ func buildArgs(cfg Config) []string {
 	}
 	if cfg.Resume != "" {
 		args = append(args, "--resume", cfg.Resume)
+	}
+	if cfg.ForkSession {
+		args = append(args, "--fork-session")
 	}
 	if cfg.SystemPrompt != "" {
 		args = append(args, "--system-prompt", cfg.SystemPrompt)

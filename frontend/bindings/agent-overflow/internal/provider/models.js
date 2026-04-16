@@ -6,6 +6,10 @@
 // @ts-ignore: Unused imports
 import { Create as $Create } from "@wailsio/runtime";
 
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as json$0 from "../../../encoding/json/models.js";
+
 /**
  * ApprovalResponse is sent back to the provider.
  */
@@ -24,7 +28,7 @@ export class ApprovalResponse {
         }
         if (!("decision" in $$source)) {
             /**
-             * "allow", "deny", "allow_session"
+             * Codex-native: "accept", "acceptForSession", "decline", "cancel"
              * @member
              * @type {string}
              */
@@ -54,6 +58,14 @@ export class ApprovalResponse {
              */
             this["scope"] = undefined;
         }
+        if (/** @type {any} */(false)) {
+            /**
+             * for MCP elicitation responses
+             * @member
+             * @type {ElicitationResolution | null | undefined}
+             */
+            this["elicitation"] = undefined;
+        }
 
         Object.assign(this, $$source);
     }
@@ -66,6 +78,7 @@ export class ApprovalResponse {
     static createFrom($$source = {}) {
         const $$createField2_0 = $$createType0;
         const $$createField3_0 = $$createType2;
+        const $$createField5_0 = $$createType4;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("answers" in $$parsedSource) {
             $$parsedSource["answers"] = $$createField2_0($$parsedSource["answers"]);
@@ -73,7 +86,55 @@ export class ApprovalResponse {
         if ("permissions" in $$parsedSource) {
             $$parsedSource["permissions"] = $$createField3_0($$parsedSource["permissions"]);
         }
+        if ("elicitation" in $$parsedSource) {
+            $$parsedSource["elicitation"] = $$createField5_0($$parsedSource["elicitation"]);
+        }
         return new ApprovalResponse(/** @type {Partial<ApprovalResponse>} */($$parsedSource));
+    }
+}
+
+/**
+ * ElicitationResolution carries the MCP elicitation response fields.
+ */
+export class ElicitationResolution {
+    /**
+     * Creates a new ElicitationResolution instance.
+     * @param {Partial<ElicitationResolution>} [$$source = {}] - The source object to create the ElicitationResolution.
+     */
+    constructor($$source = {}) {
+        if (!("action" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["action"] = "";
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {json$0.RawMessage | undefined}
+             */
+            this["content"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {json$0.RawMessage | undefined}
+             */
+            this["meta"] = undefined;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ElicitationResolution instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {ElicitationResolution}
+     */
+    static createFrom($$source = {}) {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ElicitationResolution(/** @type {Partial<ElicitationResolution>} */($$parsedSource));
     }
 }
 
@@ -110,8 +171,8 @@ export class FileSystemPermissions {
      * @returns {FileSystemPermissions}
      */
     static createFrom($$source = {}) {
-        const $$createField0_0 = $$createType3;
-        const $$createField1_0 = $$createType3;
+        const $$createField0_0 = $$createType5;
+        const $$createField1_0 = $$createType5;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("read" in $$parsedSource) {
             $$parsedSource["read"] = $$createField0_0($$parsedSource["read"]);
@@ -170,7 +231,7 @@ export class ModelInfo {
      * @returns {ModelInfo}
      */
     static createFrom($$source = {}) {
-        const $$createField3_0 = $$createType3;
+        const $$createField3_0 = $$createType5;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("capabilities" in $$parsedSource) {
             $$parsedSource["capabilities"] = $$createField3_0($$parsedSource["capabilities"]);
@@ -243,8 +304,8 @@ export class PermissionProfile {
      * @returns {PermissionProfile}
      */
     static createFrom($$source = {}) {
-        const $$createField0_0 = $$createType5;
-        const $$createField1_0 = $$createType7;
+        const $$createField0_0 = $$createType7;
+        const $$createField1_0 = $$createType9;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("network" in $$parsedSource) {
             $$parsedSource["network"] = $$createField0_0($$parsedSource["network"]);
@@ -334,8 +395,10 @@ export class ProviderStatus {
 const $$createType0 = $Create.Map($Create.Any, $Create.Any);
 const $$createType1 = PermissionProfile.createFrom;
 const $$createType2 = $Create.Nullable($$createType1);
-const $$createType3 = $Create.Array($Create.Any);
-const $$createType4 = NetworkPermissions.createFrom;
-const $$createType5 = $Create.Nullable($$createType4);
-const $$createType6 = FileSystemPermissions.createFrom;
+const $$createType3 = ElicitationResolution.createFrom;
+const $$createType4 = $Create.Nullable($$createType3);
+const $$createType5 = $Create.Array($Create.Any);
+const $$createType6 = NetworkPermissions.createFrom;
 const $$createType7 = $Create.Nullable($$createType6);
+const $$createType8 = FileSystemPermissions.createFrom;
+const $$createType9 = $Create.Nullable($$createType8);

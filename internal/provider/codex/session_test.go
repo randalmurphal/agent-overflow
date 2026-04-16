@@ -1945,3 +1945,48 @@ done
 		t.Errorf("model: got %q, want %q", info.Model, "test-model")
 	}
 }
+
+func TestSessionForkWithMock(t *testing.T) {
+	script := `#!/bin/bash
+while IFS= read -r line; do
+    id=$(echo "$line" | grep -o '"id":[0-9]*' | head -1 | grep -o '[0-9]*')
+    if [ -z "$id" ]; then
+        continue
+    fi
+    if echo "$line" | grep -q '"method":"initialize"'; then
+        echo "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{}}"
+        continue
+    fi
+    if echo "$line" | grep -q '"method":"thread/start"'; then
+        echo "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"thread\":{\"id\":\"mock-thread-123\"}}}"
+        continue
+    fi
+    if echo "$line" | grep -q '"method":"thread/fork"'; then
+        echo "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"thread\":{\"id\":\"mock-thread-fork-456\"}}}"
+    fi
+done
+`
+	scriptDir := t.TempDir()
+	scriptPath := scriptDir + "/codex"
+	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
+		t.Fatalf("write mock script: %v", err)
+	}
+
+	s, err := NewSession(context.Background(), testThread, Config{
+		Binary:  scriptPath,
+		Model:   "test-model",
+		WorkDir: "/tmp",
+	}, func(provider.ProviderEvent) {})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer s.Close()
+
+	forkedThreadID, err := s.Fork(context.Background())
+	if err != nil {
+		t.Fatalf("Fork() error = %v", err)
+	}
+	if forkedThreadID != "mock-thread-fork-456" {
+		t.Fatalf("Fork() = %q, want %q", forkedThreadID, "mock-thread-fork-456")
+	}
+}

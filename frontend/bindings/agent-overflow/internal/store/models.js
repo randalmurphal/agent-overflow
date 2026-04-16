@@ -7,6 +7,344 @@
 import { Create as $Create } from "@wailsio/runtime";
 
 /**
+ * ChannelMessage is one ordered message within a channel.
+ */
+export class ChannelMessage {
+    /**
+     * Creates a new ChannelMessage instance.
+     * @param {Partial<ChannelMessage>} [$$source = {}] - The source object to create the ChannelMessage.
+     */
+    constructor($$source = {}) {
+        if (!("id" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["id"] = "";
+        }
+        if (!("channelId" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["channelId"] = "";
+        }
+        if (!("sequence" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["sequence"] = 0;
+        }
+        if (!("fromType" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["fromType"] = "";
+        }
+        if (!("fromId" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["fromId"] = "";
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["fromRole"] = undefined;
+        }
+        if (!("content" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["content"] = "";
+        }
+        if (!("createdAt" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["createdAt"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ChannelMessage instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {ChannelMessage}
+     */
+    static createFrom($$source = {}) {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ChannelMessage(/** @type {Partial<ChannelMessage>} */($$parsedSource));
+    }
+}
+
+/**
+ * DesignArtifact is persisted metadata for a design-mode HTML artifact.
+ */
+export class DesignArtifact {
+    /**
+     * Creates a new DesignArtifact instance.
+     * @param {Partial<DesignArtifact>} [$$source = {}] - The source object to create the DesignArtifact.
+     */
+    constructor($$source = {}) {
+        if (!("id" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["id"] = "";
+        }
+        if (!("threadId" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["threadId"] = "";
+        }
+        if (!("title" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["title"] = "";
+        }
+        if (!("description" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["description"] = "";
+        }
+        if (!("kind" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["kind"] = "";
+        }
+        if (!("htmlPath" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["htmlPath"] = "";
+        }
+        if (!("createdAt" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["createdAt"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new DesignArtifact instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {DesignArtifact}
+     */
+    static createFrom($$source = {}) {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new DesignArtifact(/** @type {Partial<DesignArtifact>} */($$parsedSource));
+    }
+}
+
+/**
+ * DiscussionDefinition is the persisted discussion registry record.
+ */
+export class DiscussionDefinition {
+    /**
+     * Creates a new DiscussionDefinition instance.
+     * @param {Partial<DiscussionDefinition>} [$$source = {}] - The source object to create the DiscussionDefinition.
+     */
+    constructor($$source = {}) {
+        if (!("id" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["id"] = "";
+        }
+        if (!("name" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["name"] = "";
+        }
+        if (!("description" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["description"] = "";
+        }
+        if (!("scope" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["scope"] = "";
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["projectId"] = undefined;
+        }
+        if (!("participants" in $$source)) {
+            /**
+             * @member
+             * @type {DiscussionParticipant[]}
+             */
+            this["participants"] = [];
+        }
+        if (!("settings" in $$source)) {
+            /**
+             * @member
+             * @type {DiscussionSettings}
+             */
+            this["settings"] = (new DiscussionSettings());
+        }
+        if (!("createdAt" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["createdAt"] = 0;
+        }
+        if (!("updatedAt" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["updatedAt"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new DiscussionDefinition instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {DiscussionDefinition}
+     */
+    static createFrom($$source = {}) {
+        const $$createField5_0 = $$createType1;
+        const $$createField6_0 = $$createType2;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("participants" in $$parsedSource) {
+            $$parsedSource["participants"] = $$createField5_0($$parsedSource["participants"]);
+        }
+        if ("settings" in $$parsedSource) {
+            $$parsedSource["settings"] = $$createField6_0($$parsedSource["settings"]);
+        }
+        return new DiscussionDefinition(/** @type {Partial<DiscussionDefinition>} */($$parsedSource));
+    }
+}
+
+/**
+ * DiscussionParticipant defines a single participant in a discussion.
+ */
+export class DiscussionParticipant {
+    /**
+     * Creates a new DiscussionParticipant instance.
+     * @param {Partial<DiscussionParticipant>} [$$source = {}] - The source object to create the DiscussionParticipant.
+     */
+    constructor($$source = {}) {
+        if (!("role" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["role"] = "";
+        }
+        if (!("description" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["description"] = "";
+        }
+        if (!("system" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["system"] = "";
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["provider"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["model"] = undefined;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new DiscussionParticipant instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {DiscussionParticipant}
+     */
+    static createFrom($$source = {}) {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new DiscussionParticipant(/** @type {Partial<DiscussionParticipant>} */($$parsedSource));
+    }
+}
+
+/**
+ * DiscussionSettings contains runtime discussion configuration.
+ */
+export class DiscussionSettings {
+    /**
+     * Creates a new DiscussionSettings instance.
+     * @param {Partial<DiscussionSettings>} [$$source = {}] - The source object to create the DiscussionSettings.
+     */
+    constructor($$source = {}) {
+        if (!("maxTurns" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["maxTurns"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new DiscussionSettings instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {DiscussionSettings}
+     */
+    static createFrom($$source = {}) {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new DiscussionSettings(/** @type {Partial<DiscussionSettings>} */($$parsedSource));
+    }
+}
+
+/**
  * Item represents a persisted timeline entry.
  */
 export class Item {
@@ -182,6 +520,13 @@ export class Thread {
              */
             this["sessionRef"] = undefined;
         }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["pendingForkRef"] = undefined;
+        }
         if (!("workspacePath" in $$source)) {
             /**
              * @member
@@ -238,6 +583,13 @@ export class Thread {
              */
             this["parentThreadId"] = undefined;
         }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["forkedFromThreadId"] = undefined;
+        }
         if (!("createdAt" in $$source)) {
             /**
              * @member
@@ -273,3 +625,8 @@ export class Thread {
         return new Thread(/** @type {Partial<Thread>} */($$parsedSource));
     }
 }
+
+// Private type creation functions
+const $$createType0 = DiscussionParticipant.createFrom;
+const $$createType1 = $Create.Array($$createType0);
+const $$createType2 = DiscussionSettings.createFrom;

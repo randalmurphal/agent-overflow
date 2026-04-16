@@ -19,7 +19,7 @@ func (a *App) SwitchThread(threadID string) (store.Thread, error) {
 	_, hasSession := a.sessions[threadID]
 	a.mu.Unlock()
 
-	if !hasSession && thread.SessionRef != "" {
+	if !hasSession && (thread.SessionRef != "" || thread.PendingForkRef != "") {
 		// Auto-resume runs in a single goroutine without a wrapping timeout.
 		// The provider's own connect timeout handles the slow-start case.
 		// A previous implementation wrapped startSession in an inner goroutine
@@ -62,4 +62,3 @@ func (a *App) stopSession(threadID string) error {
 	}
 	return a.StopSession(threadID)
 }
-

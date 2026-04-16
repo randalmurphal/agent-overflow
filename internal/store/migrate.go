@@ -118,6 +118,15 @@ CREATE TABLE IF NOT EXISTS design_artifacts (
 CREATE INDEX IF NOT EXISTS idx_design_artifacts_thread ON design_artifacts(thread_id);
 `,
 	},
+	{
+		Version: 3,
+		Name:    "thread_fork_state",
+		SQL: `
+ALTER TABLE threads ADD COLUMN pending_fork_session_ref TEXT;
+ALTER TABLE threads ADD COLUMN forked_from_thread_id TEXT REFERENCES threads(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS idx_threads_forked_from_thread ON threads(forked_from_thread_id);
+`,
+	},
 }
 
 // runMigrations sets PRAGMAs, creates the version tracking table, and applies

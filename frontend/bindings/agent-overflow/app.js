@@ -13,6 +13,9 @@ import { Call as $Call, CancellablePromise as $CancellablePromise, Create as $Cr
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
+import * as design$0 from "./internal/design/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
 import * as git$0 from "./internal/git/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
@@ -33,6 +36,26 @@ export function ArchiveThread(id) {
 }
 
 /**
+ * ChooseDesignOption resolves a pending design-choice request.
+ * @param {string} threadID
+ * @param {string} requestID
+ * @param {string} optionID
+ * @returns {$CancellablePromise<void>}
+ */
+export function ChooseDesignOption(threadID, requestID, optionID) {
+    return $Call.ByID(1369097107, threadID, requestID, optionID);
+}
+
+/**
+ * CreateDiscussion validates and persists a discussion definition.
+ * @param {store$0.DiscussionDefinition} def
+ * @returns {$CancellablePromise<void>}
+ */
+export function CreateDiscussion(def) {
+    return $Call.ByID(757689265, def);
+}
+
+/**
  * @param {string} providerName
  * @param {string} workspacePath
  * @param {string} model
@@ -45,11 +68,66 @@ export function CreateThread(providerName, workspacePath, model) {
 }
 
 /**
+ * DeleteDiscussion removes a persisted discussion definition.
+ * @param {string} name
+ * @param {string} scope
+ * @returns {$CancellablePromise<void>}
+ */
+export function DeleteDiscussion(name, scope) {
+    return $Call.ByID(302062730, name, scope);
+}
+
+/**
  * @param {string} id
  * @returns {$CancellablePromise<void>}
  */
 export function DeleteThread(id) {
     return $Call.ByID(1186337974, id);
+}
+
+/**
+ * @param {string} sourceThreadID
+ * @returns {$CancellablePromise<store$0.Thread>}
+ */
+export function ForkThread(sourceThreadID) {
+    return $Call.ByID(4063914461, sourceThreadID).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType0($result);
+    }));
+}
+
+/**
+ * GetChannelMessages returns ordered messages for a discussion channel.
+ * @param {string} channelID
+ * @param {number} afterSeq
+ * @param {number} limit
+ * @returns {$CancellablePromise<store$0.ChannelMessage[]>}
+ */
+export function GetChannelMessages(channelID, afterSeq, limit) {
+    return $Call.ByID(3595031866, channelID, afterSeq, limit).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType2($result);
+    }));
+}
+
+/**
+ * GetDesignArtifactHTML returns the stored HTML for an artifact.
+ * @param {string} threadID
+ * @param {string} artifactID
+ * @returns {$CancellablePromise<string>}
+ */
+export function GetDesignArtifactHTML(threadID, artifactID) {
+    return $Call.ByID(2043420102, threadID, artifactID);
+}
+
+/**
+ * GetDiscussion returns a persisted discussion definition by name and scope.
+ * @param {string} name
+ * @param {string} scope
+ * @returns {$CancellablePromise<store$0.DiscussionDefinition>}
+ */
+export function GetDiscussion(name, scope) {
+    return $Call.ByID(1924583939, name, scope).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType3($result);
+    }));
 }
 
 /**
@@ -59,7 +137,7 @@ export function DeleteThread(id) {
  */
 export function GetGitStatus(threadID) {
     return $Call.ByID(4123560639, threadID).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType1($result);
+        return $$createType4($result);
     }));
 }
 
@@ -70,7 +148,7 @@ export function GetGitStatus(threadID) {
  */
 export function GetModelsForProvider(providerName) {
     return $Call.ByID(1632984917, providerName).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType3($result);
+        return $$createType6($result);
     }));
 }
 
@@ -88,7 +166,7 @@ export function GetPayloadData(payloadID) {
  */
 export function GetProviderStatuses() {
     return $Call.ByID(3829328996).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType5($result);
+        return $$createType8($result);
     }));
 }
 
@@ -98,7 +176,7 @@ export function GetProviderStatuses() {
  */
 export function GetSettings() {
     return $Call.ByID(2554697378).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType6($result);
+        return $$createType9($result);
     }));
 }
 
@@ -132,7 +210,9 @@ export function GitCheckout(threadID, branch) {
 }
 
 /**
- * GitCommit stages and commits workspace changes.
+ * GitCommit stages all changes and commits workspace changes.
+ * WARNING: This stages everything (git add -A) before committing, including
+ * untracked files. Use GitStageAll + a direct Commit call for more control.
  * @param {string} threadID
  * @param {string} subject
  * @param {string} body
@@ -140,7 +220,7 @@ export function GitCheckout(threadID, branch) {
  */
 export function GitCommit(threadID, subject, body) {
     return $Call.ByID(1971060042, threadID, subject, body).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType7($result);
+        return $$createType10($result);
     }));
 }
 
@@ -163,7 +243,7 @@ export function GitCreateBranch(threadID, name) {
  */
 export function GitCreatePR(threadID, title, body) {
     return $Call.ByID(4106667105, threadID, title, body).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType7($result);
+        return $$createType10($result);
     }));
 }
 
@@ -184,7 +264,7 @@ export function GitCreateWorktree(threadID, branch) {
  */
 export function GitListBranches(threadID) {
     return $Call.ByID(2693102179, threadID).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType9($result);
+        return $$createType12($result);
     }));
 }
 
@@ -195,7 +275,7 @@ export function GitListBranches(threadID) {
  */
 export function GitListWorktrees(threadID) {
     return $Call.ByID(3232495403, threadID).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType11($result);
+        return $$createType14($result);
     }));
 }
 
@@ -206,7 +286,7 @@ export function GitListWorktrees(threadID) {
  */
 export function GitPull(threadID) {
     return $Call.ByID(3933172764, threadID).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType7($result);
+        return $$createType10($result);
     }));
 }
 
@@ -217,7 +297,7 @@ export function GitPull(threadID) {
  */
 export function GitPush(threadID) {
     return $Call.ByID(4036251239, threadID).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType7($result);
+        return $$createType10($result);
     }));
 }
 
@@ -231,6 +311,16 @@ export function GitRemoveWorktree(threadID) {
 }
 
 /**
+ * GitStageAll runs `git add -A` in the thread's workspace, staging all changes
+ * including untracked files. Use before GitCommit when explicit staging is desired.
+ * @param {string} threadID
+ * @returns {$CancellablePromise<void>}
+ */
+export function GitStageAll(threadID) {
+    return $Call.ByID(548906954, threadID);
+}
+
+/**
  * @param {string} threadID
  * @returns {$CancellablePromise<void>}
  */
@@ -239,12 +329,34 @@ export function InterruptTurn(threadID) {
 }
 
 /**
+ * ListDesignArtifacts returns persisted design artifacts for a thread.
+ * @param {string} threadID
+ * @returns {$CancellablePromise<design$0.DesignArtifact[]>}
+ */
+export function ListDesignArtifacts(threadID) {
+    return $Call.ByID(4255572490, threadID).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType16($result);
+    }));
+}
+
+/**
+ * ListDiscussions returns persisted discussion definitions for the given scope.
+ * @param {string} scope
+ * @returns {$CancellablePromise<store$0.DiscussionDefinition[]>}
+ */
+export function ListDiscussions(scope) {
+    return $Call.ByID(942288562, scope).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType17($result);
+    }));
+}
+
+/**
  * @param {string} threadID
  * @returns {$CancellablePromise<store$0.Item[]>}
  */
 export function ListItems(threadID) {
     return $Call.ByID(2158085763, threadID).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType13($result);
+        return $$createType19($result);
     }));
 }
 
@@ -254,7 +366,7 @@ export function ListItems(threadID) {
  */
 export function ListPayloadMetas(threadID) {
     return $Call.ByID(1007133701, threadID).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType15($result);
+        return $$createType21($result);
     }));
 }
 
@@ -263,8 +375,18 @@ export function ListPayloadMetas(threadID) {
  */
 export function ListThreads() {
     return $Call.ByID(1090132042).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType16($result);
+        return $$createType22($result);
     }));
+}
+
+/**
+ * PostChannelMessage posts a human-authored intervention into the channel.
+ * @param {string} channelID
+ * @param {string} content
+ * @returns {$CancellablePromise<void>}
+ */
+export function PostChannelMessage(channelID, content) {
+    return $Call.ByID(1315440605, channelID, content);
 }
 
 /**
@@ -306,6 +428,16 @@ export function SendMessage(threadID, content) {
 }
 
 /**
+ * StartDiscussion creates a deliberation channel and marks the thread as operating in discussion mode.
+ * @param {string} threadID
+ * @param {string} discussionName
+ * @returns {$CancellablePromise<void>}
+ */
+export function StartDiscussion(threadID, discussionName) {
+    return $Call.ByID(3188309099, threadID, discussionName);
+}
+
+/**
  * @param {string} threadID
  * @returns {$CancellablePromise<void>}
  */
@@ -334,31 +466,60 @@ export function SwitchThread(threadID) {
 }
 
 /**
+ * UpdateDiscussion replaces an existing persisted discussion definition.
+ * @param {string} prevName
+ * @param {string} prevScope
+ * @param {store$0.DiscussionDefinition} def
+ * @returns {$CancellablePromise<void>}
+ */
+export function UpdateDiscussion(prevName, prevScope, def) {
+    return $Call.ByID(1706395020, prevName, prevScope, def);
+}
+
+/**
  * UpdateSettings applies a partial settings patch and persists it.
  * @param {{ [_ in string]?: any }} patch
  * @returns {$CancellablePromise<settings$0.Settings>}
  */
 export function UpdateSettings(patch) {
     return $Call.ByID(2894041249, patch).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType6($result);
+        return $$createType9($result);
     }));
+}
+
+/**
+ * WriteThreadWorkspaceFile writes content to a path relative to the thread's
+ * active workspace and returns the normalized relative path.
+ * @param {string} threadID
+ * @param {string} relativePath
+ * @param {string} content
+ * @returns {$CancellablePromise<string>}
+ */
+export function WriteThreadWorkspaceFile(threadID, relativePath, content) {
+    return $Call.ByID(3895036895, threadID, relativePath, content);
 }
 
 // Private type creation functions
 const $$createType0 = store$0.Thread.createFrom;
-const $$createType1 = git$0.GitStatus.createFrom;
-const $$createType2 = provider$0.ModelInfo.createFrom;
-const $$createType3 = $Create.Array($$createType2);
-const $$createType4 = provider$0.ProviderStatus.createFrom;
-const $$createType5 = $Create.Array($$createType4);
-const $$createType6 = settings$0.Settings.createFrom;
-const $$createType7 = git$0.GitActionResult.createFrom;
-const $$createType8 = git$0.GitBranch.createFrom;
-const $$createType9 = $Create.Array($$createType8);
-const $$createType10 = git$0.Worktree.createFrom;
-const $$createType11 = $Create.Array($$createType10);
-const $$createType12 = store$0.Item.createFrom;
-const $$createType13 = $Create.Array($$createType12);
-const $$createType14 = store$0.PayloadMeta.createFrom;
-const $$createType15 = $Create.Array($$createType14);
-const $$createType16 = $Create.Array($$createType0);
+const $$createType1 = store$0.ChannelMessage.createFrom;
+const $$createType2 = $Create.Array($$createType1);
+const $$createType3 = store$0.DiscussionDefinition.createFrom;
+const $$createType4 = git$0.GitStatus.createFrom;
+const $$createType5 = provider$0.ModelInfo.createFrom;
+const $$createType6 = $Create.Array($$createType5);
+const $$createType7 = provider$0.ProviderStatus.createFrom;
+const $$createType8 = $Create.Array($$createType7);
+const $$createType9 = settings$0.Settings.createFrom;
+const $$createType10 = git$0.GitActionResult.createFrom;
+const $$createType11 = git$0.GitBranch.createFrom;
+const $$createType12 = $Create.Array($$createType11);
+const $$createType13 = git$0.Worktree.createFrom;
+const $$createType14 = $Create.Array($$createType13);
+const $$createType15 = store$0.DesignArtifact.createFrom;
+const $$createType16 = $Create.Array($$createType15);
+const $$createType17 = $Create.Array($$createType3);
+const $$createType18 = store$0.Item.createFrom;
+const $$createType19 = $Create.Array($$createType18);
+const $$createType20 = store$0.PayloadMeta.createFrom;
+const $$createType21 = $Create.Array($$createType20);
+const $$createType22 = $Create.Array($$createType0);

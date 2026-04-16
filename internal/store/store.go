@@ -40,21 +40,23 @@ func (s *Store) Close() error {
 
 // Thread represents a conversation thread.
 type Thread struct {
-	ID              string `json:"id"`
-	Title           string `json:"title"`
-	Provider        string `json:"provider"`
-	SessionRef      string `json:"sessionRef,omitempty"`
-	WorkspacePath   string `json:"workspacePath"`
-	Model           string `json:"model"`
-	ProjectPath     string `json:"projectPath"`
-	WorktreePath    string `json:"worktreePath,omitempty"`
-	Branch          string `json:"branch,omitempty"`
-	InteractionMode string `json:"interactionMode"`
-	DiscussionID    string `json:"discussionId,omitempty"`
-	ParentThreadID  string `json:"parentThreadId,omitempty"`
-	CreatedAt       int64  `json:"createdAt"`
-	UpdatedAt       int64  `json:"updatedAt"`
-	Archived        bool   `json:"archived"`
+	ID                 string `json:"id"`
+	Title              string `json:"title"`
+	Provider           string `json:"provider"`
+	SessionRef         string `json:"sessionRef,omitempty"`
+	PendingForkRef     string `json:"pendingForkRef,omitempty"`
+	WorkspacePath      string `json:"workspacePath"`
+	Model              string `json:"model"`
+	ProjectPath        string `json:"projectPath"`
+	WorktreePath       string `json:"worktreePath,omitempty"`
+	Branch             string `json:"branch,omitempty"`
+	InteractionMode    string `json:"interactionMode"`
+	DiscussionID       string `json:"discussionId,omitempty"`
+	ParentThreadID     string `json:"parentThreadId,omitempty"`
+	ForkedFromThreadID string `json:"forkedFromThreadId,omitempty"`
+	CreatedAt          int64  `json:"createdAt"`
+	UpdatedAt          int64  `json:"updatedAt"`
+	Archived           bool   `json:"archived"`
 }
 
 // Item represents a persisted timeline entry.
