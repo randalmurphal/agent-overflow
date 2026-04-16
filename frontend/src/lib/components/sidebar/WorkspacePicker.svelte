@@ -81,7 +81,7 @@
 
   {#if showRecent && recentWorkspaces.length > 0}
     <div transition:fly={{ y: -4, duration: 120 }} id="workspace-recent-list" class="absolute top-full left-0 right-0 mt-1 z-50 bg-surface-1 border border-border rounded shadow-lg max-h-[160px] overflow-y-auto" role="listbox" aria-label="Recent workspaces">
-      {#each recentWorkspaces as ws}
+      {#each recentWorkspaces as ws (ws)}
         <button
           onclick={() => selectRecent(ws)}
           role="option"

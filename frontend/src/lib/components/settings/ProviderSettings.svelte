@@ -17,31 +17,29 @@
 
     const generation = ++loadGeneration;
     void (async () => {
-      try {
-        const result = await GetProviderStatuses();
-        if (generation !== loadGeneration) return;
-        statuses = (result ?? []) as ProviderStatus[];
-      } catch (err) {
-        if (generation !== loadGeneration) return;
-        console.error('Failed to load provider statuses:', err);
+      const [statusResult, claudeResult, codexResult] = await Promise.allSettled([
+        GetProviderStatuses(),
+        GetModelsForProvider('claude'),
+        GetModelsForProvider('codex'),
+      ]);
+      if (generation !== loadGeneration) return;
+
+      if (statusResult.status === 'fulfilled') {
+        statuses = (statusResult.value ?? []) as ProviderStatus[];
+      } else {
+        console.error('Failed to load provider statuses:', statusResult.reason);
         addToast('error', 'Failed to load provider statuses');
       }
-      try {
-        const result = await GetModelsForProvider('claude');
-        if (generation !== loadGeneration) return;
-        claudeModels = (result ?? []) as ModelInfo[];
-      } catch (err) {
-        if (generation !== loadGeneration) return;
-        console.error('Failed to load Claude models:', err);
+      if (claudeResult.status === 'fulfilled') {
+        claudeModels = (claudeResult.value ?? []) as ModelInfo[];
+      } else {
+        console.error('Failed to load Claude models:', claudeResult.reason);
         addToast('error', 'Failed to load Claude models');
       }
-      try {
-        const result = await GetModelsForProvider('codex');
-        if (generation !== loadGeneration) return;
-        codexModels = (result ?? []) as ModelInfo[];
-      } catch (err) {
-        if (generation !== loadGeneration) return;
-        console.error('Failed to load Codex models:', err);
+      if (codexResult.status === 'fulfilled') {
+        codexModels = (codexResult.value ?? []) as ModelInfo[];
+      } else {
+        console.error('Failed to load Codex models:', codexResult.reason);
         addToast('error', 'Failed to load Codex models');
       }
     })();

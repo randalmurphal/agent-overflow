@@ -177,6 +177,22 @@
   let parsed = $derived(parseBlocks(content));
 </script>
 
+{#snippet inlineSegments(text: string)}
+  {#each parseInline(text) as seg}
+    {#if seg.kind === 'code'}
+      <code class="bg-surface-0 px-1 rounded text-[0.9em] font-mono">{seg.text}</code>
+    {:else if seg.kind === 'bold'}
+      <strong>{seg.text}</strong>
+    {:else if seg.kind === 'italic'}
+      <em>{seg.text}</em>
+    {:else if seg.kind === 'link'}
+      <a href={seg.href} class="text-accent hover:underline" target="_blank" rel="noopener">{seg.text}</a>
+    {:else}
+      {seg.text}
+    {/if}
+  {/each}
+{/snippet}
+
 {#each parsed as block}
   {#if block.kind === 'code'}
     <CodeBlock code={block.content} lang={block.lang || 'text'} />
@@ -184,51 +200,15 @@
   {:else if block.kind === 'heading'}
     {#if block.level === 1}
       <h1 class="text-lg font-semibold text-text-primary mt-3 mb-1">
-        {#each parseInline(block.text) as seg}
-          {#if seg.kind === 'code'}
-            <code class="bg-surface-0 px-1 rounded text-[0.9em] font-mono">{seg.text}</code>
-          {:else if seg.kind === 'bold'}
-            <strong>{seg.text}</strong>
-          {:else if seg.kind === 'italic'}
-            <em>{seg.text}</em>
-          {:else if seg.kind === 'link'}
-            <a href={seg.href} class="text-accent hover:underline" target="_blank" rel="noopener">{seg.text}</a>
-          {:else}
-            {seg.text}
-          {/if}
-        {/each}
+        {@render inlineSegments(block.text)}
       </h1>
     {:else if block.level === 2}
       <h2 class="text-base font-semibold text-text-primary mt-2.5 mb-1">
-        {#each parseInline(block.text) as seg}
-          {#if seg.kind === 'code'}
-            <code class="bg-surface-0 px-1 rounded text-[0.9em] font-mono">{seg.text}</code>
-          {:else if seg.kind === 'bold'}
-            <strong>{seg.text}</strong>
-          {:else if seg.kind === 'italic'}
-            <em>{seg.text}</em>
-          {:else if seg.kind === 'link'}
-            <a href={seg.href} class="text-accent hover:underline" target="_blank" rel="noopener">{seg.text}</a>
-          {:else}
-            {seg.text}
-          {/if}
-        {/each}
+        {@render inlineSegments(block.text)}
       </h2>
     {:else}
       <h3 class="text-sm font-semibold text-text-primary mt-2 mb-0.5">
-        {#each parseInline(block.text) as seg}
-          {#if seg.kind === 'code'}
-            <code class="bg-surface-0 px-1 rounded text-[0.9em] font-mono">{seg.text}</code>
-          {:else if seg.kind === 'bold'}
-            <strong>{seg.text}</strong>
-          {:else if seg.kind === 'italic'}
-            <em>{seg.text}</em>
-          {:else if seg.kind === 'link'}
-            <a href={seg.href} class="text-accent hover:underline" target="_blank" rel="noopener">{seg.text}</a>
-          {:else}
-            {seg.text}
-          {/if}
-        {/each}
+        {@render inlineSegments(block.text)}
       </h3>
     {/if}
 
@@ -237,19 +217,7 @@
       <ol class="list-decimal list-inside text-sm leading-relaxed my-1 space-y-0.5">
         {#each block.items as item}
           <li>
-            {#each parseInline(item) as seg}
-              {#if seg.kind === 'code'}
-                <code class="bg-surface-0 px-1 rounded text-sm font-mono">{seg.text}</code>
-              {:else if seg.kind === 'bold'}
-                <strong>{seg.text}</strong>
-              {:else if seg.kind === 'italic'}
-                <em>{seg.text}</em>
-              {:else if seg.kind === 'link'}
-                <a href={seg.href} class="text-accent hover:underline" target="_blank" rel="noopener">{seg.text}</a>
-              {:else}
-                {seg.text}
-              {/if}
-            {/each}
+            {@render inlineSegments(item)}
           </li>
         {/each}
       </ol>
@@ -257,19 +225,7 @@
       <ul class="list-disc list-inside text-sm leading-relaxed my-1 space-y-0.5">
         {#each block.items as item}
           <li>
-            {#each parseInline(item) as seg}
-              {#if seg.kind === 'code'}
-                <code class="bg-surface-0 px-1 rounded text-sm font-mono">{seg.text}</code>
-              {:else if seg.kind === 'bold'}
-                <strong>{seg.text}</strong>
-              {:else if seg.kind === 'italic'}
-                <em>{seg.text}</em>
-              {:else if seg.kind === 'link'}
-                <a href={seg.href} class="text-accent hover:underline" target="_blank" rel="noopener">{seg.text}</a>
-              {:else}
-                {seg.text}
-              {/if}
-            {/each}
+            {@render inlineSegments(item)}
           </li>
         {/each}
       </ul>
@@ -277,19 +233,7 @@
 
   {:else if block.kind === 'paragraph'}
     <p class="whitespace-pre-wrap text-sm leading-relaxed my-1">
-      {#each parseInline(block.text) as seg}
-        {#if seg.kind === 'code'}
-          <code class="bg-surface-0 px-1 rounded text-sm font-mono">{seg.text}</code>
-        {:else if seg.kind === 'bold'}
-          <strong>{seg.text}</strong>
-        {:else if seg.kind === 'italic'}
-          <em>{seg.text}</em>
-        {:else if seg.kind === 'link'}
-          <a href={seg.href} class="text-accent hover:underline" target="_blank" rel="noopener">{seg.text}</a>
-        {:else}
-          {seg.text}
-        {/if}
-      {/each}
+      {@render inlineSegments(block.text)}
     </p>
   {/if}
 {/each}

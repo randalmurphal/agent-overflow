@@ -1,8 +1,10 @@
 <script lang="ts">
   import { fade, fly } from 'svelte/transition';
-  import { GetGitStatus, GitListBranches, GitCheckout, GitCreateBranch } from '../../stores/bindings';
+  import { GetGitStatus, GetThread, GitListBranches, GitCheckout, GitCreateBranch } from '../../stores/bindings';
+  import { replaceThread } from '../../stores/threads.svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import type { GitBranch, GitStatus } from '../../types/git';
+  import type { Thread } from '../../types/models';
 
   let { pane }: { pane: ThreadPane } = $props();
 
@@ -83,6 +85,12 @@
     try {
       await GitCheckout(pane.threadId, name);
       currentBranch = name;
+      // Sync sidebar thread list with updated branch metadata
+      const updated = await GetThread(pane.threadId) as Thread | null;
+      if (updated) {
+        replaceThread(updated);
+        pane.replaceThread(updated);
+      }
     } catch (err) {
       console.error('Failed to checkout branch:', err);
       pane.setError(`Failed to checkout: ${err}`);
@@ -97,6 +105,7 @@
     creating = true;
     try {
       await GitCreateBranch(pane.threadId, name);
+      await GitCheckout(pane.threadId, name);
       currentBranch = name;
       newBranchName = '';
       showCreateInput = false;
@@ -157,7 +166,7 @@
           {#if loading}
             <div class="px-3 py-2 text-xs text-text-secondary animate-pulse">Loading branches...</div>
           {:else}
-            {#each filteredBranches as branch}
+            {#each filteredBranches as branch (branch.name)}
               <button
                 onclick={() => selectBranch(branch.name)}
                 role="option"

@@ -1,7 +1,7 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
   import type { ProviderStatus } from '../../types/settings';
   import { GetProviderStatuses } from '../../stores/bindings';
+  import { getSettings } from '../../stores/settings.svelte';
   import { addToast } from '../../stores/toast.svelte';
 
   let { currentProvider, onSelect }: {
@@ -10,19 +10,30 @@
   } = $props();
 
   let statuses = $state<Map<string, ProviderStatus>>(new Map());
+  let loadGeneration = 0;
 
-  onMount(async () => {
-    try {
-      const result = await GetProviderStatuses();
-      const map = new Map<string, ProviderStatus>();
-      for (const s of (result ?? []) as ProviderStatus[]) {
-        map.set(s.provider, s);
+  // Re-fetch provider statuses when binary paths change in settings.
+  $effect(() => {
+    const settings = getSettings();
+    settings.claudeBinaryPath;
+    settings.codexBinaryPath;
+
+    const generation = ++loadGeneration;
+    void (async () => {
+      try {
+        const result = await GetProviderStatuses();
+        if (generation !== loadGeneration) return;
+        const map = new Map<string, ProviderStatus>();
+        for (const s of (result ?? []) as ProviderStatus[]) {
+          map.set(s.provider, s);
+        }
+        statuses = map;
+      } catch (err) {
+        if (generation !== loadGeneration) return;
+        console.error('Failed to fetch provider statuses:', err);
+        addToast('error', 'Failed to load provider statuses');
       }
-      statuses = map;
-    } catch (err) {
-      console.error('Failed to fetch provider statuses:', err);
-      addToast('error', 'Failed to load provider statuses');
-    }
+    })();
   });
 
   function statusDotColor(provider: string): string {
@@ -37,6 +48,9 @@
 
   function isDisabled(provider: string): boolean {
     const s = statuses.get(provider);
+    const settings = getSettings();
+    const isEnabled = provider === 'claude' ? settings.claudeEnabled : settings.codexEnabled;
+    if (!isEnabled) return true;
     return s ? s.status === 'not_found' : false;
   }
 </script>

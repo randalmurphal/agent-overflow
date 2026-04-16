@@ -120,7 +120,7 @@
       {#if loading}
         <div class="px-3 py-2 text-xs text-text-secondary animate-pulse">Loading models...</div>
       {:else}
-        {#each models as model}
+        {#each models as model (model.slug)}
           <button
             onclick={() => selectModel(model.slug)}
             role="option"

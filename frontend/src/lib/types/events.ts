@@ -1,4 +1,4 @@
-type EventKind =
+export type EventKind =
   | 'init'
   | 'text_delta'
   | 'tool_start'
@@ -34,7 +34,7 @@ export interface ProviderEvent {
   timestamp: string;
 }
 
-type ApprovalKind = 'command' | 'file-read' | 'file-change' | 'user-input' | 'permission';
+export type ApprovalKind = 'command' | 'file-read' | 'file-change' | 'user-input' | 'permission';
 
 interface UserInputQuestionOption {
   label: string;

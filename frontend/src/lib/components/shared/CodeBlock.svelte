@@ -7,14 +7,18 @@
   let html = $state('');
   let loading = $state(true);
   let highlightFailed = $state(false);
+  let highlightGeneration = 0;
 
   $effect(() => {
     loading = true;
     highlightFailed = false;
+    const gen = ++highlightGeneration;
     highlightCode(code, lang).then((result) => {
+      if (gen !== highlightGeneration) return;
       html = result;
       loading = false;
     }).catch((err) => {
+      if (gen !== highlightGeneration) return;
       console.error('Syntax highlighting failed:', err);
       highlightFailed = true;
       loading = false;

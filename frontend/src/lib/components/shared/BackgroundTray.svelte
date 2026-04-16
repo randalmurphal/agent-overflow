@@ -9,9 +9,9 @@
   let visible = $derived(taskCount > 0);
   let taskEntries = $derived([...pane.backgroundTasks.entries()]);
 
-  // Collapse automatically when all tasks complete.
+  // Auto-expand when new tasks appear so the user notices background activity.
   $effect(() => {
-    if (taskCount === 0) {
+    if (taskCount > 0) {
       expanded = true;
     }
   });

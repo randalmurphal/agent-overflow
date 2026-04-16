@@ -30,7 +30,7 @@
 
 {#if limits.length > 0}
   <div class="flex items-center gap-2" role="group" aria-label="Rate limits">
-    {#each limits as entry}
+    {#each limits as entry (entry.limitName)}
       <div
         class="flex items-center gap-1.5"
         title="{entry.limitName}: {Math.round(entry.usedPercent)}% ({formatWindow(entry.windowMins)})"

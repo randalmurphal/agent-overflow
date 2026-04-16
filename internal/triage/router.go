@@ -100,13 +100,19 @@ func (r *Router) handleInit(evt provider.ProviderEvent) error {
 }
 
 func (r *Router) handleThreadModelUpdate(evt provider.ProviderEvent) error {
-	r.emit("provider:event", evt)
 	if evt.Content == "" {
+		r.emit("provider:event", evt)
 		return nil
 	}
 	if err := r.store.UpdateModel(evt.ThreadID, evt.Content); err != nil {
+		r.emit("provider:event_error", map[string]any{
+			"threadId": evt.ThreadID,
+			"kind":     string(evt.Kind),
+			"error":    err.Error(),
+		})
 		return fmt.Errorf("update thread model: %w", err)
 	}
+	r.emit("provider:event", evt)
 	return nil
 }
 

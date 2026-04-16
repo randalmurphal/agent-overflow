@@ -19,22 +19,6 @@ html {
   color-scheme: dark;
 }
 
-html.dark {
-  color-scheme: dark;
-  --surface-0: oklch(0.145 0.014 285.82);
-  --surface-1: oklch(0.178 0.014 285.82);
-  --surface-2: oklch(0.215 0.014 285.82);
-  --border: oklch(0.3 0.014 285.82);
-  --text-primary: oklch(0.95 0.006 285.82);
-  --text-secondary: oklch(0.7 0.006 285.82);
-  --accent: oklch(0.65 0.15 250);
-  --success: oklch(0.7 0.17 150);
-  --error: oklch(0.63 0.2 25);
-  --warning: oklch(0.75 0.15 75);
-  --provider-codex: oklch(0.72 0.15 55);
-  --overlay: oklch(0 0 0 / 60%);
-}
-
 html.light {
   color-scheme: light;
   --surface-0: oklch(0.985 0.004 255);

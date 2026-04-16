@@ -72,7 +72,7 @@
     {files.length} file{files.length !== 1 ? 's' : ''} changed
   </div>
 
-  {#each grouped as group}
+  {#each grouped as group (group.dir)}
     <button
       class="w-full px-3 py-1.5 flex items-center gap-1.5 text-left cursor-pointer hover:bg-surface-2/40 border-b border-border/50"
       onclick={() => toggleDir(group.dir)}
@@ -86,7 +86,7 @@
 
     {#if expandedDirs.has(group.dir)}
       <div transition:slide={{ duration: 150 }}>
-      {#each group.files as file}
+      {#each group.files as file (file.path)}
         <button
           class="w-full pl-7 pr-3 py-1 flex items-center gap-2 text-left cursor-pointer hover:bg-surface-2/30"
           onclick={() => toggleFile(file.path)}

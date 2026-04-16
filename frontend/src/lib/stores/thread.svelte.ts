@@ -1,5 +1,5 @@
 import type { Item, PayloadMeta, Thread } from '../types/models';
-import type { ApprovalRequest, ContextWindow, RateLimitEntry, TokenUsage } from '../types/events';
+import type { ApprovalRequest, ContextWindow, RateLimitEntry, TokenUsage, ToolProgressMeta } from '../types/events';
 import { ListItems, ListPayloadMetas, SwitchThread } from './bindings';
 import { addToast } from './toast.svelte';
 
@@ -146,7 +146,7 @@ export function createThreadPane() {
       activeToolCalls = new Map(activeToolCalls).set(id, data);
     },
 
-    updateToolProgress(id: string, progress: unknown): void {
+    updateToolProgress(id: string, progress: ToolProgressMeta): void {
       if (activeToolCalls.has(id)) {
         activeToolCalls = new Map(activeToolCalls).set(id, progress);
       }

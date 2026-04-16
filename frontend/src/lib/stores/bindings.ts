@@ -32,6 +32,7 @@ export {
 
   // Git operations
   GetGitStatus,
+  GetWorkingTreeDiff,
   GitListBranches,
   GitCommit,
   GitPush,

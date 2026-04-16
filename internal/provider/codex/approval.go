@@ -48,9 +48,17 @@ func buildApprovalResponseResult(resp provider.ApprovalResponse) (int64, any, er
 		}, nil
 	}
 
-	// Codex expects native decision values directly: accept, acceptForSession,
-	// decline, cancel. No translation needed.
-	return rpcID, map[string]any{"decision": resp.Decision}, nil
+	// Translate frontend decision values to Codex-native vocabulary.
+	decision := resp.Decision
+	switch decision {
+	case "allow":
+		decision = "accept"
+	case "allow_session":
+		decision = "acceptForSession"
+	case "deny":
+		decision = "decline"
+	}
+	return rpcID, map[string]any{"decision": decision}, nil
 }
 
 func parseApprovalRequestID(requestID string) (int64, error) {
