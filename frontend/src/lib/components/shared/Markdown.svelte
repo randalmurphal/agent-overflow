@@ -1,13 +1,15 @@
 <script lang="ts">
+  import CodeBlock from './CodeBlock.svelte';
+
   let { content }: { content: string } = $props();
 
   // --- Block types ---
 
-  type CodeBlock = { kind: 'code'; lang: string; content: string };
+  type FencedCodeBlock = { kind: 'code'; lang: string; content: string };
   type HeadingBlock = { kind: 'heading'; level: 1 | 2 | 3; text: string };
   type ListBlock = { kind: 'list'; ordered: boolean; items: string[] };
   type ParagraphBlock = { kind: 'paragraph'; text: string };
-  type Block = CodeBlock | HeadingBlock | ListBlock | ParagraphBlock;
+  type Block = FencedCodeBlock | HeadingBlock | ListBlock | ParagraphBlock;
 
   // --- Inline formatting ---
 
@@ -177,14 +179,7 @@
 
 {#each parsed as block}
   {#if block.kind === 'code'}
-    <div class="my-2 rounded bg-surface-0 border border-border overflow-x-auto">
-      {#if block.lang}
-        <div class="px-3 py-1 text-xs text-text-secondary border-b border-border font-mono">
-          {block.lang}
-        </div>
-      {/if}
-      <pre class="px-3 py-2 text-sm leading-relaxed font-mono"><code>{block.content}</code></pre>
-    </div>
+    <CodeBlock code={block.content} lang={block.lang || 'text'} />
 
   {:else if block.kind === 'heading'}
     {#if block.level === 1}

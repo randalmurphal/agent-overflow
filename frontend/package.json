@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@wailsio/runtime": "^3.0.0-alpha.79",
+    "shiki": "^4.0.2",
     "svelte": "^5.55.4"
   },
   "devDependencies": {
