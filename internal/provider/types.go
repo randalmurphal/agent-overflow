@@ -205,6 +205,18 @@ type SessionInfo struct {
 	Version   string   `json:"version,omitempty"`
 }
 
+// AccountInfo describes the authenticated Claude account surfaced through
+// the `system/init` message. Subscription type and token source fields are
+// populated only when the CLI includes them; older CLI versions or
+// unauthenticated invocations may leave them empty.
+type AccountInfo struct {
+	SubscriptionType string `json:"subscriptionType,omitempty"`
+	TokenSource      string `json:"tokenSource,omitempty"`
+	APIProvider      string `json:"apiProvider,omitempty"`
+	Model            string `json:"model,omitempty"`
+	Version          string `json:"version,omitempty"`
+}
+
 // TokenUsage tracks token consumption for display.
 type TokenUsage struct {
 	InputTokens              int     `json:"inputTokens"`
