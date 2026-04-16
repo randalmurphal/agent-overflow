@@ -25,10 +25,14 @@
     }
     try {
       claudeModels = (await GetModelsForProvider('claude') ?? []) as Array<{ slug: string; name: string }>;
-    } catch { /* provider may not exist */ }
+    } catch (err) {
+      console.error('Failed to load Claude models:', err);
+    }
     try {
       codexModels = (await GetModelsForProvider('codex') ?? []) as Array<{ slug: string; name: string }>;
-    } catch { /* provider may not exist */ }
+    } catch (err) {
+      console.error('Failed to load Codex models:', err);
+    }
   });
 
   function getStatus(provider: string): Status | undefined {

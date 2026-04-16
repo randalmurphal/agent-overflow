@@ -83,4 +83,4 @@
 
 ## Review Log
 
-(Entries added during review phase.)
+- **Review 1: Spec Compliance** -- Fixed Thread type (5 missing fields), RateLimitEntry (field name mismatch with Go backend), ApprovalRequest (missing kind/questions/permissions), ContextWindow (optional fields). Wired ContextWindowMeter and RateLimitsMeter into ChatView header. Commit: 4560c43.

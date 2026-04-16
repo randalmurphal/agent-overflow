@@ -28,7 +28,8 @@
     try {
       const result = await GetGitStatus(pane.threadId);
       status = result as Status;
-    } catch {
+    } catch (err) {
+      console.error('Failed to get git status:', err);
       status = null;
     }
   }

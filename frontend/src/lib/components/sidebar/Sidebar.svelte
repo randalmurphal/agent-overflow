@@ -5,6 +5,8 @@
   import { prependThread } from '../../stores/threads.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import ThreadList from './ThreadList.svelte';
+  import WorkspacePicker from './WorkspacePicker.svelte';
+  import { getSettings } from '../../stores/settings.svelte';
 
   let { pane, onOpenSettings }: { pane: ThreadPane; onOpenSettings?: () => void } = $props();
 
@@ -100,11 +102,10 @@
             Codex
           </button>
         </div>
-        <input
-          type="text"
-          bind:value={workspacePath}
-          placeholder="Workspace path"
-          class="w-full text-xs rounded border border-border bg-surface-0 px-2 py-1.5 text-text-primary placeholder:text-text-secondary/50 focus:outline-none focus:border-accent"
+        <WorkspacePicker
+          value={workspacePath}
+          onSelect={(path) => workspacePath = path}
+          recentWorkspaces={getSettings().recentWorkspaces}
         />
         <input
           type="text"
