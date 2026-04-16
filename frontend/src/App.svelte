@@ -7,6 +7,9 @@
   import Sidebar from './lib/components/sidebar/Sidebar.svelte';
   import ChatView from './lib/components/chat/ChatView.svelte';
   import Toast from './lib/components/shared/Toast.svelte';
+  import SettingsView from './lib/components/settings/SettingsView.svelte';
+
+  let showSettings = $state(false);
 
   const pane = getMainPane();
 
@@ -22,9 +25,13 @@
 </script>
 
 <main class="h-screen w-screen bg-surface-0 text-text-primary flex overflow-hidden">
-  <Sidebar {pane} />
+  <Sidebar {pane} onOpenSettings={() => showSettings = true} />
   <div class="flex-1 flex flex-col min-w-0">
-    <ChatView {pane} />
+    {#if showSettings}
+      <SettingsView onClose={() => showSettings = false} />
+    {:else}
+      <ChatView {pane} />
+    {/if}
   </div>
 </main>
 <Toast />
