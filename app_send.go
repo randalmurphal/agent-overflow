@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 	"sync"
 	"time"
 
@@ -38,6 +39,7 @@ func (a *App) sendMessage(threadID string, content string) error {
 		return fmt.Errorf("send message: get turn index: %w", err)
 	}
 	turnIndex++
+	a.maybeRenameTemporaryWorktreeBranch(threadID, content)
 
 	now := time.Now().UnixMilli()
 	userItem := store.Item{
@@ -62,6 +64,7 @@ func (a *App) sendMessage(threadID string, content string) error {
 	case sess.codex != nil:
 		return sess.codex.Send(context.Background(), content)
 	default:
+		log.Printf("send message: session for thread %s has no provider", threadID)
 		return fmt.Errorf("session has no provider")
 	}
 }

@@ -49,9 +49,10 @@ type App struct {
 	// channelID → active deliberation state
 	deliberations map[string]*discussion.Deliberation
 	// Test-only injection points for binding helpers that need to observe start/stop.
-	startSessionFn func(string) error
-	stopSessionFn  func(string) error
-	sendMessageFn  func(string, string) error
+	startSessionFn       func(string) error
+	stopSessionFn        func(string) error
+	sendMessageFn        func(string, string) error
+	generateBranchNameFn func(store.Thread, string) (string, error)
 }
 
 // session wraps a provider session regardless of type.

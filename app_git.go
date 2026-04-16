@@ -225,15 +225,20 @@ func (a *App) GitCreateWorktree(threadID, branch string) (string, error) {
 		return "", err
 	}
 
-	worktreePath := defaultWorktreePath(project, branch)
+	resolvedBranch := strings.TrimSpace(branch)
+	if resolvedBranch == "" {
+		resolvedBranch = gitops.BuildTemporaryWorktreeBranchName()
+	}
+
+	worktreePath := defaultWorktreePath(project, resolvedBranch)
 	core := a.gitCore()
-	if err := core.CreateWorktree(project, worktreePath, branch); err != nil {
+	if err := core.CreateWorktree(project, worktreePath, resolvedBranch); err != nil {
 		return "", err
 	}
 	thread.ProjectPath = project
 	thread.WorktreePath = worktreePath
 	thread.WorkspacePath = worktreePath
-	thread.Branch = strings.TrimSpace(branch)
+	thread.Branch = resolvedBranch
 	thread.UpdatedAt = time.Now().UnixMilli()
 	if err := a.store.UpdateThread(thread); err != nil {
 		// Worktree was created on disk but the store update failed. Clean up

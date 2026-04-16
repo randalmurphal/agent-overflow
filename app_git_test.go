@@ -155,11 +155,39 @@ func TestGitCreateAndRemoveWorktree(t *testing.T) {
 	}
 }
 
+func TestGitCreateWorktreeUsesTemporaryBranchWhenEmpty(t *testing.T) {
+	app := newTestAppWithStore(t)
+	repo := testutil.InitGitRepo(t)
+
+	thread := testThread("thread-worktree-auto")
+	thread.ProjectPath = repo
+	thread.WorkspacePath = repo
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+
+	worktreePath, err := app.GitCreateWorktree(thread.ID, "")
+	if err != nil {
+		t.Fatalf("GitCreateWorktree() error = %v", err)
+	}
+
+	stored, err := app.store.GetThread(thread.ID)
+	if err != nil {
+		t.Fatalf("GetThread() error = %v", err)
+	}
+	if !gitops.IsTemporaryWorktreeBranch(stored.Branch) {
+		t.Fatalf("stored Branch = %q, want forge/<8-hex>", stored.Branch)
+	}
+	if !strings.Contains(worktreePath, "forge-") {
+		t.Fatalf("worktreePath = %q, want forge-prefixed temp path", worktreePath)
+	}
+}
+
 func TestGitCheckoutUpdatesStoredBranch(t *testing.T) {
 	app := newTestAppWithStore(t)
 	repo := testutil.InitGitRepo(t)
 
-	testutil.RunGit(t, repo,"branch", "feature/checkout")
+	testutil.RunGit(t, repo, "branch", "feature/checkout")
 
 	thread := testThread("thread-checkout")
 	thread.ProjectPath = repo
@@ -203,4 +231,3 @@ func containsWorktree(worktrees []gitops.Worktree, want string) bool {
 func samePath(left, right string) bool {
 	return testutil.CanonicalPath(nil, left) == testutil.CanonicalPath(nil, right)
 }
-

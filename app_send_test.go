@@ -9,6 +9,7 @@ import (
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/testutil"
 )
 
 func TestSendMessageHappyPath(t *testing.T) {
@@ -125,6 +126,81 @@ func TestSendMessageIncrementsTurnIndex(t *testing.T) {
 	}
 	if userItem.Summary != "Next message" {
 		t.Fatalf("user item Summary = %q, want Next message", userItem.Summary)
+	}
+}
+
+func TestSendMessageRenamesTemporaryWorktreeBranchOnFirstTurn(t *testing.T) {
+	app := newTestAppWithStore(t)
+	repo := testutil.InitGitRepo(t)
+
+	thread := testThread("thread-send-rename-worktree")
+	thread.Provider = string(provider.Claude)
+	thread.ProjectPath = repo
+	thread.WorkspacePath = repo
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+
+	worktreePath, err := app.GitCreateWorktree(thread.ID, "")
+	if err != nil {
+		t.Fatalf("GitCreateWorktree() error = %v", err)
+	}
+
+	thread, err = app.store.GetThread(thread.ID)
+	if err != nil {
+		t.Fatalf("GetThread() error = %v", err)
+	}
+	thread.Provider = string(provider.Claude)
+	thread.WorkspacePath = worktreePath
+	if err := app.store.UpdateThread(thread); err != nil {
+		t.Fatalf("UpdateThread() error = %v", err)
+	}
+
+	app.generateBranchNameFn = func(thread store.Thread, message string) (string, error) {
+		if message != "Fix reconnect spinner on resume" {
+			t.Fatalf("message = %q, want first user turn", message)
+		}
+		return "feature/reconnect-spinner", nil
+	}
+
+	sess, err := claude.NewSession(
+		context.Background(),
+		thread.ID,
+		claude.Config{
+			Binary:  writeClaudePassthroughBinary(t),
+			WorkDir: worktreePath,
+		},
+		func(provider.ProviderEvent) {},
+	)
+	if err != nil {
+		t.Fatalf("NewSession() error = %v", err)
+	}
+	t.Cleanup(func() { _ = sess.Close() })
+
+	app.sessions[thread.ID] = session{
+		provider: string(provider.Claude),
+		token:    "test-token",
+		claude:   sess,
+	}
+
+	if err := app.SendMessage(thread.ID, "Fix reconnect spinner on resume"); err != nil {
+		t.Fatalf("SendMessage() error = %v", err)
+	}
+
+	stored, err := app.store.GetThread(thread.ID)
+	if err != nil {
+		t.Fatalf("GetThread() error = %v", err)
+	}
+	if stored.Branch != "forge/feature/reconnect-spinner" {
+		t.Fatalf("stored Branch = %q, want forge/feature/reconnect-spinner", stored.Branch)
+	}
+
+	status, err := app.GetGitStatus(thread.ID)
+	if err != nil {
+		t.Fatalf("GetGitStatus() error = %v", err)
+	}
+	if status.Branch != "forge/feature/reconnect-spinner" {
+		t.Fatalf("status.Branch = %q, want forge/feature/reconnect-spinner", status.Branch)
 	}
 }
 

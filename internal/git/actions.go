@@ -92,6 +92,42 @@ func (c *Core) CreateBranch(cwd, name string) error {
 	return err
 }
 
+// RenameBranch renames a local branch, appending a numeric suffix if the
+// desired target already exists.
+func (c *Core) RenameBranch(cwd, oldBranch, newBranch string) (string, error) {
+	oldBranch = strings.TrimSpace(oldBranch)
+	if oldBranch == "" {
+		return "", fmt.Errorf("git old branch name is required")
+	}
+	newBranch = strings.TrimSpace(newBranch)
+	if newBranch == "" {
+		return "", fmt.Errorf("git new branch name is required")
+	}
+	if err := validateBranchName(oldBranch); err != nil {
+		return "", err
+	}
+	if err := validateBranchName(newBranch); err != nil {
+		return "", err
+	}
+	if oldBranch == newBranch {
+		return newBranch, nil
+	}
+
+	target := newBranch
+	for suffix := 1; c.branchExists(cwd, target); suffix++ {
+		target = fmt.Sprintf("%s-%d", newBranch, suffix)
+		if suffix >= 100 {
+			return "", fmt.Errorf("could not find an available branch name for %q", newBranch)
+		}
+	}
+
+	_, _, err := c.Execute(cwd, "branch", "-m", "--", oldBranch, target)
+	if err != nil {
+		return "", err
+	}
+	return target, nil
+}
+
 func commitArgs(subject, body string) []string {
 	args := []string{"commit", "-m", subject}
 	if trimmed := strings.TrimSpace(body); trimmed != "" {
@@ -154,4 +190,9 @@ func (c *Core) pushRemoteName(cwd string) (string, error) {
 		return "", fmt.Errorf("cannot push because no git remote is configured")
 	}
 	return remotes[0], nil
+}
+
+func (c *Core) branchExists(cwd, branch string) bool {
+	result, err := c.run(cwd, "show-ref", "--verify", "--quiet", "refs/heads/"+branch)
+	return err == nil && result.exitCode == 0
 }

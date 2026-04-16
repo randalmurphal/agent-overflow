@@ -1142,7 +1142,7 @@ func (a *App) GitPull(threadID string) (GitActionResult, error)
 func (a *App) GitCheckout(threadID, branch string) error
 func (a *App) GitCreateBranch(threadID, name string) error
 func (a *App) GitCreatePR(threadID, title, body string) (GitActionResult, error)
-func (a *App) GitCreateWorktree(threadID, branch string) (string, error) // returns worktree path
+func (a *App) GitCreateWorktree(threadID, branch string) (string, error) // returns worktree path; empty branch creates a temporary forge/<8hex> branch
 func (a *App) GitRemoveWorktree(threadID string) error
 func (a *App) GitListWorktrees(threadID string) ([]Worktree, error)
 ```
@@ -1151,6 +1151,10 @@ Git operations resolve `cwd` from the thread's `ProjectPath` (for repo-level ops
 like branch listing, worktree creation) or `WorkspacePath` (for working-dir ops
 like status, diff, commit). The distinction matters for worktree threads where
 the workspace is NOT the project root.
+
+Worktree branch naming matches forge's visible lifecycle:
+- If the user leaves the worktree branch blank, create the worktree on a temporary `forge/<8-hex>` branch.
+- On the first user turn, if the worktree branch is still temporary, derive a descriptive branch name from the message, normalize it to `forge/<fragment>`, rename the branch, and persist the updated thread metadata before sending the turn to the provider.
 
 ---
 

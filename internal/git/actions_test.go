@@ -143,6 +143,52 @@ func TestCreateBranchAndCheckout(t *testing.T) {
 	}
 }
 
+func TestRenameBranch(t *testing.T) {
+	repo := testutil.InitGitRepo(t)
+	core := NewCore()
+
+	if err := core.CreateBranch(repo, "forge/1234abcd"); err != nil {
+		t.Fatalf("CreateBranch returned error: %v", err)
+	}
+	if err := core.Checkout(repo, "forge/1234abcd"); err != nil {
+		t.Fatalf("Checkout returned error: %v", err)
+	}
+
+	renamed, err := core.RenameBranch(repo, "forge/1234abcd", "forge/reconnect-backoff")
+	if err != nil {
+		t.Fatalf("RenameBranch returned error: %v", err)
+	}
+	if renamed != "forge/reconnect-backoff" {
+		t.Fatalf("RenameBranch() = %q, want forge/reconnect-backoff", renamed)
+	}
+
+	branch := strings.TrimSpace(runGitStdout(t, repo, "rev-parse", "--abbrev-ref", "HEAD"))
+	if branch != "forge/reconnect-backoff" {
+		t.Fatalf("branch = %q, want forge/reconnect-backoff", branch)
+	}
+}
+
+func TestRenameBranchAddsSuffixWhenTargetExists(t *testing.T) {
+	repo := testutil.InitGitRepo(t)
+	core := NewCore()
+
+	testutil.RunGit(t, repo, "branch", "forge/reconnect-backoff")
+	if err := core.CreateBranch(repo, "forge/1234abcd"); err != nil {
+		t.Fatalf("CreateBranch returned error: %v", err)
+	}
+	if err := core.Checkout(repo, "forge/1234abcd"); err != nil {
+		t.Fatalf("Checkout returned error: %v", err)
+	}
+
+	renamed, err := core.RenameBranch(repo, "forge/1234abcd", "forge/reconnect-backoff")
+	if err != nil {
+		t.Fatalf("RenameBranch returned error: %v", err)
+	}
+	if renamed != "forge/reconnect-backoff-1" {
+		t.Fatalf("RenameBranch() = %q, want forge/reconnect-backoff-1", renamed)
+	}
+}
+
 func TestCreateBranchRequiresName(t *testing.T) {
 	repo := testutil.InitGitRepo(t)
 	core := NewCore()

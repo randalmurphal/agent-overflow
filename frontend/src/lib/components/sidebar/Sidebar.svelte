@@ -49,12 +49,11 @@
       const effectiveModel = model.trim() || defaultModel;
       let thread = await CreateThread(provider, workspacePath.trim(), effectiveModel) as Thread;
 
-      // Create worktree if in worktree mode
-      if (worktreeMode && worktreeBranch.trim()) {
+      if (worktreeMode) {
         try {
           await GitCreateWorktree(thread.id, worktreeBranch.trim());
           thread = await GetThread(thread.id) as Thread;
-          addToast('info', `Worktree created on branch ${worktreeBranch.trim()}`);
+          addToast('info', `Worktree created on branch ${thread.branch || 'forge/...'}`);
         } catch (err) {
           console.error('Failed to create worktree:', err);
           pane.setError(`Failed to create worktree: ${err}`);
@@ -131,13 +130,16 @@
           />
         </div>
         {#if worktreeMode}
-          <input
-            type="text"
-            bind:value={worktreeBranch}
-            placeholder="Branch name for worktree"
-            aria-label="Branch name for worktree"
-            class="w-full text-xs rounded-xl border border-border bg-surface-0 px-3 py-2 text-text-primary placeholder:text-text-secondary/50 shadow-sm focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/50 transition-colors"
-          />
+          <div class="space-y-1">
+            <input
+              type="text"
+              bind:value={worktreeBranch}
+              placeholder="Branch name for worktree (optional)"
+              aria-label="Branch name for worktree"
+              class="w-full text-xs rounded-xl border border-border bg-surface-0 px-3 py-2 text-text-primary placeholder:text-text-secondary/50 shadow-sm focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/50 transition-colors"
+            />
+            <p class="px-1 text-[11px] text-text-secondary/70">Leave blank to start on a temporary branch and rename it from your first message.</p>
+          </div>
         {/if}
         <div class="flex gap-2">
           <button
