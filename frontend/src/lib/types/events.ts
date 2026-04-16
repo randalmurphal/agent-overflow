@@ -34,14 +34,14 @@ export interface ProviderEvent {
   timestamp: string;
 }
 
-export type ApprovalKind = 'command' | 'file-read' | 'file-change' | 'user-input' | 'permission';
+type ApprovalKind = 'command' | 'file-read' | 'file-change' | 'user-input' | 'permission';
 
-export interface UserInputQuestionOption {
+interface UserInputQuestionOption {
   label: string;
   description: string;
 }
 
-export interface UserInputQuestion {
+interface UserInputQuestion {
   id: string;
   header: string;
   question: string;
@@ -49,16 +49,16 @@ export interface UserInputQuestion {
   multiSelect?: boolean;
 }
 
-export interface NetworkPermissions {
+interface NetworkPermissions {
   enabled?: boolean;
 }
 
-export interface FileSystemPermissions {
+interface FileSystemPermissions {
   read?: string[];
   write?: string[];
 }
 
-export interface PermissionProfile {
+interface PermissionProfile {
   network?: NetworkPermissions;
   fileSystem?: FileSystemPermissions;
 }

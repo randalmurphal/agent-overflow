@@ -9,6 +9,7 @@
   import StreamingMessage from './StreamingMessage.svelte';
   import ThinkingBlock from './ThinkingBlock.svelte';
   import ChangedFilesTree from './ChangedFilesTree.svelte';
+  import { getSettings } from '../../stores/settings.svelte';
 
   let { pane }: { pane: ThreadPane } = $props();
 
@@ -169,7 +170,15 @@
     {/if}
 
     {#if pane.streamingContent}
-      <StreamingMessage content={pane.streamingContent} />
+      {#if getSettings().streamingEnabled}
+        <StreamingMessage content={pane.streamingContent} />
+      {:else}
+        <div class="flex justify-start mb-3">
+          <div class="max-w-[85%] rounded-lg px-4 py-2.5 bg-surface-1 text-text-secondary text-sm">
+            <span class="animate-pulse">Thinking...</span>
+          </div>
+        </div>
+      {/if}
     {/if}
 
     {#if pane.items.length === 0 && !pane.streamingContent && activeToolEntries.length === 0 && !pane.pendingMessage}

@@ -5,6 +5,7 @@
   import { addToast } from '../../stores/toast.svelte';
   import ConfirmDialog from '../shared/ConfirmDialog.svelte';
   import { relativeTime } from '../../utils/format';
+  import { getSettings } from '../../stores/settings.svelte';
 
   let archived = $state<Thread[]>([]);
   let loading = $state(true);
@@ -68,7 +69,7 @@
         </span>
         <div class="flex-1 min-w-0">
           <p class="text-sm text-text-primary truncate">{thread.title || 'Untitled'}</p>
-          <p class="text-xs text-text-secondary/60">{relativeTime(thread.updatedAt)}</p>
+          <p class="text-xs text-text-secondary/60">{relativeTime(thread.updatedAt, getSettings().timestampFormat)}</p>
         </div>
         <button
           onclick={() => handleUnarchive(thread)}

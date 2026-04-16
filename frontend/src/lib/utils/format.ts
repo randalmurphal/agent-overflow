@@ -1,7 +1,25 @@
 /**
- * Format a Unix timestamp (milliseconds) as a relative time string.
+ * Format a Unix timestamp (milliseconds) as a time string.
+ * When format is 'locale' (default), uses relative time ("5m ago").
+ * When format is '12-hour' or '24-hour', uses absolute time.
  */
-export function relativeTime(timestampMs: number): string {
+export function relativeTime(
+  timestampMs: number,
+  format: 'locale' | '12-hour' | '24-hour' = 'locale',
+): string {
+  if (format === '12-hour') {
+    return new Date(timestampMs).toLocaleString(undefined, {
+      hour: 'numeric', minute: '2-digit', hour12: true,
+      month: 'short', day: 'numeric',
+    });
+  }
+  if (format === '24-hour') {
+    return new Date(timestampMs).toLocaleString(undefined, {
+      hour: '2-digit', minute: '2-digit', hour12: false,
+      month: 'short', day: 'numeric',
+    });
+  }
+
   const now = Date.now();
   const diffMs = now - timestampMs;
 

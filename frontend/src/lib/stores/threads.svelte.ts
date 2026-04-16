@@ -1,5 +1,5 @@
 import type { Thread } from '../types/models';
-import { ListThreads } from '../../../bindings/agent-overflow/app.js';
+import { ListThreads } from './bindings';
 import { addToast } from './toast.svelte';
 
 let threads: Thread[] = $state([]);

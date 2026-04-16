@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { Thread } from '../../types/models';
   import type { ThreadPane } from '../../stores/thread.svelte';
-  import { ArchiveThread, DeleteThread, RenameThread } from '../../stores/bindings';
+  import { ArchiveThread, DeleteThread, RenameThread, StopSession } from '../../stores/bindings';
   import { removeThread, updateThreadTitle } from '../../stores/threads.svelte';
   import { relativeTime } from '../../utils/format';
   import { getSettings } from '../../stores/settings.svelte';
@@ -73,6 +73,8 @@
 
   async function doArchive() {
     try {
+      // Stop the session before archiving so the provider process is cleaned up.
+      await StopSession(thread.id).catch(() => {});
       await ArchiveThread(thread.id);
       removeThread(thread.id);
       if (isActive) {
@@ -95,6 +97,8 @@
 
   async function doDelete() {
     try {
+      // Stop the session before deleting so the provider process is cleaned up.
+      await StopSession(thread.id).catch(() => {});
       await DeleteThread(thread.id);
       removeThread(thread.id);
       if (isActive) {
@@ -172,7 +176,7 @@
     {/if}
   </div>
   <div class="text-xs text-text-secondary/60 mt-0.5 ml-6">
-    {relativeTime(thread.updatedAt)}
+    {relativeTime(thread.updatedAt, getSettings().timestampFormat)}
   </div>
 </div>
 

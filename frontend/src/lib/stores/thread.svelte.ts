@@ -1,6 +1,6 @@
 import type { Item, PayloadMeta, Thread } from '../types/models';
 import type { ApprovalRequest, ContextWindow, RateLimitEntry, TokenUsage } from '../types/events';
-import { ListItems, ListPayloadMetas } from '../../../bindings/agent-overflow/app.js';
+import { ListItems, ListPayloadMetas, SwitchThread } from './bindings';
 import { addToast } from './toast.svelte';
 
 /**
@@ -68,6 +68,13 @@ export function createThreadPane() {
       thread = newThread;
       // Bump generation so any in-flight finalizeTurn from prior thread is discarded.
       turnGeneration++;
+
+      // Notify the backend so it can auto-start sessions for threads with session_ref.
+      try {
+        await SwitchThread(newThread.id);
+      } catch (err) {
+        console.error('Failed to notify backend of thread switch:', err);
+      }
 
       try {
         items = await ListItems(newThread.id) as Item[];
