@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { ArchiveThread, DeleteThread, RenameThread, StopSession } from '../../stores/bindings';
+  import { ArchiveThread, DeleteThread, GitRemoveWorktree, RenameThread, StopSession } from '../../stores/bindings';
   import { getSettings } from '../../stores/settings.svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { removeThread, updateThreadTitle } from '../../stores/threads.svelte';
@@ -105,6 +105,9 @@
       await StopSession(thread.id).catch((err) => {
         console.error('Failed to stop session before delete:', err);
       });
+      if (thread.worktreePath) {
+        await GitRemoveWorktree(thread.id);
+      }
       await DeleteThread(thread.id);
       removeThread(thread.id);
       if (isActive) {
