@@ -1,5 +1,5 @@
 import { Events } from '@wailsio/runtime';
-import type { ProviderEvent, ApprovalRequest, ContextWindow, RateLimitEntry, TokenUsage } from '../types/events';
+import type { ProviderEvent, ApprovalRequest, ContextWindow, RateLimitEntry, TokenUsage, ToolProgressMeta } from '../types/events';
 import type { PayloadMeta } from '../types/models';
 import type { ThreadPane } from './thread.svelte';
 import { getAllPanes } from './panes.svelte';
@@ -49,6 +49,8 @@ function routeEventToPane(pane: ThreadPane, evt: ProviderEvent): void {
               decision: 'allow',
             })).catch((err) => {
               console.error('Failed to auto-resolve approval:', err);
+              addToast('error', `Auto-approval failed for ${approval.toolName}`);
+              pane.addApproval(approval);
             });
           }
         } else {
@@ -112,7 +114,7 @@ function routeEventToPane(pane: ThreadPane, evt: ProviderEvent): void {
 
     case 'tool_progress':
       if (evt.itemId && evt.meta) {
-        pane.addToolCall(evt.itemId, evt.meta);
+        pane.addToolCall(evt.itemId, evt.meta as ToolProgressMeta);
       }
       break;
 
@@ -175,6 +177,7 @@ export function setupEventListeners(): () => void {
   const cancelError = Events.On('provider:error', (ev) => {
     const evt = ev.data as ProviderEvent;
     console.error('Provider error event:', evt.content);
+    addToast('error', evt.content ?? 'Provider error');
     for (const pane of getAllPanes().values()) {
       if (pane.threadId === evt.threadId) {
         pane.setError(evt.content ?? 'Unknown provider error');

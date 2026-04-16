@@ -4,14 +4,11 @@ export {
   CreateThread,
   ArchiveThread,
   DeleteThread,
-  GetThread,
   ListThreads,
-  SwitchThread,
   RenameThread,
 
   // Session management
   StartSession,
-  StopSession,
   ReconnectSession,
   SendMessage,
   InterruptTurn,
@@ -32,17 +29,13 @@ export {
 
   // Git operations
   GetGitStatus,
-  GetWorkingTreeDiff,
   GitListBranches,
   GitCommit,
   GitPush,
   GitPull,
   GitCheckout,
   GitCreateBranch,
-  GitCreatePR,
   GitCreateWorktree,
-  GitRemoveWorktree,
-  GitListWorktrees,
 } from '../../../bindings/agent-overflow/app.js';
 
 // Model classes needed for constructing RPC parameters.

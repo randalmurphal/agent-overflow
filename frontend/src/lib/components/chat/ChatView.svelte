@@ -11,6 +11,7 @@
   import GitActionsControl from '../git/GitActionsControl.svelte';
   import ContextWindowMeter from './ContextWindowMeter.svelte';
   import RateLimitsMeter from './RateLimitsMeter.svelte';
+  import ModelPicker from '../composer/ModelPicker.svelte';
 
   let { pane }: { pane: ThreadPane } = $props();
 </script>
@@ -22,6 +23,7 @@
         {pane.thread.provider === 'claude' ? 'C' : 'X'}
       </span>
       <h2 class="text-sm font-medium text-text-primary truncate">{pane.thread.title}</h2>
+      <ModelPicker {pane} />
       <BranchToolbar {pane} />
       <GitActionsControl {pane} />
       {#if pane.contextWindow}

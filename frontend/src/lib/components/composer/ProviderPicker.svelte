@@ -46,7 +46,7 @@
     <button
       onclick={() => { if (!isDisabled(provider)) onSelect(provider); }}
       disabled={isDisabled(provider)}
-      class="flex items-center gap-1.5 text-xs py-1.5 px-3 rounded cursor-pointer
+      class="flex-1 flex items-center justify-center gap-1.5 text-xs py-1.5 rounded cursor-pointer
         {currentProvider === provider
           ? 'bg-accent text-surface-0 font-medium'
           : 'bg-surface-2 text-text-secondary hover:text-text-primary'}

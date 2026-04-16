@@ -2,6 +2,7 @@
   import type { DiffMeta } from '../../types/models';
   import { GetPayloadData } from '../../stores/bindings';
   import { parseDiffLines, type DiffLine } from '../../utils/diff';
+  import { getSettings } from '../../stores/settings.svelte';
 
   let { meta, payloadId }: { meta: DiffMeta; payloadId: string } = $props();
 
@@ -35,6 +36,8 @@
   }
 
   let displayLines = $derived(expanded && fullLines ? fullLines : previewLines);
+
+  let wrapClass = $derived(getSettings().diffWordWrap ? 'whitespace-pre-wrap break-all' : 'whitespace-pre');
 
   let badgeClasses = $derived.by(() => {
     switch (meta.changeKind) {
@@ -74,7 +77,7 @@
         <p class="text-xs text-red-400">Failed to load diff: {loadError}</p>
       {/if}
 
-      <pre class="font-mono text-xs leading-tight">{#each displayLines as line}<span
+      <pre class="font-mono text-xs leading-tight {wrapClass}">{#each displayLines as line}<span
           class={line.type === 'added'
             ? 'bg-green-900/30 text-green-300'
             : line.type === 'removed'

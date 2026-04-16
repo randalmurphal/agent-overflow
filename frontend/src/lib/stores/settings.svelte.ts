@@ -1,5 +1,6 @@
 import type { Settings } from '../types/settings';
 import { GetSettings, UpdateSettings } from './bindings';
+import { addToast } from './toast.svelte';
 
 const DEFAULT_SETTINGS: Settings = {
   theme: 'system',
@@ -19,14 +20,9 @@ const DEFAULT_SETTINGS: Settings = {
 };
 
 let settings: Settings = $state({ ...DEFAULT_SETTINGS });
-let loaded = $state(false);
 
 export function getSettings(): Settings {
   return settings;
-}
-
-export function isSettingsLoaded(): boolean {
-  return loaded;
 }
 
 export async function loadSettings(): Promise<void> {
@@ -35,10 +31,9 @@ export async function loadSettings(): Promise<void> {
     if (result) {
       settings = { ...DEFAULT_SETTINGS, ...result } as Settings;
     }
-    loaded = true;
   } catch (err) {
     console.error('Failed to load settings:', err);
-    loaded = true;
+    addToast('error', 'Failed to load settings');
   }
 }
 
@@ -54,5 +49,6 @@ export async function updateSetting<K extends keyof Settings>(
     }
   } catch (err) {
     console.error('Failed to update setting:', err);
+    addToast('error', 'Failed to save setting');
   }
 }

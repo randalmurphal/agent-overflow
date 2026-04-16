@@ -6,12 +6,13 @@
   import { addToast } from '../../stores/toast.svelte';
   import ThreadList from './ThreadList.svelte';
   import WorkspacePicker from './WorkspacePicker.svelte';
+  import ProviderPicker from '../composer/ProviderPicker.svelte';
   import { getSettings } from '../../stores/settings.svelte';
 
   let { pane, onOpenSettings }: { pane: ThreadPane; onOpenSettings?: () => void } = $props();
 
   let showForm = $state(false);
-  let provider = $state<'claude' | 'codex'>('claude');
+  let provider = $state<'claude' | 'codex'>(getSettings().defaultProvider as 'claude' | 'codex');
   let workspacePath = $state('');
   let model = $state('');
   let worktreeMode = $state(false);
@@ -84,24 +85,7 @@
     {#if showForm}
       <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
       <form onsubmit={(e) => { e.preventDefault(); handleCreate(); }} onkeydown={handleFormKeydown} class="space-y-2">
-        <div class="flex gap-1">
-          <button
-            type="button"
-            onclick={() => provider = 'claude'}
-            class="flex-1 text-xs py-1.5 rounded cursor-pointer
-              {provider === 'claude' ? 'bg-accent text-surface-0 font-medium' : 'bg-surface-2 text-text-secondary hover:text-text-primary'}"
-          >
-            Claude
-          </button>
-          <button
-            type="button"
-            onclick={() => provider = 'codex'}
-            class="flex-1 text-xs py-1.5 rounded cursor-pointer
-              {provider === 'codex' ? 'bg-accent text-surface-0 font-medium' : 'bg-surface-2 text-text-secondary hover:text-text-primary'}"
-          >
-            Codex
-          </button>
-        </div>
+        <ProviderPicker currentProvider={provider} onSelect={(p) => provider = p as 'claude' | 'codex'} />
         <WorkspacePicker
           value={workspacePath}
           onSelect={(path) => workspacePath = path}

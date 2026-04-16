@@ -9,7 +9,7 @@ const LANGUAGES: BundledLanguage[] = [
 let highlighter: HighlighterGeneric<BundledLanguage, BundledTheme> | null = null;
 let initPromise: Promise<HighlighterGeneric<BundledLanguage, BundledTheme>> | null = null;
 
-export async function getHighlighter(): Promise<HighlighterGeneric<BundledLanguage, BundledTheme>> {
+async function getHighlighter(): Promise<HighlighterGeneric<BundledLanguage, BundledTheme>> {
   if (highlighter) return highlighter;
   if (initPromise) return initPromise;
 

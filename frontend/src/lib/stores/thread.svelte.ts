@@ -1,6 +1,7 @@
 import type { Item, PayloadMeta, Thread } from '../types/models';
 import type { ApprovalRequest, ContextWindow, RateLimitEntry, TokenUsage } from '../types/events';
 import { ListItems, ListPayloadMetas } from '../../../bindings/agent-overflow/app.js';
+import { addToast } from './toast.svelte';
 
 /**
  * Creates a self-contained thread pane state instance.
@@ -74,6 +75,7 @@ export function createThreadPane() {
         console.error('Failed to load items:', err);
         items = [];
         error = `Failed to load thread items: ${err}`;
+        addToast('error', 'Failed to load thread items');
       }
 
       try {
@@ -126,6 +128,7 @@ export function createThreadPane() {
           }
         }).catch((err) => {
           console.error('Failed to reload items after turn:', err);
+          addToast('warning', 'Failed to refresh messages');
         });
       }
     },
@@ -181,10 +184,6 @@ export function createThreadPane() {
 
     clearError(): void {
       error = null;
-    },
-
-    setLoading(value: boolean): void {
-      loading = value;
     },
 
     setPendingMessage(text: string | null): void {

@@ -1,5 +1,6 @@
 import type { Thread } from '../types/models';
 import { ListThreads } from '../../../bindings/agent-overflow/app.js';
+import { addToast } from './toast.svelte';
 
 let threads: Thread[] = $state([]);
 
@@ -12,6 +13,7 @@ export async function refreshThreads(): Promise<void> {
     threads = await ListThreads() as Thread[];
   } catch (err) {
     console.error('Failed to load threads:', err);
+    addToast('error', 'Failed to load threads');
   }
 }
 

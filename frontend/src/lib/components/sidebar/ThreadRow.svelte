@@ -4,6 +4,7 @@
   import { ArchiveThread, DeleteThread, RenameThread } from '../../stores/bindings';
   import { removeThread, updateThreadTitle } from '../../stores/threads.svelte';
   import { relativeTime } from '../../utils/format';
+  import { getSettings } from '../../stores/settings.svelte';
   import ConfirmDialog from '../shared/ConfirmDialog.svelte';
 
   let { thread, pane }: { thread: Thread; pane: ThreadPane } = $props();
@@ -85,9 +86,11 @@
 
   function handleArchive(e: MouseEvent) {
     e.stopPropagation();
-    // Archive confirmation is handled by settings (WI-4.3).
-    // For now, archive immediately. Settings integration added when settings store exists.
-    doArchive();
+    if (getSettings().confirmArchive) {
+      showArchiveConfirm = true;
+    } else {
+      doArchive();
+    }
   }
 
   async function doDelete() {
@@ -105,8 +108,11 @@
 
   function handleDelete(e: MouseEvent) {
     e.stopPropagation();
-    // Show confirmation by default. Settings integration adjusts this later.
-    showDeleteConfirm = true;
+    if (getSettings().confirmDelete) {
+      showDeleteConfirm = true;
+    } else {
+      doDelete();
+    }
   }
 </script>
 
@@ -178,4 +184,13 @@
   destructive={true}
   onConfirm={() => { showDeleteConfirm = false; doDelete(); }}
   onCancel={() => { showDeleteConfirm = false; }}
+/>
+
+<ConfirmDialog
+  open={showArchiveConfirm}
+  title="Archive thread"
+  description="This thread will be moved to the archive. You can restore it later from Settings."
+  confirmLabel="Archive"
+  onConfirm={() => { showArchiveConfirm = false; doArchive(); }}
+  onCancel={() => { showArchiveConfirm = false; }}
 />
