@@ -7,6 +7,7 @@
   import CommandOutput from './CommandOutput.svelte';
   import WorkEntry, { type WorkEntryData } from './WorkEntry.svelte';
   import StreamingMessage from './StreamingMessage.svelte';
+  import ThinkingBlock from './ThinkingBlock.svelte';
 
   let { pane }: { pane: ThreadPane } = $props();
 
@@ -89,9 +90,7 @@
           <AssistantMessage {item} />
         {/if}
       {:else if item.kind === 'thinking'}
-        <div class="mb-2 px-3 py-2 bg-surface-1 rounded border border-border text-xs text-text-secondary italic">
-          Thinking: {item.summary}
-        </div>
+        <ThinkingBlock {item} />
       {:else}
         <AssistantMessage {item} />
       {/if}
