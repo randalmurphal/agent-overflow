@@ -339,6 +339,23 @@ func extractResultUsage(raw map[string]json.RawMessage) provider.TokenUsage {
 	return usage
 }
 
+// parseStreamEvent handles the `stream_event` envelope produced by the
+// Claude CLI when `--include-partial-messages` is enabled. The envelope
+// carries lower-level Anthropic API events (content_block_delta,
+// content_block_start, content_block_stop, message_start, etc.) and an
+// optional top-level `parent_tool_use_id` that identifies the Task-tool
+// subagent that produced the delta.
+//
+// We map only the two delta kinds that have a user-visible analogue:
+//   - text_delta      → EventTextDelta
+//   - thinking_delta  → EventThinking
+//
+// input_json_delta carries incremental tool_use input JSON; the
+// assistant-message path already emits a single EventToolStart per
+// tool_use block with the final input, so we swallow these partial
+// fragments to avoid double-firing. Other event shapes
+// (content_block_start/stop, message_start/delta/stop) are lifecycle
+// markers and do not produce events at this layer.
 func parseStreamEvent(threadID string, raw map[string]json.RawMessage, now time.Time) ([]provider.ProviderEvent, error) {
 	dataRaw, ok := raw["data"]
 	if !ok {
@@ -352,27 +369,52 @@ func parseStreamEvent(threadID string, raw map[string]json.RawMessage, now time.
 
 	deltaRaw, ok := dataObj["delta"]
 	if !ok {
+		// No delta payload — lifecycle marker, swallow.
 		return nil, nil
 	}
 
 	var delta struct {
-		Text string `json:"text"`
+		Type     string `json:"type"`
+		Text     string `json:"text,omitempty"`
+		Thinking string `json:"thinking,omitempty"`
 	}
 	if json.Unmarshal(deltaRaw, &delta) != nil {
 		return nil, nil
 	}
 
-	if delta.Text != "" {
-		return []provider.ProviderEvent{{
-			Kind:      provider.EventTextDelta,
-			ThreadID:  threadID,
-			Content:   delta.Text,
-			Role:      "assistant",
-			Timestamp: now,
-		}}, nil
+	var parentToolUseID string
+	if v, ok := raw["parent_tool_use_id"]; ok {
+		_ = json.Unmarshal(v, &parentToolUseID)
 	}
 
-	return nil, nil
+	switch delta.Type {
+	case "text_delta":
+		if delta.Text == "" {
+			return nil, nil
+		}
+		return []provider.ProviderEvent{{
+			Kind:            provider.EventTextDelta,
+			ThreadID:        threadID,
+			Content:         delta.Text,
+			Role:            "assistant",
+			ParentToolUseID: parentToolUseID,
+			Timestamp:       now,
+		}}, nil
+	case "thinking_delta":
+		if delta.Thinking == "" {
+			return nil, nil
+		}
+		return []provider.ProviderEvent{{
+			Kind:            provider.EventThinking,
+			ThreadID:        threadID,
+			Content:         delta.Thinking,
+			ParentToolUseID: parentToolUseID,
+			Timestamp:       now,
+		}}, nil
+	default:
+		// input_json_delta and other partial shapes: no event.
+		return nil, nil
+	}
 }
 
 // parseControlRequest handles the wire format:
