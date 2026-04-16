@@ -15,7 +15,12 @@ export type EventKind =
   | 'background_complete'
   | 'diff'
   | 'command_output'
-  | 'thinking';
+  | 'thinking'
+  | 'tool_progress'
+  | 'compact_boundary'
+  | 'rate_limits'
+  | 'model_rerouted'
+  | 'thread_renamed';
 
 export interface ProviderEvent {
   kind: EventKind;
@@ -45,4 +50,25 @@ export interface TokenUsage {
   cacheReadInputTokens?: number;
   cacheCreationInputTokens?: number;
   totalCostUsd?: number;
+}
+
+export interface ContextWindow {
+  usedTokens: number;
+  maxTokens: number;
+  usedPercentage: number;
+  totalProcessed: number;
+}
+
+export interface RateLimitEntry {
+  name: string;
+  window: string;
+  used: number;
+  limit: number;
+  percentage: number;
+}
+
+export interface ToolProgressMeta {
+  current: number;
+  total: number;
+  message: string;
 }
