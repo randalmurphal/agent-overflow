@@ -6,6 +6,7 @@
   import Composer from '../composer/Composer.svelte';
   import ComposerControls from '../composer/ComposerControls.svelte';
   import StatusBar from '../shared/StatusBar.svelte';
+  import ProviderStatusBanner from './ProviderStatusBanner.svelte';
 
   let { pane }: { pane: ThreadPane } = $props();
 </script>
@@ -20,17 +21,7 @@
       <span class="ml-auto text-xs text-text-secondary truncate max-w-[200px]">{pane.thread.workspacePath}</span>
     </div>
 
-    {#if pane.error}
-      <div class="bg-red-900/30 border-b border-red-800/40 px-4 py-2 flex items-center gap-2 shrink-0">
-        <p class="text-xs text-red-300 flex-1 truncate">{pane.error}</p>
-        <button
-          onclick={() => pane.clearError()}
-          class="text-xs text-red-400 hover:text-red-200 shrink-0 cursor-pointer px-1"
-        >
-          Dismiss
-        </button>
-      </div>
-    {/if}
+    <ProviderStatusBanner {pane} />
 
     <MessageTimeline {pane} />
     <ApprovalPrompt {pane} />
