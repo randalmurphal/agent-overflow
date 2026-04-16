@@ -6,6 +6,7 @@
   import DiffPreview from './DiffPreview.svelte';
   import CommandOutput from './CommandOutput.svelte';
   import WorkEntry, { type WorkEntryData } from './WorkEntry.svelte';
+  import StreamingMessage from './StreamingMessage.svelte';
 
   let { pane }: { pane: ThreadPane } = $props();
 
@@ -113,12 +114,7 @@
     {/if}
 
     {#if pane.streamingContent}
-      <div class="flex justify-start mb-3">
-        <div class="max-w-[85%] rounded-lg px-4 py-2.5 bg-surface-2 text-text-primary">
-          <p class="whitespace-pre-wrap text-sm leading-relaxed">{pane.streamingContent}</p>
-          <span class="inline-block w-1.5 h-4 bg-accent animate-pulse ml-0.5 align-text-bottom"></span>
-        </div>
-      </div>
+      <StreamingMessage content={pane.streamingContent} />
     {/if}
 
     {#if pane.items.length === 0 && !pane.streamingContent && activeToolEntries.length === 0 && !pane.pendingMessage}
