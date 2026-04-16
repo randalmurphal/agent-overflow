@@ -3,6 +3,7 @@
   import { getMainPane } from './lib/stores/panes.svelte';
   import { setupEventListeners } from './lib/stores/events';
   import { refreshThreads } from './lib/stores/threads.svelte';
+  import { loadSettings } from './lib/stores/settings.svelte';
   import Sidebar from './lib/components/sidebar/Sidebar.svelte';
   import ChatView from './lib/components/chat/ChatView.svelte';
   import Toast from './lib/components/shared/Toast.svelte';
@@ -12,6 +13,7 @@
   onMount(() => {
     const cleanupEvents = setupEventListeners();
     refreshThreads();
+    loadSettings();
 
     return () => {
       cleanupEvents();
