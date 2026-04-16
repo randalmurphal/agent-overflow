@@ -77,6 +77,31 @@ func TestCalculateCost_WithCacheReadTokens(t *testing.T) {
 	}
 }
 
+func TestCalculateCost_WithCacheCreationTokens(t *testing.T) {
+	usage := TokenUsage{
+		InputTokens:              500_000,
+		OutputTokens:             200_000,
+		CacheCreationInputTokens: 1_000_000,
+	}
+	// claude-sonnet: $3.00/M input, $15.00/M output, $3.75/M cache creation
+	// 0.5M * $3.00 = $1.50; 0.2M * $15.00 = $3.00; 1M * $3.75 = $3.75
+	want := 8.25
+	got := CalculateCost("claude-sonnet-4-6", usage)
+	if !almostEqual(got, want, 0.001) {
+		t.Errorf("CalculateCost(claude-sonnet-4-6 with cache creation) = %f, want %f", got, want)
+	}
+}
+
+func TestCalculateCost_CacheCreationIgnoredForModelsWithoutPricing(t *testing.T) {
+	usage := TokenUsage{
+		CacheCreationInputTokens: 1_000_000,
+	}
+	got := CalculateCost("gpt-5.4", usage)
+	if got != 0 {
+		t.Errorf("CalculateCost(gpt-5.4 cache creation only) = %f, want 0", got)
+	}
+}
+
 func TestCalculateCost_ZeroTokens(t *testing.T) {
 	usage := TokenUsage{}
 	got := CalculateCost("claude-sonnet-4-6", usage)

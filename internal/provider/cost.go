@@ -4,22 +4,58 @@ import "strings"
 
 // ModelPricing holds per-million-token pricing for a model family.
 type ModelPricing struct {
-	InputPerMToken     float64
-	OutputPerMToken    float64
-	CacheReadPerMToken float64
+	InputPerMToken         float64
+	OutputPerMToken        float64
+	CacheCreationPerMToken float64
+	CacheReadPerMToken     float64
 }
 
 // KnownPricing maps model slug prefixes to pricing.
 // Uses family-level matching: "claude-opus" matches any claude-opus-* slug.
 var KnownPricing = map[string]ModelPricing{
-	"claude-opus":   {InputPerMToken: 5.00, OutputPerMToken: 25.00, CacheReadPerMToken: 0.50},
-	"claude-sonnet": {InputPerMToken: 3.00, OutputPerMToken: 15.00, CacheReadPerMToken: 0.30},
-	"claude-haiku":  {InputPerMToken: 1.00, OutputPerMToken: 5.00, CacheReadPerMToken: 0.10},
-	"gpt-5":         {InputPerMToken: 1.75, OutputPerMToken: 14.00, CacheReadPerMToken: 0.175},
-	"gpt-5.4":       {InputPerMToken: 1.75, OutputPerMToken: 14.00, CacheReadPerMToken: 0.175},
-	"gpt-5.4-mini":  {InputPerMToken: 0.25, OutputPerMToken: 2.00, CacheReadPerMToken: 0.025},
-	"o3":            {InputPerMToken: 1.75, OutputPerMToken: 14.00, CacheReadPerMToken: 0.175},
-	"o4-mini":       {InputPerMToken: 0.25, OutputPerMToken: 2.00, CacheReadPerMToken: 0.025},
+	"claude-opus": {
+		InputPerMToken:         5.00,
+		OutputPerMToken:        25.00,
+		CacheCreationPerMToken: 6.25,
+		CacheReadPerMToken:     0.50,
+	},
+	"claude-sonnet": {
+		InputPerMToken:         3.00,
+		OutputPerMToken:        15.00,
+		CacheCreationPerMToken: 3.75,
+		CacheReadPerMToken:     0.30,
+	},
+	"claude-haiku": {
+		InputPerMToken:         1.00,
+		OutputPerMToken:        5.00,
+		CacheCreationPerMToken: 1.25,
+		CacheReadPerMToken:     0.10,
+	},
+	"gpt-5": {
+		InputPerMToken:     1.75,
+		OutputPerMToken:    14.00,
+		CacheReadPerMToken: 0.175,
+	},
+	"gpt-5.4": {
+		InputPerMToken:     1.75,
+		OutputPerMToken:    14.00,
+		CacheReadPerMToken: 0.175,
+	},
+	"gpt-5.4-mini": {
+		InputPerMToken:     0.25,
+		OutputPerMToken:    2.00,
+		CacheReadPerMToken: 0.025,
+	},
+	"o3": {
+		InputPerMToken:     1.75,
+		OutputPerMToken:    14.00,
+		CacheReadPerMToken: 0.175,
+	},
+	"o4-mini": {
+		InputPerMToken:     0.25,
+		OutputPerMToken:    2.00,
+		CacheReadPerMToken: 0.025,
+	},
 }
 
 // CalculateCost computes the USD cost for a model's token usage.
@@ -33,9 +69,10 @@ func CalculateCost(model string, usage TokenUsage) float64 {
 	const million = 1_000_000.0
 	inputCost := float64(usage.InputTokens) / million * pricing.InputPerMToken
 	outputCost := float64(usage.OutputTokens) / million * pricing.OutputPerMToken
+	cacheCreationCost := float64(usage.CacheCreationInputTokens) / million * pricing.CacheCreationPerMToken
 	cacheReadCost := float64(usage.CacheReadInputTokens) / million * pricing.CacheReadPerMToken
 
-	return inputCost + outputCost + cacheReadCost
+	return inputCost + outputCost + cacheCreationCost + cacheReadCost
 }
 
 // matchPricing finds pricing for a model slug by trying exact match first,
