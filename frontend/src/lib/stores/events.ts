@@ -134,6 +134,7 @@ function routeEventToPane(pane: ThreadPane, evt: ProviderEvent): void {
     case 'model_rerouted':
       if (evt.meta) {
         const data = evt.meta as { newModel: string };
+        pane.updateModel(data.newModel);
         updateThreadModel(evt.threadId, data.newModel);
         addToast('info', `Model rerouted to ${data.newModel}`);
       }
@@ -142,6 +143,7 @@ function routeEventToPane(pane: ThreadPane, evt: ProviderEvent): void {
     case 'thread_renamed':
       if (evt.meta) {
         const data = evt.meta as { newTitle: string };
+        pane.updateTitle(data.newTitle);
         updateThreadTitle(evt.threadId, data.newTitle);
       }
       break;

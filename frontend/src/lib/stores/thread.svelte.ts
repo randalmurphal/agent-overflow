@@ -219,6 +219,18 @@ export function createThreadPane() {
     isToolSessionApproved(toolName: string): boolean {
       return sessionApprovedTools.has(toolName);
     },
+
+    updateTitle(title: string): void {
+      if (thread) {
+        thread = { ...thread, title };
+      }
+    },
+
+    updateModel(model: string): void {
+      if (thread) {
+        thread = { ...thread, model };
+      }
+    },
   };
 }
 
