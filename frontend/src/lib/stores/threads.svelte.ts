@@ -28,3 +28,7 @@ export function removeThread(id: string): void {
 export function updateThreadTitle(id: string, title: string): void {
   threads = threads.map((t) => t.id === id ? { ...t, title } : t);
 }
+
+export function updateThreadModel(id: string, model: string): void {
+  threads = threads.map((t) => t.id === id ? { ...t, model } : t);
+}

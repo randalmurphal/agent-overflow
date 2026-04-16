@@ -2,8 +2,31 @@
   import type { ThreadPane } from '../../stores/thread.svelte';
   import type { ApprovalRequest } from '../../types/events';
   import { RespondToApproval, ApprovalResponse } from '../../stores/bindings';
+  import { PermissionProfile } from '../../../../bindings/agent-overflow/internal/provider/models.js';
 
   let { pane }: { pane: ThreadPane } = $props();
+
+  // Per-approval answer state for user-input kind
+  let answers: Map<string, Record<string, string>> = $state(new Map());
+  // Per-approval permission scope for permission kind
+  let permissionScopes: Map<string, 'turn' | 'session'> = $state(new Map());
+
+  function getPermissionScope(requestId: string): 'turn' | 'session' {
+    return permissionScopes.get(requestId) ?? 'turn';
+  }
+
+  function setPermissionScope(requestId: string, scope: 'turn' | 'session') {
+    permissionScopes = new Map(permissionScopes).set(requestId, scope);
+  }
+
+  function getAnswer(requestId: string, questionId: string): string {
+    return answers.get(requestId)?.[questionId] ?? '';
+  }
+
+  function setAnswer(requestId: string, questionId: string, value: string) {
+    const current = answers.get(requestId) ?? {};
+    answers = new Map(answers).set(requestId, { ...current, [questionId]: value });
+  }
 
   async function handleApproval(requestId: string, decision: 'allow' | 'deny') {
     const threadId = pane.threadId;
@@ -14,6 +37,44 @@
     } catch (err) {
       console.error('Failed to respond to approval:', err);
       pane.setError(`Failed to respond to approval: ${err}`);
+    }
+  }
+
+  async function handleUserInputSubmit(approval: ApprovalRequest) {
+    const threadId = pane.threadId;
+    if (!threadId) return;
+
+    const collected = answers.get(approval.requestId) ?? {};
+    try {
+      await RespondToApproval(threadId, new ApprovalResponse({
+        requestId: approval.requestId,
+        decision: 'allow',
+        answers: collected,
+      }));
+    } catch (err) {
+      console.error('Failed to submit user input:', err);
+      pane.setError(`Failed to submit input: ${err}`);
+    }
+  }
+
+  async function handlePermissionGrant(approval: ApprovalRequest) {
+    const threadId = pane.threadId;
+    if (!threadId) return;
+
+    const scope = getPermissionScope(approval.requestId);
+    try {
+      // Cast needed: our local PermissionProfile interface uses optional fields,
+      // while the Wails binding class uses required-but-nullable fields.
+      const perms = new PermissionProfile(approval.permissions as Partial<InstanceType<typeof PermissionProfile>> ?? {});
+      await RespondToApproval(threadId, new ApprovalResponse({
+        requestId: approval.requestId,
+        decision: 'allow',
+        permissions: perms,
+        scope,
+      }));
+    } catch (err) {
+      console.error('Failed to grant permission:', err);
+      pane.setError(`Failed to grant permission: ${err}`);
     }
   }
 
@@ -53,7 +114,6 @@
 {#if pane.pendingApprovals.length > 0}
   <div class="border-t border-border bg-surface-1 px-4 py-3 space-y-2">
     {#each pane.pendingApprovals as approval (approval.requestId)}
-      {@const preview = getInputPreview(approval)}
       <div class="rounded border border-accent/40 bg-surface-0 px-3 py-2.5">
         <div class="flex items-start justify-between gap-3">
           <div class="min-w-0 flex-1">
@@ -62,33 +122,140 @@
           </div>
         </div>
 
-        {#if preview}
-          <div class="mt-2 rounded bg-surface-1 border border-border px-2.5 py-1.5 overflow-x-auto">
-            <span class="text-[10px] text-text-secondary/60 block mb-0.5">{preview.label}</span>
-            <pre class="text-xs font-mono text-text-primary whitespace-pre-wrap">{preview.content}</pre>
+        {#if approval.kind === 'user-input' && approval.questions?.length}
+          <!-- User-input kind: render questions -->
+          <div class="mt-2 space-y-2">
+            {#each approval.questions as question (question.id)}
+              <div>
+                {#if question.header}
+                  <p class="text-xs font-medium text-text-primary">{question.header}</p>
+                {/if}
+                <label class="text-xs text-text-secondary block mt-0.5" for="q-{approval.requestId}-{question.id}">{question.question}</label>
+                {#if question.options?.length}
+                  <select
+                    id="q-{approval.requestId}-{question.id}"
+                    class="mt-1 w-full text-xs rounded border border-border bg-surface-1 px-2 py-1.5 text-text-primary"
+                    value={getAnswer(approval.requestId, question.id)}
+                    onchange={(e) => setAnswer(approval.requestId, question.id, (e.target as HTMLSelectElement).value)}
+                  >
+                    <option value="">Select...</option>
+                    {#each question.options as opt}
+                      <option value={opt.label}>{opt.label}{opt.description ? ` — ${opt.description}` : ''}</option>
+                    {/each}
+                  </select>
+                {:else}
+                  <input
+                    id="q-{approval.requestId}-{question.id}"
+                    type="text"
+                    class="mt-1 w-full text-xs rounded border border-border bg-surface-1 px-2 py-1.5 text-text-primary"
+                    value={getAnswer(approval.requestId, question.id)}
+                    oninput={(e) => setAnswer(approval.requestId, question.id, (e.target as HTMLInputElement).value)}
+                    placeholder="Enter response..."
+                  />
+                {/if}
+              </div>
+            {/each}
+          </div>
+          <div class="flex gap-2 mt-2.5 justify-end">
+            <button
+              onclick={() => handleUserInputSubmit(approval)}
+              class="px-3 py-1 text-xs rounded bg-accent text-surface-0 font-medium hover:opacity-90 cursor-pointer"
+            >
+              Submit
+            </button>
+            <button
+              onclick={() => handleApproval(approval.requestId, 'deny')}
+              class="px-3 py-1 text-xs rounded border border-red-700/40 text-red-400 hover:bg-red-900/20 cursor-pointer"
+            >
+              Cancel
+            </button>
+          </div>
+
+        {:else if approval.kind === 'permission' && approval.permissions}
+          <!-- Permission kind: show permission details + scope -->
+          <div class="mt-2 rounded bg-surface-1 border border-border px-2.5 py-1.5">
+            <span class="text-[10px] text-text-secondary/60 block mb-1">Requested Permissions</span>
+            {#if approval.permissions.network}
+              <p class="text-xs text-text-primary">Network: {approval.permissions.network.enabled ? 'Enabled' : 'Disabled'}</p>
+            {/if}
+            {#if approval.permissions.fileSystem}
+              {#if approval.permissions.fileSystem.read?.length}
+                <p class="text-xs text-text-primary">Read: {approval.permissions.fileSystem.read.join(', ')}</p>
+              {/if}
+              {#if approval.permissions.fileSystem.write?.length}
+                <p class="text-xs text-text-primary">Write: {approval.permissions.fileSystem.write.join(', ')}</p>
+              {/if}
+            {/if}
+          </div>
+          <div class="mt-2 flex items-center gap-3">
+            <span class="text-xs text-text-secondary">Scope:</span>
+            <label class="flex items-center gap-1 text-xs text-text-primary cursor-pointer">
+              <input
+                type="radio"
+                name="scope-{approval.requestId}"
+                value="turn"
+                checked={getPermissionScope(approval.requestId) === 'turn'}
+                onchange={() => setPermissionScope(approval.requestId, 'turn')}
+              />
+              This turn only
+            </label>
+            <label class="flex items-center gap-1 text-xs text-text-primary cursor-pointer">
+              <input
+                type="radio"
+                name="scope-{approval.requestId}"
+                value="session"
+                checked={getPermissionScope(approval.requestId) === 'session'}
+                onchange={() => setPermissionScope(approval.requestId, 'session')}
+              />
+              This session
+            </label>
+          </div>
+          <div class="flex gap-2 mt-2.5 justify-end">
+            <button
+              onclick={() => handlePermissionGrant(approval)}
+              class="px-3 py-1 text-xs rounded bg-accent text-surface-0 font-medium hover:opacity-90 cursor-pointer"
+            >
+              Grant
+            </button>
+            <button
+              onclick={() => handleApproval(approval.requestId, 'deny')}
+              class="px-3 py-1 text-xs rounded border border-red-700/40 text-red-400 hover:bg-red-900/20 cursor-pointer"
+            >
+              Deny
+            </button>
+          </div>
+
+        {:else}
+          <!-- Default tool approval: allow / allow-for-session / deny -->
+          {@const preview = getInputPreview(approval)}
+          {#if preview}
+            <div class="mt-2 rounded bg-surface-1 border border-border px-2.5 py-1.5 overflow-x-auto">
+              <span class="text-[10px] text-text-secondary/60 block mb-0.5">{preview.label}</span>
+              <pre class="text-xs font-mono text-text-primary whitespace-pre-wrap">{preview.content}</pre>
+            </div>
+          {/if}
+
+          <div class="flex gap-2 mt-2.5 justify-end">
+            <button
+              onclick={() => handleApproval(approval.requestId, 'allow')}
+              class="px-3 py-1 text-xs rounded bg-accent text-surface-0 font-medium hover:opacity-90 cursor-pointer"
+            >
+              Allow
+            </button>
+            <button
+              onclick={() => handleAllowSession(approval)}
+              class="px-3 py-1 text-xs rounded border border-accent/40 text-accent hover:bg-accent/10 cursor-pointer"
+            >
+              Allow for Session
+            </button>
+            <button
+              onclick={() => handleApproval(approval.requestId, 'deny')}
+              class="px-3 py-1 text-xs rounded border border-red-700/40 text-red-400 hover:bg-red-900/20 cursor-pointer"
+            >
+              Deny
+            </button>
           </div>
         {/if}
-
-        <div class="flex gap-2 mt-2.5 justify-end">
-          <button
-            onclick={() => handleApproval(approval.requestId, 'allow')}
-            class="px-3 py-1 text-xs rounded bg-accent text-surface-0 font-medium hover:opacity-90 cursor-pointer"
-          >
-            Allow
-          </button>
-          <button
-            onclick={() => handleAllowSession(approval)}
-            class="px-3 py-1 text-xs rounded border border-accent/40 text-accent hover:bg-accent/10 cursor-pointer"
-          >
-            Allow for Session
-          </button>
-          <button
-            onclick={() => handleApproval(approval.requestId, 'deny')}
-            class="px-3 py-1 text-xs rounded border border-red-700/40 text-red-400 hover:bg-red-900/20 cursor-pointer"
-          >
-            Deny
-          </button>
-        </div>
       </div>
     {/each}
   </div>

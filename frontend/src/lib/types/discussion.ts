@@ -37,3 +37,12 @@ export interface ChannelMessage {
   content: string;
   createdAt: number;
 }
+
+export interface DeliberationState {
+  channelId: string;
+  currentSpeaker: string;
+  turnCount: number;
+  maxTurns: number;
+  conclusionProposals: Record<string, string>;
+  concluded: boolean;
+}

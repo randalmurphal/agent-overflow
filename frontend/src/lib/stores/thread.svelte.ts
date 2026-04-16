@@ -137,6 +137,12 @@ export function createThreadPane() {
       activeToolCalls = new Map(activeToolCalls).set(id, data);
     },
 
+    updateToolProgress(id: string, progress: unknown): void {
+      if (activeToolCalls.has(id)) {
+        activeToolCalls = new Map(activeToolCalls).set(id, progress);
+      }
+    },
+
     /**
      * Mark a tool call as complete. The actual completed item will arrive
      * from the DB via finalizeTurn -- we just remove the in-progress entry here.

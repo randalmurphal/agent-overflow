@@ -4,7 +4,7 @@ import type { PayloadMeta } from '../types/models';
 import type { ThreadPane } from './thread.svelte';
 import { getAllPanes } from './panes.svelte';
 import { addToast } from './toast.svelte';
-import { updateThreadTitle } from './threads.svelte';
+import { updateThreadTitle, updateThreadModel } from './threads.svelte';
 import { RespondToApproval, ApprovalResponse } from './bindings';
 
 /**
@@ -114,7 +114,7 @@ function routeEventToPane(pane: ThreadPane, evt: ProviderEvent): void {
 
     case 'tool_progress':
       if (evt.itemId && evt.meta) {
-        pane.addToolCall(evt.itemId, evt.meta as ToolProgressMeta);
+        pane.updateToolProgress(evt.itemId, evt.meta as ToolProgressMeta);
       }
       break;
 
@@ -134,6 +134,7 @@ function routeEventToPane(pane: ThreadPane, evt: ProviderEvent): void {
     case 'model_rerouted':
       if (evt.meta) {
         const data = evt.meta as { newModel: string };
+        updateThreadModel(evt.threadId, data.newModel);
         addToast('info', `Model rerouted to ${data.newModel}`);
       }
       break;

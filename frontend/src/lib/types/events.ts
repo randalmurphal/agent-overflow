@@ -34,6 +34,35 @@ export interface ProviderEvent {
   timestamp: string;
 }
 
+export type ApprovalKind = 'command' | 'file-read' | 'file-change' | 'user-input' | 'permission';
+
+export interface UserInputQuestionOption {
+  label: string;
+  description: string;
+}
+
+export interface UserInputQuestion {
+  id: string;
+  header: string;
+  question: string;
+  options?: UserInputQuestionOption[];
+  multiSelect?: boolean;
+}
+
+export interface NetworkPermissions {
+  enabled?: boolean;
+}
+
+export interface FileSystemPermissions {
+  read?: string[];
+  write?: string[];
+}
+
+export interface PermissionProfile {
+  network?: NetworkPermissions;
+  fileSystem?: FileSystemPermissions;
+}
+
 export interface ApprovalRequest {
   requestId: string;
   threadId: string;
@@ -42,9 +71,9 @@ export interface ApprovalRequest {
   description: string;
   input: unknown;
   title: string;
-  kind?: string;
-  questions?: Array<{ id: string; text: string; type: string }>;
-  permissions?: Record<string, unknown>;
+  kind?: ApprovalKind;
+  questions?: UserInputQuestion[];
+  permissions?: PermissionProfile;
 }
 
 export interface TokenUsage {

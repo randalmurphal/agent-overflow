@@ -7,7 +7,7 @@ export interface Thread {
   projectPath: string;
   worktreePath?: string;
   branch?: string;
-  interactionMode: string;
+  interactionMode: 'default' | 'plan' | 'design' | 'discussion';
   discussionId?: string;
   parentThreadId?: string;
   model: string;

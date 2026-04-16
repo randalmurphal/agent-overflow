@@ -6,25 +6,7 @@ All work items from Phases 0-6 are implemented and passing quality gate.
 
 ## Known Issues
 
-### KI-1: ChangedFilesTree not wired (WI-2.3)
-- **Severity**: High
-- **Description**: `ChangedFilesTree.svelte` is fully implemented but not rendered in `MessageTimeline.svelte`. The spec says it should show "all files changed in a turn" grouped by directory.
-- **Fix**: Wire into MessageTimeline at turn boundaries — collect diff items per turn and render ChangedFilesTree as a summary before the next user message or at the end.
-
-### KI-2: ModelPicker selectModel is no-op (WI-3.1)
-- **Severity**: Medium
-- **Description**: `ModelPicker.svelte` renders the dropdown but `selectModel()` does nothing — comments say "no SetModel binding available." However, `UpdateSettings` binding exists and can persist model preference.
-- **Fix**: Use `UpdateSettings` to persist the selected model as `defaultModel`, and if the thread is new (no turns yet), recreate or update via available bindings.
-
-### KI-3: Missing bindings exports (WI-0.3)
-- **Severity**: Medium
-- **Description**: `stores/bindings.ts` is missing exports for: `SwitchThread`, `StopSession`, `GetThread`, `GetWorkingTreeDiff`, `GitCreatePR`, `GitListWorktrees`, `GitRemoveWorktree`. These all exist in the generated `app.js`.
-- **Fix**: Add missing exports to `stores/bindings.ts`.
-
-### KI-4: Worktree management incomplete (WI-6.4)
-- **Severity**: Low
-- **Description**: Only worktree creation exists (in Sidebar new-thread form). No UI to list or remove worktrees. Bindings `GitListWorktrees` and `GitRemoveWorktree` exist but aren't exported or used.
-- **Fix**: Add worktree list/remove to BranchToolbar or GitActionsControl dropdown.
+None currently.
 
 ## Completed Phases
 
@@ -78,4 +60,10 @@ All work items from Phases 0-6 are implemented and passing quality gate.
 
 | Iteration | Category | Findings | Fixed |
 |-----------|----------|----------|-------|
-| R1 | Known Issues | KI-1 through KI-4 | Pending |
+| R1 | Known Issues | KI-1: ChangedFilesTree unwired, KI-2: ModelPicker no-op, KI-3: Missing binding exports, KI-4: Worktree management incomplete | All 4 fixed |
+| R2 | Spec Compliance | Types/imports/event routing vs IMPLEMENTATION-PARITY.md | Fixed |
+| R3 | Code Consistency | Unify types, imports, error handling across components | All fixed |
+| R4 | Dead Code | Unused components, settings, error paths | All wired |
+| R5 | Accessibility | ARIA labels, dialog focus management, dropdown patterns | All fixed |
+| R6 | Known Issues | Dead code wiring, missing feature completions | All fixed |
+| R7 | Spec Compliance | 8 findings: wrong ApprovalRequest.questions shape, untyped permissions, missing types (UserInputQuestion, PermissionProfile, ApprovalResponse, DeliberationState), model_rerouted not updating store, tool_progress using wrong mutation, Thread.interactionMode unnarrowed, ApprovalPrompt missing user-input/permission kind rendering | All 8 fixed |
