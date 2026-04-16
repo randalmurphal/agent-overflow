@@ -1,9 +1,10 @@
 <script lang="ts">
   import type { ThreadPane } from '../../stores/thread.svelte';
   import type { GitStatus, GitActionResult } from '../../types/git';
-  import { GetGitStatus, GitPush, GitPull } from '../../stores/bindings';
+  import { GetGitStatus, GitPush, GitPull, GitCreatePR, GitRemoveWorktree } from '../../stores/bindings';
   import { addToast } from '../../stores/toast.svelte';
   import CommitDialog from './CommitDialog.svelte';
+  import ConfirmDialog from '../shared/ConfirmDialog.svelte';
   import { onMount } from 'svelte';
 
   let { pane }: { pane: ThreadPane } = $props();
@@ -12,6 +13,12 @@
   let actionLoading = $state(false);
   let showCommit = $state(false);
   let showDropdown = $state(false);
+  let showRemoveWorktreeConfirm = $state(false);
+
+  let isWorktree = $derived(!!pane.thread?.worktreePath);
+  let canCreatePR = $derived(
+    status !== null && status.hasUpstream && !status.openPrUrl && !status.isDefaultBranch
+  );
 
   onMount(() => {
     refreshStatus();
@@ -88,6 +95,40 @@
     }
   }
 
+  async function doCreatePR() {
+    if (!pane.threadId || actionLoading) return;
+    actionLoading = true;
+    try {
+      const result = await GitCreatePR(pane.threadId, '', '');
+      const r = result as GitActionResult;
+      if (r.error) {
+        pane.setError(`Create PR failed: ${r.error}`);
+      } else {
+        const msg = r.prUrl ? `PR created: ${r.prUrl}` : 'PR created';
+        addToast('success', msg);
+        await refreshStatus();
+      }
+    } catch (err) {
+      pane.setError(`Create PR failed: ${err}`);
+    } finally {
+      actionLoading = false;
+    }
+  }
+
+  async function doRemoveWorktree() {
+    if (!pane.threadId || actionLoading) return;
+    actionLoading = true;
+    try {
+      await GitRemoveWorktree(pane.threadId);
+      addToast('success', 'Worktree removed');
+      await refreshStatus();
+    } catch (err) {
+      pane.setError(`Remove worktree failed: ${err}`);
+    } finally {
+      actionLoading = false;
+    }
+  }
+
   function handleCommitClose() {
     showCommit = false;
     refreshStatus();
@@ -119,7 +160,7 @@
     {#if showDropdown}
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div class="fixed inset-0 z-40" onclick={() => showDropdown = false} onkeydown={(e) => { if (e.key === 'Escape') showDropdown = false; }}></div>
-      <div class="absolute top-full right-0 mt-1 z-50 bg-surface-1 border border-border rounded shadow-lg min-w-[120px]" role="menu" aria-label="Git actions">
+      <div class="absolute top-full right-0 mt-1 z-50 bg-surface-1 border border-border rounded shadow-lg min-w-[140px]" role="menu" aria-label="Git actions">
         <button
           onclick={() => { showDropdown = false; showCommit = true; }}
           disabled={!status.hasChanges}
@@ -144,9 +185,37 @@
         >
           Pull
         </button>
+        <button
+          onclick={() => { showDropdown = false; doCreatePR(); }}
+          disabled={!canCreatePR}
+          role="menuitem"
+          class="w-full text-left px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary hover:bg-surface-2/50 cursor-pointer disabled:opacity-40"
+        >
+          Create PR
+        </button>
+        {#if isWorktree}
+          <div class="border-t border-border my-0.5"></div>
+          <button
+            onclick={() => { showDropdown = false; showRemoveWorktreeConfirm = true; }}
+            role="menuitem"
+            class="w-full text-left px-3 py-1.5 text-xs text-red-400/80 hover:text-red-400 hover:bg-surface-2/50 cursor-pointer"
+          >
+            Remove Worktree
+          </button>
+        {/if}
       </div>
     {/if}
   </div>
 
   <CommitDialog {pane} open={showCommit} onClose={handleCommitClose} />
+
+  <ConfirmDialog
+    open={showRemoveWorktreeConfirm}
+    title="Remove worktree"
+    description="This will remove the git worktree for this thread. The branch will be preserved but the working directory will be deleted."
+    confirmLabel="Remove"
+    destructive={true}
+    onConfirm={() => { showRemoveWorktreeConfirm = false; doRemoveWorktree(); }}
+    onCancel={() => { showRemoveWorktreeConfirm = false; }}
+  />
 {/if}

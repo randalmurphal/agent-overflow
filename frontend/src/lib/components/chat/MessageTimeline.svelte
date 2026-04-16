@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { ThreadPane } from '../../stores/thread.svelte';
-  import type { DiffMeta, CommandOutputMeta } from '../../types/models';
+  import type { DiffMeta, CommandOutputMeta, ChangedFile, Item } from '../../types/models';
   import UserMessage from './UserMessage.svelte';
   import AssistantMessage from './AssistantMessage.svelte';
   import DiffPreview from './DiffPreview.svelte';
@@ -8,6 +8,7 @@
   import WorkEntry, { type WorkEntryData } from './WorkEntry.svelte';
   import StreamingMessage from './StreamingMessage.svelte';
   import ThinkingBlock from './ThinkingBlock.svelte';
+  import ChangedFilesTree from './ChangedFilesTree.svelte';
 
   let { pane }: { pane: ThreadPane } = $props();
 
@@ -51,6 +52,54 @@
     }
   }
 
+  /**
+   * Collect changed files for a given turn by scanning diff items.
+   * Returns an array of ChangedFile for use by ChangedFilesTree.
+   */
+  function getChangedFilesForTurn(turnIndex: number): ChangedFile[] {
+    const files: ChangedFile[] = [];
+    for (const item of pane.items) {
+      if (item.turnIndex !== turnIndex) continue;
+      if (item.kind !== 'diff' || !item.payloadId) continue;
+      const meta = parseMeta<DiffMeta>(item.payloadId);
+      if (!meta) continue;
+      files.push({
+        path: meta.filePath,
+        insertions: meta.insertions,
+        deletions: meta.deletions,
+        kind: meta.changeKind,
+        payloadId: item.payloadId,
+      });
+    }
+    return files;
+  }
+
+  /**
+   * Build a set of turn indices that have at least one diff item,
+   * so we can render ChangedFilesTree at turn boundaries.
+   */
+  let turnBoundaries = $derived.by((): Map<number, ChangedFile[]> => {
+    const turns = new Map<number, ChangedFile[]>();
+    for (const item of pane.items) {
+      if (item.kind !== 'diff' || !item.payloadId) continue;
+      if (turns.has(item.turnIndex)) continue;
+      const files = getChangedFilesForTurn(item.turnIndex);
+      if (files.length > 0) {
+        turns.set(item.turnIndex, files);
+      }
+    }
+    return turns;
+  });
+
+  /**
+   * Check if this item is the last item of its turn, used to decide
+   * when to render the ChangedFilesTree summary.
+   */
+  function isLastItemInTurn(item: Item, index: number): boolean {
+    const nextItem = pane.items[index + 1];
+    return !nextItem || nextItem.turnIndex !== item.turnIndex;
+  }
+
   // Auto-scroll only when the user is already near the bottom.
   $effect(() => {
     pane.items.length;
@@ -72,7 +121,7 @@
       <span class="animate-pulse">Loading thread...</span>
     </div>
   {:else}
-    {#each pane.items as item (item.id)}
+    {#each pane.items as item, index (item.id)}
       {#if item.role === 'user'}
         <UserMessage {item} />
       {:else if item.kind === 'diff' && item.payloadId}
@@ -93,6 +142,13 @@
         <ThinkingBlock {item} />
       {:else}
         <AssistantMessage {item} />
+      {/if}
+
+      {#if isLastItemInTurn(item, index)}
+        {@const turnFiles = turnBoundaries.get(item.turnIndex)}
+        {#if turnFiles}
+          <ChangedFilesTree files={turnFiles} />
+        {/if}
       {/if}
     {/each}
 

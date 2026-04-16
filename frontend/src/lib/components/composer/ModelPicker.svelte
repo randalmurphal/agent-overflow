@@ -2,6 +2,7 @@
   import type { ThreadPane } from '../../stores/thread.svelte';
   import type { ModelInfo } from '../../types/settings';
   import { GetModelsForProvider } from '../../stores/bindings';
+  import { updateSetting } from '../../stores/settings.svelte';
   import { addToast } from '../../stores/toast.svelte';
 
   let { pane }: { pane: ThreadPane } = $props();
@@ -29,10 +30,11 @@
     }
   }
 
-  function selectModel(slug: string) {
-    // Thread model selection is read-only for now (no SetModel binding available).
-    // The model will be sent with the next thread creation or via settings.
+  async function selectModel(slug: string) {
     open = false;
+    const settingKey = provider === 'codex' ? 'defaultModelCodex' : 'defaultModelClaude';
+    await updateSetting(settingKey, slug);
+    addToast('info', `Default ${provider} model set to ${slug}`);
   }
 
   function handleCustomSubmit() {
