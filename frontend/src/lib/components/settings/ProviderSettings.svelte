@@ -93,16 +93,18 @@
           <p class="text-xs text-text-secondary/60 break-words">{status.message}</p>
         {/if}
 
-        {#if provider.models.length > 0}
-          <div>
-            <p class="text-xs text-text-secondary mb-1">Known models</p>
+        <div>
+          <p class="text-xs text-text-secondary mb-1">Known models</p>
+          {#if provider.models.length > 0}
             <div class="flex flex-wrap gap-1">
               {#each provider.models as model}
                 <span class="text-[10px] px-1.5 py-0.5 rounded bg-surface-2 text-text-secondary">{model.name || model.slug}</span>
               {/each}
             </div>
-          </div>
-        {/if}
+          {:else}
+            <p class="text-xs text-text-secondary/60">No models available</p>
+          {/if}
+        </div>
       </div>
     </div>
   {/each}

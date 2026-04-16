@@ -60,15 +60,15 @@
   </button>
 
   <!-- Output content -->
-  {#if displayText}
+  {#if expanded}
     <div id="cmd-output-{payloadId}" transition:slide={{ duration: 150 }} class="border-t border-border bg-surface-0 px-3 py-2 overflow-x-auto">
       {#if loading}
         <p class="text-xs text-text-secondary" role="status" aria-live="polite">Loading full output…</p>
       {:else if loadError}
         <p class="text-xs text-error" role="alert">Failed to load output: {loadError}</p>
+      {:else}
+        <pre class="font-mono text-xs whitespace-pre text-text-secondary">{displayText}</pre>
       {/if}
-
-      <pre class="font-mono text-xs whitespace-pre text-text-secondary">{displayText}</pre>
     </div>
   {/if}
 </div>

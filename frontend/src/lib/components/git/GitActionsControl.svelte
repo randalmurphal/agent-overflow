@@ -216,7 +216,7 @@
           onclick={() => { showDropdown = false; showCommit = true; }}
           disabled={!status.hasChanges}
           role="menuitem"
-          class="w-full text-left px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary hover:bg-surface-2/50 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+          class="w-full text-left px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary hover:bg-surface-2/50 active:bg-surface-2/70 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
         >
           Commit
         </button>
@@ -224,7 +224,7 @@
           onclick={() => { showDropdown = false; doPush(); }}
           disabled={status.aheadCount === 0}
           role="menuitem"
-          class="w-full text-left px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary hover:bg-surface-2/50 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+          class="w-full text-left px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary hover:bg-surface-2/50 active:bg-surface-2/70 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
         >
           Push
         </button>
@@ -232,7 +232,7 @@
           onclick={() => { showDropdown = false; doPull(); }}
           disabled={status.behindCount === 0}
           role="menuitem"
-          class="w-full text-left px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary hover:bg-surface-2/50 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+          class="w-full text-left px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary hover:bg-surface-2/50 active:bg-surface-2/70 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
         >
           Pull
         </button>
@@ -240,7 +240,7 @@
           onclick={() => { showDropdown = false; doCreatePR(); }}
           disabled={!canCreatePR}
           role="menuitem"
-          class="w-full text-left px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary hover:bg-surface-2/50 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+          class="w-full text-left px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary hover:bg-surface-2/50 active:bg-surface-2/70 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
         >
           Create PR
         </button>
@@ -249,7 +249,7 @@
           <button
             onclick={() => { showDropdown = false; showRemoveWorktreeConfirm = true; }}
             role="menuitem"
-            class="w-full text-left px-3 py-1.5 text-xs text-error/80 hover:text-error hover:bg-surface-2/50 cursor-pointer"
+            class="w-full text-left px-3 py-1.5 text-xs text-error/80 hover:text-error hover:bg-surface-2/50 active:bg-surface-2/70 cursor-pointer transition-colors"
           >
             Remove Worktree
           </button>

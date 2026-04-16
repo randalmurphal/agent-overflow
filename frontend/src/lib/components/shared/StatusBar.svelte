@@ -32,9 +32,9 @@
 
   {#if pane.tokenUsage}
     <span class="ml-auto flex items-center gap-3 min-w-0 shrink truncate">
-      <span>{formatTokens(pane.tokenUsage.inputTokens)} in / {formatTokens(pane.tokenUsage.outputTokens)} out</span>
+      <span class="truncate">{formatTokens(pane.tokenUsage.inputTokens)} in / {formatTokens(pane.tokenUsage.outputTokens)} out</span>
       {#if pane.tokenUsage.totalCostUsd != null}
-        <span>{formatCost(pane.tokenUsage.totalCostUsd)}</span>
+        <span class="shrink-0">{formatCost(pane.tokenUsage.totalCostUsd)}</span>
       {/if}
     </span>
   {/if}

@@ -20,7 +20,7 @@
   let dashOffset = $derived(CIRCUMFERENCE - (percentage / 100) * CIRCUMFERENCE);
 
   let strokeColor = $derived(
-    percentage > 80 ? 'stroke-warning' : 'stroke-text-secondary',
+    percentage > 95 ? 'stroke-error' : percentage > 80 ? 'stroke-warning' : 'stroke-text-secondary',
   );
 
   let displayPct = $derived(Math.round(percentage));

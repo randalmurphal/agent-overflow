@@ -183,11 +183,53 @@
 
   {:else if block.kind === 'heading'}
     {#if block.level === 1}
-      <h1 class="text-lg font-semibold text-text-primary mt-3 mb-1">{block.text}</h1>
+      <h1 class="text-lg font-semibold text-text-primary mt-3 mb-1">
+        {#each parseInline(block.text) as seg}
+          {#if seg.kind === 'code'}
+            <code class="bg-surface-0 px-1 rounded text-[0.9em] font-mono">{seg.text}</code>
+          {:else if seg.kind === 'bold'}
+            <strong>{seg.text}</strong>
+          {:else if seg.kind === 'italic'}
+            <em>{seg.text}</em>
+          {:else if seg.kind === 'link'}
+            <a href={seg.href} class="text-accent hover:underline" target="_blank" rel="noopener">{seg.text}</a>
+          {:else}
+            {seg.text}
+          {/if}
+        {/each}
+      </h1>
     {:else if block.level === 2}
-      <h2 class="text-base font-semibold text-text-primary mt-2.5 mb-1">{block.text}</h2>
+      <h2 class="text-base font-semibold text-text-primary mt-2.5 mb-1">
+        {#each parseInline(block.text) as seg}
+          {#if seg.kind === 'code'}
+            <code class="bg-surface-0 px-1 rounded text-[0.9em] font-mono">{seg.text}</code>
+          {:else if seg.kind === 'bold'}
+            <strong>{seg.text}</strong>
+          {:else if seg.kind === 'italic'}
+            <em>{seg.text}</em>
+          {:else if seg.kind === 'link'}
+            <a href={seg.href} class="text-accent hover:underline" target="_blank" rel="noopener">{seg.text}</a>
+          {:else}
+            {seg.text}
+          {/if}
+        {/each}
+      </h2>
     {:else}
-      <h3 class="text-sm font-semibold text-text-primary mt-2 mb-0.5">{block.text}</h3>
+      <h3 class="text-sm font-semibold text-text-primary mt-2 mb-0.5">
+        {#each parseInline(block.text) as seg}
+          {#if seg.kind === 'code'}
+            <code class="bg-surface-0 px-1 rounded text-[0.9em] font-mono">{seg.text}</code>
+          {:else if seg.kind === 'bold'}
+            <strong>{seg.text}</strong>
+          {:else if seg.kind === 'italic'}
+            <em>{seg.text}</em>
+          {:else if seg.kind === 'link'}
+            <a href={seg.href} class="text-accent hover:underline" target="_blank" rel="noopener">{seg.text}</a>
+          {:else}
+            {seg.text}
+          {/if}
+        {/each}
+      </h3>
     {/if}
 
   {:else if block.kind === 'list'}

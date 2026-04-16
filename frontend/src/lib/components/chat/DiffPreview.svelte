@@ -73,24 +73,24 @@
   </button>
 
   <!-- Diff content -->
-  {#if displayLines.length > 0}
+  {#if expanded}
     <div id="diff-content-{payloadId}" transition:slide={{ duration: 150 }} class="border-t border-border bg-surface-0 px-3 py-2 overflow-x-auto">
       {#if loading}
         <p class="text-xs text-text-secondary" role="status" aria-live="polite">Loading full diff…</p>
       {:else if loadError}
         <p class="text-xs text-error" role="alert">Failed to load diff: {loadError}</p>
-      {/if}
-
-      <pre class="font-mono text-xs leading-tight {wrapClass}">{#each displayLines as line}<span
-          class={line.type === 'added'
-            ? 'bg-success/10 text-success'
-            : line.type === 'removed'
-              ? 'bg-error/10 text-error'
-              : line.type === 'header'
-                ? 'text-accent/70'
-                : 'text-text-secondary'}
-        >{line.content}
+      {:else}
+        <pre class="font-mono text-xs leading-tight {wrapClass}">{#each displayLines as line}<span
+            class={line.type === 'added'
+              ? 'bg-success/10 text-success'
+              : line.type === 'removed'
+                ? 'bg-error/10 text-error'
+                : line.type === 'header'
+                  ? 'text-accent/70'
+                  : 'text-text-secondary'}
+          >{line.content}
 </span>{/each}</pre>
+      {/if}
     </div>
   {/if}
 </div>

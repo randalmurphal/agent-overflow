@@ -156,7 +156,7 @@
 
     {#if pane.pendingMessage}
       <div class="flex justify-end mb-3">
-        <div class="max-w-[80%] rounded-lg px-4 py-2.5 bg-accent/20 text-text-primary opacity-60">
+        <div class="max-w-[85%] rounded-lg px-4 py-2.5 bg-accent/20 text-text-primary opacity-60">
           <p class="whitespace-pre-wrap text-sm leading-relaxed">{pane.pendingMessage}</p>
         </div>
       </div>
@@ -175,7 +175,7 @@
         <StreamingMessage content={pane.streamingContent} />
       {:else}
         <div class="flex justify-start mb-3" role="status" aria-live="polite">
-          <div class="max-w-[85%] rounded-lg px-4 py-2.5 bg-surface-1 text-text-secondary text-sm">
+          <div class="max-w-[85%] rounded-lg px-4 py-2.5 bg-surface-2 text-text-secondary text-sm">
             <span class="animate-pulse">Thinking...</span>
           </div>
         </div>

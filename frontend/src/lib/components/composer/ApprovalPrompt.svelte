@@ -243,28 +243,28 @@
           <!-- Default tool approval: allow / allow-for-session / deny -->
           {@const preview = getInputPreview(approval)}
           {#if preview}
-            <div class="mt-2 rounded bg-surface-1 border border-border px-2.5 py-1.5 overflow-x-auto max-h-40 overflow-y-auto">
+            <div class="mt-2 rounded bg-surface-1 border border-border px-2.5 py-1.5 max-h-40 overflow-y-auto">
               <span class="text-[10px] text-text-secondary/60 block mb-0.5">{preview.label}</span>
               <pre class="text-xs font-mono text-text-primary whitespace-pre-wrap">{preview.content}</pre>
             </div>
           {/if}
 
-          <div class="flex gap-2 mt-2.5 justify-end">
+          <div class="flex flex-wrap gap-2 mt-2.5 justify-end">
             <button
               onclick={() => handleApproval(approval.requestId, 'allow')}
-              class="px-3 py-1 text-xs rounded bg-accent text-surface-0 font-medium hover:opacity-90 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+              class="px-3 py-1 text-xs rounded bg-accent text-surface-0 font-medium hover:bg-accent/85 cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
             >
               Allow
             </button>
             <button
               onclick={() => handleAllowSession(approval)}
-              class="px-3 py-1 text-xs rounded border border-accent/40 text-accent hover:bg-accent/10 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+              class="px-3 py-1 text-xs rounded border border-accent/40 text-accent hover:bg-accent/10 cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
             >
               Allow for Session
             </button>
             <button
               onclick={() => handleApproval(approval.requestId, 'deny')}
-              class="px-3 py-1 text-xs rounded border border-error/40 text-error hover:bg-error/10 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+              class="px-3 py-1 text-xs rounded border border-error/40 text-error hover:bg-error/10 cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
             >
               Deny
             </button>
