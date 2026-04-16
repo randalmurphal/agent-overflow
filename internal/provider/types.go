@@ -92,6 +92,11 @@ type ApprovalRequest struct {
 	Kind        string              `json:"kind,omitempty"`        // "command"|"file-read"|"file-change"|"user-input"|"permission"
 	Questions   []UserInputQuestion `json:"questions,omitempty"`   // populated for user-input kind
 	Permissions *PermissionProfile  `json:"permissions,omitempty"` // populated for permission kind
+	// PermissionSuggestions carries the Claude SDK's optional `permission_suggestions`
+	// array from the CanUseTool control_request. The payload is a JSON array of
+	// PermissionUpdate objects; the shape is provider-specific so it flows
+	// through the pipeline as opaque JSON for the frontend to interpret.
+	PermissionSuggestions json.RawMessage `json:"permissionSuggestions,omitempty"`
 }
 
 // ElicitationResolution carries the MCP elicitation response fields.
@@ -109,6 +114,14 @@ type ApprovalResponse struct {
 	Permissions *PermissionProfile         `json:"permissions,omitempty"` // for granted permissions
 	Scope       string                     `json:"scope,omitempty"`       // "turn"|"session" for permissions
 	Elicitation *ElicitationResolution     `json:"elicitation,omitempty"` // for MCP elicitation responses
+	// UpdatedInput replaces the original tool input when an approval is granted.
+	// Only meaningful for allow decisions; ignored on deny. Opaque JSON — the
+	// shape mirrors the tool's input schema, which is provider-specific.
+	UpdatedInput json.RawMessage `json:"updatedInput,omitempty"`
+	// UpdatedPermissions mirrors the Claude SDK's `updatedPermissions` field on
+	// allow decisions: a JSON array of PermissionUpdate objects used to broaden
+	// or narrow the session's permission scope. Ignored on deny.
+	UpdatedPermissions json.RawMessage `json:"updatedPermissions,omitempty"`
 }
 
 // UserInputQuestionOption is a selectable option in a user-input question.

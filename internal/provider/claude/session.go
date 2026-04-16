@@ -85,6 +85,14 @@ func buildArgs(cfg Config) []string {
 		"--input-format", "stream-json",
 		"--output-format", "stream-json",
 		"--verbose",
+		// Route tool-use approval through the CanUseTool control protocol on
+		// stdin/stdout. Required for parseControlRequest to receive
+		// can_use_tool events with permission_suggestions.
+		"--permission-prompt-tool", "stdio",
+		// Emit finer-grained content_block_delta envelopes (Gap 4: partial
+		// messages). These already flow through parseStreamEvent, so no new
+		// routing is needed; the flag simply increases stream fidelity.
+		"--include-partial-messages",
 	}
 
 	if cfg.Model != "" {
@@ -146,25 +154,13 @@ func (s *Session) Interrupt(ctx context.Context) error {
 // RespondToApproval sends a tool-use approval decision back to the CLI.
 // Accepts both Codex-native values (accept, acceptForSession, decline, cancel)
 // and legacy values (allow, allow_session, deny) for backward compatibility.
+// When resp.UpdatedInput or resp.UpdatedPermissions are non-empty and the
+// decision is an allow, the raw JSON is forwarded to the CLI as the
+// Claude-SDK-compatible CanUseTool response fields.
 func (s *Session) RespondToApproval(ctx context.Context, resp provider.ApprovalResponse) error {
-	var behavior map[string]any
-	switch resp.Decision {
-	case "allow", "allow_session", "accept", "acceptForSession":
-		behavior = map[string]any{"behavior": "allow"}
-	default:
-		behavior = map[string]any{"behavior": "deny", "message": "User denied"}
-	}
-	msg := map[string]any{
-		"type": "control_response",
-		"response": map[string]any{
-			"subtype":    "success",
-			"request_id": resp.RequestID,
-			"response":   behavior,
-		},
-	}
-	data, err := json.Marshal(msg)
+	data, err := buildApprovalResponse(resp)
 	if err != nil {
-		return fmt.Errorf("claude: marshal approval response: %w", err)
+		return err
 	}
 	return s.proc.WriteLine(data)
 }

@@ -637,7 +637,15 @@ func TestParseRealCLIFixture(t *testing.T) {
 func TestBuildArgsDefault(t *testing.T) {
 	args := buildArgs(Config{})
 
-	expected := []string{"--input-format", "stream-json", "--output-format", "stream-json", "--verbose"}
+	// Baseline flags that every spawn must include. Adding a new flag to
+	// buildArgs should extend this list intentionally.
+	expected := []string{
+		"--input-format", "stream-json",
+		"--output-format", "stream-json",
+		"--verbose",
+		"--permission-prompt-tool", "stdio",
+		"--include-partial-messages",
+	}
 	if len(args) != len(expected) {
 		t.Fatalf("expected %d args, got %d: %v", len(expected), len(args), args)
 	}

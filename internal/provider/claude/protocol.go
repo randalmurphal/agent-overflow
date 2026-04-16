@@ -363,7 +363,10 @@ func parseStreamEvent(threadID string, raw map[string]json.RawMessage, now time.
 }
 
 // parseControlRequest handles the wire format:
-// {"type":"control_request","request_id":"req_1_abc","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"ls"}}}
+// {"type":"control_request","request_id":"req_1_abc","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"ls"},"permission_suggestions":[...]}}
+//
+// `permission_suggestions` is preserved as opaque JSON so downstream code
+// (UI / approval handling) can surface the Claude SDK suggestions.
 func parseControlRequest(threadID string, raw map[string]json.RawMessage, now time.Time, line []byte) ([]provider.ProviderEvent, error) {
 	var requestID string
 	if v, ok := raw["request_id"]; ok {
@@ -376,9 +379,10 @@ func parseControlRequest(threadID string, raw map[string]json.RawMessage, now ti
 	}
 
 	var req struct {
-		Subtype  string          `json:"subtype"`
-		ToolName string          `json:"tool_name"`
-		Input    json.RawMessage `json:"input"`
+		Subtype               string          `json:"subtype"`
+		ToolName              string          `json:"tool_name"`
+		Input                 json.RawMessage `json:"input"`
+		PermissionSuggestions json.RawMessage `json:"permission_suggestions"`
 	}
 	if err := json.Unmarshal(reqRaw, &req); err != nil {
 		return nil, nil
@@ -389,12 +393,13 @@ func parseControlRequest(threadID string, raw map[string]json.RawMessage, now ti
 	}
 
 	approvalMeta, _ := json.Marshal(provider.ApprovalRequest{
-		RequestID:   requestID,
-		ThreadID:    threadID,
-		ToolName:    req.ToolName,
-		Description: fmt.Sprintf("Allow %s?", req.ToolName),
-		Input:       req.Input,
-		Title:       req.ToolName,
+		RequestID:             requestID,
+		ThreadID:              threadID,
+		ToolName:              req.ToolName,
+		Description:           fmt.Sprintf("Allow %s?", req.ToolName),
+		Input:                 req.Input,
+		Title:                 req.ToolName,
+		PermissionSuggestions: req.PermissionSuggestions,
 	})
 
 	return []provider.ProviderEvent{{
