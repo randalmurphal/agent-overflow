@@ -362,9 +362,15 @@ func (a *App) StopSession(threadID string) error {
 
 	if !ok {
 		a.teardownDesignThread(threadID)
+		if a.triage != nil {
+			a.triage.CleanupThread(threadID)
+		}
 		return nil
 	}
 
 	a.teardownDesignThread(threadID)
+	if a.triage != nil {
+		a.triage.CleanupThread(threadID)
+	}
 	return closeProviderSession(threadID, sess)
 }

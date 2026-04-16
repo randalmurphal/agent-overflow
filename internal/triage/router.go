@@ -19,7 +19,7 @@ import (
 // Router classifies provider events and routes them.
 type Router struct {
 	store                 *store.Store
-	emit                  func(eventName string, data any) // wraps runtime.EventsEmit
+	emit                  func(eventName string, data any) // wraps app.Event.Emit
 	mu                    sync.Mutex
 	textAccumulators      map[string]*strings.Builder // threadID → accumulated assistant text
 	reasoningAccumulators map[string]*strings.Builder // threadID → accumulated Codex reasoning
@@ -286,20 +286,6 @@ func (r *Router) accumulate(target map[string]*strings.Builder, threadID, conten
 		target[threadID] = acc
 	}
 	acc.WriteString(content)
-}
-
-func (r *Router) drain(target map[string]*strings.Builder, threadID string) string {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	acc, ok := target[threadID]
-	if !ok || acc.Len() == 0 {
-		delete(target, threadID)
-		return ""
-	}
-	content := acc.String()
-	delete(target, threadID)
-	return content
 }
 
 // drainBoth atomically drains both text and reasoning accumulators in a single
