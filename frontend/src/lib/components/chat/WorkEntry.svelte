@@ -4,19 +4,20 @@
   let { entry }: { entry: WorkEntryData } = $props();
 
   let typeLabel = $derived.by(() => {
-    switch (entry.type) {
-      case 'file_read':
-      case 'file_write':
-      case 'file_edit':
-      case 'file':
-        return '[F]';
-      case 'command':
-      case 'bash':
-      case 'shell':
-        return '[C]';
-      default:
-        return '[T]';
+    const t = entry.type.toLowerCase();
+    // Claude tools: Read, Write, Edit, Glob, Grep, NotebookEdit
+    // Codex tools: file_read, file_change, file
+    if (t === 'read' || t === 'write' || t === 'edit' || t === 'glob' || t === 'grep'
+        || t === 'notebookedit' || t === 'file_read' || t === 'file_write'
+        || t === 'file_edit' || t === 'file_change' || t === 'file') {
+      return '[F]';
     }
+    // Claude tools: Bash
+    // Codex tools: command, command_execution
+    if (t === 'bash' || t === 'command' || t === 'command_execution' || t === 'shell') {
+      return '[C]';
+    }
+    return '[T]';
   });
 
   let preview = $derived.by(() => {

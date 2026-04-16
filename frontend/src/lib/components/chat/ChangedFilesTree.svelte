@@ -47,20 +47,19 @@
     expandedFile = expandedFile === path ? null : path;
   }
 
-  function kindBadge(kind: string): string {
+  function kindBadge(kind: DiffMeta['changeKind']): string {
     switch (kind) {
       case 'added': return 'bg-success/20 text-success';
       case 'modified': return 'bg-warning/20 text-warning';
       case 'deleted': return 'bg-error/20 text-error';
       case 'renamed': return 'bg-accent/30 text-accent';
-      default: return 'bg-surface-2 text-text-secondary';
     }
   }
 
   function diffMeta(file: ChangedFile): DiffMeta {
     return {
       filePath: file.path,
-      changeKind: file.kind as DiffMeta['changeKind'],
+      changeKind: file.kind,
       insertions: file.insertions,
       deletions: file.deletions,
       preview: '',

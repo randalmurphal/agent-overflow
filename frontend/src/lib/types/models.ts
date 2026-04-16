@@ -55,7 +55,7 @@ export interface ChangedFile {
   path: string;
   insertions: number;
   deletions: number;
-  kind: string;
+  kind: DiffMeta['changeKind'];
   payloadId: string;
 }
 
