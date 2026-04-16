@@ -1,5 +1,5 @@
 import type { Item, PayloadMeta, Thread } from '../types/models';
-import type { ApprovalRequest, TokenUsage } from '../types/events';
+import type { ApprovalRequest, ContextWindow, RateLimitEntry, TokenUsage } from '../types/events';
 import { ListItems, ListPayloadMetas } from '../../../bindings/agent-overflow/app.js';
 
 /**
@@ -17,6 +17,8 @@ export function createThreadPane() {
   let backgroundTasks: Map<string, unknown> = $state(new Map());
   let sessionStatus: string = $state('disconnected');
   let tokenUsage: TokenUsage | null = $state(null);
+  let contextWindow: ContextWindow | null = $state(null);
+  let rateLimits: RateLimitEntry[] = $state([]);
   let error: string | null = $state(null);
   let loading: boolean = $state(false);
   let pendingMessage: string | null = $state(null);
@@ -39,6 +41,8 @@ export function createThreadPane() {
     get backgroundTasks() { return backgroundTasks; },
     get sessionStatus() { return sessionStatus; },
     get tokenUsage() { return tokenUsage; },
+    get contextWindow() { return contextWindow; },
+    get rateLimits() { return rateLimits; },
     get error() { return error; },
     get loading() { return loading; },
     get pendingMessage() { return pendingMessage; },
@@ -51,6 +55,8 @@ export function createThreadPane() {
       pendingApprovals = [];
       backgroundTasks = new Map();
       tokenUsage = null;
+      contextWindow = null;
+      rateLimits = [];
       sessionStatus = 'disconnected';
       error = null;
       pendingMessage = null;
@@ -89,6 +95,8 @@ export function createThreadPane() {
       backgroundTasks = new Map();
       sessionStatus = 'disconnected';
       tokenUsage = null;
+      contextWindow = null;
+      rateLimits = [];
       error = null;
       loading = false;
       pendingMessage = null;
@@ -178,6 +186,14 @@ export function createThreadPane() {
 
     setPendingMessage(text: string | null): void {
       pendingMessage = text;
+    },
+
+    setContextWindow(data: ContextWindow): void {
+      contextWindow = data;
+    },
+
+    setRateLimits(limits: RateLimitEntry[]): void {
+      rateLimits = limits;
     },
   };
 }
