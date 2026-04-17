@@ -168,8 +168,8 @@ func TestServiceShutdownReturnsSessionCloseErrors(t *testing.T) {
 	if err == nil {
 		t.Fatal("ServiceShutdown() error = nil, want provider close error")
 	}
-	if !strings.Contains(err.Error(), "close claude session for thread "+thread.ID) {
-		t.Fatalf("ServiceShutdown() error = %v, want thread-scoped close context", err)
+	if !strings.Contains(err.Error(), "session for thread "+thread.ID) || !strings.Contains(err.Error(), "close claude") {
+		t.Fatalf("ServiceShutdown() error = %v, want thread-scoped close context with claude provider", err)
 	}
 }
 
