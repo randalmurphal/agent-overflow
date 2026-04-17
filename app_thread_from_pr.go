@@ -15,6 +15,14 @@ import (
 	"github.com/google/uuid"
 )
 
+// MaxInlinedPRDiffBytes caps the number of patch bytes we inline into the
+// first user message on a PR-seeded thread. Oversized PRs (vendored dep bumps,
+// generated lockfile churn) used to be inlined verbatim and cause SQLite row
+// or frontend render explosions. Beyond this threshold we truncate and append
+// a marker so the agent sees explicit evidence of the omission instead of a
+// silently-cut patch.
+const MaxInlinedPRDiffBytes = 256 * 1024
+
 // PRReference identifies a GitHub pull request by owner/repo/number.
 type PRReference struct {
 	Owner  string
@@ -319,7 +327,23 @@ func buildPRUserMessage(ref PRReference, meta prMetadata, diff string) string {
 		b.WriteString("\n\n")
 	}
 	b.WriteString("## Patch\n\n```diff\n")
-	b.WriteString(strings.TrimRight(diff, "\n"))
+	b.WriteString(strings.TrimRight(truncatePRDiff(diff), "\n"))
 	b.WriteString("\n```\n")
 	return b.String()
+}
+
+// truncatePRDiff clips diff output at MaxInlinedPRDiffBytes and appends a
+// clear marker recording how many bytes were dropped. Shorter inputs are
+// returned unchanged.
+func truncatePRDiff(diff string) string {
+	if len(diff) <= MaxInlinedPRDiffBytes {
+		return diff
+	}
+	omitted := len(diff) - MaxInlinedPRDiffBytes
+	return fmt.Sprintf(
+		"%s\n\n<!-- diff truncated at %d KB; %d bytes omitted -->",
+		diff[:MaxInlinedPRDiffBytes],
+		MaxInlinedPRDiffBytes/1024,
+		omitted,
+	)
 }

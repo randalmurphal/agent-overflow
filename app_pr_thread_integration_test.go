@@ -420,14 +420,11 @@ func TestPR_GhReturnsMalformedJSON(t *testing.T) {
 }
 
 // TestPR_LargeDiffTruncatedOrCapped: gh can return very large diffs (e.g.
-// vendored dependency bumps). The app must not crash — we observe whether
-// the item body is verbatim-inlined or truncated and document the choice.
-//
-// Observation: as of Wave 5D, the app inlines the full diff verbatim inside a
-// ```diff block. There is NO truncation logic in buildPRUserMessage. This test
-// codifies that behavior so a future truncation feature breaks it loudly.
+// vendored dependency bumps). The app caps the inlined diff at
+// MaxInlinedPRDiffBytes and appends a visible truncation marker so oversized
+// PRs don't blow up the SQLite row or the frontend render.
 func TestPR_LargeDiffTruncatedOrCapped(t *testing.T) {
-	largeDiff := buildLargeDiff(500_000)
+	largeDiff := buildLargeDiff(MaxInlinedPRDiffBytes * 2)
 	installMockGhPR(t, prIntegrationViewJSON, largeDiff)
 
 	app := newTestAppWithStore(t)
@@ -444,12 +441,29 @@ func TestPR_LargeDiffTruncatedOrCapped(t *testing.T) {
 	if len(items) != 1 {
 		t.Fatalf("items = %d, want 1", len(items))
 	}
-	// Documented behavior: full diff is inlined. Assert the body is at least as
-	// large as the diff we fed in -- catches an accidental silent truncation
-	// introduced in a future change.
-	if len(items[0].Summary) < len(largeDiff) {
-		t.Fatalf("summary length %d < diff length %d -- unexpected truncation", len(items[0].Summary), len(largeDiff))
+	summary := items[0].Summary
+	// The body must stay well below the raw diff length — truncation happened.
+	if len(summary) >= len(largeDiff) {
+		t.Fatalf("summary length %d >= diff length %d -- expected truncation", len(summary), len(largeDiff))
 	}
+	// A clear truncation marker must be present so the agent (and reviewers)
+	// see explicit evidence of the omission.
+	if !strings.Contains(summary, "diff truncated at") {
+		t.Fatalf("summary missing truncation marker:\n%s", tailForLog(summary))
+	}
+	if !strings.Contains(summary, "bytes omitted") {
+		t.Fatalf("summary missing omitted-bytes count:\n%s", tailForLog(summary))
+	}
+}
+
+// tailForLog returns the last few hundred bytes of a string so we can include
+// the truncation marker in a failure message without dumping the full body.
+func tailForLog(s string) string {
+	const keep = 500
+	if len(s) <= keep {
+		return s
+	}
+	return "..." + s[len(s)-keep:]
 }
 
 // TestPR_WorkspaceResolvedFromRecents: an entry in settings.RecentWorkspaces
