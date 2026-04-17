@@ -191,6 +191,42 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
     },
 
     /**
+     * Restore a draft snapshot to a specific thread. Used when a send
+     * rejects AFTER the user has switched panes: we don't want to silently
+     * dump thread A's failed message into thread B's composer. If the draft
+     * store is still on the given thread we also restore the local UI state
+     * so the composer re-populates immediately; otherwise the backend row
+     * is repopulated so the user sees the draft next time they return.
+     */
+    async restoreDraftFor(
+      id: string,
+      snapshot: { content: string; attachments: Attachment[]; terminalChips: TerminalChip[] },
+    ): Promise<void> {
+      // Persist the snapshot back to the backend regardless of active thread
+      // so the draft lives across thread switches.
+      try {
+        await SaveDraft(
+          id,
+          snapshot.content,
+          snapshot.attachments.map((a) => a.id),
+          snapshot.terminalChips,
+        );
+      } catch (err) {
+        error = `Failed to restore draft: ${err}`;
+        return;
+      }
+      // If the store is still pointed at the same thread, mirror the
+      // snapshot into the local state so the composer shows it right away.
+      if (threadId === id) {
+        clearDebounce();
+        pendingSaveGeneration++;
+        content = snapshot.content;
+        attachments = [...snapshot.attachments];
+        terminalChips = [...snapshot.terminalChips];
+      }
+    },
+
+    /**
      * Build the outgoing message payload for Send. Terminal chip contents
      * are inlined as fenced blocks and attachments are appended as
      * markdown image references when they have a known path.

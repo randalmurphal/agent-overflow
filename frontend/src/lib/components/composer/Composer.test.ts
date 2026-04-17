@@ -197,12 +197,103 @@ describe('<Composer>', () => {
 
     await fireEvent.input(textarea, { target: { value: 'fails' } });
     await fireEvent.click(getByRole('button', { name: /send/i }));
-    await Promise.resolve();
-    await Promise.resolve();
+    // `send()` awaits clearAfterSend then SendMessage then restoreDraftFor —
+    // give microtasks several ticks to settle.
+    await new Promise((r) => setTimeout(r, 10));
 
     expect(pane.pendingMessage).toBeNull();
     expect(pane.error).toMatch(/Failed to send message/);
     expect(draft.content).toBe('fails');
+    consoleErr.mockRestore();
+  });
+
+  // --- Bug D3 regression ---
+  it('late SendMessage failure after thread switch does NOT clobber new thread draft', async () => {
+    const pane = await makeReadyPane();
+    const draft = await makeDraftStore('thread-1');
+    // Per-thread GetDraft so setThread('thread-B') doesn't bring back A's
+    // stale snapshot.
+    setBindingMock('GetDraft', async (id: string) => ({
+      threadId: id,
+      content: id === 'thread-B' ? 'B draft' : '',
+      attachmentIds: [],
+      terminalChips: [],
+      updatedAt: 0,
+    }));
+
+    // SendMessage stays pending until we release it so we can switch threads
+    // in between.
+    let rejectSend!: (err: Error) => void;
+    const sendP = new Promise<void>((_r, rej) => { rejectSend = rej; });
+    sendP.catch(() => {});
+    setBindingMock('SendMessage', () => sendP);
+
+    // Record every SaveDraft invocation so we can verify which thread each
+    // save targets. thread-1 is restored; thread-B must be left alone.
+    const saveMock = setBindingMock('SaveDraft', async () => {});
+    const consoleErr = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const { getByLabelText, getByRole } = render(Composer, { props: { pane, draft } });
+    const textarea = getByLabelText('Message input') as HTMLTextAreaElement;
+
+    await fireEvent.input(textarea, { target: { value: 'A message' } });
+    // Clear prior SaveDraft calls triggered by input debounce so we only
+    // see the restore path below.
+    saveMock.mockClear();
+
+    // Kick off send; SendMessage is pending.
+    await fireEvent.click(getByRole('button', { name: /send/i }));
+    await Promise.resolve();
+    // Switch the draft store to thread-B mid-flight.
+    await draft.setThread('thread-B');
+    expect(draft.threadId).toBe('thread-B');
+    // B should have hydrated its own backend draft content.
+    expect(draft.content).toBe('B draft');
+
+    // Now the send fails; give the rejection chain time to run
+    // restoreDraftFor (which awaits SaveDraft) and the toast/error branch.
+    rejectSend(new Error('rpc down'));
+    await new Promise((r) => setTimeout(r, 10));
+
+    // B's draft must not be overwritten with A's failed message.
+    expect(draft.threadId).toBe('thread-B');
+    expect(draft.content).toBe('B draft');
+
+    // thread-1's SaveDraft (the sender) should have been called with the
+    // snapshot so returning to it shows the preserved message.
+    const savesForSender = saveMock.mock.calls.filter((c) => c[0] === 'thread-1');
+    const lastSaveForSender = savesForSender[savesForSender.length - 1];
+    expect(lastSaveForSender).toBeDefined();
+    expect(lastSaveForSender![1]).toBe('A message');
+
+    // No SaveDraft for thread-B containing thread-1's message.
+    const bWroteAContent = saveMock.mock.calls.some(
+      (c) => c[0] === 'thread-B' && c[1] === 'A message',
+    );
+    expect(bWroteAContent).toBe(false);
+
+    consoleErr.mockRestore();
+  });
+
+  it('send failure while still on the original thread restores local draft', async () => {
+    const pane = await makeReadyPane();
+    const draft = await makeDraftStore('thread-1');
+    setBindingMock('SendMessage', async () => {
+      throw new Error('rpc down');
+    });
+    const consoleErr = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const { getByLabelText, getByRole } = render(Composer, { props: { pane, draft } });
+    const textarea = getByLabelText('Message input') as HTMLTextAreaElement;
+
+    await fireEvent.input(textarea, { target: { value: 'retry me' } });
+    await fireEvent.click(getByRole('button', { name: /send/i }));
+    // Let restoreDraftFor settle.
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(draft.threadId).toBe('thread-1');
+    expect(draft.content).toBe('retry me');
+    expect(pane.error).toMatch(/Failed to send message/);
     consoleErr.mockRestore();
   });
 

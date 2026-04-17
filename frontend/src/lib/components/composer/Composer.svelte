@@ -69,9 +69,14 @@
     pane.setPendingMessage(message);
 
     const threadId = pane.threadId;
-    const previousContent = draft.content;
-    const previousAttachments = draft.attachments;
-    const previousChips = draft.terminalChips;
+    // Capture the pre-send draft contents bound to THIS thread. If the user
+    // switches threads before SendMessage resolves and the send rejects, we
+    // must not bleed the snapshot into the new pane's local composer.
+    const snapshot = {
+      content: draft.content,
+      attachments: draft.attachments.slice(),
+      terminalChips: draft.terminalChips.slice(),
+    };
 
     draft.setContent('');
     await draft.clearAfterSend();
@@ -82,11 +87,19 @@
     } catch (err) {
       console.error('Failed to send message:', err);
       pane.setPendingMessage(null);
-      pane.setError(`Failed to send message: ${err}`);
-      // Restore state so the user doesn't lose their draft.
-      draft.setContent(previousContent);
-      for (const att of previousAttachments) draft.addAttachment(att);
-      for (const chip of previousChips) draft.addTerminalChip(chip);
+      // restoreDraftFor always persists to the captured thread; it only
+      // touches local UI state when the draft store is still on that thread.
+      // If the user has moved on, surface a toast so the failed send is
+      // visible rather than silent.
+      await draft.restoreDraftFor(threadId, snapshot);
+      if (draft.threadId !== threadId) {
+        addToast(
+          'error',
+          `Message to the previous thread failed to send; draft preserved (${err}).`,
+        );
+      } else {
+        pane.setError(`Failed to send message: ${err}`);
+      }
     }
   }
 
