@@ -3,6 +3,7 @@
 package triage
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -16,14 +17,26 @@ import (
 	"github.com/google/uuid"
 )
 
+// CheckpointCapture is the subset of checkpoint.Store that the router calls
+// at turn-start. Kept as an interface so tests can inject a stub.
+type CheckpointCapture interface {
+	IsGitRepository(ctx context.Context, workspace string) bool
+	CaptureBaseline(ctx context.Context, workspace, threadID string, turnIndex int) (string, error)
+}
+
 // Router classifies provider events and routes them.
 type Router struct {
 	store                 *store.Store
 	emit                  func(eventName string, data any) // wraps app.Event.Emit
+	checkpoints           CheckpointCapture                // nil-safe; no-op when nil
 	mu                    sync.Mutex
 	textAccumulators      map[string]*strings.Builder // threadID → accumulated assistant text
 	reasoningAccumulators map[string]*strings.Builder // threadID → accumulated Codex reasoning
 	pendingCommandDiffs   map[string]pendingCommandInlineDiff
+	// capturedTurns guards against double-capture when a provider emits
+	// multiple EventTurnStart events for the same (thread, turn) — which
+	// happens when Claude re-sends a system.init after an interrupt.
+	capturedTurns map[string]bool // key = threadID|turnIndex
 }
 
 // NewRouter creates a triage router.
@@ -34,7 +47,17 @@ func NewRouter(st *store.Store, emit func(eventName string, data any)) *Router {
 		textAccumulators:      make(map[string]*strings.Builder),
 		reasoningAccumulators: make(map[string]*strings.Builder),
 		pendingCommandDiffs:   make(map[string]pendingCommandInlineDiff),
+		capturedTurns:         make(map[string]bool),
 	}
+}
+
+// SetCheckpointStore wires an external checkpoint store into the router.
+// Must be called before Handle is invoked for the first time. Nil is a
+// valid argument — it disables checkpointing without breaking triage.
+func (r *Router) SetCheckpointStore(c CheckpointCapture) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.checkpoints = c
 }
 
 // Handle processes a provider event: persists heavy payloads, forwards inline events.
@@ -46,8 +69,9 @@ func (r *Router) Handle(evt provider.ProviderEvent) error {
 		return r.handleToolStart(evt)
 	case provider.EventToolComplete:
 		return r.handleToolComplete(evt)
-	case provider.EventTurnStart,
-		provider.EventApprovalRequest,
+	case provider.EventTurnStart:
+		return r.handleTurnStart(evt)
+	case provider.EventApprovalRequest,
 		provider.EventApprovalResolved,
 		provider.EventSessionStatus,
 		provider.EventToolProgress,
@@ -163,6 +187,117 @@ func (r *Router) handleThreadRename(evt provider.ProviderEvent) error {
 		return fmt.Errorf("update thread title: %w", err)
 	}
 	return nil
+}
+
+// handleTurnStart forwards the event inline (so the UI gets the turn marker)
+// and, if a checkpoint store is wired up, captures a baseline snapshot of the
+// workspace. Checkpoint failure is NOT fatal to the turn — it surfaces as a
+// `provider:event_error` event the frontend can display, but the turn proceeds.
+func (r *Router) handleTurnStart(evt provider.ProviderEvent) error {
+	// Emit the turn-start event first so the UI keeps its existing behaviour
+	// even if checkpoint capture stalls (it shouldn't — capture is ~50 ms for
+	// 500 files — but we don't want to couple triage latency to git).
+	r.emit("provider:event", evt)
+	r.captureBaselineForTurn(context.Background(), evt.ThreadID)
+	return nil
+}
+
+// captureBaselineForTurn runs checkpoint capture + SQLite persistence for the
+// current turn. Errors are logged and surfaced as activity events so the UI
+// can show "checkpoints unavailable" without blocking the turn.
+func (r *Router) captureBaselineForTurn(ctx context.Context, threadID string) {
+	cap := r.checkpointStore()
+	if cap == nil {
+		return
+	}
+	thread, err := r.store.GetThread(threadID)
+	if err != nil {
+		log.Printf("triage: checkpoint load thread %s: %v", threadID, err)
+		return
+	}
+	workspace := checkpointWorkspacePath(thread)
+	if workspace == "" {
+		return
+	}
+	if !cap.IsGitRepository(ctx, workspace) {
+		r.emit("checkpoint:unavailable", map[string]any{
+			"threadId": threadID,
+			"reason":   "not-a-git-repo",
+		})
+		return
+	}
+	turnIndex, err := r.store.LastTurnIndex(threadID)
+	if err != nil {
+		log.Printf("triage: checkpoint turn index %s: %v", threadID, err)
+		return
+	}
+	if r.markTurnCaptured(threadID, turnIndex) {
+		return // already captured for this (thread, turn)
+	}
+	ref, err := cap.CaptureBaseline(ctx, workspace, threadID, turnIndex)
+	if err != nil {
+		r.unmarkTurnCaptured(threadID, turnIndex)
+		r.emit("checkpoint:error", map[string]any{
+			"threadId":  threadID,
+			"turnIndex": turnIndex,
+			"error":     err.Error(),
+		})
+		log.Printf("triage: checkpoint capture thread=%s turn=%d: %v", threadID, turnIndex, err)
+		return
+	}
+	now := time.Now().UnixMilli()
+	record := store.Checkpoint{
+		ID:            uuid.NewString(),
+		ThreadID:      threadID,
+		TurnIndex:     turnIndex,
+		RefName:       ref,
+		CapturedAt:    now,
+		WorkspacePath: workspace,
+	}
+	if err := r.store.SaveCheckpoint(record); err != nil {
+		log.Printf("triage: checkpoint persist thread=%s turn=%d: %v", threadID, turnIndex, err)
+		r.unmarkTurnCaptured(threadID, turnIndex)
+		return
+	}
+	r.emit("checkpoint:captured", map[string]any{
+		"threadId":   threadID,
+		"turnIndex":  turnIndex,
+		"refName":    ref,
+		"capturedAt": now,
+	})
+}
+
+func (r *Router) checkpointStore() CheckpointCapture {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.checkpoints
+}
+
+func (r *Router) markTurnCaptured(threadID string, turnIndex int) bool {
+	key := fmt.Sprintf("%s|%d", threadID, turnIndex)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.capturedTurns[key] {
+		return true
+	}
+	r.capturedTurns[key] = true
+	return false
+}
+
+func (r *Router) unmarkTurnCaptured(threadID string, turnIndex int) {
+	key := fmt.Sprintf("%s|%d", threadID, turnIndex)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.capturedTurns, key)
+}
+
+// checkpointWorkspacePath picks the on-disk directory we should snapshot.
+// Prefers worktree_path (where the agent actually edits) over workspace_path.
+func checkpointWorkspacePath(t store.Thread) string {
+	if t.WorktreePath != "" {
+		return t.WorktreePath
+	}
+	return t.WorkspacePath
 }
 
 func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
@@ -312,6 +447,12 @@ func (r *Router) CleanupThread(threadID string) {
 	for key, pending := range r.pendingCommandDiffs {
 		if pending.ThreadID == threadID {
 			delete(r.pendingCommandDiffs, key)
+		}
+	}
+	prefix := threadID + "|"
+	for key := range r.capturedTurns {
+		if strings.HasPrefix(key, prefix) {
+			delete(r.capturedTurns, key)
 		}
 	}
 }
