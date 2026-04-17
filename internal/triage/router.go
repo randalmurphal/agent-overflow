@@ -678,24 +678,19 @@ func (r *Router) persistTurnText(threadID, content, parentToolUseID string) erro
 		turnIndex = 0
 	}
 
-	itemIndex, err := r.store.NextItemIndex(threadID, turnIndex)
-	if err != nil {
-		log.Printf("triage: next item index: %v (defaulting to 0)", err)
-		itemIndex = 0
-	}
-
 	item := store.Item{
 		ID:              uuid.New().String(),
 		ThreadID:        threadID,
 		TurnIndex:       turnIndex,
-		ItemIndex:       itemIndex,
 		Kind:            string(provider.ItemText),
 		Role:            "assistant",
 		Summary:         content,
 		ParentToolUseID: parentToolUseID,
 		CreatedAt:       now,
 	}
-	if err := r.store.InsertItem(item); err != nil {
+	// AppendItem computes MAX+1 atomically with the insert so a
+	// concurrent writer on the same (thread, turn) cannot collide.
+	if _, err := r.store.AppendItem(item); err != nil {
 		return fmt.Errorf("persist assistant text: %w", err)
 	}
 	r.metrics.ItemsPersisted.Add(context.Background(), 1,
@@ -778,17 +773,10 @@ func (r *Router) insertHeavyItem(
 	now int64,
 	turnIndex int,
 ) error {
-	itemIndex, err := r.store.NextItemIndex(evt.ThreadID, turnIndex)
-	if err != nil {
-		log.Printf("triage: next item index: %v (defaulting to 0)", err)
-		itemIndex = 0
-	}
-
 	item := store.Item{
 		ID:              itemID,
 		ThreadID:        evt.ThreadID,
 		TurnIndex:       turnIndex,
-		ItemIndex:       itemIndex,
 		Kind:            itemKind,
 		Role:            "assistant",
 		Summary:         buildSummary(payloadKind, metaJSON),
@@ -796,7 +784,7 @@ func (r *Router) insertHeavyItem(
 		ParentToolUseID: evt.ParentToolUseID,
 		CreatedAt:       now,
 	}
-	if err := r.store.InsertItem(item); err != nil {
+	if _, err := r.store.AppendItem(item); err != nil {
 		return fmt.Errorf("persist item: %w", err)
 	}
 	r.metrics.ItemsPersisted.Add(context.Background(), 1,
@@ -810,7 +798,9 @@ func (r *Router) insertHeavyItem(
 // insertHeavyItemAndPayload writes the payload and its matching item in
 // a single transaction (Bug B10). A failure in either half aborts both,
 // so the store never retains an orphan payload row when item insertion
-// fails (or vice versa).
+// fails (or vice versa). AppendItemWithPayload computes MAX+1 inside
+// the transaction so two concurrent heavy-item writers for the same
+// (thread, turn) cannot land on the same item_index.
 func (r *Router) insertHeavyItemAndPayload(
 	evt provider.ProviderEvent,
 	payloadKind, itemKind string,
@@ -819,17 +809,10 @@ func (r *Router) insertHeavyItemAndPayload(
 	now int64,
 	turnIndex int,
 ) error {
-	itemIndex, err := r.store.NextItemIndex(evt.ThreadID, turnIndex)
-	if err != nil {
-		log.Printf("triage: next item index: %v (defaulting to 0)", err)
-		itemIndex = 0
-	}
-
 	item := store.Item{
 		ID:              itemID,
 		ThreadID:        evt.ThreadID,
 		TurnIndex:       turnIndex,
-		ItemIndex:       itemIndex,
 		Kind:            itemKind,
 		Role:            "assistant",
 		Summary:         buildSummary(payloadKind, metaJSON),
@@ -837,7 +820,7 @@ func (r *Router) insertHeavyItemAndPayload(
 		ParentToolUseID: evt.ParentToolUseID,
 		CreatedAt:       now,
 	}
-	if err := r.store.InsertItemWithPayload(item, payload); err != nil {
+	if _, err := r.store.AppendItemWithPayload(item, payload); err != nil {
 		return fmt.Errorf("persist item+payload: %w", err)
 	}
 	r.metrics.ItemsPersisted.Add(context.Background(), 1,

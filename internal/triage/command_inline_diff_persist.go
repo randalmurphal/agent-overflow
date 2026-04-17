@@ -95,22 +95,17 @@ func (r *Router) persistToolResult(evt provider.ProviderEvent, meta ToolResultMe
 		return r.store.UpdateItemPayload(item.ID, payloadID, summary, now)
 	}
 
-	itemIndex, err := r.store.NextItemIndex(evt.ThreadID, turnIndex)
-	if err != nil {
-		return fmt.Errorf("tool result item index: %w", err)
-	}
-
-	return r.store.InsertItem(store.Item{
+	_, err = r.store.AppendItem(store.Item{
 		ID:        evt.ItemID,
 		ThreadID:  evt.ThreadID,
 		TurnIndex: turnIndex,
-		ItemIndex: itemIndex,
 		Kind:      toolResultItemKind,
 		Role:      "assistant",
 		Summary:   summary,
 		PayloadID: payloadID,
 		CreatedAt: now,
 	})
+	return err
 }
 
 func captureCommandExecutionToolResult(raw json.RawMessage, workspaceRoot string) (ToolResultMeta, []byte, bool) {

@@ -311,3 +311,114 @@ func TestAppendItemReturnsAssignedIndex(t *testing.T) {
 		t.Errorf("second append should return 1, got %d", idxB)
 	}
 }
+
+// TestConcurrentAppendItemWithPayloadAssignsUniqueIndex mirrors the
+// AppendItem test for the combined item+payload writer. The returned
+// indices must be unique and every row must end up persisted.
+func TestConcurrentAppendItemWithPayloadAssignsUniqueIndex(t *testing.T) {
+	s := newTestStore(t)
+	now := time.Now().UnixMilli()
+	if err := s.CreateThread(Thread{
+		ID: "t-race-pl", Title: "t", Provider: "claude", WorkspacePath: "/tmp",
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+
+	const writers = 50
+	var wg sync.WaitGroup
+	errs := make(chan error, writers)
+	for i := 0; i < writers; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			itemID := fmt.Sprintf("item-%d", n)
+			payloadID := fmt.Sprintf("pay-%d", n)
+			payload := Payload{
+				ID: payloadID, Kind: "diff", Meta: "{}",
+				Data: []byte("delta"), CreatedAt: now,
+			}
+			_, err := s.AppendItemWithPayload(Item{
+				ID:        itemID,
+				ThreadID:  "t-race-pl",
+				TurnIndex: 0,
+				Kind:      "diff",
+				Role:      "assistant",
+				Summary:   fmt.Sprintf("goroutine %d", n),
+				PayloadID: payloadID,
+				CreatedAt: now,
+			}, payload)
+			if err != nil {
+				errs <- fmt.Errorf("append+payload: %w", err)
+			}
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Errorf("goroutine error: %v", err)
+	}
+
+	items, err := s.ListTurnItems("t-race-pl", 0)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(items) != writers {
+		t.Fatalf("expected %d items, got %d", writers, len(items))
+	}
+	seen := make(map[int]bool, writers)
+	for _, it := range items {
+		if seen[it.ItemIndex] {
+			t.Errorf("duplicate item_index %d", it.ItemIndex)
+		}
+		seen[it.ItemIndex] = true
+	}
+	// Every item must have its paired payload persisted too.
+	for _, it := range items {
+		if it.PayloadID == "" {
+			t.Errorf("item %s missing PayloadID", it.ID)
+			continue
+		}
+		meta, err := s.GetPayloadMeta(it.PayloadID)
+		if err != nil {
+			t.Errorf("payload %s missing: %v", it.PayloadID, err)
+		}
+		if meta.Kind != "diff" {
+			t.Errorf("payload %s kind = %q, want diff", it.PayloadID, meta.Kind)
+		}
+	}
+}
+
+// TestAppendItemWithPayloadReturnsAssignedIndex sanity-checks the
+// returned index: first insert lands at 0, second at 1, etc.
+func TestAppendItemWithPayloadReturnsAssignedIndex(t *testing.T) {
+	s := newTestStore(t)
+	now := time.Now().UnixMilli()
+	if err := s.CreateThread(Thread{
+		ID: "t-rap", Title: "t", Provider: "claude", WorkspacePath: "/tmp",
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+
+	idx, err := s.AppendItemWithPayload(Item{
+		ID: "a", ThreadID: "t-rap", TurnIndex: 0, Kind: "diff",
+		Role: "assistant", PayloadID: "pa", CreatedAt: now,
+	}, Payload{ID: "pa", Kind: "diff", Meta: "{}", Data: []byte("pa"), CreatedAt: now})
+	if err != nil {
+		t.Fatalf("append a: %v", err)
+	}
+	if idx != 0 {
+		t.Errorf("first append index = %d, want 0", idx)
+	}
+	idx, err = s.AppendItemWithPayload(Item{
+		ID: "b", ThreadID: "t-rap", TurnIndex: 0, Kind: "diff",
+		Role: "assistant", PayloadID: "pb", CreatedAt: now,
+	}, Payload{ID: "pb", Kind: "diff", Meta: "{}", Data: []byte("pb"), CreatedAt: now})
+	if err != nil {
+		t.Fatalf("append b: %v", err)
+	}
+	if idx != 1 {
+		t.Errorf("second append index = %d, want 1", idx)
+	}
+}

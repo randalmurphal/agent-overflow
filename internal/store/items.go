@@ -103,6 +103,20 @@ func (s *Store) ListItems(threadID string) ([]Item, error) {
 	return items, rows.Err()
 }
 
+// NextItemIndex returns the next available item_index for the given
+// (thread, turn). Prefer AppendItem for anything that follows the read
+// with an insert: NextItemIndex + InsertItem is a read-then-write pair
+// that two goroutines can race on, landing both rows at the same
+// index. Wave A's UNIQUE(thread_id, turn_index, item_index) guards
+// against actual corruption, but a caller that treats NextItemIndex as
+// "reserve a slot" will see UNIQUE errors instead of a clean ordered
+// append.
+//
+// NextItemIndex is fine when the caller only needs to read the current
+// tail (e.g. choosing which payload to update) and does not then
+// insert using the returned value. For "append a new item" use
+// AppendItem, which computes MAX+1 and inserts inside the same
+// transaction.
 func (s *Store) NextItemIndex(threadID string, turnIndex int) (int, error) {
 	var maxIndex sql.NullInt64
 	err := s.db.QueryRow(

@@ -59,6 +59,62 @@ func (s *Store) InsertItemWithPayload(item Item, payload Payload) error {
 	return nil
 }
 
+// AppendItemWithPayload is the append-at-next-index variant of
+// InsertItemWithPayload. The item's ItemIndex is ignored; the store
+// computes MAX(item_index)+1 inside the transaction so concurrent
+// appenders for the same (thread, turn) cannot collide. Returns the
+// assigned item_index. Prefer this over NextItemIndex + InsertItemWithPayload
+// when you don't need to force a specific index.
+func (s *Store) AppendItemWithPayload(item Item, payload Payload) (int, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, fmt.Errorf("store: begin append item+payload tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	var maxIndex sql.NullInt64
+	if err := tx.QueryRow(
+		`SELECT MAX(item_index) FROM items WHERE thread_id = ? AND turn_index = ?`,
+		item.ThreadID, item.TurnIndex,
+	).Scan(&maxIndex); err != nil {
+		return 0, fmt.Errorf("store: append item+payload next index: %w", err)
+	}
+	next := 0
+	if maxIndex.Valid {
+		next = int(maxIndex.Int64) + 1
+	}
+	item.ItemIndex = next
+
+	if _, err := tx.Exec(
+		`INSERT INTO payloads (id, kind, meta, data, created_at)
+		 VALUES (?, ?, ?, ?, ?)`,
+		payload.ID, payload.Kind, payload.Meta, payload.Data, payload.CreatedAt,
+	); err != nil {
+		return 0, fmt.Errorf("store: append item+payload insert payload: %w", err)
+	}
+
+	if _, err := tx.Exec(
+		`INSERT INTO items (id, thread_id, turn_index, item_index, kind, role, summary, payload_id, parent_tool_use_id, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		item.ID, item.ThreadID, item.TurnIndex, item.ItemIndex, item.Kind, item.Role, item.Summary,
+		nilIfEmpty(item.PayloadID), item.ParentToolUseID, item.CreatedAt,
+	); err != nil {
+		return 0, fmt.Errorf("store: append item+payload insert item: %w", err)
+	}
+
+	if _, err := tx.Exec(
+		`UPDATE threads SET updated_at = ? WHERE id = ?`,
+		item.CreatedAt, item.ThreadID,
+	); err != nil {
+		return 0, fmt.Errorf("store: append item+payload touch thread %s: %w", item.ThreadID, err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("store: commit append item+payload tx: %w", err)
+	}
+	return next, nil
+}
+
 func (s *Store) UpsertPayload(p Payload) error {
 	_, err := s.db.Exec(
 		`INSERT OR REPLACE INTO payloads (id, kind, meta, data, created_at)
