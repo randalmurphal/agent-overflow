@@ -94,9 +94,13 @@
     if (!wizard.canCommit) return;
     const subject = wizard.commitSubject.trim();
     const body = wizard.commitBody.trim();
+    const startGeneration = wizard.generation;
     wizard.beginCommit();
     try {
       const result = (await GitCommit(pane.threadId, subject, body)) as GitActionResult;
+      // Drawer may have been closed (or reopened on a new thread) while the
+      // commit was in flight; resuming would blow up the state machine.
+      if (wizard.generation !== startGeneration) return;
       if (result.error) {
         wizard.failCommit(result.error);
         return;
@@ -108,6 +112,7 @@
       addToast('success', `Committed ${(result.commitSha ?? '').slice(0, 7)}`);
       await refreshStatus(pane.threadId);
     } catch (err) {
+      if (wizard.generation !== startGeneration) return;
       wizard.failCommit(err instanceof Error ? err.message : String(err));
     }
   }
@@ -119,9 +124,11 @@
   async function handlePush(): Promise<void> {
     if (!pane.threadId) return;
     if (!wizard.canPush) return;
+    const startGeneration = wizard.generation;
     wizard.beginPush();
     try {
       const result = (await GitPush(pane.threadId)) as GitActionResult;
+      if (wizard.generation !== startGeneration) return;
       if (result.error) {
         wizard.failPush(result.error);
         return;
@@ -130,6 +137,7 @@
       addToast('success', 'Pushed');
       await refreshStatus(pane.threadId);
     } catch (err) {
+      if (wizard.generation !== startGeneration) return;
       wizard.failPush(err instanceof Error ? err.message : String(err));
     }
   }
@@ -144,9 +152,11 @@
     const title = wizard.prTitle.trim();
     const body = wizard.prBody.trim();
     const draft = wizard.prDraft;
+    const startGeneration = wizard.generation;
     wizard.beginCreatePR();
     try {
       const result = (await GitCreatePR(pane.threadId, title, body, draft)) as GitActionResult;
+      if (wizard.generation !== startGeneration) return;
       if (result.error) {
         wizard.failCreatePR(result.error);
         return;
@@ -155,6 +165,7 @@
       addToast('success', 'Pull request opened');
       await refreshStatus(pane.threadId);
     } catch (err) {
+      if (wizard.generation !== startGeneration) return;
       wizard.failCreatePR(err instanceof Error ? err.message : String(err));
     }
   }

@@ -74,6 +74,16 @@ export interface ShipChangesState {
   /** True when the wizard has produced a successful PR. */
   readonly finished: boolean;
 
+  /**
+   * Monotonic counter that increments each time the wizard is opened or
+   * closed. Async operations (GitCommit/GitPush/GitCreatePR) capture this
+   * value at start and compare against the current value before mutating
+   * state; mismatches mean the user closed the drawer (or opened it on a
+   * different thread) mid-flight and the stale result must be dropped
+   * silently instead of throwing on an illegal transition.
+   */
+  readonly generation: number;
+
   /** Open the drawer for a given thread. Resets everything. */
   open(threadId: string): void;
   /** Close the drawer and reset to idle. */
@@ -142,6 +152,11 @@ export function createShipChangesState(): ShipChangesState {
   let prDraft = $state(false);
   let prUrl: string | null = $state(null);
   let error: string | null = $state(null);
+  // `generation` is intentionally NOT $state: it's only read in async
+  // branches (never in templates or derived reactivity) so making it
+  // reactive would cause spurious re-runs of any $effect that reads
+  // wizard.generation. Bumping it must be synchronous and side-effect-free.
+  let generation = 0;
 
   function reset(): void {
     phase = 'idle';
@@ -169,6 +184,7 @@ export function createShipChangesState(): ShipChangesState {
     get prDraft() { return prDraft; },
     get prUrl() { return prUrl; },
     get error() { return error; },
+    get generation() { return generation; },
     get canCommit() {
       return phase === 'commit.review' && commitSubject.trim().length > 0;
     },
@@ -183,11 +199,19 @@ export function createShipChangesState(): ShipChangesState {
     open(id) {
       reset();
       threadId = id;
+      // Bump the generation so any in-flight operation from a previous
+      // open()/close() cycle is classified as stale when it resolves.
+      generation += 1;
       // Caller will follow up with setStatus() once GetGitStatus returns;
       // we stay on idle until then so the UI can show a spinner.
     },
 
-    close() { reset(); },
+    close() {
+      reset();
+      // Same generation bump as open(): every async op captured the
+      // pre-close value and must see a different value now.
+      generation += 1;
+    },
 
     setStatus(next) {
       status = next;

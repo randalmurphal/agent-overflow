@@ -297,4 +297,155 @@ describe('<ShipChangesDrawer>', () => {
     expect(steps.querySelector('[data-step="push"]')?.getAttribute('data-state')).toBe('pending');
     expect(steps.querySelector('[data-step="pr"]')?.getAttribute('data-state')).toBe('pending');
   });
+
+  // Bug C2 regression: closing the drawer while a commit is in flight used
+  // to leave the wizard in an illegal state because completeCommit's phase
+  // guard threw when called from the post-reset 'idle' phase. Worse, the
+  // outer catch block called failCommit which threw a second illegal
+  // transition error that escaped as an unhandled rejection. The fix is a
+  // generation counter captured at the start of each side effect and
+  // checked before any state mutation.
+  // Bug C2 regression: closing the drawer while a commit is in flight used
+  // to leave the wizard in an illegal state because completeCommit's phase
+  // guard threw when called from the post-reset 'idle' phase. Worse, the
+  // outer catch block called failCommit which threw a second illegal
+  // transition error that escaped as an unhandled rejection. The fix is a
+  // generation counter captured at the start of each side effect and
+  // checked before any state mutation.
+  //
+  // Detection strategy: spy on the wizard's failCommit method. Without
+  // the fix, the handler's catch block invokes failCommit when
+  // completeCommit throws (because the phase is 'idle' post-reset);
+  // the spy's call count tells us the handler tried to mutate state
+  // after the close. With the fix, the handler bails on the generation
+  // mismatch before touching state.
+  it('ignores a commit result that lands after the drawer was closed', async () => {
+    const pane = await buildPane();
+    setBindingMock('GetGitStatus', async () => status({ hasChanges: true }));
+
+    let resolveCommit!: (value: GitActionResult) => void;
+    const commitPromise = new Promise<GitActionResult>((r) => { resolveCommit = r; });
+    setBindingMock('GitCommit', () => commitPromise);
+
+    const external = createShipChangesState();
+    // Wrap the state's failCommit / completeCommit so we can detect any
+    // call after the drawer was closed.
+    const realComplete = external.completeCommit.bind(external);
+    const realFail = external.failCommit.bind(external);
+    const completeCalls: string[] = [];
+    const failCalls: string[] = [];
+    external.completeCommit = (sha: string) => { completeCalls.push(sha); realComplete(sha); };
+    external.failCommit = (err: string) => { failCalls.push(err); realFail(err); };
+
+    const { findByTestId, getByTestId, rerender } = render(ShipChangesDrawer, {
+      props: { open: true, pane, onClose: () => {}, state: external },
+    });
+    const subject = await findByTestId('ship-changes-commit-subject') as HTMLInputElement;
+    await fireEvent.input(subject, { target: { value: 'mid-flight' } });
+    await flush();
+    await fireEvent.click(getByTestId('ship-changes-commit-submit'));
+    await flush();
+    expect(external.phase).toBe('commit.busy');
+
+    // Close the drawer before the commit resolves.
+    await rerender({ open: false, pane, onClose: () => {}, state: external });
+    await flush();
+    expect(external.phase).toBe('idle');
+
+    // Snapshot call counts before resolving so we can assert the resolve
+    // doesn't trigger new state mutations.
+    const completeBefore = completeCalls.length;
+    const failBefore = failCalls.length;
+
+    // Now resolve the commit: the drawer is gone and the result must be
+    // dropped silently without trying to advance the state machine.
+    resolveCommit({ action: 'commit', commitSha: 'abcdef0' } as GitActionResult);
+    await flush(30);
+
+    // Neither completeCommit nor failCommit should have been attempted.
+    expect(completeCalls.length).toBe(completeBefore);
+    expect(failCalls.length).toBe(failBefore);
+    expect(external.phase).toBe('idle');
+    expect(external.commitSubject).toBe('');
+    expect(external.commitSha).toBeNull();
+    expect(external.error).toBeNull();
+  });
+
+  it('ignores a GitCommit rejection that lands after the drawer was closed', async () => {
+    const pane = await buildPane();
+    setBindingMock('GetGitStatus', async () => status({ hasChanges: true }));
+
+    let rejectCommit!: (err: unknown) => void;
+    const commitPromise = new Promise<GitActionResult>((_, r) => { rejectCommit = r; });
+    setBindingMock('GitCommit', () => commitPromise);
+
+    const external = createShipChangesState();
+    const realFail = external.failCommit.bind(external);
+    const failCalls: string[] = [];
+    external.failCommit = (err: string) => { failCalls.push(err); realFail(err); };
+
+    const { findByTestId, getByTestId, rerender } = render(ShipChangesDrawer, {
+      props: { open: true, pane, onClose: () => {}, state: external },
+    });
+    const subject = await findByTestId('ship-changes-commit-subject') as HTMLInputElement;
+    await fireEvent.input(subject, { target: { value: 'oops' } });
+    await flush();
+    await fireEvent.click(getByTestId('ship-changes-commit-submit'));
+    await flush();
+    expect(external.phase).toBe('commit.busy');
+
+    await rerender({ open: false, pane, onClose: () => {}, state: external });
+    await flush();
+    expect(external.phase).toBe('idle');
+
+    const failBefore = failCalls.length;
+    // Rejection after close must bail silently — failCommit must NOT be
+    // called (it would throw on the 'idle' phase).
+    rejectCommit(new Error('late failure'));
+    await flush(30);
+    expect(failCalls.length).toBe(failBefore);
+    expect(external.phase).toBe('idle');
+    expect(external.error).toBeNull();
+  });
+
+  it('drops stale results from sequential commit+push after drawer is closed', async () => {
+    const pane = await buildPane();
+    setBindingMock('GetGitStatus', async () => status({ hasChanges: true }));
+
+    let resolveCommit!: (value: GitActionResult) => void;
+    const commitPromise = new Promise<GitActionResult>((r) => { resolveCommit = r; });
+    setBindingMock('GitCommit', () => commitPromise);
+
+    let pushCalls = 0;
+    setBindingMock('GitPush', async () => { pushCalls += 1; return { action: 'push' } as GitActionResult; });
+
+    const external = createShipChangesState();
+    const realComplete = external.completeCommit.bind(external);
+    const completeCalls: string[] = [];
+    external.completeCommit = (sha: string) => { completeCalls.push(sha); realComplete(sha); };
+
+    const { findByTestId, getByTestId, rerender } = render(ShipChangesDrawer, {
+      props: { open: true, pane, onClose: () => {}, state: external },
+    });
+    const subject = await findByTestId('ship-changes-commit-subject') as HTMLInputElement;
+    await fireEvent.input(subject, { target: { value: 'stack' } });
+    await flush();
+    await fireEvent.click(getByTestId('ship-changes-commit-submit'));
+    await flush();
+    expect(external.phase).toBe('commit.busy');
+
+    // Close the drawer while commit is still pending.
+    await rerender({ open: false, pane, onClose: () => {}, state: external });
+    await flush();
+
+    const completeBefore = completeCalls.length;
+
+    // Resolve the commit now — this must NOT trigger completeCommit or cascade into push.
+    resolveCommit({ action: 'commit', commitSha: 'sha' } as GitActionResult);
+    await flush(30);
+    expect(completeCalls.length).toBe(completeBefore);
+    expect(external.phase).toBe('idle');
+    // Push binding must not have been invoked — the wizard never reached push.
+    expect(pushCalls).toBe(0);
+  });
 });
