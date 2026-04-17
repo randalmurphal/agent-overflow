@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onDestroy } from 'svelte';
+  import { onDestroy, untrack } from 'svelte';
   import type { ChannelMessage } from '../../types/discussion';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { GetChannelMessages, PostChannelMessage } from '../../stores/bindings';
@@ -21,6 +21,7 @@
 
   let pollGeneration = 0;
   let pollTimer: ReturnType<typeof setTimeout> | null = null;
+  let lastChannelId = '';
   let composing = $state('');
   let posting = $state(false);
   let pollError = $state<string | null>(null);
@@ -35,12 +36,22 @@
   let canPost = $derived(!concluded && composing.trim().length > 0 && !posting);
 
   $effect(() => {
+    // Only re-run when the channelId prop changes; don't subscribe to the pane
+    // state that pollOnce reads/writes, or we loop on every new message.
     if (!channelId) return;
-    pane.clearChannel();
-    loadingInitial = true;
-    pollError = null;
-    const generation = ++pollGeneration;
-    void pollOnce(generation, /*initial*/ true);
+    untrack(() => {
+      // Only wipe the channel buffer when we're switching to a different
+      // channel — re-entry of the same channel preserves whatever status
+      // the caller pre-seeded (e.g. `concluded` after a prior run).
+      if (lastChannelId !== channelId) {
+        pane.clearChannel();
+        lastChannelId = channelId;
+      }
+      loadingInitial = true;
+      pollError = null;
+      const generation = ++pollGeneration;
+      void pollOnce(generation, /*initial*/ true);
+    });
 
     return () => {
       // Bump generation to cancel any in-flight polls for this channel.
@@ -97,15 +108,20 @@
   }
 
   $effect(() => {
-    // Auto-scroll on new messages when user hasn't scrolled away.
-    messages.length;
-    if (scrollContainer && userNearBottom) {
-      requestAnimationFrame(() => {
-        if (scrollContainer) {
-          scrollContainer.scrollTop = scrollContainer.scrollHeight;
-        }
-      });
-    }
+    // Auto-scroll on new messages when user hasn't scrolled away. Only track
+    // `messages.length` here — reading `userNearBottom` tracked would cause
+    // the scroll-triggered handler to re-invalidate this effect in a loop.
+    const len = messages.length;
+    if (len === 0) return;
+    untrack(() => {
+      if (scrollContainer && userNearBottom) {
+        requestAnimationFrame(() => {
+          if (scrollContainer) {
+            scrollContainer.scrollTop = scrollContainer.scrollHeight;
+          }
+        });
+      }
+    });
   });
 
   function handleScroll(): void {

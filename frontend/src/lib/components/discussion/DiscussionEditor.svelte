@@ -197,7 +197,7 @@
           oninput={(e) => updateField('name', (e.target as HTMLInputElement).value)}
           placeholder="e.g. code-review"
           class="w-full text-sm rounded-xl border border-border bg-surface-0 px-3 py-2 text-text-primary placeholder:text-text-secondary/50 focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/50 transition-colors"
-          required
+          aria-required="true"
         />
       </div>
 
