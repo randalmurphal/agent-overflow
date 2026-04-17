@@ -2,6 +2,7 @@ package triage
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -1156,5 +1157,139 @@ func TestBuildSummaryThinking(t *testing.T) {
 
 	if summary != "Let me think about this" {
 		t.Errorf("got %q, want %q", summary, "Let me think about this")
+	}
+}
+
+// TestCleanupThreadDropsLateEvents exercises Bug B5: events that arrive
+// AFTER CleanupThread has been called must not be persisted under the
+// stopped thread. The pre-fix router happily wrote rows into a thread
+// whose session had been stopped because CleanupThread only cleared
+// accumulator state.
+func TestCleanupThreadDropsLateEvents(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	// First event arrives and is persisted normally.
+	diff := "diff --git a/foo.go b/foo.go\n+hi\n"
+	before := provider.ProviderEvent{
+		Kind:      provider.EventDiff,
+		ThreadID:  "t1",
+		Content:   diff,
+		Timestamp: time.Now(),
+	}
+	if err := router.Handle(before); err != nil {
+		t.Fatalf("handle before: %v", err)
+	}
+
+	items, err := st.ListItems("t1")
+	if err != nil {
+		t.Fatalf("list items before: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("pre-stop items = %d, want 1 (setup broken)", len(items))
+	}
+
+	// Stop the thread: simulates StopSession cleanup.
+	router.CleanupThread("t1")
+
+	// Late event — would arrive from a readLoop draining in-flight
+	// stdout lines after StopSession returned.
+	after := provider.ProviderEvent{
+		Kind:      provider.EventDiff,
+		ThreadID:  "t1",
+		Content:   "diff --git a/bar.go b/bar.go\n+late\n",
+		Timestamp: time.Now(),
+	}
+	if err := router.Handle(after); err != nil {
+		t.Fatalf("handle after stop: %v", err)
+	}
+
+	// Persistence must have been suppressed.
+	items, err = st.ListItems("t1")
+	if err != nil {
+		t.Fatalf("list items after: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("post-stop items = %d, want 1 (late event persisted under stopped thread)", len(items))
+	}
+}
+
+// TestCleanupThreadDropsRapidInFlight exercises the tight race: many
+// events interleave with CleanupThread; no partial state remains.
+func TestCleanupThreadDropsRapidInFlight(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "tight")
+
+	// Fire 50 diffs sequentially, then stop halfway through.
+	total := 50
+	stopAt := 25
+	for i := 0; i < total; i++ {
+		if i == stopAt {
+			router.CleanupThread("tight")
+		}
+		evt := provider.ProviderEvent{
+			Kind:      provider.EventDiff,
+			ThreadID:  "tight",
+			Content:   fmt.Sprintf("diff --git a/f%d.go b/f%d.go\n+line\n", i, i),
+			Timestamp: time.Now(),
+		}
+		if err := router.Handle(evt); err != nil {
+			t.Fatalf("handle %d: %v", i, err)
+		}
+	}
+
+	items, err := st.ListItems("tight")
+	if err != nil {
+		t.Fatalf("list items: %v", err)
+	}
+	if len(items) != stopAt {
+		t.Fatalf("items = %d, want %d (stop dropped either too few or too many)", len(items), stopAt)
+	}
+}
+
+// TestCleanupThreadCanBeUndoneByNewEvents verifies CleanupThread is NOT
+// sticky: after cleanup, if the thread is restarted (a new StartSession
+// reintroduces events), those new events should persist. The bug-fix
+// flag must reset implicitly when the thread sees activity again OR
+// a restart routine. We model the "restart" as a re-emission with a
+// fresh init-like event; the router clears the stopped marker on
+// EventInit for the same thread.
+func TestCleanupThreadDoesNotPoisonFutureSessions(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "restart")
+
+	router.CleanupThread("restart")
+
+	// Simulate a restart: EventInit arrives for this thread (StartSession
+	// fires one as part of the claude handshake).
+	info := provider.SessionInfo{SessionID: "new-sid", Model: "opus"}
+	meta, _ := json.Marshal(info)
+	initEvt := provider.ProviderEvent{
+		Kind:      provider.EventInit,
+		ThreadID:  "restart",
+		Meta:      meta,
+		Timestamp: time.Now(),
+	}
+	if err := router.Handle(initEvt); err != nil {
+		t.Fatalf("handle init: %v", err)
+	}
+
+	// A subsequent diff must persist — the stopped marker from the
+	// earlier CleanupThread cannot continue to suppress the restart.
+	after := provider.ProviderEvent{
+		Kind:      provider.EventDiff,
+		ThreadID:  "restart",
+		Content:   "diff --git a/new.go b/new.go\n+fresh\n",
+		Timestamp: time.Now(),
+	}
+	if err := router.Handle(after); err != nil {
+		t.Fatalf("handle after restart: %v", err)
+	}
+	items, err := st.ListItems("restart")
+	if err != nil {
+		t.Fatalf("list items: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("items = %d, want 1 (stopped marker leaked into new session)", len(items))
 	}
 }

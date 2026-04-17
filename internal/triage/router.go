@@ -61,6 +61,13 @@ type Router struct {
 	// threadID since the provider treats each thread as its own turn
 	// stream.
 	turnSpans map[string]trace.Span
+	// stoppedThreads remembers thread IDs that CleanupThread has
+	// explicitly stopped. While the flag is set, Handle drops events
+	// that would persist to the store so late-arriving readLoop lines
+	// from the torn-down subprocess do not leave orphan rows on the
+	// stopped thread (Bug B5). The flag is cleared when a fresh session
+	// re-enters the thread via EventInit.
+	stoppedThreads map[string]struct{}
 }
 
 // NewRouter creates a triage router. Telemetry is off by default; wire a
@@ -88,6 +95,7 @@ func NewRouter(st *store.Store, emit func(eventName string, data any)) *Router {
 		pendingCommandDiffs:   make(map[string]pendingCommandInlineDiff),
 		capturedTurns:         make(map[string]bool),
 		turnSpans:             make(map[string]trace.Span),
+		stoppedThreads:        make(map[string]struct{}),
 	}
 }
 
@@ -130,6 +138,18 @@ func (r *Router) SetTelemetry(tracer trace.Tracer, m TurnMetrics) {
 
 // Handle processes a provider event: persists heavy payloads, forwards inline events.
 func (r *Router) Handle(evt provider.ProviderEvent) error {
+	// EventInit means a fresh session is (re)starting for this thread;
+	// clear any lingering stopped marker so subsequent events persist
+	// under the new session.
+	if evt.Kind == provider.EventInit {
+		r.markThreadActive(evt.ThreadID)
+	} else if r.isThreadStopped(evt.ThreadID) {
+		// Drop silently. The readLoop could still be draining in-flight
+		// lines after StopSession returned; persisting them under the
+		// stopped thread would pollute the timeline.
+		log.Printf("triage: dropping %s event for stopped thread %s", evt.Kind, evt.ThreadID)
+		return nil
+	}
 	switch evt.Kind {
 	case provider.EventTextDelta:
 		return r.handleTextDelta(evt)
@@ -595,9 +615,16 @@ func (r *Router) drainBoth(threadID string) (text, reasoning string) {
 }
 
 // CleanupThread removes all accumulator state for a thread. Call this when a
-// session ends or disconnects to prevent memory leaks.
+// session ends or disconnects to prevent memory leaks. Also flags the
+// thread as "stopped" so any event that arrives afterward — typically a
+// readLoop line that was already in-flight when StopSession returned — is
+// dropped instead of persisting under the torn-down session (Bug B5).
 func (r *Router) CleanupThread(threadID string) {
 	r.mu.Lock()
+	// Set the stopped flag BEFORE dropping other state so Handle observes
+	// a consistent snapshot: any concurrent Handle call either sees a live
+	// thread with full state, or a stopped thread with no state.
+	r.stoppedThreads[threadID] = struct{}{}
 	var orphanSpan trace.Span
 	if span, ok := r.turnSpans[threadID]; ok {
 		orphanSpan = span
@@ -623,6 +650,24 @@ func (r *Router) CleanupThread(threadID string) {
 		// OnEnd hook reaches for any shared resource.
 		orphanSpan.End()
 	}
+}
+
+// isThreadStopped returns true when CleanupThread has been called for
+// threadID and no subsequent EventInit has re-activated it.
+func (r *Router) isThreadStopped(threadID string) bool {
+	r.mu.Lock()
+	_, stopped := r.stoppedThreads[threadID]
+	r.mu.Unlock()
+	return stopped
+}
+
+// markThreadActive clears the stopped flag, called on EventInit so a
+// restarted session can persist again. No-op when the flag was already
+// clear.
+func (r *Router) markThreadActive(threadID string) {
+	r.mu.Lock()
+	delete(r.stoppedThreads, threadID)
+	r.mu.Unlock()
 }
 
 func (r *Router) persistTurnText(threadID, content, parentToolUseID string) error {

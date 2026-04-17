@@ -287,6 +287,15 @@ func TestCleanupThreadClearsCheckpointTrackingState(t *testing.T) {
 	if _, err := st.GetThread("t1"); err != nil {
 		t.Fatalf("thread gone: %v", err)
 	}
+	// Simulate a fresh StartSession for the same thread. Bug B5's fix
+	// requires an EventInit to clear the stopped-thread flag set by
+	// CleanupThread before further events persist.
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:     provider.EventInit,
+		ThreadID: "t1",
+	}); err != nil {
+		t.Fatalf("handle reinit: %v", err)
+	}
 	// Append a text item so LastTurnIndex > 0.
 	if err := st.InsertItem(store.Item{
 		ID:        "item-1",
@@ -489,6 +498,15 @@ func TestCaptureBaselineIdempotentAcrossReCaptures(t *testing.T) {
 	// Clear the in-memory dedupe so the router will actually recapture the
 	// same (thread, turn) — exercising the idempotent cleanup path.
 	router.CleanupThread("t1")
+
+	// Bug B5's fix marks the thread stopped on CleanupThread; a fresh
+	// StartSession would emit EventInit before any further TurnStart.
+	// Model that here so the recapture is routed to the live path.
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventInit, ThreadID: "t1",
+	}); err != nil {
+		t.Fatalf("handle init: %v", err)
+	}
 
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventTurnStart, ThreadID: "t1",
