@@ -592,3 +592,86 @@ export function WriteTerminal(terminalID, dataB64) {
     return $Call.ByID(146795716, terminalID, dataB64);
 }
 
+// ---- Composer enhancements (attachments, drafts, workspace files) ----
+
+/**
+ * UploadAttachment decodes base64 bytes, validates + persists them on disk,
+ * and returns the new attachment metadata.
+ * @param {string} threadID
+ * @param {string} filename
+ * @param {string} mimeType
+ * @param {string} dataB64
+ * @returns {$CancellablePromise<any>}
+ */
+export function UploadAttachment(threadID, filename, mimeType, dataB64) {
+    return $Call.ByID(2485473713, threadID, filename, mimeType, dataB64);
+}
+
+/**
+ * ListAttachments returns every attachment metadata row for a thread.
+ * @param {string} threadID
+ * @returns {$CancellablePromise<any[]>}
+ */
+export function ListAttachments(threadID) {
+    return $Call.ByID(1730798413, threadID);
+}
+
+/**
+ * DeleteAttachment removes the metadata row and the on-disk file.
+ * @param {string} attachmentID
+ * @returns {$CancellablePromise<void>}
+ */
+export function DeleteAttachment(attachmentID) {
+    return $Call.ByID(2428457759, attachmentID);
+}
+
+/**
+ * GetAttachmentData returns the base64-encoded raw bytes for rendering.
+ * @param {string} attachmentID
+ * @returns {$CancellablePromise<string>}
+ */
+export function GetAttachmentData(attachmentID) {
+    return $Call.ByID(71154490, attachmentID);
+}
+
+/**
+ * SaveDraft persists composer state for a thread.
+ * @param {string} threadID
+ * @param {string} content
+ * @param {string[]} attachmentIDs
+ * @param {any[]} terminalChips
+ * @returns {$CancellablePromise<void>}
+ */
+export function SaveDraft(threadID, content, attachmentIDs, terminalChips) {
+    return $Call.ByID(3025273299, threadID, content, attachmentIDs, terminalChips);
+}
+
+/**
+ * GetDraft returns the stored composer draft for a thread (empty if none).
+ * @param {string} threadID
+ * @returns {$CancellablePromise<any>}
+ */
+export function GetDraft(threadID) {
+    return $Call.ByID(875977146, threadID);
+}
+
+/**
+ * ClearDraft removes any stored composer draft for a thread.
+ * @param {string} threadID
+ * @returns {$CancellablePromise<void>}
+ */
+export function ClearDraft(threadID) {
+    return $Call.ByID(296814681, threadID);
+}
+
+/**
+ * SearchWorkspaceFiles returns workspace files matching the query.
+ * @param {string} threadID
+ * @param {string} query
+ * @param {number} limit
+ * @returns {$CancellablePromise<any>}
+ */
+export function SearchWorkspaceFiles(threadID, query, limit) {
+    return $Call.ByID(3852272821, threadID, query, limit);
+}
+

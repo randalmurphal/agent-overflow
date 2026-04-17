@@ -101,3 +101,13 @@ export const PostChannelMessage = dispatch('PostChannelMessage');
 export const ChooseDesignOption = dispatch('ChooseDesignOption');
 export const ListDesignArtifacts = dispatch('ListDesignArtifacts');
 export const GetDesignArtifactHTML = dispatch('GetDesignArtifactHTML');
+
+// Composer enhancements
+export const UploadAttachment = dispatch('UploadAttachment');
+export const ListAttachments = dispatch('ListAttachments');
+export const DeleteAttachment = dispatch('DeleteAttachment');
+export const GetAttachmentData = dispatch('GetAttachmentData');
+export const SaveDraft = dispatch('SaveDraft');
+export const GetDraft = dispatch('GetDraft');
+export const ClearDraft = dispatch('ClearDraft');
+export const SearchWorkspaceFiles = dispatch('SearchWorkspaceFiles');

@@ -70,6 +70,16 @@ export {
   ChooseDesignOption,
   ListDesignArtifacts,
   GetDesignArtifactHTML,
+
+  // Composer enhancements
+  UploadAttachment,
+  ListAttachments,
+  DeleteAttachment,
+  GetAttachmentData,
+  SaveDraft,
+  GetDraft,
+  ClearDraft,
+  SearchWorkspaceFiles,
 } from '../../../bindings/agent-overflow/app.js';
 
 // Model classes needed for constructing RPC parameters.
