@@ -11,7 +11,7 @@ import type { Thread } from '../types/models';
 import { registerCommand, type CommandContext } from './commandRegistry.svelte';
 import { closePalette, openPalette } from './palette.svelte';
 import { addToast } from './toast.svelte';
-import { removeThread, prependThread } from './threads.svelte';
+import { removeThread, prependThread, replaceThread } from './threads.svelte';
 import {
   ArchiveThread,
   DeleteThread,
@@ -21,6 +21,7 @@ import {
   GitPull,
   GitPush,
   GitCreatePR,
+  UnarchiveThread,
 } from './bindings';
 
 export interface BuiltinCommandHooks {
@@ -117,11 +118,21 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     label: 'Thread: Unarchive (restore)',
     icon: '▣',
     when: 'hasActiveThread',
-    run: () => {
-      // The current backend only exposes one-way archive — surfacing this
-      // as a toast so the user isn't left wondering why nothing happened.
-      addToast('warning', 'Unarchive is not yet supported by the backend');
-    },
+    run: (ctx) =>
+      withActiveThread(ctx, pane, async (t) => {
+        if (!t.archived) {
+          addToast('info', 'Thread is not archived');
+          return;
+        }
+        try {
+          const restored = (await UnarchiveThread(t.id)) as Thread;
+          replaceThread(restored);
+          pane.replaceThread(restored);
+          addToast('info', 'Thread unarchived');
+        } catch (err) {
+          addToast('error', `Failed to unarchive thread: ${err}`);
+        }
+      }),
   });
 
   registerCommand({
