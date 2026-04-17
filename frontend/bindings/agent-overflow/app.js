@@ -749,3 +749,17 @@ export function RevertToTurn(threadID, turnIndex, mode) {
 export function ListThreadCheckpoints(threadID) {
     return $Call.ByID(1853132444, threadID);
 }
+
+// ---- Thread unarchive binding (hand-appended; FNV32a of main.App.UnarchiveThread) ----
+
+/**
+ * UnarchiveThread flips archived back to false so the thread reappears in
+ * the active sidebar. Returns the refreshed row.
+ * @param {string} id
+ * @returns {$CancellablePromise<store$0.Thread>}
+ */
+export function UnarchiveThread(id) {
+    return $Call.ByID(3655125512, id).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType0($result);
+    }));
+}

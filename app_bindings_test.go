@@ -400,6 +400,44 @@ func TestUpdateThreadModelRollsBackOnRestartFailure(t *testing.T) {
 	}
 }
 
+func TestUnarchiveThreadRestoresThread(t *testing.T) {
+	app := newTestAppWithStore(t)
+	thread := testThread("thread-unarchive")
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+	if err := app.ArchiveThread(thread.ID); err != nil {
+		t.Fatalf("ArchiveThread() error = %v", err)
+	}
+
+	got, err := app.UnarchiveThread(thread.ID)
+	if err != nil {
+		t.Fatalf("UnarchiveThread() error = %v", err)
+	}
+	if got.ID != thread.ID {
+		t.Fatalf("UnarchiveThread() id = %q, want %q", got.ID, thread.ID)
+	}
+	if got.Archived {
+		t.Fatal("UnarchiveThread() returned archived=true, want false")
+	}
+
+	stored, err := app.store.GetThread(thread.ID)
+	if err != nil {
+		t.Fatalf("GetThread() error = %v", err)
+	}
+	if stored.Archived {
+		t.Fatal("stored archived flag still true after UnarchiveThread()")
+	}
+}
+
+func TestUnarchiveUnknownThreadReturnsError(t *testing.T) {
+	app := newTestAppWithStore(t)
+
+	if _, err := app.UnarchiveThread("does-not-exist"); err == nil {
+		t.Fatal("UnarchiveThread() error = nil, want not-found")
+	}
+}
+
 func TestUpdateThreadModelRejectsBlankModel(t *testing.T) {
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-model-blank")

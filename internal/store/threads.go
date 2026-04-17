@@ -128,6 +128,18 @@ func (s *Store) ArchiveThread(id string) error {
 	return requireRowsAffected(result, fmt.Sprintf("store: archive thread %s", id))
 }
 
+// UnarchiveThread flips the archived column back to 0 for a thread and bumps
+// updated_at so the sidebar reshuffles it toward the top of the active list.
+// Returns an error if no row matches the id.
+func (s *Store) UnarchiveThread(id string) error {
+	result, err := s.db.Exec(`UPDATE threads SET archived = 0, updated_at = ? WHERE id = ?`,
+		nowMillis(), id)
+	if err != nil {
+		return fmt.Errorf("store: unarchive thread %s: %w", id, err)
+	}
+	return requireRowsAffected(result, fmt.Sprintf("store: unarchive thread %s", id))
+}
+
 func (s *Store) UpdateSessionRef(threadID, ref string) error {
 	result, err := s.db.Exec(
 		`UPDATE threads

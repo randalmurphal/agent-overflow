@@ -1,8 +1,8 @@
 <script lang="ts">
-  import { ArchiveThread, DeleteThread, ForkThread, GitRemoveWorktree, RenameThread, StopSession } from '../../stores/bindings';
+  import { ArchiveThread, DeleteThread, ForkThread, GitRemoveWorktree, RenameThread, StopSession, UnarchiveThread } from '../../stores/bindings';
   import { getSettings } from '../../stores/settings.svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
-  import { prependThread, removeThread, updateThreadTitle } from '../../stores/threads.svelte';
+  import { prependThread, removeThread, replaceThread, updateThreadTitle } from '../../stores/threads.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import type { Thread } from '../../types/models';
   import ConfirmDialog from '../shared/ConfirmDialog.svelte';
@@ -135,6 +135,20 @@
     }
   }
 
+  async function handleUnarchive(e: MouseEvent) {
+    e.stopPropagation();
+    try {
+      const restored = (await UnarchiveThread(thread.id)) as Thread;
+      // Patch the in-memory list so the row loses its archived style
+      // immediately. The sidebar's filter uses the `archived` flag directly.
+      replaceThread(restored);
+      addToast('info', `Unarchived "${restored.title || 'thread'}"`);
+    } catch (err) {
+      console.error('Failed to unarchive thread:', err);
+      pane.setError(`Failed to unarchive thread: ${err}`);
+    }
+  }
+
   async function doDelete() {
     try {
       // Stop the session before deleting so the provider process is cleaned up.
@@ -260,15 +274,32 @@
           <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
         </svg>
       </button>
-      <button
-        onclick={handleArchive}
-        class="opacity-0 group-hover:opacity-100 transition-opacity duration-150 text-text-secondary hover:text-text-primary text-xs px-1 shrink-0 cursor-pointer focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/50 rounded"
-        aria-label="Archive thread"
-      >
-        <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M21 8v13H3V8M1 3h22v5H1zM10 12h4" />
-        </svg>
-      </button>
+      {#if thread.archived}
+        <button
+          onclick={handleUnarchive}
+          data-testid="thread-row-unarchive"
+          class="opacity-0 group-hover:opacity-100 transition-opacity duration-150 text-text-secondary hover:text-text-primary text-xs px-1 shrink-0 cursor-pointer focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/50 rounded"
+          aria-label="Unarchive thread"
+          title="Unarchive thread"
+        >
+          <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M21 8v13H3V8M1 3h22v5H1z" />
+            <path d="M9 12h6" />
+            <path d="M12 9v6" />
+          </svg>
+        </button>
+      {:else}
+        <button
+          onclick={handleArchive}
+          data-testid="thread-row-archive"
+          class="opacity-0 group-hover:opacity-100 transition-opacity duration-150 text-text-secondary hover:text-text-primary text-xs px-1 shrink-0 cursor-pointer focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/50 rounded"
+          aria-label="Archive thread"
+        >
+          <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M21 8v13H3V8M1 3h22v5H1zM10 12h4" />
+          </svg>
+        </button>
+      {/if}
     {/if}
   </div>
   <div class="text-xs text-text-secondary/60 mt-0.5 ml-6">
@@ -289,8 +320,8 @@
 <ConfirmDialog
   open={showArchiveConfirm}
   title="Archive thread"
-  description="This will hide the thread from the sidebar immediately. The current backend only exposes one-way archive, so restore is unavailable in this build."
-  confirmLabel="Archive anyway"
+  description="This will hide the thread from the sidebar. Toggle 'Include archived' and use the Unarchive action to bring it back."
+  confirmLabel="Archive"
   onConfirm={() => { showArchiveConfirm = false; doArchive(); }}
   onCancel={() => { showArchiveConfirm = false; }}
 />

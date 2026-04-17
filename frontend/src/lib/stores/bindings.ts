@@ -6,6 +6,7 @@ export {
   // Thread management
   CreateThread,
   ArchiveThread,
+  UnarchiveThread,
   DeleteThread,
   ForkThread,
   GetThread,

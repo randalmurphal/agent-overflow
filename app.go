@@ -304,6 +304,16 @@ func (a *App) ArchiveThread(id string) error {
 	return a.store.ArchiveThread(id)
 }
 
+// UnarchiveThread flips archived back to false so the thread reappears in the
+// active sidebar. Returns the refreshed row so the caller can re-render
+// without a follow-up GetThread round-trip.
+func (a *App) UnarchiveThread(id string) (store.Thread, error) {
+	if err := a.store.UnarchiveThread(id); err != nil {
+		return store.Thread{}, err
+	}
+	return a.store.GetThread(id)
+}
+
 func (a *App) RenameThread(id string, title string) error {
 	t, err := a.store.GetThread(id)
 	if err != nil {

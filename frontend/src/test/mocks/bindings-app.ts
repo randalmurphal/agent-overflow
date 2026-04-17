@@ -53,6 +53,7 @@ function dispatch(name: string) {
 // Every binding re-exported from `lib/stores/bindings.ts`.
 // Keep this list in sync with that file.
 export const ArchiveThread = dispatch('ArchiveThread');
+export const UnarchiveThread = dispatch('UnarchiveThread');
 export const CreateThread = dispatch('CreateThread');
 export const DeleteThread = dispatch('DeleteThread');
 export const GetThread = dispatch('GetThread');

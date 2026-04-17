@@ -240,6 +240,84 @@ func TestArchiveThread(t *testing.T) {
 	}
 }
 
+func TestUnarchiveThreadRestoresRow(t *testing.T) {
+	s := newTestStore(t)
+
+	thr := makeThread("t-un", "claude")
+	thr.UpdatedAt = 1000
+	if err := s.CreateThread(thr); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := s.ArchiveThread("t-un"); err != nil {
+		t.Fatalf("archive: %v", err)
+	}
+
+	if err := s.UnarchiveThread("t-un"); err != nil {
+		t.Fatalf("unarchive: %v", err)
+	}
+
+	got, err := s.GetThread("t-un")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Archived {
+		t.Fatal("expected thread to be unarchived")
+	}
+	if got.UpdatedAt <= 1000 {
+		t.Errorf("expected updated_at to be bumped from 1000, got %d", got.UpdatedAt)
+	}
+}
+
+func TestUnarchiveThreadRestoresSidebarVisibility(t *testing.T) {
+	s := newTestStore(t)
+
+	thr := makeThread("t-vis", "claude")
+	if err := s.CreateThread(thr); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := s.ArchiveThread("t-vis"); err != nil {
+		t.Fatalf("archive: %v", err)
+	}
+
+	// Confirm ListThreads (sidebar's default view) hides the archived row.
+	threads, err := s.ListThreads()
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if containsThread(threads, "t-vis") {
+		t.Fatal("expected archived thread to be hidden from ListThreads")
+	}
+
+	if err := s.UnarchiveThread("t-vis"); err != nil {
+		t.Fatalf("unarchive: %v", err)
+	}
+
+	threads, err = s.ListThreads()
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if !containsThread(threads, "t-vis") {
+		t.Fatal("expected unarchived thread to reappear in ListThreads")
+	}
+}
+
+func TestUnarchiveUnknownThreadErrors(t *testing.T) {
+	s := newTestStore(t)
+
+	if err := s.UnarchiveThread("missing"); err == nil {
+		t.Fatal("expected error for unknown thread id, got nil")
+	}
+}
+
+func containsThread(threads []Thread, id string) bool {
+	for _, t := range threads {
+		if t.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
 func TestUpdateSessionRef(t *testing.T) {
 	s := newTestStore(t)
 
