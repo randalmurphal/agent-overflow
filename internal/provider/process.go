@@ -3,6 +3,7 @@ package provider
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -17,9 +18,11 @@ import (
 )
 
 const (
-	// maxLineSize is the max stdout line buffer: 10 MB.
-	// Diffs and command outputs can be large.
-	maxLineSize = 10 * 1024 * 1024
+	// maxLineSize is the max stdout line buffer: 32 MB.
+	// Raised from 10 MB to tolerate large diffs and command outputs that
+	// a single provider line may contain (particularly when Claude emits
+	// a turn/diff/updated notification with the full cumulative patch).
+	maxLineSize = 32 * 1024 * 1024
 
 	// shutdownGrace is how long to wait after closing stdin before sending SIGTERM.
 	shutdownGrace = 3 * time.Second
@@ -28,17 +31,26 @@ const (
 	killGrace = 2 * time.Second
 )
 
+// ErrLineTooLong is returned when a single stdout line exceeds maxLineSize.
+// Callers should treat this as session-fatal: the subprocess is killed by
+// ReadLine before the error is surfaced so no orphan process remains.
+var ErrLineTooLong = errors.New("provider: stdout line exceeded maximum size")
+
 // Process manages a subprocess with stdin/stdout pipes.
 type Process struct {
 	cmd         *exec.Cmd
 	stdin       io.WriteCloser
-	stdout      *bufio.Scanner
+	stdout      *bufio.Reader
 	done        chan struct{}
 	err         error
 	mu          sync.Mutex
 	eventLogger *logging.Logger
 	threadID    string
 	provider    string
+	// killOnce guards the one-shot kill triggered on oversized lines so
+	// concurrent ReadLine failures (should never happen but defense in
+	// depth) do not double-signal the process group.
+	killOnce sync.Once
 }
 
 // SpawnConfig configures subprocess creation.
@@ -90,13 +102,17 @@ func Spawn(ctx context.Context, cfg SpawnConfig) (*Process, error) {
 		return nil, fmt.Errorf("provider: start %s: %w", cfg.Binary, err)
 	}
 
-	scanner := bufio.NewScanner(stdoutPipe)
-	scanner.Buffer(make([]byte, 0, 64*1024), maxLineSize)
+	// We use bufio.Reader (not Scanner) so we control the per-line size
+	// check ourselves. Scanner's ErrTooLong path aborts the scan but leaves
+	// the subprocess alive; our readNDJSONLine below kills the process on
+	// overflow so no orphan remains. 64 KB initial buffer matches the
+	// previous Scanner sizing; the reader grows internally as needed.
+	reader := bufio.NewReaderSize(stdoutPipe, 64*1024)
 
 	p := &Process{
 		cmd:         cmd,
 		stdin:       stdin,
-		stdout:      scanner,
+		stdout:      reader,
 		done:        make(chan struct{}),
 		eventLogger: cfg.EventLogger,
 		threadID:    cfg.ThreadID,
@@ -135,24 +151,61 @@ func (p *Process) WriteLine(data []byte) error {
 }
 
 // ReadLine reads the next line from stdout. Returns io.EOF when process exits.
+//
+// A single line is capped at maxLineSize bytes. When that cap is exceeded
+// ReadLine asynchronously kills the subprocess (so no orphan keeps writing
+// into a buffer nobody reads from) and returns ErrLineTooLong.
 func (p *Process) ReadLine() ([]byte, error) {
-	if p.stdout.Scan() {
-		// Return a copy — scanner reuses its buffer.
-		line := p.stdout.Bytes()
-		out := make([]byte, len(line))
-		copy(out, line)
-		p.logEvent("in", out)
-		return out, nil
-	}
-	if err := p.stdout.Err(); err != nil {
-		// cmd.Wait() closes the stdout pipe, which can race with Scan().
+	line, err := p.readBoundedLine()
+	if err != nil {
+		if errors.Is(err, ErrLineTooLong) {
+			// Kill asynchronously: signalGroup is fast, but Wait on the
+			// done channel could block behind stdout drainage. Callers
+			// get the error immediately and the process is reaped by the
+			// Wait goroutine once SIGKILL takes effect.
+			p.killOnce.Do(func() {
+				p.signalGroup(syscall.SIGKILL)
+			})
+			return nil, err
+		}
+		// cmd.Wait() closes the stdout pipe, which can race with the read.
 		// Treat a closed-pipe error as EOF — the process is gone either way.
-		if isClosedPipeErr(err) {
+		if err == io.EOF || isClosedPipeErr(err) {
 			return nil, io.EOF
 		}
 		return nil, err
 	}
-	return nil, io.EOF
+	p.logEvent("in", line)
+	return line, nil
+}
+
+// readBoundedLine returns the next newline-terminated line from stdout with
+// the trailing '\n' stripped. A line that would exceed maxLineSize causes
+// the function to return ErrLineTooLong immediately, without draining the
+// remainder of the line — the caller is expected to kill the subprocess so
+// the pipe closes and further reads return io.EOF. Draining would block
+// indefinitely when the subprocess writes a partial line and then sleeps
+// without emitting a newline.
+func (p *Process) readBoundedLine() ([]byte, error) {
+	buf := make([]byte, 0, 4096)
+	for {
+		b, err := p.stdout.ReadByte()
+		if err != nil {
+			if err == io.EOF && len(buf) > 0 {
+				// Final line without trailing newline: preserve it, next
+				// call returns io.EOF.
+				return buf, nil
+			}
+			return nil, err
+		}
+		if b == '\n' {
+			return buf, nil
+		}
+		if len(buf) >= maxLineSize {
+			return nil, fmt.Errorf("%w (cap=%d bytes)", ErrLineTooLong, maxLineSize)
+		}
+		buf = append(buf, b)
+	}
 }
 
 // isClosedPipeErr returns true if err indicates a closed pipe or file descriptor.

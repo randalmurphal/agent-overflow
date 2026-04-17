@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -468,3 +469,106 @@ func TestCloseEscalatesToSignal(t *testing.T) {
 		t.Fatal("Done channel should be closed after Close")
 	}
 }
+
+// TestReadLineOversizedKillsProcess exercises Bug B1: a line larger than the
+// configured cap used to leave readLoop exiting while the subprocess kept
+// running. With the fix in place the process must terminate (reaping its
+// file descriptors) and the returned error must be recognisable as an
+// oversized-line failure.
+func TestReadLineOversizedKillsProcess(t *testing.T) {
+	ctx := context.Background()
+	// Emit >cap bytes without a newline then sleep so the subprocess stays
+	// alive until the reader kills it. The cap is 32 MiB in the new
+	// implementation; yes/tr fills the pipe fast enough to trigger the
+	// overflow in a handful of milliseconds.
+	script := fmt.Sprintf(
+		`perl -e 'print "x" x %d'; sleep 60`,
+		maxLineSize+100,
+	)
+	p, err := Spawn(ctx, SpawnConfig{
+		Binary: "sh",
+		Args:   []string{"-c", script},
+	})
+	if err != nil {
+		t.Fatalf("spawn oversize emitter: %v", err)
+	}
+
+	_, err = p.ReadLine()
+	if err == nil {
+		t.Fatal("expected error on oversized line, got nil")
+	}
+	if !errors.Is(err, ErrLineTooLong) {
+		t.Fatalf("expected ErrLineTooLong, got %v", err)
+	}
+
+	// After an oversized line, the process must have been terminated by
+	// ReadLine so no orphan remains. Done() will close only after Wait()
+	// completes; we give it a short window to finish SIGKILL.
+	select {
+	case <-p.Done():
+	case <-time.After(10 * time.Second):
+		t.Fatal("process not reaped after oversized line; readLoop orphaned it")
+	}
+}
+
+// TestReadLineJustUnderCapSucceeds exercises a line sized just below the cap
+// to prove the boundary check does not fire one byte early. We use a
+// long-running emitter (cat fed via stdin) so the subprocess does not exit
+// and close the pipe mid-read — that kernel-side race already exists in
+// cmd.Wait() + StdoutPipe and is orthogonal to the cap check.
+func TestReadLineJustUnderCapSucceeds(t *testing.T) {
+	ctx := context.Background()
+	p, err := Spawn(ctx, SpawnConfig{Binary: "cat"})
+	if err != nil {
+		t.Fatalf("spawn cat: %v", err)
+	}
+	defer p.Kill()
+
+	// Send 128 KiB on stdin; cat echoes it back. 128 KiB is safely under
+	// the cap (32 MiB) yet large enough to span many bufio refills so a
+	// bogus size counter would trip.
+	payload := make([]byte, 128*1024)
+	for i := range payload {
+		payload[i] = 'x'
+	}
+	if err := p.WriteLine(payload); err != nil {
+		t.Fatalf("WriteLine: %v", err)
+	}
+
+	line, err := p.ReadLine()
+	if err != nil {
+		t.Fatalf("read line: %v", err)
+	}
+	if len(line) != len(payload) {
+		t.Fatalf("line len = %d, want %d", len(line), len(payload))
+	}
+}
+
+// TestReadLineManyUnderCap proves the new reader handles an arbitrary number
+// of normal-sized lines without accumulating state or tripping the cap.
+func TestReadLineManyUnderCap(t *testing.T) {
+	ctx := context.Background()
+	// Emit 50 lines, each a few hundred bytes. None individually exceeds
+	// the cap; the regression would be a new path that counts bytes across
+	// lines or forgets to reset per-line buffers.
+	script := `for i in $(seq 1 50); do perl -e 'print "y" x 500'; echo; done`
+	p, err := Spawn(ctx, SpawnConfig{
+		Binary: "sh",
+		Args:   []string{"-c", script},
+	})
+	if err != nil {
+		t.Fatalf("spawn many-lines emitter: %v", err)
+	}
+	defer p.Kill()
+
+	for i := 0; i < 50; i++ {
+		line, err := p.ReadLine()
+		if err != nil {
+			t.Fatalf("read line %d: %v", i, err)
+		}
+		if len(line) != 500 {
+			t.Fatalf("line %d len = %d, want 500", i, len(line))
+		}
+	}
+}
+

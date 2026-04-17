@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -1169,6 +1170,70 @@ func TestCloseWaitsForDisconnectedHandler(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("timeout waiting for Close to return")
 	}
+}
+
+// TestReadLoopEmitsErrorOnOversizedLine exercises Bug B1 at the readLoop
+// layer: when the subprocess writes a single line past the cap, we expect
+// (1) an EventError describing the overflow, (2) the session to reach the
+// disconnected terminal state, and (3) the subprocess to be reaped (no
+// orphan). A regression that swallowed the error — the pre-fix behaviour —
+// would leave readLoop exiting silently while the subprocess kept running.
+func TestReadLoopEmitsErrorOnOversizedLine(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	script := "perl -e 'print \"x\" x (33 * 1024 * 1024)'; sleep 30"
+	proc, err := provider.Spawn(ctx, provider.SpawnConfig{
+		Binary: "sh",
+		Args:   []string{"-c", script},
+	})
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+
+	eventCh := make(chan provider.ProviderEvent, 100)
+	s := &Session{
+		proc:     proc,
+		threadID: testThread,
+		onEvent: func(evt provider.ProviderEvent) {
+			eventCh <- evt
+		},
+		cancel:   cancel,
+		readDone: make(chan struct{}),
+	}
+	go s.readLoop()
+
+	var gotOverflowError, gotDisconnected bool
+	timeout := time.After(15 * time.Second)
+	for !(gotOverflowError && gotDisconnected) {
+		select {
+		case evt := <-eventCh:
+			if evt.Kind == provider.EventError && containsAny(evt.Content, "exceeded maximum size", "cap=") {
+				gotOverflowError = true
+			}
+			if evt.Kind == provider.EventSessionStatus && evt.Content == "disconnected" {
+				gotDisconnected = true
+			}
+		case <-timeout:
+			t.Fatalf("timeout waiting for oversize error + disconnected (got overflow=%v disconnected=%v)", gotOverflowError, gotDisconnected)
+		}
+	}
+
+	// Process must be reaped — the orphan-process bug would leave it alive.
+	select {
+	case <-proc.Done():
+	case <-time.After(10 * time.Second):
+		t.Fatal("process not reaped after oversized line (B1 regression)")
+	}
+}
+
+func containsAny(s string, subs ...string) bool {
+	for _, sub := range subs {
+		if strings.Contains(s, sub) {
+			return true
+		}
+	}
+	return false
 }
 
 func TestReadLoopEmitsErrorStatusOnUnexpectedExit(t *testing.T) {
