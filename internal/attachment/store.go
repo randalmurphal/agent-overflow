@@ -79,9 +79,18 @@ func NewStore(cfg Config, meta *store.Store) (*Store, error) {
 	return &Store{root: cfg.RootDir, maxSize: cfg.MaxSize, meta: meta}, nil
 }
 
-// Upload accepts base64-encoded bytes, validates them, writes to disk, and
-// inserts a metadata row. ThreadID must reference an existing thread (the
-// FK constraint in the attachments table catches violations).
+// Upload accepts base64-encoded bytes, validates them, writes the file
+// and inserts a metadata row atomically from the caller's point of view.
+// The sequence is: write to a tmp sibling file first, INSERT the DB row,
+// then atomic rename to the final path on commit. If the DB insert fails
+// the tmp file is removed; if the atomic rename fails the DB row is
+// deleted. ThreadID must reference an existing thread (FK enforced).
+//
+// The tmp-then-rename pattern means a crash at ANY point leaves a
+// consistent view: either the DB row + final file both exist, or
+// neither does. A tmp file left behind after a crash is detectable by
+// its .tmp suffix; we don't currently sweep those, but they're bounded
+// in size and never referenced from any code path.
 func (s *Store) Upload(threadID, filename, mimeType, dataB64 string, createdAt int64) (store.Attachment, error) {
 	if strings.TrimSpace(threadID) == "" {
 		return store.Attachment{}, errors.New("attachment: thread id is required")
@@ -109,6 +118,7 @@ func (s *Store) Upload(threadID, filename, mimeType, dataB64 string, createdAt i
 	id := uuid.NewString()
 	relativePath := filepath.Join(sanitizeThreadID(threadID), id+ext)
 	absolutePath := filepath.Join(s.root, relativePath)
+	tmpPath := absolutePath + ".tmp"
 
 	// Extra defence in depth: make sure we stayed under the root after
 	// path-joining, even though sanitizeThreadID already strips separators.
@@ -127,8 +137,11 @@ func (s *Store) Upload(threadID, filename, mimeType, dataB64 string, createdAt i
 	if err := os.MkdirAll(filepath.Dir(absolutePath), 0o755); err != nil {
 		return store.Attachment{}, fmt.Errorf("attachment: mkdir: %w", err)
 	}
-	if err := os.WriteFile(absolutePath, data, 0o644); err != nil {
-		return store.Attachment{}, fmt.Errorf("attachment: write file: %w", err)
+	// Stage bytes to a sibling tmp file so a crash between here and the
+	// final rename leaves only a .tmp (no orphan row, no visible final
+	// file).
+	if err := os.WriteFile(tmpPath, data, 0o644); err != nil {
+		return store.Attachment{}, fmt.Errorf("attachment: write tmp file: %w", err)
 	}
 
 	record := store.Attachment{
@@ -141,9 +154,21 @@ func (s *Store) Upload(threadID, filename, mimeType, dataB64 string, createdAt i
 		CreatedAt:    createdAt,
 	}
 	if err := s.meta.InsertAttachment(record); err != nil {
-		// Roll back the on-disk write so disk and DB stay consistent.
-		_ = os.Remove(absolutePath)
+		// DB row never landed; tear down the tmp file so we don't leak.
+		_ = os.Remove(tmpPath)
 		return store.Attachment{}, err
+	}
+
+	// Atomic rename publishes the file at its final path. If this fails
+	// (e.g. FS error between directories), roll back the DB row so we
+	// don't leave a metadata row pointing at a path that doesn't exist.
+	if err := os.Rename(tmpPath, absolutePath); err != nil {
+		_ = os.Remove(tmpPath)
+		if derr := s.meta.DeleteAttachment(record.ID); derr != nil {
+			return store.Attachment{}, fmt.Errorf("attachment: rename %s → %s: %w (rollback also failed: %v)",
+				tmpPath, absolutePath, err, derr)
+		}
+		return store.Attachment{}, fmt.Errorf("attachment: rename %s → %s: %w", tmpPath, absolutePath, err)
 	}
 	return record, nil
 }

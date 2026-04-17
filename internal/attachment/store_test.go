@@ -212,7 +212,8 @@ func TestUploadRollsBackOnMetaFailure(t *testing.T) {
 		t.Fatal("expected FK failure")
 	}
 
-	// The disk directory should either be missing or empty.
+	// After A9: no final file, no tmp file — the tmp was removed during
+	// rollback so no .tmp orphan leaks either.
 	threadDir := filepath.Join(attStore.root, "missing-thread")
 	entries, err := os.ReadDir(threadDir)
 	if err != nil && !os.IsNotExist(err) {
@@ -220,6 +221,131 @@ func TestUploadRollsBackOnMetaFailure(t *testing.T) {
 	}
 	if len(entries) != 0 {
 		t.Fatalf("expected no orphan files on rollback, got %+v", entries)
+	}
+}
+
+// TestUploadNoTmpLeakOnMetaFailure confirms the tmp-rename contract: if
+// the DB insert fails, the .tmp staging file is removed. Before A9 no
+// tmp file existed at all; the new code relies on removing it cleanly.
+func TestUploadNoTmpLeakOnMetaFailure(t *testing.T) {
+	attStore, _ := newTestStores(t)
+
+	_, err := attStore.Upload("missing-thread", "pic.png", "image/png", pngData(t), 0)
+	if err == nil {
+		t.Fatal("expected FK failure")
+	}
+
+	// Walk the attachment root looking for any .tmp file.
+	err = filepath.Walk(attStore.root, func(path string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if info.IsDir() {
+			return nil
+		}
+		if strings.HasSuffix(path, ".tmp") {
+			t.Errorf("tmp file leaked: %s", path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+}
+
+// TestUploadFilenameFuzz exercises the filename-validation surface with
+// adversarial inputs: path traversal, embedded null bytes, newlines, and
+// mixed-case extensions. Every case must either be rejected or produce
+// a record whose final on-disk path stays under the root.
+func TestUploadFilenameFuzz(t *testing.T) {
+	attStore, meta := newTestStores(t)
+	seedThread(t, meta, "t1")
+
+	cases := []struct {
+		name     string
+		filename string
+		mime     string
+	}{
+		{"traversal-in-filename", "../etc/passwd.png", "image/png"},
+		{"null-byte", "pic\x00.png", "image/png"},
+		{"newline", "pic\n.png", "image/png"},
+		{"mixed-case-ext", "PIC.PNG", "image/png"},
+		{"double-dot", "..png", ""},
+		{"empty-ext", "pic", "image/png"},
+		{"only-dot", ".", "image/png"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			record, err := attStore.Upload("t1", tc.filename, tc.mime, pngData(t), 0)
+			if err != nil {
+				// Rejected — acceptable. No orphan files should exist.
+				return
+			}
+			// Accepted — the final on-disk path MUST stay under root.
+			absRoot, _ := filepath.Abs(attStore.root)
+			absFile, _ := filepath.Abs(filepath.Join(attStore.root, record.RelativePath))
+			if !strings.HasPrefix(absFile, absRoot+string(os.PathSeparator)) {
+				t.Errorf("accepted filename %q produced path escaping root: %q", tc.filename, absFile)
+			}
+			// The file must actually exist (not a phantom row).
+			if _, err := os.Stat(absFile); err != nil {
+				t.Errorf("accepted record missing on disk: %v", err)
+			}
+		})
+	}
+}
+
+// TestUploadSuccessfulEndStateHasNoTmpFile documents the tmp-rename
+// contract from the success side: after a successful upload, only the
+// final file exists (no .tmp sibling). Acts as a post-condition for the
+// two-phase write path.
+func TestUploadSuccessfulEndStateHasNoTmpFile(t *testing.T) {
+	attStore, meta := newTestStores(t)
+	seedThread(t, meta, "t1")
+
+	record, err := attStore.Upload("t1", "pic.png", "image/png", pngData(t), 0)
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+
+	// The final file must exist.
+	finalPath := filepath.Join(attStore.root, record.RelativePath)
+	if _, err := os.Stat(finalPath); err != nil {
+		t.Errorf("final file missing after successful upload: %v", err)
+	}
+	// No .tmp sibling.
+	if _, err := os.Stat(finalPath + ".tmp"); !os.IsNotExist(err) {
+		t.Errorf("tmp file leaked after successful upload: %v", err)
+	}
+}
+
+// TestUploadFileWriteFailureLeavesNoRow injects a file-write failure by
+// making the attachment root directory read-only and verifying no DB
+// row is inserted if the tmp write fails.
+func TestUploadFileWriteFailureLeavesNoRow(t *testing.T) {
+	attStore, meta := newTestStores(t)
+	seedThread(t, meta, "t1")
+
+	// Create the per-thread dir and lock it so the tmp WriteFile fails.
+	threadDir := filepath.Join(attStore.root, "t1")
+	if err := os.MkdirAll(threadDir, 0o555); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chmod(threadDir, 0o755)
+	})
+
+	_, err := attStore.Upload("t1", "pic.png", "image/png", pngData(t), 0)
+	if err == nil {
+		t.Fatal("expected upload to fail when dir is read-only")
+	}
+
+	list, err := meta.ListAttachments("t1")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(list) != 0 {
+		t.Errorf("no row should be written when file write fails, got %d", len(list))
 	}
 }
 
