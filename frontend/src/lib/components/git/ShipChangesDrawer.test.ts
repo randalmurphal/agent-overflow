@@ -5,7 +5,9 @@ import ShipChangesDrawer from './ShipChangesDrawer.svelte';
 import { createShipChangesState } from '../../stores/shipChanges.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
 import { loadSettings } from '../../stores/settings.svelte';
+import { getToasts } from '../../stores/toast.svelte';
 import type { GitActionResult, GitStatus } from '../../types/git';
+import type { Thread } from '../../types/models';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 
 // Element.animate shim for jsdom — Svelte transitions poke at it on mount.
@@ -488,5 +490,72 @@ describe('<ShipChangesDrawer>', () => {
     expect(external.phase).toBe('idle');
     // Push binding must not have been invoked — the wizard never reached push.
     expect(pushCalls).toBe(0);
+  });
+
+  // Bug C8 regression: switching the pane's thread while the drawer was
+  // open used to silently reset wizard state onto the new thread (because
+  // the effect sees the new pane.threadId and calls wizard.open(newId),
+  // wiping whatever subject/body the user had typed). The fix is to
+  // auto-close the drawer with an info toast so the user sees what
+  // happened.
+  it('auto-closes with a toast when the active thread switches mid-wizard', async () => {
+    const pane = await buildPane();
+    setBindingMock('GetGitStatus', async () => status({ hasChanges: true }));
+    let closed = 0;
+    const beforeToastCount = getToasts().length;
+    const { findByTestId, getByTestId } = render(ShipChangesDrawer, {
+      props: {
+        open: true,
+        pane,
+        onClose: () => { closed += 1; },
+      },
+    });
+    const subject = await findByTestId('ship-changes-commit-subject') as HTMLInputElement;
+    await fireEvent.input(subject, { target: { value: 'a subject user typed' } });
+    await flush();
+    expect(getByTestId('ship-changes-commit-subject')).toHaveValue('a subject user typed');
+
+    // User switches threads while the drawer is still open.
+    await pane.switchThread({
+      id: 't-2',
+      title: 'different thread',
+      provider: 'claude',
+      workspacePath: '',
+      projectPath: '',
+      model: 'm',
+      interactionMode: 'default',
+      createdAt: 0,
+      updatedAt: 0,
+      archived: false,
+    } as Thread);
+    await flush(10);
+
+    // onClose must have been invoked so the parent tears the drawer down.
+    expect(closed).toBeGreaterThanOrEqual(1);
+    // An info toast tells the user what happened.
+    const newToasts = getToasts().slice(beforeToastCount);
+    const toast = newToasts.find((t) => t.message.includes('Ship Changes closed'));
+    expect(toast).toBeDefined();
+    expect(toast?.type).toBe('info');
+  });
+
+  it('re-opening on the same thread after a close-and-reopen resets cleanly', async () => {
+    const pane = await buildPane();
+    setBindingMock('GetGitStatus', async () => status({ hasChanges: true }));
+    const { findByTestId, rerender } = render(ShipChangesDrawer, {
+      props: { open: true, pane, onClose: () => {} },
+    });
+    const subject = await findByTestId('ship-changes-commit-subject') as HTMLInputElement;
+    await fireEvent.input(subject, { target: { value: 'typed then closed' } });
+    await flush();
+
+    // Close and reopen — state must be reset (the subject gone).
+    await rerender({ open: false, pane, onClose: () => {} });
+    await flush();
+    await rerender({ open: true, pane, onClose: () => {} });
+    await flush();
+
+    const fresh = await findByTestId('ship-changes-commit-subject') as HTMLInputElement;
+    expect(fresh.value).toBe('');
   });
 });

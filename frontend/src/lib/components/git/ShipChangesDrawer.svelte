@@ -46,6 +46,10 @@
   let dialogEl: HTMLDivElement | undefined = $state(undefined);
   let previousFocus: Element | null = null;
   let statusLoadGeneration = 0;
+  // Track the thread the wizard was opened for so we can detect a switch
+  // while the drawer is still open and bail out rather than silently
+  // resetting the user's typed content onto a different thread's state.
+  let openedForThreadId: string | null = null;
 
   async function refreshStatus(threadId: string): Promise<void> {
     const generation = ++statusLoadGeneration;
@@ -61,15 +65,35 @@
 
   $effect(() => {
     if (!open) {
-      wizard.close();
+      // Wrap mutations in untrack so the reset-on-close pass doesn't
+      // re-enter the effect via its own writes.
+      untrack(() => {
+        wizard.close();
+      });
+      openedForThreadId = null;
       return;
     }
     const threadId = pane.threadId;
     if (!threadId) return;
 
+    // The user switched the active thread while the drawer was open.
+    // Silently resetting wizard state onto a different thread would
+    // throw away the commit subject/body they typed. Close the drawer
+    // with an informative toast so the user knows what happened.
+    if (openedForThreadId !== null && openedForThreadId !== threadId) {
+      untrack(() => {
+        addToast('info', 'Ship Changes closed (thread switched)');
+        onClose();
+      });
+      return;
+    }
+
     previousFocus = document.activeElement;
-    wizard.open(threadId);
-    void refreshStatus(threadId);
+    untrack(() => {
+      wizard.open(threadId);
+      void refreshStatus(threadId);
+    });
+    openedForThreadId = threadId;
   });
 
   function close(): void {
