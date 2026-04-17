@@ -25,6 +25,7 @@
     createShipChangesState,
     type ShipChangesState,
   } from '../../stores/shipChanges.svelte';
+  import { focusTrap } from '../../utils/focusTrap';
   import StepIndicator from './ship-changes/StepIndicator.svelte';
   import CommitStep from './ship-changes/CommitStep.svelte';
   import PushStep from './ship-changes/PushStep.svelte';
@@ -44,7 +45,6 @@
   // Named `wizard` to avoid colliding with Svelte's `$state` rune.
   const wizard: ShipChangesState = untrack(() => externalState ?? createShipChangesState());
   let dialogEl: HTMLDivElement | undefined = $state(undefined);
-  let previousFocus: Element | null = null;
   let statusLoadGeneration = 0;
   // Track the thread the wizard was opened for so we can detect a switch
   // while the drawer is still open and bail out rather than silently
@@ -88,7 +88,6 @@
       return;
     }
 
-    previousFocus = document.activeElement;
     untrack(() => {
       wizard.open(threadId);
       void refreshStatus(threadId);
@@ -97,8 +96,8 @@
   });
 
   function close(): void {
-    if (previousFocus instanceof HTMLElement) previousFocus.focus();
-    previousFocus = null;
+    // focus restoration is handled by the focusTrap action applied to
+    // the drawer container.
     onClose();
   }
 
@@ -210,6 +209,7 @@
   >
     <div
       bind:this={dialogEl}
+      use:focusTrap={{ active: open }}
       transition:fly={{ y: 12, duration: 160 }}
       role="dialog"
       aria-modal="true"

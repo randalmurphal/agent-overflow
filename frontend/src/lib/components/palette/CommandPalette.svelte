@@ -4,6 +4,7 @@
   import { enabledCommands, type Command, type CommandContext } from '../../stores/commandRegistry.svelte';
   import { fuzzyFilter } from '../../utils/fuzzy';
   import { formatChord, keybindingForCommand } from '../../stores/keybindings.svelte';
+  import { focusTrap } from '../../utils/focusTrap';
   import PaletteResultRow from './PaletteResultRow.svelte';
 
   let {
@@ -147,6 +148,7 @@
     data-testid="command-palette-backdrop"
   >
     <div
+      use:focusTrap={{ active: open, autoFocus: false }}
       role="dialog"
       aria-modal="true"
       aria-label="Command palette"

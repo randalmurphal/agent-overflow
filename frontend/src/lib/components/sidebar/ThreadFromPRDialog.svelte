@@ -7,6 +7,7 @@
   import { prependThread } from '../../stores/threads.svelte';
   import type { Thread } from '../../types/models';
   import type { ThreadPane } from '../../stores/thread.svelte';
+  import { focusTrap } from '../../utils/focusTrap';
   import ProviderPicker from '../composer/ProviderPicker.svelte';
 
   let { open, pane, onClose }: {
@@ -21,7 +22,6 @@
   let submitting = $state(false);
   let error = $state<string | null>(null);
   let dialogEl: HTMLDivElement | undefined = $state(undefined);
-  let previousFocus: Element | null = null;
   // Monotonic counter bumped whenever the dialog opens or closes. Each
   // submission captures this at start; if the user closes the dialog
   // before CreateThreadFromPR resolves the counter has moved, so we
@@ -51,21 +51,17 @@
     // Dialog is opening — bump once so a fresh submission starts in a new
     // generation window.
     submitGeneration += 1;
-    previousFocus = document.activeElement;
     url = '';
     model = '';
     error = null;
     submitting = false;
     provider = getSettings().defaultProvider as 'claude' | 'codex';
-    // Focus the input once the dialog mounts.
-    queueMicrotask(() => {
-      dialogEl?.querySelector<HTMLInputElement>('#pr-url-input')?.focus();
-    });
+    // Focus routing is handled by the focusTrap action; [data-autofocus]
+    // on the URL input picks it as the initial focus target.
   });
 
   function close() {
-    if (previousFocus instanceof HTMLElement) previousFocus.focus();
-    previousFocus = null;
+    // focus restoration is handled by the focusTrap action.
     onClose();
   }
 
@@ -139,6 +135,7 @@
   >
     <div
       bind:this={dialogEl}
+      use:focusTrap={{ active: open }}
       transition:scale={{ start: 0.95, duration: 150 }}
       role="dialog"
       aria-modal="true"
@@ -156,6 +153,7 @@
         </label>
         <input
           id="pr-url-input"
+          data-autofocus
           data-testid="thread-from-pr-url"
           type="text"
           bind:value={url}

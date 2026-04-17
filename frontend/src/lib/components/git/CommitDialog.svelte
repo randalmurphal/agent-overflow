@@ -4,6 +4,7 @@
   import type { GitActionResult } from '../../types/git';
   import { GitCommit } from '../../stores/bindings';
   import { addToast } from '../../stores/toast.svelte';
+  import { focusTrap } from '../../utils/focusTrap';
 
   let { pane, open, onClose }: {
     pane: ThreadPane;
@@ -16,7 +17,6 @@
   let committing = $state(false);
   let error = $state<string | null>(null);
   let dialogEl: HTMLDivElement | undefined = $state(undefined);
-  let previousFocus: Element | null = null;
 
   async function handleCommit() {
     if (!subject.trim() || !pane.threadId || committing) return;
@@ -44,30 +44,12 @@
     if (e.key === 'Escape') {
       e.preventDefault();
       close();
-      return;
     }
-    if (e.key === 'Tab' && dialogEl) {
-      const focusable = dialogEl.querySelectorAll<HTMLElement>(
-        'input:not([disabled]), textarea:not([disabled]), button:not([disabled]), [tabindex]:not([tabindex="-1"])',
-      );
-      if (focusable.length === 0) return;
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      if (e.shiftKey && document.activeElement === first) {
-        e.preventDefault();
-        last.focus();
-      } else if (!e.shiftKey && document.activeElement === last) {
-        e.preventDefault();
-        first.focus();
-      }
-    }
+    // Tab wrapping and focus restoration are handled by the focusTrap
+    // action applied to the dialog container.
   }
 
   function close() {
-    if (previousFocus instanceof HTMLElement) {
-      previousFocus.focus();
-    }
-    previousFocus = null;
     onClose();
   }
 
@@ -76,14 +58,6 @@
       close();
     }
   }
-
-  $effect(() => {
-    if (open && dialogEl) {
-      previousFocus = document.activeElement;
-      const subjectInput = dialogEl.querySelector<HTMLElement>('#commit-subject');
-      subjectInput?.focus();
-    }
-  });
 </script>
 
 {#if open}
@@ -96,6 +70,7 @@
   >
     <div
       bind:this={dialogEl}
+      use:focusTrap={{ active: open }}
       transition:scale={{ start: 0.95, duration: 150 }}
       role="dialog"
       aria-modal="true"
@@ -110,6 +85,7 @@
           <input
             id="commit-subject"
             type="text"
+            data-autofocus
             bind:value={subject}
             maxlength={72}
             placeholder="Brief description of changes"

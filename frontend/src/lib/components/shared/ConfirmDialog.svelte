@@ -1,5 +1,6 @@
 <script lang="ts">
   import { fade, scale } from 'svelte/transition';
+  import { focusTrap } from '../../utils/focusTrap';
 
   let {
     open,
@@ -22,23 +23,13 @@
   } = $props();
 
   let dialogEl: HTMLDivElement | undefined = $state(undefined);
-  let previousFocus: Element | null = null;
   const dialogId = crypto.randomUUID().slice(0, 8);
 
-  function restoreFocus() {
-    if (previousFocus instanceof HTMLElement) {
-      previousFocus.focus();
-    }
-    previousFocus = null;
-  }
-
   function handleConfirm() {
-    restoreFocus();
     onConfirm();
   }
 
   function handleCancel() {
-    restoreFocus();
     onCancel();
   }
 
@@ -46,23 +37,9 @@
     if (e.key === 'Escape') {
       e.preventDefault();
       handleCancel();
-      return;
     }
-    if (e.key === 'Tab' && dialogEl) {
-      const focusable = dialogEl.querySelectorAll<HTMLElement>(
-        'button:not([disabled]), [tabindex]:not([tabindex="-1"])',
-      );
-      if (focusable.length === 0) return;
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      if (e.shiftKey && document.activeElement === first) {
-        e.preventDefault();
-        last.focus();
-      } else if (!e.shiftKey && document.activeElement === last) {
-        e.preventDefault();
-        first.focus();
-      }
-    }
+    // Tab wrapping and focus restoration are handled by the focusTrap
+    // action applied to the dialog container.
   }
 
   function handleBackdropClick(e: MouseEvent) {
@@ -70,14 +47,6 @@
       handleCancel();
     }
   }
-
-  $effect(() => {
-    if (open && dialogEl) {
-      previousFocus = document.activeElement;
-      const confirm = dialogEl.querySelector<HTMLElement>('[data-confirm]');
-      confirm?.focus();
-    }
-  });
 </script>
 
 {#if open}
@@ -90,6 +59,7 @@
   >
     <div
       bind:this={dialogEl}
+      use:focusTrap={{ active: open }}
       transition:scale={{ start: 0.95, duration: 150 }}
       role="dialog"
       aria-modal="true"
@@ -112,6 +82,7 @@
         </button>
         <button
           data-confirm
+          data-autofocus
           onclick={handleConfirm}
           class="px-4 py-2 text-sm rounded-md font-medium cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50
             {destructive
