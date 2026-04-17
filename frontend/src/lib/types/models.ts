@@ -27,6 +27,13 @@ export interface Item {
   role: string;
   summary: string;
   payloadId?: string;
+  /**
+   * Links this item to a Task-tool parent when the item was produced by a
+   * subagent. For Claude, this is the `tool_use.id` of the enclosing Task
+   * (Agent) call; for Codex collab receivers, whichever id the backend wires
+   * through. Empty (or undefined) for top-level turn items.
+   */
+  parentToolUseId?: string;
   createdAt: number;
 }
 
