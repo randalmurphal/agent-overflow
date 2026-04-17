@@ -113,6 +113,12 @@ export function createThreadPane() {
       activeArtifactId = null;
       pendingDesignOptions = null;
       designViewport = 'desktop';
+      // Every drawer / pane-scoped UI flag should reset so switching threads
+      // never "remembers" the previous thread's open drawers. diffPanel owns
+      // its own reset via clearForThread (which closes the panel); showTerminal
+      // is reset here so opening the terminal on thread A does not spill over
+      // into thread B.
+      showTerminal = false;
       diffPanel.clearForThread();
       loading = true;
 

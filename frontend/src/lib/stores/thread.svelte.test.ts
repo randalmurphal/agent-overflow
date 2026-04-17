@@ -153,6 +153,35 @@ describe('createThreadPane()', () => {
       expect(consoleErr).toHaveBeenCalled();
       consoleErr.mockRestore();
     });
+
+    // --- Bug D1 regression: drawer UI flags must not leak between threads ---
+    it('resets showTerminal to false when switching threads and does not auto-restore', async () => {
+      // Mount on thread A, open the terminal drawer.
+      await pane.switchThread(makeThread({ id: 'thread-A' }));
+      pane.setShowTerminal(true);
+      expect(pane.showTerminal).toBe(true);
+
+      // Switch to thread B: the drawer must be closed.
+      await pane.switchThread(makeThread({ id: 'thread-B' }));
+      expect(pane.showTerminal).toBe(false);
+
+      // Switching back to A must not auto-restore the drawer — the user's
+      // previous drawer state does not survive a thread switch.
+      await pane.switchThread(makeThread({ id: 'thread-A' }));
+      expect(pane.showTerminal).toBe(false);
+    });
+
+    it('resets diffPanel.open to false when switching threads', async () => {
+      await pane.switchThread(makeThread({ id: 'thread-A' }));
+      pane.setDiffPanelOpen(true);
+      expect(pane.diffPanel.open).toBe(true);
+
+      await pane.switchThread(makeThread({ id: 'thread-B' }));
+      expect(pane.diffPanel.open).toBe(false);
+
+      await pane.switchThread(makeThread({ id: 'thread-A' }));
+      expect(pane.diffPanel.open).toBe(false);
+    });
   });
 
   describe('clear()', () => {
