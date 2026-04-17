@@ -31,7 +31,12 @@ func (a *App) sendMessage(threadID string, content string) error {
 		return fmt.Errorf("no active session for thread %s", threadID)
 	}
 
-	// DB operations happen outside a.mu so other App methods are not blocked.
+	// DB reads happen outside a.mu so other App methods are not blocked.
+	// Under sendMu: compute turn index + do a pre-flight read of the
+	// thread. Holding sendMu keeps the "read turn index, then send, then
+	// persist" sequence atomic from our side — without it, two concurrent
+	// SendMessage calls could both compute the same turnIndex and stomp
+	// on each other's InsertItem.
 	sendMu.Lock()
 	thread, err := a.store.GetThread(threadID)
 	if err != nil {
@@ -51,6 +56,17 @@ func (a *App) sendMessage(threadID string, content string) error {
 	turnIndex++
 	a.maybeRenameTemporaryWorktreeBranch(threadID, content)
 
+	// Bug B8: the user item used to be persisted here, BEFORE the
+	// provider Send. A failing Send left an orphan user row on a turn
+	// that never ran. Write to the provider first — if that fails we
+	// don't persist anything. On success, persist the user item and
+	// release the mutex so concurrent sends see the committed turn
+	// index before they compute their own.
+	if err := sendToProvider(sess, threadID, content); err != nil {
+		sendMu.Unlock()
+		return err
+	}
+
 	now := time.Now().UnixMilli()
 	userItem := store.Item{
 		ID:        uuid.New().String(),
@@ -68,7 +84,14 @@ func (a *App) sendMessage(threadID string, content string) error {
 	}
 	sendMu.Unlock()
 	a.maybeGenerateThreadTitle(thread, content, hasPriorItems)
+	return nil
+}
 
+// sendToProvider forwards the user content to the active provider
+// session. Extracted so sendMessage can call the provider before
+// touching the store (Bug B8) while keeping the switch/log behaviour
+// in one place.
+func sendToProvider(sess session, threadID, content string) error {
 	switch {
 	case sess.claude != nil:
 		return sess.claude.Send(context.Background(), content)

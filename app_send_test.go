@@ -510,3 +510,111 @@ func TestStopSessionNoSessionIsNoOp(t *testing.T) {
 		t.Fatalf("StopSession() error = %v, want nil", err)
 	}
 }
+
+// TestSendMessageDoesNotPersistUserItemWhenProviderSendFails exercises
+// Bug B8: the old flow persisted the user item BEFORE calling Send, so
+// a broken pipe / dead subprocess left an orphan user row for a turn
+// that never ran. The fix writes to the provider first; on failure the
+// user item is never persisted.
+func TestSendMessageDoesNotPersistUserItemWhenProviderSendFails(t *testing.T) {
+	app := newTestAppWithStore(t)
+	thread := testThread("thread-send-fail")
+	thread.Provider = string(provider.Claude)
+	thread.WorkspacePath = t.TempDir()
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+
+	// Create a real claude session, then close it so the next Send's
+	// WriteLine fails with "process already exited".
+	sess, err := claude.NewSession(
+		context.Background(),
+		thread.ID,
+		claude.Config{
+			Binary:  writeClaudePassthroughBinary(t),
+			WorkDir: thread.WorkspacePath,
+		},
+		func(provider.ProviderEvent) {},
+	)
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	if err := sess.Close(); err != nil {
+		t.Logf("close returned %v (expected)", err)
+	}
+
+	app.sessions[thread.ID] = session{
+		provider: string(provider.Claude),
+		token:    "test-token",
+		claude:   sess,
+	}
+
+	err = app.SendMessage(thread.ID, "doomed content")
+	if err == nil {
+		t.Fatal("expected Send to fail with a closed session, got nil")
+	}
+
+	items, err := app.store.ListItems(thread.ID)
+	if err != nil {
+		t.Fatalf("ListItems: %v", err)
+	}
+	for _, item := range items {
+		if item.Role == "user" {
+			t.Fatalf("user item persisted despite provider send failure: %+v", item)
+		}
+	}
+}
+
+// TestSendMessagePersistsUserItemOnSuccess confirms the happy path is
+// preserved: a successful Send still results in the user item landing
+// in the store. Regression would be moving the InsertItem call past a
+// success branch by mistake.
+func TestSendMessagePersistsUserItemOnSuccess(t *testing.T) {
+	app := newTestAppWithStore(t)
+	thread := testThread("thread-send-success")
+	thread.Provider = string(provider.Claude)
+	thread.WorkspacePath = t.TempDir()
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	sess, err := claude.NewSession(
+		context.Background(),
+		thread.ID,
+		claude.Config{
+			Binary:  writeClaudePassthroughBinary(t),
+			WorkDir: thread.WorkspacePath,
+		},
+		func(provider.ProviderEvent) {},
+	)
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(func() { _ = sess.Close() })
+
+	app.sessions[thread.ID] = session{
+		provider: string(provider.Claude),
+		token:    "test-token",
+		claude:   sess,
+	}
+
+	if err := app.SendMessage(thread.ID, "hello world"); err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+
+	items, err := app.store.ListItems(thread.ID)
+	if err != nil {
+		t.Fatalf("ListItems: %v", err)
+	}
+	var userItem store.Item
+	for _, item := range items {
+		if item.Role == "user" {
+			userItem = item
+		}
+	}
+	if userItem.ID == "" {
+		t.Fatal("user item missing after successful Send")
+	}
+	if userItem.Summary != "hello world" {
+		t.Fatalf("summary = %q, want hello world", userItem.Summary)
+	}
+}
