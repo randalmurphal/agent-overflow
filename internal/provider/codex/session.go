@@ -68,6 +68,10 @@ type Session struct {
 	// clearTurnStart on EventTurnComplete so re-used turn IDs (rare,
 	// typically across resumed sessions) can fire fresh.
 	seenTurnStarts map[string]struct{}
+	// requestTimeoutOverride replaces defaultRequestTimeout when
+	// non-zero. Set by tests that exercise the late-response path; a
+	// production Session leaves it at zero to use the default.
+	requestTimeoutOverride time.Duration
 }
 
 // pendingApproval tracks one in-flight approval so the timer can be
@@ -308,7 +312,13 @@ func (s *Session) Close() error {
 
 // -- Internal methods --
 
-// sendRequest sends a JSON-RPC request and waits for a response.
+// sendRequest sends a JSON-RPC request and waits for a response. On
+// timeout or context cancellation we remove the pending entry
+// atomically with the lock, then drop the buffered response (if any)
+// so the channel does not leak a record that no one will read. A
+// response that arrives AFTER we delete the pending entry is dropped
+// by dispatchLine's default branch — we cannot leak a late response
+// once the pending entry is gone.
 func (s *Session) sendRequest(ctx context.Context, method string, params any) (json.RawMessage, error) {
 	id := s.nextID.Add(1)
 
@@ -317,11 +327,22 @@ func (s *Session) sendRequest(ctx context.Context, method string, params any) (j
 	s.pending[id] = ch
 	s.mu.Unlock()
 
-	defer func() {
+	// abandon removes the pending entry under the lock and drains the
+	// buffered response (if any) so a late write from dispatchLine
+	// lands in a channel nobody is holding. Called exactly once by
+	// whichever branch of the select below runs — we don't use a
+	// defer so the drain happens BEFORE we return rather than after,
+	// which eliminates the window where a late response can land in
+	// the buffer-1 channel unobserved.
+	abandon := func() {
 		s.mu.Lock()
 		delete(s.pending, id)
 		s.mu.Unlock()
-	}()
+		select {
+		case <-ch:
+		default:
+		}
+	}
 
 	msg := map[string]any{
 		"jsonrpc": "2.0",
@@ -334,17 +355,26 @@ func (s *Session) sendRequest(ctx context.Context, method string, params any) (j
 
 	data, err := json.Marshal(msg)
 	if err != nil {
+		abandon()
 		return nil, fmt.Errorf("codex: marshal request: %w", err)
 	}
 
 	if err := s.proc.WriteLine(data); err != nil {
+		abandon()
 		return nil, err
 	}
 
 	select {
 	case <-ctx.Done():
+		abandon()
 		return nil, ctx.Err()
 	case resp, ok := <-ch:
+		// The happy path also needs to clear the pending entry. We do
+		// it here rather than via defer so abandon's lock pattern is
+		// the single source of truth.
+		s.mu.Lock()
+		delete(s.pending, id)
+		s.mu.Unlock()
 		if !ok {
 			return nil, fmt.Errorf("codex: %s: session stopped before request completed", method)
 		}
@@ -364,14 +394,25 @@ func (s *Session) sendRequest(ctx context.Context, method string, params any) (j
 			}
 		}
 		return resp, nil
-	case <-time.After(30 * time.Second):
-		// Drain the channel so any late response is consumed and the channel can be GC'd.
-		select {
-		case <-ch:
-		default:
-		}
+	case <-time.After(s.requestTimeout()):
+		abandon()
 		return nil, fmt.Errorf("codex: %s: timeout", method)
 	}
+}
+
+// defaultRequestTimeout bounds how long sendRequest waits for a JSON-RPC
+// response. Overridable by tests via Session.requestTimeoutOverride.
+const defaultRequestTimeout = 30 * time.Second
+
+// requestTimeout returns the active JSON-RPC response timeout. Tests set
+// a much shorter value via the unexported requestTimeoutOverride field
+// so they can exercise the timeout + late-response path without waiting
+// 30 seconds.
+func (s *Session) requestTimeout() time.Duration {
+	if s.requestTimeoutOverride > 0 {
+		return s.requestTimeoutOverride
+	}
+	return defaultRequestTimeout
 }
 
 // writeNotification sends a JSON-RPC notification (no id, no response expected).

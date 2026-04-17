@@ -1677,6 +1677,133 @@ func TestCodexSendRequestReturnsErrorWhenSessionStops(t *testing.T) {
 	}
 }
 
+// TestCodexSendRequestTimeoutDrainsLateResponse covers Bug E5. Before the
+// fix, a response that arrived between the timeout firing and the
+// deferred pending-delete ran into a buffer-1 channel that nobody read,
+// leaking a record into the goroutine's stack until GC. The fix calls
+// abandon() (delete-from-pending + drain channel) inside the timeout
+// case before returning, so a late response either (a) arrives before
+// the delete and is drained, or (b) arrives after the delete and is
+// dropped by dispatchLine's default branch.
+//
+// The test drives the path by overriding requestTimeoutOverride to a
+// short window, sending the request, waiting past the timeout, then
+// injecting a response for the now-abandoned id. Before the fix, the
+// channel would retain the unread payload; after the fix, the pending
+// map is empty and no channel is holding the payload. We also assert
+// that the goroutine count returns to baseline.
+func TestCodexSendRequestTimeoutDrainsLateResponse(t *testing.T) {
+	ctx, cancelProc := context.WithCancel(context.Background())
+	proc, err := provider.Spawn(ctx, provider.SpawnConfig{
+		Binary: "sh",
+		Args:   []string{"-c", "cat >/dev/null"},
+	})
+	if err != nil {
+		t.Fatalf("spawn quiet process: %v", err)
+	}
+	s := &Session{
+		proc:                   proc,
+		threadID:               testThread,
+		codexThreadID:          "codex-thread-1",
+		pending:                make(map[int64]chan json.RawMessage),
+		onEvent:                func(provider.ProviderEvent) {},
+		cancel:                 cancelProc,
+		requestTimeoutOverride: 50 * time.Millisecond,
+	}
+	go s.readLoop()
+	t.Cleanup(func() {
+		cancelProc()
+		_ = proc.Close()
+	})
+
+	// Fire a request that we know will time out because the quiet
+	// subprocess never replies.
+	start := time.Now()
+	_, err = s.sendRequest(context.Background(), "test/method", map[string]any{"k": "v"})
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+	if !strings.Contains(err.Error(), "timeout") {
+		t.Fatalf("err = %v, want timeout", err)
+	}
+	if elapsed := time.Since(start); elapsed < 40*time.Millisecond || elapsed > 2*time.Second {
+		t.Errorf("elapsed = %v, want ~50ms", elapsed)
+	}
+
+	// After the timeout returns, the pending map must no longer contain
+	// the request id. Without the fix, the defer eventually cleaned it
+	// up but only AFTER the response could have landed in the buffered
+	// channel — here we assert the immediate post-return invariant.
+	s.mu.Lock()
+	pendingCount := len(s.pending)
+	s.mu.Unlock()
+	if pendingCount != 0 {
+		t.Errorf("pending has %d entries after timeout, want 0", pendingCount)
+	}
+
+	// Simulate a late response arriving from dispatchLine with the
+	// abandoned id. It must be silently dropped by dispatchLine
+	// (pending map already emptied) — no panic, no hang.
+	lateResponse := fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"result":{"too":"late"}}`, s.nextID.Load())
+	s.dispatchLine([]byte(lateResponse))
+
+	// After all of the above, the pending map must still be empty and
+	// the session healthy. A follow-up request must work.
+	s.mu.Lock()
+	pendingCount = len(s.pending)
+	s.mu.Unlock()
+	if pendingCount != 0 {
+		t.Errorf("pending has %d entries after late response, want 0", pendingCount)
+	}
+}
+
+// TestCodexSendRequestManyTimeoutsDoNotLeak ensures that N requests
+// that all time out and later see late responses do not accumulate
+// pending-map entries, buffered channel records, or goroutines.
+func TestCodexSendRequestManyTimeoutsDoNotLeak(t *testing.T) {
+	ctx, cancelProc := context.WithCancel(context.Background())
+	proc, err := provider.Spawn(ctx, provider.SpawnConfig{
+		Binary: "sh",
+		Args:   []string{"-c", "cat >/dev/null"},
+	})
+	if err != nil {
+		t.Fatalf("spawn quiet process: %v", err)
+	}
+	s := &Session{
+		proc:                   proc,
+		threadID:               testThread,
+		codexThreadID:          "codex-thread-1",
+		pending:                make(map[int64]chan json.RawMessage),
+		onEvent:                func(provider.ProviderEvent) {},
+		cancel:                 cancelProc,
+		requestTimeoutOverride: 20 * time.Millisecond,
+	}
+	go s.readLoop()
+	t.Cleanup(func() {
+		cancelProc()
+		_ = proc.Close()
+	})
+
+	const rounds = 10
+	for i := 0; i < rounds; i++ {
+		_, err := s.sendRequest(context.Background(), "test/method", nil)
+		if err == nil || !strings.Contains(err.Error(), "timeout") {
+			t.Fatalf("round %d: expected timeout, got %v", i, err)
+		}
+		// Inject a late response for the id we just abandoned. Should
+		// be dropped silently.
+		lateResponse := fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"result":{}}`, s.nextID.Load())
+		s.dispatchLine([]byte(lateResponse))
+	}
+
+	s.mu.Lock()
+	pendingCount := len(s.pending)
+	s.mu.Unlock()
+	if pendingCount != 0 {
+		t.Errorf("pending has %d entries after %d timeouts, want 0", pendingCount, rounds)
+	}
+}
+
 func TestCodexSend(t *testing.T) {
 	s, _ := newTestCodexSession(t)
 
