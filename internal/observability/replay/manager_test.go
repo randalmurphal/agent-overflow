@@ -382,4 +382,122 @@ func TestNilManagerMethodsSafe(t *testing.T) {
 	if err := m.Shutdown(context.Background()); err != nil {
 		t.Errorf("nil manager Shutdown returned %v, want nil", err)
 	}
+	if err := m.RemoveThreadLog("tx"); err != nil {
+		t.Errorf("nil manager RemoveThreadLog returned %v, want nil", err)
+	}
+}
+
+// TestRemoveThreadLogRemovesFileAndClosesWriter covers the common path: a
+// running manager has persisted events for a thread, then we ask it to
+// drop the thread's log. The writer should close cleanly and the file
+// should be gone.
+func TestRemoveThreadLogRemovesFileAndClosesWriter(t *testing.T) {
+	dir := t.TempDir()
+	m := NewManager(ManagerConfig{
+		RootDir:      dir,
+		QueueSize:    16,
+		WriterConfig: WriterConfig{FsyncEvery: 1},
+		IdleTimeout:  100 * time.Second,
+		Enabled:      true,
+	})
+	defer m.Shutdown(context.Background())
+
+	rec, _ := NewRecord(time.Now(), "t-remove", "k", nil)
+	if !m.Enqueue(rec) {
+		t.Fatal("Enqueue rejected while enabled")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := m.waitForDrain(ctx); err != nil {
+		t.Fatalf("waitForDrain: %v", err)
+	}
+
+	path := filepath.Join(dir, "t-remove.jsonl")
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("replay file missing before removal: %v", err)
+	}
+	if got := m.openCount(); got != 1 {
+		t.Fatalf("openCount before remove = %d, want 1", got)
+	}
+
+	if err := m.RemoveThreadLog("t-remove"); err != nil {
+		t.Fatalf("RemoveThreadLog: %v", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("replay file still present after removal: err=%v", err)
+	}
+	if got := m.openCount(); got != 0 {
+		t.Errorf("openCount after remove = %d, want 0", got)
+	}
+}
+
+// TestRemoveThreadLogRemovesRotatedBackups covers the case where the
+// writer has rotated and left .1/.2/.3 files behind. All of them must be
+// removed, not just the current file.
+func TestRemoveThreadLogRemovesRotatedBackups(t *testing.T) {
+	dir := t.TempDir()
+	m := NewManager(ManagerConfig{
+		RootDir:      dir,
+		QueueSize:    16,
+		WriterConfig: WriterConfig{FsyncEvery: 1},
+		IdleTimeout:  100 * time.Second,
+		Enabled:      false, // we're going to plant files by hand
+	})
+	defer m.Shutdown(context.Background())
+
+	// Simulate previous runs that left the main log plus rotated backups.
+	// We don't need the writer involved for this branch — RemoveThreadLog
+	// must work even when the writer was never opened in this process.
+	base := filepath.Join(dir, "t-rotated.jsonl")
+	for _, p := range []string{base, base + ".1", base + ".2", base + ".3"} {
+		if err := os.WriteFile(p, []byte("{}\n"), 0o644); err != nil {
+			t.Fatalf("seed %s: %v", p, err)
+		}
+	}
+
+	if err := m.RemoveThreadLog("t-rotated"); err != nil {
+		t.Fatalf("RemoveThreadLog: %v", err)
+	}
+	for _, p := range []string{base, base + ".1", base + ".2", base + ".3"} {
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Errorf("%s still present after removal: err=%v", p, err)
+		}
+	}
+}
+
+// TestRemoveThreadLogNoFileNoError covers the case where replay was never
+// enabled for the thread (e.g. replay disabled at thread creation, or
+// thread deleted before any event fired). Removing must succeed silently.
+func TestRemoveThreadLogNoFileNoError(t *testing.T) {
+	dir := t.TempDir()
+	m := NewManager(ManagerConfig{
+		RootDir:      dir,
+		QueueSize:    16,
+		WriterConfig: WriterConfig{FsyncEvery: 1},
+		IdleTimeout:  100 * time.Second,
+		Enabled:      true,
+	})
+	defer m.Shutdown(context.Background())
+
+	if err := m.RemoveThreadLog("t-never-wrote"); err != nil {
+		t.Errorf("RemoveThreadLog on missing file returned %v, want nil", err)
+	}
+}
+
+// TestRemoveThreadLogEmptyThreadID silently succeeds. Guarding against a
+// misuse that would otherwise blow away the entire replay root ("/.jsonl").
+func TestRemoveThreadLogEmptyThreadID(t *testing.T) {
+	dir := t.TempDir()
+	m := NewManager(ManagerConfig{
+		RootDir:      dir,
+		QueueSize:    16,
+		WriterConfig: WriterConfig{FsyncEvery: 1},
+		IdleTimeout:  100 * time.Second,
+		Enabled:      true,
+	})
+	defer m.Shutdown(context.Background())
+
+	if err := m.RemoveThreadLog(""); err != nil {
+		t.Errorf("RemoveThreadLog('') returned %v, want nil", err)
+	}
 }

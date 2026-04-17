@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
@@ -292,6 +293,57 @@ func (m *Manager) openCount() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return len(m.writers)
+}
+
+// RemoveThreadLog closes the writer for threadID (if any) and removes the
+// per-thread replay file plus any rotated backups (.1 / .2 / .3). Called by
+// deleteThreadTree so thread deletion does not leave orphan replay logs on
+// disk. Missing files are not an error — callers delete threads that may
+// never have been recorded.
+func (m *Manager) RemoveThreadLog(threadID string) error {
+	if m == nil || threadID == "" {
+		return nil
+	}
+
+	// Close the writer first so the file descriptor is released before we
+	// unlink. On Linux the unlink would succeed anyway (the file stays
+	// alive until the fd closes) but on Windows it would fail with a
+	// sharing violation, and even on Linux a dangling writer trying to
+	// rotate would look up the now-deleted file.
+	m.mu.Lock()
+	w, ok := m.writers[threadID]
+	if ok {
+		delete(m.writers, threadID)
+	}
+	m.mu.Unlock()
+	var closeErr error
+	if w != nil {
+		if err := w.Close(); err != nil {
+			closeErr = fmt.Errorf("replay: close writer for %s: %w", threadID, err)
+		}
+	}
+
+	path := filepath.Join(m.rootDir, threadID+".jsonl")
+	var removalErr error
+	for _, candidate := range []string{path, path + ".1", path + ".2", path + ".3"} {
+		if err := os.Remove(candidate); err != nil && !os.IsNotExist(err) {
+			// Record the first removal error but keep trying so a
+			// read-only backup doesn't block the main file's deletion.
+			if removalErr == nil {
+				removalErr = fmt.Errorf("replay: remove %s: %w", candidate, err)
+			}
+		}
+	}
+
+	switch {
+	case closeErr != nil && removalErr != nil:
+		return fmt.Errorf("%w; %w", closeErr, removalErr)
+	case closeErr != nil:
+		return closeErr
+	case removalErr != nil:
+		return removalErr
+	}
+	return nil
 }
 
 // waitForDrain blocks until either (a) the queue is empty AND no record is

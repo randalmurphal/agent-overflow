@@ -1,13 +1,16 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"agent-overflow/internal/attachment"
+	"agent-overflow/internal/observability/replay"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 )
@@ -541,6 +544,126 @@ func TestInstallDeliberationTracksState(t *testing.T) {
 	}
 	if got := delib.State().MaxTurns; got != 5 {
 		t.Fatalf("MaxTurns = %d, want 5", got)
+	}
+}
+
+// TestDeleteThreadRemovesReplayLog covers the common path: the thread has
+// an on-disk replay log and deleting the thread must remove it.
+func TestDeleteThreadRemovesReplayLog(t *testing.T) {
+	app := newTestAppWithStore(t)
+
+	replayDir := t.TempDir()
+	app.replay = replay.NewManager(replay.ManagerConfig{
+		RootDir:      replayDir,
+		QueueSize:    16,
+		WriterConfig: replay.WriterConfig{FsyncEvery: 1},
+		IdleTimeout:  100 * time.Second,
+		Enabled:      true,
+	})
+	t.Cleanup(func() {
+		_ = app.replay.Shutdown(context.Background())
+	})
+
+	thread := testThread("thread-replay-present")
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+
+	rec, err := replay.NewRecord(time.Now(), thread.ID, "k", nil)
+	if err != nil {
+		t.Fatalf("NewRecord: %v", err)
+	}
+	if !app.replay.Enqueue(rec) {
+		t.Fatal("Enqueue dropped event on enabled manager")
+	}
+	// Wait for the writer to flush by polling for the file. The manager
+	// has no public waitForDrain, so we rely on FsyncEvery:1 + a short
+	// retry window.
+	replayPath := filepath.Join(replayDir, thread.ID+".jsonl")
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(replayPath); err == nil {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if _, err := os.Stat(replayPath); err != nil {
+		t.Fatalf("replay file did not appear within deadline: %v", err)
+	}
+
+	if err := app.DeleteThread(thread.ID); err != nil {
+		t.Fatalf("DeleteThread: %v", err)
+	}
+
+	if _, err := os.Stat(replayPath); !os.IsNotExist(err) {
+		t.Errorf("replay file still present after delete: err=%v", err)
+	}
+}
+
+// TestDeleteThreadRemovesReplayLogWithRotations ensures rotated backups
+// (.1/.2/.3) are swept along with the current log.
+func TestDeleteThreadRemovesReplayLogWithRotations(t *testing.T) {
+	app := newTestAppWithStore(t)
+
+	replayDir := t.TempDir()
+	app.replay = replay.NewManager(replay.ManagerConfig{
+		RootDir:      replayDir,
+		QueueSize:    16,
+		WriterConfig: replay.WriterConfig{FsyncEvery: 1},
+		IdleTimeout:  100 * time.Second,
+		Enabled:      false, // we'll seed files manually
+	})
+	t.Cleanup(func() {
+		_ = app.replay.Shutdown(context.Background())
+	})
+
+	thread := testThread("thread-replay-rotated")
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+
+	base := filepath.Join(replayDir, thread.ID+".jsonl")
+	for _, p := range []string{base, base + ".1", base + ".2", base + ".3"} {
+		if err := os.WriteFile(p, []byte("{}\n"), 0o644); err != nil {
+			t.Fatalf("seed %s: %v", p, err)
+		}
+	}
+
+	if err := app.DeleteThread(thread.ID); err != nil {
+		t.Fatalf("DeleteThread: %v", err)
+	}
+	for _, p := range []string{base, base + ".1", base + ".2", base + ".3"} {
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Errorf("%s still present after delete: err=%v", p, err)
+		}
+	}
+}
+
+// TestDeleteThreadReplayLogMissingIsNotError covers the case where the
+// thread never recorded any replay events (manager disabled at thread
+// creation, or thread created before replay was toggled on). Delete
+// must not fail.
+func TestDeleteThreadReplayLogMissingIsNotError(t *testing.T) {
+	app := newTestAppWithStore(t)
+
+	replayDir := t.TempDir()
+	app.replay = replay.NewManager(replay.ManagerConfig{
+		RootDir:      replayDir,
+		QueueSize:    16,
+		WriterConfig: replay.WriterConfig{FsyncEvery: 1},
+		IdleTimeout:  100 * time.Second,
+		Enabled:      false,
+	})
+	t.Cleanup(func() {
+		_ = app.replay.Shutdown(context.Background())
+	})
+
+	thread := testThread("thread-replay-absent")
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+	if err := app.DeleteThread(thread.ID); err != nil {
+		t.Errorf("DeleteThread with no replay log returned %v, want nil", err)
 	}
 }
 

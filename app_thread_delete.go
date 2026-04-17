@@ -67,6 +67,11 @@ func (a *App) deleteThreadTree(threadID string) error {
 	if err := a.cleanupThreadAttachmentFiles(threadID); err != nil {
 		errs = append(errs, fmt.Errorf("cleanup attachments: %w", err))
 	}
+	if a.replay != nil {
+		if err := a.replay.RemoveThreadLog(threadID); err != nil {
+			errs = append(errs, fmt.Errorf("cleanup replay log: %w", err))
+		}
+	}
 
 	// If ANY step above errored, skip the DB row delete so the next
 	// DeleteThread call can reconcile from a known state. Without this,
