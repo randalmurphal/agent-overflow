@@ -118,3 +118,26 @@ export function WriteThreadWorkspaceFile(
 export function UpdateThreadModel(threadID: string, model: string): Promise<Thread> {
   return Call.ByName('main.App.UpdateThreadModel', threadID, model) as Promise<Thread>;
 }
+
+/**
+ * Global message search — returns thread-title and item-summary hits for the
+ * given query. See internal/store/search.go for the ranking contract.
+ *
+ * Wrapped by hand so the binding is available before the next wails generate
+ * pass picks up the new App method.
+ */
+export interface ThreadMessageHit {
+  threadId: string;
+  threadTitle: string;
+  provider: string;
+  itemId: string;
+  turnIndex: number;
+  itemKind: string;
+  itemRole: string;
+  summary: string;
+  matchType: 'title' | 'item';
+}
+
+export function SearchThreadMessages(query: string, limit: number): Promise<ThreadMessageHit[]> {
+  return Call.ByName('main.App.SearchThreadMessages', query, limit) as Promise<ThreadMessageHit[]>;
+}

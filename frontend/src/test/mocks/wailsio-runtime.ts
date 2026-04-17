@@ -5,9 +5,34 @@
 // we replace it with a synchronous pub-sub registry that tests can drive
 // directly via `emitWailsEvent()`.
 
+import { __bindingMocksInternal } from './bindings-app';
+
 type Handler = (ev: { name: string; data: unknown }) => void;
 
 const listeners: Map<string, Set<Handler>> = new Map();
+
+/**
+ * Mock of the Wails runtime's `Call.ByName` RPC. Routes `main.App.<Method>`
+ * to the same registry that `setBindingMock` drives, so hand-written
+ * bindings in lib/stores/bindings.ts that use `Call.ByName(...)` behave
+ * the same as generated bindings the test harness aliases.
+ */
+export const Call = {
+  ByName(name: string, ...args: unknown[]): Promise<unknown> {
+    // Accept 'main.App.<Method>' or a bare method name — tests may use
+    // either shape via setBindingMock.
+    const key = name.replace(/^main\.App\./, '');
+    const fn = __bindingMocksInternal.get(key);
+    if (!fn) {
+      return Promise.reject(
+        new Error(
+          `Call.ByName: no mock for ${name}. Install one via setBindingMock('${key}', impl).`,
+        ),
+      );
+    }
+    return Promise.resolve(fn(...args));
+  },
+};
 
 export const Events = {
   /**

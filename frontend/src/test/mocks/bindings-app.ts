@@ -12,6 +12,14 @@ type MockedFn = Mock<(...args: unknown[]) => unknown>;
 const mocks: Map<string, MockedFn> = new Map();
 
 /**
+ * Internal export of the mocks registry. Imported by the wailsio-runtime
+ * mock so Call.ByName dispatches to the same per-name handlers that
+ * setBindingMock installs. Not part of the public test surface — prefer
+ * setBindingMock / getBindingMock in tests.
+ */
+export const __bindingMocksInternal = mocks;
+
+/**
  * Install (or replace) a mock implementation for a binding.
  * Returns the underlying vi.fn so tests can inspect call args.
  */
