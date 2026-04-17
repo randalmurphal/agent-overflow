@@ -1,16 +1,28 @@
-# README
+# Agent Overflow
 
-## About
+Desktop app for using coding agents (Claude Code, Codex) with a shared UX.
+Built on Go 1.25, Wails v3, and Svelte 5.
 
-This is the official Wails Svelte template.
+## Run
 
-## Live Development
+```sh
+wails dev       # dev mode with hot reload
+wails build     # production build
+```
 
-To run in live development mode, run `wails dev` in the project directory. This will run a Vite development
-server that will provide very fast hot reload of your frontend changes. If you want to develop in a browser
-and have access to your Go methods, there is also a dev server that runs on http://localhost:34115. Connect
-to this in your browser, and you can call your Go code from devtools.
+## Check
 
-## Building
+```sh
+go build ./...                 # Go
+go test ./...                  # Go tests
+cd frontend && npm run check   # Svelte + TypeScript
+cd frontend && npm test        # frontend tests
+```
 
-To build a redistributable, production mode package, use `wails build`.
+## Docs
+
+Start at [`AGENTS.md`](AGENTS.md) for the project overview, stack,
+principles, and repo map. Area-specific guides live alongside the code
+as nested `AGENTS.md` files. Deep-dive design notes are under
+[`docs/architecture/`](docs/architecture/); external reference repos
+and the spike-test policy are under [`docs/references/`](docs/references/).
