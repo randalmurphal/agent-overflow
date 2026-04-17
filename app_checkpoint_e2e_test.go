@@ -14,6 +14,7 @@ import (
 
 	"agent-overflow/internal/checkpoint"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/settings"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/triage"
 
@@ -578,6 +579,351 @@ func TestAppE2E_RevertToTurnRevertCodeOnCodexRestoresWorkspaceOnly(t *testing.T)
 	data, _ := os.ReadFile(filepath.Join(workspace, "README"))
 	if string(data) != "hello\n" {
 		t.Errorf("README should be restored; got %q", data)
+	}
+}
+
+// writeMockCodexRollbackBinary writes a bash script that mimics the Codex
+// app-server just enough for an in-place rollback test. Handles the JSON-RPC
+// methods revert-conversation/revert-both need: initialize, thread/resume,
+// thread/rollback. When thread/rollback fires, the params line is appended
+// to sentinel so the test can verify what the app sent.
+func writeMockCodexRollbackBinary(t *testing.T, sentinel string) string {
+	t.Helper()
+	script := fmt.Sprintf(`#!/bin/bash
+while IFS= read -r line; do
+    id=$(echo "$line" | grep -o '"id":[0-9]*' | head -1 | grep -o '[0-9]*')
+    if [ -z "$id" ]; then continue; fi
+    if echo "$line" | grep -q '"method":"initialize"'; then
+        echo "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{}}"
+        continue
+    fi
+    if echo "$line" | grep -q '"method":"thread/resume"'; then
+        # Echo back whatever threadId was requested so downstream calls
+        # (like thread/rollback) use the client-visible id rather than a
+        # synthetic server-assigned one.
+        tid=$(echo "$line" | grep -o '"threadId":"[^"]*"' | head -1 | sed 's/"threadId":"//;s/"$//')
+        if [ -z "$tid" ]; then tid="mock-codex-t1"; fi
+        echo "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"thread\":{\"id\":\"$tid\"}}}"
+        continue
+    fi
+    if echo "$line" | grep -q '"method":"thread/rollback"'; then
+        # Capture the request params for the test to inspect.
+        printf '%%s\n' "$line" >> %s
+        echo "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"thread\":{\"id\":\"mock-codex-t1\",\"turns\":[]}}}"
+        continue
+    fi
+done
+`, shellQuoteForTest(sentinel))
+	dir := t.TempDir()
+	path := filepath.Join(dir, "codex-rollback-mock.sh")
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatalf("write mock codex binary: %v", err)
+	}
+	return path
+}
+
+// seedCodexItems populates a fake timeline across the given turn indices.
+// Each item is a simple text/user item — enough to exercise the truncation
+// logic without dragging in the full item-kind surface.
+func seedCodexItems(t *testing.T, app *App, threadID string, turnIndices ...int) {
+	t.Helper()
+	base := time.Now().UnixMilli()
+	for i, turn := range turnIndices {
+		if err := app.store.InsertItem(store.Item{
+			ID:        fmt.Sprintf("%s-item-%d", threadID, i),
+			ThreadID:  threadID,
+			TurnIndex: turn,
+			ItemIndex: 0,
+			Kind:      "text",
+			Role:      "user",
+			Summary:   fmt.Sprintf("turn-%d", turn),
+			CreatedAt: base + int64(i),
+		}); err != nil {
+			t.Fatalf("insert item t%d: %v", turn, err)
+		}
+	}
+}
+
+// #31 — revert-conversation on a Codex thread must call thread/rollback on
+// the provider with the correct numTurns, truncate SQLite items, and preserve
+// SessionRef + worktree. Uses a bash-mock Codex binary that records the
+// rollback request to a sentinel file.
+func TestAppE2E_RevertToTurnRevertConversationOnCodexCallsRollback(t *testing.T) {
+	e := newE2EApp(t)
+	workspace := t.TempDir()
+	initE2ERepo(t, workspace)
+
+	sentinel := filepath.Join(t.TempDir(), "rollback-params.txt")
+	binary := writeMockCodexRollbackBinary(t, sentinel)
+	e.app.settings = settings.NewService(t.TempDir())
+	if _, err := e.app.settings.Update(map[string]any{"codexBinaryPath": binary}); err != nil {
+		t.Fatalf("set binary: %v", err)
+	}
+
+	thread := seedE2EThread(t, e.app, "t-codex", workspace, provider.Codex)
+	thread.SessionRef = "stored-codex-thread-id"
+	if err := e.app.store.UpdateThread(thread); err != nil {
+		t.Fatalf("update thread: %v", err)
+	}
+	// Timeline: turns 0, 1, 2. Reverting to turn 1 drops items at 1 and 2 →
+	// numTurns = lastTurn + 1 - targetTurn = 3 - 1 = 2.
+	seedCodexItems(t, e.app, "t-codex", 0, 1, 2)
+	captureE2E(t, e.app, "t-codex", workspace, 0)
+	captureE2E(t, e.app, "t-codex", workspace, 1)
+
+	// Dirty the workspace post-capture so the test can prove revert-conversation
+	// leaves it alone.
+	writeE2EFile(t, workspace, "README", "user-edit-after-capture\n")
+
+	if _, err := e.app.RevertToTurn("t-codex", 1, "revert-conversation"); err != nil {
+		t.Fatalf("revert-conversation: %v", err)
+	}
+
+	// Sentinel must contain the rollback request with numTurns=2.
+	data, err := os.ReadFile(sentinel)
+	if err != nil {
+		t.Fatalf("read sentinel: %v", err)
+	}
+	if !strings.Contains(string(data), `"numTurns":2`) {
+		t.Errorf("expected numTurns=2 in rollback params; got %q", string(data))
+	}
+	if !strings.Contains(string(data), `"threadId":"stored-codex-thread-id"`) {
+		t.Errorf("expected threadId=stored-codex-thread-id in rollback params; got %q", string(data))
+	}
+
+	// SessionRef survives — Codex keeps the session; the rollback only prunes
+	// history server-side.
+	got, _ := e.app.store.GetThread("t-codex")
+	if got.SessionRef != "stored-codex-thread-id" {
+		t.Errorf("SessionRef should survive revert-conversation; got %q", got.SessionRef)
+	}
+
+	// Items truncated to turn 0.
+	items, err := e.app.store.ListItems("t-codex")
+	if err != nil {
+		t.Fatalf("list items: %v", err)
+	}
+	if len(items) != 1 || items[0].TurnIndex != 0 {
+		t.Errorf("expected only turn 0 to survive; got %+v", items)
+	}
+
+	// Worktree NOT touched.
+	if wd, _ := os.ReadFile(filepath.Join(workspace, "README")); string(wd) != "user-edit-after-capture\n" {
+		t.Errorf("worktree must not be restored on revert-conversation; got %q", wd)
+	}
+}
+
+// #31b — revert-both on a Codex thread calls thread/rollback AND restores
+// the worktree from the checkpoint.
+func TestAppE2E_RevertToTurnRevertBothOnCodexFullRoundTrip(t *testing.T) {
+	e := newE2EApp(t)
+	workspace := t.TempDir()
+	initE2ERepo(t, workspace)
+
+	sentinel := filepath.Join(t.TempDir(), "rollback-params.txt")
+	binary := writeMockCodexRollbackBinary(t, sentinel)
+	e.app.settings = settings.NewService(t.TempDir())
+	if _, err := e.app.settings.Update(map[string]any{"codexBinaryPath": binary}); err != nil {
+		t.Fatalf("set binary: %v", err)
+	}
+
+	thread := seedE2EThread(t, e.app, "t-codex", workspace, provider.Codex)
+	thread.SessionRef = "stored-codex-id"
+	if err := e.app.store.UpdateThread(thread); err != nil {
+		t.Fatalf("update thread: %v", err)
+	}
+	seedCodexItems(t, e.app, "t-codex", 0, 1)
+	captureE2E(t, e.app, "t-codex", workspace, 0)
+	writeE2EFile(t, workspace, "README", "dirty-tree\n")
+	writeE2EFile(t, workspace, "junk.txt", "agent-added\n")
+
+	if _, err := e.app.RevertToTurn("t-codex", 0, "revert-both"); err != nil {
+		t.Fatalf("revert-both: %v", err)
+	}
+
+	// Rollback was issued with numTurns = 0+1 - 0 via lastTurn+1-target = 2.
+	data, _ := os.ReadFile(sentinel)
+	if !strings.Contains(string(data), `"numTurns":2`) {
+		t.Errorf("expected numTurns=2 (drop turns 0 and 1); got %q", string(data))
+	}
+
+	// Worktree restored.
+	if wd, _ := os.ReadFile(filepath.Join(workspace, "README")); string(wd) != "hello\n" {
+		t.Errorf("README should be restored; got %q", wd)
+	}
+	if _, err := os.Stat(filepath.Join(workspace, "junk.txt")); err == nil {
+		t.Errorf("junk.txt added after capture should have been removed on revert-both")
+	}
+
+	// Items gone.
+	items, _ := e.app.store.ListItems("t-codex")
+	if len(items) != 0 {
+		t.Errorf("revert-both to turn 0 should drop all items; got %d", len(items))
+	}
+}
+
+// #31c — If the Codex provider call fails, revert aborts before touching the
+// worktree or truncating items. The failure ordering is deliberate: don't
+// leave a half-reverted state the user can't recover from.
+func TestAppE2E_RevertToTurnProviderFailureAbortsWorktree(t *testing.T) {
+	e := newE2EApp(t)
+	workspace := t.TempDir()
+	initE2ERepo(t, workspace)
+
+	// Binary that refuses to initialize — guaranteed to fail the temp-session
+	// handshake so rollbackCodexThread returns an error.
+	dir := t.TempDir()
+	binary := filepath.Join(dir, "codex-broken.sh")
+	if err := os.WriteFile(binary, []byte("#!/bin/bash\nexit 1\n"), 0o755); err != nil {
+		t.Fatalf("write broken binary: %v", err)
+	}
+	e.app.settings = settings.NewService(t.TempDir())
+	if _, err := e.app.settings.Update(map[string]any{"codexBinaryPath": binary}); err != nil {
+		t.Fatalf("set binary: %v", err)
+	}
+
+	thread := seedE2EThread(t, e.app, "t-codex", workspace, provider.Codex)
+	thread.SessionRef = "stored-codex-id"
+	if err := e.app.store.UpdateThread(thread); err != nil {
+		t.Fatalf("update thread: %v", err)
+	}
+	seedCodexItems(t, e.app, "t-codex", 0, 1)
+	captureE2E(t, e.app, "t-codex", workspace, 0)
+	writeE2EFile(t, workspace, "README", "dirty\n")
+
+	_, err := e.app.RevertToTurn("t-codex", 0, "revert-both")
+	if err == nil {
+		t.Fatal("expected provider error to propagate")
+	}
+
+	// Worktree untouched (no restore happened).
+	if wd, _ := os.ReadFile(filepath.Join(workspace, "README")); string(wd) != "dirty\n" {
+		t.Errorf("worktree must not be restored when provider rollback fails; got %q", wd)
+	}
+	// Items untouched (truncation comes after provider call).
+	items, _ := e.app.store.ListItems("t-codex")
+	if len(items) != 2 {
+		t.Errorf("items must survive a failed revert; got %d", len(items))
+	}
+}
+
+// #31d — Revert target == last captured turn is a degenerate but valid case:
+// numTurns = 1 (drop just the last turn). The provider rollback must still
+// be issued.
+func TestAppE2E_RevertToTurnTargetEqualsLastTurn(t *testing.T) {
+	e := newE2EApp(t)
+	workspace := t.TempDir()
+	initE2ERepo(t, workspace)
+
+	sentinel := filepath.Join(t.TempDir(), "rollback-params.txt")
+	binary := writeMockCodexRollbackBinary(t, sentinel)
+	e.app.settings = settings.NewService(t.TempDir())
+	if _, err := e.app.settings.Update(map[string]any{"codexBinaryPath": binary}); err != nil {
+		t.Fatalf("set binary: %v", err)
+	}
+
+	thread := seedE2EThread(t, e.app, "t-codex", workspace, provider.Codex)
+	thread.SessionRef = "stored-codex-id"
+	if err := e.app.store.UpdateThread(thread); err != nil {
+		t.Fatalf("update thread: %v", err)
+	}
+	seedCodexItems(t, e.app, "t-codex", 0, 1)
+	captureE2E(t, e.app, "t-codex", workspace, 0)
+	captureE2E(t, e.app, "t-codex", workspace, 1)
+
+	// Revert to turn 1: drop turn 1 only. numTurns = 2 - 1 = 1.
+	if _, err := e.app.RevertToTurn("t-codex", 1, "revert-conversation"); err != nil {
+		t.Fatalf("revert: %v", err)
+	}
+	data, _ := os.ReadFile(sentinel)
+	if !strings.Contains(string(data), `"numTurns":1`) {
+		t.Errorf("expected numTurns=1; got %q", string(data))
+	}
+	items, _ := e.app.store.ListItems("t-codex")
+	if len(items) != 1 {
+		t.Errorf("expected 1 item (turn 0) to survive; got %d", len(items))
+	}
+}
+
+// #31e — Revert with target > last turn is a no-op for the provider (the
+// server has nothing to drop) but still fires the SQL truncation path
+// harmlessly (nothing to truncate).
+func TestAppE2E_RevertToTurnTargetBeyondLastTurnIsNoop(t *testing.T) {
+	e := newE2EApp(t)
+	workspace := t.TempDir()
+	initE2ERepo(t, workspace)
+
+	sentinel := filepath.Join(t.TempDir(), "rollback-params.txt")
+	binary := writeMockCodexRollbackBinary(t, sentinel)
+	e.app.settings = settings.NewService(t.TempDir())
+	if _, err := e.app.settings.Update(map[string]any{"codexBinaryPath": binary}); err != nil {
+		t.Fatalf("set binary: %v", err)
+	}
+
+	thread := seedE2EThread(t, e.app, "t-codex", workspace, provider.Codex)
+	thread.SessionRef = "stored-codex-id"
+	if err := e.app.store.UpdateThread(thread); err != nil {
+		t.Fatalf("update thread: %v", err)
+	}
+	seedCodexItems(t, e.app, "t-codex", 0)
+	captureE2E(t, e.app, "t-codex", workspace, 5) // target-future checkpoint
+
+	// Revert to turn 5 when last turn is 0: numTurns = 0+1 - 5 = -4 → parser
+	// short-circuits and doesn't call provider.
+	if _, err := e.app.RevertToTurn("t-codex", 5, "revert-conversation"); err != nil {
+		t.Fatalf("revert: %v", err)
+	}
+	if _, err := os.Stat(sentinel); err == nil {
+		// If the sentinel was written at all, the mock got a rollback request,
+		// which it should not have.
+		data, _ := os.ReadFile(sentinel)
+		if len(data) > 0 {
+			t.Errorf("provider rollback should not be issued for out-of-range target; got: %q", data)
+		}
+	}
+	// Items stay at turn 0.
+	items, _ := e.app.store.ListItems("t-codex")
+	if len(items) != 1 || items[0].TurnIndex != 0 {
+		t.Errorf("expected item at turn 0 to survive; got %+v", items)
+	}
+}
+
+// #31f — revert-code on Codex with a real binary configured must NOT call
+// the provider. The rollback path is conversation-only.
+func TestAppE2E_RevertToTurnRevertCodeDoesNotCallProvider(t *testing.T) {
+	e := newE2EApp(t)
+	workspace := t.TempDir()
+	initE2ERepo(t, workspace)
+
+	sentinel := filepath.Join(t.TempDir(), "rollback-params.txt")
+	binary := writeMockCodexRollbackBinary(t, sentinel)
+	e.app.settings = settings.NewService(t.TempDir())
+	if _, err := e.app.settings.Update(map[string]any{"codexBinaryPath": binary}); err != nil {
+		t.Fatalf("set binary: %v", err)
+	}
+
+	thread := seedE2EThread(t, e.app, "t-codex", workspace, provider.Codex)
+	thread.SessionRef = "stored-codex-id"
+	if err := e.app.store.UpdateThread(thread); err != nil {
+		t.Fatalf("update thread: %v", err)
+	}
+	seedCodexItems(t, e.app, "t-codex", 0, 1)
+	captureE2E(t, e.app, "t-codex", workspace, 0)
+	writeE2EFile(t, workspace, "README", "dirty\n")
+
+	if _, err := e.app.RevertToTurn("t-codex", 0, "revert-code"); err != nil {
+		t.Fatalf("revert-code: %v", err)
+	}
+	if _, err := os.Stat(sentinel); err == nil {
+		data, _ := os.ReadFile(sentinel)
+		if len(data) > 0 {
+			t.Errorf("revert-code must not call provider; got: %q", data)
+		}
+	}
+	// Items survive (code-only revert doesn't truncate).
+	items, _ := e.app.store.ListItems("t-codex")
+	if len(items) != 2 {
+		t.Errorf("revert-code must not touch items; got %d", len(items))
 	}
 }
 
