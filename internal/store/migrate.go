@@ -224,6 +224,44 @@ CREATE INDEX IF NOT EXISTS idx_thread_checkpoints_thread_turn
 	ON thread_checkpoints(thread_id, turn_index);
 `,
 	},
+	{
+		Version: 9,
+		Name:    "payload_gc_on_item_delete",
+		// items.payload_id points FROM items TO payloads, so a FK ON DELETE
+		// CASCADE on that column would only propagate payloads→items
+		// (delete the payload, lose the item), which is the wrong
+		// direction. What we actually want is: when an item is deleted,
+		// garbage-collect the payload it referenced. Deleting a thread
+		// cascade-drops its items (via items.thread_id REFERENCES
+		// threads(id) ON DELETE CASCADE), but before v9 their heavy
+		// payloads stuck around forever.
+		//
+		// We install an AFTER DELETE trigger on items that removes the
+		// payload the item pointed at, provided no other item still
+		// references it. The "still referenced?" guard matters because
+		// some event flows (e.g. replaceHeavy) transiently share a payload
+		// id while an old item row is being swapped for a new one; we
+		// don't want to delete a payload that a sibling item still owns.
+		//
+		// We also sweep payloads that were already orphaned under the old
+		// schema so the GC covers pre-existing leakage, not just future
+		// deletes.
+		SQL: `
+CREATE TRIGGER IF NOT EXISTS trg_items_gc_payload
+AFTER DELETE ON items
+WHEN OLD.payload_id IS NOT NULL
+BEGIN
+    DELETE FROM payloads
+     WHERE id = OLD.payload_id
+       AND NOT EXISTS (
+           SELECT 1 FROM items WHERE payload_id = OLD.payload_id
+       );
+END;
+
+DELETE FROM payloads
+ WHERE id NOT IN (SELECT payload_id FROM items WHERE payload_id IS NOT NULL);
+`,
+	},
 }
 
 // runMigrations sets PRAGMAs, creates the version tracking table, and applies

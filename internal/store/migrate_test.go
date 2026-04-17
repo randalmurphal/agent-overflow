@@ -63,8 +63,8 @@ func TestMigrationVersionTracking(t *testing.T) {
 		t.Fatalf("rows err: %v", err)
 	}
 
-	if len(versions) != 8 {
-		t.Fatalf("expected 8 migration versions, got %d", len(versions))
+	if len(versions) != 9 {
+		t.Fatalf("expected 9 migration versions, got %d", len(versions))
 	}
 	if versions[0].version != 1 || versions[0].name != "initial_schema" {
 		t.Errorf("v1: got %d/%s", versions[0].version, versions[0].name)
@@ -90,6 +90,9 @@ func TestMigrationVersionTracking(t *testing.T) {
 	if versions[7].version != 8 || versions[7].name != "thread_checkpoints_unique_thread_turn" {
 		t.Errorf("v8: got %d/%s", versions[7].version, versions[7].name)
 	}
+	if versions[8].version != 9 || versions[8].name != "payload_gc_on_item_delete" {
+		t.Errorf("v9: got %d/%s", versions[8].version, versions[8].name)
+	}
 }
 
 func TestMigrationIdempotent(t *testing.T) {
@@ -109,8 +112,8 @@ func TestMigrationIdempotent(t *testing.T) {
 	if err := db.QueryRow("SELECT COUNT(*) FROM migration_versions").Scan(&count); err != nil {
 		t.Fatalf("count: %v", err)
 	}
-	if count != 8 {
-		t.Errorf("expected 8 version rows after idempotent re-run, got %d", count)
+	if count != 9 {
+		t.Errorf("expected 9 version rows after idempotent re-run, got %d", count)
 	}
 }
 
@@ -147,8 +150,8 @@ func TestMigrationExistingVersionedDBSkipsAppliedV1(t *testing.T) {
 	if err := db.QueryRow("SELECT COUNT(*) FROM migration_versions").Scan(&appliedVersions); err != nil {
 		t.Fatalf("count migration rows: %v", err)
 	}
-	if appliedVersions != 8 {
-		t.Fatalf("expected 8 applied migrations, got %d", appliedVersions)
+	if appliedVersions != 9 {
+		t.Fatalf("expected 9 applied migrations, got %d", appliedVersions)
 	}
 }
 
@@ -188,10 +191,10 @@ func TestMigrationExistingLegacyDBSeedsTrackingAndAppliesV2(t *testing.T) {
 		t.Fatalf("read migration rows: %v", err)
 	}
 
-	if len(versions) != 8 {
-		t.Fatalf("expected 8 applied migrations, got %d", len(versions))
+	if len(versions) != 9 {
+		t.Fatalf("expected 9 applied migrations, got %d", len(versions))
 	}
-	expected := []int{1, 2, 3, 4, 5, 6, 7, 8}
+	expected := []int{1, 2, 3, 4, 5, 6, 7, 8, 9}
 	for i, want := range expected {
 		if versions[i] != want {
 			t.Fatalf("unexpected migration versions: %v", versions)
@@ -290,10 +293,10 @@ func TestMigrationExistingLegacyParityDBBackfillsVersionHistory(t *testing.T) {
 		t.Fatalf("read migration versions: %v", err)
 	}
 
-	if len(versions) != 8 {
-		t.Fatalf("expected 8 migration rows after legacy backfill + new migrations, got %d", len(versions))
+	if len(versions) != 9 {
+		t.Fatalf("expected 9 migration rows after legacy backfill + new migrations, got %d", len(versions))
 	}
-	expectedVersions := []int{1, 2, 3, 4, 5, 6, 7, 8}
+	expectedVersions := []int{1, 2, 3, 4, 5, 6, 7, 8, 9}
 	for i, want := range expectedVersions {
 		if versions[i].version != want {
 			t.Fatalf("unexpected migration versions: %+v", versions)
@@ -431,6 +434,74 @@ func TestMigrationChannelMessageUniqueness(t *testing.T) {
 		VALUES ('m2', 'ch-1', 1, 'agent', 'a2', 'dupe', 1000)`)
 	if err == nil {
 		t.Error("expected unique constraint violation for duplicate channel+sequence")
+	}
+}
+
+// TestMigrationV9SweepsPreExistingOrphanPayloads seeds a database up to v8
+// (where payloads could orphan), inserts an orphan, then runs v9 and
+// verifies the orphan is deleted. Without the sweep, v9 would only fix
+// future deletes while leaving historical garbage behind.
+func TestMigrationV9SweepsPreExistingOrphanPayloads(t *testing.T) {
+	db := openSQLiteDB(t)
+
+	if err := configureDatabase(db); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	if err := ensureMigrationTable(db); err != nil {
+		t.Fatalf("ensure migration table: %v", err)
+	}
+	for _, m := range migrations {
+		if m.Version == 9 {
+			break
+		}
+		if _, err := db.Exec(m.SQL); err != nil {
+			t.Fatalf("apply v%d: %v", m.Version, err)
+		}
+		if _, err := db.Exec(
+			"INSERT INTO migration_versions (version, name) VALUES (?, ?)",
+			m.Version, m.Name,
+		); err != nil {
+			t.Fatalf("record v%d: %v", m.Version, err)
+		}
+	}
+
+	// Seed: a thread, an item, and TWO payloads — one linked, one orphan.
+	if _, err := db.Exec(`INSERT INTO threads (id, title, provider, workspace_path, model, created_at, updated_at)
+		VALUES ('t1', 'T', 'claude', '/tmp', '', 1000, 1000)`); err != nil {
+		t.Fatalf("seed thread: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO payloads (id, kind, meta, data, created_at)
+		VALUES ('p-linked', 'diff', '{}', x'00', 1000)`); err != nil {
+		t.Fatalf("seed linked payload: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO payloads (id, kind, meta, data, created_at)
+		VALUES ('p-orphan', 'diff', '{}', x'00', 1001)`); err != nil {
+		t.Fatalf("seed orphan payload: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO items
+		(id, thread_id, turn_index, item_index, kind, role, summary, payload_id, parent_tool_use_id, created_at)
+		VALUES ('i1', 't1', 0, 0, 'diff', 'assistant', 'x', 'p-linked', '', 1000)`); err != nil {
+		t.Fatalf("seed item: %v", err)
+	}
+
+	// Now apply v9.
+	if err := applyMigration(db, migrations[8]); err != nil {
+		t.Fatalf("apply v9: %v", err)
+	}
+
+	// The orphan must be gone; the linked one must survive.
+	var linked, orphan int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM payloads WHERE id = 'p-linked'`).Scan(&linked); err != nil {
+		t.Fatalf("count linked: %v", err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM payloads WHERE id = 'p-orphan'`).Scan(&orphan); err != nil {
+		t.Fatalf("count orphan: %v", err)
+	}
+	if linked != 1 {
+		t.Errorf("linked payload should survive v9 sweep, got %d", linked)
+	}
+	if orphan != 0 {
+		t.Errorf("orphan payload should be swept by v9, got %d", orphan)
 	}
 }
 

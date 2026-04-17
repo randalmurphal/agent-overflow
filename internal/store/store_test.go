@@ -1230,3 +1230,149 @@ func TestUpdateThread(t *testing.T) {
 		t.Errorf("Model: got %q, want %q", got.Model, "new-model")
 	}
 }
+
+// TestDeleteThreadCascadesPayloadGC verifies that deleting a thread also
+// removes every heavy payload attached to any item in that thread. Before
+// v9 the items CASCADEd but payloads stuck around forever, quietly
+// bloating the database over time.
+func TestDeleteThreadCascadesPayloadGC(t *testing.T) {
+	s := newTestStore(t)
+	thr := makeThread("t1", "codex")
+	if err := s.CreateThread(thr); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	other := makeThread("t-survivor", "codex")
+	if err := s.CreateThread(other); err != nil {
+		t.Fatalf("create survivor: %v", err)
+	}
+
+	// Two payloads owned by items on t1, plus one owned by an item on
+	// t-survivor. Only the t1 payloads should be swept.
+	if err := s.InsertPayload(Payload{ID: "p1", Kind: "diff", Meta: "{}", Data: []byte("a"), CreatedAt: 1}); err != nil {
+		t.Fatalf("p1: %v", err)
+	}
+	if err := s.InsertPayload(Payload{ID: "p2", Kind: "diff", Meta: "{}", Data: []byte("b"), CreatedAt: 2}); err != nil {
+		t.Fatalf("p2: %v", err)
+	}
+	if err := s.InsertPayload(Payload{ID: "p3", Kind: "diff", Meta: "{}", Data: []byte("c"), CreatedAt: 3}); err != nil {
+		t.Fatalf("p3: %v", err)
+	}
+	if err := s.InsertItem(Item{ID: "i1", ThreadID: "t1", TurnIndex: 0, ItemIndex: 0, Kind: "diff", Role: "assistant", PayloadID: "p1", CreatedAt: 1}); err != nil {
+		t.Fatalf("i1: %v", err)
+	}
+	if err := s.InsertItem(Item{ID: "i2", ThreadID: "t1", TurnIndex: 0, ItemIndex: 1, Kind: "diff", Role: "assistant", PayloadID: "p2", CreatedAt: 2}); err != nil {
+		t.Fatalf("i2: %v", err)
+	}
+	if err := s.InsertItem(Item{ID: "i-keep", ThreadID: "t-survivor", TurnIndex: 0, ItemIndex: 0, Kind: "diff", Role: "assistant", PayloadID: "p3", CreatedAt: 3}); err != nil {
+		t.Fatalf("i-keep: %v", err)
+	}
+
+	if err := s.DeleteThread("t1"); err != nil {
+		t.Fatalf("delete thread: %v", err)
+	}
+
+	for _, id := range []string{"p1", "p2"} {
+		var n int
+		if err := s.db.QueryRow(`SELECT COUNT(*) FROM payloads WHERE id = ?`, id).Scan(&n); err != nil {
+			t.Fatalf("count %s: %v", id, err)
+		}
+		if n != 0 {
+			t.Errorf("payload %s should be swept after thread delete, got %d rows", id, n)
+		}
+	}
+
+	var survivor int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM payloads WHERE id = 'p3'`).Scan(&survivor); err != nil {
+		t.Fatalf("count p3: %v", err)
+	}
+	if survivor != 1 {
+		t.Errorf("survivor payload should be untouched, got %d rows", survivor)
+	}
+}
+
+// TestDeleteThreadCascadesPayloadGCScale seeds 1000 items with 1000
+// payloads and deletes the thread; guards against regression where the
+// trigger or sweep would no-op or crash at scale.
+func TestDeleteThreadCascadesPayloadGCScale(t *testing.T) {
+	s := newTestStore(t)
+	thr := makeThread("t1", "codex")
+	if err := s.CreateThread(thr); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+
+	const n = 1000
+	for i := 0; i < n; i++ {
+		pid := fmt.Sprintf("p-%04d", i)
+		iid := fmt.Sprintf("i-%04d", i)
+		if err := s.InsertPayload(Payload{
+			ID: pid, Kind: "diff", Meta: "{}",
+			Data: []byte{byte(i), byte(i >> 8)}, CreatedAt: int64(i),
+		}); err != nil {
+			t.Fatalf("payload %d: %v", i, err)
+		}
+		if err := s.InsertItem(Item{
+			ID: iid, ThreadID: "t1",
+			TurnIndex: i / 10, ItemIndex: i % 10,
+			Kind: "diff", Role: "assistant",
+			PayloadID: pid, CreatedAt: int64(i),
+		}); err != nil {
+			t.Fatalf("item %d: %v", i, err)
+		}
+	}
+
+	if err := s.DeleteThread("t1"); err != nil {
+		t.Fatalf("delete thread: %v", err)
+	}
+
+	var remaining int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM payloads`).Scan(&remaining); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if remaining != 0 {
+		t.Errorf("expected 0 payloads after thread delete at scale, got %d", remaining)
+	}
+}
+
+// TestPayloadGCIgnoresSharedPayload covers a subtle case: if two items
+// share the same payload_id, deleting ONE item must not drop the payload
+// — the other item still references it. Without the guard, the trigger
+// could nuke a payload that is still wanted.
+func TestPayloadGCIgnoresSharedPayload(t *testing.T) {
+	s := newTestStore(t)
+	thr := makeThread("t1", "codex")
+	if err := s.CreateThread(thr); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := s.InsertPayload(Payload{ID: "shared", Kind: "diff", Meta: "{}", Data: []byte("x"), CreatedAt: 1}); err != nil {
+		t.Fatalf("payload: %v", err)
+	}
+	if err := s.InsertItem(Item{ID: "a", ThreadID: "t1", TurnIndex: 0, ItemIndex: 0, Kind: "diff", Role: "assistant", PayloadID: "shared", CreatedAt: 1}); err != nil {
+		t.Fatalf("a: %v", err)
+	}
+	if err := s.InsertItem(Item{ID: "b", ThreadID: "t1", TurnIndex: 0, ItemIndex: 1, Kind: "diff", Role: "assistant", PayloadID: "shared", CreatedAt: 2}); err != nil {
+		t.Fatalf("b: %v", err)
+	}
+
+	// Delete one item; payload must survive.
+	if _, err := s.db.Exec(`DELETE FROM items WHERE id = 'a'`); err != nil {
+		t.Fatalf("delete a: %v", err)
+	}
+	var n int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM payloads WHERE id = 'shared'`).Scan(&n); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("shared payload should survive while item b still references it, got %d", n)
+	}
+
+	// Delete the last remaining referencer; now it must go.
+	if _, err := s.db.Exec(`DELETE FROM items WHERE id = 'b'`); err != nil {
+		t.Fatalf("delete b: %v", err)
+	}
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM payloads WHERE id = 'shared'`).Scan(&n); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("shared payload should be swept once last referencer is gone, got %d", n)
+	}
+}
