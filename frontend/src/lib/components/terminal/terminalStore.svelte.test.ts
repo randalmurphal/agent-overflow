@@ -3,8 +3,10 @@ import {
   createThreadTerminalState,
   getTerminalFocused,
   notifyTerminalFocus,
+  PENDING_OUTPUT_LIMITS,
   resetTerminalFocusForTest,
   TERMINAL_DRAWER_LIMITS,
+  trimPendingOutput,
 } from './terminalStore.svelte';
 import type { TerminalSessionSummary } from '../../types/terminal';
 
@@ -154,5 +156,74 @@ describe('terminal focus registry', () => {
       notifyTerminalFocus(false);
     }
     expect(getTerminalFocused()).toBe(false);
+  });
+});
+
+// --- Bug D7 regression: pendingOutput cap ---
+describe('pendingOutput cap', () => {
+  const cap = PENDING_OUTPUT_LIMITS.chars;
+
+  function charsIn(queue: string[]): number {
+    return queue.reduce((acc, s) => acc + s.length, 0);
+  }
+
+  it('appends as-is while total stays below the cap', () => {
+    const q = trimPendingOutput(['a'.repeat(100)], 'b'.repeat(200));
+    expect(q).toEqual(['a'.repeat(100), 'b'.repeat(200)]);
+    expect(charsIn(q)).toBe(300);
+  });
+
+  it('drops oldest chunks when total would exceed the cap', () => {
+    // Build a queue that is already full.
+    const queue = [
+      'x'.repeat(cap / 2),
+      'y'.repeat(cap / 2),
+    ];
+    // Add a chunk that would overflow by 100 chars — oldest 'x' is dropped.
+    const next = trimPendingOutput(queue, 'z'.repeat(100));
+    expect(charsIn(next)).toBeLessThanOrEqual(cap);
+    expect(next[0]!.startsWith('y')).toBe(true);
+    expect(next[next.length - 1]!.startsWith('z')).toBe(true);
+  });
+
+  it('truncates a single oversized chunk to the cap and discards the rest', () => {
+    const queue = ['pre'];
+    const jumbo = 'J'.repeat(cap + 123);
+    const next = trimPendingOutput(queue, jumbo);
+    expect(next).toHaveLength(1);
+    expect(next[0]!.length).toBe(cap);
+    // Kept the tail of the jumbo (most recent bytes).
+    expect(next[0]!.startsWith('J')).toBe(true);
+  });
+
+  it('returns existing when chunk is empty (no work done)', () => {
+    const queue = ['a', 'b'];
+    expect(trimPendingOutput(queue, '')).toBe(queue);
+  });
+
+  it('stress: 2 MB of appended output during unmount stays under the cap', () => {
+    const s = createThreadTerminalState();
+    s.addTab(makeSummary({ terminalID: 'T' }));
+    // Simulate 2 MB arriving in 1000 chunks of 2000 chars each.
+    const chunk = 'x'.repeat(2_000);
+    for (let i = 0; i < 1_000; i += 1) {
+      s.appendOutput('T', chunk);
+    }
+    const total = s.tabs[0]!.pendingOutput.reduce((acc, v) => acc + v.length, 0);
+    expect(total).toBeLessThanOrEqual(cap);
+    // Oldest chunks (first ~50%) were evicted.
+    expect(s.tabs[0]!.pendingOutput[0]).toBe(chunk);
+  });
+
+  it('eviction preserves the most recent chunk as the tail', () => {
+    const s = createThreadTerminalState();
+    s.addTab(makeSummary({ terminalID: 'T' }));
+    // 3 MB of a character, then a single distinguishing tail chunk.
+    for (let i = 0; i < 3; i += 1) {
+      s.appendOutput('T', 'a'.repeat(cap));
+    }
+    s.appendOutput('T', 'LAST');
+    const queue = s.tabs[0]!.pendingOutput;
+    expect(queue[queue.length - 1]).toBe('LAST');
   });
 });

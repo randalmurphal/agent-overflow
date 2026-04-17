@@ -23,6 +23,55 @@ const MIN_DRAWER_HEIGHT = 160;
 const MAX_DRAWER_HEIGHT = 1200;
 
 /**
+ * Cap pendingOutput at roughly 1 MB of UTF-16 characters per terminal tab.
+ * A runaway process (e.g. `yes`) while TerminalBody is unmounted would
+ * otherwise grow the queue without bound. We measure by `.length` because
+ * that's what the xterm sink writes anyway; a few-byte overshoot due to
+ * multi-byte characters is acceptable.
+ */
+const PENDING_OUTPUT_CHAR_CAP = 1_000_000;
+
+export const PENDING_OUTPUT_LIMITS = {
+  chars: PENDING_OUTPUT_CHAR_CAP,
+};
+
+/**
+ * Append `chunk` to a pending-output queue, dropping oldest chunks when the
+ * total character count would exceed the cap. If the single incoming chunk
+ * is larger than the cap we slice its tail and discard the queue. Exported
+ * as a pure helper so the logic is unit-testable without a Svelte state
+ * wrapper.
+ */
+export function trimPendingOutput(existing: string[], chunk: string): string[] {
+  if (chunk.length === 0) return existing;
+  if (chunk.length >= PENDING_OUTPUT_CHAR_CAP) {
+    // A single jumbo chunk exceeds the cap — keep just the tail of it.
+    return [chunk.slice(chunk.length - PENDING_OUTPUT_CHAR_CAP)];
+  }
+  let totalChars = chunk.length;
+  for (const s of existing) totalChars += s.length;
+  if (totalChars <= PENDING_OUTPUT_CHAR_CAP) {
+    return [...existing, chunk];
+  }
+  // Evict oldest whole chunks first, then slice into the next chunk if we
+  // still overflow. The resulting queue is always <= the cap.
+  const next = existing.slice();
+  let size = totalChars;
+  while (next.length > 0 && size > PENDING_OUTPUT_CHAR_CAP) {
+    const first = next[0]!;
+    size -= first.length;
+    next.shift();
+  }
+  if (size > PENDING_OUTPUT_CHAR_CAP && next.length > 0) {
+    // Shouldn't happen with the loop above but keeps the invariant obvious.
+    next.length = 0;
+    size = 0;
+  }
+  next.push(chunk);
+  return next;
+}
+
+/**
  * Creates a reactive state container for a thread's terminal drawer. Each
  * thread owns one of these; the drawer component reads/mutates through the
  * returned handle.
@@ -67,11 +116,10 @@ export function createThreadTerminalState(): ThreadTerminalStateHandle {
     },
 
     appendOutput(terminalID: string, data: string): void {
-      tabs = tabs.map((t) =>
-        t.terminalID === terminalID
-          ? { ...t, pendingOutput: [...t.pendingOutput, data] }
-          : t,
-      );
+      tabs = tabs.map((t) => {
+        if (t.terminalID !== terminalID) return t;
+        return { ...t, pendingOutput: trimPendingOutput(t.pendingOutput, data) };
+      });
     },
 
     drainOutput(terminalID: string): string[] {
