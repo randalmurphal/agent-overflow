@@ -171,6 +171,81 @@ describe('<MessageTimeline>', () => {
     expect(queryByTestId('active-tools-chip')).toBeNull();
   });
 
+  it('renders a turn-diff badge after ChangedFilesTree when a turn has diffs', async () => {
+    const items: Item[] = [
+      item({
+        id: 'd1',
+        kind: 'diff',
+        role: 'assistant',
+        payloadId: 'p1',
+        itemIndex: 1,
+      }),
+    ];
+    const metas: PayloadMeta[] = [
+      {
+        id: 'p1',
+        kind: 'diff',
+        meta: JSON.stringify({
+          filePath: 'src/a.ts',
+          changeKind: 'modified',
+          insertions: 10,
+          deletions: 2,
+          preview: '',
+        }),
+        createdAt: 0,
+      },
+    ];
+    const pane = await buildPane(items, metas);
+    const { getByTestId } = render(MessageTimeline, { props: { pane } });
+    const badge = getByTestId('turn-diff-badge');
+    expect(badge.textContent ?? '').toMatch(/\+10/);
+    expect(badge.textContent ?? '').toMatch(/−2/);
+    expect(badge.getAttribute('data-turn-index')).toBe('0');
+  });
+
+  it('does not render a turn-diff badge when a turn has no diffs', async () => {
+    const pane = await buildPane([
+      item({ id: 'u1', role: 'user', summary: 'hello' }),
+      item({ id: 'a1', role: 'assistant', summary: 'hi', itemIndex: 1 }),
+    ]);
+    const { queryByTestId } = render(MessageTimeline, { props: { pane } });
+    expect(queryByTestId('turn-diff-badge')).toBeNull();
+  });
+
+  it('clicking the turn-diff badge opens the diff panel on that turn', async () => {
+    const items: Item[] = [
+      item({
+        id: 'd1',
+        kind: 'diff',
+        role: 'assistant',
+        payloadId: 'p1',
+        itemIndex: 1,
+        turnIndex: 2,
+      }),
+    ];
+    const metas: PayloadMeta[] = [
+      {
+        id: 'p1',
+        kind: 'diff',
+        meta: JSON.stringify({
+          filePath: 'src/a.ts',
+          changeKind: 'modified',
+          insertions: 1,
+          deletions: 0,
+          preview: '',
+        }),
+        createdAt: 0,
+      },
+    ];
+    const pane = await buildPane(items, metas);
+    expect(pane.diffPanel.open).toBe(false);
+    const { getByTestId } = render(MessageTimeline, { props: { pane } });
+    await fireEvent.click(getByTestId('turn-diff-badge'));
+    expect(pane.diffPanel.open).toBe(true);
+    expect(pane.diffPanel.source).toBe('turn');
+    expect(pane.diffPanel.selectedTurnIndex).toBe(2);
+  });
+
   it('golden-path: user message -> streaming assistant -> turn complete', async () => {
     // Start with a user message persisted in the DB-backed list.
     const pane = await buildPane([

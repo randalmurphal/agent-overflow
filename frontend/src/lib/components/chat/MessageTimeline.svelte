@@ -3,6 +3,7 @@
   import type { ThreadPane } from '../../stores/thread.svelte';
   import type { ChangedFile, CommandOutputMeta, DiffMeta, Item, ProposedPlanMeta, ToolResultMeta, WorkEntryData } from '../../types/models';
   import { groupItemsBySubagent, type TimelineNode } from '../../utils/subagentGrouping';
+  import { summarizeTurnDiffs, turnSummaryIsMeaningful, type TurnDiffSummary } from '../../utils/turnDiffSummary';
   import ActiveToolsGroup from './ActiveToolsGroup.svelte';
   import AssistantMessage from './AssistantMessage.svelte';
   import ChangedFilesTree from './ChangedFilesTree.svelte';
@@ -13,6 +14,7 @@
   import SubagentGroup from './SubagentGroup.svelte';
   import ThinkingBlock from './ThinkingBlock.svelte';
   import ToolResultCard from './ToolResultCard.svelte';
+  import TurnDiffBadge from './TurnDiffBadge.svelte';
   import UserMessage from './UserMessage.svelte';
 
   let { pane }: { pane: ThreadPane } = $props();
@@ -95,6 +97,22 @@
       }
     }
     return turns;
+  });
+
+  /**
+   * Aggregate per-turn diff totals keyed by turnIndex, for the inline badge
+   * rendered after ChangedFilesTree. Only turns with non-zero line changes
+   * produce an entry, so rendering can simply check map presence.
+   */
+  let turnSummaries = $derived.by((): Map<number, TurnDiffSummary> => {
+    const out = new Map<number, TurnDiffSummary>();
+    for (const turnIndex of turnBoundaries.keys()) {
+      const summary = summarizeTurnDiffs(pane.items, turnIndex, (id) => parseMeta<DiffMeta>(id));
+      if (turnSummaryIsMeaningful(summary)) {
+        out.set(turnIndex, summary);
+      }
+    }
+    return out;
   });
 
   /**
@@ -205,9 +223,14 @@
       {@render renderNode(node, 0)}
 
       {#if isLastRootInTurn(index)}
-        {@const turnFiles = turnBoundaries.get(rootTurnIndex(node))}
+        {@const turnIndex = rootTurnIndex(node)}
+        {@const turnFiles = turnBoundaries.get(turnIndex)}
         {#if turnFiles}
           <ChangedFilesTree files={turnFiles} />
+        {/if}
+        {@const turnSummary = turnSummaries.get(turnIndex)}
+        {#if turnSummary}
+          <TurnDiffBadge {pane} {turnIndex} summary={turnSummary} />
         {/if}
       {/if}
     {/each}
