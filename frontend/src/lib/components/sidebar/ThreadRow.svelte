@@ -193,6 +193,8 @@
         <span class="text-[9px] px-1 py-0.5 rounded bg-accent/15 text-accent/80 shrink-0" title="Discussion parent thread" aria-label="Discussion parent thread">D</span>
       {:else if thread.parentThreadId}
         <span class="text-[9px] px-1 py-0.5 rounded bg-provider-codex/15 text-provider-codex/80 shrink-0" title="Discussion participant" aria-label="Discussion participant">Dp</span>
+      {:else if thread.interactionMode === 'design'}
+        <span class="text-[9px] px-1 py-0.5 rounded bg-provider-codex/15 text-provider-codex/90 shrink-0" title="Design mode thread" aria-label="Design mode thread">Dsn</span>
       {/if}
       {#if thread.worktreePath}
         <span class="text-[9px] px-1 py-0.5 rounded bg-accent/15 text-accent/70 shrink-0" title="Worktree: {thread.worktreePath}">WT</span>

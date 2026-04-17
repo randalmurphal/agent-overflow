@@ -14,11 +14,15 @@
   import ModelPicker from '../composer/ModelPicker.svelte';
   import ThreadTerminalDrawer from '../terminal/ThreadTerminalDrawer.svelte';
   import DiscussionView from '../discussion/DiscussionView.svelte';
+  import DesignView from '../design/DesignView.svelte';
 
   let { pane }: { pane: ThreadPane } = $props();
 
   let inDiscussionMode = $derived(
     !!pane.thread && pane.thread.interactionMode === 'discussion' && !!pane.thread.discussionId,
+  );
+  let inDesignMode = $derived(
+    !!pane.thread && pane.thread.interactionMode === 'design',
   );
 
   function handleKeydown(e: KeyboardEvent) {
@@ -41,35 +45,45 @@
 {#if pane.thread && inDiscussionMode}
   <DiscussionView {pane} />
 {:else if pane.thread}
-  <div class="flex flex-col h-full">
-    <div class="border-b border-border bg-surface-1 px-4 py-2.5 flex items-center gap-x-2 gap-y-1 shrink-0 flex-wrap min-w-0">
-      <span class="text-xs font-medium px-1.5 py-0.5 rounded bg-accent/20 text-accent">
-        {pane.thread.provider === 'claude' ? 'C' : 'X'}
-      </span>
-      <h2 class="text-sm font-medium text-text-primary truncate">{pane.thread.title}</h2>
-      <ModelPicker {pane} />
-      <BranchToolbar {pane} />
-      <GitActionsControl {pane} />
-      {#if pane.contextWindow}
-        <ContextWindowMeter data={pane.contextWindow} />
+  <div class="flex h-full min-h-0">
+    <div class="flex flex-col {inDesignMode ? 'flex-1 min-w-0 border-r border-border' : 'flex-1 min-w-0'}">
+      <div class="border-b border-border bg-surface-1 px-4 py-2.5 flex items-center gap-x-2 gap-y-1 shrink-0 flex-wrap min-w-0">
+        <span class="text-xs font-medium px-1.5 py-0.5 rounded bg-accent/20 text-accent">
+          {pane.thread.provider === 'claude' ? 'C' : 'X'}
+        </span>
+        <h2 class="text-sm font-medium text-text-primary truncate">{pane.thread.title}</h2>
+        {#if inDesignMode}
+          <span class="text-[10px] font-bold px-1 py-0.5 rounded bg-provider-codex/15 text-provider-codex/90" title="Design mode" aria-label="Design mode">DESIGN</span>
+        {/if}
+        <ModelPicker {pane} />
+        <BranchToolbar {pane} />
+        <GitActionsControl {pane} />
+        {#if pane.contextWindow}
+          <ContextWindowMeter data={pane.contextWindow} />
+        {/if}
+        {#if pane.rateLimits.length > 0}
+          <RateLimitsMeter limits={pane.rateLimits} />
+        {/if}
+        <span class="ml-auto text-xs text-text-secondary truncate min-w-0 shrink max-w-[200px]" title={pane.thread.workspacePath}>{pane.thread.workspacePath}</span>
+      </div>
+
+      <ProviderStatusBanner {pane} />
+
+      <MessageTimeline {pane} />
+      <ApprovalPrompt {pane} />
+      <BackgroundTray {pane} />
+      <Composer {pane} />
+      <StatusBar {pane} />
+      {#if pane.showTerminal && pane.thread}
+        {#key pane.thread.id}
+          <ThreadTerminalDrawer {pane} />
+        {/key}
       {/if}
-      {#if pane.rateLimits.length > 0}
-        <RateLimitsMeter limits={pane.rateLimits} />
-      {/if}
-      <span class="ml-auto text-xs text-text-secondary truncate min-w-0 shrink max-w-[200px]" title={pane.thread.workspacePath}>{pane.thread.workspacePath}</span>
     </div>
-
-    <ProviderStatusBanner {pane} />
-
-    <MessageTimeline {pane} />
-    <ApprovalPrompt {pane} />
-    <BackgroundTray {pane} />
-    <Composer {pane} />
-    <StatusBar {pane} />
-    {#if pane.showTerminal && pane.thread}
-      {#key pane.thread.id}
-        <ThreadTerminalDrawer {pane} />
-      {/key}
+    {#if inDesignMode}
+      <div class="flex-1 min-w-0">
+        <DesignView {pane} />
+      </div>
     {/if}
   </div>
 {:else}
