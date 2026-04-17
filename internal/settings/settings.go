@@ -29,6 +29,18 @@ type Settings struct {
 	CodexEnabled       bool     `json:"codexEnabled"`
 
 	// Observability — all opt-in. Empty/false defaults leave the app quiet.
+	//
+	// SECURITY NOTE: this file is stored on disk in plaintext and is
+	// read/written without any encryption. That is fine for the fields
+	// we currently persist — an OTLP endpoint is not a secret (it's a
+	// gRPC/HTTP URL the user already exposes to every app running on
+	// their machine). If a future field stores anything that could
+	// reasonably be called a secret (API keys, bearer tokens, user
+	// credentials), do NOT put it here: settings.json is written with
+	// 0644 permissions, landed in a user-visible config dir, and may
+	// be synced to cloud backup without the user realising. Put secrets
+	// in the OS keychain via a dedicated package and keep this struct
+	// for non-sensitive preferences only.
 	ObservabilityTracingEnabled  bool   `json:"observabilityTracingEnabled"`
 	ObservabilityOtlpEndpoint    string `json:"observabilityOtlpEndpoint"`
 	ObservabilityEventLogEnabled bool   `json:"observabilityEventLogEnabled"`
