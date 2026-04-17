@@ -15,6 +15,7 @@
   import ThreadTerminalDrawer from '../terminal/ThreadTerminalDrawer.svelte';
   import DiscussionView from '../discussion/DiscussionView.svelte';
   import DesignView from '../design/DesignView.svelte';
+  import DiffPanelDrawer from './DiffPanelDrawer.svelte';
   import { createComposerDraftStore } from '../../stores/composerDraft.svelte';
 
   let { pane }: { pane: ThreadPane } = $props();
@@ -86,6 +87,17 @@
         {#if pane.rateLimits.length > 0}
           <RateLimitsMeter limits={pane.rateLimits} />
         {/if}
+        <button
+          type="button"
+          class="rounded border border-border px-2 py-0.5 text-xs text-text-secondary hover:bg-surface-2/60 cursor-pointer"
+          data-testid="diff-panel-toggle"
+          aria-pressed={pane.diffPanel.open}
+          aria-label="Toggle diff panel"
+          title="Toggle diff panel (⇧⌘D)"
+          onclick={() => pane.toggleDiffPanel()}
+        >
+          Diffs
+        </button>
         <span class="ml-auto text-xs text-text-secondary truncate min-w-0 shrink max-w-[200px]" title={pane.thread.workspacePath}>{pane.thread.workspacePath}</span>
       </div>
 
@@ -96,6 +108,11 @@
       <BackgroundTray {pane} />
       <Composer {pane} {draft} />
       <StatusBar {pane} />
+      {#if pane.diffPanel.open && pane.thread}
+        {#key pane.thread.id}
+          <DiffPanelDrawer {pane} />
+        {/key}
+      {/if}
       {#if pane.showTerminal && pane.thread}
         {#key pane.thread.id}
           <ThreadTerminalDrawer {pane} onSendToComposer={addTerminalChipToDraft} />

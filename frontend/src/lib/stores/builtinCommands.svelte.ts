@@ -208,6 +208,36 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
   });
 
   registerCommand({
+    id: 'diff.panel.toggle',
+    label: 'Diffs: Toggle Panel',
+    icon: '±',
+    when: 'hasActiveThread',
+    run: (ctx) => withActiveThread(ctx, pane, () => pane.toggleDiffPanel()),
+  });
+
+  registerCommand({
+    id: 'diff.panel.open',
+    label: 'Diffs: Open Panel',
+    icon: '±',
+    when: 'hasActiveThread',
+    run: (ctx) =>
+      withActiveThread(ctx, pane, () => {
+        pane.setDiffPanelOpen(true);
+      }),
+  });
+
+  registerCommand({
+    id: 'diff.panel.close',
+    label: 'Diffs: Close Panel',
+    icon: '■',
+    when: 'hasActiveThread',
+    run: (ctx) =>
+      withActiveThread(ctx, pane, () => {
+        pane.setDiffPanelOpen(false);
+      }),
+  });
+
+  registerCommand({
     id: 'terminal.new',
     label: 'Terminal: Show',
     icon: '▶',

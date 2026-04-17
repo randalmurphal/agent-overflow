@@ -42,6 +42,7 @@ var DefaultKeybindings = []Keybinding{
 	{Key: "mod+n", Command: "thread.new", When: "!terminalFocus"},
 	{Key: "mod+shift+o", Command: "thread.new", When: "!terminalFocus"},
 	{Key: "mod+shift+d", Command: "thread.new.discussion", When: "!terminalFocus"},
+	{Key: "mod+shift+g", Command: "diff.panel.toggle", When: "hasActiveThread && !terminalFocus"},
 	{Key: "mod+f", Command: "search.threads", When: "!terminalFocus"},
 	{Key: "mod+,", Command: "settings.open"},
 	{Key: "mod+shift+[", Command: "thread.previous"},
