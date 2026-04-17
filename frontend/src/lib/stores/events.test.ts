@@ -536,4 +536,172 @@ describe('events router', () => {
       expect((response as { requestId: string; decision: string }).decision).toBe('allow');
     });
   });
+
+  describe('design:artifact channel', () => {
+    it('appends an artifact to the pane whose threadId matches', async () => {
+      const pane = await installPane(thread('thread-1'));
+      emitWailsEvent('design:artifact', {
+        id: 'a-1',
+        threadId: 'thread-1',
+        title: 'Landing page',
+        description: '',
+        kind: 'render',
+        htmlPath: '/tmp/a-1.html',
+        createdAt: 100,
+      });
+      expect(pane.designArtifacts).toHaveLength(1);
+      expect(pane.designArtifacts[0].id).toBe('a-1');
+    });
+
+    it('ignores artifacts for other threads', async () => {
+      const paneA = await installPane(thread('thread-A'));
+      const paneB = createThreadPane();
+      getAllPanes().set('b', paneB);
+      setBindingMock('ListItems', async () => []);
+      setBindingMock('ListPayloadMetas', async () => []);
+      await paneB.switchThread(thread('thread-B'));
+
+      emitWailsEvent('design:artifact', {
+        id: 'a-1',
+        threadId: 'thread-A',
+        title: 'A-specific',
+        description: '',
+        kind: 'render',
+        htmlPath: '',
+        createdAt: 0,
+      });
+
+      expect(paneA.designArtifacts).toHaveLength(1);
+      expect(paneB.designArtifacts).toHaveLength(0);
+    });
+
+    it('de-duplicates repeated artifact IDs', async () => {
+      const pane = await installPane(thread('thread-1'));
+      const artifact = {
+        id: 'dup',
+        threadId: 'thread-1',
+        title: 'Card',
+        description: '',
+        kind: 'render',
+        htmlPath: '',
+        createdAt: 0,
+      };
+      emitWailsEvent('design:artifact', artifact);
+      emitWailsEvent('design:artifact', artifact);
+      expect(pane.designArtifacts).toHaveLength(1);
+    });
+
+    it('ignores payload with no threadId', async () => {
+      const pane = await installPane(thread('thread-1'));
+      emitWailsEvent('design:artifact', {
+        id: 'a', title: 't', description: '', kind: 'render', htmlPath: '', createdAt: 0,
+      });
+      expect(pane.designArtifacts).toHaveLength(0);
+    });
+  });
+
+  describe('design:options channel', () => {
+    it('sets pendingDesignOptions on the matching pane', async () => {
+      const pane = await installPane(thread('thread-1'));
+      emitWailsEvent('design:options', {
+        requestId: 'req-42',
+        threadId: 'thread-1',
+        prompt: 'Pick a hero layout',
+        options: [
+          { id: 'opt-1', title: 'Bold', description: '', artifactId: 'art-1' },
+          { id: 'opt-2', title: 'Minimal', description: '', artifactId: 'art-2' },
+        ],
+      });
+      expect(pane.pendingDesignOptions?.requestId).toBe('req-42');
+      expect(pane.pendingDesignOptions?.options).toHaveLength(2);
+    });
+
+    it('scopes to the matching pane only', async () => {
+      const paneA = await installPane(thread('thread-A'));
+      const paneB = createThreadPane();
+      getAllPanes().set('b', paneB);
+      setBindingMock('ListItems', async () => []);
+      setBindingMock('ListPayloadMetas', async () => []);
+      await paneB.switchThread(thread('thread-B'));
+
+      emitWailsEvent('design:options', {
+        requestId: 'r1',
+        threadId: 'thread-B',
+        prompt: '',
+        options: [{ id: 'o1', title: 'x', description: '', artifactId: 'a' }],
+      });
+
+      expect(paneA.pendingDesignOptions).toBeNull();
+      expect(paneB.pendingDesignOptions?.requestId).toBe('r1');
+    });
+  });
+
+  describe('design:chosen channel', () => {
+    it('clears pendingDesignOptions when the requestId matches', async () => {
+      const pane = await installPane(thread('thread-1'));
+      pane.setDesignOptions({
+        requestId: 'req-X',
+        threadId: 'thread-1',
+        prompt: '',
+        options: [{ id: 'o1', title: 't', description: '', artifactId: 'a' }],
+      });
+      emitWailsEvent('design:chosen', {
+        threadId: 'thread-1',
+        requestId: 'req-X',
+        optionId: 'o1',
+        title: 't',
+      });
+      expect(pane.pendingDesignOptions).toBeNull();
+    });
+
+    it('does not clear when a stale chosen event references a different requestId', async () => {
+      const pane = await installPane(thread('thread-1'));
+      pane.setDesignOptions({
+        requestId: 'req-CURRENT',
+        threadId: 'thread-1',
+        prompt: '',
+        options: [{ id: 'o1', title: 't', description: '', artifactId: 'a' }],
+      });
+      emitWailsEvent('design:chosen', {
+        threadId: 'thread-1',
+        requestId: 'req-STALE',
+        optionId: 'o1',
+        title: 't',
+      });
+      expect(pane.pendingDesignOptions?.requestId).toBe('req-CURRENT');
+    });
+
+    it('ignores events for other threads', async () => {
+      const paneA = await installPane(thread('thread-A'));
+      paneA.setDesignOptions({
+        requestId: 'req-A',
+        threadId: 'thread-A',
+        prompt: '',
+        options: [{ id: 'o1', title: 't', description: '', artifactId: 'a' }],
+      });
+      emitWailsEvent('design:chosen', {
+        threadId: 'thread-B',
+        requestId: 'req-A',
+        optionId: 'o1',
+        title: 't',
+      });
+      expect(paneA.pendingDesignOptions?.requestId).toBe('req-A');
+    });
+  });
+
+  describe('design listener lifecycle', () => {
+    it('registers listeners for the three design channels', () => {
+      expect(wailsListenerCount('design:artifact')).toBe(1);
+      expect(wailsListenerCount('design:options')).toBe(1);
+      expect(wailsListenerCount('design:chosen')).toBe(1);
+    });
+
+    it('cleanup unregisters design listeners too', () => {
+      cleanup();
+      expect(wailsListenerCount('design:artifact')).toBe(0);
+      expect(wailsListenerCount('design:options')).toBe(0);
+      expect(wailsListenerCount('design:chosen')).toBe(0);
+      cleanup = setupEventListeners();
+    });
+  });
 });

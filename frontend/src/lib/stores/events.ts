@@ -1,6 +1,7 @@
 import { Events } from '@wailsio/runtime';
 import type { ProviderEvent, ApprovalRequest, ContextWindow, RateLimitEntry, TokenUsage, ToolProgressMeta } from '../types/events';
 import type { PayloadMeta } from '../types/models';
+import type { DesignArtifact, DesignChoiceResolved, DesignOptionsRequest } from '../types/design';
 import type { ThreadPane } from './thread.svelte';
 import { getAllPanes } from './panes.svelte';
 import { addToast } from './toast.svelte';
@@ -188,9 +189,54 @@ export function setupEventListeners(): () => void {
     }
   });
 
+  // design:artifact — a new rendered artifact. Append to the owning pane's
+  // history. The preview panel auto-tracks the latest unless the user has
+  // pinned a specific artifact via the dropdown.
+  const cancelDesignArtifact = Events.On('design:artifact', (ev) => {
+    const artifact = ev.data as DesignArtifact;
+    if (!artifact || !artifact.threadId) return;
+    for (const pane of getAllPanes().values()) {
+      if (pane.threadId === artifact.threadId) {
+        pane.appendDesignArtifact(artifact);
+      }
+    }
+  });
+
+  // design:options — agent blocked on present_options. Also append the option
+  // artifacts to history so the picker thumbnails resolve without a round-trip.
+  const cancelDesignOptions = Events.On('design:options', (ev) => {
+    const request = ev.data as DesignOptionsRequest;
+    if (!request || !request.threadId) return;
+    for (const pane of getAllPanes().values()) {
+      if (pane.threadId === request.threadId) {
+        pane.setDesignOptions(request);
+      }
+    }
+  });
+
+  // design:chosen — user picked an option, backend resolved. Clear the
+  // pending-options state. The corresponding artifact stays in history.
+  const cancelDesignChosen = Events.On('design:chosen', (ev) => {
+    const resolved = ev.data as DesignChoiceResolved;
+    if (!resolved || !resolved.threadId) return;
+    for (const pane of getAllPanes().values()) {
+      if (pane.threadId !== resolved.threadId) continue;
+      const current = pane.pendingDesignOptions;
+      // Only clear if this resolution matches the currently-pending request.
+      // A stale `chosen` event for an older request shouldn't wipe a newer
+      // pending picker.
+      if (current && current.requestId === resolved.requestId) {
+        pane.clearDesignOptions();
+      }
+    }
+  });
+
   return () => {
     cancelEvent();
     cancelMeta();
     cancelError();
+    cancelDesignArtifact();
+    cancelDesignOptions();
+    cancelDesignChosen();
   };
 }
