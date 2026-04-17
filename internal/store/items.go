@@ -3,7 +3,6 @@ package store
 import (
 	"database/sql"
 	"fmt"
-	"log"
 )
 
 func (s *Store) InsertItem(item Item) error {
@@ -216,19 +215,53 @@ func (s *Store) ListTurnItems(threadID string, turnIndex int) ([]Item, error) {
 	return items, rows.Err()
 }
 
+// UpdateItemPayload updates a single item's payload link, summary, and
+// timestamp, and bumps the parent thread's updated_at so the sidebar
+// reshuffles. Both updates run inside one transaction so the thread's
+// updated_at never drifts out of sync with the item it describes. The
+// thread-touch error used to be log-only; a write failure there is just
+// as meaningful as a failure on the item update and callers deserve to
+// see it.
+//
+// Returns an error if the item does not exist or its thread has been
+// deleted (caught by RowsAffected on each UPDATE), instead of silently
+// succeeding on a no-op update.
 func (s *Store) UpdateItemPayload(id, payloadID, summary string, createdAt int64) error {
-	_, err := s.db.Exec(
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("store: begin update item payload tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	result, err := tx.Exec(
 		`UPDATE items SET payload_id = ?, summary = ?, created_at = ? WHERE id = ?`,
 		nilIfEmpty(payloadID), summary, createdAt, id,
 	)
 	if err != nil {
 		return fmt.Errorf("store: update item payload %s: %w", id, err)
 	}
+	if err := requireRowsAffected(
+		result,
+		fmt.Sprintf("store: update item payload %s", id),
+	); err != nil {
+		return err
+	}
 
-	if _, err := s.db.Exec(`UPDATE threads SET updated_at = ? WHERE id = (
+	threadResult, err := tx.Exec(`UPDATE threads SET updated_at = ? WHERE id = (
 		SELECT thread_id FROM items WHERE id = ?
-	)`, createdAt, id); err != nil {
-		log.Printf("store: touch thread updated_at for item %s: %v", id, err)
+	)`, createdAt, id)
+	if err != nil {
+		return fmt.Errorf("store: touch thread updated_at for item %s: %w", id, err)
+	}
+	if err := requireRowsAffected(
+		threadResult,
+		fmt.Sprintf("store: touch thread updated_at for item %s", id),
+	); err != nil {
+		return err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("store: commit update item payload tx: %w", err)
 	}
 	return nil
 }

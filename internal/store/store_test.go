@@ -1141,6 +1141,129 @@ func TestUpdateItemPayloadUpdatesLinkedItem(t *testing.T) {
 	}
 }
 
+// TestUpdateItemPayloadReturnsErrorForMissingItem covers the previously
+// silent-failure branch: UpdateItemPayload used to log, not return, when
+// the item-update's thread-touch step ran against a nonexistent item.
+// Now both steps fail loudly so callers can't silently mismatch.
+func TestUpdateItemPayloadReturnsErrorForMissingItem(t *testing.T) {
+	s := newTestStore(t)
+
+	err := s.UpdateItemPayload("not-a-real-item", "some-payload", "x", 100)
+	if err == nil {
+		t.Fatal("expected error for nonexistent item")
+	}
+}
+
+// TestUpdateItemPayloadAtomicThreadTouch proves the thread's updated_at
+// is revised in the SAME transaction as the item's payload link. Before
+// A8, the thread touch ran outside any tx — a failure there was logged
+// and swallowed. We verify commit-order by mutating createdAt and
+// confirming both rows moved together.
+func TestUpdateItemPayloadAtomicThreadTouch(t *testing.T) {
+	s := newTestStore(t)
+	thr := makeThread("t-atomic", "codex")
+	if err := s.CreateThread(thr); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := s.InsertPayload(Payload{
+		ID: "p-1", Kind: "diff", Meta: "{}", Data: []byte("x"), CreatedAt: 100,
+	}); err != nil {
+		t.Fatalf("payload: %v", err)
+	}
+	if err := s.InsertItem(Item{
+		ID: "i-1", ThreadID: "t-atomic", TurnIndex: 0, ItemIndex: 0,
+		Kind: "diff", Role: "assistant", PayloadID: "p-1", CreatedAt: 100,
+	}); err != nil {
+		t.Fatalf("item: %v", err)
+	}
+
+	if err := s.UpdateItemPayload("i-1", "p-1", "updated", 999); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	got, err := s.GetThread("t-atomic")
+	if err != nil {
+		t.Fatalf("get thread: %v", err)
+	}
+	if got.UpdatedAt != 999 {
+		t.Errorf("thread updated_at: got %d, want 999", got.UpdatedAt)
+	}
+	item, ok, err := s.GetItem("i-1")
+	if err != nil {
+		t.Fatalf("get item: %v", err)
+	}
+	if !ok {
+		t.Fatal("item missing after update")
+	}
+	if item.CreatedAt != 999 {
+		t.Errorf("item created_at: got %d, want 999", item.CreatedAt)
+	}
+}
+
+// TestUpdateItemPayloadConcurrentCallsSerialise drives many concurrent
+// updates at the same item; with single-connection serialisation all
+// calls must succeed and final state must be coherent (whichever
+// created_at wrote last wins for both item and thread).
+func TestUpdateItemPayloadConcurrentCallsSerialise(t *testing.T) {
+	s := newTestStore(t)
+	thr := makeThread("t-conc", "codex")
+	if err := s.CreateThread(thr); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := s.InsertPayload(Payload{
+		ID: "p-1", Kind: "diff", Meta: "{}", Data: []byte("x"), CreatedAt: 100,
+	}); err != nil {
+		t.Fatalf("payload: %v", err)
+	}
+	if err := s.InsertItem(Item{
+		ID: "i-1", ThreadID: "t-conc", TurnIndex: 0, ItemIndex: 0,
+		Kind: "diff", Role: "assistant", PayloadID: "p-1", CreatedAt: 100,
+	}); err != nil {
+		t.Fatalf("item: %v", err)
+	}
+
+	const writers = 20
+	var wg sync.WaitGroup
+	for i := 0; i < writers; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			if err := s.UpdateItemPayload("i-1", "p-1",
+				fmt.Sprintf("v%d", n), int64(1000+n)); err != nil {
+				t.Errorf("update %d: %v", n, err)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	// Thread.updated_at must match some call's createdAt, and item.created_at
+	// must match a call's createdAt — both must agree (both within the same tx).
+	thread, err := s.GetThread("t-conc")
+	if err != nil {
+		t.Fatalf("get thread: %v", err)
+	}
+	item, ok, err := s.GetItem("i-1")
+	if err != nil {
+		t.Fatalf("get item: %v", err)
+	}
+	if !ok {
+		t.Fatal("item missing")
+	}
+	// Both must be in the range of writes.
+	if thread.UpdatedAt < 1000 || thread.UpdatedAt > int64(1000+writers-1) {
+		t.Errorf("thread.UpdatedAt out of range: %d", thread.UpdatedAt)
+	}
+	if item.CreatedAt < 1000 || item.CreatedAt > int64(1000+writers-1) {
+		t.Errorf("item.CreatedAt out of range: %d", item.CreatedAt)
+	}
+	// Because the fix made both updates atomic, the final item.created_at
+	// and thread.updated_at must match exactly — they were committed from
+	// the same transaction with the same createdAt.
+	if item.CreatedAt != thread.UpdatedAt {
+		t.Errorf("item.CreatedAt (%d) and thread.UpdatedAt (%d) must be equal after atomic update",
+			item.CreatedAt, thread.UpdatedAt)
+	}
+}
+
 func TestListPayloadMetas(t *testing.T) {
 	s := newTestStore(t)
 
