@@ -56,6 +56,11 @@ var DefaultKeybindings = []Keybinding{
 	{Key: "mod+7", Command: "thread.jump.7"},
 	{Key: "mod+8", Command: "thread.jump.8"},
 	{Key: "mod+9", Command: "thread.jump.9"},
+	// Help + global message search — both open dialogs that trap focus and
+	// close with Esc, so they don't need separate `!terminalFocus` guards
+	// the way thread.new does.
+	{Key: "mod+/", Command: "help.keybindings"},
+	{Key: "mod+shift+f", Command: "search.messages"},
 }
 
 const keybindingsFileName = "keybindings.json"
