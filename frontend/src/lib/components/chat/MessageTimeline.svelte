@@ -2,12 +2,14 @@
   import { getSettings } from '../../stores/settings.svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import type { ChangedFile, CommandOutputMeta, DiffMeta, Item, ProposedPlanMeta, ToolResultMeta, WorkEntryData } from '../../types/models';
+  import { groupItemsBySubagent, type TimelineNode } from '../../utils/subagentGrouping';
   import AssistantMessage from './AssistantMessage.svelte';
   import ChangedFilesTree from './ChangedFilesTree.svelte';
   import CommandOutput from './CommandOutput.svelte';
   import DiffPreview from './DiffPreview.svelte';
   import ProposedPlanCard from './ProposedPlanCard.svelte';
   import StreamingMessage from './StreamingMessage.svelte';
+  import SubagentGroup from './SubagentGroup.svelte';
   import ThinkingBlock from './ThinkingBlock.svelte';
   import ToolResultCard from './ToolResultCard.svelte';
   import UserMessage from './UserMessage.svelte';
@@ -96,12 +98,29 @@
   });
 
   /**
-   * Check if this item is the last item of its turn, used to decide
-   * when to render the ChangedFilesTree summary.
+   * Build the subagent-aware render tree. Items are grouped into subagent
+   * cards when they declare a parentToolUseId matching a parent tool item;
+   * otherwise they pass through as leaves. The function is pure and
+   * deterministic, so `$derived` re-runs exactly when `pane.items` changes.
    */
-  function isLastItemInTurn(item: Item, index: number): boolean {
-    const nextItem = pane.items[index + 1];
-    return !nextItem || nextItem.turnIndex !== item.turnIndex;
+  let groupedNodes = $derived<TimelineNode[]>(groupItemsBySubagent(pane.items));
+
+  /**
+   * Turn boundaries on the root-node stream: we emit the ChangedFilesTree
+   * summary at the end of every turn that has diff activity. Subagent
+   * children share their parent's turnIndex (triage uses LastTurnIndex for
+   * child persistence), so the turn of a group node is the parent's turn.
+   */
+  function rootTurnIndex(node: TimelineNode): number {
+    return node.kind === 'leaf' ? node.item.turnIndex : node.parent.turnIndex;
+  }
+
+  function isLastRootInTurn(index: number): boolean {
+    const current = groupedNodes[index];
+    const next = groupedNodes[index + 1];
+    if (!current) return false;
+    if (!next) return true;
+    return rootTurnIndex(current) !== rootTurnIndex(next);
   }
 
   // Auto-scroll only when the user is already near the bottom.
@@ -126,7 +145,17 @@
       <span class="animate-pulse">Loading thread...</span>
     </div>
   {:else}
-    {#each pane.items as item, index (item.id)}
+    {#snippet leafContent(item: Item, orphan: boolean)}
+      {#if orphan}
+        <div
+          class="mb-1 flex items-center gap-2 text-xs text-warning"
+          role="status"
+          aria-label="Orphan subagent item"
+        >
+          <span aria-hidden="true">⚠</span>
+          <span>Orphan subagent entry — parent tool call not found.</span>
+        </div>
+      {/if}
       {#if item.role === 'user'}
         <UserMessage {item} />
       {:else if item.kind === 'diff' && item.payloadId}
@@ -162,9 +191,21 @@
       {:else}
         <AssistantMessage {item} />
       {/if}
+    {/snippet}
 
-      {#if isLastItemInTurn(item, index)}
-        {@const turnFiles = turnBoundaries.get(item.turnIndex)}
+    {#snippet renderNode(node: TimelineNode, depth: number)}
+      {#if node.kind === 'leaf'}
+        {@render leafContent(node.item, node.orphan === true)}
+      {:else}
+        <SubagentGroup group={node} depth={depth} renderNode={renderNode} />
+      {/if}
+    {/snippet}
+
+    {#each groupedNodes as node, index (node.kind === 'group' ? `g:${node.parent.id}` : `l:${node.item.id}`)}
+      {@render renderNode(node, 0)}
+
+      {#if isLastRootInTurn(index)}
+        {@const turnFiles = turnBoundaries.get(rootTurnIndex(node))}
         {#if turnFiles}
           <ChangedFilesTree files={turnFiles} />
         {/if}
