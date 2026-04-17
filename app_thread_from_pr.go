@@ -326,10 +326,42 @@ func buildPRUserMessage(ref PRReference, meta prMetadata, diff string) string {
 		b.WriteString(body)
 		b.WriteString("\n\n")
 	}
-	b.WriteString("## Patch\n\n```diff\n")
-	b.WriteString(strings.TrimRight(truncatePRDiff(diff), "\n"))
-	b.WriteString("\n```\n")
+	truncated := strings.TrimRight(truncatePRDiff(diff), "\n")
+	fence := fenceForContent(truncated)
+	b.WriteString("## Patch\n\n")
+	b.WriteString(fence)
+	b.WriteString("diff\n")
+	b.WriteString(truncated)
+	b.WriteString("\n")
+	b.WriteString(fence)
+	b.WriteString("\n")
 	return b.String()
+}
+
+// fenceForContent returns a backtick fence long enough to avoid colliding
+// with any backtick run inside content. Standard markdown requires the
+// closing fence to be at least as long as the opening one, and a content
+// run that matches the fence will close it prematurely. We pick a fence
+// strictly longer than the longest run we find (minimum 3 = standard
+// triple-backtick) so the diff survives verbatim.
+func fenceForContent(content string) string {
+	longest := 0
+	run := 0
+	for _, r := range content {
+		if r == '`' {
+			run++
+			if run > longest {
+				longest = run
+			}
+		} else {
+			run = 0
+		}
+	}
+	size := longest + 1
+	if size < 3 {
+		size = 3
+	}
+	return strings.Repeat("`", size)
 }
 
 // truncatePRDiff clips diff output at MaxInlinedPRDiffBytes and appends a

@@ -394,3 +394,142 @@ func min(a, b int) int {
 	}
 	return b
 }
+
+// Bug C4 regression: when a PR diff contains a literal triple-backtick run
+// (e.g. a patch that modifies a README's own fenced block), the default
+// triple-backtick fence used by buildPRUserMessage would close prematurely
+// and the rest of the diff would escape the code block, confusing the
+// provider. The fix picks a fence length one longer than the longest
+// backtick run found in the content.
+
+func TestBuildPRUserMessageFenceBeatsTripleBacktick(t *testing.T) {
+	ref := PRReference{Owner: "acme", Repo: "tool", Number: 1}
+	meta := prMetadata{Title: "Demo"}
+	diff := "diff --git a/README.md b/README.md\n" +
+		"+ Example:\n" +
+		"+ ```go\n" +
+		"+ fmt.Println(\"hello\")\n" +
+		"+ ```\n"
+
+	msg := buildPRUserMessage(ref, meta, diff)
+	fence := patchFenceFrom(t, msg)
+	// Markdown closes a fence at the first run that matches the opener.
+	// If the fence is only 3 backticks long, the ```go line inside the
+	// diff closes the block prematurely and the rest of the diff escapes
+	// the code block. The fence must be strictly longer than any inner
+	// run so that doesn't happen.
+	if len(fence) <= 3 {
+		t.Fatalf("fence %q is too short to contain inner ``` runs", fence)
+	}
+	patch := extractPatchBlock(t, msg)
+	if !strings.Contains(patch, "fmt.Println(\"hello\")") {
+		t.Fatalf("patch content lost; got %q", patch)
+	}
+	if !strings.Contains(patch, "```go") {
+		t.Fatalf("inner triple-backtick line not preserved; got %q", patch)
+	}
+}
+
+func TestBuildPRUserMessageFenceOutlivesLongestRun(t *testing.T) {
+	ref := PRReference{Owner: "acme", Repo: "tool", Number: 2}
+	meta := prMetadata{Title: "Huge fences"}
+	// A run of ten backticks on its own line — the fence must be at least
+	// 11 characters long so the patch block survives.
+	diff := "+ " + strings.Repeat("`", 10) + "\n+ not closed yet\n"
+
+	msg := buildPRUserMessage(ref, meta, diff)
+	fence := patchFenceFrom(t, msg)
+	if len(fence) < 11 {
+		t.Fatalf("expected fence >= 11 backticks, got %d: %q", len(fence), fence)
+	}
+	patch := extractPatchBlock(t, msg)
+	if !strings.Contains(patch, strings.Repeat("`", 10)) {
+		t.Fatalf("10-backtick run dropped from patch; got %q", patch)
+	}
+	if !strings.Contains(patch, "not closed yet") {
+		t.Fatalf("line after the backtick run lost; got %q", patch)
+	}
+}
+
+func TestBuildPRUserMessageFenceFallsBackToThree(t *testing.T) {
+	ref := PRReference{Owner: "acme", Repo: "tool", Number: 3}
+	meta := prMetadata{Title: "Plain diff"}
+	diff := "diff --git a/foo.go b/foo.go\n+ println(\"hi\")\n"
+
+	msg := buildPRUserMessage(ref, meta, diff)
+	fence := patchFenceFrom(t, msg)
+	if fence != "```" {
+		t.Fatalf("expected triple-backtick fence for backtick-free diff, got %q", fence)
+	}
+}
+
+// extractPatchBlock locates the "## Patch" section and returns the content
+// between the opening and closing fence. Fails the test if the structure
+// doesn't match so assertions stay readable.
+func extractPatchBlock(t *testing.T, msg string) string {
+	t.Helper()
+	patchHeader := "## Patch\n\n"
+	idx := strings.Index(msg, patchHeader)
+	if idx < 0 {
+		t.Fatalf("message missing Patch section: %q", msg)
+	}
+	rest := msg[idx+len(patchHeader):]
+
+	// The first line after the header is the opening fence + language tag.
+	newline := strings.IndexByte(rest, '\n')
+	if newline < 0 {
+		t.Fatalf("message ends abruptly after Patch header: %q", msg)
+	}
+	fenceLine := rest[:newline]
+	fence := strings.TrimSuffix(fenceLine, "diff")
+	body := rest[newline+1:]
+
+	// Find the matching closing fence on its own line.
+	closing := "\n" + fence + "\n"
+	end := strings.LastIndex(body, closing)
+	if end < 0 {
+		t.Fatalf("no closing fence %q found in message %q", fence, msg)
+	}
+	return body[:end]
+}
+
+func patchFenceFrom(t *testing.T, msg string) string {
+	t.Helper()
+	patchHeader := "## Patch\n\n"
+	idx := strings.Index(msg, patchHeader)
+	if idx < 0 {
+		t.Fatalf("message missing Patch section: %q", msg)
+	}
+	rest := msg[idx+len(patchHeader):]
+	newline := strings.IndexByte(rest, '\n')
+	if newline < 0 {
+		t.Fatalf("message ends abruptly after Patch header: %q", msg)
+	}
+	fenceLine := rest[:newline]
+	return strings.TrimSuffix(fenceLine, "diff")
+}
+
+func TestFenceForContent(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{"empty", "", "```"},
+		{"no backticks", "hello world", "```"},
+		{"single backtick", "`x`", "```"},
+		{"double backtick", "``x``", "```"},
+		{"triple backtick", "```", "````"},
+		{"four backticks", "````", "`````"},
+		{"backtick runs split by content", "``` foo ```", "````"},
+		{"longest run wins", "``\nhello\n````\nworld\n```", "`````"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := fenceForContent(tt.content)
+			if got != tt.want {
+				t.Fatalf("fenceForContent(%q) = %q, want %q", tt.content, got, tt.want)
+			}
+		})
+	}
+}
