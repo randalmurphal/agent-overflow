@@ -1,11 +1,15 @@
 // Package workspacefiles finds files inside a workspace for @-mention
-// completion. The implementation favours plain filesystem walks (no git
-// dependency) with a short TTL cache so a popover stays responsive.
+// completion. For git repositories we defer to `git ls-files` so ignore rules
+// are honoured (both the user's .gitignore and gh exclude-standard chains);
+// outside a git repo we fall back to a plain filesystem walk. A short TTL
+// cache keeps the popover responsive.
 package workspacefiles
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -20,9 +24,10 @@ const (
 	DefaultResultLimit = 200
 )
 
-// IgnoredDirs is the tight whitelist of directory names we never descend into.
-// Keep this small and explicit — the point is "never show build output in
-// the picker", not "implement .gitignore".
+// IgnoredDirs is the tight whitelist of directory names we never descend into
+// during the non-git fallback walk. Git-backed workspaces defer to the user's
+// .gitignore, but we still filter these out unconditionally so a repo that
+// accidentally committed node_modules/ or dist/ doesn't drown the @-picker.
 var IgnoredDirs = map[string]struct{}{
 	".git":         {},
 	".convex":      {},
@@ -34,6 +39,14 @@ var IgnoredDirs = map[string]struct{}{
 	"build":        {},
 	"out":          {},
 	"target":       {},
+}
+
+// gitCommand is overridable in tests so we can inject a fake `git ls-files`
+// without shelling out. It returns a *exec.Cmd configured for the given cwd.
+var gitCommand = func(ctx context.Context, cwd string, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = cwd
+	return cmd
 }
 
 // WorkspaceFile is one search result. Paths are POSIX slashes regardless of
@@ -142,9 +155,9 @@ func (s *Searcher) getIndex(root string) (*workspaceIndex, error) {
 	return built, nil
 }
 
-// buildIndex walks root breadth-first, skipping ignored directories, and
-// stops when we've collected maxEntries. Directories are included in the
-// result so '@src' can surface `src/` too.
+// buildIndex validates the root and picks the best indexing strategy: git
+// ls-files (if the workspace is inside a git repo) or a plain filesystem walk.
+// The git path is both faster on large repos and honours the user's .gitignore.
 func buildIndex(root string, maxEntries int) (*workspaceIndex, error) {
 	info, err := os.Stat(root)
 	if err != nil {
@@ -154,6 +167,127 @@ func buildIndex(root string, maxEntries int) (*workspaceIndex, error) {
 		return nil, fmt.Errorf("workspacefiles: root %s is not a directory", root)
 	}
 
+	if isGitRepo(root) {
+		if idx, err := buildIndexFromGit(root, maxEntries); err == nil {
+			return idx, nil
+		}
+		// Fall back to the filesystem walk on git failure so a broken git
+		// install or corrupted repo doesn't leave the user without a picker.
+	}
+
+	return buildIndexFromWalk(root, maxEntries)
+}
+
+// isGitRepo reports whether root is inside a git repository by looking for a
+// `.git` entry at the workspace root. `.git` can be a directory (normal
+// checkout) or a file (worktree / submodule).
+func isGitRepo(root string) bool {
+	_, err := os.Stat(filepath.Join(root, ".git"))
+	return err == nil
+}
+
+// buildIndexFromGit runs `git ls-files --cached --others --exclude-standard`
+// to enumerate every file that is either tracked or untracked-but-not-ignored,
+// then synthesises directory entries so '@src' can still surface `src/`.
+// IgnoredDirs is applied on top of git's filtering as belt-and-braces — a repo
+// that accidentally commits node_modules/ still stays out of the picker.
+func buildIndexFromGit(root string, maxEntries int) (*workspaceIndex, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := gitCommand(ctx, root, "ls-files", "--cached", "--others", "--exclude-standard", "-z")
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("workspacefiles: git ls-files in %s: %w", root, err)
+	}
+
+	rawPaths := strings.Split(strings.TrimRight(string(out), "\x00"), "\x00")
+	sort.Strings(rawPaths)
+
+	// Sets so a directory isn't emitted twice when multiple files share a
+	// parent. Entries are produced in a single pass at the end.
+	dirSet := make(map[string]struct{})
+	var files []string
+	for _, raw := range rawPaths {
+		if raw == "" {
+			continue
+		}
+		rel := filepath.ToSlash(raw)
+		if pathContainsIgnoredDir(rel) {
+			continue
+		}
+		files = append(files, rel)
+		for d := parentOf(rel); d != ""; d = parentOf(d) {
+			dirSet[d] = struct{}{}
+		}
+	}
+
+	dirs := make([]string, 0, len(dirSet))
+	for d := range dirSet {
+		dirs = append(dirs, d)
+	}
+	sort.Strings(dirs)
+
+	var entries []searchableEntry
+	truncated := false
+
+	// Emit directories first so short queries (e.g. "src") still surface
+	// directory results even when file entries would fill the cap.
+	for _, d := range dirs {
+		entries = append(entries, makeEntry(d, "directory"))
+		if len(entries) >= maxEntries {
+			truncated = true
+			break
+		}
+	}
+	if !truncated {
+		for _, f := range files {
+			entries = append(entries, makeEntry(f, "file"))
+			if len(entries) >= maxEntries {
+				truncated = true
+				break
+			}
+		}
+	}
+
+	return &workspaceIndex{
+		scannedAt: time.Now(),
+		entries:   entries,
+		truncated: truncated,
+	}, nil
+}
+
+// pathContainsIgnoredDir returns true when any segment of the path is in the
+// IgnoredDirs set, so a committed node_modules/ is still skipped.
+func pathContainsIgnoredDir(rel string) bool {
+	for _, seg := range strings.Split(rel, "/") {
+		if _, skip := IgnoredDirs[seg]; skip {
+			return true
+		}
+	}
+	return false
+}
+
+func makeEntry(rel, kind string) searchableEntry {
+	name := rel
+	if idx := strings.LastIndex(rel, "/"); idx >= 0 {
+		name = rel[idx+1:]
+	}
+	return searchableEntry{
+		WorkspaceFile: WorkspaceFile{
+			Path:       rel,
+			Kind:       kind,
+			ParentPath: parentOf(rel),
+		},
+		normalizedPath: strings.ToLower(rel),
+		normalizedName: strings.ToLower(name),
+	}
+}
+
+// buildIndexFromWalk walks root breadth-first, skipping ignored directories,
+// and stops when we've collected maxEntries. Used when the workspace is not a
+// git repo (or when git fails for some reason). Directories are included in
+// the result so '@src' can surface `src/` too.
+func buildIndexFromWalk(root string, maxEntries int) (*workspaceIndex, error) {
 	var entries []searchableEntry
 	truncated := false
 	queue := []string{""}
@@ -194,16 +328,7 @@ func buildIndex(root string, maxEntries int) (*workspaceIndex, error) {
 			if isDir {
 				kind = "directory"
 			}
-			entry := searchableEntry{
-				WorkspaceFile: WorkspaceFile{
-					Path:       rel,
-					Kind:       kind,
-					ParentPath: parentOf(rel),
-				},
-				normalizedPath: strings.ToLower(rel),
-				normalizedName: strings.ToLower(name),
-			}
-			entries = append(entries, entry)
+			entries = append(entries, makeEntry(rel, kind))
 			if len(entries) >= maxEntries {
 				truncated = true
 				break

@@ -3,6 +3,7 @@ package workspacefiles
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -177,54 +178,115 @@ func TestIntegration_SearchCacheRespectsWorkspaceFilesystemChanges(t *testing.T)
 	}
 }
 
-// TestIntegration_SearchRespectsGitIgnore documents the actual contract:
-// the workspacefiles searcher does NOT read .gitignore. Instead it walks
-// everything except a tight whitelist of build/output directories
-// (`IgnoredDirs`). A custom directory listed in .gitignore but not in that
-// whitelist will still appear in results.
-//
-// This captures the behaviour so if a future change adds .gitignore support
-// the assertion will flip and the author can update the contract.
+// TestIntegration_SearchRespectsGitIgnore verifies that a git-backed workspace
+// honours the user's .gitignore, while a non-git workspace falls back to the
+// tight IgnoredDirs whitelist walk.
 func TestIntegration_SearchRespectsGitIgnore(t *testing.T) {
-	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte("secret/\nnode_modules/\n"), 0o644); err != nil {
-		t.Fatalf("write .gitignore: %v", err)
-	}
-	// secret/ is listed in .gitignore but NOT in IgnoredDirs.
-	if err := os.MkdirAll(filepath.Join(root, "secret"), 0o755); err != nil {
-		t.Fatalf("mkdir secret: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "secret", "token.txt"), []byte("shh"), 0o644); err != nil {
-		t.Fatalf("write secret/token.txt: %v", err)
-	}
-	// node_modules/ IS in IgnoredDirs; it should be skipped regardless of .gitignore.
-	if err := os.MkdirAll(filepath.Join(root, "node_modules", "fake"), 0o755); err != nil {
-		t.Fatalf("mkdir node_modules: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "node_modules", "fake", "index.js"), []byte("x"), 0o644); err != nil {
-		t.Fatalf("write node_modules file: %v", err)
-	}
+	t.Run("git repo honours .gitignore", func(t *testing.T) {
+		root := initGitRepoForWorkspacefiles(t)
+		if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte("secret/\nnode_modules/\n"), 0o644); err != nil {
+			t.Fatalf("write .gitignore: %v", err)
+		}
+		if err := os.MkdirAll(filepath.Join(root, "secret"), 0o755); err != nil {
+			t.Fatalf("mkdir secret: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(root, "secret", "token.txt"), []byte("shh"), 0o644); err != nil {
+			t.Fatalf("write secret/token.txt: %v", err)
+		}
+		if err := os.MkdirAll(filepath.Join(root, "node_modules", "fake"), 0o755); err != nil {
+			t.Fatalf("mkdir node_modules: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(root, "node_modules", "fake", "index.js"), []byte("x"), 0o644); err != nil {
+			t.Fatalf("write node_modules file: %v", err)
+		}
+		// A tracked file so the index is not empty.
+		if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("hi"), 0o644); err != nil {
+			t.Fatalf("write README.md: %v", err)
+		}
 
-	searcher := NewSearcher(Config{})
-	results, _, err := searcher.Search(root, "", 500)
-	if err != nil {
-		t.Fatalf("Search: %v", err)
-	}
-	seenSecret, seenNodeModules := false, false
-	for _, r := range results {
-		if strings.HasPrefix(r.Path, "secret/") || r.Path == "secret" {
-			seenSecret = true
+		searcher := NewSearcher(Config{})
+		results, _, err := searcher.Search(root, "", 500)
+		if err != nil {
+			t.Fatalf("Search: %v", err)
 		}
-		if strings.HasPrefix(r.Path, "node_modules/") || r.Path == "node_modules" {
-			seenNodeModules = true
+		seenSecret, seenNodeModules, seenReadme := false, false, false
+		for _, r := range results {
+			if strings.HasPrefix(r.Path, "secret/") || r.Path == "secret" {
+				seenSecret = true
+			}
+			if strings.HasPrefix(r.Path, "node_modules/") || r.Path == "node_modules" {
+				seenNodeModules = true
+			}
+			if r.Path == "README.md" {
+				seenReadme = true
+			}
 		}
+		if seenSecret {
+			t.Fatal("secret/ appeared despite being listed in .gitignore")
+		}
+		if seenNodeModules {
+			t.Fatal("node_modules should always be skipped regardless of .gitignore")
+		}
+		if !seenReadme {
+			t.Fatalf("README.md missing from index: %+v", results)
+		}
+	})
+
+	t.Run("non-git workspace uses IgnoredDirs whitelist", func(t *testing.T) {
+		root := t.TempDir()
+		if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte("secret/\n"), 0o644); err != nil {
+			t.Fatalf("write .gitignore: %v", err)
+		}
+		// secret/ is in the .gitignore but NOT in IgnoredDirs; without git we
+		// have no way to honour it, so it surfaces. node_modules still gets
+		// filtered because it's in IgnoredDirs.
+		if err := os.MkdirAll(filepath.Join(root, "secret"), 0o755); err != nil {
+			t.Fatalf("mkdir secret: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(root, "secret", "token.txt"), []byte("shh"), 0o644); err != nil {
+			t.Fatalf("write secret/token.txt: %v", err)
+		}
+		if err := os.MkdirAll(filepath.Join(root, "node_modules", "fake"), 0o755); err != nil {
+			t.Fatalf("mkdir node_modules: %v", err)
+		}
+
+		searcher := NewSearcher(Config{})
+		results, _, err := searcher.Search(root, "", 500)
+		if err != nil {
+			t.Fatalf("Search: %v", err)
+		}
+		seenSecret, seenNodeModules := false, false
+		for _, r := range results {
+			if strings.HasPrefix(r.Path, "secret/") || r.Path == "secret" {
+				seenSecret = true
+			}
+			if strings.HasPrefix(r.Path, "node_modules/") || r.Path == "node_modules" {
+				seenNodeModules = true
+			}
+		}
+		if !seenSecret {
+			t.Fatal("non-git fallback should surface .gitignore-listed paths (they aren't in IgnoredDirs)")
+		}
+		if seenNodeModules {
+			t.Fatal("node_modules should always be skipped (it is in IgnoredDirs)")
+		}
+	})
+}
+
+// initGitRepoForWorkspacefiles runs `git init -q` in a temp dir so buildIndex
+// takes the git-backed branch. Tests that need .gitignore honoured use this.
+func initGitRepoForWorkspacefiles(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	// Write a minimal .git directory so isGitRepo picks it up without needing
+	// a real `git init`. The buildIndexFromGit path will shell out to the real
+	// `git` binary, which resolves the repo via the .git directory we make.
+	cmd := exec.Command("git", "init", "-q")
+	cmd.Dir = root
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Skipf("git init failed (skipping git-backed test): %v: %s", err, string(out))
 	}
-	if !seenSecret {
-		t.Fatal("CONTRACT NOTE: secret/ was ignored — if workspacefiles now honours .gitignore, update comment")
-	}
-	if seenNodeModules {
-		t.Fatal("node_modules should always be skipped regardless of .gitignore")
-	}
+	return root
 }
 
 // TestIntegration_SearchRespectsMaxCap generates enough files to exceed the
