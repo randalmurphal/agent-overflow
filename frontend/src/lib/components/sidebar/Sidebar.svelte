@@ -107,6 +107,13 @@
       registerOpenFromPR(() => { showFromPR = true; });
     }
   });
+
+  $effect(() => {
+    if (typeof window === 'undefined') return;
+    const handler = () => openForm();
+    window.addEventListener('agent-overflow:open-thread-form', handler);
+    return () => window.removeEventListener('agent-overflow:open-thread-form', handler);
+  });
   let provider = $state<'claude' | 'codex'>(getSettings().defaultProvider as 'claude' | 'codex');
   let workspacePath = $state('');
   let defaultModel = $derived(

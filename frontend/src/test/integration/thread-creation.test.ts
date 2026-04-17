@@ -160,7 +160,7 @@ describe('App integration — thread creation', () => {
     consoleErr.mockRestore();
   });
 
-  it('mod+shift+o dispatches the thread.new command event', async () => {
+  it('mod+shift+o dispatches the thread.new command event and opens the form', async () => {
     // Bind the keychord to the built-in thread.new command.
     setBindingMock('GetKeybindings', async () => [
       { key: 'mod+shift+o', command: 'thread.new' },
@@ -177,6 +177,9 @@ describe('App integration — thread creation', () => {
         expect(mod.isKeybindingsLoaded()).toBe(true);
       });
       expect(events).toHaveLength(0);
+      // Pre-chord: the new-thread form is NOT rendered (the "+ New Thread"
+      // CTA button is the only visible affordance).
+      expect(document.querySelector('input[aria-label="Workspace path"]')).toBeNull();
 
       // Fire the chord at window level. On darwin/mac, mod => meta; we
       // dispatch both mac and non-mac variants to stay platform-agnostic.
@@ -191,11 +194,12 @@ describe('App integration — thread creation', () => {
         shiftKey: true,
       });
 
-      // The built-in thread.new command dispatches a CustomEvent on window.
-      // No production component currently listens for this event (see report
-      // for details); verify the chord still reaches the command hook so a
-      // future subscriber will receive it.
+      // The chord reaches the command hook which dispatches the CustomEvent.
       await waitFor(() => expect(events.length).toBeGreaterThan(0));
+      // And the sidebar listener responds by mounting the new-thread form.
+      await waitFor(() => {
+        expect(document.querySelector('input[aria-label="Workspace path"]')).not.toBeNull();
+      });
     } finally {
       window.removeEventListener('agent-overflow:open-thread-form', listener);
     }
