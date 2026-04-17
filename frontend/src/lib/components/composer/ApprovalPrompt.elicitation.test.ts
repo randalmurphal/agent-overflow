@@ -6,6 +6,19 @@ import type { Thread } from '../../types/models';
 import type { ApprovalRequest } from '../../types/events';
 import { setBindingMock, getBindingMock } from '../../../test/mocks/bindings-app';
 import { installAnimateShim } from '../../../test/integration/_helpers';
+import type { Mock } from 'vitest';
+
+// Response body shape observed in these tests — keeps the type narrow so
+// assertions can reach `.elicitation.content` without every line casting.
+interface RespondBody {
+  requestId?: string;
+  decision?: string;
+  elicitation?: { action?: string; content?: unknown };
+}
+
+function respondBody(respond: Mock, callIndex = 0): RespondBody {
+  return respond.mock.calls[callIndex]?.[1] as RespondBody;
+}
 
 beforeAll(installAnimateShim);
 
@@ -579,7 +592,7 @@ describe('<ApprovalPrompt> MCP elicitation — submission', () => {
     await fireEvent.click(getByTestId('elicitation-accept'));
 
     await waitFor(() => expect(respond).toHaveBeenCalled());
-    const [, body] = respond.mock.calls[0];
+    const body = respondBody(respond);
     expect(body.decision).toBe('accept');
     expect(body.elicitation?.action).toBe('accept');
     expect(body.elicitation?.content).toEqual({
@@ -612,7 +625,7 @@ describe('<ApprovalPrompt> MCP elicitation — submission', () => {
     await fireEvent.input(getByTestId('el-input-host'), { target: { value: 'db' } });
     await fireEvent.click(getByTestId('elicitation-accept'));
     await waitFor(() => expect(respond).toHaveBeenCalled());
-    const body = respond.mock.calls[0][1];
+    const body = respondBody(respond);
     expect(body.elicitation?.content).toEqual({ host: 'db' });
   });
 
@@ -621,7 +634,7 @@ describe('<ApprovalPrompt> MCP elicitation — submission', () => {
     const { getByTestId } = await renderWithApproval(formApproval());
     await fireEvent.click(getByTestId('elicitation-decline'));
     await waitFor(() => expect(respond).toHaveBeenCalled());
-    const body = respond.mock.calls[0][1];
+    const body = respondBody(respond);
     expect(body.elicitation?.action).toBe('decline');
     expect(body.elicitation?.content).toBeUndefined();
   });
@@ -631,7 +644,7 @@ describe('<ApprovalPrompt> MCP elicitation — submission', () => {
     const { getByTestId } = await renderWithApproval(formApproval());
     await fireEvent.click(getByTestId('elicitation-cancel'));
     await waitFor(() => expect(respond).toHaveBeenCalled());
-    const body = respond.mock.calls[0][1];
+    const body = respondBody(respond);
     expect(body.elicitation?.action).toBe('cancel');
     expect(body.elicitation?.content).toBeUndefined();
   });
@@ -641,7 +654,7 @@ describe('<ApprovalPrompt> MCP elicitation — submission', () => {
     const { getByTestId } = await renderWithApproval(urlApproval());
     await fireEvent.click(getByTestId('elicitation-accept'));
     await waitFor(() => expect(respond).toHaveBeenCalled());
-    const body = respond.mock.calls[0][1];
+    const body = respondBody(respond);
     expect(body.elicitation?.action).toBe('accept');
     expect(body.elicitation?.content).toBeUndefined();
   });
@@ -738,7 +751,7 @@ describe('<ApprovalPrompt> MCP elicitation — adversarial', () => {
     const acceptBtns = container.querySelectorAll('[data-testid="elicitation-accept"]') as NodeListOf<HTMLButtonElement>;
     await fireEvent.click(acceptBtns[1]);
     await waitFor(() => expect(respond).toHaveBeenCalledTimes(1));
-    const body = respond.mock.calls[0][1];
+    const body = respondBody(respond);
     expect(body.requestId).toBe('req-b');
     expect(body.elicitation?.content).toEqual({ x: 'beta' });
   });
@@ -764,7 +777,7 @@ describe('<ApprovalPrompt> MCP elicitation — adversarial', () => {
     await fireEvent.input(getByTestId('el-input-名前'), { target: { value: '太郎' } });
     await fireEvent.click(getByTestId('elicitation-accept'));
     await waitFor(() => expect(respond).toHaveBeenCalled());
-    const body = respond.mock.calls[0][1];
+    const body = respondBody(respond);
     expect(body.elicitation?.content).toEqual({ 名前: '太郎' });
   });
 
@@ -813,7 +826,7 @@ describe('<ApprovalPrompt> MCP elicitation — adversarial', () => {
     await fireEvent.input(getByTestId('el-input-blob'), { target: { value: long } });
     await fireEvent.click(getByTestId('elicitation-accept'));
     await waitFor(() => expect(respond).toHaveBeenCalled());
-    const body = respond.mock.calls[0][1];
+    const body = respondBody(respond);
     expect((body.elicitation?.content as { blob: string }).blob).toHaveLength(100_000);
   });
 
