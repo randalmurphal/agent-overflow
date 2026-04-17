@@ -22,13 +22,23 @@
   import TerminalTabStrip from './TerminalTabStrip.svelte';
   import TerminalBody from './TerminalBody.svelte';
 
+  interface SendToComposerChip {
+    id: string;
+    label: string;
+    preview: string;
+    content: string;
+    createdAt: number;
+  }
+
   interface Props {
     pane: ThreadPane;
     /** Injected by tests to skip auto-ListTerminals/OpenTerminal on mount. */
     manual?: boolean;
+    /** Called when the user captures selected terminal text as a chip. */
+    onSendToComposer?: (chip: SendToComposerChip) => void;
   }
 
-  let { pane, manual = false }: Props = $props();
+  let { pane, manual = false, onSendToComposer }: Props = $props();
 
   // One state container per drawer instance. The drawer is keyed on the
   // thread ID in the parent, so switching threads remounts the drawer.
@@ -155,7 +165,11 @@
 
   {#if handle.activeTerminalID}
     {#key handle.activeTerminalID}
-      <TerminalBody {handle} terminalID={handle.activeTerminalID} />
+      <TerminalBody
+        {handle}
+        terminalID={handle.activeTerminalID}
+        onSendToComposer={onSendToComposer}
+      />
     {/key}
   {:else}
     <div class="flex-1 min-h-0 flex items-center justify-center text-text-secondary text-sm">

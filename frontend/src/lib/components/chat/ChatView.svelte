@@ -15,8 +15,19 @@
   import ThreadTerminalDrawer from '../terminal/ThreadTerminalDrawer.svelte';
   import DiscussionView from '../discussion/DiscussionView.svelte';
   import DesignView from '../design/DesignView.svelte';
+  import { createComposerDraftStore } from '../../stores/composerDraft.svelte';
 
   let { pane }: { pane: ThreadPane } = $props();
+
+  const draft = createComposerDraftStore();
+  let lastHydratedThreadId: string | null = null;
+
+  $effect(() => {
+    const current = pane.thread?.id ?? null;
+    if (current === lastHydratedThreadId) return;
+    lastHydratedThreadId = current;
+    void draft.setThread(current);
+  });
 
   let inDiscussionMode = $derived(
     !!pane.thread && pane.thread.interactionMode === 'discussion' && !!pane.thread.discussionId,
@@ -24,6 +35,17 @@
   let inDesignMode = $derived(
     !!pane.thread && pane.thread.interactionMode === 'design',
   );
+
+  // Exposed so the terminal drawer can "send to composer".
+  export function addTerminalChipToDraft(chip: {
+    id: string;
+    label: string;
+    preview: string;
+    content: string;
+    createdAt: number;
+  }) {
+    draft.addTerminalChip(chip);
+  }
 
   function handleKeydown(e: KeyboardEvent) {
     const isToggleShortcut = (e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'j';
@@ -72,11 +94,11 @@
       <MessageTimeline {pane} />
       <ApprovalPrompt {pane} />
       <BackgroundTray {pane} />
-      <Composer {pane} />
+      <Composer {pane} {draft} />
       <StatusBar {pane} />
       {#if pane.showTerminal && pane.thread}
         {#key pane.thread.id}
-          <ThreadTerminalDrawer {pane} />
+          <ThreadTerminalDrawer {pane} onSendToComposer={addTerminalChipToDraft} />
         {/key}
       {/if}
     </div>

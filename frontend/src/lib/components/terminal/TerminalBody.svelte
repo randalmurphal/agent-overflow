@@ -12,12 +12,23 @@
   import { decodeTerminalOutput, encodeTerminalInput } from '../../types/terminal';
   import type { ThreadTerminalStateHandle } from './terminalStore.svelte';
 
+  interface SendToComposerChip {
+    id: string;
+    label: string;
+    preview: string;
+    content: string;
+    createdAt: number;
+  }
+
   interface Props {
     handle: ThreadTerminalStateHandle;
     terminalID: string;
+    onSendToComposer?: (chip: SendToComposerChip) => void;
   }
 
-  let { handle, terminalID }: Props = $props();
+  let { handle, terminalID, onSendToComposer }: Props = $props();
+
+  let selection = $state<string>('');
 
   let mountEl: HTMLDivElement | undefined = $state();
   let term: Terminal | null = null;
@@ -67,8 +78,25 @@
       });
     });
 
+    term.onSelectionChange(() => {
+      selection = term?.getSelection() ?? '';
+    });
+
     attachResizeObserver();
     scheduleFit();
+  }
+
+  function handleSendSelection() {
+    const text = selection.trim();
+    if (!text || !onSendToComposer) return;
+    const preview = text.split('\n')[0]?.slice(0, 60) ?? text.slice(0, 60);
+    onSendToComposer({
+      id: `chip-${Date.now()}-${Math.floor(Math.random() * 10000)}`,
+      label: `terminal ${terminalID.slice(0, 8)}`,
+      preview,
+      content: text,
+      createdAt: Date.now(),
+    });
   }
 
   function attachResizeObserver() {
@@ -126,8 +154,20 @@
   }
 </script>
 
-<div
-  bind:this={mountEl}
-  class="flex-1 min-h-0 bg-[#111]"
-  data-testid={`terminal-body-${terminalID}`}
-></div>
+<div class="flex-1 min-h-0 flex flex-col bg-[#111]" data-testid={`terminal-body-${terminalID}`}>
+  {#if onSendToComposer}
+    <div class="flex items-center justify-end border-b border-border/30 bg-black/30 px-2 py-1 text-xs">
+      <button
+        type="button"
+        disabled={!selection.trim()}
+        onclick={handleSendSelection}
+        aria-label="Send selection to composer"
+        data-testid="terminal-send-to-composer"
+        class="rounded px-2 py-0.5 font-medium text-text-primary hover:bg-accent/30 disabled:opacity-40 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+      >
+        Send selection to composer
+      </button>
+    </div>
+  {/if}
+  <div bind:this={mountEl} class="flex-1 min-h-0"></div>
+</div>
