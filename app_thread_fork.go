@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -12,6 +14,20 @@ import (
 	"github.com/google/uuid"
 )
 
+// ForkThread copies a source thread's timeline into a new fork and wires
+// the provider-specific resume state. The whole sequence is atomic from
+// the caller's point of view: if any step fails, the partially-created
+// fork is torn down so no half-forked rows linger.
+//
+// The "atomic unit" is emulated in the app layer rather than a single
+// SQLite transaction because the fork flow crosses a boundary — it has
+// to talk to the Codex provider to fork a live session, which can fail
+// independently of the DB. Wrapping the whole sequence in sql.Tx would
+// hold a DB transaction open across a network-speed operation and break
+// the rest of the store's single-connection model. Instead, we compose
+// with a best-effort rollback: cleanupForkThread removes the fork row
+// (CASCADE drops cloned items + drafts), and cleanup errors are joined
+// to the primary error so the caller sees both.
 func (a *App) ForkThread(sourceThreadID string) (store.Thread, error) {
 	source, err := a.store.GetThread(sourceThreadID)
 	if err != nil {
@@ -27,33 +43,47 @@ func (a *App) ForkThread(sourceThreadID string) (store.Thread, error) {
 	}
 
 	if err := a.store.CloneThreadItems(source.ID, fork.ID); err != nil {
-		a.cleanupForkThread(fork.ID)
-		return store.Thread{}, fmt.Errorf("fork thread: clone timeline: %w", err)
+		return store.Thread{}, errors.Join(
+			fmt.Errorf("fork thread: clone timeline: %w", err),
+			a.cleanupForkThread(fork.ID),
+		)
 	}
 
 	sessionRef, pendingForkRef, err := a.resolveForkResumeState(source)
 	if err != nil {
-		a.cleanupForkThread(fork.ID)
-		return store.Thread{}, err
+		return store.Thread{}, errors.Join(err, a.cleanupForkThread(fork.ID))
 	}
 	fork.SessionRef = sessionRef
 	fork.PendingForkRef = pendingForkRef
 	fork.UpdatedAt = time.Now().UnixMilli()
 	if err := a.store.UpdateThread(fork); err != nil {
-		a.cleanupForkThread(fork.ID)
-		return store.Thread{}, fmt.Errorf("fork thread: persist fork state: %w", err)
+		return store.Thread{}, errors.Join(
+			fmt.Errorf("fork thread: persist fork state: %w", err),
+			a.cleanupForkThread(fork.ID),
+		)
 	}
 
 	return fork, nil
 }
 
-func (a *App) cleanupForkThread(threadID string) {
+// cleanupForkThread removes the fork row created by a failed fork. The
+// FK CASCADE on items.thread_id, thread_drafts.thread_id, and
+// thread_checkpoints.thread_id handles the cloned timeline and any
+// derived state. Returns nil on success OR when the row was already gone
+// (ErrNoRows is treated as idempotent). Any other error is returned so
+// the caller can errors.Join it with the primary fork error — swallowing
+// cleanup failures lets orphan fork rows accumulate silently.
+func (a *App) cleanupForkThread(threadID string) error {
 	if threadID == "" {
-		return
+		return nil
 	}
 	if err := a.store.DeleteThread(threadID); err != nil {
-		// Cleanup is best-effort. The original error path remains the actionable one.
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		return fmt.Errorf("fork thread cleanup: delete fork %s: %w", threadID, err)
 	}
+	return nil
 }
 
 func (a *App) ensureThreadCanFork(source store.Thread) error {
