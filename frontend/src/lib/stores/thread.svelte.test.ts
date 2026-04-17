@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach, vi } from 'vitest';
-import { createThreadPane } from './thread.svelte';
+import { createThreadPane, PAYLOAD_META_LIMIT } from './thread.svelte';
 import type { Thread, Item, PayloadMeta } from '../types/models';
 import type { ApprovalRequest, ContextWindow, RateLimitEntry, TokenUsage, ToolProgressMeta } from '../types/events';
 import { setBindingMock } from '../../test/mocks/bindings-app';
@@ -550,6 +550,84 @@ describe('createThreadPane()', () => {
       pane.addPayloadMeta(m1b);
       expect(pane.payloadMetas.size).toBe(1);
       expect(pane.payloadMetas.get('p1')?.meta).toBe('{"v":2}');
+    });
+
+    // --- Bug D6 regression: LRU cap ---
+    it('caps the map at PAYLOAD_META_LIMIT entries', () => {
+      for (let i = 0; i < PAYLOAD_META_LIMIT + 100; i += 1) {
+        pane.addPayloadMeta({
+          id: `p-${i}`,
+          kind: 'diff',
+          meta: String(i),
+          createdAt: i,
+        });
+      }
+      expect(pane.payloadMetas.size).toBe(PAYLOAD_META_LIMIT);
+      // First 100 inserts are the oldest and must have been evicted.
+      expect(pane.payloadMetas.has('p-0')).toBe(false);
+      expect(pane.payloadMetas.has('p-99')).toBe(false);
+      // The newest are retained.
+      expect(pane.payloadMetas.has(`p-${PAYLOAD_META_LIMIT + 99}`)).toBe(true);
+    });
+
+    it('touchPayloadMeta bumps the entry so it survives future evictions', () => {
+      // Fill exactly to capacity; p-0 is the oldest.
+      for (let i = 0; i < PAYLOAD_META_LIMIT; i += 1) {
+        pane.addPayloadMeta({
+          id: `p-${i}`,
+          kind: 'diff',
+          meta: '',
+          createdAt: i,
+        });
+      }
+      // Touch p-0 to move it to the tail.
+      const meta = pane.touchPayloadMeta('p-0');
+      expect(meta?.id).toBe('p-0');
+      // Adding one more entry should now evict p-1, not p-0.
+      pane.addPayloadMeta({
+        id: 'p-new',
+        kind: 'diff',
+        meta: '',
+        createdAt: 10_000,
+      });
+      expect(pane.payloadMetas.size).toBe(PAYLOAD_META_LIMIT);
+      expect(pane.payloadMetas.has('p-0')).toBe(true);
+      expect(pane.payloadMetas.has('p-1')).toBe(false);
+      expect(pane.payloadMetas.has('p-new')).toBe(true);
+    });
+
+    it('re-adding an existing id refreshes its LRU position', () => {
+      for (let i = 0; i < PAYLOAD_META_LIMIT; i += 1) {
+        pane.addPayloadMeta({ id: `p-${i}`, kind: 'diff', meta: '', createdAt: i });
+      }
+      // Touch p-0 via re-add (e.g. event router updates meta).
+      pane.addPayloadMeta({ id: 'p-0', kind: 'diff', meta: 'v2', createdAt: 0 });
+      // Cause an eviction by adding one more.
+      pane.addPayloadMeta({ id: 'p-new', kind: 'diff', meta: '', createdAt: 10_000 });
+      expect(pane.payloadMetas.has('p-0')).toBe(true);
+      expect(pane.payloadMetas.get('p-0')?.meta).toBe('v2');
+      expect(pane.payloadMetas.has('p-1')).toBe(false);
+    });
+
+    it('switchThread truncates hydrated metas to the LRU cap', async () => {
+      const huge: PayloadMeta[] = [];
+      for (let i = 0; i < PAYLOAD_META_LIMIT + 50; i += 1) {
+        huge.push({ id: `q-${i}`, kind: 'diff', meta: '', createdAt: i });
+      }
+      setBindingMock('ListPayloadMetas', async () => huge);
+
+      await pane.switchThread(makeThread({ id: 'thread-huge' }));
+
+      expect(pane.payloadMetas.size).toBe(PAYLOAD_META_LIMIT);
+      // Newest PAYLOAD_META_LIMIT are kept; oldest 50 are dropped.
+      expect(pane.payloadMetas.has('q-0')).toBe(false);
+      expect(pane.payloadMetas.has(`q-${PAYLOAD_META_LIMIT + 49}`)).toBe(true);
+    });
+
+    it('touchPayloadMeta on an unknown id is a no-op', () => {
+      pane.addPayloadMeta({ id: 'p-1', kind: 'diff', meta: '', createdAt: 0 });
+      expect(pane.touchPayloadMeta('never-seen')).toBeUndefined();
+      expect(pane.payloadMetas.size).toBe(1);
     });
   });
 

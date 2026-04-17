@@ -7,6 +7,15 @@ import { addToast } from './toast.svelte';
 import { createDiffPanelState, type DiffPanelState } from './diffPanel.svelte';
 
 /**
+ * Hard cap on payloadMetas entries kept alive per pane. Long threads can
+ * amass thousands of payload rows (command outputs, diffs, attachments,
+ * etc.); at a certain point the map stops helping and starts eating RAM.
+ * LRU eviction keeps the recently-used entries; the backend can always
+ * re-fetch any evicted id on demand via ListPayloadMetas/GetPayloadData.
+ */
+export const PAYLOAD_META_LIMIT = 500;
+
+/**
  * Creates a self-contained thread pane state instance.
  * Each pane tracks its own thread, items, streaming state, approvals, etc.
  * Components receive a ThreadPane as a prop.
@@ -164,7 +173,14 @@ export function createThreadPane() {
       try {
         const metas = await ListPayloadMetas(newThread.id) as PayloadMeta[];
         if (gen !== switchGeneration) return;
-        payloadMetas = new Map((metas ?? []).map((m: PayloadMeta) => [m.id, m]));
+        // Backend may return the full history; we keep only the most recent
+        // PAYLOAD_META_LIMIT entries so a freshly-hydrated long thread does
+        // not start over the LRU cap.
+        const source = metas ?? [];
+        const sliced = source.length > PAYLOAD_META_LIMIT
+          ? source.slice(source.length - PAYLOAD_META_LIMIT)
+          : source;
+        payloadMetas = new Map(sliced.map((m: PayloadMeta) => [m.id, m]));
       } catch (err) {
         if (gen !== switchGeneration) return;
         console.error('Failed to load payload metas:', err);
@@ -279,7 +295,36 @@ export function createThreadPane() {
     },
 
     addPayloadMeta(meta: PayloadMeta): void {
-      payloadMetas = new Map(payloadMetas).set(meta.id, meta);
+      // Bounded LRU insert: keep the most recently used PAYLOAD_META_LIMIT
+      // entries so a very long thread can't grow this map without bound.
+      // Deleting-then-setting moves the entry to the insertion-order tail
+      // (newest), and we evict from the head on overflow.
+      const next = new Map(payloadMetas);
+      next.delete(meta.id);
+      next.set(meta.id, meta);
+      while (next.size > PAYLOAD_META_LIMIT) {
+        const oldestKey = next.keys().next().value;
+        if (oldestKey === undefined) break;
+        next.delete(oldestKey);
+      }
+      payloadMetas = next;
+    },
+
+    /**
+     * Look up a payload meta and bump it to the LRU tail so heavy reads
+     * (scroll through a long thread) keep frequently-used entries alive.
+     * Callers that only need a one-shot read can keep using
+     * `pane.payloadMetas.get(id)`, but the currently-visible surface should
+     * prefer this accessor so live rows survive eviction.
+     */
+    touchPayloadMeta(id: string): PayloadMeta | undefined {
+      const meta = payloadMetas.get(id);
+      if (!meta) return undefined;
+      const next = new Map(payloadMetas);
+      next.delete(id);
+      next.set(id, meta);
+      payloadMetas = next;
+      return meta;
     },
 
     setError(message: string | null): void {
