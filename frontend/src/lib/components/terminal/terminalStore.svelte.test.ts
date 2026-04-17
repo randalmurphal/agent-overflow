@@ -1,5 +1,11 @@
-import { describe, expect, it } from 'vitest';
-import { createThreadTerminalState, TERMINAL_DRAWER_LIMITS } from './terminalStore.svelte';
+import { describe, expect, it, beforeEach } from 'vitest';
+import {
+  createThreadTerminalState,
+  getTerminalFocused,
+  notifyTerminalFocus,
+  resetTerminalFocusForTest,
+  TERMINAL_DRAWER_LIMITS,
+} from './terminalStore.svelte';
 import type { TerminalSessionSummary } from '../../types/terminal';
 
 function makeSummary(overrides: Partial<TerminalSessionSummary> = {}): TerminalSessionSummary {
@@ -100,5 +106,53 @@ describe('ThreadTerminalState', () => {
     s.clear();
     expect(s.tabs).toEqual([]);
     expect(s.activeTerminalID).toBeNull();
+  });
+});
+
+// --- Bug D5 regression: terminalFocus registry ---
+describe('terminal focus registry', () => {
+  beforeEach(() => {
+    resetTerminalFocusForTest();
+  });
+
+  it('starts unfocused', () => {
+    expect(getTerminalFocused()).toBe(false);
+  });
+
+  it('becomes focused on a single notifyTerminalFocus(true)', () => {
+    notifyTerminalFocus(true);
+    expect(getTerminalFocused()).toBe(true);
+  });
+
+  it('flips back to false when paired false notification arrives', () => {
+    notifyTerminalFocus(true);
+    notifyTerminalFocus(false);
+    expect(getTerminalFocused()).toBe(false);
+  });
+
+  it('stays focused while at least one component holds focus (e.g. remount overlap)', () => {
+    notifyTerminalFocus(true);
+    notifyTerminalFocus(true);
+    notifyTerminalFocus(false);
+    // One component is still focused.
+    expect(getTerminalFocused()).toBe(true);
+    notifyTerminalFocus(false);
+    expect(getTerminalFocused()).toBe(false);
+  });
+
+  it('never dips below zero (extra unfocus calls are tolerated)', () => {
+    notifyTerminalFocus(false);
+    notifyTerminalFocus(false);
+    expect(getTerminalFocused()).toBe(false);
+    notifyTerminalFocus(true);
+    expect(getTerminalFocused()).toBe(true);
+  });
+
+  it('rapid toggling ends up in the expected state', () => {
+    for (let i = 0; i < 20; i += 1) {
+      notifyTerminalFocus(true);
+      notifyTerminalFocus(false);
+    }
+    expect(getTerminalFocused()).toBe(false);
   });
 });

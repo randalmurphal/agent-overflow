@@ -10,7 +10,10 @@
     GetTerminalReplay,
   } from '../../stores/bindings';
   import { decodeTerminalOutput, encodeTerminalInput } from '../../types/terminal';
-  import type { ThreadTerminalStateHandle } from './terminalStore.svelte';
+  import {
+    notifyTerminalFocus,
+    type ThreadTerminalStateHandle,
+  } from './terminalStore.svelte';
 
   interface SendToComposerChip {
     id: string;
@@ -36,6 +39,21 @@
   let resizeObserver: ResizeObserver | null = null;
   let dataDisposable: { dispose(): void } | null = null;
   let destroyed = false;
+  // Track whether we've already told the focus registry we're focused so
+  // we don't double-decrement on teardown.
+  let focusCounted = false;
+
+  function handleFocusIn(): void {
+    if (focusCounted) return;
+    focusCounted = true;
+    notifyTerminalFocus(true);
+  }
+
+  function handleFocusOut(): void {
+    if (!focusCounted) return;
+    focusCounted = false;
+    notifyTerminalFocus(false);
+  }
 
   async function hydrate() {
     if (!mountEl || destroyed) return;
@@ -54,6 +72,11 @@
     term.loadAddon(fit);
     term.loadAddon(new WebLinksAddon());
     term.open(mountEl);
+
+    // Wire focus/blur listeners on the xterm mount. xterm puts a focusable
+    // textarea inside mountEl, so focusin/focusout bubble up reliably.
+    mountEl.addEventListener('focusin', handleFocusIn);
+    mountEl.addEventListener('focusout', handleFocusOut);
 
     // Load replay buffer before draining pending output so order is correct.
     try {
@@ -140,6 +163,16 @@
 
   onDestroy(() => {
     destroyed = true;
+    if (mountEl) {
+      mountEl.removeEventListener('focusin', handleFocusIn);
+      mountEl.removeEventListener('focusout', handleFocusOut);
+    }
+    // If the terminal was focused when the drawer closed, drop the counter
+    // so terminalFocus doesn't remain sticky in the keybindings context.
+    if (focusCounted) {
+      focusCounted = false;
+      notifyTerminalFocus(false);
+    }
     dataDisposable?.dispose();
     dataDisposable = null;
     resizeObserver?.disconnect();

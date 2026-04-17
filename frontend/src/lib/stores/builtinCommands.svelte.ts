@@ -12,6 +12,7 @@ import { registerCommand, type CommandContext } from './commandRegistry.svelte';
 import { closePalette, openPalette } from './palette.svelte';
 import { addToast } from './toast.svelte';
 import { removeThread, prependThread, replaceThread } from './threads.svelte';
+import { getTerminalFocused } from '../components/terminal/terminalStore.svelte';
 import {
   ArchiveThread,
   DeleteThread,
@@ -379,7 +380,9 @@ export function makeCommandContext(pane: ThreadPane, extra: Partial<CommandConte
   return {
     paletteOpen: false,
     terminalOpen: pane.showTerminal,
-    terminalFocus: false,
+    // terminalFocus mirrors whether an xterm element has DOM focus. The
+    // TerminalBody component bumps the registry on focus/blur events.
+    terminalFocus: getTerminalFocused(),
     approvalPending: pane.pendingApprovals.length > 0,
     anyModalOpen: false,
     hasActiveThread: thread !== null,

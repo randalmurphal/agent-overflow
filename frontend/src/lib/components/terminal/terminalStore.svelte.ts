@@ -134,3 +134,27 @@ export const TERMINAL_DRAWER_LIMITS = {
   max: MAX_DRAWER_HEIGHT,
   default: DEFAULT_DRAWER_HEIGHT,
 };
+
+// Module-level terminal-focus registry. The keybindings dispatcher reads
+// `getTerminalFocused()` via makeCommandContext to gate `terminalFocus`-scoped
+// chords. TerminalBody registers/deregisters via notifyTerminalFocus — the
+// counter tolerates multiple mounts (e.g. keyed remount when swapping active
+// tab) without flipping the flag prematurely.
+let focusedTerminals = $state(0);
+
+export function getTerminalFocused(): boolean {
+  return focusedTerminals > 0;
+}
+
+export function notifyTerminalFocus(focused: boolean): void {
+  if (focused) {
+    focusedTerminals += 1;
+  } else {
+    focusedTerminals = Math.max(0, focusedTerminals - 1);
+  }
+}
+
+/** Test helper — bring the registry back to zero between suites. */
+export function resetTerminalFocusForTest(): void {
+  focusedTerminals = 0;
+}
