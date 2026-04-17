@@ -4,10 +4,11 @@
   import ArchivedThreads from './ArchivedThreads.svelte';
   import DiscussionsSettings from './DiscussionsSettings.svelte';
   import KeybindingsSettings from './KeybindingsSettings.svelte';
+  import ObservabilitySettings from './ObservabilitySettings.svelte';
 
   let { onClose }: { onClose: () => void } = $props();
 
-  type Section = 'general' | 'providers' | 'discussions' | 'keybindings' | 'archived';
+  type Section = 'general' | 'providers' | 'discussions' | 'keybindings' | 'observability' | 'archived';
   let activeSection: Section = $state('general');
 
   const sections: Array<{ id: Section; label: string }> = [
@@ -15,6 +16,7 @@
     { id: 'providers', label: 'Providers' },
     { id: 'discussions', label: 'Discussions' },
     { id: 'keybindings', label: 'Keybindings' },
+    { id: 'observability', label: 'Observability' },
     { id: 'archived', label: 'Archived' },
   ];
 
@@ -100,6 +102,8 @@
             <DiscussionsSettings />
           {:else if activeSection === 'keybindings'}
             <KeybindingsSettings />
+          {:else if activeSection === 'observability'}
+            <ObservabilitySettings />
           {:else if activeSection === 'archived'}
             <ArchivedThreads />
           {/if}
