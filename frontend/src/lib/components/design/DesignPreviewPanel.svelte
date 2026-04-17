@@ -6,11 +6,89 @@
   // light. Cancels stale fetches if the user switches artifacts mid-flight.
 
   import type { ThreadPane } from '../../stores/thread.svelte';
-  import { GetDesignArtifactHTML } from '../../stores/bindings';
+  import type { Thread } from '../../types/models';
+  import {
+    CreateThread,
+    GetDesignArtifactHTML,
+    SaveDraft,
+    StartSession,
+    UploadAttachment,
+  } from '../../stores/bindings';
   import { addToast } from '../../stores/toast.svelte';
+  import { prependThread } from '../../stores/threads.svelte';
+  import { captureHtmlToPng, blobToBase64 } from '../../utils/captureHtml';
   import { DESIGN_VIEWPORT_WIDTHS, type DesignViewport } from '../../types/design';
 
   let { pane }: { pane: ThreadPane } = $props();
+
+  let exporting = $state(false);
+
+  async function exportToNewThread(): Promise<void> {
+    if (exporting) return;
+    const sourceThread = pane.thread;
+    const artifact = activeArtifact;
+    if (!sourceThread || !artifact || !fetchedHtml) {
+      addToast('warning', 'Nothing to export yet');
+      return;
+    }
+
+    exporting = true;
+    try {
+      // 1. Capture the rendered HTML to a PNG Blob (hidden iframe + modern-screenshot).
+      const png = await captureHtmlToPng(fetchedHtml, {
+        width: DESIGN_VIEWPORT_WIDTHS[pane.designViewport] ?? 1280,
+      });
+
+      // 2. Create a sibling thread under the same workspace/provider.
+      const newThread = (await CreateThread(
+        sourceThread.provider,
+        sourceThread.workspacePath,
+        sourceThread.model,
+        'default',
+      )) as Thread;
+
+      // 3. Upload the PNG as a draft attachment on the new thread.
+      let attachmentId: string | null = null;
+      try {
+        const base64 = await blobToBase64(png);
+        const filename = `design-${artifact.id}.png`;
+        const attachment = (await UploadAttachment(
+          newThread.id,
+          filename,
+          'image/png',
+          base64,
+        )) as { id?: string } | null;
+        attachmentId = attachment?.id ?? null;
+      } catch (err) {
+        console.error('Screenshot upload failed:', err);
+        addToast('warning', 'Exported without screenshot — upload failed');
+      }
+
+      // 4. Seed the draft with a concise reference + the attachment.
+      const prompt = `Design reference: ${artifact.title}\n\nImplement this design.`;
+      try {
+        await SaveDraft(newThread.id, prompt, attachmentId ? [attachmentId] : [], []);
+      } catch (err) {
+        console.error('Draft seed failed:', err);
+      }
+
+      prependThread(newThread);
+      await pane.switchThread(newThread);
+
+      try {
+        await StartSession(newThread.id);
+      } catch (err) {
+        console.error('Failed to start session on exported thread:', err);
+      }
+
+      addToast('success', `Exported design to a new thread`);
+    } catch (err) {
+      console.error('Failed to export design:', err);
+      pane.setError(`Failed to export design: ${err}`);
+    } finally {
+      exporting = false;
+    }
+  }
 
   // Fetch generation guard — incremented on every fetch kickoff. An in-flight
   // response is applied only if its generation matches the latest value.
@@ -128,6 +206,19 @@
           {short}
         </button>
       {/each}
+      {#if activeArtifact}
+        <button
+          type="button"
+          data-testid="design-export-to-thread"
+          onclick={exportToNewThread}
+          disabled={exporting || !fetchedHtml}
+          aria-label="Export to new thread"
+          title="Capture a screenshot and open a new thread with this design attached"
+          class="ml-2 text-xs px-2 py-1 rounded border border-border/70 text-text-secondary hover:bg-surface-2 hover:text-text-primary cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+        >
+          {exporting ? 'Exporting…' : 'Export →'}
+        </button>
+      {/if}
     </div>
   </div>
 

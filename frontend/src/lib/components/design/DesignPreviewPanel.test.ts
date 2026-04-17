@@ -6,6 +6,14 @@ import type { Thread } from '../../types/models';
 import type { DesignArtifact } from '../../types/design';
 import { setBindingMock, getBindingMock } from '../../../test/mocks/bindings-app';
 
+// Mock the screenshot utility so tests don't need a real canvas renderer
+// or a headless browser. The export-flow tests drive the mock directly.
+vi.mock('../../utils/captureHtml', () => ({
+  captureHtmlToPng: vi.fn(async () => new Blob(['fake-png'], { type: 'image/png' })),
+  blobToBase64: vi.fn(async () => 'ZmFrZS1wbmc='),
+}));
+import { captureHtmlToPng, blobToBase64 } from '../../utils/captureHtml';
+
 // Stub Element.animate for Svelte transitions (inherited from Toast subtree).
 if (typeof Element !== 'undefined' && !('animate' in Element.prototype)) {
   (Element.prototype as unknown as { animate: unknown }).animate = function () {
@@ -189,5 +197,147 @@ describe('<DesignPreviewPanel>', () => {
     const latest = calls[calls.length - 1];
     // Preview should be the first option's artifact, not the latest in history.
     expect(latest).toEqual(['thread-1', 'opt-art-A']);
+  });
+});
+
+describe('<DesignPreviewPanel> — export to new thread', () => {
+  beforeEach(() => {
+    setBindingMock('GetDesignArtifactHTML', async () => '<html><body>landing</body></html>');
+    vi.mocked(captureHtmlToPng).mockClear();
+    vi.mocked(blobToBase64).mockClear();
+  });
+
+  it('hides the Export button when there is no active artifact', async () => {
+    const pane = await buildPane();
+    const { queryByTestId } = render(DesignPreviewPanel, { props: { pane } });
+    expect(queryByTestId('design-export-to-thread')).toBeNull();
+  });
+
+  it('captures the HTML, creates a new thread, uploads the PNG, seeds the draft, and switches', async () => {
+    const pane = await buildPane();
+    pane.appendDesignArtifact(makeArtifact({ id: 'a-1', title: 'Hero v2', createdAt: 10 }));
+
+    const created = { id: 'new-thread', provider: 'claude', workspacePath: '/tmp', model: 'claude-sonnet-4-6' };
+    setBindingMock('CreateThread', async () => created);
+    const uploadMock = setBindingMock('UploadAttachment', async () => ({
+      id: 'att-1',
+      threadId: 'new-thread',
+      filename: 'design-a-1.png',
+      mimeType: 'image/png',
+      size: 8,
+      relativePath: 'new-thread/att-1.png',
+      createdAt: 1,
+    }));
+    const saveDraftMock = setBindingMock('SaveDraft', async () => {});
+    setBindingMock('StartSession', async () => {});
+
+    const { getByTestId, findByTestId } = render(DesignPreviewPanel, { props: { pane } });
+    // Wait for the iframe to load (fetchedHtml populated) so the button is enabled.
+    await findByTestId('design-export-to-thread');
+    await waitFor(() =>
+      expect((getByTestId('design-export-to-thread') as HTMLButtonElement).disabled).toBe(false),
+    );
+    await fireEvent.click(getByTestId('design-export-to-thread'));
+
+    await waitFor(() => expect(vi.mocked(captureHtmlToPng)).toHaveBeenCalled());
+    // HTML captured from the preview state.
+    expect(vi.mocked(captureHtmlToPng).mock.calls[0][0]).toContain('landing');
+
+    const createCalls = (getBindingMock('CreateThread') as ReturnType<typeof vi.fn> | undefined)?.mock.calls ?? [];
+    await waitFor(() => expect(createCalls.length).toBeGreaterThan(0));
+    // CreateThread args: provider, workspace, model, mode. Source thread is Claude.
+    expect(createCalls[0]).toEqual(['claude', '/tmp', 'claude-sonnet-4-6', 'default']);
+
+    await waitFor(() => expect(uploadMock).toHaveBeenCalled());
+    expect(uploadMock.mock.calls[0][0]).toBe('new-thread');
+    expect(uploadMock.mock.calls[0][1]).toBe('design-a-1.png');
+    expect(uploadMock.mock.calls[0][2]).toBe('image/png');
+
+    await waitFor(() => expect(saveDraftMock).toHaveBeenCalled());
+    const draftArgs = saveDraftMock.mock.calls[0];
+    expect(draftArgs[0]).toBe('new-thread');
+    expect(String(draftArgs[1])).toContain('Hero v2');
+    expect(draftArgs[2]).toEqual(['att-1']);
+
+    // Pane switched to the new thread.
+    await waitFor(() => expect(pane.threadId).toBe('new-thread'));
+  });
+
+  it('still creates the thread when the screenshot upload fails', async () => {
+    const pane = await buildPane();
+    pane.appendDesignArtifact(makeArtifact({ id: 'a-2', title: 'CTA block' }));
+
+    setBindingMock('CreateThread', async () => ({
+      id: 'new-thread',
+      provider: 'claude',
+      workspacePath: '/tmp',
+      model: 'claude-sonnet-4-6',
+    }));
+    setBindingMock('UploadAttachment', async () => {
+      throw new Error('disk full');
+    });
+    const saveDraftMock = setBindingMock('SaveDraft', async () => {});
+    setBindingMock('StartSession', async () => {});
+
+    const { getByTestId, findByTestId } = render(DesignPreviewPanel, { props: { pane } });
+    await findByTestId('design-export-to-thread');
+    await waitFor(() =>
+      expect((getByTestId('design-export-to-thread') as HTMLButtonElement).disabled).toBe(false),
+    );
+    await fireEvent.click(getByTestId('design-export-to-thread'));
+
+    await waitFor(() => expect(saveDraftMock).toHaveBeenCalled());
+    // No attachment id available — the draft should still be seeded, just
+    // without the image reference in the attachments array.
+    expect(saveDraftMock.mock.calls[0][2]).toEqual([]);
+    await waitFor(() => expect(pane.threadId).toBe('new-thread'));
+  });
+
+  it('surfaces an error to the pane when CreateThread fails', async () => {
+    const pane = await buildPane();
+    pane.appendDesignArtifact(makeArtifact({ id: 'a-3', title: 'Hero' }));
+    setBindingMock('CreateThread', async () => { throw new Error('backend down'); });
+
+    const { getByTestId, findByTestId } = render(DesignPreviewPanel, { props: { pane } });
+    await findByTestId('design-export-to-thread');
+    await waitFor(() =>
+      expect((getByTestId('design-export-to-thread') as HTMLButtonElement).disabled).toBe(false),
+    );
+    await fireEvent.click(getByTestId('design-export-to-thread'));
+    await waitFor(() => expect(pane.error).toMatch(/export design/i));
+  });
+
+  it('button shows "Exporting…" label while the export is in flight', async () => {
+    const pane = await buildPane();
+    pane.appendDesignArtifact(makeArtifact({ id: 'a-4', title: 'Nav' }));
+    let release: () => void = () => {};
+    const pending = new Promise<void>((r) => { release = r; });
+    vi.mocked(captureHtmlToPng).mockImplementationOnce(async () => {
+      await pending;
+      return new Blob(['x'], { type: 'image/png' });
+    });
+    setBindingMock('CreateThread', async () => ({ id: 'new-thread', provider: 'claude', workspacePath: '/tmp', model: 'm' }));
+    setBindingMock('UploadAttachment', async () => ({ id: 'a', threadId: 'new-thread', filename: 'x', mimeType: 'image/png', size: 0, relativePath: '', createdAt: 0 }));
+    setBindingMock('SaveDraft', async () => {});
+    setBindingMock('StartSession', async () => {});
+
+    const { getByTestId, findByTestId } = render(DesignPreviewPanel, { props: { pane } });
+    const btn = (await findByTestId('design-export-to-thread')) as HTMLButtonElement;
+    await waitFor(() => expect(btn.disabled).toBe(false));
+    void fireEvent.click(btn);
+    await waitFor(() => expect(btn.textContent).toMatch(/exporting/i));
+    release();
+    // After the export completes the pane switches to the new thread,
+    // which has no artifacts → the button unmounts. Either outcome is
+    // proof the in-flight state resolved: the button stopped showing
+    // "Exporting…" OR the button is gone entirely.
+    await waitFor(
+      () => {
+        const stillThere = document.querySelector('[data-testid="design-export-to-thread"]');
+        if (!stillThere) return;
+        expect(stillThere.textContent).not.toMatch(/exporting/i);
+      },
+      { timeout: 2000 },
+    );
   });
 });
