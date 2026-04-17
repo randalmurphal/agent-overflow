@@ -347,6 +347,121 @@ func TestObservabilitySettingsRoundTrip(t *testing.T) {
 	}
 }
 
+// TestUpdatePreservesUnknownFields ensures that fields the Settings struct
+// doesn't know about (forward-compat or downgrade scenarios) survive an
+// Update call. Without unknown-field preservation, the round-trip through
+// json.Marshal(Settings) drops anything not mapped to a struct field.
+func TestUpdatePreservesUnknownFields(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+
+	// Seed the file with known + unknown fields of varied types.
+	initial := map[string]any{
+		"theme":             "system",
+		"futureFlag":        true,
+		"futureString":      "hello",
+		"futureNumber":      42,
+		"futureObject":      map[string]any{"nested": "value", "count": 7},
+		"futureArray":       []any{"a", "b", "c"},
+		"futureNullLiteral": nil,
+	}
+	raw, err := json.MarshalIndent(initial, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	svc := NewService(dir)
+	// Updating an unrelated known field must not drop the unknowns.
+	if _, err := svc.Update(map[string]any{"theme": "dark"}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var fileMap map[string]any
+	if err := json.Unmarshal(after, &fileMap); err != nil {
+		t.Fatalf("unmarshal after update: %v", err)
+	}
+
+	// Known field should reflect the update.
+	if fileMap["theme"] != "dark" {
+		t.Errorf("theme = %v, want %q", fileMap["theme"], "dark")
+	}
+
+	// All unknowns must round-trip.
+	if v, ok := fileMap["futureFlag"].(bool); !ok || v != true {
+		t.Errorf("futureFlag = %v (%T), want true", fileMap["futureFlag"], fileMap["futureFlag"])
+	}
+	if v, ok := fileMap["futureString"].(string); !ok || v != "hello" {
+		t.Errorf("futureString = %v, want %q", fileMap["futureString"], "hello")
+	}
+	// JSON decoded numbers land as float64 in a map[string]any.
+	if v, ok := fileMap["futureNumber"].(float64); !ok || v != 42 {
+		t.Errorf("futureNumber = %v, want 42", fileMap["futureNumber"])
+	}
+	obj, ok := fileMap["futureObject"].(map[string]any)
+	if !ok {
+		t.Fatalf("futureObject = %v (%T), want map", fileMap["futureObject"], fileMap["futureObject"])
+	}
+	if obj["nested"] != "value" {
+		t.Errorf("futureObject.nested = %v, want %q", obj["nested"], "value")
+	}
+	if obj["count"] != float64(7) {
+		t.Errorf("futureObject.count = %v, want 7", obj["count"])
+	}
+	arr, ok := fileMap["futureArray"].([]any)
+	if !ok || len(arr) != 3 {
+		t.Fatalf("futureArray = %v (%T)", fileMap["futureArray"], fileMap["futureArray"])
+	}
+	if arr[0] != "a" || arr[1] != "b" || arr[2] != "c" {
+		t.Errorf("futureArray = %v, want [a b c]", arr)
+	}
+	// Null must be present as a key; it survives as nil in map[string]any.
+	if _, present := fileMap["futureNullLiteral"]; !present {
+		t.Errorf("futureNullLiteral key missing")
+	}
+}
+
+// TestAddRecentWorkspacePreservesUnknownFields guards the other writer on
+// the service. Adding a workspace path must not drop unknowns either, since
+// it goes through writeSparse.
+func TestAddRecentWorkspacePreservesUnknownFields(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+
+	initial := map[string]any{
+		"futureFlag": true,
+	}
+	raw, err := json.MarshalIndent(initial, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	svc := NewService(dir)
+	svc.AddRecentWorkspace("/tmp/workspace")
+
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fileMap map[string]any
+	if err := json.Unmarshal(after, &fileMap); err != nil {
+		t.Fatalf("unmarshal after add: %v", err)
+	}
+	if v, ok := fileMap["futureFlag"].(bool); !ok || v != true {
+		t.Errorf("futureFlag = %v (%T), want true", fileMap["futureFlag"], fileMap["futureFlag"])
+	}
+}
+
 func TestObservabilityOtlpEndpointBlankSerializesAsDefault(t *testing.T) {
 	dir := t.TempDir()
 	svc := NewService(dir)

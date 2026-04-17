@@ -64,6 +64,12 @@ type Service struct {
 	mu          sync.RWMutex
 	cached      *Settings
 	cachedState fileState
+	// unknownFields captures any top-level JSON keys from the on-disk file
+	// that do not map to a field on the Settings struct. We preserve them
+	// verbatim on writeSparse so downgrading the app, or running a build
+	// with forward-compat fields the Settings struct doesn't yet know
+	// about, does not silently drop those fields. Written under s.mu.
+	unknownFields map[string]json.RawMessage
 }
 
 type fileState struct {
@@ -179,11 +185,13 @@ func (s *Service) AddRecentWorkspace(path string) {
 
 // loadFromFile reads the settings file and merges over defaults.
 // Returns DefaultSettings if the file is missing or malformed. Must be called
-// with s.mu held (either read or write).
+// with s.mu held (either read or write). Captures any unknown top-level keys
+// into s.unknownFields so a follow-up write preserves them.
 func (s *Service) loadFromFile() Settings {
 	data, err := os.ReadFile(s.path)
 	if err != nil {
 		// Missing file is normal on first run.
+		s.unknownFields = nil
 		return copyDefaults()
 	}
 
@@ -191,20 +199,78 @@ func (s *Service) loadFromFile() Settings {
 	result := copyDefaults()
 	if err := json.Unmarshal(data, &result); err != nil {
 		log.Printf("settings: malformed JSON in %s, using defaults: %v", s.path, err)
+		s.unknownFields = nil
 		return copyDefaults()
 	}
+	s.unknownFields = captureUnknownFields(data)
 	return sanitizeLoadedSettings(result)
 }
 
+// captureUnknownFields returns a map of top-level JSON keys from raw that
+// do not correspond to a field on the Settings struct. Used to preserve
+// forward-compat / downgrade fields across a write.
+func captureUnknownFields(raw []byte) map[string]json.RawMessage {
+	var fileMap map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fileMap); err != nil {
+		return nil
+	}
+	known := knownSettingsFieldNames()
+	unknown := make(map[string]json.RawMessage)
+	for k, v := range fileMap {
+		if _, ok := known[k]; ok {
+			continue
+		}
+		unknown[k] = v
+	}
+	if len(unknown) == 0 {
+		return nil
+	}
+	return unknown
+}
+
+// knownSettingsFieldNames returns the set of JSON field names the Settings
+// struct serializes. Computed by marshalling the default Settings value and
+// reading its keys — this keeps the set in sync with the struct definition
+// automatically as fields are added or renamed.
+func knownSettingsFieldNames() map[string]struct{} {
+	data, err := json.Marshal(DefaultSettings)
+	if err != nil {
+		return map[string]struct{}{}
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(data, &m); err != nil {
+		return map[string]struct{}{}
+	}
+	known := make(map[string]struct{}, len(m))
+	for k := range m {
+		known[k] = struct{}{}
+	}
+	return known
+}
+
 // writeSparse persists only the fields that differ from DefaultSettings.
-// Uses atomic write (temp file + rename).
+// Uses atomic write (temp file + rename). Unknown fields previously read
+// from the file are preserved alongside the sparse known fields so
+// forward-compat / downgrade values are not dropped by an Update.
 func (s *Service) writeSparse(current Settings) error {
 	sparse, err := buildSparseMap(current)
 	if err != nil {
 		return fmt.Errorf("settings: build sparse map: %w", err)
 	}
 
-	data, err := json.MarshalIndent(sparse, "", "  ")
+	// Merge unknown fields under the sparse known fields. Known keys win
+	// if the unknown-fields map somehow contains a clashing key — this
+	// can happen only if Settings gained a field since loadFromFile was
+	// called, and the new field is a known one now.
+	merged := make(map[string]any, len(sparse)+len(s.unknownFields))
+	for k, v := range s.unknownFields {
+		merged[k] = v
+	}
+	for k, v := range sparse {
+		merged[k] = v
+	}
+
+	data, err := json.MarshalIndent(merged, "", "  ")
 	if err != nil {
 		return fmt.Errorf("settings: marshal: %w", err)
 	}
