@@ -164,6 +164,23 @@ CREATE TABLE IF NOT EXISTS thread_drafts (
 );
 `,
 	},
+	{
+		Version: 7,
+		Name:    "thread_checkpoints",
+		SQL: `
+CREATE TABLE IF NOT EXISTS thread_checkpoints (
+	id             TEXT    PRIMARY KEY,
+	thread_id      TEXT    NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+	turn_index     INTEGER NOT NULL,
+	ref_name       TEXT    NOT NULL UNIQUE,
+	baseline_sha   TEXT    NOT NULL DEFAULT '',
+	captured_at    INTEGER NOT NULL,
+	workspace_path TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_thread_checkpoints_thread_turn
+	ON thread_checkpoints(thread_id, turn_index);
+`,
+	},
 }
 
 // runMigrations sets PRAGMAs, creates the version tracking table, and applies
