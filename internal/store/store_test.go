@@ -1,6 +1,8 @@
 package store
 
 import (
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 )
@@ -868,6 +870,206 @@ func TestUpsertTurnPayloadReplacesExistingPayload(t *testing.T) {
 	}
 	if string(data) != "new diff" {
 		t.Fatalf("expected updated payload data, got %q", string(data))
+	}
+}
+
+// TestUpsertTurnPayloadLinksUnlinkedItem covers the orphan-payload bug where
+// UpsertTurnPayload previously inserted a new payload row without updating
+// the item's payload_id, leaving the payload unreachable from any item.
+func TestUpsertTurnPayloadLinksUnlinkedItem(t *testing.T) {
+	s := newTestStore(t)
+
+	thr := makeThread("t1", "codex")
+	if err := s.CreateThread(thr); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+
+	// Seed an item with payload_id = NULL — this is the case where the
+	// router has inserted a summary-only item and then follows up with a
+	// heavy payload via UpsertTurnPayload.
+	unlinked := Item{
+		ID:        "item-unlinked",
+		ThreadID:  "t1",
+		TurnIndex: 0,
+		ItemIndex: 0,
+		Kind:      "diff",
+		Role:      "assistant",
+		Summary:   "summary only",
+		CreatedAt: 1000,
+	}
+	if err := s.InsertItem(unlinked); err != nil {
+		t.Fatalf("insert unlinked item: %v", err)
+	}
+
+	payload := Payload{
+		ID:        "payload-fresh",
+		Kind:      "diff",
+		Meta:      `{"preview":"new"}`,
+		Data:      []byte("new diff"),
+		CreatedAt: 2000,
+	}
+	if err := s.UpsertTurnPayload("t1", 0, "diff", payload); err != nil {
+		t.Fatalf("upsert turn payload: %v", err)
+	}
+
+	got, found, err := s.GetItem("item-unlinked")
+	if err != nil {
+		t.Fatalf("get item: %v", err)
+	}
+	if !found {
+		t.Fatal("item should still exist after upsert")
+	}
+	if got.PayloadID != payload.ID {
+		t.Fatalf("item payload_id: got %q, want %q", got.PayloadID, payload.ID)
+	}
+
+	// Assert no orphan payloads — every payload must be reachable from some item.
+	var orphans int
+	if err := s.db.QueryRow(
+		`SELECT COUNT(*) FROM payloads p
+		 WHERE NOT EXISTS (SELECT 1 FROM items i WHERE i.payload_id = p.id)`,
+	).Scan(&orphans); err != nil {
+		t.Fatalf("count orphans: %v", err)
+	}
+	if orphans != 0 {
+		t.Fatalf("expected 0 orphan payloads, got %d", orphans)
+	}
+}
+
+// TestUpsertTurnPayloadReplaceDoesNotDuplicatePayload calls upsert twice with
+// distinct data against the same item and confirms exactly one payload row
+// survives. Guards against a regression where each call would insert a fresh
+// row for the same (thread, turn, kind).
+func TestUpsertTurnPayloadReplaceDoesNotDuplicatePayload(t *testing.T) {
+	s := newTestStore(t)
+
+	thr := makeThread("t1", "codex")
+	if err := s.CreateThread(thr); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+
+	original := Payload{
+		ID:        "payload-1",
+		Kind:      "diff",
+		Meta:      `{"preview":"v1"}`,
+		Data:      []byte("v1"),
+		CreatedAt: 1000,
+	}
+	if err := s.InsertPayload(original); err != nil {
+		t.Fatalf("insert original: %v", err)
+	}
+	if err := s.InsertItem(Item{
+		ID:        "item-1",
+		ThreadID:  "t1",
+		TurnIndex: 0,
+		ItemIndex: 0,
+		Kind:      "diff",
+		Role:      "assistant",
+		Summary:   "v1",
+		PayloadID: original.ID,
+		CreatedAt: 1000,
+	}); err != nil {
+		t.Fatalf("insert item: %v", err)
+	}
+
+	v2 := Payload{ID: "payload-new-a", Kind: "diff", Meta: `{"v":2}`, Data: []byte("v2"), CreatedAt: 2000}
+	v3 := Payload{ID: "payload-new-b", Kind: "diff", Meta: `{"v":3}`, Data: []byte("v3"), CreatedAt: 3000}
+	if err := s.UpsertTurnPayload("t1", 0, "diff", v2); err != nil {
+		t.Fatalf("upsert v2: %v", err)
+	}
+	if err := s.UpsertTurnPayload("t1", 0, "diff", v3); err != nil {
+		t.Fatalf("upsert v3: %v", err)
+	}
+
+	var count int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM payloads`).Scan(&count); err != nil {
+		t.Fatalf("count payloads: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("expected exactly 1 payload after two upserts, got %d", count)
+	}
+
+	data, err := s.GetPayloadData(original.ID)
+	if err != nil {
+		t.Fatalf("get data: %v", err)
+	}
+	if string(data) != "v3" {
+		t.Fatalf("expected latest data 'v3', got %q", string(data))
+	}
+}
+
+// TestUpsertTurnPayloadConcurrentWritesNoOrphans hammers UpsertTurnPayload
+// from many goroutines against the same (thread, turn, kind) tuple. The
+// store serialises via SetMaxOpenConns(1), so nothing should crash and no
+// orphan payloads should remain.
+func TestUpsertTurnPayloadConcurrentWritesNoOrphans(t *testing.T) {
+	s := newTestStore(t)
+
+	thr := makeThread("t1", "codex")
+	if err := s.CreateThread(thr); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+
+	// Seed one unlinked item for the concurrent writers to race to link.
+	if err := s.InsertItem(Item{
+		ID:        "item-concurrent",
+		ThreadID:  "t1",
+		TurnIndex: 0,
+		ItemIndex: 0,
+		Kind:      "diff",
+		Role:      "assistant",
+		Summary:   "summary",
+		CreatedAt: 1000,
+	}); err != nil {
+		t.Fatalf("insert item: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	writers := 32
+	for i := 0; i < writers; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			p := Payload{
+				ID:        fmt.Sprintf("payload-%d", n),
+				Kind:      "diff",
+				Meta:      `{"n":0}`,
+				Data:      []byte("data"),
+				CreatedAt: int64(1000 + n),
+			}
+			if err := s.UpsertTurnPayload("t1", 0, "diff", p); err != nil {
+				t.Errorf("goroutine %d: %v", n, err)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	var orphans int
+	if err := s.db.QueryRow(
+		`SELECT COUNT(*) FROM payloads p
+		 WHERE NOT EXISTS (SELECT 1 FROM items i WHERE i.payload_id = p.id)`,
+	).Scan(&orphans); err != nil {
+		t.Fatalf("count orphans: %v", err)
+	}
+	if orphans != 0 {
+		t.Fatalf("concurrent writers left %d orphan payloads", orphans)
+	}
+
+	// Item must be linked to exactly one payload and exactly one payload must exist.
+	var payloads int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM payloads`).Scan(&payloads); err != nil {
+		t.Fatalf("count payloads: %v", err)
+	}
+	if payloads != 1 {
+		t.Fatalf("expected exactly 1 payload after concurrent writers, got %d", payloads)
+	}
+
+	item, ok, err := s.GetItem("item-concurrent")
+	if err != nil {
+		t.Fatalf("get item: %v", err)
+	}
+	if !ok || item.PayloadID == "" {
+		t.Fatalf("item should be linked; got payload_id=%q ok=%v", item.PayloadID, ok)
 	}
 }
 

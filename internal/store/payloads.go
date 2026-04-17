@@ -29,6 +29,18 @@ func (s *Store) UpsertPayload(p Payload) error {
 	return nil
 }
 
+// UpsertTurnPayload writes payload bytes for (thread, turn, kind) and links
+// the latest matching item to the stored payload. If an existing item already
+// has a payload_id, its payload row is replaced in place so we don't orphan
+// the old one. If the matching item has no payload_id yet (NULL), we insert
+// the new payload under the caller-supplied id and update the item's
+// payload_id column in the same transaction — without that link, the newly
+// inserted payload would be unreachable from any item and never garbage
+// collected.
+//
+// When no matching item exists yet, we still insert the payload so the caller
+// (typically the triage router) can persist the item immediately afterward
+// under the same payload id.
 func (s *Store) UpsertTurnPayload(threadID string, turnIndex int, kind string, payload Payload) error {
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -36,8 +48,10 @@ func (s *Store) UpsertTurnPayload(threadID string, turnIndex int, kind string, p
 	}
 	defer tx.Rollback()
 
+	// Preferred path: the latest item already has a payload_id. Replace the
+	// payload row in place keyed by that id.
 	var existingID string
-	lookupErr := tx.QueryRow(
+	lookupLinked := tx.QueryRow(
 		`SELECT payload_id
 		 FROM items
 		 WHERE thread_id = ? AND turn_index = ? AND kind = ? AND payload_id IS NOT NULL
@@ -45,22 +59,52 @@ func (s *Store) UpsertTurnPayload(threadID string, turnIndex int, kind string, p
 		 LIMIT 1`,
 		threadID, turnIndex, kind,
 	).Scan(&existingID)
-	if lookupErr != nil && lookupErr != sql.ErrNoRows {
-		return fmt.Errorf("store: upsert turn payload lookup: %w", lookupErr)
+	if lookupLinked != nil && lookupLinked != sql.ErrNoRows {
+		return fmt.Errorf("store: upsert turn payload lookup linked: %w", lookupLinked)
 	}
 	if existingID != "" {
 		payload.ID = existingID
 	}
 
-	_, err = tx.Exec(
+	if _, err = tx.Exec(
 		`INSERT OR REPLACE INTO payloads (id, kind, meta, data, created_at)
 		 VALUES (?, ?, ?, ?, ?)`,
 		payload.ID, payload.Kind, payload.Meta, payload.Data, payload.CreatedAt,
-	)
-	if err != nil {
+	); err != nil {
 		return fmt.Errorf("store: upsert turn payload: %w", err)
 	}
-	return tx.Commit()
+
+	// Fallback path: we may have just inserted a brand new payload. If there
+	// is an item for this (thread, turn, kind) that still has a NULL
+	// payload_id, link it to the new payload now so it never becomes an
+	// orphan. This is a no-op when the preferred path above already matched.
+	if existingID == "" {
+		var unlinkedItemID string
+		lookupUnlinked := tx.QueryRow(
+			`SELECT id
+			 FROM items
+			 WHERE thread_id = ? AND turn_index = ? AND kind = ? AND payload_id IS NULL
+			 ORDER BY item_index DESC
+			 LIMIT 1`,
+			threadID, turnIndex, kind,
+		).Scan(&unlinkedItemID)
+		if lookupUnlinked != nil && lookupUnlinked != sql.ErrNoRows {
+			return fmt.Errorf("store: upsert turn payload lookup unlinked item: %w", lookupUnlinked)
+		}
+		if unlinkedItemID != "" {
+			if _, err := tx.Exec(
+				`UPDATE items SET payload_id = ? WHERE id = ?`,
+				payload.ID, unlinkedItemID,
+			); err != nil {
+				return fmt.Errorf("store: upsert turn payload link item %s: %w", unlinkedItemID, err)
+			}
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("store: upsert turn payload commit: %w", err)
+	}
+	return nil
 }
 
 func (s *Store) GetPayloadMeta(id string) (PayloadMeta, error) {
