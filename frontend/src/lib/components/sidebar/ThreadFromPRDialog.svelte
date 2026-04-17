@@ -22,6 +22,11 @@
   let error = $state<string | null>(null);
   let dialogEl: HTMLDivElement | undefined = $state(undefined);
   let previousFocus: Element | null = null;
+  // Monotonic counter bumped whenever the dialog opens or closes. Each
+  // submission captures this at start; if the user closes the dialog
+  // before CreateThreadFromPR resolves the counter has moved, so we
+  // don't switch the pane or flash a toast on a dialog they dismissed.
+  let submitGeneration = 0;
 
   // Live validation feedback — computed each render so the "Create" button's
   // disabled state tracks exactly what the submit path would see.
@@ -38,7 +43,14 @@
   );
 
   $effect(() => {
-    if (!open) return;
+    if (!open) {
+      // Dialog was closed; bump so any in-flight submission bails.
+      submitGeneration += 1;
+      return;
+    }
+    // Dialog is opening — bump once so a fresh submission starts in a new
+    // generation window.
+    submitGeneration += 1;
     previousFocus = document.activeElement;
     url = '';
     model = '';
@@ -78,23 +90,40 @@
     submitting = true;
     error = null;
     const effectiveModel = model.trim() || defaultModel;
+    const startGeneration = submitGeneration;
+    const prNumber = parsed.value.number;
     try {
       const ownerRepo = `${parsed.value.owner}/${parsed.value.repo}`;
       const thread = (await CreateThreadFromPR(
         ownerRepo,
-        parsed.value.number,
+        prNumber,
         provider,
         effectiveModel,
       )) as Thread;
+      if (submitGeneration !== startGeneration) {
+        // User closed the dialog before the backend finished. The thread
+        // exists server-side but we must not navigate away or pollute
+        // the already-dismissed dialog's state. Keep them informed with
+        // a non-disruptive toast so they know where the thread went.
+        addToast('info', `Thread from PR #${prNumber} was created in the background`);
+        return;
+      }
       prependThread(thread);
       await pane.switchThread(thread);
-      addToast('success', `Thread created from PR #${parsed.value.number}`);
+      addToast('success', `Thread created from PR #${prNumber}`);
       close();
     } catch (err) {
+      if (submitGeneration !== startGeneration) {
+        // Dialog is gone — don't paint an error onto a dismissed UI.
+        console.error('CreateThreadFromPR failed after dialog dismissed:', err);
+        return;
+      }
       console.error('CreateThreadFromPR failed:', err);
       error = err instanceof Error ? err.message : String(err);
     } finally {
-      submitting = false;
+      if (submitGeneration === startGeneration) {
+        submitting = false;
+      }
     }
   }
 </script>

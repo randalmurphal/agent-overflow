@@ -208,4 +208,96 @@ describe('<ThreadFromPRDialog>', () => {
     expect(binding.mock.calls.length).toBe(1);
     expect(binding.mock.calls[0][1]).toBe(9);
   });
+
+  // Bug C5 regression: the dialog used to navigate + toast + close
+  // unconditionally on CreateThreadFromPR success, even if the user had
+  // already dismissed the dialog while the RPC was in flight. That yanked
+  // the user into a thread they didn't finish confirming. The fix
+  // snapshots a generation counter on submit and bails on mismatch.
+  it('does not switch panes when the dialog closes before CreateThreadFromPR resolves', async () => {
+    const pane = await buildPane();
+    const switchSpy = setBindingMock('SwitchThread', async () => {});
+    const created: Thread = {
+      id: 'late-thread',
+      title: 'PR #42: delayed',
+      provider: 'claude',
+      workspacePath: '',
+      projectPath: '',
+      model: 'claude-sonnet-4-6',
+      interactionMode: 'default',
+      createdAt: 0,
+      updatedAt: 0,
+      archived: false,
+    };
+    let resolveCreate!: (value: Thread) => void;
+    const createPromise = new Promise<Thread>((r) => { resolveCreate = r; });
+    setBindingMock('CreateThreadFromPR', () => createPromise);
+
+    let closed = 0;
+    const { getByTestId, rerender } = render(ThreadFromPRDialog, {
+      props: {
+        open: true,
+        pane,
+        onClose: () => { closed += 1; },
+      },
+    });
+    await flush();
+
+    const input = getByTestId('thread-from-pr-url') as HTMLInputElement;
+    await fireEvent.input(input, { target: { value: 'foo/bar#42' } });
+    await flush();
+    await fireEvent.click(getByTestId('thread-from-pr-submit'));
+    await flush();
+
+    // User dismisses the dialog before the backend answers.
+    await rerender({ open: false, pane, onClose: () => { closed += 1; } });
+    await flush();
+
+    // Now the backend answers — don't navigate, don't call onClose
+    // (dialog is already closed), and don't show a success toast.
+    const before = switchSpy.mock.calls.length;
+    resolveCreate(created);
+    await flush(20);
+
+    // SwitchThread must not have been invoked because the dialog was
+    // dismissed; pane.thread is untouched.
+    expect(switchSpy.mock.calls.length).toBe(before);
+    expect(pane.thread).toBeNull();
+  });
+
+  it('still navigates and closes on the happy path', async () => {
+    // Paired sanity check for the generation logic above — when the user
+    // keeps the dialog open the normal flow must still succeed.
+    const pane = await buildPane();
+    setBindingMock('SwitchThread', async () => {});
+    const created: Thread = {
+      id: 'happy',
+      title: 'PR #1',
+      provider: 'claude',
+      workspacePath: '',
+      projectPath: '',
+      model: 'claude-sonnet-4-6',
+      interactionMode: 'default',
+      createdAt: 0,
+      updatedAt: 0,
+      archived: false,
+    };
+    setBindingMock('CreateThreadFromPR', async () => created);
+    let closed = 0;
+    const { getByTestId } = render(ThreadFromPRDialog, {
+      props: {
+        open: true,
+        pane,
+        onClose: () => { closed += 1; },
+      },
+    });
+    await flush();
+    const input = getByTestId('thread-from-pr-url') as HTMLInputElement;
+    await fireEvent.input(input, { target: { value: 'foo/bar#1' } });
+    await flush();
+    await fireEvent.click(getByTestId('thread-from-pr-submit'));
+    await flush(10);
+    expect(closed).toBe(1);
+    expect(pane.thread?.id).toBe('happy');
+  });
 });
