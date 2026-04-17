@@ -1,12 +1,22 @@
 import { Events } from '@wailsio/runtime';
 import type { ProviderEvent, ApprovalRequest, ContextWindow, RateLimitEntry, TokenUsage, ToolProgressMeta } from '../types/events';
-import type { PayloadMeta } from '../types/models';
+import type { PayloadMeta, Thread } from '../types/models';
 import type { DesignArtifact, DesignChoiceResolved, DesignOptionsRequest } from '../types/design';
 import type { ThreadPane } from './thread.svelte';
 import { getAllPanes } from './panes.svelte';
 import { addToast } from './toast.svelte';
-import { updateThreadTitle, updateThreadModel } from './threads.svelte';
+import { getThreads, updateThreadTitle, updateThreadModel, replaceThread } from './threads.svelte';
 import { RespondToApproval, ApprovalResponse } from './bindings';
+
+/**
+ * Payload for the backend-emitted thread:interaction_mode_changed event. Mirrors
+ * ThreadInteractionModeChangedEvent in app_thread_interaction_mode.go.
+ */
+interface InteractionModeChangedPayload {
+  threadId: string;
+  interactionMode: Thread['interactionMode'];
+  needsReconnect: boolean;
+}
 
 /**
  * Route a provider event to the correct pane mutation.
@@ -231,6 +241,31 @@ export function setupEventListeners(): () => void {
     }
   });
 
+  // thread:interaction_mode_changed — the backend persisted a new mode. We
+  // update the cached thread row (so sidebar badges refresh) and, when the
+  // change landed on an active session, surface a toast prompting the user
+  // to reconnect so the session can pick up the new mode's config.
+  const cancelModeChanged = Events.On('thread:interaction_mode_changed', (ev) => {
+    const payload = ev.data as InteractionModeChangedPayload;
+    if (!payload || !payload.threadId) return;
+    const existing = getThreads().find((t) => t.id === payload.threadId);
+    if (existing) {
+      replaceThread({ ...existing, interactionMode: payload.interactionMode });
+    }
+    for (const pane of getAllPanes().values()) {
+      if (pane.threadId !== payload.threadId) continue;
+      if (pane.thread) {
+        pane.replaceThread({ ...pane.thread, interactionMode: payload.interactionMode });
+      }
+    }
+    if (payload.needsReconnect) {
+      addToast(
+        'warning',
+        `Mode set to ${payload.interactionMode}. Reconnect the session to apply.`,
+      );
+    }
+  });
+
   return () => {
     cancelEvent();
     cancelMeta();
@@ -238,5 +273,6 @@ export function setupEventListeners(): () => void {
     cancelDesignArtifact();
     cancelDesignOptions();
     cancelDesignChosen();
+    cancelModeChanged();
   };
 }

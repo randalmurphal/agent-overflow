@@ -67,6 +67,7 @@ type App struct {
 	generateBranchNameFn  func(store.Thread, string) (string, error)
 	generateThreadTitleFn func(store.Thread, string) (string, error)
 	emitProviderEventFn   func(provider.ProviderEvent)
+	emitEventFn           func(eventName string, data any)
 }
 
 // session wraps a provider session regardless of type.

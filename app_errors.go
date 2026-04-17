@@ -32,6 +32,19 @@ func (a *App) emitProviderEvent(evt provider.ProviderEvent) {
 	}
 }
 
+// emitEvent sends an arbitrary Wails event to the frontend. Prefer this over
+// calling a.app.Event.Emit directly so tests can intercept emissions via
+// emitEventFn without wiring a full Wails application.
+func (a *App) emitEvent(eventName string, data any) {
+	if a.emitEventFn != nil {
+		a.emitEventFn(eventName, data)
+		return
+	}
+	if a.app != nil {
+		a.app.Event.Emit(eventName, data)
+	}
+}
+
 // emitErrorToThread sends a provider error event for the given thread through
 // the triage layer if available, falling back to direct Wails event emission.
 func (a *App) emitErrorToThread(threadID, content string) {

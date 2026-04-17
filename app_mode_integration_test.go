@@ -404,19 +404,27 @@ func TestMode_ConcurrentSetModeRace(t *testing.T) {
 	}
 }
 
-// TestMode_SetModeDuringActiveSession documents the observed behavior when a
-// mode is flipped while a provider session is active.
-//
-// Observed (as of this writing): SetThreadInteractionMode persists the row via
-// UpdateInteractionMode but does NOT signal the active session; the session was
-// started with a previous mode's designSessionConfig captured at startSessionNow.
-// The next StartSession (e.g. ReconnectSession) will pick up the new mode.
-//
-// This test asserts that behavior so a future "live mode switch" feature
-// explicitly breaks this test when the contract changes.
+// TestMode_SetModeDuringActiveSession verifies that flipping the mode during
+// an active provider session:
+//   - persists the new mode to the DB
+//   - leaves the active session map untouched (the running session keeps its
+//     captured-at-startup config; reconnect is required to pick up the new mode)
+//   - emits a thread:interaction_mode_changed event with NeedsReconnect=true
+//     so the frontend can surface the requirement to the user.
 func TestMode_SetModeDuringActiveSession(t *testing.T) {
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
+
+	var capturedEvents []struct {
+		name string
+		data any
+	}
+	app.emitEventFn = func(name string, data any) {
+		capturedEvents = append(capturedEvents, struct {
+			name string
+			data any
+		}{name, data})
+	}
 
 	thread, err := app.CreateThread(string(provider.Claude), "/tmp/ws-active-mode", "claude-sonnet-4-6", "default")
 	if err != nil {
@@ -447,6 +455,78 @@ func TestMode_SetModeDuringActiveSession(t *testing.T) {
 	app.mu.Unlock()
 	if !stillActive {
 		t.Fatal("active session was evicted by SetThreadInteractionMode (unexpected)")
+	}
+
+	// An event must have fired signalling the active session needs reconnect.
+	var modeChange *ThreadInteractionModeChangedEvent
+	for _, e := range capturedEvents {
+		if e.name != "thread:interaction_mode_changed" {
+			continue
+		}
+		evt, ok := e.data.(ThreadInteractionModeChangedEvent)
+		if !ok {
+			t.Fatalf("thread:interaction_mode_changed payload type = %T, want ThreadInteractionModeChangedEvent", e.data)
+		}
+		modeChange = &evt
+	}
+	if modeChange == nil {
+		t.Fatal("thread:interaction_mode_changed event was not emitted during active-session mode change")
+	}
+	if modeChange.ThreadID != thread.ID {
+		t.Fatalf("event ThreadID = %q, want %q", modeChange.ThreadID, thread.ID)
+	}
+	if modeChange.InteractionMode != "plan" {
+		t.Fatalf("event InteractionMode = %q, want plan", modeChange.InteractionMode)
+	}
+	if !modeChange.NeedsReconnect {
+		t.Fatalf("event NeedsReconnect = false, want true (session is active)")
+	}
+}
+
+// TestMode_SetModeWithoutActiveSessionNoReconnect covers the counterpart: when
+// there is no active session, the event is still emitted so the frontend can
+// refresh its cached thread row, but NeedsReconnect is false because nothing
+// is running to be out of sync.
+func TestMode_SetModeWithoutActiveSessionNoReconnect(t *testing.T) {
+	app := newTestAppWithStore(t)
+	app.settings = settings.NewService(t.TempDir())
+
+	var capturedEvents []struct {
+		name string
+		data any
+	}
+	app.emitEventFn = func(name string, data any) {
+		capturedEvents = append(capturedEvents, struct {
+			name string
+			data any
+		}{name, data})
+	}
+
+	thread, err := app.CreateThread(string(provider.Claude), "/tmp/ws-inactive-mode", "claude-sonnet-4-6", "default")
+	if err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+
+	if _, err := app.SetThreadInteractionMode(thread.ID, "plan"); err != nil {
+		t.Fatalf("SetThreadInteractionMode() error = %v", err)
+	}
+
+	var modeChange *ThreadInteractionModeChangedEvent
+	for _, e := range capturedEvents {
+		if e.name != "thread:interaction_mode_changed" {
+			continue
+		}
+		evt, ok := e.data.(ThreadInteractionModeChangedEvent)
+		if !ok {
+			t.Fatalf("thread:interaction_mode_changed payload type = %T", e.data)
+		}
+		modeChange = &evt
+	}
+	if modeChange == nil {
+		t.Fatal("thread:interaction_mode_changed event missing")
+	}
+	if modeChange.NeedsReconnect {
+		t.Fatal("NeedsReconnect = true without an active session")
 	}
 }
 
