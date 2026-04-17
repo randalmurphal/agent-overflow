@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount, onDestroy } from 'svelte';
   import { fade, fly } from 'svelte/transition';
   import { GetGitStatus, GetThread, GitPush, GitPull, GitCreatePR, GitRemoveWorktree } from '../../stores/bindings';
   import type { ThreadPane } from '../../stores/thread.svelte';
@@ -7,6 +8,7 @@
   import type { Thread } from '../../types/models';
   import type { GitActionResult, GitStatus } from '../../types/git';
   import CommitDialog from './CommitDialog.svelte';
+  import ShipChangesDrawer from './ShipChangesDrawer.svelte';
   import ConfirmDialog from '../shared/ConfirmDialog.svelte';
 
   let { pane }: { pane: ThreadPane } = $props();
@@ -15,8 +17,25 @@
   let statusError = $state(false);
   let actionLoading = $state(false);
   let showCommit = $state(false);
+  let showShip = $state(false);
   let showDropdown = $state(false);
   let showRemoveWorktreeConfirm = $state(false);
+
+  // The command palette fires this window event so a keyboard shortcut can
+  // launch the wizard without threading a callback through every parent.
+  function handleOpenShip(): void {
+    if (pane.threadId) showShip = true;
+  }
+
+  onMount(() => {
+    window.addEventListener('agent-overflow:open-ship-changes', handleOpenShip);
+  });
+
+  onDestroy(() => {
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('agent-overflow:open-ship-changes', handleOpenShip);
+    }
+  });
   let menuTriggerEl: HTMLButtonElement | undefined = $state(undefined);
   let menuEl: HTMLDivElement | undefined = $state(undefined);
   let statusLoadGeneration = 0;
@@ -263,6 +282,15 @@
         >
           Create PR
         </button>
+        <div class="border-t border-border my-0.5"></div>
+        <button
+          onclick={() => { showDropdown = false; showShip = true; }}
+          role="menuitem"
+          data-testid="git-actions-ship"
+          class="w-full text-left px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary hover:bg-surface-2/50 active:bg-surface-2/70 cursor-pointer transition-colors"
+        >
+          Ship Changes…
+        </button>
         {#if isWorktree}
           <div class="border-t border-border my-0.5"></div>
           <button
@@ -278,6 +306,12 @@
   </div>
 
   <CommitDialog {pane} open={showCommit} onClose={handleCommitClose} />
+
+  <ShipChangesDrawer
+    {pane}
+    open={showShip}
+    onClose={() => { showShip = false; refreshStatus(); }}
+  />
 
   <ConfirmDialog
     open={showRemoveWorktreeConfirm}

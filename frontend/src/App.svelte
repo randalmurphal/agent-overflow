@@ -114,6 +114,12 @@
         // same pattern as focusThreadSearch above.
         openFromPR?.();
       },
+      openShipChanges: () => {
+        // The Ship Changes drawer lives inside GitActionsControl (deep in
+        // the chat tree). A CustomEvent keeps App.svelte from owning a
+        // reference to a component it never renders.
+        window.dispatchEvent(new CustomEvent('agent-overflow:open-ship-changes'));
+      },
       requestRename: requestRenameForThread,
       requestDiscussion: handleStartDiscussion,
       focusThreadSearch: () => searchFocuser?.(),

@@ -29,6 +29,7 @@ export interface BuiltinCommandHooks {
   openSettings: () => void;
   openThreadForm: () => void;
   openThreadFromPR: () => void;
+  openShipChanges: () => void;
   requestRename: (thread: Thread) => void;
   requestDiscussion: (thread: Thread) => void;
   focusThreadSearch: () => void;
@@ -54,6 +55,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     openSettings,
     openThreadForm,
     openThreadFromPR,
+    openShipChanges,
     requestRename,
     requestDiscussion,
     focusThreadSearch,
@@ -353,6 +355,17 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
         } catch (err) {
           addToast('error', `PR failed: ${err}`);
         }
+      }),
+  });
+
+  registerCommand({
+    id: 'git.ship',
+    label: 'Git: Ship Changes (commit → push → PR)',
+    icon: '⇪',
+    when: 'hasActiveThread',
+    run: (ctx) =>
+      withActiveThread(ctx, pane, () => {
+        openShipChanges();
       }),
   });
 }
