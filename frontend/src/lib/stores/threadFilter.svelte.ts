@@ -22,7 +22,13 @@ export function getIncludeArchived(): boolean {
 }
 
 export function setIncludeArchived(next: boolean): void {
+  if (includeArchived === next) return;
   includeArchived = next;
+  // Selection cannot carry across a visibility-filter change: threads that
+  // were visible at selection time may now be hidden, leaving the
+  // multi-select toolbar counting threads the user can't see. Clearing is
+  // safer than silently acting on hidden rows.
+  selected = new Set();
 }
 
 export function getWorkspaceFilter(): string | null {
@@ -30,7 +36,11 @@ export function getWorkspaceFilter(): string | null {
 }
 
 export function setWorkspaceFilter(next: string | null): void {
+  if (workspaceFilter === next) return;
   workspaceFilter = next;
+  // Same rationale as setIncludeArchived: a workspace filter change can
+  // hide previously-selected threads, so clear the selection.
+  selected = new Set();
 }
 
 export function getSelectedThreadIds(): Set<string> {
