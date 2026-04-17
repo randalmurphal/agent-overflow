@@ -187,6 +187,13 @@ func (a *App) ServiceStartup(ctx context.Context, options application.ServiceOpt
 	return nil
 }
 
+// sessionShutdownTimeout caps how long ServiceShutdown will wait for every
+// provider session to close in parallel before giving up and moving on to
+// the rest of the teardown. Sessions that don't finish in time get
+// abandoned — the Wails process is going away regardless, so the
+// underlying subprocesses will be reaped by the OS.
+const sessionShutdownTimeout = 5 * time.Second
+
 // ServiceShutdown is called by Wails v3 when the service is torn down.
 func (a *App) ServiceShutdown() error {
 	a.mu.Lock()
@@ -197,22 +204,7 @@ func (a *App) ServiceShutdown() error {
 	a.sessions = make(map[string]session)
 	a.mu.Unlock()
 
-	var errs []error
-	for threadID, s := range sessions {
-		a.teardownDesignThread(threadID)
-		if s.claude != nil {
-			errs = appendError(errs, wrapLifecycleError(
-				fmt.Sprintf("close claude session for thread %s", threadID),
-				s.claude.Close(),
-			))
-		}
-		if s.codex != nil {
-			errs = appendError(errs, wrapLifecycleError(
-				fmt.Sprintf("close codex session for thread %s", threadID),
-				s.codex.Close(),
-			))
-		}
-	}
+	errs := closeSessionsParallel(a, sessions, sessionShutdownTimeout)
 	if a.terminals != nil {
 		errs = appendError(errs, wrapLifecycleError("close terminal sessions", a.terminals.Shutdown()))
 	}
@@ -236,6 +228,98 @@ func (a *App) ServiceShutdown() error {
 		errs = appendError(errs, wrapLifecycleError("close design MCP server", a.designMCP.Close()))
 	}
 	return errors.Join(errs...)
+}
+
+// closeSessionsParallel closes every session concurrently, bounded by the
+// given timeout. Any session whose Close does not return in time is
+// abandoned — the teardown emits a timeout error for it and moves on.
+// Design-thread teardown runs synchronously in the goroutine that closed
+// the session so each thread's state is cleaned up independently.
+func closeSessionsParallel(a *App, sessions map[string]session, timeout time.Duration) []error {
+	if len(sessions) == 0 {
+		return nil
+	}
+	closers := make([]threadCloser, 0, len(sessions))
+	for threadID, s := range sessions {
+		closers = append(closers, sessionThreadCloser(a, threadID, s))
+	}
+	return runParallelClosers(closers, timeout)
+}
+
+// threadCloser is a single Close operation that runParallelClosers fires
+// off in its own goroutine. The label is used to build a meaningful
+// error message if Close fails or times out.
+type threadCloser struct {
+	label string
+	close func() error
+}
+
+// sessionThreadCloser bundles the design teardown + provider Close for
+// a single thread into one threadCloser so both run under the same
+// parallel timeout.
+func sessionThreadCloser(a *App, threadID string, s session) threadCloser {
+	label := fmt.Sprintf("session for thread %s", threadID)
+	return threadCloser{
+		label: label,
+		close: func() error {
+			a.teardownDesignThread(threadID)
+			if s.claude != nil {
+				if err := s.claude.Close(); err != nil {
+					return fmt.Errorf("close claude: %w", err)
+				}
+			}
+			if s.codex != nil {
+				if err := s.codex.Close(); err != nil {
+					return fmt.Errorf("close codex: %w", err)
+				}
+			}
+			return nil
+		},
+	}
+}
+
+// runParallelClosers invokes every closer concurrently and collects their
+// errors, enforcing a single wall-clock timeout across the whole set.
+// Closers that do not finish in time are abandoned and reported as
+// timeout errors.
+func runParallelClosers(closers []threadCloser, timeout time.Duration) []error {
+	if len(closers) == 0 {
+		return nil
+	}
+	type result struct {
+		label string
+		err   error
+	}
+	results := make(chan result, len(closers))
+	for _, c := range closers {
+		go func(c threadCloser) {
+			results <- result{c.label, c.close()}
+		}(c)
+	}
+
+	var errs []error
+	remaining := len(closers)
+	deadline := time.After(timeout)
+	pending := make(map[string]struct{}, len(closers))
+	for _, c := range closers {
+		pending[c.label] = struct{}{}
+	}
+	for remaining > 0 {
+		select {
+		case r := <-results:
+			remaining--
+			delete(pending, r.label)
+			if r.err != nil {
+				errs = appendError(errs, wrapLifecycleError("close "+r.label, r.err))
+			}
+		case <-deadline:
+			for label := range pending {
+				errs = appendError(errs, fmt.Errorf("close %s: did not finish within %s", label, timeout))
+			}
+			return errs
+		}
+	}
+	return errs
 }
 
 // emitWithReplay returns an event emitter that both pushes to the Wails
