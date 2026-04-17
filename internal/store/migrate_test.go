@@ -660,6 +660,45 @@ func TestInteractionModeCheckConstraintRejectsBogusValue(t *testing.T) {
 	}
 }
 
+// TestProviderCheckConstraintRejectsBogusValue is a belt-and-braces
+// guard on the original provider constraint declared in v1. v11
+// rebuilds the threads table; we verify the CHECK survived by
+// inserting a bogus provider value and expecting a constraint
+// failure. If a future migration silently drops the constraint, this
+// test catches it before users do.
+func TestProviderCheckConstraintRejectsBogusValue(t *testing.T) {
+	s := newTestStore(t)
+
+	_, err := s.db.Exec(`
+		INSERT INTO threads (id, title, provider, workspace_path, model,
+			created_at, updated_at, archived, interaction_mode, project_path)
+		VALUES ('t-bogus-prov', 'Bogus', 'xyz', '/tmp', '', 1, 1, 0, 'default', '/tmp')
+	`)
+	if err == nil {
+		t.Fatal("INSERT with provider='xyz' must violate CHECK constraint")
+	}
+	if !strings.Contains(err.Error(), "CHECK") && !strings.Contains(err.Error(), "constraint") {
+		t.Errorf("error = %v, want CHECK constraint violation", err)
+	}
+
+	// Sanity: both allowed values succeed.
+	for _, p := range []string{"claude", "codex"} {
+		if _, err := s.db.Exec(`
+			INSERT INTO threads (id, title, provider, workspace_path, model,
+				created_at, updated_at, archived, interaction_mode, project_path)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, "t-ok-"+p, "Ok", p, "/tmp", "", 1, 1, 0, "default", "/tmp"); err != nil {
+			t.Errorf("INSERT with provider=%q: %v", p, err)
+		}
+	}
+
+	// UPDATE to a bogus value must also fail.
+	_, err = s.db.Exec(`UPDATE threads SET provider = 'nope' WHERE id = 't-ok-claude'`)
+	if err == nil {
+		t.Error("UPDATE to bogus provider must fail")
+	}
+}
+
 // TestInteractionModeMigrationNormalizesBadRows simulates an upgrade
 // from v10 (no CHECK) with a pre-existing row whose interaction_mode
 // is invalid. The migration must not abort — instead it normalises
