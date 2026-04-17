@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { ArchiveThread, CreateThread, DeleteThread, StartSession, StopSession, GitCreateWorktree, GetThread } from '../../stores/bindings';
+  import { ArchiveThread, CreateThread, DeleteThread, StartSession, StopSession, GitCreateWorktree, GetThread, StartDiscussion } from '../../stores/bindings';
   import { getSettings, loadSettings } from '../../stores/settings.svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { prependThread, getThreads, removeThread } from '../../stores/threads.svelte';
@@ -16,6 +16,7 @@
     setThreadFilterQuery,
     setWorkspaceFilter,
   } from '../../stores/threadFilter.svelte';
+  import DiscussionDefinitionPicker from '../composer/DiscussionDefinitionPicker.svelte';
   import ProviderPicker from '../composer/ProviderPicker.svelte';
   import ToggleSwitch from '../shared/ToggleSwitch.svelte';
   import ThreadList from './ThreadList.svelte';
@@ -124,6 +125,10 @@
   let worktreeMode = $state(false);
   let worktreeBranch = $state('');
   let creating = $state(false);
+  // Optional discussion definition. When set, handleCreate also calls
+  // StartDiscussion after the thread is created, promoting it into
+  // discussion mode and spawning participant child threads.
+  let discussionDefinitionName = $state<string | null>(null);
 
   function resetForm() {
     showForm = false;
@@ -133,6 +138,7 @@
     interactionMode = 'default';
     worktreeMode = false;
     worktreeBranch = '';
+    discussionDefinitionName = null;
   }
 
   function openForm() {
@@ -142,6 +148,7 @@
     interactionMode = 'default';
     worktreeMode = false;
     worktreeBranch = '';
+    discussionDefinitionName = null;
     showForm = true;
   }
 
@@ -151,7 +158,11 @@
     creating = true;
     try {
       const effectiveModel = model.trim() || defaultModel;
-      let thread = await CreateThread(provider, workspacePath.trim(), effectiveModel, interactionMode) as Thread;
+      // Discussion parent threads bypass the chosen interaction mode — the
+      // backend promotes them into "discussion" mode when StartDiscussion
+      // runs, so forcing "default" up front avoids user confusion.
+      const effectiveMode = discussionDefinitionName ? 'default' : interactionMode;
+      let thread = await CreateThread(provider, workspacePath.trim(), effectiveModel, effectiveMode) as Thread;
 
       if (worktreeMode) {
         try {
@@ -161,6 +172,22 @@
         } catch (err) {
           console.error('Failed to create worktree:', err);
           pane.setError(`Failed to create worktree: ${err}`);
+        }
+      }
+
+      // Promote to discussion BEFORE starting the session / switching the
+      // pane so the initial pane load sees the final shape (with
+      // discussionId + interactionMode="discussion" populated).
+      if (discussionDefinitionName) {
+        try {
+          await StartDiscussion(thread.id, discussionDefinitionName);
+          thread = await GetThread(thread.id) as Thread;
+          addToast('info', `Started discussion "${discussionDefinitionName}"`);
+        } catch (err) {
+          console.error('Failed to start discussion:', err);
+          pane.setError(`Failed to start discussion: ${err}`);
+          // The thread exists either way; let the user keep it as a
+          // regular thread rather than rolling it back.
         }
       }
 
@@ -214,6 +241,11 @@
           value={workspacePath}
           onSelect={(path) => workspacePath = path}
           recentWorkspaces={getSettings().recentWorkspaces}
+        />
+        <DiscussionDefinitionPicker
+          selectedName={discussionDefinitionName}
+          projectPath={workspacePath}
+          onSelect={(name) => discussionDefinitionName = name}
         />
         <input
           type="text"
@@ -273,7 +305,11 @@
             disabled={!workspacePath.trim() || creating}
             class="flex-1 rounded-xl bg-accent px-3 py-2 text-xs font-semibold text-surface-0 shadow-[0_12px_24px_-18px_var(--accent)] hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
           >
-            {creating ? 'Creating...' : 'Create'}
+            {creating
+              ? 'Creating...'
+              : discussionDefinitionName
+                ? 'Create discussion thread'
+                : 'Create'}
           </button>
           <button
             type="button"

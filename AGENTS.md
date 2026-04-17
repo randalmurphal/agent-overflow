@@ -114,3 +114,12 @@ them without a scope conversation first.
 - **Auto-updater wiring.** Wails v3 ships a built-in updater
   (https://v3alpha.wails.io/guides/distribution/auto-updates/); enable
   it when we're ready to distribute. No custom updater required.
+- **Correction-needed / mid-turn correction flow.** Forge has this as
+  a workflow/gate mechanic (`thread.correct` command, guidance channel
+  projection, `correction-needed` interactive-request kind). Both are
+  tightly coupled to workflows — which we've also deferred — and
+  neither maps to a Codex or Claude wire-level event. t3-code (the
+  reference UX we most closely track) doesn't implement either.
+  Revisit only if workflows land. If a "let me course-correct
+  mid-turn" primitive is wanted independently, it becomes its own
+  feature, not forge parity.
