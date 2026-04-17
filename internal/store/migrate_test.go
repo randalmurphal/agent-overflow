@@ -63,8 +63,8 @@ func TestMigrationVersionTracking(t *testing.T) {
 		t.Fatalf("rows err: %v", err)
 	}
 
-	if len(versions) != 7 {
-		t.Fatalf("expected 7 migration versions, got %d", len(versions))
+	if len(versions) != 8 {
+		t.Fatalf("expected 8 migration versions, got %d", len(versions))
 	}
 	if versions[0].version != 1 || versions[0].name != "initial_schema" {
 		t.Errorf("v1: got %d/%s", versions[0].version, versions[0].name)
@@ -87,6 +87,9 @@ func TestMigrationVersionTracking(t *testing.T) {
 	if versions[6].version != 7 || versions[6].name != "thread_checkpoints" {
 		t.Errorf("v7: got %d/%s", versions[6].version, versions[6].name)
 	}
+	if versions[7].version != 8 || versions[7].name != "thread_checkpoints_unique_thread_turn" {
+		t.Errorf("v8: got %d/%s", versions[7].version, versions[7].name)
+	}
 }
 
 func TestMigrationIdempotent(t *testing.T) {
@@ -106,8 +109,8 @@ func TestMigrationIdempotent(t *testing.T) {
 	if err := db.QueryRow("SELECT COUNT(*) FROM migration_versions").Scan(&count); err != nil {
 		t.Fatalf("count: %v", err)
 	}
-	if count != 7 {
-		t.Errorf("expected 7 version rows after idempotent re-run, got %d", count)
+	if count != 8 {
+		t.Errorf("expected 8 version rows after idempotent re-run, got %d", count)
 	}
 }
 
@@ -144,8 +147,8 @@ func TestMigrationExistingVersionedDBSkipsAppliedV1(t *testing.T) {
 	if err := db.QueryRow("SELECT COUNT(*) FROM migration_versions").Scan(&appliedVersions); err != nil {
 		t.Fatalf("count migration rows: %v", err)
 	}
-	if appliedVersions != 7 {
-		t.Fatalf("expected 7 applied migrations, got %d", appliedVersions)
+	if appliedVersions != 8 {
+		t.Fatalf("expected 8 applied migrations, got %d", appliedVersions)
 	}
 }
 
@@ -185,10 +188,10 @@ func TestMigrationExistingLegacyDBSeedsTrackingAndAppliesV2(t *testing.T) {
 		t.Fatalf("read migration rows: %v", err)
 	}
 
-	if len(versions) != 7 {
-		t.Fatalf("expected 7 applied migrations, got %d", len(versions))
+	if len(versions) != 8 {
+		t.Fatalf("expected 8 applied migrations, got %d", len(versions))
 	}
-	expected := []int{1, 2, 3, 4, 5, 6, 7}
+	expected := []int{1, 2, 3, 4, 5, 6, 7, 8}
 	for i, want := range expected {
 		if versions[i] != want {
 			t.Fatalf("unexpected migration versions: %v", versions)
@@ -287,10 +290,10 @@ func TestMigrationExistingLegacyParityDBBackfillsVersionHistory(t *testing.T) {
 		t.Fatalf("read migration versions: %v", err)
 	}
 
-	if len(versions) != 7 {
-		t.Fatalf("expected 7 migration rows after legacy backfill + new migrations, got %d", len(versions))
+	if len(versions) != 8 {
+		t.Fatalf("expected 8 migration rows after legacy backfill + new migrations, got %d", len(versions))
 	}
-	expectedVersions := []int{1, 2, 3, 4, 5, 6, 7}
+	expectedVersions := []int{1, 2, 3, 4, 5, 6, 7, 8}
 	for i, want := range expectedVersions {
 		if versions[i].version != want {
 			t.Fatalf("unexpected migration versions: %+v", versions)
@@ -431,7 +434,7 @@ func TestMigrationChannelMessageUniqueness(t *testing.T) {
 	}
 }
 
-func TestMigrationV7ThreadCheckpointsTableAcceptsInserts(t *testing.T) {
+func TestMigrationV8ThreadCheckpointsUniqueThreadTurn(t *testing.T) {
 	s := newTestStore(t)
 
 	// Thread FK must exist before we can insert a checkpoint.
@@ -446,12 +449,19 @@ func TestMigrationV7ThreadCheckpointsTableAcceptsInserts(t *testing.T) {
 		t.Fatalf("insert checkpoint: %v", err)
 	}
 
-	// Duplicate ref_name must violate UNIQUE.
-	_, err := s.db.Exec(`INSERT INTO thread_checkpoints
+	// A different ref_name at the SAME (thread, turn) must violate the new
+	// composite UNIQUE — this is the whole point of v8.
+	if _, err := s.db.Exec(`INSERT INTO thread_checkpoints
 		(id, thread_id, turn_index, ref_name, baseline_sha, captured_at, workspace_path)
-		VALUES ('chk-2', 't1', 1, 'refs/agent-overflow/x/0', '', 1000, '/tmp')`)
-	if err == nil {
-		t.Error("expected unique constraint violation for duplicate ref_name")
+		VALUES ('chk-2', 't1', 0, 'refs/agent-overflow/x/different', '', 2000, '/tmp')`); err == nil {
+		t.Error("expected unique constraint violation for duplicate (thread_id, turn_index)")
+	}
+
+	// A different (thread, turn) pair must still be allowed.
+	if _, err := s.db.Exec(`INSERT INTO thread_checkpoints
+		(id, thread_id, turn_index, ref_name, baseline_sha, captured_at, workspace_path)
+		VALUES ('chk-3', 't1', 1, 'refs/agent-overflow/x/1', '', 2000, '/tmp')`); err != nil {
+		t.Errorf("second turn insert should succeed: %v", err)
 	}
 }
 

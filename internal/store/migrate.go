@@ -181,6 +181,49 @@ CREATE INDEX IF NOT EXISTS idx_thread_checkpoints_thread_turn
 	ON thread_checkpoints(thread_id, turn_index);
 `,
 	},
+	{
+		Version: 8,
+		Name:    "thread_checkpoints_unique_thread_turn",
+		// v7 put UNIQUE on ref_name, which is redundant with the PRIMARY KEY
+		// id and wrong for the semantics we actually want: exactly one
+		// checkpoint row per (thread_id, turn_index). A recapture for the
+		// same turn should replace the row, not coexist with it. SQLite
+		// can't ALTER a column's uniqueness in place, so we rebuild the
+		// table. Collisions on (thread_id, turn_index) are collapsed by
+		// keeping only the most recent capture.
+		SQL: `
+CREATE TABLE thread_checkpoints_v8 (
+	id             TEXT    PRIMARY KEY,
+	thread_id      TEXT    NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+	turn_index     INTEGER NOT NULL,
+	ref_name       TEXT    NOT NULL,
+	baseline_sha   TEXT    NOT NULL DEFAULT '',
+	captured_at    INTEGER NOT NULL,
+	workspace_path TEXT    NOT NULL,
+	UNIQUE(thread_id, turn_index)
+);
+
+INSERT INTO thread_checkpoints_v8
+    (id, thread_id, turn_index, ref_name, baseline_sha, captured_at, workspace_path)
+SELECT c.id, c.thread_id, c.turn_index, c.ref_name, c.baseline_sha,
+       c.captured_at, c.workspace_path
+FROM thread_checkpoints c
+JOIN (
+    SELECT thread_id, turn_index, MAX(captured_at) AS captured_at
+    FROM thread_checkpoints
+    GROUP BY thread_id, turn_index
+) latest
+  ON latest.thread_id  = c.thread_id
+ AND latest.turn_index = c.turn_index
+ AND latest.captured_at = c.captured_at;
+
+DROP TABLE thread_checkpoints;
+ALTER TABLE thread_checkpoints_v8 RENAME TO thread_checkpoints;
+
+CREATE INDEX IF NOT EXISTS idx_thread_checkpoints_thread_turn
+	ON thread_checkpoints(thread_id, turn_index);
+`,
+	},
 }
 
 // runMigrations sets PRAGMAs, creates the version tracking table, and applies

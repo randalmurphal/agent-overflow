@@ -56,13 +56,13 @@ func (s *Store) SaveCheckpoint(c Checkpoint) error {
 }
 
 // GetCheckpoint looks up the checkpoint for (thread, turn). The second return
-// is false when no row exists, and err is nil in that case.
+// is false when no row exists, and err is nil in that case. The schema
+// enforces at most one row per (thread_id, turn_index) via a UNIQUE
+// constraint (migration v8), so this is an exact lookup with no tie-breaker.
 func (s *Store) GetCheckpoint(threadID string, turnIndex int) (Checkpoint, bool, error) {
 	row := s.db.QueryRow(
 		`SELECT `+checkpointColumns+` FROM thread_checkpoints
-		 WHERE thread_id = ? AND turn_index = ?
-		 ORDER BY captured_at DESC
-		 LIMIT 1`,
+		 WHERE thread_id = ? AND turn_index = ?`,
 		threadID, turnIndex,
 	)
 	c, err := scanCheckpoint(row)
