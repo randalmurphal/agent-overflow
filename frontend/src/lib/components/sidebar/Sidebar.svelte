@@ -19,6 +19,7 @@
   import ProviderPicker from '../composer/ProviderPicker.svelte';
   import ToggleSwitch from '../shared/ToggleSwitch.svelte';
   import ThreadList from './ThreadList.svelte';
+  import ThreadFromPRDialog from './ThreadFromPRDialog.svelte';
   import WorkspacePicker from './WorkspacePicker.svelte';
 
   let {
@@ -26,12 +27,15 @@
     onOpenSettings,
     onStartDiscussion,
     registerFocusSearch,
+    registerOpenFromPR,
   }: {
     pane: ThreadPane;
     onOpenSettings?: () => void;
     onStartDiscussion?: (thread: Thread) => void;
     /** Receives a focus callback the palette / keybindings can call. */
     registerFocusSearch?: (focus: () => void) => void;
+    /** Receives a callback that opens the "new thread from PR" dialog. */
+    registerOpenFromPR?: (openFromPR: () => void) => void;
   } = $props();
 
   let searchEl: HTMLInputElement | undefined = $state(undefined);
@@ -96,6 +100,13 @@
   ];
 
   let showForm = $state(false);
+  let showFromPR = $state(false);
+
+  $effect(() => {
+    if (registerOpenFromPR) {
+      registerOpenFromPR(() => { showFromPR = true; });
+    }
+  });
   let provider = $state<'claude' | 'codex'>(getSettings().defaultProvider as 'claude' | 'codex');
   let workspacePath = $state('');
   let defaultModel = $derived(
@@ -267,14 +278,27 @@
         </div>
       </form>
     {:else}
-      <button
-        onclick={openForm}
-        class="w-full rounded-xl bg-accent px-4 py-3 text-sm font-semibold text-surface-0 shadow-[0_12px_24px_-18px_var(--accent)] hover:opacity-90 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:ring-offset-2 focus-visible:ring-offset-surface-1"
-      >
-        + New Thread
-      </button>
+      <div class="flex gap-2">
+        <button
+          onclick={openForm}
+          class="flex-1 rounded-xl bg-accent px-4 py-3 text-sm font-semibold text-surface-0 shadow-[0_12px_24px_-18px_var(--accent)] hover:opacity-90 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:ring-offset-2 focus-visible:ring-offset-surface-1"
+        >
+          + New Thread
+        </button>
+        <button
+          type="button"
+          onclick={() => { showFromPR = true; }}
+          title="Start a thread from a GitHub PR URL"
+          data-testid="sidebar-new-thread-from-pr"
+          class="rounded-xl border border-border/70 bg-surface-0/45 px-3 py-3 text-xs font-semibold text-text-secondary hover:text-text-primary hover:border-text-secondary cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+        >
+          From PR…
+        </button>
+      </div>
     {/if}
   </div>
+
+  <ThreadFromPRDialog open={showFromPR} {pane} onClose={() => { showFromPR = false; }} />
 
   <div class="border-b border-border/60 px-3 py-2 space-y-2">
     <input

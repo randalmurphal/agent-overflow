@@ -780,3 +780,20 @@ export function SetThreadInteractionMode(threadID, mode) {
         return $$createType0($result);
     }));
 }
+
+// ---- Thread-from-PR binding (hand-appended; FNV32a of main.App.CreateThreadFromPR) ----
+
+/**
+ * CreateThreadFromPR creates a new thread seeded with a GitHub PR's metadata
+ * and diff as the first user message. Requires the `gh` CLI on PATH.
+ * @param {string} ownerRepo
+ * @param {number} number
+ * @param {string} providerName
+ * @param {string} model
+ * @returns {$CancellablePromise<store$0.Thread>}
+ */
+export function CreateThreadFromPR(ownerRepo, number, providerName, model) {
+    return $Call.ByID(1716017387, ownerRepo, number, providerName, model).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType0($result);
+    }));
+}

@@ -24,6 +24,7 @@
   let showSettings = $state(false);
   let discussionStartFor = $state<Thread | null>(null);
   let searchFocuser = $state<(() => void) | null>(null);
+  let openFromPR = $state<(() => void) | null>(null);
 
   const pane = getMainPane();
 
@@ -107,6 +108,12 @@
         // this event in a future wave without an API rename here.
         window.dispatchEvent(new CustomEvent('agent-overflow:open-thread-form'));
       },
+      openThreadFromPR: () => {
+        // Sidebar registers a callback that flips its local `showFromPR`
+        // state. The indirection keeps dialog ownership with the sidebar,
+        // same pattern as focusThreadSearch above.
+        openFromPR?.();
+      },
       requestRename: requestRenameForThread,
       requestDiscussion: handleStartDiscussion,
       focusThreadSearch: () => searchFocuser?.(),
@@ -141,6 +148,7 @@
       onOpenSettings={() => showSettings = true}
       onStartDiscussion={handleStartDiscussion}
       registerFocusSearch={(focus) => (searchFocuser = focus)}
+      registerOpenFromPR={(cb) => (openFromPR = cb)}
     />
     <div class="flex-1 flex flex-col min-w-0">
       {#if showSettings}

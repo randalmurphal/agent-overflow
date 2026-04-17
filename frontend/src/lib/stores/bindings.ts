@@ -95,6 +95,9 @@ export {
 
   // Thread interaction mode
   SetThreadInteractionMode,
+
+  // PR-based thread creation
+  CreateThreadFromPR,
 } from '../../../bindings/agent-overflow/app.js';
 
 // Model classes needed for constructing RPC parameters.

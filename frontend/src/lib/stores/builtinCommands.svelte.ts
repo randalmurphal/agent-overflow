@@ -28,6 +28,7 @@ export interface BuiltinCommandHooks {
   pane: ThreadPane;
   openSettings: () => void;
   openThreadForm: () => void;
+  openThreadFromPR: () => void;
   requestRename: (thread: Thread) => void;
   requestDiscussion: (thread: Thread) => void;
   focusThreadSearch: () => void;
@@ -48,7 +49,17 @@ function withActiveThread(
 }
 
 export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
-  const { pane, openSettings, openThreadForm, requestRename, requestDiscussion, focusThreadSearch, requestThreadJump, requestThreadStep } = hooks;
+  const {
+    pane,
+    openSettings,
+    openThreadForm,
+    openThreadFromPR,
+    requestRename,
+    requestDiscussion,
+    focusThreadSearch,
+    requestThreadJump,
+    requestThreadStep,
+  } = hooks;
 
   registerCommand({
     id: 'palette.open',
@@ -70,6 +81,13 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     label: 'Thread: New',
     icon: '+',
     run: () => openThreadForm(),
+  });
+
+  registerCommand({
+    id: 'thread.new.fromPR',
+    label: 'Thread: New from GitHub PR',
+    icon: '⇠',
+    run: () => openThreadFromPR(),
   });
 
   registerCommand({

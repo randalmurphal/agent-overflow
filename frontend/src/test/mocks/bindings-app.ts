@@ -126,3 +126,6 @@ export const ListThreadCheckpoints = dispatch('ListThreadCheckpoints');
 
 // Thread interaction mode
 export const SetThreadInteractionMode = dispatch('SetThreadInteractionMode');
+
+// PR-based thread creation
+export const CreateThreadFromPR = dispatch('CreateThreadFromPR');
