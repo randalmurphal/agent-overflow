@@ -25,6 +25,7 @@ func TestMigrationFreshDB(t *testing.T) {
 	tables := []string{
 		"migration_versions", "threads", "items", "payloads",
 		"channels", "channel_messages", "discussion_definitions", "design_artifacts",
+		"attachments", "thread_drafts",
 	}
 	for _, table := range tables {
 		var name string
@@ -62,8 +63,8 @@ func TestMigrationVersionTracking(t *testing.T) {
 		t.Fatalf("rows err: %v", err)
 	}
 
-	if len(versions) != 4 {
-		t.Fatalf("expected 4 migration versions, got %d", len(versions))
+	if len(versions) != 6 {
+		t.Fatalf("expected 6 migration versions, got %d", len(versions))
 	}
 	if versions[0].version != 1 || versions[0].name != "initial_schema" {
 		t.Errorf("v1: got %d/%s", versions[0].version, versions[0].name)
@@ -76,6 +77,12 @@ func TestMigrationVersionTracking(t *testing.T) {
 	}
 	if versions[3].version != 4 || versions[3].name != "subagent_correlation" {
 		t.Errorf("v4: got %d/%s", versions[3].version, versions[3].name)
+	}
+	if versions[4].version != 5 || versions[4].name != "attachments" {
+		t.Errorf("v5: got %d/%s", versions[4].version, versions[4].name)
+	}
+	if versions[5].version != 6 || versions[5].name != "thread_drafts" {
+		t.Errorf("v6: got %d/%s", versions[5].version, versions[5].name)
 	}
 }
 
@@ -91,13 +98,13 @@ func TestMigrationIdempotent(t *testing.T) {
 		t.Fatalf("second migration run: %v", err)
 	}
 
-	// Verify only 4 version rows (not duplicated).
+	// Verify no duplicate version rows.
 	var count int
 	if err := db.QueryRow("SELECT COUNT(*) FROM migration_versions").Scan(&count); err != nil {
 		t.Fatalf("count: %v", err)
 	}
-	if count != 4 {
-		t.Errorf("expected 4 version rows after idempotent re-run, got %d", count)
+	if count != 6 {
+		t.Errorf("expected 6 version rows after idempotent re-run, got %d", count)
 	}
 }
 
@@ -134,8 +141,8 @@ func TestMigrationExistingVersionedDBSkipsAppliedV1(t *testing.T) {
 	if err := db.QueryRow("SELECT COUNT(*) FROM migration_versions").Scan(&appliedVersions); err != nil {
 		t.Fatalf("count migration rows: %v", err)
 	}
-	if appliedVersions != 4 {
-		t.Fatalf("expected 4 applied migrations, got %d", appliedVersions)
+	if appliedVersions != 6 {
+		t.Fatalf("expected 6 applied migrations, got %d", appliedVersions)
 	}
 }
 
@@ -175,11 +182,14 @@ func TestMigrationExistingLegacyDBSeedsTrackingAndAppliesV2(t *testing.T) {
 		t.Fatalf("read migration rows: %v", err)
 	}
 
-	if len(versions) != 4 {
-		t.Fatalf("expected 4 applied migrations, got %d", len(versions))
+	if len(versions) != 6 {
+		t.Fatalf("expected 6 applied migrations, got %d", len(versions))
 	}
-	if versions[0] != 1 || versions[1] != 2 || versions[2] != 3 || versions[3] != 4 {
-		t.Fatalf("unexpected migration versions: %v", versions)
+	expected := []int{1, 2, 3, 4, 5, 6}
+	for i, want := range expected {
+		if versions[i] != want {
+			t.Fatalf("unexpected migration versions: %v", versions)
+		}
 	}
 
 	var threadCount int
@@ -274,11 +284,14 @@ func TestMigrationExistingLegacyParityDBBackfillsVersionHistory(t *testing.T) {
 		t.Fatalf("read migration versions: %v", err)
 	}
 
-	if len(versions) != 4 {
-		t.Fatalf("expected 4 migration rows after legacy backfill + new migrations, got %d", len(versions))
+	if len(versions) != 6 {
+		t.Fatalf("expected 6 migration rows after legacy backfill + new migrations, got %d", len(versions))
 	}
-	if versions[0].version != 1 || versions[1].version != 2 || versions[2].version != 3 || versions[3].version != 4 {
-		t.Fatalf("unexpected migration versions: %+v", versions)
+	expectedVersions := []int{1, 2, 3, 4, 5, 6}
+	for i, want := range expectedVersions {
+		if versions[i].version != want {
+			t.Fatalf("unexpected migration versions: %+v", versions)
+		}
 	}
 
 	var count int

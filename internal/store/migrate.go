@@ -135,6 +135,35 @@ ALTER TABLE items ADD COLUMN parent_tool_use_id TEXT NOT NULL DEFAULT '';
 CREATE INDEX IF NOT EXISTS idx_items_parent_tool_use ON items(thread_id, parent_tool_use_id) WHERE parent_tool_use_id <> '';
 `,
 	},
+	{
+		Version: 5,
+		Name:    "attachments",
+		SQL: `
+CREATE TABLE IF NOT EXISTS attachments (
+	id            TEXT    PRIMARY KEY,
+	thread_id     TEXT    NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+	filename      TEXT    NOT NULL,
+	mime_type     TEXT    NOT NULL,
+	size          INTEGER NOT NULL,
+	relative_path TEXT    NOT NULL,
+	created_at    INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_attachments_thread ON attachments(thread_id);
+`,
+	},
+	{
+		Version: 6,
+		Name:    "thread_drafts",
+		SQL: `
+CREATE TABLE IF NOT EXISTS thread_drafts (
+	thread_id      TEXT    PRIMARY KEY REFERENCES threads(id) ON DELETE CASCADE,
+	content        TEXT    NOT NULL DEFAULT '',
+	attachments    TEXT    NOT NULL DEFAULT '[]',
+	terminal_chips TEXT    NOT NULL DEFAULT '[]',
+	updated_at     INTEGER NOT NULL
+);
+`,
+	},
 }
 
 // runMigrations sets PRAGMAs, creates the version tracking table, and applies
