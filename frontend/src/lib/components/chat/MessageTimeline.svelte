@@ -3,6 +3,7 @@
   import type { ThreadPane } from '../../stores/thread.svelte';
   import type { ChangedFile, CommandOutputMeta, DiffMeta, Item, ProposedPlanMeta, ToolResultMeta, WorkEntryData } from '../../types/models';
   import { groupItemsBySubagent, type TimelineNode } from '../../utils/subagentGrouping';
+  import ActiveToolsGroup from './ActiveToolsGroup.svelte';
   import AssistantMessage from './AssistantMessage.svelte';
   import ChangedFilesTree from './ChangedFilesTree.svelte';
   import CommandOutput from './CommandOutput.svelte';
@@ -13,7 +14,6 @@
   import ThinkingBlock from './ThinkingBlock.svelte';
   import ToolResultCard from './ToolResultCard.svelte';
   import UserMessage from './UserMessage.svelte';
-  import WorkEntry from './WorkEntry.svelte';
 
   let { pane }: { pane: ThreadPane } = $props();
 
@@ -221,11 +221,7 @@
     {/if}
 
     {#if activeToolEntries.length > 0}
-      <div class="mb-3 flex flex-col gap-1" role="group" aria-label="Active tool calls">
-        {#each activeToolEntries as entry (entry.id)}
-          <WorkEntry {entry} />
-        {/each}
-      </div>
+      <ActiveToolsGroup entries={activeToolEntries} />
     {/if}
 
     {#if pane.streamingContent}

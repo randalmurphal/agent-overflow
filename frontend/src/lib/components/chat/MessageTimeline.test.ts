@@ -149,6 +149,28 @@ describe('<MessageTimeline>', () => {
     expect(getByRole('group', { name: /Active tool calls/i })).toBeInTheDocument();
   });
 
+  it('collapses 2+ concurrent tool calls into a work-group chip', async () => {
+    const pane = await buildPane();
+    pane.addToolCall('tool-1', { toolName: 'Read' });
+    pane.addToolCall('tool-2', { toolName: 'Grep' });
+    pane.addToolCall('tool-3', { toolName: 'Bash' });
+    const { getByTestId, queryByTestId } = render(MessageTimeline, { props: { pane } });
+    const chip = getByTestId('active-tools-chip');
+    expect(chip.textContent ?? '').toMatch(/Running 3 tools/);
+    expect(queryByTestId('active-tools-children')).toBeNull();
+  });
+
+  it('auto-expands the work group when tools finish and size drops', async () => {
+    const pane = await buildPane();
+    pane.addToolCall('tool-1', { toolName: 'Read' });
+    pane.addToolCall('tool-2', { toolName: 'Grep' });
+    const { queryByTestId } = render(MessageTimeline, { props: { pane } });
+    expect(queryByTestId('active-tools-chip')).not.toBeNull();
+    pane.completeToolCall('tool-2');
+    await Promise.resolve();
+    expect(queryByTestId('active-tools-chip')).toBeNull();
+  });
+
   it('golden-path: user message -> streaming assistant -> turn complete', async () => {
     // Start with a user message persisted in the DB-backed list.
     const pane = await buildPane([
