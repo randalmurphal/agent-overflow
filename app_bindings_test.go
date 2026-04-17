@@ -77,7 +77,7 @@ func TestGetModelsForProvider(t *testing.T) {
 func TestCreateThreadDefaultsInteractionMode(t *testing.T) {
 	app := newTestAppWithStore(t)
 
-	thread, err := app.CreateThread(string(provider.Codex), "/tmp/workspace", "gpt-5.4")
+	thread, err := app.CreateThread(string(provider.Codex), "/tmp/workspace", "gpt-5.4", "")
 	if err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
@@ -105,7 +105,7 @@ func TestCreateThreadDetectsGitProjectPath(t *testing.T) {
 		t.Fatalf("MkdirAll() error = %v", err)
 	}
 
-	thread, err := app.CreateThread(string(provider.Codex), workspace, "gpt-5.4")
+	thread, err := app.CreateThread(string(provider.Codex), workspace, "gpt-5.4", "")
 	if err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
@@ -131,7 +131,7 @@ func TestCreateThreadAddsRecentWorkspace(t *testing.T) {
 		t.Fatalf("MkdirAll() error = %v", err)
 	}
 
-	if _, err := app.CreateThread(string(provider.Codex), workspace, "gpt-5.4"); err != nil {
+	if _, err := app.CreateThread(string(provider.Codex), workspace, "gpt-5.4", ""); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
 

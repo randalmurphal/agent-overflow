@@ -339,6 +339,79 @@ func TestListChildThreadsReturnsOnlyDirectChildren(t *testing.T) {
 	}
 }
 
+func TestUpdateInteractionModePersistsMode(t *testing.T) {
+	s := newTestStore(t)
+
+	thr := makeThread("thread-mode", "claude")
+	thr.InteractionMode = "default"
+	if err := s.CreateThread(thr); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+
+	if err := s.UpdateInteractionMode(thr.ID, "plan"); err != nil {
+		t.Fatalf("UpdateInteractionMode() error = %v", err)
+	}
+
+	got, err := s.GetThread(thr.ID)
+	if err != nil {
+		t.Fatalf("GetThread() error = %v", err)
+	}
+	if got.InteractionMode != "plan" {
+		t.Fatalf("InteractionMode = %q, want plan", got.InteractionMode)
+	}
+}
+
+func TestUpdateInteractionModeNormalizesEmptyToDefault(t *testing.T) {
+	s := newTestStore(t)
+
+	thr := makeThread("thread-mode-empty", "claude")
+	thr.InteractionMode = "plan"
+	if err := s.CreateThread(thr); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+
+	if err := s.UpdateInteractionMode(thr.ID, ""); err != nil {
+		t.Fatalf("UpdateInteractionMode() error = %v", err)
+	}
+
+	got, err := s.GetThread(thr.ID)
+	if err != nil {
+		t.Fatalf("GetThread() error = %v", err)
+	}
+	if got.InteractionMode != "default" {
+		t.Fatalf("InteractionMode = %q, want default (normalized)", got.InteractionMode)
+	}
+}
+
+func TestUpdateInteractionModeReturnsNotFoundForMissing(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.UpdateInteractionMode("nonexistent", "plan"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("UpdateInteractionMode() error = %v, want sql.ErrNoRows", err)
+	}
+}
+
+func TestUpdateInteractionModeBumpsUpdatedAt(t *testing.T) {
+	s := newTestStore(t)
+
+	thr := makeThread("thread-mode-updated-at", "claude")
+	thr.UpdatedAt = time.Now().UnixMilli() - 10_000
+	if err := s.CreateThread(thr); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+
+	if err := s.UpdateInteractionMode(thr.ID, "design"); err != nil {
+		t.Fatalf("UpdateInteractionMode() error = %v", err)
+	}
+
+	got, err := s.GetThread(thr.ID)
+	if err != nil {
+		t.Fatalf("GetThread() error = %v", err)
+	}
+	if got.UpdatedAt <= thr.UpdatedAt {
+		t.Fatalf("UpdatedAt = %d, want > %d (should have been bumped)", got.UpdatedAt, thr.UpdatedAt)
+	}
+}
+
 func TestThreadMutationsReturnNotFoundForMissingRows(t *testing.T) {
 	s := newTestStore(t)
 

@@ -92,6 +92,9 @@ export {
   GetCheckpointToWorktreeDiff,
   RevertToTurn,
   ListThreadCheckpoints,
+
+  // Thread interaction mode
+  SetThreadInteractionMode,
 } from '../../../bindings/agent-overflow/app.js';
 
 // Model classes needed for constructing RPC parameters.

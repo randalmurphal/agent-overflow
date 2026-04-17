@@ -59,10 +59,11 @@ export function CreateDiscussion(def) {
  * @param {string} providerName
  * @param {string} workspacePath
  * @param {string} model
+ * @param {string} interactionMode
  * @returns {$CancellablePromise<store$0.Thread>}
  */
-export function CreateThread(providerName, workspacePath, model) {
-    return $Call.ByID(2579322833, providerName, workspacePath, model).then(/** @type {($result: any) => any} */(($result) => {
+export function CreateThread(providerName, workspacePath, model, interactionMode) {
+    return $Call.ByID(2579322833, providerName, workspacePath, model, interactionMode).then(/** @type {($result: any) => any} */(($result) => {
         return $$createType0($result);
     }));
 }
@@ -760,6 +761,22 @@ export function ListThreadCheckpoints(threadID) {
  */
 export function UnarchiveThread(id) {
     return $Call.ByID(3655125512, id).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType0($result);
+    }));
+}
+
+// ---- Thread interaction mode binding (hand-appended; FNV32a of main.App.SetThreadInteractionMode) ----
+
+/**
+ * SetThreadInteractionMode persists a new interaction mode for a thread and
+ * returns the refreshed row. Rejects modes outside
+ * default/plan/design/discussion with a clear error.
+ * @param {string} threadID
+ * @param {string} mode
+ * @returns {$CancellablePromise<store$0.Thread>}
+ */
+export function SetThreadInteractionMode(threadID, mode) {
+    return $Call.ByID(1283963750, threadID, mode).then(/** @type {($result: any) => any} */(($result) => {
         return $$createType0($result);
     }));
 }

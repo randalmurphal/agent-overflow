@@ -7,6 +7,7 @@
   import Composer from '../composer/Composer.svelte';
   import StatusBar from '../shared/StatusBar.svelte';
   import ProviderStatusBanner from './ProviderStatusBanner.svelte';
+  import InteractionModeBadge from './InteractionModeBadge.svelte';
   import BranchToolbar from '../git/BranchToolbar.svelte';
   import GitActionsControl from '../git/GitActionsControl.svelte';
   import ContextWindowMeter from './ContextWindowMeter.svelte';
@@ -75,9 +76,7 @@
           {pane.thread.provider === 'claude' ? 'C' : 'X'}
         </span>
         <h2 class="text-sm font-medium text-text-primary truncate">{pane.thread.title}</h2>
-        {#if inDesignMode}
-          <span class="text-[10px] font-bold px-1 py-0.5 rounded bg-provider-codex/15 text-provider-codex/90" title="Design mode" aria-label="Design mode">DESIGN</span>
-        {/if}
+        <InteractionModeBadge {pane} />
         <ModelPicker {pane} />
         <BranchToolbar {pane} />
         <GitActionsControl {pane} />

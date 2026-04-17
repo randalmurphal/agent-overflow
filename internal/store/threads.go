@@ -186,6 +186,19 @@ func (s *Store) UpdateModel(threadID, model string) error {
 	return requireRowsAffected(result, fmt.Sprintf("store: update model for %s", threadID))
 }
 
+// UpdateInteractionMode overwrites the thread's interaction mode (default, plan,
+// design, or discussion). Caller is expected to validate the mode; this method
+// only normalizes empty strings to "default" to match CreateThread/UpdateThread.
+func (s *Store) UpdateInteractionMode(threadID, mode string) error {
+	mode = normalizeInteractionMode(mode)
+	result, err := s.db.Exec(`UPDATE threads SET interaction_mode = ?, updated_at = ? WHERE id = ?`,
+		mode, nowMillis(), threadID)
+	if err != nil {
+		return fmt.Errorf("store: update interaction mode for %s: %w", threadID, err)
+	}
+	return requireRowsAffected(result, fmt.Sprintf("store: update interaction mode for %s", threadID))
+}
+
 func normalizeInteractionMode(mode string) string {
 	if mode == "" {
 		return "default"

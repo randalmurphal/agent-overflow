@@ -123,3 +123,6 @@ export const GetTurnDiff = dispatch('GetTurnDiff');
 export const GetCheckpointToWorktreeDiff = dispatch('GetCheckpointToWorktreeDiff');
 export const RevertToTurn = dispatch('RevertToTurn');
 export const ListThreadCheckpoints = dispatch('ListThreadCheckpoints');
+
+// Thread interaction mode
+export const SetThreadInteractionMode = dispatch('SetThreadInteractionMode');

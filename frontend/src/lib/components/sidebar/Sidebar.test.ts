@@ -119,4 +119,71 @@ describe('<Sidebar>', () => {
     // Two archives issued.
     expect(archive).toHaveBeenCalledTimes(2);
   });
+
+  async function openNewThreadForm() {
+    await seedThreads([]);
+    // The form's ProviderPicker queries provider statuses on mount — mock it.
+    setBindingMock('GetProviderStatuses', async () => []);
+    const pane = createThreadPane();
+    const rendered = render(Sidebar, { props: { pane } });
+    await fireEvent.click(rendered.getByText('+ New Thread'));
+    for (let i = 0; i < 5; i += 1) await tick();
+    return { pane, ...rendered };
+  }
+
+  it('new-thread form exposes an interaction-mode picker with Default selected initially', async () => {
+    const { getByTestId } = await openNewThreadForm();
+
+    const picker = getByTestId('new-thread-mode-picker');
+    expect(picker).toBeInTheDocument();
+    expect(getByTestId('new-thread-mode-default').getAttribute('aria-checked')).toBe('true');
+    expect(getByTestId('new-thread-mode-plan').getAttribute('aria-checked')).toBe('false');
+    expect(getByTestId('new-thread-mode-design').getAttribute('aria-checked')).toBe('false');
+  });
+
+  it('clicking a mode option in the picker flips aria-checked', async () => {
+    const { getByTestId } = await openNewThreadForm();
+
+    await fireEvent.click(getByTestId('new-thread-mode-plan'));
+    await tick();
+
+    expect(getByTestId('new-thread-mode-plan').getAttribute('aria-checked')).toBe('true');
+    expect(getByTestId('new-thread-mode-default').getAttribute('aria-checked')).toBe('false');
+  });
+
+  it('CreateThread receives the chosen interaction mode', async () => {
+    const createMock = vi.fn(async (_provider: unknown, _ws: unknown, _model: unknown, mode: unknown) => ({
+      id: 'created-thread',
+      title: 'New Thread',
+      provider: 'claude',
+      workspacePath: '/tmp/ws',
+      projectPath: '/tmp/ws',
+      model: 'claude-sonnet-4-6',
+      interactionMode: mode,
+      createdAt: 0,
+      updatedAt: 0,
+      archived: false,
+    }));
+    setBindingMock('CreateThread', createMock);
+    setBindingMock('StartSession', async () => {});
+    setBindingMock('SwitchThread', async () => {});
+    setBindingMock('ListItems', async () => []);
+    setBindingMock('ListPayloadMetas', async () => []);
+
+    const { getByText, getByTestId } = await openNewThreadForm();
+    // Fill in the workspace path so the form can submit (input labelled
+    // "Workspace path" by WorkspacePicker).
+    const wsInput = document.querySelector<HTMLInputElement>('input[aria-label="Workspace path"]');
+    expect(wsInput).not.toBeNull();
+    await fireEvent.input(wsInput!, { target: { value: '/tmp/ws' } });
+    await fireEvent.click(getByTestId('new-thread-mode-design'));
+    await tick();
+    const createBtn = getByText('Create');
+    await fireEvent.click(createBtn);
+
+    for (let i = 0; i < 10; i += 1) await tick();
+
+    expect(createMock.mock.calls.length).toBeGreaterThan(0);
+    expect(createMock.mock.calls[0][3]).toBe('design');
+  });
 });

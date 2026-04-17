@@ -87,6 +87,14 @@
     );
   }
 
+  type InteractionModeChoice = 'default' | 'plan' | 'design';
+
+  const INTERACTION_MODE_OPTIONS: Array<{ value: InteractionModeChoice; label: string; desc: string }> = [
+    { value: 'default', label: 'Default', desc: 'Normal coding turns' },
+    { value: 'plan', label: 'Plan', desc: 'Propose a plan before acting' },
+    { value: 'design', label: 'Design', desc: 'Interactive design artifacts' },
+  ];
+
   let showForm = $state(false);
   let provider = $state<'claude' | 'codex'>(getSettings().defaultProvider as 'claude' | 'codex');
   let workspacePath = $state('');
@@ -94,6 +102,7 @@
     provider === 'claude' ? getSettings().defaultModelClaude : getSettings().defaultModelCodex
   );
   let model = $state('');
+  let interactionMode = $state<InteractionModeChoice>('default');
   let worktreeMode = $state(false);
   let worktreeBranch = $state('');
   let creating = $state(false);
@@ -103,6 +112,7 @@
     provider = getSettings().defaultProvider as 'claude' | 'codex';
     workspacePath = '';
     model = '';
+    interactionMode = 'default';
     worktreeMode = false;
     worktreeBranch = '';
   }
@@ -111,6 +121,7 @@
     provider = getSettings().defaultProvider as 'claude' | 'codex';
     workspacePath = '';
     model = '';
+    interactionMode = 'default';
     worktreeMode = false;
     worktreeBranch = '';
     showForm = true;
@@ -122,7 +133,7 @@
     creating = true;
     try {
       const effectiveModel = model.trim() || defaultModel;
-      let thread = await CreateThread(provider, workspacePath.trim(), effectiveModel) as Thread;
+      let thread = await CreateThread(provider, workspacePath.trim(), effectiveModel, interactionMode) as Thread;
 
       if (worktreeMode) {
         try {
@@ -193,6 +204,28 @@
           aria-label="Model"
           class="w-full text-xs rounded-xl border border-border bg-surface-0 px-3 py-2 text-text-primary placeholder:text-text-secondary/50 shadow-sm focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/50 transition-colors"
         />
+        <div class="space-y-1.5" data-testid="new-thread-mode-picker">
+          <span class="text-[11px] font-semibold uppercase tracking-[0.22em] text-text-secondary/70">Mode</span>
+          <div class="flex gap-1.5" role="radiogroup" aria-label="Interaction mode">
+            {#each INTERACTION_MODE_OPTIONS as opt (opt.value)}
+              <button
+                type="button"
+                role="radio"
+                aria-checked={interactionMode === opt.value}
+                aria-label={`${opt.label}: ${opt.desc}`}
+                title={opt.desc}
+                onclick={() => { interactionMode = opt.value; }}
+                data-testid={`new-thread-mode-${opt.value}`}
+                class="flex-1 rounded-xl border px-2 py-1.5 text-xs cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50
+                  {interactionMode === opt.value
+                    ? 'border-accent bg-accent/10 text-text-primary font-medium'
+                    : 'border-border/60 bg-surface-0/55 text-text-secondary hover:text-text-primary'}"
+              >
+                {opt.label}
+              </button>
+            {/each}
+          </div>
+        </div>
         <div class="flex items-center justify-between gap-3 rounded-2xl border border-border/55 bg-surface-0/55 px-3 py-2.5">
           <div>
             <p class="text-xs font-medium text-text-primary">Worktree mode</p>

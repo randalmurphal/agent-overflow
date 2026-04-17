@@ -265,7 +265,16 @@ func (a *App) emitWithReplay() func(string, any) {
 
 // --- Thread operations ---
 
-func (a *App) CreateThread(providerName string, workspacePath string, model string) (store.Thread, error) {
+// CreateThread persists a new thread for the given provider + workspace combo.
+// `interactionMode` may be empty (normalized to "default") or one of
+// "default" / "plan" / "design". "discussion" is reserved for threads created
+// via StartDiscussion and is rejected here to prevent UI code from accidentally
+// spawning orphan discussion threads without a deliberation channel.
+func (a *App) CreateThread(providerName string, workspacePath string, model string, interactionMode string) (store.Thread, error) {
+	mode, err := validateCreateThreadMode(interactionMode)
+	if err != nil {
+		return store.Thread{}, err
+	}
 	now := time.Now().UnixMilli()
 	projectPath := a.detectProjectPath(workspacePath)
 	t := store.Thread{
@@ -275,7 +284,7 @@ func (a *App) CreateThread(providerName string, workspacePath string, model stri
 		WorkspacePath:   workspacePath,
 		ProjectPath:     projectPath,
 		Model:           model,
-		InteractionMode: "default",
+		InteractionMode: mode,
 		CreatedAt:       now,
 		UpdatedAt:       now,
 	}
