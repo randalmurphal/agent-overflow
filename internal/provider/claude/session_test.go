@@ -1359,6 +1359,110 @@ func newTestClaudeSessionWithApprovalTimeout(t *testing.T, timeout time.Duration
 	return s, eventCh
 }
 
+// TestExitPlanModeWriteFailureClosesSession exercises Bug B7: when the
+// synthetic deny-control_response can't be written (stdin closed, pipe
+// broken, subprocess gone), the old readLoop just logged and kept
+// going — leaving the subprocess hung waiting for a reply. The fix
+// treats the write failure as a session-fatal error: readLoop closes
+// the subprocess, emits EventError, and reaches the disconnected
+// terminal state.
+func TestExitPlanModeWriteFailureClosesSession(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// `true` exits immediately, taking the stdin pipe with it. We feed
+	// the ExitPlanMode control_request through readLoop via WriteLine
+	// before the subprocess has exited — but by the time the handler
+	// tries to write the deny response, stdin is closed and the write
+	// fails with broken pipe.
+	proc, err := provider.Spawn(ctx, provider.SpawnConfig{
+		Binary: "sh",
+		// Print the plan request once, then exit so stdin is closed
+		// when the session tries to respond.
+		Args: []string{"-c", `printf '{"type":"control_request","request_id":"plan-1","request":{"subtype":"can_use_tool","tool_name":"ExitPlanMode","input":{"plan":"# plan"}}}\n'; exit 0`},
+	})
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+	defer proc.Kill()
+
+	eventCh := make(chan provider.ProviderEvent, 100)
+	s := &Session{
+		proc:     proc,
+		threadID: testThread,
+		onEvent: func(evt provider.ProviderEvent) {
+			eventCh <- evt
+		},
+		cancel:   cancel,
+		readDone: make(chan struct{}),
+	}
+	go s.readLoop()
+
+	// Expect: EventProposedPlan fires (read from subprocess line),
+	// then the write fails (subprocess already exited), then an
+	// EventError describing the failure, then disconnected.
+	var gotPlan, gotWriteErr, gotDisconnected bool
+	deadline := time.After(5 * time.Second)
+	for !(gotPlan && gotWriteErr && gotDisconnected) {
+		select {
+		case evt := <-eventCh:
+			switch {
+			case evt.Kind == provider.EventProposedPlan:
+				gotPlan = true
+			case evt.Kind == provider.EventError &&
+				(strings.Contains(evt.Content, "exit plan mode") || strings.Contains(evt.Content, "plan mode response")):
+				gotWriteErr = true
+			case evt.Kind == provider.EventSessionStatus && evt.Content == "disconnected":
+				gotDisconnected = true
+			}
+		case <-deadline:
+			t.Fatalf("timeout (plan=%v writeErr=%v disc=%v)", gotPlan, gotWriteErr, gotDisconnected)
+		}
+	}
+}
+
+// TestExitPlanModeWritesDenyOnHappyPath verifies the normal path is
+// unchanged: a plan arrives, the deny response is written, the
+// subprocess continues happily.
+func TestExitPlanModeWritesDenyOnHappyPath(t *testing.T) {
+	s, eventCh := newTestClaudeSession(t)
+
+	planReq := []byte(`{"type":"control_request","request_id":"plan-ok","request":{"subtype":"can_use_tool","tool_name":"ExitPlanMode","input":{"plan":"# hi"}}}`)
+	if err := s.proc.WriteLine(planReq); err != nil {
+		t.Fatalf("write plan request: %v", err)
+	}
+
+	var sawPlan bool
+	for !sawPlan {
+		select {
+		case evt := <-eventCh:
+			if evt.Kind == provider.EventProposedPlan {
+				sawPlan = true
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatal("never saw EventProposedPlan")
+		}
+	}
+
+	// The subprocess (cat) echoes the deny response back. readLoop
+	// will parse the echoed line — it should be a control_response,
+	// which ParseLine returns 0 events for, and readLoop continues.
+	// Fire another normal line to confirm readLoop survives.
+	if err := s.proc.WriteLine([]byte(`{"type":"system","subtype":"future_feature"}`)); err != nil {
+		t.Fatalf("write follow-up: %v", err)
+	}
+
+	// Confirm no EventError arrives.
+	select {
+	case evt := <-eventCh:
+		if evt.Kind == provider.EventError {
+			t.Fatalf("unexpected error after happy-path plan mode: %v", evt.Content)
+		}
+	case <-time.After(200 * time.Millisecond):
+		// ok
+	}
+}
+
 // TestIdleWatchdogFiresAfterSilence exercises Bug B2: once Send is called
 // we expect the subprocess to produce at least one stdout line within the
 // configured idle timeout. If it stays silent, the watchdog must close the

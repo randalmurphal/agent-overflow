@@ -527,6 +527,25 @@ func (s *Session) readLoop() {
 
 		handled, err := s.maybeHandleExitPlanModeRequest(line)
 		if err != nil {
+			if handled {
+				// Bug B7: we identified an ExitPlanMode request but
+				// failed to write the synthetic deny response.
+				// Leaving Claude hanging for a reply it will never
+				// get is worse than exiting — surface the failure
+				// and tear the subprocess down.
+				s.onEvent(provider.ProviderEvent{
+					Kind:      provider.EventError,
+					ThreadID:  s.threadID,
+					Content:   fmt.Sprintf("claude: exit plan mode response failed: %v", err),
+					Timestamp: time.Now(),
+				})
+				_ = s.proc.Close()
+				return
+			}
+			// !handled + err: JSON parse failure for a line that was
+			// not even an ExitPlanMode request. Log and continue —
+			// ParseLine below will reject the same line and we don't
+			// want to tear the session down for malformed stdout.
 			log.Printf("claude: exit plan mode handling error: %v", err)
 		}
 		if handled {
