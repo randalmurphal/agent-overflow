@@ -122,18 +122,23 @@ describe('<Composer>', () => {
     const pane = await makeReadyPane();
     pane.setSessionStatus('ready');
     const draft = await makeDraftStore();
-    const { getByRole, queryByRole } = render(Composer, { props: { pane, draft } });
+    const { getByRole, queryByTestId } = render(Composer, { props: { pane, draft } });
     expect(getByRole('button', { name: /send/i })).toBeInTheDocument();
-    expect(queryByRole('button', { name: /stop/i })).toBeNull();
+    // Interrupt affordance is hidden when the turn isn't active.
+    expect(queryByTestId('composer-interrupt')).toBeNull();
+    expect(queryByTestId('composer-turn-banner')).toBeNull();
   });
 
-  it('renders Stop when the turn is running', async () => {
+  it('renders Interrupt banner alongside disabled Send while a turn streams', async () => {
     const pane = await makeReadyPane();
     pane.setSessionStatus('running');
+    pane.appendTextDelta('partial');
     const draft = await makeDraftStore();
-    const { getByRole, queryByRole } = render(Composer, { props: { pane, draft } });
-    expect(getByRole('button', { name: /stop/i })).toBeInTheDocument();
-    expect(queryByRole('button', { name: /send/i })).toBeNull();
+    const { getByRole, getByTestId } = render(Composer, { props: { pane, draft } });
+    const send = getByRole('button', { name: /send/i }) as HTMLButtonElement;
+    expect(send.disabled).toBe(true);
+    expect(getByTestId('composer-interrupt')).toBeInTheDocument();
+    expect(getByTestId('composer-turn-banner')).toBeInTheDocument();
   });
 
   it('send button stays disabled until there is content', async () => {
@@ -201,14 +206,15 @@ describe('<Composer>', () => {
     consoleErr.mockRestore();
   });
 
-  it('Stop button calls InterruptTurn with the current threadId', async () => {
+  it('Interrupt button calls InterruptTurn with the current threadId', async () => {
     const pane = await makeReadyPane();
     pane.setSessionStatus('running');
+    pane.appendTextDelta('mid-stream');
     const draft = await makeDraftStore();
     const interruptMock = setBindingMock('InterruptTurn', async () => {});
 
-    const { getByRole } = render(Composer, { props: { pane, draft } });
-    await fireEvent.click(getByRole('button', { name: /stop/i }));
+    const { getByTestId } = render(Composer, { props: { pane, draft } });
+    await fireEvent.click(getByTestId('composer-interrupt'));
 
     expect(interruptMock).toHaveBeenCalledWith('thread-1');
   });
@@ -435,5 +441,156 @@ describe('<Composer>', () => {
     const { getByLabelText } = render(Composer, { props: { pane, draft } });
     const textarea = getByLabelText('Message input') as HTMLTextAreaElement;
     expect(textarea.value).toBe('hydrated content');
+  });
+});
+
+describe('<Composer> mid-turn guard', () => {
+  beforeEach(() => {
+    setBindingMock('SendMessage', async () => {});
+    setBindingMock('InterruptTurn', async () => {});
+    mockDraftBindings();
+  });
+
+  it('disables Send while streaming content is live even with a draft', async () => {
+    const pane = await makeReadyPane();
+    pane.appendTextDelta('partial response');
+    const draft = await makeDraftStore();
+    draft.setContent('next question');
+    const { getByTestId } = render(Composer, { props: { pane, draft } });
+    const send = getByTestId('composer-send') as HTMLButtonElement;
+    expect(send.disabled).toBe(true);
+    expect(send.getAttribute('title') ?? '').toMatch(/Agent is responding/);
+  });
+
+  it('disables Send while active tool calls are in flight', async () => {
+    const pane = await makeReadyPane();
+    pane.addToolCall('tool-1', { toolName: 'bash' });
+    const draft = await makeDraftStore();
+    draft.setContent('queued');
+    const { getByTestId } = render(Composer, { props: { pane, draft } });
+    expect((getByTestId('composer-send') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('disables Send while pendingMessage is set (optimistic in-flight turn)', async () => {
+    const pane = await makeReadyPane();
+    pane.setPendingMessage('just sent');
+    const draft = await makeDraftStore();
+    draft.setContent('immediate follow-up');
+    const { getByTestId } = render(Composer, { props: { pane, draft } });
+    expect((getByTestId('composer-send') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('Enter during active turn does not call SendMessage and announces the block', async () => {
+    const pane = await makeReadyPane();
+    pane.appendTextDelta('streaming');
+    const draft = await makeDraftStore();
+    draft.setContent('queued follow-up');
+    const sendMock = setBindingMock('SendMessage', async () => {});
+    const { getByLabelText, getByTestId } = render(Composer, { props: { pane, draft } });
+    const textarea = getByLabelText('Message input') as HTMLTextAreaElement;
+
+    await fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+
+    expect(sendMock).not.toHaveBeenCalled();
+    const alert = getByTestId('composer-midturn-error');
+    expect(alert.textContent ?? '').toMatch(/Cannot send during an active turn/i);
+    expect(alert.getAttribute('aria-live')).toBe('polite');
+  });
+
+  it('clicking Send during an active turn is a no-op', async () => {
+    const pane = await makeReadyPane();
+    pane.appendTextDelta('streaming');
+    const draft = await makeDraftStore();
+    draft.setContent('queued');
+    const sendMock = setBindingMock('SendMessage', async () => {});
+    const { getByTestId } = render(Composer, { props: { pane, draft } });
+    await fireEvent.click(getByTestId('composer-send'));
+    expect(sendMock).not.toHaveBeenCalled();
+  });
+
+  it('Interrupt button surfaces an error when InterruptTurn rejects', async () => {
+    const pane = await makeReadyPane();
+    pane.appendTextDelta('streaming');
+    const draft = await makeDraftStore();
+    setBindingMock('InterruptTurn', async () => {
+      throw new Error('rpc down');
+    });
+    const consoleErr = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { getByTestId } = render(Composer, { props: { pane, draft } });
+
+    await fireEvent.click(getByTestId('composer-interrupt'));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(pane.error ?? '').toMatch(/Failed to interrupt/);
+    consoleErr.mockRestore();
+  });
+
+  it('uploading attachments is still allowed during an active turn', async () => {
+    const pane = await makeReadyPane();
+    pane.appendTextDelta('streaming');
+    const draft = await makeDraftStore();
+    const uploadMock = setBindingMock('UploadAttachment', async () => ({
+      id: 'att-mid',
+      threadId: 'thread-1',
+      filename: 'midturn.png',
+      mimeType: 'image/png',
+      size: 4,
+      relativePath: 'thread-1/att-mid.png',
+      createdAt: 4,
+    }));
+    const { getByTestId } = render(Composer, { props: { pane, draft } });
+    const root = getByTestId('composer-root') as HTMLElement;
+
+    const file = new File(['mid'], 'midturn.png', { type: 'image/png' });
+    const dataTransfer = makeDataTransfer([file]);
+    await fireEvent.drop(root, { dataTransfer });
+    await flushTimers();
+
+    expect(uploadMock).toHaveBeenCalled();
+    expect(draft.attachments.some((a) => a.id === 'att-mid')).toBe(true);
+  });
+
+  it('editing the draft is still allowed during an active turn', async () => {
+    const pane = await makeReadyPane();
+    pane.appendTextDelta('streaming');
+    const draft = await makeDraftStore();
+    const { getByLabelText } = render(Composer, { props: { pane, draft } });
+    const textarea = getByLabelText('Message input') as HTMLTextAreaElement;
+    expect(textarea.disabled).toBe(false);
+    await fireEvent.input(textarea, { target: { value: 'queued text' } });
+    expect(draft.content).toBe('queued text');
+  });
+
+  it('typing a new character clears the mid-turn polite error message', async () => {
+    const pane = await makeReadyPane();
+    pane.appendTextDelta('streaming');
+    const draft = await makeDraftStore();
+    const { getByLabelText, getByTestId } = render(Composer, { props: { pane, draft } });
+    const textarea = getByLabelText('Message input') as HTMLTextAreaElement;
+    await fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+    const alert = getByTestId('composer-midturn-error');
+    expect(alert.textContent ?? '').toMatch(/Cannot send/);
+    await fireEvent.input(textarea, { target: { value: 'a' } });
+    expect((alert.textContent ?? '').trim()).toBe('');
+  });
+
+  it('Interrupt success leaves Send re-enabled once the pane clears', async () => {
+    const pane = await makeReadyPane();
+    pane.appendTextDelta('streaming');
+    const draft = await makeDraftStore();
+    draft.setContent('queued');
+    const interruptMock = setBindingMock('InterruptTurn', async () => {});
+    const { getByTestId } = render(Composer, { props: { pane, draft } });
+
+    expect((getByTestId('composer-send') as HTMLButtonElement).disabled).toBe(true);
+    await fireEvent.click(getByTestId('composer-interrupt'));
+    expect(interruptMock).toHaveBeenCalledWith('thread-1');
+    // The backend is responsible for delivering turn_complete, but once the
+    // pane clears streamingContent the guard lifts. Simulate that here.
+    pane.finalizeTurn();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect((getByTestId('composer-send') as HTMLButtonElement).disabled).toBe(false);
   });
 });

@@ -40,18 +40,31 @@
 
   const MAX_ATTACHMENT_SIZE = DEFAULT_MAX_ATTACHMENT_SIZE;
 
-  let isRunning = $derived(pane.sessionStatus === 'running');
   let isDisabled = $derived(!pane.threadId);
-  let canSend = $derived(
-    !isDisabled &&
-      (draft.content.trim().length > 0 ||
-        draft.attachments.length > 0 ||
-        draft.terminalChips.length > 0),
+  // Mid-turn guard: block sends while a turn is in flight (any streaming text,
+  // any running tool, or an optimistic pending message). The user must press
+  // Interrupt first. Editing and uploading stay enabled so the next message can
+  // be prepared in advance.
+  let isTurnActive = $derived(pane.isTurnActive);
+  let hasDraftContent = $derived(
+    draft.content.trim().length > 0 ||
+      draft.attachments.length > 0 ||
+      draft.terminalChips.length > 0,
   );
+  let canSend = $derived(!isDisabled && !isTurnActive && hasDraftContent);
   let dragActive = $derived(dragDepth > 0);
+  // Polite aria-live error raised when the user hits Enter during an active
+  // turn. Cleared when the turn ends or the user types a new character so it
+  // doesn't re-announce on every subsequent keystroke.
+  let midTurnBlockMessage: string = $state('');
+
+  $effect(() => {
+    if (!isTurnActive) midTurnBlockMessage = '';
+  });
 
   async function send() {
     if (!pane.threadId || !canSend) return;
+    midTurnBlockMessage = '';
     const message = draft.composeOutgoingMessage();
     pane.setPendingMessage(message);
 
@@ -77,10 +90,11 @@
     }
   }
 
-  async function stop() {
+  async function interrupt() {
     if (!pane.threadId) return;
     try {
       await InterruptTurn(pane.threadId);
+      midTurnBlockMessage = '';
     } catch (err) {
       console.error('Failed to interrupt turn:', err);
       pane.setError(`Failed to interrupt: ${err}`);
@@ -127,6 +141,13 @@
 
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
+      if (isTurnActive) {
+        // Mid-turn guard: announce the block politely so a screen-reader user
+        // knows why nothing happened. The message clears when the turn ends or
+        // the user types something new.
+        midTurnBlockMessage = 'Cannot send during an active turn. Press Interrupt first.';
+        return;
+      }
       await send();
     }
   }
@@ -136,6 +157,7 @@
     draft.setContent(value);
     autosizeTextarea();
     refreshMentionTrigger();
+    if (midTurnBlockMessage) midTurnBlockMessage = '';
   }
 
   function refreshMentionTrigger() {
@@ -374,6 +396,27 @@
     </div>
   {/if}
 
+  {#if isTurnActive}
+    <div
+      class="flex items-center gap-2 border-b border-border bg-accent/10 px-4 py-1.5 text-xs text-text-secondary"
+      role="status"
+      aria-live="polite"
+      data-testid="composer-turn-banner"
+    >
+      <span class="h-2 w-2 animate-pulse rounded-full bg-accent shrink-0" aria-hidden="true"></span>
+      <span class="truncate">Agent is responding.</span>
+      <button
+        type="button"
+        onclick={interrupt}
+        data-testid="composer-interrupt"
+        aria-label="Interrupt the current turn"
+        class="ml-auto shrink-0 rounded border border-error/50 bg-error/15 px-2 py-0.5 text-error hover:bg-error/25 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-error/50"
+      >
+        Interrupt
+      </button>
+    </div>
+  {/if}
+
   <div class="px-4 py-3">
     <div class="relative flex gap-2 items-end">
       <ComposerMentionPopover
@@ -404,22 +447,25 @@
         class="flex-1 resize-none rounded-lg border border-border bg-surface-0 px-3 py-2.5 text-sm text-text-primary placeholder:text-text-secondary/50 focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/50 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
       ></textarea>
 
-      {#if isRunning}
-        <button
-          onclick={stop}
-          class="shrink-0 rounded-lg px-4 py-2.5 text-sm font-medium bg-error/30 text-error hover:bg-error/40 cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-error/50"
-        >
-          Stop
-        </button>
-      {:else}
-        <button
-          onclick={send}
-          disabled={!canSend}
-          class="shrink-0 rounded-lg px-4 py-2.5 text-sm font-medium bg-accent text-surface-0 hover:bg-accent/85 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
-        >
-          Send
-        </button>
-      {/if}
+      <button
+        onclick={send}
+        disabled={!canSend}
+        data-testid="composer-send"
+        title={isTurnActive ? 'Agent is responding. Press Interrupt to cancel.' : undefined}
+        aria-label="Send message"
+        class="shrink-0 rounded-lg px-4 py-2.5 text-sm font-medium bg-accent text-surface-0 hover:bg-accent/85 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+      >
+        Send
+      </button>
+    </div>
+
+    <div
+      class="mt-1 min-h-[1rem] text-xs text-error/90"
+      role="alert"
+      aria-live="polite"
+      data-testid="composer-midturn-error"
+    >
+      {midTurnBlockMessage}
     </div>
   </div>
 </div>

@@ -188,6 +188,41 @@ describe('createThreadPane()', () => {
     });
   });
 
+  describe('isTurnActive', () => {
+    it('is false in the idle default state', () => {
+      expect(pane.isTurnActive).toBe(false);
+    });
+
+    it('is true while streaming text is accumulating', () => {
+      pane.appendTextDelta('hello');
+      expect(pane.isTurnActive).toBe(true);
+    });
+
+    it('is true while at least one tool call is in flight', () => {
+      pane.addToolCall('tool-1', { toolName: 'bash' });
+      expect(pane.isTurnActive).toBe(true);
+      pane.completeToolCall('tool-1');
+      expect(pane.isTurnActive).toBe(false);
+    });
+
+    it('is true while a pendingMessage is set (optimistic turn)', () => {
+      pane.setPendingMessage('hi');
+      expect(pane.isTurnActive).toBe(true);
+      pane.setPendingMessage(null);
+      expect(pane.isTurnActive).toBe(false);
+    });
+
+    it('finalizeTurn clears every component so isTurnActive returns to false', async () => {
+      await pane.switchThread(makeThread());
+      pane.appendTextDelta('streaming');
+      pane.addToolCall('tool-1', { toolName: 'bash' });
+      pane.setPendingMessage('queued');
+      expect(pane.isTurnActive).toBe(true);
+      pane.finalizeTurn();
+      expect(pane.isTurnActive).toBe(false);
+    });
+  });
+
   describe('finalizeTurn()', () => {
     it('clears streaming and active tool calls and reloads items', async () => {
       await pane.switchThread(makeThread());

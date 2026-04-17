@@ -71,6 +71,21 @@ export function createThreadPane() {
     get pendingMessage() { return pendingMessage; },
     get showTerminal() { return showTerminal; },
     get diffPanel() { return diffPanel; },
+    /**
+     * True while a provider turn is in-flight for the current pane. Mirrors the
+     * mid-turn guard: the composer uses this to block sends, show the Interrupt
+     * affordance, and suppress Enter until the user interrupts or the turn
+     * completes. The condition is intentionally the union of every streaming
+     * indicator so an in-flight turn with no text yet (just queued tool calls
+     * or a pending optimistic user message) is still detected.
+     */
+    get isTurnActive() {
+      return (
+        streamingContent.length > 0
+        || activeToolCalls.size > 0
+        || pendingMessage !== null
+      );
+    },
     get channelMessages() { return channelMessages; },
     get channelStatus() { return channelStatus; },
     get designArtifacts() { return designArtifacts; },
