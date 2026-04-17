@@ -4,6 +4,7 @@ import type { ChannelMessage } from '../types/discussion';
 import type { DesignArtifact, DesignOptionsRequest, DesignViewport } from '../types/design';
 import { ListItems, ListPayloadMetas, SwitchThread } from './bindings';
 import { addToast } from './toast.svelte';
+import { createDiffPanelState, type DiffPanelState } from './diffPanel.svelte';
 
 /**
  * Creates a self-contained thread pane state instance.
@@ -27,6 +28,9 @@ export function createThreadPane() {
   let loading: boolean = $state(false);
   let pendingMessage: string | null = $state(null);
   let showTerminal: boolean = $state(false);
+  // Diff panel is per-pane; created once and reset on thread switch so its
+  // caches don't leak between threads.
+  const diffPanel: DiffPanelState = createDiffPanelState();
 
   // Channel state (only populated for discussion threads).
   let channelMessages: ChannelMessage[] = $state([]);
@@ -66,6 +70,7 @@ export function createThreadPane() {
     get loading() { return loading; },
     get pendingMessage() { return pendingMessage; },
     get showTerminal() { return showTerminal; },
+    get diffPanel() { return diffPanel; },
     get channelMessages() { return channelMessages; },
     get channelStatus() { return channelStatus; },
     get designArtifacts() { return designArtifacts; },
@@ -93,6 +98,7 @@ export function createThreadPane() {
       activeArtifactId = null;
       pendingDesignOptions = null;
       designViewport = 'desktop';
+      diffPanel.clearForThread();
       loading = true;
 
       thread = newThread;
@@ -151,6 +157,7 @@ export function createThreadPane() {
       activeArtifactId = null;
       pendingDesignOptions = null;
       designViewport = 'desktop';
+      diffPanel.clearForThread();
       turnGeneration++;
     },
 
@@ -280,6 +287,18 @@ export function createThreadPane() {
 
     setShowTerminal(value: boolean): void {
       showTerminal = value;
+    },
+
+    toggleDiffPanel(): void {
+      diffPanel.toggle();
+    },
+
+    setDiffPanelOpen(value: boolean): void {
+      if (value) {
+        diffPanel.open_();
+      } else {
+        diffPanel.close();
+      }
     },
 
     /**
