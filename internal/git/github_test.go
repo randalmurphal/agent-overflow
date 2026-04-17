@@ -56,7 +56,7 @@ func TestCreatePRReturnsURL(t *testing.T) {
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	core := NewCore()
-	url, err := core.CreatePR(t.TempDir(), "Demo PR", "Body")
+	url, err := core.CreatePR(t.TempDir(), "Demo PR", "Body", false)
 	if err != nil {
 		t.Fatalf("CreatePR returned error: %v", err)
 	}
@@ -68,7 +68,7 @@ func TestCreatePRReturnsURL(t *testing.T) {
 func TestCreatePRRequiresTitle(t *testing.T) {
 	core := NewCore()
 
-	_, err := core.CreatePR(t.TempDir(), "  ", "body")
+	_, err := core.CreatePR(t.TempDir(), "  ", "body", false)
 	if err == nil {
 		t.Fatal("expected error for empty title")
 	}
@@ -92,7 +92,7 @@ func TestCreatePRHandlesNonZeroExit(t *testing.T) {
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	core := NewCore()
-	_, err := core.CreatePR(t.TempDir(), "Test PR", "body")
+	_, err := core.CreatePR(t.TempDir(), "Test PR", "body", false)
 	if err == nil {
 		t.Fatal("expected error for non-zero exit")
 	}
@@ -116,7 +116,7 @@ func TestCreatePRHandlesEmptyURL(t *testing.T) {
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	core := NewCore()
-	_, err := core.CreatePR(t.TempDir(), "Test PR", "body")
+	_, err := core.CreatePR(t.TempDir(), "Test PR", "body", false)
 	if err == nil {
 		t.Fatal("expected error for empty URL output")
 	}
@@ -129,7 +129,7 @@ func TestCreatePRHandlesMissingGH(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 
 	core := NewCore()
-	_, err := core.CreatePR(t.TempDir(), "Test PR", "body")
+	_, err := core.CreatePR(t.TempDir(), "Test PR", "body", false)
 	if err == nil {
 		t.Fatal("expected missing gh error")
 	}

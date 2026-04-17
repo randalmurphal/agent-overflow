@@ -81,6 +81,18 @@
         class="w-full text-sm rounded border border-border bg-surface-0 px-3 py-2 text-text-primary placeholder:text-text-secondary/40 focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/50 disabled:opacity-60 transition-colors resize-none"
       ></textarea>
     </div>
+
+    <label class="flex items-center gap-2 text-xs text-text-secondary cursor-pointer select-none">
+      <input
+        type="checkbox"
+        data-testid="ship-changes-pr-draft"
+        checked={state.prDraft}
+        onchange={(e) => state.setPRDraft((e.currentTarget as HTMLInputElement).checked)}
+        disabled={busy}
+        class="h-3 w-3 rounded border-border cursor-pointer"
+      />
+      <span>Open as draft</span>
+    </label>
   {/if}
 
   {#if hasError && state.error}

@@ -17,12 +17,17 @@ type GitPR struct {
 }
 
 // CreatePR opens a pull request via GitHub CLI and returns the created URL.
-func (c *Core) CreatePR(cwd, title, body string) (string, error) {
+// When draft is true the PR is opened as a draft (gh pr create --draft).
+func (c *Core) CreatePR(cwd, title, body string, draft bool) (string, error) {
 	if strings.TrimSpace(title) == "" {
 		return "", errors.New("pull request title is required")
 	}
 
-	result, err := c.runBinary("gh", cwd, "pr", "create", "--title", title, "--body", body)
+	args := []string{"pr", "create", "--title", title, "--body", body}
+	if draft {
+		args = append(args, "--draft")
+	}
+	result, err := c.runBinary("gh", cwd, args...)
 	if err != nil {
 		return "", normalizeGitHubCLIError(err)
 	}

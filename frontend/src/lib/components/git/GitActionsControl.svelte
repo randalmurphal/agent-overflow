@@ -145,7 +145,7 @@
     if (!pane.threadId || actionLoading) return;
     actionLoading = true;
     try {
-      const result = await GitCreatePR(pane.threadId, '', '');
+      const result = await GitCreatePR(pane.threadId, '', '', false);
       const r = result as GitActionResult;
       if (r.error) {
         console.error('Create PR failed:', r.error);

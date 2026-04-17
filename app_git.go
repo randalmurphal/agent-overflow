@@ -187,8 +187,9 @@ func (a *App) GitCreateBranch(threadID, name string) error {
 	return a.gitCore().CreateBranch(project, name)
 }
 
-// GitCreatePR opens a pull request for the workspace's current branch.
-func (a *App) GitCreatePR(threadID, title, body string) (gitops.GitActionResult, error) {
+// GitCreatePR opens a pull request for the workspace's current branch. When
+// draft is true the PR is opened as a GitHub draft (gh pr create --draft).
+func (a *App) GitCreatePR(threadID, title, body string, draft bool) (gitops.GitActionResult, error) {
 	thread, err := a.store.GetThread(threadID)
 	if err != nil {
 		return gitops.GitActionResult{}, err
@@ -200,7 +201,7 @@ func (a *App) GitCreatePR(threadID, title, body string) (gitops.GitActionResult,
 	}
 
 	core := a.gitCore()
-	url, err := core.CreatePR(workspace, title, body)
+	url, err := core.CreatePR(workspace, title, body, draft)
 	if err != nil {
 		return gitops.GitActionResult{}, err
 	}

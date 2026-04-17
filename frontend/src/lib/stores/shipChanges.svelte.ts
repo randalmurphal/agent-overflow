@@ -61,6 +61,7 @@ export interface ShipChangesState {
   readonly commitSha: string | null;
   readonly prTitle: string;
   readonly prBody: string;
+  readonly prDraft: boolean;
   readonly prUrl: string | null;
   readonly error: string | null;
 
@@ -98,6 +99,7 @@ export interface ShipChangesState {
   seedPR(title: string, body: string): void;
   setPRTitle(title: string): void;
   setPRBody(body: string): void;
+  setPRDraft(draft: boolean): void;
   /** Start the Create PR side effect. */
   beginCreatePR(): void;
   completeCreatePR(url: string): void;
@@ -137,6 +139,7 @@ export function createShipChangesState(): ShipChangesState {
   let commitSha: string | null = $state(null);
   let prTitle = $state('');
   let prBody = $state('');
+  let prDraft = $state(false);
   let prUrl: string | null = $state(null);
   let error: string | null = $state(null);
 
@@ -149,6 +152,7 @@ export function createShipChangesState(): ShipChangesState {
     commitSha = null;
     prTitle = '';
     prBody = '';
+    prDraft = false;
     prUrl = null;
     error = null;
   }
@@ -162,6 +166,7 @@ export function createShipChangesState(): ShipChangesState {
     get commitSha() { return commitSha; },
     get prTitle() { return prTitle; },
     get prBody() { return prBody; },
+    get prDraft() { return prDraft; },
     get prUrl() { return prUrl; },
     get error() { return error; },
     get canCommit() {
@@ -266,6 +271,7 @@ export function createShipChangesState(): ShipChangesState {
 
     setPRTitle(title) { prTitle = title; },
     setPRBody(body) { prBody = body; },
+    setPRDraft(draft) { prDraft = draft; },
 
     beginCreatePR() {
       assertPhase(phase, ['pr.review']);

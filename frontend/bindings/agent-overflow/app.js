@@ -236,14 +236,16 @@ export function GitCreateBranch(threadID, name) {
 }
 
 /**
- * GitCreatePR opens a pull request for the workspace's current branch.
+ * GitCreatePR opens a pull request for the workspace's current branch. When
+ * draft is true the PR is opened as a GitHub draft (gh pr create --draft).
  * @param {string} threadID
  * @param {string} title
  * @param {string} body
+ * @param {boolean} draft
  * @returns {$CancellablePromise<git$0.GitActionResult>}
  */
-export function GitCreatePR(threadID, title, body) {
-    return $Call.ByID(4106667105, threadID, title, body).then(/** @type {($result: any) => any} */(($result) => {
+export function GitCreatePR(threadID, title, body, draft) {
+    return $Call.ByID(4106667105, threadID, title, body, draft).then(/** @type {($result: any) => any} */(($result) => {
         return $$createType10($result);
     }));
 }

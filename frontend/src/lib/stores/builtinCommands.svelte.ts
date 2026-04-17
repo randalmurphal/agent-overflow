@@ -350,7 +350,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
         const title = window.prompt('PR title', t.title);
         if (!title) return;
         try {
-          await GitCreatePR(t.id, title, '');
+          await GitCreatePR(t.id, title, '', false);
           addToast('success', 'Pull request opened');
         } catch (err) {
           addToast('error', `PR failed: ${err}`);

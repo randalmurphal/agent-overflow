@@ -143,9 +143,10 @@
     if (!wizard.canCreatePR) return;
     const title = wizard.prTitle.trim();
     const body = wizard.prBody.trim();
+    const draft = wizard.prDraft;
     wizard.beginCreatePR();
     try {
-      const result = (await GitCreatePR(pane.threadId, title, body)) as GitActionResult;
+      const result = (await GitCreatePR(pane.threadId, title, body, draft)) as GitActionResult;
       if (result.error) {
         wizard.failCreatePR(result.error);
         return;

@@ -120,7 +120,7 @@ func TestShip_FullWizardFlow(t *testing.T) {
 	}
 
 	// Step 3: create PR via mock gh.
-	prResult, err := app.GitCreatePR(threadID, "Ship feature", "details")
+	prResult, err := app.GitCreatePR(threadID, "Ship feature", "details", false)
 	if err != nil {
 		t.Fatalf("GitCreatePR() error = %v", err)
 	}
@@ -237,7 +237,7 @@ func TestShip_CreatePRFailsWhenNotPushed(t *testing.T) {
 	app, threadID, _ := shipTestSetup(t)
 	installMockGhShip(t, "", "must push first", 1)
 
-	_, err := app.GitCreatePR(threadID, "PR title", "body")
+	_, err := app.GitCreatePR(threadID, "PR title", "body", false)
 	if err == nil {
 		t.Fatal("GitCreatePR() with failing gh error = nil, want failure")
 	}
@@ -328,10 +328,9 @@ func TestShip_StackedActionsIdempotent(t *testing.T) {
 	}
 }
 
-// TestShip_CreatePRWithDraftFlag documents the current GitCreatePR contract:
-// it ships a `gh pr create --title --body` invocation with no draft flag
-// support. A future binding that accepts a `draft` argument would break this
-// test, forcing the author to update it intentionally.
+// TestShip_CreatePRWithDraftFlag verifies the GitCreatePR contract: the
+// `draft` parameter threads through to `gh pr create --draft`. When draft is
+// false the flag is absent; when true it's present.
 func TestShip_CreatePRWithDraftFlag(t *testing.T) {
 	app, threadID, _ := shipTestSetup(t)
 
@@ -356,13 +355,22 @@ echo "https://example.com/pr/draft-flag=$found_draft"
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	result, err := app.GitCreatePR(threadID, "PR title", "body")
+	// draft=false: gh is invoked without --draft.
+	result, err := app.GitCreatePR(threadID, "PR title", "body", false)
 	if err != nil {
-		t.Fatalf("GitCreatePR() error = %v", err)
+		t.Fatalf("GitCreatePR(draft=false) error = %v", err)
 	}
-	// Documented: draft flag is not wired. Must be false.
 	if !strings.Contains(result.PRURL, "draft-flag=false") {
-		t.Fatalf("PRURL = %q, want draft-flag=false (current contract)", result.PRURL)
+		t.Fatalf("draft=false PRURL = %q, want draft-flag=false", result.PRURL)
+	}
+
+	// draft=true: gh is invoked with --draft.
+	result, err = app.GitCreatePR(threadID, "PR title", "body", true)
+	if err != nil {
+		t.Fatalf("GitCreatePR(draft=true) error = %v", err)
+	}
+	if !strings.Contains(result.PRURL, "draft-flag=true") {
+		t.Fatalf("draft=true PRURL = %q, want draft-flag=true", result.PRURL)
 	}
 }
 
