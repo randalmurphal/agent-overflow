@@ -7,12 +7,19 @@ import (
 	"io"
 	"log"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"time"
 
 	"agent-overflow/internal/logging"
 	"agent-overflow/internal/provider"
 )
+
+// DefaultIdleTimeout is how long the watchdog waits for ANY stdout line
+// after a Send before declaring the provider wedged. Claude streaming
+// responses emit partial-message deltas frequently, so two minutes is
+// generous — the intent is to catch provider hangs, not impatient users.
+const DefaultIdleTimeout = 120 * time.Second
 
 // Session manages a Claude Code CLI subprocess.
 type Session struct {
@@ -24,6 +31,29 @@ type Session struct {
 	cancel    context.CancelFunc
 	closing   atomic.Bool
 	readDone  chan struct{}
+	// idleTimeout is the per-turn watchdog window. Zero means use
+	// DefaultIdleTimeout. The watchdog is armed by Send and disarmed by
+	// EventTurnComplete or read errors.
+	idleTimeout time.Duration
+	// inFlight indicates whether a turn is currently mid-flight. The
+	// watchdog only fires while inFlight is true — idle-between-turns is
+	// not a hang.
+	inFlight atomic.Bool
+	// watchdogMu guards assignments to watchdogReset/watchdogDone so
+	// pulseIdleWatchdog and armIdleWatchdog never race on the channel
+	// reference.
+	watchdogMu sync.Mutex
+	// watchdogReset is a buffered channel the readLoop pulses on every
+	// incoming line so the watchdog timer can restart. A nil channel
+	// means the watchdog goroutine is not running.
+	watchdogReset chan struct{}
+	// watchdogDone is closed by the watchdog goroutine when it exits so
+	// Close can wait for it deterministically.
+	watchdogDone chan struct{}
+	// watchdogFired flags that the watchdog decided the session was wedged.
+	// Inspected by Close to suppress the noisy close-related error events
+	// we would otherwise emit on top of the timeout error.
+	watchdogFired atomic.Bool
 }
 
 // Config for creating a Claude session.
@@ -121,6 +151,9 @@ func buildArgs(cfg Config) []string {
 }
 
 // Send sends a user message. The message is written as a JSON object to stdin.
+// Send also arms the idle watchdog: if no stdout line arrives within the
+// configured idle window, the watchdog closes the session and emits a
+// timeout error so the UI is never left waiting on a wedged subprocess.
 func (s *Session) Send(ctx context.Context, content string) error {
 	msg := map[string]any{
 		"type": "user",
@@ -133,7 +166,103 @@ func (s *Session) Send(ctx context.Context, content string) error {
 	if err != nil {
 		return fmt.Errorf("claude: marshal user message: %w", err)
 	}
-	return s.proc.WriteLine(data)
+	if err := s.proc.WriteLine(data); err != nil {
+		return err
+	}
+	s.armIdleWatchdog()
+	return nil
+}
+
+// armIdleWatchdog starts the idle watchdog goroutine if one is not already
+// running. Subsequent calls after the turn completes are no-ops until the
+// previous watchdog observes EventTurnComplete and exits.
+func (s *Session) armIdleWatchdog() {
+	if s.inFlight.Swap(true) {
+		// Already armed for the current turn.
+		return
+	}
+	timeout := s.idleTimeout
+	if timeout <= 0 {
+		timeout = DefaultIdleTimeout
+	}
+	resetCh := make(chan struct{}, 1)
+	doneCh := make(chan struct{})
+	s.watchdogMu.Lock()
+	s.watchdogReset = resetCh
+	s.watchdogDone = doneCh
+	s.watchdogMu.Unlock()
+	go s.runIdleWatchdog(timeout, resetCh, doneCh)
+}
+
+// runIdleWatchdog fires when no line has been received within `timeout`.
+// On expiry it marks the watchdog as fired, emits EventError, and kills the
+// subprocess so the readLoop observes EOF and completes its disconnect
+// routine. The goroutine exits cleanly when (a) it observes the inFlight
+// flag flip back to false (turn complete or session closed), or (b) it
+// fires the timeout itself.
+func (s *Session) runIdleWatchdog(timeout time.Duration, resetCh <-chan struct{}, doneCh chan<- struct{}) {
+	defer close(doneCh)
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	for {
+		select {
+		case <-resetCh:
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			if !s.inFlight.Load() {
+				return
+			}
+			timer.Reset(timeout)
+		case <-timer.C:
+			if !s.inFlight.Load() {
+				return
+			}
+			s.watchdogFired.Store(true)
+			s.onEvent(provider.ProviderEvent{
+				Kind:      provider.EventError,
+				ThreadID:  s.threadID,
+				Content:   fmt.Sprintf("claude: provider idle timeout after %s — no output received", timeout),
+				Timestamp: time.Now(),
+			})
+			// Kill the subprocess so readLoop exits and emits the
+			// disconnected terminal state. We use Kill rather than
+			// Close to avoid waiting the shutdown grace period on a
+			// subprocess that is already non-responsive.
+			_ = s.proc.Kill()
+			return
+		}
+	}
+}
+
+// pulseIdleWatchdog is called from readLoop on every received line so the
+// watchdog timer restarts. Safe when the watchdog is not armed — the nil
+// channel simply makes the select a no-op for this pulse.
+func (s *Session) pulseIdleWatchdog() {
+	s.watchdogMu.Lock()
+	reset := s.watchdogReset
+	s.watchdogMu.Unlock()
+	if reset == nil {
+		return
+	}
+	select {
+	case reset <- struct{}{}:
+	default:
+	}
+}
+
+// disarmIdleWatchdog is called when EventTurnComplete is observed so the
+// watchdog exits cleanly; flipping inFlight first ensures the watchdog's
+// next wakeup sees a stopped turn even if the reset-channel pulse loses
+// the race.
+func (s *Session) disarmIdleWatchdog() {
+	if !s.inFlight.Swap(false) {
+		return
+	}
+	s.pulseIdleWatchdog()
 }
 
 // Interrupt sends a control interrupt to the CLI.
@@ -175,10 +304,17 @@ func (s *Session) SessionID() string {
 // Closes stdin first for graceful shutdown, then cancels the context as fallback.
 func (s *Session) Close() error {
 	s.closing.Store(true)
+	s.disarmIdleWatchdog()
 	err := s.proc.Close()
 	s.cancel()
 	if s.readDone != nil {
 		<-s.readDone
+	}
+	s.watchdogMu.Lock()
+	watchdogDone := s.watchdogDone
+	s.watchdogMu.Unlock()
+	if watchdogDone != nil {
+		<-watchdogDone
 	}
 	return err
 }
@@ -190,7 +326,12 @@ func (s *Session) readLoop() {
 			defer close(s.readDone)
 		}
 
-		if !s.closing.Load() {
+		// Tear the watchdog down so the goroutine exits; if it had
+		// already fired we let the original error stand and skip the
+		// generic close-error event.
+		s.disarmIdleWatchdog()
+
+		if !s.closing.Load() && !s.watchdogFired.Load() {
 			exitErr := provider.WaitProcessExitErr(s.proc)
 			if exitErr != nil {
 				s.onEvent(provider.ProviderEvent{
@@ -214,7 +355,7 @@ func (s *Session) readLoop() {
 	for {
 		line, err := s.proc.ReadLine()
 		if err != nil {
-			if err != io.EOF {
+			if err != io.EOF && !s.watchdogFired.Load() {
 				s.onEvent(provider.ProviderEvent{
 					Kind:      provider.EventError,
 					ThreadID:  s.threadID,
@@ -224,6 +365,8 @@ func (s *Session) readLoop() {
 			}
 			return
 		}
+		// Any output keeps the watchdog happy — even lines we drop below.
+		s.pulseIdleWatchdog()
 
 		handled, err := s.maybeHandleExitPlanModeRequest(line)
 		if err != nil {
@@ -245,6 +388,9 @@ func (s *Session) readLoop() {
 				if json.Unmarshal(evt.Meta, &info) == nil && info.SessionID != "" {
 					s.sessionID = info.SessionID
 				}
+			}
+			if evt.Kind == provider.EventTurnComplete {
+				s.disarmIdleWatchdog()
 			}
 			s.onEvent(evt)
 		}
