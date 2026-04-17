@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"fmt"
+	"time"
 )
 
 func (s *Store) InsertItem(item Item) error {
@@ -227,6 +228,53 @@ func (s *Store) ListTurnItems(threadID string, turnIndex int) ([]Item, error) {
 		items = append(items, it)
 	}
 	return items, rows.Err()
+}
+
+// DeleteItemsAfterTurn removes every item with turn_index strictly greater
+// than keepThroughTurn for the given thread, and bumps the thread's
+// updated_at inside the same transaction. Returns the number of items
+// deleted. keepThroughTurn is the last turn to preserve — to drop all
+// items from a thread pass -1 (though callers should not typically do
+// that).
+//
+// Used by the revert flow in app_checkpoint.go: after a checkpoint
+// revert the timeline must match the post-revert conversation state, so
+// every item the user reverted past is dropped from the store.
+//
+// Payload rows are not cascade-deleted here. They become orphaned but
+// reachable only by a deleted item's old payload_id, which no caller
+// will look up. A future GC pass can reclaim them; no correctness
+// impact in the meantime.
+func (s *Store) DeleteItemsAfterTurn(threadID string, keepThroughTurn int) (int, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, fmt.Errorf("store: begin delete items after turn tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	result, err := tx.Exec(
+		`DELETE FROM items WHERE thread_id = ? AND turn_index > ?`,
+		threadID, keepThroughTurn,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("store: delete items after turn for thread %s: %w", threadID, err)
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("store: delete items after turn rows affected: %w", err)
+	}
+
+	if _, err := tx.Exec(
+		`UPDATE threads SET updated_at = ? WHERE id = ?`,
+		time.Now().UnixMilli(), threadID,
+	); err != nil {
+		return 0, fmt.Errorf("store: touch thread %s after item truncation: %w", threadID, err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("store: commit delete items after turn tx: %w", err)
+	}
+	return int(n), nil
 }
 
 // UpdateItemPayload updates a single item's payload link, summary, and

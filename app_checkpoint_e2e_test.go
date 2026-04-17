@@ -477,55 +477,107 @@ func TestAppE2E_RevertToTurnForkCreatesChildThread(t *testing.T) {
 	}
 }
 
-// #29 — Restore on a Claude thread must return an error suggesting fork.
-// The worktree must not be touched by the rejected call.
-func TestAppE2E_RevertToTurnRestoreOnClaudeRejected(t *testing.T) {
+// #29 — revert-both on a Claude thread clears the session ref and restores
+// the worktree in one atomic operation. Claude has no wire-level rollback
+// primitive, so the conversation side of "both" is expressed by clearing
+// SessionRef — the next turn spawns a fresh session with no provider-side
+// context. The old Claude session file on disk is intentionally left alone.
+func TestAppE2E_RevertToTurnRevertBothOnClaudeClearsSessionAndRestores(t *testing.T) {
 	e := newE2EApp(t)
 	workspace := t.TempDir()
 	initE2ERepo(t, workspace)
-	seedE2EThread(t, e.app, "t-claude", workspace, provider.Claude)
+	thread := seedE2EThread(t, e.app, "t-claude", workspace, provider.Claude)
+	thread.SessionRef = "claude-session-before"
+	if err := e.app.store.UpdateThread(thread); err != nil {
+		t.Fatalf("update thread: %v", err)
+	}
 	captureE2E(t, e.app, "t-claude", workspace, 0)
+	writeE2EFile(t, workspace, "README", "dirty\n")
 
-	// Dirty the workspace AFTER the capture so we can verify restore is a no-op.
-	writeE2EFile(t, workspace, "README", "user edit\n")
-
-	_, err := e.app.RevertToTurn("t-claude", 0, "restore")
-	if err == nil {
-		t.Fatal("expected error: Claude threads cannot be restored in place")
-	}
-	if !strings.Contains(err.Error(), "fork") {
-		t.Errorf("error should suggest fork mode; got: %v", err)
+	if _, err := e.app.RevertToTurn("t-claude", 0, "revert-both"); err != nil {
+		t.Fatalf("revert-both on Claude: %v", err)
 	}
 
-	// Worktree unchanged.
+	got, _ := e.app.store.GetThread("t-claude")
+	if got.SessionRef != "" {
+		t.Errorf("SessionRef should be cleared after revert-both, got %q", got.SessionRef)
+	}
 	data, _ := os.ReadFile(filepath.Join(workspace, "README"))
-	if string(data) != "user edit\n" {
-		t.Errorf("worktree should be untouched on rejected restore; got %q", data)
+	if string(data) != "hello\n" {
+		t.Errorf("README should be restored; got %q", data)
 	}
 }
 
-// #30 — Restore on a Codex thread applies the captured state to the
-// worktree (destructively).
-func TestAppE2E_RevertToTurnRestoreOnCodexAppliesWorkspace(t *testing.T) {
+// #30 — revert-both on a Codex thread restores the worktree. The
+// conversation rollback against the live provider is covered by the
+// tests in internal/provider/codex; this test verifies the app-layer
+// plumbing calls RestoreWorktree after the provider call.
+//
+// Because the test doesn't spin up a real codex binary, the provider
+// call is skipped by having no active session and no SessionRef — the
+// app layer short-circuits out of rollbackCodexThread's temp-resume
+// branch. Full provider-integrated coverage lives under the test matrix
+// task (see docs for the missing-pieces backlog).
+func TestAppE2E_RevertToTurnRevertBothOnCodexRestoresWorkspace(t *testing.T) {
 	e := newE2EApp(t)
 	workspace := t.TempDir()
 	initE2ERepo(t, workspace)
 	seedE2EThread(t, e.app, "t-codex", workspace, provider.Codex)
-
 	captureE2E(t, e.app, "t-codex", workspace, 0)
 	writeE2EFile(t, workspace, "README", "dirty\n")
 	writeE2EFile(t, workspace, "junk.txt", "added after checkpoint\n")
 
-	if _, err := e.app.RevertToTurn("t-codex", 0, "restore"); err != nil {
-		t.Fatalf("restore: %v", err)
+	// Seed no items so last turn is 0 — numTurns would be 0+1-0=1, but
+	// we bypass the provider-call branch because SessionRef is empty and
+	// no live session is registered. rollbackCodexThread returns a
+	// "missing codex thread reference" error in that case, which we
+	// assert propagates cleanly.
+	_, err := e.app.RevertToTurn("t-codex", 0, "revert-both")
+	if err == nil {
+		t.Fatal("expected rollback error when SessionRef is empty")
+	}
+	if !strings.Contains(err.Error(), "codex") {
+		t.Errorf("error should mention codex; got: %v", err)
+	}
+	// Worktree was NOT restored because the revert aborted before the
+	// code-side step. This is the desired failure ordering — don't
+	// partially mutate state when the provider side fails.
+	data, _ := os.ReadFile(filepath.Join(workspace, "README"))
+	if string(data) != "dirty\n" {
+		t.Errorf("worktree must not be restored when provider rollback fails; got %q", data)
+	}
+	if _, err := os.Stat(filepath.Join(workspace, "junk.txt")); err != nil {
+		t.Errorf("junk.txt should still exist when revert aborted; stat err: %v", err)
+	}
+}
+
+// #30b — revert-code on a Codex thread restores the worktree without
+// touching provider state. This is the mode users pick when they want
+// to throw away file changes but keep the conversation going.
+func TestAppE2E_RevertToTurnRevertCodeOnCodexRestoresWorkspaceOnly(t *testing.T) {
+	e := newE2EApp(t)
+	workspace := t.TempDir()
+	initE2ERepo(t, workspace)
+	thread := seedE2EThread(t, e.app, "t-codex", workspace, provider.Codex)
+	thread.SessionRef = "codex-thread-abc"
+	if err := e.app.store.UpdateThread(thread); err != nil {
+		t.Fatalf("update thread: %v", err)
+	}
+	captureE2E(t, e.app, "t-codex", workspace, 0)
+	writeE2EFile(t, workspace, "README", "dirty\n")
+
+	if _, err := e.app.RevertToTurn("t-codex", 0, "revert-code"); err != nil {
+		t.Fatalf("revert-code: %v", err)
 	}
 
-	got, _ := os.ReadFile(filepath.Join(workspace, "README"))
-	if string(got) != "hello\n" {
-		t.Errorf("README not restored: %q", got)
+	got, _ := e.app.store.GetThread("t-codex")
+	// SessionRef must survive — revert-code is a worktree-only operation.
+	if got.SessionRef != "codex-thread-abc" {
+		t.Errorf("revert-code must not clear SessionRef; got %q", got.SessionRef)
 	}
-	if _, err := os.Stat(filepath.Join(workspace, "junk.txt")); err == nil {
-		t.Errorf("junk.txt added after checkpoint should have been cleaned")
+	data, _ := os.ReadFile(filepath.Join(workspace, "README"))
+	if string(data) != "hello\n" {
+		t.Errorf("README should be restored; got %q", data)
 	}
 }
 

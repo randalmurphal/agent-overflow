@@ -219,6 +219,93 @@ func TestDeleteCheckpointsForThreadRemovesAllRows(t *testing.T) {
 	}
 }
 
+func TestDeleteCheckpointsAfterTurnScopesAndReturnsRefs(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThreadForCheckpoint(t, s, "t1")
+	mustCreateThreadForCheckpoint(t, s, "t2")
+
+	now := time.Now().UnixMilli()
+	saveAt := func(thread string, turn int, ref string) {
+		if err := s.SaveCheckpoint(Checkpoint{
+			ID:            fmt.Sprintf("chk-%s-%d", thread, turn),
+			ThreadID:      thread,
+			TurnIndex:     turn,
+			RefName:       ref,
+			BaselineSHA:   "sha",
+			CapturedAt:    now,
+			WorkspacePath: "/tmp/w",
+		}); err != nil {
+			t.Fatalf("save %s turn %d: %v", thread, turn, err)
+		}
+	}
+	// t1: turns 0..3. t2: turns 0..2 (must stay untouched).
+	for turn := 0; turn < 4; turn++ {
+		saveAt("t1", turn, fmt.Sprintf("refs/t1/turn/%d", turn))
+	}
+	for turn := 0; turn < 3; turn++ {
+		saveAt("t2", turn, fmt.Sprintf("refs/t2/turn/%d", turn))
+	}
+
+	// Keep through turn 1 on t1 → delete turns 2 and 3.
+	refs, err := s.DeleteCheckpointsAfterTurn("t1", 1)
+	if err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	want := []string{"refs/t1/turn/2", "refs/t1/turn/3"}
+	if len(refs) != len(want) {
+		t.Fatalf("returned refs: got %v, want %v", refs, want)
+	}
+	for i := range want {
+		if refs[i] != want[i] {
+			t.Errorf("refs[%d] = %q, want %q", i, refs[i], want[i])
+		}
+	}
+
+	t1Remaining, err := s.ListCheckpoints("t1")
+	if err != nil {
+		t.Fatalf("list t1: %v", err)
+	}
+	if len(t1Remaining) != 2 {
+		t.Errorf("t1 remaining count: got %d, want 2", len(t1Remaining))
+	}
+	for _, c := range t1Remaining {
+		if c.TurnIndex > 1 {
+			t.Errorf("t1 still has turn_index=%d after delete", c.TurnIndex)
+		}
+	}
+
+	t2Remaining, err := s.ListCheckpoints("t2")
+	if err != nil {
+		t.Fatalf("list t2: %v", err)
+	}
+	if len(t2Remaining) != 3 {
+		t.Errorf("t2 remaining count: got %d, want 3 (unaffected)", len(t2Remaining))
+	}
+}
+
+func TestDeleteCheckpointsAfterTurnReturnsEmptyWhenNoneMatch(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThreadForCheckpoint(t, s, "t1")
+	if err := s.SaveCheckpoint(Checkpoint{
+		ID: "chk-1", ThreadID: "t1", TurnIndex: 0,
+		RefName: "refs/t1/turn/0", BaselineSHA: "sha",
+		CapturedAt: time.Now().UnixMilli(), WorkspacePath: "/tmp",
+	}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	refs, err := s.DeleteCheckpointsAfterTurn("t1", 10)
+	if err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if len(refs) != 0 {
+		t.Errorf("returned refs: got %v, want empty", refs)
+	}
+	remaining, _ := s.ListCheckpoints("t1")
+	if len(remaining) != 1 {
+		t.Errorf("turn 0 should still exist, got %d rows", len(remaining))
+	}
+}
+
 func TestDeleteCheckpointsForThreadMissingIsNoop(t *testing.T) {
 	s := newTestStore(t)
 	if err := s.DeleteCheckpointsForThread("nonexistent"); err != nil {

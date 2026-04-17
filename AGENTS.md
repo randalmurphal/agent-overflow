@@ -95,3 +95,22 @@ the project to confirm the behavior, then port the learning in. See
 
 See [docs/references/codex.md](docs/references/codex.md) for how to use
 these when touching Codex code.
+
+## Deferred (Not Currently in Scope)
+
+These are intentional non-goals for the current phase — don't implement
+them without a scope conversation first.
+
+- **Workflow / phase / gate system.** Forge has one
+  (`apps/server/src/workflow/`); the underlying idea ported from
+  `/Users/randy/repos/orc` (see `docs/specs/TASK_TEMPLATES.md`,
+  `docs/decisions/ADR-007-human-gates.md`). Not a core feature for v1.
+- **Remote / web access.** Forge's `REMOTE.md` model (HTTP+WS server,
+  auth token, Tailnet bind) is a planned future capability but is not
+  being built yet. Until then: keep the transport boundary clean —
+  Go → frontend goes through `app.Event.Emit` and Wails bindings only;
+  don't let UI code reach into Go internals in ways that would lock out
+  a future network transport.
+- **Auto-updater wiring.** Wails v3 ships a built-in updater
+  (https://v3alpha.wails.io/guides/distribution/auto-updates/); enable
+  it when we're ready to distribute. No custom updater required.

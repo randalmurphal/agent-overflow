@@ -117,6 +117,48 @@ func (s *Store) DeleteCheckpointsForThread(threadID string) error {
 	return nil
 }
 
+// DeleteCheckpointsAfterTurn removes every checkpoint row with turn_index
+// strictly greater than keepThroughTurn for the given thread. Returns the
+// list of ref_name values that were deleted so the caller can clean up the
+// backing git refs. Order is ascending by turn_index.
+//
+// Used by the revert flow: after reverting to turn N, forward checkpoints
+// (turn N+1 and beyond) no longer correspond to a reachable state and are
+// torn down so future captures can re-use those turn indices cleanly.
+func (s *Store) DeleteCheckpointsAfterTurn(threadID string, keepThroughTurn int) ([]string, error) {
+	rows, err := s.db.Query(
+		`SELECT ref_name FROM thread_checkpoints
+		 WHERE thread_id = ? AND turn_index > ?
+		 ORDER BY turn_index`,
+		threadID, keepThroughTurn,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: list checkpoints after turn for thread %s: %w", threadID, err)
+	}
+	var refs []string
+	for rows.Next() {
+		var ref string
+		if err := rows.Scan(&ref); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("store: scan checkpoint ref after turn: %w", err)
+		}
+		refs = append(refs, ref)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, fmt.Errorf("store: iterate checkpoints after turn: %w", err)
+	}
+	rows.Close()
+
+	if _, err := s.db.Exec(
+		`DELETE FROM thread_checkpoints WHERE thread_id = ? AND turn_index > ?`,
+		threadID, keepThroughTurn,
+	); err != nil {
+		return nil, fmt.Errorf("store: delete checkpoints after turn for thread %s: %w", threadID, err)
+	}
+	return refs, nil
+}
+
 // DeleteCheckpointByThreadTurn removes the checkpoint row for (thread, turn)
 // if it exists, returning the ref_name that was deleted so the caller can
 // clean up the backing git ref. The bool is false when no row existed — not

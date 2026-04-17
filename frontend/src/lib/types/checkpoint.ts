@@ -10,8 +10,20 @@ export interface Checkpoint {
   workspacePath: string;
 }
 
-/** Modes accepted by RevertToTurn. */
-export type RevertMode = 'fork' | 'restore';
+/**
+ * Modes accepted by RevertToTurn. The four modes map to the backend
+ * constants in app_checkpoint.go:
+ *
+ * - `fork`: create a new thread forked at this turn; leave the source
+ *   thread and its worktree untouched.
+ * - `revert-both`: in-place revert of both conversation history and
+ *   working tree to the captured state.
+ * - `revert-conversation`: in-place revert of conversation history only;
+ *   worktree is untouched.
+ * - `revert-code`: restore the worktree only; conversation history and
+ *   provider session state are untouched.
+ */
+export type RevertMode = 'fork' | 'revert-both' | 'revert-conversation' | 'revert-code';
 
 /**
  * Activity event emitted via `checkpoint:captured` when the triage layer

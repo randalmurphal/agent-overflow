@@ -194,37 +194,127 @@ func TestRevertToTurnForkReturnsNewThreadID(t *testing.T) {
 	}
 }
 
-func TestRevertToTurnRestoreRejectsClaude(t *testing.T) {
+// TestRevertToTurnRevertCodeOnlyRestoresWorktreeKeepsItems confirms that
+// revert-code touches only the filesystem. Items and checkpoints stay put,
+// and the provider session is left alone (no SessionRef rewrite). This is
+// the mode users pick when they want to toss file changes from the last
+// turn while keeping the conversation intact.
+func TestRevertToTurnRevertCodeOnlyRestoresWorktreeKeepsItems(t *testing.T) {
 	app, workspace := newCheckpointTestApp(t)
-	seedCheckpointThread(t, app, "t-claude", workspace, string(provider.Claude))
-	captureForTest(t, app, "t-claude", workspace, 0)
-
-	_, err := app.RevertToTurn("t-claude", 0, "restore")
-	if err == nil {
-		t.Errorf("expected error: Claude threads cannot be restored in place")
+	seedCheckpointThread(t, app, "t-code", workspace, string(provider.Codex))
+	// Seed items across turns 0 and 1 so we can assert none are dropped.
+	for i, turn := range []int{0, 1} {
+		if err := app.store.InsertItem(store.Item{
+			ID: "item-" + strings.Repeat("x", i+1), ThreadID: "t-code",
+			TurnIndex: turn, ItemIndex: 0, Kind: "text", Role: "user",
+			Summary: "x", CreatedAt: time.Now().UnixMilli(),
+		}); err != nil {
+			t.Fatalf("insert item: %v", err)
+		}
 	}
-	if !strings.Contains(err.Error(), "fork") {
-		t.Errorf("error should suggest fork mode, got: %v", err)
-	}
-}
-
-func TestRevertToTurnRestoreAppliesForCodex(t *testing.T) {
-	app, workspace := newCheckpointTestApp(t)
-	seedCheckpointThread(t, app, "t-codex", workspace, string(provider.Codex))
-
-	captureForTest(t, app, "t-codex", workspace, 0)
+	captureForTest(t, app, "t-code", workspace, 0)
 	writeCheckpointFile(t, workspace, "README", "junk\n")
-	writeCheckpointFile(t, workspace, "agent-junk.txt", "should go\n")
 
-	if _, err := app.RevertToTurn("t-codex", 0, "restore"); err != nil {
-		t.Fatalf("revert restore: %v", err)
+	if _, err := app.RevertToTurn("t-code", 0, "revert-code"); err != nil {
+		t.Fatalf("revert-code: %v", err)
 	}
 
 	if got, _ := os.ReadFile(filepath.Join(workspace, "README")); string(got) != "hello\n" {
-		t.Errorf("README not restored: %q", got)
+		t.Errorf("README not restored by revert-code: %q", got)
 	}
-	if _, err := os.Stat(filepath.Join(workspace, "agent-junk.txt")); err == nil {
-		t.Errorf("agent-junk.txt should have been removed by restore")
+	items, err := app.store.ListItems("t-code")
+	if err != nil {
+		t.Fatalf("list items: %v", err)
+	}
+	if len(items) != 2 {
+		t.Errorf("revert-code must not truncate items; got %d", len(items))
+	}
+}
+
+// TestRevertToTurnRevertConversationOnClaudeClearsSessionRef confirms that
+// Claude's revert-conversation path stops short of touching the worktree
+// but wipes the session ref and truncates items past the target turn. The
+// old session file on disk is intentionally left where it was.
+func TestRevertToTurnRevertConversationOnClaudeClearsSessionRef(t *testing.T) {
+	app, workspace := newCheckpointTestApp(t)
+	thread := seedCheckpointThread(t, app, "t-claude", workspace, string(provider.Claude))
+	thread.SessionRef = "claude-session-old"
+	if err := app.store.UpdateThread(thread); err != nil {
+		t.Fatalf("update thread: %v", err)
+	}
+	for _, turn := range []int{0, 1, 2} {
+		if err := app.store.InsertItem(store.Item{
+			ID: "item-t" + string(rune('0'+turn)), ThreadID: "t-claude",
+			TurnIndex: turn, ItemIndex: 0, Kind: "text", Role: "user",
+			Summary: "x", CreatedAt: time.Now().UnixMilli(),
+		}); err != nil {
+			t.Fatalf("insert item: %v", err)
+		}
+	}
+	captureForTest(t, app, "t-claude", workspace, 1)
+
+	// Revert to turn 1 → drop turns 1 and 2; keep turn 0.
+	// Worktree is untouched by revert-conversation even if dirty.
+	writeCheckpointFile(t, workspace, "README", "still dirty\n")
+	if _, err := app.RevertToTurn("t-claude", 1, "revert-conversation"); err != nil {
+		t.Fatalf("revert-conversation: %v", err)
+	}
+
+	got, err := app.store.GetThread("t-claude")
+	if err != nil {
+		t.Fatalf("get thread: %v", err)
+	}
+	if got.SessionRef != "" {
+		t.Errorf("SessionRef should be cleared, got %q", got.SessionRef)
+	}
+
+	items, _ := app.store.ListItems("t-claude")
+	if len(items) != 1 {
+		t.Errorf("expected 1 item (turn 0), got %d", len(items))
+	}
+
+	// Worktree was NOT restored — revert-conversation leaves files alone.
+	if data, _ := os.ReadFile(filepath.Join(workspace, "README")); string(data) != "still dirty\n" {
+		t.Errorf("worktree should be untouched by revert-conversation; got %q", data)
+	}
+}
+
+// TestRevertToTurnRevertBothOnClaudeRestoresWorktreeAndClearsSession confirms
+// the combined path for Claude: clears session ref, restores worktree, and
+// truncates items past the target turn.
+func TestRevertToTurnRevertBothOnClaudeRestoresWorktreeAndClearsSession(t *testing.T) {
+	app, workspace := newCheckpointTestApp(t)
+	thread := seedCheckpointThread(t, app, "t-claude", workspace, string(provider.Claude))
+	thread.SessionRef = "claude-session-old"
+	if err := app.store.UpdateThread(thread); err != nil {
+		t.Fatalf("update thread: %v", err)
+	}
+	for _, turn := range []int{0, 1} {
+		if err := app.store.InsertItem(store.Item{
+			ID: "it-" + string(rune('0'+turn)), ThreadID: "t-claude",
+			TurnIndex: turn, ItemIndex: 0, Kind: "text", Role: "user",
+			Summary: "x", CreatedAt: time.Now().UnixMilli(),
+		}); err != nil {
+			t.Fatalf("insert item: %v", err)
+		}
+	}
+	captureForTest(t, app, "t-claude", workspace, 0)
+	writeCheckpointFile(t, workspace, "README", "dirty\n")
+
+	if _, err := app.RevertToTurn("t-claude", 0, "revert-both"); err != nil {
+		t.Fatalf("revert-both on Claude: %v", err)
+	}
+
+	got, _ := app.store.GetThread("t-claude")
+	if got.SessionRef != "" {
+		t.Errorf("SessionRef should be cleared, got %q", got.SessionRef)
+	}
+	if data, _ := os.ReadFile(filepath.Join(workspace, "README")); string(data) != "hello\n" {
+		t.Errorf("README not restored: %q", data)
+	}
+	items, _ := app.store.ListItems("t-claude")
+	if len(items) != 0 {
+		t.Errorf("revert to turn 0 should drop all items, got %d", len(items))
 	}
 }
 
