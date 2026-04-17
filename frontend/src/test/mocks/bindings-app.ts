@@ -88,3 +88,12 @@ export const GitCreateBranch = dispatch('GitCreateBranch');
 export const GitCreatePR = dispatch('GitCreatePR');
 export const GitCreateWorktree = dispatch('GitCreateWorktree');
 export const GitRemoveWorktree = dispatch('GitRemoveWorktree');
+
+export const ListDiscussions = dispatch('ListDiscussions');
+export const GetDiscussion = dispatch('GetDiscussion');
+export const CreateDiscussion = dispatch('CreateDiscussion');
+export const UpdateDiscussion = dispatch('UpdateDiscussion');
+export const DeleteDiscussion = dispatch('DeleteDiscussion');
+export const StartDiscussion = dispatch('StartDiscussion');
+export const GetChannelMessages = dispatch('GetChannelMessages');
+export const PostChannelMessage = dispatch('PostChannelMessage');

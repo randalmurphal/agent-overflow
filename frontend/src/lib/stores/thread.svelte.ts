@@ -1,5 +1,6 @@
 import type { Item, PayloadMeta, Thread } from '../types/models';
 import type { ApprovalRequest, ContextWindow, RateLimitEntry, TokenUsage, ToolProgressMeta } from '../types/events';
+import type { ChannelMessage } from '../types/discussion';
 import { ListItems, ListPayloadMetas, SwitchThread } from './bindings';
 import { addToast } from './toast.svelte';
 
@@ -26,6 +27,10 @@ export function createThreadPane() {
   let pendingMessage: string | null = $state(null);
   let showTerminal: boolean = $state(false);
 
+  // Channel state (only populated for discussion threads).
+  let channelMessages: ChannelMessage[] = $state([]);
+  let channelStatus: 'open' | 'concluded' | 'closed' | null = $state(null);
+
   /**
    * Generation counter for finalizeTurn. Incremented each time finalizeTurn
    * starts so that stale async DB responses don't overwrite newer state.
@@ -50,6 +55,8 @@ export function createThreadPane() {
     get loading() { return loading; },
     get pendingMessage() { return pendingMessage; },
     get showTerminal() { return showTerminal; },
+    get channelMessages() { return channelMessages; },
+    get channelStatus() { return channelStatus; },
 
     // --- Thread switching ---
 
@@ -65,6 +72,8 @@ export function createThreadPane() {
       sessionStatus = 'disconnected';
       error = null;
       pendingMessage = null;
+      channelMessages = [];
+      channelStatus = null;
       loading = true;
 
       thread = newThread;
@@ -117,6 +126,8 @@ export function createThreadPane() {
       loading = false;
       pendingMessage = null;
       showTerminal = false;
+      channelMessages = [];
+      channelStatus = null;
       turnGeneration++;
     },
 
@@ -246,6 +257,34 @@ export function createThreadPane() {
 
     setShowTerminal(value: boolean): void {
       showTerminal = value;
+    },
+
+    /**
+     * Merge channel messages into local state, de-duplicating by sequence.
+     * Expected to be called with `afterSeq` set to the highest sequence we've
+     * seen, so most calls append a small number of rows.
+     */
+    mergeChannelMessages(incoming: ChannelMessage[]): void {
+      if (!incoming || incoming.length === 0) return;
+      const seen = new Set(channelMessages.map((m) => m.sequence));
+      const next = channelMessages.slice();
+      for (const msg of incoming) {
+        if (!seen.has(msg.sequence)) {
+          next.push(msg);
+          seen.add(msg.sequence);
+        }
+      }
+      next.sort((a, b) => a.sequence - b.sequence);
+      channelMessages = next;
+    },
+
+    setChannelStatus(status: 'open' | 'concluded' | 'closed' | null): void {
+      channelStatus = status;
+    },
+
+    clearChannel(): void {
+      channelMessages = [];
+      channelStatus = null;
     },
   };
 }

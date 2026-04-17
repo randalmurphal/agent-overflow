@@ -8,9 +8,20 @@
   import ConfirmDialog from '../shared/ConfirmDialog.svelte';
   import { relativeTime } from '../../utils/format';
 
-  let { thread, pane }: { thread: Thread; pane: ThreadPane } = $props();
+  let {
+    thread,
+    pane,
+    onStartDiscussion,
+  }: {
+    thread: Thread;
+    pane: ThreadPane;
+    onStartDiscussion?: (thread: Thread) => void;
+  } = $props();
 
   let isActive = $derived(pane.threadId === thread.id);
+  let canStartDiscussion = $derived(
+    thread.interactionMode !== 'discussion' && !thread.discussionId && !thread.parentThreadId,
+  );
 
   // Inline rename state
   let editing = $state(false);
@@ -21,6 +32,11 @@
   // Confirm dialogs
   let showDeleteConfirm = $state(false);
   let showArchiveConfirm = $state(false);
+
+  function handleStartDiscussion(e: MouseEvent): void {
+    e.stopPropagation();
+    onStartDiscussion?.(thread);
+  }
 
   function handleClick() {
     if (!editing) {
@@ -173,12 +189,29 @@
       />
     {:else}
       <span class="text-sm truncate flex-1">{thread.title || 'Untitled'}</span>
+      {#if thread.interactionMode === 'discussion'}
+        <span class="text-[9px] px-1 py-0.5 rounded bg-accent/15 text-accent/80 shrink-0" title="Discussion parent thread" aria-label="Discussion parent thread">D</span>
+      {:else if thread.parentThreadId}
+        <span class="text-[9px] px-1 py-0.5 rounded bg-provider-codex/15 text-provider-codex/80 shrink-0" title="Discussion participant" aria-label="Discussion participant">Dp</span>
+      {/if}
       {#if thread.worktreePath}
         <span class="text-[9px] px-1 py-0.5 rounded bg-accent/15 text-accent/70 shrink-0" title="Worktree: {thread.worktreePath}">WT</span>
       {/if}
     {/if}
 
     {#if !editing}
+      {#if onStartDiscussion && canStartDiscussion}
+        <button
+          onclick={handleStartDiscussion}
+          class="opacity-0 group-hover:opacity-100 transition-opacity duration-150 text-text-secondary hover:text-text-primary text-xs px-1 shrink-0 cursor-pointer focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/50 rounded"
+          aria-label="Start discussion on thread"
+          title="Start discussion"
+        >
+          <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" />
+          </svg>
+        </button>
+      {/if}
       <button
         onclick={handleFork}
         disabled={!thread.sessionRef}

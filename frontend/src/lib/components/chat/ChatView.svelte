@@ -13,8 +13,13 @@
   import RateLimitsMeter from './RateLimitsMeter.svelte';
   import ModelPicker from '../composer/ModelPicker.svelte';
   import ThreadTerminalDrawer from '../terminal/ThreadTerminalDrawer.svelte';
+  import DiscussionView from '../discussion/DiscussionView.svelte';
 
   let { pane }: { pane: ThreadPane } = $props();
+
+  let inDiscussionMode = $derived(
+    !!pane.thread && pane.thread.interactionMode === 'discussion' && !!pane.thread.discussionId,
+  );
 
   function handleKeydown(e: KeyboardEvent) {
     const isToggleShortcut = (e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'j';
@@ -33,7 +38,9 @@
   });
 </script>
 
-{#if pane.thread}
+{#if pane.thread && inDiscussionMode}
+  <DiscussionView {pane} />
+{:else if pane.thread}
   <div class="flex flex-col h-full">
     <div class="border-b border-border bg-surface-1 px-4 py-2.5 flex items-center gap-x-2 gap-y-1 shrink-0 flex-wrap min-w-0">
       <span class="text-xs font-medium px-1.5 py-0.5 rounded bg-accent/20 text-accent">

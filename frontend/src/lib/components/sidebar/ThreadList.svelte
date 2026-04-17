@@ -1,9 +1,16 @@
 <script lang="ts">
+  import type { Thread } from '../../types/models';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { getThreads } from '../../stores/threads.svelte';
   import ThreadRow from './ThreadRow.svelte';
 
-  let { pane }: { pane: ThreadPane } = $props();
+  let {
+    pane,
+    onStartDiscussion,
+  }: {
+    pane: ThreadPane;
+    onStartDiscussion?: (thread: Thread) => void;
+  } = $props();
 
   let threads = $derived(getThreads());
 </script>
@@ -11,7 +18,7 @@
 <div class="flex-1 overflow-y-auto px-2 py-2 space-y-1" role="list" aria-label="Threads">
   {#each threads as thread (thread.id)}
     <div role="listitem">
-      <ThreadRow {thread} {pane} />
+      <ThreadRow {thread} {pane} {onStartDiscussion} />
     </div>
   {/each}
 

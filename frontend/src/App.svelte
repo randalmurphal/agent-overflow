@@ -9,10 +9,21 @@
   import ChatView from './lib/components/chat/ChatView.svelte';
   import Toast from './lib/components/shared/Toast.svelte';
   import SettingsView from './lib/components/settings/SettingsView.svelte';
+  import DiscussionStartFlow from './lib/components/discussion/DiscussionStartFlow.svelte';
+  import type { Thread } from './lib/types/models';
 
   let showSettings = $state(false);
+  let discussionStartFor = $state<Thread | null>(null);
 
   const pane = getMainPane();
+
+  function handleStartDiscussion(thread: Thread): void {
+    discussionStartFor = thread;
+  }
+
+  function closeDiscussionStart(): void {
+    discussionStartFor = null;
+  }
 
   $effect(() => {
     applyTheme(getSettings().theme);
@@ -35,7 +46,7 @@
     <div class="absolute bottom-[-14rem] right-[-10rem] h-[24rem] w-[24rem] rounded-full bg-provider-codex/10 blur-3xl"></div>
   </div>
   <div class="relative flex h-full w-full">
-    <Sidebar {pane} onOpenSettings={() => showSettings = true} />
+    <Sidebar {pane} onOpenSettings={() => showSettings = true} onStartDiscussion={handleStartDiscussion} />
     <div class="flex-1 flex flex-col min-w-0">
       {#if showSettings}
         <SettingsView onClose={() => showSettings = false} />
@@ -45,4 +56,10 @@
     </div>
   </div>
 </main>
+<DiscussionStartFlow
+  open={discussionStartFor !== null}
+  thread={discussionStartFor}
+  {pane}
+  onClose={closeDiscussionStart}
+/>
 <Toast />

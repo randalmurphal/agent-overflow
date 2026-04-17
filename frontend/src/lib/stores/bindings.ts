@@ -55,6 +55,16 @@ export {
   ResizeTerminal,
   RestartTerminal,
   WriteTerminal,
+
+  // Discussion operations
+  ListDiscussions,
+  GetDiscussion,
+  CreateDiscussion,
+  UpdateDiscussion,
+  DeleteDiscussion,
+  StartDiscussion,
+  GetChannelMessages,
+  PostChannelMessage,
 } from '../../../bindings/agent-overflow/app.js';
 
 // Model classes needed for constructing RPC parameters.

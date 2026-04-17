@@ -10,7 +10,15 @@
   import ThreadList from './ThreadList.svelte';
   import WorkspacePicker from './WorkspacePicker.svelte';
 
-  let { pane, onOpenSettings }: { pane: ThreadPane; onOpenSettings?: () => void } = $props();
+  let {
+    pane,
+    onOpenSettings,
+    onStartDiscussion,
+  }: {
+    pane: ThreadPane;
+    onOpenSettings?: () => void;
+    onStartDiscussion?: (thread: Thread) => void;
+  } = $props();
 
   let showForm = $state(false);
   let provider = $state<'claude' | 'codex'>(getSettings().defaultProvider as 'claude' | 'codex');
@@ -168,7 +176,7 @@
     {/if}
   </div>
 
-  <ThreadList {pane} />
+  <ThreadList {pane} {onStartDiscussion} />
 
   {#if onOpenSettings}
     <div class="border-t border-border/70 p-2 shrink-0">
