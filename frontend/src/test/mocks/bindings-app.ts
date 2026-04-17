@@ -56,10 +56,20 @@ export const ArchiveThread = dispatch('ArchiveThread');
 export const UnarchiveThread = dispatch('UnarchiveThread');
 export const CreateThread = dispatch('CreateThread');
 export const DeleteThread = dispatch('DeleteThread');
+export const ForkThread = dispatch('ForkThread');
 export const GetThread = dispatch('GetThread');
 export const ListThreads = dispatch('ListThreads');
 export const RenameThread = dispatch('RenameThread');
 export const SwitchThread = dispatch('SwitchThread');
+
+// Terminal operations (ThreadTerminalDrawer, TerminalBody, etc).
+export const CloseTerminal = dispatch('CloseTerminal');
+export const GetTerminalReplay = dispatch('GetTerminalReplay');
+export const ListTerminals = dispatch('ListTerminals');
+export const OpenTerminal = dispatch('OpenTerminal');
+export const ResizeTerminal = dispatch('ResizeTerminal');
+export const RestartTerminal = dispatch('RestartTerminal');
+export const WriteTerminal = dispatch('WriteTerminal');
 
 export const StartSession = dispatch('StartSession');
 export const StopSession = dispatch('StopSession');
