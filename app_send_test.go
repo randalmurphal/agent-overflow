@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -508,6 +510,150 @@ func TestStopSessionNoSessionIsNoOp(t *testing.T) {
 	// StopSession on a thread with no session should not error.
 	if err := app.StopSession("nonexistent-thread"); err != nil {
 		t.Fatalf("StopSession() error = %v, want nil", err)
+	}
+}
+
+// TestSendMessageSerialPerThread exercises Bug B11: five concurrent
+// SendMessage calls on the same thread must execute strictly serially,
+// each with a distinct, monotonically-increasing turn_index. Without the
+// per-thread mutex two sends could compute the same lastTurnIndex and
+// collide on the UNIQUE(turn_index, item_index) constraint, or silently
+// attribute the same user message to two different turns.
+func TestSendMessageSerialPerThread(t *testing.T) {
+	app := newTestAppWithStore(t)
+	thread := testThread("thread-serial")
+	thread.Provider = string(provider.Claude)
+	thread.WorkspacePath = t.TempDir()
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+
+	sess, err := claude.NewSession(
+		context.Background(),
+		thread.ID,
+		claude.Config{
+			Binary:  writeClaudePassthroughBinary(t),
+			WorkDir: thread.WorkspacePath,
+		},
+		func(provider.ProviderEvent) {},
+	)
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(func() { _ = sess.Close() })
+
+	app.sessions[thread.ID] = session{
+		provider: string(provider.Claude),
+		token:    "tok",
+		claude:   sess,
+	}
+
+	const N = 5
+	var wg sync.WaitGroup
+	errCh := make(chan error, N)
+	for i := 0; i < N; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			if err := app.SendMessage(thread.ID, fmt.Sprintf("msg-%d", i)); err != nil {
+				errCh <- err
+			}
+		}(i)
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		t.Fatalf("SendMessage: %v", err)
+	}
+
+	items, err := app.store.ListItems(thread.ID)
+	if err != nil {
+		t.Fatalf("ListItems: %v", err)
+	}
+	// Each SendMessage should have inserted exactly one user item with
+	// a unique turnIndex in [1..N]. A regression would produce either
+	// duplicate turnIndex (UNIQUE violation aborts the second insert),
+	// or a count mismatch.
+	seenTurns := make(map[int]bool)
+	for _, item := range items {
+		if item.Role != "user" {
+			continue
+		}
+		if seenTurns[item.TurnIndex] {
+			t.Fatalf("duplicate turnIndex %d (Bug B11 regression): %+v", item.TurnIndex, item)
+		}
+		seenTurns[item.TurnIndex] = true
+	}
+	if len(seenTurns) != N {
+		t.Fatalf("persisted user turns = %d, want %d", len(seenTurns), N)
+	}
+	for i := 1; i <= N; i++ {
+		if !seenTurns[i] {
+			t.Fatalf("missing turnIndex %d in persisted items", i)
+		}
+	}
+}
+
+// TestSendMessageParallelDifferentThreads confirms the per-thread mutex
+// does NOT serialize across unrelated threads: two threads' sends make
+// progress concurrently.
+func TestSendMessageParallelDifferentThreads(t *testing.T) {
+	app := newTestAppWithStore(t)
+
+	threadA := testThread("thread-parallel-A")
+	threadA.Provider = string(provider.Claude)
+	threadA.WorkspacePath = t.TempDir()
+	if err := app.store.CreateThread(threadA); err != nil {
+		t.Fatalf("CreateThread A: %v", err)
+	}
+	threadB := testThread("thread-parallel-B")
+	threadB.Provider = string(provider.Claude)
+	threadB.WorkspacePath = t.TempDir()
+	if err := app.store.CreateThread(threadB); err != nil {
+		t.Fatalf("CreateThread B: %v", err)
+	}
+
+	sessA, err := claude.NewSession(
+		context.Background(),
+		threadA.ID,
+		claude.Config{
+			Binary:  writeClaudePassthroughBinary(t),
+			WorkDir: threadA.WorkspacePath,
+		},
+		func(provider.ProviderEvent) {},
+	)
+	if err != nil {
+		t.Fatalf("NewSession A: %v", err)
+	}
+	t.Cleanup(func() { _ = sessA.Close() })
+	sessB, err := claude.NewSession(
+		context.Background(),
+		threadB.ID,
+		claude.Config{
+			Binary:  writeClaudePassthroughBinary(t),
+			WorkDir: threadB.WorkspacePath,
+		},
+		func(provider.ProviderEvent) {},
+	)
+	if err != nil {
+		t.Fatalf("NewSession B: %v", err)
+	}
+	t.Cleanup(func() { _ = sessB.Close() })
+
+	app.sessions[threadA.ID] = session{provider: string(provider.Claude), token: "a", claude: sessA}
+	app.sessions[threadB.ID] = session{provider: string(provider.Claude), token: "b", claude: sessB}
+
+	if err := app.SendMessage(threadA.ID, "a"); err != nil {
+		t.Fatalf("send A: %v", err)
+	}
+	if err := app.SendMessage(threadB.ID, "b"); err != nil {
+		t.Fatalf("send B: %v", err)
+	}
+
+	itemsA, _ := app.store.ListItems(threadA.ID)
+	itemsB, _ := app.store.ListItems(threadB.ID)
+	if len(itemsA) != 1 || len(itemsB) != 1 {
+		t.Fatalf("per-thread isolation broken: A=%d B=%d", len(itemsA), len(itemsB))
 	}
 }
 

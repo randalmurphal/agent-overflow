@@ -12,11 +12,37 @@ import (
 	"github.com/google/uuid"
 )
 
-// sendMu serialises the read-turn-index / insert-item sequence so concurrent
-// sends on different threads don't block unrelated App operations behind a.mu.
-// SQLite itself serialises the INSERT (SetMaxOpenConns(1)), but this mutex
-// keeps the read+write atomic from our side.
-var sendMu sync.Mutex
+// sendThreadMuRegistry owns a mutex per thread so the "compute turn index
+// / call provider / persist user item" sequence can't interleave for the
+// same thread (Bug B11). Concurrent sends on DIFFERENT threads proceed
+// in parallel — that's the whole point of splitting the lock from a
+// global sendMu. Also avoids the audit #52 misattribution where two
+// in-flight sends on one thread both attributed assistant replies to
+// max(turn_index) instead of the turn that actually spoke.
+var sendThreadMuRegistry = &threadMutexRegistry{
+	mus: make(map[string]*sync.Mutex),
+}
+
+type threadMutexRegistry struct {
+	mu  sync.Mutex
+	mus map[string]*sync.Mutex
+}
+
+// lockFor returns an unlock function that must be called once the
+// per-thread critical section completes. The registry caches one mutex
+// per thread for the life of the process; threads come and go, but the
+// memory footprint is tiny (one small struct per thread).
+func (r *threadMutexRegistry) lockFor(threadID string) func() {
+	r.mu.Lock()
+	m, ok := r.mus[threadID]
+	if !ok {
+		m = &sync.Mutex{}
+		r.mus[threadID] = m
+	}
+	r.mu.Unlock()
+	m.Lock()
+	return m.Unlock
+}
 
 func (a *App) sendMessage(threadID string, content string) error {
 	if a.sendMessageFn != nil {
@@ -31,39 +57,31 @@ func (a *App) sendMessage(threadID string, content string) error {
 		return fmt.Errorf("no active session for thread %s", threadID)
 	}
 
-	// DB reads happen outside a.mu so other App methods are not blocked.
-	// Under sendMu: compute turn index + do a pre-flight read of the
-	// thread. Holding sendMu keeps the "read turn index, then send, then
-	// persist" sequence atomic from our side — without it, two concurrent
-	// SendMessage calls could both compute the same turnIndex and stomp
-	// on each other's InsertItem.
-	sendMu.Lock()
+	// Per-thread critical section: only one Send per thread at a time.
+	// This keeps the read-turn-index / call-provider / insert-user-item
+	// sequence atomic for a single thread while letting different
+	// threads proceed in parallel.
+	unlock := sendThreadMuRegistry.lockFor(threadID)
+	defer unlock()
+
 	thread, err := a.store.GetThread(threadID)
 	if err != nil {
-		sendMu.Unlock()
 		return fmt.Errorf("send message: get thread: %w", err)
 	}
 	hasPriorItems, err := a.store.HasItems(threadID)
 	if err != nil {
-		sendMu.Unlock()
 		return fmt.Errorf("send message: check prior items: %w", err)
 	}
 	turnIndex, err := a.store.LastTurnIndex(threadID)
 	if err != nil {
-		sendMu.Unlock()
 		return fmt.Errorf("send message: get turn index: %w", err)
 	}
 	turnIndex++
 	a.maybeRenameTemporaryWorktreeBranch(threadID, content)
 
-	// Bug B8: the user item used to be persisted here, BEFORE the
-	// provider Send. A failing Send left an orphan user row on a turn
-	// that never ran. Write to the provider first — if that fails we
-	// don't persist anything. On success, persist the user item and
-	// release the mutex so concurrent sends see the committed turn
-	// index before they compute their own.
+	// Bug B8: write to the provider FIRST; a failing Send must not
+	// leave an orphan user item on a turn that never ran.
 	if err := sendToProvider(sess, threadID, content); err != nil {
-		sendMu.Unlock()
 		return err
 	}
 
@@ -79,10 +97,8 @@ func (a *App) sendMessage(threadID string, content string) error {
 		CreatedAt: now,
 	}
 	if err := a.store.InsertItem(userItem); err != nil {
-		sendMu.Unlock()
 		return fmt.Errorf("send message: persist user message: %w", err)
 	}
-	sendMu.Unlock()
 	a.maybeGenerateThreadTitle(thread, content, hasPriorItems)
 	return nil
 }
