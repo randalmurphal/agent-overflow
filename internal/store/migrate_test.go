@@ -1,7 +1,11 @@
 package store
 
 import (
+	"bytes"
 	"database/sql"
+	"log"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	_ "modernc.org/sqlite"
@@ -562,5 +566,57 @@ func TestMigrationV7ThreadCheckpointsCascadesOnThreadDelete(t *testing.T) {
 	}
 	if count != 0 {
 		t.Errorf("expected cascading delete to drop checkpoints, still have %d", count)
+	}
+}
+
+// TestConfigureDatabaseEnablesWAL verifies that the WAL pragma was
+// actually applied. With a real on-disk database, SQLite should accept
+// WAL and PRAGMA journal_mode should report "wal". This catches the
+// case where a schema change or library upgrade silently reverts
+// journaling to rollback mode (slower write concurrency, checkpointing
+// off).
+func TestConfigureDatabaseEnablesWAL(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "wal-probe.db")
+	s, err := New(path)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	var mode string
+	if err := s.db.QueryRow("PRAGMA journal_mode").Scan(&mode); err != nil {
+		t.Fatalf("PRAGMA journal_mode: %v", err)
+	}
+	if !strings.EqualFold(mode, "wal") {
+		t.Errorf("journal_mode = %q, want %q", mode, "wal")
+	}
+}
+
+// TestConfigureDatabaseWarnsOnFallback covers the documented warning
+// path. In-memory databases can't use WAL (SQLite falls back to
+// "memory" journaling). We point configureDatabase at an in-memory
+// connection and assert the log emits the WAL-fallback warning so
+// future maintainers see why their deployment isn't checkpointing.
+func TestConfigureDatabaseWarnsOnFallback(t *testing.T) {
+	db := openSQLiteDB(t)
+
+	var logBuf bytes.Buffer
+	previous := log.Writer()
+	log.SetOutput(&logBuf)
+	t.Cleanup(func() { log.SetOutput(previous) })
+
+	if err := configureDatabase(db); err != nil {
+		t.Fatalf("configureDatabase: %v", err)
+	}
+
+	output := logBuf.String()
+	if !strings.Contains(output, "journal_mode=WAL returned") {
+		t.Errorf("expected fallback warning in log, got: %q", output)
+	}
+	// Confirm the logged mode is not "wal" — an in-memory DB reports
+	// "memory" (older SQLite builds may report "file" or similar).
+	if strings.Contains(output, `returned "wal"`) {
+		t.Errorf("unexpected: in-memory DB reported WAL journaling: %q", output)
 	}
 }

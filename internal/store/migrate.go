@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"regexp"
+	"strings"
 )
 
 const createMigrationVersionsTableSQL = `CREATE TABLE IF NOT EXISTS migration_versions (
@@ -302,8 +303,18 @@ func runMigrations(db *sql.DB) error {
 }
 
 func configureDatabase(db *sql.DB) error {
-	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
+	// PRAGMA journal_mode=WAL returns the resulting mode even on
+	// success; SQLite silently falls back to the previous journal mode
+	// when WAL can't be enabled (NFS filesystems, read-only mounts,
+	// shared-cache databases). We don't treat this as fatal — rollback
+	// journaling keeps the app correct — but we log a warning so the
+	// user can see why checkpointing is not happening.
+	var journalMode string
+	if err := db.QueryRow("PRAGMA journal_mode=WAL").Scan(&journalMode); err != nil {
 		return fmt.Errorf("set WAL mode: %w", err)
+	}
+	if !strings.EqualFold(journalMode, "wal") {
+		log.Printf("store: journal_mode=WAL returned %q; SQLite fell back to rollback journaling (often caused by NFS or read-only mount)", journalMode)
 	}
 	if _, err := db.Exec("PRAGMA foreign_keys=ON"); err != nil {
 		return fmt.Errorf("enable foreign keys: %w", err)
