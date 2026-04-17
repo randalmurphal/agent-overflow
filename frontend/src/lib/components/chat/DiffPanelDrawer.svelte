@@ -15,7 +15,11 @@
     GetWorkingTreeDiff,
     GetPayloadData,
     ListThreadCheckpoints,
+    RevertToTurn,
   } from '../../stores/bindings';
+  import type { RevertMode } from '../../types/checkpoint';
+  import { addToast } from '../../stores/toast.svelte';
+  import RevertDialog from './diff-panel/RevertDialog.svelte';
   import { getSettings, updateSetting } from '../../stores/settings.svelte';
   import {
     aggregateAgentDiffs,
@@ -165,6 +169,41 @@
 
   function handleCompareModeChange(mode: TurnCompareMode): void {
     store.setTurnCompareMode(mode);
+  }
+
+  // --- Revert dialog state and wiring ---
+
+  let revertOpen = $state(false);
+  let revertTurn = $state<number | null>(null);
+  let reverting = $state(false);
+
+  function handleRequestRevert(turnIndex: number): void {
+    revertTurn = turnIndex;
+    revertOpen = true;
+  }
+
+  function handleRevertCancel(): void {
+    if (reverting) return; // Don't close while an in-flight revert is running.
+    revertOpen = false;
+    revertTurn = null;
+  }
+
+  async function handleRevert(mode: RevertMode): Promise<void> {
+    if (revertTurn === null || !threadId || !pane.thread) return;
+    reverting = true;
+    try {
+      await RevertToTurn(threadId, revertTurn, mode);
+      revertOpen = false;
+      revertTurn = null;
+      addToast('success', mode === 'fork' ? 'Thread forked' : 'Thread reverted');
+      // Reload the pane against the same thread — truncates in-memory items,
+      // resets streaming state, and refreshes checkpoints.
+      await pane.switchThread(pane.thread);
+    } catch (err) {
+      addToast('error', `Revert failed: ${errString(err)}`);
+    } finally {
+      reverting = false;
+    }
   }
 
   function handleClose(): void {
@@ -323,6 +362,7 @@
       diffText={turnDiffText}
       onSelectTurn={handleSelectTurn}
       onCompareModeChange={handleCompareModeChange}
+      onRequestRevert={handleRequestRevert}
     />
   {:else if activeSource === 'worktree'}
     <WorkingTreeView
@@ -339,3 +379,11 @@
     />
   {/if}
 </aside>
+
+<RevertDialog
+  open={revertOpen}
+  turnIndex={revertTurn ?? 0}
+  provider={(pane.thread?.provider ?? '').toLowerCase()}
+  onRevert={handleRevert}
+  onCancel={handleRevertCancel}
+/>

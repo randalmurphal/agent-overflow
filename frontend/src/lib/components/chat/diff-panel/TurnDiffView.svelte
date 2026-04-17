@@ -11,9 +11,11 @@
     diffText: string;
     onSelectTurn: (turnIndex: number) => void;
     onCompareModeChange: (mode: TurnCompareMode) => void;
+    /** Open the revert dialog for the given turn. Wired by DiffPanelDrawer. */
+    onRequestRevert: (turnIndex: number) => void;
   }
 
-  let { store, checkpoints, loadingDiff, diffText, onSelectTurn, onCompareModeChange }: Props = $props();
+  let { store, checkpoints, loadingDiff, diffText, onSelectTurn, onCompareModeChange, onRequestRevert }: Props = $props();
 
   let selected = $derived(store.selectedTurnIndex);
   let compareMode = $derived(store.turnCompareMode);
@@ -62,6 +64,16 @@
           Turn → Worktree
         </button>
       </div>
+      {#if selected !== null}
+        <button
+          type="button"
+          data-testid="diff-turn-revert"
+          onclick={() => onRequestRevert(selected!)}
+          class="ml-auto px-2 py-0.5 rounded text-xs text-error border border-error/40 hover:bg-error/10 cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+        >
+          Revert to turn {selected}…
+        </button>
+      {/if}
     </div>
     <div class="flex-1 min-h-0 overflow-auto">
       {#if selected === null}
