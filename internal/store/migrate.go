@@ -279,6 +279,69 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_items_thread_turn_item_unique
     ON items(thread_id, turn_index, item_index);
 `,
 	},
+	{
+		Version: 11,
+		Name:    "threads_interaction_mode_check",
+		// v2 added interaction_mode with no CHECK constraint. That
+		// leaves the column open to typos and stale-client writes
+		// (a user with sqlite3 and a v1-era dump could plant "plann"
+		// or any other value, and the app would carry it forever).
+		// Adding a CHECK enforces the contract at the storage layer
+		// so every subsequent read is guaranteed to see one of the
+		// four canonical values.
+		//
+		// SQLite does not support ALTER TABLE ADD CONSTRAINT, so we
+		// rebuild the threads table into a shadow with the new
+		// constraint, copy rows, rename, and recreate indexes. Any
+		// pre-existing row with an unexpected interaction_mode is
+		// normalized to 'default' first so the copy succeeds instead
+		// of aborting the whole migration — keeping the thread with
+		// a safe default beats leaving the user with a database the
+		// new binary refuses to open.
+		SQL: `
+UPDATE threads
+   SET interaction_mode = 'default'
+ WHERE interaction_mode NOT IN ('default', 'plan', 'design', 'discussion');
+
+CREATE TABLE threads_v11 (
+    id             TEXT PRIMARY KEY,
+    title          TEXT NOT NULL DEFAULT 'New Thread',
+    provider       TEXT NOT NULL CHECK(provider IN ('claude', 'codex')),
+    session_ref    TEXT,
+    workspace_path TEXT NOT NULL,
+    model          TEXT NOT NULL DEFAULT '',
+    created_at     INTEGER NOT NULL,
+    updated_at     INTEGER NOT NULL,
+    archived       INTEGER NOT NULL DEFAULT 0,
+    interaction_mode TEXT NOT NULL DEFAULT 'default'
+        CHECK(interaction_mode IN ('default', 'plan', 'design', 'discussion')),
+    branch         TEXT,
+    worktree_path  TEXT,
+    project_path   TEXT NOT NULL DEFAULT '',
+    discussion_id  TEXT,
+    parent_thread_id TEXT REFERENCES threads(id) ON DELETE SET NULL,
+    pending_fork_session_ref TEXT,
+    forked_from_thread_id TEXT REFERENCES threads(id) ON DELETE SET NULL
+);
+
+INSERT INTO threads_v11
+    (id, title, provider, session_ref, workspace_path, model, created_at,
+     updated_at, archived, interaction_mode, branch, worktree_path,
+     project_path, discussion_id, parent_thread_id, pending_fork_session_ref,
+     forked_from_thread_id)
+SELECT id, title, provider, session_ref, workspace_path, model, created_at,
+       updated_at, archived, interaction_mode, branch, worktree_path,
+       project_path, discussion_id, parent_thread_id, pending_fork_session_ref,
+       forked_from_thread_id
+FROM threads;
+
+DROP TABLE threads;
+ALTER TABLE threads_v11 RENAME TO threads;
+
+CREATE INDEX IF NOT EXISTS idx_threads_updated ON threads(updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_threads_forked_from_thread ON threads(forked_from_thread_id);
+`,
+	},
 }
 
 // runMigrations sets PRAGMAs, creates the version tracking table, and applies

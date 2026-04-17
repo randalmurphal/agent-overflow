@@ -67,8 +67,8 @@ func TestMigrationVersionTracking(t *testing.T) {
 		t.Fatalf("rows err: %v", err)
 	}
 
-	if len(versions) != 10 {
-		t.Fatalf("expected 10 migration versions, got %d", len(versions))
+	if len(versions) != 11 {
+		t.Fatalf("expected 11 migration versions, got %d", len(versions))
 	}
 	if versions[0].version != 1 || versions[0].name != "initial_schema" {
 		t.Errorf("v1: got %d/%s", versions[0].version, versions[0].name)
@@ -100,6 +100,9 @@ func TestMigrationVersionTracking(t *testing.T) {
 	if versions[9].version != 10 || versions[9].name != "items_unique_turn_item_index" {
 		t.Errorf("v10: got %d/%s", versions[9].version, versions[9].name)
 	}
+	if versions[10].version != 11 || versions[10].name != "threads_interaction_mode_check" {
+		t.Errorf("v11: got %d/%s", versions[10].version, versions[10].name)
+	}
 }
 
 func TestMigrationIdempotent(t *testing.T) {
@@ -119,8 +122,8 @@ func TestMigrationIdempotent(t *testing.T) {
 	if err := db.QueryRow("SELECT COUNT(*) FROM migration_versions").Scan(&count); err != nil {
 		t.Fatalf("count: %v", err)
 	}
-	if count != 10 {
-		t.Errorf("expected 10 version rows after idempotent re-run, got %d", count)
+	if count != 11 {
+		t.Errorf("expected 11 version rows after idempotent re-run, got %d", count)
 	}
 }
 
@@ -157,8 +160,8 @@ func TestMigrationExistingVersionedDBSkipsAppliedV1(t *testing.T) {
 	if err := db.QueryRow("SELECT COUNT(*) FROM migration_versions").Scan(&appliedVersions); err != nil {
 		t.Fatalf("count migration rows: %v", err)
 	}
-	if appliedVersions != 10 {
-		t.Fatalf("expected 10 applied migrations, got %d", appliedVersions)
+	if appliedVersions != 11 {
+		t.Fatalf("expected 11 applied migrations, got %d", appliedVersions)
 	}
 }
 
@@ -198,10 +201,10 @@ func TestMigrationExistingLegacyDBSeedsTrackingAndAppliesV2(t *testing.T) {
 		t.Fatalf("read migration rows: %v", err)
 	}
 
-	if len(versions) != 10 {
-		t.Fatalf("expected 10 applied migrations, got %d", len(versions))
+	if len(versions) != 11 {
+		t.Fatalf("expected 11 applied migrations, got %d", len(versions))
 	}
-	expected := []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}
+	expected := []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11}
 	for i, want := range expected {
 		if versions[i] != want {
 			t.Fatalf("unexpected migration versions: %v", versions)
@@ -300,10 +303,10 @@ func TestMigrationExistingLegacyParityDBBackfillsVersionHistory(t *testing.T) {
 		t.Fatalf("read migration versions: %v", err)
 	}
 
-	if len(versions) != 10 {
-		t.Fatalf("expected 10 migration rows after legacy backfill + new migrations, got %d", len(versions))
+	if len(versions) != 11 {
+		t.Fatalf("expected 11 migration rows after legacy backfill + new migrations, got %d", len(versions))
 	}
-	expectedVersions := []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}
+	expectedVersions := []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11}
 	for i, want := range expectedVersions {
 		if versions[i].version != want {
 			t.Fatalf("unexpected migration versions: %+v", versions)
@@ -618,5 +621,99 @@ func TestConfigureDatabaseWarnsOnFallback(t *testing.T) {
 	// "memory" (older SQLite builds may report "file" or similar).
 	if strings.Contains(output, `returned "wal"`) {
 		t.Errorf("unexpected: in-memory DB reported WAL journaling: %q", output)
+	}
+}
+
+// TestInteractionModeCheckConstraintRejectsBogusValue confirms the
+// CHECK constraint added in v11 does its job: a raw INSERT or UPDATE
+// with an unsupported interaction_mode must fail with a CHECK
+// violation. This is the regression guard that would catch a future
+// migration accidentally widening the allowed set.
+func TestInteractionModeCheckConstraintRejectsBogusValue(t *testing.T) {
+	s := newTestStore(t)
+
+	_, err := s.db.Exec(`
+		INSERT INTO threads (id, title, provider, workspace_path, model,
+			created_at, updated_at, archived, interaction_mode, project_path)
+		VALUES ('t-bogus', 'Bogus', 'claude', '/tmp', '', 1, 1, 0, 'plann', '/tmp')
+	`)
+	if err == nil {
+		t.Fatal("INSERT with interaction_mode='plann' must violate CHECK constraint")
+	}
+	if !strings.Contains(err.Error(), "CHECK") && !strings.Contains(err.Error(), "constraint") {
+		t.Errorf("error = %v, want CHECK constraint violation", err)
+	}
+
+	// Sanity: a valid mode does succeed.
+	if _, err := s.db.Exec(`
+		INSERT INTO threads (id, title, provider, workspace_path, model,
+			created_at, updated_at, archived, interaction_mode, project_path)
+		VALUES ('t-ok', 'Ok', 'claude', '/tmp', '', 1, 1, 0, 'plan', '/tmp')
+	`); err != nil {
+		t.Fatalf("valid INSERT: %v", err)
+	}
+
+	// UPDATE to a bogus value must also fail.
+	_, err = s.db.Exec(`UPDATE threads SET interaction_mode = 'xyz' WHERE id = 't-ok'`)
+	if err == nil {
+		t.Fatal("UPDATE to bogus interaction_mode must fail")
+	}
+}
+
+// TestInteractionModeMigrationNormalizesBadRows simulates an upgrade
+// from v10 (no CHECK) with a pre-existing row whose interaction_mode
+// is invalid. The migration must not abort — instead it normalises
+// the offending rows to 'default' before rebuilding the table.
+func TestInteractionModeMigrationNormalizesBadRows(t *testing.T) {
+	db := openSQLiteDB(t)
+
+	// Apply v1..v10 in order to mimic a pre-v11 database.
+	if err := configureDatabase(db); err != nil {
+		t.Fatalf("configureDatabase: %v", err)
+	}
+	if err := ensureMigrationTable(db); err != nil {
+		t.Fatalf("ensureMigrationTable: %v", err)
+	}
+	for _, m := range migrations {
+		if m.Version > 10 {
+			break
+		}
+		if err := applyMigration(db, m); err != nil {
+			t.Fatalf("apply v%d: %v", m.Version, err)
+		}
+	}
+
+	if _, err := db.Exec(`
+		INSERT INTO threads (id, title, provider, workspace_path, model,
+			created_at, updated_at, archived, interaction_mode, project_path)
+		VALUES ('t-stale', 'Stale', 'claude', '/tmp', '', 1, 1, 0, 'bogus_value', '/tmp')
+	`); err != nil {
+		t.Fatalf("seed stale row: %v", err)
+	}
+
+	// Now apply v11 — the migration must rewrite the stale value and
+	// the table rebuild must succeed despite the invalid pre-existing
+	// data.
+	for _, m := range migrations {
+		if m.Version != 11 {
+			continue
+		}
+		if err := applyMigration(db, m); err != nil {
+			t.Fatalf("apply v11 with stale row: %v", err)
+		}
+	}
+
+	var mode string
+	if err := db.QueryRow("SELECT interaction_mode FROM threads WHERE id = 't-stale'").Scan(&mode); err != nil {
+		t.Fatalf("read stale row after migration: %v", err)
+	}
+	if mode != "default" {
+		t.Errorf("interaction_mode = %q, want %q (normalized)", mode, "default")
+	}
+
+	// Follow-up write with the same bogus value must now fail.
+	_, err := db.Exec(`UPDATE threads SET interaction_mode = 'bogus_value' WHERE id = 't-stale'`)
+	if err == nil {
+		t.Error("UPDATE with bogus value must fail after v11")
 	}
 }
