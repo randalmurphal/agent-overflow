@@ -21,6 +21,12 @@ import (
 // generous — the intent is to catch provider hangs, not impatient users.
 const DefaultIdleTimeout = 120 * time.Second
 
+// DefaultApprovalTimeout is how long we wait for the user to answer a
+// tool-use approval prompt before auto-denying so the subprocess does
+// not wedge forever. Ten minutes is a pragmatic ceiling — most users
+// respond in seconds; anything longer is likely an abandoned session.
+const DefaultApprovalTimeout = 10 * time.Minute
+
 // Session manages a Claude Code CLI subprocess.
 type Session struct {
 	proc      *provider.Process
@@ -54,6 +60,30 @@ type Session struct {
 	// Inspected by Close to suppress the noisy close-related error events
 	// we would otherwise emit on top of the timeout error.
 	watchdogFired atomic.Bool
+	// approvalTimeout overrides DefaultApprovalTimeout when non-zero. Kept
+	// here so tests can inject a short window without racing on package
+	// globals.
+	approvalTimeout time.Duration
+	// approvalsMu guards pendingApprovals, resolvedApprovals, and
+	// approvalsClosed.
+	approvalsMu sync.Mutex
+	// pendingApprovals maps approval request IDs to the cancel function
+	// that stops the pending auto-deny timer.
+	pendingApprovals map[string]*pendingApproval
+	// resolvedApprovals remembers request IDs that have already been
+	// answered so duplicate responses return ErrApprovalAlreadyResolved
+	// (Bug B9) instead of writing a second control_response to the CLI.
+	resolvedApprovals map[string]struct{}
+	// approvalsClosed is set when Close has disarmed all pending timers
+	// so late-arriving approvals do not schedule new ones.
+	approvalsClosed bool
+}
+
+// pendingApproval tracks a single in-flight tool-use approval so we can
+// cancel its auto-deny timer when the user responds (Bug B3) and so we can
+// reject duplicate responses for the same request ID (Bug B9).
+type pendingApproval struct {
+	cancel chan struct{}
 }
 
 // Config for creating a Claude session.
@@ -286,12 +316,138 @@ func (s *Session) Interrupt(ctx context.Context) error {
 // When resp.UpdatedInput or resp.UpdatedPermissions are non-empty and the
 // decision is an allow, the raw JSON is forwarded to the CLI as the
 // Claude-SDK-compatible CanUseTool response fields.
+//
+// Responding twice for the same RequestID returns ErrApprovalAlreadyResolved
+// (Bug B9). The first response also cancels the auto-deny timer started
+// for that request by Bug B3's timeout watchdog.
 func (s *Session) RespondToApproval(ctx context.Context, resp provider.ApprovalResponse) error {
+	if !s.claimApproval(resp.RequestID) {
+		return ErrApprovalAlreadyResolved
+	}
 	data, err := buildApprovalResponse(resp)
 	if err != nil {
 		return err
 	}
 	return s.proc.WriteLine(data)
+}
+
+// ErrApprovalAlreadyResolved is returned by RespondToApproval when the
+// request ID has already been answered (either by an earlier response or
+// by the auto-deny timeout) so callers can surface a clear message instead
+// of silently shadowing the previous decision.
+var ErrApprovalAlreadyResolved = fmt.Errorf("claude: approval already resolved")
+
+// startApprovalTimer registers a pending approval and arms the auto-deny
+// timer. Subsequent responses (from the user) or calls to Close cancel
+// the timer via claimApproval / clearPendingApprovals.
+func (s *Session) startApprovalTimer(requestID string) {
+	if requestID == "" {
+		return
+	}
+	timeout := s.approvalTimeout
+	if timeout <= 0 {
+		timeout = DefaultApprovalTimeout
+	}
+	cancel := make(chan struct{})
+	s.approvalsMu.Lock()
+	if s.approvalsClosed {
+		s.approvalsMu.Unlock()
+		return
+	}
+	if s.pendingApprovals == nil {
+		s.pendingApprovals = make(map[string]*pendingApproval)
+	}
+	if existing, ok := s.pendingApprovals[requestID]; ok {
+		// Claude should not re-send the same request ID, but if it does
+		// we replace the prior timer to avoid leaking it.
+		close(existing.cancel)
+	}
+	s.pendingApprovals[requestID] = &pendingApproval{cancel: cancel}
+	// Starting a new timer re-opens the ID in case the provider
+	// re-sent the request after a response.
+	delete(s.resolvedApprovals, requestID)
+	s.approvalsMu.Unlock()
+
+	go s.runApprovalTimer(requestID, timeout, cancel)
+}
+
+// runApprovalTimer fires the auto-deny when the user fails to respond in
+// time. A cancel signal on `cancel` means the user responded first or the
+// session is closing.
+func (s *Session) runApprovalTimer(requestID string, timeout time.Duration, cancel <-chan struct{}) {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-cancel:
+		return
+	case <-timer.C:
+	}
+
+	if !s.claimApproval(requestID) {
+		return
+	}
+
+	s.onEvent(provider.ProviderEvent{
+		Kind:      provider.EventError,
+		ThreadID:  s.threadID,
+		Content:   fmt.Sprintf("claude: approval timed out for request %s after %s — auto-denied to keep session alive", requestID, timeout),
+		Timestamp: time.Now(),
+	})
+	data, err := buildApprovalResponse(provider.ApprovalResponse{
+		RequestID: requestID,
+		Decision:  "deny",
+	})
+	if err != nil {
+		log.Printf("claude: build auto-deny for %s: %v", requestID, err)
+		return
+	}
+	if err := s.proc.WriteLine(data); err != nil {
+		log.Printf("claude: write auto-deny for %s: %v", requestID, err)
+	}
+}
+
+// claimApproval returns true when the caller is the first to answer the
+// approval for requestID. False means either we already answered (Bug B9
+// dedup) or the session is closing. Cancels any pending auto-deny timer
+// so the goroutine exits.
+//
+// The absence of a pending entry is NOT an error — some callers (legacy
+// tests, programmatic flows) may respond without the request having gone
+// through the normal readLoop path. Only a repeat response for the same
+// ID is rejected.
+func (s *Session) claimApproval(requestID string) bool {
+	s.approvalsMu.Lock()
+	if _, already := s.resolvedApprovals[requestID]; already {
+		s.approvalsMu.Unlock()
+		return false
+	}
+	pending, hadPending := s.pendingApprovals[requestID]
+	if hadPending {
+		delete(s.pendingApprovals, requestID)
+	}
+	if s.resolvedApprovals == nil {
+		s.resolvedApprovals = make(map[string]struct{})
+	}
+	s.resolvedApprovals[requestID] = struct{}{}
+	s.approvalsMu.Unlock()
+	if hadPending {
+		close(pending.cancel)
+	}
+	return true
+}
+
+// clearPendingApprovals cancels every outstanding auto-deny timer. Called
+// by Close so the goroutines exit instead of racing with a closing
+// subprocess.
+func (s *Session) clearPendingApprovals() {
+	s.approvalsMu.Lock()
+	s.approvalsClosed = true
+	pending := s.pendingApprovals
+	s.pendingApprovals = nil
+	s.approvalsMu.Unlock()
+	for _, p := range pending {
+		close(p.cancel)
+	}
 }
 
 // SessionID returns the provider's session identifier.
@@ -305,6 +461,7 @@ func (s *Session) SessionID() string {
 func (s *Session) Close() error {
 	s.closing.Store(true)
 	s.disarmIdleWatchdog()
+	s.clearPendingApprovals()
 	err := s.proc.Close()
 	s.cancel()
 	if s.readDone != nil {
@@ -391,6 +548,9 @@ func (s *Session) readLoop() {
 			}
 			if evt.Kind == provider.EventTurnComplete {
 				s.disarmIdleWatchdog()
+			}
+			if evt.Kind == provider.EventApprovalRequest && evt.ItemID != "" {
+				s.startApprovalTimer(evt.ItemID)
 			}
 			s.onEvent(evt)
 		}

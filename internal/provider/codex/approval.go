@@ -17,6 +17,9 @@ func (s *Session) RespondToApproval(ctx context.Context, resp provider.ApprovalR
 	if err != nil {
 		return err
 	}
+	if !s.claimApproval(resp.RequestID) {
+		return ErrApprovalAlreadyResolved
+	}
 	return s.writeResponse(rpcID, result)
 }
 

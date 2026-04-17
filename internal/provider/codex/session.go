@@ -14,6 +14,18 @@ import (
 	"agent-overflow/internal/provider"
 )
 
+// DefaultApprovalTimeout is the ceiling on how long Codex will wait for the
+// user to answer a tool-use approval before auto-declining. Mirrors the
+// Claude session constant so both providers behave identically from the
+// user's perspective.
+const DefaultApprovalTimeout = 10 * time.Minute
+
+// ErrApprovalAlreadyResolved is returned by RespondToApproval when the
+// request ID has already been answered (either by an earlier response or
+// by the auto-deny timeout). Prevents a second write landing at the
+// provider with a stale decision.
+var ErrApprovalAlreadyResolved = fmt.Errorf("codex: approval already resolved")
+
 // DynamicToolHandler is called when the provider invokes a dynamic tool (item/tool/call
 // or dynamicToolCall). The handler receives the tool name and arguments, and returns
 // the result content and a success flag.
@@ -34,6 +46,29 @@ type Session struct {
 	cancel             context.CancelFunc
 	closing            atomic.Bool
 	readDone           chan struct{}
+	// approvalTimeout overrides DefaultApprovalTimeout when non-zero.
+	approvalTimeout time.Duration
+	// approvalsMu guards pendingApprovals, resolvedApprovals, and
+	// approvalsClosed.
+	approvalsMu sync.Mutex
+	// pendingApprovals maps request ID (string form, matching the
+	// RequestID field of ApprovalResponse) to the cancel channel for
+	// the auto-deny timer goroutine.
+	pendingApprovals map[string]*pendingApproval
+	// resolvedApprovals remembers request IDs that have already been
+	// answered so a second RespondToApproval returns
+	// ErrApprovalAlreadyResolved (Bug B9) rather than silently writing
+	// another response to the provider.
+	resolvedApprovals map[string]struct{}
+	// approvalsClosed is set by Close so late-arriving approvals don't
+	// schedule new timers after teardown.
+	approvalsClosed bool
+}
+
+// pendingApproval tracks one in-flight approval so the timer can be
+// cancelled when the user responds (Bug B3) or the session closes.
+type pendingApproval struct {
+	cancel chan struct{}
 }
 
 // Config for creating a Codex session.
@@ -253,6 +288,7 @@ func (s *Session) handleDynamicToolCall(rpcID int64, handler DynamicToolHandler,
 // Closes stdin first for graceful shutdown, then cancels the context as fallback.
 func (s *Session) Close() error {
 	s.closing.Store(true)
+	s.clearPendingApprovals()
 	err := s.proc.Close()
 	s.cancel()
 	if s.readDone != nil {
@@ -513,10 +549,12 @@ func (s *Session) handleServerRequest(method string, id *json.Number, params jso
 		"execCommandApproval":
 
 		meta := buildApprovalMeta(s.threadID, turnID, method, rpcID, params)
+		s.startApprovalTimer(rpcID)
 		s.onEvent(buildApprovalEvent(s.threadID, turnID, itemID, meta, line))
 
 	case "mcpServer/elicitation/request":
 		meta := buildElicitationMeta(s.threadID, turnID, rpcID, params)
+		s.startApprovalTimer(rpcID)
 		s.onEvent(buildApprovalEvent(s.threadID, turnID, itemID, meta, line))
 
 	case "item/tool/call", "dynamicToolCall":
@@ -534,16 +572,118 @@ func (s *Session) handleServerRequest(method string, id *json.Number, params jso
 
 	case "item/tool/requestUserInput":
 		meta := buildUserInputMeta(s.threadID, turnID, rpcID, params)
+		s.startApprovalTimer(rpcID)
 		s.onEvent(buildApprovalEvent(s.threadID, turnID, itemID, meta, line))
 
 	case "item/permissions/requestApproval":
 		meta := buildPermissionMeta(s.threadID, turnID, rpcID, params)
+		s.startApprovalTimer(rpcID)
 		s.onEvent(buildApprovalEvent(s.threadID, turnID, itemID, meta, line))
 
 	default:
 		if err := s.writeErrorResponse(rpcID, -32601, fmt.Sprintf("unsupported server request: %s", method)); err != nil {
 			log.Printf("codex: failed to send error response for %s: %v", method, err)
 		}
+	}
+}
+
+// startApprovalTimer registers the approval and arms the auto-deny timer.
+// Uses the numeric JSON-RPC id rendered as a string so dedup (Bug B9) and
+// response routing both use the same key.
+func (s *Session) startApprovalTimer(rpcID int64) {
+	requestID := fmt.Sprintf("%d", rpcID)
+	timeout := s.approvalTimeout
+	if timeout <= 0 {
+		timeout = DefaultApprovalTimeout
+	}
+	cancel := make(chan struct{})
+	s.approvalsMu.Lock()
+	if s.approvalsClosed {
+		s.approvalsMu.Unlock()
+		return
+	}
+	if s.pendingApprovals == nil {
+		s.pendingApprovals = make(map[string]*pendingApproval)
+	}
+	if existing, ok := s.pendingApprovals[requestID]; ok {
+		close(existing.cancel)
+	}
+	s.pendingApprovals[requestID] = &pendingApproval{cancel: cancel}
+	// Starting a new timer re-opens the ID: e.g. if we previously
+	// resolved it and the provider re-sent the request (unusual, but
+	// cheap to support).
+	delete(s.resolvedApprovals, requestID)
+	s.approvalsMu.Unlock()
+	go s.runApprovalTimer(rpcID, requestID, timeout, cancel)
+}
+
+// runApprovalTimer fires the auto-decline when the user fails to respond
+// in time. The cancel signal means the user answered first or the session
+// is shutting down.
+func (s *Session) runApprovalTimer(rpcID int64, requestID string, timeout time.Duration, cancel <-chan struct{}) {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-cancel:
+		return
+	case <-timer.C:
+	}
+
+	if !s.claimApproval(requestID) {
+		return
+	}
+
+	s.onEvent(provider.ProviderEvent{
+		Kind:      provider.EventError,
+		ThreadID:  s.threadID,
+		Content:   fmt.Sprintf("codex: approval timed out for request %s after %s — auto-denied to keep session alive", requestID, timeout),
+		Timestamp: time.Now(),
+	})
+	if err := s.writeResponse(rpcID, map[string]any{"decision": "decline"}); err != nil {
+		log.Printf("codex: write auto-deny for %s: %v", requestID, err)
+	}
+}
+
+// claimApproval returns true when the caller is the first to answer the
+// approval for requestID. False means either we already answered (Bug B9
+// dedup) or the session is closing. Cancels any pending auto-deny timer
+// so the goroutine exits.
+//
+// Callers that want to respond even when no request was tracked (e.g. the
+// legacy app-level callers that don't wait for handleServerRequest) should
+// still succeed on the first call: the absence of a pending entry is not
+// an error — but a second call for the same ID is.
+func (s *Session) claimApproval(requestID string) bool {
+	s.approvalsMu.Lock()
+	if _, already := s.resolvedApprovals[requestID]; already {
+		s.approvalsMu.Unlock()
+		return false
+	}
+	pending, hadPending := s.pendingApprovals[requestID]
+	if hadPending {
+		delete(s.pendingApprovals, requestID)
+	}
+	if s.resolvedApprovals == nil {
+		s.resolvedApprovals = make(map[string]struct{})
+	}
+	s.resolvedApprovals[requestID] = struct{}{}
+	s.approvalsMu.Unlock()
+	if hadPending {
+		close(pending.cancel)
+	}
+	return true
+}
+
+// clearPendingApprovals cancels every outstanding auto-deny timer. Called
+// by Close so the goroutines exit cleanly instead of racing the teardown.
+func (s *Session) clearPendingApprovals() {
+	s.approvalsMu.Lock()
+	s.approvalsClosed = true
+	pending := s.pendingApprovals
+	s.pendingApprovals = nil
+	s.approvalsMu.Unlock()
+	for _, p := range pending {
+		close(p.cancel)
 	}
 }
 

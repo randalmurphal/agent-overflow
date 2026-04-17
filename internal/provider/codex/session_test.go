@@ -951,6 +951,161 @@ func newTestCodexSession(t *testing.T) (*Session, <-chan provider.ProviderEvent)
 	return s, eventCh
 }
 
+// newTestCodexSessionWithApprovalTimeout mirrors newTestCodexSession with
+// a custom approval-watchdog window for Bug B3 tests. Codex approval
+// requests come in as JSON-RPC server requests with integer IDs; the
+// session auto-denies if the user fails to respond in time.
+func newTestCodexSessionWithApprovalTimeout(t *testing.T, timeout time.Duration) (*Session, <-chan provider.ProviderEvent) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	proc, err := provider.Spawn(ctx, provider.SpawnConfig{Binary: "cat"})
+	if err != nil {
+		t.Fatalf("spawn cat: %v", err)
+	}
+	eventCh := make(chan provider.ProviderEvent, 200)
+	s := &Session{
+		proc:            proc,
+		threadID:        testThread,
+		codexThreadID:   "codex-thread-1",
+		pending:         make(map[int64]chan json.RawMessage),
+		approvalTimeout: timeout,
+		onEvent: func(evt provider.ProviderEvent) {
+			eventCh <- evt
+		},
+		cancel: cancel,
+	}
+	go s.readLoop()
+	t.Cleanup(func() {
+		cancel()
+		proc.Close()
+	})
+	return s, eventCh
+}
+
+func containsAny(s string, subs ...string) bool {
+	for _, sub := range subs {
+		if strings.Contains(s, sub) {
+			return true
+		}
+	}
+	return false
+}
+
+// TestApprovalTimeoutAutoDeniesCodex exercises Bug B3 for Codex: when
+// an approval arrives and no RespondToApproval follows within the timeout,
+// the session writes a decline response to the provider and emits an
+// EventError. The subprocess must stay alive.
+func TestApprovalTimeoutAutoDeniesCodex(t *testing.T) {
+	s, eventCh := newTestCodexSessionWithApprovalTimeout(t, 100*time.Millisecond)
+
+	// Drive an approval server request through dispatchLine; rpcID 42 is
+	// the wire identifier the auto-deny must echo back.
+	line := []byte(`{"jsonrpc":"2.0","id":42,"method":"item/commandExecution/requestApproval","params":{"command":"ls"}}`)
+	s.dispatchLine(line)
+
+	var gotApproval, gotError bool
+	deadline := time.After(3 * time.Second)
+	for !(gotApproval && gotError) {
+		select {
+		case evt := <-eventCh:
+			switch evt.Kind {
+			case provider.EventApprovalRequest:
+				gotApproval = true
+			case provider.EventError:
+				if containsAny(evt.Content, "approval timed out", "approval timeout") {
+					gotError = true
+				}
+			}
+		case <-deadline:
+			t.Fatalf("timeout (approval=%v err=%v)", gotApproval, gotError)
+		}
+	}
+
+	// Session must stay alive — only the single approval request is resolved.
+	select {
+	case <-s.proc.Done():
+		t.Fatal("codex session died after auto-deny")
+	default:
+	}
+}
+
+// TestApprovalResponseCancelsTimeoutCodex confirms the happy path.
+func TestApprovalResponseCancelsTimeoutCodex(t *testing.T) {
+	s, eventCh := newTestCodexSessionWithApprovalTimeout(t, 500*time.Millisecond)
+
+	line := []byte(`{"jsonrpc":"2.0","id":7,"method":"item/commandExecution/requestApproval","params":{"command":"ls"}}`)
+	s.dispatchLine(line)
+
+	for {
+		select {
+		case evt := <-eventCh:
+			if evt.Kind == provider.EventApprovalRequest {
+				goto respond
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("no approval event")
+		}
+	}
+respond:
+	if err := s.RespondToApproval(context.Background(), provider.ApprovalResponse{
+		RequestID: "7",
+		Decision:  "allow",
+	}); err != nil {
+		t.Fatalf("RespondToApproval: %v", err)
+	}
+
+	deadline := time.After(800 * time.Millisecond)
+	for {
+		select {
+		case evt := <-eventCh:
+			if evt.Kind == provider.EventError && containsAny(evt.Content, "approval timed out", "approval timeout") {
+				t.Fatalf("auto-deny fired despite timely response: %v", evt.Content)
+			}
+		case <-deadline:
+			return
+		}
+	}
+}
+
+// TestApprovalTimeoutClearedOnCloseCodex exercises Close with a pending
+// approval — the timer must be cancelled cleanly.
+func TestApprovalTimeoutClearedOnCloseCodex(t *testing.T) {
+	s, eventCh := newTestCodexSessionWithApprovalTimeout(t, 200*time.Millisecond)
+
+	line := []byte(`{"jsonrpc":"2.0","id":9,"method":"item/commandExecution/requestApproval","params":{"command":"ls"}}`)
+	s.dispatchLine(line)
+
+	for {
+		select {
+		case evt := <-eventCh:
+			if evt.Kind == provider.EventApprovalRequest {
+				goto closeNow
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("no approval event")
+		}
+	}
+closeNow:
+	if err := s.Close(); err != nil {
+		t.Logf("close returned %v (acceptable)", err)
+	}
+
+	deadline := time.After(500 * time.Millisecond)
+	for {
+		select {
+		case evt, ok := <-eventCh:
+			if !ok {
+				return
+			}
+			if evt.Kind == provider.EventError && containsAny(evt.Content, "approval timed out", "approval timeout") {
+				t.Fatalf("auto-deny fired after session closed: %v", evt.Content)
+			}
+		case <-deadline:
+			return
+		}
+	}
+}
+
 func codexWaitEvent(t *testing.T, ch <-chan provider.ProviderEvent) provider.ProviderEvent {
 	t.Helper()
 	select {
