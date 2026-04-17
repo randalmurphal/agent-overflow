@@ -63,6 +63,11 @@ type Session struct {
 	// approvalsClosed is set by Close so late-arriving approvals don't
 	// schedule new timers after teardown.
 	approvalsClosed bool
+	// seenTurnStarts dedupes EventTurnStart emissions (Bug B6). Keyed by
+	// turnID. Entries are added by claimTurnStart and cleared by
+	// clearTurnStart on EventTurnComplete so re-used turn IDs (rare,
+	// typically across resumed sessions) can fire fresh.
+	seenTurnStarts map[string]struct{}
 }
 
 // pendingApproval tracks one in-flight approval so the timer can be
@@ -183,6 +188,13 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 }
 
 // Send sends a user turn via turn/start.
+//
+// The JSON-RPC response does not directly drive an EventTurnStart: the
+// app-server reliably follows turn/start with a turn/started notification
+// that ClassifyNotification turns into the event. Emitting here as well
+// produced two EventTurnStart per user send (Bug B6). We still record the
+// turn ID locally so Interrupt has something to cancel even if the
+// notification has not yet arrived.
 func (s *Session) Send(ctx context.Context, content string) error {
 	params := map[string]any{
 		"threadId": s.codexThreadID,
@@ -200,12 +212,9 @@ func (s *Session) Send(ctx context.Context, content string) error {
 
 	turnID := readNestedString(resp, "turn", "id")
 	if turnID != "" {
-		s.onEvent(provider.ProviderEvent{
-			Kind:      provider.EventTurnStart,
-			ThreadID:  s.threadID,
-			TurnID:    turnID,
-			Timestamp: time.Now(),
-		})
+		s.mu.Lock()
+		s.activeTurnID = turnID
+		s.mu.Unlock()
 	}
 
 	return nil
@@ -516,6 +525,14 @@ func (s *Session) dispatchLine(line []byte) {
 			switch evt.Kind {
 			case provider.EventTurnStart:
 				if evt.TurnID != "" {
+					if !s.claimTurnStart(evt.TurnID) {
+						// The app-server occasionally re-sends
+						// turn/started (recovery, retries). Suppress
+						// the duplicate so downstream persistence
+						// sees exactly one turn per user send
+						// (Bug B6).
+						continue
+					}
 					s.mu.Lock()
 					s.activeTurnID = evt.TurnID
 					s.mu.Unlock()
@@ -524,11 +541,41 @@ func (s *Session) dispatchLine(line []byte) {
 				s.mu.Lock()
 				s.activeTurnID = ""
 				s.mu.Unlock()
+				s.clearTurnStart(evt.TurnID)
 			}
 			s.onEvent(evt)
 		}
 		return
 	}
+}
+
+// claimTurnStart records the first observation of a turnID, returning
+// true. A second observation returns false so dispatchLine can skip the
+// duplicate EventTurnStart. The map is bounded by the number of live
+// turns — cleared on EventTurnComplete or session Close.
+func (s *Session) claimTurnStart(turnID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.seenTurnStarts == nil {
+		s.seenTurnStarts = make(map[string]struct{})
+	}
+	if _, ok := s.seenTurnStarts[turnID]; ok {
+		return false
+	}
+	s.seenTurnStarts[turnID] = struct{}{}
+	return true
+}
+
+// clearTurnStart drops the recorded turnID on completion so a follow-up
+// turn with the same ID (rare, but possible across resumed sessions)
+// can fire fresh.
+func (s *Session) clearTurnStart(turnID string) {
+	if turnID == "" {
+		return
+	}
+	s.mu.Lock()
+	delete(s.seenTurnStarts, turnID)
+	s.mu.Unlock()
 }
 
 // handleServerRequest processes server-initiated requests (approvals).

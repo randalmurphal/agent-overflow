@@ -991,6 +991,161 @@ func containsAny(s string, subs ...string) bool {
 	return false
 }
 
+// TestTurnStartEmittedExactlyOncePerTurn exercises Bug B6: one user
+// turn must produce exactly one EventTurnStart. Pre-fix, Send's RPC
+// response emitter and dispatchLine's turn/started notification path
+// both fired. We use a silent subprocess (sleep) so Send's request
+// write does NOT echo back — this gives us a stable window to inject
+// the RPC response via the pending channel without racing cat's echo
+// of the request.
+func TestTurnStartEmittedExactlyOncePerTurn(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	proc, err := provider.Spawn(ctx, provider.SpawnConfig{
+		Binary: "sh",
+		Args:   []string{"-c", "cat > /dev/null; sleep 60"},
+	})
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+	t.Cleanup(func() { proc.Close() })
+
+	eventCh := make(chan provider.ProviderEvent, 100)
+	s := &Session{
+		proc:          proc,
+		threadID:      testThread,
+		codexThreadID: "ctx-thread",
+		pending:       make(map[int64]chan json.RawMessage),
+		onEvent: func(evt provider.ProviderEvent) {
+			eventCh <- evt
+		},
+		cancel: cancel,
+	}
+	go s.readLoop()
+
+	sendDone := make(chan error, 1)
+	go func() {
+		sendDone <- s.Send(context.Background(), "hi")
+	}()
+
+	// Poll until Send has registered its pending channel, then inject a
+	// successful result. The silent subprocess never echoes anything so
+	// the pending channel is quiet until we write to it.
+	var ch chan json.RawMessage
+	var rpcID int64
+	deadline := time.After(3 * time.Second)
+pollPending:
+	for {
+		select {
+		case <-deadline:
+			t.Fatal("Send never registered a pending RPC id")
+		default:
+		}
+		s.mu.Lock()
+		for id, c := range s.pending {
+			rpcID = id
+			ch = c
+			s.mu.Unlock()
+			break pollPending
+		}
+		s.mu.Unlock()
+		time.Sleep(2 * time.Millisecond)
+	}
+	rpcResp := fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"result":{"turn":{"id":"turn-42"}}}`, rpcID)
+	ch <- json.RawMessage(rpcResp)
+
+	select {
+	case err := <-sendDone:
+		if err != nil {
+			t.Fatalf("Send: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Send did not return")
+	}
+
+	// Fire the turn/started notification via a direct dispatchLine
+	// call — the subprocess is silent so we can't rely on readLoop to
+	// pick up a stdin-written line.
+	notifLine := []byte(`{"jsonrpc":"2.0","method":"turn/started","params":{"turn":{"id":"turn-42"}}}`)
+	s.dispatchLine(notifLine)
+
+	turnStarts := 0
+	drainDeadline := time.After(500 * time.Millisecond)
+drain:
+	for {
+		select {
+		case evt := <-eventCh:
+			if evt.Kind == provider.EventTurnStart && evt.TurnID == "turn-42" {
+				turnStarts++
+			}
+		case <-drainDeadline:
+			break drain
+		}
+	}
+	if turnStarts != 1 {
+		t.Fatalf("turnStart emissions for turn-42 = %d, want exactly 1 (Bug B6 regression)", turnStarts)
+	}
+}
+
+// TestTurnStartOnlyNotificationStillEmits ensures that when the RPC
+// response path is removed (the fix), a lone notification still surfaces
+// EventTurnStart. Codex always sends turn/started after turn/start, so
+// the notification path is load-bearing.
+func TestTurnStartOnlyNotificationStillEmits(t *testing.T) {
+	s, eventCh := newTestCodexSession(t)
+
+	// Only the notification — no RPC response at all.
+	notif := `{"jsonrpc":"2.0","method":"turn/started","params":{"turn":{"id":"turn-99"}}}`
+	if err := s.proc.WriteLine([]byte(notif)); err != nil {
+		t.Fatalf("write notif: %v", err)
+	}
+
+	var got provider.ProviderEvent
+	select {
+	case got = <-eventCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("no event emitted from lone notification")
+	}
+	if got.Kind != provider.EventTurnStart {
+		t.Fatalf("kind: got %q, want EventTurnStart", got.Kind)
+	}
+	if got.TurnID != "turn-99" {
+		t.Fatalf("turnID: got %q, want turn-99", got.TurnID)
+	}
+}
+
+// TestTurnStartIdempotentOnDuplicateNotification covers the rarer case
+// where the provider re-sends turn/started (e.g. recovery). The second
+// emission must be suppressed so the router still sees one turn.
+func TestTurnStartIdempotentOnDuplicateNotification(t *testing.T) {
+	s, eventCh := newTestCodexSession(t)
+
+	notif := `{"jsonrpc":"2.0","method":"turn/started","params":{"turn":{"id":"turn-dup"}}}`
+	for i := 0; i < 2; i++ {
+		if err := s.proc.WriteLine([]byte(notif)); err != nil {
+			t.Fatalf("write notif %d: %v", i, err)
+		}
+	}
+
+	count := 0
+	deadline := time.After(1 * time.Second)
+drain:
+	for {
+		select {
+		case evt := <-eventCh:
+			if evt.Kind == provider.EventTurnStart && evt.TurnID == "turn-dup" {
+				count++
+			}
+		case <-deadline:
+			break drain
+		}
+	}
+	if count != 1 {
+		t.Fatalf("turnStart emissions = %d, want exactly 1 (dedup regression)", count)
+	}
+}
+
 // TestApprovalTimeoutAutoDeniesCodex exercises Bug B3 for Codex: when
 // an approval arrives and no RespondToApproval follows within the timeout,
 // the session writes a decline response to the provider and emits an
