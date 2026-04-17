@@ -15,6 +15,11 @@ import (
 	"agent-overflow/internal/store"
 
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
+	metricnoop "go.opentelemetry.io/otel/metric/noop"
+	"go.opentelemetry.io/otel/trace"
+	tracenoop "go.opentelemetry.io/otel/trace/noop"
 )
 
 // CheckpointCapture is the subset of checkpoint.Store that the router calls
@@ -24,11 +29,24 @@ type CheckpointCapture interface {
 	CaptureBaseline(ctx context.Context, workspace, threadID string, turnIndex int) (string, error)
 }
 
+// TurnMetrics is the subset of OTel counters the router records. Kept as a
+// struct of interfaces so the router never has to nil-check each instrument
+// (we fill in noop instances when telemetry is disabled).
+type TurnMetrics struct {
+	TurnsStarted      metric.Int64Counter
+	TurnsCompleted    metric.Int64Counter
+	TurnsErrored      metric.Int64Counter
+	ItemsPersisted    metric.Int64Counter
+	PayloadsPersisted metric.Int64Counter
+}
+
 // Router classifies provider events and routes them.
 type Router struct {
 	store                 *store.Store
 	emit                  func(eventName string, data any) // wraps app.Event.Emit
 	checkpoints           CheckpointCapture                // nil-safe; no-op when nil
+	tracer                trace.Tracer
+	metrics               TurnMetrics
 	mu                    sync.Mutex
 	textAccumulators      map[string]*strings.Builder // threadID → accumulated assistant text
 	reasoningAccumulators map[string]*strings.Builder // threadID → accumulated Codex reasoning
@@ -37,17 +55,38 @@ type Router struct {
 	// multiple EventTurnStart events for the same (thread, turn) — which
 	// happens when Claude re-sends a system.init after an interrupt.
 	capturedTurns map[string]bool // key = threadID|turnIndex
+	// turnSpans holds the active span for each in-flight turn so we can
+	// close it when the matching EventTurnComplete arrives. Keyed by
+	// threadID since the provider treats each thread as its own turn
+	// stream.
+	turnSpans map[string]trace.Span
 }
 
-// NewRouter creates a triage router.
+// NewRouter creates a triage router. Telemetry is off by default; wire a
+// tracer and metrics via SetTelemetry to enable spans and counters.
 func NewRouter(st *store.Store, emit func(eventName string, data any)) *Router {
+	noopMeter := metricnoop.NewMeterProvider().Meter("triage/router")
+	ts, _ := noopMeter.Int64Counter("turns.started")
+	tc, _ := noopMeter.Int64Counter("turns.completed")
+	te, _ := noopMeter.Int64Counter("turns.errored")
+	ip, _ := noopMeter.Int64Counter("items.persisted")
+	pp, _ := noopMeter.Int64Counter("payloads.persisted")
 	return &Router{
-		store:                 st,
-		emit:                  emit,
+		store: st,
+		emit:  emit,
+		tracer: tracenoop.NewTracerProvider().Tracer("triage/router"),
+		metrics: TurnMetrics{
+			TurnsStarted:      ts,
+			TurnsCompleted:    tc,
+			TurnsErrored:      te,
+			ItemsPersisted:    ip,
+			PayloadsPersisted: pp,
+		},
 		textAccumulators:      make(map[string]*strings.Builder),
 		reasoningAccumulators: make(map[string]*strings.Builder),
 		pendingCommandDiffs:   make(map[string]pendingCommandInlineDiff),
 		capturedTurns:         make(map[string]bool),
+		turnSpans:             make(map[string]trace.Span),
 	}
 }
 
@@ -58,6 +97,34 @@ func (r *Router) SetCheckpointStore(c CheckpointCapture) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.checkpoints = c
+}
+
+// SetTelemetry wires tracer + metric instruments. Safe to call with nil
+// tracer (falls back to noop). Zero-valued TurnMetrics is accepted only if
+// every instrument is non-nil — we don't silently promote nil counters to
+// noop here because that would mask wiring mistakes.
+func (r *Router) SetTelemetry(tracer trace.Tracer, m TurnMetrics) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if tracer == nil {
+		tracer = tracenoop.NewTracerProvider().Tracer("triage/router")
+	}
+	r.tracer = tracer
+	if m.TurnsStarted != nil {
+		r.metrics.TurnsStarted = m.TurnsStarted
+	}
+	if m.TurnsCompleted != nil {
+		r.metrics.TurnsCompleted = m.TurnsCompleted
+	}
+	if m.TurnsErrored != nil {
+		r.metrics.TurnsErrored = m.TurnsErrored
+	}
+	if m.ItemsPersisted != nil {
+		r.metrics.ItemsPersisted = m.ItemsPersisted
+	}
+	if m.PayloadsPersisted != nil {
+		r.metrics.PayloadsPersisted = m.PayloadsPersisted
+	}
 }
 
 // Handle processes a provider event: persists heavy payloads, forwards inline events.
@@ -198,8 +265,48 @@ func (r *Router) handleTurnStart(evt provider.ProviderEvent) error {
 	// even if checkpoint capture stalls (it shouldn't — capture is ~50 ms for
 	// 500 files — but we don't want to couple triage latency to git).
 	r.emit("provider:event", evt)
+	r.openTurnSpan(evt)
 	r.captureBaselineForTurn(context.Background(), evt.ThreadID)
 	return nil
+}
+
+// openTurnSpan begins a turn.lifecycle span for the incoming turn. Any
+// existing span for the thread is closed first — the provider sometimes
+// re-sends EventTurnStart (e.g. after a Claude interrupt/re-init) and we
+// don't want to leak orphan spans.
+func (r *Router) openTurnSpan(evt provider.ProviderEvent) {
+	r.mu.Lock()
+	tracer := r.tracer
+	if existing, ok := r.turnSpans[evt.ThreadID]; ok {
+		delete(r.turnSpans, evt.ThreadID)
+		r.mu.Unlock()
+		existing.End()
+		r.mu.Lock()
+	}
+	thread, err := r.store.GetThread(evt.ThreadID)
+	r.mu.Unlock()
+	if err != nil {
+		// We don't know the provider/model without the thread; drop the
+		// span rather than record misleading attributes.
+		return
+	}
+	turnIndex, _ := r.store.LastTurnIndex(evt.ThreadID)
+	_, span := tracer.Start(context.Background(), "turn.lifecycle",
+		trace.WithAttributes(
+			attribute.String("thread.id", evt.ThreadID),
+			attribute.String("provider", thread.Provider),
+			attribute.String("model", thread.Model),
+			attribute.Int("turn.index", turnIndex),
+		),
+	)
+	r.mu.Lock()
+	r.turnSpans[evt.ThreadID] = span
+	r.mu.Unlock()
+	r.metrics.TurnsStarted.Add(context.Background(), 1,
+		metric.WithAttributes(
+			attribute.String("provider", thread.Provider),
+		),
+	)
 }
 
 // captureBaselineForTurn runs checkpoint capture + SQLite persistence for the
@@ -337,7 +444,29 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 	}
 
 	r.emit("provider:event", evt)
+	r.closeTurnSpan(evt.ThreadID, persistErr)
 	return persistErr
+}
+
+// closeTurnSpan ends the live turn span for the thread, flagging it as
+// errored when persistErr is non-nil. Safe to call with no active span.
+func (r *Router) closeTurnSpan(threadID string, persistErr error) {
+	r.mu.Lock()
+	span, ok := r.turnSpans[threadID]
+	if ok {
+		delete(r.turnSpans, threadID)
+	}
+	r.mu.Unlock()
+	if !ok {
+		return
+	}
+	if persistErr != nil {
+		span.RecordError(persistErr)
+		r.metrics.TurnsErrored.Add(context.Background(), 1)
+	} else {
+		r.metrics.TurnsCompleted.Add(context.Background(), 1)
+	}
+	span.End()
 }
 
 func (r *Router) handleThinking(evt provider.ProviderEvent) error {
@@ -440,8 +569,11 @@ func (r *Router) drainBoth(threadID string) (text, reasoning string) {
 // session ends or disconnects to prevent memory leaks.
 func (r *Router) CleanupThread(threadID string) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
-
+	var orphanSpan trace.Span
+	if span, ok := r.turnSpans[threadID]; ok {
+		orphanSpan = span
+		delete(r.turnSpans, threadID)
+	}
 	delete(r.textAccumulators, threadID)
 	delete(r.reasoningAccumulators, threadID)
 	for key, pending := range r.pendingCommandDiffs {
@@ -454,6 +586,13 @@ func (r *Router) CleanupThread(threadID string) {
 		if strings.HasPrefix(key, prefix) {
 			delete(r.capturedTurns, key)
 		}
+	}
+	r.mu.Unlock()
+
+	if orphanSpan != nil {
+		// Closing outside the lock avoids self-deadlock when the tracer's
+		// OnEnd hook reaches for any shared resource.
+		orphanSpan.End()
 	}
 }
 
@@ -485,6 +624,8 @@ func (r *Router) persistTurnText(threadID, content, parentToolUseID string) erro
 	if err := r.store.InsertItem(item); err != nil {
 		return fmt.Errorf("persist assistant text: %w", err)
 	}
+	r.metrics.ItemsPersisted.Add(context.Background(), 1,
+		metric.WithAttributes(attribute.String("kind", string(provider.ItemText))))
 	return nil
 }
 
@@ -587,6 +728,10 @@ func (r *Router) insertHeavyItem(
 	if err := r.store.InsertItem(item); err != nil {
 		return fmt.Errorf("persist item: %w", err)
 	}
+	r.metrics.ItemsPersisted.Add(context.Background(), 1,
+		metric.WithAttributes(attribute.String("kind", itemKind)))
+	r.metrics.PayloadsPersisted.Add(context.Background(), 1,
+		metric.WithAttributes(attribute.String("kind", payloadKind)))
 
 	return nil
 }

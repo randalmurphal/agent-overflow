@@ -30,12 +30,21 @@ func (a *App) GetSettings() (settings.Settings, error) {
 	return a.currentSettings(), nil
 }
 
-// UpdateSettings applies a partial settings patch and persists it.
+// UpdateSettings applies a partial settings patch and persists it. Observability
+// toggles that can flip at runtime (e.g. replay log) are reconciled here.
+// Tracing changes are persisted but require a restart to take effect — the
+// UI shows a banner when that path is taken.
 func (a *App) UpdateSettings(patch map[string]any) (settings.Settings, error) {
 	if a.settings == nil {
 		return settings.Settings{}, fmt.Errorf("settings service unavailable")
 	}
-	return a.settings.Update(patch)
+	prev := a.settings.Get()
+	next, err := a.settings.Update(patch)
+	if err != nil {
+		return settings.Settings{}, err
+	}
+	a.ReconfigureObservability(prev, next)
+	return next, nil
 }
 
 // GetModelsForProvider returns the known model registry for the given provider.

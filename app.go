@@ -15,6 +15,8 @@ import (
 	"agent-overflow/internal/discussion"
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/logging"
+	obsotel "agent-overflow/internal/observability/otel"
+	"agent-overflow/internal/observability/replay"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/codex"
@@ -45,6 +47,8 @@ type App struct {
 	attachments    *attachment.Store
 	workspaceFiles *workspacefiles.Searcher
 	logger         *logging.Logger
+	telemetry      *obsotel.Provider
+	replay         *replay.Manager
 	configDir      string
 	mu        sync.Mutex
 	sessions  map[string]session // threadID → active session
@@ -120,8 +124,40 @@ func (a *App) ServiceStartup(ctx context.Context, options application.ServiceOpt
 			wrapLifecycleError("close store after logger initialization failure", closeErr),
 		)
 	}
-	a.triage = triage.NewRouter(st, func(eventName string, data any) {
-		a.app.Event.Emit(eventName, data)
+
+	// Observability: opt-in telemetry + per-thread event replay log. Both
+	// read from settings; when disabled they are no-ops with zero runtime
+	// cost. See internal/observability/* for details.
+	settingsSnapshot := a.settings.Get()
+	a.telemetry, err = obsotel.NewProvider(ctx, obsotel.ConfigFromFlags(
+		settingsSnapshot.ObservabilityTracingEnabled,
+		settingsSnapshot.ObservabilityOtlpEndpoint,
+	))
+	if err != nil {
+		// Telemetry failure is non-fatal: we log it and proceed with a
+		// no-op provider so the rest of the app still boots. Users will
+		// see the failure via the app log; the settings toggle remains on
+		// so they can fix the endpoint and restart.
+		fmt.Printf("observability: tracing setup failed, proceeding without telemetry: %v\n", err)
+		a.telemetry, _ = obsotel.NewProvider(ctx, obsotel.Config{Enabled: false})
+	}
+
+	telemetryMetrics := a.telemetry.Metrics()
+	a.replay = replay.NewManager(replay.ManagerConfig{
+		RootDir: filepath.Join(dbDir, "replay"),
+		Enabled: settingsSnapshot.ObservabilityEventLogEnabled,
+		DropHook: func() {
+			telemetryMetrics.ReplayEventsDropped.Add(context.Background(), 1)
+		},
+	})
+
+	a.triage = triage.NewRouter(st, a.emitWithReplay())
+	a.triage.SetTelemetry(a.telemetry.Tracer(), triage.TurnMetrics{
+		TurnsStarted:      telemetryMetrics.TurnsStarted,
+		TurnsCompleted:    telemetryMetrics.TurnsCompleted,
+		TurnsErrored:      telemetryMetrics.TurnsErrored,
+		ItemsPersisted:    telemetryMetrics.ItemsPersisted,
+		PayloadsPersisted: telemetryMetrics.PayloadsPersisted,
 	})
 	a.checkpoints = checkpoint.NewStore()
 	a.triage.SetCheckpointStore(a.checkpoints)
@@ -179,6 +215,16 @@ func (a *App) ServiceShutdown() error {
 	if a.terminals != nil {
 		errs = appendError(errs, wrapLifecycleError("close terminal sessions", a.terminals.Shutdown()))
 	}
+	if a.replay != nil {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		errs = appendError(errs, wrapLifecycleError("close replay manager", a.replay.Shutdown(shutdownCtx)))
+		cancel()
+	}
+	if a.telemetry != nil {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		errs = appendError(errs, wrapLifecycleError("shutdown telemetry", a.telemetry.Shutdown(shutdownCtx)))
+		cancel()
+	}
 	if a.store != nil {
 		errs = appendError(errs, wrapLifecycleError("close store", a.store.Close()))
 	}
@@ -189,6 +235,32 @@ func (a *App) ServiceShutdown() error {
 		errs = appendError(errs, wrapLifecycleError("close design MCP server", a.designMCP.Close()))
 	}
 	return errors.Join(errs...)
+}
+
+// emitWithReplay returns an event emitter that both pushes to the Wails
+// frontend and mirrors the event into the per-thread replay log when the
+// event is thread-scoped. We inspect the payload for a `threadId` field so
+// we don't introduce a hard dependency on any single event shape.
+func (a *App) emitWithReplay() func(string, any) {
+	return func(eventName string, data any) {
+		a.app.Event.Emit(eventName, data)
+		if a.replay == nil || !a.replay.Enabled() {
+			return
+		}
+		threadID := threadIDFromEvent(data)
+		if threadID == "" {
+			return
+		}
+		rec, err := replay.NewRecord(time.Now(), threadID, eventName, data)
+		if err != nil {
+			return
+		}
+		if a.replay.Enqueue(rec) {
+			if telemetryMetrics := a.telemetry.Metrics(); telemetryMetrics.ReplayEventsQueued != nil {
+				telemetryMetrics.ReplayEventsQueued.Add(context.Background(), 1)
+			}
+		}
+	}
 }
 
 // --- Thread operations ---
