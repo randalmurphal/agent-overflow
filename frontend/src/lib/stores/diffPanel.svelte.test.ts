@@ -206,6 +206,61 @@ describe('createDiffPanelState', () => {
     });
   });
 
+  // --- Bug D4 regression ---
+  describe('invalidateTurn', () => {
+    it('drops every compare-mode entry for (threadId, turnIndex)', () => {
+      store.writeTurnDiff('t1', 3, 'next', 'DIFF-NEXT');
+      store.writeTurnDiff('t1', 3, 'worktree', 'DIFF-WT');
+      store.writeTurnDiff('t1', 4, 'next', 'OTHER-TURN');
+
+      store.invalidateTurn('t1', 3);
+
+      expect(store.readTurnDiff('t1', 3, 'next')).toBeUndefined();
+      expect(store.readTurnDiff('t1', 3, 'worktree')).toBeUndefined();
+      // Neighbouring turn survives.
+      expect(store.readTurnDiff('t1', 4, 'next')).toBe('OTHER-TURN');
+    });
+
+    it('does not touch entries for other threads', () => {
+      store.writeTurnDiff('t1', 3, 'next', 'T1');
+      store.writeTurnDiff('t2', 3, 'next', 'T2');
+
+      store.invalidateTurn('t1', 3);
+
+      expect(store.readTurnDiff('t1', 3, 'next')).toBeUndefined();
+      expect(store.readTurnDiff('t2', 3, 'next')).toBe('T2');
+    });
+
+    it('clears the cumulative cache too since aggregation is built from turns', () => {
+      store.writeTurnDiff('t1', 3, 'next', 'X');
+      store.cumulativeCache.set('payload-1', 'AGG');
+      store.cumulativeCache.set('payload-2', 'AGG2');
+
+      store.invalidateTurn('t1', 3);
+
+      expect(store.cumulativeCache.size).toBe(0);
+    });
+
+    it('is a no-op when the key is absent', () => {
+      store.writeTurnDiff('t1', 0, 'next', 'A');
+      store.invalidateTurn('t1', 99);
+      expect(store.readTurnDiff('t1', 0, 'next')).toBe('A');
+    });
+
+    it('prefix is not sensitive to turnIndex substrings (e.g. 3 vs 30)', () => {
+      store.writeTurnDiff('t', 3, 'next', 'three');
+      store.writeTurnDiff('t', 30, 'next', 'thirty');
+
+      store.invalidateTurn('t', 3);
+
+      expect(store.readTurnDiff('t', 3, 'next')).toBeUndefined();
+      // Critical: key "t|30|next" must NOT have been dropped by a naive
+      // startsWith("t|3") check on the key. The separator is part of the
+      // prefix so "t|3|" only matches turnIndex 3.
+      expect(store.readTurnDiff('t', 30, 'next')).toBe('thirty');
+    });
+  });
+
   describe('clearForThread', () => {
     it('resets every field and both caches', () => {
       store.open_();

@@ -62,6 +62,13 @@ export interface DiffPanelState {
     text: string,
   ): void;
 
+  /**
+   * Drop every cached turn-diff entry for (threadId, turnIndex) across all
+   * compare modes. Called when a fresh checkpoint:captured event lands so the
+   * next read refetches the diff instead of serving a stale snapshot.
+   */
+  invalidateTurn(threadId: string, turnIndex: number): void;
+
   // Cumulative per-payload cache.
   readonly cumulativeCache: Map<string, string>;
   invalidateCumulative(): void;
@@ -176,6 +183,19 @@ export function createDiffPanelState(): DiffPanelState {
       turnDiffCache.delete(key);
       turnDiffCache.set(key, text);
       evictIfOversize();
+    },
+
+    invalidateTurn(threadId, turnIndex) {
+      // A fresh capture for the same turn produces a new diff regardless of
+      // compare mode, so we drop every key starting with
+      // "<threadId>|<turnIndex>|". We also invalidate the cumulative cache
+      // because it's an aggregation across turns: when any turn's underlying
+      // diff changes, the cumulative view must rebuild too.
+      const prefix = `${threadId}|${turnIndex}|`;
+      for (const key of Array.from(turnDiffCache.keys())) {
+        if (key.startsWith(prefix)) turnDiffCache.delete(key);
+      }
+      cumulativeCache.clear();
     },
 
     invalidateCumulative() {

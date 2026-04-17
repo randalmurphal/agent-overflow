@@ -409,6 +409,85 @@ describe('<DiffPanelDrawer>', () => {
       await flush();
       expect(callCount).toBe(1);
     });
+
+    // --- Bug D4 regression ---
+    it('checkpoint:captured triggers a refetch for the currently-selected turn', async () => {
+      // Mount with two checkpoints; latest (turn 1) auto-selects and fetches
+      // "diff-for-1". After that, a second capture for turn 1 should refetch
+      // and pick up the new bytes ("fresh-1") rather than serve the stale.
+      setBindingMock('ListThreadCheckpoints', async () => [checkpoint(0), checkpoint(1)]);
+      let callCount = 0;
+      const diffMock = setBindingMock('GetTurnDiff', async (_id, idx) => {
+        callCount += 1;
+        return callCount === 1 ? `stale-${String(idx)}` : `fresh-${String(idx)}`;
+      });
+      const pane = await buildPane();
+      render(DiffPanelDrawer, { pane });
+      await flush();
+
+      // First load filled the cache with "stale-1".
+      expect(pane.diffPanel.readTurnDiff('thread-A', 1, 'next')).toBe('stale-1');
+      expect(diffMock).toHaveBeenCalledTimes(1);
+
+      emitWailsEvent('checkpoint:captured', {
+        threadId: 'thread-A',
+        turnIndex: 1,
+        refName: 'refs/ao/thread-A/1',
+        capturedAt: 2,
+      });
+      await flush();
+      await flush();
+
+      // A fresh GetTurnDiff must have fired for the re-captured turn.
+      expect(diffMock).toHaveBeenCalledTimes(2);
+      expect(pane.diffPanel.readTurnDiff('thread-A', 1, 'next')).toBe('fresh-1');
+    });
+
+    it('checkpoint:captured invalidates cached compare-mode entries for the same turn', async () => {
+      // Pre-populate the worktree-mode cache for turn 1 (not auto-selected's
+      // mode) so we can verify the event drops all modes for turn 1.
+      setBindingMock('ListThreadCheckpoints', async () => [checkpoint(0), checkpoint(1)]);
+      setBindingMock('GetTurnDiff', async (_id, idx) => `next-${String(idx)}`);
+      const pane = await buildPane();
+      pane.diffPanel.writeTurnDiff('thread-A', 1, 'worktree', 'WORKTREE-STALE');
+      pane.diffPanel.writeTurnDiff('thread-A', 0, 'next', 'OTHER-TURN');
+
+      render(DiffPanelDrawer, { pane });
+      await flush();
+
+      emitWailsEvent('checkpoint:captured', {
+        threadId: 'thread-A',
+        turnIndex: 1,
+        refName: 'refs/ao/thread-A/1',
+        capturedAt: 2,
+      });
+      await flush();
+
+      // Worktree-mode entry for turn 1 is gone, even though only the "next"
+      // mode was visible.
+      expect(pane.diffPanel.readTurnDiff('thread-A', 1, 'worktree')).toBeUndefined();
+      // Turn 0 cache is untouched.
+      expect(pane.diffPanel.readTurnDiff('thread-A', 0, 'next')).toBe('OTHER-TURN');
+    });
+
+    it('checkpoint:captured for another thread does not invalidate this thread', async () => {
+      const pane = await buildPane();
+      pane.diffPanel.writeTurnDiff('thread-A', 0, 'next', 'A-STAYS');
+      render(DiffPanelDrawer, { pane });
+      await flush();
+
+      emitWailsEvent('checkpoint:captured', {
+        threadId: 'thread-B',
+        turnIndex: 0,
+        refName: 'refs/ao/thread-B/0',
+        capturedAt: 1,
+      });
+      await flush();
+
+      // Our drawer's threadId is thread-A, so the event shouldn't even pass
+      // the threadId guard. The cache entry for A survives.
+      expect(pane.diffPanel.readTurnDiff('thread-A', 0, 'next')).toBe('A-STAYS');
+    });
   });
 
   describe('error handling', () => {

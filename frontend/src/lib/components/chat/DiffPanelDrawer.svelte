@@ -213,6 +213,19 @@
     cancelCaptured = Events.On('checkpoint:captured', (ev) => {
       const payload = ev.data as CheckpointCapturedEvent | null;
       if (!payload || payload.threadId !== threadId) return;
+      // A recapture produces a new diff, so drop every cached entry for this
+      // turn across compare modes; the cumulative aggregation is also
+      // invalidated because any turn's diff contributes to it.
+      store.invalidateTurn(payload.threadId, payload.turnIndex);
+      // If the re-captured turn is the one currently displayed, re-trigger
+      // the load so the panel shows the fresh diff instead of leaving the
+      // user on a stale snapshot until they re-select the turn.
+      if (
+        store.source === 'turn'
+        && store.selectedTurnIndex === payload.turnIndex
+      ) {
+        void loadSelectedTurnDiff();
+      }
       void refreshCheckpoints();
     });
     cancelUnavailable = Events.On('checkpoint:unavailable', (ev) => {
