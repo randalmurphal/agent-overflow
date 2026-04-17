@@ -262,6 +262,22 @@ DELETE FROM payloads
  WHERE id NOT IN (SELECT payload_id FROM items WHERE payload_id IS NOT NULL);
 `,
 	},
+	{
+		Version: 10,
+		Name:    "items_unique_turn_item_index",
+		// InsertItem does MAX(item_index)+1 inside a transaction and
+		// inserts with the computed value. The store's SetMaxOpenConns(1)
+		// serialises those transactions today, but that's a runtime knob
+		// — nothing in the schema stops two writers from racing to the
+		// same (thread, turn, item_index) if connection pooling is ever
+		// loosened. A UNIQUE index makes the invariant schema-enforced so
+		// a duplicate insert surfaces as a clean UNIQUE error instead of
+		// silently corrupting timeline ordering.
+		SQL: `
+CREATE UNIQUE INDEX IF NOT EXISTS idx_items_thread_turn_item_unique
+    ON items(thread_id, turn_index, item_index);
+`,
+	},
 }
 
 // runMigrations sets PRAGMAs, creates the version tracking table, and applies

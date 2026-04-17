@@ -32,6 +32,57 @@ func (s *Store) InsertItem(item Item) error {
 	return nil
 }
 
+// AppendItem inserts an item at the next available item_index for
+// (thread, turn), computed atomically inside the transaction. Unlike
+// InsertItem, the caller does not pass item_index — the store derives it
+// as MAX(item_index)+1 within the same transaction as the insert, so two
+// concurrent AppendItem calls for the same (thread, turn) cannot land on
+// the same slot. Returns the assigned item_index.
+//
+// Use this when the caller's intent is "add a new timeline entry" and any
+// monotonic index is acceptable. Use InsertItem when the caller must
+// control the exact index (e.g. CloneThreadItems preserving source
+// ordering, migrations replaying a fixed sequence).
+func (s *Store) AppendItem(item Item) (int, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, fmt.Errorf("store: begin append item tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	var maxIndex sql.NullInt64
+	if err := tx.QueryRow(
+		`SELECT MAX(item_index) FROM items WHERE thread_id = ? AND turn_index = ?`,
+		item.ThreadID, item.TurnIndex,
+	).Scan(&maxIndex); err != nil {
+		return 0, fmt.Errorf("store: append item next index: %w", err)
+	}
+	next := 0
+	if maxIndex.Valid {
+		next = int(maxIndex.Int64) + 1
+	}
+	item.ItemIndex = next
+
+	if _, err := tx.Exec(
+		`INSERT INTO items (id, thread_id, turn_index, item_index, kind, role, summary, payload_id, parent_tool_use_id, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		item.ID, item.ThreadID, item.TurnIndex, item.ItemIndex, item.Kind, item.Role, item.Summary,
+		nilIfEmpty(item.PayloadID), item.ParentToolUseID, item.CreatedAt,
+	); err != nil {
+		return 0, fmt.Errorf("store: append item insert: %w", err)
+	}
+	if _, err := tx.Exec(
+		`UPDATE threads SET updated_at = ? WHERE id = ?`,
+		item.CreatedAt, item.ThreadID,
+	); err != nil {
+		return 0, fmt.Errorf("store: append item touch thread %s: %w", item.ThreadID, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("store: commit append item tx: %w", err)
+	}
+	return next, nil
+}
+
 func (s *Store) ListItems(threadID string) ([]Item, error) {
 	rows, err := s.db.Query(
 		`SELECT id, thread_id, turn_index, item_index, kind, role, summary, COALESCE(payload_id, ''), parent_tool_use_id, created_at

@@ -1,6 +1,8 @@
 package store
 
 import (
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 )
@@ -182,5 +184,130 @@ func TestListItemsPreservesParentToolUseID(t *testing.T) {
 	}
 	if child.ParentToolUseID != "parent" {
 		t.Errorf("child ParentToolUseID: got %q, want %q", child.ParentToolUseID, "parent")
+	}
+}
+
+// TestItemIndexUniqueConstraintBlocksDuplicate verifies v10's UNIQUE
+// (thread_id, turn_index, item_index). A direct raw INSERT that would
+// violate the invariant must fail rather than silently corrupt ordering.
+func TestItemIndexUniqueConstraintBlocksDuplicate(t *testing.T) {
+	s := newTestStore(t)
+	now := time.Now().UnixMilli()
+	if err := s.CreateThread(Thread{
+		ID: "t-dup", Title: "t", Provider: "claude", WorkspacePath: "/tmp",
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	// First insert is fine.
+	if err := s.InsertItem(Item{
+		ID: "i-a", ThreadID: "t-dup", TurnIndex: 0, ItemIndex: 0,
+		Kind: "text", Role: "assistant", CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("first insert: %v", err)
+	}
+	// A raw INSERT that tries to reuse (thread_id, turn_index, item_index)
+	// must violate the unique index. We bypass InsertItem so we don't have
+	// to race it; the index is the gate we care about.
+	_, err := s.db.Exec(`INSERT INTO items
+		(id, thread_id, turn_index, item_index, kind, role, summary, created_at, parent_tool_use_id)
+		VALUES ('i-b', 't-dup', 0, 0, 'text', 'assistant', '', ?, '')`, now)
+	if err == nil {
+		t.Error("expected UNIQUE constraint violation for duplicate (thread_id, turn_index, item_index)")
+	}
+}
+
+// TestConcurrentAppendItemAssignsUniqueIndex spawns many goroutines all
+// calling AppendItem for the same (thread, turn). AppendItem computes the
+// next item_index inside its transaction, so every item must land with a
+// unique item_index — no crashes, no partial state, no duplicates.
+func TestConcurrentAppendItemAssignsUniqueIndex(t *testing.T) {
+	s := newTestStore(t)
+	now := time.Now().UnixMilli()
+	if err := s.CreateThread(Thread{
+		ID: "t-race", Title: "t", Provider: "claude", WorkspacePath: "/tmp",
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+
+	const writers = 50
+	var wg sync.WaitGroup
+	errs := make(chan error, writers)
+	for i := 0; i < writers; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			if _, err := s.AppendItem(Item{
+				ID:        fmt.Sprintf("item-%d", n),
+				ThreadID:  "t-race",
+				TurnIndex: 0,
+				Kind:      "text",
+				Role:      "assistant",
+				Summary:   fmt.Sprintf("goroutine %d", n),
+				CreatedAt: now,
+			}); err != nil {
+				errs <- fmt.Errorf("append: %w", err)
+			}
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Errorf("goroutine error: %v", err)
+	}
+
+	// Every item must be present with a unique item_index.
+	items, err := s.ListTurnItems("t-race", 0)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(items) != writers {
+		t.Fatalf("expected %d items, got %d", writers, len(items))
+	}
+	seen := make(map[int]bool, writers)
+	for _, it := range items {
+		if seen[it.ItemIndex] {
+			t.Errorf("duplicate item_index %d", it.ItemIndex)
+		}
+		seen[it.ItemIndex] = true
+	}
+	if len(seen) != writers {
+		t.Errorf("expected %d unique item_index values, got %d", writers, len(seen))
+	}
+}
+
+// TestAppendItemReturnsAssignedIndex confirms the returned index matches
+// what landed in the row so callers can forward it to downstream code
+// (e.g. emitting an event with the persisted index).
+func TestAppendItemReturnsAssignedIndex(t *testing.T) {
+	s := newTestStore(t)
+	now := time.Now().UnixMilli()
+	if err := s.CreateThread(Thread{
+		ID: "t-ra", Title: "t", Provider: "claude", WorkspacePath: "/tmp",
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+
+	idxA, err := s.AppendItem(Item{
+		ID: "a", ThreadID: "t-ra", TurnIndex: 0, Kind: "text",
+		Role: "assistant", CreatedAt: now,
+	})
+	if err != nil {
+		t.Fatalf("append a: %v", err)
+	}
+	if idxA != 0 {
+		t.Errorf("first append should return 0, got %d", idxA)
+	}
+	idxB, err := s.AppendItem(Item{
+		ID: "b", ThreadID: "t-ra", TurnIndex: 0, Kind: "text",
+		Role: "assistant", CreatedAt: now,
+	})
+	if err != nil {
+		t.Fatalf("append b: %v", err)
+	}
+	if idxB != 1 {
+		t.Errorf("second append should return 1, got %d", idxB)
 	}
 }
