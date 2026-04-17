@@ -122,19 +122,14 @@ func approvalKindForMethod(method string) string {
 }
 
 func buildElicitationMeta(threadID, turnID string, rpcID int64, params json.RawMessage) json.RawMessage {
-	var parsed struct {
-		ServerName string          `json:"serverName"`
-		Message    string          `json:"message"`
-		Schema     json.RawMessage `json:"requestedSchema"`
-	}
-	_ = json.Unmarshal(params, &parsed)
+	elicitation := parseElicitationRequest(params)
 
 	description := "MCP server elicitation"
-	if parsed.ServerName != "" {
-		description = fmt.Sprintf("MCP server %q requests user consent", parsed.ServerName)
+	if elicitation.ServerName != "" {
+		description = fmt.Sprintf("MCP server %q requests user consent", elicitation.ServerName)
 	}
-	if parsed.Message != "" {
-		description = parsed.Message
+	if elicitation.Message != "" {
+		description = elicitation.Message
 	}
 
 	approval := provider.ApprovalRequest{
@@ -143,12 +138,114 @@ func buildElicitationMeta(threadID, turnID string, rpcID int64, params json.RawM
 		TurnID:      turnID,
 		ToolName:    "mcp_elicitation",
 		Description: description,
-		Input:       params,
+		// `Input` carries the raw provider payload. If the payload is not
+		// valid JSON, substitute null so marshaling the approval itself
+		// cannot fail — the adversarial-input test pins this down.
+		Input:       safeRawMessage(params),
 		Kind:        "mcp-elicitation",
 		Title:       "MCP Server Consent",
+		Elicitation: elicitation,
 	}
 	data, _ := json.Marshal(approval)
 	return data
+}
+
+// safeRawMessage returns raw if it's a valid JSON value; otherwise the JSON
+// null literal. Used as a defensive filter before embedding third-party
+// payloads in fields typed as json.RawMessage — an invalid RawMessage would
+// cause json.Marshal on the parent struct to fail entirely.
+func safeRawMessage(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 {
+		return json.RawMessage("null")
+	}
+	var probe any
+	if err := json.Unmarshal(raw, &probe); err != nil {
+		return json.RawMessage("null")
+	}
+	return raw
+}
+
+// parseElicitationRequest extracts the fields the frontend needs to render an
+// MCP elicitation dialog out of the Codex server-request params. The mode
+// discriminator is normalized; unknown or missing modes fall back to "form" so
+// the dialog always has a renderable shape (empty schema in the worst case).
+//
+// Wire contract authority lives in codex-source:
+// /Users/randy/repos/codex-source/codex-rs/app-server-protocol/schema/typescript/v2/McpServerElicitationRequestParams.ts
+//
+// The sum-type splits on `mode`:
+//   - `"form"` carries `message`, `requestedSchema`, and an opaque `_meta`.
+//   - `"url"`  carries `message`, `url`, `elicitationId`, and an opaque `_meta`.
+//
+// Returns a non-nil pointer for every input so callers never need a nil
+// check against adversarial or truncated params — an unparseable payload
+// still becomes a valid (but empty) form-mode elicitation the UI can render.
+func parseElicitationRequest(params json.RawMessage) *provider.ElicitationRequest {
+	var parsed struct {
+		Mode            string          `json:"mode"`
+		Message         string          `json:"message"`
+		ServerName      string          `json:"serverName"`
+		RequestedSchema json.RawMessage `json:"requestedSchema"`
+		URL             string          `json:"url"`
+		ElicitationID   string          `json:"elicitationId"`
+	}
+	_ = json.Unmarshal(params, &parsed)
+
+	mode := normalizeElicitationMode(parsed.Mode, parsed.URL, parsed.RequestedSchema)
+
+	out := &provider.ElicitationRequest{
+		Mode:       mode,
+		Message:    parsed.Message,
+		ServerName: parsed.ServerName,
+	}
+	switch mode {
+	case "url":
+		out.URL = parsed.URL
+		out.ElicitationID = parsed.ElicitationID
+	default:
+		// form mode (including fallback) — preserve schema as-is, including null
+		// becoming empty so the UI's schema parser has a deterministic input.
+		if len(parsed.RequestedSchema) > 0 && !isJSONNull(parsed.RequestedSchema) {
+			out.RequestedSchema = parsed.RequestedSchema
+		}
+	}
+	return out
+}
+
+// normalizeElicitationMode picks a usable mode from potentially-malformed
+// input. Adversarial inputs (missing mode, empty mode, unknown mode) fall
+// back to a best guess using the payload shape, finally landing on "form".
+func normalizeElicitationMode(raw, url string, schema json.RawMessage) string {
+	switch raw {
+	case "form", "url":
+		return raw
+	}
+	// No explicit mode — infer from payload shape.
+	if url != "" {
+		return "url"
+	}
+	if len(schema) > 0 && !isJSONNull(schema) {
+		return "form"
+	}
+	// Last resort: form with empty schema so the UI renders a decline/cancel
+	// dialog instead of a silent dead-end.
+	return "form"
+}
+
+// isJSONNull reports whether raw decodes to the JSON literal null. Used to
+// distinguish "schema was explicitly null" from "schema field absent".
+func isJSONNull(raw json.RawMessage) bool {
+	// Trim whitespace before comparison — json.RawMessage preserves input
+	// formatting, so "null", " null", and "null " all mean the same thing.
+	for i := 0; i < len(raw); i++ {
+		c := raw[i]
+		if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
+			continue
+		}
+		return len(raw)-i >= 4 &&
+			raw[i] == 'n' && raw[i+1] == 'u' && raw[i+2] == 'l' && raw[i+3] == 'l'
+	}
+	return false
 }
 
 func buildUserInputMeta(threadID, turnID string, rpcID int64, params json.RawMessage) json.RawMessage {

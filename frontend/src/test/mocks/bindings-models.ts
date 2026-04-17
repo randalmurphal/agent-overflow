@@ -8,10 +8,22 @@ export class ApprovalResponse {
   requestId: string;
   decision: string;
   input: unknown;
+  answers?: Record<string, unknown>;
+  permissions?: { network?: { enabled?: boolean }; fileSystem?: { read?: string[]; write?: string[] } } | null;
+  scope?: string;
+  elicitation?: ElicitationResolution | null;
+  updatedInput?: unknown;
+  updatedPermissions?: unknown;
   constructor(data: Partial<ApprovalResponse> = {}) {
     this.requestId = data.requestId ?? '';
     this.decision = data.decision ?? '';
     this.input = data.input ?? undefined;
+    this.answers = data.answers;
+    this.permissions = data.permissions;
+    this.scope = data.scope;
+    this.elicitation = data.elicitation;
+    this.updatedInput = data.updatedInput;
+    this.updatedPermissions = data.updatedPermissions;
   }
 }
 
@@ -21,5 +33,16 @@ export class PermissionProfile {
   constructor(data: Partial<PermissionProfile> = {}) {
     this.network = data.network;
     this.fileSystem = data.fileSystem;
+  }
+}
+
+export class ElicitationResolution {
+  action: string;
+  content?: unknown;
+  meta?: unknown;
+  constructor(data: Partial<ElicitationResolution> = {}) {
+    this.action = data.action ?? '';
+    this.content = data.content;
+    this.meta = data.meta;
   }
 }

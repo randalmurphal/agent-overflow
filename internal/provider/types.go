@@ -93,14 +93,38 @@ type ApprovalRequest struct {
 	Input       json.RawMessage `json:"input"`
 	Title       string          `json:"title"`
 	// Structured approval fields.
-	Kind        string              `json:"kind,omitempty"`        // "command"|"file-read"|"file-change"|"user-input"|"permission"
+	Kind        string              `json:"kind,omitempty"`        // "command"|"file-read"|"file-change"|"user-input"|"permission"|"mcp-elicitation"
 	Questions   []UserInputQuestion `json:"questions,omitempty"`   // populated for user-input kind
 	Permissions *PermissionProfile  `json:"permissions,omitempty"` // populated for permission kind
+	// Elicitation is populated for the mcp-elicitation kind. Carries the high-
+	// level mode discriminator and the shape the frontend needs to render the
+	// dialog. The schema for form mode is passed through as raw JSON — the
+	// frontend owns its interpretation so this package doesn't have to mirror
+	// the full Codex elicitation schema taxonomy in Go types.
+	Elicitation *ElicitationRequest `json:"elicitation,omitempty"`
 	// PermissionSuggestions carries the Claude SDK's optional `permission_suggestions`
 	// array from the CanUseTool control_request. The payload is a JSON array of
 	// PermissionUpdate objects; the shape is provider-specific so it flows
 	// through the pipeline as opaque JSON for the frontend to interpret.
 	PermissionSuggestions json.RawMessage `json:"permissionSuggestions,omitempty"`
+}
+
+// ElicitationRequest is the frontend-facing shape for an MCP elicitation
+// request, extracted from the raw provider payload. Only one of
+// (RequestedSchema) or (URL + ElicitationID) is populated depending on Mode.
+// Wire contract lives at:
+// /Users/randy/repos/codex-source/codex-rs/app-server-protocol/schema/typescript/v2/McpServerElicitationRequestParams.ts
+type ElicitationRequest struct {
+	Mode       string `json:"mode"`                 // "form" or "url"
+	Message    string `json:"message"`              // human-readable prompt shown to the user
+	ServerName string `json:"serverName,omitempty"` // name of the MCP server issuing the request
+
+	// Form mode only.
+	RequestedSchema json.RawMessage `json:"requestedSchema,omitempty"`
+
+	// URL mode only.
+	URL           string `json:"url,omitempty"`
+	ElicitationID string `json:"elicitationId,omitempty"`
 }
 
 // ElicitationResolution carries the MCP elicitation response fields.

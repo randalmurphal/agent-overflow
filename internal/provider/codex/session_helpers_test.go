@@ -2,6 +2,7 @@ package codex
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 
 	"agent-overflow/internal/provider"
@@ -80,6 +81,345 @@ func TestBuildElicitationMeta_InputPreserved(t *testing.T) {
 	if string(approval.Input) != string(params) {
 		t.Errorf("input: got %s, want %s", approval.Input, params)
 	}
+}
+
+// -- buildElicitationMeta: Elicitation field coverage --
+
+// Form mode with an explicit `mode: "form"` on the wire. The RequestedSchema
+// passes through as raw JSON and mode is preserved verbatim.
+func TestBuildElicitationMeta_FormMode_Explicit(t *testing.T) {
+	params := json.RawMessage(`{
+		"mode":"form",
+		"message":"Provide connection details",
+		"serverName":"db-mcp",
+		"requestedSchema":{"type":"object","properties":{"host":{"type":"string"}}}
+	}`)
+	meta := buildElicitationMeta("t1", "turn-A", 12, params)
+
+	var approval provider.ApprovalRequest
+	if err := json.Unmarshal(meta, &approval); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if approval.Elicitation == nil {
+		t.Fatal("expected non-nil Elicitation")
+	}
+	e := approval.Elicitation
+	if e.Mode != "form" {
+		t.Errorf("mode: got %q, want form", e.Mode)
+	}
+	if e.Message != "Provide connection details" {
+		t.Errorf("message: got %q", e.Message)
+	}
+	if e.ServerName != "db-mcp" {
+		t.Errorf("serverName: got %q", e.ServerName)
+	}
+	if e.URL != "" || e.ElicitationID != "" {
+		t.Errorf("url/elicitationId should be empty in form mode, got %q / %q", e.URL, e.ElicitationID)
+	}
+	// RequestedSchema should round-trip. Canonicalize via re-marshal to avoid
+	// whitespace differences.
+	var got, want any
+	if err := json.Unmarshal(e.RequestedSchema, &got); err != nil {
+		t.Fatalf("unmarshal schema: %v", err)
+	}
+	if err := json.Unmarshal([]byte(`{"type":"object","properties":{"host":{"type":"string"}}}`), &want); err != nil {
+		t.Fatalf("unmarshal want: %v", err)
+	}
+	if !jsonEqual(got, want) {
+		t.Errorf("requestedSchema: got %s, want %s", e.RequestedSchema, `{"type":"object","properties":{"host":{"type":"string"}}}`)
+	}
+}
+
+// URL mode with explicit discriminator and both URL-mode fields populated.
+func TestBuildElicitationMeta_URLMode_Explicit(t *testing.T) {
+	params := json.RawMessage(`{
+		"mode":"url",
+		"message":"Authorize this app",
+		"serverName":"oauth-mcp",
+		"url":"https://auth.example.com/approve?token=abc",
+		"elicitationId":"el-42"
+	}`)
+	meta := buildElicitationMeta("t1", "turn-B", 7, params)
+
+	var approval provider.ApprovalRequest
+	if err := json.Unmarshal(meta, &approval); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	e := approval.Elicitation
+	if e == nil {
+		t.Fatal("expected non-nil Elicitation")
+	}
+	if e.Mode != "url" {
+		t.Errorf("mode: got %q, want url", e.Mode)
+	}
+	if e.URL != "https://auth.example.com/approve?token=abc" {
+		t.Errorf("url: got %q", e.URL)
+	}
+	if e.ElicitationID != "el-42" {
+		t.Errorf("elicitationId: got %q", e.ElicitationID)
+	}
+	// URL mode must NOT leak the schema field even if one was present.
+	if len(e.RequestedSchema) != 0 {
+		t.Errorf("URL mode must not set RequestedSchema; got %s", e.RequestedSchema)
+	}
+}
+
+// Adversarial: `mode` omitted but URL present. Parser must infer URL mode.
+func TestBuildElicitationMeta_InferURLFromPayload(t *testing.T) {
+	params := json.RawMessage(`{"message":"Open link","url":"https://x.test","elicitationId":"e1"}`)
+	meta := buildElicitationMeta("t1", "", 1, params)
+
+	var approval provider.ApprovalRequest
+	if err := json.Unmarshal(meta, &approval); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if approval.Elicitation == nil || approval.Elicitation.Mode != "url" {
+		t.Errorf("expected inferred url mode, got %+v", approval.Elicitation)
+	}
+	if approval.Elicitation.URL != "https://x.test" {
+		t.Errorf("url not preserved: %q", approval.Elicitation.URL)
+	}
+}
+
+// Adversarial: `mode` omitted but schema present. Parser must infer form mode.
+func TestBuildElicitationMeta_InferFormFromPayload(t *testing.T) {
+	params := json.RawMessage(`{"message":"m","requestedSchema":{"type":"object"}}`)
+	meta := buildElicitationMeta("t1", "", 1, params)
+
+	var approval provider.ApprovalRequest
+	if err := json.Unmarshal(meta, &approval); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if approval.Elicitation == nil || approval.Elicitation.Mode != "form" {
+		t.Errorf("expected inferred form mode, got %+v", approval.Elicitation)
+	}
+}
+
+// Adversarial: `mode` is present but not one of the known values. Falls back
+// to shape-based inference, then to "form" as last resort.
+func TestBuildElicitationMeta_UnknownModeFallsBack(t *testing.T) {
+	cases := []struct {
+		name     string
+		params   string
+		wantMode string
+	}{
+		{"garbage mode, url present", `{"mode":"??","url":"https://x.test"}`, "url"},
+		{"garbage mode, schema present", `{"mode":"??","requestedSchema":{"type":"object"}}`, "form"},
+		{"garbage mode, nothing else", `{"mode":"??"}`, "form"},
+		{"empty mode string", `{"mode":""}`, "form"},
+		{"numeric mode (type mismatch)", `{"mode":7}`, "form"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			meta := buildElicitationMeta("t1", "", 1, json.RawMessage(tc.params))
+			var approval provider.ApprovalRequest
+			if err := json.Unmarshal(meta, &approval); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if approval.Elicitation == nil || approval.Elicitation.Mode != tc.wantMode {
+				t.Errorf("got %+v, want mode=%q", approval.Elicitation, tc.wantMode)
+			}
+		})
+	}
+}
+
+// Adversarial: entirely invalid JSON. Must not panic; must still produce a
+// renderable approval with form mode + empty schema.
+func TestBuildElicitationMeta_MalformedJSONIsSafe(t *testing.T) {
+	params := json.RawMessage(`not even close to json`)
+	meta := buildElicitationMeta("t1", "", 1, params)
+
+	var approval provider.ApprovalRequest
+	if err := json.Unmarshal(meta, &approval); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if approval.Kind != "mcp-elicitation" {
+		t.Errorf("kind must still be mcp-elicitation on malformed input, got %q", approval.Kind)
+	}
+	if approval.Elicitation == nil {
+		t.Fatal("Elicitation must be non-nil on malformed input")
+	}
+	if approval.Elicitation.Mode != "form" {
+		t.Errorf("expected fallback form mode, got %q", approval.Elicitation.Mode)
+	}
+	if len(approval.Elicitation.RequestedSchema) != 0 {
+		t.Errorf("expected no schema on malformed input, got %s", approval.Elicitation.RequestedSchema)
+	}
+}
+
+// Adversarial: null JSON literal as the whole payload.
+func TestBuildElicitationMeta_NullParams(t *testing.T) {
+	meta := buildElicitationMeta("t1", "", 1, json.RawMessage(`null`))
+	var approval provider.ApprovalRequest
+	if err := json.Unmarshal(meta, &approval); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if approval.Elicitation == nil {
+		t.Fatal("Elicitation must be non-nil even on null params")
+	}
+	if approval.Elicitation.Mode != "form" {
+		t.Errorf("expected fallback form mode, got %q", approval.Elicitation.Mode)
+	}
+}
+
+// Adversarial: `requestedSchema` is explicitly the JSON null. The parser must
+// treat null-valued-schema the same as absent-schema; not pass "null" through.
+func TestBuildElicitationMeta_NullSchemaIsTreatedAsAbsent(t *testing.T) {
+	for _, raw := range []string{
+		`{"mode":"form","requestedSchema":null}`,
+		`{"mode":"form","requestedSchema":  null }`,
+	} {
+		t.Run(raw, func(t *testing.T) {
+			meta := buildElicitationMeta("t1", "", 1, json.RawMessage(raw))
+			var approval provider.ApprovalRequest
+			if err := json.Unmarshal(meta, &approval); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if len(approval.Elicitation.RequestedSchema) != 0 {
+				t.Errorf("null schema must not pass through; got %s", approval.Elicitation.RequestedSchema)
+			}
+		})
+	}
+}
+
+// URL mode where only the URL is provided and elicitationId is missing. The
+// parser still produces a usable Elicitation — the UI can show the URL even
+// without an elicitationId (response just omits the id).
+func TestBuildElicitationMeta_URLModeMissingElicitationID(t *testing.T) {
+	meta := buildElicitationMeta("t1", "", 1, json.RawMessage(`{"mode":"url","url":"https://x.test"}`))
+	var approval provider.ApprovalRequest
+	if err := json.Unmarshal(meta, &approval); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if approval.Elicitation.URL != "https://x.test" {
+		t.Errorf("url not preserved: %q", approval.Elicitation.URL)
+	}
+	if approval.Elicitation.ElicitationID != "" {
+		t.Errorf("elicitationId should be empty, got %q", approval.Elicitation.ElicitationID)
+	}
+}
+
+// Adversarial: unicode + control characters in message and serverName survive
+// the round-trip without corruption.
+func TestBuildElicitationMeta_UnicodePreserved(t *testing.T) {
+	params := json.RawMessage(`{"mode":"form","message":"日本語 \u00e9 \\n embedded","serverName":"服务器","requestedSchema":{"type":"object"}}`)
+	meta := buildElicitationMeta("t1", "", 1, params)
+	var approval provider.ApprovalRequest
+	if err := json.Unmarshal(meta, &approval); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if approval.Elicitation.Message != "日本語 é \\n embedded" {
+		t.Errorf("message corrupted: %q", approval.Elicitation.Message)
+	}
+	if approval.Elicitation.ServerName != "服务器" {
+		t.Errorf("serverName corrupted: %q", approval.Elicitation.ServerName)
+	}
+}
+
+// Adversarial: large schema payload (>1 MB equivalent). Parser should not
+// choke; RequestedSchema preserves the full payload byte-for-byte by content.
+func TestBuildElicitationMeta_LargeSchemaRoundTrip(t *testing.T) {
+	// Build a schema with many properties to simulate a chatty server.
+	var b []byte
+	b = append(b, `{"mode":"form","message":"big","requestedSchema":{"type":"object","properties":{`...)
+	for i := 0; i < 2000; i++ {
+		if i > 0 {
+			b = append(b, ',')
+		}
+		// Each property: "p0000": {"type":"string","description":"..."}
+		b = append(b, []byte(fmt.Sprintf(`"p%04d":{"type":"string","description":"field %d"}`, i, i))...)
+	}
+	b = append(b, "}}}"...)
+
+	meta := buildElicitationMeta("t1", "", 1, json.RawMessage(b))
+	var approval provider.ApprovalRequest
+	if err := json.Unmarshal(meta, &approval); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	// Ensure the schema made it through and can be re-parsed as JSON.
+	var decoded map[string]any
+	if err := json.Unmarshal(approval.Elicitation.RequestedSchema, &decoded); err != nil {
+		t.Fatalf("schema not valid JSON after round-trip: %v", err)
+	}
+	props, ok := decoded["properties"].(map[string]any)
+	if !ok || len(props) != 2000 {
+		t.Errorf("expected 2000 properties in round-tripped schema, got %d", len(props))
+	}
+}
+
+// Both URL and schema present with explicit form mode → schema wins, URL is
+// dropped. Defensive choice so a confused server can't slip a phishing URL
+// past a form-mode UI.
+func TestBuildElicitationMeta_FormModeIgnoresURLField(t *testing.T) {
+	params := json.RawMessage(`{"mode":"form","url":"https://evil.test","requestedSchema":{"type":"object"}}`)
+	meta := buildElicitationMeta("t1", "", 1, params)
+	var approval provider.ApprovalRequest
+	if err := json.Unmarshal(meta, &approval); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if approval.Elicitation.URL != "" {
+		t.Errorf("form mode must not expose URL field, got %q", approval.Elicitation.URL)
+	}
+	if len(approval.Elicitation.RequestedSchema) == 0 {
+		t.Errorf("expected schema to be preserved in form mode")
+	}
+}
+
+// URL mode with a schema field present → URL wins, schema is dropped. Parallel
+// of the form-mode-ignores-url test.
+func TestBuildElicitationMeta_URLModeIgnoresSchemaField(t *testing.T) {
+	params := json.RawMessage(`{"mode":"url","url":"https://x.test","elicitationId":"e1","requestedSchema":{"type":"object"}}`)
+	meta := buildElicitationMeta("t1", "", 1, params)
+	var approval provider.ApprovalRequest
+	if err := json.Unmarshal(meta, &approval); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(approval.Elicitation.RequestedSchema) != 0 {
+		t.Errorf("url mode must not expose RequestedSchema, got %s", approval.Elicitation.RequestedSchema)
+	}
+	if approval.Elicitation.URL != "https://x.test" {
+		t.Errorf("url not preserved: %q", approval.Elicitation.URL)
+	}
+}
+
+// isJSONNull coverage: whitespace-padded nulls, non-null values, truncated
+// "nul" must report false. Pinned down because the check drives the
+// null-schema-equals-absent behavior.
+func TestIsJSONNull(t *testing.T) {
+	cases := []struct {
+		in   string
+		want bool
+	}{
+		{"null", true},
+		{" null", true},
+		{"null ", true}, // trailing whitespace is ignored for our purposes
+		{"  \t\nnull", true},
+		{"nullx", true},    // starts with null — isJSONNull only checks prefix after trim
+		{"nul", false},     // too short
+		{"n", false},       // truncated
+		{"", false},        // empty
+		{"true", false},    // other literal
+		{`"null"`, false},  // quoted string
+		{"0", false},       // number
+		{"{}", false},      // object
+		{`   `, false},     // all whitespace, no content
+		{"Null", false},    // JSON is case-sensitive — only lowercase null is the literal
+	}
+	for _, tc := range cases {
+		t.Run(tc.in, func(t *testing.T) {
+			if got := isJSONNull(json.RawMessage(tc.in)); got != tc.want {
+				t.Errorf("isJSONNull(%q) = %v, want %v", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// jsonEqual deep-compares two JSON values after parsing so whitespace /
+// ordering don't affect equality. Test-local helper.
+func jsonEqual(a, b any) bool {
+	aj, _ := json.Marshal(a)
+	bj, _ := json.Marshal(b)
+	return string(aj) == string(bj)
 }
 
 // -- approvalKindForMethod tests --

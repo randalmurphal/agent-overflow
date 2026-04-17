@@ -34,7 +34,13 @@ export interface ProviderEvent {
   timestamp: string;
 }
 
-export type ApprovalKind = 'command' | 'file-read' | 'file-change' | 'user-input' | 'permission';
+export type ApprovalKind =
+  | 'command'
+  | 'file-read'
+  | 'file-change'
+  | 'user-input'
+  | 'permission'
+  | 'mcp-elicitation';
 
 interface UserInputQuestionOption {
   label: string;
@@ -63,6 +69,30 @@ interface PermissionProfile {
   fileSystem?: FileSystemPermissions;
 }
 
+/**
+ * ElicitationRequest mirrors the Go ApprovalRequest.Elicitation field.
+ * Populated for `kind: "mcp-elicitation"`.
+ *
+ * Two modes:
+ *  - `form` — the server wants structured user input described by a JSON
+ *    schema. `requestedSchema` is the raw schema from the MCP wire format;
+ *    the UI parses it via utils/elicitationSchema.ts.
+ *  - `url`  — the server wants the user to complete an out-of-band flow at
+ *    an external URL (e.g. OAuth consent). The response only carries the
+ *    user's action (accept / decline / cancel) since completion happens in
+ *    the browser.
+ */
+export interface ElicitationRequest {
+  mode: 'form' | 'url';
+  message: string;
+  serverName?: string;
+  // Form mode:
+  requestedSchema?: unknown;
+  // URL mode:
+  url?: string;
+  elicitationId?: string;
+}
+
 export interface ApprovalRequest {
   requestId: string;
   threadId: string;
@@ -74,6 +104,7 @@ export interface ApprovalRequest {
   kind?: ApprovalKind;
   questions?: UserInputQuestion[];
   permissions?: PermissionProfile;
+  elicitation?: ElicitationRequest;
 }
 
 export interface TokenUsage {
