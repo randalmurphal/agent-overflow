@@ -343,4 +343,38 @@ describe('createShipChangesState', () => {
       expect(store.prUrl).toBe('https://github.com/o/r/pull/42');
     });
   });
+
+  describe('pending operation gating (Bug C3)', () => {
+    it('canCommit is false while a merge is in progress', () => {
+      store.open('t-1');
+      store.setStatus(status({ hasChanges: true, pendingOperation: 'merge' }));
+      store.setCommitSubject('try to commit');
+      expect(store.canCommit).toBe(false);
+    });
+
+    it('canCommit is false while a rebase is in progress', () => {
+      store.open('t-1');
+      store.setStatus(status({ hasChanges: true, pendingOperation: 'rebase' }));
+      store.setCommitSubject('try to commit');
+      expect(store.canCommit).toBe(false);
+    });
+
+    it('canCommit is false while a bisect is in progress', () => {
+      store.open('t-1');
+      store.setStatus(status({ hasChanges: true, pendingOperation: 'bisect' }));
+      store.setCommitSubject('try to commit');
+      expect(store.canCommit).toBe(false);
+    });
+
+    it('canCommit is true when pendingOperation clears', () => {
+      store.open('t-1');
+      store.setStatus(status({ hasChanges: true, pendingOperation: 'merge' }));
+      store.setCommitSubject('try to commit');
+      expect(store.canCommit).toBe(false);
+      // A fresh status snapshot with no pending op doesn't auto-advance but
+      // does update the gate — canCommit returns true again.
+      store.setStatus(status({ hasChanges: true, pendingOperation: '' }));
+      expect(store.canCommit).toBe(true);
+    });
+  });
 });

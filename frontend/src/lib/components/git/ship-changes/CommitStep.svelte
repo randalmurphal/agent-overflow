@@ -15,6 +15,19 @@
   let busy = $derived(state.phase === 'commit.busy');
   let hasError = $derived(state.phase === 'commit.error');
   let nothingToCommit = $derived(!!status && !status.hasChanges);
+  let pendingOperation = $derived(status?.pendingOperation ?? '');
+  let pendingMessage = $derived.by(() => {
+    switch (pendingOperation) {
+      case 'merge':
+        return 'A merge is in progress. Resolve or abort it with `git merge --abort` before committing.';
+      case 'rebase':
+        return 'A rebase is in progress. Run `git rebase --continue` or `git rebase --abort` before committing.';
+      case 'bisect':
+        return 'A bisect is in progress. Run `git bisect reset` before committing.';
+      default:
+        return '';
+    }
+  });
 </script>
 
 <div class="space-y-3" data-testid="ship-changes-step-commit">
@@ -32,6 +45,16 @@
       </p>
     {/if}
   </header>
+
+  {#if pendingMessage}
+    <p
+      class="text-xs text-warning bg-warning/10 border border-warning/40 rounded px-2 py-1.5"
+      role="alert"
+      data-testid="ship-changes-pending-operation"
+    >
+      {pendingMessage}
+    </p>
+  {/if}
 
   <div class="space-y-2">
     <label class="text-xs text-text-secondary block" for="ship-commit-subject">Subject</label>

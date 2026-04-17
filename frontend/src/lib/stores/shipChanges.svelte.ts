@@ -186,7 +186,13 @@ export function createShipChangesState(): ShipChangesState {
     get error() { return error; },
     get generation() { return generation; },
     get canCommit() {
-      return phase === 'commit.review' && commitSubject.trim().length > 0;
+      // Commits are blocked while a merge/rebase/bisect is in progress —
+      // forcing a new commit on top would compound the mess. The user
+      // must finish or abort the pending op first.
+      const pending = status?.pendingOperation ?? '';
+      return phase === 'commit.review'
+        && commitSubject.trim().length > 0
+        && pending === '';
     },
     get canPush() {
       return phase === 'push.review';

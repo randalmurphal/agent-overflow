@@ -408,6 +408,47 @@ describe('<ShipChangesDrawer>', () => {
     expect(external.error).toBeNull();
   });
 
+  // Bug C3 regression: an in-progress merge/rebase/bisect blocks new commits.
+  // The drawer must surface the reason and keep the Commit button disabled.
+  it('disables commit and shows a merge-in-progress banner when PendingOperation=merge', async () => {
+    const pane = await buildPane();
+    setBindingMock('GetGitStatus', async () => status({ hasChanges: true, pendingOperation: 'merge' }));
+    const { findByTestId, getByTestId } = render(ShipChangesDrawer, {
+      props: { open: true, pane, onClose: () => {} },
+    });
+    await findByTestId('ship-changes-step-commit');
+    const banner = await findByTestId('ship-changes-pending-operation');
+    expect(banner.textContent).toMatch(/merge is in progress/i);
+    // Even with a subject typed, canCommit stays false -> submit stays disabled.
+    const subject = getByTestId('ship-changes-commit-subject') as HTMLInputElement;
+    await fireEvent.input(subject, { target: { value: 'not happening' } });
+    await flush();
+    const submit = getByTestId('ship-changes-commit-submit') as HTMLButtonElement;
+    expect(submit.disabled).toBe(true);
+  });
+
+  it('disables commit and shows a rebase-in-progress banner when PendingOperation=rebase', async () => {
+    const pane = await buildPane();
+    setBindingMock('GetGitStatus', async () => status({ hasChanges: true, pendingOperation: 'rebase' }));
+    const { findByTestId } = render(ShipChangesDrawer, {
+      props: { open: true, pane, onClose: () => {} },
+    });
+    await findByTestId('ship-changes-step-commit');
+    const banner = await findByTestId('ship-changes-pending-operation');
+    expect(banner.textContent).toMatch(/rebase is in progress/i);
+  });
+
+  it('does not render the pending-operation banner in a clean repo', async () => {
+    const pane = await buildPane();
+    setBindingMock('GetGitStatus', async () => status({ hasChanges: true, pendingOperation: '' }));
+    const { findByTestId, queryByTestId } = render(ShipChangesDrawer, {
+      props: { open: true, pane, onClose: () => {} },
+    });
+    await findByTestId('ship-changes-step-commit');
+    await flush();
+    expect(queryByTestId('ship-changes-pending-operation')).toBeNull();
+  });
+
   it('drops stale results from sequential commit+push after drawer is closed', async () => {
     const pane = await buildPane();
     setBindingMock('GetGitStatus', async () => status({ hasChanges: true }));

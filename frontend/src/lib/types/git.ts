@@ -12,6 +12,12 @@ export interface GitStatus {
   hasOriginRemote: boolean;
   openPrUrl?: string;
   openPrNumber?: number;
+  /**
+   * Identifier of an in-progress multi-step git operation that blocks new
+   * commits. Empty string when the repo is idle. Known values: "merge",
+   * "rebase", "bisect".
+   */
+  pendingOperation?: string;
 }
 
 export interface GitBranch {
