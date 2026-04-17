@@ -675,3 +675,29 @@ export function SearchWorkspaceFiles(threadID, query, limit) {
     return $Call.ByID(3852272821, threadID, query, limit);
 }
 
+// ---- Keybindings bindings (hand-appended; FNV32a of main.App.<Method>) ----
+
+/**
+ * GetKeybindings returns the effective keybindings (defaults + user overrides).
+ * @returns {$CancellablePromise<any[]>}
+ */
+export function GetKeybindings() {
+    return $Call.ByID(3015840904);
+}
+
+/**
+ * UpdateKeybindings replaces the persisted user keybindings.
+ * @param {any[]} bindings
+ * @returns {$CancellablePromise<void>}
+ */
+export function UpdateKeybindings(bindings) {
+    return $Call.ByID(3490094229, bindings);
+}
+
+/**
+ * ResetKeybindings deletes the user keybindings file so defaults are restored.
+ * @returns {$CancellablePromise<void>}
+ */
+export function ResetKeybindings() {
+    return $Call.ByID(2775767393);
+}

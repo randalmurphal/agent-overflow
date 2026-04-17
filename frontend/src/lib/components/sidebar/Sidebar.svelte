@@ -1,10 +1,21 @@
 <script lang="ts">
-  import { CreateThread, StartSession, GitCreateWorktree, GetThread } from '../../stores/bindings';
+  import { ArchiveThread, CreateThread, DeleteThread, StartSession, StopSession, GitCreateWorktree, GetThread } from '../../stores/bindings';
   import { getSettings, loadSettings } from '../../stores/settings.svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
-  import { prependThread } from '../../stores/threads.svelte';
+  import { prependThread, getThreads, removeThread } from '../../stores/threads.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import type { Thread } from '../../types/models';
+  import {
+    clearThreadSelection,
+    filterThreads,
+    getIncludeArchived,
+    getSelectedThreadIds,
+    getThreadFilterQuery,
+    getWorkspaceFilter,
+    setIncludeArchived,
+    setThreadFilterQuery,
+    setWorkspaceFilter,
+  } from '../../stores/threadFilter.svelte';
   import ProviderPicker from '../composer/ProviderPicker.svelte';
   import ToggleSwitch from '../shared/ToggleSwitch.svelte';
   import ThreadList from './ThreadList.svelte';
@@ -14,11 +25,67 @@
     pane,
     onOpenSettings,
     onStartDiscussion,
+    registerFocusSearch,
   }: {
     pane: ThreadPane;
     onOpenSettings?: () => void;
     onStartDiscussion?: (thread: Thread) => void;
+    /** Receives a focus callback the palette / keybindings can call. */
+    registerFocusSearch?: (focus: () => void) => void;
   } = $props();
+
+  let searchEl: HTMLInputElement | undefined = $state(undefined);
+  let bulkActionInFlight = $state(false);
+  let selectedIds = $derived(getSelectedThreadIds());
+  let workspaceOptions = $derived.by(() => {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const t of getThreads()) {
+      if (!t.workspacePath || seen.has(t.workspacePath)) continue;
+      seen.add(t.workspacePath);
+      out.push(t.workspacePath);
+    }
+    return out;
+  });
+
+  $effect(() => {
+    if (registerFocusSearch && searchEl) {
+      registerFocusSearch(() => searchEl?.focus());
+    }
+  });
+
+  async function runBulkAction(action: 'archive' | 'delete'): Promise<void> {
+    if (selectedIds.size === 0 || bulkActionInFlight) return;
+    bulkActionInFlight = true;
+    const ids = Array.from(selectedIds);
+    const filtered = filterThreads(getThreads()).filter((t) => selectedIds.has(t.id));
+    const idsInOrder = filtered.map((t) => t.id);
+    const workIds = idsInOrder.length > 0 ? idsInOrder : ids;
+    let done = 0;
+    let failed = 0;
+    for (const id of workIds) {
+      try {
+        await StopSession(id).catch(() => {});
+        if (action === 'archive') {
+          await ArchiveThread(id);
+        } else {
+          await DeleteThread(id);
+        }
+        removeThread(id);
+        done += 1;
+      } catch (err) {
+        console.error(`bulk ${action} failed for ${id}:`, err);
+        failed += 1;
+      }
+    }
+    clearThreadSelection();
+    if (pane.thread && workIds.includes(pane.thread.id)) pane.clear();
+    bulkActionInFlight = false;
+    addToast(
+      failed > 0 ? 'warning' : 'success',
+      `${action === 'archive' ? 'Archived' : 'Deleted'} ${done} thread${done === 1 ? '' : 's'}${failed > 0 ? ` (${failed} failed)` : ''}`,
+    );
+  }
 
   let showForm = $state(false);
   let provider = $state<'claude' | 'codex'>(getSettings().defaultProvider as 'claude' | 'codex');
@@ -175,6 +242,79 @@
       </button>
     {/if}
   </div>
+
+  <div class="border-b border-border/60 px-3 py-2 space-y-2">
+    <input
+      bind:this={searchEl}
+      type="search"
+      value={getThreadFilterQuery()}
+      oninput={(e) => setThreadFilterQuery((e.target as HTMLInputElement).value)}
+      placeholder="Search threads..."
+      aria-label="Search threads"
+      data-testid="sidebar-thread-search"
+      class="w-full rounded-xl border border-border/60 bg-surface-0/70 px-3 py-1.5 text-xs text-text-primary placeholder:text-text-secondary/50 focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/50 transition-colors"
+    />
+    <div class="flex items-center gap-2 text-[11px] text-text-secondary">
+      <label class="flex items-center gap-1.5 cursor-pointer select-none" title="Include archived threads">
+        <input
+          type="checkbox"
+          checked={getIncludeArchived()}
+          onchange={(e) => setIncludeArchived((e.target as HTMLInputElement).checked)}
+          data-testid="sidebar-archived-toggle"
+          class="h-3 w-3 rounded border-border cursor-pointer"
+        />
+        <span>Archived</span>
+      </label>
+      {#if workspaceOptions.length > 1}
+        <select
+          value={getWorkspaceFilter() ?? ''}
+          onchange={(e) => setWorkspaceFilter(((e.target as HTMLSelectElement).value || null))}
+          aria-label="Filter by workspace"
+          data-testid="sidebar-workspace-filter"
+          class="ml-auto text-[11px] rounded border border-border/60 bg-surface-0/60 px-1.5 py-0.5 text-text-primary max-w-[140px]"
+        >
+          <option value="">All workspaces</option>
+          {#each workspaceOptions as ws (ws)}
+            <option value={ws}>{ws}</option>
+          {/each}
+        </select>
+      {/if}
+    </div>
+  </div>
+
+  {#if selectedIds.size > 0}
+    <div
+      class="border-b border-accent/40 bg-accent/10 px-3 py-2 flex items-center gap-2 text-xs"
+      role="toolbar"
+      aria-label="Multi-select actions"
+      data-testid="sidebar-multiselect-toolbar"
+    >
+      <span class="font-semibold text-text-primary">{selectedIds.size} selected</span>
+      <button
+        type="button"
+        onclick={() => runBulkAction('archive')}
+        disabled={bulkActionInFlight}
+        class="ml-auto rounded-md border border-border/60 px-2 py-1 hover:bg-surface-2/50 cursor-pointer disabled:cursor-not-allowed disabled:opacity-60"
+      >
+        Archive selected
+      </button>
+      <button
+        type="button"
+        onclick={() => runBulkAction('delete')}
+        disabled={bulkActionInFlight}
+        class="rounded-md border border-error/60 bg-error/10 px-2 py-1 text-error hover:bg-error/20 cursor-pointer disabled:cursor-not-allowed disabled:opacity-60"
+      >
+        Delete selected
+      </button>
+      <button
+        type="button"
+        onclick={clearThreadSelection}
+        class="rounded-md px-2 py-1 text-text-secondary hover:text-text-primary cursor-pointer"
+      >
+        Clear
+      </button>
+    </div>
+  {/if}
 
   <ThreadList {pane} {onStartDiscussion} />
 

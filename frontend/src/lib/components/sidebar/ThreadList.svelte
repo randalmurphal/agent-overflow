@@ -2,6 +2,12 @@
   import type { Thread } from '../../types/models';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { getThreads } from '../../stores/threads.svelte';
+  import {
+    filterThreads,
+    getSelectedThreadIds,
+    toggleThreadSelection,
+    isThreadSelected,
+  } from '../../stores/threadFilter.svelte';
   import ThreadRow from './ThreadRow.svelte';
 
   let {
@@ -12,13 +18,60 @@
     onStartDiscussion?: (thread: Thread) => void;
   } = $props();
 
-  let threads = $derived(getThreads());
+  let threads = $derived(filterThreads(getThreads()));
+  let selected = $derived(getSelectedThreadIds());
+  let lastClickedId: string | null = $state(null);
+
+  function handleRowSelectClick(
+    thread: Thread,
+    modifier: 'toggle' | 'range' | 'single' | null,
+  ): boolean {
+    // Returns true if the click was handled as a selection action (so the row
+    // should NOT trigger a thread switch). Single click (no modifier) returns
+    // false so the thread-switch path runs.
+    if (modifier === null || modifier === 'single') {
+      lastClickedId = thread.id;
+      return false;
+    }
+    if (modifier === 'toggle') {
+      toggleThreadSelection(thread.id);
+      lastClickedId = thread.id;
+      return true;
+    }
+    if (modifier === 'range') {
+      if (!lastClickedId) {
+        toggleThreadSelection(thread.id);
+        lastClickedId = thread.id;
+        return true;
+      }
+      const ids = threads.map((t) => t.id);
+      const a = ids.indexOf(lastClickedId);
+      const b = ids.indexOf(thread.id);
+      if (a === -1 || b === -1) {
+        toggleThreadSelection(thread.id);
+        lastClickedId = thread.id;
+        return true;
+      }
+      const [lo, hi] = a < b ? [a, b] : [b, a];
+      for (let i = lo; i <= hi; i += 1) {
+        if (!isThreadSelected(ids[i])) toggleThreadSelection(ids[i]);
+      }
+      return true;
+    }
+    return false;
+  }
 </script>
 
 <div class="flex-1 overflow-y-auto px-2 py-2 space-y-1" role="list" aria-label="Threads">
   {#each threads as thread (thread.id)}
     <div role="listitem">
-      <ThreadRow {thread} {pane} {onStartDiscussion} />
+      <ThreadRow
+        {thread}
+        {pane}
+        {onStartDiscussion}
+        selected={selected.has(thread.id)}
+        onSelectClick={(modifier) => handleRowSelectClick(thread, modifier)}
+      />
     </div>
   {/each}
 
@@ -29,8 +82,8 @@
           <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
         </svg>
       </div>
-      <p class="mt-3 text-sm font-medium text-text-primary">No threads yet</p>
-      <p class="mt-1 text-xs text-text-secondary/70">Create a new thread to start a session in this workspace.</p>
+      <p class="mt-3 text-sm font-medium text-text-primary">No threads here</p>
+      <p class="mt-1 text-xs text-text-secondary/70">Adjust the search or archived filter, or create a new thread.</p>
     </div>
   {/if}
 </div>

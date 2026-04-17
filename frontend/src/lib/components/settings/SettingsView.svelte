@@ -3,16 +3,18 @@
   import ProviderSettings from './ProviderSettings.svelte';
   import ArchivedThreads from './ArchivedThreads.svelte';
   import DiscussionsSettings from './DiscussionsSettings.svelte';
+  import KeybindingsSettings from './KeybindingsSettings.svelte';
 
   let { onClose }: { onClose: () => void } = $props();
 
-  type Section = 'general' | 'providers' | 'discussions' | 'archived';
+  type Section = 'general' | 'providers' | 'discussions' | 'keybindings' | 'archived';
   let activeSection: Section = $state('general');
 
   const sections: Array<{ id: Section; label: string }> = [
     { id: 'general', label: 'General' },
     { id: 'providers', label: 'Providers' },
     { id: 'discussions', label: 'Discussions' },
+    { id: 'keybindings', label: 'Keybindings' },
     { id: 'archived', label: 'Archived' },
   ];
 
@@ -96,6 +98,8 @@
             <ProviderSettings />
           {:else if activeSection === 'discussions'}
             <DiscussionsSettings />
+          {:else if activeSection === 'keybindings'}
+            <KeybindingsSettings />
           {:else if activeSection === 'archived'}
             <ArchivedThreads />
           {/if}

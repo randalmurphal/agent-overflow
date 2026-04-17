@@ -12,10 +12,20 @@
     thread,
     pane,
     onStartDiscussion,
+    selected = false,
+    onSelectClick,
   }: {
     thread: Thread;
     pane: ThreadPane;
     onStartDiscussion?: (thread: Thread) => void;
+    selected?: boolean;
+    /**
+     * Called before the thread-switch path when the user clicks the row.
+     * Return `true` to suppress the thread switch (row handled as a
+     * multi-select action instead). `modifier` describes what the click
+     * should do: 'toggle' (cmd/ctrl), 'range' (shift), or null / 'single'.
+     */
+    onSelectClick?: (modifier: 'toggle' | 'range' | 'single' | null) => boolean;
   } = $props();
 
   let isActive = $derived(pane.threadId === thread.id);
@@ -38,10 +48,20 @@
     onStartDiscussion?.(thread);
   }
 
-  function handleClick() {
-    if (!editing) {
-      pane.switchThread(thread);
+  function handleClick(e?: MouseEvent) {
+    if (editing) return;
+    if (onSelectClick && e) {
+      const modifier: 'toggle' | 'range' | 'single' | null = (e.metaKey || e.ctrlKey)
+        ? 'toggle'
+        : e.shiftKey
+        ? 'range'
+        : null;
+      if (modifier !== null) {
+        const handled = onSelectClick(modifier);
+        if (handled) return;
+      }
     }
+    pane.switchThread(thread);
   }
 
   function startRename() {
@@ -161,13 +181,14 @@
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
-  onclick={handleClick}
+  onclick={(e) => handleClick(e)}
   ondblclick={startRename}
   onkeydown={(e) => { if (!editing && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); handleClick(); } if (!editing && e.key === 'F2') { e.preventDefault(); startRename(); } }}
   role="button"
   tabindex={0}
+  aria-pressed={selected}
   class="group w-full text-left px-3 py-2 rounded-md cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50
-    {isActive ? 'bg-accent/15 text-text-primary' : 'text-text-secondary hover:bg-surface-2 hover:text-text-primary'}"
+    {selected ? 'bg-accent/25 text-text-primary ring-1 ring-accent/50' : isActive ? 'bg-accent/15 text-text-primary' : 'text-text-secondary hover:bg-surface-2 hover:text-text-primary'}"
 >
   <div class="flex items-center gap-2">
     <span class="text-[10px] font-bold px-1 py-0.5 rounded shrink-0

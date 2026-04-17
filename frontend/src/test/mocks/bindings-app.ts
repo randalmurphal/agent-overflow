@@ -111,3 +111,8 @@ export const SaveDraft = dispatch('SaveDraft');
 export const GetDraft = dispatch('GetDraft');
 export const ClearDraft = dispatch('ClearDraft');
 export const SearchWorkspaceFiles = dispatch('SearchWorkspaceFiles');
+
+// Keybindings
+export const GetKeybindings = dispatch('GetKeybindings');
+export const UpdateKeybindings = dispatch('UpdateKeybindings');
+export const ResetKeybindings = dispatch('ResetKeybindings');

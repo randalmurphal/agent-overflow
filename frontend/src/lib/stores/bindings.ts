@@ -80,6 +80,11 @@ export {
   GetDraft,
   ClearDraft,
   SearchWorkspaceFiles,
+
+  // Keybindings
+  GetKeybindings,
+  UpdateKeybindings,
+  ResetKeybindings,
 } from '../../../bindings/agent-overflow/app.js';
 
 // Model classes needed for constructing RPC parameters.
