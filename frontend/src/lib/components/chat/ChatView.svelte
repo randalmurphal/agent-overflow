@@ -93,7 +93,7 @@
           data-testid="diff-panel-toggle"
           aria-pressed={pane.diffPanel.open}
           aria-label="Toggle diff panel"
-          title="Toggle diff panel (⇧⌘D)"
+          title="Toggle diff panel (⇧⌘G)"
           onclick={() => pane.toggleDiffPanel()}
         >
           Diffs
