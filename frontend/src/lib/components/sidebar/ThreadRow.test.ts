@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach } from 'vitest';
+import { describe, expect, it, beforeEach, vi } from 'vitest';
 import { render, fireEvent } from '@testing-library/svelte';
 import ThreadRow from './ThreadRow.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
@@ -198,5 +198,84 @@ describe('<ThreadRow> fork lineage badge', () => {
     expect(rowSelectCalled).toBe(0);
     // Pane should be on the PARENT (not the forked thread we rendered).
     expect(pane.threadId).toBe('parent');
+  });
+});
+
+describe('<ThreadRow> nested row chrome', () => {
+  beforeEach(async () => {
+    await primeSettings();
+    setBindingMock('ListThreads', async () => []);
+    await refreshThreads();
+  });
+
+  it('renders no chevron when hasChildren is false', () => {
+    const pane = createThreadPane();
+    const { queryByTestId } = render(ThreadRow, {
+      props: { thread: makeThread(), pane, hasChildren: false },
+    });
+    expect(queryByTestId('thread-row-expand')).toBeNull();
+  });
+
+  it('renders the chevron (not rotated) when hasChildren is true and expanded is false', () => {
+    const pane = createThreadPane();
+    const { getByTestId } = render(ThreadRow, {
+      props: {
+        thread: makeThread({ discussionId: 'def-1' }),
+        pane,
+        hasChildren: true,
+        expanded: false,
+      },
+    });
+    const btn = getByTestId('thread-row-expand');
+    expect(btn.getAttribute('aria-expanded')).toBe('false');
+    expect(btn.querySelector('svg')?.classList.contains('rotate-90')).toBe(false);
+  });
+
+  it('rotates the chevron when expanded is true', () => {
+    const pane = createThreadPane();
+    const { getByTestId } = render(ThreadRow, {
+      props: {
+        thread: makeThread({ discussionId: 'def-1' }),
+        pane,
+        hasChildren: true,
+        expanded: true,
+      },
+    });
+    const btn = getByTestId('thread-row-expand');
+    expect(btn.getAttribute('aria-expanded')).toBe('true');
+    expect(btn.querySelector('svg')?.classList.contains('rotate-90')).toBe(true);
+  });
+
+  it('chevron click calls onToggleExpand and not the row-click path', async () => {
+    const onToggleExpand = vi.fn();
+    const onSelectClick = vi.fn(() => false);
+    const pane = createThreadPane();
+    setBindingMock('SwitchThread', async () => {});
+    setBindingMock('ListItems', async () => []);
+    setBindingMock('ListPayloadMetas', async () => []);
+
+    const { getByTestId } = render(ThreadRow, {
+      props: {
+        thread: makeThread({ discussionId: 'def-1' }),
+        pane,
+        hasChildren: true,
+        expanded: false,
+        onToggleExpand,
+        onSelectClick,
+      },
+    });
+    await fireEvent.click(getByTestId('thread-row-expand'));
+    expect(onToggleExpand).toHaveBeenCalledTimes(1);
+    expect(onSelectClick).not.toHaveBeenCalled();
+    expect(pane.threadId).toBeNull();
+  });
+
+  it('applies indent via padding-left on the outer container', () => {
+    const pane = createThreadPane();
+    const { container } = render(ThreadRow, {
+      props: { thread: makeThread(), pane, indent: 1 },
+    });
+    const outer = container.querySelector('[role="button"]') as HTMLElement;
+    expect(outer.style.paddingLeft).toMatch(/calc\(0\.75rem \+ 0\.9rem\)/);
   });
 });

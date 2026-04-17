@@ -14,6 +14,10 @@
     onStartDiscussion,
     selected = false,
     onSelectClick,
+    indent = 0,
+    hasChildren = false,
+    expanded = false,
+    onToggleExpand,
   }: {
     thread: Thread;
     pane: ThreadPane;
@@ -26,7 +30,20 @@
      * should do: 'toggle' (cmd/ctrl), 'range' (shift), or null / 'single'.
      */
     onSelectClick?: (modifier: 'toggle' | 'range' | 'single' | null) => boolean;
+    /** Visual indent level. 0 = top, 1 = direct child of a discussion parent. */
+    indent?: number;
+    /** True when this row represents a parent with at least one child below it. */
+    hasChildren?: boolean;
+    /** Controls the chevron direction when hasChildren is true. */
+    expanded?: boolean;
+    /** Fires on chevron click; caller toggles the expansion store. */
+    onToggleExpand?: () => void;
   } = $props();
+
+  function handleChevronClick(e: MouseEvent): void {
+    e.stopPropagation();
+    onToggleExpand?.();
+  }
 
   let isActive = $derived(pane.threadId === thread.id);
   let canStartDiscussion = $derived(
@@ -217,8 +234,36 @@
   aria-pressed={selected}
   class="group w-full text-left px-3 py-2 rounded-md cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50
     {selected ? 'bg-accent/25 text-text-primary ring-1 ring-accent/50' : isActive ? 'bg-accent/15 text-text-primary' : 'text-text-secondary hover:bg-surface-2 hover:text-text-primary'}"
+  style="padding-left: calc(0.75rem + {indent * 0.9}rem)"
 >
   <div class="flex items-center gap-2">
+    {#if hasChildren}
+      <button
+        type="button"
+        onclick={handleChevronClick}
+        data-testid="thread-row-expand"
+        aria-label={expanded ? 'Collapse participants' : 'Expand participants'}
+        aria-expanded={expanded}
+        class="flex items-center justify-center w-4 h-4 rounded text-text-secondary/70 hover:text-text-primary hover:bg-surface-2/50 shrink-0 cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/50"
+      >
+        <svg
+          class="w-3 h-3 transition-transform {expanded ? 'rotate-90' : ''}"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2.5"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          aria-hidden="true"
+        >
+          <polyline points="9 18 15 12 9 6" />
+        </svg>
+      </button>
+    {:else if indent > 0}
+      <!-- Alignment spacer for children so their provider badge lines
+           up with the parent's title column. -->
+      <span class="w-4 h-4 shrink-0" aria-hidden="true"></span>
+    {/if}
     <span class="text-[10px] font-bold px-1 py-0.5 rounded shrink-0
       {thread.provider === 'claude' ? 'bg-accent/20 text-accent' : 'bg-provider-codex/20 text-provider-codex'}" aria-hidden="true">
       {thread.provider === 'claude' ? 'C' : 'X'}

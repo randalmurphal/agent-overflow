@@ -8,6 +8,12 @@
     toggleThreadSelection,
     isThreadSelected,
   } from '../../stores/threadFilter.svelte';
+  import {
+    ensureExpanded,
+    getExpandedParents,
+    toggleParent,
+  } from '../../stores/threadTree.svelte';
+  import { buildDisplayRows, defaultExpandedParents, type ThreadDisplayRow } from '../../utils/threadTree';
   import ThreadRow from './ThreadRow.svelte';
   import VirtualList from '../shared/VirtualList.svelte';
 
@@ -22,6 +28,22 @@
   let threads = $derived(filterThreads(getThreads()));
   let selected = $derived(getSelectedThreadIds());
   let lastClickedId: string | null = $state(null);
+
+  // Auto-expand the parent of whichever thread is active so the user
+  // never sees a collapsed tree hiding the thread they just opened.
+  // Additive only — collapse is strictly user-driven via the chevron.
+  $effect(() => {
+    const activeId = pane.threadId;
+    const expansions = defaultExpandedParents(threads, activeId);
+    if (expansions.size > 0) ensureExpanded(expansions);
+  });
+
+  // Flatten the filtered thread list into nested rows. Children follow
+  // their parent; orphans (parent filtered out of the visible set) fall
+  // back to top-level so the user can still reach them.
+  let rows = $derived<ThreadDisplayRow[]>(
+    buildDisplayRows(threads, getExpandedParents()),
+  );
 
   // ThreadRow renders two lines (title + relative timestamp) with
   // px-3 py-2 padding, which measures ~56px on the current Tailwind v4
@@ -70,7 +92,7 @@
   }
 </script>
 
-{#if threads.length === 0}
+{#if rows.length === 0}
   <div class="flex-1 overflow-y-auto px-2 py-2" role="list" aria-label="Threads">
     <div class="mx-1 mt-3 rounded-2xl border border-dashed border-border/70 bg-surface-0/45 px-4 py-8 text-center shadow-[inset_0_1px_0_rgba(255,255,255,0.02)]">
       <div class="mx-auto flex h-10 w-10 items-center justify-center rounded-2xl border border-border/60 bg-surface-1/80 text-text-secondary/70">
@@ -84,19 +106,23 @@
   </div>
 {:else}
   <VirtualList
-    items={threads}
+    items={rows}
     rowHeight={ROW_HEIGHT}
     ariaLabel="Threads"
     class="flex-1 px-2 py-2"
   >
-    {#snippet children(thread: Thread)}
+    {#snippet children(row: ThreadDisplayRow)}
       <div role="listitem" class="px-0 py-0">
         <ThreadRow
-          {thread}
+          thread={row.thread}
           {pane}
           {onStartDiscussion}
-          selected={selected.has(thread.id)}
-          onSelectClick={(modifier) => handleRowSelectClick(thread, modifier)}
+          indent={row.indent}
+          hasChildren={row.hasVisibleChildren}
+          expanded={row.expanded}
+          onToggleExpand={() => toggleParent(row.thread.id)}
+          selected={selected.has(row.thread.id)}
+          onSelectClick={(modifier) => handleRowSelectClick(row.thread, modifier)}
         />
       </div>
     {/snippet}
