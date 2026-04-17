@@ -746,10 +746,7 @@ func (r *Router) persistHeavy(evt provider.ProviderEvent, payloadKind string, it
 	if evt.Replace {
 		return r.replaceHeavy(evt, payloadKind, itemKind, payload, itemID, metaJSON, now, turnIndex, hasExisting)
 	}
-	if err := r.store.InsertPayload(payload); err != nil {
-		return fmt.Errorf("persist payload: %w", err)
-	}
-	return r.insertHeavyItem(evt, payloadKind, itemKind, payloadID, itemID, metaJSON, now, turnIndex)
+	return r.insertHeavyItemAndPayload(evt, payloadKind, itemKind, payload, itemID, metaJSON, now, turnIndex)
 }
 
 func (r *Router) replaceHeavy(
@@ -801,6 +798,47 @@ func (r *Router) insertHeavyItem(
 	}
 	if err := r.store.InsertItem(item); err != nil {
 		return fmt.Errorf("persist item: %w", err)
+	}
+	r.metrics.ItemsPersisted.Add(context.Background(), 1,
+		metric.WithAttributes(attribute.String("kind", itemKind)))
+	r.metrics.PayloadsPersisted.Add(context.Background(), 1,
+		metric.WithAttributes(attribute.String("kind", payloadKind)))
+
+	return nil
+}
+
+// insertHeavyItemAndPayload writes the payload and its matching item in
+// a single transaction (Bug B10). A failure in either half aborts both,
+// so the store never retains an orphan payload row when item insertion
+// fails (or vice versa).
+func (r *Router) insertHeavyItemAndPayload(
+	evt provider.ProviderEvent,
+	payloadKind, itemKind string,
+	payload store.Payload,
+	itemID, metaJSON string,
+	now int64,
+	turnIndex int,
+) error {
+	itemIndex, err := r.store.NextItemIndex(evt.ThreadID, turnIndex)
+	if err != nil {
+		log.Printf("triage: next item index: %v (defaulting to 0)", err)
+		itemIndex = 0
+	}
+
+	item := store.Item{
+		ID:              itemID,
+		ThreadID:        evt.ThreadID,
+		TurnIndex:       turnIndex,
+		ItemIndex:       itemIndex,
+		Kind:            itemKind,
+		Role:            "assistant",
+		Summary:         buildSummary(payloadKind, metaJSON),
+		PayloadID:       payload.ID,
+		ParentToolUseID: evt.ParentToolUseID,
+		CreatedAt:       now,
+	}
+	if err := r.store.InsertItemWithPayload(item, payload); err != nil {
+		return fmt.Errorf("persist item+payload: %w", err)
 	}
 	r.metrics.ItemsPersisted.Add(context.Background(), 1,
 		metric.WithAttributes(attribute.String("kind", itemKind)))

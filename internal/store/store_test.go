@@ -589,6 +589,171 @@ func TestInsertItemWithValidPayloadFK(t *testing.T) {
 	}
 }
 
+// TestInsertItemWithPayloadAtomicHappyPath verifies the combined
+// InsertPayload + InsertItem path writes both rows successfully.
+func TestInsertItemWithPayloadAtomicHappyPath(t *testing.T) {
+	s := newTestStore(t)
+
+	thr := makeThread("t1", "claude")
+	if err := s.CreateThread(thr); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+
+	now := time.Now().UnixMilli()
+	payload := Payload{
+		ID:        "p1",
+		Kind:      "diff",
+		Meta:      `{"file":"main.go"}`,
+		Data:      []byte("diff content"),
+		CreatedAt: now,
+	}
+	item := Item{
+		ID:        "i1",
+		ThreadID:  "t1",
+		TurnIndex: 0,
+		ItemIndex: 0,
+		Kind:      "diff",
+		Role:      "assistant",
+		PayloadID: "p1",
+		CreatedAt: now,
+	}
+	if err := s.InsertItemWithPayload(item, payload); err != nil {
+		t.Fatalf("InsertItemWithPayload: %v", err)
+	}
+
+	// Both rows must be reachable afterward.
+	data, err := s.GetPayloadData("p1")
+	if err != nil {
+		t.Fatalf("get payload: %v", err)
+	}
+	if string(data) != "diff content" {
+		t.Fatalf("payload data = %q, want %q", data, "diff content")
+	}
+	items, err := s.ListItems("t1")
+	if err != nil {
+		t.Fatalf("list items: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("items = %d, want 1", len(items))
+	}
+	if items[0].PayloadID != "p1" {
+		t.Fatalf("item payload_id = %q, want p1", items[0].PayloadID)
+	}
+}
+
+// TestInsertItemWithPayloadAtomicRollbackOnItemFailure exercises Bug B10:
+// when the item half of the transaction fails (duplicate ID, FK error,
+// whatever), the payload half must roll back too so no orphan payload
+// row remains.
+func TestInsertItemWithPayloadAtomicRollbackOnItemFailure(t *testing.T) {
+	s := newTestStore(t)
+
+	thr := makeThread("t1", "claude")
+	if err := s.CreateThread(thr); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+
+	now := time.Now().UnixMilli()
+	// Pre-insert an item with ID "i-dup" so the combined call below
+	// tries to INSERT a duplicate primary key and fails.
+	if err := s.InsertItem(Item{
+		ID:        "i-dup",
+		ThreadID:  "t1",
+		TurnIndex: 0,
+		ItemIndex: 0,
+		Kind:      "text",
+		Role:      "user",
+		CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed item: %v", err)
+	}
+
+	payload := Payload{
+		ID:        "p-orphan",
+		Kind:      "diff",
+		Meta:      "{}",
+		Data:      []byte("data"),
+		CreatedAt: now,
+	}
+	dupItem := Item{
+		ID:        "i-dup",
+		ThreadID:  "t1",
+		TurnIndex: 0,
+		ItemIndex: 1,
+		Kind:      "diff",
+		Role:      "assistant",
+		PayloadID: "p-orphan",
+		CreatedAt: now,
+	}
+	err := s.InsertItemWithPayload(dupItem, payload)
+	if err == nil {
+		t.Fatal("expected duplicate-key error, got nil")
+	}
+
+	// Payload must NOT be present — the rollback undoes the pre-item
+	// insert of p-orphan.
+	if _, getErr := s.GetPayloadData("p-orphan"); getErr == nil {
+		t.Fatal("payload p-orphan persisted despite item failure (Bug B10 regression)")
+	}
+}
+
+// TestInsertItemWithPayloadAtomicRollbackOnPayloadFailure exercises the
+// symmetric case: the payload half fails (duplicate ID), so the item
+// must never land either.
+func TestInsertItemWithPayloadAtomicRollbackOnPayloadFailure(t *testing.T) {
+	s := newTestStore(t)
+
+	thr := makeThread("t1", "claude")
+	if err := s.CreateThread(thr); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+
+	now := time.Now().UnixMilli()
+	// Pre-insert a payload with ID "p-dup" so the call below fails on
+	// the payload half.
+	if err := s.InsertPayload(Payload{
+		ID:        "p-dup",
+		Kind:      "diff",
+		Meta:      "{}",
+		Data:      []byte("seed"),
+		CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed payload: %v", err)
+	}
+
+	dupPayload := Payload{
+		ID:        "p-dup",
+		Kind:      "diff",
+		Meta:      "{}",
+		Data:      []byte("new"),
+		CreatedAt: now,
+	}
+	item := Item{
+		ID:        "i-orphan",
+		ThreadID:  "t1",
+		TurnIndex: 0,
+		ItemIndex: 0,
+		Kind:      "diff",
+		Role:      "assistant",
+		PayloadID: "p-dup",
+		CreatedAt: now,
+	}
+	err := s.InsertItemWithPayload(item, dupPayload)
+	if err == nil {
+		t.Fatal("expected duplicate-key error, got nil")
+	}
+
+	items, err := s.ListItems("t1")
+	if err != nil {
+		t.Fatalf("list items: %v", err)
+	}
+	for _, it := range items {
+		if it.ID == "i-orphan" {
+			t.Fatalf("item i-orphan persisted despite payload failure: %+v", it)
+		}
+	}
+}
+
 func TestNextItemIndex(t *testing.T) {
 	s := newTestStore(t)
 
