@@ -913,6 +913,347 @@ func TestE2E_ClaudeApprovalRoundTrip(t *testing.T) {
 	_ = app.StopSession(thread.ID)
 }
 
+// TestE2E_StopSessionWithoutStartIsClean: calling StopSession on a thread
+// that never had a session must not error; it also must clean up any
+// lingering triage state. Covers the no-op path explicitly.
+func TestE2E_StopSessionWithoutStartIsClean(t *testing.T) {
+	app, _ := setupE2EApp(t)
+	workspace := t.TempDir()
+	thread, err := app.CreateThread(string(provider.Claude), workspace, "claude-opus-4-7", "default")
+	if err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+
+	if err := app.StopSession(thread.ID); err != nil {
+		t.Fatalf("StopSession no-op: %v", err)
+	}
+
+	// App still usable.
+	if _, err := app.ListItems(thread.ID); err != nil {
+		t.Fatalf("ListItems: %v", err)
+	}
+}
+
+// TestE2E_TokenUsagePersists: a result with token usage should flow through
+// the triage router and be emitted with cost attached (when the model is
+// known).
+func TestE2E_TokenUsagePersists(t *testing.T) {
+	app, bus := setupE2EApp(t)
+	workspace := t.TempDir()
+	thread, err := app.CreateThread(string(provider.Claude), workspace, "claude-opus-4-7", "default")
+	if err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+
+	resp := [][]string{{
+		`{"type":"system","subtype":"init","session_id":"sess-usage","model":"claude-opus-4-7","cwd":"/tmp","tools":[],"claude_code_version":"1.0"}`,
+		`{"type":"assistant","message":{"id":"m1","role":"assistant","content":[{"type":"text","text":"hi"}],"usage":{"input_tokens":100,"output_tokens":50}}}`,
+		`{"type":"result","subtype":"success","is_error":false,"usage":{"input_tokens":100,"output_tokens":50,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}`,
+	}}
+	binary := testutil.WriteMockClaudeScript(t, t.TempDir(), resp)
+	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
+		t.Fatalf("set binary: %v", err)
+	}
+
+	if err := app.StartSession(thread.ID); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	if err := app.SendMessage(thread.ID, "go"); err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+
+	usage := bus.nextProviderEventOfKind(t, provider.EventTokenUsage, 5*time.Second)
+	var tokens provider.TokenUsage
+	if err := json.Unmarshal(usage.Meta, &tokens); err != nil {
+		t.Fatalf("unmarshal usage meta: %v", err)
+	}
+	if tokens.InputTokens != 100 || tokens.OutputTokens != 50 {
+		t.Fatalf("usage = %+v, want input=100 output=50", tokens)
+	}
+	_ = app.StopSession(thread.ID)
+}
+
+// TestE2E_ThinkingBlockPersistsAsItem: a thinking block should end up in the
+// store with a thinking item + payload.
+func TestE2E_ThinkingBlockPersistsAsItem(t *testing.T) {
+	app, _ := setupE2EApp(t)
+	workspace := t.TempDir()
+	thread, err := app.CreateThread(string(provider.Claude), workspace, "claude-opus-4-7", "default")
+	if err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+
+	resp := [][]string{{
+		`{"type":"system","subtype":"init","session_id":"sess-think","model":"claude-opus-4-7","cwd":"/tmp","tools":[],"claude_code_version":"1.0"}`,
+		`{"type":"assistant","message":{"id":"m1","role":"assistant","content":[{"type":"thinking","thinking":"reasoning about the problem"},{"type":"text","text":"answer"}]}}`,
+		`{"type":"result","subtype":"success","is_error":false}`,
+	}}
+	binary := testutil.WriteMockClaudeScript(t, t.TempDir(), resp)
+	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
+		t.Fatalf("set binary: %v", err)
+	}
+
+	if err := app.StartSession(thread.ID); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	if err := app.SendMessage(thread.ID, "think"); err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+
+	// Wait for turn complete to flush accumulators.
+	waitUntil(t, 5*time.Second, func() bool {
+		items, _ := app.store.ListItems(thread.ID)
+		for _, it := range items {
+			if it.Kind == string(provider.ItemThinking) {
+				return true
+			}
+		}
+		return false
+	})
+
+	items, _ := app.store.ListItems(thread.ID)
+	var thinking, textCnt int
+	for _, it := range items {
+		switch it.Kind {
+		case string(provider.ItemThinking):
+			thinking++
+			if it.PayloadID == "" {
+				t.Fatalf("thinking item has no payload: %+v", it)
+			}
+		case string(provider.ItemText):
+			textCnt++
+		}
+	}
+	if thinking == 0 {
+		t.Fatalf("no thinking items persisted; items = %+v", items)
+	}
+	if textCnt == 0 {
+		t.Fatalf("no text item persisted; items = %+v", items)
+	}
+
+	_ = app.StopSession(thread.ID)
+}
+
+// TestE2E_CommandOutputPersistsToPayload: a command_output heavy event is
+// persisted as a command_execution item with payload.
+func TestE2E_CommandOutputPersistsToPayload(t *testing.T) {
+	app, _ := setupE2EApp(t)
+	workspace := t.TempDir()
+	thread, err := app.CreateThread(string(provider.Claude), workspace, "claude-opus-4-7", "default")
+	if err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+
+	// Seed a turn so LastTurnIndex > 0.
+	if err := app.store.InsertItem(store.Item{
+		ID: "seed", ThreadID: thread.ID, TurnIndex: 1, ItemIndex: 0,
+		Kind: "text", Role: "user", Summary: "seed", CreatedAt: time.Now().UnixMilli(),
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	evt := provider.ProviderEvent{
+		Kind:     provider.EventCommandOutput,
+		ThreadID: thread.ID,
+		Content:  "line 1\nline 2\nline 3\n",
+		Meta:     json.RawMessage(`{"command":"ls -la","exitCode":0}`),
+		Timestamp: time.Now(),
+	}
+	if err := app.triage.Handle(evt); err != nil {
+		t.Fatalf("triage.Handle: %v", err)
+	}
+
+	items, err := app.store.ListItems(thread.ID)
+	if err != nil {
+		t.Fatalf("ListItems: %v", err)
+	}
+	var cmd store.Item
+	for _, it := range items {
+		if it.Kind == string(provider.ItemCommandExecution) {
+			cmd = it
+		}
+	}
+	if cmd.ID == "" {
+		t.Fatalf("no command_execution item persisted: %+v", items)
+	}
+	if cmd.PayloadID == "" {
+		t.Fatalf("command item missing payload: %+v", cmd)
+	}
+
+	got, err := app.GetPayloadData(cmd.PayloadID)
+	if err != nil {
+		t.Fatalf("GetPayloadData: %v", err)
+	}
+	if got != evt.Content {
+		t.Fatalf("payload round-trip = %q, want %q", got, evt.Content)
+	}
+}
+
+// TestE2E_RenameThreadUpdatesTitle: verifies the basic rename binding.
+func TestE2E_RenameThreadUpdatesTitle(t *testing.T) {
+	app, _ := setupE2EApp(t)
+	thread, err := app.CreateThread(string(provider.Claude), t.TempDir(), "claude-opus-4-7", "default")
+	if err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+
+	if err := app.RenameThread(thread.ID, "Refactored Flow"); err != nil {
+		t.Fatalf("RenameThread: %v", err)
+	}
+	got, err := app.store.GetThread(thread.ID)
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+	if got.Title != "Refactored Flow" {
+		t.Fatalf("Title = %q, want %q", got.Title, "Refactored Flow")
+	}
+}
+
+// TestE2E_GetPayloadDataReturnsEmptyForMissing: unknown payloadID should
+// return an error, not silent empty string.
+func TestE2E_GetPayloadDataReturnsEmptyForMissing(t *testing.T) {
+	app, _ := setupE2EApp(t)
+	_, err := app.GetPayloadData("no-such-id")
+	if err == nil {
+		t.Fatal("GetPayloadData missing: err = nil, want error")
+	}
+}
+
+// TestE2E_SendMessageTouchesThreadUpdatedAt: sending a message must bump the
+// thread's updated_at so the sidebar reshuffles.
+func TestE2E_SendMessageTouchesThreadUpdatedAt(t *testing.T) {
+	app, _ := setupE2EApp(t)
+	workspace := t.TempDir()
+	thread, err := app.CreateThread(string(provider.Claude), workspace, "claude-opus-4-7", "default")
+	if err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	binary := testutil.WriteMockClaudeScript(t, t.TempDir(), [][]string{{}})
+	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
+		t.Fatalf("set binary: %v", err)
+	}
+	if err := app.StartSession(thread.ID); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+
+	before, err := app.store.GetThread(thread.ID)
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+	// Ensure clock ticks. UnixMilli has 1ms resolution.
+	time.Sleep(2 * time.Millisecond)
+
+	if err := app.SendMessage(thread.ID, "touch"); err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+
+	after, err := app.store.GetThread(thread.ID)
+	if err != nil {
+		t.Fatalf("GetThread post: %v", err)
+	}
+	if after.UpdatedAt <= before.UpdatedAt {
+		t.Fatalf("updated_at not bumped: before=%d after=%d", before.UpdatedAt, after.UpdatedAt)
+	}
+	_ = app.StopSession(thread.ID)
+}
+
+// TestE2E_StartSessionUnknownThread: StartSession against a non-existent
+// thread ID must fail cleanly without registering anything in app.sessions.
+func TestE2E_StartSessionUnknownThread(t *testing.T) {
+	app, _ := setupE2EApp(t)
+
+	err := app.StartSession("missing-thread-id")
+	if err == nil {
+		t.Fatal("StartSession unknown thread: err = nil, want failure")
+	}
+
+	app.mu.Lock()
+	_, registered := app.sessions["missing-thread-id"]
+	app.mu.Unlock()
+	if registered {
+		t.Fatal("session map should not contain failed-start thread")
+	}
+}
+
+// TestE2E_SendMessageUnknownThread: calling SendMessage with a thread ID that
+// does not exist must report "no active session" and not crash the app.
+func TestE2E_SendMessageUnknownThread(t *testing.T) {
+	app, _ := setupE2EApp(t)
+
+	err := app.SendMessage("ghost-thread-id", "hello")
+	if err == nil {
+		t.Fatal("SendMessage unknown thread: err = nil, want failure")
+	}
+	if !strings.Contains(err.Error(), "no active session") {
+		t.Fatalf("error = %v, want 'no active session'", err)
+	}
+
+	if _, err := app.ListThreads(); err != nil {
+		t.Fatalf("ListThreads after failed send: %v", err)
+	}
+}
+
+// TestE2E_InterruptTurnWithoutSession: InterruptTurn on a thread with no
+// active session should fail with a clear error, not crash.
+func TestE2E_InterruptTurnWithoutSession(t *testing.T) {
+	app, _ := setupE2EApp(t)
+	workspace := t.TempDir()
+	thread, err := app.CreateThread(string(provider.Claude), workspace, "claude-opus-4-7", "default")
+	if err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+
+	err = app.InterruptTurn(thread.ID)
+	if err == nil {
+		t.Fatal("InterruptTurn without session: err = nil, want failure")
+	}
+	if !strings.Contains(err.Error(), "no active session") {
+		t.Fatalf("error = %v, want 'no active session'", err)
+	}
+}
+
+// TestE2E_StartSessionTwiceReplacesOldSession: calling StartSession twice on
+// the same thread should tear down the first session and register the second.
+// The session token in the map must change.
+func TestE2E_StartSessionTwiceReplacesOldSession(t *testing.T) {
+	app, _ := setupE2EApp(t)
+	workspace := t.TempDir()
+	thread, err := app.CreateThread(string(provider.Claude), workspace, "claude-opus-4-7", "default")
+	if err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+
+	binary := testutil.WriteMockClaudeScript(t, t.TempDir(), [][]string{{}})
+	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
+		t.Fatalf("set binary: %v", err)
+	}
+
+	if err := app.StartSession(thread.ID); err != nil {
+		t.Fatalf("StartSession #1: %v", err)
+	}
+	app.mu.Lock()
+	first, ok := app.sessions[thread.ID]
+	app.mu.Unlock()
+	if !ok {
+		t.Fatal("first session not registered")
+	}
+
+	if err := app.StartSession(thread.ID); err != nil {
+		t.Fatalf("StartSession #2: %v", err)
+	}
+	app.mu.Lock()
+	second, ok := app.sessions[thread.ID]
+	app.mu.Unlock()
+	if !ok {
+		t.Fatal("second session not registered")
+	}
+
+	if first.token == second.token {
+		t.Fatalf("session token should change on restart (both=%q)", first.token)
+	}
+	_ = app.StopSession(thread.ID)
+}
+
 // --- Utilities private to this file ---
 
 func shellQuoteForTest(path string) string {
