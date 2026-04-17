@@ -18,6 +18,9 @@ const FULL_SETTINGS: Settings = {
   codexBinaryPath: '/usr/local/bin/codex',
   claudeEnabled: true,
   codexEnabled: false,
+  observabilityTracingEnabled: false,
+  observabilityOtlpEndpoint: '',
+  observabilityEventLogEnabled: false,
 };
 
 describe('settings store', () => {

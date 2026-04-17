@@ -113,6 +113,27 @@ export class Settings {
              */
             this["codexEnabled"] = false;
         }
+        if (!("observabilityTracingEnabled" in $$source)) {
+            /**
+             * @member
+             * @type {boolean}
+             */
+            this["observabilityTracingEnabled"] = false;
+        }
+        if (!("observabilityOtlpEndpoint" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["observabilityOtlpEndpoint"] = "";
+        }
+        if (!("observabilityEventLogEnabled" in $$source)) {
+            /**
+             * @member
+             * @type {boolean}
+             */
+            this["observabilityEventLogEnabled"] = false;
+        }
 
         Object.assign(this, $$source);
     }

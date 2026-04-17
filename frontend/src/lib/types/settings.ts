@@ -13,6 +13,9 @@ export interface Settings {
   codexBinaryPath: string;
   claudeEnabled: boolean;
   codexEnabled: boolean;
+  observabilityTracingEnabled: boolean;
+  observabilityOtlpEndpoint: string;
+  observabilityEventLogEnabled: boolean;
 }
 
 export interface ProviderStatus {

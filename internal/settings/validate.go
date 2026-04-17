@@ -52,6 +52,7 @@ func validateSettings(current Settings) (Settings, error) {
 	current.ClaudeBinaryPath = normalizeBinaryPath(current.ClaudeBinaryPath, DefaultSettings.ClaudeBinaryPath)
 	current.CodexBinaryPath = normalizeBinaryPath(current.CodexBinaryPath, DefaultSettings.CodexBinaryPath)
 	current.RecentWorkspaces = normalizeRecentWorkspaces(current.RecentWorkspaces)
+	current.ObservabilityOtlpEndpoint = strings.TrimSpace(current.ObservabilityOtlpEndpoint)
 	return current, nil
 }
 
@@ -90,6 +91,7 @@ func sanitizeLoadedSettings(current Settings) Settings {
 		DefaultSettings.CodexBinaryPath,
 	)
 	current.RecentWorkspaces = normalizeRecentWorkspaces(current.RecentWorkspaces)
+	current.ObservabilityOtlpEndpoint = strings.TrimSpace(current.ObservabilityOtlpEndpoint)
 	return current
 }
 

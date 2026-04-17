@@ -27,6 +27,11 @@ type Settings struct {
 	CodexBinaryPath    string   `json:"codexBinaryPath"`
 	ClaudeEnabled      bool     `json:"claudeEnabled"`
 	CodexEnabled       bool     `json:"codexEnabled"`
+
+	// Observability — all opt-in. Empty/false defaults leave the app quiet.
+	ObservabilityTracingEnabled  bool   `json:"observabilityTracingEnabled"`
+	ObservabilityOtlpEndpoint    string `json:"observabilityOtlpEndpoint"`
+	ObservabilityEventLogEnabled bool   `json:"observabilityEventLogEnabled"`
 }
 
 // DefaultSettings provides sane defaults for all settings fields.
@@ -44,6 +49,13 @@ var DefaultSettings = Settings{
 	CodexBinaryPath:    "codex",
 	ClaudeEnabled:      true,
 	CodexEnabled:       true,
+	// Observability defaults to off so there is zero runtime cost for users
+	// who don't opt in. The OTLP endpoint is only meaningful when tracing
+	// is enabled; we leave it blank so a misconfigured endpoint can't cause
+	// silent failures for default users.
+	ObservabilityTracingEnabled:  false,
+	ObservabilityOtlpEndpoint:    "",
+	ObservabilityEventLogEnabled: false,
 }
 
 // Service manages reading and writing the settings JSON file.

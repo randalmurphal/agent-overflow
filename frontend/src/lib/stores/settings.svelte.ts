@@ -17,6 +17,9 @@ const DEFAULT_SETTINGS: Settings = {
   codexBinaryPath: 'codex',
   claudeEnabled: true,
   codexEnabled: true,
+  observabilityTracingEnabled: false,
+  observabilityOtlpEndpoint: '',
+  observabilityEventLogEnabled: false,
 };
 
 let settings: Settings = $state({ ...DEFAULT_SETTINGS });

@@ -37,6 +37,15 @@ func TestGetReturnsDefaultsOnMissingFile(t *testing.T) {
 	if got.RecentWorkspaces != nil {
 		t.Errorf("RecentWorkspaces = %v, want nil", got.RecentWorkspaces)
 	}
+	if got.ObservabilityTracingEnabled {
+		t.Error("ObservabilityTracingEnabled = true, want false by default")
+	}
+	if got.ObservabilityEventLogEnabled {
+		t.Error("ObservabilityEventLogEnabled = true, want false by default")
+	}
+	if got.ObservabilityOtlpEndpoint != "" {
+		t.Errorf("ObservabilityOtlpEndpoint = %q, want empty by default", got.ObservabilityOtlpEndpoint)
+	}
 }
 
 func TestGetReturnsDefaultsOnMalformedJSON(t *testing.T) {
@@ -285,5 +294,84 @@ func TestBlankBinaryPathsSerializeAsDefaults(t *testing.T) {
 	}
 	if len(fileMap) != 0 {
 		t.Fatalf("settings file = %s, want empty sparse object", string(data))
+	}
+}
+
+func TestObservabilityDefaults(t *testing.T) {
+	svc := NewService(t.TempDir())
+	got := svc.Get()
+	if got.ObservabilityTracingEnabled {
+		t.Error("ObservabilityTracingEnabled = true, want false by default")
+	}
+	if got.ObservabilityEventLogEnabled {
+		t.Error("ObservabilityEventLogEnabled = true, want false by default")
+	}
+	if got.ObservabilityOtlpEndpoint != "" {
+		t.Errorf("ObservabilityOtlpEndpoint = %q, want empty by default", got.ObservabilityOtlpEndpoint)
+	}
+}
+
+func TestObservabilitySettingsRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	svc := NewService(dir)
+
+	updated, err := svc.Update(map[string]any{
+		"observabilityTracingEnabled":  true,
+		"observabilityOtlpEndpoint":    "  localhost:4317  ",
+		"observabilityEventLogEnabled": true,
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if !updated.ObservabilityTracingEnabled {
+		t.Error("ObservabilityTracingEnabled = false, want true")
+	}
+	if !updated.ObservabilityEventLogEnabled {
+		t.Error("ObservabilityEventLogEnabled = false, want true")
+	}
+	if updated.ObservabilityOtlpEndpoint != "localhost:4317" {
+		t.Errorf("ObservabilityOtlpEndpoint = %q, want %q (trimmed)", updated.ObservabilityOtlpEndpoint, "localhost:4317")
+	}
+
+	// Reload from disk to ensure persistence survives service restart.
+	svc2 := NewService(dir)
+	reloaded := svc2.Get()
+	if !reloaded.ObservabilityTracingEnabled {
+		t.Error("After reload: tracing enabled should persist")
+	}
+	if reloaded.ObservabilityOtlpEndpoint != "localhost:4317" {
+		t.Errorf("After reload: endpoint = %q, want %q", reloaded.ObservabilityOtlpEndpoint, "localhost:4317")
+	}
+	if !reloaded.ObservabilityEventLogEnabled {
+		t.Error("After reload: event log enabled should persist")
+	}
+}
+
+func TestObservabilityOtlpEndpointBlankSerializesAsDefault(t *testing.T) {
+	dir := t.TempDir()
+	svc := NewService(dir)
+
+	updated, err := svc.Update(map[string]any{
+		"observabilityOtlpEndpoint": "   ",
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	// Whitespace trims to empty, which matches the default, so the field
+	// should not appear in the sparse file.
+	if updated.ObservabilityOtlpEndpoint != "" {
+		t.Errorf("trimmed endpoint = %q, want empty", updated.ObservabilityOtlpEndpoint)
+	}
+
+	data, err := os.ReadFile(filepath.Join(dir, "settings.json"))
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	var fileMap map[string]any
+	if err := json.Unmarshal(data, &fileMap); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if _, present := fileMap["observabilityOtlpEndpoint"]; present {
+		t.Errorf("file contains observabilityOtlpEndpoint when it should be sparse-omitted: %s", string(data))
 	}
 }
