@@ -701,3 +701,51 @@ export function UpdateKeybindings(bindings) {
 export function ResetKeybindings() {
     return $Call.ByID(2775767393);
 }
+
+// ---- Checkpoint bindings (hand-appended; FNV32a of main.App.<Method>) ----
+
+/**
+ * GetTurnDiff returns the unified diff for a specific turn. Compares the
+ * checkpoint at the start of turn N with the checkpoint at the start of
+ * turn N+1, or against the current worktree when N is the latest turn.
+ * @param {string} threadID
+ * @param {number} turnIndex
+ * @returns {$CancellablePromise<string>}
+ */
+export function GetTurnDiff(threadID, turnIndex) {
+    return $Call.ByID(1809996571, threadID, turnIndex);
+}
+
+/**
+ * GetCheckpointToWorktreeDiff returns the diff between a checkpoint ref
+ * and the current worktree. Used by the three-source diff panel.
+ * @param {string} threadID
+ * @param {number} turnIndex
+ * @returns {$CancellablePromise<string>}
+ */
+export function GetCheckpointToWorktreeDiff(threadID, turnIndex) {
+    return $Call.ByID(3483878958, threadID, turnIndex);
+}
+
+/**
+ * RevertToTurn rolls the conversation back to a prior turn's checkpoint.
+ * mode="fork" creates a new thread forked at the checkpoint (safe for any
+ * provider; the only safe mode for Claude). mode="restore" destructively
+ * restores the workspace (Codex only). Returns the new thread ID on fork.
+ * @param {string} threadID
+ * @param {number} turnIndex
+ * @param {string} mode
+ * @returns {$CancellablePromise<string>}
+ */
+export function RevertToTurn(threadID, turnIndex, mode) {
+    return $Call.ByID(3569172301, threadID, turnIndex, mode);
+}
+
+/**
+ * ListThreadCheckpoints returns every persisted checkpoint row for a thread.
+ * @param {string} threadID
+ * @returns {$CancellablePromise<any[]>}
+ */
+export function ListThreadCheckpoints(threadID) {
+    return $Call.ByID(1853132444, threadID);
+}

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/attachment"
+	"agent-overflow/internal/checkpoint"
 	"agent-overflow/internal/design"
 	"agent-overflow/internal/discussion"
 	gitops "agent-overflow/internal/git"
@@ -34,6 +35,7 @@ type App struct {
 	git            *gitops.Core
 	settings       *settings.Service
 	triage         *triage.Router
+	checkpoints    *checkpoint.Store
 	registry       *discussion.Registry
 	channels       *discussion.ChannelService
 	artifacts      *design.ArtifactStore
@@ -121,6 +123,8 @@ func (a *App) ServiceStartup(ctx context.Context, options application.ServiceOpt
 	a.triage = triage.NewRouter(st, func(eventName string, data any) {
 		a.app.Event.Emit(eventName, data)
 	})
+	a.checkpoints = checkpoint.NewStore()
+	a.triage.SetCheckpointStore(a.checkpoints)
 	a.registry = discussion.NewRegistry(st)
 	a.channels = discussion.NewChannelService(st)
 	a.artifacts = design.NewArtifactStore(filepath.Join(dbDir, "design-artifacts"), st)

@@ -116,3 +116,9 @@ export const SearchWorkspaceFiles = dispatch('SearchWorkspaceFiles');
 export const GetKeybindings = dispatch('GetKeybindings');
 export const UpdateKeybindings = dispatch('UpdateKeybindings');
 export const ResetKeybindings = dispatch('ResetKeybindings');
+
+// Checkpoints
+export const GetTurnDiff = dispatch('GetTurnDiff');
+export const GetCheckpointToWorktreeDiff = dispatch('GetCheckpointToWorktreeDiff');
+export const RevertToTurn = dispatch('RevertToTurn');
+export const ListThreadCheckpoints = dispatch('ListThreadCheckpoints');

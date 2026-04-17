@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"errors"
+	"log"
 
 	"agent-overflow/internal/store"
 )
@@ -34,6 +36,7 @@ func (a *App) deleteThreadTree(threadID string) error {
 	}
 	a.clearThreadSystemPrompt(threadID)
 	a.removeDeliberation(thread)
+	a.cleanupThreadCheckpoints(threadID, thread, threadFound)
 
 	// Thread was already gone (e.g. partially deleted earlier). Children and
 	// session cleanup above are still necessary, but there is nothing left to
@@ -43,6 +46,26 @@ func (a *App) deleteThreadTree(threadID string) error {
 	}
 
 	return a.store.DeleteThread(threadID)
+}
+
+// cleanupThreadCheckpoints removes both the Git refs and the SQLite
+// bookkeeping rows for a thread's checkpoints. Errors are logged but NOT
+// returned so a checkpoint-cleanup failure doesn't block thread deletion;
+// the orphan refs will be garbage collected eventually via git gc.
+func (a *App) cleanupThreadCheckpoints(threadID string, thread store.Thread, threadFound bool) {
+	if threadFound {
+		workspace := checkpointWorkspaceForThread(thread)
+		if workspace != "" {
+			if err := a.checkpointStore().CleanupThread(context.Background(), workspace, threadID); err != nil {
+				log.Printf("delete thread: cleanup checkpoint refs for %s: %v", threadID, err)
+			}
+		}
+	}
+	if a.store != nil {
+		if err := a.store.DeleteCheckpointsForThread(threadID); err != nil {
+			log.Printf("delete thread: drop checkpoint rows for %s: %v", threadID, err)
+		}
+	}
 }
 
 func (a *App) removeDeliberation(thread store.Thread) {

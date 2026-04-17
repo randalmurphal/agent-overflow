@@ -85,6 +85,12 @@ export {
   GetKeybindings,
   UpdateKeybindings,
   ResetKeybindings,
+
+  // Checkpoints (per-turn git-ref snapshots for diff panel + revert UX)
+  GetTurnDiff,
+  GetCheckpointToWorktreeDiff,
+  RevertToTurn,
+  ListThreadCheckpoints,
 } from '../../../bindings/agent-overflow/app.js';
 
 // Model classes needed for constructing RPC parameters.
