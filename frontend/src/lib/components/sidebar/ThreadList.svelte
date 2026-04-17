@@ -9,6 +9,7 @@
     isThreadSelected,
   } from '../../stores/threadFilter.svelte';
   import ThreadRow from './ThreadRow.svelte';
+  import VirtualList from '../shared/VirtualList.svelte';
 
   let {
     pane,
@@ -21,6 +22,13 @@
   let threads = $derived(filterThreads(getThreads()));
   let selected = $derived(getSelectedThreadIds());
   let lastClickedId: string | null = $state(null);
+
+  // ThreadRow renders two lines (title + relative timestamp) with
+  // px-3 py-2 padding, which measures ~56px on the current Tailwind v4
+  // theme. Keep this in sync with the ThreadRow outer container if its
+  // density changes — the virtualized rows are positioned absolutely
+  // and need a fixed height for math to work.
+  const ROW_HEIGHT = 56;
 
   function handleRowSelectClick(
     thread: Thread,
@@ -62,20 +70,8 @@
   }
 </script>
 
-<div class="flex-1 overflow-y-auto px-2 py-2 space-y-1" role="list" aria-label="Threads">
-  {#each threads as thread (thread.id)}
-    <div role="listitem">
-      <ThreadRow
-        {thread}
-        {pane}
-        {onStartDiscussion}
-        selected={selected.has(thread.id)}
-        onSelectClick={(modifier) => handleRowSelectClick(thread, modifier)}
-      />
-    </div>
-  {/each}
-
-  {#if threads.length === 0}
+{#if threads.length === 0}
+  <div class="flex-1 overflow-y-auto px-2 py-2" role="list" aria-label="Threads">
     <div class="mx-1 mt-3 rounded-2xl border border-dashed border-border/70 bg-surface-0/45 px-4 py-8 text-center shadow-[inset_0_1px_0_rgba(255,255,255,0.02)]">
       <div class="mx-auto flex h-10 w-10 items-center justify-center rounded-2xl border border-border/60 bg-surface-1/80 text-text-secondary/70">
         <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -85,5 +81,24 @@
       <p class="mt-3 text-sm font-medium text-text-primary">No threads here</p>
       <p class="mt-1 text-xs text-text-secondary/70">Adjust the search or archived filter, or create a new thread.</p>
     </div>
-  {/if}
-</div>
+  </div>
+{:else}
+  <VirtualList
+    items={threads}
+    rowHeight={ROW_HEIGHT}
+    ariaLabel="Threads"
+    class="flex-1 px-2 py-2"
+  >
+    {#snippet children(thread: Thread)}
+      <div role="listitem" class="px-0 py-0">
+        <ThreadRow
+          {thread}
+          {pane}
+          {onStartDiscussion}
+          selected={selected.has(thread.id)}
+          onSelectClick={(modifier) => handleRowSelectClick(thread, modifier)}
+        />
+      </div>
+    {/snippet}
+  </VirtualList>
+{/if}
