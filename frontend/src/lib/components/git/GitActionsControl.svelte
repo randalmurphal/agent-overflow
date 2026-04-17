@@ -217,12 +217,13 @@
 {#if statusError}
   <button
     onclick={() => refreshStatus()}
+    data-testid="git-actions-error"
     class="text-xs px-2 py-1 rounded border border-error/40 text-error/80 hover:text-error cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
     title="Failed to load git status. Click to retry."
   >
     Git: error
   </button>
-{:else if status}
+{:else if status && status.isRepo}
   <div class="relative flex">
     <button
       onclick={executePrimary}
