@@ -37,6 +37,7 @@ func (a *App) deleteThreadTree(threadID string) error {
 	a.clearThreadSystemPrompt(threadID)
 	a.removeDeliberation(thread)
 	a.cleanupThreadCheckpoints(threadID, thread, threadFound)
+	a.cleanupThreadAttachmentFiles(threadID)
 
 	// Thread was already gone (e.g. partially deleted earlier). Children and
 	// session cleanup above are still necessary, but there is nothing left to
@@ -46,6 +47,20 @@ func (a *App) deleteThreadTree(threadID string) error {
 	}
 
 	return a.store.DeleteThread(threadID)
+}
+
+// cleanupThreadAttachmentFiles removes the on-disk attachment directory for a
+// thread. The SQLite FK cascade already drops the metadata rows; this sweeps
+// the bytes. Errors are logged, not returned, because attachment cleanup must
+// not block thread deletion — a residual directory is cosmetic, not a data
+// integrity problem.
+func (a *App) cleanupThreadAttachmentFiles(threadID string) {
+	if a.attachments == nil {
+		return
+	}
+	if err := a.attachments.DeleteThreadDir(threadID); err != nil {
+		log.Printf("delete thread: remove attachment files for %s: %v", threadID, err)
+	}
 }
 
 // cleanupThreadCheckpoints removes both the Git refs and the SQLite

@@ -183,6 +183,33 @@ func (s *Store) List(threadID string) ([]store.Attachment, error) {
 	return s.meta.ListAttachments(threadID)
 }
 
+// DeleteThreadDir removes every on-disk attachment file for a thread by
+// deleting the thread's attachment directory under the store root. Safe to
+// call after the DB cascade has already dropped the metadata rows; a missing
+// directory is treated as success.
+func (s *Store) DeleteThreadDir(threadID string) error {
+	if strings.TrimSpace(threadID) == "" {
+		return errors.New("attachment: thread id is required")
+	}
+	sanitized := sanitizeThreadID(threadID)
+	threadDir := filepath.Join(s.root, sanitized)
+	absRoot, err := filepath.Abs(s.root)
+	if err != nil {
+		return fmt.Errorf("attachment: absolute root: %w", err)
+	}
+	absDir, err := filepath.Abs(threadDir)
+	if err != nil {
+		return fmt.Errorf("attachment: absolute dir: %w", err)
+	}
+	if !strings.HasPrefix(absDir, absRoot+string(os.PathSeparator)) {
+		return fmt.Errorf("attachment: refusing to remove path outside %s", absRoot)
+	}
+	if err := os.RemoveAll(threadDir); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("attachment: remove thread dir: %w", err)
+	}
+	return nil
+}
+
 // Delete removes the row and the backing file. Missing files are treated as
 // success because the thing we were asked to delete is already gone.
 func (s *Store) Delete(attachmentID string) error {

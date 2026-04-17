@@ -232,16 +232,16 @@ func TestCascade_DeleteThreadRemovesAllDependents(t *testing.T) {
 			t.Fatalf("post: checkpoint ref %s still present", refName)
 		}
 	}
-	// Known attachments left behind on disk would be a bug: note that the
-	// per-thread on-disk tree is empty.
+	// On-disk attachment files are swept alongside the DB cascade.
 	for _, p := range attachmentPaths {
 		if _, err := os.Stat(p); !os.IsNotExist(err) {
-			// The production cleanup path does NOT currently erase attachment
-			// files from disk on thread delete — only DB metadata. Record the
-			// observation; we DO NOT fail the test because that's a reported
-			// bug not something we're enforcing here.
-			_ = p
+			t.Fatalf("post: attachment file %s still on disk after DeleteThread", p)
 		}
+	}
+	// And the per-thread attachment directory is gone too.
+	threadAttachmentDir := filepath.Join(app.configDir, "attachments", thread.ID)
+	if _, err := os.Stat(threadAttachmentDir); !os.IsNotExist(err) {
+		t.Fatalf("post: thread attachment dir %s still present", threadAttachmentDir)
 	}
 }
 
