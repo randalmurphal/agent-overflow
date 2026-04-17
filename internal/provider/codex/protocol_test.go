@@ -283,3 +283,61 @@ func TestExtractUsageFromTurn_InvalidJSON(t *testing.T) {
 		t.Error("expected nil for invalid JSON")
 	}
 }
+
+// TestClassifyNotification_NeverPopulatesParentToolUseID asserts the
+// intentional absence of parent-tool linkage on Codex events. Codex's
+// app-server protocol does not expose a parentToolUseId concept, so
+// every ProviderEvent we emit must leave the field empty. If a future
+// Codex release adds this field, extract it in protocol.go and update
+// this test.
+func TestClassifyNotification_NeverPopulatesParentToolUseID(t *testing.T) {
+	// One params blob per notification method; values where a naive
+	// implementation might look for a parent id are present but wrong
+	// shape ("parentToolUseId" was never part of Codex's contract).
+	cases := []struct {
+		method string
+		params string
+	}{
+		{"turn/started", `{"turn":{"id":"t1"}, "parentToolUseId":"bogus"}`},
+		{"turn/completed", `{"turn":{"id":"t1","status":"completed"}, "parentToolUseId":"bogus"}`},
+		{"turn/aborted", `{"turn":{"id":"t1"}, "parentToolUseId":"bogus"}`},
+		{"turn/diff/updated", `{"diff":"diff --git a/x b/x", "parentToolUseId":"bogus"}`},
+		{"item/started", `{"item":{"id":"i1","type":"command_execution"}, "parentToolUseId":"bogus"}`},
+		{"item/updated", `{"item":{"id":"i1","type":"command_execution"}, "parentToolUseId":"bogus"}`},
+		{"item/completed", `{"item":{"id":"i1","type":"command_execution"}, "parentToolUseId":"bogus"}`},
+		{"item/agentMessage/delta", `{"delta":"hi", "parentToolUseId":"bogus"}`},
+		{"item/commandExecution/outputDelta", `{"delta":"out", "parentToolUseId":"bogus"}`},
+		{"item/fileChange/outputDelta", `{"delta":"patch", "parentToolUseId":"bogus"}`},
+		{"item/reasoning/textDelta", `{"delta":"think", "parentToolUseId":"bogus"}`},
+		{"thread/tokenUsage/updated", `{"usage":{"inputTokens":1}, "parentToolUseId":"bogus"}`},
+		{"thread/name/updated", `{"threadName":"n", "parentToolUseId":"bogus"}`},
+		{"thread/compacted", `{"parentToolUseId":"bogus"}`},
+		{"error", `{"error":{"message":"oops"}, "parentToolUseId":"bogus"}`},
+		{"turn/plan/updated", `{"parentToolUseId":"bogus"}`},
+		{"serverRequest/resolved", `{"providerRequestId":"req-1", "parentToolUseId":"bogus"}`},
+		{"account/rateLimits/updated", `{"parentToolUseId":"bogus"}`},
+		{"model/rerouted", `{"toModel":"x", "parentToolUseId":"bogus"}`},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.method, func(t *testing.T) {
+			events := ClassifyNotification("t1", tc.method, json.RawMessage(tc.params))
+			for i, evt := range events {
+				if evt.ParentToolUseID != "" {
+					t.Errorf("%s event %d: ParentToolUseID = %q, want empty (Codex has no parent-tool linkage)",
+						tc.method, i, evt.ParentToolUseID)
+				}
+			}
+		})
+	}
+}
+
+// TestClassifyNotification_UnknownMethodDoesNotCrash guards the
+// default-skip branch for a hypothetical Codex method we don't handle
+// yet. It must not panic and must emit no events.
+func TestClassifyNotification_UnknownMethodDoesNotCrash(t *testing.T) {
+	events := ClassifyNotification("t1", "item/futurefeature", json.RawMessage(`{"whatever":true}`))
+	if len(events) != 0 {
+		t.Errorf("unknown method emitted %d events, want 0", len(events))
+	}
+}

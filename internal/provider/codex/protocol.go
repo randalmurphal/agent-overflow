@@ -7,6 +7,15 @@ import (
 	"agent-overflow/internal/provider"
 )
 
+// Codex does not expose a parent/child tool-use linkage in its app-server
+// protocol. Claude's streaming SDK surfaces parent_tool_use_id on events
+// emitted inside a Task tool invocation so downstream UI can nest the
+// sub-agent's output under its parent; Codex has no analogous field on
+// item/started, item/updated, or item/completed notifications. We
+// therefore leave ProviderEvent.ParentToolUseID empty for every Codex
+// event — the absence is intentional, not a bug. If Codex adds this
+// concept in the future, extract the id here and populate the field.
+//
 // ClassifyNotification converts a Codex app-server notification into
 // zero or more ProviderEvents. Unrecognized methods are silently skipped.
 func ClassifyNotification(threadID, method string, params json.RawMessage) []provider.ProviderEvent {
