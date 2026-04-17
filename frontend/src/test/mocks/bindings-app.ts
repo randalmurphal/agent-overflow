@@ -97,3 +97,7 @@ export const DeleteDiscussion = dispatch('DeleteDiscussion');
 export const StartDiscussion = dispatch('StartDiscussion');
 export const GetChannelMessages = dispatch('GetChannelMessages');
 export const PostChannelMessage = dispatch('PostChannelMessage');
+
+export const ChooseDesignOption = dispatch('ChooseDesignOption');
+export const ListDesignArtifacts = dispatch('ListDesignArtifacts');
+export const GetDesignArtifactHTML = dispatch('GetDesignArtifactHTML');

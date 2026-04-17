@@ -1,6 +1,7 @@
 import type { Item, PayloadMeta, Thread } from '../types/models';
 import type { ApprovalRequest, ContextWindow, RateLimitEntry, TokenUsage, ToolProgressMeta } from '../types/events';
 import type { ChannelMessage } from '../types/discussion';
+import type { DesignArtifact, DesignOptionsRequest, DesignViewport } from '../types/design';
 import { ListItems, ListPayloadMetas, SwitchThread } from './bindings';
 import { addToast } from './toast.svelte';
 
@@ -31,6 +32,16 @@ export function createThreadPane() {
   let channelMessages: ChannelMessage[] = $state([]);
   let channelStatus: 'open' | 'concluded' | 'closed' | null = $state(null);
 
+  // Design-mode state (only populated when thread.interactionMode === 'design').
+  // designArtifacts is the render+option history for the thread.
+  // activeArtifactId is what the preview panel is displaying — null = show latest.
+  // pendingDesignOptions is populated when an agent has blocked on present_options.
+  // designViewport drives the iframe width toggle.
+  let designArtifacts: DesignArtifact[] = $state([]);
+  let activeArtifactId: string | null = $state(null);
+  let pendingDesignOptions: DesignOptionsRequest | null = $state(null);
+  let designViewport: DesignViewport = $state('desktop');
+
   /**
    * Generation counter for finalizeTurn. Incremented each time finalizeTurn
    * starts so that stale async DB responses don't overwrite newer state.
@@ -57,6 +68,10 @@ export function createThreadPane() {
     get showTerminal() { return showTerminal; },
     get channelMessages() { return channelMessages; },
     get channelStatus() { return channelStatus; },
+    get designArtifacts() { return designArtifacts; },
+    get activeArtifactId() { return activeArtifactId; },
+    get pendingDesignOptions() { return pendingDesignOptions; },
+    get designViewport() { return designViewport; },
 
     // --- Thread switching ---
 
@@ -74,6 +89,10 @@ export function createThreadPane() {
       pendingMessage = null;
       channelMessages = [];
       channelStatus = null;
+      designArtifacts = [];
+      activeArtifactId = null;
+      pendingDesignOptions = null;
+      designViewport = 'desktop';
       loading = true;
 
       thread = newThread;
@@ -128,6 +147,10 @@ export function createThreadPane() {
       showTerminal = false;
       channelMessages = [];
       channelStatus = null;
+      designArtifacts = [];
+      activeArtifactId = null;
+      pendingDesignOptions = null;
+      designViewport = 'desktop';
       turnGeneration++;
     },
 
@@ -285,6 +308,50 @@ export function createThreadPane() {
     clearChannel(): void {
       channelMessages = [];
       channelStatus = null;
+    },
+
+    // --- Design-mode mutations ---
+
+    /**
+     * Replace the artifact history in one shot. Used when the panel first
+     * mounts and hydrates from ListDesignArtifacts.
+     */
+    setDesignArtifacts(artifacts: DesignArtifact[]): void {
+      designArtifacts = [...artifacts];
+    },
+
+    /**
+     * Append an artifact. De-dupes by id so idempotent event replays don't
+     * double-insert. New artifacts become the implicit active one (unless the
+     * user has pinned a different artifact via setActiveArtifact).
+     */
+    appendDesignArtifact(artifact: DesignArtifact): void {
+      const exists = designArtifacts.some((a) => a.id === artifact.id);
+      if (exists) return;
+      designArtifacts = [...designArtifacts, artifact];
+    },
+
+    setActiveArtifact(artifactId: string | null): void {
+      activeArtifactId = artifactId;
+    },
+
+    setDesignOptions(request: DesignOptionsRequest | null): void {
+      pendingDesignOptions = request;
+    },
+
+    clearDesignOptions(): void {
+      pendingDesignOptions = null;
+    },
+
+    setDesignViewport(viewport: DesignViewport): void {
+      designViewport = viewport;
+    },
+
+    clearDesign(): void {
+      designArtifacts = [];
+      activeArtifactId = null;
+      pendingDesignOptions = null;
+      designViewport = 'desktop';
     },
   };
 }

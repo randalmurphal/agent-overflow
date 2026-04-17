@@ -65,6 +65,11 @@ export {
   StartDiscussion,
   GetChannelMessages,
   PostChannelMessage,
+
+  // Design operations
+  ChooseDesignOption,
+  ListDesignArtifacts,
+  GetDesignArtifactHTML,
 } from '../../../bindings/agent-overflow/app.js';
 
 // Model classes needed for constructing RPC parameters.
