@@ -4,6 +4,7 @@
   import { SearchThreadMessages, type ThreadMessageHit } from '../../stores/bindings';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { getThreadById } from '../../stores/threads.svelte';
+  import { computeHighlightSegments } from '../../utils/highlight';
 
   interface Props {
     open: boolean;
@@ -188,13 +189,29 @@
                       {hit.provider === 'claude' ? 'bg-accent/20 text-accent' : 'bg-provider-codex/20 text-provider-codex'}" aria-hidden="true">
                       {hit.provider === 'claude' ? 'C' : 'X'}
                     </span>
-                    <span class="text-sm truncate text-text-primary">{hit.threadTitle || 'Untitled'}</span>
+                    <span class="text-sm truncate text-text-primary">
+                      {#each computeHighlightSegments(hit.threadTitle || 'Untitled', query) as seg}
+                        {#if seg.type === 'match'}
+                          <mark class="bg-accent/30 text-text-primary rounded-sm px-0.5">{seg.value}</mark>
+                        {:else}
+                          {seg.value}
+                        {/if}
+                      {/each}
+                    </span>
                     <span class="text-[9px] ml-auto px-1 py-0.5 rounded bg-surface-0 border border-border text-text-secondary shrink-0">
                       {hit.matchType === 'title' ? 'title' : `turn ${hit.turnIndex}`}
                     </span>
                   </div>
                   {#if hit.matchType === 'item' && hit.summary}
-                    <p class="text-xs text-text-secondary/80 truncate">{hit.summary}</p>
+                    <p class="text-xs text-text-secondary/80 truncate">
+                      {#each computeHighlightSegments(hit.summary, query) as seg}
+                        {#if seg.type === 'match'}
+                          <mark class="bg-accent/30 text-text-primary rounded-sm px-0.5">{seg.value}</mark>
+                        {:else}
+                          {seg.value}
+                        {/if}
+                      {/each}
+                    </p>
                   {/if}
                 </button>
               </li>

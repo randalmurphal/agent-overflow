@@ -265,6 +265,36 @@ describe('<MessageSearch> — interactions', () => {
   });
 });
 
+// ---- Match highlighting ----
+
+describe('<MessageSearch> — highlight', () => {
+  it('wraps matched substrings in <mark> within thread titles', async () => {
+    setBindingMock('SearchThreadMessages', async () => [
+      hit({ threadId: 't1', itemId: '', matchType: 'title', threadTitle: 'Release pipeline' }),
+    ]);
+    const pane = makePane();
+    const { getByTestId, findByTestId } = render(MessageSearch, { open: true, pane, onClose: vi.fn() });
+    await fireEvent.input(getByTestId('message-search-input'), { target: { value: 'release' } });
+    const row = await findByTestId('message-search-hit-t1-title');
+    const marks = row.querySelectorAll('mark');
+    expect(marks.length).toBeGreaterThan(0);
+    expect(marks[0].textContent).toBe('Release');
+  });
+
+  it('wraps matched substrings in <mark> within item summaries', async () => {
+    setBindingMock('SearchThreadMessages', async () => [
+      hit({ threadId: 't1', itemId: 'i1', matchType: 'item', summary: 'found the bug today' }),
+    ]);
+    const pane = makePane();
+    const { getByTestId, findByTestId } = render(MessageSearch, { open: true, pane, onClose: vi.fn() });
+    await fireEvent.input(getByTestId('message-search-input'), { target: { value: 'bug' } });
+    const row = await findByTestId('message-search-hit-t1-i1');
+    const marks = row.querySelectorAll('mark');
+    expect(marks.length).toBeGreaterThan(0);
+    expect(Array.from(marks).some((m) => m.textContent === 'bug')).toBe(true);
+  });
+});
+
 // ---- Provider badge ----
 
 describe('<MessageSearch> — provider rendering', () => {
