@@ -182,6 +182,92 @@ describe('createThreadPane()', () => {
       await pane.switchThread(makeThread({ id: 'thread-A' }));
       expect(pane.diffPanel.open).toBe(false);
     });
+
+    // --- Bug D2 regression: slow ListItems from thread A must not clobber thread B ---
+    it('ignores stale ListItems resolution when user switches threads during await', async () => {
+      // Route each binding call to the thread-specific promise so switching
+      // the mock between calls doesn't accidentally reroute A's in-flight
+      // promise to B.
+      let resolveA!: (items: Item[]) => void;
+      const promiseA = new Promise<Item[]>((r) => { resolveA = r; });
+      let resolveB!: (items: Item[]) => void;
+      const promiseB = new Promise<Item[]>((r) => { resolveB = r; });
+
+      setBindingMock('ListItems', (id: unknown) =>
+        id === 'thread-A' ? promiseA : promiseB,
+      );
+      setBindingMock('ListPayloadMetas', async () => []);
+
+      const switchA = pane.switchThread(makeThread({ id: 'thread-A' }));
+      const switchB = pane.switchThread(makeThread({ id: 'thread-B' }));
+
+      // Resolve B first so its awaiting code path writes `items = B`.
+      resolveB([makeItem({ id: 'B-item', threadId: 'thread-B' })]);
+      // Flush microtasks so switchB actually settles before A's late
+      // resolution gets a chance to overwrite the pane.
+      await switchB;
+
+      expect(pane.items.map((i) => i.id)).toEqual(['B-item']);
+
+      // Resolve A late — the older switch must not write its items back.
+      resolveA([makeItem({ id: 'A-stale', threadId: 'thread-A' })]);
+      await switchA;
+
+      expect(pane.thread?.id).toBe('thread-B');
+      expect(pane.items.map((i) => i.id)).toEqual(['B-item']);
+    });
+
+    it('ignores stale ListPayloadMetas resolution when thread switches mid-flight', async () => {
+      let resolveMetasA!: (metas: PayloadMeta[]) => void;
+      const metasPromiseA = new Promise<PayloadMeta[]>((r) => { resolveMetasA = r; });
+      let resolveMetasB!: (metas: PayloadMeta[]) => void;
+      const metasPromiseB = new Promise<PayloadMeta[]>((r) => { resolveMetasB = r; });
+
+      setBindingMock('ListItems', async () => []);
+      setBindingMock('ListPayloadMetas', (id: unknown) =>
+        id === 'thread-A' ? metasPromiseA : metasPromiseB,
+      );
+
+      const switchA = pane.switchThread(makeThread({ id: 'thread-A' }));
+      const switchB = pane.switchThread(makeThread({ id: 'thread-B' }));
+
+      resolveMetasB([{ id: 'meta-B', kind: 'diff', meta: '{}', createdAt: 0 }]);
+      await switchB;
+
+      expect(Array.from(pane.payloadMetas.keys())).toEqual(['meta-B']);
+
+      resolveMetasA([{ id: 'meta-A-stale', kind: 'diff', meta: '{}', createdAt: 0 }]);
+      await switchA;
+
+      expect(pane.thread?.id).toBe('thread-B');
+      expect(Array.from(pane.payloadMetas.keys())).toEqual(['meta-B']);
+    });
+
+    it('late ListItems failure from prior switch does not wipe items on current thread', async () => {
+      let rejectA!: (err: Error) => void;
+      const promiseA = new Promise<Item[]>((_r, rej) => { rejectA = rej; });
+      promiseA.catch(() => {});
+
+      setBindingMock('ListItems', (id: unknown) => {
+        if (id === 'thread-A') return promiseA;
+        return Promise.resolve([makeItem({ id: 'B-item', threadId: 'thread-B' })]);
+      });
+      setBindingMock('ListPayloadMetas', async () => []);
+
+      const switchA = pane.switchThread(makeThread({ id: 'thread-A' }));
+      const switchB = pane.switchThread(makeThread({ id: 'thread-B' }));
+
+      await switchB;
+      expect(pane.items.map((i) => i.id)).toEqual(['B-item']);
+
+      rejectA(new Error('late failure on A'));
+      await switchA.catch(() => {});
+      await Promise.resolve();
+
+      expect(pane.thread?.id).toBe('thread-B');
+      expect(pane.items.map((i) => i.id)).toEqual(['B-item']);
+      expect(pane.error).toBeNull();
+    });
   });
 
   describe('clear()', () => {

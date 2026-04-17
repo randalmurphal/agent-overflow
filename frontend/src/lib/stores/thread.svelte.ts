@@ -52,6 +52,13 @@ export function createThreadPane() {
    */
   let turnGeneration = 0;
 
+  /**
+   * Generation counter for switchThread. Incremented on every switchThread
+   * entry so a slow ListItems/ListPayloadMetas from thread A cannot clobber
+   * thread B's items when the user flips between them quickly.
+   */
+  let switchGeneration = 0;
+
   return {
     // --- Getters (reactive reads) ---
     get thread() { return thread; },
@@ -121,10 +128,17 @@ export function createThreadPane() {
       showTerminal = false;
       diffPanel.clearForThread();
       loading = true;
+      items = [];
+      payloadMetas = new Map();
 
       thread = newThread;
       // Bump generation so any in-flight finalizeTurn from prior thread is discarded.
       turnGeneration++;
+      // Capture the switch generation at the top so every await below can bail
+      // out if the user has already switched away (or back). Without this, a
+      // slow ListItems from thread A can race with a fresh ListItems from
+      // thread B and overwrite B's rows with A's.
+      const gen = ++switchGeneration;
 
       // Notify the backend so it can auto-start sessions for threads with session_ref.
       try {
@@ -133,10 +147,14 @@ export function createThreadPane() {
         console.error('Failed to notify backend of thread switch:', err);
         addToast('warning', 'Backend was not notified of thread switch');
       }
+      if (gen !== switchGeneration) return;
 
       try {
-        items = await ListItems(newThread.id) as Item[];
+        const loaded = await ListItems(newThread.id) as Item[];
+        if (gen !== switchGeneration) return;
+        items = loaded;
       } catch (err) {
+        if (gen !== switchGeneration) return;
         console.error('Failed to load items:', err);
         items = [];
         error = `Failed to load thread items: ${err}`;
@@ -145,13 +163,16 @@ export function createThreadPane() {
 
       try {
         const metas = await ListPayloadMetas(newThread.id) as PayloadMeta[];
+        if (gen !== switchGeneration) return;
         payloadMetas = new Map((metas ?? []).map((m: PayloadMeta) => [m.id, m]));
       } catch (err) {
+        if (gen !== switchGeneration) return;
         console.error('Failed to load payload metas:', err);
         payloadMetas = new Map();
         addToast('warning', 'Failed to load payload previews');
       }
 
+      if (gen !== switchGeneration) return;
       loading = false;
     },
 
@@ -180,6 +201,9 @@ export function createThreadPane() {
       designViewport = 'desktop';
       diffPanel.clearForThread();
       turnGeneration++;
+      // Invalidate any in-flight switchThread so its late resolutions can't
+      // repopulate the pane we just cleared.
+      switchGeneration++;
     },
 
     // --- Mutations (called by event router) ---
