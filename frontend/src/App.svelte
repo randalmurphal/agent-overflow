@@ -11,8 +11,10 @@
   import SettingsView from './lib/components/settings/SettingsView.svelte';
   import DiscussionStartFlow from './lib/components/discussion/DiscussionStartFlow.svelte';
   import CommandPalette from './lib/components/palette/CommandPalette.svelte';
+  import KeybindingsCheatSheet from './lib/components/palette/KeybindingsCheatSheet.svelte';
   import type { Thread } from './lib/types/models';
   import { isPaletteOpen } from './lib/stores/palette.svelte';
+  import { closeCheatSheet, isCheatSheetOpen } from './lib/stores/cheatSheet.svelte';
   import {
     dispatchKey,
     loadKeybindings,
@@ -39,7 +41,8 @@
   let paletteContext = $derived(
     makeCommandContext(pane, {
       paletteOpen: isPaletteOpen(),
-      anyModalOpen: discussionStartFor !== null || showSettings,
+      cheatSheetOpen: isCheatSheetOpen(),
+      anyModalOpen: discussionStartFor !== null || showSettings || isCheatSheetOpen(),
     }),
   );
 
@@ -172,4 +175,5 @@
   onClose={closeDiscussionStart}
 />
 <CommandPalette context={paletteContext} />
+<KeybindingsCheatSheet open={isCheatSheetOpen()} onClose={closeCheatSheet} />
 <Toast />

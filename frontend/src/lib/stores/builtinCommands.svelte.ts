@@ -9,6 +9,7 @@
 import type { ThreadPane } from './thread.svelte';
 import type { Thread } from '../types/models';
 import { registerCommand, type CommandContext } from './commandRegistry.svelte';
+import { closeCheatSheet, openCheatSheet } from './cheatSheet.svelte';
 import { closePalette, openPalette } from './palette.svelte';
 import { addToast } from './toast.svelte';
 import { removeThread, prependThread, replaceThread } from './threads.svelte';
@@ -77,6 +78,21 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     icon: '✕',
     when: 'paletteOpen',
     run: () => closePalette(),
+  });
+
+  registerCommand({
+    id: 'help.keybindings',
+    label: 'Help: Show Keyboard Shortcuts',
+    description: 'Open the cheat sheet of every command and its current binding.',
+    icon: '?',
+    run: () => openCheatSheet(),
+  });
+
+  registerCommand({
+    id: 'help.keybindings.close',
+    label: 'Help: Close Keyboard Shortcuts',
+    when: 'cheatSheetOpen',
+    run: () => closeCheatSheet(),
   });
 
   registerCommand({
