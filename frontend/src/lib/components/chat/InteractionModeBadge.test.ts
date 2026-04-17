@@ -3,6 +3,7 @@ import { render, fireEvent } from '@testing-library/svelte';
 import InteractionModeBadge from './InteractionModeBadge.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
+import { getToasts } from '../../stores/toast.svelte';
 import type { Thread } from '../../types/models';
 
 if (typeof Element !== 'undefined' && !('animate' in Element.prototype)) {
@@ -176,5 +177,83 @@ describe('<InteractionModeBadge>', () => {
 
     await fireEvent.keyDown(def, { key: 'ArrowDown' });
     expect(document.activeElement).toBe(getByTestId('interaction-mode-option-plan'));
+  });
+
+  // Bug C7 regression: the toast message used the derived `label` (sourced
+  // from the pane's current mode), which is stale at the moment the success
+  // branch runs — so switching from Default into Plan produced a toast that
+  // said "Mode set to Default". The fix computes the label from the picked
+  // mode directly.
+  it('toast reflects the picked mode, not the previous one', async () => {
+    const pane = await buildPane(makeThread({ interactionMode: 'default' }));
+    setBindingMock('SetThreadInteractionMode', async (threadId: string, mode: string) => ({
+      ...(pane.thread as Thread),
+      interactionMode: mode,
+    }));
+
+    // Snapshot pre-existing toasts so we can isolate ones created by this
+    // test. The toast store is a module singleton that persists across
+    // tests.
+    const beforeCount = getToasts().length;
+    const { getByTestId, findByTestId } = render(InteractionModeBadge, { props: { pane } });
+    await fireEvent.click(getByTestId('interaction-mode-badge'));
+    const planOpt = await findByTestId('interaction-mode-option-plan');
+    await fireEvent.click(planOpt);
+    await flushMicrotasks(10);
+
+    const newToasts = getToasts().slice(beforeCount);
+    const modeToast = newToasts.find((t) => t.message.startsWith('Mode set to'));
+    expect(modeToast).toBeDefined();
+    expect(modeToast?.message).toBe('Mode set to Plan');
+  });
+
+  // Emulate the precise scenario the audit called out: the handler awaits
+  // SetThreadInteractionMode, then on resolve calls pane.replaceThread and
+  // immediately reads the derived `label`. With the fix the toast uses the
+  // passed-in `mode` parameter, so the assertion holds regardless of Svelte's
+  // reactivity timing. Without the fix, the test catches any regression
+  // where `label` does lag behind `current` (e.g. batched updates).
+  it('toast label comes from the picked mode parameter (not a lagging derived)', async () => {
+    const pane = await buildPane(makeThread({ interactionMode: 'default' }));
+    // Use a resolved-but-queued promise so the await yield gives Svelte's
+    // scheduler a chance to batch updates differently from the sync path.
+    setBindingMock('SetThreadInteractionMode', async (threadId: string, mode: string) => {
+      await new Promise((r) => setTimeout(r, 0));
+      return { ...(pane.thread as Thread), interactionMode: mode };
+    });
+
+    const beforeCount = getToasts().length;
+    const { getByTestId, findByTestId } = render(InteractionModeBadge, { props: { pane } });
+    await fireEvent.click(getByTestId('interaction-mode-badge'));
+    const planOpt = await findByTestId('interaction-mode-option-plan');
+    await fireEvent.click(planOpt);
+    // Wait for the setTimeout(0) to resolve.
+    await new Promise((r) => setTimeout(r, 5));
+    await flushMicrotasks(10);
+
+    const newToasts = getToasts().slice(beforeCount);
+    const modeToast = newToasts.find((t) => t.message.startsWith('Mode set to'));
+    expect(modeToast?.message).toBe('Mode set to Plan');
+  });
+
+  it('toast label is correct when flipping between non-default modes', async () => {
+    // Start in plan, pick design. If the handler had been reading `label`
+    // before pane.thread updated, the toast would still read "Plan".
+    const pane = await buildPane(makeThread({ interactionMode: 'plan' }));
+    setBindingMock('SetThreadInteractionMode', async (threadId: string, mode: string) => ({
+      ...(pane.thread as Thread),
+      interactionMode: mode,
+    }));
+
+    const beforeCount = getToasts().length;
+    const { getByTestId, findByTestId } = render(InteractionModeBadge, { props: { pane } });
+    await fireEvent.click(getByTestId('interaction-mode-badge'));
+    const designOpt = await findByTestId('interaction-mode-option-design');
+    await fireEvent.click(designOpt);
+    await flushMicrotasks(10);
+
+    const newToasts = getToasts().slice(beforeCount);
+    const modeToast = newToasts.find((t) => t.message.startsWith('Mode set to'));
+    expect(modeToast?.message).toBe('Mode set to Design');
   });
 });

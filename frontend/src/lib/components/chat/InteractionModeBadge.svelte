@@ -44,12 +44,21 @@
     triggerEl?.focus();
     const threadId = pane.threadId;
     if (!threadId || updating || mode === current) return;
+    // Resolve the label from the parameter, not from the derived `label`.
+    // The derived tracks `current` which only updates after
+    // pane.replaceThread() below, and Svelte's reactive propagation is
+    // lazy enough that reading `label` right after the await can still
+    // see the pre-update value in some scheduler configurations — the
+    // audit spotted a "Mode set to Default" toast after switching into
+    // Plan. Resolving the label up front removes the timing coupling.
+    const nextLabel =
+      modeOptions.find((o) => o.value === mode)?.label ?? String(mode);
     updating = true;
     try {
       const updated = (await SetThreadInteractionMode(threadId, mode)) as Thread;
       pane.replaceThread(updated);
       replaceThread(updated);
-      addToast('info', `Mode set to ${label}`);
+      addToast('info', `Mode set to ${nextLabel}`);
     } catch (err) {
       console.error('Failed to set interaction mode:', err);
       pane.setError(`Failed to set interaction mode: ${err instanceof Error ? err.message : String(err)}`);
