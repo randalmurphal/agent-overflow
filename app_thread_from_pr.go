@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"agent-overflow/internal/store"
 
@@ -158,10 +159,7 @@ func (a *App) CreateThreadFromPR(
 	projectPath := a.detectProjectPath(workspace)
 	now := time.Now().UnixMilli()
 
-	title := fmt.Sprintf("PR #%d: %s", number, strings.TrimSpace(meta.Title))
-	if len(title) > 120 {
-		title = title[:117] + "..."
-	}
+	title := truncatePRTitle(fmt.Sprintf("PR #%d: %s", number, strings.TrimSpace(meta.Title)))
 
 	thread := store.Thread{
 		ID:              uuid.NewString(),
@@ -378,4 +376,42 @@ func truncatePRDiff(diff string) string {
 		MaxInlinedPRDiffBytes/1024,
 		omitted,
 	)
+}
+
+// maxPRTitleRunes caps thread titles at 120 user-perceived characters (runes).
+// The SQLite column is wide, but the sidebar row truncates anything that
+// doesn't fit — a 120-rune ceiling keeps the title readable while leaving
+// room for the "PR #N: " prefix in the common case.
+const maxPRTitleRunes = 120
+
+// truncatePRTitle shortens a thread title to at most maxPRTitleRunes runes,
+// appending an ellipsis marker. Crucially, it truncates on rune boundaries
+// so multibyte codepoints (CJK, combining marks, emoji) don't end up split
+// into an invalid UTF-8 sequence.
+func truncatePRTitle(title string) string {
+	if utf8.RuneCountInString(title) <= maxPRTitleRunes {
+		return title
+	}
+
+	const suffix = "..."
+	keep := maxPRTitleRunes - utf8.RuneCountInString(suffix)
+	if keep < 1 {
+		keep = 1
+	}
+
+	count := 0
+	end := 0
+	for i := range title {
+		if count == keep {
+			end = i
+			break
+		}
+		count++
+	}
+	if count < keep {
+		// The whole string fit inside keep runes — shouldn't happen given
+		// the length check above, but be defensive.
+		return title
+	}
+	return title[:end] + suffix
 }

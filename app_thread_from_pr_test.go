@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/settings"
@@ -507,6 +508,138 @@ func patchFenceFrom(t *testing.T, msg string) string {
 	}
 	fenceLine := rest[:newline]
 	return strings.TrimSuffix(fenceLine, "diff")
+}
+
+// Integration-level Bug C6 regression: exercise the full CreateThreadFromPR
+// path with a multibyte title so the byte-boundary slicing bug manifests.
+// Without the fix, the sliced title is invalid UTF-8 and the SQLite row
+// downstream either rejects or renders a replacement character.
+func TestCreateThreadFromPRPreservesMultibyteTitle(t *testing.T) {
+	// A 150-CJK-rune title — well past the 120-rune cap, so it must be
+	// truncated. The rune-boundary truncation keeps the result valid.
+	longTitle := strings.Repeat("你", 150)
+	viewJSON := fmt.Sprintf(`{
+	  "title": %q,
+	  "body": "",
+	  "headRefName": "feature",
+	  "baseRefName": "main",
+	  "url": "https://github.com/owner/repo/pull/1",
+	  "files": [],
+	  "author": {"login": "u"},
+	  "state": "OPEN"
+	}`, longTitle)
+	installFakeGh(t, viewJSON, "diff --git a/x b/x\n")
+
+	app := newTestAppWithStore(t)
+	app.settings = settings.NewService(t.TempDir())
+
+	thread, err := app.CreateThreadFromPR("owner/repo", 1, string(provider.Claude), "claude-sonnet-4-6")
+	if err != nil {
+		t.Fatalf("CreateThreadFromPR() error = %v", err)
+	}
+	if !utf8.ValidString(thread.Title) {
+		t.Fatalf("Title is not valid UTF-8: %q", thread.Title)
+	}
+	// Title must not be longer than our 120-rune ceiling.
+	if utf8.RuneCountInString(thread.Title) > 120 {
+		t.Fatalf("rune count = %d, want <= 120", utf8.RuneCountInString(thread.Title))
+	}
+}
+
+// Bug C6 regression: titles used to be sliced at byte 117, which would
+// split a UTF-8 codepoint mid-sequence and produce an invalid-UTF-8 string
+// (rendered as a question-mark replacement character downstream). The fix
+// truncates on rune boundaries.
+
+func TestTruncatePRTitleASCIIShort(t *testing.T) {
+	title := "PR #1: tiny"
+	got := truncatePRTitle(title)
+	if got != title {
+		t.Fatalf("got %q, want %q (unchanged)", got, title)
+	}
+}
+
+func TestTruncatePRTitleASCIIAtBoundary(t *testing.T) {
+	// Exactly 120 runes; must pass through unchanged.
+	title := strings.Repeat("a", 120)
+	got := truncatePRTitle(title)
+	if got != title {
+		t.Fatalf("120-rune title mutated: got %q", got)
+	}
+}
+
+func TestTruncatePRTitleASCIIOverflow(t *testing.T) {
+	// 200 ASCII runes — must cut to 117 + "...".
+	title := strings.Repeat("a", 200)
+	got := truncatePRTitle(title)
+	if utf8.RuneCountInString(got) != 120 {
+		t.Fatalf("rune count = %d, want 120", utf8.RuneCountInString(got))
+	}
+	if !strings.HasSuffix(got, "...") {
+		t.Fatalf("missing ellipsis: %q", got)
+	}
+	if !utf8.ValidString(got) {
+		t.Fatalf("output not valid UTF-8: %q", got)
+	}
+}
+
+func TestTruncatePRTitleMultibyteRunes(t *testing.T) {
+	// 200 ASCII + 20 three-byte CJK runes. Byte-based slicing at 117 would
+	// split a CJK rune; rune-based truncation must keep it whole. The
+	// result must always be valid UTF-8 regardless of where the cut falls.
+	title := strings.Repeat("a", 200) + strings.Repeat("你", 20)
+	got := truncatePRTitle(title)
+	if !utf8.ValidString(got) {
+		t.Fatalf("output not valid UTF-8: %q", got)
+	}
+	if utf8.RuneCountInString(got) != 120 {
+		t.Fatalf("rune count = %d, want 120", utf8.RuneCountInString(got))
+	}
+	if !strings.HasSuffix(got, "...") {
+		t.Fatalf("missing ellipsis: %q", got)
+	}
+}
+
+func TestTruncatePRTitleLeadingMultibyte(t *testing.T) {
+	// The cut lands squarely inside the multibyte run — must still be
+	// valid and keep the expected rune count. Uses 150 CJK runes so the
+	// whole string is multibyte.
+	title := strings.Repeat("你", 150)
+	got := truncatePRTitle(title)
+	if !utf8.ValidString(got) {
+		t.Fatalf("output not valid UTF-8: %q", got)
+	}
+	if utf8.RuneCountInString(got) != 120 {
+		t.Fatalf("rune count = %d, want 120", utf8.RuneCountInString(got))
+	}
+	if !strings.HasSuffix(got, "...") {
+		t.Fatalf("missing ellipsis: %q", got)
+	}
+	// The body must be exactly 117 '你' runes followed by the ellipsis.
+	body := strings.TrimSuffix(got, "...")
+	if utf8.RuneCountInString(body) != 117 {
+		t.Fatalf("body rune count = %d, want 117", utf8.RuneCountInString(body))
+	}
+	if strings.Contains(body, "a") {
+		t.Fatalf("unexpected ASCII in body: %q", body)
+	}
+}
+
+func TestTruncatePRTitleCombiningMarkPreservesValidity(t *testing.T) {
+	// "é" as a two-rune NFD sequence (e + U+0301 combining acute) — the
+	// combiner *can* be separated from its base, but the output must
+	// still be valid UTF-8 (the combining mark alone is a real rune).
+	// We don't promise NFC/NFD integrity, just that we never emit
+	// invalid UTF-8.
+	baseWithCombiner := "e\u0301"
+	title := strings.Repeat(baseWithCombiner, 100) // 200 runes total
+	got := truncatePRTitle(title)
+	if !utf8.ValidString(got) {
+		t.Fatalf("output not valid UTF-8: %q", got)
+	}
+	if utf8.RuneCountInString(got) != 120 {
+		t.Fatalf("rune count = %d, want 120", utf8.RuneCountInString(got))
+	}
 }
 
 func TestFenceForContent(t *testing.T) {
