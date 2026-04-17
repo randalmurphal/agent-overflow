@@ -107,3 +107,96 @@ describe('<ThreadRow> unarchive', () => {
     expect(invokedWith).toBe('toggle');
   });
 });
+
+describe('<ThreadRow> fork lineage badge', () => {
+  beforeEach(async () => {
+    await primeSettings();
+    setBindingMock('ListThreads', async () => []);
+    await refreshThreads();
+  });
+
+  it('is absent on a top-level (non-forked) thread', async () => {
+    const thread = makeThread();
+    const pane = createThreadPane();
+    const { queryByTestId } = render(ThreadRow, { props: { thread, pane } });
+    expect(queryByTestId('thread-row-fork-lineage')).toBeNull();
+  });
+
+  it('is visible when forkedFromThreadId is set', async () => {
+    const parent = makeThread({ id: 'parent', title: 'Original' });
+    const forked = makeThread({ id: 'fork', title: 'Derived', forkedFromThreadId: 'parent' });
+    setBindingMock('ListThreads', async () => [parent, forked]);
+    await refreshThreads();
+
+    const pane = createThreadPane();
+    const { getByTestId } = render(ThreadRow, { props: { thread: forked, pane } });
+    expect(getByTestId('thread-row-fork-lineage')).toBeInTheDocument();
+  });
+
+  it('surfaces the parent title in the tooltip when the parent is loaded', async () => {
+    const parent = makeThread({ id: 'parent', title: 'Original' });
+    const forked = makeThread({ id: 'fork', forkedFromThreadId: 'parent' });
+    setBindingMock('ListThreads', async () => [parent, forked]);
+    await refreshThreads();
+
+    const pane = createThreadPane();
+    const { getByTestId } = render(ThreadRow, { props: { thread: forked, pane } });
+    const badge = getByTestId('thread-row-fork-lineage') as HTMLButtonElement;
+    expect(badge.title).toMatch(/"Original"/);
+    expect(badge.disabled).toBe(false);
+  });
+
+  it('is disabled (with explanatory tooltip) when the parent is not in the sidebar view', async () => {
+    const forked = makeThread({ id: 'fork', forkedFromThreadId: 'parent-not-loaded' });
+    // Only the forked thread is in the list; the parent is absent.
+    setBindingMock('ListThreads', async () => [forked]);
+    await refreshThreads();
+
+    const pane = createThreadPane();
+    const { getByTestId } = render(ThreadRow, { props: { thread: forked, pane } });
+    const badge = getByTestId('thread-row-fork-lineage') as HTMLButtonElement;
+    expect(badge.disabled).toBe(true);
+    expect(badge.title).toMatch(/not loaded/i);
+  });
+
+  it('clicking the badge switches the pane to the parent thread', async () => {
+    const parent = makeThread({ id: 'parent', title: 'Original' });
+    const forked = makeThread({ id: 'fork', forkedFromThreadId: 'parent' });
+    setBindingMock('ListThreads', async () => [parent, forked]);
+    await refreshThreads();
+    setBindingMock('SwitchThread', async () => {});
+    setBindingMock('ListItems', async () => []);
+    setBindingMock('ListPayloadMetas', async () => []);
+
+    const pane = createThreadPane();
+    const { getByTestId } = render(ThreadRow, { props: { thread: forked, pane } });
+    await fireEvent.click(getByTestId('thread-row-fork-lineage'));
+    for (let i = 0; i < 5; i += 1) await Promise.resolve();
+    expect(pane.threadId).toBe('parent');
+  });
+
+  it('badge click does not trigger the row-level thread switch', async () => {
+    const parent = makeThread({ id: 'parent', title: 'Original' });
+    const forked = makeThread({ id: 'fork', forkedFromThreadId: 'parent' });
+    setBindingMock('ListThreads', async () => [parent, forked]);
+    await refreshThreads();
+    setBindingMock('SwitchThread', async () => {});
+    setBindingMock('ListItems', async () => []);
+    setBindingMock('ListPayloadMetas', async () => []);
+
+    let rowSelectCalled = 0;
+    const pane = createThreadPane();
+    const { getByTestId } = render(ThreadRow, {
+      props: {
+        thread: forked,
+        pane,
+        onSelectClick: () => { rowSelectCalled += 1; return false; },
+      },
+    });
+    await fireEvent.click(getByTestId('thread-row-fork-lineage'));
+    for (let i = 0; i < 5; i += 1) await Promise.resolve();
+    expect(rowSelectCalled).toBe(0);
+    // Pane should be on the PARENT (not the forked thread we rendered).
+    expect(pane.threadId).toBe('parent');
+  });
+});

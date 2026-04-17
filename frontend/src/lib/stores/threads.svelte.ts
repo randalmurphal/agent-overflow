@@ -36,3 +36,11 @@ export function updateThreadModel(id: string, model: string): void {
 export function replaceThread(thread: Thread): void {
   threads = threads.map((t) => t.id === thread.id ? thread : t);
 }
+
+/**
+ * Returns the thread with the given id, or undefined if the sidebar doesn't
+ * currently track it (e.g. archived parent not in the filtered view).
+ */
+export function getThreadById(id: string): Thread | undefined {
+  return threads.find((t) => t.id === id);
+}

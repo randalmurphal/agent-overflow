@@ -2,7 +2,7 @@
   import { ArchiveThread, DeleteThread, ForkThread, GitRemoveWorktree, RenameThread, StopSession, UnarchiveThread } from '../../stores/bindings';
   import { getSettings } from '../../stores/settings.svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
-  import { prependThread, removeThread, replaceThread, updateThreadTitle } from '../../stores/threads.svelte';
+  import { getThreadById, prependThread, removeThread, replaceThread, updateThreadTitle } from '../../stores/threads.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import type { Thread } from '../../types/models';
   import ConfirmDialog from '../shared/ConfirmDialog.svelte';
@@ -32,6 +32,20 @@
   let canStartDiscussion = $derived(
     thread.interactionMode !== 'discussion' && !thread.discussionId && !thread.parentThreadId,
   );
+
+  // Fork ancestry for the lineage badge. We look the parent up on every
+  // render; the threads store is a tiny array so the O(n) find is cheap,
+  // and a derived is preferable to stashing the parent on the row prop.
+  let forkParent = $derived.by<Thread | undefined>(() => {
+    if (!thread.forkedFromThreadId) return undefined;
+    return getThreadById(thread.forkedFromThreadId);
+  });
+
+  async function handleJumpToParent(e: MouseEvent): Promise<void> {
+    e.stopPropagation();
+    if (!forkParent) return;
+    await pane.switchThread(forkParent);
+  }
 
   // Inline rename state
   let editing = $state(false);
@@ -233,6 +247,21 @@
       {/if}
       {#if thread.worktreePath}
         <span class="text-[9px] px-1 py-0.5 rounded bg-accent/15 text-accent/70 shrink-0" title="Worktree: {thread.worktreePath}">WT</span>
+      {/if}
+      {#if thread.forkedFromThreadId}
+        <button
+          type="button"
+          data-testid="thread-row-fork-lineage"
+          onclick={handleJumpToParent}
+          disabled={!forkParent}
+          class="text-[9px] px-1 py-0.5 rounded bg-provider-codex/15 text-provider-codex/80 shrink-0 cursor-pointer disabled:cursor-not-allowed disabled:opacity-60 hover:bg-provider-codex/25 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/50"
+          title={forkParent
+            ? `Forked from "${forkParent.title || 'Untitled'}" — click to open parent`
+            : 'Forked thread (parent not loaded in sidebar)'}
+          aria-label="Fork lineage"
+        >
+          F↩
+        </button>
       {/if}
     {/if}
 
