@@ -248,6 +248,9 @@ func (s *e2eErroringStore) IsGitRepository(ctx context.Context, workspace string
 func (s *e2eErroringStore) CaptureBaseline(ctx context.Context, workspace, threadID string, turn int) (string, error) {
 	return "", errors.New("forced capture failure")
 }
+func (s *e2eErroringStore) DeleteRef(ctx context.Context, workspace, ref string) error {
+	return s.inner.DeleteRef(ctx, workspace, ref)
+}
 
 // #23 — A CaptureBaseline failure must emit checkpoint:error, must NOT
 // persist a checkpoint row, and must NOT return an error from Handle (turn

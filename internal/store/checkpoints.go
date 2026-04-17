@@ -116,3 +116,32 @@ func (s *Store) DeleteCheckpointsForThread(threadID string) error {
 	}
 	return nil
 }
+
+// DeleteCheckpointByThreadTurn removes the checkpoint row for (thread, turn)
+// if it exists, returning the ref_name that was deleted so the caller can
+// clean up the backing git ref. The bool is false when no row existed — not
+// an error. Used to make capture idempotent: before a new capture writes a
+// fresh git ref, any stale DB+ref pair for the same (thread, turn) is torn
+// down so neither side leaks.
+func (s *Store) DeleteCheckpointByThreadTurn(threadID string, turnIndex int) (string, bool, error) {
+	var ref string
+	err := s.db.QueryRow(
+		`SELECT ref_name FROM thread_checkpoints WHERE thread_id = ? AND turn_index = ?`,
+		threadID, turnIndex,
+	).Scan(&ref)
+	if err == sql.ErrNoRows {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("store: lookup checkpoint thread=%s turn=%d: %w",
+			threadID, turnIndex, err)
+	}
+	if _, err := s.db.Exec(
+		`DELETE FROM thread_checkpoints WHERE thread_id = ? AND turn_index = ?`,
+		threadID, turnIndex,
+	); err != nil {
+		return "", false, fmt.Errorf("store: delete checkpoint thread=%s turn=%d: %w",
+			threadID, turnIndex, err)
+	}
+	return ref, true, nil
+}

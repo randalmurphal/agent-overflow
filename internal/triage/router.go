@@ -27,6 +27,7 @@ import (
 type CheckpointCapture interface {
 	IsGitRepository(ctx context.Context, workspace string) bool
 	CaptureBaseline(ctx context.Context, workspace, threadID string, turnIndex int) (string, error)
+	DeleteRef(ctx context.Context, workspace, ref string) error
 }
 
 // TurnMetrics is the subset of OTel counters the router records. Kept as a
@@ -312,6 +313,15 @@ func (r *Router) openTurnSpan(evt provider.ProviderEvent) {
 // captureBaselineForTurn runs checkpoint capture + SQLite persistence for the
 // current turn. Errors are logged and surfaced as activity events so the UI
 // can show "checkpoints unavailable" without blocking the turn.
+//
+// The operation is idempotent by design. A provider can fire EventTurnStart
+// more than once for the same (thread, turn) — e.g. Claude resending
+// system.init after an interrupt — and an earlier capture attempt can have
+// partially succeeded (git ref written but DB insert failed, or vice versa).
+// Before writing a fresh pair we tear down any stale row + ref so we never
+// have to reconcile drift between git and SQLite later. If SaveCheckpoint
+// fails after the new ref is written, we remove the new ref so the two
+// sides stay in lockstep — either both exist, or neither does.
 func (r *Router) captureBaselineForTurn(ctx context.Context, threadID string) {
 	cap := r.checkpointStore()
 	if cap == nil {
@@ -341,6 +351,21 @@ func (r *Router) captureBaselineForTurn(ctx context.Context, threadID string) {
 	if r.markTurnCaptured(threadID, turnIndex) {
 		return // already captured for this (thread, turn)
 	}
+
+	// Idempotency guard: any pre-existing row for (thread, turn) means a
+	// previous capture partially succeeded or we're re-capturing. Drop both
+	// sides — DB row first (SQLite write is the cheap one to roll back),
+	// then the backing git ref — so the upcoming capture starts clean.
+	if staleRef, hadRow, err := r.store.DeleteCheckpointByThreadTurn(threadID, turnIndex); err != nil {
+		log.Printf("triage: checkpoint stale row thread=%s turn=%d: %v", threadID, turnIndex, err)
+		r.unmarkTurnCaptured(threadID, turnIndex)
+		return
+	} else if hadRow && staleRef != "" {
+		if err := cap.DeleteRef(ctx, workspace, staleRef); err != nil {
+			log.Printf("triage: checkpoint delete stale ref %s: %v", staleRef, err)
+		}
+	}
+
 	ref, err := cap.CaptureBaseline(ctx, workspace, threadID, turnIndex)
 	if err != nil {
 		r.unmarkTurnCaptured(threadID, turnIndex)
@@ -363,6 +388,10 @@ func (r *Router) captureBaselineForTurn(ctx context.Context, threadID string) {
 	}
 	if err := r.store.SaveCheckpoint(record); err != nil {
 		log.Printf("triage: checkpoint persist thread=%s turn=%d: %v", threadID, turnIndex, err)
+		// DB row never landed — don't let the git ref linger.
+		if derr := cap.DeleteRef(ctx, workspace, ref); derr != nil {
+			log.Printf("triage: checkpoint rollback ref %s: %v", ref, derr)
+		}
 		r.unmarkTurnCaptured(threadID, turnIndex)
 		return
 	}
