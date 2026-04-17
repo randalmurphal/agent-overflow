@@ -521,31 +521,27 @@ func TestCaptureBaselineEmptyWorkspaceProducesEmptyTree(t *testing.T) {
 }
 
 func TestCaptureCleanupOnContextCancel(t *testing.T) {
-	// Cancelling the context during capture must not leave temp dirs behind.
-	// We can't easily race the internal `git` calls, but we can at least
-	// assert the normal happy path cleans up its temp dir.
+	// A successful capture must clean up its own temp dir. Route MkdirTemp
+	// through a test-scoped TMPDIR so a parallel test (or another `go test`
+	// on the same host) can't race the global count we observe.
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+
 	ctx := context.Background()
 	dir := t.TempDir()
 	initRepo(t, dir)
 	s := NewStore()
 
-	before, err := os.ReadDir(os.TempDir())
-	if err != nil {
-		t.Fatalf("read temp before: %v", err)
-	}
-	beforeCount := countCheckpointTemp(before)
-
 	if _, err := s.CaptureBaseline(ctx, dir, "t1", 0); err != nil {
 		t.Fatalf("capture: %v", err)
 	}
 
-	after, err := os.ReadDir(os.TempDir())
+	entries, err := os.ReadDir(tmp)
 	if err != nil {
-		t.Fatalf("read temp after: %v", err)
+		t.Fatalf("read scoped temp: %v", err)
 	}
-	afterCount := countCheckpointTemp(after)
-	if afterCount > beforeCount {
-		t.Errorf("leaked %d agent-overflow-checkpoint temp dirs", afterCount-beforeCount)
+	if leaked := countCheckpointTemp(entries); leaked != 0 {
+		t.Errorf("leaked %d agent-overflow-checkpoint temp dirs in %s", leaked, tmp)
 	}
 }
 

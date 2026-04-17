@@ -122,7 +122,10 @@ func TestProbeAccountReturnsErrorOnSpawnFailure(t *testing.T) {
 
 func TestProbeAccountReturnsErrorWhenInitMissing(t *testing.T) {
 	// Simulate a binary that exits before emitting a system/init message.
-	// The probe must surface a structured error — not block or swallow.
+	// The probe must surface the EOF via a structured error — not hit the
+	// configured Timeout fallback. Assert elapsed < Timeout so we're
+	// explicitly verifying the EOF path beat the timeout path, rather than
+	// hard-coding a wall-clock number that flakes on loaded runners.
 	tmpDir := t.TempDir()
 	path := filepath.Join(tmpDir, "silent")
 	// Read stdin and exit with no stdout output.
@@ -130,10 +133,11 @@ func TestProbeAccountReturnsErrorWhenInitMissing(t *testing.T) {
 		t.Fatalf("write silent: %v", err)
 	}
 
+	const probeTimeout = 3 * time.Second
 	start := time.Now()
 	_, err := ProbeAccount(context.Background(), ProbeConfig{
 		Binary:  path,
-		Timeout: 2 * time.Second,
+		Timeout: probeTimeout,
 	})
 	elapsed := time.Since(start)
 	if err == nil {
@@ -142,8 +146,11 @@ func TestProbeAccountReturnsErrorWhenInitMissing(t *testing.T) {
 	if !strings.Contains(err.Error(), "claude:") {
 		t.Errorf("error should mention claude: got %v", err)
 	}
-	if elapsed > 1*time.Second {
-		t.Errorf("probe took too long: %v", elapsed)
+	// If the EOF path worked, elapsed is bounded by process-spawn latency,
+	// not the probe Timeout. Allow a generous margin for slow CI while
+	// still catching the bug where Timeout becomes the backstop.
+	if elapsed >= probeTimeout {
+		t.Errorf("probe hit timeout path (%v) instead of EOF path", elapsed)
 	}
 }
 
