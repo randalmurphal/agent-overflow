@@ -32,6 +32,12 @@ const (
 // bounded queue of records. The manager is the only API triage and app code
 // should use — they enqueue records via Enqueue, the manager writes them on
 // a background goroutine.
+//
+// Lifecycle: while disabled the manager owns no goroutines. Toggling to
+// enabled starts a fresh drain+reap pair bound to a new context; toggling
+// back to disabled cancels that context and waits for both loops to exit.
+// Construction with Enabled:false therefore has zero goroutine footprint,
+// matching the "no runtime cost when off" contract in ManagerConfig.
 type Manager struct {
 	rootDir string
 
@@ -40,17 +46,26 @@ type Manager struct {
 	mu      sync.Mutex
 	writers map[string]*Writer // key: threadID
 
-	queue       chan Record
+	// queueSize / writerCfg / idleTimeout are immutable after
+	// construction; the queue is rebuilt each time we enable (see
+	// startLoops) so a disabled period cannot leak buffered records.
 	queueSize   int
 	writerCfg   WriterConfig
 	idleTimeout time.Duration
 
 	dropHook func()
 
-	// Lifecycle: started at construction, closed by Shutdown.
-	cancel context.CancelFunc
-	loopWG sync.WaitGroup
-	closed atomic.Bool
+	// lifecycleMu serializes enable/disable transitions and Shutdown
+	// against Enqueue. Writers (SetEnabled, Shutdown) hold the write
+	// lock when swapping queue/cancel so an Enqueue holding the read
+	// lock sees a consistent (queue != nil) view for the duration of
+	// its channel send. Many Enqueues can run in parallel; toggles
+	// block them for the duration of the transition only.
+	lifecycleMu sync.RWMutex
+	queue       chan Record
+	cancel      context.CancelFunc
+	loopWG      sync.WaitGroup
+	closed      atomic.Bool
 
 	// inflight counts records that have left the queue but haven't been
 	// fully written to disk. waitForDrain uses this to tell tests "all
@@ -78,8 +93,10 @@ type ManagerConfig struct {
 	DropHook func()
 }
 
-// NewManager constructs a Manager and starts its background goroutines. Use
-// Shutdown to release resources.
+// NewManager constructs a Manager. Background goroutines are only started
+// when the manager is enabled — either via ManagerConfig.Enabled at
+// construction or via a later SetEnabled(true). Disabled construction
+// therefore has zero goroutine footprint.
 func NewManager(cfg ManagerConfig) *Manager {
 	qsize := cfg.QueueSize
 	if qsize <= 0 {
@@ -90,23 +107,49 @@ func NewManager(cfg ManagerConfig) *Manager {
 		idle = defaultIdleTimeout
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
 	m := &Manager{
 		rootDir:     cfg.RootDir,
 		writers:     make(map[string]*Writer),
-		queue:       make(chan Record, qsize),
 		queueSize:   qsize,
 		writerCfg:   cfg.WriterConfig,
 		idleTimeout: idle,
 		dropHook:    cfg.DropHook,
-		cancel:      cancel,
 	}
-	m.enabled.Store(cfg.Enabled)
+	if cfg.Enabled {
+		m.enabled.Store(true)
+		m.startLoops()
+	}
+	return m
+}
 
+// startLoops builds a fresh queue + cancel context and starts the drain
+// and reap goroutines. Must be called with lifecycleMu held, with no
+// loops currently running.
+func (m *Manager) startLoops() {
+	if m.queue != nil {
+		// Already running; this branch guards against a logic bug rather
+		// than a legitimate caller state, so we simply return.
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	m.queue = make(chan Record, m.queueSize)
+	m.cancel = cancel
 	m.loopWG.Add(2)
 	go m.drain(ctx)
 	go m.reap(ctx)
-	return m
+}
+
+// stopLoops cancels the background context, waits for drain + reap to
+// exit, and releases the queue channel. Must be called with lifecycleMu
+// held. Safe to call when loops are already stopped.
+func (m *Manager) stopLoops() {
+	if m.queue == nil {
+		return
+	}
+	m.cancel()
+	m.loopWG.Wait()
+	m.cancel = nil
+	m.queue = nil
 }
 
 // Enabled reports whether the manager will accept new records. Safe to call
@@ -118,16 +161,51 @@ func (m *Manager) Enabled() bool {
 	return m.enabled.Load()
 }
 
-// SetEnabled toggles the manager at runtime. When flipping from enabled to
-// disabled we leave open writers in place until the reaper evicts them —
-// this keeps the transition cheap and lets a user re-enable mid-session
-// without reopening files.
+// SetEnabled toggles the manager at runtime. Enabling a disabled manager
+// spins up the drain + reap goroutines on a fresh context; disabling an
+// enabled manager cancels that context, waits for the loops to exit, and
+// closes all open writers. The net result is that a disabled manager
+// holds no goroutines and no file descriptors.
+//
+// Toggling takes effect immediately: after SetEnabled(true) returns,
+// Enqueue will accept records; after SetEnabled(false) returns, Enqueue
+// will reject them and no background work remains.
 func (m *Manager) SetEnabled(v bool) {
 	if m == nil {
 		return
 	}
-	m.enabled.Store(v)
+	m.lifecycleMu.Lock()
+	defer m.lifecycleMu.Unlock()
+
+	// Shutdown has permanently disabled the manager; further enable
+	// requests would leak goroutines that no one can stop (closed is
+	// a one-way latch and Shutdown is idempotent).
+	if m.closed.Load() {
+		m.enabled.Store(false)
+		return
+	}
+
+	if !m.enabled.CompareAndSwap(!v, v) {
+		// State didn't change; nothing to do.
+		return
+	}
+	if v {
+		m.startLoops()
+		return
+	}
+	m.stopLoops()
+	// Close every open writer so the disabled state owns no FDs. A
+	// future re-enable will lazily re-open files on first write.
+	m.mu.Lock()
+	for id, w := range m.writers {
+		if err := w.Close(); err != nil {
+			log.Printf("replay: close writer %s on disable: %v", id, err)
+		}
+		delete(m.writers, id)
+	}
+	m.mu.Unlock()
 }
+
 
 // Enqueue offers a record to the background writer. Returns true on success,
 // false when the queue is full or the manager is disabled/closed. When
@@ -137,8 +215,20 @@ func (m *Manager) SetEnabled(v bool) {
 // We bump inflight BEFORE enqueueing so there's no window where the
 // record has left the queue but inflight has not yet been incremented —
 // that window is what waitForDrain was racing against.
+//
+// The read-lock on lifecycleMu is held across the channel send so a
+// concurrent SetEnabled(false) cannot reap the queue out from under us.
 func (m *Manager) Enqueue(rec Record) bool {
 	if m == nil || m.closed.Load() || !m.enabled.Load() {
+		return false
+	}
+	m.lifecycleMu.RLock()
+	defer m.lifecycleMu.RUnlock()
+	// Re-check under the lock: the manager could have been disabled in
+	// the window between the atomic reads above and the lock
+	// acquisition. Without this, an Enqueue that squeaks in just after
+	// SetEnabled(false) would push onto a soon-to-be-nil queue.
+	if m.closed.Load() || !m.enabled.Load() || m.queue == nil {
 		return false
 	}
 	m.inflight.Add(1)
@@ -155,32 +245,48 @@ func (m *Manager) Enqueue(rec Record) bool {
 }
 
 // QueueLen returns the current queue depth. Primarily used in tests.
+// Returns 0 when the manager is disabled and has no queue.
 func (m *Manager) QueueLen() int {
 	if m == nil {
+		return 0
+	}
+	m.lifecycleMu.RLock()
+	defer m.lifecycleMu.RUnlock()
+	if m.queue == nil {
 		return 0
 	}
 	return len(m.queue)
 }
 
 // Shutdown drains the queue (bounded by ctx), closes all writers, and stops
-// background goroutines. Subsequent Enqueue calls return false.
+// background goroutines. Subsequent Enqueue calls return false and
+// subsequent SetEnabled(true) calls are no-ops.
 func (m *Manager) Shutdown(ctx context.Context) error {
 	if m == nil {
 		return nil
 	}
+	m.lifecycleMu.Lock()
+	defer m.lifecycleMu.Unlock()
+
 	if !m.closed.CompareAndSwap(false, true) {
 		return nil
 	}
-	m.cancel()
-	done := make(chan struct{})
-	go func() {
-		m.loopWG.Wait()
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-ctx.Done():
-		// Loops didn't exit in time; fall through and close writers anyway.
+	m.enabled.Store(false)
+
+	if m.queue != nil {
+		m.cancel()
+		done := make(chan struct{})
+		go func() {
+			m.loopWG.Wait()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-ctx.Done():
+			// Loops didn't exit in time; fall through and close writers anyway.
+		}
+		m.cancel = nil
+		m.queue = nil
 	}
 
 	m.mu.Lock()
@@ -203,8 +309,13 @@ func (m *Manager) Shutdown(ctx context.Context) error {
 // decrements it after the write completes. The net result is that
 // inflight == 0 implies "every enqueued record has been written" — the
 // invariant waitForDrain depends on.
+//
+// The queue is captured in a local so a concurrent SetEnabled cannot nil
+// out m.queue mid-loop: we always read from the channel we were handed
+// at startLoops time, even if the field has since been reset.
 func (m *Manager) drain(ctx context.Context) {
 	defer m.loopWG.Done()
+	queue := m.queue
 	for {
 		select {
 		case <-ctx.Done():
@@ -212,14 +323,14 @@ func (m *Manager) drain(ctx context.Context) {
 			// don't lose records the triage loop already handed off.
 			for {
 				select {
-				case rec := <-m.queue:
+				case rec := <-queue:
 					m.writeRecord(rec)
 					m.inflight.Add(-1)
 				default:
 					return
 				}
 			}
-		case rec := <-m.queue:
+		case rec := <-queue:
 			m.writeRecord(rec)
 			m.inflight.Add(-1)
 		}

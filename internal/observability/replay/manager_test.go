@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -499,5 +500,145 @@ func TestRemoveThreadLogEmptyThreadID(t *testing.T) {
 
 	if err := m.RemoveThreadLog(""); err != nil {
 		t.Errorf("RemoveThreadLog('') returned %v, want nil", err)
+	}
+}
+
+// TestDisabledManagerNoGoroutines verifies the "zero runtime cost when
+// off" contract. A disabled manager must not own any background
+// goroutines; flipping to enabled should start exactly two (drain +
+// reap); flipping back to disabled should release them.
+//
+// We don't assert exact NumGoroutine() values because the test runtime
+// has its own goroutines (testing, coverage, GC). Instead we measure
+// deltas before/after construction and before/after each toggle.
+func TestDisabledManagerNoGoroutines(t *testing.T) {
+	dir := t.TempDir()
+	// Warm up the runtime so the first Goroutine-spawning paths don't
+	// count as part of the manager cost.
+	waitForGoroutineStable(t)
+
+	before := runtime.NumGoroutine()
+	m := NewManager(ManagerConfig{
+		RootDir:      dir,
+		QueueSize:    16,
+		WriterConfig: WriterConfig{FsyncEvery: 1},
+		IdleTimeout:  100 * time.Second,
+		Enabled:      false,
+	})
+	waitForGoroutineStable(t)
+	afterCreate := runtime.NumGoroutine()
+	if afterCreate > before {
+		t.Errorf("disabled construction started %d extra goroutines, want 0",
+			afterCreate-before)
+	}
+
+	// Enable -> exactly two goroutines should appear (drain + reap).
+	m.SetEnabled(true)
+	waitForGoroutineStable(t)
+	afterEnable := runtime.NumGoroutine()
+	delta := afterEnable - afterCreate
+	if delta != 2 {
+		t.Errorf("SetEnabled(true) spawned %d goroutines, want 2", delta)
+	}
+
+	// Disable -> goroutines must have exited before SetEnabled returns.
+	m.SetEnabled(false)
+	waitForGoroutineStable(t)
+	afterDisable := runtime.NumGoroutine()
+	if afterDisable > afterCreate {
+		t.Errorf("SetEnabled(false) left %d extra goroutines, want 0",
+			afterDisable-afterCreate)
+	}
+
+	// Shutdown from the disabled state must be a clean no-op.
+	if err := m.Shutdown(context.Background()); err != nil {
+		t.Errorf("Shutdown after disable: %v", err)
+	}
+	waitForGoroutineStable(t)
+	afterShutdown := runtime.NumGoroutine()
+	if afterShutdown > before {
+		t.Errorf("Shutdown left %d extra goroutines above baseline, want 0",
+			afterShutdown-before)
+	}
+}
+
+// TestRapidEnableDisableCyclingDoesNotLeak spins SetEnabled back and
+// forth many times and verifies we end up back at the baseline
+// goroutine count. A naive implementation that spawned new goroutines
+// on every enable without cleaning them up on disable would leak two
+// per cycle.
+func TestRapidEnableDisableCyclingDoesNotLeak(t *testing.T) {
+	dir := t.TempDir()
+	waitForGoroutineStable(t)
+	baseline := runtime.NumGoroutine()
+
+	m := NewManager(ManagerConfig{
+		RootDir:      dir,
+		QueueSize:    16,
+		WriterConfig: WriterConfig{FsyncEvery: 1},
+		IdleTimeout:  100 * time.Second,
+		Enabled:      false,
+	})
+	defer m.Shutdown(context.Background())
+
+	const cycles = 50
+	for i := 0; i < cycles; i++ {
+		m.SetEnabled(true)
+		m.SetEnabled(false)
+	}
+	waitForGoroutineStable(t)
+	after := runtime.NumGoroutine()
+
+	// Allow a small tolerance for scheduling artefacts from the test
+	// framework; 50 cycles would leak 100 goroutines if the fix broke.
+	if after-baseline > 4 {
+		t.Errorf("after %d enable/disable cycles, goroutine delta = %d, want < 4",
+			cycles, after-baseline)
+	}
+}
+
+// TestShutdownAfterDisableIsNoOp verifies that closing a manager that
+// was already disabled does not panic and leaves the goroutine count
+// unchanged (we're already at zero loops).
+func TestShutdownAfterDisableIsNoOp(t *testing.T) {
+	dir := t.TempDir()
+	m := NewManager(ManagerConfig{
+		RootDir:      dir,
+		QueueSize:    16,
+		WriterConfig: WriterConfig{FsyncEvery: 1},
+		IdleTimeout:  100 * time.Second,
+		Enabled:      true,
+	})
+	m.SetEnabled(false)
+	if err := m.Shutdown(context.Background()); err != nil {
+		t.Errorf("Shutdown: %v", err)
+	}
+	// Re-enable after Shutdown must be rejected (closed is a one-way
+	// latch — enabling would leak goroutines no one can stop).
+	m.SetEnabled(true)
+	if m.Enabled() {
+		t.Error("SetEnabled(true) re-enabled a closed manager")
+	}
+	rec, _ := NewRecord(time.Now(), "t", "k", nil)
+	if m.Enqueue(rec) {
+		t.Error("Enqueue accepted after Shutdown + SetEnabled(true)")
+	}
+}
+
+// waitForGoroutineStable waits a short time and then polls NumGoroutine
+// until the count stabilises. Without this, transitive goroutines from
+// ticker/timer channels may be in flight right after a cancel.
+func waitForGoroutineStable(t *testing.T) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	var last int
+	for time.Now().Before(deadline) {
+		runtime.Gosched()
+		cur := runtime.NumGoroutine()
+		if cur == last {
+			return
+		}
+		last = cur
+		time.Sleep(5 * time.Millisecond)
 	}
 }
