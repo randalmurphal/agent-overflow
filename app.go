@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"agent-overflow/internal/attachment"
 	"agent-overflow/internal/design"
 	"agent-overflow/internal/discussion"
 	gitops "agent-overflow/internal/git"
@@ -20,6 +21,7 @@ import (
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/terminal"
 	"agent-overflow/internal/triage"
+	"agent-overflow/internal/workspacefiles"
 
 	"github.com/google/uuid"
 	"github.com/wailsapp/wails/v3/pkg/application"
@@ -27,19 +29,21 @@ import (
 
 // App is the primary Wails-bound struct, registered as a v3 service.
 type App struct {
-	app       *application.App
-	store     *store.Store
-	git       *gitops.Core
-	settings  *settings.Service
-	triage    *triage.Router
-	registry  *discussion.Registry
-	channels  *discussion.ChannelService
-	artifacts *design.ArtifactStore
-	reactor   *design.Reactor
-	designMCP *codex.DesignMCPServer
-	terminals *terminal.Manager
-	logger    *logging.Logger
-	configDir string
+	app            *application.App
+	store          *store.Store
+	git            *gitops.Core
+	settings       *settings.Service
+	triage         *triage.Router
+	registry       *discussion.Registry
+	channels       *discussion.ChannelService
+	artifacts      *design.ArtifactStore
+	reactor        *design.Reactor
+	designMCP      *codex.DesignMCPServer
+	terminals      *terminal.Manager
+	attachments    *attachment.Store
+	workspaceFiles *workspacefiles.Searcher
+	logger         *logging.Logger
+	configDir      string
 	mu        sync.Mutex
 	sessions  map[string]session // threadID → active session
 	// threadID → in-flight session start. Concurrent callers wait for the
@@ -125,6 +129,18 @@ func (a *App) ServiceStartup(ctx context.Context, options application.ServiceOpt
 	})
 	a.designMCP = codex.NewDesignMCPServer(a.reactor)
 	a.terminals = terminal.NewManager(a.terminalOutputCallback, a.terminalExitCallback)
+	attachmentStore, err := attachment.NewStore(attachment.Config{
+		RootDir: filepath.Join(dbDir, "attachments"),
+	}, st)
+	if err != nil {
+		closeErr := st.Close()
+		return errors.Join(
+			fmt.Errorf("failed to initialise attachment store: %w", err),
+			wrapLifecycleError("close store after attachment init failure", closeErr),
+		)
+	}
+	a.attachments = attachmentStore
+	a.workspaceFiles = workspacefiles.NewSearcher(workspacefiles.Config{})
 	a.configDir = dbDir
 
 	return nil
