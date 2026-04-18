@@ -383,6 +383,40 @@ ADD COLUMN runtime_mode TEXT NOT NULL DEFAULT 'full-access'
 		// reshape across unrelated subsystems.
 		SQL: v13SQL,
 	},
+	{
+		Version: 14,
+		Name:    "items_tool_call_lifecycle",
+		// Tool-call lifecycle columns. Inline tool calls update status in
+		// place (running → completed|errored|declined). Backgrounded tool
+		// calls keep their launch row as-is (is_background=1) and append a
+		// second "completion" row whose completion_of_item_id points at the
+		// launch — that pair is how the frontend renders the deferred
+		// result without mutating persisted history.
+		//
+		// Every existing row represents a finished item (we only persisted
+		// on completion before this migration), so the 'completed' default
+		// is a correct backfill: no read path needs to retroactively
+		// classify old rows.
+		//
+		// completion_of_item_id is a sibling to parent_tool_use_id: a TEXT
+		// NOT NULL DEFAULT '' column with no FK (matches house style —
+		// the id points at another item row but we don't want a cascade
+		// delete path binding the pair together; the frontend treats them
+		// as a loose reference).
+		//
+		// The partial index mirrors idx_items_parent_tool_use: we only
+		// index non-empty values so the vast majority of rows (which never
+		// complete a backgrounded launch) don't pay storage cost.
+		SQL: `
+ALTER TABLE items ADD COLUMN status TEXT NOT NULL DEFAULT 'completed'
+    CHECK(status IN ('running', 'completed', 'errored', 'declined'));
+ALTER TABLE items ADD COLUMN is_background INTEGER NOT NULL DEFAULT 0
+    CHECK(is_background IN (0, 1));
+ALTER TABLE items ADD COLUMN completion_of_item_id TEXT NOT NULL DEFAULT '';
+CREATE INDEX IF NOT EXISTS idx_items_completion_of
+    ON items(thread_id, completion_of_item_id) WHERE completion_of_item_id <> '';
+`,
+	},
 }
 
 // v13SQL is the DROP-and-rebuild payload for migration v13. Extracted so

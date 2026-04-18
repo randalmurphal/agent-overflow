@@ -102,7 +102,21 @@ type Item struct {
 	// was produced by a subagent (Claude's Agent/Task tool). Empty for
 	// top-level turn items.
 	ParentToolUseID string `json:"parentToolUseId,omitempty"`
-	CreatedAt       int64  `json:"createdAt"`
+	// Status reports the lifecycle stage of the item. Persisted items
+	// default to "completed"; tool calls that stream in place move
+	// "running" → "completed"|"errored"|"declined". Always populated —
+	// existing rows were backfilled by migration v14 with "completed".
+	Status string `json:"status"`
+	// IsBackground marks a tool-call launch that runs in the background.
+	// The pair is rendered as: one launch item with is_background=true,
+	// and a sibling completion item (see CompletionOfItemID) appended at
+	// finish time. Inline tool calls keep is_background=false.
+	IsBackground bool `json:"isBackground,omitempty"`
+	// CompletionOfItemID points at the launch item this row completes when
+	// this row is a background-task completion. Empty on every other item,
+	// including the launch itself.
+	CompletionOfItemID string `json:"completionOfItemId,omitempty"`
+	CreatedAt          int64  `json:"createdAt"`
 }
 
 // Payload represents heavy content stored for on-demand loading.

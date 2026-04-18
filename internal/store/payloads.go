@@ -38,10 +38,13 @@ func (s *Store) InsertItemWithPayload(item Item, payload Payload) error {
 	}
 
 	if _, err := tx.Exec(
-		`INSERT INTO items (id, thread_id, turn_index, item_index, kind, role, summary, payload_id, parent_tool_use_id, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO items (id, thread_id, turn_index, item_index, kind, role, summary,
+		    payload_id, parent_tool_use_id, status, is_background, completion_of_item_id, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		item.ID, item.ThreadID, item.TurnIndex, item.ItemIndex, item.Kind, item.Role, item.Summary,
-		nilIfEmpty(item.PayloadID), item.ParentToolUseID, item.CreatedAt,
+		nilIfEmpty(item.PayloadID), item.ParentToolUseID,
+		defaultStatus(item.Status), boolToInt(item.IsBackground), item.CompletionOfItemID,
+		item.CreatedAt,
 	); err != nil {
 		return fmt.Errorf("store: insert item: %w", err)
 	}
@@ -94,10 +97,13 @@ func (s *Store) AppendItemWithPayload(item Item, payload Payload) (int, error) {
 	}
 
 	if _, err := tx.Exec(
-		`INSERT INTO items (id, thread_id, turn_index, item_index, kind, role, summary, payload_id, parent_tool_use_id, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO items (id, thread_id, turn_index, item_index, kind, role, summary,
+		    payload_id, parent_tool_use_id, status, is_background, completion_of_item_id, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		item.ID, item.ThreadID, item.TurnIndex, item.ItemIndex, item.Kind, item.Role, item.Summary,
-		nilIfEmpty(item.PayloadID), item.ParentToolUseID, item.CreatedAt,
+		nilIfEmpty(item.PayloadID), item.ParentToolUseID,
+		defaultStatus(item.Status), boolToInt(item.IsBackground), item.CompletionOfItemID,
+		item.CreatedAt,
 	); err != nil {
 		return 0, fmt.Errorf("store: append item+payload insert item: %w", err)
 	}
