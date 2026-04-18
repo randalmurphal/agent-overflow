@@ -20,12 +20,38 @@
   import DiffPanelDrawer from './DiffPanelDrawer.svelte';
   import PlanSidebar from './PlanSidebar.svelte';
   import PlanFollowUpBanner from './PlanFollowUpBanner.svelte';
+  import CompactHeaderMenu from './CompactHeaderMenu.svelte';
   import { createComposerDraftStore } from '../../stores/composerDraft.svelte';
 
   let { pane }: { pane: ThreadPane } = $props();
 
   const draft = createComposerDraftStore();
   let lastHydratedThreadId: string | null = null;
+
+  // Threshold in CSS pixels of the header row below which the optional
+  // chrome (model/runtime/branch/git) collapses into a dropdown. Chosen
+  // to match a typical phone/tablet split where the side panels still
+  // leave enough room for the meters + toggles but not for four
+  // inline pickers. Intentionally not user-configurable for v1.
+  const COMPACT_BREAKPOINT = 640;
+
+  let headerEl: HTMLDivElement | undefined = $state(undefined);
+  let headerCompact = $state(false);
+
+  // Observe the header element's content-box width. We can't rely on
+  // window width — sidebars and the diff panel eat real estate on the
+  // same viewport, so the header shrinks before the viewport does.
+  $effect(() => {
+    if (!headerEl) return;
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const width = entry.contentRect.width;
+        headerCompact = width > 0 && width < COMPACT_BREAKPOINT;
+      }
+    });
+    observer.observe(headerEl);
+    return () => observer.disconnect();
+  });
 
   $effect(() => {
     const current = pane.thread?.id ?? null;
@@ -74,25 +100,32 @@
 {:else if pane.thread}
   <div class="flex h-full min-h-0">
     <div class="flex flex-col {inDesignMode ? 'flex-1 min-w-0 border-r border-border' : 'flex-1 min-w-0'}">
-      <div class="border-b border-border bg-surface-1 px-4 py-2.5 flex items-center gap-x-2 gap-y-1 shrink-0 flex-wrap min-w-0">
-        <span class="text-xs font-medium px-1.5 py-0.5 rounded bg-accent/20 text-accent">
+      <div
+        bind:this={headerEl}
+        data-testid="chat-header"
+        data-compact={headerCompact ? 'true' : undefined}
+        class="border-b border-border bg-surface-1 px-4 py-2.5 flex items-center gap-x-2 shrink-0 flex-nowrap min-w-0"
+      >
+        <span class="text-xs font-medium px-1.5 py-0.5 rounded bg-accent/20 text-accent shrink-0">
           {pane.thread.provider === 'claude' ? 'C' : 'X'}
         </span>
-        <h2 class="text-sm font-medium text-text-primary truncate">{pane.thread.title}</h2>
-        <InteractionModeBadge {pane} />
-        <ModelPicker {pane} />
-        <RuntimeModePicker {pane} />
-        <BranchToolbar {pane} />
-        <GitActionsControl {pane} />
+        <h2 class="text-sm font-medium text-text-primary truncate min-w-0">{pane.thread.title}</h2>
+        <div class="shrink-0"><InteractionModeBadge {pane} /></div>
+        {#if !headerCompact}
+          <ModelPicker {pane} />
+          <RuntimeModePicker {pane} />
+          <BranchToolbar {pane} />
+          <GitActionsControl {pane} />
+        {/if}
         {#if pane.contextWindow}
-          <ContextWindowMeter data={pane.contextWindow} />
+          <div class="shrink-0"><ContextWindowMeter data={pane.contextWindow} /></div>
         {/if}
         {#if pane.rateLimits.length > 0}
-          <RateLimitsMeter limits={pane.rateLimits} />
+          <div class="shrink-0"><RateLimitsMeter limits={pane.rateLimits} /></div>
         {/if}
         <button
           type="button"
-          class="rounded border border-border px-2 py-0.5 text-xs text-text-secondary hover:bg-surface-2/60 cursor-pointer"
+          class="rounded border border-border px-2 py-0.5 text-xs text-text-secondary hover:bg-surface-2/60 cursor-pointer shrink-0"
           data-testid="diff-panel-toggle"
           aria-pressed={pane.diffPanel.open}
           aria-label="Toggle diff panel"
@@ -103,7 +136,7 @@
         </button>
         <button
           type="button"
-          class="rounded border border-border px-2 py-0.5 text-xs text-text-secondary hover:bg-surface-2/60 cursor-pointer"
+          class="rounded border border-border px-2 py-0.5 text-xs text-text-secondary hover:bg-surface-2/60 cursor-pointer shrink-0"
           data-testid="plan-sidebar-toggle"
           aria-pressed={pane.showPlanSidebar}
           aria-label="Toggle plan sidebar"
@@ -112,6 +145,24 @@
         >
           Plans
         </button>
+        {#if headerCompact}
+          <div data-testid="chat-header-compact" class="shrink-0">
+            <CompactHeaderMenu label="More">
+              {#snippet children()}
+                <!--
+                  The pickers own their own open/close flows, so we do
+                  not wire the passed-in onClose here — selecting a
+                  model/mode/branch leaves the outer More menu open
+                  and the user can click the backdrop to dismiss it.
+                -->
+                <ModelPicker {pane} />
+                <RuntimeModePicker {pane} />
+                <BranchToolbar {pane} />
+                <GitActionsControl {pane} />
+              {/snippet}
+            </CompactHeaderMenu>
+          </div>
+        {/if}
         <span class="ml-auto text-xs text-text-secondary truncate min-w-0 shrink max-w-[200px]" title={pane.thread.workspacePath}>{pane.thread.workspacePath}</span>
       </div>
 
