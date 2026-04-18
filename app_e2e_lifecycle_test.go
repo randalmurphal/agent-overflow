@@ -666,28 +666,49 @@ func TestE2E_ParseErrorRecovery(t *testing.T) {
 	_ = app.StopSession(thread.ID)
 }
 
-// TestE2E_SendMessageBeforeSessionStart: calling SendMessage before the session
-// is spawned must return an error without panicking.
+// TestE2E_SendMessageBeforeSessionStart: a thread created without an
+// explicit StartSession must still accept the user's first message —
+// SendMessage lazy-starts the provider subprocess before forwarding.
+// This replaces the prior "returns error" expectation; drafts spawn the
+// subprocess on first send so the "New Thread → type → send" path works
+// without a disconnected banner or an explicit Start step.
 func TestE2E_SendMessageBeforeSessionStart(t *testing.T) {
-	app, _ := setupE2EApp(t)
+	app, bus := setupE2EApp(t)
 	workspace := t.TempDir()
 	thread, err := createTestThread(t, app, string(provider.Claude), workspace, "claude-opus-4-7", "chat")
 	if err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
 
-	err = app.SendMessage(thread.ID, "hello")
-	if err == nil {
-		t.Fatal("SendMessage with no session: err = nil, want failure")
+	responses := [][]string{
+		{
+			`{"type":"system","subtype":"init","session_id":"lazy-start","model":"claude-opus-4-7","cwd":"/tmp","tools":[],"claude_code_version":"1.0"}`,
+			`{"type":"assistant","message":{"id":"m1","role":"assistant","content":[{"type":"text","text":"pong"}]}}`,
+			`{"type":"result","subtype":"success","is_error":false}`,
+		},
 	}
-	if !strings.Contains(err.Error(), "no active session") {
-		t.Fatalf("unexpected error: %v", err)
+	binary := testutil.WriteMockClaudeScript(t, t.TempDir(), responses)
+	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
+		t.Fatalf("set binary: %v", err)
 	}
 
-	// App should still be usable.
-	if _, err := app.ListThreads(); err != nil {
-		t.Fatalf("ListThreads after failed send: %v", err)
+	if err := app.SendMessage(thread.ID, "hello"); err != nil {
+		t.Fatalf("SendMessage (lazy-start): %v", err)
 	}
+	// Session must now be live and the mock must have delivered both the
+	// init + the assistant response. Draining them also catches the case
+	// where lazy-start silently succeeds but the send never made it.
+	bus.nextProviderEventOfKind(t, provider.EventInit, 5*time.Second)
+	bus.nextProviderEventOfKind(t, provider.EventTextDelta, 5*time.Second)
+	bus.nextProviderEventOfKind(t, provider.EventTurnComplete, 5*time.Second)
+
+	app.mu.Lock()
+	_, sessionExists := app.sessions[thread.ID]
+	app.mu.Unlock()
+	if !sessionExists {
+		t.Fatal("SendMessage should have lazy-started a session")
+	}
+	_ = app.StopSession(thread.ID)
 }
 
 // TestE2E_ToolCallFullCycle: mock emits a tool_use event (via assistant) and
@@ -1176,8 +1197,12 @@ func TestE2E_StartSessionUnknownThread(t *testing.T) {
 	}
 }
 
-// TestE2E_SendMessageUnknownThread: calling SendMessage with a thread ID that
-// does not exist must report "no active session" and not crash the app.
+// TestE2E_SendMessageUnknownThread: calling SendMessage with a thread ID
+// that does not exist must report a clear error and not crash the app.
+// Since SendMessage now lazy-starts the session, the failure surface
+// moves from "no active session" (old manual-start flow) to the
+// lazy-start trying to load the thread row — either way the caller
+// receives a user-visible error and the app stays healthy.
 func TestE2E_SendMessageUnknownThread(t *testing.T) {
 	app, _ := setupE2EApp(t)
 
@@ -1185,8 +1210,8 @@ func TestE2E_SendMessageUnknownThread(t *testing.T) {
 	if err == nil {
 		t.Fatal("SendMessage unknown thread: err = nil, want failure")
 	}
-	if !strings.Contains(err.Error(), "no active session") {
-		t.Fatalf("error = %v, want 'no active session'", err)
+	if !strings.Contains(err.Error(), "ghost-thread-id") {
+		t.Fatalf("error = %v, want mention of the missing thread id", err)
 	}
 
 	if _, err := app.ListThreads(); err != nil {

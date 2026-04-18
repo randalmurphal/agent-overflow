@@ -62,7 +62,10 @@ describe('createThreadPane()', () => {
 
     it('starts with null streaming/session fields', () => {
       expect(pane.streamingContent).toBe('');
-      expect(pane.sessionStatus).toBe('disconnected');
+      // Default is 'idle' (not 'disconnected') so a brand-new pane never
+      // flashes the "Session disconnected" banner before the backend has
+      // had a chance to confirm a real session state.
+      expect(pane.sessionStatus).toBe('idle');
       expect(pane.tokenUsage).toBeNull();
       expect(pane.contextWindow).toBeNull();
       expect(pane.error).toBeNull();
@@ -115,8 +118,9 @@ describe('createThreadPane()', () => {
       expect(pane.pendingApprovals).toEqual([]);
       expect(pane.error).toBeNull();
       expect(pane.pendingMessage).toBeNull();
-      // sessionStatus resets to 'disconnected' until backend confirms otherwise.
-      expect(pane.sessionStatus).toBe('disconnected');
+      // sessionStatus resets to 'idle' on thread switch; the real disconnect
+      // signal only arrives if the backend emits EventSessionStatus:"disconnected".
+      expect(pane.sessionStatus).toBe('idle');
       // sessionApprovedTools should reset too so a new thread starts fresh.
       expect(pane.isToolSessionApproved('bash')).toBe(false);
     });

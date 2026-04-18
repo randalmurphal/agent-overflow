@@ -562,6 +562,13 @@ export function ListThreadCheckpoints(threadID: string): $CancellablePromise<sto
     });
 }
 
+/**
+ * ListThreads backs the frontend sidebar. It deliberately excludes
+ * "draft" threads (newly created but never sent) so the sidebar stays
+ * clean: a thread only becomes visible once its first item lands.
+ * Internal callers that need every thread (tests, fork inspection,
+ * discussion runtime) go through a.store.ListThreads directly.
+ */
 export function ListThreads(): $CancellablePromise<store$0.Thread[]> {
     return $Call.ByID(1090132042).then(($result: any) => {
         return $$createType37($result);

@@ -775,8 +775,13 @@ func (a *App) defaultContextWindow() int {
 	}
 }
 
+// ListThreads backs the frontend sidebar. It deliberately excludes
+// "draft" threads (newly created but never sent) so the sidebar stays
+// clean: a thread only becomes visible once its first item lands.
+// Internal callers that need every thread (tests, fork inspection,
+// discussion runtime) go through a.store.ListThreads directly.
 func (a *App) ListThreads() ([]store.Thread, error) {
-	return a.store.ListThreads()
+	return a.store.ListThreadsWithItems()
 }
 
 func (a *App) GetThread(id string) (store.Thread, error) {

@@ -691,6 +691,87 @@ func TestListThreadsByProject(t *testing.T) {
 	}
 }
 
+func TestListThreadsWithItemsHidesEmptyDrafts(t *testing.T) {
+	s := newTestStore(t)
+	proj := newTestProject(t, s, "proj-drafts", "/tmp/d")
+
+	now := time.Now().UnixMilli()
+	withItems := Thread{
+		ID:            "thread-with-items",
+		ProjectID:     proj.ID,
+		Title:         "Sent Thread",
+		Provider:      "claude",
+		WorkspacePath: "/tmp/d",
+		Model:         "claude-sonnet-4-6",
+		Mode:          "chat",
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}
+	draftEmpty := Thread{
+		ID:            "thread-draft-empty",
+		ProjectID:     proj.ID,
+		Title:         "Draft Thread",
+		Provider:      "claude",
+		WorkspacePath: "/tmp/d",
+		Model:         "claude-sonnet-4-6",
+		Mode:          "chat",
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}
+	archivedWithItems := Thread{
+		ID:            "thread-archived",
+		ProjectID:     proj.ID,
+		Title:         "Archived Thread",
+		Provider:      "claude",
+		WorkspacePath: "/tmp/d",
+		Model:         "claude-sonnet-4-6",
+		Mode:          "chat",
+		CreatedAt:     now,
+		UpdatedAt:     now,
+		Archived:      true,
+	}
+	for _, t2 := range []Thread{withItems, draftEmpty, archivedWithItems} {
+		if err := s.CreateThread(t2); err != nil {
+			t.Fatalf("CreateThread(%s): %v", t2.ID, err)
+		}
+	}
+	if err := s.InsertItem(Item{
+		ID:        "item-1",
+		ThreadID:  withItems.ID,
+		TurnIndex: 0,
+		ItemIndex: 0,
+		Kind:      "text",
+		Role:      "user",
+		Summary:   "hi",
+		CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("InsertItem(withItems): %v", err)
+	}
+	if err := s.InsertItem(Item{
+		ID:        "item-2",
+		ThreadID:  archivedWithItems.ID,
+		TurnIndex: 0,
+		ItemIndex: 0,
+		Kind:      "text",
+		Role:      "user",
+		Summary:   "old",
+		CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("InsertItem(archivedWithItems): %v", err)
+	}
+
+	got, err := s.ListThreadsWithItems()
+	if err != nil {
+		t.Fatalf("ListThreadsWithItems: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("len = %d, want 1 (draft hidden, archived hidden)", len(got))
+	}
+	if got[0].ID != withItems.ID {
+		t.Errorf("got thread %q, want %q", got[0].ID, withItems.ID)
+	}
+}
+
 func TestThreadMutationsReturnNotFoundForMissingRows(t *testing.T) {
 	s := newTestStore(t)
 	proj := newTestProject(t, s, "proj-missing", "/tmp/m")

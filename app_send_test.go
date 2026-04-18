@@ -43,19 +43,66 @@ func TestSendMessageHappyPath(t *testing.T) {
 	}
 }
 
-func TestSendMessageNoActiveSessionError(t *testing.T) {
+// TestSendMessageLazyStartsSession covers the "new thread → type → send"
+// path: a freshly-created thread has no provider session yet, so SendMessage
+// must kick off startSession before forwarding the user message. This
+// replaces the prior "no active session" error test — thread creation no
+// longer spawns a provider process, and the UX no longer surfaces a
+// disconnected banner while the user is composing their first message.
+func TestSendMessageLazyStartsSession(t *testing.T) {
 	app := newTestAppWithStore(t)
-	thread := testThread("thread-send-no-session")
+	thread := testThread("thread-send-lazy-start")
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
 
+	var startCalls int
+	app.startSessionFn = func(threadID string) error {
+		if threadID != thread.ID {
+			t.Errorf("startSessionFn threadID = %q, want %q", threadID, thread.ID)
+		}
+		startCalls++
+		// Register a session entry so the post-start lookup succeeds. The
+		// empty session struct will fail at sendToProvider ("no provider"),
+		// which is fine — this test only asserts that the lazy-start fired.
+		app.mu.Lock()
+		app.sessions[threadID] = session{provider: string(provider.Codex), token: "lazy"}
+		app.mu.Unlock()
+		return nil
+	}
+
+	// Don't use sendMessageFn: it short-circuits before the lazy-start
+	// check, so we'd never hit the code under test.
+	_ = app.SendMessage(thread.ID, "Hello")
+	if startCalls != 1 {
+		t.Fatalf("startSessionFn calls = %d, want 1 (lazy-start must fire for session-less thread)", startCalls)
+	}
+
+	// A second send on the now-populated session must not re-trigger
+	// lazy-start — the session is already live.
+	_ = app.SendMessage(thread.ID, "Second")
+	if startCalls != 1 {
+		t.Fatalf("startSessionFn calls = %d after second send, want 1 (no double-start)", startCalls)
+	}
+}
+
+func TestSendMessageReturnsLazyStartError(t *testing.T) {
+	app := newTestAppWithStore(t)
+	thread := testThread("thread-send-lazy-start-fail")
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+
+	app.startSessionFn = func(threadID string) error {
+		return fmt.Errorf("synthetic start failure")
+	}
+
 	err := app.SendMessage(thread.ID, "Hello")
 	if err == nil {
-		t.Fatal("SendMessage() error = nil, want no active session error")
+		t.Fatal("SendMessage() error = nil, want lazy-start error")
 	}
-	if !strings.Contains(err.Error(), "no active session") {
-		t.Fatalf("SendMessage() error = %v, want no active session", err)
+	if !strings.Contains(err.Error(), "start session") || !strings.Contains(err.Error(), "synthetic start failure") {
+		t.Fatalf("SendMessage() error = %v, want wrapped start-session failure", err)
 	}
 }
 

@@ -136,6 +136,36 @@ func (s *Store) ListThreads() ([]Thread, error) {
 	return threads, rows.Err()
 }
 
+// ListThreadsWithItems returns every non-archived thread that has at least
+// one persisted item. "Draft" threads (created by the user clicking "New
+// Thread" but never sent) deliberately don't appear here — they only
+// surface in the sidebar once the first message lands. Discussion threads
+// are still included even before their first user turn because
+// StartDiscussion inserts the assistant's opening plan as an item, so the
+// EXISTS probe already considers them non-empty.
+func (s *Store) ListThreadsWithItems() ([]Thread, error) {
+	rows, err := s.db.Query(
+		`SELECT ` + threadColumns + ` FROM threads
+		 WHERE archived = 0
+		   AND EXISTS (SELECT 1 FROM items WHERE items.thread_id = threads.id)
+		 ORDER BY updated_at DESC`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: list threads with items: %w", err)
+	}
+	defer rows.Close()
+
+	var threads []Thread
+	for rows.Next() {
+		t, err := scanThread(rows)
+		if err != nil {
+			return nil, fmt.Errorf("store: scan thread row: %w", err)
+		}
+		threads = append(threads, t)
+	}
+	return threads, rows.Err()
+}
+
 // ListThreadsByProject returns all non-archived threads belonging to a
 // project, newest-touched first. Used by the sidebar to render the threads
 // nested under a project row.

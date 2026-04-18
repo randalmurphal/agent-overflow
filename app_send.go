@@ -52,20 +52,34 @@ func (a *App) sendMessage(threadID string, content string) error {
 		return a.sendMessageFn(threadID, content)
 	}
 
-	// Grab the session reference under a.mu (fast), then release immediately.
+	// Per-thread critical section: only one Send per thread at a time.
+	// This keeps the lazy-session-start + read-turn-index + call-provider +
+	// insert-user-item sequence atomic for a single thread while letting
+	// different threads proceed in parallel. Held across the lazy start so
+	// concurrent sends on a session-less thread don't race on spawn
+	// ordering.
+	unlock := sendThreadMuRegistry.lockFor(threadID)
+	defer unlock()
+
+	// A thread is session-less until the first message is sent — we don't
+	// spawn the provider subprocess at thread creation. Lazy-start here so
+	// the user's "new thread → type → send" flow works without an explicit
+	// Start step. runSessionStart dedupes with any in-flight start kicked
+	// off by SwitchThread auto-resume.
 	a.mu.Lock()
 	sess, ok := a.sessions[threadID]
 	a.mu.Unlock()
 	if !ok {
-		return fmt.Errorf("no active session for thread %s", threadID)
+		if err := a.startSession(threadID); err != nil {
+			return fmt.Errorf("send message: start session: %w", err)
+		}
+		a.mu.Lock()
+		sess, ok = a.sessions[threadID]
+		a.mu.Unlock()
+		if !ok {
+			return fmt.Errorf("send message: session unavailable after start for thread %s", threadID)
+		}
 	}
-
-	// Per-thread critical section: only one Send per thread at a time.
-	// This keeps the read-turn-index / call-provider / insert-user-item
-	// sequence atomic for a single thread while letting different
-	// threads proceed in parallel.
-	unlock := sendThreadMuRegistry.lockFor(threadID)
-	defer unlock()
 
 	thread, err := a.store.GetThread(threadID)
 	if err != nil {

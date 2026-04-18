@@ -403,6 +403,21 @@ func TestCascade_UnarchiveRestoresToSidebar(t *testing.T) {
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
+	// App.ListThreads filters out threads with zero items so the sidebar
+	// never surfaces drafts. Seed one real item so the unarchive round-trip
+	// is visible through that binding.
+	if err := app.store.InsertItem(store.Item{
+		ID:        "thread-cascade-unarchive-item",
+		ThreadID:  thread.ID,
+		TurnIndex: 0,
+		ItemIndex: 0,
+		Kind:      "text",
+		Role:      "user",
+		Summary:   "hello",
+		CreatedAt: time.Now().UnixMilli(),
+	}); err != nil {
+		t.Fatalf("InsertItem: %v", err)
+	}
 
 	if err := app.ArchiveThread(thread.ID); err != nil {
 		t.Fatalf("ArchiveThread: %v", err)

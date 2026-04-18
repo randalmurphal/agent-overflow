@@ -14,9 +14,12 @@
   } from '../../stores/sidebar.svelte';
   import { getThreadFilterQuery } from '../../stores/threadFilter.svelte';
   import { getThreads } from '../../stores/threads.svelte';
-  import { CreateThread, StartSession } from '../../stores/bindings';
+  import { CreateThread } from '../../stores/bindings';
   import { addToast } from '../../stores/toast.svelte';
-  import { prependThread } from '../../stores/threads.svelte';
+  import {
+    getProjectDraft,
+    setProjectDraft,
+  } from '../../stores/draftThreads.svelte';
   import IconButton from '../primitives/IconButton.svelte';
   import ProjectList from './ProjectList.svelte';
   import AddProjectModal from './AddProjectModal.svelte';
@@ -85,19 +88,26 @@
   });
 
   async function handleNewThread(projectId: string): Promise<void> {
+    expandProject(projectId);
+    // If a draft is already in-flight for this project (user clicked
+    // "New Thread" earlier, typed something, then wandered off), reuse
+    // it so the persisted composer draft repopulates under the pane.
+    // This matches t3-code's "one draft per project" UX.
+    const existing = getProjectDraft(projectId);
+    if (existing) {
+      await pane.switchThread(existing);
+      return;
+    }
     try {
-      // CreateThread as of v13 takes a struct. Keeping the call-site
-      // minimal (just projectId) so defaults come from settings.
+      // CreateThread as of v13 takes a struct. Defaults come from settings.
+      // We persist the row so the thread has a stable id for draft
+      // saves, but we deliberately do NOT prepend it to the sidebar or
+      // spawn a provider session — the thread stays a draft until the
+      // first SendMessage promotes it (lazy session start in
+      // app_send.go; sidebar prepend in Composer.send()).
       const thread = (await CreateThread({ projectId })) as Thread;
-      prependThread(thread);
-      expandProject(projectId);
+      setProjectDraft(projectId, thread);
       await pane.switchThread(thread);
-      try {
-        await StartSession(thread.id);
-      } catch (err) {
-        console.error('Failed to start session:', err);
-        pane.setError(`Failed to start session: ${err}`);
-      }
     } catch (err) {
       console.error('Failed to create thread:', err);
       const message = err instanceof Error ? err.message : String(err);

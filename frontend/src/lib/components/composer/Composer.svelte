@@ -43,6 +43,11 @@
   import ComposerSlashPopover from './ComposerSlashPopover.svelte';
   import ComposerTerminalChip from './ComposerTerminalChip.svelte';
   import ComposerToolbar from './toolbar/ComposerToolbar.svelte';
+  import {
+    findDraftProjectId,
+    clearProjectDraft,
+  } from '../../stores/draftThreads.svelte';
+  import { getThreadById, prependThread } from '../../stores/threads.svelte';
 
   interface Props {
     pane: ThreadPane;
@@ -120,6 +125,21 @@
     draft.setContent('');
     await draft.clearAfterSend();
     resetTextareaHeight();
+
+    // Promote a draft thread to the sidebar the moment the user hits
+    // send — not after the backend confirms delivery. A failed send
+    // leaves the thread visible (the user intended to create it; the
+    // error is surfaced separately). This matches the user's expected
+    // UX: "promote on send. period." The draft-thread pointer is
+    // cleared here too so a follow-up "New Thread" click for the same
+    // project spins up a fresh draft instead of reusing this one.
+    const draftProjectId = findDraftProjectId(threadId);
+    if (draftProjectId) {
+      if (pane.thread && !getThreadById(threadId)) {
+        prependThread(pane.thread);
+      }
+      clearProjectDraft(draftProjectId);
+    }
 
     try {
       await SendMessage(threadId, message);

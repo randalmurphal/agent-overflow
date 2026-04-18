@@ -28,7 +28,14 @@ export function createThreadPane() {
   let activeToolCalls: Map<string, unknown> = $state(new Map());
   let pendingApprovals: ApprovalRequest[] = $state([]);
   let backgroundTasks: Map<string, unknown> = $state(new Map());
-  let sessionStatus: string = $state('disconnected');
+  // 'idle' is the neutral boot/in-between state. The ProviderStatusBanner
+  // only surfaces 'disconnected' / 'error' / 'retrying', so a fresh pane
+  // starts quiet and only lights up once the backend emits a terminal
+  // session_status. Previously this defaulted to 'disconnected', which
+  // flashed the "Session disconnected" banner under every brand-new thread
+  // until an init event arrived — confusing for Claude, where init only
+  // ships after the first Send.
+  let sessionStatus: string = $state('idle');
   let tokenUsage: TokenUsage | null = $state(null);
   let contextWindow: ContextWindow | null = $state(null);
   let rateLimits: RateLimitEntry[] = $state([]);
@@ -142,7 +149,7 @@ export function createThreadPane() {
       contextWindow = null;
       rateLimits = [];
       sessionApprovedTools = new Set();
-      sessionStatus = 'disconnected';
+      sessionStatus = 'idle';
       error = null;
       pendingMessage = null;
       channelMessages = [];
@@ -228,7 +235,7 @@ export function createThreadPane() {
       activeToolCalls = new Map();
       pendingApprovals = [];
       backgroundTasks = new Map();
-      sessionStatus = 'disconnected';
+      sessionStatus = 'idle';
       tokenUsage = null;
       contextWindow = null;
       rateLimits = [];
