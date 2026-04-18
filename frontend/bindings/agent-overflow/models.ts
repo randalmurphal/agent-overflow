@@ -143,6 +143,14 @@ export class DirectoryEntry {
  * The frontend uses Parent for back-navigation, Separator to render paths
  * for display, and Truncated to surface a "refine path" hint when a dir
  * is larger than directoryEntryLimit.
+ * 
+ * Exists = false is used for two overlapping "nothing to list" cases the
+ * UI treats the same: the path doesn't exist on disk, or it points at a
+ * file rather than a directory. Those cases don't get an error — the
+ * AddProject modal calls this binding on every keystroke of a typed
+ * path, and logging each in-progress keystroke as a server error
+ * produces a flood of spurious ERR lines. True failures (permission
+ * denied, I/O errors, bad home-dir lookup) still return an error.
  */
 export class DirectoryListing {
     /**
@@ -166,6 +174,11 @@ export class DirectoryListing {
      */
     "truncated": boolean;
 
+    /**
+     * false = path missing OR not a directory (empty Entries)
+     */
+    "exists": boolean;
+
     /** Creates a new DirectoryListing instance. */
     constructor($$source: Partial<DirectoryListing> = {}) {
         if (!("path" in $$source)) {
@@ -182,6 +195,9 @@ export class DirectoryListing {
         }
         if (!("truncated" in $$source)) {
             this["truncated"] = false;
+        }
+        if (!("exists" in $$source)) {
+            this["exists"] = false;
         }
 
         Object.assign(this, $$source);

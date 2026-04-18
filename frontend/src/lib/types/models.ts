@@ -178,6 +178,11 @@ export interface DirectoryEntry {
 /**
  * DirectoryListing is the structured result of BrowseDirectory. `parent`
  * is "" at filesystem roots; `separator` is "/" on Unix, "\\" on Windows.
+ * `exists` is false when the requested path is missing or points at a
+ * file rather than a directory — the server treats those as empty-
+ * listing UI states rather than errors, so the frontend can drive
+ * typeahead (prefix-filter the parent) without flooding the server log
+ * with ERR lines on every keystroke.
  */
 export interface DirectoryListing {
   path: string;
@@ -185,4 +190,5 @@ export interface DirectoryListing {
   separator: string;
   entries: DirectoryEntry[];
   truncated: boolean;
+  exists: boolean;
 }

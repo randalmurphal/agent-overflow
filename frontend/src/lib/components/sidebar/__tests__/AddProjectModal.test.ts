@@ -18,6 +18,7 @@ function mockBrowseDirectory(
     path?: string;
     parent?: string;
     entries?: { name: string; isDir: boolean; hidden?: boolean; isRepo?: boolean }[];
+    exists?: boolean;
   } = {},
 ) {
   setBindingMock('BrowseDirectory', async () => ({
@@ -31,6 +32,7 @@ function mockBrowseDirectory(
       isRepo: e.isRepo ?? false,
     })),
     truncated: false,
+    exists: payload.exists ?? true,
   }));
 }
 

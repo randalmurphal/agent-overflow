@@ -1,13 +1,10 @@
 package main
 
 import (
-	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"testing"
 )
 
@@ -85,6 +82,9 @@ func TestBrowseDirectoryHappyPath(t *testing.T) {
 	if listing.Truncated {
 		t.Errorf("Truncated = true, want false")
 	}
+	if !listing.Exists {
+		t.Errorf("Exists = false, want true for a real directory")
+	}
 
 	// Expected order: dirs first (alphabetical) then files (alphabetical).
 	wantOrder := []string{"alpha", "zeta", ".hiddenfile", "readme.md"}
@@ -128,19 +128,31 @@ func TestBrowseDirectoryEmptyDirectory(t *testing.T) {
 }
 
 func TestBrowseDirectoryNonExistentPath(t *testing.T) {
+	// A typed-but-not-yet-valid path is an expected UI state (the modal
+	// calls BrowseDirectory on every keystroke). It must return a zero
+	// listing with Exists=false and no error — logging a server ERR for
+	// every incomplete keystroke would flood the logs.
 	app := &App{}
 	missing := filepath.Join(t.TempDir(), "does-not-exist")
 
-	_, err := app.BrowseDirectory(missing)
-	if err == nil {
-		t.Fatal("BrowseDirectory(missing) error = nil, want wrapped fs.ErrNotExist")
+	listing, err := app.BrowseDirectory(missing)
+	if err != nil {
+		t.Fatalf("BrowseDirectory(missing) error = %v, want nil", err)
 	}
-	if !errors.Is(err, fs.ErrNotExist) {
-		t.Fatalf("errors.Is(err, fs.ErrNotExist) = false, err = %v", err)
+	if listing.Exists {
+		t.Errorf("Exists = true, want false for a missing path")
+	}
+	if len(listing.Entries) != 0 {
+		t.Errorf("len(Entries) = %d, want 0", len(listing.Entries))
+	}
+	if listing.Path != filepath.Clean(missing) {
+		t.Errorf("Path = %q, want %q (cleaned absolute path echoed back)", listing.Path, filepath.Clean(missing))
 	}
 }
 
 func TestBrowseDirectoryPathIsFile(t *testing.T) {
+	// Same contract as missing-path: the UI treats "path points at a
+	// file" as an empty-listing state, not a hard error.
 	app := &App{}
 	root := t.TempDir()
 	file := filepath.Join(root, "a.txt")
@@ -149,11 +161,11 @@ func TestBrowseDirectoryPathIsFile(t *testing.T) {
 	}
 
 	listing, err := app.BrowseDirectory(file)
-	if err == nil {
-		t.Fatal("BrowseDirectory(file) error = nil, want 'not a directory'")
+	if err != nil {
+		t.Fatalf("BrowseDirectory(file) error = %v, want nil", err)
 	}
-	if !strings.Contains(err.Error(), "not a directory") {
-		t.Errorf("error = %v, want message containing 'not a directory'", err)
+	if listing.Exists {
+		t.Errorf("Exists = true, want false for a file path")
 	}
 	if len(listing.Entries) != 0 {
 		t.Errorf("len(Entries) = %d, want 0", len(listing.Entries))

@@ -16,7 +16,22 @@ function mkListing(overrides: Partial<DirectoryListing> = {}): DirectoryListing 
       { name: 'note.txt', isDir: false, hidden: false, isRepo: false },
     ],
     truncated: false,
+    exists: true,
     ...overrides,
+  };
+}
+
+// "Nothing to list" shape — missing path or path-is-a-file. No error
+// thrown; server returns exists=false so logs stay quiet on every
+// in-progress keystroke.
+function mkMissing(path: string): DirectoryListing {
+  return {
+    path,
+    parent: '',
+    separator: '/',
+    entries: [],
+    truncated: false,
+    exists: false,
   };
 }
 
@@ -145,11 +160,9 @@ describe('<DirectoryBrowser>', () => {
     vi.useFakeTimers();
     setBindingMock('BrowseDirectory', async (path: string) => {
       if (path === '~') return mkListing();
-      throw {
-        message: `browse directory: ${path}: stat ${path}: no such file or directory`,
-        kind: 'RuntimeError',
-        cause: {},
-      };
+      // Server returns exists=false (not a thrown error) for both the
+      // typed path and its parent — both are missing.
+      return mkMissing(path);
     });
     const { getByTestId, queryByTestId } = render(DirectoryBrowser, {
       props: { initialPath: '~' },
@@ -172,8 +185,9 @@ describe('<DirectoryBrowser>', () => {
 
   it('falls back to prefix-filtering the parent directory when the typed path is incomplete', async () => {
     vi.useFakeTimers();
-    // Direct browse of "/Users/randy/rep" fails, but "/Users/randy" is a
-    // real directory containing "repos", "rover", and "docs".
+    // Direct browse of "/Users/randy/rep" returns exists=false, but
+    // "/Users/randy" is a real directory containing "repos", "rover",
+    // and "docs".
     setBindingMock('BrowseDirectory', async (path: string) => {
       if (path === '~') return mkListing();
       if (path === '/Users/randy') {
@@ -187,11 +201,7 @@ describe('<DirectoryBrowser>', () => {
           ],
         });
       }
-      throw {
-        message: `browse directory: ${path}: stat ${path}: no such file or directory`,
-        kind: 'RuntimeError',
-        cause: {},
-      };
+      return mkMissing(path);
     });
     const { getByTestId, findAllByTestId, queryByTestId } = render(
       DirectoryBrowser,
@@ -230,7 +240,7 @@ describe('<DirectoryBrowser>', () => {
           entries: [{ name: 'repos', isDir: true, hidden: false, isRepo: false }],
         });
       }
-      throw { message: 'not found' };
+      return mkMissing(path);
     });
     const { getByTestId } = render(DirectoryBrowser, {
       props: { initialPath: '~', onSelect },
@@ -268,7 +278,7 @@ describe('<DirectoryBrowser>', () => {
           entries: [],
         });
       }
-      throw { message: 'not found' };
+      return mkMissing(path);
     });
     const { getByTestId, findAllByTestId } = render(DirectoryBrowser, {
       props: { initialPath: '~', onSelect },
@@ -296,11 +306,7 @@ describe('<DirectoryBrowser>', () => {
     vi.useFakeTimers();
     setBindingMock('BrowseDirectory', async (path: string) => {
       if (path === '~') return mkListing();
-      throw {
-        message: `browse directory: ${path}: stat ${path}: no such file or directory`,
-        kind: 'RuntimeError',
-        cause: {},
-      };
+      return mkMissing(path);
     });
     const { getByTestId, queryByTestId } = render(DirectoryBrowser, {
       props: { initialPath: '~' },
@@ -318,10 +324,22 @@ describe('<DirectoryBrowser>', () => {
     expect(errorEl).not.toBeNull();
     const text = errorEl!.textContent ?? '';
     // Clean message, no JSON, no "RuntimeError" wrapping.
-    expect(text).toContain('no such file or directory');
+    expect(text).toContain('No such directory');
     expect(text).not.toContain('{');
     expect(text).not.toContain('RuntimeError');
     vi.useRealTimers();
+  });
+
+  it('autofocuses the path input on mount so the user can type immediately', async () => {
+    // The path input is marked data-autofocus so that when Modal's
+    // focus-trap runs on open it picks the input as the initial focus
+    // target. That attribute must be present on the input.
+    const { getByTestId } = render(DirectoryBrowser, {
+      props: { initialPath: '~' },
+    });
+    await flushMount();
+    const input = getByTestId('directory-browser-path');
+    expect(input.hasAttribute('data-autofocus')).toBe(true);
   });
 
   it('recovers from a "No matches" state when the user types a valid path again', async () => {
@@ -329,7 +347,7 @@ describe('<DirectoryBrowser>', () => {
     setBindingMock('BrowseDirectory', async (path: string) => {
       if (path === '~') return mkListing();
       if (path.startsWith('/Users/me')) return mkListing({ path });
-      throw { message: 'not found' };
+      return mkMissing(path);
     });
     const { getByTestId, queryByTestId, findAllByTestId } = render(DirectoryBrowser, {
       props: { initialPath: '~' },

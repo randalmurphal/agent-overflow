@@ -1,7 +1,9 @@
 package main
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -19,12 +21,21 @@ const directoryEntryLimit = 500
 // The frontend uses Parent for back-navigation, Separator to render paths
 // for display, and Truncated to surface a "refine path" hint when a dir
 // is larger than directoryEntryLimit.
+//
+// Exists = false is used for two overlapping "nothing to list" cases the
+// UI treats the same: the path doesn't exist on disk, or it points at a
+// file rather than a directory. Those cases don't get an error — the
+// AddProject modal calls this binding on every keystroke of a typed
+// path, and logging each in-progress keystroke as a server error
+// produces a flood of spurious ERR lines. True failures (permission
+// denied, I/O errors, bad home-dir lookup) still return an error.
 type DirectoryListing struct {
 	Path      string           `json:"path"`      // cleaned absolute path of the listed directory
 	Parent    string           `json:"parent"`    // parent dir, or "" when at the filesystem root
 	Separator string           `json:"separator"` // "/" on unix, "\\" on windows
 	Entries   []DirectoryEntry `json:"entries"`
 	Truncated bool             `json:"truncated"` // true when entry count exceeded directoryEntryLimit
+	Exists    bool             `json:"exists"`    // false = path missing OR not a directory (empty Entries)
 }
 
 // DirectoryEntry is one row inside a DirectoryListing.
@@ -66,10 +77,20 @@ func (a *App) BrowseDirectory(path string) (DirectoryListing, error) {
 
 	info, err := os.Stat(resolved)
 	if err != nil {
+		// "Not found" is an expected UI state (the modal browses every
+		// keystroke), not a server error. Return an empty listing with
+		// Exists=false; the frontend falls back to prefix-filtering the
+		// parent. Other stat errors (permission denied, I/O) still bubble.
+		if errors.Is(err, fs.ErrNotExist) {
+			return missingDirectoryListing(resolved), nil
+		}
 		return DirectoryListing{}, fmt.Errorf("browse directory: %s: %w", resolved, err)
 	}
 	if !info.IsDir() {
-		return DirectoryListing{}, fmt.Errorf("browse directory: %s is not a directory", resolved)
+		// Path points at a file. Also not an error — the UI displays
+		// "No matches" / an empty listbox, identical to the not-found
+		// case.
+		return missingDirectoryListing(resolved), nil
 	}
 
 	rawEntries, err := os.ReadDir(resolved)
@@ -100,7 +121,23 @@ func (a *App) BrowseDirectory(path string) (DirectoryListing, error) {
 		Separator: string(os.PathSeparator),
 		Entries:   entries,
 		Truncated: truncated,
+		Exists:    true,
 	}, nil
+}
+
+// missingDirectoryListing returns the shape used for "path not found"
+// and "path is not a directory" responses. Both are UI states, not
+// errors — the frontend renders an empty listbox or falls back to
+// prefix-filtering the parent.
+func missingDirectoryListing(resolved string) DirectoryListing {
+	return DirectoryListing{
+		Path:      resolved,
+		Parent:    parentForPath(resolved),
+		Separator: string(os.PathSeparator),
+		Entries:   nil,
+		Truncated: false,
+		Exists:    false,
+	}
 }
 
 // resolveBrowsePath normalises the caller-supplied path into a cleaned

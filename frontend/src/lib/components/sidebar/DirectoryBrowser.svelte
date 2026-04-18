@@ -85,6 +85,16 @@
     try {
       const result = (await BrowseDirectory(path)) as DirectoryListing;
       if (token !== browseToken) return;
+
+      if (!result.exists) {
+        // The server signalled "nothing to list" (missing path, or the
+        // path points at a file). Handle this identically to a thrown
+        // error below, but without a round-trip through the catch block
+        // and without the server having logged a spurious ERR.
+        await handleNonExistentBrowse(path, token, fromTyping);
+        return;
+      }
+
       listing = result;
       noMatches = false;
       error = null;
@@ -101,24 +111,12 @@
       onSelect?.(result.path);
     } catch (err) {
       if (token !== browseToken) return;
+      // True errors (permission denied, I/O, bad home-dir lookup) still
+      // arrive here. Missing-path and not-a-directory are NOT errors
+      // anymore — the server returns exists=false for those. See
+      // app_directory.go.
       if (fromTyping) {
-        // Direct browse of the typed path failed. Fall back to
-        // Finder-style typeahead: split the typed path into parent +
-        // prefix, browse the parent, and filter entries by prefix.
-        // So typing "/Users/randy/rep" shows "repos" in /Users/randy/.
-        const filtered = await tryPrefixFilter(path, token);
-        if (token !== browseToken) return;
-        if (filtered) {
-          listing = filtered;
-          noMatches = filtered.entries.length === 0;
-        } else {
-          listing = null;
-          noMatches = true;
-        }
-        // The typed path itself isn't committable — disable Add until
-        // the user drills into a real entry. onSelect('') tells the
-        // parent modal to disable its Add button.
-        onSelect?.('');
+        await handleNonExistentBrowse(path, token, fromTyping);
         return;
       }
       error = extractErrorMessage(err);
@@ -131,12 +129,46 @@
     }
   }
 
+  // Shared "nothing resolved at this path" handler. Used both for the
+  // exists=false response and for true exceptions during typing. Tries
+  // Finder-style prefix typeahead first (splits path into parent +
+  // suffix, filters the parent), falls back to "No matches" when the
+  // parent also yields nothing.
+  async function handleNonExistentBrowse(
+    path: string,
+    token: number,
+    fromTyping: boolean,
+  ): Promise<void> {
+    if (fromTyping) {
+      const filtered = await tryPrefixFilter(path, token);
+      if (token !== browseToken) return;
+      if (filtered) {
+        listing = filtered;
+        noMatches = filtered.entries.length === 0;
+      } else {
+        listing = null;
+        noMatches = true;
+      }
+      // Typed path isn't committable — tell the parent modal to
+      // disable its Add button until the user drills into a real
+      // entry.
+      onSelect?.('');
+      return;
+    }
+    // Explicit nav (drill-in, parent, Enter, initial mount) to a path
+    // that doesn't exist surfaces a clean inline error so the user
+    // knows the exact commit failed.
+    error = `No such directory: ${path}`;
+    listing = null;
+    noMatches = false;
+  }
+
   // Prefix-filter fallback used when the typed path can't be browsed
   // directly (incomplete / non-existent). Splits on the last separator:
   // the parent half is browsed, the suffix becomes a case-insensitive
   // prefix match against the parent's entries. Returns null when the
   // split isn't meaningful (no separator, empty prefix) or the parent
-  // browse itself fails — the caller then shows "No matches".
+  // browse itself yields nothing — the caller then shows "No matches".
   async function tryPrefixFilter(
     path: string,
     token: number,
@@ -150,6 +182,7 @@
     try {
       const parentListing = (await BrowseDirectory(parent)) as DirectoryListing;
       if (token !== browseToken) return null;
+      if (!parentListing.exists) return null;
       const prefixLower = prefix.toLowerCase();
       return {
         ...parentListing,
@@ -270,6 +303,7 @@
       onkeydown={handlePathKeydown}
       aria-label="Path"
       data-testid="directory-browser-path"
+      data-autofocus
       autocomplete="off"
       spellcheck="false"
       class="w-full rounded-md border border-border bg-surface-0 px-3 py-1.5 text-xs font-mono text-text-primary placeholder:text-text-secondary/50 focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/50"

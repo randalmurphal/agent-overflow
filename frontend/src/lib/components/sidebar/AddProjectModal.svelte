@@ -141,7 +141,6 @@
       onclick={handleAdd}
       disabled={submitting || !pendingPath.trim()}
       data-testid="add-project-submit"
-      data-autofocus
       class="px-4 py-1.5 text-xs rounded-md bg-accent text-surface-0 font-semibold hover:opacity-90 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
     >
       {submitting ? 'Adding…' : 'Add'}
