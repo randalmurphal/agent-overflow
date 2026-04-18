@@ -1,0 +1,222 @@
+<script lang="ts">
+  import type { ApprovalRequest } from '../../../types/events';
+  import { ApprovalResponse } from '../../../stores/bindings';
+
+  interface Props {
+    approval: ApprovalRequest;
+    onResolve: (response: ApprovalResponse) => Promise<void>;
+    onError: (message: string) => void;
+    // Allow-for-Session is a side effect that has to register the tool in the
+    // owning pane's session-approved set. The dispatcher owns that pane,
+    // so it hands us a callback to invoke when the user picks that path.
+    onSessionApprove: (toolName: string) => void;
+  }
+
+  let { approval, onResolve, onError, onSessionApprove }: Props = $props();
+
+  // ---- Edit-input-before-approve state (Claude CanUseTool UpdatedInput) ----
+  //
+  // When the tool's input is editable, a user can toggle a JSON editor,
+  // tweak the input, and then "Allow with edits". The parsed JSON flows
+  // through as `updatedInput` on the approval response and the backend
+  // forwards it verbatim to the Claude SDK's control_response.
+
+  let editing: boolean = $state(false);
+  let editText: string = $state('');
+  let editError: string | undefined = $state(undefined);
+
+  // Something to edit, please.
+  const editable: boolean = $derived(approval.input !== undefined && approval.input !== null);
+
+  function openEdit() {
+    editText = JSON.stringify(approval.input ?? {}, null, 2);
+    editError = undefined;
+    editing = true;
+  }
+
+  function closeEdit() {
+    editing = false;
+    editError = undefined;
+  }
+
+  function setEditText(text: string) {
+    editText = text;
+    // Any keystroke clears the previous parse error — the user is editing.
+    editError = undefined;
+  }
+
+  function isCommandTool(toolName: string): boolean {
+    return toolName === 'Bash' || toolName === 'bash'
+      || toolName === 'execute_command' || toolName === 'shell';
+  }
+
+  function isFileTool(toolName: string): boolean {
+    return toolName === 'Read' || toolName === 'Write' || toolName === 'Edit'
+      || toolName === 'read_file' || toolName === 'write_file' || toolName === 'edit_file';
+  }
+
+  const preview: { label: string; content: string } | null = $derived.by(() => {
+    if (!approval.input) return null;
+    const input = approval.input as Record<string, unknown>;
+    if (isCommandTool(approval.toolName)) {
+      const cmd = input.command ?? input.cmd ?? '';
+      return cmd ? { label: 'Command', content: String(cmd) } : null;
+    }
+    if (isFileTool(approval.toolName)) {
+      const path = input.file_path ?? input.path ?? input.filePath ?? '';
+      return path ? { label: 'File', content: String(path) } : null;
+    }
+    return null;
+  });
+
+  async function allow() {
+    try {
+      await onResolve(new ApprovalResponse({
+        requestId: approval.requestId,
+        decision: 'allow',
+      }));
+    } catch (err) {
+      console.error('Failed to respond to approval:', err);
+      onError(`Failed to respond to approval: ${err}`);
+    }
+  }
+
+  async function allowSession() {
+    onSessionApprove(approval.toolName);
+    await allow();
+  }
+
+  async function deny() {
+    try {
+      await onResolve(new ApprovalResponse({
+        requestId: approval.requestId,
+        decision: 'deny',
+      }));
+    } catch (err) {
+      console.error('Failed to respond to approval:', err);
+      onError(`Failed to respond to approval: ${err}`);
+    }
+  }
+
+  async function allowWithEdits(alsoSession: boolean) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(editText);
+    } catch (err) {
+      editError = `Invalid JSON: ${err instanceof Error ? err.message : String(err)}`;
+      return;
+    }
+
+    try {
+      if (alsoSession) {
+        onSessionApprove(approval.toolName);
+      }
+      // The generated ApprovalResponse binding doesn't declare updatedInput
+      // (Wails elides json.RawMessage fields), so we cast through a wider
+      // shape. The Go struct accepts the field at the wire level — see
+      // internal/provider/types.go:ApprovalResponse.UpdatedInput.
+      await onResolve(new ApprovalResponse({
+        requestId: approval.requestId,
+        decision: 'allow',
+        updatedInput: parsed,
+      } as ConstructorParameters<typeof ApprovalResponse>[0] & { updatedInput: unknown }));
+      // Close the editor on success; the approval row will drop as the
+      // provider consumes the response.
+      closeEdit();
+    } catch (err) {
+      console.error('Failed to submit allow-with-edits:', err);
+      onError(`Failed to respond to approval: ${err}`);
+    }
+  }
+</script>
+
+{#if !editing && preview}
+  <div class="mt-2 rounded bg-surface-1 border border-border px-2.5 py-1.5 max-h-40 overflow-y-auto" data-testid="approval-preview">
+    <span class="text-[10px] text-text-secondary/60 block mb-0.5">{preview.label}</span>
+    <pre class="text-xs font-mono text-text-primary whitespace-pre-wrap">{preview.content}</pre>
+  </div>
+{/if}
+
+{#if editing}
+  <div class="mt-2 space-y-1">
+    <div class="flex items-center justify-between gap-2">
+      <span class="text-[10px] text-text-secondary/80">Editing tool input (JSON)</span>
+      <button
+        type="button"
+        data-testid="approval-edit-cancel"
+        onclick={closeEdit}
+        class="text-[10px] text-text-secondary hover:text-accent cursor-pointer underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 rounded px-1"
+      >
+        Cancel edit
+      </button>
+    </div>
+    <textarea
+      data-testid="approval-edit-textarea"
+      aria-label="Tool input JSON"
+      class="w-full text-xs font-mono rounded border border-border bg-surface-1 px-2 py-1.5 text-text-primary min-h-32"
+      value={editText}
+      oninput={(e) => setEditText((e.target as HTMLTextAreaElement).value)}
+    ></textarea>
+    {#if editError}
+      <p class="text-[10px] text-error" data-testid="approval-edit-error">
+        {editError}
+      </p>
+    {/if}
+  </div>
+{/if}
+
+<div class="flex flex-wrap gap-2 mt-2.5 justify-end">
+  {#if editable && !editing}
+    <button
+      type="button"
+      data-testid="approval-edit-toggle"
+      onclick={openEdit}
+      class="px-3 py-1 text-xs rounded border border-border text-text-secondary hover:text-accent hover:border-accent/40 cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+    >
+      Edit input…
+    </button>
+  {/if}
+  {#if editing}
+    <button
+      type="button"
+      data-testid="approval-allow-with-edits"
+      onclick={() => allowWithEdits(false)}
+      class="px-3 py-1 text-xs rounded bg-accent text-surface-0 font-medium hover:bg-accent/85 cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+    >
+      Allow with edits
+    </button>
+    <button
+      type="button"
+      data-testid="approval-allow-with-edits-session"
+      onclick={() => allowWithEdits(true)}
+      class="px-3 py-1 text-xs rounded border border-accent/40 text-accent hover:bg-accent/10 cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+    >
+      Allow for Session
+    </button>
+  {:else}
+    <button
+      type="button"
+      data-testid="approval-allow"
+      onclick={allow}
+      class="px-3 py-1 text-xs rounded bg-accent text-surface-0 font-medium hover:bg-accent/85 cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+    >
+      Allow
+    </button>
+    <button
+      type="button"
+      data-testid="approval-allow-session"
+      onclick={allowSession}
+      class="px-3 py-1 text-xs rounded border border-accent/40 text-accent hover:bg-accent/10 cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+    >
+      Allow for Session
+    </button>
+  {/if}
+  <button
+    type="button"
+    data-testid="approval-deny"
+    onclick={deny}
+    class="px-3 py-1 text-xs rounded border border-error/40 text-error hover:bg-error/10 cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+  >
+    Deny
+  </button>
+</div>
