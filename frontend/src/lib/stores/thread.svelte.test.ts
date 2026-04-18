@@ -171,6 +171,30 @@ describe('createThreadPane()', () => {
       expect(pane.showTerminal).toBe(false);
     });
 
+    // --- PlanSidebar + plan follow-up banner: reset on thread switch ---
+    it('resets showPlanSidebar to false when switching threads and does not auto-restore', async () => {
+      await pane.switchThread(makeThread({ id: 'thread-A' }));
+      pane.setShowPlanSidebar(true);
+      expect(pane.showPlanSidebar).toBe(true);
+
+      await pane.switchThread(makeThread({ id: 'thread-B' }));
+      expect(pane.showPlanSidebar).toBe(false);
+
+      // Returning to A must not auto-restore the panel — UI state does not
+      // survive a thread switch.
+      await pane.switchThread(makeThread({ id: 'thread-A' }));
+      expect(pane.showPlanSidebar).toBe(false);
+    });
+
+    it('resets dismissedPlanItemId when switching threads', async () => {
+      await pane.switchThread(makeThread({ id: 'thread-A' }));
+      pane.setDismissedPlanItemId('plan-A');
+      expect(pane.dismissedPlanItemId).toBe('plan-A');
+
+      await pane.switchThread(makeThread({ id: 'thread-B' }));
+      expect(pane.dismissedPlanItemId).toBeNull();
+    });
+
     it('resets diffPanel.open to false when switching threads', async () => {
       await pane.switchThread(makeThread({ id: 'thread-A' }));
       pane.setDiffPanelOpen(true);
@@ -415,6 +439,42 @@ describe('createThreadPane()', () => {
       // Should not have attempted to call ListItems.
       await Promise.resolve();
       expect(pane.items).toEqual([]);
+    });
+
+    it('clears dismissedPlanItemId so a new turn can surface the follow-up banner', async () => {
+      await pane.switchThread(makeThread());
+      pane.setDismissedPlanItemId('plan-A');
+      expect(pane.dismissedPlanItemId).toBe('plan-A');
+
+      pane.finalizeTurn();
+      expect(pane.dismissedPlanItemId).toBeNull();
+    });
+  });
+
+  describe('PlanSidebar + plan follow-up state', () => {
+    it('showPlanSidebar defaults false', () => {
+      expect(pane.showPlanSidebar).toBe(false);
+    });
+
+    it('togglePlanSidebar flips the flag and setShowPlanSidebar sets it', () => {
+      expect(pane.showPlanSidebar).toBe(false);
+      pane.togglePlanSidebar();
+      expect(pane.showPlanSidebar).toBe(true);
+      pane.togglePlanSidebar();
+      expect(pane.showPlanSidebar).toBe(false);
+
+      pane.setShowPlanSidebar(true);
+      expect(pane.showPlanSidebar).toBe(true);
+      pane.setShowPlanSidebar(false);
+      expect(pane.showPlanSidebar).toBe(false);
+    });
+
+    it('dismissedPlanItemId defaults null and round-trips through setDismissedPlanItemId', () => {
+      expect(pane.dismissedPlanItemId).toBeNull();
+      pane.setDismissedPlanItemId('plan-X');
+      expect(pane.dismissedPlanItemId).toBe('plan-X');
+      pane.setDismissedPlanItemId(null);
+      expect(pane.dismissedPlanItemId).toBeNull();
     });
   });
 

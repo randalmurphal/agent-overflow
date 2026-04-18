@@ -18,6 +18,8 @@
   import DiscussionView from '../discussion/DiscussionView.svelte';
   import DesignView from '../design/DesignView.svelte';
   import DiffPanelDrawer from './DiffPanelDrawer.svelte';
+  import PlanSidebar from './PlanSidebar.svelte';
+  import PlanFollowUpBanner from './PlanFollowUpBanner.svelte';
   import { createComposerDraftStore } from '../../stores/composerDraft.svelte';
 
   let { pane }: { pane: ThreadPane } = $props();
@@ -99,6 +101,17 @@
         >
           Diffs
         </button>
+        <button
+          type="button"
+          class="rounded border border-border px-2 py-0.5 text-xs text-text-secondary hover:bg-surface-2/60 cursor-pointer"
+          data-testid="plan-sidebar-toggle"
+          aria-pressed={pane.showPlanSidebar}
+          aria-label="Toggle plan sidebar"
+          title="Toggle plan sidebar"
+          onclick={() => pane.togglePlanSidebar()}
+        >
+          Plans
+        </button>
         <span class="ml-auto text-xs text-text-secondary truncate min-w-0 shrink max-w-[200px]" title={pane.thread.workspacePath}>{pane.thread.workspacePath}</span>
       </div>
 
@@ -107,6 +120,7 @@
       <MessageTimeline {pane} />
       <ApprovalPrompt {pane} />
       <BackgroundTray {pane} />
+      <PlanFollowUpBanner {pane} {draft} />
       <Composer {pane} {draft} />
       <StatusBar {pane} />
       {#if pane.diffPanel.open && pane.thread}
@@ -120,6 +134,7 @@
         {/key}
       {/if}
     </div>
+    <PlanSidebar {pane} />
     {#if inDesignMode}
       <div class="flex-1 min-w-0">
         <DesignView {pane} />

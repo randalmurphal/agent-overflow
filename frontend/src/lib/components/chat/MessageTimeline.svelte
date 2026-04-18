@@ -164,51 +164,53 @@
     </div>
   {:else}
     {#snippet leafContent(item: Item, orphan: boolean)}
-      {#if orphan}
-        <div
-          class="mb-1 flex items-center gap-2 text-xs text-warning"
-          role="status"
-          aria-label="Orphan subagent item"
-        >
-          <span aria-hidden="true">⚠</span>
-          <span>Orphan subagent entry — parent tool call not found.</span>
-        </div>
-      {/if}
-      {#if item.role === 'user'}
-        <UserMessage {item} />
-      {:else if item.kind === 'diff' && item.payloadId}
-        {@const diffMeta = parseMeta<DiffMeta>(item.payloadId)}
-        {#if diffMeta}
-          <DiffPreview meta={diffMeta} payloadId={item.payloadId} />
+      <div data-item-id={item.id}>
+        {#if orphan}
+          <div
+            class="mb-1 flex items-center gap-2 text-xs text-warning"
+            role="status"
+            aria-label="Orphan subagent item"
+          >
+            <span aria-hidden="true">⚠</span>
+            <span>Orphan subagent entry — parent tool call not found.</span>
+          </div>
+        {/if}
+        {#if item.role === 'user'}
+          <UserMessage {item} />
+        {:else if item.kind === 'diff' && item.payloadId}
+          {@const diffMeta = parseMeta<DiffMeta>(item.payloadId)}
+          {#if diffMeta}
+            <DiffPreview meta={diffMeta} payloadId={item.payloadId} />
+          {:else}
+            <AssistantMessage {item} />
+          {/if}
+        {:else if item.kind === 'command_execution' && item.payloadId}
+          {@const cmdMeta = parseMeta<CommandOutputMeta>(item.payloadId)}
+          {#if cmdMeta}
+            <CommandOutput meta={cmdMeta} payloadId={item.payloadId} />
+          {:else}
+            <AssistantMessage {item} />
+          {/if}
+        {:else if item.kind === 'tool_result' && item.payloadId}
+          {@const toolMeta = parseMeta<ToolResultMeta>(item.payloadId)}
+          {#if toolMeta}
+            <ToolResultCard {item} meta={toolMeta} payloadId={item.payloadId} />
+          {:else}
+            <AssistantMessage {item} />
+          {/if}
+        {:else if item.kind === 'proposed_plan' && item.payloadId}
+          {@const planMeta = parseMeta<ProposedPlanMeta>(item.payloadId)}
+          {#if planMeta}
+            <ProposedPlanCard {pane} payloadId={item.payloadId} meta={planMeta} />
+          {:else}
+            <AssistantMessage {item} />
+          {/if}
+        {:else if item.kind === 'thinking'}
+          <ThinkingBlock {item} />
         {:else}
           <AssistantMessage {item} />
         {/if}
-      {:else if item.kind === 'command_execution' && item.payloadId}
-        {@const cmdMeta = parseMeta<CommandOutputMeta>(item.payloadId)}
-        {#if cmdMeta}
-          <CommandOutput meta={cmdMeta} payloadId={item.payloadId} />
-        {:else}
-          <AssistantMessage {item} />
-        {/if}
-      {:else if item.kind === 'tool_result' && item.payloadId}
-        {@const toolMeta = parseMeta<ToolResultMeta>(item.payloadId)}
-        {#if toolMeta}
-          <ToolResultCard {item} meta={toolMeta} payloadId={item.payloadId} />
-        {:else}
-          <AssistantMessage {item} />
-        {/if}
-      {:else if item.kind === 'proposed_plan' && item.payloadId}
-        {@const planMeta = parseMeta<ProposedPlanMeta>(item.payloadId)}
-        {#if planMeta}
-          <ProposedPlanCard {pane} payloadId={item.payloadId} meta={planMeta} />
-        {:else}
-          <AssistantMessage {item} />
-        {/if}
-      {:else if item.kind === 'thinking'}
-        <ThinkingBlock {item} />
-      {:else}
-        <AssistantMessage {item} />
-      {/if}
+      </div>
     {/snippet}
 
     {#snippet renderNode(node: TimelineNode, depth: number)}

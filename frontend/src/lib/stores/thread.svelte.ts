@@ -62,6 +62,18 @@ export function createThreadPane() {
   // on turn complete and on thread switch.
   let pendingPlanUpdate: unknown = $state(null);
 
+  // PlanSidebar toggle state. Per-pane so each pane can open/close its
+  // own sidebar independently. Reset on thread switch so a new thread
+  // never "remembers" whether the prior thread had the sidebar open.
+  let showPlanSidebar: boolean = $state(false);
+
+  // Id of the proposed-plan item the user has actively dismissed from the
+  // PlanFollowUpBanner. While this is set and matches the latest item in
+  // the pane, the banner stays hidden. Reset on thread switch (every new
+  // thread starts fresh) and on finalizeTurn (a completed turn produces
+  // fresh items, so a previously-dismissed id is no longer the latest).
+  let dismissedPlanItemId: string | null = $state(null);
+
   /**
    * Generation counter for finalizeTurn. Incremented each time finalizeTurn
    * starts so that stale async DB responses don't overwrite newer state.
@@ -116,6 +128,8 @@ export function createThreadPane() {
     get pendingDesignOptions() { return pendingDesignOptions; },
     get designViewport() { return designViewport; },
     get pendingPlanUpdate() { return pendingPlanUpdate; },
+    get showPlanSidebar() { return showPlanSidebar; },
+    get dismissedPlanItemId() { return dismissedPlanItemId; },
 
     // --- Thread switching ---
 
@@ -144,6 +158,11 @@ export function createThreadPane() {
       // is reset here so opening the terminal on thread A does not spill over
       // into thread B.
       showTerminal = false;
+      // Plan-sidebar UI is pane-scoped too: never carry its open state across
+      // threads. Dismissed-plan id belongs to the previous thread's items, so
+      // it must clear along with the thread.
+      showPlanSidebar = false;
+      dismissedPlanItemId = null;
       diffPanel.clearForThread();
       loading = true;
       items = [];
@@ -218,6 +237,8 @@ export function createThreadPane() {
       loading = false;
       pendingMessage = null;
       showTerminal = false;
+      showPlanSidebar = false;
+      dismissedPlanItemId = null;
       channelMessages = [];
       channelStatus = null;
       designArtifacts = [];
@@ -246,6 +267,11 @@ export function createThreadPane() {
       // in the DB reload below. Clearing here prevents a stale in-progress
       // plan from lingering under the next turn's surface.
       pendingPlanUpdate = null;
+      // Plan follow-up dismissal belongs to a specific proposed_plan item;
+      // once the turn completes, a brand-new proposed_plan may land and the
+      // banner should re-appear for that one. Clear the dismissal flag so a
+      // previously-dismissed plan doesn't silence the next prompt.
+      dismissedPlanItemId = null;
       if (thread) {
         const gen = ++turnGeneration;
         const threadId = thread.id;
@@ -403,6 +429,18 @@ export function createThreadPane() {
 
     toggleDiffPanel(): void {
       diffPanel.toggle();
+    },
+
+    togglePlanSidebar(): void {
+      showPlanSidebar = !showPlanSidebar;
+    },
+
+    setShowPlanSidebar(value: boolean): void {
+      showPlanSidebar = value;
+    },
+
+    setDismissedPlanItemId(id: string | null): void {
+      dismissedPlanItemId = id;
     },
 
     setDiffPanelOpen(value: boolean): void {
