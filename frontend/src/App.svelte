@@ -14,10 +14,12 @@
   import CommandPalette from './lib/components/palette/CommandPalette.svelte';
   import KeybindingsCheatSheet from './lib/components/palette/KeybindingsCheatSheet.svelte';
   import MessageSearch from './lib/components/palette/MessageSearch.svelte';
+  import UnifiedThreadPicker from './lib/components/palette/UnifiedThreadPicker.svelte';
   import type { Thread } from './lib/types/models';
   import { isPaletteOpen } from './lib/stores/palette.svelte';
   import { closeCheatSheet, isCheatSheetOpen } from './lib/stores/cheatSheet.svelte';
   import { closeMessageSearch, isMessageSearchOpen } from './lib/stores/messageSearch.svelte';
+  import { closeThreadPicker, isThreadPickerOpen } from './lib/stores/threadPicker.svelte';
   import {
     dispatchKey,
     loadKeybindings,
@@ -46,11 +48,13 @@
       paletteOpen: isPaletteOpen(),
       cheatSheetOpen: isCheatSheetOpen(),
       messageSearchOpen: isMessageSearchOpen(),
+      threadPickerOpen: isThreadPickerOpen(),
       anyModalOpen:
         discussionStartFor !== null ||
         showSettings ||
         isCheatSheetOpen() ||
-        isMessageSearchOpen(),
+        isMessageSearchOpen() ||
+        isThreadPickerOpen(),
     }),
   );
 
@@ -187,4 +191,5 @@
 <CommandPalette context={paletteContext} />
 <KeybindingsCheatSheet open={isCheatSheetOpen()} onClose={closeCheatSheet} />
 <MessageSearch open={isMessageSearchOpen()} {pane} onClose={closeMessageSearch} />
+<UnifiedThreadPicker open={isThreadPickerOpen()} {pane} onClose={closeThreadPicker} />
 <Toast />

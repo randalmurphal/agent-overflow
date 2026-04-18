@@ -36,13 +36,14 @@ func TestGetKeybindingsReturnsDefaultsWhenNoFile(t *testing.T) {
 
 // TestDefaultKeybindingsIncludeNewHelpAndSearchBindings pins the chord
 // assignments for features that ship visible UI (cheat sheet, message
-// search) so a refactor can't silently drop them. Users who rebind can
-// override; but users who never open Settings should still discover
-// these features by muscle memory.
+// search, thread picker) so a refactor can't silently drop them. Users
+// who rebind can override; but users who never open Settings should
+// still discover these features by muscle memory.
 func TestDefaultKeybindingsIncludeNewHelpAndSearchBindings(t *testing.T) {
 	want := map[string]string{
 		"help.keybindings": "mod+/",
 		"search.messages":  "mod+shift+f",
+		"thread.search":    "mod+p",
 	}
 	got := make(map[string]string)
 	for _, b := range DefaultKeybindings {

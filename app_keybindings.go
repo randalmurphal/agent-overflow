@@ -61,6 +61,10 @@ var DefaultKeybindings = []Keybinding{
 	// the way thread.new does.
 	{Key: "mod+/", Command: "help.keybindings"},
 	{Key: "mod+shift+f", Command: "search.messages"},
+	// mod+p opens the unified thread picker — fuzzy-jump across every
+	// project's threads. Like mod+shift+f this traps focus + closes on Esc
+	// so no `!terminalFocus` guard is needed.
+	{Key: "mod+p", Command: "thread.search"},
 }
 
 const keybindingsFileName = "keybindings.json"

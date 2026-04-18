@@ -17,6 +17,11 @@ import {
   openMessageSearch,
 } from './messageSearch.svelte';
 import {
+  closeThreadPicker,
+  isThreadPickerOpen,
+  openThreadPicker,
+} from './threadPicker.svelte';
+import {
   notifyTerminalFocus,
   resetTerminalFocusForTest,
 } from '../components/terminal/terminalStore.svelte';
@@ -139,5 +144,52 @@ describe('search.messages command', () => {
     expect(isCommandEnabled('search.messages.close', ctx)).toBe(true);
     runCommand('search.messages.close', ctx);
     expect(isMessageSearchOpen()).toBe(false);
+  });
+});
+
+// --- thread.search wiring ---
+//
+// mod+p opens the unified thread picker. Parallel shape to search.messages —
+// the `.close` variant is gated on the `threadPickerOpen` context flag so the
+// palette doesn't let the user run close while nothing is open.
+
+describe('thread.search command', () => {
+  beforeEach(() => {
+    clearCommandRegistry();
+    closeThreadPicker();
+  });
+
+  it('registers the open and close commands', () => {
+    registerFixtureCommands(readyPane());
+    expect(getCommand('thread.search')).toBeDefined();
+    expect(getCommand('thread.search.close')).toBeDefined();
+  });
+
+  it('opens the thread picker when run', () => {
+    const pane = readyPane();
+    registerFixtureCommands(pane);
+    const ctx = makeCommandContext(pane, {}) as CommandContext;
+    expect(isThreadPickerOpen()).toBe(false);
+    const ran = runCommand('thread.search', ctx);
+    expect(ran).toBe(true);
+    expect(isThreadPickerOpen()).toBe(true);
+  });
+
+  it('close command is disabled when the picker is closed', () => {
+    const pane = readyPane();
+    registerFixtureCommands(pane);
+    const ctx = makeCommandContext(pane, { threadPickerOpen: false }) as CommandContext;
+    expect(isCommandEnabled('thread.search.close', ctx)).toBe(false);
+  });
+
+  it('close command closes the picker when enabled', () => {
+    const pane = readyPane();
+    registerFixtureCommands(pane);
+    openThreadPicker();
+    expect(isThreadPickerOpen()).toBe(true);
+    const ctx = makeCommandContext(pane, { threadPickerOpen: true }) as CommandContext;
+    expect(isCommandEnabled('thread.search.close', ctx)).toBe(true);
+    runCommand('thread.search.close', ctx);
+    expect(isThreadPickerOpen()).toBe(false);
   });
 });

@@ -12,6 +12,7 @@ import { registerCommand, type CommandContext } from './commandRegistry.svelte';
 import { closeCheatSheet, openCheatSheet } from './cheatSheet.svelte';
 import { closeMessageSearch, openMessageSearch } from './messageSearch.svelte';
 import { closePalette, openPalette } from './palette.svelte';
+import { closeThreadPicker, openThreadPicker } from './threadPicker.svelte';
 import { addToast } from './toast.svelte';
 import { removeThread, prependThread, replaceThread } from './threads.svelte';
 import { getTerminalFocused } from '../components/terminal/terminalStore.svelte';
@@ -254,6 +255,21 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     label: 'Search: Close Messages',
     when: 'messageSearchOpen',
     run: () => closeMessageSearch(),
+  });
+
+  registerCommand({
+    id: 'thread.search',
+    label: 'Thread: Open Picker',
+    description: 'Fuzzy-search threads across every project by title.',
+    icon: '⌖',
+    run: () => openThreadPicker(),
+  });
+
+  registerCommand({
+    id: 'thread.search.close',
+    label: 'Thread: Close Picker',
+    when: 'threadPickerOpen',
+    run: () => closeThreadPicker(),
   });
 
   registerCommand({
