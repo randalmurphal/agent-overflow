@@ -13,6 +13,7 @@
   import ContextWindowMeter from './ContextWindowMeter.svelte';
   import RateLimitsMeter from './RateLimitsMeter.svelte';
   import ModelPicker from '../composer/ModelPicker.svelte';
+  import RuntimeModePicker from '../composer/RuntimeModePicker.svelte';
   import ThreadTerminalDrawer from '../terminal/ThreadTerminalDrawer.svelte';
   import DiscussionView from '../discussion/DiscussionView.svelte';
   import DesignView from '../design/DesignView.svelte';
@@ -78,6 +79,7 @@
         <h2 class="text-sm font-medium text-text-primary truncate">{pane.thread.title}</h2>
         <InteractionModeBadge {pane} />
         <ModelPicker {pane} />
+        <RuntimeModePicker {pane} />
         <BranchToolbar {pane} />
         <GitActionsControl {pane} />
         {#if pane.contextWindow}

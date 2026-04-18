@@ -7,6 +7,79 @@
 import { Create as $Create } from "@wailsio/runtime";
 
 /**
+ * Attachment is the persisted metadata for a file attached to a thread.
+ */
+export class Attachment {
+    /**
+     * Creates a new Attachment instance.
+     * @param {Partial<Attachment>} [$$source = {}] - The source object to create the Attachment.
+     */
+    constructor($$source = {}) {
+        if (!("id" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["id"] = "";
+        }
+        if (!("threadId" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["threadId"] = "";
+        }
+        if (!("filename" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["filename"] = "";
+        }
+        if (!("mimeType" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["mimeType"] = "";
+        }
+        if (!("size" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["size"] = 0;
+        }
+        if (!("relativePath" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["relativePath"] = "";
+        }
+        if (!("createdAt" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["createdAt"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new Attachment instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {Attachment}
+     */
+    static createFrom($$source = {}) {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new Attachment(/** @type {Partial<Attachment>} */($$parsedSource));
+    }
+}
+
+/**
  * ChannelMessage is one ordered message within a channel.
  */
 export class ChannelMessage {
@@ -83,6 +156,81 @@ export class ChannelMessage {
     static createFrom($$source = {}) {
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         return new ChannelMessage(/** @type {Partial<ChannelMessage>} */($$parsedSource));
+    }
+}
+
+/**
+ * Checkpoint is the persisted bookkeeping row for a single per-turn snapshot.
+ * The heavy data lives in Git (keyed by RefName); this table lets us look up
+ * the ref for a given (thread, turn) and clean everything up on thread delete.
+ */
+export class Checkpoint {
+    /**
+     * Creates a new Checkpoint instance.
+     * @param {Partial<Checkpoint>} [$$source = {}] - The source object to create the Checkpoint.
+     */
+    constructor($$source = {}) {
+        if (!("id" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["id"] = "";
+        }
+        if (!("threadId" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["threadId"] = "";
+        }
+        if (!("turnIndex" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["turnIndex"] = 0;
+        }
+        if (!("refName" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["refName"] = "";
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["baselineSha"] = undefined;
+        }
+        if (!("capturedAt" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["capturedAt"] = 0;
+        }
+        if (!("workspacePath" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["workspacePath"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new Checkpoint instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {Checkpoint}
+     */
+    static createFrom($$source = {}) {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new Checkpoint(/** @type {Partial<Checkpoint>} */($$parsedSource));
     }
 }
 
@@ -409,6 +557,16 @@ export class Item {
              */
             this["payloadId"] = undefined;
         }
+        if (/** @type {any} */(false)) {
+            /**
+             * ParentToolUseID links this item to a Task-tool parent when the item
+             * was produced by a subagent (Claude's Agent/Task tool). Empty for
+             * top-level turn items.
+             * @member
+             * @type {string | undefined}
+             */
+            this["parentToolUseId"] = undefined;
+        }
         if (!("createdAt" in $$source)) {
             /**
              * @member
@@ -569,6 +727,17 @@ export class Thread {
              */
             this["interactionMode"] = "";
         }
+        if (!("runtimeMode" in $$source)) {
+            /**
+             * RuntimeMode is one of provider.RuntimeMode's three values. Kept as
+             * a plain string on the struct so store/ doesn't import provider/
+             * (which would create a cycle) — provider.NormalizeRuntimeMode is the
+             * authoritative normalizer at the binding boundary.
+             * @member
+             * @type {string}
+             */
+            this["runtimeMode"] = "";
+        }
         if (/** @type {any} */(false)) {
             /**
              * @member
@@ -623,6 +792,102 @@ export class Thread {
     static createFrom($$source = {}) {
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         return new Thread(/** @type {Partial<Thread>} */($$parsedSource));
+    }
+}
+
+/**
+ * ThreadMessageHit is one hit from a global message search. The result set is
+ * designed for an interactive UI: it pairs the thread's display title with the
+ * specific item's kind + summary so users can jump directly to the matching
+ * turn.
+ */
+export class ThreadMessageHit {
+    /**
+     * Creates a new ThreadMessageHit instance.
+     * @param {Partial<ThreadMessageHit>} [$$source = {}] - The source object to create the ThreadMessageHit.
+     */
+    constructor($$source = {}) {
+        if (!("threadId" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["threadId"] = "";
+        }
+        if (!("threadTitle" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["threadTitle"] = "";
+        }
+        if (!("provider" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["provider"] = "";
+        }
+        if (!("itemId" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["itemId"] = "";
+        }
+        if (!("turnIndex" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["turnIndex"] = 0;
+        }
+        if (!("itemKind" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["itemKind"] = "";
+        }
+        if (!("itemRole" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["itemRole"] = "";
+        }
+        if (!("summary" in $$source)) {
+            /**
+             * Summary is the item's stored summary field, truncated to the preview
+             * budget. The frontend can highlight the query within it.
+             * @member
+             * @type {string}
+             */
+            this["summary"] = "";
+        }
+        if (!("matchType" in $$source)) {
+            /**
+             * MatchType reports whether the hit came from the thread title or from
+             * a specific item's summary. Both are bundled into one result set so
+             * callers can render a unified list.
+             * "title" or "item"
+             * @member
+             * @type {string}
+             */
+            this["matchType"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ThreadMessageHit instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {ThreadMessageHit}
+     */
+    static createFrom($$source = {}) {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ThreadMessageHit(/** @type {Partial<ThreadMessageHit>} */($$parsedSource));
     }
 }
 

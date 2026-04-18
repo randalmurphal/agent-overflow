@@ -2,6 +2,7 @@ package triage
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -10,6 +11,117 @@ import (
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 )
+
+// TestHandleEveryEventKindCovered guards against silent drops of newly-added
+// EventKinds: it loops every kind listed in provider.AllEventKinds and asserts
+// the triage switch does not fall through to its default branch.
+//
+// Other errors (e.g. handler-specific payload validation) are ignored here —
+// this test is a pure coverage check. If it fires with ErrUnhandledEventKind,
+// the fix is to add a case in Router.Handle for the named kind.
+func TestHandleEveryEventKindCovered(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	for _, kind := range provider.AllEventKinds {
+		t.Run(string(kind), func(t *testing.T) {
+			evt := provider.ProviderEvent{
+				Kind:      kind,
+				ThreadID:  "t1",
+				TurnID:    "turn-1",
+				ItemID:    "item-1",
+				Content:   "content",
+				Timestamp: time.Now(),
+			}
+			err := router.Handle(evt)
+			if errors.Is(err, ErrUnhandledEventKind) {
+				t.Fatalf("Handle fell through to default for kind %q — add a case in router.go", kind)
+			}
+		})
+	}
+}
+
+// TestAllEventKindsListIsComplete fails when a new EventKind constant is
+// introduced in types.go without a matching entry in AllEventKinds. The check
+// is by name, computed by looking at every exported EventKind value we can
+// enumerate — since Go lacks runtime reflection over package-level constants,
+// the list is maintained manually in types.go; this test only verifies the
+// invariant stated in that file's AllEventKinds comment: the slice contains
+// every known kind.
+//
+// Concretely, we keep a reference list here and assert set equality. Any
+// future kind therefore requires touching three places (const block, the
+// exported slice, and this reference) — which is the friction we want so the
+// drift surfaces at CI time.
+func TestAllEventKindsListIsComplete(t *testing.T) {
+	expected := map[provider.EventKind]bool{
+		provider.EventInit:               true,
+		provider.EventTextDelta:          true,
+		provider.EventToolStart:          true,
+		provider.EventToolComplete:       true,
+		provider.EventTurnStart:          true,
+		provider.EventTurnComplete:       true,
+		provider.EventApprovalRequest:    true,
+		provider.EventApprovalResolved:   true,
+		provider.EventSessionStatus:      true,
+		provider.EventTokenUsage:         true,
+		provider.EventError:              true,
+		provider.EventBackgroundStart:    true,
+		provider.EventBackgroundDelta:    true,
+		provider.EventBackgroundComplete: true,
+		provider.EventToolProgress:       true,
+		provider.EventCompactBoundary:    true,
+		provider.EventRateLimits:         true,
+		provider.EventModelRerouted:      true,
+		provider.EventThreadRenamed:      true,
+		provider.EventDiff:               true,
+		provider.EventCommandOutput:      true,
+		provider.EventThinking:           true,
+		provider.EventProposedPlan:       true,
+		provider.EventPlanUpdate:         true,
+	}
+
+	got := make(map[provider.EventKind]bool, len(provider.AllEventKinds))
+	for _, k := range provider.AllEventKinds {
+		got[k] = true
+	}
+
+	for k := range expected {
+		if !got[k] {
+			t.Errorf("provider.AllEventKinds is missing %q", k)
+		}
+	}
+	for k := range got {
+		if !expected[k] {
+			t.Errorf("provider.AllEventKinds has unknown %q — if this is a new kind, add it to both lists and add a case in router.go", k)
+		}
+	}
+}
+
+// TestHandleReturnsSentinelForUnknownKind is the direct test for the default
+// branch: a synthetic kind not in AllEventKinds must return
+// ErrUnhandledEventKind. This guards the sentinel contract the coverage test
+// above relies on.
+func TestHandleReturnsSentinelForUnknownKind(t *testing.T) {
+	router, _, emissions := newTestRouter(t)
+	evt := provider.ProviderEvent{
+		Kind:      provider.EventKind("synthetic_unknown_kind_for_test"),
+		ThreadID:  "t1",
+		Timestamp: time.Now(),
+	}
+	err := router.Handle(evt)
+	if !errors.Is(err, ErrUnhandledEventKind) {
+		t.Fatalf("expected ErrUnhandledEventKind, got %v", err)
+	}
+	// Best-effort passthrough: the event is still emitted so the frontend has
+	// some signal even for a kind we don't route.
+	if len(*emissions) != 1 {
+		t.Fatalf("expected 1 emission for default passthrough, got %d", len(*emissions))
+	}
+	if (*emissions)[0].eventName != "provider:event" {
+		t.Errorf("expected default to emit provider:event, got %q", (*emissions)[0].eventName)
+	}
+}
 
 // -- DiffMeta tests --
 

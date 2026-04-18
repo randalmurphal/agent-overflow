@@ -34,6 +34,62 @@ export const Call = {
   },
 };
 
+/**
+ * Mock of the Wails runtime's `Create` helpers. The generated bindings files
+ * import these and call them while building up type-conversion factories
+ * (e.g. `$Create.Array(ThreadMessageHit.createFrom)`). Tests don't decode
+ * real Wails payloads — the mock just returns identity-like factories so
+ * the generated module side-effects at import time don't blow up.
+ */
+export const Create = {
+  Any<T = unknown>(source: unknown): T {
+    return source as T;
+  },
+  ByteSlice(source: unknown): string {
+    return typeof source === 'string' ? source : '';
+  },
+  Array<T = unknown>(element: (source: unknown) => T): (source: unknown) => T[] {
+    return (source: unknown) => {
+      if (!Array.isArray(source)) return [];
+      return source.map(element);
+    };
+  },
+  Map<V = unknown>(
+    _key: (source: unknown) => string,
+    value: (source: unknown) => V,
+  ): (source: unknown) => Record<string, V> {
+    return (source: unknown) => {
+      if (!source || typeof source !== 'object') return {};
+      const out: Record<string, V> = {};
+      for (const [k, v] of Object.entries(source as Record<string, unknown>)) {
+        out[k] = value(v);
+      }
+      return out;
+    };
+  },
+  Nullable<T = unknown>(element: (source: unknown) => T): (source: unknown) => T | null {
+    return (source: unknown) => (source == null ? null : element(source));
+  },
+  Struct(
+    fields: Record<string, (source: unknown) => unknown>,
+  ): <U extends Record<string, unknown> = Record<string, unknown>>(source: unknown) => U {
+    return <U extends Record<string, unknown>>(source: unknown): U => {
+      if (!source || typeof source !== 'object') return {} as U;
+      const out: Record<string, unknown> = { ...(source as Record<string, unknown>) };
+      for (const [name, factory] of Object.entries(fields)) {
+        if (name in out) out[name] = factory(out[name]);
+      }
+      return out as U;
+    };
+  },
+  /**
+   * Mirror of the real runtime's `Events` export — a mutable map patched at
+   * generation time. Tests don't drive it, but it needs to exist so modules
+   * that reference `Create.Events[...]` don't throw at import.
+   */
+  Events: {} as Record<string, (source: unknown) => unknown>,
+};
+
 export const Events = {
   /**
    * Register a handler for a named event. Returns an unsubscribe function

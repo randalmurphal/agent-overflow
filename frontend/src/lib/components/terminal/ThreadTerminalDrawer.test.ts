@@ -46,6 +46,17 @@ vi.mock('../../stores/bindings', () => ({
   }),
   GetTerminalReplay: vi.fn(async () => ''),
   RestartTerminal: vi.fn(),
+  // Simple stand-in for the generated class. Constructor matches the real
+  // shape closely enough for call-site code that only reads `cwd`/`shell`.
+  TerminalOpenOptions: class TerminalOpenOptions {
+    cwd?: string;
+    shell?: string;
+    rows?: number;
+    cols?: number;
+    constructor(src: Partial<{ cwd: string; shell: string; rows: number; cols: number }> = {}) {
+      Object.assign(this, src);
+    }
+  },
 }));
 
 vi.mock('../../stores/toast.svelte', () => ({

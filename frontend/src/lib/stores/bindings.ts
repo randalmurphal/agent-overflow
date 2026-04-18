@@ -1,7 +1,8 @@
-import { Call } from '@wailsio/runtime';
-import type { Thread } from '../types/models';
-
 // Re-export Wails v3 generated bindings used by components.
+//
+// Every entry here is produced by `wails3 generate bindings`. When a new
+// App method is added on the Go side, run the generator and re-export it
+// from this file — do not hand-wrap bindings.
 export {
   // Thread management
   CreateThread,
@@ -13,6 +14,7 @@ export {
   ListThreads,
   RenameThread,
   SwitchThread,
+  UpdateThreadModel,
 
   // Session management
   StartSession,
@@ -36,6 +38,7 @@ export {
   GetModelsForProvider,
 
   // Git operations
+  GenerateCommitMessage,
   GetGitStatus,
   GetWorkingTreeDiff,
   GitListBranches,
@@ -81,6 +84,10 @@ export {
   GetDraft,
   ClearDraft,
   SearchWorkspaceFiles,
+  WriteThreadWorkspaceFile,
+
+  // Message search
+  SearchThreadMessages,
 
   // Keybindings
   GetKeybindings,
@@ -96,6 +103,10 @@ export {
   // Thread interaction mode
   SetThreadInteractionMode,
 
+  // Thread runtime mode (three-tier approval axis)
+  GetThreadRuntimeMode,
+  SetThreadRuntimeMode,
+
   // PR-based thread creation
   CreateThreadFromPR,
 } from '../../../bindings/agent-overflow/app.js';
@@ -107,52 +118,10 @@ export {
   PermissionProfile,
 } from '../../../bindings/agent-overflow/internal/provider/models.js';
 
-export function WriteThreadWorkspaceFile(
-  threadID: string,
-  relativePath: string,
-  content: string
-): Promise<string> {
-  return Call.ByName('main.App.WriteThreadWorkspaceFile', threadID, relativePath, content);
-}
-
-export function UpdateThreadModel(threadID: string, model: string): Promise<Thread> {
-  return Call.ByName('main.App.UpdateThreadModel', threadID, model) as Promise<Thread>;
-}
-
-/**
- * Global message search — returns thread-title and item-summary hits for the
- * given query. See internal/store/search.go for the ranking contract.
- *
- * Wrapped by hand so the binding is available before the next wails generate
- * pass picks up the new App method.
- */
-export interface ThreadMessageHit {
-  threadId: string;
-  threadTitle: string;
-  provider: string;
-  itemId: string;
-  turnIndex: number;
-  itemKind: string;
-  itemRole: string;
-  summary: string;
-  matchType: 'title' | 'item';
-}
-
-export function SearchThreadMessages(query: string, limit: number): Promise<ThreadMessageHit[]> {
-  return Call.ByName('main.App.SearchThreadMessages', query, limit) as Promise<ThreadMessageHit[]>;
-}
-
-/**
- * AI-generated commit message for the thread's current working-tree diff.
- * Returns {subject, body}; subject is always non-empty on success. The
- * binding is hand-wired until the next `wails generate` pass; see
- * app_commit_message.go:GenerateCommitMessage for the Go side.
- */
-export interface GeneratedCommitMessage {
-  subject: string;
-  body: string;
-}
-
-export function GenerateCommitMessage(threadID: string): Promise<GeneratedCommitMessage> {
-  return Call.ByName('main.App.GenerateCommitMessage', threadID) as Promise<GeneratedCommitMessage>;
-}
+// Structured response types surfaced to components.
+export { ThreadMessageHit } from '../../../bindings/agent-overflow/internal/store/models.js';
+export {
+  GeneratedCommitMessage,
+  Keybinding,
+  TerminalOpenOptions,
+} from '../../../bindings/agent-overflow/models.js';

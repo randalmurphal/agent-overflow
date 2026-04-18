@@ -51,6 +51,11 @@ type Thread struct {
 	WorktreePath       string `json:"worktreePath,omitempty"`
 	Branch             string `json:"branch,omitempty"`
 	InteractionMode    string `json:"interactionMode"`
+	// RuntimeMode is one of provider.RuntimeMode's three values. Kept as
+	// a plain string on the struct so store/ doesn't import provider/
+	// (which would create a cycle) — provider.NormalizeRuntimeMode is the
+	// authoritative normalizer at the binding boundary.
+	RuntimeMode        string `json:"runtimeMode"`
 	DiscussionID       string `json:"discussionId,omitempty"`
 	ParentThreadID     string `json:"parentThreadId,omitempty"`
 	ForkedFromThreadID string `json:"forkedFromThreadId,omitempty"`

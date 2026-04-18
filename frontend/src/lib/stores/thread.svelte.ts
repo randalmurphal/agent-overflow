@@ -55,6 +55,13 @@ export function createThreadPane() {
   let pendingDesignOptions: DesignOptionsRequest | null = $state(null);
   let designViewport: DesignViewport = $state('desktop');
 
+  // Streaming in-progress plan (Codex `turn/plan/updated`). The
+  // finalized plan surfaces via the timeline as a ProposedPlanCard when
+  // the item completes; this field holds the opaque incremental payload
+  // the PlanSidebar renders while a plan is still being proposed. Reset
+  // on turn complete and on thread switch.
+  let pendingPlanUpdate: unknown = $state(null);
+
   /**
    * Generation counter for finalizeTurn. Incremented each time finalizeTurn
    * starts so that stale async DB responses don't overwrite newer state.
@@ -108,6 +115,7 @@ export function createThreadPane() {
     get activeArtifactId() { return activeArtifactId; },
     get pendingDesignOptions() { return pendingDesignOptions; },
     get designViewport() { return designViewport; },
+    get pendingPlanUpdate() { return pendingPlanUpdate; },
 
     // --- Thread switching ---
 
@@ -129,6 +137,7 @@ export function createThreadPane() {
       activeArtifactId = null;
       pendingDesignOptions = null;
       designViewport = 'desktop';
+      pendingPlanUpdate = null;
       // Every drawer / pane-scoped UI flag should reset so switching threads
       // never "remembers" the previous thread's open drawers. diffPanel owns
       // its own reset via clearForThread (which closes the panel); showTerminal
@@ -232,6 +241,11 @@ export function createThreadPane() {
       streamingContent = '';
       activeToolCalls = new Map();
       pendingMessage = null;
+      // Streaming plan updates are a "turn is still thinking" signal —
+      // once the turn completes, any finalized plan arrives as an item
+      // in the DB reload below. Clearing here prevents a stale in-progress
+      // plan from lingering under the next turn's surface.
+      pendingPlanUpdate = null;
       if (thread) {
         const gen = ++turnGeneration;
         const threadId = thread.id;
@@ -266,6 +280,14 @@ export function createThreadPane() {
       const next = new Map(activeToolCalls);
       next.delete(id);
       activeToolCalls = next;
+    },
+
+    setPendingPlanUpdate(meta: unknown): void {
+      pendingPlanUpdate = meta;
+    },
+
+    clearPendingPlanUpdate(): void {
+      pendingPlanUpdate = null;
     },
 
     addApproval(approval: ApprovalRequest): void {

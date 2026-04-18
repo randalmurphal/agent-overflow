@@ -342,6 +342,24 @@ CREATE INDEX IF NOT EXISTS idx_threads_updated ON threads(updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_threads_forked_from_thread ON threads(forked_from_thread_id);
 `,
 	},
+	{
+		Version: 12,
+		Name:    "threads_runtime_mode",
+		// Adds the three-tier runtime-mode axis (approval-required /
+		// auto-accept-edits / full-access) as a persisted per-thread
+		// column. Default is 'full-access' to match the frictionless
+		// default that AllRuntimeModes / DefaultRuntimeMode in the
+		// provider package reflect.
+		//
+		// Existing rows pre-v12 had no column; the ALTER seeds every
+		// row with 'full-access' so legacy threads inherit the default
+		// rather than tripping the CHECK constraint with NULL.
+		SQL: `
+ALTER TABLE threads
+ADD COLUMN runtime_mode TEXT NOT NULL DEFAULT 'full-access'
+    CHECK(runtime_mode IN ('approval-required', 'auto-accept-edits', 'full-access'));
+`,
+	},
 }
 
 // runMigrations sets PRAGMAs, creates the version tracking table, and applies

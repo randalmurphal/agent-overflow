@@ -196,10 +196,15 @@ func ClassifyNotification(threadID, method string, params json.RawMessage) []pro
 		}}
 
 	case "turn/plan/updated":
+		// Stream the incremental plan update as a dedicated EventPlanUpdate.
+		// Previously routed as EventSessionStatus with content="plan_updated",
+		// which collided with the generic status string and prevented the
+		// frontend from reacting to plan updates distinctly. The full
+		// finalized plan still arrives via item/completed (itemType=plan)
+		// → EventProposedPlan; this kind is for the intermediate steps.
 		return []provider.ProviderEvent{{
-			Kind:      provider.EventSessionStatus,
+			Kind:      provider.EventPlanUpdate,
 			ThreadID:  threadID,
-			Content:   "plan_updated",
 			Meta:      params,
 			Timestamp: now,
 		}}

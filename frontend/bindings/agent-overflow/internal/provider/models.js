@@ -11,6 +11,68 @@ import { Create as $Create } from "@wailsio/runtime";
 import * as json$0 from "../../../encoding/json/models.js";
 
 /**
+ * AccountInfo describes the authenticated Claude account surfaced through
+ * the `system/init` message. Subscription type and token source fields are
+ * populated only when the CLI includes them; older CLI versions or
+ * unauthenticated invocations may leave them empty.
+ */
+export class AccountInfo {
+    /**
+     * Creates a new AccountInfo instance.
+     * @param {Partial<AccountInfo>} [$$source = {}] - The source object to create the AccountInfo.
+     */
+    constructor($$source = {}) {
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["subscriptionType"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["tokenSource"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["apiProvider"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["model"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["version"] = undefined;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new AccountInfo instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {AccountInfo}
+     */
+    static createFrom($$source = {}) {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new AccountInfo(/** @type {Partial<AccountInfo>} */($$parsedSource));
+    }
+}
+
+/**
  * ApprovalResponse is sent back to the provider.
  */
 export class ApprovalResponse {
@@ -65,6 +127,26 @@ export class ApprovalResponse {
              * @type {ElicitationResolution | null | undefined}
              */
             this["elicitation"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * UpdatedInput replaces the original tool input when an approval is granted.
+             * Only meaningful for allow decisions; ignored on deny. Opaque JSON — the
+             * shape mirrors the tool's input schema, which is provider-specific.
+             * @member
+             * @type {json$0.RawMessage | undefined}
+             */
+            this["updatedInput"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * UpdatedPermissions mirrors the Claude SDK's `updatedPermissions` field on
+             * allow decisions: a JSON array of PermissionUpdate objects used to broaden
+             * or narrow the session's permission scope. Ignored on deny.
+             * @member
+             * @type {json$0.RawMessage | undefined}
+             */
+            this["updatedPermissions"] = undefined;
         }
 
         Object.assign(this, $$source);

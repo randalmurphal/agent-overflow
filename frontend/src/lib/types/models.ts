@@ -1,3 +1,5 @@
+export type RuntimeMode = "approval-required" | "auto-accept-edits" | "full-access";
+
 export interface Thread {
   id: string;
   title: string;
@@ -9,6 +11,11 @@ export interface Thread {
   worktreePath?: string;
   branch?: string;
   interactionMode: "default" | "plan" | "design" | "discussion";
+  // Backend always populates this (CHECK constraint + default in v12),
+  // but it's optional at the TS layer so test fixtures and hand-built
+  // thread stubs from external callers don't have to set it. Consumers
+  // that branch on the value MUST fall back to "full-access" when absent.
+  runtimeMode?: RuntimeMode;
   discussionId?: string;
   parentThreadId?: string;
   forkedFromThreadId?: string;

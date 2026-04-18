@@ -20,7 +20,8 @@ export type EventKind =
   | 'compact_boundary'
   | 'rate_limits'
   | 'model_rerouted'
-  | 'thread_renamed';
+  | 'thread_renamed'
+  | 'plan_update';
 
 export interface ProviderEvent {
   kind: EventKind;

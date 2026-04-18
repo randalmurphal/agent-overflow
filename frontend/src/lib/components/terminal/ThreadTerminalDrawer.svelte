@@ -5,6 +5,7 @@
     OpenTerminal,
     CloseTerminal,
     ListTerminals,
+    TerminalOpenOptions,
   } from '../../stores/bindings';
   import type {
     TerminalExitEventPayload,
@@ -51,7 +52,10 @@
   async function openTerminal() {
     if (!pane.thread) return;
     try {
-      const th = (await OpenTerminal(pane.thread.id, { cwd: pane.thread.workspacePath })) as TerminalHandle;
+      const th = (await OpenTerminal(
+        pane.thread.id,
+        new TerminalOpenOptions({ cwd: pane.thread.workspacePath }),
+      )) as TerminalHandle;
       if (th?.summary) {
         handle.addTab(th.summary);
       }

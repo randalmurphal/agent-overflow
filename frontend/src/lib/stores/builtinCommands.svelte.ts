@@ -10,6 +10,7 @@ import type { ThreadPane } from './thread.svelte';
 import type { Thread } from '../types/models';
 import { registerCommand, type CommandContext } from './commandRegistry.svelte';
 import { closeCheatSheet, openCheatSheet } from './cheatSheet.svelte';
+import { closeMessageSearch, openMessageSearch } from './messageSearch.svelte';
 import { closePalette, openPalette } from './palette.svelte';
 import { addToast } from './toast.svelte';
 import { removeThread, prependThread, replaceThread } from './threads.svelte';
@@ -238,6 +239,21 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     label: 'Threads: Focus Search',
     icon: '⌕',
     run: () => focusThreadSearch(),
+  });
+
+  registerCommand({
+    id: 'search.messages',
+    label: 'Search: Messages',
+    description: 'Full-text search across every thread title and message.',
+    icon: '⌕',
+    run: () => openMessageSearch(),
+  });
+
+  registerCommand({
+    id: 'search.messages.close',
+    label: 'Search: Close Messages',
+    when: 'messageSearchOpen',
+    run: () => closeMessageSearch(),
   });
 
   registerCommand({

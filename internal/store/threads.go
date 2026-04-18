@@ -4,7 +4,7 @@ import "fmt"
 
 const threadColumns = `id, title, provider, COALESCE(session_ref, ''), COALESCE(pending_fork_session_ref, ''), workspace_path, model,
     project_path, COALESCE(worktree_path, ''), COALESCE(branch, ''),
-    interaction_mode, COALESCE(discussion_id, ''), COALESCE(parent_thread_id, ''), COALESCE(forked_from_thread_id, ''),
+    interaction_mode, runtime_mode, COALESCE(discussion_id, ''), COALESCE(parent_thread_id, ''), COALESCE(forked_from_thread_id, ''),
     created_at, updated_at, archived`
 
 func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
@@ -13,7 +13,7 @@ func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
 	if err := scanner.Scan(
 		&t.ID, &t.Title, &t.Provider, &t.SessionRef, &t.PendingForkRef, &t.WorkspacePath, &t.Model,
 		&t.ProjectPath, &t.WorktreePath, &t.Branch,
-		&t.InteractionMode, &t.DiscussionID, &t.ParentThreadID, &t.ForkedFromThreadID,
+		&t.InteractionMode, &t.RuntimeMode, &t.DiscussionID, &t.ParentThreadID, &t.ForkedFromThreadID,
 		&t.CreatedAt, &t.UpdatedAt, &archived,
 	); err != nil {
 		return Thread{}, err
@@ -24,13 +24,14 @@ func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
 
 func (s *Store) CreateThread(t Thread) error {
 	t.InteractionMode = normalizeInteractionMode(t.InteractionMode)
+	t.RuntimeMode = normalizeRuntimeMode(t.RuntimeMode)
 	_, err := s.db.Exec(
 		`INSERT INTO threads (id, title, provider, session_ref, pending_fork_session_ref, workspace_path, model,
-		    project_path, worktree_path, branch, interaction_mode, discussion_id, parent_thread_id,
+		    project_path, worktree_path, branch, interaction_mode, runtime_mode, discussion_id, parent_thread_id,
 		    forked_from_thread_id, created_at, updated_at, archived)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		t.ID, t.Title, t.Provider, nilIfEmpty(t.SessionRef), nilIfEmpty(t.PendingForkRef), t.WorkspacePath, t.Model,
-		t.ProjectPath, nilIfEmpty(t.WorktreePath), nilIfEmpty(t.Branch), t.InteractionMode,
+		t.ProjectPath, nilIfEmpty(t.WorktreePath), nilIfEmpty(t.Branch), t.InteractionMode, t.RuntimeMode,
 		nilIfEmpty(t.DiscussionID), nilIfEmpty(t.ParentThreadID), nilIfEmpty(t.ForkedFromThreadID),
 		t.CreatedAt, t.UpdatedAt, boolToInt(t.Archived),
 	)
@@ -94,14 +95,15 @@ func (s *Store) ListChildThreads(parentID string) ([]Thread, error) {
 
 func (s *Store) UpdateThread(t Thread) error {
 	t.InteractionMode = normalizeInteractionMode(t.InteractionMode)
+	t.RuntimeMode = normalizeRuntimeMode(t.RuntimeMode)
 	result, err := s.db.Exec(
 		`UPDATE threads SET title=?, provider=?, session_ref=?, pending_fork_session_ref=?, workspace_path=?, model=?,
-		    project_path=?, worktree_path=?, branch=?, interaction_mode=?,
+		    project_path=?, worktree_path=?, branch=?, interaction_mode=?, runtime_mode=?,
 		    discussion_id=?, parent_thread_id=?, forked_from_thread_id=?,
 		    updated_at=?, archived=?
 		 WHERE id=?`,
 		t.Title, t.Provider, nilIfEmpty(t.SessionRef), nilIfEmpty(t.PendingForkRef), t.WorkspacePath, t.Model,
-		t.ProjectPath, nilIfEmpty(t.WorktreePath), nilIfEmpty(t.Branch), t.InteractionMode,
+		t.ProjectPath, nilIfEmpty(t.WorktreePath), nilIfEmpty(t.Branch), t.InteractionMode, t.RuntimeMode,
 		nilIfEmpty(t.DiscussionID), nilIfEmpty(t.ParentThreadID), nilIfEmpty(t.ForkedFromThreadID),
 		t.UpdatedAt, boolToInt(t.Archived), t.ID,
 	)
@@ -199,9 +201,36 @@ func (s *Store) UpdateInteractionMode(threadID, mode string) error {
 	return requireRowsAffected(result, fmt.Sprintf("store: update interaction mode for %s", threadID))
 }
 
+// UpdateRuntimeMode overwrites the thread's runtime mode (approval-required,
+// auto-accept-edits, or full-access). Unknown values are coerced to the
+// default via normalizeRuntimeMode — the CHECK constraint on the column
+// would otherwise reject the write, so we prefer falling back silently over
+// breaking a session restart for an old client that sent a stale string.
+func (s *Store) UpdateRuntimeMode(threadID, mode string) error {
+	mode = normalizeRuntimeMode(mode)
+	result, err := s.db.Exec(`UPDATE threads SET runtime_mode = ?, updated_at = ? WHERE id = ?`,
+		mode, nowMillis(), threadID)
+	if err != nil {
+		return fmt.Errorf("store: update runtime mode for %s: %w", threadID, err)
+	}
+	return requireRowsAffected(result, fmt.Sprintf("store: update runtime mode for %s", threadID))
+}
+
 func normalizeInteractionMode(mode string) string {
 	if mode == "" {
 		return "default"
 	}
 	return mode
+}
+
+// normalizeRuntimeMode coerces empty or unknown strings to the default
+// runtime mode. Duplicated from provider.NormalizeRuntimeMode so that
+// internal/store stays provider-free (import cycle avoidance).
+func normalizeRuntimeMode(mode string) string {
+	switch mode {
+	case "approval-required", "auto-accept-edits", "full-access":
+		return mode
+	default:
+		return "full-access"
+	}
 }

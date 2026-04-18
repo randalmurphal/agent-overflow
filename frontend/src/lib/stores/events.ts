@@ -19,6 +19,19 @@ interface InteractionModeChangedPayload {
 }
 
 /**
+ * Payload for thread:runtime_mode_changed — emitted whenever
+ * SetThreadRuntimeMode persists a change. NeedsReconnect means the backend
+ * is already restarting the active session; the frontend just refreshes
+ * its cached thread row and surfaces a toast via RuntimeModePicker /
+ * settings flow.
+ */
+interface RuntimeModeChangedPayload {
+  threadId: string;
+  runtimeMode: Thread['runtimeMode'];
+  needsReconnect: boolean;
+}
+
+/**
  * Route a provider event to the correct pane mutation.
  * Called once per pane that matches the event's threadId.
  *
@@ -158,6 +171,27 @@ function routeEventToPane(pane: ThreadPane, evt: ProviderEvent): void {
         updateThreadTitle(evt.threadId, data.newTitle);
       }
       break;
+
+    case 'plan_update':
+      // Stream the Codex turn/plan/updated payload onto the pane so the
+      // PlanSidebar / follow-up banner can render an in-progress plan
+      // without waiting for the finalized item/completed (itemType=plan)
+      // event. Opaque JSON — consumers read `meta` and render the plan
+      // shape themselves.
+      if (evt.meta) {
+        pane.setPendingPlanUpdate(evt.meta);
+      }
+      break;
+
+    default: {
+      // Exhaustiveness guard: if TypeScript complains on this line, a new
+      // EventKind was added to types/events.ts without a matching case above.
+      // Add one — don't rely on the default to silently swallow it. The cast
+      // to `never` forces a compile error when the union is extended.
+      const _exhaustive: never = evt.kind;
+      void _exhaustive;
+      break;
+    }
   }
 }
 
@@ -241,6 +275,26 @@ export function setupEventListeners(): () => void {
     }
   });
 
+  // thread:runtime_mode_changed — backend persisted a new three-tier
+  // approval mode. Refresh the sidebar cache and active pane; the backend
+  // kicks off a session reconnect itself when needed, so the frontend just
+  // needs to keep its thread shape in sync (the RuntimeModePicker's own
+  // optimistic update already covered the pane that triggered the change).
+  const cancelRuntimeModeChanged = Events.On('thread:runtime_mode_changed', (ev) => {
+    const payload = ev.data as RuntimeModeChangedPayload;
+    if (!payload || !payload.threadId || !payload.runtimeMode) return;
+    const existing = getThreads().find((t) => t.id === payload.threadId);
+    if (existing) {
+      replaceThread({ ...existing, runtimeMode: payload.runtimeMode });
+    }
+    for (const pane of getAllPanes().values()) {
+      if (pane.threadId !== payload.threadId) continue;
+      if (pane.thread) {
+        pane.replaceThread({ ...pane.thread, runtimeMode: payload.runtimeMode });
+      }
+    }
+  });
+
   // thread:interaction_mode_changed — the backend persisted a new mode. We
   // update the cached thread row (so sidebar badges refresh) and, when the
   // change landed on an active session, surface a toast prompting the user
@@ -274,5 +328,6 @@ export function setupEventListeners(): () => void {
     cancelDesignOptions();
     cancelDesignChosen();
     cancelModeChanged();
+    cancelRuntimeModeChanged();
   };
 }

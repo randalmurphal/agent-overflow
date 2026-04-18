@@ -12,9 +12,11 @@
   import DiscussionStartFlow from './lib/components/discussion/DiscussionStartFlow.svelte';
   import CommandPalette from './lib/components/palette/CommandPalette.svelte';
   import KeybindingsCheatSheet from './lib/components/palette/KeybindingsCheatSheet.svelte';
+  import MessageSearch from './lib/components/palette/MessageSearch.svelte';
   import type { Thread } from './lib/types/models';
   import { isPaletteOpen } from './lib/stores/palette.svelte';
   import { closeCheatSheet, isCheatSheetOpen } from './lib/stores/cheatSheet.svelte';
+  import { closeMessageSearch, isMessageSearchOpen } from './lib/stores/messageSearch.svelte';
   import {
     dispatchKey,
     loadKeybindings,
@@ -42,7 +44,12 @@
     makeCommandContext(pane, {
       paletteOpen: isPaletteOpen(),
       cheatSheetOpen: isCheatSheetOpen(),
-      anyModalOpen: discussionStartFor !== null || showSettings || isCheatSheetOpen(),
+      messageSearchOpen: isMessageSearchOpen(),
+      anyModalOpen:
+        discussionStartFor !== null ||
+        showSettings ||
+        isCheatSheetOpen() ||
+        isMessageSearchOpen(),
     }),
   );
 
@@ -176,4 +183,5 @@
 />
 <CommandPalette context={paletteContext} />
 <KeybindingsCheatSheet open={isCheatSheetOpen()} onClose={closeCheatSheet} />
+<MessageSearch open={isMessageSearchOpen()} {pane} onClose={closeMessageSearch} />
 <Toast />

@@ -19,6 +19,12 @@ import * as design$0 from "./internal/design/models.js";
 import * as git$0 from "./internal/git/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
+import * as otel$0 from "./internal/observability/otel/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as replay$0 from "./internal/observability/replay/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
 import * as provider$0 from "./internal/provider/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
@@ -26,6 +32,13 @@ import * as settings$0 from "./internal/settings/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
 import * as store$0 from "./internal/store/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as terminal$0 from "./internal/terminal/models.js";
+
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as $models from "./models.js";
 
 /**
  * @param {string} id
@@ -47,6 +60,26 @@ export function ChooseDesignOption(threadID, requestID, optionID) {
 }
 
 /**
+ * ClearDraft deletes any stored draft for a thread. Missing rows are not
+ * treated as an error because the caller just wants the thread to have no
+ * draft.
+ * @param {string} threadID
+ * @returns {$CancellablePromise<void>}
+ */
+export function ClearDraft(threadID) {
+    return $Call.ByID(296814681, threadID);
+}
+
+/**
+ * CloseTerminal kills the terminal's process group and removes the session.
+ * @param {string} terminalID
+ * @returns {$CancellablePromise<void>}
+ */
+export function CloseTerminal(terminalID) {
+    return $Call.ByID(2702963191, terminalID);
+}
+
+/**
  * CreateDiscussion validates and persists a discussion definition.
  * @param {store$0.DiscussionDefinition} def
  * @returns {$CancellablePromise<void>}
@@ -56,6 +89,11 @@ export function CreateDiscussion(def) {
 }
 
 /**
+ * CreateThread persists a new thread for the given provider + workspace combo.
+ * `interactionMode` may be empty (normalized to "default") or one of
+ * "default" / "plan" / "design". "discussion" is reserved for threads created
+ * via StartDiscussion and is rejected here to prevent UI code from accidentally
+ * spawning orphan discussion threads without a deliberation channel.
  * @param {string} providerName
  * @param {string} workspacePath
  * @param {string} model
@@ -66,6 +104,41 @@ export function CreateThread(providerName, workspacePath, model, interactionMode
     return $Call.ByID(2579322833, providerName, workspacePath, model, interactionMode).then(/** @type {($result: any) => any} */(($result) => {
         return $$createType0($result);
     }));
+}
+
+/**
+ * CreateThreadFromPR creates a new thread seeded with a GitHub PR's metadata +
+ * diff as the first user message. Relies on the `gh` CLI being available on
+ * PATH; returns a structured error with installation hint if it isn't.
+ * 
+ * Parameters:
+ *   - ownerRepo: OWNER/REPO pair (e.g. "agent-overflow/agent-overflow")
+ *   - number:    PR number
+ *   - providerName + model: provider + model for the new thread
+ * 
+ * If the user has a local clone of the target repo registered in
+ * settings.RecentWorkspaces, that path is auto-selected as the workspace.
+ * Otherwise the caller is expected to pick a workspace; we still create the
+ * thread but WorkspacePath is left empty and the UI can prompt.
+ * @param {string} ownerRepo
+ * @param {number} $number
+ * @param {string} providerName
+ * @param {string} model
+ * @returns {$CancellablePromise<store$0.Thread>}
+ */
+export function CreateThreadFromPR(ownerRepo, $number, providerName, model) {
+    return $Call.ByID(1716017387, ownerRepo, $number, providerName, model).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType0($result);
+    }));
+}
+
+/**
+ * DeleteAttachment removes both the metadata row and the disk file.
+ * @param {string} attachmentID
+ * @returns {$CancellablePromise<void>}
+ */
+export function DeleteAttachment(attachmentID) {
+    return $Call.ByID(2428457759, attachmentID);
 }
 
 /**
@@ -87,6 +160,20 @@ export function DeleteThread(id) {
 }
 
 /**
+ * ForkThread copies a source thread's timeline into a new fork and wires
+ * the provider-specific resume state. The whole sequence is atomic from
+ * the caller's point of view: if any step fails, the partially-created
+ * fork is torn down so no half-forked rows linger.
+ * 
+ * The "atomic unit" is emulated in the app layer rather than a single
+ * SQLite transaction because the fork flow crosses a boundary — it has
+ * to talk to the Codex provider to fork a live session, which can fail
+ * independently of the DB. Wrapping the whole sequence in sql.Tx would
+ * hold a DB transaction open across a network-speed operation and break
+ * the rest of the store's single-connection model. Instead, we compose
+ * with a best-effort rollback: cleanupForkThread removes the fork row
+ * (CASCADE drops cloned items + drafts), and cleanup errors are joined
+ * to the primary error so the caller sees both.
  * @param {string} sourceThreadID
  * @returns {$CancellablePromise<store$0.Thread>}
  */
@@ -94,6 +181,35 @@ export function ForkThread(sourceThreadID) {
     return $Call.ByID(4063914461, sourceThreadID).then(/** @type {($result: any) => any} */(($result) => {
         return $$createType0($result);
     }));
+}
+
+/**
+ * GenerateCommitMessage inspects the thread's working-tree diff and asks the
+ * provider CLI to draft a commit subject + body. Short-circuits with an
+ * error when there's nothing to commit so the UI can show a clean
+ * "nothing to describe" message instead of a synthesized placeholder.
+ * 
+ * Only Claude is currently wired — it's the provider with a stable
+ * --json-schema flag. For Codex / other providers, callers should fall
+ * back to manual entry (the dialog already supports this).
+ * @param {string} threadID
+ * @returns {$CancellablePromise<$models.GeneratedCommitMessage>}
+ */
+export function GenerateCommitMessage(threadID) {
+    return $Call.ByID(1669373286, threadID).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType1($result);
+    }));
+}
+
+/**
+ * GetAttachmentData returns the base64-encoded raw bytes for rendering the
+ * attachment inline in the UI. Keeping this behind RPC avoids exposing a
+ * static file server.
+ * @param {string} attachmentID
+ * @returns {$CancellablePromise<string>}
+ */
+export function GetAttachmentData(attachmentID) {
+    return $Call.ByID(71154490, attachmentID);
 }
 
 /**
@@ -105,8 +221,19 @@ export function ForkThread(sourceThreadID) {
  */
 export function GetChannelMessages(channelID, afterSeq, limit) {
     return $Call.ByID(3595031866, channelID, afterSeq, limit).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType2($result);
+        return $$createType3($result);
     }));
+}
+
+/**
+ * GetCheckpointToWorktreeDiff returns the diff between a specific checkpoint
+ * ref and the current worktree. Used by the three-source diff panel.
+ * @param {string} threadID
+ * @param {number} turnIndex
+ * @returns {$CancellablePromise<string>}
+ */
+export function GetCheckpointToWorktreeDiff(threadID, turnIndex) {
+    return $Call.ByID(3483878958, threadID, turnIndex);
 }
 
 /**
@@ -127,7 +254,19 @@ export function GetDesignArtifactHTML(threadID, artifactID) {
  */
 export function GetDiscussion(name, scope) {
     return $Call.ByID(1924583939, name, scope).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType3($result);
+        return $$createType4($result);
+    }));
+}
+
+/**
+ * GetDraft returns the draft for a thread. Missing drafts return a zero
+ * Draft (with empty arrays) rather than an error.
+ * @param {string} threadID
+ * @returns {$CancellablePromise<$models.Draft>}
+ */
+export function GetDraft(threadID) {
+    return $Call.ByID(875977146, threadID).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType5($result);
     }));
 }
 
@@ -138,7 +277,20 @@ export function GetDiscussion(name, scope) {
  */
 export function GetGitStatus(threadID) {
     return $Call.ByID(4123560639, threadID).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType4($result);
+        return $$createType6($result);
+    }));
+}
+
+/**
+ * GetKeybindings returns the effective keybindings: defaults with any
+ * user overrides layered on top. Invalid entries in the user file are
+ * dropped silently (the frontend surfaces parse errors on its own); a
+ * completely malformed file falls back to defaults.
+ * @returns {$CancellablePromise<$models.Keybinding[]>}
+ */
+export function GetKeybindings() {
+    return $Call.ByID(3015840904).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType8($result);
     }));
 }
 
@@ -149,7 +301,7 @@ export function GetGitStatus(threadID) {
  */
 export function GetModelsForProvider(providerName) {
     return $Call.ByID(1632984917, providerName).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType6($result);
+        return $$createType10($result);
     }));
 }
 
@@ -167,7 +319,7 @@ export function GetPayloadData(payloadID) {
  */
 export function GetProviderStatuses() {
     return $Call.ByID(3829328996).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType8($result);
+        return $$createType12($result);
     }));
 }
 
@@ -177,8 +329,18 @@ export function GetProviderStatuses() {
  */
 export function GetSettings() {
     return $Call.ByID(2554697378).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType9($result);
+        return $$createType13($result);
     }));
+}
+
+/**
+ * GetTerminalReplay returns the base64-encoded replay buffer. base64 keeps
+ * binary safety for non-UTF-8 bytes emitted by the shell.
+ * @param {string} terminalID
+ * @returns {$CancellablePromise<string>}
+ */
+export function GetTerminalReplay(terminalID) {
+    return $Call.ByID(2329592604, terminalID);
 }
 
 /**
@@ -189,6 +351,35 @@ export function GetThread(id) {
     return $Call.ByID(1098302047, id).then(/** @type {($result: any) => any} */(($result) => {
         return $$createType0($result);
     }));
+}
+
+/**
+ * GetThreadRuntimeMode returns the persisted runtime mode for a thread.
+ * Exposed as a convenience binding so the frontend picker doesn't have to
+ * round-trip the full Thread shape.
+ * @param {string} threadID
+ * @returns {$CancellablePromise<string>}
+ */
+export function GetThreadRuntimeMode(threadID) {
+    return $Call.ByID(2573491630, threadID);
+}
+
+/**
+ * GetTurnDiff returns the unified diff produced by a single turn.
+ * 
+ * Semantics:
+ *   - Between the checkpoint captured at the START of turn N and the
+ *     checkpoint captured at the start of turn N+1 (if one exists), or
+ *   - Between the checkpoint at turn N and the current worktree if this is
+ *     the most recent captured turn.
+ * 
+ * The frontend uses this to render "what did this turn change" diffs.
+ * @param {string} threadID
+ * @param {number} turnIndex
+ * @returns {$CancellablePromise<string>}
+ */
+export function GetTurnDiff(threadID, turnIndex) {
+    return $Call.ByID(1809996571, threadID, turnIndex);
 }
 
 /**
@@ -221,7 +412,7 @@ export function GitCheckout(threadID, branch) {
  */
 export function GitCommit(threadID, subject, body) {
     return $Call.ByID(1971060042, threadID, subject, body).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType10($result);
+        return $$createType14($result);
     }));
 }
 
@@ -246,7 +437,7 @@ export function GitCreateBranch(threadID, name) {
  */
 export function GitCreatePR(threadID, title, body, draft) {
     return $Call.ByID(4106667105, threadID, title, body, draft).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType10($result);
+        return $$createType14($result);
     }));
 }
 
@@ -267,7 +458,7 @@ export function GitCreateWorktree(threadID, branch) {
  */
 export function GitListBranches(threadID) {
     return $Call.ByID(2693102179, threadID).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType12($result);
+        return $$createType16($result);
     }));
 }
 
@@ -278,7 +469,7 @@ export function GitListBranches(threadID) {
  */
 export function GitListWorktrees(threadID) {
     return $Call.ByID(3232495403, threadID).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType14($result);
+        return $$createType18($result);
     }));
 }
 
@@ -289,7 +480,7 @@ export function GitListWorktrees(threadID) {
  */
 export function GitPull(threadID) {
     return $Call.ByID(3933172764, threadID).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType10($result);
+        return $$createType14($result);
     }));
 }
 
@@ -300,7 +491,7 @@ export function GitPull(threadID) {
  */
 export function GitPush(threadID) {
     return $Call.ByID(4036251239, threadID).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType10($result);
+        return $$createType14($result);
     }));
 }
 
@@ -332,13 +523,24 @@ export function InterruptTurn(threadID) {
 }
 
 /**
+ * ListAttachments returns every attachment metadata row for a thread.
+ * @param {string} threadID
+ * @returns {$CancellablePromise<store$0.Attachment[]>}
+ */
+export function ListAttachments(threadID) {
+    return $Call.ByID(1730798413, threadID).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType20($result);
+    }));
+}
+
+/**
  * ListDesignArtifacts returns persisted design artifacts for a thread.
  * @param {string} threadID
  * @returns {$CancellablePromise<design$0.DesignArtifact[]>}
  */
 export function ListDesignArtifacts(threadID) {
     return $Call.ByID(4255572490, threadID).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType16($result);
+        return $$createType22($result);
     }));
 }
 
@@ -349,7 +551,7 @@ export function ListDesignArtifacts(threadID) {
  */
 export function ListDiscussions(scope) {
     return $Call.ByID(942288562, scope).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType17($result);
+        return $$createType23($result);
     }));
 }
 
@@ -359,7 +561,7 @@ export function ListDiscussions(scope) {
  */
 export function ListItems(threadID) {
     return $Call.ByID(2158085763, threadID).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType19($result);
+        return $$createType25($result);
     }));
 }
 
@@ -369,7 +571,31 @@ export function ListItems(threadID) {
  */
 export function ListPayloadMetas(threadID) {
     return $Call.ByID(1007133701, threadID).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType21($result);
+        return $$createType27($result);
+    }));
+}
+
+/**
+ * ListTerminals returns a summary per active terminal for the given thread.
+ * @param {string} threadID
+ * @returns {$CancellablePromise<terminal$0.SessionSummary[]>}
+ */
+export function ListTerminals(threadID) {
+    return $Call.ByID(2445206506, threadID).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType29($result);
+    }));
+}
+
+/**
+ * ListThreadCheckpoints returns every persisted checkpoint row for a thread.
+ * Ordering is ascending by turn_index so the UI can render a turn-navigation
+ * strip without additional sorting.
+ * @param {string} threadID
+ * @returns {$CancellablePromise<store$0.Checkpoint[]>}
+ */
+export function ListThreadCheckpoints(threadID) {
+    return $Call.ByID(1853132444, threadID).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType31($result);
     }));
 }
 
@@ -378,7 +604,20 @@ export function ListPayloadMetas(threadID) {
  */
 export function ListThreads() {
     return $Call.ByID(1090132042).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType22($result);
+        return $$createType32($result);
+    }));
+}
+
+/**
+ * OpenTerminal starts a new PTY-backed terminal session bound to the given
+ * thread.
+ * @param {string} threadID
+ * @param {$models.TerminalOpenOptions} opts
+ * @returns {$CancellablePromise<$models.TerminalHandle>}
+ */
+export function OpenTerminal(threadID, opts) {
+    return $Call.ByID(2247958725, threadID, opts).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType33($result);
     }));
 }
 
@@ -390,6 +629,37 @@ export function ListThreads() {
  */
 export function PostChannelMessage(channelID, content) {
     return $Call.ByID(1315440605, channelID, content);
+}
+
+/**
+ * ProbeClaudeAccount spawns a short-lived Claude CLI subprocess with
+ * `--max-turns 0` and returns the authenticated account metadata from
+ * the emitted `system/init` message. Results are cached per binary path
+ * for 5 minutes. Zero tokens are consumed — the CLI aborts before any
+ * API call.
+ * @returns {$CancellablePromise<provider$0.AccountInfo>}
+ */
+export function ProbeClaudeAccount() {
+    return $Call.ByID(1313986574).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType34($result);
+    }));
+}
+
+/**
+ * ReconfigureObservability reconciles the live observability stack with the
+ * current Settings snapshot. Tracing changes always require restart (we
+ * don't hot-swap tracer providers — that path is too easy to break in
+ * ways the user only sees when a trace goes missing). The replay toggle
+ * is cheap to flip in place.
+ * 
+ * This is the hook the UI calls after UpdateSettings persists a change —
+ * see app_settings.go.
+ * @param {settings$0.Settings} prev
+ * @param {settings$0.Settings} next
+ * @returns {$CancellablePromise<void>}
+ */
+export function ReconfigureObservability(prev, next) {
+    return $Call.ByID(225050321, prev, next);
 }
 
 /**
@@ -412,6 +682,35 @@ export function RenameThread(id, title) {
 }
 
 /**
+ * ReplayManager returns the active replay manager. May be nil before startup.
+ * @returns {$CancellablePromise<replay$0.Manager | null>}
+ */
+export function ReplayManager() {
+    return $Call.ByID(3320777729).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType36($result);
+    }));
+}
+
+/**
+ * ResetKeybindings deletes the user file so GetKeybindings returns defaults.
+ * @returns {$CancellablePromise<void>}
+ */
+export function ResetKeybindings() {
+    return $Call.ByID(2775767393);
+}
+
+/**
+ * ResizeTerminal forwards a winsize change to the PTY.
+ * @param {string} terminalID
+ * @param {number} rows
+ * @param {number} cols
+ * @returns {$CancellablePromise<void>}
+ */
+export function ResizeTerminal(terminalID, rows, cols) {
+    return $Call.ByID(1887984285, terminalID, rows, cols);
+}
+
+/**
  * RespondToApproval forwards an interactive response to the active provider session.
  * @param {string} threadID
  * @param {provider$0.ApprovalResponse} response
@@ -422,12 +721,135 @@ export function RespondToApproval(threadID, response) {
 }
 
 /**
+ * RestartTerminal kills the given terminal and spawns a fresh replacement
+ * with the same configuration.
+ * @param {string} terminalID
+ * @returns {$CancellablePromise<$models.TerminalHandle>}
+ */
+export function RestartTerminal(terminalID) {
+    return $Call.ByID(4152403588, terminalID).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType33($result);
+    }));
+}
+
+/**
+ * RevertToTurn rolls a thread back to a prior turn's captured state. The
+ * checkpoint at turnIndex records the state *before* turn turnIndex ran, so
+ * every revert mode drops turn turnIndex and everything after it.
+ * 
+ * Modes:
+ *   - "fork": create a new thread forked from this one at the checkpoint,
+ *     leave the source thread untouched. Returns the new thread ID.
+ *   - "revert-both": in-place revert of both conversation history and
+ *     working tree.
+ *   - "revert-conversation": in-place revert of conversation history only
+ *     (working tree untouched). Codex uses its native thread/rollback;
+ *     Claude clears the session ref so the next message starts fresh.
+ *   - "revert-code": restore the working tree only, leave conversation
+ *     history and provider session state untouched.
+ * 
+ * All in-place modes stop the active session first. Fork does not touch
+ * the source session.
+ * @param {string} threadID
+ * @param {number} turnIndex
+ * @param {string} mode
+ * @returns {$CancellablePromise<string>}
+ */
+export function RevertToTurn(threadID, turnIndex, mode) {
+    return $Call.ByID(3569172301, threadID, turnIndex, mode);
+}
+
+/**
+ * SaveDraft replaces the draft row for a thread.
+ * @param {string} threadID
+ * @param {string} content
+ * @param {string[]} attachmentIDs
+ * @param {$models.TerminalChip[]} terminalChips
+ * @returns {$CancellablePromise<void>}
+ */
+export function SaveDraft(threadID, content, attachmentIDs, terminalChips) {
+    return $Call.ByID(3025273299, threadID, content, attachmentIDs, terminalChips);
+}
+
+/**
+ * SearchThreadMessages runs a global substring search across thread titles
+ * and item summaries. Intended to back the message-search overlay in the
+ * frontend — kept thin so the store owns the query shape.
+ * 
+ * A zero or empty query short-circuits to an empty slice in the store; this
+ * binding returns the same without an error so the frontend can call it on
+ * every keystroke cheaply. limit caps the result set; callers should pass a
+ * reasonable ceiling (50–100) for interactive UIs.
+ * @param {string} query
+ * @param {number} limit
+ * @returns {$CancellablePromise<store$0.ThreadMessageHit[]>}
+ */
+export function SearchThreadMessages(query, limit) {
+    return $Call.ByID(3644945077, query, limit).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType38($result);
+    }));
+}
+
+/**
+ * SearchWorkspaceFiles returns workspace files matching the query, scoped to
+ * the workspace of the given thread.
+ * @param {string} threadID
+ * @param {string} query
+ * @param {number} limit
+ * @returns {$CancellablePromise<$models.WorkspaceFileSearchResult>}
+ */
+export function SearchWorkspaceFiles(threadID, query, limit) {
+    return $Call.ByID(3852272821, threadID, query, limit).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType39($result);
+    }));
+}
+
+/**
  * @param {string} threadID
  * @param {string} content
  * @returns {$CancellablePromise<void>}
  */
 export function SendMessage(threadID, content) {
     return $Call.ByID(1496882310, threadID, content);
+}
+
+/**
+ * SetThreadInteractionMode updates the thread's interaction mode and returns
+ * the refreshed row. Rejects unknown modes with a clear error message so the
+ * frontend can surface it verbatim.
+ * 
+ * When the thread has an active provider session at the time of the change we
+ * emit a "thread:interaction_mode_changed" event with NeedsReconnect=true so
+ * the frontend can prompt the user to reconnect — the running session was
+ * started under the previous mode and will not pick up the new one until a
+ * new session is spawned. The persisted row is always updated regardless.
+ * @param {string} threadID
+ * @param {string} mode
+ * @returns {$CancellablePromise<store$0.Thread>}
+ */
+export function SetThreadInteractionMode(threadID, mode) {
+    return $Call.ByID(1283963750, threadID, mode).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType0($result);
+    }));
+}
+
+/**
+ * SetThreadRuntimeMode persists a new runtime mode and, if the thread has
+ * an active session, automatically restarts it so the provider picks up
+ * the new mode. An idempotent no-op when the mode is unchanged.
+ * 
+ * Valid modes are the three provider.RuntimeMode values. Unknown strings
+ * are rejected outright rather than coerced — we want the binding to
+ * surface a clear error to the UI instead of silently swapping what the
+ * user picked for "full-access".
+ * @param {string} threadID
+ * @param {string} mode
+ * @returns {$CancellablePromise<$models.ThreadRuntimeModeChangedEvent>}
+ */
+export function SetThreadRuntimeMode(threadID, mode) {
+    return $Call.ByID(1115610690, threadID, mode).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType40($result);
+    }));
 }
 
 /**
@@ -469,6 +891,31 @@ export function SwitchThread(threadID) {
 }
 
 /**
+ * Telemetry returns the active OpenTelemetry provider. Returns nil when the
+ * app has not completed ServiceStartup. Exported for tests that need to
+ * inspect or replace the provider at runtime.
+ * @returns {$CancellablePromise<otel$0.Provider | null>}
+ */
+export function Telemetry() {
+    return $Call.ByID(669486408).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType42($result);
+    }));
+}
+
+/**
+ * UnarchiveThread flips archived back to false so the thread reappears in the
+ * active sidebar. Returns the refreshed row so the caller can re-render
+ * without a follow-up GetThread round-trip.
+ * @param {string} id
+ * @returns {$CancellablePromise<store$0.Thread>}
+ */
+export function UnarchiveThread(id) {
+    return $Call.ByID(3655125512, id).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType0($result);
+    }));
+}
+
+/**
  * UpdateDiscussion replaces an existing persisted discussion definition.
  * @param {string} prevName
  * @param {string} prevScope
@@ -480,14 +927,70 @@ export function UpdateDiscussion(prevName, prevScope, def) {
 }
 
 /**
- * UpdateSettings applies a partial settings patch and persists it.
+ * UpdateKeybindings replaces the user keybindings file with the caller's
+ * config. The config is capped at maxKeybindingsCount entries; entries past
+ * the cap are dropped from the tail.
+ * @param {$models.Keybinding[]} bindings
+ * @returns {$CancellablePromise<void>}
+ */
+export function UpdateKeybindings(bindings) {
+    return $Call.ByID(3490094229, bindings);
+}
+
+/**
+ * UpdateSettings applies a partial settings patch and persists it. Observability
+ * toggles that can flip at runtime (e.g. replay log) are reconciled here.
+ * Tracing changes are persisted but require a restart to take effect — the
+ * UI shows a banner when that path is taken.
  * @param {{ [_ in string]?: any }} patch
  * @returns {$CancellablePromise<settings$0.Settings>}
  */
 export function UpdateSettings(patch) {
     return $Call.ByID(2894041249, patch).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType9($result);
+        return $$createType13($result);
     }));
+}
+
+/**
+ * UpdateThreadModel changes a thread's model and restarts an active provider
+ * session so the new model takes effect immediately. Threads without an active
+ * session are updated in place and will use the new model on the next start.
+ * @param {string} threadID
+ * @param {string} model
+ * @returns {$CancellablePromise<store$0.Thread>}
+ */
+export function UpdateThreadModel(threadID, model) {
+    return $Call.ByID(4179686417, threadID, model).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType0($result);
+    }));
+}
+
+/**
+ * UploadAttachment decodes base64 bytes, validates + persists them on disk,
+ * and returns the new attachment metadata.
+ * @param {string} threadID
+ * @param {string} filename
+ * @param {string} mimeType
+ * @param {string} dataB64
+ * @returns {$CancellablePromise<store$0.Attachment>}
+ */
+export function UploadAttachment(threadID, filename, mimeType, dataB64) {
+    return $Call.ByID(2485473713, threadID, filename, mimeType, dataB64).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType19($result);
+    }));
+}
+
+/**
+ * WriteTerminal writes base64-encoded data to the given terminal. The
+ * payload is base64 rather than a raw string so that non-UTF-8 byte
+ * sequences (control codes, mouse events, binary heredocs) round-trip
+ * losslessly from the frontend.
+ * @param {string} terminalID
+ * @param {string} dataB64
+ * @returns {$CancellablePromise<void>}
+ */
+export function WriteTerminal(terminalID, dataB64) {
+    return $Call.ByID(146795716, terminalID, dataB64);
 }
 
 /**
@@ -504,298 +1007,45 @@ export function WriteThreadWorkspaceFile(threadID, relativePath, content) {
 
 // Private type creation functions
 const $$createType0 = store$0.Thread.createFrom;
-const $$createType1 = store$0.ChannelMessage.createFrom;
-const $$createType2 = $Create.Array($$createType1);
-const $$createType3 = store$0.DiscussionDefinition.createFrom;
-const $$createType4 = git$0.GitStatus.createFrom;
-const $$createType5 = provider$0.ModelInfo.createFrom;
-const $$createType6 = $Create.Array($$createType5);
-const $$createType7 = provider$0.ProviderStatus.createFrom;
+const $$createType1 = $models.GeneratedCommitMessage.createFrom;
+const $$createType2 = store$0.ChannelMessage.createFrom;
+const $$createType3 = $Create.Array($$createType2);
+const $$createType4 = store$0.DiscussionDefinition.createFrom;
+const $$createType5 = $models.Draft.createFrom;
+const $$createType6 = git$0.GitStatus.createFrom;
+const $$createType7 = $models.Keybinding.createFrom;
 const $$createType8 = $Create.Array($$createType7);
-const $$createType9 = settings$0.Settings.createFrom;
-const $$createType10 = git$0.GitActionResult.createFrom;
-const $$createType11 = git$0.GitBranch.createFrom;
+const $$createType9 = provider$0.ModelInfo.createFrom;
+const $$createType10 = $Create.Array($$createType9);
+const $$createType11 = provider$0.ProviderStatus.createFrom;
 const $$createType12 = $Create.Array($$createType11);
-const $$createType13 = git$0.Worktree.createFrom;
-const $$createType14 = $Create.Array($$createType13);
-const $$createType15 = store$0.DesignArtifact.createFrom;
+const $$createType13 = settings$0.Settings.createFrom;
+const $$createType14 = git$0.GitActionResult.createFrom;
+const $$createType15 = git$0.GitBranch.createFrom;
 const $$createType16 = $Create.Array($$createType15);
-const $$createType17 = $Create.Array($$createType3);
-const $$createType18 = store$0.Item.createFrom;
-const $$createType19 = $Create.Array($$createType18);
-const $$createType20 = store$0.PayloadMeta.createFrom;
-const $$createType21 = $Create.Array($$createType20);
-const $$createType22 = $Create.Array($$createType0);
-
-/**
- * CloseTerminal kills the terminal's process group and removes the session.
- * @param {string} terminalID
- * @returns {$CancellablePromise<void>}
- */
-export function CloseTerminal(terminalID) {
-    return $Call.ByID(2702963191, terminalID);
-}
-
-/**
- * GetTerminalReplay returns the base64-encoded replay buffer for a terminal.
- * @param {string} terminalID
- * @returns {$CancellablePromise<string>}
- */
-export function GetTerminalReplay(terminalID) {
-    return $Call.ByID(2329592604, terminalID);
-}
-
-/**
- * ListTerminals returns a summary per active terminal for the given thread.
- * @param {string} threadID
- * @returns {$CancellablePromise<any[]>}
- */
-export function ListTerminals(threadID) {
-    return $Call.ByID(2445206506, threadID);
-}
-
-/**
- * OpenTerminal starts a new PTY-backed terminal session bound to the given thread.
- * @param {string} threadID
- * @param {any} opts
- * @returns {$CancellablePromise<any>}
- */
-export function OpenTerminal(threadID, opts) {
-    return $Call.ByID(2247958725, threadID, opts);
-}
-
-/**
- * ResizeTerminal forwards a winsize change to the PTY.
- * @param {string} terminalID
- * @param {number} rows
- * @param {number} cols
- * @returns {$CancellablePromise<void>}
- */
-export function ResizeTerminal(terminalID, rows, cols) {
-    return $Call.ByID(1887984285, terminalID, rows, cols);
-}
-
-/**
- * RestartTerminal kills the given terminal and spawns a fresh replacement
- * with the same configuration.
- * @param {string} terminalID
- * @returns {$CancellablePromise<any>}
- */
-export function RestartTerminal(terminalID) {
-    return $Call.ByID(4152403588, terminalID);
-}
-
-/**
- * WriteTerminal writes base64-encoded data to the given terminal.
- * @param {string} terminalID
- * @param {string} dataB64
- * @returns {$CancellablePromise<void>}
- */
-export function WriteTerminal(terminalID, dataB64) {
-    return $Call.ByID(146795716, terminalID, dataB64);
-}
-
-// ---- Composer enhancements (attachments, drafts, workspace files) ----
-
-/**
- * UploadAttachment decodes base64 bytes, validates + persists them on disk,
- * and returns the new attachment metadata.
- * @param {string} threadID
- * @param {string} filename
- * @param {string} mimeType
- * @param {string} dataB64
- * @returns {$CancellablePromise<any>}
- */
-export function UploadAttachment(threadID, filename, mimeType, dataB64) {
-    return $Call.ByID(2485473713, threadID, filename, mimeType, dataB64);
-}
-
-/**
- * ListAttachments returns every attachment metadata row for a thread.
- * @param {string} threadID
- * @returns {$CancellablePromise<any[]>}
- */
-export function ListAttachments(threadID) {
-    return $Call.ByID(1730798413, threadID);
-}
-
-/**
- * DeleteAttachment removes the metadata row and the on-disk file.
- * @param {string} attachmentID
- * @returns {$CancellablePromise<void>}
- */
-export function DeleteAttachment(attachmentID) {
-    return $Call.ByID(2428457759, attachmentID);
-}
-
-/**
- * GetAttachmentData returns the base64-encoded raw bytes for rendering.
- * @param {string} attachmentID
- * @returns {$CancellablePromise<string>}
- */
-export function GetAttachmentData(attachmentID) {
-    return $Call.ByID(71154490, attachmentID);
-}
-
-/**
- * SaveDraft persists composer state for a thread.
- * @param {string} threadID
- * @param {string} content
- * @param {string[]} attachmentIDs
- * @param {any[]} terminalChips
- * @returns {$CancellablePromise<void>}
- */
-export function SaveDraft(threadID, content, attachmentIDs, terminalChips) {
-    return $Call.ByID(3025273299, threadID, content, attachmentIDs, terminalChips);
-}
-
-/**
- * GetDraft returns the stored composer draft for a thread (empty if none).
- * @param {string} threadID
- * @returns {$CancellablePromise<any>}
- */
-export function GetDraft(threadID) {
-    return $Call.ByID(875977146, threadID);
-}
-
-/**
- * ClearDraft removes any stored composer draft for a thread.
- * @param {string} threadID
- * @returns {$CancellablePromise<void>}
- */
-export function ClearDraft(threadID) {
-    return $Call.ByID(296814681, threadID);
-}
-
-/**
- * SearchWorkspaceFiles returns workspace files matching the query.
- * @param {string} threadID
- * @param {string} query
- * @param {number} limit
- * @returns {$CancellablePromise<any>}
- */
-export function SearchWorkspaceFiles(threadID, query, limit) {
-    return $Call.ByID(3852272821, threadID, query, limit);
-}
-
-// ---- Keybindings bindings (hand-appended; FNV32a of main.App.<Method>) ----
-
-/**
- * GetKeybindings returns the effective keybindings (defaults + user overrides).
- * @returns {$CancellablePromise<any[]>}
- */
-export function GetKeybindings() {
-    return $Call.ByID(3015840904);
-}
-
-/**
- * UpdateKeybindings replaces the persisted user keybindings.
- * @param {any[]} bindings
- * @returns {$CancellablePromise<void>}
- */
-export function UpdateKeybindings(bindings) {
-    return $Call.ByID(3490094229, bindings);
-}
-
-/**
- * ResetKeybindings deletes the user keybindings file so defaults are restored.
- * @returns {$CancellablePromise<void>}
- */
-export function ResetKeybindings() {
-    return $Call.ByID(2775767393);
-}
-
-// ---- Checkpoint bindings (hand-appended; FNV32a of main.App.<Method>) ----
-
-/**
- * GetTurnDiff returns the unified diff for a specific turn. Compares the
- * checkpoint at the start of turn N with the checkpoint at the start of
- * turn N+1, or against the current worktree when N is the latest turn.
- * @param {string} threadID
- * @param {number} turnIndex
- * @returns {$CancellablePromise<string>}
- */
-export function GetTurnDiff(threadID, turnIndex) {
-    return $Call.ByID(1809996571, threadID, turnIndex);
-}
-
-/**
- * GetCheckpointToWorktreeDiff returns the diff between a checkpoint ref
- * and the current worktree. Used by the three-source diff panel.
- * @param {string} threadID
- * @param {number} turnIndex
- * @returns {$CancellablePromise<string>}
- */
-export function GetCheckpointToWorktreeDiff(threadID, turnIndex) {
-    return $Call.ByID(3483878958, threadID, turnIndex);
-}
-
-/**
- * RevertToTurn rolls the conversation back to a prior turn's checkpoint.
- * mode="fork" creates a new thread forked at the checkpoint (safe for any
- * provider; the only safe mode for Claude). mode="restore" destructively
- * restores the workspace (Codex only). Returns the new thread ID on fork.
- * @param {string} threadID
- * @param {number} turnIndex
- * @param {string} mode
- * @returns {$CancellablePromise<string>}
- */
-export function RevertToTurn(threadID, turnIndex, mode) {
-    return $Call.ByID(3569172301, threadID, turnIndex, mode);
-}
-
-/**
- * ListThreadCheckpoints returns every persisted checkpoint row for a thread.
- * @param {string} threadID
- * @returns {$CancellablePromise<any[]>}
- */
-export function ListThreadCheckpoints(threadID) {
-    return $Call.ByID(1853132444, threadID);
-}
-
-// ---- Thread unarchive binding (hand-appended; FNV32a of main.App.UnarchiveThread) ----
-
-/**
- * UnarchiveThread flips archived back to false so the thread reappears in
- * the active sidebar. Returns the refreshed row.
- * @param {string} id
- * @returns {$CancellablePromise<store$0.Thread>}
- */
-export function UnarchiveThread(id) {
-    return $Call.ByID(3655125512, id).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType0($result);
-    }));
-}
-
-// ---- Thread interaction mode binding (hand-appended; FNV32a of main.App.SetThreadInteractionMode) ----
-
-/**
- * SetThreadInteractionMode persists a new interaction mode for a thread and
- * returns the refreshed row. Rejects modes outside
- * default/plan/design/discussion with a clear error.
- * @param {string} threadID
- * @param {string} mode
- * @returns {$CancellablePromise<store$0.Thread>}
- */
-export function SetThreadInteractionMode(threadID, mode) {
-    return $Call.ByID(1283963750, threadID, mode).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType0($result);
-    }));
-}
-
-// ---- Thread-from-PR binding (hand-appended; FNV32a of main.App.CreateThreadFromPR) ----
-
-/**
- * CreateThreadFromPR creates a new thread seeded with a GitHub PR's metadata
- * and diff as the first user message. Requires the `gh` CLI on PATH.
- * @param {string} ownerRepo
- * @param {number} number
- * @param {string} providerName
- * @param {string} model
- * @returns {$CancellablePromise<store$0.Thread>}
- */
-export function CreateThreadFromPR(ownerRepo, number, providerName, model) {
-    return $Call.ByID(1716017387, ownerRepo, number, providerName, model).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType0($result);
-    }));
-}
+const $$createType17 = git$0.Worktree.createFrom;
+const $$createType18 = $Create.Array($$createType17);
+const $$createType19 = store$0.Attachment.createFrom;
+const $$createType20 = $Create.Array($$createType19);
+const $$createType21 = store$0.DesignArtifact.createFrom;
+const $$createType22 = $Create.Array($$createType21);
+const $$createType23 = $Create.Array($$createType4);
+const $$createType24 = store$0.Item.createFrom;
+const $$createType25 = $Create.Array($$createType24);
+const $$createType26 = store$0.PayloadMeta.createFrom;
+const $$createType27 = $Create.Array($$createType26);
+const $$createType28 = terminal$0.SessionSummary.createFrom;
+const $$createType29 = $Create.Array($$createType28);
+const $$createType30 = store$0.Checkpoint.createFrom;
+const $$createType31 = $Create.Array($$createType30);
+const $$createType32 = $Create.Array($$createType0);
+const $$createType33 = $models.TerminalHandle.createFrom;
+const $$createType34 = provider$0.AccountInfo.createFrom;
+const $$createType35 = replay$0.Manager.createFrom;
+const $$createType36 = $Create.Nullable($$createType35);
+const $$createType37 = store$0.ThreadMessageHit.createFrom;
+const $$createType38 = $Create.Array($$createType37);
+const $$createType39 = $models.WorkspaceFileSearchResult.createFrom;
+const $$createType40 = $models.ThreadRuntimeModeChangedEvent.createFrom;
+const $$createType41 = otel$0.Provider.createFrom;
+const $$createType42 = $Create.Nullable($$createType41);

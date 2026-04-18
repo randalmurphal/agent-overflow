@@ -231,6 +231,16 @@ export class GitStatus {
              */
             this["openPrNumber"] = undefined;
         }
+        if (/** @type {any} */(false)) {
+            /**
+             * PendingOperation surfaces any in-progress multi-step operation that
+             * blocks new commits. Values: "merge", "rebase", "bisect", or "" when
+             * the repo is clean. Callers gate Ship Changes on this being empty.
+             * @member
+             * @type {string | undefined}
+             */
+            this["pendingOperation"] = undefined;
+        }
 
         Object.assign(this, $$source);
     }

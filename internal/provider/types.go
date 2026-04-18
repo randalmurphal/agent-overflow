@@ -14,6 +14,109 @@ const (
 	Codex  ProviderKind = "codex"
 )
 
+// RuntimeMode is the three-tier approval axis (mirrors t3-code). It controls
+// whether the agent prompts for tool use, auto-approves file edits, or
+// bypasses approvals entirely. Orthogonal to InteractionMode ("plan" /
+// "design" / "discussion"), which shapes *what* the agent does, not how
+// much friction is in the way.
+type RuntimeMode string
+
+const (
+	// RuntimeApprovalRequired prompts the user for every tool use. Safest
+	// default; maps to Claude permission mode "default" and Codex approval
+	// policy "untrusted" with a read-only sandbox.
+	RuntimeApprovalRequired RuntimeMode = "approval-required"
+
+	// RuntimeAutoAcceptEdits auto-approves file edits inside the workspace
+	// but still prompts for shell commands and other escalation. Maps to
+	// Claude "acceptEdits" and Codex "on-request" with a workspace-write
+	// sandbox.
+	RuntimeAutoAcceptEdits RuntimeMode = "auto-accept-edits"
+
+	// RuntimeFullAccess bypasses approvals entirely. Maps to Claude
+	// "bypassPermissions" and Codex "never" with a danger-full-access
+	// sandbox. This is the agent-overflow default — chosen deliberately
+	// over safer defaults because our target user is an agent operator
+	// who explicitly wants frictionless runs and will opt in to the
+	// stricter tiers on a per-thread basis.
+	RuntimeFullAccess RuntimeMode = "full-access"
+)
+
+// AllRuntimeModes is the canonical list. CHECK constraints, frontend
+// pickers, and migration fallbacks all reference it — keep in sync with the
+// const block above.
+var AllRuntimeModes = []RuntimeMode{
+	RuntimeApprovalRequired,
+	RuntimeAutoAcceptEdits,
+	RuntimeFullAccess,
+}
+
+// DefaultRuntimeMode is the seed value for new threads and for the global
+// settings default. Intentionally frictionless — see RuntimeFullAccess.
+const DefaultRuntimeMode = RuntimeFullAccess
+
+// NormalizeRuntimeMode returns the input if it's a known mode; otherwise
+// falls back to DefaultRuntimeMode. Callers pass arbitrary strings coming
+// from the wire or an older DB row; this is the chokepoint that keeps
+// unknown values out of the session-config mapping.
+func NormalizeRuntimeMode(mode string) RuntimeMode {
+	switch RuntimeMode(mode) {
+	case RuntimeApprovalRequired, RuntimeAutoAcceptEdits, RuntimeFullAccess:
+		return RuntimeMode(mode)
+	default:
+		return DefaultRuntimeMode
+	}
+}
+
+// ClaudePermissionMode maps a RuntimeMode to the `--permission-mode` flag
+// the Claude CLI accepts. Returns "" for approval-required, which maps to
+// omitting the flag entirely so the CLI uses its own "default" mode. The
+// caller treats empty as "do not pass --permission-mode".
+func ClaudePermissionMode(mode RuntimeMode) string {
+	switch mode {
+	case RuntimeAutoAcceptEdits:
+		return "acceptEdits"
+	case RuntimeFullAccess:
+		return "bypassPermissions"
+	case RuntimeApprovalRequired:
+		fallthrough
+	default:
+		// Claude CLI without --permission-mode is its internal "default"
+		// mode — prompts for every tool. Explicitly returning the empty
+		// string signals the caller to drop the flag; claude/session.go
+		// already gates on this.
+		return ""
+	}
+}
+
+// CodexApprovalPolicy maps a RuntimeMode to Codex's approval_policy field.
+func CodexApprovalPolicy(mode RuntimeMode) string {
+	switch mode {
+	case RuntimeAutoAcceptEdits:
+		return "on-request"
+	case RuntimeFullAccess:
+		return "never"
+	case RuntimeApprovalRequired:
+		fallthrough
+	default:
+		return "untrusted"
+	}
+}
+
+// CodexSandbox maps a RuntimeMode to Codex's sandbox_mode field.
+func CodexSandbox(mode RuntimeMode) string {
+	switch mode {
+	case RuntimeAutoAcceptEdits:
+		return "workspace-write"
+	case RuntimeFullAccess:
+		return "danger-full-access"
+	case RuntimeApprovalRequired:
+		fallthrough
+	default:
+		return "read-only"
+	}
+}
+
 // EventKind classifies provider events for triage routing.
 type EventKind string
 
@@ -46,7 +149,48 @@ const (
 	EventCommandOutput EventKind = "command_output"
 	EventThinking      EventKind = "thinking"
 	EventProposedPlan  EventKind = "proposed_plan"
+
+	// EventPlanUpdate carries incremental updates to Codex's turn plan
+	// (`turn/plan/updated` JSON-RPC notification). Distinct from
+	// EventProposedPlan, which is the *finalized* plan item; this kind
+	// streams intermediate states so the PlanSidebar / follow-up banner
+	// can surface an "in-progress plan" indicator without waiting for
+	// the full item. Claude has no direct analogue — its plans surface
+	// as the ExitPlanMode tool result, already routed via EventProposedPlan.
+	EventPlanUpdate EventKind = "plan_update"
 )
+
+// AllEventKinds is the canonical list of EventKind values. Triage and the
+// frontend router MUST handle every entry here; the exhaustiveness tests
+// enforce this. Keep in sync with the const block above — a new kind that is
+// not listed here (or any listed kind without a handler case) is the kind of
+// silent drop this slice exists to prevent.
+var AllEventKinds = []EventKind{
+	EventInit,
+	EventTextDelta,
+	EventToolStart,
+	EventToolComplete,
+	EventTurnStart,
+	EventTurnComplete,
+	EventApprovalRequest,
+	EventApprovalResolved,
+	EventSessionStatus,
+	EventTokenUsage,
+	EventError,
+	EventBackgroundStart,
+	EventBackgroundDelta,
+	EventBackgroundComplete,
+	EventToolProgress,
+	EventCompactBoundary,
+	EventRateLimits,
+	EventModelRerouted,
+	EventThreadRenamed,
+	EventDiff,
+	EventCommandOutput,
+	EventThinking,
+	EventProposedPlan,
+	EventPlanUpdate,
+}
 
 // ItemKind for persisted items in the database.
 type ItemKind string

@@ -279,17 +279,23 @@ func TestErrorNotification(t *testing.T) {
 }
 
 func TestTurnPlanUpdated(t *testing.T) {
+	// turn/plan/updated now emits EventPlanUpdate instead of overloading
+	// EventSessionStatus. The raw params become Meta so the frontend can
+	// render the incremental plan without a second round-trip.
 	params := json.RawMessage(`{"plan":"step 1, step 2"}`)
 	events := ClassifyNotification(testThread, "turn/plan/updated", params)
 
 	if len(events) != 1 {
 		t.Fatalf("expected 1 event, got %d", len(events))
 	}
-	if events[0].Kind != provider.EventSessionStatus {
-		t.Errorf("kind: got %q, want %q", events[0].Kind, provider.EventSessionStatus)
+	if events[0].Kind != provider.EventPlanUpdate {
+		t.Errorf("kind: got %q, want %q", events[0].Kind, provider.EventPlanUpdate)
 	}
-	if events[0].Content != "plan_updated" {
-		t.Errorf("content: got %q, want %q", events[0].Content, "plan_updated")
+	if events[0].Content != "" {
+		t.Errorf("content should be empty (payload rides on Meta), got %q", events[0].Content)
+	}
+	if string(events[0].Meta) != string(params) {
+		t.Errorf("meta: got %s, want %s", events[0].Meta, params)
 	}
 }
 

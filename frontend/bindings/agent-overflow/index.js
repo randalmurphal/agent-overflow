@@ -6,3 +6,14 @@ import * as App from "./app.js";
 export {
     App
 };
+
+export {
+    Draft,
+    GeneratedCommitMessage,
+    Keybinding,
+    TerminalChip,
+    TerminalHandle,
+    TerminalOpenOptions,
+    ThreadRuntimeModeChangedEvent,
+    WorkspaceFileSearchResult
+} from "./models.js";

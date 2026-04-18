@@ -67,8 +67,8 @@ func TestMigrationVersionTracking(t *testing.T) {
 		t.Fatalf("rows err: %v", err)
 	}
 
-	if len(versions) != 11 {
-		t.Fatalf("expected 11 migration versions, got %d", len(versions))
+	if len(versions) != 12 {
+		t.Fatalf("expected 12 migration versions, got %d", len(versions))
 	}
 	if versions[0].version != 1 || versions[0].name != "initial_schema" {
 		t.Errorf("v1: got %d/%s", versions[0].version, versions[0].name)
@@ -103,6 +103,9 @@ func TestMigrationVersionTracking(t *testing.T) {
 	if versions[10].version != 11 || versions[10].name != "threads_interaction_mode_check" {
 		t.Errorf("v11: got %d/%s", versions[10].version, versions[10].name)
 	}
+	if versions[11].version != 12 || versions[11].name != "threads_runtime_mode" {
+		t.Errorf("v12: got %d/%s", versions[11].version, versions[11].name)
+	}
 }
 
 func TestMigrationIdempotent(t *testing.T) {
@@ -122,8 +125,8 @@ func TestMigrationIdempotent(t *testing.T) {
 	if err := db.QueryRow("SELECT COUNT(*) FROM migration_versions").Scan(&count); err != nil {
 		t.Fatalf("count: %v", err)
 	}
-	if count != 11 {
-		t.Errorf("expected 11 version rows after idempotent re-run, got %d", count)
+	if count != 12 {
+		t.Errorf("expected 12 version rows after idempotent re-run, got %d", count)
 	}
 }
 
@@ -160,8 +163,8 @@ func TestMigrationExistingVersionedDBSkipsAppliedV1(t *testing.T) {
 	if err := db.QueryRow("SELECT COUNT(*) FROM migration_versions").Scan(&appliedVersions); err != nil {
 		t.Fatalf("count migration rows: %v", err)
 	}
-	if appliedVersions != 11 {
-		t.Fatalf("expected 11 applied migrations, got %d", appliedVersions)
+	if appliedVersions != 12 {
+		t.Fatalf("expected 12 applied migrations, got %d", appliedVersions)
 	}
 }
 
@@ -201,10 +204,10 @@ func TestMigrationExistingLegacyDBSeedsTrackingAndAppliesV2(t *testing.T) {
 		t.Fatalf("read migration rows: %v", err)
 	}
 
-	if len(versions) != 11 {
-		t.Fatalf("expected 11 applied migrations, got %d", len(versions))
+	if len(versions) != 12 {
+		t.Fatalf("expected 12 applied migrations, got %d", len(versions))
 	}
-	expected := []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11}
+	expected := []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}
 	for i, want := range expected {
 		if versions[i] != want {
 			t.Fatalf("unexpected migration versions: %v", versions)
@@ -303,10 +306,10 @@ func TestMigrationExistingLegacyParityDBBackfillsVersionHistory(t *testing.T) {
 		t.Fatalf("read migration versions: %v", err)
 	}
 
-	if len(versions) != 11 {
-		t.Fatalf("expected 11 migration rows after legacy backfill + new migrations, got %d", len(versions))
+	if len(versions) != 12 {
+		t.Fatalf("expected 12 migration rows after legacy backfill + new migrations, got %d", len(versions))
 	}
-	expectedVersions := []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11}
+	expectedVersions := []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}
 	for i, want := range expectedVersions {
 		if versions[i].version != want {
 			t.Fatalf("unexpected migration versions: %+v", versions)
@@ -696,6 +699,68 @@ func TestProviderCheckConstraintRejectsBogusValue(t *testing.T) {
 	_, err = s.db.Exec(`UPDATE threads SET provider = 'nope' WHERE id = 't-ok-claude'`)
 	if err == nil {
 		t.Error("UPDATE to bogus provider must fail")
+	}
+}
+
+// TestRuntimeModeCheckConstraintRejectsBogusValue guards the CHECK
+// constraint added in v12: the runtime_mode column only accepts the
+// three sanctioned values (approval-required / auto-accept-edits /
+// full-access). Any other string must be rejected at the storage
+// layer.
+func TestRuntimeModeCheckConstraintRejectsBogusValue(t *testing.T) {
+	s := newTestStore(t)
+
+	// Rejected: unknown value.
+	_, err := s.db.Exec(`
+		INSERT INTO threads (id, title, provider, workspace_path, model,
+			created_at, updated_at, archived, interaction_mode, runtime_mode, project_path)
+		VALUES ('t-bogus-runtime', 'Bogus', 'claude', '/tmp', '', 1, 1, 0, 'default', 'yolo', '/tmp')
+	`)
+	if err == nil {
+		t.Fatal("INSERT with runtime_mode='yolo' must violate CHECK constraint")
+	}
+	if !strings.Contains(err.Error(), "CHECK") && !strings.Contains(err.Error(), "constraint") {
+		t.Errorf("error = %v, want CHECK constraint violation", err)
+	}
+
+	// Sanity: all three allowed values succeed.
+	for _, m := range []string{"approval-required", "auto-accept-edits", "full-access"} {
+		if _, err := s.db.Exec(`
+			INSERT INTO threads (id, title, provider, workspace_path, model,
+				created_at, updated_at, archived, interaction_mode, runtime_mode, project_path)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, "t-ok-"+m, "Ok", "claude", "/tmp", "", 1, 1, 0, "default", m, "/tmp"); err != nil {
+			t.Errorf("INSERT with runtime_mode=%q: %v", m, err)
+		}
+	}
+
+	// UPDATE to a bogus value must also fail.
+	if _, err := s.db.Exec(`UPDATE threads SET runtime_mode = 'nope' WHERE id = 't-ok-full-access'`); err == nil {
+		t.Error("UPDATE to bogus runtime_mode must fail")
+	}
+}
+
+// TestRuntimeModeDefaultSeedsFullAccess asserts that rows inserted
+// without specifying runtime_mode (e.g., the legacy code path or a
+// pre-v12 row that came through the migration with a DEFAULT) land on
+// 'full-access' — which matches provider.DefaultRuntimeMode.
+func TestRuntimeModeDefaultSeedsFullAccess(t *testing.T) {
+	s := newTestStore(t)
+
+	if _, err := s.db.Exec(`
+		INSERT INTO threads (id, title, provider, workspace_path, model,
+			created_at, updated_at, archived, interaction_mode, project_path)
+		VALUES ('t-default-rm', 'Default', 'claude', '/tmp', '', 1, 1, 0, 'default', '/tmp')
+	`); err != nil {
+		t.Fatalf("INSERT without runtime_mode: %v", err)
+	}
+
+	var got string
+	if err := s.db.QueryRow(`SELECT runtime_mode FROM threads WHERE id = 't-default-rm'`).Scan(&got); err != nil {
+		t.Fatalf("select runtime_mode: %v", err)
+	}
+	if got != "full-access" {
+		t.Errorf("runtime_mode default = %q, want full-access", got)
 	}
 }
 

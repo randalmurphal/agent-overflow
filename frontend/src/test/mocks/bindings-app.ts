@@ -86,6 +86,14 @@ export const SendMessage = dispatch('SendMessage');
 export const InterruptTurn = dispatch('InterruptTurn');
 export const RespondToApproval = dispatch('RespondToApproval');
 
+// Thread-scoped model / workspace / message-search / commit-message bindings
+// (previously hand-wrapped with Call.ByName; now re-exported through the
+// generated app.js). Tests stub these through setBindingMock by method name.
+export const UpdateThreadModel = dispatch('UpdateThreadModel');
+export const WriteThreadWorkspaceFile = dispatch('WriteThreadWorkspaceFile');
+export const SearchThreadMessages = dispatch('SearchThreadMessages');
+export const GenerateCommitMessage = dispatch('GenerateCommitMessage');
+
 export const GetPayloadData = dispatch('GetPayloadData');
 export const ListItems = dispatch('ListItems');
 export const ListPayloadMetas = dispatch('ListPayloadMetas');
@@ -144,6 +152,10 @@ export const ListThreadCheckpoints = dispatch('ListThreadCheckpoints');
 
 // Thread interaction mode
 export const SetThreadInteractionMode = dispatch('SetThreadInteractionMode');
+
+// Thread runtime mode
+export const GetThreadRuntimeMode = dispatch('GetThreadRuntimeMode');
+export const SetThreadRuntimeMode = dispatch('SetThreadRuntimeMode');
 
 // PR-based thread creation
 export const CreateThreadFromPR = dispatch('CreateThreadFromPR');

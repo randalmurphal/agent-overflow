@@ -5,6 +5,7 @@ package triage
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -21,6 +22,13 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	tracenoop "go.opentelemetry.io/otel/trace/noop"
 )
+
+// ErrUnhandledEventKind is returned by Handle when the switch lands in its
+// default branch — i.e. a new EventKind was added to the provider package
+// without a matching case here. The event is still emitted to the frontend
+// under "provider:event" as a best-effort passthrough; the sentinel lets the
+// exhaustiveness test flag the drift.
+var ErrUnhandledEventKind = errors.New("triage: unhandled event kind")
 
 // CheckpointCapture is the subset of checkpoint.Store that the router calls
 // at turn-start. Kept as an interface so tests can inject a stub.
@@ -166,7 +174,8 @@ func (r *Router) Handle(evt provider.ProviderEvent) error {
 		provider.EventCompactBoundary,
 		provider.EventRateLimits,
 		provider.EventError,
-		provider.EventBackgroundStart:
+		provider.EventBackgroundStart,
+		provider.EventPlanUpdate:
 		return r.emitInline(evt)
 	case provider.EventTokenUsage:
 		return r.handleTokenUsage(evt)
@@ -191,9 +200,8 @@ func (r *Router) Handle(evt provider.ProviderEvent) error {
 	case provider.EventProposedPlan:
 		return r.persistHeavy(evt, "proposed_plan", string(provider.ItemProposedPlan))
 	default:
-		log.Printf("triage: unhandled event kind: %s", evt.Kind)
 		r.emit("provider:event", evt)
-		return nil
+		return fmt.Errorf("%w: %s", ErrUnhandledEventKind, evt.Kind)
 	}
 }
 

@@ -12,7 +12,7 @@
 //     That keeps this store testable without mounting any component.
 
 import { addToast } from './toast.svelte';
-import { GetKeybindings, ResetKeybindings, UpdateKeybindings } from './bindings';
+import { GetKeybindings, Keybinding, ResetKeybindings, UpdateKeybindings } from './bindings';
 import { runCommand, type CommandContext } from './commandRegistry.svelte';
 import type { Chord, WhenNode } from './keybindingParser';
 import {
@@ -122,7 +122,14 @@ export async function loadKeybindings(): Promise<void> {
  * rules that differ from defaults — the backend re-merges on the next read).
  */
 export async function saveKeybindings(next: KeybindingRule[]): Promise<void> {
-  await UpdateKeybindings(next);
+  // The Wails-generated Keybinding class treats optional `when` as
+  // `string | undefined` (required-but-maybe-absent) rather than `?:`, so we
+  // normalize through the constructor to satisfy the binding's parameter type.
+  const payload = next.map(
+    (rule) =>
+      new Keybinding({ key: rule.key, command: rule.command, when: rule.when }),
+  );
+  await UpdateKeybindings(payload);
   await loadKeybindings();
 }
 

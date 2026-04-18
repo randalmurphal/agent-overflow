@@ -113,8 +113,34 @@ export class Settings {
              */
             this["codexEnabled"] = false;
         }
+        if (!("defaultRuntimeMode" in $$source)) {
+            /**
+             * DefaultRuntimeMode is the three-tier approval axis applied to every
+             * new thread when the user hasn't picked a different mode at creation
+             * time. Accepts "approval-required", "auto-accept-edits", or
+             * "full-access"; unknown values are coerced to "full-access" at the
+             * provider-mode chokepoint so a stale settings file can't lock the
+             * app into an invalid mode.
+             * @member
+             * @type {string}
+             */
+            this["defaultRuntimeMode"] = "";
+        }
         if (!("observabilityTracingEnabled" in $$source)) {
             /**
+             * Observability — all opt-in. Empty/false defaults leave the app quiet.
+             * 
+             * SECURITY NOTE: this file is stored on disk in plaintext and is
+             * read/written without any encryption. That is fine for the fields
+             * we currently persist — an OTLP endpoint is not a secret (it's a
+             * gRPC/HTTP URL the user already exposes to every app running on
+             * their machine). If a future field stores anything that could
+             * reasonably be called a secret (API keys, bearer tokens, user
+             * credentials), do NOT put it here: settings.json is written with
+             * 0644 permissions, landed in a user-visible config dir, and may
+             * be synced to cloud backup without the user realising. Put secrets
+             * in the OS keychain via a dedicated package and keep this struct
+             * for non-sensitive preferences only.
              * @member
              * @type {boolean}
              */

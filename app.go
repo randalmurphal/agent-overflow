@@ -370,6 +370,7 @@ func (a *App) CreateThread(providerName string, workspacePath string, model stri
 		ProjectPath:     projectPath,
 		Model:           model,
 		InteractionMode: mode,
+		RuntimeMode:     a.defaultRuntimeModeForNewThread(),
 		CreatedAt:       now,
 		UpdatedAt:       now,
 	}
@@ -485,14 +486,16 @@ func (a *App) startSessionNow(threadID string) error {
 			resumeRef = t.PendingForkRef
 			forkSession = true
 		}
+		runtimeMode := provider.NormalizeRuntimeMode(t.RuntimeMode)
 		cfg := claude.Config{
-			Binary:       a.providerBinaryPath(t.Provider),
-			Model:        t.Model,
-			WorkDir:      t.WorkspacePath,
-			Resume:       resumeRef,
-			ForkSession:  forkSession,
-			SystemPrompt: systemPrompt,
-			EventLogger:  a.logger,
+			Binary:         a.providerBinaryPath(t.Provider),
+			Model:          t.Model,
+			WorkDir:        t.WorkspacePath,
+			Resume:         resumeRef,
+			ForkSession:    forkSession,
+			SystemPrompt:   systemPrompt,
+			PermissionMode: provider.ClaudePermissionMode(runtimeMode),
+			EventLogger:    a.logger,
 		}
 		sess, err := claude.NewSession(context.Background(), threadID, cfg, onEvent)
 		if err != nil {
@@ -513,10 +516,13 @@ func (a *App) startSessionNow(threadID string) error {
 			return fmt.Errorf("start session: %w", err)
 		}
 		systemPrompt := joinSystemPrompts(designCfg.Prompt, threadPrompt)
+		runtimeMode := provider.NormalizeRuntimeMode(t.RuntimeMode)
 		cfg := codex.Config{
 			Binary:         a.providerBinaryPath(t.Provider),
 			Model:          t.Model,
 			WorkDir:        t.WorkspacePath,
+			ApprovalPolicy: provider.CodexApprovalPolicy(runtimeMode),
+			Sandbox:        provider.CodexSandbox(runtimeMode),
 			ResumeThreadID: t.SessionRef,
 			SystemPrompt:   systemPrompt,
 			MCPServers:     designCfg.MCPServers,

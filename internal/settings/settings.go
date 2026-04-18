@@ -28,6 +28,14 @@ type Settings struct {
 	ClaudeEnabled      bool     `json:"claudeEnabled"`
 	CodexEnabled       bool     `json:"codexEnabled"`
 
+	// DefaultRuntimeMode is the three-tier approval axis applied to every
+	// new thread when the user hasn't picked a different mode at creation
+	// time. Accepts "approval-required", "auto-accept-edits", or
+	// "full-access"; unknown values are coerced to "full-access" at the
+	// provider-mode chokepoint so a stale settings file can't lock the
+	// app into an invalid mode.
+	DefaultRuntimeMode string `json:"defaultRuntimeMode"`
+
 	// Observability — all opt-in. Empty/false defaults leave the app quiet.
 	//
 	// SECURITY NOTE: this file is stored on disk in plaintext and is
@@ -61,6 +69,10 @@ var DefaultSettings = Settings{
 	CodexBinaryPath:    "codex",
 	ClaudeEnabled:      true,
 	CodexEnabled:       true,
+	// DefaultRuntimeMode mirrors provider.DefaultRuntimeMode. Duplicated as
+	// a string literal rather than imported so internal/settings doesn't
+	// pull in the provider package (tiny leaf package, kept leaf).
+	DefaultRuntimeMode: "full-access",
 	// Observability defaults to off so there is zero runtime cost for users
 	// who don't opt in. The OTLP endpoint is only meaningful when tracing
 	// is enabled; we leave it blank so a misconfigured endpoint can't cause
