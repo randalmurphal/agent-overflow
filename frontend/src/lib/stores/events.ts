@@ -6,6 +6,7 @@ import type { ThreadPane } from './thread.svelte';
 import { getAllPanes } from './panes.svelte';
 import { addToast } from './toast.svelte';
 import { getThreads, updateThreadTitle, updateThreadModel, replaceThread } from './threads.svelte';
+import { setThreadStatus } from './threadStatuses.svelte';
 import { RespondToApproval, ApprovalResponse } from './bindings';
 
 /**
@@ -243,19 +244,21 @@ function routeEventToPane(pane: ThreadPane, evt: ProviderEvent): void {
       break;
 
     case 'model_rerouted':
+      // The sidebar cache and toast are handled in applyThreadLevelUpdate
+      // (runs before the pane loop so non-active threads also refresh).
+      // The pane mutation here only fires for the matching pane.
       if (evt.meta) {
         const data = evt.meta as { newModel: string };
         pane.updateModel(data.newModel);
-        updateThreadModel(evt.threadId, data.newModel);
-        addToast('info', `Model rerouted to ${data.newModel}`);
       }
       break;
 
     case 'thread_renamed':
+      // Same split as model_rerouted: sidebar cache is updated outside
+      // the pane loop, pane-local state here.
       if (evt.meta) {
         const data = evt.meta as { newTitle: string };
         pane.updateTitle(data.newTitle);
-        updateThreadTitle(evt.threadId, data.newTitle);
       }
       break;
 
@@ -283,6 +286,88 @@ function routeEventToPane(pane: ThreadPane, evt: ProviderEvent): void {
 }
 
 /**
+ * Apply updates that must happen for every provider event regardless of
+ * whether a pane currently owns the thread. The sidebar renders live
+ * status dots for every tracked thread, not just the focused one, and
+ * rename/model-rerouted updates should refresh the cached thread row
+ * whether the user is looking at it or not.
+ *
+ * Deliberately runs before the pane-match loop in the event handler so
+ * status for an off-pane thread still registers.
+ */
+function applyThreadLevelUpdate(evt: ProviderEvent): void {
+  if (!evt.threadId) return;
+
+  switch (evt.kind) {
+    case 'turn_start':
+      setThreadStatus(evt.threadId, 'running');
+      break;
+
+    case 'turn_complete':
+      // Let pending approvals dominate: if the backend landed a
+      // turn_complete while an approval is still unresolved (shouldn't
+      // happen for a well-behaved provider but we defend anyway), we
+      // don't want to stomp the pending-approval dot back to idle.
+      // The pane's pendingApprovals array is the authority, but since
+      // this function is pane-agnostic by design we just transition to
+      // idle — the next approval_request will re-raise the dot.
+      setThreadStatus(evt.threadId, 'idle');
+      break;
+
+    case 'approval_request':
+      setThreadStatus(evt.threadId, 'pending-approval');
+      break;
+
+    case 'approval_resolved':
+      // We don't know from this event alone whether the pane has more
+      // pending approvals. Transitioning back to 'running' is a safe
+      // middle ground: an in-flight turn keeps its dot until the next
+      // turn_complete settles to idle. If there's no turn running (rare
+      // — approvals usually live inside a turn) the dot stays amber
+      // until the backend emits another status change.
+      setThreadStatus(evt.threadId, 'running');
+      break;
+
+    case 'error':
+      setThreadStatus(evt.threadId, 'error');
+      break;
+
+    case 'init':
+    case 'session_status':
+      // 'connected' / 'ready' are the provider's way of saying "I'm
+      // alive but not actively working". Map both to idle; anything
+      // else (reconnecting, disconnected, unknown) leaves whatever
+      // status is set — we conservatively do nothing on those strings
+      // so a running turn mid-reconnect doesn't lose its dot.
+      if (evt.kind === 'init') {
+        setThreadStatus(evt.threadId, 'idle');
+      } else if (evt.content === 'connected' || evt.content === 'ready') {
+        setThreadStatus(evt.threadId, 'idle');
+      }
+      break;
+
+    case 'model_rerouted':
+      if (evt.meta) {
+        const data = evt.meta as { newModel: string };
+        updateThreadModel(evt.threadId, data.newModel);
+        addToast('info', `Model rerouted to ${data.newModel}`);
+      }
+      break;
+
+    case 'thread_renamed':
+      if (evt.meta) {
+        const data = evt.meta as { newTitle: string };
+        updateThreadTitle(evt.threadId, data.newTitle);
+      }
+      break;
+
+    default:
+      // All other kinds have no thread-level projection.
+      break;
+  }
+}
+
+/**
  * Set up Wails event listeners for provider events.
  * Returns a cleanup function that removes all listeners.
  */
@@ -293,6 +378,11 @@ export function setupEventListeners(): () => void {
   resetSeqTracking();
 
   const cancelEvent = wailsEventOn<ProviderEvent>('provider:event', (evt) => {
+    // Thread-level updates (sidebar cache, live status dot) must run
+    // whether or not a pane currently owns the thread — the sidebar
+    // renders every thread, not just the focused one.
+    applyThreadLevelUpdate(evt);
+
     for (const pane of getAllPanes().values()) {
       if (pane.threadId === evt.threadId) {
         routeEventToPane(pane, evt);
@@ -315,6 +405,13 @@ export function setupEventListeners(): () => void {
   const cancelError = wailsEventOn<ProviderEvent>('provider:error', (evt) => {
     console.error('Provider error event:', evt.content);
     addToast('error', evt.content ?? 'Provider error');
+    // Mirror the per-pane error onto the sidebar dot so a background
+    // thread that tripped on the provider:error channel (not the
+    // multiplexed provider:event channel) still surfaces red in the
+    // sidebar.
+    if (evt.threadId) {
+      setThreadStatus(evt.threadId, 'error');
+    }
     for (const pane of getAllPanes().values()) {
       if (pane.threadId === evt.threadId) {
         pane.setError(evt.content ?? 'Unknown provider error');

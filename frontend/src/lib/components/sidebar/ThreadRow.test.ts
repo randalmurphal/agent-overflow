@@ -4,6 +4,7 @@ import ThreadRow from './ThreadRow.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
 import { loadSettings } from '../../stores/settings.svelte';
 import { refreshThreads, getThreads } from '../../stores/threads.svelte';
+import { resetForTest as resetThreadStatuses, setThreadStatus } from '../../stores/threadStatuses.svelte';
 import type { Thread } from '../../types/models';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 
@@ -198,6 +199,80 @@ describe('<ThreadRow> fork lineage badge', () => {
     expect(rowSelectCalled).toBe(0);
     // Pane should be on the PARENT (not the forked thread we rendered).
     expect(pane.threadId).toBe('parent');
+  });
+});
+
+describe('<ThreadRow> live status dot', () => {
+  beforeEach(async () => {
+    await primeSettings();
+    setBindingMock('ListThreads', async () => []);
+    await refreshThreads();
+    resetThreadStatuses();
+  });
+
+  it('renders a placeholder (no dot) when the thread is idle', () => {
+    const pane = createThreadPane();
+    const { queryByTestId } = render(ThreadRow, {
+      props: { thread: makeThread({ id: 't-idle' }), pane },
+    });
+    expect(queryByTestId('thread-row-status-dot')).toBeNull();
+    expect(queryByTestId('thread-row-status-placeholder')).toBeInTheDocument();
+  });
+
+  it('renders an amber pulsing dot when the thread is running', () => {
+    setThreadStatus('t-run', 'running');
+    const pane = createThreadPane();
+    const { getByTestId, queryByTestId } = render(ThreadRow, {
+      props: { thread: makeThread({ id: 't-run' }), pane },
+    });
+    expect(queryByTestId('thread-row-status-placeholder')).toBeNull();
+    const dot = getByTestId('thread-row-status-dot');
+    expect(dot.getAttribute('data-status')).toBe('running');
+    expect(dot.getAttribute('aria-label')).toBe('Running');
+    expect(dot.getAttribute('title')).toBe('Running');
+    expect(dot.classList.contains('bg-warning')).toBe(true);
+    expect(dot.classList.contains('animate-pulse')).toBe(true);
+  });
+
+  it('renders an accent dot when an approval is pending', () => {
+    setThreadStatus('t-approval', 'pending-approval');
+    const pane = createThreadPane();
+    const { getByTestId } = render(ThreadRow, {
+      props: { thread: makeThread({ id: 't-approval' }), pane },
+    });
+    const dot = getByTestId('thread-row-status-dot');
+    expect(dot.getAttribute('data-status')).toBe('pending-approval');
+    expect(dot.getAttribute('aria-label')).toBe('Pending approval');
+    expect(dot.classList.contains('bg-accent')).toBe(true);
+  });
+
+  it('renders an error dot when the thread has errored', () => {
+    setThreadStatus('t-err', 'error');
+    const pane = createThreadPane();
+    const { getByTestId } = render(ThreadRow, {
+      props: { thread: makeThread({ id: 't-err' }), pane },
+    });
+    const dot = getByTestId('thread-row-status-dot');
+    expect(dot.getAttribute('data-status')).toBe('error');
+    expect(dot.getAttribute('aria-label')).toBe('Error');
+    expect(dot.classList.contains('bg-error')).toBe(true);
+  });
+
+  it('uses the thread id (not some shared row instance) for the lookup', () => {
+    setThreadStatus('t-a', 'running');
+    setThreadStatus('t-b', 'error');
+    const pane = createThreadPane();
+    // Scope each query to its own render's baseElement so duplicate
+    // data-testid attributes in the shared document body don't collide.
+    const rowA = render(ThreadRow, { props: { thread: makeThread({ id: 't-a' }), pane } });
+    const dotA = rowA.container.querySelector<HTMLElement>('[data-testid="thread-row-status-dot"]');
+    expect(dotA?.getAttribute('data-status')).toBe('running');
+    rowA.unmount();
+
+    const rowB = render(ThreadRow, { props: { thread: makeThread({ id: 't-b' }), pane } });
+    const dotB = rowB.container.querySelector<HTMLElement>('[data-testid="thread-row-status-dot"]');
+    expect(dotB?.getAttribute('data-status')).toBe('error');
+    rowB.unmount();
   });
 });
 

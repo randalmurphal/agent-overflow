@@ -3,6 +3,7 @@
   import { getSettings } from '../../stores/settings.svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { getThreadById, prependThread, removeThread, replaceThread, updateThreadTitle } from '../../stores/threads.svelte';
+  import { getThreadStatus, type ThreadLiveStatus } from '../../stores/threadStatuses.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import type { Thread } from '../../types/models';
   import ConfirmDialog from '../shared/ConfirmDialog.svelte';
@@ -56,6 +57,38 @@
   let forkParent = $derived.by<Thread | undefined>(() => {
     if (!thread.forkedFromThreadId) return undefined;
     return getThreadById(thread.forkedFromThreadId);
+  });
+
+  // Sidebar live-status dot. Reads from the global threadStatuses store
+  // so a background thread's turn-start / approval-request / error is
+  // visible without focusing the pane. 'idle' renders nothing so the
+  // row layout stays stable when a thread is quiet.
+  let liveStatus: ThreadLiveStatus = $derived(getThreadStatus(thread.id));
+  let statusDotClass = $derived.by(() => {
+    switch (liveStatus) {
+      case 'running':
+        return 'bg-warning animate-pulse';
+      case 'pending-approval':
+        return 'bg-accent';
+      case 'error':
+        return 'bg-error';
+      case 'idle':
+      default:
+        return '';
+    }
+  });
+  let statusDotLabel = $derived.by(() => {
+    switch (liveStatus) {
+      case 'running':
+        return 'Running';
+      case 'pending-approval':
+        return 'Pending approval';
+      case 'error':
+        return 'Error';
+      case 'idle':
+      default:
+        return '';
+    }
   });
 
   async function handleJumpToParent(e: MouseEvent): Promise<void> {
@@ -268,6 +301,20 @@
       {thread.provider === 'claude' ? 'bg-accent/20 text-accent' : 'bg-provider-codex/20 text-provider-codex'}" aria-hidden="true">
       {thread.provider === 'claude' ? 'C' : 'X'}
     </span>
+    {#if liveStatus === 'idle'}
+      <!-- Transparent placeholder so the row doesn't shift when a dot
+           appears/disappears as a thread moves through running/idle. -->
+      <span class="w-2 h-2 shrink-0" aria-hidden="true" data-testid="thread-row-status-placeholder"></span>
+    {:else}
+      <span
+        class="w-2 h-2 rounded-full shrink-0 {statusDotClass}"
+        role="status"
+        aria-label={statusDotLabel}
+        title={statusDotLabel}
+        data-testid="thread-row-status-dot"
+        data-status={liveStatus}
+      ></span>
+    {/if}
 
     {#if editing}
       <!-- svelte-ignore a11y_autofocus -->

@@ -2,6 +2,8 @@ import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import { setupEventListeners } from './events';
 import { createThreadPane, type ThreadPane } from './thread.svelte';
 import { getAllPanes } from './panes.svelte';
+import { getThreadStatus, resetForTest as resetThreadStatuses } from './threadStatuses.svelte';
+import { refreshThreads, getThreads } from './threads.svelte';
 import type { Thread } from '../types/models';
 import type { ProviderEvent, EventKind } from '../types/events';
 import { emitWailsEvent, wailsListenerCount } from '../../test/mocks/wailsio-runtime';
@@ -54,12 +56,14 @@ describe('events router', () => {
   beforeEach(() => {
     // Clear any panes left over.
     getAllPanes().clear();
+    resetThreadStatuses();
     cleanup = setupEventListeners();
   });
 
   afterEach(() => {
     cleanup();
     getAllPanes().clear();
+    resetThreadStatuses();
   });
 
   describe('listener lifecycle', () => {
@@ -414,6 +418,167 @@ describe('events router', () => {
       });
       expect(pane.items).toEqual([]);
       expect(pane.streamingContent).toBe('');
+    });
+  });
+
+  describe('sidebar live status updates', () => {
+    // Live status is set on the global threadStatuses map regardless of
+    // whether a pane currently owns the thread. The sidebar renders a dot
+    // for every tracked thread, so the router must keep the map fresh
+    // even for backgrounded threads.
+
+    it('turn_start marks the thread running', async () => {
+      await installPane(thread('thread-1'));
+      emitWailsEvent('provider:event', event('turn_start'));
+      expect(getThreadStatus('thread-1')).toBe('running');
+    });
+
+    it('approval_request marks the thread pending-approval', async () => {
+      await installPane(thread('thread-1'));
+      emitWailsEvent('provider:event', event('approval_request', {
+        meta: {
+          requestId: 'req-1',
+          threadId: 'thread-1',
+          toolName: 'bash',
+          description: '',
+          input: null,
+          title: 'approve bash',
+        },
+      }));
+      expect(getThreadStatus('thread-1')).toBe('pending-approval');
+    });
+
+    it('turn_complete settles to idle', async () => {
+      await installPane(thread('thread-1'));
+      setBindingMock('ListItems', async () => []);
+      emitWailsEvent('provider:event', event('turn_start'));
+      emitWailsEvent('provider:event', event('turn_complete'));
+      expect(getThreadStatus('thread-1')).toBe('idle');
+    });
+
+    it('error sets status to error', async () => {
+      await installPane(thread('thread-1'));
+      const consoleErr = vi.spyOn(console, 'error').mockImplementation(() => {});
+      emitWailsEvent('provider:event', event('error', { content: 'boom' }));
+      expect(getThreadStatus('thread-1')).toBe('error');
+      consoleErr.mockRestore();
+    });
+
+    it('approval_resolved transitions to running (turn-level dot remains)', async () => {
+      await installPane(thread('thread-1'));
+      emitWailsEvent('provider:event', event('approval_request', {
+        meta: {
+          requestId: 'req-X',
+          threadId: 'thread-1',
+          toolName: 'edit',
+          description: '',
+          input: null,
+          title: '',
+        },
+      }));
+      expect(getThreadStatus('thread-1')).toBe('pending-approval');
+      emitWailsEvent('provider:event', event('approval_resolved', { itemId: 'req-X' }));
+      expect(getThreadStatus('thread-1')).toBe('running');
+    });
+
+    it('init settles to idle', async () => {
+      await installPane(thread('thread-1'));
+      emitWailsEvent('provider:event', event('error', { content: 'boom' }));
+      const consoleErr = vi.spyOn(console, 'error').mockImplementation(() => {});
+      expect(getThreadStatus('thread-1')).toBe('error');
+      emitWailsEvent('provider:event', event('init'));
+      expect(getThreadStatus('thread-1')).toBe('idle');
+      consoleErr.mockRestore();
+    });
+
+    it('session_status = connected settles to idle; reconnecting leaves status unchanged', async () => {
+      await installPane(thread('thread-1'));
+      emitWailsEvent('provider:event', event('turn_start'));
+      expect(getThreadStatus('thread-1')).toBe('running');
+      // Reconnecting is an ambiguous transitional state — don't touch the dot.
+      emitWailsEvent('provider:event', event('session_status', { content: 'reconnecting' }));
+      expect(getThreadStatus('thread-1')).toBe('running');
+      // Connected / ready means the provider is alive and idle.
+      emitWailsEvent('provider:event', event('session_status', { content: 'connected' }));
+      expect(getThreadStatus('thread-1')).toBe('idle');
+    });
+
+    it('updates status for a thread that no pane owns', async () => {
+      // Critical invariant: the sidebar dot must update for backgrounded
+      // threads too. The router today only dispatches to matching panes,
+      // but status is a thread-level projection — it's independent of
+      // which pane is focused.
+      await installPane(thread('main-thread'));
+      emitWailsEvent('provider:event', event('turn_start', { threadId: 'background-thread' }));
+      expect(getThreadStatus('background-thread')).toBe('running');
+      // And of course the owning pane's thread status is untouched.
+      expect(getThreadStatus('main-thread')).toBe('idle');
+    });
+
+    it('provider:error channel sets the status dot to error', async () => {
+      await installPane(thread('thread-1'));
+      const consoleErr = vi.spyOn(console, 'error').mockImplementation(() => {});
+      emitWailsEvent('provider:error', event('error', { content: 'stdio died' }));
+      expect(getThreadStatus('thread-1')).toBe('error');
+      consoleErr.mockRestore();
+    });
+
+    it('provider:error with missing threadId does not throw or write', async () => {
+      await installPane(thread('thread-1'));
+      const consoleErr = vi.spyOn(console, 'error').mockImplementation(() => {});
+      emitWailsEvent('provider:error', {
+        kind: 'error',
+        threadId: '',
+        timestamp: '0',
+        content: 'bare error',
+      });
+      expect(getThreadStatus('thread-1')).toBe('idle');
+      consoleErr.mockRestore();
+    });
+  });
+
+  describe('sidebar cache updates run regardless of pane ownership', () => {
+    // model_rerouted and thread_renamed refresh the cached thread row
+    // in the threads store. That lookup is used by the sidebar for every
+    // thread, not just the active pane, so the update must run before
+    // the per-pane dispatch.
+
+    beforeEach(async () => {
+      setBindingMock('ListThreads', async () => [
+        {
+          id: 'background-thread',
+          title: 'Old title',
+          provider: 'claude',
+          workspacePath: '/tmp',
+          projectPath: '/tmp',
+          interactionMode: 'default',
+          model: 'sonnet',
+          createdAt: 0,
+          updatedAt: 0,
+          archived: false,
+        },
+      ]);
+      await refreshThreads();
+    });
+
+    it('thread_renamed updates the threads store even when no pane owns the thread', async () => {
+      await installPane(thread('focused-thread'));
+      emitWailsEvent('provider:event', event('thread_renamed', {
+        threadId: 'background-thread',
+        meta: { newTitle: 'Renamed in background' },
+      }));
+      const row = getThreads().find((t) => t.id === 'background-thread');
+      expect(row?.title).toBe('Renamed in background');
+    });
+
+    it('model_rerouted updates the threads store even when no pane owns the thread', async () => {
+      await installPane(thread('focused-thread'));
+      emitWailsEvent('provider:event', event('model_rerouted', {
+        threadId: 'background-thread',
+        meta: { newModel: 'opus' },
+      }));
+      const row = getThreads().find((t) => t.id === 'background-thread');
+      expect(row?.model).toBe('opus');
     });
   });
 

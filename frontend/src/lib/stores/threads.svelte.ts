@@ -1,5 +1,6 @@
 import type { Thread } from '../types/models';
 import { ListThreads } from './bindings';
+import { clearThreadStatus } from './threadStatuses.svelte';
 import { addToast } from './toast.svelte';
 
 let threads: Thread[] = $state([]);
@@ -23,6 +24,9 @@ export function prependThread(thread: Thread): void {
 
 export function removeThread(id: string): void {
   threads = threads.filter((t) => t.id !== id);
+  // Drop any live-status entry so the sidebar doesn't keep painting a
+  // dot for a thread that no longer exists in the list.
+  clearThreadStatus(id);
 }
 
 export function updateThreadTitle(id: string, title: string): void {
