@@ -471,6 +471,7 @@ func newTestAppWithStore(t *testing.T) *App {
 		sessions:            make(map[string]session),
 		startingSessions:    make(map[string]*sessionStart),
 		threadSystemPrompts: make(map[string]string),
+		threadSlashCommands: make(map[string][]string),
 		deliberations:       make(map[string]*discussion.Deliberation),
 	}
 }

@@ -74,6 +74,13 @@ type App struct {
 	// threadID → persisted in-process system prompt overrides used for
 	// discussion participants and other non-default session starts.
 	threadSystemPrompts map[string]string
+	// threadID → last-seen Claude slash-command list from system.init.
+	// Claude-only; Codex sessions leave the entry absent. Populated in
+	// sessionEventHandler as a side effect of EventInit; drained via the
+	// GetThreadSlashCommands binding so the frontend composer can surface
+	// an autocomplete popover. Guarded by a.mu with the rest of the
+	// per-thread in-process state.
+	threadSlashCommands map[string][]string
 	// channelID → active deliberation state
 	deliberations map[string]*discussion.Deliberation
 	// Test-only injection points for binding helpers that need to observe start/stop.
@@ -134,6 +141,7 @@ func NewApp() *App {
 		sessions:            make(map[string]session),
 		startingSessions:    make(map[string]*sessionStart),
 		threadSystemPrompts: make(map[string]string),
+		threadSlashCommands: make(map[string][]string),
 		deliberations:       make(map[string]*discussion.Deliberation),
 	}
 }

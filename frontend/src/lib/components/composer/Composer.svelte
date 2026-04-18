@@ -3,6 +3,7 @@
   import type { ThreadPane } from '../../stores/thread.svelte';
   import {
     DeleteAttachment,
+    GetThreadSlashCommands,
     InterruptTurn,
     SearchWorkspaceFiles,
     SendMessage,
@@ -17,8 +18,14 @@
   import type { WorkspaceFile, WorkspaceFileSearchResult } from '../../types/workspaceFile';
   import type { ComposerDraftStore } from '../../stores/composerDraft.svelte';
   import { applyMention, detectMentionTrigger, type MentionTrigger } from './mentionHelpers';
+  import {
+    applySlashCommand,
+    detectSlashTrigger,
+    type SlashTrigger,
+  } from './slashHelpers';
   import ComposerAttachmentRow from './ComposerAttachmentRow.svelte';
   import ComposerMentionPopover from './ComposerMentionPopover.svelte';
+  import ComposerSlashPopover from './ComposerSlashPopover.svelte';
   import ComposerTerminalChip from './ComposerTerminalChip.svelte';
 
   interface Props {
@@ -35,12 +42,28 @@
   let mentionActiveIndex = $state(0);
   let mentionLoading = $state(false);
   let mentionSearchGeneration = 0;
+  // Slash-command popover: Claude surfaces user-configurable commands via
+  // system.init; the cache on the Go side is refreshed per init and fetched
+  // once per thread here. Codex threads get an empty list and the popover
+  // shows the "no commands available" empty state.
+  let slashTrigger: SlashTrigger | null = $state(null);
+  let slashCommandsCache: string[] = $state([]);
+  let slashActiveIndex = $state(0);
+  let slashFetchedForThread: string | null = null;
   let expandedChips = new Set<string>();
   let expandedVersion = $state(0);
 
   const MAX_ATTACHMENT_SIZE = DEFAULT_MAX_ATTACHMENT_SIZE;
 
   let isDisabled = $derived(!pane.threadId);
+  // Derived view over the slash-command cache, filtered by the active trigger
+  // text. Pure function of cache + trigger so no $effect is needed.
+  let slashFilteredCommands = $derived.by(() => {
+    if (!slashTrigger) return [] as string[];
+    const q = slashTrigger.text.toLowerCase();
+    if (!q) return slashCommandsCache.slice();
+    return slashCommandsCache.filter((cmd) => cmd.toLowerCase().includes(q));
+  });
   // Mid-turn guard: block sends while a turn is in flight (any streaming text,
   // any running tool, or an optimistic pending message). The user must press
   // Interrupt first. Editing and uploading stay enabled so the next message can
@@ -152,6 +175,38 @@
       }
     }
 
+    if (slashTrigger) {
+      // The two popovers are mutually exclusive — only one trigger is open
+      // at a time (see refreshTriggers) — so the ordering between the
+      // mention and slash guard blocks doesn't produce a conflict.
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        slashActiveIndex = Math.min(
+          slashActiveIndex + 1,
+          Math.max(0, slashFilteredCommands.length - 1),
+        );
+        return;
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        slashActiveIndex = Math.max(slashActiveIndex - 1, 0);
+        return;
+      }
+      if (
+        (e.key === 'Enter' || e.key === 'Tab') &&
+        slashFilteredCommands[slashActiveIndex]
+      ) {
+        e.preventDefault();
+        insertSlashCommand(slashFilteredCommands[slashActiveIndex]);
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        closeSlash();
+        return;
+      }
+    }
+
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       if (isTurnActive) {
@@ -169,21 +224,49 @@
     const value = (event.target as HTMLTextAreaElement).value;
     draft.setContent(value);
     autosizeTextarea();
-    refreshMentionTrigger();
+    refreshTriggers();
     if (midTurnBlockMessage) midTurnBlockMessage = '';
   }
 
-  function refreshMentionTrigger() {
+  // refreshTriggers inspects the textarea for both an active @mention trigger
+  // and a start-of-message /slash trigger. Only one popover can be open at a
+  // time; the slash trigger only fires at index 0 (first character of the
+  // message), so a message that starts with `@` and a later `/` will only
+  // ever show the mention popover — the two rules don't overlap in practice.
+  function refreshTriggers() {
     if (!textarea) return;
     const value = textarea.value;
     const caret = textarea.selectionStart ?? value.length;
-    const trigger = detectMentionTrigger(value, caret);
-    if (!trigger) {
-      closeMention();
+
+    const mention = detectMentionTrigger(value, caret);
+    if (mention) {
+      closeSlash();
+      mentionTrigger = mention;
+      void loadMentionResults(mention.query);
       return;
     }
-    mentionTrigger = trigger;
-    void loadMentionResults(trigger.query);
+
+    const slash = detectSlashTrigger(value, caret);
+    if (slash) {
+      closeMention();
+      slashTrigger = slash;
+      // Filtering is derived; just clamp the active index when the list
+      // shrinks so the highlighted row stays in range.
+      if (slashActiveIndex >= slashFilteredCommands.length) {
+        slashActiveIndex = 0;
+      }
+      void ensureSlashCommandsLoaded();
+      return;
+    }
+
+    closeMention();
+    closeSlash();
+  }
+
+  function refreshMentionTrigger() {
+    // Preserved as a thin alias for clarity at the remaining call sites
+    // (selection change). Both triggers refresh together.
+    refreshTriggers();
   }
 
   async function loadMentionResults(query: string) {
@@ -235,6 +318,69 @@
     mentionActiveIndex = 0;
     mentionSearchGeneration++;
   }
+
+  async function ensureSlashCommandsLoaded() {
+    const threadId = pane.threadId;
+    if (!threadId) {
+      slashCommandsCache = [];
+      slashFetchedForThread = null;
+      return;
+    }
+    if (slashFetchedForThread === threadId) return;
+    slashFetchedForThread = threadId;
+    try {
+      const result = (await GetThreadSlashCommands(threadId)) as string[];
+      // Guard against a thread switch in flight: only apply the result if the
+      // binding's thread matches the current pane's thread.
+      if (pane.threadId !== threadId) return;
+      slashCommandsCache = Array.isArray(result) ? result : [];
+      if (slashActiveIndex >= slashCommandsCache.length) {
+        slashActiveIndex = 0;
+      }
+    } catch (err) {
+      console.error('GetThreadSlashCommands failed:', err);
+      // Leave the cache untouched; the popover will fall back to its empty
+      // state. Repeat fetches are skipped because `slashFetchedForThread` is
+      // now set — we'd rather stay quiet than spam the binding on every
+      // keystroke.
+      if (pane.threadId === threadId) {
+        slashCommandsCache = [];
+      }
+    }
+  }
+
+  function insertSlashCommand(command: string) {
+    if (!slashTrigger || !textarea) return;
+    const current = textarea.value;
+    const { value, nextCaret } = applySlashCommand(current, slashTrigger, command);
+    draft.setContent(value);
+    textarea.value = value;
+    requestAnimationFrame(() => {
+      if (!textarea) return;
+      textarea.focus();
+      textarea.setSelectionRange(nextCaret, nextCaret);
+      autosizeTextarea();
+    });
+    closeSlash();
+  }
+
+  function closeSlash() {
+    slashTrigger = null;
+    slashActiveIndex = 0;
+  }
+
+  // When the pane's thread changes, reset the cache + the fetched marker so
+  // the next slash trigger refetches against the new thread. The cache is
+  // intentionally cleared so a stale list from the previous thread doesn't
+  // flash for a frame while the fetch is in flight.
+  $effect(() => {
+    const id = pane.thread?.id ?? null;
+    if (id !== slashFetchedForThread) {
+      slashCommandsCache = [];
+      slashFetchedForThread = null;
+      closeSlash();
+    }
+  });
 
   function handleSelectionChange() {
     refreshMentionTrigger();
@@ -374,6 +520,7 @@
 
   onDestroy(() => {
     closeMention();
+    closeSlash();
   });
 </script>
 
@@ -440,6 +587,15 @@
         loading={mentionLoading}
         onSelect={insertMention}
         onHover={(idx) => (mentionActiveIndex = idx)}
+      />
+
+      <ComposerSlashPopover
+        open={slashTrigger !== null}
+        query={slashTrigger?.text ?? ''}
+        commands={slashFilteredCommands}
+        activeIndex={slashActiveIndex}
+        onSelect={insertSlashCommand}
+        onHover={(idx) => (slashActiveIndex = idx)}
       />
 
       <textarea

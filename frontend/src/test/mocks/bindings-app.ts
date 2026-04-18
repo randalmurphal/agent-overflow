@@ -158,5 +158,8 @@ export const SetThreadInteractionMode = dispatch('SetThreadInteractionMode');
 export const GetThreadRuntimeMode = dispatch('GetThreadRuntimeMode');
 export const SetThreadRuntimeMode = dispatch('SetThreadRuntimeMode');
 
+// Slash commands (Claude-only)
+export const GetThreadSlashCommands = dispatch('GetThreadSlashCommands');
+
 // PR-based thread creation
 export const CreateThreadFromPR = dispatch('CreateThreadFromPR');

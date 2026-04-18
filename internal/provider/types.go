@@ -371,6 +371,10 @@ type SessionInfo struct {
 	CWD       string   `json:"cwd"`
 	Tools     []string `json:"tools,omitempty"`
 	Version   string   `json:"version,omitempty"`
+	// SlashCommands lists the user-configurable slash commands Claude surfaces
+	// via `system.init` (from `.claude/commands/` and built-ins). Claude-only —
+	// Codex's init payload has no equivalent and leaves this nil.
+	SlashCommands []string `json:"slashCommands,omitempty"`
 }
 
 // AccountInfo describes the authenticated Claude account surfaced through

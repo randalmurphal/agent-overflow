@@ -25,6 +25,55 @@ func TestParseLine_SystemInit(t *testing.T) {
 	}
 }
 
+// TestParseLine_SystemInitSlashCommands exercises the slash_commands array on
+// system.init. The Claude CLI surfaces user-configurable slash commands (from
+// .claude/commands/ and built-ins) here; we round-trip them through
+// SessionInfo so the frontend composer can render an autocomplete popover.
+func TestParseLine_SystemInitSlashCommands(t *testing.T) {
+	line := []byte(`{"type":"system","subtype":"init","session_id":"s1","slash_commands":["init","review","deploy-staging"]}`)
+	events, err := ParseLine(testThreadProto, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	var info provider.SessionInfo
+	if err := json.Unmarshal(events[0].Meta, &info); err != nil {
+		t.Fatalf("unmarshal session info: %v", err)
+	}
+	want := []string{"init", "review", "deploy-staging"}
+	if len(info.SlashCommands) != len(want) {
+		t.Fatalf("SlashCommands len = %d, want %d (%v)", len(info.SlashCommands), len(want), info.SlashCommands)
+	}
+	for i, v := range want {
+		if info.SlashCommands[i] != v {
+			t.Errorf("SlashCommands[%d] = %q, want %q", i, info.SlashCommands[i], v)
+		}
+	}
+}
+
+// TestParseLine_SystemInitWithoutSlashCommands guards against a CLI payload
+// that omits slash_commands entirely — the field must remain nil/empty and
+// parsing must still succeed.
+func TestParseLine_SystemInitWithoutSlashCommands(t *testing.T) {
+	line := []byte(`{"type":"system","subtype":"init","session_id":"s1","model":"claude-opus-4-6"}`)
+	events, err := ParseLine(testThreadProto, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	var info provider.SessionInfo
+	if err := json.Unmarshal(events[0].Meta, &info); err != nil {
+		t.Fatalf("unmarshal session info: %v", err)
+	}
+	if len(info.SlashCommands) != 0 {
+		t.Errorf("expected empty SlashCommands, got %v", info.SlashCommands)
+	}
+}
+
 func TestParseLine_SystemSessionStateChanged(t *testing.T) {
 	line := []byte(`{"type":"system","subtype":"session_state_changed","data":{"state":"idle"}}`)
 	events, err := ParseLine(testThreadProto, line)

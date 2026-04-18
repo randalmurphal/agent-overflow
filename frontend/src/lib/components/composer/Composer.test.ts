@@ -57,6 +57,9 @@ function mockDraftBindings() {
     truncated: false,
     root: '/tmp',
   }));
+  // Default: no slash commands available. Individual tests override this to
+  // surface a populated list.
+  setBindingMock('GetThreadSlashCommands', async () => []);
 }
 
 async function makeDraftStore(threadId: string | null = 'thread-1') {
@@ -516,6 +519,91 @@ describe('<Composer>', () => {
     expect(lastCall[0]).toBe('thread-1');
     expect(lastCall[1]).toBe('hi');
     expect(Array.isArray(lastCall[2])).toBe(true);
+  });
+
+  it('typing "/" at the start of the message opens the slash popover', async () => {
+    const pane = await makeReadyPane();
+    const draft = await makeDraftStore();
+    setBindingMock('GetThreadSlashCommands', async () => ['init', 'review', 'deploy-staging']);
+    const { getByLabelText, findByTestId } = render(Composer, { props: { pane, draft } });
+    const textarea = getByLabelText('Message input') as HTMLTextAreaElement;
+
+    await fireEvent.input(textarea, { target: { value: '/' } });
+    const popover = await findByTestId('slash-popover');
+    expect(popover).toBeInTheDocument();
+  });
+
+  it('slash popover does not open when "/" is not the first character', async () => {
+    const pane = await makeReadyPane();
+    const draft = await makeDraftStore();
+    setBindingMock('GetThreadSlashCommands', async () => ['init']);
+    const { getByLabelText, queryByTestId } = render(Composer, { props: { pane, draft } });
+    const textarea = getByLabelText('Message input') as HTMLTextAreaElement;
+
+    await fireEvent.input(textarea, { target: { value: 'hello /init' } });
+    expect(queryByTestId('slash-popover')).toBeNull();
+  });
+
+  it('filters slash-command options as the user types', async () => {
+    const pane = await makeReadyPane();
+    const draft = await makeDraftStore();
+    setBindingMock('GetThreadSlashCommands', async () => [
+      'init',
+      'review',
+      'deploy-staging',
+    ]);
+    const { getByLabelText, findAllByTestId } = render(Composer, {
+      props: { pane, draft },
+    });
+    const textarea = getByLabelText('Message input') as HTMLTextAreaElement;
+
+    await fireEvent.input(textarea, { target: { value: '/' } });
+    // Wait for the binding + state update so all three commands render.
+    let options = await findAllByTestId('slash-option');
+    expect(options.length).toBe(3);
+
+    await fireEvent.input(textarea, { target: { value: '/rev' } });
+    options = await findAllByTestId('slash-option');
+    expect(options.length).toBe(1);
+    expect(options[0].textContent).toMatch(/\/review/);
+  });
+
+  it('ArrowDown + Enter inserts the highlighted command and closes the popover', async () => {
+    const pane = await makeReadyPane();
+    const draft = await makeDraftStore();
+    setBindingMock('GetThreadSlashCommands', async () => ['init', 'review']);
+    const { getByLabelText, findAllByTestId, queryByTestId } = render(Composer, {
+      props: { pane, draft },
+    });
+    const textarea = getByLabelText('Message input') as HTMLTextAreaElement;
+
+    await fireEvent.input(textarea, { target: { value: '/' } });
+    await findAllByTestId('slash-option');
+
+    await fireEvent.keyDown(textarea, { key: 'ArrowDown' });
+    await fireEvent.keyDown(textarea, { key: 'Enter' });
+
+    // Draft content gets the replacement with a trailing space; pendingMessage
+    // is unset because Enter inside the popover is a selection, not a send.
+    expect(draft.content).toBe('/review ');
+    expect(pane.pendingMessage).toBeNull();
+    expect(queryByTestId('slash-popover')).toBeNull();
+  });
+
+  it('Escape closes the slash popover without mutating the draft', async () => {
+    const pane = await makeReadyPane();
+    const draft = await makeDraftStore();
+    setBindingMock('GetThreadSlashCommands', async () => ['init']);
+    const { getByLabelText, findByTestId, queryByTestId } = render(Composer, {
+      props: { pane, draft },
+    });
+    const textarea = getByLabelText('Message input') as HTMLTextAreaElement;
+
+    await fireEvent.input(textarea, { target: { value: '/ini' } });
+    await findByTestId('slash-popover');
+    await fireEvent.keyDown(textarea, { key: 'Escape' });
+    expect(queryByTestId('slash-popover')).toBeNull();
+    expect(draft.content).toBe('/ini');
   });
 
   it('draft hydrates on thread switch and shows stored content', async () => {

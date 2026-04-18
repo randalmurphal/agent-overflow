@@ -108,6 +108,9 @@ export {
   GetThreadRuntimeMode,
   SetThreadRuntimeMode,
 
+  // Slash commands (Claude-only)
+  GetThreadSlashCommands,
+
   // PR-based thread creation
   CreateThreadFromPR,
 } from '../../../bindings/agent-overflow/app.js';

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 
@@ -10,6 +11,10 @@ import (
 func (a *App) sessionEventHandler(threadID, sessionToken string) func(provider.ProviderEvent) {
 	return func(evt provider.ProviderEvent) {
 		a.handleClaudeDesignTool(evt)
+
+		if evt.Kind == provider.EventInit {
+			a.cacheSlashCommandsFromInit(threadID, evt.Meta)
+		}
 
 		if a.triage != nil {
 			if err := a.triage.Handle(evt); err != nil {
@@ -30,6 +35,34 @@ func (a *App) sessionEventHandler(threadID, sessionToken string) func(provider.P
 			a.unregisterSession(threadID, sessionToken)
 		}
 	}
+}
+
+// cacheSlashCommandsFromInit decodes the SessionInfo.Meta payload shipped with
+// an EventInit and caches the Claude slash-command list for the thread. No-ops
+// for payloads that lack the field (Codex) or fail to parse — the composer
+// popover tolerates an empty cache.
+func (a *App) cacheSlashCommandsFromInit(threadID string, meta json.RawMessage) {
+	if len(meta) == 0 {
+		return
+	}
+	var info provider.SessionInfo
+	if err := json.Unmarshal(meta, &info); err != nil {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.threadSlashCommands == nil {
+		a.threadSlashCommands = make(map[string][]string)
+	}
+	// Always overwrite: a fresh init replaces the prior list even when the new
+	// one is empty (e.g. user deleted their command files between sessions).
+	if len(info.SlashCommands) == 0 {
+		delete(a.threadSlashCommands, threadID)
+		return
+	}
+	copied := make([]string, len(info.SlashCommands))
+	copy(copied, info.SlashCommands)
+	a.threadSlashCommands[threadID] = copied
 }
 
 func (a *App) unregisterSession(threadID, sessionToken string) {
