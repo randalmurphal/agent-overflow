@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
-  import { Events } from '@wailsio/runtime';
+  import { wailsEventOn } from '../../stores/events';
   import {
     OpenTerminal,
     CloseTerminal,
@@ -88,14 +88,12 @@
   let cancelExit: (() => void) | null = null;
 
   onMount(async () => {
-    cancelOutput = Events.On('terminal:output', (ev) => {
-      const payload = ev.data as TerminalOutputEventPayload;
+    cancelOutput = wailsEventOn<TerminalOutputEventPayload>('terminal:output', (payload) => {
       if (pane.thread && payload.threadID !== pane.thread.id) return;
       const decoded = decodeTerminalOutput(payload.data);
       handle.appendOutput(payload.terminalID, decoded);
     });
-    cancelExit = Events.On('terminal:exit', (ev) => {
-      const payload = ev.data as TerminalExitEventPayload;
+    cancelExit = wailsEventOn<TerminalExitEventPayload>('terminal:exit', (payload) => {
       if (pane.thread && payload.threadID !== pane.thread.id) return;
       handle.markExit(payload.terminalID, payload.code, payload.reason);
     });

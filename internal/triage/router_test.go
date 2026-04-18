@@ -1,6 +1,7 @@
 package triage
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -332,6 +333,95 @@ func TestExtractThinkingMetaTokenEstimate(t *testing.T) {
 }
 
 // -- Router tests --
+
+// TestRouterWaitReturnsImmediatelyWhenIdle is the happy-path contract
+// for Router.Wait: if no Handle is running, Wait returns instantly.
+// App shutdown calls this first, so a regression that introduced a
+// blocking wait would stall every Quit.
+func TestRouterWaitReturnsImmediatelyWhenIdle(t *testing.T) {
+	router, _, _ := newTestRouter(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	if err := router.Wait(ctx); err != nil {
+		t.Fatalf("Wait() on idle router error = %v, want nil", err)
+	}
+	if elapsed := time.Since(start); elapsed > 50*time.Millisecond {
+		t.Fatalf("idle Wait took %v; expected instant return", elapsed)
+	}
+}
+
+// TestRouterWaitBlocksUntilInflightHandleReturns tests the drain
+// contract under load: a Handle() in progress holds Wait open until
+// the Handle returns. We drive this with a stub store-free event
+// (ErrUnhandledEventKind returns fast) and then a blocking handler
+// emulation via a goroutine that paces the Done.
+//
+// Rather than monkey-patching the router, we inject a handler that
+// blocks by feeding an event kind whose handler does real work
+// (persistHeavy) but the store write is just a memory insert on the
+// test store. That is NOT blocking on its own, so we instead call
+// Wait while a slow synthetic "Handle" is active via a helper that
+// mirrors the inflight add/done.
+func TestRouterWaitBlocksUntilInflightHandleReturns(t *testing.T) {
+	router, _, _ := newTestRouter(t)
+
+	// Simulate an in-flight Handle call by bumping the inflight counter
+	// directly. This mirrors exactly what Handle does at its entrypoint
+	// — test stays honest because Wait reads the same waitgroup.
+	router.inflight.Add(1)
+
+	waitDone := make(chan error, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		waitDone <- router.Wait(ctx)
+	}()
+
+	// Wait must not resolve while the counter is held.
+	select {
+	case err := <-waitDone:
+		t.Fatalf("Wait returned %v while inflight > 0; expected to block", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	router.inflight.Done()
+
+	select {
+	case err := <-waitDone:
+		if err != nil {
+			t.Fatalf("Wait() after drain error = %v, want nil", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Wait did not return after inflight dropped to zero")
+	}
+}
+
+// TestRouterWaitHonoursContextDeadline guards the timeout branch: if
+// Handle is stuck longer than the caller's deadline, Wait returns
+// context.DeadlineExceeded rather than blocking forever. App Shutdown
+// relies on this to keep Quit latency bounded.
+func TestRouterWaitHonoursContextDeadline(t *testing.T) {
+	router, _, _ := newTestRouter(t)
+
+	router.inflight.Add(1)
+	defer router.inflight.Done() // release after test so the test's own cleanup doesn't hang
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	err := router.Wait(ctx)
+	elapsed := time.Since(start)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Wait() error = %v, want context.DeadlineExceeded", err)
+	}
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("Wait took %v; expected near the 100ms timeout", elapsed)
+	}
+}
 
 type emitted struct {
 	eventName string

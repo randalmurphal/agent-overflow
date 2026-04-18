@@ -9,6 +9,93 @@ import { getThreads, updateThreadTitle, updateThreadModel, replaceThread } from 
 import { RespondToApproval, ApprovalResponse } from './bindings';
 
 /**
+ * SeqEnvelope mirrors the Go-side `SeqEnvelope` in app.go. Every Wails
+ * emission stamps a monotonic `seq` so subscribers can detect gaps
+ * (scaffolding for future remote-access transport). The envelope also
+ * carries a `data` field with the original Go payload.
+ *
+ * We keep the detection shape duck-typed instead of using `instanceof`
+ * or a JSON-schema check — the Go runtime serialises the envelope
+ * through encoding/json, so what arrives in the webview is a plain
+ * object with `seq` + `data` keys.
+ */
+interface SeqEnvelope<T = unknown> {
+  seq: number;
+  data: T;
+}
+
+function isSeqEnvelope(value: unknown): value is SeqEnvelope {
+  return (
+    value !== null
+    && typeof value === 'object'
+    && 'seq' in value
+    && typeof (value as { seq: unknown }).seq === 'number'
+    && 'data' in value
+  );
+}
+
+/**
+ * Per-event-name last-seen seq table. Keys are event names; values are
+ * the most recent seq observed on that channel. Undefined = never seen,
+ * so the first emission on a channel does not warn.
+ *
+ * We reset the table when setupEventListeners() is called again — tests
+ * re-install listeners between cases, and a stale last-seen would
+ * trigger spurious gap warnings.
+ */
+const lastSeenSeq: Map<string, number> = new Map();
+
+function resetSeqTracking(): void {
+  lastSeenSeq.clear();
+}
+
+/**
+ * wailsEventOn wraps Events.On to (a) unwrap SeqEnvelope payloads back
+ * to the original Go shape, and (b) track per-channel seq gaps. The
+ * wrapper is robust against raw payloads: if `ev.data` is not a seq
+ * envelope (older emits during rollout, tests driving raw data), the
+ * handler receives the raw payload and no gap tracking runs.
+ *
+ * Exported so subscribers outside this file (terminal drawer, diff
+ * panel) can share the same gap-detection + unwrapping logic without
+ * re-implementing the boilerplate.
+ */
+export function wailsEventOn<T = unknown>(
+  name: string,
+  handler: (data: T) => void,
+): () => void {
+  return Events.On(name, (ev) => {
+    const raw = ev.data as unknown;
+    if (isSeqEnvelope(raw)) {
+      const prev = lastSeenSeq.get(name);
+      // A strictly-increasing seq means no gap; anything else (drop,
+      // retransmit, out-of-order) produces a warn with the missing
+      // range. We warn once per gap and still deliver the event — the
+      // seq is an observability scaffold, not a back-pressure knob.
+      if (prev !== undefined && raw.seq > prev + 1) {
+        const missingCount = raw.seq - prev - 1;
+        const firstMissing = prev + 1;
+        const lastMissing = raw.seq - 1;
+        console.warn(
+          `event seq gap on ${name}: missing ${missingCount} event(s) ` +
+          `(ids ${firstMissing}..${lastMissing})`,
+        );
+      }
+      // Track the highest seq we've seen so a stale re-delivery doesn't
+      // roll the pointer backward.
+      if (prev === undefined || raw.seq > prev) {
+        lastSeenSeq.set(name, raw.seq);
+      }
+      handler(raw.data as T);
+      return;
+    }
+    // Raw payload: pass through unchanged so legacy emit callers and
+    // tests driving raw data continue to work without special casing.
+    handler(raw as T);
+  });
+}
+
+/**
  * Payload for the backend-emitted thread:interaction_mode_changed event. Mirrors
  * ThreadInteractionModeChangedEvent in app_thread_interaction_mode.go.
  */
@@ -200,8 +287,12 @@ function routeEventToPane(pane: ThreadPane, evt: ProviderEvent): void {
  * Returns a cleanup function that removes all listeners.
  */
 export function setupEventListeners(): () => void {
-  const cancelEvent = Events.On('provider:event', (ev) => {
-    const evt = ev.data as ProviderEvent;
+  // Reset the gap-detection table so a previous setupEventListeners call
+  // (tests re-wire between cases) does not bleed its last-seen seq into
+  // the new listener set and trigger spurious warnings.
+  resetSeqTracking();
+
+  const cancelEvent = wailsEventOn<ProviderEvent>('provider:event', (evt) => {
     for (const pane of getAllPanes().values()) {
       if (pane.threadId === evt.threadId) {
         routeEventToPane(pane, evt);
@@ -209,8 +300,7 @@ export function setupEventListeners(): () => void {
     }
   });
 
-  const cancelMeta = Events.On('provider:meta', (ev) => {
-    const meta = ev.data as PayloadMeta;
+  const cancelMeta = wailsEventOn<PayloadMeta>('provider:meta', (meta) => {
     for (const pane of getAllPanes().values()) {
       // Only push meta to the pane that owns this thread.
       // If the backend includes a threadId, filter by it.
@@ -222,8 +312,7 @@ export function setupEventListeners(): () => void {
     }
   });
 
-  const cancelError = Events.On('provider:error', (ev) => {
-    const evt = ev.data as ProviderEvent;
+  const cancelError = wailsEventOn<ProviderEvent>('provider:error', (evt) => {
     console.error('Provider error event:', evt.content);
     addToast('error', evt.content ?? 'Provider error');
     for (const pane of getAllPanes().values()) {
@@ -236,8 +325,7 @@ export function setupEventListeners(): () => void {
   // design:artifact — a new rendered artifact. Append to the owning pane's
   // history. The preview panel auto-tracks the latest unless the user has
   // pinned a specific artifact via the dropdown.
-  const cancelDesignArtifact = Events.On('design:artifact', (ev) => {
-    const artifact = ev.data as DesignArtifact;
+  const cancelDesignArtifact = wailsEventOn<DesignArtifact>('design:artifact', (artifact) => {
     if (!artifact || !artifact.threadId) return;
     for (const pane of getAllPanes().values()) {
       if (pane.threadId === artifact.threadId) {
@@ -248,8 +336,7 @@ export function setupEventListeners(): () => void {
 
   // design:options — agent blocked on present_options. Also append the option
   // artifacts to history so the picker thumbnails resolve without a round-trip.
-  const cancelDesignOptions = Events.On('design:options', (ev) => {
-    const request = ev.data as DesignOptionsRequest;
+  const cancelDesignOptions = wailsEventOn<DesignOptionsRequest>('design:options', (request) => {
     if (!request || !request.threadId) return;
     for (const pane of getAllPanes().values()) {
       if (pane.threadId === request.threadId) {
@@ -260,8 +347,7 @@ export function setupEventListeners(): () => void {
 
   // design:chosen — user picked an option, backend resolved. Clear the
   // pending-options state. The corresponding artifact stays in history.
-  const cancelDesignChosen = Events.On('design:chosen', (ev) => {
-    const resolved = ev.data as DesignChoiceResolved;
+  const cancelDesignChosen = wailsEventOn<DesignChoiceResolved>('design:chosen', (resolved) => {
     if (!resolved || !resolved.threadId) return;
     for (const pane of getAllPanes().values()) {
       if (pane.threadId !== resolved.threadId) continue;
@@ -280,45 +366,49 @@ export function setupEventListeners(): () => void {
   // kicks off a session reconnect itself when needed, so the frontend just
   // needs to keep its thread shape in sync (the RuntimeModePicker's own
   // optimistic update already covered the pane that triggered the change).
-  const cancelRuntimeModeChanged = Events.On('thread:runtime_mode_changed', (ev) => {
-    const payload = ev.data as RuntimeModeChangedPayload;
-    if (!payload || !payload.threadId || !payload.runtimeMode) return;
-    const existing = getThreads().find((t) => t.id === payload.threadId);
-    if (existing) {
-      replaceThread({ ...existing, runtimeMode: payload.runtimeMode });
-    }
-    for (const pane of getAllPanes().values()) {
-      if (pane.threadId !== payload.threadId) continue;
-      if (pane.thread) {
-        pane.replaceThread({ ...pane.thread, runtimeMode: payload.runtimeMode });
+  const cancelRuntimeModeChanged = wailsEventOn<RuntimeModeChangedPayload>(
+    'thread:runtime_mode_changed',
+    (payload) => {
+      if (!payload || !payload.threadId || !payload.runtimeMode) return;
+      const existing = getThreads().find((t) => t.id === payload.threadId);
+      if (existing) {
+        replaceThread({ ...existing, runtimeMode: payload.runtimeMode });
       }
-    }
-  });
+      for (const pane of getAllPanes().values()) {
+        if (pane.threadId !== payload.threadId) continue;
+        if (pane.thread) {
+          pane.replaceThread({ ...pane.thread, runtimeMode: payload.runtimeMode });
+        }
+      }
+    },
+  );
 
   // thread:interaction_mode_changed — the backend persisted a new mode. We
   // update the cached thread row (so sidebar badges refresh) and, when the
   // change landed on an active session, surface a toast prompting the user
   // to reconnect so the session can pick up the new mode's config.
-  const cancelModeChanged = Events.On('thread:interaction_mode_changed', (ev) => {
-    const payload = ev.data as InteractionModeChangedPayload;
-    if (!payload || !payload.threadId) return;
-    const existing = getThreads().find((t) => t.id === payload.threadId);
-    if (existing) {
-      replaceThread({ ...existing, interactionMode: payload.interactionMode });
-    }
-    for (const pane of getAllPanes().values()) {
-      if (pane.threadId !== payload.threadId) continue;
-      if (pane.thread) {
-        pane.replaceThread({ ...pane.thread, interactionMode: payload.interactionMode });
+  const cancelModeChanged = wailsEventOn<InteractionModeChangedPayload>(
+    'thread:interaction_mode_changed',
+    (payload) => {
+      if (!payload || !payload.threadId) return;
+      const existing = getThreads().find((t) => t.id === payload.threadId);
+      if (existing) {
+        replaceThread({ ...existing, interactionMode: payload.interactionMode });
       }
-    }
-    if (payload.needsReconnect) {
-      addToast(
-        'warning',
-        `Mode set to ${payload.interactionMode}. Reconnect the session to apply.`,
-      );
-    }
-  });
+      for (const pane of getAllPanes().values()) {
+        if (pane.threadId !== payload.threadId) continue;
+        if (pane.thread) {
+          pane.replaceThread({ ...pane.thread, interactionMode: payload.interactionMode });
+        }
+      }
+      if (payload.needsReconnect) {
+        addToast(
+          'warning',
+          `Mode set to ${payload.interactionMode}. Reconnect the session to apply.`,
+        );
+      }
+    },
+  );
 
   return () => {
     cancelEvent();

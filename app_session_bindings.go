@@ -41,6 +41,9 @@ func (a *App) SwitchThread(threadID string) (store.Thread, error) {
 // ReconnectSession tears down the current session and starts a fresh one using
 // the thread's stored resume cursor.
 func (a *App) ReconnectSession(threadID string) error {
+	if a.shuttingDown.Load() {
+		return ErrShuttingDown
+	}
 	if err := a.stopSession(threadID); err != nil {
 		return err
 	}
@@ -48,6 +51,9 @@ func (a *App) ReconnectSession(threadID string) error {
 }
 
 func (a *App) startSession(threadID string) error {
+	if a.shuttingDown.Load() {
+		return ErrShuttingDown
+	}
 	return a.runSessionStart(threadID, func() error {
 		if a.startSessionFn != nil {
 			return a.startSessionFn(threadID)

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
-  import { Events } from '@wailsio/runtime';
+  import { wailsEventOn } from '../../stores/events';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import type {
     Checkpoint,
@@ -249,8 +249,7 @@
   let cancelError: (() => void) | null = null;
 
   onMount(() => {
-    cancelCaptured = Events.On('checkpoint:captured', (ev) => {
-      const payload = ev.data as CheckpointCapturedEvent | null;
+    cancelCaptured = wailsEventOn<CheckpointCapturedEvent | null>('checkpoint:captured', (payload) => {
       if (!payload || payload.threadId !== threadId) return;
       // A recapture produces a new diff, so drop every cached entry for this
       // turn across compare modes; the cumulative aggregation is also
@@ -267,13 +266,11 @@
       }
       void refreshCheckpoints();
     });
-    cancelUnavailable = Events.On('checkpoint:unavailable', (ev) => {
-      const payload = ev.data as CheckpointUnavailableEvent | null;
+    cancelUnavailable = wailsEventOn<CheckpointUnavailableEvent | null>('checkpoint:unavailable', (payload) => {
       if (!payload || payload.threadId !== threadId) return;
       store.markCheckpointsUnavailable(payload.reason ?? 'unknown');
     });
-    cancelError = Events.On('checkpoint:error', (ev) => {
-      const payload = ev.data as CheckpointErrorEvent | null;
+    cancelError = wailsEventOn<CheckpointErrorEvent | null>('checkpoint:error', (payload) => {
       if (!payload || payload.threadId !== threadId) return;
       store.setError(`Checkpoint capture failed (turn ${payload.turnIndex}): ${payload.error}`);
     });

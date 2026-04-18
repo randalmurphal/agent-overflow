@@ -704,4 +704,106 @@ describe('events router', () => {
       cleanup = setupEventListeners();
     });
   });
+
+  // Task B (seq envelope): the wailsEventOn helper unwraps SeqEnvelope
+  // payloads and logs a console.warn whenever the seq jumps past 1. The
+  // frontend is purely observability scaffolding — it never blocks or
+  // buffers, so every test here asserts both the delivered payload and
+  // the console side-effect.
+  describe('seq envelope gap detection', () => {
+    it('routes enveloped payloads to handlers with the inner data', async () => {
+      const pane = await installPane(thread('thread-1'));
+      emitWailsEvent('provider:event', {
+        seq: 1,
+        data: event('text_delta', { content: 'hi' }),
+      });
+      expect(pane.streamingContent).toBe('hi');
+    });
+
+    it('warns when a seq gap appears, logging the missing range', async () => {
+      await installPane(thread('thread-1'));
+      const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      emitWailsEvent('provider:event', { seq: 1, data: event('text_delta', { content: 'a' }) });
+      emitWailsEvent('provider:event', { seq: 2, data: event('text_delta', { content: 'b' }) });
+      emitWailsEvent('provider:event', { seq: 5, data: event('text_delta', { content: 'c' }) });
+
+      // Gap: ids 3 and 4 missing.
+      expect(consoleWarn).toHaveBeenCalledTimes(1);
+      const [message] = consoleWarn.mock.calls[0];
+      expect(message).toContain('provider:event');
+      expect(message).toContain('missing 2');
+      expect(message).toContain('3..4');
+      consoleWarn.mockRestore();
+    });
+
+    it('stays silent on the first event of a channel (nothing to compare against)', async () => {
+      await installPane(thread('thread-1'));
+      const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      emitWailsEvent('provider:event', { seq: 42, data: event('text_delta', { content: 'a' }) });
+
+      expect(consoleWarn).not.toHaveBeenCalled();
+      consoleWarn.mockRestore();
+    });
+
+    it('stays silent on consecutive monotonic seqs', async () => {
+      await installPane(thread('thread-1'));
+      const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      for (let i = 1; i <= 5; i++) {
+        emitWailsEvent('provider:event', { seq: i, data: event('text_delta', { content: 'x' }) });
+      }
+
+      expect(consoleWarn).not.toHaveBeenCalled();
+      consoleWarn.mockRestore();
+    });
+
+    it('does not warn or break on raw (pre-envelope) payloads', async () => {
+      const pane = await installPane(thread('thread-1'));
+      const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      // Raw event, no envelope — the existing tests in this file drive
+      // this shape, and production emissions during rollout may do the
+      // same. The helper must pass through the payload untouched.
+      emitWailsEvent('provider:event', event('text_delta', { content: 'raw' }));
+
+      expect(pane.streamingContent).toBe('raw');
+      expect(consoleWarn).not.toHaveBeenCalled();
+      consoleWarn.mockRestore();
+    });
+
+    it('does not roll the seq pointer backward on a stale re-delivery', async () => {
+      await installPane(thread('thread-1'));
+      const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      // Deliver 5 in order, then a stale 3. The pointer must stay at 5
+      // so a subsequent 6 is treated as consecutive (no warn), not as
+      // "2..5 missing".
+      for (let i = 1; i <= 5; i++) {
+        emitWailsEvent('provider:event', { seq: i, data: event('text_delta') });
+      }
+      emitWailsEvent('provider:event', { seq: 3, data: event('text_delta') });
+      emitWailsEvent('provider:event', { seq: 6, data: event('text_delta') });
+
+      expect(consoleWarn).not.toHaveBeenCalled();
+      consoleWarn.mockRestore();
+    });
+
+    it('tracks seq independently per channel', async () => {
+      await installPane(thread('thread-1'));
+      const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      emitWailsEvent('provider:event', { seq: 10, data: event('text_delta') });
+      // First provider:meta: no prior baseline on this channel, must
+      // not warn even though its seq is far below provider:event's.
+      emitWailsEvent('provider:meta', {
+        seq: 1,
+        data: { id: 'p1', threadId: 'thread-1', kind: 'diff', meta: '{}', createdAt: 0 },
+      });
+
+      expect(consoleWarn).not.toHaveBeenCalled();
+      consoleWarn.mockRestore();
+    });
+  });
 });

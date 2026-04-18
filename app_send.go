@@ -45,6 +45,9 @@ func (r *threadMutexRegistry) lockFor(threadID string) func() {
 }
 
 func (a *App) sendMessage(threadID string, content string) error {
+	if a.shuttingDown.Load() {
+		return ErrShuttingDown
+	}
 	if a.sendMessageFn != nil {
 		return a.sendMessageFn(threadID, content)
 	}

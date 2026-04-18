@@ -27,9 +27,10 @@ func (a *App) emitProviderEvent(evt provider.ProviderEvent) {
 		a.emitProviderEventFn(evt)
 		return
 	}
-	if a.app != nil {
-		a.app.Event.Emit("provider:event", evt)
-	}
+	// Route through a.emit so every wire emission carries a monotonic
+	// seq. The test seam above bypasses this — tests that want to assert
+	// envelope shape should install a spy via emitEventFn instead.
+	a.emit("provider:event", evt)
 }
 
 // emitEvent sends an arbitrary Wails event to the frontend. Prefer this over
@@ -40,9 +41,9 @@ func (a *App) emitEvent(eventName string, data any) {
 		a.emitEventFn(eventName, data)
 		return
 	}
-	if a.app != nil {
-		a.app.Event.Emit(eventName, data)
-	}
+	// Route through a.emit so every wire emission carries a monotonic
+	// seq envelope matching the one applied by the triage router.
+	a.emit(eventName, data)
 }
 
 // emitErrorToThread sends a provider error event for the given thread through

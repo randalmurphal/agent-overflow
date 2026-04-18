@@ -136,10 +136,7 @@ func (a *App) GetTerminalReplay(terminalID string) (string, error) {
 
 // terminalOutputCallback emits a `terminal:output` event to the frontend.
 func (a *App) terminalOutputCallback(threadID, terminalID string, sequence uint64, data []byte) {
-	if a.app == nil {
-		return
-	}
-	a.app.Event.Emit("terminal:output", TerminalOutputEvent{
+	a.emit("terminal:output", TerminalOutputEvent{
 		TerminalID: terminalID,
 		ThreadID:   threadID,
 		Sequence:   sequence,
@@ -149,10 +146,7 @@ func (a *App) terminalOutputCallback(threadID, terminalID string, sequence uint6
 
 // terminalExitCallback emits a `terminal:exit` event to the frontend.
 func (a *App) terminalExitCallback(threadID, terminalID string, status terminal.ExitStatus) {
-	if a.app == nil {
-		return
-	}
-	a.app.Event.Emit("terminal:exit", TerminalExitEvent{
+	a.emit("terminal:exit", TerminalExitEvent{
 		TerminalID: terminalID,
 		ThreadID:   threadID,
 		Code:       status.Code,

@@ -76,6 +76,12 @@ type Router struct {
 	// stopped thread (Bug B5). The flag is cleared when a fresh session
 	// re-enters the thread via EventInit.
 	stoppedThreads map[string]struct{}
+	// inflight counts Handle() calls currently in progress. Wait drains
+	// this to zero so app shutdown can flush observability + persistence
+	// without racing against events mid-persist. Counter is bumped at
+	// the top of Handle and decremented via defer so a panic still
+	// releases the wait.
+	inflight sync.WaitGroup
 }
 
 // NewRouter creates a triage router. Telemetry is off by default; wire a
@@ -146,6 +152,9 @@ func (r *Router) SetTelemetry(tracer trace.Tracer, m TurnMetrics) {
 
 // Handle processes a provider event: persists heavy payloads, forwards inline events.
 func (r *Router) Handle(evt provider.ProviderEvent) error {
+	r.inflight.Add(1)
+	defer r.inflight.Done()
+
 	// EventInit means a fresh session is (re)starting for this thread;
 	// clear any lingering stopped marker so subsequent events persist
 	// under the new session.
@@ -620,6 +629,28 @@ func (r *Router) drainBoth(threadID string) (text, reasoning string) {
 	delete(r.reasoningAccumulators, threadID)
 
 	return text, reasoning
+}
+
+// Wait blocks until every in-flight Handle call has returned, or until
+// ctx is cancelled. Shutdown uses this to drain the router before
+// flushing observability writers; a completed Wait means the store and
+// event emit have seen the last event. Callers that pass a deadlined
+// ctx get a context.DeadlineExceeded when the drain runs long.
+func (r *Router) Wait(ctx context.Context) error {
+	if r == nil {
+		return nil
+	}
+	done := make(chan struct{})
+	go func() {
+		r.inflight.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // CleanupThread removes all accumulator state for a thread. Call this when a

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"agent-overflow/internal/attachment"
@@ -30,6 +31,11 @@ import (
 	"github.com/wailsapp/wails/v3/pkg/application"
 )
 
+// ErrShuttingDown is returned from binding entry points once Shutdown has
+// started. Callers should surface this as a terminal state — no retry will
+// succeed because the app is tearing down.
+var ErrShuttingDown = errors.New("app: shutting down")
+
 // App is the primary Wails-bound struct, registered as a v3 service.
 type App struct {
 	app            *application.App
@@ -50,6 +56,16 @@ type App struct {
 	telemetry      *obsotel.Provider
 	replay         *replay.Manager
 	configDir      string
+	// seq is a monotonic counter stamped on every event emitted through
+	// a.emit. Frontend subscribers use it to log gaps; the counter is
+	// scaffolding for a future remote-access transport where gap recovery
+	// matters, but today it is purely observability.
+	seq atomic.Uint64
+	// shuttingDown is flipped to true once Shutdown begins. Binding entry
+	// points that spin up new work (StartSession, SendMessage, ReconnectSession)
+	// check it and fail fast with ErrShuttingDown so late RPCs can't race
+	// with subsystem teardown.
+	shuttingDown atomic.Bool
 	mu        sync.Mutex
 	sessions  map[string]session // threadID → active session
 	// threadID → in-flight session start. Concurrent callers wait for the
@@ -68,6 +84,40 @@ type App struct {
 	generateThreadTitleFn func(store.Thread, string) (string, error)
 	emitProviderEventFn   func(provider.ProviderEvent)
 	emitEventFn           func(eventName string, data any)
+	// shutdownStepFn is a test-only hook fired after every step of
+	// Shutdown. Production leaves this nil. Order tests install it to
+	// record the step sequence and observe per-step errors without
+	// wrapping every subsystem in its own spy type.
+	shutdownStepFn func(step string, err error)
+	// shutdownInjectErrFn is a test-only hook that, when set, takes the
+	// step name + the subsystem's own error and returns the error
+	// Shutdown will record for that step. Production leaves it nil;
+	// shutdown error-aggregation tests install it to force controlled
+	// failures across specific steps.
+	shutdownInjectErrFn func(step string, err error) error
+	// testEmitHook is a test-only observer for a.emit. Production
+	// leaves it nil and a.emit reaches for a.app. Tests that want to
+	// observe the envelope shape without wiring up a full Wails
+	// application install a hook here; when set, a.emit ALSO calls
+	// the hook with the (name, envelope) it would have sent through
+	// the Wails event bus.
+	testEmitHook func(name string, data any)
+}
+
+// SeqEnvelope is the shape every event takes on the Wails wire. The
+// Go→frontend boundary in a.emit wraps the caller's payload into this
+// envelope so the frontend can log seq gaps. The replay log takes the
+// un-enveloped payload because its format records provider events, not
+// wire envelopes.
+//
+// Keeping the nesting (rather than mutating arbitrary payload structs
+// in place) lets every caller keep using its existing Go type and
+// lets the frontend deserialise a stable `{seq, data}` shape. Wails'
+// CustomEvent runs `json.Marshal(&envelope)` which produces
+// `{"seq": N, "data": <payload>}`.
+type SeqEnvelope struct {
+	Seq  uint64 `json:"seq"`
+	Data any    `json:"data"`
 }
 
 // session wraps a provider session regardless of type.
@@ -165,9 +215,7 @@ func (a *App) ServiceStartup(ctx context.Context, options application.ServiceOpt
 	a.registry = discussion.NewRegistry(st)
 	a.channels = discussion.NewChannelService(st)
 	a.artifacts = design.NewArtifactStore(filepath.Join(dbDir, "design-artifacts"), st)
-	a.reactor = design.NewReactor(a.artifacts, func(eventName string, data any) {
-		a.app.Event.Emit(eventName, data)
-	})
+	a.reactor = design.NewReactor(a.artifacts, a.emit)
 	a.designMCP = codex.NewDesignMCPServer(a.reactor)
 	a.terminals = terminal.NewManager(a.terminalOutputCallback, a.terminalExitCallback)
 	attachmentStore, err := attachment.NewStore(attachment.Config{
@@ -187,15 +235,99 @@ func (a *App) ServiceStartup(ctx context.Context, options application.ServiceOpt
 	return nil
 }
 
-// sessionShutdownTimeout caps how long ServiceShutdown will wait for every
-// provider session to close in parallel before giving up and moving on to
-// the rest of the teardown. Sessions that don't finish in time get
-// abandoned — the Wails process is going away regardless, so the
-// underlying subprocesses will be reaped by the OS.
-const sessionShutdownTimeout = 5 * time.Second
+// Shutdown timeouts. Each subsystem gets its own budget so a slow telemetry
+// flush can't eat the replay writer's window. The top-level ServiceShutdown
+// wrapper does NOT sum these — it calls Shutdown(context.Background()) and
+// lets each subsystem enforce its own deadline below. Callers (tests) that
+// want a ceiling on total shutdown latency can pass their own ctx.
+const (
+	// sessionShutdownTimeout caps how long Shutdown will wait for every
+	// provider session to close in parallel before giving up and moving on
+	// to the rest of the teardown. Sessions that don't finish in time get
+	// abandoned — the Wails process is going away regardless, so the
+	// underlying subprocesses will be reaped by the OS.
+	sessionShutdownTimeout = 5 * time.Second
 
-// ServiceShutdown is called by Wails v3 when the service is torn down.
-func (a *App) ServiceShutdown() error {
+	// reactorDrainTimeout caps how long we wait for in-flight triage
+	// Handle calls to return before continuing shutdown. Triage work is
+	// short-lived in practice (SQLite writes over the local FS), so 2s is
+	// generous; the guard is there to stop a stuck goroutine from
+	// blocking user-perceived Quit latency.
+	reactorDrainTimeout = 2 * time.Second
+
+	// replayShutdownTimeout bounds the replay manager's queue drain.
+	replayShutdownTimeout = 2 * time.Second
+
+	// telemetryShutdownTimeout bounds the OTLP exporter flush. The otel
+	// package applies its own internal cap on top of this.
+	telemetryShutdownTimeout = 5 * time.Second
+)
+
+// Shutdown tears the App down in a documented order. See the numbered steps
+// inline for the rationale. Shutdown is idempotent and safe to call on a
+// zero-value App: every guard is nil-safe so tests can wire a subset of
+// subsystems without threading nil-checks through the call sites.
+//
+// Errors from individual subsystems are collected and joined — Shutdown
+// never aborts on the first failure because every caller is mid-quit and
+// we want every subsystem to flush before the process exits.
+//
+// `//wails:ignore` keeps this method out of the auto-generated TS bindings.
+// Shutdown is a process-local lifecycle hook; the frontend has no business
+// calling it.
+//
+//wails:ignore
+func (a *App) Shutdown(ctx context.Context) error {
+	// Step 1: stop accepting new work. Binding entry points check this
+	// atomic on every call, so any concurrent RPC after this line fails
+	// fast with ErrShuttingDown instead of starting a session we'd have
+	// to tear right back down.
+	if !a.shuttingDown.CompareAndSwap(false, true) {
+		// Already shut down. Return nil so double-invocation (test
+		// harness + Wails both calling us) stays a no-op.
+		return nil
+	}
+
+	var errs []error
+	record := func(step string, err error) {
+		if a.shutdownInjectErrFn != nil {
+			err = a.shutdownInjectErrFn(step, err)
+		}
+		errs = appendError(errs, wrapLifecycleError(step, err))
+		if a.shutdownStepFn != nil {
+			a.shutdownStepFn(step, err)
+		}
+	}
+
+	// Step 2: drain the triage reactor. Any Handle() calls currently
+	// running (dispatched from provider sessionEventHandlers) get to
+	// finish. We use a short timeout so a stuck goroutine can't block
+	// the rest of teardown.
+	record("drain triage", a.drainTriage(ctx, reactorDrainTimeout))
+
+	// Step 3: flush observability writers BEFORE closing provider
+	// sessions. Provider close events pass through the replay log; if
+	// we close the log first we drop the last few frames of every
+	// in-flight session. OTEL flush goes here too because traces
+	// attached to in-flight turns should land before the sessions
+	// holding those turns go away.
+	if a.replay != nil {
+		replayCtx, cancel := contextWithTimeout(ctx, replayShutdownTimeout)
+		record("close replay manager", a.replay.Shutdown(replayCtx))
+		cancel()
+	}
+	if a.telemetry != nil {
+		otelCtx, cancel := contextWithTimeout(ctx, telemetryShutdownTimeout)
+		record("shutdown telemetry", a.telemetry.Shutdown(otelCtx))
+		cancel()
+	}
+
+	// Step 4: stop provider sessions. Each session's Close tears down
+	// its own design-thread state as part of the same parallel closer,
+	// so a slow design teardown can't serialize behind an unrelated
+	// session close. Session closers aggregate their own errors via
+	// closeSessionsParallel — we surface them under a single
+	// "close provider sessions" step so the order spy sees one entry.
 	a.mu.Lock()
 	sessions := make(map[string]session, len(a.sessions))
 	for threadID, sess := range a.sessions {
@@ -203,31 +335,147 @@ func (a *App) ServiceShutdown() error {
 	}
 	a.sessions = make(map[string]session)
 	a.mu.Unlock()
+	sessionErrs := closeSessionsParallel(a, sessions, sessionShutdownTimeout)
+	record("close provider sessions", errors.Join(sessionErrs...))
 
-	errs := closeSessionsParallel(a, sessions, sessionShutdownTimeout)
+	// Step 5: close the design reactor's pending choice requests. This
+	// tears down per-thread design state left dangling when a session
+	// never reached a clean Close — matches the teardownDesignThread
+	// work the session closers did above but is safe to call again
+	// (reactor.TeardownThread is a no-op when nothing is pending).
+	if a.reactor != nil {
+		// Walk the sessions we snapshotted so TeardownThread fires for
+		// each thread even if the session close itself failed before
+		// reaching its own teardown.
+		for threadID := range sessions {
+			a.reactor.TeardownThread(threadID)
+		}
+		record("close design reactor", nil)
+	}
+
+	// Step 6: close PTYs. Must happen after provider sessions because
+	// a provider close might emit terminal output events; terminating
+	// the terminal manager first would drop those final frames.
 	if a.terminals != nil {
-		errs = appendError(errs, wrapLifecycleError("close terminal sessions", a.terminals.Shutdown()))
+		record("close terminal sessions", a.terminals.Shutdown())
 	}
-	if a.replay != nil {
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		errs = appendError(errs, wrapLifecycleError("close replay manager", a.replay.Shutdown(shutdownCtx)))
-		cancel()
-	}
-	if a.telemetry != nil {
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		errs = appendError(errs, wrapLifecycleError("shutdown telemetry", a.telemetry.Shutdown(shutdownCtx)))
-		cancel()
-	}
-	if a.store != nil {
-		errs = appendError(errs, wrapLifecycleError("close store", a.store.Close()))
-	}
-	if a.logger != nil {
-		errs = appendError(errs, wrapLifecycleError("close logger", a.logger.Close()))
-	}
+
+	// Step 7: close the design MCP server. Safe to close once no
+	// provider session holds a reference (step 4 guarantees that).
 	if a.designMCP != nil {
-		errs = appendError(errs, wrapLifecycleError("close design MCP server", a.designMCP.Close()))
+		record("close design MCP server", a.designMCP.Close())
 	}
+
+	// Step 8: close the provider event logger. After providers are
+	// gone, nothing else writes to it — close it before SQLite so its
+	// final flush isn't racing any other persistence sink.
+	if a.logger != nil {
+		record("close logger", a.logger.Close())
+	}
+
+	// Step 9: close SQLite last. Triage, replay, provider sessions,
+	// and the logger have all flushed by this point; anyone calling
+	// into the store after this will see a closed-db error rather
+	// than corrupting a half-shut database.
+	if a.store != nil {
+		record("close store", a.store.Close())
+	}
+
 	return errors.Join(errs...)
+}
+
+// drainTriage blocks until every in-flight triage Handle() call returns
+// or the timeout fires. Shutdown runs this before flushing observability
+// + SQLite so no event is persisted after the store is closed. The
+// timeout caps Quit latency — a stuck goroutine can delay the rest of
+// teardown by at most `timeout`.
+//
+// A DeadlineExceeded error is returned rather than swallowed so the
+// caller (Shutdown) records it in the step sequence; the rest of
+// teardown continues regardless.
+func (a *App) drainTriage(ctx context.Context, timeout time.Duration) error {
+	if a.triage == nil {
+		return nil
+	}
+	drainCtx, cancel := contextWithTimeout(ctx, timeout)
+	defer cancel()
+	if err := a.triage.Wait(drainCtx); err != nil {
+		return fmt.Errorf("drain triage (timeout %s): %w", timeout, err)
+	}
+	return nil
+}
+
+// contextWithTimeout derives a child context bounded by whichever is
+// tighter: the parent's remaining deadline or the subsystem's own timeout.
+// A nil parent behaves like context.Background — this keeps the test path
+// (which passes context.Background directly) and the Wails path (which has
+// the parent cancelled mid-shutdown) both working.
+func contextWithTimeout(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if parent == nil {
+		parent = context.Background()
+	}
+	return context.WithTimeout(parent, timeout)
+}
+
+// ServiceShutdown is the Wails v3 lifecycle hook. We keep it as a thin
+// wrapper around Shutdown so the Wails runtime drives the same code path
+// tests exercise directly.
+func (a *App) ServiceShutdown() error {
+	return a.Shutdown(context.Background())
+}
+
+// emit stamps a monotonic seq on every Wails event and forwards the
+// wrapped envelope through the Wails event bus. The frontend's
+// wrapEventOn helper peels the envelope back off — subscribers see the
+// same Go payload shape they would have without the envelope.
+//
+// When a.app is nil AND no test hook is installed, the helper is a
+// silent no-op — this matches the pre-Shutdown boot path (Wails may
+// not be initialised) and keeps tests free to construct an App with
+// just the fields they need. Tests that want to observe the envelope
+// install testEmitHook.
+func (a *App) emit(name string, data any) {
+	if a.app == nil && a.testEmitHook == nil {
+		return
+	}
+	seq := a.seq.Add(1)
+	env := SeqEnvelope{Seq: seq, Data: data}
+	if a.app != nil {
+		a.app.Event.Emit(name, env)
+	}
+	if a.testEmitHook != nil {
+		a.testEmitHook(name, env)
+	}
+}
+
+// emitWithReplay returns an event emitter that both pushes to the Wails
+// frontend and mirrors the event into the per-thread replay log when the
+// event is thread-scoped. We inspect the payload for a `threadId` field so
+// we don't introduce a hard dependency on any single event shape.
+//
+// The emission goes through a.emit so every event gets the seq envelope;
+// the replay log receives the raw (un-enveloped) payload because the
+// replay format records provider events, not Wails wire envelopes.
+func (a *App) emitWithReplay() func(string, any) {
+	return func(eventName string, data any) {
+		a.emit(eventName, data)
+		if a.replay == nil || !a.replay.Enabled() {
+			return
+		}
+		threadID := threadIDFromEvent(data)
+		if threadID == "" {
+			return
+		}
+		rec, err := replay.NewRecord(time.Now(), threadID, eventName, data)
+		if err != nil {
+			return
+		}
+		if a.replay.Enqueue(rec) {
+			if telemetryMetrics := a.telemetry.Metrics(); telemetryMetrics.ReplayEventsQueued != nil {
+				telemetryMetrics.ReplayEventsQueued.Add(context.Background(), 1)
+			}
+		}
+	}
 }
 
 // closeSessionsParallel closes every session concurrently, bounded by the
@@ -320,32 +568,6 @@ func runParallelClosers(closers []threadCloser, timeout time.Duration) []error {
 		}
 	}
 	return errs
-}
-
-// emitWithReplay returns an event emitter that both pushes to the Wails
-// frontend and mirrors the event into the per-thread replay log when the
-// event is thread-scoped. We inspect the payload for a `threadId` field so
-// we don't introduce a hard dependency on any single event shape.
-func (a *App) emitWithReplay() func(string, any) {
-	return func(eventName string, data any) {
-		a.app.Event.Emit(eventName, data)
-		if a.replay == nil || !a.replay.Enabled() {
-			return
-		}
-		threadID := threadIDFromEvent(data)
-		if threadID == "" {
-			return
-		}
-		rec, err := replay.NewRecord(time.Now(), threadID, eventName, data)
-		if err != nil {
-			return
-		}
-		if a.replay.Enqueue(rec) {
-			if telemetryMetrics := a.telemetry.Metrics(); telemetryMetrics.ReplayEventsQueued != nil {
-				telemetryMetrics.ReplayEventsQueued.Add(context.Background(), 1)
-			}
-		}
-	}
 }
 
 // --- Thread operations ---
@@ -442,6 +664,9 @@ func (a *App) ListPayloadMetas(threadID string) ([]store.PayloadMeta, error) {
 // --- Session operations ---
 
 func (a *App) StartSession(threadID string) error {
+	if a.shuttingDown.Load() {
+		return ErrShuttingDown
+	}
 	return a.runSessionStart(threadID, func() error {
 		return a.startSessionNow(threadID)
 	})
@@ -549,6 +774,9 @@ func (a *App) startSessionNow(threadID string) error {
 }
 
 func (a *App) SendMessage(threadID string, content string) error {
+	if a.shuttingDown.Load() {
+		return ErrShuttingDown
+	}
 	return a.sendMessage(threadID, content)
 }
 
