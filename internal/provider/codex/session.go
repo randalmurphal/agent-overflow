@@ -73,6 +73,10 @@ type Session struct {
 	// non-zero. Set by tests that exercise the late-response path; a
 	// production Session leaves it at zero to use the default.
 	requestTimeoutOverride time.Duration
+	// background classifies tool-call events as background (the model
+	// moved on with text while the tool was still open) before emission.
+	// Holds its own mutex — do not call while holding s.mu.
+	background *BackgroundClassifier
 }
 
 // pendingApproval tracks one in-flight approval so the timer can be
@@ -132,6 +136,7 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 		onEvent:         onEvent,
 		cancel:          cancel,
 		readDone:        make(chan struct{}),
+		background:      NewBackgroundClassifier(),
 	}
 
 	// Start stdout reader goroutine before sending any requests.
@@ -318,6 +323,9 @@ func (s *Session) handleDynamicToolCall(rpcID int64, handler DynamicToolHandler,
 func (s *Session) Close() error {
 	s.closing.Store(true)
 	s.clearPendingApprovals()
+	if s.background != nil {
+		s.background.Reset()
+	}
 	err := s.proc.Close()
 	s.cancel()
 	if s.readDone != nil {
@@ -577,7 +585,8 @@ func (s *Session) dispatchLine(line []byte) {
 	// Notification: has method, no id.
 	if msg.Method != "" {
 		events := ClassifyNotification(s.threadID, msg.Method, msg.Params)
-		for _, evt := range events {
+		for i := range events {
+			evt := &events[i]
 			// Track active turn ID for Interrupt.
 			switch evt.Kind {
 			case provider.EventTurnStart:
@@ -600,7 +609,18 @@ func (s *Session) dispatchLine(line []byte) {
 				s.mu.Unlock()
 				s.clearTurnStart(evt.TurnID)
 			}
-			s.onEvent(evt)
+			// Run the background classifier in order. It observes
+			// tool start/complete pairs plus assistant text deltas
+			// and mutates evt.Meta to carry is_background=true when
+			// a tool was concurrent with assistant reasoning. Must
+			// happen after the turn-tracking switch so the
+			// classifier sees the same EventTurnComplete that clears
+			// activeTurnID (it uses turn complete as a state-reset
+			// boundary).
+			if s.background != nil {
+				s.background.Classify(evt)
+			}
+			s.onEvent(*evt)
 		}
 		return
 	}

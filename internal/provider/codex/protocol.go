@@ -54,8 +54,15 @@ func ClassifyNotification(threadID, method string, params json.RawMessage) []pro
 			})
 		}
 
+		// Surface turn.status so downstream can distinguish completed /
+		// interrupted / failed turns (wire values: "completed" | "interrupted"
+		// | "failed" | "inProgress" — see codex-source TurnStatus.ts).
+		turnMeta := mergeMetaKeys(params, map[string]any{
+			"turn_status": status,
+		})
+
 		events = append(events, provider.ProviderEvent{
-			Kind: provider.EventTurnComplete, ThreadID: threadID, TurnID: turnID, Timestamp: now,
+			Kind: provider.EventTurnComplete, ThreadID: threadID, TurnID: turnID, Meta: turnMeta, Timestamp: now,
 		})
 		return events
 
@@ -77,7 +84,7 @@ func ClassifyNotification(threadID, method string, params json.RawMessage) []pro
 			ThreadID:  threadID,
 			ItemID:    itemID,
 			ItemType:  itemType,
-			Meta:      params,
+			Meta:      enrichItemMeta(params),
 			Timestamp: now,
 		}}
 
@@ -104,7 +111,7 @@ func ClassifyNotification(threadID, method string, params json.RawMessage) []pro
 			ThreadID:  threadID,
 			ItemID:    itemID,
 			ItemType:  itemType,
-			Meta:      params,
+			Meta:      enrichItemMeta(params),
 			Timestamp: now,
 		}}
 
@@ -282,6 +289,52 @@ func ClassifyNotification(threadID, method string, params json.RawMessage) []pro
 			Timestamp: now,
 		}}
 
+	// item/commandExecution/terminalInteraction and item/mcpToolCall/progress
+	// both map to EventToolProgress with a `subtype` discriminator in Meta.
+	// We collapse two wire notifications onto one EventKind deliberately —
+	// neither has enough downstream-rendering baggage to justify its own
+	// EventKind today, and giving each its own would require adding entries
+	// to AllEventKinds plus frontend `never`-guard branches. If downstream
+	// rendering ever diverges (e.g. terminal interactions want a dedicated
+	// timeline affordance), promote either to its own EventKind by adding
+	// to AllEventKinds in internal/provider/types.go and adding a branch in
+	// the frontend router.
+	case "item/commandExecution/terminalInteraction":
+		itemID := readTopLevelString(params, "itemId")
+		turnID := readTopLevelString(params, "turnId")
+		processID := readTopLevelString(params, "processId")
+		stdin := readTopLevelString(params, "stdin")
+		meta, _ := json.Marshal(map[string]any{
+			"subtype":   "terminal_interaction",
+			"processId": processID,
+			"stdin":     stdin,
+		})
+		return []provider.ProviderEvent{{
+			Kind:      provider.EventToolProgress,
+			ThreadID:  threadID,
+			TurnID:    turnID,
+			ItemID:    itemID,
+			Meta:      meta,
+			Timestamp: now,
+		}}
+
+	case "item/mcpToolCall/progress":
+		itemID := readTopLevelString(params, "itemId")
+		turnID := readTopLevelString(params, "turnId")
+		message := readTopLevelString(params, "message")
+		meta, _ := json.Marshal(map[string]any{
+			"subtype": "mcp_progress",
+			"message": message,
+		})
+		return []provider.ProviderEvent{{
+			Kind:      provider.EventToolProgress,
+			ThreadID:  threadID,
+			TurnID:    turnID,
+			ItemID:    itemID,
+			Meta:      meta,
+			Timestamp: now,
+		}}
+
 	// --- Explicitly skipped notifications ---
 
 	case "thread/started",
@@ -292,7 +345,6 @@ func ClassifyNotification(threadID, method string, params json.RawMessage) []pro
 		"item/autoApprovalReview/started",
 		"item/autoApprovalReview/completed",
 		"item/reasoning/summaryPartAdded",
-		"item/mcpToolCall/progress",
 		"account/updated",
 		"account/login/completed",
 		"configWarning",
@@ -490,4 +542,52 @@ func readRawString(m map[string]json.RawMessage, key string) string {
 		return ""
 	}
 	return s
+}
+
+// enrichItemMeta augments the raw item/started or item/completed params with
+// discoverable top-level keys: `source` (CommandExecutionSource —
+// "agent" | "userShell" | "unifiedExecStartup" | "unifiedExecInteraction")
+// and `item_status` (CommandExecutionStatus / McpToolCallStatus / etc. —
+// "inProgress" | "completed" | "failed" | "declined"). Both live inside
+// `params.item` on the wire; surfacing them at the top of Meta means
+// downstream consumers don't need to know the nested path. The original
+// params are preserved so anything that already reads `item.xxx` still
+// works. If marshaling fails (it shouldn't — we're round-tripping decoded
+// JSON) the raw params are returned unmodified rather than dropping data.
+func enrichItemMeta(params json.RawMessage) json.RawMessage {
+	source := readNestedString(params, "item", "source")
+	status := readNestedString(params, "item", "status")
+	if source == "" && status == "" {
+		return params
+	}
+	extras := map[string]any{}
+	if source != "" {
+		extras["source"] = source
+	}
+	if status != "" {
+		extras["item_status"] = status
+	}
+	return mergeMetaKeys(params, extras)
+}
+
+// mergeMetaKeys decodes base as a JSON object, overlays extras on top, and
+// returns the re-encoded result. If base is not a JSON object (or decoding
+// fails) we fall back to marshaling extras alone so the enrichment keys are
+// still present. Used by turn/completed and item enrichment to carry both
+// raw wire fields and synthesized top-level keys in the same Meta blob.
+func mergeMetaKeys(base json.RawMessage, extras map[string]any) json.RawMessage {
+	var merged map[string]any
+	if err := json.Unmarshal(base, &merged); err != nil || merged == nil {
+		merged = map[string]any{}
+	}
+	for k, v := range extras {
+		merged[k] = v
+	}
+	out, err := json.Marshal(merged)
+	if err != nil {
+		// Shouldn't happen: merged is built from decoded JSON + known-safe
+		// values. Preserve base rather than drop everything.
+		return base
+	}
+	return out
 }

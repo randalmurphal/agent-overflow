@@ -542,7 +542,6 @@ func TestSkippedMethods(t *testing.T) {
 		"item/autoApprovalReview/started",
 		"item/autoApprovalReview/completed",
 		"item/reasoning/summaryPartAdded",
-		"item/mcpToolCall/progress",
 		"account/updated",
 		"account/login/completed",
 		"configWarning",

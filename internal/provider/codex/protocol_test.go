@@ -341,3 +341,206 @@ func TestClassifyNotification_UnknownMethodDoesNotCrash(t *testing.T) {
 		t.Errorf("unknown method emitted %d events, want 0", len(events))
 	}
 }
+
+// -- item/started surface tests (task #4: propagate CommandExecutionSource) --
+
+// TestClassifyNotification_ItemStartedCommandExecutionSource verifies each
+// of the four CommandExecutionSource variants (wire values from
+// codex-source/schema/typescript/v2/CommandExecutionSource.ts) land at the
+// top of evt.Meta as the `source` key. Downstream classifiers branch on
+// source (unifiedExec is the hint that a command will keep running after
+// its tool-call "completes" on the wire); nested access into
+// meta.item.source works today but is fragile to a future schema bump.
+func TestClassifyNotification_ItemStartedCommandExecutionSource(t *testing.T) {
+	sources := []string{"agent", "userShell", "unifiedExecStartup", "unifiedExecInteraction"}
+	for _, source := range sources {
+		t.Run(source, func(t *testing.T) {
+			params := json.RawMessage(
+				`{"item":{"id":"i1","type":"commandExecution","source":"` + source + `","status":"inProgress"}}`,
+			)
+			events := ClassifyNotification("t1", "item/started", params)
+			if len(events) != 1 {
+				t.Fatalf("expected 1 event, got %d", len(events))
+			}
+			evt := events[0]
+			if evt.Kind != provider.EventToolStart {
+				t.Fatalf("kind: got %q, want %q", evt.Kind, provider.EventToolStart)
+			}
+			var meta map[string]any
+			if err := json.Unmarshal(evt.Meta, &meta); err != nil {
+				t.Fatalf("unmarshal meta: %v", err)
+			}
+			if meta["source"] != source {
+				t.Errorf("meta.source: got %v, want %q (meta=%+v)", meta["source"], source, meta)
+			}
+			if meta["item_status"] != "inProgress" {
+				t.Errorf("meta.item_status: got %v, want %q (meta=%+v)", meta["item_status"], "inProgress", meta)
+			}
+			// Nested item block must still be present — callers who
+			// previously parsed meta.item.* should not break.
+			if _, ok := meta["item"]; !ok {
+				t.Errorf("meta.item was dropped by enrichment: %+v", meta)
+			}
+		})
+	}
+}
+
+// TestClassifyNotification_ItemCompletedStatusFailed verifies failed-status
+// command completions carry item_status into Meta. The failed status is the
+// load-bearing signal for rendering a red glyph / stderr-forward UI.
+func TestClassifyNotification_ItemCompletedStatusFailed(t *testing.T) {
+	params := json.RawMessage(
+		`{"item":{"id":"cmd-1","type":"commandExecution","source":"agent","status":"failed","exitCode":1}}`,
+	)
+	events := ClassifyNotification("t1", "item/completed", params)
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	evt := events[0]
+	if evt.Kind != provider.EventToolComplete {
+		t.Fatalf("kind: got %q, want %q", evt.Kind, provider.EventToolComplete)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(evt.Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if meta["item_status"] != "failed" {
+		t.Errorf("meta.item_status: got %v, want %q (meta=%+v)", meta["item_status"], "failed", meta)
+	}
+	if meta["source"] != "agent" {
+		t.Errorf("meta.source: got %v, want %q (meta=%+v)", meta["source"], "agent", meta)
+	}
+}
+
+// TestClassifyNotification_ItemCompletedEachStatus covers each
+// CommandExecutionStatus variant so a schema rename in codex-source
+// surfaces here instead of silently dropping.
+func TestClassifyNotification_ItemCompletedEachStatus(t *testing.T) {
+	statuses := []string{"inProgress", "completed", "failed", "declined"}
+	for _, status := range statuses {
+		t.Run(status, func(t *testing.T) {
+			params := json.RawMessage(
+				`{"item":{"id":"cmd-1","type":"commandExecution","source":"agent","status":"` + status + `"}}`,
+			)
+			events := ClassifyNotification("t1", "item/completed", params)
+			if len(events) != 1 {
+				t.Fatalf("expected 1 event, got %d", len(events))
+			}
+			var meta map[string]any
+			if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
+				t.Fatalf("unmarshal meta: %v", err)
+			}
+			if meta["item_status"] != status {
+				t.Errorf("meta.item_status: got %v, want %q", meta["item_status"], status)
+			}
+		})
+	}
+}
+
+// -- terminalInteraction / mcpToolCall progress tests --
+
+// TestClassifyNotification_TerminalInteraction exercises
+// item/commandExecution/terminalInteraction, which Codex emits when a
+// command prompts for input (sudo password, interactive REPL, etc.). We
+// route it as EventToolProgress with a subtype discriminator so triage
+// can branch without yet owning a dedicated EventKind for it. Wire
+// format in codex-source/schema/typescript/v2/TerminalInteractionNotification.ts.
+func TestClassifyNotification_TerminalInteraction(t *testing.T) {
+	params := json.RawMessage(
+		`{"threadId":"th-1","turnId":"t1","itemId":"cmd-1","processId":"pid-42","stdin":"password:"}`,
+	)
+	events := ClassifyNotification("th-1", "item/commandExecution/terminalInteraction", params)
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	evt := events[0]
+	if evt.Kind != provider.EventToolProgress {
+		t.Errorf("kind: got %q, want %q", evt.Kind, provider.EventToolProgress)
+	}
+	if evt.ItemID != "cmd-1" {
+		t.Errorf("itemID: got %q, want %q", evt.ItemID, "cmd-1")
+	}
+	if evt.TurnID != "t1" {
+		t.Errorf("turnID: got %q, want %q", evt.TurnID, "t1")
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(evt.Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if meta["subtype"] != "terminal_interaction" {
+		t.Errorf("meta.subtype: got %v, want %q", meta["subtype"], "terminal_interaction")
+	}
+	if meta["processId"] != "pid-42" {
+		t.Errorf("meta.processId: got %v, want %q", meta["processId"], "pid-42")
+	}
+	if meta["stdin"] != "password:" {
+		t.Errorf("meta.stdin: got %v, want %q", meta["stdin"], "password:")
+	}
+}
+
+// TestClassifyNotification_McpToolCallProgress wraps the
+// item/mcpToolCall/progress notification — Codex forwards a progress
+// message string from the MCP server. Wire format in
+// codex-source/schema/typescript/v2/McpToolCallProgressNotification.ts.
+func TestClassifyNotification_McpToolCallProgress(t *testing.T) {
+	params := json.RawMessage(
+		`{"threadId":"th-1","turnId":"t1","itemId":"mcp-1","message":"Indexed 47/100 files"}`,
+	)
+	events := ClassifyNotification("th-1", "item/mcpToolCall/progress", params)
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	evt := events[0]
+	if evt.Kind != provider.EventToolProgress {
+		t.Errorf("kind: got %q, want %q", evt.Kind, provider.EventToolProgress)
+	}
+	if evt.ItemID != "mcp-1" {
+		t.Errorf("itemID: got %q, want %q", evt.ItemID, "mcp-1")
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(evt.Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if meta["subtype"] != "mcp_progress" {
+		t.Errorf("meta.subtype: got %v, want %q", meta["subtype"], "mcp_progress")
+	}
+	if meta["message"] != "Indexed 47/100 files" {
+		t.Errorf("meta.message: got %v, want %q", meta["message"], "Indexed 47/100 files")
+	}
+}
+
+// -- turn/completed surface test --
+
+// TestClassifyNotification_TurnCompletedStatus asserts that turn.status
+// (TurnStatus: "completed" | "interrupted" | "failed" | "inProgress")
+// is lifted into the turn-complete event's Meta.
+func TestClassifyNotification_TurnCompletedStatus(t *testing.T) {
+	statuses := []string{"completed", "interrupted", "failed", "inProgress"}
+	for _, status := range statuses {
+		t.Run(status, func(t *testing.T) {
+			params := json.RawMessage(
+				`{"turn":{"id":"t1","status":"` + status + `"}}`,
+			)
+			events := ClassifyNotification("th-1", "turn/completed", params)
+			// Find the turn-complete event (failed status also emits a
+			// paired EventError, so we can't just take events[0]).
+			var found provider.ProviderEvent
+			for _, e := range events {
+				if e.Kind == provider.EventTurnComplete {
+					found = e
+					break
+				}
+			}
+			if found.Kind == "" {
+				t.Fatalf("no EventTurnComplete in events=%+v", events)
+			}
+			var meta map[string]any
+			if err := json.Unmarshal(found.Meta, &meta); err != nil {
+				t.Fatalf("unmarshal meta: %v", err)
+			}
+			if meta["turn_status"] != status {
+				t.Errorf("meta.turn_status: got %v, want %q (meta=%+v)", meta["turn_status"], status, meta)
+			}
+		})
+	}
+}
