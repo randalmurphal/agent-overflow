@@ -4,8 +4,14 @@
   import { getSettings } from '../../stores/settings.svelte';
   import type { Item, ToolInlineDiffFile, ToolResultMeta } from '../../types/models';
   import { parseDiffLines, type DiffLine } from '../../utils/diff';
+  import LazyContentBlock from './LazyContentBlock.svelte';
 
   let { item, meta, payloadId }: { item: Item; meta: ToolResultMeta; payloadId?: string } = $props();
+
+  // detail/preview are unbounded provider text; LazyContentBlock caps
+  // display length. The stored payload is the diff (Exact patch toggle),
+  // so detailText doesn't get a payloadId — it's truncate-only.
+  const detailText = $derived(meta.detail || meta.preview || '');
 
   let expanded = $state(false);
   let loading = $state(false);
@@ -66,8 +72,10 @@
         <p class="truncate text-sm font-medium text-text-primary">{meta.title || item.summary}</p>
         <span class="ml-auto text-xs text-success">done</span>
       </div>
-      {#if meta.detail || meta.preview}
-        <p class="mt-1 text-xs text-text-secondary">{meta.detail || meta.preview}</p>
+      {#if detailText}
+        <div class="mt-1">
+          <LazyContentBlock payloadId={undefined} preview={detailText} />
+        </div>
       {/if}
       {#if hasInlineDiff}
         <div class="mt-2 flex flex-wrap gap-2">
