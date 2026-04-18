@@ -132,6 +132,43 @@ describe('<DiscussionDefinitionPicker>', () => {
     expect(select.disabled).toBe(true);
   });
 
+  it('dedupes definitions appearing in both project and global lists', async () => {
+    // A backend that returns the same id under both scopes (or a mock
+    // that ignores the scope arg) would otherwise produce duplicate
+    // options and trip Svelte's keyed-each invariant.
+    setBindingMock('ListDiscussions', async () => [
+      def({ id: 'shared', name: 'Architects', scope: 'global' }),
+    ]);
+    const { findByTestId } = render(DiscussionDefinitionPicker, {
+      selectedName: null,
+      projectPath: '/ws',
+      onSelect: vi.fn(),
+    });
+    const select = (await findByTestId('discussion-definition-select')) as HTMLSelectElement;
+    await waitFor(() => {
+      const hits = Array.from(select.options).filter((o) => o.value === 'Architects');
+      expect(hits.length).toBe(1);
+    });
+  });
+
+  it('preserves unicode in definition names', async () => {
+    setBindingMock('ListDiscussions', async (scope: unknown) => {
+      if (scope === 'global') return [def({ id: 'u1', name: '建築家チーム', scope: 'global' })];
+      return [];
+    });
+    const { findByTestId } = render(DiscussionDefinitionPicker, {
+      selectedName: null,
+      projectPath: '/ws',
+      onSelect: vi.fn(),
+    });
+    const select = (await findByTestId('discussion-definition-select')) as HTMLSelectElement;
+    await waitFor(() => {
+      const opt = Array.from(select.options).find((o) => o.value === '建築家チーム');
+      expect(opt).toBeDefined();
+      expect(opt?.textContent).toBe('建築家チーム');
+    });
+  });
+
   it('filters project-scoped definitions to the current project path', async () => {
     setBindingMock('ListDiscussions', async (scope: unknown) => {
       if (scope === 'project') {

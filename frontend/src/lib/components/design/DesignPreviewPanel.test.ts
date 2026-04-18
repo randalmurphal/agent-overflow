@@ -293,6 +293,37 @@ describe('<DesignPreviewPanel> — export to new thread', () => {
     await waitFor(() => expect(pane.threadId).toBe('new-thread'));
   });
 
+  it('ignores rapid second clicks while an export is already in flight', async () => {
+    const pane = await buildPane();
+    pane.appendDesignArtifact(makeArtifact({ id: 'a-dbl', title: 'Nav' }));
+    let release: (blob: Blob) => void = () => {};
+    const pending = new Promise<Blob>((r) => {
+      release = (b) => r(b);
+    });
+    vi.mocked(captureHtmlToPng).mockImplementationOnce(async () => pending);
+    const createMock = setBindingMock('CreateThread', async () => ({
+      id: 'new-thread', provider: 'claude', workspacePath: '/tmp', model: 'm',
+    }));
+    setBindingMock('UploadAttachment', async () => ({
+      id: 'a', threadId: 'new-thread', filename: 'x', mimeType: 'image/png', size: 0, relativePath: '', createdAt: 0,
+    }));
+    setBindingMock('SaveDraft', async () => {});
+    setBindingMock('StartSession', async () => {});
+
+    const { getByTestId, findByTestId } = render(DesignPreviewPanel, { props: { pane } });
+    const btn = (await findByTestId('design-export-to-thread')) as HTMLButtonElement;
+    await waitFor(() => expect(btn.disabled).toBe(false));
+    // Three rapid clicks: the disabled guard + early-return should
+    // collapse them to one actual export.
+    void fireEvent.click(btn);
+    void fireEvent.click(btn);
+    void fireEvent.click(btn);
+    await waitFor(() => expect(vi.mocked(captureHtmlToPng)).toHaveBeenCalledTimes(1));
+    release(new Blob(['x'], { type: 'image/png' }));
+    await waitFor(() => expect(pane.threadId).toBe('new-thread'));
+    expect(createMock).toHaveBeenCalledTimes(1);
+  });
+
   it('surfaces an error to the pane when CreateThread fails', async () => {
     const pane = await buildPane();
     pane.appendDesignArtifact(makeArtifact({ id: 'a-3', title: 'Hero' }));

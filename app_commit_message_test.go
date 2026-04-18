@@ -1,8 +1,17 @@
 package main
 
 import (
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"agent-overflow/internal/checkpoint"
+	"agent-overflow/internal/provider"
+	"agent-overflow/internal/settings"
+	"agent-overflow/internal/store"
 )
 
 // ---- sanitizeCommitSubject ----
@@ -209,4 +218,169 @@ func TestBuildCommitMessagePrompt_IncludesDiffAndRules(t *testing.T) {
 			t.Errorf("prompt missing %q", needle)
 		}
 	}
+}
+
+// ---- GenerateCommitMessage top-level handler ----
+//
+// The handler has four paths: missing thread, unsupported provider,
+// empty diff, and happy path. The happy + failure paths with a real
+// CLI call use a bash mock so we don't shell out to a real Claude
+// binary in the test suite.
+
+func newCommitMsgTestApp(t *testing.T) *App {
+	t.Helper()
+	app := newTestAppWithStore(t)
+	app.settings = settings.NewService(t.TempDir())
+	app.checkpoints = checkpoint.NewStore()
+	return app
+}
+
+func TestGenerateCommitMessage_UnknownThreadErrors(t *testing.T) {
+	app := newCommitMsgTestApp(t)
+	_, err := app.GenerateCommitMessage("nope")
+	if err == nil {
+		t.Fatal("expected error for unknown thread id")
+	}
+	if !strings.Contains(err.Error(), "generate commit message") {
+		t.Errorf("error should be prefixed with the operation name: %v", err)
+	}
+}
+
+func TestGenerateCommitMessage_CodexThreadRejected(t *testing.T) {
+	app := newCommitMsgTestApp(t)
+	now := time.Now().UnixMilli()
+	if err := app.store.CreateThread(store.Thread{
+		ID: "t-codex", Title: "x", Provider: string(provider.Codex),
+		WorkspacePath: t.TempDir(), CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	_, err := app.GenerateCommitMessage("t-codex")
+	if err == nil {
+		t.Fatal("expected error: non-Claude provider must be rejected")
+	}
+	if !strings.Contains(err.Error(), "codex") && !strings.Contains(err.Error(), "manually") {
+		t.Errorf("error should name the unsupported provider + suggest manual entry; got: %v", err)
+	}
+}
+
+func TestGenerateCommitMessage_EmptyDiffReturnsNothingToDescribe(t *testing.T) {
+	app := newCommitMsgTestApp(t)
+	workspace := initCommitMsgRepo(t)
+	now := time.Now().UnixMilli()
+	if err := app.store.CreateThread(store.Thread{
+		ID: "t-claude", Title: "x", Provider: string(provider.Claude),
+		WorkspacePath: workspace, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	// Repo is clean — no uncommitted changes. The handler should
+	// short-circuit before invoking the CLI.
+	_, err := app.GenerateCommitMessage("t-claude")
+	if err == nil {
+		t.Fatal("expected error when working tree is clean")
+	}
+	if !strings.Contains(err.Error(), "no uncommitted changes") {
+		t.Errorf("error should mention empty diff; got: %v", err)
+	}
+}
+
+func TestGenerateCommitMessage_HappyPathWithMockClaude(t *testing.T) {
+	app := newCommitMsgTestApp(t)
+	workspace := initCommitMsgRepo(t)
+	if err := os.WriteFile(filepath.Join(workspace, "README"), []byte("hello\nworld\n"), 0o644); err != nil {
+		t.Fatalf("dirty repo: %v", err)
+	}
+
+	// Mock `claude -p`: drains stdin then emits the tail-line envelope
+	// decodeClaudeCommitMessage expects.
+	mockPath := filepath.Join(t.TempDir(), "claude-mock.sh")
+	mock := `#!/bin/bash
+cat > /dev/null
+echo '{"session_id":"mock"}'
+echo '{"structured_output":{"subject":"Refine README greeting","body":"Mention the workspace layout."}}'
+`
+	if err := os.WriteFile(mockPath, []byte(mock), 0o755); err != nil {
+		t.Fatalf("write mock: %v", err)
+	}
+	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": mockPath}); err != nil {
+		t.Fatalf("set binary: %v", err)
+	}
+
+	now := time.Now().UnixMilli()
+	if err := app.store.CreateThread(store.Thread{
+		ID: "t-claude", Title: "x", Provider: string(provider.Claude),
+		WorkspacePath: workspace, CreatedAt: now, UpdatedAt: now,
+		Model: "claude-sonnet-4-6",
+	}); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+
+	got, err := app.GenerateCommitMessage("t-claude")
+	if err != nil {
+		t.Fatalf("happy path: %v", err)
+	}
+	if got.Subject != "Refine README greeting" {
+		t.Errorf("subject: got %q", got.Subject)
+	}
+	if got.Body != "Mention the workspace layout." {
+		t.Errorf("body: got %q", got.Body)
+	}
+}
+
+func TestGenerateCommitMessage_SurfacesClaudeFailureAsError(t *testing.T) {
+	app := newCommitMsgTestApp(t)
+	workspace := initCommitMsgRepo(t)
+	if err := os.WriteFile(filepath.Join(workspace, "README"), []byte("dirty\n"), 0o644); err != nil {
+		t.Fatalf("dirty repo: %v", err)
+	}
+
+	mockPath := filepath.Join(t.TempDir(), "claude-fail.sh")
+	if err := os.WriteFile(mockPath, []byte("#!/bin/bash\ncat > /dev/null\necho 'boom' 1>&2\nexit 1\n"), 0o755); err != nil {
+		t.Fatalf("write mock: %v", err)
+	}
+	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": mockPath}); err != nil {
+		t.Fatalf("set binary: %v", err)
+	}
+
+	now := time.Now().UnixMilli()
+	if err := app.store.CreateThread(store.Thread{
+		ID: "t-claude", Title: "x", Provider: string(provider.Claude),
+		WorkspacePath: workspace, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+
+	_, err := app.GenerateCommitMessage("t-claude")
+	if err == nil {
+		t.Fatal("expected error when mock CLI exits non-zero")
+	}
+	if !strings.Contains(err.Error(), "boom") {
+		t.Errorf("error should include stderr message from the mock; got: %v", err)
+	}
+}
+
+// initCommitMsgRepo creates a clean git repo with one committed file so
+// GetWorkingTreeDiff has a stable baseline.
+func initCommitMsgRepo(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	run := func(args ...string) {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=Tester", "GIT_AUTHOR_EMAIL=t@t",
+			"GIT_COMMITTER_NAME=Tester", "GIT_COMMITTER_EMAIL=t@t",
+		)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	run("init", "-q", "-b", "main")
+	if err := os.WriteFile(filepath.Join(dir, "README"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatalf("seed file: %v", err)
+	}
+	run("add", "-A")
+	run("-c", "user.email=t@t", "-c", "user.name=Tester", "commit", "-q", "-m", "init")
+	return dir
 }

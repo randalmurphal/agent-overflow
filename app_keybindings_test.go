@@ -34,6 +34,66 @@ func TestGetKeybindingsReturnsDefaultsWhenNoFile(t *testing.T) {
 	}
 }
 
+// TestDefaultKeybindingsIncludeNewHelpAndSearchBindings pins the chord
+// assignments for features that ship visible UI (cheat sheet, message
+// search) so a refactor can't silently drop them. Users who rebind can
+// override; but users who never open Settings should still discover
+// these features by muscle memory.
+func TestDefaultKeybindingsIncludeNewHelpAndSearchBindings(t *testing.T) {
+	want := map[string]string{
+		"help.keybindings": "mod+/",
+		"search.messages":  "mod+shift+f",
+	}
+	got := make(map[string]string)
+	for _, b := range DefaultKeybindings {
+		got[b.Command] = b.Key
+	}
+	for cmd, key := range want {
+		if got[cmd] != key {
+			t.Errorf("DefaultKeybindings: %s = %q, want %q", cmd, got[cmd], key)
+		}
+	}
+}
+
+// TestDefaultKeybindingsHaveUniqueKeyWhenTuples guarantees no two
+// defaults collide on the same (key, when) pair. Multiple chords for one
+// command is fine (e.g. mod+n and mod+shift+o both → thread.new), but
+// two different commands on the same chord under the same context would
+// make one unreachable.
+func TestDefaultKeybindingsHaveUniqueKeyWhenTuples(t *testing.T) {
+	seen := make(map[string]string)
+	for _, b := range DefaultKeybindings {
+		tuple := b.Key + "|" + b.When
+		if prev, found := seen[tuple]; found && prev != b.Command {
+			t.Errorf(
+				"chord %q under when=%q is bound to both %q and %q — collision shadows the second binding",
+				b.Key, b.When, prev, b.Command,
+			)
+		}
+		seen[tuple] = b.Command
+	}
+}
+
+// TestDefaultKeybindingsUseValidChordSyntax is a smoke test guarding
+// against typos like "mod+/ " or empty keys making it into defaults.
+// The frontend's tryParseChord is the authoritative validator, but we
+// check the basic shape here to catch obvious mistakes at build time.
+func TestDefaultKeybindingsUseValidChordSyntax(t *testing.T) {
+	for i, b := range DefaultKeybindings {
+		if b.Key == "" {
+			t.Errorf("DefaultKeybindings[%d] has empty key", i)
+		}
+		if b.Command == "" {
+			t.Errorf("DefaultKeybindings[%d] has empty command", i)
+		}
+		// Leading/trailing whitespace isn't valid and usually means a
+		// typo in the source.
+		if b.Key != "" && (b.Key[0] == ' ' || b.Key[len(b.Key)-1] == ' ') {
+			t.Errorf("DefaultKeybindings[%d].Key = %q has surrounding whitespace", i, b.Key)
+		}
+	}
+}
+
 func TestUpdateKeybindingsPersistsAndMergesOverDefaults(t *testing.T) {
 	app := newKeybindingsApp(t)
 

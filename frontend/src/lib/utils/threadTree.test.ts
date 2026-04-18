@@ -152,6 +152,43 @@ describe('buildDisplayRows', () => {
     // rather than leak a row at the wrong level.
     expect(rows.length).toBe(0);
   });
+
+  it('grandchildren are dropped — the flattener only supports one nesting level', () => {
+    // Participant threads shouldn't have their own participants today,
+    // so the flattener emits top-level roots and (if expanded) their
+    // direct kids; anything deeper is silently skipped because the
+    // outer loop sees a parent already in the set and moves on.
+    //
+    // Pinned here so a future change to support deeper nesting is
+    // explicit (requires both a flattener pass and ThreadRow's indent
+    // style math, which currently provisions for exactly one step).
+    const rows = buildDisplayRows(
+      [
+        t({ id: 'root', discussionId: 'd1' }),
+        t({ id: 'child', parentThreadId: 'root' }),
+        t({ id: 'grandchild', parentThreadId: 'child' }),
+      ],
+      new Set(['root', 'child']),
+    );
+    expect(rows.map((r) => r.thread.id)).toEqual(['root', 'child']);
+    expect(rows.find((r) => r.thread.id === 'grandchild')).toBeUndefined();
+  });
+
+  it('mixes roots and parent groups: all emitted exactly once, groups contiguous', () => {
+    const rows = buildDisplayRows(
+      [
+        t({ id: 'a' }),
+        t({ id: 'p', discussionId: 'd' }),
+        t({ id: 'c1', parentThreadId: 'p' }),
+        t({ id: 'c2', parentThreadId: 'p' }),
+        t({ id: 'b' }),
+      ],
+      new Set(['p']),
+    );
+    const ids = rows.map((r) => r.thread.id);
+    expect(ids).toEqual(['a', 'p', 'c1', 'c2', 'b']);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
 });
 
 describe('defaultExpandedParents', () => {
