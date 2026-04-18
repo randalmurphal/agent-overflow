@@ -42,6 +42,10 @@
   let pathText = $state(startingPath);
   let loading = $state(false);
   let error: string | null = $state(null);
+  // noMatches goes true when the user is typing and the current input
+  // doesn't resolve to a real directory. The listbox uses it to show a
+  // muted "No matches" hint instead of the last-valid listing.
+  let noMatches = $state(false);
   let listboxEl: HTMLUListElement | undefined = $state(undefined);
 
   // Debounce handle for path-text changes. Typing in the input shouldn't
@@ -51,21 +55,64 @@
   // path can't overwrite a newer listing.
   let browseToken = 0;
 
-  async function browse(path: string): Promise<void> {
+  // Pull a readable message out of whatever the binding threw. Wails
+  // serializes its server-side errors as objects with {message, kind,
+  // cause}; a naive String(err) prints "[object Object]" or the full
+  // JSON dump. We want the human-readable message only.
+  function extractErrorMessage(err: unknown): string {
+    if (err instanceof Error) return err.message;
+    if (typeof err === 'string') return err;
+    if (err && typeof err === 'object') {
+      const maybeMessage = (err as { message?: unknown }).message;
+      if (typeof maybeMessage === 'string') return maybeMessage;
+    }
+    return 'Unknown error';
+  }
+
+  async function browse(
+    path: string,
+    opts: { fromTyping?: boolean } = {},
+  ): Promise<void> {
+    const fromTyping = opts.fromTyping ?? false;
     const token = ++browseToken;
     loading = true;
-    error = null;
+    if (!fromTyping) {
+      // Only the explicit nav path (drill-in, goToParent, Enter,
+      // initial mount) clears a prior error. Typing shouldn't flicker
+      // the banner on or off between keystrokes.
+      error = null;
+    }
     try {
       const result = (await BrowseDirectory(path)) as DirectoryListing;
       if (token !== browseToken) return;
       listing = result;
-      pathText = result.path;
+      noMatches = false;
+      error = null;
+      // On an explicit nav (drill-in, parent, Enter, mount) we adopt
+      // the server's canonical path so the input mirrors the listing.
+      // While the user is still typing we leave pathText alone — the
+      // server may have normalised away a trailing slash or expanded
+      // "~", and clobbering the input would erase the user's cursor
+      // position and the character they just pressed.
+      if (!fromTyping) {
+        pathText = result.path;
+      }
       highlight = 0;
       onSelect?.(result.path);
     } catch (err) {
       if (token !== browseToken) return;
-      error = err instanceof Error ? err.message : String(err);
+      if (fromTyping) {
+        // Silent while typing: wipe the listing and surface a muted
+        // "No matches" hint. No red banner — the user's input is a
+        // work-in-progress and they'll see the empty state clear as
+        // soon as they type something that resolves.
+        listing = null;
+        noMatches = true;
+        return;
+      }
+      error = extractErrorMessage(err);
       listing = null;
+      noMatches = false;
     } finally {
       if (token === browseToken) {
         loading = false;
@@ -86,7 +133,7 @@
     if (debounceHandle) clearTimeout(debounceHandle);
     debounceHandle = setTimeout(() => {
       debounceHandle = null;
-      void browse(pathText);
+      void browse(pathText, { fromTyping: true });
     }, 120);
   }
 
@@ -209,6 +256,14 @@
     {#if loading && !listing}
       <li class="px-3 py-2 text-xs text-text-secondary/70" aria-hidden="true">
         Loading…
+      </li>
+    {:else if noMatches}
+      <li
+        class="px-3 py-2 text-xs text-text-secondary/70"
+        data-testid="directory-browser-no-matches"
+        aria-hidden="true"
+      >
+        No matches
       </li>
     {:else if listing && listing.entries.length === 0}
       <li class="px-3 py-2 text-xs text-text-secondary/70" aria-hidden="true">
