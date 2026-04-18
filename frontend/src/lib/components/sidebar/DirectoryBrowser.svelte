@@ -102,12 +102,23 @@
     } catch (err) {
       if (token !== browseToken) return;
       if (fromTyping) {
-        // Silent while typing: wipe the listing and surface a muted
-        // "No matches" hint. No red banner — the user's input is a
-        // work-in-progress and they'll see the empty state clear as
-        // soon as they type something that resolves.
-        listing = null;
-        noMatches = true;
+        // Direct browse of the typed path failed. Fall back to
+        // Finder-style typeahead: split the typed path into parent +
+        // prefix, browse the parent, and filter entries by prefix.
+        // So typing "/Users/randy/rep" shows "repos" in /Users/randy/.
+        const filtered = await tryPrefixFilter(path, token);
+        if (token !== browseToken) return;
+        if (filtered) {
+          listing = filtered;
+          noMatches = filtered.entries.length === 0;
+        } else {
+          listing = null;
+          noMatches = true;
+        }
+        // The typed path itself isn't committable — disable Add until
+        // the user drills into a real entry. onSelect('') tells the
+        // parent modal to disable its Add button.
+        onSelect?.('');
         return;
       }
       error = extractErrorMessage(err);
@@ -117,6 +128,37 @@
       if (token === browseToken) {
         loading = false;
       }
+    }
+  }
+
+  // Prefix-filter fallback used when the typed path can't be browsed
+  // directly (incomplete / non-existent). Splits on the last separator:
+  // the parent half is browsed, the suffix becomes a case-insensitive
+  // prefix match against the parent's entries. Returns null when the
+  // split isn't meaningful (no separator, empty prefix) or the parent
+  // browse itself fails — the caller then shows "No matches".
+  async function tryPrefixFilter(
+    path: string,
+    token: number,
+  ): Promise<DirectoryListing | null> {
+    const trimmed = path.replace(/\/+$/, '');
+    const lastSep = trimmed.lastIndexOf('/');
+    if (lastSep < 0) return null;
+    const parent = trimmed.slice(0, lastSep) || '/';
+    const prefix = trimmed.slice(lastSep + 1);
+    if (!prefix) return null;
+    try {
+      const parentListing = (await BrowseDirectory(parent)) as DirectoryListing;
+      if (token !== browseToken) return null;
+      const prefixLower = prefix.toLowerCase();
+      return {
+        ...parentListing,
+        entries: parentListing.entries.filter((e) =>
+          e.name.toLowerCase().startsWith(prefixLower),
+        ),
+      };
+    } catch {
+      return null;
     }
   }
 

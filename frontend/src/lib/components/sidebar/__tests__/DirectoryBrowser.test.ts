@@ -141,7 +141,7 @@ describe('<DirectoryBrowser>', () => {
     vi.useRealTimers();
   });
 
-  it('wipes the listing and shows a muted "No matches" hint for an invalid typed path, without a red banner', async () => {
+  it('wipes the listing and shows a muted "No matches" hint when neither the typed path nor its parent resolve', async () => {
     vi.useFakeTimers();
     setBindingMock('BrowseDirectory', async (path: string) => {
       if (path === '~') return mkListing();
@@ -158,7 +158,8 @@ describe('<DirectoryBrowser>', () => {
     for (let i = 0; i < 3; i += 1) await tick();
 
     const input = getByTestId('directory-browser-path') as HTMLInputElement;
-    await fireEvent.input(input, { target: { value: '/Users/does-not-exist' } });
+    // Both "/nope/still-nope" AND its parent "/nope" fail — full wipe.
+    await fireEvent.input(input, { target: { value: '/nope/still-nope' } });
     await vi.advanceTimersByTimeAsync(120);
     await Promise.resolve();
     for (let i = 0; i < 4; i += 1) await tick();
@@ -166,6 +167,128 @@ describe('<DirectoryBrowser>', () => {
     expect(queryByTestId('directory-browser-no-matches')).not.toBeNull();
     expect(queryByTestId('directory-browser-error')).toBeNull();
     expect(queryByTestId('directory-browser-entry')).toBeNull();
+    vi.useRealTimers();
+  });
+
+  it('falls back to prefix-filtering the parent directory when the typed path is incomplete', async () => {
+    vi.useFakeTimers();
+    // Direct browse of "/Users/randy/rep" fails, but "/Users/randy" is a
+    // real directory containing "repos", "rover", and "docs".
+    setBindingMock('BrowseDirectory', async (path: string) => {
+      if (path === '~') return mkListing();
+      if (path === '/Users/randy') {
+        return mkListing({
+          path: '/Users/randy',
+          parent: '/Users',
+          entries: [
+            { name: 'docs', isDir: true, hidden: false, isRepo: false },
+            { name: 'repos', isDir: true, hidden: false, isRepo: false },
+            { name: 'rover', isDir: true, hidden: false, isRepo: false },
+          ],
+        });
+      }
+      throw {
+        message: `browse directory: ${path}: stat ${path}: no such file or directory`,
+        kind: 'RuntimeError',
+        cause: {},
+      };
+    });
+    const { getByTestId, findAllByTestId, queryByTestId } = render(
+      DirectoryBrowser,
+      { props: { initialPath: '~' } },
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    for (let i = 0; i < 3; i += 1) await tick();
+
+    const input = getByTestId('directory-browser-path') as HTMLInputElement;
+    await fireEvent.input(input, { target: { value: '/Users/randy/rep' } });
+    await vi.advanceTimersByTimeAsync(120);
+    await Promise.resolve();
+    for (let i = 0; i < 4; i += 1) await tick();
+
+    // Filtered to entries whose name starts with "rep" — only "repos".
+    const entries = await findAllByTestId('directory-browser-entry');
+    expect(entries.map((e) => e.textContent?.trim())).toEqual(
+      expect.arrayContaining([expect.stringContaining('repos')]),
+    );
+    expect(entries).toHaveLength(1);
+    // No "no matches" hint — we found a match via prefix filter.
+    expect(queryByTestId('directory-browser-no-matches')).toBeNull();
+    expect(queryByTestId('directory-browser-error')).toBeNull();
+    vi.useRealTimers();
+  });
+
+  it('reports onSelect("") when prefix-filtering so the parent modal can disable the Add button', async () => {
+    vi.useFakeTimers();
+    const onSelect = vi.fn();
+    setBindingMock('BrowseDirectory', async (path: string) => {
+      if (path === '~') return mkListing();
+      if (path === '/Users/me') {
+        return mkListing({
+          path: '/Users/me',
+          parent: '/Users',
+          entries: [{ name: 'repos', isDir: true, hidden: false, isRepo: false }],
+        });
+      }
+      throw { message: 'not found' };
+    });
+    const { getByTestId } = render(DirectoryBrowser, {
+      props: { initialPath: '~', onSelect },
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    for (let i = 0; i < 3; i += 1) await tick();
+    onSelect.mockClear();
+
+    const input = getByTestId('directory-browser-path') as HTMLInputElement;
+    await fireEvent.input(input, { target: { value: '/Users/me/rep' } });
+    await vi.advanceTimersByTimeAsync(120);
+    await Promise.resolve();
+    for (let i = 0; i < 4; i += 1) await tick();
+
+    expect(onSelect).toHaveBeenCalledWith('');
+    vi.useRealTimers();
+  });
+
+  it('drilling into a prefix-filtered entry commits to the real path and updates onSelect', async () => {
+    vi.useFakeTimers();
+    const onSelect = vi.fn();
+    setBindingMock('BrowseDirectory', async (path: string) => {
+      if (path === '~') return mkListing();
+      if (path === '/Users/me') {
+        return mkListing({
+          path: '/Users/me',
+          parent: '/Users',
+          entries: [{ name: 'repos', isDir: true, hidden: false, isRepo: false }],
+        });
+      }
+      if (path === '/Users/me/repos') {
+        return mkListing({
+          path: '/Users/me/repos',
+          parent: '/Users/me',
+          entries: [],
+        });
+      }
+      throw { message: 'not found' };
+    });
+    const { getByTestId, findAllByTestId } = render(DirectoryBrowser, {
+      props: { initialPath: '~', onSelect },
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    for (let i = 0; i < 3; i += 1) await tick();
+
+    const input = getByTestId('directory-browser-path') as HTMLInputElement;
+    await fireEvent.input(input, { target: { value: '/Users/me/rep' } });
+    await vi.advanceTimersByTimeAsync(120);
+    await Promise.resolve();
+    for (let i = 0; i < 4; i += 1) await tick();
+    onSelect.mockClear();
+
+    const entries = await findAllByTestId('directory-browser-entry');
+    await fireEvent.click(entries[0]);
+    for (let i = 0; i < 4; i += 1) await tick();
+
+    expect(onSelect).toHaveBeenLastCalledWith('/Users/me/repos');
+    expect(input.value).toBe('/Users/me/repos');
     vi.useRealTimers();
   });
 
