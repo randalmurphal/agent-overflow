@@ -401,6 +401,16 @@ export class PermissionProfile {
 
 /**
  * ProviderStatus describes whether a provider binary is available and its version.
+ * 
+ * Status values:
+ *   - "ready"           — binary resolved and passed every version check.
+ *   - "not_found"       — exec.LookPath(binaryPath) failed.
+ *   - "version_too_old" — binary ran but its version is below the minimum we support
+ *     (Codex: see minimumCodexCLIVersion).
+ *   - "unauthenticated" — binary is present and new enough but has no logged-in
+ *     account (Claude: ProbeAccount returned a zero-value AccountInfo).
+ *   - "error"           — the version check itself failed (binary exited non-zero,
+ *     garbled output, etc.).
  */
 export class ProviderStatus {
     /**
@@ -438,7 +448,6 @@ export class ProviderStatus {
         }
         if (!("status" in $$source)) {
             /**
-             * "ready", "not_found", "error"
              * @member
              * @type {string}
              */

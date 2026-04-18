@@ -30,11 +30,19 @@ func claudeAccountProbeCache() *claude.ProbeCache {
 // the emitted `system/init` message. Results are cached per binary path
 // for 5 minutes. Zero tokens are consumed — the CLI aborts before any
 // API call.
+//
+// On a successful probe that returns an empty AccountInfo (no
+// subscription and no token source) we also emit a `provider:status`
+// event with Status="unauthenticated" so the thread-level banner can
+// prompt the user to run `claude login`.
 func (a *App) ProbeClaudeAccount() (provider.AccountInfo, error) {
 	binary := a.providerBinaryPath(string(provider.Claude))
 
 	cache := claudeAccountProbeCache()
 	if cached, hit := cache.Get(binary); hit {
+		if claudeUnauthenticatedStatus(cached) {
+			a.emitClaudeUnauthenticatedStatus()
+		}
 		return cached, nil
 	}
 
@@ -46,5 +54,8 @@ func (a *App) ProbeClaudeAccount() (provider.AccountInfo, error) {
 	}
 
 	cache.Set(binary, info)
+	if claudeUnauthenticatedStatus(info) {
+		a.emitClaudeUnauthenticatedStatus()
+	}
 	return info, nil
 }

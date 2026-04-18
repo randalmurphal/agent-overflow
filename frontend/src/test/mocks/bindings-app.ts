@@ -103,6 +103,7 @@ export const UpdateSettings = dispatch('UpdateSettings');
 
 export const GetProviderStatuses = dispatch('GetProviderStatuses');
 export const GetModelsForProvider = dispatch('GetModelsForProvider');
+export const ProbeClaudeAccount = dispatch('ProbeClaudeAccount');
 
 export const GetGitStatus = dispatch('GetGitStatus');
 export const GetWorkingTreeDiff = dispatch('GetWorkingTreeDiff');

@@ -36,6 +36,7 @@ export {
   // Provider detection
   GetProviderStatuses,
   GetModelsForProvider,
+  ProbeClaudeAccount,
 
   // Git operations
   GenerateCommitMessage,

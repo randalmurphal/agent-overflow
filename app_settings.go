@@ -9,12 +9,17 @@ import (
 )
 
 // GetProviderStatuses reports provider binary availability using the configured paths.
+// Also pushes a `provider:status` event per non-ready provider so thread-level
+// banners (ProviderStatusBanner) stay in sync with the settings page without
+// polling. Idempotent: re-emitting the same state is harmless — the frontend
+// keeps only the latest per-provider entry.
 func (a *App) GetProviderStatuses() ([]provider.ProviderStatus, error) {
 	cfg := a.currentSettings()
 	statuses := []provider.ProviderStatus{
 		provider.DetectProvider(string(provider.Claude), cfg.ClaudeBinaryPath),
 		provider.DetectProvider(string(provider.Codex), cfg.CodexBinaryPath),
 	}
+	a.emitProviderStatusesFromDetect(statuses)
 	return statuses, nil
 }
 

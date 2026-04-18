@@ -232,6 +232,12 @@ func (a *App) ServiceStartup(ctx context.Context, options application.ServiceOpt
 	a.workspaceFiles = workspacefiles.NewSearcher(workspacefiles.Config{})
 	a.configDir = dbDir
 
+	// Probe provider binaries once on boot so the thread-level banner can
+	// surface "claude not found" / "codex too old" before the user opens
+	// settings. Runs in a goroutine because DetectProvider spawns subprocesses
+	// (up to 5s per provider) and we never want that blocking app startup.
+	go a.probeStartupProviderStatuses()
+
 	return nil
 }
 
@@ -725,6 +731,10 @@ func (a *App) startSessionNow(threadID string) error {
 		sess, err := claude.NewSession(context.Background(), threadID, cfg, onEvent)
 		if err != nil {
 			a.teardownDesignThread(threadID)
+			// Surface "binary missing" / "version too old" as a provider:status
+			// banner before the error bubbles up as a toast. If the detect
+			// path finds nothing wrong the helper is a no-op.
+			a.emitProviderStatusOnSessionStartError(string(provider.Claude))
 			return fmt.Errorf("start session: %w", err)
 		}
 		a.mu.Lock()
@@ -756,6 +766,7 @@ func (a *App) startSessionNow(threadID string) error {
 		sess, err := codex.NewSession(context.Background(), threadID, cfg, onEvent)
 		if err != nil {
 			a.teardownDesignThread(threadID)
+			a.emitProviderStatusOnSessionStartError(string(provider.Codex))
 			return fmt.Errorf("start session: %w", err)
 		}
 		a.mu.Lock()

@@ -149,8 +149,8 @@ func TestGetProviderStatusesFlagsUnsupportedCodexVersion(t *testing.T) {
 	if statuses[1].Provider != "codex" {
 		t.Fatalf("statuses[1].Provider = %q, want codex", statuses[1].Provider)
 	}
-	if statuses[1].Status != "error" {
-		t.Fatalf("statuses[1].Status = %q, want error", statuses[1].Status)
+	if statuses[1].Status != "version_too_old" {
+		t.Fatalf("statuses[1].Status = %q, want version_too_old", statuses[1].Status)
 	}
 	wantMessage := "Codex CLI v0.36.0 is too old for Agent Overflow. Upgrade to v0.37.0 or newer and restart the app."
 	if statuses[1].Message != wantMessage {

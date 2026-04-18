@@ -315,6 +315,10 @@ export function GetPayloadData(payloadID) {
 
 /**
  * GetProviderStatuses reports provider binary availability using the configured paths.
+ * Also pushes a `provider:status` event per non-ready provider so thread-level
+ * banners (ProviderStatusBanner) stay in sync with the settings page without
+ * polling. Idempotent: re-emitting the same state is harmless — the frontend
+ * keeps only the latest per-provider entry.
  * @returns {$CancellablePromise<provider$0.ProviderStatus[]>}
  */
 export function GetProviderStatuses() {
@@ -637,6 +641,11 @@ export function PostChannelMessage(channelID, content) {
  * the emitted `system/init` message. Results are cached per binary path
  * for 5 minutes. Zero tokens are consumed — the CLI aborts before any
  * API call.
+ * 
+ * On a successful probe that returns an empty AccountInfo (no
+ * subscription and no token source) we also emit a `provider:status`
+ * event with Status="unauthenticated" so the thread-level banner can
+ * prompt the user to run `claude login`.
  * @returns {$CancellablePromise<provider$0.AccountInfo>}
  */
 export function ProbeClaudeAccount() {

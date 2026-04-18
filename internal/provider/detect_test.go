@@ -96,8 +96,8 @@ func TestDetectProviderCodexUnsupportedVersion(t *testing.T) {
 	if !status.Installed {
 		t.Fatal("expected Installed=true when binary exists")
 	}
-	if status.Status != "error" {
-		t.Fatalf("expected Status 'error' for unsupported Codex CLI, got %q", status.Status)
+	if status.Status != "version_too_old" {
+		t.Fatalf("expected Status 'version_too_old' for unsupported Codex CLI, got %q", status.Status)
 	}
 	if status.Version != "codex 0.36.0" {
 		t.Fatalf("expected raw Version to be preserved, got %q", status.Version)

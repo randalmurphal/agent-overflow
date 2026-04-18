@@ -2,6 +2,7 @@
   import { onMount, onDestroy } from 'svelte';
   import { getMainPane } from './lib/stores/panes.svelte';
   import { setupEventListeners } from './lib/stores/events';
+  import { setupProviderStatusListener } from './lib/stores/providerStatus.svelte';
   import { getThreads, refreshThreads } from './lib/stores/threads.svelte';
   import { loadSettings, getSettings } from './lib/stores/settings.svelte';
   import { applyTheme } from './lib/utils/theme';
@@ -103,6 +104,7 @@
 
   onMount(() => {
     const cleanupEvents = setupEventListeners();
+    const cleanupProviderStatus = setupProviderStatusListener();
     refreshThreads();
     loadSettings();
 
@@ -142,6 +144,7 @@
 
     return () => {
       cleanupEvents();
+      cleanupProviderStatus();
     };
   });
 

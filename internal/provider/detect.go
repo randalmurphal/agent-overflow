@@ -11,12 +11,22 @@ import (
 const versionTimeout = 5 * time.Second
 
 // ProviderStatus describes whether a provider binary is available and its version.
+//
+// Status values:
+//   - "ready"           — binary resolved and passed every version check.
+//   - "not_found"       — exec.LookPath(binaryPath) failed.
+//   - "version_too_old" — binary ran but its version is below the minimum we support
+//     (Codex: see minimumCodexCLIVersion).
+//   - "unauthenticated" — binary is present and new enough but has no logged-in
+//     account (Claude: ProbeAccount returned a zero-value AccountInfo).
+//   - "error"           — the version check itself failed (binary exited non-zero,
+//     garbled output, etc.).
 type ProviderStatus struct {
 	Provider   string `json:"provider"`
 	Installed  bool   `json:"installed"`
 	Version    string `json:"version,omitempty"`
 	BinaryPath string `json:"binaryPath"`
-	Status     string `json:"status"` // "ready", "not_found", "error"
+	Status     string `json:"status"`
 	Message    string `json:"message,omitempty"`
 }
 
@@ -66,7 +76,7 @@ func DetectProvider(name, binaryPath string) ProviderStatus {
 	if name == string(Codex) {
 		parsedVersion := parseCodexCLIVersion(version)
 		if parsedVersion != "" && !isCodexCLIVersionSupported(parsedVersion) {
-			status.Status = "error"
+			status.Status = "version_too_old"
 			status.Message = formatCodexCLIUpgradeMessage(parsedVersion)
 		}
 	}
