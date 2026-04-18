@@ -8,9 +8,44 @@ import (
 	"agent-overflow/internal/provider"
 )
 
-// ParseLine parses a single NDJSON line from Claude CLI stdout
-// and returns zero or more ProviderEvents.
+// Parser holds per-session parse state shared across NDJSON lines.
+//
+// The Claude SDK splits a single tool invocation across two messages: an
+// assistant message carrying the `tool_use` block, and a later user message
+// echoing the `tool_result` block keyed by the same `tool_use_id`. We need
+// to remember per-tool flags (currently `run_in_background`) from the first
+// message so the complete-side event carries the same `is_background` hint
+// without re-parsing the original input.
+//
+// Parser is not safe for concurrent use — each Session owns one, and the
+// readLoop serializes line parsing. A zero-value Parser is valid; the
+// internal map lazily initialises on first write.
+type Parser struct {
+	// backgroundToolUses flags tool_use IDs that were started with
+	// `run_in_background: true` so the matching tool_result event can be
+	// tagged the same way. Kept until the session ends; a few kilobytes
+	// of string keys is cheap compared to the alternative of re-deriving
+	// the flag from tool-input state across processes.
+	backgroundToolUses map[string]bool
+}
+
+// NewParser returns an initialised Parser. Callers that only need one-shot
+// parsing can use the package-level ParseLine helper instead.
+func NewParser() *Parser {
+	return &Parser{}
+}
+
+// ParseLine parses a single NDJSON line from Claude CLI stdout and returns
+// zero or more ProviderEvents. This is the stateless entry point — cross-line
+// correlation (e.g. background tool_use → tool_result tagging) is not
+// available. Use (*Parser).ParseLine for that.
 func ParseLine(threadID string, line []byte) ([]provider.ProviderEvent, error) {
+	return (&Parser{}).ParseLine(threadID, line)
+}
+
+// ParseLine on a Parser preserves state across calls so tool-use / tool-result
+// pairs can share metadata (e.g. the `is_background` flag).
+func (p *Parser) ParseLine(threadID string, line []byte) ([]provider.ProviderEvent, error) {
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(line, &raw); err != nil {
 		return nil, fmt.Errorf("invalid JSON: %w", err)
@@ -25,13 +60,14 @@ func ParseLine(threadID string, line []byte) ([]provider.ProviderEvent, error) {
 
 	switch msgType {
 	case "system":
-		return parseSystem(threadID, raw, now, line)
+		return p.parseSystem(threadID, raw, now, line)
 	case "assistant":
-		return parseAssistant(threadID, raw, now, line)
+		return p.parseAssistant(threadID, raw, now, line)
 	case "user":
-		// Echoed tool results. Skip — we track tool results
-		// from the tool_complete flow.
-		return nil, nil
+		// Claude echoes tool results via the user role. Pick them up so
+		// the triage layer can persist tool-call completions instead of
+		// relying on the implicit signal at `result` (turn end).
+		return p.parseUser(threadID, raw, now, line)
 	case "result":
 		return parseResult(threadID, raw, now, line)
 	case "stream_event":
@@ -46,7 +82,29 @@ func ParseLine(threadID string, line []byte) ([]provider.ProviderEvent, error) {
 	}
 }
 
-func parseSystem(threadID string, raw map[string]json.RawMessage, now time.Time, line []byte) ([]provider.ProviderEvent, error) {
+// markBackground records that the given tool_use ID was launched with
+// `run_in_background: true`. The matching tool_result event will copy
+// the flag onto its Meta.
+func (p *Parser) markBackground(toolUseID string) {
+	if toolUseID == "" {
+		return
+	}
+	if p.backgroundToolUses == nil {
+		p.backgroundToolUses = make(map[string]bool)
+	}
+	p.backgroundToolUses[toolUseID] = true
+}
+
+// isBackground reports whether the given tool_use ID was started in the
+// background. False when the ID is unknown or was not flagged.
+func (p *Parser) isBackground(toolUseID string) bool {
+	if toolUseID == "" || p.backgroundToolUses == nil {
+		return false
+	}
+	return p.backgroundToolUses[toolUseID]
+}
+
+func (p *Parser) parseSystem(threadID string, raw map[string]json.RawMessage, now time.Time, line []byte) ([]provider.ProviderEvent, error) {
 	var subtype string
 	if err := json.Unmarshal(raw["subtype"], &subtype); err != nil {
 		return nil, nil // no subtype — skip
@@ -105,6 +163,17 @@ func parseSystem(threadID string, raw map[string]json.RawMessage, now time.Time,
 			Timestamp: now,
 		}}, nil
 
+	// TODO(task.*): the Claude SDK emits `system.task_started`,
+	// `system.task_progress`, and `system.task_notification` subtypes
+	// around the Task (subagent) tool's background lifecycle — we can
+	// see the handler shape in forge's ClaudeAdapter (Layers/claude/
+	// streamHandlers.ts). None of these subtypes appear in our current
+	// testdata fixture (`testdata/real_output.ndjson`), so rather than
+	// fabricate a wire shape, leave the integration point flagged. When
+	// a spike against the real CLI captures a sample, map task_started →
+	// EventBackgroundStart, task_progress → EventBackgroundDelta,
+	// task_notification → EventBackgroundComplete.
+
 	// Explicitly skipped subtypes — no action, no error.
 	case "hook_started", "hook_progress", "hook_response",
 		"notification",
@@ -120,7 +189,7 @@ func parseSystem(threadID string, raw map[string]json.RawMessage, now time.Time,
 	}
 }
 
-func parseAssistant(threadID string, raw map[string]json.RawMessage, now time.Time, line []byte) ([]provider.ProviderEvent, error) {
+func (p *Parser) parseAssistant(threadID string, raw map[string]json.RawMessage, now time.Time, line []byte) ([]provider.ProviderEvent, error) {
 	var msg struct {
 		ID      string `json:"id"`
 		Content []struct {
@@ -194,10 +263,12 @@ func parseAssistant(threadID string, raw map[string]json.RawMessage, now time.Ti
 				continue
 			}
 
-			meta, _ := json.Marshal(map[string]any{
-				"toolName": block.Name,
-				"input":    block.Input,
-			})
+			isBackground := hasRunInBackground(block.Input)
+			if isBackground {
+				p.markBackground(block.ID)
+			}
+
+			meta := marshalToolMeta(block.Name, block.Input, isBackground)
 			events = append(events, provider.ProviderEvent{
 				Kind:            provider.EventToolStart,
 				ThreadID:        threadID,
@@ -238,6 +309,273 @@ func parseAssistant(threadID string, raw map[string]json.RawMessage, now time.Ti
 	}
 
 	return events, nil
+}
+
+// parseUser picks up the Claude `user` echo of a prior assistant tool_use.
+// The content is a list of `tool_result` blocks (other user-role messages
+// have a string content and aren't interesting at this layer). Each block
+// becomes one EventToolComplete keyed by the original tool_use_id.
+//
+// The `tool_use_result` sibling carries richer structured metadata for some
+// tools (e.g. Bash's `exit_code`, stdout/stderr). We surface `exit_code`
+// when present so downstream UI can flag command failures without re-parsing
+// the text body. When the block content is a list of content blocks (e.g.
+// [{"type":"text","text":"..."}]) we stringify the text. JSON marshal
+// failures fall through to an empty body — this layer never errors on
+// malformed input since the read loop cannot recover a broken line.
+func (p *Parser) parseUser(threadID string, raw map[string]json.RawMessage, now time.Time, line []byte) ([]provider.ProviderEvent, error) {
+	msgRaw, ok := raw["message"]
+	if !ok {
+		return nil, nil
+	}
+
+	var msg struct {
+		Content json.RawMessage `json:"content"`
+	}
+	if err := json.Unmarshal(msgRaw, &msg); err != nil {
+		return nil, nil
+	}
+
+	// user.message.content can be either a plain string (a user-typed
+	// message echoed back) or an array of blocks. Only the array form
+	// carries tool_result.
+	var blocks []map[string]json.RawMessage
+	if err := json.Unmarshal(msg.Content, &blocks); err != nil {
+		return nil, nil
+	}
+
+	// Optional sibling with richer per-tool result metadata. Not all tools
+	// populate it and some versions of the CLI omit it entirely.
+	toolUseResults := indexToolUseResults(raw["tool_use_result"])
+
+	events := make([]provider.ProviderEvent, 0, len(blocks))
+	for _, block := range blocks {
+		var blockType string
+		if err := json.Unmarshal(block["type"], &blockType); err != nil || blockType != "tool_result" {
+			continue
+		}
+
+		var toolUseID string
+		if err := json.Unmarshal(block["tool_use_id"], &toolUseID); err != nil || toolUseID == "" {
+			// A tool_result without an ID can't be correlated back to a
+			// tool_use, so drop it rather than emit an orphan completion.
+			continue
+		}
+
+		var isError bool
+		if v, ok := block["is_error"]; ok {
+			_ = json.Unmarshal(v, &isError)
+		}
+
+		content := extractToolResultText(block["content"])
+
+		metaFields := map[string]any{
+			"is_error": isError,
+		}
+		if p.isBackground(toolUseID) {
+			metaFields["is_background"] = true
+		}
+		if code, ok := extractExitCode(block["content"], toolUseResults[toolUseID]); ok {
+			metaFields["exit_code"] = code
+		}
+
+		meta, _ := json.Marshal(metaFields)
+		events = append(events, provider.ProviderEvent{
+			Kind:      provider.EventToolComplete,
+			ThreadID:  threadID,
+			ItemID:    toolUseID,
+			Content:   content,
+			Meta:      meta,
+			Timestamp: now,
+			Raw:       line,
+		})
+	}
+
+	return events, nil
+}
+
+// hasRunInBackground returns true when the tool input JSON contains
+// `"run_in_background": true`. Malformed JSON is treated as absent —
+// this is a best-effort hint, not a correctness-critical value.
+func hasRunInBackground(input json.RawMessage) bool {
+	if len(input) == 0 {
+		return false
+	}
+	var parsed struct {
+		RunInBackground bool `json:"run_in_background"`
+	}
+	if err := json.Unmarshal(input, &parsed); err != nil {
+		return false
+	}
+	return parsed.RunInBackground
+}
+
+// marshalToolMeta builds the EventToolStart Meta payload. We omit
+// `is_background` when false so pipelines downstream don't have to
+// distinguish "explicitly foreground" from "unknown" — absence is the
+// default.
+func marshalToolMeta(toolName string, input json.RawMessage, isBackground bool) json.RawMessage {
+	fields := map[string]any{
+		"toolName": toolName,
+		"input":    input,
+	}
+	if isBackground {
+		fields["is_background"] = true
+	}
+	out, _ := json.Marshal(fields)
+	return out
+}
+
+// extractToolResultText flattens the content of a tool_result block into a
+// plain string. The SDK uses either a top-level string or a list of content
+// blocks with `{type, text}` shapes; we handle both and concatenate text
+// bodies.
+func extractToolResultText(content json.RawMessage) string {
+	if len(content) == 0 {
+		return ""
+	}
+
+	var asString string
+	if json.Unmarshal(content, &asString) == nil {
+		return asString
+	}
+
+	var asBlocks []map[string]json.RawMessage
+	if json.Unmarshal(content, &asBlocks) != nil {
+		// Fall back to the raw JSON so we don't silently drop structured
+		// content shapes we haven't taught the parser about.
+		return string(content)
+	}
+
+	var builder []byte
+	for _, block := range asBlocks {
+		var t string
+		if err := json.Unmarshal(block["type"], &t); err != nil {
+			continue
+		}
+		switch t {
+		case "text":
+			var text string
+			if json.Unmarshal(block["text"], &text) == nil {
+				builder = append(builder, text...)
+			}
+		case "image":
+			// Images inside tool_result blocks are rare (Read tool for
+			// binary files). Skip the payload; downstream consumers that
+			// care will read the raw line.
+		}
+	}
+	return string(builder)
+}
+
+// extractExitCode pulls `exit_code` from either the tool_result block's
+// content (Bash emits it inside the structured content) or the optional
+// `tool_use_result` sibling. Returns (0, false) when absent.
+func extractExitCode(content json.RawMessage, toolUseResult json.RawMessage) (int, bool) {
+	// tool_use_result often mirrors the Bash tool's structured output.
+	if code, ok := readIntAtAnyKey(toolUseResult, "exit_code", "exitCode"); ok {
+		return code, true
+	}
+	// Some shapes embed the code on the block content itself.
+	if code, ok := readIntAtAnyKey(content, "exit_code", "exitCode"); ok {
+		return code, true
+	}
+	return 0, false
+}
+
+// readIntAtAnyKey returns the first integer-valued field in `data` matching
+// one of `keys`. Works on both plain objects and objects nested inside an
+// array (returning the first hit).
+func readIntAtAnyKey(data json.RawMessage, keys ...string) (int, bool) {
+	if len(data) == 0 {
+		return 0, false
+	}
+
+	var obj map[string]json.RawMessage
+	if json.Unmarshal(data, &obj) == nil {
+		for _, key := range keys {
+			if v, ok := obj[key]; ok {
+				var n int
+				if json.Unmarshal(v, &n) == nil {
+					return n, true
+				}
+			}
+		}
+		return 0, false
+	}
+
+	var arr []map[string]json.RawMessage
+	if json.Unmarshal(data, &arr) == nil {
+		for _, entry := range arr {
+			for _, key := range keys {
+				if v, ok := entry[key]; ok {
+					var n int
+					if json.Unmarshal(v, &n) == nil {
+						return n, true
+					}
+				}
+			}
+		}
+	}
+	return 0, false
+}
+
+// indexToolUseResults builds a map from tool_use_id → the structured
+// result object. Mirrors the forge adapter's behavior: tool_use_result can
+// be a single object, an object keyed by tool_use_id, or an array. Returns
+// an empty (but non-nil) map when the input is absent so callers can use
+// zero-value lookups safely.
+func indexToolUseResults(value json.RawMessage) map[string]json.RawMessage {
+	results := make(map[string]json.RawMessage)
+	if len(value) == 0 {
+		return results
+	}
+
+	addCandidate := func(candidate json.RawMessage, fallbackID string) {
+		if len(candidate) == 0 {
+			return
+		}
+		var obj map[string]json.RawMessage
+		if json.Unmarshal(candidate, &obj) != nil {
+			return
+		}
+		var id string
+		if raw, ok := obj["tool_use_id"]; ok {
+			_ = json.Unmarshal(raw, &id)
+		}
+		if id == "" {
+			if raw, ok := obj["toolUseId"]; ok {
+				_ = json.Unmarshal(raw, &id)
+			}
+		}
+		if id == "" {
+			id = fallbackID
+		}
+		if id == "" {
+			return
+		}
+		if _, exists := results[id]; !exists {
+			results[id] = candidate
+		}
+	}
+
+	var arr []json.RawMessage
+	if json.Unmarshal(value, &arr) == nil {
+		for _, entry := range arr {
+			addCandidate(entry, "")
+		}
+		return results
+	}
+
+	var obj map[string]json.RawMessage
+	if json.Unmarshal(value, &obj) != nil {
+		return results
+	}
+	addCandidate(value, "")
+	for key, raw := range obj {
+		addCandidate(raw, key)
+	}
+	return results
 }
 
 func parseResult(threadID string, raw map[string]json.RawMessage, now time.Time, line []byte) ([]provider.ProviderEvent, error) {

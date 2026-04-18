@@ -37,6 +37,10 @@ type Session struct {
 	cancel    context.CancelFunc
 	closing   atomic.Bool
 	readDone  chan struct{}
+	// parser holds per-session NDJSON parse state so tool_use / tool_result
+	// pairs can share metadata (e.g. the `is_background` flag) across the
+	// two messages that carry them.
+	parser *Parser
 	// idleTimeout is the per-turn watchdog window. Zero means use
 	// DefaultIdleTimeout. The watchdog is armed by Send and disarmed by
 	// EventTurnComplete or read errors.
@@ -142,6 +146,7 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 		onEvent:  onEvent,
 		cancel:   cancel,
 		readDone: make(chan struct{}),
+		parser:   NewParser(),
 	}
 
 	go s.readLoop()
@@ -563,7 +568,7 @@ func (s *Session) readLoop() {
 			continue
 		}
 
-		events, err := ParseLine(s.threadID, line)
+		events, err := s.parser.ParseLine(s.threadID, line)
 		if err != nil {
 			log.Printf("claude: parse error: %v (line: %s)", err, string(line[:min(len(line), 200)]))
 			continue

@@ -195,7 +195,11 @@ func TestParseLine_AssistantWithUsage(t *testing.T) {
 	}
 }
 
-func TestParseLine_UserType(t *testing.T) {
+// TestParseLine_UserPlainContent confirms that a `user` message whose
+// `content` is a plain string (the echo of a user-typed turn input rather
+// than a tool_result echo) produces no events. Only tool_result blocks in a
+// list-shaped content are meaningful at this layer.
+func TestParseLine_UserPlainContent(t *testing.T) {
 	line := []byte(`{"type":"user","message":{"role":"user","content":"test"}}`)
 	events, err := ParseLine(testThreadProto, line)
 	if err != nil {
@@ -203,6 +207,255 @@ func TestParseLine_UserType(t *testing.T) {
 	}
 	if len(events) != 0 {
 		t.Errorf("expected 0 events for user type, got %d", len(events))
+	}
+}
+
+// TestParseLine_AssistantToolUseNoBackgroundMetaByDefault verifies that a
+// tool_use block without `run_in_background` does not add `is_background`
+// to the emitted EventToolStart's Meta. Absence is the default.
+func TestParseLine_AssistantToolUseNoBackgroundMetaByDefault(t *testing.T) {
+	line := []byte(`{"type":"assistant","message":{"id":"msg-1","role":"assistant","content":[{"type":"tool_use","id":"tool-fg","name":"Bash","input":{"command":"ls"}}]}}`)
+	events, err := ParseLine(testThreadProto, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if v, ok := meta["is_background"]; ok && v != false {
+		t.Errorf("expected is_background to be absent or false, got %v", v)
+	}
+}
+
+// TestParseLine_AssistantToolUseRunInBackground verifies that a tool_use
+// with `run_in_background: true` surfaces `is_background: true` on the
+// emitted EventToolStart's Meta.
+func TestParseLine_AssistantToolUseRunInBackground(t *testing.T) {
+	line := []byte(`{"type":"assistant","message":{"id":"msg-1","role":"assistant","content":[{"type":"tool_use","id":"tool-bg","name":"Bash","input":{"command":"npm run dev","run_in_background":true}}]}}`)
+	events, err := ParseLine(testThreadProto, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if events[0].Kind != provider.EventToolStart {
+		t.Errorf("kind: got %q, want %q", events[0].Kind, provider.EventToolStart)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if meta["is_background"] != true {
+		t.Errorf("expected is_background=true, got %v", meta["is_background"])
+	}
+}
+
+// TestParseLine_UserToolResultEmitsComplete verifies that a user message
+// with a `tool_result` block emits a matching EventToolComplete keyed by
+// the original tool_use_id.
+func TestParseLine_UserToolResultEmitsComplete(t *testing.T) {
+	line := []byte(`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","content":"file listing","is_error":false}]}}`)
+	events, err := ParseLine(testThreadProto, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	evt := events[0]
+	if evt.Kind != provider.EventToolComplete {
+		t.Errorf("kind: got %q, want %q", evt.Kind, provider.EventToolComplete)
+	}
+	if evt.ItemID != "tool-1" {
+		t.Errorf("itemID: got %q, want %q", evt.ItemID, "tool-1")
+	}
+	if evt.Content != "file listing" {
+		t.Errorf("content: got %q, want %q", evt.Content, "file listing")
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(evt.Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if meta["is_error"] != false {
+		t.Errorf("expected is_error=false, got %v", meta["is_error"])
+	}
+	if _, ok := meta["is_background"]; ok {
+		t.Errorf("expected is_background absent for foreground tool, got %v", meta["is_background"])
+	}
+}
+
+// TestParseLine_UserToolResultMultipleBlocks verifies that a user message
+// carrying multiple tool_result blocks emits one EventToolComplete for each
+// block, with each ItemID mapped back to its origin tool_use_id.
+func TestParseLine_UserToolResultMultipleBlocks(t *testing.T) {
+	line := []byte(`{"type":"user","message":{"role":"user","content":[
+		{"type":"tool_result","tool_use_id":"tool-a","content":"first"},
+		{"type":"tool_result","tool_use_id":"tool-b","content":"second"}
+	]}}`)
+	events, err := ParseLine(testThreadProto, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("expected 2 events, got %d", len(events))
+	}
+	want := map[string]string{"tool-a": "first", "tool-b": "second"}
+	for _, evt := range events {
+		if evt.Kind != provider.EventToolComplete {
+			t.Errorf("kind: got %q, want %q", evt.Kind, provider.EventToolComplete)
+		}
+		expected, ok := want[evt.ItemID]
+		if !ok {
+			t.Errorf("unexpected tool_use_id %q", evt.ItemID)
+			continue
+		}
+		if evt.Content != expected {
+			t.Errorf("content for %s: got %q, want %q", evt.ItemID, evt.Content, expected)
+		}
+	}
+}
+
+// TestParseLine_UserToolResultError verifies that `is_error: true` on the
+// tool_result block is reflected in the emitted EventToolComplete's Meta.
+func TestParseLine_UserToolResultError(t *testing.T) {
+	line := []byte(`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","content":"command not found","is_error":true}]}}`)
+	events, err := ParseLine(testThreadProto, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if meta["is_error"] != true {
+		t.Errorf("expected is_error=true, got %v", meta["is_error"])
+	}
+}
+
+// TestParseLine_UserToolResultStructuredContent verifies that a tool_result
+// whose content is a list of text blocks (the richer shape some tools emit)
+// is flattened into a single Content string.
+func TestParseLine_UserToolResultStructuredContent(t *testing.T) {
+	line := []byte(`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","content":[{"type":"text","text":"hello "},{"type":"text","text":"world"}]}]}}`)
+	events, err := ParseLine(testThreadProto, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if events[0].Content != "hello world" {
+		t.Errorf("content: got %q, want %q", events[0].Content, "hello world")
+	}
+}
+
+// TestParser_BackgroundToolUsePropagatesToToolResult verifies the
+// cross-line correlation: a Parser instance parses a tool_use with
+// `run_in_background: true`, then a subsequent user tool_result for the
+// same tool_use_id. The EventToolComplete must carry `is_background: true`.
+func TestParser_BackgroundToolUsePropagatesToToolResult(t *testing.T) {
+	parser := NewParser()
+
+	startLine := []byte(`{"type":"assistant","message":{"id":"msg-1","role":"assistant","content":[{"type":"tool_use","id":"tool-bg","name":"Bash","input":{"command":"npm run dev","run_in_background":true}}]}}`)
+	startEvents, err := parser.ParseLine(testThreadProto, startLine)
+	if err != nil {
+		t.Fatalf("parse start: %v", err)
+	}
+	if len(startEvents) != 1 {
+		t.Fatalf("start: expected 1 event, got %d", len(startEvents))
+	}
+	var startMeta map[string]any
+	if err := json.Unmarshal(startEvents[0].Meta, &startMeta); err != nil {
+		t.Fatalf("unmarshal start meta: %v", err)
+	}
+	if startMeta["is_background"] != true {
+		t.Fatalf("start: expected is_background=true, got %v", startMeta["is_background"])
+	}
+
+	completeLine := []byte(`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-bg","content":"dev server launched"}]}}`)
+	completeEvents, err := parser.ParseLine(testThreadProto, completeLine)
+	if err != nil {
+		t.Fatalf("parse complete: %v", err)
+	}
+	if len(completeEvents) != 1 {
+		t.Fatalf("complete: expected 1 event, got %d", len(completeEvents))
+	}
+	if completeEvents[0].Kind != provider.EventToolComplete {
+		t.Errorf("complete kind: got %q, want %q", completeEvents[0].Kind, provider.EventToolComplete)
+	}
+	if completeEvents[0].ItemID != "tool-bg" {
+		t.Errorf("complete itemID: got %q, want %q", completeEvents[0].ItemID, "tool-bg")
+	}
+	var completeMeta map[string]any
+	if err := json.Unmarshal(completeEvents[0].Meta, &completeMeta); err != nil {
+		t.Fatalf("unmarshal complete meta: %v", err)
+	}
+	if completeMeta["is_background"] != true {
+		t.Errorf("complete: expected is_background=true, got %v", completeMeta["is_background"])
+	}
+}
+
+// TestParser_ForegroundToolResultHasNoBackgroundFlag confirms the negative
+// case: a tool_use without run_in_background followed by its tool_result
+// produces a complete event whose Meta omits is_background (or has it
+// false).
+func TestParser_ForegroundToolResultHasNoBackgroundFlag(t *testing.T) {
+	parser := NewParser()
+
+	startLine := []byte(`{"type":"assistant","message":{"id":"msg-1","role":"assistant","content":[{"type":"tool_use","id":"tool-fg","name":"Bash","input":{"command":"ls"}}]}}`)
+	if _, err := parser.ParseLine(testThreadProto, startLine); err != nil {
+		t.Fatalf("parse start: %v", err)
+	}
+
+	completeLine := []byte(`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-fg","content":"file1\nfile2"}]}}`)
+	completeEvents, err := parser.ParseLine(testThreadProto, completeLine)
+	if err != nil {
+		t.Fatalf("parse complete: %v", err)
+	}
+	if len(completeEvents) != 1 {
+		t.Fatalf("complete: expected 1 event, got %d", len(completeEvents))
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(completeEvents[0].Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if v, ok := meta["is_background"]; ok && v != false {
+		t.Errorf("expected is_background absent or false for foreground tool, got %v", v)
+	}
+}
+
+// TestParser_ExitCodeSurfacedFromToolUseResult verifies that when Claude
+// attaches a structured `tool_use_result` sibling with an `exit_code`
+// (typical for Bash), the EventToolComplete Meta exposes it so downstream
+// UI can flag command failures without re-parsing the text body.
+func TestParser_ExitCodeSurfacedFromToolUseResult(t *testing.T) {
+	parser := NewParser()
+	line := []byte(`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","content":"boom","is_error":true}]},"tool_use_result":{"tool_use_id":"tool-1","exit_code":127,"stdout":"","stderr":"boom"}}`)
+
+	events, err := parser.ParseLine(testThreadProto, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if meta["exit_code"] != float64(127) {
+		t.Errorf("expected exit_code=127, got %v", meta["exit_code"])
+	}
+	if meta["is_error"] != true {
+		t.Errorf("expected is_error=true, got %v", meta["is_error"])
 	}
 }
 
