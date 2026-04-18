@@ -33,6 +33,14 @@ func TestUpdateRejectsInvalidEnumeratedValues(t *testing.T) {
 			name:  "defaultModelCodex",
 			patch: map[string]any{"defaultModelCodex": ""},
 		},
+		{
+			name:  "textGenerationProvider",
+			patch: map[string]any{"textGenerationProvider": "anthropic"},
+		},
+		{
+			name:  "textGenerationReasoningEffort",
+			patch: map[string]any{"textGenerationReasoningEffort": "turbo"},
+		},
 	}
 
 	for _, tc := range testCases {
@@ -136,6 +144,57 @@ func TestAddRecentWorkspaceIgnoresEmptyPaths(t *testing.T) {
 
 	if got := svc.Get(); len(got.RecentWorkspaces) != 0 {
 		t.Fatalf("RecentWorkspaces = %v, want empty list", got.RecentWorkspaces)
+	}
+}
+
+func TestTextGenerationDefaultsAndRoundTrip(t *testing.T) {
+	svc := NewService(t.TempDir())
+	got := svc.Get()
+	if got.TextGenerationProvider != "codex" {
+		t.Fatalf("TextGenerationProvider default = %q, want codex", got.TextGenerationProvider)
+	}
+	if got.TextGenerationModel != "" {
+		t.Fatalf("TextGenerationModel default = %q, want empty", got.TextGenerationModel)
+	}
+	if got.TextGenerationReasoningEffort != "low" {
+		t.Fatalf("TextGenerationReasoningEffort default = %q, want low", got.TextGenerationReasoningEffort)
+	}
+
+	updated, err := svc.Update(map[string]any{
+		"textGenerationProvider":        "claude",
+		"textGenerationModel":           "  claude-haiku-4-5  ",
+		"textGenerationReasoningEffort": "medium",
+	})
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if updated.TextGenerationProvider != "claude" {
+		t.Errorf("provider round-trip: got %q", updated.TextGenerationProvider)
+	}
+	if updated.TextGenerationModel != "claude-haiku-4-5" {
+		t.Errorf("model trim: got %q", updated.TextGenerationModel)
+	}
+	if updated.TextGenerationReasoningEffort != "medium" {
+		t.Errorf("effort round-trip: got %q", updated.TextGenerationReasoningEffort)
+	}
+}
+
+func TestTextGenerationSanitizesInvalidOnLoad(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+	if err := os.WriteFile(path, []byte(`{
+  "textGenerationProvider": "openai",
+  "textGenerationReasoningEffort": "turbo"
+}
+`), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	got := NewService(dir).Get()
+	if got.TextGenerationProvider != DefaultSettings.TextGenerationProvider {
+		t.Errorf("provider = %q, want default %q", got.TextGenerationProvider, DefaultSettings.TextGenerationProvider)
+	}
+	if got.TextGenerationReasoningEffort != DefaultSettings.TextGenerationReasoningEffort {
+		t.Errorf("effort = %q, want default %q", got.TextGenerationReasoningEffort, DefaultSettings.TextGenerationReasoningEffort)
 	}
 }
 

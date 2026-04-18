@@ -33,11 +33,13 @@ func TestConcurrent_CreateThreadsUnderLoad(t *testing.T) {
 	for i := 0; i < n; i++ {
 		go func(i int) {
 			defer wg.Done()
-			thread, err := app.CreateThread(
+			thread, err := createTestThread(
+				t,
+				app,
 				string(provider.Claude),
 				"/tmp/ws-"+fmt.Sprint(i),
 				"claude-opus-4-7",
-				"default",
+				"chat",
 			)
 			if err != nil {
 				errs[i] = err
@@ -77,7 +79,7 @@ func TestConcurrent_CreateThreadsUnderLoad(t *testing.T) {
 func TestConcurrent_SameThreadUpdates(t *testing.T) {
 	app, _ := setupE2EApp(t)
 
-	thread, err := app.CreateThread(string(provider.Claude), t.TempDir(), "claude-opus-4-7", "default")
+	thread, err := createTestThread(t, app, string(provider.Claude), t.TempDir(), "claude-opus-4-7", "chat")
 	if err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
@@ -131,7 +133,7 @@ func TestConcurrent_ListItemsDuringActiveSession(t *testing.T) {
 	app, bus := setupE2EApp(t)
 
 	workspace := t.TempDir()
-	thread, err := app.CreateThread(string(provider.Claude), workspace, "claude-opus-4-7", "default")
+	thread, err := createTestThread(t, app, string(provider.Claude), workspace, "claude-opus-4-7", "chat")
 	if err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
@@ -261,7 +263,7 @@ func TestConcurrent_CheckpointCaptureDuringWrite(t *testing.T) {
 func TestConcurrent_SettingsUpdateDuringStartup(t *testing.T) {
 	app, _ := setupE2EApp(t)
 
-	thread, err := app.CreateThread(string(provider.Claude), t.TempDir(), "claude-opus-4-7", "default")
+	thread, err := createTestThread(t, app, string(provider.Claude), t.TempDir(), "claude-opus-4-7", "chat")
 	if err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
@@ -313,11 +315,13 @@ func TestConcurrent_ThreadArchiveAndListRace(t *testing.T) {
 	const seed = 20
 	var ids []string
 	for i := 0; i < seed; i++ {
-		th, err := app.CreateThread(
+		th, err := createTestThread(
+			t,
+			app,
 			string(provider.Claude),
 			"/tmp/ws-"+fmt.Sprint(i),
 			"claude-opus-4-7",
-			"default",
+			"chat",
 		)
 		if err != nil {
 			t.Fatalf("CreateThread %d: %v", i, err)
@@ -387,7 +391,7 @@ func TestConcurrent_ThreadArchiveAndListRace(t *testing.T) {
 func TestConcurrent_ItemInsertDuringSameThread(t *testing.T) {
 	app, _ := setupE2EApp(t)
 
-	thread, err := app.CreateThread(string(provider.Claude), t.TempDir(), "claude-opus-4-7", "default")
+	thread, err := createTestThread(t, app, string(provider.Claude), t.TempDir(), "claude-opus-4-7", "chat")
 	if err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
@@ -443,7 +447,7 @@ func TestConcurrent_ItemInsertDuringSameThread(t *testing.T) {
 // unambiguously in flight before any follower is created.
 func TestConcurrent_StartSessionCoalesces(t *testing.T) {
 	app, _ := setupE2EApp(t)
-	thread, err := app.CreateThread(string(provider.Claude), t.TempDir(), "claude-opus-4-7", "default")
+	thread, err := createTestThread(t, app, string(provider.Claude), t.TempDir(), "claude-opus-4-7", "chat")
 	if err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}

@@ -88,16 +88,25 @@ type pendingApproval struct {
 
 // Config for creating a Claude session.
 type Config struct {
-	Binary         string // default: "claude"
-	Model          string
-	WorkDir        string
-	Resume         string // session ID to resume, empty for new
-	ForkSession    bool
-	SystemPrompt   string
-	AllowedTools   []string
-	PermissionMode string // "default", "acceptEdits", "bypassPermissions"
-	MaxTurns       int
-	EventLogger    *logging.Logger
+	Binary       string // default: "claude"
+	Model        string
+	WorkDir      string
+	Resume       string // session ID to resume, empty for new
+	ForkSession  bool
+	SystemPrompt string
+	AllowedTools []string
+	// PermissionFlags carries the full `--permission-mode <value>` or
+	// `--dangerously-skip-permissions` sequence emitted by
+	// provider.ClaudePermissionFlags. Nil / empty means "don't pass any
+	// permission-related flag".
+	PermissionFlags []string
+	MaxTurns        int
+	// Env carries per-session environment variables appended on top of the
+	// caller's process env (e.g. ANTHROPIC_BETAS for the 1M-context beta).
+	// The provider.SpawnConfig.Env hook already reads this shape; we just
+	// pipe it through.
+	Env         map[string]string
+	EventLogger *logging.Logger
 }
 
 // NewSession spawns a Claude CLI process and starts the stdout reader goroutine.
@@ -116,6 +125,7 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 		Binary:      binary,
 		Args:        args,
 		Dir:         cfg.WorkDir,
+		Env:         cfg.Env,
 		EventLogger: cfg.EventLogger,
 		ThreadID:    threadID,
 		Provider:    string(provider.Claude),
@@ -167,9 +177,10 @@ func buildArgs(cfg Config) []string {
 	if cfg.SystemPrompt != "" {
 		args = append(args, "--system-prompt", cfg.SystemPrompt)
 	}
-	if cfg.PermissionMode != "" && cfg.PermissionMode != "default" {
-		args = append(args, "--permission-mode", cfg.PermissionMode)
-	}
+	// PermissionFlags is either nil (default CLI prompting), a two-element
+	// slice for `--permission-mode <value>`, or a single-element slice for
+	// boolean-style flags like `--dangerously-skip-permissions`.
+	args = append(args, cfg.PermissionFlags...)
 	if cfg.MaxTurns > 0 {
 		args = append(args, "--max-turns", strconv.Itoa(cfg.MaxTurns))
 	}

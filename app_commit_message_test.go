@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -98,52 +100,58 @@ func TestSanitizeCommitBody_EmptyIsEmpty(t *testing.T) {
 }
 
 func TestSanitizeCommitBody_PreservesSingleNewlines(t *testing.T) {
-	// Single newlines inside a paragraph aren't blank runs — leave them.
 	in := "Line one.\nLine two.\n\nParagraph break."
 	if got := sanitizeCommitBody(in); got != in {
 		t.Errorf("expected no change, got %q", got)
 	}
 }
 
-// ---- truncateDiffForPrompt ----
+// ---- limitPromptSection ----
 
-func TestTruncateDiffForPrompt_NoopBelowBudget(t *testing.T) {
+func TestLimitPromptSection_NoopBelowBudget(t *testing.T) {
 	in := "short diff"
-	if got := truncateDiffForPrompt(in, 1000); got != in {
+	if got := limitPromptSection(in, 1000); got != in {
 		t.Errorf("expected no truncation, got %q", got)
 	}
 }
 
-func TestTruncateDiffForPrompt_PreservesHeadAndTail(t *testing.T) {
-	// Build a diff with distinct head / tail markers so we can verify both
-	// survived the truncation.
-	head := strings.Repeat("HEAD_", 2_000) // 10k bytes
-	tail := strings.Repeat("TAIL_", 2_000) // 10k bytes
-	middle := strings.Repeat("x", 100_000)
-	diff := head + middle + tail
-
-	got := truncateDiffForPrompt(diff, 20_000)
-	if len(got) > 20_000 {
-		t.Errorf("got %d bytes, expected <=20000", len(got))
+func TestLimitPromptSection_AppendsTruncatedMarker(t *testing.T) {
+	in := strings.Repeat("x", 10_000)
+	got := limitPromptSection(in, 100)
+	if !strings.HasSuffix(got, "[truncated]") {
+		t.Errorf("expected [truncated] marker, got %q", got[len(got)-40:])
 	}
-	if !strings.Contains(got, "HEAD_") {
-		t.Errorf("expected head marker to survive")
-	}
-	if !strings.Contains(got, "TAIL_") {
-		t.Errorf("expected tail marker to survive")
-	}
-	if !strings.Contains(got, "truncated") {
-		t.Errorf("expected truncation marker in output")
+	// The marker is appended on top of the budget — that's fine; the
+	// budget bounds the meaningful content, not the exact string length.
+	if !strings.HasPrefix(got, strings.Repeat("x", 100)) {
+		t.Error("expected first maxChars bytes preserved")
 	}
 }
 
-func TestTruncateDiffForPrompt_HandlesTinyBudget(t *testing.T) {
-	// Degenerate case — caller passes a budget smaller than the marker.
-	// Should still return something no larger than the budget.
-	in := strings.Repeat("x", 500)
-	got := truncateDiffForPrompt(in, 100)
-	if len(got) > 100 {
-		t.Errorf("got %d bytes, expected <=100", len(got))
+// ---- buildCommitMessagePrompt ----
+
+func TestBuildCommitMessagePrompt_IncludesBranchAndSections(t *testing.T) {
+	prompt := buildCommitMessagePrompt("A\tREADME\n", "+++ b/README\n+new line\n", "main")
+	for _, needle := range []string{
+		"You write concise git commit messages.",
+		"Return a JSON object with keys: subject, body.",
+		"subject must be imperative",
+		"Branch: main",
+		"Staged files:",
+		"A\tREADME",
+		"Staged patch:",
+		"+new line",
+	} {
+		if !strings.Contains(prompt, needle) {
+			t.Errorf("prompt missing %q; got:\n%s", needle, prompt)
+		}
+	}
+}
+
+func TestBuildCommitMessagePrompt_DetachedHEADRendersSentinel(t *testing.T) {
+	prompt := buildCommitMessagePrompt("A\tx", "+++", "")
+	if !strings.Contains(prompt, "Branch: (detached)") {
+		t.Errorf("expected '(detached)' sentinel; got:\n%s", prompt)
 	}
 }
 
@@ -187,8 +195,6 @@ func TestDecodeClaudeCommitMessage_MalformedJSONErrors(t *testing.T) {
 }
 
 func TestDecodeClaudeCommitMessage_HandlesMultilineEnvelope(t *testing.T) {
-	// Claude's -p JSON output can include multiple lines; we take the last
-	// non-empty line as the envelope.
 	stdout := []byte(`first log line
 {"structured_output":{"subject":"Fix race in readLoop","body":""}}
 `)
@@ -204,28 +210,7 @@ func TestDecodeClaudeCommitMessage_HandlesMultilineEnvelope(t *testing.T) {
 	}
 }
 
-// ---- buildCommitMessagePrompt ----
-
-func TestBuildCommitMessagePrompt_IncludesDiffAndRules(t *testing.T) {
-	diff := "diff --git a/x b/x\n+added line"
-	prompt := buildCommitMessagePrompt(diff)
-	if !strings.Contains(prompt, diff) {
-		t.Errorf("prompt should include the diff")
-	}
-	// Key rules that keep the output usable.
-	for _, needle := range []string{"subject", "body", "Imperative", "72 characters"} {
-		if !strings.Contains(prompt, needle) {
-			t.Errorf("prompt missing %q", needle)
-		}
-	}
-}
-
 // ---- GenerateCommitMessage top-level handler ----
-//
-// The handler has four paths: missing thread, unsupported provider,
-// empty diff, and happy path. The happy + failure paths with a real
-// CLI call use a bash mock so we don't shell out to a real Claude
-// binary in the test suite.
 
 func newCommitMsgTestApp(t *testing.T) *App {
 	t.Helper()
@@ -246,37 +231,18 @@ func TestGenerateCommitMessage_UnknownThreadErrors(t *testing.T) {
 	}
 }
 
-func TestGenerateCommitMessage_CodexThreadRejected(t *testing.T) {
-	app := newCommitMsgTestApp(t)
-	now := time.Now().UnixMilli()
-	if err := app.store.CreateThread(store.Thread{
-		ID: "t-codex", Title: "x", Provider: string(provider.Codex),
-		WorkspacePath: t.TempDir(), CreatedAt: now, UpdatedAt: now,
-	}); err != nil {
-		t.Fatalf("create thread: %v", err)
-	}
-	_, err := app.GenerateCommitMessage("t-codex")
-	if err == nil {
-		t.Fatal("expected error: non-Claude provider must be rejected")
-	}
-	if !strings.Contains(err.Error(), "codex") && !strings.Contains(err.Error(), "manually") {
-		t.Errorf("error should name the unsupported provider + suggest manual entry; got: %v", err)
-	}
-}
-
-func TestGenerateCommitMessage_EmptyDiffReturnsNothingToDescribe(t *testing.T) {
+func TestGenerateCommitMessage_EmptyStagedReturnsNothingToDescribe(t *testing.T) {
 	app := newCommitMsgTestApp(t)
 	workspace := initCommitMsgRepo(t)
 	now := time.Now().UnixMilli()
 	if err := app.store.CreateThread(store.Thread{
-		ID: "t-claude", Title: "x", Provider: string(provider.Claude),
+		ID: "t-empty", ProjectID: defaultTestProjectID, Title: "x", Provider: string(provider.Claude),
 		WorkspacePath: workspace, CreatedAt: now, UpdatedAt: now,
 	}); err != nil {
 		t.Fatalf("create thread: %v", err)
 	}
-	// Repo is clean — no uncommitted changes. The handler should
-	// short-circuit before invoking the CLI.
-	_, err := app.GenerateCommitMessage("t-claude")
+	// Repo is clean — StageAll is a no-op, nothing to describe.
+	_, err := app.GenerateCommitMessage("t-empty")
 	if err == nil {
 		t.Fatal("expected error when working tree is clean")
 	}
@@ -285,33 +251,95 @@ func TestGenerateCommitMessage_EmptyDiffReturnsNothingToDescribe(t *testing.T) {
 	}
 }
 
-func TestGenerateCommitMessage_HappyPathWithMockClaude(t *testing.T) {
+func TestGenerateCommitMessage_CodexPathHappy(t *testing.T) {
 	app := newCommitMsgTestApp(t)
 	workspace := initCommitMsgRepo(t)
+	// Dirty the repo so there's something to stage.
 	if err := os.WriteFile(filepath.Join(workspace, "README"), []byte("hello\nworld\n"), 0o644); err != nil {
-		t.Fatalf("dirty repo: %v", err)
+		t.Fatalf("dirty: %v", err)
 	}
 
-	// Mock `claude -p`: drains stdin then emits the tail-line envelope
-	// decodeClaudeCommitMessage expects.
-	mockPath := filepath.Join(t.TempDir(), "claude-mock.sh")
-	mock := `#!/bin/bash
-cat > /dev/null
-echo '{"session_id":"mock"}'
-echo '{"structured_output":{"subject":"Refine README greeting","body":"Mention the workspace layout."}}'
-`
-	if err := os.WriteFile(mockPath, []byte(mock), 0o755); err != nil {
-		t.Fatalf("write mock: %v", err)
-	}
-	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": mockPath}); err != nil {
-		t.Fatalf("set binary: %v", err)
+	// Settings default to codex; we don't need to patch them.
+	// Install the commit executor stub: write a realistic output.json
+	// to the --output-last-message path so the real file-read path is
+	// exercised end-to-end.
+	var gotSpec commitCLISpec
+	app.commitExecutor = func(_ context.Context, spec commitCLISpec) (commitCLIResult, error) {
+		gotSpec = spec
+		payload := []byte(`{"subject":"Add world to README","body":"Mention the new world line."}`)
+		outputPath := extractCodexOutputPath(spec.Args)
+		if outputPath == "" {
+			t.Fatalf("commitCLISpec has no --output-last-message; args=%v", spec.Args)
+		}
+		if err := os.WriteFile(outputPath, payload, 0o600); err != nil {
+			return commitCLIResult{}, err
+		}
+		return commitCLIResult{ExitCode: 0}, nil
 	}
 
 	now := time.Now().UnixMilli()
 	if err := app.store.CreateThread(store.Thread{
-		ID: "t-claude", Title: "x", Provider: string(provider.Claude),
+		ID: "t-codex", ProjectID: defaultTestProjectID, Title: "x", Provider: string(provider.Codex),
 		WorkspacePath: workspace, CreatedAt: now, UpdatedAt: now,
-		Model: "claude-sonnet-4-6",
+	}); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+
+	got, err := app.GenerateCommitMessage("t-codex")
+	if err != nil {
+		t.Fatalf("happy path: %v", err)
+	}
+	if got.Subject != "Add world to README" {
+		t.Errorf("subject: got %q", got.Subject)
+	}
+	if got.Body != "Mention the new world line." {
+		t.Errorf("body: got %q", got.Body)
+	}
+
+	// The CLI got invoked with the t3-code-style args.
+	if !argsContain(gotSpec.Args, "exec") || !argsContain(gotSpec.Args, "--ephemeral") {
+		t.Errorf("codex args missing 'exec --ephemeral'; got %v", gotSpec.Args)
+	}
+	if !argsContain(gotSpec.Args, "--model") {
+		t.Errorf("codex args missing '--model'; got %v", gotSpec.Args)
+	}
+	// Default model for codex commit-message is gpt-5.4-mini.
+	if modelArg := nextArgAfter(gotSpec.Args, "--model"); modelArg != defaultCommitCodexModel {
+		t.Errorf("codex model arg = %q, want %q", modelArg, defaultCommitCodexModel)
+	}
+	// Default reasoning effort is "low".
+	if !argsContainSubstring(gotSpec.Args, `model_reasoning_effort="low"`) {
+		t.Errorf("codex reasoning-effort config missing 'low'; got %v", gotSpec.Args)
+	}
+}
+
+func TestGenerateCommitMessage_ClaudePathHappy(t *testing.T) {
+	app := newCommitMsgTestApp(t)
+	workspace := initCommitMsgRepo(t)
+	if err := os.WriteFile(filepath.Join(workspace, "README"), []byte("bonjour\n"), 0o644); err != nil {
+		t.Fatalf("dirty: %v", err)
+	}
+	if _, err := app.settings.Update(map[string]any{
+		"textGenerationProvider": "claude",
+	}); err != nil {
+		t.Fatalf("select claude: %v", err)
+	}
+
+	// Claude returns the envelope as the last stdout line.
+	var gotSpec commitCLISpec
+	app.commitExecutor = func(_ context.Context, spec commitCLISpec) (commitCLIResult, error) {
+		gotSpec = spec
+		return commitCLIResult{
+			Stdout: `{"session_id":"abc"}
+{"structured_output":{"subject":"Translate README greeting","body":""}}`,
+			ExitCode: 0,
+		}, nil
+	}
+
+	now := time.Now().UnixMilli()
+	if err := app.store.CreateThread(store.Thread{
+		ID: "t-claude", ProjectID: defaultTestProjectID, Title: "x", Provider: string(provider.Claude),
+		WorkspacePath: workspace, CreatedAt: now, UpdatedAt: now,
 	}); err != nil {
 		t.Fatalf("create thread: %v", err)
 	}
@@ -320,48 +348,227 @@ echo '{"structured_output":{"subject":"Refine README greeting","body":"Mention t
 	if err != nil {
 		t.Fatalf("happy path: %v", err)
 	}
-	if got.Subject != "Refine README greeting" {
+	if got.Subject != "Translate README greeting" {
 		t.Errorf("subject: got %q", got.Subject)
 	}
-	if got.Body != "Mention the workspace layout." {
-		t.Errorf("body: got %q", got.Body)
+
+	if !argsContain(gotSpec.Args, "-p") || !argsContain(gotSpec.Args, "--json-schema") {
+		t.Errorf("claude args missing '-p --json-schema'; got %v", gotSpec.Args)
+	}
+	if !argsContain(gotSpec.Args, "--dangerously-skip-permissions") {
+		t.Errorf("claude args missing '--dangerously-skip-permissions'; got %v", gotSpec.Args)
+	}
+	if modelArg := nextArgAfter(gotSpec.Args, "--model"); modelArg != defaultCommitClaudeModel {
+		t.Errorf("claude model arg = %q, want %q", modelArg, defaultCommitClaudeModel)
 	}
 }
 
-func TestGenerateCommitMessage_SurfacesClaudeFailureAsError(t *testing.T) {
+func TestGenerateCommitMessage_RoutingRespectsSettings(t *testing.T) {
 	app := newCommitMsgTestApp(t)
 	workspace := initCommitMsgRepo(t)
-	if err := os.WriteFile(filepath.Join(workspace, "README"), []byte("dirty\n"), 0o644); err != nil {
-		t.Fatalf("dirty repo: %v", err)
+	if err := os.WriteFile(filepath.Join(workspace, "README"), []byte("x\n"), 0o644); err != nil {
+		t.Fatalf("dirty: %v", err)
 	}
-
-	mockPath := filepath.Join(t.TempDir(), "claude-fail.sh")
-	if err := os.WriteFile(mockPath, []byte("#!/bin/bash\ncat > /dev/null\necho 'boom' 1>&2\nexit 1\n"), 0o755); err != nil {
-		t.Fatalf("write mock: %v", err)
-	}
-	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": mockPath}); err != nil {
-		t.Fatalf("set binary: %v", err)
-	}
-
 	now := time.Now().UnixMilli()
 	if err := app.store.CreateThread(store.Thread{
-		ID: "t-claude", Title: "x", Provider: string(provider.Claude),
+		ID: "t-route", ProjectID: defaultTestProjectID, Title: "x", Provider: string(provider.Claude),
 		WorkspacePath: workspace, CreatedAt: now, UpdatedAt: now,
 	}); err != nil {
 		t.Fatalf("create thread: %v", err)
 	}
 
-	_, err := app.GenerateCommitMessage("t-claude")
-	if err == nil {
-		t.Fatal("expected error when mock CLI exits non-zero")
+	// Test both routes with a per-provider recognisable arg.
+	tests := []struct {
+		name     string
+		provider string
+		sentinel string
+	}{
+		{"codex", "codex", "exec"},
+		{"claude", "claude", "-p"},
 	}
-	if !strings.Contains(err.Error(), "boom") {
-		t.Errorf("error should include stderr message from the mock; got: %v", err)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := app.settings.Update(map[string]any{
+				"textGenerationProvider": tc.provider,
+			}); err != nil {
+				t.Fatalf("set provider: %v", err)
+			}
+
+			var gotSpec commitCLISpec
+			app.commitExecutor = func(_ context.Context, spec commitCLISpec) (commitCLIResult, error) {
+				gotSpec = spec
+				if tc.provider == "codex" {
+					outputPath := extractCodexOutputPath(spec.Args)
+					_ = os.WriteFile(outputPath, []byte(`{"subject":"ok","body":""}`), 0o600)
+					return commitCLIResult{ExitCode: 0}, nil
+				}
+				return commitCLIResult{
+					Stdout:   `{"structured_output":{"subject":"ok","body":""}}`,
+					ExitCode: 0,
+				}, nil
+			}
+
+			if _, err := app.GenerateCommitMessage("t-route"); err != nil {
+				t.Fatalf("generate: %v", err)
+			}
+			if !argsContain(gotSpec.Args, tc.sentinel) {
+				t.Errorf("%s route didn't pass its sentinel arg %q; got %v",
+					tc.provider, tc.sentinel, gotSpec.Args)
+			}
+		})
 	}
 }
 
-// initCommitMsgRepo creates a clean git repo with one committed file so
-// GetWorkingTreeDiff has a stable baseline.
+func TestGenerateCommitMessage_RoutingCustomEffortAndModel(t *testing.T) {
+	app := newCommitMsgTestApp(t)
+	workspace := initCommitMsgRepo(t)
+	if err := os.WriteFile(filepath.Join(workspace, "README"), []byte("x\n"), 0o644); err != nil {
+		t.Fatalf("dirty: %v", err)
+	}
+	if _, err := app.settings.Update(map[string]any{
+		"textGenerationProvider":        "codex",
+		"textGenerationModel":           "gpt-5.4",
+		"textGenerationReasoningEffort": "high",
+	}); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	now := time.Now().UnixMilli()
+	if err := app.store.CreateThread(store.Thread{
+		ID: "t-custom", ProjectID: defaultTestProjectID, Title: "x", Provider: string(provider.Claude),
+		WorkspacePath: workspace, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+
+	var gotSpec commitCLISpec
+	app.commitExecutor = func(_ context.Context, spec commitCLISpec) (commitCLIResult, error) {
+		gotSpec = spec
+		outputPath := extractCodexOutputPath(spec.Args)
+		_ = os.WriteFile(outputPath, []byte(`{"subject":"x","body":""}`), 0o600)
+		return commitCLIResult{ExitCode: 0}, nil
+	}
+
+	if _, err := app.GenerateCommitMessage("t-custom"); err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	if got := nextArgAfter(gotSpec.Args, "--model"); got != "gpt-5.4" {
+		t.Errorf("model = %q, want gpt-5.4", got)
+	}
+	if !argsContainSubstring(gotSpec.Args, `model_reasoning_effort="high"`) {
+		t.Errorf("expected effort 'high'; got %v", gotSpec.Args)
+	}
+}
+
+func TestGenerateCommitMessage_CLIMissingReturnsFriendlyError(t *testing.T) {
+	app := newCommitMsgTestApp(t)
+	workspace := initCommitMsgRepo(t)
+	if err := os.WriteFile(filepath.Join(workspace, "README"), []byte("x\n"), 0o644); err != nil {
+		t.Fatalf("dirty: %v", err)
+	}
+	now := time.Now().UnixMilli()
+	if err := app.store.CreateThread(store.Thread{
+		ID: "t-missing", ProjectID: defaultTestProjectID, Title: "x", Provider: string(provider.Claude),
+		WorkspacePath: workspace, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+
+	app.commitExecutor = func(_ context.Context, _ commitCLISpec) (commitCLIResult, error) {
+		// Emulate exec.LookPath failure shape — a PathError wrapping ENOENT.
+		return commitCLIResult{}, exec.ErrNotFound
+	}
+	_, err := app.GenerateCommitMessage("t-missing")
+	if err == nil {
+		t.Fatal("expected error when CLI isn't available")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("expected 'not found' in error; got: %v", err)
+	}
+}
+
+func TestGenerateCommitMessage_CLIFailureSurfacesStderr(t *testing.T) {
+	app := newCommitMsgTestApp(t)
+	workspace := initCommitMsgRepo(t)
+	if err := os.WriteFile(filepath.Join(workspace, "README"), []byte("x\n"), 0o644); err != nil {
+		t.Fatalf("dirty: %v", err)
+	}
+	now := time.Now().UnixMilli()
+	if err := app.store.CreateThread(store.Thread{
+		ID: "t-fail", ProjectID: defaultTestProjectID, Title: "x", Provider: string(provider.Claude),
+		WorkspacePath: workspace, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+
+	app.commitExecutor = func(_ context.Context, _ commitCLISpec) (commitCLIResult, error) {
+		return commitCLIResult{
+			Stderr:   "boom",
+			ExitCode: 1,
+		}, nil
+	}
+	_, err := app.GenerateCommitMessage("t-fail")
+	if err == nil {
+		t.Fatal("expected error when CLI exits non-zero")
+	}
+	if !strings.Contains(err.Error(), "boom") {
+		t.Errorf("expected stderr 'boom' in error: %v", err)
+	}
+}
+
+// TestGenerateCommitMessage_InvalidProviderCoercesToDefault — Guard that
+// a malformed settings.json (provider = "bogus") does NOT crash. The
+// sanitizeLoadedSettings layer coerces invalid values back to the
+// default "codex", so routing still lands on a valid CLI path.
+func TestGenerateCommitMessage_InvalidProviderCoercesToDefault(t *testing.T) {
+	app := newCommitMsgTestApp(t)
+	workspace := initCommitMsgRepo(t)
+	if err := os.WriteFile(filepath.Join(workspace, "README"), []byte("x\n"), 0o644); err != nil {
+		t.Fatalf("dirty: %v", err)
+	}
+	// Seed a bogus provider directly on disk, bypassing the Update()
+	// validation layer. sanitizeLoadedSettings on the read path will
+	// coerce it back to the default.
+	settingsPath := app.settings.Path()
+	if err := os.WriteFile(settingsPath, []byte(`{"textGenerationProvider":"bogus"}`), 0o600); err != nil {
+		t.Fatalf("seed settings: %v", err)
+	}
+
+	// Wait until the file's modtime is strictly later than the cached
+	// state so Get() reloads it. We explicitly bump modtime so there's
+	// no wall-clock race.
+	if err := os.Chtimes(settingsPath, time.Now().Add(2*time.Second), time.Now().Add(2*time.Second)); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+
+	// Confirm the coercion before we invoke the handler.
+	if got := app.currentSettings().TextGenerationProvider; got != "codex" {
+		t.Fatalf("expected bogus provider to be coerced to codex; got %q", got)
+	}
+
+	now := time.Now().UnixMilli()
+	if err := app.store.CreateThread(store.Thread{
+		ID: "t-coerce", ProjectID: defaultTestProjectID, Title: "x", Provider: string(provider.Claude),
+		WorkspacePath: workspace, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+
+	app.commitExecutor = func(_ context.Context, spec commitCLISpec) (commitCLIResult, error) {
+		// Confirm we landed on the codex path — if the default coercion
+		// broke, we'd see claude's '-p' here instead.
+		if !argsContain(spec.Args, "exec") {
+			t.Errorf("expected codex route after coercion; got args %v", spec.Args)
+		}
+		outputPath := extractCodexOutputPath(spec.Args)
+		_ = os.WriteFile(outputPath, []byte(`{"subject":"ok","body":""}`), 0o600)
+		return commitCLIResult{ExitCode: 0}, nil
+	}
+	if _, err := app.GenerateCommitMessage("t-coerce"); err != nil {
+		t.Fatalf("handler should succeed after provider coercion; got: %v", err)
+	}
+}
+
+// initCommitMsgRepo creates a clean git repo with one committed file.
 func initCommitMsgRepo(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -383,4 +590,63 @@ func initCommitMsgRepo(t *testing.T) string {
 	run("add", "-A")
 	run("-c", "user.email=t@t", "-c", "user.name=Tester", "commit", "-q", "-m", "init")
 	return dir
+}
+
+// ---- helper argument inspectors for test readability ----
+
+func argsContain(args []string, needle string) bool {
+	for _, a := range args {
+		if a == needle {
+			return true
+		}
+	}
+	return false
+}
+
+func argsContainSubstring(args []string, needle string) bool {
+	for _, a := range args {
+		if strings.Contains(a, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func nextArgAfter(args []string, flag string) string {
+	for i, a := range args {
+		if a == flag && i+1 < len(args) {
+			return args[i+1]
+		}
+	}
+	return ""
+}
+
+// extractCodexOutputPath pulls the --output-last-message path out of a
+// Codex commitCLISpec so test stubs can populate the file the real CLI
+// would write. Returns "" if the flag isn't present.
+func extractCodexOutputPath(args []string) string {
+	return nextArgAfter(args, "--output-last-message")
+}
+
+// Sanity check — the codex schema string is valid JSON. Kept in the
+// test package so a typo in the inlined constant doesn't take down
+// prod.
+func TestCommitCodexSchemaIsValidJSON(t *testing.T) {
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(commitCodexSchemaJSON), &parsed); err != nil {
+		t.Fatalf("commitCodexSchemaJSON invalid: %v", err)
+	}
+	if parsed["type"] != "object" {
+		t.Errorf("type = %v, want object", parsed["type"])
+	}
+	props, ok := parsed["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("properties missing or wrong shape: %v", parsed["properties"])
+	}
+	if _, ok := props["subject"]; !ok {
+		t.Errorf("properties.subject missing")
+	}
+	if _, ok := props["body"]; !ok {
+		t.Errorf("properties.body missing")
+	}
 }

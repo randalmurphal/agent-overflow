@@ -148,7 +148,7 @@ func TestHandleClaudeDesignToolIgnoresNonDesignInteractionMode(t *testing.T) {
 
 	thread := testThread("thread-non-design")
 	thread.Provider = string(provider.Claude)
-	// interactionMode stays "default" via testThread.
+	// mode stays "default" via testThread.
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
 	}

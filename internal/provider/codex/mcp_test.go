@@ -12,6 +12,7 @@ import (
 
 	"agent-overflow/internal/design"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/testutil"
 )
 
 func TestDesignMCPServerRenderDesign(t *testing.T) {
@@ -153,16 +154,17 @@ func newTestDesignMCPServer(t *testing.T) (*DesignMCPServer, string, *design.Art
 		_ = st.Close()
 	})
 
+	project := testutil.EnsureProject(t, st, t.TempDir())
 	thread := store.Thread{
-		ID:              "thread-mcp",
-		Title:           "Design Thread",
-		Provider:        "codex",
-		WorkspacePath:   t.TempDir(),
-		ProjectPath:     t.TempDir(),
-		Model:           "gpt-5.4",
-		InteractionMode: "design",
-		CreatedAt:       time.Now().UnixMilli(),
-		UpdatedAt:       time.Now().UnixMilli(),
+		ID:            "thread-mcp",
+		ProjectID:     project.ID,
+		Title:         "Design Thread",
+		Provider:      "codex",
+		WorkspacePath: t.TempDir(),
+		Model:         "gpt-5.4",
+		Mode:          "design",
+		CreatedAt:     time.Now().UnixMilli(),
+		UpdatedAt:     time.Now().UnixMilli(),
 	}
 	if err := st.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
@@ -283,17 +285,18 @@ func TestDesignMCPServerRegisteredThreadCountMultiple(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = st.Close() })
 
+	project := testutil.EnsureProject(t, st, t.TempDir())
 	for _, id := range []string{"thread-1", "thread-2"} {
 		if err := st.CreateThread(store.Thread{
-			ID:              id,
-			Title:           id,
-			Provider:        "codex",
-			WorkspacePath:   t.TempDir(),
-			ProjectPath:     t.TempDir(),
-			Model:           "gpt-5.4",
-			InteractionMode: "design",
-			CreatedAt:       time.Now().UnixMilli(),
-			UpdatedAt:       time.Now().UnixMilli(),
+			ID:            id,
+			ProjectID:     project.ID,
+			Title:         id,
+			Provider:      "codex",
+			WorkspacePath: t.TempDir(),
+			Model:         "gpt-5.4",
+			Mode:          "design",
+			CreatedAt:     time.Now().UnixMilli(),
+			UpdatedAt:     time.Now().UnixMilli(),
 		}); err != nil {
 			t.Fatalf("CreateThread(%s) error = %v", id, err)
 		}

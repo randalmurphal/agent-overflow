@@ -17,6 +17,16 @@ const DEFAULT_SETTINGS: Settings = {
   codexBinaryPath: 'codex',
   claudeEnabled: true,
   codexEnabled: true,
+  // Thread defaults mirror internal/settings.DefaultSettings so a fresh
+  // frontend seeing no backend response still picks the correct seed.
+  defaultMode: 'chat',
+  defaultReasoningEffort: 'high',
+  defaultFastMode: false,
+  defaultContextWindow: 1000000,
+  // Text generation defaults mirror internal/settings.DefaultSettings.
+  textGenerationProvider: 'codex',
+  textGenerationModel: '',
+  textGenerationReasoningEffort: 'low',
   observabilityTracingEnabled: false,
   observabilityOtlpEndpoint: '',
   observabilityEventLogEnabled: false,

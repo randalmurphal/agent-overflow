@@ -328,8 +328,8 @@ func TestPR_CreateThreadFromValidURL(t *testing.T) {
 	if thread.Provider != string(provider.Claude) {
 		t.Fatalf("provider = %q, want claude", thread.Provider)
 	}
-	if thread.InteractionMode != "default" {
-		t.Fatalf("mode = %q, want default", thread.InteractionMode)
+	if thread.Mode != "chat" {
+		t.Fatalf("mode = %q, want chat", thread.Mode)
 	}
 
 	items, err := app.store.ListItems(thread.ID)

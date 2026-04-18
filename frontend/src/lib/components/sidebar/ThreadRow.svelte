@@ -48,7 +48,7 @@
 
   let isActive = $derived(pane.threadId === thread.id);
   let canStartDiscussion = $derived(
-    thread.interactionMode !== 'discussion' && !thread.discussionId && !thread.parentThreadId,
+    thread.mode !== 'discussion' && !thread.discussionId && !thread.parentThreadId,
   );
 
   // Fork ancestry for the lineage badge. We look the parent up on every
@@ -330,11 +330,11 @@
       />
     {:else}
       <span class="text-sm truncate flex-1">{thread.title || 'Untitled'}</span>
-      {#if thread.interactionMode === 'discussion'}
+      {#if thread.mode === 'discussion'}
         <span class="text-[9px] px-1 py-0.5 rounded bg-accent/15 text-accent/80 shrink-0" title="Discussion parent thread" aria-label="Discussion parent thread">D</span>
       {:else if thread.parentThreadId}
         <span class="text-[9px] px-1 py-0.5 rounded bg-provider-codex/15 text-provider-codex/80 shrink-0" title="Discussion participant" aria-label="Discussion participant">Dp</span>
-      {:else if thread.interactionMode === 'design'}
+      {:else if thread.mode === 'design'}
         <span class="text-[9px] px-1 py-0.5 rounded bg-provider-codex/15 text-provider-codex/90 shrink-0" title="Design mode thread" aria-label="Design mode thread">Dsn</span>
       {/if}
       {#if thread.worktreePath}

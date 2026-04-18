@@ -18,6 +18,7 @@ import {
   installThreadViewDefaults,
   makeThread,
   resetAppState,
+  seedSidebarProject,
 } from './_helpers';
 
 beforeAll(installAnimateShim);
@@ -57,6 +58,7 @@ async function mountAppWithThread(opts: {
   const thread = opts.thread ?? makeThread({ title: 'Diff Panel Thread' });
   installAppDefaults();
   setBindingMock('ListThreads', async () => [thread]);
+  seedSidebarProject([thread]);
   installThreadViewDefaults();
   setBindingMock('ListItems', async () => opts.items ?? []);
   setBindingMock('ListThreadCheckpoints', async () => opts.checkpoints ?? []);

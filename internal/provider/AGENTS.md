@@ -26,6 +26,17 @@ Each subpackage has its own `AGENTS.md`.
   package only produces structured values. `app.go` and `triage` decide
   where those values go.
 
+## SessionOptions + ThreadView
+
+`SessionOptions` (this package) and `store.ThreadView` (in
+`internal/store/thread_view.go`) are the shared translation layer
+between the raw thread row and the per-provider Config. Callers
+hydrate a ThreadView from `store.Thread`, derive `SessionOptions`
+from it, then hand those options to the provider-specific
+`Config.From(opts)`. Provider-specific knobs (context window,
+reasoning effort, fast mode) live in the options; the provider
+packages stay free of SQLite types.
+
 ## Approvals
 
 The two providers disagree about everything except that there is an

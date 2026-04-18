@@ -2,8 +2,22 @@
   import { GetProviderStatuses, GetModelsForProvider } from '../../stores/bindings';
   import { getSettings, updateSetting } from '../../stores/settings.svelte';
   import { addToast } from '../../stores/toast.svelte';
-  import type { ModelInfo, ProviderStatus } from '../../types/settings';
+  import type { ModelInfo, ProviderStatus, ReasoningEffort } from '../../types/settings';
   import ToggleSwitch from '../shared/ToggleSwitch.svelte';
+
+  // Mirror of internal/settings text-generation defaults so the model-input
+  // placeholder tracks the per-provider recommendation without a round-trip.
+  const TEXTGEN_DEFAULT_MODEL: Record<'claude' | 'codex', string> = {
+    claude: 'claude-haiku-4-5',
+    codex: 'gpt-5.4-mini',
+  };
+  const TEXTGEN_EFFORT_OPTIONS: Array<{ value: ReasoningEffort; label: string }> = [
+    { value: 'low', label: 'Low' },
+    { value: 'medium', label: 'Medium' },
+    { value: 'high', label: 'High' },
+    { value: 'xhigh', label: 'X-High' },
+    { value: 'max', label: 'Max' },
+  ];
 
   let settings = $derived(getSettings());
   let statuses = $state<ProviderStatus[]>([]);
@@ -132,4 +146,69 @@
       </div>
     </div>
   {/each}
+
+  <section
+    class="rounded-2xl border border-border/70 bg-surface-1/80 p-5 shadow-[0_10px_40px_-24px_rgba(0,0,0,0.45)] backdrop-blur-sm"
+    data-testid="settings-text-generation"
+  >
+    <div class="mb-4">
+      <p class="text-[11px] font-semibold uppercase tracking-[0.22em] text-text-secondary/70">Text generation</p>
+      <h3 class="mt-1 text-base font-semibold text-text-primary">Commit + PR message CLI</h3>
+      <p class="mt-1 text-sm text-text-secondary">
+        Which CLI writes commit messages, PR bodies, and generated thread
+        titles. Independent of the chat provider so Claude users can still
+        spend Codex cycles on short text.
+      </p>
+    </div>
+    <div class="space-y-3">
+      <div class="flex items-center justify-between gap-4 rounded-2xl border border-border/55 bg-surface-0/55 px-4 py-3">
+        <div>
+          <label for="textgen-provider" class="text-sm text-text-primary block">Provider</label>
+          <p class="text-xs text-text-secondary/60">CLI that generates non-chat text</p>
+        </div>
+        <select
+          id="textgen-provider"
+          data-testid="settings-textgen-provider"
+          value={settings.textGenerationProvider}
+          onchange={(e) => updateSetting('textGenerationProvider', (e.target as HTMLSelectElement).value as 'claude' | 'codex')}
+          class="min-w-[8rem] text-xs rounded-xl border border-border bg-surface-0 px-3 py-2 text-text-primary shadow-sm focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/50 transition-colors cursor-pointer"
+        >
+          <option value="codex">Codex</option>
+          <option value="claude">Claude</option>
+        </select>
+      </div>
+
+      <div class="rounded-2xl border border-border/55 bg-surface-0/55 px-4 py-3">
+        <label for="textgen-model" class="text-xs text-text-secondary block mb-1">Model</label>
+        <input
+          id="textgen-model"
+          type="text"
+          data-testid="settings-textgen-model"
+          value={settings.textGenerationModel}
+          onchange={(e) => updateSetting('textGenerationModel', (e.target as HTMLInputElement).value)}
+          placeholder={`Default: ${TEXTGEN_DEFAULT_MODEL[settings.textGenerationProvider]}`}
+          class="w-full text-xs rounded-xl border border-border bg-surface-0 px-3 py-2 text-text-primary placeholder:text-text-secondary/40 shadow-sm focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/50 transition-colors"
+        />
+        <p class="mt-1 text-[11px] text-text-secondary/60">Leave empty to use the provider's default small-text model.</p>
+      </div>
+
+      <div class="flex items-center justify-between gap-4 rounded-2xl border border-border/55 bg-surface-0/55 px-4 py-3">
+        <div>
+          <label for="textgen-effort" class="text-sm text-text-primary block">Reasoning effort</label>
+          <p class="text-xs text-text-secondary/60">Budget for commit/PR text generation</p>
+        </div>
+        <select
+          id="textgen-effort"
+          data-testid="settings-textgen-effort"
+          value={settings.textGenerationReasoningEffort}
+          onchange={(e) => updateSetting('textGenerationReasoningEffort', (e.target as HTMLSelectElement).value as ReasoningEffort)}
+          class="min-w-[8rem] text-xs rounded-xl border border-border bg-surface-0 px-3 py-2 text-text-primary shadow-sm focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/50 transition-colors cursor-pointer"
+        >
+          {#each TEXTGEN_EFFORT_OPTIONS as opt}
+            <option value={opt.value}>{opt.label}</option>
+          {/each}
+        </select>
+      </div>
+    </div>
+  </section>
 </div>

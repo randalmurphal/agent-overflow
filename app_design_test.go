@@ -211,7 +211,6 @@ func TestStartSessionCleansUpDesignMCPRegistrationOnFailure(t *testing.T) {
 		t.Fatalf("GetThread() error = %v", err)
 	}
 	thread.WorkspacePath = t.TempDir()
-	thread.ProjectPath = thread.WorkspacePath
 	if err := app.store.UpdateThread(thread); err != nil {
 		t.Fatalf("UpdateThread() error = %v", err)
 	}
@@ -286,7 +285,7 @@ func newTestAppWithDesignNotify(t *testing.T) (*App, <-chan struct{}) {
 
 func testDesignThread(id string) store.Thread {
 	thread := testThread(id)
-	thread.InteractionMode = "design"
+	thread.Mode = "design"
 	return thread
 }
 

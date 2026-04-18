@@ -97,12 +97,12 @@ export function wailsEventOn<T = unknown>(
 }
 
 /**
- * Payload for the backend-emitted thread:interaction_mode_changed event. Mirrors
- * ThreadInteractionModeChangedEvent in app_thread_interaction_mode.go.
+ * Payload for the backend-emitted thread:mode_changed event. Mirrors
+ * ThreadModeChangedEvent in app_thread_interaction_mode.go.
  */
-interface InteractionModeChangedPayload {
+interface ModeChangedPayload {
   threadId: string;
-  interactionMode: Thread['interactionMode'];
+  mode: NonNullable<Thread['mode']>;
   needsReconnect: boolean;
 }
 
@@ -110,8 +110,8 @@ interface InteractionModeChangedPayload {
  * Payload for thread:runtime_mode_changed — emitted whenever
  * SetThreadRuntimeMode persists a change. NeedsReconnect means the backend
  * is already restarting the active session; the frontend just refreshes
- * its cached thread row and surfaces a toast via RuntimeModePicker /
- * settings flow.
+ * its cached thread row and surfaces a toast via the composer toolbar's
+ * AccessToggle / the settings flow.
  */
 interface RuntimeModeChangedPayload {
   threadId: string;
@@ -461,8 +461,8 @@ export function setupEventListeners(): () => void {
   // thread:runtime_mode_changed — backend persisted a new three-tier
   // approval mode. Refresh the sidebar cache and active pane; the backend
   // kicks off a session reconnect itself when needed, so the frontend just
-  // needs to keep its thread shape in sync (the RuntimeModePicker's own
-  // optimistic update already covered the pane that triggered the change).
+  // needs to keep its thread shape in sync (AccessToggle's own optimistic
+  // update already covered the pane that triggered the change).
   const cancelRuntimeModeChanged = wailsEventOn<RuntimeModeChangedPayload>(
     'thread:runtime_mode_changed',
     (payload) => {
@@ -480,28 +480,28 @@ export function setupEventListeners(): () => void {
     },
   );
 
-  // thread:interaction_mode_changed — the backend persisted a new mode. We
-  // update the cached thread row (so sidebar badges refresh) and, when the
-  // change landed on an active session, surface a toast prompting the user
-  // to reconnect so the session can pick up the new mode's config.
-  const cancelModeChanged = wailsEventOn<InteractionModeChangedPayload>(
-    'thread:interaction_mode_changed',
+  // thread:mode_changed — the backend persisted a new mode. We update the
+  // cached thread row (so sidebar badges refresh) and, when the change
+  // landed on an active session, surface a toast prompting the user to
+  // reconnect so the session can pick up the new mode's config.
+  const cancelModeChanged = wailsEventOn<ModeChangedPayload>(
+    'thread:mode_changed',
     (payload) => {
       if (!payload || !payload.threadId) return;
       const existing = getThreads().find((t) => t.id === payload.threadId);
       if (existing) {
-        replaceThread({ ...existing, interactionMode: payload.interactionMode });
+        replaceThread({ ...existing, mode: payload.mode });
       }
       for (const pane of getAllPanes().values()) {
         if (pane.threadId !== payload.threadId) continue;
         if (pane.thread) {
-          pane.replaceThread({ ...pane.thread, interactionMode: payload.interactionMode });
+          pane.replaceThread({ ...pane.thread, mode: payload.mode });
         }
       }
       if (payload.needsReconnect) {
         addToast(
           'warning',
-          `Mode set to ${payload.interactionMode}. Reconnect the session to apply.`,
+          `Mode set to ${payload.mode}. Reconnect the session to apply.`,
         );
       }
     },

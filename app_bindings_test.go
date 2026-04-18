@@ -74,26 +74,30 @@ func TestGetModelsForProvider(t *testing.T) {
 	}
 }
 
-func TestCreateThreadDefaultsInteractionMode(t *testing.T) {
+func TestCreateThreadDefaultsMode(t *testing.T) {
 	app := newTestAppWithStore(t)
 
-	thread, err := app.CreateThread(string(provider.Codex), "/tmp/workspace", "gpt-5.4", "")
+	thread, err := createTestThread(t, app, string(provider.Codex), "/tmp/workspace", "gpt-5.4", "")
 	if err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
-	if thread.InteractionMode != "default" {
-		t.Fatalf("returned InteractionMode = %q, want default", thread.InteractionMode)
+	if thread.Mode != "chat" {
+		t.Fatalf("returned Mode = %q, want chat", thread.Mode)
 	}
 
 	stored, err := app.store.GetThread(thread.ID)
 	if err != nil {
 		t.Fatalf("GetThread() error = %v", err)
 	}
-	if stored.InteractionMode != "default" {
-		t.Fatalf("stored InteractionMode = %q, want default", stored.InteractionMode)
+	if stored.Mode != "chat" {
+		t.Fatalf("stored Mode = %q, want chat", stored.Mode)
 	}
-	if stored.ProjectPath != "/tmp/workspace" {
-		t.Fatalf("stored ProjectPath = %q, want /tmp/workspace", stored.ProjectPath)
+	project, err := app.store.GetProject(stored.ProjectID)
+	if err != nil {
+		t.Fatalf("GetProject() error = %v", err)
+	}
+	if project.Path != "/tmp/workspace" {
+		t.Fatalf("project path = %q, want /tmp/workspace", project.Path)
 	}
 }
 
@@ -105,20 +109,24 @@ func TestCreateThreadDetectsGitProjectPath(t *testing.T) {
 		t.Fatalf("MkdirAll() error = %v", err)
 	}
 
-	thread, err := app.CreateThread(string(provider.Codex), workspace, "gpt-5.4", "")
+	thread, err := createTestThread(t, app, string(provider.Codex), workspace, "gpt-5.4", "")
 	if err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
-	if !samePath(thread.ProjectPath, repo) {
-		t.Fatalf("returned ProjectPath = %q, want %q", thread.ProjectPath, repo)
+	project, err := app.store.GetProject(thread.ProjectID)
+	if err != nil {
+		t.Fatalf("GetProject() error = %v", err)
+	}
+	if !samePath(project.Path, repo) {
+		t.Fatalf("returned project.Path = %q, want %q", project.Path, repo)
 	}
 
 	stored, err := app.store.GetThread(thread.ID)
 	if err != nil {
 		t.Fatalf("GetThread() error = %v", err)
 	}
-	if !samePath(stored.ProjectPath, repo) {
-		t.Fatalf("stored ProjectPath = %q, want %q", stored.ProjectPath, repo)
+	if stored.ProjectID != project.ID {
+		t.Fatalf("stored ProjectID = %q, want %q", stored.ProjectID, project.ID)
 	}
 }
 
@@ -131,7 +139,7 @@ func TestCreateThreadAddsRecentWorkspace(t *testing.T) {
 		t.Fatalf("MkdirAll() error = %v", err)
 	}
 
-	if _, err := app.CreateThread(string(provider.Codex), workspace, "gpt-5.4", ""); err != nil {
+	if _, err := createTestThread(t, app, string(provider.Codex), workspace, "gpt-5.4", ""); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
 
@@ -466,7 +474,7 @@ func newTestAppWithStore(t *testing.T) *App {
 		_ = st.Close()
 	})
 
-	return &App{
+	app := &App{
 		store:               st,
 		sessions:            make(map[string]session),
 		startingSessions:    make(map[string]*sessionStart),
@@ -474,19 +482,25 @@ func newTestAppWithStore(t *testing.T) *App {
 		threadSlashCommands: make(map[string][]string),
 		deliberations:       make(map[string]*discussion.Deliberation),
 	}
+	ensureDefaultTestProject(t, app)
+	return app
 }
 
+// testThread returns a Thread with the v13 shape, pre-attached to a
+// stable test project row. Callers must have created that project via
+// newTestAppWithStore (it creates a default project so inline Thread
+// literals can hang off a valid FK).
 func testThread(id string) store.Thread {
 	now := time.Now().UnixMilli()
 	return store.Thread{
-		ID:              id,
-		Title:           "Test Thread",
-		Provider:        string(provider.Codex),
-		WorkspacePath:   "/tmp/workspace",
-		ProjectPath:     "/tmp/project",
-		Model:           "gpt-5.4",
-		InteractionMode: "default",
-		CreatedAt:       now,
-		UpdatedAt:       now,
+		ID:            id,
+		ProjectID:     defaultTestProjectID,
+		Title:         "Test Thread",
+		Provider:      string(provider.Codex),
+		WorkspacePath: "/tmp/workspace",
+		Model:         "gpt-5.4",
+		Mode:          "chat",
+		CreatedAt:     now,
+		UpdatedAt:     now,
 	}
 }

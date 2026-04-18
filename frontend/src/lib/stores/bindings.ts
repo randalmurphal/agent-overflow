@@ -5,7 +5,12 @@
 // from this file — do not hand-wrap bindings.
 export {
   // Thread management
-  CreateThread,
+  //
+  // CreateThread is NOT re-exported from the generated app.js because
+  // the generated CreateThreadOptions class emits optional fields under
+  // an `if (false)` pattern that TypeScript infers as required. Callers
+  // pass `{ projectId }` or similar partials that the Go side treats as
+  // optional, so we re-wrap below against the Wails runtime directly.
   ArchiveThread,
   UnarchiveThread,
   DeleteThread,
@@ -15,6 +20,14 @@ export {
   RenameThread,
   SwitchThread,
   UpdateThreadModel,
+  UpdateThreadProvider,
+  UpdateThreadMode,
+  UpdateThreadReasoningEffort,
+  UpdateThreadFastMode,
+  UpdateThreadContextWindow,
+  UpdateThreadRuntimeMode,
+  UpdateThreadBranch,
+  UpdateThreadWorkspace,
 
   // Session management
   StartSession,
@@ -43,6 +56,7 @@ export {
   GetGitStatus,
   GetWorkingTreeDiff,
   GitListBranches,
+  GitListWorktrees,
   GitCommit,
   GitPush,
   GitPull,
@@ -101,9 +115,6 @@ export {
   RevertToTurn,
   ListThreadCheckpoints,
 
-  // Thread interaction mode
-  SetThreadInteractionMode,
-
   // Thread runtime mode (three-tier approval axis)
   GetThreadRuntimeMode,
   SetThreadRuntimeMode,
@@ -129,3 +140,90 @@ export {
   Keybinding,
   TerminalOpenOptions,
 } from '../../../bindings/agent-overflow/models.js';
+
+// ---------------------------------------------------------------------------
+// Projects + directory-browser bindings.
+//
+// These landed on the Go side in Wave 1/2 (see /app_projects.go and
+// /app_directory.go) but the `wails3 generate bindings` output in this
+// checkout doesn't yet carry them. Hand-wrapping via Call.ByName keeps
+// the sidebar compiling and unblocks Wave 3a while we wait for the
+// generator to catch up. The tests drive the same Call.ByName path via
+// src/test/mocks/wailsio-runtime.ts, so mock + real call paths match.
+// ---------------------------------------------------------------------------
+
+import { Call } from '@wailsio/runtime';
+import type {
+  DirectoryListing,
+  Project,
+  ProjectWithCounts,
+  Thread,
+} from '../types/models';
+
+/**
+ * Options the frontend passes to CreateThread. Mirrors the Go
+ * CreateThreadOptions struct (projectId required; every other field
+ * defaults from settings when omitted). We keep a hand-written
+ * interface here because the Wails-generated CreateThreadOptions class
+ * encodes optional fields under an `if (false)` pattern that the
+ * TypeScript inference engine reads as required — the generated class
+ * is usable at runtime but not typeable on the call site.
+ */
+export interface CreateThreadOptions {
+  projectId: string;
+  provider?: 'claude' | 'codex' | string;
+  model?: string;
+  mode?: 'chat' | 'plan' | 'design' | 'discussion' | string;
+  reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max' | string;
+  fastMode?: boolean | null;
+  contextWindow?: number;
+  runtimeMode?: string;
+  worktreeBranch?: string;
+  workspaceOverride?: string;
+}
+
+/**
+ * CreateThread persists a new thread. Wrapped via Call.ByName so the
+ * call site can pass a partial options bag without fighting the
+ * generated class's over-strict TypeScript inference.
+ */
+export function CreateThread(opts: CreateThreadOptions): Promise<Thread> {
+  return callApp<Thread>('CreateThread', opts);
+}
+
+function callApp<T>(method: string, ...args: unknown[]): Promise<T> {
+  return Call.ByName(`main.App.${method}`, ...args) as unknown as Promise<T>;
+}
+
+export function ListProjects(): Promise<ProjectWithCounts[]> {
+  return callApp<ProjectWithCounts[] | null>('ListProjects').then(
+    (result) => result ?? [],
+  );
+}
+
+export function CreateProject(path: string): Promise<Project> {
+  return callApp<Project>('CreateProject', path);
+}
+
+export function RenameProject(id: string, name: string): Promise<Project> {
+  return callApp<Project>('RenameProject', id, name);
+}
+
+export function DeleteProject(id: string): Promise<string[]> {
+  return callApp<string[] | null>('DeleteProject', id).then(
+    (result) => result ?? [],
+  );
+}
+
+export function ArchiveProject(id: string): Promise<void> {
+  return callApp<void>('ArchiveProject', id);
+}
+
+export function UnarchiveProject(id: string): Promise<Project> {
+  return callApp<Project>('UnarchiveProject', id);
+}
+
+export function BrowseDirectory(path: string): Promise<DirectoryListing> {
+  return callApp<DirectoryListing>('BrowseDirectory', path);
+}
+

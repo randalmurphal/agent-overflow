@@ -16,6 +16,7 @@ func createRuntimeTestThread(t *testing.T, app *App, mode provider.RuntimeMode) 
 	id := "rt-" + strings.ReplaceAll(string(mode), "-", "_")
 	err := app.store.CreateThread(store.Thread{
 		ID:            id,
+		ProjectID:     defaultTestProjectID,
 		Title:         "runtime",
 		Provider:      "claude",
 		WorkspacePath: "/tmp",
@@ -184,7 +185,7 @@ func TestCreateThreadUsesSettingsDefault(t *testing.T) {
 	// App created by the test helper doesn't have a settings service
 	// wired. CreateThread's fallback reaches provider.DefaultRuntimeMode
 	// directly; verify it lands on 'full-access'.
-	thread, err := app.CreateThread("claude", "/tmp", "claude-sonnet-4-6", "default")
+	thread, err := createTestThread(t, app, "claude", "/tmp", "claude-sonnet-4-6", "chat")
 	if err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}

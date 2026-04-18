@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -89,6 +90,12 @@ type App struct {
 	sendMessageFn         func(string, string) error
 	generateBranchNameFn  func(store.Thread, string) (string, error)
 	generateThreadTitleFn func(store.Thread, string) (string, error)
+	// commitExecutor stubs the provider-CLI invocation used by
+	// GenerateCommitMessage. Production leaves it nil — the commit path
+	// calls execCommitCLI directly. Tests install a fake that returns
+	// a canned stdout/stderr/exitCode triple so the test suite runs
+	// without `codex` / `claude` binaries on PATH.
+	commitExecutor        commitCLIExecutor
 	emitProviderEventFn   func(provider.ProviderEvent)
 	emitEventFn           func(eventName string, data any)
 	// shutdownStepFn is a test-only hook fired after every step of
@@ -586,27 +593,110 @@ func runParallelClosers(closers []threadCloser, timeout time.Duration) []error {
 
 // --- Thread operations ---
 
-// CreateThread persists a new thread for the given provider + workspace combo.
-// `interactionMode` may be empty (normalized to "default") or one of
-// "default" / "plan" / "design". "discussion" is reserved for threads created
-// via StartDiscussion and is rejected here to prevent UI code from accidentally
-// spawning orphan discussion threads without a deliberation channel.
-func (a *App) CreateThread(providerName string, workspacePath string, model string, interactionMode string) (store.Thread, error) {
-	mode, err := validateCreateThreadMode(interactionMode)
+// CreateThreadOptions carries the minimum a caller MUST specify plus an
+// optional override bundle for any field that defaults from settings.
+// Using a struct (not 10 positional args) means a future field doesn't
+// break callers. ProjectID is required; every thread must belong to a
+// project as of v13.
+type CreateThreadOptions struct {
+	ProjectID         string `json:"projectId"`
+	Provider          string `json:"provider,omitempty"`          // defaults to settings.DefaultProvider
+	Model             string `json:"model,omitempty"`             // defaults to settings.DefaultModelClaude/Codex
+	Mode              string `json:"mode,omitempty"`              // defaults to settings.DefaultMode
+	ReasoningEffort   string `json:"reasoningEffort,omitempty"`   // defaults to settings.DefaultReasoningEffort
+	FastMode          *bool  `json:"fastMode,omitempty"`          // nil = use setting default
+	ContextWindow     int    `json:"contextWindow,omitempty"`     // 0 = setting default
+	RuntimeMode       string `json:"runtimeMode,omitempty"`       // defaults to settings.DefaultRuntimeMode
+	WorktreeBranch    string `json:"worktreeBranch,omitempty"`    // empty = no worktree
+	WorkspaceOverride string `json:"workspaceOverride,omitempty"` // empty = project.path
+}
+
+// CreateThread persists a new thread rooted at a project. The options
+// struct carries every knob; any empty field is resolved via settings
+// defaults. "discussion" is rejected as a mode value because discussion
+// threads must come through StartDiscussion (which wires the
+// deliberation channel).
+func (a *App) CreateThread(opts CreateThreadOptions) (store.Thread, error) {
+	if a.store == nil {
+		return store.Thread{}, fmt.Errorf("create thread: store unavailable")
+	}
+	projectID := strings.TrimSpace(opts.ProjectID)
+	if projectID == "" {
+		return store.Thread{}, fmt.Errorf("create thread: projectId is required")
+	}
+	project, err := a.store.GetProject(projectID)
+	if err != nil {
+		return store.Thread{}, fmt.Errorf("create thread: resolve project %s: %w", projectID, err)
+	}
+
+	mode, err := validateCreateThreadMode(opts.Mode)
 	if err != nil {
 		return store.Thread{}, err
 	}
+
+	providerName := strings.TrimSpace(opts.Provider)
+	if providerName == "" {
+		providerName = a.defaultProviderFromSettings()
+	}
+
+	model := strings.TrimSpace(opts.Model)
+	if model == "" {
+		model = a.defaultModelForProvider(providerName)
+	}
+
+	effort := strings.TrimSpace(opts.ReasoningEffort)
+	if effort == "" {
+		effort = a.defaultReasoningEffort()
+	}
+
+	fastMode := a.defaultFastMode()
+	if opts.FastMode != nil {
+		fastMode = *opts.FastMode
+	}
+
+	contextWindow := opts.ContextWindow
+	if contextWindow == 0 {
+		contextWindow = a.defaultContextWindow()
+	}
+
+	runtimeMode := strings.TrimSpace(opts.RuntimeMode)
+	if runtimeMode == "" {
+		runtimeMode = a.defaultRuntimeModeForNewThread()
+	}
+
+	workspace := strings.TrimSpace(opts.WorkspaceOverride)
+	if workspace == "" {
+		workspace = project.Path
+	}
+	var branch, worktreePath string
+	if trimmed := strings.TrimSpace(opts.WorktreeBranch); trimmed != "" {
+		// Worktree creation runs through the git core with the project
+		// path as the repo root. On success the thread's workspace
+		// becomes the worktree directory.
+		wtPath, wtBranch, err := a.createWorktreeForNewThread(project.Path, trimmed)
+		if err != nil {
+			return store.Thread{}, fmt.Errorf("create thread: worktree: %w", err)
+		}
+		workspace = wtPath
+		worktreePath = wtPath
+		branch = wtBranch
+	}
+
 	now := time.Now().UnixMilli()
-	projectPath := a.detectProjectPath(workspacePath)
 	t := store.Thread{
 		ID:              uuid.New().String(),
+		ProjectID:       project.ID,
 		Title:           "New Thread",
 		Provider:        providerName,
-		WorkspacePath:   workspacePath,
-		ProjectPath:     projectPath,
+		WorkspacePath:   workspace,
+		WorktreePath:    worktreePath,
+		Branch:          branch,
 		Model:           model,
-		InteractionMode: mode,
-		RuntimeMode:     a.defaultRuntimeModeForNewThread(),
+		Mode:            mode,
+		ReasoningEffort: effort,
+		FastMode:        fastMode,
+		ContextWindow:   contextWindow,
+		RuntimeMode:     runtimeMode,
 		CreatedAt:       now,
 		UpdatedAt:       now,
 	}
@@ -614,9 +704,75 @@ func (a *App) CreateThread(providerName string, workspacePath string, model stri
 		return store.Thread{}, err
 	}
 	if a.settings != nil {
-		a.settings.AddRecentWorkspace(workspacePath)
+		a.settings.AddRecentWorkspace(workspace)
 	}
 	return t, nil
+}
+
+// createWorktreeForNewThread is the small helper CreateThread uses when
+// WorktreeBranch is non-empty. Extracted from CreateThread so the inline
+// logic there stays focused on building the Thread row.
+func (a *App) createWorktreeForNewThread(projectPath, branch string) (string, string, error) {
+	resolvedBranch := strings.TrimSpace(branch)
+	if resolvedBranch == "" {
+		resolvedBranch = gitops.BuildTemporaryWorktreeBranchName()
+	}
+	worktreePath := defaultWorktreePath(projectPath, resolvedBranch)
+	if err := a.gitCore().CreateWorktree(projectPath, worktreePath, resolvedBranch); err != nil {
+		return "", "", err
+	}
+	return worktreePath, resolvedBranch, nil
+}
+
+// defaultProviderFromSettings returns the provider name to seed new
+// threads with. Falls back to "claude" when settings are unavailable or
+// hold an unexpected value.
+func (a *App) defaultProviderFromSettings() string {
+	if a.settings == nil {
+		return "claude"
+	}
+	name := strings.TrimSpace(a.settings.Get().DefaultProvider)
+	switch name {
+	case "claude", "codex":
+		return name
+	default:
+		return "claude"
+	}
+}
+
+// defaultReasoningEffort returns the seed effort tier for new threads.
+func (a *App) defaultReasoningEffort() string {
+	if a.settings == nil {
+		return "high"
+	}
+	effort := strings.TrimSpace(a.settings.Get().DefaultReasoningEffort)
+	switch effort {
+	case "low", "medium", "high", "xhigh", "max":
+		return effort
+	default:
+		return "high"
+	}
+}
+
+// defaultFastMode returns the seed fast-mode flag for new threads.
+func (a *App) defaultFastMode() bool {
+	if a.settings == nil {
+		return false
+	}
+	return a.settings.Get().DefaultFastMode
+}
+
+// defaultContextWindow returns the seed context-window size in tokens.
+func (a *App) defaultContextWindow() int {
+	if a.settings == nil {
+		return 1000000
+	}
+	switch a.settings.Get().DefaultContextWindow {
+	case 200000, 1000000:
+		return a.settings.Get().DefaultContextWindow
+	default:
+		return 1000000
+	}
 }
 
 func (a *App) ListThreads() ([]store.Thread, error) {
@@ -694,8 +850,49 @@ func (a *App) startSessionNow(threadID string) error {
 
 	sessionToken := uuid.NewString()
 	onEvent := a.sessionEventHandler(threadID, sessionToken)
-	threadPrompt := a.threadSystemPrompt(threadID)
 
+	// Design-mode plumbing (extra system prompt + Codex MCP servers) is
+	// caller-owned: the provider package intentionally doesn't know about
+	// design or discussion. We compose the final system prompt here, then
+	// hand a provider-agnostic SessionOptions bundle to each provider's
+	// ConfigFromOptions translator.
+	designCfg, err := a.designSessionConfig(t)
+	if err != nil {
+		return fmt.Errorf("start session: %w", err)
+	}
+	systemPrompt := joinSystemPrompts(designCfg.Prompt, a.threadSystemPrompt(threadID))
+
+	// Pending-fork intent is a one-shot. SessionOptionsFromThread reads
+	// either PendingForkRef or SessionRef into opts.Resume based on this
+	// flag. We consume it here (bool in scope) rather than mutating the
+	// Thread row; any persistence changes belong to the caller that set
+	// PendingForkRef originally.
+	forkSession := t.PendingForkRef != ""
+
+	opts := provider.SessionOptionsFromThread(t, systemPrompt, forkSession)
+
+	if err := a.stopExistingSessionLocked(threadID); err != nil {
+		return fmt.Errorf("start session: %w", err)
+	}
+
+	newSess, err := a.spawnProviderSession(threadID, sessionToken, t, opts, designCfg, onEvent)
+	if err != nil {
+		a.teardownDesignThread(threadID)
+		a.emitProviderStatusOnSessionStartError(t.Provider)
+		return fmt.Errorf("start session: %w", err)
+	}
+
+	a.mu.Lock()
+	a.sessions[threadID] = newSess
+	a.mu.Unlock()
+
+	return nil
+}
+
+// stopExistingSessionLocked tears down any prior session for the thread
+// before we start a replacement. Separated from startSessionNow so the
+// caller reads top-down as "stop, compute options, spawn, register".
+func (a *App) stopExistingSessionLocked(threadID string) error {
 	a.mu.Lock()
 	existing, ok := a.sessions[threadID]
 	if ok {
@@ -703,93 +900,61 @@ func (a *App) startSessionNow(threadID string) error {
 	}
 	a.mu.Unlock()
 
-	// Stop the old runtime before starting a replacement so thread-scoped
-	// design state does not leak across reconnects or restart attempts.
-	if ok {
-		a.teardownDesignThread(threadID)
-		if err := closeProviderSession(threadID, existing); err != nil {
-			return fmt.Errorf("start session: %w", err)
-		}
+	if !ok {
+		return nil
 	}
 
+	// Thread-scoped design state must be torn down alongside the session
+	// so a restart doesn't leak the prior turn's MCP registration.
+	a.teardownDesignThread(threadID)
+	return closeProviderSession(threadID, existing)
+}
+
+// spawnProviderSession builds the provider-specific Config via
+// ConfigFromOptions + per-provider ancillary wiring (binary path, MCP
+// servers for Codex, event logger) and calls the provider's NewSession
+// constructor. Returns a populated session wrapper ready to register in
+// a.sessions.
+func (a *App) spawnProviderSession(
+	threadID, sessionToken string,
+	t store.Thread,
+	opts provider.SessionOptions,
+	designCfg designSessionConfig,
+	onEvent func(provider.ProviderEvent),
+) (session, error) {
 	switch t.Provider {
 	case string(provider.Claude):
-		designCfg, err := a.designSessionConfig(t)
-		if err != nil {
-			return fmt.Errorf("start session: %w", err)
-		}
-		systemPrompt := joinSystemPrompts(designCfg.Prompt, threadPrompt)
-		resumeRef := t.SessionRef
-		forkSession := false
-		if t.PendingForkRef != "" {
-			resumeRef = t.PendingForkRef
-			forkSession = true
-		}
-		runtimeMode := provider.NormalizeRuntimeMode(t.RuntimeMode)
-		cfg := claude.Config{
-			Binary:         a.providerBinaryPath(t.Provider),
-			Model:          t.Model,
-			WorkDir:        t.WorkspacePath,
-			Resume:         resumeRef,
-			ForkSession:    forkSession,
-			SystemPrompt:   systemPrompt,
-			PermissionMode: provider.ClaudePermissionMode(runtimeMode),
-			EventLogger:    a.logger,
-		}
+		cfg := claude.ConfigFromOptions(opts)
+		cfg.Binary = a.providerBinaryPath(t.Provider)
+		cfg.EventLogger = a.logger
 		sess, err := claude.NewSession(context.Background(), threadID, cfg, onEvent)
 		if err != nil {
-			a.teardownDesignThread(threadID)
-			// Surface "binary missing" / "version too old" as a provider:status
-			// banner before the error bubbles up as a toast. If the detect
-			// path finds nothing wrong the helper is a no-op.
-			a.emitProviderStatusOnSessionStartError(string(provider.Claude))
-			return fmt.Errorf("start session: %w", err)
+			return session{}, err
 		}
-		a.mu.Lock()
-		a.sessions[threadID] = session{
+		return session{
 			provider: string(provider.Claude),
 			token:    sessionToken,
 			claude:   sess,
-		}
-		a.mu.Unlock()
+		}, nil
 
 	case string(provider.Codex):
-		designCfg, err := a.designSessionConfig(t)
-		if err != nil {
-			return fmt.Errorf("start session: %w", err)
-		}
-		systemPrompt := joinSystemPrompts(designCfg.Prompt, threadPrompt)
-		runtimeMode := provider.NormalizeRuntimeMode(t.RuntimeMode)
-		cfg := codex.Config{
-			Binary:         a.providerBinaryPath(t.Provider),
-			Model:          t.Model,
-			WorkDir:        t.WorkspacePath,
-			ApprovalPolicy: provider.CodexApprovalPolicy(runtimeMode),
-			Sandbox:        provider.CodexSandbox(runtimeMode),
-			ResumeThreadID: t.SessionRef,
-			SystemPrompt:   systemPrompt,
-			MCPServers:     designCfg.MCPServers,
-			EventLogger:    a.logger,
-		}
+		cfg := codex.ConfigFromOptions(opts)
+		cfg.Binary = a.providerBinaryPath(t.Provider)
+		cfg.EventLogger = a.logger
+		cfg.MCPServers = designCfg.MCPServers
 		sess, err := codex.NewSession(context.Background(), threadID, cfg, onEvent)
 		if err != nil {
-			a.teardownDesignThread(threadID)
-			a.emitProviderStatusOnSessionStartError(string(provider.Codex))
-			return fmt.Errorf("start session: %w", err)
+			return session{}, err
 		}
-		a.mu.Lock()
-		a.sessions[threadID] = session{
+		return session{
 			provider: string(provider.Codex),
 			token:    sessionToken,
 			codex:    sess,
-		}
-		a.mu.Unlock()
+		}, nil
 
 	default:
-		return fmt.Errorf("unknown provider: %s", t.Provider)
+		return session{}, fmt.Errorf("unknown provider: %s", t.Provider)
 	}
-
-	return nil
 }
 
 func (a *App) SendMessage(threadID string, content string) error {

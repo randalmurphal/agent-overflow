@@ -175,7 +175,6 @@ func TestStartSessionUsesConfiguredClaudeBinaryPath(t *testing.T) {
 	thread := testThread("thread-start-session-binary")
 	thread.Provider = string(provider.Claude)
 	thread.WorkspacePath = t.TempDir()
-	thread.ProjectPath = thread.WorkspacePath
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
 	}

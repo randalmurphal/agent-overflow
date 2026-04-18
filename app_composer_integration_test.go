@@ -42,12 +42,12 @@ func composerSeedThread(t *testing.T, app *App, id, workspacePath string) store.
 	now := time.Now().UnixMilli()
 	thread := store.Thread{
 		ID:              id,
+		ProjectID:     defaultTestProjectID,
 		Title:           "Composer Thread",
 		Provider:        string(provider.Claude),
 		WorkspacePath:   workspacePath,
-		ProjectPath:     workspacePath,
 		Model:           "claude-sonnet",
-		InteractionMode: "default",
+		Mode: "chat",
 		CreatedAt:       now,
 		UpdatedAt:       now,
 	}
@@ -681,14 +681,15 @@ func TestComposer_DraftSurvivesRestart(t *testing.T) {
 		startingSessions:    make(map[string]*sessionStart),
 		threadSystemPrompts: make(map[string]string),
 	}
+	ensureDefaultTestProject(t, app1)
 	thread := store.Thread{
 		ID:              threadID,
+		ProjectID:     defaultTestProjectID,
 		Title:           "Restart",
 		Provider:        string(provider.Claude),
 		WorkspacePath:   "/tmp",
-		ProjectPath:     "/tmp",
 		Model:           "claude",
-		InteractionMode: "default",
+		Mode: "chat",
 		CreatedAt:       time.Now().UnixMilli(),
 		UpdatedAt:       time.Now().UnixMilli(),
 	}

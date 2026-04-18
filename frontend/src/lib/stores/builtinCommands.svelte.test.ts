@@ -39,7 +39,7 @@ function readyPane(overrides: Partial<Thread> = {}): ReturnType<typeof createThr
     provider: 'claude',
     workspacePath: '/tmp',
     projectPath: '/tmp',
-    interactionMode: 'default',
+    mode: 'chat',
     model: 'claude-sonnet-4-6',
     createdAt: 0,
     updatedAt: 0,
@@ -191,5 +191,97 @@ describe('thread.search command', () => {
     expect(isCommandEnabled('thread.search.close', ctx)).toBe(true);
     runCommand('thread.search.close', ctx);
     expect(isThreadPickerOpen()).toBe(false);
+  });
+});
+
+// --- mode.cycle wiring ---
+//
+// Shift+Tab cycles the active thread through chat → plan → design. The command
+// reads the current mode from the pane's thread and calls UpdateThreadMode.
+// Disabled while any modal or the palette is open because Shift+Tab is the
+// native "focus previous" chord inside those surfaces.
+
+describe('mode.cycle command', () => {
+  beforeEach(() => {
+    clearCommandRegistry();
+  });
+
+  it('is registered and reports enabled when a thread is active', () => {
+    const pane = readyPane({ mode: 'chat' });
+    registerFixtureCommands(pane);
+    expect(getCommand('mode.cycle')).toBeDefined();
+    const ctx = makeCommandContext(pane, {}) as CommandContext;
+    expect(isCommandEnabled('mode.cycle', ctx)).toBe(true);
+  });
+
+  it('is disabled while the palette is open', () => {
+    const pane = readyPane({ mode: 'chat' });
+    registerFixtureCommands(pane);
+    const ctx = makeCommandContext(pane, { paletteOpen: true }) as CommandContext;
+    expect(isCommandEnabled('mode.cycle', ctx)).toBe(false);
+  });
+
+  it('calls UpdateThreadMode with the next step in the cycle', async () => {
+    const pane = readyPane({ mode: 'plan' });
+    const calls: Array<[string, string]> = [];
+    setBindingMock('UpdateThreadMode', async (id: unknown, mode: unknown) => {
+      calls.push([id as string, mode as string]);
+      // Return the updated thread shape the command expects.
+      return {
+        id: id as string,
+        title: 'Test thread',
+        provider: 'claude',
+        workspacePath: '/tmp',
+        projectPath: '/tmp',
+        mode: mode as string,
+        model: 'claude-sonnet-4-6',
+        createdAt: 0,
+        updatedAt: 0,
+        archived: false,
+      };
+    });
+    registerFixtureCommands(pane);
+    const ctx = makeCommandContext(pane, {}) as CommandContext;
+    runCommand('mode.cycle', ctx);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(calls[0]).toEqual(['thread-1', 'design']);
+  });
+});
+
+// --- sidebar.focus-search wiring ---
+//
+// ⌘K moved from palette.open (now ⌘⇧K) to sidebar.focus-search in Wave 4.
+// This test pins that the command id exists and its run callback routes
+// through the same focusThreadSearch hook search.threads uses — a single
+// shared sink so Sidebar/SidebarSearch have one wiring point.
+
+describe('sidebar.focus-search command', () => {
+  beforeEach(() => {
+    clearCommandRegistry();
+  });
+
+  it('is registered and calls the focusThreadSearch hook', () => {
+    let focusCount = 0;
+    const pane = readyPane();
+    registerBuiltinCommands({
+      pane,
+      openSettings: () => {},
+      openThreadForm: () => {},
+      openThreadFromPR: () => {},
+      openShipChanges: () => {},
+      requestRename: () => {},
+      requestDiscussion: () => {},
+      focusThreadSearch: () => {
+        focusCount += 1;
+      },
+      requestThreadJump: () => {},
+      requestThreadStep: () => {},
+    });
+    expect(getCommand('sidebar.focus-search')).toBeDefined();
+    const ctx = makeCommandContext(pane, {}) as CommandContext;
+    runCommand('sidebar.focus-search', ctx);
+    expect(focusCount).toBe(1);
   });
 });

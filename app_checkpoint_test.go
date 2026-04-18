@@ -66,11 +66,12 @@ func seedCheckpointThread(t *testing.T, app *App, threadID, workspace string, pr
 	now := time.Now().UnixMilli()
 	thread := store.Thread{
 		ID:              threadID,
+		ProjectID:     defaultTestProjectID,
 		Title:           "Checkpoint Test",
 		Provider:        provider,
 		WorkspacePath:   workspace,
 		Model:           "test",
-		InteractionMode: "default",
+		Mode: "chat",
 		CreatedAt:       now,
 		UpdatedAt:       now,
 	}

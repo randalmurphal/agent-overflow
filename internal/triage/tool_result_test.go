@@ -375,9 +375,11 @@ func TestCommandExecutionToolResultSkipsDependentAndFailedCommands(t *testing.T)
 
 func createToolResultThread(t *testing.T, st *store.Store, id, workspace string) {
 	t.Helper()
+	ensureTriageProject(t, st)
 	now := time.Now().UnixMilli()
 	err := st.CreateThread(store.Thread{
 		ID:            id,
+		ProjectID:     triageTestProjectID,
 		Title:         "Test",
 		Provider:      "codex",
 		WorkspacePath: workspace,

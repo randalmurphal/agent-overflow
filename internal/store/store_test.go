@@ -7,6 +7,11 @@ import (
 	"time"
 )
 
+// defaultTestProjectID is the project id lazily created by newTestStore
+// so that legacy tests that call makeThread() without supplying a
+// ProjectID still satisfy the threads.project_id FK.
+const defaultTestProjectID = "default-test-project"
+
 func newTestStore(t *testing.T) *Store {
 	t.Helper()
 	s, err := New(":memory:")
@@ -14,6 +19,19 @@ func newTestStore(t *testing.T) *Store {
 		t.Fatalf("new store: %v", err)
 	}
 	t.Cleanup(func() { s.Close() })
+
+	// Seed a default project so any thread built via makeThread() has a
+	// valid FK target without the test having to create a project itself.
+	now := time.Now().UnixMilli()
+	if err := s.CreateProject(Project{
+		ID:        defaultTestProjectID,
+		Path:      "/tmp/test",
+		Name:      "Default Test Project",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed default test project: %v", err)
+	}
 	return s
 }
 
@@ -21,6 +39,7 @@ func makeThread(id, provider string) Thread {
 	now := time.Now().UnixMilli()
 	return Thread{
 		ID:            id,
+		ProjectID:     defaultTestProjectID,
 		Title:         "Thread " + id,
 		Provider:      provider,
 		WorkspacePath: "/tmp/test",
@@ -54,6 +73,7 @@ func TestCreateAndGetThreadRoundTrip(t *testing.T) {
 	now := time.Now().UnixMilli()
 	thr := Thread{
 		ID:            "thread-abc",
+		ProjectID:     defaultTestProjectID,
 		Title:         "My Thread",
 		Provider:      "codex",
 		SessionRef:    "session-xyz",

@@ -18,8 +18,10 @@ import {
   setWorkspaceFilter,
 } from '../../lib/stores/threadFilter.svelte';
 import { setBindingMock } from '../mocks/bindings-app';
-import type { Thread } from '../../lib/types/models';
+import type { Project, ProjectWithCounts, Thread } from '../../lib/types/models';
 import type { GitStatus } from '../../lib/types/git';
+import { resetProjectsForTest } from '../../lib/stores/projects.svelte';
+import { resetSidebarForTest, expandProject } from '../../lib/stores/sidebar.svelte';
 
 // Drain microtasks + Svelte reactions so $effects and async mounts settle.
 // `n` should be generous for integration tests that depend on $effects
@@ -37,6 +39,10 @@ export function resetAppState(): void {
   setIncludeArchived(false);
   setWorkspaceFilter(null);
   clearThreadSelection();
+  // Reset the projects-first sidebar state so tests that expect a clean
+  // project list / collapsed chevrons don't inherit from a prior case.
+  resetProjectsForTest();
+  resetSidebarForTest();
 }
 
 // Every binding that App (or anything App mounts during bootstrap) calls on
@@ -47,17 +53,48 @@ export function installAppDefaults(): void {
   setBindingMock('ListThreads', async () => []);
   setBindingMock('GetKeybindings', async () => []);
   setBindingMock('GetProviderStatuses', async () => []);
+  // Sidebar fetches projects on mount. Default to an empty list — tests
+  // that need visible threads should seed a project via seedProject().
+  setBindingMock('ListProjects', async () => []);
+}
+
+/**
+ * Sidebar tests that want to see threads in the sidebar need to declare a
+ * project for those threads and expand it. This helper wires both steps in
+ * one call; callers pass the project metadata + the threads they intend to
+ * list via ListThreads and we handle the plumbing.
+ */
+export function seedSidebarProject(threads: Thread[]): Project {
+  const project: Project = {
+    id: 'proj-int',
+    path: '/tmp/ws',
+    name: 'Integration Project',
+    sortPosition: 0,
+    createdAt: 0,
+    updatedAt: 0,
+    archived: false,
+  };
+  const pwc: ProjectWithCounts = {
+    project,
+    threadCount: threads.length,
+    lastActive: 0,
+  };
+  setBindingMock('ListProjects', async () => [pwc]);
+  expandProject(project.id);
+  return project;
 }
 
 // Bindings that start firing the moment a thread becomes active: ChatView
-// mounts BranchToolbar + GitActionsControl, both of which call GetGitStatus
-// in $effect. Tests that switch into a thread need these mocked even if they
-// don't assert on git UI.
+// mounts GitActionsControl (header) and the below-composer BranchPicker,
+// which call GetGitStatus / GitListBranches in $effect. Tests that
+// switch into a thread need these mocked even if they don't assert on
+// git UI.
 export function installThreadViewDefaults(): void {
   setBindingMock('SwitchThread', async () => {});
   setBindingMock('ListItems', async () => []);
   setBindingMock('ListPayloadMetas', async () => []);
   setBindingMock('GetGitStatus', async () => makeGitStatus());
+  setBindingMock('GitListBranches', async () => []);
   setBindingMock('ListThreadCheckpoints', async () => []);
 }
 
@@ -89,7 +126,10 @@ export function makeThread(overrides: Partial<Thread> = {}): Thread {
     provider: 'claude',
     workspacePath: '/tmp/ws',
     projectPath: '/tmp/ws',
-    interactionMode: 'default',
+    // All post-Wave-1 threads carry a projectId; default to the seeded
+    // integration project so the sidebar renders the row under its group.
+    projectId: 'proj-int',
+    mode: 'chat',
     model: 'claude-sonnet-4-6',
     createdAt: 1_700_000_000_000,
     updatedAt: 1_700_000_000_000,

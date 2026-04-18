@@ -8,9 +8,35 @@ export interface Thread {
   pendingForkRef?: string;
   workspacePath: string;
   projectPath: string;
+  /**
+   * FK into the projects table. Added in Wave 1/2; optional at the TS layer
+   * until all fixtures pass it through so hand-built test stubs don't have
+   * to set it. Sidebar code must tolerate missing values.
+   */
+  projectId?: string;
   worktreePath?: string;
   branch?: string;
-  interactionMode: "default" | "plan" | "design" | "discussion";
+  /**
+   * Canonical mode column. "chat" | "plan" | "design" | "discussion".
+   * Optional in the TS layer so older fixtures omit it cleanly; new UI
+   * code defaults to "chat" when missing.
+   */
+  mode?: "chat" | "plan" | "design" | "discussion";
+  /**
+   * Reasoning effort tier. Claude exposes Low/Medium/High/XHigh/Max;
+   * Codex exposes Low/Medium/High/XHigh.
+   */
+  reasoningEffort?: "low" | "medium" | "high" | "xhigh" | "max";
+  /**
+   * When true, the provider launches with its small-model tier (e.g.
+   * claude-haiku, gpt-5.4-mini). Rendered as the "Fast Mode" toggle.
+   */
+  fastMode?: boolean;
+  /**
+   * Context window in tokens. 200000 or 1000000 for Claude; Codex uses
+   * per-model defaults and this field is ignored.
+   */
+  contextWindow?: number;
   // Backend always populates this (CHECK constraint + default in v12),
   // but it's optional at the TS layer so test fixtures and hand-built
   // thread stubs from external callers don't have to set it. Consumers
@@ -110,4 +136,53 @@ export interface WorkEntryData {
   name?: string;
   status: "running" | "completed";
   meta?: unknown;
+}
+
+/**
+ * Project mirrors internal/store.Project: a user-defined grouping of threads
+ * rooted at a directory.
+ */
+export interface Project {
+  id: string;
+  path: string;
+  name: string;
+  color?: string;
+  sortPosition: number;
+  createdAt: number;
+  updatedAt: number;
+  archived: boolean;
+}
+
+/**
+ * ProjectWithCounts is the sidebar-lightweight view: the project row plus
+ * its thread count and the timestamp of the most recently touched thread.
+ * Mirrors internal/store.ProjectWithCounts.
+ */
+export interface ProjectWithCounts {
+  project: Project;
+  threadCount: number;
+  lastActive?: number;
+}
+
+/**
+ * DirectoryEntry is one row inside a DirectoryListing. Mirrors the Go
+ * DirectoryEntry struct in app_directory.go.
+ */
+export interface DirectoryEntry {
+  name: string;
+  isDir: boolean;
+  hidden: boolean;
+  isRepo: boolean;
+}
+
+/**
+ * DirectoryListing is the structured result of BrowseDirectory. `parent`
+ * is "" at filesystem roots; `separator` is "/" on Unix, "\\" on Windows.
+ */
+export interface DirectoryListing {
+  path: string;
+  parent: string;
+  separator: string;
+  entries: DirectoryEntry[];
+  truncated: boolean;
 }

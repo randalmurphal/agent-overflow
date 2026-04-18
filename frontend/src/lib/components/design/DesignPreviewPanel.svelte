@@ -39,13 +39,20 @@
         width: DESIGN_VIEWPORT_WIDTHS[pane.designViewport] ?? 1280,
       });
 
-      // 2. Create a sibling thread under the same workspace/provider.
-      const newThread = (await CreateThread(
-        sourceThread.provider,
-        sourceThread.workspacePath,
-        sourceThread.model,
-        'default',
-      )) as Thread;
+      // 2. Create a sibling thread under the same project/provider.
+      // CreateThread moved to a struct-arg signature in Wave 1/2; the
+      // export-to-thread flow only needs to forward the source's project
+      // context — provider/model/mode default from settings.
+      if (!sourceThread.projectId) {
+        addToast('error', 'Cannot export: source thread has no project');
+        return;
+      }
+      const newThread = (await CreateThread({
+        projectId: sourceThread.projectId,
+        provider: sourceThread.provider,
+        model: sourceThread.model,
+        mode: 'default',
+      })) as Thread;
 
       // 3. Upload the PNG as a draft attachment on the new thread.
       let attachmentId: string | null = null;

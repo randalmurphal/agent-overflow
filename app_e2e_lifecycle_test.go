@@ -176,6 +176,7 @@ func setupE2EApp(t *testing.T) (*App, *capturedEventBus) {
 		threadSystemPrompts: make(map[string]string),
 	}
 	app.triage = triage.NewRouter(st, bus.emit)
+	ensureDefaultTestProject(t, app)
 
 	// Ensure any sessions that remain open at test end are torn down.
 	t.Cleanup(func() {
@@ -205,12 +206,12 @@ func e2eThread(id, providerName, workspace string) store.Thread {
 	now := time.Now().UnixMilli()
 	return store.Thread{
 		ID:              id,
+		ProjectID:     defaultTestProjectID,
 		Title:           "E2E Thread",
 		Provider:        providerName,
 		WorkspacePath:   workspace,
-		ProjectPath:     workspace,
 		Model:           "claude-opus-4-7",
-		InteractionMode: "default",
+		Mode: "chat",
 		CreatedAt:       now,
 		UpdatedAt:       now,
 	}
@@ -225,7 +226,7 @@ func TestE2E_FullClaudeSessionHappyPath(t *testing.T) {
 	app, bus := setupE2EApp(t)
 
 	workspace := t.TempDir()
-	thread, err := app.CreateThread(string(provider.Claude), workspace, "claude-opus-4-7", "default")
+	thread, err := createTestThread(t, app, string(provider.Claude), workspace, "claude-opus-4-7", "chat")
 	if err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
@@ -296,7 +297,7 @@ func TestE2E_FullCodexSessionHappyPath(t *testing.T) {
 	app, bus := setupE2EApp(t)
 
 	workspace := t.TempDir()
-	thread, err := app.CreateThread(string(provider.Codex), workspace, "gpt-5", "default")
+	thread, err := createTestThread(t, app, string(provider.Codex), workspace, "gpt-5", "chat")
 	if err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
@@ -359,7 +360,7 @@ func TestE2E_FullCodexSessionHappyPath(t *testing.T) {
 func TestE2E_MultiTurnClaude(t *testing.T) {
 	app, bus := setupE2EApp(t)
 	workspace := t.TempDir()
-	thread, err := app.CreateThread(string(provider.Claude), workspace, "claude-opus-4-7", "default")
+	thread, err := createTestThread(t, app, string(provider.Claude), workspace, "claude-opus-4-7", "chat")
 	if err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
@@ -427,7 +428,7 @@ func TestE2E_MultiTurnClaude(t *testing.T) {
 func TestE2E_InterruptMidTurn(t *testing.T) {
 	app, bus := setupE2EApp(t)
 	workspace := t.TempDir()
-	thread, err := app.CreateThread(string(provider.Claude), workspace, "claude-opus-4-7", "default")
+	thread, err := createTestThread(t, app, string(provider.Claude), workspace, "claude-opus-4-7", "chat")
 	if err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
@@ -493,7 +494,7 @@ func TestE2E_InterruptMidTurn(t *testing.T) {
 func TestE2E_ProviderExitsMidTurn(t *testing.T) {
 	app, bus := setupE2EApp(t)
 	workspace := t.TempDir()
-	thread, err := app.CreateThread(string(provider.Claude), workspace, "claude-opus-4-7", "default")
+	thread, err := createTestThread(t, app, string(provider.Claude), workspace, "claude-opus-4-7", "chat")
 	if err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
@@ -566,7 +567,7 @@ func TestE2E_ProviderExitsMidTurn(t *testing.T) {
 func TestE2E_ReconnectToExistingSession(t *testing.T) {
 	app, _ := setupE2EApp(t)
 	workspace := t.TempDir()
-	thread, err := app.CreateThread(string(provider.Claude), workspace, "claude-opus-4-7", "default")
+	thread, err := createTestThread(t, app, string(provider.Claude), workspace, "claude-opus-4-7", "chat")
 	if err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
@@ -631,7 +632,7 @@ exit 0
 func TestE2E_ParseErrorRecovery(t *testing.T) {
 	app, bus := setupE2EApp(t)
 	workspace := t.TempDir()
-	thread, err := app.CreateThread(string(provider.Claude), workspace, "claude-opus-4-7", "default")
+	thread, err := createTestThread(t, app, string(provider.Claude), workspace, "claude-opus-4-7", "chat")
 	if err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
@@ -670,7 +671,7 @@ func TestE2E_ParseErrorRecovery(t *testing.T) {
 func TestE2E_SendMessageBeforeSessionStart(t *testing.T) {
 	app, _ := setupE2EApp(t)
 	workspace := t.TempDir()
-	thread, err := app.CreateThread(string(provider.Claude), workspace, "claude-opus-4-7", "default")
+	thread, err := createTestThread(t, app, string(provider.Claude), workspace, "claude-opus-4-7", "chat")
 	if err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
@@ -694,7 +695,7 @@ func TestE2E_SendMessageBeforeSessionStart(t *testing.T) {
 func TestE2E_ToolCallFullCycle(t *testing.T) {
 	app, bus := setupE2EApp(t)
 	workspace := t.TempDir()
-	thread, err := app.CreateThread(string(provider.Claude), workspace, "claude-opus-4-7", "default")
+	thread, err := createTestThread(t, app, string(provider.Claude), workspace, "claude-opus-4-7", "chat")
 	if err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
@@ -753,7 +754,7 @@ func TestE2E_ToolCallFullCycle(t *testing.T) {
 func TestE2E_DiffItemPersistsWithPayload(t *testing.T) {
 	app, _ := setupE2EApp(t)
 	workspace := t.TempDir()
-	thread, err := app.CreateThread(string(provider.Claude), workspace, "claude-opus-4-7", "default")
+	thread, err := createTestThread(t, app, string(provider.Claude), workspace, "claude-opus-4-7", "chat")
 	if err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
@@ -811,7 +812,7 @@ func TestE2E_DiffItemPersistsWithPayload(t *testing.T) {
 func TestE2E_ThreadModelSwitchMidSession(t *testing.T) {
 	app, _ := setupE2EApp(t)
 	workspace := t.TempDir()
-	thread, err := app.CreateThread(string(provider.Claude), workspace, "claude-opus-4-7", "default")
+	thread, err := createTestThread(t, app, string(provider.Claude), workspace, "claude-opus-4-7", "chat")
 	if err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
@@ -868,7 +869,7 @@ func TestE2E_ThreadModelSwitchMidSession(t *testing.T) {
 func TestE2E_ClaudeApprovalRoundTrip(t *testing.T) {
 	app, bus := setupE2EApp(t)
 	workspace := t.TempDir()
-	thread, err := app.CreateThread(string(provider.Claude), workspace, "claude-opus-4-7", "default")
+	thread, err := createTestThread(t, app, string(provider.Claude), workspace, "claude-opus-4-7", "chat")
 	if err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
@@ -919,7 +920,7 @@ func TestE2E_ClaudeApprovalRoundTrip(t *testing.T) {
 func TestE2E_StopSessionWithoutStartIsClean(t *testing.T) {
 	app, _ := setupE2EApp(t)
 	workspace := t.TempDir()
-	thread, err := app.CreateThread(string(provider.Claude), workspace, "claude-opus-4-7", "default")
+	thread, err := createTestThread(t, app, string(provider.Claude), workspace, "claude-opus-4-7", "chat")
 	if err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
@@ -940,7 +941,7 @@ func TestE2E_StopSessionWithoutStartIsClean(t *testing.T) {
 func TestE2E_TokenUsagePersists(t *testing.T) {
 	app, bus := setupE2EApp(t)
 	workspace := t.TempDir()
-	thread, err := app.CreateThread(string(provider.Claude), workspace, "claude-opus-4-7", "default")
+	thread, err := createTestThread(t, app, string(provider.Claude), workspace, "claude-opus-4-7", "chat")
 	if err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
@@ -978,7 +979,7 @@ func TestE2E_TokenUsagePersists(t *testing.T) {
 func TestE2E_ThinkingBlockPersistsAsItem(t *testing.T) {
 	app, _ := setupE2EApp(t)
 	workspace := t.TempDir()
-	thread, err := app.CreateThread(string(provider.Claude), workspace, "claude-opus-4-7", "default")
+	thread, err := createTestThread(t, app, string(provider.Claude), workspace, "claude-opus-4-7", "chat")
 	if err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
@@ -1039,7 +1040,7 @@ func TestE2E_ThinkingBlockPersistsAsItem(t *testing.T) {
 func TestE2E_CommandOutputPersistsToPayload(t *testing.T) {
 	app, _ := setupE2EApp(t)
 	workspace := t.TempDir()
-	thread, err := app.CreateThread(string(provider.Claude), workspace, "claude-opus-4-7", "default")
+	thread, err := createTestThread(t, app, string(provider.Claude), workspace, "claude-opus-4-7", "chat")
 	if err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
@@ -1092,7 +1093,7 @@ func TestE2E_CommandOutputPersistsToPayload(t *testing.T) {
 // TestE2E_RenameThreadUpdatesTitle: verifies the basic rename binding.
 func TestE2E_RenameThreadUpdatesTitle(t *testing.T) {
 	app, _ := setupE2EApp(t)
-	thread, err := app.CreateThread(string(provider.Claude), t.TempDir(), "claude-opus-4-7", "default")
+	thread, err := createTestThread(t, app, string(provider.Claude), t.TempDir(), "claude-opus-4-7", "chat")
 	if err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
@@ -1124,7 +1125,7 @@ func TestE2E_GetPayloadDataReturnsEmptyForMissing(t *testing.T) {
 func TestE2E_SendMessageTouchesThreadUpdatedAt(t *testing.T) {
 	app, _ := setupE2EApp(t)
 	workspace := t.TempDir()
-	thread, err := app.CreateThread(string(provider.Claude), workspace, "claude-opus-4-7", "default")
+	thread, err := createTestThread(t, app, string(provider.Claude), workspace, "claude-opus-4-7", "chat")
 	if err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
@@ -1198,7 +1199,7 @@ func TestE2E_SendMessageUnknownThread(t *testing.T) {
 func TestE2E_InterruptTurnWithoutSession(t *testing.T) {
 	app, _ := setupE2EApp(t)
 	workspace := t.TempDir()
-	thread, err := app.CreateThread(string(provider.Claude), workspace, "claude-opus-4-7", "default")
+	thread, err := createTestThread(t, app, string(provider.Claude), workspace, "claude-opus-4-7", "chat")
 	if err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
@@ -1218,7 +1219,7 @@ func TestE2E_InterruptTurnWithoutSession(t *testing.T) {
 func TestE2E_StartSessionTwiceReplacesOldSession(t *testing.T) {
 	app, _ := setupE2EApp(t)
 	workspace := t.TempDir()
-	thread, err := app.CreateThread(string(provider.Claude), workspace, "claude-opus-4-7", "default")
+	thread, err := createTestThread(t, app, string(provider.Claude), workspace, "claude-opus-4-7", "chat")
 	if err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}

@@ -68,24 +68,30 @@ func NormalizeRuntimeMode(mode string) RuntimeMode {
 	}
 }
 
-// ClaudePermissionMode maps a RuntimeMode to the `--permission-mode` flag
-// the Claude CLI accepts. Returns "" for approval-required, which maps to
-// omitting the flag entirely so the CLI uses its own "default" mode. The
-// caller treats empty as "do not pass --permission-mode".
-func ClaudePermissionMode(mode RuntimeMode) string {
+// ClaudePermissionFlags maps a RuntimeMode to the raw CLI flag sequence the
+// Claude CLI expects. Returning a []string (rather than a single string) lets
+// us represent boolean-style flags that take no value, most notably
+// `--dangerously-skip-permissions` for full-access.
+//
+//   - RuntimeApprovalRequired: no flags (CLI's built-in default prompts for
+//     each tool use).
+//   - RuntimeAutoAcceptEdits:  `--permission-mode acceptEdits`.
+//   - RuntimeFullAccess:       `--dangerously-skip-permissions` (canonical
+//     name of the bypass flag — `--permission-mode bypassPermissions` is an
+//     alias but the skip flag is what the current CLI docs surface).
+func ClaudePermissionFlags(mode RuntimeMode) []string {
 	switch mode {
 	case RuntimeAutoAcceptEdits:
-		return "acceptEdits"
+		return []string{"--permission-mode", "acceptEdits"}
 	case RuntimeFullAccess:
-		return "bypassPermissions"
+		return []string{"--dangerously-skip-permissions"}
 	case RuntimeApprovalRequired:
 		fallthrough
 	default:
-		// Claude CLI without --permission-mode is its internal "default"
-		// mode — prompts for every tool. Explicitly returning the empty
-		// string signals the caller to drop the flag; claude/session.go
-		// already gates on this.
-		return ""
+		// Claude CLI without a permission flag is its built-in default
+		// mode — prompts for every tool. Returning nil signals the caller
+		// to pass no permission flag.
+		return nil
 	}
 }
 

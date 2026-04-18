@@ -54,6 +54,7 @@ func setupCascadeApp(t *testing.T) (*App, *capturedEventBus, string) {
 	app.registry = discussion.NewRegistry(st)
 	app.channels = discussion.NewChannelService(st)
 	app.terminals = terminal.NewManager(nil, nil)
+	ensureDefaultTestProject(t, app)
 
 	attachmentStore, err := attachment.NewStore(attachment.Config{
 		RootDir: filepath.Join(dbDir, "attachments"),
@@ -445,12 +446,12 @@ func e2eThreadCascade(id string, prov provider.ProviderKind, workspace string) s
 	now := time.Now().UnixMilli()
 	return store.Thread{
 		ID:              id,
+		ProjectID:     defaultTestProjectID,
 		Title:           "Cascade Thread",
 		Provider:        string(prov),
 		WorkspacePath:   workspace,
-		ProjectPath:     workspace,
 		Model:           "claude-opus-4-7",
-		InteractionMode: "default",
+		Mode: "chat",
 		CreatedAt:       now,
 		UpdatedAt:       now,
 	}

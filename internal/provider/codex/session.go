@@ -38,6 +38,7 @@ type Session struct {
 	codexThreadID      string // the Codex app-server's thread ID from thread/start
 	activeTurnID       string // current active turn ID from turn/started; cleared on turn/completed
 	model              string // model name for cost calculation
+	reasoningEffort    string // per-turn reasoning effort override; empty means inherit thread default
 	nextID             atomic.Int64
 	mu                 sync.Mutex
 	pending            map[int64]chan json.RawMessage
@@ -90,7 +91,13 @@ type Config struct {
 	ResumeThreadID string // thread ID to resume, empty for new
 	SystemPrompt   string
 	MCPServers     map[string]any
-	EventLogger    *logging.Logger
+	// ReasoningEffort is the Codex-native reasoning_effort enum value
+	// (none|minimal|low|medium|high|xhigh). Applied to the thread start
+	// handshake under `config.model_reasoning_effort`, and re-applied to
+	// every turn/start call under the `effort` parameter so per-thread
+	// tuning takes effect without a session restart.
+	ReasoningEffort string
+	EventLogger     *logging.Logger
 }
 
 // NewSession spawns codex app-server, performs the initialize handshake,
@@ -117,13 +124,14 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 	}
 
 	s := &Session{
-		proc:     proc,
-		threadID: threadID,
-		model:    cfg.Model,
-		pending:  make(map[int64]chan json.RawMessage),
-		onEvent:  onEvent,
-		cancel:   cancel,
-		readDone: make(chan struct{}),
+		proc:            proc,
+		threadID:        threadID,
+		model:           cfg.Model,
+		reasoningEffort: cfg.ReasoningEffort,
+		pending:         make(map[int64]chan json.RawMessage),
+		onEvent:         onEvent,
+		cancel:          cancel,
+		readDone:        make(chan struct{}),
 	}
 
 	// Start stdout reader goroutine before sending any requests.
@@ -207,6 +215,14 @@ func (s *Session) Send(ctx context.Context, content string) error {
 			"text":          content,
 			"text_elements": []any{},
 		}},
+	}
+	// Per-turn effort override — Codex's TurnStartParams takes `effort` at
+	// the top level. Threading it here (rather than only at thread-start)
+	// means a mid-session effort change from the composer takes effect on
+	// the very next turn without needing a session restart. Empty means
+	// "inherit the thread default set during thread/start".
+	if s.reasoningEffort != "" {
+		params["effort"] = s.reasoningEffort
 	}
 
 	resp, err := s.sendRequest(ctx, "turn/start", params)

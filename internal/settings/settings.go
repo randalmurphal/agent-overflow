@@ -36,6 +36,46 @@ type Settings struct {
 	// app into an invalid mode.
 	DefaultRuntimeMode string `json:"defaultRuntimeMode"`
 
+	// DefaultReasoningEffort is the effort tier seeded on every new
+	// thread. Accepts the five values the provider package exposes
+	// (low / medium / high / xhigh / max); unknown values coerce to
+	// "high".
+	DefaultReasoningEffort string `json:"defaultReasoningEffort"`
+
+	// DefaultFastMode seeds the per-thread fast-mode toggle.
+	DefaultFastMode bool `json:"defaultFastMode"`
+
+	// DefaultContextWindow seeds the per-thread context-window pref.
+	// 200000 and 1000000 are the only schema-legal values; unknown
+	// values fall back to 1000000 at the validation layer.
+	DefaultContextWindow int `json:"defaultContextWindow"`
+
+	// DefaultMode seeds the per-thread interaction mode (chat / plan /
+	// design / discussion). Discussion is reached via a separate flow,
+	// but is included in the enum for symmetry with provider.ModeDiscussion.
+	DefaultMode string `json:"defaultMode"`
+
+	// TextGenerationProvider selects which CLI drives non-chat text
+	// generation (commit messages today; PR bodies and thread titles
+	// eventually). Mirrors t3-code's RoutingTextGeneration: one of
+	// {"codex", "claude"}. Empty falls through to the default at the
+	// validation layer.
+	TextGenerationProvider string `json:"textGenerationProvider"`
+
+	// TextGenerationModel is the model id the text-generation CLI uses.
+	// Empty string means "use the per-provider default" (codex ->
+	// gpt-5.4-mini, claude -> claude-haiku-4-5). We avoid forcing a
+	// concrete default on the field itself because the right model
+	// depends on which provider is selected, and a cross-provider
+	// default would be wrong half the time.
+	TextGenerationModel string `json:"textGenerationModel"`
+
+	// TextGenerationReasoningEffort controls the reasoning budget the
+	// text-generation CLI spends. Mirrors the five-tier thread-level
+	// enum. Default is "low" — commit/PR message generation benefits
+	// more from speed than from heavy reasoning.
+	TextGenerationReasoningEffort string `json:"textGenerationReasoningEffort"`
+
 	// Observability — all opt-in. Empty/false defaults leave the app quiet.
 	//
 	// SECURITY NOTE: this file is stored on disk in plaintext and is
@@ -73,6 +113,23 @@ var DefaultSettings = Settings{
 	// a string literal rather than imported so internal/settings doesn't
 	// pull in the provider package (tiny leaf package, kept leaf).
 	DefaultRuntimeMode: "full-access",
+	// DefaultReasoningEffort mirrors provider.DefaultReasoningEffort.
+	DefaultReasoningEffort: "high",
+	// DefaultFastMode defaults to off — power users opt in per thread.
+	DefaultFastMode: false,
+	// DefaultContextWindow defaults to the 1M-token tier (Claude's
+	// extended beta). Codex ignores the field at the translation
+	// boundary.
+	DefaultContextWindow: 1000000,
+	// DefaultMode mirrors provider.DefaultInteractionMode.
+	DefaultMode: "chat",
+	// Text-generation defaults: Codex is cheap + fast for short JSON
+	// responses, so it's the sensible default. The model stays empty
+	// so the call site picks the per-provider default; if the user
+	// switches provider without updating model, the app still works.
+	TextGenerationProvider:        "codex",
+	TextGenerationModel:           "",
+	TextGenerationReasoningEffort: "low",
 	// Observability defaults to off so there is zero runtime cost for users
 	// who don't opt in. The OTLP endpoint is only meaningful when tracing
 	// is enabled; we leave it blank so a misconfigured endpoint can't cause

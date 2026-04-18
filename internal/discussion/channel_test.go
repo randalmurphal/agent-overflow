@@ -5,22 +5,38 @@ import (
 	"time"
 
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/testutil"
 )
+
+// makeDiscussionThread constructs a store.Thread with the v13 shape,
+// lazily ensuring a project row exists at /tmp/project.
+func makeDiscussionThread(t *testing.T, st *store.Store, id string, provider string) store.Thread {
+	t.Helper()
+	project := testutil.EnsureProject(t, st, "/tmp/project")
+	return store.Thread{
+		ID:            id,
+		ProjectID:     project.ID,
+		Title:         "Discussion Thread",
+		Provider:      provider,
+		WorkspacePath: "/tmp/workspace",
+		Model:         modelForProvider(provider),
+		Mode:          "discussion",
+		CreatedAt:     time.Now().UnixMilli(),
+		UpdatedAt:     time.Now().UnixMilli(),
+	}
+}
+
+func modelForProvider(p string) string {
+	if p == "claude" {
+		return "claude-sonnet-4-6"
+	}
+	return "gpt-5.4"
+}
 
 func TestChannelServiceOrdersMessagesAndCloses(t *testing.T) {
 	st := newDiscussionTestStore(t)
 	channelSvc := NewChannelService(st)
-	thread := store.Thread{
-		ID:              "thread-1",
-		Title:           "Discussion Thread",
-		Provider:        "codex",
-		WorkspacePath:   "/tmp/workspace",
-		ProjectPath:     "/tmp/project",
-		Model:           "gpt-5.4",
-		InteractionMode: "discussion",
-		CreatedAt:       time.Now().UnixMilli(),
-		UpdatedAt:       time.Now().UnixMilli(),
-	}
+	thread := makeDiscussionThread(t, st, "thread-1", "codex")
 	if err := st.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
@@ -81,17 +97,7 @@ func TestChannelServiceOrdersMessagesAndCloses(t *testing.T) {
 func TestChannelServiceRejectsPostingToConcludedChannel(t *testing.T) {
 	st := newDiscussionTestStore(t)
 	channelSvc := NewChannelService(st)
-	thread := store.Thread{
-		ID:              "thread-concluded",
-		Title:           "Discussion Thread",
-		Provider:        "codex",
-		WorkspacePath:   "/tmp/workspace",
-		ProjectPath:     "/tmp/project",
-		Model:           "gpt-5.4",
-		InteractionMode: "discussion",
-		CreatedAt:       time.Now().UnixMilli(),
-		UpdatedAt:       time.Now().UnixMilli(),
-	}
+	thread := makeDiscussionThread(t, st, "thread-concluded", "codex")
 	if err := st.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
@@ -118,17 +124,7 @@ func TestChannelServiceDefaultsAndValidation(t *testing.T) {
 	st := newDiscussionTestStore(t)
 	channelSvc := NewChannelService(st)
 
-	thread := store.Thread{
-		ID:              "thread-2",
-		Title:           "Thread",
-		Provider:        "claude",
-		WorkspacePath:   "/tmp/workspace",
-		ProjectPath:     "/tmp/project",
-		Model:           "claude-sonnet-4-6",
-		InteractionMode: "discussion",
-		CreatedAt:       time.Now().UnixMilli(),
-		UpdatedAt:       time.Now().UnixMilli(),
-	}
+	thread := makeDiscussionThread(t, st, "thread-2", "claude")
 	if err := st.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
@@ -152,22 +148,9 @@ func TestChannelServiceDefaultsAndValidation(t *testing.T) {
 		Content:   "one",
 	})
 	if err != nil {
-		t.Fatalf("PostMessage(first) error = %v", err)
+		t.Fatalf("PostMessage(one) error = %v", err)
 	}
-	if _, err := channelSvc.PostMessage(PostMessageInput{
-		ChannelID: channel.ID,
-		FromType:  "human",
-		FromID:    "user",
-		Content:   "two",
-	}); err != nil {
-		t.Fatalf("PostMessage(second) error = %v", err)
-	}
-
-	filtered, err := channelSvc.GetMessages(channel.ID, first.Sequence, 1)
-	if err != nil {
-		t.Fatalf("GetMessages(filtered) error = %v", err)
-	}
-	if len(filtered) != 1 || filtered[0].Content != "two" {
-		t.Fatalf("filtered messages = %+v, want second message only", filtered)
+	if first.FromRole != "" {
+		t.Fatalf("default FromRole should be blank, got %q", first.FromRole)
 	}
 }

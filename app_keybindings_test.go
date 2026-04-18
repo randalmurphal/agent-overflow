@@ -22,15 +22,21 @@ func TestGetKeybindingsReturnsDefaultsWhenNoFile(t *testing.T) {
 	if len(kb) != len(DefaultKeybindings) {
 		t.Fatalf("len(kb) = %d, want %d", len(kb), len(DefaultKeybindings))
 	}
-	found := false
+	wantPalette := false
+	wantSidebar := false
 	for _, b := range kb {
-		if b.Command == "palette.open" && b.Key == "mod+k" {
-			found = true
-			break
+		if b.Command == "palette.open" && b.Key == "mod+shift+k" {
+			wantPalette = true
+		}
+		if b.Command == "sidebar.focus-search" && b.Key == "mod+k" {
+			wantSidebar = true
 		}
 	}
-	if !found {
-		t.Fatal("expected default palette.open binding (mod+k) in result")
+	if !wantPalette {
+		t.Fatal("expected default palette.open binding (mod+shift+k) in result")
+	}
+	if !wantSidebar {
+		t.Fatal("expected default sidebar.focus-search binding (mod+k) in result")
 	}
 }
 

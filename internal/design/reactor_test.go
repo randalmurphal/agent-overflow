@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/testutil"
 )
 
 type designEmission struct {
@@ -273,16 +274,17 @@ func newDesignTestStore(t *testing.T) *store.Store {
 		_ = st.Close()
 	})
 
+	project := testutil.EnsureProject(t, st, t.TempDir())
 	thread := store.Thread{
-		ID:              "thread-render",
-		Title:           "Render",
-		Provider:        "codex",
-		WorkspacePath:   t.TempDir(),
-		ProjectPath:     t.TempDir(),
-		Model:           "gpt-5.4",
-		InteractionMode: "design",
-		CreatedAt:       time.Now().UnixMilli(),
-		UpdatedAt:       time.Now().UnixMilli(),
+		ID:            "thread-render",
+		ProjectID:     project.ID,
+		Title:         "Render",
+		Provider:      "codex",
+		WorkspacePath: t.TempDir(),
+		Model:         "gpt-5.4",
+		Mode:          "design",
+		CreatedAt:     time.Now().UnixMilli(),
+		UpdatedAt:     time.Now().UnixMilli(),
 	}
 	if err := st.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread(thread-render) error = %v", err)

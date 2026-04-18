@@ -83,7 +83,7 @@
       provider: hit.provider as 'claude' | 'codex',
       workspacePath: '',
       projectPath: '',
-      interactionMode: 'default' as const,
+      mode: 'chat' as const,
       model: '',
       createdAt: 0,
       updatedAt: 0,

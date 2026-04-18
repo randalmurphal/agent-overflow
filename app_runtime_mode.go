@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"log"
 
 	"agent-overflow/internal/provider"
 )
@@ -29,15 +28,18 @@ func (a *App) GetThreadRuntimeMode(threadID string) (string, error) {
 	return string(provider.NormalizeRuntimeMode(t.RuntimeMode)), nil
 }
 
-// SetThreadRuntimeMode persists a new runtime mode and, if the thread has
-// an active session, automatically restarts it so the provider picks up
-// the new mode. An idempotent no-op when the mode is unchanged.
+// SetThreadRuntimeMode is the legacy binding name preserved only while
+// the frontend migration lands (Wave 2c+). The implementation routes to
+// UpdateThreadRuntimeMode, emits the same runtime-mode-changed event,
+// and returns the older event struct.
 //
-// Valid modes are the three provider.RuntimeMode values. Unknown strings
-// are rejected outright rather than coerced — we want the binding to
-// surface a clear error to the UI instead of silently swapping what the
-// user picked for "full-access".
+// The new per-field binding UpdateThreadRuntimeMode in app_threads.go
+// is the going-forward surface and returns store.Thread directly.
 func (a *App) SetThreadRuntimeMode(threadID, mode string) (ThreadRuntimeModeChangedEvent, error) {
+	t, err := a.store.GetThread(threadID)
+	if err != nil {
+		return ThreadRuntimeModeChangedEvent{}, fmt.Errorf("set runtime mode: %w", err)
+	}
 	normalized := provider.RuntimeMode(mode)
 	switch normalized {
 	case provider.RuntimeApprovalRequired, provider.RuntimeAutoAcceptEdits, provider.RuntimeFullAccess:
@@ -45,15 +47,7 @@ func (a *App) SetThreadRuntimeMode(threadID, mode string) (ThreadRuntimeModeChan
 	default:
 		return ThreadRuntimeModeChangedEvent{}, fmt.Errorf("set runtime mode: invalid mode %q", mode)
 	}
-
-	t, err := a.store.GetThread(threadID)
-	if err != nil {
-		return ThreadRuntimeModeChangedEvent{}, fmt.Errorf("set runtime mode: %w", err)
-	}
-
 	if provider.NormalizeRuntimeMode(t.RuntimeMode) == normalized {
-		// No-op: avoid tearing down a healthy session just because a UI
-		// element re-submitted the current value.
 		return ThreadRuntimeModeChangedEvent{
 			ThreadID:       threadID,
 			RuntimeMode:    string(normalized),
@@ -61,31 +55,17 @@ func (a *App) SetThreadRuntimeMode(threadID, mode string) (ThreadRuntimeModeChan
 		}, nil
 	}
 
-	if err := a.store.UpdateRuntimeMode(threadID, string(normalized)); err != nil {
-		return ThreadRuntimeModeChangedEvent{}, fmt.Errorf("set runtime mode: %w", err)
+	if _, err := a.UpdateThreadRuntimeMode(threadID, string(normalized)); err != nil {
+		return ThreadRuntimeModeChangedEvent{}, err
 	}
 
 	needsReconnect := a.hasActiveSession(threadID)
-
 	evt := ThreadRuntimeModeChangedEvent{
 		ThreadID:       threadID,
 		RuntimeMode:    string(normalized),
 		NeedsReconnect: needsReconnect,
 	}
 	a.emitEvent("thread:runtime_mode_changed", evt)
-
-	if needsReconnect {
-		// Fire-and-forget the restart so the binding returns immediately.
-		// The frontend can render the optimistic state and react to any
-		// error via the existing session-status / error channels.
-		go func() {
-			if err := a.ReconnectSession(threadID); err != nil {
-				log.Printf("runtime mode: reconnect %s: %v", threadID, err)
-				a.emitErrorToThread(threadID, fmt.Sprintf("runtime mode change failed to reconnect: %v", err))
-			}
-		}()
-	}
-
 	return evt, nil
 }
 

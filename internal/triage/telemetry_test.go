@@ -26,15 +26,18 @@ func newTestRouterWithSpans(t *testing.T) (*Router, *tracetest.SpanRecorder, *st
 	}
 	t.Cleanup(func() { _ = st.Close() })
 
-	// Pre-seed a thread so span attribute lookups succeed.
+	// Pre-seed a project + thread so span attribute lookups succeed.
+	ensureTriageProject(t, st)
 	thread := store.Thread{
-		ID:              "thread-1",
-		Title:           "t",
-		Provider:        "claude",
-		Model:           "claude-sonnet-4-6",
-		InteractionMode: "default",
-		CreatedAt:       time.Now().UnixMilli(),
-		UpdatedAt:       time.Now().UnixMilli(),
+		ID:            "thread-1",
+		ProjectID:     triageTestProjectID,
+		Title:         "t",
+		Provider:      "claude",
+		WorkspacePath: "/tmp/triage",
+		Model:         "claude-sonnet-4-6",
+		Mode:          "chat",
+		CreatedAt:     time.Now().UnixMilli(),
+		UpdatedAt:     time.Now().UnixMilli(),
 	}
 	if err := st.CreateThread(thread); err != nil {
 		t.Fatalf("seed thread: %v", err)

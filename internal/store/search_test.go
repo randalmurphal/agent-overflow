@@ -10,7 +10,7 @@ func mustCreateThreadForSearch(t *testing.T, s *Store, id, title string) {
 	t.Helper()
 	now := time.Now().UnixMilli()
 	if err := s.CreateThread(Thread{
-		ID: id, Title: title, Provider: "codex",
+		ProjectID: defaultTestProjectID, ID: id, Title: title, Provider: "codex",
 		WorkspacePath: "/tmp", CreatedAt: now, UpdatedAt: now,
 	}); err != nil {
 		t.Fatalf("create thread %s: %v", id, err)
@@ -313,13 +313,13 @@ func TestSearchThreadMessages_ProviderFieldPropagates(t *testing.T) {
 	// Mix Claude and Codex threads to confirm the provider field is populated
 	// per-hit (used by the UI to render the provider badge).
 	if err := s.CreateThread(Thread{
-		ID: "tc", Title: "claude side", Provider: "claude",
+		ProjectID: defaultTestProjectID, ID: "tc", Title: "claude side", Provider: "claude",
 		WorkspacePath: "/tmp", CreatedAt: now, UpdatedAt: now,
 	}); err != nil {
 		t.Fatalf("create claude: %v", err)
 	}
 	if err := s.CreateThread(Thread{
-		ID: "tx", Title: "codex side", Provider: "codex",
+		ProjectID: defaultTestProjectID, ID: "tx", Title: "codex side", Provider: "codex",
 		WorkspacePath: "/tmp", CreatedAt: now, UpdatedAt: now,
 	}); err != nil {
 		t.Fatalf("create codex: %v", err)

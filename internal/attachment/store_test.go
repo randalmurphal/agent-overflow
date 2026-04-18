@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/testutil"
 )
 
 func newTestStores(t *testing.T) (*Store, *store.Store) {
@@ -29,9 +30,11 @@ func newTestStores(t *testing.T) (*Store, *store.Store) {
 
 func seedThread(t *testing.T, meta *store.Store, id string) {
 	t.Helper()
+	project := testutil.EnsureProject(t, meta, "/tmp")
 	now := time.Now().UnixMilli()
 	thread := store.Thread{
 		ID:            id,
+		ProjectID:     project.ID,
 		Title:         "Thread",
 		Provider:      "claude",
 		WorkspacePath: "/tmp",

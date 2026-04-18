@@ -21,10 +21,26 @@ Schema summary: `/docs/architecture/schema.md`. Data-flow context:
 - **Summary is the preview.** `items.summary` is what the frontend
   renders by default — keep it short and always populated.
 
+## Recent schema changes (v13)
+
+- `projects` is a first-class table. Each thread carries a `project_id`
+  FK; a project is the user-level grouping (root dir + name + color)
+  above individual threads.
+- `interaction_mode` was renamed to `mode` with a new canonical
+  default of `"chat"` (was `"default"`). The CHECK constraint was
+  rewritten in the same migration; older values are normalised in
+  place.
+- Composer-context columns landed on the threads table:
+  `reasoning_effort` (low/medium/high/xhigh/max), `fast_mode` (bool),
+  `context_window` (200000 or 1000000). The per-thread row is the
+  source of truth; the `SessionOptions` helper in `thread_view.go`
+  translates it into the provider Config.
+
 ## What Goes In
 
 - Timeline items, payloads, thread metadata, channels/messages,
-  discussion templates, design-artifact metadata, attachment metadata.
+  discussion templates, design-artifact metadata, attachment metadata,
+  projects.
 
 ## What Doesn't Go In
 

@@ -111,11 +111,12 @@ func seedE2EThread(t *testing.T, app *App, id, workspace string, p provider.Prov
 	now := time.Now().UnixMilli()
 	thread := store.Thread{
 		ID:              id,
+		ProjectID:     defaultTestProjectID,
 		Title:           "e2e",
 		Provider:        string(p),
 		WorkspacePath:   workspace,
 		Model:           "test",
-		InteractionMode: "default",
+		Mode: "chat",
 		CreatedAt:       now,
 		UpdatedAt:       now,
 	}

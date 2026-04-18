@@ -33,6 +33,7 @@ func newDiscussionApp(t *testing.T) (*App, string) {
 		registry:            discussion.NewRegistry(st),
 		channels:            discussion.NewChannelService(st),
 	}
+	ensureDefaultTestProject(t, app)
 	// Stub out session start/stop so discussion orchestration does not try to
 	// spawn real provider processes.
 	app.startSessionFn = func(threadID string) error { return nil }
@@ -44,12 +45,12 @@ func integTestThread(id string) store.Thread {
 	now := time.Now().UnixMilli()
 	return store.Thread{
 		ID:              id,
+		ProjectID:     defaultTestProjectID,
 		Title:           "Integration Thread",
 		Provider:        string(provider.Codex),
 		WorkspacePath:   "/tmp/workspace",
-		ProjectPath:     "/tmp/project-x",
 		Model:           "gpt-5.4",
-		InteractionMode: "default",
+		Mode: "chat",
 		CreatedAt:       now,
 		UpdatedAt:       now,
 	}
@@ -155,8 +156,8 @@ func TestDisc_StartDiscussionCreatesThreadWithDiscussionMode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetThread: %v", err)
 	}
-	if updated.InteractionMode != "discussion" {
-		t.Errorf("parent.InteractionMode = %q, want discussion", updated.InteractionMode)
+	if updated.Mode != "discussion" {
+		t.Errorf("parent.Mode = %q, want discussion", updated.Mode)
 	}
 	if updated.DiscussionID == "" {
 		t.Error("parent thread has no discussion channel ID")
@@ -171,8 +172,8 @@ func TestDisc_StartDiscussionCreatesThreadWithDiscussionMode(t *testing.T) {
 		t.Fatalf("children count = %d, want 2", len(children))
 	}
 	for _, c := range children {
-		if c.InteractionMode != "discussion" {
-			t.Errorf("child %s mode = %q, want discussion", c.ID, c.InteractionMode)
+		if c.Mode != "discussion" {
+			t.Errorf("child %s mode = %q, want discussion", c.ID, c.Mode)
 		}
 	}
 }
@@ -531,7 +532,7 @@ func TestDisc_StartDiscussionFailsOnMissingParticipants(t *testing.T) {
 
 	// Ensure no partial state was persisted.
 	updated, _ := app.store.GetThread(parent.ID)
-	if updated.InteractionMode == "discussion" {
+	if updated.Mode == "discussion" {
 		t.Error("parent thread got flipped to discussion mode despite failure")
 	}
 	if updated.DiscussionID != "" {

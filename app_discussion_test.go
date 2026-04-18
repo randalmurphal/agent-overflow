@@ -69,7 +69,6 @@ func TestResolveDiscussionDefinitionFallsBackToGlobalWhenProjectDefinitionMissin
 	app.registry = discussion.NewRegistry(app.store)
 
 	thread := testThread("thread-discussion-fallback")
-	thread.ProjectPath = "/tmp/project-fallback"
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
@@ -126,9 +125,9 @@ func TestResolveDiscussionDefinitionDoesNotHideProjectDefinitionErrors(t *testin
 		store:    st,
 		registry: discussion.NewRegistry(st),
 	}
+	ensureDefaultTestProject(t, app)
 
 	thread := testThread("thread-discussion-project-error")
-	thread.ProjectPath = "/tmp/project-a"
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
@@ -157,7 +156,7 @@ func TestResolveDiscussionDefinitionDoesNotHideProjectDefinitionErrors(t *testin
 		"Architects",
 		"Broken project definition",
 		"project",
-		thread.ProjectPath,
+		projectPathForThread(t, app, thread),
 		"{bad json",
 		time.Now().UnixMilli(),
 		time.Now().UnixMilli(),
@@ -189,7 +188,6 @@ func TestStartDiscussionCreatesChannelChildrenAndParticipantSessions(t *testing.
 	}
 
 	thread := testThread("thread-discussion")
-	thread.ProjectPath = "/tmp/project"
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
@@ -197,7 +195,7 @@ func TestStartDiscussionCreatesChannelChildrenAndParticipantSessions(t *testing.
 		ID:        "def-project",
 		Name:      "Architects",
 		Scope:     "project",
-		ProjectID: thread.ProjectPath,
+		ProjectID: projectPathForThread(t, app, thread),
 		Participants: []store.DiscussionParticipant{
 			{Role: "architect", System: "Design the change"},
 			{Role: "reviewer", System: "Review the change", Provider: string(provider.Claude), Model: "claude-sonnet-4"},
@@ -217,8 +215,8 @@ func TestStartDiscussionCreatesChannelChildrenAndParticipantSessions(t *testing.
 	if err != nil {
 		t.Fatalf("GetThread() error = %v", err)
 	}
-	if updated.InteractionMode != "discussion" {
-		t.Fatalf("InteractionMode = %q, want discussion", updated.InteractionMode)
+	if updated.Mode != "discussion" {
+		t.Fatalf("Mode = %q, want discussion", updated.Mode)
 	}
 	if updated.DiscussionID == "" {
 		t.Fatal("expected discussion channel ID on thread")
@@ -251,8 +249,8 @@ func TestStartDiscussionCreatesChannelChildrenAndParticipantSessions(t *testing.
 	}
 
 	sort.Slice(children, func(i, j int) bool { return children[i].Title < children[j].Title })
-	if children[0].InteractionMode != "discussion" || children[1].InteractionMode != "discussion" {
-		t.Fatalf("child interaction modes = %q, %q; want discussion", children[0].InteractionMode, children[1].InteractionMode)
+	if children[0].Mode != "discussion" || children[1].Mode != "discussion" {
+		t.Fatalf("child interaction modes = %q, %q; want discussion", children[0].Mode, children[1].Mode)
 	}
 	if children[0].DiscussionID != channel.ID || children[1].DiscussionID != channel.ID {
 		t.Fatalf("child discussion IDs = %q, %q; want %q", children[0].DiscussionID, children[1].DiscussionID, channel.ID)
@@ -317,7 +315,7 @@ func TestStartDiscussionCleansUpOnParticipantSessionFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetThread() error = %v", err)
 	}
-	if updated.InteractionMode != "default" || updated.DiscussionID != "" {
+	if updated.Mode != "chat" || updated.DiscussionID != "" {
 		t.Fatalf("parent thread after failed start = %+v, want no discussion state", updated)
 	}
 
@@ -343,7 +341,6 @@ func TestStartDiscussionMirrorsEarlyParticipantTurnDuringStartup(t *testing.T) {
 	app.triage = triage.NewRouter(app.store, func(string, any) {})
 
 	thread := testThread("thread-discussion-early-turn")
-	thread.ProjectPath = "/tmp/project"
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
@@ -351,7 +348,7 @@ func TestStartDiscussionMirrorsEarlyParticipantTurnDuringStartup(t *testing.T) {
 		ID:        "def-early-turn",
 		Name:      "Architects",
 		Scope:     "project",
-		ProjectID: thread.ProjectPath,
+		ProjectID: projectPathForThread(t, app, thread),
 		Participants: []store.DiscussionParticipant{
 			{Role: "architect", System: "Design the change"},
 			{Role: "reviewer", System: "Review the change"},
@@ -426,12 +423,12 @@ func TestPostChannelMessageAndGetChannelMessages(t *testing.T) {
 
 	thread := store.Thread{
 		ID:              "thread-channel",
+		ProjectID:     defaultTestProjectID,
 		Title:           "Channel Thread",
 		Provider:        string(provider.Codex),
 		WorkspacePath:   "/tmp/workspace",
-		ProjectPath:     "/tmp/project",
 		Model:           "gpt-5.4",
-		InteractionMode: "discussion",
+		Mode: "discussion",
 		CreatedAt:       time.Now().UnixMilli(),
 		UpdatedAt:       time.Now().UnixMilli(),
 	}
@@ -465,7 +462,6 @@ func TestDeleteThreadRemovesDiscussionChildrenAndRuntimeState(t *testing.T) {
 	app.channels = discussion.NewChannelService(app.store)
 
 	thread := testThread("thread-discussion-delete")
-	thread.ProjectPath = "/tmp/project"
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
@@ -473,7 +469,7 @@ func TestDeleteThreadRemovesDiscussionChildrenAndRuntimeState(t *testing.T) {
 		ID:        "def-delete",
 		Name:      "Architects",
 		Scope:     "project",
-		ProjectID: thread.ProjectPath,
+		ProjectID: projectPathForThread(t, app, thread),
 		Participants: []store.DiscussionParticipant{
 			{Role: "architect", System: "Design the change"},
 			{Role: "reviewer", System: "Review the change"},
@@ -545,12 +541,12 @@ func TestSessionEventHandlerMirrorsDiscussionTurnsIntoChannelAndConcludes(t *tes
 	now := time.Now().UnixMilli()
 	parent := store.Thread{
 		ID:              "thread-parent",
+		ProjectID:     defaultTestProjectID,
 		Title:           "Architecture Review",
 		Provider:        string(provider.Codex),
 		WorkspacePath:   "/tmp/workspace",
-		ProjectPath:     "/tmp/project",
 		Model:           "gpt-5.4",
-		InteractionMode: "discussion",
+		Mode: "discussion",
 		DiscussionID:    "channel-1",
 		CreatedAt:       now,
 		UpdatedAt:       now,
@@ -561,30 +557,30 @@ func TestSessionEventHandlerMirrorsDiscussionTurnsIntoChannelAndConcludes(t *tes
 
 	children := []store.Thread{
 		{
-			ID:              "thread-child-a",
-			Title:           "Architecture Review - Architect",
-			Provider:        string(provider.Codex),
-			WorkspacePath:   parent.WorkspacePath,
-			ProjectPath:     parent.ProjectPath,
-			Model:           parent.Model,
-			InteractionMode: "discussion",
-			DiscussionID:    parent.DiscussionID,
-			ParentThreadID:  parent.ID,
-			CreatedAt:       now,
-			UpdatedAt:       now,
+			ID:             "thread-child-a",
+			ProjectID:      parent.ProjectID,
+			Title:          "Architecture Review - Architect",
+			Provider:       string(provider.Codex),
+			WorkspacePath:  parent.WorkspacePath,
+			Model:          parent.Model,
+			Mode:           "discussion",
+			DiscussionID:   parent.DiscussionID,
+			ParentThreadID: parent.ID,
+			CreatedAt:      now,
+			UpdatedAt:      now,
 		},
 		{
-			ID:              "thread-child-b",
-			Title:           "Architecture Review - Reviewer",
-			Provider:        string(provider.Codex),
-			WorkspacePath:   parent.WorkspacePath,
-			ProjectPath:     parent.ProjectPath,
-			Model:           parent.Model,
-			InteractionMode: "discussion",
-			DiscussionID:    parent.DiscussionID,
-			ParentThreadID:  parent.ID,
-			CreatedAt:       now + 1,
-			UpdatedAt:       now + 1,
+			ID:             "thread-child-b",
+			ProjectID:      parent.ProjectID,
+			Title:          "Architecture Review - Reviewer",
+			Provider:       string(provider.Codex),
+			WorkspacePath:  parent.WorkspacePath,
+			Model:          parent.Model,
+			Mode:           "discussion",
+			DiscussionID:   parent.DiscussionID,
+			ParentThreadID: parent.ID,
+			CreatedAt:      now + 1,
+			UpdatedAt:      now + 1,
 		},
 	}
 	for _, child := range children {

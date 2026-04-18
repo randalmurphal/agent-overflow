@@ -11,7 +11,6 @@ func TestWriteThreadWorkspaceFile(t *testing.T) {
 	workspace := t.TempDir()
 	thread := testThread("thread-save-plan")
 	thread.WorkspacePath = workspace
-	thread.ProjectPath = workspace
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
@@ -38,7 +37,6 @@ func TestWriteThreadWorkspaceFileRejectsParentEscape(t *testing.T) {
 	workspace := t.TempDir()
 	thread := testThread("thread-save-plan-escape")
 	thread.WorkspacePath = workspace
-	thread.ProjectPath = workspace
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
 	}

@@ -6,7 +6,7 @@
 
   let thread = $derived(pane.thread);
   let channelId = $derived(thread?.discussionId ?? '');
-  let isDiscussion = $derived(!!thread && thread.interactionMode === 'discussion' && !!channelId);
+  let isDiscussion = $derived(!!thread && thread.mode === 'discussion' && !!channelId);
 </script>
 
 {#if isDiscussion}

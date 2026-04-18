@@ -24,12 +24,12 @@ func newAttachmentTestApp(t *testing.T) *App {
 
 	thread := store.Thread{
 		ID:              "thr-a",
+		ProjectID:     defaultTestProjectID,
 		Title:           "Thread A",
 		Provider:        "claude",
 		WorkspacePath:   "/tmp/work",
-		ProjectPath:     "/tmp/work",
 		Model:           "claude",
-		InteractionMode: "default",
+		Mode: "chat",
 		CreatedAt:       time.Now().UnixMilli(),
 		UpdatedAt:       time.Now().UnixMilli(),
 	}

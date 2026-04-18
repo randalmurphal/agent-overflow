@@ -21,6 +21,36 @@ var (
 		"claude": {},
 		"codex":  {},
 	}
+	// allowedTextGenerationProviders enumerates the commit-message /
+	// text-generation backend. Mirrors t3-code's RoutingTextGeneration —
+	// only the Claude and Codex CLIs have the structured-output flags
+	// we rely on.
+	allowedTextGenerationProviders = map[string]struct{}{
+		"claude": {},
+		"codex":  {},
+	}
+	// allowedReasoningEfforts mirrors provider.AllReasoningEfforts — duplicated
+	// here to keep internal/settings dependency-free of the provider package.
+	allowedReasoningEfforts = map[string]struct{}{
+		"low":    {},
+		"medium": {},
+		"high":   {},
+		"xhigh":  {},
+		"max":    {},
+	}
+	// allowedModes mirrors provider.AllInteractionModes.
+	allowedModes = map[string]struct{}{
+		"chat":       {},
+		"plan":       {},
+		"design":     {},
+		"discussion": {},
+	}
+	// allowedContextWindows mirrors the CHECK constraint on
+	// threads.context_window (see store/migrate.go::v13SQL).
+	allowedContextWindows = map[int]struct{}{
+		200000:  {},
+		1000000: {},
+	}
 )
 
 func validateSettings(current Settings) (Settings, error) {
@@ -53,6 +83,46 @@ func validateSettings(current Settings) (Settings, error) {
 	current.CodexBinaryPath = normalizeBinaryPath(current.CodexBinaryPath, DefaultSettings.CodexBinaryPath)
 	current.RecentWorkspaces = normalizeRecentWorkspaces(current.RecentWorkspaces)
 	current.ObservabilityOtlpEndpoint = strings.TrimSpace(current.ObservabilityOtlpEndpoint)
+
+	current.DefaultReasoningEffort = strings.TrimSpace(current.DefaultReasoningEffort)
+	if err := validateOption(
+		"defaultReasoningEffort",
+		current.DefaultReasoningEffort,
+		allowedReasoningEfforts,
+	); err != nil {
+		return Settings{}, err
+	}
+
+	current.DefaultMode = strings.TrimSpace(current.DefaultMode)
+	if err := validateOption("defaultMode", current.DefaultMode, allowedModes); err != nil {
+		return Settings{}, err
+	}
+
+	if _, ok := allowedContextWindows[current.DefaultContextWindow]; !ok {
+		return Settings{}, fmt.Errorf("defaultContextWindow must be one of 200000, 1000000")
+	}
+
+	current.TextGenerationProvider = strings.TrimSpace(current.TextGenerationProvider)
+	if err := validateOption(
+		"textGenerationProvider",
+		current.TextGenerationProvider,
+		allowedTextGenerationProviders,
+	); err != nil {
+		return Settings{}, err
+	}
+
+	// TextGenerationModel is optional ("" == use per-provider default).
+	// Trim but don't reject empty.
+	current.TextGenerationModel = strings.TrimSpace(current.TextGenerationModel)
+
+	current.TextGenerationReasoningEffort = strings.TrimSpace(current.TextGenerationReasoningEffort)
+	if err := validateOption(
+		"textGenerationReasoningEffort",
+		current.TextGenerationReasoningEffort,
+		allowedReasoningEfforts,
+	); err != nil {
+		return Settings{}, err
+	}
 	return current, nil
 }
 
@@ -92,6 +162,43 @@ func sanitizeLoadedSettings(current Settings) Settings {
 	)
 	current.RecentWorkspaces = normalizeRecentWorkspaces(current.RecentWorkspaces)
 	current.ObservabilityOtlpEndpoint = strings.TrimSpace(current.ObservabilityOtlpEndpoint)
+
+	current.DefaultReasoningEffort = sanitizeOption(
+		"defaultReasoningEffort",
+		current.DefaultReasoningEffort,
+		DefaultSettings.DefaultReasoningEffort,
+		allowedReasoningEfforts,
+	)
+	current.DefaultMode = sanitizeOption(
+		"defaultMode",
+		current.DefaultMode,
+		DefaultSettings.DefaultMode,
+		allowedModes,
+	)
+	if _, ok := allowedContextWindows[current.DefaultContextWindow]; !ok {
+		log.Printf(
+			"settings: invalid defaultContextWindow %d, using default %d",
+			current.DefaultContextWindow,
+			DefaultSettings.DefaultContextWindow,
+		)
+		current.DefaultContextWindow = DefaultSettings.DefaultContextWindow
+	}
+
+	current.TextGenerationProvider = sanitizeOption(
+		"textGenerationProvider",
+		current.TextGenerationProvider,
+		DefaultSettings.TextGenerationProvider,
+		allowedTextGenerationProviders,
+	)
+	// TextGenerationModel is optional — normalize whitespace but keep "" as
+	// a legal value meaning "use the per-provider default".
+	current.TextGenerationModel = strings.TrimSpace(current.TextGenerationModel)
+	current.TextGenerationReasoningEffort = sanitizeOption(
+		"textGenerationReasoningEffort",
+		current.TextGenerationReasoningEffort,
+		DefaultSettings.TextGenerationReasoningEffort,
+		allowedReasoningEfforts,
+	)
 	return current
 }
 
@@ -174,7 +281,17 @@ func normalizeRecentWorkspaces(paths []string) []string {
 
 func joinAllowedValues(values map[string]struct{}) string {
 	options := make([]string, 0, len(values))
-	for _, candidate := range []string{"system", "light", "dark", "locale", "12-hour", "24-hour", "claude", "codex"} {
+	// Ordered candidate list so error messages render deterministically.
+	// Any value in `values` not in this list is skipped — new enums must
+	// be appended here.
+	candidates := []string{
+		"system", "light", "dark",
+		"locale", "12-hour", "24-hour",
+		"claude", "codex",
+		"low", "medium", "high", "xhigh", "max",
+		"chat", "plan", "design", "discussion",
+	}
+	for _, candidate := range candidates {
 		if _, ok := values[candidate]; ok {
 			options = append(options, candidate)
 		}

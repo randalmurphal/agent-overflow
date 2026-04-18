@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/testutil"
 )
 
 // integrationStores spins up a fresh SQLite store + on-disk attachment root
@@ -36,17 +37,18 @@ func integrationStores(t *testing.T) (*Store, *store.Store, string) {
 
 func integrationSeedThread(t *testing.T, meta *store.Store, id string) {
 	t.Helper()
+	project := testutil.EnsureProject(t, meta, "/tmp")
 	now := time.Now().UnixMilli()
 	thread := store.Thread{
-		ID:              id,
-		Title:           "Integration Thread",
-		Provider:        "claude",
-		WorkspacePath:   "/tmp",
-		ProjectPath:     "/tmp",
-		Model:           "claude-sonnet",
-		InteractionMode: "default",
-		CreatedAt:       now,
-		UpdatedAt:       now,
+		ID:            id,
+		ProjectID:     project.ID,
+		Title:         "Integration Thread",
+		Provider:      "claude",
+		WorkspacePath: "/tmp",
+		Model:         "claude-sonnet",
+		Mode:          "chat",
+		CreatedAt:     now,
+		UpdatedAt:     now,
 	}
 	if err := meta.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread: %v", err)

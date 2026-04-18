@@ -17,7 +17,7 @@ func (a *App) GetGitStatus(threadID string) (gitops.GitStatus, error) {
 		return gitops.GitStatus{}, err
 	}
 
-	_, workspace, err := resolveGitPaths(thread)
+	_, workspace, err := a.resolveGitPaths(thread)
 	if err != nil {
 		return gitops.GitStatus{}, err
 	}
@@ -32,7 +32,7 @@ func (a *App) GetWorkingTreeDiff(threadID string) (string, error) {
 		return "", err
 	}
 
-	_, workspace, err := resolveGitPaths(thread)
+	_, workspace, err := a.resolveGitPaths(thread)
 	if err != nil {
 		return "", err
 	}
@@ -47,7 +47,7 @@ func (a *App) GitListBranches(threadID string) ([]gitops.GitBranch, error) {
 		return nil, err
 	}
 
-	project, _, err := resolveGitPaths(thread)
+	project, _, err := a.resolveGitPaths(thread)
 	if err != nil {
 		return nil, err
 	}
@@ -64,7 +64,7 @@ func (a *App) GitCommit(threadID, subject, body string) (gitops.GitActionResult,
 		return gitops.GitActionResult{}, err
 	}
 
-	_, workspace, err := resolveGitPaths(thread)
+	_, workspace, err := a.resolveGitPaths(thread)
 	if err != nil {
 		return gitops.GitActionResult{}, err
 	}
@@ -94,7 +94,7 @@ func (a *App) GitStageAll(threadID string) error {
 		return err
 	}
 
-	_, workspace, err := resolveGitPaths(thread)
+	_, workspace, err := a.resolveGitPaths(thread)
 	if err != nil {
 		return err
 	}
@@ -109,7 +109,7 @@ func (a *App) GitPush(threadID string) (gitops.GitActionResult, error) {
 		return gitops.GitActionResult{}, err
 	}
 
-	_, workspace, err := resolveGitPaths(thread)
+	_, workspace, err := a.resolveGitPaths(thread)
 	if err != nil {
 		return gitops.GitActionResult{}, err
 	}
@@ -133,7 +133,7 @@ func (a *App) GitPull(threadID string) (gitops.GitActionResult, error) {
 		return gitops.GitActionResult{}, err
 	}
 
-	_, workspace, err := resolveGitPaths(thread)
+	_, workspace, err := a.resolveGitPaths(thread)
 	if err != nil {
 		return gitops.GitActionResult{}, err
 	}
@@ -157,7 +157,7 @@ func (a *App) GitCheckout(threadID, branch string) error {
 		return err
 	}
 
-	_, workspace, err := resolveGitPaths(thread)
+	_, workspace, err := a.resolveGitPaths(thread)
 	if err != nil {
 		return err
 	}
@@ -179,7 +179,7 @@ func (a *App) GitCreateBranch(threadID, name string) error {
 		return err
 	}
 
-	project, _, err := resolveGitPaths(thread)
+	project, _, err := a.resolveGitPaths(thread)
 	if err != nil {
 		return err
 	}
@@ -195,7 +195,7 @@ func (a *App) GitCreatePR(threadID, title, body string, draft bool) (gitops.GitA
 		return gitops.GitActionResult{}, err
 	}
 
-	_, workspace, err := resolveGitPaths(thread)
+	_, workspace, err := a.resolveGitPaths(thread)
 	if err != nil {
 		return gitops.GitActionResult{}, err
 	}
@@ -221,7 +221,7 @@ func (a *App) GitCreateWorktree(threadID, branch string) (string, error) {
 		return "", err
 	}
 
-	project, _, err := resolveGitPaths(thread)
+	project, _, err := a.resolveGitPaths(thread)
 	if err != nil {
 		return "", err
 	}
@@ -236,7 +236,8 @@ func (a *App) GitCreateWorktree(threadID, branch string) (string, error) {
 	if err := core.CreateWorktree(project, worktreePath, resolvedBranch); err != nil {
 		return "", err
 	}
-	thread.ProjectPath = project
+	// ProjectID is already set on the thread; the project's Path is the
+	// git repo root. WorktreePath + WorkspacePath diverge at this point.
 	thread.WorktreePath = worktreePath
 	thread.WorkspacePath = worktreePath
 	thread.Branch = resolvedBranch
@@ -257,7 +258,7 @@ func (a *App) GitRemoveWorktree(threadID string) error {
 		return err
 	}
 
-	project, _, err := resolveGitPaths(thread)
+	project, _, err := a.resolveGitPaths(thread)
 	if err != nil {
 		return err
 	}
@@ -288,7 +289,7 @@ func (a *App) GitListWorktrees(threadID string) ([]gitops.Worktree, error) {
 		return nil, err
 	}
 
-	project, _, err := resolveGitPaths(thread)
+	project, _, err := a.resolveGitPaths(thread)
 	if err != nil {
 		return nil, err
 	}
@@ -296,10 +297,18 @@ func (a *App) GitListWorktrees(threadID string) ([]gitops.Worktree, error) {
 	return a.gitCore().ListWorktrees(project)
 }
 
-func resolveGitPaths(thread store.Thread) (project string, workspace string, err error) {
-	project = strings.TrimSpace(thread.ProjectPath)
+// resolveGitPaths resolves the (projectPath, workspacePath) pair for a
+// thread. Project path comes from the threads→projects FK; workspace
+// path is the thread's own column (which may diverge when a worktree is
+// active). A missing project row falls back to WorkspacePath so tests
+// that pre-insert threads without a store fixture still work.
+func (a *App) resolveGitPaths(thread store.Thread) (project string, workspace string, err error) {
 	workspace = strings.TrimSpace(thread.WorkspacePath)
-
+	if thread.ProjectID != "" && a.store != nil {
+		if p, pErr := a.store.GetProject(thread.ProjectID); pErr == nil {
+			project = strings.TrimSpace(p.Path)
+		}
+	}
 	switch {
 	case project == "" && workspace == "":
 		return "", "", fmt.Errorf("thread %s has no git paths", thread.ID)
@@ -310,19 +319,6 @@ func resolveGitPaths(thread store.Thread) (project string, workspace string, err
 	}
 
 	return project, workspace, nil
-}
-
-func (a *App) detectProjectPath(workspacePath string) string {
-	workspacePath = strings.TrimSpace(workspacePath)
-	if workspacePath == "" {
-		return ""
-	}
-
-	root, err := a.gitCore().RepositoryRoot(workspacePath)
-	if err == nil && strings.TrimSpace(root) != "" {
-		return root
-	}
-	return workspacePath
 }
 
 // gitCore returns the shared Core instance, lazily creating one if ServiceStartup

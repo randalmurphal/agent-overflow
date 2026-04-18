@@ -11,6 +11,11 @@ Svelte 5 + Vite 8 (Rolldown) + Tailwind 4 + TypeScript.
 ## Layout
 
 - `src/lib/components/` — UI components grouped by feature.
+- `src/lib/components/primitives/` — reusable Menu / Popover / Modal /
+  dropdown shells. Every picker in the composer toolbar and sidebar
+  (ModeCycleButton, EffortMenu, ModelProviderMenu, UnifiedThreadPicker,
+  ThreadFromPRDialog, etc.) composes these rather than rolling its
+  own positioning / focus-trap / keyboard handling.
 - `src/lib/stores/` — reactive stores (runes). See subarea guide.
 - `src/lib/types/` — shared TypeScript types.
 - `src/lib/utils/` — pure helpers.

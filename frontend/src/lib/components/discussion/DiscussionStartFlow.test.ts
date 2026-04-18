@@ -26,7 +26,7 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
     provider: 'claude',
     workspacePath: '/workspace',
     projectPath: '/project',
-    interactionMode: 'default',
+    mode: 'chat',
     model: 'claude-sonnet-4-6',
     createdAt: 0,
     updatedAt: 0,
@@ -105,7 +105,7 @@ describe('<DiscussionStartFlow>', () => {
     // GetThread is called after successful start to refresh the parent thread.
     setBindingMock('GetThread', async () => ({
       ...pane.thread!,
-      interactionMode: 'discussion',
+      mode: 'discussion',
       discussionId: 'channel-new',
     }));
     let closedCount = 0;
@@ -124,7 +124,7 @@ describe('<DiscussionStartFlow>', () => {
     for (let i = 0; i < 5; i++) await Promise.resolve();
     expect(startMock.mock.calls[0]).toEqual(['parent', 'interrogate']);
     expect(closedCount).toBe(1);
-    expect(pane.thread?.interactionMode).toBe('discussion');
+    expect(pane.thread?.mode).toBe('discussion');
     expect(pane.thread?.discussionId).toBe('channel-new');
   });
 

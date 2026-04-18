@@ -3,6 +3,7 @@ package store
 import (
 	"bytes"
 	"database/sql"
+	"fmt"
 	"log"
 	"path/filepath"
 	"strings"
@@ -67,8 +68,8 @@ func TestMigrationVersionTracking(t *testing.T) {
 		t.Fatalf("rows err: %v", err)
 	}
 
-	if len(versions) != 12 {
-		t.Fatalf("expected 12 migration versions, got %d", len(versions))
+	if len(versions) != 13 {
+		t.Fatalf("expected 13 migration versions, got %d", len(versions))
 	}
 	if versions[0].version != 1 || versions[0].name != "initial_schema" {
 		t.Errorf("v1: got %d/%s", versions[0].version, versions[0].name)
@@ -106,6 +107,9 @@ func TestMigrationVersionTracking(t *testing.T) {
 	if versions[11].version != 12 || versions[11].name != "threads_runtime_mode" {
 		t.Errorf("v12: got %d/%s", versions[11].version, versions[11].name)
 	}
+	if versions[12].version != 13 || versions[12].name != "projects_and_thread_reshape" {
+		t.Errorf("v13: got %d/%s", versions[12].version, versions[12].name)
+	}
 }
 
 func TestMigrationIdempotent(t *testing.T) {
@@ -125,8 +129,8 @@ func TestMigrationIdempotent(t *testing.T) {
 	if err := db.QueryRow("SELECT COUNT(*) FROM migration_versions").Scan(&count); err != nil {
 		t.Fatalf("count: %v", err)
 	}
-	if count != 12 {
-		t.Errorf("expected 12 version rows after idempotent re-run, got %d", count)
+	if count != 13 {
+		t.Errorf("expected 13 version rows after idempotent re-run, got %d", count)
 	}
 }
 
@@ -163,8 +167,8 @@ func TestMigrationExistingVersionedDBSkipsAppliedV1(t *testing.T) {
 	if err := db.QueryRow("SELECT COUNT(*) FROM migration_versions").Scan(&appliedVersions); err != nil {
 		t.Fatalf("count migration rows: %v", err)
 	}
-	if appliedVersions != 12 {
-		t.Fatalf("expected 12 applied migrations, got %d", appliedVersions)
+	if appliedVersions != 13 {
+		t.Fatalf("expected 13 applied migrations, got %d", appliedVersions)
 	}
 }
 
@@ -204,22 +208,26 @@ func TestMigrationExistingLegacyDBSeedsTrackingAndAppliesV2(t *testing.T) {
 		t.Fatalf("read migration rows: %v", err)
 	}
 
-	if len(versions) != 12 {
-		t.Fatalf("expected 12 applied migrations, got %d", len(versions))
+	if len(versions) != 13 {
+		t.Fatalf("expected 13 applied migrations, got %d", len(versions))
 	}
-	expected := []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}
+	expected := []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13}
 	for i, want := range expected {
 		if versions[i] != want {
 			t.Fatalf("unexpected migration versions: %v", versions)
 		}
 	}
 
+	// v13 wipes the threads table and rebuilds — the legacy seed row
+	// should NOT survive. This is the documented behaviour of the
+	// breaking reset; the test locks it in so a future migration that
+	// accidentally tries to preserve data fails here.
 	var threadCount int
-	if err := db.QueryRow("SELECT COUNT(*) FROM threads WHERE id = 'legacy-thread'").Scan(&threadCount); err != nil {
-		t.Fatalf("count legacy thread: %v", err)
+	if err := db.QueryRow("SELECT COUNT(*) FROM threads").Scan(&threadCount); err != nil {
+		t.Fatalf("count threads: %v", err)
 	}
-	if threadCount != 1 {
-		t.Fatalf("expected legacy thread to survive migration, got %d rows", threadCount)
+	if threadCount != 0 {
+		t.Fatalf("expected v13 reset to clear threads, got %d rows", threadCount)
 	}
 }
 
@@ -306,22 +314,23 @@ func TestMigrationExistingLegacyParityDBBackfillsVersionHistory(t *testing.T) {
 		t.Fatalf("read migration versions: %v", err)
 	}
 
-	if len(versions) != 12 {
-		t.Fatalf("expected 12 migration rows after legacy backfill + new migrations, got %d", len(versions))
+	if len(versions) != 13 {
+		t.Fatalf("expected 13 migration rows after legacy backfill + new migrations, got %d", len(versions))
 	}
-	expectedVersions := []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}
+	expectedVersions := []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13}
 	for i, want := range expectedVersions {
 		if versions[i].version != want {
 			t.Fatalf("unexpected migration versions: %+v", versions)
 		}
 	}
 
+	// v13 is a breaking reset: the legacy parity thread must NOT survive.
 	var count int
-	if err := db.QueryRow("SELECT COUNT(*) FROM threads WHERE id = 'legacy-parity-thread'").Scan(&count); err != nil {
-		t.Fatalf("count legacy parity thread: %v", err)
+	if err := db.QueryRow("SELECT COUNT(*) FROM threads").Scan(&count); err != nil {
+		t.Fatalf("count threads: %v", err)
 	}
-	if count != 1 {
-		t.Fatalf("expected legacy parity thread to survive migration, got %d rows", count)
+	if count != 0 {
+		t.Fatalf("expected v13 reset to clear threads, got %d rows", count)
 	}
 }
 
@@ -337,32 +346,46 @@ func TestTableExistsReturnsFalseForMissingTable(t *testing.T) {
 	}
 }
 
-func TestMigrationV2NewColumns(t *testing.T) {
+// TestMigrationV13ThreadColumns verifies the v13 shape of the threads
+// table. The legacy test that peeked at interaction_mode / project_path
+// is obsolete after the reshape; this covers the new column list instead.
+func TestMigrationV13ThreadColumns(t *testing.T) {
 	s := newTestStore(t)
 
-	// Verify the new thread columns exist by inserting a thread with new fields.
-	_, err := s.db.Exec(`
-		INSERT INTO threads (id, title, provider, workspace_path, model, created_at, updated_at,
-			interaction_mode, branch, worktree_path, project_path, discussion_id, parent_thread_id)
-		VALUES ('t-test', 'Test', 'claude', '/tmp', '', 1000, 1000,
-			'design', 'feature-x', '/tmp/wt', '/project', 'disc-1', NULL)
-	`)
-	if err != nil {
-		t.Fatalf("insert with new columns: %v", err)
+	if _, err := s.db.Exec(`
+		INSERT INTO projects (id, path, name, created_at, updated_at)
+		VALUES ('p-test', '/project', '/project', 1000, 1000)
+	`); err != nil {
+		t.Fatalf("insert project: %v", err)
 	}
 
-	var mode, branch, wtPath, projPath string
-	var discID sql.NullString
+	_, err := s.db.Exec(`
+		INSERT INTO threads (id, project_id, title, provider, workspace_path, model,
+			created_at, updated_at, mode, branch, worktree_path, discussion_id,
+			reasoning_effort, fast_mode, context_window, runtime_mode)
+		VALUES ('t-test', 'p-test', 'Test', 'claude', '/tmp', '', 1000, 1000,
+			'design', 'feature-x', '/tmp/wt', 'disc-1',
+			'xhigh', 1, 200000, 'full-access')
+	`)
+	if err != nil {
+		t.Fatalf("insert with v13 columns: %v", err)
+	}
+
+	var (
+		mode, branch, wtPath, effort, runtimeMode string
+		fastMode, contextWindow                   int
+		discID                                    sql.NullString
+	)
 	err = s.db.QueryRow(`
-		SELECT interaction_mode, COALESCE(branch, ''), COALESCE(worktree_path, ''),
-			project_path, discussion_id
+		SELECT mode, COALESCE(branch, ''), COALESCE(worktree_path, ''),
+			reasoning_effort, fast_mode, context_window, runtime_mode, discussion_id
 		FROM threads WHERE id = 't-test'
-	`).Scan(&mode, &branch, &wtPath, &projPath, &discID)
+	`).Scan(&mode, &branch, &wtPath, &effort, &fastMode, &contextWindow, &runtimeMode, &discID)
 	if err != nil {
 		t.Fatalf("query new columns: %v", err)
 	}
 	if mode != "design" {
-		t.Errorf("interaction_mode = %q, want design", mode)
+		t.Errorf("mode = %q, want design", mode)
 	}
 	if branch != "feature-x" {
 		t.Errorf("branch = %q, want feature-x", branch)
@@ -370,8 +393,17 @@ func TestMigrationV2NewColumns(t *testing.T) {
 	if wtPath != "/tmp/wt" {
 		t.Errorf("worktree_path = %q, want /tmp/wt", wtPath)
 	}
-	if projPath != "/project" {
-		t.Errorf("project_path = %q, want /project", projPath)
+	if effort != "xhigh" {
+		t.Errorf("reasoning_effort = %q, want xhigh", effort)
+	}
+	if fastMode != 1 {
+		t.Errorf("fast_mode = %d, want 1", fastMode)
+	}
+	if contextWindow != 200000 {
+		t.Errorf("context_window = %d, want 200000", contextWindow)
+	}
+	if runtimeMode != "full-access" {
+		t.Errorf("runtime_mode = %q, want full-access", runtimeMode)
 	}
 	if !discID.Valid || discID.String != "disc-1" {
 		t.Errorf("discussion_id = %v, want disc-1", discID)
@@ -381,11 +413,11 @@ func TestMigrationV2NewColumns(t *testing.T) {
 func TestMigrationV2NewTables(t *testing.T) {
 	s := newTestStore(t)
 
-	// Insert into channels.
+	// newTestStore already seeded a default project; attach this thread to it.
 	_, err := s.db.Exec(`
-		INSERT INTO threads (id, title, provider, workspace_path, model, created_at, updated_at)
-		VALUES ('t1', 'T', 'claude', '/tmp', '', 1000, 1000)
-	`)
+		INSERT INTO threads (id, project_id, title, provider, workspace_path, model, created_at, updated_at)
+		VALUES ('t1', ?, 'T', 'claude', '/tmp', '', 1000, 1000)
+	`, defaultTestProjectID)
 	if err != nil {
 		t.Fatalf("insert thread: %v", err)
 	}
@@ -430,8 +462,8 @@ func TestMigrationChannelMessageUniqueness(t *testing.T) {
 	s := newTestStore(t)
 
 	// Set up thread + channel.
-	s.db.Exec(`INSERT INTO threads (id, title, provider, workspace_path, model, created_at, updated_at)
-		VALUES ('t1', 'T', 'claude', '/tmp', '', 1000, 1000)`)
+	s.db.Exec(`INSERT INTO threads (id, project_id, title, provider, workspace_path, model, created_at, updated_at)
+		VALUES ('t1', ?, 'T', 'claude', '/tmp', '', 1000, 1000)`, defaultTestProjectID)
 	s.db.Exec(`INSERT INTO channels (id, thread_id, type, status, created_at, updated_at)
 		VALUES ('ch-1', 't1', 'deliberation', 'open', 1000, 1000)`)
 
@@ -522,8 +554,8 @@ func TestMigrationV8ThreadCheckpointsUniqueThreadTurn(t *testing.T) {
 	s := newTestStore(t)
 
 	// Thread FK must exist before we can insert a checkpoint.
-	if _, err := s.db.Exec(`INSERT INTO threads (id, title, provider, workspace_path, model, created_at, updated_at)
-		VALUES ('t1', 'T', 'claude', '/tmp', '', 1000, 1000)`); err != nil {
+	if _, err := s.db.Exec(`INSERT INTO threads (id, project_id, title, provider, workspace_path, model, created_at, updated_at)
+		VALUES ('t1', ?, 'T', 'claude', '/tmp', '', 1000, 1000)`, defaultTestProjectID); err != nil {
 		t.Fatalf("seed thread: %v", err)
 	}
 
@@ -552,8 +584,8 @@ func TestMigrationV8ThreadCheckpointsUniqueThreadTurn(t *testing.T) {
 func TestMigrationV7ThreadCheckpointsCascadesOnThreadDelete(t *testing.T) {
 	s := newTestStore(t)
 
-	if _, err := s.db.Exec(`INSERT INTO threads (id, title, provider, workspace_path, model, created_at, updated_at)
-		VALUES ('t1', 'T', 'claude', '/tmp', '', 1000, 1000)`); err != nil {
+	if _, err := s.db.Exec(`INSERT INTO threads (id, project_id, title, provider, workspace_path, model, created_at, updated_at)
+		VALUES ('t1', ?, 'T', 'claude', '/tmp', '', 1000, 1000)`, defaultTestProjectID); err != nil {
 		t.Fatalf("seed thread: %v", err)
 	}
 	if _, err := s.db.Exec(`INSERT INTO thread_checkpoints
@@ -627,21 +659,21 @@ func TestConfigureDatabaseWarnsOnFallback(t *testing.T) {
 	}
 }
 
-// TestInteractionModeCheckConstraintRejectsBogusValue confirms the
-// CHECK constraint added in v11 does its job: a raw INSERT or UPDATE
-// with an unsupported interaction_mode must fail with a CHECK
-// violation. This is the regression guard that would catch a future
-// migration accidentally widening the allowed set.
-func TestInteractionModeCheckConstraintRejectsBogusValue(t *testing.T) {
+// TestModeCheckConstraintRejectsBogusValue confirms the v13 CHECK
+// constraint on threads.mode does its job: a raw INSERT or UPDATE with
+// an unsupported mode must fail with a CHECK violation. Renamed from
+// the v11-era InteractionMode test; the column is now called `mode`
+// and the enum dropped "default" in favor of "chat".
+func TestModeCheckConstraintRejectsBogusValue(t *testing.T) {
 	s := newTestStore(t)
 
 	_, err := s.db.Exec(`
-		INSERT INTO threads (id, title, provider, workspace_path, model,
-			created_at, updated_at, archived, interaction_mode, project_path)
-		VALUES ('t-bogus', 'Bogus', 'claude', '/tmp', '', 1, 1, 0, 'plann', '/tmp')
-	`)
+		INSERT INTO threads (id, project_id, title, provider, workspace_path, model,
+			created_at, updated_at, archived, mode)
+		VALUES ('t-bogus', ?, 'Bogus', 'claude', '/tmp', '', 1, 1, 0, 'plann')
+	`, defaultTestProjectID)
 	if err == nil {
-		t.Fatal("INSERT with interaction_mode='plann' must violate CHECK constraint")
+		t.Fatal("INSERT with mode='plann' must violate CHECK constraint")
 	}
 	if !strings.Contains(err.Error(), "CHECK") && !strings.Contains(err.Error(), "constraint") {
 		t.Errorf("error = %v, want CHECK constraint violation", err)
@@ -649,34 +681,30 @@ func TestInteractionModeCheckConstraintRejectsBogusValue(t *testing.T) {
 
 	// Sanity: a valid mode does succeed.
 	if _, err := s.db.Exec(`
-		INSERT INTO threads (id, title, provider, workspace_path, model,
-			created_at, updated_at, archived, interaction_mode, project_path)
-		VALUES ('t-ok', 'Ok', 'claude', '/tmp', '', 1, 1, 0, 'plan', '/tmp')
-	`); err != nil {
+		INSERT INTO threads (id, project_id, title, provider, workspace_path, model,
+			created_at, updated_at, archived, mode)
+		VALUES ('t-ok', ?, 'Ok', 'claude', '/tmp', '', 1, 1, 0, 'plan')
+	`, defaultTestProjectID); err != nil {
 		t.Fatalf("valid INSERT: %v", err)
 	}
 
 	// UPDATE to a bogus value must also fail.
-	_, err = s.db.Exec(`UPDATE threads SET interaction_mode = 'xyz' WHERE id = 't-ok'`)
+	_, err = s.db.Exec(`UPDATE threads SET mode = 'xyz' WHERE id = 't-ok'`)
 	if err == nil {
-		t.Fatal("UPDATE to bogus interaction_mode must fail")
+		t.Fatal("UPDATE to bogus mode must fail")
 	}
 }
 
-// TestProviderCheckConstraintRejectsBogusValue is a belt-and-braces
-// guard on the original provider constraint declared in v1. v11
-// rebuilds the threads table; we verify the CHECK survived by
-// inserting a bogus provider value and expecting a constraint
-// failure. If a future migration silently drops the constraint, this
-// test catches it before users do.
+// TestProviderCheckConstraintRejectsBogusValue guards the provider
+// CHECK constraint in the v13-rebuilt threads table.
 func TestProviderCheckConstraintRejectsBogusValue(t *testing.T) {
 	s := newTestStore(t)
 
 	_, err := s.db.Exec(`
-		INSERT INTO threads (id, title, provider, workspace_path, model,
-			created_at, updated_at, archived, interaction_mode, project_path)
-		VALUES ('t-bogus-prov', 'Bogus', 'xyz', '/tmp', '', 1, 1, 0, 'default', '/tmp')
-	`)
+		INSERT INTO threads (id, project_id, title, provider, workspace_path, model,
+			created_at, updated_at, archived, mode)
+		VALUES ('t-bogus-prov', ?, 'Bogus', 'xyz', '/tmp', '', 1, 1, 0, 'chat')
+	`, defaultTestProjectID)
 	if err == nil {
 		t.Fatal("INSERT with provider='xyz' must violate CHECK constraint")
 	}
@@ -687,10 +715,10 @@ func TestProviderCheckConstraintRejectsBogusValue(t *testing.T) {
 	// Sanity: both allowed values succeed.
 	for _, p := range []string{"claude", "codex"} {
 		if _, err := s.db.Exec(`
-			INSERT INTO threads (id, title, provider, workspace_path, model,
-				created_at, updated_at, archived, interaction_mode, project_path)
+			INSERT INTO threads (id, project_id, title, provider, workspace_path, model,
+				created_at, updated_at, archived, mode)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		`, "t-ok-"+p, "Ok", p, "/tmp", "", 1, 1, 0, "default", "/tmp"); err != nil {
+		`, "t-ok-"+p, defaultTestProjectID, "Ok", p, "/tmp", "", 1, 1, 0, "chat"); err != nil {
 			t.Errorf("INSERT with provider=%q: %v", p, err)
 		}
 	}
@@ -703,19 +731,15 @@ func TestProviderCheckConstraintRejectsBogusValue(t *testing.T) {
 }
 
 // TestRuntimeModeCheckConstraintRejectsBogusValue guards the CHECK
-// constraint added in v12: the runtime_mode column only accepts the
-// three sanctioned values (approval-required / auto-accept-edits /
-// full-access). Any other string must be rejected at the storage
-// layer.
+// constraint on the v13 runtime_mode column.
 func TestRuntimeModeCheckConstraintRejectsBogusValue(t *testing.T) {
 	s := newTestStore(t)
 
-	// Rejected: unknown value.
 	_, err := s.db.Exec(`
-		INSERT INTO threads (id, title, provider, workspace_path, model,
-			created_at, updated_at, archived, interaction_mode, runtime_mode, project_path)
-		VALUES ('t-bogus-runtime', 'Bogus', 'claude', '/tmp', '', 1, 1, 0, 'default', 'yolo', '/tmp')
-	`)
+		INSERT INTO threads (id, project_id, title, provider, workspace_path, model,
+			created_at, updated_at, archived, mode, runtime_mode)
+		VALUES ('t-bogus-runtime', ?, 'Bogus', 'claude', '/tmp', '', 1, 1, 0, 'chat', 'yolo')
+	`, defaultTestProjectID)
 	if err == nil {
 		t.Fatal("INSERT with runtime_mode='yolo' must violate CHECK constraint")
 	}
@@ -723,35 +747,31 @@ func TestRuntimeModeCheckConstraintRejectsBogusValue(t *testing.T) {
 		t.Errorf("error = %v, want CHECK constraint violation", err)
 	}
 
-	// Sanity: all three allowed values succeed.
 	for _, m := range []string{"approval-required", "auto-accept-edits", "full-access"} {
 		if _, err := s.db.Exec(`
-			INSERT INTO threads (id, title, provider, workspace_path, model,
-				created_at, updated_at, archived, interaction_mode, runtime_mode, project_path)
+			INSERT INTO threads (id, project_id, title, provider, workspace_path, model,
+				created_at, updated_at, archived, mode, runtime_mode)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		`, "t-ok-"+m, "Ok", "claude", "/tmp", "", 1, 1, 0, "default", m, "/tmp"); err != nil {
+		`, "t-ok-"+m, defaultTestProjectID, "Ok", "claude", "/tmp", "", 1, 1, 0, "chat", m); err != nil {
 			t.Errorf("INSERT with runtime_mode=%q: %v", m, err)
 		}
 	}
 
-	// UPDATE to a bogus value must also fail.
 	if _, err := s.db.Exec(`UPDATE threads SET runtime_mode = 'nope' WHERE id = 't-ok-full-access'`); err == nil {
 		t.Error("UPDATE to bogus runtime_mode must fail")
 	}
 }
 
 // TestRuntimeModeDefaultSeedsFullAccess asserts that rows inserted
-// without specifying runtime_mode (e.g., the legacy code path or a
-// pre-v12 row that came through the migration with a DEFAULT) land on
-// 'full-access' — which matches provider.DefaultRuntimeMode.
+// without specifying runtime_mode land on 'full-access'.
 func TestRuntimeModeDefaultSeedsFullAccess(t *testing.T) {
 	s := newTestStore(t)
 
 	if _, err := s.db.Exec(`
-		INSERT INTO threads (id, title, provider, workspace_path, model,
-			created_at, updated_at, archived, interaction_mode, project_path)
-		VALUES ('t-default-rm', 'Default', 'claude', '/tmp', '', 1, 1, 0, 'default', '/tmp')
-	`); err != nil {
+		INSERT INTO threads (id, project_id, title, provider, workspace_path, model,
+			created_at, updated_at, archived, mode)
+		VALUES ('t-default-rm', ?, 'Default', 'claude', '/tmp', '', 1, 1, 0, 'chat')
+	`, defaultTestProjectID); err != nil {
 		t.Fatalf("INSERT without runtime_mode: %v", err)
 	}
 
@@ -761,6 +781,104 @@ func TestRuntimeModeDefaultSeedsFullAccess(t *testing.T) {
 	}
 	if got != "full-access" {
 		t.Errorf("runtime_mode default = %q, want full-access", got)
+	}
+}
+
+// TestEffortCheckConstraintRejectsBogusValue guards the CHECK on the
+// new v13 reasoning_effort column. Mirrors the mode/provider tests
+// above so a future migration widening the enum doesn't sneak past.
+func TestEffortCheckConstraintRejectsBogusValue(t *testing.T) {
+	s := newTestStore(t)
+
+	if _, err := s.db.Exec(`
+		INSERT INTO threads (id, project_id, title, provider, workspace_path, model,
+			created_at, updated_at, archived, mode, reasoning_effort)
+		VALUES ('t-bogus-eff', ?, 'Bogus', 'claude', '/tmp', '', 1, 1, 0, 'chat', 'ultranope')
+	`, defaultTestProjectID); err == nil {
+		t.Fatal("INSERT with reasoning_effort='ultranope' must violate CHECK constraint")
+	}
+
+	for _, eff := range []string{"low", "medium", "high", "xhigh", "max"} {
+		if _, err := s.db.Exec(`
+			INSERT INTO threads (id, project_id, title, provider, workspace_path, model,
+				created_at, updated_at, archived, mode, reasoning_effort)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, "t-eff-"+eff, defaultTestProjectID, "Ok", "claude", "/tmp", "", 1, 1, 0, "chat", eff); err != nil {
+			t.Errorf("INSERT with reasoning_effort=%q: %v", eff, err)
+		}
+	}
+}
+
+// TestContextWindowCheckConstraintRejectsBogusValue confirms only the
+// two schema-legal context-window sizes are accepted.
+func TestContextWindowCheckConstraintRejectsBogusValue(t *testing.T) {
+	s := newTestStore(t)
+
+	if _, err := s.db.Exec(`
+		INSERT INTO threads (id, project_id, title, provider, workspace_path, model,
+			created_at, updated_at, archived, mode, context_window)
+		VALUES ('t-cw-bad', ?, 'Bad', 'claude', '/tmp', '', 1, 1, 0, 'chat', 500000)
+	`, defaultTestProjectID); err == nil {
+		t.Fatal("INSERT with context_window=500000 must violate CHECK constraint")
+	}
+
+	for _, cw := range []int{200000, 1000000} {
+		if _, err := s.db.Exec(`
+			INSERT INTO threads (id, project_id, title, provider, workspace_path, model,
+				created_at, updated_at, archived, mode, context_window)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, fmt.Sprintf("t-cw-%d", cw), defaultTestProjectID, "Ok", "claude", "/tmp", "", 1, 1, 0, "chat", cw); err != nil {
+			t.Errorf("INSERT with context_window=%d: %v", cw, err)
+		}
+	}
+}
+
+// TestProjectsPathUnique asserts the UNIQUE constraint on projects.path.
+func TestProjectsPathUnique(t *testing.T) {
+	s := newTestStore(t)
+
+	if _, err := s.db.Exec(`
+		INSERT INTO projects (id, path, name, created_at, updated_at)
+		VALUES ('p1', '/tmp/conflict', '/tmp/conflict', 1, 1)
+	`); err != nil {
+		t.Fatalf("first INSERT: %v", err)
+	}
+	if _, err := s.db.Exec(`
+		INSERT INTO projects (id, path, name, created_at, updated_at)
+		VALUES ('p2', '/tmp/conflict', '/tmp/conflict', 1, 1)
+	`); err == nil {
+		t.Fatal("INSERT with duplicate path must violate UNIQUE constraint")
+	}
+}
+
+// TestProjectThreadsCascade confirms deleting a project cascades to its
+// threads (threads.project_id is ON DELETE CASCADE).
+func TestProjectThreadsCascade(t *testing.T) {
+	s := newTestStore(t)
+
+	if _, err := s.db.Exec(`
+		INSERT INTO projects (id, path, name, created_at, updated_at)
+		VALUES ('p-cascade', '/cascade', 'cascade', 1, 1)
+	`); err != nil {
+		t.Fatalf("insert project: %v", err)
+	}
+	if _, err := s.db.Exec(`
+		INSERT INTO threads (id, project_id, title, provider, workspace_path, model,
+			created_at, updated_at, archived, mode)
+		VALUES ('t-cascade', 'p-cascade', 'T', 'claude', '/tmp', '', 1, 1, 0, 'chat')
+	`); err != nil {
+		t.Fatalf("insert thread: %v", err)
+	}
+
+	if _, err := s.db.Exec(`DELETE FROM projects WHERE id = 'p-cascade'`); err != nil {
+		t.Fatalf("delete project: %v", err)
+	}
+	var count int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM threads`).Scan(&count); err != nil {
+		t.Fatalf("count threads: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("expected cascade to drop threads, got %d rows", count)
 	}
 }
 

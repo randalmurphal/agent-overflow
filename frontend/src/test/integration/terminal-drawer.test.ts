@@ -20,6 +20,7 @@ import {
   installThreadViewDefaults,
   makeThread,
   resetAppState,
+  seedSidebarProject,
 } from './_helpers';
 
 beforeAll(installAnimateShim);
@@ -57,6 +58,7 @@ function pressCmdJ() {
 async function mountWithActiveThread(thread: Thread = makeThread({ title: 'Terminal Thread' })) {
   installAppDefaults();
   setBindingMock('ListThreads', async () => [thread]);
+  seedSidebarProject([thread]);
   installThreadViewDefaults();
   installComposerDefaults(thread.id);
   // Terminal drawer lifecycle bindings. Defaults resolve with empty lists;

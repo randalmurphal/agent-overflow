@@ -68,10 +68,15 @@
       tag === 'TEXTAREA' ||
       tag === 'SELECT' ||
       target?.isContentEditable === true;
-    // Allow Cmd/Ctrl+K even from editable elements so the palette is always
-    // reachable. Everything else respects editable context.
-    const isPaletteChord = (ev.metaKey || ev.ctrlKey) && ev.key.toLowerCase() === 'k' && !ev.shiftKey && !ev.altKey;
-    if (editable && !isPaletteChord) return;
+    // Allow Cmd/Ctrl+K even from editable elements so the sidebar search
+    // and palette chords (⌘K / ⌘⇧K) are always reachable. Shift+Tab is
+    // also allowed through so `mode.cycle` works while the composer
+    // textarea has focus — the textarea itself preventDefaults the key
+    // to suppress the browser's outdent behaviour.
+    const isSidebarOrPaletteChord =
+      (ev.metaKey || ev.ctrlKey) && ev.key.toLowerCase() === 'k' && !ev.altKey;
+    const isShiftTab = ev.key === 'Tab' && ev.shiftKey && !ev.metaKey && !ev.ctrlKey && !ev.altKey;
+    if (editable && !isSidebarOrPaletteChord && !isShiftTab) return;
 
     const handled = dispatchKey(ev, paletteContext);
     if (handled) ev.preventDefault();

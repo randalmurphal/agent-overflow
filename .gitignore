@@ -1,6 +1,10 @@
 # Build
 build/bin/
 frontend/dist/
+bin/
+
+# Task runner cache
+.task/
 
 # Dependencies
 node_modules/

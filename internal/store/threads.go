@@ -1,37 +1,101 @@
 package store
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+)
 
-const threadColumns = `id, title, provider, COALESCE(session_ref, ''), COALESCE(pending_fork_session_ref, ''), workspace_path, model,
-    project_path, COALESCE(worktree_path, ''), COALESCE(branch, ''),
-    interaction_mode, runtime_mode, COALESCE(discussion_id, ''), COALESCE(parent_thread_id, ''), COALESCE(forked_from_thread_id, ''),
+// threadColumns lists every column in the order scanThread expects. The
+// COALESCE-ing of nullable text columns returns "" instead of NULL so the
+// Go struct has a clean empty-string value for unset optional fields.
+const threadColumns = `id, project_id, title, provider, model,
+    workspace_path, COALESCE(worktree_path, ''), COALESCE(branch, ''),
+    COALESCE(session_ref, ''), COALESCE(pending_fork_session_ref, ''),
+    mode, reasoning_effort, fast_mode, context_window, runtime_mode,
+    COALESCE(discussion_id, ''), COALESCE(parent_thread_id, ''),
+    COALESCE(forked_from_thread_id, ''),
     created_at, updated_at, archived`
+
+// -- Validation errors for enum fields. Each binding checks against the
+// -- list before hitting SQLite so the caller sees a typed error instead
+// -- of a raw CHECK-constraint failure.
+var (
+	// ErrInvalidEffort is returned when a caller passes a reasoning-effort
+	// value outside the five-tier enum (low / medium / high / xhigh / max).
+	ErrInvalidEffort = errors.New("store: invalid reasoning effort")
+	// ErrInvalidMode is returned for a bad mode value.
+	ErrInvalidMode = errors.New("store: invalid thread mode")
+	// ErrInvalidContextWindow is returned when the caller requests a
+	// context window size the schema's CHECK constraint does not allow.
+	ErrInvalidContextWindow = errors.New("store: invalid context window")
+	// ErrInvalidProvider is returned for a bad provider value.
+	ErrInvalidProvider = errors.New("store: invalid provider")
+)
+
+// legalModes maps every valid mode value to struct{}{} so membership
+// checks are constant-time. Kept in sync with the CHECK constraint on
+// threads.mode (see migrate.go::v13SQL).
+var legalModes = map[string]struct{}{
+	"chat":       {},
+	"plan":       {},
+	"design":     {},
+	"discussion": {},
+}
+
+var legalEfforts = map[string]struct{}{
+	"low":    {},
+	"medium": {},
+	"high":   {},
+	"xhigh":  {},
+	"max":    {},
+}
+
+var legalContextWindows = map[int]struct{}{
+	200000:  {},
+	1000000: {},
+}
+
+var legalProviders = map[string]struct{}{
+	"claude": {},
+	"codex":  {},
+}
 
 func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
 	var t Thread
-	var archived int
+	var archived, fastMode int
 	if err := scanner.Scan(
-		&t.ID, &t.Title, &t.Provider, &t.SessionRef, &t.PendingForkRef, &t.WorkspacePath, &t.Model,
-		&t.ProjectPath, &t.WorktreePath, &t.Branch,
-		&t.InteractionMode, &t.RuntimeMode, &t.DiscussionID, &t.ParentThreadID, &t.ForkedFromThreadID,
+		&t.ID, &t.ProjectID, &t.Title, &t.Provider, &t.Model,
+		&t.WorkspacePath, &t.WorktreePath, &t.Branch,
+		&t.SessionRef, &t.PendingForkRef,
+		&t.Mode, &t.ReasoningEffort, &fastMode, &t.ContextWindow, &t.RuntimeMode,
+		&t.DiscussionID, &t.ParentThreadID, &t.ForkedFromThreadID,
 		&t.CreatedAt, &t.UpdatedAt, &archived,
 	); err != nil {
 		return Thread{}, err
 	}
+	t.FastMode = fastMode != 0
 	t.Archived = archived != 0
 	return t, nil
 }
 
 func (s *Store) CreateThread(t Thread) error {
-	t.InteractionMode = normalizeInteractionMode(t.InteractionMode)
+	t.Mode = normalizeMode(t.Mode)
 	t.RuntimeMode = normalizeRuntimeMode(t.RuntimeMode)
+	t.ReasoningEffort = normalizeEffort(t.ReasoningEffort)
+	if t.ContextWindow == 0 {
+		t.ContextWindow = 1000000
+	}
 	_, err := s.db.Exec(
-		`INSERT INTO threads (id, title, provider, session_ref, pending_fork_session_ref, workspace_path, model,
-		    project_path, worktree_path, branch, interaction_mode, runtime_mode, discussion_id, parent_thread_id,
-		    forked_from_thread_id, created_at, updated_at, archived)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		t.ID, t.Title, t.Provider, nilIfEmpty(t.SessionRef), nilIfEmpty(t.PendingForkRef), t.WorkspacePath, t.Model,
-		t.ProjectPath, nilIfEmpty(t.WorktreePath), nilIfEmpty(t.Branch), t.InteractionMode, t.RuntimeMode,
+		`INSERT INTO threads (id, project_id, title, provider, model,
+		    workspace_path, worktree_path, branch, session_ref, pending_fork_session_ref,
+		    mode, reasoning_effort, fast_mode, context_window, runtime_mode,
+		    discussion_id, parent_thread_id, forked_from_thread_id,
+		    created_at, updated_at, archived)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		t.ID, t.ProjectID, t.Title, t.Provider, t.Model,
+		t.WorkspacePath, nilIfEmpty(t.WorktreePath), nilIfEmpty(t.Branch),
+		nilIfEmpty(t.SessionRef), nilIfEmpty(t.PendingForkRef),
+		t.Mode, t.ReasoningEffort, boolToInt(t.FastMode), t.ContextWindow, t.RuntimeMode,
 		nilIfEmpty(t.DiscussionID), nilIfEmpty(t.ParentThreadID), nilIfEmpty(t.ForkedFromThreadID),
 		t.CreatedAt, t.UpdatedAt, boolToInt(t.Archived),
 	)
@@ -72,6 +136,32 @@ func (s *Store) ListThreads() ([]Thread, error) {
 	return threads, rows.Err()
 }
 
+// ListThreadsByProject returns all non-archived threads belonging to a
+// project, newest-touched first. Used by the sidebar to render the threads
+// nested under a project row.
+func (s *Store) ListThreadsByProject(projectID string) ([]Thread, error) {
+	rows, err := s.db.Query(
+		`SELECT `+threadColumns+` FROM threads
+		 WHERE project_id = ? AND archived = 0
+		 ORDER BY updated_at DESC`,
+		projectID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: list threads for project %s: %w", projectID, err)
+	}
+	defer rows.Close()
+
+	var threads []Thread
+	for rows.Next() {
+		t, err := scanThread(rows)
+		if err != nil {
+			return nil, fmt.Errorf("store: scan project thread row: %w", err)
+		}
+		threads = append(threads, t)
+	}
+	return threads, rows.Err()
+}
+
 func (s *Store) ListChildThreads(parentID string) ([]Thread, error) {
 	rows, err := s.db.Query(
 		`SELECT `+threadColumns+` FROM threads WHERE parent_thread_id = ? ORDER BY created_at ASC`,
@@ -94,16 +184,23 @@ func (s *Store) ListChildThreads(parentID string) ([]Thread, error) {
 }
 
 func (s *Store) UpdateThread(t Thread) error {
-	t.InteractionMode = normalizeInteractionMode(t.InteractionMode)
+	t.Mode = normalizeMode(t.Mode)
 	t.RuntimeMode = normalizeRuntimeMode(t.RuntimeMode)
+	t.ReasoningEffort = normalizeEffort(t.ReasoningEffort)
+	if t.ContextWindow == 0 {
+		t.ContextWindow = 1000000
+	}
 	result, err := s.db.Exec(
-		`UPDATE threads SET title=?, provider=?, session_ref=?, pending_fork_session_ref=?, workspace_path=?, model=?,
-		    project_path=?, worktree_path=?, branch=?, interaction_mode=?, runtime_mode=?,
+		`UPDATE threads SET project_id=?, title=?, provider=?, model=?,
+		    workspace_path=?, worktree_path=?, branch=?, session_ref=?, pending_fork_session_ref=?,
+		    mode=?, reasoning_effort=?, fast_mode=?, context_window=?, runtime_mode=?,
 		    discussion_id=?, parent_thread_id=?, forked_from_thread_id=?,
 		    updated_at=?, archived=?
 		 WHERE id=?`,
-		t.Title, t.Provider, nilIfEmpty(t.SessionRef), nilIfEmpty(t.PendingForkRef), t.WorkspacePath, t.Model,
-		t.ProjectPath, nilIfEmpty(t.WorktreePath), nilIfEmpty(t.Branch), t.InteractionMode, t.RuntimeMode,
+		t.ProjectID, t.Title, t.Provider, t.Model,
+		t.WorkspacePath, nilIfEmpty(t.WorktreePath), nilIfEmpty(t.Branch),
+		nilIfEmpty(t.SessionRef), nilIfEmpty(t.PendingForkRef),
+		t.Mode, t.ReasoningEffort, boolToInt(t.FastMode), t.ContextWindow, t.RuntimeMode,
 		nilIfEmpty(t.DiscussionID), nilIfEmpty(t.ParentThreadID), nilIfEmpty(t.ForkedFromThreadID),
 		t.UpdatedAt, boolToInt(t.Archived), t.ID,
 	)
@@ -188,17 +285,99 @@ func (s *Store) UpdateModel(threadID, model string) error {
 	return requireRowsAffected(result, fmt.Sprintf("store: update model for %s", threadID))
 }
 
-// UpdateInteractionMode overwrites the thread's interaction mode (default, plan,
-// design, or discussion). Caller is expected to validate the mode; this method
-// only normalizes empty strings to "default" to match CreateThread/UpdateThread.
-func (s *Store) UpdateInteractionMode(threadID, mode string) error {
-	mode = normalizeInteractionMode(mode)
-	result, err := s.db.Exec(`UPDATE threads SET interaction_mode = ?, updated_at = ? WHERE id = ?`,
+// UpdateProvider overwrites the provider ('claude' / 'codex'). Invalid
+// values surface ErrInvalidProvider before hitting SQLite so the binding
+// can translate to a user-facing error.
+func (s *Store) UpdateProvider(threadID, prov string) error {
+	if _, ok := legalProviders[prov]; !ok {
+		return fmt.Errorf("%w: %q", ErrInvalidProvider, prov)
+	}
+	result, err := s.db.Exec(`UPDATE threads SET provider = ?, updated_at = ? WHERE id = ?`,
+		prov, nowMillis(), threadID)
+	if err != nil {
+		return fmt.Errorf("store: update provider for %s: %w", threadID, err)
+	}
+	return requireRowsAffected(result, fmt.Sprintf("store: update provider for %s", threadID))
+}
+
+// UpdateMode overwrites the thread's mode (chat, plan, design, or
+// discussion). Empty strings are normalized to "chat" to match
+// CreateThread/UpdateThread.
+func (s *Store) UpdateMode(threadID, mode string) error {
+	mode = normalizeMode(mode)
+	if _, ok := legalModes[mode]; !ok {
+		return fmt.Errorf("%w: %q", ErrInvalidMode, mode)
+	}
+	result, err := s.db.Exec(`UPDATE threads SET mode = ?, updated_at = ? WHERE id = ?`,
 		mode, nowMillis(), threadID)
 	if err != nil {
-		return fmt.Errorf("store: update interaction mode for %s: %w", threadID, err)
+		return fmt.Errorf("store: update mode for %s: %w", threadID, err)
 	}
-	return requireRowsAffected(result, fmt.Sprintf("store: update interaction mode for %s", threadID))
+	return requireRowsAffected(result, fmt.Sprintf("store: update mode for %s", threadID))
+}
+
+// UpdateReasoningEffort overwrites the effort tier. See legalEfforts for
+// the enumerated values.
+func (s *Store) UpdateReasoningEffort(threadID, effort string) error {
+	normalized := normalizeEffort(effort)
+	if _, ok := legalEfforts[normalized]; !ok {
+		return fmt.Errorf("%w: %q", ErrInvalidEffort, effort)
+	}
+	result, err := s.db.Exec(`UPDATE threads SET reasoning_effort = ?, updated_at = ? WHERE id = ?`,
+		normalized, nowMillis(), threadID)
+	if err != nil {
+		return fmt.Errorf("store: update reasoning effort for %s: %w", threadID, err)
+	}
+	return requireRowsAffected(result, fmt.Sprintf("store: update reasoning effort for %s", threadID))
+}
+
+// UpdateFastMode flips the fast-mode boolean.
+func (s *Store) UpdateFastMode(threadID string, on bool) error {
+	result, err := s.db.Exec(`UPDATE threads SET fast_mode = ?, updated_at = ? WHERE id = ?`,
+		boolToInt(on), nowMillis(), threadID)
+	if err != nil {
+		return fmt.Errorf("store: update fast mode for %s: %w", threadID, err)
+	}
+	return requireRowsAffected(result, fmt.Sprintf("store: update fast mode for %s", threadID))
+}
+
+// UpdateContextWindow overwrites the context_window column. The schema
+// CHECK constraint restricts values to {200000, 1000000}; we mirror that
+// here so the binding surfaces ErrInvalidContextWindow instead of a raw
+// SQLite error.
+func (s *Store) UpdateContextWindow(threadID string, tokens int) error {
+	if _, ok := legalContextWindows[tokens]; !ok {
+		return fmt.Errorf("%w: %d", ErrInvalidContextWindow, tokens)
+	}
+	result, err := s.db.Exec(`UPDATE threads SET context_window = ?, updated_at = ? WHERE id = ?`,
+		tokens, nowMillis(), threadID)
+	if err != nil {
+		return fmt.Errorf("store: update context window for %s: %w", threadID, err)
+	}
+	return requireRowsAffected(result, fmt.Sprintf("store: update context window for %s", threadID))
+}
+
+// UpdateBranch persists a new branch string without touching the git
+// working tree. Callers that want to actually switch branches should
+// wrap this with the git checkout side effect.
+func (s *Store) UpdateBranch(threadID, branch string) error {
+	result, err := s.db.Exec(`UPDATE threads SET branch = ?, updated_at = ? WHERE id = ?`,
+		nilIfEmpty(branch), nowMillis(), threadID)
+	if err != nil {
+		return fmt.Errorf("store: update branch for %s: %w", threadID, err)
+	}
+	return requireRowsAffected(result, fmt.Sprintf("store: update branch for %s", threadID))
+}
+
+// UpdateWorkspacePath overwrites workspace_path. Used by the env/worktree
+// picker when a thread switches between the project root and a worktree.
+func (s *Store) UpdateWorkspacePath(threadID, path string) error {
+	result, err := s.db.Exec(`UPDATE threads SET workspace_path = ?, updated_at = ? WHERE id = ?`,
+		path, nowMillis(), threadID)
+	if err != nil {
+		return fmt.Errorf("store: update workspace path for %s: %w", threadID, err)
+	}
+	return requireRowsAffected(result, fmt.Sprintf("store: update workspace path for %s", threadID))
 }
 
 // UpdateRuntimeMode overwrites the thread's runtime mode (approval-required,
@@ -216,11 +395,22 @@ func (s *Store) UpdateRuntimeMode(threadID, mode string) error {
 	return requireRowsAffected(result, fmt.Sprintf("store: update runtime mode for %s", threadID))
 }
 
-func normalizeInteractionMode(mode string) string {
+// normalizeMode coerces empty strings to the schema default "chat" and
+// returns anything else verbatim. Callers that need strict validation
+// run the legalModes check separately.
+func normalizeMode(mode string) string {
 	if mode == "" {
-		return "default"
+		return "chat"
 	}
 	return mode
+}
+
+// normalizeEffort coerces empty strings to the schema default "high".
+func normalizeEffort(effort string) string {
+	if effort == "" {
+		return "high"
+	}
+	return effort
 }
 
 // normalizeRuntimeMode coerces empty or unknown strings to the default

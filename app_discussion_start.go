@@ -47,7 +47,7 @@ func (a *App) startDiscussion(threadID, discussionName string) error {
 }
 
 func (a *App) ensureDiscussionCanStart(parent store.Thread) error {
-	if parent.DiscussionID != "" || parent.InteractionMode == "discussion" {
+	if parent.DiscussionID != "" || parent.Mode == "discussion" {
 		return fmt.Errorf("thread %s already has an active discussion", parent.ID)
 	}
 
@@ -82,18 +82,18 @@ func buildDiscussionParticipantPlans(
 		}
 
 		child := store.Thread{
-			ID:              uuid.NewString(),
-			Title:           fmt.Sprintf("%s - %s", parent.Title, formatDiscussionRole(role)),
-			Provider:        providerName,
-			WorkspacePath:   parent.WorkspacePath,
-			Model:           model,
-			ProjectPath:     parent.ProjectPath,
-			WorktreePath:    parent.WorktreePath,
-			Branch:          parent.Branch,
-			InteractionMode: "discussion",
-			ParentThreadID:  parent.ID,
-			CreatedAt:       now,
-			UpdatedAt:       now,
+			ID:             uuid.NewString(),
+			ProjectID:      parent.ProjectID,
+			Title:          fmt.Sprintf("%s - %s", parent.Title, formatDiscussionRole(role)),
+			Provider:       providerName,
+			WorkspacePath:  parent.WorkspacePath,
+			Model:          model,
+			WorktreePath:   parent.WorktreePath,
+			Branch:         parent.Branch,
+			Mode:           "discussion",
+			ParentThreadID: parent.ID,
+			CreatedAt:      now,
+			UpdatedAt:      now,
 		}
 		plans = append(plans, discussionParticipantPlan{
 			thread:       child,
@@ -175,7 +175,7 @@ func (a *App) linkDiscussionParticipants(channelID string, plans []discussionPar
 }
 
 func (a *App) persistDiscussionParent(parent store.Thread, channel store.Channel) error {
-	parent.InteractionMode = "discussion"
+	parent.Mode = "discussion"
 	parent.DiscussionID = channel.ID
 	parent.UpdatedAt = max(parent.UpdatedAt+1, channel.CreatedAt)
 	return a.store.UpdateThread(parent)

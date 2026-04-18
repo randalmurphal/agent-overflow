@@ -17,6 +17,7 @@ import {
   installThreadViewDefaults,
   makeThread,
   resetAppState,
+  seedSidebarProject,
 } from './_helpers';
 
 beforeAll(installAnimateShim);
@@ -30,6 +31,7 @@ beforeAll(installAnimateShim);
 async function mountWithActiveThread(thread: Thread = makeThread({ title: 'Messaging Spec Thread' })) {
   installAppDefaults();
   setBindingMock('ListThreads', async () => [thread]);
+  seedSidebarProject([thread]);
   installThreadViewDefaults();
   installComposerDefaults(thread.id);
 

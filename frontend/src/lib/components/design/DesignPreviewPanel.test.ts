@@ -33,7 +33,10 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
     provider: 'claude',
     workspacePath: '/tmp',
     projectPath: '/tmp',
-    interactionMode: 'design',
+    // Source threads need a projectId so the export-to-thread flow can
+    // forward it to CreateThread. All post-Wave-1 threads carry one.
+    projectId: 'proj-design',
+    mode: 'design',
     model: 'claude-sonnet-4-6',
     createdAt: 0,
     updatedAt: 0,
@@ -245,8 +248,15 @@ describe('<DesignPreviewPanel> — export to new thread', () => {
 
     const createCalls = (getBindingMock('CreateThread') as ReturnType<typeof vi.fn> | undefined)?.mock.calls ?? [];
     await waitFor(() => expect(createCalls.length).toBeGreaterThan(0));
-    // CreateThread args: provider, workspace, model, mode. Source thread is Claude.
-    expect(createCalls[0]).toEqual(['claude', '/tmp', 'claude-sonnet-4-6', 'default']);
+    // CreateThread now takes a CreateThreadOptions struct. Export-to-thread
+    // forwards the source thread's project, provider, and model; mode is
+    // reset to 'default' for the spun-off thread.
+    expect(createCalls[0][0]).toEqual({
+      projectId: 'proj-design',
+      provider: 'claude',
+      model: 'claude-sonnet-4-6',
+      mode: 'default',
+    });
 
     await waitFor(() => expect(uploadMock).toHaveBeenCalled());
     expect(uploadMock.mock.calls[0][0]).toBe('new-thread');

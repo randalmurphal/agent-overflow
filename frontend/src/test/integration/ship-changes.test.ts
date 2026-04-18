@@ -16,6 +16,7 @@ import {
   makeGitStatus,
   makeThread,
   resetAppState,
+  seedSidebarProject,
 } from './_helpers';
 
 beforeAll(installAnimateShim);
@@ -24,6 +25,7 @@ async function mountWithThread(status: GitStatus = makeGitStatus({ hasChanges: t
   const thread = makeThread({ title: 'Ship Changes Thread' });
   installAppDefaults();
   setBindingMock('ListThreads', async () => [thread]);
+  seedSidebarProject([thread]);
   installThreadViewDefaults();
   installComposerDefaults(thread.id);
   // GitActionsControl calls GetGitStatus on $effect when a thread becomes

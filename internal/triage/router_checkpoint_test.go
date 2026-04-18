@@ -237,9 +237,11 @@ func TestHandleTurnStartCapturesWorktreePathWhenSet(t *testing.T) {
 	// When a thread has a worktree_path (git worktree), capture should
 	// target that directory rather than the project root.
 	router, st, _ := newTestRouter(t)
+	ensureTriageProject(t, st)
 	now := time.Now().UnixMilli()
 	if err := st.CreateThread(store.Thread{
 		ID:            "t-wt",
+		ProjectID:     triageTestProjectID,
 		Title:         "WT thread",
 		Provider:      "claude",
 		WorkspacePath: "/tmp/project",

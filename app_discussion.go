@@ -83,13 +83,23 @@ func (a *App) resolveDiscussionDefinition(thread store.Thread, discussionName st
 	if discussionName == "" {
 		return store.DiscussionDefinition{}, fmt.Errorf("discussion name is required")
 	}
-	if thread.ProjectPath != "" {
-		def, err := a.store.GetDiscussionDef(discussionName, "project", thread.ProjectPath)
-		if err == nil {
-			return def, nil
-		}
-		if !errors.Is(err, sql.ErrNoRows) {
+	// Resolve the thread's project path via the project id so we can look up
+	// project-scoped discussion definitions. ProjectID is required on every
+	// thread post-v13; a missing project row is a fatal error rather than
+	// silent fallback to global.
+	if thread.ProjectID != "" {
+		project, err := a.store.GetProject(thread.ProjectID)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return store.DiscussionDefinition{}, err
+		}
+		if err == nil && project.Path != "" {
+			def, err := a.store.GetDiscussionDef(discussionName, "project", project.Path)
+			if err == nil {
+				return def, nil
+			}
+			if !errors.Is(err, sql.ErrNoRows) {
+				return store.DiscussionDefinition{}, err
+			}
 		}
 	}
 	if a.registry == nil {

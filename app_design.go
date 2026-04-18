@@ -13,7 +13,7 @@ type designSessionConfig struct {
 }
 
 func (a *App) designSessionConfig(thread store.Thread) (designSessionConfig, error) {
-	if thread.InteractionMode != "design" {
+	if thread.Mode != "design" {
 		return designSessionConfig{}, nil
 	}
 

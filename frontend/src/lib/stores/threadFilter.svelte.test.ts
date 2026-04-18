@@ -22,7 +22,7 @@ function makeThread(id: string, extra: Partial<Thread> = {}): Thread {
     provider: 'claude',
     workspacePath: '/tmp/ws',
     projectPath: '/tmp/ws',
-    interactionMode: 'default',
+    mode: 'chat',
     model: 'claude-sonnet-4-6',
     createdAt: 0,
     updatedAt: 0,

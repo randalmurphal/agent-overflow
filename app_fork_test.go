@@ -71,7 +71,6 @@ func TestForkThreadCodexUsesStoredResumeStateWhenSessionInactive(t *testing.T) {
 	source.Provider = string(provider.Codex)
 	source.SessionRef = "resume-provider-thread"
 	source.WorkspacePath = t.TempDir()
-	source.ProjectPath = source.WorkspacePath
 	if err := app.store.CreateThread(source); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
@@ -149,7 +148,6 @@ func TestForkThreadUsesActiveCodexSession(t *testing.T) {
 	source.Provider = string(provider.Codex)
 	source.SessionRef = "resume-provider-thread"
 	source.WorkspacePath = t.TempDir()
-	source.ProjectPath = source.WorkspacePath
 	if err := app.store.CreateThread(source); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
 	}

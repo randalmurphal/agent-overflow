@@ -447,9 +447,11 @@ func newTestRouter(t *testing.T) (*Router, *store.Store, *[]emitted) {
 
 func createTestThread(t *testing.T, st *store.Store, id string) {
 	t.Helper()
+	ensureTriageProject(t, st)
 	now := time.Now().UnixMilli()
 	err := st.CreateThread(store.Thread{
 		ID:            id,
+		ProjectID:     triageTestProjectID,
 		Title:         "Test",
 		Provider:      "claude",
 		WorkspacePath: "/tmp",
@@ -562,9 +564,11 @@ func TestThreadRenamedUpdatesThread(t *testing.T) {
 
 func TestTokenUsageAddsCalculatedCost(t *testing.T) {
 	router, st, emissions := newTestRouter(t)
+	ensureTriageProject(t, st)
 	now := time.Now().UnixMilli()
 	if err := st.CreateThread(store.Thread{
 		ID:            "t1",
+		ProjectID:     triageTestProjectID,
 		Title:         "Cost Test",
 		Provider:      "codex",
 		WorkspacePath: "/tmp",
@@ -604,9 +608,11 @@ func TestTokenUsageAddsCalculatedCost(t *testing.T) {
 
 func TestTokenUsageLeavesUnknownModelUnchanged(t *testing.T) {
 	router, st, emissions := newTestRouter(t)
+	ensureTriageProject(t, st)
 	now := time.Now().UnixMilli()
 	if err := st.CreateThread(store.Thread{
 		ID:            "t1",
+		ProjectID:     triageTestProjectID,
 		Title:         "Unknown Model",
 		Provider:      "claude",
 		WorkspacePath: "/tmp",
@@ -1191,9 +1197,11 @@ func TestTurnCompleteWithoutAccumulatedText(t *testing.T) {
 
 func TestTurnCompleteDoesNotAutoRenameClaudeThread(t *testing.T) {
 	router, st, emissions := newTestRouter(t)
+	ensureTriageProject(t, st)
 	now := time.Now().UnixMilli()
 	if err := st.CreateThread(store.Thread{
 		ID:            "t1",
+		ProjectID:     triageTestProjectID,
 		Title:         "New Thread",
 		Provider:      "claude",
 		WorkspacePath: "/tmp",

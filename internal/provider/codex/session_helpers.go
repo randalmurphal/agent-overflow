@@ -35,10 +35,21 @@ func buildThreadParams(cfg Config) map[string]any {
 	if cfg.SystemPrompt != "" {
 		params["baseInstructions"] = cfg.SystemPrompt
 	}
+
+	// `config` is the free-form override bag on ThreadStartParams. We set
+	// mcp_servers (design-mode wiring) and model_reasoning_effort (the
+	// thread-level reasoning_effort default, mirrored by the per-turn
+	// `effort` override on turn/start). Keys documented in codex-source:
+	// app-server/src/codex_message_processor.rs (search "model_reasoning_effort").
+	configOverrides := map[string]any{}
 	if len(cfg.MCPServers) > 0 {
-		params["config"] = map[string]any{
-			"mcp_servers": cfg.MCPServers,
-		}
+		configOverrides["mcp_servers"] = cfg.MCPServers
+	}
+	if cfg.ReasoningEffort != "" {
+		configOverrides["model_reasoning_effort"] = cfg.ReasoningEffort
+	}
+	if len(configOverrides) > 0 {
+		params["config"] = configOverrides
 	}
 
 	return params

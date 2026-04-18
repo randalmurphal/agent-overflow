@@ -38,12 +38,12 @@ func newWorkspaceFilesApp(t *testing.T) (*App, string) {
 
 	thread := store.Thread{
 		ID:              "thr-ws",
+		ProjectID:     defaultTestProjectID,
 		Title:           "Ws",
 		Provider:        "claude",
 		WorkspacePath:   workspace,
-		ProjectPath:     workspace,
 		Model:           "claude",
-		InteractionMode: "default",
+		Mode: "chat",
 		CreatedAt:       time.Now().UnixMilli(),
 		UpdatedAt:       time.Now().UnixMilli(),
 	}

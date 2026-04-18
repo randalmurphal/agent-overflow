@@ -29,28 +29,44 @@ func TestNormalizeRuntimeMode(t *testing.T) {
 	}
 }
 
-// TestClaudePermissionModeMapping encodes the Claude CLI's expected flags.
-// The approval-required case returns the empty string because the CLI's
-// own "default" mode is *not* the same as the string "default" — the caller
-// is expected to omit --permission-mode entirely to get the CLI default.
-func TestClaudePermissionModeMapping(t *testing.T) {
-	cases := map[RuntimeMode]string{
-		RuntimeApprovalRequired: "",
-		RuntimeAutoAcceptEdits:  "acceptEdits",
-		RuntimeFullAccess:       "bypassPermissions",
+// TestClaudePermissionFlagsMapping encodes the Claude CLI's expected flag
+// sequence per RuntimeMode. Full-access emits the bare
+// `--dangerously-skip-permissions` flag (no value argument); auto-accept
+// emits `--permission-mode acceptEdits`; approval-required emits nothing so
+// the CLI's built-in default prompting engages.
+func TestClaudePermissionFlagsMapping(t *testing.T) {
+	cases := map[RuntimeMode][]string{
+		RuntimeApprovalRequired: nil,
+		RuntimeAutoAcceptEdits:  {"--permission-mode", "acceptEdits"},
+		RuntimeFullAccess:       {"--dangerously-skip-permissions"},
 	}
 	for mode, want := range cases {
 		t.Run(string(mode), func(t *testing.T) {
-			if got := ClaudePermissionMode(mode); got != want {
-				t.Errorf("ClaudePermissionMode(%q) = %q, want %q", mode, got, want)
+			got := ClaudePermissionFlags(mode)
+			if !stringSliceEqual(got, want) {
+				t.Errorf("ClaudePermissionFlags(%q) = %v, want %v", mode, got, want)
 			}
 		})
 	}
-	// Unknown mode also falls back to empty — never passes a bogus value
+	// Unknown mode also falls back to no flag — never passes a bogus value
 	// downstream.
-	if got := ClaudePermissionMode("unknown-mode"); got != "" {
-		t.Errorf("ClaudePermissionMode(unknown) = %q, want empty", got)
+	if got := ClaudePermissionFlags("unknown-mode"); got != nil {
+		t.Errorf("ClaudePermissionFlags(unknown) = %v, want nil", got)
 	}
+}
+
+// stringSliceEqual is a tiny deep-equality helper so the permission-flag test
+// doesn't have to pull in reflect.DeepEqual for a three-element comparison.
+func stringSliceEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // TestCodexApprovalPolicyMapping encodes the Codex JSON-RPC shape.

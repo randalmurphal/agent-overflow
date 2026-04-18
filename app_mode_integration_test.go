@@ -17,7 +17,7 @@ import (
 // -- Agent 3 (Wave 5D) -- integration tests for interaction-mode APIs --
 //
 // These exercise CreateThread (newly accepting an explicit mode) and
-// SetThreadInteractionMode (new binding) end-to-end through the App layer to
+// UpdateThreadMode (new binding) end-to-end through the App layer to
 // confirm the app + store layers agree on what a "mode" is.
 //
 // Scope: no provider runtime is launched. We stub startSessionFn where a mode
@@ -26,31 +26,31 @@ import (
 func TestMode_CreateThreadWithExplicitDefault(t *testing.T) {
 	app := newTestAppWithStore(t)
 
-	thread, err := app.CreateThread(string(provider.Claude), "/tmp/ws-default", "claude-sonnet-4-6", "default")
+	thread, err := createTestThread(t, app, string(provider.Claude), "/tmp/ws-default", "claude-sonnet-4-6", "chat")
 	if err != nil {
 		t.Fatalf("CreateThread(default) error = %v", err)
 	}
-	if thread.InteractionMode != "default" {
-		t.Fatalf("returned mode = %q, want default", thread.InteractionMode)
+	if thread.Mode != "chat" {
+		t.Fatalf("returned mode = %q, want chat", thread.Mode)
 	}
 
 	stored, err := app.store.GetThread(thread.ID)
 	if err != nil {
 		t.Fatalf("GetThread() error = %v", err)
 	}
-	if stored.InteractionMode != "default" {
-		t.Fatalf("stored mode = %q, want default", stored.InteractionMode)
+	if stored.Mode != "chat" {
+		t.Fatalf("stored mode = %q, want chat", stored.Mode)
 	}
 }
 
 func TestMode_CreateThreadWithDiscussion(t *testing.T) {
 	app := newTestAppWithStore(t)
 
-	_, err := app.CreateThread(string(provider.Claude), "/tmp/ws-discussion", "claude-sonnet-4-6", "discussion")
+	_, err := createTestThread(t, app, string(provider.Claude), "/tmp/ws-discussion", "claude-sonnet-4-6", "discussion")
 	if err == nil {
 		t.Fatal("CreateThread(discussion) error = nil, want rejection (discussion is reserved for StartDiscussion)")
 	}
-	if !strings.Contains(err.Error(), "invalid interaction mode") {
+	if !strings.Contains(err.Error(), "invalid mode") {
 		t.Fatalf("CreateThread(discussion) error = %v, want invalid-mode message", err)
 	}
 }
@@ -58,40 +58,40 @@ func TestMode_CreateThreadWithDiscussion(t *testing.T) {
 func TestMode_CreateThreadWithDesign(t *testing.T) {
 	app := newTestAppWithStore(t)
 
-	thread, err := app.CreateThread(string(provider.Claude), "/tmp/ws-design", "claude-sonnet-4-6", "design")
+	thread, err := createTestThread(t, app, string(provider.Claude), "/tmp/ws-design", "claude-sonnet-4-6", "design")
 	if err != nil {
 		t.Fatalf("CreateThread(design) error = %v", err)
 	}
-	if thread.InteractionMode != "design" {
-		t.Fatalf("mode = %q, want design", thread.InteractionMode)
+	if thread.Mode != "design" {
+		t.Fatalf("mode = %q, want design", thread.Mode)
 	}
 
 	stored, err := app.store.GetThread(thread.ID)
 	if err != nil {
 		t.Fatalf("GetThread() error = %v", err)
 	}
-	if stored.InteractionMode != "design" {
-		t.Fatalf("stored mode = %q, want design", stored.InteractionMode)
+	if stored.Mode != "design" {
+		t.Fatalf("stored mode = %q, want design", stored.Mode)
 	}
 }
 
 func TestMode_CreateThreadWithPlan(t *testing.T) {
 	app := newTestAppWithStore(t)
 
-	thread, err := app.CreateThread(string(provider.Claude), "/tmp/ws-plan", "claude-sonnet-4-6", "plan")
+	thread, err := createTestThread(t, app, string(provider.Claude), "/tmp/ws-plan", "claude-sonnet-4-6", "plan")
 	if err != nil {
 		t.Fatalf("CreateThread(plan) error = %v", err)
 	}
-	if thread.InteractionMode != "plan" {
-		t.Fatalf("mode = %q, want plan", thread.InteractionMode)
+	if thread.Mode != "plan" {
+		t.Fatalf("mode = %q, want plan", thread.Mode)
 	}
 
 	stored, err := app.store.GetThread(thread.ID)
 	if err != nil {
 		t.Fatalf("GetThread() error = %v", err)
 	}
-	if stored.InteractionMode != "plan" {
-		t.Fatalf("stored mode = %q, want plan", stored.InteractionMode)
+	if stored.Mode != "plan" {
+		t.Fatalf("stored mode = %q, want plan", stored.Mode)
 	}
 }
 
@@ -112,11 +112,11 @@ func TestMode_CreateThreadRejectsInvalidMode(t *testing.T) {
 	for _, mode := range cases {
 		mode := mode
 		t.Run(fmt.Sprintf("mode=%q", mode), func(t *testing.T) {
-			_, err := app.CreateThread(string(provider.Claude), "/tmp/ws-invalid", "claude-sonnet-4-6", mode)
+			_, err := createTestThread(t, app, string(provider.Claude), "/tmp/ws-invalid", "claude-sonnet-4-6", mode)
 			if err == nil {
 				t.Fatalf("CreateThread(%q) error = nil, want rejection", mode)
 			}
-			if !strings.Contains(err.Error(), "invalid interaction mode") {
+			if !strings.Contains(err.Error(), "invalid mode") {
 				t.Fatalf("CreateThread(%q) error = %v, want invalid-mode message", mode, err)
 			}
 		})
@@ -126,34 +126,34 @@ func TestMode_CreateThreadRejectsInvalidMode(t *testing.T) {
 func TestMode_SetInteractionModeChangesPersistentRow(t *testing.T) {
 	app := newTestAppWithStore(t)
 
-	thread, err := app.CreateThread(string(provider.Claude), "/tmp/ws-setmode", "claude-sonnet-4-6", "")
+	thread, err := createTestThread(t, app, string(provider.Claude), "/tmp/ws-setmode", "claude-sonnet-4-6", "")
 	if err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
-	if thread.InteractionMode != "default" {
-		t.Fatalf("initial mode = %q, want default", thread.InteractionMode)
+	if thread.Mode != "chat" {
+		t.Fatalf("initial mode = %q, want chat", thread.Mode)
 	}
 
-	updated, err := app.SetThreadInteractionMode(thread.ID, "design")
+	updated, err := app.UpdateThreadMode(thread.ID, "design")
 	if err != nil {
-		t.Fatalf("SetThreadInteractionMode(design) error = %v", err)
+		t.Fatalf("UpdateThreadMode(design) error = %v", err)
 	}
-	if updated.InteractionMode != "design" {
-		t.Fatalf("returned mode = %q, want design", updated.InteractionMode)
+	if updated.Mode != "design" {
+		t.Fatalf("returned mode = %q, want design", updated.Mode)
 	}
 
 	stored, err := app.store.GetThread(thread.ID)
 	if err != nil {
 		t.Fatalf("GetThread() error = %v", err)
 	}
-	if stored.InteractionMode != "design" {
-		t.Fatalf("stored mode = %q, want design", stored.InteractionMode)
+	if stored.Mode != "design" {
+		t.Fatalf("stored mode = %q, want design", stored.Mode)
 	}
 }
 
 func TestMode_SetInteractionModeRejectsInvalidMode(t *testing.T) {
 	app := newTestAppWithStore(t)
-	thread, err := app.CreateThread(string(provider.Claude), "/tmp/ws", "claude-sonnet-4-6", "")
+	thread, err := createTestThread(t, app, string(provider.Claude), "/tmp/ws", "claude-sonnet-4-6", "")
 	if err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
@@ -161,12 +161,12 @@ func TestMode_SetInteractionModeRejectsInvalidMode(t *testing.T) {
 	for _, bad := range []string{"gibberish", "Plan", "DEFAULT", "archive", "DiscussioN"} {
 		bad := bad
 		t.Run(fmt.Sprintf("mode=%q", bad), func(t *testing.T) {
-			_, err := app.SetThreadInteractionMode(thread.ID, bad)
+			_, err := app.UpdateThreadMode(thread.ID, bad)
 			if err == nil {
-				t.Fatalf("SetThreadInteractionMode(%q) error = nil, want rejection", bad)
+				t.Fatalf("UpdateThreadMode(%q) error = nil, want rejection", bad)
 			}
-			if !strings.Contains(err.Error(), "invalid interaction mode") {
-				t.Fatalf("SetThreadInteractionMode(%q) error = %v, want invalid-mode message", bad, err)
+			if !strings.Contains(err.Error(), "invalid mode") {
+				t.Fatalf("UpdateThreadMode(%q) error = %v, want invalid-mode message", bad, err)
 			}
 		})
 	}
@@ -176,21 +176,21 @@ func TestMode_SetInteractionModeRejectsInvalidMode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetThread() error = %v", err)
 	}
-	if stored.InteractionMode != "default" {
-		t.Fatalf("stored mode after rejected sets = %q, want default", stored.InteractionMode)
+	if stored.Mode != "chat" {
+		t.Fatalf("stored mode after rejected sets = %q, want chat", stored.Mode)
 	}
 }
 
-// TestMode_SetInteractionModeUnknownThreadErrors: calling SetThreadInteractionMode
+// TestMode_SetInteractionModeUnknownThreadErrors: calling UpdateThreadMode
 // with a non-existent thread id must error out, and the error surfaces sql.ErrNoRows
 // via the GetThread pre-check (so callers can distinguish "not found" from validation
 // errors).
 func TestMode_SetInteractionModeUnknownThreadErrors(t *testing.T) {
 	app := newTestAppWithStore(t)
 
-	_, err := app.SetThreadInteractionMode("nonexistent-thread", "design")
+	_, err := app.UpdateThreadMode("nonexistent-thread", "design")
 	if err == nil {
-		t.Fatal("SetThreadInteractionMode(nonexistent) error = nil, want not-found")
+		t.Fatal("UpdateThreadMode(nonexistent) error = nil, want not-found")
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("err = %v, want wrapped sql.ErrNoRows", err)
@@ -202,7 +202,7 @@ func TestMode_SetInteractionModeUnknownThreadErrors(t *testing.T) {
 func TestMode_SetInteractionModeUpdatesUpdatedAt(t *testing.T) {
 	app := newTestAppWithStore(t)
 
-	thread, err := app.CreateThread(string(provider.Claude), "/tmp/ws-updated", "claude-sonnet-4-6", "")
+	thread, err := createTestThread(t, app, string(provider.Claude), "/tmp/ws-updated", "claude-sonnet-4-6", "")
 	if err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
@@ -212,9 +212,9 @@ func TestMode_SetInteractionModeUpdatesUpdatedAt(t *testing.T) {
 	// single-millisecond tick.
 	time.Sleep(5 * time.Millisecond)
 
-	updated, err := app.SetThreadInteractionMode(thread.ID, "plan")
+	updated, err := app.UpdateThreadMode(thread.ID, "plan")
 	if err != nil {
-		t.Fatalf("SetThreadInteractionMode() error = %v", err)
+		t.Fatalf("UpdateThreadMode() error = %v", err)
 	}
 	if updated.UpdatedAt <= originalUpdatedAt {
 		t.Fatalf("updatedAt = %d, want > %d (should have bumped)", updated.UpdatedAt, originalUpdatedAt)
@@ -238,7 +238,7 @@ func TestMode_ForkInheritsInteractionMode(t *testing.T) {
 	source := testThread("thread-fork-mode")
 	source.Provider = string(provider.Claude)
 	source.SessionRef = "claude-session-abc"
-	source.InteractionMode = "design"
+	source.Mode = "design"
 	if err := app.store.CreateThread(source); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
@@ -248,16 +248,16 @@ func TestMode_ForkInheritsInteractionMode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ForkThread() error = %v", err)
 	}
-	if forked.InteractionMode != "design" {
-		t.Fatalf("fork mode = %q, want design (inherited from source)", forked.InteractionMode)
+	if forked.Mode != "design" {
+		t.Fatalf("fork mode = %q, want design (inherited from source)", forked.Mode)
 	}
 
 	stored, err := app.store.GetThread(forked.ID)
 	if err != nil {
 		t.Fatalf("GetThread() error = %v", err)
 	}
-	if stored.InteractionMode != "design" {
-		t.Fatalf("stored fork mode = %q, want design", stored.InteractionMode)
+	if stored.Mode != "design" {
+		t.Fatalf("stored fork mode = %q, want design", stored.Mode)
 	}
 }
 
@@ -268,7 +268,7 @@ func TestMode_ForkInheritsInteractionMode(t *testing.T) {
 func TestMode_DesignModeThreadHasDesignArtifactCapability(t *testing.T) {
 	app := newTestAppWithStore(t)
 
-	thread, err := app.CreateThread(string(provider.Claude), "/tmp/ws-design-cap", "claude-sonnet-4-6", "design")
+	thread, err := createTestThread(t, app, string(provider.Claude), "/tmp/ws-design-cap", "claude-sonnet-4-6", "design")
 	if err != nil {
 		t.Fatalf("CreateThread(design) error = %v", err)
 	}
@@ -277,8 +277,8 @@ func TestMode_DesignModeThreadHasDesignArtifactCapability(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetThread() error = %v", err)
 	}
-	if stored.InteractionMode != "design" {
-		t.Fatalf("stored mode = %q, want design (capability gate)", stored.InteractionMode)
+	if stored.Mode != "design" {
+		t.Fatalf("stored mode = %q, want design (capability gate)", stored.Mode)
 	}
 	if stored.Provider != string(provider.Claude) {
 		t.Fatalf("stored provider = %q, want claude (design tools only gate on Claude)", stored.Provider)
@@ -289,27 +289,27 @@ func TestMode_DesignModeThreadHasDesignArtifactCapability(t *testing.T) {
 // produce a free-standing "discussion" thread. A discussion-mode thread appears
 // only via StartDiscussion which wires a channel, the deliberation runtime, and
 // child participant threads. We assert the CreateThread rejection path and that
-// SetThreadInteractionMode is the only permitted way to label an existing
+// UpdateThreadMode is the only permitted way to label an existing
 // thread "discussion" — documenting the intended layering.
 func TestMode_DiscussionModeCreatesOrPairsWithDiscussion(t *testing.T) {
 	app := newTestAppWithStore(t)
 
 	// CreateThread rejects the discussion mode directly.
-	if _, err := app.CreateThread(string(provider.Claude), "/tmp/ws-disc", "claude-sonnet-4-6", "discussion"); err == nil {
+	if _, err := createTestThread(t, app, string(provider.Claude), "/tmp/ws-disc", "claude-sonnet-4-6", "discussion"); err == nil {
 		t.Fatal("CreateThread(discussion) should fail (StartDiscussion owns that mode)")
 	}
 
 	// But an existing thread may be "promoted" to discussion via the setter.
-	thread, err := app.CreateThread(string(provider.Claude), "/tmp/ws-disc", "claude-sonnet-4-6", "")
+	thread, err := createTestThread(t, app, string(provider.Claude), "/tmp/ws-disc", "claude-sonnet-4-6", "")
 	if err != nil {
 		t.Fatalf("CreateThread(default) error = %v", err)
 	}
-	updated, err := app.SetThreadInteractionMode(thread.ID, "discussion")
+	updated, err := app.UpdateThreadMode(thread.ID, "discussion")
 	if err != nil {
-		t.Fatalf("SetThreadInteractionMode(discussion) error = %v", err)
+		t.Fatalf("UpdateThreadMode(discussion) error = %v", err)
 	}
-	if updated.InteractionMode != "discussion" {
-		t.Fatalf("mode = %q, want discussion", updated.InteractionMode)
+	if updated.Mode != "discussion" {
+		t.Fatalf("mode = %q, want discussion", updated.Mode)
 	}
 	// No deliberation has been wired; the thread is a bare discussion-labelled
 	// row. This is expected for the setter path — the deliberation runtime
@@ -322,30 +322,30 @@ func TestMode_DiscussionModeCreatesOrPairsWithDiscussion(t *testing.T) {
 func TestMode_CreateThreadDefaultWhenEmpty(t *testing.T) {
 	app := newTestAppWithStore(t)
 
-	thread, err := app.CreateThread(string(provider.Codex), "/tmp/ws-empty", "gpt-5.4", "")
+	thread, err := createTestThread(t, app, string(provider.Codex), "/tmp/ws-empty", "gpt-5.4", "")
 	if err != nil {
 		t.Fatalf("CreateThread(empty) error = %v", err)
 	}
-	if thread.InteractionMode != "default" {
-		t.Fatalf("returned mode = %q, want default (normalized from empty)", thread.InteractionMode)
+	if thread.Mode != "chat" {
+		t.Fatalf("returned mode = %q, want chat (normalized from empty)", thread.Mode)
 	}
 
 	stored, err := app.store.GetThread(thread.ID)
 	if err != nil {
 		t.Fatalf("GetThread() error = %v", err)
 	}
-	if stored.InteractionMode != "default" {
-		t.Fatalf("stored mode = %q, want default (normalized)", stored.InteractionMode)
+	if stored.Mode != "chat" {
+		t.Fatalf("stored mode = %q, want chat (normalized)", stored.Mode)
 	}
 
 	// Whitespace-only inputs must also normalize to default, not be preserved
 	// verbatim.
-	whitespaceThread, err := app.CreateThread(string(provider.Codex), "/tmp/ws-whitespace", "gpt-5.4", "   \t  ")
+	whitespaceThread, err := createTestThread(t, app, string(provider.Codex), "/tmp/ws-whitespace", "gpt-5.4", "   \t  ")
 	if err != nil {
 		t.Fatalf("CreateThread(whitespace) error = %v", err)
 	}
-	if whitespaceThread.InteractionMode != "default" {
-		t.Fatalf("whitespace mode = %q, want default", whitespaceThread.InteractionMode)
+	if whitespaceThread.Mode != "chat" {
+		t.Fatalf("whitespace mode = %q, want chat", whitespaceThread.Mode)
 	}
 }
 
@@ -359,12 +359,12 @@ func TestMode_CreateThreadDefaultWhenEmpty(t *testing.T) {
 func TestMode_ConcurrentSetModeRace(t *testing.T) {
 	app := newTestAppWithStore(t)
 
-	thread, err := app.CreateThread(string(provider.Claude), "/tmp/ws-race", "claude-sonnet-4-6", "")
+	thread, err := createTestThread(t, app, string(provider.Claude), "/tmp/ws-race", "claude-sonnet-4-6", "")
 	if err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
 
-	modes := []string{"default", "plan", "design", "discussion"}
+	modes := []string{"chat", "plan", "design", "discussion"}
 	setModes := map[string]struct{}{}
 	var setModesMu sync.Mutex
 	var wg sync.WaitGroup
@@ -375,10 +375,10 @@ func TestMode_ConcurrentSetModeRace(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			mode := modes[i%len(modes)]
-			if _, err := app.SetThreadInteractionMode(thread.ID, mode); err != nil {
+			if _, err := app.UpdateThreadMode(thread.ID, mode); err != nil {
 				// A concurrent call should never produce a validation error
 				// (we passed a valid mode) -- anything else is a bug.
-				t.Errorf("goroutine %d SetThreadInteractionMode(%q) error = %v", i, mode, err)
+				t.Errorf("goroutine %d UpdateThreadMode(%q) error = %v", i, mode, err)
 				return
 			}
 			setModesMu.Lock()
@@ -392,8 +392,8 @@ func TestMode_ConcurrentSetModeRace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetThread() after race error = %v", err)
 	}
-	if _, ok := setModes[stored.InteractionMode]; !ok {
-		t.Fatalf("final mode = %q, want one of %v (that was observed as set)", stored.InteractionMode, keys(setModes))
+	if _, ok := setModes[stored.Mode]; !ok {
+		t.Fatalf("final mode = %q, want one of %v (that was observed as set)", stored.Mode, keys(setModes))
 	}
 	// Sanity: other persisted columns should be unchanged by the setter.
 	if stored.Provider != string(provider.Claude) {
@@ -409,7 +409,7 @@ func TestMode_ConcurrentSetModeRace(t *testing.T) {
 //   - persists the new mode to the DB
 //   - leaves the active session map untouched (the running session keeps its
 //     captured-at-startup config; reconnect is required to pick up the new mode)
-//   - emits a thread:interaction_mode_changed event with NeedsReconnect=true
+//   - emits a thread:mode_changed event with NeedsReconnect=true
 //     so the frontend can surface the requirement to the user.
 func TestMode_SetModeDuringActiveSession(t *testing.T) {
 	app := newTestAppWithStore(t)
@@ -426,25 +426,25 @@ func TestMode_SetModeDuringActiveSession(t *testing.T) {
 		}{name, data})
 	}
 
-	thread, err := app.CreateThread(string(provider.Claude), "/tmp/ws-active-mode", "claude-sonnet-4-6", "default")
+	thread, err := createTestThread(t, app, string(provider.Claude), "/tmp/ws-active-mode", "claude-sonnet-4-6", "chat")
 	if err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
 
 	// Simulate an active session by parking a fake session struct; no real
 	// provider is started. This is enough to exercise the code path where
-	// SetThreadInteractionMode runs while a.sessions[threadID] is populated.
+	// UpdateThreadMode runs while a.sessions[threadID] is populated.
 	app.sessions[thread.ID] = session{
 		provider: string(provider.Claude),
 		token:    "active-session-token",
 	}
 
-	updated, err := app.SetThreadInteractionMode(thread.ID, "plan")
+	updated, err := app.UpdateThreadMode(thread.ID, "plan")
 	if err != nil {
-		t.Fatalf("SetThreadInteractionMode() error with active session = %v", err)
+		t.Fatalf("UpdateThreadMode() error with active session = %v", err)
 	}
-	if updated.InteractionMode != "plan" {
-		t.Fatalf("updated mode = %q, want plan", updated.InteractionMode)
+	if updated.Mode != "plan" {
+		t.Fatalf("updated mode = %q, want plan", updated.Mode)
 	}
 
 	// Session map must be untouched -- the in-memory session state is
@@ -454,29 +454,29 @@ func TestMode_SetModeDuringActiveSession(t *testing.T) {
 	_, stillActive := app.sessions[thread.ID]
 	app.mu.Unlock()
 	if !stillActive {
-		t.Fatal("active session was evicted by SetThreadInteractionMode (unexpected)")
+		t.Fatal("active session was evicted by UpdateThreadMode (unexpected)")
 	}
 
 	// An event must have fired signalling the active session needs reconnect.
-	var modeChange *ThreadInteractionModeChangedEvent
+	var modeChange *ThreadModeChangedEvent
 	for _, e := range capturedEvents {
-		if e.name != "thread:interaction_mode_changed" {
+		if e.name != "thread:mode_changed" {
 			continue
 		}
-		evt, ok := e.data.(ThreadInteractionModeChangedEvent)
+		evt, ok := e.data.(ThreadModeChangedEvent)
 		if !ok {
-			t.Fatalf("thread:interaction_mode_changed payload type = %T, want ThreadInteractionModeChangedEvent", e.data)
+			t.Fatalf("thread:mode_changed payload type = %T, want ThreadModeChangedEvent", e.data)
 		}
 		modeChange = &evt
 	}
 	if modeChange == nil {
-		t.Fatal("thread:interaction_mode_changed event was not emitted during active-session mode change")
+		t.Fatal("thread:mode_changed event was not emitted during active-session mode change")
 	}
 	if modeChange.ThreadID != thread.ID {
 		t.Fatalf("event ThreadID = %q, want %q", modeChange.ThreadID, thread.ID)
 	}
-	if modeChange.InteractionMode != "plan" {
-		t.Fatalf("event InteractionMode = %q, want plan", modeChange.InteractionMode)
+	if modeChange.Mode != "plan" {
+		t.Fatalf("event Mode = %q, want plan", modeChange.Mode)
 	}
 	if !modeChange.NeedsReconnect {
 		t.Fatalf("event NeedsReconnect = false, want true (session is active)")
@@ -502,28 +502,28 @@ func TestMode_SetModeWithoutActiveSessionNoReconnect(t *testing.T) {
 		}{name, data})
 	}
 
-	thread, err := app.CreateThread(string(provider.Claude), "/tmp/ws-inactive-mode", "claude-sonnet-4-6", "default")
+	thread, err := createTestThread(t, app, string(provider.Claude), "/tmp/ws-inactive-mode", "claude-sonnet-4-6", "chat")
 	if err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
 
-	if _, err := app.SetThreadInteractionMode(thread.ID, "plan"); err != nil {
-		t.Fatalf("SetThreadInteractionMode() error = %v", err)
+	if _, err := app.UpdateThreadMode(thread.ID, "plan"); err != nil {
+		t.Fatalf("UpdateThreadMode() error = %v", err)
 	}
 
-	var modeChange *ThreadInteractionModeChangedEvent
+	var modeChange *ThreadModeChangedEvent
 	for _, e := range capturedEvents {
-		if e.name != "thread:interaction_mode_changed" {
+		if e.name != "thread:mode_changed" {
 			continue
 		}
-		evt, ok := e.data.(ThreadInteractionModeChangedEvent)
+		evt, ok := e.data.(ThreadModeChangedEvent)
 		if !ok {
-			t.Fatalf("thread:interaction_mode_changed payload type = %T", e.data)
+			t.Fatalf("thread:mode_changed payload type = %T", e.data)
 		}
 		modeChange = &evt
 	}
 	if modeChange == nil {
-		t.Fatal("thread:interaction_mode_changed event missing")
+		t.Fatal("thread:mode_changed event missing")
 	}
 	if modeChange.NeedsReconnect {
 		t.Fatal("NeedsReconnect = true without an active session")
@@ -539,6 +539,6 @@ func keys(m map[string]struct{}) []string {
 	return out
 }
 
-// Compile-time guard: ensure store.Thread carries the InteractionMode field we
+// Compile-time guard: ensure store.Thread carries the Mode field we
 // rely on. If this ever stops compiling, callers need to be updated.
-var _ = func(t store.Thread) string { return t.InteractionMode }
+var _ = func(t store.Thread) string { return t.Mode }

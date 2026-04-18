@@ -437,10 +437,10 @@ func TestShutdownClosesLiveSessionsWithoutDeadlock(t *testing.T) {
 
 	thread := store.Thread{
 		ID:            "thread-shutdown-live",
+		ProjectID:     defaultTestProjectID,
 		Title:         "Live",
 		Provider:      "claude",
 		WorkspacePath: t.TempDir(),
-		ProjectPath:   t.TempDir(),
 		Model:         "claude-sonnet-4-6",
 		CreatedAt:     time.Now().UnixMilli(),
 		UpdatedAt:     time.Now().UnixMilli(),

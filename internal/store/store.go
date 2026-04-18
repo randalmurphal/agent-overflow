@@ -39,18 +39,27 @@ func (s *Store) Close() error {
 // runMigrations is defined in migrate.go.
 
 // Thread represents a conversation thread.
+//
+// The shape changed at migration v13: ProjectPath is gone (replaced by the
+// ProjectID FK to the projects table), InteractionMode is renamed to Mode,
+// and three new per-thread composer controls (ReasoningEffort, FastMode,
+// ContextWindow) are persisted so two threads sharing a project can
+// diverge on these axes.
 type Thread struct {
 	ID                 string `json:"id"`
+	ProjectID          string `json:"projectId"`
 	Title              string `json:"title"`
 	Provider           string `json:"provider"`
-	SessionRef         string `json:"sessionRef,omitempty"`
-	PendingForkRef     string `json:"pendingForkRef,omitempty"`
-	WorkspacePath      string `json:"workspacePath"`
 	Model              string `json:"model"`
-	ProjectPath        string `json:"projectPath"`
+	WorkspacePath      string `json:"workspacePath"`
 	WorktreePath       string `json:"worktreePath,omitempty"`
 	Branch             string `json:"branch,omitempty"`
-	InteractionMode    string `json:"interactionMode"`
+	SessionRef         string `json:"sessionRef,omitempty"`
+	PendingForkRef     string `json:"pendingForkRef,omitempty"`
+	Mode               string `json:"mode"`
+	ReasoningEffort    string `json:"reasoningEffort"`
+	FastMode           bool   `json:"fastMode"`
+	ContextWindow      int    `json:"contextWindow"`
 	// RuntimeMode is one of provider.RuntimeMode's three values. Kept as
 	// a plain string on the struct so store/ doesn't import provider/
 	// (which would create a cycle) — provider.NormalizeRuntimeMode is the
@@ -62,6 +71,21 @@ type Thread struct {
 	CreatedAt          int64  `json:"createdAt"`
 	UpdatedAt          int64  `json:"updatedAt"`
 	Archived           bool   `json:"archived"`
+}
+
+// Project represents a user-defined grouping of threads rooted at a
+// directory. Threads belong to a project via the project_id FK; the
+// project's path is the canonical workspace root, though individual
+// threads may operate in a worktree that diverges from project.path.
+type Project struct {
+	ID           string `json:"id"`
+	Path         string `json:"path"`
+	Name         string `json:"name"`
+	Color        string `json:"color,omitempty"`
+	SortPosition int    `json:"sortPosition"`
+	CreatedAt    int64  `json:"createdAt"`
+	UpdatedAt    int64  `json:"updatedAt"`
+	Archived     bool   `json:"archived"`
 }
 
 // Item represents a persisted timeline entry.

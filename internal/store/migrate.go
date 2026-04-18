@@ -360,7 +360,224 @@ ADD COLUMN runtime_mode TEXT NOT NULL DEFAULT 'full-access'
     CHECK(runtime_mode IN ('approval-required', 'auto-accept-edits', 'full-access'));
 `,
 	},
+	{
+		Version: 13,
+		Name:    "projects_and_thread_reshape",
+		// Breaking reshape. The sidebar + composer rewrite introduces
+		// Project as a first-class entity, renames interaction_mode →
+		// mode, drops the free-form project_path in favor of a FK to
+		// projects(id), and adds three new per-thread controls
+		// (reasoning_effort, fast_mode, context_window). Because the
+		// column list and FK topology change materially, ALTER TABLE
+		// is not enough — we drop every v12 table and recreate from
+		// the new shape. The user-facing contract is that this bump
+		// wipes history; runMigrations logs a prominent line when v13
+		// applies so the reset is visible in the app log.
+		//
+		// Dependent tables (items, payloads, channels,
+		// channel_messages, discussion_definitions, design_artifacts,
+		// attachments, thread_drafts, thread_checkpoints) are
+		// recreated with the same shape they had at v12 after all
+		// previous migrations — just referencing the new threads
+		// table. Keeping the shapes identical avoids spreading the
+		// reshape across unrelated subsystems.
+		SQL: v13SQL,
+	},
 }
+
+// v13SQL is the DROP-and-rebuild payload for migration v13. Extracted so
+// the lint-y size of the SQL doesn't bloat the migrations slice.
+const v13SQL = `
+-- Drop every v12 table. IF EXISTS keeps the migration idempotent on
+-- fresh installs where these have never been created.
+DROP TABLE IF EXISTS thread_checkpoints;
+DROP TABLE IF EXISTS attachments;
+DROP TABLE IF EXISTS thread_drafts;
+DROP TABLE IF EXISTS design_artifacts;
+DROP TABLE IF EXISTS channel_messages;
+DROP TABLE IF EXISTS channels;
+DROP TABLE IF EXISTS discussion_definitions;
+DROP TABLE IF EXISTS items;
+DROP TABLE IF EXISTS payloads;
+DROP TABLE IF EXISTS threads;
+
+-- Projects: the new grouping entity. path is UNIQUE so two threads rooted
+-- at the same directory share one project row.
+CREATE TABLE projects (
+    id            TEXT    PRIMARY KEY,
+    path          TEXT    NOT NULL UNIQUE,
+    name          TEXT    NOT NULL,
+    color         TEXT    NOT NULL DEFAULT '',
+    sort_position INTEGER NOT NULL DEFAULT 0,
+    created_at    INTEGER NOT NULL,
+    updated_at    INTEGER NOT NULL,
+    archived      INTEGER NOT NULL DEFAULT 0 CHECK(archived IN (0,1))
+);
+CREATE INDEX idx_projects_updated  ON projects(updated_at DESC);
+CREATE INDEX idx_projects_archived ON projects(archived, updated_at DESC);
+
+-- Threads: replaces the legacy shape. project_id is required, mode
+-- replaces interaction_mode (with the new 'chat' default), and the three
+-- new composer controls (reasoning_effort, fast_mode, context_window)
+-- persist per-thread so two threads in the same project can diverge.
+CREATE TABLE threads (
+    id                       TEXT    PRIMARY KEY,
+    project_id               TEXT    NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    title                    TEXT    NOT NULL DEFAULT 'New Thread',
+    provider                 TEXT    NOT NULL CHECK(provider IN ('claude','codex')),
+    model                    TEXT    NOT NULL DEFAULT '',
+    workspace_path           TEXT    NOT NULL,
+    worktree_path            TEXT,
+    branch                   TEXT,
+    session_ref              TEXT,
+    pending_fork_session_ref TEXT,
+    mode                     TEXT    NOT NULL DEFAULT 'chat'
+        CHECK(mode IN ('chat','plan','design','discussion')),
+    reasoning_effort         TEXT    NOT NULL DEFAULT 'high'
+        CHECK(reasoning_effort IN ('low','medium','high','xhigh','max')),
+    fast_mode                INTEGER NOT NULL DEFAULT 0 CHECK(fast_mode IN (0,1)),
+    context_window           INTEGER NOT NULL DEFAULT 1000000
+        CHECK(context_window IN (200000,1000000)),
+    runtime_mode             TEXT    NOT NULL DEFAULT 'full-access'
+        CHECK(runtime_mode IN ('approval-required','auto-accept-edits','full-access')),
+    discussion_id            TEXT,
+    parent_thread_id         TEXT    REFERENCES threads(id) ON DELETE SET NULL,
+    forked_from_thread_id    TEXT    REFERENCES threads(id) ON DELETE SET NULL,
+    created_at               INTEGER NOT NULL,
+    updated_at               INTEGER NOT NULL,
+    archived                 INTEGER NOT NULL DEFAULT 0 CHECK(archived IN (0,1))
+);
+CREATE INDEX idx_threads_project     ON threads(project_id, updated_at DESC);
+CREATE INDEX idx_threads_updated     ON threads(updated_at DESC);
+CREATE INDEX idx_threads_parent      ON threads(parent_thread_id);
+CREATE INDEX idx_threads_forked_from ON threads(forked_from_thread_id);
+
+-- Heavy-payload blob store. Unchanged shape; recreated because v12 threads
+-- reference it via items.payload_id and we dropped the whole table graph.
+CREATE TABLE payloads (
+    id         TEXT PRIMARY KEY,
+    kind       TEXT NOT NULL,
+    meta       TEXT NOT NULL DEFAULT '{}',
+    data       BLOB NOT NULL,
+    created_at INTEGER NOT NULL
+);
+
+-- Timeline items. parent_tool_use_id carries forward the v4 subagent
+-- correlation column; the composite UNIQUE on (thread_id, turn_index,
+-- item_index) carries forward v10.
+CREATE TABLE items (
+    id                 TEXT    PRIMARY KEY,
+    thread_id          TEXT    NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+    turn_index         INTEGER NOT NULL,
+    item_index         INTEGER NOT NULL,
+    kind               TEXT    NOT NULL,
+    role               TEXT    NOT NULL DEFAULT 'assistant',
+    summary            TEXT    NOT NULL DEFAULT '',
+    payload_id         TEXT    REFERENCES payloads(id),
+    parent_tool_use_id TEXT    NOT NULL DEFAULT '',
+    created_at         INTEGER NOT NULL
+);
+CREATE INDEX idx_items_thread            ON items(thread_id, turn_index, item_index);
+CREATE INDEX idx_items_parent_tool_use   ON items(thread_id, parent_tool_use_id) WHERE parent_tool_use_id <> '';
+CREATE UNIQUE INDEX idx_items_thread_turn_item_unique
+    ON items(thread_id, turn_index, item_index);
+
+-- Payload GC trigger (v9). Without it, deleting an item strands its
+-- heavy payload. No legacy cleanup is needed because v13 just dropped
+-- every payload row.
+CREATE TRIGGER trg_items_gc_payload
+AFTER DELETE ON items
+WHEN OLD.payload_id IS NOT NULL
+BEGIN
+    DELETE FROM payloads
+     WHERE id = OLD.payload_id
+       AND NOT EXISTS (
+           SELECT 1 FROM items WHERE payload_id = OLD.payload_id
+       );
+END;
+
+-- Deliberation channels + messages (v2 parity tables).
+CREATE TABLE channels (
+    id          TEXT    PRIMARY KEY,
+    thread_id   TEXT    NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+    type        TEXT    NOT NULL DEFAULT 'deliberation',
+    status      TEXT    NOT NULL DEFAULT 'open',
+    created_at  INTEGER NOT NULL,
+    updated_at  INTEGER NOT NULL
+);
+CREATE INDEX idx_channels_thread ON channels(thread_id);
+
+CREATE TABLE channel_messages (
+    id          TEXT    PRIMARY KEY,
+    channel_id  TEXT    NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+    sequence    INTEGER NOT NULL,
+    from_type   TEXT    NOT NULL,
+    from_id     TEXT    NOT NULL,
+    from_role   TEXT,
+    content     TEXT    NOT NULL,
+    created_at  INTEGER NOT NULL,
+    UNIQUE(channel_id, sequence)
+);
+
+CREATE TABLE discussion_definitions (
+    id          TEXT    PRIMARY KEY,
+    name        TEXT    NOT NULL,
+    description TEXT    NOT NULL DEFAULT '',
+    scope       TEXT    NOT NULL DEFAULT 'global',
+    project_id  TEXT,
+    definition  TEXT    NOT NULL,
+    created_at  INTEGER NOT NULL,
+    updated_at  INTEGER NOT NULL,
+    UNIQUE(name, scope, project_id)
+);
+
+-- Design artifacts (v2).
+CREATE TABLE design_artifacts (
+    id          TEXT    PRIMARY KEY,
+    thread_id   TEXT    NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+    title       TEXT    NOT NULL,
+    description TEXT    NOT NULL DEFAULT '',
+    kind        TEXT    NOT NULL DEFAULT 'render',
+    html_path   TEXT    NOT NULL,
+    created_at  INTEGER NOT NULL
+);
+CREATE INDEX idx_design_artifacts_thread ON design_artifacts(thread_id);
+
+-- Attachments (v5).
+CREATE TABLE attachments (
+    id            TEXT    PRIMARY KEY,
+    thread_id     TEXT    NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+    filename      TEXT    NOT NULL,
+    mime_type     TEXT    NOT NULL,
+    size          INTEGER NOT NULL,
+    relative_path TEXT    NOT NULL,
+    created_at    INTEGER NOT NULL
+);
+CREATE INDEX idx_attachments_thread ON attachments(thread_id);
+
+-- Thread drafts (v6).
+CREATE TABLE thread_drafts (
+    thread_id      TEXT    PRIMARY KEY REFERENCES threads(id) ON DELETE CASCADE,
+    content        TEXT    NOT NULL DEFAULT '',
+    attachments    TEXT    NOT NULL DEFAULT '[]',
+    terminal_chips TEXT    NOT NULL DEFAULT '[]',
+    updated_at     INTEGER NOT NULL
+);
+
+-- Thread checkpoints (v8: composite UNIQUE on thread+turn).
+CREATE TABLE thread_checkpoints (
+    id             TEXT    PRIMARY KEY,
+    thread_id      TEXT    NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+    turn_index     INTEGER NOT NULL,
+    ref_name       TEXT    NOT NULL,
+    baseline_sha   TEXT    NOT NULL DEFAULT '',
+    captured_at    INTEGER NOT NULL,
+    workspace_path TEXT    NOT NULL,
+    UNIQUE(thread_id, turn_index)
+);
+CREATE INDEX idx_thread_checkpoints_thread_turn
+    ON thread_checkpoints(thread_id, turn_index);
+`
 
 // runMigrations sets PRAGMAs, creates the version tracking table, and applies
 // any unapplied migrations in order.
@@ -586,6 +803,12 @@ func applyPendingMigrations(db *sql.DB, applied int) error {
 
 func applyMigration(db *sql.DB, m Migration) error {
 	log.Printf("store: applying migration v%d: %s", m.Version, m.Name)
+	if m.Version == 13 {
+		// v13 drops every user-visible table and rebuilds. Make the
+		// data-loss side effect loud enough that a user skimming the
+		// log sees it before their first launch on the new binary.
+		log.Printf("store: applying breaking migration v13 (data reset)")
+	}
 
 	tx, err := db.Begin()
 	if err != nil {

@@ -9,7 +9,7 @@ function t(overrides: Partial<Thread> = {}): Thread {
     provider: 'claude',
     workspacePath: '/ws',
     projectPath: '/ws',
-    interactionMode: 'default',
+    mode: 'chat',
     model: 'm',
     createdAt: 0,
     updatedAt: 0,

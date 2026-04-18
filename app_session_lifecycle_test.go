@@ -96,7 +96,6 @@ func TestServiceShutdownClosesSessionsWithoutDeadlock(t *testing.T) {
 	thread := testThread("thread-shutdown")
 	thread.Provider = string(provider.Claude)
 	thread.WorkspacePath = t.TempDir()
-	thread.ProjectPath = thread.WorkspacePath
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
@@ -140,7 +139,6 @@ func TestServiceShutdownReturnsSessionCloseErrors(t *testing.T) {
 	thread := testThread("thread-shutdown-error")
 	thread.Provider = string(provider.Claude)
 	thread.WorkspacePath = t.TempDir()
-	thread.ProjectPath = thread.WorkspacePath
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
@@ -180,7 +178,6 @@ func TestStartSessionReturnsExistingSessionCloseError(t *testing.T) {
 	thread := testThread("thread-start-replace-close-error")
 	thread.Provider = string(provider.Claude)
 	thread.WorkspacePath = t.TempDir()
-	thread.ProjectPath = thread.WorkspacePath
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
 	}

@@ -42,7 +42,11 @@ func shipTestSetup(t *testing.T) (*App, string, string) {
 	testutil.RunGit(t, remoteParent, "init", "--bare", remote)
 
 	thread := testThread("thread-ship-" + t.Name())
-	thread.ProjectPath = repo
+	project, err := app.ensureProjectForWorkspace(repo)
+	if err != nil {
+		t.Fatalf("ensureProjectForWorkspace() error = %v", err)
+	}
+	thread.ProjectID = project.ID
 	thread.WorkspacePath = repo
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)

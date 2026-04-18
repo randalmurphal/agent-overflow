@@ -14,7 +14,7 @@ function seedThread(): Thread {
     provider: 'claude',
     workspacePath: '/tmp',
     projectPath: '/tmp',
-    interactionMode: 'default',
+    mode: 'chat',
     model: 'claude-sonnet-4-6',
     createdAt: 0,
     updatedAt: 0,
@@ -132,15 +132,19 @@ describe('<Composer>', () => {
     expect(queryByTestId('composer-turn-banner')).toBeNull();
   });
 
-  it('renders Interrupt banner alongside disabled Send while a turn streams', async () => {
+  it('renders Interrupt banner and an interrupt-labelled action while a turn streams', async () => {
     const pane = await makeReadyPane();
     pane.setSessionStatus('running');
     pane.appendTextDelta('partial');
     const draft = await makeDraftStore();
-    const { getByRole, getByTestId } = render(Composer, { props: { pane, draft } });
-    const send = getByRole('button', { name: /send/i }) as HTMLButtonElement;
-    expect(send.disabled).toBe(true);
-    expect(getByTestId('composer-interrupt')).toBeInTheDocument();
+    const { queryByTestId, getByTestId } = render(Composer, { props: { pane, draft } });
+    // The merged send/interrupt control swaps data-testid + aria-label
+    // based on turn state. While a turn streams the Send data-testid
+    // is replaced by composer-interrupt; the underlying button remains
+    // enabled so the user can actually fire InterruptTurn.
+    expect(queryByTestId('composer-send')).toBeNull();
+    const interruptBtn = getByTestId('composer-interrupt') as HTMLButtonElement;
+    expect(interruptBtn.disabled).toBe(false);
     expect(getByTestId('composer-turn-banner')).toBeInTheDocument();
   });
 
@@ -630,33 +634,38 @@ describe('<Composer> mid-turn guard', () => {
     mockDraftBindings();
   });
 
-  it('disables Send while streaming content is live even with a draft', async () => {
+  it('swaps Send for Interrupt while streaming content is live', async () => {
     const pane = await makeReadyPane();
     pane.appendTextDelta('partial response');
     const draft = await makeDraftStore();
     draft.setContent('next question');
-    const { getByTestId } = render(Composer, { props: { pane, draft } });
-    const send = getByTestId('composer-send') as HTMLButtonElement;
-    expect(send.disabled).toBe(true);
-    expect(send.getAttribute('title') ?? '').toMatch(/Agent is responding/);
+    const { queryByTestId, getByTestId } = render(Composer, { props: { pane, draft } });
+    // A turn in flight hides the send testid; the interrupt affordance
+    // remains clickable so the user can cancel.
+    expect(queryByTestId('composer-send')).toBeNull();
+    const interruptBtn = getByTestId('composer-interrupt') as HTMLButtonElement;
+    expect(interruptBtn.disabled).toBe(false);
+    expect(interruptBtn.getAttribute('title') ?? '').toMatch(/Interrupt/i);
   });
 
-  it('disables Send while active tool calls are in flight', async () => {
+  it('swaps Send for Interrupt while active tool calls are in flight', async () => {
     const pane = await makeReadyPane();
     pane.addToolCall('tool-1', { toolName: 'bash' });
     const draft = await makeDraftStore();
     draft.setContent('queued');
-    const { getByTestId } = render(Composer, { props: { pane, draft } });
-    expect((getByTestId('composer-send') as HTMLButtonElement).disabled).toBe(true);
+    const { queryByTestId, getByTestId } = render(Composer, { props: { pane, draft } });
+    expect(queryByTestId('composer-send')).toBeNull();
+    expect((getByTestId('composer-interrupt') as HTMLButtonElement).disabled).toBe(false);
   });
 
-  it('disables Send while pendingMessage is set (optimistic in-flight turn)', async () => {
+  it('swaps Send for Interrupt while pendingMessage is set (optimistic in-flight turn)', async () => {
     const pane = await makeReadyPane();
     pane.setPendingMessage('just sent');
     const draft = await makeDraftStore();
     draft.setContent('immediate follow-up');
-    const { getByTestId } = render(Composer, { props: { pane, draft } });
-    expect((getByTestId('composer-send') as HTMLButtonElement).disabled).toBe(true);
+    const { queryByTestId, getByTestId } = render(Composer, { props: { pane, draft } });
+    expect(queryByTestId('composer-send')).toBeNull();
+    expect((getByTestId('composer-interrupt') as HTMLButtonElement).disabled).toBe(false);
   });
 
   it('Enter during active turn does not call SendMessage and announces the block', async () => {
@@ -676,15 +685,19 @@ describe('<Composer> mid-turn guard', () => {
     expect(alert.getAttribute('aria-live')).toBe('polite');
   });
 
-  it('clicking Send during an active turn is a no-op', async () => {
+  it('the Interrupt button during an active turn does not call SendMessage', async () => {
     const pane = await makeReadyPane();
     pane.appendTextDelta('streaming');
     const draft = await makeDraftStore();
     draft.setContent('queued');
     const sendMock = setBindingMock('SendMessage', async () => {});
+    const interruptMock = setBindingMock('InterruptTurn', async () => {});
     const { getByTestId } = render(Composer, { props: { pane, draft } });
-    await fireEvent.click(getByTestId('composer-send'));
+    // Clicking the merged control while a turn runs fires InterruptTurn,
+    // never SendMessage — the two are mutually exclusive.
+    await fireEvent.click(getByTestId('composer-interrupt'));
     expect(sendMock).not.toHaveBeenCalled();
+    expect(interruptMock).toHaveBeenCalledWith('thread-1');
   });
 
   it('Interrupt button surfaces an error when InterruptTurn rejects', async () => {
@@ -754,22 +767,24 @@ describe('<Composer> mid-turn guard', () => {
     expect((alert.textContent ?? '').trim()).toBe('');
   });
 
-  it('Interrupt success leaves Send re-enabled once the pane clears', async () => {
+  it('Interrupt success restores the Send button once the pane clears', async () => {
     const pane = await makeReadyPane();
     pane.appendTextDelta('streaming');
     const draft = await makeDraftStore();
     draft.setContent('queued');
     const interruptMock = setBindingMock('InterruptTurn', async () => {});
-    const { getByTestId } = render(Composer, { props: { pane, draft } });
+    const { getByTestId, queryByTestId } = render(Composer, { props: { pane, draft } });
 
-    expect((getByTestId('composer-send') as HTMLButtonElement).disabled).toBe(true);
+    // While the turn is active the data-testid is composer-interrupt;
+    // after finalizeTurn the same button re-exports composer-send and
+    // becomes clickable because the draft is non-empty.
+    expect(queryByTestId('composer-send')).toBeNull();
     await fireEvent.click(getByTestId('composer-interrupt'));
     expect(interruptMock).toHaveBeenCalledWith('thread-1');
-    // The backend is responsible for delivering turn_complete, but once the
-    // pane clears streamingContent the guard lifts. Simulate that here.
     pane.finalizeTurn();
     await Promise.resolve();
     await Promise.resolve();
+    expect(queryByTestId('composer-interrupt')).toBeNull();
     expect((getByTestId('composer-send') as HTMLButtonElement).disabled).toBe(false);
   });
 });

@@ -9,7 +9,7 @@ func TestDeleteItemsAfterTurnRemovesOnlyForwardTurns(t *testing.T) {
 	s := newTestStore(t)
 	now := time.Now().UnixMilli()
 	if err := s.CreateThread(Thread{
-		ID: "t-del", Title: "t", Provider: "claude", WorkspacePath: "/tmp",
+		ProjectID: defaultTestProjectID, ID: "t-del", Title: "t", Provider: "claude", WorkspacePath: "/tmp",
 		CreatedAt: now, UpdatedAt: now,
 	}); err != nil {
 		t.Fatalf("create thread: %v", err)
@@ -59,7 +59,7 @@ func TestDeleteItemsAfterTurnScopesToThread(t *testing.T) {
 	now := time.Now().UnixMilli()
 	for _, id := range []string{"t-a", "t-b"} {
 		if err := s.CreateThread(Thread{
-			ID: id, Title: id, Provider: "claude", WorkspacePath: "/tmp",
+			ProjectID: defaultTestProjectID, ID: id, Title: id, Provider: "claude", WorkspacePath: "/tmp",
 			CreatedAt: now, UpdatedAt: now,
 		}); err != nil {
 			t.Fatalf("create thread %s: %v", id, err)
@@ -92,7 +92,7 @@ func TestDeleteItemsAfterTurnEmptyIsNoop(t *testing.T) {
 	s := newTestStore(t)
 	now := time.Now().UnixMilli()
 	if err := s.CreateThread(Thread{
-		ID: "t-empty", Title: "t", Provider: "claude", WorkspacePath: "/tmp",
+		ProjectID: defaultTestProjectID, ID: "t-empty", Title: "t", Provider: "claude", WorkspacePath: "/tmp",
 		CreatedAt: now, UpdatedAt: now,
 	}); err != nil {
 		t.Fatalf("create thread: %v", err)
@@ -110,7 +110,7 @@ func TestDeleteItemsAfterTurnTouchesThreadUpdatedAt(t *testing.T) {
 	s := newTestStore(t)
 	base := time.Now().UnixMilli() - 10_000
 	if err := s.CreateThread(Thread{
-		ID: "t-touch", Title: "t", Provider: "claude", WorkspacePath: "/tmp",
+		ProjectID: defaultTestProjectID, ID: "t-touch", Title: "t", Provider: "claude", WorkspacePath: "/tmp",
 		CreatedAt: base, UpdatedAt: base,
 	}); err != nil {
 		t.Fatalf("create thread: %v", err)

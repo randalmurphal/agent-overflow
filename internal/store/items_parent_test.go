@@ -55,7 +55,7 @@ func TestInsertItemPersistsParentToolUseID(t *testing.T) {
 
 	threadID := "thread-sub"
 	if err := s.CreateThread(Thread{
-		ID:            threadID,
+		ProjectID: defaultTestProjectID, ID:            threadID,
 		Title:         "t",
 		Provider:      "claude",
 		WorkspacePath: "/tmp",
@@ -98,7 +98,7 @@ func TestInsertItemEmptyParentToolUseIDRoundTrips(t *testing.T) {
 
 	threadID := "thread-top"
 	if err := s.CreateThread(Thread{
-		ID:            threadID,
+		ProjectID: defaultTestProjectID, ID:            threadID,
 		Title:         "t",
 		Provider:      "claude",
 		WorkspacePath: "/tmp",
@@ -139,7 +139,7 @@ func TestListItemsPreservesParentToolUseID(t *testing.T) {
 
 	threadID := "thread-list"
 	if err := s.CreateThread(Thread{
-		ID:            threadID,
+		ProjectID: defaultTestProjectID, ID:            threadID,
 		Title:         "t",
 		Provider:      "claude",
 		WorkspacePath: "/tmp",
@@ -194,7 +194,7 @@ func TestItemIndexUniqueConstraintBlocksDuplicate(t *testing.T) {
 	s := newTestStore(t)
 	now := time.Now().UnixMilli()
 	if err := s.CreateThread(Thread{
-		ID: "t-dup", Title: "t", Provider: "claude", WorkspacePath: "/tmp",
+		ProjectID: defaultTestProjectID, ID: "t-dup", Title: "t", Provider: "claude", WorkspacePath: "/tmp",
 		CreatedAt: now, UpdatedAt: now,
 	}); err != nil {
 		t.Fatalf("create thread: %v", err)
@@ -225,7 +225,7 @@ func TestConcurrentAppendItemAssignsUniqueIndex(t *testing.T) {
 	s := newTestStore(t)
 	now := time.Now().UnixMilli()
 	if err := s.CreateThread(Thread{
-		ID: "t-race", Title: "t", Provider: "claude", WorkspacePath: "/tmp",
+		ProjectID: defaultTestProjectID, ID: "t-race", Title: "t", Provider: "claude", WorkspacePath: "/tmp",
 		CreatedAt: now, UpdatedAt: now,
 	}); err != nil {
 		t.Fatalf("create thread: %v", err)
@@ -284,7 +284,7 @@ func TestAppendItemReturnsAssignedIndex(t *testing.T) {
 	s := newTestStore(t)
 	now := time.Now().UnixMilli()
 	if err := s.CreateThread(Thread{
-		ID: "t-ra", Title: "t", Provider: "claude", WorkspacePath: "/tmp",
+		ProjectID: defaultTestProjectID, ID: "t-ra", Title: "t", Provider: "claude", WorkspacePath: "/tmp",
 		CreatedAt: now, UpdatedAt: now,
 	}); err != nil {
 		t.Fatalf("create thread: %v", err)
@@ -319,7 +319,7 @@ func TestConcurrentAppendItemWithPayloadAssignsUniqueIndex(t *testing.T) {
 	s := newTestStore(t)
 	now := time.Now().UnixMilli()
 	if err := s.CreateThread(Thread{
-		ID: "t-race-pl", Title: "t", Provider: "claude", WorkspacePath: "/tmp",
+		ProjectID: defaultTestProjectID, ID: "t-race-pl", Title: "t", Provider: "claude", WorkspacePath: "/tmp",
 		CreatedAt: now, UpdatedAt: now,
 	}); err != nil {
 		t.Fatalf("create thread: %v", err)
@@ -395,7 +395,7 @@ func TestAppendItemWithPayloadReturnsAssignedIndex(t *testing.T) {
 	s := newTestStore(t)
 	now := time.Now().UnixMilli()
 	if err := s.CreateThread(Thread{
-		ID: "t-rap", Title: "t", Provider: "claude", WorkspacePath: "/tmp",
+		ProjectID: defaultTestProjectID, ID: "t-rap", Title: "t", Provider: "claude", WorkspacePath: "/tmp",
 		CreatedAt: now, UpdatedAt: now,
 	}); err != nil {
 		t.Fatalf("create thread: %v", err)

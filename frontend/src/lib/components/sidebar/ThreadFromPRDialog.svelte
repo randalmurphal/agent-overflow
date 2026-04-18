@@ -8,7 +8,6 @@
   import type { Thread } from '../../types/models';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { focusTrap } from '../../utils/focusTrap';
-  import ProviderPicker from '../composer/ProviderPicker.svelte';
 
   let { open, pane, onClose }: {
     open: boolean;
@@ -167,7 +166,25 @@
 
       <div class="space-y-2">
         <span class="text-xs text-text-secondary block">Provider</span>
-        <ProviderPicker currentProvider={provider} onSelect={(p) => provider = p as 'claude' | 'codex'} />
+        <div class="flex gap-1" role="radiogroup" aria-label="Provider">
+          {#each (['claude', 'codex'] as const) as choice}
+            <button
+              type="button"
+              role="radio"
+              aria-checked={provider === choice}
+              data-testid={`thread-from-pr-provider-${choice}`}
+              onclick={() => (provider = choice)}
+              class={[
+                'flex-1 text-xs py-1.5 rounded cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50',
+                provider === choice
+                  ? 'bg-accent text-surface-0 font-medium'
+                  : 'bg-surface-2 text-text-secondary hover:text-text-primary',
+              ].join(' ')}
+            >
+              {choice === 'claude' ? 'Claude' : 'Codex'}
+            </button>
+          {/each}
+        </div>
       </div>
 
       <div class="space-y-1">

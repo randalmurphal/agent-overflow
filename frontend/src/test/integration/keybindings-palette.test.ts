@@ -14,6 +14,7 @@ import {
   installThreadViewDefaults,
   makeThread,
   resetAppState,
+  seedSidebarProject,
 } from './_helpers';
 
 beforeAll(installAnimateShim);
@@ -27,6 +28,9 @@ async function loadKeybindingsFromMock(rules: Array<{ key: string; command: stri
 async function mountBareApp(threads: Thread[] = []) {
   installAppDefaults();
   setBindingMock('ListThreads', async () => threads);
+  // The sidebar is projects-first — each thread must live under a
+  // project and its project must be expanded for the row to render.
+  if (threads.length > 0) seedSidebarProject(threads);
   // If any thread ends up active during the test, these are used.
   installThreadViewDefaults();
   for (const t of threads) installComposerDefaults(t.id);

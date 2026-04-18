@@ -29,7 +29,7 @@ function seedThread(id = 'thread-1'): Thread {
     provider: 'codex',
     workspacePath: '/tmp',
     projectPath: '/tmp',
-    interactionMode: 'default',
+    mode: 'chat',
     model: 'gpt-4',
     createdAt: 0,
     updatedAt: 0,

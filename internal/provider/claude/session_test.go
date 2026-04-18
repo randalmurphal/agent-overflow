@@ -659,13 +659,13 @@ func TestBuildArgsDefault(t *testing.T) {
 
 func TestBuildArgsWithAllOptions(t *testing.T) {
 	args := buildArgs(Config{
-		Model:          "opus",
-		Resume:         "session-123",
-		ForkSession:    true,
-		SystemPrompt:   "Be helpful",
-		PermissionMode: "bypassPermissions",
-		MaxTurns:       5,
-		AllowedTools:   []string{"Bash", "Edit"},
+		Model:           "opus",
+		Resume:          "session-123",
+		ForkSession:     true,
+		SystemPrompt:    "Be helpful",
+		PermissionFlags: []string{"--permission-mode", "acceptEdits"},
+		MaxTurns:        5,
+		AllowedTools:    []string{"Bash", "Edit"},
 	})
 
 	// Check that all flags are present.
@@ -697,8 +697,8 @@ func TestBuildArgsWithAllOptions(t *testing.T) {
 	if !findFlag("--system-prompt", "Be helpful") {
 		t.Error("missing --system-prompt")
 	}
-	if !findFlag("--permission-mode", "bypassPermissions") {
-		t.Error("missing --permission-mode")
+	if !findFlag("--permission-mode", "acceptEdits") {
+		t.Error("missing --permission-mode acceptEdits")
 	}
 	if !findFlag("--max-turns", "5") {
 		t.Error("missing --max-turns 5")
@@ -711,15 +711,39 @@ func TestBuildArgsWithAllOptions(t *testing.T) {
 	}
 }
 
-func TestBuildArgsDefaultPermissionModeOmitted(t *testing.T) {
-	args := buildArgs(Config{PermissionMode: "default"})
+func TestBuildArgsNoPermissionFlagsOmitsAll(t *testing.T) {
+	args := buildArgs(Config{PermissionFlags: nil})
 
 	for _, a := range args {
-		if a == "--permission-mode" {
-			t.Error("--permission-mode should be omitted for 'default'")
+		if a == "--permission-mode" || a == "--dangerously-skip-permissions" {
+			t.Errorf("permission flag %q should be omitted when PermissionFlags is nil", a)
 		}
 	}
 }
+
+// TestBuildArgsDangerousSkipPermissions confirms the full-access flow
+// emits the bare flag with no value argument — a regression guard around
+// the []string shape of PermissionFlags.
+func TestBuildArgsDangerousSkipPermissions(t *testing.T) {
+	args := buildArgs(Config{PermissionFlags: []string{"--dangerously-skip-permissions"}})
+	found := false
+	for i, a := range args {
+		if a != "--dangerously-skip-permissions" {
+			continue
+		}
+		found = true
+		// Next arg should not be a companion value — either end of slice
+		// or another flag.
+		if i+1 < len(args) && !isFlagToken(args[i+1]) {
+			t.Errorf("--dangerously-skip-permissions should not carry a value; got %q", args[i+1])
+		}
+	}
+	if !found {
+		t.Errorf("expected --dangerously-skip-permissions in args: %v", args)
+	}
+}
+
+func isFlagToken(arg string) bool { return len(arg) >= 2 && arg[0] == '-' }
 
 func TestSendWireFormat(t *testing.T) {
 	// Verify the JSON format matches the Claude CLI input protocol.

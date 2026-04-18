@@ -31,7 +31,12 @@ type Keybinding struct {
 // editor.* commands) removed, and with the command-palette / app-level
 // actions this wave introduces layered on top.
 var DefaultKeybindings = []Keybinding{
-	{Key: "mod+k", Command: "palette.open"},
+	// Wave 4 swap: ⌘K focuses the sidebar search (the most common
+	// wayfinding chord), and the command palette moves to ⌘⇧K. The
+	// sidebar.focus-search binding fires globally (empty `when`) so it
+	// works from the composer, the diff panel, the terminal, etc.
+	{Key: "mod+shift+k", Command: "palette.open"},
+	{Key: "mod+k", Command: "sidebar.focus-search"},
 	// NOTE: mod+j for terminal.toggle is owned by ChatView's existing listener
 	// (Wave 2C). The command is still registered and reachable from the
 	// palette / user remappings, but the default binding is intentionally
@@ -65,6 +70,11 @@ var DefaultKeybindings = []Keybinding{
 	// project's threads. Like mod+shift+f this traps focus + closes on Esc
 	// so no `!terminalFocus` guard is needed.
 	{Key: "mod+p", Command: "thread.search"},
+	// shift+tab cycles the active thread through chat → plan → design. The
+	// `when` expression keeps the chord inert while the palette or any
+	// modal has focus so Shift+Tab's default "focus prev" behaviour still
+	// wins inside those surfaces.
+	{Key: "shift+tab", Command: "mode.cycle", When: "hasActiveThread && !paletteOpen && !anyModalOpen"},
 }
 
 const keybindingsFileName = "keybindings.json"

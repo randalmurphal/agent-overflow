@@ -208,8 +208,8 @@ func TestCreateThreadFromPRCreatesThreadWithFirstItem(t *testing.T) {
 	if thread.Model != "claude-sonnet-4-6" {
 		t.Fatalf("Model = %q", thread.Model)
 	}
-	if thread.InteractionMode != "default" {
-		t.Fatalf("InteractionMode = %q, want default", thread.InteractionMode)
+	if thread.Mode != "chat" {
+		t.Fatalf("Mode = %q, want chat", thread.Mode)
 	}
 
 	items, err := app.store.ListItems(thread.ID)

@@ -15,7 +15,11 @@ func TestGetGitStatusUsesWorkspacePath(t *testing.T) {
 	repo := testutil.InitGitRepo(t)
 
 	thread := testThread("thread-status")
-	thread.ProjectPath = t.TempDir()
+	project, err := app.ensureProjectForWorkspace(repo)
+	if err != nil {
+		t.Fatalf("ensureProjectForWorkspace() error = %v", err)
+	}
+	thread.ProjectID = project.ID
 	thread.WorkspacePath = repo
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
@@ -37,8 +41,14 @@ func TestGitListBranchesUsesProjectPath(t *testing.T) {
 	app := newTestAppWithStore(t)
 	repo := testutil.InitGitRepo(t)
 
+	// Anchor the thread to a project at the git repo — that's the
+	// implicit project.Path for GitListBranches to resolve.
+	project, err := app.ensureProjectForWorkspace(repo)
+	if err != nil {
+		t.Fatalf("ensureProjectForWorkspace() error = %v", err)
+	}
 	thread := testThread("thread-branches")
-	thread.ProjectPath = repo
+	thread.ProjectID = project.ID
 	thread.WorkspacePath = t.TempDir()
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
@@ -63,7 +73,11 @@ func TestGitCommitReturnsCommitSHA(t *testing.T) {
 	repo := testutil.InitGitRepo(t)
 
 	thread := testThread("thread-commit")
-	thread.ProjectPath = repo
+	project, err := app.ensureProjectForWorkspace(repo)
+	if err != nil {
+		t.Fatalf("ensureProjectForWorkspace() error = %v", err)
+	}
+	thread.ProjectID = project.ID
 	thread.WorkspacePath = repo
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
@@ -93,8 +107,14 @@ func TestGitCreateAndRemoveWorktree(t *testing.T) {
 	app := newTestAppWithStore(t)
 	repo := testutil.InitGitRepo(t)
 
+	// The thread must belong to a project whose path is the repo root
+	// so GitCreateWorktree can drive git from the correct cwd.
+	project, err := app.ensureProjectForWorkspace(repo)
+	if err != nil {
+		t.Fatalf("ensureProjectForWorkspace() error = %v", err)
+	}
 	thread := testThread("thread-worktree")
-	thread.ProjectPath = repo
+	thread.ProjectID = project.ID
 	thread.WorkspacePath = repo
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
@@ -159,8 +179,12 @@ func TestGitCreateWorktreeUsesTemporaryBranchWhenEmpty(t *testing.T) {
 	app := newTestAppWithStore(t)
 	repo := testutil.InitGitRepo(t)
 
+	project, err := app.ensureProjectForWorkspace(repo)
+	if err != nil {
+		t.Fatalf("ensureProjectForWorkspace() error = %v", err)
+	}
 	thread := testThread("thread-worktree-auto")
-	thread.ProjectPath = repo
+	thread.ProjectID = project.ID
 	thread.WorkspacePath = repo
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
@@ -190,7 +214,11 @@ func TestGitCheckoutUpdatesStoredBranch(t *testing.T) {
 	testutil.RunGit(t, repo, "branch", "feature/checkout")
 
 	thread := testThread("thread-checkout")
-	thread.ProjectPath = repo
+	project, err := app.ensureProjectForWorkspace(repo)
+	if err != nil {
+		t.Fatalf("ensureProjectForWorkspace() error = %v", err)
+	}
+	thread.ProjectID = project.ID
 	thread.WorkspacePath = repo
 	thread.Branch = "main"
 	if err := app.store.CreateThread(thread); err != nil {

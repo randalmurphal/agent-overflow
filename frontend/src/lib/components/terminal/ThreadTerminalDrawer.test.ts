@@ -91,7 +91,7 @@ function makePane() {
     provider: 'claude',
     projectPath: '/workspace',
     model: '',
-    interactionMode: 'default',
+    mode: 'chat',
     createdAt: 0,
     updatedAt: 0,
   };

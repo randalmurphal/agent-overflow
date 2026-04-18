@@ -20,7 +20,11 @@ func TestMaybeRenameTemporaryWorktreeBranchRenamesOnFirstMessage(t *testing.T) {
 
 	thread := testThread("thread-worktree-rename")
 	thread.Provider = string(provider.Claude)
-	thread.ProjectPath = repo
+	project, err := app.ensureProjectForWorkspace(repo)
+	if err != nil {
+		t.Fatalf("ensureProjectForWorkspace() error = %v", err)
+	}
+	thread.ProjectID = project.ID
 	thread.WorkspacePath = repo
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
@@ -135,7 +139,11 @@ func TestMaybeRenameTemporaryWorktreeBranchGeneratorErrorIsNonFatal(t *testing.T
 
 	thread := testThread("thread-generator-error")
 	thread.Provider = string(provider.Claude)
-	thread.ProjectPath = repo
+	project, err := app.ensureProjectForWorkspace(repo)
+	if err != nil {
+		t.Fatalf("ensureProjectForWorkspace() error = %v", err)
+	}
+	thread.ProjectID = project.ID
 	thread.WorkspacePath = repo
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
@@ -178,7 +186,11 @@ func TestMaybeRenameTemporaryWorktreeBranchFallsBackOnEmptyMessage(t *testing.T)
 
 	thread := testThread("thread-fallback-branch")
 	thread.Provider = string(provider.Claude)
-	thread.ProjectPath = repo
+	project, err := app.ensureProjectForWorkspace(repo)
+	if err != nil {
+		t.Fatalf("ensureProjectForWorkspace() error = %v", err)
+	}
+	thread.ProjectID = project.ID
 	thread.WorkspacePath = repo
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
@@ -211,7 +223,11 @@ func TestMaybeRenameTemporaryWorktreeBranchIsIdempotentWhenSkipped(t *testing.T)
 
 	thread := testThread("thread-rename-idempotent")
 	thread.Provider = string(provider.Claude)
-	thread.ProjectPath = repo
+	project, err := app.ensureProjectForWorkspace(repo)
+	if err != nil {
+		t.Fatalf("ensureProjectForWorkspace() error = %v", err)
+	}
+	thread.ProjectID = project.ID
 	thread.WorkspacePath = repo
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)

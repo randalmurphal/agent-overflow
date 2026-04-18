@@ -26,7 +26,9 @@ import {
   GitPush,
   GitCreatePR,
   UnarchiveThread,
+  UpdateThreadMode,
 } from './bindings';
+import { cycleMode } from '../utils/modeCycle';
 
 export interface BuiltinCommandHooks {
   pane: ThreadPane;
@@ -212,6 +214,25 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
   });
 
   registerCommand({
+    id: 'mode.cycle',
+    label: 'Mode: Cycle (Chat → Plan → Design)',
+    description: 'Cycle the active thread through the chat / plan / design modes.',
+    icon: '⇆',
+    when: 'hasActiveThread && !paletteOpen && !anyModalOpen',
+    run: (ctx) =>
+      withActiveThread(ctx, pane, async (t) => {
+        const next = cycleMode(t.mode);
+        try {
+          const updated = (await UpdateThreadMode(t.id, next)) as Thread;
+          pane.replaceThread(updated);
+          replaceThread(updated);
+        } catch (err) {
+          addToast('error', `Failed to cycle mode: ${err}`);
+        }
+      }),
+  });
+
+  registerCommand({
     id: 'thread.previous',
     label: 'Thread: Previous',
     icon: '↑',
@@ -238,6 +259,18 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
   registerCommand({
     id: 'search.threads',
     label: 'Threads: Focus Search',
+    icon: '⌕',
+    run: () => focusThreadSearch(),
+  });
+
+  // Alias command reachable from the ⌘K global chord. Same behaviour as
+  // search.threads; kept as a separate id so the keybindings cheat sheet
+  // lists "Sidebar: Focus Search" under its own row (matches what users
+  // expect when they glance at the sidebar ⌘K hint).
+  registerCommand({
+    id: 'sidebar.focus-search',
+    label: 'Sidebar: Focus Search',
+    description: 'Move focus to the sidebar search input.',
     icon: '⌕',
     run: () => focusThreadSearch(),
   });
@@ -436,7 +469,7 @@ export function makeCommandContext(pane: ThreadPane, extra: Partial<CommandConte
     hasActiveThread: thread !== null,
     canForkActiveThread: !!thread?.sessionRef,
     canStartDiscussion:
-      !!thread && thread.interactionMode !== 'discussion' && !thread.discussionId && !thread.parentThreadId,
+      !!thread && thread.mode !== 'discussion' && !thread.discussionId && !thread.parentThreadId,
     ...extra,
   } as CommandContext;
 }

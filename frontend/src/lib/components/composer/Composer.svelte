@@ -1,4 +1,16 @@
 <script lang="ts">
+  // Pure message entry. After Wave 3b the composer owns:
+  //   - textarea + autosize + Enter/Shift-Enter semantics
+  //   - attachment drag/drop/paste + row rendering
+  //   - mention popover + slash popover
+  //   - send / interrupt flow (delegated to SendButton via ComposerToolbar)
+  //   - mid-turn guard + polite aria-live error
+  //
+  // Everything else — model/provider picker, effort + fast-mode,
+  // runtime mode, mode cycle, branch picker, env/worktree picker — now
+  // lives in the composer toolbar / below-composer bar. See
+  // ../composer/toolbar/ and ../composer/belowbar/.
+
   import { onDestroy } from 'svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import {
@@ -11,10 +23,6 @@
   } from '../../stores/bindings';
   import { addToast } from '../../stores/toast.svelte';
   import type { Attachment } from '../../types/attachment';
-  import {
-    DEFAULT_MAX_ATTACHMENT_SIZE,
-    isAllowedAttachmentMime,
-  } from '../../types/attachment';
   import type { WorkspaceFile, WorkspaceFileSearchResult } from '../../types/workspaceFile';
   import type { ComposerDraftStore } from '../../stores/composerDraft.svelte';
   import { applyMention, detectMentionTrigger, type MentionTrigger } from './mentionHelpers';
@@ -23,10 +31,18 @@
     detectSlashTrigger,
     type SlashTrigger,
   } from './slashHelpers';
+  import {
+    DEFAULT_MAX_ATTACHMENT_SIZE,
+    extractClipboardImages,
+    fileToBase64,
+    hasImagePayload,
+    rejectionReason,
+  } from './attachmentHelpers';
   import ComposerAttachmentRow from './ComposerAttachmentRow.svelte';
   import ComposerMentionPopover from './ComposerMentionPopover.svelte';
   import ComposerSlashPopover from './ComposerSlashPopover.svelte';
   import ComposerTerminalChip from './ComposerTerminalChip.svelte';
+  import ComposerToolbar from './toolbar/ComposerToolbar.svelte';
 
   interface Props {
     pane: ThreadPane;
@@ -149,6 +165,15 @@
   }
 
   async function handleKeydown(e: KeyboardEvent) {
+    // Shift+Tab globally cycles thread mode. Let the App-level keydown
+    // see it; preventing the browser's outdent here keeps focus inside
+    // the textarea while the global command fires. The user has
+    // explicitly confirmed textarea outdent is not wanted.
+    if (e.key === 'Tab' && e.shiftKey && !mentionTrigger && !slashTrigger) {
+      e.preventDefault();
+      return;
+    }
+
     if (mentionTrigger) {
       if (e.key === 'ArrowDown') {
         e.preventDefault();
@@ -396,17 +421,9 @@
   }
 
   async function uploadOne(threadId: string, file: File) {
-    if (!isAllowedAttachmentMime(file.type) && !matchesImageExtension(file.name)) {
-      addToast('warning', `Unsupported file type: ${file.name}`);
-      return;
-    }
-    if (file.size > MAX_ATTACHMENT_SIZE) {
-      addToast(
-        'warning',
-        `${file.name} is ${(file.size / 1024 / 1024).toFixed(1)} MB; limit is ${Math.round(
-          MAX_ATTACHMENT_SIZE / 1024 / 1024,
-        )} MB`,
-      );
+    const rejection = rejectionReason(file, MAX_ATTACHMENT_SIZE);
+    if (rejection) {
+      addToast('warning', rejection);
       return;
     }
     try {
@@ -426,27 +443,6 @@
     }
   }
 
-  function matchesImageExtension(name: string): boolean {
-    return /\.(png|jpe?g|gif|webp)$/i.test(name);
-  }
-
-  function fileToBase64(file: File): Promise<string> {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onerror = () => reject(new Error('Failed to read file'));
-      reader.onload = () => {
-        const result = reader.result;
-        if (typeof result !== 'string') {
-          reject(new Error('Unexpected reader result'));
-          return;
-        }
-        const commaIdx = result.indexOf(',');
-        resolve(commaIdx >= 0 ? result.slice(commaIdx + 1) : result);
-      };
-      reader.readAsDataURL(file);
-    });
-  }
-
   function handleDragEnter(event: DragEvent) {
     if (!hasImagePayload(event)) return;
     event.preventDefault();
@@ -454,9 +450,7 @@
   }
 
   function handleDragLeave(_event: DragEvent) {
-    if (dragDepth > 0) {
-      dragDepth -= 1;
-    }
+    if (dragDepth > 0) dragDepth -= 1;
   }
 
   function handleDragOver(event: DragEvent) {
@@ -473,22 +467,8 @@
     await uploadFiles(files);
   }
 
-  function hasImagePayload(event: DragEvent): boolean {
-    const types = event.dataTransfer?.types;
-    if (!types) return false;
-    return Array.from(types).some((type) => type === 'Files' || type.startsWith('image/'));
-  }
-
   async function handlePaste(event: ClipboardEvent) {
-    const clip = event.clipboardData;
-    if (!clip) return;
-    const files: File[] = [];
-    for (const item of Array.from(clip.items)) {
-      if (item.kind === 'file' && item.type.startsWith('image/')) {
-        const file = item.getAsFile();
-        if (file) files.push(file);
-      }
-    }
+    const files = extractClipboardImages(event);
     if (files.length === 0) return;
     event.preventDefault();
     await uploadFiles(files);
@@ -565,20 +545,11 @@
     >
       <span class="h-2 w-2 animate-pulse rounded-full bg-accent shrink-0" aria-hidden="true"></span>
       <span class="truncate">Agent is responding.</span>
-      <button
-        type="button"
-        onclick={interrupt}
-        data-testid="composer-interrupt"
-        aria-label="Interrupt the current turn"
-        class="ml-auto shrink-0 rounded border border-error/50 bg-error/15 px-2 py-0.5 text-error hover:bg-error/25 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-error/50"
-      >
-        Interrupt
-      </button>
     </div>
   {/if}
 
   <div class="px-4 py-3">
-    <div class="relative flex gap-2 items-end">
+    <div class="relative">
       <ComposerMentionPopover
         open={mentionTrigger !== null}
         query={mentionTrigger?.query ?? ''}
@@ -613,19 +584,8 @@
           : 'Send a message... (Shift+Enter for newline, @ to mention a file)'}
         aria-label="Message input"
         rows={1}
-        class="flex-1 resize-none rounded-lg border border-border bg-surface-0 px-3 py-2.5 text-sm text-text-primary placeholder:text-text-secondary/50 focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/50 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+        class="w-full resize-none rounded-lg border border-border bg-surface-0 px-3 py-2.5 text-sm text-text-primary placeholder:text-text-secondary/50 focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/50 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
       ></textarea>
-
-      <button
-        onclick={send}
-        disabled={!canSend}
-        data-testid="composer-send"
-        title={isTurnActive ? 'Agent is responding. Press Interrupt to cancel.' : undefined}
-        aria-label="Send message"
-        class="shrink-0 rounded-lg px-4 py-2.5 text-sm font-medium bg-accent text-surface-0 hover:bg-accent/85 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
-      >
-        Send
-      </button>
     </div>
 
     <div
@@ -637,4 +597,12 @@
       {midTurnBlockMessage}
     </div>
   </div>
+
+  <ComposerToolbar
+    {pane}
+    {canSend}
+    {isTurnActive}
+    onSend={send}
+    onInterrupt={interrupt}
+  />
 </div>

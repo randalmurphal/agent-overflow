@@ -1,0 +1,71 @@
+<script lang="ts">
+  // Icon-only button. Consistent sizing + hit area + focus ring so the
+  // toolbar pickers (model, effort, mode, access) and sidebar affordances
+  // share one visual language. Callers pass their icon markup through the
+  // `children` snippet; we own chrome (size, border, hover, aria-label).
+  //
+  // `label` is both the aria-label (required for screen readers on
+  // icon-only controls) AND the native title, so a hovering user sees the
+  // same thing the AT user hears.
+
+  import type { Snippet } from 'svelte';
+
+  interface Props {
+    label: string;
+    disabled?: boolean;
+    onClick?: (e: MouseEvent) => void;
+    size?: 'sm' | 'md';
+    variant?: 'ghost' | 'subtle';
+    children: Snippet;
+  }
+
+  let {
+    label,
+    disabled = false,
+    onClick,
+    size = 'md',
+    variant = 'ghost',
+    children,
+  }: Props = $props();
+
+  // Two fixed hit-area sizes keep vertical rhythm inside the toolbar. The
+  // inner icon sizing is the caller's responsibility — the button just
+  // guarantees the box is consistent.
+  const SIZE_CLASSES: Record<NonNullable<Props['size']>, string> = {
+    sm: 'h-7 w-7',
+    md: 'h-8 w-8',
+  };
+
+  // Ghost = transparent until hover. Subtle = shows a low-contrast fill
+  // at rest so it reads as a control rather than blank space. Both share
+  // the same hover tint so hover feedback is identical.
+  const VARIANT_CLASSES: Record<NonNullable<Props['variant']>, string> = {
+    ghost: 'bg-transparent hover:bg-surface-2/60',
+    subtle: 'bg-surface-2/40 hover:bg-surface-2/70',
+  };
+
+  function handleClick(e: MouseEvent) {
+    if (disabled) return;
+    onClick?.(e);
+  }
+</script>
+
+<button
+  type="button"
+  {disabled}
+  aria-label={label}
+  title={label}
+  onclick={handleClick}
+  class={[
+    'inline-flex items-center justify-center rounded-md text-text-secondary',
+    'transition-colors cursor-pointer',
+    'hover:text-text-primary',
+    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50',
+    'disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent disabled:hover:text-text-secondary',
+    SIZE_CLASSES[size],
+    VARIANT_CLASSES[variant],
+  ].join(' ')}
+  data-icon-button
+>
+  {@render children()}
+</button>

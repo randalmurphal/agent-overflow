@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/testutil"
 
 	_ "modernc.org/sqlite"
 )
@@ -28,9 +29,11 @@ func newArtifactStore(t *testing.T) (*ArtifactStore, *store.Store, string) {
 func createThread(t *testing.T, st *store.Store, id string) {
 	t.Helper()
 
+	project := testutil.EnsureProject(t, st, "/tmp/workspace")
 	now := int64(1000)
 	if err := st.CreateThread(store.Thread{
 		ID:            id,
+		ProjectID:     project.ID,
 		Title:         "Thread " + id,
 		Provider:      "codex",
 		WorkspacePath: "/tmp/workspace",

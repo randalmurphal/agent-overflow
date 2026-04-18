@@ -269,7 +269,11 @@ func TestSendMessageRenamesTemporaryWorktreeBranchOnFirstTurn(t *testing.T) {
 
 	thread := testThread("thread-send-rename-worktree")
 	thread.Provider = string(provider.Claude)
-	thread.ProjectPath = repo
+	project, err := app.ensureProjectForWorkspace(repo)
+	if err != nil {
+		t.Fatalf("ensureProjectForWorkspace() error = %v", err)
+	}
+	thread.ProjectID = project.ID
 	thread.WorkspacePath = repo
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)

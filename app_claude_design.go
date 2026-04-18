@@ -38,7 +38,7 @@ func (a *App) handleClaudeDesignTool(evt provider.ProviderEvent) {
 		log.Printf("design runtime: load thread %s: %v", evt.ThreadID, err)
 		return
 	}
-	if thread.Provider != string(provider.Claude) || thread.InteractionMode != "design" {
+	if thread.Provider != string(provider.Claude) || thread.Mode != "design" {
 		return
 	}
 

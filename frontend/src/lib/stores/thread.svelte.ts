@@ -45,7 +45,7 @@ export function createThreadPane() {
   let channelMessages: ChannelMessage[] = $state([]);
   let channelStatus: 'open' | 'concluded' | 'closed' | null = $state(null);
 
-  // Design-mode state (only populated when thread.interactionMode === 'design').
+  // Design-mode state (only populated when thread.mode === 'design').
   // designArtifacts is the render+option history for the thread.
   // activeArtifactId is what the preview panel is displaying — null = show latest.
   // pendingDesignOptions is populated when an agent has blocked on present_options.

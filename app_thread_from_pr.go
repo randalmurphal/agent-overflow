@@ -156,21 +156,32 @@ func (a *App) CreateThreadFromPR(
 	}
 
 	workspace := a.resolveRepoWorkspace(ref)
-	projectPath := a.detectProjectPath(workspace)
+	// When the user has no local clone of OWNER/REPO in their recent-
+	// workspace list, fall back to a pseudo path derived from the ref
+	// so every thread still belongs to a project row. The frontend can
+	// later prompt the user to pick a real workspace.
+	projectAnchor := workspace
+	if strings.TrimSpace(projectAnchor) == "" {
+		projectAnchor = fmt.Sprintf("pr://%s/%s", ref.Owner, ref.Repo)
+	}
+	project, err := a.ensureProjectForWorkspace(projectAnchor)
+	if err != nil {
+		return store.Thread{}, err
+	}
 	now := time.Now().UnixMilli()
 
 	title := truncatePRTitle(fmt.Sprintf("PR #%d: %s", number, strings.TrimSpace(meta.Title)))
 
 	thread := store.Thread{
-		ID:              uuid.NewString(),
-		Title:           title,
-		Provider:        providerName,
-		WorkspacePath:   workspace,
-		Model:           model,
-		ProjectPath:     projectPath,
-		InteractionMode: "default",
-		CreatedAt:       now,
-		UpdatedAt:       now,
+		ID:            uuid.NewString(),
+		ProjectID:     project.ID,
+		Title:         title,
+		Provider:      providerName,
+		WorkspacePath: workspace,
+		Model:         model,
+		Mode:          "chat",
+		CreatedAt:     now,
+		UpdatedAt:     now,
 	}
 
 	if err := a.store.CreateThread(thread); err != nil {

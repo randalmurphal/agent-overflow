@@ -25,7 +25,7 @@ function makeThread(): Thread {
     provider: 'claude',
     workspacePath: '/tmp',
     projectPath: '/tmp',
-    interactionMode: 'design',
+    mode: 'design',
     model: 'claude-sonnet-4-6',
     createdAt: 0,
     updatedAt: 0,

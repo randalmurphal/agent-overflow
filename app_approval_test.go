@@ -19,7 +19,6 @@ func TestRespondToApprovalHappyPathCodex(t *testing.T) {
 	thread := testThread("thread-approval-codex")
 	thread.Provider = string(provider.Codex)
 	thread.WorkspacePath = t.TempDir()
-	thread.ProjectPath = thread.WorkspacePath
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
@@ -64,7 +63,6 @@ func TestRespondToApprovalPropagatesProviderError(t *testing.T) {
 	thread := testThread("thread-approval-codex-error")
 	thread.Provider = string(provider.Codex)
 	thread.WorkspacePath = t.TempDir()
-	thread.ProjectPath = thread.WorkspacePath
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
 	}

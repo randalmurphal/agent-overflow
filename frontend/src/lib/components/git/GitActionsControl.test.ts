@@ -28,7 +28,7 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
     workspacePath: '/workspace',
     projectPath: '/workspace',
     model: 'claude-sonnet-4-6',
-    interactionMode: 'default',
+    mode: 'chat',
     createdAt: 0,
     updatedAt: 0,
     archived: false,

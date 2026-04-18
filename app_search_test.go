@@ -44,7 +44,7 @@ func TestSearchThreadMessagesBindingSurfacesResults(t *testing.T) {
 	app := newTestAppWithStore(t)
 	now := time.Now().UnixMilli()
 	if err := app.store.CreateThread(store.Thread{
-		ID: "t1", Title: "Hello world", Provider: "codex",
+		ID: "t1", ProjectID: defaultTestProjectID, Title: "Hello world", Provider: "codex",
 		WorkspacePath: "/tmp", CreatedAt: now, UpdatedAt: now,
 	}); err != nil {
 		t.Fatalf("create thread: %v", err)

@@ -15,12 +15,12 @@ func newDraftTestApp(t *testing.T) *App {
 
 	thread := store.Thread{
 		ID:              "thr-draft",
+		ProjectID:     defaultTestProjectID,
 		Title:           "Draft Thread",
 		Provider:        "claude",
 		WorkspacePath:   "/tmp",
-		ProjectPath:     "/tmp",
 		Model:           "claude",
-		InteractionMode: "default",
+		Mode: "chat",
 		CreatedAt:       time.Now().UnixMilli(),
 		UpdatedAt:       time.Now().UnixMilli(),
 	}

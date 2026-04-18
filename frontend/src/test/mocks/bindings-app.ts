@@ -90,6 +90,14 @@ export const RespondToApproval = dispatch('RespondToApproval');
 // (previously hand-wrapped with Call.ByName; now re-exported through the
 // generated app.js). Tests stub these through setBindingMock by method name.
 export const UpdateThreadModel = dispatch('UpdateThreadModel');
+export const UpdateThreadProvider = dispatch('UpdateThreadProvider');
+export const UpdateThreadMode = dispatch('UpdateThreadMode');
+export const UpdateThreadReasoningEffort = dispatch('UpdateThreadReasoningEffort');
+export const UpdateThreadFastMode = dispatch('UpdateThreadFastMode');
+export const UpdateThreadContextWindow = dispatch('UpdateThreadContextWindow');
+export const UpdateThreadRuntimeMode = dispatch('UpdateThreadRuntimeMode');
+export const UpdateThreadBranch = dispatch('UpdateThreadBranch');
+export const UpdateThreadWorkspace = dispatch('UpdateThreadWorkspace');
 export const WriteThreadWorkspaceFile = dispatch('WriteThreadWorkspaceFile');
 export const SearchThreadMessages = dispatch('SearchThreadMessages');
 export const GenerateCommitMessage = dispatch('GenerateCommitMessage');
@@ -108,6 +116,7 @@ export const ProbeClaudeAccount = dispatch('ProbeClaudeAccount');
 export const GetGitStatus = dispatch('GetGitStatus');
 export const GetWorkingTreeDiff = dispatch('GetWorkingTreeDiff');
 export const GitListBranches = dispatch('GitListBranches');
+export const GitListWorktrees = dispatch('GitListWorktrees');
 export const GitCommit = dispatch('GitCommit');
 export const GitPush = dispatch('GitPush');
 export const GitPull = dispatch('GitPull');
@@ -151,9 +160,6 @@ export const GetCheckpointToWorktreeDiff = dispatch('GetCheckpointToWorktreeDiff
 export const RevertToTurn = dispatch('RevertToTurn');
 export const ListThreadCheckpoints = dispatch('ListThreadCheckpoints');
 
-// Thread interaction mode
-export const SetThreadInteractionMode = dispatch('SetThreadInteractionMode');
-
 // Thread runtime mode
 export const GetThreadRuntimeMode = dispatch('GetThreadRuntimeMode');
 export const SetThreadRuntimeMode = dispatch('SetThreadRuntimeMode');
@@ -163,3 +169,14 @@ export const GetThreadSlashCommands = dispatch('GetThreadSlashCommands');
 
 // PR-based thread creation
 export const CreateThreadFromPR = dispatch('CreateThreadFromPR');
+
+// Projects (sidebar)
+export const ListProjects = dispatch('ListProjects');
+export const CreateProject = dispatch('CreateProject');
+export const RenameProject = dispatch('RenameProject');
+export const DeleteProject = dispatch('DeleteProject');
+export const ArchiveProject = dispatch('ArchiveProject');
+export const UnarchiveProject = dispatch('UnarchiveProject');
+
+// Directory browser (Add Project modal)
+export const BrowseDirectory = dispatch('BrowseDirectory');
