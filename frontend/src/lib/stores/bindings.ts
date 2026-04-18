@@ -141,3 +141,18 @@ export interface ThreadMessageHit {
 export function SearchThreadMessages(query: string, limit: number): Promise<ThreadMessageHit[]> {
   return Call.ByName('main.App.SearchThreadMessages', query, limit) as Promise<ThreadMessageHit[]>;
 }
+
+/**
+ * AI-generated commit message for the thread's current working-tree diff.
+ * Returns {subject, body}; subject is always non-empty on success. The
+ * binding is hand-wired until the next `wails generate` pass; see
+ * app_commit_message.go:GenerateCommitMessage for the Go side.
+ */
+export interface GeneratedCommitMessage {
+  subject: string;
+  body: string;
+}
+
+export function GenerateCommitMessage(threadID: string): Promise<GeneratedCommitMessage> {
+  return Call.ByName('main.App.GenerateCommitMessage', threadID) as Promise<GeneratedCommitMessage>;
+}
