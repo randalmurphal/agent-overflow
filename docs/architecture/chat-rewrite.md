@@ -290,11 +290,31 @@ resolution, same `lost` decision.
   - `text` / unknown → preformatted
 
 **Large payload caps:**
-- Initial fetch caps at 256KB head + 64KB tail of the payload data.
-- For payloads larger than that, render a "Show full output (N MB) in
-  terminal drawer →" link that opens the existing terminal drawer.
-- Diffs with >10 files: render a file tree, fetch each file's diff
-  on demand when expanded.
+
+- **Backend capture cap: 50MB.** Provider handlers truncate payload
+  data at 50MB at capture time and append an `[output truncated at
+  50MB]` marker. Prevents unbounded memory per tool call. Tuned
+  downward later if profiling says so.
+- **Frontend initial fetch: first 256KB** from the head of the payload,
+  rendered immediately on dropdown expand.
+- **Pagination within the dropdown**, not a separate viewer. A new
+  ranged binding `GetPayloadDataRange(payloadId, offset, length)`
+  returns a chunk. When the user scrolls near the bottom of the
+  already-rendered content, fetch the next chunk and append. Virtual
+  scrolling keeps DOM node count bounded regardless of total payload
+  size. Works for 256KB or 50MB the same way — it's just scroll
+  distance.
+- **Save-to-file escape hatch.** A small button in the dropdown
+  header calls `SavePayloadToFile(payloadId)` which opens the OS
+  save-file dialog and writes the full payload data to the chosen
+  path. For when the user wants to grep / diff / open in an external
+  editor without dealing with scrollable in-app rendering.
+- **Diffs with >10 files**: render a file tree at the top of the
+  dropdown body. Each file's diff lazy-loads via the same ranged
+  binding when its tree node is expanded. File tree is cheap; only
+  the expanded files consume render budget.
+
+The dropdown is the viewer for everything. No new drawer components.
 
 ### Per-tool-kind header rendering
 
