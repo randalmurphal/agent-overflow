@@ -84,15 +84,35 @@ matters for two reasons: (a) upsert idempotency on Claude `--resume`
 replay, and (b) cross-references (`completion_of`, `parent_id`) are
 stable without a lookup table.
 
+Top-level items (parent thread, `parent_id = ""`):
+
 | kind              | id format                                     | notes                                                                       |
 |-------------------|-----------------------------------------------|-----------------------------------------------------------------------------|
 | `user_text`       | `user:<turn_index>`                           | one per turn; keyed off the synthesized TurnStart's `turn_index` (int)      |
-| `assistant_text`  | `text:<turn_index>:<segment_index>`           | one per output segment; `segment_index` from `segmentIndexByTurn` counter   |
-| `thinking`        | `think:<turn_index>:<block_index>`            | one per thinking block; `block_index` increments per thinking_start event   |
+| `assistant_text`  | `text:<turn_index>:<segment_index>`           | one per output segment; `segment_index` from `segmentIndexByScope` counter  |
+| `thinking`        | `think:<turn_index>:<block_index>`            | one per thinking block. `block_index` is MONOTONIC across the full turn (never resets per API cycle, even across tool_use → tool_result continuations) |
 | `tool_call`       | provider-native id (see adapter contract)     | Claude: `tool_use.id`. Codex: `item.id` from v2 notifications (see adapter) |
-| `tool_completion` | `complete:<tool_call.id>`                     | 1:1 with launch; deterministic so `--resume` replay upserts, not duplicates |
+| `tool_completion` | `complete:<tool_call.id>`                     | 1:1 with launch; deterministic so replay upserts, not duplicates            |
 | `error`           | `error:<turn_index>:<error_seq>`              | `error_seq` is a per-turn counter (multiple errors in one turn possible)    |
 | `compaction`      | `compact:<turn_index>`                        | one per compaction event; compaction lands at a turn boundary by definition |
+
+**Child items (inside a subagent card, `parent_id = <card.id>`):**
+id formats append the parent card id before the intra-card counter
+so that parallel subagents in the same turn don't collide:
+
+| kind              | id format                                                          |
+|-------------------|--------------------------------------------------------------------|
+| `assistant_text`  | `text:<turn_index>:<card_id>:<segment_index>`                      |
+| `thinking`        | `think:<turn_index>:<card_id>:<block_index>`                       |
+| `tool_call`       | provider-native id (adapter scopes within card context)            |
+| `tool_completion` | `complete:<tool_call.id>` (still unique — tool_call.id is unique)  |
+| `error`           | `error:<turn_index>:<card_id>:<error_seq>`                         |
+
+Without the card_id scope, two subagents launched in the same turn
+(parent turn_index=5, card A and card B) would both mint `text:5:0`
+for their first child text segment and collide on upsert. The
+`card_id` segment is the subagent `tool_call.id` — already unique
+across the thread.
 
 `turn_index` is used in id keys rather than any provider-supplied
 `turnId` string — this keeps ids stable across adapters (Claude
@@ -102,9 +122,9 @@ because `thread_id` is a separate column on every query.
 
 **Adapter contract for tool_call id:** the provider adapter produces a
 string that is stable across the tool's Begin/End events (so upsert
-finds the same row). The field name varies per provider — the
-triage layer and frontend never need to know which. Naming this
-contract is the entire point of the adapter interface.
+finds the same row) AND unique across the thread (to prevent
+child-scope collisions). The field name varies per provider — the
+triage layer and frontend never need to know which.
 
 ### Invariants
 
@@ -135,15 +155,26 @@ don't get re-derived (or accidentally violated) in implementation.
    per-thread mutex (`sendThreadMuRegistry`) serializes send flow;
    `SetMaxOpenConns(1)` serializes SQLite writes. Together these mean
    no two events for the same thread race on item_index assignment.
-9. **`segmentIndexByTurn` is keyed by `(threadID, turn_index)`.**
-   Resets to 0 on TurnStart; increments on every EventToolStart
-   emission. Value is read when building ids for subsequent
-   EventTextDelta events.
+9. **`segmentIndexByScope` / `blockIndexByScope` keyed by
+   `(threadID, turn_index, scope)`** where `scope` is either `""`
+   (top-level, parent thread) or a subagent `card_id` (child items
+   within that card). Resets to 0 on TurnStart (for the top-level
+   scope) or on card creation (for child scopes). Increments on
+   every EventToolStart within that scope.
 10. **Subagent child events inherit the subagent card's
     `turn_index`.** A subagent launched in turn 5 that emits events
     while the parent has moved to turn 7 persists its events under
     turn 5 (the launching turn). `item_index` remains monotonic
     across the full thread.
+11. **`item_index` is assigned in intended-appearance order, not
+    wire-arrival order.** For inline events this is automatic (begin
+    fixes the index; end mutates the same row). For anything that
+    triage creates as a NEW row during an active streaming phase
+    (currently: backgrounded tool_completion), the streaming-phase
+    interrupt queue defers `item_index` assignment until the stream
+    settles. If new event kinds are added later that produce fresh
+    rows mid-turn, they must route through the queue too, or the
+    same "new row inserts before the streaming tail" bug recurs.
 
 ### Status / streaming / settle
 
@@ -153,15 +184,27 @@ For `assistant_text` and `thinking`:
 
 For `tool_call`:
 - `running` from EventToolStart until EventToolComplete
-- `completed` if completed cleanly OR if the underlying provider reports success
-  even with a non-zero exit code (`grep` returning 1 for "no match" is normal
-  — that does **not** flip to errored)
-- `errored` only when `meta.is_error == true` (provider-reported failure)
+- `completed` if the provider reports success (even with non-zero
+  exit code — `grep` returning 1 for "no match" is normal; that
+  does NOT flip to errored)
+- `errored` when the provider reports failure
 - `declined` when an approval was denied
 
-The non-zero exit code is preserved in the `summary` (e.g. `"Bash: grep foo  (exit 1)"`)
-but does NOT change status. This is a deliberate decoupling — many shell tools
-use exit codes for flow control, not failure.
+**Per-provider status derivation** (adapter's job to normalize):
+- **Claude**: `meta.is_error == true` → `errored`; otherwise
+  `completed`. Non-zero exit is preserved in the summary but does
+  not change status. Declined approvals → `declined`.
+- **Codex**: the ThreadItem variant carries an explicit status
+  enum. `CommandExecutionStatus`: `in_progress | completed | failed |
+  declined`. `McpToolCallStatus`: `in_progress | completed | failed`.
+  `FileChangeStatus`: same. `CollabAgentToolCallStatus`: same.
+  Adapter maps: `in_progress` → `running`, `completed` → `completed`,
+  `failed` → `errored`, `declined` → `declined`.
+
+The non-zero exit code (Bash tools) is preserved in the `summary`
+(e.g. `"Bash: grep foo  (exit 1)"`) but does NOT change status.
+This is a deliberate decoupling — many shell tools use exit codes
+for flow control, not failure.
 
 ### Text segmentation around tool_use
 
@@ -179,13 +222,26 @@ reasoning order. The spec MUST preserve that order, so:
 Without this, two text chunks bracketing a tool_call would fuse into
 one item that renders BEFORE the tool — wrong.
 
-**Router state:** tracks `segmentIndexByTurn[threadID][turnID]` as an
-int counter. Incremented on every EventToolStart emission (inside the
-triage layer, before text-segmentation logic reads it). The current
-counter value is used to build the text item id for subsequent
-EventTextDeltas in that turn. Cleared at turn-complete. Thread-safe
-via the router's existing mutex. Same shape as the bg classifier's
-per-thread state.
+**Adapter requirement**: to know when segments/blocks start, the
+Claude adapter MUST preserve `content_block_start` / `content_block_stop`
+events from the wire. The current adapter discards these and only
+emits `text_delta` / `thinking_delta` — that needs to change as part
+of execution. Without block boundaries, the triage layer cannot tell
+when to bump `segmentIndexByScope` / `blockIndexByScope` for a new
+segment within the same API response (e.g., model emits `thinking →
+thinking → text` with two thinking blocks in one response — without
+block boundaries we'd fuse them into one).
+
+**Router state:** tracks `segmentIndexByScope[threadID][turn_index][scope]`
+as an int counter, where `scope` is either `""` (top-level parent
+thread) or a subagent `card_id` (for child items inside that card).
+Incremented on every EventToolStart emission within that scope
+(inside the triage layer, before text-segmentation logic reads it).
+The current counter value is used to build the text item id for
+subsequent EventTextDeltas in that scope. Cleared at turn-complete
+for the top-level scope; cleared when a subagent card's final event
+lands for child scopes. Thread-safe via the router's existing mutex.
+Same shape applies for `blockIndexByScope` (thinking block counter).
 
 ### Streaming text body handling
 
@@ -203,7 +259,17 @@ This avoids the visual ejection that would happen if we promoted
 mid-stream — the user keeps reading uninterrupted; the cap only kicks
 in once the segment settles.
 
-### Subagents
+**Thinking signature preservation (Claude-specific):** Claude's
+`thinking` content blocks carry a `signature` field — an opaque
+server-side encrypted blob that the API requires round-tripped
+unchanged for resume / tool-use continuations within a turn. The
+client never validates it; it just stores and replays. Our Claude
+adapter MUST capture the `signature` on every thinking block and
+store it alongside the content (in the item's payload or meta JSON).
+On resume, the adapter re-submits the thinking block with its
+original signature, or the API 400s. This is a payload-preservation
+concern, not an identity concern — the `think:<turn_index>:<block_index>`
+id is what the UI tracks; the signature rides along for API replay.
 
 A subagent is any sub-session spawned by the model: Claude's `Task`
 tool, Codex's `CollabAgentToolCall` (SpawnAgent). Both represent
@@ -269,20 +335,39 @@ MessageTimeline with `items.filter(i => i.parent_id == card.id)`).
   extra subscription — Claude emits child events on the same
   stream.
 - **Codex `CollabAgentToolCall`**: child runs on a separate
-  Codex `thread_id` (`receiverThreadIds`). The Codex adapter:
-  1. On `item/started` for `CollabAgentToolCall`, persist the
-     parent card item, extract `receiverThreadIds`, open
+  Codex `thread_id` (`receiverThreadIds`). Codex emits multiple
+  `CollabAgentToolCall` items across a subagent's lifecycle —
+  SpawnAgent, SendInput, Wait, CloseAgent, ResumeAgent — each as
+  its own item with its own `tool` field. **`receiverThreadIds`
+  is populated on the SpawnAgent item's COMPLETED notification,
+  not STARTED** (the app-server doesn't know the thread id until
+  the spawn finishes). The Codex adapter:
+  1. On `item/started` for a `CollabAgentToolCall` with
+     `tool == "SpawnAgent"`, persist the parent card item
+     (status=running, but `receiverThreadId` not yet known).
+  2. On `item/completed` for the same SpawnAgent item, extract
+     `receiverThreadIds`, store them on the card's meta, and open
      subscriptions to those child threads via the session registry.
-  2. Child-thread events are re-emitted onto the PARENT thread's
-     store with `parent_id = card.id`. Child `thread_id` stored on
-     the card's meta for resume / stop plumbing.
-  3. On child's `turn/completed`, the card transitions to
-     `completed` / `errored` accordingly.
-  4. Our `internal/provider/codex/protocol.go` header comment
+  3. Subsequent `SendInput` items are surfaced as separate line
+     items in the parent timeline (see "Parent-to-child input" below).
+  4. `Wait` items are silent — their state is already reflected in
+     the subagent card's `status=running` until `turn/completed`
+     fires on the receiver thread.
+  5. `CloseAgent` / `ResumeAgent` items transition the card's
+     status (close → `completed`/`errored`, resume → back to
+     `running`).
+  6. Child-thread events from any subscribed receiver are
+     re-emitted onto the PARENT thread's store with `parent_id =
+     card.id`.
+  7. On child's `turn/completed`, if the subagent isn't explicitly
+     closed yet, the card stays `running` (agent may Wait on the
+     child again). The card transitions to `completed` only when
+     Codex emits the CloseAgent item.
+  8. Our `internal/provider/codex/protocol.go` header comment
      (claims "no parent/child linkage") is out of date and must
      be rewritten as part of execution.
-  5. `ClassifyNotification` must handle `item.type ==
-     "collabAgentToolCall"` and surface the receiver thread ids.
+  9. `ClassifyNotification` must handle `item.type ==
+     "collabAgentToolCall"` and dispatch on its `tool` field.
 
 **Parent-to-child input** (Codex `SendInput`):
 
@@ -296,15 +381,22 @@ user (human) never sends input to subagents directly; this is
 always an agent-to-agent message, and it's rendered as an action
 the parent agent took.
 
-**Nesting depth cap**:
+**Nesting depth cap** (Codex-only concern):
 
-If a subagent itself spawns a sub-subagent (grandchild), we show
-the grandchild as a minimal "spawned subagent" marker inside the
-child's expansion — NOT its full conversation. Grandchild events
-are not subscribed to, not persisted. The marker shows the child
-name/prompt so the user knows delegation happened. Sufficient for
-v1; deeper nesting is rare. If real usage demands it later, this
-becomes a future feature.
+**Claude's `Task` tool does NOT allow subagents to spawn further
+subagents** per the official Claude Agent SDK docs. So
+grandchild nesting is architecturally impossible on the Claude
+side — the depth cap does not apply.
+
+**Codex CollabAgent** does support multi-agent orchestration
+that could in principle spawn further agents from a child. For v1,
+if a Codex subagent itself spawns a sub-subagent (rare but
+possible), we show the grandchild as a minimal "spawned subagent"
+marker inside the child's expansion — NOT its full conversation.
+Grandchild events are not subscribed to, not persisted. The marker
+shows the child name/prompt so the user knows delegation happened.
+If real usage demands deeper nesting later, this becomes a future
+feature.
 
 **Crash recovery for subagents:**
 - On reopen, walk all `running` tool_calls with `tool_name =
@@ -339,6 +431,39 @@ Backgrounded tool call:
   late-arriving row is decontextualized.
 - `tool_completion.completion_of` = launch.id; `is_background=true`;
   status = `completed` / `errored`.
+
+**Claude backgrounded tool terminal-signal flow** (adapter concern,
+load-bearing for correctness). For `run_in_background: true` Bash
+and Task tools, the immediate `user.tool_result` echo with content
+like "Command running in background…" is NOT a real completion —
+it's a backgrounded-ack. The authoritative terminal signals are, in
+order of priority:
+
+1. `system/task_updated` with `patch.status ∈
+   {completed, failed, killed}`. Always fires. Carries `task_id` only;
+   adapter must hold a `task_id → tool_use_id` map (learned from
+   `system/task_started` when it was active).
+2. `system/task_notification` — carries BOTH `task_id` and
+   `tool_use_id`; works as a standalone signal even if `task_started`
+   was missed (reconnect case, out-of-turn completion).
+3. For Task subagent (`TaskOutput` tool): the `user.tool_result`
+   content includes `<status>completed|failed</status>` — parse as
+   an additional confirmation.
+
+The adapter emits `EventToolComplete` on the FIRST of these to
+arrive for a given `tool_use_id`. A parser-level
+`completedToolUseIDs` set dedupes subsequent redundant signals.
+
+**Claude adapter execution work required:**
+- `internal/provider/claude/protocol.go:171-180` currently drops
+  `task_started` / `task_updated` / `task_notification` with a TODO.
+  Must parse them and drive `EventToolComplete` per the rules above.
+- `internal/provider/claude/protocol.go:380-385` currently fires
+  `EventToolComplete` on the first `tool_result` echo for a
+  background tool — that's premature. Fix: if the tool_use is in
+  the `backgroundToolUses` set, treat the echo as informational;
+  wait for `task_updated` / `task_notification` / `TaskOutput
+  <status>` to terminate.
 
 **Provider-specific `item.ID` sources for tool_call:**
 - **Claude**: `tool_use.id` from the assistant message content block.
@@ -444,8 +569,8 @@ transitions where possible):
    streams, so we synthesize it here.
 2. Do NOT proactively flip `running` tool_calls. Let the natural
    event flow handle them:
-   - Codex `turn/completed{status:"aborted"}` fires for the parent
-     turn → synthesize TurnComplete; drain interrupt queue to
+   - Codex `turn/completed{status:"interrupted"}` fires for the
+     parent turn → synthesize TurnComplete; drain interrupt queue to
      errored.
    - Codex tool_calls that survived keep their `status=running` —
      the wire will emit their completion events normally if/when
@@ -482,12 +607,19 @@ matching completion: the adapter probes session liveness and
 classifies the outcome.
 
 Liveness probe mechanism per provider:
-- **Codex**: call `thread/read { threadId }` on the app-server. The
-  returned `Thread.status.type` is one of `notLoaded | idle | active
-  | systemError`. `active` or `idle` → session alive. `systemError`
-  or `notLoaded` → not alive. Cheap, idempotent, no side effects.
-  Alternative: consume pushed `thread/status/changed` notifications
-  (not available at reopen time since there's no subscription yet).
+- **Codex**: call `thread/read { threadId }`. Returned
+  `Thread.status.type` is one of `notLoaded | idle | active |
+  systemError`.
+  - `active` or `idle` → session alive, keep `running`.
+  - `notLoaded` → **NOT necessarily dead**. This just means the
+    thread isn't currently in memory. Call `thread/resume
+    { threadId }` to rehydrate. If resume succeeds → treat as
+    alive, subscribe to its events. If resume errors → treat as
+    lost.
+  - `systemError` → treat as lost (flip to errored,
+    `decision=lost`).
+  - `thread/status/changed` push notifications also fire during a
+    live session; consume them after a successful resume.
 - **Claude**: session log file exists under `~/.claude/` and can be
   resumed via `--resume <session-ref>`. Liveness = "the session ref
   is still resumable." The Claude adapter's existing resume path
@@ -937,16 +1069,28 @@ provider-independent.
 1. Acquire the per-thread mutex (existing `sendThreadMuRegistry`).
 2. `turnIndex = store.LastTurnIndex(threadID) + 1`.
 3. Triage emits `EventTurnStart{threadID, turnIndex}` synchronously.
-4. Router handler: reset `segmentIndexByTurn[threadID][turnIndex] = 0`,
+4. Router handler: reset `segmentIndexByScope[threadID][turnIndex][""] = 0`,
    open turn telemetry span, capture git baseline (existing
    `handleTurnStart` behavior).
 5. Persist the `user_text` item with that `turn_index`.
 6. Forward content to provider; all subsequent stream events under
    this turn.
 
+**Send failure rollback.** If `provider.Send` fails after steps 1-5
+have succeeded (user_text persisted, TurnStart emitted), triage must
+NOT roll back the turn_index or delete the user_text (the user still
+sent a message that needs to be visible). Instead:
+- Upsert a system `error` item in the same turn with summary
+  "Failed to send: <error>".
+- Synthesize `EventTurnComplete{truncated: true}` so the turn
+  lifecycle closes cleanly and the frontend exits `isTurnActive`.
+- `turn_index` stays monotonic; the next send gets `turn_index+1`.
+
 The existing router `handleTurnStart` is idempotent on
-`(threadID, turnIndex)`. If a provider also emits TurnStart (Claude
-interrupt / re-init path), the duplicate is silently absorbed.
+`(threadID, turnIndex)`. If a provider also emits TurnStart (Codex
+`turn/started`, Claude interrupt / re-init path), the duplicate is
+silently absorbed. We synthesize regardless, so we don't depend on
+provider-emitted TurnStart being present.
 
 **TurnComplete** — wire signal primary, with fallbacks:
 
@@ -954,7 +1098,7 @@ interrupt / re-init path), the duplicate is silently absorbed.
 |---|---|---|
 | Claude wire | `{type:"result"}` message | primary — the Claude adapter's `parseResult` handler already emits `EventTurnComplete` |
 | Claude wire | `system/session_state_changed{state:"idle"}` | fallback — if `result` hasn't arrived for the active turn (provider dropped it, stream truncation), synthesize `EventTurnComplete` on idle transition |
-| Codex wire | `turn/completed` notification (carries `turn.status: completed \| failed \| aborted`) | primary — the Codex adapter's notification handler already emits `EventTurnComplete` |
+| Codex wire | `turn/completed` notification (carries `turn.status: completed \| interrupted \| failed`) | primary — the Codex adapter's notification handler already emits `EventTurnComplete` |
 | Both | provider process exit while a turn is open (TurnStart seen, no TurnComplete yet) | session lifecycle handler synthesizes `EventTurnComplete{truncated: true}` before session teardown |
 
 Tracking "is a turn currently open" in the router: a simple
@@ -982,7 +1126,7 @@ On `truncated: true`, the router additionally:
 | event                       | handler                                                                                               |
 |-----------------------------|-------------------------------------------------------------------------------------------------------|
 | `EventTextDelta`            | upsert `assistant_text`; id = `text:<turnId>:<segmentIndex>`; append delta to summary; status=streaming |
-| `EventThinking`             | upsert `thinking`; id = `think:<turnId>:<thinkingBlockIndex>`; append delta to summary                |
+| `EventThinking`             | upsert `thinking`; id = `think:<turn_index>:<block_index>` (block_index monotonic across turn, not per-API-cycle); append delta to summary; preserve `signature` on payload/meta for API replay |
 | `EventToolStart`            | upsert `tool_call`; id = evt.ItemID; status=running; is_background from the per-provider classifier (Codex: `BackgroundClassifier` in `internal/provider/codex/`; Claude: `backgroundToolUses` map in the parser); tool_name set |
 | `EventToolComplete` inline  | upsert same `tool_call`; status=completed/errored (errored only when is_error=true); attach payload  |
 | `EventToolComplete` bg      | route through `maybeDeferOrPersist` for the new `tool_completion`; summary restates command          |
@@ -991,7 +1135,7 @@ On `truncated: true`, the router additionally:
 | `EventProposedPlan`         | upsert a `tool_call` with tool_name="plan"; payload carries the plan markdown                        |
 | `EventError`                | upsert `error` item; id = uuid; summary = error message. ALSO: flip any `streaming`/`running` items in this turn to `errored` (live-crash flip) |
 | `EventCompactBoundary`      | upsert `compaction` item; id = uuid; summary = compaction note. ALSO: emit `provider:usage` reset    |
-| `EventTurnStart`            | synthesized by triage on `sendMessage` (see Turn lifecycle synthesis); reset `segmentIndexByTurn`; open turn span; capture checkpoint; mark turn open; no item |
+| `EventTurnStart`            | synthesized by triage on `sendMessage` (see Turn lifecycle synthesis); reset `segmentIndexByScope[threadID][turn_index][""]` and `blockIndexByScope[threadID][turn_index][""]`; open turn span; capture checkpoint; mark turn open; no item |
 | `EventTurnComplete`         | from wire signal or synthesis (see Turn lifecycle synthesis); flip `streaming` items in this turn to `completed`; drain `interruptQueue`; close turn span; clear open-turn marker; if `truncated`, flip streaming to `errored` and drain queue as `errored` |
 | `EventApprovalRequest`      | emit `provider:approval` `{action:request, request}`                                                  |
 | `EventApprovalResolved`     | emit `provider:approval` `{action:resolve, requestId, decision}`; upsert the underlying tool_call with `decision` set |
