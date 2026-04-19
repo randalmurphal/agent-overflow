@@ -242,22 +242,36 @@ the frontend, persisted as a `decision` field on the underlying
   next upsert (when the tool actually starts with the new args).
 - `timeout`: provider timed out the request. Treated as decline. Tool
   status flips to `declined`.
+- `lost`: the app or provider session died before the user could
+  respond. See "Approval lost on restart" below.
 
 The decision renders as a small inline chip on the tool_call row
-(`✔ approved`, `✗ declined`, `~ amended`, `⏱ timeout`). Scrolling
-back you can see what was approved/declined when, without polluting
-the timeline with extra items.
+(`✔ approved`, `✗ declined`, `~ amended`, `⏱ timeout`, `⊘ lost`).
+Scrolling back you can see what was approved/declined/lost when,
+without polluting the timeline with extra items. The tool_call's
+`summary` retains the original question / input preview — that's the
+permanent record of what was asked.
 
 **AskUser-style tools** (an explicit "ask the user a question" tool)
 are NORMAL `tool_call` items — the question is in the summary, the
 answer becomes the tool result. Not an approval.
 
-**Approval lost on reopen:** the `pendingApprovals` overlay is
-volatile. On app restart, if a tool_call is still `running` and the
-provider session can re-emit pending approvals, do that. If the
-provider doesn't support re-emission, flip the tool_call to
-`errored` with summary "Approval lost on restart — please retry"
-and decision unset.
+**Approval lost on restart:** the `pendingApprovals` overlay is
+volatile. In practice, every provider we support (Claude Code, Codex)
+kills pending approvals when the session dies — there is no
+re-emission path. Don't try to resume them.
+
+On reopen, any `tool_call` with `status=running` and no matching
+completion is flipped to `status=errored`, `decision=lost`. The row's
+`summary` already carries the question / input preview that was
+asked, so the historical record is preserved: "Bash: rm -rf foo"
+with a `⊘ lost` chip tells the user exactly what the agent wanted
+to do and that it never got an answer. The user can manually re-send
+the prompt if they want to retry.
+
+This applies BOTH to approvals that were mid-pending at crash AND to
+backgrounded tool_calls whose process died along with the app — same
+resolution, same `lost` decision.
 
 ### Heavy payloads
 
@@ -672,9 +686,10 @@ Falls out of the design + the live-crash flip rule:
    - For streaming text/thinking: the resumed session continues
      delta-ing if available; otherwise flip to `errored` with
      "Interrupted" suffix.
-5. If `pendingApprovals` were active at crash time: provider re-emits
-   if supported (Claude does); otherwise tool_call goes to errored
-   "Approval lost on restart — please retry".
+5. If `pendingApprovals` were active at crash time: approval state
+   is always lost on restart — no provider we support re-emits.
+   Affected tool_calls flip to `errored` with `decision=lost`. The
+   question (tool name + input preview) is preserved in `summary`.
 
 The recovery contract: **what's in SQLite is what the user sees**.
 Provider session state may be ahead, behind, or equal — none of those
