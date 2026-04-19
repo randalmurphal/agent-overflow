@@ -17,10 +17,31 @@ listener, one list**.
 ## Non-goals
 
 - Reframing the framework (Svelte stays).
-- Rewriting providers, store schema (other than additive), sidebar,
-  composer shell, terminal, design mode, discussion mode, or settings.
+- Wholesale provider rewrites, sidebar, composer shell, terminal,
+  design mode, discussion mode, or settings.
 - UI visual polish — that's a separate pass after the data model
   lands.
+
+## In-scope provider + schema changes
+
+The rewrite requires some provider and schema work beyond "purely
+additive." Called out up front so scope is clear:
+
+- **Claude adapter**: preserve `content_block_start`/`stop` (currently
+  discarded); handle `system/task_started`/`task_updated`/
+  `task_notification` for background lifecycle; stop treating
+  backgrounded-ack `tool_result` echoes as terminal; persist
+  thinking `signature` blobs for API replay.
+- **Codex adapter**: handle `CollabAgentToolCall` variants (spawn,
+  send, wait, close, resume); open child-thread subscriptions on
+  SpawnAgent completion; rewrite the header-comment claim that
+  Codex has no parent/child linkage.
+- **Store schema v15**: additive columns (`tool_name`, `decision`,
+  `meta`, `last_token_usage`) plus two renames
+  (`parent_tool_use_id` → `parent_id`,
+  `completion_of_item_id` → `completion_of`) plus a wipe of
+  `items` and `payloads`. Not purely additive — scope this work
+  explicitly.
 
 ## The model
 
@@ -45,9 +66,20 @@ completion_of   optional fk to the tool_call this row completes
                 (used only by kind=tool_completion)
 tool_name       optional string (for kind=tool_call: bash/edit/read/etc.)
                 drives the per-kind header dispatch in the renderer
-decision        optional enum (for kind=tool_call backed by an approval):
+decision        optional enum (tool_call lifecycle annotation):
                 approved | declined | amended | timeout | lost
-                renders as a small chip on the row; see Approvals
+                approved/declined/amended/timeout populate from
+                approval resolutions; lost populates on restart
+                for approvals OR backgrounded tool_calls that died
+                with their session. Renders as a small chip on
+                tool_call rows; see Approvals + Crash recovery.
+meta            TEXT (JSON), default '{}'. Provider-specific
+                per-item metadata: Claude thinking `signature`,
+                Claude task_id↔tool_use_id map, Codex
+                receiverThreadId for subagent cards, denormalized
+                live subagent activity fields. Adapter owns the
+                schema per-key; renderer reads specific keys by
+                name.
 created_at      int64 ms
 updated_at      int64 ms
 ```
@@ -436,34 +468,70 @@ Backgrounded tool call:
 load-bearing for correctness). For `run_in_background: true` Bash
 and Task tools, the immediate `user.tool_result` echo with content
 like "Command running in background…" is NOT a real completion —
-it's a backgrounded-ack. The authoritative terminal signals are, in
-order of priority:
+it's a backgrounded-ack.
 
-1. `system/task_updated` with `patch.status ∈
-   {completed, failed, killed}`. Always fires. Carries `task_id` only;
-   adapter must hold a `task_id → tool_use_id` map (learned from
-   `system/task_started` when it was active).
-2. `system/task_notification` — carries BOTH `task_id` and
-   `tool_use_id`; works as a standalone signal even if `task_started`
-   was missed (reconnect case, out-of-turn completion).
-3. For Task subagent (`TaskOutput` tool): the `user.tool_result`
-   content includes `<status>completed|failed</status>` — parse as
-   an additional confirmation.
+**Primary signal: `system/task_updated` with `patch.status ∈
+{completed, failed, killed}`.** Fires when a backgrounded task
+ends. Carries `task_id` only, so the adapter must hold a
+`task_id ↔ tool_use_id` mapping (learned from
+`system/task_started`, persisted to `items.meta` so it survives
+reconnect).
 
-The adapter emits `EventToolComplete` on the FIRST of these to
-arrive for a given `tool_use_id`. A parser-level
-`completedToolUseIDs` set dedupes subsequent redundant signals.
+**Parallel signal: `system/task_notification`.** Fires downstream
+of task_updated (for out-of-turn completions the user-facing
+notification system generates this to get the model's attention on
+next turn). Carries BOTH `task_id` AND `tool_use_id` inline.
+Forge uses task_notification as a parallel completion trigger
+with dedup — either signal can fire first, whichever does emits
+`task.completed`, the other is suppressed by the `completedToolUseIDs`
+set. In practice `task_updated` arrives first (seen in our spike by
+~1-2 seconds); but adapter should handle both defensively — they
+can drift in edge cases (SDK event-queue backpressure, reconnect
+timing), and `task_notification`'s inline `tool_use_id` is a
+self-sufficient terminal signal even without a prior
+`task_started` in memory.
+
+**TaskOutput tool_result**: when the model calls the `TaskOutput`
+tool to poll a backgrounded item, the result content carries
+`<status>completed|failed</status>` and richer result data (exit
+code, output file path, final agent result text) for the SINGLE
+`task_id` the model passed in. TaskOutput is 1:1 with its input
+by wire-protocol design — its serializer emits one `<task_id>`,
+one `<status>`, one `<output>`; it cannot fan out to multiple
+completions even if other tasks finish during its blocking wait.
+Verified by live spike: if TaskOutput polls task A and task B
+finishes during the wait, `task_updated` fires independently for
+task B and TaskOutput's returned content contains only task A.
+
+Implication: we do NOT need to parse TaskOutput content as a
+completion signal. `task_updated` already fires per-task
+independently. TaskOutput's value is purely its richer result
+payload (useful for populating the tool_completion's summary /
+inline output), not its terminal signal — that's already covered.
 
 **Claude adapter execution work required:**
 - `internal/provider/claude/protocol.go:171-180` currently drops
   `task_started` / `task_updated` / `task_notification` with a TODO.
-  Must parse them and drive `EventToolComplete` per the rules above.
+  Must parse all three:
+  - `task_started` → store `task_id ↔ tool_use_id` mapping; persist
+    to `items.meta` for reconnect recovery.
+  - `task_updated` with terminal status → look up tool_use_id from
+    the map; emit `EventToolComplete` and add tool_use_id to
+    `completedToolUseIDs`.
+  - `task_notification` → carries both ids inline; if
+    tool_use_id not already in `completedToolUseIDs`, emit
+    `EventToolComplete` and add to the set. Redundant in the
+    happy path, load-bearing when `task_updated` is delayed or
+    missed.
 - `internal/provider/claude/protocol.go:380-385` currently fires
   `EventToolComplete` on the first `tool_result` echo for a
   background tool — that's premature. Fix: if the tool_use is in
   the `backgroundToolUses` set, treat the echo as informational;
-  wait for `task_updated` / `task_notification` / `TaskOutput
-  <status>` to terminate.
+  wait for `task_updated` / `task_notification` to terminate.
+- When `TaskOutput`'s tool_result arrives, extract its output /
+  exit code / result text into the corresponding `tool_completion`
+  item's payload. Do NOT use it as a completion signal — it's
+  purely a content source.
 
 **Provider-specific `item.ID` sources for tool_call:**
 - **Claude**: `tool_use.id` from the assistant message content block.
@@ -695,8 +763,16 @@ If the user **declines before tool_use ever fires** (no tool_call
 item exists yet), the triage layer MUST create one at
 EventApprovalResolved time:
 
-- id = the would-have-been tool_use id (the approval request carries
-  it as `request.toolUseId`)
+- id = the anticipated tool_use_id for this approval. Claude's
+  CanUseTool control_request includes this; the adapter surfaces
+  it on the `ApprovalRequest` struct. **Execution note**: the
+  current `provider.ApprovalRequest` (`internal/provider/types.go`)
+  carries `RequestID`, `ToolName`, `Input`, etc. but NO
+  `ToolUseID` field. Adding one is required — the Claude adapter
+  populates it from CanUseTool, Codex leaves it empty (Codex
+  approvals are kind=command/file-change which always fire AFTER
+  the tool's own `item/started`, so a tool_call always exists
+  already).
 - kind = tool_call, status = declined, decision = declined
 - tool_name + summary = derived from the approval request payload
   (Claude includes `toolName` and `input` on the request)
@@ -705,8 +781,17 @@ Without this, a declined-before-start request leaves no trace; the
 user's decline is visibly lost. The created tool_call row carries
 the permanent record of what was asked and that it was rejected.
 
-The decision renders as a small inline chip on the tool_call row
-(`✔ approved`, `✗ declined`, `~ amended`, `⏱ timeout`, `⊘ lost`).
+**Decision chip scope**: the chip (`✔ approved`, `✗ declined`,
+`~ amended`, `⏱ timeout`, `⊘ lost`) is meaningful for
+**tool-flavored approvals** (kinds: `command`, `file-read`,
+`file-change`, `permission`). Non-tool approval kinds
+(`user-input`, `mcp-elicitation`) don't create tool_calls — they
+show in the composer approval panel, the user answers, and the
+answer becomes part of the conversation via a subsequent assistant
+response or follow-up message. No decision chip because there's no
+underlying tool_call to chip. The approval overlay simply clears
+on resolve.
+
 Scrolling back you can see what was approved/declined/lost when,
 without polluting the timeline with extra items. The tool_call's
 `summary` shows the input that was ultimately used — the original
@@ -1048,20 +1133,42 @@ func (r *Router) drainInterruptQueue(threadID string) {
 }
 ```
 
-Crash safety: queued completions are NOT yet in SQLite. On crash,
-they're lost. That's acceptable — on resume, the underlying
-provider's session log replay will re-emit the completion when the
-session reconnects, and the queuing re-applies cleanly. (Worst case:
-the user sees the launch row as `running` until the session resyncs.)
+**Crash safety — provider-dependent**:
+- **Claude**: `--resume <session-ref>` replays the full session log
+  including tool_results, so queued-but-lost completions re-fire
+  after resume. The queuing re-applies cleanly. Worst case: the
+  user sees the launch row as `running` until resync delivers the
+  completion event again.
+- **Codex**: `thread/resume` returns a snapshot, NOT an event
+  replay. If a queued completion was dropped pre-persist (app
+  crashed between EventToolComplete and SQLite write), Codex will
+  NOT re-emit it. The launch row stays `running` after resume
+  and the standard crash-recovery flow (`thread/read` probe + flip
+  to errored if no longer live) applies. This means for Codex
+  specifically, a pre-persist crash during the interrupt queue's
+  hold window can permanently lose the real completion outcome —
+  the row will end up errored with summary "Interrupted — outcome
+  unknown" rather than reflecting the actual completion. Accept
+  this as pre-release scope; if load-bearing later, persist queue
+  entries to a `pending_completions` side table before queuing.
 
 ### Turn lifecycle synthesis
 
-Turn boundaries are synthesized in the Go triage layer, NOT derived
-from the provider wire. Neither Claude Code nor Codex emits an
-explicit `turn_start` wire event; both emit reliable turn-end
-signals that we consume but don't depend on exclusively. Synthesis
-keeps `turn_index` monotonic per thread, assigned server-side,
-provider-independent.
+Turn boundaries are synthesized in the Go triage layer. We don't
+depend on the wire for TurnStart — Claude doesn't emit one, and
+Codex does (`turn/started` notification, handled at
+`internal/provider/codex/protocol.go:28`) but we still synthesize
+to keep `turn_index` monotonic per thread, server-assigned, and
+provider-independent. Any wire TurnStart is absorbed idempotently.
+
+**`turn_index` semantics**: this is a LOCAL counter on agent-overflow's
+thread, not a provider turn id. Provider turn ids (Codex's
+`turn.id`, Claude's per-cycle identifiers) are opaque strings we
+don't mint. `turn_index` counts "send cycles" on our thread — one
+per `sendMessage` call. The two can diverge (e.g., Claude may
+internally loop through multiple API cycles under one of our
+turns), and that's fine: our `turn_index` is the UI unit, the
+provider's turn id is the wire unit.
 
 **TurnStart** — emitted from `App.sendMessage` BEFORE calling
 `provider.Send`:
@@ -1076,15 +1183,24 @@ provider-independent.
 6. Forward content to provider; all subsequent stream events under
    this turn.
 
-**Send failure rollback.** If `provider.Send` fails after steps 1-5
-have succeeded (user_text persisted, TurnStart emitted), triage must
-NOT roll back the turn_index or delete the user_text (the user still
-sent a message that needs to be visible). Instead:
+**Send failure rollback.** This reverses the current `Bug B8`
+invariant in `app_send.go` which sends to provider FIRST, then
+persists, to avoid orphan user_text on send failure. The new model
+intentionally inverts: persist user_text first so the user sees
+their message immediately and knows it was captured. If
+`provider.Send` then fails:
 - Upsert a system `error` item in the same turn with summary
   "Failed to send: <error>".
 - Synthesize `EventTurnComplete{truncated: true}` so the turn
   lifecycle closes cleanly and the frontend exits `isTurnActive`.
 - `turn_index` stays monotonic; the next send gets `turn_index+1`.
+
+Rationale for the inversion: silent-disappearing-user-message
+(current behavior on send failure) is worse UX than "message
+visible + error clearly attached." The user knows what happened;
+no mystery. The "orphan" scenario the old rule avoided is not an
+orphan in the new model — it's a visible turn with a clear error
+item, which is exactly what the user needs.
 
 The existing router `handleTurnStart` is idempotent on
 `(threadID, turnIndex)`. If a provider also emits TurnStart (Codex
@@ -1197,8 +1313,8 @@ makes the broken state explicit on the items themselves.
 Add `UpsertItem(item Item, payload *Payload) (Item, error)`:
 
 - If `item.ID` exists: update kind/role/summary/payload_id/status/
-  is_background/completion_of/parent_id/tool_name/decision/updated_at.
-  Item index is preserved.
+  is_background/completion_of/parent_id/tool_name/decision/meta/
+  updated_at. Item index is preserved.
 - Else: assign next item_index for `(thread_id, turn_index)`, insert.
 - If payload non-nil, upsert payload in same transaction.
 - Returns the canonical persisted Item (with assigned item_index).
@@ -1216,6 +1332,16 @@ upsert race-free.
 Additive columns:
 - `items.tool_name TEXT NOT NULL DEFAULT ''`
 - `items.decision TEXT NOT NULL DEFAULT ''`
+- `items.meta TEXT NOT NULL DEFAULT '{}'` — JSON blob for
+  per-item provider-specific metadata that doesn't fit the
+  column model. Used for: Claude thinking `signature` (for API
+  replay), Claude `task_id ↔ tool_use_id` mapping (for bg
+  completion correlation across reconnect), Codex subagent
+  `receiverThreadId` (for resubscribing children on reopen),
+  denormalized live subagent activity (`latestActivityText`,
+  `latestActivityAt`). Structured enough to query specific keys
+  via `json_extract` when needed, flexible enough to avoid
+  column churn per provider detail.
 - `threads.last_token_usage TEXT NOT NULL DEFAULT ''` (JSON blob of
   the last EventTokenUsage meta for that thread; seeds the context
   meter on thread switch)
@@ -1225,15 +1351,23 @@ Column renames (for provider-neutral vocabulary):
   Claude subagents and Codex's mapped subagent items)
 - `items.completion_of_item_id` → `items.completion_of`
 
-**Data: wipe existing threads/items/payloads on migration to v15.**
+**Data: wipe existing items and payloads on migration to v15.**
 The app is pre-release; historical chat content has no user value
-worth preserving through this schema change. The migration `DELETE`s
-from `items`, `payloads`, and `threads` in one transaction as part
-of the v15 up-migration, leaving the tables empty for the new model.
-Project rows stay (no schema change there). This avoids the
-complexity of a live data migration for kind-splits,
-`background_started/done` → `tool_call`/`tool_completion` rollups,
-and the column renames happening in one shot.
+worth preserving through this schema change, but `threads` carry
+session refs, workspace/project identity, runtime settings, and
+recovery cursors we DO want to keep. The migration:
+- `DELETE FROM items`
+- `DELETE FROM payloads`
+- (leaves `threads`, `projects`, and all other tables intact)
+
+On next thread open, the user sees an empty chat but their thread
+list, worktree bindings, and settings are preserved. They start
+fresh content against familiar threads rather than losing the
+thread registry entirely.
+
+This avoids the complexity of a live data migration for
+kind-splits, `background_started/done` → `tool_call`/`tool_completion`
+rollups, and the column renames happening in one shot.
 
 No index changes (new columns aren't query targets; the renamed
 columns keep their existing indexes under the new names).
@@ -1329,16 +1463,23 @@ Plus existing app-shell channels (design, thread mode, etc.) untouched.
 
 ```ts
 get isTurnActive() {
-  return items.some(i =>
-    (i.kind === 'assistant_text' || i.kind === 'thinking') && i.status === 'streaming'
-    || i.kind === 'tool_call' && i.status === 'running' && !i.isBackground
+  return (
+    items.some(i =>
+      (i.kind === 'assistant_text' || i.kind === 'thinking') && i.status === 'streaming'
+      || i.kind === 'tool_call' && i.status === 'running' && !i.isBackground
+    )
+    || pendingApprovals.length > 0
   );
 }
 ```
 
 Note: backgrounded tool_calls do NOT count as "turn active" — they
-run independently and shouldn't block sends. Used by Composer to gate
-sends + show interrupt button.
+run independently and shouldn't block sends. Pending approvals DO
+count — the turn is waiting on the user's decision, send should be
+blocked until they respond. Codex also exposes `waitingOnApproval` /
+`waitingOnUserInput` thread states; those are reflected in
+`pendingApprovals` via the normal approval flow. Used by Composer to
+gate sends + show interrupt button.
 
 ### finalizeTurn / switchThread
 
