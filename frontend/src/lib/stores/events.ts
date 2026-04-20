@@ -3,6 +3,7 @@ import type { ApprovalEvent, ProviderStatusEvent, UsageEvent } from '../types/ev
 import type { Item, Thread } from '../types/models';
 import type { DesignArtifact, DesignChoiceResolved, DesignOptionsRequest } from '../types/design';
 import { getAllPanes } from './panes.svelte';
+import { recordProviderStatus } from './providerStatus.svelte';
 import { addToast } from './toast.svelte';
 import { getThreads, replaceThread } from './threads.svelte';
 import { projectApprovalRequest, projectApprovalResolution, projectThreadItem } from './threadStatuses.svelte';
@@ -258,6 +259,14 @@ function applyProviderStatus(evt: ProviderStatusEvent): void {
   if (!evt.provider || !effectiveStatus) return;
 
   const normalized: ProviderStatusEvent = { ...evt, status: effectiveStatus };
+
+  // Single source of truth: update the app-wide per-provider map first
+  // so any consumer reading via getProviderStatus sees the latest
+  // snapshot regardless of whether the event arrived with a `status`
+  // (legacy) or a `kind` (chat-rewrite). The map is mutated with the
+  // normalized event so legacy banner consumers stay untouched.
+  recordProviderStatus(normalized);
+
   const banner = effectiveStatus === 'ready' ? null : normalized;
   for (const pane of getAllPanes().values()) {
     if (pane.thread?.provider !== evt.provider) continue;

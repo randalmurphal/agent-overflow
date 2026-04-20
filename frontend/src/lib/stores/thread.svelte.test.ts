@@ -19,7 +19,7 @@ describe('createThreadPane', () => {
     expect(pane.items).toEqual([]);
     expect(pane.pendingApprovals).toEqual([]);
     expect(pane.contextWindow).toBeNull();
-    expect(pane.error).toBeNull();
+    expect(pane.generalError).toBeNull();
     expect(pane.isTurnActive).toBe(false);
   });
 
@@ -58,14 +58,14 @@ describe('createThreadPane', () => {
       input: null,
       title: 'Approve bash',
     });
-    pane.setError('boom');
+    pane.setGeneralError('boom');
     pane.setShowTerminal(true);
     pane.setShowPlanSidebar(true);
 
     await pane.switchThread(makeThread({ id: 'thread-b' }));
 
     expect(pane.pendingApprovals).toEqual([]);
-    expect(pane.error).toBeNull();
+    expect(pane.generalError).toBeNull();
     expect(pane.showTerminal).toBe(false);
     expect(pane.showPlanSidebar).toBe(false);
   });
@@ -161,7 +161,7 @@ describe('createThreadPane', () => {
     const pane = createThreadPane();
     await pane.switchThread(makeThread());
     pane.upsertItem(makeItem({ id: 'x' }));
-    pane.setError('boom');
+    pane.setGeneralError('boom');
     pane.addApproval({
       requestId: 'req-1',
       threadId: 'thread-1',
@@ -177,7 +177,7 @@ describe('createThreadPane', () => {
     expect(pane.items).toEqual([]);
     expect(pane.pendingApprovals).toEqual([]);
     expect(pane.contextWindow).toBeNull();
-    expect(pane.error).toBeNull();
+    expect(pane.generalError).toBeNull();
     expect(pane.turnDiffViews.size).toBe(0);
   });
 

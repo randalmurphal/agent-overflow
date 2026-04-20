@@ -5,7 +5,7 @@
   let { pane }: { pane: ThreadPane } = $props();
 
   let statusLabel = $derived.by(() => {
-    if (pane.error) return 'error';
+    if (pane.generalError) return 'error';
     if (pane.isTurnActive) return 'running';
     return 'ready';
   });

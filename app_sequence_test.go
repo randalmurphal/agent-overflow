@@ -58,7 +58,7 @@ func TestAppEmitEnvelopeSeqAdvancesAcrossCalls(t *testing.T) {
 	}
 	for i, rec := range spy.events {
 		if rec.name != "provider:item_upsert" {
-			t.Fatalf("emit[%d].name = %q, want provider:event", i, rec.name)
+			t.Fatalf("emit[%d].name = %q, want provider:item_upsert", i, rec.name)
 		}
 		env, ok := rec.data.(SeqEnvelope)
 		if !ok {

@@ -93,7 +93,7 @@
       replaceThread(updated);
     } catch (err) {
       console.error('Rename thread failed:', err);
-      pane.setError(`Failed to rename thread: ${err}`);
+      pane.setGeneralError(`Failed to rename thread: ${err}`);
     } finally {
       renamePending = false;
       editing = false;

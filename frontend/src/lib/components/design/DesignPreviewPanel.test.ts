@@ -345,7 +345,7 @@ describe('<DesignPreviewPanel> — export to new thread', () => {
       expect((getByTestId('design-export-to-thread') as HTMLButtonElement).disabled).toBe(false),
     );
     await fireEvent.click(getByTestId('design-export-to-thread'));
-    await waitFor(() => expect(pane.error).toMatch(/export design/i));
+    await waitFor(() => expect(pane.generalError).toMatch(/export design/i));
   });
 
   it('button shows "Exporting…" label while the export is in flight', async () => {

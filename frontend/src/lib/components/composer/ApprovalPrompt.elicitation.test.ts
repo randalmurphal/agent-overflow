@@ -667,7 +667,7 @@ describe('<ApprovalPrompt> MCP elicitation — submission', () => {
     await fireEvent.input(getByTestId('el-input-host'), { target: { value: 'db' } });
     await fireEvent.click(getByTestId('elicitation-accept'));
     await waitFor(() => {
-      expect(pane.error).toMatch(/Failed to respond to elicitation/i);
+      expect(pane.generalError).toMatch(/Failed to respond to elicitation/i);
     });
   });
 });

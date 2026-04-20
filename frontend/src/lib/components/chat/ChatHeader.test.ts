@@ -190,7 +190,7 @@ describe('<ChatHeader>', () => {
     await fireEvent.keyDown(input, { key: 'Enter' });
     for (let i = 0; i < 5; i += 1) await Promise.resolve();
 
-    expect(pane.error).toMatch(/Failed to rename thread/);
+    expect(pane.generalError).toMatch(/Failed to rename thread/);
     consoleErr.mockRestore();
   });
 

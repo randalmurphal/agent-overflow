@@ -59,7 +59,7 @@
       wizard.setStatus(fetched);
     } catch (err) {
       console.error('ship-changes: GetGitStatus failed', err);
-      pane.setError(`Failed to load git status: ${err}`);
+      pane.setGeneralError(`Failed to load git status: ${err}`);
     }
   }
 

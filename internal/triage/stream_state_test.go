@@ -9,6 +9,18 @@ import (
 	"agent-overflow/internal/store"
 )
 
+// firstItemByKind returns the first item of the given kind for a
+// thread. Used by settle tests that need to reach the actual row id
+// without coupling to the router's internal counter state.
+func firstItemByKind(t *testing.T, st *store.Store, threadID, kind string) store.Item {
+	t.Helper()
+	items := findItemsByKind(t, st, threadID, kind)
+	if len(items) == 0 {
+		t.Fatalf("no %q items for thread %s", kind, threadID)
+	}
+	return items[0]
+}
+
 // TestInterruptQueueDrainsInArrivalOrder pins the FIFO contract on the
 // interrupt queue. While a streaming text item is open, two background
 // tool completions (A then B) arrive. The queue holds both, and on
@@ -142,5 +154,177 @@ func TestInterruptQueueDrainsInArrivalOrder(t *testing.T) {
 	if upsertOrder[0] != "bg-A" ||
 		upsertOrder[1] != "bg-B" {
 		t.Fatalf("upsert arrival order violated: got %+v, want [bg-A, bg-B]", upsertOrder)
+	}
+}
+
+// TestSettleNonStreamingRowStillDrainsQueue pins a subtle invariant in
+// settleStreamingText / settleStreamingThinking: once the streaming
+// counter has been decremented inside the lock, the interrupt-queue
+// drain MUST run even if the store lookup finds the row in a
+// non-streaming state. Without the drain-after-decrement path, a late
+// settle that raced with an external status flip would leak every
+// queued completion for that thread.
+//
+// Scenario:
+//   1. Streaming text opens for a turn (counter = 1, row inserted as streaming).
+//   2. A background tool completes and queues behind the streaming block.
+//   3. Before the block closes, the row's status is flipped OUT of streaming
+//      (simulating a crash-flip handler that got in first, or any path that
+//      mutated the row's status while the block was still tracked active).
+//   4. Content block stop fires: settle decrements the counter to 0 but the
+//      row is now non-streaming. The drain still has to run — otherwise the
+//      queued completion sits in `interruptQueue[threadID]` forever.
+func TestSettleNonStreamingRowStillDrainsQueue(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	// 1. Launch a background tool BEFORE streaming text opens. handleToolStart
+	//    calls settleStreamingScope, which would close the streaming block if
+	//    one were already open — so order matters.
+	startMeta, _ := json.Marshal(map[string]any{
+		"toolName":      "Bash",
+		"is_background": true,
+		"input":         map[string]any{"command": "bg"},
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "bg-x",
+		ItemType: "Bash", Meta: startMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("start bg: %v", err)
+	}
+
+	// 2. Stream a text delta. First delta inserts the row with status=streaming
+	//    and bumps streamingItemCounts[threadID] to 1.
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTextDelta,
+		ThreadID:  "t1",
+		Content:   "streaming ",
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("text delta: %v", err)
+	}
+
+	// 3. Complete the background tool while text is streaming — completion
+	//    queues behind the active block instead of persisting inline.
+	completeMeta, _ := json.Marshal(map[string]any{
+		"is_background": true,
+		"exit_code":     0,
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "bg-x",
+		Meta: completeMeta, Content: "done", Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("complete bg: %v", err)
+	}
+
+	doneQueued := findItemsByKind(t, st, "t1", itemKindBackgroundDone)
+	if len(doneQueued) != 0 {
+		t.Fatalf("precondition: background_done should still be queued behind streaming text, got %d", len(doneQueued))
+	}
+
+	// 3. Flip the row OUT of streaming externally. In production this can
+	//    happen via the fatal-error crash-flip path, which transitions
+	//    every streaming/running row to errored before the content block
+	//    stop arrives. We reach in with UpdateItemStatus to mimic the
+	//    end state regardless of which path produced it. Look up the
+	//    actual item id (text:<turn>:<segmentIndex>) rather than
+	//    hard-coding it — the segment counter's value is internal to the
+	//    router and the test shouldn't be coupled to it.
+	textRow := firstItemByKind(t, st, "t1", "assistant_text")
+	if err := st.UpdateItemStatus(textRow.ID, "errored", "streaming — interrupted", "", time.Now().UnixMilli()); err != nil {
+		t.Fatalf("flip row status out of streaming: %v", err)
+	}
+
+	// 4. Fire content block stop. settleStreamingText decrements the
+	//    counter to 0, sees the row is non-streaming, and MUST still
+	//    drain the queued background completion.
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventContentBlockStop,
+		ThreadID:  "t1",
+		Meta:      json.RawMessage(`{"blockType":"text"}`),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("content block stop: %v", err)
+	}
+
+	drained := findItemsByKind(t, st, "t1", itemKindBackgroundDone)
+	if len(drained) != 1 {
+		t.Fatalf("drain-after-non-streaming: expected 1 drained background_done row, got %d", len(drained))
+	}
+	if drained[0].CompletionOf != "bg-x" {
+		t.Fatalf("drained row completion_of = %q, want bg-x", drained[0].CompletionOf)
+	}
+}
+
+// TestSettleStreamingThinkingNonStreamingRowStillDrainsQueue mirrors the
+// text-block invariant on the thinking path. Same failure mode (drain
+// skipped when the store lookup returns a non-streaming row) would
+// starve the queue identically — the thinking handler owns its own
+// defer now, and this test guards the wiring.
+func TestSettleStreamingThinkingNonStreamingRowStillDrainsQueue(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	// 1. Launch a background tool BEFORE streaming thinking opens — order
+	//    matters for the same reason as the text variant: handleToolStart
+	//    would otherwise settle an already-open thinking block.
+	startMeta, _ := json.Marshal(map[string]any{
+		"toolName":      "Bash",
+		"is_background": true,
+		"input":         map[string]any{"command": "bg"},
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "bg-y",
+		ItemType: "Bash", Meta: startMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("start bg: %v", err)
+	}
+
+	// 2. Stream a thinking delta. First delta inserts the row with
+	//    status=streaming and bumps streamingItemCounts[threadID] to 1.
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventThinking,
+		ThreadID:  "t1",
+		Content:   "pondering ",
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("thinking delta: %v", err)
+	}
+
+	// 3. Complete the background tool — queues behind the thinking block.
+	completeMeta, _ := json.Marshal(map[string]any{
+		"is_background": true,
+		"exit_code":     0,
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "bg-y",
+		Meta: completeMeta, Content: "done", Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("complete bg: %v", err)
+	}
+	doneQueued := findItemsByKind(t, st, "t1", itemKindBackgroundDone)
+	if len(doneQueued) != 0 {
+		t.Fatalf("precondition: background_done should be queued, got %d", len(doneQueued))
+	}
+
+	// 3. Flip the thinking row out of streaming externally.
+	thinkRow := firstItemByKind(t, st, "t1", "thinking")
+	if err := st.UpdateItemStatus(thinkRow.ID, "errored", "pondering — interrupted", thinkRow.PayloadID, time.Now().UnixMilli()); err != nil {
+		t.Fatalf("flip row status: %v", err)
+	}
+
+	// 4. Content block stop must still drain despite the non-streaming row.
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventContentBlockStop,
+		ThreadID:  "t1",
+		Meta:      json.RawMessage(`{"blockType":"thinking"}`),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("content block stop: %v", err)
+	}
+
+	drained := findItemsByKind(t, st, "t1", itemKindBackgroundDone)
+	if len(drained) != 1 {
+		t.Fatalf("drain-after-non-streaming: expected 1 drained background_done row, got %d", len(drained))
 	}
 }

@@ -17,24 +17,24 @@ to hand back.
 | `pending_fork_session_ref` | Set on a freshly-forked thread to point at the *source* session. Cleared the first time we start under it. |
 
 `Router.handleInit` writes `session_ref` via
-`store.UpdateSessionRef` on every `EventInit`
-(`internal/triage/router.go:245`). The store-level update also clears
-`pending_fork_session_ref` in the same statement
-(`internal/store/threads.go:148`) so a pre-committed fork cannot get
-re-forked on the next restart.
+`store.UpdateSessionRef` on every `EventInit`. The store-level update
+also clears `pending_fork_session_ref` in the same statement
+(`Store.UpdateSessionRef` in `internal/store/threads.go`) so a
+pre-committed fork cannot get re-forked on the next restart.
 
 ## Start, Resume, Fork
 
-`App.startSessionNow` (`app.go:620`) picks the right cursor per provider:
+`App.startSessionNow` picks the right cursor per provider:
 
-- **Claude** — passes `--resume <session_ref>` via
-  `buildArgs` (`internal/provider/claude/session.go:162`). If
-  `PendingForkRef` is populated it replaces `Resume` and the `ForkSession`
-  flag is set, producing `--fork-session --resume <source-ref>` so the
-  CLI replays from the source into a fresh session id.
+- **Claude** — passes `--resume <session_ref>` via `buildArgs` in
+  `internal/provider/claude/session.go`. If `PendingForkRef` is
+  populated it replaces `Resume` and the `ForkSession` flag is set,
+  producing `--fork-session --resume <source-ref>` so the CLI replays
+  from the source into a fresh session id.
 - **Codex** — passes `ResumeThreadID = t.SessionRef`. The session
   selects `thread/resume` over `thread/start` when the ID is non-empty
-  (`internal/provider/codex/session.go:157`). Codex has a native
+  (see the method-dispatch switch in `Session.start` in
+  `internal/provider/codex/session.go`). Codex has a native
   `thread/fork` wire method that `app_thread_fork.go` uses at fork
   time; the child thread's first start still goes through plain
   resume on its freshly-assigned id.
@@ -42,10 +42,10 @@ re-forked on the next restart.
 ## Auto-Resume on SwitchThread
 
 The frontend calls `SwitchThread(threadID)` whenever the user selects
-a thread in the sidebar. The binding in `app_session_bindings.go:12`
-looks up the thread, and when `SessionRef != ""` or
-`PendingForkRef != ""` and no active session is in the map, it
-launches `startSession` in a background goroutine:
+a thread in the sidebar. The `App.SwitchThread` binding in
+`app_session_bindings.go` looks up the thread, and when
+`SessionRef != ""` or `PendingForkRef != ""` and no active session is
+in the map, it launches `startSession` in a background goroutine:
 
 ```
 SwitchThread(id) ──► store.GetThread ──► thread in sessions map?
@@ -55,22 +55,25 @@ SwitchThread(id) ──► store.GetThread ──► thread in sessions map?
                                           │        │ no  → return thread
 ```
 
-`app_session_start.go:runSessionStart` coalesces concurrent starts on
-the same thread id (see `TestSwitchThreadCoalescesConcurrentAutoResume`
-at `app_bindings_test.go:179`). Failures synthesize an `EventError`
-through triage with `content = "auto-resume failed: ..."`
-(`app_session_bindings.go:33` → `emitErrorToThread`).
+`App.runSessionStart` (in `app_session_start.go`) coalesces concurrent
+starts on the same thread id (see
+`TestSwitchThreadCoalescesConcurrentAutoResume` in
+`app_bindings_test.go`). Failures synthesize an `EventError` through
+triage with `content = "auto-resume failed: ..."` (the goroutine in
+`App.SwitchThread` calls `emitErrorToThread`).
 
 ## Disconnects and Manual Reconnect
 
 When Claude's subprocess exits (idle-watchdog fires, crash, or manual
 close) the session emits `EventSessionStatus{Content: "disconnected"}`
-— see the tests in `internal/provider/claude/session_test.go:1113`.
-The frontend's `ProviderStatusBanner.svelte` renders a "Session
-disconnected" banner with a Reconnect button that calls
-`ReconnectSession` (`app_session_bindings.go:43` — stop then
-`startSession`). The stored `session_ref` drives the resume; no extra
-state is needed from the frontend.
+— see `TestReadLoopEmitsDisconnectedOnExit` and
+`TestCloseWaitsForDisconnectedHandler` in
+`internal/provider/claude/session_test.go`. The frontend's
+`ProviderStatusBanner.svelte` renders a "Session disconnected" banner
+with a Reconnect button that calls `App.ReconnectSession` (in
+`app_session_bindings.go` — stop then `startSession`). The stored
+`session_ref` drives the resume; no extra state is needed from the
+frontend.
 
 ## Revert and Recovery
 
@@ -80,6 +83,6 @@ The revert modes in `app_checkpoint.go` interact with this machinery:
   on the live or a temp resumed session (`rollbackCodexThread`).
   `session_ref` stays valid.
 - Claude has no wire-level rollback, so the same modes clear
-  `SessionRef` and `PendingForkRef` (`app_checkpoint.go:220`). The
-  next message starts a fresh session; the old session file is left
-  on disk untouched.
+  `SessionRef` and `PendingForkRef` (`revertProviderConversation` in
+  `app_checkpoint.go`). The next message starts a fresh session; the
+  old session file is left on disk untouched.

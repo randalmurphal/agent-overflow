@@ -11,16 +11,16 @@ whose turn is next. Implementation lives in `internal/discussion/` and
 ## The Shape
 
 A discussion starts when `App.StartDiscussion(threadID, name)` is
-called on a "parent" thread. `app_discussion_start.go:20` resolves a
-`DiscussionDefinition` (global or per-project), spawns one child
-thread per participant role, creates a `channels` row of type
+called on a "parent" thread. The binding (in `app_discussion_start.go`)
+resolves a `DiscussionDefinition` (global or per-project), spawns one
+child thread per participant role, creates a `channels` row of type
 `deliberation`, and wires each participant's `DiscussionID` to that
 channel id. All four step-failures share a cleanup helper that tears
-down whatever partial state was built
-(`cleanupDiscussionSetup`, `app_discussion_start.go:184`).
+down whatever partial state was built (`cleanupDiscussionSetup` in
+the same file).
 
-Child thread shape (`buildDiscussionParticipantPlans`,
-`app_discussion_start.go:66`):
+Child thread shape (see `buildDiscussionParticipantPlans` in
+`app_discussion_start.go`):
 
 | Column | Value |
 |---|---|
@@ -53,14 +53,14 @@ Each participant gets a role-specific system prompt injected via
 `channel_messages` tables. Messages are appended with
 `InsertChannelMessageAtomic` so `sequence` is assigned inside the
 transaction. When a participant finishes a turn, `syncDiscussionTurn`
-(`app_discussion_runtime.go:12`) reads the latest assistant text from
+(in `app_discussion_runtime.go`) reads the latest assistant text from
 that child thread's timeline, posts it as a `channel_messages` row
 with `from_type="agent"`, and calls `RecordPost` on the deliberation.
 On conclusion the channel status moves from `open` to `concluded` via
 `UpdateChannelStatus`.
 
-Human interventions arrive through `PostChannelMessage`
-(`app_discussion.go:67`) as `from_type="human"` and do not advance the
+Human interventions arrive through `App.PostChannelMessage` (in
+`app_discussion.go`) as `from_type="human"` and do not advance the
 deliberation counter.
 
 ## Why This Lives in Go

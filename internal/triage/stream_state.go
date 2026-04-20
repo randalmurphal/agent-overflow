@@ -161,6 +161,13 @@ func (r *Router) settleStreamingText(threadID string, turnIndex int, scope strin
 		return nil
 	}
 
+	// Defer the drain unconditionally once the counter has been
+	// decremented: every early return below (row missing, row already
+	// non-streaming) still represents a streaming slot that just
+	// closed. Without this, a late settle that sees a non-streaming
+	// row would leak whatever was queued behind the streaming lock.
+	defer r.drainInterruptQueueIfIdle(threadID)
+
 	itemID := textItemID(turnIndex, scope, index)
 	item, found, err := r.store.GetThreadItem(threadID, itemID)
 	if err != nil || !found {
@@ -174,11 +181,7 @@ func (r *Router) settleStreamingText(threadID string, turnIndex int, scope strin
 		item.Summary = interruptedSummary(item.Summary)
 	}
 	item.UpdatedAt = time.Now().UnixMilli()
-	if err := r.persistItem(item, nil); err != nil {
-		return err
-	}
-	r.drainInterruptQueueIfIdle(threadID)
-	return nil
+	return r.persistItem(item, nil)
 }
 
 func (r *Router) settleStreamingThinking(threadID string, turnIndex int, scope string, status string) error {
@@ -196,6 +199,12 @@ func (r *Router) settleStreamingThinking(threadID string, turnIndex int, scope s
 	if !active {
 		return nil
 	}
+
+	// Same invariant as settleStreamingText: once we've decremented the
+	// counter, the drain must fire regardless of what we find in the
+	// store. A lookup miss or an already-non-streaming row would
+	// otherwise leak whatever sat behind the streaming lock.
+	defer r.drainInterruptQueueIfIdle(threadID)
 
 	itemID := thinkingItemID(turnIndex, scope, index)
 	item, found, err := r.store.GetThreadItem(threadID, itemID)
@@ -239,11 +248,7 @@ func (r *Router) settleStreamingThinking(threadID string, turnIndex int, scope s
 			return err
 		}
 	}
-	if err := r.persistItem(item, nil); err != nil {
-		return err
-	}
-	r.drainInterruptQueueIfIdle(threadID)
-	return nil
+	return r.persistItem(item, nil)
 }
 
 func nextErrorID(turnIndex int, scope string, seq int) string {

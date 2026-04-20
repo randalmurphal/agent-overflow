@@ -305,7 +305,7 @@ describe('<ApprovalPrompt> edit-input toggle — adversarial', () => {
     await fireEvent.click(getByTestId('approval-edit-toggle'));
     await fireEvent.click(getByTestId('approval-allow-with-edits'));
     await waitFor(() => {
-      expect(pane.error).toMatch(/Failed to respond to approval/i);
+      expect(pane.generalError).toMatch(/Failed to respond to approval/i);
     });
   });
 

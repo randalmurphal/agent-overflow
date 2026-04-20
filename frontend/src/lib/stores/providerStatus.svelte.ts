@@ -1,5 +1,4 @@
 import type { ProviderStatusEvent } from '../types/events';
-import { wailsEventOn } from './events';
 
 export type { ProviderStatusEvent } from '../types/events';
 
@@ -28,25 +27,22 @@ export function getProviderStatus(
 }
 
 /**
- * setupProviderStatusListener subscribes to the Wails `provider:status`
- * channel. Returns a cleanup function so the caller (App.svelte) can
- * unsubscribe on teardown. Events arrive wrapped in SeqEnvelope — the
- * wailsEventOn helper unwraps the `data` field automatically and tracks
- * per-channel seq gaps for us.
+ * recordProviderStatus updates the app-wide per-provider status map.
+ * Accepts either the legacy binary-detect shape (`status` populated) or
+ * the chat-rewrite kind-bearing shape (`kind` populated, `status`
+ * derived at the event boundary). Events lacking both a provider AND
+ * at least one of `status`/`kind` are dropped as malformed.
  *
- * Idempotent: re-emitting the same state twice is safe; the map just
- * replaces the entry in place.
+ * Called from the consolidated `provider:status` listener in
+ * `events.ts applyProviderStatus`; kept as the sole mutator on the map
+ * so the store has one entry point.
  */
-export function setupProviderStatusListener(): () => void {
-  return wailsEventOn<ProviderStatusEvent>('provider:status', (evt) => {
-    if (!evt || typeof evt.provider !== 'string' || typeof evt.status !== 'string') {
-      // Malformed payloads are dropped silently; wailsEventOn already
-      // logs the raw event at the gap-detection layer when something
-      // is off. A bad payload shouldn't blow up the whole bus.
-      return;
-    }
-    statuses = new Map(statuses).set(evt.provider, evt);
-  });
+export function recordProviderStatus(evt: ProviderStatusEvent | null | undefined): void {
+  if (!evt || typeof evt.provider !== 'string') return;
+  const hasStatus = typeof evt.status === 'string' && evt.status.length > 0;
+  const hasKind = typeof evt.kind === 'string' && evt.kind.length > 0;
+  if (!hasStatus && !hasKind) return;
+  statuses = new Map(statuses).set(evt.provider, evt);
 }
 
 /**

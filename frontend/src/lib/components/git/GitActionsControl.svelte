@@ -64,7 +64,7 @@
       console.error('Failed to get git status:', err);
       status = null;
       statusError = true;
-      pane.setError(`Failed to load git status: ${err}`);
+      pane.setGeneralError(`Failed to load git status: ${err}`);
     }
   }
 
@@ -88,7 +88,7 @@
   function ctx(): GitActionCtx {
     return {
       threadId: pane.threadId!,
-      reportError: (msg) => pane.setError(msg),
+      reportError: (msg) => pane.setGeneralError(msg),
       refreshStatus: () => refreshStatus(),
       replacePaneThread: (t) => pane.replaceThread(t),
     };

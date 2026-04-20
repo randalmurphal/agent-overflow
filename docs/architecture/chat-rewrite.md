@@ -90,8 +90,10 @@ both to `parent_id` and `completion_of` in a single migration. The
 old names were Claude-centric; the new ones are provider-agnostic and
 reflect the unified item model (any kind can be a parent of any
 other — e.g., an MCP tool with child tool_calls, not just a
-`tool_use`). Existing rows have their column values preserved under
-the new names.
+`tool_use`). The v15 migration wipes `items` and `payloads` entirely
+(see "Store changes" below), so column-value preservation doesn't
+apply — the rename is really a schema-shape change with a fresh
+start on data.
 
 ### Kinds (closed set — 7)
 
@@ -510,9 +512,8 @@ payload (useful for populating the tool_completion's summary /
 inline output), not its terminal signal — that's already covered.
 
 **Claude adapter execution work required:**
-- `internal/provider/claude/protocol.go:171-180` currently drops
-  `task_started` / `task_updated` / `task_notification` with a TODO.
-  Must parse all three:
+- The `parse_system.go` `task_started` / `task_updated` /
+  `task_notification` handlers must cover all three paths:
   - `task_started` → store `task_id ↔ tool_use_id` mapping; persist
     to `items.meta` for reconnect recovery.
   - `task_updated` with terminal status → look up tool_use_id from
@@ -523,11 +524,10 @@ inline output), not its terminal signal — that's already covered.
     `EventToolComplete` and add to the set. Redundant in the
     happy path, load-bearing when `task_updated` is delayed or
     missed.
-- `internal/provider/claude/protocol.go:380-385` currently fires
-  `EventToolComplete` on the first `tool_result` echo for a
-  background tool — that's premature. Fix: if the tool_use is in
-  the `backgroundToolUses` set, treat the echo as informational;
-  wait for `task_updated` / `task_notification` to terminate.
+- The `parse_user.go` `tool_result` echo path must suppress
+  `EventToolComplete` when the tool_use is in
+  `backgroundToolUses` — the echo is informational; wait for
+  `task_updated` / `task_notification` to terminate.
 - When `TaskOutput`'s tool_result arrives, extract its output /
   exit code / result text into the corresponding `tool_completion`
   item's payload. Do NOT use it as a completion signal — it's
@@ -1159,8 +1159,8 @@ func (r *Router) drainInterruptQueue(threadID string) {
 
 Turn boundaries are synthesized in the Go triage layer. We don't
 depend on the wire for TurnStart — Claude doesn't emit one, and
-Codex does (`turn/started` notification, handled at
-`internal/provider/codex/protocol.go:28`) but we still synthesize
+Codex does (`turn/started` notification, handled at the Codex
+adapter's `ClassifyNotification` entry point) but we still synthesize
 to keep `turn_index` monotonic per thread, server-assigned, and
 provider-independent. Any wire TurnStart is absorbed idempotently.
 
@@ -1658,8 +1658,10 @@ break the UI.
 - `pane.payloadMetas`, `addPayloadMeta`, `touchPayloadMeta` (payload previews/data held in component-local `$state`, discarded on collapse — no cache)
 - `pane.tokenUsage`, `setTokenUsage` (replaced by `pane.contextWindow`)
 - `pane.rateLimits`, `setRateLimits`
-- `pane.error`, `setError`, `clearError` (audit — may be used outside
-  chat data flow)
+- `pane.error`, `setError`, `clearError` — audit resolved: renamed to
+  `pane.generalError` / `setGeneralError` / `clearGeneralError` so the
+  slot's grab-bag purpose (thread-load / composer send / git action
+  failures) is distinct from the wire-level `providerBanner`.
 - `pane.sessionStatus`, `setSessionStatus`
 - `pane.finalizeTurn`
 - `pane.sessionApprovedTools`, `addSessionApprovedTool`,

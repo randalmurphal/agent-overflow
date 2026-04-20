@@ -757,6 +757,56 @@ func TestSessionStatusPrecisePerReason(t *testing.T) {
 			wantKind:    provider.ProviderStatusTransientRetry,
 			wantMessage: "Retrying...",
 		},
+		// Negative cases — substring matching used to misclassify these.
+		// A Codex rate-limit message that quotes "401 requests/minute" must
+		// still land on rate_limited_retrying, not unauthenticated. The
+		// boundary-aware status-code matcher keeps "401" from winning here
+		// because it's glued to a digit run; the phrase "rate limit" wins
+		// via the rate-limit branch.
+		{
+			name: "codex_rate_limit_mentions_401_requests",
+			meta: map[string]any{
+				"willRetry": true,
+				"error":     map[string]any{"message": "Rate limit exceeded: 401 requests/minute"},
+			},
+			wantKind:    provider.ProviderStatusRateLimitedRetrying,
+			wantMessage: "Rate limit exceeded: 401 requests/minute",
+		},
+		{
+			// Claude's closed enum takes precedence over stray substrings.
+			// If the same "rate_limit" enum arrives with a confusing
+			// narrative message, we still land on rate_limited_retrying.
+			name: "claude_rate_limit_exact_wins_over_text",
+			meta: map[string]any{
+				"error":         "rate_limit",
+				"error_message": "Your 401 auth token expired — wait and retry.",
+			},
+			wantKind:    provider.ProviderStatusRateLimitedRetrying,
+			wantMessage: "rate_limit",
+		},
+		{
+			// 1401 must NOT match 401 as a status code. Free-form message
+			// with no phrase signals falls through to transient retry.
+			name: "codex_digit_glued_to_status_code_falls_through",
+			meta: map[string]any{
+				"willRetry": true,
+				"error":     map[string]any{"message": "Process 1401 restarted"},
+			},
+			wantKind:    provider.ProviderStatusTransientRetry,
+			wantMessage: "Process 1401 restarted",
+		},
+		{
+			// "authorization" alone (no "unauthorized", no 401/403) is NOT
+			// an auth error. We used to match "auth" as a prefix and flip
+			// to unauthenticated incorrectly — this guards the fix.
+			name: "message_mentions_authorization_header_only",
+			meta: map[string]any{
+				"willRetry": true,
+				"error":     map[string]any{"message": "Refreshing authorization header"},
+			},
+			wantKind:    provider.ProviderStatusTransientRetry,
+			wantMessage: "Refreshing authorization header",
+		},
 	}
 
 	for _, tc := range cases {
@@ -2133,6 +2183,236 @@ func TestErrorPersistsTimelineItem(t *testing.T) {
 	if len(upserts) != 1 {
 		t.Fatalf("expected 1 provider:item_upsert emission, got %+v", *emissions)
 	}
+}
+
+// TestFatalErrorOrderingMatchesSpec pins the ordering contract on a
+// fatal EventError, per chat-rewrite §"Live provider-crash flip":
+//
+//   1. flip every streaming/running item in the turn to errored
+//   2. persist the error row
+//   3. drain any queued completions as errored
+//   4. synthesize TurnComplete{truncated:true} when no wire
+//      TurnComplete is expected
+//
+// Earlier code drained before creating the error row; the emission
+// ordering below locks the spec sequence so a regression surfaces as
+// a loud assertion failure rather than a subtle UX glitch.
+func TestFatalErrorOrderingMatchesSpec(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	// 1. Start a turn with a streaming text item AND a queued background
+	//    tool completion. The background starts before the text block
+	//    opens so handleToolStart's settleStreamingScope doesn't close
+	//    the (still-to-be-opened) text block.
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnStart, ThreadID: "t1", Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn start: %v", err)
+	}
+	startMeta, _ := json.Marshal(map[string]any{
+		"toolName":      "Bash",
+		"is_background": true,
+		"input":         map[string]any{"command": "bg"},
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "bg-1",
+		ItemType: "Bash", Meta: startMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("bg start: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTextDelta, ThreadID: "t1", Content: "hello",
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("text delta: %v", err)
+	}
+	completeMeta, _ := json.Marshal(map[string]any{
+		"is_background": true,
+		"exit_code":     0,
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "bg-1",
+		Meta: completeMeta, Content: "done", Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("bg complete: %v", err)
+	}
+
+	// Baseline check: queued completion has NOT persisted yet (sits
+	// behind the streaming text block).
+	done := findItemsByKind(t, st, "t1", itemKindBackgroundDone)
+	if len(done) != 0 {
+		t.Fatalf("background_done should still be queued, got %d", len(done))
+	}
+
+	// Clear emissions up to this point — we only want the fatal-error
+	// fan-out in the sequence check.
+	*emissions = (*emissions)[:0]
+
+	// 2. Fire a fatal EventError. This exercises the spec ordering.
+	fatalMeta, _ := json.Marshal(map[string]any{"fatal": true})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventError, ThreadID: "t1",
+		Content: "provider crashed", Meta: fatalMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("fatal error: %v", err)
+	}
+
+	// Walk the upsert emissions and extract the fatal-phase items in
+	// order. We care specifically about:
+	//   - the flipped streaming text item (Kind=assistant_text, Status=errored)
+	//   - the new error row (Kind=error)
+	//   - the drained background_done row (Kind=background_done, Status=errored)
+	upserts := filterEmissions(*emissions, "provider:item_upsert")
+	var sequence []string
+	for _, e := range upserts {
+		item, ok := e.data.(store.Item)
+		if !ok {
+			continue
+		}
+		switch {
+		case item.Kind == "assistant_text" && item.Status == "errored":
+			sequence = append(sequence, "flip_text")
+		case item.Kind == "error":
+			sequence = append(sequence, "create_error")
+		case item.Kind == itemKindBackgroundDone && item.Status == "errored":
+			sequence = append(sequence, "drain_bg_done")
+		}
+	}
+
+	if len(sequence) < 3 {
+		t.Fatalf("expected flip_text, create_error, drain_bg_done in order; got %+v (upserts=%+v)", sequence, upserts)
+	}
+
+	// Spec ordering: flip_text MUST come before create_error, and
+	// create_error MUST come before drain_bg_done. Anything else is a
+	// regression.
+	flipIdx := indexOf(sequence, "flip_text")
+	errorIdx := indexOf(sequence, "create_error")
+	drainIdx := indexOf(sequence, "drain_bg_done")
+	if !(flipIdx < errorIdx && errorIdx < drainIdx) {
+		t.Fatalf("fatal-error emission ordering violated: flip=%d error=%d drain=%d sequence=%+v",
+			flipIdx, errorIdx, drainIdx, sequence)
+	}
+
+}
+
+// TestFatalErrorSynthesizesTurnCompleteWhenNoWireExpected verifies the
+// final step of the spec ordering: absent an `expect_turn_complete`
+// opt-in on the error meta, the router must synthesize an
+// EventTurnComplete{truncated:true} so the frontend working
+// indicator flips off without needing the wire event. The synthesis
+// is observable via the test-only event hook, which fires for
+// EVERY Handle invocation — including the recursive one.
+func TestFatalErrorSynthesizesTurnCompleteWhenNoWireExpected(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	observed := make(chan provider.ProviderEvent, 8)
+	router.SetEventHook(func(evt provider.ProviderEvent) {
+		observed <- evt
+	})
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnStart, ThreadID: "t1", Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn start: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTextDelta, ThreadID: "t1", Content: "hi",
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("text delta: %v", err)
+	}
+
+	fatalMeta, _ := json.Marshal(map[string]any{"fatal": true})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventError, ThreadID: "t1",
+		Content: "subprocess exit", Meta: fatalMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("fatal error: %v", err)
+	}
+
+	// Drain all observed events and look for the synthesized
+	// TurnComplete. The synthetic event has meta.synthetic=true so we
+	// can distinguish it from a real wire TurnComplete.
+	close(observed)
+	var gotSynthesized bool
+	for evt := range observed {
+		if evt.Kind != provider.EventTurnComplete {
+			continue
+		}
+		var meta map[string]any
+		if len(evt.Meta) > 0 {
+			_ = json.Unmarshal(evt.Meta, &meta)
+		}
+		if synth, _ := meta["synthetic"].(bool); synth {
+			gotSynthesized = true
+			// And meta.truncated must be true so handleTurnComplete
+			// takes the truncated branch (flip items, drain as errored).
+			if truncated, _ := meta["truncated"].(bool); !truncated {
+				t.Fatalf("synthesized TurnComplete lacks truncated:true, meta=%+v", meta)
+			}
+		}
+	}
+
+	if !gotSynthesized {
+		t.Fatal("expected a synthesized TurnComplete after fatal without expect_turn_complete opt-in")
+	}
+}
+
+// TestFatalErrorSkipsSynthesisWhenExpectTurnComplete guards the
+// opt-in case: a fatal error on a still-alive session carrying
+// `expect_turn_complete:true` must NOT synthesize, because a real
+// wire TurnComplete is still coming. Double-emitting would leave
+// the working indicator in a confusing "just-flipped" state.
+func TestFatalErrorSkipsSynthesisWhenExpectTurnComplete(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	observed := make(chan provider.ProviderEvent, 8)
+	router.SetEventHook(func(evt provider.ProviderEvent) {
+		observed <- evt
+	})
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnStart, ThreadID: "t1", Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn start: %v", err)
+	}
+
+	fatalMeta, _ := json.Marshal(map[string]any{"fatal": true, "expect_turn_complete": true})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventError, ThreadID: "t1",
+		Content: "mid-turn refusal", Meta: fatalMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("fatal error: %v", err)
+	}
+
+	close(observed)
+	for evt := range observed {
+		if evt.Kind != provider.EventTurnComplete {
+			continue
+		}
+		var meta map[string]any
+		if len(evt.Meta) > 0 {
+			_ = json.Unmarshal(evt.Meta, &meta)
+		}
+		if synth, _ := meta["synthetic"].(bool); synth {
+			t.Fatal("synthesized TurnComplete must NOT fire when expect_turn_complete is true")
+		}
+	}
+}
+
+// indexOf returns the index of value in slice, or -1 if absent. Used
+// only by TestFatalErrorOrderingMatchesSpec for readable assertions.
+func indexOf(haystack []string, needle string) int {
+	for i, v := range haystack {
+		if v == needle {
+			return i
+		}
+	}
+	return -1
 }
 
 func TestFatalErrorFlipsStreamingItemsToErrored(t *testing.T) {

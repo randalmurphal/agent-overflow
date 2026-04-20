@@ -2,9 +2,9 @@ import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import {
   getProviderStatus,
   resetForTest,
-  setupProviderStatusListener,
   type ProviderStatusEvent,
 } from './providerStatus.svelte';
+import { setupEventListeners } from './events';
 import { emitWailsEvent, wailsListenerCount, resetWailsMocks } from '../../test/mocks/wailsio-runtime';
 
 function statusEvent(overrides: Partial<ProviderStatusEvent> = {}): ProviderStatusEvent {
@@ -25,7 +25,10 @@ describe('providerStatus store', () => {
   beforeEach(() => {
     resetWailsMocks();
     resetForTest();
-    cleanup = setupProviderStatusListener();
+    // The store now feeds through the consolidated `provider:status`
+    // listener in setupEventListeners; wiring that single listener gives
+    // the store the same coverage as the retired dedicated subscriber.
+    cleanup = setupEventListeners();
   });
 
   afterEach(() => {
@@ -34,7 +37,7 @@ describe('providerStatus store', () => {
   });
 
   describe('listener lifecycle', () => {
-    it('subscribes to provider:status on setup', () => {
+    it('subscribes to provider:status exactly once through setupEventListeners', () => {
       expect(wailsListenerCount('provider:status')).toBe(1);
     });
 
@@ -42,7 +45,7 @@ describe('providerStatus store', () => {
       cleanup();
       expect(wailsListenerCount('provider:status')).toBe(0);
       // Re-install so afterEach cleanup stays balanced.
-      cleanup = setupProviderStatusListener();
+      cleanup = setupEventListeners();
     });
   });
 
@@ -91,6 +94,37 @@ describe('providerStatus store', () => {
       const evt = getProviderStatus('claude');
       expect(evt?.status).toBe('ready');
     });
+
+    it('records kind-only events from the chat-rewrite router', () => {
+      // Chat-rewrite EventSessionStatus emissions carry `kind` with no
+      // `status`; the consolidated listener in events.ts maps `kind` to a
+      // legacy status and the store has to see the normalized event so
+      // consumers reading getProviderStatus(...) get the same snapshot
+      // the banner draws.
+      emitWailsEvent('provider:status', {
+        provider: 'claude',
+        kind: 'rate_limited_retrying',
+        actionable: false,
+        message: 'Rate limited — retrying',
+      } as unknown as ProviderStatusEvent);
+
+      const stored = getProviderStatus('claude');
+      expect(stored).not.toBeNull();
+      expect(stored?.kind).toBe('rate_limited_retrying');
+      // Normalization derived an effective status (warning-styled banner).
+      expect(stored?.status).toBe('version_too_old');
+    });
+
+    it('drops kind events whose value is outside the closed enum', () => {
+      emitWailsEvent('provider:status', {
+        provider: 'claude',
+        kind: 'totally-made-up',
+        actionable: false,
+      } as unknown as ProviderStatusEvent);
+      // Unknown kinds are console-warned and dropped before they reach
+      // the store; nothing should land for that provider.
+      expect(getProviderStatus('claude')).toBeNull();
+    });
   });
 
   describe('payload validation', () => {
@@ -99,7 +133,7 @@ describe('providerStatus store', () => {
       emitWailsEvent('provider:status', { status: 'not_found' } as unknown as ProviderStatusEvent);
       expect(getProviderStatus('claude')).toBeNull();
 
-      // No status field either.
+      // No status AND no kind — neither shape populated.
       emitWailsEvent('provider:status', { provider: 'claude' } as unknown as ProviderStatusEvent);
       expect(getProviderStatus('claude')).toBeNull();
 

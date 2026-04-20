@@ -120,7 +120,7 @@ describe('<Composer>', () => {
     await new Promise((resolve) => setTimeout(resolve, 10));
 
     expect(draft.content).toBe('fails');
-    expect(pane.error).toMatch(/Failed to send message/);
+    expect(pane.generalError).toMatch(/Failed to send message/);
     consoleError.mockRestore();
   });
 });

@@ -35,7 +35,7 @@
   }
 
   function handleError(message: string): void {
-    pane.setError(message);
+    pane.setGeneralError(message);
   }
 </script>
 

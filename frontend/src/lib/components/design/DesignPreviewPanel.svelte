@@ -91,7 +91,7 @@
       addToast('success', `Exported design to a new thread`);
     } catch (err) {
       console.error('Failed to export design:', err);
-      pane.setError(`Failed to export design: ${err}`);
+      pane.setGeneralError(`Failed to export design: ${err}`);
     } finally {
       exporting = false;
     }

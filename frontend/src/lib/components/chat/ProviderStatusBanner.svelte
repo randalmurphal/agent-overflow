@@ -25,14 +25,14 @@
     return evt.status === 'ready' ? null : evt;
   });
 
-  let sessionBannerVisible = $derived(!!pane.thread && (reconnecting || !!pane.error));
+  let sessionBannerVisible = $derived(!!pane.thread && (reconnecting || !!pane.generalError));
   let sessionBannerClasses = $derived(
     reconnecting
       ? 'bg-warning/15 border-warning/30 text-warning'
       : 'bg-error/15 border-error/30 text-error',
   );
   let sessionMessage = $derived(
-    reconnecting ? 'Reconnecting…' : (pane.error ?? 'Provider error'),
+    reconnecting ? 'Reconnecting…' : (pane.generalError ?? 'Provider error'),
   );
 
   // Status-level banner (install / version / auth) — colour + copy are
@@ -87,12 +87,12 @@
   async function handleReconnect() {
     if (!pane.threadId || reconnecting) return;
     reconnecting = true;
-    pane.clearError();
+    pane.clearGeneralError();
     try {
       await ReconnectSession(pane.threadId);
     } catch (err) {
       console.error('Failed to reconnect:', err);
-      pane.setError(`Failed to reconnect: ${err}`);
+      pane.setGeneralError(`Failed to reconnect: ${err}`);
     } finally {
       reconnecting = false;
     }
@@ -163,7 +163,7 @@
       </button>
     {/if}
     <button
-      onclick={() => pane.clearError()}
+      onclick={() => pane.clearGeneralError()}
       class="text-xs hover:opacity-70 cursor-pointer shrink-0 px-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 rounded"
       aria-label="Dismiss banner"
     >

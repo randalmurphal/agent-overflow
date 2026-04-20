@@ -10,6 +10,7 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"time"
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
@@ -495,23 +496,105 @@ func classifyRetryReason(meta json.RawMessage) (provider.ProviderStatusEventKind
 	return provider.ProviderStatusTransientRetry, ""
 }
 
+// claudeRetryErrorKinds maps Claude's closed-set `error` enum (carried
+// on `system.api_retry`) to our banner status. Unlisted values fall
+// through to transient_retry via the switch's default branch.
+//
+// Source: the Claude Agent SDK emits one of these exact strings in
+// api_retry.data.error — keeping the switch keyed on the enum avoids
+// the substring-match pitfalls (e.g. "401 requests/minute" would
+// otherwise wrongly classify a rate_limit as unauthenticated).
+var claudeRetryErrorKinds = map[string]provider.ProviderStatusEventKind{
+	"rate_limit":            provider.ProviderStatusRateLimitedRetrying,
+	"authentication_failed": provider.ProviderStatusUnauthenticated,
+	"server_error":          provider.ProviderStatusTransientRetry,
+	"invalid_request":       provider.ProviderStatusTransientRetry,
+	"billing_error":         provider.ProviderStatusTransientRetry,
+	"max_output_tokens":     provider.ProviderStatusTransientRetry,
+	"unknown":               provider.ProviderStatusTransientRetry,
+}
+
 // retryKindForReason returns the ProviderStatusEventKind we want the
 // banner to render for a given upstream reason. The reason can be a
-// Claude SDK enum, a Codex error message, or anything else a future
-// provider surfaces — unknown values fall through to transient_retry so
-// the banner still fires.
+// Claude SDK enum (closed set — matched exactly), a Codex error
+// message (free-form — matched by signal phrase), or anything else a
+// future provider surfaces.
+//
+// Order matters: we try the Claude enum first because it's an exact
+// match and cannot collide with user-supplied text. Only when that
+// fails do we fall back to substring matching on the free-form
+// message, which we scope carefully so "401 requests/minute" doesn't
+// classify a rate-limit retry as unauthenticated.
 func retryKindForReason(reason string) provider.ProviderStatusEventKind {
 	normalized := strings.ToLower(strings.TrimSpace(reason))
 	if normalized == "" {
 		return provider.ProviderStatusTransientRetry
 	}
-	if strings.Contains(normalized, "rate_limit") || strings.Contains(normalized, "rate limit") || strings.Contains(normalized, "429") || strings.Contains(normalized, "quota") {
+	// Exact match against Claude's closed enum.
+	if kind, ok := claudeRetryErrorKinds[normalized]; ok {
+		return kind
+	}
+	// Codex free-form messages + future-provider fallback. We check for
+	// rate-limit signals FIRST because Codex rate-limit messages often
+	// quote HTTP 429 next to the word "auth" ("authorization header:
+	// ...") and we want rate_limit classification to win over a stray
+	// "auth" fragment.
+	//
+	// The rate-limit probes use phrase boundaries ("rate limit",
+	// "rate_limit") plus the HTTP-status token " 429 " / "429 " to
+	// avoid false positives against unrelated messages that happen to
+	// contain "429" as a substring of a number or path.
+	if strings.Contains(normalized, "rate limit") ||
+		strings.Contains(normalized, "rate_limit") ||
+		strings.Contains(normalized, "quota") ||
+		containsStatusCode(normalized, "429") {
 		return provider.ProviderStatusRateLimitedRetrying
 	}
-	if strings.Contains(normalized, "auth") || strings.Contains(normalized, "unauthenticated") || strings.Contains(normalized, "unauthorized") || strings.Contains(normalized, "401") || strings.Contains(normalized, "403") {
+	// Unauthenticated probes key on explicit auth phrasings — plain
+	// "auth" alone is too weak (matches "authorization", "authored",
+	// etc.). We require one of the canonical error tokens or an HTTP
+	// 401/403 that's surfaced as its own word, not embedded in a
+	// bigger number like "1401".
+	if strings.Contains(normalized, "unauthenticated") ||
+		strings.Contains(normalized, "unauthorized") ||
+		strings.Contains(normalized, "authentication failed") ||
+		strings.Contains(normalized, "authentication_failed") ||
+		containsStatusCode(normalized, "401") ||
+		containsStatusCode(normalized, "403") {
 		return provider.ProviderStatusUnauthenticated
 	}
 	return provider.ProviderStatusTransientRetry
+}
+
+// containsStatusCode reports whether `haystack` contains the HTTP
+// status code `code` as a standalone token — i.e. not a prefix or
+// suffix of a larger digit run. Keeps "401 Unauthorized" matching
+// while rejecting "1401 requests" from false-positive-classifying.
+func containsStatusCode(haystack, code string) bool {
+	i := strings.Index(haystack, code)
+	for i != -1 {
+		// boundary before
+		if i > 0 {
+			b := haystack[i-1]
+			if b >= '0' && b <= '9' {
+				haystack = haystack[i+len(code):]
+				i = strings.Index(haystack, code)
+				continue
+			}
+		}
+		// boundary after
+		end := i + len(code)
+		if end < len(haystack) {
+			b := haystack[end]
+			if b >= '0' && b <= '9' {
+				haystack = haystack[end:]
+				i = strings.Index(haystack, code)
+				continue
+			}
+		}
+		return true
+	}
+	return false
 }
 
 // retryBannerMessage returns the banner Message field for a retry. The
@@ -583,19 +666,28 @@ func (r *Router) handleError(evt provider.ProviderEvent) error {
 		}
 	}
 
-	if isFatalProviderError(evt.Meta) {
+	fatal := isFatalProviderError(evt.Meta)
+
+	// Fatal ordering, per chat-rewrite spec §"Live provider-crash flip":
+	//   1. flip every streaming/running item in the active turn → errored
+	//   2. create the error row
+	//   3. drain any queued completions as errored
+	//   4. synthesize EventTurnComplete{truncated:true} if no wire
+	//      TurnComplete is expected (subprocess exit case) — not needed
+	//      for a fatal EventError on an otherwise-alive session.
+	//
+	// The order matters for the frontend: by the time the error row
+	// emits, every streaming/running item is already visibly flipped
+	// to errored, so no "still-streaming text next to an error item"
+	// visual state appears in the timeline.
+	if fatal {
 		if err := r.markTurnItemsErrored(evt.ThreadID, turnIndex, now); err != nil {
 			return err
 		}
-		if err := r.drainInterruptQueue(evt.ThreadID, true); err != nil {
-			return err
-		}
-		r.clearOpenTurn(evt.ThreadID)
-		r.closeTurnSpan(evt.ThreadID, errors.New(stringsx.FirstNonEmptyTrimmed(evt.Content, "provider error")))
 	}
 
 	scope := strings.TrimSpace(evt.ParentToolUseID)
-	item := store.Item{
+	errorItem := store.Item{
 		ID:        nextErrorID(turnIndex, scope, r.nextErrorSequence(evt.ThreadID, turnIndex, scope)),
 		ThreadID:  evt.ThreadID,
 		TurnIndex: turnIndex,
@@ -607,7 +699,85 @@ func (r *Router) handleError(evt provider.ProviderEvent) error {
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
-	return r.persistItem(item, nil)
+	if err := r.persistItem(errorItem, nil); err != nil {
+		return err
+	}
+
+	if fatal {
+		if err := r.drainInterruptQueue(evt.ThreadID, true); err != nil {
+			return err
+		}
+		r.clearOpenTurn(evt.ThreadID)
+		r.closeTurnSpan(evt.ThreadID, errors.New(stringsx.FirstNonEmptyTrimmed(evt.Content, "provider error")))
+
+		// Synthesize a truncated TurnComplete only when no wire
+		// TurnComplete is expected downstream. `meta.expect_turn_complete`
+		// opts in to "the subprocess is still alive, a real wire
+		// TurnComplete will still arrive" — the common case for a fatal
+		// EventError that represents a mid-turn refusal. Absent that
+		// opt-in we assume the subprocess exited (stdout EOF, crash)
+		// and emit the synthetic TurnComplete so the frontend working
+		// indicator flips off even without a wire event.
+		if !fatalExpectsWireTurnComplete(evt.Meta) {
+			if err := r.synthesizeTruncatedTurnComplete(evt.ThreadID, turnIndex, now); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+// fatalExpectsWireTurnComplete reports whether a fatal error carries
+// the opt-in `expect_turn_complete: true` flag, signalling that the
+// provider process is still alive and a real TurnComplete will follow.
+// When absent (the common case — subprocess exit, stream EOF), the
+// router synthesizes a TurnComplete{truncated:true} so the frontend
+// working indicator flips off without needing the wire event.
+func fatalExpectsWireTurnComplete(meta json.RawMessage) bool {
+	if len(meta) == 0 {
+		return false
+	}
+	var m map[string]any
+	if json.Unmarshal(meta, &m) != nil {
+		return false
+	}
+	// Accept either key — callers can't agree and a false-negative here
+	// just synthesizes an extra TurnComplete (idempotent if the wire
+	// also delivers one).
+	if v, ok := m["expect_turn_complete"].(bool); ok {
+		return v
+	}
+	if v, ok := m["expectTurnComplete"].(bool); ok {
+		return v
+	}
+	return false
+}
+
+// synthesizeTruncatedTurnComplete emits a synthetic
+// EventTurnComplete{truncated:true} onto the routing pipeline so the
+// frontend observes the turn's termination even when no wire
+// TurnComplete arrives (subprocess exit, stream EOF). The synthetic
+// event reuses the turn-complete handler's idempotent plumbing — it
+// closes the span, clears the open turn, and emits any final
+// thread-updated the UI needs to settle state.
+//
+// Dispatched through the handler directly (not through Handle) to
+// avoid re-entering routing-layer guards such as the stopped-thread
+// marker check — the fatal path has already committed to closing the
+// turn. The test-only event hook is fired manually so synthesis
+// observers still see the event.
+func (r *Router) synthesizeTruncatedTurnComplete(threadID string, turnIndex int, now int64) error {
+	synth := provider.ProviderEvent{
+		Kind:      provider.EventTurnComplete,
+		ThreadID:  threadID,
+		Meta:      json.RawMessage(`{"truncated":true,"synthetic":true}`),
+		Timestamp: time.UnixMilli(now),
+	}
+	_ = turnIndex // embedded in the router's open-turn map already
+	err := r.handleTurnComplete(synth)
+	r.fireEventHook(synth)
+	return err
 }
 
 // emitInline is a no-op kept as an explicit marker at handler exit for

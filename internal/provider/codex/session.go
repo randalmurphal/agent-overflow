@@ -87,6 +87,10 @@ type Session struct {
 	// thread are re-emitted onto the parent thread with ParentToolUseID set
 	// to this card id.
 	childParentByThread map[string]string
+	// probeFn is a test-only override for Probe(). When non-nil, Probe
+	// skips the wire call and returns the result from this function.
+	// Production Session construction (NewSession) never sets it.
+	probeFn func(ctx context.Context) (ProbeResult, error)
 }
 
 // pendingApproval tracks one in-flight approval so the timer can be

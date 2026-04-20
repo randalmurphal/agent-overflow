@@ -24,7 +24,13 @@ export function createThreadPane() {
   let pendingApprovals: ApprovalRequest[] = $state([]);
   let contextWindow: ContextWindow | null = $state(null);
   let providerBanner: ProviderStatusEvent | null = $state(null);
-  let error: string | null = $state(null);
+  // generalError is the grab-bag pane-level error slot surfaced by
+  // ProviderStatusBanner for non-wire failures: thread load failures,
+  // composer send failures, git action failures, reconnect failures.
+  // It is deliberately distinct from providerBanner (which mirrors the
+  // provider's own session/auth/rate-limit state) — consumers treat
+  // them as two independent reasons to show the top-of-pane banner.
+  let generalError: string | null = $state(null);
   let loading: boolean = $state(false);
   let showTerminal: boolean = $state(false);
   // Diff panel is per-pane; created once and reset on thread switch so its
@@ -123,7 +129,7 @@ export function createThreadPane() {
     get pendingApprovals() { return pendingApprovals; },
     get contextWindow() { return contextWindow; },
     get providerBanner() { return providerBanner; },
-    get error() { return error; },
+    get generalError() { return generalError; },
     get loading() { return loading; },
     get showTerminal() { return showTerminal; },
     get diffPanel() { return diffPanel; },
@@ -155,7 +161,7 @@ export function createThreadPane() {
       pendingApprovals = [];
       contextWindow = seedContextWindow(newThread);
       providerBanner = null;
-      error = null;
+      generalError = null;
       channelMessages = [];
       channelStatus = null;
       designArtifacts = [];
@@ -200,7 +206,7 @@ export function createThreadPane() {
         console.error('Failed to load items:', err);
         items = [];
         turnDiffViews = new Map();
-        error = `Failed to load thread items: ${err}`;
+        generalError = `Failed to load thread items: ${err}`;
         addToast('error', 'Failed to load thread items');
       }
 
@@ -215,7 +221,7 @@ export function createThreadPane() {
       pendingApprovals = [];
       contextWindow = null;
       providerBanner = null;
-      error = null;
+      generalError = null;
       loading = false;
       showTerminal = false;
       showPlanSidebar = false;
@@ -289,12 +295,12 @@ export function createThreadPane() {
       refreshTurnDiffView(next, item.turnIndex);
     },
 
-    setError(message: string | null): void {
-      error = message;
+    setGeneralError(message: string | null): void {
+      generalError = message;
     },
 
-    clearError(): void {
-      error = null;
+    clearGeneralError(): void {
+      generalError = null;
     },
 
     setContextWindow(data: ContextWindow): void {

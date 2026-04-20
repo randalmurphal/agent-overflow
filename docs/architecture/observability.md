@@ -18,9 +18,9 @@ Three fields on `settings.Settings` control the stack, all wired in
 
 Tracing changes require an app restart — we do not hot-swap
 `TracerProvider`. The replay toggle is hot-swapped by
-`app.ReconfigureObservability` (`app_observability.go:33`). Neither field
-is treated as a secret — the "SECURITY NOTE" block at
-`internal/settings/settings.go:41` spells out why and warns against
+`App.ReconfigureObservability` (in `app_observability.go`). Neither
+field is treated as a secret — the "SECURITY NOTE" block at the top of
+`internal/settings/settings.go` spells out why and warns against
 adding real secrets to this file.
 
 ## OTel (traces + metrics)
@@ -28,36 +28,43 @@ adding real secrets to this file.
 `otel.NewProvider` builds one `TracerProvider` + one `MeterProvider`,
 both OTLP-gRPC exporters using `WithInsecure()` against the configured
 endpoint. The `Provider` exposes a pre-built `Metrics` struct so callers
-avoid otel's global lookups (`internal/observability/otel/provider.go:63`).
+avoid otel's global lookups (see `otel.NewProvider` in
+`internal/observability/otel/provider.go`).
 
 - **Spans** — triage opens a `turn.lifecycle` span on `EventTurnStart` and
   closes it on `EventTurnComplete`, tagged with `thread.id`, `provider`,
-  `model`, `turn.index` (`internal/triage/router.go:302`).
+  `model`, `turn.index` (see `Router.openTurnSpan` in
+  `internal/triage/turn_lifecycle.go`).
 - **Counters** — `turns.started`, `turns.completed`, `turns.errored`,
   `items.persisted`, `payloads.persisted` (recorded by the triage
   router), plus `replay.events.queued` / `replay.events.dropped`
-  (recorded by the event-log hook in `app.go:419`).
+  (recorded by the event-log hook wired from `app.go` via
+  `App.emitWithReplay`).
 - **Histogram** — `provider.stream.frames` for byte sizes of individual
   provider stream frames.
-- Metric export uses a `PeriodicReader` at 15s (provider.go:186) — fine
-  for a desktop app, not tuned for high-volume tracing backends.
+- Metric export uses a `PeriodicReader` at 15s (see
+  `otel.NewProvider`) — fine for a desktop app, not tuned for
+  high-volume tracing backends.
 
 ## Replay (per-thread NDJSON)
 
 `replay.Manager` owns one `Writer` per threadID, writing to
 `<dbDir>/replay/<threadID>.jsonl`. Every event flowing through
-`a.emitWithReplay()` (`app.go:404`) is mirrored into the log when
-enabled — including frontend-visible events like `provider:event`,
-`provider:meta`, design and checkpoint events. Records are
+`App.emitWithReplay` (in `app_emit.go`) is mirrored into the log when
+enabled — including the typed routing channels (`provider:item_upsert`,
+`provider:approval`, `provider:usage`, `provider:status`) and the
+design / checkpoint event families. Records are
 `{ts, threadId, kind, data}` with `data` as opaque JSON.
 
 - **Bounded queue** — `defaultQueueSize = 4096`. A full queue drops the
   event and bumps `replay.events.dropped`. Never blocks triage.
 - **Rotation** — `defaultMaxBytes = 100 MB` per thread file; keeps three
-  backups `.1 / .2 / .3` (`writer.go:16`).
+  backups `.1 / .2 / .3` (see `Writer.rotate` in
+  `internal/observability/replay/writer.go`).
 - **Idle reaper** — `defaultIdleTimeout = 5 min`, scanned every 30s; an
   idle writer is closed so the manager doesn't hold dormant file
-  descriptors (`manager.go:22`, `manager.go:371`).
+  descriptors (see `Manager.reapIdleWriters` in
+  `internal/observability/replay/manager.go`).
 - **Privacy** — replay captures user prompts, assistant output, tool
   inputs, command output. Opt-in only; nothing is redacted. Disabling
   the setting tears down the goroutines, closes every writer, and
@@ -66,7 +73,7 @@ enabled — including frontend-visible events like `provider:event`,
 ## Related
 
 - Raw provider stdio logging (`internal/logging`) is a separate,
-  dev-only path gated by `AGENT_OVERFLOW_DEBUG=provider`
-  (`app_logging.go:13`). 10 MB rotation, not wired into settings.
+  dev-only path gated by `AGENT_OVERFLOW_DEBUG=provider` (wired in
+  `app_logging.go`). 10 MB rotation, not wired into settings.
 - Replay files are deleted alongside their thread via
-  `replay.Manager.RemoveThreadLog` (`manager.go:414`).
+  `replay.Manager.RemoveThreadLog`.

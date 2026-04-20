@@ -97,7 +97,7 @@
         currentThread: pane.thread,
         restoreDraft: (tid, snap) => draft.restoreDraftFor(tid, snap),
         draftThreadId: () => draft.threadId,
-        reportError: (msg) => pane.setError(msg),
+        reportError: (msg) => pane.setGeneralError(msg),
       });
     } finally {
       sending = false;
@@ -106,7 +106,7 @@
 
   async function interrupt() {
     if (!pane.threadId) return;
-    await dispatchInterrupt(pane.threadId, (msg) => pane.setError(msg));
+    await dispatchInterrupt(pane.threadId, (msg) => pane.setGeneralError(msg));
     midTurnBlockMessage = '';
   }
 

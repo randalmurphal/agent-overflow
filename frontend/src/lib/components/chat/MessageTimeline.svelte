@@ -93,7 +93,7 @@
             <span>Orphan subagent entry — parent tool call not found.</span>
           </div>
         {/if}
-        {#if item.kind === 'user_text' || item.role === 'user'}
+        {#if item.kind === 'user_text'}
           <UserMessage {item} />
         {:else if item.kind === 'tool_call' || item.kind === 'tool_completion'}
           <ToolCallCard {pane} {item} />

@@ -9,7 +9,6 @@
   //
   // Spec: docs/architecture/chat-rewrite.md §Working indicator.
 
-  import { onDestroy } from 'svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
 
   let { pane }: { pane: ThreadPane } = $props();
@@ -73,12 +72,9 @@
     return Math.floor(diff / 1000);
   });
 
-  onDestroy(() => {
-    if (timer) {
-      clearInterval(timer);
-      timer = null;
-    }
-  });
+  // No separate onDestroy — the $effect above returns a cleanup closure
+  // that Svelte runs when isWorking flips OR the component unmounts.
+  // A second onDestroy hook would only duplicate that teardown.
 </script>
 
 {#if isWorking}

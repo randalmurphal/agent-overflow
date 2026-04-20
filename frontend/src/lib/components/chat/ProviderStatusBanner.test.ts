@@ -3,9 +3,9 @@ import { fireEvent, render } from '@testing-library/svelte';
 import ProviderStatusBanner from './ProviderStatusBanner.svelte';
 import {
   resetForTest as resetProviderStatuses,
-  setupProviderStatusListener,
   type ProviderStatusEvent,
 } from '../../stores/providerStatus.svelte';
+import { setupEventListeners } from '../../stores/events';
 import { buildPane } from '../../../test/helpers/chat';
 import { emitWailsEvent, resetWailsMocks } from '../../../test/mocks/wailsio-runtime';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
@@ -31,7 +31,7 @@ describe('<ProviderStatusBanner>', () => {
     resetWailsMocks();
     resetBindingMocks();
     resetProviderStatuses();
-    cleanupStatus = setupProviderStatusListener();
+    cleanupStatus = setupEventListeners();
   });
 
   afterEach(() => {
@@ -47,21 +47,21 @@ describe('<ProviderStatusBanner>', () => {
     expect(getByTestId('provider-status-banner').textContent).toContain('Claude CLI not found');
   });
 
-  it('renders a session-error banner from pane.error and can dismiss it', async () => {
+  it('renders a session-error banner from pane.generalError and can dismiss it', async () => {
     const pane = await buildPane();
-    pane.setError('session exploded');
+    pane.setGeneralError('session exploded');
 
     const { getByText, queryByText } = render(ProviderStatusBanner, { props: { pane } });
     expect(getByText('session exploded')).toBeInTheDocument();
 
     await fireEvent.click(getByText('Dismiss'));
-    expect(pane.error).toBeNull();
+    expect(pane.generalError).toBeNull();
     expect(queryByText('session exploded')).toBeNull();
   });
 
   it('reconnects through the binding from the session banner', async () => {
     const pane = await buildPane();
-    pane.setError('session exploded');
+    pane.setGeneralError('session exploded');
     const reconnect = setBindingMock('ReconnectSession', async () => {});
 
     const { getByText } = render(ProviderStatusBanner, { props: { pane } });

@@ -40,11 +40,11 @@ synchronize on the routing pipeline without a wire channel.
 
 The `default` branch in `Handle` returns
 `fmt.Errorf("%w: %s", ErrUnhandledEventKind, evt.Kind)` and emits on no
-channel. The sentinel exists so `TestHandleEveryEventKindCovered` can
-loop `provider.AllEventKinds` and fail loudly if any kind falls
-through — see `router_test.go:22`. `TestAllEventKindsListIsComplete`
-(`router_test.go:56`) guards the complementary drift: a new const in
-`types.go` that isn't added to `AllEventKinds`.
+channel. The sentinel exists so `TestHandleEveryEventKindCovered` (in
+`internal/triage/router_test.go`) can loop `provider.AllEventKinds`
+and fail loudly if any kind falls through.
+`TestAllEventKindsListIsComplete` (same file) guards the complementary
+drift: a new const in `types.go` that isn't added to `AllEventKinds`.
 
 ## Adding a New EventKind
 
@@ -52,7 +52,7 @@ When a provider surfaces a new event type:
 
 1. Add the constant to the `const` block in `internal/provider/types.go`.
 2. Append it to `provider.AllEventKinds` in the same file.
-3. Add a `case` in `Router.Handle` (`internal/triage/router.go:161`).
+3. Add a `case` in `Router.Handle` (in `internal/triage/router.go`).
 4. Add the matching case in the frontend switch in
    `frontend/src/lib/stores/events.ts` — the `never` guard at the
    default branch will fail the TypeScript build if you forget.
