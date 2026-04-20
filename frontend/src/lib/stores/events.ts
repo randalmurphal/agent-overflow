@@ -163,6 +163,19 @@ function applyApprovalEvent(evt: ApprovalEvent): void {
 
 function applyUsageEvent(evt: UsageEvent): void {
   if (!evt?.threadId) return;
+
+  // `rate_limits` piggybacks on the same channel but doesn't touch the
+  // context-window ring — the popover renders it as a separate row. Bail
+  // before the ring-update path so a rate-limit refresh never clobbers
+  // the last known token-window snapshot.
+  if (evt.action === 'rate_limits') {
+    // Future work: thread this onto a pane-level rateLimits state so the
+    // popover can render the snapshot. For v1 the backend just keeps
+    // capturing it; no pane surface yet. Explicitly returning here makes
+    // the "no-op" intentional and greppable.
+    return;
+  }
+
   const payload = evt.action === 'usage'
     ? {
         usedTokens: evt.usedTokens ?? 0,
@@ -202,13 +215,56 @@ function applyItemUpsert(item: Item): void {
   }
 }
 
+// kindToLegacyStatus maps the chat-rewrite closed kind enum onto the legacy
+// `status` vocabulary the ProviderStatusBanner already renders. Keeps the
+// banner component untouched while the router adopts the new vocabulary —
+// the two pipelines converge here rather than in the view.
+//
+// `rate_limited_retrying` lands on `version_too_old` (the banner's
+// warning-styled branch) rather than `error` (red / terminal-failure
+// styling). "Please wait, we're retrying" is warning, not catastrophic.
+// The banner copy still comes from the event `message` so the UX is
+// accurate without having to teach ProviderStatusBanner a new branch.
+const KIND_TO_LEGACY_STATUS: Record<NonNullable<ProviderStatusEvent['kind']>, ProviderStatusEvent['status']> = {
+  binary_missing: 'not_found',
+  unauthenticated: 'unauthenticated',
+  version_incompatible: 'version_too_old',
+  rate_limited_retrying: 'version_too_old',
+  ok: 'ready',
+};
+
 function applyProviderStatus(evt: ProviderStatusEvent): void {
-  if (!evt?.provider || !evt.status) return;
-  const banner = evt.status === 'ready' ? null : evt;
-  for (const pane of getAllPanes().values()) {
-    if (pane.thread?.provider === evt.provider) {
-      pane.setProviderBanner(banner);
+  if (!evt) return;
+
+  // Chat-rewrite emissions carry `kind` and optionally `threadId`. The
+  // legacy binary-detect emissions carry `provider + status`. Derive a
+  // unified shape before fanning out so downstream consumers don't have
+  // to branch.
+  let effectiveStatus = evt.status;
+  if (evt.kind) {
+    const mapped = KIND_TO_LEGACY_STATUS[evt.kind];
+    if (!mapped) {
+      // An unknown kind leaks the banner to the console so the gap is
+      // visible in dev — the spec calls this out as "require updating the
+      // frontend banner component in the same PR". Drop without rendering.
+      console.warn(`provider:status: unknown kind "${evt.kind}" — dropped`);
+      return;
     }
+    effectiveStatus = mapped;
+  }
+
+  if (!evt.provider || !effectiveStatus) return;
+
+  const normalized: ProviderStatusEvent = { ...evt, status: effectiveStatus };
+  const banner = effectiveStatus === 'ready' ? null : normalized;
+  for (const pane of getAllPanes().values()) {
+    if (pane.thread?.provider !== evt.provider) continue;
+    // Kind-bearing events can carry a threadId for per-pane scoping; when
+    // present, only update the matching pane. Without a threadId the event
+    // is provider-global (legacy behavior) and fans out to every matching
+    // pane as before.
+    if (evt.threadId && pane.threadId !== evt.threadId) continue;
+    pane.setProviderBanner(banner);
   }
 }
 

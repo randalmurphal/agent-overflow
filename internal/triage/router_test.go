@@ -525,14 +525,225 @@ func TestCompactBoundaryAndRateLimitsEmit(t *testing.T) {
 		}
 	}
 
-	if len(filterEmissions(*emissions, "provider:event")) != 1 {
-		t.Fatalf("expected only rate-limits to emit provider:event, got %+v", *emissions)
+	// Neither event should land on the legacy passthrough channel —
+	// compact-boundary produces an item_upsert + usage reset, and
+	// rate-limits now folds onto provider:usage per the chat-rewrite
+	// spec (Channels section).
+	if got := len(filterEmissions(*emissions, "provider:event")); got != 0 {
+		t.Fatalf("expected zero provider:event emissions, got %d (%+v)", got, *emissions)
 	}
-	if len(filterEmissions(*emissions, "provider:usage")) != 1 {
-		t.Fatalf("expected compact boundary reset on provider:usage, got %+v", *emissions)
+	// Compact boundary emits a `reset` usage; rate-limits emits a
+	// `rate_limits` usage. Assert both are present and ordered so the
+	// discriminator is verified rather than the raw count alone.
+	usageEmits := filterEmissions(*emissions, "provider:usage")
+	if len(usageEmits) != 2 {
+		t.Fatalf("expected 2 provider:usage emissions (compact reset + rate_limits), got %+v", *emissions)
+	}
+	if got := usageEmits[0].data.(provider.UsageEvent).Action; got != "reset" {
+		t.Fatalf("compact-boundary usage action = %q, want %q", got, "reset")
+	}
+	if got := usageEmits[1].data.(provider.UsageEvent).Action; got != "rate_limits" {
+		t.Fatalf("rate-limits usage action = %q, want %q", got, "rate_limits")
 	}
 	if len(filterEmissions(*emissions, "provider:item_upsert")) != 1 {
 		t.Fatalf("expected compact boundary item upsert, got %+v", *emissions)
+	}
+}
+
+// TestRateLimitsRoutedToUsageChannel verifies EventRateLimits emits on the
+// provider:usage channel with action=rate_limits and the snapshot carried
+// through in the RateLimits field (chat-rewrite spec, Channels section).
+// This replaces the legacy provider:event fanout.
+func TestRateLimitsRoutedToUsageChannel(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	snapshot := provider.RateLimitsSnapshot{
+		Provider: "claude",
+		Limits: []provider.RateLimitEntry{
+			{
+				LimitID:     "five_hour",
+				LimitName:   "5h",
+				UsedPercent: 62.5,
+				WindowMins:  300,
+				ResetsAt:    1776283200,
+			},
+		},
+		UpdatedAt: 1776283000,
+	}
+	meta, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatalf("marshal snapshot: %v", err)
+	}
+
+	evt := provider.ProviderEvent{
+		Kind:      provider.EventRateLimits,
+		ThreadID:  "t1",
+		Meta:      meta,
+		Timestamp: time.Now(),
+	}
+	if err := router.Handle(evt); err != nil {
+		t.Fatalf("handle rate-limits: %v", err)
+	}
+
+	if got := len(filterEmissions(*emissions, "provider:event")); got != 0 {
+		t.Fatalf("expected 0 provider:event emissions, got %d (%+v)", got, *emissions)
+	}
+	usage := filterEmissions(*emissions, "provider:usage")
+	if len(usage) != 1 {
+		t.Fatalf("expected 1 provider:usage emission, got %+v", *emissions)
+	}
+	payload, ok := usage[0].data.(provider.UsageEvent)
+	if !ok {
+		t.Fatalf("usage payload type = %T, want provider.UsageEvent", usage[0].data)
+	}
+	if payload.Action != "rate_limits" {
+		t.Fatalf("usage action = %q, want rate_limits", payload.Action)
+	}
+	if payload.ThreadID != "t1" {
+		t.Fatalf("usage threadID = %q, want t1", payload.ThreadID)
+	}
+	if payload.RateLimits == nil {
+		t.Fatalf("rate-limits payload is nil; expected snapshot")
+	}
+	if payload.RateLimits.Provider != "claude" {
+		t.Fatalf("rate-limits provider = %q, want claude", payload.RateLimits.Provider)
+	}
+	if got := len(payload.RateLimits.Limits); got != 1 {
+		t.Fatalf("rate-limits entries = %d, want 1", got)
+	}
+}
+
+// TestRateLimitsTolereatesMissingMeta covers the degenerate case where the
+// rate-limits snapshot is missing or malformed — the router still emits the
+// discriminator so the frontend listener fires, just without the payload
+// body. This mirrors the "drop meta, keep the signal" pattern used for
+// token usage.
+func TestRateLimitsTolereatesMissingMeta(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	evt := provider.ProviderEvent{
+		Kind:      provider.EventRateLimits,
+		ThreadID:  "t1",
+		Timestamp: time.Now(),
+	}
+	if err := router.Handle(evt); err != nil {
+		t.Fatalf("handle empty rate-limits: %v", err)
+	}
+
+	usage := filterEmissions(*emissions, "provider:usage")
+	if len(usage) != 1 {
+		t.Fatalf("expected 1 provider:usage emission, got %+v", *emissions)
+	}
+	payload := usage[0].data.(provider.UsageEvent)
+	if payload.Action != "rate_limits" {
+		t.Fatalf("usage action = %q, want rate_limits", payload.Action)
+	}
+	if payload.RateLimits != nil {
+		t.Fatalf("rate-limits should be nil when meta is empty, got %+v", payload.RateLimits)
+	}
+}
+
+// TestSessionStatusRoutesPersistentKinds covers the persistent → provider:status
+// path for EventSessionStatus. "retrying" maps to rate_limited_retrying and
+// the banner carries the thread's provider so a multi-provider UI can scope
+// the banner correctly.
+func TestSessionStatusRoutesPersistentKinds(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	evt := provider.ProviderEvent{
+		Kind:      provider.EventSessionStatus,
+		ThreadID:  "t1",
+		Content:   "retrying",
+		Timestamp: time.Now(),
+	}
+	if err := router.Handle(evt); err != nil {
+		t.Fatalf("handle session-status: %v", err)
+	}
+
+	statusEmits := filterEmissions(*emissions, "provider:status")
+	if len(statusEmits) != 1 {
+		t.Fatalf("expected 1 provider:status emission, got %+v", *emissions)
+	}
+	payload, ok := statusEmits[0].data.(provider.ProviderStatusEvent)
+	if !ok {
+		t.Fatalf("provider:status payload type = %T, want provider.ProviderStatusEvent", statusEmits[0].data)
+	}
+	if payload.Kind != provider.ProviderStatusRateLimitedRetrying {
+		t.Fatalf("kind = %q, want %q", payload.Kind, provider.ProviderStatusRateLimitedRetrying)
+	}
+	if payload.Provider != "claude" {
+		t.Fatalf("provider = %q, want claude (from seeded thread)", payload.Provider)
+	}
+	if payload.ThreadID != "t1" {
+		t.Fatalf("threadID = %q, want t1", payload.ThreadID)
+	}
+	if len(filterEmissions(*emissions, "provider:event")) != 0 {
+		t.Fatalf("expected no provider:event passthrough for persistent status, got %+v", *emissions)
+	}
+}
+
+// TestSessionStatusDropsTransientKinds verifies that transient lifecycle
+// signals ("disconnected", "session_state_changed", "error") don't reach
+// the banner channel — they're handled by working-indicator + EventError
+// flows elsewhere.
+func TestSessionStatusDropsTransientKinds(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	transient := []string{"disconnected", "session_state_changed", "error"}
+	for _, content := range transient {
+		evt := provider.ProviderEvent{
+			Kind:      provider.EventSessionStatus,
+			ThreadID:  "t1",
+			Content:   content,
+			Timestamp: time.Now(),
+		}
+		if err := router.Handle(evt); err != nil {
+			t.Fatalf("handle session-status %q: %v", content, err)
+		}
+	}
+
+	if got := len(filterEmissions(*emissions, "provider:status")); got != 0 {
+		t.Fatalf("expected 0 provider:status emissions for transients, got %d (%+v)", got, *emissions)
+	}
+	if got := len(filterEmissions(*emissions, "provider:event")); got != 0 {
+		t.Fatalf("expected 0 provider:event emissions for transients, got %d (%+v)", got, *emissions)
+	}
+}
+
+// TestSessionStatusUnknownContentIsSilentDrop guards the "log once, drop
+// silently" contract for unrecognized Content strings. The event shouldn't
+// surface on any channel — the log is an observability breadcrumb, not a
+// routing decision.
+func TestSessionStatusUnknownContentIsSilentDrop(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	evt := provider.ProviderEvent{
+		Kind:      provider.EventSessionStatus,
+		ThreadID:  "t1",
+		Content:   "wholly-new-subtype-from-sdk",
+		Timestamp: time.Now(),
+	}
+	if err := router.Handle(evt); err != nil {
+		t.Fatalf("handle unknown session-status: %v", err)
+	}
+
+	if len(*emissions) != 0 {
+		t.Fatalf("expected zero emissions for unknown session-status, got %+v", *emissions)
+	}
+
+	// Second emission of the same unknown content should also not emit
+	// (the "log once" part is implicit — we just assert that no channel
+	// fires so the silent-drop contract holds regardless of dedup state).
+	if err := router.Handle(evt); err != nil {
+		t.Fatalf("handle repeat unknown session-status: %v", err)
+	}
+	if len(*emissions) != 0 {
+		t.Fatalf("repeat unknown session-status emitted %+v", *emissions)
 	}
 }
 

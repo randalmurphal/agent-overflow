@@ -1,35 +1,3 @@
-export type EventKind =
-  | 'init'
-  | 'text_delta'
-  | 'tool_start'
-  | 'tool_complete'
-  | 'turn_start'
-  | 'turn_complete'
-  | 'approval_request'
-  | 'approval_resolved'
-  | 'session_status'
-  | 'token_usage'
-  | 'error'
-  | 'diff'
-  | 'command_output'
-  | 'thinking'
-  | 'compact_boundary'
-  | 'rate_limits'
-  | 'model_rerouted'
-  | 'thread_renamed';
-
-export interface ProviderEvent {
-  kind: EventKind;
-  threadId: string;
-  turnId?: string;
-  itemId?: string;
-  itemType?: string;
-  content?: string;
-  role?: string;
-  meta?: unknown;
-  timestamp: string;
-}
-
 export type ApprovalKind =
   | 'command'
   | 'file-read'
@@ -127,21 +95,65 @@ export interface ApprovalEvent {
   decision?: '' | 'approved' | 'declined' | 'amended' | 'timeout' | 'lost';
 }
 
+/**
+ * RateLimitsSnapshot mirrors the Go `provider.RateLimitsSnapshot` payload.
+ * Lives here because the chat-rewrite `UsageEvent` now folds rate-limit
+ * snapshots onto the provider:usage channel via `action: 'rate_limits'`.
+ * See docs/architecture/chat-rewrite.md "Channels".
+ */
+export interface RateLimitsSnapshot {
+  provider: string;
+  limits: RateLimitEntry[];
+  updatedAt: number;
+}
+
 export interface UsageEvent {
-  action: 'usage' | 'reset';
+  action: 'usage' | 'reset' | 'rate_limits';
   threadId: string;
   usedTokens?: number;
   maxTokens?: number;
   contextPercent?: number;
+  rateLimits?: RateLimitsSnapshot;
 }
 
+/**
+ * Persistent provider-status kinds carried on `provider:status` by the
+ * chat-rewrite router (closed set — see docs/architecture/chat-rewrite.md
+ * "Channels"). Surfacing a value outside this set in the banner is a bug,
+ * not a feature: the frontend should drop unknown kinds with a console warn.
+ */
+export type ProviderStatusKind =
+  | 'binary_missing'
+  | 'unauthenticated'
+  | 'version_incompatible'
+  | 'rate_limited_retrying'
+  | 'ok';
+
 export interface ProviderStatusEvent {
+  /**
+   * Legacy shape (app_provider_status.go / binary detection). `provider`
+   * and `status` are the fields the existing ProviderStatusBanner renders;
+   * both are required for the banner to scope + dispatch correctly.
+   */
   provider: 'claude' | 'codex';
   status: 'ready' | 'not_found' | 'version_too_old' | 'unauthenticated' | 'error';
   message?: string;
   version?: string;
   actionable: boolean;
   actionUrl?: string;
+  /**
+   * New chat-rewrite kind enum. Optional because the legacy binary-detect
+   * emissions don't populate it; the router does for EventSessionStatus.
+   * When present, the banner can branch on this first and fall back to
+   * `status` otherwise.
+   */
+  kind?: ProviderStatusKind;
+  /**
+   * threadId is attached by the new chat-rewrite router so the banner can
+   * scope to a specific pane. Legacy binary-detect emissions omit it —
+   * those are provider-global and the banner fans out to every matching pane.
+   */
+  threadId?: string;
 }
 
 export interface RateLimitEntry {

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { setupEventListeners } from './events';
 import { getAllPanes } from './panes.svelte';
 import { getThreadStatus, resetForTest as resetThreadStatuses } from './threadStatuses.svelte';
@@ -193,5 +193,90 @@ describe('setupEventListeners', () => {
       threadId: 'thread-1',
     });
     expect(pane.contextWindow).toBeNull();
+  });
+
+  // Chat-rewrite routing: EventRateLimits folds onto provider:usage
+  // via `action: 'rate_limits'`. The listener must NOT treat this as a
+  // reset — the last-seen context-window ring stays in place so the
+  // meter keeps rendering its existing value while the popover picks up
+  // the new rate-limits row (future work, see TODO in applyUsageEvent).
+  it('routes EventRateLimits to provider:usage without clobbering the context ring', async () => {
+    const pane = await buildPane();
+    getAllPanes().set('main', pane);
+
+    // Seed a real context window first; the rate-limits event must not
+    // wipe this state.
+    emitWailsEvent('provider:usage', {
+      action: 'usage',
+      threadId: 'thread-1',
+      usedTokens: 5000,
+      maxTokens: 200000,
+      contextPercent: 2.5,
+    });
+    expect(pane.contextWindow?.usedTokens).toBe(5000);
+
+    emitWailsEvent('provider:usage', {
+      action: 'rate_limits',
+      threadId: 'thread-1',
+      rateLimits: {
+        provider: 'claude',
+        limits: [
+          { limitId: 'five_hour', limitName: '5h', usedPercent: 62.5, windowMins: 300, resetsAt: 1776283200 },
+        ],
+        updatedAt: 1776283000,
+      },
+    });
+
+    // Context window is unchanged; the rate-limits payload is a sibling
+    // signal on the same channel rather than a ring update.
+    expect(pane.contextWindow?.usedTokens).toBe(5000);
+    expect(pane.contextWindow?.maxTokens).toBe(200000);
+  });
+
+  // EventSessionStatus routing: persistent kinds surface on
+  // provider:status (banner update); transient kinds drop silently.
+  it('routes persistent EventSessionStatus to provider:status; drops transient', async () => {
+    const pane = await buildPane(makeThread({ id: 'thread-1', provider: 'claude' }));
+    getAllPanes().set('main', pane);
+
+    // Persistent kind → banner appears. The router emits the rewrite
+    // shape (`kind` + `threadId` + `provider`); the listener maps kind
+    // onto the legacy `status` vocabulary internally so the existing
+    // ProviderStatusBanner renders unchanged.
+    emitWailsEvent('provider:status', {
+      kind: 'rate_limited_retrying',
+      provider: 'claude',
+      threadId: 'thread-1',
+      message: 'Retrying — rate limited',
+      // `status` + `actionable` aren't populated by the router, but the
+      // existing type requires them. Cast to satisfy the shape; the
+      // handler derives `status` from `kind`.
+    } as unknown as ProviderStatusEvent);
+
+    expect(pane.providerBanner).not.toBeNull();
+    // rate_limited_retrying folds onto the warning-styled `version_too_old`
+    // legacy status — see KIND_TO_LEGACY_STATUS in events.ts for why.
+    expect(pane.providerBanner?.status).toBe('version_too_old');
+
+    // Clear banner with kind=ok (spec: "ok" → clear signal).
+    emitWailsEvent('provider:status', {
+      kind: 'ok',
+      provider: 'claude',
+      threadId: 'thread-1',
+    } as unknown as ProviderStatusEvent);
+    expect(pane.providerBanner).toBeNull();
+
+    // Unknown kind → dropped. Use a console.warn spy to confirm the
+    // emit landed on the "drop with warn" path rather than silently
+    // mutating banner state.
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    emitWailsEvent('provider:status', {
+      kind: 'not_a_real_kind',
+      provider: 'claude',
+      threadId: 'thread-1',
+    } as unknown as ProviderStatusEvent);
+    expect(pane.providerBanner).toBeNull();
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('unknown kind'));
+    warnSpy.mockRestore();
   });
 });

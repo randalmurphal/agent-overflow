@@ -257,13 +257,43 @@ type ApprovalEvent struct {
 }
 
 // UsageEvent is the frontend-facing channel payload for the context-window
-// meter. `usage` updates the ring; `reset` clears it after compaction.
+// meter. `usage` updates the ring; `reset` clears it after compaction;
+// `rate_limits` carries a rate-limits snapshot folded onto the same channel
+// (the meter popover surfaces this alongside token usage per the chat-rewrite
+// spec — see docs/architecture/chat-rewrite.md "Channels").
 type UsageEvent struct {
-	Action         string  `json:"action"` // "usage" | "reset"
-	ThreadID       string  `json:"threadId"`
-	UsedTokens     int     `json:"usedTokens,omitempty"`
-	MaxTokens      int     `json:"maxTokens,omitempty"`
-	ContextPercent float64 `json:"contextPercent,omitempty"`
+	Action         string              `json:"action"` // "usage" | "reset" | "rate_limits"
+	ThreadID       string              `json:"threadId"`
+	UsedTokens     int                 `json:"usedTokens,omitempty"`
+	MaxTokens      int                 `json:"maxTokens,omitempty"`
+	ContextPercent float64             `json:"contextPercent,omitempty"`
+	RateLimits     *RateLimitsSnapshot `json:"rateLimits,omitempty"`
+}
+
+// ProviderStatusEventKind enumerates the persistent provider-status banner
+// states defined by docs/architecture/chat-rewrite.md (Channels section).
+// The frontend banner dispatches on these values; anything outside the set
+// MUST be dropped by the emitter rather than silently rendered.
+type ProviderStatusEventKind string
+
+const (
+	ProviderStatusBinaryMissing       ProviderStatusEventKind = "binary_missing"
+	ProviderStatusUnauthenticated     ProviderStatusEventKind = "unauthenticated"
+	ProviderStatusVersionIncompatible ProviderStatusEventKind = "version_incompatible"
+	ProviderStatusRateLimitedRetrying ProviderStatusEventKind = "rate_limited_retrying"
+	ProviderStatusOK                  ProviderStatusEventKind = "ok"
+)
+
+// ProviderStatusEvent is the frontend-facing channel payload for the
+// persistent provider banner. Emitted on `provider:status`. The spec keeps
+// this struct deliberately minimal (Kind + Message); Provider and ThreadID
+// are added so a multi-provider UI can scope the banner to the right pane
+// without round-tripping back to a binding.
+type ProviderStatusEvent struct {
+	Kind     ProviderStatusEventKind `json:"kind"`
+	Message  string                  `json:"message,omitempty"`
+	Provider string                  `json:"provider,omitempty"`
+	ThreadID string                  `json:"threadId,omitempty"`
 }
 
 // ElicitationRequest is the frontend-facing shape for an MCP elicitation

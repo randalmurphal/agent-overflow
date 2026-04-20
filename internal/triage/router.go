@@ -49,23 +49,23 @@ type TurnMetrics struct {
 
 // Router classifies provider events and routes them.
 type Router struct {
-	store                 *store.Store
-	emit                  func(eventName string, data any) // wraps app.Event.Emit
-	checkpoints           CheckpointCapture                // nil-safe; no-op when nil
-	tracer                trace.Tracer
-	metrics               TurnMetrics
-	mu                    sync.Mutex
-	pendingCommandDiffs   map[string]pendingCommandInlineDiff
-	pendingApprovals      map[string]pendingApprovalState
-	pendingApprovalItems  map[string]string
-	interruptQueue        map[string][]queuedPersistence
-	openTurns             map[string]int
-	segmentIndexByScope   map[string]int
-	blockIndexByScope     map[string]int
-	activeTextBlocks      map[string]bool
-	activeThinkingBlocks  map[string]bool
-	streamingItemCounts   map[string]int
-	errorSeqByScope       map[string]int
+	store                *store.Store
+	emit                 func(eventName string, data any) // wraps app.Event.Emit
+	checkpoints          CheckpointCapture                // nil-safe; no-op when nil
+	tracer               trace.Tracer
+	metrics              TurnMetrics
+	mu                   sync.Mutex
+	pendingCommandDiffs  map[string]pendingCommandInlineDiff
+	pendingApprovals     map[string]pendingApprovalState
+	pendingApprovalItems map[string]string
+	interruptQueue       map[string][]queuedPersistence
+	openTurns            map[string]int
+	segmentIndexByScope  map[string]int
+	blockIndexByScope    map[string]int
+	activeTextBlocks     map[string]bool
+	activeThinkingBlocks map[string]bool
+	streamingItemCounts  map[string]int
+	errorSeqByScope      map[string]int
 	// capturedTurns guards against double-capture when a provider emits
 	// multiple EventTurnStart events for the same (thread, turn) — which
 	// happens when Claude re-sends a system.init after an interrupt.
@@ -82,6 +82,14 @@ type Router struct {
 	// stopped thread (Bug B5). The flag is cleared when a fresh session
 	// re-enters the thread via EventInit.
 	stoppedThreads map[string]struct{}
+	// unknownSessionStatusLogged throttles the "unknown session-status
+	// content" log to one line per distinct value. EventSessionStatus
+	// carries provider-specific Content strings ("disconnected",
+	// "retrying", "session_state_changed", "error"); the triage router
+	// only cares about persistent failures, so unknown values are
+	// expected but the first sighting is worth flagging so a new
+	// provider subtype doesn't silently disappear.
+	unknownSessionStatusLogged map[string]struct{}
 	// inflight counts Handle() calls currently in progress. Wait drains
 	// this to zero so app shutdown can flush observability + persistence
 	// without racing against events mid-persist. Counter is bumped at
@@ -110,20 +118,21 @@ func NewRouter(st *store.Store, emit func(eventName string, data any)) *Router {
 			ItemsPersisted:    ip,
 			PayloadsPersisted: pp,
 		},
-		pendingCommandDiffs:   make(map[string]pendingCommandInlineDiff),
-		pendingApprovals:      make(map[string]pendingApprovalState),
-		pendingApprovalItems:  make(map[string]string),
-		interruptQueue:        make(map[string][]queuedPersistence),
-		openTurns:             make(map[string]int),
-		segmentIndexByScope:   make(map[string]int),
-		blockIndexByScope:     make(map[string]int),
-		activeTextBlocks:      make(map[string]bool),
-		activeThinkingBlocks:  make(map[string]bool),
-		streamingItemCounts:   make(map[string]int),
-		errorSeqByScope:       make(map[string]int),
-		capturedTurns:         make(map[string]bool),
-		turnSpans:             make(map[string]trace.Span),
-		stoppedThreads:        make(map[string]struct{}),
+		pendingCommandDiffs:        make(map[string]pendingCommandInlineDiff),
+		pendingApprovals:           make(map[string]pendingApprovalState),
+		pendingApprovalItems:       make(map[string]string),
+		interruptQueue:             make(map[string][]queuedPersistence),
+		openTurns:                  make(map[string]int),
+		segmentIndexByScope:        make(map[string]int),
+		blockIndexByScope:          make(map[string]int),
+		activeTextBlocks:           make(map[string]bool),
+		activeThinkingBlocks:       make(map[string]bool),
+		streamingItemCounts:        make(map[string]int),
+		errorSeqByScope:            make(map[string]int),
+		capturedTurns:              make(map[string]bool),
+		turnSpans:                  make(map[string]trace.Span),
+		stoppedThreads:             make(map[string]struct{}),
+		unknownSessionStatusLogged: make(map[string]struct{}),
 	}
 }
 
@@ -200,9 +209,10 @@ func (r *Router) Handle(evt provider.ProviderEvent) error {
 		return r.handleContentBlockStart(evt)
 	case provider.EventContentBlockStop:
 		return r.handleContentBlockStop(evt)
-	case provider.EventSessionStatus,
-		provider.EventRateLimits:
-		return r.emitInline(evt)
+	case provider.EventSessionStatus:
+		return r.handleSessionStatus(evt)
+	case provider.EventRateLimits:
+		return r.handleRateLimits(evt)
 	case provider.EventError:
 		return r.handleError(evt)
 	case provider.EventTokenUsage:
@@ -340,6 +350,111 @@ func (r *Router) handleTokenUsage(evt provider.ProviderEvent) error {
 		ContextPercent: window.UsedPercentage,
 	})
 	return nil
+}
+
+// handleRateLimits folds EventRateLimits onto the provider:usage channel so
+// the context-meter popover can surface rate-limit state alongside token
+// usage (chat-rewrite spec, Channels section). The snapshot lives in the
+// event Meta; a missing / malformed snapshot is tolerated (the frontend
+// just renders nothing for the rate-limits row).
+func (r *Router) handleRateLimits(evt provider.ProviderEvent) error {
+	usage := provider.UsageEvent{
+		Action:   "rate_limits",
+		ThreadID: evt.ThreadID,
+	}
+	if len(evt.Meta) > 0 {
+		var snap provider.RateLimitsSnapshot
+		if err := json.Unmarshal(evt.Meta, &snap); err != nil {
+			log.Printf("triage: unmarshal rate limits: %v", err)
+		} else {
+			usage.RateLimits = &snap
+		}
+	}
+	r.emit("provider:usage", usage)
+	return nil
+}
+
+// handleSessionStatus routes EventSessionStatus onto the provider:status
+// banner channel — but only for persistent kinds the spec calls out
+// (binary_missing, unauthenticated, version_incompatible,
+// rate_limited_retrying, ok). Transient values ("disconnected",
+// "session_state_changed") drop silently; anything we don't recognize is
+// logged once per distinct content string so a new provider subtype
+// surfaces without polluting steady-state logs.
+func (r *Router) handleSessionStatus(evt provider.ProviderEvent) error {
+	kind, known, persistent := classifySessionStatusContent(evt.Content)
+	if !known {
+		r.logUnknownSessionStatusOnce(evt.Content)
+		return nil
+	}
+	if !persistent {
+		return nil
+	}
+
+	providerName, err := r.lookupThreadProvider(evt.ThreadID)
+	if err != nil {
+		// Non-fatal — the banner just won't be provider-scoped. Log so
+		// a missing thread row is still visible.
+		log.Printf("triage: lookup thread provider for session-status: %v", err)
+	}
+
+	r.emit("provider:status", provider.ProviderStatusEvent{
+		Kind:     kind,
+		Message:  strings.TrimSpace(evt.Content),
+		Provider: providerName,
+		ThreadID: evt.ThreadID,
+	})
+	return nil
+}
+
+// classifySessionStatusContent maps a provider-specific EventSessionStatus
+// Content string to a ProviderStatusEventKind. The return shape is a
+// three-tuple: the kind value (meaningful only when both known and
+// persistent are true), a known flag (true when the string is recognized
+// by either the persistent or transient set), and a persistent flag (true
+// when the kind should surface on provider:status).
+func classifySessionStatusContent(content string) (provider.ProviderStatusEventKind, bool, bool) {
+	switch strings.TrimSpace(content) {
+	case "retrying":
+		// Claude's api_retry lands here. The spec vocabulary is
+		// rate_limited_retrying; we accept any retry as persistent
+		// because the banner copy is the same regardless of the
+		// upstream cause.
+		return provider.ProviderStatusRateLimitedRetrying, true, true
+	case "ok", "ready":
+		// Either vocabulary clears the banner. "ready" is what the
+		// legacy detect flow uses; accept it so a migration in Agent 2's
+		// adapter rewrite doesn't have to touch this file to flip a
+		// pass-through kind.
+		return provider.ProviderStatusOK, true, true
+	case "disconnected", "session_state_changed", "error":
+		// Transient — the working-indicator handles connection churn
+		// and EventError handles terminal failures. Known but not
+		// persistent.
+		return "", true, false
+	default:
+		return "", false, false
+	}
+}
+
+func (r *Router) lookupThreadProvider(threadID string) (string, error) {
+	thread, err := r.store.GetThread(threadID)
+	if err != nil {
+		return "", err
+	}
+	return thread.Provider, nil
+}
+
+func (r *Router) logUnknownSessionStatusOnce(content string) {
+	key := strings.TrimSpace(content)
+	r.mu.Lock()
+	if _, seen := r.unknownSessionStatusLogged[key]; seen {
+		r.mu.Unlock()
+		return
+	}
+	r.unknownSessionStatusLogged[key] = struct{}{}
+	r.mu.Unlock()
+	log.Printf("triage: unknown session-status content %q — dropping", key)
 }
 
 func (r *Router) handleError(evt provider.ProviderEvent) error {
