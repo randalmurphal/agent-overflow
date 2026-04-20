@@ -639,3 +639,172 @@ func TestListItemsIncludesLifecycleFields(t *testing.T) {
 		t.Errorf("Status = %q, want completed", got.Status)
 	}
 }
+
+// TestUpsertItemIdempotentPreservesItemIndex pins the upsert semantics
+// triage relies on: calling UpsertItem twice with the same (thread, id)
+// must produce exactly one row whose item_index is the one assigned at
+// first insert, even when the second call supplies a different summary
+// and/or a payload. Without this invariant a streaming text update would
+// re-assign item_index on every delta and the timeline would reorder
+// mid-stream.
+//
+// The second call also exercises the payload upsert path — the refreshed
+// payload must land in the same transaction so the re-read returns the
+// updated row + payload consistently.
+func TestUpsertItemIdempotentPreservesItemIndex(t *testing.T) {
+	s := newTestStore(t)
+	now := int64(1000)
+	if err := s.CreateThread(Thread{
+		ID: "t", ProjectID: defaultTestProjectID, Title: "T", Provider: "claude", WorkspacePath: "/tmp",
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+
+	// Seed two prior items so the natural MAX(item_index) is 1 — the
+	// first UpsertItem call should land at index 2, and the second call
+	// must NOT bump it to 3 or reset it to 0.
+	for i, id := range []string{"prior-0", "prior-1"} {
+		if err := s.InsertItem(Item{
+			ID: id, ThreadID: "t", TurnIndex: 0, ItemIndex: i,
+			Kind: "assistant_text", Role: "assistant", Summary: "seed",
+			Status: "completed", CreatedAt: now,
+		}); err != nil {
+			t.Fatalf("seed %s: %v", id, err)
+		}
+	}
+
+	first := Item{
+		ID: "streaming", ThreadID: "t", TurnIndex: 0,
+		Kind: "assistant_text", Role: "assistant",
+		Status: "streaming", Summary: "first",
+		CreatedAt: 2000, UpdatedAt: 2000,
+	}
+	persistedFirst, err := s.UpsertItem(first, nil)
+	if err != nil {
+		t.Fatalf("first upsert: %v", err)
+	}
+	if persistedFirst.ItemIndex != 2 {
+		t.Fatalf("first upsert item_index = %d, want 2 (MAX+1)", persistedFirst.ItemIndex)
+	}
+
+	second := Item{
+		ID: "streaming", ThreadID: "t", TurnIndex: 0,
+		Kind: "assistant_text", Role: "assistant",
+		Status: "completed", Summary: "first + second",
+		CreatedAt: 3000, UpdatedAt: 3000,
+	}
+	payload := &Payload{
+		ID:        "streaming-p",
+		Kind:      "assistant_text",
+		Meta:      `{"preview":"first + second"}`,
+		Data:      []byte("first + second"),
+		CreatedAt: 3000,
+	}
+	persistedSecond, err := s.UpsertItem(second, payload)
+	if err != nil {
+		t.Fatalf("second upsert: %v", err)
+	}
+	if persistedSecond.ItemIndex != persistedFirst.ItemIndex {
+		t.Errorf("item_index drifted across upserts: first=%d, second=%d",
+			persistedFirst.ItemIndex, persistedSecond.ItemIndex)
+	}
+	if persistedSecond.Summary != "first + second" {
+		t.Errorf("summary not refreshed by second upsert: got %q", persistedSecond.Summary)
+	}
+	if persistedSecond.Status != "completed" {
+		t.Errorf("status not refreshed: got %q", persistedSecond.Status)
+	}
+	if persistedSecond.PayloadID != "streaming-p" {
+		t.Errorf("payload not linked to upserted row: got %q", persistedSecond.PayloadID)
+	}
+	// CreatedAt must be pinned to the first insert — triage relies on this
+	// invariant so timestamps stay stable across streaming updates.
+	if persistedSecond.CreatedAt != persistedFirst.CreatedAt {
+		t.Errorf("created_at changed on upsert: first=%d, second=%d",
+			persistedFirst.CreatedAt, persistedSecond.CreatedAt)
+	}
+
+	// Exactly one row for (thread, id).
+	var count int
+	if err := s.db.QueryRow(
+		`SELECT COUNT(*) FROM items WHERE thread_id = ? AND id = ?`,
+		"t", "streaming",
+	).Scan(&count); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("expected 1 row after two upserts, got %d", count)
+	}
+
+	// Payload landed atomically — its data column matches the second call.
+	data, err := s.GetPayloadData("streaming-p")
+	if err != nil {
+		t.Fatalf("get payload data: %v", err)
+	}
+	if string(data) != "first + second" {
+		t.Errorf("payload data = %q, want %q", string(data), "first + second")
+	}
+}
+
+// TestItemsDecisionCHECKRejectsBogusValue pins the v15 CHECK constraint
+// on items.decision. Only the enumerated set is legal at the SQL layer;
+// triage and the frontend depend on this to prune impossible states at
+// the store boundary (an invalid decision reaching the frontend would
+// quietly break ToolDecisionChip branching).
+func TestItemsDecisionCHECKRejectsBogusValue(t *testing.T) {
+	s := newTestStore(t)
+	now := int64(1)
+	if err := s.CreateThread(Thread{
+		ID: "t", ProjectID: defaultTestProjectID, Title: "T", Provider: "claude", WorkspacePath: "/tmp",
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+
+	// Bogus decision must trigger the CHECK constraint.
+	_, err := s.db.Exec(`INSERT INTO items
+		(id, thread_id, turn_index, item_index, kind, role, summary, parent_id, status,
+		 is_background, completion_of, tool_name, decision, meta, created_at, updated_at)
+		VALUES ('bogus', 't', 0, 0, 'tool_call', 'assistant', '', '', 'completed',
+		 0, '', '', 'maybe', '{}', 1, 1)`)
+	if err == nil {
+		t.Fatal("INSERT with decision='maybe' must violate CHECK constraint")
+	}
+	if !strings.Contains(err.Error(), "CHECK") && !strings.Contains(err.Error(), "constraint") {
+		t.Errorf("error = %v, want CHECK constraint violation", err)
+	}
+
+	// Every legal decision inserts successfully. Table-driven so a future
+	// addition fails obviously (and reminds the dev to update the test).
+	cases := []struct {
+		name     string
+		decision string
+	}{
+		{name: "empty", decision: ""},
+		{name: "approved", decision: "approved"},
+		{name: "declined", decision: "declined"},
+		{name: "amended", decision: "amended"},
+		{name: "timeout", decision: "timeout"},
+		{name: "lost", decision: "lost"},
+	}
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			id := fmt.Sprintf("ok-decision-%d", i)
+			if _, err := s.db.Exec(`INSERT INTO items
+				(id, thread_id, turn_index, item_index, kind, role, summary, parent_id, status,
+				 is_background, completion_of, tool_name, decision, meta, created_at, updated_at)
+				VALUES (?, 't', 0, ?, 'tool_call', 'assistant', '', '', 'completed',
+				 0, '', '', ?, '{}', 1, 1)`, id, i, tc.decision); err != nil {
+				t.Errorf("INSERT decision=%q: %v", tc.decision, err)
+			}
+		})
+	}
+
+	// UPDATE to a bogus value must also fail — covers the case where
+	// runtime Go code accidentally writes a new invalid decision onto
+	// an existing row.
+	if _, err := s.db.Exec(`UPDATE items SET decision = 'banana' WHERE id = 'ok-decision-0'`); err == nil {
+		t.Error("UPDATE to bogus decision must fail")
+	}
+}

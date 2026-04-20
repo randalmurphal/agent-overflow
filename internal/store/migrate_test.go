@@ -945,3 +945,120 @@ func TestInteractionModeMigrationNormalizesBadRows(t *testing.T) {
 		t.Error("UPDATE with bogus value must fail after v11")
 	}
 }
+
+// TestMigrationV15PreservesThreadsAndWipesPayloads pins the v15 reset
+// semantics: the chat-rewrite migration REBUILDS items + payloads from
+// scratch (both tables are dropped and recreated), but threads are
+// left intact — an existing thread survives, while its timeline and
+// every stored blob are discarded. This is the contract callers rely
+// on to seed their v14-schema chat history forward without losing the
+// top-level project / thread structure.
+//
+// Seeded in parallel schema shape: we run every migration EXCEPT v15
+// against an in-memory DB, seed one project + one thread + two items
+// + two payloads, then apply v15 and assert the cut pattern
+// (threads=1, items=0, payloads=0).
+func TestMigrationV15PreservesThreadsAndWipesPayloads(t *testing.T) {
+	db := openSQLiteDB(t)
+
+	if err := configureDatabase(db); err != nil {
+		t.Fatalf("configureDatabase: %v", err)
+	}
+	if err := ensureMigrationTable(db); err != nil {
+		t.Fatalf("ensureMigrationTable: %v", err)
+	}
+	// Apply v1..v14 — everything but the v15 rebuild.
+	for _, m := range migrations {
+		if m.Version == 15 {
+			continue
+		}
+		if err := applyMigration(db, m); err != nil {
+			t.Fatalf("apply v%d: %v", m.Version, err)
+		}
+	}
+
+	// Seed the parent rows.
+	if _, err := db.Exec(`INSERT INTO projects
+		(id, path, name, created_at, updated_at)
+		VALUES ('p-keep', '/tmp/keep', 'Keep Me', 500, 500)`); err != nil {
+		t.Fatalf("seed project: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO threads
+		(id, project_id, title, provider, workspace_path, model, created_at, updated_at)
+		VALUES ('t-keep', 'p-keep', 'Survives v15', 'claude', '/tmp', '', 500, 500)`); err != nil {
+		t.Fatalf("seed thread: %v", err)
+	}
+
+	// Two items + two payloads. item.payload_id points at the payload
+	// so the round-trip read would be valid before v15.
+	if _, err := db.Exec(`INSERT INTO payloads
+		(id, kind, meta, data, created_at) VALUES
+		('pay-1', 'command_output', '{}', ?, 500),
+		('pay-2', 'diff', '{}', ?, 500)`,
+		[]byte("out"), []byte("patch")); err != nil {
+		t.Fatalf("seed payloads: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO items
+		(id, thread_id, turn_index, item_index, kind, role, summary, parent_tool_use_id,
+		 status, is_background, completion_of_item_id, payload_id, created_at)
+		VALUES
+		('i-1', 't-keep', 0, 0, 'text', 'assistant', 'old body', '',
+		 'completed', 0, '', 'pay-1', 500),
+		('i-2', 't-keep', 0, 1, 'text', 'assistant', 'second body', '',
+		 'completed', 0, '', 'pay-2', 500)`); err != nil {
+		t.Fatalf("seed items: %v", err)
+	}
+
+	// Baseline counts — confirm seeding actually landed before the cut.
+	assertRowCount(t, db, "threads", 1)
+	assertRowCount(t, db, "items", 2)
+	assertRowCount(t, db, "payloads", 2)
+
+	// Apply v15 in isolation.
+	var v15 *Migration
+	for i := range migrations {
+		if migrations[i].Version == 15 {
+			v15 = &migrations[i]
+			break
+		}
+	}
+	if v15 == nil {
+		t.Fatal("v15 migration missing from list")
+	}
+	if err := applyMigration(db, *v15); err != nil {
+		t.Fatalf("apply v15: %v", err)
+	}
+
+	// Threads survive the rebuild; items + payloads are wiped clean.
+	assertRowCount(t, db, "threads", 1)
+	assertRowCount(t, db, "items", 0)
+	assertRowCount(t, db, "payloads", 0)
+
+	// The surviving thread row still points at its project — project FK
+	// cascades are unaffected by the reset, and project itself is
+	// untouched.
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM threads WHERE id = 't-keep' AND project_id = 'p-keep'`).Scan(&count); err != nil {
+		t.Fatalf("query surviving thread: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("surviving thread count = %d, want 1", count)
+	}
+}
+
+// assertRowCount is a focused helper for migration tests — the parent
+// tests assert precise row counts on table resets; putting this here
+// avoids a fragile format-string assertion in the body of each caller.
+func assertRowCount(t *testing.T, db *sql.DB, table string, want int) {
+	t.Helper()
+	if !validTableName.MatchString(table) {
+		t.Fatalf("invalid table name: %q", table)
+	}
+	var got int
+	if err := db.QueryRow(fmt.Sprintf("SELECT COUNT(*) FROM %s", table)).Scan(&got); err != nil {
+		t.Fatalf("count %s: %v", table, err)
+	}
+	if got != want {
+		t.Errorf("%s rowcount = %d, want %d", table, got, want)
+	}
+}
