@@ -84,3 +84,22 @@ body::selection {
 ::-webkit-scrollbar-track {
   background: transparent;
 }
+
+/*
+ * Opt-in CSS containment for long timeline rows. `content-visibility: auto`
+ * lets the browser skip paint and layout for nodes that are outside the
+ * visible scroll window; `contain-intrinsic-size` supplies a fallback layout
+ * size so scroll extents stay sane before the real content has been
+ * measured. The auto keyword means once a node is rendered its real size
+ * replaces the intrinsic estimate, so short messages don't leave gaps and
+ * tall messages don't overlap.
+ *
+ * 120px is a rough average chat row — user bubble, assistant paragraph, or
+ * collapsed tool card. Tall diff previews and expanded subagent trees are
+ * measured once they scroll in; the estimate only matters when the node
+ * has never been rendered.
+ */
+.contents-visibility-auto {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 120px;
+}

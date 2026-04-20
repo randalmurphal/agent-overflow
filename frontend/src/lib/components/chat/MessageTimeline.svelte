@@ -1,8 +1,8 @@
 <script lang="ts">
   import type { ThreadPane } from '../../stores/thread.svelte';
-  import type { ChangedFile, CommandOutputMeta, DiffMeta, Item, ProposedPlanMeta, ToolResultMeta } from '../../types/models';
+  import type { CommandOutputMeta, DiffMeta, Item, ProposedPlanMeta, ToolResultMeta } from '../../types/models';
   import { groupItemsBySubagent, type TimelineNode } from '../../utils/subagentGrouping';
-  import { summarizeTurnDiffs, turnSummaryIsMeaningful, type TurnDiffSummary } from '../../utils/turnDiffSummary';
+  import { turnSummaryIsMeaningful } from '../../utils/turnDiffSummary';
   import AssistantMessage from './AssistantMessage.svelte';
   import ChangedFilesTree from './ChangedFilesTree.svelte';
   import CommandOutput from './CommandOutput.svelte';
@@ -43,80 +43,13 @@
     }
   }
 
-  function changedFilesForItem(item: Item): ChangedFile[] {
-    if (!item.payloadMeta) return [];
-    try {
-      if (item.payloadKind === 'diff' && item.payloadId) {
-        const meta = JSON.parse(item.payloadMeta) as DiffMeta;
-        return [{
-          path: meta.filePath,
-          insertions: meta.insertions,
-          deletions: meta.deletions,
-          kind: meta.changeKind,
-          payloadId: item.payloadId,
-        }];
-      }
-      if (item.payloadKind !== 'tool_result' || !item.payloadId) return [];
-      const meta = JSON.parse(item.payloadMeta) as ToolResultMeta;
-      return (meta.inlineDiff?.files ?? []).map((file) => ({
-        path: file.path,
-        insertions: file.insertions ?? 0,
-        deletions: file.deletions ?? 0,
-        kind: file.kind ?? 'modified',
-        payloadId: item.payloadId!,
-      }));
-    } catch (err) {
-      console.error('Failed to parse changed-file metadata:', item.id, err);
-      return [];
-    }
-  }
-
   /**
-   * Collect changed files for a given turn by scanning diff-bearing payloads.
-   * Returns an array of ChangedFile for use by ChangedFilesTree.
+   * Per-turn diff view lives on the pane and is incrementally maintained by
+   * upsertItem. MessageTimeline consumes it read-only: a turn with an entry
+   * renders the ChangedFilesTree; if the summary passes `isMeaningful` the
+   * TurnDiffBadge renders too.
    */
-  function getChangedFilesForTurn(turnIndex: number): ChangedFile[] {
-    const files: ChangedFile[] = [];
-    for (const item of pane.items) {
-      if (item.turnIndex !== turnIndex) continue;
-      files.push(...changedFilesForItem(item));
-    }
-    return files;
-  }
-
-  /**
-   * Build a set of turn indices that have at least one diff item,
-   * so we can render ChangedFilesTree at turn boundaries.
-   */
-  let turnBoundaries = $derived.by((): Map<number, ChangedFile[]> => {
-    const turns = new Map<number, ChangedFile[]>();
-    for (const item of pane.items) {
-      if (!item.payloadId) continue;
-      if (item.payloadKind !== 'diff' && item.payloadKind !== 'tool_result') continue;
-      if (turns.has(item.turnIndex)) continue;
-      const files = getChangedFilesForTurn(item.turnIndex);
-      if (files.length > 0) {
-        turns.set(item.turnIndex, files);
-      }
-    }
-    return turns;
-  });
-
-  /**
-   * Aggregate per-turn diff totals keyed by turnIndex, for the inline badge
-   * rendered after ChangedFilesTree. Only turns with non-zero line changes
-   * produce an entry, so rendering can simply check map presence.
-   */
-  let turnSummaries = $derived.by((): Map<number, TurnDiffSummary> => {
-    const out = new Map<number, TurnDiffSummary>();
-    for (const turnIndex of turnBoundaries.keys()) {
-      const summary = summarizeTurnDiffs(pane.items, turnIndex);
-      if (turnSummaryIsMeaningful(summary)) {
-        out.set(turnIndex, summary);
-      }
-    }
-    return out;
-  });
+  let turnDiffViews = $derived(pane.turnDiffViews);
 
   /**
    * Build the subagent-aware render tree. Items are grouped into subagent
@@ -242,17 +175,29 @@
     {/snippet}
 
     {#each groupedNodes as node, index (node.kind === 'group' ? `g:${node.parent.id}` : `l:${node.item.id}`)}
-      {@render renderNode(node, 0)}
+      <!-- content-visibility: auto lets the browser skip paint + layout for
+           off-screen nodes. Pairs with contain-intrinsic-size as a layout
+           placeholder so scroll height stays sane when nodes aren't measured
+           yet. This is the spec-sanctioned "virtualize the whole list"
+           approach (no count-slicing, no anchor IDs) — every node stays in
+           the DOM with stable identity, but only the visible ones pay the
+           render cost. The intrinsic size is a rough average; the real
+           height replaces it once the node scrolls into view. -->
+      <div
+        data-testid="message-timeline-node"
+        class="contents-visibility-auto"
+      >
+        {@render renderNode(node, 0)}
+      </div>
 
       {#if isLastRootInTurn(index)}
         {@const turnIndex = rootTurnIndex(node)}
-        {@const turnFiles = turnBoundaries.get(turnIndex)}
-        {#if turnFiles}
-          <ChangedFilesTree files={turnFiles} />
-        {/if}
-        {@const turnSummary = turnSummaries.get(turnIndex)}
-        {#if turnSummary}
-          <TurnDiffBadge {pane} {turnIndex} summary={turnSummary} />
+        {@const turnView = turnDiffViews.get(turnIndex)}
+        {#if turnView}
+          <ChangedFilesTree files={turnView.files} />
+          {#if turnSummaryIsMeaningful(turnView.summary)}
+            <TurnDiffBadge {pane} {turnIndex} summary={turnView.summary} />
+          {/if}
         {/if}
       {/if}
     {/each}

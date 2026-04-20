@@ -106,11 +106,19 @@ export function summarizeEntries(
   entries: readonly AgentDiffEntry[],
   items: readonly Item[],
 ): DiffStats {
+  // Index items by payloadId once instead of scanning the items array per
+  // entry. The naive nested-find was O(entries*items), which shows up on
+  // threads with hundreds of diffs.
+  const byPayloadId = new Map<string, Item>();
+  for (const item of items) {
+    if (item.payloadId) byPayloadId.set(item.payloadId, item);
+  }
+
   let insertions = 0;
   let deletions = 0;
   let fileCount = 0;
   for (const entry of entries) {
-    const item = items.find((candidate) => candidate.payloadId === entry.payloadId);
+    const item = byPayloadId.get(entry.payloadId);
     if (!item?.payloadMeta) continue;
     try {
       if (item.payloadKind === 'diff') {

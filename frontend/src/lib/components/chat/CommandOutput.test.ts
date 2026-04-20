@@ -4,6 +4,7 @@ import CommandOutput from './CommandOutput.svelte';
 import { makeItem } from '../../../test/helpers/chat';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import type { CommandOutputMeta } from '../../types/models';
+import { DEFAULT_PAYLOAD_PREVIEW_BYTES } from './payloadExpansion.svelte';
 
 // Some Svelte transitions call Element.prototype.animate; jsdom doesn't
 // implement it. Stub it the same way ToolResultDropdown.test.ts does so
@@ -139,7 +140,7 @@ describe('<CommandOutput>', () => {
     await Promise.resolve();
     await Promise.resolve();
     // Expand loads the preview but NOT the full body.
-    expect(previewMock).toHaveBeenCalledWith('pay-3', 32768);
+    expect(previewMock).toHaveBeenCalledWith('pay-3', DEFAULT_PAYLOAD_PREVIEW_BYTES);
     expect(dataMock).not.toHaveBeenCalled();
   });
 });

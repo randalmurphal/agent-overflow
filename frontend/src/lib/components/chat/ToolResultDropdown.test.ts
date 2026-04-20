@@ -3,6 +3,7 @@ import { cleanup, fireEvent, render } from '@testing-library/svelte';
 import ToolResultDropdown from './ToolResultDropdown.svelte';
 import { makeItem } from '../../../test/helpers/chat';
 import { getBindingMock, resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { DEFAULT_PAYLOAD_PREVIEW_BYTES } from './payloadExpansion.svelte';
 
 beforeAll(() => {
   if (typeof (Element.prototype as unknown as { animate?: unknown }).animate !== 'function') {
@@ -64,7 +65,7 @@ describe('<ToolResultDropdown>', () => {
 
     await fireEvent.click(getByTestId('tool-result-dropdown-toggle'));
 
-    expect(getBindingMock('GetPayloadPreview')).toHaveBeenCalledWith('payload-1', 32768);
+    expect(getBindingMock('GetPayloadPreview')).toHaveBeenCalledWith('payload-1', DEFAULT_PAYLOAD_PREVIEW_BYTES);
     expect(getBindingMock('GetPayloadData')).not.toHaveBeenCalled();
     expect(getByTestId('tool-result-dropdown-output').textContent).toContain('line 1');
     expect(getByTestId('tool-result-dropdown-exit').textContent).toContain('exit 1');

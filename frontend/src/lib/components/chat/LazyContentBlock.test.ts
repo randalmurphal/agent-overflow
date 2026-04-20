@@ -3,6 +3,7 @@ import { render, fireEvent } from '@testing-library/svelte';
 import LazyContentBlock from './LazyContentBlock.svelte';
 import { getBindingMock, setBindingMock } from '../../../test/mocks/bindings-app';
 import { MAX_INLINE_BYTES } from '../../utils/inlineThreshold';
+import { DEFAULT_PAYLOAD_PREVIEW_BYTES } from './payloadExpansion.svelte';
 
 describe('<LazyContentBlock>', () => {
   it('renders the preview verbatim and no toggle when preview is short', () => {
@@ -89,7 +90,7 @@ describe('<LazyContentBlock>', () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    expect(getBindingMock('GetPayloadPreview')).toHaveBeenCalledWith('p1', 32768);
+    expect(getBindingMock('GetPayloadPreview')).toHaveBeenCalledWith('p1', DEFAULT_PAYLOAD_PREVIEW_BYTES);
     expect(getBindingMock('GetPayloadData')).not.toHaveBeenCalled();
     expect(getByTestId('lazy-content-preview').textContent).toBe('PREVIEW BODY');
     expect(getByTestId('lazy-content-show-full').textContent).toContain('64.0 KB');

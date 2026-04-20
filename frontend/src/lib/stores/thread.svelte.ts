@@ -5,6 +5,7 @@ import type { DesignArtifact, DesignOptionsRequest, DesignViewport } from '../ty
 import { ListItems, SwitchThread } from './bindings';
 import { addToast } from './toast.svelte';
 import { createDiffPanelState, type DiffPanelState } from './diffPanel.svelte';
+import { buildTurnDiffView, type TurnDiffView } from '../utils/turnDiffSummary';
 
 /**
  * Creates a self-contained thread pane state instance.
@@ -15,6 +16,11 @@ import { createDiffPanelState, type DiffPanelState } from './diffPanel.svelte';
 export function createThreadPane() {
   let thread: Thread | null = $state(null);
   let items: Item[] = $state([]);
+  // Per-turn diff view index. Keyed by turnIndex. Incrementally updated on
+  // upsertItem rather than rebuilt from scratch — with hundreds of items the
+  // old $derived recomputation was O(turns · items) per upsert. Map presence
+  // is the render gate in MessageTimeline; absent turns skip the tree+badge.
+  let turnDiffViews: Map<number, TurnDiffView> = $state(new Map());
   let pendingApprovals: ApprovalRequest[] = $state([]);
   let contextWindow: ContextWindow | null = $state(null);
   let providerBanner: ProviderStatusEvent | null = $state(null);
@@ -51,6 +57,38 @@ export function createThreadPane() {
    */
   let switchGeneration = 0;
 
+  /**
+   * Rebuild the per-turn diff view for a single turnIndex from the current
+   * items snapshot. Mutates the reactive Map in place — Svelte 5 tracks Map
+   * mutations on $state values, so set/delete are reactive without having
+   * to allocate a fresh Map per upsert (which would be O(turns) alloc per
+   * mutation and defeat the point of moving this out of MessageTimeline).
+   */
+  function refreshTurnDiffView(nextItems: Item[], turnIndex: number): void {
+    const view = buildTurnDiffView(nextItems, turnIndex);
+    if (view) {
+      turnDiffViews.set(turnIndex, view);
+    } else {
+      turnDiffViews.delete(turnIndex);
+    }
+  }
+
+  /**
+   * Rebuild the full per-turn diff view map from an items snapshot. Used on
+   * thread switch / bulk load where a single incremental pass isn't
+   * appropriate. Clears the reactive map in place for the same "no
+   * per-mutation alloc" reason.
+   */
+  function rebuildTurnDiffViews(nextItems: Item[]): void {
+    turnDiffViews.clear();
+    const byTurn = new Set<number>();
+    for (const item of nextItems) byTurn.add(item.turnIndex);
+    for (const turnIndex of byTurn) {
+      const view = buildTurnDiffView(nextItems, turnIndex);
+      if (view) turnDiffViews.set(turnIndex, view);
+    }
+  }
+
   function seedContextWindow(nextThread: Thread | null): ContextWindow | null {
     const raw = nextThread?.lastTokenUsage?.trim();
     if (!raw) return null;
@@ -76,6 +114,12 @@ export function createThreadPane() {
     get thread() { return thread; },
     get threadId() { return thread?.id ?? null; },
     get items() { return items; },
+    /**
+     * Per-turn diff view. Keyed by `turnIndex`. Incrementally maintained by
+     * `upsertItem` so MessageTimeline can render the ChangedFilesTree and
+     * TurnDiffBadge without re-scanning the full items array each upsert.
+     */
+    get turnDiffViews() { return turnDiffViews; },
     get pendingApprovals() { return pendingApprovals; },
     get contextWindow() { return contextWindow; },
     get providerBanner() { return providerBanner; },
@@ -130,6 +174,7 @@ export function createThreadPane() {
       diffPanel.clearForThread();
       loading = true;
       items = [];
+      turnDiffViews = new Map();
 
       thread = newThread;
       // Capture the switch generation at the top so every await below can bail
@@ -149,10 +194,12 @@ export function createThreadPane() {
         const loaded = await ListItems(newThread.id) as Item[];
         if (gen !== switchGeneration) return;
         items = loaded;
+        rebuildTurnDiffViews(loaded);
       } catch (err) {
         if (gen !== switchGeneration) return;
         console.error('Failed to load items:', err);
         items = [];
+        turnDiffViews = new Map();
         error = `Failed to load thread items: ${err}`;
         addToast('error', 'Failed to load thread items');
       }
@@ -164,6 +211,7 @@ export function createThreadPane() {
     clear(): void {
       thread = null;
       items = [];
+      turnDiffViews = new Map();
       pendingApprovals = [];
       contextWindow = null;
       providerBanner = null;
@@ -200,13 +248,24 @@ export function createThreadPane() {
      * mutate without losing position. The backend is authoritative for
      * ordering — we never reshuffle by anything other than those two
      * fields, so a tool_call row stays exactly where it was inserted.
+     *
+     * Also refreshes the turnDiffViews entry for the item's turn (and, on
+     * replace, the prior item's turn if it differed — defensive against
+     * cross-turn corrections). Only the affected turn(s) are recomputed,
+     * keeping per-upsert work bounded by the turn's item count rather than
+     * the full thread.
      */
     upsertItem(item: Item): void {
       const idx = items.findIndex((existing) => existing.id === item.id);
       if (idx >= 0) {
+        const prevTurnIndex = items[idx].turnIndex;
         const next = items.slice();
         next[idx] = item;
         items = next;
+        refreshTurnDiffView(next, item.turnIndex);
+        if (prevTurnIndex !== item.turnIndex) {
+          refreshTurnDiffView(next, prevTurnIndex);
+        }
         return;
       }
       // Find the insertion point that preserves (turnIndex, itemIndex).
@@ -227,6 +286,7 @@ export function createThreadPane() {
       const next = items.slice();
       next.splice(insertAt, 0, item);
       items = next;
+      refreshTurnDiffView(next, item.turnIndex);
     },
 
     setError(message: string | null): void {

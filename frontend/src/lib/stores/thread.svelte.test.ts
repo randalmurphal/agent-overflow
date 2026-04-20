@@ -178,5 +178,170 @@ describe('createThreadPane', () => {
     expect(pane.pendingApprovals).toEqual([]);
     expect(pane.contextWindow).toBeNull();
     expect(pane.error).toBeNull();
+    expect(pane.turnDiffViews.size).toBe(0);
+  });
+
+  it('upsertItem builds turnDiffViews incrementally per affected turn', () => {
+    const pane = createThreadPane();
+
+    // Non-diff items don't seed a turn entry.
+    pane.upsertItem(makeItem({ id: 'user:0', turnIndex: 0, kind: 'user_text', summary: 'hi' }));
+    expect(pane.turnDiffViews.size).toBe(0);
+
+    pane.upsertItem(makeItem({
+      id: 'diff-0',
+      turnIndex: 0,
+      itemIndex: 1,
+      kind: 'tool_call',
+      payloadId: 'p0',
+      payloadKind: 'diff',
+      payloadMeta: JSON.stringify({
+        filePath: 'a.ts',
+        changeKind: 'modified',
+        insertions: 3,
+        deletions: 1,
+        preview: '',
+      }),
+    }));
+
+    expect(pane.turnDiffViews.get(0)).toEqual({
+      files: [{
+        path: 'a.ts',
+        insertions: 3,
+        deletions: 1,
+        kind: 'modified',
+        payloadId: 'p0',
+      }],
+      summary: { insertions: 3, deletions: 1, fileCount: 1 },
+    });
+
+    // Turn 1 entry is independent.
+    pane.upsertItem(makeItem({
+      id: 'tool-1',
+      turnIndex: 1,
+      itemIndex: 0,
+      kind: 'tool_call',
+      payloadId: 'p1',
+      payloadKind: 'tool_result',
+      payloadMeta: JSON.stringify({
+        inlineDiff: {
+          files: [
+            { path: 'b.ts', insertions: 5, deletions: 2, kind: 'modified' },
+          ],
+        },
+      }),
+    }));
+
+    expect(pane.turnDiffViews.get(1)?.summary).toEqual({
+      insertions: 5,
+      deletions: 2,
+      fileCount: 1,
+    });
+    // Turn 0 untouched by turn 1's upsert.
+    expect(pane.turnDiffViews.get(0)?.summary).toEqual({
+      insertions: 3,
+      deletions: 1,
+      fileCount: 1,
+    });
+  });
+
+  it('upsertItem refreshes the affected turn on replace', () => {
+    const pane = createThreadPane();
+
+    pane.upsertItem(makeItem({
+      id: 'diff-0',
+      turnIndex: 0,
+      kind: 'tool_call',
+      payloadId: 'p0',
+      payloadKind: 'diff',
+      payloadMeta: JSON.stringify({
+        filePath: 'a.ts',
+        changeKind: 'modified',
+        insertions: 1,
+        deletions: 0,
+        preview: '',
+      }),
+    }));
+    expect(pane.turnDiffViews.get(0)?.summary.insertions).toBe(1);
+
+    // Replace the same id with a new payload meta (e.g. completion swap).
+    pane.upsertItem(makeItem({
+      id: 'diff-0',
+      turnIndex: 0,
+      kind: 'tool_call',
+      payloadId: 'p0',
+      payloadKind: 'diff',
+      payloadMeta: JSON.stringify({
+        filePath: 'a.ts',
+        changeKind: 'modified',
+        insertions: 9,
+        deletions: 2,
+        preview: '',
+      }),
+    }));
+    expect(pane.turnDiffViews.get(0)?.summary).toEqual({
+      insertions: 9,
+      deletions: 2,
+      fileCount: 1,
+    });
+  });
+
+  it('clears the turnDiffViews entry when replace removes the turn\'s last diff', () => {
+    const pane = createThreadPane();
+
+    pane.upsertItem(makeItem({
+      id: 'diff-0',
+      turnIndex: 0,
+      kind: 'tool_call',
+      payloadId: 'p0',
+      payloadKind: 'diff',
+      payloadMeta: JSON.stringify({
+        filePath: 'a.ts',
+        changeKind: 'modified',
+        insertions: 3,
+        deletions: 1,
+        preview: '',
+      }),
+    }));
+    expect(pane.turnDiffViews.has(0)).toBe(true);
+
+    // Replace the diff with a plain non-diff item under the same id.
+    pane.upsertItem(makeItem({
+      id: 'diff-0',
+      turnIndex: 0,
+      kind: 'assistant_text',
+      summary: 'changed shape',
+    }));
+
+    expect(pane.turnDiffViews.has(0)).toBe(false);
+  });
+
+  it('switchThread seeds turnDiffViews from the loaded items', async () => {
+    const pane = createThreadPane();
+    const items = [
+      makeItem({
+        id: 'tool-0',
+        turnIndex: 0,
+        kind: 'tool_call',
+        payloadId: 'p0',
+        payloadKind: 'diff',
+        payloadMeta: JSON.stringify({
+          filePath: 'a.ts',
+          changeKind: 'modified',
+          insertions: 2,
+          deletions: 0,
+          preview: '',
+        }),
+      }),
+    ];
+    setBindingMock('ListItems', async () => items);
+
+    await pane.switchThread(makeThread({ id: 'thread-a' }));
+
+    expect(pane.turnDiffViews.get(0)?.summary).toEqual({
+      insertions: 2,
+      deletions: 0,
+      fileCount: 1,
+    });
   });
 });

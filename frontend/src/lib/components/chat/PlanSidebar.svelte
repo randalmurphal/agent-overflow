@@ -18,9 +18,8 @@
     previewSnippet: string;
   }
 
-  function parsePlanMeta(itemId: string): ProposedPlanMeta | null {
-    const item = pane.items.find((entry) => entry.id === itemId);
-    if (!item?.payloadMeta) return null;
+  function parsePlanMeta(item: Item): ProposedPlanMeta | null {
+    if (!item.payloadMeta) return null;
     try {
       return JSON.parse(item.payloadMeta) as ProposedPlanMeta;
     } catch {
@@ -35,13 +34,16 @@
   }
 
   // Newest first. Proposed plans live on payload-bearing tool rows.
+  // Single pass: filter/reverse/map without an inner lookup. The item is
+  // already in scope in the .map body, so parsePlanMeta takes it directly
+  // instead of re-searching pane.items.
   let planRows = $derived<PlanRow[]>(
     pane.items
       .filter((item: Item) => item.payloadKind === 'proposed_plan' && !!item.payloadId)
       .slice()
       .reverse()
       .map((item) => {
-        const meta = parsePlanMeta(item.id);
+        const meta = parsePlanMeta(item);
         return {
           itemId: item.id,
           turnIndex: item.turnIndex,

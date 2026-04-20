@@ -101,4 +101,76 @@ describe('<MessageTimeline>', () => {
 
     expect(getAllByText('Ship it').length).toBeGreaterThan(0);
   });
+
+  it('wraps each root node in a content-visibility container for off-screen skipping', async () => {
+    const items = Array.from({ length: 50 }, (_, i) =>
+      makeItem({
+        id: `text:${i}`,
+        turnIndex: Math.floor(i / 10),
+        itemIndex: i % 10,
+        summary: `message ${i}`,
+        createdAt: i,
+      }),
+    );
+    const pane = await buildPane(undefined, items);
+    const { container } = render(MessageTimeline, { props: { pane } });
+
+    const wrappers = container.querySelectorAll('[data-testid="message-timeline-node"]');
+    // One wrapper per root timeline node. With no subagent grouping,
+    // that's one wrapper per item.
+    expect(wrappers.length).toBe(50);
+    // Every wrapper applies the CSS class that opts into
+    // content-visibility: auto. We assert on the class rather than the
+    // computed style because happy-dom doesn't implement the property.
+    for (const w of wrappers) {
+      expect(w.classList.contains('contents-visibility-auto')).toBe(true);
+    }
+  });
+
+  it('rebuilds turn summaries incrementally via the pane (not per-upsert full scan)', async () => {
+    // Regression pin for the task-2 refactor: MessageTimeline must source
+    // turnDiffViews from the pane (pane.turnDiffViews) rather than a
+    // component-local $derived that rescans pane.items on every upsert.
+    // This test injects an item, then upserts a second diff into the same
+    // turn, and checks that both contributions land in the rendered badge.
+    const pane = await buildPane(undefined, [
+      makeItem({
+        id: 'tool-1',
+        turnIndex: 0,
+        itemIndex: 0,
+        kind: 'tool_call',
+        payloadId: 'payload-1',
+        payloadKind: 'diff',
+        payloadMeta: JSON.stringify({
+          filePath: 'src/a.ts',
+          changeKind: 'modified',
+          insertions: 3,
+          deletions: 1,
+          preview: '',
+        }),
+      }),
+    ]);
+    const { getByTestId, rerender } = render(MessageTimeline, { props: { pane } });
+
+    expect(getByTestId('turn-diff-badge').textContent ?? '').toContain('+3');
+
+    pane.upsertItem(makeItem({
+      id: 'tool-2',
+      turnIndex: 0,
+      itemIndex: 1,
+      kind: 'tool_call',
+      payloadId: 'payload-2',
+      payloadKind: 'diff',
+      payloadMeta: JSON.stringify({
+        filePath: 'src/b.ts',
+        changeKind: 'added',
+        insertions: 2,
+        deletions: 0,
+        preview: '',
+      }),
+    }));
+    await rerender({ pane });
+
+    expect(getByTestId('turn-diff-badge').textContent ?? '').toContain('+5');
+  });
 });
