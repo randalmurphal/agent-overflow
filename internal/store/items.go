@@ -156,6 +156,76 @@ func (s *Store) AppendItem(item Item) (int, error) {
 	return next, nil
 }
 
+// AppendItemSummary appends delta to the item's summary column in-place
+// without round-tripping the full existing summary through Go memory. The
+// caller passes only the newly-arrived text; SQLite's `||` operator does the
+// concatenation against the already-stored column value. updatedAt is
+// written in the same UPDATE so the hot streaming path does not need two
+// statements. Returns the re-read Item (including the joined payload_kind
+// and payload_meta) so the caller can emit the updated row without
+// performing its own GetThreadItem round-trip.
+//
+// This is the dedicated hot-path fix for the former O(N²) streaming
+// behavior in triage: handleTextDelta / handleThinking used to
+// GetThreadItem → existing.Summary+delta in Go → UpsertItem (which
+// re-reads via LEFT JOIN), producing 3 round-trips and a full-summary
+// allocation per delta. AppendItemSummary collapses all three into one
+// UPDATE + one SELECT, keeps the quadratic string concatenation inside
+// SQLite's blob-append, and preserves the existing item_index, role,
+// kind, status, and payload_id (none of which change across deltas).
+//
+// Returns sql.ErrNoRows (wrapped) if no item matches id. Callers that
+// need to create the item on the first delta should call UpsertItem for
+// the initial delta and AppendItemSummary for every subsequent delta.
+func (s *Store) AppendItemSummary(id, delta string, updatedAt int64) (Item, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return Item{}, fmt.Errorf("store: begin append item summary tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	result, err := tx.Exec(
+		`UPDATE items SET summary = summary || ?, updated_at = ? WHERE id = ?`,
+		delta, updatedAt, id,
+	)
+	if err != nil {
+		return Item{}, fmt.Errorf("store: append item summary %s: %w", id, err)
+	}
+	if err := requireRowsAffected(
+		result,
+		fmt.Sprintf("store: append item summary %s", id),
+	); err != nil {
+		return Item{}, err
+	}
+
+	// Bump the owning thread's updated_at in the same transaction so the
+	// sidebar ordering stays in lockstep with the stream.
+	if _, err := tx.Exec(
+		`UPDATE threads SET updated_at = ? WHERE id = (
+			SELECT thread_id FROM items WHERE id = ?
+		)`,
+		updatedAt, id,
+	); err != nil {
+		return Item{}, fmt.Errorf("store: touch thread for item %s: %w", id, err)
+	}
+
+	row := tx.QueryRow(
+		`SELECT `+itemColumns+`
+		   FROM items
+		   LEFT JOIN payloads ON payloads.id = items.payload_id
+		  WHERE items.id = ?`,
+		id,
+	)
+	updated, err := scanItemRow(row)
+	if err != nil {
+		return Item{}, fmt.Errorf("store: re-read appended item %s: %w", id, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return Item{}, fmt.Errorf("store: commit append item summary tx: %w", err)
+	}
+	return updated, nil
+}
+
 func (s *Store) UpsertItem(item Item, payload *Payload) (Item, error) {
 	applyItemDefaults(&item)
 	tx, err := s.db.Begin()
@@ -365,6 +435,35 @@ func (s *Store) GetItem(id string) (Item, bool, error) {
 	}
 	if err != nil {
 		return Item{}, false, fmt.Errorf("store: get item %s: %w", id, err)
+	}
+	return item, true, nil
+}
+
+// GetItemByPayloadID returns the item whose payload_id matches payloadID.
+// Used by the "save payload to file" flow so it does not have to iterate
+// threads × items to find the owner. A missing payload returns (Item{},
+// false, nil). When two items happen to share a payload (e.g. forked
+// threads retaining a reference) the caller gets the most recently
+// updated item — this matches the forward-only intent of the save flow.
+//
+// The query is O(log N) thanks to the partial idx_items_payload_id index
+// added in migration v16.
+func (s *Store) GetItemByPayloadID(payloadID string) (Item, bool, error) {
+	row := s.db.QueryRow(
+		`SELECT `+itemColumns+`
+		   FROM items
+		   LEFT JOIN payloads ON payloads.id = items.payload_id
+		  WHERE items.payload_id = ?
+		  ORDER BY items.updated_at DESC
+		  LIMIT 1`,
+		payloadID,
+	)
+	item, err := scanItemRow(row)
+	if err == sql.ErrNoRows {
+		return Item{}, false, nil
+	}
+	if err != nil {
+		return Item{}, false, fmt.Errorf("store: get item by payload id %s: %w", payloadID, err)
 	}
 	return item, true, nil
 }

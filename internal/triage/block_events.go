@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 
 	"agent-overflow/internal/provider"
-	"agent-overflow/internal/store"
 )
 
 func (r *Router) handleContentBlockStart(evt provider.ProviderEvent) error {
@@ -75,7 +74,10 @@ func (r *Router) persistThinkingSignature(threadID string, turnIndex int, scope,
 	}
 	item.Meta = string(data)
 
-	var payload *store.Payload
+	// Patch the payload's meta without reading the (potentially large)
+	// data blob. Previously this code pulled the full blob through Go
+	// memory solely to re-insert it with an updated meta; UpdatePayloadMeta
+	// is a narrow UPDATE that touches only the JSON column.
 	if item.PayloadID != "" {
 		metaRow, metaErr := r.store.GetPayloadMeta(item.PayloadID)
 		if metaErr == nil {
@@ -86,22 +88,11 @@ func (r *Router) persistThinkingSignature(threadID string, turnIndex int, scope,
 			if marshalErr != nil {
 				return marshalErr
 			}
-			dataBytes, dataErr := r.store.GetPayloadData(item.PayloadID)
-			if dataErr != nil {
-				return dataErr
-			}
-			payload = &store.Payload{
-				ID:        item.PayloadID,
-				Kind:      metaRow.Kind,
-				Meta:      string(payloadMetaJSON),
-				Data:      dataBytes,
-				CreatedAt: item.CreatedAt,
+			if err := r.store.UpdatePayloadMeta(item.PayloadID, string(payloadMetaJSON)); err != nil {
+				return err
 			}
 		}
 	}
 
-	if err := r.persistItem(item, payload); err != nil {
-		return err
-	}
-	return nil
+	return r.persistItem(item, nil)
 }

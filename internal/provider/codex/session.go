@@ -342,6 +342,18 @@ func (s *Session) Close() error {
 	if s.readDone != nil {
 		<-s.readDone
 	}
+	// Drop session-scoped maps so the closed Session doesn't hold onto
+	// per-turn / per-child-thread entries indefinitely. The dispatch
+	// goroutine has exited by this point (readDone closed), so no
+	// concurrent writer races these deletions. We deliberately leave
+	// s.pending as an empty map (readLoop already drained it) — a late
+	// sendRequest caller would otherwise panic writing to a nil map;
+	// the existing WriteLine-on-closed-proc path handles shutdown
+	// cleanly.
+	s.mu.Lock()
+	s.seenTurnStarts = nil
+	s.childParentByThread = nil
+	s.mu.Unlock()
 	return err
 }
 
@@ -919,6 +931,14 @@ func (s *Session) claimApproval(requestID string) bool {
 	if s.resolvedApprovals == nil {
 		s.resolvedApprovals = make(map[string]struct{})
 	}
+	// Soft-cap the dedup set so long-running sessions don't accumulate
+	// one entry per answered approval for the life of the process. The
+	// hot window is small; dropping older IDs may admit a duplicate
+	// response for an ancient request at worst, which the provider
+	// discards.
+	if len(s.resolvedApprovals) >= resolvedApprovalsSoftCap {
+		s.resolvedApprovals = make(map[string]struct{})
+	}
 	s.resolvedApprovals[requestID] = struct{}{}
 	s.approvalsMu.Unlock()
 	if hadPending {
@@ -929,11 +949,14 @@ func (s *Session) claimApproval(requestID string) bool {
 
 // clearPendingApprovals cancels every outstanding auto-deny timer. Called
 // by Close so the goroutines exit cleanly instead of racing the teardown.
+// Also drops the resolvedApprovals dedup set — once Close has been
+// called, no duplicate response can reach the provider anyway.
 func (s *Session) clearPendingApprovals() {
 	s.approvalsMu.Lock()
 	s.approvalsClosed = true
 	pending := s.pendingApprovals
 	s.pendingApprovals = nil
+	s.resolvedApprovals = nil
 	s.approvalsMu.Unlock()
 	for requestID, p := range pending {
 		close(p.cancel)
@@ -950,6 +973,11 @@ func (s *Session) clearPendingApprovals() {
 		})
 	}
 }
+
+// resolvedApprovalsSoftCap bounds the per-session dedup set on long
+// sessions. See the Claude session's constant of the same name for
+// rationale.
+const resolvedApprovalsSoftCap = 1000
 
 // -- helpers --
 

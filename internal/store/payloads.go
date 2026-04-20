@@ -236,20 +236,68 @@ func (s *Store) GetPayloadData(id string) ([]byte, error) {
 	return data, nil
 }
 
+// GetPayloadPreview returns up to maxBytes of the payload prefix together
+// with the full payload length and a completion flag. The payload is
+// sliced inside SQLite via substr() so a 10 MB blob does not ever cross
+// into Go memory when the caller only wants the first 8 KB. The
+// completion flag is true only when total <= maxBytes.
 func (s *Store) GetPayloadPreview(id string, maxBytes int) ([]byte, int, bool, error) {
-	var data []byte
-	err := s.db.QueryRow(`SELECT data FROM payloads WHERE id = ?`, id).Scan(&data)
-	if err != nil {
-		return nil, 0, false, fmt.Errorf("store: get payload preview %s: %w", id, err)
-	}
 	if maxBytes < 0 {
 		maxBytes = 0
 	}
-	total := len(data)
-	if total <= maxBytes {
-		return data, total, true, nil
+	var head []byte
+	var total int
+	// substr(blob, 1, N) is 1-indexed and clamps to the blob length, so
+	// passing a maxBytes larger than the payload returns the full data
+	// without an extra branch. length(blob) returns the byte count even
+	// for NULL, so the NULL guard is superfluous (INSERT paths never
+	// store NULL for data).
+	err := s.db.QueryRow(
+		`SELECT substr(data, 1, ?) AS head, length(data) AS total FROM payloads WHERE id = ?`,
+		maxBytes, id,
+	).Scan(&head, &total)
+	if err != nil {
+		return nil, 0, false, fmt.Errorf("store: get payload preview %s: %w", id, err)
 	}
-	return data[:maxBytes], total, false, nil
+	return head, total, total <= maxBytes, nil
+}
+
+// AppendPayloadData appends delta to an existing payload's data blob
+// in-place, updating its meta and created_at stamp inside one UPDATE.
+// Unlike read-append-write (which pulled the full blob through Go on
+// every delta), this streams the concatenation inside SQLite so repeated
+// appends stay linear rather than quadratic in cumulative size.
+//
+// Returns sql.ErrNoRows (wrapped) if no payload matches id. Callers
+// must handle "no row yet" by inserting via InsertPayload first; this
+// method only handles the append path.
+func (s *Store) AppendPayloadData(id string, delta []byte, meta string, createdAt int64) error {
+	result, err := s.db.Exec(
+		`UPDATE payloads SET data = data || ?, meta = ?, created_at = ? WHERE id = ?`,
+		delta, meta, createdAt, id,
+	)
+	if err != nil {
+		return fmt.Errorf("store: append payload data %s: %w", id, err)
+	}
+	return requireRowsAffected(result, fmt.Sprintf("store: append payload data %s", id))
+}
+
+// UpdatePayloadMeta updates only the meta column of an existing payload
+// without touching the data blob. Used for signature / preview patches
+// that arrive after the blob is already assembled — callers that
+// previously did GetPayloadData + re-insert to update meta now avoid
+// the full-blob round trip.
+//
+// Returns sql.ErrNoRows (wrapped) if no payload matches id.
+func (s *Store) UpdatePayloadMeta(id, meta string) error {
+	result, err := s.db.Exec(
+		`UPDATE payloads SET meta = ? WHERE id = ?`,
+		meta, id,
+	)
+	if err != nil {
+		return fmt.Errorf("store: update payload meta %s: %w", id, err)
+	}
+	return requireRowsAffected(result, fmt.Sprintf("store: update payload meta %s", id))
 }
 
 func (s *Store) ListPayloadMetas(threadID string) ([]PayloadMeta, error) {

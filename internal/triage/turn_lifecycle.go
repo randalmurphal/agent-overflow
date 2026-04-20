@@ -210,12 +210,28 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 	if err != nil {
 		persistErr = err
 	} else {
-		status := statusCompleted
+		// On truncation, drain the interrupt queue as errored BEFORE
+		// settling the streaming items. settleTurnStreaming fires
+		// drainInterruptQueueIfIdle on the last streaming close, which
+		// would otherwise persist the queued items as-is (status
+		// completed, no " — interrupted" suffix). Draining first means
+		// the subsequent idle-drain finds an empty queue and the
+		// queued rows correctly reflect the interrupted turn. For
+		// non-truncated completions we keep the original order —
+		// settle → (idle-drain persists normally) → forced drain no-op.
 		if truncated {
-			status = statusErrored
+			if err := r.drainInterruptQueue(evt.ThreadID, true); err != nil {
+				persistErr = err
+			}
 		}
-		if err := r.settleTurnStreaming(evt.ThreadID, turnIndex, status); err != nil {
-			persistErr = err
+		if persistErr == nil {
+			status := statusCompleted
+			if truncated {
+				status = statusErrored
+			}
+			if err := r.settleTurnStreaming(evt.ThreadID, turnIndex, status); err != nil {
+				persistErr = err
+			}
 		}
 		if persistErr == nil && truncated {
 			if err := r.markTurnItemsErrored(evt.ThreadID, turnIndex, now); err != nil {
@@ -223,6 +239,10 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 			}
 		}
 		if persistErr == nil {
+			// For the non-truncated path this drains any queued events
+			// that settled outside settleTurnStreaming's idle-drain
+			// window (rare but possible). For the truncated path the
+			// queue is already empty so this is a cheap no-op.
 			if err := r.drainInterruptQueue(evt.ThreadID, truncated); err != nil {
 				persistErr = err
 			}

@@ -496,6 +496,20 @@ BEGIN
 END;
 `,
 	},
+	{
+		Version: 16,
+		Name:    "items_payload_id_index",
+		// Payload reverse lookup (items keyed by payload_id) is used by
+		// the "save payload to file" flow, which otherwise does a
+		// threads × items nested scan to find the owning item. A partial
+		// index skips rows where payload_id is NULL — the overwhelming
+		// majority of text/user-message rows — so the index stays small
+		// even on large history caches.
+		SQL: `
+CREATE INDEX IF NOT EXISTS idx_items_payload_id
+    ON items(payload_id) WHERE payload_id IS NOT NULL;
+`,
+	},
 }
 
 // v13SQL is the DROP-and-rebuild payload for migration v13. Extracted so

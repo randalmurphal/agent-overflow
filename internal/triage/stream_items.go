@@ -1,7 +1,9 @@
 package triage
 
 import (
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -18,7 +20,8 @@ func (r *Router) handleTextDelta(evt provider.ProviderEvent) error {
 		return fmt.Errorf("text delta turn index: %w", err)
 	}
 	scope := evt.ParentToolUseID
-	if r.ensureTextBlockStarted(evt.ThreadID, turnIndex, scope) {
+	firstBlock := r.ensureTextBlockStarted(evt.ThreadID, turnIndex, scope)
+	if firstBlock {
 		defer r.drainInterruptQueueIfIdle(evt.ThreadID)
 	}
 	itemID := textItemID(turnIndex, scope, r.segmentIndex(evt.ThreadID, turnIndex, scope))
@@ -26,10 +29,29 @@ func (r *Router) handleTextDelta(evt provider.ProviderEvent) error {
 	if now == 0 {
 		now = time.Now().UnixMilli()
 	}
-	existing, found, err := r.store.GetThreadItem(evt.ThreadID, itemID)
-	if err != nil {
-		return fmt.Errorf("text delta get item %s: %w", itemID, err)
+
+	// Hot path: first delta opens the block and UpsertItem creates the
+	// row; every subsequent delta just appends into the summary column
+	// via AppendItemSummary — SQLite does the concat inside one UPDATE,
+	// so total work stays linear in cumulative text size instead of the
+	// former O(N^2) (GetThreadItem → existing+delta in Go → UpsertItem
+	// re-read). See store.AppendItemSummary.
+	if !firstBlock {
+		updated, err := r.store.AppendItemSummary(itemID, evt.Content, now)
+		if err == nil {
+			r.emitItemUpsert(updated)
+			return r.emitInline(evt)
+		}
+		// Fall through to UpsertItem on ErrNoRows: a prior firstBlock
+		// insert might have failed, leaving the counter bumped but no
+		// row. Re-creating the row here is how the old code self-healed
+		// via GetThreadItem/UpsertItem, and the delta data is small so
+		// paying one UpsertItem round-trip is fine for the error path.
+		if !errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("text delta append %s: %w", itemID, err)
+		}
 	}
+
 	item := store.Item{
 		ID:        itemID,
 		ThreadID:  evt.ThreadID,
@@ -41,12 +63,6 @@ func (r *Router) handleTextDelta(evt provider.ProviderEvent) error {
 		ParentID:  eventParentID(evt),
 		CreatedAt: now,
 		UpdatedAt: now,
-	}
-	if found {
-		item.Summary = existing.Summary + evt.Content
-		item.PayloadID = existing.PayloadID
-		item.CreatedAt = existing.CreatedAt
-		item.UpdatedAt = now
 	}
 	if err := r.persistItem(item, nil); err != nil {
 		return err
@@ -63,7 +79,8 @@ func (r *Router) handleThinking(evt provider.ProviderEvent) error {
 		return fmt.Errorf("thinking turn index: %w", err)
 	}
 	scope := evt.ParentToolUseID
-	if r.ensureThinkingBlockStarted(evt.ThreadID, turnIndex, scope) {
+	firstBlock := r.ensureThinkingBlockStarted(evt.ThreadID, turnIndex, scope)
+	if firstBlock {
 		defer r.drainInterruptQueueIfIdle(evt.ThreadID)
 	}
 	itemID := thinkingItemID(turnIndex, scope, r.blockIndex(evt.ThreadID, turnIndex, scope))
@@ -71,10 +88,38 @@ func (r *Router) handleThinking(evt provider.ProviderEvent) error {
 	if now == 0 {
 		now = time.Now().UnixMilli()
 	}
-	existing, found, err := r.store.GetThreadItem(evt.ThreadID, itemID)
-	if err != nil {
-		return fmt.Errorf("thinking get item %s: %w", itemID, err)
+
+	// Payload id is deterministic so subsequent deltas can address the
+	// same blob without a Store round-trip. First delta inserts; later
+	// deltas append inside SQLite via AppendItemSummary +
+	// AppendPayloadData — same O(N^2) → O(N) fix as handleTextDelta. See
+	// store.AppendItemSummary / store.AppendPayloadData.
+	payloadID := "thinking:" + itemID
+
+	if !firstBlock {
+		// Append-only path: extend summary + payload.data without
+		// reading cumulative text into Go memory. The payload meta
+		// carries the preview, which only reflects the first ~200
+		// runes of the block; we leave it alone here and let
+		// settleStreamingThinking rebuild it from the final summary
+		// when the block closes.
+		updated, err := r.store.AppendItemSummary(itemID, evt.Content, now)
+		if err == nil {
+			if err := r.store.AppendPayloadData(payloadID, []byte(evt.Content), updated.PayloadMeta, now); err != nil {
+				return fmt.Errorf("thinking delta append payload %s: %w", payloadID, err)
+			}
+			r.emitItemUpsert(updated)
+			return r.emitInline(evt)
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("thinking delta append %s: %w", itemID, err)
+		}
+		// Fall through to full insert: a prior firstBlock persist may
+		// have failed and left the counter bumped without a row.
 	}
+
+	metaEvt := evt
+	metaEvt.Content = evt.Content
 	item := store.Item{
 		ID:        itemID,
 		ThreadID:  evt.ThreadID,
@@ -83,27 +128,16 @@ func (r *Router) handleThinking(evt provider.ProviderEvent) error {
 		Role:      "assistant",
 		Status:    "streaming",
 		Summary:   evt.Content,
+		PayloadID: payloadID,
 		ParentID:  eventParentID(evt),
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
-	if found {
-		item.Summary = existing.Summary + evt.Content
-		item.PayloadID = existing.PayloadID
-		item.CreatedAt = existing.CreatedAt
-		item.UpdatedAt = now
-	}
-	payloadID := item.PayloadID
-	if payloadID == "" {
-		payloadID = "thinking:" + itemID
-	}
-	metaEvt := evt
-	metaEvt.Content = item.Summary
 	payload := store.Payload{
 		ID:        payloadID,
 		Kind:      "thinking",
 		Meta:      buildPayloadMeta("thinking", metaEvt),
-		Data:      []byte(item.Summary),
+		Data:      []byte(evt.Content),
 		CreatedAt: now,
 	}
 	if err := r.persistItem(item, &payload); err != nil {

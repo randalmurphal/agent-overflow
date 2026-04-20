@@ -470,6 +470,14 @@ func (s *Session) claimApproval(requestID string) bool {
 	if s.resolvedApprovals == nil {
 		s.resolvedApprovals = make(map[string]struct{})
 	}
+	// Soft-cap the dedup set so long-running sessions don't accumulate
+	// one entry per answered approval for the life of the process. The
+	// hot window is small; dropping older IDs may admit a duplicate
+	// response for an ancient request at worst, which the provider
+	// discards.
+	if len(s.resolvedApprovals) >= resolvedApprovalsSoftCap {
+		s.resolvedApprovals = make(map[string]struct{})
+	}
 	s.resolvedApprovals[requestID] = struct{}{}
 	s.approvalsMu.Unlock()
 	if hadPending {
@@ -480,12 +488,16 @@ func (s *Session) claimApproval(requestID string) bool {
 
 // clearPendingApprovals cancels every outstanding auto-deny timer. Called
 // by Close so the goroutines exit instead of racing with a closing
-// subprocess.
+// subprocess. Also drops the resolvedApprovals dedup set — once Close
+// has been called, no duplicate response can land at the provider (the
+// process is being torn down), so the memory cost of keeping the IDs
+// around is pure overhead.
 func (s *Session) clearPendingApprovals() {
 	s.approvalsMu.Lock()
 	s.approvalsClosed = true
 	pending := s.pendingApprovals
 	s.pendingApprovals = nil
+	s.resolvedApprovals = nil
 	s.approvalsMu.Unlock()
 	for requestID, p := range pending {
 		close(p.cancel)
@@ -502,6 +514,16 @@ func (s *Session) clearPendingApprovals() {
 		})
 	}
 }
+
+// resolvedApprovalsSoftCap bounds the per-session dedup set. Duplicate
+// responses for the same requestID can only arrive while a provider is
+// still mid-turn; once the session has accumulated this many answered
+// approvals the oldest entries are dropped so memory stays flat on
+// very long-running sessions. Exceeding the cap is not a correctness
+// issue — a duplicate for a flushed entry would write one extra
+// control_response, which the provider discards, so the cap is a
+// pragmatic ceiling rather than a hard requirement.
+const resolvedApprovalsSoftCap = 1000
 
 // SessionID returns the provider's session identifier.
 // Only valid after the init event has been received.

@@ -63,20 +63,12 @@ func (a *App) SavePayloadToFile(payloadID string) (string, error) {
 }
 
 func (a *App) findItemByPayloadID(payloadID string) (store.Item, error) {
-	threads, err := a.store.ListThreads()
+	item, found, err := a.store.GetItemByPayloadID(payloadID)
 	if err != nil {
-		return store.Item{}, fmt.Errorf("list threads for payload lookup: %w", err)
+		return store.Item{}, fmt.Errorf("find item by payload id: %w", err)
 	}
-	for _, thread := range threads {
-		items, err := a.store.ListItems(thread.ID)
-		if err != nil {
-			return store.Item{}, fmt.Errorf("list items for payload lookup in %s: %w", thread.ID, err)
-		}
-		for _, item := range items {
-			if item.PayloadID == payloadID {
-				return item, nil
-			}
-		}
+	if !found {
+		return store.Item{}, fmt.Errorf("payload %s not linked to any item", payloadID)
 	}
-	return store.Item{}, fmt.Errorf("payload %s not linked to any item", payloadID)
+	return item, nil
 }

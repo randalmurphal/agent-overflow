@@ -30,8 +30,10 @@ type threadMutexRegistry struct {
 
 // lockFor returns an unlock function that must be called once the
 // per-thread critical section completes. The registry caches one mutex
-// per thread for the life of the process; threads come and go, but the
-// memory footprint is tiny (one small struct per thread).
+// per thread; ForgetThread should be called when the thread is deleted
+// so a very long-lived process doesn't accumulate one dead mutex per
+// deleted thread indefinitely. (Each struct is tiny, but bounded
+// cleanup is still the right posture.)
 func (r *threadMutexRegistry) lockFor(threadID string) func() {
 	r.mu.Lock()
 	m, ok := r.mus[threadID]
@@ -42,6 +44,20 @@ func (r *threadMutexRegistry) lockFor(threadID string) func() {
 	r.mu.Unlock()
 	m.Lock()
 	return m.Unlock
+}
+
+// ForgetThread drops the per-thread mutex entry. Called from the thread
+// deletion path so the registry doesn't keep dead mutexes forever.
+// Safe to call for an unknown threadID. No-op if there's no entry.
+//
+// Callers must ensure no goroutine is holding the mutex for this
+// thread; by the time deletion runs, the per-thread session has already
+// been stopped (see deleteThreadTree) and no new sendMessage call can
+// arrive because the frontend only sends for live threads.
+func (r *threadMutexRegistry) ForgetThread(threadID string) {
+	r.mu.Lock()
+	delete(r.mus, threadID)
+	r.mu.Unlock()
 }
 
 func (a *App) sendMessage(threadID string, content string) error {

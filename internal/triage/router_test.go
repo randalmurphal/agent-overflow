@@ -1383,6 +1383,72 @@ func TestCommandOutputPersistsHeavy(t *testing.T) {
 	}
 }
 
+// TestCommandOutputMultipleDeltasAppend pins the append-in-SQLite
+// behaviour that replaced the O(N^2) read-append-write path. Two
+// separate outputDelta events for the same item_id must cumulate in
+// the payload blob, not overwrite each other.
+func TestCommandOutputMultipleDeltasAppend(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	insertToolCallItem(t, st, "t1", "cmd-1", "Bash: streaming", "command_execution", "running")
+
+	// First chunk: creates the payload with data "chunk1\n".
+	meta1, _ := json.Marshal(map[string]any{"command": "streaming", "exitCode": 0})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventCommandOutput,
+		ThreadID:  "t1",
+		ItemID:    "cmd-1",
+		Content:   "chunk1\n",
+		Meta:      meta1,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle first: %v", err)
+	}
+
+	items, err := st.ListItems("t1")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("items after first delta: got %d, want 1", len(items))
+	}
+	payloadID := items[0].PayloadID
+	if payloadID == "" {
+		t.Fatal("no payload id after first delta")
+	}
+
+	// Second chunk: must append, not replace.
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventCommandOutput,
+		ThreadID:  "t1",
+		ItemID:    "cmd-1",
+		Content:   "chunk2\n",
+		Meta:      meta1,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle second: %v", err)
+	}
+
+	items, err = st.ListItems("t1")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("items after second delta: got %d, want 1 (reuse existing)", len(items))
+	}
+	if items[0].PayloadID != payloadID {
+		t.Errorf("payload id changed across deltas: %q vs %q", items[0].PayloadID, payloadID)
+	}
+	data, err := st.GetPayloadData(payloadID)
+	if err != nil {
+		t.Fatalf("get payload data: %v", err)
+	}
+	want := "chunk1\nchunk2\n"
+	if string(data) != want {
+		t.Errorf("payload data after two deltas = %q, want %q", data, want)
+	}
+}
+
 func TestThinkingPersistsHeavy(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")

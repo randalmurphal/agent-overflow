@@ -1,10 +1,12 @@
 package triage
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
 
+	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 )
 
@@ -198,6 +200,35 @@ func (r *Router) settleStreamingThinking(threadID string, turnIndex int, scope s
 		item.Summary = interruptedSummary(item.Summary)
 	}
 	item.UpdatedAt = time.Now().UnixMilli()
+
+	// Now that the block has closed, refresh the thinking-meta preview so
+	// the card reflects the final summary rather than the first-delta
+	// preview captured at block open. We only pay the rebuild once per
+	// block (not per delta). The preview rebuilds from the current
+	// summary but the signature field — set later by
+	// persistThinkingSignature when EventContentBlockStop carries one —
+	// must survive the refresh, so we reuse the existing payload meta
+	// JSON and only replace the summary-derived fields.
+	if item.PayloadID != "" && item.PayloadKind == "thinking" {
+		metaBase := buildPayloadMeta("thinking", provider.ProviderEvent{Content: item.Summary})
+		merged := metaBase
+		if item.PayloadMeta != "" && item.PayloadMeta != "{}" {
+			// Preserve the signature field set by persistThinkingSignature
+			// — the only field we can't reconstruct from summary alone.
+			if sig := metaNestedString(json.RawMessage(item.PayloadMeta), "signature"); sig != "" {
+				var m map[string]any
+				if jerr := json.Unmarshal([]byte(metaBase), &m); jerr == nil {
+					m["signature"] = sig
+					if refreshed, merr := json.Marshal(m); merr == nil {
+						merged = string(refreshed)
+					}
+				}
+			}
+		}
+		if err := r.store.UpdatePayloadMeta(item.PayloadID, merged); err != nil {
+			return err
+		}
+	}
 	if err := r.persistItem(item, nil); err != nil {
 		return err
 	}

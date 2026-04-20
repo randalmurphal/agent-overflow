@@ -250,15 +250,38 @@ func (r *Router) attachPayloadToItem(
 	now := eventTimestampMillis(evt)
 	payloadID := item.PayloadID
 	data := []byte(evt.Content)
-	if payloadID != "" && item.PayloadKind == payloadKind {
-		if !replace {
-			existing, err := r.store.GetPayloadData(payloadID)
-			if err != nil {
-				return fmt.Errorf("load existing %s payload %s: %w", payloadKind, payloadID, err)
-			}
-			data = append(existing, data...)
+	linked := payloadID != "" && item.PayloadKind == payloadKind
+
+	// Append-only hot path: when the item already owns a payload of the
+	// same kind and the caller isn't replacing the blob wholesale, we
+	// append the delta inside SQLite and update meta + summary without
+	// ever reading the prior data into Go memory. The former path —
+	// GetPayloadData → append(existing, data...) → write full blob —
+	// was O(N^2) in cumulative payload size. Meta is derived from the
+	// DELTA alone: command_output's preview has always reflected the
+	// latest chunk (forge parity), and diff meta carries file-level
+	// counters that are already cumulative via the prior read — for
+	// diff the caller passes replace=true anyway, so we stay on the
+	// full-write branch below.
+	if linked && !replace {
+		metaEvt := evt
+		metaEvt.Content = string(data)
+		metaJSON := buildPayloadMeta(payloadKind, metaEvt)
+		if err := r.store.AppendPayloadData(payloadID, data, metaJSON, now); err != nil {
+			return fmt.Errorf("append %s payload %s: %w", payloadKind, payloadID, err)
 		}
-	} else {
+		item.PayloadID = payloadID
+		if summary != "" {
+			item.Summary = summary
+		}
+		item.UpdatedAt = now
+		if item.CreatedAt == 0 {
+			item.CreatedAt = now
+		}
+		return r.persistItem(item, nil)
+	}
+
+	if !linked {
 		payloadID = uuid.New().String()
 	}
 

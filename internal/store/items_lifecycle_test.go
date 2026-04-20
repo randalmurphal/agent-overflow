@@ -65,9 +65,12 @@ func TestMigrationV14BackfillsExistingRows(t *testing.T) {
 	if err := ensureMigrationTable(db); err != nil {
 		t.Fatalf("ensureMigrationTable: %v", err)
 	}
-	// Apply every migration except v15 so we're on the pre-v15 schema.
+	// Apply every migration except v15 (and anything that follows it)
+	// so we're on the pre-v15 schema. Later migrations that assume the
+	// v15-shaped items table (e.g. v16's idx_items_payload_id) would
+	// break against the pre-v15 layout.
 	for _, m := range migrations {
-		if m.Version == 15 {
+		if m.Version >= 15 {
 			continue
 		}
 		if err := applyMigration(db, m); err != nil {
@@ -744,6 +747,300 @@ func TestUpsertItemIdempotentPreservesItemIndex(t *testing.T) {
 	}
 	if string(data) != "first + second" {
 		t.Errorf("payload data = %q, want %q", string(data), "first + second")
+	}
+}
+
+// TestAppendItemSummaryConcatenatesInPlace pins the hot-path streaming
+// behaviour: AppendItemSummary must append the delta to the existing
+// summary column in a single UPDATE and return the re-read row. The
+// item's item_index and created_at must not change across calls —
+// exact same invariants as UpsertItem relies on.
+func TestAppendItemSummaryConcatenatesInPlace(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(Thread{
+		ID: "t", ProjectID: defaultTestProjectID, Title: "T", Provider: "claude", WorkspacePath: "/tmp",
+		CreatedAt: 1000, UpdatedAt: 1000,
+	}); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+
+	// Seed a streaming assistant_text row with its first delta.
+	first := Item{
+		ID: "stream", ThreadID: "t", TurnIndex: 0, ItemIndex: 0,
+		Kind: "assistant_text", Role: "assistant",
+		Status: "streaming", Summary: "hello ",
+		CreatedAt: 2000, UpdatedAt: 2000,
+	}
+	if err := s.InsertItem(first); err != nil {
+		t.Fatalf("insert first: %v", err)
+	}
+
+	got, err := s.AppendItemSummary("stream", "world", 3000)
+	if err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	if got.Summary != "hello world" {
+		t.Errorf("after append Summary = %q, want %q", got.Summary, "hello world")
+	}
+	if got.CreatedAt != 2000 {
+		t.Errorf("CreatedAt changed across append: got %d, want 2000", got.CreatedAt)
+	}
+	if got.UpdatedAt != 3000 {
+		t.Errorf("UpdatedAt = %d, want 3000", got.UpdatedAt)
+	}
+	if got.ItemIndex != 0 {
+		t.Errorf("ItemIndex drifted: got %d, want 0", got.ItemIndex)
+	}
+
+	// A second append chains onto the new state, not the original.
+	got2, err := s.AppendItemSummary("stream", "!", 4000)
+	if err != nil {
+		t.Fatalf("append2: %v", err)
+	}
+	if got2.Summary != "hello world!" {
+		t.Errorf("after 2nd append Summary = %q, want %q", got2.Summary, "hello world!")
+	}
+
+	// Thread updated_at moves in the same transaction.
+	thr, err := s.GetThread("t")
+	if err != nil {
+		t.Fatalf("get thread: %v", err)
+	}
+	if thr.UpdatedAt != 4000 {
+		t.Errorf("thread UpdatedAt = %d, want 4000", thr.UpdatedAt)
+	}
+}
+
+func TestAppendItemSummaryErrorsOnMissingItem(t *testing.T) {
+	s := newTestStore(t)
+	_, err := s.AppendItemSummary("nonexistent", "x", 100)
+	if err == nil {
+		t.Fatal("expected error for missing item")
+	}
+}
+
+// BenchmarkTextDeltaGrowth approximates the streaming hot path: a
+// single row receives many deltas totalling the same final size. With
+// the old GetThreadItem → concat → UpsertItem path the work was
+// quadratic; AppendItemSummary is linear.
+//
+// Run with `go test ./internal/store -bench=BenchmarkTextDeltaGrowth -count=1`.
+func BenchmarkTextDeltaGrowth(b *testing.B) {
+	s := newBenchStore(b)
+	if err := s.CreateThread(Thread{
+		ID: "t", ProjectID: defaultTestProjectID, Title: "T", Provider: "claude", WorkspacePath: "/tmp",
+		CreatedAt: 1, UpdatedAt: 1,
+	}); err != nil {
+		b.Fatalf("create thread: %v", err)
+	}
+	delta := "abcdefghijklmnopqrstuvwxyz0123456789" // 36 bytes
+	const deltas = 200
+
+	b.ResetTimer()
+	for n := 0; n < b.N; n++ {
+		id := "stream-" + b.Name() + "-" + strconvItoa(n)
+		if err := s.InsertItem(Item{
+			ID: id, ThreadID: "t", TurnIndex: n, ItemIndex: 0,
+			Kind: "assistant_text", Role: "assistant",
+			Status: "streaming", Summary: delta, CreatedAt: 1,
+		}); err != nil {
+			b.Fatalf("insert: %v", err)
+		}
+		for i := 1; i < deltas; i++ {
+			if _, err := s.AppendItemSummary(id, delta, int64(2+i)); err != nil {
+				b.Fatalf("append: %v", err)
+			}
+		}
+	}
+}
+
+// newBenchStore is a test/benchmark store helper that avoids the
+// t.Cleanup indirection newTestStore uses so benchmarks don't pay
+// for teardown bookkeeping.
+func newBenchStore(b *testing.B) *Store {
+	b.Helper()
+	s, err := New(":memory:")
+	if err != nil {
+		b.Fatalf("new store: %v", err)
+	}
+	b.Cleanup(func() { s.Close() })
+	now := time.Now().UnixMilli()
+	if err := s.CreateProject(Project{
+		ID:        defaultTestProjectID,
+		Path:      "/tmp/test",
+		Name:      "Default Test Project",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}); err != nil {
+		b.Fatalf("seed default project: %v", err)
+	}
+	return s
+}
+
+// strconvItoa inlined to keep benchmark free of strconv import diffs.
+func strconvItoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	neg := n < 0
+	if neg {
+		n = -n
+	}
+	var buf [20]byte
+	i := len(buf)
+	for n > 0 {
+		i--
+		buf[i] = byte('0' + n%10)
+		n /= 10
+	}
+	if neg {
+		i--
+		buf[i] = '-'
+	}
+	return string(buf[i:])
+}
+
+// TestAppendPayloadDataAppendsInPlace mirrors AppendItemSummary: the
+// payload.data blob extends in one UPDATE without reading the full
+// blob into Go memory first.
+func TestAppendPayloadDataAppendsInPlace(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.InsertPayload(Payload{
+		ID: "p", Kind: "command_output", Meta: `{"v":1}`,
+		Data: []byte("hello "), CreatedAt: 1000,
+	}); err != nil {
+		t.Fatalf("insert payload: %v", err)
+	}
+
+	if err := s.AppendPayloadData("p", []byte("world"), `{"v":2}`, 2000); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	data, err := s.GetPayloadData("p")
+	if err != nil {
+		t.Fatalf("get data: %v", err)
+	}
+	if string(data) != "hello world" {
+		t.Errorf("data = %q, want %q", data, "hello world")
+	}
+	meta, err := s.GetPayloadMeta("p")
+	if err != nil {
+		t.Fatalf("get meta: %v", err)
+	}
+	if meta.Meta != `{"v":2}` {
+		t.Errorf("meta = %q, want %q", meta.Meta, `{"v":2}`)
+	}
+	if meta.CreatedAt != 2000 {
+		t.Errorf("CreatedAt = %d, want 2000", meta.CreatedAt)
+	}
+}
+
+func TestAppendPayloadDataErrorsOnMissingPayload(t *testing.T) {
+	s := newTestStore(t)
+	err := s.AppendPayloadData("nope", []byte("x"), "{}", 1)
+	if err == nil {
+		t.Fatal("expected error for missing payload")
+	}
+}
+
+// TestGetPayloadPreviewSliceInsideSQLite covers the new substr-based
+// preview path. Large payloads must never cross into Go memory past
+// the requested head size.
+func TestGetPayloadPreviewSliceInsideSQLite(t *testing.T) {
+	s := newTestStore(t)
+	// 64 KiB payload; preview should only pull the first 4 KiB.
+	const total = 64 * 1024
+	const maxBytes = 4 * 1024
+	full := make([]byte, total)
+	for i := range full {
+		full[i] = byte('A' + (i % 26))
+	}
+	if err := s.InsertPayload(Payload{
+		ID: "p-big", Kind: "diff", Meta: "{}",
+		Data: full, CreatedAt: 1,
+	}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	head, totalSize, complete, err := s.GetPayloadPreview("p-big", maxBytes)
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	if totalSize != total {
+		t.Errorf("totalSize = %d, want %d", totalSize, total)
+	}
+	if complete {
+		t.Error("complete flag should be false when head < total")
+	}
+	if len(head) != maxBytes {
+		t.Errorf("len(head) = %d, want %d", len(head), maxBytes)
+	}
+	for i := 0; i < maxBytes; i++ {
+		if head[i] != full[i] {
+			t.Fatalf("head[%d] = %v, want %v", i, head[i], full[i])
+		}
+	}
+
+	// Fully-contained request returns the whole blob and complete=true.
+	head2, total2, complete2, err := s.GetPayloadPreview("p-big", total*2)
+	if err != nil {
+		t.Fatalf("preview2: %v", err)
+	}
+	if total2 != total {
+		t.Errorf("total2 = %d, want %d", total2, total)
+	}
+	if !complete2 {
+		t.Error("complete flag should be true when maxBytes >= total")
+	}
+	if len(head2) != total {
+		t.Errorf("full read length = %d, want %d", len(head2), total)
+	}
+}
+
+// TestGetItemByPayloadIDUsesIndex verifies the direct lookup replaces
+// the O(threads × items) walk the app layer used to do. A missing
+// payload returns (zero, false, nil); a hit returns the owning item.
+func TestGetItemByPayloadIDUsesIndex(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(Thread{
+		ID: "t", ProjectID: defaultTestProjectID, Title: "T", Provider: "claude", WorkspacePath: "/tmp",
+		CreatedAt: 1, UpdatedAt: 1,
+	}); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	if err := s.InsertPayload(Payload{
+		ID: "p", Kind: "diff", Meta: "{}", Data: []byte("body"), CreatedAt: 1,
+	}); err != nil {
+		t.Fatalf("insert payload: %v", err)
+	}
+	if err := s.InsertItem(Item{
+		ID: "owner", ThreadID: "t", TurnIndex: 0, ItemIndex: 0,
+		Kind: "tool_call", Role: "assistant", Summary: "s",
+		PayloadID: "p", CreatedAt: 1, UpdatedAt: 1,
+	}); err != nil {
+		t.Fatalf("insert owner: %v", err)
+	}
+
+	got, found, err := s.GetItemByPayloadID("p")
+	if err != nil {
+		t.Fatalf("lookup: %v", err)
+	}
+	if !found {
+		t.Fatal("expected payload lookup to find owner")
+	}
+	if got.ID != "owner" {
+		t.Errorf("got item id %q, want owner", got.ID)
+	}
+	if got.PayloadKind != "diff" {
+		t.Errorf("got PayloadKind = %q, want diff", got.PayloadKind)
+	}
+
+	// Missing payload: no error, found=false.
+	_, found2, err := s.GetItemByPayloadID("no-such-payload")
+	if err != nil {
+		t.Fatalf("missing lookup error: %v", err)
+	}
+	if found2 {
+		t.Error("expected found=false for missing payload")
 	}
 }
 

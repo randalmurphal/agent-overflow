@@ -95,6 +95,11 @@ func (a *App) deleteThreadTree(threadID string) error {
 		}
 		return fmt.Errorf("delete thread %s: drop row: %w", threadID, err)
 	}
+	// Drop the per-thread sendMessage mutex so a long-lived process
+	// doesn't accumulate dead mutexes for deleted threads. Safe after
+	// the DB row is gone — no new sendMessage can arrive for this
+	// thread.
+	sendThreadMuRegistry.ForgetThread(threadID)
 	return nil
 }
 

@@ -16,22 +16,18 @@ import (
 //  1. Flip every still-streaming item on that turn to status=errored
 //     with summary suffixed by " — interrupted" (em-dash + " interrupted").
 //  2. Flip every still-running tool_call item the same way.
-//  3. Drain the interrupt queue — no queued background completion is
-//     left pending after a truncated turn-complete.
+//  3. Drain the interrupt queue AS ERRORED — every queued background
+//     completion lands with status=errored and the interrupted suffix,
+//     mirroring the streaming/tool flips. The previous ordering (idle
+//     drain first, forced drain last) left queued rows as 'completed',
+//     which contradicted the spec; handleTurnComplete now forces the
+//     queue drain BEFORE settling streaming so the idle-drain path
+//     never sees the queue.
 //  4. Leave the interrupt queue empty afterward so a late event can't
 //     resurrect a settled turn.
 //
 // The three-item setup (streaming text, running tool, queued bg) is the
 // minimum that exercises all three codepaths in one pass.
-//
-// Implementation note on ordering: settleTurnStreaming drains the queue
-// via drainInterruptQueueIfIdle the moment the last streaming item
-// closes, which happens BEFORE handleTurnComplete's own force-errored
-// drain runs. That path persists the queued completion as-is; only the
-// streaming and still-running items receive the " — interrupted"
-// suffix. The test pins that observable behavior — a regression in any
-// of the three paths (text flip, tool flip, queue drain) would break
-// the assertions.
 func TestTurnCompleteTruncatedFlipsRunningAndDrainsQueueAsErrored(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
@@ -139,10 +135,19 @@ func TestTurnCompleteTruncatedFlipsRunningAndDrainsQueueAsErrored(t *testing.T) 
 					interruptedSuffix, it.Summary)
 			}
 		case itemKindBackgroundDone:
-			// Queue drain happened: the row exists regardless of which
-			// code path drained it. The critical invariant is that the
-			// queue is not leaked.
+			// Spec: queued background completions drained during a
+			// truncated turn-complete must land as errored with the
+			// interrupted suffix, the same as the streaming and
+			// running-tool items. A completed-status row here means the
+			// old quiet-settle path ran and reopened the regression.
 			sawQueuedDone = true
+			if it.Status != statusErrored {
+				t.Errorf("queued bg_done status = %q, want errored", it.Status)
+			}
+			if !strings.HasSuffix(it.Summary, interruptedSuffix) {
+				t.Errorf("queued bg_done summary missing %q suffix: %q",
+					interruptedSuffix, it.Summary)
+			}
 		}
 	}
 	if !sawText {

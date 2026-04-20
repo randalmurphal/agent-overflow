@@ -68,8 +68,8 @@ func TestMigrationVersionTracking(t *testing.T) {
 		t.Fatalf("rows err: %v", err)
 	}
 
-	if len(versions) != 15 {
-		t.Fatalf("expected 15 migration versions, got %d", len(versions))
+	if len(versions) != 16 {
+		t.Fatalf("expected 16 migration versions, got %d", len(versions))
 	}
 	if versions[0].version != 1 || versions[0].name != "initial_schema" {
 		t.Errorf("v1: got %d/%s", versions[0].version, versions[0].name)
@@ -116,6 +116,9 @@ func TestMigrationVersionTracking(t *testing.T) {
 	if versions[14].version != 15 || versions[14].name != "chat_rewrite_unified_items" {
 		t.Errorf("v15: got %d/%s", versions[14].version, versions[14].name)
 	}
+	if versions[15].version != 16 || versions[15].name != "items_payload_id_index" {
+		t.Errorf("v16: got %d/%s", versions[15].version, versions[15].name)
+	}
 }
 
 func TestMigrationIdempotent(t *testing.T) {
@@ -135,8 +138,8 @@ func TestMigrationIdempotent(t *testing.T) {
 	if err := db.QueryRow("SELECT COUNT(*) FROM migration_versions").Scan(&count); err != nil {
 		t.Fatalf("count: %v", err)
 	}
-	if count != 15 {
-		t.Errorf("expected 15 version rows after idempotent re-run, got %d", count)
+	if count != 16 {
+		t.Errorf("expected 16 version rows after idempotent re-run, got %d", count)
 	}
 }
 
@@ -173,8 +176,8 @@ func TestMigrationExistingVersionedDBSkipsAppliedV1(t *testing.T) {
 	if err := db.QueryRow("SELECT COUNT(*) FROM migration_versions").Scan(&appliedVersions); err != nil {
 		t.Fatalf("count migration rows: %v", err)
 	}
-	if appliedVersions != 15 {
-		t.Fatalf("expected 15 applied migrations, got %d", appliedVersions)
+	if appliedVersions != 16 {
+		t.Fatalf("expected 16 applied migrations, got %d", appliedVersions)
 	}
 }
 
@@ -214,10 +217,10 @@ func TestMigrationExistingLegacyDBSeedsTrackingAndAppliesV2(t *testing.T) {
 		t.Fatalf("read migration rows: %v", err)
 	}
 
-	if len(versions) != 15 {
-		t.Fatalf("expected 15 applied migrations, got %d", len(versions))
+	if len(versions) != 16 {
+		t.Fatalf("expected 16 applied migrations, got %d", len(versions))
 	}
-	expected := []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15}
+	expected := []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
 	for i, want := range expected {
 		if versions[i] != want {
 			t.Fatalf("unexpected migration versions: %v", versions)
@@ -320,10 +323,10 @@ func TestMigrationExistingLegacyParityDBBackfillsVersionHistory(t *testing.T) {
 		t.Fatalf("read migration versions: %v", err)
 	}
 
-	if len(versions) != 15 {
-		t.Fatalf("expected 15 migration rows after legacy backfill + new migrations, got %d", len(versions))
+	if len(versions) != 16 {
+		t.Fatalf("expected 16 migration rows after legacy backfill + new migrations, got %d", len(versions))
 	}
-	expectedVersions := []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15}
+	expectedVersions := []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
 	for i, want := range expectedVersions {
 		if versions[i].version != want {
 			t.Fatalf("unexpected migration versions: %+v", versions)
@@ -967,9 +970,10 @@ func TestMigrationV15PreservesThreadsAndWipesPayloads(t *testing.T) {
 	if err := ensureMigrationTable(db); err != nil {
 		t.Fatalf("ensureMigrationTable: %v", err)
 	}
-	// Apply v1..v14 — everything but the v15 rebuild.
+	// Apply v1..v14 — everything before the v15 rebuild. Later migrations
+	// (v16+) are skipped here because they assume the v15-shaped tables.
 	for _, m := range migrations {
-		if m.Version == 15 {
+		if m.Version >= 15 {
 			continue
 		}
 		if err := applyMigration(db, m); err != nil {
@@ -1043,6 +1047,52 @@ func TestMigrationV15PreservesThreadsAndWipesPayloads(t *testing.T) {
 	}
 	if count != 1 {
 		t.Errorf("surviving thread count = %d, want 1", count)
+	}
+}
+
+// TestMigrationV16AddsPayloadIDIndex pins the partial index added in v16
+// so findItemByPayloadID runs as an index lookup rather than a full
+// thread+item scan. The index is partial (payload_id IS NOT NULL) so it
+// stays small even on long histories dominated by user/assistant-text
+// rows with no payload.
+func TestMigrationV16AddsPayloadIDIndex(t *testing.T) {
+	s := newTestStore(t)
+
+	var foundIndex bool
+	rows, err := s.db.Query(
+		`SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'items'`,
+	)
+	if err != nil {
+		t.Fatalf("list item indexes: %v", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		if name == "idx_items_payload_id" {
+			foundIndex = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows err: %v", err)
+	}
+	if !foundIndex {
+		t.Error("idx_items_payload_id missing after v16")
+	}
+
+	// Confirm the index is partial with the expected WHERE clause so a
+	// later migration that widens it (or drops the WHERE) surfaces as
+	// a regression here.
+	var sqlText string
+	if err := s.db.QueryRow(
+		`SELECT sql FROM sqlite_master WHERE name = 'idx_items_payload_id'`,
+	).Scan(&sqlText); err != nil {
+		t.Fatalf("read index sql: %v", err)
+	}
+	if !strings.Contains(sqlText, "payload_id IS NOT NULL") {
+		t.Errorf("expected partial index on payload_id IS NOT NULL, got: %s", sqlText)
 	}
 }
 
