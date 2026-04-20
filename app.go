@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -489,6 +490,7 @@ func (a *App) emitWithReplay() func(string, any) {
 		}
 		rec, err := replay.NewRecord(time.Now(), threadID, eventName, data)
 		if err != nil {
+			log.Printf("replay: NewRecord failed: %v", err)
 			return
 		}
 		if a.replay.Enqueue(rec) {

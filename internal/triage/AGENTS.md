@@ -23,9 +23,30 @@ See `/docs/architecture/data-flow.md` for the full pipeline diagram.
 
 ## Rules
 
-- **No caching, no in-memory reduction.** If you need to derive
-  something across events, do it in the frontend or in a persisted
-  projection — not here.
+- **No data caching, no cross-turn derived read models.** Triage
+  persists to SQLite and emits to the frontend; it does NOT
+  maintain in-memory views of timeline content or compute
+  aggregates the renderer could derive on its own. If you need to
+  derive something across events, do it in the frontend or in a
+  persisted projection — not here.
+- **Per-thread transient correlation state is allowed.** The Router
+  carries a narrow set of per-thread maps (interrupt queue, open
+  turn index, content-block counters, active streaming block flags,
+  pending approvals / approval decisions, pending command inline
+  diffs, captured-turn guard, turn spans, stopped-thread markers)
+  that exist purely to correlate one event to the next within a
+  turn — not to duplicate the store or the provider session. All of
+  these are bounded and have an explicit cleanup path:
+  - Per-turn state clears on `EventTurnComplete` (and on a matching
+    error branch for errored turns).
+  - Per-thread state clears on `CleanupThread`.
+  - Approval and interrupt-queue entries clear when their
+    correlated event resolves (approval resolved, interrupt drained).
+  The one deliberate exception is the interrupt queue, which can
+  span a turn boundary because its contract is "persist queued
+  events once the interrupt lifts." Any other cross-turn derivation
+  is forbidden — if you need one, add it as a store query or a
+  frontend derivation, not a new map here.
 - **No provider-specific types.** Provider packages normalize before
   handing events to triage.
 - **Meta is cheap, data is heavy.** When in doubt, put preview/stats

@@ -8,23 +8,6 @@
 
   let { items, onExpand }: Props = $props();
 
-  /**
-   * The Item fields we rely on (`status`, `isBackground`,
-   * `completionOf`) are being added to `src/lib/types/models.ts` by
-   * another agent. Until that lands, read them defensively — the store
-   * populates them, but a hand-written stub (or the current type) may
-   * omit them.
-   */
-  type BgFields = {
-    status?: 'running' | 'completed' | 'errored';
-    isBackground?: boolean;
-    completionOf?: string;
-  };
-
-  function bg(item: Item): BgFields {
-    return item as unknown as BgFields;
-  }
-
   // Retention window for completion rows after createdAt. A completion
   // entry keeps rendering in the tray for 2 s so the user sees the final
   // state land, then disappears.
@@ -66,17 +49,16 @@
     const freeCompletions: Item[] = [];
 
     for (const item of items) {
-      const meta = bg(item);
-      if (!meta.isBackground) continue;
+      if (!item.isBackground) continue;
 
-      if (meta.completionOf) {
+      if (item.completionOf) {
         if (now - item.createdAt >= COMPLETION_RETENTION_MS) continue;
-        const existing = completionsByLaunchId.get(meta.completionOf);
+        const existing = completionsByLaunchId.get(item.completionOf);
         // Keep the latest completion when duplicates arrive.
         if (!existing || existing.createdAt < item.createdAt) {
-          completionsByLaunchId.set(meta.completionOf, item);
+          completionsByLaunchId.set(item.completionOf, item);
         }
-      } else if (meta.status === 'running') {
+      } else if (item.status === 'running') {
         launches.push(item);
       }
     }
@@ -88,7 +70,7 @@
       const completion = completionsByLaunchId.get(launch.id) ?? null;
       matchedLaunchIds.add(launch.id);
       const status = completion
-        ? (bg(completion).status === 'errored' ? 'errored' : 'completed')
+        ? (completion.status === 'errored' ? 'errored' : 'completed')
         : 'running';
       out.push({
         rowId: launch.id,
@@ -104,10 +86,9 @@
     // retention window) render as their own row so the user still sees
     // the result land.
     for (const completion of items) {
-      const meta = bg(completion);
-      if (!meta.isBackground || !meta.completionOf) continue;
+      if (!completion.isBackground || !completion.completionOf) continue;
       if (now - completion.createdAt >= COMPLETION_RETENTION_MS) continue;
-      if (matchedLaunchIds.has(meta.completionOf)) continue;
+      if (matchedLaunchIds.has(completion.completionOf)) continue;
       freeCompletions.push(completion);
     }
 
@@ -116,7 +97,7 @@
         rowId: completion.id,
         launch: completion,
         completion,
-        status: bg(completion).status === 'errored' ? 'errored' : 'completed',
+        status: completion.status === 'errored' ? 'errored' : 'completed',
         elapsedMs: Math.max(0, now - completion.createdAt),
       });
     }

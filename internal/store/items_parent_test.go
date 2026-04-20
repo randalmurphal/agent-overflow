@@ -2,6 +2,7 @@ package store
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -206,12 +207,17 @@ func TestItemIndexUniqueConstraintBlocksDuplicate(t *testing.T) {
 	}
 	// A raw INSERT that tries to reuse (thread_id, turn_index, item_index)
 	// must violate the unique index. We bypass InsertItem so we don't have
-	// to race it; the index is the gate we care about.
+	// to race it; the index is the gate we care about. Column list matches
+	// the v15 items schema (parent_id, completion_of, status, updated_at)
+	// so the row is rejected by the UNIQUE index and NOT by a "no such
+	// column" or CHECK-kind error unrelated to the invariant under test.
 	_, err := s.db.Exec(`INSERT INTO items
-		(id, thread_id, turn_index, item_index, kind, role, summary, created_at, parent_tool_use_id)
-		VALUES ('i-b', 't-dup', 0, 0, 'text', 'assistant', '', ?, '')`, now)
+		(id, thread_id, turn_index, item_index, kind, role, status, summary, created_at, updated_at, parent_id, completion_of)
+		VALUES ('i-b', 't-dup', 0, 0, 'assistant_text', 'assistant', 'completed', '', ?, ?, '', '')`, now, now)
 	if err == nil {
 		t.Error("expected UNIQUE constraint violation for duplicate (thread_id, turn_index, item_index)")
+	} else if !strings.Contains(err.Error(), "UNIQUE") && !strings.Contains(err.Error(), "constraint") {
+		t.Errorf("expected UNIQUE constraint violation, got: %v", err)
 	}
 }
 

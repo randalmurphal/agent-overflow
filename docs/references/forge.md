@@ -14,7 +14,8 @@ Provider handling:
   `turn/start`, `turn/interrupt`, plus notifications).
 - `apps/server/src/provider/Layers/ClaudeAdapter.ts` and sibling
   `claude/*.ts` — uses `@anthropic-ai/claude-agent-sdk` directly
-  (`CanUseTool`, Task subagent correlation via `parent_tool_use_id`,
+  (`CanUseTool`, Task subagent correlation via `parent_tool_use_id` on
+  the Claude SDK wire — maps to `parent_id` on the items schema column,
   OAuth subscription probe via `maxTurns: 0`).
 
 UX surface:

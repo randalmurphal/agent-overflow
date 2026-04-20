@@ -8,8 +8,9 @@ the migrations win.
 
 | Table | Purpose |
 |---|---|
-| `threads` | One row per conversation. Provider, session_ref, workspace/project paths, model, interaction mode, archived flag, fork lineage (`parent_thread_id`, `pending_fork_session_ref`, `forked_from_thread_id`), discussion membership (`discussion_id`). |
-| `items` | Timeline items per thread. `turn_index`, `item_index`, `kind`, `role`, `summary` (always-loaded preview), `payload_id`, `parent_tool_use_id` (subagent correlation). |
+| `projects` | User-defined grouping of threads rooted at a directory. `path` (UNIQUE), `name`, `color`, `sort_position`, `archived`. Each thread belongs to exactly one project. |
+| `threads` | One row per conversation. Provider, session_ref, workspace/project paths, model, `mode` (chat/plan/design/discussion), `reasoning_effort`, `fast_mode`, `context_window`, `runtime_mode`, archived flag, fork lineage (`parent_thread_id`, `pending_fork_session_ref`, `forked_from_thread_id`), discussion membership (`discussion_id`), `last_token_usage`. |
+| `items` | Timeline items per thread. `turn_index`, `item_index`, `kind`, `role`, `status`, `summary` (always-loaded preview), `payload_id`, `parent_id` (subagent / nested-tool correlation), `is_background`, `completion_of` (back-reference from tool_completion to its launch), `tool_name`, `decision`, `meta`. |
 | `payloads` | Heavy content. `kind`, `meta` (JSON, loaded with items), `data` (BLOB, on-demand). |
 | `channels` | Deliberation channels for multi-agent discussions. Belongs to a thread. |
 | `channel_messages` | Ordered messages within a channel. `sequence`, `from_type`/`from_id`/`from_role`, `content`. |
@@ -28,17 +29,19 @@ the migrations win.
 ## Key Indexes
 
 - `idx_threads_updated` — sidebar sort.
+- `idx_threads_project` — per-project thread list.
 - `idx_items_thread` — load thread timeline.
-- `idx_items_parent_tool_use` — group subagent items under a parent Task.
-- `idx_threads_forked_from_thread` — lineage walks.
+- `idx_items_parent` — group subagent / nested-tool items under a parent (partial index on non-empty `parent_id`).
+- `idx_items_completion_of` — pair a `tool_completion` row with its launch (partial index on non-empty `completion_of`).
+- `idx_threads_forked_from` — fork lineage walks.
 - `idx_channels_thread`, `idx_design_artifacts_thread` — per-thread feature lookups.
 
 ## Migration Policy
 
 - Migrations are numbered, forward-only, append-only. Never edit a migration
   that has shipped; add a new one.
-- SQLite check constraints (see `CHECK(interaction_mode IN ...)`,
-  `CHECK(provider IN ...)`) are the recommended way to enforce enums.
+- SQLite check constraints (see `CHECK(mode IN ...)`, `CHECK(provider IN ...)`,
+  `CHECK(runtime_mode IN ...)`) are the recommended way to enforce enums.
 - Test every migration: each migration must have a corresponding test under
   `internal/store/` that proves the expected schema state.
 - WAL mode is verified on startup (not just requested). If `journal_mode=WAL`
@@ -46,7 +49,7 @@ the migrations win.
 
 ## What Goes in SQLite vs What Doesn't
 
-- **In**: timeline items, payloads, thread metadata, channels/messages,
+- **In**: timeline items, payloads, thread metadata, projects, channels/messages,
   discussion templates, design artifact metadata, attachment metadata.
 - **Not in**: live per-turn provider state (the provider owns it),
   transient UI state (frontend $state), logs (observability package has

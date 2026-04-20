@@ -77,9 +77,9 @@ func TestParentToolUseIDPersistsOnTurnText(t *testing.T) {
 	var found bool
 	for _, it := range items {
 		if it.Summary == "subagent result" {
-			if it.ParentID != providerScopedItemID("t1", "task_tool_99") {
+			if it.ParentID != providerScopedItemID("task_tool_99") {
 				t.Errorf("persisted item ParentID: got %q, want %q",
-					it.ParentID, providerScopedItemID("t1", "task_tool_99"))
+					it.ParentID, providerScopedItemID("task_tool_99"))
 			}
 			found = true
 		}

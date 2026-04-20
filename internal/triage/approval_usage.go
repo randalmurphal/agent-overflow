@@ -14,14 +14,21 @@ type pendingApprovalState struct {
 	ItemID  string
 }
 
-func providerScopedItemID(threadID, raw string) string {
-	_ = threadID
-	raw = strings.TrimSpace(raw)
-	return raw
+// providerScopedItemID normalizes a raw provider-side id (tool_use.id,
+// Codex item.id, Claude parent_tool_use_id) into the string we actually
+// store on items.id. Today normalization is just whitespace trimming —
+// thread scoping is enforced by the (thread_id, id) composite primary
+// key on the items table rather than by baking the thread id into the
+// string here. The function exists as the single call site so the
+// contract ("everything that assigns an items.id funnels through this")
+// stays discoverable, and so a future change (e.g. prefixing, hashing)
+// has one place to live.
+func providerScopedItemID(raw string) string {
+	return strings.TrimSpace(raw)
 }
 
 func eventParentID(evt provider.ProviderEvent) string {
-	return providerScopedItemID(evt.ThreadID, evt.ParentToolUseID)
+	return providerScopedItemID(evt.ParentToolUseID)
 }
 
 func approvalStateKey(threadID, requestID string) string {
@@ -166,10 +173,10 @@ func firstNonEmptyString(values ...string) string {
 
 func approvalItemID(evt provider.ProviderEvent, request provider.ApprovalRequest) string {
 	if request.ToolUseID != "" {
-		return providerScopedItemID(evt.ThreadID, request.ToolUseID)
+		return providerScopedItemID(request.ToolUseID)
 	}
 	if evt.ItemID != "" && evt.ItemID != request.RequestID {
-		return providerScopedItemID(evt.ThreadID, evt.ItemID)
+		return providerScopedItemID(evt.ItemID)
 	}
 	return ""
 }

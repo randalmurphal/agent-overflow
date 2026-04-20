@@ -24,7 +24,7 @@ Child thread shape (`buildDiscussionParticipantPlans`,
 
 | Column | Value |
 |---|---|
-| `interaction_mode` | `"discussion"` — reserved for this path; `CreateThread` rejects it. |
+| `mode` | `"discussion"` — reserved for this path; `CreateThread` rejects it. |
 | `parent_thread_id` | the parent thread's ID. |
 | `discussion_id` | the deliberation channel ID (set after channel creation). |
 | `workspace_path` / `worktree_path` / `branch` | inherited from the parent. |
