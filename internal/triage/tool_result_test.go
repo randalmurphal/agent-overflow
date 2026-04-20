@@ -16,7 +16,7 @@ func TestFileChangeToolResultUpgradesFromTurnDiff(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	workspace := t.TempDir()
 	createToolResultThread(t, st, "t1", workspace)
-	payloadID := toolResultPayloadID(providerScopedItemID("item-file-change"))
+	payloadID := toolResultPayloadID("item-file-change")
 
 	startMeta := json.RawMessage(`{
 		"item": {
@@ -102,7 +102,7 @@ func TestFileChangeToolResultDoesNotOverwriteExistingExactPatch(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	workspace := t.TempDir()
 	createToolResultThread(t, st, "t1", workspace)
-	payloadID := toolResultPayloadID(providerScopedItemID("item-file-change"))
+	payloadID := toolResultPayloadID("item-file-change")
 
 	startMeta := json.RawMessage(`{
 		"item": {
@@ -212,7 +212,7 @@ func TestCommandExecutionToolResultPersistsExactDeletePatch(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	workspace := t.TempDir()
 	createToolResultThread(t, st, "t1", workspace)
-	payloadID := toolResultPayloadID(providerScopedItemID("item-command-rm"))
+	payloadID := toolResultPayloadID("item-command-rm")
 
 	path := filepath.Join(workspace, "src", "remove.ts")
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -368,10 +368,10 @@ func TestCommandExecutionToolResultSkipsDependentAndFailedCommands(t *testing.T)
 		t.Fatalf("handle failed complete: %v", err)
 	}
 
-	if _, err := st.GetPayloadMeta(toolResultPayloadID(providerScopedItemID("item-command-dependent"))); err == nil {
+	if _, err := st.GetPayloadMeta(toolResultPayloadID("item-command-dependent")); err == nil {
 		t.Fatal("expected no payload for dependent command")
 	}
-	if _, err := st.GetPayloadMeta(toolResultPayloadID(providerScopedItemID("item-command-failed"))); err == nil {
+	if _, err := st.GetPayloadMeta(toolResultPayloadID("item-command-failed")); err == nil {
 		t.Fatal("expected no payload for failed command")
 	}
 }

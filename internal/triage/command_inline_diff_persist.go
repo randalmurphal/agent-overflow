@@ -1,3 +1,8 @@
+// Package triage — persistence half of the command inline diff pipeline.
+// This file captures and retains the inline-diff preview derived at
+// command_execution start, then attaches it to the completed tool-call
+// item once the command finishes successfully.
+
 package triage
 
 import (
@@ -6,6 +11,7 @@ import (
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/stringsx"
 )
 
 type pendingCommandInlineDiff struct {
@@ -140,7 +146,7 @@ func captureCommandExecutionToolResult(raw json.RawMessage, workspaceRoot string
 
 	meta := ToolResultMeta{
 		ItemType:   "command_execution",
-		Title:      firstNonEmptyString(asTrimmedString(item["title"]), "Run command"),
+		Title:      stringsx.FirstNonEmptyTrimmed(asTrimmedString(item["title"]), "Run command"),
 		Detail:     parsed.NormalizedCommand,
 		InlineDiff: inlineDiff,
 	}

@@ -1,12 +1,17 @@
+// Package triage — token-usage and compaction routing. decodeContextWindow
+// / encodeContextWindow normalise the wire shape of ContextWindow across
+// providers; handleCompaction persists a compaction timeline entry and
+// clears the thread's last token-usage snapshot.
+
 package triage
 
 import (
 	"encoding/json"
 	"fmt"
-	"strings"
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/stringsx"
 )
 
 func decodeContextWindow(raw json.RawMessage) (provider.ContextWindow, bool) {
@@ -59,7 +64,7 @@ func (r *Router) handleCompaction(evt provider.ProviderEvent) error {
 		Kind:      "compaction",
 		Role:      "system",
 		Status:    statusCompleted,
-		Summary:   firstNonEmptyString(strings.TrimSpace(evt.Content), "Context compacted"),
+		Summary:   stringsx.FirstNonEmptyTrimmed(evt.Content, "Context compacted"),
 		CreatedAt: now,
 		UpdatedAt: now,
 	}

@@ -834,7 +834,7 @@ func TestE2E_DiffItemPersistsWithPayload(t *testing.T) {
 	}
 
 	// Synthesise a diff event directly: this mirrors what Claude would emit
-	// and exercises the persistHeavy → payload round-trip.
+	// and exercises the diff-payload persistence round-trip.
 	evt := provider.ProviderEvent{
 		Kind:      provider.EventDiff,
 		ThreadID:  thread.ID,

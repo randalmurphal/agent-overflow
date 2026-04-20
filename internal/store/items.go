@@ -226,6 +226,22 @@ func (s *Store) AppendItemSummary(id, delta string, updatedAt int64) (Item, erro
 	return updated, nil
 }
 
+// UpsertItem persists `item` (inserting or updating depending on whether a
+// row with the same (thread_id, id) already exists) together with an
+// optional `payload`, bumps the owning thread's updated_at, and returns the
+// re-read row (joined with its payload meta/kind) so the caller can emit
+// the canonical persisted state without a separate round-trip.
+//
+// The method is split into three small helpers that run inside one
+// transaction:
+//
+//   - upsertPayload stores the payload blob first and links its id onto
+//     the item so the subsequent item write carries the right foreign key.
+//   - writeItem looks up an existing row and dispatches to either
+//     updateExistingItem or insertNewItem; both preserve the caller's
+//     intent about which fields change.
+//   - readBackUpsertedItem re-reads the row through the same JOIN used by
+//     ListItems so the returned Item matches what ListItems would surface.
 func (s *Store) UpsertItem(item Item, payload *Payload) (Item, error) {
 	applyItemDefaults(&item)
 	tx, err := s.db.Begin()
@@ -234,17 +250,54 @@ func (s *Store) UpsertItem(item Item, payload *Payload) (Item, error) {
 	}
 	defer tx.Rollback()
 
-	if payload != nil {
-		if _, err := tx.Exec(
-			`INSERT OR REPLACE INTO payloads (id, kind, meta, data, created_at)
-			 VALUES (?, ?, ?, ?, ?)`,
-			payload.ID, payload.Kind, payload.Meta, payload.Data, payload.CreatedAt,
-		); err != nil {
-			return Item{}, fmt.Errorf("store: upsert item payload %s: %w", payload.ID, err)
-		}
-		item.PayloadID = payload.ID
+	if err := upsertPayload(tx, payload, &item); err != nil {
+		return Item{}, err
+	}
+	if err := writeItem(tx, &item); err != nil {
+		return Item{}, err
 	}
 
+	if _, err := tx.Exec(
+		`UPDATE threads SET updated_at = ? WHERE id = ?`,
+		item.UpdatedAt, item.ThreadID,
+	); err != nil {
+		return Item{}, fmt.Errorf("store: touch thread updated_at for %s: %w", item.ThreadID, err)
+	}
+
+	persisted, err := readBackUpsertedItem(tx, item.ThreadID, item.ID)
+	if err != nil {
+		return Item{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Item{}, fmt.Errorf("store: commit upsert item tx: %w", err)
+	}
+	return persisted, nil
+}
+
+// upsertPayload writes the optional payload blob and links its id onto
+// `item`. When payload is nil the function is a no-op; otherwise it runs
+// the same INSERT OR REPLACE semantics UpsertItem has always used so
+// repeated upserts against the same payload id refresh the blob.
+func upsertPayload(tx *sql.Tx, payload *Payload, item *Item) error {
+	if payload == nil {
+		return nil
+	}
+	if _, err := tx.Exec(
+		`INSERT OR REPLACE INTO payloads (id, kind, meta, data, created_at)
+		 VALUES (?, ?, ?, ?, ?)`,
+		payload.ID, payload.Kind, payload.Meta, payload.Data, payload.CreatedAt,
+	); err != nil {
+		return fmt.Errorf("store: upsert item payload %s: %w", payload.ID, err)
+	}
+	item.PayloadID = payload.ID
+	return nil
+}
+
+// writeItem resolves whether `item` already exists on its thread and
+// dispatches to the matching update/insert helper. The lookup query runs
+// inside the same transaction so concurrent upserts can't both see
+// "absent" and race to insert.
+func writeItem(tx *sql.Tx, item *Item) error {
 	var existingItemIndex int
 	var existingCreatedAt int64
 	row := tx.QueryRow(
@@ -255,65 +308,78 @@ func (s *Store) UpsertItem(item Item, payload *Payload) (Item, error) {
 	case nil:
 		item.ItemIndex = existingItemIndex
 		item.CreatedAt = existingCreatedAt
-		if _, err := tx.Exec(
-			`UPDATE items
-			 SET turn_index = ?, kind = ?, role = ?, status = ?, summary = ?,
-			     payload_id = ?, parent_id = ?, is_background = ?, completion_of = ?,
-			     tool_name = ?, decision = ?, meta = ?, updated_at = ?
-			 WHERE thread_id = ? AND id = ?`,
-			item.TurnIndex, item.Kind, item.Role, item.Status, item.Summary,
-			nilIfEmpty(item.PayloadID), item.ParentID, boolToInt(item.IsBackground), item.CompletionOf,
-			item.ToolName, item.Decision, item.Meta, item.UpdatedAt, item.ThreadID, item.ID,
-		); err != nil {
-			return Item{}, fmt.Errorf("store: update item %s: %w", item.ID, err)
-		}
+		return updateExistingItem(tx, *item)
 	case sql.ErrNoRows:
-		var maxIndex sql.NullInt64
-		if err := tx.QueryRow(
-			`SELECT MAX(item_index) FROM items WHERE thread_id = ? AND turn_index = ?`,
-			item.ThreadID, item.TurnIndex,
-		).Scan(&maxIndex); err != nil {
-			return Item{}, fmt.Errorf("store: upsert item next index: %w", err)
-		}
-		item.ItemIndex = 0
-		if maxIndex.Valid {
-			item.ItemIndex = int(maxIndex.Int64) + 1
-		}
-		if _, err := tx.Exec(
-			`INSERT INTO items (id, thread_id, turn_index, item_index, kind, role, status, summary,
-			    payload_id, parent_id, is_background, completion_of, tool_name, decision, meta,
-			    created_at, updated_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			item.ID, item.ThreadID, item.TurnIndex, item.ItemIndex, item.Kind, item.Role, item.Status, item.Summary,
-			nilIfEmpty(item.PayloadID), item.ParentID, boolToInt(item.IsBackground), item.CompletionOf,
-			item.ToolName, item.Decision, item.Meta, item.CreatedAt, item.UpdatedAt,
-		); err != nil {
-			return Item{}, fmt.Errorf("store: insert item %s: %w", item.ID, err)
-		}
+		return insertNewItem(tx, item)
 	default:
-		return Item{}, fmt.Errorf("store: upsert item lookup %s: %w", item.ID, err)
+		return fmt.Errorf("store: upsert item lookup %s: %w", item.ID, err)
 	}
+}
 
+// updateExistingItem writes every mutable column on the existing row.
+// item_index / created_at are preserved (the caller already copied them
+// from the lookup) so the upsert is logically "update-in-place".
+func updateExistingItem(tx *sql.Tx, item Item) error {
 	if _, err := tx.Exec(
-		`UPDATE threads SET updated_at = ? WHERE id = ?`,
-		item.UpdatedAt, item.ThreadID,
+		`UPDATE items
+		 SET turn_index = ?, kind = ?, role = ?, status = ?, summary = ?,
+		     payload_id = ?, parent_id = ?, is_background = ?, completion_of = ?,
+		     tool_name = ?, decision = ?, meta = ?, updated_at = ?
+		 WHERE thread_id = ? AND id = ?`,
+		item.TurnIndex, item.Kind, item.Role, item.Status, item.Summary,
+		nilIfEmpty(item.PayloadID), item.ParentID, boolToInt(item.IsBackground), item.CompletionOf,
+		item.ToolName, item.Decision, item.Meta, item.UpdatedAt, item.ThreadID, item.ID,
 	); err != nil {
-		return Item{}, fmt.Errorf("store: touch thread updated_at for %s: %w", item.ThreadID, err)
+		return fmt.Errorf("store: update item %s: %w", item.ID, err)
 	}
+	return nil
+}
 
-	row = tx.QueryRow(
+// insertNewItem computes MAX(item_index)+1 within the transaction to
+// keep concurrent upserts from colliding on the same slot, then inserts
+// the row. The computed ItemIndex is written back onto `item` so the
+// re-read step (readBackUpsertedItem) returns the persisted value.
+func insertNewItem(tx *sql.Tx, item *Item) error {
+	var maxIndex sql.NullInt64
+	if err := tx.QueryRow(
+		`SELECT MAX(item_index) FROM items WHERE thread_id = ? AND turn_index = ?`,
+		item.ThreadID, item.TurnIndex,
+	).Scan(&maxIndex); err != nil {
+		return fmt.Errorf("store: upsert item next index: %w", err)
+	}
+	item.ItemIndex = 0
+	if maxIndex.Valid {
+		item.ItemIndex = int(maxIndex.Int64) + 1
+	}
+	if _, err := tx.Exec(
+		`INSERT INTO items (id, thread_id, turn_index, item_index, kind, role, status, summary,
+		    payload_id, parent_id, is_background, completion_of, tool_name, decision, meta,
+		    created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		item.ID, item.ThreadID, item.TurnIndex, item.ItemIndex, item.Kind, item.Role, item.Status, item.Summary,
+		nilIfEmpty(item.PayloadID), item.ParentID, boolToInt(item.IsBackground), item.CompletionOf,
+		item.ToolName, item.Decision, item.Meta, item.CreatedAt, item.UpdatedAt,
+	); err != nil {
+		return fmt.Errorf("store: insert item %s: %w", item.ID, err)
+	}
+	return nil
+}
+
+// readBackUpsertedItem re-reads the just-written row through the same
+// LEFT JOIN ListItems uses so the returned Item carries the current
+// payload kind/meta. This lives inside the upsert transaction so
+// callers observe their own write even with WAL-reader snapshots in play.
+func readBackUpsertedItem(tx *sql.Tx, threadID, id string) (Item, error) {
+	row := tx.QueryRow(
 		`SELECT `+itemColumns+`
 		   FROM items
 		   LEFT JOIN payloads ON payloads.id = items.payload_id
 		  WHERE items.thread_id = ? AND items.id = ?`,
-		item.ThreadID, item.ID,
+		threadID, id,
 	)
 	persisted, err := scanItemRow(row)
 	if err != nil {
-		return Item{}, fmt.Errorf("store: re-read upserted item %s: %w", item.ID, err)
-	}
-	if err := tx.Commit(); err != nil {
-		return Item{}, fmt.Errorf("store: commit upsert item tx: %w", err)
+		return Item{}, fmt.Errorf("store: re-read upserted item %s: %w", id, err)
 	}
 	return persisted, nil
 }

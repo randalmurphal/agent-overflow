@@ -54,6 +54,40 @@ See `/docs/architecture/data-flow.md` for the full pipeline diagram.
 - **One event in, zero or more routing decisions out.** Don't combine
   or split events across boundaries.
 
+## Layout
+
+The package is split by concern so each file owns a narrow slice of the
+routing pipeline. New routing logic belongs in whichever file most closely
+matches its concern; create a new file (and list it here) if none fits.
+
+- `router.go` — entry point. `Router` struct, `Handle` dispatch switch,
+  error/session-status/token-usage/rate-limit routers, and the shared
+  `persistItem` / `emitThreadUpdated` helpers.
+- `approvals.go` — approval-request lifecycle: pending-approval map,
+  approval-resolved fan-out, decision → item projection.
+- `turn_lifecycle.go` — per-turn and per-thread correlation state
+  (open turns, interrupt queue, captured-turn guard, stopped-thread
+  markers, turn span bookkeeping, cleanup paths).
+- `tool_lifecycle.go` — tool-call launch/completion rows, background-task
+  pairing, summary/status derivation.
+- `tool_result_file_change.go` — `file_change` tool-result normalisation
+  (inline diff projection, unified patch assembly).
+- `tool_result_diff_upgrade.go` — late-arriving diff upgrades that
+  attach a richer payload onto a previously persisted tool result.
+- `command_inline_diff_capture.go` / `command_inline_diff_parser.go` /
+  `command_inline_diff_runtime.go` / `command_inline_diff_persist.go` —
+  command-execution inline-diff pipeline, split by phase (capture →
+  parse → runtime match → persist).
+- `payload_items.go` — diff / command output / thinking / plan payload
+  writers.
+- `stream_items.go` / `stream_state.go` / `block_events.go` —
+  streaming text/thinking block lifecycle and the content-block index
+  bookkeeping they depend on.
+- `usage_compaction.go` — token-usage normalisation and compaction
+  boundary persistence.
+- `meta.go` — shared JSON-inspection helpers.
+- `maps.go` — generic map utilities (currently just `deleteByPrefix`).
+
 ## Testing
 
 - Every routing decision has a unit test with a representative event.

@@ -1,3 +1,8 @@
+// Package claude — parser for `control_request` NDJSON lines (CanUseTool
+// approval requests and the exit_plan_mode signal). The control_request
+// envelope is RPC-shaped, so this file also shapes the matching response
+// structures the session uses to reply.
+
 package claude
 
 import (

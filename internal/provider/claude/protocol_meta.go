@@ -1,3 +1,9 @@
+// Package claude — protocol meta helpers for system-type NDJSON lines.
+// extractCompactBoundaryMeta normalises context-window metadata emitted
+// alongside compact_boundary / init frames so downstream consumers can
+// rely on a single shape regardless of which CLI version produced the
+// line.
+
 package claude
 
 import (
@@ -5,28 +11,6 @@ import (
 
 	"agent-overflow/internal/provider"
 )
-
-func extractToolProgressMeta(raw map[string]json.RawMessage) json.RawMessage {
-	if progress, ok := raw["progress"]; ok {
-		return progress
-	}
-
-	content, ok := raw["content"]
-	if !ok {
-		return json.RawMessage("{}")
-	}
-
-	var payload map[string]json.RawMessage
-	if err := json.Unmarshal(content, &payload); err != nil {
-		return content
-	}
-
-	if progress, ok := payload["progress"]; ok {
-		return progress
-	}
-
-	return content
-}
 
 func extractCompactBoundaryMeta(raw map[string]json.RawMessage) json.RawMessage {
 	for _, key := range []string{"data", "content"} {

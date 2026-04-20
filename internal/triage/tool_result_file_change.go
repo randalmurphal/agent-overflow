@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/stringsx"
 )
 
 const (
@@ -97,7 +98,7 @@ func extractFileChangeToolResult(raw json.RawMessage, workspaceRoot string) (Too
 
 	meta := ToolResultMeta{
 		ItemType: "file_change",
-		Title:    firstNonEmptyString(rawString(item, "title"), "File change"),
+		Title:    stringsx.FirstNonEmptyTrimmed(rawString(item, "title"), "File change"),
 		Detail:   rawString(item, "detail"),
 	}
 	inlineDiff, unifiedDiff := buildInlineDiffFromChanges(changes)

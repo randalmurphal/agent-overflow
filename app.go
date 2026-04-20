@@ -155,29 +155,65 @@ func NewApp() *App {
 }
 
 // ServiceStartup is called by Wails v3 when the service is initialised.
+// The body is split into three phases (initStores → initObservability →
+// initSubsystems) so the dependency order is obvious: stores boot first
+// because every other subsystem either embeds the store or reads from it,
+// observability boots next because the triage router installs metrics
+// before it can accept events, and the remaining subsystems (triage,
+// checkpoints, discussion, design, terminals, attachments, workspace
+// search) boot last once their inputs are ready.
 func (a *App) ServiceStartup(ctx context.Context, options application.ServiceOptions) error {
 	a.app = application.Get()
 
-	// Open SQLite database in the app data directory.
+	dbDir, st, err := a.initStores()
+	if err != nil {
+		return err
+	}
+	if err := a.initObservability(ctx, dbDir); err != nil {
+		return err
+	}
+	if err := a.initSubsystems(dbDir, st); err != nil {
+		return err
+	}
+
+	// Probe provider binaries once on boot so the thread-level banner can
+	// surface "claude not found" / "codex too old" before the user opens
+	// settings. Runs in a goroutine because DetectProvider spawns subprocesses
+	// (up to 5s per provider) and we never want that blocking app startup.
+	go a.probeStartupProviderStatuses()
+
+	return nil
+}
+
+// initStores resolves the on-disk data directory, opens SQLite, wires the
+// git/settings helpers, and installs the provider-event logger. Returns
+// (dbDir, store) so later phases can attach their own subdirectories
+// (replay/, attachments/, design-artifacts/) without re-computing the
+// root path.
+//
+// A logger init failure closes the store before returning so we don't
+// leak an open DB file on startup error; the close error is joined onto
+// the logger error so tests see both causes.
+func (a *App) initStores() (string, *store.Store, error) {
 	dataDir, err := os.UserConfigDir()
 	if err != nil {
 		// Fall back to ~/.agent-overflow/ which persists across reboots,
 		// unlike os.TempDir() which is cleaned on reboot and would lose data.
 		homeDir, homeErr := os.UserHomeDir()
 		if homeErr != nil {
-			return fmt.Errorf("cannot determine config directory: %w (home dir also unavailable: %v)", err, homeErr)
+			return "", nil, fmt.Errorf("cannot determine config directory: %w (home dir also unavailable: %v)", err, homeErr)
 		}
 		dataDir = homeDir
 	}
 	dbDir := filepath.Join(dataDir, "agent-overflow")
 	if err := os.MkdirAll(dbDir, 0755); err != nil {
-		return fmt.Errorf("failed to create data directory %s: %w", dbDir, err)
+		return "", nil, fmt.Errorf("failed to create data directory %s: %w", dbDir, err)
 	}
 	dbPath := filepath.Join(dbDir, "agent-overflow.db")
 
 	st, err := store.New(dbPath)
 	if err != nil {
-		return fmt.Errorf("failed to open database: %w", err)
+		return "", nil, fmt.Errorf("failed to open database: %w", err)
 	}
 
 	a.store = st
@@ -186,17 +222,22 @@ func (a *App) ServiceStartup(ctx context.Context, options application.ServiceOpt
 	a.logger, err = newProviderEventLogger(dbDir)
 	if err != nil {
 		closeErr := st.Close()
-		return errors.Join(
+		return "", nil, errors.Join(
 			fmt.Errorf("failed to initialize provider event logger: %w", err),
 			wrapLifecycleError("close store after logger initialization failure", closeErr),
 		)
 	}
+	return dbDir, st, nil
+}
 
-	// Observability: opt-in telemetry + per-thread event replay log. Both
-	// read from settings; when disabled they are no-ops with zero runtime
-	// cost. See internal/observability/* for details.
+// initObservability wires the opt-in OTEL provider and the per-thread
+// replay log. Both read from the settings snapshot; when disabled they
+// install noop-backed providers so callers never have to nil-check.
+// A telemetry init failure is non-fatal — we print it and fall back to a
+// disabled provider so the rest of the app still boots.
+func (a *App) initObservability(ctx context.Context, dbDir string) error {
 	settingsSnapshot := a.settings.Get()
-	a.telemetry, err = obsotel.NewProvider(ctx, obsotel.ConfigFromFlags(
+	telemetry, err := obsotel.NewProvider(ctx, obsotel.ConfigFromFlags(
 		settingsSnapshot.ObservabilityTracingEnabled,
 		settingsSnapshot.ObservabilityOtlpEndpoint,
 	))
@@ -206,8 +247,9 @@ func (a *App) ServiceStartup(ctx context.Context, options application.ServiceOpt
 		// see the failure via the app log; the settings toggle remains on
 		// so they can fix the endpoint and restart.
 		fmt.Printf("observability: tracing setup failed, proceeding without telemetry: %v\n", err)
-		a.telemetry, _ = obsotel.NewProvider(ctx, obsotel.Config{Enabled: false})
+		telemetry, _ = obsotel.NewProvider(ctx, obsotel.Config{Enabled: false})
 	}
+	a.telemetry = telemetry
 
 	telemetryMetrics := a.telemetry.Metrics()
 	a.replay = replay.NewManager(replay.ManagerConfig{
@@ -217,6 +259,20 @@ func (a *App) ServiceStartup(ctx context.Context, options application.ServiceOpt
 			telemetryMetrics.ReplayEventsDropped.Add(context.Background(), 1)
 		},
 	})
+	return nil
+}
+
+// initSubsystems wires the remaining services: triage (with metrics and
+// checkpoint capture), discussion registry/channels, design artifacts and
+// reactor, the design MCP server, terminals, attachments, and workspace
+// search. Called after initStores / initObservability so every subsystem
+// has its dependencies in place.
+//
+// An attachment init failure closes the store before returning — matching
+// the logger init failure path in initStores — so a boot error never
+// leaves an open DB handle dangling.
+func (a *App) initSubsystems(dbDir string, st *store.Store) error {
+	telemetryMetrics := a.telemetry.Metrics()
 
 	a.triage = triage.NewRouter(st, a.emitWithReplay())
 	a.triage.SetTelemetry(a.telemetry.Tracer(), triage.TurnMetrics{
@@ -247,13 +303,6 @@ func (a *App) ServiceStartup(ctx context.Context, options application.ServiceOpt
 	a.attachments = attachmentStore
 	a.workspaceFiles = workspacefiles.NewSearcher(workspacefiles.Config{})
 	a.configDir = dbDir
-
-	// Probe provider binaries once on boot so the thread-level banner can
-	// surface "claude not found" / "codex too old" before the user opens
-	// settings. Runs in a goroutine because DetectProvider spawns subprocesses
-	// (up to 5s per provider) and we never want that blocking app startup.
-	go a.probeStartupProviderStatuses()
-
 	return nil
 }
 

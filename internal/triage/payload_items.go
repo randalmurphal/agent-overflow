@@ -151,9 +151,9 @@ func eventTimestampMillis(evt provider.ProviderEvent) int64 {
 
 func eventItemID(evt provider.ProviderEvent) string {
 	if evt.ItemID != "" {
-		return providerScopedItemID(evt.ItemID)
+		return strings.TrimSpace(evt.ItemID)
 	}
-	return providerScopedItemID(metaNestedString(evt.Meta, "item", "id"))
+	return strings.TrimSpace(metaNestedString(evt.Meta, "item", "id"))
 }
 
 func metaNestedString(raw json.RawMessage, path ...string) string {

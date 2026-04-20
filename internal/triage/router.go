@@ -13,6 +13,7 @@ import (
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/stringsx"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
@@ -475,7 +476,7 @@ func (r *Router) handleError(evt provider.ProviderEvent) error {
 			return err
 		}
 		r.clearOpenTurn(evt.ThreadID)
-		r.closeTurnSpan(evt.ThreadID, errors.New(firstNonEmptyString(evt.Content, "provider error")))
+		r.closeTurnSpan(evt.ThreadID, errors.New(stringsx.FirstNonEmptyTrimmed(evt.Content, "provider error")))
 	}
 
 	scope := strings.TrimSpace(evt.ParentToolUseID)
@@ -486,7 +487,7 @@ func (r *Router) handleError(evt provider.ProviderEvent) error {
 		Kind:      "error",
 		Role:      "system",
 		Status:    statusCompleted,
-		Summary:   firstNonEmptyString(strings.TrimSpace(evt.Content), "Provider error"),
+		Summary:   stringsx.FirstNonEmptyTrimmed(evt.Content, "Provider error"),
 		ParentID:  eventParentID(evt),
 		CreatedAt: now,
 		UpdatedAt: now,

@@ -8,6 +8,7 @@ import (
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/stringsx"
 )
 
 const (
@@ -83,7 +84,7 @@ func (r *Router) persistToolCallLaunch(evt provider.ProviderEvent) error {
 		return r.persistItem(existing, nil)
 	}
 
-	toolName := firstNonEmptyString(strings.TrimSpace(meta.ToolName), strings.TrimSpace(evt.ItemType), "tool")
+	toolName := stringsx.FirstNonEmptyTrimmed(meta.ToolName, evt.ItemType, "tool")
 	summary := buildToolCallSummary(meta, evt.ItemType)
 	turnIndex, err := r.turnIndexForEvent(evt)
 	if err != nil {
@@ -108,7 +109,7 @@ func (r *Router) persistToolCallLaunch(evt provider.ProviderEvent) error {
 	if found {
 		item = existing
 		item.Summary = summary
-		item.ParentID = firstNonEmptyString(eventParentID(evt), existing.ParentID)
+		item.ParentID = stringsx.FirstNonEmptyTrimmed(eventParentID(evt), existing.ParentID)
 		item.ToolName = toolName
 		item.IsBackground = existing.IsBackground || meta.IsBackground
 		if existing.Status == "" {

@@ -1,3 +1,10 @@
+// Package claude — parser for `user`-type NDJSON lines. The top-level
+// parseUser dispatches each tool_result content block to either the
+// task-output helper (appendTaskOutputCompletion) or the standard tool
+// completion helper (appendToolResultCompletion). Keeping each block's
+// logic in its own helper isolates the task-correlation rules from the
+// routine completion path.
+
 package claude
 
 import (
@@ -46,88 +53,154 @@ func (p *Parser) parseUser(threadID string, raw map[string]json.RawMessage, now 
 
 	events := make([]provider.ProviderEvent, 0, len(blocks))
 	for _, block := range blocks {
-		var blockType string
-		if err := json.Unmarshal(block["type"], &blockType); err != nil || blockType != "tool_result" {
-			continue
-		}
+		events = p.appendToolResultBlock(events, threadID, now, line, raw, block, toolUseResults)
+	}
+	return events, nil
+}
 
-		var toolUseID string
-		if err := json.Unmarshal(block["tool_use_id"], &toolUseID); err != nil || toolUseID == "" {
-			// A tool_result without an ID can't be correlated back to a
-			// tool_use, so drop it rather than emit an orphan completion.
-			continue
-		}
-
-		var isError bool
-		if v, ok := block["is_error"]; ok {
-			_ = json.Unmarshal(v, &isError)
-		}
-
-		content := extractToolResultText(block["content"])
-
-		taskOutputMeta := toolUseResults[toolUseID]
-		if len(taskOutputMeta) == 0 {
-			taskOutputMeta = raw["tool_use_result"]
-		}
-		if taskOutput, ok := extractTaskOutputCompletion(block["content"], taskOutputMeta); ok {
-			originalToolUseID := p.taskToolUse(taskOutput.TaskID)
-			if originalToolUseID != "" && p.markTaskOutput(taskOutput.TaskID) {
-				metaFields := map[string]any{
-					"is_background": true,
-					"task_id":       taskOutput.TaskID,
-				}
-				if taskOutput.IsError {
-					metaFields["is_error"] = true
-				}
-				if taskOutput.ExitCode != nil {
-					metaFields["exit_code"] = *taskOutput.ExitCode
-				}
-				if taskOutput.OutputFile != "" {
-					metaFields["output_file"] = taskOutput.OutputFile
-				}
-				meta, _ := json.Marshal(metaFields)
-				events = append(events, provider.ProviderEvent{
-					Kind:      provider.EventToolComplete,
-					ThreadID:  threadID,
-					ItemID:    originalToolUseID,
-					Content:   firstNonEmpty(taskOutput.Summary, content),
-					Meta:      meta,
-					Timestamp: now,
-					Raw:       line,
-				})
-				p.clearBackground(originalToolUseID)
-			}
-			continue
-		}
-
-		if p.isBackground(toolUseID) {
-			// Claude echoes a placeholder tool_result for backgrounded tools
-			// before the real terminal task lifecycle lands. Treat it as
-			// informational only; task_updated / TaskOutput emit the
-			// authoritative completion later.
-			continue
-		}
-
-		metaFields := map[string]any{
-			"is_error": isError,
-		}
-		if code, ok := extractExitCode(block["content"], toolUseResults[toolUseID]); ok {
-			metaFields["exit_code"] = code
-		}
-
-		meta, _ := json.Marshal(metaFields)
-		events = append(events, provider.ProviderEvent{
-			Kind:      provider.EventToolComplete,
-			ThreadID:  threadID,
-			ItemID:    toolUseID,
-			Content:   content,
-			Meta:      meta,
-			Timestamp: now,
-			Raw:       line,
-		})
+// appendToolResultBlock classifies one tool_result block: either a
+// task-output completion (background Task tool), a backgrounded-tool
+// placeholder (dropped), or a standard inline tool completion. The
+// function returns the events slice with any produced events appended;
+// blocks that should not emit an event (wrong type, missing id,
+// placeholder echo) return the slice unchanged.
+func (p *Parser) appendToolResultBlock(
+	events []provider.ProviderEvent,
+	threadID string,
+	now time.Time,
+	line []byte,
+	raw, block map[string]json.RawMessage,
+	toolUseResults map[string]json.RawMessage,
+) []provider.ProviderEvent {
+	var blockType string
+	if err := json.Unmarshal(block["type"], &blockType); err != nil || blockType != "tool_result" {
+		return events
 	}
 
-	return events, nil
+	var toolUseID string
+	if err := json.Unmarshal(block["tool_use_id"], &toolUseID); err != nil || toolUseID == "" {
+		// A tool_result without an ID can't be correlated back to a
+		// tool_use, so drop it rather than emit an orphan completion.
+		return events
+	}
+
+	content := extractToolResultText(block["content"])
+
+	taskOutputMeta := toolUseResults[toolUseID]
+	if len(taskOutputMeta) == 0 {
+		taskOutputMeta = raw["tool_use_result"]
+	}
+	if updated, handled := p.appendTaskOutputCompletion(
+		events, threadID, now, line,
+		block, content, taskOutputMeta,
+	); handled {
+		return updated
+	}
+
+	if p.isBackground(toolUseID) {
+		// Claude echoes a placeholder tool_result for backgrounded tools
+		// before the real terminal task lifecycle lands. Treat it as
+		// informational only; task_updated / TaskOutput emit the
+		// authoritative completion later.
+		return events
+	}
+
+	return appendToolResultCompletion(
+		events, threadID, toolUseID, now, line,
+		block, content, toolUseResults[toolUseID],
+	)
+}
+
+// appendTaskOutputCompletion handles the task_id-carrying "Task tool"
+// completion path: when the block's tool_use_result carries a
+// TaskOutput payload we look up the original tool_use_id via the
+// parser's in-memory task map and emit a background-flagged
+// EventToolComplete. The second return reports whether the block was
+// consumed by this helper; false means "not a task-output shape, try
+// the standard path."
+func (p *Parser) appendTaskOutputCompletion(
+	events []provider.ProviderEvent,
+	threadID string,
+	now time.Time,
+	line []byte,
+	block map[string]json.RawMessage,
+	content string,
+	taskOutputMeta json.RawMessage,
+) ([]provider.ProviderEvent, bool) {
+	taskOutput, ok := extractTaskOutputCompletion(block["content"], taskOutputMeta)
+	if !ok {
+		return events, false
+	}
+
+	originalToolUseID := p.taskToolUse(taskOutput.TaskID)
+	if originalToolUseID == "" || !p.markTaskOutput(taskOutput.TaskID) {
+		// Already emitted (dedupe) or no matching tool_use — either way
+		// the block is fully consumed; we just don't emit.
+		return events, true
+	}
+
+	metaFields := map[string]any{
+		"is_background": true,
+		"task_id":       taskOutput.TaskID,
+	}
+	if taskOutput.IsError {
+		metaFields["is_error"] = true
+	}
+	if taskOutput.ExitCode != nil {
+		metaFields["exit_code"] = *taskOutput.ExitCode
+	}
+	if taskOutput.OutputFile != "" {
+		metaFields["output_file"] = taskOutput.OutputFile
+	}
+	meta, _ := json.Marshal(metaFields)
+	events = append(events, provider.ProviderEvent{
+		Kind:      provider.EventToolComplete,
+		ThreadID:  threadID,
+		ItemID:    originalToolUseID,
+		Content:   firstNonEmpty(taskOutput.Summary, content),
+		Meta:      meta,
+		Timestamp: now,
+		Raw:       line,
+	})
+	p.clearBackground(originalToolUseID)
+	return events, true
+}
+
+// appendToolResultCompletion emits the standard inline tool completion
+// shape: EventToolComplete keyed by the original tool_use_id, with
+// is_error / exit_code surfaced into meta. Used for every non-background,
+// non-task tool_result.
+func appendToolResultCompletion(
+	events []provider.ProviderEvent,
+	threadID, toolUseID string,
+	now time.Time,
+	line []byte,
+	block map[string]json.RawMessage,
+	content string,
+	toolUseResult json.RawMessage,
+) []provider.ProviderEvent {
+	var isError bool
+	if v, ok := block["is_error"]; ok {
+		_ = json.Unmarshal(v, &isError)
+	}
+
+	metaFields := map[string]any{
+		"is_error": isError,
+	}
+	if code, ok := extractExitCode(block["content"], toolUseResult); ok {
+		metaFields["exit_code"] = code
+	}
+
+	meta, _ := json.Marshal(metaFields)
+	return append(events, provider.ProviderEvent{
+		Kind:      provider.EventToolComplete,
+		ThreadID:  threadID,
+		ItemID:    toolUseID,
+		Content:   content,
+		Meta:      meta,
+		Timestamp: now,
+		Raw:       line,
+	})
 }
 
 // extractToolResultText flattens the content of a tool_result block into a

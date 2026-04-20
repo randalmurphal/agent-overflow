@@ -1,3 +1,9 @@
+// Package claude — parser for `assistant`-type NDJSON lines. The top-level
+// parseAssistant dispatches each content block to a per-type helper
+// (appendTextEvent / appendToolUseEvent / appendThinkingEvent /
+// appendExitPlanModeEvent) so new block types can be added without growing
+// the main function.
+
 package claude
 
 import (
@@ -8,26 +14,40 @@ import (
 	"agent-overflow/internal/provider"
 )
 
+// assistantContentBlock is the subset of fields every block type on an
+// `assistant.message.content` entry carries. The decoded blocks are fed
+// into the appendX helpers below; each helper reads the fields relevant
+// to its block.Type and ignores the rest.
+type assistantContentBlock struct {
+	Type      string          `json:"type"`
+	Text      string          `json:"text,omitempty"`
+	ID        string          `json:"id,omitempty"`
+	Name      string          `json:"name,omitempty"`
+	Input     json.RawMessage `json:"input,omitempty"`
+	Thinking  string          `json:"thinking,omitempty"`
+	Signature string          `json:"signature,omitempty"`
+}
+
+// assistantUsage mirrors the usage object Claude attaches to
+// `assistant.message` lines. Split out so the usage branch of
+// parseAssistant can rewrite it into a provider.TokenUsage without the
+// rest of the message struct leaking into the helper.
+type assistantUsage struct {
+	InputTokens              int `json:"input_tokens"`
+	OutputTokens             int `json:"output_tokens"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+}
+
+type assistantMessage struct {
+	ID      string                  `json:"id"`
+	Content []assistantContentBlock `json:"content"`
+	Role    string                  `json:"role"`
+	Usage   *assistantUsage         `json:"usage,omitempty"`
+}
+
 func (p *Parser) parseAssistant(threadID string, raw map[string]json.RawMessage, now time.Time, line []byte) ([]provider.ProviderEvent, error) {
-	var msg struct {
-		ID      string `json:"id"`
-		Content []struct {
-			Type      string          `json:"type"`
-			Text      string          `json:"text,omitempty"`
-			ID        string          `json:"id,omitempty"`
-			Name      string          `json:"name,omitempty"`
-			Input     json.RawMessage `json:"input,omitempty"`
-			Thinking  string          `json:"thinking,omitempty"`
-			Signature string          `json:"signature,omitempty"`
-		} `json:"content"`
-		Role  string `json:"role"`
-		Usage *struct {
-			InputTokens              int `json:"input_tokens"`
-			OutputTokens             int `json:"output_tokens"`
-			CacheReadInputTokens     int `json:"cache_read_input_tokens"`
-			CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
-		} `json:"usage,omitempty"`
-	}
+	var msg assistantMessage
 
 	// The message payload is under "message" key for assistant type.
 	if rawMsg, ok := raw["message"]; ok {
@@ -59,87 +79,145 @@ func (p *Parser) parseAssistant(threadID string, raw map[string]json.RawMessage,
 	for _, block := range msg.Content {
 		switch block.Type {
 		case "text":
-			events = append(events, provider.ProviderEvent{
-				Kind:            provider.EventTextDelta,
-				ThreadID:        threadID,
-				ItemID:          msg.ID,
-				Content:         block.Text,
-				Role:            "assistant",
-				ParentToolUseID: parentToolUseID,
-				Timestamp:       now,
-			})
-
+			events = appendTextEvent(events, threadID, msg.ID, parentToolUseID, now, block)
 		case "tool_use":
-			if block.Name == "ExitPlanMode" {
-				planMarkdown := extractExitPlanModePlan(block.Input)
-				if planMarkdown == "" {
-					continue
-				}
-				events = append(events, provider.ProviderEvent{
-					Kind:            provider.EventProposedPlan,
-					ThreadID:        threadID,
-					ItemID:          block.ID,
-					ItemType:        block.Name,
-					Content:         planMarkdown,
-					ParentToolUseID: parentToolUseID,
-					Timestamp:       now,
-				})
-				continue
-			}
-
-			isBackground := hasRunInBackground(block.Input)
-			if isBackground {
-				p.markBackground(block.ID)
-			}
-
-			meta := marshalToolMeta(block.Name, block.Input, isBackground)
-			events = append(events, provider.ProviderEvent{
-				Kind:            provider.EventToolStart,
-				ThreadID:        threadID,
-				ItemID:          block.ID,
-				ItemType:        block.Name,
-				Meta:            meta,
-				ParentToolUseID: parentToolUseID,
-				Timestamp:       now,
-			})
-
+			events = p.appendToolUseEvent(events, threadID, parentToolUseID, now, block)
 		case "thinking":
-			var meta json.RawMessage
-			if block.Signature != "" {
-				meta, _ = json.Marshal(map[string]any{
-					"signature": block.Signature,
-				})
-			}
-			events = append(events, provider.ProviderEvent{
-				Kind:            provider.EventThinking,
-				ThreadID:        threadID,
-				ItemID:          msg.ID,
-				Content:         block.Thinking,
-				Meta:            meta,
-				ParentToolUseID: parentToolUseID,
-				Timestamp:       now,
-			})
+			events = appendThinkingEvent(events, threadID, msg.ID, parentToolUseID, now, block)
 		}
 	}
 
-	// Emit token usage if present.
-	if msg.Usage != nil {
-		usageMeta, _ := json.Marshal(provider.TokenUsage{
-			InputTokens:              msg.Usage.InputTokens,
-			OutputTokens:             msg.Usage.OutputTokens,
-			CacheReadInputTokens:     msg.Usage.CacheReadInputTokens,
-			CacheCreationInputTokens: msg.Usage.CacheCreationInputTokens,
-		})
-		events = append(events, provider.ProviderEvent{
-			Kind:            provider.EventTokenUsage,
-			ThreadID:        threadID,
-			Meta:            usageMeta,
-			ParentToolUseID: parentToolUseID,
-			Timestamp:       now,
-		})
+	events = appendUsageEvent(events, threadID, parentToolUseID, now, msg.Usage)
+	return events, nil
+}
+
+// appendTextEvent emits a streaming text delta for a `text` block. The
+// message-level id (msg.ID) is used as the item id so every text chunk in
+// the same assistant message collapses onto one timeline row.
+func appendTextEvent(
+	events []provider.ProviderEvent,
+	threadID, itemID, parentToolUseID string,
+	now time.Time,
+	block assistantContentBlock,
+) []provider.ProviderEvent {
+	return append(events, provider.ProviderEvent{
+		Kind:            provider.EventTextDelta,
+		ThreadID:        threadID,
+		ItemID:          itemID,
+		Content:         block.Text,
+		Role:            "assistant",
+		ParentToolUseID: parentToolUseID,
+		Timestamp:       now,
+	})
+}
+
+// appendToolUseEvent handles `tool_use` blocks. ExitPlanMode takes a
+// different path (EventProposedPlan); every other tool call emits an
+// EventToolStart and — when the input says so — registers the tool as
+// backgrounded so the later user.tool_result echo can be suppressed.
+func (p *Parser) appendToolUseEvent(
+	events []provider.ProviderEvent,
+	threadID, parentToolUseID string,
+	now time.Time,
+	block assistantContentBlock,
+) []provider.ProviderEvent {
+	if block.Name == "ExitPlanMode" {
+		return appendExitPlanModeEvent(events, threadID, parentToolUseID, now, block)
 	}
 
-	return events, nil
+	isBackground := hasRunInBackground(block.Input)
+	if isBackground {
+		p.markBackground(block.ID)
+	}
+
+	meta := marshalToolMeta(block.Name, block.Input, isBackground)
+	return append(events, provider.ProviderEvent{
+		Kind:            provider.EventToolStart,
+		ThreadID:        threadID,
+		ItemID:          block.ID,
+		ItemType:        block.Name,
+		Meta:            meta,
+		ParentToolUseID: parentToolUseID,
+		Timestamp:       now,
+	})
+}
+
+// appendExitPlanModeEvent converts an ExitPlanMode tool call into an
+// EventProposedPlan. A missing plan body drops the event rather than emit
+// an empty plan the frontend would render as "no content".
+func appendExitPlanModeEvent(
+	events []provider.ProviderEvent,
+	threadID, parentToolUseID string,
+	now time.Time,
+	block assistantContentBlock,
+) []provider.ProviderEvent {
+	planMarkdown := extractExitPlanModePlan(block.Input)
+	if planMarkdown == "" {
+		return events
+	}
+	return append(events, provider.ProviderEvent{
+		Kind:            provider.EventProposedPlan,
+		ThreadID:        threadID,
+		ItemID:          block.ID,
+		ItemType:        block.Name,
+		Content:         planMarkdown,
+		ParentToolUseID: parentToolUseID,
+		Timestamp:       now,
+	})
+}
+
+// appendThinkingEvent emits a thinking block, optionally carrying the
+// cryptographic signature Claude attaches when it's enabled. The
+// signature is marshaled into meta rather than stamped onto the Content
+// so the frontend can rely on Content being plain text.
+func appendThinkingEvent(
+	events []provider.ProviderEvent,
+	threadID, itemID, parentToolUseID string,
+	now time.Time,
+	block assistantContentBlock,
+) []provider.ProviderEvent {
+	var meta json.RawMessage
+	if block.Signature != "" {
+		meta, _ = json.Marshal(map[string]any{
+			"signature": block.Signature,
+		})
+	}
+	return append(events, provider.ProviderEvent{
+		Kind:            provider.EventThinking,
+		ThreadID:        threadID,
+		ItemID:          itemID,
+		Content:         block.Thinking,
+		Meta:            meta,
+		ParentToolUseID: parentToolUseID,
+		Timestamp:       now,
+	})
+}
+
+// appendUsageEvent emits an EventTokenUsage when the assistant message
+// carries a usage object. Nil usage (the common mid-stream case) drops
+// through without touching the event slice.
+func appendUsageEvent(
+	events []provider.ProviderEvent,
+	threadID, parentToolUseID string,
+	now time.Time,
+	usage *assistantUsage,
+) []provider.ProviderEvent {
+	if usage == nil {
+		return events
+	}
+	usageMeta, _ := json.Marshal(provider.TokenUsage{
+		InputTokens:              usage.InputTokens,
+		OutputTokens:             usage.OutputTokens,
+		CacheReadInputTokens:     usage.CacheReadInputTokens,
+		CacheCreationInputTokens: usage.CacheCreationInputTokens,
+	})
+	return append(events, provider.ProviderEvent{
+		Kind:            provider.EventTokenUsage,
+		ThreadID:        threadID,
+		Meta:            usageMeta,
+		ParentToolUseID: parentToolUseID,
+		Timestamp:       now,
+	})
 }
 
 // hasRunInBackground returns true when the tool input JSON contains

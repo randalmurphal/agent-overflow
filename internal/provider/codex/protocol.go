@@ -12,13 +12,37 @@ import (
 // resolved in session.go, not here: the protocol only gives us child
 // provider-thread IDs, so the session owns the receiver-thread -> parent-card
 // mapping and stamps ParentToolUseID onto routed child events.
+//
+// The method catalog is grouped into per-family dispatchers (turn / item /
+// thread / account / etc.) so each family's shape lives in one place. Each
+// dispatcher returns (events, handled): when handled is false the caller
+// falls through to the next group. Adding a new method means editing the
+// dispatcher for its family, not the top-level switch.
 func ClassifyNotification(threadID, method string, params json.RawMessage) []provider.ProviderEvent {
 	now := time.Now()
 
+	if events, ok := classifyTurnNotification(threadID, method, params, now); ok {
+		return events
+	}
+	if events, ok := classifyItemNotification(threadID, method, params, now); ok {
+		return events
+	}
+	if events, ok := classifyThreadNotification(threadID, method, params, now); ok {
+		return events
+	}
+	if events, ok := classifyAccountNotification(threadID, method, params, now); ok {
+		return events
+	}
+	if events, ok := classifyMiscNotification(threadID, method, params, now); ok {
+		return events
+	}
+	return nil
+}
+
+// classifyTurnNotification handles `turn/*` methods plus the closely
+// related `thread/tokenUsage/updated` (per-turn usage signal).
+func classifyTurnNotification(threadID, method string, params json.RawMessage, now time.Time) ([]provider.ProviderEvent, bool) {
 	switch method {
-
-	// --- Handle and emit ---
-
 	case "turn/started":
 		turnID := readNestedString(params, "turn", "id")
 		return []provider.ProviderEvent{{
@@ -26,39 +50,10 @@ func ClassifyNotification(threadID, method string, params json.RawMessage) []pro
 			ThreadID:  threadID,
 			TurnID:    turnID,
 			Timestamp: now,
-		}}
+		}}, true
 
 	case "turn/completed":
-		turnID := readNestedString(params, "turn", "id")
-		status := readNestedString(params, "turn", "status")
-		errorMsg := readNestedString(params, "turn", "error", "message")
-
-		var events []provider.ProviderEvent
-
-		if status == "failed" && errorMsg != "" {
-			events = append(events, provider.ProviderEvent{
-				Kind: provider.EventError, ThreadID: threadID, TurnID: turnID, Content: errorMsg, Timestamp: now,
-			})
-		}
-
-		// Extract usage data if present in the turn/completed notification.
-		if usageData := extractUsageFromTurn(params); usageData != nil {
-			events = append(events, provider.ProviderEvent{
-				Kind: provider.EventTokenUsage, ThreadID: threadID, TurnID: turnID, Meta: usageData, Timestamp: now,
-			})
-		}
-
-		// Surface turn.status so downstream can distinguish completed /
-		// interrupted / failed turns (wire values: "completed" | "interrupted"
-		// | "failed" | "inProgress" — see codex-source TurnStatus.ts).
-		turnMeta := mergeMetaKeys(params, map[string]any{
-			"turn_status": status,
-		})
-
-		events = append(events, provider.ProviderEvent{
-			Kind: provider.EventTurnComplete, ThreadID: threadID, TurnID: turnID, Meta: turnMeta, Timestamp: now,
-		})
-		return events
+		return classifyTurnCompleted(threadID, params, now), true
 
 	case "turn/diff/updated":
 		return []provider.ProviderEvent{{
@@ -68,13 +63,82 @@ func ClassifyNotification(threadID, method string, params json.RawMessage) []pro
 			Meta:      params,
 			Replace:   true,
 			Timestamp: now,
-		}}
+		}}, true
 
+	case "turn/aborted":
+		turnID := readNestedString(params, "turn", "id")
+		meta, _ := json.Marshal(map[string]any{"aborted": true})
+		return []provider.ProviderEvent{{
+			Kind:      provider.EventTurnComplete,
+			ThreadID:  threadID,
+			TurnID:    turnID,
+			Meta:      meta,
+			Timestamp: now,
+		}}, true
+
+	case "turn/plan/updated":
+		// Incremental plan updates are intentionally dropped. The finalized
+		// plan still lands via item/completed(item.type=plan).
+		return nil, true
+
+	case "thread/tokenUsage/updated":
+		return []provider.ProviderEvent{{
+			Kind:      provider.EventTokenUsage,
+			ThreadID:  threadID,
+			Meta:      params,
+			Timestamp: now,
+		}}, true
+	}
+	return nil, false
+}
+
+// classifyTurnCompleted breaks out the multi-event turn/completed shape.
+// A single notification can produce up to three events: error (if the turn
+// failed), token-usage (if usage was reported), and a turn-complete with the
+// status surfaced into meta.
+func classifyTurnCompleted(threadID string, params json.RawMessage, now time.Time) []provider.ProviderEvent {
+	turnID := readNestedString(params, "turn", "id")
+	status := readNestedString(params, "turn", "status")
+	errorMsg := readNestedString(params, "turn", "error", "message")
+
+	var events []provider.ProviderEvent
+
+	if status == "failed" && errorMsg != "" {
+		events = append(events, provider.ProviderEvent{
+			Kind: provider.EventError, ThreadID: threadID, TurnID: turnID, Content: errorMsg, Timestamp: now,
+		})
+	}
+
+	// Extract usage data if present in the turn/completed notification.
+	if usageData := extractUsageFromTurn(params); usageData != nil {
+		events = append(events, provider.ProviderEvent{
+			Kind: provider.EventTokenUsage, ThreadID: threadID, TurnID: turnID, Meta: usageData, Timestamp: now,
+		})
+	}
+
+	// Surface turn.status so downstream can distinguish completed /
+	// interrupted / failed turns (wire values: "completed" | "interrupted"
+	// | "failed" | "inProgress" — see codex-source TurnStatus.ts).
+	turnMeta := mergeMetaKeys(params, map[string]any{
+		"turn_status": status,
+	})
+
+	events = append(events, provider.ProviderEvent{
+		Kind: provider.EventTurnComplete, ThreadID: threadID, TurnID: turnID, Meta: turnMeta, Timestamp: now,
+	})
+	return events
+}
+
+// classifyItemNotification handles `item/*` methods — the tool-call
+// lifecycle (started/updated/completed) plus the streaming deltas and
+// reasoning channels.
+func classifyItemNotification(threadID, method string, params json.RawMessage, now time.Time) ([]provider.ProviderEvent, bool) {
+	switch method {
 	case "item/started":
 		itemID := readNestedString(params, "item", "id")
 		itemType := classifyCodexItemType(params)
 		if itemType == "" {
-			return nil
+			return nil, true
 		}
 		return []provider.ProviderEvent{{
 			Kind:      provider.EventToolStart,
@@ -83,42 +147,31 @@ func ClassifyNotification(threadID, method string, params json.RawMessage) []pro
 			ItemType:  itemType,
 			Meta:      enrichItemMeta(params),
 			Timestamp: now,
-		}}
+		}}, true
 
 	case "item/completed":
+		return classifyItemCompleted(threadID, params, now), true
+
+	case "item/updated":
 		itemID := readNestedString(params, "item", "id")
 		itemType := classifyCodexItemType(params)
 		if itemType == "" {
-			return nil
-		}
-		if itemType == "plan" {
-			planMarkdown := extractCodexPlanMarkdown(params)
-			if planMarkdown == "" {
-				return nil
-			}
-			return []provider.ProviderEvent{{
-				Kind:      provider.EventProposedPlan,
-				ThreadID:  threadID,
-				ItemID:    itemID,
-				ItemType:  itemType,
-				Content:   planMarkdown,
-				Meta:      params,
-				Timestamp: now,
-			}}
+			return nil, true
 		}
 		return []provider.ProviderEvent{{
-			Kind:      provider.EventToolComplete,
+			Kind:      provider.EventToolStart,
 			ThreadID:  threadID,
 			ItemID:    itemID,
 			ItemType:  itemType,
-			Meta:      enrichItemMeta(params),
+			Meta:      params,
+			Replace:   true,
 			Timestamp: now,
-		}}
+		}}, true
 
 	case "item/agentMessage/delta":
 		delta := readTopLevelString(params, "delta")
 		if delta == "" {
-			return nil
+			return nil, true
 		}
 		return []provider.ProviderEvent{{
 			Kind:      provider.EventTextDelta,
@@ -126,7 +179,7 @@ func ClassifyNotification(threadID, method string, params json.RawMessage) []pro
 			Content:   delta,
 			Role:      "assistant",
 			Timestamp: now,
-		}}
+		}}, true
 
 	case "item/commandExecution/outputDelta":
 		return []provider.ProviderEvent{{
@@ -135,7 +188,7 @@ func ClassifyNotification(threadID, method string, params json.RawMessage) []pro
 			Content:   readTopLevelString(params, "delta"),
 			Meta:      params,
 			Timestamp: now,
-		}}
+		}}, true
 
 	case "item/fileChange/outputDelta":
 		return []provider.ProviderEvent{{
@@ -144,16 +197,141 @@ func ClassifyNotification(threadID, method string, params json.RawMessage) []pro
 			Content:   readTopLevelString(params, "delta"),
 			Meta:      params,
 			Timestamp: now,
-		}}
+		}}, true
 
-	case "thread/tokenUsage/updated":
+	case "item/reasoning/textDelta", "item/reasoning/summaryTextDelta":
+		delta := readTopLevelString(params, "delta")
+		if delta == "" {
+			delta = readTopLevelString(params, "text")
+		}
+		if delta == "" {
+			delta = readNestedString(params, "content", "text")
+		}
+		if delta == "" {
+			return nil, true
+		}
 		return []provider.ProviderEvent{{
-			Kind:      provider.EventTokenUsage,
+			Kind:      provider.EventThinking,
 			ThreadID:  threadID,
+			Content:   delta,
+			Timestamp: now,
+		}}, true
+
+	case "item/commandExecution/terminalInteraction",
+		"item/mcpToolCall/progress",
+		"item/autoApprovalReview/started",
+		"item/autoApprovalReview/completed",
+		"item/reasoning/summaryPartAdded":
+		return nil, true
+	}
+	return nil, false
+}
+
+// classifyItemCompleted breaks out item/completed because the plan-item
+// branch (itemType=="plan") produces a different event kind than the
+// generic tool-complete branch.
+func classifyItemCompleted(threadID string, params json.RawMessage, now time.Time) []provider.ProviderEvent {
+	itemID := readNestedString(params, "item", "id")
+	itemType := classifyCodexItemType(params)
+	if itemType == "" {
+		return nil
+	}
+	if itemType == "plan" {
+		planMarkdown := extractCodexPlanMarkdown(params)
+		if planMarkdown == "" {
+			return nil
+		}
+		return []provider.ProviderEvent{{
+			Kind:      provider.EventProposedPlan,
+			ThreadID:  threadID,
+			ItemID:    itemID,
+			ItemType:  itemType,
+			Content:   planMarkdown,
 			Meta:      params,
 			Timestamp: now,
 		}}
+	}
+	return []provider.ProviderEvent{{
+		Kind:      provider.EventToolComplete,
+		ThreadID:  threadID,
+		ItemID:    itemID,
+		ItemType:  itemType,
+		Meta:      enrichItemMeta(params),
+		Timestamp: now,
+	}}
+}
 
+// classifyThreadNotification handles `thread/*` methods — the name-change,
+// compaction, and lifecycle no-ops.
+func classifyThreadNotification(threadID, method string, params json.RawMessage, now time.Time) ([]provider.ProviderEvent, bool) {
+	switch method {
+	case "thread/name/updated":
+		name := readTopLevelString(params, "threadName")
+		if name == "" {
+			name = readTopLevelString(params, "name")
+		}
+		meta, _ := json.Marshal(map[string]string{"newTitle": name})
+		return []provider.ProviderEvent{{
+			Kind:      provider.EventThreadRenamed,
+			ThreadID:  threadID,
+			Content:   name,
+			Meta:      meta,
+			Timestamp: now,
+		}}, true
+
+	case "thread/compacted":
+		return []provider.ProviderEvent{{
+			Kind:      provider.EventCompactBoundary,
+			ThreadID:  threadID,
+			Meta:      params,
+			Timestamp: now,
+		}}, true
+
+	case "thread/started",
+		"thread/status/changed",
+		"thread/archived",
+		"thread/unarchived",
+		"thread/closed":
+		return nil, true
+	}
+	return nil, false
+}
+
+// classifyAccountNotification handles `account/*` and `model/*` methods —
+// rate-limit refreshes, model reroute signals, and the login/account
+// no-ops.
+func classifyAccountNotification(threadID, method string, params json.RawMessage, now time.Time) ([]provider.ProviderEvent, bool) {
+	switch method {
+	case "account/rateLimits/updated":
+		meta := normalizeRateLimitsMeta(params, now)
+		return []provider.ProviderEvent{{
+			Kind:      provider.EventRateLimits,
+			ThreadID:  threadID,
+			Meta:      meta,
+			Timestamp: now,
+		}}, true
+
+	case "model/rerouted":
+		toModel := readTopLevelString(params, "toModel")
+		meta, _ := json.Marshal(map[string]string{"newModel": toModel})
+		return []provider.ProviderEvent{{
+			Kind:      provider.EventModelRerouted,
+			ThreadID:  threadID,
+			Content:   toModel,
+			Meta:      meta,
+			Timestamp: now,
+		}}, true
+
+	case "account/updated", "account/login/completed":
+		return nil, true
+	}
+	return nil, false
+}
+
+// classifyMiscNotification handles the remaining grab-bag: errors, server
+// request resolution, and pure-informational notices.
+func classifyMiscNotification(threadID, method string, params json.RawMessage, now time.Time) ([]provider.ProviderEvent, bool) {
+	switch method {
 	case "error":
 		errorMsg := readNestedString(params, "error", "message")
 		willRetry := readTopLevelBool(params, "willRetry")
@@ -168,7 +346,7 @@ func ClassifyNotification(threadID, method string, params json.RawMessage) []pro
 				Content:   "retrying",
 				Meta:      meta,
 				Timestamp: now,
-			}}
+			}}, true
 		}
 		return []provider.ProviderEvent{{
 			Kind:      provider.EventError,
@@ -176,39 +354,7 @@ func ClassifyNotification(threadID, method string, params json.RawMessage) []pro
 			Content:   errorMsg,
 			Meta:      params,
 			Timestamp: now,
-		}}
-
-	case "turn/aborted":
-		turnID := readNestedString(params, "turn", "id")
-		meta, _ := json.Marshal(map[string]any{"aborted": true})
-		return []provider.ProviderEvent{{
-			Kind:      provider.EventTurnComplete,
-			ThreadID:  threadID,
-			TurnID:    turnID,
-			Meta:      meta,
-			Timestamp: now,
-		}}
-
-	case "item/updated":
-		itemID := readNestedString(params, "item", "id")
-		itemType := classifyCodexItemType(params)
-		if itemType == "" {
-			return nil
-		}
-		return []provider.ProviderEvent{{
-			Kind:      provider.EventToolStart,
-			ThreadID:  threadID,
-			ItemID:    itemID,
-			ItemType:  itemType,
-			Meta:      params,
-			Replace:   true,
-			Timestamp: now,
-		}}
-
-	case "turn/plan/updated":
-		// Incremental plan updates are intentionally dropped. The finalized
-		// plan still lands via item/completed(item.type=plan).
-		return nil
+		}}, true
 
 	case "serverRequest/resolved":
 		requestID := readTopLevelIDString(params, "providerRequestId")
@@ -221,93 +367,12 @@ func ClassifyNotification(threadID, method string, params json.RawMessage) []pro
 			ItemID:    requestID,
 			Meta:      params,
 			Timestamp: now,
-		}}
+		}}, true
 
-	case "item/reasoning/textDelta", "item/reasoning/summaryTextDelta":
-		delta := readTopLevelString(params, "delta")
-		if delta == "" {
-			delta = readTopLevelString(params, "text")
-		}
-		if delta == "" {
-			delta = readNestedString(params, "content", "text")
-		}
-		if delta == "" {
-			return nil
-		}
-		return []provider.ProviderEvent{{
-			Kind:      provider.EventThinking,
-			ThreadID:  threadID,
-			Content:   delta,
-			Timestamp: now,
-		}}
-
-	case "thread/name/updated":
-		name := readTopLevelString(params, "threadName")
-		if name == "" {
-			name = readTopLevelString(params, "name")
-		}
-		meta, _ := json.Marshal(map[string]string{"newTitle": name})
-		return []provider.ProviderEvent{{
-			Kind:      provider.EventThreadRenamed,
-			ThreadID:  threadID,
-			Content:   name,
-			Meta:      meta,
-			Timestamp: now,
-		}}
-
-	case "account/rateLimits/updated":
-		meta := normalizeRateLimitsMeta(params, now)
-		return []provider.ProviderEvent{{
-			Kind:      provider.EventRateLimits,
-			ThreadID:  threadID,
-			Meta:      meta,
-			Timestamp: now,
-		}}
-
-	case "model/rerouted":
-		toModel := readTopLevelString(params, "toModel")
-		meta, _ := json.Marshal(map[string]string{"newModel": toModel})
-		return []provider.ProviderEvent{{
-			Kind:      provider.EventModelRerouted,
-			ThreadID:  threadID,
-			Content:   toModel,
-			Meta:      meta,
-			Timestamp: now,
-		}}
-
-	case "thread/compacted":
-		return []provider.ProviderEvent{{
-			Kind:      provider.EventCompactBoundary,
-			ThreadID:  threadID,
-			Meta:      params,
-			Timestamp: now,
-		}}
-
-	case "item/commandExecution/terminalInteraction":
-		return nil
-
-	case "item/mcpToolCall/progress":
-		return nil
-
-	// --- Explicitly skipped notifications ---
-
-	case "thread/started",
-		"thread/status/changed",
-		"thread/archived",
-		"thread/unarchived",
-		"thread/closed",
-		"item/autoApprovalReview/started",
-		"item/autoApprovalReview/completed",
-		"item/reasoning/summaryPartAdded",
-		"account/updated",
-		"account/login/completed",
-		"configWarning",
-		"deprecationNotice":
-		return nil
-
-	default:
-		return nil
+	case "configWarning", "deprecationNotice":
+		return nil, true
 	}
+	return nil, false
 }
 
 // -- JSON helpers --

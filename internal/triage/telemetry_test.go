@@ -192,7 +192,8 @@ func TestTurnSpanRecordsErrorOnPersistFailure(t *testing.T) {
 		Timestamp: time.Now(),
 	})
 
-	// Close the store so persistTurnText fails; we still want the span to close.
+	// Close the store so the text-delta persistence path fails; we still
+	// want the span to close.
 	_ = st.Close()
 
 	if err := r.Handle(provider.ProviderEvent{

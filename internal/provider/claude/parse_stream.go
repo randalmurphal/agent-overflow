@@ -1,3 +1,7 @@
+// Package claude — parser for `stream_event` envelope NDJSON lines
+// (incremental text/tool deltas streamed between assistant-message
+// boundaries).
+
 package claude
 
 import (

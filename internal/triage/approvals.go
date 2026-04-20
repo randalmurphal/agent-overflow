@@ -1,3 +1,7 @@
+// Package triage — approval-request coordination and item id derivation.
+// This file holds the pending-approval map plumbing plus the helpers that
+// convert approval events into persisted items and routed frontend events.
+
 package triage
 
 import (
@@ -6,6 +10,7 @@ import (
 	"strings"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/stringsx"
 )
 
 type pendingApprovalState struct {
@@ -13,21 +18,8 @@ type pendingApprovalState struct {
 	ItemID  string
 }
 
-// providerScopedItemID normalizes a raw provider-side id (tool_use.id,
-// Codex item.id, Claude parent_tool_use_id) into the string we actually
-// store on items.id. Today normalization is just whitespace trimming —
-// thread scoping is enforced by the (thread_id, id) composite primary
-// key on the items table rather than by baking the thread id into the
-// string here. The function exists as the single call site so the
-// contract ("everything that assigns an items.id funnels through this")
-// stays discoverable, and so a future change (e.g. prefixing, hashing)
-// has one place to live.
-func providerScopedItemID(raw string) string {
-	return strings.TrimSpace(raw)
-}
-
 func eventParentID(evt provider.ProviderEvent) string {
-	return providerScopedItemID(evt.ParentToolUseID)
+	return strings.TrimSpace(evt.ParentToolUseID)
 }
 
 func approvalStateKey(threadID, requestID string) string {
@@ -101,11 +93,11 @@ func decodeApprovalResolvedMeta(raw json.RawMessage) (requestID, decision string
 	if json.Unmarshal(raw, &payload) != nil {
 		return "", ""
 	}
-	requestID = firstNonEmptyString(
+	requestID = stringsx.FirstNonEmptyTrimmed(
 		readJSONID(payload["providerRequestId"]),
 		readJSONID(payload["requestId"]),
 	)
-	decision = firstNonEmptyString(
+	decision = stringsx.FirstNonEmptyTrimmed(
 		readJSONString(payload["decision"]),
 		readJSONNestedString(payload["resolution"], "decision"),
 	)
@@ -161,21 +153,12 @@ func readJSONNestedString(raw json.RawMessage, path ...string) string {
 	return value
 }
 
-func firstNonEmptyString(values ...string) string {
-	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			return value
-		}
-	}
-	return ""
-}
-
 func approvalItemID(evt provider.ProviderEvent, request provider.ApprovalRequest) string {
 	if request.ToolUseID != "" {
-		return providerScopedItemID(request.ToolUseID)
+		return strings.TrimSpace(request.ToolUseID)
 	}
 	if evt.ItemID != "" && evt.ItemID != request.RequestID {
-		return providerScopedItemID(evt.ItemID)
+		return strings.TrimSpace(evt.ItemID)
 	}
 	return ""
 }
@@ -196,7 +179,7 @@ func approvalSummary(request provider.ApprovalRequest) string {
 	if summary != "" {
 		return summary
 	}
-	return firstNonEmptyString(request.Description, request.Title, request.ToolName, "tool")
+	return stringsx.FirstNonEmptyTrimmed(request.Description, request.Title, request.ToolName, "tool")
 }
 
 func approvalDeclinesExecution(decision string) bool {
@@ -309,7 +292,7 @@ func (r *Router) applyApprovalDecision(
 	item, err = r.newToolCallItem(
 		threadID,
 		itemID,
-		firstNonEmptyString(request.ToolName, "tool"),
+		stringsx.FirstNonEmptyTrimmed(request.ToolName, "tool"),
 		approvalSummary(request),
 		"declined",
 		now,

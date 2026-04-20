@@ -240,9 +240,10 @@ CREATE INDEX IF NOT EXISTS idx_thread_checkpoints_thread_turn
 		// We install an AFTER DELETE trigger on items that removes the
 		// payload the item pointed at, provided no other item still
 		// references it. The "still referenced?" guard matters because
-		// some event flows (e.g. replaceHeavy) transiently share a payload
-		// id while an old item row is being swapped for a new one; we
-		// don't want to delete a payload that a sibling item still owns.
+		// some event flows (e.g. payload-replacement upserts) transiently
+		// share a payload id while an old item row is being swapped for
+		// a new one; we don't want to delete a payload that a sibling
+		// item still owns.
 		//
 		// We also sweep payloads that were already orphaned under the old
 		// schema so the GC covers pre-existing leakage, not just future

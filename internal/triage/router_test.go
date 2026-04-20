@@ -358,10 +358,10 @@ func TestRouterWaitReturnsImmediatelyWhenIdle(t *testing.T) {
 //
 // Rather than monkey-patching the router, we inject a handler that
 // blocks by feeding an event kind whose handler does real work
-// (persistHeavy) but the store write is just a memory insert on the
-// test store. That is NOT blocking on its own, so we instead call
-// Wait while a slow synthetic "Handle" is active via a helper that
-// mirrors the inflight add/done.
+// (payload persistence) but the store write is just a memory insert
+// on the test store. That is NOT blocking on its own, so we instead
+// call Wait while a slow synthetic "Handle" is active via a helper
+// that mirrors the inflight add/done.
 func TestRouterWaitBlocksUntilInflightHandleReturns(t *testing.T) {
 	router, _, _ := newTestRouter(t)
 
@@ -464,7 +464,7 @@ func insertToolCallItem(t *testing.T, st *store.Store, threadID, itemID, summary
 	t.Helper()
 	now := time.Now().UnixMilli()
 	if _, err := st.AppendItem(store.Item{
-		ID:        providerScopedItemID(itemID),
+		ID:        strings.TrimSpace(itemID),
 		ThreadID:  threadID,
 		TurnIndex: 0,
 		Kind:      "tool_call",
@@ -985,8 +985,8 @@ func TestApprovalDeclineBeforeToolStartCreatesSyntheticToolCall(t *testing.T) {
 	if len(items) != 1 {
 		t.Fatalf("expected 1 synthetic tool_call, got %+v", items)
 	}
-	if items[0].ID != providerScopedItemID("tool-1") {
-		t.Fatalf("item id = %q, want %q", items[0].ID, providerScopedItemID("tool-1"))
+	if items[0].ID != "tool-1" {
+		t.Fatalf("item id = %q, want %q", items[0].ID, "tool-1")
 	}
 	if items[0].Status != "declined" || items[0].Decision != "declined" {
 		t.Fatalf("unexpected declined item state: %+v", items[0])
@@ -1082,11 +1082,11 @@ func TestProviderToolItemIDsAreThreadScoped(t *testing.T) {
 	if len(t1Items) != 1 || len(t2Items) != 1 {
 		t.Fatalf("expected one tool_call per thread, got t1=%+v t2=%+v", t1Items, t2Items)
 	}
-	if t1Items[0].ID != providerScopedItemID("tool-1") {
-		t.Fatalf("t1 id = %q, want %q", t1Items[0].ID, providerScopedItemID("tool-1"))
+	if t1Items[0].ID != "tool-1" {
+		t.Fatalf("t1 id = %q, want %q", t1Items[0].ID, "tool-1")
 	}
-	if t2Items[0].ID != providerScopedItemID("tool-1") {
-		t.Fatalf("t2 id = %q, want %q", t2Items[0].ID, providerScopedItemID("tool-1"))
+	if t2Items[0].ID != "tool-1" {
+		t.Fatalf("t2 id = %q, want %q", t2Items[0].ID, "tool-1")
 	}
 	if t1Items[0].ID != t2Items[0].ID {
 		t.Fatalf("thread-local ids should be reusable across threads, got t1=%q t2=%q", t1Items[0].ID, t2Items[0].ID)

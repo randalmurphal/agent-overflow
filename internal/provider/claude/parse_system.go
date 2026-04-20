@@ -1,3 +1,7 @@
+// Package claude — parser for `system`-type NDJSON lines (init metadata,
+// compact_boundary, and the task_started / task_updated / task_notification
+// triples that drive Claude's background-task lifecycle).
+
 package claude
 
 import (

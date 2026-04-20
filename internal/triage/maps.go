@@ -1,3 +1,8 @@
+// Package triage — map helpers shared across turn-lifecycle and cleanup
+// paths. Keep this file to the minimum generic utilities; logic that
+// depends on triage-specific types belongs in turn_lifecycle.go or the
+// handler files.
+
 package triage
 
 import "strings"

@@ -78,9 +78,9 @@ func TestParentToolUseIDPersistsOnTurnText(t *testing.T) {
 	var found bool
 	for _, it := range items {
 		if it.Summary == "subagent result" {
-			if it.ParentID != providerScopedItemID("task_tool_99") {
+			if it.ParentID != "task_tool_99" {
 				t.Errorf("persisted item ParentID: got %q, want %q",
-					it.ParentID, providerScopedItemID("task_tool_99"))
+					it.ParentID, "task_tool_99")
 			}
 			found = true
 		}
@@ -193,8 +193,8 @@ func TestTextItemIDDisambiguatesSubagentScopes(t *testing.T) {
 		t.Fatalf("expected 2 distinct scoped text items, got %d: %+v", len(textByParent), textByParent)
 	}
 
-	alphaID := providerScopedItemID("task_tool_alpha")
-	betaID := providerScopedItemID("task_tool_beta")
+	alphaID := "task_tool_alpha"
+	betaID := "task_tool_beta"
 	if got := textByParent[alphaID]; got != "A output" {
 		t.Errorf("alpha scope summary = %q, want %q", got, "A output")
 	}

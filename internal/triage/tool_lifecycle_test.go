@@ -52,7 +52,7 @@ func findItemsByKind(t *testing.T, st *store.Store, threadID, kind string) []sto
 func TestToolStartPersistsLifecycleItem(t *testing.T) {
 	router, st, emissions := newTestRouter(t)
 	createTestThread(t, st, "t1")
-	scopedID := providerScopedItemID("tool-1")
+	scopedID := "tool-1"
 
 	meta, _ := json.Marshal(map[string]any{
 		"toolName": "Bash",
@@ -167,8 +167,8 @@ func TestToolCompleteFlipsInlineStatus(t *testing.T) {
 		t.Fatalf("expected 2 upserts (launch + completion), got %d", len(upserted))
 	}
 	for _, item := range upserted {
-		if item.ID != providerScopedItemID("tool-2") {
-			t.Errorf("upsert id %q, want %q", item.ID, providerScopedItemID("tool-2"))
+		if item.ID != "tool-2" {
+			t.Errorf("upsert id %q, want %q", item.ID, "tool-2")
 		}
 	}
 }
@@ -252,8 +252,8 @@ func TestToolCompleteOnBackgroundedAppendsCompletion(t *testing.T) {
 		t.Fatalf("expected 1 background_done item, got %d", len(dones))
 	}
 	done := dones[0]
-	if done.CompletionOf != providerScopedItemID("bg-tool") {
-		t.Errorf("CompletionOf = %q, want %q", done.CompletionOf, providerScopedItemID("bg-tool"))
+	if done.CompletionOf != "bg-tool" {
+		t.Errorf("CompletionOf = %q, want %q", done.CompletionOf, "bg-tool")
 	}
 	if !done.IsBackground {
 		t.Error("background_done IsBackground = false")
@@ -392,7 +392,7 @@ func TestInlineCompletionPreservesRichPayload(t *testing.T) {
 		t.Fatalf("start: %v", err)
 	}
 
-	preCompletion, _, _ := st.GetItem(providerScopedItemID("fc-rich"))
+	preCompletion, _, _ := st.GetItem("fc-rich")
 	if preCompletion.PayloadID == "" {
 		t.Fatalf("file_change start failed to attach payload — test setup invalid")
 	}
@@ -420,7 +420,7 @@ func TestInlineCompletionPreservesRichPayload(t *testing.T) {
 		t.Fatalf("complete: %v", err)
 	}
 
-	postCompletion, _, _ := st.GetItem(providerScopedItemID("fc-rich"))
+	postCompletion, _, _ := st.GetItem("fc-rich")
 	if postCompletion.PayloadID == "" {
 		t.Fatalf("payload wiped on completion (B1 regression)")
 	}
@@ -457,7 +457,7 @@ func TestInlineCompletionAttachesPayloadWhenNoneExists(t *testing.T) {
 		t.Fatalf("complete: %v", err)
 	}
 
-	item, _, _ := st.GetItem(providerScopedItemID("bash-1"))
+	item, _, _ := st.GetItem("bash-1")
 	if item.PayloadID == "" {
 		t.Fatalf("expected tool_call_result payload attached to inline completion")
 	}
@@ -555,7 +555,7 @@ func TestTaskStartedMergesTaskIDIntoItemMeta(t *testing.T) {
 		t.Fatalf("task_started meta update: %v", err)
 	}
 
-	item, _, err := st.GetItem(providerScopedItemID("tool-bg-meta"))
+	item, _, err := st.GetItem("tool-bg-meta")
 	if err != nil {
 		t.Fatalf("get item: %v", err)
 	}
@@ -654,15 +654,15 @@ func TestTaskUpdatedResolvesItemViaMetaTaskID(t *testing.T) {
 	if len(launches) != 1 {
 		t.Fatalf("expected 1 tool_call, got %+v", launches)
 	}
-	if launches[0].ID != providerScopedItemID("bg-recov") {
+	if launches[0].ID != "bg-recov" {
 		t.Errorf("unexpected launch id %q", launches[0].ID)
 	}
 	dones := findItemsByKind(t, st, "t1", itemKindBackgroundDone)
 	if len(dones) != 1 {
 		t.Fatalf("expected 1 tool_completion, got %+v", dones)
 	}
-	if dones[0].CompletionOf != providerScopedItemID("bg-recov") {
-		t.Errorf("completion_of = %q, want %q", dones[0].CompletionOf, providerScopedItemID("bg-recov"))
+	if dones[0].CompletionOf != "bg-recov" {
+		t.Errorf("completion_of = %q, want %q", dones[0].CompletionOf, "bg-recov")
 	}
 }
 
