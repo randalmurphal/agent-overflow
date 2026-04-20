@@ -248,6 +248,14 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 			}
 		}
 	}
+	// The captured-turn guard only needs to hold for the duration of
+	// this turn — once the turn is complete the baseline checkpoint is
+	// already persisted and no further EventTurnStart can re-fire for
+	// the same (thread, turn). Dropping the entry here keeps
+	// capturedTurns bounded by concurrency rather than by session
+	// lifetime, which mattered for long-running sessions that would
+	// otherwise accumulate one entry per turn until CleanupThread.
+	r.unmarkTurnCaptured(evt.ThreadID, turnIndex)
 	r.clearOpenTurn(evt.ThreadID)
 	r.closeTurnSpan(evt.ThreadID, persistErr)
 	r.emit("provider:event", evt)

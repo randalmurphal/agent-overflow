@@ -254,8 +254,20 @@ func TestSendMessageDoesNotOverwriteRenamedThreadTitle(t *testing.T) {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
 
+	// Channel-gated title generator: the fake generator blocks on
+	// generatorGate until the test explicitly releases it, and signals
+	// generatorDone when its inner write attempt has landed. That
+	// replaces the former 100ms sleep in the generator and 250ms sleep
+	// after RenameThread — both were heuristic windows that hid a
+	// real ordering contract. With the gate we can enforce the exact
+	// scenario: SendMessage kicks off the background title generator,
+	// the user renames while the generator is still blocked, we then
+	// release the generator and wait for it to settle.
+	generatorGate := make(chan struct{})
+	generatorDone := make(chan struct{})
 	app.generateThreadTitleFn = func(store.Thread, string) (string, error) {
-		time.Sleep(100 * time.Millisecond)
+		<-generatorGate
+		defer close(generatorDone)
 		return "Generated title", nil
 	}
 
@@ -293,7 +305,16 @@ func TestSendMessageDoesNotOverwriteRenamedThreadTitle(t *testing.T) {
 		t.Fatalf("RenameThread() error = %v", err)
 	}
 
-	time.Sleep(250 * time.Millisecond)
+	// Release the generator now that the user rename has already
+	// landed; the generator's post-rename write must be suppressed
+	// because the thread no longer carries the original "New Thread"
+	// title.
+	close(generatorGate)
+	select {
+	case <-generatorDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("title generator never completed after gate release")
+	}
 
 	select {
 	case evt := <-renamed:

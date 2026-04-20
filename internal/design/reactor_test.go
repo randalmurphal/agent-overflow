@@ -134,7 +134,7 @@ func TestReactorTeardownThreadCancelsPendingChoices(t *testing.T) {
 		errCh <- err
 	}()
 
-	time.Sleep(100 * time.Millisecond)
+	waitForPendingRequest(t, reactor, "thread-cancel")
 	reactor.TeardownThread("thread-cancel")
 
 	select {

@@ -5,7 +5,6 @@ import (
 	"path/filepath"
 	"testing"
 
-	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/settings"
 )
 
@@ -33,7 +32,7 @@ func writeProbeMockBinary(t *testing.T, accountJSON string) string {
 
 func TestProbeClaudeAccountReturnsInfo(t *testing.T) {
 	// Reset the package-level cache so prior tests don't leak results.
-	claudeProbeCache = claude.NewProbeCache(claude.DefaultProbeTTL)
+	resetClaudeProbeCacheForTest()
 
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
@@ -56,7 +55,7 @@ func TestProbeClaudeAccountReturnsInfo(t *testing.T) {
 }
 
 func TestProbeClaudeAccountCachesByBinary(t *testing.T) {
-	claudeProbeCache = claude.NewProbeCache(claude.DefaultProbeTTL)
+	resetClaudeProbeCacheForTest()
 
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
@@ -100,7 +99,7 @@ func TestProbeClaudeAccountCachesByBinary(t *testing.T) {
 }
 
 func TestProbeClaudeAccountSurfacesSpawnErrors(t *testing.T) {
-	claudeProbeCache = claude.NewProbeCache(claude.DefaultProbeTTL)
+	resetClaudeProbeCacheForTest()
 
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())

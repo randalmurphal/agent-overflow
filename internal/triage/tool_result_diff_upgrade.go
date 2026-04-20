@@ -100,13 +100,15 @@ func (r *Router) loadSummaryOnlyToolResultCandidate(item store.Item) (toolResult
 	if item.PayloadID == "" {
 		return toolResultCandidate{}, false
 	}
-	pm, err := r.store.GetPayloadMeta(item.PayloadID)
-	if err != nil || pm.Kind != toolResultPayloadKind {
+	// ListTurnItems left-joins payloads so PayloadKind and PayloadMeta
+	// arrive hydrated on the row already — the former GetPayloadMeta
+	// round-trip was pure N×1 overhead per turn on diff-upgrade.
+	if item.PayloadKind != toolResultPayloadKind {
 		return toolResultCandidate{}, false
 	}
 
 	var meta ToolResultMeta
-	if json.Unmarshal([]byte(pm.Meta), &meta) != nil {
+	if json.Unmarshal([]byte(item.PayloadMeta), &meta) != nil {
 		return toolResultCandidate{}, false
 	}
 	if meta.ItemType != "file_change" || meta.InlineDiff == nil || meta.InlineDiff.Availability != "summary_only" {

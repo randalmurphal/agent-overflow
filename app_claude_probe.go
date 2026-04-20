@@ -13,16 +13,36 @@ import (
 // the ambient Claude auth state, not on App configuration, so a single
 // cache per process is correct and mirrors how forge's capabilities
 // probe behaves.
+//
+// The cache is guarded by claudeProbeCacheMu rather than sync.Once so
+// tests can reassign claudeProbeCache to a fresh instance between
+// subtests without racing against production initialization. The
+// previous sync.Once pattern made test-side resets fragile: if a test
+// ran before the Once had fired, its reset was silently overwritten by
+// the Once body on first production access; if the Once had fired the
+// reset worked, so identical tests passed or failed depending on suite
+// ordering.
 var (
-	claudeProbeCacheOnce sync.Once
-	claudeProbeCache     *claude.ProbeCache
+	claudeProbeCacheMu sync.Mutex
+	claudeProbeCache   *claude.ProbeCache
 )
 
 func claudeAccountProbeCache() *claude.ProbeCache {
-	claudeProbeCacheOnce.Do(func() {
+	claudeProbeCacheMu.Lock()
+	defer claudeProbeCacheMu.Unlock()
+	if claudeProbeCache == nil {
 		claudeProbeCache = claude.NewProbeCache(claude.DefaultProbeTTL)
-	})
+	}
 	return claudeProbeCache
+}
+
+// resetClaudeProbeCacheForTest swaps the package-level cache for a
+// fresh instance. Call from test setup to guarantee a clean cache
+// without racing against concurrent probes via claudeAccountProbeCache.
+func resetClaudeProbeCacheForTest() {
+	claudeProbeCacheMu.Lock()
+	defer claudeProbeCacheMu.Unlock()
+	claudeProbeCache = claude.NewProbeCache(claude.DefaultProbeTTL)
 }
 
 // ProbeClaudeAccount spawns a short-lived Claude CLI subprocess with

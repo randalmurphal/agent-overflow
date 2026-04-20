@@ -278,6 +278,17 @@ func TestManagerShutdownHonoursContextTimeout(t *testing.T) {
 	if elapsed > 2*time.Second {
 		t.Errorf("Shutdown took %v, want bounded by context", elapsed)
 	}
+
+	// Wait for the drain goroutines to settle before letting t.TempDir
+	// run its cleanup. The contract being tested is "Shutdown returns
+	// within ctx bound" — not that Shutdown synchronously drains. Under
+	// the race detector the drain goroutine can still be writing to
+	// disk when Shutdown returns, which races against t.Cleanup's
+	// os.RemoveAll and produces a "directory not empty" flake. Explicit
+	// waitForDrain closes the window by blocking until inflight == 0.
+	drainCtx, drainCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer drainCancel()
+	_ = m.waitForDrain(drainCtx)
 }
 
 func TestManagerEnqueueRoundTrip(t *testing.T) {

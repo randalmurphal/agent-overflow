@@ -203,6 +203,23 @@ func (r *Router) persistToolCallCompletion(evt provider.ProviderEvent) error {
 	launch.Summary = buildCompletionSummary(launch.Summary, meta)
 	launch.UpdatedAt = now
 
+	// Command-output payloads accumulate meta jitter across the streaming
+	// hot path: every delta rewrites the payload's meta using just the
+	// delta's content, so the collapsed card's "N lines" counter bounces
+	// around instead of converging on the total. Rebuild the meta once at
+	// completion from the cumulative payload data so the final card
+	// reflects the full command output. This is one full blob read per
+	// command — acceptable overhead at turn boundary — and only touches
+	// the payload.meta column (data blob stays put).
+	if launch.PayloadID != "" && launch.PayloadKind == "command_output" {
+		if err := r.rebuildCommandOutputMeta(launch.PayloadID); err != nil {
+			// Meta jitter is a presentation concern; do not fail the
+			// turn because we couldn't fix it. Log and continue so
+			// the tool lifecycle completes cleanly.
+			log.Printf("triage: rebuild command_output meta %s: %v", launch.PayloadID, err)
+		}
+	}
+
 	payload := completionPayload(launch.ID, evt, meta, now)
 	switch {
 	case payload == nil:
@@ -215,6 +232,39 @@ func (r *Router) persistToolCallCompletion(evt provider.ProviderEvent) error {
 	default:
 		return r.persistItem(launch, nil)
 	}
+}
+
+// rebuildCommandOutputMeta recomputes command_output payload meta from
+// the cumulative payload data. Used at EventToolComplete to counteract
+// the per-delta meta jitter in the streaming append path — each delta
+// updates meta from the delta alone (line count of THIS chunk), so the
+// final collapsed card would otherwise show the last chunk's count
+// rather than the total. Reading the full blob once here and writing
+// fresh meta is cheap compared to the per-delta savings we keep by not
+// reading the blob back on every append.
+func (r *Router) rebuildCommandOutputMeta(payloadID string) error {
+	data, err := r.store.GetPayloadData(payloadID)
+	if err != nil {
+		return fmt.Errorf("read payload for command_output meta rebuild: %w", err)
+	}
+	pm, err := r.store.GetPayloadMeta(payloadID)
+	if err != nil {
+		return fmt.Errorf("read existing command_output meta: %w", err)
+	}
+	// Preserve whatever command / exitCode the streaming path captured
+	// on the last delta — they do not accumulate, so the last-seen
+	// value is already the correct terminal value.
+	var prior CommandOutputMeta
+	_ = json.Unmarshal([]byte(pm.Meta), &prior)
+	cumulative := ExtractCommandOutputMeta(string(data), prior.Command, prior.ExitCode)
+	cumulativeJSON, err := json.Marshal(cumulative)
+	if err != nil {
+		return fmt.Errorf("marshal cumulative command_output meta: %w", err)
+	}
+	if string(cumulativeJSON) == pm.Meta {
+		return nil
+	}
+	return r.store.UpdatePayloadMeta(payloadID, string(cumulativeJSON))
 }
 
 func (r *Router) turnIndexForEvent(evt provider.ProviderEvent) (int, error) {
@@ -389,52 +439,30 @@ func completionPayload(itemID string, evt provider.ProviderEvent, meta toolCompl
 	}
 }
 
-// findToolCallByTaskID scans the thread's items for the tool_call row
-// whose meta.task_id matches. Used by background completion routing
-// when the adapter's in-memory task_id ↔ tool_use_id map has been lost
-// (reconnect with a fresh parser). Returns (Item{}, false, nil) when
-// no row matches so callers can log-and-drop without surfacing a user
-// error.
+// findToolCallByTaskID resolves the tool_call row on the thread whose
+// persisted items.meta JSON carries a matching task_id. Used by the
+// background completion router when the adapter's in-memory
+// task_id ↔ tool_use_id map has been lost (reconnect with a fresh
+// parser). Delegates to the store's indexed query (partial expression
+// index from migration v17) so the lookup is O(log N) instead of the
+// former O(items) scan + per-row JSON unmarshal.
+//
+// The store query does not filter by kind — the partial index already
+// narrows to rows carrying a task_id, which today are only ever
+// tool_call rows. The explicit kind guard below stays as a defence in
+// depth so a future unrelated kind that adopts task_id can't silently
+// be mistaken for a background tool completion. Returns (Item{}, false,
+// nil) when no row matches so callers can log-and-drop without
+// surfacing a user error.
 func (r *Router) findToolCallByTaskID(threadID, taskID string) (store.Item, bool, error) {
-	if taskID == "" {
-		return store.Item{}, false, nil
-	}
-	items, err := r.store.ListItems(threadID)
-	if err != nil {
+	item, found, err := r.store.FindToolCallItemByTaskID(threadID, taskID)
+	if err != nil || !found {
 		return store.Item{}, false, err
 	}
-	for _, it := range items {
-		if it.Kind != itemKindToolCall {
-			continue
-		}
-		if metaContainsTaskID(it.Meta, taskID) {
-			return it, true, nil
-		}
+	if item.Kind != itemKindToolCall {
+		return store.Item{}, false, nil
 	}
-	return store.Item{}, false, nil
-}
-
-// metaContainsTaskID reports whether the persisted items.meta JSON has
-// a top-level "task_id" field equal to taskID. Empty / malformed meta
-// returns false rather than an error — item meta is provider-scoped
-// and we don't want a stray value to blow up background routing.
-func metaContainsTaskID(rawMeta, taskID string) bool {
-	if rawMeta == "" || taskID == "" {
-		return false
-	}
-	var parsed map[string]json.RawMessage
-	if json.Unmarshal([]byte(rawMeta), &parsed) != nil {
-		return false
-	}
-	raw, ok := parsed["task_id"]
-	if !ok {
-		return false
-	}
-	var value string
-	if json.Unmarshal(raw, &value) != nil {
-		return false
-	}
-	return value == taskID
+	return item, true, nil
 }
 
 // mergeItemMetaTaskID merges a task_id value into an existing

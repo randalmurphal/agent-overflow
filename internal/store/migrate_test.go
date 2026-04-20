@@ -68,8 +68,8 @@ func TestMigrationVersionTracking(t *testing.T) {
 		t.Fatalf("rows err: %v", err)
 	}
 
-	if len(versions) != 16 {
-		t.Fatalf("expected 16 migration versions, got %d", len(versions))
+	if len(versions) != 17 {
+		t.Fatalf("expected 17 migration versions, got %d", len(versions))
 	}
 	if versions[0].version != 1 || versions[0].name != "initial_schema" {
 		t.Errorf("v1: got %d/%s", versions[0].version, versions[0].name)
@@ -119,6 +119,9 @@ func TestMigrationVersionTracking(t *testing.T) {
 	if versions[15].version != 16 || versions[15].name != "items_payload_id_index" {
 		t.Errorf("v16: got %d/%s", versions[15].version, versions[15].name)
 	}
+	if versions[16].version != 17 || versions[16].name != "items_meta_task_id_index" {
+		t.Errorf("v17: got %d/%s", versions[16].version, versions[16].name)
+	}
 }
 
 func TestMigrationIdempotent(t *testing.T) {
@@ -138,8 +141,8 @@ func TestMigrationIdempotent(t *testing.T) {
 	if err := db.QueryRow("SELECT COUNT(*) FROM migration_versions").Scan(&count); err != nil {
 		t.Fatalf("count: %v", err)
 	}
-	if count != 16 {
-		t.Errorf("expected 16 version rows after idempotent re-run, got %d", count)
+	if count != 17 {
+		t.Errorf("expected 17 version rows after idempotent re-run, got %d", count)
 	}
 }
 
@@ -176,8 +179,8 @@ func TestMigrationExistingVersionedDBSkipsAppliedV1(t *testing.T) {
 	if err := db.QueryRow("SELECT COUNT(*) FROM migration_versions").Scan(&appliedVersions); err != nil {
 		t.Fatalf("count migration rows: %v", err)
 	}
-	if appliedVersions != 16 {
-		t.Fatalf("expected 16 applied migrations, got %d", appliedVersions)
+	if appliedVersions != 17 {
+		t.Fatalf("expected 17 applied migrations, got %d", appliedVersions)
 	}
 }
 
@@ -217,10 +220,10 @@ func TestMigrationExistingLegacyDBSeedsTrackingAndAppliesV2(t *testing.T) {
 		t.Fatalf("read migration rows: %v", err)
 	}
 
-	if len(versions) != 16 {
-		t.Fatalf("expected 16 applied migrations, got %d", len(versions))
+	if len(versions) != 17 {
+		t.Fatalf("expected 17 applied migrations, got %d", len(versions))
 	}
-	expected := []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
+	expected := []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17}
 	for i, want := range expected {
 		if versions[i] != want {
 			t.Fatalf("unexpected migration versions: %v", versions)
@@ -323,10 +326,10 @@ func TestMigrationExistingLegacyParityDBBackfillsVersionHistory(t *testing.T) {
 		t.Fatalf("read migration versions: %v", err)
 	}
 
-	if len(versions) != 16 {
-		t.Fatalf("expected 16 migration rows after legacy backfill + new migrations, got %d", len(versions))
+	if len(versions) != 17 {
+		t.Fatalf("expected 17 migration rows after legacy backfill + new migrations, got %d", len(versions))
 	}
-	expectedVersions := []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
+	expectedVersions := []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17}
 	for i, want := range expectedVersions {
 		if versions[i].version != want {
 			t.Fatalf("unexpected migration versions: %+v", versions)
@@ -1093,6 +1096,57 @@ func TestMigrationV16AddsPayloadIDIndex(t *testing.T) {
 	}
 	if !strings.Contains(sqlText, "payload_id IS NOT NULL") {
 		t.Errorf("expected partial index on payload_id IS NOT NULL, got: %s", sqlText)
+	}
+}
+
+// TestMigrationV17AddsMetaTaskIDIndex pins the partial expression index
+// added in v17 so findToolCallByTaskID can resolve the matching
+// tool_call row via an index seek instead of a full thread scan +
+// per-row JSON unmarshal. The index expression mirrors the lookup in
+// FindToolCallByTaskID (which compares json_extract(meta,
+// '$.task_id')), so it stays usable only while both shapes agree.
+func TestMigrationV17AddsMetaTaskIDIndex(t *testing.T) {
+	s := newTestStore(t)
+
+	var sqlText string
+	if err := s.db.QueryRow(
+		`SELECT sql FROM sqlite_master WHERE name = 'idx_items_meta_task_id'`,
+	).Scan(&sqlText); err != nil {
+		t.Fatalf("read idx_items_meta_task_id sql: %v", err)
+	}
+	if !strings.Contains(sqlText, "json_extract(meta, '$.task_id')") {
+		t.Errorf("expected index expression on json_extract(meta, '$.task_id'), got: %s", sqlText)
+	}
+	if !strings.Contains(sqlText, "WHERE json_extract(meta, '$.task_id') IS NOT NULL") {
+		t.Errorf("expected partial predicate on task_id IS NOT NULL, got: %s", sqlText)
+	}
+
+	// Confirm the planner actually uses the index for the exact
+	// predicate FindToolCallByTaskID emits — without this check a
+	// future refactor of the query shape could silently degrade back
+	// to a scan while leaving the index orphaned.
+	rows, err := s.db.Query(
+		`EXPLAIN QUERY PLAN
+		 SELECT id FROM items
+		  WHERE thread_id = ? AND json_extract(meta, '$.task_id') = ?`,
+		"t", "task-1",
+	)
+	if err != nil {
+		t.Fatalf("explain: %v", err)
+	}
+	defer rows.Close()
+	var plan strings.Builder
+	for rows.Next() {
+		var id, parent, notused sql.NullInt64
+		var detail string
+		if err := rows.Scan(&id, &parent, &notused, &detail); err != nil {
+			t.Fatalf("scan plan: %v", err)
+		}
+		plan.WriteString(detail)
+		plan.WriteString("\n")
+	}
+	if !strings.Contains(plan.String(), "idx_items_meta_task_id") {
+		t.Errorf("query plan did not use idx_items_meta_task_id: %s", plan.String())
 	}
 }
 

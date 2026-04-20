@@ -1649,15 +1649,19 @@ func TestCodexHandleServerRequestPermission(t *testing.T) {
 func TestCodexHandleServerRequestUnknown(t *testing.T) {
 	s, _ := newTestCodexSession(t)
 
-	// Unknown server request — should send error response.
-	// With cat, the error response echoes back. We just verify no crash.
+	// Unknown server request — should send error response. With cat,
+	// the error response echoes back and readLoop sees it as a stray
+	// response (no matching pending id) and logs-and-drops. We just
+	// verify no crash. Drive a synchronous observation instead of the
+	// former fixed-200ms sleep: write the request, then invoke
+	// dispatchLine directly on the same line so its decode path runs
+	// in the test goroutine and any panic or error surfaces
+	// immediately.
 	line := []byte(`{"jsonrpc":"2.0","id":1,"method":"unknown/request","params":{}}`)
 	if err := s.proc.WriteLine(line); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-
-	// Give readLoop time to process both the original and echo.
-	time.Sleep(200 * time.Millisecond)
+	s.dispatchLine(line)
 }
 
 func TestCodexSendRequestViaCat(t *testing.T) {
@@ -2264,9 +2268,11 @@ func TestHandleDynamicToolCallNoHandler(t *testing.T) {
 	if err := s.proc.WriteLine(line); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-
-	// Give readLoop time to process. With cat, the error response echoes back.
-	time.Sleep(200 * time.Millisecond)
+	// Drive dispatchLine in the test goroutine so the decode path
+	// runs synchronously — former 200ms sleep just hid the fact that
+	// there is no readLoop assertion this test makes beyond "it did
+	// not crash."
+	s.dispatchLine(line)
 }
 
 // -- handleServerRequest: elicitation branch --

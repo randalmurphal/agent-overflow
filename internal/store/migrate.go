@@ -511,6 +511,24 @@ CREATE INDEX IF NOT EXISTS idx_items_payload_id
     ON items(payload_id) WHERE payload_id IS NOT NULL;
 `,
 	},
+	{
+		Version: 17,
+		Name:    "items_meta_task_id_index",
+		// Background tool completion routing used to O(N) scan every
+		// item on the thread to find the tool_call row whose
+		// items.meta.task_id matches a Claude task_updated event with
+		// an unknown tool_use_id. A partial expression index on
+		// json_extract(meta, '$.task_id') — restricted to rows that
+		// actually carry a task_id — converts that scan into an index
+		// lookup. The predicate keeps the index tiny: only the handful
+		// of inline background-tool rows (Bash with run_in_background,
+		// Task subagents) ever have task_id set.
+		SQL: `
+CREATE INDEX IF NOT EXISTS idx_items_meta_task_id
+    ON items(thread_id, json_extract(meta, '$.task_id'))
+ WHERE json_extract(meta, '$.task_id') IS NOT NULL;
+`,
+	},
 }
 
 // v13SQL is the DROP-and-rebuild payload for migration v13. Extracted so

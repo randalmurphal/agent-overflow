@@ -505,6 +505,47 @@ func (s *Store) GetItem(id string) (Item, bool, error) {
 	return item, true, nil
 }
 
+// FindToolCallItemByTaskID resolves a thread's tool_call row whose persisted
+// items.meta JSON carries a top-level task_id matching taskID. Used by the
+// background completion router when a Claude task_updated/task_notification
+// event arrives without an inline tool_use_id — most commonly after a
+// reconnect with a fresh parser, when the adapter's in-memory
+// task_id ↔ tool_use_id map has been dropped.
+//
+// The query is O(log N) thanks to the partial expression index
+// idx_items_meta_task_id (migration v17) which materialises
+// json_extract(meta, '$.task_id') for the narrow subset of rows that
+// actually carry a task_id. The kind filter stays in Go-space rather
+// than the index because every row this function cares about is a
+// tool_call by construction (only that kind sets task_id in meta), and
+// adding kind to the index would bloat it for no planner benefit.
+//
+// Empty taskID returns (Item{}, false, nil) so callers can short-circuit
+// without a DB round-trip.
+func (s *Store) FindToolCallItemByTaskID(threadID, taskID string) (Item, bool, error) {
+	if taskID == "" {
+		return Item{}, false, nil
+	}
+	row := s.db.QueryRow(
+		`SELECT `+itemColumns+`
+		   FROM items
+		   LEFT JOIN payloads ON payloads.id = items.payload_id
+		  WHERE items.thread_id = ?
+		    AND json_extract(items.meta, '$.task_id') = ?
+		  ORDER BY items.updated_at DESC
+		  LIMIT 1`,
+		threadID, taskID,
+	)
+	item, err := scanItemRow(row)
+	if err == sql.ErrNoRows {
+		return Item{}, false, nil
+	}
+	if err != nil {
+		return Item{}, false, fmt.Errorf("store: find tool call by task id %s: %w", taskID, err)
+	}
+	return item, true, nil
+}
+
 // GetItemByPayloadID returns the item whose payload_id matches payloadID.
 // Used by the "save payload to file" flow so it does not have to iterate
 // threads × items to find the owner. A missing payload returns (Item{},

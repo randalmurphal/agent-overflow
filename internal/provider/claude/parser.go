@@ -87,6 +87,9 @@ func (p *Parser) markToolUseCompleted(toolUseID string) bool {
 	if _, ok := p.completedToolUseIDs[toolUseID]; ok {
 		return false
 	}
+	if len(p.completedToolUseIDs) >= parserTaskMapCap {
+		p.completedToolUseIDs = make(map[string]struct{})
+	}
 	p.completedToolUseIDs[toolUseID] = struct{}{}
 	return true
 }
@@ -169,11 +172,31 @@ func (p *Parser) clearBackground(toolUseID string) {
 	delete(p.backgroundToolUses, toolUseID)
 }
 
+// parserTaskMapCap bounds the taskToolUses / completedTasks /
+// taskOutputTasks / completedToolUseIDs maps so an abandoned task — one
+// that never produces a matching clearTask — cannot grow the parser's
+// per-session state without bound. When the cap is hit the map is
+// replaced wholesale, which may re-emit a completion for an ancient
+// task; that is benign because the corresponding store row is already
+// terminal, and the cap is well above any realistic in-flight task
+// fan-out.
+const parserTaskMapCap = 1024
+
+// parserStreamBlockCap bounds streamBlockTypes for the same reason —
+// Claude normally pairs every content_block_start with a block_stop
+// that calls takeStreamBlock, but an interrupt (or a malformed
+// abandoned block) can leak the entry. The cap covers only the
+// pathological case.
+const parserStreamBlockCap = 1024
+
 func (p *Parser) rememberTaskToolUse(taskID, toolUseID string) {
 	if taskID == "" || toolUseID == "" {
 		return
 	}
 	if p.taskToolUses == nil {
+		p.taskToolUses = make(map[string]string)
+	}
+	if len(p.taskToolUses) >= parserTaskMapCap {
 		p.taskToolUses = make(map[string]string)
 	}
 	p.taskToolUses[taskID] = toolUseID
@@ -211,6 +234,9 @@ func (p *Parser) markTaskCompleted(taskID string) bool {
 	if _, ok := p.completedTasks[taskID]; ok {
 		return false
 	}
+	if len(p.completedTasks) >= parserTaskMapCap {
+		p.completedTasks = make(map[string]struct{})
+	}
 	p.completedTasks[taskID] = struct{}{}
 	return true
 }
@@ -233,6 +259,9 @@ func (p *Parser) markTaskOutput(taskID string) bool {
 	if _, ok := p.taskOutputTasks[taskID]; ok {
 		return false
 	}
+	if len(p.taskOutputTasks) >= parserTaskMapCap {
+		p.taskOutputTasks = make(map[string]struct{})
+	}
 	p.taskOutputTasks[taskID] = struct{}{}
 	return true
 }
@@ -242,6 +271,9 @@ func (p *Parser) rememberStreamBlock(parentToolUseID string, index int, blockTyp
 		return
 	}
 	if p.streamBlockTypes == nil {
+		p.streamBlockTypes = make(map[string]string)
+	}
+	if len(p.streamBlockTypes) >= parserStreamBlockCap {
 		p.streamBlockTypes = make(map[string]string)
 	}
 	p.streamBlockTypes[streamBlockKey(parentToolUseID, index)] = blockType

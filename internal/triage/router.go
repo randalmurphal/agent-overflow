@@ -446,12 +446,25 @@ func (r *Router) lookupThreadProvider(threadID string) (string, error) {
 	return thread.Provider, nil
 }
 
+// unknownSessionStatusCap bounds the throttle set so a long-running
+// process that sees a stream of novel session-status strings — a
+// provider regression, a wire-format drift, or a fuzzed input — cannot
+// grow the map without bound. When the cap is hit the oldest entries
+// are dropped wholesale (map reset) which re-admits one extra log line
+// per distinct value after a cap rollover. That is acceptable because
+// the cap is orders of magnitude higher than the known-good enumeration
+// (~6 persistent kinds today).
+const unknownSessionStatusCap = 256
+
 func (r *Router) logUnknownSessionStatusOnce(content string) {
 	key := strings.TrimSpace(content)
 	r.mu.Lock()
 	if _, seen := r.unknownSessionStatusLogged[key]; seen {
 		r.mu.Unlock()
 		return
+	}
+	if len(r.unknownSessionStatusLogged) >= unknownSessionStatusCap {
+		r.unknownSessionStatusLogged = make(map[string]struct{})
 	}
 	r.unknownSessionStatusLogged[key] = struct{}{}
 	r.mu.Unlock()
