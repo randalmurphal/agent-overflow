@@ -26,8 +26,27 @@ func (a *App) GetPayloadPreview(payloadID string, maxBytes int) (PayloadPreview,
 	}, nil
 }
 
-func (a *App) SavePayloadToFile(payloadID string) (string, error) {
+// savePayloadPicker resolves a destination path for SavePayloadToFile.
+// Production uses the Wails save dialog; tests inject a stub via
+// a.savePayloadPickerFn so the write path is exercisable without a
+// running GUI.
+type savePayloadPicker func(filename string) (string, error)
+
+func (a *App) resolveSavePayloadPicker() savePayloadPicker {
+	if a.savePayloadPickerFn != nil {
+		return a.savePayloadPickerFn
+	}
 	if a.app == nil {
+		return nil
+	}
+	return func(filename string) (string, error) {
+		return a.app.Dialog.SaveFile().SetFilename(filename).PromptForSingleSelection()
+	}
+}
+
+func (a *App) SavePayloadToFile(payloadID string) (string, error) {
+	picker := a.resolveSavePayloadPicker()
+	if picker == nil {
 		return "", fmt.Errorf("app: save payload to file requires active application")
 	}
 
@@ -44,7 +63,7 @@ func (a *App) SavePayloadToFile(payloadID string) (string, error) {
 	}
 	filename = filepath.Base(filename)
 
-	path, err := a.app.Dialog.SaveFile().SetFilename(filename).PromptForSingleSelection()
+	path, err := picker(filename)
 	if err != nil {
 		return "", fmt.Errorf("save payload dialog: %w", err)
 	}

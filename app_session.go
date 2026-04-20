@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
@@ -165,6 +166,14 @@ func (a *App) SendMessage(threadID string, content string) error {
 // InterruptTurn fires a provider-level interrupt on the thread's active
 // session. Returns an error when no session is active or the provider
 // surface isn't wired up.
+//
+// Spec: on user interrupt, any streaming items on the current turn are
+// flipped to errored with a " — stopped" suffix, and a system `error`
+// row with Summary "Stopped by user" is appended. This happens AFTER
+// the provider interrupt signal is sent so the UI gets a consistent
+// "signal sent, now here's the record" ordering. If the triage
+// bookkeeping fails we log — the provider interrupt already fired, so
+// the session state is correct even if the timeline marker is missing.
 func (a *App) InterruptTurn(threadID string) error {
 	a.mu.Lock()
 	sess, ok := a.sessions[threadID]
@@ -177,7 +186,15 @@ func (a *App) InterruptTurn(threadID string) error {
 	if providerSess == nil {
 		return fmt.Errorf("session has no provider")
 	}
-	return providerSess.Interrupt(context.Background())
+	if err := providerSess.Interrupt(context.Background()); err != nil {
+		return err
+	}
+	if a.triage != nil {
+		if _, err := a.triage.MarkUserInterrupt(threadID); err != nil {
+			log.Printf("interrupt turn: mark user interrupt: %v", err)
+		}
+	}
+	return nil
 }
 
 // StopSession tears down the thread's provider session. Idempotent: a

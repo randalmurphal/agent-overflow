@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"agent-overflow/internal/provider"
@@ -21,6 +22,9 @@ import (
 // workspace. Checkpoint failure is NOT fatal to the turn — it surfaces as a
 // `provider:event_error` event the frontend can display, but the turn proceeds.
 func (r *Router) handleTurnStart(evt provider.ProviderEvent) error {
+	// provider:event fanout is retained for the Go test harness (see
+	// router.handleInit). The live frontend reacts to item upserts
+	// instead.
 	r.emit("provider:event", evt)
 	turnIndex := evt.TurnIndex
 	if turnIndex == 0 {
@@ -258,6 +262,9 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 	r.unmarkTurnCaptured(evt.ThreadID, turnIndex)
 	r.clearOpenTurn(evt.ThreadID)
 	r.closeTurnSpan(evt.ThreadID, persistErr)
+	// provider:event fanout is retained for the Go test harness (see
+	// router.handleInit). The live frontend reacts to item upserts
+	// instead.
 	r.emit("provider:event", evt)
 	return persistErr
 }
@@ -355,6 +362,20 @@ func isFatalProviderError(raw json.RawMessage) bool {
 }
 
 func (r *Router) markTurnItemsErrored(threadID string, turnIndex int, now int64) error {
+	return r.flipTurnItemsErrored(threadID, turnIndex, now, interruptedSummary)
+}
+
+// flipTurnItemsErrored flips every running/streaming item in the turn
+// to errored and rewrites its summary via summaryFn. The function-over-
+// string indirection lets the user-interrupt path ("— stopped") and
+// the truncated-turn path ("— interrupted") share the same iteration
+// logic without either branch learning about the other.
+func (r *Router) flipTurnItemsErrored(
+	threadID string,
+	turnIndex int,
+	now int64,
+	summaryFn func(string) string,
+) error {
 	items, err := r.store.ListTurnItems(threadID, turnIndex)
 	if err != nil {
 		return fmt.Errorf("error flip list turn items: %w", err)
@@ -364,13 +385,67 @@ func (r *Router) markTurnItemsErrored(threadID string, turnIndex int, now int64)
 			continue
 		}
 		item.Status = statusErrored
-		item.Summary = interruptedSummary(item.Summary)
+		item.Summary = summaryFn(item.Summary)
 		item.UpdatedAt = now
 		if err := r.persistItem(item, nil); err != nil {
 			return fmt.Errorf("error flip item %s: %w", item.ID, err)
 		}
 	}
 	return nil
+}
+
+// stoppedSummary is the user-interrupt sibling of interruptedSummary.
+// Spec wording: "stopped" for a user-initiated interrupt, "interrupted"
+// for a fatal crash / truncation. Both suffixes are idempotent so
+// re-applying leaves the summary unchanged.
+func stoppedSummary(summary string) string {
+	summary = strings.TrimSpace(summary)
+	if summary == "" {
+		return "Stopped"
+	}
+	const suffix = " — stopped"
+	if strings.HasSuffix(summary, suffix) {
+		return summary
+	}
+	return summary + suffix
+}
+
+// MarkUserInterrupt is the public chokepoint for the app-layer
+// interrupt flow. It flips every streaming/running item in the current
+// turn to errored with a " — stopped" suffix and records a new
+// "Stopped by user" system error row so the timeline carries the
+// explicit user-facing signal.
+//
+// Returns the error id that was persisted so the caller can surface
+// diagnostics or correlate with downstream emissions; empty string
+// when the thread has no open turn.
+func (r *Router) MarkUserInterrupt(threadID string) (string, error) {
+	turnIndex, err := r.currentTurnIndex(threadID)
+	if err != nil {
+		// Nothing to stop if we can't resolve a turn.
+		return "", nil
+	}
+	now := time.Now().UnixMilli()
+	if err := r.flipTurnItemsErrored(threadID, turnIndex, now, stoppedSummary); err != nil {
+		return "", err
+	}
+	seq := r.nextErrorSequence(threadID, turnIndex, "")
+	errID := nextErrorID(turnIndex, "", seq)
+	item := store.Item{
+		ID:        errID,
+		ThreadID:  threadID,
+		TurnIndex: turnIndex,
+		Kind:      "error",
+		Role:      "system",
+		Status:    statusCompleted,
+		Summary:   "Stopped by user",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := r.persistItem(item, nil); err != nil {
+		return "", err
+	}
+	return errID, nil
 }
 
 // Wait blocks until every in-flight Handle call has returned, or until

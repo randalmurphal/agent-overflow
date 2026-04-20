@@ -270,4 +270,27 @@ describe('<SubagentGroup>', () => {
     // the marker to avoid locking to a specific element structure.
     expect(container.textContent).toMatch(/this got cut off somewhere…/);
   });
+
+  it('grandchild (depth >= 3) renders as marker only — no recursive card', () => {
+    // Spec: "first card depth=1, its children depth=2, grandchildren
+    // depth=3 plateau". At depth=3 the component must render a
+    // "Spawned subagent…" marker instead of another nested card.
+    const group = mkGroup({
+      parentId: 'grand',
+      children: [mkLeaf('leaf-under-grand', 'hidden body')],
+      descendantCount: 1,
+      preview: 'hidden body',
+    });
+    const { queryByTestId, queryByRole, getByText } = render(SubagentGroupTestHarness, {
+      props: { group, startDepth: 3 },
+    });
+    // No expandable card is rendered for a depth-3 group.
+    expect(queryByTestId('subagent-group')).toBeNull();
+    expect(queryByRole('button')).toBeNull();
+    // The marker is rendered with the Spawned subagent label + entry count.
+    expect(queryByTestId('subagent-group-marker')).not.toBeNull();
+    expect(getByText(/Spawned subagent/i)).toBeInTheDocument();
+    // The descendant leaf is NOT painted (no drill-down past the cap).
+    expect(queryByTestId('leaf')).toBeNull();
+  });
 });

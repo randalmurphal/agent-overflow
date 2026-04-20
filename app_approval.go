@@ -28,10 +28,18 @@ func (a *App) RespondToApproval(threadID string, response provider.ApprovalRespo
 	}
 
 	decision := provider.NormalizeApprovalDecision(response)
-	meta, _ := json.Marshal(map[string]any{
+	metaFields := map[string]any{
 		"requestId": response.RequestID,
 		"decision":  decision,
-	})
+	}
+	// Forward updatedInput through the resolution event so triage can
+	// refresh the tool_call summary to reflect the MODIFIED input on an
+	// "amended" decision (spec invariant: an amended tool row shows the
+	// input that will actually run, not the original).
+	if len(response.UpdatedInput) > 0 {
+		metaFields["updatedInput"] = json.RawMessage(response.UpdatedInput)
+	}
+	meta, _ := json.Marshal(metaFields)
 	evt := provider.ProviderEvent{
 		Kind:      provider.EventApprovalResolved,
 		ThreadID:  threadID,

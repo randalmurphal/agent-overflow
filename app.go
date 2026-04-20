@@ -114,6 +114,11 @@ type App struct {
 	// the hook with the (name, envelope) it would have sent through
 	// the Wails event bus.
 	testEmitHook func(name string, data any)
+	// savePayloadPickerFn is a test-only override for the save-file
+	// dialog used by SavePayloadToFile. Production leaves it nil and
+	// the real Wails dialog runs; tests install a stub that returns a
+	// canned path (or empty for "cancelled").
+	savePayloadPickerFn savePayloadPicker
 }
 
 // session wraps a provider session regardless of type. Exactly one of

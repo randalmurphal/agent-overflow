@@ -694,3 +694,49 @@ func TestTaskUpdatedUnmatchedMetaTaskIDIsDropped(t *testing.T) {
 		t.Errorf("expected no rows for unmatched meta.task_id, got %+v", items)
 	}
 }
+
+// TestItemUpdatedDoesNotReopenCompletedToolCall verifies that a Codex
+// item/updated notification arriving AFTER item/completed does not
+// reset the tool_call row's status back to "running". The protocol
+// emitter stamps update_only:true onto the meta and triage must
+// respect it by mutating Summary/Meta only — not Status.
+func TestItemUpdatedDoesNotReopenCompletedToolCall(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	startMeta, _ := json.Marshal(map[string]any{"toolName": "Bash"})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "tool-u",
+		ItemType: "Bash", Meta: startMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	completeMeta, _ := json.Marshal(map[string]any{"exit_code": 0})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "tool-u",
+		Meta: completeMeta, Content: "ok", Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+
+	// Simulate a late item/updated arriving after completion.
+	updateMeta, _ := json.Marshal(map[string]any{
+		"toolName":    "Bash",
+		"update_only": true,
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "tool-u",
+		ItemType: "Bash", Meta: updateMeta, Replace: true, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+
+	items := findItemsByKind(t, st, "t1", itemKindToolCall)
+	if len(items) != 1 {
+		t.Fatalf("expected 1 tool_call after update, got %d", len(items))
+	}
+	if items[0].Status != statusCompleted {
+		t.Errorf("status after update_only = %q, want %q (must not reopen)", items[0].Status, statusCompleted)
+	}
+}

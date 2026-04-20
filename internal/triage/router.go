@@ -279,6 +279,12 @@ func (r *Router) handleToolComplete(evt provider.ProviderEvent) error {
 }
 
 func (r *Router) handleInit(evt provider.ProviderEvent) error {
+	// provider:event fanout is retained here for the test harness that
+	// uses capturedEventBus.nextProviderEventOfKind as a completion
+	// signal — the live frontend does NOT listen on this channel (it
+	// reacts to provider:item_upsert, provider:approval, and
+	// provider:status instead). When the test harness is migrated, this
+	// can drop.
 	r.emit("provider:event", evt)
 	if evt.Meta == nil {
 		return nil
@@ -508,6 +514,12 @@ func (r *Router) handleError(evt provider.ProviderEvent) error {
 	return r.persistItem(item, nil)
 }
 
+// emitInline forwards the raw provider event on the provider:event
+// channel. The live frontend does NOT listen on this channel (see
+// handleInit's note); the emission is retained for the Go test harness
+// that uses nextProviderEventOfKind as a completion signal. A future
+// refactor can drop this once the harness migrates to
+// provider:item_upsert-driven synchronization.
 func (r *Router) emitInline(evt provider.ProviderEvent) error {
 	r.emit("provider:event", evt)
 	return nil
@@ -523,6 +535,17 @@ func (r *Router) emitThreadUpdated(threadID string) {
 }
 
 func (r *Router) persistItem(item store.Item, payload *store.Payload) error {
+	// parent_id invariant (spec invariant 7): items.parent_id must point
+	// to an existing tool_call row. Drop invalid / cyclic refs here rather
+	// than rejecting the whole persistence — a dangling parent would only
+	// hide the row from the UI, not corrupt the thread.
+	if item.ParentID != "" {
+		if dropped, reason := r.shouldDropParentID(item.ThreadID, item.ID, item.ParentID); dropped {
+			log.Printf("triage: dropping parent_id %q on item %s: %s", item.ParentID, item.ID, reason)
+			item.ParentID = ""
+		}
+	}
+
 	persisted, err := r.store.UpsertItem(item, payload)
 	if err != nil {
 		return err
@@ -535,4 +558,82 @@ func (r *Router) persistItem(item store.Item, payload *store.Payload) error {
 			metric.WithAttributes(attribute.String("kind", payload.Kind)))
 	}
 	return nil
+}
+
+// shouldDropParentID decides whether an item's parent_id should be
+// dropped before persistence. The spec invariant is that parent_id
+// ultimately points to a tool_call row, but text/thinking deltas from
+// a subagent can arrive before the parent Task tool_call is persisted
+// — so a missing parent is NOT grounds for dropping the link. Instead
+// we guard against two real corruption patterns:
+//
+//  1. Self-reference (parent_id == item.id).
+//  2. A cycle discovered by walking existing parent_id links back to
+//     the same row.
+//  3. A parent row that EXISTS but is not a tool_call (the invariant
+//     violation the spec actually cares about: a text item attached
+//     to another text item).
+//
+// Returns (true, reason) on drop; (false, "") when the link is either
+// valid or refers to a yet-unseen row that may arrive later. Lookup
+// failures downgrade to (false, "") — a transient store error never
+// blocks persistence.
+func (r *Router) shouldDropParentID(threadID, itemID, parentID string) (bool, string) {
+	if parentID == itemID {
+		return true, "self reference"
+	}
+	seen := map[string]struct{}{itemID: {}}
+	current := parentID
+	for hops := 0; hops < 16; hops++ {
+		if _, cycle := seen[current]; cycle {
+			return true, "cycle detected"
+		}
+		seen[current] = struct{}{}
+		parent, found, err := r.store.GetThreadItem(threadID, current)
+		if err != nil {
+			// Transient lookup error — keep the link, the store write
+			// below will surface any hard error.
+			return false, ""
+		}
+		if !found {
+			// Parent hasn't been persisted yet (common for subagent
+			// text deltas arriving before the Task tool_call row).
+			// Leave the link — the row may materialise shortly.
+			return false, ""
+		}
+		if parent.Kind != itemKindToolCall {
+			return true, fmt.Sprintf("parent kind %q is not tool_call", parent.Kind)
+		}
+		if parent.ParentID == "" {
+			return false, ""
+		}
+		current = parent.ParentID
+	}
+	return true, "parent chain too deep"
+}
+
+// PersistItem is the public chokepoint for non-provider callers that
+// need the same UpsertItem-then-emit semantics the router uses
+// internally (user-typed messages, send-failure errors). Routing every
+// persistence through this guarantees parent_id validation, emit order,
+// and metrics stay consistent regardless of source.
+func (r *Router) PersistItem(item store.Item, payload *store.Payload) error {
+	return r.persistItem(item, payload)
+}
+
+// NextErrorSequence returns the next per-turn error sequence number for
+// the given thread + turn + scope. Exposed so app-layer callers (e.g.
+// send-failure persistence) can build error IDs via the same counter
+// EventError uses, preventing collisions when a provider error lands on
+// the same turn as a user-visible send failure.
+func (r *Router) NextErrorSequence(threadID string, turnIndex int, scope string) int {
+	return r.nextErrorSequence(threadID, turnIndex, scope)
+}
+
+// NewErrorID builds a deterministic error:<turnIndex>[:<scope>]:<seq>
+// id. Exposed alongside NextErrorSequence so callers outside triage can
+// build rows that slot in next to provider-sourced errors without
+// reimplementing the id format.
+func NewErrorID(turnIndex int, scope string, seq int) string {
+	return nextErrorID(turnIndex, scope, seq)
 }

@@ -136,26 +136,32 @@ func (a *App) sendMessage(threadID string, content string) error {
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
-	persisted, err := a.store.UpsertItem(userItem, nil)
-	if err != nil {
+	// Route through the triage chokepoint so parent_id validation,
+	// emit order, and ItemsPersisted metric stay consistent with
+	// provider-sourced items.
+	if err := a.triage.PersistItem(userItem, nil); err != nil {
 		return fmt.Errorf("send message: persist user message: %w", err)
 	}
-	a.emit("provider:item_upsert", persisted)
 
 	if err := sendToProvider(sess, threadID, content); err != nil {
+		// Allocate an error id from the same per-turn counter the
+		// EventError handler uses so a subsequent provider error on
+		// the same turn doesn't collide on "error:<turn>:0".
+		errSeq := a.triage.NextErrorSequence(threadID, turnIndex, "")
+		errNow := time.Now().UnixMilli()
 		errorItem := store.Item{
-			ID:        fmt.Sprintf("error:%d:0", turnIndex),
+			ID:        triage.NewErrorID(turnIndex, "", errSeq),
 			ThreadID:  threadID,
 			TurnIndex: turnIndex,
 			Kind:      "error",
 			Role:      "system",
 			Status:    "completed",
 			Summary:   fmt.Sprintf("Failed to send: %v", err),
-			CreatedAt: time.Now().UnixMilli(),
-			UpdatedAt: time.Now().UnixMilli(),
+			CreatedAt: errNow,
+			UpdatedAt: errNow,
 		}
-		if persistedErr, upsertErr := a.store.UpsertItem(errorItem, nil); upsertErr == nil {
-			a.emit("provider:item_upsert", persistedErr)
+		if persistErr := a.triage.PersistItem(errorItem, nil); persistErr != nil {
+			log.Printf("send message: persist send-failure error: %v", persistErr)
 		}
 		_ = a.triage.Handle(provider.ProviderEvent{
 			Kind:      provider.EventTurnComplete,

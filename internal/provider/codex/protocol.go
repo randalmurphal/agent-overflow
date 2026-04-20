@@ -158,12 +158,19 @@ func classifyItemNotification(threadID, method string, params json.RawMessage, n
 		if itemType == "" {
 			return nil, true
 		}
+		// item/updated is an in-place refresh of a tool_call's summary/meta —
+		// it must NOT reset status back to "running" for rows that have
+		// already completed. Mark the meta with update_only:true so triage
+		// routes this as a partial update instead of a fresh start.
+		updatedMeta := mergeMetaKeys(params, map[string]any{
+			"update_only": true,
+		})
 		return []provider.ProviderEvent{{
 			Kind:      provider.EventToolStart,
 			ThreadID:  threadID,
 			ItemID:    itemID,
 			ItemType:  itemType,
-			Meta:      params,
+			Meta:      updatedMeta,
 			Replace:   true,
 			Timestamp: now,
 		}}, true

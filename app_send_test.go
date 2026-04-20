@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -12,6 +13,7 @@ import (
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/testutil"
+	"agent-overflow/internal/triage"
 )
 
 func TestSendMessageHappyPath(t *testing.T) {
@@ -536,6 +538,106 @@ func TestInterruptTurnHappyPathClaude(t *testing.T) {
 	}
 }
 
+// TestInterruptCreatesStoppedSystemError covers spec behavior: a user
+// interrupt flips running/streaming items to errored with a " — stopped"
+// suffix and records a new "Stopped by user" system error row. The
+// existing markTurnItemsErrored path uses " — interrupted" for fatal
+// crash / truncation; these suffixes must NOT collapse into one —
+// "stopped" is user-initiated, "interrupted" is everything else.
+func TestInterruptCreatesStoppedSystemError(t *testing.T) {
+	app := newTestAppWithStore(t)
+	thread := testThread("thread-interrupt-stopped")
+	thread.Provider = string(provider.Claude)
+	thread.WorkspacePath = t.TempDir()
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+
+	app.triage = triage.NewRouter(app.store, func(string, any) {})
+
+	// Start a turn and seed a running tool_call in it.
+	if err := app.triage.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTurnStart,
+		ThreadID:  thread.ID,
+		TurnIndex: 1,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn start: %v", err)
+	}
+	startMeta, _ := json.Marshal(map[string]any{
+		"toolName": "Bash",
+		"input":    map[string]any{"command": "sleep 60"},
+	})
+	if err := app.triage.Handle(provider.ProviderEvent{
+		Kind:      provider.EventToolStart,
+		ThreadID:  thread.ID,
+		ItemID:    "tool-stopped",
+		ItemType:  "Bash",
+		Meta:      startMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("tool start: %v", err)
+	}
+
+	sess, err := claude.NewSession(
+		context.Background(),
+		thread.ID,
+		claude.Config{
+			Binary:  writeClaudePassthroughBinary(t),
+			WorkDir: thread.WorkspacePath,
+		},
+		func(provider.ProviderEvent) {},
+	)
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(func() { _ = sess.Close() })
+	app.sessions[thread.ID] = session{
+		provider: string(provider.Claude),
+		token:    "tok",
+		claude:   sess,
+	}
+
+	if err := app.InterruptTurn(thread.ID); err != nil {
+		t.Fatalf("InterruptTurn: %v", err)
+	}
+
+	items, err := app.store.ListItems(thread.ID)
+	if err != nil {
+		t.Fatalf("ListItems: %v", err)
+	}
+
+	var toolCall, sysError store.Item
+	for _, it := range items {
+		if it.Kind == "tool_call" {
+			toolCall = it
+		}
+		if it.Kind == "error" && it.Role == "system" {
+			sysError = it
+		}
+	}
+	if toolCall.ID == "" {
+		t.Fatal("tool_call row missing")
+	}
+	if toolCall.Status != "errored" {
+		t.Errorf("tool_call status = %q, want errored", toolCall.Status)
+	}
+	if !strings.HasSuffix(toolCall.Summary, " — stopped") {
+		t.Errorf("tool_call summary %q must end with ' — stopped'", toolCall.Summary)
+	}
+	// The " — interrupted" suffix is for truncation/crash; never for
+	// user interrupts.
+	if strings.Contains(toolCall.Summary, " — interrupted") {
+		t.Errorf("tool_call summary %q must not carry interrupted suffix", toolCall.Summary)
+	}
+	if sysError.ID == "" {
+		t.Fatal("system error row missing — expected 'Stopped by user'")
+	}
+	if sysError.Summary != "Stopped by user" {
+		t.Errorf("system error summary = %q, want 'Stopped by user'", sysError.Summary)
+	}
+}
+
 func TestStopSessionRemovesFromMap(t *testing.T) {
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-stop")
@@ -786,6 +888,109 @@ func TestSendMessagePersistsUserItemAndErrorWhenProviderSendFails(t *testing.T) 
 	}
 	if !userFound || !errorFound {
 		t.Fatalf("expected user_text + error after provider send failure, got %+v", items)
+	}
+}
+
+// TestSendMessageGoesThroughRouter asserts that both the optimistic
+// user_text item and the send-failure error row flow through
+// triage.Router.PersistItem (the single persistence chokepoint) rather
+// than bypassing it via a raw store.UpsertItem call. We exercise the
+// failure path because it hits both persistence sites in the same run;
+// success alone would miss the send-failure branch. Regression mode:
+// if a future refactor re-introduces the direct store.UpsertItem call,
+// the items wouldn't emit through the registered emit func, and the
+// error:<turn>:<seq> id would collide with a fresh provider error on
+// the same turn.
+func TestSendMessageGoesThroughRouter(t *testing.T) {
+	app := newTestAppWithStore(t)
+	thread := testThread("thread-send-router")
+	thread.Provider = string(provider.Claude)
+	thread.WorkspacePath = t.TempDir()
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+
+	// Record every emit so we can assert the items flowed through the
+	// router (which emits on persist) and not via a direct
+	// store.UpsertItem (which wouldn't call emit at all).
+	var mu sync.Mutex
+	var emissions []string
+	var upsertedIDs []string
+	app.triage = triage.NewRouter(app.store, func(name string, data any) {
+		mu.Lock()
+		emissions = append(emissions, name)
+		if name == "provider:item_upsert" {
+			if item, ok := data.(store.Item); ok {
+				upsertedIDs = append(upsertedIDs, item.ID)
+			}
+		}
+		mu.Unlock()
+	})
+
+	sess, err := claude.NewSession(
+		context.Background(),
+		thread.ID,
+		claude.Config{
+			Binary:  writeClaudePassthroughBinary(t),
+			WorkDir: thread.WorkspacePath,
+		},
+		func(provider.ProviderEvent) {},
+	)
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	// Close the session so Send fails and we exercise both paths.
+	if err := sess.Close(); err != nil {
+		t.Logf("close: %v (expected)", err)
+	}
+	app.sessions[thread.ID] = session{
+		provider: string(provider.Claude),
+		token:    "tok",
+		claude:   sess,
+	}
+
+	// Expected to fail because the session is closed.
+	if err := app.SendMessage(thread.ID, "will-fail"); err == nil {
+		t.Fatal("expected send failure on closed session")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	// Both the user item and the error item must have been emitted as
+	// provider:item_upsert — that only happens when the router's
+	// persistItem runs, not when we call store.UpsertItem directly.
+	wantUserID := "user:1"
+	var sawUser, sawError bool
+	for _, id := range upsertedIDs {
+		if id == wantUserID {
+			sawUser = true
+		}
+		if strings.HasPrefix(id, "error:1:") {
+			sawError = true
+		}
+	}
+	if !sawUser {
+		t.Errorf("router did not emit user item upsert (ids=%v)", upsertedIDs)
+	}
+	if !sawError {
+		t.Errorf("router did not emit send-failure error upsert (ids=%v)", upsertedIDs)
+	}
+
+	// The send-failure error id MUST use the router's sequence counter —
+	// not a hardcoded :0 suffix. First error on turn 1 → seq 0 → error:1:0.
+	// If a future refactor reverts to a hardcoded :0 this still matches,
+	// so the distinguishing signal is the prefix format (error:<turn>:<seq>)
+	// rather than a numeric collision check alone.
+	sendFailureID := ""
+	for _, id := range upsertedIDs {
+		if strings.HasPrefix(id, "error:") {
+			sendFailureID = id
+			break
+		}
+	}
+	if sendFailureID != "error:1:0" {
+		t.Errorf("first send-failure error id = %q, want error:1:0", sendFailureID)
 	}
 }
 

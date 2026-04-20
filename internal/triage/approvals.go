@@ -85,13 +85,13 @@ func decodeApprovalRequest(raw json.RawMessage) provider.ApprovalRequest {
 	return approval
 }
 
-func decodeApprovalResolvedMeta(raw json.RawMessage) (requestID, decision string) {
+func decodeApprovalResolvedMeta(raw json.RawMessage) (requestID, decision string, updatedInput json.RawMessage) {
 	if len(raw) == 0 {
-		return "", ""
+		return "", "", nil
 	}
 	var payload map[string]json.RawMessage
 	if json.Unmarshal(raw, &payload) != nil {
-		return "", ""
+		return "", "", nil
 	}
 	requestID = stringsx.FirstNonEmptyTrimmed(
 		readJSONID(payload["providerRequestId"]),
@@ -101,7 +101,10 @@ func decodeApprovalResolvedMeta(raw json.RawMessage) (requestID, decision string
 		readJSONString(payload["decision"]),
 		readJSONNestedString(payload["resolution"], "decision"),
 	)
-	return requestID, decision
+	if raw, ok := payload["updatedInput"]; ok && len(raw) > 0 {
+		updatedInput = raw
+	}
+	return requestID, decision, updatedInput
 }
 
 func readJSONID(raw json.RawMessage) string {
@@ -221,7 +224,7 @@ func (r *Router) handleApprovalRequest(evt provider.ProviderEvent) error {
 }
 
 func (r *Router) handleApprovalResolved(evt provider.ProviderEvent) error {
-	requestID, decision := decodeApprovalResolvedMeta(evt.Meta)
+	requestID, decision, updatedInput := decodeApprovalResolvedMeta(evt.Meta)
 	if requestID == "" {
 		requestID = evt.ItemID
 	}
@@ -234,6 +237,13 @@ func (r *Router) handleApprovalResolved(evt provider.ProviderEvent) error {
 
 	if itemID != "" && decision != "" {
 		r.rememberApprovalDecision(evt.ThreadID, itemID, decision)
+		// When the user amended the input, overlay it onto the request so
+		// applyApprovalDecision builds the summary against the MODIFIED
+		// input rather than the original. applyApprovalDecision clones
+		// request by value internally, so this mutation is scoped.
+		if decision == "amended" && len(updatedInput) > 0 {
+			pending.Request.Input = updatedInput
+		}
 		if err := r.applyApprovalDecision(evt.ThreadID, itemID, pending.Request, decision, eventTimestampMillis(evt)); err != nil {
 			return err
 		}
@@ -270,6 +280,14 @@ func (r *Router) applyApprovalDecision(
 		}
 		if item.Summary == "" {
 			item.Summary = approvalSummary(request)
+		}
+		// On an amended decision the stored summary must reflect the
+		// MODIFIED input — overwrite whatever the tool_call launch wrote
+		// so the row renders what will actually run.
+		if decision == "amended" && len(request.Input) > 0 {
+			if refreshed := approvalSummary(request); refreshed != "" {
+				item.Summary = refreshed
+			}
 		}
 		if approvalDeclinesExecution(decision) && item.Status != statusCompleted && item.Status != statusErrored {
 			item.Status = "declined"

@@ -27,6 +27,11 @@ type toolStartMeta struct {
 	Input        json.RawMessage `json:"input"`
 	IsBackground bool            `json:"is_background"`
 	TaskID       string          `json:"task_id"`
+	// UpdateOnly is set by the Codex item/updated emitter to mark this
+	// as an in-place refresh of an existing tool_call. When true, triage
+	// must mutate only Summary/Meta and NEVER reset status back to
+	// "running" for a row that already reached a terminal state.
+	UpdateOnly bool `json:"update_only"`
 }
 
 type toolCompleteMeta struct {
@@ -86,6 +91,28 @@ func (r *Router) persistToolCallLaunch(evt provider.ProviderEvent) error {
 
 	toolName := stringsx.FirstNonEmptyTrimmed(meta.ToolName, evt.ItemType, "tool")
 	summary := buildToolCallSummary(meta, evt.ItemType)
+
+	// Codex item/updated is an in-place refresh (not a fresh start). If the
+	// existing row has already completed/errored/declined, only refresh
+	// Summary/Meta — never flip status back to "running".
+	if meta.UpdateOnly {
+		if !found {
+			// No row yet — the update is meaningless without a launch row
+			// to annotate. Drop silently rather than fabricate one; the
+			// subsequent item/completed will create the row if needed.
+			return nil
+		}
+		updated := existing
+		if strings.TrimSpace(summary) != "" {
+			updated.Summary = summary
+		}
+		if toolName != "" {
+			updated.ToolName = toolName
+		}
+		updated.UpdatedAt = now
+		return r.persistItem(updated, nil)
+	}
+
 	turnIndex, err := r.turnIndexForEvent(evt)
 	if err != nil {
 		return fmt.Errorf("tool launch turn index %s: %w", itemID, err)

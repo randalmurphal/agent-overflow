@@ -136,7 +136,10 @@
         data-testid="message-timeline-node"
         class="contents-visibility-auto"
       >
-        {@render renderNode(node, 0)}
+        <!-- Root nodes feed in at depth=1 so SubagentGroup's GRANDCHILD
+             cap aligns with the spec numbering (first card=1, child=2,
+             grandchild=3 marker-only plateau). -->
+        {@render renderNode(node, 1)}
       </div>
 
       {#if isLastRootInTurn(index)}

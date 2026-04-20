@@ -1001,6 +1001,83 @@ func TestApprovalDeclineBeforeToolStartCreatesSyntheticToolCall(t *testing.T) {
 	}
 }
 
+// TestAmendedDecisionUpdatesToolCallSummary verifies that when the user
+// amends an approval's input (the Claude SDK UpdatedInput path), the
+// persisted tool_call summary reflects the MODIFIED input, not the
+// original command the provider proposed. Regression would leave the
+// row showing the pre-amendment command, which the spec explicitly
+// rules out for the amended decision.
+func TestAmendedDecisionUpdatesToolCallSummary(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	// Seed the launch row with the ORIGINAL command.
+	startMeta, _ := json.Marshal(map[string]any{
+		"toolName": "Bash",
+		"input":    map[string]any{"command": "rm -rf /tmp/old"},
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventToolStart,
+		ThreadID:  "t1",
+		ItemID:    "tool-amended",
+		ItemType:  "Bash",
+		Meta:      startMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle start: %v", err)
+	}
+
+	// Register the pending approval with the ORIGINAL input so we
+	// exercise the overlay path (not a fresh request build).
+	requestMeta, _ := json.Marshal(provider.ApprovalRequest{
+		RequestID: "req-a",
+		ThreadID:  "t1",
+		ToolUseID: "tool-amended",
+		ToolName:  "Bash",
+		Input:     json.RawMessage(`{"command":"rm -rf /tmp/old"}`),
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventApprovalRequest,
+		ThreadID:  "t1",
+		ItemID:    "req-a",
+		Meta:      requestMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle request: %v", err)
+	}
+
+	// Resolve with decision=amended and a different updatedInput.
+	resolveMeta, _ := json.Marshal(map[string]any{
+		"requestId":    "req-a",
+		"decision":     "amended",
+		"updatedInput": map[string]any{"command": "rm -rf /tmp/new"},
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventApprovalResolved,
+		ThreadID:  "t1",
+		ItemID:    "req-a",
+		Meta:      resolveMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle resolve: %v", err)
+	}
+
+	items := findItemsByKind(t, st, "t1", itemKindToolCall)
+	if len(items) != 1 {
+		t.Fatalf("expected 1 tool_call, got %+v", items)
+	}
+	got := items[0]
+	if got.Decision != "amended" {
+		t.Errorf("decision = %q, want amended", got.Decision)
+	}
+	if !strings.Contains(got.Summary, "rm -rf /tmp/new") {
+		t.Errorf("summary %q must contain amended command /tmp/new", got.Summary)
+	}
+	if strings.Contains(got.Summary, "/tmp/old") {
+		t.Errorf("summary %q still contains original command; amendment lost", got.Summary)
+	}
+}
+
 func TestApprovalLostMarksRunningToolCallErrored(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
@@ -1739,6 +1816,145 @@ func TestTurnCompleteDoesNotAutoRenameClaudeThread(t *testing.T) {
 }
 
 // -- Error propagation tests --
+
+// TestPersistDropsInvalidParentID verifies the spec invariant that
+// parent_id must point to a tool_call row. The router enforces this
+// defensively via persistItem:
+//   - Self-reference drops the link with a log.
+//   - An existing non-tool_call parent drops the link.
+//   - Cycles along the parent chain drop the link.
+// A parent that doesn't exist yet is intentionally NOT dropped —
+// subagent streaming text/thinking can reference a Task tool_call that
+// materializes later in the same turn.
+func TestPersistDropsInvalidParentID(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	// Seed a non-tool_call row (assistant_text) we can point at to
+	// trigger the "parent exists but is wrong kind" branch.
+	now := time.Now().UnixMilli()
+	if _, err := st.AppendItem(store.Item{
+		ID:        "text-parent",
+		ThreadID:  "t1",
+		TurnIndex: 0,
+		Kind:      "assistant_text",
+		Role:      "assistant",
+		Status:    "completed",
+		Summary:   "not a tool call",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed text parent: %v", err)
+	}
+	// Seed a tool_call with a ParentID that points at itself. Used by
+	// the cycle test below.
+	if _, err := st.AppendItem(store.Item{
+		ID:        "cycle-a",
+		ThreadID:  "t1",
+		TurnIndex: 0,
+		Kind:      "tool_call",
+		Role:      "assistant",
+		Status:    "running",
+		Summary:   "cycle a",
+		ToolName:  "Bash",
+		ParentID:  "cycle-a",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed cycle parent: %v", err)
+	}
+
+	// 1. Self-parent is dropped.
+	selfItem := store.Item{
+		ID:        "self-parent",
+		ThreadID:  "t1",
+		TurnIndex: 0,
+		Kind:      "tool_call",
+		Role:      "assistant",
+		Status:    "running",
+		Summary:   "self-parented",
+		ToolName:  "Bash",
+		ParentID:  "self-parent",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := router.PersistItem(selfItem, nil); err != nil {
+		t.Fatalf("persist self-parent: %v", err)
+	}
+	got, found, err := st.GetThreadItem("t1", "self-parent")
+	if err != nil || !found {
+		t.Fatalf("get self-parent: err=%v found=%v", err, found)
+	}
+	if got.ParentID != "" {
+		t.Errorf("self-parent kept ParentID %q, want dropped", got.ParentID)
+	}
+
+	// 2. Parent exists but is NOT a tool_call — drop the link.
+	wrongKindItem := store.Item{
+		ID:        "wrong-kind-child",
+		ThreadID:  "t1",
+		TurnIndex: 0,
+		Kind:      "tool_call",
+		Role:      "assistant",
+		Status:    "running",
+		Summary:   "wrong-kind parent",
+		ToolName:  "Bash",
+		ParentID:  "text-parent",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := router.PersistItem(wrongKindItem, nil); err != nil {
+		t.Fatalf("persist wrong-kind: %v", err)
+	}
+	got, _, _ = st.GetThreadItem("t1", "wrong-kind-child")
+	if got.ParentID != "" {
+		t.Errorf("wrong-kind child kept ParentID %q, want dropped", got.ParentID)
+	}
+
+	// 3. Parent chain cycles back → drop the link.
+	cycleChild := store.Item{
+		ID:        "cycle-child",
+		ThreadID:  "t1",
+		TurnIndex: 0,
+		Kind:      "tool_call",
+		Role:      "assistant",
+		Status:    "running",
+		Summary:   "cycle child",
+		ToolName:  "Bash",
+		ParentID:  "cycle-a", // cycle-a points back at itself
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := router.PersistItem(cycleChild, nil); err != nil {
+		t.Fatalf("persist cycle child: %v", err)
+	}
+	got, _, _ = st.GetThreadItem("t1", "cycle-child")
+	if got.ParentID != "" {
+		t.Errorf("cycle child kept ParentID %q, want dropped", got.ParentID)
+	}
+
+	// 4. Unknown parent_id — PRESERVED so a late-arriving parent row
+	//    still links up correctly (subagent streaming text ordering).
+	yetToArriveItem := store.Item{
+		ID:        "early-child",
+		ThreadID:  "t1",
+		TurnIndex: 0,
+		Kind:      "assistant_text",
+		Role:      "assistant",
+		Status:    "streaming",
+		Summary:   "early subagent text",
+		ParentID:  "task_tool_future",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := router.PersistItem(yetToArriveItem, nil); err != nil {
+		t.Fatalf("persist early child: %v", err)
+	}
+	got, _, _ = st.GetThreadItem("t1", "early-child")
+	if got.ParentID != "task_tool_future" {
+		t.Errorf("unknown parent was dropped (%q) — should be preserved for late arrival", got.ParentID)
+	}
+}
 
 func TestErrorPersistsTimelineItem(t *testing.T) {
 	router, st, emissions := newTestRouter(t)

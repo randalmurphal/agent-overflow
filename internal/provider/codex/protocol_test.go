@@ -117,6 +117,15 @@ func TestClassifyNotification_ItemUpdated(t *testing.T) {
 	if !evt.Replace {
 		t.Error("expected Replace=true for item/updated")
 	}
+	// item/updated must carry an update_only:true flag so triage does
+	// not re-open a completed tool_call back to status=running.
+	var meta map[string]any
+	if err := json.Unmarshal(evt.Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if updateOnly, _ := meta["update_only"].(bool); !updateOnly {
+		t.Errorf("expected meta.update_only=true for item/updated, got %v", meta["update_only"])
+	}
 }
 
 func TestClassifyNotification_ItemCompletedPlan(t *testing.T) {
