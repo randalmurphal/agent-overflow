@@ -2,9 +2,45 @@
 
 Classifies provider events and decides what ships to the frontend vs
 what writes to SQLite. The single most important rule is that triage
-has **no derived state** — it is a pure function of the current event.
+has **no derived state** — it is a pure function of the current event
+plus a narrow, bounded set of per-thread correlation state.
 
-## Routing Table
+## Layout
+
+The package is split by concern so each file owns a narrow slice of the
+routing pipeline. New routing logic belongs in whichever file most
+closely matches its concern; create a new file (and list it here) if
+none fits.
+
+- `router.go` — entry point. `Router` struct, `Handle` dispatch switch,
+  error / session-status / token-usage / rate-limit routers, and the
+  shared `persistItem` / `emitThreadUpdated` helpers.
+- `approvals.go` — approval-request lifecycle: pending-approval map,
+  approval-resolved fan-out, decision → item projection.
+- `turn_lifecycle.go` — per-turn and per-thread correlation state
+  (open turns, interrupt queue, captured-turn guard, stopped-thread
+  markers, turn span bookkeeping, cleanup paths).
+- `tool_lifecycle.go` — tool-call launch/completion rows,
+  background-task pairing, summary/status derivation.
+- `tool_result_file_change.go` — `file_change` tool-result normalisation
+  (inline diff projection, unified patch assembly).
+- `tool_result_diff_upgrade.go` — late-arriving diff upgrades that
+  attach a richer payload onto a previously persisted tool result.
+- `command_inline_diff_capture.go` / `command_inline_diff_parser.go` /
+  `command_inline_diff_runtime.go` / `command_inline_diff_persist.go` —
+  command-execution inline-diff pipeline, split by phase
+  (capture → parse → runtime match → persist).
+- `payload_items.go` — diff / command output / thinking / plan payload
+  writers.
+- `stream_items.go` / `stream_state.go` / `block_events.go` —
+  streaming text / thinking block lifecycle and the content-block
+  index bookkeeping they depend on.
+- `usage_compaction.go` — token-usage normalisation and compaction
+  boundary persistence.
+- `meta.go` — shared JSON-inspection helpers.
+- `maps.go` — generic map utilities (currently just `deleteByPrefix`).
+
+## Routing table
 
 | Event kind | Destination |
 |---|---|
@@ -19,77 +55,70 @@ has **no derived state** — it is a pure function of the current event.
 | Error | Distinct event kind; frontend renders as status/alert. |
 | Unknown | Log with full context, do not drop silently. |
 
-See `/docs/architecture/data-flow.md` for the full pipeline diagram.
+## Responsibility boundary
 
-## Rules
+- What BELONGS here:
+  - Classify a single event → zero or more (persist + emit) decisions.
+  - Bounded per-thread transient correlation state with explicit
+    cleanup paths (see below).
+  - Shared helpers for `persistItem` and `emitThreadUpdated`.
+- What does NOT belong here:
+  - Cross-turn derivations — do them in the frontend or as a persisted
+    projection, not as an in-memory map here.
+  - Provider-specific types. Provider packages normalize before handing
+    events to triage.
+  - Business decisions about when to fork/resume a thread; that's
+    `app.go`.
 
-- **No data caching, no cross-turn derived read models.** Triage
-  persists to SQLite and emits to the frontend; it does NOT
-  maintain in-memory views of timeline content or compute
-  aggregates the renderer could derive on its own. If you need to
-  derive something across events, do it in the frontend or in a
-  persisted projection — not here.
-- **Per-thread transient correlation state is allowed.** The Router
-  carries a narrow set of per-thread maps (interrupt queue, open
-  turn index, content-block counters, active streaming block flags,
-  pending approvals / approval decisions, pending command inline
-  diffs, captured-turn guard, turn spans, stopped-thread markers)
-  that exist purely to correlate one event to the next within a
-  turn — not to duplicate the store or the provider session. All of
-  these are bounded and have an explicit cleanup path:
-  - Per-turn state clears on `EventTurnComplete` (and on a matching
-    error branch for errored turns).
-  - Per-thread state clears on `CleanupThread`.
-  - Approval and interrupt-queue entries clear when their
-    correlated event resolves (approval resolved, interrupt drained).
-  The one deliberate exception is the interrupt queue, which can
-  span a turn boundary because its contract is "persist queued
-  events once the interrupt lifts." Any other cross-turn derivation
-  is forbidden — if you need one, add it as a store query or a
-  frontend derivation, not a new map here.
-- **No provider-specific types.** Provider packages normalize before
-  handing events to triage.
-- **Meta is cheap, data is heavy.** When in doubt, put preview/stats
-  in `meta` and the full content in `data`.
-- **One event in, zero or more routing decisions out.** Don't combine
-  or split events across boundaries.
+## Correlation state (bounded, not derived)
 
-## Layout
+The Router carries a narrow set of per-thread maps (interrupt queue,
+open turn index, content-block counters, active streaming block flags,
+pending approvals / approval decisions, pending command inline diffs,
+captured-turn guard, turn spans, stopped-thread markers) that exist
+purely to correlate one event to the next within a turn — not to
+duplicate the store or the provider session. All of these are bounded
+and have an explicit cleanup path:
 
-The package is split by concern so each file owns a narrow slice of the
-routing pipeline. New routing logic belongs in whichever file most closely
-matches its concern; create a new file (and list it here) if none fits.
+- Per-turn state clears on `EventTurnComplete` (and on a matching
+  error branch for errored turns).
+- Per-thread state clears on `CleanupThread`.
+- Approval and interrupt-queue entries clear when their correlated
+  event resolves.
 
-- `router.go` — entry point. `Router` struct, `Handle` dispatch switch,
-  error/session-status/token-usage/rate-limit routers, and the shared
-  `persistItem` / `emitThreadUpdated` helpers.
-- `approvals.go` — approval-request lifecycle: pending-approval map,
-  approval-resolved fan-out, decision → item projection.
-- `turn_lifecycle.go` — per-turn and per-thread correlation state
-  (open turns, interrupt queue, captured-turn guard, stopped-thread
-  markers, turn span bookkeeping, cleanup paths).
-- `tool_lifecycle.go` — tool-call launch/completion rows, background-task
-  pairing, summary/status derivation.
-- `tool_result_file_change.go` — `file_change` tool-result normalisation
-  (inline diff projection, unified patch assembly).
-- `tool_result_diff_upgrade.go` — late-arriving diff upgrades that
-  attach a richer payload onto a previously persisted tool result.
-- `command_inline_diff_capture.go` / `command_inline_diff_parser.go` /
-  `command_inline_diff_runtime.go` / `command_inline_diff_persist.go` —
-  command-execution inline-diff pipeline, split by phase (capture →
-  parse → runtime match → persist).
-- `payload_items.go` — diff / command output / thinking / plan payload
-  writers.
-- `stream_items.go` / `stream_state.go` / `block_events.go` —
-  streaming text/thinking block lifecycle and the content-block index
-  bookkeeping they depend on.
-- `usage_compaction.go` — token-usage normalisation and compaction
-  boundary persistence.
-- `meta.go` — shared JSON-inspection helpers.
-- `maps.go` — generic map utilities (currently just `deleteByPrefix`).
+The one deliberate exception is the interrupt queue, which can span a
+turn boundary because its contract is "persist queued events once the
+interrupt lifts."
+
+## Extension points
+
+- To add routing for a new event kind: pick or create the matching
+  `*_lifecycle.go` / `*_items.go` file, add a `Handle` switch case in
+  `router.go`, write the routing-decision test FIRST. See
+  `docs/architecture/how-to.md#add-a-new-event-kind`.
+- To add a new persisted payload kind: extend `payload_items.go`,
+  update `docs/architecture/schema.md`.
+
+## Anti-patterns
+
+- Do NOT cache store data here. No caching of store data. Transient
+  correlation state only. Cross-turn derivation forbidden beyond the
+  interrupt queue.
+- Do NOT put preview content in the payload data blob. Meta is cheap,
+  data is heavy — preview/stats in `meta`, full content in `data`.
+- Do NOT combine or split events across boundaries. One event in, zero
+  or more routing decisions out.
+- Do NOT reach back into provider-specific types. If you need a detail
+  the normalized event doesn't carry, fix the normalization upstream.
 
 ## Testing
 
 - Every routing decision has a unit test with a representative event.
 - When a new provider event type is added upstream, the routing
   decision is the first test — not the last.
+
+## References
+
+- `docs/architecture/data-flow.md` — end-to-end pipeline diagram.
+- `docs/architecture/triage-routing.md` — detail on per-kind decisions.
+- `docs/architecture/schema.md` — payload / item column reference.

@@ -1,61 +1,98 @@
 # internal/store/
 
-SQLite access and schema. The store is a history cache, not an event
-store — see `/AGENTS.md` principle 3.
+SQLite access and schema. A history cache, not an event store — see
+root `CLAUDE.md` principle 3.
 
-Schema summary: `/docs/architecture/schema.md`. Data-flow context:
-`/docs/architecture/data-flow.md`.
+## Layout
 
-## Rules
+- `store.go` — `Store` construct, `Thread` / `Project` / `Item` /
+  `Payload` shared shapes.
+- `migrate.go` — forward-only migration chain with the per-version
+  upgrade SQL.
+- `items.go` / `payloads.go` — timeline item + heavy-payload tables.
+  `items.go` is large; it owns every read/write against `items` so the
+  single-table invariants stay co-located.
+- `threads.go` / `thread_view.go` / `thread_forks.go` — threads table
+  plus the `ThreadView` translation layer that hydrates `SessionOptions`
+  for the provider packages.
+- `projects.go` — projects table (v13 introduces `project_id` FK).
+- `channels.go` / `discussions.go` / `discussion_types.go` —
+  multi-agent discussion persistence.
+- `designs.go` / `design_types.go` — design-mode artifact metadata.
+- `attachments.go` — attachment metadata (bytes on disk are the
+  `internal/attachment` package's problem).
+- `checkpoints.go` — turn-checkpoint row/ref bookkeeping; the ref-level
+  mechanics live in `internal/checkpoint`.
+- `drafts.go` — composer drafts per thread.
+- `search.go` — FTS across items/threads.
+- `sqlutil.go` — shared SQL helpers.
 
-- **Migrations are forward-only and append-only.** Never edit a
-  migration that has shipped; add a new one.
-- **Every migration has a test** that asserts the resulting schema
-  state. CHECK constraints belong in SQL; the test proves they fire.
-- **WAL mode is verified at startup**, not just requested. If it didn't
-  take, boot fails.
-- **No business logic in SQL.** Joins for views are fine; behavior
-  lives in Go.
-- **Payload data is BLOB, loaded on demand.** `payload.meta` (JSON) is
-  loaded with items; `payload.data` only on explicit expand.
-- **Summary is the preview.** `items.summary` is what the frontend
-  renders by default — keep it short and always populated.
+## Responsibility boundary
+
+- What BELONGS here:
+  - Timeline items, payloads, thread metadata, channels / messages,
+    discussion templates, design-artifact metadata, attachment
+    metadata, projects.
+  - Migrations, indices, CHECK constraints.
+  - Query helpers that return typed rows.
+- What does NOT belong here:
+  - Live per-turn provider state — the provider process owns it.
+  - Transient UI state — frontend `$state` owns it.
+  - Logs — `internal/logging` owns those.
+  - Business logic. If a tempting SELECT grows a WHEN/CASE, the
+    behavior belongs in Go.
+
+If you're tempted to add a new table, first check whether the provider
+session already has the answer.
 
 ## Recent schema changes (v13)
 
 - `projects` is a first-class table. Each thread carries a `project_id`
   FK; a project is the user-level grouping (root dir + name + color)
   above individual threads.
-- `interaction_mode` was renamed to `mode` with a new canonical
-  default of `"chat"` (was `"default"`). The CHECK constraint was
-  rewritten in the same migration; older values are normalised in
-  place.
+- `interaction_mode` was renamed to `mode` with a new canonical default
+  of `"chat"` (was `"default"`). The CHECK constraint was rewritten in
+  the same migration; older values are normalised in place.
 - Composer-context columns landed on the threads table:
   `reasoning_effort` (low/medium/high/xhigh/max), `fast_mode` (bool),
   `context_window` (200000 or 1000000). The per-thread row is the
-  source of truth; the `SessionOptions` helper in `thread_view.go`
-  translates it into the provider Config.
+  source of truth; `SessionOptions` in `thread_view.go` translates it
+  for the provider.
 
-## What Goes In
+## Extension points
 
-- Timeline items, payloads, thread metadata, channels/messages,
-  discussion templates, design-artifact metadata, attachment metadata,
-  projects.
+- To add a new column / index / CHECK: write a new migration — never
+  edit a shipped one — and add a test that asserts both the schema and
+  the constraint behavior. See
+  `docs/architecture/how-to.md#add-a-migration`.
+- To add a new table: confirm the provider session doesn't already own
+  the data; if it doesn't, add the table + migration + a companion
+  `<name>.go` with typed accessors. Update `docs/architecture/schema.md`.
+- To add a payload kind: extend `payloads.go` + the triage emitter;
+  keep `data` as BLOB and `meta` as JSON.
 
-## What Doesn't Go In
+## Anti-patterns
 
-- Live per-turn provider state — the provider process owns it.
-- Transient UI state — frontend `$state` owns it.
-- Logs — `internal/logging` owns those.
-
-If you're tempted to add a new table, first check whether the provider
-session already has the answer.
+- Do NOT use `SELECT *`. Index every `WHERE` column. No business logic
+  in SQL — just persist + query.
+- Do NOT edit a migration that has shipped. Append a new one.
+- Do NOT work around SQLite+WAL single-writer semantics with in-Go
+  locks; structure writes so they don't contend.
+- Do NOT load `payload.data` eagerly alongside list reads. `meta` is
+  cheap, `data` loads on explicit expand.
+- Do NOT leave `items.summary` empty. The frontend renders it by
+  default.
 
 ## Testing
 
 - Every new column, index, or constraint: add a test.
-- Concurrency: SQLite+WAL gives you single-writer semantics. Don't
-  work around it with in-Go locks; structure writes so they don't
-  contend.
 - Fixtures: use `t.TempDir()`-scoped DBs. Never share a DB file across
   tests.
+- WAL mode is verified at startup, not just requested. If it didn't
+  take, boot fails — keep the existing assertion alive.
+
+## References
+
+- `docs/architecture/schema.md` — authoritative schema summary.
+- `docs/architecture/data-flow.md` — when/why rows are written.
+- Root `CLAUDE.md` principle 3 ("SQLite is a history cache").
