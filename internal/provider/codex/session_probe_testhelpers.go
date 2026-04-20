@@ -23,3 +23,21 @@ func NewProbeOnlyTestSession(probeFn func(ctx context.Context) (ProbeResult, err
 		probeFn: probeFn,
 	}
 }
+
+// NewProbeAndResumeTestSession extends NewProbeOnlyTestSession with a
+// Resume override. The on-reopen reconcile flow calls Probe first, then
+// (on notLoaded) Resume — wiring both as stubs lets the app-layer test
+// assert the sequenced behaviour without any subprocess.
+//
+// Either function may be nil: callers typically pass both. A nil probe
+// falls back to the wire path (which will fail because proc is nil), so
+// only production-shaped tests should leave it unset.
+func NewProbeAndResumeTestSession(
+	probeFn func(ctx context.Context) (ProbeResult, error),
+	resumeFn func(ctx context.Context) error,
+) *Session {
+	return &Session{
+		probeFn:  probeFn,
+		resumeFn: resumeFn,
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"time"
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
@@ -83,7 +84,60 @@ func (a *App) startSessionNow(threadID string) error {
 	a.sessions[threadID] = newSess
 	a.mu.Unlock()
 
+	// Best-effort Codex reconcile for the on-reopen case. If the prior
+	// app-server forgot the thread across a restart we want to flip any
+	// still-`running && is_background` rows to errored/lost (systemError
+	// probe) or rehydrate the thread (notLoaded probe) before the user
+	// sends another turn. This only applies to Codex sessions that were
+	// resumed — a brand-new thread has nothing to reconcile.
+	//
+	// Runs asynchronously so a slow `thread/read` can't block session
+	// startup; errors are logged because reconciliation is never
+	// user-perceivable. The pattern mirrors probeStartupProviderStatuses
+	// in ServiceStartup.
+	if newSess.codex != nil && opts.Resume != "" {
+		go a.reconcileCodexAfterStart(threadID)
+	}
+
 	return nil
+}
+
+// reconcileCodexAfterStart runs the on-reopen reconcile once the Codex
+// session is in a.sessions. Called from startSessionNow (not a Wails
+// binding) so the caller-visible startup latency isn't paying for a
+// probe RPC. Runs in a goroutine — errors are logged because the
+// reconcile is best-effort; the session is already up either way.
+//
+// Split out of startSessionNow so the goroutine body is trivial and
+// testable: TestStartSessionTriggersCodexReconcile installs a probe stub
+// and asserts this runs exactly when opts.Resume != "".
+func (a *App) reconcileCodexAfterStart(threadID string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	result, err := a.ReconcileCodexOnReopen(ctx, threadID)
+	if err != nil {
+		log.Printf("app: reconcile codex on reopen for %s: %v", threadID, err)
+		return
+	}
+	if !result.NeedsResume {
+		return
+	}
+
+	// notLoaded probe: the session is up but the app-server has dropped
+	// the thread from memory (eviction, server restart). Call
+	// thread/resume to rehydrate before any future turn would try to
+	// send on a stale thread id. Best-effort — if the session has gone
+	// away in the meantime Resume will error and we log it; no new work
+	// was in flight anyway.
+	a.mu.Lock()
+	sess, ok := a.sessions[threadID]
+	a.mu.Unlock()
+	if !ok || sess.codex == nil {
+		return
+	}
+	if err := sess.codex.Resume(ctx); err != nil {
+		log.Printf("app: reconcile codex resume for %s: %v", threadID, err)
+	}
 }
 
 // stopExistingSessionLocked tears down any prior session for the thread

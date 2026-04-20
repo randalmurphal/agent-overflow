@@ -1,7 +1,9 @@
 package codex
 
 import (
+	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -74,6 +76,22 @@ func TestDecodeProbeResponseUnknownStatusPreservesLiteral(t *testing.T) {
 	}
 	if result.Status == ThreadStatusIdle || result.Status == ThreadStatusActive {
 		t.Fatalf("unknown status should not match a known kind, got %q", result.Status)
+	}
+}
+
+// TestResumeRejectsEmptyThreadID guards the precondition: a Session
+// without a codexThreadID has nothing to resume. We surface this as an
+// explicit error (not a silent no-op) so a buggy caller — e.g. a
+// reconciler firing before the initial thread/start handshake landed —
+// surfaces loudly instead of sending a malformed request to the wire.
+func TestResumeRejectsEmptyThreadID(t *testing.T) {
+	s := &Session{}
+	err := s.Resume(context.Background())
+	if err == nil {
+		t.Fatal("Resume on session with empty codexThreadID should error")
+	}
+	if !strings.Contains(err.Error(), "no thread id") {
+		t.Fatalf("Resume error = %v, want 'no thread id'", err)
 	}
 }
 

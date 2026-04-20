@@ -2,10 +2,10 @@ package main
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
 	"time"
 
-	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/store"
 )
@@ -301,6 +301,9 @@ var threadIDsSeededForReconcileTests = []string{
 	"thread-no-session",
 	"thread-idle",
 	"thread-active",
+	"thread-reconcile-start",
+	"thread-reconcile-alive",
+	"thread-reconcile-systemerr",
 }
 
 // getItem walks every thread this file seeds looking for a row with
@@ -343,6 +346,118 @@ func installFakeCodexSession(t *testing.T, a *App, threadID string, stub codexPr
 	a.mu.Unlock()
 }
 
-// (Unused suppression — the provider import is referenced indirectly
-// via the codex subpackage for type clarity in signatures.)
-var _ provider.EventKind = provider.EventInit
+// installFakeCodexSessionWithResume is the reconcile-after-start variant
+// that also wires a Resume stub. Used by the tests that exercise the
+// notLoaded → thread/resume rehydration path: they need to observe
+// whether Resume was called in addition to Probe.
+func installFakeCodexSessionWithResume(
+	t *testing.T,
+	a *App,
+	threadID string,
+	stub codexProbeStub,
+	resumeFn func(ctx context.Context) error,
+) {
+	t.Helper()
+	fakeSession := codex.NewProbeAndResumeTestSession(
+		func(_ context.Context) (codex.ProbeResult, error) {
+			if stub.err != nil {
+				return codex.ProbeResult{}, stub.err
+			}
+			return codex.ProbeResult{Status: stub.status}, nil
+		},
+		resumeFn,
+	)
+	a.mu.Lock()
+	a.sessions[threadID] = session{
+		provider: "codex",
+		codex:    fakeSession,
+	}
+	a.mu.Unlock()
+}
+
+// TestStartSessionTriggersCodexReconcileResumesOnNotLoaded covers the
+// post-start reconcile path: when startSessionNow seats a Codex session
+// with a resume ref, reconcileCodexAfterStart runs, and if the probe
+// reports notLoaded it triggers Resume to rehydrate the thread before
+// the user sends another turn.
+//
+// We can't drive startSessionNow end-to-end in a unit test (it spawns a
+// real codex process), so we exercise reconcileCodexAfterStart directly
+// — that's the same code path the goroutine in startSessionNow enters.
+func TestStartSessionTriggersCodexReconcileResumesOnNotLoaded(t *testing.T) {
+	st := newMemoryStore(t)
+	a := newAppWithStore(t, st)
+	threadID := seedCodexThread(t, st, "thread-reconcile-start")
+
+	var resumeCalls atomic.Int32
+	installFakeCodexSessionWithResume(t, a, threadID,
+		codexProbeStub{status: codex.ThreadStatusNotLoaded},
+		func(_ context.Context) error {
+			resumeCalls.Add(1)
+			return nil
+		},
+	)
+
+	a.reconcileCodexAfterStart(threadID)
+
+	if got := resumeCalls.Load(); got != 1 {
+		t.Fatalf("resumeCalls = %d, want 1 on notLoaded probe", got)
+	}
+}
+
+// TestStartSessionTriggersCodexReconcileSkipsResumeOnAlive covers the
+// alive path: an idle/active probe must NOT trigger Resume. The session
+// is live; a redundant resume would be a waste of a round-trip and
+// could race with real turn traffic.
+func TestStartSessionTriggersCodexReconcileSkipsResumeOnAlive(t *testing.T) {
+	st := newMemoryStore(t)
+	a := newAppWithStore(t, st)
+	threadID := seedCodexThread(t, st, "thread-reconcile-alive")
+
+	var resumeCalls atomic.Int32
+	installFakeCodexSessionWithResume(t, a, threadID,
+		codexProbeStub{status: codex.ThreadStatusIdle},
+		func(_ context.Context) error {
+			resumeCalls.Add(1)
+			return nil
+		},
+	)
+
+	a.reconcileCodexAfterStart(threadID)
+
+	if got := resumeCalls.Load(); got != 0 {
+		t.Fatalf("resumeCalls = %d, want 0 on idle probe", got)
+	}
+}
+
+// TestStartSessionTriggersCodexReconcileSkipsResumeOnSystemError covers
+// systemError: the reconciler flips persisted rows itself, and there is
+// nothing to resume — the session is terminally broken. Resume would
+// just error back; best to not call it.
+func TestStartSessionTriggersCodexReconcileSkipsResumeOnSystemError(t *testing.T) {
+	st := newMemoryStore(t)
+	a := newAppWithStore(t, st)
+	threadID := seedCodexThread(t, st, "thread-reconcile-systemerr")
+
+	// Seed a running bg row so the flip has something to mutate; this is
+	// the headline behaviour of ReconcileCodexOnReopen already covered
+	// elsewhere, but having a row present confirms we exercised the full
+	// systemError branch rather than the fast-path out.
+	_ = seedRunningBackgroundTool(t, st, threadID, "tool-bg-systemerr")
+
+	var resumeCalls atomic.Int32
+	installFakeCodexSessionWithResume(t, a, threadID,
+		codexProbeStub{status: codex.ThreadStatusSystemError},
+		func(_ context.Context) error {
+			resumeCalls.Add(1)
+			return nil
+		},
+	)
+
+	a.reconcileCodexAfterStart(threadID)
+
+	if got := resumeCalls.Load(); got != 0 {
+		t.Fatalf("resumeCalls = %d, want 0 on systemError probe", got)
+	}
+}
+

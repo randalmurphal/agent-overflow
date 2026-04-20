@@ -9,7 +9,7 @@ import (
 // ThreadStatusKind enumerates the closed set of `thread.status.type`
 // values the Codex app-server reports on `thread/read`. The app relies
 // on this enum to pick a reconciliation strategy after a restart — see
-// `(*App).reconcileCodexOnReopen` for the consumer.
+// `(*App).ReconcileCodexOnReopen` for the consumer.
 //
 // Source of truth:
 //   codex-rs/app-server-protocol/schema/typescript/v2/ThreadStatus.ts
@@ -70,6 +70,40 @@ func (s *Session) Probe(ctx context.Context) (ProbeResult, error) {
 	}
 
 	return decodeProbeResponse(resp)
+}
+
+// Resume calls `thread/resume` on a live session. Used by the on-reopen
+// reconciler when Probe reports `notLoaded` — the session is up but the
+// thread isn't in memory, so the app-server needs to be told to rehydrate
+// it before any further message/send will work.
+//
+// This is NOT the resume path used by NewSession. NewSession calls
+// thread/resume as part of its initial handshake to seed s.codexThreadID.
+// Resume here runs AFTER that handshake, on a session whose app-server
+// has since forgotten the thread (e.g., provider crashed and auto-
+// restarted, or idle eviction). We reuse the same wire method with the
+// already-known thread id; the response body is ignored because the
+// session already has everything it needs to dispatch turns.
+//
+// Returns an error only on transport/decoding failure. A session whose
+// proc has gone away (Close already fired) errors out of sendRequest
+// before it writes anything.
+func (s *Session) Resume(ctx context.Context) error {
+	// Tests install a resumeFn override so the reconcile path can run
+	// without a real app-server subprocess (mirrors probeFn).
+	// Production construction never sets it.
+	if s.resumeFn != nil {
+		return s.resumeFn(ctx)
+	}
+	if s.codexThreadID == "" {
+		return fmt.Errorf("codex: resume: session has no thread id")
+	}
+	if _, err := s.sendRequest(ctx, "thread/resume", map[string]any{
+		"threadId": s.codexThreadID,
+	}); err != nil {
+		return fmt.Errorf("codex: thread/resume: %w", err)
+	}
+	return nil
 }
 
 // decodeProbeResponse pulls `thread.status` out of the raw `thread/read`

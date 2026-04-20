@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"agent-overflow/internal/provider/codex"
-	"agent-overflow/internal/store"
 )
 
 // ReconcileCodexOnReopen probes a Codex thread's liveness via
@@ -40,6 +39,13 @@ import (
 // This path is the minimum viable wiring called out by the chat-rewrite
 // spec §"On app reopen" — it will grow as the broader crash-recovery
 // flow lands.
+//
+// `//wails:ignore` keeps this off the auto-generated TS bindings: the
+// reconcile is triggered internally by reconcileCodexAfterStart (fired
+// from startSessionNow on Codex resumes) — the frontend never needs to
+// call it directly.
+//
+//wails:ignore
 func (a *App) ReconcileCodexOnReopen(ctx context.Context, threadID string) (ReconcileResult, error) {
 	if a.shuttingDown.Load() {
 		return ReconcileResult{}, ErrShuttingDown
@@ -60,7 +66,7 @@ func (a *App) ReconcileCodexOnReopen(ctx context.Context, threadID string) (Reco
 		return ReconcileResult{}, fmt.Errorf("app: reconcile codex probe: %w", err)
 	}
 
-	runningBg, err := listRunningBackgroundToolCalls(a.store, threadID)
+	runningBg, err := a.store.ListRunningBackgroundToolCalls(threadID)
 	if err != nil {
 		return ReconcileResult{}, fmt.Errorf("app: reconcile codex list running: %w", err)
 	}
@@ -140,29 +146,3 @@ type ReconcileResult struct {
 	NeedsResume bool                   `json:"needsResume"` // true when status=notLoaded
 }
 
-// listRunningBackgroundToolCalls returns every still-running
-// is_background=true tool_call row for the given thread. Used by the
-// reconciler to scope its flip. Kept here rather than in the store
-// because the query is narrow and couples to the reconcile semantics
-// (tool_call + running + is_background); pushing it into the store
-// package would give it a generic API that isn't otherwise needed.
-func listRunningBackgroundToolCalls(st *store.Store, threadID string) ([]store.Item, error) {
-	items, err := st.ListItems(threadID)
-	if err != nil {
-		return nil, err
-	}
-	var out []store.Item
-	for _, item := range items {
-		if item.Kind != "tool_call" {
-			continue
-		}
-		if item.Status != "running" {
-			continue
-		}
-		if !item.IsBackground {
-			continue
-		}
-		out = append(out, item)
-	}
-	return out, nil
-}

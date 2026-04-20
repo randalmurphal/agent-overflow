@@ -8,6 +8,9 @@ over stdio.
 - `thread/new`, `thread/resume`, `thread/fork`, `thread/rollback`
   (rollback exists in the protocol; frontend wiring is incomplete —
   see the missing-pieces backlog).
+- `thread/read` — on-reopen liveness probe. Called by `Session.Probe`
+  to fetch the current `thread.status.type` so the app-layer reconciler
+  can flip stale running background tool rows (see `session_probe.go`).
 - `message/send` — deliver a user turn.
 - Sandbox/approval method family — `file/write`, `file/delete`,
   `file/mkdir`, `command/execute`, etc. These arrive as requests we

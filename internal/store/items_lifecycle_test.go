@@ -1105,3 +1105,108 @@ func TestItemsDecisionCHECKRejectsBogusValue(t *testing.T) {
 		t.Error("UPDATE to bogus decision must fail")
 	}
 }
+
+// TestListRunningBackgroundToolCallsFiltersCorrectly exercises the
+// store-level query the on-reopen reconciler uses. We seed a mixed set
+// of item rows and assert only the running + is_background=1 +
+// kind=tool_call rows come back.
+//
+// Without the push-down filter the reconciler would have to scan every
+// item on every reopen; the test guards against a regression that
+// would accidentally return, e.g., completed rows or inline tool calls.
+func TestListRunningBackgroundToolCallsFiltersCorrectly(t *testing.T) {
+	s := newTestStore(t)
+	now := int64(1)
+	if err := s.CreateThread(Thread{
+		ID: "t-reconcile", ProjectID: defaultTestProjectID, Title: "T", Provider: "codex", WorkspacePath: "/tmp",
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+
+	// Seed (must match): running background tool_call
+	if _, err := s.AppendItem(Item{
+		ID: "match-running-bg", ThreadID: "t-reconcile", TurnIndex: 1,
+		Kind: "tool_call", Role: "assistant", Status: "running",
+		IsBackground: true, Summary: "Bash: sleep 999", ToolName: "Bash",
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed match-running-bg: %v", err)
+	}
+	// Seed (should NOT match): completed background tool_call
+	if _, err := s.AppendItem(Item{
+		ID: "skip-completed-bg", ThreadID: "t-reconcile", TurnIndex: 1,
+		Kind: "tool_call", Role: "assistant", Status: "completed",
+		IsBackground: true, Summary: "Bash: done", ToolName: "Bash",
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed skip-completed-bg: %v", err)
+	}
+	// Seed (should NOT match): running inline (non-background) tool_call
+	if _, err := s.AppendItem(Item{
+		ID: "skip-running-inline", ThreadID: "t-reconcile", TurnIndex: 1,
+		Kind: "tool_call", Role: "assistant", Status: "running",
+		IsBackground: false, Summary: "Read: /tmp/x", ToolName: "Read",
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed skip-running-inline: %v", err)
+	}
+	// Seed (should NOT match): running background non-tool_call kind
+	if _, err := s.AppendItem(Item{
+		ID: "skip-running-non-tool", ThreadID: "t-reconcile", TurnIndex: 1,
+		Kind: "assistant_text", Role: "assistant", Status: "running",
+		IsBackground: true, Summary: "streaming text",
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed skip-running-non-tool: %v", err)
+	}
+	// Seed a second running bg on a different thread — must NOT come
+	// back when scoping to t-reconcile.
+	if err := s.CreateThread(Thread{
+		ID: "t-other", ProjectID: defaultTestProjectID, Title: "Other", Provider: "codex", WorkspacePath: "/tmp",
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("create other thread: %v", err)
+	}
+	if _, err := s.AppendItem(Item{
+		ID: "skip-other-thread", ThreadID: "t-other", TurnIndex: 1,
+		Kind: "tool_call", Role: "assistant", Status: "running",
+		IsBackground: true, Summary: "Bash: other", ToolName: "Bash",
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed skip-other-thread: %v", err)
+	}
+
+	got, err := s.ListRunningBackgroundToolCalls("t-reconcile")
+	if err != nil {
+		t.Fatalf("ListRunningBackgroundToolCalls: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d rows, want 1", len(got))
+	}
+	if got[0].ID != "match-running-bg" {
+		t.Fatalf("got[0].ID = %q, want match-running-bg", got[0].ID)
+	}
+}
+
+// TestListRunningBackgroundToolCallsEmptyThread returns no rows and no
+// error when the thread has no items — the reconciler tolerates an
+// empty thread and this pins that contract.
+func TestListRunningBackgroundToolCallsEmptyThread(t *testing.T) {
+	s := newTestStore(t)
+	now := int64(1)
+	if err := s.CreateThread(Thread{
+		ID: "t-empty", ProjectID: defaultTestProjectID, Title: "Empty", Provider: "codex", WorkspacePath: "/tmp",
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+
+	got, err := s.ListRunningBackgroundToolCalls("t-empty")
+	if err != nil {
+		t.Fatalf("ListRunningBackgroundToolCalls: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("got %d rows on empty thread, want 0", len(got))
+	}
+}

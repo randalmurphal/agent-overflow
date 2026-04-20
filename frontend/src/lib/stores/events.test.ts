@@ -199,7 +199,8 @@ describe('setupEventListeners', () => {
   // via `action: 'rate_limits'`. The listener must NOT treat this as a
   // reset — the last-seen context-window ring stays in place so the
   // meter keeps rendering its existing value while the popover picks up
-  // the new rate-limits row (future work, see TODO in applyUsageEvent).
+  // the new rate-limits row (future work — see the "Future work" note in
+  // applyUsageEvent's rate_limits branch).
   it('routes EventRateLimits to provider:usage without clobbering the context ring', async () => {
     const pane = await buildPane();
     getAllPanes().set('main', pane);

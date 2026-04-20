@@ -619,6 +619,46 @@ func (s *Store) ListTurnItems(threadID string, turnIndex int) ([]Item, error) {
 	return items, rows.Err()
 }
 
+// ListRunningBackgroundToolCalls returns every still-`running` +
+// `is_background=1` `tool_call` row for the given thread. The on-reopen
+// Codex reconciler uses it to scope its flip when the probe reports a
+// systemError — those are the only rows whose disposition is uncertain
+// after a session restart (inline tool calls complete or error in the
+// same turn; non-running rows are already settled).
+//
+// The filter pushes down into SQLite (vs. fetching ListItems and
+// filtering in Go) so threads with deep history don't pay the
+// deserialization cost on every reopen. Reopen is a cold path today but
+// the query is narrow enough that a dedicated method is cheaper than a
+// full table hydration.
+func (s *Store) ListRunningBackgroundToolCalls(threadID string) ([]Item, error) {
+	rows, err := s.db.Query(
+		`SELECT `+itemColumns+`
+		   FROM items
+		   LEFT JOIN payloads ON payloads.id = items.payload_id
+		  WHERE items.thread_id = ?
+		    AND items.kind = 'tool_call'
+		    AND items.status = 'running'
+		    AND items.is_background = 1
+		  ORDER BY items.turn_index, items.item_index`,
+		threadID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: list running background tool calls for thread %s: %w", threadID, err)
+	}
+	defer rows.Close()
+
+	var items []Item
+	for rows.Next() {
+		it, err := scanItemRow(rows)
+		if err != nil {
+			return nil, fmt.Errorf("store: scan running bg tool call row: %w", err)
+		}
+		items = append(items, it)
+	}
+	return items, rows.Err()
+}
+
 // LatestToolCallByName returns the most-recently-inserted tool_call row
 // in (threadID, turnIndex) whose lower(tool_name) equals any of
 // toolNames. Matches the iteration pattern in triage.findLatestToolCall

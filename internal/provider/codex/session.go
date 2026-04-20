@@ -91,6 +91,11 @@ type Session struct {
 	// skips the wire call and returns the result from this function.
 	// Production Session construction (NewSession) never sets it.
 	probeFn func(ctx context.Context) (ProbeResult, error)
+	// resumeFn mirrors probeFn for Resume(). Used by
+	// app_codex_reconcile_test.go to verify the post-probe rehydration
+	// path without needing a live app-server. Production NewSession
+	// never sets it.
+	resumeFn func(ctx context.Context) error
 }
 
 // pendingApproval tracks one in-flight approval so the timer can be
