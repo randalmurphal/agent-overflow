@@ -24,12 +24,22 @@ import (
 func TestTaskNotificationDedupsAfterTerminalTaskUpdated(t *testing.T) {
 	parser := NewParser()
 
-	// 1. task_started primes the parser with the taskID → toolUseID map.
+	// 1. task_started primes the parser with the taskID → toolUseID map
+	// AND emits a meta-only EventToolStart so triage persists the
+	// task_id into items.meta for reconnect recovery.
 	startLine := []byte(`{"type":"system","subtype":"task_started","task_id":"task-dedup","tool_use_id":"tool-dedup"}`)
-	if events, err := parser.ParseLine(testThread, startLine); err != nil {
+	startEvents, err := parser.ParseLine(testThread, startLine)
+	if err != nil {
 		t.Fatalf("task_started: %v", err)
-	} else if len(events) != 0 {
-		t.Fatalf("task_started must not emit events, got %d", len(events))
+	}
+	if len(startEvents) != 1 {
+		t.Fatalf("task_started must emit 1 meta-carrying EventToolStart, got %d", len(startEvents))
+	}
+	if startEvents[0].Kind != provider.EventToolStart {
+		t.Fatalf("task_started kind = %q, want %q", startEvents[0].Kind, provider.EventToolStart)
+	}
+	if startEvents[0].ItemID != "tool-dedup" {
+		t.Fatalf("task_started ItemID = %q, want tool-dedup", startEvents[0].ItemID)
 	}
 
 	// 2. Terminal task_updated is the ONLY source of truth for the

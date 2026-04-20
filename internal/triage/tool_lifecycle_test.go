@@ -555,7 +555,7 @@ func TestTaskStartedMergesTaskIDIntoItemMeta(t *testing.T) {
 		t.Fatalf("task_started meta update: %v", err)
 	}
 
-	item, _, err := st.GetItem(providerScopedItemID("t1", "tool-bg-meta"))
+	item, _, err := st.GetItem(providerScopedItemID("tool-bg-meta"))
 	if err != nil {
 		t.Fatalf("get item: %v", err)
 	}
@@ -654,15 +654,15 @@ func TestTaskUpdatedResolvesItemViaMetaTaskID(t *testing.T) {
 	if len(launches) != 1 {
 		t.Fatalf("expected 1 tool_call, got %+v", launches)
 	}
-	if launches[0].ID != providerScopedItemID("t1", "bg-recov") {
+	if launches[0].ID != providerScopedItemID("bg-recov") {
 		t.Errorf("unexpected launch id %q", launches[0].ID)
 	}
 	dones := findItemsByKind(t, st, "t1", itemKindBackgroundDone)
 	if len(dones) != 1 {
 		t.Fatalf("expected 1 tool_completion, got %+v", dones)
 	}
-	if dones[0].CompletionOf != providerScopedItemID("t1", "bg-recov") {
-		t.Errorf("completion_of = %q, want %q", dones[0].CompletionOf, providerScopedItemID("t1", "bg-recov"))
+	if dones[0].CompletionOf != providerScopedItemID("bg-recov") {
+		t.Errorf("completion_of = %q, want %q", dones[0].CompletionOf, providerScopedItemID("bg-recov"))
 	}
 }
 

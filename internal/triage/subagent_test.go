@@ -193,8 +193,8 @@ func TestTextItemIDDisambiguatesSubagentScopes(t *testing.T) {
 		t.Fatalf("expected 2 distinct scoped text items, got %d: %+v", len(textByParent), textByParent)
 	}
 
-	alphaID := providerScopedItemID("t1", "task_tool_alpha")
-	betaID := providerScopedItemID("t1", "task_tool_beta")
+	alphaID := providerScopedItemID("task_tool_alpha")
+	betaID := providerScopedItemID("task_tool_beta")
 	if got := textByParent[alphaID]; got != "A output" {
 		t.Errorf("alpha scope summary = %q, want %q", got, "A output")
 	}

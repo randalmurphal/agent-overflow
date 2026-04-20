@@ -106,9 +106,9 @@ func TestInterruptQueueDrainsInArrivalOrder(t *testing.T) {
 	var aIdx, bIdx = -1, -1
 	for _, it := range drained {
 		switch it.CompletionOf {
-		case providerScopedItemID("t1", "bg-A"):
+		case providerScopedItemID("bg-A"):
 			aIdx = it.ItemIndex
-		case providerScopedItemID("t1", "bg-B"):
+		case providerScopedItemID("bg-B"):
 			bIdx = it.ItemIndex
 		}
 	}
@@ -139,8 +139,8 @@ func TestInterruptQueueDrainsInArrivalOrder(t *testing.T) {
 	if len(upsertOrder) < 2 {
 		t.Fatalf("expected 2 background_done upserts, got %+v", upsertOrder)
 	}
-	if upsertOrder[0] != providerScopedItemID("t1", "bg-A") ||
-		upsertOrder[1] != providerScopedItemID("t1", "bg-B") {
+	if upsertOrder[0] != providerScopedItemID("bg-A") ||
+		upsertOrder[1] != providerScopedItemID("bg-B") {
 		t.Fatalf("upsert arrival order violated: got %+v, want [bg-A, bg-B]", upsertOrder)
 	}
 }
