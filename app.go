@@ -93,9 +93,8 @@ type App struct {
 	// calls execCommitCLI directly. Tests install a fake that returns
 	// a canned stdout/stderr/exitCode triple so the test suite runs
 	// without `codex` / `claude` binaries on PATH.
-	commitExecutor      commitCLIExecutor
-	emitProviderEventFn func(provider.ProviderEvent)
-	emitEventFn         func(eventName string, data any)
+	commitExecutor commitCLIExecutor
+	emitEventFn    func(eventName string, data any)
 	// shutdownStepFn is a test-only hook fired after every step of
 	// Shutdown. Production leaves this nil. Order tests install it to
 	// record the step sequence and observe per-step errors without

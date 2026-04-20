@@ -3,6 +3,7 @@ package claude
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"agent-overflow/internal/provider"
@@ -48,6 +49,35 @@ type Parser struct {
 	// (parent_tool_use_id,index) so a later content_block_stop can identify
 	// which streaming block closed.
 	streamBlockTypes map[string]string
+	// model is the latest model id observed on this session. Seeded from
+	// the system/init line and used to price assistant usage events so
+	// triage doesn't have to reach back into the store for pricing. When
+	// the CLI rewrites the model mid-session (e.g. Sonnet → Opus auto-
+	// upgrade), the next init echo updates this field.
+	model string
+}
+
+// SetModel primes the parser with the model id the session was started
+// with. Init messages still overwrite the field when they arrive, but
+// seeding from Session.Start lets the first assistant usage event carry
+// a priced TokenUsage even if the init line is late or absent.
+func (p *Parser) SetModel(model string) {
+	if p == nil {
+		return
+	}
+	p.model = strings.TrimSpace(model)
+}
+
+// currentModel returns the parser's tracked model id, or "" when the
+// parser is nil. Used by the pricing paths so ParseLine can be called
+// on a nil receiver without panicking — the package-level ParseLine
+// helper and a handful of tests that construct a *Session without a
+// parser rely on this.
+func (p *Parser) currentModel() string {
+	if p == nil {
+		return ""
+	}
+	return p.model
 }
 
 // NewParser returns an initialised Parser. Callers that only need one-shot
@@ -128,7 +158,7 @@ func (p *Parser) ParseLine(threadID string, line []byte) ([]provider.ProviderEve
 		// relying on the implicit signal at `result` (turn end).
 		return p.parseUser(threadID, raw, now, line)
 	case "result":
-		return parseResult(threadID, raw, now, line)
+		return parseResult(threadID, raw, now, line, p.currentModel())
 	case "stream_event":
 		return p.parseStreamEvent(threadID, raw, now)
 	case "control_request":

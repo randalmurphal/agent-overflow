@@ -1039,6 +1039,9 @@ type ProviderStatusEvent struct {
 //   "unauthenticated"        — OAuth / API key missing or expired
 //   "version_incompatible"   — installed CLI doesn't match expected version
 //   "rate_limited_retrying"  — provider rate-limited, adapter is retrying
+//   "transient_retry"        — adapter is retrying against a non-rate-limit
+//                              cause (5xx, billing, invalid_request, etc.);
+//                              Message carries the upstream reason verbatim
 //   "ok"                     — transient issue resolved; frontend clears banner
 ```
 

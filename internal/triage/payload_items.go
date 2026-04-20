@@ -209,35 +209,25 @@ func (r *Router) newToolCallItem(
 	return item, nil
 }
 
+// findLatestToolCall returns the most-recent tool_call row in the
+// current turn whose tool_name matches one of toolNames
+// (case-insensitive). Delegates to store.LatestToolCallByName so the
+// filter runs in SQLite — previous implementations pulled every turn
+// item into Go and scanned in reverse, which was O(turn_items) on
+// a path called once per fallback diff/command-output event.
 func (r *Router) findLatestToolCall(threadID string, toolNames ...string) (store.Item, bool, error) {
 	turnIndex, err := r.currentTurnIndex(threadID)
 	if err != nil {
 		return store.Item{}, false, err
 	}
-	items, err := r.store.ListTurnItems(threadID, turnIndex)
-	if err != nil {
-		return store.Item{}, false, err
-	}
-	for i := len(items) - 1; i >= 0; i-- {
-		item := items[i]
-		if item.Kind != itemKindToolCall {
-			continue
-		}
-		if len(toolNames) == 0 || toolNameMatches(item.ToolName, toolNames...) {
-			return item, true, nil
+	normalized := make([]string, 0, len(toolNames))
+	for _, name := range toolNames {
+		trimmed := strings.TrimSpace(strings.ToLower(name))
+		if trimmed != "" {
+			normalized = append(normalized, trimmed)
 		}
 	}
-	return store.Item{}, false, nil
-}
-
-func toolNameMatches(name string, candidates ...string) bool {
-	name = strings.TrimSpace(strings.ToLower(name))
-	for _, candidate := range candidates {
-		if name == strings.TrimSpace(strings.ToLower(candidate)) {
-			return true
-		}
-	}
-	return false
+	return r.store.LatestToolCallByName(threadID, turnIndex, normalized)
 }
 
 func (r *Router) attachPayloadToItem(

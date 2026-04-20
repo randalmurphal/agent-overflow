@@ -7,8 +7,9 @@ import (
 // ProviderStatusEvent is the payload for the `provider:status` Wails
 // event. It surfaces provider-level health (install / version / auth)
 // to the frontend so ProviderStatusBanner can render actionable
-// guidance. This is a separate channel from `provider:event` — those
-// are per-turn session events; these describe the binary itself.
+// guidance. This is a separate channel from the triage router's
+// per-turn `provider:item_upsert` stream — those describe timeline
+// content; these describe the binary itself.
 type ProviderStatusEvent struct {
 	// Provider is "claude" or "codex".
 	Provider string `json:"provider"`

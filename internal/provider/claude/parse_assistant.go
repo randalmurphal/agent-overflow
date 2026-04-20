@@ -87,7 +87,7 @@ func (p *Parser) parseAssistant(threadID string, raw map[string]json.RawMessage,
 		}
 	}
 
-	events = appendUsageEvent(events, threadID, parentToolUseID, now, msg.Usage)
+	events = appendUsageEvent(events, threadID, parentToolUseID, now, msg.Usage, p.currentModel())
 	return events, nil
 }
 
@@ -195,22 +195,31 @@ func appendThinkingEvent(
 
 // appendUsageEvent emits an EventTokenUsage when the assistant message
 // carries a usage object. Nil usage (the common mid-stream case) drops
-// through without touching the event slice.
+// through without touching the event slice. When `model` is non-empty
+// we price the usage via provider.CalculateCost and stamp the result on
+// TotalCostUSD before marshaling — the triage router trusts the meta
+// verbatim, so the cost is attached at the provider boundary where the
+// model is authoritatively known.
 func appendUsageEvent(
 	events []provider.ProviderEvent,
 	threadID, parentToolUseID string,
 	now time.Time,
 	usage *assistantUsage,
+	model string,
 ) []provider.ProviderEvent {
 	if usage == nil {
 		return events
 	}
-	usageMeta, _ := json.Marshal(provider.TokenUsage{
+	tokenUsage := provider.TokenUsage{
 		InputTokens:              usage.InputTokens,
 		OutputTokens:             usage.OutputTokens,
 		CacheReadInputTokens:     usage.CacheReadInputTokens,
 		CacheCreationInputTokens: usage.CacheCreationInputTokens,
-	})
+	}
+	if model != "" {
+		tokenUsage.TotalCostUSD = provider.CalculateCost(model, tokenUsage)
+	}
+	usageMeta, _ := json.Marshal(tokenUsage)
 	return append(events, provider.ProviderEvent{
 		Kind:            provider.EventTokenUsage,
 		ThreadID:        threadID,

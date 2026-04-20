@@ -24,9 +24,9 @@ import (
 
 // ErrUnhandledEventKind is returned by Handle when the switch lands in its
 // default branch — i.e. a new EventKind was added to the provider package
-// without a matching case here. The event is still emitted to the frontend
-// under "provider:event" as a best-effort passthrough; the sentinel lets the
-// exhaustiveness test flag the drift.
+// without a matching case here. The exhaustiveness test flags this so new
+// provider event kinds can't slip through without an explicit routing
+// decision.
 var ErrUnhandledEventKind = errors.New("triage: unhandled event kind")
 
 // CheckpointCapture is the subset of checkpoint.Store that the router calls
@@ -91,6 +91,14 @@ type Router struct {
 	// expected but the first sighting is worth flagging so a new
 	// provider subtype doesn't silently disappear.
 	unknownSessionStatusLogged map[string]struct{}
+	// eventHook is a test-only seam: when set, the Router invokes it for
+	// every Handle call AFTER the routing switch runs. Production code
+	// never sets a hook (the call site in Handle is nil-checked so the
+	// production path pays only one branch). Tests install a hook that
+	// forwards events to a channel so test assertions can synchronize on
+	// the routing pipeline without depending on a retired
+	// `provider:event` emission.
+	eventHook func(provider.ProviderEvent)
 	// inflight counts Handle() calls currently in progress. Wait drains
 	// this to zero so app shutdown can flush observability + persistence
 	// without racing against events mid-persist. Counter is bumped at
@@ -174,10 +182,21 @@ func (r *Router) SetTelemetry(tracer trace.Tracer, m TurnMetrics) {
 	}
 }
 
+// SetEventHook installs a test-only observer that fires after every
+// Handle call. Production code must leave this nil — the hook exists so
+// tests can synchronize on the routing pipeline without depending on a
+// wire-level emission. Pass nil to clear.
+func (r *Router) SetEventHook(hook func(provider.ProviderEvent)) {
+	r.mu.Lock()
+	r.eventHook = hook
+	r.mu.Unlock()
+}
+
 // Handle processes a provider event: persists heavy payloads, forwards inline events.
 func (r *Router) Handle(evt provider.ProviderEvent) error {
 	r.inflight.Add(1)
 	defer r.inflight.Done()
+	defer r.fireEventHook(evt)
 
 	// EventInit means a fresh session is (re)starting for this thread;
 	// clear any lingering stopped marker so subsequent events persist
@@ -235,8 +254,21 @@ func (r *Router) Handle(evt provider.ProviderEvent) error {
 	case provider.EventProposedPlan:
 		return r.handleProposedPlan(evt)
 	default:
-		r.emit("provider:event", evt)
+		// No-op: the event has no routing decision. Return the sentinel so
+		// the exhaustiveness test in router_test.go can flag the drift.
 		return fmt.Errorf("%w: %s", ErrUnhandledEventKind, evt.Kind)
+	}
+}
+
+// fireEventHook runs the installed test-only observer. Deferred from
+// Handle so the hook fires after the routing switch — callers can rely
+// on persistence and emissions having completed before the hook runs.
+func (r *Router) fireEventHook(evt provider.ProviderEvent) {
+	r.mu.Lock()
+	hook := r.eventHook
+	r.mu.Unlock()
+	if hook != nil {
+		hook(evt)
 	}
 }
 
@@ -279,13 +311,6 @@ func (r *Router) handleToolComplete(evt provider.ProviderEvent) error {
 }
 
 func (r *Router) handleInit(evt provider.ProviderEvent) error {
-	// provider:event fanout is retained here for the test harness that
-	// uses capturedEventBus.nextProviderEventOfKind as a completion
-	// signal — the live frontend does NOT listen on this channel (it
-	// reacts to provider:item_upsert, provider:approval, and
-	// provider:status instead). When the test harness is migrated, this
-	// can drop.
-	r.emit("provider:event", evt)
 	if evt.Meta == nil {
 		return nil
 	}
@@ -304,11 +329,6 @@ func (r *Router) handleThreadModelUpdate(evt provider.ProviderEvent) error {
 		return nil
 	}
 	if err := r.store.UpdateModel(evt.ThreadID, evt.Content); err != nil {
-		r.emit("provider:event_error", map[string]any{
-			"threadId": evt.ThreadID,
-			"kind":     string(evt.Kind),
-			"error":    err.Error(),
-		})
 		return fmt.Errorf("update thread model: %w", err)
 	}
 	r.emitThreadUpdated(evt.ThreadID)
@@ -326,22 +346,13 @@ func (r *Router) handleThreadRename(evt provider.ProviderEvent) error {
 	return nil
 }
 
+// handleTokenUsage is provider-agnostic by design: the provider adapter
+// prices the usage (see provider/claude and provider/codex CalculateCost
+// callsites) and hands triage a fully-populated TokenUsage in Meta.
+// Triage only decodes the context window from that meta, persists it as
+// the thread's last_token_usage snapshot, and emits the `provider:usage`
+// update so the meter popover refreshes.
 func (r *Router) handleTokenUsage(evt provider.ProviderEvent) error {
-	usage, ok := parseTokenUsage(evt.Meta)
-	if ok {
-		model, err := r.lookupThreadModel(evt.ThreadID)
-		if err != nil {
-			log.Printf("triage: lookup thread model: %v", err)
-		} else if model != "" {
-			usage.TotalCostUSD = provider.CalculateCost(model, usage)
-			if meta, merr := json.Marshal(usage); merr == nil {
-				evt.Meta = meta
-			} else {
-				log.Printf("triage: marshal token usage: %v", merr)
-			}
-		}
-	}
-
 	window, ok := decodeContextWindow(evt.Meta)
 	if !ok {
 		return nil
@@ -382,16 +393,20 @@ func (r *Router) handleRateLimits(evt provider.ProviderEvent) error {
 }
 
 // handleSessionStatus routes EventSessionStatus onto the provider:status
-// banner channel — but only for persistent kinds the spec calls out
-// (binary_missing, unauthenticated, version_incompatible,
-// rate_limited_retrying, ok). Transient values ("disconnected",
-// "session_state_changed") drop silently; anything we don't recognize is
-// logged once per distinct content string so a new provider subtype
-// surfaces without polluting steady-state logs.
+// banner channel. Retries are inspected for an upstream reason
+// (Claude's `data.error` string from api_retry, Codex's
+// `error.message`) and mapped to the most-specific ProviderStatusEventKind
+// we can justify: `unauthenticated` for auth failure, `rate_limited_retrying`
+// for rate-limit, and `transient_retry` as the catch-all for the rest.
+// Transient lifecycle signals (disconnected, session_state_changed) drop
+// silently; anything we don't recognize is logged once per distinct
+// content string so a new provider subtype surfaces without polluting
+// steady-state logs.
 func (r *Router) handleSessionStatus(evt provider.ProviderEvent) error {
-	kind, known, persistent := classifySessionStatusContent(evt.Content)
+	content := strings.TrimSpace(evt.Content)
+	kind, message, known, persistent := classifySessionStatus(content, evt.Meta)
 	if !known {
-		r.logUnknownSessionStatusOnce(evt.Content)
+		r.logUnknownSessionStatusOnce(content)
 		return nil
 	}
 	if !persistent {
@@ -407,41 +422,122 @@ func (r *Router) handleSessionStatus(evt provider.ProviderEvent) error {
 
 	r.emit("provider:status", provider.ProviderStatusEvent{
 		Kind:     kind,
-		Message:  strings.TrimSpace(evt.Content),
+		Message:  message,
 		Provider: providerName,
 		ThreadID: evt.ThreadID,
 	})
 	return nil
 }
 
-// classifySessionStatusContent maps a provider-specific EventSessionStatus
-// Content string to a ProviderStatusEventKind. The return shape is a
-// three-tuple: the kind value (meaningful only when both known and
-// persistent are true), a known flag (true when the string is recognized
-// by either the persistent or transient set), and a persistent flag (true
-// when the kind should surface on provider:status).
-func classifySessionStatusContent(content string) (provider.ProviderStatusEventKind, bool, bool) {
-	switch strings.TrimSpace(content) {
+// classifySessionStatus maps a provider-specific EventSessionStatus to a
+// persistent ProviderStatusEventKind + a banner Message. Returns
+// (kind, message, known, persistent): kind and message are meaningful
+// only when both known and persistent are true.
+//
+// The Content string is the coarse discriminator ("retrying", "ok",
+// "disconnected", ...). For "retrying" we dig into Meta to pick the
+// most-specific kind so the banner tells the user whether the retry is
+// rate-limit, auth, or generic transient.
+func classifySessionStatus(content string, meta json.RawMessage) (provider.ProviderStatusEventKind, string, bool, bool) {
+	switch content {
 	case "retrying":
-		// Claude's api_retry lands here. The spec vocabulary is
-		// rate_limited_retrying; we accept any retry as persistent
-		// because the banner copy is the same regardless of the
-		// upstream cause.
-		return provider.ProviderStatusRateLimitedRetrying, true, true
+		kind, reason := classifyRetryReason(meta)
+		message := retryBannerMessage(reason)
+		return kind, message, true, true
 	case "ok", "ready":
 		// Either vocabulary clears the banner. "ready" is what the
 		// legacy detect flow uses; accept it so a migration in Agent 2's
 		// adapter rewrite doesn't have to touch this file to flip a
 		// pass-through kind.
-		return provider.ProviderStatusOK, true, true
+		return provider.ProviderStatusOK, "", true, true
 	case "disconnected", "session_state_changed", "error":
 		// Transient — the working-indicator handles connection churn
 		// and EventError handles terminal failures. Known but not
 		// persistent.
-		return "", true, false
+		return "", "", true, false
 	default:
-		return "", false, false
+		return "", "", false, false
 	}
+}
+
+// classifyRetryReason extracts the upstream retry cause from the
+// EventSessionStatus Meta payload and returns (kind, reason). The reason
+// string is a short provider-reported token ("rate_limit", "server_error",
+// an HTTP status, or an excerpt of an error message) that the banner
+// surfaces verbatim in Message; the caller composes the final message.
+//
+// Sources:
+//   - Claude api_retry: Meta has {"error":"rate_limit|authentication_failed|
+//     server_error|invalid_request|billing_error|max_output_tokens|unknown",
+//     "error_status":<HTTP>,"attempt":N,"max_retries":M,"retry_delay_ms":D}.
+//   - Codex error+willRetry: Meta has {"willRetry":true,
+//     "error":{"message":"..."}}.
+//
+// Empty / missing reason falls through to transient_retry with an empty
+// reason, which the UI renders as "Retrying provider request...".
+func classifyRetryReason(meta json.RawMessage) (provider.ProviderStatusEventKind, string) {
+	if len(meta) == 0 {
+		return provider.ProviderStatusTransientRetry, ""
+	}
+
+	// Claude shape: top-level string "error".
+	if reason := readJSONString(metaAt(meta, "error")); reason != "" {
+		return retryKindForReason(reason), reason
+	}
+	// Codex shape: nested error.message.
+	if nested := strings.TrimSpace(metaNestedString(meta, "error", "message")); nested != "" {
+		return retryKindForReason(nested), nested
+	}
+	// Legacy shape some adapters used: top-level "reason".
+	if reason := readJSONString(metaAt(meta, "reason")); reason != "" {
+		return retryKindForReason(reason), reason
+	}
+	return provider.ProviderStatusTransientRetry, ""
+}
+
+// retryKindForReason returns the ProviderStatusEventKind we want the
+// banner to render for a given upstream reason. The reason can be a
+// Claude SDK enum, a Codex error message, or anything else a future
+// provider surfaces — unknown values fall through to transient_retry so
+// the banner still fires.
+func retryKindForReason(reason string) provider.ProviderStatusEventKind {
+	normalized := strings.ToLower(strings.TrimSpace(reason))
+	if normalized == "" {
+		return provider.ProviderStatusTransientRetry
+	}
+	if strings.Contains(normalized, "rate_limit") || strings.Contains(normalized, "rate limit") || strings.Contains(normalized, "429") || strings.Contains(normalized, "quota") {
+		return provider.ProviderStatusRateLimitedRetrying
+	}
+	if strings.Contains(normalized, "auth") || strings.Contains(normalized, "unauthenticated") || strings.Contains(normalized, "unauthorized") || strings.Contains(normalized, "401") || strings.Contains(normalized, "403") {
+		return provider.ProviderStatusUnauthenticated
+	}
+	return provider.ProviderStatusTransientRetry
+}
+
+// retryBannerMessage returns the banner Message field for a retry. The
+// UI already renders kind-specific copy (see ProviderStatusBanner);
+// Message is a human-readable detail line. We keep it short — Codex can
+// send reason="Reconnecting... 2/5" and the UI clips to two lines.
+func retryBannerMessage(reason string) string {
+	if reason == "" {
+		return "Retrying..."
+	}
+	return reason
+}
+
+// metaAt returns the raw JSON value at a top-level key, or nil if the
+// key is absent or the meta is not a JSON object. Keeps the session
+// status classifier independent of metaNestedString's "walk into nested
+// objects" semantics.
+func metaAt(meta json.RawMessage, key string) json.RawMessage {
+	if len(meta) == 0 {
+		return nil
+	}
+	var m map[string]json.RawMessage
+	if json.Unmarshal(meta, &m) != nil {
+		return nil
+	}
+	return m[key]
 }
 
 func (r *Router) lookupThreadProvider(threadID string) (string, error) {
@@ -514,14 +610,15 @@ func (r *Router) handleError(evt provider.ProviderEvent) error {
 	return r.persistItem(item, nil)
 }
 
-// emitInline forwards the raw provider event on the provider:event
-// channel. The live frontend does NOT listen on this channel (see
-// handleInit's note); the emission is retained for the Go test harness
-// that uses nextProviderEventOfKind as a completion signal. A future
-// refactor can drop this once the harness migrates to
-// provider:item_upsert-driven synchronization.
+// emitInline is a no-op kept as an explicit marker at handler exit for
+// events that triage routes purely through the typed channels
+// (provider:item_upsert, provider:approval, provider:usage,
+// provider:status). The router exposes an eventHook observer (see
+// SetEventHook) for tests that need to synchronize on the routing
+// pipeline; wire-level passthroughs are intentionally absent so the
+// frontend can rely on a single typed contract per channel.
 func (r *Router) emitInline(evt provider.ProviderEvent) error {
-	r.emit("provider:event", evt)
+	_ = evt
 	return nil
 }
 

@@ -92,6 +92,16 @@ func (r *Router) drainInterruptQueue(threadID string, forceErrored bool) error {
 	return nil
 }
 
+// settleTurnStreaming collects every active streaming scope in
+// (threadID, turnIndex) and calls settleStreamingText /
+// settleStreamingThinking on each. The prefix scan runs against the
+// full activeTextBlocks / activeThinkingBlocks maps, but both maps are
+// pruned aggressively — entries clear on content_block_stop (typical
+// Claude path), clearOpenTurn (turn completion), and CleanupThread
+// (session teardown). In steady state the map holds ~1-5 entries for
+// the current in-flight turn on active threads, so a flat prefix scan
+// beats the bookkeeping overhead of a nested map[threadIDTurn]map[scope]bool
+// rekey. Revisit if profiling shows this becoming a hotspot.
 func (r *Router) settleTurnStreaming(threadID string, turnIndex int, status string) error {
 	prefix := fmt.Sprintf("%s|%d|", threadID, turnIndex)
 

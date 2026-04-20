@@ -9,45 +9,42 @@ Every normalized `ProviderEvent` flows through `Router.Handle` in
 
 | EventKind | Disposition |
 |---|---|
-| `init` | `handleInit` — emit inline + upsert `session_ref` on `threads`. |
-| `text_delta` | `handleTextDelta` — accumulate per-thread text, emit inline. |
-| `tool_start` | `handleToolStart` — persist tool-use shape, capture pending inline diff, emit. |
-| `tool_complete` | `handleToolComplete` — persist tool result (inc. inline diffs), emit. |
-| `turn_start` | `handleTurnStart` — emit inline, open turn span, capture git baseline. |
-| `turn_complete` | `handleTurnComplete` — drain accumulators, persist text/reasoning/plan, close span. |
-| `approval_request` | Inline emit. |
-| `approval_resolved` | Inline emit. |
-| `session_status` | Inline emit. |
-| `token_usage` | `handleTokenUsage` — compute cost from model, emit enriched meta. |
-| `error` | Inline emit. |
-| `background_start` | Inline emit (tray marker; SQLite write happens on complete). |
-| `background_delta` | Dropped. Accumulated in the provider package. |
-| `background_complete` | `persistHeavy` → `full_text` payload + `background_done` item. |
-| `tool_progress` | Inline emit. |
-| `compact_boundary` | Inline emit. |
-| `rate_limits` | Inline emit. |
-| `model_rerouted` | `handleThreadModelUpdate` — persist new model, emit. |
-| `thread_renamed` | `handleThreadRename` — persist new title, emit. |
-| `diff` | `handleDiff` — `persistHeavy` + upgrade earlier summary-only tool results. |
-| `command_output` | `persistHeavy` → `command_output` payload + `command_execution` item. |
-| `thinking` | `handleThinking` — persist if item-scoped, else accumulate for turn-complete drain. |
-| `proposed_plan` | `persistHeavy` → `proposed_plan` payload + item. |
-| `plan_update` | Inline emit (Codex `turn/plan/updated` mid-turn stream). |
+| `init` | `handleInit` — upsert `session_ref` on `threads`. |
+| `text_delta` | `handleTextDelta` — append streaming item via SQLite append, emit `provider:item_upsert`. |
+| `tool_start` | `handleToolStart` — persist tool-use lifecycle row, capture pending inline diff, emit `provider:item_upsert`. |
+| `tool_complete` | `handleToolComplete` — persist tool result (inc. inline diffs), flip status, emit `provider:item_upsert`. |
+| `turn_start` | `handleTurnStart` — open turn span, capture git baseline. |
+| `turn_complete` | `handleTurnComplete` — drain accumulators, persist text/thinking/plan, close span. |
+| `approval_request` | `handleApprovalRequest` — record pending, emit `provider:approval` (request). |
+| `approval_resolved` | `handleApprovalResolved` — fold decision onto the row, emit `provider:approval` (resolve). |
+| `session_status` | `handleSessionStatus` — precise mapping to `ProviderStatusEventKind`, emit `provider:status` when persistent. |
+| `token_usage` | `handleTokenUsage` — emit `provider:usage` (cost pre-computed in the provider adapter). |
+| `error` | `handleError` — persist error row, mark turn items errored on fatal, emit `provider:item_upsert`. |
+| `compact_boundary` | `handleCompaction` — persist compaction marker, emit `provider:usage` (reset). |
+| `rate_limits` | `handleRateLimits` — emit `provider:usage` (rate_limits). |
+| `content_block_start` / `content_block_stop` | Streaming text/thinking block markers; settle streaming rows on stop. |
+| `model_rerouted` | `handleThreadModelUpdate` — persist new model, emit `thread:updated`. |
+| `thread_renamed` | `handleThreadRename` — persist new title, emit `thread:updated`. |
+| `diff` | `handleDiff` — persist payload + meta, upgrade summary-only tool results, emit `provider:item_upsert`. |
+| `command_output` | `handleCommandOutput` — persist command_output payload, emit `provider:item_upsert`. |
+| `thinking` | `handleThinking` — persist + append streaming thinking block, emit `provider:item_upsert`. |
+| `proposed_plan` | `handleProposedPlan` — persist plan payload, emit `provider:item_upsert`. |
 
-Inline emits go out on the `"provider:event"` Wails channel. Heavy
-persistence also emits a `"provider:meta"` event carrying the rendered
-preview; the full body loads on demand.
+Routing lands on typed channels: `provider:item_upsert` (every
+timeline state change), `provider:approval`, `provider:usage`, and
+`provider:status`. There is no generic `provider:event` passthrough —
+the router exposes a `SetEventHook` test-only observer so Go tests can
+synchronize on the routing pipeline without a wire channel.
 
 ## The Sentinel
 
-The `default` branch in `Handle` calls `r.emit("provider:event", evt)`
-(best-effort passthrough) and returns `fmt.Errorf("%w: %s",
-ErrUnhandledEventKind, evt.Kind)`. The sentinel exists so
-`TestHandleEveryEventKindCovered` can loop `provider.AllEventKinds` and
-fail loudly if any kind falls through — see `router_test.go:22`.
-`TestAllEventKindsListIsComplete` (`router_test.go:56`) guards the
-complementary drift: a new const in `types.go` that isn't added to
-`AllEventKinds`.
+The `default` branch in `Handle` returns
+`fmt.Errorf("%w: %s", ErrUnhandledEventKind, evt.Kind)` and emits on no
+channel. The sentinel exists so `TestHandleEveryEventKindCovered` can
+loop `provider.AllEventKinds` and fail loudly if any kind falls
+through — see `router_test.go:22`. `TestAllEventKindsListIsComplete`
+(`router_test.go:56`) guards the complementary drift: a new const in
+`types.go` that isn't added to `AllEventKinds`.
 
 ## Adding a New EventKind
 

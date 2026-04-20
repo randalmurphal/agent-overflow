@@ -197,11 +197,16 @@ func TestSendMessageGeneratesClaudeThreadTitleOnFirstTurn(t *testing.T) {
 		return ` "Reconnect spinner resume fix" `, nil
 	}
 
-	emitted := make(chan provider.ProviderEvent, 1)
-	app.emitProviderEventFn = func(evt provider.ProviderEvent) {
-		if evt.Kind == provider.EventThreadRenamed {
-			emitted <- evt
+	emitted := make(chan store.Thread, 4)
+	app.emitEventFn = func(name string, data any) {
+		if name != "thread:updated" {
+			return
 		}
+		updated, ok := data.(store.Thread)
+		if !ok {
+			t.Fatalf("thread:updated payload type = %T, want store.Thread", data)
+		}
+		emitted <- updated
 	}
 
 	sess, err := claude.NewSession(
@@ -228,13 +233,17 @@ func TestSendMessageGeneratesClaudeThreadTitleOnFirstTurn(t *testing.T) {
 		t.Fatalf("SendMessage() error = %v", err)
 	}
 
-	select {
-	case evt := <-emitted:
-		if evt.Content != "Reconnect spinner resume fix" {
-			t.Fatalf("rename event content = %q", evt.Content)
+	deadline := time.After(2 * time.Second)
+	foundTitle := false
+	for !foundTitle {
+		select {
+		case updated := <-emitted:
+			if updated.Title == "Reconnect spinner resume fix" {
+				foundTitle = true
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for thread rename event")
 		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for thread rename event")
 	}
 
 	stored, err := app.store.GetThread(thread.ID)
@@ -273,10 +282,20 @@ func TestSendMessageDoesNotOverwriteRenamedThreadTitle(t *testing.T) {
 		return "Generated title", nil
 	}
 
-	renamed := make(chan provider.ProviderEvent, 1)
-	app.emitProviderEventFn = func(evt provider.ProviderEvent) {
-		if evt.Kind == provider.EventThreadRenamed {
-			renamed <- evt
+	renamedByGenerator := make(chan store.Thread, 4)
+	app.emitEventFn = func(name string, data any) {
+		if name != "thread:updated" {
+			return
+		}
+		updated, ok := data.(store.Thread)
+		if !ok {
+			t.Fatalf("thread:updated payload type = %T, want store.Thread", data)
+		}
+		// Only record events where the title matches the generated value —
+		// the user-driven rename in this test sets a different title and
+		// we only care about catching a stale generator write here.
+		if updated.Title == "Generated title" {
+			renamedByGenerator <- updated
 		}
 	}
 
@@ -319,8 +338,8 @@ func TestSendMessageDoesNotOverwriteRenamedThreadTitle(t *testing.T) {
 	}
 
 	select {
-	case evt := <-renamed:
-		t.Fatalf("unexpected rename event: %+v", evt)
+	case evt := <-renamedByGenerator:
+		t.Fatalf("unexpected generator rename event after user override: %+v", evt)
 	default:
 	}
 

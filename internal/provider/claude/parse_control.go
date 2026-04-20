@@ -111,7 +111,7 @@ func parseRateLimitEvent(threadID string, raw map[string]json.RawMessage, now ti
 	}}, nil
 }
 
-func parseResult(threadID string, raw map[string]json.RawMessage, now time.Time, line []byte) ([]provider.ProviderEvent, error) {
+func parseResult(threadID string, raw map[string]json.RawMessage, now time.Time, line []byte, model string) ([]provider.ProviderEvent, error) {
 	var isError bool
 	if v, ok := raw["is_error"]; ok {
 		_ = json.Unmarshal(v, &isError)
@@ -133,9 +133,14 @@ func parseResult(threadID string, raw map[string]json.RawMessage, now time.Time,
 
 	var events []provider.ProviderEvent
 
-	// Extract usage/cost data from the result summary.
+	// Extract usage/cost data from the result summary. If the wire
+	// didn't include a cost and we know the model, price the usage
+	// here — triage is provider-agnostic and cannot compute cost.
 	usage := extractResultUsage(raw)
 	if usage.InputTokens > 0 || usage.OutputTokens > 0 {
+		if usage.TotalCostUSD == 0 && model != "" {
+			usage.TotalCostUSD = provider.CalculateCost(model, usage)
+		}
 		usageMeta, _ := json.Marshal(usage)
 		events = append(events, provider.ProviderEvent{
 			Kind:      provider.EventTokenUsage,

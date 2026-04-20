@@ -19,6 +19,14 @@ func TestParentToolUseIDFlowsThroughInlineEmit(t *testing.T) {
 	router, st, emissions := newTestRouter(t)
 	createTestThread(t, st, "t1")
 
+	// Install the router's test-only eventHook so this test can observe
+	// that ParentToolUseID survives the routing pipeline — previously
+	// the assertion rode on the retired provider:event fanout.
+	var observed provider.ProviderEvent
+	router.SetEventHook(func(evt provider.ProviderEvent) {
+		observed = evt
+	})
+
 	evt := provider.ProviderEvent{
 		Kind:            provider.EventToolStart,
 		ThreadID:        "t1",
@@ -32,18 +40,18 @@ func TestParentToolUseIDFlowsThroughInlineEmit(t *testing.T) {
 		t.Fatalf("handle: %v", err)
 	}
 
-	inline := filterEmissions(*emissions, "provider:event")
-	if len(inline) != 1 {
-		t.Fatalf("expected 1 provider:event emission, got %d", len(inline))
+	if observed.ParentToolUseID != "task_tool_abc" {
+		t.Errorf("ParentToolUseID on eventHook observation: got %q, want %q",
+			observed.ParentToolUseID, "task_tool_abc")
 	}
 
-	emitted, ok := inline[0].data.(provider.ProviderEvent)
-	if !ok {
-		t.Fatalf("emitted payload not a ProviderEvent: %T", inline[0].data)
-	}
-	if emitted.ParentToolUseID != "task_tool_abc" {
-		t.Errorf("ParentToolUseID on emission: got %q, want %q",
-			emitted.ParentToolUseID, "task_tool_abc")
+	// The persisted tool_call row carries the parent_tool_use_id as
+	// parent_id, and that lands on the upsert channel — use the
+	// emissions sink to assert the outbound contract without depending
+	// on a retired passthrough channel.
+	upserts := filterEmissions(*emissions, "provider:item_upsert")
+	if len(upserts) == 0 {
+		t.Fatalf("expected at least 1 provider:item_upsert emission, got %d", len(upserts))
 	}
 }
 

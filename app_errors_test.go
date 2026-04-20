@@ -5,8 +5,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"agent-overflow/internal/provider"
 )
 
 func TestAppendErrorFiltersNil(t *testing.T) {
@@ -47,26 +45,6 @@ func TestWrapLifecycleErrorWrapsWithAction(t *testing.T) {
 	}
 }
 
-func TestEmitProviderEventPrefersTestInjection(t *testing.T) {
-	app := &App{}
-
-	var seen provider.ProviderEvent
-	app.emitProviderEventFn = func(evt provider.ProviderEvent) {
-		seen = evt
-	}
-
-	want := provider.ProviderEvent{
-		Kind:     provider.EventThreadRenamed,
-		ThreadID: "t1",
-		Content:  "renamed",
-	}
-	app.emitProviderEvent(want)
-
-	if seen.ThreadID != want.ThreadID || seen.Content != want.Content {
-		t.Fatalf("seen = %+v, want %+v", seen, want)
-	}
-}
-
 func TestEmitErrorToThreadRoutesThroughTriageWhenAvailable(t *testing.T) {
 	app := newTestAppWithStore(t)
 	if err := app.store.CreateThread(testThread("thread-xyz")); err != nil {
@@ -90,25 +68,22 @@ func TestEmitErrorToThreadRoutesThroughTriageWhenAvailable(t *testing.T) {
 	}
 }
 
-func TestEmitErrorToThreadFallsBackToProviderEmitWhenNoTriage(t *testing.T) {
+// TestEmitErrorToThreadIsSafeWithoutTriage proves the triage-nil branch
+// in emitErrorToThread degrades to a log breadcrumb rather than panicking
+// or emitting on a retired wire channel. This path only fires when an
+// error surfaces before the triage router is wired at startup, so the
+// bar is "no crash, no dead wire emission."
+func TestEmitErrorToThreadIsSafeWithoutTriage(t *testing.T) {
 	app := &App{}
 
-	emitted := make(chan provider.ProviderEvent, 1)
-	app.emitProviderEventFn = func(evt provider.ProviderEvent) {
-		emitted <- evt
+	var emittedName string
+	app.emitEventFn = func(name string, _ any) {
+		emittedName = name
 	}
 
 	app.emitErrorToThread("thread-abc", "fell back")
 
-	select {
-	case evt := <-emitted:
-		if evt.Kind != provider.EventError || evt.Content != "fell back" {
-			t.Fatalf("evt = %+v, want EventError with content", evt)
-		}
-		if evt.ThreadID != "thread-abc" {
-			t.Fatalf("evt.ThreadID = %q", evt.ThreadID)
-		}
-	case <-time.After(1 * time.Second):
-		t.Fatal("timed out waiting for fallback emit")
+	if emittedName != "" {
+		t.Fatalf("unexpected emission %q — triage-nil fallback must not touch the wire", emittedName)
 	}
 }

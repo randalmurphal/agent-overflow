@@ -2,7 +2,6 @@ package triage
 
 import (
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -144,26 +143,6 @@ func (r *Router) handleThinking(evt provider.ProviderEvent) error {
 		return err
 	}
 	return r.emitInline(evt)
-}
-
-func parseTokenUsage(meta json.RawMessage) (provider.TokenUsage, bool) {
-	if len(meta) == 0 {
-		return provider.TokenUsage{}, false
-	}
-
-	var usage provider.TokenUsage
-	if err := json.Unmarshal(meta, &usage); err != nil {
-		return provider.TokenUsage{}, false
-	}
-	return usage, true
-}
-
-func (r *Router) lookupThreadModel(threadID string) (string, error) {
-	thread, err := r.store.GetThread(threadID)
-	if err != nil {
-		return "", err
-	}
-	return thread.Model, nil
 }
 
 func scopeCounterKey(threadID string, turnIndex int, scope string) string {

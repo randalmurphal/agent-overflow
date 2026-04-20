@@ -49,6 +49,7 @@ func setupCascadeApp(t *testing.T) (*App, *capturedEventBus, string) {
 		configDir:           dbDir,
 	}
 	app.triage = triage.NewRouter(st, bus.emit)
+	app.triage.SetEventHook(bus.observeRouterEvent)
 	app.checkpoints = checkpoint.NewStore()
 	app.triage.SetCheckpointStore(app.checkpoints)
 	app.registry = discussion.NewRegistry(st)

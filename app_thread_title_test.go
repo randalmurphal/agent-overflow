@@ -13,7 +13,8 @@ import (
 // TestMaybeGenerateThreadTitleAppliesGeneratedTitleAndEmits covers the happy
 // path of maybeGenerateThreadTitle → generatedThreadTitle →
 // applyGeneratedThreadTitle. The thread title advances from the default to
-// the generated value, and a provider "thread_renamed" event is emitted.
+// the generated value, and a thread:updated event is emitted so the
+// frontend sidebar refreshes.
 func TestMaybeGenerateThreadTitleAppliesGeneratedTitleAndEmits(t *testing.T) {
 	app := newTestAppWithStore(t)
 
@@ -34,28 +35,30 @@ func TestMaybeGenerateThreadTitleAppliesGeneratedTitleAndEmits(t *testing.T) {
 		return "Reconnect spinner fix", nil
 	}
 
-	emitted := make(chan provider.ProviderEvent, 1)
-	app.emitProviderEventFn = func(evt provider.ProviderEvent) {
-		if evt.Kind == provider.EventThreadRenamed {
-			emitted <- evt
+	updates := make(chan store.Thread, 1)
+	app.emitEventFn = func(name string, data any) {
+		if name != "thread:updated" {
+			return
 		}
+		updated, ok := data.(store.Thread)
+		if !ok {
+			t.Fatalf("thread:updated payload type = %T, want store.Thread", data)
+		}
+		updates <- updated
 	}
 
 	app.maybeGenerateThreadTitle(thread, "fix the reconnect bug", false)
 
 	select {
-	case evt := <-emitted:
-		if evt.ThreadID != thread.ID {
-			t.Fatalf("event threadID = %q, want %q", evt.ThreadID, thread.ID)
+	case updated := <-updates:
+		if updated.ID != thread.ID {
+			t.Fatalf("updated threadID = %q, want %q", updated.ID, thread.ID)
 		}
-		if evt.Content != "Reconnect spinner fix" {
-			t.Fatalf("event content = %q", evt.Content)
-		}
-		if !strings.Contains(string(evt.Meta), `"newTitle":"Reconnect spinner fix"`) {
-			t.Fatalf("event meta = %s, want newTitle", string(evt.Meta))
+		if updated.Title != "Reconnect spinner fix" {
+			t.Fatalf("updated title = %q", updated.Title)
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for rename event")
+		t.Fatal("timed out waiting for thread:updated event")
 	}
 
 	stored, err := app.store.GetThread(thread.ID)
@@ -87,10 +90,10 @@ func TestMaybeGenerateThreadTitleSkipsCodexThread(t *testing.T) {
 		return "Should not be applied", nil
 	}
 
-	emitted := make(chan provider.ProviderEvent, 1)
-	app.emitProviderEventFn = func(evt provider.ProviderEvent) {
-		if evt.Kind == provider.EventThreadRenamed {
-			emitted <- evt
+	updates := make(chan store.Thread, 1)
+	app.emitEventFn = func(name string, data any) {
+		if name == "thread:updated" {
+			updates <- data.(store.Thread)
 		}
 	}
 
@@ -101,8 +104,8 @@ func TestMaybeGenerateThreadTitleSkipsCodexThread(t *testing.T) {
 	select {
 	case <-calls:
 		t.Fatal("generateThreadTitleFn called for Codex thread")
-	case <-emitted:
-		t.Fatal("emitted rename event for Codex thread")
+	case <-updates:
+		t.Fatal("emitted thread:updated for Codex thread")
 	case <-time.After(150 * time.Millisecond):
 	}
 
@@ -215,10 +218,10 @@ func TestMaybeGenerateThreadTitleSwallowsSubprocessError(t *testing.T) {
 		return "", errors.New("subprocess boom")
 	}
 
-	emitted := make(chan provider.ProviderEvent, 1)
-	app.emitProviderEventFn = func(evt provider.ProviderEvent) {
-		if evt.Kind == provider.EventThreadRenamed {
-			emitted <- evt
+	updates := make(chan store.Thread, 1)
+	app.emitEventFn = func(name string, data any) {
+		if name == "thread:updated" {
+			updates <- data.(store.Thread)
 		}
 	}
 
@@ -231,8 +234,8 @@ func TestMaybeGenerateThreadTitleSwallowsSubprocessError(t *testing.T) {
 	}
 
 	select {
-	case <-emitted:
-		t.Fatal("rename event emitted despite subprocess error")
+	case <-updates:
+		t.Fatal("thread:updated emitted despite subprocess error")
 	case <-time.After(150 * time.Millisecond):
 	}
 
@@ -265,10 +268,10 @@ func TestMaybeGenerateThreadTitleIgnoresEmptyResponse(t *testing.T) {
 		return "", nil
 	}
 
-	emitted := make(chan provider.ProviderEvent, 1)
-	app.emitProviderEventFn = func(evt provider.ProviderEvent) {
-		if evt.Kind == provider.EventThreadRenamed {
-			emitted <- evt
+	updates := make(chan store.Thread, 1)
+	app.emitEventFn = func(name string, data any) {
+		if name == "thread:updated" {
+			updates <- data.(store.Thread)
 		}
 	}
 
@@ -281,8 +284,8 @@ func TestMaybeGenerateThreadTitleIgnoresEmptyResponse(t *testing.T) {
 	}
 
 	select {
-	case <-emitted:
-		t.Fatal("rename event emitted despite empty title response")
+	case <-updates:
+		t.Fatal("thread:updated emitted despite empty title response")
 	case <-time.After(150 * time.Millisecond):
 	}
 
@@ -309,10 +312,10 @@ func TestApplyGeneratedThreadTitleCompareAndSwapSkipsWhenTitleChanged(t *testing
 		t.Fatalf("CreateThread() error = %v", err)
 	}
 
-	emitted := make(chan provider.ProviderEvent, 1)
-	app.emitProviderEventFn = func(evt provider.ProviderEvent) {
-		if evt.Kind == provider.EventThreadRenamed {
-			emitted <- evt
+	updates := make(chan store.Thread, 1)
+	app.emitEventFn = func(name string, data any) {
+		if name == "thread:updated" {
+			updates <- data.(store.Thread)
 		}
 	}
 
@@ -321,8 +324,8 @@ func TestApplyGeneratedThreadTitleCompareAndSwapSkipsWhenTitleChanged(t *testing
 	}
 
 	select {
-	case <-emitted:
-		t.Fatal("rename event emitted when current title != default (CAS should fail)")
+	case <-updates:
+		t.Fatal("thread:updated emitted when current title != default (CAS should fail)")
 	case <-time.After(150 * time.Millisecond):
 	}
 

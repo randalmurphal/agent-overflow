@@ -22,17 +22,6 @@ func wrapLifecycleError(action string, err error) error {
 	return fmt.Errorf("%s: %w", action, err)
 }
 
-func (a *App) emitProviderEvent(evt provider.ProviderEvent) {
-	if a.emitProviderEventFn != nil {
-		a.emitProviderEventFn(evt)
-		return
-	}
-	// Route through a.emit so every wire emission carries a monotonic
-	// seq. The test seam above bypasses this — tests that want to assert
-	// envelope shape should install a spy via emitEventFn instead.
-	a.emit("provider:event", evt)
-}
-
 // emitEvent sends an arbitrary Wails event to the frontend. Prefer this over
 // calling a.app.Event.Emit directly so tests can intercept emissions via
 // emitEventFn without wiring a full Wails application.
@@ -46,8 +35,11 @@ func (a *App) emitEvent(eventName string, data any) {
 	a.emit(eventName, data)
 }
 
-// emitErrorToThread sends a provider error event for the given thread through
-// the triage layer if available, falling back to direct Wails event emission.
+// emitErrorToThread persists a provider error item for the given thread
+// via triage (which owns the provider:item_upsert chokepoint). The
+// triage-nil path logs instead of emitting — if the router is not wired
+// yet, we have neither a store to persist into nor a typed channel to
+// drop the error on, so it degrades to an observability breadcrumb.
 func (a *App) emitErrorToThread(threadID, content string) {
 	evt := provider.ProviderEvent{
 		Kind:      provider.EventError,
@@ -62,5 +54,5 @@ func (a *App) emitErrorToThread(threadID, content string) {
 		}
 		return
 	}
-	a.emitProviderEvent(evt)
+	log.Printf("emit error to thread %s: triage not wired — dropping error %q", threadID, content)
 }

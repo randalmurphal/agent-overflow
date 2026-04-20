@@ -17,15 +17,12 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// handleTurnStart forwards the event inline (so the UI gets the turn marker)
-// and, if a checkpoint store is wired up, captures a baseline snapshot of the
-// workspace. Checkpoint failure is NOT fatal to the turn — it surfaces as a
-// `provider:event_error` event the frontend can display, but the turn proceeds.
+// handleTurnStart opens the per-turn span, seeds bookkeeping, and (if
+// a checkpoint store is wired up) captures a baseline snapshot of the
+// workspace. Checkpoint failure is NOT fatal to the turn — it surfaces
+// as a `checkpoint:error` event the UI renders as a dismissible banner,
+// and the turn proceeds.
 func (r *Router) handleTurnStart(evt provider.ProviderEvent) error {
-	// provider:event fanout is retained for the Go test harness (see
-	// router.handleInit). The live frontend reacts to item upserts
-	// instead.
-	r.emit("provider:event", evt)
 	turnIndex := evt.TurnIndex
 	if turnIndex == 0 {
 		var err error
@@ -262,10 +259,6 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 	r.unmarkTurnCaptured(evt.ThreadID, turnIndex)
 	r.clearOpenTurn(evt.ThreadID)
 	r.closeTurnSpan(evt.ThreadID, persistErr)
-	// provider:event fanout is retained for the Go test harness (see
-	// router.handleInit). The live frontend reacts to item upserts
-	// instead.
-	r.emit("provider:event", evt)
 	return persistErr
 }
 

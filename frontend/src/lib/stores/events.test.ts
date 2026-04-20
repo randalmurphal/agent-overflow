@@ -258,6 +258,18 @@ describe('setupEventListeners', () => {
     // legacy status — see KIND_TO_LEGACY_STATUS in events.ts for why.
     expect(pane.providerBanner?.status).toBe('version_too_old');
 
+    // transient_retry also folds onto `version_too_old` so the banner
+    // renders warning-styled regardless of the precise retry cause — the
+    // banner Message is where the cause is surfaced.
+    emitWailsEvent('provider:status', {
+      kind: 'transient_retry',
+      provider: 'claude',
+      threadId: 'thread-1',
+      message: 'server_error',
+    } as unknown as ProviderStatusEvent);
+    expect(pane.providerBanner?.status).toBe('version_too_old');
+    expect(pane.providerBanner?.message).toBe('server_error');
+
     // Clear banner with kind=ok (spec: "ok" → clear signal).
     emitWailsEvent('provider:status', {
       kind: 'ok',

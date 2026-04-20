@@ -99,7 +99,9 @@ func TestAllEventKindsListIsComplete(t *testing.T) {
 // TestHandleReturnsSentinelForUnknownKind is the direct test for the default
 // branch: a synthetic kind not in AllEventKinds must return
 // ErrUnhandledEventKind. This guards the sentinel contract the coverage test
-// above relies on.
+// above relies on. The router no longer fans the unknown kind out on a
+// wire channel — emission is zero so a fresh EventKind surfaces as a
+// sentinel error instead of a silent passthrough.
 func TestHandleReturnsSentinelForUnknownKind(t *testing.T) {
 	router, _, emissions := newTestRouter(t)
 	evt := provider.ProviderEvent{
@@ -111,13 +113,8 @@ func TestHandleReturnsSentinelForUnknownKind(t *testing.T) {
 	if !errors.Is(err, ErrUnhandledEventKind) {
 		t.Fatalf("expected ErrUnhandledEventKind, got %v", err)
 	}
-	// Best-effort passthrough: the event is still emitted so the frontend has
-	// some signal even for a kind we don't route.
-	if len(*emissions) != 1 {
-		t.Fatalf("expected 1 emission for default passthrough, got %d", len(*emissions))
-	}
-	if (*emissions)[0].eventName != "provider:event" {
-		t.Errorf("expected default to emit provider:event, got %q", (*emissions)[0].eventName)
+	if len(*emissions) != 0 {
+		t.Fatalf("expected 0 emissions for unhandled kind, got %d: %+v", len(*emissions), *emissions)
 	}
 }
 
@@ -646,17 +643,22 @@ func TestRateLimitsTolereatesMissingMeta(t *testing.T) {
 }
 
 // TestSessionStatusRoutesPersistentKinds covers the persistent → provider:status
-// path for EventSessionStatus. "retrying" maps to rate_limited_retrying and
-// the banner carries the thread's provider so a multi-provider UI can scope
-// the banner correctly.
+// path for EventSessionStatus. A rate-limit retry maps to
+// rate_limited_retrying and the banner carries the thread's provider so a
+// multi-provider UI can scope the banner correctly.
 func TestSessionStatusRoutesPersistentKinds(t *testing.T) {
 	router, st, emissions := newTestRouter(t)
 	createTestThread(t, st, "t1")
 
+	meta, _ := json.Marshal(map[string]any{
+		"error":        "rate_limit",
+		"error_status": 429,
+	})
 	evt := provider.ProviderEvent{
 		Kind:      provider.EventSessionStatus,
 		ThreadID:  "t1",
 		Content:   "retrying",
+		Meta:      meta,
 		Timestamp: time.Now(),
 	}
 	if err := router.Handle(evt); err != nil {
@@ -674,6 +676,9 @@ func TestSessionStatusRoutesPersistentKinds(t *testing.T) {
 	if payload.Kind != provider.ProviderStatusRateLimitedRetrying {
 		t.Fatalf("kind = %q, want %q", payload.Kind, provider.ProviderStatusRateLimitedRetrying)
 	}
+	if payload.Message != "rate_limit" {
+		t.Fatalf("message = %q, want %q", payload.Message, "rate_limit")
+	}
 	if payload.Provider != "claude" {
 		t.Fatalf("provider = %q, want claude (from seeded thread)", payload.Provider)
 	}
@@ -682,6 +687,118 @@ func TestSessionStatusRoutesPersistentKinds(t *testing.T) {
 	}
 	if len(filterEmissions(*emissions, "provider:event")) != 0 {
 		t.Fatalf("expected no provider:event passthrough for persistent status, got %+v", *emissions)
+	}
+}
+
+// TestSessionStatusPrecisePerReason covers the kind-precision contract of
+// handleSessionStatus: when a retry event carries an upstream reason in
+// Meta, the banner Kind matches the reason (rate-limit, unauth, or
+// transient_retry as a catch-all) and the Message carries the raw reason
+// so the user can tell rate-limit from auth-failure. Empty Meta falls
+// through to transient_retry with a generic "Retrying..." message.
+func TestSessionStatusPrecisePerReason(t *testing.T) {
+	cases := []struct {
+		name        string
+		meta        map[string]any
+		wantKind    provider.ProviderStatusEventKind
+		wantMessage string
+	}{
+		{
+			name:        "claude_rate_limit",
+			meta:        map[string]any{"error": "rate_limit", "error_status": 429},
+			wantKind:    provider.ProviderStatusRateLimitedRetrying,
+			wantMessage: "rate_limit",
+		},
+		{
+			name:        "claude_auth_failed",
+			meta:        map[string]any{"error": "authentication_failed", "error_status": 401},
+			wantKind:    provider.ProviderStatusUnauthenticated,
+			wantMessage: "authentication_failed",
+		},
+		{
+			name:        "claude_server_error",
+			meta:        map[string]any{"error": "server_error", "error_status": 502},
+			wantKind:    provider.ProviderStatusTransientRetry,
+			wantMessage: "server_error",
+		},
+		{
+			name:        "claude_billing_error",
+			meta:        map[string]any{"error": "billing_error"},
+			wantKind:    provider.ProviderStatusTransientRetry,
+			wantMessage: "billing_error",
+		},
+		{
+			name:        "claude_max_output_tokens",
+			meta:        map[string]any{"error": "max_output_tokens"},
+			wantKind:    provider.ProviderStatusTransientRetry,
+			wantMessage: "max_output_tokens",
+		},
+		{
+			name: "codex_nested_rate_limit",
+			meta: map[string]any{
+				"willRetry": true,
+				"error":     map[string]any{"message": "Rate limit exceeded, retry after 30s"},
+			},
+			wantKind:    provider.ProviderStatusRateLimitedRetrying,
+			wantMessage: "Rate limit exceeded, retry after 30s",
+		},
+		{
+			name: "codex_nested_unknown",
+			meta: map[string]any{
+				"willRetry": true,
+				"error":     map[string]any{"message": "Reconnecting... 2/5"},
+			},
+			wantKind:    provider.ProviderStatusTransientRetry,
+			wantMessage: "Reconnecting... 2/5",
+		},
+		{
+			name:        "empty_meta",
+			meta:        nil,
+			wantKind:    provider.ProviderStatusTransientRetry,
+			wantMessage: "Retrying...",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			router, st, emissions := newTestRouter(t)
+			createTestThread(t, st, "t1")
+
+			var meta json.RawMessage
+			if tc.meta != nil {
+				m, err := json.Marshal(tc.meta)
+				if err != nil {
+					t.Fatalf("marshal meta: %v", err)
+				}
+				meta = m
+			}
+
+			evt := provider.ProviderEvent{
+				Kind:      provider.EventSessionStatus,
+				ThreadID:  "t1",
+				Content:   "retrying",
+				Meta:      meta,
+				Timestamp: time.Now(),
+			}
+			if err := router.Handle(evt); err != nil {
+				t.Fatalf("handle session-status: %v", err)
+			}
+
+			statusEmits := filterEmissions(*emissions, "provider:status")
+			if len(statusEmits) != 1 {
+				t.Fatalf("expected 1 provider:status emission, got %+v", *emissions)
+			}
+			payload, ok := statusEmits[0].data.(provider.ProviderStatusEvent)
+			if !ok {
+				t.Fatalf("payload type = %T, want ProviderStatusEvent", statusEmits[0].data)
+			}
+			if payload.Kind != tc.wantKind {
+				t.Fatalf("kind = %q, want %q", payload.Kind, tc.wantKind)
+			}
+			if payload.Message != tc.wantMessage {
+				t.Fatalf("message = %q, want %q", payload.Message, tc.wantMessage)
+			}
+		})
 	}
 }
 
@@ -799,7 +916,7 @@ func TestThreadRenamedUpdatesThread(t *testing.T) {
 	}
 }
 
-func TestTokenUsageAddsCalculatedCost(t *testing.T) {
+func TestTokenUsageEmitsContextMeterUpdate(t *testing.T) {
 	router, st, emissions := newTestRouter(t)
 	ensureTriageProject(t, st)
 	now := time.Now().UnixMilli()
@@ -816,9 +933,12 @@ func TestTokenUsageAddsCalculatedCost(t *testing.T) {
 		t.Fatalf("create thread: %v", err)
 	}
 
+	// Provider-side cost pricing is the adapter's job. Triage trusts the
+	// incoming meta verbatim and emits a provider:usage update.
 	meta, err := json.Marshal(provider.TokenUsage{
 		InputTokens:  2_000_000,
 		OutputTokens: 1_000_000,
+		TotalCostUSD: 5.25, // pre-priced by provider adapter
 	})
 	if err != nil {
 		t.Fatalf("marshal usage: %v", err)
@@ -853,7 +973,10 @@ func TestTokenUsageAddsCalculatedCost(t *testing.T) {
 	}
 }
 
-func TestTokenUsageLeavesUnknownModelUnchanged(t *testing.T) {
+func TestTokenUsageEmitsWithoutProviderCost(t *testing.T) {
+	// When the provider adapter didn't attach TotalCostUSD (empty or
+	// unknown model), triage should still emit the context-meter update.
+	// Cost is nice-to-have; the meter must fire regardless.
 	router, st, emissions := newTestRouter(t)
 	ensureTriageProject(t, st)
 	now := time.Now().UnixMilli()
@@ -1193,7 +1316,7 @@ func TestInlineEventDoesNotCallStore(t *testing.T) {
 	}
 }
 
-func TestEventInitEmitsAndUpdatesSessionRef(t *testing.T) {
+func TestEventInitUpdatesSessionRef(t *testing.T) {
 	router, st, emissions := newTestRouter(t)
 	createTestThread(t, st, "t1")
 
@@ -1211,9 +1334,10 @@ func TestEventInitEmitsAndUpdatesSessionRef(t *testing.T) {
 		t.Fatalf("handle: %v", err)
 	}
 
-	// Should emit.
-	if len(*emissions) != 1 {
-		t.Fatalf("expected 1 emission, got %d", len(*emissions))
+	// EventInit persists the session ref but does not emit on a wire
+	// channel — there is no frontend contract for "init arrived".
+	if len(*emissions) != 0 {
+		t.Fatalf("expected 0 emissions for EventInit, got %d: %+v", len(*emissions), *emissions)
 	}
 
 	// Should update session ref.
@@ -1223,6 +1347,36 @@ func TestEventInitEmitsAndUpdatesSessionRef(t *testing.T) {
 	}
 	if thr.SessionRef != "session-abc" {
 		t.Errorf("session ref: got %q, want %q", thr.SessionRef, "session-abc")
+	}
+}
+
+func TestEventInitFiresEventHook(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	var observed provider.ProviderEvent
+	router.SetEventHook(func(evt provider.ProviderEvent) {
+		observed = evt
+	})
+
+	info := provider.SessionInfo{SessionID: "session-xyz", Model: "opus"}
+	meta, _ := json.Marshal(info)
+	evt := provider.ProviderEvent{
+		Kind:      provider.EventInit,
+		ThreadID:  "t1",
+		Meta:      meta,
+		Timestamp: time.Now(),
+	}
+
+	if err := router.Handle(evt); err != nil {
+		t.Fatalf("handle: %v", err)
+	}
+
+	if observed.Kind != provider.EventInit {
+		t.Fatalf("eventHook observed = %q, want EventInit", observed.Kind)
+	}
+	if observed.ThreadID != "t1" {
+		t.Fatalf("eventHook threadID = %q, want t1", observed.ThreadID)
 	}
 }
 
@@ -1253,20 +1407,6 @@ func TestTextDeltaAccumulation(t *testing.T) {
 	if items[0].Status != "streaming" {
 		t.Fatalf("status: got %q, want streaming", items[0].Status)
 	}
-}
-
-func emittedProviderEvent(t *testing.T, emissions *[]emitted) provider.ProviderEvent {
-	t.Helper()
-	inline := filterEmissions(*emissions, "provider:event")
-	if len(inline) != 1 {
-		t.Fatalf("expected 1 provider:event emission, got %d (all emissions: %d)",
-			len(inline), len(*emissions))
-	}
-	evt, ok := inline[0].data.(provider.ProviderEvent)
-	if !ok {
-		t.Fatalf("emitted data type = %T, want provider.ProviderEvent", inline[0].data)
-	}
-	return evt
 }
 
 // filterEmissions returns the subset of emissions on the given channel
@@ -1756,9 +1896,10 @@ func TestTurnCompleteWithoutAccumulatedText(t *testing.T) {
 		t.Errorf("expected 0 items, got %d", len(items))
 	}
 
-	inline := filterEmissions(*emissions, "provider:event")
-	if len(inline) != 1 {
-		t.Errorf("expected 1 provider:event emission, got %d", len(inline))
+	// Router no longer fans every event out on provider:event. An empty
+	// turn produces no item upserts and no typed emissions either.
+	if len(*emissions) != 0 {
+		t.Errorf("expected 0 emissions for empty turn, got %d: %+v", len(*emissions), *emissions)
 	}
 }
 
@@ -1809,9 +1950,12 @@ func TestTurnCompleteDoesNotAutoRenameClaudeThread(t *testing.T) {
 		t.Fatalf("thread title: got %q", thread.Title)
 	}
 
-	inline := filterEmissions(*emissions, "provider:event")
-	if len(inline) != 1 {
-		t.Fatalf("expected 1 provider:event emission, got %d", len(inline))
+	// Auto-rename heuristics live on the app layer, not in triage. Turn
+	// completion here should NOT flip the title nor emit a thread row
+	// update for the old Claude-thread fallback.
+	updates := filterEmissions(*emissions, "thread:updated")
+	if len(updates) != 0 {
+		t.Fatalf("expected 0 thread:updated emissions, got %d (%+v)", len(updates), updates)
 	}
 }
 
@@ -2075,8 +2219,16 @@ func TestPersistHeavyReturnsErrorOnClosedStore(t *testing.T) {
 }
 
 func TestTurnCompleteReturnsErrorOnClosedStore(t *testing.T) {
-	router, st, emissions := newTestRouter(t)
+	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
+
+	// Install the test-only router hook so we can observe Handle calls
+	// even after persistence fails. Every Handle defer-fires the hook
+	// regardless of return status.
+	observed := make(chan provider.ProviderEvent, 4)
+	router.SetEventHook(func(evt provider.ProviderEvent) {
+		observed <- evt
+	})
 
 	// Accumulate text before closing the store.
 	router.Handle(provider.ProviderEvent{
@@ -2099,17 +2251,16 @@ func TestTurnCompleteReturnsErrorOnClosedStore(t *testing.T) {
 		t.Fatal("expected error from Handle when store is closed and text accumulated")
 	}
 
-	providerEvents := filterEmissions(*emissions, "provider:event")
+	// Drain the hook channel and verify the turn-complete observation fired.
 	foundTurnComplete := false
-	for _, emission := range providerEvents {
-		evt, ok := emission.data.(provider.ProviderEvent)
-		if ok && evt.Kind == provider.EventTurnComplete {
+	for len(observed) > 0 {
+		evt := <-observed
+		if evt.Kind == provider.EventTurnComplete {
 			foundTurnComplete = true
-			break
 		}
 	}
 	if !foundTurnComplete {
-		t.Fatal("expected turn_complete provider:event emission even on persistence failure")
+		t.Fatal("expected turn_complete eventHook observation even on persistence failure")
 	}
 }
 

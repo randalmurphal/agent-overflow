@@ -127,6 +127,7 @@ export type ProviderStatusKind =
   | 'unauthenticated'
   | 'version_incompatible'
   | 'rate_limited_retrying'
+  | 'transient_retry'
   | 'ok';
 
 export interface ProviderStatusEvent {

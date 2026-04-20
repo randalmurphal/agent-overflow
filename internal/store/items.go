@@ -619,6 +619,56 @@ func (s *Store) ListTurnItems(threadID string, turnIndex int) ([]Item, error) {
 	return items, rows.Err()
 }
 
+// LatestToolCallByName returns the most-recently-inserted tool_call row
+// in (threadID, turnIndex) whose lower(tool_name) equals any of
+// toolNames. Matches the iteration pattern in triage.findLatestToolCall
+// but pushes the filter into SQLite so we don't deserialize every item
+// in turns with a lot of tool calls. Returns (zero Item, false, nil)
+// when no match exists.
+//
+// toolNames must be non-empty and are matched case-insensitively; the
+// names are lowercased by the caller (to keep the SQL string short).
+func (s *Store) LatestToolCallByName(threadID string, turnIndex int, toolNames []string) (Item, bool, error) {
+	if len(toolNames) == 0 {
+		return Item{}, false, nil
+	}
+
+	// Build a parametrized IN clause. SQLite has no native array type; we
+	// use ? placeholders. Thread id + turn index stay as the final two
+	// parameters so the SELECT works regardless of the tool-name slice
+	// length. Performance-wise we rely on the items.thread_id +
+	// turn_index covering index — the LIMIT 1 makes the scan minimal.
+	placeholders := ""
+	args := make([]any, 0, len(toolNames)+2)
+	for i, name := range toolNames {
+		if i > 0 {
+			placeholders += ", "
+		}
+		placeholders += "?"
+		args = append(args, name)
+	}
+	args = append(args, threadID, turnIndex)
+
+	query := `SELECT ` + itemColumns + `
+		   FROM items
+		   LEFT JOIN payloads ON payloads.id = items.payload_id
+		  WHERE items.kind = 'tool_call'
+		    AND lower(items.tool_name) IN (` + placeholders + `)
+		    AND items.thread_id = ? AND items.turn_index = ?
+		  ORDER BY items.item_index DESC
+		  LIMIT 1`
+
+	row := s.db.QueryRow(query, args...)
+	it, err := scanItemRow(row)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return Item{}, false, nil
+		}
+		return Item{}, false, fmt.Errorf("store: latest tool_call thread %s turn %d: %w", threadID, turnIndex, err)
+	}
+	return it, true, nil
+}
+
 // DeleteItemsAfterTurn removes every item with turn_index strictly greater
 // than keepThroughTurn for the given thread, and bumps the thread's
 // updated_at inside the same transaction. Returns the number of items

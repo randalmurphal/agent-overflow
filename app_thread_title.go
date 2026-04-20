@@ -108,18 +108,9 @@ func (a *App) applyGeneratedThreadTitle(threadID, title string) error {
 		return nil
 	}
 
-	meta, err := json.Marshal(map[string]string{"newTitle": title})
-	if err != nil {
-		return fmt.Errorf("marshal thread rename meta: %w", err)
-	}
-
-	a.emitProviderEvent(provider.ProviderEvent{
-		Kind:      provider.EventThreadRenamed,
-		ThreadID:  threadID,
-		Content:   title,
-		Meta:      meta,
-		Timestamp: time.Now(),
-	})
+	// Only thread:updated is wired on the frontend; the historical
+	// provider:event fanout here was consumed by the retired test
+	// harness but never by the UI.
 	if thread, gerr := a.store.GetThread(threadID); gerr == nil {
 		a.emitEvent("thread:updated", thread)
 	}

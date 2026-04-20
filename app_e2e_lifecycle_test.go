@@ -26,7 +26,15 @@ type capturedEvent struct {
 }
 
 // capturedEventBus is a thread-safe sink for events emitted via the triage
-// emit function. Tests can Next() the channel to read events in order.
+// emit function and the router's SetEventHook observer. Tests can Next()
+// the channel to read events in order.
+//
+// Wire emissions go into `ch` under their real event name. Router
+// eventHook callbacks are recorded under the synthetic name
+// "provider:event" so tests that synchronize on a routing-pipeline step
+// (EventTurnComplete, EventInit, EventTextDelta, etc.) can read through
+// nextProviderEventOfKind. This keeps the hook private to tests while
+// preserving the pre-migration test-bus API.
 type capturedEventBus struct {
 	mu  sync.Mutex
 	ch  chan capturedEvent
@@ -46,6 +54,15 @@ func (b *capturedEventBus) emit(name string, data any) {
 	case b.ch <- capturedEvent{Name: name, Data: data}:
 	default:
 	}
+}
+
+// observeRouterEvent is the router.SetEventHook callback. Each Handle
+// call pipes its incoming ProviderEvent through here AFTER the routing
+// switch returns, giving tests a deterministic sync point without a
+// wire-channel emission. The synthetic "provider:event" name keeps
+// nextProviderEventOfKind unchanged.
+func (b *capturedEventBus) observeRouterEvent(evt provider.ProviderEvent) {
+	b.emit("provider:event", evt)
 }
 
 // next reads the next event off the channel with a timeout. Fails the test if
@@ -232,6 +249,7 @@ func setupE2EApp(t *testing.T) (*App, *capturedEventBus) {
 		threadSystemPrompts: make(map[string]string),
 	}
 	app.triage = triage.NewRouter(st, bus.emit)
+	app.triage.SetEventHook(bus.observeRouterEvent)
 	ensureDefaultTestProject(t, app)
 
 	// Ensure any sessions that remain open at test end are torn down.

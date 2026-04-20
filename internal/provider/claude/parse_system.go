@@ -6,6 +6,7 @@ package claude
 
 import (
 	"encoding/json"
+	"strings"
 	"time"
 
 	"agent-overflow/internal/provider"
@@ -19,7 +20,16 @@ func (p *Parser) parseSystem(threadID string, raw map[string]json.RawMessage, no
 
 	switch subtype {
 	case "init":
-		meta, _ := json.Marshal(extractSessionInfo(raw))
+		info := extractSessionInfo(raw)
+		// Remember the model id so subsequent assistant usage events can
+		// be priced without a round-trip to the store. Cost lands on
+		// EventTokenUsage meta via appendUsageEvent. p is nil only in
+		// the package-level ParseLine helper's test-only fast path; in
+		// that path we can't price anyway, so skip the assignment.
+		if p != nil {
+			p.model = strings.TrimSpace(info.Model)
+		}
+		meta, _ := json.Marshal(info)
 		return []provider.ProviderEvent{{
 			Kind:      provider.EventInit,
 			ThreadID:  threadID,

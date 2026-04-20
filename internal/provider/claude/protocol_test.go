@@ -195,6 +195,72 @@ func TestParseLine_AssistantWithUsage(t *testing.T) {
 	}
 }
 
+// TestParseLine_AssistantUsagePricedFromInit verifies that the parser
+// remembers the model reported in system/init and uses it to price
+// subsequent assistant-message usage events. Before this, cost was
+// computed in triage via a store round-trip — this test pins the
+// provider-side annotation to the wire emission so triage can stay
+// provider-agnostic.
+func TestParseLine_AssistantUsagePricedFromInit(t *testing.T) {
+	p := NewParser()
+
+	initLine := []byte(`{"type":"system","subtype":"init","session_id":"s1","model":"claude-sonnet-4-6","cwd":"/tmp","tools":[],"claude_code_version":"1.0"}`)
+	if _, err := p.ParseLine(testThreadProto, initLine); err != nil {
+		t.Fatalf("parse init: %v", err)
+	}
+
+	usageLine := []byte(`{"type":"assistant","message":{"id":"msg-1","content":[],"role":"assistant","usage":{"input_tokens":1000,"output_tokens":500}}}`)
+	events, err := p.ParseLine(testThreadProto, usageLine)
+	if err != nil {
+		t.Fatalf("parse usage: %v", err)
+	}
+
+	var found bool
+	for _, evt := range events {
+		if evt.Kind != provider.EventTokenUsage {
+			continue
+		}
+		found = true
+		var usage provider.TokenUsage
+		if err := json.Unmarshal(evt.Meta, &usage); err != nil {
+			t.Fatalf("unmarshal usage: %v", err)
+		}
+		if usage.InputTokens != 1000 || usage.OutputTokens != 500 {
+			t.Errorf("tokens: got input=%d output=%d", usage.InputTokens, usage.OutputTokens)
+		}
+		if usage.TotalCostUSD == 0 {
+			t.Errorf("TotalCostUSD = 0, want priced value from CalculateCost(claude-sonnet-4-6)")
+		}
+	}
+	if !found {
+		t.Fatal("expected an EventTokenUsage emission")
+	}
+}
+
+// TestParseLine_AssistantUsageNoModelNoCost guards the unpriced path:
+// when the parser has never seen an init (e.g. fresh session, the
+// package-level ParseLine helper) the usage event still fires but with
+// TotalCostUSD == 0 rather than a bogus pricing against an empty model.
+func TestParseLine_AssistantUsageNoModelNoCost(t *testing.T) {
+	line := []byte(`{"type":"assistant","message":{"id":"msg-1","content":[],"role":"assistant","usage":{"input_tokens":1000,"output_tokens":500}}}`)
+	events, err := ParseLine(testThreadProto, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	for _, evt := range events {
+		if evt.Kind != provider.EventTokenUsage {
+			continue
+		}
+		var usage provider.TokenUsage
+		if err := json.Unmarshal(evt.Meta, &usage); err != nil {
+			t.Fatalf("unmarshal usage: %v", err)
+		}
+		if usage.TotalCostUSD != 0 {
+			t.Errorf("TotalCostUSD = %f, want 0 for unpriced (no init seen)", usage.TotalCostUSD)
+		}
+	}
+}
+
 // TestParseLine_UserPlainContent confirms that a `user` message whose
 // `content` is a plain string (the echo of a user-typed turn input rather
 // than a tool_result echo) produces no events. Only tool_result blocks in a

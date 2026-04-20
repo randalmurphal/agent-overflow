@@ -220,16 +220,18 @@ function applyItemUpsert(item: Item): void {
 // banner component untouched while the router adopts the new vocabulary —
 // the two pipelines converge here rather than in the view.
 //
-// `rate_limited_retrying` lands on `version_too_old` (the banner's
-// warning-styled branch) rather than `error` (red / terminal-failure
-// styling). "Please wait, we're retrying" is warning, not catastrophic.
-// The banner copy still comes from the event `message` so the UX is
-// accurate without having to teach ProviderStatusBanner a new branch.
+// `rate_limited_retrying` and `transient_retry` both land on
+// `version_too_old` (the banner's warning-styled branch) rather than
+// `error` (red / terminal-failure styling). "Please wait, we're retrying"
+// is warning, not catastrophic. The banner copy still comes from the
+// event `message` so the UX is accurate without having to teach
+// ProviderStatusBanner a new branch.
 const KIND_TO_LEGACY_STATUS: Record<NonNullable<ProviderStatusEvent['kind']>, ProviderStatusEvent['status']> = {
   binary_missing: 'not_found',
   unauthenticated: 'unauthenticated',
   version_incompatible: 'version_too_old',
   rate_limited_retrying: 'version_too_old',
+  transient_retry: 'version_too_old',
   ok: 'ready',
 };
 

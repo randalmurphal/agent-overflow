@@ -161,6 +161,11 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 		readDone: make(chan struct{}),
 		parser:   NewParser(),
 	}
+	// Seed the parser with the configured model so early assistant usage
+	// events can be priced even if the init envelope lands late. The
+	// init handler still overrides this when Claude echoes a different
+	// model (auto-reroute).
+	s.parser.SetModel(cfg.Model)
 
 	go s.readLoop()
 

@@ -26,7 +26,7 @@ func TestAppEmitStampsMonotonicSeq(t *testing.T) {
 	// observability guard for the FRONTEND. A missed event on the Go
 	// side without a Wails runtime is not something the frontend ever
 	// sees. So we deliberately don't bump — verify this is the behavior.
-	a.emit("provider:event", provider.ProviderEvent{ThreadID: "t1"})
+	a.emit("provider:item_upsert", provider.ProviderEvent{ThreadID: "t1"})
 	if got := a.seq.Load(); got != 0 {
 		t.Fatalf("seq = %d after no-Wails emit, want 0 (counter must not advance when nothing was emitted)", got)
 	}
@@ -50,14 +50,14 @@ func TestAppEmitEnvelopeSeqAdvancesAcrossCalls(t *testing.T) {
 
 	evt := provider.ProviderEvent{ThreadID: "t1", Kind: provider.EventTextDelta}
 	for i := 1; i <= 5; i++ {
-		a.emit("provider:event", evt)
+		a.emit("provider:item_upsert", evt)
 	}
 
 	if got := len(spy.events); got != 5 {
 		t.Fatalf("spy captured %d emits, want 5", got)
 	}
 	for i, rec := range spy.events {
-		if rec.name != "provider:event" {
+		if rec.name != "provider:item_upsert" {
 			t.Fatalf("emit[%d].name = %q, want provider:event", i, rec.name)
 		}
 		env, ok := rec.data.(SeqEnvelope)
@@ -77,11 +77,10 @@ func TestAppEmitEnvelopeSeqAdvancesAcrossCalls(t *testing.T) {
 	}
 }
 
-// TestTriageRouterEmitsFlowThroughEnvelope proves the wire contract for
-// Task B: provider events triaged into "provider:event" emissions arrive
-// at the Wails spy wrapped in a SeqEnvelope. This is the test the task
-// spec asked for ("emit 5 provider events, assert the Wails emit spy saw
-// seq 1..5 on the envelope").
+// TestTriageRouterEmitsFlowThroughEnvelope proves the wire contract:
+// emissions that flow through emitWithReplay arrive at the Wails spy
+// wrapped in a SeqEnvelope. The channel name is representative — the
+// envelope + seq logic is payload-agnostic.
 func TestTriageRouterEmitsFlowThroughEnvelope(t *testing.T) {
 	spy := newEmitSpy()
 	a := newAppWithEmitSpy(spy)
@@ -91,7 +90,7 @@ func TestTriageRouterEmitsFlowThroughEnvelope(t *testing.T) {
 	// seq and pushes to the spy.
 	emit := a.emitWithReplay()
 	for i := 1; i <= 5; i++ {
-		emit("provider:event", provider.ProviderEvent{
+		emit("provider:item_upsert", provider.ProviderEvent{
 			ThreadID: "t1",
 			Kind:     provider.EventTextDelta,
 			Content:  fmt.Sprintf("chunk-%d", i),
@@ -120,9 +119,9 @@ func TestAppEmitSeqSharedAcrossEventNames(t *testing.T) {
 	spy := newEmitSpy()
 	a := newAppWithEmitSpy(spy)
 
-	a.emit("provider:event", provider.ProviderEvent{ThreadID: "t1"})
+	a.emit("provider:item_upsert", provider.ProviderEvent{ThreadID: "t1"})
 	a.emit("terminal:output", TerminalOutputEvent{TerminalID: "term-1", ThreadID: "t1"})
-	a.emit("provider:event", provider.ProviderEvent{ThreadID: "t1"})
+	a.emit("provider:item_upsert", provider.ProviderEvent{ThreadID: "t1"})
 
 	if len(spy.events) != 3 {
 		t.Fatalf("spy captured %d emits, want 3", len(spy.events))

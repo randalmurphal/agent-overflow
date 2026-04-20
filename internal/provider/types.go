@@ -281,7 +281,12 @@ const (
 	ProviderStatusUnauthenticated     ProviderStatusEventKind = "unauthenticated"
 	ProviderStatusVersionIncompatible ProviderStatusEventKind = "version_incompatible"
 	ProviderStatusRateLimitedRetrying ProviderStatusEventKind = "rate_limited_retrying"
-	ProviderStatusOK                  ProviderStatusEventKind = "ok"
+	// ProviderStatusTransientRetry covers retrying against a non-rate-limit
+	// cause: 5xx, invalid_request, server_error, etc. The banner copy is
+	// warning-styled and carries the upstream reason in Message so the
+	// user can distinguish "provider is busy" from "credentials expired".
+	ProviderStatusTransientRetry ProviderStatusEventKind = "transient_retry"
+	ProviderStatusOK             ProviderStatusEventKind = "ok"
 )
 
 // ProviderStatusEvent is the frontend-facing channel payload for the
