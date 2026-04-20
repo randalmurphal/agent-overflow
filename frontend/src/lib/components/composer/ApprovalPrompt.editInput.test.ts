@@ -125,7 +125,6 @@ describe('<ApprovalPrompt> edit-input toggle — open/close flow', () => {
     const { getByTestId, queryByTestId } = await mountWith(toolApproval());
     await fireEvent.click(getByTestId('approval-edit-toggle'));
     expect(getByTestId('approval-allow-with-edits')).toBeInTheDocument();
-    expect(getByTestId('approval-allow-with-edits-session')).toBeInTheDocument();
     // The unsuffixed "Allow" button is replaced.
     expect(queryByTestId('approval-edit-toggle')).toBeNull();
   });
@@ -222,15 +221,14 @@ describe('<ApprovalPrompt> edit-input toggle — submission', () => {
     await waitFor(() => expect(queryByTestId('approval-edit-textarea')).toBeNull());
   });
 
-  it('Allow for Session with edits sends updatedInput AND registers the tool for the session', async () => {
+  it('Allow with edits submits updatedInput without any session-level side effects', async () => {
     const respond = setBindingMock('RespondToApproval', async () => {});
-    const { getByTestId, pane } = await mountWith(toolApproval());
+    const { getByTestId } = await mountWith(toolApproval());
     await fireEvent.click(getByTestId('approval-edit-toggle'));
     await fireEvent.input(getByTestId('approval-edit-textarea'), { target: { value: '{"command":"ls"}' } });
-    await fireEvent.click(getByTestId('approval-allow-with-edits-session'));
+    await fireEvent.click(getByTestId('approval-allow-with-edits'));
     await waitFor(() => expect(respond).toHaveBeenCalled());
     expect(bodyAt(respond).updatedInput).toEqual({ command: 'ls' });
-    expect(pane.isToolSessionApproved('Bash')).toBe(true);
   });
 
   // Each JSON root type gets its own subtest so the test harness mounts+

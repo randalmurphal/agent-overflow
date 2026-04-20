@@ -37,10 +37,6 @@
   function handleError(message: string): void {
     pane.setError(message);
   }
-
-  function handleSessionApprove(toolName: string): void {
-    pane.addSessionApprovedTool(toolName);
-  }
 </script>
 
 {#if pane.pendingApprovals.length > 0}
@@ -72,7 +68,6 @@
             {approval}
             onResolve={resolve}
             onError={handleError}
-            onSessionApprove={handleSessionApprove}
           />
         {/if}
       </div>

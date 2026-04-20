@@ -13,7 +13,6 @@ import (
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/testutil"
-	"agent-overflow/internal/triage"
 )
 
 func TestGetSettingsReturnsCurrentServiceState(t *testing.T) {
@@ -258,19 +257,7 @@ func TestSwitchThreadAutoResumeFailureEmitsErrorEvent(t *testing.T) {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
 
-	emitted := make(chan provider.ProviderEvent, 1)
-	app.triage = triage.NewRouter(app.store, func(eventName string, data any) {
-		if eventName != "provider:event" {
-			return
-		}
-		evt, ok := data.(provider.ProviderEvent)
-		if !ok {
-			t.Fatalf("provider:event payload type = %T, want provider.ProviderEvent", data)
-		}
-		if evt.Kind == provider.EventError {
-			emitted <- evt
-		}
-	})
+	emitted := collectErrorItemUpserts(t, app, 1)
 	app.startSessionFn = func(threadID string) error {
 		return fmt.Errorf("boom")
 	}
@@ -280,15 +267,15 @@ func TestSwitchThreadAutoResumeFailureEmitsErrorEvent(t *testing.T) {
 	}
 
 	select {
-	case evt := <-emitted:
-		if evt.ThreadID != thread.ID {
-			t.Fatalf("error thread = %q, want %q", evt.ThreadID, thread.ID)
+	case item := <-emitted:
+		if item.ThreadID != thread.ID {
+			t.Fatalf("error thread = %q, want %q", item.ThreadID, thread.ID)
 		}
-		if evt.Content != "auto-resume failed: boom" {
-			t.Fatalf("error content = %q, want %q", evt.Content, "auto-resume failed: boom")
+		if item.Summary != "auto-resume failed: boom" {
+			t.Fatalf("error content = %q, want %q", item.Summary, "auto-resume failed: boom")
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for auto-resume error event")
+		t.Fatal("timed out waiting for auto-resume error item")
 	}
 }
 

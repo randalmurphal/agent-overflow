@@ -1,19 +1,17 @@
 <script lang="ts">
-  import { getSettings } from '../../stores/settings.svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
-  import type { ChangedFile, CommandOutputMeta, DiffMeta, Item, ProposedPlanMeta, ToolResultMeta, WorkEntryData } from '../../types/models';
+  import type { ChangedFile, CommandOutputMeta, DiffMeta, Item, ProposedPlanMeta, ToolResultMeta } from '../../types/models';
   import { groupItemsBySubagent, type TimelineNode } from '../../utils/subagentGrouping';
   import { summarizeTurnDiffs, turnSummaryIsMeaningful, type TurnDiffSummary } from '../../utils/turnDiffSummary';
-  import ActiveToolsGroup from './ActiveToolsGroup.svelte';
   import AssistantMessage from './AssistantMessage.svelte';
   import ChangedFilesTree from './ChangedFilesTree.svelte';
   import CommandOutput from './CommandOutput.svelte';
   import DiffPreview from './DiffPreview.svelte';
   import ProposedPlanCard from './ProposedPlanCard.svelte';
-  import StreamingMessage from './StreamingMessage.svelte';
   import SubagentGroup from './SubagentGroup.svelte';
   import ThinkingBlock from './ThinkingBlock.svelte';
   import ToolResultCard from './ToolResultCard.svelte';
+  import ToolResultDropdown from './ToolResultDropdown.svelte';
   import TurnDiffBadge from './TurnDiffBadge.svelte';
   import UserMessage from './UserMessage.svelte';
 
@@ -34,50 +32,54 @@
     userNearBottom = scrollHeight - scrollTop - clientHeight <= NEAR_BOTTOM_THRESHOLD;
   }
 
-  // Active tool calls as WorkEntryData for rendering.
-  let activeToolEntries = $derived<WorkEntryData[]>(
-    [...pane.activeToolCalls.entries()].map(([id, data]) => {
-      const meta = data as Record<string, unknown> | null;
-      return {
-        id,
-        type: (meta && typeof meta.toolName === 'string') ? meta.toolName : 'tool',
-        name: (meta && typeof meta.toolName === 'string') ? meta.toolName : undefined,
-        status: 'running' as const,
-        meta: data,
-      };
-    })
-  );
-
-  function parseMeta<T>(payloadId: string | undefined): T | null {
-    if (!payloadId) return null;
-    const pm = pane.payloadMetas.get(payloadId);
-    if (!pm) return null;
+  function parseMeta<T>(item: Item | undefined): T | null {
+    const raw = item?.payloadMeta;
+    if (!raw) return null;
     try {
-      return JSON.parse(pm.meta) as T;
+      return JSON.parse(raw) as T;
     } catch (err) {
-      console.error('Failed to parse payload meta:', payloadId, err);
+      console.error('Failed to parse payload meta:', item?.id, err);
       return null;
     }
   }
 
+  function changedFilesForItem(item: Item): ChangedFile[] {
+    if (!item.payloadMeta) return [];
+    try {
+      if (item.payloadKind === 'diff' && item.payloadId) {
+        const meta = JSON.parse(item.payloadMeta) as DiffMeta;
+        return [{
+          path: meta.filePath,
+          insertions: meta.insertions,
+          deletions: meta.deletions,
+          kind: meta.changeKind,
+          payloadId: item.payloadId,
+        }];
+      }
+      if (item.payloadKind !== 'tool_result' || !item.payloadId) return [];
+      const meta = JSON.parse(item.payloadMeta) as ToolResultMeta;
+      return (meta.inlineDiff?.files ?? []).map((file) => ({
+        path: file.path,
+        insertions: file.insertions ?? 0,
+        deletions: file.deletions ?? 0,
+        kind: file.kind ?? 'modified',
+        payloadId: item.payloadId!,
+      }));
+    } catch (err) {
+      console.error('Failed to parse changed-file metadata:', item.id, err);
+      return [];
+    }
+  }
+
   /**
-   * Collect changed files for a given turn by scanning diff items.
+   * Collect changed files for a given turn by scanning diff-bearing payloads.
    * Returns an array of ChangedFile for use by ChangedFilesTree.
    */
   function getChangedFilesForTurn(turnIndex: number): ChangedFile[] {
     const files: ChangedFile[] = [];
     for (const item of pane.items) {
       if (item.turnIndex !== turnIndex) continue;
-      if (item.kind !== 'diff' || !item.payloadId) continue;
-      const meta = parseMeta<DiffMeta>(item.payloadId);
-      if (!meta) continue;
-      files.push({
-        path: meta.filePath,
-        insertions: meta.insertions,
-        deletions: meta.deletions,
-        kind: meta.changeKind,
-        payloadId: item.payloadId,
-      });
+      files.push(...changedFilesForItem(item));
     }
     return files;
   }
@@ -89,7 +91,8 @@
   let turnBoundaries = $derived.by((): Map<number, ChangedFile[]> => {
     const turns = new Map<number, ChangedFile[]>();
     for (const item of pane.items) {
-      if (item.kind !== 'diff' || !item.payloadId) continue;
+      if (!item.payloadId) continue;
+      if (item.payloadKind !== 'diff' && item.payloadKind !== 'tool_result') continue;
       if (turns.has(item.turnIndex)) continue;
       const files = getChangedFilesForTurn(item.turnIndex);
       if (files.length > 0) {
@@ -107,7 +110,7 @@
   let turnSummaries = $derived.by((): Map<number, TurnDiffSummary> => {
     const out = new Map<number, TurnDiffSummary>();
     for (const turnIndex of turnBoundaries.keys()) {
-      const summary = summarizeTurnDiffs(pane.items, turnIndex, (id) => parseMeta<DiffMeta>(id));
+      const summary = summarizeTurnDiffs(pane.items, turnIndex);
       if (turnSummaryIsMeaningful(summary)) {
         out.set(turnIndex, summary);
       }
@@ -117,7 +120,7 @@
 
   /**
    * Build the subagent-aware render tree. Items are grouped into subagent
-   * cards when they declare a parentToolUseId matching a parent tool item;
+   * cards when they declare a parentId matching a parent tool item;
    * otherwise they pass through as leaves. The function is pure and
    * deterministic, so `$derived` re-runs exactly when `pane.items` changes.
    */
@@ -144,9 +147,6 @@
   // Auto-scroll only when the user is already near the bottom.
   $effect(() => {
     pane.items.length;
-    pane.streamingContent;
-    pane.activeToolCalls.size;
-    pane.pendingMessage;
 
     if (scrollContainer && userNearBottom) {
       requestAnimationFrame(() => {
@@ -175,38 +175,58 @@
             <span>Orphan subagent entry — parent tool call not found.</span>
           </div>
         {/if}
-        {#if item.role === 'user'}
+        {#if item.kind === 'user_text' || item.role === 'user'}
           <UserMessage {item} />
-        {:else if item.kind === 'diff' && item.payloadId}
-          {@const diffMeta = parseMeta<DiffMeta>(item.payloadId)}
-          {#if diffMeta}
-            <DiffPreview meta={diffMeta} payloadId={item.payloadId} />
+        {:else if item.kind === 'tool_call' || item.kind === 'tool_completion'}
+          {#if item.payloadKind === 'proposed_plan' && item.payloadId}
+            {@const planMeta = parseMeta<ProposedPlanMeta>(item)}
+            {#if planMeta}
+              <ProposedPlanCard {pane} payloadId={item.payloadId} meta={planMeta} />
+            {:else}
+              <ToolResultDropdown {item} />
+            {/if}
+          {:else if item.payloadKind === 'diff' && item.payloadId}
+            {@const diffMeta = parseMeta<DiffMeta>(item)}
+            {#if diffMeta}
+              <DiffPreview {item} meta={diffMeta} payloadId={item.payloadId} />
+            {:else}
+              <ToolResultDropdown {item} />
+            {/if}
+          {:else if item.payloadKind === 'command_output' && item.payloadId}
+            {@const cmdMeta = parseMeta<CommandOutputMeta>(item)}
+            {#if cmdMeta}
+              <CommandOutput {item} meta={cmdMeta} payloadId={item.payloadId} />
+            {:else}
+              <ToolResultDropdown {item} />
+            {/if}
+          {:else if item.payloadKind === 'tool_result' && item.payloadId}
+            <!-- File-change/command-mutation helpers attached a tool_result
+                 payload to the lifecycle row; render the rich diff card so
+                 file edits keep their existing visual weight. Gating on
+                 payload kind (not just a successful JSON parse) avoids
+                 the tool_call_result payload accidentally fitting the
+                 ToolResultMeta shape and rendering as an empty card. -->
+            {@const toolMeta = parseMeta<ToolResultMeta>(item)}
+            {#if toolMeta}
+              <ToolResultCard {item} meta={toolMeta} payloadId={item.payloadId} />
+            {:else}
+              <ToolResultDropdown {item} />
+            {/if}
           {:else}
-            <AssistantMessage {item} />
-          {/if}
-        {:else if item.kind === 'command_execution' && item.payloadId}
-          {@const cmdMeta = parseMeta<CommandOutputMeta>(item.payloadId)}
-          {#if cmdMeta}
-            <CommandOutput meta={cmdMeta} payloadId={item.payloadId} />
-          {:else}
-            <AssistantMessage {item} />
-          {/if}
-        {:else if item.kind === 'tool_result' && item.payloadId}
-          {@const toolMeta = parseMeta<ToolResultMeta>(item.payloadId)}
-          {#if toolMeta}
-            <ToolResultCard {item} meta={toolMeta} payloadId={item.payloadId} />
-          {:else}
-            <AssistantMessage {item} />
-          {/if}
-        {:else if item.kind === 'proposed_plan' && item.payloadId}
-          {@const planMeta = parseMeta<ProposedPlanMeta>(item.payloadId)}
-          {#if planMeta}
-            <ProposedPlanCard {pane} payloadId={item.payloadId} meta={planMeta} />
-          {:else}
-            <AssistantMessage {item} />
+            <ToolResultDropdown {item} />
           {/if}
         {:else if item.kind === 'thinking'}
           <ThinkingBlock {item} />
+        {:else if item.kind === 'error'}
+          <div class="mb-3 rounded border border-error/30 bg-error/10 px-3 py-2 text-sm text-error">
+            {item.summary}
+          </div>
+        {:else if item.kind === 'compaction'}
+          <div class="mb-3 flex items-center gap-3 text-xs uppercase tracking-wide text-text-secondary">
+            <div class="h-px flex-1 bg-border"></div>
+            <span>{item.summary || 'Context compacted'}</span>
+            <div class="h-px flex-1 bg-border"></div>
+          </div>
         {:else}
           <AssistantMessage {item} />
         {/if}
@@ -237,31 +257,7 @@
       {/if}
     {/each}
 
-    {#if pane.pendingMessage}
-      <div class="flex justify-end mb-3">
-        <div class="max-w-[85%] rounded-lg px-4 py-2.5 bg-accent/20 text-text-primary opacity-60">
-          <p class="whitespace-pre-wrap text-sm leading-relaxed">{pane.pendingMessage}</p>
-        </div>
-      </div>
-    {/if}
-
-    {#if activeToolEntries.length > 0}
-      <ActiveToolsGroup entries={activeToolEntries} />
-    {/if}
-
-    {#if pane.streamingContent}
-      {#if getSettings().streamingEnabled}
-        <StreamingMessage content={pane.streamingContent} />
-      {:else}
-        <div class="flex justify-start mb-3" role="status" aria-live="polite">
-          <div class="max-w-[85%] rounded-lg px-4 py-2.5 bg-surface-2 text-text-secondary text-sm">
-            <span class="animate-pulse">Thinking...</span>
-          </div>
-        </div>
-      {/if}
-    {/if}
-
-    {#if pane.items.length === 0 && !pane.streamingContent && activeToolEntries.length === 0 && !pane.pendingMessage}
+    {#if pane.items.length === 0}
       <div class="flex items-center justify-center h-full text-text-secondary text-sm">
         No messages yet. Send a message to get started.
       </div>

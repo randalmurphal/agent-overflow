@@ -23,10 +23,21 @@ import (
 type Parser struct {
 	// backgroundToolUses flags tool_use IDs that were started with
 	// `run_in_background: true` so the matching tool_result event can be
-	// tagged the same way. Kept until the session ends; a few kilobytes
-	// of string keys is cheap compared to the alternative of re-deriving
-	// the flag from tool-input state across processes.
+	// tagged the same way.
 	backgroundToolUses map[string]bool
+	// taskToolUses correlates Claude background task lifecycle messages
+	// (task_started/task_updated/TaskOutput) back to the originating
+	// tool_use id so we can complete the right timeline row.
+	taskToolUses map[string]string
+	// completedTasks suppresses duplicate terminal task_updated events.
+	completedTasks map[string]struct{}
+	// taskOutputTasks suppresses duplicate TaskOutput terminal results and
+	// prevents a later task_updated from clobbering richer TaskOutput data.
+	taskOutputTasks map[string]struct{}
+	// streamBlockTypes tracks partial-message content block types by
+	// (parent_tool_use_id,index) so a later content_block_stop can identify
+	// which streaming block closed.
+	streamBlockTypes map[string]string
 }
 
 // NewParser returns an initialised Parser. Callers that only need one-shot
@@ -71,7 +82,7 @@ func (p *Parser) ParseLine(threadID string, line []byte) ([]provider.ProviderEve
 	case "result":
 		return parseResult(threadID, raw, now, line)
 	case "stream_event":
-		return parseStreamEvent(threadID, raw, now)
+		return p.parseStreamEvent(threadID, raw, now)
 	case "control_request":
 		return parseControlRequest(threadID, raw, now, line)
 	case "rate_limit_event":
@@ -95,13 +106,115 @@ func (p *Parser) markBackground(toolUseID string) {
 	p.backgroundToolUses[toolUseID] = true
 }
 
-// isBackground reports whether the given tool_use ID was started in the
-// background. False when the ID is unknown or was not flagged.
+// consumeBackground reports whether the given tool_use ID was started
+// in the background AND removes the entry from the map so it doesn't
+// pin memory for the rest of the session. The Claude tool_use ↔
+// tool_result correlation is one-shot: once the matching user-echo
+// arrives we don't need the flag again.
 func (p *Parser) isBackground(toolUseID string) bool {
 	if toolUseID == "" || p.backgroundToolUses == nil {
 		return false
 	}
 	return p.backgroundToolUses[toolUseID]
+}
+
+func (p *Parser) clearBackground(toolUseID string) {
+	if toolUseID == "" || p.backgroundToolUses == nil {
+		return
+	}
+	delete(p.backgroundToolUses, toolUseID)
+}
+
+func (p *Parser) rememberTaskToolUse(taskID, toolUseID string) {
+	if taskID == "" || toolUseID == "" {
+		return
+	}
+	if p.taskToolUses == nil {
+		p.taskToolUses = make(map[string]string)
+	}
+	p.taskToolUses[taskID] = toolUseID
+}
+
+func (p *Parser) taskToolUse(taskID string) string {
+	if taskID == "" || p.taskToolUses == nil {
+		return ""
+	}
+	return p.taskToolUses[taskID]
+}
+
+func (p *Parser) clearTask(taskID string) {
+	if taskID == "" {
+		return
+	}
+	if p.taskToolUses != nil {
+		delete(p.taskToolUses, taskID)
+	}
+	if p.completedTasks != nil {
+		delete(p.completedTasks, taskID)
+	}
+	if p.taskOutputTasks != nil {
+		delete(p.taskOutputTasks, taskID)
+	}
+}
+
+func (p *Parser) markTaskCompleted(taskID string) bool {
+	if taskID == "" {
+		return false
+	}
+	if p.completedTasks == nil {
+		p.completedTasks = make(map[string]struct{})
+	}
+	if _, ok := p.completedTasks[taskID]; ok {
+		return false
+	}
+	p.completedTasks[taskID] = struct{}{}
+	return true
+}
+
+func (p *Parser) hasTaskOutput(taskID string) bool {
+	if taskID == "" || p.taskOutputTasks == nil {
+		return false
+	}
+	_, ok := p.taskOutputTasks[taskID]
+	return ok
+}
+
+func (p *Parser) markTaskOutput(taskID string) bool {
+	if taskID == "" {
+		return false
+	}
+	if p.taskOutputTasks == nil {
+		p.taskOutputTasks = make(map[string]struct{})
+	}
+	if _, ok := p.taskOutputTasks[taskID]; ok {
+		return false
+	}
+	p.taskOutputTasks[taskID] = struct{}{}
+	return true
+}
+
+func (p *Parser) rememberStreamBlock(parentToolUseID string, index int, blockType string) {
+	if blockType == "" {
+		return
+	}
+	if p.streamBlockTypes == nil {
+		p.streamBlockTypes = make(map[string]string)
+	}
+	p.streamBlockTypes[streamBlockKey(parentToolUseID, index)] = blockType
+}
+
+func (p *Parser) takeStreamBlock(parentToolUseID string, index int) string {
+	if p.streamBlockTypes == nil {
+		return ""
+	}
+	key := streamBlockKey(parentToolUseID, index)
+	blockType := p.streamBlockTypes[key]
+	delete(p.streamBlockTypes, key)
+	return blockType
+}
+
+func streamBlockKey(parentToolUseID string, index int) string {
+	return fmt.Sprintf("%s:%d", parentToolUseID, index)
 }
 
 func (p *Parser) parseSystem(threadID string, raw map[string]json.RawMessage, now time.Time, line []byte) ([]provider.ProviderEvent, error) {
@@ -131,18 +244,10 @@ func (p *Parser) parseSystem(threadID string, raw map[string]json.RawMessage, no
 		}}, nil
 
 	case "tool_progress":
-		meta := extractToolProgressMeta(raw)
-		itemID := ""
-		if v, ok := raw["item_id"]; ok {
-			json.Unmarshal(v, &itemID)
-		}
-		return []provider.ProviderEvent{{
-			Kind:      provider.EventToolProgress,
-			ThreadID:  threadID,
-			ItemID:    itemID,
-			Meta:      meta,
-			Timestamp: now,
-		}}, nil
+		// Streaming tool progress is intentionally dropped. The chat rewrite
+		// renders successive tool_call summary upserts rather than a parallel
+		// progress-event channel.
+		return nil, nil
 
 	case "compact_boundary":
 		meta := extractCompactBoundaryMeta(raw)
@@ -163,16 +268,19 @@ func (p *Parser) parseSystem(threadID string, raw map[string]json.RawMessage, no
 			Timestamp: now,
 		}}, nil
 
-	// TODO(task.*): the Claude SDK emits `system.task_started`,
-	// `system.task_progress`, and `system.task_notification` subtypes
-	// around the Task (subagent) tool's background lifecycle — we can
-	// see the handler shape in forge's ClaudeAdapter (Layers/claude/
-	// streamHandlers.ts). None of these subtypes appear in our current
-	// testdata fixture (`testdata/real_output.ndjson`), so rather than
-	// fabricate a wire shape, leave the integration point flagged. When
-	// a spike against the real CLI captures a sample, map task_started →
-	// EventBackgroundStart, task_progress → EventBackgroundDelta,
-	// task_notification → EventBackgroundComplete.
+	case "task_started":
+		taskID := readRawString(raw["task_id"])
+		toolUseID := firstNonEmpty(readRawString(raw["tool_use_id"]), readRawString(raw["toolUseId"]))
+		p.rememberTaskToolUse(taskID, toolUseID)
+		return nil, nil
+
+	case "task_updated":
+		return p.parseTaskLifecycleEvent(threadID, raw, now)
+
+	case "task_notification":
+		// Notifications are informational only. They follow task_updated /
+		// TaskOutput and must never drive lifecycle.
+		return nil, nil
 
 	// Explicitly skipped subtypes — no action, no error.
 	case "hook_started", "hook_progress", "hook_response",
@@ -180,7 +288,8 @@ func (p *Parser) parseSystem(threadID string, raw map[string]json.RawMessage, no
 		"files_persisted",
 		"tool_use_summary",
 		"memory_recall",
-		"local_command_output":
+		"local_command_output",
+		"task_progress":
 		return nil, nil
 
 	default:
@@ -193,12 +302,13 @@ func (p *Parser) parseAssistant(threadID string, raw map[string]json.RawMessage,
 	var msg struct {
 		ID      string `json:"id"`
 		Content []struct {
-			Type     string          `json:"type"`
-			Text     string          `json:"text,omitempty"`
-			ID       string          `json:"id,omitempty"`
-			Name     string          `json:"name,omitempty"`
-			Input    json.RawMessage `json:"input,omitempty"`
-			Thinking string          `json:"thinking,omitempty"`
+			Type      string          `json:"type"`
+			Text      string          `json:"text,omitempty"`
+			ID        string          `json:"id,omitempty"`
+			Name      string          `json:"name,omitempty"`
+			Input     json.RawMessage `json:"input,omitempty"`
+			Thinking  string          `json:"thinking,omitempty"`
+			Signature string          `json:"signature,omitempty"`
 		} `json:"content"`
 		Role  string `json:"role"`
 		Usage *struct {
@@ -280,11 +390,18 @@ func (p *Parser) parseAssistant(threadID string, raw map[string]json.RawMessage,
 			})
 
 		case "thinking":
+			var meta json.RawMessage
+			if block.Signature != "" {
+				meta, _ = json.Marshal(map[string]any{
+					"signature": block.Signature,
+				})
+			}
 			events = append(events, provider.ProviderEvent{
 				Kind:            provider.EventThinking,
 				ThreadID:        threadID,
 				ItemID:          msg.ID,
 				Content:         block.Thinking,
+				Meta:            meta,
 				ParentToolUseID: parentToolUseID,
 				Timestamp:       now,
 			})
@@ -369,11 +486,51 @@ func (p *Parser) parseUser(threadID string, raw map[string]json.RawMessage, now 
 
 		content := extractToolResultText(block["content"])
 
+		taskOutputMeta := toolUseResults[toolUseID]
+		if len(taskOutputMeta) == 0 {
+			taskOutputMeta = raw["tool_use_result"]
+		}
+		if taskOutput, ok := extractTaskOutputCompletion(block["content"], taskOutputMeta); ok {
+			originalToolUseID := p.taskToolUse(taskOutput.TaskID)
+			if originalToolUseID != "" && p.markTaskOutput(taskOutput.TaskID) {
+				metaFields := map[string]any{
+					"is_background": true,
+					"task_id":       taskOutput.TaskID,
+				}
+				if taskOutput.IsError {
+					metaFields["is_error"] = true
+				}
+				if taskOutput.ExitCode != nil {
+					metaFields["exit_code"] = *taskOutput.ExitCode
+				}
+				if taskOutput.OutputFile != "" {
+					metaFields["output_file"] = taskOutput.OutputFile
+				}
+				meta, _ := json.Marshal(metaFields)
+				events = append(events, provider.ProviderEvent{
+					Kind:      provider.EventToolComplete,
+					ThreadID:  threadID,
+					ItemID:    originalToolUseID,
+					Content:   firstNonEmpty(taskOutput.Summary, content),
+					Meta:      meta,
+					Timestamp: now,
+					Raw:       line,
+				})
+				p.clearBackground(originalToolUseID)
+			}
+			continue
+		}
+
+		if p.isBackground(toolUseID) {
+			// Claude echoes a placeholder tool_result for backgrounded tools
+			// before the real terminal task lifecycle lands. Treat it as
+			// informational only; task_updated / TaskOutput emit the
+			// authoritative completion later.
+			continue
+		}
+
 		metaFields := map[string]any{
 			"is_error": isError,
-		}
-		if p.isBackground(toolUseID) {
-			metaFields["is_background"] = true
 		}
 		if code, ok := extractExitCode(block["content"], toolUseResults[toolUseID]); ok {
 			metaFields["exit_code"] = code
@@ -518,6 +675,131 @@ func readIntAtAnyKey(data json.RawMessage, keys ...string) (int, bool) {
 		}
 	}
 	return 0, false
+}
+
+func readRawString(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var value string
+	if json.Unmarshal(raw, &value) == nil {
+		return value
+	}
+	return ""
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func (p *Parser) parseTaskLifecycleEvent(threadID string, raw map[string]json.RawMessage, now time.Time) ([]provider.ProviderEvent, error) {
+	taskID := readRawString(raw["task_id"])
+	if taskID == "" {
+		return nil, nil
+	}
+	if p.hasTaskOutput(taskID) {
+		return nil, nil
+	}
+
+	var patch map[string]json.RawMessage
+	if json.Unmarshal(raw["patch"], &patch) != nil {
+		return nil, nil
+	}
+	status := normalizeTaskTerminalStatus(firstNonEmpty(
+		readRawString(patch["status"]),
+		readRawString(raw["status"]),
+	))
+	if status == "" {
+		return nil, nil
+	}
+
+	toolUseID := firstNonEmpty(p.taskToolUse(taskID), readRawString(raw["tool_use_id"]), readRawString(raw["toolUseId"]))
+	if toolUseID == "" {
+		return nil, nil
+	}
+	if !p.markTaskCompleted(taskID) {
+		return nil, nil
+	}
+
+	metaFields := map[string]any{
+		"is_background": true,
+		"task_id":       taskID,
+	}
+	if status != "completed" {
+		metaFields["is_error"] = true
+	}
+	if endTime, ok := readIntAtAnyKey(raw["patch"], "end_time", "endTime"); ok {
+		metaFields["end_time"] = endTime
+	}
+	meta, _ := json.Marshal(metaFields)
+
+	p.clearBackground(toolUseID)
+
+	return []provider.ProviderEvent{{
+		Kind:      provider.EventToolComplete,
+		ThreadID:  threadID,
+		ItemID:    toolUseID,
+		Content:   firstNonEmpty(readRawString(patch["description"]), readRawString(raw["summary"])),
+		Meta:      meta,
+		Timestamp: now,
+	}}, nil
+}
+
+func normalizeTaskTerminalStatus(status string) string {
+	switch status {
+	case "completed":
+		return "completed"
+	case "failed", "killed", "error", "errored", "interrupted", "stopped":
+		return "failed"
+	default:
+		return ""
+	}
+}
+
+type taskOutputCompletion struct {
+	TaskID     string
+	Summary    string
+	IsError    bool
+	ExitCode   *int
+	OutputFile string
+}
+
+func extractTaskOutputCompletion(content json.RawMessage, toolUseResult json.RawMessage) (taskOutputCompletion, bool) {
+	var payload map[string]json.RawMessage
+	if json.Unmarshal(toolUseResult, &payload) != nil {
+		return taskOutputCompletion{}, false
+	}
+
+	var task map[string]json.RawMessage
+	if json.Unmarshal(payload["task"], &task) != nil {
+		return taskOutputCompletion{}, false
+	}
+
+	taskID := firstNonEmpty(readRawString(task["task_id"]), readRawString(task["taskId"]))
+	status := normalizeTaskTerminalStatus(firstNonEmpty(readRawString(task["status"]), readRawString(payload["status"])))
+	if taskID == "" || status == "" {
+		return taskOutputCompletion{}, false
+	}
+
+	result := taskOutputCompletion{
+		TaskID:     taskID,
+		Summary:    firstNonEmpty(readRawString(task["description"]), extractToolResultText(content)),
+		IsError:    status != "completed",
+		OutputFile: firstNonEmpty(readRawString(task["output_file"]), readRawString(task["outputFile"]), readRawString(payload["output_file"]), readRawString(payload["outputFile"])),
+	}
+
+	if exitCode, ok := readIntAtAnyKey(task["result"], "exit_code", "exitCode"); ok {
+		result.ExitCode = &exitCode
+	} else if exitCode, ok := readIntAtAnyKey(toolUseResult, "exit_code", "exitCode"); ok {
+		result.ExitCode = &exitCode
+	}
+
+	return result, true
 }
 
 // indexToolUseResults builds a map from tool_use_id → the structured
@@ -678,79 +960,113 @@ func extractResultUsage(raw map[string]json.RawMessage) provider.TokenUsage {
 }
 
 // parseStreamEvent handles the `stream_event` envelope produced by the
-// Claude CLI when `--include-partial-messages` is enabled. The envelope
-// carries lower-level Anthropic API events (content_block_delta,
-// content_block_start, content_block_stop, message_start, etc.) and an
-// optional top-level `parent_tool_use_id` that identifies the Task-tool
-// subagent that produced the delta.
-//
-// We map only the two delta kinds that have a user-visible analogue:
-//   - text_delta      → EventTextDelta
-//   - thinking_delta  → EventThinking
-//
-// input_json_delta carries incremental tool_use input JSON; the
-// assistant-message path already emits a single EventToolStart per
-// tool_use block with the final input, so we swallow these partial
-// fragments to avoid double-firing. Other event shapes
-// (content_block_start/stop, message_start/delta/stop) are lifecycle
-// markers and do not produce events at this layer.
-func parseStreamEvent(threadID string, raw map[string]json.RawMessage, now time.Time) ([]provider.ProviderEvent, error) {
-	dataRaw, ok := raw["data"]
-	if !ok {
+// Claude CLI when `--include-partial-messages` is enabled. Unlike the
+// assistant-message path, partial messages preserve content block
+// boundaries, so we emit explicit start/stop events for text/thinking blocks
+// and remember the block type by (parent_tool_use_id,index) so a later stop
+// can settle the right streaming item.
+func (p *Parser) parseStreamEvent(threadID string, raw map[string]json.RawMessage, now time.Time) ([]provider.ProviderEvent, error) {
+	eventRaw := raw["data"]
+	if len(eventRaw) == 0 {
+		eventRaw = raw["event"]
+	}
+	if len(eventRaw) == 0 {
 		return nil, nil
 	}
 
-	var dataObj map[string]json.RawMessage
-	if json.Unmarshal(dataRaw, &dataObj) != nil {
+	var eventObj map[string]json.RawMessage
+	if json.Unmarshal(eventRaw, &eventObj) != nil {
 		return nil, nil
 	}
 
-	deltaRaw, ok := dataObj["delta"]
-	if !ok {
-		// No delta payload — lifecycle marker, swallow.
+	eventType := firstNonEmpty(readRawString(eventObj["type"]), readRawString(raw["event"]))
+	if eventType == "" {
 		return nil, nil
 	}
 
-	var delta struct {
-		Type     string `json:"type"`
-		Text     string `json:"text,omitempty"`
-		Thinking string `json:"thinking,omitempty"`
-	}
-	if json.Unmarshal(deltaRaw, &delta) != nil {
-		return nil, nil
-	}
+	parentToolUseID := readRawString(raw["parent_tool_use_id"])
 
-	var parentToolUseID string
-	if v, ok := raw["parent_tool_use_id"]; ok {
-		_ = json.Unmarshal(v, &parentToolUseID)
-	}
-
-	switch delta.Type {
-	case "text_delta":
-		if delta.Text == "" {
+	switch eventType {
+	case "content_block_start":
+		index, _ := readIntAtAnyKey(eventRaw, "index")
+		var block map[string]json.RawMessage
+		if json.Unmarshal(eventObj["content_block"], &block) != nil {
 			return nil, nil
 		}
+		blockType := readRawString(block["type"])
+		if blockType == "" {
+			return nil, nil
+		}
+		p.rememberStreamBlock(parentToolUseID, index, blockType)
+		meta, _ := json.Marshal(map[string]any{
+			"index":         index,
+			"blockType":     blockType,
+			"content_block": json.RawMessage(eventObj["content_block"]),
+		})
 		return []provider.ProviderEvent{{
-			Kind:            provider.EventTextDelta,
+			Kind:            provider.EventContentBlockStart,
 			ThreadID:        threadID,
-			Content:         delta.Text,
-			Role:            "assistant",
+			Meta:            meta,
 			ParentToolUseID: parentToolUseID,
 			Timestamp:       now,
 		}}, nil
-	case "thinking_delta":
-		if delta.Thinking == "" {
-			return nil, nil
-		}
+
+	case "content_block_stop":
+		index, _ := readIntAtAnyKey(eventRaw, "index")
+		blockType := p.takeStreamBlock(parentToolUseID, index)
+		meta, _ := json.Marshal(map[string]any{
+			"index":     index,
+			"blockType": blockType,
+		})
 		return []provider.ProviderEvent{{
-			Kind:            provider.EventThinking,
+			Kind:            provider.EventContentBlockStop,
 			ThreadID:        threadID,
-			Content:         delta.Thinking,
+			Meta:            meta,
 			ParentToolUseID: parentToolUseID,
 			Timestamp:       now,
 		}}, nil
+
+	case "content_block_delta":
+		deltaRaw, ok := eventObj["delta"]
+		if !ok {
+			return nil, nil
+		}
+		var delta struct {
+			Type     string `json:"type"`
+			Text     string `json:"text,omitempty"`
+			Thinking string `json:"thinking,omitempty"`
+		}
+		if json.Unmarshal(deltaRaw, &delta) != nil {
+			return nil, nil
+		}
+		switch delta.Type {
+		case "text_delta":
+			if delta.Text == "" {
+				return nil, nil
+			}
+			return []provider.ProviderEvent{{
+				Kind:            provider.EventTextDelta,
+				ThreadID:        threadID,
+				Content:         delta.Text,
+				Role:            "assistant",
+				ParentToolUseID: parentToolUseID,
+				Timestamp:       now,
+			}}, nil
+		case "thinking_delta":
+			if delta.Thinking == "" {
+				return nil, nil
+			}
+			return []provider.ProviderEvent{{
+				Kind:            provider.EventThinking,
+				ThreadID:        threadID,
+				Content:         delta.Thinking,
+				ParentToolUseID: parentToolUseID,
+				Timestamp:       now,
+			}}, nil
+		default:
+			return nil, nil
+		}
 	default:
-		// input_json_delta and other partial shapes: no event.
 		return nil, nil
 	}
 }
@@ -774,6 +1090,8 @@ func parseControlRequest(threadID string, raw map[string]json.RawMessage, now ti
 	var req struct {
 		Subtype               string          `json:"subtype"`
 		ToolName              string          `json:"tool_name"`
+		ToolUseID             string          `json:"tool_use_id"`
+		ToolUseIDCamel        string          `json:"toolUseId"`
 		Input                 json.RawMessage `json:"input"`
 		PermissionSuggestions json.RawMessage `json:"permission_suggestions"`
 	}
@@ -785,9 +1103,15 @@ func parseControlRequest(threadID string, raw map[string]json.RawMessage, now ti
 		return nil, nil
 	}
 
+	toolUseID := req.ToolUseID
+	if toolUseID == "" {
+		toolUseID = req.ToolUseIDCamel
+	}
+
 	approvalMeta, _ := json.Marshal(provider.ApprovalRequest{
 		RequestID:             requestID,
 		ThreadID:              threadID,
+		ToolUseID:             toolUseID,
 		ToolName:              req.ToolName,
 		Description:           fmt.Sprintf("Allow %s?", req.ToolName),
 		Input:                 req.Input,

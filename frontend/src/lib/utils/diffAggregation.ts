@@ -33,8 +33,25 @@ export interface AgentDiffEntry {
 export function selectAgentDiffEntries(items: readonly Item[]): AgentDiffEntry[] {
   const out: AgentDiffEntry[] = [];
   for (const item of items) {
-    if (item.kind !== 'diff') continue;
     if (!item.payloadId) continue;
+    if (item.payloadKind === 'diff') {
+      out.push({
+        itemId: item.id,
+        payloadId: item.payloadId,
+        turnIndex: item.turnIndex,
+        itemIndex: item.itemIndex,
+      });
+      continue;
+    }
+    if (item.payloadKind !== 'tool_result' || !item.payloadMeta) continue;
+    try {
+      const parsed = JSON.parse(item.payloadMeta) as {
+        inlineDiff?: { availability?: string };
+      };
+      if (parsed.inlineDiff?.availability !== 'exact_patch') continue;
+    } catch {
+      continue;
+    }
     out.push({
       itemId: item.id,
       payloadId: item.payloadId,
@@ -87,22 +104,37 @@ export interface DiffStats {
 
 export function summarizeEntries(
   entries: readonly AgentDiffEntry[],
-  metas: ReadonlyMap<string, { meta: string } | undefined>,
+  items: readonly Item[],
 ): DiffStats {
   let insertions = 0;
   let deletions = 0;
   let fileCount = 0;
   for (const entry of entries) {
-    const meta = metas.get(entry.payloadId);
-    if (!meta) continue;
+    const item = items.find((candidate) => candidate.payloadId === entry.payloadId);
+    if (!item?.payloadMeta) continue;
     try {
-      const parsed = JSON.parse(meta.meta) as {
-        insertions?: number;
-        deletions?: number;
+      if (item.payloadKind === 'diff') {
+        const parsed = JSON.parse(item.payloadMeta) as {
+          insertions?: number;
+          deletions?: number;
+        };
+        insertions += parsed.insertions ?? 0;
+        deletions += parsed.deletions ?? 0;
+        fileCount += 1;
+        continue;
+      }
+      if (item.payloadKind !== 'tool_result') continue;
+      const parsed = JSON.parse(item.payloadMeta) as {
+        inlineDiff?: {
+          files?: Array<{ insertions?: number; deletions?: number }>;
+        };
       };
-      insertions += parsed.insertions ?? 0;
-      deletions += parsed.deletions ?? 0;
-      fileCount += 1;
+      const files = parsed.inlineDiff?.files ?? [];
+      for (const file of files) {
+        insertions += file.insertions ?? 0;
+        deletions += file.deletions ?? 0;
+        fileCount += 1;
+      }
     } catch {
       // A broken meta shouldn't poison the entire summary — just skip it.
     }

@@ -394,7 +394,7 @@ func TestDisc_ParticipantRoutingRespected(t *testing.T) {
 		ThreadID:  childA.ID,
 		TurnIndex: 0,
 		ItemIndex: 0,
-		Kind:      string(provider.ItemText),
+		Kind:      "assistant_text",
 		Role:      "assistant",
 		Summary:   "I propose X",
 		CreatedAt: now,

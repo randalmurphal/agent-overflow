@@ -284,51 +284,50 @@ func TestExtractUsageFromTurn_InvalidJSON(t *testing.T) {
 	}
 }
 
-// TestClassifyNotification_NeverPopulatesParentToolUseID asserts the
-// intentional absence of parent-tool linkage on Codex events. Codex's
-// app-server protocol does not expose a parentToolUseId concept, so
-// every ProviderEvent we emit must leave the field empty. If a future
-// Codex release adds this field, extract it in protocol.go and update
-// this test.
-func TestClassifyNotification_NeverPopulatesParentToolUseID(t *testing.T) {
-	// One params blob per notification method; values where a naive
-	// implementation might look for a parent id are present but wrong
-	// shape ("parentToolUseId" was never part of Codex's contract).
-	cases := []struct {
-		method string
-		params string
-	}{
-		{"turn/started", `{"turn":{"id":"t1"}, "parentToolUseId":"bogus"}`},
-		{"turn/completed", `{"turn":{"id":"t1","status":"completed"}, "parentToolUseId":"bogus"}`},
-		{"turn/aborted", `{"turn":{"id":"t1"}, "parentToolUseId":"bogus"}`},
-		{"turn/diff/updated", `{"diff":"diff --git a/x b/x", "parentToolUseId":"bogus"}`},
-		{"item/started", `{"item":{"id":"i1","type":"command_execution"}, "parentToolUseId":"bogus"}`},
-		{"item/updated", `{"item":{"id":"i1","type":"command_execution"}, "parentToolUseId":"bogus"}`},
-		{"item/completed", `{"item":{"id":"i1","type":"command_execution"}, "parentToolUseId":"bogus"}`},
-		{"item/agentMessage/delta", `{"delta":"hi", "parentToolUseId":"bogus"}`},
-		{"item/commandExecution/outputDelta", `{"delta":"out", "parentToolUseId":"bogus"}`},
-		{"item/fileChange/outputDelta", `{"delta":"patch", "parentToolUseId":"bogus"}`},
-		{"item/reasoning/textDelta", `{"delta":"think", "parentToolUseId":"bogus"}`},
-		{"thread/tokenUsage/updated", `{"usage":{"inputTokens":1}, "parentToolUseId":"bogus"}`},
-		{"thread/name/updated", `{"threadName":"n", "parentToolUseId":"bogus"}`},
-		{"thread/compacted", `{"parentToolUseId":"bogus"}`},
-		{"error", `{"error":{"message":"oops"}, "parentToolUseId":"bogus"}`},
-		{"turn/plan/updated", `{"parentToolUseId":"bogus"}`},
-		{"serverRequest/resolved", `{"providerRequestId":"req-1", "parentToolUseId":"bogus"}`},
-		{"account/rateLimits/updated", `{"parentToolUseId":"bogus"}`},
-		{"model/rerouted", `{"toModel":"x", "parentToolUseId":"bogus"}`},
+func TestClassifyNotification_CollabSpawnUsesCollabAgentType(t *testing.T) {
+	params := json.RawMessage(`{"item":{"id":"call-1","type":"collabAgentToolCall","tool":"spawnAgent","prompt":"Refactor auth","receiverThreadIds":["child-1"],"status":"completed"}}`)
+	events := ClassifyNotification("t1", "item/completed", params)
+
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if events[0].ItemType != "collab_agent" {
+		t.Fatalf("itemType: got %q, want %q", events[0].ItemType, "collab_agent")
 	}
 
-	for _, tc := range cases {
-		t.Run(tc.method, func(t *testing.T) {
-			events := ClassifyNotification("t1", tc.method, json.RawMessage(tc.params))
-			for i, evt := range events {
-				if evt.ParentToolUseID != "" {
-					t.Errorf("%s event %d: ParentToolUseID = %q, want empty (Codex has no parent-tool linkage)",
-						tc.method, i, evt.ParentToolUseID)
-				}
-			}
-		})
+	var meta map[string]any
+	if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if meta["toolName"] != "collab_agent" {
+		t.Fatalf("toolName: got %v, want collab_agent", meta["toolName"])
+	}
+	input, ok := meta["input"].(map[string]any)
+	if !ok {
+		t.Fatalf("input missing from meta: %+v", meta)
+	}
+	if input["prompt"] != "Refactor auth" {
+		t.Fatalf("prompt: got %v, want %q", input["prompt"], "Refactor auth")
+	}
+}
+
+func TestClassifyNotification_CollabSendInputUsesDedicatedType(t *testing.T) {
+	params := json.RawMessage(`{"item":{"id":"call-2","type":"collabAgentToolCall","tool":"sendInput","prompt":"continue","receiverThreadIds":["child-1"],"status":"completed"}}`)
+	events := ClassifyNotification("t1", "item/completed", params)
+
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if events[0].ItemType != "send_input" {
+		t.Fatalf("itemType: got %q, want %q", events[0].ItemType, "send_input")
+	}
+}
+
+func TestClassifyNotification_CollabWaitIsSilent(t *testing.T) {
+	params := json.RawMessage(`{"item":{"id":"call-3","type":"collabAgentToolCall","tool":"waitAgent","receiverThreadIds":["child-1"],"status":"completed"}}`)
+	events := ClassifyNotification("t1", "item/completed", params)
+	if len(events) != 0 {
+		t.Fatalf("expected 0 events, got %d", len(events))
 	}
 }
 
@@ -437,75 +436,25 @@ func TestClassifyNotification_ItemCompletedEachStatus(t *testing.T) {
 	}
 }
 
-// -- terminalInteraction / mcpToolCall progress tests --
+// -- progress notifications dropped --
 
-// TestClassifyNotification_TerminalInteraction exercises
-// item/commandExecution/terminalInteraction, which Codex emits when a
-// command prompts for input (sudo password, interactive REPL, etc.). We
-// route it as EventToolProgress with a subtype discriminator so triage
-// can branch without yet owning a dedicated EventKind for it. Wire
-// format in codex-source/schema/typescript/v2/TerminalInteractionNotification.ts.
-func TestClassifyNotification_TerminalInteraction(t *testing.T) {
+func TestClassifyNotification_TerminalInteractionDropped(t *testing.T) {
 	params := json.RawMessage(
 		`{"threadId":"th-1","turnId":"t1","itemId":"cmd-1","processId":"pid-42","stdin":"password:"}`,
 	)
 	events := ClassifyNotification("th-1", "item/commandExecution/terminalInteraction", params)
-	if len(events) != 1 {
-		t.Fatalf("expected 1 event, got %d", len(events))
-	}
-	evt := events[0]
-	if evt.Kind != provider.EventToolProgress {
-		t.Errorf("kind: got %q, want %q", evt.Kind, provider.EventToolProgress)
-	}
-	if evt.ItemID != "cmd-1" {
-		t.Errorf("itemID: got %q, want %q", evt.ItemID, "cmd-1")
-	}
-	if evt.TurnID != "t1" {
-		t.Errorf("turnID: got %q, want %q", evt.TurnID, "t1")
-	}
-	var meta map[string]any
-	if err := json.Unmarshal(evt.Meta, &meta); err != nil {
-		t.Fatalf("unmarshal meta: %v", err)
-	}
-	if meta["subtype"] != "terminal_interaction" {
-		t.Errorf("meta.subtype: got %v, want %q", meta["subtype"], "terminal_interaction")
-	}
-	if meta["processId"] != "pid-42" {
-		t.Errorf("meta.processId: got %v, want %q", meta["processId"], "pid-42")
-	}
-	if meta["stdin"] != "password:" {
-		t.Errorf("meta.stdin: got %v, want %q", meta["stdin"], "password:")
+	if len(events) != 0 {
+		t.Fatalf("expected terminalInteraction to be dropped, got %d event(s)", len(events))
 	}
 }
 
-// TestClassifyNotification_McpToolCallProgress wraps the
-// item/mcpToolCall/progress notification — Codex forwards a progress
-// message string from the MCP server. Wire format in
-// codex-source/schema/typescript/v2/McpToolCallProgressNotification.ts.
-func TestClassifyNotification_McpToolCallProgress(t *testing.T) {
+func TestClassifyNotification_McpToolCallProgressDropped(t *testing.T) {
 	params := json.RawMessage(
 		`{"threadId":"th-1","turnId":"t1","itemId":"mcp-1","message":"Indexed 47/100 files"}`,
 	)
 	events := ClassifyNotification("th-1", "item/mcpToolCall/progress", params)
-	if len(events) != 1 {
-		t.Fatalf("expected 1 event, got %d", len(events))
-	}
-	evt := events[0]
-	if evt.Kind != provider.EventToolProgress {
-		t.Errorf("kind: got %q, want %q", evt.Kind, provider.EventToolProgress)
-	}
-	if evt.ItemID != "mcp-1" {
-		t.Errorf("itemID: got %q, want %q", evt.ItemID, "mcp-1")
-	}
-	var meta map[string]any
-	if err := json.Unmarshal(evt.Meta, &meta); err != nil {
-		t.Fatalf("unmarshal meta: %v", err)
-	}
-	if meta["subtype"] != "mcp_progress" {
-		t.Errorf("meta.subtype: got %v, want %q", meta["subtype"], "mcp_progress")
-	}
-	if meta["message"] != "Indexed 47/100 files" {
-		t.Errorf("meta.message: got %v, want %q", meta["message"], "Indexed 47/100 files")
+	if len(events) != 0 {
+		t.Fatalf("expected mcpToolCall/progress to be dropped, got %d event(s)", len(events))
 	}
 }
 

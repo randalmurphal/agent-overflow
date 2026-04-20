@@ -38,6 +38,7 @@ export {
   RespondToApproval,
 
   // Data access
+  GetPayloadPreview,
   GetPayloadData,
   ListItems,
   ListPayloadMetas,
@@ -226,4 +227,3 @@ export function UnarchiveProject(id: string): Promise<Project> {
 export function BrowseDirectory(path: string): Promise<DirectoryListing> {
   return callApp<DirectoryListing>('BrowseDirectory', path);
 }
-

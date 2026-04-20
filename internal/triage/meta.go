@@ -26,6 +26,7 @@ type CommandOutputMeta struct {
 type ThinkingMeta struct {
 	TokenCount int    `json:"tokenCount"`
 	Preview    string `json:"preview"`
+	Signature  string `json:"signature,omitempty"`
 }
 
 // ProposedPlanMeta is the JSON structure for proposed plan payloads.

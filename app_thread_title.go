@@ -120,6 +120,9 @@ func (a *App) applyGeneratedThreadTitle(threadID, title string) error {
 		Meta:      meta,
 		Timestamp: time.Now(),
 	})
+	if thread, gerr := a.store.GetThread(threadID); gerr == nil {
+		a.emitEvent("thread:updated", thread)
+	}
 	return nil
 }
 

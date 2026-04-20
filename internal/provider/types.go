@@ -128,42 +128,31 @@ type EventKind string
 
 const (
 	// Inline events — forwarded directly to frontend via EventsEmit.
-	EventInit               EventKind = "init"
-	EventTextDelta          EventKind = "text_delta"
-	EventToolStart          EventKind = "tool_start"
-	EventToolComplete       EventKind = "tool_complete"
-	EventTurnStart          EventKind = "turn_start"
-	EventTurnComplete       EventKind = "turn_complete"
-	EventApprovalRequest    EventKind = "approval_request"
-	EventApprovalResolved   EventKind = "approval_resolved"
-	EventSessionStatus      EventKind = "session_status"
-	EventTokenUsage         EventKind = "token_usage"
-	EventError              EventKind = "error"
-	EventBackgroundStart    EventKind = "background_start"
-	EventBackgroundDelta    EventKind = "background_delta"
-	EventBackgroundComplete EventKind = "background_complete"
+	EventInit             EventKind = "init"
+	EventTextDelta        EventKind = "text_delta"
+	EventToolStart        EventKind = "tool_start"
+	EventToolComplete     EventKind = "tool_complete"
+	EventTurnStart        EventKind = "turn_start"
+	EventTurnComplete     EventKind = "turn_complete"
+	EventApprovalRequest  EventKind = "approval_request"
+	EventApprovalResolved EventKind = "approval_resolved"
+	EventSessionStatus    EventKind = "session_status"
+	EventTokenUsage       EventKind = "token_usage"
+	EventError            EventKind = "error"
 
-	// New inline events for feature parity.
-	EventToolProgress    EventKind = "tool_progress"
+	// Inline/system events that do not render as timeline rows.
 	EventCompactBoundary EventKind = "compact_boundary"
 	EventRateLimits      EventKind = "rate_limits"
 	EventModelRerouted   EventKind = "model_rerouted"
 	EventThreadRenamed   EventKind = "thread_renamed"
+	EventContentBlockStart EventKind = "content_block_start"
+	EventContentBlockStop  EventKind = "content_block_stop"
 
 	// Heavy events — persisted to SQLite, meta emitted to frontend.
 	EventDiff          EventKind = "diff"
 	EventCommandOutput EventKind = "command_output"
 	EventThinking      EventKind = "thinking"
 	EventProposedPlan  EventKind = "proposed_plan"
-
-	// EventPlanUpdate carries incremental updates to Codex's turn plan
-	// (`turn/plan/updated` JSON-RPC notification). Distinct from
-	// EventProposedPlan, which is the *finalized* plan item; this kind
-	// streams intermediate states so the PlanSidebar / follow-up banner
-	// can surface an "in-progress plan" indicator without waiting for
-	// the full item. Claude has no direct analogue — its plans surface
-	// as the ExitPlanMode tool result, already routed via EventProposedPlan.
-	EventPlanUpdate EventKind = "plan_update"
 )
 
 // AllEventKinds is the canonical list of EventKind values. Triage and the
@@ -183,34 +172,29 @@ var AllEventKinds = []EventKind{
 	EventSessionStatus,
 	EventTokenUsage,
 	EventError,
-	EventBackgroundStart,
-	EventBackgroundDelta,
-	EventBackgroundComplete,
-	EventToolProgress,
 	EventCompactBoundary,
 	EventRateLimits,
 	EventModelRerouted,
 	EventThreadRenamed,
+	EventContentBlockStart,
+	EventContentBlockStop,
 	EventDiff,
 	EventCommandOutput,
 	EventThinking,
 	EventProposedPlan,
-	EventPlanUpdate,
 }
 
 // ItemKind for persisted items in the database.
 type ItemKind string
 
 const (
-	ItemText              ItemKind = "text"
-	ItemToolCall          ItemKind = "tool_call"
-	ItemToolResult        ItemKind = "tool_result"
-	ItemThinking          ItemKind = "thinking"
-	ItemDiff              ItemKind = "diff"
-	ItemCommandExecution  ItemKind = "command_execution"
-	ItemProposedPlan      ItemKind = "proposed_plan"
-	ItemBackgroundStarted ItemKind = "background_started"
-	ItemBackgroundDone    ItemKind = "background_done"
+	ItemUserText       ItemKind = "user_text"
+	ItemAssistantText  ItemKind = "assistant_text"
+	ItemThinking       ItemKind = "thinking"
+	ItemToolCall       ItemKind = "tool_call"
+	ItemToolCompletion ItemKind = "tool_completion"
+	ItemError          ItemKind = "error"
+	ItemCompaction     ItemKind = "compaction"
 )
 
 // ProviderEvent is the normalized event emitted by both provider protocols.
@@ -219,6 +203,7 @@ type ProviderEvent struct {
 	Kind      EventKind       `json:"kind"`
 	ThreadID  string          `json:"threadId"`
 	TurnID    string          `json:"turnId,omitempty"`
+	TurnIndex int             `json:"turnIndex,omitempty"`
 	ItemID    string          `json:"itemId,omitempty"`
 	ItemType  string          `json:"itemType,omitempty"`
 	Content   string          `json:"content,omitempty"`
@@ -238,6 +223,7 @@ type ApprovalRequest struct {
 	RequestID   string          `json:"requestId"`
 	ThreadID    string          `json:"threadId"`
 	TurnID      string          `json:"turnId,omitempty"`
+	ToolUseID   string          `json:"toolUseId,omitempty"`
 	ToolName    string          `json:"toolName"`
 	Description string          `json:"description"`
 	Input       json.RawMessage `json:"input"`
@@ -257,6 +243,27 @@ type ApprovalRequest struct {
 	// PermissionUpdate objects; the shape is provider-specific so it flows
 	// through the pipeline as opaque JSON for the frontend to interpret.
 	PermissionSuggestions json.RawMessage `json:"permissionSuggestions,omitempty"`
+}
+
+// ApprovalEvent is the frontend-facing channel payload for approval overlay
+// changes. The request ID remains the provider-native identifier because the
+// response binding routes back through it unchanged.
+type ApprovalEvent struct {
+	Action    string           `json:"action"` // "request" | "resolve"
+	ThreadID  string           `json:"threadId,omitempty"`
+	Request   *ApprovalRequest `json:"request,omitempty"`
+	RequestID string           `json:"requestId,omitempty"`
+	Decision  string           `json:"decision,omitempty"` // approved|declined|amended|timeout|lost
+}
+
+// UsageEvent is the frontend-facing channel payload for the context-window
+// meter. `usage` updates the ring; `reset` clears it after compaction.
+type UsageEvent struct {
+	Action         string  `json:"action"` // "usage" | "reset"
+	ThreadID       string  `json:"threadId"`
+	UsedTokens     int     `json:"usedTokens,omitempty"`
+	MaxTokens      int     `json:"maxTokens,omitempty"`
+	ContextPercent float64 `json:"contextPercent,omitempty"`
 }
 
 // ElicitationRequest is the frontend-facing shape for an MCP elicitation
@@ -300,6 +307,23 @@ type ApprovalResponse struct {
 	// allow decisions: a JSON array of PermissionUpdate objects used to broaden
 	// or narrow the session's permission scope. Ignored on deny.
 	UpdatedPermissions json.RawMessage `json:"updatedPermissions,omitempty"`
+}
+
+// NormalizeApprovalDecision converts transport-specific approval response
+// values ("allow", "accept", "decline", "deny", etc.) into the persisted item
+// decision enum used by the chat rewrite.
+func NormalizeApprovalDecision(resp ApprovalResponse) string {
+	switch resp.Decision {
+	case "allow", "allow_session", "accept", "acceptForSession":
+		if len(resp.UpdatedInput) > 0 || len(resp.UpdatedPermissions) > 0 {
+			return "amended"
+		}
+		return "approved"
+	case "deny", "decline", "cancel":
+		return "declined"
+	default:
+		return ""
+	}
 }
 
 // UserInputQuestionOption is a selectable option in a user-input question.

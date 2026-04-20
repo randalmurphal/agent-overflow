@@ -1,10 +1,11 @@
 <script lang="ts">
   import { slide } from 'svelte/transition';
-  import { GetPayloadData } from '../../stores/bindings';
   import { getSettings } from '../../stores/settings.svelte';
   import type { Item, ToolInlineDiffFile, ToolResultMeta } from '../../types/models';
   import { parseDiffLines, type DiffLine } from '../../utils/diff';
   import LazyContentBlock from './LazyContentBlock.svelte';
+  import ToolDecisionChip from './ToolDecisionChip.svelte';
+  import { createPayloadExpansion, formatPayloadSize } from './payloadExpansion.svelte';
 
   let { item, meta, payloadId }: { item: Item; meta: ToolResultMeta; payloadId?: string } = $props();
 
@@ -13,35 +14,20 @@
   // so detailText doesn't get a payloadId — it's truncate-only.
   const detailText = $derived(meta.detail || meta.preview || '');
 
-  let expanded = $state(false);
-  let loading = $state(false);
-  let loadError = $state<string | null>(null);
-  let fullLines = $state<DiffLine[] | null>(null);
+  const expansion = createPayloadExpansion(() => payloadId);
 
   const hasInlineDiff = $derived(Boolean(meta.inlineDiff && meta.inlineDiff.files.length > 0));
   const hasExactPatch = $derived(meta.inlineDiff?.availability === 'exact_patch' && Boolean(payloadId));
   const wrapClass = $derived(getSettings().diffWordWrap ? 'whitespace-pre-wrap break-all' : 'whitespace-pre');
+  const patchLines = $derived.by<DiffLine[] | null>(() => {
+    if (expansion.displayData === null) return null;
+    return parseDiffLines(expansion.displayData);
+  });
 
-  async function togglePatch() {
-    if (!hasExactPatch) return;
-    if (expanded) {
-      expanded = false;
-      return;
-    }
-
-    expanded = true;
-    if (fullLines !== null || !payloadId) return;
-
-    loading = true;
-    loadError = null;
-    try {
-      fullLines = parseDiffLines(await GetPayloadData(payloadId));
-    } catch (err) {
-      loadError = err instanceof Error ? err.message : String(err);
-    } finally {
-      loading = false;
-    }
-  }
+  $effect(() => {
+    payloadId;
+    expansion.reset();
+  });
 
   function kindClasses(file: ToolInlineDiffFile): string {
     switch (file.kind) {
@@ -70,6 +56,7 @@
     <div class="min-w-0 flex-1">
       <div class="flex items-center gap-2">
         <p class="truncate text-sm font-medium text-text-primary">{meta.title || item.summary}</p>
+        <ToolDecisionChip decision={item.decision} />
         <span class="ml-auto text-xs text-success">done</span>
       </div>
       {#if detailText}
@@ -96,11 +83,11 @@
     <div class="border-t border-border">
       <button
         class="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-text-secondary hover:bg-surface-2/40"
-        onclick={togglePatch}
-        aria-expanded={expanded}
+        onclick={() => expansion.toggle()}
+        aria-expanded={expansion.expanded}
         aria-controls="tool-result-patch-{item.id}"
       >
-        <span>{expanded ? '▼' : '▶'}</span>
+        <span>{expansion.expanded ? '▼' : '▶'}</span>
         <span>Exact patch</span>
         {#if meta.inlineDiff?.insertions || meta.inlineDiff?.deletions}
           <span class="ml-auto">
@@ -111,14 +98,14 @@
         {/if}
       </button>
 
-      {#if expanded}
+      {#if expansion.expanded}
         <div id="tool-result-patch-{item.id}" transition:slide={{ duration: 150 }} class="overflow-x-auto border-t border-border bg-surface-0 px-3 py-2">
-          {#if loading}
+          {#if expansion.loading}
             <p class="text-xs text-text-secondary" role="status" aria-live="polite">Loading patch…</p>
-          {:else if loadError}
-            <p class="text-xs text-error" role="alert">Failed to load patch: {loadError}</p>
-          {:else if fullLines}
-            <pre class="font-mono text-xs leading-tight {wrapClass}">{#each fullLines as line}<span
+          {:else if expansion.error}
+            <p class="text-xs text-error" role="alert">Failed to load patch: {expansion.error}</p>
+          {:else if patchLines}
+            <pre class="font-mono text-xs leading-tight {wrapClass}">{#each patchLines as line}<span
                 class={line.type === 'added'
                   ? 'bg-success/10 text-success'
                   : line.type === 'removed'
@@ -128,6 +115,16 @@
                       : 'text-text-secondary'}
               >{line.content}
 </span>{/each}</pre>
+            {#if expansion.hasMore}
+              <button
+                type="button"
+                class="mt-2 text-xs text-accent hover:underline cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 rounded"
+                onclick={() => expansion.showFull()}
+                data-testid="tool-result-patch-show-full"
+              >
+                Show full output ({formatPayloadSize(expansion.totalSize)}) ↓
+              </button>
+            {/if}
           {/if}
         </div>
       {/if}

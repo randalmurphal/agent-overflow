@@ -11,11 +11,9 @@ import (
 	"database/sql"
 )
 
-// Migration v14 adds the tool-call lifecycle columns to items:
-// status (TEXT CHECK IN …), is_background (INTEGER 0|1), and
-// completion_of_item_id (TEXT). These tests pin:
-//   - the three columns exist after migration
-//   - defaults backfill existing rows safely ("completed", 0, "")
+// Migration v15 finalizes the unified-item schema. These tests pin:
+//   - the renamed lifecycle/parent columns exist after migration
+//   - the destructive reset semantics when upgrading older schemas
 //   - CHECK constraints reject bogus values
 //   - the completion-of partial index is created
 
@@ -26,7 +24,7 @@ func TestMigrationV14AddsLifecycleColumns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("tableColumns(items): %v", err)
 	}
-	for _, want := range []string{"status", "is_background", "completion_of_item_id"} {
+	for _, want := range []string{"status", "is_background", "completion_of", "parent_id", "tool_name", "decision", "meta"} {
 		if !cols[want] {
 			t.Errorf("items.%s column missing (columns=%v)", want, cols)
 		}
@@ -55,9 +53,9 @@ func TestMigrationV14AddsLifecycleColumns(t *testing.T) {
 	}
 }
 
-// TestMigrationV14BackfillsExistingRows simulates an upgrade from a pre-v14
-// database: pre-populate an item under the pre-v14 schema, then apply v14
-// and confirm the row comes out with the defaults ("completed", 0, "").
+// TestMigrationV14BackfillsExistingRows simulates an upgrade from a pre-v15
+// database: pre-populate an item under the pre-v15 schema, then apply v15
+// and confirm the destructive reset dropped legacy chat rows.
 func TestMigrationV14BackfillsExistingRows(t *testing.T) {
 	db := openSQLiteDB(t)
 
@@ -67,9 +65,9 @@ func TestMigrationV14BackfillsExistingRows(t *testing.T) {
 	if err := ensureMigrationTable(db); err != nil {
 		t.Fatalf("ensureMigrationTable: %v", err)
 	}
-	// Apply every migration except v14 so we're on the pre-v14 schema.
+	// Apply every migration except v15 so we're on the pre-v15 schema.
 	for _, m := range migrations {
-		if m.Version == 14 {
+		if m.Version == 15 {
 			continue
 		}
 		if err := applyMigration(db, m); err != nil {
@@ -77,9 +75,14 @@ func TestMigrationV14BackfillsExistingRows(t *testing.T) {
 		}
 	}
 
+	if _, err := db.Exec(`INSERT INTO projects
+		(id, path, name, created_at, updated_at)
+		VALUES ('p-pre', '/tmp/test', 'Pre-v14 Project', 1000, 1000)`); err != nil {
+		t.Fatalf("seed project: %v", err)
+	}
 	if _, err := db.Exec(`INSERT INTO threads
-		(id, title, provider, workspace_path, model, created_at, updated_at)
-		VALUES ('t-pre', 'Pre-v14', 'claude', '/tmp', '', 1000, 1000)`); err != nil {
+		(id, project_id, title, provider, workspace_path, model, created_at, updated_at)
+		VALUES ('t-pre', 'p-pre', 'Pre-v14', 'claude', '/tmp', '', 1000, 1000)`); err != nil {
 		t.Fatalf("seed thread: %v", err)
 	}
 	if _, err := db.Exec(`INSERT INTO items
@@ -88,50 +91,42 @@ func TestMigrationV14BackfillsExistingRows(t *testing.T) {
 		t.Fatalf("seed item: %v", err)
 	}
 
-	// Find v14 in the migration list and apply it.
-	var v14 *Migration
+	// Find v15 in the migration list and apply it.
+	var v15 *Migration
 	for i := range migrations {
-		if migrations[i].Version == 14 {
-			v14 = &migrations[i]
+		if migrations[i].Version == 15 {
+			v15 = &migrations[i]
 			break
 		}
 	}
-	if v14 == nil {
-		t.Fatal("v14 migration missing from list")
+	if v15 == nil {
+		t.Fatal("v15 migration missing from list")
 	}
-	if err := applyMigration(db, *v14); err != nil {
-		t.Fatalf("apply v14: %v", err)
+	if err := applyMigration(db, *v15); err != nil {
+		t.Fatalf("apply v15: %v", err)
 	}
 
-	var status, completionOf string
-	var isBackground int
-	if err := db.QueryRow(`SELECT status, is_background, completion_of_item_id FROM items WHERE id = 'i-pre'`).
-		Scan(&status, &isBackground, &completionOf); err != nil {
-		t.Fatalf("read backfilled row: %v", err)
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM items`).Scan(&count); err != nil {
+		t.Fatalf("count items after v15 reset: %v", err)
 	}
-	if status != "completed" {
-		t.Errorf("status = %q, want %q", status, "completed")
-	}
-	if isBackground != 0 {
-		t.Errorf("is_background = %d, want 0", isBackground)
-	}
-	if completionOf != "" {
-		t.Errorf("completion_of_item_id = %q, want empty", completionOf)
+	if count != 0 {
+		t.Fatalf("expected v15 reset to clear legacy items, got %d", count)
 	}
 }
 
 func TestMigrationV14StatusCheckRejectsBogusValue(t *testing.T) {
 	s := newTestStore(t)
 
-	if _, err := s.db.Exec(`INSERT INTO threads (id, title, provider, workspace_path, model, created_at, updated_at)
-		VALUES ('t', 'T', 'claude', '/tmp', '', 1, 1)`); err != nil {
+	if _, err := s.db.Exec(`INSERT INTO threads (id, project_id, title, provider, workspace_path, model, created_at, updated_at)
+		VALUES ('t', ?, 'T', 'claude', '/tmp', '', 1, 1)`, defaultTestProjectID); err != nil {
 		t.Fatalf("seed thread: %v", err)
 	}
 
 	// Raw INSERT with a status value outside the allowed enum must fail.
 	_, err := s.db.Exec(`INSERT INTO items
-		(id, thread_id, turn_index, item_index, kind, role, summary, parent_tool_use_id, status, is_background, completion_of_item_id, created_at)
-		VALUES ('i', 't', 0, 0, 'text', 'assistant', '', '', 'weird', 0, '', 1)`)
+		(id, thread_id, turn_index, item_index, kind, role, summary, parent_id, status, is_background, completion_of, created_at, updated_at)
+		VALUES ('i', 't', 0, 0, 'assistant_text', 'assistant', '', '', 'weird', 0, '', 1, 1)`)
 	if err == nil {
 		t.Fatal("INSERT with bogus status must violate CHECK constraint")
 	}
@@ -143,8 +138,8 @@ func TestMigrationV14StatusCheckRejectsBogusValue(t *testing.T) {
 	for i, status := range []string{"running", "completed", "errored", "declined"} {
 		id := fmt.Sprintf("ok-%d", i)
 		if _, err := s.db.Exec(`INSERT INTO items
-			(id, thread_id, turn_index, item_index, kind, role, summary, parent_tool_use_id, status, is_background, completion_of_item_id, created_at)
-			VALUES (?, 't', 0, ?, 'text', 'assistant', '', '', ?, 0, '', 1)`,
+			(id, thread_id, turn_index, item_index, kind, role, summary, parent_id, status, is_background, completion_of, created_at, updated_at)
+			VALUES (?, 't', 0, ?, 'assistant_text', 'assistant', '', '', ?, 0, '', 1, 1)`,
 			id, i, status); err != nil {
 			t.Errorf("INSERT with status=%q: %v", status, err)
 		}
@@ -159,15 +154,15 @@ func TestMigrationV14StatusCheckRejectsBogusValue(t *testing.T) {
 func TestMigrationV14IsBackgroundCheckRejectsBogusValue(t *testing.T) {
 	s := newTestStore(t)
 
-	if _, err := s.db.Exec(`INSERT INTO threads (id, title, provider, workspace_path, model, created_at, updated_at)
-		VALUES ('t', 'T', 'claude', '/tmp', '', 1, 1)`); err != nil {
+	if _, err := s.db.Exec(`INSERT INTO threads (id, project_id, title, provider, workspace_path, model, created_at, updated_at)
+		VALUES ('t', ?, 'T', 'claude', '/tmp', '', 1, 1)`, defaultTestProjectID); err != nil {
 		t.Fatalf("seed thread: %v", err)
 	}
 
 	// Only 0 and 1 are allowed; 2 must fail.
 	if _, err := s.db.Exec(`INSERT INTO items
-		(id, thread_id, turn_index, item_index, kind, role, summary, parent_tool_use_id, status, is_background, completion_of_item_id, created_at)
-		VALUES ('i', 't', 0, 0, 'text', 'assistant', '', '', 'completed', 2, '', 1)`); err == nil {
+		(id, thread_id, turn_index, item_index, kind, role, summary, parent_id, status, is_background, completion_of, created_at, updated_at)
+		VALUES ('i', 't', 0, 0, 'assistant_text', 'assistant', '', '', 'completed', 2, '', 1, 1)`); err == nil {
 		t.Fatal("INSERT with is_background=2 must violate CHECK constraint")
 	}
 }
@@ -178,7 +173,7 @@ func TestInsertItemRoundTripsLifecycleFields(t *testing.T) {
 	s := newTestStore(t)
 	now := time.Now().UnixMilli()
 	if err := s.CreateThread(Thread{
-		ID: "t", Title: "T", Provider: "claude", WorkspacePath: "/tmp",
+		ID: "t", ProjectID: defaultTestProjectID, Title: "T", Provider: "claude", WorkspacePath: "/tmp",
 		CreatedAt: now, UpdatedAt: now,
 	}); err != nil {
 		t.Fatalf("create thread: %v", err)
@@ -206,8 +201,8 @@ func TestInsertItemRoundTripsLifecycleFields(t *testing.T) {
 	if !got.IsBackground {
 		t.Error("IsBackground: got false, want true")
 	}
-	if got.CompletionOfItemID != "" {
-		t.Errorf("CompletionOfItemID: got %q, want empty", got.CompletionOfItemID)
+	if got.CompletionOf != "" {
+		t.Errorf("CompletionOf: got %q, want empty", got.CompletionOf)
 	}
 }
 
@@ -218,14 +213,14 @@ func TestInsertItemDefaultsStatusToCompleted(t *testing.T) {
 	s := newTestStore(t)
 	now := time.Now().UnixMilli()
 	if err := s.CreateThread(Thread{
-		ID: "t", Title: "T", Provider: "claude", WorkspacePath: "/tmp",
+		ID: "t", ProjectID: defaultTestProjectID, Title: "T", Provider: "claude", WorkspacePath: "/tmp",
 		CreatedAt: now, UpdatedAt: now,
 	}); err != nil {
 		t.Fatalf("create thread: %v", err)
 	}
 	if err := s.InsertItem(Item{
 		ID: "i", ThreadID: "t", TurnIndex: 0, ItemIndex: 0,
-		Kind: "text", Role: "assistant", Summary: "hi", CreatedAt: now,
+		Kind:      "assistant_text", Role: "assistant", Summary: "hi", CreatedAt: now,
 	}); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
@@ -244,7 +239,7 @@ func TestUpdateItemStatusTransitionsRunningToCompleted(t *testing.T) {
 	s := newTestStore(t)
 	now := int64(1000)
 	if err := s.CreateThread(Thread{
-		ID: "t", Title: "T", Provider: "claude", WorkspacePath: "/tmp",
+		ID: "t", ProjectID: defaultTestProjectID, Title: "T", Provider: "claude", WorkspacePath: "/tmp",
 		CreatedAt: now, UpdatedAt: now,
 	}); err != nil {
 		t.Fatalf("create thread: %v", err)
@@ -271,8 +266,11 @@ func TestUpdateItemStatusTransitionsRunningToCompleted(t *testing.T) {
 	if got.Summary != "ls output" {
 		t.Errorf("Summary = %q, want %q", got.Summary, "ls output")
 	}
-	if got.CreatedAt != 2000 {
-		t.Errorf("CreatedAt = %d, want 2000", got.CreatedAt)
+	if got.CreatedAt != 1000 {
+		t.Errorf("CreatedAt = %d, want 1000", got.CreatedAt)
+	}
+	if got.UpdatedAt != 2000 {
+		t.Errorf("UpdatedAt = %d, want 2000", got.UpdatedAt)
 	}
 
 	// Thread's updated_at must move in the same transaction.
@@ -289,7 +287,7 @@ func TestUpdateItemStatusLinksPayload(t *testing.T) {
 	s := newTestStore(t)
 	now := int64(1000)
 	if err := s.CreateThread(Thread{
-		ID: "t", Title: "T", Provider: "claude", WorkspacePath: "/tmp",
+		ID: "t", ProjectID: defaultTestProjectID, Title: "T", Provider: "claude", WorkspacePath: "/tmp",
 		CreatedAt: now, UpdatedAt: now,
 	}); err != nil {
 		t.Fatalf("create thread: %v", err)
@@ -336,7 +334,7 @@ func TestUpdateItemStatusRejectsInvalidStatus(t *testing.T) {
 	s := newTestStore(t)
 	now := int64(1000)
 	if err := s.CreateThread(Thread{
-		ID: "t", Title: "T", Provider: "claude", WorkspacePath: "/tmp",
+		ID: "t", ProjectID: defaultTestProjectID, Title: "T", Provider: "claude", WorkspacePath: "/tmp",
 		CreatedAt: now, UpdatedAt: now,
 	}); err != nil {
 		t.Fatalf("create: %v", err)
@@ -360,7 +358,7 @@ func TestAppendCompletionItemPairsLaunchAndCompletion(t *testing.T) {
 	s := newTestStore(t)
 	now := int64(1000)
 	if err := s.CreateThread(Thread{
-		ID: "t", Title: "T", Provider: "claude", WorkspacePath: "/tmp",
+		ID: "t", ProjectID: defaultTestProjectID, Title: "T", Provider: "claude", WorkspacePath: "/tmp",
 		CreatedAt: now, UpdatedAt: now,
 	}); err != nil {
 		t.Fatalf("create: %v", err)
@@ -378,7 +376,7 @@ func TestAppendCompletionItemPairsLaunchAndCompletion(t *testing.T) {
 	// A sibling text item lands in between so item_index assignment has
 	// something to bump past.
 	if _, err := s.AppendItem(Item{
-		ID: "text", ThreadID: "t", TurnIndex: 2, Kind: "text",
+		ID: "text", ThreadID: "t", TurnIndex: 2, Kind:      "assistant_text",
 		Role: "assistant", Summary: "notes", CreatedAt: 1500,
 	}); err != nil {
 		t.Fatalf("append text: %v", err)
@@ -386,7 +384,7 @@ func TestAppendCompletionItemPairsLaunchAndCompletion(t *testing.T) {
 
 	completion := Item{
 		ID: "completion", ThreadID: "t", TurnIndex: 2,
-		Kind: "background_done", Role: "assistant", Summary: "build ok",
+		Kind:      "tool_completion", Role: "assistant", Summary: "build ok",
 		CreatedAt: 2000,
 	}
 	idx, err := s.AppendCompletionItem(launch, completion, nil)
@@ -407,11 +405,11 @@ func TestAppendCompletionItemPairsLaunchAndCompletion(t *testing.T) {
 	if !got.IsBackground {
 		t.Error("completion IsBackground: got false, want true")
 	}
-	if got.CompletionOfItemID != "launch" {
-		t.Errorf("CompletionOfItemID = %q, want %q", got.CompletionOfItemID, "launch")
+	if got.CompletionOf != "launch" {
+		t.Errorf("CompletionOf = %q, want %q", got.CompletionOf, "launch")
 	}
-	if got.Kind != "background_done" {
-		t.Errorf("Kind = %q, want background_done", got.Kind)
+	if got.Kind != "tool_completion" {
+		t.Errorf("Kind = %q, want tool_completion", got.Kind)
 	}
 
 	// Thread updated_at should match the completion's timestamp.
@@ -425,13 +423,13 @@ func TestAppendCompletionItemPairsLaunchAndCompletion(t *testing.T) {
 }
 
 // TestAppendCompletionItemForcesInvariants proves callers can't
-// accidentally override IsBackground/CompletionOfItemID by pre-setting
+// accidentally override IsBackground/CompletionOf by pre-setting
 // them on the passed-in completion struct.
 func TestAppendCompletionItemForcesInvariants(t *testing.T) {
 	s := newTestStore(t)
 	now := int64(1)
 	if err := s.CreateThread(Thread{
-		ID: "t", Title: "T", Provider: "claude", WorkspacePath: "/tmp",
+		ID: "t", ProjectID: defaultTestProjectID, Title: "T", Provider: "claude", WorkspacePath: "/tmp",
 		CreatedAt: now, UpdatedAt: now,
 	}); err != nil {
 		t.Fatalf("create: %v", err)
@@ -447,10 +445,10 @@ func TestAppendCompletionItemForcesInvariants(t *testing.T) {
 
 	completion := Item{
 		ID: "completion", ThreadID: "t", TurnIndex: 0,
-		Kind: "background_done", Role: "assistant",
+		Kind:      "tool_completion", Role: "assistant",
 		// Caller tries to pre-stamp lies:
 		IsBackground:       false,
-		CompletionOfItemID: "some-other-item",
+		CompletionOf: "some-other-item",
 		CreatedAt:          2,
 	}
 	if _, err := s.AppendCompletionItem(launch, completion, nil); err != nil {
@@ -463,8 +461,8 @@ func TestAppendCompletionItemForcesInvariants(t *testing.T) {
 	if !got.IsBackground {
 		t.Error("AppendCompletionItem must force IsBackground=true")
 	}
-	if got.CompletionOfItemID != "launch" {
-		t.Errorf("AppendCompletionItem must force CompletionOfItemID=launch.ID, got %q", got.CompletionOfItemID)
+	if got.CompletionOf != "launch" {
+		t.Errorf("AppendCompletionItem must force CompletionOf=launch.ID, got %q", got.CompletionOf)
 	}
 }
 
@@ -472,7 +470,7 @@ func TestAppendCompletionItemWithPayloadPersistsAtomically(t *testing.T) {
 	s := newTestStore(t)
 	now := int64(1)
 	if err := s.CreateThread(Thread{
-		ID: "t", Title: "T", Provider: "claude", WorkspacePath: "/tmp",
+		ID: "t", ProjectID: defaultTestProjectID, Title: "T", Provider: "claude", WorkspacePath: "/tmp",
 		CreatedAt: now, UpdatedAt: now,
 	}); err != nil {
 		t.Fatalf("create: %v", err)
@@ -491,7 +489,7 @@ func TestAppendCompletionItemWithPayloadPersistsAtomically(t *testing.T) {
 	}
 	completion := Item{
 		ID: "completion", ThreadID: "t", TurnIndex: 0,
-		Kind: "background_done", Role: "assistant", Summary: "done",
+		Kind:      "tool_completion", Role: "assistant", Summary: "done",
 		CreatedAt: 2,
 	}
 	idx, err := s.AppendCompletionItem(launch, completion, payload)
@@ -525,7 +523,7 @@ func TestConcurrentAppendCompletionItemAssignsUniqueIndex(t *testing.T) {
 	s := newTestStore(t)
 	now := int64(1)
 	if err := s.CreateThread(Thread{
-		ID: "t", Title: "T", Provider: "claude", WorkspacePath: "/tmp",
+		ID: "t", ProjectID: defaultTestProjectID, Title: "T", Provider: "claude", WorkspacePath: "/tmp",
 		CreatedAt: now, UpdatedAt: now,
 	}); err != nil {
 		t.Fatalf("create: %v", err)
@@ -547,7 +545,7 @@ func TestConcurrentAppendCompletionItemAssignsUniqueIndex(t *testing.T) {
 			defer wg.Done()
 			_, err := s.AppendCompletionItem(launch, Item{
 				ID: fmt.Sprintf("done-%d", n), ThreadID: "t", TurnIndex: 0,
-				Kind: "background_done", Role: "assistant", CreatedAt: int64(10 + n),
+				Kind:      "tool_completion", Role: "assistant", CreatedAt: int64(10 + n),
 			}, nil)
 			if err != nil {
 				errs <- fmt.Errorf("completion %d: %w", n, err)
@@ -580,8 +578,8 @@ func TestConcurrentAppendCompletionItemAssignsUniqueIndex(t *testing.T) {
 		if it.ID == "launch" {
 			continue
 		}
-		if it.CompletionOfItemID != "launch" {
-			t.Errorf("completion %s CompletionOfItemID = %q, want launch", it.ID, it.CompletionOfItemID)
+		if it.CompletionOf != "launch" {
+			t.Errorf("completion %s CompletionOf = %q, want launch", it.ID, it.CompletionOf)
 		}
 		if !it.IsBackground {
 			t.Errorf("completion %s IsBackground = false, want true", it.ID)
@@ -595,7 +593,7 @@ func TestListItemsIncludesLifecycleFields(t *testing.T) {
 	s := newTestStore(t)
 	now := int64(1)
 	if err := s.CreateThread(Thread{
-		ID: "t", Title: "T", Provider: "claude", WorkspacePath: "/tmp",
+		ID: "t", ProjectID: defaultTestProjectID, Title: "T", Provider: "claude", WorkspacePath: "/tmp",
 		CreatedAt: now, UpdatedAt: now,
 	}); err != nil {
 		t.Fatalf("create: %v", err)
@@ -609,7 +607,7 @@ func TestListItemsIncludesLifecycleFields(t *testing.T) {
 		t.Fatalf("insert: %v", err)
 	}
 	if _, err := s.AppendCompletionItem(launch, Item{
-		ID: "done", ThreadID: "t", TurnIndex: 0, Kind: "background_done",
+		ID: "done", ThreadID: "t", TurnIndex: 0, Kind:      "tool_completion",
 		Role: "assistant", Summary: "ok", CreatedAt: 2,
 	}, nil); err != nil {
 		t.Fatalf("append completion: %v", err)
@@ -631,8 +629,8 @@ func TestListItemsIncludesLifecycleFields(t *testing.T) {
 	if got.ID == "" {
 		t.Fatal("completion row missing from ListItems")
 	}
-	if got.CompletionOfItemID != "launch" {
-		t.Errorf("CompletionOfItemID = %q, want launch", got.CompletionOfItemID)
+	if got.CompletionOf != "launch" {
+		t.Errorf("CompletionOf = %q, want launch", got.CompletionOf)
 	}
 	if !got.IsBackground {
 		t.Error("IsBackground = false, want true")

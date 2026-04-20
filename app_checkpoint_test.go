@@ -174,7 +174,7 @@ func TestRevertToTurnForkReturnsNewThreadID(t *testing.T) {
 	// ForkThread requires at least one timeline item.
 	if err := app.store.InsertItem(store.Item{
 		ID: "item-1", ThreadID: "t-claude", TurnIndex: 1, ItemIndex: 0,
-		Kind: "text", Role: "user", Summary: "hi", CreatedAt: time.Now().UnixMilli(),
+		Kind: "user_text", Role: "user", Summary: "hi", CreatedAt: time.Now().UnixMilli(),
 	}); err != nil {
 		t.Fatalf("insert item: %v", err)
 	}
@@ -207,7 +207,7 @@ func TestRevertToTurnRevertCodeOnlyRestoresWorktreeKeepsItems(t *testing.T) {
 	for i, turn := range []int{0, 1} {
 		if err := app.store.InsertItem(store.Item{
 			ID: "item-" + strings.Repeat("x", i+1), ThreadID: "t-code",
-			TurnIndex: turn, ItemIndex: 0, Kind: "text", Role: "user",
+			TurnIndex: turn, ItemIndex: 0, Kind: "user_text", Role: "user",
 			Summary: "x", CreatedAt: time.Now().UnixMilli(),
 		}); err != nil {
 			t.Fatalf("insert item: %v", err)
@@ -246,7 +246,7 @@ func TestRevertToTurnRevertConversationOnClaudeClearsSessionRef(t *testing.T) {
 	for _, turn := range []int{0, 1, 2} {
 		if err := app.store.InsertItem(store.Item{
 			ID: "item-t" + string(rune('0'+turn)), ThreadID: "t-claude",
-			TurnIndex: turn, ItemIndex: 0, Kind: "text", Role: "user",
+			TurnIndex: turn, ItemIndex: 0, Kind: "user_text", Role: "user",
 			Summary: "x", CreatedAt: time.Now().UnixMilli(),
 		}); err != nil {
 			t.Fatalf("insert item: %v", err)
@@ -293,7 +293,7 @@ func TestRevertToTurnRevertBothOnClaudeRestoresWorktreeAndClearsSession(t *testi
 	for _, turn := range []int{0, 1} {
 		if err := app.store.InsertItem(store.Item{
 			ID: "it-" + string(rune('0'+turn)), ThreadID: "t-claude",
-			TurnIndex: turn, ItemIndex: 0, Kind: "text", Role: "user",
+			TurnIndex: turn, ItemIndex: 0, Kind: "user_text", Role: "user",
 			Summary: "x", CreatedAt: time.Now().UnixMilli(),
 		}); err != nil {
 			t.Fatalf("insert item: %v", err)

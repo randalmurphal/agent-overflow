@@ -225,64 +225,27 @@ func TestParseSystemSkippedSubtypes(t *testing.T) {
 	}
 }
 
-func TestParseToolProgress(t *testing.T) {
+func TestParseToolProgressDropped(t *testing.T) {
 	line := []byte(`{"type":"system","subtype":"tool_progress","item_id":"item-1","content":{"progress":{"current":5,"total":10,"message":"Reading..."}}}`)
 
 	events, err := ParseLine(testThread, line)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	if len(events) != 1 {
-		t.Fatalf("expected 1 event, got %d", len(events))
-	}
-
-	evt := events[0]
-	if evt.Kind != provider.EventToolProgress {
-		t.Errorf("kind: got %q, want %q", evt.Kind, provider.EventToolProgress)
-	}
-	if evt.ItemID != "item-1" {
-		t.Errorf("itemID: got %q, want %q", evt.ItemID, "item-1")
-	}
-	if evt.ThreadID != testThread {
-		t.Errorf("threadID: got %q, want %q", evt.ThreadID, testThread)
-	}
-
-	var meta map[string]any
-	if err := json.Unmarshal(evt.Meta, &meta); err != nil {
-		t.Fatalf("unmarshal meta: %v", err)
-	}
-	if meta["current"] != float64(5) {
-		t.Errorf("current: got %v, want 5", meta["current"])
-	}
-	if meta["total"] != float64(10) {
-		t.Errorf("total: got %v, want 10", meta["total"])
-	}
-	if meta["message"] != "Reading..." {
-		t.Errorf("message: got %v, want %q", meta["message"], "Reading...")
+	if len(events) != 0 {
+		t.Fatalf("expected tool_progress to be dropped, got %d event(s)", len(events))
 	}
 }
 
-func TestParseToolProgressNoContent(t *testing.T) {
+func TestParseToolProgressNoContentDropped(t *testing.T) {
 	line := []byte(`{"type":"system","subtype":"tool_progress"}`)
 
 	events, err := ParseLine(testThread, line)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	if len(events) != 1 {
-		t.Fatalf("expected 1 event, got %d", len(events))
-	}
-
-	evt := events[0]
-	if evt.Kind != provider.EventToolProgress {
-		t.Errorf("kind: got %q, want %q", evt.Kind, provider.EventToolProgress)
-	}
-	// When content is nil, Meta should default to "{}".
-	if string(evt.Meta) != "{}" {
-		t.Errorf("meta: got %s, want {}", evt.Meta)
-	}
-	if evt.ItemID != "" {
-		t.Errorf("itemID: got %q, want empty", evt.ItemID)
+	if len(events) != 0 {
+		t.Fatalf("expected tool_progress to be dropped, got %d event(s)", len(events))
 	}
 }
 
@@ -1403,7 +1366,7 @@ func TestExitPlanModeWriteFailureClosesSession(t *testing.T) {
 	// letting the write succeed and the EventError never fire.
 	proc, err := provider.Spawn(ctx, provider.SpawnConfig{
 		Binary: "sh",
-		Args: []string{"-c", `printf '{"type":"control_request","request_id":"plan-1","request":{"subtype":"can_use_tool","tool_name":"ExitPlanMode","input":{"plan":"# plan"}}}\n'; exec 0<&-; sleep 0.5`},
+		Args:   []string{"-c", `printf '{"type":"control_request","request_id":"plan-1","request":{"subtype":"can_use_tool","tool_name":"ExitPlanMode","input":{"plan":"# plan"}}}\n'; exec 0<&-; sleep 0.5`},
 	})
 	if err != nil {
 		t.Fatalf("spawn: %v", err)

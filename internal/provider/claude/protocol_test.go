@@ -357,11 +357,10 @@ func TestParseLine_UserToolResultStructuredContent(t *testing.T) {
 	}
 }
 
-// TestParser_BackgroundToolUsePropagatesToToolResult verifies the
-// cross-line correlation: a Parser instance parses a tool_use with
-// `run_in_background: true`, then a subsequent user tool_result for the
-// same tool_use_id. The EventToolComplete must carry `is_background: true`.
-func TestParser_BackgroundToolUsePropagatesToToolResult(t *testing.T) {
+// TestParser_BackgroundToolUseSuppressesPlaceholderToolResult verifies the
+// Claude background ack path: the immediate user tool_result echo is
+// informational only and must NOT terminate the tool call.
+func TestParser_BackgroundToolUseSuppressesPlaceholderToolResult(t *testing.T) {
 	parser := NewParser()
 
 	startLine := []byte(`{"type":"assistant","message":{"id":"msg-1","role":"assistant","content":[{"type":"tool_use","id":"tool-bg","name":"Bash","input":{"command":"npm run dev","run_in_background":true}}]}}`)
@@ -385,21 +384,8 @@ func TestParser_BackgroundToolUsePropagatesToToolResult(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse complete: %v", err)
 	}
-	if len(completeEvents) != 1 {
-		t.Fatalf("complete: expected 1 event, got %d", len(completeEvents))
-	}
-	if completeEvents[0].Kind != provider.EventToolComplete {
-		t.Errorf("complete kind: got %q, want %q", completeEvents[0].Kind, provider.EventToolComplete)
-	}
-	if completeEvents[0].ItemID != "tool-bg" {
-		t.Errorf("complete itemID: got %q, want %q", completeEvents[0].ItemID, "tool-bg")
-	}
-	var completeMeta map[string]any
-	if err := json.Unmarshal(completeEvents[0].Meta, &completeMeta); err != nil {
-		t.Fatalf("unmarshal complete meta: %v", err)
-	}
-	if completeMeta["is_background"] != true {
-		t.Errorf("complete: expected is_background=true, got %v", completeMeta["is_background"])
+	if len(completeEvents) != 0 {
+		t.Fatalf("complete: expected 0 events, got %d", len(completeEvents))
 	}
 }
 
@@ -456,6 +442,147 @@ func TestParser_ExitCodeSurfacedFromToolUseResult(t *testing.T) {
 	}
 	if meta["is_error"] != true {
 		t.Errorf("expected is_error=true, got %v", meta["is_error"])
+	}
+}
+
+// TestParser_OutOfOrderToolResults covers a realistic mixed sequence where
+// the foreground tool result arrives before a background placeholder echo.
+// The foreground tool must still complete normally while the background ack
+// stays suppressed.
+func TestParser_OutOfOrderToolResults(t *testing.T) {
+	parser := NewParser()
+
+	// Two tool_use blocks: tool-a (background), tool-b (inline).
+	startLine := []byte(`{"type":"assistant","message":{"role":"assistant","content":[
+		{"type":"tool_use","id":"tool-a","name":"Bash","input":{"command":"start daemon","run_in_background":true}},
+		{"type":"tool_use","id":"tool-b","name":"Read","input":{"file_path":"/etc/hosts"}}
+	]}}`)
+	if _, err := parser.ParseLine(testThreadProto, startLine); err != nil {
+		t.Fatalf("start parse: %v", err)
+	}
+
+	// Echo arrives with tool-b's result FIRST, then tool-a's.
+	echoLine := []byte(`{"type":"user","message":{"role":"user","content":[
+		{"type":"tool_result","tool_use_id":"tool-b","content":"127.0.0.1"},
+		{"type":"tool_result","tool_use_id":"tool-a","content":"daemon pid 1234"}
+	]}}`)
+	events, err := parser.ParseLine(testThreadProto, echoLine)
+	if err != nil {
+		t.Fatalf("echo parse: %v", err)
+	}
+
+	completes := map[string]map[string]any{}
+	for _, evt := range events {
+		if evt.Kind != provider.EventToolComplete {
+			continue
+		}
+		var meta map[string]any
+		if err := json.Unmarshal(evt.Meta, &meta); err != nil {
+			t.Fatalf("unmarshal meta for %s: %v", evt.ItemID, err)
+		}
+		completes[evt.ItemID] = meta
+	}
+
+	if len(completes) != 1 {
+		t.Fatalf("expected 1 EventToolComplete, got %d", len(completes))
+	}
+
+	// tool-b was inline — no is_background flag.
+	if bgB, ok := completes["tool-b"]["is_background"]; ok && bgB == true {
+		t.Errorf("tool-b incorrectly marked background")
+	}
+	if _, ok := completes["tool-a"]; ok {
+		t.Fatalf("tool-a background placeholder should stay suppressed: %+v", completes["tool-a"])
+	}
+}
+
+func TestParser_TaskUpdatedTerminatesBackgroundTool(t *testing.T) {
+	parser := NewParser()
+
+	if _, err := parser.ParseLine(testThreadProto, []byte(`{"type":"system","subtype":"task_started","task_id":"task-1","tool_use_id":"tool-bg"}`)); err != nil {
+		t.Fatalf("task_started: %v", err)
+	}
+
+	events, err := parser.ParseLine(testThreadProto, []byte(`{"type":"system","subtype":"task_updated","task_id":"task-1","patch":{"status":"completed","description":"finished"}}`))
+	if err != nil {
+		t.Fatalf("task_updated: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if events[0].Kind != provider.EventToolComplete {
+		t.Fatalf("kind: got %q, want %q", events[0].Kind, provider.EventToolComplete)
+	}
+	if events[0].ItemID != "tool-bg" {
+		t.Fatalf("itemID: got %q, want %q", events[0].ItemID, "tool-bg")
+	}
+	if events[0].Content != "finished" {
+		t.Fatalf("content: got %q, want %q", events[0].Content, "finished")
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if meta["task_id"] != "task-1" {
+		t.Fatalf("task_id: got %v, want task-1", meta["task_id"])
+	}
+	if meta["is_background"] != true {
+		t.Fatalf("is_background: got %v, want true", meta["is_background"])
+	}
+}
+
+func TestParser_TaskOutputEnrichesBackgroundCompletionAfterTaskUpdated(t *testing.T) {
+	parser := NewParser()
+
+	if _, err := parser.ParseLine(testThreadProto, []byte(`{"type":"system","subtype":"task_started","task_id":"task-1","tool_use_id":"tool-bg"}`)); err != nil {
+		t.Fatalf("task_started: %v", err)
+	}
+	if _, err := parser.ParseLine(testThreadProto, []byte(`{"type":"system","subtype":"task_updated","task_id":"task-1","patch":{"status":"completed"}}`)); err != nil {
+		t.Fatalf("task_updated: %v", err)
+	}
+
+	if _, err := parser.ParseLine(testThreadProto, []byte(`{"type":"assistant","message":{"id":"msg-1","role":"assistant","content":[{"type":"tool_use","id":"tool-taskoutput","name":"TaskOutput","input":{"task_id":"task-1","block":true}}]}}`)); err != nil {
+		t.Fatalf("taskoutput start: %v", err)
+	}
+
+	events, err := parser.ParseLine(testThreadProto, []byte(`{"type":"user","tool_use_result":{"task":{"task_id":"task-1","status":"completed","description":"Background bash is running","output_file":"/tmp/task-1.out"},"exit_code":0},"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-taskoutput","content":""}]}}`))
+	if err != nil {
+		t.Fatalf("taskoutput result: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if events[0].Kind != provider.EventToolComplete {
+		t.Fatalf("kind: got %q, want %q", events[0].Kind, provider.EventToolComplete)
+	}
+	if events[0].ItemID != "tool-bg" {
+		t.Fatalf("itemID: got %q, want %q", events[0].ItemID, "tool-bg")
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if meta["output_file"] != "/tmp/task-1.out" {
+		t.Fatalf("output_file: got %v, want /tmp/task-1.out", meta["output_file"])
+	}
+	if meta["exit_code"] != float64(0) {
+		t.Fatalf("exit_code: got %v, want 0", meta["exit_code"])
+	}
+}
+
+func TestParser_TaskNotificationDoesNotEmitCompletion(t *testing.T) {
+	parser := NewParser()
+
+	if _, err := parser.ParseLine(testThreadProto, []byte(`{"type":"system","subtype":"task_started","task_id":"task-1","tool_use_id":"tool-bg"}`)); err != nil {
+		t.Fatalf("task_started: %v", err)
+	}
+
+	events, err := parser.ParseLine(testThreadProto, []byte(`{"type":"system","subtype":"task_notification","task_id":"task-1","tool_use_id":"tool-bg","status":"completed","summary":"done"}`))
+	if err != nil {
+		t.Fatalf("task_notification: %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("expected 0 events, got %d", len(events))
 	}
 }
 
@@ -576,20 +703,14 @@ func TestParseLine_MissingType(t *testing.T) {
 	}
 }
 
-func TestParseLine_SystemToolProgress(t *testing.T) {
+func TestParseLine_SystemToolProgressDropped(t *testing.T) {
 	line := []byte(`{"type":"system","subtype":"tool_progress","item_id":"item-1","progress":{"percent":50}}`)
 	events, err := ParseLine(testThreadProto, line)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	if len(events) != 1 {
-		t.Fatalf("expected 1 event, got %d", len(events))
-	}
-	if events[0].Kind != provider.EventToolProgress {
-		t.Errorf("kind: got %q, want %q", events[0].Kind, provider.EventToolProgress)
-	}
-	if events[0].ItemID != "item-1" {
-		t.Errorf("itemID: got %q, want %q", events[0].ItemID, "item-1")
+	if len(events) != 0 {
+		t.Fatalf("expected tool_progress to be dropped, got %d event(s)", len(events))
 	}
 }
 

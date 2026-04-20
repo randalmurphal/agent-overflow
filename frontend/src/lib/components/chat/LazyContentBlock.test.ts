@@ -58,18 +58,27 @@ describe('<LazyContentBlock>', () => {
     expect(getByTestId('lazy-content-toggle').textContent?.trim()).toBe('Expand output');
   });
 
-  it('does not call GetPayloadData on mount — only on click', () => {
-    const fullBody = 'FULL BODY';
-    const mock = setBindingMock('GetPayloadData', async () => fullBody);
+  it('does not call payload bindings on mount — only on click', () => {
+    const preview = setBindingMock('GetPayloadPreview', async () => ({
+      data: 'PREVIEW',
+      totalSize: 12,
+      isComplete: true,
+    }));
+    const full = setBindingMock('GetPayloadData', async () => 'FULL BODY');
     render(LazyContentBlock, {
       props: { payloadId: 'p1', preview: 'a'.repeat(MAX_INLINE_BYTES + 1) },
     });
-    expect(mock).not.toHaveBeenCalled();
+    expect(preview).not.toHaveBeenCalled();
+    expect(full).not.toHaveBeenCalled();
   });
 
-  it('fetches and swaps in the full body when "Show all" is clicked', async () => {
-    const fullBody = 'FULL BODY CONTENT';
-    setBindingMock('GetPayloadData', async () => fullBody);
+  it('fetches the preview on expand and the full body only when requested', async () => {
+    setBindingMock('GetPayloadPreview', async () => ({
+      data: 'PREVIEW BODY',
+      totalSize: 64 * 1024,
+      isComplete: false,
+    }));
+    setBindingMock('GetPayloadData', async () => 'FULL BODY CONTENT');
     const preview = 'a'.repeat(MAX_INLINE_BYTES + 1);
     const { getByTestId } = render(LazyContentBlock, {
       props: { payloadId: 'p1', preview },
@@ -77,20 +86,28 @@ describe('<LazyContentBlock>', () => {
 
     const toggle = getByTestId('lazy-content-toggle');
     await fireEvent.click(toggle);
-    // Let the microtask chain for the await resolve.
     await Promise.resolve();
     await Promise.resolve();
 
-    expect(getByTestId('lazy-content-full').textContent).toBe(fullBody);
-    expect(toggle.textContent?.trim()).toBe('Show less');
-    expect(toggle.getAttribute('aria-expanded')).toBe('true');
-    // GetPayloadData was called with the payloadId exactly once.
-    const mock = getBindingMock('GetPayloadData');
-    expect(mock).toHaveBeenCalledTimes(1);
-    expect(mock?.mock.calls[0]).toEqual(['p1']);
+    expect(getBindingMock('GetPayloadPreview')).toHaveBeenCalledWith('p1', 32768);
+    expect(getBindingMock('GetPayloadData')).not.toHaveBeenCalled();
+    expect(getByTestId('lazy-content-preview').textContent).toBe('PREVIEW BODY');
+    expect(getByTestId('lazy-content-show-full').textContent).toContain('64.0 KB');
+
+    await fireEvent.click(getByTestId('lazy-content-show-full'));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(getBindingMock('GetPayloadData')).toHaveBeenCalledWith('p1');
+    expect(getByTestId('lazy-content-full').textContent).toBe('FULL BODY CONTENT');
   });
 
-  it('collapses back to the preview on "Show less" without re-fetching', async () => {
+  it('discarding on collapse causes re-expand to refetch the preview', async () => {
+    setBindingMock('GetPayloadPreview', async () => ({
+      data: 'PREVIEW',
+      totalSize: 8 * 1024,
+      isComplete: true,
+    }));
     setBindingMock('GetPayloadData', async () => 'FULL');
     const preview = 'a'.repeat(MAX_INLINE_BYTES + 1);
     const { getByTestId, queryByTestId } = render(LazyContentBlock, {
@@ -101,21 +118,21 @@ describe('<LazyContentBlock>', () => {
     await fireEvent.click(toggle);
     await Promise.resolve();
     await Promise.resolve();
-    expect(getByTestId('lazy-content-full')).toBeInTheDocument();
+    expect(getByTestId('lazy-content-preview').textContent).toBe('PREVIEW');
 
     await fireEvent.click(toggle);
     expect(queryByTestId('lazy-content-full')).toBeNull();
     expect(getByTestId('lazy-content-preview')).toBeInTheDocument();
-    // Re-expanding shouldn't fire a second fetch — the cached body wins.
+
     await fireEvent.click(toggle);
     await Promise.resolve();
     await Promise.resolve();
-    expect(getBindingMock('GetPayloadData')).toHaveBeenCalledTimes(1);
+    expect(getBindingMock('GetPayloadPreview')).toHaveBeenCalledTimes(2);
   });
 
-  it('surfaces fetch errors inline without swallowing them', async () => {
-    setBindingMock('GetPayloadData', async () => {
-      throw new Error('network boom');
+  it('surfaces preview fetch errors inline without swallowing them', async () => {
+    setBindingMock('GetPayloadPreview', async () => {
+      throw new Error('preview boom');
     });
     const preview = 'a'.repeat(MAX_INLINE_BYTES + 1);
     const { getByTestId } = render(LazyContentBlock, {
@@ -125,7 +142,7 @@ describe('<LazyContentBlock>', () => {
     await Promise.resolve();
     await Promise.resolve();
     const errorNode = getByTestId('lazy-content-error');
-    expect(errorNode.textContent).toContain('network boom');
+    expect(errorNode.textContent).toContain('preview boom');
     expect(errorNode.getAttribute('role')).toBe('alert');
   });
 });

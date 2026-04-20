@@ -15,7 +15,8 @@ replay from the chosen turn against a fresh session.
 ## NDJSON Shapes We Handle
 
 - `system` — `init` (startup metadata: model, cost, context window),
-  `tool_progress`, `compact_boundary`.
+  `compact_boundary`. `tool_progress` is intentionally dropped by the
+  chat rewrite; tool cards update through normal item upserts.
 - `assistant` — text deltas, tool calls, thinking blocks.
 - `stream_event` — streaming deltas (`text_delta`, `tool_use_start`,
   `tool_result`, …).

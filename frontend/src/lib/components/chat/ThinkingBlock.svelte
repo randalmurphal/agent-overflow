@@ -1,67 +1,58 @@
 <script lang="ts">
   import { slide } from 'svelte/transition';
   import type { Item } from '../../types/models';
-  import { GetPayloadData } from '../../stores/bindings';
+  import { ansiToHtml } from '../../utils/ansi';
+  import { createPayloadExpansion, formatPayloadSize } from './payloadExpansion.svelte';
 
   let { item }: { item: Item } = $props();
 
-  let expanded = $state(false);
-  let loading = $state(false);
-  let fullContent = $state<string | null>(null);
-  let loadError = $state<string | null>(null);
+  const expansion = createPayloadExpansion(() => item.payloadId);
 
   let preview = $derived(
     item.summary.length > 200 ? item.summary.slice(0, 200) + '...' : item.summary,
   );
 
-  async function toggle() {
-    if (expanded) {
-      expanded = false;
-      return;
-    }
-
-    expanded = true;
-
-    if (fullContent !== null || !item.payloadId) return;
-
-    loading = true;
-    loadError = null;
-    try {
-      fullContent = await GetPayloadData(item.payloadId);
-    } catch (err) {
-      loadError = err instanceof Error ? err.message : String(err);
-    } finally {
-      loading = false;
-    }
-  }
+  $effect(() => {
+    item.id;
+    item.payloadId;
+    expansion.reset();
+  });
 </script>
 
 <div class="mb-2 bg-surface-1 rounded border border-border overflow-hidden">
   <button
     class="w-full px-3 py-2 flex items-center gap-2 text-left cursor-pointer hover:bg-surface-2/40"
-    onclick={toggle}
-    aria-expanded={expanded}
+    onclick={() => expansion.toggle()}
+    aria-expanded={expansion.expanded}
     aria-controls="thinking-{item.id}"
     aria-label="Toggle thinking block"
   >
-    <span class="text-xs text-text-secondary select-none" aria-hidden="true">{expanded ? '▼' : '▶'}</span>
+    <span class="text-xs text-text-secondary select-none" aria-hidden="true">{expansion.expanded ? '▼' : '▶'}</span>
     <span class="text-xs text-text-secondary font-medium">Thinking</span>
-    {#if !expanded}
+    {#if !expansion.expanded}
       <span class="text-xs text-text-secondary/60 truncate flex-1 italic">{preview}</span>
     {/if}
   </button>
 
-  {#if expanded}
+  {#if expansion.expanded}
     <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
     <div id="thinking-{item.id}" transition:slide={{ duration: 150 }} class="border-t border-border px-3 py-2 max-h-80 overflow-y-auto" tabindex="0" role="region" aria-label="Thinking content">
-      {#if loading}
+      {#if expansion.loading}
         <p class="text-xs text-text-secondary animate-pulse" role="status" aria-live="polite">Loading thinking content...</p>
-      {:else if loadError}
-        <p class="text-xs text-error" role="alert">Failed to load: {loadError}</p>
-      {:else if fullContent}
-        <pre class="text-xs text-text-secondary whitespace-pre-wrap font-mono leading-relaxed">{fullContent}</pre>
+      {:else if expansion.error}
+        <p class="text-xs text-error" role="alert">Failed to load: {expansion.error}</p>
       {:else}
-        <pre class="text-xs text-text-secondary whitespace-pre-wrap font-mono leading-relaxed italic">{item.summary}</pre>
+        <pre class="text-xs text-text-secondary whitespace-pre-wrap font-mono leading-relaxed italic">{@html ansiToHtml(expansion.displayData ?? item.summary)}</pre>
+        {#if expansion.hasMore}
+          <button
+            type="button"
+            class="mt-2 text-xs text-accent hover:underline cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 rounded"
+            onclick={() => expansion.showFull()}
+            data-testid="thinking-show-full"
+          >
+            Show full output ({formatPayloadSize(expansion.totalSize)}) ↓
+          </button>
+        {/if}
       {/if}
     </div>
   {/if}

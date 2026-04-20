@@ -7,21 +7,19 @@ import (
 	"time"
 )
 
-// --- Gap 3: items.parent_tool_use_id column ---
-//
-// Migration v4 adds a `parent_tool_use_id` column to items.  The column
-// stores the Claude CLI `parent_tool_use_id` value when a message is a
-// subagent (Task-tool) child.  An empty string round-trips as empty.
+// Migration v15 renames the old provider-specific parent column to the
+// provider-neutral `parent_id`. The column stores the parent tool_call id
+// for nested child items; an empty string round-trips as empty.
 
-func TestMigrationV4AddsParentToolUseIDColumn(t *testing.T) {
+func TestMigrationV4AddsParentIDColumn(t *testing.T) {
 	s := newTestStore(t)
 
 	cols, err := tableColumns(s.db, "items")
 	if err != nil {
 		t.Fatalf("tableColumns(items): %v", err)
 	}
-	if !cols["parent_tool_use_id"] {
-		t.Fatalf("items.parent_tool_use_id column missing (columns=%v)", cols)
+	if !cols["parent_id"] {
+		t.Fatalf("items.parent_id column missing (columns=%v)", cols)
 	}
 
 	rows, err := s.db.Query("SELECT version, name FROM migration_versions ORDER BY version")
@@ -49,7 +47,7 @@ func TestMigrationV4AddsParentToolUseIDColumn(t *testing.T) {
 	}
 }
 
-func TestInsertItemPersistsParentToolUseID(t *testing.T) {
+func TestInsertItemPersistsParentID(t *testing.T) {
 	s := newTestStore(t)
 	now := time.Now().UnixMilli()
 
@@ -70,10 +68,10 @@ func TestInsertItemPersistsParentToolUseID(t *testing.T) {
 		ThreadID:        threadID,
 		TurnIndex:       0,
 		ItemIndex:       0,
-		Kind:            "text",
+		Kind:      "assistant_text",
 		Role:            "assistant",
 		Summary:         "subagent body",
-		ParentToolUseID: "task_tool_42",
+		ParentID: "task_tool_42",
 		CreatedAt:       now,
 	}
 	if err := s.InsertItem(item); err != nil {
@@ -87,12 +85,12 @@ func TestInsertItemPersistsParentToolUseID(t *testing.T) {
 	if !found {
 		t.Fatal("item not found after insert")
 	}
-	if got.ParentToolUseID != "task_tool_42" {
-		t.Errorf("ParentToolUseID: got %q, want %q", got.ParentToolUseID, "task_tool_42")
+	if got.ParentID != "task_tool_42" {
+		t.Errorf("ParentID: got %q, want %q", got.ParentID, "task_tool_42")
 	}
 }
 
-func TestInsertItemEmptyParentToolUseIDRoundTrips(t *testing.T) {
+func TestInsertItemEmptyParentIDRoundTrips(t *testing.T) {
 	s := newTestStore(t)
 	now := time.Now().UnixMilli()
 
@@ -113,7 +111,7 @@ func TestInsertItemEmptyParentToolUseIDRoundTrips(t *testing.T) {
 		ThreadID:  threadID,
 		TurnIndex: 0,
 		ItemIndex: 0,
-		Kind:      "text",
+		Kind:      "assistant_text",
 		Role:      "assistant",
 		Summary:   "top-level body",
 		CreatedAt: now,
@@ -128,12 +126,12 @@ func TestInsertItemEmptyParentToolUseIDRoundTrips(t *testing.T) {
 	if !found {
 		t.Fatal("not found")
 	}
-	if got.ParentToolUseID != "" {
-		t.Errorf("ParentToolUseID: got %q, want empty", got.ParentToolUseID)
+	if got.ParentID != "" {
+		t.Errorf("ParentID: got %q, want empty", got.ParentID)
 	}
 }
 
-func TestListItemsPreservesParentToolUseID(t *testing.T) {
+func TestListItemsPreservesParentID(t *testing.T) {
 	s := newTestStore(t)
 	now := time.Now().UnixMilli()
 
@@ -157,8 +155,8 @@ func TestListItemsPreservesParentToolUseID(t *testing.T) {
 	}
 	if err := s.InsertItem(Item{
 		ID: "child-1", ThreadID: threadID, TurnIndex: 0, ItemIndex: 1,
-		Kind: "text", Role: "assistant", Summary: "child result",
-		ParentToolUseID: "parent", CreatedAt: now,
+		Kind:      "assistant_text", Role: "assistant", Summary: "child result",
+		ParentID: "parent", CreatedAt: now,
 	}); err != nil {
 		t.Fatalf("insert child: %v", err)
 	}
@@ -179,11 +177,11 @@ func TestListItemsPreservesParentToolUseID(t *testing.T) {
 			child = it
 		}
 	}
-	if parent.ParentToolUseID != "" {
-		t.Errorf("parent ParentToolUseID: got %q, want empty", parent.ParentToolUseID)
+	if parent.ParentID != "" {
+		t.Errorf("parent ParentID: got %q, want empty", parent.ParentID)
 	}
-	if child.ParentToolUseID != "parent" {
-		t.Errorf("child ParentToolUseID: got %q, want %q", child.ParentToolUseID, "parent")
+	if child.ParentID != "parent" {
+		t.Errorf("child ParentID: got %q, want %q", child.ParentID, "parent")
 	}
 }
 
@@ -202,7 +200,7 @@ func TestItemIndexUniqueConstraintBlocksDuplicate(t *testing.T) {
 	// First insert is fine.
 	if err := s.InsertItem(Item{
 		ID: "i-a", ThreadID: "t-dup", TurnIndex: 0, ItemIndex: 0,
-		Kind: "text", Role: "assistant", CreatedAt: now,
+		Kind:      "assistant_text", Role: "assistant", CreatedAt: now,
 	}); err != nil {
 		t.Fatalf("first insert: %v", err)
 	}
@@ -242,7 +240,7 @@ func TestConcurrentAppendItemAssignsUniqueIndex(t *testing.T) {
 				ID:        fmt.Sprintf("item-%d", n),
 				ThreadID:  "t-race",
 				TurnIndex: 0,
-				Kind:      "text",
+				Kind:      "assistant_text",
 				Role:      "assistant",
 				Summary:   fmt.Sprintf("goroutine %d", n),
 				CreatedAt: now,
@@ -291,7 +289,7 @@ func TestAppendItemReturnsAssignedIndex(t *testing.T) {
 	}
 
 	idxA, err := s.AppendItem(Item{
-		ID: "a", ThreadID: "t-ra", TurnIndex: 0, Kind: "text",
+		ID: "a", ThreadID: "t-ra", TurnIndex: 0, Kind:      "assistant_text",
 		Role: "assistant", CreatedAt: now,
 	})
 	if err != nil {
@@ -301,7 +299,7 @@ func TestAppendItemReturnsAssignedIndex(t *testing.T) {
 		t.Errorf("first append should return 0, got %d", idxA)
 	}
 	idxB, err := s.AppendItem(Item{
-		ID: "b", ThreadID: "t-ra", TurnIndex: 0, Kind: "text",
+		ID: "b", ThreadID: "t-ra", TurnIndex: 0, Kind:      "assistant_text",
 		Role: "assistant", CreatedAt: now,
 	})
 	if err != nil {
@@ -342,7 +340,7 @@ func TestConcurrentAppendItemWithPayloadAssignsUniqueIndex(t *testing.T) {
 				ID:        itemID,
 				ThreadID:  "t-race-pl",
 				TurnIndex: 0,
-				Kind:      "diff",
+				Kind:      "tool_call",
 				Role:      "assistant",
 				Summary:   fmt.Sprintf("goroutine %d", n),
 				PayloadID: payloadID,
@@ -402,7 +400,7 @@ func TestAppendItemWithPayloadReturnsAssignedIndex(t *testing.T) {
 	}
 
 	idx, err := s.AppendItemWithPayload(Item{
-		ID: "a", ThreadID: "t-rap", TurnIndex: 0, Kind: "diff",
+		ID: "a", ThreadID: "t-rap", TurnIndex: 0, Kind:      "tool_call",
 		Role: "assistant", PayloadID: "pa", CreatedAt: now,
 	}, Payload{ID: "pa", Kind: "diff", Meta: "{}", Data: []byte("pa"), CreatedAt: now})
 	if err != nil {
@@ -412,7 +410,7 @@ func TestAppendItemWithPayloadReturnsAssignedIndex(t *testing.T) {
 		t.Errorf("first append index = %d, want 0", idx)
 	}
 	idx, err = s.AppendItemWithPayload(Item{
-		ID: "b", ThreadID: "t-rap", TurnIndex: 0, Kind: "diff",
+		ID: "b", ThreadID: "t-rap", TurnIndex: 0, Kind:      "tool_call",
 		Role: "assistant", PayloadID: "pb", CreatedAt: now,
 	}, Payload{ID: "pb", Kind: "diff", Meta: "{}", Data: []byte("pb"), CreatedAt: now})
 	if err != nil {

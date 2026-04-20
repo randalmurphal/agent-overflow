@@ -10,7 +10,6 @@ import (
 	"agent-overflow/internal/design"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/codex"
-	"agent-overflow/internal/triage"
 )
 
 // TestHandleClaudeDesignToolIgnoresNonToolStartEvents asserts that only
@@ -183,19 +182,7 @@ func TestHandleClaudeDesignToolInvalidMetaEmitsErrorEvent(t *testing.T) {
 	app := newTestAppWithDesign(t)
 	setThreadProvider(t, app, "thread-design", string(provider.Claude))
 
-	errorEvents := make(chan provider.ProviderEvent, 4)
-	app.triage = triage.NewRouter(app.store, func(eventName string, data any) {
-		if eventName != "provider:event" {
-			return
-		}
-		evt, ok := data.(provider.ProviderEvent)
-		if !ok {
-			t.Fatalf("provider:event payload type = %T", data)
-		}
-		if evt.Kind == provider.EventError {
-			errorEvents <- evt
-		}
-	})
+	errorEvents := collectErrorItemUpserts(t, app, 4)
 
 	app.handleClaudeDesignTool(provider.ProviderEvent{
 		Kind:      provider.EventToolStart,
@@ -206,15 +193,15 @@ func TestHandleClaudeDesignToolInvalidMetaEmitsErrorEvent(t *testing.T) {
 	})
 
 	select {
-	case evt := <-errorEvents:
-		if !strings.Contains(evt.Content, "render_design") {
-			t.Fatalf("error content = %q, want render_design context", evt.Content)
+	case item := <-errorEvents:
+		if !strings.Contains(item.Summary, "render_design") {
+			t.Fatalf("error content = %q, want render_design context", item.Summary)
 		}
-		if !strings.Contains(evt.Content, "invalid input") {
-			t.Fatalf("error content = %q, want invalid input phrasing", evt.Content)
+		if !strings.Contains(item.Summary, "invalid input") {
+			t.Fatalf("error content = %q, want invalid input phrasing", item.Summary)
 		}
 	case <-time.After(1 * time.Second):
-		t.Fatal("timed out waiting for error event")
+		t.Fatal("timed out waiting for error item")
 	}
 }
 
@@ -224,19 +211,7 @@ func TestHandleClaudeDesignToolMissingInputEmitsErrorEvent(t *testing.T) {
 	app := newTestAppWithDesign(t)
 	setThreadProvider(t, app, "thread-design", string(provider.Claude))
 
-	errorEvents := make(chan provider.ProviderEvent, 4)
-	app.triage = triage.NewRouter(app.store, func(eventName string, data any) {
-		if eventName != "provider:event" {
-			return
-		}
-		evt, ok := data.(provider.ProviderEvent)
-		if !ok {
-			return
-		}
-		if evt.Kind == provider.EventError {
-			errorEvents <- evt
-		}
-	})
+	errorEvents := collectErrorItemUpserts(t, app, 4)
 
 	// outer envelope has toolName but no input.
 	meta, err := json.Marshal(map[string]any{"toolName": "present_options"})
@@ -253,15 +228,15 @@ func TestHandleClaudeDesignToolMissingInputEmitsErrorEvent(t *testing.T) {
 	})
 
 	select {
-	case evt := <-errorEvents:
-		if !strings.Contains(evt.Content, "present_options") {
-			t.Fatalf("error content = %q, want present_options context", evt.Content)
+	case item := <-errorEvents:
+		if !strings.Contains(item.Summary, "present_options") {
+			t.Fatalf("error content = %q, want present_options context", item.Summary)
 		}
-		if !strings.Contains(evt.Content, "missing input") {
-			t.Fatalf("error content = %q, want missing input phrasing", evt.Content)
+		if !strings.Contains(item.Summary, "missing input") {
+			t.Fatalf("error content = %q, want missing input phrasing", item.Summary)
 		}
 	case <-time.After(1 * time.Second):
-		t.Fatal("timed out waiting for missing-input error event")
+		t.Fatal("timed out waiting for missing-input error item")
 	}
 }
 
@@ -272,19 +247,7 @@ func TestHandleClaudeDesignToolRenderInvalidInputEmitsError(t *testing.T) {
 	app := newTestAppWithDesign(t)
 	setThreadProvider(t, app, "thread-design", string(provider.Claude))
 
-	errorEvents := make(chan provider.ProviderEvent, 4)
-	app.triage = triage.NewRouter(app.store, func(eventName string, data any) {
-		if eventName != "provider:event" {
-			return
-		}
-		evt, ok := data.(provider.ProviderEvent)
-		if !ok {
-			return
-		}
-		if evt.Kind == provider.EventError {
-			errorEvents <- evt
-		}
-	})
+	errorEvents := collectErrorItemUpserts(t, app, 4)
 
 	// input is a JSON number, which cannot unmarshal into RenderInput.
 	meta := json.RawMessage(`{"toolName":"render_design","input":42}`)
@@ -298,12 +261,12 @@ func TestHandleClaudeDesignToolRenderInvalidInputEmitsError(t *testing.T) {
 	})
 
 	select {
-	case evt := <-errorEvents:
-		if !strings.Contains(evt.Content, "render_design") {
-			t.Fatalf("error content = %q, want render_design context", evt.Content)
+	case item := <-errorEvents:
+		if !strings.Contains(item.Summary, "render_design") {
+			t.Fatalf("error content = %q, want render_design context", item.Summary)
 		}
 	case <-time.After(1 * time.Second):
-		t.Fatal("timed out waiting for render input error event")
+		t.Fatal("timed out waiting for render input error item")
 	}
 }
 
@@ -316,19 +279,7 @@ func TestHandleClaudeDesignToolTeardownCancelsPendingOptions(t *testing.T) {
 	app, presented := newTestAppWithDesignNotify(t)
 	setThreadProvider(t, app, "thread-design", string(provider.Claude))
 
-	errorEvents := make(chan provider.ProviderEvent, 4)
-	app.triage = triage.NewRouter(app.store, func(eventName string, data any) {
-		if eventName != "provider:event" {
-			return
-		}
-		evt, ok := data.(provider.ProviderEvent)
-		if !ok {
-			return
-		}
-		if evt.Kind == provider.EventError {
-			errorEvents <- evt
-		}
-	})
+	errorEvents := collectErrorItemUpserts(t, app, 4)
 
 	sent := make(chan string, 1)
 	app.sendMessageFn = func(threadID, content string) error {
@@ -374,8 +325,8 @@ func TestHandleClaudeDesignToolTeardownCancelsPendingOptions(t *testing.T) {
 
 	// No error should surface either (ErrDesignSessionEnded is suppressed).
 	select {
-	case evt := <-errorEvents:
-		t.Fatalf("unexpected error event after teardown: %q", evt.Content)
+	case item := <-errorEvents:
+		t.Fatalf("unexpected error item after teardown: %q", item.Summary)
 	case <-time.After(150 * time.Millisecond):
 	}
 }
@@ -386,19 +337,7 @@ func TestHandleClaudeDesignToolOptionsInvalidInputEmitsError(t *testing.T) {
 	app := newTestAppWithDesign(t)
 	setThreadProvider(t, app, "thread-design", string(provider.Claude))
 
-	errorEvents := make(chan provider.ProviderEvent, 4)
-	app.triage = triage.NewRouter(app.store, func(eventName string, data any) {
-		if eventName != "provider:event" {
-			return
-		}
-		evt, ok := data.(provider.ProviderEvent)
-		if !ok {
-			return
-		}
-		if evt.Kind == provider.EventError {
-			errorEvents <- evt
-		}
-	})
+	errorEvents := collectErrorItemUpserts(t, app, 4)
 
 	// input is an array, which fails PresentOptionsInput unmarshal.
 	meta := json.RawMessage(`{"toolName":"present_options","input":[1,2,3]}`)
@@ -412,12 +351,12 @@ func TestHandleClaudeDesignToolOptionsInvalidInputEmitsError(t *testing.T) {
 	})
 
 	select {
-	case evt := <-errorEvents:
-		if !strings.Contains(evt.Content, "present_options") {
-			t.Fatalf("error content = %q, want present_options context", evt.Content)
+	case item := <-errorEvents:
+		if !strings.Contains(item.Summary, "present_options") {
+			t.Fatalf("error content = %q, want present_options context", item.Summary)
 		}
 	case <-time.After(1 * time.Second):
-		t.Fatal("timed out waiting for options input error event")
+		t.Fatal("timed out waiting for options input error item")
 	}
 }
 

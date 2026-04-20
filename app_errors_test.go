@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"agent-overflow/internal/provider"
-	"agent-overflow/internal/triage"
 )
 
 func TestAppendErrorFiltersNil(t *testing.T) {
@@ -70,33 +69,24 @@ func TestEmitProviderEventPrefersTestInjection(t *testing.T) {
 
 func TestEmitErrorToThreadRoutesThroughTriageWhenAvailable(t *testing.T) {
 	app := newTestAppWithStore(t)
+	if err := app.store.CreateThread(testThread("thread-xyz")); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
 
-	emitted := make(chan provider.ProviderEvent, 1)
-	app.triage = triage.NewRouter(app.store, func(eventName string, data any) {
-		if eventName != "provider:event" {
-			return
-		}
-		evt, ok := data.(provider.ProviderEvent)
-		if !ok {
-			t.Fatalf("provider:event payload type = %T", data)
-		}
-		if evt.Kind == provider.EventError {
-			emitted <- evt
-		}
-	})
+	emitted := collectErrorItemUpserts(t, app, 1)
 
 	app.emitErrorToThread("thread-xyz", "boom")
 
 	select {
-	case evt := <-emitted:
-		if evt.ThreadID != "thread-xyz" {
-			t.Fatalf("evt.ThreadID = %q, want thread-xyz", evt.ThreadID)
+	case item := <-emitted:
+		if item.ThreadID != "thread-xyz" {
+			t.Fatalf("item.ThreadID = %q, want thread-xyz", item.ThreadID)
 		}
-		if evt.Content != "boom" {
-			t.Fatalf("evt.Content = %q", evt.Content)
+		if item.Summary != "boom" {
+			t.Fatalf("item.Summary = %q", item.Summary)
 		}
 	case <-time.After(1 * time.Second):
-		t.Fatal("timed out waiting for triaged error event")
+		t.Fatal("timed out waiting for triaged error item")
 	}
 }
 

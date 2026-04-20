@@ -13,7 +13,7 @@ import (
 // content_block_delta/text_delta. These tests confirm the parser covers:
 //   - thinking_delta  → EventThinking
 //   - input_json_delta → silently skipped (no downstream event)
-//   - content_block_start/stop → silently skipped
+//   - content_block_start/stop → explicit lifecycle events
 //   - parent_tool_use_id on stream_event → propagated to emitted events
 
 func TestBuildArgsIncludesPartialMessagesFlag(t *testing.T) {
@@ -61,27 +61,39 @@ func TestParseStreamEventInputJSONDeltaSkipped(t *testing.T) {
 	}
 }
 
-func TestParseStreamEventContentBlockStartSkipped(t *testing.T) {
-	line := []byte(`{"type":"stream_event","event":"content_block_start","data":{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"tool-1","name":"Bash","input":{}}}}`)
+func TestParseStreamEventContentBlockStartEmitsLifecycleEvent(t *testing.T) {
+	line := []byte(`{"type":"stream_event","event":"content_block_start","data":{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":"sig-1"}}}`)
 
 	events, err := ParseLine(testThread, line)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	if len(events) != 0 {
-		t.Errorf("expected 0 events for content_block_start, got %d", len(events))
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event for content_block_start, got %d", len(events))
+	}
+	if events[0].Kind != provider.EventContentBlockStart {
+		t.Fatalf("kind: got %q, want %q", events[0].Kind, provider.EventContentBlockStart)
 	}
 }
 
-func TestParseStreamEventContentBlockStopSkipped(t *testing.T) {
+func TestParseStreamEventContentBlockStopEmitsLifecycleEvent(t *testing.T) {
+	parser := NewParser()
+	startLine := []byte(`{"type":"stream_event","event":"content_block_start","data":{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}}`)
+	if _, err := parser.ParseLine(testThread, startLine); err != nil {
+		t.Fatalf("parse start: %v", err)
+	}
+
 	line := []byte(`{"type":"stream_event","event":"content_block_stop","data":{"type":"content_block_stop","index":0}}`)
 
-	events, err := ParseLine(testThread, line)
+	events, err := parser.ParseLine(testThread, line)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	if len(events) != 0 {
-		t.Errorf("expected 0 events for content_block_stop, got %d", len(events))
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event for content_block_stop, got %d", len(events))
+	}
+	if events[0].Kind != provider.EventContentBlockStop {
+		t.Fatalf("kind: got %q, want %q", events[0].Kind, provider.EventContentBlockStop)
 	}
 }
 

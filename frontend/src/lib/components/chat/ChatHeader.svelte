@@ -21,7 +21,6 @@
   import { getProject } from '../../stores/projects.svelte';
   import { expandProject } from '../../stores/sidebar.svelte';
   import ContextWindowMeter from './ContextWindowMeter.svelte';
-  import RateLimitsMeter from './RateLimitsMeter.svelte';
   import GitActionsControl from '../git/GitActionsControl.svelte';
 
   interface Props {
@@ -179,12 +178,6 @@
       {#if pane.contextWindow}
         <div class="shrink-0" data-testid="chat-header-context-meter">
           <ContextWindowMeter data={pane.contextWindow} />
-        </div>
-      {/if}
-
-      {#if pane.rateLimits.length > 0}
-        <div class="shrink-0" data-testid="chat-header-rate-limits">
-          <RateLimitsMeter limits={pane.rateLimits} />
         </div>
       {/if}
 

@@ -409,7 +409,7 @@ func TestConcurrent_ItemInsertDuringSameThread(t *testing.T) {
 					ThreadID:  thread.ID,
 					TurnIndex: turn,
 					ItemIndex: idx,
-					Kind:      "text",
+					Kind:      "user_text",
 					Role:      "user",
 					Summary:   fmt.Sprintf("t%d-i%d", turn, idx),
 					CreatedAt: time.Now().UnixMilli(),

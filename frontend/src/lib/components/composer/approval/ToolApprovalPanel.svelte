@@ -6,13 +6,9 @@
     approval: ApprovalRequest;
     onResolve: (response: ApprovalResponse) => Promise<void>;
     onError: (message: string) => void;
-    // Allow-for-Session is a side effect that has to register the tool in the
-    // owning pane's session-approved set. The dispatcher owns that pane,
-    // so it hands us a callback to invoke when the user picks that path.
-    onSessionApprove: (toolName: string) => void;
   }
 
-  let { approval, onResolve, onError, onSessionApprove }: Props = $props();
+  let { approval, onResolve, onError }: Props = $props();
 
   // ---- Edit-input-before-approve state (Claude CanUseTool UpdatedInput) ----
   //
@@ -81,11 +77,6 @@
     }
   }
 
-  async function allowSession() {
-    onSessionApprove(approval.toolName);
-    await allow();
-  }
-
   async function deny() {
     try {
       await onResolve(new ApprovalResponse({
@@ -98,7 +89,7 @@
     }
   }
 
-  async function allowWithEdits(alsoSession: boolean) {
+  async function allowWithEdits() {
     let parsed: unknown;
     try {
       parsed = JSON.parse(editText);
@@ -108,9 +99,6 @@
     }
 
     try {
-      if (alsoSession) {
-        onSessionApprove(approval.toolName);
-      }
       // The generated ApprovalResponse binding doesn't declare updatedInput
       // (Wails elides json.RawMessage fields), so we cast through a wider
       // shape. The Go struct accepts the field at the wire level — see
@@ -180,18 +168,10 @@
     <button
       type="button"
       data-testid="approval-allow-with-edits"
-      onclick={() => allowWithEdits(false)}
+      onclick={allowWithEdits}
       class="px-3 py-1 text-xs rounded bg-accent text-surface-0 font-medium hover:bg-accent/85 cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
     >
       Allow with edits
-    </button>
-    <button
-      type="button"
-      data-testid="approval-allow-with-edits-session"
-      onclick={() => allowWithEdits(true)}
-      class="px-3 py-1 text-xs rounded border border-accent/40 text-accent hover:bg-accent/10 cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
-    >
-      Allow for Session
     </button>
   {:else}
     <button
@@ -201,14 +181,6 @@
       class="px-3 py-1 text-xs rounded bg-accent text-surface-0 font-medium hover:bg-accent/85 cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
     >
       Allow
-    </button>
-    <button
-      type="button"
-      data-testid="approval-allow-session"
-      onclick={allowSession}
-      class="px-3 py-1 text-xs rounded border border-accent/40 text-accent hover:bg-accent/10 cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
-    >
-      Allow for Session
     </button>
   {/if}
   <button

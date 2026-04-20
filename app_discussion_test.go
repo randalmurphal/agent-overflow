@@ -373,7 +373,7 @@ func TestStartDiscussionMirrorsEarlyParticipantTurnDuringStartup(t *testing.T) {
 			ThreadID:  threadID,
 			TurnIndex: 0,
 			ItemIndex: 0,
-			Kind:      string(provider.ItemText),
+			Kind:      "assistant_text",
 			Role:      "assistant",
 			Summary:   "Lead with the migration boundary before branching out.",
 			CreatedAt: now,

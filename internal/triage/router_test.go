@@ -56,30 +56,27 @@ func TestHandleEveryEventKindCovered(t *testing.T) {
 // drift surfaces at CI time.
 func TestAllEventKindsListIsComplete(t *testing.T) {
 	expected := map[provider.EventKind]bool{
-		provider.EventInit:               true,
-		provider.EventTextDelta:          true,
-		provider.EventToolStart:          true,
-		provider.EventToolComplete:       true,
-		provider.EventTurnStart:          true,
-		provider.EventTurnComplete:       true,
-		provider.EventApprovalRequest:    true,
-		provider.EventApprovalResolved:   true,
-		provider.EventSessionStatus:      true,
-		provider.EventTokenUsage:         true,
-		provider.EventError:              true,
-		provider.EventBackgroundStart:    true,
-		provider.EventBackgroundDelta:    true,
-		provider.EventBackgroundComplete: true,
-		provider.EventToolProgress:       true,
-		provider.EventCompactBoundary:    true,
-		provider.EventRateLimits:         true,
-		provider.EventModelRerouted:      true,
-		provider.EventThreadRenamed:      true,
-		provider.EventDiff:               true,
-		provider.EventCommandOutput:      true,
-		provider.EventThinking:           true,
-		provider.EventProposedPlan:       true,
-		provider.EventPlanUpdate:         true,
+		provider.EventInit:              true,
+		provider.EventTextDelta:         true,
+		provider.EventToolStart:         true,
+		provider.EventToolComplete:      true,
+		provider.EventTurnStart:         true,
+		provider.EventTurnComplete:      true,
+		provider.EventApprovalRequest:   true,
+		provider.EventApprovalResolved:  true,
+		provider.EventSessionStatus:     true,
+		provider.EventTokenUsage:        true,
+		provider.EventError:             true,
+		provider.EventCompactBoundary:   true,
+		provider.EventRateLimits:        true,
+		provider.EventModelRerouted:     true,
+		provider.EventThreadRenamed:     true,
+		provider.EventContentBlockStart: true,
+		provider.EventContentBlockStop:  true,
+		provider.EventDiff:              true,
+		provider.EventCommandOutput:     true,
+		provider.EventThinking:          true,
+		provider.EventProposedPlan:      true,
 	}
 
 	got := make(map[provider.EventKind]bool, len(provider.AllEventKinds))
@@ -463,8 +460,28 @@ func createTestThread(t *testing.T, st *store.Store, id string) {
 	}
 }
 
+func insertToolCallItem(t *testing.T, st *store.Store, threadID, itemID, summary, toolName string, status string) {
+	t.Helper()
+	now := time.Now().UnixMilli()
+	if _, err := st.AppendItem(store.Item{
+		ID:        providerScopedItemID(threadID, itemID),
+		ThreadID:  threadID,
+		TurnIndex: 0,
+		Kind:      "tool_call",
+		Role:      "assistant",
+		Status:    status,
+		Summary:   summary,
+		ToolName:  toolName,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("append tool_call %s: %v", itemID, err)
+	}
+}
+
 func TestInlineEventEmit(t *testing.T) {
-	router, _, emissions := newTestRouter(t)
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
 
 	evt := provider.ProviderEvent{
 		Kind:      provider.EventTextDelta,
@@ -477,19 +494,27 @@ func TestInlineEventEmit(t *testing.T) {
 		t.Fatalf("handle: %v", err)
 	}
 
-	if len(*emissions) != 1 {
-		t.Fatalf("expected 1 emission, got %d", len(*emissions))
+	upserts := filterEmissions(*emissions, "provider:item_upsert")
+	if len(upserts) != 1 {
+		t.Fatalf("expected 1 provider:item_upsert emission, got %d", len(upserts))
 	}
-	if (*emissions)[0].eventName != "provider:event" {
-		t.Errorf("eventName: got %q, want %q", (*emissions)[0].eventName, "provider:event")
+	item, ok := upserts[0].data.(store.Item)
+	if !ok {
+		t.Fatalf("item upsert type = %T, want store.Item", upserts[0].data)
+	}
+	if item.Kind != "assistant_text" {
+		t.Fatalf("item kind: got %q, want assistant_text", item.Kind)
+	}
+	if item.Status != "streaming" {
+		t.Fatalf("status: got %q, want streaming", item.Status)
 	}
 }
 
-func TestNewInlineEventsEmit(t *testing.T) {
-	router, _, emissions := newTestRouter(t)
+func TestCompactBoundaryAndRateLimitsEmit(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
 
 	events := []provider.ProviderEvent{
-		{Kind: provider.EventToolProgress, ThreadID: "t1", Content: "progress", Timestamp: time.Now()},
 		{Kind: provider.EventCompactBoundary, ThreadID: "t1", Timestamp: time.Now()},
 		{Kind: provider.EventRateLimits, ThreadID: "t1", Timestamp: time.Now()},
 	}
@@ -500,13 +525,14 @@ func TestNewInlineEventsEmit(t *testing.T) {
 		}
 	}
 
-	if len(*emissions) != len(events) {
-		t.Fatalf("expected %d emissions, got %d", len(events), len(*emissions))
+	if len(filterEmissions(*emissions, "provider:event")) != 1 {
+		t.Fatalf("expected only rate-limits to emit provider:event, got %+v", *emissions)
 	}
-	for i, em := range *emissions {
-		if em.eventName != "provider:event" {
-			t.Fatalf("emission %d eventName: got %q, want provider:event", i, em.eventName)
-		}
+	if len(filterEmissions(*emissions, "provider:usage")) != 1 {
+		t.Fatalf("expected compact boundary reset on provider:usage, got %+v", *emissions)
+	}
+	if len(filterEmissions(*emissions, "provider:item_upsert")) != 1 {
+		t.Fatalf("expected compact boundary item upsert, got %+v", *emissions)
 	}
 }
 
@@ -531,8 +557,8 @@ func TestModelReroutedUpdatesThread(t *testing.T) {
 	if thread.Model != "gpt-5.4" {
 		t.Fatalf("expected updated model, got %q", thread.Model)
 	}
-	if len(*emissions) != 1 || (*emissions)[0].eventName != "provider:event" {
-		t.Fatalf("expected inline emission for model reroute, got %+v", *emissions)
+	if len(*emissions) != 1 || (*emissions)[0].eventName != "thread:updated" {
+		t.Fatalf("expected thread:updated emission for model reroute, got %+v", *emissions)
 	}
 }
 
@@ -557,8 +583,8 @@ func TestThreadRenamedUpdatesThread(t *testing.T) {
 	if thread.Title != "New Title" {
 		t.Fatalf("expected updated title, got %q", thread.Title)
 	}
-	if len(*emissions) != 1 || (*emissions)[0].eventName != "provider:event" {
-		t.Fatalf("expected inline emission for thread rename, got %+v", *emissions)
+	if len(*emissions) != 1 || (*emissions)[0].eventName != "thread:updated" {
+		t.Fatalf("expected thread:updated emission for thread rename, got %+v", *emissions)
 	}
 }
 
@@ -596,13 +622,23 @@ func TestTokenUsageAddsCalculatedCost(t *testing.T) {
 		t.Fatalf("handle: %v", err)
 	}
 
-	evt := emittedProviderEvent(t, emissions)
-	var usage provider.TokenUsage
-	if err := json.Unmarshal(evt.Meta, &usage); err != nil {
-		t.Fatalf("unmarshal emitted usage: %v", err)
+	usageEvents := filterEmissions(*emissions, "provider:usage")
+	if len(usageEvents) != 1 {
+		t.Fatalf("expected 1 provider:usage emission, got %+v", *emissions)
 	}
-	if usage.TotalCostUSD != 17.5 {
-		t.Fatalf("totalCostUsd: got %f, want 17.5", usage.TotalCostUSD)
+	usage, ok := usageEvents[0].data.(provider.UsageEvent)
+	if !ok {
+		t.Fatalf("usage emission type = %T, want provider.UsageEvent", usageEvents[0].data)
+	}
+	if usage.UsedTokens != 3_000_000 {
+		t.Fatalf("usedTokens: got %d, want 3000000", usage.UsedTokens)
+	}
+	thread, err := st.GetThread("t1")
+	if err != nil {
+		t.Fatalf("get thread: %v", err)
+	}
+	if !strings.Contains(thread.LastTokenUsage, "\"usedTokens\":3000000") {
+		t.Fatalf("last token usage not persisted: %q", thread.LastTokenUsage)
 	}
 }
 
@@ -638,16 +674,211 @@ func TestTokenUsageLeavesUnknownModelUnchanged(t *testing.T) {
 		t.Fatalf("handle: %v", err)
 	}
 
-	evt := emittedProviderEvent(t, emissions)
-	var usage provider.TokenUsage
-	if err := json.Unmarshal(evt.Meta, &usage); err != nil {
-		t.Fatalf("unmarshal emitted usage: %v", err)
+	usageEvents := filterEmissions(*emissions, "provider:usage")
+	if len(usageEvents) != 1 {
+		t.Fatalf("expected 1 provider:usage emission, got %+v", *emissions)
 	}
-	if usage.TotalCostUSD != 0 {
-		t.Fatalf("totalCostUsd: got %f, want 0", usage.TotalCostUSD)
+	usage, ok := usageEvents[0].data.(provider.UsageEvent)
+	if !ok {
+		t.Fatalf("usage emission type = %T, want provider.UsageEvent", usageEvents[0].data)
 	}
-	if usage.InputTokens != original.InputTokens || usage.OutputTokens != original.OutputTokens {
-		t.Fatalf("usage changed unexpectedly: got %+v, want %+v", usage, original)
+	if usage.UsedTokens != 579 {
+		t.Fatalf("usedTokens: got %d, want 579", usage.UsedTokens)
+	}
+}
+
+func TestApprovalRequestEmitsProviderApproval(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	meta, err := json.Marshal(provider.ApprovalRequest{
+		RequestID:   "req-1",
+		ThreadID:    "t1",
+		ToolUseID:   "tool-1",
+		ToolName:    "Bash",
+		Description: "Allow Bash?",
+		Input:       json.RawMessage(`{"command":"rm -rf tmp"}`),
+		Title:       "Bash",
+	})
+	if err != nil {
+		t.Fatalf("marshal approval: %v", err)
+	}
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventApprovalRequest,
+		ThreadID:  "t1",
+		ItemID:    "req-1",
+		Meta:      meta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle: %v", err)
+	}
+
+	approvalEvents := filterEmissions(*emissions, "provider:approval")
+	if len(approvalEvents) != 1 {
+		t.Fatalf("expected 1 provider:approval emission, got %+v", *emissions)
+	}
+	approval, ok := approvalEvents[0].data.(provider.ApprovalEvent)
+	if !ok {
+		t.Fatalf("approval emission type = %T, want provider.ApprovalEvent", approvalEvents[0].data)
+	}
+	if approval.Action != "request" {
+		t.Fatalf("action = %q, want request", approval.Action)
+	}
+	if approval.Request == nil || approval.Request.ToolUseID != "tool-1" {
+		t.Fatalf("request = %+v, want toolUseId=tool-1", approval.Request)
+	}
+}
+
+func TestApprovalDeclineBeforeToolStartCreatesSyntheticToolCall(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	requestMeta, err := json.Marshal(provider.ApprovalRequest{
+		RequestID:   "req-1",
+		ThreadID:    "t1",
+		ToolUseID:   "tool-1",
+		ToolName:    "Bash",
+		Description: "Allow Bash?",
+		Input:       json.RawMessage(`{"command":"rm -rf tmp"}`),
+		Title:       "Bash",
+	})
+	if err != nil {
+		t.Fatalf("marshal approval: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventApprovalRequest,
+		ThreadID:  "t1",
+		ItemID:    "req-1",
+		Meta:      requestMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle request: %v", err)
+	}
+
+	resolveMeta, _ := json.Marshal(map[string]any{
+		"requestId": "req-1",
+		"decision":  "declined",
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventApprovalResolved,
+		ThreadID:  "t1",
+		ItemID:    "req-1",
+		Meta:      resolveMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle resolve: %v", err)
+	}
+
+	items := findItemsByKind(t, st, "t1", itemKindToolCall)
+	if len(items) != 1 {
+		t.Fatalf("expected 1 synthetic tool_call, got %+v", items)
+	}
+	if items[0].ID != providerScopedItemID("t1", "tool-1") {
+		t.Fatalf("item id = %q, want %q", items[0].ID, providerScopedItemID("t1", "tool-1"))
+	}
+	if items[0].Status != "declined" || items[0].Decision != "declined" {
+		t.Fatalf("unexpected declined item state: %+v", items[0])
+	}
+	if !strings.Contains(items[0].Summary, "rm -rf tmp") {
+		t.Fatalf("summary = %q, want command preview", items[0].Summary)
+	}
+
+	approvalEvents := filterEmissions(*emissions, "provider:approval")
+	if len(approvalEvents) != 2 {
+		t.Fatalf("expected request + resolve approval events, got %+v", approvalEvents)
+	}
+}
+
+func TestApprovalLostMarksRunningToolCallErrored(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	startMeta, _ := json.Marshal(map[string]any{"toolName": "Bash"})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventToolStart,
+		ThreadID:  "t1",
+		ItemID:    "tool-1",
+		ItemType:  "Bash",
+		Meta:      startMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle start: %v", err)
+	}
+
+	requestMeta, _ := json.Marshal(provider.ApprovalRequest{
+		RequestID:   "req-1",
+		ThreadID:    "t1",
+		ToolName:    "Bash",
+		Description: "Allow Bash?",
+		Input:       json.RawMessage(`{"command":"rm -rf tmp"}`),
+		Title:       "Bash",
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventApprovalRequest,
+		ThreadID:  "t1",
+		ItemID:    "tool-1",
+		Meta:      requestMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle request: %v", err)
+	}
+
+	resolveMeta, _ := json.Marshal(map[string]any{
+		"requestId": "req-1",
+		"decision":  "lost",
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventApprovalResolved,
+		ThreadID:  "t1",
+		ItemID:    "req-1",
+		Meta:      resolveMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle resolve: %v", err)
+	}
+
+	items := findItemsByKind(t, st, "t1", itemKindToolCall)
+	if len(items) != 1 {
+		t.Fatalf("expected 1 tool_call, got %+v", items)
+	}
+	if items[0].Status != statusErrored || items[0].Decision != "lost" {
+		t.Fatalf("unexpected lost item state: %+v", items[0])
+	}
+}
+
+func TestProviderToolItemIDsAreThreadScoped(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	createTestThread(t, st, "t2")
+
+	meta, _ := json.Marshal(map[string]any{"toolName": "Bash"})
+	for _, threadID := range []string{"t1", "t2"} {
+		if err := router.Handle(provider.ProviderEvent{
+			Kind:      provider.EventToolStart,
+			ThreadID:  threadID,
+			ItemID:    "tool-1",
+			ItemType:  "Bash",
+			Meta:      meta,
+			Timestamp: time.Now(),
+		}); err != nil {
+			t.Fatalf("handle %s: %v", threadID, err)
+		}
+	}
+
+	t1Items := findItemsByKind(t, st, "t1", itemKindToolCall)
+	t2Items := findItemsByKind(t, st, "t2", itemKindToolCall)
+	if len(t1Items) != 1 || len(t2Items) != 1 {
+		t.Fatalf("expected one tool_call per thread, got t1=%+v t2=%+v", t1Items, t2Items)
+	}
+	if t1Items[0].ID != providerScopedItemID("t1", "tool-1") {
+		t.Fatalf("t1 id = %q, want %q", t1Items[0].ID, providerScopedItemID("t1", "tool-1"))
+	}
+	if t2Items[0].ID != providerScopedItemID("t2", "tool-1") {
+		t.Fatalf("t2 id = %q, want %q", t2Items[0].ID, providerScopedItemID("t2", "tool-1"))
+	}
+	if t1Items[0].ID != t2Items[0].ID {
+		t.Fatalf("thread-local ids should be reusable across threads, got t1=%q t2=%q", t1Items[0].ID, t2Items[0].ID)
 	}
 }
 
@@ -708,7 +939,8 @@ func TestEventInitEmitsAndUpdatesSessionRef(t *testing.T) {
 }
 
 func TestTextDeltaAccumulation(t *testing.T) {
-	router, _, _ := newTestRouter(t)
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
 
 	for _, text := range []string{"hello ", "world", "!"} {
 		evt := provider.ProviderEvent{
@@ -720,59 +952,59 @@ func TestTextDeltaAccumulation(t *testing.T) {
 		router.Handle(evt)
 	}
 
-	// Check accumulator state.
-	acc, ok := router.textAccumulators["t1"]
-	if !ok {
-		t.Fatal("expected text accumulator for t1")
+	items, err := st.ListItems("t1")
+	if err != nil {
+		t.Fatalf("list items: %v", err)
 	}
-	if acc.String() != "hello world!" {
-		t.Errorf("accumulated text: got %q, want %q", acc.String(), "hello world!")
+	if len(items) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(items))
+	}
+	if items[0].Summary != "hello world!" {
+		t.Fatalf("summary: got %q, want %q", items[0].Summary, "hello world!")
+	}
+	if items[0].Status != "streaming" {
+		t.Fatalf("status: got %q, want streaming", items[0].Status)
 	}
 }
 
 func emittedProviderEvent(t *testing.T, emissions *[]emitted) provider.ProviderEvent {
 	t.Helper()
-	if len(*emissions) != 1 {
-		t.Fatalf("expected 1 emission, got %d", len(*emissions))
+	inline := filterEmissions(*emissions, "provider:event")
+	if len(inline) != 1 {
+		t.Fatalf("expected 1 provider:event emission, got %d (all emissions: %d)",
+			len(inline), len(*emissions))
 	}
-	if (*emissions)[0].eventName != "provider:event" {
-		t.Fatalf("eventName: got %q, want provider:event", (*emissions)[0].eventName)
-	}
-
-	evt, ok := (*emissions)[0].data.(provider.ProviderEvent)
+	evt, ok := inline[0].data.(provider.ProviderEvent)
 	if !ok {
-		t.Fatalf("emitted data type = %T, want provider.ProviderEvent", (*emissions)[0].data)
+		t.Fatalf("emitted data type = %T, want provider.ProviderEvent", inline[0].data)
 	}
 	return evt
 }
 
-func TestBackgroundDeltaNotEmitted(t *testing.T) {
-	router, _, emissions := newTestRouter(t)
-
-	evt := provider.ProviderEvent{
-		Kind:      provider.EventBackgroundDelta,
-		ThreadID:  "t1",
-		Content:   "background output",
-		Timestamp: time.Now(),
+// filterEmissions returns the subset of emissions on the given channel
+// name. Tests that target a specific Wails channel use this so the
+// presence of unrelated channels (provider:item_upsert, provider:meta,
+// etc.) doesn't perturb count assertions.
+func filterEmissions(emissions []emitted, channel string) []emitted {
+	out := make([]emitted, 0, len(emissions))
+	for _, e := range emissions {
+		if e.eventName == channel {
+			out = append(out, e)
+		}
 	}
-
-	if err := router.Handle(evt); err != nil {
-		t.Fatalf("handle: %v", err)
-	}
-
-	if len(*emissions) != 0 {
-		t.Errorf("expected 0 emissions for background delta, got %d", len(*emissions))
-	}
+	return out
 }
 
 func TestDiffPersistsHeavy(t *testing.T) {
 	router, st, emissions := newTestRouter(t)
 	createTestThread(t, st, "t1")
+	insertToolCallItem(t, st, "t1", "tool-1", "Edit: main.go", "file_change", "running")
 
 	patch := "diff --git a/main.go b/main.go\n--- a/main.go\n+++ b/main.go\n@@ -1 +1,2 @@\n foo\n+bar\n"
 	evt := provider.ProviderEvent{
 		Kind:      provider.EventDiff,
 		ThreadID:  "t1",
+		ItemID:    "tool-1",
 		Content:   patch,
 		Timestamp: time.Now(),
 	}
@@ -781,27 +1013,11 @@ func TestDiffPersistsHeavy(t *testing.T) {
 		t.Fatalf("handle: %v", err)
 	}
 
-	// Should emit provider:meta (not provider:event).
-	if len(*emissions) != 1 {
-		t.Fatalf("expected 1 emission, got %d", len(*emissions))
-	}
-	if (*emissions)[0].eventName != "provider:meta" {
-		t.Errorf("eventName: got %q, want %q", (*emissions)[0].eventName, "provider:meta")
+	upserts := filterEmissions(*emissions, "provider:item_upsert")
+	if len(upserts) == 0 {
+		t.Fatal("expected at least one provider:item_upsert emission")
 	}
 
-	// Should persist payload.
-	metas, err := st.ListPayloadMetas("t1")
-	if err != nil {
-		t.Fatalf("list payload metas: %v", err)
-	}
-	if len(metas) != 1 {
-		t.Fatalf("expected 1 payload meta, got %d", len(metas))
-	}
-	if metas[0].Kind != "diff" {
-		t.Errorf("payload kind: got %q, want %q", metas[0].Kind, "diff")
-	}
-
-	// Should persist item.
 	items, err := st.ListItems("t1")
 	if err != nil {
 		t.Fatalf("list items: %v", err)
@@ -809,18 +1025,30 @@ func TestDiffPersistsHeavy(t *testing.T) {
 	if len(items) != 1 {
 		t.Fatalf("expected 1 item, got %d", len(items))
 	}
-	if items[0].Kind != "diff" {
-		t.Errorf("item kind: got %q, want %q", items[0].Kind, "diff")
+	if items[0].Kind != "tool_call" {
+		t.Errorf("item kind: got %q, want %q", items[0].Kind, "tool_call")
+	}
+	if items[0].PayloadKind != "diff" {
+		t.Fatalf("payload kind: got %q, want diff", items[0].PayloadKind)
+	}
+	data, err := st.GetPayloadData(items[0].PayloadID)
+	if err != nil {
+		t.Fatalf("get payload data: %v", err)
+	}
+	if string(data) != patch {
+		t.Fatalf("payload data: got %q, want %q", string(data), patch)
 	}
 }
 
 func TestDiffReplaceUpsertsExistingPayload(t *testing.T) {
 	router, st, emissions := newTestRouter(t)
 	createTestThread(t, st, "t1")
+	insertToolCallItem(t, st, "t1", "tool-1", "Edit: main.go", "file_change", "running")
 
 	first := provider.ProviderEvent{
 		Kind:      provider.EventDiff,
 		ThreadID:  "t1",
+		ItemID:    "tool-1",
 		Content:   "diff --git a/main.go b/main.go\n--- a/main.go\n+++ b/main.go\n@@ -1 +1 @@\n-old\n+new\n",
 		Timestamp: time.Now(),
 	}
@@ -831,6 +1059,7 @@ func TestDiffReplaceUpsertsExistingPayload(t *testing.T) {
 	second := provider.ProviderEvent{
 		Kind:      provider.EventDiff,
 		ThreadID:  "t1",
+		ItemID:    "tool-1",
 		Content:   "diff --git a/main.go b/main.go\n--- a/main.go\n+++ b/main.go\n@@ -1 +1,2 @@\n-old\n+new\n+newer\n",
 		Replace:   true,
 		Timestamp: time.Now(),
@@ -839,47 +1068,44 @@ func TestDiffReplaceUpsertsExistingPayload(t *testing.T) {
 		t.Fatalf("handle replacement diff: %v", err)
 	}
 
-	metas, err := st.ListPayloadMetas("t1")
+	items, err := st.ListItems("t1")
 	if err != nil {
-		t.Fatalf("list payload metas: %v", err)
+		t.Fatalf("list items: %v", err)
 	}
-	if len(metas) != 1 {
-		t.Fatalf("expected 1 payload meta after replacement, got %d", len(metas))
+	if len(items) != 1 {
+		t.Fatalf("expected 1 item after replacement, got %d", len(items))
 	}
-
-	data, err := st.GetPayloadData(metas[0].ID)
+	if items[0].PayloadKind != "diff" {
+		t.Fatalf("payload kind: got %q, want diff", items[0].PayloadKind)
+	}
+	data, err := st.GetPayloadData(items[0].PayloadID)
 	if err != nil {
 		t.Fatalf("get payload data: %v", err)
 	}
 	if !strings.Contains(string(data), "+newer") {
 		t.Fatalf("expected replacement diff content, got %q", string(data))
 	}
-
-	items, err := st.ListItems("t1")
-	if err != nil {
-		t.Fatalf("list items: %v", err)
-	}
-	if len(items) != 1 {
-		t.Fatalf("expected 1 diff item after replacement, got %d", len(items))
-	}
-	if len(*emissions) != 2 {
-		t.Fatalf("expected 2 meta emissions, got %d", len(*emissions))
+	if len(filterEmissions(*emissions, "provider:item_upsert")) < 2 {
+		t.Fatalf("expected at least 2 item upserts, got %d", len(filterEmissions(*emissions, "provider:item_upsert")))
 	}
 }
 
 func TestDiffWithoutReplaceAppendsPayloads(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
+	insertToolCallItem(t, st, "t1", "tool-1", "Edit: main.go", "file_change", "running")
 
 	first := provider.ProviderEvent{
 		Kind:      provider.EventDiff,
 		ThreadID:  "t1",
+		ItemID:    "tool-1",
 		Content:   "first diff",
 		Timestamp: time.Now(),
 	}
 	second := provider.ProviderEvent{
 		Kind:      provider.EventDiff,
 		ThreadID:  "t1",
+		ItemID:    "tool-1",
 		Content:   "second diff",
 		Timestamp: time.Now(),
 	}
@@ -891,31 +1117,32 @@ func TestDiffWithoutReplaceAppendsPayloads(t *testing.T) {
 		t.Fatalf("handle second diff: %v", err)
 	}
 
-	metas, err := st.ListPayloadMetas("t1")
-	if err != nil {
-		t.Fatalf("list payload metas: %v", err)
-	}
-	if len(metas) != 2 {
-		t.Fatalf("expected 2 payload metas without replace, got %d", len(metas))
-	}
-
 	items, err := st.ListItems("t1")
 	if err != nil {
 		t.Fatalf("list items: %v", err)
 	}
-	if len(items) != 2 {
-		t.Fatalf("expected 2 diff items without replace, got %d", len(items))
+	if len(items) != 1 {
+		t.Fatalf("expected 1 tool_call item without replace, got %d", len(items))
+	}
+	data, err := st.GetPayloadData(items[0].PayloadID)
+	if err != nil {
+		t.Fatalf("get payload data: %v", err)
+	}
+	if string(data) != "first diffsecond diff" {
+		t.Fatalf("payload data: got %q, want appended diff chunks", string(data))
 	}
 }
 
 func TestCommandOutputPersistsHeavy(t *testing.T) {
 	router, st, emissions := newTestRouter(t)
 	createTestThread(t, st, "t1")
+	insertToolCallItem(t, st, "t1", "cmd-1", "Bash: go build", "command_execution", "running")
 
 	cmdMeta, _ := json.Marshal(map[string]any{"command": "go build", "exitCode": 0})
 	evt := provider.ProviderEvent{
 		Kind:      provider.EventCommandOutput,
 		ThreadID:  "t1",
+		ItemID:    "cmd-1",
 		Content:   "building...\nok",
 		Meta:      cmdMeta,
 		Timestamp: time.Now(),
@@ -925,8 +1152,9 @@ func TestCommandOutputPersistsHeavy(t *testing.T) {
 		t.Fatalf("handle: %v", err)
 	}
 
-	if len(*emissions) != 1 {
-		t.Fatalf("expected 1 emission, got %d", len(*emissions))
+	upserts := filterEmissions(*emissions, "provider:item_upsert")
+	if len(upserts) == 0 {
+		t.Fatal("expected at least one provider:item_upsert emission")
 	}
 
 	items, err := st.ListItems("t1")
@@ -936,8 +1164,11 @@ func TestCommandOutputPersistsHeavy(t *testing.T) {
 	if len(items) != 1 {
 		t.Fatalf("expected 1 item, got %d", len(items))
 	}
-	if items[0].Kind != "command_execution" {
-		t.Errorf("item kind: got %q, want %q", items[0].Kind, "command_execution")
+	if items[0].Kind != "tool_call" {
+		t.Errorf("item kind: got %q, want %q", items[0].Kind, "tool_call")
+	}
+	if items[0].PayloadKind != "command_output" {
+		t.Fatalf("payload kind: got %q, want command_output", items[0].PayloadKind)
 	}
 }
 
@@ -985,17 +1216,6 @@ func TestProposedPlanPersistsHeavy(t *testing.T) {
 		t.Fatalf("handle: %v", err)
 	}
 
-	metas, err := st.ListPayloadMetas("t1")
-	if err != nil {
-		t.Fatalf("list payload metas: %v", err)
-	}
-	if len(metas) != 1 {
-		t.Fatalf("expected 1 payload meta, got %d", len(metas))
-	}
-	if metas[0].Kind != "proposed_plan" {
-		t.Fatalf("payload kind: got %q, want proposed_plan", metas[0].Kind)
-	}
-
 	items, err := st.ListItems("t1")
 	if err != nil {
 		t.Fatalf("list items: %v", err)
@@ -1003,15 +1223,21 @@ func TestProposedPlanPersistsHeavy(t *testing.T) {
 	if len(items) != 1 {
 		t.Fatalf("expected 1 item, got %d", len(items))
 	}
-	if items[0].Kind != "proposed_plan" {
-		t.Fatalf("item kind: got %q, want proposed_plan", items[0].Kind)
+	if items[0].Kind != "tool_call" {
+		t.Fatalf("item kind: got %q, want tool_call", items[0].Kind)
+	}
+	if items[0].ToolName != "plan" {
+		t.Fatalf("tool name: got %q, want plan", items[0].ToolName)
+	}
+	if items[0].PayloadKind != "proposed_plan" {
+		t.Fatalf("payload kind: got %q, want proposed_plan", items[0].PayloadKind)
 	}
 	if items[0].Summary != "Ship it" {
 		t.Fatalf("item summary: got %q, want %q", items[0].Summary, "Ship it")
 	}
 
-	if len(*emissions) != 1 || (*emissions)[0].eventName != "provider:meta" {
-		t.Fatalf("expected a single provider:meta emission, got %+v", *emissions)
+	if len(filterEmissions(*emissions, "provider:item_upsert")) == 0 {
+		t.Fatalf("expected provider:item_upsert emission, got %+v", *emissions)
 	}
 }
 
@@ -1044,8 +1270,11 @@ func TestTurnCompleteExtractsProposedPlanFromAssistantText(t *testing.T) {
 	if len(items) != 1 {
 		t.Fatalf("expected 1 item, got %d", len(items))
 	}
-	if items[0].Kind != "proposed_plan" {
-		t.Fatalf("item kind: got %q, want proposed_plan", items[0].Kind)
+	if items[0].Kind != "assistant_text" {
+		t.Fatalf("item kind: got %q, want assistant_text", items[0].Kind)
+	}
+	if items[0].Status != "completed" {
+		t.Fatalf("status: got %q, want completed", items[0].Status)
 	}
 }
 
@@ -1069,8 +1298,11 @@ func TestReasoningDeltasPersistOnTurnComplete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list items before turn complete: %v", err)
 	}
-	if len(items) != 0 {
-		t.Fatalf("expected no persisted items before turn complete, got %d", len(items))
+	if len(items) != 1 {
+		t.Fatalf("expected 1 persisted thinking item before turn complete, got %d", len(items))
+	}
+	if items[0].Status != "streaming" {
+		t.Fatalf("status before turn complete: got %q, want streaming", items[0].Status)
 	}
 
 	if err := router.Handle(provider.ProviderEvent{
@@ -1091,32 +1323,15 @@ func TestReasoningDeltasPersistOnTurnComplete(t *testing.T) {
 	if items[0].Kind != "thinking" {
 		t.Fatalf("expected thinking item, got %q", items[0].Kind)
 	}
-
-	metas, err := st.ListPayloadMetas("t1")
-	if err != nil {
-		t.Fatalf("list payload metas: %v", err)
+	if items[0].Summary != "Need more analysis" {
+		t.Fatalf("expected accumulated reasoning, got %q", items[0].Summary)
 	}
-	if len(metas) != 1 {
-		t.Fatalf("expected 1 payload meta after turn complete, got %d", len(metas))
+	if items[0].Status != "completed" {
+		t.Fatalf("status after turn complete: got %q, want completed", items[0].Status)
 	}
 
-	data, err := st.GetPayloadData(metas[0].ID)
-	if err != nil {
-		t.Fatalf("get payload data: %v", err)
-	}
-	if string(data) != "Need more analysis" {
-		t.Fatalf("expected accumulated reasoning, got %q", string(data))
-	}
-
-	if acc, ok := router.reasoningAccumulators["t1"]; ok {
-		t.Fatalf("expected reasoning accumulator entry to be removed, got %q", acc.String())
-	}
-
-	if len(*emissions) != 2 {
-		t.Fatalf("expected meta + turn complete emissions, got %d", len(*emissions))
-	}
-	if (*emissions)[0].eventName != "provider:meta" || (*emissions)[1].eventName != "provider:event" {
-		t.Fatalf("unexpected emissions order: %+v", *emissions)
+	if len(filterEmissions(*emissions, "provider:item_upsert")) < 4 {
+		t.Fatalf("expected streaming upserts plus settle upsert, got %+v", *emissions)
 	}
 }
 
@@ -1149,8 +1364,8 @@ func TestTurnCompleteWithAccumulatedText(t *testing.T) {
 	if len(items) != 1 {
 		t.Fatalf("expected 1 item, got %d", len(items))
 	}
-	if items[0].Kind != "text" {
-		t.Errorf("item kind: got %q, want %q", items[0].Kind, "text")
+	if items[0].Kind != "assistant_text" {
+		t.Errorf("item kind: got %q, want %q", items[0].Kind, "assistant_text")
 	}
 	if items[0].Role != "assistant" {
 		t.Errorf("item role: got %q, want %q", items[0].Role, "assistant")
@@ -1158,15 +1373,13 @@ func TestTurnCompleteWithAccumulatedText(t *testing.T) {
 	if items[0].Summary != "Hello world!" {
 		t.Errorf("item summary: got %q, want %q", items[0].Summary, "Hello world!")
 	}
-
-	// Accumulator entry should be removed (not just reset) to prevent memory leaks.
-	if acc, ok := router.textAccumulators["t1"]; ok {
-		t.Errorf("expected text accumulator entry to be removed, got %q", acc.String())
+	if items[0].Status != "completed" {
+		t.Errorf("status: got %q, want completed", items[0].Status)
 	}
 
-	// Should have emitted 3 events: 2 text deltas + 1 turn complete.
-	if len(*emissions) != 3 {
-		t.Errorf("expected 3 emissions, got %d", len(*emissions))
+	upserts := filterEmissions(*emissions, "provider:item_upsert")
+	if len(upserts) != 3 {
+		t.Errorf("expected 3 item upserts, got %d", len(upserts))
 	}
 }
 
@@ -1189,9 +1402,9 @@ func TestTurnCompleteWithoutAccumulatedText(t *testing.T) {
 		t.Errorf("expected 0 items, got %d", len(items))
 	}
 
-	// Should still emit turn complete.
-	if len(*emissions) != 1 {
-		t.Errorf("expected 1 emission, got %d", len(*emissions))
+	inline := filterEmissions(*emissions, "provider:event")
+	if len(inline) != 1 {
+		t.Errorf("expected 1 provider:event emission, got %d", len(inline))
 	}
 }
 
@@ -1216,10 +1429,12 @@ func TestTurnCompleteDoesNotAutoRenameClaudeThread(t *testing.T) {
 		ThreadID:  "t1",
 		TurnIndex: 1,
 		ItemIndex: 0,
-		Kind:      "text",
+		Kind:      "user_text",
 		Role:      "user",
+		Status:    "completed",
 		Summary:   "Fix flaky reconnect logic after sleep resumes. It breaks after laptop wake.\nExtra detail.",
 		CreatedAt: now,
+		UpdatedAt: now,
 	}); err != nil {
 		t.Fatalf("insert user item: %v", err)
 	}
@@ -1240,19 +1455,22 @@ func TestTurnCompleteDoesNotAutoRenameClaudeThread(t *testing.T) {
 		t.Fatalf("thread title: got %q", thread.Title)
 	}
 
-	if len(*emissions) != 1 {
-		t.Fatalf("expected only turn complete emission, got %d", len(*emissions))
+	inline := filterEmissions(*emissions, "provider:event")
+	if len(inline) != 1 {
+		t.Fatalf("expected 1 provider:event emission, got %d", len(inline))
 	}
 }
 
-func TestBackgroundCompletePersists(t *testing.T) {
-	router, st, _ := newTestRouter(t)
+// -- Error propagation tests --
+
+func TestErrorPersistsTimelineItem(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
 	createTestThread(t, st, "t1")
 
 	evt := provider.ProviderEvent{
-		Kind:      provider.EventBackgroundComplete,
+		Kind:      provider.EventError,
 		ThreadID:  "t1",
-		Content:   "background task completed output",
+		Content:   "provider blew up",
 		Timestamp: time.Now(),
 	}
 
@@ -1267,24 +1485,89 @@ func TestBackgroundCompletePersists(t *testing.T) {
 	if len(items) != 1 {
 		t.Fatalf("expected 1 item, got %d", len(items))
 	}
-	if items[0].Kind != "background_done" {
-		t.Errorf("item kind: got %q, want %q", items[0].Kind, "background_done")
+	if items[0].Kind != "error" {
+		t.Fatalf("kind: got %q, want error", items[0].Kind)
+	}
+	if items[0].Summary != "provider blew up" {
+		t.Fatalf("summary: got %q, want provider blew up", items[0].Summary)
+	}
+
+	upserts := filterEmissions(*emissions, "provider:item_upsert")
+	if len(upserts) != 1 {
+		t.Fatalf("expected 1 provider:item_upsert emission, got %+v", *emissions)
 	}
 }
 
-// -- Error propagation tests --
+func TestFatalErrorFlipsStreamingItemsToErrored(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTurnStart,
+		ThreadID:  "t1",
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn start: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTextDelta,
+		ThreadID:  "t1",
+		Content:   "hello",
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("text delta: %v", err)
+	}
+
+	meta, _ := json.Marshal(map[string]any{"fatal": true})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventError,
+		ThreadID:  "t1",
+		Content:   "fatal session failure",
+		Meta:      meta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("fatal error: %v", err)
+	}
+
+	items, err := st.ListItems("t1")
+	if err != nil {
+		t.Fatalf("list items: %v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("expected text item plus error item, got %d", len(items))
+	}
+	if items[0].Kind != "assistant_text" {
+		t.Fatalf("first item kind: got %q, want assistant_text", items[0].Kind)
+	}
+	if items[0].Status != "errored" {
+		t.Fatalf("text status: got %q, want errored", items[0].Status)
+	}
+	if !strings.HasSuffix(items[0].Summary, " — interrupted") {
+		t.Fatalf("text summary missing interrupted suffix: %q", items[0].Summary)
+	}
+	if items[1].Kind != "error" {
+		t.Fatalf("second item kind: got %q, want error", items[1].Kind)
+	}
+
+	upserts := filterEmissions(*emissions, "provider:item_upsert")
+	if len(upserts) < 3 {
+		t.Fatalf("expected streaming upsert, flip upsert, and error upsert; got %+v", *emissions)
+	}
+}
 
 func TestPersistHeavyReturnsErrorOnClosedStore(t *testing.T) {
 	router, st, emissions := newTestRouter(t)
 	createTestThread(t, st, "t1")
+	insertToolCallItem(t, st, "t1", "cmd-1", "Bash: go build", "command_execution", "running")
 
 	// Close the store to force insertion failures.
 	st.Close()
 
 	evt := provider.ProviderEvent{
-		Kind:      provider.EventDiff,
+		Kind:      provider.EventCommandOutput,
 		ThreadID:  "t1",
-		Content:   "+added line",
+		ItemID:    "cmd-1",
+		Content:   "line 1",
 		Timestamp: time.Now(),
 	}
 
@@ -1293,12 +1576,8 @@ func TestPersistHeavyReturnsErrorOnClosedStore(t *testing.T) {
 		t.Fatal("expected error from Handle when store is closed")
 	}
 
-	// Meta should still be emitted even when persistence fails.
-	if len(*emissions) != 1 {
-		t.Fatalf("expected 1 emission (meta), got %d", len(*emissions))
-	}
-	if (*emissions)[0].eventName != "provider:meta" {
-		t.Errorf("eventName: got %q, want %q", (*emissions)[0].eventName, "provider:meta")
+	if len(*emissions) != 0 {
+		t.Fatalf("expected 0 emissions on failed persist, got %d", len(*emissions))
 	}
 }
 
@@ -1327,17 +1606,17 @@ func TestTurnCompleteReturnsErrorOnClosedStore(t *testing.T) {
 		t.Fatal("expected error from Handle when store is closed and text accumulated")
 	}
 
-	// Turn complete should still be emitted even when persistence fails.
-	found := false
-	for _, em := range *emissions {
-		if em.eventName == "provider:event" {
-			if evt, ok := em.data.(provider.ProviderEvent); ok && evt.Kind == provider.EventTurnComplete {
-				found = true
-			}
+	providerEvents := filterEmissions(*emissions, "provider:event")
+	foundTurnComplete := false
+	for _, emission := range providerEvents {
+		evt, ok := emission.data.(provider.ProviderEvent)
+		if ok && evt.Kind == provider.EventTurnComplete {
+			foundTurnComplete = true
+			break
 		}
 	}
-	if !found {
-		t.Error("expected turn_complete event to be emitted even on persistence failure")
+	if !foundTurnComplete {
+		t.Fatal("expected turn_complete provider:event emission even on persistence failure")
 	}
 }
 
@@ -1380,11 +1659,11 @@ func TestCleanupThreadDropsLateEvents(t *testing.T) {
 	createTestThread(t, st, "t1")
 
 	// First event arrives and is persisted normally.
-	diff := "diff --git a/foo.go b/foo.go\n+hi\n"
 	before := provider.ProviderEvent{
-		Kind:      provider.EventDiff,
+		Kind:      provider.EventProposedPlan,
 		ThreadID:  "t1",
-		Content:   diff,
+		ItemID:    "plan-1",
+		Content:   "# Before\n\n- one",
 		Timestamp: time.Now(),
 	}
 	if err := router.Handle(before); err != nil {
@@ -1405,9 +1684,10 @@ func TestCleanupThreadDropsLateEvents(t *testing.T) {
 	// Late event — would arrive from a readLoop draining in-flight
 	// stdout lines after StopSession returned.
 	after := provider.ProviderEvent{
-		Kind:      provider.EventDiff,
+		Kind:      provider.EventProposedPlan,
 		ThreadID:  "t1",
-		Content:   "diff --git a/bar.go b/bar.go\n+late\n",
+		ItemID:    "plan-2",
+		Content:   "# After\n\n- late",
 		Timestamp: time.Now(),
 	}
 	if err := router.Handle(after); err != nil {
@@ -1430,7 +1710,7 @@ func TestCleanupThreadDropsRapidInFlight(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "tight")
 
-	// Fire 50 diffs sequentially, then stop halfway through.
+	// Fire 50 plan items sequentially, then stop halfway through.
 	total := 50
 	stopAt := 25
 	for i := 0; i < total; i++ {
@@ -1438,9 +1718,10 @@ func TestCleanupThreadDropsRapidInFlight(t *testing.T) {
 			router.CleanupThread("tight")
 		}
 		evt := provider.ProviderEvent{
-			Kind:      provider.EventDiff,
+			Kind:      provider.EventProposedPlan,
 			ThreadID:  "tight",
-			Content:   fmt.Sprintf("diff --git a/f%d.go b/f%d.go\n+line\n", i, i),
+			ItemID:    fmt.Sprintf("plan-%d", i),
+			Content:   fmt.Sprintf("# Plan %d\n\n- line", i),
 			Timestamp: time.Now(),
 		}
 		if err := router.Handle(evt); err != nil {
@@ -1487,9 +1768,10 @@ func TestCleanupThreadDoesNotPoisonFutureSessions(t *testing.T) {
 	// A subsequent diff must persist — the stopped marker from the
 	// earlier CleanupThread cannot continue to suppress the restart.
 	after := provider.ProviderEvent{
-		Kind:      provider.EventDiff,
+		Kind:      provider.EventProposedPlan,
 		ThreadID:  "restart",
-		Content:   "diff --git a/new.go b/new.go\n+fresh\n",
+		ItemID:    "plan-after-restart",
+		Content:   "# Restarted\n\n- fresh",
 		Timestamp: time.Now(),
 	}
 	if err := router.Handle(after); err != nil {

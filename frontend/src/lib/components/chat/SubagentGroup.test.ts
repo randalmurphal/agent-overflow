@@ -42,14 +42,17 @@ beforeAll(() => {
 });
 
 function mkItem(overrides: Partial<Item> & { id: string }): Item {
+  const createdAt = overrides.createdAt ?? 0;
   return {
     threadId: 'thread-1',
     turnIndex: 0,
     itemIndex: 0,
-    kind: 'message',
+    kind: 'assistant_text',
     role: 'assistant',
+    status: 'completed',
     summary: '',
-    createdAt: 0,
+    createdAt,
+    updatedAt: overrides.updatedAt ?? createdAt,
     ...overrides,
   };
 }

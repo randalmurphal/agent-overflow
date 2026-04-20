@@ -101,19 +101,11 @@ func TestHandleTurnStartCapturesBaselineWhenRepo(t *testing.T) {
 		t.Errorf("expected non-empty ref name")
 	}
 
-	// Existing behavior preserved: turn-start event still emitted inline.
-	sawTurnStart := false
 	sawCaptured := false
 	for _, e := range *emissions {
-		if e.eventName == "provider:event" {
-			sawTurnStart = true
-		}
 		if e.eventName == "checkpoint:captured" {
 			sawCaptured = true
 		}
-	}
-	if !sawTurnStart {
-		t.Errorf("expected provider:event emission for turn_start")
 	}
 	if !sawCaptured {
 		t.Errorf("expected checkpoint:captured emission")
@@ -304,10 +296,12 @@ func TestCleanupThreadClearsCheckpointTrackingState(t *testing.T) {
 		ThreadID:  "t1",
 		TurnIndex: 1,
 		ItemIndex: 0,
-		Kind:      "text",
+		Kind:      "user_text",
 		Role:      "user",
+		Status:    "completed",
 		Summary:   "next",
 		CreatedAt: time.Now().UnixMilli(),
+		UpdatedAt: time.Now().UnixMilli(),
 	}); err != nil {
 		t.Fatalf("insert item: %v", err)
 	}

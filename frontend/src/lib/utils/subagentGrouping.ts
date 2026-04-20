@@ -1,5 +1,5 @@
 // Pure grouping utility for turning a flat timeline of Items into a tree
-// where subagent children (items with parentToolUseId) are nested under
+// where subagent children (items with parentId) are nested under
 // their parent tool-call item.
 //
 // Contract:
@@ -10,11 +10,11 @@
 //     item with nothing under it.
 //
 // Rules:
-//   - An item without a parentToolUseId is a root. It becomes either a
+//   - An item without a parentId is a root. It becomes either a
 //     `leaf` (no children matched it) or a `group` (other items named it).
-//   - An item with a parentToolUseId whose value matches a parent item's
+//   - An item with a parentId whose value matches a parent item's
 //     `id` becomes a child of that parent.
-//   - A child whose parentToolUseId does not match any visible item is an
+//   - A child whose parentId does not match any visible item is an
 //     "orphan" — it renders as a top-level leaf with `orphan: true` so the
 //     caller can surface a warning indicator rather than silently dropping
 //     it. This is a fail-loud path.
@@ -42,7 +42,7 @@ export interface TimelineLeaf {
   kind: 'leaf';
   item: Item;
   /**
-   * True when the item declared a parentToolUseId that didn't match any
+   * True when the item declared a parentId that didn't match any
    * visible parent. Rendered with a warning indicator instead of dropped.
    */
   orphan?: boolean;
@@ -164,13 +164,13 @@ export function groupItemsBySubagent(items: readonly Item[]): TimelineNode[] {
 
   const idSet = new Set(sorted.map((it) => it.id));
 
-  // Index children by their parentToolUseId. Multi-level nesting: we do a
+  // Index children by their parentId. Multi-level nesting: we do a
   // single pass from roots down, picking up matches as we go.
   const childrenByParent = new Map<string, Item[]>();
   const orphanIds = new Set<string>();
 
   for (const item of sorted) {
-    const pid = item.parentToolUseId ?? '';
+    const pid = item.parentId ?? '';
     if (!pid) continue;
     if (!idSet.has(pid)) {
       orphanIds.add(item.id);
@@ -232,7 +232,7 @@ export function groupItemsBySubagent(items: readonly Item[]): TimelineNode[] {
 
   const roots: TimelineNode[] = [];
   for (const item of sorted) {
-    const pid = item.parentToolUseId ?? '';
+    const pid = item.parentId ?? '';
     if (!pid) {
       roots.push(buildNode(item, 1));
       continue;

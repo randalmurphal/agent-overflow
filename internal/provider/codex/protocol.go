@@ -7,17 +7,11 @@ import (
 	"agent-overflow/internal/provider"
 )
 
-// Codex does not expose a parent/child tool-use linkage in its app-server
-// protocol. Claude's streaming SDK surfaces parent_tool_use_id on events
-// emitted inside a Task tool invocation so downstream UI can nest the
-// sub-agent's output under its parent; Codex has no analogous field on
-// item/started, item/updated, or item/completed notifications. We
-// therefore leave ProviderEvent.ParentToolUseID empty for every Codex
-// event — the absence is intentional, not a bug. If Codex adds this
-// concept in the future, extract the id here and populate the field.
-//
-// ClassifyNotification converts a Codex app-server notification into
-// zero or more ProviderEvents. Unrecognized methods are silently skipped.
+// ClassifyNotification converts a Codex app-server notification into zero or
+// more ProviderEvents. Parent/child linkage for CollabAgent children is
+// resolved in session.go, not here: the protocol only gives us child
+// provider-thread IDs, so the session owns the receiver-thread -> parent-card
+// mapping and stamps ParentToolUseID onto routed child events.
 func ClassifyNotification(threadID, method string, params json.RawMessage) []provider.ProviderEvent {
 	now := time.Now()
 
@@ -78,7 +72,10 @@ func ClassifyNotification(threadID, method string, params json.RawMessage) []pro
 
 	case "item/started":
 		itemID := readNestedString(params, "item", "id")
-		itemType := readNestedString(params, "item", "type")
+		itemType := classifyCodexItemType(params)
+		if itemType == "" {
+			return nil
+		}
 		return []provider.ProviderEvent{{
 			Kind:      provider.EventToolStart,
 			ThreadID:  threadID,
@@ -90,7 +87,10 @@ func ClassifyNotification(threadID, method string, params json.RawMessage) []pro
 
 	case "item/completed":
 		itemID := readNestedString(params, "item", "id")
-		itemType := readNestedString(params, "item", "type")
+		itemType := classifyCodexItemType(params)
+		if itemType == "" {
+			return nil
+		}
 		if itemType == "plan" {
 			planMarkdown := extractCodexPlanMarkdown(params)
 			if planMarkdown == "" {
@@ -191,7 +191,10 @@ func ClassifyNotification(threadID, method string, params json.RawMessage) []pro
 
 	case "item/updated":
 		itemID := readNestedString(params, "item", "id")
-		itemType := readNestedString(params, "item", "type")
+		itemType := classifyCodexItemType(params)
+		if itemType == "" {
+			return nil
+		}
 		return []provider.ProviderEvent{{
 			Kind:      provider.EventToolStart,
 			ThreadID:  threadID,
@@ -203,18 +206,9 @@ func ClassifyNotification(threadID, method string, params json.RawMessage) []pro
 		}}
 
 	case "turn/plan/updated":
-		// Stream the incremental plan update as a dedicated EventPlanUpdate.
-		// Previously routed as EventSessionStatus with content="plan_updated",
-		// which collided with the generic status string and prevented the
-		// frontend from reacting to plan updates distinctly. The full
-		// finalized plan still arrives via item/completed (itemType=plan)
-		// → EventProposedPlan; this kind is for the intermediate steps.
-		return []provider.ProviderEvent{{
-			Kind:      provider.EventPlanUpdate,
-			ThreadID:  threadID,
-			Meta:      params,
-			Timestamp: now,
-		}}
+		// Incremental plan updates are intentionally dropped. The finalized
+		// plan still lands via item/completed(item.type=plan).
+		return nil
 
 	case "serverRequest/resolved":
 		requestID := readTopLevelIDString(params, "providerRequestId")
@@ -289,51 +283,11 @@ func ClassifyNotification(threadID, method string, params json.RawMessage) []pro
 			Timestamp: now,
 		}}
 
-	// item/commandExecution/terminalInteraction and item/mcpToolCall/progress
-	// both map to EventToolProgress with a `subtype` discriminator in Meta.
-	// We collapse two wire notifications onto one EventKind deliberately —
-	// neither has enough downstream-rendering baggage to justify its own
-	// EventKind today, and giving each its own would require adding entries
-	// to AllEventKinds plus frontend `never`-guard branches. If downstream
-	// rendering ever diverges (e.g. terminal interactions want a dedicated
-	// timeline affordance), promote either to its own EventKind by adding
-	// to AllEventKinds in internal/provider/types.go and adding a branch in
-	// the frontend router.
 	case "item/commandExecution/terminalInteraction":
-		itemID := readTopLevelString(params, "itemId")
-		turnID := readTopLevelString(params, "turnId")
-		processID := readTopLevelString(params, "processId")
-		stdin := readTopLevelString(params, "stdin")
-		meta, _ := json.Marshal(map[string]any{
-			"subtype":   "terminal_interaction",
-			"processId": processID,
-			"stdin":     stdin,
-		})
-		return []provider.ProviderEvent{{
-			Kind:      provider.EventToolProgress,
-			ThreadID:  threadID,
-			TurnID:    turnID,
-			ItemID:    itemID,
-			Meta:      meta,
-			Timestamp: now,
-		}}
+		return nil
 
 	case "item/mcpToolCall/progress":
-		itemID := readTopLevelString(params, "itemId")
-		turnID := readTopLevelString(params, "turnId")
-		message := readTopLevelString(params, "message")
-		meta, _ := json.Marshal(map[string]any{
-			"subtype": "mcp_progress",
-			"message": message,
-		})
-		return []provider.ProviderEvent{{
-			Kind:      provider.EventToolProgress,
-			ThreadID:  threadID,
-			TurnID:    turnID,
-			ItemID:    itemID,
-			Meta:      meta,
-			Timestamp: now,
-		}}
+		return nil
 
 	// --- Explicitly skipped notifications ---
 
@@ -557,9 +511,6 @@ func readRawString(m map[string]json.RawMessage, key string) string {
 func enrichItemMeta(params json.RawMessage) json.RawMessage {
 	source := readNestedString(params, "item", "source")
 	status := readNestedString(params, "item", "status")
-	if source == "" && status == "" {
-		return params
-	}
 	extras := map[string]any{}
 	if source != "" {
 		extras["source"] = source
@@ -567,7 +518,104 @@ func enrichItemMeta(params json.RawMessage) json.RawMessage {
 	if status != "" {
 		extras["item_status"] = status
 	}
+	if item := readNestedObject(params, "item"); item != nil {
+		if readRawString(item, "type") == "collabAgentToolCall" {
+			tool := normalizeCollabToolName(readRawString(item, "tool"))
+			toolName := "collab_agent"
+			if tool == "send_input" {
+				toolName = "send_input"
+			}
+			input := map[string]any{
+				"tool": tool,
+			}
+			if prompt := readRawString(item, "prompt"); prompt != "" {
+				input["prompt"] = prompt
+			}
+			if model := readRawString(item, "model"); model != "" {
+				input["model"] = model
+			}
+			if reasoningEffort := readRawString(item, "reasoningEffort"); reasoningEffort != "" {
+				input["reasoningEffort"] = reasoningEffort
+			}
+			if receiverThreadIDs := readRawStringArray(item, "receiverThreadIds"); len(receiverThreadIDs) > 0 {
+				input["receiverThreadIds"] = receiverThreadIDs
+			}
+			extras["toolName"] = toolName
+			extras["input"] = input
+		}
+	}
+	if len(extras) == 0 {
+		return params
+	}
 	return mergeMetaKeys(params, extras)
+}
+
+func classifyCodexItemType(params json.RawMessage) string {
+	itemType := readNestedString(params, "item", "type")
+	if itemType != "collabAgentToolCall" {
+		return itemType
+	}
+	switch normalizeCollabToolName(readNestedString(params, "item", "tool")) {
+	case "wait_agent":
+		return ""
+	case "send_input":
+		return "send_input"
+	default:
+		return "collab_agent"
+	}
+}
+
+func normalizeCollabToolName(raw string) string {
+	switch raw {
+	case "SpawnAgent", "spawnAgent", "spawn_agent":
+		return "spawn_agent"
+	case "SendInput", "sendInput", "send_input":
+		return "send_input"
+	case "WaitAgent", "waitAgent", "wait_agent":
+		return "wait_agent"
+	case "CloseAgent", "closeAgent", "close_agent":
+		return "close_agent"
+	case "ResumeAgent", "resumeAgent", "resume_agent":
+		return "resume_agent"
+	default:
+		return raw
+	}
+}
+
+func readNestedObject(data json.RawMessage, keys ...string) map[string]json.RawMessage {
+	var m map[string]json.RawMessage
+	if json.Unmarshal(data, &m) != nil {
+		return nil
+	}
+	for i, key := range keys {
+		raw, ok := m[key]
+		if !ok {
+			return nil
+		}
+		if i == len(keys)-1 {
+			var nested map[string]json.RawMessage
+			if json.Unmarshal(raw, &nested) != nil {
+				return nil
+			}
+			return nested
+		}
+		if json.Unmarshal(raw, &m) != nil {
+			return nil
+		}
+	}
+	return nil
+}
+
+func readRawStringArray(m map[string]json.RawMessage, key string) []string {
+	raw, ok := m[key]
+	if !ok {
+		return nil
+	}
+	var values []string
+	if json.Unmarshal(raw, &values) != nil {
+		return nil
+	}
+	return values
 }
 
 // mergeMetaKeys decodes base as a JSON object, overlays extras on top, and

@@ -10,15 +10,15 @@
 
   /**
    * The Item fields we rely on (`status`, `isBackground`,
-   * `completionOfItemId`) are being added to `src/lib/types/models.ts` by
+   * `completionOf`) are being added to `src/lib/types/models.ts` by
    * another agent. Until that lands, read them defensively — the store
    * populates them, but a hand-written stub (or the current type) may
    * omit them.
    */
   type BgFields = {
-    status?: 'running' | 'completed' | 'failed';
+    status?: 'running' | 'completed' | 'errored';
     isBackground?: boolean;
-    completionOfItemId?: string;
+    completionOf?: string;
   };
 
   function bg(item: Item): BgFields {
@@ -49,10 +49,12 @@
     /** The completion item, if one has landed for this launch. */
     completion: Item | null;
     /** Resolved status for the badge + pulse. */
-    status: 'running' | 'completed' | 'failed';
+    status: 'running' | 'completed' | 'errored';
     /** ms elapsed; drives the tabular-nums label. */
     elapsedMs: number;
   }
+
+  const MAX_VISIBLE_ROWS = 3;
 
   // Derive the task list: running launches + completions within the
   // retention window, paired up into one row per logical task. Re-runs
@@ -67,12 +69,12 @@
       const meta = bg(item);
       if (!meta.isBackground) continue;
 
-      if (meta.completionOfItemId) {
+      if (meta.completionOf) {
         if (now - item.createdAt >= COMPLETION_RETENTION_MS) continue;
-        const existing = completionsByLaunchId.get(meta.completionOfItemId);
+        const existing = completionsByLaunchId.get(meta.completionOf);
         // Keep the latest completion when duplicates arrive.
         if (!existing || existing.createdAt < item.createdAt) {
-          completionsByLaunchId.set(meta.completionOfItemId, item);
+          completionsByLaunchId.set(meta.completionOf, item);
         }
       } else if (meta.status === 'running') {
         launches.push(item);
@@ -86,7 +88,7 @@
       const completion = completionsByLaunchId.get(launch.id) ?? null;
       matchedLaunchIds.add(launch.id);
       const status = completion
-        ? (bg(completion).status === 'failed' ? 'failed' : 'completed')
+        ? (bg(completion).status === 'errored' ? 'errored' : 'completed')
         : 'running';
       out.push({
         rowId: launch.id,
@@ -103,9 +105,9 @@
     // the result land.
     for (const completion of items) {
       const meta = bg(completion);
-      if (!meta.isBackground || !meta.completionOfItemId) continue;
+      if (!meta.isBackground || !meta.completionOf) continue;
       if (now - completion.createdAt >= COMPLETION_RETENTION_MS) continue;
-      if (matchedLaunchIds.has(meta.completionOfItemId)) continue;
+      if (matchedLaunchIds.has(meta.completionOf)) continue;
       freeCompletions.push(completion);
     }
 
@@ -114,16 +116,18 @@
         rowId: completion.id,
         launch: completion,
         completion,
-        status: bg(completion).status === 'failed' ? 'failed' : 'completed',
+        status: bg(completion).status === 'errored' ? 'errored' : 'completed',
         elapsedMs: Math.max(0, now - completion.createdAt),
       });
     }
 
-    return out;
+    return out.sort((a, b) => b.launch.updatedAt - a.launch.updatedAt);
   });
 
   const count = $derived(tasks.length);
   const anyRunning = $derived(tasks.some((t) => t.status === 'running'));
+  const visibleTasks = $derived(tasks.slice(0, MAX_VISIBLE_ROWS));
+  const hiddenCount = $derived(Math.max(0, tasks.length - MAX_VISIBLE_ROWS));
 
   // Tray opens by default; clicking the header collapses the body.
   let expanded = $state(true);
@@ -173,19 +177,19 @@
 
   function statusGlyph(status: TrayTask['status']): string {
     if (status === 'running') return '◐';
-    if (status === 'failed') return '!';
+    if (status === 'errored') return '!';
     return '✓';
   }
 
   function statusLabel(status: TrayTask['status']): string {
     if (status === 'running') return 'Running';
-    if (status === 'failed') return 'Failed';
+    if (status === 'errored') return 'Failed';
     return 'Completed';
   }
 
   function statusClass(status: TrayTask['status']): string {
     if (status === 'running') return 'text-accent';
-    if (status === 'failed') return 'text-error';
+    if (status === 'errored') return 'text-error';
     return 'text-success';
   }
 </script>
@@ -230,7 +234,7 @@
         data-testid="background-task-tray-body"
       >
         <ul class="flex flex-col gap-1">
-          {#each tasks as task (task.rowId)}
+          {#each visibleTasks as task (task.rowId)}
             <li>
               <button
                 type="button"
@@ -263,6 +267,11 @@
             </li>
           {/each}
         </ul>
+        {#if hiddenCount > 0}
+          <p class="mt-2 px-1 text-xs text-text-secondary" data-testid="background-task-tray-more">
+            +{hiddenCount} more
+          </p>
+        {/if}
       </div>
     {/if}
   </div>

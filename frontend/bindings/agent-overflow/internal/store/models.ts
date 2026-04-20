@@ -326,16 +326,19 @@ export class Item {
     "itemIndex": number;
     "kind": string;
     "role": string;
+    "status": string;
     "summary": string;
     "payloadId"?: string;
-
-    /**
-     * ParentToolUseID links this item to a Task-tool parent when the item
-     * was produced by a subagent (Claude's Agent/Task tool). Empty for
-     * top-level turn items.
-     */
-    "parentToolUseId"?: string;
+    "payloadKind"?: string;
+    "payloadMeta"?: string;
+    "parentId"?: string;
+    "isBackground"?: boolean;
+    "completionOf"?: string;
+    "toolName"?: string;
+    "decision"?: string;
+    "meta"?: string;
     "createdAt": number;
+    "updatedAt": number;
 
     /** Creates a new Item instance. */
     constructor($$source: Partial<Item> = {}) {
@@ -357,11 +360,17 @@ export class Item {
         if (!("role" in $$source)) {
             this["role"] = "";
         }
+        if (!("status" in $$source)) {
+            this["status"] = "";
+        }
         if (!("summary" in $$source)) {
             this["summary"] = "";
         }
         if (!("createdAt" in $$source)) {
             this["createdAt"] = 0;
+        }
+        if (!("updatedAt" in $$source)) {
+            this["updatedAt"] = 0;
         }
 
         Object.assign(this, $$source);
@@ -534,6 +543,7 @@ export class Thread {
     "discussionId"?: string;
     "parentThreadId"?: string;
     "forkedFromThreadId"?: string;
+    "lastTokenUsage"?: string;
     "createdAt": number;
     "updatedAt": number;
     "archived": boolean;

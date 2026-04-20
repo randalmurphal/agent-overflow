@@ -278,24 +278,12 @@ func TestErrorNotification(t *testing.T) {
 	}
 }
 
-func TestTurnPlanUpdated(t *testing.T) {
-	// turn/plan/updated now emits EventPlanUpdate instead of overloading
-	// EventSessionStatus. The raw params become Meta so the frontend can
-	// render the incremental plan without a second round-trip.
+func TestTurnPlanUpdatedDropped(t *testing.T) {
 	params := json.RawMessage(`{"plan":"step 1, step 2"}`)
 	events := ClassifyNotification(testThread, "turn/plan/updated", params)
 
-	if len(events) != 1 {
-		t.Fatalf("expected 1 event, got %d", len(events))
-	}
-	if events[0].Kind != provider.EventPlanUpdate {
-		t.Errorf("kind: got %q, want %q", events[0].Kind, provider.EventPlanUpdate)
-	}
-	if events[0].Content != "" {
-		t.Errorf("content should be empty (payload rides on Meta), got %q", events[0].Content)
-	}
-	if string(events[0].Meta) != string(params) {
-		t.Errorf("meta: got %s, want %s", events[0].Meta, params)
+	if len(events) != 0 {
+		t.Fatalf("expected turn/plan/updated to be dropped, got %d event(s)", len(events))
 	}
 }
 
@@ -853,6 +841,91 @@ func TestDispatchLineNotification(t *testing.T) {
 	}
 	if events[0].Kind != provider.EventTurnStart {
 		t.Errorf("kind: got %q, want %q", events[0].Kind, provider.EventTurnStart)
+	}
+}
+
+func TestDispatchLineChildNotificationSetsParentToolUseID(t *testing.T) {
+	var events []provider.ProviderEvent
+	s := &Session{
+		threadID:            "parent-thread",
+		pending:             make(map[int64]chan json.RawMessage),
+		childParentByThread: map[string]string{"child-provider-1": "call-collab-1"},
+		onEvent: func(evt provider.ProviderEvent) {
+			events = append(events, evt)
+		},
+	}
+
+	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"threadId":"child-provider-1","turnId":"turn-child-1","itemId":"msg-1","delta":"working"}}`))
+
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if events[0].ParentToolUseID != "call-collab-1" {
+		t.Fatalf("ParentToolUseID: got %q, want %q", events[0].ParentToolUseID, "call-collab-1")
+	}
+	if events[0].ThreadID != "parent-thread" {
+		t.Fatalf("ThreadID: got %q, want %q", events[0].ThreadID, "parent-thread")
+	}
+}
+
+func TestDispatchLineSuppressesChildTurnLifecycle(t *testing.T) {
+	var events []provider.ProviderEvent
+	s := &Session{
+		threadID:            "parent-thread",
+		pending:             make(map[int64]chan json.RawMessage),
+		childParentByThread: map[string]string{"child-provider-1": "call-collab-1"},
+		onEvent: func(evt provider.ProviderEvent) {
+			events = append(events, evt)
+		},
+	}
+
+	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"child-provider-1","turn":{"id":"turn-child-1"}}}`))
+	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"child-provider-1","turn":{"id":"turn-child-1","status":"completed"}}}`))
+
+	if len(events) != 0 {
+		t.Fatalf("expected child turn lifecycle notifications to be suppressed, got %+v", events)
+	}
+}
+
+func TestDispatchLineCollabSpawnRemembersReceiverThread(t *testing.T) {
+	var events []provider.ProviderEvent
+	s := &Session{
+		threadID:            "parent-thread",
+		pending:             make(map[int64]chan json.RawMessage),
+		childParentByThread: make(map[string]string),
+		onEvent: func(evt provider.ProviderEvent) {
+			events = append(events, evt)
+		},
+	}
+
+	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"provider-parent","item":{"id":"call-collab-1","type":"collabAgentToolCall","tool":"spawnAgent","receiverThreadIds":["child-provider-1"],"prompt":"Refactor auth","status":"completed"}}}`))
+
+	if got := s.parentToolUseForProviderThread("child-provider-1"); got != "call-collab-1" {
+		t.Fatalf("child mapping: got %q, want %q", got, "call-collab-1")
+	}
+	if len(events) != 1 || events[0].ItemType != "collab_agent" {
+		t.Fatalf("expected collab_agent event, got %+v", events)
+	}
+}
+
+func TestDispatchLineCloseAgentRewritesToParentCardID(t *testing.T) {
+	var events []provider.ProviderEvent
+	s := &Session{
+		threadID:            "parent-thread",
+		pending:             make(map[int64]chan json.RawMessage),
+		childParentByThread: map[string]string{"child-provider-1": "call-collab-1"},
+		onEvent: func(evt provider.ProviderEvent) {
+			events = append(events, evt)
+		},
+	}
+
+	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"provider-parent","item":{"id":"close-call-1","type":"collabAgentToolCall","tool":"closeAgent","receiverThreadIds":["child-provider-1"],"status":"completed"}}}`))
+
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if events[0].ItemID != "call-collab-1" {
+		t.Fatalf("ItemID: got %q, want %q", events[0].ItemID, "call-collab-1")
 	}
 }
 

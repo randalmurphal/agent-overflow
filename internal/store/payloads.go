@@ -23,6 +23,7 @@ func (s *Store) InsertPayload(p Payload) error {
 // The thread's updated_at column is also bumped in the same transaction
 // so the sidebar ordering stays consistent with the newly persisted item.
 func (s *Store) InsertItemWithPayload(item Item, payload Payload) error {
+	applyItemDefaults(&item)
 	tx, err := s.db.Begin()
 	if err != nil {
 		return fmt.Errorf("store: begin insert item+payload tx: %w", err)
@@ -38,20 +39,21 @@ func (s *Store) InsertItemWithPayload(item Item, payload Payload) error {
 	}
 
 	if _, err := tx.Exec(
-		`INSERT INTO items (id, thread_id, turn_index, item_index, kind, role, summary,
-		    payload_id, parent_tool_use_id, status, is_background, completion_of_item_id, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		item.ID, item.ThreadID, item.TurnIndex, item.ItemIndex, item.Kind, item.Role, item.Summary,
-		nilIfEmpty(item.PayloadID), item.ParentToolUseID,
-		defaultStatus(item.Status), boolToInt(item.IsBackground), item.CompletionOfItemID,
-		item.CreatedAt,
+		`INSERT INTO items (id, thread_id, turn_index, item_index, kind, role, status, summary,
+		    payload_id, parent_id, is_background, completion_of, tool_name, decision, meta,
+		    created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		item.ID, item.ThreadID, item.TurnIndex, item.ItemIndex, item.Kind, item.Role, item.Status, item.Summary,
+		nilIfEmpty(item.PayloadID), item.ParentID,
+		boolToInt(item.IsBackground), item.CompletionOf, item.ToolName, item.Decision, item.Meta,
+		item.CreatedAt, item.UpdatedAt,
 	); err != nil {
 		return fmt.Errorf("store: insert item: %w", err)
 	}
 
 	if _, err := tx.Exec(
 		`UPDATE threads SET updated_at = ? WHERE id = ?`,
-		item.CreatedAt, item.ThreadID,
+		item.UpdatedAt, item.ThreadID,
 	); err != nil {
 		return fmt.Errorf("store: touch thread updated_at for %s: %w", item.ThreadID, err)
 	}
@@ -69,6 +71,7 @@ func (s *Store) InsertItemWithPayload(item Item, payload Payload) error {
 // assigned item_index. Prefer this over NextItemIndex + InsertItemWithPayload
 // when you don't need to force a specific index.
 func (s *Store) AppendItemWithPayload(item Item, payload Payload) (int, error) {
+	applyItemDefaults(&item)
 	tx, err := s.db.Begin()
 	if err != nil {
 		return 0, fmt.Errorf("store: begin append item+payload tx: %w", err)
@@ -97,20 +100,21 @@ func (s *Store) AppendItemWithPayload(item Item, payload Payload) (int, error) {
 	}
 
 	if _, err := tx.Exec(
-		`INSERT INTO items (id, thread_id, turn_index, item_index, kind, role, summary,
-		    payload_id, parent_tool_use_id, status, is_background, completion_of_item_id, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		item.ID, item.ThreadID, item.TurnIndex, item.ItemIndex, item.Kind, item.Role, item.Summary,
-		nilIfEmpty(item.PayloadID), item.ParentToolUseID,
-		defaultStatus(item.Status), boolToInt(item.IsBackground), item.CompletionOfItemID,
-		item.CreatedAt,
+		`INSERT INTO items (id, thread_id, turn_index, item_index, kind, role, status, summary,
+		    payload_id, parent_id, is_background, completion_of, tool_name, decision, meta,
+		    created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		item.ID, item.ThreadID, item.TurnIndex, item.ItemIndex, item.Kind, item.Role, item.Status, item.Summary,
+		nilIfEmpty(item.PayloadID), item.ParentID,
+		boolToInt(item.IsBackground), item.CompletionOf, item.ToolName, item.Decision, item.Meta,
+		item.CreatedAt, item.UpdatedAt,
 	); err != nil {
 		return 0, fmt.Errorf("store: append item+payload insert item: %w", err)
 	}
 
 	if _, err := tx.Exec(
 		`UPDATE threads SET updated_at = ? WHERE id = ?`,
-		item.CreatedAt, item.ThreadID,
+		item.UpdatedAt, item.ThreadID,
 	); err != nil {
 		return 0, fmt.Errorf("store: append item+payload touch thread %s: %w", item.ThreadID, err)
 	}
@@ -230,6 +234,22 @@ func (s *Store) GetPayloadData(id string) ([]byte, error) {
 		return nil, fmt.Errorf("store: get payload data %s: %w", id, err)
 	}
 	return data, nil
+}
+
+func (s *Store) GetPayloadPreview(id string, maxBytes int) ([]byte, int, bool, error) {
+	var data []byte
+	err := s.db.QueryRow(`SELECT data FROM payloads WHERE id = ?`, id).Scan(&data)
+	if err != nil {
+		return nil, 0, false, fmt.Errorf("store: get payload preview %s: %w", id, err)
+	}
+	if maxBytes < 0 {
+		maxBytes = 0
+	}
+	total := len(data)
+	if total <= maxBytes {
+		return data, total, true, nil
+	}
+	return data[:maxBytes], total, false, nil
 }
 
 func (s *Store) ListPayloadMetas(threadID string) ([]PayloadMeta, error) {

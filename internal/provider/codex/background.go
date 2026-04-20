@@ -75,6 +75,9 @@ func (c *BackgroundClassifier) Classify(evt *provider.ProviderEvent) {
 
 	switch evt.Kind {
 	case provider.EventToolStart:
+		if evt.ParentToolUseID != "" {
+			return
+		}
 		// Register on the FIRST observation only. item/updated emits
 		// EventToolStart with Replace=true for the same itemID (see
 		// protocol.go, case "item/updated"); treating a replace as a
@@ -93,6 +96,9 @@ func (c *BackgroundClassifier) Classify(evt *provider.ProviderEvent) {
 		}
 
 	case provider.EventTextDelta:
+		if evt.ParentToolUseID != "" {
+			return
+		}
 		// Only assistant-role text flags tools as background. Reasoning
 		// (thinking) is handled separately as EventThinking and is not a
 		// user-visible interleave.
@@ -104,6 +110,9 @@ func (c *BackgroundClassifier) Classify(evt *provider.ProviderEvent) {
 		}
 
 	case provider.EventToolComplete:
+		if evt.ParentToolUseID != "" {
+			return
+		}
 		if evt.ItemID == "" {
 			return
 		}

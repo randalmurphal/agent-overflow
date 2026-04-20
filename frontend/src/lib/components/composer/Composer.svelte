@@ -90,12 +90,13 @@
   // Interrupt first. Editing and uploading stay enabled so the next message can
   // be prepared in advance.
   let isTurnActive = $derived(pane.isTurnActive);
+  let sending = $state(false);
   let hasDraftContent = $derived(
     draft.content.trim().length > 0 ||
       draft.attachments.length > 0 ||
       draft.terminalChips.length > 0,
   );
-  let canSend = $derived(!isDisabled && !isTurnActive && hasDraftContent);
+  let canSend = $derived(!isDisabled && !isTurnActive && !sending && hasDraftContent);
   let dragActive = $derived(dragDepth > 0);
   // Polite aria-live error raised when the user hits Enter during an active
   // turn. Cleared when the turn ends or the user types a new character so it
@@ -110,7 +111,7 @@
     if (!pane.threadId || !canSend) return;
     midTurnBlockMessage = '';
     const message = draft.composeOutgoingMessage();
-    pane.setPendingMessage(message);
+    sending = true;
 
     const threadId = pane.threadId;
     // Capture the pre-send draft contents bound to THIS thread. If the user
@@ -145,7 +146,6 @@
       await SendMessage(threadId, message);
     } catch (err) {
       console.error('Failed to send message:', err);
-      pane.setPendingMessage(null);
       // restoreDraftFor always persists to the captured thread; it only
       // touches local UI state when the draft store is still on that thread.
       // If the user has moved on, surface a toast so the failed send is
@@ -159,6 +159,8 @@
       } else {
         pane.setError(`Failed to send message: ${err}`);
       }
+    } finally {
+      sending = false;
     }
   }
 

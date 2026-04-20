@@ -5,7 +5,7 @@ import type { Item } from '../../types/models';
 
 /**
  * Tests operate against the Item type extended by the schema agent —
- * `status`, `isBackground`, and `completionOfItemId` are optional fields
+ * `status`, `isBackground`, and `completionOf` are optional fields
  * on the Item record and fed through by the store/adapter layer. The
  * component tolerates missing fields by design, so stubs here only set
  * what each test needs.
@@ -13,7 +13,7 @@ import type { Item } from '../../types/models';
 type BgItem = Item & {
   status?: 'running' | 'completed' | 'failed';
   isBackground?: boolean;
-  completionOfItemId?: string;
+  completionOf?: string;
 };
 
 function item(overrides: Partial<BgItem> & { id: string }): BgItem {
@@ -51,7 +51,7 @@ describe('<BackgroundTaskTray>', () => {
             id: 'b',
             isBackground: true,
             status: 'completed',
-            completionOfItemId: 'ghost',
+            completionOf: 'ghost',
             createdAt: 0,
           }),
         ],
@@ -109,7 +109,7 @@ describe('<BackgroundTaskTray>', () => {
           id: 'done-a',
           isBackground: true,
           status: 'completed',
-          completionOfItemId: 'launch-a',
+          completionOf: 'launch-a',
           summary: 'Bash',
           createdAt: 1_000_000 - 500,
         }),
@@ -129,7 +129,7 @@ describe('<BackgroundTaskTray>', () => {
             id: 'done-a',
             isBackground: true,
             status: 'completed',
-            completionOfItemId: 'ghost-launch',
+            completionOf: 'ghost-launch',
             summary: 'Bash',
             // createdAt == now; retention window is fresh.
             createdAt: 1_000_000,
@@ -168,5 +168,36 @@ describe('<BackgroundTaskTray>', () => {
     await fireEvent.click(rows[0]);
     expect(onExpand).toHaveBeenCalledTimes(1);
     expect(onExpand).toHaveBeenCalledWith('launch-a');
+  });
+
+  it('caps visible rows at three and shows the hidden count', () => {
+    const { getAllByTestId, getByTestId } = render(BackgroundTaskTray, {
+      props: {
+        items: [
+          item({ id: 'a', isBackground: true, status: 'running', summary: 'A', createdAt: 1_000_000 - 1_000 }),
+          item({ id: 'b', isBackground: true, status: 'running', summary: 'B', createdAt: 1_000_000 - 2_000 }),
+          item({ id: 'c', isBackground: true, status: 'running', summary: 'C', createdAt: 1_000_000 - 3_000 }),
+          item({ id: 'd', isBackground: true, status: 'running', summary: 'D', createdAt: 1_000_000 - 4_000 }),
+        ],
+      },
+    });
+
+    expect(getAllByTestId('background-task-tray-row')).toHaveLength(3);
+    expect(getByTestId('background-task-tray-more').textContent).toContain('+1 more');
+  });
+
+  it('orders rows by latest activity first', () => {
+    const { getAllByTestId } = render(BackgroundTaskTray, {
+      props: {
+        items: [
+          item({ id: 'older', isBackground: true, status: 'running', summary: 'Older', createdAt: 1_000_000 - 4_000, updatedAt: 1_000_000 - 4_000 }),
+          item({ id: 'newer', isBackground: true, status: 'running', summary: 'Newer', createdAt: 1_000_000 - 1_000, updatedAt: 1_000_000 - 1_000 }),
+        ],
+      },
+    });
+
+    const rows = getAllByTestId('background-task-tray-row');
+    expect(rows[0]?.getAttribute('data-row-id')).toBe('newer');
+    expect(rows[1]?.getAttribute('data-row-id')).toBe('older');
   });
 });

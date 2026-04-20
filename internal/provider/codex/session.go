@@ -77,6 +77,11 @@ type Session struct {
 	// moved on with text while the tool was still open) before emission.
 	// Holds its own mutex — do not call while holding s.mu.
 	background *BackgroundClassifier
+	// childParentByThread maps a spawned collab receiver thread back to the
+	// parent SpawnAgent tool-call item id. Notifications from the child
+	// thread are re-emitted onto the parent thread with ParentToolUseID set
+	// to this card id.
+	childParentByThread map[string]string
 }
 
 // pendingApproval tracks one in-flight approval so the timer can be
@@ -128,15 +133,16 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 	}
 
 	s := &Session{
-		proc:            proc,
-		threadID:        threadID,
-		model:           cfg.Model,
-		reasoningEffort: cfg.ReasoningEffort,
-		pending:         make(map[int64]chan json.RawMessage),
-		onEvent:         onEvent,
-		cancel:          cancel,
-		readDone:        make(chan struct{}),
-		background:      NewBackgroundClassifier(),
+		proc:                proc,
+		threadID:            threadID,
+		model:               cfg.Model,
+		reasoningEffort:     cfg.ReasoningEffort,
+		pending:             make(map[int64]chan json.RawMessage),
+		onEvent:             onEvent,
+		cancel:              cancel,
+		readDone:            make(chan struct{}),
+		background:          NewBackgroundClassifier(),
+		childParentByThread: make(map[string]string),
 	}
 
 	// Start stdout reader goroutine before sending any requests.
@@ -526,10 +532,12 @@ func (s *Session) readLoop() {
 		line, err := s.proc.ReadLine()
 		if err != nil {
 			if err != io.EOF {
+				meta, _ := json.Marshal(map[string]any{"fatal": true})
 				s.onEvent(provider.ProviderEvent{
 					Kind:      provider.EventError,
 					ThreadID:  s.threadID,
 					Content:   fmt.Sprintf("codex: read error: %v", err),
+					Meta:      meta,
 					Timestamp: time.Now(),
 				})
 			}
@@ -584,9 +592,20 @@ func (s *Session) dispatchLine(line []byte) {
 
 	// Notification: has method, no id.
 	if msg.Method != "" {
+		providerThreadID := readTopLevelString(msg.Params, "threadId")
+		parentToolUseID := s.parentToolUseForProviderThread(providerThreadID)
+		if parentToolUseID != "" && isChildTurnLifecycleNotification(msg.Method) {
+			return
+		}
+
 		events := ClassifyNotification(s.threadID, msg.Method, msg.Params)
 		for i := range events {
 			evt := &events[i]
+			if parentToolUseID != "" {
+				evt.ParentToolUseID = parentToolUseID
+			}
+			s.maybeRewriteCollabControlItemID(evt, msg.Params)
+			s.maybeRememberCollabReceiverThreads(msg.Method, msg.Params)
 			// Track active turn ID for Interrupt.
 			switch evt.Kind {
 			case provider.EventTurnStart:
@@ -624,6 +643,100 @@ func (s *Session) dispatchLine(line []byte) {
 		}
 		return
 	}
+}
+
+func isChildTurnLifecycleNotification(method string) bool {
+	switch method {
+	case "turn/started", "turn/completed", "turn/aborted":
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *Session) parentToolUseForProviderThread(providerThreadID string) string {
+	if providerThreadID == "" {
+		return ""
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.childParentByThread[providerThreadID]
+}
+
+func (s *Session) setParentToolUseForProviderThread(providerThreadID, parentToolUseID string) {
+	if providerThreadID == "" || parentToolUseID == "" {
+		return
+	}
+	s.mu.Lock()
+	s.childParentByThread[providerThreadID] = parentToolUseID
+	s.mu.Unlock()
+}
+
+func (s *Session) deleteParentToolUseForProviderThread(providerThreadID string) {
+	if providerThreadID == "" {
+		return
+	}
+	s.mu.Lock()
+	delete(s.childParentByThread, providerThreadID)
+	s.mu.Unlock()
+}
+
+func (s *Session) maybeRememberCollabReceiverThreads(method string, params json.RawMessage) {
+	if method != "item/completed" && method != "item/updated" {
+		return
+	}
+	item := readNestedObject(params, "item")
+	if item == nil || readRawString(item, "type") != "collabAgentToolCall" {
+		return
+	}
+	tool := normalizeCollabToolName(readRawString(item, "tool"))
+	itemID := readRawString(item, "id")
+	receiverThreadIDs := readRawStringArray(item, "receiverThreadIds")
+	if itemID == "" || len(receiverThreadIDs) == 0 {
+		return
+	}
+
+	switch tool {
+	case "spawn_agent":
+		for _, receiverThreadID := range receiverThreadIDs {
+			s.setParentToolUseForProviderThread(receiverThreadID, itemID)
+			go s.resumeChildThread(receiverThreadID)
+		}
+	case "close_agent":
+		for _, receiverThreadID := range receiverThreadIDs {
+			s.deleteParentToolUseForProviderThread(receiverThreadID)
+		}
+	}
+}
+
+func (s *Session) maybeRewriteCollabControlItemID(evt *provider.ProviderEvent, params json.RawMessage) {
+	if evt == nil || evt.ItemType != "collab_agent" {
+		return
+	}
+	item := readNestedObject(params, "item")
+	if item == nil || readRawString(item, "type") != "collabAgentToolCall" {
+		return
+	}
+	switch normalizeCollabToolName(readRawString(item, "tool")) {
+	case "close_agent", "resume_agent":
+		for _, receiverThreadID := range readRawStringArray(item, "receiverThreadIds") {
+			if parentToolUseID := s.parentToolUseForProviderThread(receiverThreadID); parentToolUseID != "" {
+				evt.ItemID = parentToolUseID
+				return
+			}
+		}
+	}
+}
+
+func (s *Session) resumeChildThread(providerThreadID string) {
+	if s.proc == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	_, _ = s.sendRequest(ctx, "thread/resume", map[string]any{
+		"threadId": providerThreadID,
+	})
 }
 
 // claimTurnStart records the first observation of a turnID, returning
@@ -763,6 +876,17 @@ func (s *Session) runApprovalTimer(rpcID int64, requestID string, timeout time.D
 		Content:   fmt.Sprintf("codex: approval timed out for request %s after %s — auto-denied to keep session alive", requestID, timeout),
 		Timestamp: time.Now(),
 	})
+	meta, _ := json.Marshal(map[string]any{
+		"requestId": requestID,
+		"decision":  "timeout",
+	})
+	s.onEvent(provider.ProviderEvent{
+		Kind:      provider.EventApprovalResolved,
+		ThreadID:  s.threadID,
+		ItemID:    requestID,
+		Meta:      meta,
+		Timestamp: time.Now(),
+	})
 	if err := s.writeResponse(rpcID, map[string]any{"decision": "decline"}); err != nil {
 		log.Printf("codex: write auto-deny for %s: %v", requestID, err)
 	}
@@ -806,8 +930,19 @@ func (s *Session) clearPendingApprovals() {
 	pending := s.pendingApprovals
 	s.pendingApprovals = nil
 	s.approvalsMu.Unlock()
-	for _, p := range pending {
+	for requestID, p := range pending {
 		close(p.cancel)
+		meta, _ := json.Marshal(map[string]any{
+			"requestId": requestID,
+			"decision":  "lost",
+		})
+		s.onEvent(provider.ProviderEvent{
+			Kind:      provider.EventApprovalResolved,
+			ThreadID:  s.threadID,
+			ItemID:    requestID,
+			Meta:      meta,
+			Timestamp: time.Now(),
+		})
 	}
 }
 
@@ -824,5 +959,3 @@ func buildApprovalEvent(threadID, turnID, itemID string, meta json.RawMessage, r
 		Raw:       raw,
 	}
 }
-
-

@@ -36,16 +36,20 @@ function checkpoint(turnIndex: number, overrides: Partial<Checkpoint> = {}): Che
 }
 
 function diffItem(id: string, turnIndex: number, overrides: Partial<Item> = {}): Item {
+  const createdAt = overrides.createdAt ?? 0;
   return {
     id,
     threadId: 'thread-1',
     turnIndex,
     itemIndex: 0,
-    kind: 'diff',
+    kind: 'tool_call',
     role: 'assistant',
+    status: 'completed',
     summary: '',
     payloadId: `${id}-payload`,
-    createdAt: 0,
+    payloadKind: 'diff',
+    createdAt,
+    updatedAt: overrides.updatedAt ?? createdAt,
     ...overrides,
   };
 }

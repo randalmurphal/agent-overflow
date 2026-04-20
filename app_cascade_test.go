@@ -97,7 +97,7 @@ func populateThreadForCascade(t *testing.T, app *App, thread store.Thread) []str
 			ThreadID:  thread.ID,
 			TurnIndex: 1,
 			ItemIndex: i,
-			Kind:      string(provider.ItemDiff),
+			Kind:      "tool_call",
 			Role:      "assistant",
 			Summary:   "diff",
 			PayloadID: payloadID,
@@ -300,7 +300,7 @@ func TestCascade_DeletingWithActiveSession(t *testing.T) {
 	// Simulate a persisted item that was written mid-session.
 	if err := app.store.InsertItem(store.Item{
 		ID: uuid.NewString(), ThreadID: thread.ID, TurnIndex: 1, ItemIndex: 0,
-		Kind: "text", Role: "user", Summary: "before delete",
+		Kind: "user_text", Role: "user", Summary: "before delete",
 		CreatedAt: time.Now().UnixMilli(),
 	}); err != nil {
 		t.Fatalf("InsertItem: %v", err)
@@ -342,7 +342,7 @@ func TestCascade_ForkPreservesOriginalState(t *testing.T) {
 	for i := 0; i < 2; i++ {
 		if err := app.store.InsertItem(store.Item{
 			ID: uuid.NewString(), ThreadID: source.ID, TurnIndex: 1, ItemIndex: i,
-			Kind: "text", Role: "user", Summary: "seed",
+			Kind: "user_text", Role: "user", Summary: "seed",
 			CreatedAt: time.Now().UnixMilli(),
 		}); err != nil {
 			t.Fatalf("InsertItem %d: %v", i, err)
@@ -411,7 +411,7 @@ func TestCascade_UnarchiveRestoresToSidebar(t *testing.T) {
 		ThreadID:  thread.ID,
 		TurnIndex: 0,
 		ItemIndex: 0,
-		Kind:      "text",
+		Kind:      "user_text",
 		Role:      "user",
 		Summary:   "hello",
 		CreatedAt: time.Now().UnixMilli(),

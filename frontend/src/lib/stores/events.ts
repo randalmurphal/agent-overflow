@@ -1,13 +1,11 @@
 import { Events } from '@wailsio/runtime';
-import type { ProviderEvent, ApprovalRequest, ContextWindow, RateLimitEntry, TokenUsage, ToolProgressMeta } from '../types/events';
-import type { PayloadMeta, Thread } from '../types/models';
+import type { ApprovalEvent, ProviderStatusEvent, UsageEvent } from '../types/events';
+import type { Item, Thread } from '../types/models';
 import type { DesignArtifact, DesignChoiceResolved, DesignOptionsRequest } from '../types/design';
-import type { ThreadPane } from './thread.svelte';
 import { getAllPanes } from './panes.svelte';
 import { addToast } from './toast.svelte';
-import { getThreads, updateThreadTitle, updateThreadModel, replaceThread } from './threads.svelte';
-import { setThreadStatus } from './threadStatuses.svelte';
-import { RespondToApproval, ApprovalResponse } from './bindings';
+import { getThreads, replaceThread } from './threads.svelte';
+import { projectApprovalRequest, projectApprovalResolution, projectThreadItem } from './threadStatuses.svelte';
 
 /**
  * SeqEnvelope mirrors the Go-side `SeqEnvelope` in app.go. Every Wails
@@ -119,256 +117,108 @@ interface RuntimeModeChangedPayload {
   needsReconnect: boolean;
 }
 
-/**
- * Route a provider event to the correct pane mutation.
- * Called once per pane that matches the event's threadId.
- *
- * Every EventKind has an explicit case -- nothing falls through to default.
- */
-function routeEventToPane(pane: ThreadPane, evt: ProviderEvent): void {
-  switch (evt.kind) {
-    case 'text_delta':
-      pane.appendTextDelta(evt.content ?? '');
-      break;
-
-    case 'tool_start':
-      pane.addToolCall(evt.itemId ?? '', evt.meta);
-      break;
-
-    case 'tool_complete':
-      // Don't fabricate an item -- just mark the tool call done.
-      // The persisted item arrives via finalizeTurn's DB reload.
-      pane.completeToolCall(evt.itemId ?? '');
-      break;
-
-    case 'turn_start':
-      pane.setSessionStatus('running');
-      break;
-
-    case 'turn_complete':
-      pane.setSessionStatus('ready');
-      pane.finalizeTurn();
-      break;
-
-    case 'approval_request':
-      if (evt.meta) {
-        const approval = evt.meta as ApprovalRequest;
-        if (pane.isToolSessionApproved(approval.toolName)) {
-          const threadId = pane.threadId;
-          if (threadId) {
-            RespondToApproval(threadId, new ApprovalResponse({
-              requestId: approval.requestId,
-              decision: 'allow',
-            })).catch((err) => {
-              console.error('Failed to auto-resolve approval:', err);
-              addToast('error', `Auto-approval failed for ${approval.toolName}`);
-              pane.addApproval(approval);
-            });
-          }
-        } else {
-          pane.addApproval(approval);
-        }
-      }
-      break;
-
-    case 'approval_resolved':
-      if (evt.itemId) {
-        pane.removeApproval(evt.itemId);
-      }
-      break;
-
-    case 'session_status':
-      pane.setSessionStatus(evt.content ?? 'unknown');
-      break;
-
-    case 'token_usage':
-      if (evt.meta) {
-        pane.setTokenUsage(evt.meta as TokenUsage);
-      }
-      break;
-
-    case 'error':
-      console.error('Provider error:', evt.content);
-      pane.setSessionStatus('error');
-      pane.setError(evt.content ?? 'Unknown provider error');
-      break;
-
-    case 'init':
-      pane.setSessionStatus('connected');
-      break;
-
-    case 'background_start':
-      pane.addBackgroundTask(evt.itemId ?? '', evt.meta);
-      break;
-
-    case 'background_delta':
-      // Background deltas are accumulated server-side. No frontend action needed.
-      break;
-
-    case 'background_complete':
-      pane.completeBackgroundTask(evt.itemId ?? '');
-      break;
-
-    case 'diff':
-      // Diff events are persisted as heavy payloads by the backend.
-      // The item and payload meta arrive separately. Nothing to do inline.
-      break;
-
-    case 'command_output':
-      // Command output events are persisted as heavy payloads by the backend.
-      // The item and payload meta arrive separately. Nothing to do inline.
-      break;
-
-    case 'thinking':
-      // Thinking events are persisted as heavy payloads by the backend.
-      // The item and payload meta arrive separately. Nothing to do inline.
-      break;
-
-    case 'tool_progress':
-      if (evt.itemId && evt.meta) {
-        pane.updateToolProgress(evt.itemId, evt.meta as ToolProgressMeta);
-      }
-      break;
-
-    case 'compact_boundary':
-      if (evt.meta) {
-        pane.setContextWindow(evt.meta as ContextWindow);
-      }
-      break;
-
-    case 'rate_limits':
-      if (evt.meta) {
-        const data = evt.meta as { limits: RateLimitEntry[] };
-        pane.setRateLimits(data.limits ?? []);
-      }
-      break;
-
-    case 'model_rerouted':
-      // The sidebar cache and toast are handled in applyThreadLevelUpdate
-      // (runs before the pane loop so non-active threads also refresh).
-      // The pane mutation here only fires for the matching pane.
-      if (evt.meta) {
-        const data = evt.meta as { newModel: string };
-        pane.updateModel(data.newModel);
-      }
-      break;
-
-    case 'thread_renamed':
-      // Same split as model_rerouted: sidebar cache is updated outside
-      // the pane loop, pane-local state here.
-      if (evt.meta) {
-        const data = evt.meta as { newTitle: string };
-        pane.updateTitle(data.newTitle);
-      }
-      break;
-
-    case 'plan_update':
-      // Stream the Codex turn/plan/updated payload onto the pane so the
-      // PlanSidebar / follow-up banner can render an in-progress plan
-      // without waiting for the finalized item/completed (itemType=plan)
-      // event. Opaque JSON — consumers read `meta` and render the plan
-      // shape themselves.
-      if (evt.meta) {
-        pane.setPendingPlanUpdate(evt.meta);
-      }
-      break;
-
-    default: {
-      // Exhaustiveness guard: if TypeScript complains on this line, a new
-      // EventKind was added to types/events.ts without a matching case above.
-      // Add one — don't rely on the default to silently swallow it. The cast
-      // to `never` forces a compile error when the union is extended.
-      const _exhaustive: never = evt.kind;
-      void _exhaustive;
-      break;
+function syncThreadRow(updated: Thread): void {
+  replaceThread(updated);
+  for (const pane of getAllPanes().values()) {
+    if (pane.threadId === updated.id && pane.thread) {
+      pane.replaceThread(updated);
     }
   }
 }
 
-/**
- * Apply updates that must happen for every provider event regardless of
- * whether a pane currently owns the thread. The sidebar renders live
- * status dots for every tracked thread, not just the focused one, and
- * rename/model-rerouted updates should refresh the cached thread row
- * whether the user is looking at it or not.
- *
- * Deliberately runs before the pane-match loop in the event handler so
- * status for an off-pane thread still registers.
- */
-function applyThreadLevelUpdate(evt: ProviderEvent): void {
-  if (!evt.threadId) return;
-
-  switch (evt.kind) {
-    case 'turn_start':
-      setThreadStatus(evt.threadId, 'running');
-      break;
-
-    case 'turn_complete':
-      // Let pending approvals dominate: if the backend landed a
-      // turn_complete while an approval is still unresolved (shouldn't
-      // happen for a well-behaved provider but we defend anyway), we
-      // don't want to stomp the pending-approval dot back to idle.
-      // The pane's pendingApprovals array is the authority, but since
-      // this function is pane-agnostic by design we just transition to
-      // idle — the next approval_request will re-raise the dot.
-      setThreadStatus(evt.threadId, 'idle');
-      break;
-
-    case 'approval_request':
-      setThreadStatus(evt.threadId, 'pending-approval');
-      break;
-
-    case 'approval_resolved':
-      // We don't know from this event alone whether the pane has more
-      // pending approvals. Transitioning back to 'running' is a safe
-      // middle ground: an in-flight turn keeps its dot until the next
-      // turn_complete settles to idle. If there's no turn running (rare
-      // — approvals usually live inside a turn) the dot stays amber
-      // until the backend emits another status change.
-      setThreadStatus(evt.threadId, 'running');
-      break;
-
-    case 'error':
-      setThreadStatus(evt.threadId, 'error');
-      break;
-
-    case 'init':
-    case 'session_status':
-      // 'connected' / 'ready' are the provider's way of saying "I'm
-      // alive but not actively working". Map both to idle; anything
-      // else (reconnecting, disconnected, unknown) leaves whatever
-      // status is set — we conservatively do nothing on those strings
-      // so a running turn mid-reconnect doesn't lose its dot.
-      if (evt.kind === 'init') {
-        setThreadStatus(evt.threadId, 'idle');
-      } else if (evt.content === 'connected' || evt.content === 'ready') {
-        setThreadStatus(evt.threadId, 'idle');
-      }
-      break;
-
-    case 'model_rerouted':
-      if (evt.meta) {
-        const data = evt.meta as { newModel: string };
-        updateThreadModel(evt.threadId, data.newModel);
-        addToast('info', `Model rerouted to ${data.newModel}`);
-      }
-      break;
-
-    case 'thread_renamed':
-      if (evt.meta) {
-        const data = evt.meta as { newTitle: string };
-        updateThreadTitle(evt.threadId, data.newTitle);
-      }
-      break;
-
-    default:
-      // All other kinds have no thread-level projection.
-      break;
+function updateThreadUsageCache(threadId: string, raw: string): void {
+  const existing = getThreads().find((thread) => thread.id === threadId);
+  if (existing) {
+    replaceThread({ ...existing, lastTokenUsage: raw });
+  }
+  for (const pane of getAllPanes().values()) {
+    if (pane.threadId !== threadId || !pane.thread) continue;
+    pane.replaceThread({ ...pane.thread, lastTokenUsage: raw });
   }
 }
 
+function applyApprovalEvent(evt: ApprovalEvent): void {
+  if (!evt) return;
+
+  if (evt.action === 'request' && evt.request?.threadId) {
+    projectApprovalRequest(evt.request.threadId, evt.request.requestId);
+    for (const pane of getAllPanes().values()) {
+      if (pane.threadId === evt.request.threadId) {
+        pane.addApproval(evt.request);
+      }
+    }
+    return;
+  }
+
+  if (evt.action === 'resolve' && evt.requestId) {
+    projectApprovalResolution(evt.threadId, evt.requestId);
+    for (const pane of getAllPanes().values()) {
+      if (evt.threadId && pane.threadId !== evt.threadId) continue;
+      const hadApproval = pane.pendingApprovals.some((approval) => approval.requestId === evt.requestId);
+      if (!hadApproval) continue;
+      pane.removeApproval(evt.requestId);
+    }
+  }
+}
+
+function applyUsageEvent(evt: UsageEvent): void {
+  if (!evt?.threadId) return;
+  const payload = evt.action === 'usage'
+    ? {
+        usedTokens: evt.usedTokens ?? 0,
+        maxTokens: evt.maxTokens,
+        usedPercentage: evt.contextPercent,
+      }
+    : null;
+
+  for (const pane of getAllPanes().values()) {
+    if (pane.threadId !== evt.threadId) continue;
+    if (payload) {
+      pane.setContextWindow(payload);
+    } else {
+      pane.clearContextWindow();
+    }
+  }
+
+  updateThreadUsageCache(
+    evt.threadId,
+    payload
+      ? JSON.stringify({
+          usedTokens: payload.usedTokens,
+          maxTokens: payload.maxTokens,
+          contextPercent: payload.usedPercentage,
+        })
+      : '',
+  );
+}
+
+function applyItemUpsert(item: Item): void {
+  if (!item || !item.threadId) return;
+  projectThreadItem(item);
+
+  for (const pane of getAllPanes().values()) {
+    if (pane.threadId !== item.threadId) continue;
+    pane.upsertItem(item);
+  }
+}
+
+function applyProviderStatus(evt: ProviderStatusEvent): void {
+  if (!evt?.provider || !evt.status) return;
+  const banner = evt.status === 'ready' ? null : evt;
+  for (const pane of getAllPanes().values()) {
+    if (pane.thread?.provider === evt.provider) {
+      pane.setProviderBanner(banner);
+    }
+  }
+}
+
+function applyThreadUpdated(updated: Thread): void {
+  if (!updated?.id) return;
+  syncThreadRow(updated);
+}
+
 /**
- * Set up Wails event listeners for provider events.
+ * Set up the app's Wails event listeners.
  * Returns a cleanup function that removes all listeners.
  */
 export function setupEventListeners(): () => void {
@@ -377,47 +227,20 @@ export function setupEventListeners(): () => void {
   // the new listener set and trigger spurious warnings.
   resetSeqTracking();
 
-  const cancelEvent = wailsEventOn<ProviderEvent>('provider:event', (evt) => {
-    // Thread-level updates (sidebar cache, live status dot) must run
-    // whether or not a pane currently owns the thread — the sidebar
-    // renders every thread, not just the focused one.
-    applyThreadLevelUpdate(evt);
+  const cancelApproval = wailsEventOn<ApprovalEvent>('provider:approval', applyApprovalEvent);
 
-    for (const pane of getAllPanes().values()) {
-      if (pane.threadId === evt.threadId) {
-        routeEventToPane(pane, evt);
-      }
-    }
-  });
+  const cancelUsage = wailsEventOn<UsageEvent>('provider:usage', applyUsageEvent);
 
-  const cancelMeta = wailsEventOn<PayloadMeta>('provider:meta', (meta) => {
-    for (const pane of getAllPanes().values()) {
-      // Only push meta to the pane that owns this thread.
-      // If the backend includes a threadId, filter by it.
-      // If threadId is absent (legacy), fall back to broadcasting to all panes.
-      if (meta.threadId && pane.threadId !== meta.threadId) {
-        continue;
-      }
-      pane.addPayloadMeta(meta);
-    }
-  });
+  const cancelProviderStatus = wailsEventOn<ProviderStatusEvent>('provider:status', applyProviderStatus);
 
-  const cancelError = wailsEventOn<ProviderEvent>('provider:error', (evt) => {
-    console.error('Provider error event:', evt.content);
-    addToast('error', evt.content ?? 'Provider error');
-    // Mirror the per-pane error onto the sidebar dot so a background
-    // thread that tripped on the provider:error channel (not the
-    // multiplexed provider:event channel) still surfaces red in the
-    // sidebar.
-    if (evt.threadId) {
-      setThreadStatus(evt.threadId, 'error');
-    }
-    for (const pane of getAllPanes().values()) {
-      if (pane.threadId === evt.threadId) {
-        pane.setError(evt.content ?? 'Unknown provider error');
-      }
-    }
-  });
+  // provider:item_upsert — backend persisted (or updated) a timeline
+  // item. Triage emits this for every tool_call lifecycle row + every
+  // background tool_completion sibling so the frontend can show the
+  // row inline as soon as it lands, without waiting for the
+  // turn-complete ListItems reconcile.
+  const cancelItemUpsert = wailsEventOn<Item>('provider:item_upsert', applyItemUpsert);
+
+  const cancelThreadUpdated = wailsEventOn<Thread>('thread:updated', applyThreadUpdated);
 
   // design:artifact — a new rendered artifact. Append to the owning pane's
   // history. The preview panel auto-tracks the latest unless the user has
@@ -508,9 +331,11 @@ export function setupEventListeners(): () => void {
   );
 
   return () => {
-    cancelEvent();
-    cancelMeta();
-    cancelError();
+    cancelApproval();
+    cancelUsage();
+    cancelProviderStatus();
+    cancelItemUpsert();
+    cancelThreadUpdated();
     cancelDesignArtifact();
     cancelDesignOptions();
     cancelDesignChosen();

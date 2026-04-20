@@ -3,7 +3,6 @@ package triage
 import (
 	"encoding/json"
 	"fmt"
-	"time"
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
@@ -53,21 +52,14 @@ func (r *Router) persistCommandInlineDiffToolResult(evt provider.ProviderEvent) 
 }
 
 func (r *Router) persistToolResult(evt provider.ProviderEvent, meta ToolResultMeta, diffData []byte) error {
-	if evt.ItemID == "" {
+	itemID := eventItemID(evt)
+	if itemID == "" {
 		return nil
 	}
 
-	now := evt.Timestamp.UnixMilli()
-	if now == 0 {
-		now = time.Now().UnixMilli()
-	}
+	now := eventTimestampMillis(evt)
 
-	turnIndex, err := r.store.LastTurnIndex(evt.ThreadID)
-	if err != nil {
-		return fmt.Errorf("tool result turn index: %w", err)
-	}
-
-	payloadID := toolResultPayloadID(evt.ItemID)
+	payloadID := toolResultPayloadID(itemID)
 	meta, diffData = r.mergeToolResultPayload(payloadID, meta, diffData)
 	metaJSON, err := json.Marshal(meta)
 	if err != nil {
@@ -81,31 +73,38 @@ func (r *Router) persistToolResult(evt provider.ProviderEvent, meta ToolResultMe
 		Data:      diffData,
 		CreatedAt: now,
 	}
-	if err := r.store.UpsertPayload(payload); err != nil {
-		return fmt.Errorf("persist tool result payload: %w", err)
-	}
-	r.emitPayloadMeta(payloadID, evt.ThreadID, toolResultPayloadKind, string(metaJSON), now)
-
-	item, found, err := r.store.GetItem(evt.ItemID)
+	item, found, err := r.store.GetThreadItem(evt.ThreadID, itemID)
 	if err != nil {
 		return fmt.Errorf("lookup tool result item: %w", err)
 	}
 	summary := summarizeToolResult(meta)
 	if found {
-		return r.store.UpdateItemPayload(item.ID, payloadID, summary, now)
+		item.PayloadID = payloadID
+		item.Summary = summary
+		item.UpdatedAt = now
+		return r.persistItem(item, &payload)
 	}
 
-	_, err = r.store.AppendItem(store.Item{
-		ID:        evt.ItemID,
+	turnIndex, err := r.turnIndexForEvent(evt)
+	if err != nil {
+		return fmt.Errorf("tool result turn index: %w", err)
+	}
+	newItem := store.Item{
+		ID:        itemID,
 		ThreadID:  evt.ThreadID,
 		TurnIndex: turnIndex,
-		Kind:      toolResultItemKind,
+		Kind:      itemKindToolCall,
 		Role:      "assistant",
+		Status:    statusCompleted,
 		Summary:   summary,
 		PayloadID: payloadID,
+		ParentID:  eventParentID(evt),
+		ToolName:  evt.ItemType,
+		Decision:  r.takeApprovalDecision(evt.ThreadID, itemID),
 		CreatedAt: now,
-	})
-	return err
+		UpdatedAt: now,
+	}
+	return r.persistItem(newItem, &payload)
 }
 
 func captureCommandExecutionToolResult(raw json.RawMessage, workspaceRoot string) (ToolResultMeta, []byte, bool) {

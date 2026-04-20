@@ -268,10 +268,12 @@ func (s *Session) runIdleWatchdog(timeout time.Duration, resetCh <-chan struct{}
 				return
 			}
 			s.watchdogFired.Store(true)
+			meta, _ := json.Marshal(map[string]any{"fatal": true})
 			s.onEvent(provider.ProviderEvent{
 				Kind:      provider.EventError,
 				ThreadID:  s.threadID,
 				Content:   fmt.Sprintf("claude: provider idle timeout after %s — no output received", timeout),
+				Meta:      meta,
 				Timestamp: time.Now(),
 			})
 			// Kill the subprocess so readLoop exits and emits the
@@ -409,6 +411,17 @@ func (s *Session) runApprovalTimer(requestID string, timeout time.Duration, canc
 		Content:   fmt.Sprintf("claude: approval timed out for request %s after %s — auto-denied to keep session alive", requestID, timeout),
 		Timestamp: time.Now(),
 	})
+	meta, _ := json.Marshal(map[string]any{
+		"requestId": requestID,
+		"decision":  "timeout",
+	})
+	s.onEvent(provider.ProviderEvent{
+		Kind:      provider.EventApprovalResolved,
+		ThreadID:  s.threadID,
+		ItemID:    requestID,
+		Meta:      meta,
+		Timestamp: time.Now(),
+	})
 	data, err := buildApprovalResponse(provider.ApprovalResponse{
 		RequestID: requestID,
 		Decision:  "deny",
@@ -461,8 +474,19 @@ func (s *Session) clearPendingApprovals() {
 	pending := s.pendingApprovals
 	s.pendingApprovals = nil
 	s.approvalsMu.Unlock()
-	for _, p := range pending {
+	for requestID, p := range pending {
 		close(p.cancel)
+		meta, _ := json.Marshal(map[string]any{
+			"requestId": requestID,
+			"decision":  "lost",
+		})
+		s.onEvent(provider.ProviderEvent{
+			Kind:      provider.EventApprovalResolved,
+			ThreadID:  s.threadID,
+			ItemID:    requestID,
+			Meta:      meta,
+			Timestamp: time.Now(),
+		})
 	}
 }
 
@@ -529,10 +553,12 @@ func (s *Session) readLoop() {
 		line, err := s.proc.ReadLine()
 		if err != nil {
 			if err != io.EOF && !s.watchdogFired.Load() {
+				meta, _ := json.Marshal(map[string]any{"fatal": true})
 				s.onEvent(provider.ProviderEvent{
 					Kind:      provider.EventError,
 					ThreadID:  s.threadID,
 					Content:   fmt.Sprintf("claude: read error: %v", err),
+					Meta:      meta,
 					Timestamp: time.Now(),
 				})
 			}
@@ -549,10 +575,12 @@ func (s *Session) readLoop() {
 				// Leaving Claude hanging for a reply it will never
 				// get is worse than exiting — surface the failure
 				// and tear the subprocess down.
+				meta, _ := json.Marshal(map[string]any{"fatal": true})
 				s.onEvent(provider.ProviderEvent{
 					Kind:      provider.EventError,
 					ThreadID:  s.threadID,
 					Content:   fmt.Sprintf("claude: exit plan mode response failed: %v", err),
+					Meta:      meta,
 					Timestamp: time.Now(),
 				})
 				_ = s.proc.Close()

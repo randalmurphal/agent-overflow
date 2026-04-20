@@ -124,6 +124,62 @@ func (b *capturedEventBus) nextProviderEventOfKind(t *testing.T, kind provider.E
 	}
 }
 
+func (b *capturedEventBus) nextApprovalEvent(t *testing.T, action string, d time.Duration) provider.ApprovalEvent {
+	t.Helper()
+	deadline := time.Now().Add(d)
+	for {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			t.Fatalf("timed out waiting for provider:approval action %q", action)
+			return provider.ApprovalEvent{}
+		}
+		select {
+		case e := <-b.ch:
+			if e.Name != "provider:approval" {
+				continue
+			}
+			evt, ok := e.Data.(provider.ApprovalEvent)
+			if !ok {
+				continue
+			}
+			if evt.Action == action {
+				return evt
+			}
+		case <-time.After(remaining):
+			t.Fatalf("timed out waiting for provider:approval action %q", action)
+			return provider.ApprovalEvent{}
+		}
+	}
+}
+
+func (b *capturedEventBus) nextUsageEvent(t *testing.T, action string, d time.Duration) provider.UsageEvent {
+	t.Helper()
+	deadline := time.Now().Add(d)
+	for {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			t.Fatalf("timed out waiting for provider:usage action %q", action)
+			return provider.UsageEvent{}
+		}
+		select {
+		case e := <-b.ch:
+			if e.Name != "provider:usage" {
+				continue
+			}
+			evt, ok := e.Data.(provider.UsageEvent)
+			if !ok {
+				continue
+			}
+			if evt.Action == action {
+				return evt
+			}
+		case <-time.After(remaining):
+			t.Fatalf("timed out waiting for provider:usage action %q", action)
+			return provider.UsageEvent{}
+		}
+	}
+}
+
 // allEvents returns a snapshot of every captured event (including ones already
 // consumed via next/nextOfKind).
 func (b *capturedEventBus) allEvents() []capturedEvent {
@@ -205,15 +261,15 @@ func setupE2EApp(t *testing.T) (*App, *capturedEventBus) {
 func e2eThread(id, providerName, workspace string) store.Thread {
 	now := time.Now().UnixMilli()
 	return store.Thread{
-		ID:              id,
+		ID:            id,
 		ProjectID:     defaultTestProjectID,
-		Title:           "E2E Thread",
-		Provider:        providerName,
-		WorkspacePath:   workspace,
-		Model:           "claude-opus-4-7",
-		Mode: "chat",
-		CreatedAt:       now,
-		UpdatedAt:       now,
+		Title:         "E2E Thread",
+		Provider:      providerName,
+		WorkspacePath: workspace,
+		Model:         "claude-opus-4-7",
+		Mode:          "chat",
+		CreatedAt:     now,
+		UpdatedAt:     now,
 	}
 }
 
@@ -272,7 +328,7 @@ func TestE2E_FullClaudeSessionHappyPath(t *testing.T) {
 	}
 	var foundText bool
 	for _, it := range items {
-		if it.Role == "assistant" && it.Kind == string(provider.ItemText) && it.Summary == "hello from mock" {
+		if it.Role == "assistant" && it.Kind == "assistant_text" && it.Summary == "hello from mock" {
 			foundText = true
 		}
 	}
@@ -783,15 +839,15 @@ func TestE2E_DiffItemPersistsWithPayload(t *testing.T) {
 	// Synthesise a diff event directly: this mirrors what Claude would emit
 	// and exercises the persistHeavy → payload round-trip.
 	evt := provider.ProviderEvent{
-		Kind:     provider.EventDiff,
-		ThreadID: thread.ID,
-		Content:  "diff --git a/file.txt b/file.txt\n@@ -0,0 +1 @@\n+hello\n",
+		Kind:      provider.EventDiff,
+		ThreadID:  thread.ID,
+		Content:   "diff --git a/file.txt b/file.txt\n@@ -0,0 +1 @@\n+hello\n",
 		Timestamp: time.Now(),
 	}
 	// Seed an item so LastTurnIndex is deterministic (>=1).
 	if err := app.store.InsertItem(store.Item{
 		ID: "seed-user", ThreadID: thread.ID, TurnIndex: 1, ItemIndex: 0,
-		Kind: "text", Role: "user", Summary: "seed", CreatedAt: time.Now().UnixMilli(),
+		Kind: "user_text", Role: "user", Summary: "seed", CreatedAt: time.Now().UnixMilli(),
 	}); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
@@ -806,15 +862,15 @@ func TestE2E_DiffItemPersistsWithPayload(t *testing.T) {
 	}
 	var diffItem store.Item
 	for _, it := range items {
-		if it.Kind == string(provider.ItemDiff) {
+		if it.Kind == "tool_call" && it.PayloadID != "" {
 			diffItem = it
 		}
 	}
 	if diffItem.ID == "" {
-		t.Fatalf("no diff item persisted: %+v", items)
+		t.Fatalf("no tool_call with diff payload persisted: %+v", items)
 	}
 	if diffItem.PayloadID == "" {
-		t.Fatalf("diff item has no payload: %+v", diffItem)
+		t.Fatalf("tool_call has no diff payload: %+v", diffItem)
 	}
 
 	// Round-trip the payload via the binding.
@@ -913,16 +969,15 @@ func TestE2E_ClaudeApprovalRoundTrip(t *testing.T) {
 		t.Fatalf("SendMessage: %v", err)
 	}
 
-	approval := bus.nextProviderEventOfKind(t, provider.EventApprovalRequest, 5*time.Second)
-	if approval.ItemID != "req-1" {
-		t.Fatalf("approval requestID = %q", approval.ItemID)
+	approval := bus.nextApprovalEvent(t, "request", 5*time.Second)
+	if approval.Request == nil {
+		t.Fatal("approval request missing payload")
 	}
-	var ar provider.ApprovalRequest
-	if err := json.Unmarshal(approval.Meta, &ar); err != nil {
-		t.Fatalf("unmarshal approval meta: %v", err)
+	if approval.Request.RequestID != "req-1" {
+		t.Fatalf("approval requestID = %q", approval.Request.RequestID)
 	}
-	if ar.ToolName != "Bash" {
-		t.Fatalf("approval tool = %q", ar.ToolName)
+	if approval.Request.ToolName != "Bash" {
+		t.Fatalf("approval tool = %q", approval.Request.ToolName)
 	}
 
 	if err := app.RespondToApproval(thread.ID, provider.ApprovalResponse{
@@ -930,6 +985,11 @@ func TestE2E_ClaudeApprovalRoundTrip(t *testing.T) {
 		Decision:  "allow",
 	}); err != nil {
 		t.Fatalf("RespondToApproval: %v", err)
+	}
+
+	resolved := bus.nextApprovalEvent(t, "resolve", 5*time.Second)
+	if resolved.RequestID != "req-1" || resolved.Decision != "approved" {
+		t.Fatalf("resolved approval = %+v, want requestId=req-1 decision=approved", resolved)
 	}
 
 	_ = app.StopSession(thread.ID)
@@ -984,13 +1044,9 @@ func TestE2E_TokenUsagePersists(t *testing.T) {
 		t.Fatalf("SendMessage: %v", err)
 	}
 
-	usage := bus.nextProviderEventOfKind(t, provider.EventTokenUsage, 5*time.Second)
-	var tokens provider.TokenUsage
-	if err := json.Unmarshal(usage.Meta, &tokens); err != nil {
-		t.Fatalf("unmarshal usage meta: %v", err)
-	}
-	if tokens.InputTokens != 100 || tokens.OutputTokens != 50 {
-		t.Fatalf("usage = %+v, want input=100 output=50", tokens)
+	usage := bus.nextUsageEvent(t, "usage", 5*time.Second)
+	if usage.UsedTokens != 150 {
+		t.Fatalf("usage = %+v, want usedTokens=150", usage)
 	}
 	_ = app.StopSession(thread.ID)
 }
@@ -1042,7 +1098,7 @@ func TestE2E_ThinkingBlockPersistsAsItem(t *testing.T) {
 			if it.PayloadID == "" {
 				t.Fatalf("thinking item has no payload: %+v", it)
 			}
-		case string(provider.ItemText):
+		case "assistant_text":
 			textCnt++
 		}
 	}
@@ -1057,7 +1113,7 @@ func TestE2E_ThinkingBlockPersistsAsItem(t *testing.T) {
 }
 
 // TestE2E_CommandOutputPersistsToPayload: a command_output heavy event is
-// persisted as a command_execution item with payload.
+// persisted as a tool_call item with payload.
 func TestE2E_CommandOutputPersistsToPayload(t *testing.T) {
 	app, _ := setupE2EApp(t)
 	workspace := t.TempDir()
@@ -1069,16 +1125,16 @@ func TestE2E_CommandOutputPersistsToPayload(t *testing.T) {
 	// Seed a turn so LastTurnIndex > 0.
 	if err := app.store.InsertItem(store.Item{
 		ID: "seed", ThreadID: thread.ID, TurnIndex: 1, ItemIndex: 0,
-		Kind: "text", Role: "user", Summary: "seed", CreatedAt: time.Now().UnixMilli(),
+		Kind: "user_text", Role: "user", Summary: "seed", CreatedAt: time.Now().UnixMilli(),
 	}); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 
 	evt := provider.ProviderEvent{
-		Kind:     provider.EventCommandOutput,
-		ThreadID: thread.ID,
-		Content:  "line 1\nline 2\nline 3\n",
-		Meta:     json.RawMessage(`{"command":"ls -la","exitCode":0}`),
+		Kind:      provider.EventCommandOutput,
+		ThreadID:  thread.ID,
+		Content:   "line 1\nline 2\nline 3\n",
+		Meta:      json.RawMessage(`{"command":"ls -la","exitCode":0}`),
 		Timestamp: time.Now(),
 	}
 	if err := app.triage.Handle(evt); err != nil {
@@ -1091,12 +1147,12 @@ func TestE2E_CommandOutputPersistsToPayload(t *testing.T) {
 	}
 	var cmd store.Item
 	for _, it := range items {
-		if it.Kind == string(provider.ItemCommandExecution) {
+		if it.Kind == "tool_call" && it.ToolName == "command_execution" {
 			cmd = it
 		}
 	}
 	if cmd.ID == "" {
-		t.Fatalf("no command_execution item persisted: %+v", items)
+		t.Fatalf("no command tool_call persisted: %+v", items)
 	}
 	if cmd.PayloadID == "" {
 		t.Fatalf("command item missing payload: %+v", cmd)

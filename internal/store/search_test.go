@@ -24,7 +24,7 @@ func mustInsertItemForSearch(t *testing.T, s *Store, threadID, itemID string, tu
 		ThreadID:  threadID,
 		TurnIndex: turnIndex,
 		ItemIndex: 0,
-		Kind:      "text",
+		Kind:      "assistant_text",
 		Role:      "assistant",
 		Summary:   summary,
 		CreatedAt: createdAt,

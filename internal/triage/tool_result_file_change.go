@@ -4,12 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
-	"sort"
 	"strings"
-	"time"
 
 	"agent-overflow/internal/provider"
-	"agent-overflow/internal/store"
 )
 
 const (
@@ -75,110 +72,6 @@ func (r *Router) mergeToolResultPayload(payloadID string, next ToolResultMeta, n
 		return existing, nextDiff
 	}
 	return existing, data
-}
-
-func (r *Router) upgradeSummaryOnlyToolResults(threadID string, turnIndex int, turnDiff string) error {
-	if strings.TrimSpace(turnDiff) == "" {
-		return nil
-	}
-
-	thread, err := r.store.GetThread(threadID)
-	if err != nil {
-		return fmt.Errorf("lookup thread for diff upgrade: %w", err)
-	}
-	items, err := r.store.ListTurnItems(threadID, turnIndex)
-	if err != nil {
-		return fmt.Errorf("list turn items for diff upgrade: %w", err)
-	}
-
-	candidates := make([]toolResultCandidate, 0, len(items))
-	signatureCounts := map[string]int{}
-	for _, item := range items {
-		candidate, ok := r.loadSummaryOnlyToolResultCandidate(item)
-		if !ok {
-			continue
-		}
-		signature := inlineDiffPathSignature(candidate.meta.InlineDiff.Files, thread.WorkspacePath)
-		if signature == "" {
-			continue
-		}
-		candidate.pathSignature = signature
-		candidates = append(candidates, candidate)
-		signatureCounts[signature]++
-	}
-
-	for _, candidate := range candidates {
-		if signatureCounts[candidate.pathSignature] != 1 {
-			continue
-		}
-
-		filtered := filterUnifiedDiffByPaths(turnDiff, candidate.meta.InlineDiff.Files, thread.WorkspacePath)
-		if strings.TrimSpace(filtered) == "" {
-			continue
-		}
-
-		upgraded := buildExactInlineDiff(filtered)
-		if upgraded == nil {
-			continue
-		}
-		candidate.meta.InlineDiff = upgraded
-
-		metaJSON, err := json.Marshal(candidate.meta)
-		if err != nil {
-			return fmt.Errorf("marshal upgraded tool result meta: %w", err)
-		}
-
-		now := time.Now().UnixMilli()
-		if err := r.store.UpsertPayload(store.Payload{
-			ID:        candidate.payloadID,
-			Kind:      toolResultPayloadKind,
-			Meta:      string(metaJSON),
-			Data:      []byte(filtered),
-			CreatedAt: now,
-		}); err != nil {
-			return fmt.Errorf("persist upgraded tool result payload: %w", err)
-		}
-		r.emitPayloadMeta(candidate.payloadID, threadID, toolResultPayloadKind, string(metaJSON), now)
-		if err := r.store.UpdateItemPayload(candidate.item.ID, candidate.payloadID, summarizeToolResult(candidate.meta), now); err != nil {
-			return fmt.Errorf("persist upgraded tool result item: %w", err)
-		}
-	}
-
-	return nil
-}
-
-type toolResultCandidate struct {
-	item          store.Item
-	payloadID     string
-	meta          ToolResultMeta
-	pathSignature string
-}
-
-func (r *Router) loadSummaryOnlyToolResultCandidate(item store.Item) (toolResultCandidate, bool) {
-	if item.Kind != toolResultItemKind || item.PayloadID == "" {
-		return toolResultCandidate{}, false
-	}
-	pm, err := r.store.GetPayloadMeta(item.PayloadID)
-	if err != nil || pm.Kind != toolResultPayloadKind {
-		return toolResultCandidate{}, false
-	}
-
-	var meta ToolResultMeta
-	if json.Unmarshal([]byte(pm.Meta), &meta) != nil {
-		return toolResultCandidate{}, false
-	}
-	if meta.ItemType != "file_change" || meta.InlineDiff == nil || meta.InlineDiff.Availability != "summary_only" {
-		return toolResultCandidate{}, false
-	}
-	if len(meta.InlineDiff.Files) == 0 {
-		return toolResultCandidate{}, false
-	}
-
-	return toolResultCandidate{
-		item:      item,
-		payloadID: item.PayloadID,
-		meta:      meta,
-	}, true
 }
 
 func extractFileChangeToolResult(raw json.RawMessage, workspaceRoot string) (ToolResultMeta, []byte, bool) {
@@ -344,146 +237,6 @@ func buildUnifiedPatch(change fileChange) (string, bool) {
 	return strings.Join(append(header, hunk), "\n"), true
 }
 
-func buildExactInlineDiff(diff string) *ToolInlineDiff {
-	sections := splitUnifiedDiffSections(diff)
-	if len(sections) == 0 {
-		return nil
-	}
-
-	files := make([]ToolInlineDiffFile, 0, len(sections))
-	insertions := 0
-	deletions := 0
-	for _, section := range sections {
-		meta := ExtractDiffMeta(section)
-		path := strings.TrimSpace(meta.FilePath)
-		if path == "" {
-			continue
-		}
-		files = append(files, ToolInlineDiffFile{
-			Path:       path,
-			Kind:       meta.ChangeKind,
-			Insertions: meta.Insertions,
-			Deletions:  meta.Deletions,
-		})
-		insertions += meta.Insertions
-		deletions += meta.Deletions
-	}
-	if len(files) == 0 {
-		return nil
-	}
-	return &ToolInlineDiff{
-		Availability: "exact_patch",
-		Files:        files,
-		Insertions:   insertions,
-		Deletions:    deletions,
-	}
-}
-
-func splitUnifiedDiffSections(diff string) []string {
-	lines := strings.Split(strings.TrimSpace(diff), "\n")
-	var sections []string
-	var current []string
-
-	for _, line := range lines {
-		if strings.HasPrefix(line, "diff --git ") {
-			if len(current) > 0 {
-				sections = append(sections, strings.Join(current, "\n"))
-			}
-			current = []string{line}
-			continue
-		}
-		if len(current) == 0 {
-			continue
-		}
-		current = append(current, line)
-	}
-	if len(current) > 0 {
-		sections = append(sections, strings.Join(current, "\n"))
-	}
-	return sections
-}
-
-func filterUnifiedDiffByPaths(diff string, files []ToolInlineDiffFile, workspaceRoot string) string {
-	if len(files) == 0 {
-		return ""
-	}
-
-	allowed := make(map[string]struct{}, len(files))
-	for _, file := range files {
-		path := normalizeToolPath(file.Path, workspaceRoot)
-		if path != "" {
-			allowed[path] = struct{}{}
-		}
-	}
-
-	var sections []string
-	for _, section := range splitUnifiedDiffSections(diff) {
-		if toolDiffSectionAllowed(section, allowed, workspaceRoot) {
-			sections = append(sections, section)
-		}
-	}
-	return strings.Join(sections, "\n")
-}
-
-func toolDiffSectionAllowed(section string, allowed map[string]struct{}, workspaceRoot string) bool {
-	for _, path := range diffSectionPaths(section, workspaceRoot) {
-		if _, ok := allowed[path]; ok {
-			return true
-		}
-	}
-	return false
-}
-
-func diffSectionPaths(section string, workspaceRoot string) []string {
-	var paths []string
-	for _, line := range strings.Split(section, "\n") {
-		switch {
-		case strings.HasPrefix(line, "+++ b/"):
-			paths = append(paths, normalizeToolPath(strings.TrimPrefix(line, "+++ b/"), workspaceRoot))
-		case strings.HasPrefix(line, "rename to "):
-			paths = append(paths, normalizeToolPath(strings.TrimPrefix(line, "rename to "), workspaceRoot))
-		case strings.HasPrefix(line, "diff --git "):
-			fields := strings.Fields(line)
-			if len(fields) >= 4 {
-				paths = append(paths, normalizeToolPath(strings.TrimPrefix(fields[3], "b/"), workspaceRoot))
-			}
-		}
-	}
-	return uniqueNonEmpty(paths)
-}
-
-func inlineDiffPathSignature(files []ToolInlineDiffFile, workspaceRoot string) string {
-	paths := make([]string, 0, len(files))
-	for _, file := range files {
-		path := normalizeToolPath(file.Path, workspaceRoot)
-		if path != "" {
-			paths = append(paths, path)
-		}
-	}
-	if len(paths) == 0 {
-		return ""
-	}
-	sort.Strings(paths)
-	return strings.Join(paths, "|")
-}
-
-func normalizeToolPath(rawPath, workspaceRoot string) string {
-	rawPath = strings.TrimSpace(rawPath)
-	if rawPath == "" {
-		return ""
-	}
-
-	cleanPath := filepath.Clean(rawPath)
-	if workspaceRoot != "" && filepath.IsAbs(cleanPath) {
-		cleanRoot := filepath.Clean(workspaceRoot)
-		rel, err := filepath.Rel(cleanRoot, cleanPath)
-		if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			cleanPath = rel
-		}
-	}
-	return filepath.ToSlash(cleanPath)
-}
-
 func normalizeChangeKind(raw json.RawMessage) string {
 	var value string
 	if json.Unmarshal(raw, &value) == nil {
@@ -562,6 +315,23 @@ func toolResultPayloadID(itemID string) string {
 
 func hasExactToolInlineDiff(inlineDiff *ToolInlineDiff) bool {
 	return inlineDiff != nil && inlineDiff.Availability == "exact_patch"
+}
+
+func normalizeToolPath(rawPath, workspaceRoot string) string {
+	rawPath = strings.TrimSpace(rawPath)
+	if rawPath == "" {
+		return ""
+	}
+
+	cleanPath := filepath.Clean(rawPath)
+	if workspaceRoot != "" && filepath.IsAbs(cleanPath) {
+		cleanRoot := filepath.Clean(workspaceRoot)
+		rel, err := filepath.Rel(cleanRoot, cleanPath)
+		if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			cleanPath = rel
+		}
+	}
+	return filepath.ToSlash(cleanPath)
 }
 
 func uniqueNonEmpty(values []string) []string {

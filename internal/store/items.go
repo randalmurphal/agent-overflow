@@ -9,9 +9,11 @@ import (
 // itemColumns is the canonical SELECT projection for scanItemRow. Keep in sync
 // with the Item struct; adding a column means updating this list, the
 // INSERT sites below, and scanItemRow together.
-const itemColumns = `id, thread_id, turn_index, item_index, kind, role, summary,
-    COALESCE(payload_id, ''), parent_tool_use_id,
-    status, is_background, completion_of_item_id, created_at`
+const itemColumns = `items.id, items.thread_id, items.turn_index, items.item_index,
+    items.kind, items.role, items.status, items.summary,
+    COALESCE(items.payload_id, ''), COALESCE(payloads.kind, ''), COALESCE(payloads.meta, ''),
+    items.parent_id, items.is_background, items.completion_of,
+    items.tool_name, items.decision, items.meta, items.created_at, items.updated_at`
 
 // scanItemRow accepts either *sql.Row or *sql.Rows via the common
 // Scan(...any) error surface and hydrates one Item. Centralising the
@@ -21,9 +23,11 @@ func scanItemRow(scanner interface{ Scan(...any) error }) (Item, error) {
 	var it Item
 	var isBackground int
 	if err := scanner.Scan(
-		&it.ID, &it.ThreadID, &it.TurnIndex, &it.ItemIndex, &it.Kind,
-		&it.Role, &it.Summary, &it.PayloadID, &it.ParentToolUseID,
-		&it.Status, &isBackground, &it.CompletionOfItemID, &it.CreatedAt,
+		&it.ID, &it.ThreadID, &it.TurnIndex, &it.ItemIndex,
+		&it.Kind, &it.Role, &it.Status, &it.Summary,
+		&it.PayloadID, &it.PayloadKind, &it.PayloadMeta,
+		&it.ParentID, &isBackground, &it.CompletionOf,
+		&it.ToolName, &it.Decision, &it.Meta, &it.CreatedAt, &it.UpdatedAt,
 	); err != nil {
 		return Item{}, err
 	}
@@ -44,7 +48,29 @@ func defaultStatus(s string) string {
 	return s
 }
 
+func defaultItemMeta(meta string) string {
+	if meta == "" {
+		return "{}"
+	}
+	return meta
+}
+
+func applyItemDefaults(item *Item) {
+	if item == nil {
+		return
+	}
+	item.Status = defaultStatus(item.Status)
+	item.Meta = defaultItemMeta(item.Meta)
+	if item.CreatedAt == 0 {
+		item.CreatedAt = nowMillis()
+	}
+	if item.UpdatedAt == 0 {
+		item.UpdatedAt = item.CreatedAt
+	}
+}
+
 func (s *Store) InsertItem(item Item) error {
+	applyItemDefaults(&item)
 	tx, err := s.db.Begin()
 	if err != nil {
 		return fmt.Errorf("store: begin insert item tx: %w", err)
@@ -52,19 +78,20 @@ func (s *Store) InsertItem(item Item) error {
 	defer tx.Rollback()
 
 	_, err = tx.Exec(
-		`INSERT INTO items (id, thread_id, turn_index, item_index, kind, role, summary,
-		    payload_id, parent_tool_use_id, status, is_background, completion_of_item_id, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		item.ID, item.ThreadID, item.TurnIndex, item.ItemIndex, item.Kind, item.Role, item.Summary,
-		nilIfEmpty(item.PayloadID), item.ParentToolUseID,
-		defaultStatus(item.Status), boolToInt(item.IsBackground), item.CompletionOfItemID,
-		item.CreatedAt,
+		`INSERT INTO items (id, thread_id, turn_index, item_index, kind, role, status, summary,
+		    payload_id, parent_id, is_background, completion_of, tool_name, decision, meta,
+		    created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		item.ID, item.ThreadID, item.TurnIndex, item.ItemIndex, item.Kind, item.Role, item.Status, item.Summary,
+		nilIfEmpty(item.PayloadID), item.ParentID,
+		boolToInt(item.IsBackground), item.CompletionOf, item.ToolName, item.Decision, item.Meta,
+		item.CreatedAt, item.UpdatedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("store: insert item: %w", err)
 	}
 	// Touch the parent thread's updated_at.
-	if _, err := tx.Exec(`UPDATE threads SET updated_at = ? WHERE id = ?`, item.CreatedAt, item.ThreadID); err != nil {
+	if _, err := tx.Exec(`UPDATE threads SET updated_at = ? WHERE id = ?`, item.UpdatedAt, item.ThreadID); err != nil {
 		return fmt.Errorf("store: touch thread updated_at for %s: %w", item.ThreadID, err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -85,6 +112,7 @@ func (s *Store) InsertItem(item Item) error {
 // control the exact index (e.g. CloneThreadItems preserving source
 // ordering, migrations replaying a fixed sequence).
 func (s *Store) AppendItem(item Item) (int, error) {
+	applyItemDefaults(&item)
 	tx, err := s.db.Begin()
 	if err != nil {
 		return 0, fmt.Errorf("store: begin append item tx: %w", err)
@@ -105,19 +133,20 @@ func (s *Store) AppendItem(item Item) (int, error) {
 	item.ItemIndex = next
 
 	if _, err := tx.Exec(
-		`INSERT INTO items (id, thread_id, turn_index, item_index, kind, role, summary,
-		    payload_id, parent_tool_use_id, status, is_background, completion_of_item_id, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		item.ID, item.ThreadID, item.TurnIndex, item.ItemIndex, item.Kind, item.Role, item.Summary,
-		nilIfEmpty(item.PayloadID), item.ParentToolUseID,
-		defaultStatus(item.Status), boolToInt(item.IsBackground), item.CompletionOfItemID,
-		item.CreatedAt,
+		`INSERT INTO items (id, thread_id, turn_index, item_index, kind, role, status, summary,
+		    payload_id, parent_id, is_background, completion_of, tool_name, decision, meta,
+		    created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		item.ID, item.ThreadID, item.TurnIndex, item.ItemIndex, item.Kind, item.Role, item.Status, item.Summary,
+		nilIfEmpty(item.PayloadID), item.ParentID,
+		boolToInt(item.IsBackground), item.CompletionOf, item.ToolName, item.Decision, item.Meta,
+		item.CreatedAt, item.UpdatedAt,
 	); err != nil {
 		return 0, fmt.Errorf("store: append item insert: %w", err)
 	}
 	if _, err := tx.Exec(
 		`UPDATE threads SET updated_at = ? WHERE id = ?`,
-		item.CreatedAt, item.ThreadID,
+		item.UpdatedAt, item.ThreadID,
 	); err != nil {
 		return 0, fmt.Errorf("store: append item touch thread %s: %w", item.ThreadID, err)
 	}
@@ -127,12 +156,106 @@ func (s *Store) AppendItem(item Item) (int, error) {
 	return next, nil
 }
 
+func (s *Store) UpsertItem(item Item, payload *Payload) (Item, error) {
+	applyItemDefaults(&item)
+	tx, err := s.db.Begin()
+	if err != nil {
+		return Item{}, fmt.Errorf("store: begin upsert item tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	if payload != nil {
+		if _, err := tx.Exec(
+			`INSERT OR REPLACE INTO payloads (id, kind, meta, data, created_at)
+			 VALUES (?, ?, ?, ?, ?)`,
+			payload.ID, payload.Kind, payload.Meta, payload.Data, payload.CreatedAt,
+		); err != nil {
+			return Item{}, fmt.Errorf("store: upsert item payload %s: %w", payload.ID, err)
+		}
+		item.PayloadID = payload.ID
+	}
+
+	var existingItemIndex int
+	var existingCreatedAt int64
+	row := tx.QueryRow(
+		`SELECT item_index, created_at FROM items WHERE thread_id = ? AND id = ?`,
+		item.ThreadID, item.ID,
+	)
+	switch err := row.Scan(&existingItemIndex, &existingCreatedAt); err {
+	case nil:
+		item.ItemIndex = existingItemIndex
+		item.CreatedAt = existingCreatedAt
+		if _, err := tx.Exec(
+			`UPDATE items
+			 SET turn_index = ?, kind = ?, role = ?, status = ?, summary = ?,
+			     payload_id = ?, parent_id = ?, is_background = ?, completion_of = ?,
+			     tool_name = ?, decision = ?, meta = ?, updated_at = ?
+			 WHERE thread_id = ? AND id = ?`,
+			item.TurnIndex, item.Kind, item.Role, item.Status, item.Summary,
+			nilIfEmpty(item.PayloadID), item.ParentID, boolToInt(item.IsBackground), item.CompletionOf,
+			item.ToolName, item.Decision, item.Meta, item.UpdatedAt, item.ThreadID, item.ID,
+		); err != nil {
+			return Item{}, fmt.Errorf("store: update item %s: %w", item.ID, err)
+		}
+	case sql.ErrNoRows:
+		var maxIndex sql.NullInt64
+		if err := tx.QueryRow(
+			`SELECT MAX(item_index) FROM items WHERE thread_id = ? AND turn_index = ?`,
+			item.ThreadID, item.TurnIndex,
+		).Scan(&maxIndex); err != nil {
+			return Item{}, fmt.Errorf("store: upsert item next index: %w", err)
+		}
+		item.ItemIndex = 0
+		if maxIndex.Valid {
+			item.ItemIndex = int(maxIndex.Int64) + 1
+		}
+		if _, err := tx.Exec(
+			`INSERT INTO items (id, thread_id, turn_index, item_index, kind, role, status, summary,
+			    payload_id, parent_id, is_background, completion_of, tool_name, decision, meta,
+			    created_at, updated_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			item.ID, item.ThreadID, item.TurnIndex, item.ItemIndex, item.Kind, item.Role, item.Status, item.Summary,
+			nilIfEmpty(item.PayloadID), item.ParentID, boolToInt(item.IsBackground), item.CompletionOf,
+			item.ToolName, item.Decision, item.Meta, item.CreatedAt, item.UpdatedAt,
+		); err != nil {
+			return Item{}, fmt.Errorf("store: insert item %s: %w", item.ID, err)
+		}
+	default:
+		return Item{}, fmt.Errorf("store: upsert item lookup %s: %w", item.ID, err)
+	}
+
+	if _, err := tx.Exec(
+		`UPDATE threads SET updated_at = ? WHERE id = ?`,
+		item.UpdatedAt, item.ThreadID,
+	); err != nil {
+		return Item{}, fmt.Errorf("store: touch thread updated_at for %s: %w", item.ThreadID, err)
+	}
+
+	row = tx.QueryRow(
+		`SELECT `+itemColumns+`
+		   FROM items
+		   LEFT JOIN payloads ON payloads.id = items.payload_id
+		  WHERE items.thread_id = ? AND items.id = ?`,
+		item.ThreadID, item.ID,
+	)
+	persisted, err := scanItemRow(row)
+	if err != nil {
+		return Item{}, fmt.Errorf("store: re-read upserted item %s: %w", item.ID, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return Item{}, fmt.Errorf("store: commit upsert item tx: %w", err)
+	}
+	return persisted, nil
+}
+
 func (s *Store) ListItems(threadID string) ([]Item, error) {
 	rows, err := s.db.Query(
-		`SELECT id, thread_id, turn_index, item_index, kind, role, summary,
-		    COALESCE(payload_id, ''), parent_tool_use_id,
-		    status, is_background, completion_of_item_id, created_at
-		 FROM items WHERE thread_id = ? ORDER BY turn_index, item_index`, threadID,
+		`SELECT `+itemColumns+`
+		   FROM items
+		   LEFT JOIN payloads ON payloads.id = items.payload_id
+		  WHERE items.thread_id = ?
+		  ORDER BY items.turn_index, items.item_index`,
+		threadID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("store: list items for thread %s: %w", threadID, err)
@@ -206,12 +329,11 @@ func (s *Store) HasItems(threadID string) (bool, error) {
 
 func (s *Store) FindTurnItem(threadID string, turnIndex int, kind string) (Item, bool, error) {
 	row := s.db.QueryRow(
-		`SELECT id, thread_id, turn_index, item_index, kind, role, summary,
-		    COALESCE(payload_id, ''), parent_tool_use_id,
-		    status, is_background, completion_of_item_id, created_at
-		 FROM items
-		 WHERE thread_id = ? AND turn_index = ? AND kind = ?
-		 ORDER BY item_index DESC
+		`SELECT `+itemColumns+`
+		   FROM items
+		   LEFT JOIN payloads ON payloads.id = items.payload_id
+		  WHERE items.thread_id = ? AND items.turn_index = ? AND items.kind = ?
+		 ORDER BY items.item_index DESC
 		 LIMIT 1`,
 		threadID, turnIndex, kind,
 	)
@@ -228,11 +350,12 @@ func (s *Store) FindTurnItem(threadID string, turnIndex int, kind string) (Item,
 
 func (s *Store) GetItem(id string) (Item, bool, error) {
 	row := s.db.QueryRow(
-		`SELECT id, thread_id, turn_index, item_index, kind, role, summary,
-		    COALESCE(payload_id, ''), parent_tool_use_id,
-		    status, is_background, completion_of_item_id, created_at
-		 FROM items
-		 WHERE id = ?`,
+		`SELECT `+itemColumns+`
+		   FROM items
+		   LEFT JOIN payloads ON payloads.id = items.payload_id
+		  WHERE items.id = ?
+		  ORDER BY items.created_at DESC
+		  LIMIT 1`,
 		id,
 	)
 
@@ -246,14 +369,32 @@ func (s *Store) GetItem(id string) (Item, bool, error) {
 	return item, true, nil
 }
 
+func (s *Store) GetThreadItem(threadID, id string) (Item, bool, error) {
+	row := s.db.QueryRow(
+		`SELECT `+itemColumns+`
+		   FROM items
+		   LEFT JOIN payloads ON payloads.id = items.payload_id
+		  WHERE items.thread_id = ? AND items.id = ?`,
+		threadID, id,
+	)
+
+	item, err := scanItemRow(row)
+	if err == sql.ErrNoRows {
+		return Item{}, false, nil
+	}
+	if err != nil {
+		return Item{}, false, fmt.Errorf("store: get item %s on thread %s: %w", id, threadID, err)
+	}
+	return item, true, nil
+}
+
 func (s *Store) ListTurnItems(threadID string, turnIndex int) ([]Item, error) {
 	rows, err := s.db.Query(
-		`SELECT id, thread_id, turn_index, item_index, kind, role, summary,
-		    COALESCE(payload_id, ''), parent_tool_use_id,
-		    status, is_background, completion_of_item_id, created_at
-		 FROM items
-		 WHERE thread_id = ? AND turn_index = ?
-		 ORDER BY item_index`,
+		`SELECT `+itemColumns+`
+		   FROM items
+		   LEFT JOIN payloads ON payloads.id = items.payload_id
+		  WHERE items.thread_id = ? AND items.turn_index = ?
+		 ORDER BY items.item_index`,
 		threadID, turnIndex,
 	)
 	if err != nil {
@@ -338,7 +479,7 @@ func (s *Store) UpdateItemPayload(id, payloadID, summary string, createdAt int64
 	defer tx.Rollback()
 
 	result, err := tx.Exec(
-		`UPDATE items SET payload_id = ?, summary = ?, created_at = ? WHERE id = ?`,
+		`UPDATE items SET payload_id = ?, summary = ?, updated_at = ? WHERE id = ?`,
 		nilIfEmpty(payloadID), summary, createdAt, id,
 	)
 	if err != nil {
@@ -353,7 +494,7 @@ func (s *Store) UpdateItemPayload(id, payloadID, summary string, createdAt int64
 
 	threadResult, err := tx.Exec(`UPDATE threads SET updated_at = ? WHERE id = (
 		SELECT thread_id FROM items WHERE id = ?
-	)`, createdAt, id)
+		)`, createdAt, id)
 	if err != nil {
 		return fmt.Errorf("store: touch thread updated_at for item %s: %w", id, err)
 	}
@@ -393,7 +534,7 @@ func (s *Store) UpdateItemStatus(id, status, summary, payloadID string, createdA
 
 	result, err := tx.Exec(
 		`UPDATE items
-		 SET status = ?, summary = ?, payload_id = ?, created_at = ?
+		 SET status = ?, summary = ?, payload_id = ?, updated_at = ?
 		 WHERE id = ?`,
 		status, summary, nilIfEmpty(payloadID), createdAt, id,
 	)
@@ -431,9 +572,9 @@ func (s *Store) UpdateItemStatus(id, status, summary, payloadID string, createdA
 
 // AppendCompletionItem writes the second row of a backgrounded tool-call
 // pair: the caller passes the launch row (already persisted, used only to
-// stamp the new row's CompletionOfItemID) and the completion row that
+// stamp the new row's CompletionOf) and the completion row that
 // should land next in the timeline. The completion row always lands with
-// IsBackground=true and CompletionOfItemID=launch.ID, overriding whatever
+// IsBackground=true and CompletionOf=launch.ID, overriding whatever
 // the caller may have pre-set on those fields — that invariant is the
 // whole point of this API.
 //
@@ -449,13 +590,14 @@ func (s *Store) UpdateItemStatus(id, status, summary, payloadID string, createdA
 //
 // Returns the assigned item_index.
 func (s *Store) AppendCompletionItem(launch Item, completion Item, completionPayload *Payload) (int, error) {
+	applyItemDefaults(&completion)
 	tx, err := s.db.Begin()
 	if err != nil {
 		return 0, fmt.Errorf("store: begin append completion item tx: %w", err)
 	}
 	defer tx.Rollback()
 
-	completion.CompletionOfItemID = launch.ID
+	completion.CompletionOf = launch.ID
 	completion.IsBackground = true
 	completion.ThreadID = launch.ThreadID
 
@@ -485,21 +627,23 @@ func (s *Store) AppendCompletionItem(launch Item, completion Item, completionPay
 	}
 
 	if _, err := tx.Exec(
-		`INSERT INTO items (id, thread_id, turn_index, item_index, kind, role, summary,
-		    payload_id, parent_tool_use_id, status, is_background, completion_of_item_id, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO items (id, thread_id, turn_index, item_index, kind, role, status, summary,
+		    payload_id, parent_id, is_background, completion_of, tool_name, decision, meta,
+		    created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		completion.ID, completion.ThreadID, completion.TurnIndex, completion.ItemIndex,
-		completion.Kind, completion.Role, completion.Summary,
-		nilIfEmpty(completion.PayloadID), completion.ParentToolUseID,
-		defaultStatus(completion.Status), boolToInt(completion.IsBackground),
-		completion.CompletionOfItemID, completion.CreatedAt,
+		completion.Kind, completion.Role, completion.Status, completion.Summary,
+		nilIfEmpty(completion.PayloadID), completion.ParentID,
+		boolToInt(completion.IsBackground), completion.CompletionOf,
+		completion.ToolName, completion.Decision, completion.Meta,
+		completion.CreatedAt, completion.UpdatedAt,
 	); err != nil {
 		return 0, fmt.Errorf("store: append completion item insert: %w", err)
 	}
 
 	if _, err := tx.Exec(
 		`UPDATE threads SET updated_at = ? WHERE id = ?`,
-		completion.CreatedAt, completion.ThreadID,
+		completion.UpdatedAt, completion.ThreadID,
 	); err != nil {
 		return 0, fmt.Errorf("store: append completion touch thread %s: %w", completion.ThreadID, err)
 	}

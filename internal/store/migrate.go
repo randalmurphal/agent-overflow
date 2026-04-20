@@ -417,6 +417,85 @@ CREATE INDEX IF NOT EXISTS idx_items_completion_of
     ON items(thread_id, completion_of_item_id) WHERE completion_of_item_id <> '';
 `,
 	},
+	{
+		Version: 15,
+		Name:    "chat_rewrite_unified_items",
+		SQL: `
+ALTER TABLE threads ADD COLUMN last_token_usage TEXT NOT NULL DEFAULT '';
+
+DROP TRIGGER IF EXISTS trg_items_gc_payload;
+DROP TABLE IF EXISTS items;
+DROP TABLE IF EXISTS payloads;
+
+CREATE TABLE payloads (
+    id         TEXT PRIMARY KEY,
+    kind       TEXT NOT NULL,
+    meta       TEXT NOT NULL DEFAULT '{}',
+    data       BLOB NOT NULL,
+    created_at INTEGER NOT NULL
+);
+
+CREATE TABLE items (
+    id            TEXT    NOT NULL,
+    thread_id     TEXT    NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+    turn_index    INTEGER NOT NULL,
+    item_index    INTEGER NOT NULL,
+    kind          TEXT    NOT NULL CHECK(kind IN (
+        'user_text',
+        'assistant_text',
+        'thinking',
+        'tool_call',
+        'tool_completion',
+        'error',
+        'compaction'
+    )),
+    role          TEXT    NOT NULL CHECK(role IN ('assistant', 'user', 'system')),
+    status        TEXT    NOT NULL DEFAULT 'completed' CHECK(status IN (
+        'streaming',
+        'running',
+        'completed',
+        'errored',
+        'declined'
+    )),
+    summary       TEXT    NOT NULL DEFAULT '',
+    payload_id    TEXT    REFERENCES payloads(id),
+    parent_id     TEXT    NOT NULL DEFAULT '',
+    is_background INTEGER NOT NULL DEFAULT 0 CHECK(is_background IN (0, 1)),
+    completion_of TEXT    NOT NULL DEFAULT '',
+    tool_name     TEXT    NOT NULL DEFAULT '',
+    decision      TEXT    NOT NULL DEFAULT '' CHECK(decision IN (
+        '',
+        'approved',
+        'declined',
+        'amended',
+        'timeout',
+        'lost'
+    )),
+    meta          TEXT    NOT NULL DEFAULT '{}',
+    created_at    INTEGER NOT NULL,
+    updated_at    INTEGER NOT NULL,
+    PRIMARY KEY (thread_id, id)
+);
+
+CREATE INDEX idx_items_thread            ON items(thread_id, turn_index, item_index);
+CREATE INDEX idx_items_id                ON items(id);
+CREATE UNIQUE INDEX idx_items_thread_turn_item_unique
+    ON items(thread_id, turn_index, item_index);
+CREATE INDEX idx_items_parent            ON items(thread_id, parent_id) WHERE parent_id <> '';
+CREATE INDEX idx_items_completion_of     ON items(thread_id, completion_of) WHERE completion_of <> '';
+
+CREATE TRIGGER trg_items_gc_payload
+AFTER DELETE ON items
+WHEN OLD.payload_id IS NOT NULL
+BEGIN
+    DELETE FROM payloads
+     WHERE id = OLD.payload_id
+       AND NOT EXISTS (
+           SELECT 1 FROM items WHERE payload_id = OLD.payload_id
+       );
+END;
+`,
+	},
 }
 
 // v13SQL is the DROP-and-rebuild payload for migration v13. Extracted so

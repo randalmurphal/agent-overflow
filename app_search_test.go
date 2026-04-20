@@ -51,7 +51,7 @@ func TestSearchThreadMessagesBindingSurfacesResults(t *testing.T) {
 	}
 	if err := app.store.InsertItem(store.Item{
 		ID: "i1", ThreadID: "t1", TurnIndex: 0, ItemIndex: 0,
-		Kind: "text", Role: "assistant", Summary: "found a bug",
+		Kind: "assistant_text", Role: "assistant", Summary: "found a bug",
 		CreatedAt: now,
 	}); err != nil {
 		t.Fatalf("insert item: %v", err)

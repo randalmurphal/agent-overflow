@@ -10,14 +10,17 @@ import {
 import type { Item } from '../types/models';
 
 function mkItem(overrides: Partial<Item> & { id: string }): Item {
+  const createdAt = overrides.createdAt ?? 0;
   return {
     threadId: 'thread-1',
     turnIndex: 0,
     itemIndex: 0,
-    kind: 'message',
+    kind: 'assistant_text',
     role: 'assistant',
+    status: 'completed',
     summary: '',
-    createdAt: 0,
+    createdAt,
+    updatedAt: overrides.updatedAt ?? createdAt,
     ...overrides,
   };
 }
@@ -41,7 +44,7 @@ describe('groupItemsBySubagent', () => {
     expect(groupItemsBySubagent([])).toEqual([]);
   });
 
-  it('returns only leaves when no item has a parentToolUseId', () => {
+  it('returns only leaves when no item has a parentId', () => {
     const items = [
       mkItem({ id: 'a', itemIndex: 0, summary: 'one' }),
       mkItem({ id: 'b', itemIndex: 1, summary: 'two' }),
@@ -57,10 +60,10 @@ describe('groupItemsBySubagent', () => {
 
   it('nests three children under a single subagent parent', () => {
     const items = [
-      mkItem({ id: 'parent', itemIndex: 0, kind: 'tool_result', summary: 'Task: refactor' }),
-      mkItem({ id: 'child-1', itemIndex: 1, parentToolUseId: 'parent', summary: 'reading file' }),
-      mkItem({ id: 'child-2', itemIndex: 2, parentToolUseId: 'parent', summary: 'editing lines' }),
-      mkItem({ id: 'child-3', itemIndex: 3, parentToolUseId: 'parent', summary: 'final reply' }),
+      mkItem({ id: 'parent', itemIndex: 0, kind: 'tool_call', summary: 'Task: refactor' }),
+      mkItem({ id: 'child-1', itemIndex: 1, parentId: 'parent', summary: 'reading file' }),
+      mkItem({ id: 'child-2', itemIndex: 2, parentId: 'parent', summary: 'editing lines' }),
+      mkItem({ id: 'child-3', itemIndex: 3, parentId: 'parent', summary: 'final reply' }),
     ];
     const nodes = groupItemsBySubagent(items);
     expect(nodes).toHaveLength(1);
@@ -82,9 +85,9 @@ describe('groupItemsBySubagent', () => {
     // Feed items out of order; the group should still emerge in
     // (turnIndex, itemIndex) order.
     const items = [
-      mkItem({ id: 'child-b', itemIndex: 3, parentToolUseId: 'parent', summary: 'second' }),
-      mkItem({ id: 'parent', itemIndex: 1, kind: 'tool_result', summary: 'task' }),
-      mkItem({ id: 'child-a', itemIndex: 2, parentToolUseId: 'parent', summary: 'first' }),
+      mkItem({ id: 'child-b', itemIndex: 3, parentId: 'parent', summary: 'second' }),
+      mkItem({ id: 'parent', itemIndex: 1, kind: 'tool_call', summary: 'task' }),
+      mkItem({ id: 'child-a', itemIndex: 2, parentId: 'parent', summary: 'first' }),
     ];
     const nodes = groupItemsBySubagent(items);
     expect(nodes).toHaveLength(1);
@@ -94,10 +97,10 @@ describe('groupItemsBySubagent', () => {
 
   it('nests grandchildren inside child groups (parent -> child -> grandchild)', () => {
     const items = [
-      mkItem({ id: 'root', itemIndex: 0, kind: 'tool_result', summary: 'outer task' }),
-      mkItem({ id: 'mid', itemIndex: 1, parentToolUseId: 'root', kind: 'tool_result', summary: 'inner task' }),
-      mkItem({ id: 'leaf', itemIndex: 2, parentToolUseId: 'mid', summary: 'deep work' }),
-      mkItem({ id: 'root-sib', itemIndex: 3, parentToolUseId: 'root', summary: 'root sibling' }),
+      mkItem({ id: 'root', itemIndex: 0, kind: 'tool_call', summary: 'outer task' }),
+      mkItem({ id: 'mid', itemIndex: 1, parentId: 'root', kind: 'tool_call', summary: 'inner task' }),
+      mkItem({ id: 'leaf', itemIndex: 2, parentId: 'mid', summary: 'deep work' }),
+      mkItem({ id: 'root-sib', itemIndex: 3, parentId: 'root', summary: 'root sibling' }),
     ];
     const nodes = groupItemsBySubagent(items);
     expect(nodes).toHaveLength(1);
@@ -121,7 +124,7 @@ describe('groupItemsBySubagent', () => {
       mkItem({
         id: 'orphan',
         itemIndex: 1,
-        parentToolUseId: 'missing-tool-id',
+        parentId: 'missing-tool-id',
         summary: 'had a parent once',
       }),
     ];
@@ -137,11 +140,11 @@ describe('groupItemsBySubagent', () => {
     // Build a chain 5 levels deep: L0 (root) -> L1 -> L2 -> L3 -> L4.
     // With MAX_DEPTH=3, we expect: L0(group) > L1(group) > L2(group with L3,L4 as flat leaves).
     const items = [
-      mkItem({ id: 'L0', itemIndex: 0, kind: 'tool_result', summary: 'depth 0' }),
-      mkItem({ id: 'L1', itemIndex: 1, parentToolUseId: 'L0', kind: 'tool_result', summary: 'depth 1' }),
-      mkItem({ id: 'L2', itemIndex: 2, parentToolUseId: 'L1', kind: 'tool_result', summary: 'depth 2' }),
-      mkItem({ id: 'L3', itemIndex: 3, parentToolUseId: 'L2', kind: 'tool_result', summary: 'depth 3' }),
-      mkItem({ id: 'L4', itemIndex: 4, parentToolUseId: 'L3', summary: 'depth 4' }),
+      mkItem({ id: 'L0', itemIndex: 0, kind: 'tool_call', summary: 'depth 0' }),
+      mkItem({ id: 'L1', itemIndex: 1, parentId: 'L0', kind: 'tool_call', summary: 'depth 1' }),
+      mkItem({ id: 'L2', itemIndex: 2, parentId: 'L1', kind: 'tool_call', summary: 'depth 2' }),
+      mkItem({ id: 'L3', itemIndex: 3, parentId: 'L2', kind: 'tool_call', summary: 'depth 3' }),
+      mkItem({ id: 'L4', itemIndex: 4, parentId: 'L3', summary: 'depth 4' }),
     ];
     const nodes = groupItemsBySubagent(items);
     expect(nodes).toHaveLength(1);
@@ -164,8 +167,8 @@ describe('groupItemsBySubagent', () => {
   it('bounds the aggregate preview at MAX_PREVIEW_CHARS', () => {
     const bigText = 'x'.repeat(MAX_PREVIEW_CHARS * 4);
     const items = [
-      mkItem({ id: 'parent', itemIndex: 0, kind: 'tool_result', summary: 'Task' }),
-      mkItem({ id: 'child', itemIndex: 1, parentToolUseId: 'parent', summary: bigText }),
+      mkItem({ id: 'parent', itemIndex: 0, kind: 'tool_call', summary: 'Task' }),
+      mkItem({ id: 'child', itemIndex: 1, parentId: 'parent', summary: bigText }),
     ];
     const group = expectGroup(groupItemsBySubagent(items)[0]);
     expect(group.preview.length).toBeLessThanOrEqual(MAX_PREVIEW_CHARS + 10);
@@ -174,10 +177,10 @@ describe('groupItemsBySubagent', () => {
 
   it('handles two unrelated subagents in the same turn without interference', () => {
     const items = [
-      mkItem({ id: 'p1', itemIndex: 0, kind: 'tool_result', summary: 'task 1' }),
-      mkItem({ id: 'c1', itemIndex: 1, parentToolUseId: 'p1', summary: 'child of 1' }),
-      mkItem({ id: 'p2', itemIndex: 2, kind: 'tool_result', summary: 'task 2' }),
-      mkItem({ id: 'c2', itemIndex: 3, parentToolUseId: 'p2', summary: 'child of 2' }),
+      mkItem({ id: 'p1', itemIndex: 0, kind: 'tool_call', summary: 'task 1' }),
+      mkItem({ id: 'c1', itemIndex: 1, parentId: 'p1', summary: 'child of 1' }),
+      mkItem({ id: 'p2', itemIndex: 2, kind: 'tool_call', summary: 'task 2' }),
+      mkItem({ id: 'c2', itemIndex: 3, parentId: 'p2', summary: 'child of 2' }),
       mkItem({ id: 'final', itemIndex: 4, summary: 'parent wrap-up' }),
     ];
     const nodes = groupItemsBySubagent(items);
@@ -189,8 +192,8 @@ describe('groupItemsBySubagent', () => {
 
   it('does not mutate the input items array or individual item objects', () => {
     const items = [
-      mkItem({ id: 'p', itemIndex: 0, kind: 'tool_result', summary: 'task' }),
-      mkItem({ id: 'c', itemIndex: 1, parentToolUseId: 'p', summary: 'child' }),
+      mkItem({ id: 'p', itemIndex: 0, kind: 'tool_call', summary: 'task' }),
+      mkItem({ id: 'c', itemIndex: 1, parentId: 'p', summary: 'child' }),
     ];
     const frozenInput = Object.freeze(items.slice());
     const snapshotJSON = JSON.stringify(items);
@@ -201,20 +204,20 @@ describe('groupItemsBySubagent', () => {
 
   it('reports descendantCount for nested groups as the total count of descendants', () => {
     const items = [
-      mkItem({ id: 'p', itemIndex: 0, kind: 'tool_result', summary: 'task' }),
-      mkItem({ id: 'c1', itemIndex: 1, parentToolUseId: 'p', kind: 'tool_result', summary: 'c1' }),
-      mkItem({ id: 'gc1', itemIndex: 2, parentToolUseId: 'c1', summary: 'gc1' }),
-      mkItem({ id: 'gc2', itemIndex: 3, parentToolUseId: 'c1', summary: 'gc2' }),
-      mkItem({ id: 'c2', itemIndex: 4, parentToolUseId: 'p', summary: 'c2' }),
+      mkItem({ id: 'p', itemIndex: 0, kind: 'tool_call', summary: 'task' }),
+      mkItem({ id: 'c1', itemIndex: 1, parentId: 'p', kind: 'tool_call', summary: 'c1' }),
+      mkItem({ id: 'gc1', itemIndex: 2, parentId: 'c1', summary: 'gc1' }),
+      mkItem({ id: 'gc2', itemIndex: 3, parentId: 'c1', summary: 'gc2' }),
+      mkItem({ id: 'c2', itemIndex: 4, parentId: 'p', summary: 'c2' }),
     ];
     const root = expectGroup(groupItemsBySubagent(items)[0]);
     // c1 + gc1 + gc2 + c2 = 4 descendants
     expect(root.descendantCount).toBe(4);
   });
 
-  it('empty parentToolUseId strings are treated as top-level roots', () => {
+  it('empty parentId strings are treated as top-level roots', () => {
     const items = [
-      mkItem({ id: 'a', itemIndex: 0, parentToolUseId: '', summary: 'still root' }),
+      mkItem({ id: 'a', itemIndex: 0, parentId: '', summary: 'still root' }),
       mkItem({ id: 'b', itemIndex: 1, summary: 'also root' }),
     ];
     const nodes = groupItemsBySubagent(items);

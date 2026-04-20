@@ -1,22 +1,7 @@
+import type { ProviderStatusEvent } from '../types/events';
 import { wailsEventOn } from './events';
 
-/**
- * Mirrors `ProviderStatusEvent` in app_provider_status.go.
- *
- * The Go struct is the source of truth; if a new field is added
- * there the bindings regeneration will flag the mismatch in the
- * component that reads it, not here (the Wails generator doesn't
- * currently emit a TS type for event payloads, so this interface is
- * hand-maintained). Keep field names and `status` values in sync.
- */
-export interface ProviderStatusEvent {
-  provider: 'claude' | 'codex';
-  status: 'ready' | 'not_found' | 'version_too_old' | 'unauthenticated' | 'error';
-  message?: string;
-  version?: string;
-  actionable: boolean;
-  actionUrl?: string;
-}
+export type { ProviderStatusEvent } from '../types/events';
 
 /**
  * Per-provider snapshot of the most recent status event. We keep the

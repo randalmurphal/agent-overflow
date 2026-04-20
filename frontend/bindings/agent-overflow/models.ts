@@ -328,6 +328,35 @@ export class Keybinding {
     }
 }
 
+export class PayloadPreview {
+    "data": string;
+    "totalSize": number;
+    "isComplete": boolean;
+
+    /** Creates a new PayloadPreview instance. */
+    constructor($$source: Partial<PayloadPreview> = {}) {
+        if (!("data" in $$source)) {
+            this["data"] = "";
+        }
+        if (!("totalSize" in $$source)) {
+            this["totalSize"] = 0;
+        }
+        if (!("isComplete" in $$source)) {
+            this["isComplete"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new PayloadPreview instance from a string or object.
+     */
+    static createFrom($$source: any = {}): PayloadPreview {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new PayloadPreview($$parsedSource as Partial<PayloadPreview>);
+    }
+}
+
 /**
  * TerminalChip is the frontend-owned shape of a "terminal context" snippet
  * captured from the terminal drawer. The Go side treats these as opaque —

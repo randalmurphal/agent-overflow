@@ -214,7 +214,7 @@ func TestDeleteThreadCascadesToItems(t *testing.T) {
 		ThreadID:  "t1",
 		TurnIndex: 0,
 		ItemIndex: 0,
-		Kind:      "text",
+		Kind:      "user_text",
 		Role:      "user",
 		Summary:   "hello",
 		CreatedAt: time.Now().UnixMilli(),
@@ -515,8 +515,8 @@ func TestInsertAndListItems(t *testing.T) {
 
 	now := time.Now().UnixMilli()
 	items := []Item{
-		{ID: "i1", ThreadID: "t1", TurnIndex: 0, ItemIndex: 0, Kind: "text", Role: "user", Summary: "hello", CreatedAt: now},
-		{ID: "i2", ThreadID: "t1", TurnIndex: 0, ItemIndex: 1, Kind: "text", Role: "assistant", Summary: "hi", CreatedAt: now + 1},
+		{ID: "i1", ThreadID: "t1", TurnIndex: 0, ItemIndex: 0, Kind:      "user_text", Role: "user", Summary: "hello", CreatedAt: now},
+		{ID: "i2", ThreadID: "t1", TurnIndex: 0, ItemIndex: 1, Kind:      "assistant_text", Role: "assistant", Summary: "hi", CreatedAt: now + 1},
 		{ID: "i3", ThreadID: "t1", TurnIndex: 1, ItemIndex: 0, Kind: "tool_call", Role: "assistant", Summary: "bash", CreatedAt: now + 2},
 	}
 
@@ -563,7 +563,7 @@ func TestInsertItemWithPayloadFK(t *testing.T) {
 		ThreadID:  "t1",
 		TurnIndex: 0,
 		ItemIndex: 0,
-		Kind:      "diff",
+		Kind:      "tool_call",
 		Role:      "assistant",
 		PayloadID: "nonexistent-payload",
 		CreatedAt: time.Now().UnixMilli(),
@@ -599,7 +599,7 @@ func TestInsertItemWithValidPayloadFK(t *testing.T) {
 		ThreadID:  "t1",
 		TurnIndex: 0,
 		ItemIndex: 0,
-		Kind:      "diff",
+		Kind:      "tool_call",
 		Role:      "assistant",
 		PayloadID: "p1",
 		CreatedAt: now,
@@ -632,7 +632,7 @@ func TestInsertItemWithPayloadAtomicHappyPath(t *testing.T) {
 		ThreadID:  "t1",
 		TurnIndex: 0,
 		ItemIndex: 0,
-		Kind:      "diff",
+		Kind:      "tool_call",
 		Role:      "assistant",
 		PayloadID: "p1",
 		CreatedAt: now,
@@ -681,7 +681,7 @@ func TestInsertItemWithPayloadAtomicRollbackOnItemFailure(t *testing.T) {
 		ThreadID:  "t1",
 		TurnIndex: 0,
 		ItemIndex: 0,
-		Kind:      "text",
+		Kind:      "user_text",
 		Role:      "user",
 		CreatedAt: now,
 	}); err != nil {
@@ -700,7 +700,7 @@ func TestInsertItemWithPayloadAtomicRollbackOnItemFailure(t *testing.T) {
 		ThreadID:  "t1",
 		TurnIndex: 0,
 		ItemIndex: 1,
-		Kind:      "diff",
+		Kind:      "tool_call",
 		Role:      "assistant",
 		PayloadID: "p-orphan",
 		CreatedAt: now,
@@ -753,7 +753,7 @@ func TestInsertItemWithPayloadAtomicRollbackOnPayloadFailure(t *testing.T) {
 		ThreadID:  "t1",
 		TurnIndex: 0,
 		ItemIndex: 0,
-		Kind:      "diff",
+		Kind:      "tool_call",
 		Role:      "assistant",
 		PayloadID: "p-dup",
 		CreatedAt: now,
@@ -799,7 +799,7 @@ func TestNextItemIndex(t *testing.T) {
 			ThreadID:  "t1",
 			TurnIndex: 0,
 			ItemIndex: i,
-			Kind:      "text",
+			Kind:      "user_text",
 			Role:      "user",
 			CreatedAt: now,
 		}
@@ -841,7 +841,7 @@ func TestLastTurnIndex(t *testing.T) {
 			ThreadID:  "t1",
 			TurnIndex: turnIdx,
 			ItemIndex: 0,
-			Kind:      "text",
+			Kind:      "user_text",
 			Role:      "user",
 			CreatedAt: now,
 		}
@@ -880,7 +880,7 @@ func TestHasItems(t *testing.T) {
 		ThreadID:  "t1",
 		TurnIndex: 0,
 		ItemIndex: 0,
-		Kind:      "text",
+		Kind:      "user_text",
 		Role:      "user",
 		CreatedAt: time.Now().UnixMilli(),
 	}); err != nil {
@@ -911,7 +911,7 @@ func TestInsertItemBumpsThreadUpdatedAt(t *testing.T) {
 		ThreadID:  "t1",
 		TurnIndex: 0,
 		ItemIndex: 0,
-		Kind:      "text",
+		Kind:      "user_text",
 		Role:      "user",
 		CreatedAt: itemTime,
 	}
@@ -1014,7 +1014,7 @@ func TestUpsertTurnPayloadReplacesExistingPayload(t *testing.T) {
 		ThreadID:  "t1",
 		TurnIndex: 0,
 		ItemIndex: 0,
-		Kind:      "diff",
+		Kind:      "tool_call",
 		Role:      "assistant",
 		Summary:   "old diff",
 		PayloadID: original.ID,
@@ -1031,7 +1031,7 @@ func TestUpsertTurnPayloadReplacesExistingPayload(t *testing.T) {
 		Data:      []byte("new diff"),
 		CreatedAt: 2000,
 	}
-	if err := s.UpsertTurnPayload("t1", 0, "diff", replacement); err != nil {
+	if err := s.UpsertTurnPayload("t1", 0, "tool_call", replacement); err != nil {
 		t.Fatalf("upsert turn payload: %v", err)
 	}
 
@@ -1077,7 +1077,7 @@ func TestUpsertTurnPayloadLinksUnlinkedItem(t *testing.T) {
 		ThreadID:  "t1",
 		TurnIndex: 0,
 		ItemIndex: 0,
-		Kind:      "diff",
+		Kind:      "tool_call",
 		Role:      "assistant",
 		Summary:   "summary only",
 		CreatedAt: 1000,
@@ -1093,7 +1093,7 @@ func TestUpsertTurnPayloadLinksUnlinkedItem(t *testing.T) {
 		Data:      []byte("new diff"),
 		CreatedAt: 2000,
 	}
-	if err := s.UpsertTurnPayload("t1", 0, "diff", payload); err != nil {
+	if err := s.UpsertTurnPayload("t1", 0, "tool_call", payload); err != nil {
 		t.Fatalf("upsert turn payload: %v", err)
 	}
 
@@ -1148,7 +1148,7 @@ func TestUpsertTurnPayloadReplaceDoesNotDuplicatePayload(t *testing.T) {
 		ThreadID:  "t1",
 		TurnIndex: 0,
 		ItemIndex: 0,
-		Kind:      "diff",
+		Kind:      "tool_call",
 		Role:      "assistant",
 		Summary:   "v1",
 		PayloadID: original.ID,
@@ -1159,10 +1159,10 @@ func TestUpsertTurnPayloadReplaceDoesNotDuplicatePayload(t *testing.T) {
 
 	v2 := Payload{ID: "payload-new-a", Kind: "diff", Meta: `{"v":2}`, Data: []byte("v2"), CreatedAt: 2000}
 	v3 := Payload{ID: "payload-new-b", Kind: "diff", Meta: `{"v":3}`, Data: []byte("v3"), CreatedAt: 3000}
-	if err := s.UpsertTurnPayload("t1", 0, "diff", v2); err != nil {
+	if err := s.UpsertTurnPayload("t1", 0, "tool_call", v2); err != nil {
 		t.Fatalf("upsert v2: %v", err)
 	}
-	if err := s.UpsertTurnPayload("t1", 0, "diff", v3); err != nil {
+	if err := s.UpsertTurnPayload("t1", 0, "tool_call", v3); err != nil {
 		t.Fatalf("upsert v3: %v", err)
 	}
 
@@ -1201,7 +1201,7 @@ func TestUpsertTurnPayloadConcurrentWritesNoOrphans(t *testing.T) {
 		ThreadID:  "t1",
 		TurnIndex: 0,
 		ItemIndex: 0,
-		Kind:      "diff",
+		Kind:      "tool_call",
 		Role:      "assistant",
 		Summary:   "summary",
 		CreatedAt: 1000,
@@ -1222,7 +1222,7 @@ func TestUpsertTurnPayloadConcurrentWritesNoOrphans(t *testing.T) {
 				Data:      []byte("data"),
 				CreatedAt: int64(1000 + n),
 			}
-			if err := s.UpsertTurnPayload("t1", 0, "diff", p); err != nil {
+			if err := s.UpsertTurnPayload("t1", 0, "tool_call", p); err != nil {
 				t.Errorf("goroutine %d: %v", n, err)
 			}
 		}(i)
@@ -1297,7 +1297,7 @@ func TestUpdateItemPayloadUpdatesLinkedItem(t *testing.T) {
 		ThreadID:  "t1",
 		TurnIndex: 0,
 		ItemIndex: 0,
-		Kind:      "diff",
+		Kind:      "tool_call",
 		Role:      "assistant",
 		Summary:   "before",
 		PayloadID: payload.ID,
@@ -1311,7 +1311,7 @@ func TestUpdateItemPayloadUpdatesLinkedItem(t *testing.T) {
 		t.Fatalf("update item payload: %v", err)
 	}
 
-	updated, found, err := s.FindTurnItem("t1", 0, "diff")
+	updated, found, err := s.FindTurnItem("t1", 0, "tool_call")
 	if err != nil {
 		t.Fatalf("find turn item: %v", err)
 	}
@@ -1321,8 +1321,11 @@ func TestUpdateItemPayloadUpdatesLinkedItem(t *testing.T) {
 	if updated.Summary != "after" {
 		t.Fatalf("expected updated summary, got %q", updated.Summary)
 	}
-	if updated.CreatedAt != 2000 {
-		t.Fatalf("expected updated created_at, got %d", updated.CreatedAt)
+	if updated.CreatedAt != 1000 {
+		t.Fatalf("expected original created_at, got %d", updated.CreatedAt)
+	}
+	if updated.UpdatedAt != 2000 {
+		t.Fatalf("expected updated_at 2000, got %d", updated.UpdatedAt)
 	}
 }
 
@@ -1342,7 +1345,7 @@ func TestUpdateItemPayloadReturnsErrorForMissingItem(t *testing.T) {
 // TestUpdateItemPayloadAtomicThreadTouch proves the thread's updated_at
 // is revised in the SAME transaction as the item's payload link. Before
 // A8, the thread touch ran outside any tx — a failure there was logged
-// and swallowed. We verify commit-order by mutating createdAt and
+// and swallowed. We verify commit-order by mutating updatedAt and
 // confirming both rows moved together.
 func TestUpdateItemPayloadAtomicThreadTouch(t *testing.T) {
 	s := newTestStore(t)
@@ -1357,7 +1360,7 @@ func TestUpdateItemPayloadAtomicThreadTouch(t *testing.T) {
 	}
 	if err := s.InsertItem(Item{
 		ID: "i-1", ThreadID: "t-atomic", TurnIndex: 0, ItemIndex: 0,
-		Kind: "diff", Role: "assistant", PayloadID: "p-1", CreatedAt: 100,
+		Kind:      "tool_call", Role: "assistant", PayloadID: "p-1", CreatedAt: 100,
 	}); err != nil {
 		t.Fatalf("item: %v", err)
 	}
@@ -1379,15 +1382,18 @@ func TestUpdateItemPayloadAtomicThreadTouch(t *testing.T) {
 	if !ok {
 		t.Fatal("item missing after update")
 	}
-	if item.CreatedAt != 999 {
-		t.Errorf("item created_at: got %d, want 999", item.CreatedAt)
+	if item.CreatedAt != 100 {
+		t.Errorf("item created_at: got %d, want 100", item.CreatedAt)
+	}
+	if item.UpdatedAt != 999 {
+		t.Errorf("item updated_at: got %d, want 999", item.UpdatedAt)
 	}
 }
 
 // TestUpdateItemPayloadConcurrentCallsSerialise drives many concurrent
 // updates at the same item; with single-connection serialisation all
 // calls must succeed and final state must be coherent (whichever
-// created_at wrote last wins for both item and thread).
+// updated_at wrote last wins for both item and thread).
 func TestUpdateItemPayloadConcurrentCallsSerialise(t *testing.T) {
 	s := newTestStore(t)
 	thr := makeThread("t-conc", "codex")
@@ -1401,7 +1407,7 @@ func TestUpdateItemPayloadConcurrentCallsSerialise(t *testing.T) {
 	}
 	if err := s.InsertItem(Item{
 		ID: "i-1", ThreadID: "t-conc", TurnIndex: 0, ItemIndex: 0,
-		Kind: "diff", Role: "assistant", PayloadID: "p-1", CreatedAt: 100,
+		Kind:      "tool_call", Role: "assistant", PayloadID: "p-1", CreatedAt: 100,
 	}); err != nil {
 		t.Fatalf("item: %v", err)
 	}
@@ -1420,8 +1426,8 @@ func TestUpdateItemPayloadConcurrentCallsSerialise(t *testing.T) {
 	}
 	wg.Wait()
 
-	// Thread.updated_at must match some call's createdAt, and item.created_at
-	// must match a call's createdAt — both must agree (both within the same tx).
+	// Thread.updated_at must match some call's updatedAt, and item.updated_at
+	// must match a call's updatedAt — both must agree (both within the same tx).
 	thread, err := s.GetThread("t-conc")
 	if err != nil {
 		t.Fatalf("get thread: %v", err)
@@ -1437,15 +1443,15 @@ func TestUpdateItemPayloadConcurrentCallsSerialise(t *testing.T) {
 	if thread.UpdatedAt < 1000 || thread.UpdatedAt > int64(1000+writers-1) {
 		t.Errorf("thread.UpdatedAt out of range: %d", thread.UpdatedAt)
 	}
-	if item.CreatedAt < 1000 || item.CreatedAt > int64(1000+writers-1) {
-		t.Errorf("item.CreatedAt out of range: %d", item.CreatedAt)
+	if item.UpdatedAt < 1000 || item.UpdatedAt > int64(1000+writers-1) {
+		t.Errorf("item.UpdatedAt out of range: %d", item.UpdatedAt)
 	}
-	// Because the fix made both updates atomic, the final item.created_at
+	// Because the fix made both updates atomic, the final item.updated_at
 	// and thread.updated_at must match exactly — they were committed from
-	// the same transaction with the same createdAt.
-	if item.CreatedAt != thread.UpdatedAt {
-		t.Errorf("item.CreatedAt (%d) and thread.UpdatedAt (%d) must be equal after atomic update",
-			item.CreatedAt, thread.UpdatedAt)
+	// the same transaction with the same timestamp.
+	if item.UpdatedAt != thread.UpdatedAt {
+		t.Errorf("item.UpdatedAt (%d) and thread.UpdatedAt (%d) must be equal after atomic update",
+			item.UpdatedAt, thread.UpdatedAt)
 	}
 }
 
@@ -1476,9 +1482,9 @@ func TestListPayloadMetas(t *testing.T) {
 
 	// Insert items linking payloads to threads.
 	items := []Item{
-		{ID: "i1", ThreadID: "t1", TurnIndex: 0, ItemIndex: 0, Kind: "diff", Role: "assistant", PayloadID: "p1", CreatedAt: now},
-		{ID: "i2", ThreadID: "t1", TurnIndex: 0, ItemIndex: 1, Kind: "diff", Role: "assistant", PayloadID: "p2", CreatedAt: now},
-		{ID: "i3", ThreadID: "t2", TurnIndex: 0, ItemIndex: 0, Kind: "diff", Role: "assistant", PayloadID: "p3", CreatedAt: now},
+		{ID: "i1", ThreadID: "t1", TurnIndex: 0, ItemIndex: 0, Kind:      "tool_call", Role: "assistant", PayloadID: "p1", CreatedAt: now},
+		{ID: "i2", ThreadID: "t1", TurnIndex: 0, ItemIndex: 1, Kind:      "tool_call", Role: "assistant", PayloadID: "p2", CreatedAt: now},
+		{ID: "i3", ThreadID: "t2", TurnIndex: 0, ItemIndex: 0, Kind:      "tool_call", Role: "assistant", PayloadID: "p3", CreatedAt: now},
 	}
 	for _, it := range items {
 		if err := s.InsertItem(it); err != nil {
@@ -1565,13 +1571,13 @@ func TestDeleteThreadCascadesPayloadGC(t *testing.T) {
 	if err := s.InsertPayload(Payload{ID: "p3", Kind: "diff", Meta: "{}", Data: []byte("c"), CreatedAt: 3}); err != nil {
 		t.Fatalf("p3: %v", err)
 	}
-	if err := s.InsertItem(Item{ID: "i1", ThreadID: "t1", TurnIndex: 0, ItemIndex: 0, Kind: "diff", Role: "assistant", PayloadID: "p1", CreatedAt: 1}); err != nil {
+	if err := s.InsertItem(Item{ID: "i1", ThreadID: "t1", TurnIndex: 0, ItemIndex: 0, Kind:      "tool_call", Role: "assistant", PayloadID: "p1", CreatedAt: 1}); err != nil {
 		t.Fatalf("i1: %v", err)
 	}
-	if err := s.InsertItem(Item{ID: "i2", ThreadID: "t1", TurnIndex: 0, ItemIndex: 1, Kind: "diff", Role: "assistant", PayloadID: "p2", CreatedAt: 2}); err != nil {
+	if err := s.InsertItem(Item{ID: "i2", ThreadID: "t1", TurnIndex: 0, ItemIndex: 1, Kind:      "tool_call", Role: "assistant", PayloadID: "p2", CreatedAt: 2}); err != nil {
 		t.Fatalf("i2: %v", err)
 	}
-	if err := s.InsertItem(Item{ID: "i-keep", ThreadID: "t-survivor", TurnIndex: 0, ItemIndex: 0, Kind: "diff", Role: "assistant", PayloadID: "p3", CreatedAt: 3}); err != nil {
+	if err := s.InsertItem(Item{ID: "i-keep", ThreadID: "t-survivor", TurnIndex: 0, ItemIndex: 0, Kind:      "tool_call", Role: "assistant", PayloadID: "p3", CreatedAt: 3}); err != nil {
 		t.Fatalf("i-keep: %v", err)
 	}
 
@@ -1621,7 +1627,7 @@ func TestDeleteThreadCascadesPayloadGCScale(t *testing.T) {
 		if err := s.InsertItem(Item{
 			ID: iid, ThreadID: "t1",
 			TurnIndex: i / 10, ItemIndex: i % 10,
-			Kind: "diff", Role: "assistant",
+			Kind:      "tool_call", Role: "assistant",
 			PayloadID: pid, CreatedAt: int64(i),
 		}); err != nil {
 			t.Fatalf("item %d: %v", i, err)
@@ -1654,10 +1660,10 @@ func TestPayloadGCIgnoresSharedPayload(t *testing.T) {
 	if err := s.InsertPayload(Payload{ID: "shared", Kind: "diff", Meta: "{}", Data: []byte("x"), CreatedAt: 1}); err != nil {
 		t.Fatalf("payload: %v", err)
 	}
-	if err := s.InsertItem(Item{ID: "a", ThreadID: "t1", TurnIndex: 0, ItemIndex: 0, Kind: "diff", Role: "assistant", PayloadID: "shared", CreatedAt: 1}); err != nil {
+	if err := s.InsertItem(Item{ID: "a", ThreadID: "t1", TurnIndex: 0, ItemIndex: 0, Kind:      "tool_call", Role: "assistant", PayloadID: "shared", CreatedAt: 1}); err != nil {
 		t.Fatalf("a: %v", err)
 	}
-	if err := s.InsertItem(Item{ID: "b", ThreadID: "t1", TurnIndex: 0, ItemIndex: 1, Kind: "diff", Role: "assistant", PayloadID: "shared", CreatedAt: 2}); err != nil {
+	if err := s.InsertItem(Item{ID: "b", ThreadID: "t1", TurnIndex: 0, ItemIndex: 1, Kind:      "tool_call", Role: "assistant", PayloadID: "shared", CreatedAt: 2}); err != nil {
 		t.Fatalf("b: %v", err)
 	}
 

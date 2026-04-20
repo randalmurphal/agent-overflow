@@ -45,6 +45,7 @@ export interface Thread {
   discussionId?: string;
   parentThreadId?: string;
   forkedFromThreadId?: string;
+  lastTokenUsage?: string;
   model: string;
   createdAt: number;
   updatedAt: number;
@@ -58,35 +59,19 @@ export interface Item {
   itemIndex: number;
   kind: string;
   role: string;
+  status: "streaming" | "running" | "completed" | "errored" | "declined";
   summary: string;
   payloadId?: string;
-  /**
-   * Links this item to a Task-tool parent when the item was produced by a
-   * subagent. For Claude, this is the `tool_use.id` of the enclosing Task
-   * (Agent) call; for Codex collab receivers, whichever id the backend wires
-   * through. Empty (or undefined) for top-level turn items.
-   */
-  parentToolUseId?: string;
-  /**
-   * Tool-call lifecycle stage (migration v14). Inline tool calls stream
-   * "running" → "completed"|"errored"|"declined" in place. Non-tool items
-   * land at "completed" on insert. Optional in TS so pre-v14 fixtures
-   * (which predate the field) don't break; backend always sets it.
-   */
-  status?: "running" | "completed" | "errored" | "declined";
-  /**
-   * True on the launch row of a backgrounded tool call, and on its paired
-   * completion row. Absent/false for inline tool calls and for all
-   * non-tool items.
-   */
+  payloadKind?: string;
+  payloadMeta?: string;
+  parentId?: string;
   isBackground?: boolean;
-  /**
-   * When this row completes a backgrounded launch, points at the launch
-   * item's id so the frontend can render the pair together. Empty on the
-   * launch itself and on every non-completion item.
-   */
-  completionOfItemId?: string;
+  completionOf?: string;
+  toolName?: string;
+  decision?: "" | "approved" | "declined" | "amended" | "timeout" | "lost";
+  meta?: string;
   createdAt: number;
+  updatedAt: number;
 }
 
 export interface PayloadMeta {
@@ -147,14 +132,6 @@ export interface ChangedFile {
   deletions: number;
   kind: DiffMeta["changeKind"];
   payloadId: string;
-}
-
-export interface WorkEntryData {
-  id: string;
-  type: string;
-  name?: string;
-  status: "running" | "completed";
-  meta?: unknown;
 }
 
 /**

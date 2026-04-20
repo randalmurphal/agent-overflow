@@ -11,17 +11,18 @@
   let { pane, draft }: Props = $props();
 
   const IMPLEMENT_PROMPT = 'Please implement the plan above.';
+  let dismissedPlanItemId = $state<string | null>(null);
 
   // The banner surfaces when the latest item in the timeline is a
-  // proposed_plan — i.e. the agent has finished proposing and is waiting
-  // on the user. If any subsequent message/tool result has landed, the
+  // plan-bearing tool row — i.e. the agent has finished proposing and is
+  // waiting on the user. If any subsequent message/tool result has landed, the
   // user has clearly moved on.
   let latestItem = $derived(pane.items.length > 0 ? pane.items[pane.items.length - 1] : null);
   let latestPlanItemId = $derived(
-    latestItem && latestItem.kind === 'proposed_plan' ? latestItem.id : null,
+    latestItem && latestItem.payloadKind === 'proposed_plan' ? latestItem.id : null,
   );
   let visible = $derived(
-    latestPlanItemId !== null && pane.dismissedPlanItemId !== latestPlanItemId,
+    latestPlanItemId !== null && dismissedPlanItemId !== latestPlanItemId,
   );
 
   function handleImplement() {
@@ -41,8 +42,13 @@
 
   function handleDismiss() {
     if (!latestPlanItemId) return;
-    pane.setDismissedPlanItemId(latestPlanItemId);
+    dismissedPlanItemId = latestPlanItemId;
   }
+
+  $effect(() => {
+    pane.threadId;
+    dismissedPlanItemId = null;
+  });
 </script>
 
 {#if visible}

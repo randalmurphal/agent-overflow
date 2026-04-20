@@ -1,7 +1,7 @@
 // Integration tests covering the composer + message timeline working
 // together. These tests mount the full App and drive user input through
-// the composer, then observe the side effects the message timeline
-// renders (pending messages, streaming tokens, tool-call chips, etc).
+// the composer, then observe the side effects the unified item stream
+// drives in the message timeline and composer.
 
 import { describe, expect, it, beforeAll, beforeEach, vi } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
@@ -53,7 +53,7 @@ describe('App integration — messaging flow', () => {
     setBindingMock('InterruptTurn', async () => {});
   });
 
-  it('sends a message and shows it in the timeline as pending', async () => {
+  it('sends a message and clears the composer draft', async () => {
     const { getByLabelText, getByTestId } = await mountWithActiveThread();
     // Re-assign the mock AFTER mount so the call count starts at 0.
     const sendMock = setBindingMock('SendMessage', async () => {});
@@ -71,10 +71,7 @@ describe('App integration — messaging flow', () => {
 
     expect(sendMock.mock.calls[0][0]).toBe('thread-1');
     expect(sendMock.mock.calls[0][1]).toBe('hello agent');
-    // The optimistic pending message renders in the timeline.
-    await waitFor(() => {
-      expect(document.body.textContent).toContain('hello agent');
-    });
+    expect(textarea.value).toBe('');
   });
 
   it('blocks Enter during an active turn and surfaces the mid-turn banner', async () => {
@@ -84,12 +81,19 @@ describe('App integration — messaging flow', () => {
     await fireEvent.input(textarea, { target: { value: 'queued message' } });
     await flush();
 
-    // Simulate a streaming turn starting: the provider:event router calls
-    // appendTextDelta. We emit through the Wails mock bus.
-    emitWailsEvent('provider:event', {
-      kind: 'text_delta',
+    // Simulate a streaming turn starting by upserting a streaming assistant
+    // item. The composer derives active state from pane.items now.
+    emitWailsEvent('provider:item_upsert', {
+      id: 'text:0:0',
       threadId: 'thread-1',
-      content: 'response...',
+      turnIndex: 0,
+      itemIndex: 0,
+      kind: 'assistant_text',
+      role: 'assistant',
+      status: 'streaming',
+      summary: 'response...',
+      createdAt: 1,
+      updatedAt: 1,
     });
     await flush();
 
@@ -107,10 +111,17 @@ describe('App integration — messaging flow', () => {
     const { getByTestId } = await mountWithActiveThread();
     const interruptMock = setBindingMock('InterruptTurn', async () => {});
 
-    emitWailsEvent('provider:event', {
-      kind: 'text_delta',
+    emitWailsEvent('provider:item_upsert', {
+      id: 'text:0:0',
       threadId: 'thread-1',
-      content: 'streaming...',
+      turnIndex: 0,
+      itemIndex: 0,
+      kind: 'assistant_text',
+      role: 'assistant',
+      status: 'streaming',
+      summary: 'streaming...',
+      createdAt: 1,
+      updatedAt: 1,
     });
     await flush();
     await fireEvent.click(getByTestId('composer-interrupt'));
@@ -118,19 +129,32 @@ describe('App integration — messaging flow', () => {
     expect(interruptMock.mock.calls[0][0]).toBe('thread-1');
   });
 
-  it('renders streaming text deltas as they arrive', async () => {
+  it('renders streaming assistant item updates as they arrive', async () => {
     await mountWithActiveThread();
-    // Multiple deltas accumulate.
-    emitWailsEvent('provider:event', {
-      kind: 'text_delta',
+    emitWailsEvent('provider:item_upsert', {
+      id: 'text:0:0',
       threadId: 'thread-1',
-      content: 'first ',
+      turnIndex: 0,
+      itemIndex: 0,
+      kind: 'assistant_text',
+      role: 'assistant',
+      status: 'streaming',
+      summary: 'first ',
+      createdAt: 1,
+      updatedAt: 1,
     });
     await flush();
-    emitWailsEvent('provider:event', {
-      kind: 'text_delta',
+    emitWailsEvent('provider:item_upsert', {
+      id: 'text:0:0',
       threadId: 'thread-1',
-      content: 'second',
+      turnIndex: 0,
+      itemIndex: 0,
+      kind: 'assistant_text',
+      role: 'assistant',
+      status: 'streaming',
+      summary: 'first second',
+      createdAt: 1,
+      updatedAt: 2,
     });
     await flush();
 
@@ -139,28 +163,41 @@ describe('App integration — messaging flow', () => {
     });
   });
 
-  it('replaces individual tool cards with a group chip when 2+ tools are active', async () => {
-    const { queryByTestId, getByTestId } = await mountWithActiveThread();
+  it('renders tool_call rows inline as provider:item_upsert events arrive', async () => {
+    const { queryByText, findByText } = await mountWithActiveThread();
 
-    // One tool => individual card, no group chip.
-    emitWailsEvent('provider:event', {
-      kind: 'tool_start',
+    // Backend persisted a tool_call item and pushed the upsert; the
+    // timeline should reflect it without any transient grouping.
+    emitWailsEvent('provider:item_upsert', {
+      id: 'tool-1',
       threadId: 'thread-1',
-      itemId: 'tool-1',
-      meta: { toolName: 'bash' },
+      turnIndex: 0,
+      itemIndex: 0,
+      kind: 'tool_call',
+      role: 'assistant',
+      summary: 'Bash: ls -la',
+      status: 'running',
+      isBackground: false,
+      createdAt: 1,
     });
-    await flush();
-    expect(queryByTestId('active-tools-chip')).toBeNull();
+    expect(await findByText(/Bash: ls -la/)).toBeInTheDocument();
 
-    // Second tool -> group chip appears, cards collapse into children.
-    emitWailsEvent('provider:event', {
-      kind: 'tool_start',
+    // A second concurrent tool_call shows up as its own row — no
+    // grouping chip, no relocation.
+    emitWailsEvent('provider:item_upsert', {
+      id: 'tool-2',
       threadId: 'thread-1',
-      itemId: 'tool-2',
-      meta: { toolName: 'read' },
+      turnIndex: 0,
+      itemIndex: 1,
+      kind: 'tool_call',
+      role: 'assistant',
+      summary: 'Read: README.md',
+      status: 'running',
+      isBackground: false,
+      createdAt: 2,
     });
-    await flush();
-    expect(getByTestId('active-tools-chip')).toBeInTheDocument();
+    expect(await findByText(/Read: README.md/)).toBeInTheDocument();
+    expect(queryByText(/Running 2 tools/i)).toBeNull();
   });
 
   it('handles SendMessage rejection by restoring draft and logging the error', async () => {
@@ -188,44 +225,36 @@ describe('App integration — messaging flow', () => {
     consoleErr.mockRestore();
   });
 
-  it('clears pending message when turn_complete arrives', async () => {
-    // finalizeTurn re-reads items via ListItems; stub that so it returns the
-    // freshly-persisted user message as a solid item.
-    const items: Array<Record<string, unknown>> = [];
-    setBindingMock('ListItems', async () => items);
-    const { getByLabelText, getByTestId } = await mountWithActiveThread();
-    const textarea = getByLabelText('Message input') as HTMLTextAreaElement;
-
-    await fireEvent.input(textarea, { target: { value: 'persist me' } });
-    await flush();
-    await fireEvent.click(getByTestId('composer-send'));
-    await flush(10);
-
-    // Pending message appears immediately.
-    await waitFor(() => {
-      expect(document.body.textContent).toContain('persist me');
-    });
-
-    // A turn_complete event triggers finalizeTurn which clears pending.
-    items.push({
-      id: 'user-1',
+  it('marks the pane idle once the streaming item completes', async () => {
+    await mountWithActiveThread();
+    emitWailsEvent('provider:item_upsert', {
+      id: 'text:0:0',
       threadId: 'thread-1',
       turnIndex: 0,
       itemIndex: 0,
-      kind: 'message',
-      role: 'user',
+      kind: 'assistant_text',
+      role: 'assistant',
+      status: 'streaming',
       summary: 'persist me',
-      createdAt: 0,
+      createdAt: 1,
+      updatedAt: 1,
     });
-    emitWailsEvent('provider:event', {
-      kind: 'turn_complete',
+    emitWailsEvent('provider:item_upsert', {
+      id: 'text:0:0',
       threadId: 'thread-1',
+      turnIndex: 0,
+      itemIndex: 0,
+      kind: 'assistant_text',
+      role: 'assistant',
+      status: 'completed',
+      summary: 'persist me',
+      createdAt: 1,
+      updatedAt: 2,
     });
     await flush(10);
 
-    // Pending has cleared; the persisted item took its place.
     const paneMod = await import('../../lib/stores/panes.svelte');
     const pane = paneMod.getMainPane();
-    await waitFor(() => expect(pane.pendingMessage).toBeNull());
+    await waitFor(() => expect(pane.isTurnActive).toBe(false));
   });
 });

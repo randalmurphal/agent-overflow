@@ -18,11 +18,11 @@
     previewSnippet: string;
   }
 
-  function parsePlanMeta(payloadId: string): ProposedPlanMeta | null {
-    const pm = pane.payloadMetas.get(payloadId);
-    if (!pm) return null;
+  function parsePlanMeta(itemId: string): ProposedPlanMeta | null {
+    const item = pane.items.find((entry) => entry.id === itemId);
+    if (!item?.payloadMeta) return null;
     try {
-      return JSON.parse(pm.meta) as ProposedPlanMeta;
+      return JSON.parse(item.payloadMeta) as ProposedPlanMeta;
     } catch {
       return null;
     }
@@ -34,14 +34,14 @@
     return `${oneLine.slice(0, PREVIEW_CHAR_LIMIT - 1).trimEnd()}…`;
   }
 
-  // Newest first. proposed_plan items always carry a payloadId.
+  // Newest first. Proposed plans live on payload-bearing tool rows.
   let planRows = $derived<PlanRow[]>(
     pane.items
-      .filter((item: Item) => item.kind === 'proposed_plan' && !!item.payloadId)
+      .filter((item: Item) => item.payloadKind === 'proposed_plan' && !!item.payloadId)
       .slice()
       .reverse()
       .map((item) => {
-        const meta = parsePlanMeta(item.payloadId!);
+        const meta = parsePlanMeta(item.id);
         return {
           itemId: item.id,
           turnIndex: item.turnIndex,
@@ -51,7 +51,6 @@
       }),
   );
 
-  let streaming = $derived(pane.pendingPlanUpdate !== null);
   let visible = $derived(pane.showPlanSidebar);
 
   function handleRowClick(itemId: string) {
@@ -90,18 +89,6 @@
         </svg>
       </button>
     </div>
-
-    {#if streaming}
-      <div
-        class="flex items-center gap-2 border-b border-border bg-accent/10 px-3 py-1.5 text-xs text-text-secondary"
-        data-testid="plan-sidebar-streaming"
-        role="status"
-        aria-live="polite"
-      >
-        <span class="h-2 w-2 animate-pulse rounded-full bg-accent" aria-hidden="true"></span>
-        <span>Plan updating…</span>
-      </div>
-    {/if}
 
     <div class="flex-1 overflow-y-auto">
       {#if planRows.length === 0}

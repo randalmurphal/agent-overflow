@@ -68,6 +68,7 @@ type Thread struct {
 	DiscussionID       string `json:"discussionId,omitempty"`
 	ParentThreadID     string `json:"parentThreadId,omitempty"`
 	ForkedFromThreadID string `json:"forkedFromThreadId,omitempty"`
+	LastTokenUsage     string `json:"lastTokenUsage,omitempty"`
 	CreatedAt          int64  `json:"createdAt"`
 	UpdatedAt          int64  `json:"updatedAt"`
 	Archived           bool   `json:"archived"`
@@ -90,33 +91,25 @@ type Project struct {
 
 // Item represents a persisted timeline entry.
 type Item struct {
-	ID        string `json:"id"`
-	ThreadID  string `json:"threadId"`
-	TurnIndex int    `json:"turnIndex"`
-	ItemIndex int    `json:"itemIndex"`
-	Kind      string `json:"kind"`
-	Role      string `json:"role"`
-	Summary   string `json:"summary"`
-	PayloadID string `json:"payloadId,omitempty"`
-	// ParentToolUseID links this item to a Task-tool parent when the item
-	// was produced by a subagent (Claude's Agent/Task tool). Empty for
-	// top-level turn items.
-	ParentToolUseID string `json:"parentToolUseId,omitempty"`
-	// Status reports the lifecycle stage of the item. Persisted items
-	// default to "completed"; tool calls that stream in place move
-	// "running" → "completed"|"errored"|"declined". Always populated —
-	// existing rows were backfilled by migration v14 with "completed".
-	Status string `json:"status"`
-	// IsBackground marks a tool-call launch that runs in the background.
-	// The pair is rendered as: one launch item with is_background=true,
-	// and a sibling completion item (see CompletionOfItemID) appended at
-	// finish time. Inline tool calls keep is_background=false.
-	IsBackground bool `json:"isBackground,omitempty"`
-	// CompletionOfItemID points at the launch item this row completes when
-	// this row is a background-task completion. Empty on every other item,
-	// including the launch itself.
-	CompletionOfItemID string `json:"completionOfItemId,omitempty"`
-	CreatedAt          int64  `json:"createdAt"`
+	ID           string `json:"id"`
+	ThreadID     string `json:"threadId"`
+	TurnIndex    int    `json:"turnIndex"`
+	ItemIndex    int    `json:"itemIndex"`
+	Kind         string `json:"kind"`
+	Role         string `json:"role"`
+	Status       string `json:"status"`
+	Summary      string `json:"summary"`
+	PayloadID    string `json:"payloadId,omitempty"`
+	PayloadKind  string `json:"payloadKind,omitempty"`
+	PayloadMeta  string `json:"payloadMeta,omitempty"`
+	ParentID     string `json:"parentId,omitempty"`
+	IsBackground bool   `json:"isBackground,omitempty"`
+	CompletionOf string `json:"completionOf,omitempty"`
+	ToolName     string `json:"toolName,omitempty"`
+	Decision     string `json:"decision,omitempty"`
+	Meta         string `json:"meta,omitempty"`
+	CreatedAt    int64  `json:"createdAt"`
+	UpdatedAt    int64  `json:"updatedAt"`
 }
 
 // Payload represents heavy content stored for on-demand loading.

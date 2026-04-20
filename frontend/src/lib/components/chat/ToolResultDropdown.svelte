@@ -1,14 +1,15 @@
 <script lang="ts">
   import { slide } from 'svelte/transition';
-  import { GetPayloadData } from '../../stores/bindings';
-  import type { Item, PayloadMeta } from '../../types/models';
+  import type { Item } from '../../types/models';
+  import { ansiToHtml } from '../../utils/ansi';
+  import ToolDecisionChip from './ToolDecisionChip.svelte';
+  import { createPayloadExpansion, formatPayloadSize } from './payloadExpansion.svelte';
 
   interface Props {
     item: Item;
-    payloadMeta?: PayloadMeta;
   }
 
-  let { item, payloadMeta }: Props = $props();
+  let { item }: Props = $props();
 
   /**
    * The Item fields we read (`status`) are being added to
@@ -16,17 +17,10 @@
    * that type extension lands so this component compiles with the
    * current baseline.
    */
-  type StatusFields = { status?: 'running' | 'completed' | 'failed' };
+  type StatusFields = { status?: 'running' | 'completed' | 'errored' };
   const itemStatus = $derived((item as unknown as StatusFields).status ?? 'completed');
 
-  // Local expansion + cache state. `fullBody` stays populated after the
-  // first successful fetch so collapse + re-expand does NOT re-hit the
-  // binding — matches the rule in frontend/CLAUDE.md that heavy content
-  // is on-demand but cached per component instance.
-  let expanded = $state(false);
-  let loading = $state(false);
-  let loadError = $state<string | null>(null);
-  let fullBody = $state<string | null>(null);
+  const expansion = createPayloadExpansion(() => item.payloadId);
 
   /**
    * payloadMeta.meta is stored as a JSON string so kind-specific data
@@ -35,7 +29,7 @@
    * parsing — a garbage string just yields a null lookup, not a crash.
    */
   const summaryMeta = $derived.by<Record<string, unknown> | null>(() => {
-    const raw = payloadMeta?.meta;
+    const raw = item.payloadMeta;
     if (!raw) return null;
     try {
       const parsed = JSON.parse(raw) as unknown;
@@ -75,13 +69,13 @@
 
   const statusLabel = $derived.by(() => {
     if (itemStatus === 'running') return 'running';
-    if (itemStatus === 'failed') return 'failed';
+    if (itemStatus === 'errored') return 'failed';
     return 'done';
   });
 
   const statusClass = $derived.by(() => {
     if (itemStatus === 'running') return 'text-accent';
-    if (itemStatus === 'failed') return 'text-error';
+    if (itemStatus === 'errored') return 'text-error';
     return 'text-success';
   });
 
@@ -101,27 +95,14 @@
     return `${minutes}m ${remSec}s`;
   }
 
+  $effect(() => {
+    item.id;
+    item.payloadId;
+    expansion.reset();
+  });
+
   async function toggle() {
-    if (expanded) {
-      expanded = false;
-      return;
-    }
-
-    expanded = true;
-
-    // Already cached — collapse/re-expand doesn't re-fetch.
-    if (fullBody !== null) return;
-    if (!item.payloadId) return;
-
-    loading = true;
-    loadError = null;
-    try {
-      fullBody = await GetPayloadData(item.payloadId);
-    } catch (err) {
-      loadError = err instanceof Error ? err.message : String(err);
-    } finally {
-      loading = false;
-    }
+    await expansion.toggle();
   }
 
   function handleKeydown(evt: KeyboardEvent) {
@@ -141,13 +122,14 @@
     class="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-surface-2/40 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
     onclick={toggle}
     onkeydown={handleKeydown}
-    aria-expanded={expanded}
+    aria-expanded={expansion.expanded}
     aria-controls="tool-result-dropdown-body-{item.id}"
     data-testid="tool-result-dropdown-toggle"
   >
-    <span class="text-xs text-text-secondary select-none" aria-hidden="true">{expanded ? '▼' : '▶'}</span>
+    <span class="text-xs text-text-secondary select-none" aria-hidden="true">{expansion.expanded ? '▼' : '▶'}</span>
     <span class="font-mono text-xs text-text-secondary shrink-0" aria-hidden="true">[T]</span>
     <span class="min-w-0 flex-1 truncate text-sm text-text-primary">{toolName}</span>
+    <ToolDecisionChip decision={item.decision} />
     <span
       class="shrink-0 text-xs {statusClass}"
       data-testid="tool-result-dropdown-status"
@@ -172,14 +154,14 @@
     {/if}
   </button>
 
-  {#if expanded}
+  {#if expansion.expanded}
     <div
       id="tool-result-dropdown-body-{item.id}"
       transition:slide={{ duration: 150 }}
       class="border-t border-border bg-surface-0"
       data-testid="tool-result-dropdown-body"
     >
-      {#if loading}
+      {#if expansion.loading}
         <p
           class="px-3 py-2 text-xs text-text-secondary animate-pulse"
           role="status"
@@ -188,19 +170,29 @@
         >
           Loading…
         </p>
-      {:else if loadError}
+      {:else if expansion.error}
         <p
           class="px-3 py-2 text-xs text-error"
           role="alert"
           data-testid="tool-result-dropdown-error"
         >
-          Failed to load: {loadError}
+          Failed to load: {expansion.error}
         </p>
-      {:else if fullBody !== null}
+      {:else if expansion.displayData !== null}
         <pre
           class="max-h-60 overflow-auto whitespace-pre-wrap break-words px-3 py-2 font-mono text-xs leading-relaxed text-text-secondary"
           data-testid="tool-result-dropdown-output"
-        >{fullBody}</pre>
+        >{@html ansiToHtml(expansion.displayData)}</pre>
+        {#if expansion.hasMore}
+          <button
+            type="button"
+            class="mx-3 mb-3 text-xs text-accent hover:underline cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 rounded"
+            onclick={() => expansion.showFull()}
+            data-testid="tool-result-dropdown-show-full"
+          >
+            Show full output ({formatPayloadSize(expansion.totalSize)}) ↓
+          </button>
+        {/if}
       {:else}
         <p
           class="px-3 py-2 text-xs text-text-secondary italic"

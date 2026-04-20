@@ -22,7 +22,7 @@ func TestDeleteItemsAfterTurnRemovesOnlyForwardTurns(t *testing.T) {
 				ID:        idFor(turn, i),
 				ThreadID:  "t-del",
 				TurnIndex: turn,
-				Kind:      "text",
+				Kind:      "assistant_text",
 				Role:      "assistant",
 				CreatedAt: now,
 			}); err != nil {
@@ -67,7 +67,7 @@ func TestDeleteItemsAfterTurnScopesToThread(t *testing.T) {
 		for turn := 0; turn < 3; turn++ {
 			if _, err := s.AppendItem(Item{
 				ID: id + "-" + idFor(turn, 0), ThreadID: id,
-				TurnIndex: turn, Kind: "text", Role: "assistant", CreatedAt: now,
+				TurnIndex: turn, Kind:      "assistant_text", Role: "assistant", CreatedAt: now,
 			}); err != nil {
 				t.Fatalf("append %s t%d: %v", id, turn, err)
 			}
@@ -116,7 +116,7 @@ func TestDeleteItemsAfterTurnTouchesThreadUpdatedAt(t *testing.T) {
 		t.Fatalf("create thread: %v", err)
 	}
 	if _, err := s.AppendItem(Item{
-		ID: "only", ThreadID: "t-touch", TurnIndex: 0, Kind: "text",
+		ID: "only", ThreadID: "t-touch", TurnIndex: 0, Kind:      "assistant_text",
 		Role: "assistant", CreatedAt: base,
 	}); err != nil {
 		t.Fatalf("append: %v", err)

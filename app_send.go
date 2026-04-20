@@ -7,13 +7,13 @@ import (
 	"sync"
 	"time"
 
+	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
-
-	"github.com/google/uuid"
+	"agent-overflow/internal/triage"
 )
 
 // sendThreadMuRegistry owns a mutex per thread so the "compute turn index
-// / call provider / persist user item" sequence can't interleave for the
+// / persist user item / call provider" sequence can't interleave for the
 // same thread (Bug B11). Concurrent sends on DIFFERENT threads proceed
 // in parallel — that's the whole point of splitting the lock from a
 // global sendMu. Also avoids the audit #52 misattribution where two
@@ -53,8 +53,8 @@ func (a *App) sendMessage(threadID string, content string) error {
 	}
 
 	// Per-thread critical section: only one Send per thread at a time.
-	// This keeps the lazy-session-start + read-turn-index + call-provider +
-	// insert-user-item sequence atomic for a single thread while letting
+	// This keeps the lazy-session-start + read-turn-index + insert-user-item +
+	// call-provider sequence atomic for a single thread while letting
 	// different threads proceed in parallel. Held across the lazy start so
 	// concurrent sends on a session-less thread don't race on spawn
 	// ordering.
@@ -85,6 +85,9 @@ func (a *App) sendMessage(threadID string, content string) error {
 	if err != nil {
 		return fmt.Errorf("send message: get thread: %w", err)
 	}
+	if a.triage == nil {
+		a.triage = triage.NewRouter(a.store, a.emitWithReplay())
+	}
 	hasPriorItems, err := a.store.HasItems(threadID)
 	if err != nil {
 		return fmt.Errorf("send message: check prior items: %w", err)
@@ -96,34 +99,64 @@ func (a *App) sendMessage(threadID string, content string) error {
 	turnIndex++
 	a.maybeRenameTemporaryWorktreeBranch(threadID, content)
 
-	// Bug B8: write to the provider FIRST; a failing Send must not
-	// leave an orphan user item on a turn that never ran.
+	now := time.Now().UnixMilli()
+	if err := a.triage.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTurnStart,
+		ThreadID:  threadID,
+		TurnIndex: turnIndex,
+		Timestamp: time.Now(),
+	}); err != nil {
+		return fmt.Errorf("send message: turn start: %w", err)
+	}
+
+	userItem := store.Item{
+		ID:        fmt.Sprintf("user:%d", turnIndex),
+		ThreadID:  threadID,
+		TurnIndex: turnIndex,
+		Kind:      "user_text",
+		Role:      "user",
+		Status:    "completed",
+		Summary:   content,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	persisted, err := a.store.UpsertItem(userItem, nil)
+	if err != nil {
+		return fmt.Errorf("send message: persist user message: %w", err)
+	}
+	a.emit("provider:item_upsert", persisted)
+
 	if err := sendToProvider(sess, threadID, content); err != nil {
+		errorItem := store.Item{
+			ID:        fmt.Sprintf("error:%d:0", turnIndex),
+			ThreadID:  threadID,
+			TurnIndex: turnIndex,
+			Kind:      "error",
+			Role:      "system",
+			Status:    "completed",
+			Summary:   fmt.Sprintf("Failed to send: %v", err),
+			CreatedAt: time.Now().UnixMilli(),
+			UpdatedAt: time.Now().UnixMilli(),
+		}
+		if persistedErr, upsertErr := a.store.UpsertItem(errorItem, nil); upsertErr == nil {
+			a.emit("provider:item_upsert", persistedErr)
+		}
+		_ = a.triage.Handle(provider.ProviderEvent{
+			Kind:      provider.EventTurnComplete,
+			ThreadID:  threadID,
+			Meta:      []byte(`{"truncated":true}`),
+			Timestamp: time.Now(),
+		})
 		return err
 	}
 
-	now := time.Now().UnixMilli()
-	userItem := store.Item{
-		ID:        uuid.New().String(),
-		ThreadID:  threadID,
-		TurnIndex: turnIndex,
-		ItemIndex: 0,
-		Kind:      "text",
-		Role:      "user",
-		Summary:   content,
-		CreatedAt: now,
-	}
-	if err := a.store.InsertItem(userItem); err != nil {
-		return fmt.Errorf("send message: persist user message: %w", err)
-	}
 	a.maybeGenerateThreadTitle(thread, content, hasPriorItems)
 	return nil
 }
 
 // sendToProvider forwards the user content to the active provider
-// session. Extracted so sendMessage can call the provider before
-// touching the store (Bug B8) while keeping the switch/log behaviour
-// in one place.
+// session. Extracted so sendMessage keeps the provider routing and
+// logging in one place after persisting the optimistic user item.
 func sendToProvider(sess session, threadID, content string) error {
 	switch {
 	case sess.claude != nil:

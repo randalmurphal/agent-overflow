@@ -12,10 +12,9 @@ func TestEventKindUniqueness(t *testing.T) {
 		EventInit, EventTextDelta, EventToolStart, EventToolComplete,
 		EventTurnStart, EventTurnComplete, EventApprovalRequest,
 		EventApprovalResolved, EventSessionStatus, EventTokenUsage,
-		EventError, EventBackgroundStart, EventBackgroundDelta,
-		EventBackgroundComplete, EventDiff, EventCommandOutput, EventThinking,
-		EventToolProgress, EventCompactBoundary, EventRateLimits,
-		EventModelRerouted, EventThreadRenamed,
+		EventError, EventCompactBoundary, EventRateLimits,
+		EventModelRerouted, EventThreadRenamed, EventDiff,
+		EventCommandOutput, EventThinking, EventProposedPlan,
 	}
 
 	seen := make(map[EventKind]bool, len(kinds))
@@ -29,15 +28,15 @@ func TestEventKindUniqueness(t *testing.T) {
 		seen[k] = true
 	}
 
-	if len(seen) != 22 {
-		t.Errorf("expected 22 unique EventKind values, got %d", len(seen))
+	if len(seen) != 19 {
+		t.Errorf("expected 19 unique EventKind values, got %d", len(seen))
 	}
 }
 
 func TestItemKindUniqueness(t *testing.T) {
 	kinds := []ItemKind{
-		ItemText, ItemToolCall, ItemToolResult, ItemThinking,
-		ItemDiff, ItemCommandExecution, ItemBackgroundStarted, ItemBackgroundDone,
+		ItemUserText, ItemAssistantText, ItemThinking, ItemToolCall,
+		ItemToolCompletion, ItemError, ItemCompaction,
 	}
 
 	seen := make(map[ItemKind]bool, len(kinds))
@@ -51,8 +50,8 @@ func TestItemKindUniqueness(t *testing.T) {
 		seen[k] = true
 	}
 
-	if len(seen) != 8 {
-		t.Errorf("expected 8 unique ItemKind values, got %d", len(seen))
+	if len(seen) != 7 {
+		t.Errorf("expected 7 unique ItemKind values, got %d", len(seen))
 	}
 }
 

@@ -223,8 +223,8 @@ func TestCreateThreadFromPRCreatesThreadWithFirstItem(t *testing.T) {
 	if item.Role != "user" {
 		t.Fatalf("item.Role = %q, want user", item.Role)
 	}
-	if item.Kind != "text" {
-		t.Fatalf("item.Kind = %q, want text", item.Kind)
+	if item.Kind != "user_text" {
+		t.Fatalf("item.Kind = %q, want user_text", item.Kind)
 	}
 	if item.TurnIndex != 1 {
 		t.Fatalf("item.TurnIndex = %d, want 1", item.TurnIndex)

@@ -52,7 +52,7 @@
 
   // Insertion/deletion totals for the cumulative tab header.
   let cumulativeEntries = $derived<AgentDiffEntry[]>(selectAgentDiffEntries(pane.items));
-  let cumulativeStats = $derived<DiffStats>(summarizeEntries(cumulativeEntries, pane.payloadMetas));
+  let cumulativeStats = $derived<DiffStats>(summarizeEntries(cumulativeEntries, pane.items));
 
   // The panel body's visible tab. Derived so the SourceTabs component stays
   // synchronized with store.source.

@@ -13,7 +13,7 @@ const threadColumns = `id, project_id, title, provider, model,
     COALESCE(session_ref, ''), COALESCE(pending_fork_session_ref, ''),
     mode, reasoning_effort, fast_mode, context_window, runtime_mode,
     COALESCE(discussion_id, ''), COALESCE(parent_thread_id, ''),
-    COALESCE(forked_from_thread_id, ''),
+    COALESCE(forked_from_thread_id, ''), last_token_usage,
     created_at, updated_at, archived`
 
 // -- Validation errors for enum fields. Each binding checks against the
@@ -68,7 +68,7 @@ func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
 		&t.WorkspacePath, &t.WorktreePath, &t.Branch,
 		&t.SessionRef, &t.PendingForkRef,
 		&t.Mode, &t.ReasoningEffort, &fastMode, &t.ContextWindow, &t.RuntimeMode,
-		&t.DiscussionID, &t.ParentThreadID, &t.ForkedFromThreadID,
+		&t.DiscussionID, &t.ParentThreadID, &t.ForkedFromThreadID, &t.LastTokenUsage,
 		&t.CreatedAt, &t.UpdatedAt, &archived,
 	); err != nil {
 		return Thread{}, err
@@ -89,14 +89,14 @@ func (s *Store) CreateThread(t Thread) error {
 		`INSERT INTO threads (id, project_id, title, provider, model,
 		    workspace_path, worktree_path, branch, session_ref, pending_fork_session_ref,
 		    mode, reasoning_effort, fast_mode, context_window, runtime_mode,
-		    discussion_id, parent_thread_id, forked_from_thread_id,
+		    discussion_id, parent_thread_id, forked_from_thread_id, last_token_usage,
 		    created_at, updated_at, archived)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		t.ID, t.ProjectID, t.Title, t.Provider, t.Model,
 		t.WorkspacePath, nilIfEmpty(t.WorktreePath), nilIfEmpty(t.Branch),
 		nilIfEmpty(t.SessionRef), nilIfEmpty(t.PendingForkRef),
 		t.Mode, t.ReasoningEffort, boolToInt(t.FastMode), t.ContextWindow, t.RuntimeMode,
-		nilIfEmpty(t.DiscussionID), nilIfEmpty(t.ParentThreadID), nilIfEmpty(t.ForkedFromThreadID),
+		nilIfEmpty(t.DiscussionID), nilIfEmpty(t.ParentThreadID), nilIfEmpty(t.ForkedFromThreadID), t.LastTokenUsage,
 		t.CreatedAt, t.UpdatedAt, boolToInt(t.Archived),
 	)
 	if err != nil {
@@ -224,14 +224,14 @@ func (s *Store) UpdateThread(t Thread) error {
 		`UPDATE threads SET project_id=?, title=?, provider=?, model=?,
 		    workspace_path=?, worktree_path=?, branch=?, session_ref=?, pending_fork_session_ref=?,
 		    mode=?, reasoning_effort=?, fast_mode=?, context_window=?, runtime_mode=?,
-		    discussion_id=?, parent_thread_id=?, forked_from_thread_id=?,
+		    discussion_id=?, parent_thread_id=?, forked_from_thread_id=?, last_token_usage=?,
 		    updated_at=?, archived=?
 		 WHERE id=?`,
 		t.ProjectID, t.Title, t.Provider, t.Model,
 		t.WorkspacePath, nilIfEmpty(t.WorktreePath), nilIfEmpty(t.Branch),
 		nilIfEmpty(t.SessionRef), nilIfEmpty(t.PendingForkRef),
 		t.Mode, t.ReasoningEffort, boolToInt(t.FastMode), t.ContextWindow, t.RuntimeMode,
-		nilIfEmpty(t.DiscussionID), nilIfEmpty(t.ParentThreadID), nilIfEmpty(t.ForkedFromThreadID),
+		nilIfEmpty(t.DiscussionID), nilIfEmpty(t.ParentThreadID), nilIfEmpty(t.ForkedFromThreadID), t.LastTokenUsage,
 		t.UpdatedAt, boolToInt(t.Archived), t.ID,
 	)
 	if err != nil {
@@ -313,6 +313,21 @@ func (s *Store) UpdateModel(threadID, model string) error {
 		return fmt.Errorf("store: update model for %s: %w", threadID, err)
 	}
 	return requireRowsAffected(result, fmt.Sprintf("store: update model for %s", threadID))
+}
+
+func (s *Store) UpdateLastTokenUsage(threadID, usage string) error {
+	result, err := s.db.Exec(
+		`UPDATE threads SET last_token_usage = ?, updated_at = ? WHERE id = ?`,
+		usage, nowMillis(), threadID,
+	)
+	if err != nil {
+		return fmt.Errorf("store: update last token usage for %s: %w", threadID, err)
+	}
+	return requireRowsAffected(result, fmt.Sprintf("store: update last token usage for %s", threadID))
+}
+
+func (s *Store) ClearLastTokenUsage(threadID string) error {
+	return s.UpdateLastTokenUsage(threadID, "")
 }
 
 // UpdateProvider overwrites the provider ('claude' / 'codex'). Invalid

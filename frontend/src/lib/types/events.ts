@@ -10,18 +10,13 @@ export type EventKind =
   | 'session_status'
   | 'token_usage'
   | 'error'
-  | 'background_start'
-  | 'background_delta'
-  | 'background_complete'
   | 'diff'
   | 'command_output'
   | 'thinking'
-  | 'tool_progress'
   | 'compact_boundary'
   | 'rate_limits'
   | 'model_rerouted'
-  | 'thread_renamed'
-  | 'plan_update';
+  | 'thread_renamed';
 
 export interface ProviderEvent {
   kind: EventKind;
@@ -98,6 +93,7 @@ export interface ApprovalRequest {
   requestId: string;
   threadId: string;
   turnId?: string;
+  toolUseId?: string;
   toolName: string;
   description: string;
   input: unknown;
@@ -123,16 +119,35 @@ export interface ContextWindow {
   totalProcessed?: number;
 }
 
+export interface ApprovalEvent {
+  action: 'request' | 'resolve';
+  threadId?: string;
+  request?: ApprovalRequest;
+  requestId?: string;
+  decision?: '' | 'approved' | 'declined' | 'amended' | 'timeout' | 'lost';
+}
+
+export interface UsageEvent {
+  action: 'usage' | 'reset';
+  threadId: string;
+  usedTokens?: number;
+  maxTokens?: number;
+  contextPercent?: number;
+}
+
+export interface ProviderStatusEvent {
+  provider: 'claude' | 'codex';
+  status: 'ready' | 'not_found' | 'version_too_old' | 'unauthenticated' | 'error';
+  message?: string;
+  version?: string;
+  actionable: boolean;
+  actionUrl?: string;
+}
+
 export interface RateLimitEntry {
   limitId: string;
   limitName: string;
   usedPercent: number;
   windowMins: number;
   resetsAt: number;
-}
-
-export interface ToolProgressMeta {
-  current: number;
-  total: number;
-  message: string;
 }

@@ -3,7 +3,7 @@
 // that returns DiffMeta for an item's payload id, and produces the aggregate
 // line counts and file count.
 
-import type { DiffMeta, Item } from '../types/models';
+import type { DiffMeta, Item, ToolResultMeta } from '../types/models';
 
 export interface TurnDiffSummary {
   insertions: number;
@@ -18,18 +18,14 @@ export const EMPTY_TURN_DIFF_SUMMARY: TurnDiffSummary = {
 };
 
 /**
- * Aggregate the insertions/deletions/file-count for every diff item in a turn.
- *
- * `items` may include non-diff items (we filter by `kind === 'diff'` and a
- * non-empty `payloadId`). The metaFor function must return the parsed DiffMeta
- * for a payloadId or `null` if the meta hasn't loaded yet — items with a
- * missing meta are skipped so a partially-hydrated thread still renders
- * something useful.
+ * Aggregate the insertions/deletions/file-count for every diff-bearing item in
+ * a turn. File-change tool results contribute through `payloadKind=tool_result`
+ * and their `inlineDiff.files` metadata; raw diff payloads contribute through
+ * `payloadKind=diff`.
  */
 export function summarizeTurnDiffs(
   items: readonly Item[],
   turnIndex: number,
-  metaFor: (payloadId: string) => DiffMeta | null,
 ): TurnDiffSummary {
   let insertions = 0;
   let deletions = 0;
@@ -40,15 +36,31 @@ export function summarizeTurnDiffs(
   const seenPaths = new Set<string>();
   for (const item of items) {
     if (item.turnIndex !== turnIndex) continue;
-    if (item.kind !== 'diff') continue;
-    if (!item.payloadId) continue;
-    const meta = metaFor(item.payloadId);
-    if (!meta) continue;
-    insertions += meta.insertions;
-    deletions += meta.deletions;
-    if (!seenPaths.has(meta.filePath)) {
-      seenPaths.add(meta.filePath);
-      fileCount += 1;
+    if (!item.payloadMeta) continue;
+    try {
+      if (item.payloadKind === 'diff') {
+        const meta = JSON.parse(item.payloadMeta) as DiffMeta;
+        insertions += meta.insertions;
+        deletions += meta.deletions;
+        if (!seenPaths.has(meta.filePath)) {
+          seenPaths.add(meta.filePath);
+          fileCount += 1;
+        }
+        continue;
+      }
+      if (item.payloadKind !== 'tool_result') continue;
+      const meta = JSON.parse(item.payloadMeta) as ToolResultMeta;
+      const files = meta.inlineDiff?.files ?? [];
+      for (const file of files) {
+        insertions += file.insertions ?? 0;
+        deletions += file.deletions ?? 0;
+        if (!seenPaths.has(file.path)) {
+          seenPaths.add(file.path);
+          fileCount += 1;
+        }
+      }
+    } catch {
+      // Ignore malformed payload metadata.
     }
   }
   return { insertions, deletions, fileCount };

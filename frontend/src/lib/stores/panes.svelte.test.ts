@@ -26,8 +26,8 @@ describe('panes store', () => {
       const pane = getMainPane();
       expect(pane.thread).toBeNull();
       expect(pane.items).toEqual([]);
-      expect(pane.streamingContent).toBe('');
-      expect(typeof pane.appendTextDelta).toBe('function');
+      expect(pane.pendingApprovals).toEqual([]);
+      expect(typeof pane.upsertItem).toBe('function');
     });
   });
 });

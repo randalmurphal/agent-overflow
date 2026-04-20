@@ -24,7 +24,7 @@ func TestStoreMethodsReturnErrorsAfterClose(t *testing.T) {
 		ThreadID:  "closed-thread",
 		TurnIndex: 0,
 		ItemIndex: 0,
-		Kind:      "text",
+		Kind:      "user_text",
 		Role:      "user",
 		Summary:   "hello",
 		CreatedAt: now,

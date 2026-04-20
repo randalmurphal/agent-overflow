@@ -31,13 +31,14 @@ func TestParentToolUseIDFlowsThroughInlineEmit(t *testing.T) {
 		t.Fatalf("handle: %v", err)
 	}
 
-	if len(*emissions) != 1 {
-		t.Fatalf("expected 1 emission, got %d", len(*emissions))
+	inline := filterEmissions(*emissions, "provider:event")
+	if len(inline) != 1 {
+		t.Fatalf("expected 1 provider:event emission, got %d", len(inline))
 	}
 
-	emitted, ok := (*emissions)[0].data.(provider.ProviderEvent)
+	emitted, ok := inline[0].data.(provider.ProviderEvent)
 	if !ok {
-		t.Fatalf("emitted payload not a ProviderEvent: %T", (*emissions)[0].data)
+		t.Fatalf("emitted payload not a ProviderEvent: %T", inline[0].data)
 	}
 	if emitted.ParentToolUseID != "task_tool_abc" {
 		t.Errorf("ParentToolUseID on emission: got %q, want %q",
@@ -76,9 +77,9 @@ func TestParentToolUseIDPersistsOnTurnText(t *testing.T) {
 	var found bool
 	for _, it := range items {
 		if it.Summary == "subagent result" {
-			if it.ParentToolUseID != "task_tool_99" {
-				t.Errorf("persisted item ParentToolUseID: got %q, want %q",
-					it.ParentToolUseID, "task_tool_99")
+			if it.ParentID != providerScopedItemID("t1", "task_tool_99") {
+				t.Errorf("persisted item ParentID: got %q, want %q",
+					it.ParentID, providerScopedItemID("t1", "task_tool_99"))
 			}
 			found = true
 		}
@@ -129,9 +130,9 @@ func TestParentToolUseIDEmptyWhenAbsent(t *testing.T) {
 		t.Fatalf("list items: %v", err)
 	}
 	for _, it := range items {
-		if it.ParentToolUseID != "" {
-			t.Errorf("persisted item %q ParentToolUseID: got %q, want empty",
-				it.ID, it.ParentToolUseID)
+		if it.ParentID != "" {
+			t.Errorf("persisted item %q ParentID: got %q, want empty",
+				it.ID, it.ParentID)
 		}
 	}
 }

@@ -13,39 +13,27 @@
   let rechecking = $state(false);
 
   // Provider-level status is keyed by the pane's current provider. When
-  // the pane has no thread yet (boot, between switches) we stay empty —
-  // there's nothing actionable to surface without a provider.
+  // the pane has no thread yet (boot, between switches) we stay empty.
+  // `pane.providerBanner` is the chat-state mirror used by the rewrite;
+  // the providerStatus store remains the app-wide cache so thread switches
+  // can seed immediately from the last seen event for that provider.
   let providerStatus = $derived.by((): ProviderStatusEvent | null => {
     if (!pane.thread) return null;
-    const evt = getProviderStatus(pane.thread.provider);
+    const evt = pane.providerBanner ?? getProviderStatus(pane.thread.provider);
     if (!evt) return null;
     // Ready events are clear-banner signals — render nothing.
     return evt.status === 'ready' ? null : evt;
   });
 
-  let sessionBannerVisible = $derived(
-    pane.sessionStatus === 'error' ||
-    pane.sessionStatus === 'disconnected' ||
-    pane.sessionStatus === 'retrying',
+  let sessionBannerVisible = $derived(!!pane.thread && (reconnecting || !!pane.error));
+  let sessionBannerClasses = $derived(
+    reconnecting
+      ? 'bg-warning/15 border-warning/30 text-warning'
+      : 'bg-error/15 border-error/30 text-error',
   );
-
-  let sessionBannerClasses = $derived.by(() => {
-    switch (pane.sessionStatus) {
-      case 'error': return 'bg-error/15 border-error/30 text-error';
-      case 'retrying': return 'bg-warning/15 border-warning/30 text-warning';
-      case 'disconnected': return 'bg-warning/15 border-warning/30 text-warning';
-      default: return '';
-    }
-  });
-
-  let sessionMessage = $derived.by(() => {
-    switch (pane.sessionStatus) {
-      case 'error': return pane.error ?? 'Provider error';
-      case 'retrying': return 'Reconnecting...';
-      case 'disconnected': return 'Session disconnected';
-      default: return '';
-    }
-  });
+  let sessionMessage = $derived(
+    reconnecting ? 'Reconnecting…' : (pane.error ?? 'Provider error'),
+  );
 
   // Status-level banner (install / version / auth) — colour + copy are
   // derived off the status string. Docs link (when present) comes from
@@ -100,12 +88,10 @@
     if (!pane.threadId || reconnecting) return;
     reconnecting = true;
     pane.clearError();
-    pane.setSessionStatus('retrying');
     try {
       await ReconnectSession(pane.threadId);
     } catch (err) {
       console.error('Failed to reconnect:', err);
-      pane.setSessionStatus('error');
       pane.setError(`Failed to reconnect: ${err}`);
     } finally {
       reconnecting = false;
@@ -167,7 +153,7 @@
 {#if sessionBannerVisible && pane.thread}
   <div transition:slide={{ duration: 150 }} role="alert" aria-live="assertive" class="border-b {sessionBannerClasses} px-4 py-2 flex items-center gap-2 shrink-0">
     <p class="text-xs flex-1 line-clamp-2" title={sessionMessage}>{sessionMessage}</p>
-    {#if pane.sessionStatus !== 'retrying'}
+    {#if !reconnecting}
       <button
         onclick={handleReconnect}
         disabled={reconnecting}

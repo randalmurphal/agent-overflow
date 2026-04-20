@@ -121,7 +121,7 @@ func TestSendMessageIncrementsTurnIndex(t *testing.T) {
 		ThreadID:  thread.ID,
 		TurnIndex: 0,
 		ItemIndex: 0,
-		Kind:      "text",
+		Kind:      "assistant_text",
 		Role:      "assistant",
 		Summary:   "prior turn",
 		CreatedAt: time.Now().UnixMilli(),
@@ -708,12 +708,11 @@ func TestSendMessageParallelDifferentThreads(t *testing.T) {
 	}
 }
 
-// TestSendMessageDoesNotPersistUserItemWhenProviderSendFails exercises
-// Bug B8: the old flow persisted the user item BEFORE calling Send, so
-// a broken pipe / dead subprocess left an orphan user row for a turn
-// that never ran. The fix writes to the provider first; on failure the
-// user item is never persisted.
-func TestSendMessageDoesNotPersistUserItemWhenProviderSendFails(t *testing.T) {
+// TestSendMessagePersistsUserItemAndErrorWhenProviderSendFails exercises the
+// current optimistic-send contract: the user_text lands first so the turn is
+// visible immediately, and a follow-up error row records the failed provider
+// send.
+func TestSendMessagePersistsUserItemAndErrorWhenProviderSendFails(t *testing.T) {
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-send-fail")
 	thread.Provider = string(provider.Claude)
@@ -755,10 +754,17 @@ func TestSendMessageDoesNotPersistUserItemWhenProviderSendFails(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListItems: %v", err)
 	}
+	var userFound, errorFound bool
 	for _, item := range items {
-		if item.Role == "user" {
-			t.Fatalf("user item persisted despite provider send failure: %+v", item)
+		if item.Role == "user" && item.Kind == "user_text" {
+			userFound = true
 		}
+		if item.Kind == "error" {
+			errorFound = true
+		}
+	}
+	if !userFound || !errorFound {
+		t.Fatalf("expected user_text + error after provider send failure, got %+v", items)
 	}
 }
 

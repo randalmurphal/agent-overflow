@@ -102,6 +102,7 @@ export const WriteThreadWorkspaceFile = dispatch('WriteThreadWorkspaceFile');
 export const SearchThreadMessages = dispatch('SearchThreadMessages');
 export const GenerateCommitMessage = dispatch('GenerateCommitMessage');
 
+export const GetPayloadPreview = dispatch('GetPayloadPreview');
 export const GetPayloadData = dispatch('GetPayloadData');
 export const ListItems = dispatch('ListItems');
 export const ListPayloadMetas = dispatch('ListPayloadMetas');

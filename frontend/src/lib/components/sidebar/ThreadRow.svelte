@@ -59,9 +59,9 @@
     return getThreadById(thread.forkedFromThreadId);
   });
 
-  // Sidebar live-status dot. Reads from the global threadStatuses store
-  // so a background thread's turn-start / approval-request / error is
-  // visible without focusing the pane. 'idle' renders nothing so the
+  // Sidebar live-status dot. Reads from the global thread-status
+  // projection so a background thread's live item/approval/error state
+  // is visible without focusing the pane. 'idle' renders nothing so the
   // row layout stays stable when a thread is quiet.
   let liveStatus: ThreadLiveStatus = $derived(getThreadStatus(thread.id));
   let statusDotClass = $derived.by(() => {

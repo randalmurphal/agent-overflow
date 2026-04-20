@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	"agent-overflow/internal/discussion"
-	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 )
 
@@ -57,7 +56,7 @@ func (a *App) latestAssistantTurn(threadID string) (store.Item, bool, error) {
 		return store.Item{}, false, err
 	}
 
-	item, found, err := a.store.FindTurnItem(threadID, turnIndex, string(provider.ItemText))
+	item, found, err := a.store.FindTurnItem(threadID, turnIndex, "assistant_text")
 	if err != nil || !found {
 		return item, found, err
 	}

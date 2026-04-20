@@ -31,7 +31,6 @@ describe('<ToolApprovalPanel>', () => {
         approval: bashApproval(),
         onResolve: makeResolver(),
         onError: vi.fn(),
-        onSessionApprove: vi.fn(),
       },
     });
     expect(getByText('ls -la')).toBeInTheDocument();
@@ -47,7 +46,6 @@ describe('<ToolApprovalPanel>', () => {
         }),
         onResolve: makeResolver(),
         onError: vi.fn(),
-        onSessionApprove: vi.fn(),
       },
     });
     expect(getByText('/etc/hosts')).toBeInTheDocument();
@@ -61,7 +59,6 @@ describe('<ToolApprovalPanel>', () => {
         approval: bashApproval(),
         onResolve,
         onError: vi.fn(),
-        onSessionApprove: vi.fn(),
       },
     });
     await fireEvent.click(getByTestId('approval-allow'));
@@ -71,23 +68,6 @@ describe('<ToolApprovalPanel>', () => {
     expect(response.updatedInput).toBeUndefined();
   });
 
-  it('Allow for Session registers the tool and sends decision=allow', async () => {
-    const onResolve = makeResolver();
-    const onSessionApprove = vi.fn();
-    const { getByTestId } = render(ToolApprovalPanel, {
-      props: {
-        approval: bashApproval(),
-        onResolve,
-        onError: vi.fn(),
-        onSessionApprove,
-      },
-    });
-    await fireEvent.click(getByTestId('approval-allow-session'));
-    expect(onSessionApprove).toHaveBeenCalledWith('Bash');
-    await waitFor(() => expect(onResolve).toHaveBeenCalled());
-    expect((onResolve.mock.calls[0][0] as ApprovalResponse).decision).toBe('allow');
-  });
-
   it('Deny sends decision=deny', async () => {
     const onResolve = makeResolver();
     const { getByTestId } = render(ToolApprovalPanel, {
@@ -95,7 +75,6 @@ describe('<ToolApprovalPanel>', () => {
         approval: bashApproval(),
         onResolve,
         onError: vi.fn(),
-        onSessionApprove: vi.fn(),
       },
     });
     await fireEvent.click(getByTestId('approval-deny'));
@@ -109,7 +88,6 @@ describe('<ToolApprovalPanel>', () => {
         approval: bashApproval({ input: null as unknown as object }),
         onResolve: makeResolver(),
         onError: vi.fn(),
-        onSessionApprove: vi.fn(),
       },
     });
     expect(queryByTestId('approval-edit-toggle')).toBeNull();
@@ -121,7 +99,6 @@ describe('<ToolApprovalPanel>', () => {
         approval: bashApproval(),
         onResolve: makeResolver(),
         onError: vi.fn(),
-        onSessionApprove: vi.fn(),
       },
     });
     await fireEvent.click(getByTestId('approval-edit-toggle'));
@@ -136,7 +113,6 @@ describe('<ToolApprovalPanel>', () => {
         approval: bashApproval(),
         onResolve,
         onError: vi.fn(),
-        onSessionApprove: vi.fn(),
       },
     });
     await fireEvent.click(getByTestId('approval-edit-toggle'));
@@ -157,7 +133,6 @@ describe('<ToolApprovalPanel>', () => {
         approval: bashApproval(),
         onResolve,
         onError: vi.fn(),
-        onSessionApprove: vi.fn(),
       },
     });
     await fireEvent.click(getByTestId('approval-edit-toggle'));
@@ -169,36 +144,12 @@ describe('<ToolApprovalPanel>', () => {
     expect(getByTestId('approval-edit-error').textContent).toMatch(/Invalid JSON/i);
   });
 
-  it('Allow with edits + session registers the tool AND forwards updatedInput', async () => {
-    const onResolve = makeResolver();
-    const onSessionApprove = vi.fn();
-    const { getByTestId } = render(ToolApprovalPanel, {
-      props: {
-        approval: bashApproval(),
-        onResolve,
-        onError: vi.fn(),
-        onSessionApprove,
-      },
-    });
-    await fireEvent.click(getByTestId('approval-edit-toggle'));
-    await fireEvent.input(getByTestId('approval-edit-textarea'), {
-      target: { value: '{"command":"ls"}' },
-    });
-    await fireEvent.click(getByTestId('approval-allow-with-edits-session'));
-    expect(onSessionApprove).toHaveBeenCalledWith('Bash');
-    await waitFor(() => expect(onResolve).toHaveBeenCalled());
-    expect((onResolve.mock.calls[0][0] as ApprovalResponse).updatedInput).toEqual({
-      command: 'ls',
-    });
-  });
-
   it('Cancel edit restores the preview and clears any edit error', async () => {
     const { getByTestId, queryByTestId } = render(ToolApprovalPanel, {
       props: {
         approval: bashApproval(),
         onResolve: makeResolver(),
         onError: vi.fn(),
-        onSessionApprove: vi.fn(),
       },
     });
     await fireEvent.click(getByTestId('approval-edit-toggle'));
@@ -221,7 +172,6 @@ describe('<ToolApprovalPanel>', () => {
         approval: bashApproval(),
         onResolve,
         onError,
-        onSessionApprove: vi.fn(),
       },
     });
     await fireEvent.click(getByTestId('approval-allow'));

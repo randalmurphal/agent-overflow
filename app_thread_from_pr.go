@@ -197,7 +197,7 @@ func (a *App) CreateThreadFromPR(
 		ThreadID:  thread.ID,
 		TurnIndex: 1,
 		ItemIndex: 0,
-		Kind:      "text",
+		Kind:      "user_text",
 		Role:      "user",
 		Summary:   userContent,
 		CreatedAt: now,
