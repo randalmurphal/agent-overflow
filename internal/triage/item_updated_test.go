@@ -21,7 +21,7 @@ import (
 // persistToolCallLaunch landed, a duplicate EventToolStart would rewrite
 // status to running, wiping the completed status and breaking the
 // frontend's collapsed-card rendering.
-func TestItemUpdatedDoesNotReopenCompletedToolCall(t *testing.T) {
+func TestItemUpdatedPreservesCompletedToolCallStatus(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
 
@@ -41,7 +41,7 @@ func TestItemUpdatedDoesNotReopenCompletedToolCall(t *testing.T) {
 		t.Fatalf("complete: %v", err)
 	}
 
-	before, _, _ := st.GetThreadItem("t1", providerScopedItemID("tool-ix"))
+	before, _, _ := st.GetThreadItem("t1", "tool-ix")
 	if before.Status != statusCompleted {
 		t.Fatalf("prerequisite: status after complete = %q, want completed", before.Status)
 	}
@@ -56,7 +56,7 @@ func TestItemUpdatedDoesNotReopenCompletedToolCall(t *testing.T) {
 		t.Fatalf("second start: %v", err)
 	}
 
-	after, _, _ := st.GetThreadItem("t1", providerScopedItemID("tool-ix"))
+	after, _, _ := st.GetThreadItem("t1", "tool-ix")
 	if after.Status != statusCompleted {
 		t.Errorf("status after duplicate start = %q, want completed (item/updated must not reopen)", after.Status)
 	}

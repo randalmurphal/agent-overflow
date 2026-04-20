@@ -58,7 +58,7 @@ func TestCommandOutputMetaStabilisesOnComplete(t *testing.T) {
 	// That's intentional — the streaming hot path doesn't rebuild over
 	// the full blob per delta. Confirm the scaffolding is what we
 	// think before asserting the fix.
-	item, _, _ := st.GetThreadItem("t1", providerScopedItemID("cmd-xx"))
+	item, _, _ := st.GetThreadItem("t1", "cmd-xx")
 	if item.PayloadID == "" {
 		t.Fatalf("expected payload attached after streaming deltas")
 	}
@@ -81,7 +81,7 @@ func TestCommandOutputMetaStabilisesOnComplete(t *testing.T) {
 		t.Fatalf("complete: %v", err)
 	}
 
-	item, _, _ = st.GetThreadItem("t1", providerScopedItemID("cmd-xx"))
+	item, _, _ = st.GetThreadItem("t1", "cmd-xx")
 	var finalMeta CommandOutputMeta
 	if err := json.Unmarshal([]byte(item.PayloadMeta), &finalMeta); err != nil {
 		t.Fatalf("unmarshal final meta: %v", err)
