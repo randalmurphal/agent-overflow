@@ -8,6 +8,7 @@ import (
 
 	"agent-overflow/internal/discussion"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/stringsx"
 
 	"github.com/google/uuid"
 )
@@ -248,12 +249,9 @@ func formatDiscussionRole(role string) string {
 	return strings.Join(parts, " ")
 }
 
+// firstNonEmpty returns the first input that is non-blank after TrimSpace,
+// with the whitespace stripped. Thin wrapper over stringsx.FirstNonEmptyTrimmed
+// so call sites in the main package stay concise.
 func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		value = strings.TrimSpace(value)
-		if value != "" {
-			return value
-		}
-	}
-	return ""
+	return stringsx.FirstNonEmptyTrimmed(values...)
 }

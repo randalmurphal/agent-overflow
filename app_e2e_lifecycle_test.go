@@ -244,11 +244,8 @@ func setupE2EApp(t *testing.T) (*App, *capturedEventBus) {
 		app.sessions = make(map[string]session)
 		app.mu.Unlock()
 		for _, s := range sessions {
-			if s.claude != nil {
-				_ = s.claude.Close()
-			}
-			if s.codex != nil {
-				_ = s.codex.Close()
+			if ps := s.providerSession(); ps != nil {
+				_ = ps.Close()
 			}
 		}
 	})

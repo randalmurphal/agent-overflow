@@ -158,13 +158,10 @@ func (a *App) sendMessage(threadID string, content string) error {
 // session. Extracted so sendMessage keeps the provider routing and
 // logging in one place after persisting the optimistic user item.
 func sendToProvider(sess session, threadID, content string) error {
-	switch {
-	case sess.claude != nil:
-		return sess.claude.Send(context.Background(), content)
-	case sess.codex != nil:
-		return sess.codex.Send(context.Background(), content)
-	default:
+	providerSess := sess.providerSession()
+	if providerSess == nil {
 		log.Printf("send message: session for thread %s has no provider", threadID)
 		return fmt.Errorf("session has no provider")
 	}
+	return providerSess.Send(context.Background(), content)
 }

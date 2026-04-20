@@ -35,6 +35,11 @@ const DefaultIdleTimeout = 120 * time.Second
 // respond in seconds; anything longer is likely an abandoned session.
 const DefaultApprovalTimeout = 10 * time.Minute
 
+// Compile-time guarantee that *Session satisfies the provider.Session
+// interface the app layer calls into. Changing any of the methods in a
+// way that breaks the contract is caught at build time.
+var _ provider.Session = (*Session)(nil)
+
 // Session manages a Claude Code CLI subprocess.
 type Session struct {
 	proc      *provider.Process

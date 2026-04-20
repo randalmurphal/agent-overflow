@@ -43,16 +43,12 @@ func (a *App) finishSessionStart(threadID string, startState *sessionStart) {
 }
 
 func closeProviderSession(threadID string, sess session) error {
-	switch {
-	case sess.claude != nil:
-		if err := sess.claude.Close(); err != nil {
-			return fmt.Errorf("close claude session for thread %s: %w", threadID, err)
-		}
-	case sess.codex != nil:
-		if err := sess.codex.Close(); err != nil {
-			return fmt.Errorf("close codex session for thread %s: %w", threadID, err)
-		}
+	providerSess := sess.providerSession()
+	if providerSess == nil {
+		return nil
 	}
-
+	if err := providerSess.Close(); err != nil {
+		return fmt.Errorf("close %s session for thread %s: %w", sess.provider, threadID, err)
+	}
 	return nil
 }

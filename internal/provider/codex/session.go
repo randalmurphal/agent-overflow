@@ -31,6 +31,11 @@ var ErrApprovalAlreadyResolved = fmt.Errorf("codex: approval already resolved")
 // the result content and a success flag.
 type DynamicToolHandler func(toolName string, args map[string]any) (content string, success bool, err error)
 
+// Compile-time guarantee that *Session satisfies the provider.Session
+// interface the app layer calls into. Changing any of the methods in a
+// way that breaks the contract is caught at build time.
+var _ provider.Session = (*Session)(nil)
+
 // Session manages a Codex app-server subprocess.
 type Session struct {
 	proc               *provider.Process

@@ -19,17 +19,12 @@ func (a *App) RespondToApproval(threadID string, response provider.ApprovalRespo
 		return fmt.Errorf("no active session for thread %s", threadID)
 	}
 
-	switch {
-	case sess.claude != nil:
-		if err := sess.claude.RespondToApproval(context.Background(), response); err != nil {
-			return err
-		}
-	case sess.codex != nil:
-		if err := sess.codex.RespondToApproval(context.Background(), response); err != nil {
-			return err
-		}
-	default:
+	providerSess := sess.providerSession()
+	if providerSess == nil {
 		return fmt.Errorf("session has no provider")
+	}
+	if err := providerSess.RespondToApproval(context.Background(), response); err != nil {
+		return err
 	}
 
 	decision := provider.NormalizeApprovalDecision(response)

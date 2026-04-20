@@ -140,7 +140,7 @@ func captureCommandExecutionToolResult(raw json.RawMessage, workspaceRoot string
 
 	meta := ToolResultMeta{
 		ItemType:   "command_execution",
-		Title:      firstNonEmpty(asTrimmedString(item["title"]), "Run command"),
+		Title:      firstNonEmptyString(asTrimmedString(item["title"]), "Run command"),
 		Detail:     parsed.NormalizedCommand,
 		InlineDiff: inlineDiff,
 	}

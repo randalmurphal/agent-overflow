@@ -4,10 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -29,7 +27,6 @@ import (
 	"agent-overflow/internal/triage"
 	"agent-overflow/internal/workspacefiles"
 
-	"github.com/google/uuid"
 	"github.com/wailsapp/wails/v3/pkg/application"
 )
 
@@ -68,8 +65,8 @@ type App struct {
 	// check it and fail fast with ErrShuttingDown so late RPCs can't race
 	// with subsystem teardown.
 	shuttingDown atomic.Bool
-	mu        sync.Mutex
-	sessions  map[string]session // threadID → active session
+	mu           sync.Mutex
+	sessions     map[string]session // threadID → active session
 	// threadID → in-flight session start. Concurrent callers wait for the
 	// first start attempt instead of spawning duplicate provider runtimes.
 	startingSessions map[string]*sessionStart
@@ -96,9 +93,9 @@ type App struct {
 	// calls execCommitCLI directly. Tests install a fake that returns
 	// a canned stdout/stderr/exitCode triple so the test suite runs
 	// without `codex` / `claude` binaries on PATH.
-	commitExecutor        commitCLIExecutor
-	emitProviderEventFn   func(provider.ProviderEvent)
-	emitEventFn           func(eventName string, data any)
+	commitExecutor      commitCLIExecutor
+	emitProviderEventFn func(provider.ProviderEvent)
+	emitEventFn         func(eventName string, data any)
 	// shutdownStepFn is a test-only hook fired after every step of
 	// Shutdown. Production leaves this nil. Order tests install it to
 	// record the step sequence and observe per-step errors without
@@ -119,29 +116,32 @@ type App struct {
 	testEmitHook func(name string, data any)
 }
 
-// SeqEnvelope is the shape every event takes on the Wails wire. The
-// Go→frontend boundary in a.emit wraps the caller's payload into this
-// envelope so the frontend can log seq gaps. The replay log takes the
-// un-enveloped payload because its format records provider events, not
-// wire envelopes.
-//
-// Keeping the nesting (rather than mutating arbitrary payload structs
-// in place) lets every caller keep using its existing Go type and
-// lets the frontend deserialise a stable `{seq, data}` shape. Wails'
-// CustomEvent runs `json.Marshal(&envelope)` which produces
-// `{"seq": N, "data": <payload>}`.
-type SeqEnvelope struct {
-	Seq  uint64 `json:"seq"`
-	Data any    `json:"data"`
-}
-
-// session wraps a provider session regardless of type.
+// session wraps a provider session regardless of type. Exactly one of
+// the `claude` or `codex` pointers is non-nil; the provider string
+// mirrors which. Use the `providerSession` accessor for the common
+// methods (Send / Interrupt / RespondToApproval / Close) so call sites
+// don't have to keep branching on the two typed fields.
 type session struct {
 	provider string
 	token    string
 	// Exactly one of these is non-nil.
 	claude *claude.Session
 	codex  *codex.Session
+}
+
+// providerSession returns the underlying provider-agnostic Session, or
+// nil when neither typed field is populated. The zero value is
+// intentionally left nil so callers can distinguish "no provider" from
+// a panic-inducing partial state.
+func (s session) providerSession() provider.Session {
+	switch {
+	case s.claude != nil:
+		return s.claude
+	case s.codex != nil:
+		return s.codex
+	default:
+		return nil
+	}
 }
 
 func NewApp() *App {
@@ -446,386 +446,16 @@ func (a *App) ServiceShutdown() error {
 	return a.Shutdown(context.Background())
 }
 
-// emit stamps a monotonic seq on every Wails event and forwards the
-// wrapped envelope through the Wails event bus. The frontend's
-// wrapEventOn helper peels the envelope back off — subscribers see the
-// same Go payload shape they would have without the envelope.
-//
-// When a.app is nil AND no test hook is installed, the helper is a
-// silent no-op — this matches the pre-Shutdown boot path (Wails may
-// not be initialised) and keeps tests free to construct an App with
-// just the fields they need. Tests that want to observe the envelope
-// install testEmitHook.
-func (a *App) emit(name string, data any) {
-	if a.app == nil && a.testEmitHook == nil {
-		return
-	}
-	seq := a.seq.Add(1)
-	env := SeqEnvelope{Seq: seq, Data: data}
-	if a.app != nil {
-		a.app.Event.Emit(name, env)
-	}
-	if a.testEmitHook != nil {
-		a.testEmitHook(name, env)
-	}
-}
-
-// emitWithReplay returns an event emitter that both pushes to the Wails
-// frontend and mirrors the event into the per-thread replay log when the
-// event is thread-scoped. We inspect the payload for a `threadId` field so
-// we don't introduce a hard dependency on any single event shape.
-//
-// The emission goes through a.emit so every event gets the seq envelope;
-// the replay log receives the raw (un-enveloped) payload because the
-// replay format records provider events, not Wails wire envelopes.
-func (a *App) emitWithReplay() func(string, any) {
-	return func(eventName string, data any) {
-		a.emit(eventName, data)
-		if a.replay == nil || !a.replay.Enabled() {
-			return
-		}
-		threadID := threadIDFromEvent(data)
-		if threadID == "" {
-			return
-		}
-		rec, err := replay.NewRecord(time.Now(), threadID, eventName, data)
-		if err != nil {
-			log.Printf("replay: NewRecord failed: %v", err)
-			return
-		}
-		if a.replay.Enqueue(rec) {
-			if telemetryMetrics := a.telemetry.Metrics(); telemetryMetrics.ReplayEventsQueued != nil {
-				telemetryMetrics.ReplayEventsQueued.Add(context.Background(), 1)
-			}
-		}
-	}
-}
-
-// closeSessionsParallel closes every session concurrently, bounded by the
-// given timeout. Any session whose Close does not return in time is
-// abandoned — the teardown emits a timeout error for it and moves on.
-// Design-thread teardown runs synchronously in the goroutine that closed
-// the session so each thread's state is cleaned up independently.
-func closeSessionsParallel(a *App, sessions map[string]session, timeout time.Duration) []error {
-	if len(sessions) == 0 {
-		return nil
-	}
-	closers := make([]threadCloser, 0, len(sessions))
-	for threadID, s := range sessions {
-		closers = append(closers, sessionThreadCloser(a, threadID, s))
-	}
-	return runParallelClosers(closers, timeout)
-}
-
-// threadCloser is a single Close operation that runParallelClosers fires
-// off in its own goroutine. The label is used to build a meaningful
-// error message if Close fails or times out.
-type threadCloser struct {
-	label string
-	close func() error
-}
-
-// sessionThreadCloser bundles the design teardown + provider Close for
-// a single thread into one threadCloser so both run under the same
-// parallel timeout.
-func sessionThreadCloser(a *App, threadID string, s session) threadCloser {
-	label := fmt.Sprintf("session for thread %s", threadID)
-	return threadCloser{
-		label: label,
-		close: func() error {
-			a.teardownDesignThread(threadID)
-			if s.claude != nil {
-				if err := s.claude.Close(); err != nil {
-					return fmt.Errorf("close claude: %w", err)
-				}
-			}
-			if s.codex != nil {
-				if err := s.codex.Close(); err != nil {
-					return fmt.Errorf("close codex: %w", err)
-				}
-			}
-			return nil
-		},
-	}
-}
-
-// runParallelClosers invokes every closer concurrently and collects their
-// errors, enforcing a single wall-clock timeout across the whole set.
-// Closers that do not finish in time are abandoned and reported as
-// timeout errors.
-func runParallelClosers(closers []threadCloser, timeout time.Duration) []error {
-	if len(closers) == 0 {
-		return nil
-	}
-	type result struct {
-		label string
-		err   error
-	}
-	results := make(chan result, len(closers))
-	for _, c := range closers {
-		go func(c threadCloser) {
-			results <- result{c.label, c.close()}
-		}(c)
-	}
-
-	var errs []error
-	remaining := len(closers)
-	deadline := time.After(timeout)
-	pending := make(map[string]struct{}, len(closers))
-	for _, c := range closers {
-		pending[c.label] = struct{}{}
-	}
-	for remaining > 0 {
-		select {
-		case r := <-results:
-			remaining--
-			delete(pending, r.label)
-			if r.err != nil {
-				errs = appendError(errs, wrapLifecycleError("close "+r.label, r.err))
-			}
-		case <-deadline:
-			for label := range pending {
-				errs = appendError(errs, fmt.Errorf("close %s: did not finish within %s", label, timeout))
-			}
-			return errs
-		}
-	}
-	return errs
-}
-
-// --- Thread operations ---
-
-// CreateThreadOptions carries the minimum a caller MUST specify plus an
-// optional override bundle for any field that defaults from settings.
-// Using a struct (not 10 positional args) means a future field doesn't
-// break callers. ProjectID is required; every thread must belong to a
-// project as of v13.
-type CreateThreadOptions struct {
-	ProjectID         string `json:"projectId"`
-	Provider          string `json:"provider,omitempty"`          // defaults to settings.DefaultProvider
-	Model             string `json:"model,omitempty"`             // defaults to settings.DefaultModelClaude/Codex
-	Mode              string `json:"mode,omitempty"`              // defaults to settings.DefaultMode
-	ReasoningEffort   string `json:"reasoningEffort,omitempty"`   // defaults to settings.DefaultReasoningEffort
-	FastMode          *bool  `json:"fastMode,omitempty"`          // nil = use setting default
-	ContextWindow     int    `json:"contextWindow,omitempty"`     // 0 = setting default
-	RuntimeMode       string `json:"runtimeMode,omitempty"`       // defaults to settings.DefaultRuntimeMode
-	WorktreeBranch    string `json:"worktreeBranch,omitempty"`    // empty = no worktree
-	WorkspaceOverride string `json:"workspaceOverride,omitempty"` // empty = project.path
-}
-
-// CreateThread persists a new thread rooted at a project. The options
-// struct carries every knob; any empty field is resolved via settings
-// defaults. "discussion" is rejected as a mode value because discussion
-// threads must come through StartDiscussion (which wires the
-// deliberation channel).
-func (a *App) CreateThread(opts CreateThreadOptions) (store.Thread, error) {
-	if a.store == nil {
-		return store.Thread{}, fmt.Errorf("create thread: store unavailable")
-	}
-	projectID := strings.TrimSpace(opts.ProjectID)
-	if projectID == "" {
-		return store.Thread{}, fmt.Errorf("create thread: projectId is required")
-	}
-	project, err := a.store.GetProject(projectID)
-	if err != nil {
-		return store.Thread{}, fmt.Errorf("create thread: resolve project %s: %w", projectID, err)
-	}
-
-	mode, err := validateCreateThreadMode(opts.Mode)
-	if err != nil {
-		return store.Thread{}, err
-	}
-
-	providerName := strings.TrimSpace(opts.Provider)
-	if providerName == "" {
-		providerName = a.defaultProviderFromSettings()
-	}
-
-	model := strings.TrimSpace(opts.Model)
-	if model == "" {
-		model = a.defaultModelForProvider(providerName)
-	}
-
-	effort := strings.TrimSpace(opts.ReasoningEffort)
-	if effort == "" {
-		effort = a.defaultReasoningEffort()
-	}
-
-	fastMode := a.defaultFastMode()
-	if opts.FastMode != nil {
-		fastMode = *opts.FastMode
-	}
-
-	contextWindow := opts.ContextWindow
-	if contextWindow == 0 {
-		contextWindow = a.defaultContextWindow()
-	}
-
-	runtimeMode := strings.TrimSpace(opts.RuntimeMode)
-	if runtimeMode == "" {
-		runtimeMode = a.defaultRuntimeModeForNewThread()
-	}
-
-	workspace := strings.TrimSpace(opts.WorkspaceOverride)
-	if workspace == "" {
-		workspace = project.Path
-	}
-	var branch, worktreePath string
-	if trimmed := strings.TrimSpace(opts.WorktreeBranch); trimmed != "" {
-		// Worktree creation runs through the git core with the project
-		// path as the repo root. On success the thread's workspace
-		// becomes the worktree directory.
-		wtPath, wtBranch, err := a.createWorktreeForNewThread(project.Path, trimmed)
-		if err != nil {
-			return store.Thread{}, fmt.Errorf("create thread: worktree: %w", err)
-		}
-		workspace = wtPath
-		worktreePath = wtPath
-		branch = wtBranch
-	}
-
-	now := time.Now().UnixMilli()
-	t := store.Thread{
-		ID:              uuid.New().String(),
-		ProjectID:       project.ID,
-		Title:           "New Thread",
-		Provider:        providerName,
-		WorkspacePath:   workspace,
-		WorktreePath:    worktreePath,
-		Branch:          branch,
-		Model:           model,
-		Mode:            mode,
-		ReasoningEffort: effort,
-		FastMode:        fastMode,
-		ContextWindow:   contextWindow,
-		RuntimeMode:     runtimeMode,
-		CreatedAt:       now,
-		UpdatedAt:       now,
-	}
-	if err := a.store.CreateThread(t); err != nil {
-		return store.Thread{}, err
-	}
-	if a.settings != nil {
-		a.settings.AddRecentWorkspace(workspace)
-	}
-	return t, nil
-}
-
-// createWorktreeForNewThread is the small helper CreateThread uses when
-// WorktreeBranch is non-empty. Extracted from CreateThread so the inline
-// logic there stays focused on building the Thread row.
-func (a *App) createWorktreeForNewThread(projectPath, branch string) (string, string, error) {
-	resolvedBranch := strings.TrimSpace(branch)
-	if resolvedBranch == "" {
-		resolvedBranch = gitops.BuildTemporaryWorktreeBranchName()
-	}
-	worktreePath := defaultWorktreePath(projectPath, resolvedBranch)
-	if err := a.gitCore().CreateWorktree(projectPath, worktreePath, resolvedBranch); err != nil {
-		return "", "", err
-	}
-	return worktreePath, resolvedBranch, nil
-}
-
-// defaultProviderFromSettings returns the provider name to seed new
-// threads with. Falls back to "claude" when settings are unavailable or
-// hold an unexpected value.
-func (a *App) defaultProviderFromSettings() string {
-	if a.settings == nil {
-		return "claude"
-	}
-	name := strings.TrimSpace(a.settings.Get().DefaultProvider)
-	switch name {
-	case "claude", "codex":
-		return name
-	default:
-		return "claude"
-	}
-}
-
-// defaultReasoningEffort returns the seed effort tier for new threads.
-func (a *App) defaultReasoningEffort() string {
-	if a.settings == nil {
-		return "high"
-	}
-	effort := strings.TrimSpace(a.settings.Get().DefaultReasoningEffort)
-	switch effort {
-	case "low", "medium", "high", "xhigh", "max":
-		return effort
-	default:
-		return "high"
-	}
-}
-
-// defaultFastMode returns the seed fast-mode flag for new threads.
-func (a *App) defaultFastMode() bool {
-	if a.settings == nil {
-		return false
-	}
-	return a.settings.Get().DefaultFastMode
-}
-
-// defaultContextWindow returns the seed context-window size in tokens.
-func (a *App) defaultContextWindow() int {
-	if a.settings == nil {
-		return 1000000
-	}
-	switch a.settings.Get().DefaultContextWindow {
-	case 200000, 1000000:
-		return a.settings.Get().DefaultContextWindow
-	default:
-		return 1000000
-	}
-}
-
-// ListThreads backs the frontend sidebar. It deliberately excludes
-// "draft" threads (newly created but never sent) so the sidebar stays
-// clean: a thread only becomes visible once its first item lands.
-// Internal callers that need every thread (tests, fork inspection,
-// discussion runtime) go through a.store.ListThreads directly.
-func (a *App) ListThreads() ([]store.Thread, error) {
-	return a.store.ListThreadsWithItems()
-}
-
-func (a *App) GetThread(id string) (store.Thread, error) {
-	return a.store.GetThread(id)
-}
-
-func (a *App) DeleteThread(id string) error {
-	return a.deleteThreadTree(id)
-}
-
-func (a *App) ArchiveThread(id string) error {
-	return a.store.ArchiveThread(id)
-}
-
-// UnarchiveThread flips archived back to false so the thread reappears in the
-// active sidebar. Returns the refreshed row so the caller can re-render
-// without a follow-up GetThread round-trip.
-func (a *App) UnarchiveThread(id string) (store.Thread, error) {
-	if err := a.store.UnarchiveThread(id); err != nil {
-		return store.Thread{}, err
-	}
-	return a.store.GetThread(id)
-}
-
-func (a *App) RenameThread(id string, title string) error {
-	t, err := a.store.GetThread(id)
-	if err != nil {
-		return err
-	}
-	t.Title = title
-	t.UpdatedAt = time.Now().UnixMilli()
-	return a.store.UpdateThread(t)
-}
-
 // --- Item operations ---
 
+// ListItems returns every item persisted for a thread in chronological order.
 func (a *App) ListItems(threadID string) ([]store.Item, error) {
 	return a.store.ListItems(threadID)
 }
 
 // --- Payload operations ---
 
+// GetPayloadData returns a payload body as a string for the frontend.
 func (a *App) GetPayloadData(payloadID string) (string, error) {
 	data, err := a.store.GetPayloadData(payloadID)
 	if err != nil {
@@ -834,180 +464,7 @@ func (a *App) GetPayloadData(payloadID string) (string, error) {
 	return string(data), nil
 }
 
+// ListPayloadMetas returns all payload metadata for a thread without the body.
 func (a *App) ListPayloadMetas(threadID string) ([]store.PayloadMeta, error) {
 	return a.store.ListPayloadMetas(threadID)
-}
-
-// --- Session operations ---
-
-func (a *App) StartSession(threadID string) error {
-	if a.shuttingDown.Load() {
-		return ErrShuttingDown
-	}
-	return a.runSessionStart(threadID, func() error {
-		return a.startSessionNow(threadID)
-	})
-}
-
-func (a *App) startSessionNow(threadID string) error {
-	t, err := a.store.GetThread(threadID)
-	if err != nil {
-		return fmt.Errorf("start session: %w", err)
-	}
-
-	sessionToken := uuid.NewString()
-	onEvent := a.sessionEventHandler(threadID, sessionToken)
-
-	// Design-mode plumbing (extra system prompt + Codex MCP servers) is
-	// caller-owned: the provider package intentionally doesn't know about
-	// design or discussion. We compose the final system prompt here, then
-	// hand a provider-agnostic SessionOptions bundle to each provider's
-	// ConfigFromOptions translator.
-	designCfg, err := a.designSessionConfig(t)
-	if err != nil {
-		return fmt.Errorf("start session: %w", err)
-	}
-	systemPrompt := joinSystemPrompts(designCfg.Prompt, a.threadSystemPrompt(threadID))
-
-	// Pending-fork intent is a one-shot. SessionOptionsFromThread reads
-	// either PendingForkRef or SessionRef into opts.Resume based on this
-	// flag. We consume it here (bool in scope) rather than mutating the
-	// Thread row; any persistence changes belong to the caller that set
-	// PendingForkRef originally.
-	forkSession := t.PendingForkRef != ""
-
-	opts := provider.SessionOptionsFromThread(t, systemPrompt, forkSession)
-
-	if err := a.stopExistingSessionLocked(threadID); err != nil {
-		return fmt.Errorf("start session: %w", err)
-	}
-
-	newSess, err := a.spawnProviderSession(threadID, sessionToken, t, opts, designCfg, onEvent)
-	if err != nil {
-		a.teardownDesignThread(threadID)
-		a.emitProviderStatusOnSessionStartError(t.Provider)
-		return fmt.Errorf("start session: %w", err)
-	}
-
-	a.mu.Lock()
-	a.sessions[threadID] = newSess
-	a.mu.Unlock()
-
-	return nil
-}
-
-// stopExistingSessionLocked tears down any prior session for the thread
-// before we start a replacement. Separated from startSessionNow so the
-// caller reads top-down as "stop, compute options, spawn, register".
-func (a *App) stopExistingSessionLocked(threadID string) error {
-	a.mu.Lock()
-	existing, ok := a.sessions[threadID]
-	if ok {
-		delete(a.sessions, threadID)
-	}
-	a.mu.Unlock()
-
-	if !ok {
-		return nil
-	}
-
-	// Thread-scoped design state must be torn down alongside the session
-	// so a restart doesn't leak the prior turn's MCP registration.
-	a.teardownDesignThread(threadID)
-	return closeProviderSession(threadID, existing)
-}
-
-// spawnProviderSession builds the provider-specific Config via
-// ConfigFromOptions + per-provider ancillary wiring (binary path, MCP
-// servers for Codex, event logger) and calls the provider's NewSession
-// constructor. Returns a populated session wrapper ready to register in
-// a.sessions.
-func (a *App) spawnProviderSession(
-	threadID, sessionToken string,
-	t store.Thread,
-	opts provider.SessionOptions,
-	designCfg designSessionConfig,
-	onEvent func(provider.ProviderEvent),
-) (session, error) {
-	switch t.Provider {
-	case string(provider.Claude):
-		cfg := claude.ConfigFromOptions(opts)
-		cfg.Binary = a.providerBinaryPath(t.Provider)
-		cfg.EventLogger = a.logger
-		sess, err := claude.NewSession(context.Background(), threadID, cfg, onEvent)
-		if err != nil {
-			return session{}, err
-		}
-		return session{
-			provider: string(provider.Claude),
-			token:    sessionToken,
-			claude:   sess,
-		}, nil
-
-	case string(provider.Codex):
-		cfg := codex.ConfigFromOptions(opts)
-		cfg.Binary = a.providerBinaryPath(t.Provider)
-		cfg.EventLogger = a.logger
-		cfg.MCPServers = designCfg.MCPServers
-		sess, err := codex.NewSession(context.Background(), threadID, cfg, onEvent)
-		if err != nil {
-			return session{}, err
-		}
-		return session{
-			provider: string(provider.Codex),
-			token:    sessionToken,
-			codex:    sess,
-		}, nil
-
-	default:
-		return session{}, fmt.Errorf("unknown provider: %s", t.Provider)
-	}
-}
-
-func (a *App) SendMessage(threadID string, content string) error {
-	if a.shuttingDown.Load() {
-		return ErrShuttingDown
-	}
-	return a.sendMessage(threadID, content)
-}
-
-func (a *App) InterruptTurn(threadID string) error {
-	a.mu.Lock()
-	sess, ok := a.sessions[threadID]
-	a.mu.Unlock()
-	if !ok {
-		return fmt.Errorf("no active session for thread %s", threadID)
-	}
-
-	switch {
-	case sess.claude != nil:
-		return sess.claude.Interrupt(context.Background())
-	case sess.codex != nil:
-		return sess.codex.Interrupt(context.Background())
-	default:
-		return fmt.Errorf("session has no provider")
-	}
-}
-
-func (a *App) StopSession(threadID string) error {
-	a.mu.Lock()
-	sess, ok := a.sessions[threadID]
-	if ok {
-		delete(a.sessions, threadID)
-	}
-	a.mu.Unlock()
-
-	if !ok {
-		a.teardownDesignThread(threadID)
-		if a.triage != nil {
-			a.triage.CleanupThread(threadID)
-		}
-		return nil
-	}
-
-	a.teardownDesignThread(threadID)
-	if a.triage != nil {
-		a.triage.CleanupThread(threadID)
-	}
-	return closeProviderSession(threadID, sess)
 }

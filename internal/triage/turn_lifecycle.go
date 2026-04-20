@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"strings"
 	"time"
 
 	"agent-overflow/internal/provider"
@@ -303,31 +302,11 @@ func (r *Router) clearOpenTurn(threadID string) {
 	turnIndex, ok := r.openTurns[threadID]
 	if ok {
 		prefix := fmt.Sprintf("%s|%d|", threadID, turnIndex)
-		for key := range r.segmentIndexByScope {
-			if strings.HasPrefix(key, prefix) {
-				delete(r.segmentIndexByScope, key)
-			}
-		}
-		for key := range r.blockIndexByScope {
-			if strings.HasPrefix(key, prefix) {
-				delete(r.blockIndexByScope, key)
-			}
-		}
-		for key := range r.activeTextBlocks {
-			if strings.HasPrefix(key, prefix) {
-				delete(r.activeTextBlocks, key)
-			}
-		}
-		for key := range r.activeThinkingBlocks {
-			if strings.HasPrefix(key, prefix) {
-				delete(r.activeThinkingBlocks, key)
-			}
-		}
-		for key := range r.errorSeqByScope {
-			if strings.HasPrefix(key, prefix) {
-				delete(r.errorSeqByScope, key)
-			}
-		}
+		deleteByPrefix(r.segmentIndexByScope, prefix)
+		deleteByPrefix(r.blockIndexByScope, prefix)
+		deleteByPrefix(r.activeTextBlocks, prefix)
+		deleteByPrefix(r.activeThinkingBlocks, prefix)
+		deleteByPrefix(r.errorSeqByScope, prefix)
 	}
 	delete(r.openTurns, threadID)
 	delete(r.interruptQueue, threadID)
@@ -412,47 +391,16 @@ func (r *Router) CleanupThread(threadID string) {
 			delete(r.pendingCommandDiffs, key)
 		}
 	}
-	for key := range r.pendingApprovals {
-		if strings.HasPrefix(key, threadID+":") {
-			delete(r.pendingApprovals, key)
-		}
-	}
-	for key := range r.pendingApprovalItems {
-		if strings.HasPrefix(key, threadID+":") {
-			delete(r.pendingApprovalItems, key)
-		}
-	}
+	approvalPrefix := threadID + ":"
+	deleteByPrefix(r.pendingApprovals, approvalPrefix)
+	deleteByPrefix(r.pendingApprovalItems, approvalPrefix)
 	prefix := threadID + "|"
-	for key := range r.capturedTurns {
-		if strings.HasPrefix(key, prefix) {
-			delete(r.capturedTurns, key)
-		}
-	}
-	for key := range r.segmentIndexByScope {
-		if strings.HasPrefix(key, prefix) {
-			delete(r.segmentIndexByScope, key)
-		}
-	}
-	for key := range r.blockIndexByScope {
-		if strings.HasPrefix(key, prefix) {
-			delete(r.blockIndexByScope, key)
-		}
-	}
-	for key := range r.activeTextBlocks {
-		if strings.HasPrefix(key, prefix) {
-			delete(r.activeTextBlocks, key)
-		}
-	}
-	for key := range r.activeThinkingBlocks {
-		if strings.HasPrefix(key, prefix) {
-			delete(r.activeThinkingBlocks, key)
-		}
-	}
-	for key := range r.errorSeqByScope {
-		if strings.HasPrefix(key, prefix) {
-			delete(r.errorSeqByScope, key)
-		}
-	}
+	deleteByPrefix(r.capturedTurns, prefix)
+	deleteByPrefix(r.segmentIndexByScope, prefix)
+	deleteByPrefix(r.blockIndexByScope, prefix)
+	deleteByPrefix(r.activeTextBlocks, prefix)
+	deleteByPrefix(r.activeThinkingBlocks, prefix)
+	deleteByPrefix(r.errorSeqByScope, prefix)
 	r.mu.Unlock()
 
 	if orphanSpan != nil {

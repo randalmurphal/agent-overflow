@@ -4,10 +4,244 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"time"
 
+	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
+
+	"github.com/google/uuid"
 )
+
+// --- Thread CRUD and lifecycle ---
+
+// CreateThreadOptions carries the minimum a caller MUST specify plus an
+// optional override bundle for any field that defaults from settings.
+// Using a struct (not 10 positional args) means a future field doesn't
+// break callers. ProjectID is required; every thread must belong to a
+// project as of v13.
+type CreateThreadOptions struct {
+	ProjectID         string `json:"projectId"`
+	Provider          string `json:"provider,omitempty"`          // defaults to settings.DefaultProvider
+	Model             string `json:"model,omitempty"`             // defaults to settings.DefaultModelClaude/Codex
+	Mode              string `json:"mode,omitempty"`              // defaults to settings.DefaultMode
+	ReasoningEffort   string `json:"reasoningEffort,omitempty"`   // defaults to settings.DefaultReasoningEffort
+	FastMode          *bool  `json:"fastMode,omitempty"`          // nil = use setting default
+	ContextWindow     int    `json:"contextWindow,omitempty"`     // 0 = setting default
+	RuntimeMode       string `json:"runtimeMode,omitempty"`       // defaults to settings.DefaultRuntimeMode
+	WorktreeBranch    string `json:"worktreeBranch,omitempty"`    // empty = no worktree
+	WorkspaceOverride string `json:"workspaceOverride,omitempty"` // empty = project.path
+}
+
+// CreateThread persists a new thread rooted at a project. The options
+// struct carries every knob; any empty field is resolved via settings
+// defaults. "discussion" is rejected as a mode value because discussion
+// threads must come through StartDiscussion (which wires the
+// deliberation channel).
+func (a *App) CreateThread(opts CreateThreadOptions) (store.Thread, error) {
+	if a.store == nil {
+		return store.Thread{}, fmt.Errorf("create thread: store unavailable")
+	}
+	projectID := strings.TrimSpace(opts.ProjectID)
+	if projectID == "" {
+		return store.Thread{}, fmt.Errorf("create thread: projectId is required")
+	}
+	project, err := a.store.GetProject(projectID)
+	if err != nil {
+		return store.Thread{}, fmt.Errorf("create thread: resolve project %s: %w", projectID, err)
+	}
+
+	mode, err := validateCreateThreadMode(opts.Mode)
+	if err != nil {
+		return store.Thread{}, err
+	}
+
+	providerName := strings.TrimSpace(opts.Provider)
+	if providerName == "" {
+		providerName = a.defaultProviderFromSettings()
+	}
+
+	model := strings.TrimSpace(opts.Model)
+	if model == "" {
+		model = a.defaultModelForProvider(providerName)
+	}
+
+	effort := strings.TrimSpace(opts.ReasoningEffort)
+	if effort == "" {
+		effort = a.defaultReasoningEffort()
+	}
+
+	fastMode := a.defaultFastMode()
+	if opts.FastMode != nil {
+		fastMode = *opts.FastMode
+	}
+
+	contextWindow := opts.ContextWindow
+	if contextWindow == 0 {
+		contextWindow = a.defaultContextWindow()
+	}
+
+	runtimeMode := strings.TrimSpace(opts.RuntimeMode)
+	if runtimeMode == "" {
+		runtimeMode = a.defaultRuntimeModeForNewThread()
+	}
+
+	workspace := strings.TrimSpace(opts.WorkspaceOverride)
+	if workspace == "" {
+		workspace = project.Path
+	}
+	var branch, worktreePath string
+	if trimmed := strings.TrimSpace(opts.WorktreeBranch); trimmed != "" {
+		// Worktree creation runs through the git core with the project
+		// path as the repo root. On success the thread's workspace
+		// becomes the worktree directory.
+		wtPath, wtBranch, err := a.createWorktreeForNewThread(project.Path, trimmed)
+		if err != nil {
+			return store.Thread{}, fmt.Errorf("create thread: worktree: %w", err)
+		}
+		workspace = wtPath
+		worktreePath = wtPath
+		branch = wtBranch
+	}
+
+	now := time.Now().UnixMilli()
+	t := store.Thread{
+		ID:              uuid.New().String(),
+		ProjectID:       project.ID,
+		Title:           "New Thread",
+		Provider:        providerName,
+		WorkspacePath:   workspace,
+		WorktreePath:    worktreePath,
+		Branch:          branch,
+		Model:           model,
+		Mode:            mode,
+		ReasoningEffort: effort,
+		FastMode:        fastMode,
+		ContextWindow:   contextWindow,
+		RuntimeMode:     runtimeMode,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}
+	if err := a.store.CreateThread(t); err != nil {
+		return store.Thread{}, err
+	}
+	if a.settings != nil {
+		a.settings.AddRecentWorkspace(workspace)
+	}
+	return t, nil
+}
+
+// createWorktreeForNewThread is the small helper CreateThread uses when
+// WorktreeBranch is non-empty. Extracted from CreateThread so the inline
+// logic there stays focused on building the Thread row.
+func (a *App) createWorktreeForNewThread(projectPath, branch string) (string, string, error) {
+	resolvedBranch := strings.TrimSpace(branch)
+	if resolvedBranch == "" {
+		resolvedBranch = gitops.BuildTemporaryWorktreeBranchName()
+	}
+	worktreePath := defaultWorktreePath(projectPath, resolvedBranch)
+	if err := a.gitCore().CreateWorktree(projectPath, worktreePath, resolvedBranch); err != nil {
+		return "", "", err
+	}
+	return worktreePath, resolvedBranch, nil
+}
+
+// defaultProviderFromSettings returns the provider name to seed new
+// threads with. Falls back to "claude" when settings are unavailable or
+// hold an unexpected value.
+func (a *App) defaultProviderFromSettings() string {
+	if a.settings == nil {
+		return "claude"
+	}
+	name := strings.TrimSpace(a.settings.Get().DefaultProvider)
+	switch name {
+	case "claude", "codex":
+		return name
+	default:
+		return "claude"
+	}
+}
+
+// defaultReasoningEffort returns the seed effort tier for new threads.
+func (a *App) defaultReasoningEffort() string {
+	if a.settings == nil {
+		return "high"
+	}
+	effort := strings.TrimSpace(a.settings.Get().DefaultReasoningEffort)
+	switch effort {
+	case "low", "medium", "high", "xhigh", "max":
+		return effort
+	default:
+		return "high"
+	}
+}
+
+// defaultFastMode returns the seed fast-mode flag for new threads.
+func (a *App) defaultFastMode() bool {
+	if a.settings == nil {
+		return false
+	}
+	return a.settings.Get().DefaultFastMode
+}
+
+// defaultContextWindow returns the seed context-window size in tokens.
+func (a *App) defaultContextWindow() int {
+	if a.settings == nil {
+		return 1000000
+	}
+	switch a.settings.Get().DefaultContextWindow {
+	case 200000, 1000000:
+		return a.settings.Get().DefaultContextWindow
+	default:
+		return 1000000
+	}
+}
+
+// ListThreads backs the frontend sidebar. It deliberately excludes
+// "draft" threads (newly created but never sent) so the sidebar stays
+// clean: a thread only becomes visible once its first item lands.
+// Internal callers that need every thread (tests, fork inspection,
+// discussion runtime) go through a.store.ListThreads directly.
+func (a *App) ListThreads() ([]store.Thread, error) {
+	return a.store.ListThreadsWithItems()
+}
+
+// GetThread returns a single thread row.
+func (a *App) GetThread(id string) (store.Thread, error) {
+	return a.store.GetThread(id)
+}
+
+// DeleteThread tears down the thread and any child threads. The recursive
+// cascade logic lives in app_thread_delete.go.
+func (a *App) DeleteThread(id string) error {
+	return a.deleteThreadTree(id)
+}
+
+// ArchiveThread flips archived to true so the thread leaves the active sidebar.
+func (a *App) ArchiveThread(id string) error {
+	return a.store.ArchiveThread(id)
+}
+
+// UnarchiveThread flips archived back to false so the thread reappears in the
+// active sidebar. Returns the refreshed row so the caller can re-render
+// without a follow-up GetThread round-trip.
+func (a *App) UnarchiveThread(id string) (store.Thread, error) {
+	if err := a.store.UnarchiveThread(id); err != nil {
+		return store.Thread{}, err
+	}
+	return a.store.GetThread(id)
+}
+
+// RenameThread updates the thread title.
+func (a *App) RenameThread(id string, title string) error {
+	t, err := a.store.GetThread(id)
+	if err != nil {
+		return err
+	}
+	t.Title = title
+	t.UpdatedAt = time.Now().UnixMilli()
+	return a.store.UpdateThread(t)
+}
 
 // sessionAffectingFields enumerates the thread columns that, when
 // changed, require a provider-session restart to take effect. The

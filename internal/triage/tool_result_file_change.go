@@ -97,7 +97,7 @@ func extractFileChangeToolResult(raw json.RawMessage, workspaceRoot string) (Too
 
 	meta := ToolResultMeta{
 		ItemType: "file_change",
-		Title:    firstNonEmpty(rawString(item, "title"), "File change"),
+		Title:    firstNonEmptyString(rawString(item, "title"), "File change"),
 		Detail:   rawString(item, "detail"),
 	}
 	inlineDiff, unifiedDiff := buildInlineDiffFromChanges(changes)
@@ -350,11 +350,3 @@ func uniqueNonEmpty(values []string) []string {
 	return result
 }
 
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			return value
-		}
-	}
-	return ""
-}
