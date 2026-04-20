@@ -34,6 +34,15 @@ type Parser struct {
 	// taskOutputTasks suppresses duplicate TaskOutput terminal results and
 	// prevents a later task_updated from clobbering richer TaskOutput data.
 	taskOutputTasks map[string]struct{}
+	// completedToolUseIDs dedups parallel completion signals for the same
+	// background tool. Both `system/task_updated` (terminal status) and
+	// `system/task_notification` can carry a completion for the same task;
+	// whichever fires first emits EventToolComplete and records the
+	// tool_use_id here so the other is suppressed. The set is keyed by
+	// tool_use_id (not task_id) because task_notification carries the
+	// tool_use_id inline and so is self-sufficient even on a fresh adapter
+	// session with no task_id→tool_use_id mapping.
+	completedToolUseIDs map[string]struct{}
 	// streamBlockTypes tracks partial-message content block types by
 	// (parent_tool_use_id,index) so a later content_block_stop can identify
 	// which streaming block closed.
@@ -44,6 +53,41 @@ type Parser struct {
 // parsing can use the package-level ParseLine helper instead.
 func NewParser() *Parser {
 	return &Parser{}
+}
+
+// Close releases parser-owned maps. Called by Session.Close so the
+// `completedToolUseIDs` dedup set (and sibling background-task caches)
+// don't linger after the session ends. Calling Close on a zero-value
+// parser or twice is safe.
+func (p *Parser) Close() {
+	if p == nil {
+		return
+	}
+	p.backgroundToolUses = nil
+	p.taskToolUses = nil
+	p.completedTasks = nil
+	p.taskOutputTasks = nil
+	p.completedToolUseIDs = nil
+	p.streamBlockTypes = nil
+}
+
+// markToolUseCompleted records that an EventToolComplete has already been
+// emitted for the given tool_use_id. Returns true only on the first call
+// for a given id — the caller emits the completion, adds to the set, and
+// subsequent calls (from the parallel task_notification signal) are
+// suppressed. Empty ids are ignored.
+func (p *Parser) markToolUseCompleted(toolUseID string) bool {
+	if toolUseID == "" {
+		return false
+	}
+	if p.completedToolUseIDs == nil {
+		p.completedToolUseIDs = make(map[string]struct{})
+	}
+	if _, ok := p.completedToolUseIDs[toolUseID]; ok {
+		return false
+	}
+	p.completedToolUseIDs[toolUseID] = struct{}{}
+	return true
 }
 
 // ParseLine parses a single NDJSON line from Claude CLI stdout and returns
@@ -272,15 +316,32 @@ func (p *Parser) parseSystem(threadID string, raw map[string]json.RawMessage, no
 		taskID := readRawString(raw["task_id"])
 		toolUseID := firstNonEmpty(readRawString(raw["tool_use_id"]), readRawString(raw["toolUseId"]))
 		p.rememberTaskToolUse(taskID, toolUseID)
-		return nil, nil
+		if taskID == "" || toolUseID == "" {
+			return nil, nil
+		}
+		// Re-emit an EventToolStart carrying task_id so triage can
+		// persist the task_id ↔ tool_use_id mapping into items.meta.
+		// On reconnect with a fresh in-memory parser, a later
+		// task_updated carries only task_id; persisted meta lets triage
+		// correlate back to the original tool_use item. The event is
+		// minimal (no toolName/input) — triage merges task_id into the
+		// existing item meta without clobbering the launch summary.
+		meta, _ := json.Marshal(map[string]any{
+			"task_id": taskID,
+		})
+		return []provider.ProviderEvent{{
+			Kind:      provider.EventToolStart,
+			ThreadID:  threadID,
+			ItemID:    toolUseID,
+			Meta:      meta,
+			Timestamp: now,
+		}}, nil
 
 	case "task_updated":
 		return p.parseTaskLifecycleEvent(threadID, raw, now)
 
 	case "task_notification":
-		// Notifications are informational only. They follow task_updated /
-		// TaskOutput and must never drive lifecycle.
-		return nil, nil
+		return p.parseTaskNotificationEvent(threadID, raw, now)
 
 	// Explicitly skipped subtypes — no action, no error.
 	case "hook_started", "hook_progress", "hook_response",
@@ -719,9 +780,11 @@ func (p *Parser) parseTaskLifecycleEvent(threadID string, raw map[string]json.Ra
 	}
 
 	toolUseID := firstNonEmpty(p.taskToolUse(taskID), readRawString(raw["tool_use_id"]), readRawString(raw["toolUseId"]))
-	if toolUseID == "" {
-		return nil, nil
-	}
+	// An empty tool_use_id here means the in-memory map is empty (fresh
+	// adapter session after reconnect) AND the event did not echo the
+	// id inline. Emit a completion keyed only by task_id so triage can
+	// look the row up via items.meta.task_id. If triage finds no match
+	// the event is dropped there.
 	if !p.markTaskCompleted(taskID) {
 		return nil, nil
 	}
@@ -738,13 +801,81 @@ func (p *Parser) parseTaskLifecycleEvent(threadID string, raw map[string]json.Ra
 	}
 	meta, _ := json.Marshal(metaFields)
 
-	p.clearBackground(toolUseID)
+	if toolUseID != "" {
+		p.clearBackground(toolUseID)
+		// Dedup parallel task_notification for the same tool_use_id so
+		// the downstream notification signal is suppressed.
+		if !p.markToolUseCompleted(toolUseID) {
+			return nil, nil
+		}
+	}
 
 	return []provider.ProviderEvent{{
 		Kind:      provider.EventToolComplete,
 		ThreadID:  threadID,
 		ItemID:    toolUseID,
 		Content:   firstNonEmpty(readRawString(patch["description"]), readRawString(raw["summary"])),
+		Meta:      meta,
+		Timestamp: now,
+	}}, nil
+}
+
+// parseTaskNotificationEvent handles `system/task_notification`. It is a
+// parallel completion signal: Claude sends it out-of-turn to get the
+// model's attention on the next turn. The tool_use_id is inline, so this
+// event is self-sufficient even without a prior task_started in memory
+// (fresh session after reconnect). In the normal path, `task_updated`
+// has already fired and added the id to `completedToolUseIDs` — this
+// call no-ops.
+func (p *Parser) parseTaskNotificationEvent(threadID string, raw map[string]json.RawMessage, now time.Time) ([]provider.ProviderEvent, error) {
+	taskID := readRawString(raw["task_id"])
+	toolUseID := firstNonEmpty(p.taskToolUse(taskID), readRawString(raw["tool_use_id"]), readRawString(raw["toolUseId"]))
+	if toolUseID == "" {
+		// Without a tool_use_id we can't build a targeted completion.
+		// Task_notification without an inline tool_use_id and no
+		// task_started in memory cannot be correlated; drop it.
+		return nil, nil
+	}
+	// Per-task dedup covers the fresh-session edge case where
+	// task_updated fired with only task_id (no tool_use_id) and could
+	// not populate completedToolUseIDs.
+	if taskID != "" {
+		if _, alreadyCompleted := p.completedTasks[taskID]; alreadyCompleted {
+			return nil, nil
+		}
+	}
+	if !p.markToolUseCompleted(toolUseID) {
+		return nil, nil
+	}
+	status := normalizeTaskTerminalStatus(readRawString(raw["status"]))
+	if status == "" {
+		// Default to completed — notifications only fire for terminal tasks.
+		status = "completed"
+	}
+
+	metaFields := map[string]any{
+		"is_background": true,
+	}
+	if taskID != "" {
+		metaFields["task_id"] = taskID
+	}
+	if status != "completed" {
+		metaFields["is_error"] = true
+	}
+	meta, _ := json.Marshal(metaFields)
+
+	p.clearBackground(toolUseID)
+	if taskID != "" {
+		// Record the task in completedTasks so any later task_updated
+		// for the same task is suppressed.
+		p.markTaskCompleted(taskID)
+	}
+
+	return []provider.ProviderEvent{{
+		Kind:      provider.EventToolComplete,
+		ThreadID:  threadID,
+		ItemID:    toolUseID,
+		Content:   readRawString(raw["summary"]),
 		Meta:      meta,
 		Timestamp: now,
 	}}, nil

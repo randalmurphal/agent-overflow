@@ -570,19 +570,237 @@ func TestParser_TaskOutputEnrichesBackgroundCompletionAfterTaskUpdated(t *testin
 	}
 }
 
-func TestParser_TaskNotificationDoesNotEmitCompletion(t *testing.T) {
+// TestParser_TaskNotificationEmitsCompletionWhenNoTaskUpdated covers the
+// parallel-signal path: task_notification carries both task_id and
+// tool_use_id inline and is treated as a completion trigger when the
+// primary task_updated signal has not already fired. A later
+// task_updated for the same task must NOT double-complete (see the
+// dedup test below).
+func TestParser_TaskNotificationEmitsCompletionWhenNoTaskUpdated(t *testing.T) {
 	parser := NewParser()
 
-	if _, err := parser.ParseLine(testThreadProto, []byte(`{"type":"system","subtype":"task_started","task_id":"task-1","tool_use_id":"tool-bg"}`)); err != nil {
+	// task_started records the mapping but also emits a meta-update
+	// EventToolStart so triage can persist task_id ↔ tool_use_id.
+	startEvents, err := parser.ParseLine(testThreadProto, []byte(`{"type":"system","subtype":"task_started","task_id":"task-1","tool_use_id":"tool-bg"}`))
+	if err != nil {
 		t.Fatalf("task_started: %v", err)
+	}
+	if len(startEvents) != 1 || startEvents[0].Kind != provider.EventToolStart {
+		t.Fatalf("expected 1 EventToolStart from task_started, got %+v", startEvents)
+	}
+	if startEvents[0].ItemID != "tool-bg" {
+		t.Fatalf("task_started ItemID: got %q, want tool-bg", startEvents[0].ItemID)
 	}
 
 	events, err := parser.ParseLine(testThreadProto, []byte(`{"type":"system","subtype":"task_notification","task_id":"task-1","tool_use_id":"tool-bg","status":"completed","summary":"done"}`))
 	if err != nil {
 		t.Fatalf("task_notification: %v", err)
 	}
-	if len(events) != 0 {
-		t.Fatalf("expected 0 events, got %d", len(events))
+	if len(events) != 1 {
+		t.Fatalf("expected 1 EventToolComplete from task_notification, got %d", len(events))
+	}
+	if events[0].Kind != provider.EventToolComplete {
+		t.Fatalf("kind: got %q, want %q", events[0].Kind, provider.EventToolComplete)
+	}
+	if events[0].ItemID != "tool-bg" {
+		t.Fatalf("ItemID: got %q, want tool-bg", events[0].ItemID)
+	}
+}
+
+// TestParser_TaskStartedEmitsBothIDs (Bug A) verifies that when Claude
+// fires `system/task_started`, the adapter emits an EventToolStart that
+// carries BOTH ids — ItemID = tool_use_id so triage finds the existing
+// tool_call row, and Meta.task_id so the row's items.meta captures the
+// mapping. Persisting the mapping is the only way a later task_updated
+// on a fresh adapter session (in-memory map lost) can correlate back.
+func TestParser_TaskStartedEmitsBothIDs(t *testing.T) {
+	parser := NewParser()
+
+	events, err := parser.ParseLine(testThreadProto, []byte(`{"type":"system","subtype":"task_started","task_id":"task-42","tool_use_id":"tool-bg-7"}`))
+	if err != nil {
+		t.Fatalf("task_started parse: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	evt := events[0]
+	if evt.Kind != provider.EventToolStart {
+		t.Fatalf("kind: got %q, want %q", evt.Kind, provider.EventToolStart)
+	}
+	if evt.ItemID != "tool-bg-7" {
+		t.Fatalf("ItemID: got %q, want tool-bg-7", evt.ItemID)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(evt.Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if meta["task_id"] != "task-42" {
+		t.Fatalf("Meta.task_id: got %v, want task-42", meta["task_id"])
+	}
+}
+
+// TestParser_TaskStartedSkipsWhenIDsAreEmpty verifies the adapter drops
+// a malformed task_started (missing task_id or tool_use_id) rather than
+// emitting a ghost EventToolStart. An empty ItemID would not correlate
+// to any tool_call row in triage.
+func TestParser_TaskStartedSkipsWhenIDsAreEmpty(t *testing.T) {
+	parser := NewParser()
+
+	cases := []string{
+		`{"type":"system","subtype":"task_started","task_id":"task-1"}`,      // missing tool_use_id
+		`{"type":"system","subtype":"task_started","tool_use_id":"tool-bg"}`, // missing task_id
+		`{"type":"system","subtype":"task_started"}`,                         // both missing
+	}
+	for _, line := range cases {
+		events, err := parser.ParseLine(testThreadProto, []byte(line))
+		if err != nil {
+			t.Fatalf("parse %q: %v", line, err)
+		}
+		if len(events) != 0 {
+			t.Errorf("expected 0 events for malformed %q, got %d", line, len(events))
+		}
+	}
+}
+
+// TestParser_FullTaskLifecycleEmitsSingleCompletion (Bug B happy path)
+// covers the canonical sequence — task_started, task_updated(completed),
+// then a delayed task_notification. The notification must dedup against
+// the already-emitted completion via completedToolUseIDs.
+func TestParser_FullTaskLifecycleEmitsSingleCompletion(t *testing.T) {
+	parser := NewParser()
+
+	if _, err := parser.ParseLine(testThreadProto, []byte(`{"type":"system","subtype":"task_started","task_id":"task-1","tool_use_id":"tool-bg"}`)); err != nil {
+		t.Fatalf("task_started: %v", err)
+	}
+
+	updatedEvents, err := parser.ParseLine(testThreadProto, []byte(`{"type":"system","subtype":"task_updated","task_id":"task-1","patch":{"status":"completed","description":"ok"}}`))
+	if err != nil {
+		t.Fatalf("task_updated: %v", err)
+	}
+	if len(updatedEvents) != 1 || updatedEvents[0].Kind != provider.EventToolComplete {
+		t.Fatalf("task_updated: expected 1 EventToolComplete, got %+v", updatedEvents)
+	}
+
+	notifyEvents, err := parser.ParseLine(testThreadProto, []byte(`{"type":"system","subtype":"task_notification","task_id":"task-1","tool_use_id":"tool-bg","status":"completed","summary":"dup"}`))
+	if err != nil {
+		t.Fatalf("task_notification: %v", err)
+	}
+	if len(notifyEvents) != 0 {
+		t.Fatalf("expected 0 events from duplicate task_notification, got %+v", notifyEvents)
+	}
+}
+
+// TestParser_TaskUpdatedAloneEmitsCompletion (Bug B) covers the fresh-
+// session variant: no task_started is ever observed, so the adapter's
+// in-memory map is empty. task_updated carries only task_id inline —
+// the adapter emits an EventToolComplete with empty ItemID and
+// Meta.task_id so triage can resolve the row via items.meta.
+func TestParser_TaskUpdatedAloneEmitsCompletion(t *testing.T) {
+	parser := NewParser()
+
+	events, err := parser.ParseLine(testThreadProto, []byte(`{"type":"system","subtype":"task_updated","task_id":"task-lost","patch":{"status":"completed","description":"done"}}`))
+	if err != nil {
+		t.Fatalf("task_updated: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 EventToolComplete, got %d", len(events))
+	}
+	if events[0].Kind != provider.EventToolComplete {
+		t.Fatalf("kind: got %q, want %q", events[0].Kind, provider.EventToolComplete)
+	}
+	if events[0].ItemID != "" {
+		t.Fatalf("ItemID: got %q, want empty (triage resolves via meta.task_id)", events[0].ItemID)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if meta["task_id"] != "task-lost" {
+		t.Fatalf("meta.task_id: got %v, want task-lost", meta["task_id"])
+	}
+}
+
+// TestParser_TaskNotificationAloneEmitsCompletion (Bug B) covers the
+// other half of the fresh-session variant — task_started never fired,
+// task_updated was missed (event-queue drop), and the notification
+// signal arrives. Because task_notification carries tool_use_id inline
+// it is self-sufficient: the adapter emits a completion keyed on that id.
+func TestParser_TaskNotificationAloneEmitsCompletion(t *testing.T) {
+	parser := NewParser()
+
+	events, err := parser.ParseLine(testThreadProto, []byte(`{"type":"system","subtype":"task_notification","task_id":"task-x","tool_use_id":"tool-bg-x","status":"completed","summary":"cleaned"}`))
+	if err != nil {
+		t.Fatalf("task_notification: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 EventToolComplete, got %d", len(events))
+	}
+	if events[0].ItemID != "tool-bg-x" {
+		t.Fatalf("ItemID: got %q, want tool-bg-x", events[0].ItemID)
+	}
+	// A subsequent task_updated for the same task must NOT emit a
+	// second completion — the notification has already deduped it.
+	dupEvents, err := parser.ParseLine(testThreadProto, []byte(`{"type":"system","subtype":"task_updated","task_id":"task-x","patch":{"status":"completed"}}`))
+	if err != nil {
+		t.Fatalf("task_updated: %v", err)
+	}
+	if len(dupEvents) != 0 {
+		t.Fatalf("expected 0 events from duplicate task_updated after notification, got %+v", dupEvents)
+	}
+}
+
+// TestParser_TaskNotificationFirstThenUpdatedIsDeduped (Bug B) reverses
+// the arrival order: notification fires first (with both ids), then
+// task_updated arrives. The completion must fire once total — the
+// update is suppressed by the completedTasks / completedToolUseIDs sets.
+func TestParser_TaskNotificationFirstThenUpdatedIsDeduped(t *testing.T) {
+	parser := NewParser()
+
+	if _, err := parser.ParseLine(testThreadProto, []byte(`{"type":"system","subtype":"task_started","task_id":"t1","tool_use_id":"tu1"}`)); err != nil {
+		t.Fatalf("task_started: %v", err)
+	}
+
+	notifyEvents, err := parser.ParseLine(testThreadProto, []byte(`{"type":"system","subtype":"task_notification","task_id":"t1","tool_use_id":"tu1","status":"completed"}`))
+	if err != nil {
+		t.Fatalf("task_notification: %v", err)
+	}
+	if len(notifyEvents) != 1 {
+		t.Fatalf("expected 1 EventToolComplete from first-arriving notification, got %d", len(notifyEvents))
+	}
+
+	updatedEvents, err := parser.ParseLine(testThreadProto, []byte(`{"type":"system","subtype":"task_updated","task_id":"t1","patch":{"status":"completed"}}`))
+	if err != nil {
+		t.Fatalf("task_updated: %v", err)
+	}
+	if len(updatedEvents) != 0 {
+		t.Fatalf("expected 0 events from duplicate task_updated, got %+v", updatedEvents)
+	}
+}
+
+// TestParser_CloseClearsState verifies Parser.Close empties the dedup
+// sets. Required so completedToolUseIDs does not leak across session
+// teardown / restart within the same parser instance.
+func TestParser_CloseClearsState(t *testing.T) {
+	parser := NewParser()
+
+	if _, err := parser.ParseLine(testThreadProto, []byte(`{"type":"system","subtype":"task_started","task_id":"task-close","tool_use_id":"tool-close"}`)); err != nil {
+		t.Fatalf("task_started: %v", err)
+	}
+	if _, err := parser.ParseLine(testThreadProto, []byte(`{"type":"system","subtype":"task_updated","task_id":"task-close","patch":{"status":"completed"}}`)); err != nil {
+		t.Fatalf("task_updated: %v", err)
+	}
+
+	// Before Close, a duplicate task_updated should be suppressed.
+	parser.Close()
+
+	// After Close, all dedup state is gone. A fresh task_started with
+	// the same id must succeed (no lingering "already completed").
+	events, err := parser.ParseLine(testThreadProto, []byte(`{"type":"system","subtype":"task_started","task_id":"task-close","tool_use_id":"tool-close"}`))
+	if err != nil {
+		t.Fatalf("task_started after close: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected fresh task_started to emit after Close, got %d events", len(events))
 	}
 }
 

@@ -1,6 +1,7 @@
 package claude
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -14,6 +15,13 @@ import (
 	"agent-overflow/internal/logging"
 	"agent-overflow/internal/provider"
 )
+
+// controlRequestPrefix is the first bytes of a Claude control_request
+// NDJSON line. Gating the ExitPlanMode handler on this prefix saves a
+// json.Unmarshal on every assistant/user/stream_event line (which is
+// the hot path during streaming). False positives are benign — the
+// subsequent Request.Subtype / ToolName check still filters.
+var controlRequestPrefix = []byte(`{"type":"control_request"`)
 
 // DefaultIdleTimeout is how long the watchdog waits for ANY stdout line
 // after a Send before declaring the provider wedged. Claude streaming
@@ -513,6 +521,10 @@ func (s *Session) Close() error {
 	if watchdogDone != nil {
 		<-watchdogDone
 	}
+	// Release parser-owned state so the dedup sets
+	// (completedToolUseIDs, completedTasks, backgroundToolUses, etc.)
+	// don't linger after the readLoop exits.
+	s.parser.Close()
 	return err
 }
 
@@ -567,33 +579,40 @@ func (s *Session) readLoop() {
 		// Any output keeps the watchdog happy — even lines we drop below.
 		s.pulseIdleWatchdog()
 
-		handled, err := s.maybeHandleExitPlanModeRequest(line)
-		if err != nil {
-			if handled {
-				// Bug B7: we identified an ExitPlanMode request but
-				// failed to write the synthetic deny response.
-				// Leaving Claude hanging for a reply it will never
-				// get is worse than exiting — surface the failure
-				// and tear the subprocess down.
-				meta, _ := json.Marshal(map[string]any{"fatal": true})
-				s.onEvent(provider.ProviderEvent{
-					Kind:      provider.EventError,
-					ThreadID:  s.threadID,
-					Content:   fmt.Sprintf("claude: exit plan mode response failed: %v", err),
-					Meta:      meta,
-					Timestamp: time.Now(),
-				})
-				_ = s.proc.Close()
-				return
+		// Gate the ExitPlanMode pre-parse on a byte-prefix check so
+		// every streaming text_delta line doesn't pay a second
+		// json.Unmarshal. ParseLine below still handles the line if
+		// the gate skips this branch.
+		if bytes.HasPrefix(line, controlRequestPrefix) {
+			handled, err := s.maybeHandleExitPlanModeRequest(line)
+			if err != nil {
+				if handled {
+					// Bug B7: we identified an ExitPlanMode request but
+					// failed to write the synthetic deny response.
+					// Leaving Claude hanging for a reply it will never
+					// get is worse than exiting — surface the failure
+					// and tear the subprocess down.
+					meta, _ := json.Marshal(map[string]any{"fatal": true})
+					s.onEvent(provider.ProviderEvent{
+						Kind:      provider.EventError,
+						ThreadID:  s.threadID,
+						Content:   fmt.Sprintf("claude: exit plan mode response failed: %v", err),
+						Meta:      meta,
+						Timestamp: time.Now(),
+					})
+					_ = s.proc.Close()
+					return
+				}
+				// !handled + err: JSON parse failure for a line that
+				// looked like a control_request by prefix but was
+				// malformed. Log and continue — ParseLine below will
+				// reject the same line and we don't want to tear the
+				// session down for malformed stdout.
+				log.Printf("claude: exit plan mode handling error: %v", err)
 			}
-			// !handled + err: JSON parse failure for a line that was
-			// not even an ExitPlanMode request. Log and continue —
-			// ParseLine below will reject the same line and we don't
-			// want to tear the session down for malformed stdout.
-			log.Printf("claude: exit plan mode handling error: %v", err)
-		}
-		if handled {
-			continue
+			if handled {
+				continue
+			}
 		}
 
 		events, err := s.parser.ParseLine(s.threadID, line)

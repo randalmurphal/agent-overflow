@@ -523,3 +523,174 @@ func TestToolStartFileChangeReusesIDForRichPayload(t *testing.T) {
 		t.Error("expected tool_result payload attached, got empty PayloadID")
 	}
 }
+
+// TestTaskStartedMergesTaskIDIntoItemMeta (Bug A) verifies that the
+// Claude adapter's `system/task_started` event — an EventToolStart
+// carrying ONLY task_id in Meta — is treated as a meta-merge onto an
+// existing tool_call row. The launch row's summary / tool_name /
+// status are preserved; only items.meta.task_id is updated.
+func TestTaskStartedMergesTaskIDIntoItemMeta(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	// Real tool_use block: Bash background command.
+	startMeta, _ := json.Marshal(map[string]any{
+		"toolName":      "Bash",
+		"input":         map[string]any{"command": "npm run dev"},
+		"is_background": true,
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "tool-bg-meta",
+		ItemType: "Bash", Meta: startMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("tool start: %v", err)
+	}
+
+	// task_started arrives with only task_id in meta.
+	taskStartedMeta, _ := json.Marshal(map[string]any{"task_id": "task-xyz"})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "tool-bg-meta",
+		Meta: taskStartedMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("task_started meta update: %v", err)
+	}
+
+	item, _, err := st.GetItem(providerScopedItemID("t1", "tool-bg-meta"))
+	if err != nil {
+		t.Fatalf("get item: %v", err)
+	}
+	if item.Status != statusRunning {
+		t.Errorf("status = %q, want running (meta merge must not stall lifecycle)", item.Status)
+	}
+	if !item.IsBackground {
+		t.Error("IsBackground lost during meta merge")
+	}
+	if !strings.Contains(item.Summary, "Bash") || !strings.Contains(item.Summary, "npm run dev") {
+		t.Errorf("summary overwritten by meta merge: %q", item.Summary)
+	}
+
+	var persistedMeta map[string]any
+	if err := json.Unmarshal([]byte(item.Meta), &persistedMeta); err != nil {
+		t.Fatalf("unmarshal persisted meta: %v", err)
+	}
+	if persistedMeta["task_id"] != "task-xyz" {
+		t.Errorf("items.meta.task_id = %v, want task-xyz", persistedMeta["task_id"])
+	}
+}
+
+// TestTaskStartedMetaMergeNoopsWhenItemMissing covers the reconnect
+// edge case where task_started fires for a tool_use that was never
+// observed (crash-replay lost the launch). Triage drops the meta-only
+// event rather than fabricating a ghost tool_call row.
+func TestTaskStartedMetaMergeNoopsWhenItemMissing(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	taskStartedMeta, _ := json.Marshal(map[string]any{"task_id": "orphan-task"})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "ghost-tool",
+		Meta: taskStartedMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("orphan meta merge: %v", err)
+	}
+	items, err := st.ListItems("t1")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(items) != 0 {
+		t.Errorf("expected no rows for orphan meta merge, got %+v", items)
+	}
+}
+
+// TestTaskUpdatedResolvesItemViaMetaTaskID (Bug A reconnect-recovery
+// scenario) verifies that when a fresh adapter session emits
+// EventToolComplete with empty ItemID and only meta.task_id, triage
+// looks up the matching tool_call row via items.meta.task_id and
+// terminates IT — not some ghost row keyed by empty string.
+func TestTaskUpdatedResolvesItemViaMetaTaskID(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	// Seed the tool_call row (pre-reconnect adapter would have done this).
+	startMeta, _ := json.Marshal(map[string]any{
+		"toolName":      "Bash",
+		"input":         map[string]any{"command": "long-running"},
+		"is_background": true,
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "bg-recov",
+		ItemType: "Bash", Meta: startMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("seed tool_call: %v", err)
+	}
+
+	// Adapter persists task_id into items.meta via task_started.
+	taskStartedMeta, _ := json.Marshal(map[string]any{"task_id": "recov-task"})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "bg-recov",
+		Meta: taskStartedMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("task_started meta merge: %v", err)
+	}
+
+	// Simulate app restart: a fresh adapter session parser has an
+	// empty in-memory task_id map. task_updated on the live server
+	// fires with only task_id inline, producing an EventToolComplete
+	// with empty ItemID + meta.task_id.
+	completeMeta, _ := json.Marshal(map[string]any{
+		"is_background": true,
+		"task_id":       "recov-task",
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "",
+		Meta: completeMeta, Content: "terminated", Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("task_updated completion: %v", err)
+	}
+
+	// Launch row stays frozen at running (per background lifecycle),
+	// and a tool_completion partner is appended.
+	launches := findItemsByKind(t, st, "t1", itemKindToolCall)
+	if len(launches) != 1 {
+		t.Fatalf("expected 1 tool_call, got %+v", launches)
+	}
+	if launches[0].ID != providerScopedItemID("t1", "bg-recov") {
+		t.Errorf("unexpected launch id %q", launches[0].ID)
+	}
+	dones := findItemsByKind(t, st, "t1", itemKindBackgroundDone)
+	if len(dones) != 1 {
+		t.Fatalf("expected 1 tool_completion, got %+v", dones)
+	}
+	if dones[0].CompletionOf != providerScopedItemID("t1", "bg-recov") {
+		t.Errorf("completion_of = %q, want %q", dones[0].CompletionOf, providerScopedItemID("t1", "bg-recov"))
+	}
+}
+
+// TestTaskUpdatedUnmatchedMetaTaskIDIsDropped (Bug A edge case) covers
+// the "log and drop" branch: adapter emits EventToolComplete keyed by
+// meta.task_id but no tool_call row carries that task_id — the launch
+// was never persisted. Triage must not error and must not create a
+// phantom completion row.
+func TestTaskUpdatedUnmatchedMetaTaskIDIsDropped(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	completeMeta, _ := json.Marshal(map[string]any{
+		"is_background": true,
+		"task_id":       "missing-task",
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "",
+		Meta: completeMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("unmatched task_id completion: %v", err)
+	}
+
+	items, err := st.ListItems("t1")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(items) != 0 {
+		t.Errorf("expected no rows for unmatched meta.task_id, got %+v", items)
+	}
+}

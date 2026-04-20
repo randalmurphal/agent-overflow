@@ -3,6 +3,7 @@ package triage
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 
 	"agent-overflow/internal/provider"
@@ -24,6 +25,7 @@ type toolStartMeta struct {
 	ToolName     string          `json:"toolName"`
 	Input        json.RawMessage `json:"input"`
 	IsBackground bool            `json:"is_background"`
+	TaskID       string          `json:"task_id"`
 }
 
 type toolCompleteMeta struct {
@@ -31,6 +33,7 @@ type toolCompleteMeta struct {
 	IsError      bool   `json:"is_error"`
 	ExitCode     *int   `json:"exit_code,omitempty"`
 	ItemStatus   string `json:"item_status,omitempty"`
+	TaskID       string `json:"task_id,omitempty"`
 }
 
 func (r *Router) persistToolCallLaunch(evt provider.ProviderEvent) error {
@@ -41,8 +44,16 @@ func (r *Router) persistToolCallLaunch(evt provider.ProviderEvent) error {
 
 	meta := decodeToolStartMeta(evt.Meta)
 	now := eventTimestampMillis(evt)
-	toolName := firstNonEmptyString(strings.TrimSpace(meta.ToolName), strings.TrimSpace(evt.ItemType), "tool")
-	summary := buildToolCallSummary(meta, evt.ItemType)
+
+	// A "meta update" EventToolStart carries only task_id (no toolName,
+	// no input) — Claude's `system/task_started` uses it to attach the
+	// task_id ↔ tool_use_id mapping to an existing tool_call row so
+	// reconnect recovery can correlate later task_updated / task_notification
+	// events via items.meta.task_id. Treat this as a targeted meta merge
+	// that preserves the existing summary and tool_name.
+	metaUpdateOnly := strings.TrimSpace(meta.ToolName) == "" &&
+		len(meta.Input) == 0 &&
+		meta.TaskID != ""
 
 	existing, found, err := r.store.GetThreadItem(evt.ThreadID, itemID)
 	if err != nil {
@@ -52,6 +63,28 @@ func (r *Router) persistToolCallLaunch(evt provider.ProviderEvent) error {
 		return nil
 	}
 
+	if metaUpdateOnly {
+		if !found {
+			// No existing row to annotate. The tool_use block must have
+			// been dropped (fresh session) — drop the meta update rather
+			// than fabricate a ghost tool_call row.
+			return nil
+		}
+		mergedMeta, err := mergeItemMetaTaskID(existing.Meta, meta.TaskID)
+		if err != nil {
+			log.Printf("triage: merge task_id into item meta %s: %v", itemID, err)
+			return nil
+		}
+		if mergedMeta == existing.Meta {
+			return nil
+		}
+		existing.Meta = mergedMeta
+		existing.UpdatedAt = now
+		return r.persistItem(existing, nil)
+	}
+
+	toolName := firstNonEmptyString(strings.TrimSpace(meta.ToolName), strings.TrimSpace(evt.ItemType), "tool")
+	summary := buildToolCallSummary(meta, evt.ItemType)
 	turnIndex, err := r.turnIndexForEvent(evt)
 	if err != nil {
 		return fmt.Errorf("tool launch turn index %s: %w", itemID, err)
@@ -94,8 +127,25 @@ func (r *Router) persistToolCallLaunch(evt provider.ProviderEvent) error {
 
 func (r *Router) persistToolCallCompletion(evt provider.ProviderEvent) error {
 	itemID := eventItemID(evt)
+	meta := decodeToolCompleteMeta(evt.Meta)
+
 	if itemID == "" {
-		return nil
+		// Fresh-session task_updated carries only task_id (no inline
+		// tool_use_id) — the adapter's in-memory map is empty so it
+		// emits a completion keyed by meta.task_id and lets triage
+		// resolve back to the tool_call row whose meta.task_id matches.
+		if meta.TaskID == "" {
+			return nil
+		}
+		resolved, ok, err := r.findToolCallByTaskID(evt.ThreadID, meta.TaskID)
+		if err != nil {
+			return fmt.Errorf("tool completion task_id lookup %s: %w", meta.TaskID, err)
+		}
+		if !ok {
+			log.Printf("triage: task_updated for task_id=%q on thread %s had no matching tool_call item; dropping", meta.TaskID, evt.ThreadID)
+			return nil
+		}
+		itemID = resolved.ID
 	}
 
 	launch, found, err := r.store.GetThreadItem(evt.ThreadID, itemID)
@@ -106,7 +156,6 @@ func (r *Router) persistToolCallCompletion(evt provider.ProviderEvent) error {
 		return nil
 	}
 
-	meta := decodeToolCompleteMeta(evt.Meta)
 	now := eventTimestampMillis(evt)
 	status := completionStatus(meta)
 
@@ -337,4 +386,87 @@ func completionPayload(itemID string, evt provider.ProviderEvent, meta toolCompl
 		Data:      []byte(evt.Content),
 		CreatedAt: now,
 	}
+}
+
+// findToolCallByTaskID scans the thread's items for the tool_call row
+// whose meta.task_id matches. Used by background completion routing
+// when the adapter's in-memory task_id ↔ tool_use_id map has been lost
+// (reconnect with a fresh parser). Returns (Item{}, false, nil) when
+// no row matches so callers can log-and-drop without surfacing a user
+// error.
+func (r *Router) findToolCallByTaskID(threadID, taskID string) (store.Item, bool, error) {
+	if taskID == "" {
+		return store.Item{}, false, nil
+	}
+	items, err := r.store.ListItems(threadID)
+	if err != nil {
+		return store.Item{}, false, err
+	}
+	for _, it := range items {
+		if it.Kind != itemKindToolCall {
+			continue
+		}
+		if metaContainsTaskID(it.Meta, taskID) {
+			return it, true, nil
+		}
+	}
+	return store.Item{}, false, nil
+}
+
+// metaContainsTaskID reports whether the persisted items.meta JSON has
+// a top-level "task_id" field equal to taskID. Empty / malformed meta
+// returns false rather than an error — item meta is provider-scoped
+// and we don't want a stray value to blow up background routing.
+func metaContainsTaskID(rawMeta, taskID string) bool {
+	if rawMeta == "" || taskID == "" {
+		return false
+	}
+	var parsed map[string]json.RawMessage
+	if json.Unmarshal([]byte(rawMeta), &parsed) != nil {
+		return false
+	}
+	raw, ok := parsed["task_id"]
+	if !ok {
+		return false
+	}
+	var value string
+	if json.Unmarshal(raw, &value) != nil {
+		return false
+	}
+	return value == taskID
+}
+
+// mergeItemMetaTaskID merges a task_id value into an existing
+// items.meta JSON blob. Returns the original string unchanged when
+// task_id is already present with the same value (so the caller can
+// skip an unnecessary upsert). Other meta fields are preserved.
+func mergeItemMetaTaskID(existing, taskID string) (string, error) {
+	if taskID == "" {
+		return existing, nil
+	}
+	if existing == "" {
+		existing = "{}"
+	}
+	var parsed map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(existing), &parsed); err != nil {
+		// Malformed meta — rebuild with just the task_id rather than
+		// silently carry the broken payload forward.
+		parsed = map[string]json.RawMessage{}
+	}
+	if raw, ok := parsed["task_id"]; ok {
+		var current string
+		if json.Unmarshal(raw, &current) == nil && current == taskID {
+			return existing, nil
+		}
+	}
+	encoded, err := json.Marshal(taskID)
+	if err != nil {
+		return existing, err
+	}
+	parsed["task_id"] = encoded
+	out, err := json.Marshal(parsed)
+	if err != nil {
+		return existing, err
+	}
+	return string(out), nil
 }
