@@ -1,0 +1,497 @@
+# Invariants
+
+Load-bearing rules the whole system depends on. If you're about to
+change code that touches any of these, read the rationale first — each
+one exists because violating it produced (or would produce) a specific
+user-visible bug.
+
+For contributor guardrails that are softer than these (file sizes,
+naming), see [`conventions.md`](conventions.md). For recipes that walk
+through common changes, see [`how-to.md`](how-to.md).
+
+---
+
+## 1. `item_index` is immutable after first upsert
+
+**Rule.** `items.item_index` is assigned by the store at insert time;
+never rewritten. Subsequent upserts to the same `(thread_id, id)` row
+preserve its position.
+
+**Rationale.** `item_index` is the ordering key the frontend reads to
+lay out the timeline. If two concurrent events could both race to
+assign the same `item_index`, rows would shuffle on every refresh. If
+an update could shift a row's index, history would renumber itself
+mid-conversation and the scroll position would jump.
+
+**Enforcement.** `UNIQUE INDEX idx_items_thread_turn_item_unique`
+(migration v15 in `internal/store/migrate.go`) — two rows in the same
+thread+turn cannot share an `item_index`. The upsert path in
+`internal/store/items.go` only computes `item_index` on INSERT; UPDATE
+leaves the existing value untouched.
+
+**Test.** `TestUpsertItemIdempotentPreservesItemIndex` in
+`internal/store/items_lifecycle_test.go`, plus the unique-index
+test `TestItemIndexUniqueConstraintBlocksDuplicate` in
+`items_parent_test.go`.
+
+---
+
+## 2. `item.id` is stable from stream start through completion
+
+**Rule.** A streaming `assistant_text` with id `text:5:2` stays
+`text:5:2` when it flips to `completed`. No ID rewrite at state
+transitions.
+
+**Rationale.** The frontend tracks streaming items by id; if the id
+changed at completion, the reactive diff would see "old item removed,
+new item added" and re-mount the DOM node. That breaks selection,
+copy-paste, and any in-progress user interaction (e.g., expanding
+thinking). Also: `completion_of` and `parent_id` are back-references
+to ids — an id rewrite would require a cascade rewrite of every
+referencing row, which we don't do.
+
+**Enforcement.** ID format is deterministic per kind (see "Item ID
+schemas" in [`chat-rewrite.md`](chat-rewrite.md)). The triage router
+computes the id from `(turn_index, segment_index)` etc. at the first
+event and keeps computing the same value on subsequent deltas.
+
+**Test.** The streaming-settle coverage in
+`internal/triage/stream_state_test.go` and the upsert-idempotency
+tests in `internal/store/items_lifecycle_test.go`
+(`TestUpsertItemIdempotentPreservesItemIndex` in particular —
+replay re-upserts find the same row, which requires id stability).
+
+---
+
+## 3. `turn_index` is monotonic per thread
+
+**Rule.** `turn_index` on `items` is assigned by triage from
+`LastTurnIndex(threadID) + 1` under the per-thread send mutex. It
+never decreases within a thread's history.
+
+**Rationale.** Turn ordering is how we group items, capture git
+baselines, and scope the interrupt queue. A non-monotonic turn_index
+would either group unrelated items into one turn (checkpoint drift)
+or split one turn into two (orphan items, orphan baseline).
+
+**Enforcement.** `App.SendMessage` in `app_send.go` holds the
+per-thread mutex (`sendThreadMuRegistry.lockFor(threadID)`) while
+`LastTurnIndex` → compute → insert happens. Combined with the store's
+`SetMaxOpenConns(1)` in `internal/store/store.go`, this means no two
+events race on turn_index assignment.
+
+**Test.** `TestSendMessageIncrementsTurnIndex` in
+`app_send_test.go`, plus the concurrent-write coverage in
+`app_concurrent_test.go` and
+`TestConcurrentAppendItemAssignsUniqueIndex` in
+`internal/store/items_parent_test.go`.
+
+---
+
+## 4. FIFO drain for the interrupt queue
+
+**Rule.** Parallel tool completions that queue during one streaming
+cycle must flush in arrival order so a `_End` never renders before
+its `_Begin` partner.
+
+**Rationale.** This was the "end card renders before begin card" bug.
+If two backgrounded tools complete while assistant text is streaming,
+both completions get deferred into the interrupt queue. Without FIFO
+drain, the queue could re-emit them in reverse order, causing the
+completion row to appear above the launch row in the timeline.
+
+**Enforcement.** `Router.drainInterruptQueue` in
+`internal/triage/turn_lifecycle.go` drains entries in insertion order
+(slice, not map iteration).
+
+**Test.** The interrupt-queue ordering tests in
+`internal/triage/tool_lifecycle_test.go` and the e2e lifecycle test
+in `app_e2e_lifecycle_test.go`.
+
+---
+
+## 5. `completion_of` references a `tool_call` with `is_background=true`
+
+**Rule.** Inline tool_calls mutate in place — they never produce a
+`tool_completion`. Only backgrounded launches do. Every
+`items` row with `kind='tool_completion'` points via `completion_of`
+at a `tool_call` row with `is_background=1`.
+
+**Rationale.** `tool_completion` exists to carry the rich result card
+for a tool that finished after the launch had already scrolled past.
+Creating a completion row for an inline tool would duplicate the
+tool's result display.
+
+**Enforcement.** `Router.handleToolComplete` in
+`internal/triage/tool_lifecycle.go` checks the launch row's
+`is_background` before emitting a completion row; otherwise it
+updates the launch row in place.
+
+**Test.** `TestToolCompleteFlipsInlineStatus` and
+`TestToolCompleteOnBackgroundedAppendsCompletion` in
+`internal/triage/tool_lifecycle_test.go`.
+
+---
+
+## 6. At most one `tool_completion` per `tool_call`
+
+**Rule.** The relationship is 1:1. Synthetic "stopped by user"
+completions use the same id (`complete:<tool_call.id>`) and therefore
+upsert-replace any pre-existing completion row.
+
+**Rationale.** If stop-then-late-completion produced two rows, the
+UI would render two result cards for the same tool. The id format
+guarantees replacement.
+
+**Enforcement.** Deterministic id format
+(`complete:<tool_call.id>`) + `INSERT OR REPLACE` semantics of
+`UpsertItem`.
+
+**Test.** `TestAppendCompletionItemPairsLaunchAndCompletion` and
+`TestAppendCompletionItemForcesInvariants` in
+`internal/store/items_lifecycle_test.go`.
+
+---
+
+## 7. `parent_id` points to a `tool_call`
+
+**Rule.** Only `tool_call` kinds can be parents (subagent containers,
+MCP tools with nested tool_calls). Not `assistant_text`, not
+`thinking`, not `user_text`.
+
+**Rationale.** The nesting semantics are "tool did work that produced
+sub-events." A text item can't produce sub-events; treating it as a
+parent would let the UI render child tool_calls under a text bubble,
+which is nonsense.
+
+**Enforcement.** `Router.persistItem` in `internal/triage/router.go`
+calls `shouldDropParentID` before the insert; dangling or
+cycle-producing parent_ids are silently dropped (logged). The partial
+index `idx_items_parent` is filtered on non-empty parent_id.
+
+**Test.** `internal/store/items_parent_test.go` (column round-trip,
+listItems projection) plus the parent-drop coverage invoked through
+the `persistItem` tests in `internal/triage/router_test.go`.
+
+---
+
+## 8. One writer per thread, one item stream per thread
+
+**Rule.** The per-thread mutex (`sendThreadMuRegistry` in
+`app_send.go`) serializes send flow; `SetMaxOpenConns(1)` serializes
+SQLite writes. Together these mean no two events for the same thread
+race on `item_index` assignment.
+
+**Rationale.** If two goroutines could concurrently assign
+`item_index`, one of them would lose the `UNIQUE` index race at
+commit time — by which point the first row might already be visible
+to the frontend. Serializing up-front keeps `item_index` contiguous
+and eliminates the retry path.
+
+**Enforcement.** `sendThreadMuRegistry.lockFor(threadID)` in
+`app_send.go` + `db.SetMaxOpenConns(1)` in
+`internal/store/store.go`.
+
+**Test.** `app_concurrent_test.go` drives concurrent sends;
+`TestConcurrentAppendItemAssignsUniqueIndex` and
+`TestConcurrentAppendItemWithPayloadAssignsUniqueIndex` in
+`internal/store/items_parent_test.go` cover the store-side race
+by assertion.
+
+---
+
+## 9. `segmentIndexByScope` / `blockIndexByScope` keyed by `(threadID, turn_index, scope)`
+
+**Rule.** The counters used to mint `text:N:M` and `think:N:K` ids
+are keyed by a triple: `(threadID, turn_index, scope)`, where `scope`
+is either `""` (top-level, parent thread) or a subagent `card_id`
+(for child items inside that card). Reset to 0 on `EventTurnStart`
+(top-level scope) or on card creation (child scope). Incremented on
+every `EventToolStart` within that scope.
+
+**Rationale.** Without the scope key, two subagents launched in the
+same turn would both mint `text:5:0` for their first child segment
+and collide on upsert. With the triple, each scope counts
+independently.
+
+**Enforcement.** `Router` state in `internal/triage/router.go` (the
+maps are defined on the struct; bump sites live in
+`stream_items.go` / `block_events.go`).
+
+**Test.** `TestTextItemIDDisambiguatesSubagentScopes` and the
+surrounding subagent-id coverage in
+`internal/triage/subagent_test.go`.
+
+---
+
+## 10. Subagent child events inherit the subagent card's `turn_index`
+
+**Rule.** A subagent spawned in turn 5 that emits events while the
+parent has moved to turn 7 persists its events under turn 5 (the
+launching turn). `item_index` remains monotonic across the full
+thread.
+
+**Rationale.** If child events inherited the parent thread's
+current turn_index, the turn the user is actively typing into would
+get polluted by background subagent output, and the revert-modes
+would restore the wrong baseline.
+
+**Enforcement.** The Codex child-event re-emission path (in
+`internal/provider/codex/session.go`) stamps the subagent card's
+`turn_index` onto the re-emitted event before triage sees it. The
+Claude Task path preserves `parent_tool_use_id` which triage then
+resolves to the card's turn.
+
+**Test.** `TestParentToolUseIDFlowsThroughInlineEmit` and
+`TestParentToolUseIDPersistsOnTurnText` in
+`internal/triage/subagent_test.go`.
+
+---
+
+## 11. `item_index` is assigned in intended-appearance order, not wire-arrival order
+
+**Rule.** For inline events, the begin event fixes the index and the
+end event mutates the same row — automatic. For anything that triage
+creates as a NEW row during an active streaming phase (currently:
+backgrounded `tool_completion`), the streaming-phase interrupt queue
+defers `item_index` assignment until the stream settles.
+
+**Rationale.** If a backgrounded tool completes mid-stream, the new
+completion row would get the next available `item_index` and render
+ABOVE the still-streaming text row (which got its lower index when
+the segment began). The queue defers the insert until streaming
+settles, then assigns indexes in the intended visual order.
+
+**If new event kinds are added later that produce fresh rows mid-turn,
+they must route through the queue too**, or the same "new row inserts
+before the streaming tail" bug recurs.
+
+**Enforcement.** `Router.enqueueInterrupt` /
+`Router.drainInterruptQueue` in
+`internal/triage/turn_lifecycle.go`.
+
+**Test.** Queue ordering coverage in
+`internal/triage/tool_lifecycle_test.go` alongside the end-to-end
+`app_e2e_lifecycle_test.go` scenarios that drive mixed inline +
+backgrounded mid-stream completions.
+
+---
+
+## 12. `persistItem` is the single write+emit chokepoint
+
+**Rule.** Every timeline row that lands in SQLite goes through
+`Router.persistItem`. The same function handles `parent_id` cycle
+guards, store upsert, `provider:item_upsert` emission, and the
+persisted-items counter.
+
+**Rationale.** Split write/emit paths are how "item appears in DB but
+not on screen" (or vice versa) bugs happen. Centralizing the two
+operations means a caller can't accidentally persist without emitting
+or emit without persisting. It also gives us exactly one place to
+enforce cross-cutting concerns (parent_id drop, counter bump, future
+observability hooks).
+
+**Enforcement.** Callers under `internal/triage/` route through
+`persistItem`; `go vet`-style conventions are enforced by code review
+(there is no lint rule, so a reviewer must notice a direct
+`store.UpsertItem` call).
+
+**Test.** Every lifecycle test exercises the full persist → emit
+path; absence of a direct emit for a persist would fail the
+end-to-end sequence tests.
+
+---
+
+## 13. Provider adapters don't write to the store directly
+
+**Rule.** `internal/provider/{claude,codex}` produce normalized
+`ProviderEvent` values on a channel. They do not hold a
+`*store.Store` reference and do not call `app.Event.Emit`.
+
+**Rationale.** Principle 6: "Provider-specific code stays in
+provider-specific packages." Triage and store are provider-agnostic;
+letting the provider write to SQLite would force the store to handle
+provider-specific types and defeat the abstraction.
+
+**Enforcement.** Architectural — the `provider/` package `AGENTS.md`
+calls this out explicitly, and the package has no import of
+`internal/store`. Reviews catch any new import.
+
+**Test.** No dedicated test; the absence of a `store` import in
+`go mod graph`-style tooling would suffice if we had it.
+
+---
+
+## 14. Triage contains no provider-specific types
+
+**Rule.** Triage reads `provider.ProviderEvent` and its typed fields
+only. No case statements on provider-name strings; no
+Claude-/Codex-specific structs.
+
+**Rationale.** Same principle as #13 from the other side. If triage
+branches on "if claude then A else B," the promise that triage is
+provider-agnostic is broken, and adding a third provider would
+require opening every triage handler.
+
+**Enforcement.** `internal/triage/AGENTS.md` rule "No
+provider-specific types." Reviews enforce.
+
+**Test.** Architectural review; no automated gate.
+
+---
+
+## 15. Cost computation lives in provider adapters, not triage
+
+**Rule.** `CalculateCost` (in `internal/provider/cost.go`) is called
+by the provider adapter when it produces an `EventTokenUsage`.
+Triage's `handleTokenUsage` emits the event as-is; it does not
+recompute cost.
+
+**Rationale.** Model pricing is provider knowledge (per-provider
+pricing tables); putting the calculation in triage would leak model
+awareness into the provider-agnostic layer. See the
+[`triage-routing.md`](triage-routing.md) entry for `token_usage`.
+
+**Enforcement.** `handleTokenUsage` in `internal/triage/router.go`
+passes the event through untouched; the cost field arrives
+populated.
+
+**Test.** `internal/provider/cost_test.go`.
+
+---
+
+## 16. Every `EventKind` has a triage handler
+
+**Rule.** Every `provider.EventKind` constant is present in
+`provider.AllEventKinds` AND has a matching `case` in
+`Router.Handle`. The `default` branch in `Handle` returns
+`ErrUnhandledEventKind` so a missing case is caught on the test
+loop rather than silently dropped at runtime.
+
+**Rationale.** A kind the router doesn't handle is a silent drop —
+the event evaporates and the frontend sees nothing. The Go-side
+exhaustiveness tests guarantee that every declared kind is
+reachable; if a new kind is added to the enum but not handled, the
+test fails.
+
+**Enforcement.** `TestHandleEveryEventKindCovered` and
+`TestAllEventKindsListIsComplete` in
+`internal/triage/router_test.go`. The former loops
+`provider.AllEventKinds` and asserts `Handle` returns without the
+unhandled-kind sentinel; the latter guards the drift between the
+`const` block and the `AllEventKinds` slice.
+
+**Test.** `TestHandleEveryEventKindCovered` and
+`TestAllEventKindsListIsComplete` (router_test.go).
+
+**Frontend.** The frontend subscribes to typed channels
+(`provider:item_upsert`, `provider:approval`, `provider:usage`,
+`provider:status`) rather than branching on individual
+`EventKind`s, so this invariant is Go-only today. If the frontend
+ever starts branching on a new enum it receives over the wire, add
+a `never`-guard pattern at that switch.
+
+---
+
+## 17. Every long-lived map has a documented cleanup path
+
+**Rule.** Every map on `Router`, `Parser`, or any other long-lived
+struct has an explicit lifetime boundary and a documented cleanup
+site. Per-turn maps clear on `EventTurnComplete`; per-thread maps
+clear on `CleanupThread`; correlation maps clear when their
+correlated event resolves.
+
+**Rationale.** Without cleanup paths, every new per-thread map is a
+slow memory leak that only shows up in sessions that accumulate
+dozens of turns. The triage router accumulated three such leaks
+during the chat rewrite before we formalized the cleanup rule.
+
+**Enforcement.** `internal/triage/AGENTS.md` documents the current
+set and the rule. Adding a new map requires documenting its cleanup
+in the same commit.
+
+**Test.** `TestCapturedTurnsClearOnTurnComplete` and
+`TestUnknownSessionStatusLoggedStaysBounded` in
+`internal/triage/memory_cleanup_test.go`, plus per-map cleanup
+coverage under `router_test.go` (`CleanupThread` paths).
+
+---
+
+## 18. SessionRef writes clear PendingForkRef atomically
+
+**Rule.** `store.UpdateSessionRef` in `internal/store/threads.go`
+writes the new `session_ref` and clears `pending_fork_session_ref`
+in the same statement.
+
+**Rationale.** A freshly-forked thread points at the source session
+via `PendingForkRef`. The first time we start under it, we use
+`--fork-session --resume <source-ref>` to clone and get a new session
+id. If the write that captures the new session id didn't also clear
+`PendingForkRef`, the next restart would re-fork from the source and
+create a second branch of the same timeline.
+
+**Enforcement.** `Store.UpdateSessionRef` is a single UPDATE that
+sets both columns.
+
+**Test.** `TestUpdateSessionRefClearsPendingForkRef` in
+`internal/store/threads_test.go`.
+
+---
+
+## 19. WAL mode is verified at startup
+
+**Rule.** `configureDatabase` in `internal/store/migrate.go` reads
+back `PRAGMA journal_mode=WAL` and logs a visible warning when
+SQLite silently falls back to rollback journaling. The app proceeds
+on a rollback-journaled DB (still correct), but the log line is the
+only signal that checkpointing isn't happening.
+
+**Rationale.** SQLite silently downgrades `journal_mode=WAL` to the
+prior mode under some filesystems (network mounts, read-only mounts,
+shared-cache DBs). A store running in DELETE mode has different
+concurrency semantics — concurrent readers during a write block on
+the file — which we rely on not blocking for responsive thread
+switches. The warning tells us that the concurrency model has
+degraded so we can investigate before users hit the visible symptom.
+
+**Note.** Earlier docs described this as "boot fails loudly." The
+code today logs and continues. If the hard-fail behavior is desired,
+it needs a deliberate change plus a test — today's rule is "warn
+and proceed."
+
+**Enforcement.** `configureDatabase` runs on every `Open` via
+`runMigrations`; there is no way to construct a `*Store` that
+skipped it.
+
+**Test.** Happy-path WAL coverage is in
+`internal/store/store_test.go`. No explicit fallback-mode test
+today.
+
+---
+
+## 20. Migrations are forward-only and append-only
+
+**Rule.** Never edit a migration that has shipped. Add a new one. The
+`migrations` slice in `internal/store/migrate.go` is an ordered list;
+versions are contiguous integers.
+
+**Rationale.** An edited migration would apply differently to users
+who've already run the original version vs. fresh installs. That
+drift produces "works on my machine" schema bugs that are
+untraceable.
+
+**Enforcement.** Code review. Changing an existing `SQL:` string
+on a shipped `Version: N` entry is disallowed.
+
+**Test.** The migrate tests apply migrations in order; a new
+migration adds a new `TestMigrateVXX*` block.
+
+---
+
+## See Also
+
+- [`chat-rewrite.md`](chat-rewrite.md) — the spec these rules were
+  distilled from.
+- [`conventions.md`](conventions.md) — softer contributor guardrails.
+- [`how-to.md`](how-to.md) — step-by-step recipes for common changes.
+- [`adrs/`](adrs/) — the decisions behind these rules.

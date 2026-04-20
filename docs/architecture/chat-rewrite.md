@@ -4,6 +4,18 @@ Status: spec, pre-execution. v2 — incorporates review findings from
 t3-code deep-dive, multi-reference cross-check (Claude Code CLI, Codex
 CLI, CodexMonitor, Continue, Aider), and 25-scenario UX stress-test.
 
+> **See also.** This doc is the spec that produced today's code. For
+> the rules extracted from it, jump to:
+>
+> - [`invariants.md`](invariants.md) — the load-bearing invariants,
+>   with rationale and tests.
+> - [`conventions.md`](conventions.md) — contributor guardrails.
+> - [`how-to.md`](how-to.md) — step-by-step extension playbooks.
+> - [`adrs/`](adrs/) — architecture decisions captured as ADRs.
+>
+> This doc remains the historical record of the design; when it
+> drifts from the code, trust the invariants / ADRs.
+
 ## Why
 
 The current chat data flow has five parallel state streams on the
