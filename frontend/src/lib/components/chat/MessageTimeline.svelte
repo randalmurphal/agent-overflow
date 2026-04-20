@@ -1,17 +1,13 @@
 <script lang="ts">
   import type { ThreadPane } from '../../stores/thread.svelte';
-  import type { CommandOutputMeta, DiffMeta, Item, ProposedPlanMeta, ToolResultMeta } from '../../types/models';
+  import type { Item } from '../../types/models';
   import { groupItemsBySubagent, type TimelineNode } from '../../utils/subagentGrouping';
   import { turnSummaryIsMeaningful } from '../../utils/turnDiffSummary';
   import AssistantMessage from './AssistantMessage.svelte';
   import ChangedFilesTree from './ChangedFilesTree.svelte';
-  import CommandOutput from './CommandOutput.svelte';
-  import DiffPreview from './DiffPreview.svelte';
-  import ProposedPlanCard from './ProposedPlanCard.svelte';
   import SubagentGroup from './SubagentGroup.svelte';
   import ThinkingBlock from './ThinkingBlock.svelte';
-  import ToolResultCard from './ToolResultCard.svelte';
-  import ToolResultDropdown from './ToolResultDropdown.svelte';
+  import ToolCallCard from './ToolCallCard.svelte';
   import TurnDiffBadge from './TurnDiffBadge.svelte';
   import UserMessage from './UserMessage.svelte';
 
@@ -30,17 +26,6 @@
     if (!scrollContainer) return;
     const { scrollTop, scrollHeight, clientHeight } = scrollContainer;
     userNearBottom = scrollHeight - scrollTop - clientHeight <= NEAR_BOTTOM_THRESHOLD;
-  }
-
-  function parseMeta<T>(item: Item | undefined): T | null {
-    const raw = item?.payloadMeta;
-    if (!raw) return null;
-    try {
-      return JSON.parse(raw) as T;
-    } catch (err) {
-      console.error('Failed to parse payload meta:', item?.id, err);
-      return null;
-    }
   }
 
   /**
@@ -111,43 +96,7 @@
         {#if item.kind === 'user_text' || item.role === 'user'}
           <UserMessage {item} />
         {:else if item.kind === 'tool_call' || item.kind === 'tool_completion'}
-          {#if item.payloadKind === 'proposed_plan' && item.payloadId}
-            {@const planMeta = parseMeta<ProposedPlanMeta>(item)}
-            {#if planMeta}
-              <ProposedPlanCard {pane} payloadId={item.payloadId} meta={planMeta} />
-            {:else}
-              <ToolResultDropdown {item} />
-            {/if}
-          {:else if item.payloadKind === 'diff' && item.payloadId}
-            {@const diffMeta = parseMeta<DiffMeta>(item)}
-            {#if diffMeta}
-              <DiffPreview {item} meta={diffMeta} payloadId={item.payloadId} />
-            {:else}
-              <ToolResultDropdown {item} />
-            {/if}
-          {:else if item.payloadKind === 'command_output' && item.payloadId}
-            {@const cmdMeta = parseMeta<CommandOutputMeta>(item)}
-            {#if cmdMeta}
-              <CommandOutput {item} meta={cmdMeta} payloadId={item.payloadId} />
-            {:else}
-              <ToolResultDropdown {item} />
-            {/if}
-          {:else if item.payloadKind === 'tool_result' && item.payloadId}
-            <!-- File-change/command-mutation helpers attached a tool_result
-                 payload to the lifecycle row; render the rich diff card so
-                 file edits keep their existing visual weight. Gating on
-                 payload kind (not just a successful JSON parse) avoids
-                 the tool_call_result payload accidentally fitting the
-                 ToolResultMeta shape and rendering as an empty card. -->
-            {@const toolMeta = parseMeta<ToolResultMeta>(item)}
-            {#if toolMeta}
-              <ToolResultCard {item} meta={toolMeta} payloadId={item.payloadId} />
-            {:else}
-              <ToolResultDropdown {item} />
-            {/if}
-          {:else}
-            <ToolResultDropdown {item} />
-          {/if}
+          <ToolCallCard {pane} {item} />
         {:else if item.kind === 'thinking'}
           <ThinkingBlock {item} />
         {:else if item.kind === 'error'}

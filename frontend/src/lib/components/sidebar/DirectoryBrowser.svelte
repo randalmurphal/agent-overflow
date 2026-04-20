@@ -1,16 +1,13 @@
 <script lang="ts">
   // DirectoryBrowser: path input + listbox + keyboard nav.
   //
-  // Owned state:
-  //  - current listing (path, parent, entries)
-  //  - highlighted index inside the listing
-  //  - the path-input string
+  // The browse / debounce / typeahead browser lives in
+  // `directoryBrowser.svelte.ts`. This shell owns the markup + the
+  // listbox keyboard handler. Behaviours:
   //
-  // Behaviours:
   //  - ArrowUp / ArrowDown move the highlight.
   //  - Enter on a directory row drills in.
-  //  - Backspace (from anywhere except the path input when it has content)
-  //    goes to the parent directory.
+  //  - Backspace (outside the path input) goes to the parent directory.
   //  - Typing in the path input debounces 120ms before calling
   //    BrowseDirectory with the raw string — the backend handles "~",
   //    relative, and absolute forms.
@@ -18,9 +15,8 @@
   //    (either via drill-in or direct path-input text); the parent uses
   //    the latest value to drive its Add button.
 
-  import { untrack } from 'svelte';
-  import { BrowseDirectory } from '../../stores/bindings';
-  import type { DirectoryEntry, DirectoryListing } from '../../types/models';
+  import { onDestroy, untrack } from 'svelte';
+  import { createDirectoryBrowser } from './directoryBrowserState.svelte';
 
   interface Props {
     initialPath?: string;
@@ -33,206 +29,58 @@
   let { initialPath = '~', onSelect }: Props = $props();
 
   // Snapshot the initial path once. `untrack` tells Svelte we don't want
-  // this $state init to re-fire if the parent ever passes a new
-  // initialPath — after mount the path is user-driven.
+  // this $state init to re-fire if the parent passes a new initialPath —
+  // after mount the path is user-driven.
   const startingPath = untrack(() => initialPath);
 
-  let listing: DirectoryListing | null = $state(null);
-  let highlight = $state(0);
-  let pathText = $state(startingPath);
-  let loading = $state(false);
-  let error: string | null = $state(null);
-  // noMatches goes true when the user is typing and the current input
-  // doesn't resolve to a real directory. The listbox uses it to show a
-  // muted "No matches" hint instead of the last-valid listing.
-  let noMatches = $state(false);
+  const browser = createDirectoryBrowser({
+    initialPath: startingPath,
+    // Forward to the prop via a closure so Svelte doesn't flag the prop
+    // reference as a one-shot capture. The wrapper is cheap; the alternative
+    // is stashing the reference in a local $state, which just moves the
+    // complaint to a derived.
+    onSelect: (path) => onSelect?.(path),
+  });
+
   let listboxEl: HTMLUListElement | undefined = $state(undefined);
 
-  // Debounce handle for path-text changes. Typing in the input shouldn't
-  // fire one RPC per keystroke. 120ms feels snappy but quiets burst input.
-  let debounceHandle: ReturnType<typeof setTimeout> | null = null;
-  // Track the latest in-flight browse so a slow response from an earlier
-  // path can't overwrite a newer listing.
-  let browseToken = 0;
-
-  // Pull a readable message out of whatever the binding threw. Wails
-  // serializes its server-side errors as objects with {message, kind,
-  // cause}; a naive String(err) prints "[object Object]" or the full
-  // JSON dump. We want the human-readable message only.
-  function extractErrorMessage(err: unknown): string {
-    if (err instanceof Error) return err.message;
-    if (typeof err === 'string') return err;
-    if (err && typeof err === 'object') {
-      const maybeMessage = (err as { message?: unknown }).message;
-      if (typeof maybeMessage === 'string') return maybeMessage;
-    }
-    return 'Unknown error';
-  }
-
-  async function browse(
-    path: string,
-    opts: { fromTyping?: boolean } = {},
-  ): Promise<void> {
-    const fromTyping = opts.fromTyping ?? false;
-    const token = ++browseToken;
-    loading = true;
-    if (!fromTyping) {
-      // Only the explicit nav path (drill-in, goToParent, Enter,
-      // initial mount) clears a prior error. Typing shouldn't flicker
-      // the banner on or off between keystrokes.
-      error = null;
-    }
-    try {
-      const result = (await BrowseDirectory(path)) as DirectoryListing;
-      if (token !== browseToken) return;
-
-      if (!result.exists) {
-        // The server signalled "nothing to list" (missing path, or the
-        // path points at a file). Handle this identically to a thrown
-        // error below, but without a round-trip through the catch block
-        // and without the server having logged a spurious ERR.
-        await handleNonExistentBrowse(path, token, fromTyping);
-        return;
-      }
-
-      listing = result;
-      noMatches = false;
-      error = null;
-      // On an explicit nav (drill-in, parent, Enter, mount) we adopt
-      // the server's canonical path so the input mirrors the listing.
-      // While the user is still typing we leave pathText alone — the
-      // server may have normalised away a trailing slash or expanded
-      // "~", and clobbering the input would erase the user's cursor
-      // position and the character they just pressed.
-      if (!fromTyping) {
-        pathText = result.path;
-      }
-      highlight = 0;
-      onSelect?.(result.path);
-    } catch (err) {
-      if (token !== browseToken) return;
-      // True errors (permission denied, I/O, bad home-dir lookup) still
-      // arrive here. Missing-path and not-a-directory are NOT errors
-      // anymore — the server returns exists=false for those. See
-      // app_directory.go.
-      if (fromTyping) {
-        await handleNonExistentBrowse(path, token, fromTyping);
-        return;
-      }
-      error = extractErrorMessage(err);
-      listing = null;
-      noMatches = false;
-    } finally {
-      if (token === browseToken) {
-        loading = false;
-      }
-    }
-  }
-
-  // Shared "nothing resolved at this path" handler. Used both for the
-  // exists=false response and for true exceptions during typing. Tries
-  // Finder-style prefix typeahead first (splits path into parent +
-  // suffix, filters the parent), falls back to "No matches" when the
-  // parent also yields nothing.
-  async function handleNonExistentBrowse(
-    path: string,
-    token: number,
-    fromTyping: boolean,
-  ): Promise<void> {
-    if (fromTyping) {
-      const filtered = await tryPrefixFilter(path, token);
-      if (token !== browseToken) return;
-      if (filtered) {
-        listing = filtered;
-        noMatches = filtered.entries.length === 0;
-      } else {
-        listing = null;
-        noMatches = true;
-      }
-      // Typed path isn't committable — tell the parent modal to
-      // disable its Add button until the user drills into a real
-      // entry.
-      onSelect?.('');
-      return;
-    }
-    // Explicit nav (drill-in, parent, Enter, initial mount) to a path
-    // that doesn't exist surfaces a clean inline error so the user
-    // knows the exact commit failed.
-    error = `No such directory: ${path}`;
-    listing = null;
-    noMatches = false;
-  }
-
-  // Prefix-filter fallback used when the typed path can't be browsed
-  // directly (incomplete / non-existent). Splits on the last separator:
-  // the parent half is browsed, the suffix becomes a case-insensitive
-  // prefix match against the parent's entries. Returns null when the
-  // split isn't meaningful (no separator, empty prefix) or the parent
-  // browse itself yields nothing — the caller then shows "No matches".
-  async function tryPrefixFilter(
-    path: string,
-    token: number,
-  ): Promise<DirectoryListing | null> {
-    const trimmed = path.replace(/\/+$/, '');
-    const lastSep = trimmed.lastIndexOf('/');
-    if (lastSep < 0) return null;
-    const parent = trimmed.slice(0, lastSep) || '/';
-    const prefix = trimmed.slice(lastSep + 1);
-    if (!prefix) return null;
-    try {
-      const parentListing = (await BrowseDirectory(parent)) as DirectoryListing;
-      if (token !== browseToken) return null;
-      if (!parentListing.exists) return null;
-      const prefixLower = prefix.toLowerCase();
-      return {
-        ...parentListing,
-        entries: parentListing.entries.filter((e) =>
-          e.name.toLowerCase().startsWith(prefixLower),
-        ),
-      };
-    } catch {
-      return null;
-    }
-  }
-
-  // Initial load: fire once on mount with the starting path.
   $effect(() => {
-    void browse(startingPath);
-    return () => {
-      if (debounceHandle) clearTimeout(debounceHandle);
-    };
+    browser.mount();
+    // onDestroy fires too late for $effect teardown in some test setups;
+    // we still register it below for component unmount.
+  });
+
+  onDestroy(() => {
+    browser.destroy();
   });
 
   function handlePathInput(e: Event): void {
-    pathText = (e.target as HTMLInputElement).value;
-    if (debounceHandle) clearTimeout(debounceHandle);
-    debounceHandle = setTimeout(() => {
-      debounceHandle = null;
-      void browse(pathText, { fromTyping: true });
-    }, 120);
+    browser.handlePathInput((e.target as HTMLInputElement).value);
   }
 
-  async function drillInto(entry: DirectoryEntry): Promise<void> {
-    if (!entry.isDir || !listing) return;
-    const sep = listing.separator || '/';
-    const next = listing.path.endsWith(sep)
-      ? listing.path + entry.name
-      : `${listing.path}${sep}${entry.name}`;
-    await browse(next);
+  function handlePathKeydown(e: KeyboardEvent): void {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      browser.handlePathEnter();
+    }
   }
 
-  async function goToParent(): Promise<void> {
-    if (!listing || !listing.parent) return;
-    await browse(listing.parent);
+  function scrollHighlightIntoView(): void {
+    if (!listboxEl) return;
+    const row = listboxEl.querySelector<HTMLLIElement>(
+      `[data-index="${browser.highlight}"]`,
+    );
+    row?.scrollIntoView({ block: 'nearest' });
   }
 
   function handleListKeydown(e: KeyboardEvent): void {
+    const listing = browser.listing;
     if (!listing) return;
     const entries = listing.entries;
     if (entries.length === 0) {
       if (e.key === 'Backspace') {
         e.preventDefault();
-        void goToParent();
+        void browser.goToParent();
       }
       return;
     }
@@ -240,55 +88,38 @@
     switch (e.key) {
       case 'ArrowDown':
         e.preventDefault();
-        highlight = (highlight + 1) % entries.length;
+        browser.setHighlight((browser.highlight + 1) % entries.length);
         scrollHighlightIntoView();
         return;
       case 'ArrowUp':
         e.preventDefault();
-        highlight = (highlight - 1 + entries.length) % entries.length;
+        browser.setHighlight(
+          (browser.highlight - 1 + entries.length) % entries.length,
+        );
         scrollHighlightIntoView();
         return;
       case 'Home':
         e.preventDefault();
-        highlight = 0;
+        browser.setHighlight(0);
         scrollHighlightIntoView();
         return;
       case 'End':
         e.preventDefault();
-        highlight = entries.length - 1;
+        browser.setHighlight(entries.length - 1);
         scrollHighlightIntoView();
         return;
       case 'Enter': {
-        const entry = entries[highlight];
+        const entry = entries[browser.highlight];
         if (entry && entry.isDir) {
           e.preventDefault();
-          void drillInto(entry);
+          void browser.drillInto(entry);
         }
         return;
       }
       case 'Backspace':
         e.preventDefault();
-        void goToParent();
+        void browser.goToParent();
         return;
-    }
-  }
-
-  function scrollHighlightIntoView(): void {
-    if (!listboxEl) return;
-    const row = listboxEl.querySelector<HTMLLIElement>(
-      `[data-index="${highlight}"]`,
-    );
-    row?.scrollIntoView({ block: 'nearest' });
-  }
-
-  function handlePathKeydown(e: KeyboardEvent): void {
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      if (debounceHandle) {
-        clearTimeout(debounceHandle);
-        debounceHandle = null;
-      }
-      void browse(pathText);
     }
   }
 </script>
@@ -298,7 +129,7 @@
     <span class="sr-only">Path</span>
     <input
       type="text"
-      value={pathText}
+      value={browser.pathText}
       oninput={handlePathInput}
       onkeydown={handlePathKeydown}
       aria-label="Path"
@@ -310,13 +141,13 @@
     />
   </label>
 
-  {#if error}
+  {#if browser.error}
     <div
       role="alert"
       data-testid="directory-browser-error"
       class="rounded-md border border-error/40 bg-error/10 px-3 py-2 text-xs text-error"
     >
-      {error}
+      {browser.error}
     </div>
   {/if}
 
@@ -329,11 +160,11 @@
     data-testid="directory-browser-list"
     class="flex-1 min-h-[220px] max-h-[360px] overflow-y-auto rounded-md border border-border/60 bg-surface-0/60 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
   >
-    {#if loading && !listing}
+    {#if browser.loading && !browser.listing}
       <li class="px-3 py-2 text-xs text-text-secondary/70" aria-hidden="true">
         Loading…
       </li>
-    {:else if noMatches}
+    {:else if browser.noMatches}
       <li
         class="px-3 py-2 text-xs text-text-secondary/70"
         data-testid="directory-browser-no-matches"
@@ -341,25 +172,25 @@
       >
         No matches
       </li>
-    {:else if listing && listing.entries.length === 0}
+    {:else if browser.listing && browser.listing.entries.length === 0}
       <li class="px-3 py-2 text-xs text-text-secondary/70" aria-hidden="true">
         Empty directory
       </li>
-    {:else if listing}
-      {#each listing.entries as entry, i (entry.name)}
+    {:else if browser.listing}
+      {#each browser.listing.entries as entry, i (entry.name)}
         <!-- svelte-ignore a11y_click_events_have_key_events — parent listbox handles keyboard -->
         <li
           role="option"
-          aria-selected={highlight === i}
+          aria-selected={browser.highlight === i}
           data-index={i}
           data-testid="directory-browser-entry"
           data-is-dir={entry.isDir ? 'true' : 'false'}
           onclick={() => {
-            highlight = i;
-            if (entry.isDir) void drillInto(entry);
+            browser.setHighlight(i);
+            if (entry.isDir) void browser.drillInto(entry);
           }}
           class="flex items-center gap-2 px-3 py-1 text-xs cursor-pointer select-none
-            {highlight === i
+            {browser.highlight === i
               ? 'bg-accent/15 text-text-primary'
               : 'text-text-secondary hover:bg-surface-2/40 hover:text-text-primary'}"
         >
@@ -396,7 +227,7 @@
           {/if}
         </li>
       {/each}
-      {#if listing.truncated}
+      {#if browser.listing.truncated}
         <li
           class="px-3 py-2 text-[11px] text-text-secondary/60 border-t border-border/50"
           aria-hidden="true"

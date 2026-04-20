@@ -15,6 +15,7 @@
   import PlanSidebar from './PlanSidebar.svelte';
   import PlanFollowUpBanner from './PlanFollowUpBanner.svelte';
   import ChatHeader from './ChatHeader.svelte';
+  import ChatWorkingIndicator from './ChatWorkingIndicator.svelte';
   import { createComposerDraftStore } from '../../stores/composerDraft.svelte';
 
   let { pane }: { pane: ThreadPane } = $props();
@@ -78,6 +79,7 @@
       <BackgroundTaskTray items={pane.items} />
       <PlanFollowUpBanner {pane} {draft} />
       <Composer {pane} {draft} />
+      <ChatWorkingIndicator {pane} />
       <BelowComposerBar {pane} />
       <StatusBar {pane} />
       {#if pane.diffPanel.open && pane.thread}

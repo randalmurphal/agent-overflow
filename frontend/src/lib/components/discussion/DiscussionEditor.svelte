@@ -4,7 +4,7 @@
     DiscussionParticipant,
     DiscussionScope,
   } from '../../types/discussion';
-  import { DEFAULT_MAX_TURNS, createEmptyDiscussionDefinition } from '../../types/discussion';
+  import { createEmptyDiscussionDefinition } from '../../types/discussion';
   import {
     CreateDiscussion,
     UpdateDiscussion,
@@ -13,6 +13,16 @@
   import { addToast } from '../../stores/toast.svelte';
   import ConfirmDialog from '../shared/ConfirmDialog.svelte';
   import ParticipantForm from './ParticipantForm.svelte';
+  import {
+    addParticipant,
+    cloneDef,
+    removeParticipant,
+    setDefField,
+    setMaxTurns,
+    setScope,
+    updateParticipant,
+    validateDiscussion,
+  } from './discussionEditorHelpers';
 
   let {
     initial,
@@ -29,8 +39,8 @@
   } = $props();
 
   // Local editable draft. We deep-clone so parent state isn't mutated until
-  // Save. When the parent swaps which definition is being edited (prop change),
-  // we detect via the `initial` reference and re-seed the draft.
+  // Save. When the parent swaps which definition is being edited (prop
+  // change), we detect via the `initial` reference and re-seed the draft.
   // svelte-ignore state_referenced_locally
   let draft = $state<DiscussionDefinition>(cloneDef(initial));
   // svelte-ignore state_referenced_locally
@@ -50,83 +60,34 @@
   let showDeleteConfirm = $state(false);
   let validationError = $state<string | null>(null);
 
-  function cloneDef(def: DiscussionDefinition): DiscussionDefinition {
-    return {
-      ...def,
-      participants: def.participants.map((p) => ({ ...p })),
-      settings: { ...def.settings },
-    };
-  }
-
   function updateField<K extends keyof DiscussionDefinition>(key: K, value: DiscussionDefinition[K]): void {
-    draft = { ...draft, [key]: value };
+    draft = setDefField(draft, key, value);
   }
 
   function updateScope(scope: DiscussionScope): void {
-    draft = {
-      ...draft,
-      scope,
-      projectId: scope === 'project' ? draft.projectId ?? '' : '',
-    };
+    draft = setScope(draft, scope);
   }
 
   function updateMaxTurns(raw: string): void {
-    const parsed = parseInt(raw, 10);
-    const maxTurns = Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_MAX_TURNS;
-    draft = { ...draft, settings: { ...draft.settings, maxTurns } };
+    draft = setMaxTurns(draft, raw);
   }
 
-  function updateParticipant(index: number, next: DiscussionParticipant): void {
-    draft = {
-      ...draft,
-      participants: draft.participants.map((p, i) => (i === index ? next : p)),
-    };
+  function updateParticipantAt(index: number, next: DiscussionParticipant): void {
+    draft = updateParticipant(draft, index, next);
   }
 
-  function addParticipant(): void {
-    draft = {
-      ...draft,
-      participants: [
-        ...draft.participants,
-        { role: '', description: '', system: '', provider: undefined, model: undefined },
-      ],
-    };
+  function handleAddParticipant(): void {
+    draft = addParticipant(draft);
   }
 
-  function removeParticipant(index: number): void {
-    if (draft.participants.length <= 2) return;
-    draft = {
-      ...draft,
-      participants: draft.participants.filter((_, i) => i !== index),
-    };
-  }
-
-  /**
-   * Mirror of the Go-side `normalizeDiscussionDefinition` validation so we
-   * can surface errors inline instead of round-tripping to the backend.
-   * Keep these in sync with `internal/discussion/registry.go`.
-   */
-  function validate(): string | null {
-    if (!draft.name.trim()) return 'Discussion name is required.';
-    if (draft.participants.length < 2) return 'A discussion needs at least 2 participants.';
-    if (draft.scope === 'project' && !(draft.projectId ?? '').trim()) {
-      return 'Project-scoped discussions require a project path.';
-    }
-    for (let i = 0; i < draft.participants.length; i++) {
-      const p = draft.participants[i];
-      if (!p.role.trim()) return `Participant ${i + 1} needs a role.`;
-      if (!p.system.trim()) return `Participant ${i + 1} needs a system prompt.`;
-    }
-    if (!Number.isInteger(draft.settings.maxTurns) || draft.settings.maxTurns < 1) {
-      return 'Max turns must be a positive integer.';
-    }
-    return null;
+  function handleRemoveParticipant(index: number): void {
+    draft = removeParticipant(draft, index);
   }
 
   async function handleSubmit(e: Event): Promise<void> {
     e.preventDefault();
     if (saving) return;
-    const err = validate();
+    const err = validateDiscussion(draft);
     if (err) {
       validationError = err;
       return;
@@ -167,11 +128,7 @@
   }
 
   function handleReset(): void {
-    if (isNew) {
-      draft = createEmptyDiscussionDefinition();
-    } else {
-      draft = cloneDef(initial);
-    }
+    draft = isNew ? createEmptyDiscussionDefinition() : cloneDef(initial);
     validationError = null;
   }
 </script>
@@ -264,7 +221,7 @@
       </div>
       <button
         type="button"
-        onclick={addParticipant}
+        onclick={handleAddParticipant}
         class="rounded-xl border border-border px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary hover:border-text-secondary cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
       >
         + Add participant
@@ -277,8 +234,8 @@
           participant={participant}
           index={i}
           canRemove={draft.participants.length > 2}
-          onChange={(next) => updateParticipant(i, next)}
-          onRemove={() => removeParticipant(i)}
+          onChange={(next) => updateParticipantAt(i, next)}
+          onRemove={() => handleRemoveParticipant(i)}
         />
       {/each}
     </div>

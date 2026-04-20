@@ -3,26 +3,17 @@
   import { wailsEventOn } from '../../stores/events';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import type {
-    Checkpoint,
     CheckpointCapturedEvent,
     CheckpointErrorEvent,
     CheckpointUnavailableEvent,
   } from '../../types/checkpoint';
   import type { DiffPanelSource, TurnCompareMode } from '../../stores/diffPanel.svelte';
-  import {
-    GetCheckpointToWorktreeDiff,
-    GetTurnDiff,
-    GetWorkingTreeDiff,
-    GetPayloadData,
-    ListThreadCheckpoints,
-    RevertToTurn,
-  } from '../../stores/bindings';
+  import { RevertToTurn } from '../../stores/bindings';
   import type { RevertMode } from '../../types/checkpoint';
   import { addToast } from '../../stores/toast.svelte';
   import RevertDialog from './diff-panel/RevertDialog.svelte';
   import { getSettings, updateSetting } from '../../stores/settings.svelte';
   import {
-    aggregateAgentDiffs,
     selectAgentDiffEntries,
     summarizeEntries,
     type AgentDiffEntry,
@@ -33,6 +24,8 @@
   import PanelHeader from './diff-panel/PanelHeader.svelte';
   import TurnDiffView from './diff-panel/TurnDiffView.svelte';
   import WorkingTreeView from './diff-panel/WorkingTreeView.svelte';
+  import { createDiffPanelSources } from './diff-panel/diffPanelSources.svelte';
+  import { selectTurnForKey } from './diff-panel/diffPanelKeyboard';
 
   interface Props {
     pane: ThreadPane;
@@ -43,119 +36,39 @@
   const store = $derived(pane.diffPanel);
   const threadId = $derived(pane.thread?.id ?? null);
 
-  let loadingDiff = $state(false);
-  let turnDiffText = $state('');
-  let worktreeLoading = $state(false);
-  let worktreeText = $state('');
-  let cumulativeLoading = $state(false);
-  let cumulativeText = $state('');
-
-  // Insertion/deletion totals for the cumulative tab header.
+  // Cumulative entries + stats are pure derivations of the pane's items.
+  // The sources module reads these through a getter so there's no
+  // double-stream of reactive state between this shell and the module.
   let cumulativeEntries = $derived<AgentDiffEntry[]>(selectAgentDiffEntries(pane.items));
   let cumulativeStats = $derived<DiffStats>(summarizeEntries(cumulativeEntries, pane.items));
 
-  // The panel body's visible tab. Derived so the SourceTabs component stays
-  // synchronized with store.source.
+  // pane.diffPanel is stable for the lifetime of the pane (created once in
+  // createThreadPane and reset internally), so passing the initial reference
+  // is intentional. Svelte's static check can't see that — but the module
+  // never captures `pane` directly, only this dereferenced store.
+  // svelte-ignore state_referenced_locally
+  const diffPanelStore = pane.diffPanel;
+  const sources = createDiffPanelSources({
+    getThreadId: () => pane.thread?.id ?? null,
+    store: diffPanelStore,
+    getCumulativeEntries: () => cumulativeEntries,
+  });
+
+  // Active-tab derivation stays in sync with the store.
   let activeSource = $derived<DiffPanelSource>(store.source);
-
-  // --- Turn list lifecycle ---
-
-  async function refreshCheckpoints(): Promise<void> {
-    if (!threadId) return;
-    try {
-      const raw = (await ListThreadCheckpoints(threadId)) as Checkpoint[] | null;
-      store.setCheckpoints(raw ?? []);
-    } catch (err) {
-      store.setError(`Failed to load checkpoints: ${errString(err)}`);
-    }
-  }
-
-  function errString(err: unknown): string {
-    if (err instanceof Error) return err.message;
-    return String(err);
-  }
 
   // A thread "has had turns" when at least one persisted item carries a
   // non-negative turnIndex. The turn-diff tab is visible when either the
-  // workspace is a git repo with checkpoints, or we have no strong signal that
-  // checkpoints are unavailable.
+  // workspace is a git repo with checkpoints, or we have no strong signal
+  // that checkpoints are unavailable.
   let threadHasTurns = $derived(pane.items.some((it) => it.turnIndex >= 0));
   let turnTabVisible = $derived.by(() => {
     if (store.checkpointsUnavailable) return false;
-    // If we've loaded checkpoints for the thread and got zero back but the
-    // thread has had turns, assume the workspace isn't a git repo. Keep the
-    // tab hidden to avoid a confusing "no turns" empty state.
     if (store.checkpointsLoaded && store.checkpoints.length === 0 && threadHasTurns) {
       return false;
     }
     return true;
   });
-
-  // --- Turn diff loading ---
-
-  async function loadSelectedTurnDiff(): Promise<void> {
-    if (!threadId) return;
-    const turnIndex = store.selectedTurnIndex;
-    const mode = store.turnCompareMode;
-    if (turnIndex === null) {
-      turnDiffText = '';
-      return;
-    }
-    const cached = store.readTurnDiff(threadId, turnIndex, mode);
-    if (cached !== undefined) {
-      turnDiffText = cached;
-      return;
-    }
-    loadingDiff = true;
-    try {
-      const text =
-        mode === 'next'
-          ? await GetTurnDiff(threadId, turnIndex)
-          : await GetCheckpointToWorktreeDiff(threadId, turnIndex);
-      const result = (text ?? '') as string;
-      store.writeTurnDiff(threadId, turnIndex, mode, result);
-      turnDiffText = result;
-    } catch (err) {
-      store.setError(`Failed to load turn diff: ${errString(err)}`);
-      turnDiffText = '';
-    } finally {
-      loadingDiff = false;
-    }
-  }
-
-  async function loadWorktreeDiff(force = false): Promise<void> {
-    if (!threadId) return;
-    if (!force && worktreeText.length > 0) return;
-    worktreeLoading = true;
-    try {
-      const text = await GetWorkingTreeDiff(threadId);
-      worktreeText = (text ?? '') as string;
-    } catch (err) {
-      store.setError(`Failed to load working tree diff: ${errString(err)}`);
-      worktreeText = '';
-    } finally {
-      worktreeLoading = false;
-    }
-  }
-
-  async function loadCumulativeDiff(force = false): Promise<void> {
-    if (!threadId) return;
-    if (force) store.invalidateCumulative();
-    cumulativeLoading = true;
-    try {
-      const text = await aggregateAgentDiffs(
-        cumulativeEntries,
-        (id) => GetPayloadData(id) as Promise<string>,
-        store.cumulativeCache,
-      );
-      cumulativeText = text;
-    } catch (err) {
-      store.setError(`Failed to aggregate agent diffs: ${errString(err)}`);
-      cumulativeText = '';
-    } finally {
-      cumulativeLoading = false;
-    }
-  }
 
   // --- Event handlers wired to the panel header & views ---
 
@@ -200,7 +113,8 @@
       // resets streaming state, and refreshes checkpoints.
       await pane.switchThread(pane.thread);
     } catch (err) {
-      addToast('error', `Revert failed: ${errString(err)}`);
+      const msg = err instanceof Error ? err.message : String(err);
+      addToast('error', `Revert failed: ${msg}`);
     } finally {
       reverting = false;
     }
@@ -215,31 +129,24 @@
   }
 
   // Keyboard nav: ← / → step through the checkpoint list in the turn view.
+  // Pure dispatch lives in diffPanelKeyboard.ts; this shell just forwards
+  // the DOM event fields and acts on the suggested turn index.
   function handleKeydown(ev: KeyboardEvent): void {
-    if (!store.open) return;
-    if (store.source !== 'turn') return;
-    // Don't steal keys the user typed into a control inside the panel.
     const target = ev.target as HTMLElement | null;
-    const tag = target?.tagName;
-    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
-    if (ev.metaKey || ev.ctrlKey || ev.altKey) return;
-
-    if (ev.key !== 'ArrowLeft' && ev.key !== 'ArrowRight') return;
-    const list = store.checkpoints;
-    if (list.length === 0) return;
-    const current = store.selectedTurnIndex;
-    const idx = list.findIndex((c) => c.turnIndex === current);
-    let nextIdx: number;
-    if (ev.key === 'ArrowLeft') {
-      nextIdx = idx <= 0 ? 0 : idx - 1;
-    } else {
-      nextIdx = idx === -1 ? 0 : Math.min(list.length - 1, idx + 1);
-    }
-    const target2 = list[nextIdx];
-    if (target2 && target2.turnIndex !== current) {
-      ev.preventDefault();
-      store.selectTurn(target2.turnIndex);
-    }
+    const nextTurn = selectTurnForKey({
+      key: ev.key,
+      metaKey: ev.metaKey,
+      ctrlKey: ev.ctrlKey,
+      altKey: ev.altKey,
+      targetTag: target?.tagName,
+      source: store.source,
+      panelOpen: store.open,
+      checkpoints: store.checkpoints,
+      selectedTurnIndex: store.selectedTurnIndex,
+    });
+    if (nextTurn === null) return;
+    ev.preventDefault();
+    store.selectTurn(nextTurn);
   }
 
   // --- Wails event subscriptions ---
@@ -252,19 +159,13 @@
     cancelCaptured = wailsEventOn<CheckpointCapturedEvent | null>('checkpoint:captured', (payload) => {
       if (!payload || payload.threadId !== threadId) return;
       // A recapture produces a new diff, so drop every cached entry for this
-      // turn across compare modes; the cumulative aggregation is also
-      // invalidated because any turn's diff contributes to it.
+      // turn across compare modes; cumulative is invalidated too because
+      // any turn's diff contributes to it.
       store.invalidateTurn(payload.threadId, payload.turnIndex);
-      // If the re-captured turn is the one currently displayed, re-trigger
-      // the load so the panel shows the fresh diff instead of leaving the
-      // user on a stale snapshot until they re-select the turn.
-      if (
-        store.source === 'turn'
-        && store.selectedTurnIndex === payload.turnIndex
-      ) {
-        void loadSelectedTurnDiff();
+      if (store.source === 'turn' && store.selectedTurnIndex === payload.turnIndex) {
+        void sources.loadSelectedTurnDiff();
       }
-      void refreshCheckpoints();
+      void sources.refreshCheckpoints();
     });
     cancelUnavailable = wailsEventOn<CheckpointUnavailableEvent | null>('checkpoint:unavailable', (payload) => {
       if (!payload || payload.threadId !== threadId) return;
@@ -276,7 +177,7 @@
     });
 
     window.addEventListener('keydown', handleKeydown);
-    void refreshCheckpoints();
+    void sources.refreshCheckpoints();
   });
 
   onDestroy(() => {
@@ -312,16 +213,16 @@
     store.selectedTurnIndex;
     store.turnCompareMode;
     if (activeSource === 'turn') {
-      void loadSelectedTurnDiff();
+      void sources.loadSelectedTurnDiff();
     }
   });
 
   // Lazy-load worktree and cumulative views when the user first opens them.
   $effect(() => {
     if (activeSource === 'worktree') {
-      void loadWorktreeDiff(false);
+      void sources.loadWorktreeDiff(false);
     } else if (activeSource === 'cumulative') {
-      void loadCumulativeDiff(false);
+      void sources.loadCumulativeDiff(false);
     }
   });
 </script>
@@ -355,24 +256,24 @@
     <TurnDiffView
       {store}
       checkpoints={store.checkpoints}
-      {loadingDiff}
-      diffText={turnDiffText}
+      loadingDiff={sources.loadingTurn}
+      diffText={sources.turnDiffText}
       onSelectTurn={handleSelectTurn}
       onCompareModeChange={handleCompareModeChange}
       onRequestRevert={handleRequestRevert}
     />
   {:else if activeSource === 'worktree'}
     <WorkingTreeView
-      loading={worktreeLoading}
-      diffText={worktreeText}
-      onRefresh={() => void loadWorktreeDiff(true)}
+      loading={sources.worktreeLoading}
+      diffText={sources.worktreeText}
+      onRefresh={() => void sources.loadWorktreeDiff(true)}
     />
   {:else}
     <CumulativeView
-      loading={cumulativeLoading}
-      diffText={cumulativeText}
+      loading={sources.cumulativeLoading}
+      diffText={sources.cumulativeText}
       stats={cumulativeStats}
-      onRefresh={() => void loadCumulativeDiff(true)}
+      onRefresh={() => void sources.loadCumulativeDiff(true)}
     />
   {/if}
 </aside>
