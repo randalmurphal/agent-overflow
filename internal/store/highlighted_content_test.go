@@ -241,6 +241,74 @@ func TestUpdateItemHighlightSkipsSettledRow(t *testing.T) {
 	}
 }
 
+// TestUpdateItemPayloadClearsHighlightedContent pins the defensive clear
+// added alongside the payload/summary rewrite: any caller using this
+// method on a server-rendered kind (assistant_text / thinking /
+// tool_result) would otherwise leave stale HTML on the row — the
+// summary changes but highlighted_content still reflects the previous
+// rendering. Clearing it forces the next persist path to re-render.
+func TestUpdateItemPayloadClearsHighlightedContent(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("t-up", "claude")); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	if err := s.InsertItem(Item{
+		ID: "u-pay", ThreadID: "t-up", TurnIndex: 0, ItemIndex: 0,
+		Kind: "assistant_text", Role: "assistant",
+		Status: "completed", Summary: "before",
+		HighlightedContent: "<p>before-html</p>",
+		CreatedAt:          1, UpdatedAt: 1,
+	}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	if err := s.UpdateItemPayload("u-pay", "", "after", 2); err != nil {
+		t.Fatalf("UpdateItemPayload: %v", err)
+	}
+
+	got, _, _ := s.GetItem("u-pay")
+	if got.Summary != "after" {
+		t.Errorf("Summary not updated: got %q", got.Summary)
+	}
+	if got.HighlightedContent != "" {
+		t.Errorf("HighlightedContent not cleared: got %q (should have been wiped so the next persistItem re-renders from 'after')", got.HighlightedContent)
+	}
+}
+
+// TestUpdateItemStatusClearsHighlightedContent mirrors the payload test
+// for the status-transition method; both helpers rewrite summary and
+// must not leave the prior HTML rendering attached.
+func TestUpdateItemStatusClearsHighlightedContent(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("t-us", "claude")); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	if err := s.InsertItem(Item{
+		ID: "u-stat", ThreadID: "t-us", TurnIndex: 0, ItemIndex: 0,
+		Kind: "thinking", Role: "assistant",
+		Status: "streaming", Summary: "running output",
+		HighlightedContent: "<pre>running output</pre>",
+		CreatedAt:          1, UpdatedAt: 1,
+	}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	if err := s.UpdateItemStatus("u-stat", "completed", "final output", "", 2); err != nil {
+		t.Fatalf("UpdateItemStatus: %v", err)
+	}
+
+	got, _, _ := s.GetItem("u-stat")
+	if got.Status != "completed" {
+		t.Errorf("Status not updated: got %q", got.Status)
+	}
+	if got.Summary != "final output" {
+		t.Errorf("Summary not updated: got %q", got.Summary)
+	}
+	if got.HighlightedContent != "" {
+		t.Errorf("HighlightedContent not cleared: got %q", got.HighlightedContent)
+	}
+}
+
 // TestAppendItemSummarySkipsSettledRow mirrors
 // TestUpdateItemHighlightSkipsSettledRow for the summary column: once a
 // row is no longer streaming, a late delta's AppendItemSummary must not
