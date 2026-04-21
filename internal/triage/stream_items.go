@@ -10,6 +10,20 @@ import (
 	"agent-overflow/internal/store"
 )
 
+// streamingHighlightIntervalMs caps how often the streaming delta path
+// re-renders the cumulative summary to HTML. goldmark+chroma on a 40 KB
+// summary runs in ~0.5 ms; terminal-to-html on a 40 KB thinking block
+// runs in ~0.15 ms. Unthrottled that is fine, but Claude can stream 40
+// deltas per second and the render parses the FULL cumulative summary
+// every time, so the total work grows quadratically in the length of
+// the summary. At 50 ms we cap that burst to ~20 renders/sec per item
+// and the user-visible lag is under one animation frame.
+//
+// Settle (content-block-stop, interrupt, turn-end) forces a final
+// render regardless of the throttle, so the last visible state always
+// reflects the completed summary.
+const streamingHighlightIntervalMs int64 = 50
+
 func (r *Router) handleTextDelta(evt provider.ProviderEvent) error {
 	if evt.Content == "" {
 		return nil
@@ -30,15 +44,23 @@ func (r *Router) handleTextDelta(evt provider.ProviderEvent) error {
 	}
 
 	// Hot path: first delta opens the block and UpsertItem creates the
-	// row; every subsequent delta just appends into the summary column
-	// via AppendItemSummaryAndHighlight — SQLite does the concat inside
-	// one UPDATE and the render callback rewrites highlighted_content in
-	// the same transaction, so total work stays linear in cumulative
-	// text size instead of the former O(N^2) (GetThreadItem →
-	// existing+delta in Go → UpsertItem re-read).
+	// row. Every subsequent delta appends into the summary column via
+	// AppendItemSummary (one UPDATE, no render inside the TX), then
+	// optionally renders the cumulative summary and flushes the result
+	// with UpdateItemHighlight. The render runs OUTSIDE the writer TX
+	// so it does not block other thread writes, and the throttle caps
+	// render frequency to streamingHighlightIntervalMs regardless of
+	// provider delta rate.
 	if !firstBlock {
-		updated, err := r.store.AppendItemSummaryAndHighlight(itemID, evt.Content, r.highlighter.RenderMarkdown, now)
+		updated, err := r.store.AppendItemSummary(itemID, evt.Content, now)
 		if err == nil {
+			if r.shouldRenderHighlight(evt.ThreadID, itemID, now) {
+				html := r.highlighter.RenderMarkdown(updated.Summary)
+				if err := r.store.UpdateItemHighlight(itemID, html); err != nil {
+					return fmt.Errorf("text delta highlight %s: %w", itemID, err)
+				}
+				updated.HighlightedContent = html
+			}
 			r.emitItemUpsert(updated)
 			return r.emitInline(evt)
 		}
@@ -67,6 +89,9 @@ func (r *Router) handleTextDelta(evt provider.ProviderEvent) error {
 	if err := r.persistItem(item, nil); err != nil {
 		return err
 	}
+	// persistItem just rendered — reset the throttle window so the next
+	// real delta doesn't race the render it just triggered.
+	r.markHighlighted(evt.ThreadID, itemID, now)
 	return r.emitInline(evt)
 }
 
@@ -92,27 +117,32 @@ func (r *Router) handleThinking(evt provider.ProviderEvent) error {
 	// Payload id is deterministic so subsequent deltas can address the
 	// same blob without a Store round-trip. First delta inserts; later
 	// deltas append inside SQLite via AppendItemSummary +
-	// AppendPayloadData — same O(N^2) → O(N) fix as handleTextDelta. See
-	// store.AppendItemSummary / store.AppendPayloadData.
+	// AppendPayloadData — same O(N^2) → O(N) fix as handleTextDelta.
 	payloadID := "thinking:" + itemID
 
 	if !firstBlock {
-		// Append-only path: extend summary + payload.data without
-		// reading cumulative text into Go memory. The payload meta
-		// carries the preview, which only reflects the first ~200
-		// runes of the block; we leave it alone here and let
-		// settleStreamingThinking rebuild it from the final summary
-		// when the block closes.
+		// Append-only path: extend summary + payload.data without reading
+		// cumulative text into Go memory. The payload meta carries the
+		// preview, which only reflects the first ~200 runes of the block;
+		// we leave it alone here and let settleStreamingThinking rebuild
+		// it from the final summary when the block closes.
 		//
-		// The summary append rewrites the item's highlighted_content
-		// from the cumulative summary using the ANSI renderer —
-		// thinking can contain terminal escape sequences. The payload
-		// blob stays raw; payload HTML is rendered on demand at
-		// GetPayloadData-time (see app_payloads.go).
-		updated, err := r.store.AppendItemSummaryAndHighlight(itemID, evt.Content, r.highlighter.RenderANSI, now)
+		// HighlightedContent uses the same throttled two-phase write as
+		// text deltas. The renderer for thinking is ANSI (terminal→HTML)
+		// because thinking often carries escape sequences; the payload
+		// blob stays raw. Payload HTML is rendered on demand at
+		// GetPayloadData time (see app_payloads.go).
+		updated, err := r.store.AppendItemSummary(itemID, evt.Content, now)
 		if err == nil {
 			if err := r.store.AppendPayloadData(payloadID, []byte(evt.Content), updated.PayloadMeta, now); err != nil {
 				return fmt.Errorf("thinking delta append payload %s: %w", payloadID, err)
+			}
+			if r.shouldRenderHighlight(evt.ThreadID, itemID, now) {
+				html := r.highlighter.RenderANSI(updated.Summary)
+				if err := r.store.UpdateItemHighlight(itemID, html); err != nil {
+					return fmt.Errorf("thinking delta highlight %s: %w", itemID, err)
+				}
+				updated.HighlightedContent = html
 			}
 			r.emitItemUpsert(updated)
 			return r.emitInline(evt)
@@ -149,7 +179,53 @@ func (r *Router) handleThinking(evt provider.ProviderEvent) error {
 	if err := r.persistItem(item, &payload); err != nil {
 		return err
 	}
+	r.markHighlighted(evt.ThreadID, itemID, now)
 	return r.emitInline(evt)
+}
+
+// highlightThrottleKey returns the map key for nextHighlightAt. Scoping
+// by thread lets CleanupThread prune the entries for a torn-down
+// thread by prefix, matching the activeTextBlocks / activeThinkingBlocks
+// cleanup pattern.
+func highlightThrottleKey(threadID, itemID string) string {
+	return threadID + "|" + itemID
+}
+
+// shouldRenderHighlight returns true when enough wall-clock time has
+// elapsed since the last render for this item that we should re-render
+// on the current delta. Also updates the throttle bookkeeping so the
+// NEXT caller sees the new floor.
+func (r *Router) shouldRenderHighlight(threadID, itemID string, nowMs int64) bool {
+	key := highlightThrottleKey(threadID, itemID)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	next, ok := r.nextHighlightAt[key]
+	if ok && nowMs < next {
+		return false
+	}
+	r.nextHighlightAt[key] = nowMs + streamingHighlightIntervalMs
+	return true
+}
+
+// markHighlighted records that the caller just rendered this item so
+// shouldRenderHighlight won't fire again until the throttle elapses.
+// Used by the first-delta path where persistItem's built-in render runs
+// unconditionally.
+func (r *Router) markHighlighted(threadID, itemID string, nowMs int64) {
+	key := highlightThrottleKey(threadID, itemID)
+	r.mu.Lock()
+	r.nextHighlightAt[key] = nowMs + streamingHighlightIntervalMs
+	r.mu.Unlock()
+}
+
+// forgetHighlighted drops the throttle entry for an item that has
+// settled. Called from the settle paths so the map does not grow
+// unboundedly across the life of a thread.
+func (r *Router) forgetHighlighted(threadID, itemID string) {
+	key := highlightThrottleKey(threadID, itemID)
+	r.mu.Lock()
+	delete(r.nextHighlightAt, key)
+	r.mu.Unlock()
 }
 
 func scopeCounterKey(threadID string, turnIndex int, scope string) string {

@@ -54,10 +54,10 @@ type TurnMetrics struct {
 type Router struct {
 	store                *store.Store
 	emit                 func(eventName string, data any) // wraps app.Event.Emit
-	// highlighter renders items.summary → items.highlighted_content before
-	// every UpsertItem and inside AppendItemSummaryAndHighlight. Required —
-	// NewRouter panics on nil. Concurrent-safe; one instance is shared
-	// across the whole Router.
+	// highlighter renders items.summary → items.highlighted_content on
+	// every item persist and at the throttled render boundary on streaming
+	// deltas. Required — NewRouter panics on nil. Concurrent-safe; one
+	// instance is shared across the whole Router.
 	highlighter          *highlight.Renderer
 	checkpoints          CheckpointCapture                // nil-safe; no-op when nil
 	tracer               trace.Tracer
@@ -74,6 +74,13 @@ type Router struct {
 	activeThinkingBlocks map[string]bool
 	streamingItemCounts  map[string]int
 	errorSeqByScope      map[string]int
+	// nextHighlightAt throttles the render-on-delta path to one render per
+	// streamingHighlightIntervalMs per streaming item id. Without it, a
+	// long turn at Claude's ~40 deltas/sec stream rate re-renders the
+	// cumulative summary on every delta — O(N²) CPU and allocations in
+	// the length of the summary. Cleared on settle / turn end / thread
+	// cleanup alongside activeTextBlocks / activeThinkingBlocks.
+	nextHighlightAt map[string]int64
 	// capturedTurns guards against double-capture when a provider emits
 	// multiple EventTurnStart events for the same (thread, turn) — which
 	// happens when Claude re-sends a system.init after an interrupt.
@@ -155,6 +162,7 @@ func NewRouter(st *store.Store, emit func(eventName string, data any), h *highli
 		activeThinkingBlocks:       make(map[string]bool),
 		streamingItemCounts:        make(map[string]int),
 		errorSeqByScope:            make(map[string]int),
+		nextHighlightAt:            make(map[string]int64),
 		capturedTurns:              make(map[string]bool),
 		turnSpans:                  make(map[string]trace.Span),
 		stoppedThreads:             make(map[string]struct{}),
@@ -856,8 +864,9 @@ func (r *Router) persistItem(item store.Item, payload *store.Payload) error {
 	// server-render (user_text, tool_call, compaction, ...) get an empty
 	// string; the frontend treats empty as "render summary as plain text",
 	// which matches the pre-highlight behaviour. Pre-populated
-	// HighlightedContent (from AppendItemSummaryAndHighlight on the
-	// streaming path, for instance) is preserved.
+	// HighlightedContent (from UpdateItemHighlight on the streaming path,
+	// for instance) is preserved; settle paths explicitly clear it to
+	// force a final render against the completed summary.
 	if item.HighlightedContent == "" {
 		item.HighlightedContent = r.highlighter.RenderForKind(item.Kind, item.Summary)
 	}

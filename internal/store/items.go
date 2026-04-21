@@ -226,94 +226,31 @@ func (s *Store) AppendItemSummary(id, delta string, updatedAt int64) (Item, erro
 	return updated, nil
 }
 
-// AppendItemSummaryAndHighlight extends AppendItemSummary with a second
-// write: after concatenating delta onto summary, it calls render with the
-// cumulative summary to produce display HTML and stores it in the
-// highlighted_content column. The whole sequence runs in a single
-// transaction so the two columns never drift out of sync — readers only
-// ever see the pair updated atomically.
+// UpdateItemHighlight rewrites the highlighted_content column in a
+// single-statement write (no open transaction, no bundled summary or
+// thread-updated_at update). The streaming hot path calls this AFTER
+// AppendItemSummary has committed so the render call — which can take
+// ~1 ms on an 80 KB buffer for markdown and ~100+ µs for ANSI — runs
+// outside the SQLite writer lock instead of pinning concurrent writes
+// against the WAL for the duration of the render.
 //
-// Used by triage's streaming-text and streaming-thinking paths, where each
-// provider delta must both extend the summary and update the rendered HTML
-// the timeline paints via {@html}. The render callback is caller-provided
-// so the store stays ignorant of markdown vs ANSI: the triage Router
-// passes its highlighter.RenderMarkdown for assistant_text and
-// RenderANSI for thinking.
+// The resulting two-phase write leaves a narrow window where a reader
+// can observe a newer summary paired with the prior render of an
+// earlier summary. That is benign: AssistantMessage.svelte shows the
+// previously rendered HTML (shorter than the new summary by a handful
+// of characters) until the next render catches up — no empty state, no
+// flash of plain text.
 //
-// The SQLite `||` concatenation lets us avoid pulling the existing
-// summary through Go memory on every delta. The RETURNING clause on the
-// first UPDATE hands us the new cumulative summary, which we feed into
-// render without a separate SELECT.
-//
-// Returns sql.ErrNoRows (wrapped) if no item matches id; callers that
-// might race with item creation should UpsertItem for the first delta
-// and AppendItemSummaryAndHighlight for every subsequent delta.
-func (s *Store) AppendItemSummaryAndHighlight(
-	id, delta string,
-	render func(full string) string,
-	updatedAt int64,
-) (Item, error) {
-	tx, err := s.db.Begin()
-	if err != nil {
-		return Item{}, fmt.Errorf("store: begin append item summary+highlight tx: %w", err)
-	}
-	defer tx.Rollback()
-
-	// Append delta inside SQLite, return the cumulative summary in one round-trip.
-	var newSummary string
-	if err := tx.QueryRow(
-		`UPDATE items SET summary = summary || ?, updated_at = ?
-		 WHERE id = ?
-		 RETURNING summary`,
-		delta, updatedAt, id,
-	).Scan(&newSummary); err != nil {
-		if err == sql.ErrNoRows {
-			return Item{}, fmt.Errorf("store: append item summary+highlight %s: no such item", id)
-		}
-		return Item{}, fmt.Errorf("store: append item summary+highlight %s: %w", id, err)
-	}
-
-	// Render the new cumulative summary to HTML. render must not panic on
-	// any input; the highlight package guarantees this (every failure
-	// path falls through to a safe <pre><code> fallback).
-	html := ""
-	if render != nil {
-		html = render(newSummary)
-	}
-
-	if _, err := tx.Exec(
+// Returns sql.ErrNoRows (via requireRowsAffected) if no row matches id.
+func (s *Store) UpdateItemHighlight(id, html string) error {
+	result, err := s.db.Exec(
 		`UPDATE items SET highlighted_content = ? WHERE id = ?`,
 		html, id,
-	); err != nil {
-		return Item{}, fmt.Errorf("store: write highlighted_content %s: %w", id, err)
-	}
-
-	// Bump the owning thread's updated_at so the sidebar resorts in sync
-	// with the stream — same semantics as AppendItemSummary.
-	if _, err := tx.Exec(
-		`UPDATE threads SET updated_at = ? WHERE id = (
-			SELECT thread_id FROM items WHERE id = ?
-		)`,
-		updatedAt, id,
-	); err != nil {
-		return Item{}, fmt.Errorf("store: touch thread for item %s: %w", id, err)
-	}
-
-	row := tx.QueryRow(
-		`SELECT `+itemColumns+`
-		   FROM items
-		   LEFT JOIN payloads ON payloads.id = items.payload_id
-		  WHERE items.id = ?`,
-		id,
 	)
-	updated, err := scanItemRow(row)
 	if err != nil {
-		return Item{}, fmt.Errorf("store: re-read appended item %s: %w", id, err)
+		return fmt.Errorf("store: write highlighted_content %s: %w", id, err)
 	}
-	if err := tx.Commit(); err != nil {
-		return Item{}, fmt.Errorf("store: commit append item summary+highlight tx: %w", err)
-	}
-	return updated, nil
+	return requireRowsAffected(result, fmt.Sprintf("store: write highlighted_content %s", id))
 }
 
 // UpsertItem persists `item` (inserting or updating depending on whether a

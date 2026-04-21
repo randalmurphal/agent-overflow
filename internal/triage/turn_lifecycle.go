@@ -548,10 +548,11 @@ func (r *Router) flipTurnItemsErrored(
 		}
 		item.Status = statusErrored
 		item.Summary = summaryFn(item.Summary)
-		// Clear pre-flip rendered HTML so persistItem re-renders against
-		// the now-suffixed summary; otherwise the UI shows pre-suffix
-		// markup next to post-suffix text on interrupted/stopped turns.
+		// Force persistItem to re-render against the now-suffixed summary;
+		// the streaming render throttle means the latest HTML may be
+		// several deltas behind the summary at flip time.
 		item.HighlightedContent = ""
+		r.forgetHighlighted(item.ThreadID, item.ID)
 		item.UpdatedAt = now
 		if err := r.persistItem(item, nil); err != nil {
 			return fmt.Errorf("error flip item %s: %w", item.ID, err)
@@ -670,6 +671,7 @@ func (r *Router) CleanupThread(threadID string) {
 	deleteByPrefix(r.activeTextBlocks, prefix)
 	deleteByPrefix(r.activeThinkingBlocks, prefix)
 	deleteByPrefix(r.errorSeqByScope, prefix)
+	deleteByPrefix(r.nextHighlightAt, prefix)
 	r.mu.Unlock()
 
 	if orphanSpan != nil {

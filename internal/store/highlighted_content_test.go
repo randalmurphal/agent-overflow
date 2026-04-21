@@ -11,9 +11,10 @@ import (
 // These tests pin:
 //   - the column exists on both tables after migration
 //   - inserts, upserts, and list/get paths round-trip the field
-//   - AppendItemSummaryAndHighlight writes summary + html atomically
-//   - a nil render callback leaves highlighted_content empty (the caller
-//     may legitimately want that for kinds that don't server-render)
+//   - UpdateItemHighlight rewrites the column as a single-statement write
+//     (render runs outside the SQLite writer lock; see items.go)
+//   - concurrent two-phase writes (AppendItemSummary + UpdateItemHighlight)
+//     converge on matching summary / html for every item
 
 func TestMigrationV19AddsHighlightedContentColumns(t *testing.T) {
 	s := newTestStore(t)
@@ -147,111 +148,56 @@ func TestChannelMessageHighlightedContentRoundTrip(t *testing.T) {
 	}
 }
 
-// TestAppendItemSummaryAndHighlight pins the hot-path streaming contract:
-// each call extends the summary AND rewrites highlighted_content atomically
-// from the cumulative summary. The render callback must receive the NEW
-// cumulative summary (existing || delta), not the delta alone.
-func TestAppendItemSummaryAndHighlight(t *testing.T) {
+// TestUpdateItemHighlight pins the single-statement HTML write used by
+// the throttled streaming path. AppendItemSummary extends summary in
+// phase 1; the caller renders outside any open TX; UpdateItemHighlight
+// flushes the result. The column must take the exact string written
+// with no inter-column side effects.
+func TestUpdateItemHighlight(t *testing.T) {
 	s := newTestStore(t)
-	if err := s.CreateThread(makeThread("t-stream", "claude")); err != nil {
-		t.Fatalf("create thread: %v", err)
-	}
-	first := Item{
-		ID: "stream-1", ThreadID: "t-stream", TurnIndex: 0, ItemIndex: 0,
-		Kind: "assistant_text", Role: "assistant",
-		Status: "streaming", Summary: "hello ",
-		HighlightedContent: "<p>hello</p>",
-		CreatedAt:          1000, UpdatedAt: 1000,
-	}
-	if err := s.InsertItem(first); err != nil {
-		t.Fatalf("insert: %v", err)
-	}
-
-	// Record the cumulative summary the render callback receives so we
-	// can assert both the in-SQL concat and the callback's input.
-	var seen []string
-	render := func(full string) string {
-		seen = append(seen, full)
-		return "<p>" + full + "</p>"
-	}
-
-	got, err := s.AppendItemSummaryAndHighlight("stream-1", "world", render, 2000)
-	if err != nil {
-		t.Fatalf("append: %v", err)
-	}
-	if got.Summary != "hello world" {
-		t.Errorf("Summary = %q, want %q", got.Summary, "hello world")
-	}
-	if got.HighlightedContent != "<p>hello world</p>" {
-		t.Errorf("HighlightedContent = %q, want %q", got.HighlightedContent, "<p>hello world</p>")
-	}
-	if got.UpdatedAt != 2000 {
-		t.Errorf("UpdatedAt = %d, want 2000", got.UpdatedAt)
-	}
-	if got.CreatedAt != 1000 {
-		t.Errorf("CreatedAt drifted: got %d, want 1000", got.CreatedAt)
-	}
-	if len(seen) != 1 || seen[0] != "hello world" {
-		t.Errorf("render received %v, want [\"hello world\"]", seen)
-	}
-
-	// Second append chains on the new state.
-	got2, err := s.AppendItemSummaryAndHighlight("stream-1", "!", render, 3000)
-	if err != nil {
-		t.Fatalf("append2: %v", err)
-	}
-	if got2.Summary != "hello world!" {
-		t.Errorf("Summary2 = %q, want %q", got2.Summary, "hello world!")
-	}
-	if got2.HighlightedContent != "<p>hello world!</p>" {
-		t.Errorf("HighlightedContent2 = %q, want %q", got2.HighlightedContent, "<p>hello world!</p>")
-	}
-	if len(seen) != 2 || seen[1] != "hello world!" {
-		t.Errorf("render second call received %v", seen)
-	}
-
-	// Thread updated_at moves in the same tx.
-	thr, err := s.GetThread("t-stream")
-	if err != nil {
-		t.Fatalf("get thread: %v", err)
-	}
-	if thr.UpdatedAt != 3000 {
-		t.Errorf("thread UpdatedAt = %d, want 3000", thr.UpdatedAt)
-	}
-}
-
-func TestAppendItemSummaryAndHighlightNilRenderClearsHTML(t *testing.T) {
-	s := newTestStore(t)
-	if err := s.CreateThread(makeThread("t-nilrender", "claude")); err != nil {
+	if err := s.CreateThread(makeThread("t-u", "claude")); err != nil {
 		t.Fatalf("create thread: %v", err)
 	}
 	if err := s.InsertItem(Item{
-		ID: "i", ThreadID: "t-nilrender", TurnIndex: 0, ItemIndex: 0,
+		ID: "u-1", ThreadID: "t-u", TurnIndex: 0, ItemIndex: 0,
 		Kind: "assistant_text", Role: "assistant",
-		Status: "streaming", Summary: "seed ",
-		HighlightedContent: "<p>seed</p>",
-		CreatedAt:          1, UpdatedAt: 1,
+		Status: "streaming", Summary: "hello",
+		CreatedAt: 1, UpdatedAt: 1,
 	}); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
 
-	// nil render callback means "no html for this kind" — highlighted_content
-	// becomes empty, which the frontend treats as "render as plain text".
-	got, err := s.AppendItemSummaryAndHighlight("i", "more", nil, 2)
-	if err != nil {
-		t.Fatalf("append: %v", err)
+	if err := s.UpdateItemHighlight("u-1", "<p>hello</p>"); err != nil {
+		t.Fatalf("update highlight: %v", err)
 	}
-	if got.Summary != "seed more" {
-		t.Errorf("Summary = %q, want seed more", got.Summary)
+	got, ok, err := s.GetItem("u-1")
+	if err != nil || !ok {
+		t.Fatalf("get: err=%v ok=%v", err, ok)
 	}
+	if got.HighlightedContent != "<p>hello</p>" {
+		t.Errorf("HighlightedContent = %q, want <p>hello</p>", got.HighlightedContent)
+	}
+	if got.Summary != "hello" {
+		t.Errorf("Summary should be untouched, got %q", got.Summary)
+	}
+	if got.UpdatedAt != 1 {
+		t.Errorf("UpdatedAt should be untouched, got %d", got.UpdatedAt)
+	}
+
+	// Empty html is a legitimate write — it triggers the plain-text
+	// fallback in the frontend.
+	if err := s.UpdateItemHighlight("u-1", ""); err != nil {
+		t.Fatalf("update empty: %v", err)
+	}
+	got, _, _ = s.GetItem("u-1")
 	if got.HighlightedContent != "" {
-		t.Errorf("HighlightedContent = %q, want empty", got.HighlightedContent)
+		t.Errorf("HighlightedContent should clear, got %q", got.HighlightedContent)
 	}
 }
 
-func TestAppendItemSummaryAndHighlightMissingItem(t *testing.T) {
+func TestUpdateItemHighlightMissingItem(t *testing.T) {
 	s := newTestStore(t)
-	_, err := s.AppendItemSummaryAndHighlight("nope", "x", func(string) string { return "" }, 1)
+	err := s.UpdateItemHighlight("nope", "<p>x</p>")
 	if err == nil {
 		t.Fatal("expected error for missing item")
 	}
@@ -260,11 +206,14 @@ func TestAppendItemSummaryAndHighlightMissingItem(t *testing.T) {
 	}
 }
 
-// TestAppendItemSummaryAndHighlightAtomic pins the "summary and html never
-// drift" invariant under concurrent appends to distinct items. Each item
-// gets N deltas; after all finish, every item's html matches exactly one
-// re-render of its final summary.
-func TestAppendItemSummaryAndHighlightAtomic(t *testing.T) {
+// TestTwoPhaseStreamingWriteAtomic: the streaming path now runs
+// AppendItemSummary (commits summary) → render outside TX →
+// UpdateItemHighlight (commits html). Concurrent deltas across
+// distinct items must converge: each item ends with summary and html
+// that match a single rendering of the final summary. This catches
+// cross-item state bleed that would have existed if UpdateItemHighlight
+// accidentally updated the wrong row.
+func TestTwoPhaseStreamingWriteAtomic(t *testing.T) {
 	s := newTestStore(t)
 	if err := s.CreateThread(makeThread("t-race", "claude")); err != nil {
 		t.Fatalf("create thread: %v", err)
@@ -293,8 +242,14 @@ func TestAppendItemSummaryAndHighlightAtomic(t *testing.T) {
 		go func(id string, base int) {
 			defer wg.Done()
 			for j := 0; j < deltas; j++ {
-				if _, err := s.AppendItemSummaryAndHighlight(id, "a", render, int64(base*1000+j+1)); err != nil {
+				row, err := s.AppendItemSummary(id, "a", int64(base*1000+j+1))
+				if err != nil {
 					t.Errorf("append %s[%d]: %v", id, j, err)
+					return
+				}
+				html := render(row.Summary)
+				if err := s.UpdateItemHighlight(id, html); err != nil {
+					t.Errorf("update highlight %s[%d]: %v", id, j, err)
 					return
 				}
 			}

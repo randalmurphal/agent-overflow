@@ -179,12 +179,13 @@ func (r *Router) settleStreamingText(threadID string, turnIndex int, scope strin
 	item.Status = status
 	if status == statusErrored {
 		item.Summary = interruptedSummary(item.Summary)
-		// Clear the streaming-rendered HTML so persistItem re-renders
-		// against the now-suffixed summary. Without this, the UI shows
-		// pre-suffix HTML next to post-suffix summary text and the two
-		// diverge on interrupt.
-		item.HighlightedContent = ""
 	}
+	// Clear the streaming-rendered HTML unconditionally so persistItem
+	// re-renders against the final summary. The throttle in
+	// shouldRenderHighlight means the last N deltas may not have
+	// triggered a render; this is the settle point where we catch up.
+	item.HighlightedContent = ""
+	r.forgetHighlighted(item.ThreadID, item.ID)
 	item.UpdatedAt = time.Now().UnixMilli()
 	return r.persistItem(item, nil)
 }
@@ -222,10 +223,11 @@ func (r *Router) settleStreamingThinking(threadID string, turnIndex int, scope s
 	item.Status = status
 	if status == statusErrored {
 		item.Summary = interruptedSummary(item.Summary)
-		// Clear rendered HTML so persistItem re-renders against the
-		// suffixed summary; see settleStreamingText.
-		item.HighlightedContent = ""
 	}
+	// Force a final render against the (possibly suffixed) summary; see
+	// settleStreamingText for the throttle rationale.
+	item.HighlightedContent = ""
+	r.forgetHighlighted(item.ThreadID, item.ID)
 	item.UpdatedAt = time.Now().UnixMilli()
 
 	// Now that the block has closed, refresh the thinking-meta preview so

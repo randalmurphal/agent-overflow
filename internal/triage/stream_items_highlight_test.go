@@ -1,6 +1,7 @@
 package triage
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -9,16 +10,14 @@ import (
 	"agent-overflow/internal/store"
 )
 
-// TestTextDeltaStreamPopulatesMarkdownHTML emits a stream of text_delta
-// events that together form a fenced code block and asserts every
-// provider:item_upsert carries populated HighlightedContent with the
-// expected Chroma span after the fence closes.
+// TestTextDeltaStreamPopulatesMarkdownHTML streams text_delta events that
+// together form a fenced code block, then closes the block. The post-
+// settle state is the canonical completion point where the frontend
+// observes highlighted HTML regardless of streaming throttle decisions.
 func TestTextDeltaStreamPopulatesMarkdownHTML(t *testing.T) {
 	router, st, emissions := newTestRouter(t)
 	createTestThread(t, st, "t1")
 
-	// Split across deltas so we exercise the firstBlock +
-	// AppendItemSummaryAndHighlight code paths together.
 	deltas := []string{
 		"Here is some Go:\n",
 		"```go\n",
@@ -37,28 +36,38 @@ func TestTextDeltaStreamPopulatesMarkdownHTML(t *testing.T) {
 			t.Fatalf("handle text_delta %q: %v", d, err)
 		}
 	}
+	// Close the block so settleStreamingText fires its forced final
+	// render. Without this, the render throttle may leave the last few
+	// deltas unrendered until the next throttle window elapses — correct
+	// for streaming, but the test wants the final painted state.
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventContentBlockStop, ThreadID: "t1",
+		Meta: json.RawMessage(`{"blockType":"text"}`), Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("content block stop: %v", err)
+	}
 
 	upserts := filterEmissions(*emissions, "provider:item_upsert")
 	if len(upserts) == 0 {
 		t.Fatalf("expected item_upsert emissions, got none")
 	}
-	for i, e := range upserts {
-		item, ok := e.data.(store.Item)
-		if !ok {
-			t.Fatalf("upsert[%d] type = %T, want store.Item", i, e.data)
-		}
-		if item.Kind != "assistant_text" {
+	var final store.Item
+	var ok bool
+	for i := len(upserts) - 1; i >= 0; i-- {
+		item, itemOK := upserts[i].data.(store.Item)
+		if !itemOK || item.Kind != "assistant_text" {
 			continue
 		}
-		if item.HighlightedContent == "" {
-			t.Fatalf("upsert[%d] assistant_text has empty HighlightedContent (summary=%q)", i, item.Summary)
-		}
+		final = item
+		ok = true
+		break
 	}
-
-	// Final upsert contains the closed fence, so goldmark should have
-	// handed it to Chroma and the output must carry at least one
-	// `ch-`-prefixed span plus the code keyword.
-	final, _ := upserts[len(upserts)-1].data.(store.Item)
+	if !ok {
+		t.Fatalf("no assistant_text upsert found in %d emissions", len(upserts))
+	}
+	if final.HighlightedContent == "" {
+		t.Fatalf("post-settle assistant_text has empty HighlightedContent (summary=%q)", final.Summary)
+	}
 	if !strings.Contains(final.HighlightedContent, `class="ch-`) {
 		t.Fatalf("final HighlightedContent missing ch- class prefix; got: %q", final.HighlightedContent)
 	}
@@ -67,15 +76,13 @@ func TestTextDeltaStreamPopulatesMarkdownHTML(t *testing.T) {
 	}
 }
 
-// TestThinkingStreamPopulatesANSIHTML emits thinking deltas that carry
-// ANSI escape sequences and asserts every upsert has HighlightedContent
-// populated with at least one terminal-to-html term- span.
+// TestThinkingStreamPopulatesANSIHTML streams thinking deltas with an
+// ANSI color sequence, closes the block, and asserts the post-settle
+// upsert carries the rendered ANSI span.
 func TestThinkingStreamPopulatesANSIHTML(t *testing.T) {
 	router, st, emissions := newTestRouter(t)
 	createTestThread(t, st, "t1")
 
-	// Split across deltas. The color sequence straddles the boundary so
-	// the append path runs the cumulative renderer over spliced bytes.
 	deltas := []string{
 		"reasoning: ",
 		"\x1b[31mred\x1b[0m",
@@ -91,31 +98,91 @@ func TestThinkingStreamPopulatesANSIHTML(t *testing.T) {
 			t.Fatalf("handle thinking %q: %v", d, err)
 		}
 	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventContentBlockStop, ThreadID: "t1",
+		Meta: json.RawMessage(`{"blockType":"thinking"}`), Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("content block stop: %v", err)
+	}
 
 	upserts := filterEmissions(*emissions, "provider:item_upsert")
 	if len(upserts) == 0 {
 		t.Fatalf("expected item_upsert emissions, got none")
 	}
-	for i, e := range upserts {
-		item, ok := e.data.(store.Item)
-		if !ok {
-			t.Fatalf("upsert[%d] type = %T, want store.Item", i, e.data)
-		}
-		if item.Kind != "thinking" {
+	var final store.Item
+	var ok bool
+	for i := len(upserts) - 1; i >= 0; i-- {
+		item, itemOK := upserts[i].data.(store.Item)
+		if !itemOK || item.Kind != "thinking" {
 			continue
 		}
-		if item.HighlightedContent == "" {
-			t.Fatalf("upsert[%d] thinking has empty HighlightedContent (summary=%q)", i, item.Summary)
-		}
+		final = item
+		ok = true
+		break
 	}
-
-	// The final upsert spans the full "red" color segment so the
-	// renderer must have emitted a term- classed span over it.
-	final, _ := upserts[len(upserts)-1].data.(store.Item)
+	if !ok {
+		t.Fatalf("no thinking upsert found")
+	}
+	if final.HighlightedContent == "" {
+		t.Fatalf("post-settle thinking has empty HighlightedContent (summary=%q)", final.Summary)
+	}
 	if !strings.Contains(final.HighlightedContent, "term-") {
 		t.Fatalf("final thinking HighlightedContent missing term- class; got: %q", final.HighlightedContent)
 	}
 	if !strings.Contains(final.HighlightedContent, "red") {
 		t.Fatalf("final thinking HighlightedContent missing 'red' payload; got: %q", final.HighlightedContent)
+	}
+}
+
+// TestStreamingHighlightThrottleSkipsRapidDeltas pins the throttle
+// contract: a burst of deltas fired within streamingHighlightIntervalMs
+// of each other produces exactly one intermediate render (the first
+// delta's persistItem render on block open). After the settle forces a
+// final render, the DB row's HTML reflects the cumulative summary.
+func TestStreamingHighlightThrottleSkipsRapidDeltas(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	// Five deltas fired with timestamps inside a single throttle window
+	// (using the same millisecond tick). Only the first-block render
+	// should populate HTML; the remaining four must reuse it.
+	start := time.Unix(0, 1_000_000_000_000).UTC() // fixed clock
+	for i, d := range []string{"# heading\n\n", "first ", "second ", "third ", "fourth"} {
+		if err := router.Handle(provider.ProviderEvent{
+			Kind: provider.EventTextDelta, ThreadID: "t1",
+			Content: d, Timestamp: start.Add(time.Duration(i) * time.Millisecond),
+		}); err != nil {
+			t.Fatalf("delta %d: %v", i, err)
+		}
+	}
+
+	// Read the row directly: mid-burst, the HTML should have rendered
+	// ONLY at firstBlock (delta 0) and all subsequent deltas fell into
+	// the throttle window.
+	item := firstItemByKind(t, st, "t1", "assistant_text")
+	if item.Summary != "# heading\n\nfirst second third fourth" {
+		t.Errorf("Summary not fully appended: %q", item.Summary)
+	}
+	if !strings.Contains(item.HighlightedContent, "<h1") {
+		t.Errorf("expected heading in mid-stream HTML, got: %q", item.HighlightedContent)
+	}
+	// HTML reflects delta-0 summary ("# heading\n\n") since the remaining
+	// deltas were throttled. The next delta outside the throttle window
+	// would catch up, and settle always forces a final render.
+	if strings.Contains(item.HighlightedContent, "fourth") {
+		t.Errorf("mid-stream HTML unexpectedly contains 'fourth' (throttle not applied?): %q", item.HighlightedContent)
+	}
+
+	// Close the block: settle clears HighlightedContent and persistItem
+	// re-renders against the final cumulative summary.
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventContentBlockStop, ThreadID: "t1",
+		Meta: json.RawMessage(`{"blockType":"text"}`), Timestamp: start.Add(10 * time.Millisecond),
+	}); err != nil {
+		t.Fatalf("content block stop: %v", err)
+	}
+	item = firstItemByKind(t, st, "t1", "assistant_text")
+	if !strings.Contains(item.HighlightedContent, "fourth") {
+		t.Errorf("post-settle HTML missing 'fourth': %q", item.HighlightedContent)
 	}
 }
