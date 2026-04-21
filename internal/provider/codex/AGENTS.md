@@ -20,6 +20,9 @@ over stdio.
 - `approval.go` — sandbox approval-method translation into the shared
   `ApprovalRequest` Kind.
 - `mcp.go` — MCP elicitation flow.
+- `subagent_notifications.go` — `<subagent_notification>` XML-tag parser
+  for detached-child-agent terminal signals injected into the next
+  user-message. Pure parsing (regex + JSON decode), no Session state.
 - `options.go` — `SessionOptions → Config` hydration, binary probe.
 
 ## Methods we call
