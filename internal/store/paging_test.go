@@ -698,6 +698,97 @@ func TestPickInitialFloorTurn_ActiveTurnAdjustmentRespectsMaxItems(t *testing.T)
 	}
 }
 
+// Exercises the `reachable && cumulative+extra > maxItems` branch
+// directly. The wide-gap fallback at the bottom of the cap block
+// covers the "scan didn't reach activeFloor" case; this test pins
+// the precise-budget guard — when the scan DID reach activeFloor
+// and we can count every item in the gap, the guard must skip
+// adjustment if adding the gap would blow maxItems.
+//
+// Setup: turns 10 (6 items) and 20 (10 items). turnLimit=1,
+// maxItems=15. Walker picks 20 (10 items, under maxItems). gap is
+// [activeFloor=10, picked=20); turn 10 sits inside with 6 items.
+// scanLimit = 4, the scan of GROUP-BY item-counts returns both
+// turns (2 rows, under limit), so lastScanned=10 == activeFloor,
+// reachable=true. cumulative+extra = 10+6 = 16 > maxItems=15;
+// first branch must skip. picked stays at 20.
+func TestPickInitialFloorTurn_ActiveTurnReachableButOverBudget(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	// Turn 10: completed, 6 items. This is the active-turn
+	// adjustment target.
+	if err := s.InsertTurn(Turn{TurnID: "t10", ThreadID: "t", TurnIndex: 10, StartedAt: 1000}); err != nil {
+		t.Fatalf("insert turn 10: %v", err)
+	}
+	for i := 0; i < 6; i++ {
+		seedItem(t, s, "t", idForItem(10, i), 10, i, "")
+	}
+	// Turn 20: completed, 10 items.
+	if err := s.InsertTurn(Turn{TurnID: "t20", ThreadID: "t", TurnIndex: 20, StartedAt: 2000}); err != nil {
+		t.Fatalf("insert turn 20: %v", err)
+	}
+	if err := s.UpdateTurnCompleted("t20", 2500, "end_turn", "", "", ""); err != nil {
+		t.Fatalf("complete turn 20: %v", err)
+	}
+	for i := 0; i < 10; i++ {
+		seedItem(t, s, "t", idForItem(20, i), 20, i, "")
+	}
+	// Mark turn 10 as the active in-flight turn.
+	// InsertTurn defaults completed_at=NULL, so the insert above
+	// already left it active. We didn't UpdateTurnCompleted it.
+
+	floor, _, err := s.PickInitialFloorTurn("t", 1, 0, 15)
+	if err != nil {
+		t.Fatalf("pick: %v", err)
+	}
+	// Lowering would pull turn 10's 6 items → 16 > maxItems=15.
+	// Precise-budget guard must keep picked at 20. Removing the
+	// `cumulative+extra <= maxItems` predicate from the fix would
+	// let picked drop to 10 and fail this assertion.
+	if floor != 20 {
+		t.Errorf("floor: got %d, want 20 (cap must block adjustment when it blows maxItems)", floor)
+	}
+}
+
+// Boundary counterpart to the test above: when the gap fits exactly
+// (cumulative+extra == maxItems), the inclusive comparator must
+// ALLOW the adjustment. A regression that swapped `<=` for `<` would
+// silently reject an equal-to-budget window — this test pins the
+// inclusive semantics.
+func TestPickInitialFloorTurn_ActiveTurnReachableAtBudgetAllowed(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	if err := s.InsertTurn(Turn{TurnID: "t10", ThreadID: "t", TurnIndex: 10, StartedAt: 1000}); err != nil {
+		t.Fatalf("insert turn 10: %v", err)
+	}
+	for i := 0; i < 6; i++ {
+		seedItem(t, s, "t", idForItem(10, i), 10, i, "")
+	}
+	if err := s.InsertTurn(Turn{TurnID: "t20", ThreadID: "t", TurnIndex: 20, StartedAt: 2000}); err != nil {
+		t.Fatalf("insert turn 20: %v", err)
+	}
+	if err := s.UpdateTurnCompleted("t20", 2500, "end_turn", "", "", ""); err != nil {
+		t.Fatalf("complete turn 20: %v", err)
+	}
+	for i := 0; i < 10; i++ {
+		seedItem(t, s, "t", idForItem(20, i), 20, i, "")
+	}
+
+	// Same shape as above but maxItems=16 — cumulative+extra = 16
+	// == maxItems, inclusive. Adjustment MUST be allowed.
+	floor, _, err := s.PickInitialFloorTurn("t", 1, 0, 16)
+	if err != nil {
+		t.Fatalf("pick: %v", err)
+	}
+	if floor != 10 {
+		t.Errorf("floor: got %d, want 10 (budget boundary is inclusive)", floor)
+	}
+}
+
 // The active-turn adjustment IS allowed when the gap is trivial —
 // one or two empty turns between picked and activeFloor. This covers
 // the common "just-started turn below newest settled turn" case.
