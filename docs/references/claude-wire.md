@@ -32,7 +32,7 @@ launching the app. Raw stdio lines (pre-parse) land in
 ## Envelope types
 
 The CLI emits newline-delimited JSON. Every line has a top-level
-`type` field dispatched in `parser.go:150-171`:
+`type` field dispatched in `parser.go:131-152`:
 
 | `type` | Dispatch | Purpose |
 |---|---|---|
@@ -307,7 +307,8 @@ enrichments (below) layer on top — they do NOT replace the completion.
   structured data. Per-tool shape (Bash: `exit_code/stdout/stderr`,
   Edit: `filePath/oldString/newString/structuredPatch`). Can arrive as
   single object, object keyed by tool_use_id, or array — see
-  `indexToolUseResults` in `parse_user.go:309-360`.
+  `indexToolUseResults` in `parse_user.go` (see the function defined
+  at line 382+).
 
 ### E2 — Backgrounded Bash placeholder
 

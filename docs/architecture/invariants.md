@@ -101,7 +101,7 @@ drain, the queue could re-emit them in reverse order, causing the
 completion row to appear above the launch row in the timeline.
 
 **Enforcement.** `Router.drainInterruptQueue` in
-`internal/triage/turn_lifecycle.go` drains entries in insertion order
+`internal/triage/stream_state.go` drains entries in insertion order
 (slice, not map iteration).
 
 **Test.** The interrupt-queue ordering tests in
@@ -266,9 +266,9 @@ settles, then assigns indexes in the intended visual order.
 they must route through the queue too**, or the same "new row inserts
 before the streaming tail" bug recurs.
 
-**Enforcement.** `Router.enqueueInterrupt` /
+**Enforcement.** `Router.maybeDeferOrPersist` /
 `Router.drainInterruptQueue` in
-`internal/triage/turn_lifecycle.go`.
+`internal/triage/stream_state.go`.
 
 **Test.** Queue ordering coverage in
 `internal/triage/tool_lifecycle_test.go` alongside the end-to-end
@@ -626,9 +626,11 @@ the spawn request is accepted; the child runs on a separate
 tray rows that never completed, because nothing on the Codex wire
 ever emits a task-lifecycle terminal to pair with them.
 
-**Enforcement.** `internal/provider/codex/background.go` has no
-side-effects that set `is_background`. The `BackgroundTaskTray`
-component renders nothing when no items have `is_background=true`.
+**Enforcement.** No Codex code stamps `is_background=true`. The
+former `BackgroundClassifier` at `internal/provider/codex/background.go`
+has been retired (file deleted); nothing in `internal/provider/codex/`
+sets the flag. The `BackgroundTaskTray` component renders nothing
+when no items have `is_background=true`.
 
 **Test.** Codex integration test: run a `spawn_agent` flow; assert
 no item in the timeline carries `is_background=true`.

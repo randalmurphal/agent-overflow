@@ -162,8 +162,10 @@ deferred).
 - `internal/provider/codex/protocol.go` — route `"wait"` to a
   distinct itemType (`"wait_agent"`); surface `agentsStates` in
   `enrichItemMeta`
-- `internal/provider/codex/background.go` — neuter classifier for
-  Codex so no Codex tool gets `is_background=true`
+- `internal/provider/codex/background.go` — retired (file deleted in
+  commit `f9065f8`). No Codex code stamps `is_background=true`; the
+  former `BackgroundClassifier` was removed because its heuristic
+  didn't map to Codex's real concurrency model.
 - `internal/provider/codex/session.go` — detect
   `<subagent_notification>` tags in user-message items, emit a new
   internal event (`EventSubagentNotification`); **rendering is

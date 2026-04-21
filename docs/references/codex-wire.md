@@ -48,11 +48,11 @@ has no per-tool backgrounding flag**. Every tool is either:
 **Implication for agent-overflow**: the `tool_completion` sibling-row
 model and the `BackgroundTaskTray` are **Claude-specific**. Codex
 tool_calls always close via `item/completed`; there is no sibling row
-to append. `internal/provider/codex/background.go`'s
-`BackgroundClassifier` should NOT flag any Codex tools as
-`is_background: true` — the heuristic it uses ("assistant text after
-tool started = background") doesn't map to anything real on the
-Codex wire.
+to append. No Codex code stamps `is_background=true`; the former
+`BackgroundClassifier` (previously at
+`internal/provider/codex/background.go`) was retired because its
+heuristic ("assistant text after tool started = background") didn't
+map to anything real on the Codex wire.
 
 ### 2. Items carry their own status on the wire
 
@@ -71,26 +71,77 @@ collapse half our Codex handling.
 
 ## Notification taxonomy
 
-Every top-level envelope is a JSON-RPC 2.0 notification:
-`{"jsonrpc":"2.0","method":"<method>","params":{...}}`. Dispatched
-in `internal/provider/codex/protocol.go`.
+Every server → client envelope comes in two flavours. **Notifications**
+(`{"jsonrpc":"2.0","method":"<method>","params":{...}}`) carry no
+`id` and expect no response. **Server requests** carry a JSON-RPC `id`
+and require a response — approvals and MCP elicitation arrive this way,
+not as notifications. Dispatched in
+`internal/provider/codex/session.go` via the top-level read loop;
+`handleServerRequest` handles the request flavour, `handleNotification`
+handles the notification flavour.
 
-| `method` | Destination |
+### Notifications
+
+Authoritative method list from
+[`codex-rs/app-server-protocol/schema/typescript/ServerNotification.ts`](file:///Users/randy/repos/codex-source/codex-rs/app-server-protocol/schema/typescript/ServerNotification.ts).
+
+| `method` | Destination / purpose |
 |---|---|
-| `item/started` | `classifyItemNotification` → `EventToolStart` (or drop) |
-| `item/completed` | `classifyItemCompleted` → `EventToolComplete` (or drop) |
-| `turn/started` | `EventTurnStart` |
-| `turn/completed` | `EventTurnComplete` |
-| `turn/aborted` | `EventTurnComplete` with `Meta.aborted = true` |
-| `thread/created` | `EventSessionInit` |
-| `thread/status_changed` | `EventSessionStatus` |
-| `rate_limit/warning` | `EventSessionStatus` with `kind: rate_limited_*` |
-| `approval/request`, `approval/resolved` | Approval pipeline |
+| `turn/started` | Turn lifecycle. `EventTurnStart`. |
+| `turn/completed` | Turn lifecycle. `EventTurnComplete`. |
+| `turn/aborted` | Turn lifecycle. `EventTurnComplete` with `Meta.aborted = true`. |
+| `turn/diff/updated` | Per-turn unified-diff snapshot. |
+| `turn/plan/updated` | Per-turn plan updates (markdown). |
+| `item/started` | Tool/item lifecycle. `classifyItemNotification` → `EventToolStart` (or drop). |
+| `item/completed` | Tool/item lifecycle. `classifyItemCompleted` → `EventToolComplete` (or drop). |
+| `thread/started` | Session-level. First notification on a new thread; emits `EventSessionInit`. |
+| `thread/status/changed` | Session-level. Thread status transitions; emits `EventSessionStatus`. |
+| `thread/compacted` | Thread housekeeping. Compaction boundary event. |
+| `thread/name/updated` | Thread housekeeping. Thread name/title changed. |
+| `thread/tokenUsage/updated` | Thread housekeeping. Rolling token-usage snapshot. |
+| `account/rateLimits/updated` | Rate-limit state updates. Surfaced as `EventSessionStatus` with `kind: rate_limited_*`. |
+| `model/rerouted` | Model reroute notice (Codex fell back to a different model). |
+| `configWarning` | Session-level notice surfaced to the user. |
+| `deprecationNotice` | Session-level deprecation notice. |
+| `serverRequest/resolved` | Fires when a previously-sent server request (approval / elicitation) has been resolved by the client. |
 
-Detailed fields live in
+⚠ **Wire-name gotchas.**
+
+- It's `thread/started` (NOT `thread/created`).
+- It's `thread/status/changed` (NOT `thread/status_changed`).
+- It's `account/rateLimits/updated` (NOT `rate_limit/warning`).
+- There is no `item/updated` method. Any code that dispatches for
+  `item/updated` is dispatching on a phantom method; the two item
+  notifications on the wire are `item/started` and `item/completed`.
+
+Detailed param shapes live in
 `codex-rs/app-server-protocol/schema/typescript/v2/`. Read that when
 adding handlers; the TypeScript schema is the canonical shape
 reference.
+
+### Server requests (approvals, tool-user-input, elicitation)
+
+Approvals arrive as **server requests** (with a JSON-RPC `id`), not as
+notifications. The client is expected to respond with a matching
+`id`. Authoritative list from
+[`codex-rs/app-server-protocol/schema/typescript/ServerRequest.ts`](file:///Users/randy/repos/codex-source/codex-rs/app-server-protocol/schema/typescript/ServerRequest.ts):
+
+| `method` | Purpose |
+|---|---|
+| `item/commandExecution/requestApproval` | Approve/deny a shell command execution. |
+| `item/fileChange/requestApproval` | Approve/deny a write/apply_patch. |
+| `item/permissions/requestApproval` | Approve/deny a permission grant. |
+| `item/tool/requestUserInput` | Tool is requesting structured user input. |
+| `item/tool/call` | Dynamic tool-call request. |
+| `mcpServer/elicitation/request` | MCP server-side elicitation. |
+| `account/chatgptAuthTokens/refresh` | ChatGPT auth token refresh request. |
+| `applyPatchApproval` | Legacy apply-patch approval. |
+| `execCommandApproval` | Legacy exec-command approval. |
+
+Dispatch lives in `handleServerRequest` in
+`internal/provider/codex/session.go`. Once the client responds, Codex
+fires a `serverRequest/resolved` notification so the original request
+can be garbage-collected on both sides.
 
 ---
 
@@ -108,7 +159,7 @@ Every `ThreadItem` subtype has its own shape
  }}
 ```
 
-### Item types handled by `classifyCodexItemType` (protocol.go:628)
+### Item types handled by `classifyCodexItemType` (protocol.go:648)
 
 | Wire `type` | Item kind | Notes |
 |---|---|---|
@@ -232,10 +283,13 @@ the parent, but child `item/*` events are relayed via `ParentToolUseID`.
 
 The parent's `spawn_agent` item carries `agentsStates` — a map of
 `thread_id → CollabAgentStatus`. Updated on the item envelope as
-state changes. **Currently not surfaced** by our `enrichItemMeta`
-(`protocol.go:594-617`). CodexMonitor uses it for a live child-status
-badge inside the spawn card (see
-`CodexMonitor/src/utils/threadItems.collab.ts:299-369`).
+state changes. Surfaced by `enrichItemMeta` in `protocol.go` (the
+`collabAgentToolCall` branch copies it into `extras.input.agentsStates`
+alongside `tool` / `prompt` / `receiverThreadIds`) so the frontend can
+render a live child-status badge without subscribing to every child
+thread's session-status events. See
+`CodexMonitor/src/utils/threadItems.collab.ts:299-369` for the
+reference rendering.
 
 ---
 
@@ -293,15 +347,15 @@ Fires on user interrupt. `classifyTurnAborted` at
 
 ## Session / thread state
 
-### `thread/created`
+### `thread/started`
 
 First notification on a session. Carries the thread id and initial
 metadata.
 
-### `thread/status_changed`
+### `thread/status/changed`
 
 ```json
-{"method": "thread/status_changed",
+{"method": "thread/status/changed",
  "params": {
    "threadId": "...",
    "status": {"type": "active"},
@@ -322,12 +376,36 @@ we don't infer turn activity from session status).
 
 ## `<subagent_notification>` tag inside user messages
 
-When Codex core injects a subagent completion notification, it
-surfaces as part of the NEXT `item/completed` (`type: userMessage`)
-block's text content, wrapped in `<subagent_notification>` tags. If
-we want a distinct "subagent finished" UI event, parse the tag out
-of the user-message item text at the triage layer and synthesize an
-event. (Not currently done.)
+When Codex core detects a detached child thread that finished without
+a matching `wait` outstanding on the parent, it injects a notification
+fragment into the parent's NEXT user-message item. The fragment lands
+as part of the `item/completed` (`type: userMessage`) text content,
+wrapped in `<subagent_notification>` tags.
+
+### Authoritative wire shape
+
+Produced by `format_subagent_notification_message` at
+[`codex-rs/core/src/session_prefix.rs:8-18`](file:///Users/randy/repos/codex-source/codex-rs/core/src/session_prefix.rs):
+
+```
+<subagent_notification>
+{"agent_path":"<child_thread_reference>","status":"<AgentStatus>"}
+</subagent_notification>
+```
+
+⚠ **The wire field is `agent_path`, NOT `agent_id`.** It's a
+reference to the child thread (thread-id-style path), not a bare id.
+The `status` value is a serialized `AgentStatus` — one of Codex's
+`CollabAgentStatus` variants.
+
+### Current state in agent-overflow
+
+Extraction is **wired at the parser** (`session.go` pulls
+`<subagent_notification>` fragments out of user-message item text) but
+emission to the frontend is **deferred** — the parser produces no
+visible UI event yet, because the UX for a detached-subagent
+completion notice hasn't landed. The internal event exists as a stub
+so the plumbing can be turned on without another parser change.
 
 ---
 

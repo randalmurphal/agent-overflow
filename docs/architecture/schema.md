@@ -47,7 +47,9 @@ the migrations win.
 - Test every migration: each migration must have a corresponding test under
   `internal/store/` that proves the expected schema state.
 - WAL mode is verified on startup (not just requested). If `journal_mode=WAL`
-  didn't take, boot fails loudly.
+  didn't take, the app logs a visible warning and continues — the store is
+  still correct under rollback journaling, but the warning is the only
+  signal that checkpointing isn't happening. See invariant 19.
 
 ## What Goes in SQLite vs What Doesn't
 

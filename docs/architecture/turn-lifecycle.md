@@ -227,19 +227,32 @@ cases only — it must not feed turn detection.
 `ThreadPane` carries two per-pane state objects:
 
 ```ts
-interface ActiveTurn { turnId: string; startedAt: number }
+interface ActiveTurn {
+  turnId: string;
+  turnIndex: number;
+  startedAt: number;
+}
 interface SettledTurn {
   turnId: string;
+  turnIndex: number;
   startedAt: number;
   completedAt: number;
   stopReason: string;
   assistantMessageId: string | null;
   tokenUsage: { inputTokens, outputTokens, cacheReadTokens, costUsd } | null;
+  aborted: boolean;
+  errorMessage: string;
 }
 
 activeTurn: ActiveTurn | null            // working indicator on iff non-null
 latestSettledTurn: SettledTurn | null    // completion divider on iff non-null
 ```
+
+`aborted` and `errorMessage` on `SettledTurn` are live-read by the
+completion-divider label precedence — see
+`frontend/src/lib/components/chat/CompletionDivider.svelte` (the
+`baseLabel` derivation picks `"Interrupted"` > `"Error"` > `"Response"`
+based on these fields).
 
 ### `isTurnActive` replacement
 

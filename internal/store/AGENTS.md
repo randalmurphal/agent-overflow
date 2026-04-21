@@ -89,7 +89,8 @@ session already has the answer.
 - Fixtures: use `t.TempDir()`-scoped DBs. Never share a DB file across
   tests.
 - WAL mode is verified at startup, not just requested. If it didn't
-  take, boot fails — keep the existing assertion alive.
+  take, the app warns and proceeds (rollback journaling keeps the store
+  correct); keep the verification + log line alive. See invariant 19.
 
 ## References
 

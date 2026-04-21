@@ -52,7 +52,7 @@ Summary:
   produces both (one-shot upsert pattern). Items carry their own
   `status` field (`inProgress | completed | failed | ...`) directly
   on the wire.
-- `thread/status_changed` — session-level state.
+- `thread/status/changed` — session-level state.
 - Rate-limit, model-reroute, reasoning-delta, thread-rename,
   thread-compact events.
 - `error` notifications (user-facing state, not log entries).
