@@ -1,80 +1,67 @@
 <script lang="ts">
-  // Footer component below the Composer. Surfaces "the agent is working" —
-  // derived purely from pane.isTurnActive, with an elapsed-seconds counter
-  // read off the earliest streaming/running item's createdAt.
+  // Footer component below the Composer. Renders exclusively off
+  // `pane.activeTurn` — the wire-pushed live-turn projection — per
+  // invariant 22 (turn activity is wire-pushed, never derived from
+  // items). Hidden when no turn is active. Never renders session-level
+  // status (no "connecting", "disconnected", etc). The Esc hint is
+  // advisory text only; the actual interrupt binding lives in the
+  // Composer.
   //
-  // Hidden when no turn is active. Never renders session-level status (no
-  // "connecting", "disconnected", etc). The Esc hint is advisory text only;
-  // the actual interrupt binding lives in the Composer.
+  // Spec:
+  //   docs/architecture/turn-lifecycle.md §UI components driven by this state
+  //   docs/architecture/invariants.md §22
   //
-  // Spec: docs/architecture/chat-rewrite.md §Working indicator.
+  // The elapsed-seconds counter anchors to `pane.activeTurn.startedAt`
+  // (ms since epoch, from `provider:turn_started`) and ticks via a
+  // self-owned interval. The interval mounts when `activeTurn` becomes
+  // non-null and unmounts when it flips to null, so an idle pane
+  // doesn't keep a timer alive. Pattern adapted from t3-code's
+  // WorkingTimer — see
+  // /Users/randy/repos/t3-code/apps/web/src/components/chat/MessagesTimeline.tsx:490-497.
 
   import type { ThreadPane } from '../../stores/thread.svelte';
 
   let { pane }: { pane: ThreadPane } = $props();
 
   let isWorking = $derived(pane.isTurnActive);
+  // `activeTurn.startedAt` is a unix-millis epoch stamped by the
+  // provider on turn_started. Null when `activeTurn` is null — the
+  // `isWorking` branch hides the DOM so we never render an elapsed
+  // counter without an anchor.
+  let anchor = $derived(pane.activeTurn?.startedAt ?? null);
 
-  /**
-   * Earliest createdAt across any streaming assistant_text / thinking item
-   * or running tool_call. Falls back to null when nothing qualifies — in
-   * that case isWorking is false too and the component is hidden, so the
-   * counter never renders without an anchor.
-   */
-  let anchorCreatedAt = $derived.by<number | null>(() => {
-    let earliest: number | null = null;
-    for (const item of pane.items) {
-      const streaming =
-        (item.kind === 'assistant_text' || item.kind === 'thinking') &&
-        item.status === 'streaming';
-      const running = item.kind === 'tool_call' && item.status === 'running' && !item.isBackground;
-      if (!streaming && !running) continue;
-      if (earliest === null || item.createdAt < earliest) {
-        earliest = item.createdAt;
-      }
-    }
-    return earliest;
-  });
-
-  // Tick once per second while working. Tracked as state so the derived
-  // `elapsedSeconds` recomputes on every tick without needing a second
-  // $effect. When isWorking flips off we stop the interval so we don't
-  // keep a timer alive for idle panes.
+  // `now` is re-seeded each time `activeTurn` flips on (fresh mount),
+  // and ticked once per second by the interval below. `elapsedSeconds`
+  // is a pure derivation off `now` and `anchor`, so a single tick
+  // triggers a single DOM update — no separate `$effect` needed to
+  // push the number into state.
   let now = $state(Date.now());
-  let timer: ReturnType<typeof setInterval> | null = null;
 
   $effect(() => {
-    if (!isWorking) {
-      if (timer) {
-        clearInterval(timer);
-        timer = null;
-      }
-      return;
-    }
-    // Seed immediately so the displayed seconds value is fresh on mount.
+    // Read the reactive inputs at the top so Svelte tracks them and
+    // re-runs this effect when `anchor` flips (new turn started) or
+    // `isWorking` flips off (turn settled).
+    if (!isWorking || anchor === null) return;
+    // Seed fresh on mount so the first rendered value reflects
+    // wall-clock at the moment the turn became active, not whatever
+    // stale `now` was last written.
     now = Date.now();
-    timer = setInterval(() => {
+    const id = setInterval(() => {
       now = Date.now();
     }, 1000);
-    return () => {
-      if (timer) {
-        clearInterval(timer);
-        timer = null;
-      }
-    };
+    // Returned cleanup fires when (a) the tracked inputs change and
+    // the effect re-runs, or (b) the component unmounts. Both paths
+    // must clear the interval — otherwise an idle pane keeps ticking
+    // and a rapid turn → turn transition leaks the previous timer.
+    return () => clearInterval(id);
   });
 
   let elapsedSeconds = $derived.by<number>(() => {
-    if (!isWorking || anchorCreatedAt === null) return 0;
-    // createdAt is a unix-millis timestamp on the pane's Item; clamp to
-    // zero so a clock skew on the backend never renders a negative count.
-    const diff = Math.max(0, now - anchorCreatedAt);
-    return Math.floor(diff / 1000);
+    if (!isWorking || anchor === null) return 0;
+    // Clamp to zero so a backend clock skew can never render a
+    // negative count.
+    return Math.max(0, Math.floor((now - anchor) / 1000));
   });
-
-  // No separate onDestroy — the $effect above returns a cleanup closure
-  // that Svelte runs when isWorking flips OR the component unmounts.
-  // A second onDestroy hook would only duplicate that teardown.
 </script>
 
 {#if isWorking}
