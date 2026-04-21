@@ -180,6 +180,42 @@ func TestRenderMarkdownGFMLinkify(t *testing.T) {
 	}
 }
 
+// TestRenderMarkdownDetailsBlock pins <details>/<summary> passthrough.
+// Agents use collapsible blocks for long command output and optional
+// context; without the safeHTMLRenderer those would render as literal
+// "raw HTML omitted" comments and lose the <summary> caption entirely.
+func TestRenderMarkdownDetailsBlock(t *testing.T) {
+	r := newTestRenderer(t)
+	in := "<details>\n<summary>Click to expand</summary>\n\ninner **bold** text\n\n</details>\n"
+	out := r.RenderMarkdown(in)
+	for _, want := range []string{
+		"<details>",
+		"<summary>Click to expand</summary>",
+		"<strong>bold</strong>",
+		"</details>",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q: %q", want, out)
+		}
+	}
+	// The "omitted" placeholder must not appear when every HTML block
+	// on the page is whitelisted.
+	if strings.Contains(out, "raw HTML omitted") {
+		t.Fatalf("whitelisted block dropped: %q", out)
+	}
+}
+
+// TestRenderMarkdownDetailsOpenAttribute confirms the `open` attribute
+// survives the attribute filter so servers can emit a collapsible that
+// renders expanded by default.
+func TestRenderMarkdownDetailsOpenAttribute(t *testing.T) {
+	r := newTestRenderer(t)
+	out := r.RenderMarkdown("<details open>\n<summary>Visible</summary>\nbody\n</details>\n")
+	if !strings.Contains(out, "<details open>") {
+		t.Fatalf("expected <details open>, got %q", out)
+	}
+}
+
 func TestRenderMarkdownMalformedDoesNotCrash(t *testing.T) {
 	r := newTestRenderer(t)
 	inputs := []string{

@@ -126,6 +126,51 @@ func TestMarkdownImageJavascriptURIIsNeutralized(t *testing.T) {
 	}
 }
 
+// TestMarkdownDetailsStripsUnsafeAttributes pins the attribute filter
+// on the <details>/<summary> whitelist. An attacker who gets prose
+// into the render pipeline will try to smuggle an event handler or
+// javascript URI via attributes on the one tag that IS whitelisted.
+// The safeHTMLRenderer must emit the bare tag only — no attributes
+// beyond the explicit allowlist.
+func TestMarkdownDetailsStripsUnsafeAttributes(t *testing.T) {
+	r := New(Options{})
+	cases := []string{
+		`<details onclick="alert(1)"><summary>x</summary>y</details>`,
+		`<details style="background:url(javascript:alert(1))"><summary>x</summary>y</details>`,
+		`<details id="x" class="y"><summary onclick="steal()">x</summary>y</details>`,
+	}
+	for _, in := range cases {
+		out := r.RenderMarkdown(in)
+		lower := strings.ToLower(out)
+		// No inline event handlers or dangerous URIs surviving.
+		for _, bad := range []string{"onclick", "onmouseover", "onerror", "javascript:"} {
+			if strings.Contains(lower, bad) {
+				t.Fatalf("dangerous attribute %q survived in %q (input %q)", bad, out, in)
+			}
+		}
+	}
+}
+
+// TestMarkdownDetailsRejectsUnknownTags confirms the whitelist is a
+// closed set: sibling HTML tags a user might also want (kbd, mark,
+// iframe, script, etc.) all fall through to the default omitted path.
+func TestMarkdownDetailsRejectsUnknownTags(t *testing.T) {
+	r := New(Options{})
+	for _, in := range []string{
+		"<iframe src=http://evil></iframe>",
+		"<script>alert(1)</script>",
+		"<object data=javascript:alert(1)>x</object>",
+	} {
+		out := r.RenderMarkdown(in)
+		lower := strings.ToLower(out)
+		for _, bad := range []string{"<iframe", "<script", "<object"} {
+			if strings.Contains(lower, bad) {
+				t.Fatalf("unsafe tag survived: %q in %q", bad, out)
+			}
+		}
+	}
+}
+
 func TestMarkdownInlineEventHandlerImg(t *testing.T) {
 	r := New(Options{})
 	out := r.RenderMarkdown(`<img src=x onerror=alert(1)>`)

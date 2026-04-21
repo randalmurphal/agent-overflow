@@ -216,6 +216,35 @@ body::selection {
   color: var(--text-secondary);
 }
 
+/* Collapsible <details>/<summary>. Passed through by safeHTMLRenderer. */
+.markdown-body details {
+  border: 1px solid var(--border);
+  border-radius: 0.375rem;
+  padding: 0.375rem 0.625rem;
+  margin: 0.5rem 0;
+  background: color-mix(in oklab, var(--surface-0) 50%, transparent);
+}
+.markdown-body details[open] {
+  padding-bottom: 0.625rem;
+}
+.markdown-body details > summary {
+  cursor: pointer;
+  font-weight: 500;
+  color: var(--text-secondary);
+  user-select: none;
+  padding: 0.125rem 0;
+}
+.markdown-body details > summary:hover {
+  color: var(--text-primary);
+}
+.markdown-body details > summary::marker {
+  color: var(--text-secondary);
+}
+.markdown-body details[open] > summary {
+  margin-bottom: 0.25rem;
+  color: var(--text-primary);
+}
+
 /*
  * Code-block wrapper + copy button. Emitted by the Go markdown renderer
  * around every fenced block (see internal/highlight/markdown.go).

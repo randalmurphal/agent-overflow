@@ -47,7 +47,10 @@ func newGoldmark(style string) goldmark.Markdown {
 		// leak a live href= and `data:image/svg+xml` images slip past
 		// goldmark's whitelist.
 		goldmark.WithRendererOptions(
-			renderer.WithNodeRenderers(util.Prioritized(safeLinkRenderer{}, 1)),
+			renderer.WithNodeRenderers(
+				util.Prioritized(safeLinkRenderer{}, 1),
+				util.Prioritized(safeHTMLRenderer{}, 1),
+			),
 		),
 	)
 }
