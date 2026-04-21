@@ -7,6 +7,7 @@ import (
 	chromahtml "github.com/alecthomas/chroma/v2/formatters/html"
 	"github.com/yuin/goldmark"
 	highlighting "github.com/yuin/goldmark-highlighting/v2"
+	"github.com/yuin/goldmark/extension"
 	"github.com/yuin/goldmark/renderer"
 	"github.com/yuin/goldmark/util"
 )
@@ -21,6 +22,15 @@ import (
 func newGoldmark(style string) goldmark.Markdown {
 	return goldmark.New(
 		goldmark.WithExtensions(
+			// GFM: tables, strikethrough (~~x~~), task lists (- [ ] /
+			// - [x]), linkify (auto-detect http/https URLs). Agents
+			// emit tables and task lists constantly; without GFM the
+			// pipe separators and [x] markers render as literal text.
+			// safeLinkRenderer still runs for every ast.KindAutoLink
+			// node — linkify only ever produces http/https/ftp/email
+			// URLs, which are not in the dangerous-scheme set, but the
+			// hook keeps future attack surface covered.
+			extension.GFM,
 			highlighting.NewHighlighting(
 				highlighting.WithStyle(style),
 				highlighting.WithFormatOptions(

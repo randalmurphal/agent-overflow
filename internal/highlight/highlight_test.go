@@ -98,6 +98,68 @@ func TestRenderMarkdownUnknownLanguageFence(t *testing.T) {
 	}
 }
 
+// TestRenderMarkdownGFMTable pins GFM table rendering. Without the
+// GFM extension, the `| header | ... |\n|---|` block renders as three
+// plain paragraphs with literal pipes — not a <table>. Agents emit
+// tables frequently (e.g. comparison grids, config summaries); the
+// plain-text fallback is user-visible as garbled output.
+func TestRenderMarkdownGFMTable(t *testing.T) {
+	r := newTestRenderer(t)
+	in := "| A | B |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n"
+	out := r.RenderMarkdown(in)
+	for _, want := range []string{
+		"<table>", "<thead>", "<tbody>",
+		"<th>A</th>", "<th>B</th>",
+		"<td>1</td>", "<td>2</td>",
+		"<td>3</td>", "<td>4</td>",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q in table output: %q", want, out)
+		}
+	}
+	// The raw pipe separator must not survive as literal text in a <p>.
+	if strings.Contains(out, "|---|") {
+		t.Fatalf("table separator survived as literal text: %q", out)
+	}
+}
+
+// TestRenderMarkdownGFMStrikethrough pins GFM ~~strikethrough~~ support.
+func TestRenderMarkdownGFMStrikethrough(t *testing.T) {
+	r := newTestRenderer(t)
+	out := r.RenderMarkdown("Hello ~~world~~ text")
+	if !strings.Contains(out, "<del>world</del>") {
+		t.Fatalf("missing <del>: %q", out)
+	}
+}
+
+// TestRenderMarkdownGFMTaskList pins GFM task-list rendering:
+// `- [ ]` / `- [x]` produce checkbox inputs, not literal brackets.
+func TestRenderMarkdownGFMTaskList(t *testing.T) {
+	r := newTestRenderer(t)
+	out := r.RenderMarkdown("- [x] done\n- [ ] pending\n")
+	if !strings.Contains(out, `type="checkbox"`) {
+		t.Fatalf("missing checkbox input: %q", out)
+	}
+	if !strings.Contains(out, "checked") {
+		t.Fatalf("missing checked attribute for [x]: %q", out)
+	}
+	// The literal bracket text must not bleed through.
+	if strings.Contains(out, "[x]") || strings.Contains(out, "[ ]") {
+		t.Fatalf("literal task-list brackets leaked into output: %q", out)
+	}
+}
+
+// TestRenderMarkdownGFMLinkify pins auto-link detection for plain URLs
+// — and verifies the safe-autolink renderer still applies, so a
+// linkified javascript: URL is stripped.
+func TestRenderMarkdownGFMLinkify(t *testing.T) {
+	r := newTestRenderer(t)
+	out := r.RenderMarkdown("visit https://example.com today")
+	if !strings.Contains(out, `<a href="https://example.com"`) {
+		t.Fatalf("plain URL not auto-linked: %q", out)
+	}
+}
+
 func TestRenderMarkdownMalformedDoesNotCrash(t *testing.T) {
 	r := newTestRenderer(t)
 	inputs := []string{

@@ -176,6 +176,46 @@ body::selection {
   margin: 0.5rem 0;
 }
 
+/* GFM tables — goldmark emits <table><thead><tr><th>…</th></tr></thead><tbody>… */
+.markdown-body table {
+  border-collapse: collapse;
+  margin: 0.5rem 0;
+  font-size: 0.8125rem;
+  display: block;
+  overflow-x: auto;
+  max-width: 100%;
+}
+.markdown-body th,
+.markdown-body td {
+  border: 1px solid var(--border);
+  padding: 0.35rem 0.625rem;
+  text-align: left;
+  vertical-align: top;
+}
+.markdown-body thead th {
+  background: var(--surface-0);
+  font-weight: 600;
+}
+.markdown-body tbody tr:nth-child(even) td {
+  background: color-mix(in oklab, var(--surface-0) 50%, transparent);
+}
+
+/* GFM task lists — goldmark renders as <li><input type="checkbox" disabled ...> text</li>. */
+.markdown-body li:has(> input[type="checkbox"]) {
+  list-style: none;
+  margin-left: -1.25rem;
+}
+.markdown-body li > input[type="checkbox"] {
+  margin-right: 0.375rem;
+  vertical-align: baseline;
+  accent-color: var(--accent);
+}
+
+/* GFM strikethrough — <del> browser default is fine; tone the color to match. */
+.markdown-body del {
+  color: var(--text-secondary);
+}
+
 /*
  * Code-block wrapper + copy button. Emitted by the Go markdown renderer
  * around every fenced block (see internal/highlight/markdown.go).
