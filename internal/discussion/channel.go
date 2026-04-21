@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"agent-overflow/internal/highlight"
 	"agent-overflow/internal/store"
 
 	"github.com/google/uuid"
@@ -13,6 +14,10 @@ import (
 // ChannelService manages discussion channels and ordered channel messages.
 type ChannelService struct {
 	store *store.Store
+	// highlighter renders channel-message markdown to HTML at post-time so
+	// the discussion view paints {@html} directly. Required; NewChannelService
+	// panics on nil.
+	highlighter *highlight.Renderer
 }
 
 // PostMessageInput describes a new channel message.
@@ -24,9 +29,15 @@ type PostMessageInput struct {
 	Content   string `json:"content"`
 }
 
-// NewChannelService constructs a channel service.
-func NewChannelService(st *store.Store) *ChannelService {
-	return &ChannelService{store: st}
+// NewChannelService constructs a channel service. Panics if highlighter
+// is nil — every PostMessage renders markdown to HTML, so there is no
+// graceful fallback. Tests that don't care about rendering can pass
+// highlight.New(highlight.Options{}).
+func NewChannelService(st *store.Store, h *highlight.Renderer) *ChannelService {
+	if h == nil {
+		panic("discussion: NewChannelService requires a non-nil highlight renderer")
+	}
+	return &ChannelService{store: st, highlighter: h}
 }
 
 // Create opens a new channel for the given thread.
@@ -93,13 +104,14 @@ func (cs *ChannelService) PostMessage(input PostMessageInput) (store.ChannelMess
 	}
 
 	msg := store.ChannelMessage{
-		ID:        uuid.New().String(),
-		ChannelID: input.ChannelID,
-		FromType:  input.FromType,
-		FromID:    input.FromID,
-		FromRole:  input.FromRole,
-		Content:   input.Content,
-		CreatedAt: time.Now().UnixMilli(),
+		ID:                 uuid.New().String(),
+		ChannelID:          input.ChannelID,
+		FromType:           input.FromType,
+		FromID:             input.FromID,
+		FromRole:           input.FromRole,
+		Content:            input.Content,
+		HighlightedContent: cs.highlighter.RenderMarkdown(input.Content),
+		CreatedAt:          time.Now().UnixMilli(),
 	}
 	sequence, err := cs.store.InsertChannelMessageAtomic(msg)
 	if err != nil {

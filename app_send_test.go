@@ -572,7 +572,7 @@ func TestInterruptCreatesStoppedSystemError(t *testing.T) {
 		t.Fatalf("CreateThread: %v", err)
 	}
 
-	app.triage = triage.NewRouter(app.store, func(string, any) {})
+	app.triage = triage.NewRouter(app.store, func(string, any) {}, app.highlighter)
 
 	// Start a turn and seed a running tool_call in it.
 	if err := app.triage.Handle(provider.ProviderEvent{
@@ -944,7 +944,7 @@ func TestSendMessageGoesThroughRouter(t *testing.T) {
 			}
 		}
 		mu.Unlock()
-	})
+	}, app.highlighter)
 
 	sess, err := claude.NewSession(
 		context.Background(),

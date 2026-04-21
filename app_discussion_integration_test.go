@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/discussion"
+	"agent-overflow/internal/highlight"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 )
@@ -24,14 +25,16 @@ func newDiscussionApp(t *testing.T) (*App, string) {
 	}
 	t.Cleanup(func() { _ = st.Close() })
 
+	hl := highlight.New(highlight.Options{})
 	app := &App{
 		store:               st,
 		sessions:            make(map[string]session),
 		startingSessions:    make(map[string]*sessionStart),
 		threadSystemPrompts: make(map[string]string),
 		deliberations:       make(map[string]*discussion.Deliberation),
+		highlighter:         hl,
 		registry:            discussion.NewRegistry(st),
-		channels:            discussion.NewChannelService(st),
+		channels:            discussion.NewChannelService(st, hl),
 	}
 	ensureDefaultTestProject(t, app)
 	// Stub out session start/stop so discussion orchestration does not try to

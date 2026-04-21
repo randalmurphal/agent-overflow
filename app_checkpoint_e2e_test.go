@@ -52,7 +52,7 @@ func newE2EApp(t *testing.T) *e2eTestApp {
 		lock.Unlock()
 	}
 
-	app.triage = triage.NewRouter(app.store, emit)
+	app.triage = triage.NewRouter(app.store, emit, app.highlighter)
 	app.triage.SetCheckpointStore(app.checkpoints)
 
 	return &e2eTestApp{app: app, emissions: &emissions, emissLock: &lock}

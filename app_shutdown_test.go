@@ -163,7 +163,7 @@ func newFullyWiredTestApp(t *testing.T) (*App, *shutdownRecorder) {
 	app.telemetry = tel
 	// The triage router does not expose in-flight work today; Shutdown
 	// still dispatches drainTriage under a timeout and records the step.
-	app.triage = triage.NewRouter(app.store, func(string, any) {})
+	app.triage = triage.NewRouter(app.store, func(string, any) {}, app.highlighter)
 	// A design reactor without artifact storage is fine for teardown —
 	// TeardownThread is a no-op when no pending choices exist.
 	app.reactor = design.NewReactor(nil, func(string, any) {})

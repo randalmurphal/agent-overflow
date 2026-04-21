@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/highlight"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 
@@ -55,7 +56,7 @@ func newTestRouterWithSpans(t *testing.T) (*Router, *tracetest.SpanRecorder, *st
 		}
 	}
 
-	r := NewRouter(st, emit)
+	r := NewRouter(st, emit, highlight.New(highlight.Options{}))
 	recorder := tracetest.NewSpanRecorder()
 	tp := trace.NewTracerProvider(trace.WithSpanProcessor(recorder))
 	r.SetTelemetry(tp.Tracer("test"), TurnMetrics{})

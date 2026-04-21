@@ -12,6 +12,7 @@ import (
 	"agent-overflow/internal/attachment"
 	"agent-overflow/internal/checkpoint"
 	"agent-overflow/internal/discussion"
+	"agent-overflow/internal/highlight"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/store"
@@ -48,12 +49,13 @@ func setupCascadeApp(t *testing.T) (*App, *capturedEventBus, string) {
 		deliberations:       make(map[string]*discussion.Deliberation),
 		configDir:           dbDir,
 	}
-	app.triage = triage.NewRouter(st, bus.emit)
+	app.highlighter = highlight.New(highlight.Options{})
+	app.triage = triage.NewRouter(st, bus.emit, app.highlighter)
 	app.triage.SetEventHook(bus.observeRouterEvent)
 	app.checkpoints = checkpoint.NewStore()
 	app.triage.SetCheckpointStore(app.checkpoints)
 	app.registry = discussion.NewRegistry(st)
-	app.channels = discussion.NewChannelService(st)
+	app.channels = discussion.NewChannelService(st, app.highlighter)
 	app.terminals = terminal.NewManager(nil, nil)
 	ensureDefaultTestProject(t, app)
 

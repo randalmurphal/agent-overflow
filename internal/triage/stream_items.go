@@ -31,12 +31,13 @@ func (r *Router) handleTextDelta(evt provider.ProviderEvent) error {
 
 	// Hot path: first delta opens the block and UpsertItem creates the
 	// row; every subsequent delta just appends into the summary column
-	// via AppendItemSummary — SQLite does the concat inside one UPDATE,
-	// so total work stays linear in cumulative text size instead of the
-	// former O(N^2) (GetThreadItem → existing+delta in Go → UpsertItem
-	// re-read). See store.AppendItemSummary.
+	// via AppendItemSummaryAndHighlight — SQLite does the concat inside
+	// one UPDATE and the render callback rewrites highlighted_content in
+	// the same transaction, so total work stays linear in cumulative
+	// text size instead of the former O(N^2) (GetThreadItem →
+	// existing+delta in Go → UpsertItem re-read).
 	if !firstBlock {
-		updated, err := r.store.AppendItemSummary(itemID, evt.Content, now)
+		updated, err := r.store.AppendItemSummaryAndHighlight(itemID, evt.Content, r.highlighter.RenderMarkdown, now)
 		if err == nil {
 			r.emitItemUpsert(updated)
 			return r.emitInline(evt)
@@ -102,7 +103,13 @@ func (r *Router) handleThinking(evt provider.ProviderEvent) error {
 		// runes of the block; we leave it alone here and let
 		// settleStreamingThinking rebuild it from the final summary
 		// when the block closes.
-		updated, err := r.store.AppendItemSummary(itemID, evt.Content, now)
+		//
+		// The summary append rewrites the item's highlighted_content
+		// from the cumulative summary using the ANSI renderer —
+		// thinking can contain terminal escape sequences. The payload
+		// blob stays raw; payload HTML is rendered on demand at
+		// GetPayloadData-time (see app_payloads.go).
+		updated, err := r.store.AppendItemSummaryAndHighlight(itemID, evt.Content, r.highlighter.RenderANSI, now)
 		if err == nil {
 			if err := r.store.AppendPayloadData(payloadID, []byte(evt.Content), updated.PayloadMeta, now); err != nil {
 				return fmt.Errorf("thinking delta append payload %s: %w", payloadID, err)

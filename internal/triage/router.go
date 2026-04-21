@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"agent-overflow/internal/highlight"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/stringsx"
@@ -53,6 +54,11 @@ type TurnMetrics struct {
 type Router struct {
 	store                *store.Store
 	emit                 func(eventName string, data any) // wraps app.Event.Emit
+	// highlighter renders items.summary → items.highlighted_content before
+	// every UpsertItem and inside AppendItemSummaryAndHighlight. Required —
+	// NewRouter panics on nil. Concurrent-safe; one instance is shared
+	// across the whole Router.
+	highlighter          *highlight.Renderer
 	checkpoints          CheckpointCapture                // nil-safe; no-op when nil
 	tracer               trace.Tracer
 	metrics              TurnMetrics
@@ -110,7 +116,16 @@ type Router struct {
 
 // NewRouter creates a triage router. Telemetry is off by default; wire a
 // tracer and metrics via SetTelemetry to enable spans and counters.
-func NewRouter(st *store.Store, emit func(eventName string, data any)) *Router {
+//
+// The highlighter is required — every persistItem and streaming append
+// runs raw text through it before writing the highlighted_content column
+// so the frontend can paint {@html} directly. Passing nil is a bug and
+// panics; tests that don't care about rendering can pass
+// highlight.New(highlight.Options{}) to get the zero-config default.
+func NewRouter(st *store.Store, emit func(eventName string, data any), h *highlight.Renderer) *Router {
+	if h == nil {
+		panic("triage: NewRouter requires a non-nil highlight renderer")
+	}
 	noopMeter := metricnoop.NewMeterProvider().Meter("triage/router")
 	ts, _ := noopMeter.Int64Counter("turns.started")
 	tc, _ := noopMeter.Int64Counter("turns.completed")
@@ -118,9 +133,10 @@ func NewRouter(st *store.Store, emit func(eventName string, data any)) *Router {
 	ip, _ := noopMeter.Int64Counter("items.persisted")
 	pp, _ := noopMeter.Int64Counter("payloads.persisted")
 	return &Router{
-		store:  st,
-		emit:   emit,
-		tracer: tracenoop.NewTracerProvider().Tracer("triage/router"),
+		store:       st,
+		emit:        emit,
+		highlighter: h,
+		tracer:      tracenoop.NewTracerProvider().Tracer("triage/router"),
 		metrics: TurnMetrics{
 			TurnsStarted:      ts,
 			TurnsCompleted:    tc,
@@ -834,6 +850,16 @@ func (r *Router) persistItem(item store.Item, payload *store.Payload) error {
 			log.Printf("triage: dropping parent_id %q on item %s: %s", item.ParentID, item.ID, reason)
 			item.ParentID = ""
 		}
+	}
+
+	// Render the display HTML before we persist. Kinds that don't
+	// server-render (user_text, tool_call, compaction, ...) get an empty
+	// string; the frontend treats empty as "render summary as plain text",
+	// which matches the pre-highlight behaviour. Pre-populated
+	// HighlightedContent (from AppendItemSummaryAndHighlight on the
+	// streaming path, for instance) is preserved.
+	if item.HighlightedContent == "" {
+		item.HighlightedContent = r.highlighter.RenderForKind(item.Kind, item.Summary)
 	}
 
 	persisted, err := r.store.UpsertItem(item, payload)

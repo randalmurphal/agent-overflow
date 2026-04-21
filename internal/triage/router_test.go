@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/highlight"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 )
@@ -437,7 +438,7 @@ func newTestRouter(t *testing.T) (*Router, *store.Store, *[]emitted) {
 		emissions = append(emissions, emitted{eventName, data})
 	}
 
-	router := NewRouter(st, emit)
+	router := NewRouter(st, emit, highlight.New(highlight.Options{}))
 	return router, st, &emissions
 }
 

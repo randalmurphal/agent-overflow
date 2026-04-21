@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/highlight"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/store"
@@ -247,8 +248,9 @@ func setupE2EApp(t *testing.T) (*App, *capturedEventBus) {
 		sessions:            make(map[string]session),
 		startingSessions:    make(map[string]*sessionStart),
 		threadSystemPrompts: make(map[string]string),
+		highlighter:         highlight.New(highlight.Options{}),
 	}
-	app.triage = triage.NewRouter(st, bus.emit)
+	app.triage = triage.NewRouter(st, bus.emit, app.highlighter)
 	app.triage.SetEventHook(bus.observeRouterEvent)
 	ensureDefaultTestProject(t, app)
 

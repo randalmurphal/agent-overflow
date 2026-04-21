@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/discussion"
+	"agent-overflow/internal/highlight"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/store"
@@ -468,6 +469,7 @@ func newTestAppWithStore(t *testing.T) *App {
 		threadSystemPrompts: make(map[string]string),
 		threadSlashCommands: make(map[string][]string),
 		deliberations:       make(map[string]*discussion.Deliberation),
+		highlighter:         highlight.New(highlight.Options{}),
 	}
 	ensureDefaultTestProject(t, app)
 	return app
