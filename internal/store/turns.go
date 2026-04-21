@@ -164,6 +164,168 @@ func (s *Store) ListRecentTurns(threadID string, limit int) ([]Turn, error) {
 	return out, nil
 }
 
+// PickInitialFloorTurn chooses the inclusive `turn_index` floor for a
+// windowed thread open. The caller asks for up to `turnLimit` most
+// recent turns but the window grows or shrinks around that target so
+// the loaded item count stays within a sane range — at least
+// `minItems` if any more turns are available, and never more than
+// `maxItems` even if a single turn is unusually large.
+//
+// Strategy:
+//  1. Read per-turn item counts from newest to oldest (bounded scan so
+//     the query doesn't walk the whole thread on enormous histories).
+//  2. Accumulate counts. Stop growing the window as soon as items have
+//     reached `minItems` and we've seen at least `turnLimit` turns.
+//  3. If a single turn's item count would push the cumulative past
+//     `maxItems`, include the turn anyway (every turn is loaded whole;
+//     mid-turn cuts break downstream per-turn derivations) and stop.
+//  4. If the thread has fewer turns than `turnLimit`, return the
+//     smallest turn_index the thread has.
+//
+// `hasMore` reports whether any older turn was excluded from the
+// returned floor — i.e. older history exists below `floor` and the
+// frontend should render its "Load older" control. Returns
+// (-1, false, nil) for threads with no turns.
+//
+// Inputs are coerced: `turnLimit < 1` defaults to 1; `minItems < 0`
+// defaults to 0; `maxItems <= 0` or `maxItems < minItems` defaults to
+// the effective minItems so the "never less than minItems" invariant
+// holds.
+func (s *Store) PickInitialFloorTurn(
+	threadID string,
+	turnLimit, minItems, maxItems int,
+) (floorTurnIndex int, hasMore bool, err error) {
+	if turnLimit < 1 {
+		turnLimit = 1
+	}
+	if minItems < 0 {
+		minItems = 0
+	}
+	if maxItems <= 0 || maxItems < minItems {
+		maxItems = minItems
+	}
+
+	// Query the most recent (turn_index, item_count) pairs. The scan
+	// must cover both the caller's turnLimit target AND enough turns to
+	// hit minItems when every turn is tiny (burst Q&A threads). A fixed
+	// overshoot on turnLimit doesn't cover the latter — for turnLimit=10
+	// / minItems=500 on a thread of 1-item turns we'd need to scan 500
+	// rows just to count far enough down. `absoluteScanCap` still limits
+	// the blast radius on pathological threads.
+	const overshootFactor = 4
+	const absoluteScanCap = 5000
+	scanLimit := turnLimit * overshootFactor
+	if minItems > scanLimit {
+		scanLimit = minItems
+	}
+	if scanLimit > absoluteScanCap {
+		scanLimit = absoluteScanCap
+	}
+
+	rows, err := s.db.Query(
+		`SELECT turn_index, COUNT(*) AS item_count
+		   FROM items
+		  WHERE thread_id = ?
+		  GROUP BY turn_index
+		  ORDER BY turn_index DESC
+		  LIMIT ?`,
+		threadID, scanLimit,
+	)
+	if err != nil {
+		return -1, false, fmt.Errorf("store: pick initial floor for %s: %w", threadID, err)
+	}
+	defer rows.Close()
+
+	type turnCount struct {
+		turnIndex int
+		count     int
+	}
+	var turns []turnCount
+	for rows.Next() {
+		var tc turnCount
+		if err := rows.Scan(&tc.turnIndex, &tc.count); err != nil {
+			return -1, false, fmt.Errorf("store: scan turn count: %w", err)
+		}
+		turns = append(turns, tc)
+	}
+	if err := rows.Err(); err != nil {
+		return -1, false, fmt.Errorf("store: iterate turn counts for %s: %w", threadID, err)
+	}
+
+	// Empty thread (no items on any turn). The turns table may still
+	// hold an in-flight turn with no items yet — look for it so a
+	// just-started turn is included on first paint.
+	if len(turns) == 0 {
+		activeFloor, ok, err := s.activeTurnFloor(threadID)
+		if err != nil {
+			return -1, false, err
+		}
+		if !ok {
+			return -1, false, nil
+		}
+		return activeFloor, false, nil
+	}
+
+	// Walk newest → oldest accumulating item counts. `picked` is the
+	// current candidate floor.
+	cumulative := 0
+	picked := turns[0].turnIndex
+	for i, tc := range turns {
+		// Adding this turn would push us past maxItems: stop BEFORE we
+		// include it, unless it's the only turn we have so far (we
+		// never return an empty window when turns exist).
+		if i > 0 && cumulative+tc.count > maxItems {
+			break
+		}
+		cumulative += tc.count
+		picked = tc.turnIndex
+		// Break once we've met both the turn-count target and the
+		// minItems target — further turns are only added when the
+		// thread is small.
+		if i+1 >= turnLimit && cumulative >= minItems {
+			break
+		}
+	}
+
+	// The scan stops at scanLimit; if we walked every scanned row,
+	// older turns may still exist below. Check cheaply for "any item
+	// below picked".
+	hasMore, err = s.hasOlderTurns(threadID, picked)
+	if err != nil {
+		return -1, false, err
+	}
+
+	// Include the active turn (if any) even when it has no items yet —
+	// the window must cover the currently-running turn so the first
+	// streaming upsert for that turn lands on a row the frontend can
+	// render. The active turn's turn_index is always the thread's
+	// maximum, so this only lowers `picked` if we picked a later floor
+	// somehow (defensive).
+	activeFloor, ok, err := s.activeTurnFloor(threadID)
+	if err != nil {
+		return -1, false, err
+	}
+	if ok && activeFloor < picked {
+		picked = activeFloor
+	}
+	return picked, hasMore, nil
+}
+
+// activeTurnFloor returns the turn_index of the active (completed_at
+// NULL) turn for a thread, or (0, false, nil) when none is in-flight.
+// Used by PickInitialFloorTurn to guarantee a newly-started turn with
+// no items yet is still inside the loaded window.
+func (s *Store) activeTurnFloor(threadID string) (int, bool, error) {
+	turn, ok, err := s.GetActiveTurn(threadID)
+	if err != nil {
+		return 0, false, err
+	}
+	if !ok {
+		return 0, false, nil
+	}
+	return turn.TurnIndex, true, nil
+}
+
 // GetActiveTurn returns the most recent in-flight (completed_at=NULL)
 // turn for a thread. Called on resume to decide whether a crash-
 // interrupted turn is still visible to the UI.

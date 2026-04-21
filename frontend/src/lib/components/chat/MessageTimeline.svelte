@@ -1,6 +1,8 @@
 <script lang="ts">
+  import { tick } from 'svelte';
   import type { SettledTurn, ThreadPane } from '../../stores/thread.svelte';
   import type { Item } from '../../types/models';
+  import { addToast } from '../../stores/toast.svelte';
   import { groupItemsBySubagent, type TimelineNode } from '../../utils/subagentGrouping';
   import { turnSummaryIsMeaningful } from '../../utils/turnDiffSummary';
   import AssistantMessage from './AssistantMessage.svelte';
@@ -101,20 +103,69 @@
   });
 
   /**
-   * Scroll the timeline to the inline row for the given item id, called
-   * by BackgroundTaskTray when the user clicks a tray row (spec:
-   * docs/architecture/chat-rewrite.md "Tray rows … Clicking a tray row
-   * scrolls/expands the corresponding inline item"). Each leaf's
-   * wrapper carries a `data-item-id` attribute; we query within our
-   * scroll container so the lookup is scoped to this pane.
+   * Fetch older history and preserve the user's visual anchor row. We
+   * capture the pre-prepend scrollHeight/scrollTop, wait for the store
+   * to prepend + rebuild turn diff views, then await a tick so the DOM
+   * reflects the new rows. The growth delta is re-applied to scrollTop
+   * so the row the user was reading stays at the same viewport
+   * position. `userNearBottom` can't flip during the capture window —
+   * the click originates from the top of the container — so the
+   * auto-scroll-to-bottom effect stays dormant throughout.
    */
-  export function scrollToItem(id: string): void {
+  async function handleLoadOlder(): Promise<void> {
+    if (!scrollContainer) return;
+    const prevScrollHeight = scrollContainer.scrollHeight;
+    const prevScrollTop = scrollContainer.scrollTop;
+    await pane.loadOlder();
+    await tick();
+    if (!scrollContainer) return;
+    const delta = scrollContainer.scrollHeight - prevScrollHeight;
+    scrollContainer.scrollTop = prevScrollTop + delta;
+  }
+
+  /**
+   * Scroll the timeline to the inline row for `id`. Called directly by
+   * BackgroundTaskTray (spec: docs/architecture/chat-rewrite.md "Tray
+   * rows … Clicking a tray row scrolls/expands the corresponding
+   * inline item") and indirectly via `pane.requestScrollToItem` for
+   * search hits, plan sidebar rows, and plan follow-up banners. The
+   * target item may live below the loaded window; we ask the pane to
+   * page back until it's in view before querying the DOM. A `false`
+   * return from `loadUntilItem` means the backend couldn't find the
+   * item on this thread — surface a toast instead of silently failing.
+   */
+  export async function scrollToItem(id: string): Promise<void> {
     if (!scrollContainer || !id) return;
+    const found = await pane.loadUntilItem(id);
+    if (!scrollContainer) return;
+    if (!found) {
+      addToast('warning', 'Message is no longer in this thread');
+      return;
+    }
+    await tick();
+    if (!scrollContainer) return;
     const el = scrollContainer.querySelector(`[data-item-id="${CSS.escape(id)}"]`);
     if (el instanceof HTMLElement) {
       el.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }
   }
+
+  /**
+   * Observe pane-published scroll-to-item intents. The pane exposes a
+   * `{itemId, nonce}` tuple; a bumped nonce is our cue to run
+   * scrollToItem. Tracked imperatively rather than via a $derived so a
+   * repeat publish (same id, new nonce) still triggers. Nonce 0 is the
+   * initial state and we deliberately ignore it so mounting a pane
+   * doesn't auto-scroll.
+   */
+  let lastHandledScrollNonce = 0;
+  $effect(() => {
+    const req = pane.scrollToItemRequest;
+    if (req.nonce === 0) return;
+    if (req.nonce === lastHandledScrollNonce) return;
+    lastHandledScrollNonce = req.nonce;
+    void scrollToItem(req.itemId);
+  });
 </script>
 
 <div bind:this={scrollContainer} onscroll={handleScroll} class="flex-1 overflow-y-auto px-4 py-4" role="log" aria-label="Message history">
@@ -165,6 +216,22 @@
       {/if}
     {/snippet}
 
+    {#if pane.hasMoreHistory}
+      <!-- Paged history control. Sits above the timeline so it's always
+           in view when the user scrolls to the top. Delta-based scroll
+           preservation lives in handleLoadOlder. -->
+      <div class="mb-2 flex justify-center">
+        <button
+          data-testid="load-older-messages"
+          class="rounded border border-border px-3 py-1.5 text-sm text-text-secondary hover:text-text-primary disabled:opacity-50"
+          disabled={pane.loadingOlder}
+          onclick={handleLoadOlder}
+        >
+          {pane.loadingOlder ? 'Loading…' : 'Load older messages'}
+        </button>
+      </div>
+    {/if}
+
     {#each groupedNodes as node, index (node.kind === 'group' ? `g:${node.parent.id}` : `l:${node.item.id}`)}
       {#if pane.latestSettledTurn && shouldRenderDividerBefore(node, pane.latestSettledTurn)}
         <!-- The divider renders BEFORE the assistant message that closed
@@ -175,21 +242,10 @@
              boundary. -->
         <CompletionDivider turn={pane.latestSettledTurn} />
       {/if}
-      <!-- content-visibility: auto lets the browser skip paint + layout for
-           off-screen nodes. Pairs with contain-intrinsic-size as a layout
-           placeholder so scroll height stays sane when nodes aren't measured
-           yet. This is the spec-sanctioned "virtualize the whole list"
-           approach (no count-slicing, no anchor IDs) — every node stays in
-           the DOM with stable identity, but only the visible ones pay the
-           render cost. The intrinsic size is a rough average; the real
-           height replaces it once the node scrolls into view. -->
-      <div
-        data-testid="message-timeline-node"
-        class="contents-visibility-auto"
-      >
-        <!-- Root nodes feed in at depth=1 so SubagentGroup's GRANDCHILD
-             cap aligns with the spec numbering (first card=1, child=2,
-             grandchild=3 marker-only plateau). -->
+      <!-- Root nodes feed in at depth=1 so SubagentGroup's GRANDCHILD
+           cap aligns with the spec numbering (first card=1, child=2,
+           grandchild=3 marker-only plateau). -->
+      <div data-testid="message-timeline-node">
         {@render renderNode(node, 1)}
       </div>
 

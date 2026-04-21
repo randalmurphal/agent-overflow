@@ -8,7 +8,22 @@ import type {
 } from '../types/events';
 import type { ChannelMessage } from '../types/discussion';
 import type { DesignArtifact, DesignOptionsRequest, DesignViewport } from '../types/design';
-import { ListItems, ListRecentTurns, SwitchThread } from './bindings';
+import {
+  GetThreadItem,
+  ListItemsBeforeTurn,
+  ListRecentThreadItems,
+  ListRecentTurns,
+  SwitchThread,
+} from './bindings';
+
+/**
+ * Default batch size for "Load older" fetches. Matches the initial window
+ * size so a single paging click approximately doubles the loaded history.
+ * The value is a turn count, not an item count; backend-side caps keep a
+ * single page from exceeding reasonable item totals even if those turns
+ * are unusually large.
+ */
+const LOAD_OLDER_TURN_BATCH = 50;
 import { addToast } from './toast.svelte';
 import { createDiffPanelState, type DiffPanelState } from './diffPanel.svelte';
 import { buildTurnDiffView, type TurnDiffView } from '../utils/turnDiffSummary';
@@ -202,10 +217,51 @@ export function createThreadPane() {
 
   /**
    * Generation counter for switchThread. Incremented on every switchThread
-   * entry so a slow ListItems from thread A cannot clobber thread B's items
-   * when the user flips between them quickly.
+   * entry so a slow ListRecentThreadItems from thread A cannot clobber
+   * thread B's items when the user flips between them quickly.
    */
   let switchGeneration = 0;
+
+  /**
+   * Windowed-history state. The pane holds a contiguous tail of the
+   * thread's items (last ~50 turns by default); older history loads
+   * on demand via `loadOlder()` or `loadUntilItem()`.
+   *
+   *  - `oldestLoadedTurnIndex` is the inclusive floor of the window.
+   *    `null` when nothing is loaded (empty thread / fresh pane).
+   *  - `hasMoreHistory` drives the "Load older" button's visibility.
+   *  - `loadingOlder` disables the button while a fetch is in flight.
+   *
+   * Upsert events whose item coordinates fall below the window floor
+   * are silently dropped — the canonical copy lives in SQLite and will
+   * be pulled in the next time the user loads older history. See
+   * `upsertItem` below.
+   */
+  let oldestLoadedTurnIndex: number | null = $state(null);
+  let hasMoreHistory: boolean = $state(false);
+  let loadingOlder: boolean = $state(false);
+
+  /**
+   * Separate generation counter for `loadOlder` / `loadUntilItem` so a
+   * second click doesn't race with a slow first fetch. `switchGeneration`
+   * covers thread swaps; this guards against same-thread concurrent
+   * paging fetches (double-click, keyboard repeat).
+   */
+  let pagingGeneration = 0;
+
+  /**
+   * Nonce bumped when the pane wants the active MessageTimeline to scroll
+   * to a specific item. Scroll side effects are DOM operations that
+   * shouldn't live on the store, so the store publishes an intent and
+   * the timeline reads it reactively. Consumers compare the most
+   * recently observed nonce against `scrollToItemRequest.nonce` and
+   * react when it changes. `itemId` is the target id; an empty string
+   * means "no outstanding request".
+   */
+  let scrollToItemRequest: { itemId: string; nonce: number } = $state({
+    itemId: '',
+    nonce: 0,
+  });
 
   /**
    * Rebuild the per-turn diff view for a single turnIndex from the current
@@ -315,6 +371,22 @@ export function createThreadPane() {
      * needing a new channel.
      */
     get subagentNotifications() { return subagentNotifications; },
+    /**
+     * Inclusive floor of the loaded history window. Consumers use this
+     * to render "Load older messages" and, in scroll-to-item flows, to
+     * decide whether a target coordinate is already in view.
+     */
+    get oldestLoadedTurnIndex() { return oldestLoadedTurnIndex; },
+    get hasMoreHistory() { return hasMoreHistory; },
+    get loadingOlder() { return loadingOlder; },
+    /**
+     * Scroll-to-item intent published by pane-level callers (search
+     * hits, plan sidebar clicks, tray rows). MessageTimeline reacts to
+     * nonce changes — the timeline compares the observed nonce against
+     * the current value and runs `scrollToItem(itemId)` when it
+     * advances. `itemId === ''` means "no request".
+     */
+    get scrollToItemRequest() { return scrollToItemRequest; },
     get channelMessages() { return channelMessages; },
     get channelStatus() { return channelStatus; },
     get designArtifacts() { return designArtifacts; },
@@ -357,6 +429,15 @@ export function createThreadPane() {
       loading = true;
       items = [];
       turnDiffViews = new Map();
+      // Windowed-history reset. A null floor disables the upsert floor
+      // check until the backend tells us otherwise, which is correct:
+      // between thread clear and the ListRecentThreadItems response any
+      // streamed upserts are already ours to append normally.
+      oldestLoadedTurnIndex = null;
+      hasMoreHistory = false;
+      loadingOlder = false;
+      pagingGeneration = 0;
+      scrollToItemRequest = { itemId: '', nonce: 0 };
 
       thread = newThread;
       // Capture the switch generation at the top so every await below can bail
@@ -373,15 +454,19 @@ export function createThreadPane() {
       if (gen !== switchGeneration) return;
 
       try {
-        const loaded = await ListItems(newThread.id) as Item[];
+        const paged = await ListRecentThreadItems(newThread.id, 0);
         if (gen !== switchGeneration) return;
-        items = loaded;
-        rebuildTurnDiffViews(loaded);
+        items = (paged.items ?? []) as Item[];
+        oldestLoadedTurnIndex = paged.oldestTurnIndex >= 0 ? paged.oldestTurnIndex : null;
+        hasMoreHistory = paged.hasMore ?? false;
+        rebuildTurnDiffViews(items);
       } catch (err) {
         if (gen !== switchGeneration) return;
         console.error('Failed to load items:', err);
         items = [];
         turnDiffViews = new Map();
+        oldestLoadedTurnIndex = null;
+        hasMoreHistory = false;
         generalError = `Failed to load thread items: ${err}`;
         addToast('error', 'Failed to load thread items');
       }
@@ -437,10 +522,144 @@ export function createThreadPane() {
       activeTurn = null;
       latestSettledTurn = null;
       subagentNotifications = [];
+      oldestLoadedTurnIndex = null;
+      hasMoreHistory = false;
+      loadingOlder = false;
+      pagingGeneration = 0;
+      scrollToItemRequest = { itemId: '', nonce: 0 };
       diffPanel.clearForThread();
       // Invalidate any in-flight switchThread so its late resolutions can't
       // repopulate the pane we just cleared.
       switchGeneration++;
+    },
+
+    /**
+     * Fetch the next batch of older turns and prepend them to the window.
+     * Respects both the switch generation (thread swapped mid-flight) and
+     * a paging-specific generation (concurrent invocations from double-
+     * clicks or keyboard repeats). On success the per-turn diff-view map
+     * is rebuilt to include the newly loaded turns; because paging is
+     * turn-boundary aligned the refresh is safe — no turn can straddle
+     * the window edge and produce a partial diff.
+     */
+    async loadOlder(): Promise<void> {
+      const currentThread = thread;
+      if (!currentThread) return;
+      if (!hasMoreHistory || loadingOlder) return;
+      const floor = oldestLoadedTurnIndex;
+      if (floor === null) return;
+
+      const gen = switchGeneration;
+      const pageGen = ++pagingGeneration;
+      loadingOlder = true;
+      try {
+        const paged = await ListItemsBeforeTurn(currentThread.id, floor, LOAD_OLDER_TURN_BATCH);
+        if (gen !== switchGeneration || pageGen !== pagingGeneration) return;
+        const prepend = (paged.items ?? []) as Item[];
+        if (prepend.length > 0) {
+          items = [...prepend, ...items];
+          rebuildTurnDiffViews(items);
+        }
+        oldestLoadedTurnIndex =
+          paged.oldestTurnIndex >= 0 ? paged.oldestTurnIndex : floor;
+        hasMoreHistory = paged.hasMore ?? false;
+      } catch (err) {
+        if (gen !== switchGeneration || pageGen !== pagingGeneration) return;
+        console.error('loadOlder failed:', err);
+        addToast('error', 'Failed to load older messages');
+      } finally {
+        if (gen === switchGeneration && pageGen === pagingGeneration) {
+          loadingOlder = false;
+        }
+      }
+    },
+
+    /**
+     * Ensure the item with `itemID` is present in the loaded window.
+     * Used by scroll-to-item callers (search hits, plan sidebar, tray)
+     * before they dispatch the scroll intent. When the item is already
+     * in the window this is a cheap `Array.some` and no backend call.
+     * When the item lives below the floor the pane loads every turn
+     * from the item's turn_index up to the existing tail in one
+     * replacement — the window grows to cover the hit, no cumulative
+     * multi-page ratchet.
+     *
+     * Returns `true` when the item is (now) loaded and scrollable,
+     * `false` when the backend reports the item doesn't exist on this
+     * thread (scroll callers show a toast and abandon the request).
+     */
+    async loadUntilItem(itemID: string): Promise<boolean> {
+      const currentThread = thread;
+      if (!currentThread || !itemID) return false;
+      if (items.some((it) => it.id === itemID)) return true;
+
+      const gen = switchGeneration;
+      const pageGen = ++pagingGeneration;
+      let fetched: Item;
+      try {
+        fetched = (await GetThreadItem(currentThread.id, itemID)) as Item;
+      } catch (err) {
+        if (gen !== switchGeneration) return false;
+        console.error('loadUntilItem GetThreadItem failed:', err);
+        return false;
+      }
+      if (gen !== switchGeneration || pageGen !== pagingGeneration) return false;
+      if (!fetched || !fetched.id) return false;
+
+      // Race: another upsert or loadOlder might have pulled the item in
+      // between our check and the backend round-trip. Re-check before
+      // paging in a whole turn window we don't need.
+      if (items.some((it) => it.id === itemID)) return true;
+
+      const currentFloor = oldestLoadedTurnIndex;
+      if (currentFloor !== null && fetched.turnIndex >= currentFloor) return true;
+
+      // Load every turn from the target's turn index up through the
+      // existing floor. A single ListItemsBeforeTurn with a turnLimit
+      // sized to cover that distance does it in one shot.
+      const targetFloor = fetched.turnIndex;
+      const beforeTurn = currentFloor ?? Number.MAX_SAFE_INTEGER;
+      const turnSpan = Math.max(LOAD_OLDER_TURN_BATCH, beforeTurn - targetFloor + 1);
+
+      loadingOlder = true;
+      try {
+        const paged = await ListItemsBeforeTurn(currentThread.id, beforeTurn, turnSpan);
+        if (gen !== switchGeneration || pageGen !== pagingGeneration) return false;
+        const prepend = (paged.items ?? []) as Item[];
+        if (prepend.length > 0) {
+          items = [...prepend, ...items];
+          rebuildTurnDiffViews(items);
+        }
+        oldestLoadedTurnIndex =
+          paged.oldestTurnIndex >= 0 ? paged.oldestTurnIndex : beforeTurn;
+        hasMoreHistory = paged.hasMore ?? false;
+      } catch (err) {
+        if (gen !== switchGeneration || pageGen !== pagingGeneration) return false;
+        console.error('loadUntilItem ListItemsBeforeTurn failed:', err);
+        addToast('error', 'Failed to load older messages');
+        return false;
+      } finally {
+        if (gen === switchGeneration && pageGen === pagingGeneration) {
+          loadingOlder = false;
+        }
+      }
+      return items.some((it) => it.id === itemID);
+    },
+
+    /**
+     * Publish a scroll-to-item intent for the MessageTimeline to pick
+     * up. Consumers call this instead of reaching into the timeline
+     * directly — keeps DOM operations inside the component that owns
+     * the scroll container, and lets the pane mediate window loading
+     * if the target isn't visible yet. The timeline handler is
+     * responsible for awaiting `loadUntilItem` before scrolling.
+     */
+    requestScrollToItem(itemID: string): void {
+      if (!itemID) return;
+      scrollToItemRequest = {
+        itemId: itemID,
+        nonce: scrollToItemRequest.nonce + 1,
+      };
     },
 
     // --- Mutations (called by event router) ---
@@ -470,6 +689,10 @@ export function createThreadPane() {
     upsertItem(item: Item): void {
       const idx = items.findIndex((existing) => existing.id === item.id);
       if (idx >= 0) {
+        // Existing-id path: always accept. If we already have this id in
+        // the window, the item is in-window by construction regardless
+        // of any window-floor math. This branch also handles cross-turn
+        // corrections where the server reassigns turn_index on a known id.
         const prevTurnIndex = items[idx].turnIndex;
         const next = items.slice();
         next[idx] = item;
@@ -480,10 +703,18 @@ export function createThreadPane() {
         }
         return;
       }
+      // Window-floor guard for NEW items. Upserts can legitimately fire
+      // for older turns (triage interrupt-queue replay, late background
+      // tool_completion siblings, codex reconcile flips). If the
+      // coordinate is below the loaded window, silently drop — the row
+      // is safely persisted in SQLite and will pull in on the next
+      // `loadOlder` click.
+      if (oldestLoadedTurnIndex !== null && item.turnIndex < oldestLoadedTurnIndex) {
+        return;
+      }
       // Find the insertion point that preserves (turnIndex, itemIndex).
-      // Linear scan is fine — typical pane carries < 1k items and the
-      // upsert volume during a turn is bounded by how many tools the
-      // agent runs.
+      // Linear scan is fine — the loaded window is bounded by
+      // INITIAL_TURN_WINDOW (~50 turns, typically a few hundred items).
       let insertAt = items.length;
       for (let i = 0; i < items.length; i++) {
         const cur = items[i];

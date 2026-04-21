@@ -185,3 +185,15 @@ export const BrowseDirectory = dispatch('BrowseDirectory');
 
 // Turn lifecycle rehydration (thread-switch reads the most recent settled turn)
 export const ListRecentTurns = dispatch('ListRecentTurns');
+
+// Windowed history + thread-wide aggregates. The frontend reads the
+// tail of a thread via ListRecentThreadItems on switch and pages
+// backward via ListItemsBeforeTurn; the three thread-wide bindings
+// back dedicated panel / sidebar / tray surfaces that need the full
+// thread regardless of the timeline window.
+export const ListRecentThreadItems = dispatch('ListRecentThreadItems');
+export const ListItemsBeforeTurn = dispatch('ListItemsBeforeTurn');
+export const ListThreadProposedPlans = dispatch('ListThreadProposedPlans');
+export const ListThreadDiffPayloads = dispatch('ListThreadDiffPayloads');
+export const ListLiveBackgroundTasks = dispatch('ListLiveBackgroundTasks');
+export const GetThreadItem = dispatch('GetThreadItem');

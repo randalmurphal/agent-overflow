@@ -1,4 +1,4 @@
-import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render } from '@testing-library/svelte';
 import PlanFollowUpBanner from './PlanFollowUpBanner.svelte';
 import { createComposerDraftStore } from '../../stores/composerDraft.svelte';
@@ -61,6 +61,30 @@ describe('<PlanFollowUpBanner>', () => {
     await fireEvent.click(getByTestId('plan-followup-dismiss'));
 
     expect(queryByTestId('plan-followup-banner')).toBeNull();
+  });
+
+  it('clicking Review publishes a scroll-to-item request for the plan', async () => {
+    const pane = await buildPane(undefined, [
+      makeItem({
+        id: 'plan-review',
+        kind: 'tool_call',
+        payloadId: 'plan-payload',
+        payloadKind: 'proposed_plan',
+        payloadMeta: JSON.stringify({
+          title: 'Plan',
+          preview: 'preview',
+          lineCount: 1,
+          charCount: 7,
+        }),
+      }),
+    ]);
+    const draft = createComposerDraftStore();
+    const spy = vi.spyOn(pane, 'requestScrollToItem');
+
+    const { getByTestId } = render(PlanFollowUpBanner, { props: { pane, draft } });
+    await fireEvent.click(getByTestId('plan-followup-review'));
+
+    expect(spy).toHaveBeenCalledWith('plan-review');
   });
 
   it('stays hidden when a newer non-plan item has landed', async () => {

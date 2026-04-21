@@ -129,6 +129,17 @@ export {
 
   // Turn lifecycle
   ListRecentTurns,
+
+  // Windowed history + thread-wide aggregates. See /app_paging.go.
+  // `ListRecentThreadItems` replaces `ListItems` on thread switch; the
+  // others back dedicated panel/sidebar surfaces (plans, diffs, tray)
+  // so they don't under-report against a partial timeline window.
+  ListRecentThreadItems,
+  ListItemsBeforeTurn,
+  ListThreadProposedPlans,
+  ListThreadDiffPayloads,
+  ListLiveBackgroundTasks,
+  GetThreadItem,
 } from '../../../bindings/agent-overflow/app.js';
 
 // Model classes needed for constructing RPC parameters.
@@ -139,7 +150,10 @@ export {
 } from '../../../bindings/agent-overflow/internal/provider/models.js';
 
 // Structured response types surfaced to components.
-export { ThreadMessageHit } from '../../../bindings/agent-overflow/internal/store/models.js';
+export {
+  ThreadMessageHit,
+  PagedItems,
+} from '../../../bindings/agent-overflow/internal/store/models.js';
 export {
   GeneratedCommitMessage,
   Keybinding,

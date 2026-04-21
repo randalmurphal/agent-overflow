@@ -1,9 +1,11 @@
-import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { render } from '@testing-library/svelte';
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { fireEvent, render } from '@testing-library/svelte';
+import { tick } from 'svelte';
 import { loadSettings } from '../../stores/settings.svelte';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
-import { buildPane, makeItem } from '../../../test/helpers/chat';
-import type { SettledTurn } from '../../stores/thread.svelte';
+import { buildPane, makeItem, makeThread } from '../../../test/helpers/chat';
+import { createThreadPane, type SettledTurn } from '../../stores/thread.svelte';
+import { getToasts } from '../../stores/toast.svelte';
 import MessageTimeline from './MessageTimeline.svelte';
 
 function makeSettledTurn(overrides: Partial<SettledTurn> = {}): SettledTurn {
@@ -119,7 +121,7 @@ describe('<MessageTimeline>', () => {
     expect(getAllByText('Ship it').length).toBeGreaterThan(0);
   });
 
-  it('wraps each root node in a content-visibility container for off-screen skipping', async () => {
+  it('renders one wrapper per root timeline node', async () => {
     const items = Array.from({ length: 50 }, (_, i) =>
       makeItem({
         id: `text:${i}`,
@@ -133,15 +135,7 @@ describe('<MessageTimeline>', () => {
     const { container } = render(MessageTimeline, { props: { pane } });
 
     const wrappers = container.querySelectorAll('[data-testid="message-timeline-node"]');
-    // One wrapper per root timeline node. With no subagent grouping,
-    // that's one wrapper per item.
     expect(wrappers.length).toBe(50);
-    // Every wrapper applies the CSS class that opts into
-    // content-visibility: auto. We assert on the class rather than the
-    // computed style because happy-dom doesn't implement the property.
-    for (const w of wrappers) {
-      expect(w.classList.contains('contents-visibility-auto')).toBe(true);
-    }
   });
 
   it('rebuilds turn summaries incrementally via the pane (not per-upsert full scan)', async () => {
@@ -189,6 +183,141 @@ describe('<MessageTimeline>', () => {
     await rerender({ pane });
 
     expect(getByTestId('turn-diff-badge').textContent ?? '').toContain('+5');
+  });
+
+  describe('windowed history', () => {
+    // Build a pane driven directly (not via buildPane) so the test can
+    // prime ListRecentThreadItems with its own items + hasMore flag. The
+    // integration shape is stable: createThreadPane + switchThread reads
+    // the paged bindings we stub below.
+    async function buildWindowedPane(opts: {
+      items: ReturnType<typeof makeItem>[];
+      hasMore?: boolean;
+      oldestTurnIndex?: number;
+    }): Promise<ReturnType<typeof createThreadPane>> {
+      const { items, hasMore = false, oldestTurnIndex } = opts;
+      const floor =
+        oldestTurnIndex ?? (items.length > 0 ? items[0].turnIndex : -1);
+      setBindingMock('SwitchThread', async () => {});
+      setBindingMock('ListRecentThreadItems', async () => ({
+        items,
+        oldestTurnIndex: floor,
+        hasMore,
+      }));
+      setBindingMock('ListRecentTurns', async () => []);
+      const pane = createThreadPane();
+      await pane.switchThread(makeThread());
+      return pane;
+    }
+
+    it('renders the Load older button when pane.hasMoreHistory is true', async () => {
+      const pane = await buildWindowedPane({
+        items: [makeItem({ id: 'a', turnIndex: 10 })],
+        hasMore: true,
+        oldestTurnIndex: 10,
+      });
+
+      const { getByTestId } = render(MessageTimeline, { props: { pane } });
+
+      const button = getByTestId('load-older-messages') as HTMLButtonElement;
+      expect(button.textContent ?? '').toContain('Load older messages');
+      expect(button.disabled).toBe(false);
+    });
+
+    it('hides the Load older button when pane.hasMoreHistory is false', async () => {
+      const pane = await buildWindowedPane({
+        items: [makeItem({ id: 'a' })],
+        hasMore: false,
+      });
+
+      const { queryByTestId } = render(MessageTimeline, { props: { pane } });
+
+      expect(queryByTestId('load-older-messages')).toBeNull();
+    });
+
+    it('clicking Load older invokes pane.loadOlder', async () => {
+      const pane = await buildWindowedPane({
+        items: [makeItem({ id: 'tail', turnIndex: 10 })],
+        hasMore: true,
+        oldestTurnIndex: 10,
+      });
+      const loadOlderSpy = vi.spyOn(pane, 'loadOlder').mockResolvedValue();
+
+      const { getByTestId } = render(MessageTimeline, { props: { pane } });
+      await fireEvent.click(getByTestId('load-older-messages'));
+      await tick();
+
+      expect(loadOlderSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('disables the button while loadOlder is in flight', async () => {
+      const pane = await buildWindowedPane({
+        items: [makeItem({ id: 'tail', turnIndex: 10 })],
+        hasMore: true,
+        oldestTurnIndex: 10,
+      });
+      // Hold ListItemsBeforeTurn open so the store's loadingOlder stays
+      // true across the render we want to assert on.
+      let release: (value: unknown) => void = () => {};
+      const pending = new Promise((resolve) => { release = resolve; });
+      setBindingMock('ListItemsBeforeTurn', async () => {
+        await pending;
+        return { items: [], oldestTurnIndex: 10, hasMore: false };
+      });
+
+      const { getByTestId, rerender } = render(MessageTimeline, { props: { pane } });
+      void pane.loadOlder();
+      // One synchronous task boundary is enough for loadingOlder=true to
+      // flip before Svelte paints; rerender makes the $effect re-read
+      // the getter.
+      await tick();
+      await rerender({ pane });
+
+      const button = getByTestId('load-older-messages') as HTMLButtonElement;
+      expect(button.disabled).toBe(true);
+      expect(button.textContent ?? '').toContain('Loading');
+
+      release({ items: [], oldestTurnIndex: 10, hasMore: false });
+      await tick();
+    });
+
+    it('scroll intents route through pane.loadUntilItem before touching the DOM', async () => {
+      // Covers both directions of the windowed scroll contract:
+      //   1) The pane publishes a requestScrollToItem nonce.
+      //   2) MessageTimeline's $effect picks that up and calls
+      //      pane.loadUntilItem first so the target is guaranteed in
+      //      the window before scrollIntoView runs.
+      const pane = await buildWindowedPane({
+        items: [makeItem({ id: 'a', turnIndex: 5 })],
+      });
+      const loadSpy = vi.spyOn(pane, 'loadUntilItem').mockResolvedValue(true);
+
+      render(MessageTimeline, { props: { pane } });
+      pane.requestScrollToItem('a');
+      // Two ticks: one for the $effect to fire, one for the scrollToItem
+      // awaits inside it to settle to the point where loadUntilItem was
+      // called.
+      await tick();
+      await tick();
+
+      expect(loadSpy).toHaveBeenCalledWith('a');
+    });
+
+    it('surfaces a warning toast when the scroll target no longer exists', async () => {
+      const pane = await buildWindowedPane({
+        items: [makeItem({ id: 'visible', turnIndex: 5 })],
+      });
+      vi.spyOn(pane, 'loadUntilItem').mockResolvedValue(false);
+      const toastsBefore = getToasts().length;
+
+      render(MessageTimeline, { props: { pane } });
+      pane.requestScrollToItem('missing');
+      await tick();
+      await tick();
+
+      const added = getToasts().slice(toastsBefore);
+      expect(added.some((t) => t.type === 'warning')).toBe(true);
+    });
   });
 
   describe('completion divider integration', () => {

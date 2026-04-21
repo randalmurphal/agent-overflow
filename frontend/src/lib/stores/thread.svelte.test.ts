@@ -8,6 +8,14 @@ describe('createThreadPane', () => {
   beforeEach(() => {
     resetBindingMocks();
     setBindingMock('SwitchThread', async () => {});
+    // switchThread loads items via ListRecentThreadItems. Tests override
+    // the mock to supply specific items; the default is an empty thread
+    // so unrelated tests don't have to plumb it.
+    setBindingMock('ListRecentThreadItems', async () => ({
+      items: [] as Item[],
+      oldestTurnIndex: -1,
+      hasMore: false,
+    }));
     setBindingMock('ListItems', async () => [] as Item[]);
     // switchThread calls ListRecentTurns as part of rehydration. Default
     // to an empty list so tests that don't care about turn rehydration
@@ -33,7 +41,11 @@ describe('createThreadPane', () => {
       makeItem({ id: 'user:0', kind: 'user_text', role: 'user', summary: 'hi' }),
       makeItem({ id: 'text:0:0', itemIndex: 1, summary: 'hello back' }),
     ];
-    setBindingMock('ListItems', async () => items);
+    setBindingMock('ListRecentThreadItems', async () => ({
+      items,
+      oldestTurnIndex: 0,
+      hasMore: false,
+    }));
 
     await pane.switchThread(makeThread({
       lastTokenUsage: JSON.stringify({
@@ -74,23 +86,32 @@ describe('createThreadPane', () => {
     expect(pane.showPlanSidebar).toBe(false);
   });
 
-  it('ignores stale ListItems resolutions after a second thread switch', async () => {
+  it('ignores stale ListRecentThreadItems resolutions after a second thread switch', async () => {
     const pane = createThreadPane();
-    let resolveA!: (items: Item[]) => void;
-    let resolveB!: (items: Item[]) => void;
-    const listA = new Promise<Item[]>((resolve) => { resolveA = resolve; });
-    const listB = new Promise<Item[]>((resolve) => { resolveB = resolve; });
+    type Paged = { items: Item[]; oldestTurnIndex: number; hasMore: boolean };
+    let resolveA!: (paged: Paged) => void;
+    let resolveB!: (paged: Paged) => void;
+    const listA = new Promise<Paged>((resolve) => { resolveA = resolve; });
+    const listB = new Promise<Paged>((resolve) => { resolveB = resolve; });
 
-    setBindingMock('ListItems', (threadId: string) => (
+    setBindingMock('ListRecentThreadItems', (threadId: string) => (
       threadId === 'thread-a' ? listA : listB
     ));
 
     const switchA = pane.switchThread(makeThread({ id: 'thread-a' }));
     const switchB = pane.switchThread(makeThread({ id: 'thread-b' }));
 
-    resolveB([makeItem({ id: 'b', threadId: 'thread-b', summary: 'from b' })]);
+    resolveB({
+      items: [makeItem({ id: 'b', threadId: 'thread-b', summary: 'from b' })],
+      oldestTurnIndex: 0,
+      hasMore: false,
+    });
     await switchB;
-    resolveA([makeItem({ id: 'a', threadId: 'thread-a', summary: 'from a' })]);
+    resolveA({
+      items: [makeItem({ id: 'a', threadId: 'thread-a', summary: 'from a' })],
+      oldestTurnIndex: 0,
+      hasMore: false,
+    });
     await switchA;
 
     expect(pane.threadId).toBe('thread-b');
@@ -345,7 +366,11 @@ describe('createThreadPane', () => {
         }),
       }),
     ];
-    setBindingMock('ListItems', async () => items);
+    setBindingMock('ListRecentThreadItems', async () => ({
+      items,
+      oldestTurnIndex: 0,
+      hasMore: false,
+    }));
 
     await pane.switchThread(makeThread({ id: 'thread-a' }));
 
@@ -353,6 +378,193 @@ describe('createThreadPane', () => {
       insertions: 2,
       deletions: 0,
       fileCount: 1,
+    });
+  });
+
+  describe('windowed history', () => {
+    it('upsertItem drops new items below the window floor', async () => {
+      const pane = createThreadPane();
+      const seed: Item[] = [
+        makeItem({ id: 'at-floor', turnIndex: 5, itemIndex: 0 }),
+      ];
+      setBindingMock('ListRecentThreadItems', async () => ({
+        items: seed,
+        oldestTurnIndex: 5,
+        hasMore: true,
+      }));
+      await pane.switchThread(makeThread({ id: 'thread-windowed' }));
+      expect(pane.oldestLoadedTurnIndex).toBe(5);
+
+      // Upsert for a turn below the floor (e.g. interrupt-queue replay
+      // of an older tool_completion). Must NOT land in the window — the
+      // canonical row stays in SQLite and surfaces via loadOlder later.
+      pane.upsertItem(makeItem({ id: 'below', turnIndex: 2, itemIndex: 0 }));
+      expect(pane.items.map((it) => it.id)).toEqual(['at-floor']);
+    });
+
+    it('upsertItem still accepts replacements for known ids below the floor', async () => {
+      const pane = createThreadPane();
+      const seed: Item[] = [
+        makeItem({ id: 'known', turnIndex: 5, itemIndex: 0, summary: 'old' }),
+      ];
+      setBindingMock('ListRecentThreadItems', async () => ({
+        items: seed,
+        oldestTurnIndex: 5,
+        hasMore: true,
+      }));
+      await pane.switchThread(makeThread({ id: 't' }));
+
+      // Known id, turn below floor — cross-turn correction path. Must
+      // still replace because the id is clearly in-window already.
+      pane.upsertItem(makeItem({ id: 'known', turnIndex: 2, itemIndex: 0, summary: 'new' }));
+      expect(pane.items.find((it) => it.id === 'known')?.summary).toBe('new');
+    });
+
+    it('loadOlder prepends older items and updates the floor + hasMore', async () => {
+      const pane = createThreadPane();
+      const tail: Item[] = [
+        makeItem({ id: 't5', turnIndex: 5, itemIndex: 0 }),
+      ];
+      setBindingMock('ListRecentThreadItems', async () => ({
+        items: tail,
+        oldestTurnIndex: 5,
+        hasMore: true,
+      }));
+      setBindingMock('ListItemsBeforeTurn', async () => ({
+        items: [
+          makeItem({ id: 't3', turnIndex: 3, itemIndex: 0 }),
+          makeItem({ id: 't4', turnIndex: 4, itemIndex: 0 }),
+        ],
+        oldestTurnIndex: 3,
+        hasMore: true,
+      }));
+      await pane.switchThread(makeThread({ id: 't' }));
+      await pane.loadOlder();
+
+      expect(pane.items.map((it) => it.id)).toEqual(['t3', 't4', 't5']);
+      expect(pane.oldestLoadedTurnIndex).toBe(3);
+      expect(pane.hasMoreHistory).toBe(true);
+      expect(pane.loadingOlder).toBe(false);
+    });
+
+    it('loadOlder is a no-op when hasMoreHistory is false', async () => {
+      const pane = createThreadPane();
+      setBindingMock('ListRecentThreadItems', async () => ({
+        items: [makeItem({ id: 'a', turnIndex: 0, itemIndex: 0 })],
+        oldestTurnIndex: 0,
+        hasMore: false,
+      }));
+      let calls = 0;
+      setBindingMock('ListItemsBeforeTurn', async () => {
+        calls += 1;
+        return { items: [], oldestTurnIndex: -1, hasMore: false };
+      });
+      await pane.switchThread(makeThread({ id: 't' }));
+      await pane.loadOlder();
+      expect(calls).toBe(0);
+    });
+
+    it('loadOlder guards against a thread swap mid-fetch', async () => {
+      const pane = createThreadPane();
+      let resolveOlder!: (v: {
+        items: Item[]; oldestTurnIndex: number; hasMore: boolean;
+      }) => void;
+      const olderPromise = new Promise<{
+        items: Item[]; oldestTurnIndex: number; hasMore: boolean;
+      }>((r) => { resolveOlder = r; });
+      setBindingMock('ListRecentThreadItems', async () => ({
+        items: [makeItem({ id: 'tail', turnIndex: 5 })],
+        oldestTurnIndex: 5,
+        hasMore: true,
+      }));
+      setBindingMock('ListItemsBeforeTurn', () => olderPromise);
+
+      await pane.switchThread(makeThread({ id: 'thread-a' }));
+      const olderPending = pane.loadOlder();
+      // Swap before the older fetch resolves.
+      await pane.switchThread(makeThread({ id: 'thread-b' }));
+      resolveOlder({
+        items: [makeItem({ id: 'stale', turnIndex: 3, threadId: 'thread-a' })],
+        oldestTurnIndex: 3,
+        hasMore: true,
+      });
+      await olderPending;
+
+      // thread-b has its own fresh window; the stale thread-a older
+      // fetch must not leak into it.
+      expect(pane.threadId).toBe('thread-b');
+      expect(pane.items.some((it) => it.id === 'stale')).toBe(false);
+    });
+
+    it('loadUntilItem returns true when the item is already in-window', async () => {
+      const pane = createThreadPane();
+      setBindingMock('ListRecentThreadItems', async () => ({
+        items: [makeItem({ id: 'here', turnIndex: 5 })],
+        oldestTurnIndex: 5,
+        hasMore: true,
+      }));
+      let fetched = 0;
+      setBindingMock('GetThreadItem', async () => {
+        fetched += 1;
+        return makeItem({ id: 'here', turnIndex: 5 });
+      });
+      await pane.switchThread(makeThread({ id: 't' }));
+      const ok = await pane.loadUntilItem('here');
+      expect(ok).toBe(true);
+      expect(fetched).toBe(0);
+    });
+
+    it('loadUntilItem replaces the window to cover a below-floor item', async () => {
+      const pane = createThreadPane();
+      setBindingMock('ListRecentThreadItems', async () => ({
+        items: [makeItem({ id: 't5', turnIndex: 5 })],
+        oldestTurnIndex: 5,
+        hasMore: true,
+      }));
+      setBindingMock('GetThreadItem', async (_threadId: string, itemId: string) =>
+        itemId === 'target' ? makeItem({ id: 'target', turnIndex: 1 }) : null,
+      );
+      setBindingMock('ListItemsBeforeTurn', async () => ({
+        items: [
+          makeItem({ id: 'target', turnIndex: 1 }),
+          makeItem({ id: 't2', turnIndex: 2 }),
+          makeItem({ id: 't3', turnIndex: 3 }),
+          makeItem({ id: 't4', turnIndex: 4 }),
+        ],
+        oldestTurnIndex: 1,
+        hasMore: false,
+      }));
+      await pane.switchThread(makeThread({ id: 't' }));
+      const ok = await pane.loadUntilItem('target');
+
+      expect(ok).toBe(true);
+      expect(pane.oldestLoadedTurnIndex).toBe(1);
+      expect(pane.items.map((it) => it.id)).toEqual(['target', 't2', 't3', 't4', 't5']);
+    });
+
+    it('loadUntilItem returns false when the item is unknown to the backend', async () => {
+      const pane = createThreadPane();
+      setBindingMock('ListRecentThreadItems', async () => ({
+        items: [makeItem({ id: 't5', turnIndex: 5 })],
+        oldestTurnIndex: 5,
+        hasMore: true,
+      }));
+      setBindingMock('GetThreadItem', async () => makeItem({ id: '' }));
+      await pane.switchThread(makeThread({ id: 't' }));
+      const ok = await pane.loadUntilItem('ghost');
+      expect(ok).toBe(false);
+    });
+
+    it('requestScrollToItem bumps the nonce observed by the timeline', () => {
+      const pane = createThreadPane();
+      const first = pane.scrollToItemRequest.nonce;
+      pane.requestScrollToItem('a');
+      const second = pane.scrollToItemRequest.nonce;
+      expect(second).toBeGreaterThan(first);
+      expect(pane.scrollToItemRequest.itemId).toBe('a');
+      pane.requestScrollToItem('b');
+      expect(pane.scrollToItemRequest.nonce).toBeGreaterThan(second);
+      expect(pane.scrollToItemRequest.itemId).toBe('b');
     });
   });
 

@@ -14,6 +14,12 @@ beforeEach(async () => {
   await refreshThreads();
   setBindingMock('SwitchThread', async () => {});
   setBindingMock('ListItems', async () => []);
+  setBindingMock('ListRecentThreadItems', async () => ({
+    items: [],
+    oldestTurnIndex: -1,
+    hasMore: false,
+  }));
+  setBindingMock('ListRecentTurns', async () => []);
   setBindingMock('ListPayloadMetas', async () => []);
 });
 
@@ -225,6 +231,43 @@ describe('<MessageSearch> — interactions', () => {
     await fireEvent.click(btn);
     await waitFor(() => expect(onClose).toHaveBeenCalled());
     expect(pane.threadId).toBe('t1');
+  });
+
+  it('clicking an item hit publishes a scroll-to-item request for the match', async () => {
+    // Post-windowing behavior: openHit must ask the pane to scroll to
+    // the hit's itemId after switching threads. The pane mediates
+    // out-of-window targets via loadUntilItem; this test pins the
+    // wiring at the MessageSearch edge.
+    setBindingMock('SearchThreadMessages', async () => [
+      hit({ threadId: 't1', itemId: 'item-xyz', matchType: 'item', summary: 'match', threadTitle: 'Open' }),
+    ]);
+    const onClose = vi.fn();
+    const pane = makePane();
+    const spy = vi.spyOn(pane, 'requestScrollToItem');
+
+    const { getByTestId, findByTestId } = render(MessageSearch, { open: true, pane, onClose });
+    await fireEvent.input(getByTestId('message-search-input'), { target: { value: 'q' } });
+    await fireEvent.click(await findByTestId('message-search-hit-t1-item-xyz'));
+
+    await waitFor(() => expect(spy).toHaveBeenCalledWith('item-xyz'));
+  });
+
+  it('does not publish a scroll request for a title-only hit', async () => {
+    // Title matches carry no itemId — switching to the thread is
+    // enough, the timeline should not receive a scroll request.
+    setBindingMock('SearchThreadMessages', async () => [
+      hit({ threadId: 't1', itemId: '', matchType: 'title', threadTitle: 'Title' }),
+    ]);
+    const onClose = vi.fn();
+    const pane = makePane();
+    const spy = vi.spyOn(pane, 'requestScrollToItem');
+
+    const { getByTestId, findByTestId } = render(MessageSearch, { open: true, pane, onClose });
+    await fireEvent.input(getByTestId('message-search-input'), { target: { value: 'q' } });
+    await fireEvent.click(await findByTestId('message-search-hit-t1-title'));
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+
+    expect(spy).not.toHaveBeenCalled();
   });
 
   it('falls back to a minimal thread shape when the sidebar does not know the id', async () => {

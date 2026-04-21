@@ -8,7 +8,8 @@
     CheckpointUnavailableEvent,
   } from '../../types/checkpoint';
   import type { DiffPanelSource, TurnCompareMode } from '../../stores/diffPanel.svelte';
-  import { RevertToTurn } from '../../stores/bindings';
+  import { ListThreadDiffPayloads, RevertToTurn } from '../../stores/bindings';
+  import type { Item } from '../../types/models';
   import type { RevertMode } from '../../types/checkpoint';
   import { addToast } from '../../stores/toast.svelte';
   import RevertDialog from './diff-panel/RevertDialog.svelte';
@@ -19,6 +20,7 @@
     type AgentDiffEntry,
     type DiffStats,
   } from '../../utils/diffAggregation';
+  import { debounce } from '../../utils/debounce';
   import CumulativeView from './diff-panel/CumulativeView.svelte';
   import ErrorBanner from './diff-panel/ErrorBanner.svelte';
   import PanelHeader from './diff-panel/PanelHeader.svelte';
@@ -33,14 +35,48 @@
 
   let { pane }: Props = $props();
 
+  const REFRESH_DEBOUNCE_MS = 100;
+
   const store = $derived(pane.diffPanel);
   const threadId = $derived(pane.thread?.id ?? null);
 
-  // Cumulative entries + stats are pure derivations of the pane's items.
-  // The sources module reads these through a getter so there's no
-  // double-stream of reactive state between this shell and the module.
-  let cumulativeEntries = $derived<AgentDiffEntry[]>(selectAgentDiffEntries(pane.items));
-  let cumulativeStats = $derived<DiffStats>(summarizeEntries(cumulativeEntries, pane.items));
+  // Cumulative diff state is sourced from ListThreadDiffPayloads — a
+  // dedicated backend binding that returns every diff- or tool_result-
+  // kind item for the thread, independent of the pane's loaded window.
+  // Without this we'd under-report any diffs that live in paged-out
+  // history.
+  let diffItems: Item[] = $state([]);
+  let cumulativeEntries = $derived<AgentDiffEntry[]>(selectAgentDiffEntries(diffItems));
+  let cumulativeStats = $derived<DiffStats>(summarizeEntries(cumulativeEntries, diffItems));
+
+  let fetchSeq = 0;
+  async function refreshDiffItems(): Promise<void> {
+    const id = threadId;
+    const seq = ++fetchSeq;
+    if (!id) {
+      diffItems = [];
+      return;
+    }
+    try {
+      const items = (await ListThreadDiffPayloads(id)) as Item[] | null;
+      if (seq !== fetchSeq) return;
+      diffItems = items ?? [];
+    } catch (err) {
+      if (seq !== fetchSeq) return;
+      console.error('DiffPanelDrawer: ListThreadDiffPayloads failed:', err);
+      diffItems = [];
+    }
+  }
+
+  const debouncedRefresh = debounce(() => { void refreshDiffItems(); }, REFRESH_DEBOUNCE_MS);
+
+  // Initial + on-thread-switch fetch.
+  $effect(() => {
+    threadId;
+    void refreshDiffItems();
+  });
+
+  let cancelItemUpsertDiff: (() => void) | null = null;
 
   // pane.diffPanel is stable for the lifetime of the pane (created once in
   // createThreadPane and reset internally), so passing the initial reference
@@ -57,11 +93,13 @@
   // Active-tab derivation stays in sync with the store.
   let activeSource = $derived<DiffPanelSource>(store.source);
 
-  // A thread "has had turns" when at least one persisted item carries a
-  // non-negative turnIndex. The turn-diff tab is visible when either the
-  // workspace is a git repo with checkpoints, or we have no strong signal
-  // that checkpoints are unavailable.
-  let threadHasTurns = $derived(pane.items.some((it) => it.turnIndex >= 0));
+  // A thread "has had turns" when the pane knows a loaded floor. The
+  // pane sets `oldestLoadedTurnIndex` to a non-null value when the
+  // backend returned any paged items from ListRecentThreadItems — this
+  // is semantically identical to "at least one persisted item exists"
+  // but costs O(1) instead of O(window). Keeps working with a paged
+  // window where pane.items is a bounded tail.
+  let threadHasTurns = $derived(pane.oldestLoadedTurnIndex !== null);
   let turnTabVisible = $derived.by(() => {
     if (store.checkpointsUnavailable) return false;
     if (store.checkpointsLoaded && store.checkpoints.length === 0 && threadHasTurns) {
@@ -176,6 +214,15 @@
       store.setError(`Checkpoint capture failed (turn ${payload.turnIndex}): ${payload.error}`);
     });
 
+    // Refresh the cumulative diff list when new diff- or tool_result-kind
+    // items land. The 100 ms debounce collapses the burst of upserts a
+    // single tool_call → tool_completion pair produces into one query.
+    cancelItemUpsertDiff = wailsEventOn<Item>('provider:item_upsert', (item) => {
+      if (!item || item.threadId !== threadId) return;
+      if (item.payloadKind !== 'diff' && item.payloadKind !== 'tool_result') return;
+      debouncedRefresh();
+    });
+
     window.addEventListener('keydown', handleKeydown);
     void sources.refreshCheckpoints();
   });
@@ -184,6 +231,8 @@
     cancelCaptured?.();
     cancelUnavailable?.();
     cancelError?.();
+    cancelItemUpsertDiff?.();
+    debouncedRefresh.cancel();
     window.removeEventListener('keydown', handleKeydown);
   });
 

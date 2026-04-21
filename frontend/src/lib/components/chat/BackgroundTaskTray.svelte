@@ -1,17 +1,23 @@
 <script lang="ts">
+  import { onDestroy, onMount } from 'svelte';
+  import { ListLiveBackgroundTasks } from '../../stores/bindings';
+  import { wailsEventOn } from '../../stores/events';
+  import type { ThreadPane } from '../../stores/thread.svelte';
   import type { Item } from '../../types/models';
+  import { debounce } from '../../utils/debounce';
 
   interface Props {
-    items: Item[];
-    onExpand?: (id: string) => void;
+    pane: ThreadPane;
   }
 
-  let { items, onExpand }: Props = $props();
+  let { pane }: Props = $props();
 
   // Retention window for completion rows after createdAt. A completion
   // entry keeps rendering in the tray for 2 s so the user sees the final
-  // state land, then disappears.
+  // state land, then disappears. Matches the Go-side cutoff the
+  // ListLiveBackgroundTasks binding applies.
   const COMPLETION_RETENTION_MS = 2_000;
+  const REFRESH_DEBOUNCE_MS = 100;
 
   // Local clock used for retention pruning + elapsed-duration labels.
   // Updated by a 1 s interval in the $effect below.
@@ -24,13 +30,69 @@
     return () => clearInterval(id);
   });
 
+  // Thread-wide snapshot of running background launches + recent
+  // completions. Sourced from ListLiveBackgroundTasks so a running
+  // background task launched 200 turns ago (now paged out of the
+  // timeline window) still appears in the tray. The 2s retention cutoff
+  // is enforced both in SQL and again in the `tasks` derivation below,
+  // because the local clock keeps ticking between refreshes.
+  let backgroundItems: Item[] = $state([]);
+  let threadId = $derived(pane.thread?.id ?? null);
+
+  let fetchSeq = 0;
+  async function refreshItems(): Promise<void> {
+    const id = threadId;
+    const seq = ++fetchSeq;
+    if (!id) {
+      backgroundItems = [];
+      return;
+    }
+    try {
+      const items = (await ListLiveBackgroundTasks(id)) as Item[] | null;
+      if (seq !== fetchSeq) return;
+      backgroundItems = items ?? [];
+    } catch (err) {
+      if (seq !== fetchSeq) return;
+      console.error('BackgroundTaskTray: ListLiveBackgroundTasks failed:', err);
+      backgroundItems = [];
+    }
+  }
+
+  const debouncedRefresh = debounce(() => { void refreshItems(); }, REFRESH_DEBOUNCE_MS);
+
+  // Initial load + on thread-switch.
+  $effect(() => {
+    threadId;
+    void refreshItems();
+  });
+
+  let cancelItemUpsert: (() => void) | null = null;
+  onMount(() => {
+    cancelItemUpsert = wailsEventOn<Item>('provider:item_upsert', (item) => {
+      if (!item || item.threadId !== threadId) return;
+      // Refresh when a background launch, its completion, OR anything
+      // that looks like it could be either of those lands. The backend
+      // filters authoritatively on the next fetch; we stay permissive
+      // here so we don't miss a race where isBackground flips on first
+      // upsert after a later completion arrives first.
+      if (item.isBackground || item.completionOf) {
+        debouncedRefresh();
+      }
+    });
+  });
+
+  onDestroy(() => {
+    cancelItemUpsert?.();
+    debouncedRefresh.cancel();
+  });
+
   interface TrayTask {
-    /** Stable id used for the row key and onExpand callback. */
+    /** Stable id used for the row key and scroll-to-item request. */
     rowId: string;
     /** Primary item the row reads summary/timing from — the launch when
      * we have one, otherwise the completion. */
     anchor: Item;
-    /** The launch item, if it's still in `items`. */
+    /** The launch item, if it's still in the backend's live set. */
     launch: Item | null;
     /** The completion item, if one has landed for this launch. */
     completion: Item | null;
@@ -54,8 +116,8 @@
   // ages past the retention window. Otherwise the launch would
   // re-render as "Running" forever after retention elapsed.
   //
-  // Re-runs when `items` or `now` changes so the 1 s tick prunes
-  // expired pairs and advances the elapsed counter.
+  // Re-runs when `backgroundItems` or `now` changes so the 1 s tick
+  // prunes expired pairs and advances the elapsed counter.
   const tasks = $derived.by<TrayTask[]>(() => {
     interface Bucket {
       launch: Item | null;
@@ -71,8 +133,7 @@
       return b;
     };
 
-    for (const item of items) {
-      if (!item.isBackground) continue;
+    for (const item of backgroundItems) {
       if (item.completionOf) {
         const b = bucketFor(item.completionOf);
         // The backend upserts the same completion id in place, so a
@@ -89,9 +150,9 @@
     const out: TrayTask[] = [];
     for (const { launch, completion } of buckets.values()) {
       // Drop the whole pair once the completion ages out. A completion
-      // without a launch (launch already pruned from `items`) still
-      // renders during the window so the user sees the final state
-      // land.
+      // without a launch (launch already pruned from `backgroundItems`)
+      // still renders during the window so the user sees the final
+      // state land.
       if (completion && now - completion.createdAt >= COMPLETION_RETENTION_MS) continue;
       const anchor = launch ?? completion;
       if (!anchor) continue;
@@ -107,10 +168,10 @@
         completion,
         status,
         // Only the launch has a meaningful "started at" timestamp. For
-        // orphan completions (no launch in items) counting elapsed time
-        // from the completion's createdAt would misleadingly show "0s"
-        // for a task that actually ran for minutes — so we omit the
-        // label entirely in that case.
+        // orphan completions (no launch in the list) counting elapsed
+        // time from the completion's createdAt would misleadingly show
+        // "0s" for a task that actually ran for minutes — so we omit
+        // the label entirely in that case.
         elapsedMs: launch ? Math.max(0, now - launch.createdAt) : null,
       });
     }
@@ -157,7 +218,10 @@
   }
 
   function onRowClick(task: TrayTask) {
-    onExpand?.(task.rowId);
+    // Route the scroll request through the pane so MessageTimeline can
+    // page in the target turn if the launch/completion is below the
+    // loaded window floor.
+    pane.requestScrollToItem(task.rowId);
   }
 
   function onRowKeydown(evt: KeyboardEvent, task: TrayTask) {

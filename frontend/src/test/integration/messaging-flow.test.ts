@@ -446,6 +446,15 @@ describe('App integration — messaging flow', () => {
     const paneMod = await import('../../lib/stores/panes.svelte');
     const pane = paneMod.getMainPane();
 
+    // BackgroundTaskTray sources its rows from ListLiveBackgroundTasks
+    // (thread-scoped, independent of the paged timeline). Install a
+    // stateful mock AFTER mount so it isn't overwritten by the
+    // installThreadViewDefaults → empty default. Each
+    // provider:item_upsert that also mutates `liveBackgroundItems`
+    // lands in the tray after its 100 ms debounced refresh fires.
+    const liveBackgroundItems: Array<Record<string, unknown>> = [];
+    setBindingMock('ListLiveBackgroundTasks', async () => [...liveBackgroundItems]);
+
     const startedAt = Date.now();
 
     // 1. Turn starts.
@@ -460,7 +469,7 @@ describe('App integration — messaging flow', () => {
     // 2. Backgrounded tool_call launch (run_in_background:true on the
     // Claude wire). The launch row stays status=running per invariant
     // 24 — triage never flips it even at turn-complete.
-    emitWailsEvent('provider:item_upsert', {
+    const launchItem = {
       id: 'bg-launch',
       threadId: 'thread-1',
       turnIndex: 0,
@@ -473,7 +482,9 @@ describe('App integration — messaging flow', () => {
       toolName: 'Bash',
       createdAt: startedAt + 10,
       updatedAt: startedAt + 10,
-    });
+    };
+    liveBackgroundItems.push(launchItem);
+    emitWailsEvent('provider:item_upsert', launchItem);
     await flush();
 
     // The inline ToolCallCard renders "…" in the status chip while
@@ -516,7 +527,7 @@ describe('App integration — messaging flow', () => {
     // place rather than growing to 2 rows. The completion's createdAt
     // is near the current wall clock so the tray's 2 s retention
     // window starts NOW, not in the past.
-    emitWailsEvent('provider:item_upsert', {
+    const completionItem = {
       id: 'complete:bg-launch',
       threadId: 'thread-1',
       turnIndex: 0,
@@ -530,14 +541,19 @@ describe('App integration — messaging flow', () => {
       toolName: 'Bash',
       createdAt: Date.now(),
       updatedAt: Date.now(),
-    });
+    };
+    liveBackgroundItems.push(completionItem);
+    emitWailsEvent('provider:item_upsert', completionItem);
     await flush();
 
     // BackgroundTaskTray pairs launch + completion by completionOf;
     // the tray count stays at 1 (one logical task), and the row
-    // status flips to completed.
+    // status flips to completed. Use waitFor so the 100 ms debounced
+    // tray refresh has time to pick up the completion.
     expect((await findByTestId('background-task-tray-count')).textContent).toBe('1');
-    const rowStatus = await findByTestId('background-task-tray-row-status');
-    expect(rowStatus.getAttribute('data-status')).toBe('completed');
+    await waitFor(async () => {
+      const rowStatus = await findByTestId('background-task-tray-row-status');
+      expect(rowStatus.getAttribute('data-status')).toBe('completed');
+    });
   });
 });

@@ -1,7 +1,11 @@
 <script lang="ts">
+  import { onMount, onDestroy } from 'svelte';
   import { fly } from 'svelte/transition';
+  import { ListThreadProposedPlans } from '../../stores/bindings';
+  import { wailsEventOn } from '../../stores/events';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import type { Item, ProposedPlanMeta } from '../../types/models';
+  import { debounce } from '../../utils/debounce';
 
   interface Props {
     pane: ThreadPane;
@@ -10,6 +14,7 @@
   let { pane }: Props = $props();
 
   const PREVIEW_CHAR_LIMIT = 120;
+  const REFRESH_DEBOUNCE_MS = 100;
 
   interface PlanRow {
     itemId: string;
@@ -33,15 +38,12 @@
     return `${oneLine.slice(0, PREVIEW_CHAR_LIMIT - 1).trimEnd()}…`;
   }
 
-  // Newest first. Proposed plans live on payload-bearing tool rows.
-  // Single pass: filter/reverse/map without an inner lookup. The item is
-  // already in scope in the .map body, so parsePlanMeta takes it directly
-  // instead of re-searching pane.items.
-  let planRows = $derived<PlanRow[]>(
-    pane.items
-      .filter((item: Item) => item.payloadKind === 'proposed_plan' && !!item.payloadId)
-      .slice()
-      .reverse()
+  function itemsToRows(items: Item[]): PlanRow[] {
+    // Backend returns newest-first ordered by (turn_index, item_index)
+    // DESC, so no re-sort is necessary. A defensive filter keeps us
+    // insulated if the SQL ever widens beyond proposed_plan kinds.
+    return items
+      .filter((item) => item.payloadKind === 'proposed_plan' && !!item.payloadId)
       .map((item) => {
         const meta = parsePlanMeta(item);
         return {
@@ -50,16 +52,65 @@
           title: meta?.title?.trim() || 'Proposed plan',
           previewSnippet: meta ? trimPreview(meta.preview ?? '') : '',
         };
-      }),
-  );
+      });
+  }
 
+  // Thread-wide plan list, fetched from the dedicated binding. This is
+  // independent of the windowed `pane.items` tail — a plan emitted 200
+  // turns ago must still show up in the sidebar even when it's been
+  // paged out of the timeline window.
+  let planRows: PlanRow[] = $state([]);
   let visible = $derived(pane.showPlanSidebar);
+  let threadId = $derived(pane.thread?.id ?? null);
+
+  let fetchSeq = 0;
+  async function refreshPlans(): Promise<void> {
+    const id = threadId;
+    const seq = ++fetchSeq;
+    if (!id) {
+      planRows = [];
+      return;
+    }
+    try {
+      const items = (await ListThreadProposedPlans(id)) as Item[] | null;
+      if (seq !== fetchSeq) return;
+      planRows = itemsToRows(items ?? []);
+    } catch (err) {
+      if (seq !== fetchSeq) return;
+      console.error('PlanSidebar: ListThreadProposedPlans failed:', err);
+      planRows = [];
+    }
+  }
+
+  const debouncedRefresh = debounce(() => { void refreshPlans(); }, REFRESH_DEBOUNCE_MS);
+
+  // Initial + on-thread-switch fetch.
+  $effect(() => {
+    // Track the thread id so a switch retriggers the effect.
+    threadId;
+    void refreshPlans();
+  });
+
+  let cancelItemUpsert: (() => void) | null = null;
+  onMount(() => {
+    cancelItemUpsert = wailsEventOn<Item>('provider:item_upsert', (item) => {
+      if (!item || !item.threadId) return;
+      if (item.threadId !== threadId) return;
+      if (item.payloadKind !== 'proposed_plan') return;
+      debouncedRefresh();
+    });
+  });
+
+  onDestroy(() => {
+    cancelItemUpsert?.();
+    debouncedRefresh.cancel();
+  });
 
   function handleRowClick(itemId: string) {
-    const target = document.querySelector(`[data-item-id="${CSS.escape(itemId)}"]`);
-    if (target && typeof (target as HTMLElement).scrollIntoView === 'function') {
-      (target as HTMLElement).scrollIntoView({ behavior: 'smooth', block: 'start' });
-    }
+    // Route through the pane so out-of-window plans get paged in first.
+    // MessageTimeline owns the DOM scroll call and will toast if the
+    // item has been deleted since the list was fetched.
+    pane.requestScrollToItem(itemId);
   }
 
   function handleKeydown(event: KeyboardEvent, itemId: string) {

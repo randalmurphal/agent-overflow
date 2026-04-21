@@ -62,7 +62,19 @@ function seedThread(): Thread {
 async function buildPane(): Promise<ReturnType<typeof createThreadPane>> {
   setBindingMock('SwitchThread', async () => {});
   setBindingMock('ListItems', async () => []);
+  setBindingMock('ListRecentThreadItems', async () => ({
+    items: [],
+    oldestTurnIndex: -1,
+    hasMore: false,
+  }));
+  setBindingMock('ListRecentTurns', async () => []);
   setBindingMock('ListPayloadMetas', async () => []);
+  // Thread-wide aggregate bindings — PlanSidebar / DiffPanelDrawer /
+  // BackgroundTaskTray fetch these on mount. Default to empty; tests
+  // that need a populated tray override these before rendering.
+  setBindingMock('ListThreadProposedPlans', async () => []);
+  setBindingMock('ListThreadDiffPayloads', async () => []);
+  setBindingMock('ListLiveBackgroundTasks', async () => []);
   // GitActionsControl calls GetGitStatus on mount; return "not a repo"
   // so the control renders nothing — we don't need a branch chip.
   setBindingMock('GetGitStatus', async () => ({
@@ -134,15 +146,17 @@ describe('<ChatView>', () => {
   it('clicking a background tray row scrolls the timeline to the matching inline item', async () => {
     // Spec: docs/architecture/chat-rewrite.md §"Tray rows" — "Clicking
     // a tray row scrolls/expands the corresponding inline item."
-    // Verify the end-to-end wiring: ChatView binds MessageTimeline and
-    // threads `onExpand` into BackgroundTaskTray, which calls
-    // scrollToItem with the launch id. The inline leaf wrapper carries
-    // data-item-id, and scrollToItem runs scrollIntoView on it.
+    // Post-windowing wiring: BackgroundTaskTray sources its rows from
+    // ListLiveBackgroundTasks (thread-scoped, independent of the
+    // timeline's loaded window). A tray click publishes a scroll
+    // request on the pane; MessageTimeline's effect picks that up and
+    // runs loadUntilItem + scrollIntoView. This test verifies the
+    // end-to-end loop: backend row → rendered tray → click → scrollIntoView
+    // on the [data-item-id] wrapper inside the timeline.
     const scrollSpy = vi.fn();
     const originalScrollIntoView = HTMLElement.prototype.scrollIntoView;
     HTMLElement.prototype.scrollIntoView = scrollSpy as typeof HTMLElement.prototype.scrollIntoView;
     try {
-      const pane = await buildPane();
       const launch: Item = {
         id: 'launch-a',
         threadId: 'thread-1',
@@ -158,15 +172,27 @@ describe('<ChatView>', () => {
         createdAt: Date.now() - 1_000,
         updatedAt: Date.now() - 1_000,
       };
+      const pane = await buildPane();
+      setBindingMock('ListLiveBackgroundTasks', async () => [launch]);
+      // Put the launch in the pane's loaded window so loadUntilItem
+      // short-circuits without a GetThreadItem/ListItemsBeforeTurn
+      // round-trip. Mirrors what the real streaming path produces.
       pane.upsertItem(launch);
 
       const { getByTestId } = render(ChatView, { props: { pane } });
+      // Let onMount fire the ListLiveBackgroundTasks fetch + render the row.
+      await tick();
       await tick();
 
       const row = getByTestId('background-task-tray-row');
       expect(row.getAttribute('data-row-id')).toBe('launch-a');
 
       await fireEvent.click(row);
+      // pane.requestScrollToItem bumps a nonce; MessageTimeline's $effect
+      // then awaits loadUntilItem + tick before scrollIntoView. Two
+      // ticks cover both async hops.
+      await tick();
+      await tick();
 
       expect(scrollSpy).toHaveBeenCalledTimes(1);
       const thisArg = scrollSpy.mock.contexts[0] as HTMLElement;

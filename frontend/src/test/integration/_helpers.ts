@@ -97,6 +97,11 @@ export function seedSidebarProject(threads: Thread[]): Project {
 // git UI.
 export function installThreadViewDefaults(): void {
   setBindingMock('SwitchThread', async () => {});
+  setBindingMock('ListRecentThreadItems', async () => ({
+    items: [],
+    oldestTurnIndex: -1,
+    hasMore: false,
+  }));
   setBindingMock('ListItems', async () => []);
   // switchThread rehydrates latestSettledTurn via ListRecentTurns — default
   // to an empty list so tests that don't care about turn history don't
@@ -106,6 +111,13 @@ export function installThreadViewDefaults(): void {
   setBindingMock('GetGitStatus', async () => makeGitStatus());
   setBindingMock('GitListBranches', async () => []);
   setBindingMock('ListThreadCheckpoints', async () => []);
+  // Thread-wide aggregate surfaces (PlanSidebar / DiffPanelDrawer /
+  // BackgroundTaskTray) fetch these bindings on mount / thread-switch.
+  // Default to empty lists so tests that don't assert on those
+  // surfaces don't have to stub each one themselves.
+  setBindingMock('ListThreadProposedPlans', async () => []);
+  setBindingMock('ListThreadDiffPayloads', async () => []);
+  setBindingMock('ListLiveBackgroundTasks', async () => []);
 }
 
 // Composer-adjacent bindings that fire on mount. NOT included: SendMessage

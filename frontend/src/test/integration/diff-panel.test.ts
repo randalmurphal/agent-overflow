@@ -67,6 +67,10 @@ async function mountAppWithThread(opts: {
   installThreadViewDefaults();
   setBindingMock('ListItems', async () => opts.items ?? []);
   setBindingMock('ListThreadCheckpoints', async () => opts.checkpoints ?? []);
+  // The cumulative tab sources its row set from a dedicated binding
+  // now. Mirror `items` into it so the existing fixtures keep working
+  // without the caller having to know about the windowing split.
+  setBindingMock('ListThreadDiffPayloads', async () => opts.items ?? []);
   installComposerDefaults(thread.id);
   setBindingMock('GetWorkingTreeDiff', async () => '');
   setBindingMock('GetTurnDiff', async () => '');

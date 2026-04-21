@@ -38,6 +38,16 @@ export function makeItem(overrides: Partial<Item> = {}): Item {
 
 export function installPaneMocks(items: Item[] = []): void {
   setBindingMock('SwitchThread', async () => {});
+  // The pane now loads the tail of history via ListRecentThreadItems on
+  // switch; ListItems remains mocked because a few component tests (and
+  // a couple of integration fixtures) still reach for it directly.
+  // Both default to the same items array so helpers and raw mocks
+  // behave consistently.
+  setBindingMock('ListRecentThreadItems', async () => ({
+    items,
+    oldestTurnIndex: items.length > 0 ? items[0].turnIndex : -1,
+    hasMore: false,
+  }));
   setBindingMock('ListItems', async () => items);
   // Empty turn history by default. Tests that want to exercise rehydration
   // override this via setBindingMock('ListRecentTurns', ...) after calling

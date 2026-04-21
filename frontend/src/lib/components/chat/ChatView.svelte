@@ -22,9 +22,6 @@
 
   const draft = createComposerDraftStore();
   let lastHydratedThreadId: string | null = null;
-  // Ref to the timeline so the background tray can ask it to scroll to
-  // a specific inline row when the user clicks a tray entry.
-  let timeline: ReturnType<typeof MessageTimeline> | undefined = $state();
 
   $effect(() => {
     const current = pane.thread?.id ?? null;
@@ -77,12 +74,9 @@
 
       <ProviderStatusBanner {pane} />
 
-      <MessageTimeline bind:this={timeline} {pane} />
+      <MessageTimeline {pane} />
       <ApprovalPrompt {pane} />
-      <BackgroundTaskTray
-        items={pane.items}
-        onExpand={(id) => timeline?.scrollToItem(id)}
-      />
+      <BackgroundTaskTray {pane} />
       <PlanFollowUpBanner {pane} {draft} />
       <Composer {pane} {draft} />
       <ChatWorkingIndicator {pane} />

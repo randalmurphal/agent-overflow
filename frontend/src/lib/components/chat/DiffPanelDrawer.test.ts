@@ -50,6 +50,10 @@ describe('<DiffPanelDrawer>', () => {
     setBindingMock('GetCheckpointToWorktreeDiff', async () => '');
     setBindingMock('GetWorkingTreeDiff', async () => '');
     setBindingMock('GetPayloadData', async () => ({ data: '', html: '' }));
+    // Cumulative diffs are now sourced from a dedicated thread-wide
+    // binding so the panel stays accurate with a paged timeline. Each
+    // test overrides this below when it needs non-empty rows.
+    setBindingMock('ListThreadDiffPayloads', async () => []);
   });
 
   it('loads checkpoints on mount and auto-selects the latest turn diff', async () => {
@@ -66,7 +70,7 @@ describe('<DiffPanelDrawer>', () => {
   });
 
   it('aggregates exact tool-result and diff payloads in cumulative mode', async () => {
-    const pane = await buildPane(makeThread({ id: 'thread-a' }), [
+    setBindingMock('ListThreadDiffPayloads', async () => [
       makeItem({
         id: 'tool-1',
         threadId: 'thread-a',
@@ -96,9 +100,11 @@ describe('<DiffPanelDrawer>', () => {
         }),
       }),
     ]);
+    const pane = await buildPane(makeThread({ id: 'thread-a' }));
     const getPayload = setBindingMock('GetPayloadData', async (payloadId: string) => ({ data: `diff:${payloadId}`, html: '' }));
 
     const { getByTestId, findByTestId } = render(DiffPanelDrawer, { props: { pane } });
+    await flush();
     await fireEvent.click(getByTestId('diff-source-tab-cumulative'));
     await flush();
 
@@ -108,7 +114,7 @@ describe('<DiffPanelDrawer>', () => {
   });
 
   it('surfaces cumulative aggregation failures as an error banner', async () => {
-    const pane = await buildPane(makeThread({ id: 'thread-a' }), [
+    setBindingMock('ListThreadDiffPayloads', async () => [
       makeItem({
         id: 'tool-1',
         threadId: 'thread-a',
@@ -123,11 +129,13 @@ describe('<DiffPanelDrawer>', () => {
         }),
       }),
     ]);
+    const pane = await buildPane(makeThread({ id: 'thread-a' }));
     setBindingMock('GetPayloadData', async () => {
       throw new Error('payload gone');
     });
 
     const { getByTestId, findByTestId } = render(DiffPanelDrawer, { props: { pane } });
+    await flush();
     await fireEvent.click(getByTestId('diff-source-tab-cumulative'));
 
     expect((await findByTestId('diff-panel-error')).textContent).toContain('payload gone');

@@ -34,10 +34,11 @@
 
   function handleReview() {
     if (!latestPlanItemId) return;
-    const target = document.querySelector(`[data-item-id="${CSS.escape(latestPlanItemId)}"]`);
-    if (target && typeof (target as HTMLElement).scrollIntoView === 'function') {
-      (target as HTMLElement).scrollIntoView({ behavior: 'smooth', block: 'start' });
-    }
+    // Route through the pane so MessageTimeline owns the scroll. The
+    // banner only fires for the tail-most item, which is always in the
+    // loaded window — requestScrollToItem still enforces that via
+    // loadUntilItem, so there's no window-math to duplicate here.
+    pane.requestScrollToItem(latestPlanItemId);
   }
 
   function handleDismiss() {
