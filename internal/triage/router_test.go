@@ -26,16 +26,6 @@ func TestHandleEveryEventKindCovered(t *testing.T) {
 
 	for _, kind := range provider.AllEventKinds {
 		t.Run(string(kind), func(t *testing.T) {
-			// Skip kinds the triage router does not yet handle. These are
-			// introduced by the Wave 1 Claude parser refactor
-			// (turn-lifecycle.md) and get wired in Wave 2
-			// (handleBackgroundTaskTerminal in tool_lifecycle.go).
-			// Re-enable by adding the matching case in Router.Handle.
-			switch kind {
-			case provider.EventBackgroundTaskTerminal, provider.EventSubagentNotification:
-				t.Skip("refactored in Wave 2 — triage wiring")
-			}
-
 			evt := provider.ProviderEvent{
 				Kind:      kind,
 				ThreadID:  "t1",
@@ -1958,10 +1948,17 @@ func TestTurnCompleteWithoutAccumulatedText(t *testing.T) {
 		t.Errorf("expected 0 items, got %d", len(items))
 	}
 
-	// Router no longer fans every event out on provider:event. An empty
-	// turn produces no item upserts and no typed emissions either.
-	if len(*emissions) != 0 {
-		t.Errorf("expected 0 emissions for empty turn, got %d: %+v", len(*emissions), *emissions)
+	// Empty turn produces no item upserts. Turn-lifecycle refactor adds a
+	// provider:turn_completed push so the frontend clears its working
+	// indicator even for turns that carry no text; assert that shape but
+	// nothing else.
+	upserts := filterEmissions(*emissions, "provider:item_upsert")
+	if len(upserts) != 0 {
+		t.Errorf("expected 0 item upserts for empty turn, got %d: %+v", len(upserts), upserts)
+	}
+	completed := filterEmissions(*emissions, "provider:turn_completed")
+	if len(completed) != 1 {
+		t.Errorf("expected 1 provider:turn_completed emission, got %d: %+v", len(completed), completed)
 	}
 }
 
@@ -2239,15 +2236,21 @@ func TestFatalErrorOrderingMatchesSpec(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("text delta: %v", err)
 	}
-	completeMeta, _ := json.Marshal(map[string]any{
-		"is_background": true,
-		"exit_code":     0,
+	// Post-refactor: EventToolComplete on the backgrounded placeholder
+	// is a no-op for sibling creation. The EventBackgroundTaskTerminal
+	// fires the sibling-row upsert, which queues behind the streaming
+	// text item.
+	terminalMeta, _ := json.Marshal(map[string]any{
+		"task_id":     "tsk-1",
+		"tool_use_id": "bg-1",
+		"status":      "completed",
+		"exit_code":   0,
 	})
 	if err := router.Handle(provider.ProviderEvent{
-		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "bg-1",
-		Meta: completeMeta, Content: "done", Timestamp: time.Now(),
+		Kind: provider.EventBackgroundTaskTerminal, ThreadID: "t1", ItemID: "bg-1",
+		Meta: terminalMeta, Content: "done", Timestamp: time.Now(),
 	}); err != nil {
-		t.Fatalf("bg complete: %v", err)
+		t.Fatalf("bg terminal: %v", err)
 	}
 
 	// Baseline check: queued completion has NOT persisted yet (sits
@@ -2719,5 +2722,50 @@ func TestCleanupThreadDoesNotPoisonFutureSessions(t *testing.T) {
 	}
 	if len(items) != 1 {
 		t.Fatalf("items = %d, want 1 (stopped marker leaked into new session)", len(items))
+	}
+}
+
+// TestHandleEventSubagentNotification_EmitsPassthrough confirms the
+// Wave 2 emission-only contract for the Codex `<subagent_notification>`
+// tag: the handler fans out a provider:subagent_notification event
+// carrying the raw Meta payload but does NOT persist an item (the
+// tray / subagent UI will decide what to surface later). The handler
+// must also not error — it's a pure pass-through.
+func TestHandleEventSubagentNotification_EmitsPassthrough(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	meta := json.RawMessage(`{"agent_id":"child-123","status":"completed"}`)
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventSubagentNotification,
+		ThreadID:  "t1",
+		Meta:      meta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("subagent notification: %v", err)
+	}
+
+	// No persistence — subagent notifications are not timeline rows.
+	items, err := st.ListItems("t1")
+	if err != nil {
+		t.Fatalf("list items: %v", err)
+	}
+	if len(items) != 0 {
+		t.Errorf("subagent notification must not persist items; got %+v", items)
+	}
+
+	notif := filterEmissions(*emissions, "provider:subagent_notification")
+	if len(notif) != 1 {
+		t.Fatalf("expected 1 provider:subagent_notification emission, got %d", len(notif))
+	}
+	payload, ok := notif[0].data.(SubagentNotificationEvent)
+	if !ok {
+		t.Fatalf("emission payload type = %T, want SubagentNotificationEvent", notif[0].data)
+	}
+	if payload.ThreadID != "t1" {
+		t.Errorf("ThreadID = %q, want t1", payload.ThreadID)
+	}
+	if string(payload.Meta) != string(meta) {
+		t.Errorf("payload.Meta = %q, want %q (raw passthrough)", string(payload.Meta), string(meta))
 	}
 }

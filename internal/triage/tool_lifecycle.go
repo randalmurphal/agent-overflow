@@ -158,22 +158,7 @@ func (r *Router) persistToolCallCompletion(evt provider.ProviderEvent) error {
 	meta := decodeToolCompleteMeta(evt.Meta)
 
 	if itemID == "" {
-		// Fresh-session task_updated carries only task_id (no inline
-		// tool_use_id) — the adapter's in-memory map is empty so it
-		// emits a completion keyed by meta.task_id and lets triage
-		// resolve back to the tool_call row whose meta.task_id matches.
-		if meta.TaskID == "" {
-			return nil
-		}
-		resolved, ok, err := r.findToolCallByTaskID(evt.ThreadID, meta.TaskID)
-		if err != nil {
-			return fmt.Errorf("tool completion task_id lookup %s: %w", meta.TaskID, err)
-		}
-		if !ok {
-			log.Printf("triage: task_updated for task_id=%q on thread %s had no matching tool_call item; dropping", meta.TaskID, evt.ThreadID)
-			return nil
-		}
-		itemID = resolved.ID
+		return nil
 	}
 
 	launch, found, err := r.store.GetThreadItem(evt.ThreadID, itemID)
@@ -185,47 +170,31 @@ func (r *Router) persistToolCallCompletion(evt provider.ProviderEvent) error {
 	}
 
 	now := eventTimestampMillis(evt)
-	status := completionStatus(meta)
 
+	// Backgrounded tool_result is a placeholder — Claude sends it to
+	// close the wire-level tool_use block (universal tool-lifecycle
+	// invariant 20) but the real terminal for the task arrives later
+	// via EventBackgroundTaskTerminal. Per spec:
+	// docs/architecture/turn-lifecycle.md §Tool lifecycle, the launch
+	// row must STAY running + is_background=true. Refresh the
+	// is_background meta on the launch row (in case the start event
+	// missed the flag) but don't flip status and don't create a sibling
+	// tool_completion — that sibling now lives under
+	// handleBackgroundTaskTerminal.
 	if launch.IsBackground || meta.IsBackground {
-		completionID := nextToolCompletionID(launch.ID)
-		turnIndex, err := r.currentTurnIndex(evt.ThreadID)
-		if err != nil {
-			return fmt.Errorf("background completion turn index %s: %w", completionID, err)
+		if meta.IsBackground && !launch.IsBackground {
+			launch.IsBackground = true
+			launch.UpdatedAt = now
+			return r.persistItem(launch, nil)
 		}
-
-		completion := store.Item{
-			ID:           completionID,
-			ThreadID:     evt.ThreadID,
-			TurnIndex:    turnIndex,
-			Kind:         itemKindBackgroundDone,
-			Role:         "assistant",
-			Status:       status,
-			Summary:      buildBackgroundCompletionSummary(launch.Summary, meta),
-			ParentID:     launch.ParentID,
-			IsBackground: true,
-			CompletionOf: launch.ID,
-			ToolName:     launch.ToolName,
-			CreatedAt:    now,
-			UpdatedAt:    now,
-		}
-
-		if existing, ok, err := r.store.GetThreadItem(evt.ThreadID, completionID); err == nil && ok {
-			completion = existing
-			completion.Status = status
-			completion.Summary = buildBackgroundCompletionSummary(launch.Summary, meta)
-			completion.ParentID = launch.ParentID
-			completion.IsBackground = true
-			completion.CompletionOf = launch.ID
-			completion.ToolName = launch.ToolName
-			completion.UpdatedAt = now
-		} else if err != nil {
-			return fmt.Errorf("background completion lookup %s: %w", completionID, err)
-		}
-
-		return r.maybeDeferOrPersist(evt.ThreadID, completion, completionPayload(launch.ID, evt, meta, now))
+		// Launch row already correctly flagged; the placeholder
+		// completion carries no additional state to persist. The
+		// background task terminal (task_updated / TaskOutput) will
+		// write the sibling completion row when it arrives.
+		return nil
 	}
 
+	status := completionStatus(meta)
 	launch.Status = status
 	launch.Summary = buildCompletionSummary(launch.Summary, meta)
 	launch.UpdatedAt = now
@@ -258,6 +227,226 @@ func (r *Router) persistToolCallCompletion(evt provider.ProviderEvent) error {
 		return r.persistItem(launch, payload)
 	default:
 		return r.persistItem(launch, nil)
+	}
+}
+
+// backgroundTaskTerminalMeta is the decoded view of
+// EventBackgroundTaskTerminal.Meta. Fields mirror what Claude's
+// parse_system (for task_updated) and parse_user (for TaskOutput
+// enrichment) emit: docs/architecture/turn-lifecycle.md §Task lifecycle.
+type backgroundTaskTerminalMeta struct {
+	TaskID     string `json:"task_id"`
+	ToolUseID  string `json:"tool_use_id,omitempty"`
+	Status     string `json:"status"`
+	IsError    bool   `json:"is_error,omitempty"`
+	ExitCode   *int   `json:"exit_code,omitempty"`
+	OutputFile string `json:"output_file,omitempty"`
+	EndTime    int64  `json:"end_time,omitempty"`
+}
+
+func decodeBackgroundTaskTerminalMeta(raw json.RawMessage) backgroundTaskTerminalMeta {
+	if len(raw) == 0 {
+		return backgroundTaskTerminalMeta{}
+	}
+	var m backgroundTaskTerminalMeta
+	if json.Unmarshal(raw, &m) != nil {
+		return backgroundTaskTerminalMeta{}
+	}
+	return m
+}
+
+// handleBackgroundTaskTerminal writes the sibling tool_completion row
+// for a backgrounded Claude tool (Bash with run_in_background:true, or
+// Task subagent). The event fires twice in the wild — once on
+// system.task_updated and once on TaskOutput enrichment — and ordering
+// is undefined. The stable completion id (nextToolCompletionID) +
+// persistItem's INSERT-OR-UPDATE semantics coalesce the pair
+// idempotently; the second (typically richer) payload wins.
+//
+// Launch resolution prefers the explicit tool_use_id on the event;
+// falls back to an items.meta.task_id lookup when the adapter's
+// in-memory map was flushed (fresh session after reconnect). A launch
+// that can't be resolved is logged and dropped.
+//
+// Persistence uses maybeDeferOrPersist so a mid-stream terminal queues
+// behind the active streaming block (invariant 11 — intended-order
+// item_index assignment).
+func (r *Router) handleBackgroundTaskTerminal(evt provider.ProviderEvent) error {
+	meta := decodeBackgroundTaskTerminalMeta(evt.Meta)
+
+	// Resolve launch: prefer the explicit tool_use_id the parser
+	// passed via evt.ItemID, else fall back to the task_id lookup.
+	launchID := strings.TrimSpace(evt.ItemID)
+	if launchID == "" {
+		launchID = strings.TrimSpace(meta.ToolUseID)
+	}
+	var launch store.Item
+	var found bool
+	if launchID != "" {
+		var err error
+		launch, found, err = r.store.GetThreadItem(evt.ThreadID, launchID)
+		if err != nil {
+			return fmt.Errorf("bg task terminal lookup %s: %w", launchID, err)
+		}
+	}
+	if !found && meta.TaskID != "" {
+		resolved, ok, err := r.findToolCallByTaskID(evt.ThreadID, meta.TaskID)
+		if err != nil {
+			return fmt.Errorf("bg task terminal task_id lookup %s: %w", meta.TaskID, err)
+		}
+		if ok {
+			launch = resolved
+			found = true
+		}
+	}
+	if !found || launch.Kind != itemKindToolCall {
+		log.Printf("triage: background task terminal with no matching tool_call on thread %s (task_id=%q tool_use_id=%q); dropping",
+			evt.ThreadID, meta.TaskID, meta.ToolUseID)
+		return nil
+	}
+
+	now := eventTimestampMillis(evt)
+	status := backgroundTerminalStatus(meta)
+	completionID := nextToolCompletionID(launch.ID)
+	turnIndex := launch.TurnIndex // sibling lands on the launching turn so ordering follows the launch row
+
+	completion := store.Item{
+		ID:           completionID,
+		ThreadID:     evt.ThreadID,
+		TurnIndex:    turnIndex,
+		Kind:         itemKindBackgroundDone,
+		Role:         "assistant",
+		Status:       status,
+		Summary:      buildBackgroundTerminalSummary(launch.Summary, evt.Content, meta),
+		ParentID:     launch.ParentID,
+		IsBackground: true,
+		CompletionOf: launch.ID,
+		ToolName:     launch.ToolName,
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+
+	// Preserve an already-persisted sibling's created_at and
+	// item_index (persistItem keeps item_index on update), but
+	// overwrite the mutable fields so a second call with richer
+	// payload enriches the row.
+	if existing, ok, err := r.store.GetThreadItem(evt.ThreadID, completionID); err == nil && ok {
+		completion.CreatedAt = existing.CreatedAt
+	} else if err != nil {
+		return fmt.Errorf("bg task terminal existing lookup %s: %w", completionID, err)
+	}
+
+	payload := backgroundTerminalPayload(launch.ID, evt, meta, now)
+	return r.maybeDeferOrPersist(evt.ThreadID, completion, payload)
+}
+
+// backgroundTerminalStatus maps the task-lifecycle status to the
+// canonical item status enum. task_updated uses completed | failed |
+// killed — TaskOutput uses completed with an is_error / exit_code
+// signal. We treat any non-completed status as errored so the UI can
+// render a distinct "failed" badge.
+func backgroundTerminalStatus(meta backgroundTaskTerminalMeta) string {
+	if meta.IsError {
+		return statusErrored
+	}
+	if meta.ExitCode != nil && *meta.ExitCode != 0 {
+		return statusErrored
+	}
+	switch meta.Status {
+	case "completed":
+		return statusCompleted
+	case "", "failed", "killed", "interrupted", "errored":
+		if meta.Status == "" {
+			return statusCompleted
+		}
+		return statusErrored
+	default:
+		// Unknown provider-side status — fall back to errored so a
+		// non-completed state never renders as a successful badge.
+		return statusErrored
+	}
+}
+
+// buildBackgroundTerminalSummary produces the sibling row's summary.
+// Prefers the launch summary followed by a short outcome marker so the
+// UI keeps the "Bash: long-running" context alongside "-> done" /
+// "-> exit 1". Falls back to the event's Content (the human-readable
+// description / summary Claude emitted) when the launch had none.
+func buildBackgroundTerminalSummary(launchSummary, content string, meta backgroundTaskTerminalMeta) string {
+	outcome := backgroundTerminalOutcome(meta)
+	summary := strings.TrimSpace(launchSummary)
+	if summary == "" {
+		summary = strings.TrimSpace(content)
+	}
+	if outcome == "" {
+		if summary == "" {
+			return "done"
+		}
+		return summary
+	}
+	if summary == "" {
+		return outcome
+	}
+	return summary + " -> " + outcome
+}
+
+func backgroundTerminalOutcome(meta backgroundTaskTerminalMeta) string {
+	switch {
+	case meta.ExitCode != nil:
+		return fmt.Sprintf("exit %d", *meta.ExitCode)
+	case meta.IsError:
+		return "error"
+	case meta.Status == "failed":
+		return "failed"
+	case meta.Status == "killed":
+		return "killed"
+	case meta.Status == "interrupted":
+		return "interrupted"
+	case meta.Status == "completed":
+		return "done"
+	default:
+		return ""
+	}
+}
+
+// backgroundTerminalPayload builds the sibling row's tool_call_result
+// payload. Returns nil when the event has neither body content nor
+// structured meta fields worth persisting — the store row alone
+// carries the status + summary so an empty terminal is still
+// renderable.
+func backgroundTerminalPayload(itemID string, evt provider.ProviderEvent, meta backgroundTaskTerminalMeta, now int64) *store.Payload {
+	hasBody := strings.TrimSpace(evt.Content) != ""
+	hasMeta := meta.ExitCode != nil || meta.IsError || meta.OutputFile != "" || meta.EndTime != 0
+	if !hasBody && !hasMeta {
+		return nil
+	}
+
+	header := map[string]any{}
+	if meta.ExitCode != nil {
+		header["exitCode"] = *meta.ExitCode
+	}
+	if meta.IsError {
+		header["isError"] = true
+	}
+	if meta.Status != "" {
+		header["itemStatus"] = meta.Status
+	}
+	if meta.OutputFile != "" {
+		header["outputFile"] = meta.OutputFile
+	}
+	if meta.EndTime != 0 {
+		header["endTime"] = meta.EndTime
+	}
+	headerJSON, err := json.Marshal(header)
+	if err != nil {
+		headerJSON = []byte("{}")
+	}
+	return &store.Payload{
+		ID:        "tool-call-result:" + itemID,
+		Kind:      payloadKindToolCallResult,
+		Meta:      string(headerJSON),
+		Data:      []byte(evt.Content),
+		CreatedAt: now,
 	}
 }
 
@@ -354,34 +543,6 @@ func buildCompletionSummary(launchSummary string, meta toolCompleteMeta) string 
 		return launchSummary
 	}
 	return launchSummary + " " + suffix
-}
-
-func buildBackgroundCompletionSummary(launchSummary string, meta toolCompleteMeta) string {
-	outcome := backgroundCompletionOutcome(meta)
-	if outcome == "" {
-		return launchSummary
-	}
-	if launchSummary == "" {
-		return outcome
-	}
-	return launchSummary + " -> " + outcome
-}
-
-func backgroundCompletionOutcome(meta toolCompleteMeta) string {
-	switch {
-	case meta.ExitCode != nil:
-		return fmt.Sprintf("exit %d", *meta.ExitCode)
-	case meta.IsError:
-		return "error"
-	case meta.ItemStatus == "failed":
-		return "failed"
-	case meta.ItemStatus == "killed":
-		return "killed"
-	case meta.ItemStatus == "declined":
-		return "declined"
-	default:
-		return "done"
-	}
 }
 
 func completionSuffix(meta toolCompleteMeta) string {

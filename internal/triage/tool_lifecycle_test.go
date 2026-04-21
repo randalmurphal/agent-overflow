@@ -202,13 +202,15 @@ func TestToolCompleteOnErroredFlipsToErrored(t *testing.T) {
 	}
 }
 
-// TestToolCompleteOnBackgroundedAppendsCompletion is the keystone test
-// for the two-row pattern. The launch row stays in place
-// (is_background=1, status=running) while a NEW background_done row is
-// appended carrying the result payload. Frontends render the launch
-// inline at its original position and the completion at its real
-// completion time — the launch is never mutated.
-func TestToolCompleteOnBackgroundedAppendsCompletion(t *testing.T) {
+// TestToolCompleteOnBackgroundedKeepsLaunchRunning pins the post-refactor
+// contract: a backgrounded tool_result placeholder must NOT mutate the
+// launch row's status (invariant: launch stays running until the actual
+// task_lifecycle terminal arrives) and must NOT create a sibling
+// completion row. The sibling is the responsibility of
+// handleBackgroundTaskTerminal — see
+// TestHandleEventBackgroundTaskTerminal_InsertsSibling for the
+// sibling-row assertions.
+func TestToolCompleteOnBackgroundedKeepsLaunchRunning(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
 
@@ -247,22 +249,53 @@ func TestToolCompleteOnBackgroundedAppendsCompletion(t *testing.T) {
 		t.Error("launch IsBackground lost")
 	}
 
+	// The placeholder tool_result must NOT materialize a sibling.
+	// That's EventBackgroundTaskTerminal's job now.
 	dones := findItemsByKind(t, st, "t1", itemKindBackgroundDone)
-	if len(dones) != 1 {
-		t.Fatalf("expected 1 background_done item, got %d", len(dones))
+	if len(dones) != 0 {
+		t.Fatalf("placeholder tool_result must not create sibling; got %d background_done rows", len(dones))
 	}
-	done := dones[0]
-	if done.CompletionOf != "bg-tool" {
-		t.Errorf("CompletionOf = %q, want %q", done.CompletionOf, "bg-tool")
+}
+
+// TestToolCompleteOnBackgroundedPromotesMissingFlag covers the
+// rescue case where EventToolStart missed the is_background flag (a
+// provider drift we haven't observed but the code has always
+// tolerated): the complete event carries is_background=true, so the
+// launch row must flip to is_background=true without touching its
+// status.
+func TestToolCompleteOnBackgroundedPromotesMissingFlag(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	// Start without is_background — simulate a provider drift.
+	startMeta, _ := json.Marshal(map[string]any{
+		"toolName": "Bash",
+		"input":    map[string]any{"command": "long &"},
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "promote-tool",
+		ItemType: "Bash", Meta: startMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("start: %v", err)
 	}
-	if !done.IsBackground {
-		t.Error("background_done IsBackground = false")
+
+	completeMeta, _ := json.Marshal(map[string]any{"is_background": true})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "promote-tool",
+		Meta: completeMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("complete: %v", err)
 	}
-	if done.Status != statusCompleted {
-		t.Errorf("background_done Status = %q, want completed", done.Status)
+
+	launches := findItemsByKind(t, st, "t1", itemKindToolCall)
+	if len(launches) != 1 {
+		t.Fatalf("expected 1 launch row, got %d", len(launches))
 	}
-	if done.PayloadID == "" {
-		t.Error("expected background_done to carry a result payload, got none")
+	if !launches[0].IsBackground {
+		t.Error("expected is_background promoted by complete-event meta")
+	}
+	if launches[0].Status != statusRunning {
+		t.Errorf("launch status = %q, want still running after promotion", launches[0].Status)
 	}
 }
 
@@ -604,9 +637,15 @@ func TestTaskStartedMetaMergeNoopsWhenItemMissing(t *testing.T) {
 
 // TestTaskUpdatedResolvesItemViaMetaTaskID (Bug A reconnect-recovery
 // scenario) verifies that when a fresh adapter session emits
-// EventToolComplete with empty ItemID and only meta.task_id, triage
-// looks up the matching tool_call row via items.meta.task_id and
-// terminates IT — not some ghost row keyed by empty string.
+// EventBackgroundTaskTerminal with empty tool_use_id and only task_id,
+// triage looks up the matching tool_call row via items.meta.task_id
+// and writes the sibling completion against IT — not some ghost row
+// keyed by empty string.
+//
+// Post-refactor: this routing moved from EventToolComplete to
+// EventBackgroundTaskTerminal. The tool-lifecycle placeholder no
+// longer fans out on task_id lookups — that's strictly the task
+// lifecycle's job now.
 func TestTaskUpdatedResolvesItemViaMetaTaskID(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
@@ -635,17 +674,17 @@ func TestTaskUpdatedResolvesItemViaMetaTaskID(t *testing.T) {
 
 	// Simulate app restart: a fresh adapter session parser has an
 	// empty in-memory task_id map. task_updated on the live server
-	// fires with only task_id inline, producing an EventToolComplete
-	// with empty ItemID + meta.task_id.
-	completeMeta, _ := json.Marshal(map[string]any{
-		"is_background": true,
-		"task_id":       "recov-task",
+	// fires with only task_id inline, producing an
+	// EventBackgroundTaskTerminal with empty ItemID + meta.task_id.
+	terminalMeta, _ := json.Marshal(map[string]any{
+		"task_id": "recov-task",
+		"status":  "completed",
 	})
 	if err := router.Handle(provider.ProviderEvent{
-		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "",
-		Meta: completeMeta, Content: "terminated", Timestamp: time.Now(),
+		Kind: provider.EventBackgroundTaskTerminal, ThreadID: "t1", ItemID: "",
+		Meta: terminalMeta, Content: "terminated", Timestamp: time.Now(),
 	}); err != nil {
-		t.Fatalf("task_updated completion: %v", err)
+		t.Fatalf("task_updated terminal: %v", err)
 	}
 
 	// Launch row stays frozen at running (per background lifecycle),
@@ -667,23 +706,23 @@ func TestTaskUpdatedResolvesItemViaMetaTaskID(t *testing.T) {
 }
 
 // TestTaskUpdatedUnmatchedMetaTaskIDIsDropped (Bug A edge case) covers
-// the "log and drop" branch: adapter emits EventToolComplete keyed by
-// meta.task_id but no tool_call row carries that task_id — the launch
-// was never persisted. Triage must not error and must not create a
-// phantom completion row.
+// the "log and drop" branch: adapter emits
+// EventBackgroundTaskTerminal keyed by meta.task_id but no tool_call
+// row carries that task_id — the launch was never persisted. Triage
+// must not error and must not create a phantom completion row.
 func TestTaskUpdatedUnmatchedMetaTaskIDIsDropped(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
 
-	completeMeta, _ := json.Marshal(map[string]any{
-		"is_background": true,
-		"task_id":       "missing-task",
+	terminalMeta, _ := json.Marshal(map[string]any{
+		"task_id": "missing-task",
+		"status":  "completed",
 	})
 	if err := router.Handle(provider.ProviderEvent{
-		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "",
-		Meta: completeMeta, Timestamp: time.Now(),
+		Kind: provider.EventBackgroundTaskTerminal, ThreadID: "t1", ItemID: "",
+		Meta: terminalMeta, Timestamp: time.Now(),
 	}); err != nil {
-		t.Fatalf("unmatched task_id completion: %v", err)
+		t.Fatalf("unmatched task_id terminal: %v", err)
 	}
 
 	items, err := st.ListItems("t1")
@@ -738,5 +777,265 @@ func TestItemUpdatedDoesNotReopenCompletedToolCall(t *testing.T) {
 	}
 	if items[0].Status != statusCompleted {
 		t.Errorf("status after update_only = %q, want %q (must not reopen)", items[0].Status, statusCompleted)
+	}
+}
+
+// TestHandleEventBackgroundTaskTerminal_InsertsSibling is the Wave 2
+// task-lifecycle contract. A backgrounded launch (is_background=true,
+// status=running) plus a single EventBackgroundTaskTerminal must
+// produce exactly one tool_completion sibling keyed by the launch id,
+// leaving the launch row frozen at running. This is how the timeline
+// renders "agent dispatched this background tool" and "the background
+// work actually finished" as two historically accurate rows.
+func TestHandleEventBackgroundTaskTerminal_InsertsSibling(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	startMeta, _ := json.Marshal(map[string]any{
+		"toolName":      "Bash",
+		"is_background": true,
+		"input":         map[string]any{"command": "sleep 30"},
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "bg-insert",
+		ItemType: "Bash", Meta: startMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("seed launch: %v", err)
+	}
+
+	exit := 0
+	terminalMeta, _ := json.Marshal(map[string]any{
+		"task_id":     "tsk-insert",
+		"tool_use_id": "bg-insert",
+		"status":      "completed",
+		"exit_code":   exit,
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventBackgroundTaskTerminal, ThreadID: "t1", ItemID: "bg-insert",
+		Meta: terminalMeta, Content: "done body", Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("bg terminal: %v", err)
+	}
+
+	launches := findItemsByKind(t, st, "t1", itemKindToolCall)
+	if len(launches) != 1 {
+		t.Fatalf("expected 1 tool_call launch, got %d", len(launches))
+	}
+	if launches[0].Status != statusRunning {
+		t.Errorf("launch status = %q, want %q (frozen per background lifecycle)", launches[0].Status, statusRunning)
+	}
+	if !launches[0].IsBackground {
+		t.Error("launch IsBackground lost")
+	}
+
+	dones := findItemsByKind(t, st, "t1", itemKindBackgroundDone)
+	if len(dones) != 1 {
+		t.Fatalf("expected exactly 1 tool_completion sibling, got %d", len(dones))
+	}
+	done := dones[0]
+	if done.ID != nextToolCompletionID("bg-insert") {
+		t.Errorf("sibling id = %q, want %q", done.ID, nextToolCompletionID("bg-insert"))
+	}
+	if done.CompletionOf != "bg-insert" {
+		t.Errorf("CompletionOf = %q, want bg-insert", done.CompletionOf)
+	}
+	if !done.IsBackground {
+		t.Error("sibling IsBackground = false")
+	}
+	if done.Status != statusCompleted {
+		t.Errorf("sibling Status = %q, want completed", done.Status)
+	}
+	if done.PayloadID == "" {
+		t.Error("expected sibling to carry a result payload")
+	}
+
+	// A second invocation with the same task_id must be idempotent — no
+	// new row; the existing sibling is re-upserted in place.
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventBackgroundTaskTerminal, ThreadID: "t1", ItemID: "bg-insert",
+		Meta: terminalMeta, Content: "done body", Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("bg terminal (2nd): %v", err)
+	}
+	dones = findItemsByKind(t, st, "t1", itemKindBackgroundDone)
+	if len(dones) != 1 {
+		t.Fatalf("expected 1 tool_completion after duplicate terminal (idempotent upsert), got %d", len(dones))
+	}
+
+	// Sibling emission lands as provider:item_upsert with the same id
+	// so the frontend reconciler merges in place.
+	siblingUpserts := 0
+	for _, e := range *emissions {
+		if e.eventName != "provider:item_upsert" {
+			continue
+		}
+		item, ok := e.data.(store.Item)
+		if !ok {
+			continue
+		}
+		if item.ID == nextToolCompletionID("bg-insert") {
+			siblingUpserts++
+		}
+	}
+	if siblingUpserts < 2 {
+		t.Errorf("expected at least 2 sibling upsert emissions (insert + idempotent refresh), got %d", siblingUpserts)
+	}
+}
+
+// TestHandleEventBackgroundTaskTerminal_Enriches covers the two-event
+// task-updated + TaskOutput sequence where the second call carries a
+// richer payload (exit_code, output_file) than the first. The sibling
+// row must upsert in place — same id, no duplicate row — and the
+// richer payload must win.
+func TestHandleEventBackgroundTaskTerminal_Enriches(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	startMeta, _ := json.Marshal(map[string]any{
+		"toolName":      "Bash",
+		"is_background": true,
+		"input":         map[string]any{"command": "sleep 5; echo done"},
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "bg-enrich",
+		ItemType: "Bash", Meta: startMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("seed launch: %v", err)
+	}
+
+	// First terminal from task_updated — basic shape (no exit_code /
+	// output_file yet).
+	basicMeta, _ := json.Marshal(map[string]any{
+		"task_id":     "tsk-enrich",
+		"tool_use_id": "bg-enrich",
+		"status":      "completed",
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventBackgroundTaskTerminal, ThreadID: "t1", ItemID: "bg-enrich",
+		Meta: basicMeta, Content: "", Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("basic terminal: %v", err)
+	}
+	dones := findItemsByKind(t, st, "t1", itemKindBackgroundDone)
+	if len(dones) != 1 {
+		t.Fatalf("expected 1 sibling after basic terminal, got %d", len(dones))
+	}
+
+	// Second terminal from TaskOutput — richer payload.
+	exit := 0
+	enrichedMeta, _ := json.Marshal(map[string]any{
+		"task_id":     "tsk-enrich",
+		"tool_use_id": "bg-enrich",
+		"status":      "completed",
+		"exit_code":   exit,
+		"output_file": "/tmp/bg-output.txt",
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventBackgroundTaskTerminal, ThreadID: "t1", ItemID: "bg-enrich",
+		Meta: enrichedMeta, Content: "stdout body here", Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("enriched terminal: %v", err)
+	}
+
+	donesAfter := findItemsByKind(t, st, "t1", itemKindBackgroundDone)
+	if len(donesAfter) != 1 {
+		t.Fatalf("expected still 1 sibling after enrichment, got %d (enrichment created a duplicate)", len(donesAfter))
+	}
+	done := donesAfter[0]
+	if done.PayloadID == "" {
+		t.Fatal("expected enriched sibling to carry a payload")
+	}
+	meta, err := st.GetPayloadMeta(done.PayloadID)
+	if err != nil {
+		t.Fatalf("read enriched payload meta: %v", err)
+	}
+	if !strings.Contains(meta.Meta, "outputFile") {
+		t.Errorf("expected enriched meta to carry outputFile, got %q", meta.Meta)
+	}
+	data, err := st.GetPayloadData(done.PayloadID)
+	if err != nil {
+		t.Fatalf("read enriched payload data: %v", err)
+	}
+	if string(data) != "stdout body here" {
+		t.Errorf("expected enriched payload data to be replaced, got %q", string(data))
+	}
+}
+
+// TestHandleEventBackgroundTaskTerminal_ResolvesByTaskIDWhenToolUseMissing
+// covers the reconnect path: a fresh adapter session has an empty
+// task_id↔tool_use_id map, so the terminal event arrives with only
+// meta.task_id (tool_use_id empty). Triage must look up the launch
+// via items.meta.task_id.
+func TestHandleEventBackgroundTaskTerminal_ResolvesByTaskIDWhenToolUseMissing(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	startMeta, _ := json.Marshal(map[string]any{
+		"toolName":      "Bash",
+		"is_background": true,
+		"input":         map[string]any{"command": "long job"},
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "bg-resolve",
+		ItemType: "Bash", Meta: startMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("seed launch: %v", err)
+	}
+
+	// Adapter attaches task_id to the row via a meta-only tool_start.
+	taskStartedMeta, _ := json.Marshal(map[string]any{"task_id": "tsk-resolve"})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "bg-resolve",
+		Meta: taskStartedMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("task_started meta merge: %v", err)
+	}
+
+	// Reconnect: terminal arrives with no tool_use_id.
+	terminalMeta, _ := json.Marshal(map[string]any{
+		"task_id": "tsk-resolve",
+		"status":  "completed",
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventBackgroundTaskTerminal, ThreadID: "t1", ItemID: "",
+		Meta: terminalMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("terminal via task_id: %v", err)
+	}
+
+	dones := findItemsByKind(t, st, "t1", itemKindBackgroundDone)
+	if len(dones) != 1 {
+		t.Fatalf("expected 1 sibling resolved via task_id lookup, got %d", len(dones))
+	}
+	if dones[0].CompletionOf != "bg-resolve" {
+		t.Errorf("CompletionOf = %q, want bg-resolve", dones[0].CompletionOf)
+	}
+}
+
+// TestHandleEventBackgroundTaskTerminal_DropsWhenNoLaunch guards the
+// "launch never persisted" edge case. The terminal event is silently
+// dropped — no phantom sibling row, no panic, no error.
+func TestHandleEventBackgroundTaskTerminal_DropsWhenNoLaunch(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	terminalMeta, _ := json.Marshal(map[string]any{
+		"task_id":     "tsk-phantom",
+		"tool_use_id": "ghost-tool",
+		"status":      "completed",
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventBackgroundTaskTerminal, ThreadID: "t1", ItemID: "ghost-tool",
+		Meta: terminalMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("phantom terminal: %v", err)
+	}
+
+	items, err := st.ListItems("t1")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(items) != 0 {
+		t.Errorf("expected no rows when launch is missing, got %+v", items)
 	}
 }

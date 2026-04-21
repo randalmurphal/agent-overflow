@@ -19,9 +19,11 @@ import (
 
 // handleTurnStart opens the per-turn span, seeds bookkeeping, and (if
 // a checkpoint store is wired up) captures a baseline snapshot of the
-// workspace. Checkpoint failure is NOT fatal to the turn — it surfaces
-// as a `checkpoint:error` event the UI renders as a dismissible banner,
-// and the turn proceeds.
+// workspace. It also writes the `turns` row for this turn (completed_at
+// NULL) and emits `provider:turn_started` so the frontend flips
+// `pane.activeTurn` on. Checkpoint failure is NOT fatal to the turn —
+// it surfaces as a `checkpoint:error` event the UI renders as a
+// dismissible banner, and the turn proceeds.
 func (r *Router) handleTurnStart(evt provider.ProviderEvent) error {
 	turnIndex := evt.TurnIndex
 	if turnIndex == 0 {
@@ -35,7 +37,63 @@ func (r *Router) handleTurnStart(evt provider.ProviderEvent) error {
 	r.setOpenTurn(evt.ThreadID, turnIndex)
 	r.openTurnSpan(evt)
 	r.captureBaselineForTurn(context.Background(), evt.ThreadID)
+
+	startedAt := eventTimestampMillis(evt)
+	turnID := resolveTurnID(evt, turnIndex)
+	r.upsertTurnRow(store.Turn{
+		TurnID:    turnID,
+		ThreadID:  evt.ThreadID,
+		TurnIndex: turnIndex,
+		StartedAt: startedAt,
+	})
+
+	r.emit("provider:turn_started", TurnStartedEvent{
+		ThreadID:  evt.ThreadID,
+		TurnID:    turnID,
+		TurnIndex: turnIndex,
+		StartedAt: startedAt,
+	})
 	return nil
+}
+
+// resolveTurnID builds the `turns` table primary key for the incoming
+// turn. Codex fills evt.TurnID directly from `turn/started`; Claude
+// has no wire-level turn_id so triage synthesizes one from
+// `<threadID>:<turnIndex>`. Both forms are deterministic so a re-sent
+// EventTurnStart for the same (thread, turn) maps back to the same row
+// (the store upsert path then skips a redundant insert).
+func resolveTurnID(evt provider.ProviderEvent, turnIndex int) string {
+	if id := strings.TrimSpace(evt.TurnID); id != "" {
+		return id
+	}
+	return fmt.Sprintf("%s:%d", evt.ThreadID, turnIndex)
+}
+
+// upsertTurnRow inserts the turns row for a freshly-opened turn or
+// updates started_at if the provider re-sends EventTurnStart. An
+// existing row means we've seen this turn before (re-init after
+// interrupt, recovery replay) and the original started_at is the
+// authoritative wall time — don't overwrite it. A missing row on
+// update (sql.ErrNoRows) means a fresh insert is the right path.
+// Errors are logged but not propagated: turn-start emission must fire
+// even if persistence hiccups, so the frontend's working indicator
+// still tracks the wire signal.
+func (r *Router) upsertTurnRow(turn store.Turn) {
+	_, found, err := r.store.GetTurn(turn.TurnID)
+	if err != nil {
+		log.Printf("triage: turn start get %s: %v", turn.TurnID, err)
+	}
+	if found {
+		// A re-sent EventTurnStart for the same (thread, turn). The
+		// existing row is the authoritative one — preserve started_at
+		// and completed_at. Refreshing started_at would show a
+		// later clock on the working indicator each time the
+		// provider re-initialises.
+		return
+	}
+	if err := r.store.InsertTurn(turn); err != nil {
+		log.Printf("triage: turn start insert %s: %v", turn.TurnID, err)
+	}
 }
 
 // openTurnSpan begins a turn.lifecycle span for the incoming turn. Any
@@ -206,7 +264,8 @@ func checkpointWorkspacePath(t store.Thread) string {
 func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 	var persistErr error
 	now := eventTimestampMillis(evt)
-	truncated := turnCompleteIsTruncated(evt.Meta)
+	meta := decodeTurnCompleteMeta(evt.Meta)
+	truncated := turnCompleteIsTruncated(meta)
 	turnIndex, err := r.currentTurnIndex(evt.ThreadID)
 	if err != nil {
 		persistErr = err
@@ -249,6 +308,27 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 			}
 		}
 	}
+
+	// Invariant 23: force-close orphan running non-background tool_calls.
+	// Backgrounded launches are exempt (invariant 24). Runs after the
+	// truncation flip so we don't double-flip items that
+	// markTurnItemsErrored already settled — the check targets status=
+	// running tool_calls only, which persistItem-via-markTurnItemsErrored
+	// has already moved to status=errored in the truncated path.
+	if persistErr == nil && err == nil {
+		if fcErr := r.forceCloseOrphanToolCalls(evt.ThreadID, turnIndex, now); fcErr != nil {
+			persistErr = fcErr
+		}
+	}
+
+	// Settle the turns row + emit provider:turn_completed even on
+	// persist error so the frontend's working indicator clears.
+	// Persistence failures are logged inside settleTurnRow; we keep
+	// persistErr as the return so upstream (observability, error
+	// reporting) sees the real failure.
+	settled := r.settleTurnRow(evt, turnIndex, now, meta, persistErr)
+	r.emit("provider:turn_completed", settled)
+
 	// The captured-turn guard only needs to hold for the duration of
 	// this turn — once the turn is complete the baseline checkpoint is
 	// already persisted and no further EventTurnStart can re-fire for
@@ -262,24 +342,111 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 	return persistErr
 }
 
-func turnCompleteIsTruncated(raw json.RawMessage) bool {
-	if len(raw) == 0 {
-		return false
+// turnCompleteIsTruncated reports whether the turn ended via
+// interruption / truncation. See decodeTurnCompleteMeta for the wire
+// shapes this accepts.
+func turnCompleteIsTruncated(meta turnCompleteMeta) bool {
+	return meta.Truncated || meta.Aborted || meta.TurnStatus == "interrupted"
+}
+
+// forceCloseOrphanToolCalls flips every status=running +
+// is_background=0 tool_call row in (threadID, turnIndex) to errored
+// with a synthesized completion summary. This is the safety net for
+// invariant 23: the provider/parser can drop a tool_result and leave a
+// row stuck at running; a clean turn-complete should settle the
+// timeline regardless. Backgrounded launches are exempt (invariant 24
+// — they legitimately outlive their turn) and are filtered out here
+// rather than at the SQL layer so the exemption stays visible in the
+// code the reviewer lands on when tracing the force-close.
+func (r *Router) forceCloseOrphanToolCalls(threadID string, turnIndex int, now int64) error {
+	items, err := r.store.ListTurnItems(threadID, turnIndex)
+	if err != nil {
+		return fmt.Errorf("force-close list turn items: %w", err)
 	}
-	var meta map[string]any
-	if err := json.Unmarshal(raw, &meta); err != nil {
-		return false
+	for _, item := range items {
+		if item.Kind != itemKindToolCall {
+			continue
+		}
+		if item.Status != statusRunning {
+			continue
+		}
+		if item.IsBackground {
+			continue
+		}
+		item.Status = statusErrored
+		item.Summary = forceCloseSummary(item.Summary)
+		item.UpdatedAt = now
+		if err := r.persistItem(item, nil); err != nil {
+			return fmt.Errorf("force-close persist %s: %w", item.ID, err)
+		}
 	}
-	if truncated, _ := meta["truncated"].(bool); truncated {
-		return true
+	return nil
+}
+
+const forceCloseSuffix = " — turn ended with tool unresolved"
+
+// forceCloseSummary adds the force-close marker to the tool_call's
+// summary. Idempotent — a second call leaves the string unchanged, so
+// a repeated turn-complete (Claude re-init → re-complete) doesn't
+// accumulate suffixes.
+func forceCloseSummary(summary string) string {
+	summary = strings.TrimSpace(summary)
+	if summary == "" {
+		return "Turn ended with tool unresolved"
 	}
-	if aborted, _ := meta["aborted"].(bool); aborted {
-		return true
+	if strings.HasSuffix(summary, forceCloseSuffix) {
+		return summary
 	}
-	if turnStatus, _ := meta["turn_status"].(string); turnStatus == "interrupted" {
-		return true
+	return summary + forceCloseSuffix
+}
+
+// settleTurnRow updates the turns row and returns the frontend-facing
+// TurnCompletedEvent payload. Persists on best-effort: a persistence
+// failure logs but still yields a payload so the wire emission fires.
+// Missing turn rows (e.g. a turn_complete with no matching turn_start
+// because the first event arrived mid-crash-recovery) are tolerated —
+// the UPDATE's sql.ErrNoRows is logged and the payload still emits.
+func (r *Router) settleTurnRow(evt provider.ProviderEvent, turnIndex int, now int64, meta turnCompleteMeta, persistErr error) TurnCompletedEvent {
+	stopReason := canonicalStopReason(meta)
+	if persistErr != nil && stopReason == "" {
+		stopReason = "error"
 	}
-	return false
+	assistantMessageID := resolveAssistantMessageID(meta)
+	errorMessage := meta.Error
+	if errorMessage == "" && persistErr != nil {
+		errorMessage = persistErr.Error()
+	}
+	turnID := resolveTurnID(evt, turnIndex)
+
+	// Lookup started_at. A persisted row is the authoritative clock;
+	// fall back to `now` so the payload always carries a sensible
+	// StartedAt if the turns row was never written.
+	startedAt := now
+	if existing, found, err := r.store.GetTurn(turnID); err == nil && found {
+		startedAt = existing.StartedAt
+	}
+
+	usageJSON := ""
+	if len(meta.Usage) > 0 {
+		usageJSON = string(meta.Usage)
+	}
+
+	if err := r.store.UpdateTurnCompleted(turnID, now, stopReason, assistantMessageID, usageJSON, errorMessage); err != nil {
+		log.Printf("triage: update turn %s: %v", turnID, err)
+	}
+
+	return TurnCompletedEvent{
+		ThreadID:           evt.ThreadID,
+		TurnID:             turnID,
+		TurnIndex:          turnIndex,
+		StartedAt:          startedAt,
+		CompletedAt:        now,
+		StopReason:         stopReason,
+		AssistantMessageID: assistantMessageID,
+		TokenUsage:         meta.Usage,
+		ErrorMessage:       errorMessage,
+		Aborted:            meta.Aborted || meta.Truncated || meta.TurnStatus == "interrupted",
+	}
 }
 
 // closeTurnSpan ends the live turn span for the thread, flagging it as

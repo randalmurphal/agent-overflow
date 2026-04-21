@@ -246,6 +246,10 @@ func (r *Router) Handle(evt provider.ProviderEvent) error {
 		return r.handleThreadRename(evt)
 	case provider.EventTurnComplete:
 		return r.handleTurnComplete(evt)
+	case provider.EventBackgroundTaskTerminal:
+		return r.handleBackgroundTaskTerminal(evt)
+	case provider.EventSubagentNotification:
+		return r.handleSubagentNotification(evt)
 	case provider.EventDiff:
 		return r.handleDiff(evt)
 	case provider.EventCommandOutput:
@@ -789,6 +793,25 @@ func (r *Router) synthesizeTruncatedTurnComplete(threadID string, turnIndex int,
 // frontend can rely on a single typed contract per channel.
 func (r *Router) emitInline(evt provider.ProviderEvent) error {
 	_ = evt
+	return nil
+}
+
+// handleSubagentNotification is the pass-through router for Codex
+// `<subagent_notification>` tags. Emission is triage's job; persistence
+// is deliberately NOT — the notification isn't a timeline row today
+// (tray/subagent UI will decide what to render later). The handler only
+// forwards the Meta payload (agent_id, status, optional extras) onto
+// `provider:subagent_notification` so the frontend can opt in without
+// the parser-side emission needing to land first.
+//
+// See docs/architecture/turn-lifecycle.md and
+// docs/archive/turn-lifecycle-refactor-plan.md WT-codex-parser for the
+// emission-side plan.
+func (r *Router) handleSubagentNotification(evt provider.ProviderEvent) error {
+	r.emit("provider:subagent_notification", SubagentNotificationEvent{
+		ThreadID: evt.ThreadID,
+		Meta:     evt.Meta,
+	})
 	return nil
 }
 

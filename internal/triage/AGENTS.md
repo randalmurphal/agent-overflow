@@ -37,6 +37,10 @@ none fits.
   index bookkeeping they depend on.
 - `usage_compaction.go` — token-usage normalisation and compaction
   boundary persistence.
+- `turn_events.go` — frontend-facing payload shapes for
+  `provider:turn_started` / `provider:turn_completed` /
+  `provider:subagent_notification`, plus the canonical stop-reason
+  normaliser.
 - `meta.go` — shared JSON-inspection helpers.
 - `maps.go` — generic map utilities (currently just `deleteByPrefix`).
 
@@ -67,8 +71,10 @@ Authoritative mental model:
   written by the task lifecycle).
 - **Task lifecycle (Claude only)** —
   `EventBackgroundTaskTerminal` → idempotent sibling row upsert via
-  `AppendCompletionItem`. Both `task_updated` terminal and TaskOutput
-  enrichment arrive via this event; the upsert coalesces them.
+  `persistItem` (stable `complete:<launchID>` id + `UpsertItem`'s
+  INSERT-OR-UPDATE semantics). Both `task_updated` terminal and
+  TaskOutput enrichment arrive via this event; the upsert coalesces
+  them in place, with the richer payload winning.
 - **Turn lifecycle** — `EventTurnStart` writes a `turns` row with
   `completed_at=null`; `EventTurnComplete` updates it and emits
   `provider:turn_completed` to the frontend. Triage force-closes any

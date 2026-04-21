@@ -116,13 +116,22 @@ func (a *App) sendMessage(threadID string, content string) error {
 	a.maybeRenameTemporaryWorktreeBranch(threadID, content)
 
 	now := time.Now().UnixMilli()
-	if err := a.triage.Handle(provider.ProviderEvent{
-		Kind:      provider.EventTurnStart,
-		ThreadID:  threadID,
-		TurnIndex: turnIndex,
-		Timestamp: time.Now(),
-	}); err != nil {
-		return fmt.Errorf("send message: turn start: %w", err)
+	// Synthesize EventTurnStart only for providers that don't emit their
+	// own turn/started wire notification. Codex emits `turn/started` with
+	// the authoritative provider-assigned turn_id — synthesizing a second
+	// EventTurnStart here would collide with that row on the UNIQUE
+	// (thread_id, turn_index) constraint and fan out duplicate
+	// `provider:turn_started` events to the frontend. Claude has no
+	// equivalent wire event, so we carry the synthesized one.
+	if thread.Provider != "codex" {
+		if err := a.triage.Handle(provider.ProviderEvent{
+			Kind:      provider.EventTurnStart,
+			ThreadID:  threadID,
+			TurnIndex: turnIndex,
+			Timestamp: time.Now(),
+		}); err != nil {
+			return fmt.Errorf("send message: turn start: %w", err)
+		}
 	}
 
 	userItem := store.Item{

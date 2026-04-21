@@ -70,25 +70,32 @@ func TestInterruptQueueDrainsInArrivalOrder(t *testing.T) {
 		t.Fatalf("background_done rows appeared before queue drain: %d", len(doneBefore))
 	}
 
-	completeMetaA, _ := json.Marshal(map[string]any{
-		"is_background": true,
-		"exit_code":     0,
+	// Post-refactor: sibling-row creation fires from
+	// EventBackgroundTaskTerminal (task lifecycle), not EventToolComplete
+	// (tool-lifecycle placeholder). The terminal event is what queues.
+	terminalMetaA, _ := json.Marshal(map[string]any{
+		"task_id":     "tsk-A",
+		"tool_use_id": "bg-A",
+		"status":      "completed",
+		"exit_code":   0,
 	})
 	if err := router.Handle(provider.ProviderEvent{
-		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "bg-A",
-		Meta: completeMetaA, Content: "body A", Timestamp: time.Now(),
+		Kind: provider.EventBackgroundTaskTerminal, ThreadID: "t1", ItemID: "bg-A",
+		Meta: terminalMetaA, Content: "body A", Timestamp: time.Now(),
 	}); err != nil {
-		t.Fatalf("complete A: %v", err)
+		t.Fatalf("terminal A: %v", err)
 	}
-	completeMetaB, _ := json.Marshal(map[string]any{
-		"is_background": true,
-		"exit_code":     0,
+	terminalMetaB, _ := json.Marshal(map[string]any{
+		"task_id":     "tsk-B",
+		"tool_use_id": "bg-B",
+		"status":      "completed",
+		"exit_code":   0,
 	})
 	if err := router.Handle(provider.ProviderEvent{
-		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "bg-B",
-		Meta: completeMetaB, Content: "body B", Timestamp: time.Now(),
+		Kind: provider.EventBackgroundTaskTerminal, ThreadID: "t1", ItemID: "bg-B",
+		Meta: terminalMetaB, Content: "body B", Timestamp: time.Now(),
 	}); err != nil {
-		t.Fatalf("complete B: %v", err)
+		t.Fatalf("terminal B: %v", err)
 	}
 
 	// While streaming is still open, neither completion has been persisted.
@@ -204,17 +211,21 @@ func TestSettleNonStreamingRowStillDrainsQueue(t *testing.T) {
 		t.Fatalf("text delta: %v", err)
 	}
 
-	// 3. Complete the background tool while text is streaming — completion
-	//    queues behind the active block instead of persisting inline.
-	completeMeta, _ := json.Marshal(map[string]any{
-		"is_background": true,
-		"exit_code":     0,
+	// 3. Fire the background task terminal while text is streaming —
+	//    sibling-row upsert queues behind the active block instead of
+	//    persisting inline. (Post-refactor: sibling creation moved from
+	//    EventToolComplete to EventBackgroundTaskTerminal.)
+	terminalMeta, _ := json.Marshal(map[string]any{
+		"task_id":     "tsk-x",
+		"tool_use_id": "bg-x",
+		"status":      "completed",
+		"exit_code":   0,
 	})
 	if err := router.Handle(provider.ProviderEvent{
-		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "bg-x",
-		Meta: completeMeta, Content: "done", Timestamp: time.Now(),
+		Kind: provider.EventBackgroundTaskTerminal, ThreadID: "t1", ItemID: "bg-x",
+		Meta: terminalMeta, Content: "done", Timestamp: time.Now(),
 	}); err != nil {
-		t.Fatalf("complete bg: %v", err)
+		t.Fatalf("bg terminal: %v", err)
 	}
 
 	doneQueued := findItemsByKind(t, st, "t1", itemKindBackgroundDone)
@@ -291,16 +302,20 @@ func TestSettleStreamingThinkingNonStreamingRowStillDrainsQueue(t *testing.T) {
 		t.Fatalf("thinking delta: %v", err)
 	}
 
-	// 3. Complete the background tool — queues behind the thinking block.
-	completeMeta, _ := json.Marshal(map[string]any{
-		"is_background": true,
-		"exit_code":     0,
+	// 3. Fire the task terminal — queues behind the thinking block.
+	//    (Post-refactor: sibling-row upsert moved from EventToolComplete
+	//    to EventBackgroundTaskTerminal.)
+	terminalMeta, _ := json.Marshal(map[string]any{
+		"task_id":     "tsk-y",
+		"tool_use_id": "bg-y",
+		"status":      "completed",
+		"exit_code":   0,
 	})
 	if err := router.Handle(provider.ProviderEvent{
-		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "bg-y",
-		Meta: completeMeta, Content: "done", Timestamp: time.Now(),
+		Kind: provider.EventBackgroundTaskTerminal, ThreadID: "t1", ItemID: "bg-y",
+		Meta: terminalMeta, Content: "done", Timestamp: time.Now(),
 	}); err != nil {
-		t.Fatalf("complete bg: %v", err)
+		t.Fatalf("bg terminal: %v", err)
 	}
 	doneQueued := findItemsByKind(t, st, "t1", itemKindBackgroundDone)
 	if len(doneQueued) != 0 {
