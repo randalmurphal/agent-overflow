@@ -17,6 +17,7 @@ the migrations win.
 | `discussion_definitions` | Reusable discussion templates. Scoped global or per-project. `UNIQUE(name, scope, project_id)`. |
 | `design_artifacts` | Design-mode HTML artifacts. `html_path` points at the on-disk file. |
 | `attachments` | Message attachments. `mime_type`, `size`, `relative_path` on disk. |
+| `turns` | Per-turn records (one row per user → assistant round-trip). `turn_id` PK, `thread_id` FK, `turn_index`, `started_at`, nullable `completed_at` (NULL = in-flight or crashed), `stop_reason`, `assistant_message_id`, `token_usage_json`, `error_message`. |
 
 ## Always-Loaded vs On-Demand
 
@@ -35,6 +36,7 @@ the migrations win.
 - `idx_items_completion_of` — pair a `tool_completion` row with its launch (partial index on non-empty `completion_of`).
 - `idx_threads_forked_from` — fork lineage walks.
 - `idx_channels_thread`, `idx_design_artifacts_thread` — per-thread feature lookups.
+- `turns_thread_index` on `turns(thread_id, turn_index DESC)` — backs `ListRecentTurns` for the newest-first rehydration the frontend runs on thread-switch.
 
 ## Migration Policy
 
@@ -57,3 +59,28 @@ the migrations win.
 
 If you find yourself reaching for a new table, first ask whether the
 provider process already owns the answer.
+
+## `turns`
+
+Per-turn records. One row per user → assistant round-trip.
+
+Columns:
+- `turn_id` TEXT PK — provider-assigned opaque id (Claude's session-scoped id / Codex's turnId)
+- `thread_id` FK threads(id)
+- `turn_index` INTEGER — monotonic per thread, caller-assigned
+- `started_at` INTEGER (ms) — turn-start wire event timestamp
+- `completed_at` INTEGER (ms, nullable) — NULL = in-flight or crashed mid-turn
+- `stop_reason` TEXT — end_turn / max_tokens / tool_use / stop_sequence / refusal / error / interrupted
+- `assistant_message_id` TEXT — `items.id` of the final assistant_text for the turn (drives completion divider)
+- `token_usage_json` TEXT — snapshot of provider usage at turn-end for the "Worked for Xs · Yk tokens" label
+- `error_message` TEXT — populated when stop_reason indicates error
+
+Indexes:
+- `turns_thread_index` on (thread_id, turn_index DESC) for ListRecentTurns
+
+Rules:
+- Inserted at turn-start with `completed_at=NULL`; updated at turn-complete.
+- NEVER auto-close a NULL row. Crash-interrupted turns stay NULL; the frontend treats them as "interrupted" state.
+- `turn_index` is assigned by the caller (triage), not by the store.
+
+See `docs/architecture/turn-lifecycle.md` for the full lifecycle rules.

@@ -30,7 +30,7 @@ func TestMigrationFreshDB(t *testing.T) {
 	tables := []string{
 		"migration_versions", "threads", "items", "payloads",
 		"channels", "channel_messages", "discussion_definitions", "design_artifacts",
-		"attachments", "thread_drafts", "thread_checkpoints",
+		"attachments", "thread_drafts", "thread_checkpoints", "turns",
 	}
 	for _, table := range tables {
 		var name string
@@ -68,8 +68,8 @@ func TestMigrationVersionTracking(t *testing.T) {
 		t.Fatalf("rows err: %v", err)
 	}
 
-	if len(versions) != 17 {
-		t.Fatalf("expected 17 migration versions, got %d", len(versions))
+	if len(versions) != 18 {
+		t.Fatalf("expected 18 migration versions, got %d", len(versions))
 	}
 	if versions[0].version != 1 || versions[0].name != "initial_schema" {
 		t.Errorf("v1: got %d/%s", versions[0].version, versions[0].name)
@@ -122,6 +122,9 @@ func TestMigrationVersionTracking(t *testing.T) {
 	if versions[16].version != 17 || versions[16].name != "items_meta_task_id_index" {
 		t.Errorf("v17: got %d/%s", versions[16].version, versions[16].name)
 	}
+	if versions[17].version != 18 || versions[17].name != "turns_table" {
+		t.Errorf("v18: got %d/%s", versions[17].version, versions[17].name)
+	}
 }
 
 func TestMigrationIdempotent(t *testing.T) {
@@ -141,8 +144,8 @@ func TestMigrationIdempotent(t *testing.T) {
 	if err := db.QueryRow("SELECT COUNT(*) FROM migration_versions").Scan(&count); err != nil {
 		t.Fatalf("count: %v", err)
 	}
-	if count != 17 {
-		t.Errorf("expected 17 version rows after idempotent re-run, got %d", count)
+	if count != 18 {
+		t.Errorf("expected 18 version rows after idempotent re-run, got %d", count)
 	}
 }
 
@@ -179,8 +182,8 @@ func TestMigrationExistingVersionedDBSkipsAppliedV1(t *testing.T) {
 	if err := db.QueryRow("SELECT COUNT(*) FROM migration_versions").Scan(&appliedVersions); err != nil {
 		t.Fatalf("count migration rows: %v", err)
 	}
-	if appliedVersions != 17 {
-		t.Fatalf("expected 17 applied migrations, got %d", appliedVersions)
+	if appliedVersions != 18 {
+		t.Fatalf("expected 18 applied migrations, got %d", appliedVersions)
 	}
 }
 
@@ -220,10 +223,10 @@ func TestMigrationExistingLegacyDBSeedsTrackingAndAppliesV2(t *testing.T) {
 		t.Fatalf("read migration rows: %v", err)
 	}
 
-	if len(versions) != 17 {
-		t.Fatalf("expected 17 applied migrations, got %d", len(versions))
+	if len(versions) != 18 {
+		t.Fatalf("expected 18 applied migrations, got %d", len(versions))
 	}
-	expected := []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17}
+	expected := []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18}
 	for i, want := range expected {
 		if versions[i] != want {
 			t.Fatalf("unexpected migration versions: %v", versions)
@@ -326,10 +329,10 @@ func TestMigrationExistingLegacyParityDBBackfillsVersionHistory(t *testing.T) {
 		t.Fatalf("read migration versions: %v", err)
 	}
 
-	if len(versions) != 17 {
-		t.Fatalf("expected 17 migration rows after legacy backfill + new migrations, got %d", len(versions))
+	if len(versions) != 18 {
+		t.Fatalf("expected 18 migration rows after legacy backfill + new migrations, got %d", len(versions))
 	}
-	expectedVersions := []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17}
+	expectedVersions := []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18}
 	for i, want := range expectedVersions {
 		if versions[i].version != want {
 			t.Fatalf("unexpected migration versions: %+v", versions)
@@ -1147,6 +1150,150 @@ func TestMigrationV17AddsMetaTaskIDIndex(t *testing.T) {
 	}
 	if !strings.Contains(plan.String(), "idx_items_meta_task_id") {
 		t.Errorf("query plan did not use idx_items_meta_task_id: %s", plan.String())
+	}
+}
+
+// TestMigrationV18CreatesTurnsTableOnFreshDB asserts the v18 migration
+// installs the turns table with its CHECK constraint, its index, and
+// its cascade FK on a fresh database. The broader migration pipeline
+// is covered by TestMigrationFreshDB; this test focuses on shape
+// assertions that TestMigrationFreshDB would miss (CHECK, index
+// ordering).
+func TestMigrationV18CreatesTurnsTableOnFreshDB(t *testing.T) {
+	s := newTestStore(t)
+
+	// Index exists and is the composite (thread_id, turn_index DESC).
+	var indexSQL string
+	if err := s.db.QueryRow(
+		`SELECT sql FROM sqlite_master WHERE type='index' AND name='turns_thread_index'`,
+	).Scan(&indexSQL); err != nil {
+		t.Fatalf("read turns_thread_index sql: %v", err)
+	}
+	if !strings.Contains(indexSQL, "turn_index DESC") {
+		t.Errorf("index sql = %q, want turn_index DESC for newest-first scans", indexSQL)
+	}
+	if !strings.Contains(indexSQL, "thread_id") {
+		t.Errorf("index sql = %q, missing thread_id column", indexSQL)
+	}
+
+	// CHECK constraint is present and rejects a negative turn_index via
+	// raw SQL (bypasses any Go-level validation in InsertTurn so this
+	// really tests the constraint, not the wrapper).
+	if _, err := s.db.Exec(`
+		INSERT INTO projects (id, path, name, created_at, updated_at)
+		VALUES ('p-v18', '/tmp/v18', 'v18', 1, 1)
+	`); err != nil {
+		t.Fatalf("seed project: %v", err)
+	}
+	if _, err := s.db.Exec(`
+		INSERT INTO threads (id, project_id, title, provider, workspace_path, model,
+			created_at, updated_at, archived, mode)
+		VALUES ('t-v18', 'p-v18', 'v18', 'claude', '/tmp', '', 1, 1, 0, 'chat')
+	`); err != nil {
+		t.Fatalf("seed thread: %v", err)
+	}
+	_, err := s.db.Exec(`
+		INSERT INTO turns (turn_id, thread_id, turn_index, started_at)
+		VALUES ('t-bad', 't-v18', -1, 1)
+	`)
+	if err == nil {
+		t.Fatal("expected CHECK(turn_index >= 0) to reject negative index")
+	}
+	if !strings.Contains(err.Error(), "CHECK") && !strings.Contains(err.Error(), "constraint") {
+		t.Errorf("error = %v, want CHECK constraint violation", err)
+	}
+
+	// Valid boundary: zero must be accepted.
+	if _, err := s.db.Exec(`
+		INSERT INTO turns (turn_id, thread_id, turn_index, started_at)
+		VALUES ('t-zero', 't-v18', 0, 1)
+	`); err != nil {
+		t.Errorf("INSERT with turn_index=0 should succeed: %v", err)
+	}
+}
+
+// TestMigrationV18UpgradesFromV17 drives the same migration on a database
+// that's been migrated up to v17, seeded with real data, and then stepped
+// forward. Mirrors the pattern in TestMigrationV15PreservesThreadsAndWipesPayloads
+// and TestMigrationV9SweepsPreExistingOrphanPayloads.
+func TestMigrationV18UpgradesFromV17(t *testing.T) {
+	db := openSQLiteDB(t)
+
+	if err := configureDatabase(db); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	if err := ensureMigrationTable(db); err != nil {
+		t.Fatalf("ensure migration table: %v", err)
+	}
+	// Apply v1..v17.
+	for _, m := range migrations {
+		if m.Version >= 18 {
+			break
+		}
+		if err := applyMigration(db, m); err != nil {
+			t.Fatalf("apply v%d: %v", m.Version, err)
+		}
+	}
+
+	// The turns table must NOT exist yet — we're at v17.
+	exists, err := tableExists(db, "turns")
+	if err != nil {
+		t.Fatalf("tableExists(turns): %v", err)
+	}
+	if exists {
+		t.Fatal("turns table exists at v17; migration v18 has not run yet")
+	}
+
+	// Seed a thread so that after v18 we can insert a turn row and
+	// observe the FK wiring is live.
+	if _, err := db.Exec(`INSERT INTO projects (id, path, name, created_at, updated_at)
+		VALUES ('p-upgrade', '/tmp/upgrade', 'upgrade', 1, 1)`); err != nil {
+		t.Fatalf("seed project: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO threads (id, project_id, title, provider, workspace_path, model,
+		created_at, updated_at, archived, mode)
+		VALUES ('t-upgrade', 'p-upgrade', 'T', 'claude', '/tmp', '', 1, 1, 0, 'chat')`); err != nil {
+		t.Fatalf("seed thread: %v", err)
+	}
+
+	// Apply v18.
+	var v18 *Migration
+	for i := range migrations {
+		if migrations[i].Version == 18 {
+			v18 = &migrations[i]
+			break
+		}
+	}
+	if v18 == nil {
+		t.Fatal("v18 migration missing from list")
+	}
+	if err := applyMigration(db, *v18); err != nil {
+		t.Fatalf("apply v18 on top of v17: %v", err)
+	}
+
+	// Turns table now exists and accepts a row.
+	exists, err = tableExists(db, "turns")
+	if err != nil {
+		t.Fatalf("tableExists(turns) post-v18: %v", err)
+	}
+	if !exists {
+		t.Fatal("expected turns table after v18")
+	}
+	if _, err := db.Exec(`INSERT INTO turns (turn_id, thread_id, turn_index, started_at)
+		VALUES ('t-first', 't-upgrade', 0, 1)`); err != nil {
+		t.Fatalf("insert turn after v18 upgrade: %v", err)
+	}
+
+	// FK CASCADE wiring: delete the thread, turn row should go.
+	if _, err := db.Exec(`DELETE FROM threads WHERE id = 't-upgrade'`); err != nil {
+		t.Fatalf("delete thread: %v", err)
+	}
+	var remaining int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM turns WHERE thread_id = 't-upgrade'`).Scan(&remaining); err != nil {
+		t.Fatalf("count turns post-cascade: %v", err)
+	}
+	if remaining != 0 {
+		t.Errorf("expected CASCADE to drop turn rows, still have %d", remaining)
 	}
 }
 

@@ -529,6 +529,52 @@ CREATE INDEX IF NOT EXISTS idx_items_meta_task_id
  WHERE json_extract(meta, '$.task_id') IS NOT NULL;
 `,
 	},
+	{
+		Version: 18,
+		Name:    "turns_table",
+		// Per-turn records for the turn-lifecycle refactor. One row per
+		// user → assistant round-trip, keyed by the provider-assigned
+		// turn_id (Claude's session-scoped id / Codex's turnId).
+		//
+		// completed_at is nullable by design: NULL means "in-flight or
+		// crashed mid-turn." Triage inserts the row at turn-start with
+		// completed_at=NULL and updates it on turn-complete. Crash-
+		// interrupted turns stay NULL forever — we never fabricate a
+		// completion to dismiss a stuck row. The frontend reads
+		// completed_at=NULL as "interrupted" on thread rehydration and
+		// relies on live provider:turn_started pushes (not this table)
+		// to light up the working indicator.
+		//
+		// turn_index is assigned by the caller (triage), not by the
+		// store, so it can stay in lock-step with the turn_index
+		// stamped on items (invariant 3). CHECK(turn_index >= 0)
+		// catches caller bugs that would otherwise silently corrupt
+		// ordering.
+		//
+		// stop_reason is intentionally unconstrained: providers can
+		// extend the canonical set (end_turn / max_tokens / tool_use /
+		// stop_sequence / refusal / error / interrupted). The frontend
+		// treats unknown values as "unknown error."
+		//
+		// The (thread_id, turn_index DESC) index backs ListRecentTurns,
+		// which the frontend calls on thread-switch to hydrate the
+		// completion divider from the most recent settled turn.
+		SQL: `
+CREATE TABLE turns (
+    turn_id              TEXT    PRIMARY KEY,
+    thread_id            TEXT    NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+    turn_index           INTEGER NOT NULL CHECK(turn_index >= 0),
+    started_at           INTEGER NOT NULL,
+    completed_at         INTEGER,
+    stop_reason          TEXT    NOT NULL DEFAULT '',
+    assistant_message_id TEXT    NOT NULL DEFAULT '',
+    token_usage_json     TEXT    NOT NULL DEFAULT '',
+    error_message        TEXT    NOT NULL DEFAULT '',
+    UNIQUE(thread_id, turn_index)
+);
+CREATE INDEX turns_thread_index ON turns(thread_id, turn_index DESC);
+`,
+	},
 }
 
 // v13SQL is the DROP-and-rebuild payload for migration v13. Extracted so
