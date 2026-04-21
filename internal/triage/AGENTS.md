@@ -13,8 +13,13 @@ closely matches its concern; create a new file (and list it here) if
 none fits.
 
 - `router.go` — entry point. `Router` struct, `Handle` dispatch switch,
-  error / session-status / token-usage / rate-limit routers, and the
-  shared `persistItem` / `emitThreadUpdated` helpers.
+  `persistItem` / `emitThreadUpdated` shared helpers, and the top-level
+  error / session-status / token-usage / rate-limit routers.
+- `session_status.go` — `EventSessionStatus` classifier:
+  `classifySessionStatus` maps content + meta → `ProviderStatusEventKind`
+  (rate-limit / unauthenticated / transient retry / ok), plus the
+  `logUnknownSessionStatusOnce` capped log throttle that keeps novel
+  status strings from polluting steady-state logs.
 - `approvals.go` — approval-request lifecycle: pending-approval map,
   approval-resolved fan-out, decision → item projection.
 - `turn_lifecycle.go` — per-turn and per-thread correlation state
