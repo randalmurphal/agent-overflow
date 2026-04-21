@@ -469,7 +469,175 @@ today.
 
 ---
 
-## 20. Migrations are forward-only and append-only
+## 20. Every `tool_use` emits exactly one tool-lifecycle completion
+
+**Rule.** Every `tool_use` the provider emits produces exactly one
+`EventToolStart` and exactly one `EventToolComplete` keyed by its own
+`tool_use_id`. No ID rewriting between start and complete. No
+"consumed by another handler." Task-lifecycle enrichments (Claude's
+TaskOutput, `task_updated` terminal) emit a SEPARATE
+`EventBackgroundTaskTerminal` — they never substitute for the
+tool-lifecycle completion.
+
+**Rationale.** Violating this produced the TaskOutput stuck-`running`
+bug: the parser consumed TaskOutput's `tool_result` to emit a
+completion for a backgrounded task's `tool_use_id`, skipping
+TaskOutput's own completion. TaskOutput's `tool_call` row stayed
+`running` forever; `isTurnActive` stayed true; the "Working…"
+indicator never cleared.
+
+**Enforcement.** Claude parser (`parse_user.go`) always runs the
+standard completion path before any task-lifecycle enrichment; task
+enrichment is additive via `EventBackgroundTaskTerminal`, never via
+the tool-completion event. Codex's `item/started`/`item/completed`
+are symmetric one-shot upserts by design.
+
+**Test.** Replay
+`/tmp/claude-bg-spike/ndjson_task.log` and
+`/tmp/taskoutput-multi-spike/ndjson.log` through the parser; assert
+TaskOutput's own `tool_use_id` receives an `EventToolComplete` in
+addition to any task-terminal events.
+
+**See also.** [`turn-lifecycle.md §Tool lifecycle`](turn-lifecycle.md#1-tool-lifecycle);
+[`claude-wire.md §tool_result`](../references/claude-wire.md#user-message--tool_result-blocks).
+
+---
+
+## 21. `task_notification` is not a completion source
+
+**Rule.** The Claude `system/task_notification` envelope is dropped
+at the parser — no `EventBackgroundTaskTerminal`,
+no `EventToolComplete`, no other state transition. Its sole field of
+interest (`summary` human-readable completion text) is information we
+knowingly discard.
+
+**Rationale.** `task_notification` is an "attention signal" that
+Claude fires so the next user turn's prompt includes the task's
+summary. It also fires for non-terminal foreground bash (with
+`output_file: ""`), so treating it as a completion source corrupts
+the task lifecycle. `system/task_updated` with terminal
+`patch.status` and TaskOutput `tool_use_result.task.status` are the
+only authoritative task-terminal sources.
+
+**Enforcement.** `parseTaskNotificationEvent` in `parse_system.go`
+returns no events. If we want a human-readable notification in the
+UI later, add a NEW event kind — do not re-wire
+`task_notification` through the task lifecycle.
+
+**Test.** `parse_system_test.go` asserts zero events emitted for
+every shape of `task_notification` envelope.
+
+**See also.** [`turn-lifecycle.md §Task lifecycle`](turn-lifecycle.md#2-task-lifecycle-claude-only);
+[`claude-wire.md §task_notification`](../references/claude-wire.md#systemtask_notification).
+
+---
+
+## 22. Turn activity is wire-pushed, never derived from items
+
+**Rule.** The frontend's "Working…" indicator and `isTurnActive`
+signal come exclusively from provider-pushed `provider:turn_started`
+/ `provider:turn_completed` events. Never derive turn state from
+item state (e.g., `items.some(running tool_call)`). Never compute
+"is working" from backend process liveness.
+
+**Rationale.** Deriving turn state from items means any parser bug
+that drops a completion freezes the UI. Deriving from process
+liveness means a legitimately backgrounded task makes the agent look
+like it's still working. Invariant 20 (force every tool_use to
+complete) addresses the parser-bug case; this invariant ensures the
+UI reads the authoritative wire signal even if a future parser bug
+resurfaces.
+
+**Enforcement.** `ThreadPane.isTurnActive` reads
+`activeTurn !== null`. The `activeTurn` object is only set from
+`provider:turn_started` and cleared by `provider:turn_completed`.
+
+**Test.** Frontend test: simulate a stuck `tool_call` row + live
+`activeTurn=null`; assert the working indicator is hidden.
+
+**See also.** [`turn-lifecycle.md §Turn lifecycle`](turn-lifecycle.md#3-turn-lifecycle).
+
+---
+
+## 23. Turn-complete force-closes orphan non-background tool_calls
+
+**Rule.** When a turn's `EventTurnComplete` arrives, triage flips
+every `tool_call` row matching
+`status='running' && !is_background && turn_index=currentTurn` to
+`status='errored'` with a synthesized completion summary.
+Backgrounded launches are exempt.
+
+**Rationale.** Provider bugs (or a crash mid-turn) can drop a
+`tool_result`, leaving a tool_call row orphaned at `running`. The
+turn-complete handler acts as a safety net so the timeline always
+settles cleanly. Backgrounded launches are exempt because their
+work can legitimately outlive the turn — see invariant 24.
+
+**Enforcement.** `handleTurnComplete` in
+`internal/triage/turn_lifecycle.go` iterates the turn's items and
+flips any matching rows before emitting `provider:turn_completed`.
+
+**Test.** Integration test: synthesize a `tool_use` with no matching
+`tool_result`, fire `EventTurnComplete`, assert the row flips to
+`errored`.
+
+---
+
+## 24. Backgrounded work outlives its launching turn
+
+**Rule.** A Claude `tool_call` with `is_background=true` can remain
+`status='running'` after its launching turn has completed. This is
+expected and must render correctly (the backgrounded tool tray shows
+it; the timeline shows the launch and, when it lands, the sibling
+`tool_completion` row).
+
+**Rationale.** Claude's `task_updated` terminal and TaskOutput
+enrichment events can arrive AFTER the `result` envelope. Captured
+evidence: `/tmp/claude-bg-spike/ndjson_outlives.log` shows the
+turn-1 `result` landing before the backgrounded task's
+`task_updated`. Agents expect this — they send messages that
+dispatch background work and move on.
+
+**Enforcement.** Triage's force-close (invariant 23) exempts
+`is_background=true` rows. Tray derivation clocks retention off the
+completion row's `createdAt`, not turn boundaries.
+
+**Test.** Replay `ndjson_outlives.log` through the full pipeline;
+assert the turn closes cleanly and the background task's
+`tool_completion` sibling row is written when its `task_updated`
+arrives later.
+
+**See also.** [`turn-lifecycle.md §Task lifecycle`](turn-lifecycle.md#2-task-lifecycle-claude-only).
+
+---
+
+## 25. Codex has no backgrounded-tool concept
+
+**Rule.** No Codex tool ever gets `is_background=true`. The sibling
+`tool_completion` row model and `BackgroundTaskTray` are
+Claude-specific. Codex's concurrency model (parallel tool calls,
+`spawn_agent` child threads) is fundamentally different from
+Claude's `run_in_background`.
+
+**Rationale.** Codex's `spawn_agent` tool completes immediately when
+the spawn request is accepted; the child runs on a separate
+`thread_id`. Stamping `is_background` on Codex tools (as the old
+`BackgroundClassifier` did via a broken heuristic) produced ghost
+tray rows that never completed, because nothing on the Codex wire
+ever emits a task-lifecycle terminal to pair with them.
+
+**Enforcement.** `internal/provider/codex/background.go` has no
+side-effects that set `is_background`. The `BackgroundTaskTray`
+component renders nothing when no items have `is_background=true`.
+
+**Test.** Codex integration test: run a `spawn_agent` flow; assert
+no item in the timeline carries `is_background=true`.
+
+**See also.** [`codex-wire.md §The two critical differences from Claude`](../references/codex-wire.md#the-two-critical-differences-from-claude).
+
+---
+
+## 26. Migrations are forward-only and append-only
 
 **Rule.** Never edit a migration that has shipped. Add a new one. The
 `migrations` slice in `internal/store/migrate.go` is an ordered list;

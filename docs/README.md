@@ -30,6 +30,7 @@ Deep-dive design docs under [`architecture/`](architecture/).
 | [`how-to.md`](architecture/how-to.md) | Extension playbooks: new event kind, new item kind, new tool renderer, new migration, new provider, new approval, file splits. |
 | [`adrs/`](architecture/adrs/) | Architecture Decision Records. One file per load-bearing choice. |
 | [`chat-rewrite.md`](architecture/chat-rewrite.md) | The original unified-item-stream spec. Historical record; invariants and ADRs are the living summary. |
+| [`turn-lifecycle.md`](architecture/turn-lifecycle.md) | The three-lifecycle mental model (tool / task / turn). Read before touching provider, triage, or any turn-state UI. |
 | [`data-flow.md`](architecture/data-flow.md) | How provider output becomes visible state. Pipeline diagram. |
 | [`triage-routing.md`](architecture/triage-routing.md) | Routing table: every `EventKind` → handler → destination. |
 | [`schema.md`](architecture/schema.md) | SQLite schema summary. Tables, indexes, migration policy. |
@@ -46,6 +47,8 @@ External repos we track and how to use them. Under
 
 | File | 1-line summary |
 |---|---|
+| [`claude-wire.md`](references/claude-wire.md) | Canonical Claude Code NDJSON shapes + pinned citations into the Python SDK and forge. Single source of truth for parser work. |
+| [`codex-wire.md`](references/codex-wire.md) | Canonical Codex JSON-RPC shapes + collab-agent lifecycle. Single source of truth for Codex parser work. |
 | [`forge.md`](references/forge.md) | Pointers into the forge codebase we're rewriting. UX and provider-handling reference. |
 | [`codex.md`](references/codex.md) | Codex source + CodexMonitor — how to use them when touching Codex code. |
 | [`spike-policy.md`](references/spike-policy.md) | When to write an isolated spike test outside the project. |

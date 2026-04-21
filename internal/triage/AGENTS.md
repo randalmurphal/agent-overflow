@@ -51,9 +51,38 @@ none fits.
 | Command output | SQLite payload + meta to frontend. |
 | Thinking block | SQLite payload + preview to frontend. |
 | Turn metadata (cost, tokens, context) | Inline to frontend, persist on `threads`. |
-| Background task start/complete | See data-flow.md; two distinct items. |
+| Background task terminal (Claude) | `tool_completion` sibling row upsert (idempotent). See `turn-lifecycle.md`. |
+| Turn start/complete | Write `turns` row; emit `provider:turn_*` to frontend; force-close orphan tool_calls on complete. |
 | Error | Distinct event kind; frontend renders as status/alert. |
 | Unknown | Log with full context, do not drop silently. |
+
+## Lifecycles we route
+
+Authoritative mental model:
+[`turn-lifecycle.md`](../../docs/architecture/turn-lifecycle.md).
+
+- **Tool lifecycle** — `EventToolStart`/`EventToolComplete` keyed by
+  tool_use_id. Triage upserts `tool_call` rows. Per-spec backgrounded
+  launches stay `status=running` (the `tool_completion` sibling is
+  written by the task lifecycle).
+- **Task lifecycle (Claude only)** —
+  `EventBackgroundTaskTerminal` → idempotent sibling row upsert via
+  `AppendCompletionItem`. Both `task_updated` terminal and TaskOutput
+  enrichment arrive via this event; the upsert coalesces them.
+- **Turn lifecycle** — `EventTurnStart` writes a `turns` row with
+  `completed_at=null`; `EventTurnComplete` updates it and emits
+  `provider:turn_completed` to the frontend. Triage force-closes any
+  `tool_call` row with `status='running' && !is_background &&
+  turn_index=currentTurn` as a safety net.
+
+⚠ **Load-bearing invariants** (see
+[`invariants.md`](../../docs/architecture/invariants.md)):
+
+- `task_notification` is NOT a completion source; drop parser
+  emission.
+- Turn activity on the frontend is wire-pushed only — never derived
+  from item state.
+- No session-liveness probing for turn state inference.
 
 ## Responsibility boundary
 

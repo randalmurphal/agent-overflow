@@ -44,32 +44,76 @@ owner. The top-level `ParseLine` (in `parser.go`) reads the envelope's
 
 ## NDJSON shapes we handle
 
-- `system` — `init` (startup metadata: model, cost, context window),
-  `compact_boundary`. `tool_progress` is intentionally dropped; tool
-  cards update through normal item upserts.
-- `system.task_started` — fires for `run_in_background` Bash / `Task`
-  launches. Parser records a `task_id ↔ tool_use_id` map entry and
-  re-emits a meta-only `EventToolStart` so triage can persist the
-  mapping into `items.meta` for reconnect recovery.
-- `system.task_updated` — terminal status patch
-  (`completed` / `failed` / `killed`). Resolves tool_use_id from the
-  in-memory map; on a fresh adapter session emits with empty ItemID
-  and `Meta.task_id` so triage can look up by `items.meta.task_id`.
-- `system.task_notification` — parallel completion trigger. Carries
-  both `task_id` and `tool_use_id` inline. Deduped against task_updated
-  via the parser's `completedToolUseIDs` and `completedTasks` sets.
-- `assistant` — text deltas, tool calls, thinking blocks.
-- `stream_event` — streaming deltas (`text_delta`, `tool_use_start`,
-  `tool_result`, …).
-- `result` — final tool results.
-- `control_request`: `CanUseTool` (approval; may include
-  `UpdatedInput` / `UpdatedPermissions`) and `exit_plan_mode`. Gated
-  behind a `bytes.HasPrefix` check in `session.readLoop` so streaming
-  text/thinking lines don't pay a second `json.Unmarshal`.
-- `rate_limit_event` — surfaces via the rate-limit normalizer.
+⚠ **Authoritative wire reference**:
+[`docs/references/claude-wire.md`](../../../docs/references/claude-wire.md).
+Read that before adding or changing parser logic — it has the
+canonical JSON examples, pinned citations into the Python SDK and
+forge, and a list of contradictions/ambiguities we've confirmed.
+Don't guess shapes from this guide; `claude-wire.md` is the source
+of truth.
+
+Summary of what `ParseLine` dispatches:
+
+- `system` subtypes: `init`, `compact_boundary`, `task_started`,
+  `task_updated`, `task_notification` (dropped — see below),
+  `session_state_changed`, `api_retry`. `tool_progress` is
+  intentionally dropped.
+- `system.task_started` — meta-only `EventToolStart` emission that
+  records the `task_id ↔ tool_use_id` mapping into `items.meta`.
+  Fires for EVERY Bash/Task — not just backgrounded ones.
+- `system.task_updated` (terminal `patch.status` in
+  `{completed, failed, killed}`) — emits
+  `EventBackgroundTaskTerminal` keyed by task_id + resolved
+  tool_use_id.
+- `system.task_notification` — **NOT a completion source**. Dropped.
+  See [`claude-wire.md §task_notification`](../../../docs/references/claude-wire.md#systemtask_notification)
+  and [`turn-lifecycle.md §Task lifecycle`](../../../docs/architecture/turn-lifecycle.md#2-task-lifecycle-claude-only).
+- `assistant` — text deltas, tool_use, thinking, exit_plan_mode,
+  usage. Subagent messages identified by top-level
+  `parent_tool_use_id`.
+- `user` — `tool_result` blocks. Three variants: standard inline,
+  backgrounded placeholder, TaskOutput. All emit `EventToolComplete`
+  for their own `tool_use_id` (universal tool-lifecycle invariant);
+  TaskOutput ADDITIONALLY emits `EventBackgroundTaskTerminal`.
+- `stream_event` — streaming deltas (requires
+  `include_partial_messages: true`).
+- `result` — **turn-complete signal**. Emits `EventTurnComplete`.
+- `control_request`: `CanUseTool` and `exit_plan_mode`.
+- `rate_limit_event` — rate-limit state.
 
 `parent_tool_use_id` on tool events correlates subagent (`Task`) work
 back to the parent tool call.
+
+## Lifecycles we drive
+
+- **Tool lifecycle** — every `tool_use` produces a matching
+  `EventToolComplete`. Universal invariant. See
+  [`turn-lifecycle.md §Tool lifecycle`](../../../docs/architecture/turn-lifecycle.md#1-tool-lifecycle).
+- **Task lifecycle** (Claude-only) — backgrounded tools (Bash with
+  `run_in_background:true`, Task subagent) emit
+  `EventBackgroundTaskTerminal` via `task_updated` terminal or
+  TaskOutput enrichment. Triage writes a `tool_completion` sibling
+  row idempotently.
+- **Turn lifecycle** — `result` envelope is the authoritative
+  turn-complete signal. No heuristics, no wait-for-tools.
+
+Do NOT derive turn activity from item state. Do NOT emit anything
+from `task_notification`. Do NOT rewrite `tool_use_id` between
+start and complete. These are load-bearing rules enforced by
+[`invariants.md`](../../../docs/architecture/invariants.md).
+
+## Captured wire samples (authoritative test fixtures)
+
+- `/tmp/claude-bg-spike/ndjson_bash.log` — backgrounded + foreground
+  Bash + Read
+- `/tmp/claude-bg-spike/ndjson_task.log` — Task subagent + TaskOutput
+- `/tmp/claude-bg-spike/ndjson_outlives.log` — bg task outliving its
+  turn
+- `/tmp/taskoutput-multi-spike/ndjson.log` — two parallel bg Bashes
+  + blocking TaskOutput
+
+Use these in tests via file path. Do NOT copy into the repo — they
+refresh via `AGENT_OVERFLOW_DEBUG=provider` re-runs.
 
 ## Responsibility boundary
 

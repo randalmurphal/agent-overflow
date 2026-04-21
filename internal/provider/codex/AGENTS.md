@@ -37,11 +37,59 @@ over stdio.
 
 ## Notifications we handle
 
-- `turn/started`, `turn/completed`.
-- `tool/started`, `tool/completed`.
+⚠ **Authoritative wire reference**:
+[`docs/references/codex-wire.md`](../../../docs/references/codex-wire.md).
+Read that before adding or changing handler logic — it has the
+canonical JSON-RPC examples, pinned citations into codex-source
+and CodexMonitor, and the rules for how `item/*`, `turn/*`, and the
+collab-agent lifecycle interact.
+
+Summary:
+
+- `turn/started`, `turn/completed`, `turn/aborted` — **turn
+  lifecycle**. Authoritative turn-complete signal; emit
+  `EventTurnComplete` which triage forwards as
+  `provider:turn_completed` to the frontend.
+- `item/started`, `item/completed` — **tool lifecycle**. Every tool
+  produces both (one-shot upsert pattern). Items carry their own
+  `status` field (`inProgress | completed | failed | ...`) directly
+  on the wire.
+- `thread/status_changed` — session-level state.
 - Rate-limit, model-reroute, reasoning-delta, thread-rename,
   thread-compact events.
-- `error` notifications (these are user-facing state, not log entries).
+- `error` notifications (user-facing state, not log entries).
+
+## Lifecycles we drive
+
+- **Tool lifecycle** — every `item/*` fires `EventToolStart` /
+  `EventToolComplete` for the item's own id. Status comes from the
+  wire `item.status`. See
+  [`turn-lifecycle.md §Tool lifecycle`](../../../docs/architecture/turn-lifecycle.md#1-tool-lifecycle).
+- **Turn lifecycle** — `turn/completed.lastAssistantMessageId` is
+  the authoritative final-message marker; use it for the `turns`
+  row.
+- **⚠ Codex has NO task lifecycle.** There is no `run_in_background`
+  concept; no Codex tool gets `is_background=true`. The sibling
+  `tool_completion` row model and `BackgroundTaskTray` are
+  Claude-specific. The `BackgroundClassifier` must not stamp
+  `is_background` on any Codex tool.
+
+## Collab agent lifecycle (spawn_agent / wait / close_agent / send_input / resume_agent)
+
+Codex's closest analog to Claude's backgrounded tools, but
+structurally different — **a spawn creates a child thread**, not
+a backgrounded tool. See
+[`codex-wire.md §Collab agent lifecycle`](../../../docs/references/codex-wire.md#collab-agent-lifecycle-spawn_agent-wait-close_agent-etc)
+for the wire sequence. Key points:
+
+- `spawn_agent` tool_call completes **immediately** (status:
+  completed) when the spawn request is accepted; child runs on a
+  separate `thread_id`.
+- Parent's `turn/completed` does NOT wait for spawned children.
+- Child completion signals the parent via either explicit `wait`
+  tool OR a `<subagent_notification>` XML tag in the next user
+  message.
+- Wire enum for the wait tool is `"wait"` (not `"waitAgent"`).
 
 ## Responsibility boundary
 
