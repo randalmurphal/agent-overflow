@@ -10,8 +10,22 @@ import (
 
 type PayloadPreview struct {
 	Data       string `json:"data"`
+	// Html is the pre-rendered display HTML for the payload's kind
+	// (markdown → Chroma-highlighted fences; thinking / command_output /
+	// tool_result → terminal-to-html ANSI spans). Kinds the dispatcher
+	// does not server-render (diffs, unknown) leave this empty and the
+	// frontend falls back to its structured rendering path.
+	Html       string `json:"html"`
 	TotalSize  int    `json:"totalSize"`
 	IsComplete bool   `json:"isComplete"`
+}
+
+// PayloadContent bundles a payload's raw bytes (Data) with its pre-rendered
+// display HTML (Html). Raw-data paths (copy to clipboard, save to file,
+// transforms before re-render) read Data; view paths use Html directly.
+type PayloadContent struct {
+	Data string `json:"data"`
+	Html string `json:"html"`
 }
 
 func (a *App) GetPayloadPreview(payloadID string, maxBytes int) (PayloadPreview, error) {
@@ -19,8 +33,16 @@ func (a *App) GetPayloadPreview(payloadID string, maxBytes int) (PayloadPreview,
 	if err != nil {
 		return PayloadPreview{}, err
 	}
+	// Look up the payload kind via meta so the dispatcher can pick
+	// the right renderer. A missing/uncached meta is a store-level
+	// error and surfaces here; we don't silently drop the html.
+	meta, err := a.store.GetPayloadMeta(payloadID)
+	if err != nil {
+		return PayloadPreview{}, err
+	}
 	return PayloadPreview{
 		Data:       string(data),
+		Html:       a.highlighter.RenderForKind(meta.Kind, string(data)),
 		TotalSize:  totalSize,
 		IsComplete: isComplete,
 	}, nil

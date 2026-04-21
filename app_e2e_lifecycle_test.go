@@ -895,8 +895,8 @@ func TestE2E_DiffItemPersistsWithPayload(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetPayloadData: %v", err)
 	}
-	if got != evt.Content {
-		t.Fatalf("payload round-trip = %q", got)
+	if got.Data != evt.Content {
+		t.Fatalf("payload round-trip = %q", got.Data)
 	}
 }
 
@@ -1179,8 +1179,8 @@ func TestE2E_CommandOutputPersistsToPayload(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetPayloadData: %v", err)
 	}
-	if got != evt.Content {
-		t.Fatalf("payload round-trip = %q, want %q", got, evt.Content)
+	if got.Data != evt.Content {
+		t.Fatalf("payload round-trip = %q, want %q", got.Data, evt.Content)
 	}
 }
 
@@ -1211,6 +1211,84 @@ func TestE2E_GetPayloadDataReturnsEmptyForMissing(t *testing.T) {
 	_, err := app.GetPayloadData("no-such-id")
 	if err == nil {
 		t.Fatal("GetPayloadData missing: err = nil, want error")
+	}
+}
+
+// TestE2E_GetPayloadDataRendersHtmlForCommandOutput: command_output
+// payloads run through the ANSI renderer at binding time so the
+// returned Html is non-empty and escapes input safely.
+func TestE2E_GetPayloadDataRendersHtmlForCommandOutput(t *testing.T) {
+	app, _ := setupE2EApp(t)
+	thread, err := createTestThread(t, app, string(provider.Claude), t.TempDir(), "claude-opus-4-7", "chat")
+	if err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+
+	if err := app.store.InsertItem(store.Item{
+		ID: "seed-cmd-html", ThreadID: thread.ID, TurnIndex: 1, ItemIndex: 0,
+		Kind: "user_text", Role: "user", Summary: "seed", CreatedAt: time.Now().UnixMilli(),
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	evt := provider.ProviderEvent{
+		Kind:      provider.EventCommandOutput,
+		ThreadID:  thread.ID,
+		Content:   "\x1b[31merror: boom\x1b[0m",
+		Meta:      json.RawMessage(`{"command":"run","exitCode":1}`),
+		Timestamp: time.Now(),
+	}
+	if err := app.triage.Handle(evt); err != nil {
+		t.Fatalf("triage.Handle: %v", err)
+	}
+
+	items, err := app.store.ListItems(thread.ID)
+	if err != nil {
+		t.Fatalf("ListItems: %v", err)
+	}
+	var cmd store.Item
+	for _, it := range items {
+		if it.Kind == "tool_call" && it.ToolName == "command_execution" {
+			cmd = it
+		}
+	}
+	if cmd.PayloadID == "" {
+		t.Fatalf("command item missing payload: %+v", cmd)
+	}
+
+	got, err := app.GetPayloadData(cmd.PayloadID)
+	if err != nil {
+		t.Fatalf("GetPayloadData: %v", err)
+	}
+	if got.Data != evt.Content {
+		t.Fatalf("payload data round-trip = %q", got.Data)
+	}
+	if got.Html == "" {
+		t.Fatal("expected populated Html for command_output payload, got empty")
+	}
+	if !strings.Contains(got.Html, "term-") {
+		t.Fatalf("expected term- class in Html, got: %q", got.Html)
+	}
+	if !strings.Contains(got.Html, "error: boom") {
+		t.Fatalf("expected 'error: boom' in Html, got: %q", got.Html)
+	}
+}
+
+// TestE2E_HighlightMarkdownBinding: HighlightMarkdown must render
+// markdown through the shared renderer with Chroma fences intact.
+// Used by ProposedPlanCard because it applies markdown-level transforms
+// before rendering (stripping title, truncating for preview).
+func TestE2E_HighlightMarkdownBinding(t *testing.T) {
+	app, _ := setupE2EApp(t)
+	html := app.HighlightMarkdown("# Heading\n\n```go\nx := 1\n```\n")
+	if html == "" {
+		t.Fatal("HighlightMarkdown returned empty")
+	}
+	if !strings.Contains(html, "<h1") {
+		t.Fatalf("expected <h1> in output, got: %q", html)
+	}
+	if !strings.Contains(html, `class="ch-`) {
+		t.Fatalf("expected ch- class in Chroma-highlighted fence, got: %q", html)
 	}
 }
 
