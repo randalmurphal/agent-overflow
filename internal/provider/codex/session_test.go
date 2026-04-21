@@ -2511,3 +2511,184 @@ done
 		t.Fatalf("Fork() = %q, want %q", forkedThreadID, "mock-thread-fork-456")
 	}
 }
+
+// -- subagent notification parser tests --
+
+// TestParseSubagentNotifications_SingleTag pins the canonical wire
+// shape emitted by codex-source
+// (core/src/contextual_user_message.rs): a single
+// <subagent_notification>{"agent_id":..,"status":..}</subagent_notification>
+// block whose JSON body round-trips to a subagentNotification value.
+func TestParseSubagentNotifications_SingleTag(t *testing.T) {
+	text := `<subagent_notification>{"agent_id":"child-1","status":"completed"}</subagent_notification>`
+	got := parseSubagentNotifications(text)
+	if len(got) != 1 {
+		t.Fatalf("len=%d, want 1 (got=%+v)", len(got), got)
+	}
+	if got[0].AgentID != "child-1" {
+		t.Errorf("AgentID: got %q, want %q", got[0].AgentID, "child-1")
+	}
+	if got[0].Status != "completed" {
+		t.Errorf("Status: got %q, want %q", got[0].Status, "completed")
+	}
+}
+
+// TestParseSubagentNotifications_MultipleTags verifies that multiple
+// notifications in one user message are all extracted and returned in
+// source order. In practice this happens when several children finish
+// between two parent turns.
+func TestParseSubagentNotifications_MultipleTags(t *testing.T) {
+	text := `Ordinary prose.
+
+<subagent_notification>{"agent_id":"child-1","status":"completed"}</subagent_notification>
+
+More prose.
+
+<subagent_notification>{"agent_id":"child-2","status":"errored"}</subagent_notification>
+`
+	got := parseSubagentNotifications(text)
+	if len(got) != 2 {
+		t.Fatalf("len=%d, want 2 (got=%+v)", len(got), got)
+	}
+	if got[0].AgentID != "child-1" || got[0].Status != "completed" {
+		t.Errorf("entry 0: got %+v", got[0])
+	}
+	if got[1].AgentID != "child-2" || got[1].Status != "errored" {
+		t.Errorf("entry 1: got %+v", got[1])
+	}
+}
+
+// TestParseSubagentNotifications_WhitespaceLenient verifies the regex
+// tolerates leading/trailing whitespace around the JSON body. Codex's
+// tests pin a tight shape but the refactor plan flagged "be lenient on
+// whitespace" as a correctness criterion.
+func TestParseSubagentNotifications_WhitespaceLenient(t *testing.T) {
+	text := "<subagent_notification>\n  {\"agent_id\":\"child-3\",\"status\":\"interrupted\"}\n</subagent_notification>"
+	got := parseSubagentNotifications(text)
+	if len(got) != 1 {
+		t.Fatalf("len=%d, want 1 (got=%+v)", len(got), got)
+	}
+	if got[0].AgentID != "child-3" || got[0].Status != "interrupted" {
+		t.Errorf("got %+v", got[0])
+	}
+}
+
+// TestParseSubagentNotifications_PreservesExtraFields keeps forward
+// compatibility: when Codex adds fields inside the notification JSON,
+// we preserve them on the Extra map so downstream can opt into richer
+// rendering without a parser update. The load-bearing `agent_id` and
+// `status` keys are stripped from Extra (they have their own fields).
+func TestParseSubagentNotifications_PreservesExtraFields(t *testing.T) {
+	text := `<subagent_notification>{"agent_id":"child-1","status":"completed","message":"ok","duration_ms":1234}</subagent_notification>`
+	got := parseSubagentNotifications(text)
+	if len(got) != 1 {
+		t.Fatalf("len=%d, want 1", len(got))
+	}
+	if got[0].Extra["message"] != "ok" {
+		t.Errorf("Extra.message: got %v, want %q", got[0].Extra["message"], "ok")
+	}
+	// JSON numbers decode as float64 in map[string]any.
+	if got[0].Extra["duration_ms"].(float64) != 1234 {
+		t.Errorf("Extra.duration_ms: got %v, want 1234", got[0].Extra["duration_ms"])
+	}
+	if _, dup := got[0].Extra["agent_id"]; dup {
+		t.Errorf("Extra should not duplicate agent_id: %+v", got[0].Extra)
+	}
+	if _, dup := got[0].Extra["status"]; dup {
+		t.Errorf("Extra should not duplicate status: %+v", got[0].Extra)
+	}
+}
+
+// TestParseSubagentNotifications_SkipsMalformed ensures a single
+// broken tag never blocks sibling tags from parsing. A Codex bug (or a
+// partial stream) that emits malformed JSON inside one block should
+// still let the parent render the remaining user text.
+func TestParseSubagentNotifications_SkipsMalformed(t *testing.T) {
+	text := `<subagent_notification>not json at all</subagent_notification>
+<subagent_notification>{"agent_id":"child-1","status":"completed"}</subagent_notification>
+<subagent_notification>{"agent_id":"","status":"completed"}</subagent_notification>
+<subagent_notification>{"agent_id":"child-2"}</subagent_notification>`
+	got := parseSubagentNotifications(text)
+	if len(got) != 1 {
+		t.Fatalf("len=%d, want 1 (got=%+v)", len(got), got)
+	}
+	if got[0].AgentID != "child-1" {
+		t.Errorf("got %+v", got[0])
+	}
+}
+
+// TestParseSubagentNotifications_NoTag returns nil for plain user text
+// — the hot path that runs on every userMessage in a session. A
+// positive answer would churn a throwaway slice on every turn.
+func TestParseSubagentNotifications_NoTag(t *testing.T) {
+	if got := parseSubagentNotifications(""); got != nil {
+		t.Errorf("empty: got %+v, want nil", got)
+	}
+	if got := parseSubagentNotifications("plain user message"); got != nil {
+		t.Errorf("plain text: got %+v, want nil", got)
+	}
+}
+
+// TestExtractSubagentNotificationsFromUserMessage_WireShape feeds the
+// exact params shape that comes off the wire on item/completed for a
+// userMessage (UserInput array with type=text entries) and asserts the
+// notifications are extracted. This is the integration between the
+// JSON-shape path and the parser.
+func TestExtractSubagentNotificationsFromUserMessage_WireShape(t *testing.T) {
+	params := json.RawMessage(`{
+		"threadId":"parent-thread",
+		"item":{
+			"id":"user-msg-1",
+			"type":"userMessage",
+			"content":[
+				{"type":"text","text":"<subagent_notification>{\"agent_id\":\"child-1\",\"status\":\"completed\"}</subagent_notification>","text_elements":[]},
+				{"type":"text","text":"follow-up question","text_elements":[]}
+			]
+		}
+	}`)
+	got := extractSubagentNotificationsFromUserMessage(params)
+	if len(got) != 1 {
+		t.Fatalf("len=%d, want 1 (got=%+v)", len(got), got)
+	}
+	if got[0].AgentID != "child-1" || got[0].Status != "completed" {
+		t.Errorf("got %+v", got[0])
+	}
+}
+
+// TestExtractSubagentNotificationsFromUserMessage_NotUserMessage
+// guards the filter: assistant and reasoning items must not trigger
+// the parser. This matters because the parser walks the full content
+// array — running it on every item would waste allocations on every
+// turn.
+func TestExtractSubagentNotificationsFromUserMessage_NotUserMessage(t *testing.T) {
+	params := json.RawMessage(`{
+		"item":{
+			"id":"asst-1",
+			"type":"agentMessage",
+			"text":"<subagent_notification>{\"agent_id\":\"child-1\",\"status\":\"completed\"}</subagent_notification>"
+		}
+	}`)
+	if got := extractSubagentNotificationsFromUserMessage(params); got != nil {
+		t.Errorf("non-userMessage: got %+v, want nil", got)
+	}
+}
+
+// TestExtractSubagentNotificationsFromUserMessage_NonTextContent
+// confirms the UserInput tagged union filter: image / mention / skill
+// entries must not be text-concatenated (their `text` field, if any,
+// carries different semantics).
+func TestExtractSubagentNotificationsFromUserMessage_NonTextContent(t *testing.T) {
+	params := json.RawMessage(`{
+		"item":{
+			"id":"user-msg-1",
+			"type":"userMessage",
+			"content":[
+				{"type":"image","url":"https://example.test/image.png"},
+				{"type":"mention","name":"file","path":"/tmp/a"}
+			]
+		}
+	}`)
+	if got := extractSubagentNotificationsFromUserMessage(params); got != nil {
+		t.Errorf("non-text content: got %+v, want nil", got)
+	}
+}

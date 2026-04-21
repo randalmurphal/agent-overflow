@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"regexp"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -78,14 +80,15 @@ type Session struct {
 	// non-zero. Set by tests that exercise the late-response path; a
 	// production Session leaves it at zero to use the default.
 	requestTimeoutOverride time.Duration
-	// background classifies tool-call events as background (the model
-	// moved on with text while the tool was still open) before emission.
-	// Holds its own mutex — do not call while holding s.mu.
-	background *BackgroundClassifier
 	// childParentByThread maps a spawned collab receiver thread back to the
 	// parent SpawnAgent tool-call item id. Notifications from the child
 	// thread are re-emitted onto the parent thread with ParentToolUseID set
 	// to this card id.
+	//
+	// There is deliberately no background-tool classifier here: Codex has
+	// no `run_in_background` concept (invariant 25, see docs/architecture/
+	// invariants.md). Every Codex tool closes via `item/completed`; we do
+	// not stamp `is_background=true` on any Codex item.
 	childParentByThread map[string]string
 	// probeFn is a test-only override for Probe(). When non-nil, Probe
 	// skips the wire call and returns the result from this function.
@@ -155,7 +158,6 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 		onEvent:             onEvent,
 		cancel:              cancel,
 		readDone:            make(chan struct{}),
-		background:          NewBackgroundClassifier(),
 		childParentByThread: make(map[string]string),
 	}
 
@@ -343,9 +345,6 @@ func (s *Session) handleDynamicToolCall(rpcID int64, handler DynamicToolHandler,
 func (s *Session) Close() error {
 	s.closing.Store(true)
 	s.clearPendingApprovals()
-	if s.background != nil {
-		s.background.Reset()
-	}
 	err := s.proc.Close()
 	s.cancel()
 	if s.readDone != nil {
@@ -625,6 +624,32 @@ func (s *Session) dispatchLine(line []byte) {
 		}
 
 		events := ClassifyNotification(s.threadID, msg.Method, msg.Params)
+
+		// Detect <subagent_notification> tags injected by Codex core
+		// into the next user-message item after a detached child agent
+		// reaches a terminal state with no parent `wait` outstanding.
+		// See codex-wire.md §<subagent_notification> and
+		// codex-source/core/src/contextual_user_message.rs for the tag
+		// constants. This is emission-only for now — the matching
+		// EventSubagentNotification kind, triage handler, and UI
+		// renderer are deferred (see
+		// docs/archive/turn-lifecycle-refactor-plan.md). When those
+		// land, swap the log line below for an `s.onEvent(...)` call
+		// that emits one event per notification. The detection logic
+		// runs today so the wiring is already correct and so tests can
+		// pin the parser's contract.
+		//
+		// TODO(turn-lifecycle-refactor): emit EventSubagentNotification
+		// once the const + triage handler land in a follow-up wave.
+		if msg.Method == "item/completed" {
+			if notifications := extractSubagentNotificationsFromUserMessage(msg.Params); len(notifications) > 0 {
+				for _, n := range notifications {
+					log.Printf("codex: subagent_notification detected (emission deferred): thread=%s agent_id=%s status=%s",
+						s.threadID, n.AgentID, n.Status)
+				}
+			}
+		}
+
 		for i := range events {
 			evt := &events[i]
 			if parentToolUseID != "" {
@@ -654,17 +679,12 @@ func (s *Session) dispatchLine(line []byte) {
 				s.mu.Unlock()
 				s.clearTurnStart(evt.TurnID)
 			}
-			// Run the background classifier in order. It observes
-			// tool start/complete pairs plus assistant text deltas
-			// and mutates evt.Meta to carry is_background=true when
-			// a tool was concurrent with assistant reasoning. Must
-			// happen after the turn-tracking switch so the
-			// classifier sees the same EventTurnComplete that clears
-			// activeTurnID (it uses turn complete as a state-reset
-			// boundary).
-			if s.background != nil {
-				s.background.Classify(evt)
-			}
+			// No background-tool classification is performed here —
+			// Codex has no `run_in_background` concept (invariant 25).
+			// Stamping `is_background=true` on Codex items produced
+			// ghost tray rows that never completed because nothing on
+			// the Codex wire emits a task-lifecycle terminal to pair
+			// with them.
 			s.onEvent(*evt)
 		}
 		return
@@ -678,6 +698,135 @@ func isChildTurnLifecycleNotification(method string) bool {
 	default:
 		return false
 	}
+}
+
+// subagentNotification is the parsed shape of a single
+// <subagent_notification>{...}</subagent_notification> tag that Codex
+// core injects into the NEXT user-message item when a detached child
+// agent has reached a terminal state without a parent `wait`
+// outstanding. See codex-source's `core/src/contextual_user_message.rs`
+// for the tag constants and `core/tests/suite/subagent_notifications.rs`
+// for the canonical wire shape (test fixture, lines 274-296).
+//
+// The tag payload is a JSON object with at least `agent_id` and
+// `status`; `status` is a CollabAgentStatus value
+// ("completed" | "errored" | "interrupted" | "shutdown" | ...).
+// Additional fields may appear in future Codex versions — we preserve
+// them in `extra` so downstream can opt into richer rendering without
+// a parser update.
+type subagentNotification struct {
+	AgentID string         `json:"agent_id"`
+	Status  string         `json:"status"`
+	Extra   map[string]any `json:"-"`
+}
+
+// subagentNotificationPattern matches a single
+// <subagent_notification>...</subagent_notification> block with lenient
+// whitespace handling. The inner body is captured in group 1 and then
+// JSON-decoded. `(?s)` makes `.` cross newlines — Codex's core writes
+// the tag on a single line today but the tests pin a single-line shape
+// and humans might paste multi-line bodies during reproduction.
+var subagentNotificationPattern = regexp.MustCompile(`(?s)<subagent_notification>\s*(.*?)\s*</subagent_notification>`)
+
+// parseSubagentNotifications extracts every
+// <subagent_notification>...</subagent_notification> tag in text,
+// JSON-decoding each body into a subagentNotification. Malformed tags
+// (body isn't JSON, or missing agent_id / status) are silently skipped —
+// surfacing a parse error would leak a Codex-core detail into our UI
+// and a single broken notification should not block the user turn from
+// rendering. Multiple tags per text are supported and returned in the
+// order they appear.
+func parseSubagentNotifications(text string) []subagentNotification {
+	if text == "" || !strings.Contains(text, "<subagent_notification>") {
+		return nil
+	}
+	matches := subagentNotificationPattern.FindAllStringSubmatch(text, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+	notifications := make([]subagentNotification, 0, len(matches))
+	for _, match := range matches {
+		body := strings.TrimSpace(match[1])
+		if body == "" {
+			continue
+		}
+		var raw map[string]any
+		if err := json.Unmarshal([]byte(body), &raw); err != nil {
+			continue
+		}
+		agentID, _ := raw["agent_id"].(string)
+		status, _ := raw["status"].(string)
+		if agentID == "" || status == "" {
+			continue
+		}
+		delete(raw, "agent_id")
+		delete(raw, "status")
+		notifications = append(notifications, subagentNotification{
+			AgentID: agentID,
+			Status:  status,
+			Extra:   raw,
+		})
+	}
+	if len(notifications) == 0 {
+		return nil
+	}
+	return notifications
+}
+
+// extractSubagentNotificationsFromUserMessage inspects an item/completed
+// params envelope and returns any subagent notifications the
+// user-message's content carries. Returns nil when the item is not a
+// userMessage, the content array is missing, or no tags are present.
+// The wire shape is:
+//
+//	params.item.type == "userMessage"
+//	params.item.content: [{type: "text", text: "...<subagent_notification>...</subagent_notification>..."}, ...]
+//
+// We concatenate every text UserInput entry before running the regex so
+// a notification split across multiple entries (shouldn't happen today
+// but cheap to tolerate) is still detected.
+func extractSubagentNotificationsFromUserMessage(params json.RawMessage) []subagentNotification {
+	item := readNestedObject(params, "item")
+	if item == nil {
+		return nil
+	}
+	if readRawString(item, "type") != "userMessage" {
+		return nil
+	}
+	contentRaw, ok := item["content"]
+	if !ok {
+		return nil
+	}
+	var content []map[string]json.RawMessage
+	if err := json.Unmarshal(contentRaw, &content); err != nil {
+		return nil
+	}
+	var builder strings.Builder
+	for _, entry := range content {
+		// UserInput tagged union: only the "text" variant carries the
+		// notification payload; image / localImage / skill / mention
+		// variants don't. See codex-source v2/UserInput.ts.
+		var entryType string
+		if rawType, ok := entry["type"]; ok {
+			_ = json.Unmarshal(rawType, &entryType)
+		}
+		if entryType != "text" {
+			continue
+		}
+		rawText, ok := entry["text"]
+		if !ok {
+			continue
+		}
+		var text string
+		if err := json.Unmarshal(rawText, &text); err != nil {
+			continue
+		}
+		if builder.Len() > 0 {
+			builder.WriteString("\n")
+		}
+		builder.WriteString(text)
+	}
+	return parseSubagentNotifications(builder.String())
 }
 
 func (s *Session) parentToolUseForProviderThread(providerThreadID string) string {

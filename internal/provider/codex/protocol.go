@@ -162,7 +162,13 @@ func classifyItemNotification(threadID, method string, params json.RawMessage, n
 		// it must NOT reset status back to "running" for rows that have
 		// already completed. Mark the meta with update_only:true so triage
 		// routes this as a partial update instead of a fresh start.
-		updatedMeta := mergeMetaKeys(params, map[string]any{
+		//
+		// Run enrichItemMeta first so collab-agent enrichments (toolName,
+		// input.agentsStates, etc.) land on item/updated too — the wire
+		// uses item/updated to push live agentsStates transitions onto
+		// the parent spawn_agent card, so the enrichment has to follow
+		// that path or the frontend sees an update with no live state.
+		updatedMeta := mergeMetaKeys(enrichItemMeta(params), map[string]any{
 			"update_only": true,
 		})
 		return []provider.ProviderEvent{{
@@ -593,9 +599,16 @@ func enrichItemMeta(params json.RawMessage) json.RawMessage {
 	if item := readNestedObject(params, "item"); item != nil {
 		if readRawString(item, "type") == "collabAgentToolCall" {
 			tool := normalizeCollabToolName(readRawString(item, "tool"))
+			// toolName mirrors the itemType classification so the
+			// frontend can pick a renderer without having to inspect
+			// input.tool. Keep in sync with classifyCodexItemType's
+			// collabAgentToolCall branch.
 			toolName := "collab_agent"
-			if tool == "send_input" {
+			switch tool {
+			case "send_input":
 				toolName = "send_input"
+			case "wait_agent":
+				toolName = "wait_agent"
 			}
 			input := map[string]any{
 				"tool": tool,
@@ -611,6 +624,16 @@ func enrichItemMeta(params json.RawMessage) json.RawMessage {
 			}
 			if receiverThreadIDs := readRawStringArray(item, "receiverThreadIds"); len(receiverThreadIDs) > 0 {
 				input["receiverThreadIds"] = receiverThreadIDs
+			}
+			// Surface agentsStates — a map of child thread ID →
+			// {status, message?} — that the parent spawn/wait card
+			// tracks. See codex-source v2.rs:4462 (`agents_states`)
+			// and codex-wire.md §Collab agent lifecycle. The UI can
+			// render a live child-status badge from this without
+			// needing to subscribe to every child thread's
+			// session-status events.
+			if agentsStates := readRawJSONObject(item, "agentsStates"); agentsStates != nil {
+				input["agentsStates"] = agentsStates
 			}
 			extras["toolName"] = toolName
 			extras["input"] = input
@@ -629,7 +652,10 @@ func classifyCodexItemType(params json.RawMessage) string {
 	}
 	switch normalizeCollabToolName(readNestedString(params, "item", "tool")) {
 	case "wait_agent":
-		return ""
+		// The parent agent is blocking on one or more children. Surface
+		// it as a dedicated item type so the timeline can render it as
+		// a "waiting on N agents" card distinct from spawn/send_input.
+		return "wait_agent"
 	case "send_input":
 		return "send_input"
 	default:
@@ -637,13 +663,21 @@ func classifyCodexItemType(params json.RawMessage) string {
 	}
 }
 
+// normalizeCollabToolName folds the wire forms of CollabAgentTool into our
+// internal snake_case names. Wire values come from codex-source
+// `codex-rs/app-server-protocol/src/protocol/v2.rs` with
+// `#[serde(rename_all = "camelCase")]` — so `CollabAgentTool::Wait`
+// serializes to the single-word `"wait"`, NOT `"waitAgent"`. The older
+// spellings (`WaitAgent`, `waitAgent`, `wait_agent`) are kept as a
+// defensive alias set so a future upstream rename or an older server
+// doesn't silently fall through to the default branch.
 func normalizeCollabToolName(raw string) string {
 	switch raw {
 	case "SpawnAgent", "spawnAgent", "spawn_agent":
 		return "spawn_agent"
 	case "SendInput", "sendInput", "send_input":
 		return "send_input"
-	case "WaitAgent", "waitAgent", "wait_agent":
+	case "Wait", "wait", "WaitAgent", "waitAgent", "wait_agent":
 		return "wait_agent"
 	case "CloseAgent", "closeAgent", "close_agent":
 		return "close_agent"
@@ -688,6 +722,28 @@ func readRawStringArray(m map[string]json.RawMessage, key string) []string {
 		return nil
 	}
 	return values
+}
+
+// readRawJSONObject decodes the value at key as a `map[string]any` so it
+// can be merged back into Meta without losing structure. Returns nil if
+// the key is missing, empty, or the value is not a JSON object — a null
+// return is indistinguishable from absent, which matches the callers'
+// "only include when populated" semantics. Used for agentsStates
+// enrichment where we want the nested {status, message?} shape to
+// survive the re-encode.
+func readRawJSONObject(m map[string]json.RawMessage, key string) map[string]any {
+	raw, ok := m[key]
+	if !ok {
+		return nil
+	}
+	var obj map[string]any
+	if json.Unmarshal(raw, &obj) != nil {
+		return nil
+	}
+	if len(obj) == 0 {
+		return nil
+	}
+	return obj
 }
 
 // mergeMetaKeys decodes base as a JSON object, overlays extras on top, and

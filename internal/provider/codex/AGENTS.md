@@ -19,8 +19,6 @@ over stdio.
 - `protocol_rate_limits.go` — rate-limit event normalizer.
 - `approval.go` — sandbox approval-method translation into the shared
   `ApprovalRequest` Kind.
-- `background.go` — background tool tracking (Codex's long-running
-  tool analogue to Claude's Task tool).
 - `mcp.go` — MCP elicitation flow.
 - `options.go` — `SessionOptions → Config` hydration, binary probe.
 

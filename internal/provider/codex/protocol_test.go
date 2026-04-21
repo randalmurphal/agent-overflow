@@ -332,11 +332,154 @@ func TestClassifyNotification_CollabSendInputUsesDedicatedType(t *testing.T) {
 	}
 }
 
-func TestClassifyNotification_CollabWaitIsSilent(t *testing.T) {
-	params := json.RawMessage(`{"item":{"id":"call-3","type":"collabAgentToolCall","tool":"waitAgent","receiverThreadIds":["child-1"],"status":"completed"}}`)
+// TestClassifyNotification_CollabSpawnSurfacesAgentsStates is the
+// primary user of the agentsStates enrichment: the parent spawn_agent
+// card tracks each child thread's live status so the UI can render
+// "agent running…" / "agent completed" badges without subscribing to
+// every child thread's session status. item/updated is the wire event
+// that carries the status transitions.
+func TestClassifyNotification_CollabSpawnSurfacesAgentsStates(t *testing.T) {
+	params := json.RawMessage(
+		`{"item":{"id":"call-1","type":"collabAgentToolCall","tool":"spawnAgent",` +
+			`"prompt":"Refactor auth","receiverThreadIds":["child-1"],"status":"inProgress",` +
+			`"agentsStates":{"child-1":{"status":"running"}}}}`,
+	)
+	events := ClassifyNotification("t1", "item/updated", params)
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	input, ok := meta["input"].(map[string]any)
+	if !ok {
+		t.Fatalf("input missing from meta: %+v", meta)
+	}
+	states, ok := input["agentsStates"].(map[string]any)
+	if !ok {
+		t.Fatalf("agentsStates missing from input: %+v", input)
+	}
+	child, ok := states["child-1"].(map[string]any)
+	if !ok {
+		t.Fatalf("child-1 entry wrong shape: %+v", states)
+	}
+	if child["status"] != "running" {
+		t.Errorf("child-1 status: got %v, want %q", child["status"], "running")
+	}
+}
+
+// TestClassifyNotification_CollabSpawnWithoutAgentsStatesOmitsKey
+// guards the "only include when populated" rule. A spawn_agent
+// envelope that carries no agentsStates (or an empty object) must not
+// bake an empty map into Meta — a missing key is distinct from a map
+// that truly reports zero children, and the frontend's conditional
+// rendering relies on the distinction.
+func TestClassifyNotification_CollabSpawnWithoutAgentsStatesOmitsKey(t *testing.T) {
+	params := json.RawMessage(
+		`{"item":{"id":"call-1","type":"collabAgentToolCall","tool":"spawnAgent",` +
+			`"prompt":"kick off","receiverThreadIds":["child-1"],"status":"completed"}}`,
+	)
 	events := ClassifyNotification("t1", "item/completed", params)
-	if len(events) != 0 {
-		t.Fatalf("expected 0 events, got %d", len(events))
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	input, _ := meta["input"].(map[string]any)
+	if _, present := input["agentsStates"]; present {
+		t.Errorf("agentsStates should be absent when wire payload omits it; input=%+v", input)
+	}
+}
+
+// TestClassifyNotification_CollabWaitEmitsWaitAgent verifies that the
+// `wait` collab tool emits a dedicated `wait_agent` item type so the UI
+// can render a distinct "waiting on N agents" card. The wire value is
+// `"wait"` per codex-source v2.rs:4977 (`CollabAgentTool::Wait` with
+// `rename_all = "camelCase"` — single-word enums serialize verbatim).
+// The older `"waitAgent"` variant is never emitted by a live server but
+// is accepted as a defensive alias.
+func TestClassifyNotification_CollabWaitEmitsWaitAgent(t *testing.T) {
+	cases := []struct {
+		name string
+		tool string
+	}{
+		{"canonical wire value", "wait"},
+		{"defensive alias waitAgent", "waitAgent"},
+		{"defensive alias wait_agent", "wait_agent"},
+		{"title-case legacy", "WaitAgent"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			params := json.RawMessage(
+				`{"item":{"id":"call-3","type":"collabAgentToolCall","tool":"` + tc.tool +
+					`","receiverThreadIds":["child-1"],"status":"completed"}}`,
+			)
+			events := ClassifyNotification("t1", "item/completed", params)
+			if len(events) != 1 {
+				t.Fatalf("expected 1 event for tool=%q, got %d", tc.tool, len(events))
+			}
+			evt := events[0]
+			if evt.Kind != provider.EventToolComplete {
+				t.Errorf("kind: got %q, want %q", evt.Kind, provider.EventToolComplete)
+			}
+			if evt.ItemType != "wait_agent" {
+				t.Errorf("itemType for tool=%q: got %q, want %q", tc.tool, evt.ItemType, "wait_agent")
+			}
+			var meta map[string]any
+			if err := json.Unmarshal(evt.Meta, &meta); err != nil {
+				t.Fatalf("unmarshal meta: %v", err)
+			}
+			if meta["toolName"] != "wait_agent" {
+				t.Errorf("toolName: got %v, want %q", meta["toolName"], "wait_agent")
+			}
+		})
+	}
+}
+
+// TestClassifyNotification_CollabWaitSurfacesAgentsStates pins that the
+// parent wait card carries the agentsStates map (child thread ID →
+// {status, message?}) into its Meta. The v1 wait tool populates this on
+// the end event so the UI can show per-child terminal status on the
+// same card the agent blocked on. See codex-wire.md §Collab agent
+// lifecycle and codex-source v2.rs:4462 (`agents_states`).
+func TestClassifyNotification_CollabWaitSurfacesAgentsStates(t *testing.T) {
+	params := json.RawMessage(
+		`{"item":{"id":"call-3","type":"collabAgentToolCall","tool":"wait",` +
+			`"receiverThreadIds":["child-1","child-2"],"status":"completed",` +
+			`"agentsStates":{` +
+			`"child-1":{"status":"completed","message":"ok"},` +
+			`"child-2":{"status":"errored","message":"boom"}` +
+			`}}}`,
+	)
+	events := ClassifyNotification("t1", "item/completed", params)
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	input, ok := meta["input"].(map[string]any)
+	if !ok {
+		t.Fatalf("input missing from meta: %+v", meta)
+	}
+	states, ok := input["agentsStates"].(map[string]any)
+	if !ok {
+		t.Fatalf("agentsStates missing from input: %+v", input)
+	}
+	// Spot-check one child; the whole nested object must round-trip.
+	child1, ok := states["child-1"].(map[string]any)
+	if !ok {
+		t.Fatalf("child-1 entry wrong shape: %+v", states)
+	}
+	if child1["status"] != "completed" {
+		t.Errorf("child-1 status: got %v, want %q", child1["status"], "completed")
+	}
+	if child1["message"] != "ok" {
+		t.Errorf("child-1 message: got %v, want %q", child1["message"], "ok")
 	}
 }
 
