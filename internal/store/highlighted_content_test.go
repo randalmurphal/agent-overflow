@@ -1,6 +1,8 @@
 package store
 
 import (
+	"database/sql"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -203,6 +205,75 @@ func TestUpdateItemHighlightMissingItem(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "nope") {
 		t.Errorf("error should mention the item id, got %v", err)
+	}
+}
+
+// TestUpdateItemHighlightSkipsSettledRow pins the status-guarded write:
+// once a row transitions out of 'streaming' (via interrupt or settle on
+// a parallel goroutine), a late streaming render must NOT overwrite the
+// terminal HTML the settle wrote. The UPDATE's WHERE clause includes
+// status = 'streaming', so the late write is a silent no-op instead of
+// a stale-HTML regression. This is the store-level guard that fixes
+// the delta/interrupt race in the triage layer.
+func TestUpdateItemHighlightSkipsSettledRow(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("t-race2", "claude")); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	if err := s.InsertItem(Item{
+		ID: "race-1", ThreadID: "t-race2", TurnIndex: 0, ItemIndex: 0,
+		Kind: "assistant_text", Role: "assistant",
+		Status: "errored", Summary: "hello — stopped",
+		HighlightedContent: "<p>hello — stopped</p>",
+		CreatedAt:          1, UpdatedAt: 2,
+	}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	// Late delta's render tries to flush stale "hello" HTML; the row is
+	// already settled (status='errored'), so the write is a no-op.
+	if err := s.UpdateItemHighlight("race-1", "<p>hello</p>"); err != nil {
+		t.Fatalf("update highlight on settled row should silently skip: %v", err)
+	}
+	got, _, _ := s.GetItem("race-1")
+	if got.HighlightedContent != "<p>hello — stopped</p>" {
+		t.Errorf("settled HTML got clobbered: HighlightedContent = %q", got.HighlightedContent)
+	}
+}
+
+// TestAppendItemSummarySkipsSettledRow mirrors
+// TestUpdateItemHighlightSkipsSettledRow for the summary column: once a
+// row is no longer streaming, a late delta's AppendItemSummary must not
+// extend the terminal summary. Returns ErrItemSettled so the triage
+// caller can distinguish "drop the delta" from "row missing" and avoid
+// the UpsertItem fallback that would resurrect a settled row.
+func TestAppendItemSummarySkipsSettledRow(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("t-race3", "claude")); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	if err := s.InsertItem(Item{
+		ID: "race-2", ThreadID: "t-race3", TurnIndex: 0, ItemIndex: 0,
+		Kind: "assistant_text", Role: "assistant",
+		Status: "completed", Summary: "final",
+		CreatedAt: 1, UpdatedAt: 2,
+	}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	_, err := s.AppendItemSummary("race-2", "stale delta", 3)
+	if !errors.Is(err, ErrItemSettled) {
+		t.Fatalf("expected ErrItemSettled for settled row, got %v", err)
+	}
+	got, _, _ := s.GetItem("race-2")
+	if got.Summary != "final" {
+		t.Errorf("settled summary got extended: Summary = %q", got.Summary)
+	}
+
+	// Genuinely missing row still returns sql.ErrNoRows so the caller's
+	// UpsertItem fallback path stays untouched.
+	if _, err := s.AppendItemSummary("not-here", "x", 1); !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("missing row should return sql.ErrNoRows, got %v", err)
 	}
 }
 

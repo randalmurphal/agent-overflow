@@ -64,6 +64,14 @@ func (r *Router) handleTextDelta(evt provider.ProviderEvent) error {
 			r.emitItemUpsert(updated)
 			return r.emitInline(evt)
 		}
+		// An interrupt or settle has already committed a terminal status
+		// for this row — drop the late delta rather than resurrect the
+		// streaming state. The frontend already reflects the settled row
+		// from the interrupt's own upsert; we only need to let the
+		// passthrough emit fire so inline cards stay in sync.
+		if errors.Is(err, store.ErrItemSettled) {
+			return r.emitInline(evt)
+		}
 		// Fall through to UpsertItem on ErrNoRows: a prior firstBlock
 		// insert might have failed, leaving the counter bumped but no
 		// row. Re-creating the row here is how the old code self-healed
@@ -145,6 +153,12 @@ func (r *Router) handleThinking(evt provider.ProviderEvent) error {
 				updated.HighlightedContent = html
 			}
 			r.emitItemUpsert(updated)
+			return r.emitInline(evt)
+		}
+		// Settled row: interrupt or settle beat this delta to the row.
+		// Drop the delta (and its payload append) to avoid clobbering
+		// the terminal summary; see handleTextDelta for the same guard.
+		if errors.Is(err, store.ErrItemSettled) {
 			return r.emitInline(evt)
 		}
 		if !errors.Is(err, sql.ErrNoRows) {

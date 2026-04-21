@@ -2,9 +2,18 @@ package store
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 )
+
+// ErrItemSettled is returned by AppendItemSummary / UpdateItemHighlight
+// when the target row exists but is no longer streaming — i.e. an
+// interrupt or settle has already transitioned it to a terminal status
+// on a different goroutine. Callers in the streaming hot path treat this
+// as "drop the late delta", distinct from sql.ErrNoRows which still
+// means the row is genuinely absent.
+var ErrItemSettled = errors.New("store: item is no longer streaming")
 
 // itemColumns is the canonical SELECT projection for scanItemRow. Keep in sync
 // with the Item struct; adding a column means updating this list, the
@@ -185,17 +194,31 @@ func (s *Store) AppendItemSummary(id, delta string, updatedAt int64) (Item, erro
 	defer tx.Rollback()
 
 	result, err := tx.Exec(
-		`UPDATE items SET summary = summary || ?, updated_at = ? WHERE id = ?`,
+		`UPDATE items SET summary = summary || ?, updated_at = ? WHERE id = ? AND status = 'streaming'`,
 		delta, updatedAt, id,
 	)
 	if err != nil {
 		return Item{}, fmt.Errorf("store: append item summary %s: %w", id, err)
 	}
-	if err := requireRowsAffected(
-		result,
-		fmt.Sprintf("store: append item summary %s", id),
-	); err != nil {
-		return Item{}, err
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return Item{}, fmt.Errorf("store: rows affected append item summary %s: %w", id, err)
+	}
+	if affected == 0 {
+		// The UPDATE matched no rows — either the row is missing or it is
+		// no longer streaming. Distinguish so callers can (a) fall back to
+		// an UpsertItem create for genuinely-missing rows and (b) silently
+		// drop late deltas that arrive after an interrupt/settle has
+		// already committed a terminal status.
+		var status string
+		probeErr := tx.QueryRow(`SELECT status FROM items WHERE id = ?`, id).Scan(&status)
+		if errors.Is(probeErr, sql.ErrNoRows) {
+			return Item{}, sql.ErrNoRows
+		}
+		if probeErr != nil {
+			return Item{}, fmt.Errorf("store: probe status for append item summary %s: %w", id, probeErr)
+		}
+		return Item{}, ErrItemSettled
 	}
 
 	// Bump the owning thread's updated_at in the same transaction so the
@@ -241,16 +264,39 @@ func (s *Store) AppendItemSummary(id, delta string, updatedAt int64) (Item, erro
 // of characters) until the next render catches up — no empty state, no
 // flash of plain text.
 //
-// Returns sql.ErrNoRows (via requireRowsAffected) if no row matches id.
+// UpdateItemHighlight only writes to rows whose status is still
+// 'streaming'. Once an interrupt or settle flips the status to a
+// terminal value on a parallel goroutine, a late streaming render would
+// otherwise overwrite the interrupt's own HTML with the pre-suffix
+// rendering (summary column carries the suffix but the re-render was
+// kicked off before the interrupt landed). The status filter drops the
+// stale write silently. A genuinely missing row still returns
+// sql.ErrNoRows so the caller can distinguish.
 func (s *Store) UpdateItemHighlight(id, html string) error {
 	result, err := s.db.Exec(
-		`UPDATE items SET highlighted_content = ? WHERE id = ?`,
+		`UPDATE items SET highlighted_content = ? WHERE id = ? AND status = 'streaming'`,
 		html, id,
 	)
 	if err != nil {
 		return fmt.Errorf("store: write highlighted_content %s: %w", id, err)
 	}
-	return requireRowsAffected(result, fmt.Sprintf("store: write highlighted_content %s", id))
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("store: rows affected write highlighted_content %s: %w", id, err)
+	}
+	if affected > 0 {
+		return nil
+	}
+	// Zero rows: row missing OR already settled. Probe once to distinguish.
+	var status string
+	if err := s.db.QueryRow(`SELECT status FROM items WHERE id = ?`, id).Scan(&status); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("store: write highlighted_content %s: %w", id, sql.ErrNoRows)
+		}
+		return fmt.Errorf("store: probe status for highlighted_content %s: %w", id, err)
+	}
+	// Row exists but settled — the interrupt/settle's write is authoritative.
+	return nil
 }
 
 // UpsertItem persists `item` (inserting or updating depending on whether a
