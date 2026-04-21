@@ -16,12 +16,15 @@ performance, memory efficiency, and minimal code.
 
 ## Commands
 
-- `wails dev` — dev mode, hot reload
-- `wails build` — production build
-- `go build ./...` — Go-only sanity check
-- `go test ./...` — Go tests
-- `cd frontend && npm run check` — Svelte + TypeScript
-- `cd frontend && npm test` — frontend unit tests
+Requires Go 1.25+ and Node 24+. On Linux, install
+`libgtk-3-dev`, `libwebkit2gtk-4.1-dev`, `pkg-config`, and `gcc`
+before `make install`.
+
+- `make install` — installs `wails3` CLI (via `go.mod` tool directive) + npm deps
+- `make dev` — dev mode, hot reload (`wails3 dev`)
+- `make build` — production build (`wails3 build`)
+- `make check` — `go build ./...` + `npm run check`
+- `make test` — `go test ./...` + `npm test`
 
 Every task must leave `go build`, `go test`, `npm run check`, and
 `npm run build` passing.

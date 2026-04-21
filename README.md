@@ -3,20 +3,28 @@
 Desktop app for using coding agents (Claude Code, Codex) with a shared UX.
 Built on Go 1.25, Wails v3, and Svelte 5.
 
+## Setup
+
+Requires Go 1.25+ and Node 24+. On Linux, Wails v3 also needs
+`libgtk-3-dev`, `libwebkit2gtk-4.1-dev`, `pkg-config`, and `gcc`
+(install via your distro's package manager).
+
+```sh
+make install    # installs wails3 CLI (via go.mod tool directive) + npm deps
+```
+
 ## Run
 
 ```sh
-wails dev       # dev mode with hot reload
-wails build     # production build
+make dev        # dev mode with hot reload (wails3 dev)
+make build      # production build (wails3 build)
 ```
 
 ## Check
 
 ```sh
-go build ./...                 # Go
-go test ./...                  # Go tests
-cd frontend && npm run check   # Svelte + TypeScript
-cd frontend && npm test        # frontend tests
+make check      # go build + frontend type check
+make test       # go test + frontend unit tests
 ```
 
 ## Docs
