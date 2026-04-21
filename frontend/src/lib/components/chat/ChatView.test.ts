@@ -5,12 +5,12 @@
 // is "does ChatView wire the right children?". This file asserts the
 // visible contract that's still meaningful after the rewrite.
 
-import { describe, expect, it, beforeAll } from 'vitest';
-import { render } from '@testing-library/svelte';
+import { describe, expect, it, beforeAll, vi } from 'vitest';
+import { fireEvent, render } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import ChatView from './ChatView.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
-import type { Thread } from '../../types/models';
+import type { Item, Thread } from '../../types/models';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 
 beforeAll(() => {
@@ -129,5 +129,49 @@ describe('<ChatView>', () => {
     await tick();
     expect(queryByTestId('chat-header')).toBeNull();
     expect(getByText('Select or create a thread')).toBeInTheDocument();
+  });
+
+  it('clicking a background tray row scrolls the timeline to the matching inline item', async () => {
+    // Spec: docs/architecture/chat-rewrite.md §"Tray rows" — "Clicking
+    // a tray row scrolls/expands the corresponding inline item."
+    // Verify the end-to-end wiring: ChatView binds MessageTimeline and
+    // threads `onExpand` into BackgroundTaskTray, which calls
+    // scrollToItem with the launch id. The inline leaf wrapper carries
+    // data-item-id, and scrollToItem runs scrollIntoView on it.
+    const scrollSpy = vi.fn();
+    const originalScrollIntoView = HTMLElement.prototype.scrollIntoView;
+    HTMLElement.prototype.scrollIntoView = scrollSpy as typeof HTMLElement.prototype.scrollIntoView;
+    try {
+      const pane = await buildPane();
+      const launch: Item = {
+        id: 'launch-a',
+        threadId: 'thread-1',
+        turnIndex: 0,
+        itemIndex: 0,
+        kind: 'tool_call',
+        role: 'assistant',
+        status: 'running',
+        summary: 'Bash: sleep 30',
+        isBackground: true,
+        toolName: 'Bash',
+        createdAt: Date.now() - 1_000,
+        updatedAt: Date.now() - 1_000,
+      };
+      pane.upsertItem(launch);
+
+      const { getByTestId } = render(ChatView, { props: { pane } });
+      await tick();
+
+      const row = getByTestId('background-task-tray-row');
+      expect(row.getAttribute('data-row-id')).toBe('launch-a');
+
+      await fireEvent.click(row);
+
+      expect(scrollSpy).toHaveBeenCalledTimes(1);
+      const thisArg = scrollSpy.mock.contexts[0] as HTMLElement;
+      expect(thisArg.getAttribute('data-item-id')).toBe('launch-a');
+    } finally {
+      HTMLElement.prototype.scrollIntoView = originalScrollIntoView;
+    }
   });
 });

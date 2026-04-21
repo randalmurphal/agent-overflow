@@ -4,29 +4,25 @@ import BackgroundTaskTray from './BackgroundTaskTray.svelte';
 import type { Item } from '../../types/models';
 
 /**
- * Tests operate against the Item type extended by the schema agent —
- * `status`, `isBackground`, and `completionOf` are optional fields
- * on the Item record and fed through by the store/adapter layer. The
- * component tolerates missing fields by design, so stubs here only set
- * what each test needs.
+ * Test fixtures mirror the real `Item` shape produced by the backend:
+ * launches land as `tool_call`, completions as `tool_completion` with
+ * `completionOf` pointing at the launch id. `status` uses the real
+ * vocabulary from the store (`streaming | running | completed |
+ * errored | declined`).
  */
-type BgItem = Item & {
-  status?: 'running' | 'completed' | 'failed';
-  isBackground?: boolean;
-  completionOf?: string;
-};
-
-function item(overrides: Partial<BgItem> & { id: string }): BgItem {
+function item(overrides: Partial<Item> & { id: string }): Item {
   return {
     threadId: 't1',
     turnIndex: 0,
     itemIndex: 0,
-    kind: 'tool_use',
+    kind: 'tool_call',
     role: 'assistant',
+    status: 'running',
     summary: '',
     createdAt: 0,
+    updatedAt: 0,
     ...overrides,
-  } as BgItem;
+  };
 }
 
 describe('<BackgroundTaskTray>', () => {
@@ -49,6 +45,7 @@ describe('<BackgroundTaskTray>', () => {
           // Flagged but already completed with no matching launch + past retention.
           item({
             id: 'b',
+            kind: 'tool_completion',
             isBackground: true,
             status: 'completed',
             completionOf: 'ghost',
@@ -107,6 +104,7 @@ describe('<BackgroundTaskTray>', () => {
       items: [
         item({
           id: 'done-a',
+          kind: 'tool_completion',
           isBackground: true,
           status: 'completed',
           completionOf: 'launch-a',
@@ -127,6 +125,7 @@ describe('<BackgroundTaskTray>', () => {
         items: [
           item({
             id: 'done-a',
+            kind: 'tool_completion',
             isBackground: true,
             status: 'completed',
             completionOf: 'ghost-launch',
@@ -145,6 +144,111 @@ describe('<BackgroundTaskTray>', () => {
     await vi.advanceTimersByTimeAsync(2_500);
 
     expect(queryByTestId('background-task-tray')).toBeNull();
+  });
+
+  it('removes a launch+completion pair 2 seconds after the completion lands', async () => {
+    // Regression: for backgrounded tools the launch row stays
+    // `status='running'` forever (spec invariant — the backend never
+    // flips it; the completion is a sibling row). If retention only
+    // prunes the completion from the tray's view, the launch gets
+    // orphaned and re-renders as "Running" indefinitely. The tray
+    // must drop the whole pair once the completion ages past the
+    // retention window.
+    const { getByTestId, queryByTestId, getAllByTestId } = render(BackgroundTaskTray, {
+      props: {
+        items: [
+          item({
+            id: 'launch-a',
+            isBackground: true,
+            status: 'running',
+            summary: 'Bash',
+            createdAt: 1_000_000 - 10_000,
+            updatedAt: 1_000_000 - 10_000,
+          }),
+          item({
+            id: 'done-a',
+            kind: 'tool_completion',
+            isBackground: true,
+            status: 'completed',
+            completionOf: 'launch-a',
+            summary: 'Bash -> done',
+            createdAt: 1_000_000,
+            updatedAt: 1_000_000,
+          }),
+        ],
+      },
+    });
+    // Completion just landed — row shows as completed.
+    const [row] = getAllByTestId('background-task-tray-row');
+    expect(row.getAttribute('data-row-id')).toBe('launch-a');
+    expect(getByTestId('background-task-tray-row-status').getAttribute('data-status')).toBe('completed');
+
+    await vi.advanceTimersByTimeAsync(2_500);
+
+    // Both the launch and the completion must be gone from the tray.
+    expect(queryByTestId('background-task-tray')).toBeNull();
+  });
+
+  it('renders a declined completion with error styling, not as a green checkmark', () => {
+    // Backend emits three terminal completion statuses — completed,
+    // errored, declined — and ToolDecisionChip.svelte already
+    // colours a declined run in error-red elsewhere in the UI. The
+    // tray used to collapse declined into completed (green ✓); this
+    // test pins the distinct rendering.
+    const { getByTestId } = render(BackgroundTaskTray, {
+      props: {
+        items: [
+          item({
+            id: 'launch-a',
+            isBackground: true,
+            status: 'running',
+            summary: 'Bash',
+            createdAt: 1_000_000 - 5_000,
+            updatedAt: 1_000_000 - 5_000,
+          }),
+          item({
+            id: 'done-a',
+            kind: 'tool_completion',
+            isBackground: true,
+            status: 'declined',
+            completionOf: 'launch-a',
+            summary: 'Bash -> declined',
+            createdAt: 1_000_000 - 100,
+            updatedAt: 1_000_000 - 100,
+          }),
+        ],
+      },
+    });
+    const status = getByTestId('background-task-tray-row-status');
+    expect(status.getAttribute('data-status')).toBe('declined');
+    expect(status.className).toContain('text-error');
+    expect(status.textContent).toContain('Declined');
+  });
+
+  it('suppresses the elapsed label for an orphan completion (no launch)', () => {
+    // An orphan completion has no matching launch in `items`, so
+    // there's no meaningful "task started at" timestamp — counting
+    // elapsed from the completion's createdAt would show a misleading
+    // "0s" for a task that actually ran for minutes. The row still
+    // renders (the user sees the result land) but the elapsed label
+    // is hidden.
+    const { getByTestId, queryByTestId } = render(BackgroundTaskTray, {
+      props: {
+        items: [
+          item({
+            id: 'done-a',
+            kind: 'tool_completion',
+            isBackground: true,
+            status: 'completed',
+            completionOf: 'ghost-launch',
+            summary: 'Bash',
+            createdAt: 1_000_000 - 100,
+          }),
+        ],
+      },
+    });
+    expect(getByTestId('background-task-tray-row')).toBeInTheDocument();
+    expect(queryByTestId('background-task-tray-row-elapsed')).toBeNull();
   });
 
   it('clicking a row invokes onExpand with the item id', async () => {

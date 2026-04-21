@@ -46,6 +46,9 @@ export function ArchiveProject(id: string): $CancellablePromise<void> {
     return $Call.ByID(1352159878, id);
 }
 
+/**
+ * ArchiveThread flips archived to true so the thread leaves the active sidebar.
+ */
 export function ArchiveThread(id: string): $CancellablePromise<void> {
     return $Call.ByID(3655608409, id);
 }
@@ -179,6 +182,10 @@ export function DeleteProject(id: string): $CancellablePromise<string[]> {
     });
 }
 
+/**
+ * DeleteThread tears down the thread and any child threads. The recursive
+ * cascade logic lives in app_thread_delete.go.
+ */
 export function DeleteThread(id: string): $CancellablePromise<void> {
     return $Call.ByID(1186337974, id);
 }
@@ -309,6 +316,9 @@ export function GetModelsForProvider(providerName: string): $CancellablePromise<
     });
 }
 
+/**
+ * GetPayloadData returns a payload body as a string for the frontend.
+ */
 export function GetPayloadData(payloadID: string): $CancellablePromise<string> {
     return $Call.ByID(3448919335, payloadID);
 }
@@ -349,6 +359,9 @@ export function GetTerminalReplay(terminalID: string): $CancellablePromise<strin
     return $Call.ByID(2329592604, terminalID);
 }
 
+/**
+ * GetThread returns a single thread row.
+ */
 export function GetThread(id: string): $CancellablePromise<store$0.Thread> {
     return $Call.ByID(1098302047, id).then(($result: any) => {
         return $$createType2($result);
@@ -495,6 +508,19 @@ export function GitStageAll(threadID: string): $CancellablePromise<void> {
     return $Call.ByID(548906954, threadID);
 }
 
+/**
+ * InterruptTurn fires a provider-level interrupt on the thread's active
+ * session. Returns an error when no session is active or the provider
+ * surface isn't wired up.
+ * 
+ * Spec: on user interrupt, any streaming items on the current turn are
+ * flipped to errored with a " — stopped" suffix, and a system `error`
+ * row with Summary "Stopped by user" is appended. This happens AFTER
+ * the provider interrupt signal is sent so the UI gets a consistent
+ * "signal sent, now here's the record" ordering. If the triage
+ * bookkeeping fails we log — the provider interrupt already fired, so
+ * the session state is correct even if the timeline marker is missing.
+ */
 export function InterruptTurn(threadID: string): $CancellablePromise<void> {
     return $Call.ByID(850013031, threadID);
 }
@@ -526,12 +552,18 @@ export function ListDiscussions(scope: string): $CancellablePromise<store$0.Disc
     });
 }
 
+/**
+ * ListItems returns every item persisted for a thread in chronological order.
+ */
 export function ListItems(threadID: string): $CancellablePromise<store$0.Item[]> {
     return $Call.ByID(2158085763, threadID).then(($result: any) => {
         return $$createType29($result);
     });
 }
 
+/**
+ * ListPayloadMetas returns all payload metadata for a thread without the body.
+ */
 export function ListPayloadMetas(threadID: string): $CancellablePromise<store$0.PayloadMeta[]> {
     return $Call.ByID(1007133701, threadID).then(($result: any) => {
         return $$createType31($result);
@@ -647,6 +679,9 @@ export function RenameProject(id: string, name: string): $CancellablePromise<sto
     });
 }
 
+/**
+ * RenameThread updates the thread title.
+ */
 export function RenameThread(id: string, title: string): $CancellablePromise<void> {
     return $Call.ByID(727416435, id, title);
 }
@@ -751,6 +786,10 @@ export function SearchWorkspaceFiles(threadID: string, query: string, limit: num
     });
 }
 
+/**
+ * SendMessage is the Wails-bound entry point for user-typed content.
+ * The real work lives in app_send.go.
+ */
 export function SendMessage(threadID: string, content: string): $CancellablePromise<void> {
     return $Call.ByID(1496882310, threadID, content);
 }
@@ -777,10 +816,21 @@ export function StartDiscussion(threadID: string, discussionName: string): $Canc
     return $Call.ByID(3188309099, threadID, discussionName);
 }
 
+/**
+ * StartSession is the Wails-bound entry point for "bring this thread's
+ * provider subprocess up." The sendMessage path also calls
+ * startSessionNow via runSessionStart when a thread has no active
+ * session yet.
+ */
 export function StartSession(threadID: string): $CancellablePromise<void> {
     return $Call.ByID(2850159713, threadID);
 }
 
+/**
+ * StopSession tears down the thread's provider session. Idempotent: a
+ * thread with no active session still runs the design teardown +
+ * triage cleanup so stale per-thread state doesn't leak.
+ */
 export function StopSession(threadID: string): $CancellablePromise<void> {
     return $Call.ByID(3838500111, threadID);
 }

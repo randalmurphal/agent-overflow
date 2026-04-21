@@ -27,83 +27,115 @@
   interface TrayTask {
     /** Stable id used for the row key and onExpand callback. */
     rowId: string;
-    /** The launch item (source of tool name + start time). */
-    launch: Item;
+    /** Primary item the row reads summary/timing from — the launch when
+     * we have one, otherwise the completion. */
+    anchor: Item;
+    /** The launch item, if it's still in `items`. */
+    launch: Item | null;
     /** The completion item, if one has landed for this launch. */
     completion: Item | null;
     /** Resolved status for the badge + pulse. */
-    status: 'running' | 'completed' | 'errored';
-    /** ms elapsed; drives the tabular-nums label. */
-    elapsedMs: number;
+    status: 'running' | 'completed' | 'errored' | 'declined';
+    /** ms since the launch started; null when we only have a completion
+     * (no meaningful start time to count from). */
+    elapsedMs: number | null;
   }
 
   const MAX_VISIBLE_ROWS = 3;
 
-  // Derive the task list: running launches + completions within the
-  // retention window, paired up into one row per logical task. Re-runs
-  // when `items` or `now` changes so the 1 s tick prunes stale
-  // completions and advances the elapsed counter.
+  // Derive the task list by grouping each backgrounded launch with its
+  // tool_completion sibling. The backend persists the two as
+  // independent immutable rows: the launch stays `status='running'`
+  // forever (spec invariant — see docs/architecture/chat-rewrite.md
+  // "Background tray"), and the completion is a separate row linked
+  // via `completionOf`. So the tray can't treat "launch.status ===
+  // 'running'" as liveness — it must treat a (launch, completion)
+  // pair as a single logical task and drop BOTH once the completion
+  // ages past the retention window. Otherwise the launch would
+  // re-render as "Running" forever after retention elapsed.
+  //
+  // Re-runs when `items` or `now` changes so the 1 s tick prunes
+  // expired pairs and advances the elapsed counter.
   const tasks = $derived.by<TrayTask[]>(() => {
-    const launches: Item[] = [];
-    const completionsByLaunchId = new Map<string, Item>();
-    const freeCompletions: Item[] = [];
+    interface Bucket {
+      launch: Item | null;
+      completion: Item | null;
+    }
+    const buckets = new Map<string, Bucket>();
+    const bucketFor = (key: string): Bucket => {
+      let b = buckets.get(key);
+      if (!b) {
+        b = { launch: null, completion: null };
+        buckets.set(key, b);
+      }
+      return b;
+    };
 
     for (const item of items) {
       if (!item.isBackground) continue;
-
       if (item.completionOf) {
-        if (now - item.createdAt >= COMPLETION_RETENTION_MS) continue;
-        const existing = completionsByLaunchId.get(item.completionOf);
-        // Keep the latest completion when duplicates arrive.
-        if (!existing || existing.createdAt < item.createdAt) {
-          completionsByLaunchId.set(item.completionOf, item);
+        const b = bucketFor(item.completionOf);
+        // The backend upserts the same completion id in place, so a
+        // duplicate is rare; the createdAt comparison is defensive
+        // against any out-of-order delivery.
+        if (!b.completion || b.completion.createdAt < item.createdAt) {
+          b.completion = item;
         }
       } else if (item.status === 'running') {
-        launches.push(item);
+        bucketFor(item.id).launch = item;
       }
     }
 
     const out: TrayTask[] = [];
-    const matchedLaunchIds = new Set<string>();
+    for (const { launch, completion } of buckets.values()) {
+      // Drop the whole pair once the completion ages out. A completion
+      // without a launch (launch already pruned from `items`) still
+      // renders during the window so the user sees the final state
+      // land.
+      if (completion && now - completion.createdAt >= COMPLETION_RETENTION_MS) continue;
+      const anchor = launch ?? completion;
+      if (!anchor) continue;
 
-    for (const launch of launches) {
-      const completion = completionsByLaunchId.get(launch.id) ?? null;
-      matchedLaunchIds.add(launch.id);
-      const status = completion
-        ? (completion.status === 'errored' ? 'errored' : 'completed')
+      const status: TrayTask['status'] = completion
+        ? completionStatusFor(completion)
         : 'running';
+
       out.push({
-        rowId: launch.id,
+        rowId: anchor.id,
+        anchor,
         launch,
         completion,
         status,
-        elapsedMs: Math.max(0, now - launch.createdAt),
+        // Only the launch has a meaningful "started at" timestamp. For
+        // orphan completions (no launch in items) counting elapsed time
+        // from the completion's createdAt would misleadingly show "0s"
+        // for a task that actually ran for minutes — so we omit the
+        // label entirely in that case.
+        elapsedMs: launch ? Math.max(0, now - launch.createdAt) : null,
       });
     }
 
-    // Completion entries whose launch is no longer in `items` (launch
-    // already pruned by the parent but the completion still in its 2 s
-    // retention window) render as their own row so the user still sees
-    // the result land.
-    for (const completion of items) {
-      if (!completion.isBackground || !completion.completionOf) continue;
-      if (now - completion.createdAt >= COMPLETION_RETENTION_MS) continue;
-      if (matchedLaunchIds.has(completion.completionOf)) continue;
-      freeCompletions.push(completion);
-    }
-
-    for (const completion of freeCompletions) {
-      out.push({
-        rowId: completion.id,
-        launch: completion,
-        completion,
-        status: completion.status === 'errored' ? 'errored' : 'completed',
-        elapsedMs: Math.max(0, now - completion.createdAt),
-      });
-    }
-
-    return out.sort((a, b) => b.launch.updatedAt - a.launch.updatedAt);
+    // The launch's updatedAt doesn't bump when the completion lands,
+    // so a just-completed pair would otherwise sort below a launch
+    // that's been running for ages. Take the max of the two so active
+    // rows bubble to the top.
+    return out.sort((a, b) => {
+      const aAct = Math.max(a.launch?.updatedAt ?? 0, a.completion?.updatedAt ?? 0);
+      const bAct = Math.max(b.launch?.updatedAt ?? 0, b.completion?.updatedAt ?? 0);
+      return bAct - aAct;
+    });
   });
+
+  // The backend exposes three terminal statuses for a completion row:
+  // `completed`, `errored`, and `declined`. The tray used to collapse
+  // `declined` into `completed` (green ✓) even though the rest of the
+  // UI (ToolDecisionChip) renders declined as error-colored. Map it
+  // through faithfully so the affordance matches.
+  function completionStatusFor(completion: Item): TrayTask['status'] {
+    if (completion.status === 'errored') return 'errored';
+    if (completion.status === 'declined') return 'declined';
+    return 'completed';
+  }
 
   const count = $derived(tasks.length);
   const anyRunning = $derived(tasks.some((t) => t.status === 'running'));
@@ -149,7 +181,7 @@
   function toolNameOf(task: TrayTask): string {
     // Prefer the launch's summary (Claude/Codex adapters fill it with the
     // tool name). Fall back to the completion's summary, then "Tool".
-    const fromLaunch = (task.launch.summary ?? '').trim();
+    const fromLaunch = (task.launch?.summary ?? '').trim();
     if (fromLaunch) return fromLaunch;
     const fromCompletion = (task.completion?.summary ?? '').trim();
     if (fromCompletion) return fromCompletion;
@@ -159,18 +191,23 @@
   function statusGlyph(status: TrayTask['status']): string {
     if (status === 'running') return '◐';
     if (status === 'errored') return '!';
+    if (status === 'declined') return '×';
     return '✓';
   }
 
   function statusLabel(status: TrayTask['status']): string {
     if (status === 'running') return 'Running';
     if (status === 'errored') return 'Failed';
+    if (status === 'declined') return 'Declined';
     return 'Completed';
   }
 
   function statusClass(status: TrayTask['status']): string {
     if (status === 'running') return 'text-accent';
-    if (status === 'errored') return 'text-error';
+    // `declined` shares the error palette with ToolDecisionChip — a
+    // user-declined tool run is not a success, and the rest of the UI
+    // already colors it the same way a tool failure is colored.
+    if (status === 'errored' || status === 'declined') return 'text-error';
     return 'text-success';
   }
 </script>
@@ -238,12 +275,14 @@
                   >{statusGlyph(task.status)}</span>
                   <span>{statusLabel(task.status)}</span>
                 </span>
-                <span
-                  class="shrink-0 tabular-nums text-xs text-text-secondary"
-                  data-testid="background-task-tray-row-elapsed"
-                >
-                  {formatElapsed(task.elapsedMs)}
-                </span>
+                {#if task.elapsedMs !== null}
+                  <span
+                    class="shrink-0 tabular-nums text-xs text-text-secondary"
+                    data-testid="background-task-tray-row-elapsed"
+                  >
+                    {formatElapsed(task.elapsedMs)}
+                  </span>
+                {/if}
               </button>
             </li>
           {/each}

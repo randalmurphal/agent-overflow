@@ -73,6 +73,22 @@
       });
     }
   });
+
+  /**
+   * Scroll the timeline to the inline row for the given item id, called
+   * by BackgroundTaskTray when the user clicks a tray row (spec:
+   * docs/architecture/chat-rewrite.md "Tray rows … Clicking a tray row
+   * scrolls/expands the corresponding inline item"). Each leaf's
+   * wrapper carries a `data-item-id` attribute; we query within our
+   * scroll container so the lookup is scoped to this pane.
+   */
+  export function scrollToItem(id: string): void {
+    if (!scrollContainer || !id) return;
+    const el = scrollContainer.querySelector(`[data-item-id="${CSS.escape(id)}"]`);
+    if (el instanceof HTMLElement) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  }
 </script>
 
 <div bind:this={scrollContainer} onscroll={handleScroll} class="flex-1 overflow-y-auto px-4 py-4" role="log" aria-label="Message history">
