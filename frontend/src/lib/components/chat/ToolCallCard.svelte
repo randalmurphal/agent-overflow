@@ -123,7 +123,18 @@
     return null;
   });
 
+  // Status label replaces the plain "running" with "…" for
+  // backgrounded launches so the row visually communicates "the agent
+  // dispatched this and moved on" instead of "the tool is actively
+  // executing right now." Spec invariant 24 (backgrounded work
+  // outlives turns) — see docs/architecture/turn-lifecycle.md §UI
+  // components driven by this state.
+  let isBackgroundedRunning = $derived(
+    item.kind === 'tool_call' && item.isBackground === true && item.status === 'running',
+  );
+
   let statusLabel = $derived.by(() => {
+    if (isBackgroundedRunning) return '…';
     if (item.status === 'running' || item.status === 'streaming') return 'running';
     if (item.status === 'errored') return 'failed';
     return 'done';
@@ -197,21 +208,6 @@
       <span class="text-xs font-medium text-text-secondary shrink-0" data-testid="tool-call-card-label">
         {classification.label}
       </span>
-      {#if item.kind === 'tool_call' && item.isBackground && item.status === 'running'}
-        <!-- Backgrounded-running badge. Visual signal that the launch row is
-             legitimately still "running" because the agent dispatched this
-             to the background and moved on — not that the tool is actively
-             executing right now. See docs/architecture/turn-lifecycle.md
-             §UI components driven by this state + invariants.md §24. -->
-        <span
-          class="shrink-0 inline-flex items-center rounded-full bg-accent/15 px-1.5 py-0.5 text-[10px] font-medium leading-none text-accent"
-          title="Running in background"
-          aria-label="Backgrounded"
-          data-testid="tool-call-backgrounded-badge"
-        >
-          …
-        </span>
-      {/if}
       <span class="min-w-0 flex-1 truncate text-sm text-text-primary" data-testid="tool-call-card-preview">
         {inputPreview}
       </span>
@@ -220,6 +216,8 @@
         class="shrink-0 text-xs {statusClass}"
         data-testid="tool-call-card-status"
         data-status={item.status}
+        title={isBackgroundedRunning ? 'Running in background' : undefined}
+        aria-label={isBackgroundedRunning ? 'Backgrounded' : undefined}
       >
         {statusLabel}
       </span>

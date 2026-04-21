@@ -263,8 +263,15 @@ describe('<ToolCallCard> header dispatcher', () => {
   });
 });
 
-describe('<ToolCallCard> backgrounded badge', () => {
-  it('renders the badge when isBackground && status === "running"', async () => {
+describe('<ToolCallCard> backgrounded status label', () => {
+  // Per-spec (invariant 24, docs/architecture/turn-lifecycle.md §UI
+  // components driven by this state), the status chip replaces "running"
+  // with "…" for a backgrounded launch. The "…" is the visual signal
+  // that the agent dispatched the tool and moved on — it is NOT a
+  // claim that the tool is currently executing. The existing
+  // status-chip slot renders it; no separate badge is added to the row.
+
+  it('shows "…" in the status chip when isBackground && status === "running"', async () => {
     const pane = await buildPane();
     const item = makeItem({
       id: 'bg-run',
@@ -275,32 +282,17 @@ describe('<ToolCallCard> backgrounded badge', () => {
       isBackground: true,
     });
 
-    const { getByTestId } = render(ToolCallCard, { props: { pane, item } });
+    const { getByTestId, queryByTestId } = render(ToolCallCard, { props: { pane, item } });
 
-    const badge = getByTestId('tool-call-backgrounded-badge');
-    expect(badge).toBeTruthy();
-    expect(badge.textContent?.trim()).toBe('…');
-    expect(badge.getAttribute('aria-label')).toBe('Backgrounded');
-    expect(badge.getAttribute('title')).toBe('Running in background');
-  });
-
-  it('does NOT render the badge when isBackground && status === "completed"', async () => {
-    const pane = await buildPane();
-    const item = makeItem({
-      id: 'bg-done',
-      kind: 'tool_call',
-      status: 'completed',
-      toolName: 'Bash',
-      summary: 'sleep 60 &',
-      isBackground: true,
-    });
-
-    const { queryByTestId } = render(ToolCallCard, { props: { pane, item } });
-
+    const status = getByTestId('tool-call-card-status');
+    expect(status.textContent?.trim()).toBe('…');
+    expect(status.getAttribute('aria-label')).toBe('Backgrounded');
+    expect(status.getAttribute('title')).toBe('Running in background');
+    // No separate badge element — the label itself carries the signal.
     expect(queryByTestId('tool-call-backgrounded-badge')).toBeNull();
   });
 
-  it('does NOT render the badge when !isBackground && status === "running"', async () => {
+  it('renders "running" (not "…") when !isBackground && status === "running"', async () => {
     const pane = await buildPane();
     const item = makeItem({
       id: 'inline-run',
@@ -311,17 +303,37 @@ describe('<ToolCallCard> backgrounded badge', () => {
       isBackground: false,
     });
 
-    const { queryByTestId } = render(ToolCallCard, { props: { pane, item } });
+    const { getByTestId } = render(ToolCallCard, { props: { pane, item } });
 
-    expect(queryByTestId('tool-call-backgrounded-badge')).toBeNull();
+    const status = getByTestId('tool-call-card-status');
+    expect(status.textContent?.trim()).toBe('running');
+    expect(status.getAttribute('aria-label')).toBeNull();
+    expect(status.getAttribute('title')).toBeNull();
   });
 
-  it('does NOT render the badge for tool_completion kind even when the flags match', async () => {
+  it('renders "done" (not "…") when isBackground && status === "completed"', async () => {
+    const pane = await buildPane();
+    const item = makeItem({
+      id: 'bg-done',
+      kind: 'tool_call',
+      status: 'completed',
+      toolName: 'Bash',
+      summary: 'sleep 60 &',
+      isBackground: true,
+    });
+
+    const { getByTestId } = render(ToolCallCard, { props: { pane, item } });
+
+    const status = getByTestId('tool-call-card-status');
+    expect(status.textContent?.trim()).toBe('done');
+    expect(status.getAttribute('aria-label')).toBeNull();
+  });
+
+  it('renders "running" (not "…") for tool_completion kind even when the flags match', async () => {
     // tool_completion rows are terminal by definition — isBackground+running
-    // should never fire on them in practice, but the template guards against
-    // this corner anyway. The guard is load-bearing: a badge on the sibling
-    // completion row would misleadingly tell the user the task is still
-    // running when its completion has already landed.
+    // should never fire on them in practice, but the template guards
+    // against this corner. The sibling completion row must not claim
+    // "backgrounded still-running" when its completion has already landed.
     const pane = await buildPane();
     const item = makeItem({
       id: 'bg-completion',
@@ -332,38 +344,11 @@ describe('<ToolCallCard> backgrounded badge', () => {
       isBackground: true,
     });
 
-    const { queryByTestId } = render(ToolCallCard, { props: { pane, item } });
-
-    expect(queryByTestId('tool-call-backgrounded-badge')).toBeNull();
-  });
-
-  it('places the badge next to the tool name, not inside the status chip', async () => {
-    // The badge is a tag on the tool itself — it must sit adjacent to the
-    // tool label in the header, not nested inside the status chip (which
-    // already renders "running" via its own path and must stay untouched).
-    const pane = await buildPane();
-    const item = makeItem({
-      id: 'bg-placement',
-      kind: 'tool_call',
-      status: 'running',
-      toolName: 'Bash',
-      summary: 'sleep 60 &',
-      isBackground: true,
-    });
-
     const { getByTestId } = render(ToolCallCard, { props: { pane, item } });
 
-    const badge = getByTestId('tool-call-backgrounded-badge');
-    const label = getByTestId('tool-call-card-label');
     const status = getByTestId('tool-call-card-status');
-
-    // Same parent row as the label, and the label is the immediate
-    // previous element sibling — "adjacent to the tool name" per spec.
-    expect(badge.parentElement).toBe(label.parentElement);
-    expect(badge.previousElementSibling).toBe(label);
-
-    // Badge is NOT a descendant of the status chip.
-    expect(status.contains(badge)).toBe(false);
+    expect(status.textContent?.trim()).toBe('running');
+    expect(status.getAttribute('aria-label')).toBeNull();
   });
 });
 

@@ -476,11 +476,14 @@ describe('App integration — messaging flow', () => {
     });
     await flush();
 
-    // The inline ToolCallCard renders the "…" backgrounded badge while
+    // The inline ToolCallCard renders "…" in the status chip while
     // status=running AND isBackground=true. This is the spec's sole
-    // render signal for "work dispatched, waiting for sibling."
-    const badge = await findByTestId('tool-call-backgrounded-badge');
-    expect(badge).toBeInTheDocument();
+    // render signal for "work dispatched, waiting for sibling" —
+    // invariant 24 + §UI components driven by this state. The chip
+    // replaces "running"; no separate badge element is rendered.
+    const status = await findByTestId('tool-call-card-status');
+    expect(status.textContent?.trim()).toBe('…');
+    expect(status.getAttribute('aria-label')).toBe('Backgrounded');
 
     // 3. Turn ends while the backgrounded work is still in flight.
     // pane.activeTurn clears, the working indicator hides, and the
@@ -496,9 +499,9 @@ describe('App integration — messaging flow', () => {
     await waitFor(() => expect(pane.activeTurn).toBeNull());
     await waitFor(() => expect(queryByTestId('chat-working-indicator')).toBeNull());
 
-    // The "…" badge is still present — invariant 24. The launch row
+    // The "…" label is still present — invariant 24. The launch row
     // renders as background+running until the sibling terminal lands.
-    expect(queryByTestId('tool-call-backgrounded-badge')).toBeInTheDocument();
+    expect(status.textContent?.trim()).toBe('…');
 
     // The background tray now renders the launch — the tray consumes
     // pane.items and only filters by isBackground/kind/completionOf,
