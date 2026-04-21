@@ -180,6 +180,93 @@ func TestRenderMarkdownGFMLinkify(t *testing.T) {
 	}
 }
 
+// TestRenderMarkdownInlineMath pins `$...$` inline math.
+func TestRenderMarkdownInlineMath(t *testing.T) {
+	r := newTestRenderer(t)
+	out := r.RenderMarkdown("The complexity is $O(n \\log n)$ in the worst case.")
+	if !strings.Contains(out, `<span class="math-inline">`) {
+		t.Fatalf("missing inline math span: %q", out)
+	}
+	if !strings.Contains(out, `O(n \log n)`) {
+		t.Fatalf("missing LaTeX source in span: %q", out)
+	}
+	if !strings.Contains(out, "The complexity is") {
+		t.Fatalf("surrounding text dropped: %q", out)
+	}
+}
+
+// TestRenderMarkdownInlineMathProsePreserved confirms the heuristics
+// that keep "$5 costs" style prose from being eaten as math: a `$`
+// followed by whitespace or a digit-then-`$` pattern must stay literal.
+func TestRenderMarkdownInlineMathProsePreserved(t *testing.T) {
+	r := newTestRenderer(t)
+	cases := []struct {
+		in, mustContain string
+		mustNotContain  string
+	}{
+		{"It costs $5 and $10 each", "It costs", "math-inline"},
+		{"pay $ now", "pay $ now", "math-inline"},
+		{"$5$ is prose", "$5$", "math-inline"},
+	}
+	for _, tc := range cases {
+		out := r.RenderMarkdown(tc.in)
+		if !strings.Contains(out, tc.mustContain) {
+			t.Errorf("case %q: missing %q in %q", tc.in, tc.mustContain, out)
+		}
+		if strings.Contains(out, tc.mustNotContain) {
+			t.Errorf("case %q: unexpected %q in %q", tc.in, tc.mustNotContain, out)
+		}
+	}
+}
+
+// TestRenderMarkdownBlockMathMultiline pins the multi-line `$$` block.
+func TestRenderMarkdownBlockMathMultiline(t *testing.T) {
+	r := newTestRenderer(t)
+	in := "Before\n\n$$\nE = mc^2\n$$\n\nAfter\n"
+	out := r.RenderMarkdown(in)
+	if !strings.Contains(out, `<div class="math-display">`) {
+		t.Fatalf("missing block math div: %q", out)
+	}
+	if !strings.Contains(out, "E = mc^2") {
+		t.Fatalf("missing LaTeX source: %q", out)
+	}
+	// Surrounding markdown still parses.
+	if !strings.Contains(out, "<p>Before</p>") {
+		t.Fatalf("Before paragraph lost: %q", out)
+	}
+	if !strings.Contains(out, "<p>After</p>") {
+		t.Fatalf("After paragraph lost: %q", out)
+	}
+}
+
+// TestRenderMarkdownBlockMathTightForm pins the single-line `$$...$$`
+// block form — agents frequently write short expressions inline-block
+// rather than across three lines.
+func TestRenderMarkdownBlockMathTightForm(t *testing.T) {
+	r := newTestRenderer(t)
+	out := r.RenderMarkdown("$$\\frac{1}{2}$$\n")
+	if !strings.Contains(out, `<div class="math-display">`) {
+		t.Fatalf("missing tight block math div: %q", out)
+	}
+	if !strings.Contains(out, `\frac{1}{2}`) {
+		t.Fatalf("missing LaTeX source: %q", out)
+	}
+}
+
+// TestRenderMarkdownMathIsEscaped confirms LaTeX source containing
+// angle brackets or HTML-flavored bytes are HTML-escaped on emission.
+// KaTeX reads textContent on render so the escape round-trips.
+func TestRenderMarkdownMathIsEscaped(t *testing.T) {
+	r := newTestRenderer(t)
+	out := r.RenderMarkdown("inline $a < b$ test")
+	if strings.Contains(out, "<b>") {
+		t.Fatalf("unescaped <b> in math span: %q", out)
+	}
+	if !strings.Contains(out, "&lt;") {
+		t.Fatalf("expected &lt; in math source: %q", out)
+	}
+}
+
 // TestRenderMarkdownMermaidFence pins the mermaid extension: agents
 // emit diagrams inside ```mermaid fences and without the extension
 // those blocks render as raw ASCII-art via the unknown-lang fallback.

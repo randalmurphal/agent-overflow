@@ -216,6 +216,31 @@ body::selection {
   color: var(--text-secondary);
 }
 
+/* LaTeX math — emitted by internal/highlight/math.go as
+   <span class="math-inline"> and <div class="math-display">. Once
+   KaTeX renders they keep these class names so we can style the
+   container + pre-render fallback. */
+.markdown-body .math-inline {
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
+}
+.markdown-body .math-display {
+  display: block;
+  text-align: center;
+  margin: 0.75rem 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+/* Post-render KaTeX handles its own typography; undo the mono fallback. */
+.markdown-body .math-inline[data-math-rendered],
+.markdown-body .math-display[data-math-rendered] {
+  font-family: inherit;
+}
+.markdown-body .math-error {
+  color: var(--error);
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 0.875em;
+}
+
 /* Mermaid diagrams — the Go renderer emits <pre class="mermaid"> and
    the lazy loader swaps text for SVG. The raw-source state inherits
    the <pre> styling; post-render we remove that padding/background so

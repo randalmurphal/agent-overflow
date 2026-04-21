@@ -28,6 +28,7 @@
   import { filterThreads } from './lib/stores/threadFilter.svelte';
   import { registerCodeCopyListener } from './lib/utils/codeCopy';
   import { registerMermaidRenderer } from './lib/utils/mermaidRenderer';
+  import { registerMathRenderer } from './lib/utils/mathRenderer';
 
   let showSettings = $state(false);
   let discussionStartFor = $state<Thread | null>(null);
@@ -118,6 +119,7 @@
     loadSettings();
     registerCodeCopyListener();
     registerMermaidRenderer();
+    registerMathRenderer();
 
     // Register the built-in commands. The hooks close over stable references
     // so commands see the live pane state each time they run.

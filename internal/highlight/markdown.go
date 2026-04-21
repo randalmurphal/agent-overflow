@@ -35,6 +35,7 @@ func newGoldmark(style string) goldmark.Markdown {
 			// fences get rewritten into mermaidBlock nodes before
 			// chroma tries to lex them as source code.
 			mermaidExtension{},
+			mathExtension{},
 			highlighting.NewHighlighting(
 				highlighting.WithStyle(style),
 				highlighting.WithFormatOptions(
