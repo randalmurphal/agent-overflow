@@ -3,6 +3,8 @@ package triage
 import (
 	"encoding/json"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -184,5 +186,42 @@ func TestStreamingHighlightThrottleSkipsRapidDeltas(t *testing.T) {
 	item = firstItemByKind(t, st, "t1", "assistant_text")
 	if !strings.Contains(item.HighlightedContent, "fourth") {
 		t.Errorf("post-settle HTML missing 'fourth': %q", item.HighlightedContent)
+	}
+}
+
+// TestShouldRenderHighlightRaceOnePerWindow pins the throttle atomicity
+// invariant: N goroutines hitting shouldRenderHighlight for the same
+// (threadID, itemID) within a single window produce exactly one true.
+// Without the mutex-guarded read-modify-write in shouldRenderHighlight
+// this test would flake under -race.
+func TestShouldRenderHighlightRaceOnePerWindow(t *testing.T) {
+	router, _, _ := newTestRouter(t)
+	const goroutines = 64
+	const now int64 = 1_000_000
+	var granted int32
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
+			if router.shouldRenderHighlight("t-race", "text:0:0", now) {
+				atomic.AddInt32(&granted, 1)
+			}
+		}()
+	}
+	wg.Wait()
+	if got := atomic.LoadInt32(&granted); got != 1 {
+		t.Fatalf("concurrent shouldRenderHighlight: got %d grants, want exactly 1", got)
+	}
+
+	// After the window elapses, a fresh call returns true again.
+	if !router.shouldRenderHighlight("t-race", "text:0:0", now+streamingHighlightIntervalMs) {
+		t.Fatalf("window expiry did not re-grant")
+	}
+
+	// Distinct items are independent: a different item key still gets a
+	// fresh grant at the same timestamp.
+	if !router.shouldRenderHighlight("t-race", "text:0:1", now) {
+		t.Fatalf("distinct itemID did not get its own grant")
 	}
 }
