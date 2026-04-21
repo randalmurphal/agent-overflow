@@ -179,7 +179,7 @@ func TestANSIOSC8HyperlinkStripped(t *testing.T) {
 	//   ESC]8;;URL(BEL|ESC\)text ESC]8;;(BEL|ESC\)
 	// terminal-to-html by default turns that into <a href="URL">text</a>,
 	// which would let untrusted tool output smuggle `javascript:` URIs
-	// through the ANSI render path into {@html}. stripOSC8 drops every
+	// through the ANSI render path into {@html}. stripUnsafeEscapes drops every
 	// OSC 8 introducer and terminator (both ST forms) before handing the
 	// bytes to terminal-to-html.
 	r := New(Options{})
@@ -202,7 +202,7 @@ func TestANSIOSC8HyperlinkStripped(t *testing.T) {
 }
 
 func TestANSIOSC8PartialSequenceDropped(t *testing.T) {
-	// A stream can end mid-OSC8 (`\x1b]8;;http://evil`). stripOSC8 drops
+	// A stream can end mid-OSC8 (`\x1b]8;;http://evil`). stripUnsafeEscapes drops
 	// the trailing partial sequence rather than passing its bytes through,
 	// matching terminal-to-html's end-of-input discard for partial SGR.
 	r := New(Options{})
