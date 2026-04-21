@@ -96,6 +96,33 @@ func TestFileChangeToolResultUpgradesFromTurnDiff(t *testing.T) {
 	if !strings.Contains(string(data), "src/app.ts") {
 		t.Fatalf("expected upgraded patch to contain src/app.ts, got %q", string(data))
 	}
+
+	// Regression guard: the upgrade rewrote Summary via summarizeToolResult,
+	// so HighlightedContent must have been re-rendered against the new
+	// summary — not kept from the pre-upgrade summary_only text. Assert
+	// the rendered HTML reflects the upgraded summary.
+	items, err := st.ListTurnItems("t1", 0)
+	if err != nil {
+		t.Fatalf("list items: %v", err)
+	}
+	var toolItem store.Item
+	for _, it := range items {
+		if it.PayloadID == payloadID {
+			toolItem = it
+			break
+		}
+	}
+	if toolItem.ID == "" {
+		t.Fatalf("upgraded tool_result item not found")
+	}
+	// Summary is newly derived; HighlightedContent should match a fresh
+	// RenderForKind(tool_result, Summary). We compare against the live
+	// renderer the Router holds to pin the invariant without hard-coding
+	// ANSI escape markup.
+	want := router.highlighter.RenderForKind(toolItem.Kind, toolItem.Summary)
+	if toolItem.HighlightedContent != want {
+		t.Fatalf("HighlightedContent not re-rendered after upgrade:\n got %q\nwant %q", toolItem.HighlightedContent, want)
+	}
 }
 
 func TestFileChangeToolResultDoesNotOverwriteExistingExactPatch(t *testing.T) {
