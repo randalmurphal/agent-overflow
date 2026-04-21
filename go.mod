@@ -3,9 +3,13 @@ module agent-overflow
 go 1.25.0
 
 require (
+	github.com/alecthomas/chroma/v2 v2.23.1
+	github.com/buildkite/terminal-to-html/v3 v3.16.8
 	github.com/creack/pty v1.1.24
 	github.com/google/uuid v1.6.0
 	github.com/wailsapp/wails/v3 v3.0.0-alpha.76
+	github.com/yuin/goldmark v1.7.16
+	github.com/yuin/goldmark-highlighting/v2 v2.0.0-20230729083705-37449abec8cc
 	go.opentelemetry.io/otel v1.43.0
 	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc v1.43.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.43.0
@@ -33,7 +37,6 @@ require (
 	github.com/Microsoft/go-winio v0.6.2 // indirect
 	github.com/ProtonMail/go-crypto v1.3.0 // indirect
 	github.com/adrg/xdg v0.5.3 // indirect
-	github.com/alecthomas/chroma/v2 v2.23.1 // indirect
 	github.com/atotto/clipboard v0.1.4 // indirect
 	github.com/atterpac/refresh v0.8.6 // indirect
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
@@ -148,7 +151,6 @@ require (
 	github.com/wailsapp/task/v3 v3.40.1-patched3 // indirect
 	github.com/xanzy/ssh-agent v0.3.3 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
-	github.com/yuin/goldmark v1.7.16 // indirect
 	github.com/yuin/goldmark-emoji v1.0.6 // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
 	github.com/zalando/go-keyring v0.2.6 // indirect
