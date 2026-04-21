@@ -45,6 +45,12 @@ export function createCumulativeDiffItems(opts: {
   async function refresh(): Promise<void> {
     const id = opts.getThreadId();
     const seq = ++fetchSeq;
+    // Explicit null thread (pane cleared, no active thread) IS the
+    // signal to wipe — the old data would belong to a thread the
+    // user isn't viewing. Error paths below don't reset: a transient
+    // binding failure would flicker the view empty for a frame and
+    // then refill, which is worse UX than keeping the last-known set
+    // visible while the next retry flows.
     if (!id) {
       items = [];
       return;
@@ -56,7 +62,10 @@ export function createCumulativeDiffItems(opts: {
     } catch (err) {
       if (seq !== fetchSeq) return;
       console.error('cumulativeDiffItems: ListThreadDiffPayloads failed:', err);
-      items = [];
+      // Keep the previous `items` snapshot so the cumulative view
+      // doesn't flash empty on a transient failure. The next
+      // successful refresh (thread-switch effect or debounced upsert)
+      // overwrites this with fresh data.
     }
   }
 

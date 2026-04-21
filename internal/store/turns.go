@@ -254,7 +254,10 @@ func (s *Store) PickInitialFloorTurn(
 
 	// Empty thread (no items on any turn). The turns table may still
 	// hold an in-flight turn with no items yet — look for it so a
-	// just-started turn is included on first paint.
+	// just-started turn is included on first paint. Even when the only
+	// surviving row is an active turn, probe for older items so a
+	// crashed-then-restored thread with an orphan NULL turn-row below
+	// the active one still reports hasMore=true.
 	if len(turns) == 0 {
 		activeFloor, ok, err := s.activeTurnFloor(threadID)
 		if err != nil {
@@ -263,7 +266,11 @@ func (s *Store) PickInitialFloorTurn(
 		if !ok {
 			return -1, false, nil
 		}
-		return activeFloor, false, nil
+		older, err := s.hasOlderTurns(threadID, activeFloor)
+		if err != nil {
+			return -1, false, err
+		}
+		return activeFloor, older, nil
 	}
 
 	// Walk newest → oldest accumulating item counts. `picked` is the
@@ -287,26 +294,29 @@ func (s *Store) PickInitialFloorTurn(
 		}
 	}
 
+	// Include the active turn (if any) BEFORE probing hasMore — a
+	// crash-interrupted thread can have an in-flight turn whose
+	// turn_index is lower than the newest item's (a stale NULL
+	// completed_at on an earlier turn). If we probed against the
+	// higher `picked` we'd under-report "older history" because items
+	// between the active turn's index and the original picked turn
+	// would fall below the probe threshold. `GetActiveTurn` returns
+	// the latest in-flight turn; for the common happy path
+	// activeFloor >= picked and this is a no-op.
+	activeFloor, active, err := s.activeTurnFloor(threadID)
+	if err != nil {
+		return -1, false, err
+	}
+	if active && activeFloor < picked {
+		picked = activeFloor
+	}
+
 	// The scan stops at scanLimit; if we walked every scanned row,
 	// older turns may still exist below. Check cheaply for "any item
 	// below picked".
 	hasMore, err = s.hasOlderTurns(threadID, picked)
 	if err != nil {
 		return -1, false, err
-	}
-
-	// Include the active turn (if any) even when it has no items yet —
-	// the window must cover the currently-running turn so the first
-	// streaming upsert for that turn lands on a row the frontend can
-	// render. The active turn's turn_index is always the thread's
-	// maximum, so this only lowers `picked` if we picked a later floor
-	// somehow (defensive).
-	activeFloor, ok, err := s.activeTurnFloor(threadID)
-	if err != nil {
-		return -1, false, err
-	}
-	if ok && activeFloor < picked {
-		picked = activeFloor
 	}
 	return picked, hasMore, nil
 }

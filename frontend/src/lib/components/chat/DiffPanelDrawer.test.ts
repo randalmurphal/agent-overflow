@@ -3,9 +3,11 @@ import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import DiffPanelDrawer from './DiffPanelDrawer.svelte';
 import type { Checkpoint } from '../../types/checkpoint';
+import type { Item } from '../../types/models';
 import { loadSettings } from '../../stores/settings.svelte';
 import { buildPane, makeItem, makeThread } from '../../../test/helpers/chat';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { emitWailsEvent } from '../../../test/mocks/wailsio-runtime';
 
 beforeAll(() => {
   if (typeof (Element.prototype as unknown as { animate?: unknown }).animate !== 'function') {
@@ -111,6 +113,53 @@ describe('<DiffPanelDrawer>', () => {
     await waitFor(() => expect(getPayload).toHaveBeenCalledWith('p1'));
     expect(getPayload).toHaveBeenCalledWith('p2');
     expect((await findByTestId('diff-viewer')).textContent).toContain('diff:p1');
+  });
+
+  it('re-fetches diff items on diff-kind upsert and ignores plain tool_results', async () => {
+    // The debounced refresh listener must fire for diff payloads
+    // always and for tool_result payloads only when their meta carries
+    // `inlineDiff.availability=="exact_patch"` — matching the SQL
+    // filter. Mismatched events must not provoke a fetch.
+    let responses: Item[] = [];
+    let calls = 0;
+    setBindingMock('ListThreadDiffPayloads', async () => {
+      calls += 1;
+      return responses;
+    });
+    const pane = await buildPane(makeThread({ id: 'thread-a' }));
+    render(DiffPanelDrawer, { props: { pane } });
+    await flush();
+    expect(calls).toBe(1); // initial mount fetch
+
+    // Plain tool_result with no inlineDiff meta — must NOT refetch.
+    emitWailsEvent('provider:item_upsert', makeItem({
+      id: 'plain',
+      threadId: 'thread-a',
+      kind: 'tool_completion',
+      payloadKind: 'tool_result',
+      payloadMeta: '{}',
+    }));
+    await new Promise((r) => setTimeout(r, 150));
+    expect(calls).toBe(1);
+
+    // tool_result carrying inlineDiff meta — triggers refetch.
+    responses = [
+      makeItem({
+        id: 'inline',
+        threadId: 'thread-a',
+        kind: 'tool_completion',
+        payloadId: 'pi',
+        payloadKind: 'tool_result',
+        payloadMeta: JSON.stringify({
+          inlineDiff: {
+            availability: 'exact_patch',
+            files: [{ path: 'c.ts', insertions: 1, deletions: 0 }],
+          },
+        }),
+      }),
+    ];
+    emitWailsEvent('provider:item_upsert', responses[0]);
+    await waitFor(() => expect(calls).toBeGreaterThanOrEqual(2), { timeout: 500 });
   });
 
   it('surfaces cumulative aggregation failures as an error banner', async () => {

@@ -33,6 +33,122 @@ func TestListThreadProposedPlans_OrderedDesc(t *testing.T) {
 	}
 }
 
+func TestListThreadProposedPlans_ExcludesUserAuthored(t *testing.T) {
+	// Regression guard for the `role = 'assistant'` filter: a
+	// user-authored item whose payload.kind happens to be
+	// 'proposed_plan' (schema-allows it; can happen via thread imports
+	// or forks) must not surface in the PlanSidebar — only plans the
+	// assistant actually proposed.
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	seedPayloadItem(t, s, "t", "agent-plan", 0, 0, "assistant_text", "proposed_plan", "{}")
+	seedUserPlan(t, s, "t", "user-plan", 0, 1, "proposed_plan", "{}")
+
+	got, err := s.ListThreadProposedPlans("t")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	ids := collectIDs(got)
+	if !equalStringSlice(ids, []string{"agent-plan"}) {
+		t.Errorf("plans: got %v, want [agent-plan] (user-authored must be filtered)", ids)
+	}
+}
+
+func TestListThreadProposedPlans_EmptyThreadReturnsEmptySlice(t *testing.T) {
+	// Stable JSON shape: an empty result is `[]`, never `null` — the
+	// frontend binds the response directly as `Item[]` and a null here
+	// would throw a type error at runtime.
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	got, err := s.ListThreadProposedPlans("t")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if got == nil {
+		t.Fatal("got nil, want empty slice")
+	}
+	if len(got) != 0 {
+		t.Errorf("got %d rows, want 0", len(got))
+	}
+}
+
+// seedUserPlan persists a user-authored item carrying a proposed_plan
+// payload so the role-filter test above has a user row to assert
+// against. Mirrors seedPayloadItem but overrides Kind/Role to match a
+// real user-message insert.
+func seedUserPlan(
+	t *testing.T,
+	s *Store,
+	threadID, id string,
+	turnIndex, itemIndex int,
+	payloadKind, payloadMeta string,
+) {
+	t.Helper()
+	payloadID := "p-" + id
+	payload := Payload{
+		ID:        payloadID,
+		Kind:      payloadKind,
+		Meta:      payloadMeta,
+		Data:      []byte("body-" + id),
+		CreatedAt: int64(turnIndex*10 + itemIndex),
+	}
+	item := Item{
+		ID:        id,
+		ThreadID:  threadID,
+		TurnIndex: turnIndex,
+		ItemIndex: itemIndex,
+		Kind:      "user_text",
+		Role:      "user",
+		Summary:   id,
+		PayloadID: payloadID,
+		CreatedAt: int64(turnIndex*10 + itemIndex),
+	}
+	if err := s.InsertItemWithPayload(item, payload); err != nil {
+		t.Fatalf("seed user plan %s: %v", id, err)
+	}
+}
+
+func TestListThreadDiffPayloads_ExcludesToolResultWithoutInlineDiff(t *testing.T) {
+	// The SQL-level filter uses
+	// `json_extract(meta, '$.inlineDiff.availability') = 'exact_patch'`
+	// so a plain tool_result (bash / read-file / etc.) never ships to
+	// the frontend. Verify both the exclusion and the positive branch
+	// in the same scenario so a regression that broadens the filter
+	// fails here.
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	// Qualifies.
+	seedPayloadItem(t, s, "t", "diff", 0, 0, "tool_call", "diff", `{}`)
+	seedPayloadItem(t, s, "t", "tr-inline", 0, 1, "tool_completion", "tool_result",
+		`{"inlineDiff":{"availability":"exact_patch"}}`)
+	// Does NOT qualify: missing inlineDiff.
+	seedPayloadItem(t, s, "t", "tr-bash", 0, 2, "tool_completion", "tool_result", `{}`)
+	// Does NOT qualify: inlineDiff present but different availability value.
+	seedPayloadItem(t, s, "t", "tr-out-of-band", 0, 3, "tool_completion", "tool_result",
+		`{"inlineDiff":{"availability":"out_of_band"}}`)
+	// Does NOT qualify: inlineDiff is a string, not an object (malformed
+	// meta). json_extract returns NULL → the = comparison fails → row
+	// excluded. Defensive: callers write meta, a bad writer shouldn't
+	// poison the cumulative view.
+	seedPayloadItem(t, s, "t", "tr-malformed", 0, 4, "tool_completion", "tool_result",
+		`{"inlineDiff":"oops"}`)
+
+	got, err := s.ListThreadDiffPayloads("t")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	ids := collectIDs(got)
+	if !equalStringSlice(ids, []string{"diff", "tr-inline"}) {
+		t.Errorf("ids: got %v, want [diff tr-inline] (non-inline tool_results must be filtered)", ids)
+	}
+}
+
 func TestListThreadDiffPayloads_SelectsDiffAndToolResult(t *testing.T) {
 	s := newTestStore(t)
 	if err := s.CreateThread(makeThread("t", "claude")); err != nil {

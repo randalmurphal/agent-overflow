@@ -23,15 +23,21 @@ type PagedItems struct {
 // floor. The seed scan filters items by thread+turn range and uses
 // migrate.go's idx_items_parent partial index to find the distinct parent
 // ids; the recursive step seeks on the items primary-key id to walk up
-// each parent edge. Both hops are index-driven. Placeholders in order:
+// each parent edge AND re-filters by thread_id so a future migration that
+// preserves ids across threads can't leak ancestors from another thread.
+// Both hops are index-driven. Placeholders in order:
 //
 //	1. thread_id       (seed)
 //	2. floorTurnIndex  (seed: turn_index >= floor)
 //	3. upperBound      (seed: turn_index < upper) — when the caller wants
 //	   a bounded range; pass openUpperBound for open-ended initial loads.
+//	4. thread_id       (recursive step) — the id-join gate.
 //
-// Items without a parent_id are filtered at each step so the walk
-// terminates.
+// UNION (not UNION ALL) is load-bearing here: it dedups during recursion
+// so a cycle (pathological parent_id pointing at itself or back to a
+// descendant) terminates instead of looping forever. Items without a
+// parent_id are filtered at each step so the walk terminates on the
+// normal path too.
 const ancestorCTE = `WITH RECURSIVE ancestors(id) AS (
     SELECT DISTINCT parent_id FROM items
      WHERE thread_id = ?
@@ -41,7 +47,8 @@ const ancestorCTE = `WITH RECURSIVE ancestors(id) AS (
     UNION
     SELECT i.parent_id FROM items i
       JOIN ancestors a ON i.id = a.id
-     WHERE i.parent_id <> ''
+     WHERE i.thread_id = ?
+       AND i.parent_id <> ''
 )`
 
 // openUpperBound is the sentinel upper-turn bound used by queries that
@@ -121,6 +128,13 @@ func (s *Store) ListItemsBeforeTurn(threadID string, beforeTurnIndex, turnLimit 
 // already captured by the primary clause). For paged loads pass the
 // new floor so ancestors above it — already in the caller's window — are
 // excluded.
+//
+// `threadID` is bound into every scope of the query: the seed, the
+// recursive step, the outer SELECT, and — defence-in-depth — the
+// `ancestors IN (…)` subquery too. `items.id` is not globally unique
+// (see migrate.go: PRIMARY KEY on id alone, but identical ids across
+// threads are schema-allowed), so without the outer `items.thread_id`
+// guard a cross-thread id collision would leak rows from another thread.
 func (s *Store) queryPagedItems(threadID string, floor, upper int64, ancestorCutoff int) ([]Item, error) {
 	rows, err := s.db.Query(ancestorCTE+`
 		SELECT `+itemColumns+`
@@ -133,7 +147,7 @@ func (s *Store) queryPagedItems(threadID string, floor, upper int64, ancestorCut
 		         AND items.turn_index < ?)
 		   )
 		 ORDER BY items.turn_index, items.item_index`,
-		threadID, floor, upper,
+		threadID, floor, upper, threadID,
 		threadID, floor, upper, int64(ancestorCutoff),
 	)
 	if err != nil {

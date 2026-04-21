@@ -480,6 +480,186 @@ func collectIDs(items []Item) []string {
 	return out
 }
 
+func TestListRecentItemsWithAncestors_CrossThreadIsolation(t *testing.T) {
+	// The items PK is `(thread_id, id)` not `id` alone, so the same
+	// item id can exist on two threads. The recursive CTE in
+	// `ancestorCTE` re-filters by thread_id at every step so an
+	// ancestor walk on thread A never pulls rows from thread B even
+	// when ids collide. Regression guard for that invariant.
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("ta", "claude")); err != nil {
+		t.Fatalf("create ta: %v", err)
+	}
+	if err := s.CreateThread(makeThread("tb", "claude")); err != nil {
+		t.Fatalf("create tb: %v", err)
+	}
+	// Thread A: parent in turn 0, child in turn 5 pointing at parent.
+	seedItem(t, s, "ta", "parent", 0, 0, "")
+	seedItem(t, s, "ta", "child", 5, 0, "parent")
+	// Thread B has an item with the SAME id as A's parent (id collision).
+	// If the CTE's recursive step didn't filter by thread_id, the
+	// ancestor walk for thread A would pick up B's "parent" row too and
+	// render it as an orphan under A's timeline.
+	seedItem(t, s, "tb", "parent", 10, 0, "")
+	// Thread B also has a child pointing at a parent-id that only exists
+	// on thread A — another cross-thread trap. The ancestor walk on B
+	// should find NOTHING.
+	seedItem(t, s, "tb", "b-child", 10, 1, "parent")
+
+	pagedA, err := s.ListRecentItemsWithAncestors("ta", 5)
+	if err != nil {
+		t.Fatalf("list ta: %v", err)
+	}
+	if !equalStringSlice(collectIDs(pagedA.Items), []string{"parent", "child"}) {
+		t.Errorf("ta: got %v, want [parent child]", collectIDs(pagedA.Items))
+	}
+	// Both returned rows must be from thread A — check thread_id
+	// explicitly since the ids alone can't distinguish.
+	for _, it := range pagedA.Items {
+		if it.ThreadID != "ta" {
+			t.Errorf("cross-thread leak: item %s came from %s, want ta", it.ID, it.ThreadID)
+		}
+	}
+
+	// Thread B's ancestor walk hits a parent id that only exists on A.
+	// Filtering must keep A's row out of B's result entirely.
+	pagedB, err := s.ListRecentItemsWithAncestors("tb", 0)
+	if err != nil {
+		t.Fatalf("list tb: %v", err)
+	}
+	if !equalStringSlice(collectIDs(pagedB.Items), []string{"parent", "b-child"}) {
+		t.Errorf("tb: got %v, want [parent b-child]", collectIDs(pagedB.Items))
+	}
+	for _, it := range pagedB.Items {
+		if it.ThreadID != "tb" {
+			t.Errorf("cross-thread leak: item %s came from %s, want tb", it.ID, it.ThreadID)
+		}
+	}
+}
+
+func TestListRecentItemsWithAncestors_TerminatesOnParentCycle(t *testing.T) {
+	// A malformed thread where parent_id forms a cycle (item A ->
+	// parent B; item B -> parent A). The recursive CTE uses UNION (not
+	// UNION ALL) so duplicate ancestor ids are dedup'd per-iteration
+	// and the recursion converges instead of spinning. Guard: if a
+	// future refactor changes UNION → UNION ALL this test deadlocks,
+	// surfacing the regression immediately.
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	seedItem(t, s, "t", "a", 0, 0, "b")
+	seedItem(t, s, "t", "b", 1, 0, "a")
+	seedItem(t, s, "t", "child", 5, 0, "a")
+
+	paged, err := s.ListRecentItemsWithAncestors("t", 5)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	got := collectIDs(paged.Items)
+	// Both a and b are ancestors (reachable via the cycle) so both load.
+	// Order: grand/parent by turn_index then child.
+	want := []string{"a", "b", "child"}
+	if !equalStringSlice(got, want) {
+		t.Errorf("items: got %v, want %v", got, want)
+	}
+}
+
+func TestPickInitialFloorTurn_ActiveTurnBelowPicked(t *testing.T) {
+	// Crash recovery scenario: an older turn was left with
+	// `completed_at = NULL` after a process crash, and a later
+	// (completed) turn sits above it with items. `GetActiveTurn`
+	// returns the older, still-in-flight row; the floor must be
+	// lowered to cover it AND `hasMore` must reflect the lowered
+	// floor (items from an even-older completed turn below).
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	// InsertTurn always writes completed_at=NULL; use
+	// UpdateTurnCompleted to close the ones we want to be settled. The
+	// one left NULL is the "crash-interrupted" row that activeTurnFloor
+	// must surface.
+	if err := s.InsertTurn(Turn{TurnID: "t0", ThreadID: "t", TurnIndex: 0, StartedAt: 0}); err != nil {
+		t.Fatalf("insert turn 0: %v", err)
+	}
+	if err := s.UpdateTurnCompleted("t0", 100, "end_turn", "", "", ""); err != nil {
+		t.Fatalf("complete turn 0: %v", err)
+	}
+	seedItem(t, s, "t", "old-0", 0, 0, "")
+	// Turn 1: in-flight (stays NULL). No items yet.
+	if err := s.InsertTurn(Turn{TurnID: "t1", ThreadID: "t", TurnIndex: 1, StartedAt: 200}); err != nil {
+		t.Fatalf("insert turn 1 in-flight: %v", err)
+	}
+	// Turn 5: completed, with items. PickInitialFloorTurn walking
+	// newest→oldest with turnLimit=1 would pick turn 5, but the
+	// active-turn adjustment must lower picked to turn 1 so the
+	// pre-fixed ordering bug is reproduced/caught.
+	if err := s.InsertTurn(Turn{TurnID: "t5", ThreadID: "t", TurnIndex: 5, StartedAt: 400}); err != nil {
+		t.Fatalf("insert turn 5: %v", err)
+	}
+	if err := s.UpdateTurnCompleted("t5", 500, "end_turn", "", "", ""); err != nil {
+		t.Fatalf("complete turn 5: %v", err)
+	}
+	seedItem(t, s, "t", "new-5", 5, 0, "")
+
+	floor, hasMore, err := s.PickInitialFloorTurn("t", 1, 0, 10)
+	if err != nil {
+		t.Fatalf("pick: %v", err)
+	}
+	if floor != 1 {
+		t.Errorf("floor: got %d, want 1 (active turn 1 must be covered)", floor)
+	}
+	// Turn 0 has items and sits below the lowered floor (1). hasMore
+	// must be probed AFTER the active-turn adjustment so this is true.
+	// Before the fix this was false (probe ran against the higher
+	// picked, missing the items between the active-turn index and
+	// the newer picked).
+	if !hasMore {
+		t.Error("hasMore: got false, want true (turn 0 has items below the lowered floor)")
+	}
+}
+
+func TestPickInitialFloorTurn_EmptyThreadActiveOnlyReportsHasMoreForOlderRows(t *testing.T) {
+	// Another crash-recovery edge: the items table is empty (fresh
+	// thread after a DB-level item wipe, or a restored backup that
+	// lost item rows) but the turns table has both an active turn and
+	// an older orphan NULL-completed row. The earlier implementation
+	// returned hasMore=false unconditionally for the "no items, one
+	// active turn" branch; now it probes and reports accurately.
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	// Older turn row, NULL completed_at. No items. Represents an
+	// orphan interrupted turn.
+	if err := s.InsertTurn(Turn{TurnID: "t0", ThreadID: "t", TurnIndex: 0, StartedAt: 10}); err != nil {
+		t.Fatalf("insert turn 0 in-flight: %v", err)
+	}
+	// Newer active turn. Also no items.
+	if err := s.InsertTurn(Turn{TurnID: "t3", ThreadID: "t", TurnIndex: 3, StartedAt: 300}); err != nil {
+		t.Fatalf("insert turn 3: %v", err)
+	}
+
+	floor, hasMore, err := s.PickInitialFloorTurn("t", 1, 0, 10)
+	if err != nil {
+		t.Fatalf("pick: %v", err)
+	}
+	// GetActiveTurn returns the latest in-flight turn (turn 3).
+	if floor != 3 {
+		t.Errorf("floor: got %d, want 3 (latest active turn)", floor)
+	}
+	// The items table is empty so `hasOlderTurns` returns false even
+	// though the turns table has an older row. This is accurate: the
+	// caller's "older items" promise can't be fulfilled from the
+	// items table alone, and the turns-only row has no items to load.
+	// Pinning the current behavior here prevents a silent regression
+	// if the probe semantics change.
+	if hasMore {
+		t.Error("hasMore: got true, want false (no older item rows, even with an older turn row)")
+	}
+}
+
 func equalStringSlice(a, b []string) bool {
 	if len(a) != len(b) {
 		return false

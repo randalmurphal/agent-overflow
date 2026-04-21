@@ -318,6 +318,118 @@ describe('<MessageTimeline>', () => {
       const added = getToasts().slice(toastsBefore);
       expect(added.some((t) => t.type === 'warning')).toBe(true);
     });
+
+    it('preserves the visible anchor row when Load older prepends history', async () => {
+      // Scroll-preservation contract: the row the user was reading
+      // (captured via prevScrollTop) must stay in the same viewport
+      // position after the prepend. We simulate the DOM growth by
+      // swapping scrollContainer.scrollHeight before and after
+      // loadOlder and assert scrollTop was adjusted by the delta.
+      const pane = await buildWindowedPane({
+        items: [makeItem({ id: 'tail', turnIndex: 10 })],
+        hasMore: true,
+        oldestTurnIndex: 10,
+      });
+      // Simulate a backend response that prepends two older items and
+      // advances the floor. The store mutates pane.items via a new
+      // Array reference; the DOM grows proportionally.
+      setBindingMock('ListItemsBeforeTurn', async () => ({
+        items: [
+          makeItem({ id: 'older-1', turnIndex: 8 }),
+          makeItem({ id: 'older-2', turnIndex: 9 }),
+        ],
+        oldestTurnIndex: 8,
+        hasMore: false,
+      }));
+
+      const { getByTestId, container } = render(MessageTimeline, { props: { pane } });
+      const scroll = container.querySelector('[role="log"]') as HTMLElement;
+      // Stage the "before" geometry. We'll flip scrollHeight after the
+      // loadOlder resolves — that's how the delta is observed.
+      const initialHeight = 2000;
+      const grownHeight = 2600;
+      Object.defineProperty(scroll, 'scrollHeight', {
+        configurable: true,
+        get: () => scrollHeightValue,
+      });
+      Object.defineProperty(scroll, 'clientHeight', {
+        configurable: true,
+        get: () => 600,
+      });
+      let scrollHeightValue = initialHeight;
+      scroll.scrollTop = 0; // user is at the top, where Load Older lives
+
+      // Swap scrollHeight the instant loadOlder runs. We tee off the
+      // debounced store fetch by waiting for pane.items length to grow.
+      const paneItemsLenBefore = pane.items.length;
+      const clickPromise = fireEvent.click(getByTestId('load-older-messages'));
+
+      // Give the macrotask a chance — the ListItemsBeforeTurn mock
+      // resolves synchronously under microtask scheduling, so by the
+      // time fireEvent.click awaits the handler we can swap the height.
+      await clickPromise;
+      scrollHeightValue = grownHeight;
+      await tick();
+      await tick();
+
+      expect(pane.items.length).toBeGreaterThan(paneItemsLenBefore);
+      // The delta (600 px) should have been re-applied to scrollTop so
+      // the row the user was anchored on stays in the same viewport
+      // position. With prevScrollTop=0, the new scrollTop == delta.
+      expect(scroll.scrollTop).toBe(grownHeight - initialHeight);
+    });
+
+    it('does not snap to the bottom after Load older when the window fits the viewport', async () => {
+      // Regression guard: the `suppressBottomAutoScroll` flag must
+      // keep the near-bottom effect dormant across the prepend AND
+      // across the tick where the flag flips back to false. Recompute
+      // userNearBottom from the post-prepend scroll position so the
+      // effect's re-run sees the refreshed state.
+      const pane = await buildWindowedPane({
+        items: [makeItem({ id: 'only', turnIndex: 5 })],
+        hasMore: true,
+        oldestTurnIndex: 5,
+      });
+      setBindingMock('ListItemsBeforeTurn', async () => ({
+        items: [makeItem({ id: 'prepended', turnIndex: 4 })],
+        oldestTurnIndex: 4,
+        hasMore: false,
+      }));
+
+      const { getByTestId, container } = render(MessageTimeline, { props: { pane } });
+      const scroll = container.querySelector('[role="log"]') as HTMLElement;
+      // Short thread: total content fits the viewport (1000 content
+      // px, 600 viewport px → scrollTop=0 IS near-bottom per the 100 px
+      // threshold). A stale userNearBottom-true after the load would
+      // scroll us to scrollHeight; the fix keeps scrollTop at the
+      // handleLoadOlder-computed position.
+      let scrollHeightValue = 1000;
+      Object.defineProperty(scroll, 'scrollHeight', {
+        configurable: true,
+        get: () => scrollHeightValue,
+      });
+      Object.defineProperty(scroll, 'clientHeight', {
+        configurable: true,
+        get: () => 600,
+      });
+      // User is at the top when they click Load Older; fire a scroll
+      // event so handleScroll runs once to flip userNearBottom to false
+      // for a moment, then reset to the top to simulate "at top" which
+      // for a short thread also counts as near-bottom (600-0-600=0).
+      scroll.scrollTop = 0;
+      await fireEvent.scroll(scroll);
+
+      await fireEvent.click(getByTestId('load-older-messages'));
+      scrollHeightValue = 1400;
+      await tick();
+      await tick();
+      // Give the auto-scroll effect a rAF to fire if the suppress
+      // failed. We don't actually poll rAF here — we just check that
+      // scrollTop did not land at scrollHeight-clientHeight.
+      const atBottom = scrollHeightValue - 600;
+      expect(scroll.scrollTop).not.toBe(atBottom);
+      expect(scroll.scrollTop).toBe(1400 - 1000); // delta-preserved
+    });
   });
 
   describe('completion divider integration', () => {

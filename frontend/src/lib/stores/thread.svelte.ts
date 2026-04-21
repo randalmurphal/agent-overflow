@@ -436,10 +436,13 @@ export function createThreadPane() {
       oldestLoadedTurnIndex = null;
       hasMoreHistory = false;
       loadingOlder = false;
-      pagingGeneration = 0;
-      // scrollToItemRequest.nonce is kept monotonically increasing for
-      // the pane's lifetime so MessageTimeline's lastHandledScrollNonce
-      // can't miss an intent by seeing a lower number after a switch.
+      // `pagingGeneration` is kept monotonically increasing for the
+      // pane's lifetime — same argument as `scrollToItemRequest.nonce`
+      // below. A stale pre-switch loadOlder/loadUntilItem is guarded
+      // by `switchGeneration`, so resetting this counter here is
+      // redundant and only introduces a "same generation value before
+      // and after the swap" collision risk if the guards ever get
+      // reordered.
 
       thread = newThread;
       // Capture the switch generation at the top so every await below can bail
@@ -527,9 +530,9 @@ export function createThreadPane() {
       oldestLoadedTurnIndex = null;
       hasMoreHistory = false;
       loadingOlder = false;
-      pagingGeneration = 0;
-      // See switchThread: the scroll nonce stays monotonic across thread
-      // changes so no consumer observes a regressed counter.
+      // See switchThread: both `pagingGeneration` and
+      // `scrollToItemRequest.nonce` stay monotonic for the pane's
+      // lifetime so no consumer observes a regressed counter.
       diffPanel.clearForThread();
       // Invalidate any in-flight switchThread so its late resolutions can't
       // repopulate the pane we just cleared.
@@ -582,9 +585,16 @@ export function createThreadPane() {
         console.error('loadOlder failed:', err);
         addToast('error', 'Failed to load older messages');
       } finally {
-        if (gen === switchGeneration && pageGen === pagingGeneration) {
-          loadingOlder = false;
-        }
+        // Always clear the button's busy flag. The generation guard on
+        // the happy path protects state mutation from late resolutions,
+        // but `loadingOlder` is a UI-only flag — leaving it stuck true
+        // after a pagingGeneration bump (e.g. a concurrent
+        // loadUntilItem) would greys out the Load Older button
+        // indefinitely. The worst outcome of clearing unconditionally
+        // is a brief flash of the non-busy state while another pager
+        // is still in-flight; the concurrent call will re-raise the
+        // flag on its next write.
+        loadingOlder = false;
       }
     },
 
@@ -640,9 +650,20 @@ export function createThreadPane() {
       // Load every turn from the target's turn index up through the
       // existing floor. A single ListItemsBeforeTurn with a turnLimit
       // sized to cover that distance does it in one shot.
+      //
+      // When `currentFloor` is null (empty window — thread never
+      // loaded items, or cleared pane state) we hand the backend the
+      // default batch and let its `smallestTurnIndexBefore` fallback
+      // walk to the real floor. Passing `MAX_SAFE_INTEGER - targetFloor`
+      // as turnSpan would work but poisons the query with a sentinel
+      // value that looks like a DoS vector at the SQL layer; keeping
+      // turnSpan to the default batch size is cleaner and
+      // semantically equivalent.
       const targetFloor = fetched.turnIndex;
       const beforeTurn = currentFloor ?? Number.MAX_SAFE_INTEGER;
-      const turnSpan = Math.max(LOAD_OLDER_TURN_BATCH, beforeTurn - targetFloor + 1);
+      const turnSpan = currentFloor === null
+        ? LOAD_OLDER_TURN_BATCH
+        : Math.max(LOAD_OLDER_TURN_BATCH, beforeTurn - targetFloor + 1);
 
       loadingOlder = true;
       try {
@@ -662,9 +683,8 @@ export function createThreadPane() {
         addToast('error', 'Failed to load older messages');
         return false;
       } finally {
-        if (gen === switchGeneration && pageGen === pagingGeneration) {
-          loadingOlder = false;
-        }
+        // Match loadOlder's unconditional reset — see comment there.
+        loadingOlder = false;
       }
       return items.some((it) => it.id === itemID);
     },

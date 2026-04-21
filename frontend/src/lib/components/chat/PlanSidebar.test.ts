@@ -1,9 +1,10 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render } from '@testing-library/svelte';
+import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import PlanSidebar from './PlanSidebar.svelte';
 import { buildPane, makeItem } from '../../../test/helpers/chat';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { emitWailsEvent } from '../../../test/mocks/wailsio-runtime';
 import { installAnimateShim } from '../../../test/integration/_helpers';
 
 beforeAll(installAnimateShim);
@@ -102,5 +103,110 @@ describe('<PlanSidebar>', () => {
     await fireEvent.click(getByTestId('plan-sidebar-close'));
 
     expect(pane.showPlanSidebar).toBe(false);
+  });
+
+  it('re-fetches the plan list when a proposed_plan upsert lands for this thread', async () => {
+    // Initial list is empty; after the provider upsert for a new plan
+    // lands the sidebar must call ListThreadProposedPlans again (with
+    // debounce) and render the new row. This pins the core refresh
+    // path that keeps the sidebar in sync during live turns.
+    let plansForRefresh: ReturnType<typeof makeItem>[] = [];
+    let fetchCount = 0;
+    setBindingMock('ListThreadProposedPlans', async () => {
+      fetchCount += 1;
+      return plansForRefresh;
+    });
+
+    const pane = await buildPane();
+    pane.setShowPlanSidebar(true);
+    const { findByText, queryByText } = await renderSidebar(pane);
+
+    // First render: empty state + 1 fetch from the mount $effect.
+    expect(queryByText('Freshly proposed')).toBeNull();
+    expect(fetchCount).toBe(1);
+
+    // Stage the post-upsert response.
+    plansForRefresh = [
+      makeItem({
+        id: 'plan-fresh',
+        kind: 'tool_call',
+        payloadId: 'p-fresh',
+        payloadKind: 'proposed_plan',
+        payloadMeta: JSON.stringify({
+          title: 'Freshly proposed',
+          preview: 'content',
+          lineCount: 1,
+          charCount: 7,
+        }),
+      }),
+    ];
+
+    emitWailsEvent('provider:item_upsert', {
+      id: 'plan-fresh',
+      threadId: pane.thread!.id,
+      turnIndex: 0,
+      itemIndex: 0,
+      kind: 'tool_call',
+      role: 'assistant',
+      status: 'completed',
+      summary: '',
+      highlightedContent: '',
+      payloadKind: 'proposed_plan',
+      createdAt: 0,
+      updatedAt: 0,
+    });
+
+    // The debounce window is 100 ms; wait for the text to appear.
+    await findByText('Freshly proposed', {}, { timeout: 500 });
+    expect(fetchCount).toBeGreaterThanOrEqual(2);
+  });
+
+  it('ignores provider upserts with mismatched thread id or non-plan kind', async () => {
+    let fetchCount = 0;
+    setBindingMock('ListThreadProposedPlans', async () => {
+      fetchCount += 1;
+      return [];
+    });
+    const pane = await buildPane();
+    pane.setShowPlanSidebar(true);
+    await renderSidebar(pane);
+    expect(fetchCount).toBe(1);
+
+    // Wrong thread.
+    emitWailsEvent('provider:item_upsert', {
+      id: 'x',
+      threadId: 'other-thread',
+      turnIndex: 0,
+      itemIndex: 0,
+      kind: 'tool_call',
+      role: 'assistant',
+      status: 'completed',
+      summary: '',
+      highlightedContent: '',
+      payloadKind: 'proposed_plan',
+      createdAt: 0,
+      updatedAt: 0,
+    });
+    // Different payload kind.
+    emitWailsEvent('provider:item_upsert', {
+      id: 'y',
+      threadId: pane.thread!.id,
+      turnIndex: 0,
+      itemIndex: 0,
+      kind: 'tool_call',
+      role: 'assistant',
+      status: 'completed',
+      summary: '',
+      highlightedContent: '',
+      payloadKind: 'diff',
+      createdAt: 0,
+      updatedAt: 0,
+    });
+
+    // Give the debounce window a chance to fire if the filter was wrong.
+    await new Promise((r) => setTimeout(r, 150));
+    // Refresh count still at the mount fetch — filter held.
+    expect(fetchCount).toBe(1);
+    await waitFor(() => expect(fetchCount).toBe(1));
   });
 });

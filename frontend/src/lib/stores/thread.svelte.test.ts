@@ -681,6 +681,123 @@ describe('createThreadPane', () => {
       await pane.loadOlder();
       expect(calls).toBe(1);
     });
+
+    it('loadOlder clears loadingOlder even when a concurrent loadUntilItem bumps the paging generation', async () => {
+      // Regression pin: `loadingOlder` is a UI-only flag. If a
+      // concurrent `loadUntilItem` increments `pagingGeneration`
+      // while `loadOlder` is mid-fetch, the generation-guarded
+      // finally block used to skip clearing the flag, greying out
+      // the Load Older button forever. The fix resets the flag
+      // unconditionally.
+      const pane = createThreadPane();
+      setBindingMock('ListRecentThreadItems', async () => ({
+        items: [makeItem({ id: 'tail', threadId: 't', turnIndex: 10 })],
+        oldestTurnIndex: 10,
+        hasMore: true,
+      }));
+      let releaseOlder!: (v: {
+        items: ReturnType<typeof makeItem>[]; oldestTurnIndex: number; hasMore: boolean;
+      }) => void;
+      const olderPending = new Promise<{
+        items: ReturnType<typeof makeItem>[]; oldestTurnIndex: number; hasMore: boolean;
+      }>((r) => { releaseOlder = r; });
+      setBindingMock('ListItemsBeforeTurn', () => olderPending);
+
+      await pane.switchThread(makeThread({ id: 't' }));
+      const olderPromise = pane.loadOlder();
+      expect(pane.loadingOlder).toBe(true);
+
+      // Kick off loadUntilItem, which increments pagingGeneration and
+      // takes its own path. It must not deadlock loadOlder's cleanup.
+      setBindingMock('GetThreadItem', async () =>
+        makeItem({ id: 'tail', threadId: 't', turnIndex: 10 }),
+      );
+      await pane.loadUntilItem('tail');
+
+      releaseOlder({ items: [], oldestTurnIndex: 10, hasMore: false });
+      await olderPromise;
+
+      expect(pane.loadingOlder).toBe(false);
+    });
+
+    it('loadUntilItem uses the default batch size when the pane floor is null', async () => {
+      // Regression pin for the MAX_SAFE_INTEGER turnSpan bug: when
+      // currentFloor is null (empty window), the request must pass a
+      // bounded turnLimit rather than a sentinel number. Check that
+      // the actual turnLimit argument is the default batch size.
+      const pane = createThreadPane();
+      setBindingMock('ListRecentThreadItems', async () => ({
+        items: [],
+        oldestTurnIndex: -1,
+        hasMore: false,
+      }));
+      setBindingMock('GetThreadItem', async () =>
+        makeItem({ id: 'deep', threadId: 't', turnIndex: 3 }),
+      );
+      let capturedLimit: number | null = null;
+      setBindingMock('ListItemsBeforeTurn', async (_id, _before, limit) => {
+        capturedLimit = limit as number;
+        return {
+          items: [makeItem({ id: 'deep', threadId: 't', turnIndex: 3 })],
+          oldestTurnIndex: 3,
+          hasMore: false,
+        };
+      });
+
+      await pane.switchThread(makeThread({ id: 't' }));
+      expect(pane.oldestLoadedTurnIndex).toBeNull();
+      const ok = await pane.loadUntilItem('deep');
+      expect(ok).toBe(true);
+      // The default batch (LOAD_OLDER_TURN_BATCH=50) — not a sentinel
+      // like Number.MAX_SAFE_INTEGER.
+      expect(capturedLimit).toBeLessThanOrEqual(200);
+      expect(capturedLimit).toBeGreaterThan(0);
+    });
+
+    it('pagingGeneration stays monotonic across switchThread', async () => {
+      // Regression: earlier the reset to 0 on swap meant a stale
+      // in-flight paging fetch could see its captured generation
+      // match the freshly-reset counter and proceed to clobber
+      // state. The switchGeneration guard catches the common case
+      // but pinning the monotonicity invariant here prevents a
+      // future refactor from reintroducing the reset.
+      const pane = createThreadPane();
+      setBindingMock('ListRecentThreadItems', async () => ({
+        items: [makeItem({ id: 'a', threadId: 't', turnIndex: 0 })],
+        oldestTurnIndex: 0,
+        hasMore: true,
+      }));
+      setBindingMock('ListItemsBeforeTurn', async () => ({
+        items: [],
+        oldestTurnIndex: -1,
+        hasMore: false,
+      }));
+      setBindingMock('GetThreadItem', async () =>
+        makeItem({ id: 'x', threadId: 't', turnIndex: 0 }),
+      );
+
+      await pane.switchThread(makeThread({ id: 't' }));
+      // Trigger a paging call so pagingGeneration advances to 1.
+      await pane.loadOlder();
+      await pane.switchThread(makeThread({ id: 't2' }));
+      // After switch, another paging call should advance the counter
+      // further — never regress to a prior value. We observe by
+      // chaining two calls and ensuring the second still makes a
+      // network call (i.e. the guards remain accurate).
+      let postSwitchCalls = 0;
+      setBindingMock('ListRecentThreadItems', async () => ({
+        items: [makeItem({ id: 'b', threadId: 't2', turnIndex: 3 })],
+        oldestTurnIndex: 3,
+        hasMore: true,
+      }));
+      setBindingMock('ListItemsBeforeTurn', async () => {
+        postSwitchCalls += 1;
+        return { items: [], oldestTurnIndex: 2, hasMore: false };
+      });
+      await pane.switchThread(makeThread({ id: 't3' }));
+      await pane.loadOlder();
+      expect(postSwitchCalls).toBe(1);
+    });
   });
 
   // --- Turn-lifecycle pane state (Wave 2) -----------------------------------

@@ -136,6 +136,16 @@
       if (!scrollContainer) return;
       const delta = scrollContainer.scrollHeight - prevScrollHeight;
       scrollContainer.scrollTop = prevScrollTop + delta;
+      // Sync `userNearBottom` from the post-prepend scroll position
+      // BEFORE we release the suppress flag. Svelte re-runs the
+      // auto-scroll effect the moment `suppressBottomAutoScroll`
+      // flips false; if userNearBottom is still stale-`true` from
+      // before the load (short thread whose window fit the viewport),
+      // the effect would snap to the new bottom and stomp the row
+      // the user was anchored on. Programmatic scrollTop assignment
+      // queues a `scroll` event asynchronously — too late for this
+      // effect run — so we recompute inline.
+      handleScroll();
     } finally {
       suppressBottomAutoScroll = false;
     }

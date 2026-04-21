@@ -14,18 +14,24 @@ import (
 // loaded here (payload meta is carried via the standard LEFT JOIN, but
 // `data` stays in the on-demand expansion path).
 
-// ListThreadProposedPlans returns every item for the thread whose joined
-// payload_kind equals "proposed_plan", newest-first. Ordering is
-// (turn_index DESC, item_index DESC) so the PlanSidebar can render the
-// most recent plans at the top without an additional sort pass in the
-// frontend. Returns an empty slice (not nil) when no plans exist so the
-// JSON response always carries a stable shape.
+// ListThreadProposedPlans returns every assistant-authored item for the
+// thread whose joined payload_kind equals "proposed_plan", newest-first.
+// Ordering is (turn_index DESC, item_index DESC) so the PlanSidebar can
+// render the most recent plans at the top without an additional sort
+// pass in the frontend. Returns an empty slice (not nil) when no plans
+// exist so the JSON response always carries a stable shape.
+//
+// The `role = 'assistant'` filter keeps a user-authored item whose
+// payload_kind happens to collide with 'proposed_plan' (possible via
+// forks / imports) out of the sidebar — only plans the agent actually
+// proposed should appear.
 func (s *Store) ListThreadProposedPlans(threadID string) ([]Item, error) {
 	rows, err := s.db.Query(
 		`SELECT `+itemColumns+`
 		   FROM items
 		   LEFT JOIN payloads ON payloads.id = items.payload_id
 		  WHERE items.thread_id = ?
+		    AND items.role = 'assistant'
 		    AND payloads.kind = 'proposed_plan'
 		  ORDER BY items.turn_index DESC, items.item_index DESC`,
 		threadID,
@@ -49,13 +55,22 @@ func (s *Store) ListThreadProposedPlans(threadID string) ([]Item, error) {
 	return out, nil
 }
 
-// ListThreadDiffPayloads returns every item for the thread whose joined
-// payload_kind is "diff" or "tool_result". The frontend's
-// `selectAgentDiffEntries` filters the tool_result rows further by
-// inspecting their meta JSON for an `inlineDiff.availability ==
-// "exact_patch"` signal — that check stays in the frontend so the
-// parsing rules live in exactly one place (alongside the other meta
-// readers that feed the diff panel UI).
+// ListThreadDiffPayloads returns every item for the thread that
+// contributes to the cumulative diff view. Two kinds qualify:
+//
+//   - `diff` payloads unconditionally (every row is a real patch).
+//   - `tool_result` payloads whose meta carries
+//     `inlineDiff.availability == "exact_patch"` — tool_results are
+//     produced by most tool-call paths but only the ones that emit
+//     an inline patch are relevant to the cumulative diff.
+//
+// The meta check is done in SQL via `json_extract` so large threads
+// don't pay the cost of shipping every tool_result over Wails just for
+// the frontend to discard the non-diff ones (a long agent session can
+// easily produce thousands of tool_results; only a fraction are
+// diffs). Keeps the selector logic aligned with
+// `selectAgentDiffEntries` in the frontend — that function still runs
+// as a second pass to build the AgentDiffEntry shape.
 //
 // Ordering is (turn_index, item_index) ASC, matching the frontend
 // selector's expectation that entries arrive in chronological order.
@@ -65,7 +80,13 @@ func (s *Store) ListThreadDiffPayloads(threadID string) ([]Item, error) {
 		   FROM items
 		   LEFT JOIN payloads ON payloads.id = items.payload_id
 		  WHERE items.thread_id = ?
-		    AND payloads.kind IN ('diff', 'tool_result')
+		    AND (
+		      payloads.kind = 'diff'
+		      OR (
+		        payloads.kind = 'tool_result'
+		        AND json_extract(payloads.meta, '$.inlineDiff.availability') = 'exact_patch'
+		      )
+		    )
 		  ORDER BY items.turn_index, items.item_index`,
 		threadID,
 	)
