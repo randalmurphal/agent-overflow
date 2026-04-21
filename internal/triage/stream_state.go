@@ -179,6 +179,11 @@ func (r *Router) settleStreamingText(threadID string, turnIndex int, scope strin
 	item.Status = status
 	if status == statusErrored {
 		item.Summary = interruptedSummary(item.Summary)
+		// Clear the streaming-rendered HTML so persistItem re-renders
+		// against the now-suffixed summary. Without this, the UI shows
+		// pre-suffix HTML next to post-suffix summary text and the two
+		// diverge on interrupt.
+		item.HighlightedContent = ""
 	}
 	item.UpdatedAt = time.Now().UnixMilli()
 	return r.persistItem(item, nil)
@@ -217,6 +222,9 @@ func (r *Router) settleStreamingThinking(threadID string, turnIndex int, scope s
 	item.Status = status
 	if status == statusErrored {
 		item.Summary = interruptedSummary(item.Summary)
+		// Clear rendered HTML so persistItem re-renders against the
+		// suffixed summary; see settleStreamingText.
+		item.HighlightedContent = ""
 	}
 	item.UpdatedAt = time.Now().UnixMilli()
 

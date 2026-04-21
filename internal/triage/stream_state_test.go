@@ -2,6 +2,7 @@ package triage
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -341,5 +342,44 @@ func TestSettleStreamingThinkingNonStreamingRowStillDrainsQueue(t *testing.T) {
 	drained := findItemsByKind(t, st, "t1", itemKindBackgroundDone)
 	if len(drained) != 1 {
 		t.Fatalf("drain-after-non-streaming: expected 1 drained background_done row, got %d", len(drained))
+	}
+}
+
+// TestMarkUserInterruptRefreshesHighlightedContent guards against the
+// regression where interrupted/stopped streaming rows carried stale HTML:
+// settleStreamingText mutated item.Summary (" — stopped") but persistItem
+// only re-rendered when HighlightedContent was empty, so the DOM showed
+// pre-suffix markup next to post-suffix text.
+func TestMarkUserInterruptRefreshesHighlightedContent(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTextDelta, ThreadID: "t1",
+		Content: "**hello**", Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("text delta: %v", err)
+	}
+
+	// Pre-interrupt: streaming row carries rendered markdown in
+	// HighlightedContent with no "— stopped" suffix.
+	pre := firstItemByKind(t, st, "t1", "assistant_text")
+	if pre.HighlightedContent == "" {
+		t.Fatalf("pre-interrupt HighlightedContent should be populated, got empty")
+	}
+	if strings.Contains(pre.HighlightedContent, "stopped") {
+		t.Fatalf("pre-interrupt HighlightedContent should not contain 'stopped': %q", pre.HighlightedContent)
+	}
+
+	if _, err := router.MarkUserInterrupt("t1"); err != nil {
+		t.Fatalf("mark user interrupt: %v", err)
+	}
+
+	post := firstItemByKind(t, st, "t1", "assistant_text")
+	if !strings.Contains(post.Summary, "— stopped") {
+		t.Fatalf("post-interrupt Summary should contain '— stopped', got %q", post.Summary)
+	}
+	if !strings.Contains(post.HighlightedContent, "— stopped") {
+		t.Fatalf("post-interrupt HighlightedContent should contain '— stopped', got %q", post.HighlightedContent)
 	}
 }

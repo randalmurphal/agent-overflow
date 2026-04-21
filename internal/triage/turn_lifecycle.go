@@ -548,6 +548,10 @@ func (r *Router) flipTurnItemsErrored(
 		}
 		item.Status = statusErrored
 		item.Summary = summaryFn(item.Summary)
+		// Clear pre-flip rendered HTML so persistItem re-renders against
+		// the now-suffixed summary; otherwise the UI shows pre-suffix
+		// markup next to post-suffix text on interrupted/stopped turns.
+		item.HighlightedContent = ""
 		item.UpdatedAt = now
 		if err := r.persistItem(item, nil); err != nil {
 			return fmt.Errorf("error flip item %s: %w", item.ID, err)
