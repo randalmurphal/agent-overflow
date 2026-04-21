@@ -169,6 +169,10 @@ func (r *Router) settleStreamingText(threadID string, turnIndex int, scope strin
 	defer r.drainInterruptQueueIfIdle(threadID)
 
 	itemID := textItemID(turnIndex, scope, index)
+	// Drop the throttle entry first: the itemID is known before the
+	// store lookup, so a lookup miss or already-settled row can still
+	// release the map slot instead of waiting for CleanupThread.
+	r.forgetHighlighted(threadID, itemID)
 	item, found, err := r.store.GetThreadItem(threadID, itemID)
 	if err != nil || !found {
 		return err
@@ -185,7 +189,6 @@ func (r *Router) settleStreamingText(threadID string, turnIndex int, scope strin
 	// shouldRenderHighlight means the last N deltas may not have
 	// triggered a render; this is the settle point where we catch up.
 	item.HighlightedContent = ""
-	r.forgetHighlighted(item.ThreadID, item.ID)
 	item.UpdatedAt = time.Now().UnixMilli()
 	return r.persistItem(item, nil)
 }
@@ -213,6 +216,9 @@ func (r *Router) settleStreamingThinking(threadID string, turnIndex int, scope s
 	defer r.drainInterruptQueueIfIdle(threadID)
 
 	itemID := thinkingItemID(turnIndex, scope, index)
+	// Drop the throttle entry first so a lookup miss still releases the
+	// map slot; mirrors settleStreamingText.
+	r.forgetHighlighted(threadID, itemID)
 	item, found, err := r.store.GetThreadItem(threadID, itemID)
 	if err != nil || !found {
 		return err
@@ -227,7 +233,6 @@ func (r *Router) settleStreamingThinking(threadID string, turnIndex int, scope s
 	// Force a final render against the (possibly suffixed) summary; see
 	// settleStreamingText for the throttle rationale.
 	item.HighlightedContent = ""
-	r.forgetHighlighted(item.ThreadID, item.ID)
 	item.UpdatedAt = time.Now().UnixMilli()
 
 	// Now that the block has closed, refresh the thinking-meta preview so

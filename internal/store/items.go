@@ -1013,8 +1013,14 @@ func (s *Store) UpdateItemPayload(id, payloadID, summary string, createdAt int64
 	}
 	defer tx.Rollback()
 
+	// Clear highlighted_content alongside the summary rewrite so any
+	// subsequent persistItem on a server-rendered kind re-renders from
+	// the new summary instead of shipping HTML computed from the old
+	// one. No production caller uses UpdateItemPayload today — this
+	// keeps the method safe for future callers on assistant_text /
+	// thinking / tool_result rows.
 	result, err := tx.Exec(
-		`UPDATE items SET payload_id = ?, summary = ?, updated_at = ? WHERE id = ?`,
+		`UPDATE items SET payload_id = ?, summary = ?, highlighted_content = '', updated_at = ? WHERE id = ?`,
 		nilIfEmpty(payloadID), summary, createdAt, id,
 	)
 	if err != nil {
@@ -1067,9 +1073,13 @@ func (s *Store) UpdateItemStatus(id, status, summary, payloadID string, createdA
 	}
 	defer tx.Rollback()
 
+	// Clear highlighted_content so any later re-render picks up the new
+	// summary cleanly; mirrors UpdateItemPayload above. Callers today
+	// only use this for tool_call transitions (no server-rendered HTML),
+	// but future callers on server-rendered kinds need the guarantee.
 	result, err := tx.Exec(
 		`UPDATE items
-		 SET status = ?, summary = ?, payload_id = ?, updated_at = ?
+		 SET status = ?, summary = ?, payload_id = ?, highlighted_content = '', updated_at = ?
 		 WHERE id = ?`,
 		status, summary, nilIfEmpty(payloadID), createdAt, id,
 	)
