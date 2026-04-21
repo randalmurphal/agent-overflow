@@ -14,39 +14,42 @@ import (
 // to an HTML-escaped <pre><code> block so a runaway command output can't
 // pin the renderer.
 //
-// OSC 8 hyperlinks (`\x1b]8;;URL\x1b\\text\x1b]8;;\x1b\\`) are stripped
-// before rendering. terminal-to-html happily emits live <a href> from them,
-// which would let untrusted tool output smuggle `javascript:` / `data:` URIs
-// through the ANSI path into {@html}. We strip only the escape pair; the
-// text between pairs is preserved so the user still sees the visible
-// content.
+// Every OSC (`ESC]...ST`) and APC (`ESC_...ST`) sequence is stripped before
+// rendering. terminal-to-html happily emits live `<a href>` from OSC 8 and
+// OSC 1339 and live `<img src>` from OSC 1337 / 1338, and its URL sanitizer
+// only blocks the `javascript:` scheme — `vbscript:`, `data:text/html`,
+// `data:image/svg+xml`, and `file:` all survive. That would let untrusted
+// tool output smuggle dangerous URIs through the ANSI path into {@html}.
+// The app does not rely on any OSC/APC-driven terminal feature, so
+// stripping them wholesale is lossless for display and closes every
+// cross-scheme vector in one pass.
 func (r *Renderer) renderANSI(s string) string {
 	if len(s) > r.maxBytes {
 		return fallbackPreCode(s)
 	}
-	return string(terminal.Render([]byte(stripOSC8(s))))
+	return string(terminal.Render([]byte(stripUnsafeEscapes(s))))
 }
 
-// stripOSC8 removes OSC 8 hyperlink introducers/terminators while leaving
-// the enclosed visible text in place. An OSC 8 sequence is
+// stripUnsafeEscapes removes OSC and APC envelopes while leaving the
+// enclosed visible text (outside the envelope) in place. Both sequence
+// kinds share the same shape:
 //
-//	ESC ] 8 ; params ; URI ST
+//	ESC ] params ST     (OSC — 0x1b 0x5d ... terminator)
+//	ESC _ params ST     (APC — 0x1b 0x5f ... terminator)
 //
-// where ST (the string terminator) is either `ESC \` or the single-byte
-// `BEL` (0x07). We strip introducers (with URI) and terminators (with
-// empty URI). Parameters and URI bytes inside the envelope are dropped;
-// anything outside the envelope passes through unchanged so legitimate
-// terminal color sequences still reach terminal-to-html.
-func stripOSC8(s string) string {
+// where ST is either `ESC \` or the single-byte `BEL` (0x07). Anything
+// outside the envelope — including SGR sequences (`ESC [ ... m`), the
+// bytes terminal-to-html renders into color spans — passes through
+// unchanged.
+func stripUnsafeEscapes(s string) string {
 	if len(s) == 0 {
 		return s
 	}
-	const prefix = "\x1b]8;"
 	out := make([]byte, 0, len(s))
 	i := 0
 	for i < len(s) {
-		if i+len(prefix) <= len(s) && s[i:i+len(prefix)] == prefix {
-			end := findOSCEnd(s, i+len(prefix))
+		if i+1 < len(s) && s[i] == 0x1b && (s[i+1] == ']' || s[i+1] == '_') {
+			end := findOSCEnd(s, i+2)
 			if end < 0 {
 				// No terminator before end-of-input; drop the partial
 				// sequence entirely rather than passing its bytes
@@ -63,7 +66,7 @@ func stripOSC8(s string) string {
 	return string(out)
 }
 
-// findOSCEnd returns the index immediately after the OSC string
+// findOSCEnd returns the index immediately after the OSC / APC string
 // terminator (BEL or ESC\) starting the scan at `from`, or -1 if the
 // sequence runs past the end of s without terminating.
 func findOSCEnd(s string, from int) int {

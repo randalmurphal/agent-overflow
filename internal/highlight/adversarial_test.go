@@ -85,6 +85,47 @@ func TestMarkdownSafeAutoLinkPreserved(t *testing.T) {
 	}
 }
 
+func TestMarkdownImageSVGDataURIIsNeutralized(t *testing.T) {
+	// goldmark's IsDangerousURL whitelists `data:image/svg+xml`, but a
+	// crafted SVG can carry script payloads that some webviews execute
+	// when the image loads. safeLinkRenderer's Image override adds that
+	// scheme back to the block list; the other raster data: URIs are
+	// still allowed.
+	r := New(Options{})
+	svg := `![evil](data:image/svg+xml;base64,PHN2Zy8+)`
+	out := r.RenderMarkdown(svg)
+	lower := strings.ToLower(out)
+	if strings.Contains(lower, "data:image/svg") {
+		t.Fatalf("svg data URI survived: %q", out)
+	}
+
+	// Benign raster data URI should still render.
+	png := `![ok](data:image/png;base64,iVBORw0KGgo=)`
+	outPng := r.RenderMarkdown(png)
+	if !strings.Contains(outPng, `src="data:image/png;`) {
+		t.Fatalf("benign PNG data URI unexpectedly dropped: %q", outPng)
+	}
+}
+
+func TestMarkdownImageJavascriptURIIsNeutralized(t *testing.T) {
+	// Standard dangerous schemes must be dropped on image src just like
+	// on link href.
+	r := New(Options{})
+	for _, raw := range []string{
+		`![x](javascript:alert(1))`,
+		`![x](vbscript:msgbox(1))`,
+		`![x](file:///etc/passwd)`,
+	} {
+		out := r.RenderMarkdown(raw)
+		lower := strings.ToLower(out)
+		if strings.Contains(lower, `src="javascript:`) ||
+			strings.Contains(lower, `src="vbscript:`) ||
+			strings.Contains(lower, `src="file:`) {
+			t.Fatalf("dangerous scheme survived image for %q: %q", raw, out)
+		}
+	}
+}
+
 func TestMarkdownInlineEventHandlerImg(t *testing.T) {
 	r := New(Options{})
 	out := r.RenderMarkdown(`<img src=x onerror=alert(1)>`)
@@ -172,6 +213,102 @@ func TestANSIOSC8PartialSequenceDropped(t *testing.T) {
 	}
 	if !strings.Contains(lower, "visible") {
 		t.Fatalf("visible prefix dropped: %q", out)
+	}
+}
+
+// TestANSIBuildkiteHyperlinkStripped closes a vector missed by the
+// initial OSC 8 fix: terminal-to-html also renders Buildkite-style OSC
+// 1339 links as live <a href>, and its URL sanitizer only blocks the
+// `javascript:` scheme. `vbscript:`, `data:text/html`, `file:` etc. all
+// slipped through until stripUnsafeEscapes widened the strip to every
+// OSC/APC envelope.
+func TestANSIBuildkiteHyperlinkStripped(t *testing.T) {
+	r := New(Options{})
+	cases := []string{
+		"\x1b]1339;url=data:text/html,<script>alert(1)</script>;content=click\x07",
+		"\x1b]1339;url=vbscript:msgbox(2);content=click\x07",
+		"\x1b]1339;url=file:///etc/passwd;content=read\x07",
+		"\x1b]1339;url=http://evil.example/;content=hover\x1b\\",
+	}
+	for _, raw := range cases {
+		out := r.RenderANSI(raw)
+		lower := strings.ToLower(out)
+		if strings.Contains(lower, "<a ") || strings.Contains(lower, "href=") {
+			t.Fatalf("OSC 1339 link leaked for %q: %q", raw, out)
+		}
+		if strings.Contains(lower, "javascript:") ||
+			strings.Contains(lower, "vbscript:") ||
+			strings.Contains(lower, "data:text/html") ||
+			strings.Contains(lower, "file:") {
+			t.Fatalf("dangerous scheme leaked for %q: %q", raw, out)
+		}
+	}
+}
+
+// TestANSIITermImageStripped closes the iTerm2 inline-image route
+// (OSC 1337). terminal-to-html emits
+//
+//	<img alt="..." src="data:TYPE;base64,CONTENT">
+//
+// from `ESC]1337;File=...:BASE64`; attacker-controlled `TYPE` lets
+// `data:image/svg+xml` slip through as `<img src=...>` with script-
+// eligible content in older webviews. stripUnsafeEscapes drops the
+// whole sequence.
+func TestANSIITermImageStripped(t *testing.T) {
+	r := New(Options{})
+	cases := []string{
+		"\x1b]1337;File=name=x.svg;inline=1:PHN2Zy8+\x07",
+		"\x1b]1337;File=name=ev.svg;inline=1:PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciPjxzY3JpcHQ+YWxlcnQoMSk8L3NjcmlwdD48L3N2Zz4=\x1b\\",
+	}
+	for _, raw := range cases {
+		out := r.RenderANSI(raw)
+		lower := strings.ToLower(out)
+		if strings.Contains(lower, "<img ") {
+			t.Fatalf("OSC 1337 image leaked for %q: %q", raw, out)
+		}
+		if strings.Contains(lower, "data:") || strings.Contains(lower, "base64") {
+			t.Fatalf("data URI leaked for %q: %q", raw, out)
+		}
+	}
+}
+
+// TestANSIBuildkiteExternalImageStripped closes OSC 1338 — Buildkite
+// external images emitted as `<img src=URL>`. sanitizeURL lets through
+// `data:` and `file:` schemes.
+func TestANSIBuildkiteExternalImageStripped(t *testing.T) {
+	r := New(Options{})
+	cases := []string{
+		"\x1b]1338;url=data:image/svg+xml,%3Csvg%3E%3Cscript%3Ealert(1)%3C%2Fscript%3E%3C%2Fsvg%3E\x07",
+		"\x1b]1338;url=file:///etc/passwd\x1b\\",
+	}
+	for _, raw := range cases {
+		out := r.RenderANSI(raw)
+		lower := strings.ToLower(out)
+		if strings.Contains(lower, "<img ") {
+			t.Fatalf("OSC 1338 image leaked for %q: %q", raw, out)
+		}
+		if strings.Contains(lower, "data:image") || strings.Contains(lower, "file:") {
+			t.Fatalf("dangerous img URI leaked for %q: %q", raw, out)
+		}
+	}
+}
+
+// TestANSIApplicationProgramCommandStripped closes the APC (`ESC_…ST`)
+// route — terminal-to-html treats APC-wrapped `1337;…` and `1339;…`
+// payloads the same way it treats OSC-wrapped ones. Any attacker who
+// can inject an APC gets the same vectors.
+func TestANSIApplicationProgramCommandStripped(t *testing.T) {
+	r := New(Options{})
+	cases := []string{
+		"\x1b_1339;url=javascript:alert(1);content=click\x1b\\",
+		"\x1b_1337;File=name=x.svg;inline=1:PHN2Zy8+\x1b\\",
+	}
+	for _, raw := range cases {
+		out := r.RenderANSI(raw)
+		lower := strings.ToLower(out)
+		if strings.Contains(lower, "<a ") || strings.Contains(lower, "<img ") {
+			t.Fatalf("APC element leaked for %q: %q", raw, out)
+		}
 	}
 }
 

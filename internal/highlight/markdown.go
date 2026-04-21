@@ -30,12 +30,14 @@ func newGoldmark(style string) goldmark.Markdown {
 				highlighting.WithWrapperRenderer(codeBlockWrapper),
 			),
 		),
-		// safeAutoLinkRenderer runs at priority 1 so it registers *after*
+		// safeLinkRenderer runs at priority 1 so it registers *after*
 		// goldmark's default html renderer (priority 1000) and wins for
-		// ast.KindAutoLink in the kind->func map. Without this override,
-		// `<javascript:alert(1)>` autolinks leak a live href= into {@html}.
+		// ast.KindAutoLink + ast.KindImage in the kind->func map.
+		// Without these overrides, `<javascript:alert(1)>` autolinks
+		// leak a live href= and `data:image/svg+xml` images slip past
+		// goldmark's whitelist.
 		goldmark.WithRendererOptions(
-			renderer.WithNodeRenderers(util.Prioritized(safeAutoLinkRenderer{}, 1)),
+			renderer.WithNodeRenderers(util.Prioritized(safeLinkRenderer{}, 1)),
 		),
 	)
 }
