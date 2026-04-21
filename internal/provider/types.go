@@ -156,13 +156,13 @@ const (
 	// it layers a richer sibling `tool_completion` row on top. See
 	// docs/architecture/turn-lifecycle.md §Task lifecycle and
 	// docs/architecture/invariants.md invariant 20.
-	EventBackgroundTaskTerminal EventKind = "tool.background_task_terminal"
+	EventBackgroundTaskTerminal EventKind = "background_task_terminal"
 
-	// EventSubagentNotification is a reserved Codex-only event kind for
-	// future `<subagent_notification>` surfacing. Not currently emitted
-	// by any parser — reserved so the frontend can opt into handling it
-	// ahead of the emission being wired. See
-	// docs/archive/turn-lifecycle-refactor-plan.md WT-codex-parser.
+	// EventSubagentNotification surfaces Codex's `<subagent_notification>`
+	// tag detections (session.go parser → triage handler →
+	// provider:subagent_notification on the frontend event bus). Emitted
+	// when a detached spawned child has produced a terminal state and
+	// Codex injected the notification into the parent's next user turn.
 	EventSubagentNotification EventKind = "subagent_notification"
 
 	// Heavy events — persisted to SQLite, meta emitted to frontend.

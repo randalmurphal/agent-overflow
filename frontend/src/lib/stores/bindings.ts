@@ -125,6 +125,9 @@ export {
 
   // PR-based thread creation
   CreateThreadFromPR,
+
+  // Turn lifecycle
+  ListRecentTurns,
 } from '../../../bindings/agent-overflow/app.js';
 
 // Model classes needed for constructing RPC parameters.
@@ -228,49 +231,10 @@ export function BrowseDirectory(path: string): Promise<DirectoryListing> {
   return callApp<DirectoryListing>('BrowseDirectory', path);
 }
 
-// ---------------------------------------------------------------------------
-// Turn lifecycle binding: ListRecentTurns.
-//
-// The Go side (app_turns.go) is present and compiles; the Wails binding
-// generator hasn't been run inside this worktree so the corresponding
-// `ListRecentTurns` export isn't yet on the generated app.js. Hand-wrap via
-// `Call.ByName` for now so the store can call it and tests can stub it via
-// `setBindingMock`. When `wails build` / `wails generate bindings` next
-// regenerates the `frontend/bindings/agent-overflow/` tree, the generated
-// export will exist and this hand-wrap can be replaced with a direct
-// re-export from app.js (same pattern as the project / directory wrappers
-// above). Tests stub this via the shared `setBindingMock('ListRecentTurns',
-// ...)` path, which routes through the same registry as the generated
-// bindings mock.
-// ---------------------------------------------------------------------------
-
-/**
- * Turn mirrors the Go `store.Turn` struct (internal/store/turns.go).
- * `completedAt` is nullable: NULL indicates an in-flight turn that the
- * session never closed (crash, interrupt). The frontend treats the NULL
- * row as historical — only a live `provider:turn_started` push sets
- * `pane.activeTurn`.
- */
-export interface Turn {
-  turnId: string;
-  threadId: string;
-  turnIndex: number;
-  startedAt: number;
-  completedAt?: number | null;
-  stopReason?: string;
-  assistantMessageId?: string;
-  tokenUsageJson?: string;
-  errorMessage?: string;
-}
-
-/**
- * ListRecentTurns returns the N most recent turn records for the given
- * thread, newest first. Called on thread-switch to rehydrate
- * `pane.latestSettledTurn`. A non-positive `limit` returns an empty array
- * without hitting the DB (matches the Go-side contract).
- */
-export function ListRecentTurns(threadID: string, limit: number): Promise<Turn[]> {
-  return callApp<Turn[] | null>('ListRecentTurns', threadID, limit).then(
-    (result) => result ?? [],
-  );
-}
+// Turn lifecycle `Turn` model is re-exported from the generated
+// bindings. ListRecentTurns itself is re-exported in the main import
+// block above. The frontend treats `completedAt=null` as historical
+// in-flight (crash/interrupt); only a live `provider:turn_started`
+// push sets `pane.activeTurn`. See docs/architecture/invariants.md #22
+// and docs/architecture/turn-lifecycle.md §Frontend state shape.
+export { Turn } from '../../../bindings/agent-overflow/internal/store/models.js';
