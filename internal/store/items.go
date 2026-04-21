@@ -619,6 +619,172 @@ func (s *Store) ListTurnItems(threadID string, turnIndex int) ([]Item, error) {
 	return items, rows.Err()
 }
 
+// itemColumnsSansPayload mirrors itemColumns but without the
+// payloads.kind / payloads.meta projection. Used on the narrow paths
+// that only need status/summary/kind/role (force-close safety net, the
+// turn-complete flip loop) so we skip the LEFT JOIN and the two string
+// scans. Column order in scanItemRowSansPayload must match exactly.
+const itemColumnsSansPayload = `items.id, items.thread_id, items.turn_index, items.item_index,
+    items.kind, items.role, items.status, items.summary,
+    COALESCE(items.payload_id, ''),
+    items.parent_id, items.is_background, items.completion_of,
+    items.tool_name, items.decision, items.meta, items.created_at, items.updated_at`
+
+// scanItemRowSansPayload hydrates an Item without the joined payload
+// kind / meta columns. PayloadKind and PayloadMeta are left empty on
+// the returned row — callers that need those must use scanItemRow.
+func scanItemRowSansPayload(scanner interface{ Scan(...any) error }) (Item, error) {
+	var it Item
+	var isBackground int
+	if err := scanner.Scan(
+		&it.ID, &it.ThreadID, &it.TurnIndex, &it.ItemIndex,
+		&it.Kind, &it.Role, &it.Status, &it.Summary,
+		&it.PayloadID,
+		&it.ParentID, &isBackground, &it.CompletionOf,
+		&it.ToolName, &it.Decision, &it.Meta, &it.CreatedAt, &it.UpdatedAt,
+	); err != nil {
+		return Item{}, err
+	}
+	it.IsBackground = isBackground != 0
+	return it, nil
+}
+
+// ListTurnItemsSansPayload is a lighter sibling of ListTurnItems that
+// skips the payloads LEFT JOIN. Use it on paths that read only the
+// item-table columns (status, summary, kind, role, is_background) —
+// the force-close safety net and the truncated-turn flip loop both
+// qualify. For any caller that inspects PayloadKind / PayloadMeta
+// (e.g. tool_result_diff_upgrade.loadSummaryOnlyToolResultCandidate)
+// keep ListTurnItems, which hydrates them.
+func (s *Store) ListTurnItemsSansPayload(threadID string, turnIndex int) ([]Item, error) {
+	rows, err := s.db.Query(
+		`SELECT `+itemColumnsSansPayload+`
+		   FROM items
+		  WHERE items.thread_id = ? AND items.turn_index = ?
+		 ORDER BY items.item_index`,
+		threadID, turnIndex,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: list turn items (sans payload) for thread %s turn %d: %w", threadID, turnIndex, err)
+	}
+	defer rows.Close()
+
+	var items []Item
+	for rows.Next() {
+		it, err := scanItemRowSansPayload(rows)
+		if err != nil {
+			return nil, fmt.Errorf("store: scan turn item row (sans payload): %w", err)
+		}
+		items = append(items, it)
+	}
+	return items, rows.Err()
+}
+
+// ForceCloseRunningToolCallsInTurn flips every status=running +
+// is_background=0 tool_call row in (threadID, turnIndex) to
+// status=errored with the caller-provided summary. The UPDATEs and the
+// thread's updated_at bump all run inside a single transaction so an
+// N-orphan force-close pays one fsync (WAL commit) instead of N.
+//
+// Returns the flipped rows (with status/summary/updated_at already
+// reflecting the post-write state) so the caller can fan out one
+// `provider:item_upsert` per row — the store handles the write, the
+// caller handles the emit, matching the existing persistItem
+// contract.
+//
+// summarise is called with the row's prior summary so callers can
+// preserve idempotency of their suffix convention (the force-close
+// summariser returns the same string when the suffix is already
+// present). updatedAt is stamped on every flipped row.
+//
+// Backgrounded tool_call rows (is_background=1) are exempt — they
+// legitimately outlive the turn per invariant 24. Rows in other
+// statuses (streaming text/thinking, already-settled tool_calls) are
+// left alone — this accessor is the narrow force-close path, not the
+// broader flip-everything-to-errored path owned by
+// flipTurnItemsErrored.
+func (s *Store) ForceCloseRunningToolCallsInTurn(
+	threadID string,
+	turnIndex int,
+	summarise func(string) string,
+	updatedAt int64,
+) ([]Item, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("store: begin force-close tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	rows, err := tx.Query(
+		`SELECT `+itemColumnsSansPayload+`
+		   FROM items
+		  WHERE items.thread_id = ?
+		    AND items.turn_index = ?
+		    AND items.kind = 'tool_call'
+		    AND items.status = 'running'
+		    AND items.is_background = 0
+		 ORDER BY items.item_index`,
+		threadID, turnIndex,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: force-close select for thread %s turn %d: %w", threadID, turnIndex, err)
+	}
+
+	var flipped []Item
+	for rows.Next() {
+		it, err := scanItemRowSansPayload(rows)
+		if err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("store: force-close scan: %w", err)
+		}
+		flipped = append(flipped, it)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, fmt.Errorf("store: force-close rows err: %w", err)
+	}
+	rows.Close()
+
+	if len(flipped) == 0 {
+		// Commit the no-op TX — cheaper than holding it open and lets
+		// WAL recycle. The thread-touch below runs only when at least
+		// one row actually flipped, matching the pre-refactor
+		// persistItem-per-row behaviour.
+		if err := tx.Commit(); err != nil {
+			return nil, fmt.Errorf("store: commit force-close (no rows): %w", err)
+		}
+		return nil, nil
+	}
+
+	for i := range flipped {
+		flipped[i].Status = "errored"
+		flipped[i].Summary = summarise(flipped[i].Summary)
+		flipped[i].UpdatedAt = updatedAt
+
+		if _, err := tx.Exec(
+			`UPDATE items
+			    SET status = ?, summary = ?, updated_at = ?
+			  WHERE thread_id = ? AND id = ?`,
+			flipped[i].Status, flipped[i].Summary, flipped[i].UpdatedAt,
+			flipped[i].ThreadID, flipped[i].ID,
+		); err != nil {
+			return nil, fmt.Errorf("store: force-close update %s: %w", flipped[i].ID, err)
+		}
+	}
+
+	if _, err := tx.Exec(
+		`UPDATE threads SET updated_at = ? WHERE id = ?`,
+		updatedAt, threadID,
+	); err != nil {
+		return nil, fmt.Errorf("store: force-close touch thread %s: %w", threadID, err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("store: commit force-close tx: %w", err)
+	}
+	return flipped, nil
+}
+
 // ListRunningBackgroundToolCalls returns every still-`running` +
 // `is_background=1` `tool_call` row for the given thread. The on-reopen
 // Codex reconciler uses it to scope its flip when the probe reports a

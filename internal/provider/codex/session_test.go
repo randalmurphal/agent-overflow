@@ -2692,3 +2692,126 @@ func TestExtractSubagentNotificationsFromUserMessage_NonTextContent(t *testing.T
 		t.Errorf("non-text content: got %+v, want nil", got)
 	}
 }
+
+// TestDispatchLineSubagentNotificationEmitsEvent pins the emission
+// contract: when an item/completed userMessage carries a
+// <subagent_notification> tag, dispatchLine must fire an
+// EventSubagentNotification with ThreadID and a Meta payload carrying
+// at least agent_id and status. This is the integration between the
+// parser and the event emission path — the triage handler and UI
+// renderer downstream assume the event actually fires.
+func TestDispatchLineSubagentNotificationEmitsEvent(t *testing.T) {
+	var events []provider.ProviderEvent
+	s := &Session{
+		threadID:            "parent-thread",
+		pending:             make(map[int64]chan json.RawMessage),
+		childParentByThread: make(map[string]string),
+		onEvent: func(evt provider.ProviderEvent) {
+			events = append(events, evt)
+		},
+	}
+
+	// Shape mirrors the userMessage item/completed frame Codex core
+	// emits after a detached child agent reaches a terminal state.
+	line := []byte(`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"parent-thread","item":{"id":"user-msg-1","type":"userMessage","content":[{"type":"text","text":"<subagent_notification>{\"agent_id\":\"child-done\",\"status\":\"completed\"}</subagent_notification>"}]}}}`)
+	s.dispatchLine(line)
+
+	var notif *provider.ProviderEvent
+	for i := range events {
+		if events[i].Kind == provider.EventSubagentNotification {
+			notif = &events[i]
+			break
+		}
+	}
+	if notif == nil {
+		t.Fatalf("expected EventSubagentNotification among emitted events; got %+v", events)
+	}
+	if notif.ThreadID != "parent-thread" {
+		t.Errorf("ThreadID: got %q, want parent-thread", notif.ThreadID)
+	}
+
+	var meta map[string]any
+	if err := json.Unmarshal(notif.Meta, &meta); err != nil {
+		t.Fatalf("meta unmarshal: %v", err)
+	}
+	if meta["agent_id"] != "child-done" {
+		t.Errorf("meta.agent_id: got %v, want child-done", meta["agent_id"])
+	}
+	if meta["status"] != "completed" {
+		t.Errorf("meta.status: got %v, want completed", meta["status"])
+	}
+}
+
+// TestDispatchLineSubagentNotificationMultipleTagsEmitOnce pins that a
+// userMessage carrying multiple <subagent_notification> tags produces
+// one EventSubagentNotification per tag, in source order. The UI
+// surfaces each terminal child as its own notification; a single
+// combined event would collapse them.
+func TestDispatchLineSubagentNotificationMultipleTagsEmitOnce(t *testing.T) {
+	var events []provider.ProviderEvent
+	s := &Session{
+		threadID:            "parent-thread",
+		pending:             make(map[int64]chan json.RawMessage),
+		childParentByThread: make(map[string]string),
+		onEvent: func(evt provider.ProviderEvent) {
+			events = append(events, evt)
+		},
+	}
+
+	line := []byte(`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"parent-thread","item":{"id":"user-msg-1","type":"userMessage","content":[{"type":"text","text":"<subagent_notification>{\"agent_id\":\"child-1\",\"status\":\"completed\"}</subagent_notification>\n<subagent_notification>{\"agent_id\":\"child-2\",\"status\":\"errored\"}</subagent_notification>"}]}}}`)
+	s.dispatchLine(line)
+
+	var agents []string
+	for _, evt := range events {
+		if evt.Kind != provider.EventSubagentNotification {
+			continue
+		}
+		var meta map[string]any
+		if err := json.Unmarshal(evt.Meta, &meta); err != nil {
+			t.Fatalf("meta unmarshal: %v", err)
+		}
+		agents = append(agents, meta["agent_id"].(string))
+	}
+	if len(agents) != 2 {
+		t.Fatalf("expected 2 EventSubagentNotification events, got %d (agents=%v events=%+v)", len(agents), agents, events)
+	}
+	if agents[0] != "child-1" || agents[1] != "child-2" {
+		t.Errorf("order: got %v, want [child-1 child-2]", agents)
+	}
+}
+
+// TestBuildSubagentNotificationMetaIncludesExtra pins the Extra-field
+// forward-compat promise: custom fields Codex core adds to the
+// notification JSON must round-trip through buildSubagentNotificationMeta
+// onto the frontend-facing meta blob. The load-bearing agent_id /
+// status keys always win on collision.
+func TestBuildSubagentNotificationMetaIncludesExtra(t *testing.T) {
+	n := subagentNotification{
+		AgentID: "child-extra",
+		Status:  "completed",
+		Extra: map[string]any{
+			"message":     "ok",
+			"duration_ms": float64(1234),
+			// Attempted collision — the canonical fields must win.
+			"agent_id": "clobber-attempt",
+			"status":   "clobber-attempt",
+		},
+	}
+	raw := buildSubagentNotificationMeta(n)
+	var meta map[string]any
+	if err := json.Unmarshal(raw, &meta); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if meta["agent_id"] != "child-extra" {
+		t.Errorf("agent_id: got %v, want child-extra (Extra must not clobber)", meta["agent_id"])
+	}
+	if meta["status"] != "completed" {
+		t.Errorf("status: got %v, want completed (Extra must not clobber)", meta["status"])
+	}
+	if meta["message"] != "ok" {
+		t.Errorf("message: got %v, want ok", meta["message"])
+	}
+	if meta["duration_ms"] != float64(1234) {
+		t.Errorf("duration_ms: got %v, want 1234", meta["duration_ms"])
+	}
+}

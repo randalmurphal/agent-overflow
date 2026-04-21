@@ -2,6 +2,7 @@ package claude
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 
 	"agent-overflow/internal/provider"
@@ -147,6 +148,63 @@ func TestAppendToolResultBlock_OrphanToolResultDroppedWhenIDMissing(t *testing.T
 	}
 	if len(events) != 0 {
 		t.Fatalf("expected 0 events for orphan tool_result (no tool_use_id), got %+v", events)
+	}
+}
+
+// TestAppendToolResultBlock_BackgroundFlagClearedOnCorrelation pins
+// the one-shot correlation lifecycle: once a backgrounded tool_use's
+// placeholder tool_result has been echoed, the parser releases the
+// is_background flag for that tool_use_id. Without this, the
+// backgroundToolUses map grows unbounded across a long session — every
+// backgrounded launch leaves an entry that only Close() clears. The
+// second parse of a matching tool_result would also re-stamp
+// is_background on a subsequent echo, which is meaningless (the
+// placeholder is one-shot) and sends noise through triage.
+func TestAppendToolResultBlock_BackgroundFlagClearedOnCorrelation(t *testing.T) {
+	parser := NewParser()
+
+	if _, err := parser.ParseLine(testThread, []byte(`{"type":"assistant","message":{"id":"msg-1","role":"assistant","content":[{"type":"tool_use","id":"tool-bg","name":"Bash","input":{"command":"sleep 1","run_in_background":true}}]}}`)); err != nil {
+		t.Fatalf("assistant tool_use: %v", err)
+	}
+	if !parser.isBackground("tool-bg") {
+		t.Fatal("expected tool-bg flagged as background after run_in_background tool_use")
+	}
+
+	line := []byte(`{"type":"user","tool_use_result":{"stdout":"","stderr":"","interrupted":false,"backgroundTaskId":"task-bg"},"message":{"role":"user","content":[{"tool_use_id":"tool-bg","type":"tool_result","content":"Command running in background with ID: task-bg.","is_error":false}]}}`)
+	if _, err := parser.ParseLine(testThread, line); err != nil {
+		t.Fatalf("parse placeholder: %v", err)
+	}
+
+	if parser.isBackground("tool-bg") {
+		t.Error("backgroundToolUses[tool-bg] must be cleared after placeholder tool_result correlation")
+	}
+	if len(parser.backgroundToolUses) != 0 {
+		t.Errorf("backgroundToolUses must be empty after single correlation; got %v", parser.backgroundToolUses)
+	}
+}
+
+// TestAppendToolResultBlock_BackgroundFlagNoLeakOverManyLaunches is a
+// shape-level leak test — parse N background launches + echoes and
+// assert the correlation map stays bounded. Without clearBackground on
+// correlation the map would hold N entries until Close(); with the
+// clear, it stays at zero between pairs.
+func TestAppendToolResultBlock_BackgroundFlagNoLeakOverManyLaunches(t *testing.T) {
+	parser := NewParser()
+
+	const pairs = 50
+	for i := 0; i < pairs; i++ {
+		id := fmt.Sprintf("tool-bg-%d", i)
+		start := fmt.Sprintf(`{"type":"assistant","message":{"id":"msg-%d","role":"assistant","content":[{"type":"tool_use","id":%q,"name":"Bash","input":{"command":"sleep 1","run_in_background":true}}]}}`, i, id)
+		if _, err := parser.ParseLine(testThread, []byte(start)); err != nil {
+			t.Fatalf("start %d: %v", i, err)
+		}
+		result := fmt.Sprintf(`{"type":"user","tool_use_result":{"backgroundTaskId":"task-%d"},"message":{"role":"user","content":[{"tool_use_id":%q,"type":"tool_result","content":"running","is_error":false}]}}`, i, id)
+		if _, err := parser.ParseLine(testThread, []byte(result)); err != nil {
+			t.Fatalf("result %d: %v", i, err)
+		}
+	}
+	if len(parser.backgroundToolUses) != 0 {
+		t.Errorf("backgroundToolUses leaked across %d pairs: got len=%d", pairs, len(parser.backgroundToolUses))
 	}
 }
 

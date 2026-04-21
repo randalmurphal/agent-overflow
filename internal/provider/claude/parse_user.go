@@ -110,11 +110,22 @@ func (p *Parser) appendToolResultBlock(
 	// per-spec "keep status=running for background" rule is a triage
 	// decision keyed off `is_background` in meta, not a parser-level
 	// drop of the event.
+	isBackground := p.isBackground(toolUseID)
 	events = appendToolResultCompletion(
 		events, threadID, toolUseID, now, line,
-		p.isBackground(toolUseID),
+		isBackground,
 		block, content, toolUseResults[toolUseID],
 	)
+	// The tool_use_id → is_background correlation is a one-shot: once
+	// the placeholder tool_result echoes, the flag has served its
+	// purpose. Release it so backgroundToolUses doesn't leak across a
+	// long session. The triage row is already tagged
+	// `is_background=true`; any later task_updated / TaskOutput writes a
+	// sibling via EventBackgroundTaskTerminal and does not re-read this
+	// map.
+	if isBackground {
+		p.clearBackground(toolUseID)
+	}
 
 	// Additive TaskOutput enrichment: this lets a later
 	// `task_updated` or another TaskOutput poll upsert the same
@@ -187,10 +198,12 @@ func (p *Parser) appendTaskOutputCompletion(
 		Timestamp: now,
 		Raw:       line,
 	})
-	// The launch row's `is_background` tag lives in triage — no parser
-	// state to clear here. Leaving backgroundToolUses intact means a
-	// delayed placeholder echo (if one somehow appears) would still
-	// propagate `is_background` on its meta.
+	// TaskOutput enrichment does not clear backgroundToolUses — the
+	// original backgrounded tool_use's placeholder tool_result is what
+	// releases that flag (see appendToolResultBlock). This helper runs
+	// ON a TaskOutput tool_result whose own tool_use_id is NOT the
+	// backgrounded one, so the map entry for `originalToolUseID` is
+	// orthogonal to the caller's clear path.
 	return events
 }
 

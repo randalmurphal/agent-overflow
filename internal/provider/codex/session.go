@@ -630,22 +630,19 @@ func (s *Session) dispatchLine(line []byte) {
 		// reaches a terminal state with no parent `wait` outstanding.
 		// See codex-wire.md §<subagent_notification> and
 		// codex-source/core/src/contextual_user_message.rs for the tag
-		// constants. This is emission-only for now — the matching
-		// EventSubagentNotification kind, triage handler, and UI
-		// renderer are deferred (see
-		// docs/archive/turn-lifecycle-refactor-plan.md). When those
-		// land, swap the log line below for an `s.onEvent(...)` call
-		// that emits one event per notification. The detection logic
-		// runs today so the wiring is already correct and so tests can
-		// pin the parser's contract.
-		//
-		// TODO(turn-lifecycle-refactor): emit EventSubagentNotification
-		// once the const + triage handler land in a follow-up wave.
+		// constants. Each detected notification fires a separate
+		// EventSubagentNotification so the triage pass-through emits a
+		// `provider:subagent_notification` event for the frontend
+		// tray / subagent UI to surface.
 		if msg.Method == "item/completed" {
 			if notifications := extractSubagentNotificationsFromUserMessage(msg.Params); len(notifications) > 0 {
 				for _, n := range notifications {
-					log.Printf("codex: subagent_notification detected (emission deferred): thread=%s agent_id=%s status=%s",
-						s.threadID, n.AgentID, n.Status)
+					s.onEvent(provider.ProviderEvent{
+						Kind:      provider.EventSubagentNotification,
+						ThreadID:  s.threadID,
+						Meta:      buildSubagentNotificationMeta(n),
+						Timestamp: time.Now(),
+					})
 				}
 			}
 		}
@@ -827,6 +824,35 @@ func extractSubagentNotificationsFromUserMessage(params json.RawMessage) []subag
 		builder.WriteString(text)
 	}
 	return parseSubagentNotifications(builder.String())
+}
+
+// buildSubagentNotificationMeta serialises a parsed subagentNotification
+// into the json.RawMessage the triage handler forwards on
+// `provider:subagent_notification`. Any `Extra` fields are merged onto
+// the top level so future Codex core versions can add fields without a
+// parser update; the load-bearing `agent_id` / `status` keys win on
+// collision so a stray Extra entry can't poison the contract.
+func buildSubagentNotificationMeta(n subagentNotification) json.RawMessage {
+	fields := make(map[string]any, 2+len(n.Extra))
+	for k, v := range n.Extra {
+		fields[k] = v
+	}
+	fields["agent_id"] = n.AgentID
+	fields["status"] = n.Status
+	meta, err := json.Marshal(fields)
+	if err != nil {
+		// Fallback to a minimal payload so the frontend still gets the
+		// load-bearing fields even if a malformed Extra entry trips
+		// Marshal. The parser already validated agent_id/status are
+		// strings, so this encode is safe.
+		minimal, _ := json.Marshal(map[string]string{
+			"agent_id": n.AgentID,
+			"status":   n.Status,
+		})
+		log.Printf("codex: subagent_notification meta marshal fallback: %v", err)
+		return minimal
+	}
+	return meta
 }
 
 func (s *Session) parentToolUseForProviderThread(providerThreadID string) string {

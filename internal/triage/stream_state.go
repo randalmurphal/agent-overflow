@@ -173,7 +173,7 @@ func (r *Router) settleStreamingText(threadID string, turnIndex int, scope strin
 	if err != nil || !found {
 		return err
 	}
-	if item.Status != "streaming" {
+	if item.Status != statusStreaming {
 		return nil
 	}
 	item.Status = status
@@ -211,7 +211,7 @@ func (r *Router) settleStreamingThinking(threadID string, turnIndex int, scope s
 	if err != nil || !found {
 		return err
 	}
-	if item.Status != "streaming" {
+	if item.Status != statusStreaming {
 		return nil
 	}
 	item.Status = status

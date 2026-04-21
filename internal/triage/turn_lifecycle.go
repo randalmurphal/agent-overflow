@@ -355,30 +355,23 @@ func turnCompleteIsTruncated(meta turnCompleteMeta) bool {
 // invariant 23: the provider/parser can drop a tool_result and leave a
 // row stuck at running; a clean turn-complete should settle the
 // timeline regardless. Backgrounded launches are exempt (invariant 24
-// — they legitimately outlive their turn) and are filtered out here
-// rather than at the SQL layer so the exemption stays visible in the
-// code the reviewer lands on when tracing the force-close.
+// — they legitimately outlive their turn); the exemption is pushed
+// into the SQL accessor so we don't deserialize settled or
+// already-exempt rows at all.
+//
+// The DB writes are batched inside store.ForceCloseRunningToolCallsInTurn
+// (one TX, one thread-touch) to cut per-orphan roundtrips; the
+// frontend-bound `provider:item_upsert` emissions stay per-row so the
+// UI still updates each card independently.
 func (r *Router) forceCloseOrphanToolCalls(threadID string, turnIndex int, now int64) error {
-	items, err := r.store.ListTurnItems(threadID, turnIndex)
+	flipped, err := r.store.ForceCloseRunningToolCallsInTurn(threadID, turnIndex, forceCloseSummary, now)
 	if err != nil {
-		return fmt.Errorf("force-close list turn items: %w", err)
+		return fmt.Errorf("force-close orphan tool calls: %w", err)
 	}
-	for _, item := range items {
-		if item.Kind != itemKindToolCall {
-			continue
-		}
-		if item.Status != statusRunning {
-			continue
-		}
-		if item.IsBackground {
-			continue
-		}
-		item.Status = statusErrored
-		item.Summary = forceCloseSummary(item.Summary)
-		item.UpdatedAt = now
-		if err := r.persistItem(item, nil); err != nil {
-			return fmt.Errorf("force-close persist %s: %w", item.ID, err)
-		}
+	for _, item := range flipped {
+		r.emitItemUpsert(item)
+		r.metrics.ItemsPersisted.Add(context.Background(), 1,
+			metric.WithAttributes(attribute.String("kind", item.Kind)))
 	}
 	return nil
 }
@@ -530,6 +523,12 @@ func (r *Router) markTurnItemsErrored(threadID string, turnIndex int, now int64)
 // string indirection lets the user-interrupt path ("— stopped") and
 // the truncated-turn path ("— interrupted") share the same iteration
 // logic without either branch learning about the other.
+//
+// Backgrounded tool_call launches are EXEMPT (invariant 24): their work
+// legitimately outlives the launching turn, and the sibling
+// tool_completion row (written by EventBackgroundTaskTerminal) is the
+// thing that carries the interrupted/stopped marker when the task
+// settles. Mirrors the exemption in forceCloseOrphanToolCalls.
 func (r *Router) flipTurnItemsErrored(
 	threadID string,
 	turnIndex int,
@@ -541,7 +540,10 @@ func (r *Router) flipTurnItemsErrored(
 		return fmt.Errorf("error flip list turn items: %w", err)
 	}
 	for _, item := range items {
-		if item.Status != statusRunning && item.Status != "streaming" {
+		if item.Status != statusRunning && item.Status != statusStreaming {
+			continue
+		}
+		if item.IsBackground && item.Kind == itemKindToolCall {
 			continue
 		}
 		item.Status = statusErrored

@@ -1210,3 +1210,182 @@ func TestListRunningBackgroundToolCallsEmptyThread(t *testing.T) {
 		t.Fatalf("got %d rows on empty thread, want 0", len(got))
 	}
 }
+
+// TestListTurnItemsSansPayloadSkipsPayloadJoin verifies the narrow
+// sibling of ListTurnItems returns items with PayloadKind / PayloadMeta
+// left empty even when payload rows exist — the caller explicitly
+// opted out of the JOIN. Status/summary/is_background/kind are all
+// hydrated so the force-close path has what it needs.
+func TestListTurnItemsSansPayloadSkipsPayloadJoin(t *testing.T) {
+	s := newTestStore(t)
+	now := int64(1)
+	if err := s.CreateThread(Thread{
+		ID: "t-sp", ProjectID: defaultTestProjectID, Title: "T", Provider: "claude", WorkspacePath: "/tmp",
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+
+	payload := Payload{ID: "pl-1", Kind: "tool_call_result", Meta: `{"exitCode":0}`, Data: []byte("done"), CreatedAt: now}
+	if _, err := s.UpsertItem(Item{
+		ID: "it-with-payload", ThreadID: "t-sp", TurnIndex: 0, Kind: "tool_call",
+		Role: "assistant", Status: "completed", Summary: "echo",
+		PayloadID: "pl-1", CreatedAt: now, UpdatedAt: now,
+	}, &payload); err != nil {
+		t.Fatalf("upsert item with payload: %v", err)
+	}
+
+	bare, err := s.ListTurnItemsSansPayload("t-sp", 0)
+	if err != nil {
+		t.Fatalf("ListTurnItemsSansPayload: %v", err)
+	}
+	if len(bare) != 1 {
+		t.Fatalf("len=%d, want 1", len(bare))
+	}
+	if bare[0].PayloadID != "pl-1" {
+		t.Errorf("PayloadID = %q, want pl-1 (items column survives)", bare[0].PayloadID)
+	}
+	if bare[0].PayloadKind != "" {
+		t.Errorf("PayloadKind = %q, want empty (JOIN skipped)", bare[0].PayloadKind)
+	}
+	if bare[0].PayloadMeta != "" {
+		t.Errorf("PayloadMeta = %q, want empty (JOIN skipped)", bare[0].PayloadMeta)
+	}
+	if bare[0].Status != "completed" {
+		t.Errorf("Status = %q, want completed", bare[0].Status)
+	}
+
+	// Confirm the full-JOIN sibling still hydrates payload metadata —
+	// other callers rely on it.
+	full, err := s.ListTurnItems("t-sp", 0)
+	if err != nil {
+		t.Fatalf("ListTurnItems: %v", err)
+	}
+	if full[0].PayloadKind != "tool_call_result" {
+		t.Errorf("full.PayloadKind = %q, want tool_call_result (sibling still joins)", full[0].PayloadKind)
+	}
+}
+
+// TestForceCloseRunningToolCallsInTurnFlipsOnlyOrphanInlineTools pins
+// the three-way filter in the new accessor: only rows that are
+// (1) kind=tool_call, (2) status=running, (3) is_background=0 flip. A
+// completed inline tool stays completed; a running bg tool stays
+// running (invariant 24); a non-tool_call running row (streaming
+// assistant_text) stays untouched.
+func TestForceCloseRunningToolCallsInTurnFlipsOnlyOrphanInlineTools(t *testing.T) {
+	s := newTestStore(t)
+	now := int64(1)
+	if err := s.CreateThread(Thread{
+		ID: "t-fc", ProjectID: defaultTestProjectID, Title: "T", Provider: "claude", WorkspacePath: "/tmp",
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+
+	if _, err := s.UpsertItem(Item{
+		ID: "inline-orphan", ThreadID: "t-fc", TurnIndex: 0, Kind: "tool_call",
+		Role: "assistant", Status: "running", Summary: "Bash: sleep 10",
+		CreatedAt: now, UpdatedAt: now,
+	}, nil); err != nil {
+		t.Fatalf("upsert inline orphan: %v", err)
+	}
+	if _, err := s.UpsertItem(Item{
+		ID: "inline-complete", ThreadID: "t-fc", TurnIndex: 0, Kind: "tool_call",
+		Role: "assistant", Status: "completed", Summary: "Bash: true",
+		CreatedAt: now, UpdatedAt: now,
+	}, nil); err != nil {
+		t.Fatalf("upsert inline complete: %v", err)
+	}
+	if _, err := s.UpsertItem(Item{
+		ID: "bg-running", ThreadID: "t-fc", TurnIndex: 0, Kind: "tool_call",
+		Role: "assistant", Status: "running", Summary: "Bash: long-running",
+		IsBackground: true, CreatedAt: now, UpdatedAt: now,
+	}, nil); err != nil {
+		t.Fatalf("upsert bg running: %v", err)
+	}
+	if _, err := s.UpsertItem(Item{
+		ID: "text-streaming", ThreadID: "t-fc", TurnIndex: 0, Kind: "assistant_text",
+		Role: "assistant", Status: "streaming", Summary: "thinking...",
+		CreatedAt: now, UpdatedAt: now,
+	}, nil); err != nil {
+		t.Fatalf("upsert streaming text: %v", err)
+	}
+
+	updatedAt := now + 100
+	summariser := func(prior string) string { return strings.TrimSpace(prior) + " — unresolved" }
+	flipped, err := s.ForceCloseRunningToolCallsInTurn("t-fc", 0, summariser, updatedAt)
+	if err != nil {
+		t.Fatalf("ForceCloseRunningToolCallsInTurn: %v", err)
+	}
+	if len(flipped) != 1 {
+		t.Fatalf("flipped=%d, want 1 (inline-orphan only)", len(flipped))
+	}
+	if flipped[0].ID != "inline-orphan" {
+		t.Errorf("flipped[0].ID = %q, want inline-orphan", flipped[0].ID)
+	}
+	if flipped[0].Status != "errored" {
+		t.Errorf("flipped[0].Status = %q, want errored", flipped[0].Status)
+	}
+	if !strings.HasSuffix(flipped[0].Summary, " — unresolved") {
+		t.Errorf("flipped[0].Summary = %q, want trailing ' — unresolved'", flipped[0].Summary)
+	}
+	if flipped[0].UpdatedAt != updatedAt {
+		t.Errorf("flipped[0].UpdatedAt = %d, want %d", flipped[0].UpdatedAt, updatedAt)
+	}
+
+	// Cross-check the persisted state matches what the accessor
+	// returned.
+	orphan, ok, err := s.GetItem("inline-orphan")
+	if err != nil || !ok {
+		t.Fatalf("get orphan: found=%v err=%v", ok, err)
+	}
+	if orphan.Status != "errored" {
+		t.Errorf("persisted orphan status = %q, want errored", orphan.Status)
+	}
+
+	done, ok, err := s.GetItem("inline-complete")
+	if err != nil || !ok {
+		t.Fatalf("get done: found=%v err=%v", ok, err)
+	}
+	if done.Status != "completed" {
+		t.Errorf("already-completed row flipped: status = %q, want completed", done.Status)
+	}
+
+	bg, ok, err := s.GetItem("bg-running")
+	if err != nil || !ok {
+		t.Fatalf("get bg: found=%v err=%v", ok, err)
+	}
+	if bg.Status != "running" {
+		t.Errorf("bg tool_call flipped despite is_background=1 (invariant 24): status = %q", bg.Status)
+	}
+
+	txt, ok, err := s.GetItem("text-streaming")
+	if err != nil || !ok {
+		t.Fatalf("get text: found=%v err=%v", ok, err)
+	}
+	if txt.Status != "streaming" {
+		t.Errorf("streaming text kind flipped by force-close: status = %q", txt.Status)
+	}
+}
+
+// TestForceCloseRunningToolCallsInTurnEmptyNoOp confirms the no-rows
+// path commits cleanly without a thread-touch write (the caller is
+// expected to emit nothing).
+func TestForceCloseRunningToolCallsInTurnEmptyNoOp(t *testing.T) {
+	s := newTestStore(t)
+	now := int64(1)
+	if err := s.CreateThread(Thread{
+		ID: "t-noop", ProjectID: defaultTestProjectID, Title: "T", Provider: "claude", WorkspacePath: "/tmp",
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+
+	flipped, err := s.ForceCloseRunningToolCallsInTurn("t-noop", 0, func(s string) string { return s }, now+1)
+	if err != nil {
+		t.Fatalf("empty force-close: %v", err)
+	}
+	if flipped != nil {
+		t.Errorf("empty force-close returned %+v, want nil", flipped)
+	}
+}

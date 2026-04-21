@@ -18,6 +18,7 @@ const (
 	payloadKindToolCallResult = "tool_call_result"
 
 	statusRunning   = "running"
+	statusStreaming = "streaming"
 	statusCompleted = "completed"
 	statusErrored   = "errored"
 )

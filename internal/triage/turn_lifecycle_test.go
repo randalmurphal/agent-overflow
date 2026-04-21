@@ -13,8 +13,11 @@ import (
 // spec-critical contract for turn interruption. A single
 // EventTurnComplete with meta.truncated=true must:
 //
-//  1. Flip every still-streaming item on that turn to status=errored
-//     with summary suffixed by " — interrupted" (em-dash + " interrupted").
+//  1. Flip every still-streaming NON-BACKGROUND item on that turn to
+//     status=errored with summary suffixed by " — interrupted"
+//     (em-dash + " interrupted"). Backgrounded tool_call launches are
+//     EXEMPT per invariant 24 — they legitimately outlive the turn
+//     and their status stays running.
 //  2. Drain the interrupt queue AS ERRORED — every queued background
 //     completion lands with status=errored and the interrupted suffix,
 //     mirroring the streaming flip. The previous ordering (idle drain
@@ -26,13 +29,8 @@ import (
 //     resurrect a settled turn.
 //
 // The setup (streaming text + backgrounded launch + task terminal
-// queued) is the minimum that exercises the queue-drain codepath.
-//
-// Note on the bg launch row: backgrounded launches are EXEMPT from
-// force-close (invariant 24). They legitimately stay running after the
-// turn closes, so the launch row keeps status=running. The sibling
-// tool_completion written from EventBackgroundTaskTerminal is what
-// carries the interrupted suffix.
+// queued) is the minimum that exercises the queue-drain codepath and
+// the invariant 24 bg-launch exemption together.
 func TestTurnCompleteTruncatedFlipsRunningAndDrainsQueueAsErrored(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
@@ -133,14 +131,24 @@ func TestTurnCompleteTruncatedFlipsRunningAndDrainsQueueAsErrored(t *testing.T) 
 					interruptedSuffix, it.Summary)
 			}
 		case itemKindToolCall:
-			// Backgrounded launch is exempt from force-close — the
-			// spec explicitly lets a backgrounded tool outlive its
-			// turn. markTurnItemsErrored flips running/streaming to
-			// errored for ALL items (it doesn't know about the
-			// is_background exemption), so on truncated the bg launch
-			// also ends up errored. That's acceptable — this test is
-			// about the queue drain, not the force-close exemption.
+			// Invariant 24: backgrounded launches must stay running
+			// across a truncated turn. The sibling tool_completion
+			// row (drained from the interrupt queue, below) is what
+			// carries the interrupted marker for the task itself;
+			// the launch row keeps status=running so
+			// BackgroundTaskTray still renders the live task.
 			sawBgLaunch = true
+			if !it.IsBackground {
+				t.Errorf("unexpected inline tool_call row with id=%s status=%s", it.ID, it.Status)
+			}
+			if it.Status != statusRunning {
+				t.Errorf("bg launch status = %q, want running (invariant 24 exempts bg launches from truncated-turn flip)",
+					it.Status)
+			}
+			if strings.HasSuffix(it.Summary, interruptedSuffix) {
+				t.Errorf("bg launch summary picked up %q suffix despite exemption: %q",
+					interruptedSuffix, it.Summary)
+			}
 		case itemKindBackgroundDone:
 			// Spec: queued background completions drained during a
 			// truncated turn-complete must land as errored with the
@@ -506,5 +514,237 @@ func TestHandleEventTurnComplete_InterruptedMapsCanonicalStopReason(t *testing.T
 	}
 	if !payload.Aborted {
 		t.Error("payload.Aborted = false, want true")
+	}
+}
+
+// TestMarkUserInterrupt_ExemptsBackgroundedLaunches pins invariant 24
+// on the user-interrupt (Esc) path. A user hitting stop mid-turn flips
+// every running/streaming NON-BACKGROUND item with a " — stopped"
+// suffix, but backgrounded tool_call launches must stay running — the
+// background task legitimately outlives the turn, and the sibling
+// tool_completion row (written later via EventBackgroundTaskTerminal)
+// is what carries the stopped marker if the task itself gets
+// interrupted. Without the exemption the BackgroundTaskTray would
+// flip the launch badge to errored the moment the user presses Esc,
+// even though the task is still running in Claude.
+func TestMarkUserInterrupt_ExemptsBackgroundedLaunches(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnStart, ThreadID: "t1", TurnIndex: 1,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn start: %v", err)
+	}
+
+	// One backgrounded launch (is_background=true, status=running).
+	bgMeta, _ := json.Marshal(map[string]any{
+		"toolName":      "Bash",
+		"is_background": true,
+		"input":         map[string]any{"command": "sleep 60"},
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "bg-stopped-exempt",
+		ItemType: "Bash", Meta: bgMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("bg start: %v", err)
+	}
+
+	// One inline launch in parallel so we confirm the loop still flips
+	// non-bg rows while respecting the exemption.
+	inlineMeta, _ := json.Marshal(map[string]any{
+		"toolName": "Bash",
+		"input":    map[string]any{"command": "true"},
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "inline-stopped",
+		ItemType: "Bash", Meta: inlineMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("inline start: %v", err)
+	}
+
+	errID, err := router.MarkUserInterrupt("t1")
+	if err != nil {
+		t.Fatalf("MarkUserInterrupt: %v", err)
+	}
+	if errID == "" {
+		t.Fatal("MarkUserInterrupt returned empty error id")
+	}
+
+	// Backgrounded launch stays running — it must NOT be flipped.
+	bg, ok, err := st.GetItem("bg-stopped-exempt")
+	if err != nil || !ok {
+		t.Fatalf("missing bg-stopped-exempt: found=%v err=%v", ok, err)
+	}
+	if bg.Status != statusRunning {
+		t.Errorf("bg launch status = %q, want running (invariant 24 exempts bg launches from user-interrupt flip)",
+			bg.Status)
+	}
+	if strings.HasSuffix(bg.Summary, " — stopped") {
+		t.Errorf("bg launch summary picked up stopped suffix despite exemption: %q", bg.Summary)
+	}
+
+	// Inline launch must flip to errored with the stopped suffix.
+	inline, ok, err := st.GetItem("inline-stopped")
+	if err != nil || !ok {
+		t.Fatalf("missing inline-stopped: found=%v err=%v", ok, err)
+	}
+	if inline.Status != statusErrored {
+		t.Errorf("inline launch status = %q, want errored", inline.Status)
+	}
+	if !strings.HasSuffix(inline.Summary, " — stopped") {
+		t.Errorf("inline launch summary = %q, want trailing ' — stopped'", inline.Summary)
+	}
+
+	// "Stopped by user" system error row is persisted.
+	sys, ok, err := st.GetItem(errID)
+	if err != nil || !ok {
+		t.Fatalf("missing system error row %s: found=%v err=%v", errID, ok, err)
+	}
+	if sys.Summary != "Stopped by user" {
+		t.Errorf("system error summary = %q, want 'Stopped by user'", sys.Summary)
+	}
+}
+
+// TestHandleEventTurnStart_UsesWireTurnIDForCodex pins the
+// resolveTurnID branch that prefers the provider-supplied `evt.TurnID`
+// over the synthetic `<threadID>:<turnIndex>` fallback. Codex fills
+// evt.TurnID from `turn/started.turnId`; Claude has no wire-level
+// turn_id and leaves the field empty, so the synthetic path kicks in
+// (see TestHandleEventTurnStart_InsertsTurnRow which exercises that
+// branch). This test exercises the Codex branch end-to-end:
+//   - EventTurnStart with evt.TurnID="turn-codex-1" inserts a turns
+//     row keyed by "turn-codex-1" (NOT "t1:0").
+//   - A follow-up EventTurnComplete with the SAME evt.TurnID updates
+//     that row rather than creating or touching a sibling.
+//   - The frontend payload (TurnStartedEvent / TurnCompletedEvent)
+//     carries the real wire id so the UI's `activeTurn.turnId` and
+//     `latestSettledTurn.turnId` round-trip correctly.
+//
+// Regression-guard rationale: the resolveTurnID helper is a single
+// `if id != "" return id` branch. If someone swaps the condition or
+// adds a provider check that falls through to the synthetic path,
+// the turns table's primary key would flip between turn_index=0 and
+// whatever Codex sent, splitting one logical turn into two rows.
+// See docs/architecture/turn-lifecycle.md §Participants and
+// turn_lifecycle.go resolveTurnID.
+func TestHandleEventTurnStart_UsesWireTurnIDForCodex(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	const wireTurnID = "turn-codex-1"
+	startedAt := time.UnixMilli(1_700_000_000_000)
+
+	// Turn start with evt.TurnID populated — Codex's turn/started path.
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTurnStart,
+		ThreadID:  "t1",
+		TurnID:    wireTurnID,
+		TurnIndex: 0,
+		Timestamp: startedAt,
+	}); err != nil {
+		t.Fatalf("turn start: %v", err)
+	}
+
+	// The turns row is keyed by the WIRE id, not the synthetic one.
+	turn, found, err := st.GetTurn(wireTurnID)
+	if err != nil {
+		t.Fatalf("get turn by wire id: %v", err)
+	}
+	if !found {
+		t.Fatalf("expected turn row keyed by wire id %q", wireTurnID)
+	}
+	if turn.ThreadID != "t1" {
+		t.Errorf("turn.ThreadID = %q, want t1", turn.ThreadID)
+	}
+	if turn.StartedAt != startedAt.UnixMilli() {
+		t.Errorf("turn.StartedAt = %d, want %d", turn.StartedAt, startedAt.UnixMilli())
+	}
+
+	// The synthetic id ("t1:0") MUST NOT have produced a separate row.
+	// If we see a row under the fallback id alongside the wire-id row,
+	// resolveTurnID has silently switched paths mid-pipeline.
+	if _, synthFound, err := st.GetTurn("t1:0"); err != nil {
+		t.Fatalf("get turn by synthetic id: %v", err)
+	} else if synthFound {
+		t.Errorf("resolveTurnID split the turn into a synthetic sibling row (id t1:0) — wire id %q should be the only row", wireTurnID)
+	}
+
+	// provider:turn_started payload carries the wire id.
+	started := filterEmissions(*emissions, "provider:turn_started")
+	if len(started) != 1 {
+		t.Fatalf("expected 1 provider:turn_started emission, got %d", len(started))
+	}
+	startedPayload, ok := started[0].data.(TurnStartedEvent)
+	if !ok {
+		t.Fatalf("started payload type = %T, want TurnStartedEvent", started[0].data)
+	}
+	if startedPayload.TurnID != wireTurnID {
+		t.Errorf("provider:turn_started TurnID = %q, want %q (wire id must win)", startedPayload.TurnID, wireTurnID)
+	}
+
+	// EventTurnComplete with the SAME wire id updates the EXISTING row
+	// rather than forking a new synthetic row. This is the round-trip
+	// invariant: both ends of a turn share a single row keyed by the
+	// provider's identifier.
+	completeMeta, _ := json.Marshal(map[string]any{
+		"stop_reason":          "end_turn",
+		"assistant_message_id": "codex-assist-1",
+	})
+	completedAt := startedAt.Add(3 * time.Second)
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTurnComplete,
+		ThreadID:  "t1",
+		TurnID:    wireTurnID,
+		TurnIndex: 0,
+		Meta:      completeMeta,
+		Timestamp: completedAt,
+	}); err != nil {
+		t.Fatalf("turn complete: %v", err)
+	}
+
+	settled, found, err := st.GetTurn(wireTurnID)
+	if err != nil || !found {
+		t.Fatalf("get settled turn: found=%v err=%v", found, err)
+	}
+	if settled.CompletedAt == nil {
+		t.Fatal("expected completed_at set after turn complete")
+	}
+	if *settled.CompletedAt != completedAt.UnixMilli() {
+		t.Errorf("completed_at = %d, want %d", *settled.CompletedAt, completedAt.UnixMilli())
+	}
+	if settled.StopReason != "end_turn" {
+		t.Errorf("stop_reason = %q, want end_turn", settled.StopReason)
+	}
+	if settled.AssistantMessageID != "codex-assist-1" {
+		t.Errorf("assistant_message_id = %q, want codex-assist-1", settled.AssistantMessageID)
+	}
+	// Started_at must survive the update unchanged — the complete
+	// path must not rewrite the wall clock.
+	if settled.StartedAt != startedAt.UnixMilli() {
+		t.Errorf("started_at mutated on complete: %d, want %d", settled.StartedAt, startedAt.UnixMilli())
+	}
+
+	// The synthetic id still must not appear — the complete event must
+	// not spawn a second row via the fallback path.
+	if _, synthFound, _ := st.GetTurn("t1:0"); synthFound {
+		t.Error("EventTurnComplete with wire id spuriously created a synthetic sibling row (id t1:0)")
+	}
+
+	// provider:turn_completed payload carries the wire id.
+	completed := filterEmissions(*emissions, "provider:turn_completed")
+	if len(completed) != 1 {
+		t.Fatalf("expected 1 provider:turn_completed emission, got %d", len(completed))
+	}
+	completedPayload, ok := completed[0].data.(TurnCompletedEvent)
+	if !ok {
+		t.Fatalf("completed payload type = %T, want TurnCompletedEvent", completed[0].data)
+	}
+	if completedPayload.TurnID != wireTurnID {
+		t.Errorf("provider:turn_completed TurnID = %q, want %q (wire id must win)", completedPayload.TurnID, wireTurnID)
+	}
+	if completedPayload.AssistantMessageID != "codex-assist-1" {
+		t.Errorf("provider:turn_completed AssistantMessageID = %q, want codex-assist-1", completedPayload.AssistantMessageID)
 	}
 }
