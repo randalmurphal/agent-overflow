@@ -149,6 +149,26 @@ func TestRenderMarkdownGFMTaskList(t *testing.T) {
 	}
 }
 
+// TestRenderMarkdownGFMTableAlignment pins GFM's column-alignment
+// syntax (`| :--- |`, `| ---: |`, `| :---: |`). Without alignment
+// handled, wide comparison tables lose their visual column affinity.
+func TestRenderMarkdownGFMTableAlignment(t *testing.T) {
+	r := newTestRenderer(t)
+	in := "| L | C | R |\n| :--- | :---: | ---: |\n| a | b | c |\n"
+	out := r.RenderMarkdown(in)
+	// goldmark emits inline `style="text-align:<dir>"` on <th> / <td>
+	// for aligned columns.
+	for _, want := range []string{
+		`style="text-align:left"`,
+		`style="text-align:center"`,
+		`style="text-align:right"`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing alignment attribute %q: %q", want, out)
+		}
+	}
+}
+
 // TestRenderMarkdownGFMLinkify pins auto-link detection for plain URLs
 // — and verifies the safe-autolink renderer still applies, so a
 // linkified javascript: URL is stripped.
@@ -244,6 +264,57 @@ func TestRenderANSISGRSequences(t *testing.T) {
 			}
 			if !strings.Contains(out, tc.wantText) {
 				t.Fatalf("missing text %q in %q", tc.wantText, out)
+			}
+		})
+	}
+}
+
+// TestRenderANSIBrightColors pins the class-name contract for bright
+// (intense) foreground/background variants. terminal-to-html emits
+// `term-fgi{N}` / `term-bgi{N}` (note the "i"), not `term-fg{N}` /
+// `term-bg{N}`. The CSS in app.css must track these names — an earlier
+// build named them without the "i" and bright colors went unstyled.
+func TestRenderANSIBrightColors(t *testing.T) {
+	r := newTestRenderer(t)
+	cases := []struct {
+		name, in, wantClass string
+	}{
+		{"bright-fg-90", "\x1b[90mgray\x1b[0m", "term-fgi90"},
+		{"bright-fg-91", "\x1b[91mbrightred\x1b[0m", "term-fgi91"},
+		{"bright-fg-97", "\x1b[97mbrightwhite\x1b[0m", "term-fgi97"},
+		{"bright-bg-100", "\x1b[100mbg\x1b[0m", "term-bgi100"},
+		{"bright-bg-107", "\x1b[107mbg\x1b[0m", "term-bgi107"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out := r.RenderANSI(tc.in)
+			if !strings.Contains(out, tc.wantClass) {
+				t.Fatalf("missing class %q in %q", tc.wantClass, out)
+			}
+		})
+	}
+}
+
+// TestRenderANSIAttributeCodes pins italic, underline, and strike
+// emissions. terminal-to-html uses `term-fg{N}` for SGR codes 1-9
+// (bold/italic/underline/blink/strike) — the class namespace overlaps
+// with color codes 30-37 but the parameter numbers don't collide in
+// practice.
+func TestRenderANSIAttributeCodes(t *testing.T) {
+	r := newTestRenderer(t)
+	cases := []struct {
+		name, in, wantClass string
+	}{
+		{"bold", "\x1b[1mbold\x1b[0m", "term-fg1"},
+		{"italic", "\x1b[3mitalic\x1b[0m", "term-fg3"},
+		{"underline", "\x1b[4munder\x1b[0m", "term-fg4"},
+		{"strike", "\x1b[9mstrike\x1b[0m", "term-fg9"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out := r.RenderANSI(tc.in)
+			if !strings.Contains(out, tc.wantClass) {
+				t.Fatalf("missing class %q in %q", tc.wantClass, out)
 			}
 		})
 	}

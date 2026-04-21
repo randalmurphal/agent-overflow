@@ -268,14 +268,20 @@ body::selection {
 .ansi-body .term-fg35 { color: oklch(0.75 0.16 320); } /* magenta */
 .ansi-body .term-fg36 { color: oklch(0.8 0.12 205); }  /* cyan */
 .ansi-body .term-fg37 { color: var(--text-primary); }  /* white */
-.ansi-body .term-fg90 { color: var(--text-secondary); }
-.ansi-body .term-fg91 { color: oklch(0.78 0.15 27); }
-.ansi-body .term-fg92 { color: oklch(0.82 0.14 150); }
-.ansi-body .term-fg93 { color: oklch(0.88 0.13 85); }
-.ansi-body .term-fg94 { color: oklch(0.8 0.13 250); }
-.ansi-body .term-fg95 { color: oklch(0.82 0.15 320); }
-.ansi-body .term-fg96 { color: oklch(0.86 0.11 205); }
-.ansi-body .term-fg97 { color: #ffffff; }
+/* Bright/intense variants. terminal-to-html emits `term-fgi{N}` and
+   `term-bgi{N}` for SGR codes 90-97 and 100-107 (the "i" marks
+   intense). Earlier builds mis-named these as `term-fg90`/`term-bg100`
+   which never matched anything — many agent tools (ripgrep, prettier,
+   fd, bat) render bright-colored output and those colors silently
+   inherited the default foreground. */
+.ansi-body .term-fgi90 { color: var(--text-secondary); }
+.ansi-body .term-fgi91 { color: oklch(0.78 0.15 27); }
+.ansi-body .term-fgi92 { color: oklch(0.82 0.14 150); }
+.ansi-body .term-fgi93 { color: oklch(0.88 0.13 85); }
+.ansi-body .term-fgi94 { color: oklch(0.8 0.13 250); }
+.ansi-body .term-fgi95 { color: oklch(0.82 0.15 320); }
+.ansi-body .term-fgi96 { color: oklch(0.86 0.11 205); }
+.ansi-body .term-fgi97 { color: #ffffff; }
 .ansi-body .term-bg40 { background: #111827; }
 .ansi-body .term-bg41 { background: color-mix(in oklab, oklch(0.55 0.18 27) 60%, transparent); }
 .ansi-body .term-bg42 { background: color-mix(in oklab, oklch(0.55 0.16 150) 55%, transparent); }
@@ -284,5 +290,21 @@ body::selection {
 .ansi-body .term-bg45 { background: color-mix(in oklab, oklch(0.6 0.17 320) 55%, transparent); }
 .ansi-body .term-bg46 { background: color-mix(in oklab, oklch(0.65 0.13 205) 55%, transparent); }
 .ansi-body .term-bg47 { background: color-mix(in oklab, var(--text-primary) 15%, transparent); }
-.ansi-body .term-fg1 { font-weight: 600; }    /* bold */
-.ansi-body .term-fg4 { text-decoration: underline; }
+.ansi-body .term-bgi100 { background: color-mix(in oklab, var(--text-secondary) 25%, transparent); }
+.ansi-body .term-bgi101 { background: color-mix(in oklab, oklch(0.78 0.15 27) 40%, transparent); }
+.ansi-body .term-bgi102 { background: color-mix(in oklab, oklch(0.82 0.14 150) 40%, transparent); }
+.ansi-body .term-bgi103 { background: color-mix(in oklab, oklch(0.88 0.13 85) 40%, transparent); }
+.ansi-body .term-bgi104 { background: color-mix(in oklab, oklch(0.8 0.13 250) 40%, transparent); }
+.ansi-body .term-bgi105 { background: color-mix(in oklab, oklch(0.82 0.15 320) 40%, transparent); }
+.ansi-body .term-bgi106 { background: color-mix(in oklab, oklch(0.86 0.11 205) 40%, transparent); }
+.ansi-body .term-bgi107 { background: color-mix(in oklab, #ffffff 25%, transparent); }
+
+/* SGR attribute codes. terminal-to-html emits `term-fg{N}` for 1/3/4/9
+   (bold/italic/underline/strike) the same way it emits `term-fg{30..37}`
+   for color codes — parameter number wins, context is lost. That's fine
+   because 30-37 map to colors and 1/3/4/9 map to attributes, so the
+   class namespaces don't overlap in practice. */
+.ansi-body .term-fg1 { font-weight: 600; }           /* bold */
+.ansi-body .term-fg3 { font-style: italic; }         /* italic */
+.ansi-body .term-fg4 { text-decoration: underline; } /* underline */
+.ansi-body .term-fg9 { text-decoration: line-through; } /* strike */
