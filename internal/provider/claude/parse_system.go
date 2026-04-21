@@ -119,12 +119,18 @@ func (p *Parser) parseSystem(threadID string, raw map[string]json.RawMessage, no
 	}
 }
 
+// parseTaskLifecycleEvent handles `system/task_updated`. A terminal
+// `patch.status` (`completed`, `failed`, `killed`) emits
+// `EventBackgroundTaskTerminal` for the backgrounded task — the
+// authoritative basic-terminal signal for the task lifecycle. A later
+// TaskOutput enrichment for the same task idempotently upserts through
+// triage with richer payload. Non-terminal `patch.status` values
+// (`pending`, `running`) are no-ops; dedup is triage's job.
+// See docs/references/claude-wire.md §task_updated and
+// docs/architecture/turn-lifecycle.md §Task lifecycle.
 func (p *Parser) parseTaskLifecycleEvent(threadID string, raw map[string]json.RawMessage, now time.Time) ([]provider.ProviderEvent, error) {
 	taskID := readRawString(raw["task_id"])
 	if taskID == "" {
-		return nil, nil
-	}
-	if p.hasTaskOutput(taskID) {
 		return nil, nil
 	}
 
@@ -140,19 +146,19 @@ func (p *Parser) parseTaskLifecycleEvent(threadID string, raw map[string]json.Ra
 		return nil, nil
 	}
 
-	toolUseID := firstNonEmpty(p.taskToolUse(taskID), readRawString(raw["tool_use_id"]), readRawString(raw["toolUseId"]))
 	// An empty tool_use_id here means the in-memory map is empty (fresh
 	// adapter session after reconnect) AND the event did not echo the
-	// id inline. Emit a completion keyed only by task_id so triage can
+	// id inline. Emit a terminal keyed only by task_id so triage can
 	// look the row up via items.meta.task_id. If triage finds no match
 	// the event is dropped there.
-	if !p.markTaskCompleted(taskID) {
-		return nil, nil
-	}
+	toolUseID := firstNonEmpty(p.taskToolUse(taskID), readRawString(raw["tool_use_id"]), readRawString(raw["toolUseId"]))
 
 	metaFields := map[string]any{
-		"is_background": true,
-		"task_id":       taskID,
+		"task_id": taskID,
+		"status":  status,
+	}
+	if toolUseID != "" {
+		metaFields["tool_use_id"] = toolUseID
 	}
 	if status != "completed" {
 		metaFields["is_error"] = true
@@ -162,17 +168,8 @@ func (p *Parser) parseTaskLifecycleEvent(threadID string, raw map[string]json.Ra
 	}
 	meta, _ := json.Marshal(metaFields)
 
-	if toolUseID != "" {
-		p.clearBackground(toolUseID)
-		// Dedup parallel task_notification for the same tool_use_id so
-		// the downstream notification signal is suppressed.
-		if !p.markToolUseCompleted(toolUseID) {
-			return nil, nil
-		}
-	}
-
 	return []provider.ProviderEvent{{
-		Kind:      provider.EventToolComplete,
+		Kind:      provider.EventBackgroundTaskTerminal,
 		ThreadID:  threadID,
 		ItemID:    toolUseID,
 		Content:   firstNonEmpty(readRawString(patch["description"]), readRawString(raw["summary"])),
@@ -181,65 +178,21 @@ func (p *Parser) parseTaskLifecycleEvent(threadID string, raw map[string]json.Ra
 	}}, nil
 }
 
-// parseTaskNotificationEvent handles `system/task_notification`. It is a
-// parallel completion signal: Claude sends it out-of-turn to get the
-// model's attention on the next turn. The tool_use_id is inline, so this
-// event is self-sufficient even without a prior task_started in memory
-// (fresh session after reconnect). In the normal path, `task_updated`
-// has already fired and added the id to `completedToolUseIDs` — this
-// call no-ops.
+// parseTaskNotificationEvent is intentionally a no-op. Claude fires
+// `system/task_notification` as an attention signal (to nudge the next
+// user prompt) for every foreground AND background Bash/Task terminal;
+// it is NOT a task-lifecycle terminal source. The authoritative
+// terminals are `system/task_updated` and TaskOutput
+// `tool_use_result.task.status`. Emitting from task_notification
+// introduces races and corrupts the lifecycle — see
+// docs/architecture/invariants.md invariant 21 and
+// docs/references/claude-wire.md §task_notification.
+//
+// The `summary` field is information we knowingly discard. If a future
+// UX wants a notification log, add a distinct `EventBackgroundTaskNotification`
+// kind; do NOT conflate with `EventBackgroundTaskTerminal`.
 func (p *Parser) parseTaskNotificationEvent(threadID string, raw map[string]json.RawMessage, now time.Time) ([]provider.ProviderEvent, error) {
-	taskID := readRawString(raw["task_id"])
-	toolUseID := firstNonEmpty(p.taskToolUse(taskID), readRawString(raw["tool_use_id"]), readRawString(raw["toolUseId"]))
-	if toolUseID == "" {
-		// Without a tool_use_id we can't build a targeted completion.
-		// Task_notification without an inline tool_use_id and no
-		// task_started in memory cannot be correlated; drop it.
-		return nil, nil
-	}
-	// Per-task dedup covers the fresh-session edge case where
-	// task_updated fired with only task_id (no tool_use_id) and could
-	// not populate completedToolUseIDs.
-	if taskID != "" {
-		if _, alreadyCompleted := p.completedTasks[taskID]; alreadyCompleted {
-			return nil, nil
-		}
-	}
-	if !p.markToolUseCompleted(toolUseID) {
-		return nil, nil
-	}
-	status := normalizeTaskTerminalStatus(readRawString(raw["status"]))
-	if status == "" {
-		// Default to completed — notifications only fire for terminal tasks.
-		status = "completed"
-	}
-
-	metaFields := map[string]any{
-		"is_background": true,
-	}
-	if taskID != "" {
-		metaFields["task_id"] = taskID
-	}
-	if status != "completed" {
-		metaFields["is_error"] = true
-	}
-	meta, _ := json.Marshal(metaFields)
-
-	p.clearBackground(toolUseID)
-	if taskID != "" {
-		// Record the task in completedTasks so any later task_updated
-		// for the same task is suppressed.
-		p.markTaskCompleted(taskID)
-	}
-
-	return []provider.ProviderEvent{{
-		Kind:      provider.EventToolComplete,
-		ThreadID:  threadID,
-		ItemID:    toolUseID,
-		Content:   readRawString(raw["summary"]),
-		Meta:      meta,
-		Timestamp: now,
-	}}, nil
+	return nil, nil
 }
 
 func normalizeTaskTerminalStatus(status string) string {

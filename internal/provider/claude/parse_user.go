@@ -58,12 +58,26 @@ func (p *Parser) parseUser(threadID string, raw map[string]json.RawMessage, now 
 	return events, nil
 }
 
-// appendToolResultBlock classifies one tool_result block: either a
-// task-output completion (background Task tool), a backgrounded-tool
-// placeholder (dropped), or a standard inline tool completion. The
-// function returns the events slice with any produced events appended;
-// blocks that should not emit an event (wrong type, missing id,
-// placeholder echo) return the slice unchanged.
+// appendToolResultBlock emits the tool-lifecycle completion for one
+// `tool_result` block and — when the block carries a TaskOutput
+// enrichment — an additive `EventBackgroundTaskTerminal` for the
+// underlying backgrounded task.
+//
+// The universal tool-lifecycle invariant (see
+// docs/architecture/invariants.md invariant 20) says every `tool_use_id`
+// on a `tool_result` emits exactly one `EventToolComplete` for its own
+// id. There are NO exceptions: backgrounded placeholders, TaskOutput
+// echoes, and standard inline results all emit that completion. The
+// background placeholder's completion just carries `is_background:true`
+// in meta so triage keeps the launch row at `status=running` per spec
+// (see docs/architecture/turn-lifecycle.md §Tool lifecycle).
+//
+// TaskOutput (E3 in claude-wire.md) is additive: after the own-id
+// completion fires, if `tool_use_result.task.status` is terminal we
+// also emit `EventBackgroundTaskTerminal` keyed to the underlying
+// backgrounded task's original `tool_use_id`. Triage's
+// AppendCompletionItem upsert is idempotent, so any later
+// `task_updated` for the same task_id folds into the same sibling row.
 func (p *Parser) appendToolResultBlock(
 	events []provider.ProviderEvent,
 	threadID string,
@@ -90,34 +104,42 @@ func (p *Parser) appendToolResultBlock(
 	if len(taskOutputMeta) == 0 {
 		taskOutputMeta = raw["tool_use_result"]
 	}
-	if updated, handled := p.appendTaskOutputCompletion(
-		events, threadID, now, line,
-		block, content, taskOutputMeta,
-	); handled {
-		return updated
-	}
 
-	if p.isBackground(toolUseID) {
-		// Claude echoes a placeholder tool_result for backgrounded tools
-		// before the real terminal task lifecycle lands. Treat it as
-		// informational only; task_updated / TaskOutput emit the
-		// authoritative completion later.
-		return events
-	}
-
-	return appendToolResultCompletion(
+	// Always emit `EventToolComplete` for the tool's own id — no
+	// short-circuit for TaskOutput or backgrounded placeholders. The
+	// per-spec "keep status=running for background" rule is a triage
+	// decision keyed off `is_background` in meta, not a parser-level
+	// drop of the event.
+	events = appendToolResultCompletion(
 		events, threadID, toolUseID, now, line,
+		p.isBackground(toolUseID),
 		block, content, toolUseResults[toolUseID],
 	)
+
+	// Additive TaskOutput enrichment: this lets a later
+	// `task_updated` or another TaskOutput poll upsert the same
+	// sibling row idempotently in triage.
+	events = p.appendTaskOutputCompletion(
+		events, threadID, now, line,
+		block, content, taskOutputMeta,
+	)
+
+	return events
 }
 
-// appendTaskOutputCompletion handles the task_id-carrying "Task tool"
-// completion path: when the block's tool_use_result carries a
-// TaskOutput payload we look up the original tool_use_id via the
-// parser's in-memory task map and emit a background-flagged
-// EventToolComplete. The second return reports whether the block was
-// consumed by this helper; false means "not a task-output shape, try
-// the standard path."
+// appendTaskOutputCompletion emits the additive
+// `EventBackgroundTaskTerminal` enrichment when the TaskOutput
+// `tool_use_result.task` carries a terminal status.
+//
+// This path is NOT consuming — the caller has already emitted the
+// own-id `EventToolComplete` for the TaskOutput tool itself. The
+// terminal event carries the backgrounded task's original
+// `tool_use_id` (looked up via `taskToolUses[task_id]`) plus the
+// richer task payload (exit_code, output_file, summary text). When
+// the `tool_use_id` cannot be resolved — e.g. fresh adapter session
+// after reconnect with an empty correlation map — the event still
+// emits with an empty `ItemID`; triage falls back to
+// `items.meta.task_id` lookup.
 func (p *Parser) appendTaskOutputCompletion(
 	events []provider.ProviderEvent,
 	threadID string,
@@ -126,22 +148,24 @@ func (p *Parser) appendTaskOutputCompletion(
 	block map[string]json.RawMessage,
 	content string,
 	taskOutputMeta json.RawMessage,
-) ([]provider.ProviderEvent, bool) {
+) []provider.ProviderEvent {
 	taskOutput, ok := extractTaskOutputCompletion(block["content"], taskOutputMeta)
 	if !ok {
-		return events, false
+		return events
 	}
 
 	originalToolUseID := p.taskToolUse(taskOutput.TaskID)
-	if originalToolUseID == "" || !p.markTaskOutput(taskOutput.TaskID) {
-		// Already emitted (dedupe) or no matching tool_use — either way
-		// the block is fully consumed; we just don't emit.
-		return events, true
-	}
 
+	status := "completed"
+	if taskOutput.IsError {
+		status = "failed"
+	}
 	metaFields := map[string]any{
-		"is_background": true,
-		"task_id":       taskOutput.TaskID,
+		"task_id": taskOutput.TaskID,
+		"status":  status,
+	}
+	if originalToolUseID != "" {
+		metaFields["tool_use_id"] = originalToolUseID
 	}
 	if taskOutput.IsError {
 		metaFields["is_error"] = true
@@ -153,8 +177,9 @@ func (p *Parser) appendTaskOutputCompletion(
 		metaFields["output_file"] = taskOutput.OutputFile
 	}
 	meta, _ := json.Marshal(metaFields)
+
 	events = append(events, provider.ProviderEvent{
-		Kind:      provider.EventToolComplete,
+		Kind:      provider.EventBackgroundTaskTerminal,
 		ThreadID:  threadID,
 		ItemID:    originalToolUseID,
 		Content:   firstNonEmpty(taskOutput.Summary, content),
@@ -162,19 +187,26 @@ func (p *Parser) appendTaskOutputCompletion(
 		Timestamp: now,
 		Raw:       line,
 	})
-	p.clearBackground(originalToolUseID)
-	return events, true
+	// The launch row's `is_background` tag lives in triage — no parser
+	// state to clear here. Leaving backgroundToolUses intact means a
+	// delayed placeholder echo (if one somehow appears) would still
+	// propagate `is_background` on its meta.
+	return events
 }
 
-// appendToolResultCompletion emits the standard inline tool completion
-// shape: EventToolComplete keyed by the original tool_use_id, with
-// is_error / exit_code surfaced into meta. Used for every non-background,
-// non-task tool_result.
+// appendToolResultCompletion emits the tool-lifecycle completion
+// (`EventToolComplete` keyed by the tool_use_id) for every `tool_result`
+// block — standard inline, backgrounded placeholder, or TaskOutput. The
+// `isBackground` flag is surfaced in meta so triage knows to keep the
+// launch row at `status=running` per the background-tool spec. Any
+// richer sibling event (e.g. TaskOutput's terminal) rides on top via
+// `EventBackgroundTaskTerminal`.
 func appendToolResultCompletion(
 	events []provider.ProviderEvent,
 	threadID, toolUseID string,
 	now time.Time,
 	line []byte,
+	isBackground bool,
 	block map[string]json.RawMessage,
 	content string,
 	toolUseResult json.RawMessage,
@@ -186,6 +218,9 @@ func appendToolResultCompletion(
 
 	metaFields := map[string]any{
 		"is_error": isError,
+	}
+	if isBackground {
+		metaFields["is_background"] = true
 	}
 	if code, ok := extractExitCode(block["content"], toolUseResult); ok {
 		metaFields["exit_code"] = code
@@ -292,13 +327,38 @@ func extractTaskOutputCompletion(content json.RawMessage, toolUseResult json.Raw
 		OutputFile: firstNonEmpty(readRawString(task["output_file"]), readRawString(task["outputFile"]), readRawString(payload["output_file"]), readRawString(payload["outputFile"])),
 	}
 
-	if exitCode, ok := readIntAtAnyKey(task["result"], "exit_code", "exitCode"); ok {
+	// exit_code / exitCode can live in any of these places depending
+	// on which backgrounded tool the TaskOutput is polling:
+	//   - `task.exitCode` / `task.exit_code` — local_bash
+	//   - `task.result.{exit_code,exitCode}` — nested structured result
+	//   - top-level `tool_use_result.exit_code` — tool-output fallback
+	// Check in priority order and return the first hit.
+	if exitCode, ok := readIntValueFromTask(task); ok {
+		result.ExitCode = &exitCode
+	} else if exitCode, ok := readIntAtAnyKey(task["result"], "exit_code", "exitCode"); ok {
 		result.ExitCode = &exitCode
 	} else if exitCode, ok := readIntAtAnyKey(toolUseResult, "exit_code", "exitCode"); ok {
 		result.ExitCode = &exitCode
 	}
 
 	return result, true
+}
+
+// readIntValueFromTask reads exit_code / exitCode from the task
+// object itself. Pulled out of extractTaskOutputCompletion so the
+// priority chain stays readable.
+func readIntValueFromTask(task map[string]json.RawMessage) (int, bool) {
+	for _, key := range []string{"exit_code", "exitCode"} {
+		raw, ok := task[key]
+		if !ok {
+			continue
+		}
+		var value int
+		if err := json.Unmarshal(raw, &value); err == nil {
+			return value, true
+		}
+	}
+	return 0, false
 }
 
 // indexToolUseResults builds a map from tool_use_id → the structured

@@ -1,0 +1,284 @@
+package claude
+
+import (
+	"encoding/json"
+	"testing"
+
+	"agent-overflow/internal/provider"
+)
+
+// TestParseTaskLifecycleEvent_CompletedPatchEmitsBackgroundTerminal is
+// the basic happy-path assertion: a task_updated envelope with
+// `patch.status=completed` emits exactly one
+// `EventBackgroundTaskTerminal`. No `EventToolComplete` is produced —
+// the tool-lifecycle completion was already emitted by the
+// backgrounded placeholder's `tool_result`.
+func TestParseTaskLifecycleEvent_CompletedPatchEmitsBackgroundTerminal(t *testing.T) {
+	parser := NewParser()
+	if _, err := parser.ParseLine(testThread, []byte(`{"type":"system","subtype":"task_started","task_id":"t1","tool_use_id":"tu1"}`)); err != nil {
+		t.Fatalf("task_started: %v", err)
+	}
+
+	events, err := parser.ParseLine(testThread, []byte(`{"type":"system","subtype":"task_updated","task_id":"t1","patch":{"status":"completed","end_time":1776577311261}}`))
+	if err != nil {
+		t.Fatalf("task_updated: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if events[0].Kind != provider.EventBackgroundTaskTerminal {
+		t.Fatalf("Kind: got %q, want %q", events[0].Kind, provider.EventBackgroundTaskTerminal)
+	}
+	if events[0].ItemID != "tu1" {
+		t.Fatalf("ItemID: got %q, want tu1", events[0].ItemID)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if meta["task_id"] != "t1" {
+		t.Fatalf("meta.task_id: got %v", meta["task_id"])
+	}
+	if meta["status"] != "completed" {
+		t.Fatalf("meta.status: got %v", meta["status"])
+	}
+	if meta["end_time"] != float64(1776577311261) {
+		t.Fatalf("meta.end_time: got %v", meta["end_time"])
+	}
+}
+
+// TestParseTaskLifecycleEvent_FailedPatchMarksIsError covers the
+// `failed` and `killed` terminal mappings — the event is normalized to
+// status=failed and is_error=true.
+func TestParseTaskLifecycleEvent_FailedPatchMarksIsError(t *testing.T) {
+	for _, wireStatus := range []string{"failed", "killed"} {
+		t.Run(wireStatus, func(t *testing.T) {
+			parser := NewParser()
+			if _, err := parser.ParseLine(testThread, []byte(`{"type":"system","subtype":"task_started","task_id":"t1","tool_use_id":"tu1"}`)); err != nil {
+				t.Fatalf("task_started: %v", err)
+			}
+			line := []byte(`{"type":"system","subtype":"task_updated","task_id":"t1","patch":{"status":"` + wireStatus + `"}}`)
+			events, err := parser.ParseLine(testThread, line)
+			if err != nil {
+				t.Fatalf("task_updated: %v", err)
+			}
+			if len(events) != 1 {
+				t.Fatalf("expected 1 event, got %d", len(events))
+			}
+			if events[0].Kind != provider.EventBackgroundTaskTerminal {
+				t.Fatalf("Kind: got %q", events[0].Kind)
+			}
+			var meta map[string]any
+			if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if meta["status"] != "failed" {
+				t.Fatalf("meta.status: got %v, want failed", meta["status"])
+			}
+			if meta["is_error"] != true {
+				t.Fatalf("meta.is_error: got %v, want true", meta["is_error"])
+			}
+		})
+	}
+}
+
+// TestParseTaskLifecycleEvent_NonTerminalPatchIsNoOp confirms that an
+// intermediate `patch.status` (e.g. `running`, `pending`) does not
+// produce an event. Only the terminal statuses are authoritative.
+func TestParseTaskLifecycleEvent_NonTerminalPatchIsNoOp(t *testing.T) {
+	parser := NewParser()
+	for _, wireStatus := range []string{"pending", "running", "queued", ""} {
+		t.Run(wireStatus, func(t *testing.T) {
+			line := []byte(`{"type":"system","subtype":"task_updated","task_id":"t1","patch":{"status":"` + wireStatus + `"}}`)
+			events, err := parser.ParseLine(testThread, line)
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			if len(events) != 0 {
+				t.Fatalf("expected 0 events for non-terminal status %q, got %+v", wireStatus, events)
+			}
+		})
+	}
+}
+
+// TestParseTaskNotificationEvent_EmitsNothing is the invariant-21
+// guard: every shape of task_notification — with or without
+// tool_use_id, with or without a status — emits zero events. The
+// summary field is information we knowingly discard.
+func TestParseTaskNotificationEvent_EmitsNothing(t *testing.T) {
+	parser := NewParser()
+
+	cases := []string{
+		`{"type":"system","subtype":"task_notification","task_id":"t1","tool_use_id":"tu1","status":"completed","summary":"done"}`,
+		`{"type":"system","subtype":"task_notification","task_id":"t1","status":"failed","summary":"whoops"}`,
+		`{"type":"system","subtype":"task_notification","tool_use_id":"tu1"}`, // no task_id, no status
+		`{"type":"system","subtype":"task_notification"}`,                     // empty
+		`{"type":"system","subtype":"task_notification","task_id":"t-fg","tool_use_id":"tu-fg","status":"completed","summary":"Background command \"echo\" completed (exit code 0)","output_file":""}`, // foreground bash form
+	}
+	for _, line := range cases {
+		events, err := parser.ParseLine(testThread, []byte(line))
+		if err != nil {
+			t.Fatalf("parse %q: %v", line, err)
+		}
+		if len(events) != 0 {
+			t.Errorf("task_notification must emit zero events (invariant 21) for %s, got %+v", line, events)
+		}
+	}
+}
+
+// TestParseResult_PopulatesAssistantMessageID verifies that the
+// parser tracks the last `assistant.message.id` and stamps it on
+// `EventTurnComplete.Meta.assistant_message_id`. The id resets after
+// emission so the next turn's result starts fresh.
+func TestParseResult_PopulatesAssistantMessageID(t *testing.T) {
+	parser := NewParser()
+
+	if _, err := parser.ParseLine(testThread, []byte(`{"type":"assistant","message":{"id":"msg_first","role":"assistant","content":[{"type":"text","text":"hi"}]}}`)); err != nil {
+		t.Fatalf("first assistant: %v", err)
+	}
+	if _, err := parser.ParseLine(testThread, []byte(`{"type":"assistant","message":{"id":"msg_second","role":"assistant","content":[{"type":"text","text":"still me"}]}}`)); err != nil {
+		t.Fatalf("second assistant: %v", err)
+	}
+
+	events, err := parser.ParseLine(testThread, []byte(`{"type":"result","subtype":"success","is_error":false,"stop_reason":"end_turn","duration_ms":12345,"total_cost_usd":0.12,"usage":{"input_tokens":50,"output_tokens":100}}`))
+	if err != nil {
+		t.Fatalf("result: %v", err)
+	}
+
+	var turn provider.ProviderEvent
+	for _, evt := range events {
+		if evt.Kind == provider.EventTurnComplete {
+			turn = evt
+			break
+		}
+	}
+	if turn.Kind != provider.EventTurnComplete {
+		t.Fatalf("no EventTurnComplete in %+v", events)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(turn.Meta, &meta); err != nil {
+		t.Fatalf("unmarshal turn meta: %v", err)
+	}
+	if meta["assistant_message_id"] != "msg_second" {
+		t.Fatalf("assistant_message_id: got %v, want msg_second", meta["assistant_message_id"])
+	}
+	if meta["stop_reason"] != "end_turn" {
+		t.Fatalf("stop_reason: got %v", meta["stop_reason"])
+	}
+	if meta["duration_ms"] != float64(12345) {
+		t.Fatalf("duration_ms: got %v", meta["duration_ms"])
+	}
+	if meta["total_cost_usd"] != 0.12 {
+		t.Fatalf("total_cost_usd: got %v", meta["total_cost_usd"])
+	}
+
+	// Emit a second result. lastAssistantMessageID must have cleared
+	// so the next turn's meta does not carry stale id.
+	events, err = parser.ParseLine(testThread, []byte(`{"type":"result","subtype":"success","is_error":false,"stop_reason":"end_turn"}`))
+	if err != nil {
+		t.Fatalf("second result: %v", err)
+	}
+	for _, evt := range events {
+		if evt.Kind != provider.EventTurnComplete {
+			continue
+		}
+		var m2 map[string]any
+		if err := json.Unmarshal(evt.Meta, &m2); err != nil {
+			t.Fatalf("unmarshal second turn meta: %v", err)
+		}
+		if v, ok := m2["assistant_message_id"]; ok {
+			t.Fatalf("second turn still carries assistant_message_id=%v — take should have cleared it", v)
+		}
+	}
+}
+
+// TestParseResult_InterruptedMarksAbortedAndStopReason verifies the
+// interrupted-turn heuristic (forge sdkMessageParsing.ts:112-125):
+// subtype=error_during_execution + is_error=false + errors[] containing
+// "aborted" promotes stop_reason to "interrupted" and sets
+// meta.aborted=true.
+func TestParseResult_InterruptedMarksAbortedAndStopReason(t *testing.T) {
+	parser := NewParser()
+
+	// Seed an assistant id so we can also verify the id flows into meta.
+	if _, err := parser.ParseLine(testThread, []byte(`{"type":"assistant","message":{"id":"msg_x","role":"assistant","content":[{"type":"text","text":"working"}]}}`)); err != nil {
+		t.Fatalf("assistant: %v", err)
+	}
+
+	line := []byte(`{"type":"result","subtype":"error_during_execution","is_error":false,"errors":["user aborted the turn"],"duration_ms":999}`)
+	events, err := parser.ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("result: %v", err)
+	}
+	var turn provider.ProviderEvent
+	for _, evt := range events {
+		if evt.Kind == provider.EventTurnComplete {
+			turn = evt
+			break
+		}
+	}
+	if turn.Kind != provider.EventTurnComplete {
+		t.Fatalf("expected EventTurnComplete, got %+v", events)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(turn.Meta, &meta); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if meta["aborted"] != true {
+		t.Fatalf("meta.aborted: got %v, want true", meta["aborted"])
+	}
+	if meta["stop_reason"] != "interrupted" {
+		t.Fatalf("meta.stop_reason: got %v, want interrupted", meta["stop_reason"])
+	}
+	if meta["assistant_message_id"] != "msg_x" {
+		t.Fatalf("assistant_message_id: got %v, want msg_x", meta["assistant_message_id"])
+	}
+}
+
+// TestParseResult_NonMatchingErrorNoAbort — the `error_during_execution`
+// subtype alone is not enough to flag interrupted; the errors[] must
+// contain "aborted" or "interrupted".
+func TestParseResult_NonMatchingErrorNoAbort(t *testing.T) {
+	parser := NewParser()
+	line := []byte(`{"type":"result","subtype":"error_during_execution","is_error":false,"errors":["disk full"]}`)
+	events, err := parser.ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("result: %v", err)
+	}
+	var turn provider.ProviderEvent
+	for _, evt := range events {
+		if evt.Kind == provider.EventTurnComplete {
+			turn = evt
+			break
+		}
+	}
+	if turn.Kind != provider.EventTurnComplete {
+		t.Fatalf("expected EventTurnComplete, got %+v", events)
+	}
+	var meta map[string]any
+	_ = json.Unmarshal(turn.Meta, &meta)
+	if v, ok := meta["aborted"]; ok && v == true {
+		t.Fatalf("non-interrupt errors[] should not trigger aborted flag, got %v", v)
+	}
+}
+
+// TestParseResult_IsErrorTrueStillEmitsEventError — we preserve the
+// legacy "is_error=true" → EventError path so a real crash keeps
+// rendering as an error rather than a normal turn-complete.
+func TestParseResult_IsErrorTrueStillEmitsEventError(t *testing.T) {
+	parser := NewParser()
+	line := []byte(`{"type":"result","is_error":true,"error":"boom"}`)
+	events, err := parser.ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("result: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if events[0].Kind != provider.EventError {
+		t.Fatalf("Kind: got %q, want %q", events[0].Kind, provider.EventError)
+	}
+	if events[0].Content != "boom" {
+		t.Fatalf("Content: got %q, want boom", events[0].Content)
+	}
+}

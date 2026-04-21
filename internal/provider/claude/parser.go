@@ -19,9 +19,20 @@ import (
 // message so the complete-side event carries the same `is_background` hint
 // without re-parsing the original input.
 //
+// Correlation state is intentionally minimal. Two maps are enough:
+// `backgroundToolUses` tags tool_use ids started with
+// `run_in_background:true` so the immediate placeholder `tool_result`
+// can propagate `is_background:true` on its completion meta.
+// `taskToolUses` correlates `system/task_*` envelopes back to the
+// originating `tool_use_id`. Any dedup for
+// `EventBackgroundTaskTerminal` — both `task_updated` and TaskOutput
+// can arrive for the same task_id — is NOT the parser's job; triage's
+// `AppendCompletionItem` is idempotent. See
+// docs/architecture/turn-lifecycle.md §Task lifecycle.
+//
 // Parser is not safe for concurrent use — each Session owns one, and the
 // readLoop serializes line parsing. A zero-value Parser is valid; the
-// internal map lazily initialises on first write.
+// internal maps lazily initialise on first write.
 type Parser struct {
 	// backgroundToolUses flags tool_use IDs that were started with
 	// `run_in_background: true` so the matching tool_result event can be
@@ -29,22 +40,8 @@ type Parser struct {
 	backgroundToolUses map[string]bool
 	// taskToolUses correlates Claude background task lifecycle messages
 	// (task_started/task_updated/TaskOutput) back to the originating
-	// tool_use id so we can complete the right timeline row.
+	// tool_use id so we can target the right timeline row.
 	taskToolUses map[string]string
-	// completedTasks suppresses duplicate terminal task_updated events.
-	completedTasks map[string]struct{}
-	// taskOutputTasks suppresses duplicate TaskOutput terminal results and
-	// prevents a later task_updated from clobbering richer TaskOutput data.
-	taskOutputTasks map[string]struct{}
-	// completedToolUseIDs dedups parallel completion signals for the same
-	// background tool. Both `system/task_updated` (terminal status) and
-	// `system/task_notification` can carry a completion for the same task;
-	// whichever fires first emits EventToolComplete and records the
-	// tool_use_id here so the other is suppressed. The set is keyed by
-	// tool_use_id (not task_id) because task_notification carries the
-	// tool_use_id inline and so is self-sufficient even on a fresh adapter
-	// session with no task_id→tool_use_id mapping.
-	completedToolUseIDs map[string]struct{}
 	// streamBlockTypes tracks partial-message content block types by
 	// (parent_tool_use_id,index) so a later content_block_stop can identify
 	// which streaming block closed.
@@ -55,6 +52,15 @@ type Parser struct {
 	// the CLI rewrites the model mid-session (e.g. Sonnet → Opus auto-
 	// upgrade), the next init echo updates this field.
 	model string
+	// lastAssistantMessageID is the id of the most-recent `assistant`
+	// envelope's `message.id`. The `result` envelope does not carry this
+	// id, so we track it in-stream and stamp it onto
+	// `EventTurnComplete.Meta.assistant_message_id` so triage can write
+	// the `turns.assistant_message_id` column. Reset to "" inside
+	// `parseResult` after emission so it doesn't leak into the next turn.
+	// See docs/references/claude-wire.md §result and
+	// docs/architecture/turn-lifecycle.md §Turn lifecycle.
+	lastAssistantMessageID string
 }
 
 // SetModel primes the parser with the model id the session was started
@@ -87,41 +93,16 @@ func NewParser() *Parser {
 }
 
 // Close releases parser-owned maps. Called by Session.Close so the
-// `completedToolUseIDs` dedup set (and sibling background-task caches)
-// don't linger after the session ends. Calling Close on a zero-value
-// parser or twice is safe.
+// correlation maps don't linger after the session ends. Calling Close
+// on a zero-value parser or twice is safe.
 func (p *Parser) Close() {
 	if p == nil {
 		return
 	}
 	p.backgroundToolUses = nil
 	p.taskToolUses = nil
-	p.completedTasks = nil
-	p.taskOutputTasks = nil
-	p.completedToolUseIDs = nil
 	p.streamBlockTypes = nil
-}
-
-// markToolUseCompleted records that an EventToolComplete has already been
-// emitted for the given tool_use_id. Returns true only on the first call
-// for a given id — the caller emits the completion, adds to the set, and
-// subsequent calls (from the parallel task_notification signal) are
-// suppressed. Empty ids are ignored.
-func (p *Parser) markToolUseCompleted(toolUseID string) bool {
-	if toolUseID == "" {
-		return false
-	}
-	if p.completedToolUseIDs == nil {
-		p.completedToolUseIDs = make(map[string]struct{})
-	}
-	if _, ok := p.completedToolUseIDs[toolUseID]; ok {
-		return false
-	}
-	if len(p.completedToolUseIDs) >= parserTaskMapCap {
-		p.completedToolUseIDs = make(map[string]struct{})
-	}
-	p.completedToolUseIDs[toolUseID] = struct{}{}
-	return true
+	p.lastAssistantMessageID = ""
 }
 
 // ParseLine parses a single NDJSON line from Claude CLI stdout and returns
@@ -158,7 +139,7 @@ func (p *Parser) ParseLine(threadID string, line []byte) ([]provider.ProviderEve
 		// relying on the implicit signal at `result` (turn end).
 		return p.parseUser(threadID, raw, now, line)
 	case "result":
-		return parseResult(threadID, raw, now, line, p.currentModel())
+		return p.parseResult(threadID, raw, now, line)
 	case "stream_event":
 		return p.parseStreamEvent(threadID, raw, now)
 	case "control_request":
@@ -202,14 +183,13 @@ func (p *Parser) clearBackground(toolUseID string) {
 	delete(p.backgroundToolUses, toolUseID)
 }
 
-// parserTaskMapCap bounds the taskToolUses / completedTasks /
-// taskOutputTasks / completedToolUseIDs maps so an abandoned task — one
-// that never produces a matching clearTask — cannot grow the parser's
-// per-session state without bound. When the cap is hit the map is
-// replaced wholesale, which may re-emit a completion for an ancient
-// task; that is benign because the corresponding store row is already
-// terminal, and the cap is well above any realistic in-flight task
-// fan-out.
+// parserTaskMapCap bounds the taskToolUses map so an abandoned task —
+// one that never clears from the correlation table — cannot grow the
+// parser's per-session state without bound. When the cap is hit the
+// map is replaced wholesale, which may lose a late-arriving lookup
+// for an ancient task; that is benign because the corresponding store
+// row is already terminal, and the cap is well above any realistic
+// in-flight task fan-out.
 const parserTaskMapCap = 1024
 
 // parserStreamBlockCap bounds streamBlockTypes for the same reason —
@@ -239,61 +219,29 @@ func (p *Parser) taskToolUse(taskID string) string {
 	return p.taskToolUses[taskID]
 }
 
-func (p *Parser) clearTask(taskID string) {
-	if taskID == "" {
+// setLastAssistantMessageID remembers the id of the most recent
+// `assistant` envelope's `message.id`. Called from parse_assistant.go
+// on every assistant envelope so `parseResult` can include it on
+// `EventTurnComplete.Meta.assistant_message_id`. Empty input is
+// ignored so mid-stream content-only messages (no id) don't clobber
+// the stored id.
+func (p *Parser) setLastAssistantMessageID(id string) {
+	if p == nil || id == "" {
 		return
 	}
-	if p.taskToolUses != nil {
-		delete(p.taskToolUses, taskID)
-	}
-	if p.completedTasks != nil {
-		delete(p.completedTasks, taskID)
-	}
-	if p.taskOutputTasks != nil {
-		delete(p.taskOutputTasks, taskID)
-	}
+	p.lastAssistantMessageID = id
 }
 
-func (p *Parser) markTaskCompleted(taskID string) bool {
-	if taskID == "" {
-		return false
+// takeLastAssistantMessageID returns the last id tracked and clears
+// it. Called by `parseResult` at turn boundary so the id does not
+// leak from one turn to the next within the same session.
+func (p *Parser) takeLastAssistantMessageID() string {
+	if p == nil {
+		return ""
 	}
-	if p.completedTasks == nil {
-		p.completedTasks = make(map[string]struct{})
-	}
-	if _, ok := p.completedTasks[taskID]; ok {
-		return false
-	}
-	if len(p.completedTasks) >= parserTaskMapCap {
-		p.completedTasks = make(map[string]struct{})
-	}
-	p.completedTasks[taskID] = struct{}{}
-	return true
-}
-
-func (p *Parser) hasTaskOutput(taskID string) bool {
-	if taskID == "" || p.taskOutputTasks == nil {
-		return false
-	}
-	_, ok := p.taskOutputTasks[taskID]
-	return ok
-}
-
-func (p *Parser) markTaskOutput(taskID string) bool {
-	if taskID == "" {
-		return false
-	}
-	if p.taskOutputTasks == nil {
-		p.taskOutputTasks = make(map[string]struct{})
-	}
-	if _, ok := p.taskOutputTasks[taskID]; ok {
-		return false
-	}
-	if len(p.taskOutputTasks) >= parserTaskMapCap {
-		p.taskOutputTasks = make(map[string]struct{})
-	}
-	p.taskOutputTasks[taskID] = struct{}{}
-	return true
+	id := p.lastAssistantMessageID
+	p.lastAssistantMessageID = ""
+	return id
 }
 
 func (p *Parser) rememberStreamBlock(parentToolUseID string, index int, blockType string) {

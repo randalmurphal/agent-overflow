@@ -74,6 +74,17 @@ func (p *Parser) parseAssistant(threadID string, raw map[string]json.RawMessage,
 	// stays uniform.
 	_ = line
 
+	// Track the final assistant message id at the session level so the
+	// eventual `result` envelope (which does NOT carry this id) can
+	// emit it on EventTurnComplete.Meta.assistant_message_id. Only
+	// top-level assistant messages qualify — subagent Task messages
+	// carry `parent_tool_use_id`, and the final-text label we want
+	// here is the parent thread's. See
+	// docs/references/claude-wire.md §assistant.
+	if parentToolUseID == "" {
+		p.setLastAssistantMessageID(msg.ID)
+	}
+
 	var events []provider.ProviderEvent
 
 	for _, block := range msg.Content {

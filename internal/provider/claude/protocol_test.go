@@ -423,10 +423,14 @@ func TestParseLine_UserToolResultStructuredContent(t *testing.T) {
 	}
 }
 
-// TestParser_BackgroundToolUseSuppressesPlaceholderToolResult verifies the
-// Claude background ack path: the immediate user tool_result echo is
-// informational only and must NOT terminate the tool call.
-func TestParser_BackgroundToolUseSuppressesPlaceholderToolResult(t *testing.T) {
+// TestParser_BackgroundToolUsePlaceholderCarriesIsBackgroundMeta
+// verifies the universal tool-lifecycle invariant (invariant 20):
+// every `tool_result` — including the backgrounded placeholder —
+// emits exactly one `EventToolComplete`. The placeholder's completion
+// carries `is_background: true` in meta so triage keeps the launch
+// row at `status=running` per spec; the sibling `tool_completion`
+// row later lands via `EventBackgroundTaskTerminal`.
+func TestParser_BackgroundToolUsePlaceholderCarriesIsBackgroundMeta(t *testing.T) {
 	parser := NewParser()
 
 	startLine := []byte(`{"type":"assistant","message":{"id":"msg-1","role":"assistant","content":[{"type":"tool_use","id":"tool-bg","name":"Bash","input":{"command":"npm run dev","run_in_background":true}}]}}`)
@@ -450,8 +454,21 @@ func TestParser_BackgroundToolUseSuppressesPlaceholderToolResult(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse complete: %v", err)
 	}
-	if len(completeEvents) != 0 {
-		t.Fatalf("complete: expected 0 events, got %d", len(completeEvents))
+	if len(completeEvents) != 1 {
+		t.Fatalf("complete: expected 1 event, got %d", len(completeEvents))
+	}
+	if completeEvents[0].Kind != provider.EventToolComplete {
+		t.Fatalf("complete kind: got %q, want %q", completeEvents[0].Kind, provider.EventToolComplete)
+	}
+	if completeEvents[0].ItemID != "tool-bg" {
+		t.Fatalf("complete ItemID: got %q, want tool-bg", completeEvents[0].ItemID)
+	}
+	var completeMeta map[string]any
+	if err := json.Unmarshal(completeEvents[0].Meta, &completeMeta); err != nil {
+		t.Fatalf("unmarshal complete meta: %v", err)
+	}
+	if completeMeta["is_background"] != true {
+		t.Fatalf("complete: expected is_background=true, got %v", completeMeta["is_background"])
 	}
 }
 
@@ -511,10 +528,14 @@ func TestParser_ExitCodeSurfacedFromToolUseResult(t *testing.T) {
 	}
 }
 
-// TestParser_OutOfOrderToolResults covers a realistic mixed sequence where
-// the foreground tool result arrives before a background placeholder echo.
-// The foreground tool must still complete normally while the background ack
-// stays suppressed.
+// TestParser_OutOfOrderToolResults covers a mixed sequence: a
+// backgrounded Bash and an inline Read in the same assistant message,
+// with tool_result blocks arriving for the inline tool first. Under
+// the universal tool-lifecycle invariant both tool_use_ids receive an
+// EventToolComplete; the backgrounded placeholder carries
+// `is_background:true` in meta so triage keeps its launch row at
+// status=running (per spec), while the inline tool's completion has
+// no background flag.
 func TestParser_OutOfOrderToolResults(t *testing.T) {
 	parser := NewParser()
 
@@ -549,20 +570,31 @@ func TestParser_OutOfOrderToolResults(t *testing.T) {
 		completes[evt.ItemID] = meta
 	}
 
-	if len(completes) != 1 {
-		t.Fatalf("expected 1 EventToolComplete, got %d", len(completes))
+	if len(completes) != 2 {
+		t.Fatalf("expected 2 EventToolComplete (one per tool_use_id), got %d: %+v", len(completes), completes)
 	}
 
 	// tool-b was inline — no is_background flag.
 	if bgB, ok := completes["tool-b"]["is_background"]; ok && bgB == true {
 		t.Errorf("tool-b incorrectly marked background")
 	}
-	if _, ok := completes["tool-a"]; ok {
-		t.Fatalf("tool-a background placeholder should stay suppressed: %+v", completes["tool-a"])
+	// tool-a is the backgrounded placeholder — is_background must be true.
+	bgA, ok := completes["tool-a"]
+	if !ok {
+		t.Fatalf("expected a completion for backgrounded tool-a placeholder")
+	}
+	if bgA["is_background"] != true {
+		t.Errorf("tool-a expected is_background=true, got %v", bgA["is_background"])
 	}
 }
 
-func TestParser_TaskUpdatedTerminatesBackgroundTool(t *testing.T) {
+// TestParser_TaskUpdatedEmitsBackgroundTaskTerminal verifies that a
+// terminal `system/task_updated` emits `EventBackgroundTaskTerminal`
+// (NOT `EventToolComplete` — that event belongs to the tool
+// lifecycle and was already emitted by the placeholder echo). The
+// terminal carries `task_id`, the resolved `tool_use_id`, and the
+// normalized `status`.
+func TestParser_TaskUpdatedEmitsBackgroundTaskTerminal(t *testing.T) {
 	parser := NewParser()
 
 	if _, err := parser.ParseLine(testThreadProto, []byte(`{"type":"system","subtype":"task_started","task_id":"task-1","tool_use_id":"tool-bg"}`)); err != nil {
@@ -576,8 +608,8 @@ func TestParser_TaskUpdatedTerminatesBackgroundTool(t *testing.T) {
 	if len(events) != 1 {
 		t.Fatalf("expected 1 event, got %d", len(events))
 	}
-	if events[0].Kind != provider.EventToolComplete {
-		t.Fatalf("kind: got %q, want %q", events[0].Kind, provider.EventToolComplete)
+	if events[0].Kind != provider.EventBackgroundTaskTerminal {
+		t.Fatalf("kind: got %q, want %q", events[0].Kind, provider.EventBackgroundTaskTerminal)
 	}
 	if events[0].ItemID != "tool-bg" {
 		t.Fatalf("itemID: got %q, want %q", events[0].ItemID, "tool-bg")
@@ -592,12 +624,23 @@ func TestParser_TaskUpdatedTerminatesBackgroundTool(t *testing.T) {
 	if meta["task_id"] != "task-1" {
 		t.Fatalf("task_id: got %v, want task-1", meta["task_id"])
 	}
-	if meta["is_background"] != true {
-		t.Fatalf("is_background: got %v, want true", meta["is_background"])
+	if meta["tool_use_id"] != "tool-bg" {
+		t.Fatalf("tool_use_id: got %v, want tool-bg", meta["tool_use_id"])
+	}
+	if meta["status"] != "completed" {
+		t.Fatalf("status: got %v, want completed", meta["status"])
 	}
 }
 
-func TestParser_TaskOutputEnrichesBackgroundCompletionAfterTaskUpdated(t *testing.T) {
+// TestParser_TaskOutputEmitsOwnCompleteAndBackgroundTerminal verifies
+// the TaskOutput two-event shape: every `tool_result` — including
+// TaskOutput's own — emits an `EventToolComplete` for its own id
+// (invariant 20), AND when the block carries a terminal
+// `tool_use_result.task` it additionally emits
+// `EventBackgroundTaskTerminal` keyed to the backgrounded task's
+// original tool_use_id with the richer enrichment (output_file,
+// exit_code).
+func TestParser_TaskOutputEmitsOwnCompleteAndBackgroundTerminal(t *testing.T) {
 	parser := NewParser()
 
 	if _, err := parser.ParseLine(testThreadProto, []byte(`{"type":"system","subtype":"task_started","task_id":"task-1","tool_use_id":"tool-bg"}`)); err != nil {
@@ -615,17 +658,26 @@ func TestParser_TaskOutputEnrichesBackgroundCompletionAfterTaskUpdated(t *testin
 	if err != nil {
 		t.Fatalf("taskoutput result: %v", err)
 	}
-	if len(events) != 1 {
-		t.Fatalf("expected 1 event, got %d", len(events))
+	if len(events) != 2 {
+		t.Fatalf("expected 2 events (ToolComplete + BackgroundTaskTerminal), got %d: %+v", len(events), events)
 	}
+	// First: own-id EventToolComplete for TaskOutput's tool_use_id.
 	if events[0].Kind != provider.EventToolComplete {
-		t.Fatalf("kind: got %q, want %q", events[0].Kind, provider.EventToolComplete)
+		t.Fatalf("events[0].Kind: got %q, want %q", events[0].Kind, provider.EventToolComplete)
 	}
-	if events[0].ItemID != "tool-bg" {
-		t.Fatalf("itemID: got %q, want %q", events[0].ItemID, "tool-bg")
+	if events[0].ItemID != "tool-taskoutput" {
+		t.Fatalf("events[0].ItemID: got %q, want tool-taskoutput", events[0].ItemID)
+	}
+	// Second: EventBackgroundTaskTerminal carrying the backgrounded
+	// task's original tool_use_id and the richer enrichment payload.
+	if events[1].Kind != provider.EventBackgroundTaskTerminal {
+		t.Fatalf("events[1].Kind: got %q, want %q", events[1].Kind, provider.EventBackgroundTaskTerminal)
+	}
+	if events[1].ItemID != "tool-bg" {
+		t.Fatalf("events[1].ItemID: got %q, want tool-bg", events[1].ItemID)
 	}
 	var meta map[string]any
-	if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
+	if err := json.Unmarshal(events[1].Meta, &meta); err != nil {
 		t.Fatalf("unmarshal meta: %v", err)
 	}
 	if meta["output_file"] != "/tmp/task-1.out" {
@@ -634,19 +686,19 @@ func TestParser_TaskOutputEnrichesBackgroundCompletionAfterTaskUpdated(t *testin
 	if meta["exit_code"] != float64(0) {
 		t.Fatalf("exit_code: got %v, want 0", meta["exit_code"])
 	}
+	if meta["task_id"] != "task-1" {
+		t.Fatalf("task_id: got %v, want task-1", meta["task_id"])
+	}
 }
 
-// TestParser_TaskNotificationEmitsCompletionWhenNoTaskUpdated covers the
-// parallel-signal path: task_notification carries both task_id and
-// tool_use_id inline and is treated as a completion trigger when the
-// primary task_updated signal has not already fired. A later
-// task_updated for the same task must NOT double-complete (see the
-// dedup test below).
-func TestParser_TaskNotificationEmitsCompletionWhenNoTaskUpdated(t *testing.T) {
+// TestParser_TaskNotificationEmitsNoEvents verifies invariant 21:
+// `system/task_notification` is NOT a completion source and must emit
+// zero events. The authoritative task-terminal signals are
+// `system/task_updated` (basic) and TaskOutput `tool_use_result.task`
+// (enriched). See docs/references/claude-wire.md §task_notification.
+func TestParser_TaskNotificationEmitsNoEvents(t *testing.T) {
 	parser := NewParser()
 
-	// task_started records the mapping but also emits a meta-update
-	// EventToolStart so triage can persist task_id ↔ tool_use_id.
 	startEvents, err := parser.ParseLine(testThreadProto, []byte(`{"type":"system","subtype":"task_started","task_id":"task-1","tool_use_id":"tool-bg"}`))
 	if err != nil {
 		t.Fatalf("task_started: %v", err)
@@ -654,22 +706,13 @@ func TestParser_TaskNotificationEmitsCompletionWhenNoTaskUpdated(t *testing.T) {
 	if len(startEvents) != 1 || startEvents[0].Kind != provider.EventToolStart {
 		t.Fatalf("expected 1 EventToolStart from task_started, got %+v", startEvents)
 	}
-	if startEvents[0].ItemID != "tool-bg" {
-		t.Fatalf("task_started ItemID: got %q, want tool-bg", startEvents[0].ItemID)
-	}
 
 	events, err := parser.ParseLine(testThreadProto, []byte(`{"type":"system","subtype":"task_notification","task_id":"task-1","tool_use_id":"tool-bg","status":"completed","summary":"done"}`))
 	if err != nil {
 		t.Fatalf("task_notification: %v", err)
 	}
-	if len(events) != 1 {
-		t.Fatalf("expected 1 EventToolComplete from task_notification, got %d", len(events))
-	}
-	if events[0].Kind != provider.EventToolComplete {
-		t.Fatalf("kind: got %q, want %q", events[0].Kind, provider.EventToolComplete)
-	}
-	if events[0].ItemID != "tool-bg" {
-		t.Fatalf("ItemID: got %q, want tool-bg", events[0].ItemID)
+	if len(events) != 0 {
+		t.Fatalf("expected 0 events from task_notification (see invariant 21), got %d: %+v", len(events), events)
 	}
 }
 
@@ -728,11 +771,12 @@ func TestParser_TaskStartedSkipsWhenIDsAreEmpty(t *testing.T) {
 	}
 }
 
-// TestParser_FullTaskLifecycleEmitsSingleCompletion (Bug B happy path)
-// covers the canonical sequence — task_started, task_updated(completed),
-// then a delayed task_notification. The notification must dedup against
-// the already-emitted completion via completedToolUseIDs.
-func TestParser_FullTaskLifecycleEmitsSingleCompletion(t *testing.T) {
+// TestParser_FullTaskLifecycleEmitsSingleBackgroundTerminal covers
+// the canonical sequence — task_started (meta-only EventToolStart),
+// task_updated(completed) (one EventBackgroundTaskTerminal), then
+// task_notification (MUST drop). Any idempotent fold of later
+// terminals into the sibling row is triage's job.
+func TestParser_FullTaskLifecycleEmitsSingleBackgroundTerminal(t *testing.T) {
 	parser := NewParser()
 
 	if _, err := parser.ParseLine(testThreadProto, []byte(`{"type":"system","subtype":"task_started","task_id":"task-1","tool_use_id":"tool-bg"}`)); err != nil {
@@ -743,8 +787,8 @@ func TestParser_FullTaskLifecycleEmitsSingleCompletion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("task_updated: %v", err)
 	}
-	if len(updatedEvents) != 1 || updatedEvents[0].Kind != provider.EventToolComplete {
-		t.Fatalf("task_updated: expected 1 EventToolComplete, got %+v", updatedEvents)
+	if len(updatedEvents) != 1 || updatedEvents[0].Kind != provider.EventBackgroundTaskTerminal {
+		t.Fatalf("task_updated: expected 1 EventBackgroundTaskTerminal, got %+v", updatedEvents)
 	}
 
 	notifyEvents, err := parser.ParseLine(testThreadProto, []byte(`{"type":"system","subtype":"task_notification","task_id":"task-1","tool_use_id":"tool-bg","status":"completed","summary":"dup"}`))
@@ -752,16 +796,17 @@ func TestParser_FullTaskLifecycleEmitsSingleCompletion(t *testing.T) {
 		t.Fatalf("task_notification: %v", err)
 	}
 	if len(notifyEvents) != 0 {
-		t.Fatalf("expected 0 events from duplicate task_notification, got %+v", notifyEvents)
+		t.Fatalf("expected 0 events from task_notification (invariant 21), got %+v", notifyEvents)
 	}
 }
 
-// TestParser_TaskUpdatedAloneEmitsCompletion (Bug B) covers the fresh-
-// session variant: no task_started is ever observed, so the adapter's
-// in-memory map is empty. task_updated carries only task_id inline —
-// the adapter emits an EventToolComplete with empty ItemID and
-// Meta.task_id so triage can resolve the row via items.meta.
-func TestParser_TaskUpdatedAloneEmitsCompletion(t *testing.T) {
+// TestParser_TaskUpdatedAloneEmitsBackgroundTerminal covers the
+// fresh-session variant: no task_started is ever observed, so the
+// adapter's in-memory map is empty. task_updated carries only task_id
+// inline — the adapter emits an EventBackgroundTaskTerminal with
+// empty ItemID and Meta.task_id so triage can resolve the row via
+// items.meta.task_id.
+func TestParser_TaskUpdatedAloneEmitsBackgroundTerminal(t *testing.T) {
 	parser := NewParser()
 
 	events, err := parser.ParseLine(testThreadProto, []byte(`{"type":"system","subtype":"task_updated","task_id":"task-lost","patch":{"status":"completed","description":"done"}}`))
@@ -769,10 +814,10 @@ func TestParser_TaskUpdatedAloneEmitsCompletion(t *testing.T) {
 		t.Fatalf("task_updated: %v", err)
 	}
 	if len(events) != 1 {
-		t.Fatalf("expected 1 EventToolComplete, got %d", len(events))
+		t.Fatalf("expected 1 EventBackgroundTaskTerminal, got %d", len(events))
 	}
-	if events[0].Kind != provider.EventToolComplete {
-		t.Fatalf("kind: got %q, want %q", events[0].Kind, provider.EventToolComplete)
+	if events[0].Kind != provider.EventBackgroundTaskTerminal {
+		t.Fatalf("kind: got %q, want %q", events[0].Kind, provider.EventBackgroundTaskTerminal)
 	}
 	if events[0].ItemID != "" {
 		t.Fatalf("ItemID: got %q, want empty (triage resolves via meta.task_id)", events[0].ItemID)
@@ -784,42 +829,43 @@ func TestParser_TaskUpdatedAloneEmitsCompletion(t *testing.T) {
 	if meta["task_id"] != "task-lost" {
 		t.Fatalf("meta.task_id: got %v, want task-lost", meta["task_id"])
 	}
+	if _, ok := meta["tool_use_id"]; ok {
+		t.Fatalf("tool_use_id should be absent when map is empty, got %v", meta["tool_use_id"])
+	}
 }
 
-// TestParser_TaskNotificationAloneEmitsCompletion (Bug B) covers the
-// other half of the fresh-session variant — task_started never fired,
-// task_updated was missed (event-queue drop), and the notification
-// signal arrives. Because task_notification carries tool_use_id inline
-// it is self-sufficient: the adapter emits a completion keyed on that id.
-func TestParser_TaskNotificationAloneEmitsCompletion(t *testing.T) {
+// TestParser_TaskNotificationOnlyFiresNoTerminal is the reinforcement
+// case for invariant 21: even when task_notification is the ONLY
+// terminal signal seen (e.g. task_updated was dropped), the parser
+// emits nothing. Triage's force-close safety net or the idempotent
+// upsert by a later replay will handle the row eventually.
+func TestParser_TaskNotificationOnlyFiresNoTerminal(t *testing.T) {
 	parser := NewParser()
 
 	events, err := parser.ParseLine(testThreadProto, []byte(`{"type":"system","subtype":"task_notification","task_id":"task-x","tool_use_id":"tool-bg-x","status":"completed","summary":"cleaned"}`))
 	if err != nil {
 		t.Fatalf("task_notification: %v", err)
 	}
-	if len(events) != 1 {
-		t.Fatalf("expected 1 EventToolComplete, got %d", len(events))
+	if len(events) != 0 {
+		t.Fatalf("expected 0 events from task_notification (invariant 21), got %+v", events)
 	}
-	if events[0].ItemID != "tool-bg-x" {
-		t.Fatalf("ItemID: got %q, want tool-bg-x", events[0].ItemID)
-	}
-	// A subsequent task_updated for the same task must NOT emit a
-	// second completion — the notification has already deduped it.
-	dupEvents, err := parser.ParseLine(testThreadProto, []byte(`{"type":"system","subtype":"task_updated","task_id":"task-x","patch":{"status":"completed"}}`))
+
+	// A subsequent task_updated for the same task DOES emit the
+	// terminal — notification did not suppress it.
+	terminalEvents, err := parser.ParseLine(testThreadProto, []byte(`{"type":"system","subtype":"task_updated","task_id":"task-x","patch":{"status":"completed"}}`))
 	if err != nil {
 		t.Fatalf("task_updated: %v", err)
 	}
-	if len(dupEvents) != 0 {
-		t.Fatalf("expected 0 events from duplicate task_updated after notification, got %+v", dupEvents)
+	if len(terminalEvents) != 1 || terminalEvents[0].Kind != provider.EventBackgroundTaskTerminal {
+		t.Fatalf("expected 1 EventBackgroundTaskTerminal from task_updated, got %+v", terminalEvents)
 	}
 }
 
-// TestParser_TaskNotificationFirstThenUpdatedIsDeduped (Bug B) reverses
-// the arrival order: notification fires first (with both ids), then
-// task_updated arrives. The completion must fire once total — the
-// update is suppressed by the completedTasks / completedToolUseIDs sets.
-func TestParser_TaskNotificationFirstThenUpdatedIsDeduped(t *testing.T) {
+// TestParser_TaskNotificationFirstThenUpdatedEmitsTerminal reverses
+// the arrival order: notification fires first (dropped), then
+// task_updated arrives. The terminal fires on task_updated, not
+// blocked by the earlier notification.
+func TestParser_TaskNotificationFirstThenUpdatedEmitsTerminal(t *testing.T) {
 	parser := NewParser()
 
 	if _, err := parser.ParseLine(testThreadProto, []byte(`{"type":"system","subtype":"task_started","task_id":"t1","tool_use_id":"tu1"}`)); err != nil {
@@ -830,22 +876,24 @@ func TestParser_TaskNotificationFirstThenUpdatedIsDeduped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("task_notification: %v", err)
 	}
-	if len(notifyEvents) != 1 {
-		t.Fatalf("expected 1 EventToolComplete from first-arriving notification, got %d", len(notifyEvents))
+	if len(notifyEvents) != 0 {
+		t.Fatalf("expected 0 events from task_notification (invariant 21), got %+v", notifyEvents)
 	}
 
 	updatedEvents, err := parser.ParseLine(testThreadProto, []byte(`{"type":"system","subtype":"task_updated","task_id":"t1","patch":{"status":"completed"}}`))
 	if err != nil {
 		t.Fatalf("task_updated: %v", err)
 	}
-	if len(updatedEvents) != 0 {
-		t.Fatalf("expected 0 events from duplicate task_updated, got %+v", updatedEvents)
+	if len(updatedEvents) != 1 || updatedEvents[0].Kind != provider.EventBackgroundTaskTerminal {
+		t.Fatalf("expected 1 EventBackgroundTaskTerminal from task_updated, got %+v", updatedEvents)
 	}
 }
 
-// TestParser_CloseClearsState verifies Parser.Close empties the dedup
-// sets. Required so completedToolUseIDs does not leak across session
-// teardown / restart within the same parser instance.
+// TestParser_CloseClearsState verifies Parser.Close empties the
+// correlation maps so they don't leak across session teardown / restart
+// within the same parser instance. Post-refactor the parser only
+// holds backgroundToolUses, taskToolUses, streamBlockTypes and
+// lastAssistantMessageID — no dedup sets.
 func TestParser_CloseClearsState(t *testing.T) {
 	parser := NewParser()
 
@@ -855,12 +903,30 @@ func TestParser_CloseClearsState(t *testing.T) {
 	if _, err := parser.ParseLine(testThreadProto, []byte(`{"type":"system","subtype":"task_updated","task_id":"task-close","patch":{"status":"completed"}}`)); err != nil {
 		t.Fatalf("task_updated: %v", err)
 	}
+	// Prime lastAssistantMessageID so we can see it clear.
+	if _, err := parser.ParseLine(testThreadProto, []byte(`{"type":"assistant","message":{"id":"msg-pre","role":"assistant","content":[{"type":"text","text":"hi"}]}}`)); err != nil {
+		t.Fatalf("assistant: %v", err)
+	}
+	if parser.lastAssistantMessageID != "msg-pre" {
+		t.Fatalf("precondition: lastAssistantMessageID = %q, want msg-pre", parser.lastAssistantMessageID)
+	}
 
-	// Before Close, a duplicate task_updated should be suppressed.
 	parser.Close()
 
-	// After Close, all dedup state is gone. A fresh task_started with
-	// the same id must succeed (no lingering "already completed").
+	if parser.lastAssistantMessageID != "" {
+		t.Errorf("lastAssistantMessageID after Close: got %q, want empty", parser.lastAssistantMessageID)
+	}
+	if parser.backgroundToolUses != nil {
+		t.Errorf("backgroundToolUses after Close: got %v, want nil", parser.backgroundToolUses)
+	}
+	if parser.taskToolUses != nil {
+		t.Errorf("taskToolUses after Close: got %v, want nil", parser.taskToolUses)
+	}
+	if parser.streamBlockTypes != nil {
+		t.Errorf("streamBlockTypes after Close: got %v, want nil", parser.streamBlockTypes)
+	}
+
+	// A fresh task_started after Close still emits normally.
 	events, err := parser.ParseLine(testThreadProto, []byte(`{"type":"system","subtype":"task_started","task_id":"task-close","tool_use_id":"tool-close"}`))
 	if err != nil {
 		t.Fatalf("task_started after close: %v", err)

@@ -148,6 +148,23 @@ const (
 	EventContentBlockStart EventKind = "content_block_start"
 	EventContentBlockStop  EventKind = "content_block_stop"
 
+	// EventBackgroundTaskTerminal is the additive Claude-only task-lifecycle
+	// terminal signal, emitted when `system/task_updated` lands with a
+	// terminal `patch.status` OR when a TaskOutput `tool_use_result.task`
+	// carries a terminal status. It NEVER replaces the tool-lifecycle
+	// `EventToolComplete` for the original backgrounded tool_use_id —
+	// it layers a richer sibling `tool_completion` row on top. See
+	// docs/architecture/turn-lifecycle.md §Task lifecycle and
+	// docs/architecture/invariants.md invariant 20.
+	EventBackgroundTaskTerminal EventKind = "tool.background_task_terminal"
+
+	// EventSubagentNotification is a reserved Codex-only event kind for
+	// future `<subagent_notification>` surfacing. Not currently emitted
+	// by any parser — reserved so the frontend can opt into handling it
+	// ahead of the emission being wired. See
+	// docs/archive/turn-lifecycle-refactor-plan.md WT-codex-parser.
+	EventSubagentNotification EventKind = "subagent_notification"
+
 	// Heavy events — persisted to SQLite, meta emitted to frontend.
 	EventDiff          EventKind = "diff"
 	EventCommandOutput EventKind = "command_output"
@@ -178,6 +195,8 @@ var AllEventKinds = []EventKind{
 	EventThreadRenamed,
 	EventContentBlockStart,
 	EventContentBlockStop,
+	EventBackgroundTaskTerminal,
+	EventSubagentNotification,
 	EventDiff,
 	EventCommandOutput,
 	EventThinking,
