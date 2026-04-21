@@ -152,7 +152,6 @@ export {
 // Structured response types surfaced to components.
 export {
   ThreadMessageHit,
-  PagedItems,
 } from '../../../bindings/agent-overflow/internal/store/models.js';
 export {
   GeneratedCommitMessage,

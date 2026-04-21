@@ -90,10 +90,21 @@
     return rootTurnIndex(current) !== rootTurnIndex(next);
   }
 
+  /**
+   * Suppress the "stick to bottom" auto-scroll while a Load Older
+   * round-trip is in flight. Without this, a short thread whose whole
+   * window fits in the viewport keeps `userNearBottom` true throughout
+   * the prepend. When items.length grows, the effect would scroll the
+   * container to the new bottom a frame after our handleLoadOlder
+   * delta-apply — snapping the user past the newly revealed history.
+   */
+  let suppressBottomAutoScroll = $state(false);
+
   // Auto-scroll only when the user is already near the bottom.
   $effect(() => {
     pane.items.length;
 
+    if (suppressBottomAutoScroll) return;
     if (scrollContainer && userNearBottom) {
       requestAnimationFrame(() => {
         if (!scrollContainer) return;
@@ -108,33 +119,41 @@
    * to prepend + rebuild turn diff views, then await a tick so the DOM
    * reflects the new rows. The growth delta is re-applied to scrollTop
    * so the row the user was reading stays at the same viewport
-   * position. `userNearBottom` can't flip during the capture window —
-   * the click originates from the top of the container — so the
-   * auto-scroll-to-bottom effect stays dormant throughout.
+   * position. `suppressBottomAutoScroll` is raised across the await so
+   * the near-bottom auto-scroll effect can't fire on the
+   * items-length-change and snap past the newly revealed rows — short
+   * threads whose window already fits the viewport would otherwise
+   * keep `userNearBottom` true throughout the prepend.
    */
   async function handleLoadOlder(): Promise<void> {
     if (!scrollContainer) return;
     const prevScrollHeight = scrollContainer.scrollHeight;
     const prevScrollTop = scrollContainer.scrollTop;
-    await pane.loadOlder();
-    await tick();
-    if (!scrollContainer) return;
-    const delta = scrollContainer.scrollHeight - prevScrollHeight;
-    scrollContainer.scrollTop = prevScrollTop + delta;
+    suppressBottomAutoScroll = true;
+    try {
+      await pane.loadOlder();
+      await tick();
+      if (!scrollContainer) return;
+      const delta = scrollContainer.scrollHeight - prevScrollHeight;
+      scrollContainer.scrollTop = prevScrollTop + delta;
+    } finally {
+      suppressBottomAutoScroll = false;
+    }
   }
 
   /**
-   * Scroll the timeline to the inline row for `id`. Called directly by
-   * BackgroundTaskTray (spec: docs/architecture/chat-rewrite.md "Tray
-   * rows … Clicking a tray row scrolls/expands the corresponding
-   * inline item") and indirectly via `pane.requestScrollToItem` for
-   * search hits, plan sidebar rows, and plan follow-up banners. The
-   * target item may live below the loaded window; we ask the pane to
-   * page back until it's in view before querying the DOM. A `false`
-   * return from `loadUntilItem` means the backend couldn't find the
-   * item on this thread — surface a toast instead of silently failing.
+   * Scroll the timeline to the inline row for `id`. Invoked only by
+   * the `scrollToItemRequest` $effect below — external callers publish
+   * the intent through `pane.requestScrollToItem` (search hits, plan
+   * sidebar rows, tray rows, plan follow-up banners) so the DOM
+   * operation stays inside the component that owns the scroll
+   * container. The target may live below the loaded window; we ask
+   * the pane to page back until it's in view before querying the DOM.
+   * A `false` return from `loadUntilItem` means the backend couldn't
+   * find the item on this thread — surface a toast instead of
+   * silently failing.
    */
-  export async function scrollToItem(id: string): Promise<void> {
+  async function scrollToItem(id: string): Promise<void> {
     if (!scrollContainer || !id) return;
     const found = await pane.loadUntilItem(id);
     if (!scrollContainer) return;

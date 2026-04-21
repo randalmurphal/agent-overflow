@@ -379,7 +379,12 @@ func TestPickInitialFloorTurn_IncludesActiveTurnWithNoItems(t *testing.T) {
 	if floor > 0 {
 		t.Errorf("floor: got %d, want <= 0 so active turn 1 is covered", floor)
 	}
-	_ = hasMore
+	// The window loaded every turn this thread has. Nothing older exists,
+	// so `hasMore` must be false — the Load Older button would lie
+	// otherwise. Assert it rather than discarding the return value.
+	if hasMore {
+		t.Error("hasMore: got true, want false (every turn is inside the window)")
+	}
 }
 
 func TestPickInitialFloorTurn_BurstyThread(t *testing.T) {

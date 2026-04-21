@@ -17,6 +17,13 @@
   // plan-bearing tool row — i.e. the agent has finished proposing and is
   // waiting on the user. If any subsequent message/tool result has landed, the
   // user has clearly moved on.
+  //
+  // Invariant: the windowed pane always loads every turn from its floor
+  // through the most recent — the tail of `pane.items` is therefore the
+  // thread's tail, never a mid-window cut-off. Tail-based checks here
+  // stay correct under paging because loadOlder only prepends. If that
+  // invariant ever changes, this derivation must switch to a dedicated
+  // backend binding (mirror PlanSidebar).
   let latestItem = $derived(pane.items.length > 0 ? pane.items[pane.items.length - 1] : null);
   let latestPlanItemId = $derived(
     latestItem && latestItem.payloadKind === 'proposed_plan' ? latestItem.id : null,

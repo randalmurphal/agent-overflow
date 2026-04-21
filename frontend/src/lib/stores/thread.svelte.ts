@@ -437,7 +437,9 @@ export function createThreadPane() {
       hasMoreHistory = false;
       loadingOlder = false;
       pagingGeneration = 0;
-      scrollToItemRequest = { itemId: '', nonce: 0 };
+      // scrollToItemRequest.nonce is kept monotonically increasing for
+      // the pane's lifetime so MessageTimeline's lastHandledScrollNonce
+      // can't miss an intent by seeing a lower number after a switch.
 
       thread = newThread;
       // Capture the switch generation at the top so every await below can bail
@@ -526,7 +528,8 @@ export function createThreadPane() {
       hasMoreHistory = false;
       loadingOlder = false;
       pagingGeneration = 0;
-      scrollToItemRequest = { itemId: '', nonce: 0 };
+      // See switchThread: the scroll nonce stays monotonic across thread
+      // changes so no consumer observes a regressed counter.
       diffPanel.clearForThread();
       // Invalidate any in-flight switchThread so its late resolutions can't
       // repopulate the pane we just cleared.
@@ -560,9 +563,20 @@ export function createThreadPane() {
           items = [...prepend, ...items];
           rebuildTurnDiffViews(items);
         }
-        oldestLoadedTurnIndex =
+        const nextFloor =
           paged.oldestTurnIndex >= 0 ? paged.oldestTurnIndex : floor;
-        hasMoreHistory = paged.hasMore ?? false;
+        oldestLoadedTurnIndex = nextFloor;
+        // Progress guard. If the backend returned no items AND the floor
+        // didn't decrease, another click would fire the same query for
+        // the same range. Force hasMore=false so the UI stops offering a
+        // button that can't actually load anything. A later in-flight
+        // upsert that lands an older item will re-enable paging through
+        // the normal streaming path.
+        if (prepend.length === 0 && nextFloor >= floor) {
+          hasMoreHistory = false;
+        } else {
+          hasMoreHistory = paged.hasMore ?? false;
+        }
       } catch (err) {
         if (gen !== switchGeneration || pageGen !== pagingGeneration) return;
         console.error('loadOlder failed:', err);
@@ -605,6 +619,10 @@ export function createThreadPane() {
       }
       if (gen !== switchGeneration || pageGen !== pagingGeneration) return false;
       if (!fetched || !fetched.id) return false;
+      // Defense-in-depth: the backend already filters by threadId, but a
+      // mislayered binding or a future cache that returns stale rows
+      // shouldn't cross-pollute between panes.
+      if (fetched.threadId !== currentThread.id) return false;
 
       // Race: another upsert or loadOlder might have pulled the item in
       // between our check and the backend round-trip. Re-check before
@@ -612,7 +630,12 @@ export function createThreadPane() {
       if (items.some((it) => it.id === itemID)) return true;
 
       const currentFloor = oldestLoadedTurnIndex;
-      if (currentFloor !== null && fetched.turnIndex >= currentFloor) return true;
+      if (currentFloor !== null && fetched.turnIndex >= currentFloor) {
+        // Nominally in-window per the floor invariant. Double-check the
+        // in-memory state in case an upsert got dropped — never claim
+        // success without a row the DOM can actually scroll to.
+        return items.some((it) => it.id === itemID);
+      }
 
       // Load every turn from the target's turn index up through the
       // existing floor. A single ListItemsBeforeTurn with a turnLimit

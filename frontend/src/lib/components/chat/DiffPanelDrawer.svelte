@@ -8,24 +8,17 @@
     CheckpointUnavailableEvent,
   } from '../../types/checkpoint';
   import type { DiffPanelSource, TurnCompareMode } from '../../stores/diffPanel.svelte';
-  import { ListThreadDiffPayloads, RevertToTurn } from '../../stores/bindings';
-  import type { Item } from '../../types/models';
+  import { RevertToTurn } from '../../stores/bindings';
   import type { RevertMode } from '../../types/checkpoint';
   import { addToast } from '../../stores/toast.svelte';
   import RevertDialog from './diff-panel/RevertDialog.svelte';
   import { getSettings, updateSetting } from '../../stores/settings.svelte';
-  import {
-    selectAgentDiffEntries,
-    summarizeEntries,
-    type AgentDiffEntry,
-    type DiffStats,
-  } from '../../utils/diffAggregation';
-  import { debounce } from '../../utils/debounce';
   import CumulativeView from './diff-panel/CumulativeView.svelte';
   import ErrorBanner from './diff-panel/ErrorBanner.svelte';
   import PanelHeader from './diff-panel/PanelHeader.svelte';
   import TurnDiffView from './diff-panel/TurnDiffView.svelte';
   import WorkingTreeView from './diff-panel/WorkingTreeView.svelte';
+  import { createCumulativeDiffItems } from './diff-panel/cumulativeDiffItems.svelte';
   import { createDiffPanelSources } from './diff-panel/diffPanelSources.svelte';
   import { selectTurnForKey } from './diff-panel/diffPanelKeyboard';
 
@@ -35,48 +28,17 @@
 
   let { pane }: Props = $props();
 
-  const REFRESH_DEBOUNCE_MS = 100;
-
   const store = $derived(pane.diffPanel);
   const threadId = $derived(pane.thread?.id ?? null);
 
   // Cumulative diff state is sourced from ListThreadDiffPayloads — a
   // dedicated backend binding that returns every diff- or tool_result-
   // kind item for the thread, independent of the pane's loaded window.
-  // Without this we'd under-report any diffs that live in paged-out
-  // history.
-  let diffItems: Item[] = $state([]);
-  let cumulativeEntries = $derived<AgentDiffEntry[]>(selectAgentDiffEntries(diffItems));
-  let cumulativeStats = $derived<DiffStats>(summarizeEntries(cumulativeEntries, diffItems));
-
-  let fetchSeq = 0;
-  async function refreshDiffItems(): Promise<void> {
-    const id = threadId;
-    const seq = ++fetchSeq;
-    if (!id) {
-      diffItems = [];
-      return;
-    }
-    try {
-      const items = (await ListThreadDiffPayloads(id)) as Item[] | null;
-      if (seq !== fetchSeq) return;
-      diffItems = items ?? [];
-    } catch (err) {
-      if (seq !== fetchSeq) return;
-      console.error('DiffPanelDrawer: ListThreadDiffPayloads failed:', err);
-      diffItems = [];
-    }
-  }
-
-  const debouncedRefresh = debounce(() => { void refreshDiffItems(); }, REFRESH_DEBOUNCE_MS);
-
-  // Initial + on-thread-switch fetch.
-  $effect(() => {
-    threadId;
-    void refreshDiffItems();
+  // The factory owns the fetch/debounce/subscribe wiring so this file
+  // stays focused on panel composition.
+  const cumulative = createCumulativeDiffItems({
+    getThreadId: () => pane.thread?.id ?? null,
   });
-
-  let cancelItemUpsertDiff: (() => void) | null = null;
 
   // pane.diffPanel is stable for the lifetime of the pane (created once in
   // createThreadPane and reset internally), so passing the initial reference
@@ -87,7 +49,7 @@
   const sources = createDiffPanelSources({
     getThreadId: () => pane.thread?.id ?? null,
     store: diffPanelStore,
-    getCumulativeEntries: () => cumulativeEntries,
+    getCumulativeEntries: () => cumulative.entries,
   });
 
   // Active-tab derivation stays in sync with the store.
@@ -214,15 +176,6 @@
       store.setError(`Checkpoint capture failed (turn ${payload.turnIndex}): ${payload.error}`);
     });
 
-    // Refresh the cumulative diff list when new diff- or tool_result-kind
-    // items land. The 100 ms debounce collapses the burst of upserts a
-    // single tool_call → tool_completion pair produces into one query.
-    cancelItemUpsertDiff = wailsEventOn<Item>('provider:item_upsert', (item) => {
-      if (!item || item.threadId !== threadId) return;
-      if (item.payloadKind !== 'diff' && item.payloadKind !== 'tool_result') return;
-      debouncedRefresh();
-    });
-
     window.addEventListener('keydown', handleKeydown);
     void sources.refreshCheckpoints();
   });
@@ -231,8 +184,6 @@
     cancelCaptured?.();
     cancelUnavailable?.();
     cancelError?.();
-    cancelItemUpsertDiff?.();
-    debouncedRefresh.cancel();
     window.removeEventListener('keydown', handleKeydown);
   });
 
@@ -321,7 +272,7 @@
     <CumulativeView
       loading={sources.cumulativeLoading}
       diffText={sources.cumulativeText}
-      stats={cumulativeStats}
+      stats={cumulative.stats}
       onRefresh={() => void sources.loadCumulativeDiff(true)}
     />
   {/if}

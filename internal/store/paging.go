@@ -20,17 +20,18 @@ type PagedItems struct {
 
 // ancestorCTE is the recursive common table expression used by every paged
 // items query to pull in subagent parents that live below the requested
-// floor. Matches migrate.go's idx_items_parent partial index so each
-// iteration is an index seek. Placeholders in order:
+// floor. The seed scan filters items by thread+turn range and uses
+// migrate.go's idx_items_parent partial index to find the distinct parent
+// ids; the recursive step seeks on the items primary-key id to walk up
+// each parent edge. Both hops are index-driven. Placeholders in order:
 //
-//	1. thread_id  (seed)
-//	2. floorTurnIndex (seed: turn_index >= floor)
-//	3. upperBound (seed: turn_index < upper) — when the caller wants a
-//	   bounded range; pass a sentinel like math.MaxInt for open-ended
-//	   initial loads to behave like an unbounded upper.
+//	1. thread_id       (seed)
+//	2. floorTurnIndex  (seed: turn_index >= floor)
+//	3. upperBound      (seed: turn_index < upper) — when the caller wants
+//	   a bounded range; pass openUpperBound for open-ended initial loads.
 //
-// The recursive step walks up parent edges unconditionally. Items without
-// a parent_id are filtered at each step so the walk terminates.
+// Items without a parent_id are filtered at each step so the walk
+// terminates.
 const ancestorCTE = `WITH RECURSIVE ancestors(id) AS (
     SELECT DISTINCT parent_id FROM items
      WHERE thread_id = ?
@@ -44,8 +45,9 @@ const ancestorCTE = `WITH RECURSIVE ancestors(id) AS (
 )`
 
 // openUpperBound is the sentinel upper-turn bound used by queries that
-// want "all turns at or above floor." Equal to math.MaxInt32 which is
-// larger than any real turn_index under SQLite's INTEGER CHECK constraint.
+// want "all turns at or above floor." 2^31 is larger than any practical
+// turn_index — the schema only enforces CHECK(turn_index >= 0), so this
+// isn't a hard cap, just a safe ceiling past anything realistic.
 const openUpperBound = int64(1 << 31)
 
 // ListRecentItemsWithAncestors loads every item for the thread whose
@@ -59,11 +61,11 @@ const openUpperBound = int64(1 << 31)
 // turn_index) to load the entire thread. Empty threads return
 // PagedItems{Items: nil, OldestTurnIndex: -1, HasMore: false}.
 func (s *Store) ListRecentItemsWithAncestors(threadID string, floorTurnIndex int) (PagedItems, error) {
-	items, err := s.queryItemsWithAncestors(threadID, int64(floorTurnIndex), openUpperBound, floorTurnIndex)
+	items, err := s.queryPagedItems(threadID, int64(floorTurnIndex), openUpperBound, floorTurnIndex)
 	if err != nil {
 		return PagedItems{}, err
 	}
-	return s.finalizePagedItems(threadID, items, floorTurnIndex)
+	return s.finalizePagedItems(threadID, items)
 }
 
 // ListItemsBeforeTurn loads the next `turnLimit` turns strictly below
@@ -74,20 +76,15 @@ func (s *Store) ListRecentItemsWithAncestors(threadID string, floorTurnIndex int
 //
 // `beforeTurnIndex` is exclusive — callers pass their current floor and
 // get back items for turns strictly below it. `turnLimit` is the maximum
-// number of distinct turn_index values to pull in; zero or negative
-// returns PagedItems{Items: nil, OldestTurnIndex: beforeTurnIndex - 1,
-// HasMore: probeHasMore(...)} so callers can still refresh the hasMore
-// signal cheaply.
+// number of distinct turn_index values to pull in; a non-positive value
+// is treated as "nothing to load" and returns an empty page.
 //
-// Returns PagedItems.OldestTurnIndex = -1 and HasMore = false when no
-// older turns exist.
+// Returns PagedItems{Items: []Item{}, OldestTurnIndex: -1, HasMore: false}
+// when no older turns exist or turnLimit is non-positive.
 func (s *Store) ListItemsBeforeTurn(threadID string, beforeTurnIndex, turnLimit int) (PagedItems, error) {
+	empty := PagedItems{Items: []Item{}, OldestTurnIndex: -1, HasMore: false}
 	if turnLimit <= 0 {
-		hasMore, err := s.hasOlderTurns(threadID, beforeTurnIndex)
-		if err != nil {
-			return PagedItems{}, err
-		}
-		return PagedItems{Items: nil, OldestTurnIndex: -1, HasMore: hasMore}, nil
+		return empty, nil
 	}
 
 	newFloor, ok, err := s.floorTurnIndexBefore(threadID, beforeTurnIndex, turnLimit)
@@ -95,8 +92,7 @@ func (s *Store) ListItemsBeforeTurn(threadID string, beforeTurnIndex, turnLimit 
 		return PagedItems{}, err
 	}
 	if !ok {
-		// No older turns exist at all — return an empty page.
-		return PagedItems{Items: nil, OldestTurnIndex: -1, HasMore: false}, nil
+		return empty, nil
 	}
 
 	// Constrain ancestors to those strictly below newFloor so items that
@@ -145,7 +141,7 @@ func (s *Store) queryPagedItems(threadID string, floor, upper int64, ancestorCut
 	}
 	defer rows.Close()
 
-	var items []Item
+	items := []Item{}
 	for rows.Next() {
 		it, err := scanItemRow(rows)
 		if err != nil {
@@ -159,20 +155,12 @@ func (s *Store) queryPagedItems(threadID string, floor, upper int64, ancestorCut
 	return items, nil
 }
 
-// queryItemsWithAncestors is a thin wrapper for the initial-load case
-// where the ancestor cutoff equals the floor. Kept separate so the call
-// sites read at the level of intent ("load from floor up") rather than
-// the internal bound mechanics.
-func (s *Store) queryItemsWithAncestors(threadID string, floor, upper int64, ancestorCutoff int) ([]Item, error) {
-	return s.queryPagedItems(threadID, floor, upper, ancestorCutoff)
-}
-
 // finalizePagedItems attaches OldestTurnIndex + HasMore to an items
-// slice so the two entry points (ListRecentItemsWithAncestors + the
-// "whole-thread" initial-load helper) share the same construction.
-func (s *Store) finalizePagedItems(threadID string, items []Item, floorTurnIndex int) (PagedItems, error) {
+// slice for the initial-load entry point. Empty results yield a stable
+// empty slice so the JSON response shape matches the paged-load branch.
+func (s *Store) finalizePagedItems(threadID string, items []Item) (PagedItems, error) {
 	if len(items) == 0 {
-		return PagedItems{Items: nil, OldestTurnIndex: -1, HasMore: false}, nil
+		return PagedItems{Items: []Item{}, OldestTurnIndex: -1, HasMore: false}, nil
 	}
 	// Items are returned ORDER BY turn_index ASC, so the smallest
 	// turn_index is on the first row. Using items[0] rather than a min
@@ -182,7 +170,6 @@ func (s *Store) finalizePagedItems(threadID string, items []Item, floorTurnIndex
 	if err != nil {
 		return PagedItems{}, err
 	}
-	_ = floorTurnIndex // retained for symmetry with paged call sites that may want telemetry.
 	return PagedItems{Items: items, OldestTurnIndex: oldest, HasMore: hasMore}, nil
 }
 

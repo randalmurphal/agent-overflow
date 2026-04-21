@@ -517,19 +517,21 @@ describe('createThreadPane', () => {
     it('loadUntilItem replaces the window to cover a below-floor item', async () => {
       const pane = createThreadPane();
       setBindingMock('ListRecentThreadItems', async () => ({
-        items: [makeItem({ id: 't5', turnIndex: 5 })],
+        items: [makeItem({ id: 't5', threadId: 't', turnIndex: 5 })],
         oldestTurnIndex: 5,
         hasMore: true,
       }));
       setBindingMock('GetThreadItem', async (_threadId: string, itemId: string) =>
-        itemId === 'target' ? makeItem({ id: 'target', turnIndex: 1 }) : null,
+        itemId === 'target'
+          ? makeItem({ id: 'target', threadId: 't', turnIndex: 1 })
+          : null,
       );
       setBindingMock('ListItemsBeforeTurn', async () => ({
         items: [
-          makeItem({ id: 'target', turnIndex: 1 }),
-          makeItem({ id: 't2', turnIndex: 2 }),
-          makeItem({ id: 't3', turnIndex: 3 }),
-          makeItem({ id: 't4', turnIndex: 4 }),
+          makeItem({ id: 'target', threadId: 't', turnIndex: 1 }),
+          makeItem({ id: 't2', threadId: 't', turnIndex: 2 }),
+          makeItem({ id: 't3', threadId: 't', turnIndex: 3 }),
+          makeItem({ id: 't4', threadId: 't', turnIndex: 4 }),
         ],
         oldestTurnIndex: 1,
         hasMore: false,
@@ -565,6 +567,119 @@ describe('createThreadPane', () => {
       pane.requestScrollToItem('b');
       expect(pane.scrollToItemRequest.nonce).toBeGreaterThan(second);
       expect(pane.scrollToItemRequest.itemId).toBe('b');
+    });
+
+    it('scrollToItemRequest nonce stays monotonic across switchThread', async () => {
+      // The timeline tracks `lastHandledScrollNonce` locally. If a pane
+      // reset the nonce to 0 on switch, a follow-up intent with nonce=1
+      // would compare against the lingering higher handled value and
+      // silently not dispatch. Keep the nonce monotonic.
+      const pane = createThreadPane();
+      setBindingMock('ListRecentThreadItems', async () => ({
+        items: [],
+        oldestTurnIndex: -1,
+        hasMore: false,
+      }));
+      pane.requestScrollToItem('before-switch');
+      const beforeSwitch = pane.scrollToItemRequest.nonce;
+      expect(beforeSwitch).toBeGreaterThan(0);
+
+      await pane.switchThread(makeThread({ id: 't' }));
+      expect(pane.scrollToItemRequest.nonce).toBe(beforeSwitch);
+
+      pane.requestScrollToItem('after-switch');
+      expect(pane.scrollToItemRequest.nonce).toBeGreaterThan(beforeSwitch);
+    });
+
+    it('loadUntilItem loads the target turn when the pane has no floor yet', async () => {
+      // An empty-thread pane (or one whose switchThread returned 0 items)
+      // has `oldestLoadedTurnIndex = null`. The loader must still be able
+      // to pull in history when the user triggers scroll-to-item from
+      // search — not skip the fetch and short-circuit to `true`.
+      const pane = createThreadPane();
+      setBindingMock('ListRecentThreadItems', async () => ({
+        items: [],
+        oldestTurnIndex: -1,
+        hasMore: false,
+      }));
+      setBindingMock('GetThreadItem', async () =>
+        makeItem({ id: 'deep', threadId: 't', turnIndex: 3 }),
+      );
+      let beforeTurnCalled: number | null = null;
+      setBindingMock('ListItemsBeforeTurn', async (_id, beforeTurn) => {
+        beforeTurnCalled = beforeTurn as number;
+        return {
+          items: [makeItem({ id: 'deep', threadId: 't', turnIndex: 3 })],
+          oldestTurnIndex: 3,
+          hasMore: false,
+        };
+      });
+
+      await pane.switchThread(makeThread({ id: 't' }));
+      expect(pane.oldestLoadedTurnIndex).toBeNull();
+
+      const ok = await pane.loadUntilItem('deep');
+      expect(ok).toBe(true);
+      expect(beforeTurnCalled).not.toBeNull();
+      expect(pane.items.some((it) => it.id === 'deep')).toBe(true);
+      expect(pane.oldestLoadedTurnIndex).toBe(3);
+    });
+
+    it('loadUntilItem rejects an item whose threadId does not match the current pane', async () => {
+      // Defense-in-depth: a mislayered binding or stale cache that
+      // returns a row from a different thread should never cross-pollute
+      // a pane. loadUntilItem must treat the mismatch as "not found"
+      // rather than trying to page an item that doesn't belong here.
+      const pane = createThreadPane();
+      setBindingMock('ListRecentThreadItems', async () => ({
+        items: [makeItem({ id: 'tail', threadId: 't', turnIndex: 5 })],
+        oldestTurnIndex: 5,
+        hasMore: true,
+      }));
+      setBindingMock('GetThreadItem', async () =>
+        makeItem({ id: 'wrong', threadId: 'other-thread', turnIndex: 1 }),
+      );
+      let paged = 0;
+      setBindingMock('ListItemsBeforeTurn', async () => {
+        paged += 1;
+        return { items: [], oldestTurnIndex: -1, hasMore: false };
+      });
+      await pane.switchThread(makeThread({ id: 't' }));
+
+      const ok = await pane.loadUntilItem('wrong');
+      expect(ok).toBe(false);
+      expect(paged).toBe(0);
+    });
+
+    it('loadOlder disables hasMoreHistory when the backend cannot advance the floor', async () => {
+      // Pathological scenario: turns table claims more history exists
+      // but the item range [newFloor, beforeTurn) is empty (a sparse
+      // turn row with no items). Without a progress guard the Load
+      // Older button would keep firing the same query. The store must
+      // break the loop by forcing hasMoreHistory=false when no rows
+      // were returned AND the floor did not decrease.
+      const pane = createThreadPane();
+      setBindingMock('ListRecentThreadItems', async () => ({
+        items: [makeItem({ id: 'tail', threadId: 't', turnIndex: 10 })],
+        oldestTurnIndex: 10,
+        hasMore: true,
+      }));
+      let calls = 0;
+      setBindingMock('ListItemsBeforeTurn', async () => {
+        calls += 1;
+        // Backend cooperates: no items, floor unchanged, but still
+        // claims more exists. Common when a turn row has zero items.
+        return { items: [], oldestTurnIndex: 10, hasMore: true };
+      });
+
+      await pane.switchThread(makeThread({ id: 't' }));
+      expect(pane.hasMoreHistory).toBe(true);
+      await pane.loadOlder();
+      expect(calls).toBe(1);
+      expect(pane.hasMoreHistory).toBe(false);
+      // Second invocation should short-circuit; no network call.
+      await pane.loadOlder();
+      expect(calls).toBe(1);
     });
   });
 
