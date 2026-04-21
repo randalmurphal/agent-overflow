@@ -219,6 +219,29 @@ func TestRenderANSIEmpty(t *testing.T) {
 	}
 }
 
+// TestStripUnsafeEscapesFastPathReturnsInputIdentity pins the allocation
+// short-circuit: on ESC-free input (the common case for streaming text
+// and most command output), stripUnsafeEscapes must return the input
+// string with no copy. Breaking the fast path re-introduces a full
+// buffer allocation per throttled render — a few KB/sec × 20 renders/sec
+// across every active thinking block.
+func TestStripUnsafeEscapesFastPathReturnsInputIdentity(t *testing.T) {
+	input := "plain text with no escape sequences at all"
+	out := stripUnsafeEscapes(input)
+	if out != input {
+		t.Fatalf("stripUnsafeEscapes modified ESC-free input: %q → %q", input, out)
+	}
+	// Header equality check: the fast path should return the input string
+	// header directly, not a fresh allocation. This is a best-effort proxy
+	// for the zero-allocation contract — Go doesn't expose the underlying
+	// data pointer from string cheaply, but on the fast path string(out)
+	// shares storage with input.
+	allocs := testing.AllocsPerRun(100, func() { _ = stripUnsafeEscapes(input) })
+	if allocs > 0 {
+		t.Fatalf("stripUnsafeEscapes fast path allocated %v times, want 0", allocs)
+	}
+}
+
 func TestRenderANSIOversizedFallsBack(t *testing.T) {
 	r := New(Options{MaxBytes: 16})
 	out := r.RenderANSI("plain input with <marker> padding padding padding")

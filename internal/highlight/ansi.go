@@ -1,6 +1,8 @@
 package highlight
 
 import (
+	"strings"
+
 	terminal "github.com/buildkite/terminal-to-html/v3"
 )
 
@@ -43,6 +45,13 @@ func (r *Renderer) renderANSI(s string) string {
 // unchanged.
 func stripUnsafeEscapes(s string) string {
 	if len(s) == 0 {
+		return s
+	}
+	// Fast path: no ESC byte anywhere means no OSC/APC envelope to strip.
+	// Streaming thinking deltas and most command output hit this branch,
+	// so short-circuiting saves a full allocation + copy per render (on a
+	// 40 KB summary that is ~40 KB of avoided byte churn at 20 renders/sec).
+	if strings.IndexByte(s, 0x1b) < 0 {
 		return s
 	}
 	out := make([]byte, 0, len(s))
