@@ -7,6 +7,7 @@ import (
 	chromahtml "github.com/alecthomas/chroma/v2/formatters/html"
 	"github.com/yuin/goldmark"
 	highlighting "github.com/yuin/goldmark-highlighting/v2"
+	"github.com/yuin/goldmark/renderer"
 	"github.com/yuin/goldmark/util"
 )
 
@@ -28,6 +29,13 @@ func newGoldmark(style string) goldmark.Markdown {
 				),
 				highlighting.WithWrapperRenderer(codeBlockWrapper),
 			),
+		),
+		// safeAutoLinkRenderer runs at priority 1 so it registers *after*
+		// goldmark's default html renderer (priority 1000) and wins for
+		// ast.KindAutoLink in the kind->func map. Without this override,
+		// `<javascript:alert(1)>` autolinks leak a live href= into {@html}.
+		goldmark.WithRendererOptions(
+			renderer.WithNodeRenderers(util.Prioritized(safeAutoLinkRenderer{}, 1)),
 		),
 	)
 }

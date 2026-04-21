@@ -52,6 +52,39 @@ func TestMarkdownJavascriptURIInLink(t *testing.T) {
 	}
 }
 
+func TestMarkdownJavascriptAutoLinkIsNeutralized(t *testing.T) {
+	// Autolink syntax — `<javascript:...>` — goes through goldmark's
+	// renderAutoLink, which (unlike renderLink) does NOT consult
+	// IsDangerousURL. Our safeAutoLinkRenderer restores that check.
+	r := New(Options{})
+	for _, raw := range []string{
+		`<javascript:alert(1)>`,
+		`<JavaScript:alert(2)>`,
+		`<vbscript:msgbox(3)>`,
+		`<data:text/html,<script>alert(4)</script>>`,
+		`<file:///etc/passwd>`,
+	} {
+		out := r.RenderMarkdown(raw)
+		lower := strings.ToLower(out)
+		if strings.Contains(lower, `href="javascript:`) ||
+			strings.Contains(lower, `href="vbscript:`) ||
+			strings.Contains(lower, `href="data:`) ||
+			strings.Contains(lower, `href="file:`) {
+			t.Fatalf("dangerous scheme survived autolink for %q: %q", raw, out)
+		}
+	}
+}
+
+func TestMarkdownSafeAutoLinkPreserved(t *testing.T) {
+	// Regression guard: benign URLs still produce live hrefs.
+	r := New(Options{})
+	out := r.RenderMarkdown(`<https://example.com/a?b=1>`)
+	lower := strings.ToLower(out)
+	if !strings.Contains(lower, `href="https://example.com/a?b=1"`) {
+		t.Fatalf("expected benign autolink href, got %q", out)
+	}
+}
+
 func TestMarkdownInlineEventHandlerImg(t *testing.T) {
 	r := New(Options{})
 	out := r.RenderMarkdown(`<img src=x onerror=alert(1)>`)
@@ -97,6 +130,48 @@ func TestANSIRawHTMLIsEscaped(t *testing.T) {
 	}
 	if !strings.Contains(out, "&gt;") {
 		t.Fatalf("expected &gt; in output, got %q", out)
+	}
+}
+
+func TestANSIOSC8HyperlinkStripped(t *testing.T) {
+	// OSC 8 hyperlinks wrap visible text in
+	//   ESC]8;;URL(BEL|ESC\)text ESC]8;;(BEL|ESC\)
+	// terminal-to-html by default turns that into <a href="URL">text</a>,
+	// which would let untrusted tool output smuggle `javascript:` URIs
+	// through the ANSI render path into {@html}. stripOSC8 drops every
+	// OSC 8 introducer and terminator (both ST forms) before handing the
+	// bytes to terminal-to-html.
+	r := New(Options{})
+	cases := []string{
+		"\x1b]8;;javascript:alert(1)\x1b\\click\x1b]8;;\x1b\\",
+		"\x1b]8;;javascript:alert(2)\x07click\x1b]8;;\x07",
+		"\x1b]8;;http://evil.example/\x1b\\evil\x1b]8;;\x1b\\",
+		"\x1b]8;id=1;data:text/html,<script>x()</script>\x07evil\x1b]8;;\x07",
+	}
+	for _, raw := range cases {
+		out := r.RenderANSI(raw)
+		lower := strings.ToLower(out)
+		if strings.Contains(lower, "<a ") || strings.Contains(lower, "href=") {
+			t.Fatalf("OSC 8 link leaked for %q: %q", raw, out)
+		}
+		if strings.Contains(lower, "javascript:") || strings.Contains(lower, "data:text/html") {
+			t.Fatalf("dangerous URI leaked for %q: %q", raw, out)
+		}
+	}
+}
+
+func TestANSIOSC8PartialSequenceDropped(t *testing.T) {
+	// A stream can end mid-OSC8 (`\x1b]8;;http://evil`). stripOSC8 drops
+	// the trailing partial sequence rather than passing its bytes through,
+	// matching terminal-to-html's end-of-input discard for partial SGR.
+	r := New(Options{})
+	out := r.RenderANSI("visible\x1b]8;;javascript:alert(1)")
+	lower := strings.ToLower(out)
+	if strings.Contains(lower, "javascript:") {
+		t.Fatalf("partial OSC 8 URI leaked: %q", out)
+	}
+	if !strings.Contains(lower, "visible") {
+		t.Fatalf("visible prefix dropped: %q", out)
 	}
 }
 
