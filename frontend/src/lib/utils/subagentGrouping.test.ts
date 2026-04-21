@@ -224,4 +224,69 @@ describe('groupItemsBySubagent', () => {
     expect(nodes).toHaveLength(2);
     for (const node of nodes) expect(node.kind).toBe('leaf');
   });
+
+  // Fast-path: when no item declares a parentId and the input is already
+  // in canonical (turnIndex, itemIndex) order, we skip the sort + id-set +
+  // grouping walk and wrap each item as a leaf directly. Verify the output
+  // matches the slow path for the inputs both can handle.
+  describe('fast-path (no subagents, pre-sorted input)', () => {
+    it('returns leaves in upsert order for pre-sorted input with no parentIds', () => {
+      const items = [
+        mkItem({ id: 'a', turnIndex: 0, itemIndex: 0, summary: 'first' }),
+        mkItem({ id: 'b', turnIndex: 0, itemIndex: 1, summary: 'second' }),
+        mkItem({ id: 'c', turnIndex: 1, itemIndex: 0, summary: 'third' }),
+        mkItem({ id: 'd', turnIndex: 1, itemIndex: 1, summary: 'fourth' }),
+      ];
+      const nodes = groupItemsBySubagent(items);
+      expect(nodes).toHaveLength(4);
+      expect(nodes.map((n) => expectLeaf(n).item.id)).toEqual(['a', 'b', 'c', 'd']);
+      for (const node of nodes) {
+        expect(node.kind).toBe('leaf');
+        expect(expectLeaf(node).orphan).toBeUndefined();
+      }
+    });
+
+    it('falls through to slow path when input is out of order (sorts defensively)', () => {
+      // If items arrive out of order and none have parentId, the
+      // monotonic check fails and we take the slow path, which sorts.
+      // This preserves the documented contract that callers may pass
+      // unsorted input.
+      const items = [
+        mkItem({ id: 'late', turnIndex: 2, itemIndex: 0 }),
+        mkItem({ id: 'early', turnIndex: 0, itemIndex: 0 }),
+        mkItem({ id: 'mid', turnIndex: 1, itemIndex: 0 }),
+      ];
+      const nodes = groupItemsBySubagent(items);
+      expect(nodes.map((n) => expectLeaf(n).item.id)).toEqual(['early', 'mid', 'late']);
+    });
+
+    it('fast path does not mutate input when wrapping leaves', () => {
+      const items = [
+        mkItem({ id: 'a', turnIndex: 0, itemIndex: 0 }),
+        mkItem({ id: 'b', turnIndex: 0, itemIndex: 1 }),
+      ];
+      const snapshot = JSON.stringify(items);
+      groupItemsBySubagent(items);
+      expect(JSON.stringify(items)).toBe(snapshot);
+    });
+
+    it('one parentId anywhere in the list defeats the fast path and triggers grouping', () => {
+      // Sanity: even if 99 of 100 items have no parentId, a single
+      // subagent entry routes the whole list through the slow path.
+      const items = [
+        mkItem({ id: 'p', turnIndex: 0, itemIndex: 0, kind: 'tool_call', summary: 'task' }),
+        mkItem({ id: 'c', turnIndex: 0, itemIndex: 1, parentId: 'p', summary: 'child' }),
+        mkItem({ id: 'x', turnIndex: 0, itemIndex: 2, summary: 'sibling' }),
+      ];
+      const nodes = groupItemsBySubagent(items);
+      expect(nodes).toHaveLength(2);
+      const group = nodes[0];
+      expect(group.kind).toBe('group');
+      if (group.kind === 'group') {
+        expect(group.parent.id).toBe('p');
+        expect(group.children).toHaveLength(1);
+      }
+      expect(expectLeaf(nodes[1]).item.id).toBe('x');
+    });
+  });
 });
