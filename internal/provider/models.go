@@ -19,8 +19,8 @@ type ModelInfo struct {
 var ClaudeModels = []ModelInfo{
 	{Slug: "claude-sonnet-4-6", Name: "Claude Sonnet 4.6", Provider: "claude"},
 	{
-		Slug:         "claude-opus-4-6",
-		Name:         "Claude Opus 4.6",
+		Slug:         "claude-opus-4-7",
+		Name:         "Claude Opus 4.7",
 		Provider:     "claude",
 		Capabilities: []string{ModelCapabilityFastMode},
 	},
