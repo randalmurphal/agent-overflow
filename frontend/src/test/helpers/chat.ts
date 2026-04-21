@@ -38,6 +38,10 @@ export function makeItem(overrides: Partial<Item> = {}): Item {
 export function installPaneMocks(items: Item[] = []): void {
   setBindingMock('SwitchThread', async () => {});
   setBindingMock('ListItems', async () => items);
+  // Empty turn history by default. Tests that want to exercise rehydration
+  // override this via setBindingMock('ListRecentTurns', ...) after calling
+  // buildPane / installPaneMocks.
+  setBindingMock('ListRecentTurns', async () => []);
 }
 
 export async function buildPane(

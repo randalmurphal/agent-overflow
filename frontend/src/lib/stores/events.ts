@@ -1,5 +1,12 @@
 import { Events } from '@wailsio/runtime';
-import type { ApprovalEvent, ProviderStatusEvent, UsageEvent } from '../types/events';
+import type {
+  ApprovalEvent,
+  ProviderStatusEvent,
+  SubagentNotificationEvent,
+  TurnCompletedEvent,
+  TurnStartedEvent,
+  UsageEvent,
+} from '../types/events';
 import type { Item, Thread } from '../types/models';
 import type { DesignArtifact, DesignChoiceResolved, DesignOptionsRequest } from '../types/design';
 import { getAllPanes } from './panes.svelte';
@@ -7,6 +14,7 @@ import { recordProviderStatus } from './providerStatus.svelte';
 import { addToast } from './toast.svelte';
 import { getThreads, replaceThread } from './threads.svelte';
 import { projectApprovalRequest, projectApprovalResolution, projectThreadItem } from './threadStatuses.svelte';
+import { parseTokenUsage } from './thread.svelte';
 
 /**
  * SeqEnvelope mirrors the Go-side `SeqEnvelope` in app.go. Every Wails
@@ -285,6 +293,68 @@ function applyThreadUpdated(updated: Thread): void {
 }
 
 /**
+ * Route `provider:turn_started` to the matching pane. Flips
+ * `pane.activeTurn` on so the composer blocks sends and (Wave 3) the
+ * working indicator lights up. Invariant 22: this is the only way
+ * `activeTurn` can become non-null.
+ */
+function applyTurnStarted(evt: TurnStartedEvent): void {
+  if (!evt?.threadId || !evt.turnId) return;
+  for (const pane of getAllPanes().values()) {
+    if (pane.threadId !== evt.threadId) continue;
+    pane.setActiveTurn({
+      turnId: evt.turnId,
+      turnIndex: evt.turnIndex,
+      startedAt: evt.startedAt,
+    });
+  }
+}
+
+/**
+ * Route `provider:turn_completed` to the matching pane. Clears
+ * `pane.activeTurn` and writes the settled projection so (Wave 3) the
+ * completion divider can render above the final assistant message.
+ *
+ * `tokenUsage` arrives as a JSON-encoded string on the wire because
+ * triage round-trips it through the DB's `token_usage_json` column. We
+ * parse it here via `parseTokenUsage` — the same helper the pane uses on
+ * thread-switch rehydration — so malformed JSON degrades gracefully to
+ * `tokenUsage: null` rather than crashing the listener.
+ */
+function applyTurnCompleted(evt: TurnCompletedEvent): void {
+  if (!evt?.threadId || !evt.turnId) return;
+  const rawAssistantId = evt.assistantMessageId ?? '';
+  const settled = {
+    turnId: evt.turnId,
+    turnIndex: evt.turnIndex,
+    startedAt: evt.startedAt,
+    completedAt: evt.completedAt,
+    stopReason: evt.stopReason ?? '',
+    assistantMessageId: rawAssistantId === '' ? null : rawAssistantId,
+    tokenUsage: parseTokenUsage(evt.tokenUsage),
+    aborted: Boolean(evt.aborted),
+    errorMessage: evt.errorMessage ?? '',
+  };
+  for (const pane of getAllPanes().values()) {
+    if (pane.threadId !== evt.threadId) continue;
+    pane.settleTurn(settled);
+  }
+}
+
+/**
+ * Route `provider:subagent_notification` to the matching pane. No UI
+ * consumes this today; the pane records it in a bounded log so a future
+ * tray / toast surface can subscribe without re-wiring the channel.
+ */
+function applySubagentNotification(evt: SubagentNotificationEvent): void {
+  if (!evt?.threadId) return;
+  for (const pane of getAllPanes().values()) {
+    if (pane.threadId !== evt.threadId) continue;
+    pane.appendSubagentNotification(evt);
+  }
+}
+
+/**
  * Set up the app's Wails event listeners.
  * Returns a cleanup function that removes all listeners.
  */
@@ -306,6 +376,20 @@ export function setupEventListeners(): () => void {
   // row inline as soon as it lands, without waiting for the
   // turn-complete ListItems reconcile.
   const cancelItemUpsert = wailsEventOn<Item>('provider:item_upsert', applyItemUpsert);
+
+  // provider:turn_{started,completed} — wire-pushed turn lifecycle.
+  // These are the sole drivers of `pane.activeTurn` /
+  // `pane.latestSettledTurn`. See invariant 22 and
+  // docs/architecture/turn-lifecycle.md §Frontend state shape.
+  const cancelTurnStarted = wailsEventOn<TurnStartedEvent>('provider:turn_started', applyTurnStarted);
+  const cancelTurnCompleted = wailsEventOn<TurnCompletedEvent>('provider:turn_completed', applyTurnCompleted);
+  // provider:subagent_notification — Codex passes subagent metadata
+  // through; no UI renders this yet, but the pane records it so future
+  // surfaces can subscribe without re-wiring.
+  const cancelSubagentNotification = wailsEventOn<SubagentNotificationEvent>(
+    'provider:subagent_notification',
+    applySubagentNotification,
+  );
 
   const cancelThreadUpdated = wailsEventOn<Thread>('thread:updated', applyThreadUpdated);
 
@@ -402,6 +486,9 @@ export function setupEventListeners(): () => void {
     cancelUsage();
     cancelProviderStatus();
     cancelItemUpsert();
+    cancelTurnStarted();
+    cancelTurnCompleted();
+    cancelSubagentNotification();
     cancelThreadUpdated();
     cancelDesignArtifact();
     cancelDesignOptions();

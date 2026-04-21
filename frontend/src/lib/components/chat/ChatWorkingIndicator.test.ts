@@ -30,6 +30,9 @@ describe('<ChatWorkingIndicator>', () => {
 
   it('renders when a streaming assistant message is active', async () => {
     vi.setSystemTime(new Date(1_000_000));
+    // Post-refactor isTurnActive is wire-pushed (invariant 22). Drive
+    // activeTurn via setActiveTurn so the component still lights up the
+    // indicator the same way a `provider:turn_started` event would.
     const pane = await buildPane(undefined, [
       makeItem({
         id: 'text:0:0',
@@ -38,6 +41,7 @@ describe('<ChatWorkingIndicator>', () => {
         createdAt: 1_000_000,
       }),
     ]);
+    pane.setActiveTurn({ turnId: 't1', turnIndex: 0, startedAt: 1_000_000 });
 
     const { getByTestId } = render(ChatWorkingIndicator, { props: { pane } });
 
@@ -65,6 +69,7 @@ describe('<ChatWorkingIndicator>', () => {
         itemIndex: 1,
       }),
     ]);
+    pane.setActiveTurn({ turnId: 't1', turnIndex: 0, startedAt: 1_000 });
 
     const { getByTestId } = render(ChatWorkingIndicator, { props: { pane } });
 
@@ -78,9 +83,10 @@ describe('<ChatWorkingIndicator>', () => {
 
   it('ignores backgrounded tool calls when selecting the anchor', async () => {
     vi.setSystemTime(new Date(10_000));
+    // With no activeTurn set, the indicator stays hidden even though the
+    // pane carries a running backgrounded tool. This pins invariant 22:
+    // stuck items must not freeze the indicator.
     const pane = await buildPane(undefined, [
-      // Backgrounded tools don't count as "active turn", so this alone
-      // should keep isTurnActive === false and hide the indicator.
       makeItem({
         id: 'tool:bg',
         kind: 'tool_call',
@@ -95,7 +101,14 @@ describe('<ChatWorkingIndicator>', () => {
     expect(queryByTestId('chat-working-indicator')).toBeNull();
   });
 
-  it('treats a pending approval as active even without running items', async () => {
+  it('stays hidden when approvals are pending without an active turn push', async () => {
+    // Pre-refactor, pending approvals were folded into isTurnActive via
+    // the items-derived path. Post-refactor (invariant 22), pending
+    // approvals ride INSIDE an active turn — the provider emits
+    // turn_started before any approval request — so `isTurnActive` stays
+    // false until the wire push arrives. A synthetic approval without a
+    // matching activeTurn is an unusual state; the indicator should not
+    // fire on its own.
     vi.setSystemTime(new Date(2_000));
     const pane = await buildPane();
     pane.addApproval({
@@ -105,11 +118,8 @@ describe('<ChatWorkingIndicator>', () => {
       summary: 'approve?',
     } as unknown as Parameters<typeof pane.addApproval>[0]);
 
-    const { getByTestId } = render(ChatWorkingIndicator, { props: { pane } });
+    const { queryByTestId } = render(ChatWorkingIndicator, { props: { pane } });
 
-    // No anchor item → elapsed reads 0s, but the indicator is visible
-    // because isTurnActive is derived from pendingApprovals too.
-    expect(getByTestId('chat-working-indicator')).toBeInTheDocument();
-    expect(getByTestId('chat-working-indicator-elapsed').textContent).toBe('0s');
+    expect(queryByTestId('chat-working-indicator')).toBeNull();
   });
 });

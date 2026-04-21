@@ -9,6 +9,10 @@ describe('createThreadPane', () => {
     resetBindingMocks();
     setBindingMock('SwitchThread', async () => {});
     setBindingMock('ListItems', async () => [] as Item[]);
+    // switchThread calls ListRecentTurns as part of rehydration. Default
+    // to an empty list so tests that don't care about turn rehydration
+    // don't need to plumb the mock themselves.
+    setBindingMock('ListRecentTurns', async () => []);
   });
 
   it('starts empty', () => {
@@ -108,41 +112,33 @@ describe('createThreadPane', () => {
     expect(pane.items.find((item) => item.id === 'early')?.summary).toBe('updated');
   });
 
-  it('derives turn activity from streaming text, running tools, and approvals', () => {
+  it('derives isTurnActive strictly from activeTurn (invariant 22)', () => {
+    // Post-refactor, isTurnActive comes solely from the wire-pushed
+    // activeTurn slot. Item state (streaming text, running tool_calls,
+    // pending approvals) no longer leaks into the flag.
     const pane = createThreadPane();
 
     expect(pane.isTurnActive).toBe(false);
 
+    // A streaming assistant item alone doesn't flip the flag.
     pane.upsertItem(makeItem({
       id: 'text:0:0',
       kind: 'assistant_text',
       status: 'streaming',
     }));
-    expect(pane.isTurnActive).toBe(true);
-
-    pane.upsertItem(makeItem({
-      id: 'text:0:0',
-      kind: 'assistant_text',
-      status: 'completed',
-    }));
     expect(pane.isTurnActive).toBe(false);
 
+    // A running foreground tool_call alone doesn't flip the flag either.
     pane.upsertItem(makeItem({
       id: 'tool-1',
       kind: 'tool_call',
       status: 'running',
       isBackground: false,
     }));
-    expect(pane.isTurnActive).toBe(true);
-
-    pane.upsertItem(makeItem({
-      id: 'tool-1',
-      kind: 'tool_call',
-      status: 'running',
-      isBackground: true,
-    }));
     expect(pane.isTurnActive).toBe(false);
 
+    // Pending approvals no longer count on their own — they live INSIDE
+    // an active turn (see invariant 22 rationale).
     pane.addApproval({
       requestId: 'req-1',
       threadId: 'thread-1',
@@ -151,9 +147,24 @@ describe('createThreadPane', () => {
       input: null,
       title: 'Approve edit',
     });
+    expect(pane.isTurnActive).toBe(false);
+
+    // Wire-push flips it on.
+    pane.setActiveTurn({ turnId: 't1', turnIndex: 0, startedAt: 1 });
     expect(pane.isTurnActive).toBe(true);
 
-    pane.removeApproval('req-1');
+    // settleTurn clears it even if streaming items / approvals remain.
+    pane.settleTurn({
+      turnId: 't1',
+      turnIndex: 0,
+      startedAt: 1,
+      completedAt: 2,
+      stopReason: 'end_turn',
+      assistantMessageId: null,
+      tokenUsage: null,
+      aborted: false,
+      errorMessage: '',
+    });
     expect(pane.isTurnActive).toBe(false);
   });
 
@@ -343,5 +354,233 @@ describe('createThreadPane', () => {
       deletions: 0,
       fileCount: 1,
     });
+  });
+
+  // --- Turn-lifecycle pane state (Wave 2) -----------------------------------
+
+  it('setActiveTurn populates activeTurn and flips isTurnActive on', () => {
+    const pane = createThreadPane();
+    expect(pane.activeTurn).toBeNull();
+    expect(pane.isTurnActive).toBe(false);
+
+    pane.setActiveTurn({ turnId: 'turn-1', turnIndex: 0, startedAt: 1000 });
+
+    expect(pane.activeTurn).toEqual({ turnId: 'turn-1', turnIndex: 0, startedAt: 1000 });
+    expect(pane.isTurnActive).toBe(true);
+  });
+
+  it('setActiveTurn is idempotent by turnId — preserves startedAt on re-emit', () => {
+    // A Claude re-init / interrupt can re-send EventTurnStart for the same
+    // (thread, turn). The pane must not rewind startedAt — otherwise the
+    // working indicator's elapsed-seconds counter would jump backward each
+    // time the provider re-initialises.
+    const pane = createThreadPane();
+    pane.setActiveTurn({ turnId: 'turn-1', turnIndex: 0, startedAt: 1000 });
+    pane.setActiveTurn({ turnId: 'turn-1', turnIndex: 0, startedAt: 9999 });
+    expect(pane.activeTurn?.startedAt).toBe(1000);
+  });
+
+  it('settleTurn clears activeTurn and writes latestSettledTurn', () => {
+    const pane = createThreadPane();
+    pane.setActiveTurn({ turnId: 'turn-1', turnIndex: 0, startedAt: 1000 });
+
+    pane.settleTurn({
+      turnId: 'turn-1',
+      turnIndex: 0,
+      startedAt: 1000,
+      completedAt: 2000,
+      stopReason: 'end_turn',
+      assistantMessageId: 'text:0:3',
+      tokenUsage: { inputTokens: 100, outputTokens: 50 },
+      aborted: false,
+      errorMessage: '',
+    });
+
+    expect(pane.activeTurn).toBeNull();
+    expect(pane.isTurnActive).toBe(false);
+    expect(pane.latestSettledTurn).toEqual({
+      turnId: 'turn-1',
+      turnIndex: 0,
+      startedAt: 1000,
+      completedAt: 2000,
+      stopReason: 'end_turn',
+      assistantMessageId: 'text:0:3',
+      tokenUsage: { inputTokens: 100, outputTokens: 50 },
+      aborted: false,
+      errorMessage: '',
+    });
+  });
+
+  it('clearTurnState resets both slots without rehydrating', () => {
+    const pane = createThreadPane();
+    pane.setActiveTurn({ turnId: 'turn-1', turnIndex: 0, startedAt: 1 });
+    pane.settleTurn({
+      turnId: 'turn-1',
+      turnIndex: 0,
+      startedAt: 1,
+      completedAt: 2,
+      stopReason: 'end_turn',
+      assistantMessageId: null,
+      tokenUsage: null,
+      aborted: false,
+      errorMessage: '',
+    });
+    expect(pane.latestSettledTurn).not.toBeNull();
+
+    pane.clearTurnState();
+    expect(pane.activeTurn).toBeNull();
+    expect(pane.latestSettledTurn).toBeNull();
+  });
+
+  it('switchThread rehydrates latestSettledTurn from the most recent completed row', async () => {
+    setBindingMock('ListRecentTurns', async () => [
+      {
+        turnId: 'turn-1',
+        threadId: 'thread-a',
+        turnIndex: 1,
+        startedAt: 1000,
+        completedAt: 2000,
+        stopReason: 'end_turn',
+        assistantMessageId: 'text:1:4',
+        tokenUsageJson: JSON.stringify({
+          inputTokens: 150,
+          outputTokens: 75,
+          totalCostUsd: 0.012,
+        }),
+      },
+    ]);
+
+    const pane = createThreadPane();
+    await pane.switchThread(makeThread({ id: 'thread-a' }));
+
+    expect(pane.latestSettledTurn).toEqual({
+      turnId: 'turn-1',
+      turnIndex: 1,
+      startedAt: 1000,
+      completedAt: 2000,
+      stopReason: 'end_turn',
+      assistantMessageId: 'text:1:4',
+      tokenUsage: {
+        inputTokens: 150,
+        outputTokens: 75,
+        totalCostUsd: 0.012,
+      },
+      aborted: false,
+      errorMessage: '',
+    });
+    // activeTurn stays null even though rehydration ran — invariant 22.
+    expect(pane.activeTurn).toBeNull();
+    expect(pane.isTurnActive).toBe(false);
+  });
+
+  it('switchThread does NOT promote an in-flight historical turn to activeTurn', async () => {
+    // Most-recent row has completedAt=null → a crashed / interrupted
+    // turn that was never settled. The frontend MUST leave activeTurn
+    // alone; only a fresh `provider:turn_started` push can light up the
+    // working indicator (invariant 22).
+    setBindingMock('ListRecentTurns', async () => [
+      {
+        turnId: 'turn-crashed',
+        threadId: 'thread-a',
+        turnIndex: 1,
+        startedAt: 1000,
+        completedAt: null,
+      },
+      {
+        turnId: 'turn-settled',
+        threadId: 'thread-a',
+        turnIndex: 0,
+        startedAt: 500,
+        completedAt: 900,
+        stopReason: 'end_turn',
+        assistantMessageId: 'text:0:2',
+        tokenUsageJson: '',
+      },
+    ]);
+
+    const pane = createThreadPane();
+    await pane.switchThread(makeThread({ id: 'thread-a' }));
+
+    // Not lit up.
+    expect(pane.activeTurn).toBeNull();
+    expect(pane.isTurnActive).toBe(false);
+    // But the prior settled turn IS rehydrated so the completion divider
+    // can still render.
+    expect(pane.latestSettledTurn?.turnId).toBe('turn-settled');
+  });
+
+  it('switchThread tolerates malformed tokenUsageJson without crashing', async () => {
+    setBindingMock('ListRecentTurns', async () => [
+      {
+        turnId: 'turn-1',
+        threadId: 'thread-a',
+        turnIndex: 0,
+        startedAt: 1,
+        completedAt: 2,
+        stopReason: 'end_turn',
+        assistantMessageId: '',
+        tokenUsageJson: '{not valid json',
+      },
+    ]);
+
+    const pane = createThreadPane();
+    await pane.switchThread(makeThread({ id: 'thread-a' }));
+
+    expect(pane.latestSettledTurn?.tokenUsage).toBeNull();
+  });
+
+  it('switchThread tolerates a ListRecentTurns rejection', async () => {
+    setBindingMock('ListRecentTurns', async () => {
+      throw new Error('rpc down');
+    });
+
+    const pane = createThreadPane();
+    // switchThread swallows the rehydration error so the thread still
+    // renders its items.
+    await pane.switchThread(makeThread({ id: 'thread-a' }));
+
+    expect(pane.latestSettledTurn).toBeNull();
+    expect(pane.activeTurn).toBeNull();
+    // Items path was not touched.
+    expect(pane.thread?.id).toBe('thread-a');
+  });
+
+  it('switchThread clears turn state between threads', async () => {
+    const pane = createThreadPane();
+    pane.setActiveTurn({ turnId: 'turn-a', turnIndex: 0, startedAt: 1 });
+    pane.settleTurn({
+      turnId: 'turn-a-prev',
+      turnIndex: -1,
+      startedAt: 0,
+      completedAt: 0,
+      stopReason: 'end_turn',
+      assistantMessageId: null,
+      tokenUsage: null,
+      aborted: false,
+      errorMessage: '',
+    });
+
+    // Switching to a new thread with no recent turns must clear both
+    // slots so the prior thread's state doesn't bleed over.
+    await pane.switchThread(makeThread({ id: 'thread-b' }));
+
+    expect(pane.activeTurn).toBeNull();
+    expect(pane.latestSettledTurn).toBeNull();
+  });
+
+  it('appendSubagentNotification records pass-through payloads, bounded', () => {
+    const pane = createThreadPane();
+    for (let i = 0; i < 40; i++) {
+      pane.appendSubagentNotification({
+        threadId: 'thread-1',
+        meta: JSON.stringify({ agentId: `agent-${i}`, status: 'completed' }),
+      });
+    }
+    // Bound should cap at 32 (subagentNotificationLimit). The newest
+    // entry is at the tail; oldest entries have fallen off.
+    expect(pane.subagentNotifications.length).toBe(32);
+    expect(pane.subagentNotifications[pane.subagentNotifications.length - 1].meta)
+      .toContain('agent-39');
+    expect(pane.subagentNotifications[0].meta).toContain('agent-8');
   });
 });

@@ -181,3 +181,6 @@ export const UnarchiveProject = dispatch('UnarchiveProject');
 
 // Directory browser (Add Project modal)
 export const BrowseDirectory = dispatch('BrowseDirectory');
+
+// Turn lifecycle rehydration (thread-switch reads the most recent settled turn)
+export const ListRecentTurns = dispatch('ListRecentTurns');

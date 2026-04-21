@@ -81,8 +81,16 @@ describe('App integration — messaging flow', () => {
     await fireEvent.input(textarea, { target: { value: 'queued message' } });
     await flush();
 
-    // Simulate a streaming turn starting by upserting a streaming assistant
-    // item. The composer derives active state from pane.items now.
+    // Post-refactor isTurnActive is wire-pushed (invariant 22). Simulate
+    // the real Go → frontend path by emitting provider:turn_started. A
+    // streaming item no longer flips the composer's active-turn guard
+    // on its own.
+    emitWailsEvent('provider:turn_started', {
+      threadId: 'thread-1',
+      turnId: 'turn-1',
+      turnIndex: 0,
+      startedAt: 1,
+    });
     emitWailsEvent('provider:item_upsert', {
       id: 'text:0:0',
       threadId: 'thread-1',
@@ -111,6 +119,12 @@ describe('App integration — messaging flow', () => {
     const { getByTestId } = await mountWithActiveThread();
     const interruptMock = setBindingMock('InterruptTurn', async () => {});
 
+    emitWailsEvent('provider:turn_started', {
+      threadId: 'thread-1',
+      turnId: 'turn-1',
+      turnIndex: 0,
+      startedAt: 1,
+    });
     emitWailsEvent('provider:item_upsert', {
       id: 'text:0:0',
       threadId: 'thread-1',
@@ -227,6 +241,15 @@ describe('App integration — messaging flow', () => {
 
   it('marks the pane idle once the streaming item completes', async () => {
     await mountWithActiveThread();
+    // Post-refactor pane.isTurnActive only clears on provider:turn_completed
+    // (invariant 22). Drive the full turn lifecycle so the assertion is
+    // exercising the real wire path.
+    emitWailsEvent('provider:turn_started', {
+      threadId: 'thread-1',
+      turnId: 'turn-1',
+      turnIndex: 0,
+      startedAt: 1,
+    });
     emitWailsEvent('provider:item_upsert', {
       id: 'text:0:0',
       threadId: 'thread-1',
@@ -250,6 +273,14 @@ describe('App integration — messaging flow', () => {
       summary: 'persist me',
       createdAt: 1,
       updatedAt: 2,
+    });
+    emitWailsEvent('provider:turn_completed', {
+      threadId: 'thread-1',
+      turnId: 'turn-1',
+      turnIndex: 0,
+      startedAt: 1,
+      completedAt: 2,
+      stopReason: 'end_turn',
     });
     await flush(10);
 

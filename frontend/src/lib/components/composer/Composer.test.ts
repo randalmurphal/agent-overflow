@@ -3,7 +3,7 @@ import { fireEvent, render } from '@testing-library/svelte';
 import Composer from './Composer.svelte';
 import { createComposerDraftStore } from '../../stores/composerDraft.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
-import { buildPane, makeItem } from '../../../test/helpers/chat';
+import { buildPane } from '../../../test/helpers/chat';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 
 function installDraftMocks() {
@@ -65,13 +65,11 @@ describe('<Composer>', () => {
   });
 
   it('shows the interrupt affordance while a turn is active and interrupts on click', async () => {
-    const pane = await buildPane(undefined, [
-      makeItem({
-        id: 'text:0:0',
-        kind: 'assistant_text',
-        status: 'streaming',
-      }),
-    ]);
+    const pane = await buildPane();
+    // Post-refactor, isTurnActive is wire-pushed — a streaming item no
+    // longer flips it on. Driving setActiveTurn directly simulates the
+    // `provider:turn_started` event the composer really depends on.
+    pane.setActiveTurn({ turnId: 't1', turnIndex: 0, startedAt: 0 });
     const draft = await buildDraft();
     const interrupt = setBindingMock('InterruptTurn', async () => {});
 
@@ -84,14 +82,11 @@ describe('<Composer>', () => {
   });
 
   it('does not send while a turn is active', async () => {
-    const pane = await buildPane(undefined, [
-      makeItem({
-        id: 'tool-1',
-        kind: 'tool_call',
-        status: 'running',
-        isBackground: false,
-      }),
-    ]);
+    const pane = await buildPane();
+    // See note above — drive the active-turn state via the wire-push API
+    // rather than relying on the removed "streaming item = active turn"
+    // derivation.
+    pane.setActiveTurn({ turnId: 't1', turnIndex: 0, startedAt: 0 });
     const draft = await buildDraft();
     const send = setBindingMock('SendMessage', async () => {});
 

@@ -98,6 +98,10 @@ export function seedSidebarProject(threads: Thread[]): Project {
 export function installThreadViewDefaults(): void {
   setBindingMock('SwitchThread', async () => {});
   setBindingMock('ListItems', async () => []);
+  // switchThread rehydrates latestSettledTurn via ListRecentTurns — default
+  // to an empty list so tests that don't care about turn history don't
+  // need to set the mock themselves.
+  setBindingMock('ListRecentTurns', async () => []);
   setBindingMock('ListPayloadMetas', async () => []);
   setBindingMock('GetGitStatus', async () => makeGitStatus());
   setBindingMock('GitListBranches', async () => []);

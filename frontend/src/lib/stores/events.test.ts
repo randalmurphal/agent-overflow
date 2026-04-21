@@ -41,6 +41,9 @@ describe('setupEventListeners', () => {
     expect(wailsListenerCount('provider:usage')).toBe(1);
     expect(wailsListenerCount('provider:status')).toBe(1);
     expect(wailsListenerCount('provider:item_upsert')).toBe(1);
+    expect(wailsListenerCount('provider:turn_started')).toBe(1);
+    expect(wailsListenerCount('provider:turn_completed')).toBe(1);
+    expect(wailsListenerCount('provider:subagent_notification')).toBe(1);
     expect(wailsListenerCount('thread:updated')).toBe(1);
 
     cleanup();
@@ -49,6 +52,9 @@ describe('setupEventListeners', () => {
     expect(wailsListenerCount('provider:usage')).toBe(0);
     expect(wailsListenerCount('provider:status')).toBe(0);
     expect(wailsListenerCount('provider:item_upsert')).toBe(0);
+    expect(wailsListenerCount('provider:turn_started')).toBe(0);
+    expect(wailsListenerCount('provider:turn_completed')).toBe(0);
+    expect(wailsListenerCount('provider:subagent_notification')).toBe(0);
     expect(wailsListenerCount('thread:updated')).toBe(0);
 
     cleanup = setupEventListeners();
@@ -291,5 +297,153 @@ describe('setupEventListeners', () => {
     expect(pane.providerBanner).toBeNull();
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('unknown kind'));
     warnSpy.mockRestore();
+  });
+
+  // --- Turn lifecycle routing (Wave 2) ---------------------------------------
+
+  it('routes provider:turn_started to pane.setActiveTurn for the matching thread only', async () => {
+    const paneA = await buildPane(makeThread({ id: 'thread-a' }));
+    const paneB = await buildPane(makeThread({ id: 'thread-b' }));
+    getAllPanes().set('a', paneA);
+    getAllPanes().set('b', paneB);
+
+    emitWailsEvent('provider:turn_started', {
+      threadId: 'thread-a',
+      turnId: 'turn-1',
+      turnIndex: 0,
+      startedAt: 1000,
+    });
+
+    expect(paneA.activeTurn).toEqual({ turnId: 'turn-1', turnIndex: 0, startedAt: 1000 });
+    expect(paneA.isTurnActive).toBe(true);
+    expect(paneB.activeTurn).toBeNull();
+    expect(paneB.isTurnActive).toBe(false);
+  });
+
+  it('routes provider:turn_completed to pane.settleTurn and clears activeTurn', async () => {
+    const pane = await buildPane(makeThread({ id: 'thread-1' }));
+    getAllPanes().set('main', pane);
+
+    emitWailsEvent('provider:turn_started', {
+      threadId: 'thread-1',
+      turnId: 'turn-1',
+      turnIndex: 0,
+      startedAt: 1000,
+    });
+    expect(pane.isTurnActive).toBe(true);
+
+    emitWailsEvent('provider:turn_completed', {
+      threadId: 'thread-1',
+      turnId: 'turn-1',
+      turnIndex: 0,
+      startedAt: 1000,
+      completedAt: 2000,
+      stopReason: 'end_turn',
+      assistantMessageId: 'text:0:3',
+    });
+
+    expect(pane.activeTurn).toBeNull();
+    expect(pane.isTurnActive).toBe(false);
+    expect(pane.latestSettledTurn?.turnId).toBe('turn-1');
+    expect(pane.latestSettledTurn?.assistantMessageId).toBe('text:0:3');
+    expect(pane.latestSettledTurn?.completedAt).toBe(2000);
+    expect(pane.latestSettledTurn?.stopReason).toBe('end_turn');
+  });
+
+  it('parses tokenUsage JSON from provider:turn_completed into a typed summary', async () => {
+    const pane = await buildPane(makeThread({ id: 'thread-1' }));
+    getAllPanes().set('main', pane);
+
+    emitWailsEvent('provider:turn_completed', {
+      threadId: 'thread-1',
+      turnId: 'turn-1',
+      turnIndex: 0,
+      startedAt: 1,
+      completedAt: 2,
+      stopReason: 'end_turn',
+      // The wire payload's `tokenUsage` is a JSON-encoded string because
+      // triage round-trips it through SQLite's token_usage_json column.
+      // We accept snake_case too (Claude's wire shape).
+      tokenUsage: JSON.stringify({
+        input_tokens: 120,
+        output_tokens: 45,
+        cache_read_input_tokens: 10,
+        total_cost_usd: 0.0034,
+      }),
+    });
+
+    expect(pane.latestSettledTurn?.tokenUsage).toEqual({
+      inputTokens: 120,
+      outputTokens: 45,
+      cacheReadInputTokens: 10,
+      totalCostUsd: 0.0034,
+    });
+  });
+
+  it('tolerates malformed tokenUsage without crashing — tokenUsage becomes null', async () => {
+    const pane = await buildPane(makeThread({ id: 'thread-1' }));
+    getAllPanes().set('main', pane);
+
+    emitWailsEvent('provider:turn_completed', {
+      threadId: 'thread-1',
+      turnId: 'turn-1',
+      turnIndex: 0,
+      startedAt: 1,
+      completedAt: 2,
+      stopReason: 'end_turn',
+      tokenUsage: '{this is not json',
+    });
+
+    expect(pane.latestSettledTurn).not.toBeNull();
+    expect(pane.latestSettledTurn?.tokenUsage).toBeNull();
+  });
+
+  it('routes provider:turn_completed.aborted into the settled projection', async () => {
+    const pane = await buildPane(makeThread({ id: 'thread-1' }));
+    getAllPanes().set('main', pane);
+
+    emitWailsEvent('provider:turn_completed', {
+      threadId: 'thread-1',
+      turnId: 'turn-1',
+      turnIndex: 0,
+      startedAt: 1,
+      completedAt: 2,
+      stopReason: 'interrupted',
+      aborted: true,
+      errorMessage: 'user interrupted',
+    });
+
+    expect(pane.latestSettledTurn?.aborted).toBe(true);
+    expect(pane.latestSettledTurn?.errorMessage).toBe('user interrupted');
+    expect(pane.latestSettledTurn?.stopReason).toBe('interrupted');
+  });
+
+  it('routes provider:subagent_notification to the matching pane', async () => {
+    const pane = await buildPane(makeThread({ id: 'thread-1' }));
+    getAllPanes().set('main', pane);
+
+    emitWailsEvent('provider:subagent_notification', {
+      threadId: 'thread-1',
+      meta: JSON.stringify({ agentId: 'child-a', status: 'completed' }),
+    });
+
+    expect(pane.subagentNotifications).toHaveLength(1);
+    expect(pane.subagentNotifications[0].threadId).toBe('thread-1');
+    expect(pane.subagentNotifications[0].meta).toContain('child-a');
+  });
+
+  it('drops provider:turn_started for non-matching threadIds', async () => {
+    const pane = await buildPane(makeThread({ id: 'thread-1' }));
+    getAllPanes().set('main', pane);
+
+    emitWailsEvent('provider:turn_started', {
+      threadId: 'thread-other',
+      turnId: 'turn-1',
+      turnIndex: 0,
+      startedAt: 1,
+    });
+
+    expect(pane.activeTurn).toBeNull();
+    expect(pane.isTurnActive).toBe(false);
   });
 });

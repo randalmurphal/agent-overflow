@@ -164,3 +164,77 @@ export interface RateLimitEntry {
   windowMins: number;
   resetsAt: number;
 }
+
+// ---------------------------------------------------------------------------
+// Turn lifecycle events — shapes mirror internal/triage/turn_events.go. See
+// docs/architecture/turn-lifecycle.md §Frontend state shape for how these
+// feed into pane.activeTurn / pane.latestSettledTurn.
+// ---------------------------------------------------------------------------
+
+/**
+ * TurnStartedEvent is the payload the frontend receives on
+ * `provider:turn_started`. When this arrives, events.ts flips
+ * pane.activeTurn on so the working indicator lights up.
+ */
+export interface TurnStartedEvent {
+  threadId: string;
+  turnId: string;
+  turnIndex: number;
+  /** Wall-clock unix-millis; the working indicator reads this for its timer. */
+  startedAt: number;
+}
+
+/**
+ * TurnCompletedEvent is the payload for `provider:turn_completed`. Carries
+ * the settled-turn projection the UI needs to render the completion divider
+ * plus clear the working indicator. `tokenUsageJson` is a JSON-encoded
+ * string because triage stores it that way for the DB round-trip — the
+ * event listener parses it into TokenUsageSummary before writing pane state.
+ */
+export interface TurnCompletedEvent {
+  threadId: string;
+  turnId: string;
+  turnIndex: number;
+  startedAt: number;
+  completedAt: number;
+  stopReason: string;
+  /** item.id of the final assistant_text; empty string when unknown. */
+  assistantMessageId?: string;
+  /**
+   * JSON-encoded string carrying the provider's `usage` snapshot. Triage
+   * round-trips it through SQLite so the shape matches the Go-side
+   * `json.RawMessage`. The listener parses this into TokenUsageSummary
+   * before exposing it to panes.
+   */
+  tokenUsage?: string;
+  errorMessage?: string;
+  /** True when the turn ended via interruption / truncation / abort. */
+  aborted?: boolean;
+}
+
+/**
+ * SubagentNotificationEvent is the payload for
+ * `provider:subagent_notification`. Carries the raw `meta` JSON bag from
+ * Codex's `<subagent_notification>` parse. No UI today renders this; the
+ * listener records the payloads against the pane so a future tray / toast
+ * can surface them without re-wiring the channel.
+ */
+export interface SubagentNotificationEvent {
+  threadId: string;
+  meta?: string;
+}
+
+/**
+ * TokenUsageSummary is the parsed shape the pane stores on
+ * latestSettledTurn.tokenUsage. Built from the provider's `usage` JSON
+ * snapshot (Claude's `result.usage` or Codex's token-usage payload). All
+ * fields are optional because different providers populate different
+ * subsets.
+ */
+export interface TokenUsageSummary {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadInputTokens?: number;
+  cacheCreationInputTokens?: number;
+  totalCostUsd?: number;
+}

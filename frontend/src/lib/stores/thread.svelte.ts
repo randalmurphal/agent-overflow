@@ -1,11 +1,136 @@
 import type { Item, Thread } from '../types/models';
-import type { ApprovalRequest, ContextWindow, ProviderStatusEvent } from '../types/events';
+import type {
+  ApprovalRequest,
+  ContextWindow,
+  ProviderStatusEvent,
+  SubagentNotificationEvent,
+  TokenUsageSummary,
+} from '../types/events';
 import type { ChannelMessage } from '../types/discussion';
 import type { DesignArtifact, DesignOptionsRequest, DesignViewport } from '../types/design';
-import { ListItems, SwitchThread } from './bindings';
+import { ListItems, ListRecentTurns, SwitchThread } from './bindings';
 import { addToast } from './toast.svelte';
 import { createDiffPanelState, type DiffPanelState } from './diffPanel.svelte';
 import { buildTurnDiffView, type TurnDiffView } from '../utils/turnDiffSummary';
+
+/**
+ * ActiveTurn is the live in-flight turn for the pane. Populated exclusively
+ * from the `provider:turn_started` wire event; cleared on
+ * `provider:turn_completed` or thread switch. Never hydrated from
+ * persistence — see invariant 22 (turn activity is wire-pushed).
+ */
+export interface ActiveTurn {
+  turnId: string;
+  turnIndex: number;
+  /** Unix-millis. Anchors the self-ticking working-indicator timer. */
+  startedAt: number;
+}
+
+/**
+ * SettledTurn is the most recent completed turn's projection. Used by the
+ * completion divider to render "Response · Worked for Xs · Yk tokens" above
+ * the final assistant item. Populated from `provider:turn_completed` pushes
+ * or, on thread switch, from the most recent `ListRecentTurns` row whose
+ * `completedAt` is non-null.
+ */
+export interface SettledTurn {
+  turnId: string;
+  turnIndex: number;
+  startedAt: number;
+  completedAt: number;
+  stopReason: string;
+  /** item.id of the final assistant_text; null when the provider didn't report one. */
+  assistantMessageId: string | null;
+  /** Parsed from triage's token_usage_json. null on malformed / missing input. */
+  tokenUsage: TokenUsageSummary | null;
+  aborted: boolean;
+  errorMessage: string;
+}
+
+/**
+ * TurnRow mirrors the Go `store.Turn` shape returned by the
+ * `ListRecentTurns` binding. Kept as a local interface rather than an
+ * import from `../types/models` because this is the only consumer and
+ * inlining keeps the rehydration path self-contained. `completedAt` is
+ * nullable / optional: Go's `json:"completedAt,omitempty"` omits the
+ * field entirely when it's NULL in the DB, so the frontend must handle
+ * both `null` and `undefined` as "in-flight / crashed."
+ */
+interface TurnRow {
+  turnId: string;
+  threadId: string;
+  turnIndex: number;
+  startedAt: number;
+  completedAt?: number | null;
+  stopReason?: string;
+  assistantMessageId?: string;
+  tokenUsageJson?: string;
+  errorMessage?: string;
+}
+
+/**
+ * Build a SettledTurn from a persisted TurnRow. Only called with rows
+ * where `completedAt` is populated. Token usage is parsed via
+ * `parseTokenUsage`, which is tolerant of malformed input.
+ */
+function turnRowToSettled(row: TurnRow): SettledTurn {
+  return {
+    turnId: row.turnId,
+    turnIndex: row.turnIndex,
+    startedAt: row.startedAt,
+    // Narrowed by caller — `completedAt` is guaranteed non-null/undefined
+    // at this point, so coerce to number with a sane fallback.
+    completedAt: row.completedAt ?? 0,
+    stopReason: row.stopReason ?? '',
+    assistantMessageId: row.assistantMessageId && row.assistantMessageId !== ''
+      ? row.assistantMessageId
+      : null,
+    tokenUsage: parseTokenUsage(row.tokenUsageJson),
+    // Persisted rows don't carry the aborted flag as its own column; the
+    // stop_reason='interrupted' value is the rehydrated signal. UI
+    // consumers can branch on stopReason directly for the aborted case.
+    aborted: row.stopReason === 'interrupted',
+    errorMessage: row.errorMessage ?? '',
+  };
+}
+
+/**
+ * Parse a token-usage JSON string produced by triage into the typed
+ * summary the pane exposes. Accepts either snake_case (Claude wire shape)
+ * or camelCase (what triage passes through); malformed / empty input
+ * returns null without throwing so the event listener can swallow
+ * garbage from a misbehaving provider rather than crashing the pane.
+ *
+ * Exported so the `provider:turn_completed` listener in events.ts can
+ * parse the wire payload's `tokenUsage` string through the same code
+ * path the thread-switch rehydration uses — one parser, two call sites.
+ */
+export function parseTokenUsage(raw: string | null | undefined): TokenUsageSummary | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    if (!parsed || typeof parsed !== 'object') return null;
+    const pickNumber = (...keys: string[]): number | undefined => {
+      for (const key of keys) {
+        const v = parsed[key];
+        if (typeof v === 'number' && Number.isFinite(v)) return v;
+      }
+      return undefined;
+    };
+    const inputTokens = pickNumber('inputTokens', 'input_tokens') ?? 0;
+    const outputTokens = pickNumber('outputTokens', 'output_tokens') ?? 0;
+    const summary: TokenUsageSummary = { inputTokens, outputTokens };
+    const cacheRead = pickNumber('cacheReadInputTokens', 'cache_read_input_tokens');
+    if (cacheRead !== undefined) summary.cacheReadInputTokens = cacheRead;
+    const cacheCreation = pickNumber('cacheCreationInputTokens', 'cache_creation_input_tokens');
+    if (cacheCreation !== undefined) summary.cacheCreationInputTokens = cacheCreation;
+    const cost = pickNumber('totalCostUsd', 'total_cost_usd');
+    if (cost !== undefined) summary.totalCostUsd = cost;
+    return summary;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Creates a self-contained thread pane state instance.
@@ -55,6 +180,25 @@ export function createThreadPane() {
   // own sidebar independently. Reset on thread switch so a new thread
   // never "remembers" whether the prior thread had the sidebar open.
   let showPlanSidebar: boolean = $state(false);
+
+  // Turn-lifecycle state. `activeTurn` is set exclusively from live
+  // `provider:turn_started` wire events (invariant 22) and cleared on
+  // `provider:turn_completed` or thread switch. `latestSettledTurn` is
+  // populated from turn-complete events OR on thread-switch rehydration
+  // from the most recent `ListRecentTurns` row with a non-null
+  // `completedAt`. A crashed / in-flight historical turn is deliberately
+  // NOT promoted to `activeTurn` on rehydration — only the wire can turn
+  // the indicator on.
+  let activeTurn: ActiveTurn | null = $state(null);
+  let latestSettledTurn: SettledTurn | null = $state(null);
+  // Subagent notification log. The backend emits
+  // `provider:subagent_notification` as a pass-through; no UI consumes it
+  // today, but keeping a bounded in-pane log lets future surfaces (tray,
+  // toast) subscribe without re-wiring the channel. We cap at a small
+  // number of most-recent entries so the array can't grow unbounded in a
+  // session that generates many notifications.
+  let subagentNotifications: SubagentNotificationEvent[] = $state([]);
+  const subagentNotificationLimit = 32;
 
   /**
    * Generation counter for switchThread. Incremented on every switchThread
@@ -135,18 +279,42 @@ export function createThreadPane() {
     get diffPanel() { return diffPanel; },
     /**
      * True while a provider turn is in-flight for the current pane. The
-     * composer uses this to block sends and surface the interrupt affordance.
-     * Pending approvals count as active; backgrounded tools do not.
+     * composer uses this to block sends and surface the interrupt
+     * affordance.
+     *
+     * Post-turn-lifecycle refactor: this is now strictly wire-pushed —
+     * `activeTurn !== null` is the single source of truth. Item-state
+     * derivations (streaming text, running tool_calls) no longer drive
+     * this flag; see invariant 22 (turn activity is wire-pushed).
+     *
+     * Pending approvals live within an active turn by construction — the
+     * provider emits turn_started before any approval request and
+     * turn_completed only after all approvals resolve — so they're
+     * covered implicitly via activeTurn being non-null during that
+     * window. If a future flow decouples approvals from turn spans,
+     * re-evaluate this invariant.
      */
     get isTurnActive() {
-      return (
-        items.some((item) =>
-          ((item.kind === 'assistant_text' || item.kind === 'thinking') && item.status === 'streaming')
-          || (item.kind === 'tool_call' && item.status === 'running' && !item.isBackground),
-        )
-        || pendingApprovals.length > 0
-      );
+      return activeTurn !== null;
     },
+    /**
+     * Live in-flight turn (wire-pushed from `provider:turn_started`).
+     * Consumers drive the working indicator and the composer's mid-turn
+     * guard off this value.
+     */
+    get activeTurn() { return activeTurn; },
+    /**
+     * Most recent completed turn, or null if the thread has no settled
+     * turns yet. Populated from `provider:turn_completed` pushes and
+     * from thread-switch rehydration.
+     */
+    get latestSettledTurn() { return latestSettledTurn; },
+    /**
+     * Bounded recent subagent notifications. No UI consumer today; stored
+     * so a future tray / toast surface can subscribe without the pane
+     * needing a new channel.
+     */
+    get subagentNotifications() { return subagentNotifications; },
     get channelMessages() { return channelMessages; },
     get channelStatus() { return channelStatus; },
     get designArtifacts() { return designArtifacts; },
@@ -177,6 +345,14 @@ export function createThreadPane() {
       // Plan-sidebar UI is pane-scoped too: never carry its open state across
       // threads.
       showPlanSidebar = false;
+      // Turn-lifecycle reset. activeTurn goes to null on every switch — a
+      // crashed thread's in-flight row is historical and must not light up
+      // the indicator (invariant 22). latestSettledTurn gets rehydrated
+      // below from ListRecentTurns; we clear it first so a rehydration
+      // failure leaves the pane in a consistent "no prior turn" state.
+      activeTurn = null;
+      latestSettledTurn = null;
+      subagentNotifications = [];
       diffPanel.clearForThread();
       loading = true;
       items = [];
@@ -211,6 +387,33 @@ export function createThreadPane() {
       }
 
       if (gen !== switchGeneration) return;
+
+      // Rehydrate latestSettledTurn from the most recent completed row.
+      // We ask for the two most recent turns so a crashed-then-completed
+      // sequence can skip over the in-flight row and still find the prior
+      // settled one. This is a defensive fetch — the happy path is a
+      // single "most recent = settled" row.
+      try {
+        const recent = (await ListRecentTurns(newThread.id, 2)) as TurnRow[] | null;
+        if (gen !== switchGeneration) return;
+        if (recent && recent.length > 0) {
+          const settled = recent.find(
+            (row) => row.completedAt !== null && row.completedAt !== undefined,
+          );
+          if (settled) {
+            latestSettledTurn = turnRowToSettled(settled);
+          }
+        }
+      } catch (err) {
+        if (gen !== switchGeneration) return;
+        // Rehydration is best-effort — a fetch failure shouldn't block the
+        // thread from rendering items. Log and proceed with
+        // latestSettledTurn=null (the completion divider just won't appear
+        // for the prior turn).
+        console.error('Failed to rehydrate recent turns:', err);
+      }
+
+      if (gen !== switchGeneration) return;
       loading = false;
     },
 
@@ -231,6 +434,9 @@ export function createThreadPane() {
       activeArtifactId = null;
       pendingDesignOptions = null;
       designViewport = 'desktop';
+      activeTurn = null;
+      latestSettledTurn = null;
+      subagentNotifications = [];
       diffPanel.clearForThread();
       // Invalidate any in-flight switchThread so its late resolutions can't
       // repopulate the pane we just cleared.
@@ -313,6 +519,65 @@ export function createThreadPane() {
 
     setProviderBanner(status: ProviderStatusEvent | null): void {
       providerBanner = status;
+    },
+
+    // --- Turn lifecycle mutations ---
+
+    /**
+     * Flip the pane into "turn in flight" on `provider:turn_started`. Safe
+     * to call repeatedly — a re-emission (Claude re-init after interrupt)
+     * maps back to the same turnId and leaves startedAt as the
+     * authoritative first-wall-clock the working indicator anchors on.
+     * Idempotent by turnId: a second call with the same id preserves the
+     * existing startedAt so the on-screen counter doesn't reset mid-turn.
+     */
+    setActiveTurn(turn: ActiveTurn): void {
+      if (activeTurn !== null && activeTurn.turnId === turn.turnId) {
+        // Preserve the original startedAt so the working indicator's
+        // elapsed-seconds counter doesn't rewind. turnIndex can shift
+        // only if the caller changed turns entirely, which the guard
+        // above excludes.
+        return;
+      }
+      activeTurn = turn;
+    },
+
+    /**
+     * Settle the current turn on `provider:turn_completed`. Clears the
+     * live `activeTurn` and writes `latestSettledTurn` so the completion
+     * divider can render above the assistant message this settled. Safe
+     * to call when `activeTurn` is already null (recovered turn that
+     * the backend re-settles).
+     */
+    settleTurn(settled: SettledTurn): void {
+      activeTurn = null;
+      latestSettledTurn = settled;
+    },
+
+    /**
+     * Reset both turn-lifecycle slots without rehydrating. Used by the
+     * frontend on explicit "clear this pane" paths that aren't a full
+     * switchThread — e.g. a user-triggered stop that leaves the pane in
+     * a known-quiet state until the next wire push.
+     */
+    clearTurnState(): void {
+      activeTurn = null;
+      latestSettledTurn = null;
+    },
+
+    /**
+     * Append a subagent notification. No UI consumer today; bounded by
+     * subagentNotificationLimit so a misbehaving provider can't grow the
+     * array without bound. Oldest entries fall off the front once the
+     * cap is exceeded.
+     */
+    appendSubagentNotification(evt: SubagentNotificationEvent): void {
+      const next = subagentNotifications.concat(evt);
+      if (next.length > subagentNotificationLimit) {
+        subagentNotifications = next.slice(next.length - subagentNotificationLimit);
+      } else {
+        subagentNotifications = next;
+      }
     },
 
     replaceThread(nextThread: Thread): void {
