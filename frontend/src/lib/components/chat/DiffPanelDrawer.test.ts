@@ -49,7 +49,7 @@ describe('<DiffPanelDrawer>', () => {
     setBindingMock('GetTurnDiff', async () => '');
     setBindingMock('GetCheckpointToWorktreeDiff', async () => '');
     setBindingMock('GetWorkingTreeDiff', async () => '');
-    setBindingMock('GetPayloadData', async () => '');
+    setBindingMock('GetPayloadData', async () => ({ data: '', html: '' }));
   });
 
   it('loads checkpoints on mount and auto-selects the latest turn diff', async () => {
@@ -96,7 +96,7 @@ describe('<DiffPanelDrawer>', () => {
         }),
       }),
     ]);
-    const getPayload = setBindingMock('GetPayloadData', async (payloadId: string) => `diff:${payloadId}`);
+    const getPayload = setBindingMock('GetPayloadData', async (payloadId: string) => ({ data: `diff:${payloadId}`, html: '' }));
 
     const { getByTestId, findByTestId } = render(DiffPanelDrawer, { props: { pane } });
     await fireEvent.click(getByTestId('diff-source-tab-cumulative'));

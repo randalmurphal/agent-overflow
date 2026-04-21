@@ -48,10 +48,11 @@ describe('<ToolResultDropdown>', () => {
   it('loads payload data on expand and shows the body', async () => {
     setBindingMock('GetPayloadPreview', async () => ({
       data: 'line 1\nline 2',
+      html: 'line 1\nline 2',
       totalSize: 20,
       isComplete: true,
     }));
-    setBindingMock('GetPayloadData', async () => 'unused');
+    setBindingMock('GetPayloadData', async () => ({ data: 'unused', html: 'unused' }));
     const { getByTestId } = render(ToolResultDropdown, {
       props: {
         item: makeItem({
@@ -93,10 +94,11 @@ describe('<ToolResultDropdown>', () => {
   it('discards expanded payload data on collapse and refetches preview on re-open', async () => {
     setBindingMock('GetPayloadPreview', async () => ({
       data: 'preview body',
+      html: 'preview body',
       totalSize: 128 * 1024,
       isComplete: false,
     }));
-    setBindingMock('GetPayloadData', async () => 'full body');
+    setBindingMock('GetPayloadData', async () => ({ data: 'full body', html: 'full body' }));
     const { getByTestId } = render(ToolResultDropdown, {
       props: {
         item: makeItem({

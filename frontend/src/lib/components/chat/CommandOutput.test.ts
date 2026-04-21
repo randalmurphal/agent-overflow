@@ -44,57 +44,58 @@ describe('<CommandOutput>', () => {
     cleanup();
   });
 
-  it('renders ANSI escapes in the preview as styled spans, not raw escape text', async () => {
-    // The body carries the \x1b[31m…\x1b[0m sequence as raw bytes.
-    // ansiToHtml converts it to <span class="text-red-400">red</span>;
-    // if the conversion path broke, the literal escape string would
-    // survive into the DOM and the user would see garbage.
-    //
-    // Empty payloadId short-circuits the lazy payload-preview fetch
-    // (loadPreview bails on falsy id), so displayData stays null and
-    // the template falls through to the inline meta.preview — which is
-    // the path we want to pin through ansiToHtml.
-    const ansiPreview = '\x1b[31mred\x1b[0m then plain';
+  it('paints server-rendered ANSI html in the expanded <pre>', async () => {
+    // The Go-side ANSI renderer emits stable `term-*` classes around
+    // colored segments. CommandOutput paints the HTML via {@html}, so we
+    // stub GetPayloadPreview to hand back the span the server would
+    // produce, then verify it lands in the DOM under the expected class.
+    setBindingMock('GetPayloadPreview', async () => ({
+      data: '\x1b[31mred\x1b[0m then plain',
+      html: '<span class="term-fg31">red</span> then plain',
+      totalSize: 32,
+      isComplete: true,
+    }));
+
     const { getByRole, container } = render(CommandOutput, {
       props: {
         item: makeItem({ id: 'tool-cmd', kind: 'tool_call' }),
-        meta: commandMeta({ command: 'ls', preview: ansiPreview, lineCount: 1 }),
-        payloadId: '',
+        meta: commandMeta({ command: 'ls', preview: '', lineCount: 1 }),
+        payloadId: 'cmd-payload',
       },
     });
 
-    // Expand so the <pre> containing the preview mounts.
     await fireEvent.click(getByRole('button', { name: /Toggle command output/i }));
     await Promise.resolve();
     await Promise.resolve();
 
     const pre = container.querySelector('pre');
     if (!pre) throw new Error('expected <pre> for the command output body');
-
-    const styledSpans = pre.querySelectorAll('span.text-red-400');
+    const styledSpans = pre.querySelectorAll('span.term-fg31');
     expect(styledSpans.length).toBeGreaterThan(0);
     expect(styledSpans[0]?.textContent).toBe('red');
-
-    // The raw escape code must NOT survive into the rendered DOM.
-    expect(pre.textContent).toContain('red');
     expect(pre.textContent).toContain(' then plain');
+    // The raw escape must not land in the DOM — server strips it.
     expect(pre.innerHTML).not.toContain('\u001b[');
-    expect(pre.textContent).not.toContain('\u001b[');
   });
 
-  it('escapes HTML-looking text even when no ANSI codes are present', async () => {
-    // Defensive pair: ansiToHtml's "no escapes" fast path still has to
-    // escape raw HTML. A regression that printed the preview verbatim
-    // via {@html} would render the script tag as a real node.
+  it('paints server-escaped HTML so script tags never become live nodes', async () => {
+    // The Go renderer escapes HTML before handing bytes to the frontend,
+    // so the html channel is safe to drop through {@html}. This test
+    // pins that contract by stubbing what the backend would return for
+    // a dangerous payload and verifying no live <script> ends up in
+    // the DOM.
+    setBindingMock('GetPayloadPreview', async () => ({
+      data: '<script>alert(1)</script>',
+      html: '&lt;script&gt;alert(1)&lt;/script&gt;',
+      totalSize: 30,
+      isComplete: true,
+    }));
+
     const { getByRole, container } = render(CommandOutput, {
       props: {
         item: makeItem({ id: 'tool-cmd', kind: 'tool_call' }),
-        meta: commandMeta({
-          command: 'echo',
-          preview: '<script>alert(1)</script>',
-          lineCount: 1,
-        }),
-        payloadId: '',
+        meta: commandMeta({ command: 'echo', preview: '', lineCount: 1 }),
+        payloadId: 'cmd-payload',
       },
     });
     await fireEvent.click(getByRole('button', { name: /Toggle command output/i }));
@@ -103,8 +104,6 @@ describe('<CommandOutput>', () => {
 
     const pre = container.querySelector('pre');
     if (!pre) throw new Error('expected <pre>');
-    // jsdom normalizes innerHTML; we check the HTML source directly
-    // so a literal <script> tag would still fail the assertion.
     expect(pre.innerHTML).not.toContain('<script>');
     expect(pre.innerHTML).toContain('&lt;script&gt;');
     expect(pre.querySelector('script')).toBeNull();
@@ -116,10 +115,11 @@ describe('<CommandOutput>', () => {
     // lazy-content guarantee that keeps memory bounded.
     const previewMock = setBindingMock('GetPayloadPreview', async () => ({
       data: '\u001b[32mok\u001b[0m',
+      html: '<span class="term-fg32">ok</span>',
       totalSize: 2048,
       isComplete: false,
     }));
-    const dataMock = setBindingMock('GetPayloadData', async () => 'full body');
+    const dataMock = setBindingMock('GetPayloadData', async () => ({ data: 'full body', html: 'full body' }));
 
     const { getByRole } = render(CommandOutput, {
       props: {

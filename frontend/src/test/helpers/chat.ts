@@ -29,6 +29,7 @@ export function makeItem(overrides: Partial<Item> = {}): Item {
     role: 'assistant',
     status: 'completed',
     summary: 'hello',
+    highlightedContent: '',
     createdAt,
     updatedAt: overrides.updatedAt ?? createdAt,
     ...overrides,

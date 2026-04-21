@@ -1,17 +1,14 @@
 <script lang="ts">
   import { fade, scale } from 'svelte/transition';
   import type { ThreadPane } from '../../stores/thread.svelte';
-  import { GetPayloadData, WriteThreadWorkspaceFile } from '../../stores/bindings';
+  import { GetPayloadData, HighlightMarkdown, WriteThreadWorkspaceFile } from '../../stores/bindings';
   import { addToast } from '../../stores/toast.svelte';
   import { copyToClipboard } from '../../utils/clipboard';
   import type { ProposedPlanMeta } from '../../types/models';
-  import Markdown from '../shared/Markdown.svelte';
   import {
-    buildCollapsedProposedPlanPreviewMarkdown,
     buildProposedPlanMarkdownFilename,
     downloadPlanAsTextFile,
     normalizePlanMarkdownForExport,
-    proposedPlanTitle,
     stripDisplayedPlanMarkdown,
   } from '../../utils/proposedPlan';
 
@@ -45,9 +42,9 @@
     }
     loading = true;
     try {
-      const data = await GetPayloadData(payloadId);
-      planMarkdown = data;
-      return data;
+      const content = await GetPayloadData(payloadId);
+      planMarkdown = content.data;
+      return content.data;
     } catch (err) {
       console.error('Failed to load proposed plan:', err);
       addToast('error', 'Failed to load proposed plan');
@@ -56,6 +53,30 @@
       loading = false;
     }
   }
+
+  // ProposedPlanCard applies markdown-level transforms
+  // (stripDisplayedPlanMarkdown strips the title heading; the collapsed
+  // path would truncate) BEFORE rendering, so we can't reuse the
+  // pre-rendered HTML returned by GetPayloadData. Render on demand via
+  // the HighlightMarkdown binding, memoised by the exact markdown we
+  // hand it so flipping expanded ↔ collapsed hits the same cache key
+  // when the underlying source hasn't changed.
+  let displayedHtml = $state<string>('');
+  let lastRenderedSource = '';
+  $effect(() => {
+    const source = displayedMarkdown;
+    if (source === lastRenderedSource) return;
+    lastRenderedSource = source;
+    if (!source) {
+      displayedHtml = '';
+      return;
+    }
+    HighlightMarkdown(source).then((html) => {
+      if (lastRenderedSource === source) {
+        displayedHtml = html;
+      }
+    });
+  });
 
   async function handleToggleExpanded() {
     if (!expanded) {
@@ -208,7 +229,7 @@
 
   <div class="mt-4">
     <div class:overflow-hidden={canCollapse && !expanded} class:max-h-104={canCollapse && !expanded} class="relative">
-      <Markdown content={canCollapse && !expanded ? displayedMarkdown : displayedMarkdown} />
+      <div class="markdown-body">{@html displayedHtml}</div>
       {#if canCollapse && !expanded}
         <div class="pointer-events-none absolute inset-x-0 bottom-0 h-24 bg-linear-to-t from-surface-1 via-surface-1/80 to-transparent"></div>
       {/if}

@@ -152,6 +152,7 @@ describe('<ChatView>', () => {
         role: 'assistant',
         status: 'running',
         summary: 'Bash: sleep 30',
+        highlightedContent: '',
         isBackground: true,
         toolName: 'Bash',
         createdAt: Date.now() - 1_000,

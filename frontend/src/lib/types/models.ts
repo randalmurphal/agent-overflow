@@ -61,6 +61,15 @@ export interface Item {
   role: string;
   status: "streaming" | "running" | "completed" | "errored" | "declined";
   summary: string;
+  /**
+   * Pre-rendered display HTML. Populated by the Go highlighter at write
+   * time for kinds that flow through the kind dispatcher
+   * (assistant_text → markdown; thinking → ANSI). Empty string for
+   * kinds that stay frontend-rendered (diffs, tool_call, user_text).
+   * Render via {@html} — never parse or mutate; the server escapes
+   * untrusted text before returning it.
+   */
+  highlightedContent: string;
   payloadId?: string;
   payloadKind?: string;
   payloadMeta?: string;

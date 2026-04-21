@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { ansiToHtml } from '../../utils/ansi';
   import { MAX_INLINE_BYTES, shouldLazyLoad, truncateForPreview } from '../../utils/inlineThreshold';
   import { createPayloadExpansion, formatPayloadSize } from './payloadExpansion.svelte';
 
@@ -32,7 +31,6 @@
   const previewIsLarge = $derived(shouldLazyLoad(preview));
   const canExpand = $derived(Boolean(payloadId) && (previewIsLarge || expansion.expanded));
   const displayPreview = $derived(truncateForPreview(preview, MAX_INLINE_BYTES));
-  const displayContent = $derived(expansion.displayData ?? displayPreview);
 
   $effect(() => {
     payloadId;
@@ -56,7 +54,7 @@
       Failed to load: {expansion.error}
     </p>
   {:else}
-    <pre class="whitespace-pre-wrap break-words text-xs text-text-secondary" data-testid={expansion.fullData !== null ? 'lazy-content-full' : 'lazy-content-preview'}>{@html ansiToHtml(displayContent)}</pre>
+    <pre class="ansi-body whitespace-pre-wrap break-words text-xs text-text-secondary" data-testid={expansion.fullData !== null ? 'lazy-content-full' : 'lazy-content-preview'}>{@html expansion.displayHtml ?? ''}</pre>
     {#if expansion.hasMore}
       <button
         type="button"

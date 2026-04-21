@@ -10,10 +10,14 @@ describe('payloadExpansion', () => {
   it('loads preview before full payload and discards both on collapse', async () => {
     setBindingMock('GetPayloadPreview', async () => ({
       data: 'PREVIEW',
+      html: '<p>PREVIEW</p>',
       totalSize: 40_960,
       isComplete: false,
     }));
-    setBindingMock('GetPayloadData', async () => 'FULL PAYLOAD');
+    setBindingMock('GetPayloadData', async () => ({
+      data: 'FULL PAYLOAD',
+      html: '<p>FULL PAYLOAD</p>',
+    }));
 
     const expansion = createPayloadExpansion('payload-1');
     await expansion.expand();

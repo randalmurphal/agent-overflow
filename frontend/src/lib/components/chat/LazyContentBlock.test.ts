@@ -62,10 +62,11 @@ describe('<LazyContentBlock>', () => {
   it('does not call payload bindings on mount — only on click', () => {
     const preview = setBindingMock('GetPayloadPreview', async () => ({
       data: 'PREVIEW',
+      html: 'PREVIEW',
       totalSize: 12,
       isComplete: true,
     }));
-    const full = setBindingMock('GetPayloadData', async () => 'FULL BODY');
+    const full = setBindingMock('GetPayloadData', async () => ({ data: 'FULL BODY', html: 'FULL BODY' }));
     render(LazyContentBlock, {
       props: { payloadId: 'p1', preview: 'a'.repeat(MAX_INLINE_BYTES + 1) },
     });
@@ -76,10 +77,11 @@ describe('<LazyContentBlock>', () => {
   it('fetches the preview on expand and the full body only when requested', async () => {
     setBindingMock('GetPayloadPreview', async () => ({
       data: 'PREVIEW BODY',
+      html: 'PREVIEW BODY',
       totalSize: 64 * 1024,
       isComplete: false,
     }));
-    setBindingMock('GetPayloadData', async () => 'FULL BODY CONTENT');
+    setBindingMock('GetPayloadData', async () => ({ data: 'FULL BODY CONTENT', html: 'FULL BODY CONTENT' }));
     const preview = 'a'.repeat(MAX_INLINE_BYTES + 1);
     const { getByTestId } = render(LazyContentBlock, {
       props: { payloadId: 'p1', preview },
@@ -106,10 +108,11 @@ describe('<LazyContentBlock>', () => {
   it('discarding on collapse causes re-expand to refetch the preview', async () => {
     setBindingMock('GetPayloadPreview', async () => ({
       data: 'PREVIEW',
+      html: 'PREVIEW',
       totalSize: 8 * 1024,
       isComplete: true,
     }));
-    setBindingMock('GetPayloadData', async () => 'FULL');
+    setBindingMock('GetPayloadData', async () => ({ data: 'FULL', html: 'FULL' }));
     const preview = 'a'.repeat(MAX_INLINE_BYTES + 1);
     const { getByTestId, queryByTestId } = render(LazyContentBlock, {
       props: { payloadId: 'p1', preview },

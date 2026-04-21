@@ -11,7 +11,16 @@ export interface PayloadExpansionHandle {
   readonly totalSize: number;
   readonly isComplete: boolean;
   readonly hasMore: boolean;
+  /**
+   * Raw payload bytes. Used for clipboard copy, save-to-file, and
+   * any caller that needs to run a transform before rendering.
+   */
   readonly displayData: string | null;
+  /**
+   * Pre-rendered display HTML from Go. Use with {@html}. Empty for
+   * payload kinds the backend does not server-render (diffs, unknown).
+   */
+  readonly displayHtml: string | null;
   toggle(): Promise<void>;
   expand(): Promise<void>;
   collapse(): void;
@@ -30,7 +39,9 @@ export function createPayloadExpansion(
   let loadingFull = $state(false);
   let error = $state<string | null>(null);
   let previewData = $state<string | null>(null);
+  let previewHtml = $state<string | null>(null);
   let fullData = $state<string | null>(null);
+  let fullHtml = $state<string | null>(null);
   let totalSize = $state(0);
   let isComplete = $state(true);
 
@@ -48,7 +59,9 @@ export function createPayloadExpansion(
   function clearLoadedData(): void {
     error = null;
     previewData = null;
+    previewHtml = null;
     fullData = null;
+    fullHtml = null;
     totalSize = 0;
     isComplete = true;
   }
@@ -66,6 +79,7 @@ export function createPayloadExpansion(
       const result = await GetPayloadPreview(id, previewBytes);
       if (generation !== requestGeneration || !expanded) return;
       previewData = result.data;
+      previewHtml = result.html ?? '';
       totalSize = result.totalSize;
       isComplete = result.isComplete;
     } catch (err) {
@@ -110,10 +124,11 @@ export function createPayloadExpansion(
     error = null;
 
     try {
-      const data = await GetPayloadData(id);
+      const content = await GetPayloadData(id);
       if (generation !== requestGeneration || !expanded) return;
-      fullData = data;
-      totalSize = Math.max(totalSize, data.length);
+      fullData = content.data;
+      fullHtml = content.html ?? '';
+      totalSize = Math.max(totalSize, content.data.length);
     } catch (err) {
       if (generation !== requestGeneration || !expanded) return;
       error = err instanceof Error ? err.message : String(err);
@@ -140,6 +155,7 @@ export function createPayloadExpansion(
       return expanded && previewData !== null && !isComplete && fullData === null;
     },
     get displayData() { return fullData ?? previewData; },
+    get displayHtml() { return fullHtml ?? previewHtml; },
     toggle,
     expand,
     collapse,

@@ -1,7 +1,6 @@
 <script lang="ts">
   import { slide } from 'svelte/transition';
   import type { CommandOutputMeta, Item } from '../../types/models';
-  import { ansiToHtml } from '../../utils/ansi';
   import ToolDecisionChip from './ToolDecisionChip.svelte';
   import { createPayloadExpansion, formatPayloadSize } from './payloadExpansion.svelte';
 
@@ -49,7 +48,7 @@
       {:else if expansion.error}
         <p class="text-xs text-error" role="alert">Failed to load output: {expansion.error}</p>
       {:else}
-        <pre class="font-mono text-xs whitespace-pre text-text-secondary">{@html ansiToHtml(expansion.displayData ?? meta.preview)}</pre>
+        <pre class="ansi-body font-mono text-xs whitespace-pre text-text-secondary">{@html expansion.displayHtml ?? ''}</pre>
         {#if expansion.hasMore}
           <button
             type="button"

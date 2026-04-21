@@ -137,6 +137,16 @@ export class ChannelMessage {
              */
             this["content"] = "";
         }
+        if (!("highlightedContent" in $$source)) {
+            /**
+             * HighlightedContent is the Chroma-rendered HTML for Content. Channel
+             * messages are always markdown, so this column is always populated for
+             * new writes. Empty for rows inserted before migration v19.
+             * @member
+             * @type {string}
+             */
+            this["highlightedContent"] = "";
+        }
         if (!("createdAt" in $$source)) {
             /**
              * @member
@@ -556,6 +566,18 @@ export class Item {
              * @type {string}
              */
             this["summary"] = "";
+        }
+        if (!("highlightedContent" in $$source)) {
+            /**
+             * HighlightedContent is pre-rendered HTML for Summary (Chroma-highlighted
+             * markdown for assistant_text / proposed_plan, ANSI spans for thinking).
+             * Empty string for kinds that don't get server-rendered (user_text,
+             * tool_call, tool_completion, error, compaction) — the frontend treats
+             * empty as "fall back to rendering summary as plain text".
+             * @member
+             * @type {string}
+             */
+            this["highlightedContent"] = "";
         }
         if (/** @type {any} */(false)) {
             /**

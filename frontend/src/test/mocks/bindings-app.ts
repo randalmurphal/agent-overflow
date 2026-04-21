@@ -104,6 +104,7 @@ export const GenerateCommitMessage = dispatch('GenerateCommitMessage');
 
 export const GetPayloadPreview = dispatch('GetPayloadPreview');
 export const GetPayloadData = dispatch('GetPayloadData');
+export const HighlightMarkdown = dispatch('HighlightMarkdown');
 export const ListItems = dispatch('ListItems');
 export const ListPayloadMetas = dispatch('ListPayloadMetas');
 

@@ -1,4 +1,6 @@
 @import "tailwindcss";
+@import "./styles/chroma-dark.css";
+@import "./styles/chroma-light.css";
 
 :root {
   --surface-0: oklch(0.145 0.014 285.82);
@@ -103,3 +105,144 @@ body::selection {
   content-visibility: auto;
   contain-intrinsic-size: auto 120px;
 }
+
+/*
+ * Markdown rendering. The server emits plain goldmark-shaped HTML
+ * (<h1>/<ul>/<p>/<pre>/...); these rules port the visual spacing and
+ * sizing that the former Svelte Markdown component applied inline via
+ * Tailwind classes. The container reads the ambient color, so nesting
+ * inside bubbles of any color works without override.
+ */
+.markdown-body {
+  font-size: 0.875rem;
+  line-height: 1.55;
+}
+.markdown-body > :first-child { margin-top: 0; }
+.markdown-body > :last-child { margin-bottom: 0; }
+.markdown-body h1 {
+  font-size: 1.125rem;
+  font-weight: 600;
+  margin: 0.75rem 0 0.25rem;
+}
+.markdown-body h2 {
+  font-size: 1rem;
+  font-weight: 600;
+  margin: 0.625rem 0 0.25rem;
+}
+.markdown-body h3 {
+  font-size: 0.9375rem;
+  font-weight: 600;
+  margin: 0.5rem 0 0.125rem;
+}
+.markdown-body p {
+  margin: 0.25rem 0;
+  white-space: pre-wrap;
+}
+.markdown-body ul,
+.markdown-body ol {
+  margin: 0.25rem 0;
+  padding-left: 1.25rem;
+}
+.markdown-body li { margin: 0.125rem 0; }
+.markdown-body a { color: var(--accent); }
+.markdown-body a:hover { text-decoration: underline; }
+.markdown-body code {
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 0.9em;
+  background: var(--surface-0);
+  padding: 0.05rem 0.3rem;
+  border-radius: 0.25rem;
+}
+.markdown-body pre {
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 0.8125rem;
+  background: var(--surface-0);
+  border: 1px solid var(--border);
+  border-radius: 0.375rem;
+  padding: 0.75rem;
+  margin: 0.5rem 0;
+  overflow-x: auto;
+}
+.markdown-body pre code {
+  background: transparent;
+  padding: 0;
+  border-radius: 0;
+  font-size: inherit;
+}
+.markdown-body blockquote {
+  border-left: 3px solid var(--border);
+  padding-left: 0.75rem;
+  color: var(--text-secondary);
+  margin: 0.5rem 0;
+}
+
+/*
+ * Code-block wrapper + copy button. Emitted by the Go markdown renderer
+ * around every fenced block (see internal/highlight/markdown.go).
+ * The delegated click listener in codeCopy.ts reads the sibling <pre>'s
+ * text content; styles only set the position, hover reveal, and success /
+ * error states.
+ */
+.markdown-body .ch-wrap { position: relative; }
+.markdown-body .ch-wrap .ch-copy {
+  position: absolute;
+  top: 0.4rem;
+  right: 0.4rem;
+  font-size: 0.7rem;
+  line-height: 1;
+  padding: 0.25rem 0.5rem;
+  border-radius: 0.25rem;
+  border: 1px solid var(--border);
+  background: var(--surface-0);
+  color: var(--text-secondary);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s ease-out;
+}
+.markdown-body .ch-wrap:hover .ch-copy,
+.markdown-body .ch-wrap .ch-copy:focus-visible {
+  opacity: 1;
+}
+.markdown-body .ch-wrap .ch-copy[data-copy-state="copied"] {
+  color: var(--success);
+  border-color: color-mix(in oklab, var(--success) 45%, transparent);
+}
+.markdown-body .ch-wrap .ch-copy[data-copy-state="error"] {
+  color: var(--error);
+  border-color: color-mix(in oklab, var(--error) 45%, transparent);
+}
+
+/*
+ * ANSI rendering. terminal-to-html emits stable `term-fg<code>` and
+ * `term-bg<code>` classes matching SGR codes. These rules map the
+ * most common color codes to the design-token palette so colored
+ * command output, colored tool results, and colored thinking blocks
+ * read the same color identity as the rest of the UI.
+ */
+.ansi-body { color: inherit; }
+.ansi-body .term-fg30 { color: #4b5563; }
+.ansi-body .term-fg31 { color: oklch(0.7 0.17 27); }   /* red */
+.ansi-body .term-fg32 { color: oklch(0.75 0.15 150); } /* green */
+.ansi-body .term-fg33 { color: oklch(0.82 0.14 85); }  /* yellow */
+.ansi-body .term-fg34 { color: oklch(0.72 0.14 250); } /* blue */
+.ansi-body .term-fg35 { color: oklch(0.75 0.16 320); } /* magenta */
+.ansi-body .term-fg36 { color: oklch(0.8 0.12 205); }  /* cyan */
+.ansi-body .term-fg37 { color: var(--text-primary); }  /* white */
+.ansi-body .term-fg90 { color: var(--text-secondary); }
+.ansi-body .term-fg91 { color: oklch(0.78 0.15 27); }
+.ansi-body .term-fg92 { color: oklch(0.82 0.14 150); }
+.ansi-body .term-fg93 { color: oklch(0.88 0.13 85); }
+.ansi-body .term-fg94 { color: oklch(0.8 0.13 250); }
+.ansi-body .term-fg95 { color: oklch(0.82 0.15 320); }
+.ansi-body .term-fg96 { color: oklch(0.86 0.11 205); }
+.ansi-body .term-fg97 { color: #ffffff; }
+.ansi-body .term-bg40 { background: #111827; }
+.ansi-body .term-bg41 { background: color-mix(in oklab, oklch(0.55 0.18 27) 60%, transparent); }
+.ansi-body .term-bg42 { background: color-mix(in oklab, oklch(0.55 0.16 150) 55%, transparent); }
+.ansi-body .term-bg43 { background: color-mix(in oklab, oklch(0.7 0.15 85) 50%, transparent); }
+.ansi-body .term-bg44 { background: color-mix(in oklab, oklch(0.55 0.14 250) 55%, transparent); }
+.ansi-body .term-bg45 { background: color-mix(in oklab, oklch(0.6 0.17 320) 55%, transparent); }
+.ansi-body .term-bg46 { background: color-mix(in oklab, oklch(0.65 0.13 205) 55%, transparent); }
+.ansi-body .term-bg47 { background: color-mix(in oklab, var(--text-primary) 15%, transparent); }
+.ansi-body .term-fg1 { font-weight: 600; }    /* bold */
+.ansi-body .term-fg4 { text-decoration: underline; }

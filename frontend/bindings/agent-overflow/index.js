@@ -14,6 +14,7 @@ export {
     Draft,
     GeneratedCommitMessage,
     Keybinding,
+    PayloadContent,
     PayloadPreview,
     TerminalChip,
     TerminalHandle,

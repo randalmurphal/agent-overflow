@@ -19,6 +19,7 @@ function item(overrides: Partial<Item> & { id: string }): Item {
     role: 'assistant',
     status: 'running',
     summary: '',
+    highlightedContent: '',
     createdAt: 0,
     updatedAt: 0,
     ...overrides,

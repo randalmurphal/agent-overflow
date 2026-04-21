@@ -26,6 +26,7 @@
   import { clearCommandRegistry } from './lib/stores/commandRegistry.svelte';
   import { registerBuiltinCommands, makeCommandContext } from './lib/stores/builtinCommands.svelte';
   import { filterThreads } from './lib/stores/threadFilter.svelte';
+  import { registerCodeCopyListener } from './lib/utils/codeCopy';
 
   let showSettings = $state(false);
   let discussionStartFor = $state<Thread | null>(null);
@@ -114,6 +115,7 @@
     const cleanupEvents = setupEventListeners();
     refreshThreads();
     loadSettings();
+    registerCodeCopyListener();
 
     // Register the built-in commands. The hooks close over stable references
     // so commands see the live pane state each time they run.

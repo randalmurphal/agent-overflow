@@ -1,7 +1,6 @@
 <script lang="ts">
   import { slide } from 'svelte/transition';
   import type { Item } from '../../types/models';
-  import { ansiToHtml } from '../../utils/ansi';
   import { createPayloadExpansion, formatPayloadSize } from './payloadExpansion.svelte';
 
   let { item }: { item: Item } = $props();
@@ -42,7 +41,7 @@
       {:else if expansion.error}
         <p class="text-xs text-error" role="alert">Failed to load: {expansion.error}</p>
       {:else}
-        <pre class="text-xs text-text-secondary whitespace-pre-wrap font-mono leading-relaxed italic">{@html ansiToHtml(expansion.displayData ?? item.summary)}</pre>
+        <pre class="ansi-body text-xs text-text-secondary whitespace-pre-wrap font-mono leading-relaxed italic">{@html expansion.displayHtml ?? item.highlightedContent}</pre>
         {#if expansion.hasMore}
           <button
             type="button"

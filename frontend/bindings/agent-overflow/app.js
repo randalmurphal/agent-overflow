@@ -378,12 +378,19 @@ export function GetModelsForProvider(providerName) {
 }
 
 /**
- * GetPayloadData returns a payload body as a string for the frontend.
+ * GetPayloadData returns a payload body alongside its pre-rendered
+ * display HTML for the frontend. The kind-dispatched renderer runs on
+ * demand here rather than persisting a column on the payloads table —
+ * payload expansions are cold reads (only when the user expands) and
+ * render cost is ~1 ms per 32 KB, so paying at binding time keeps the
+ * data fresh on renderer upgrades and avoids a wasted streaming write.
  * @param {string} payloadID
- * @returns {$CancellablePromise<string>}
+ * @returns {$CancellablePromise<$models.PayloadContent>}
  */
 export function GetPayloadData(payloadID) {
-    return $Call.ByID(3448919335, payloadID);
+    return $Call.ByID(3448919335, payloadID).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType14($result);
+    }));
 }
 
 /**
@@ -393,7 +400,7 @@ export function GetPayloadData(payloadID) {
  */
 export function GetPayloadPreview(payloadID, maxBytes) {
     return $Call.ByID(4070214921, payloadID, maxBytes).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType14($result);
+        return $$createType15($result);
     }));
 }
 
@@ -407,7 +414,7 @@ export function GetPayloadPreview(payloadID, maxBytes) {
  */
 export function GetProviderStatuses() {
     return $Call.ByID(3829328996).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType16($result);
+        return $$createType17($result);
     }));
 }
 
@@ -417,7 +424,7 @@ export function GetProviderStatuses() {
  */
 export function GetSettings() {
     return $Call.ByID(2554697378).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType17($result);
+        return $$createType18($result);
     }));
 }
 
@@ -519,7 +526,7 @@ export function GitCheckout(threadID, branch) {
  */
 export function GitCommit(threadID, subject, body) {
     return $Call.ByID(1971060042, threadID, subject, body).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType18($result);
+        return $$createType19($result);
     }));
 }
 
@@ -544,7 +551,7 @@ export function GitCreateBranch(threadID, name) {
  */
 export function GitCreatePR(threadID, title, body, draft) {
     return $Call.ByID(4106667105, threadID, title, body, draft).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType18($result);
+        return $$createType19($result);
     }));
 }
 
@@ -565,7 +572,7 @@ export function GitCreateWorktree(threadID, branch) {
  */
 export function GitListBranches(threadID) {
     return $Call.ByID(2693102179, threadID).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType20($result);
+        return $$createType21($result);
     }));
 }
 
@@ -576,7 +583,7 @@ export function GitListBranches(threadID) {
  */
 export function GitListWorktrees(threadID) {
     return $Call.ByID(3232495403, threadID).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType22($result);
+        return $$createType23($result);
     }));
 }
 
@@ -587,7 +594,7 @@ export function GitListWorktrees(threadID) {
  */
 export function GitPull(threadID) {
     return $Call.ByID(3933172764, threadID).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType18($result);
+        return $$createType19($result);
     }));
 }
 
@@ -598,7 +605,7 @@ export function GitPull(threadID) {
  */
 export function GitPush(threadID) {
     return $Call.ByID(4036251239, threadID).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType18($result);
+        return $$createType19($result);
     }));
 }
 
@@ -619,6 +626,20 @@ export function GitRemoveWorktree(threadID) {
  */
 export function GitStageAll(threadID) {
     return $Call.ByID(548906954, threadID);
+}
+
+/**
+ * HighlightMarkdown renders arbitrary markdown through the shared
+ * highlighter. Surfaces that transform raw markdown before display
+ * (ProposedPlanCard strips the title heading, truncates for collapsed
+ * previews) can't use a pre-rendered payload HTML blob because the
+ * transforms must happen at the markdown level. They call this binding
+ * after applying their transforms.
+ * @param {string} input
+ * @returns {$CancellablePromise<string>}
+ */
+export function HighlightMarkdown(input) {
+    return $Call.ByID(1566741474, input);
 }
 
 /**
@@ -647,7 +668,7 @@ export function InterruptTurn(threadID) {
  */
 export function ListAttachments(threadID) {
     return $Call.ByID(1730798413, threadID).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType24($result);
+        return $$createType25($result);
     }));
 }
 
@@ -658,7 +679,7 @@ export function ListAttachments(threadID) {
  */
 export function ListDesignArtifacts(threadID) {
     return $Call.ByID(4255572490, threadID).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType26($result);
+        return $$createType27($result);
     }));
 }
 
@@ -669,7 +690,7 @@ export function ListDesignArtifacts(threadID) {
  */
 export function ListDiscussions(scope) {
     return $Call.ByID(942288562, scope).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType27($result);
+        return $$createType28($result);
     }));
 }
 
@@ -680,7 +701,7 @@ export function ListDiscussions(scope) {
  */
 export function ListItems(threadID) {
     return $Call.ByID(2158085763, threadID).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType29($result);
+        return $$createType30($result);
     }));
 }
 
@@ -691,7 +712,7 @@ export function ListItems(threadID) {
  */
 export function ListPayloadMetas(threadID) {
     return $Call.ByID(1007133701, threadID).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType31($result);
+        return $$createType32($result);
     }));
 }
 
@@ -702,7 +723,7 @@ export function ListPayloadMetas(threadID) {
  */
 export function ListProjects() {
     return $Call.ByID(2721360259).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType33($result);
+        return $$createType34($result);
     }));
 }
 
@@ -722,7 +743,7 @@ export function ListProjects() {
  */
 export function ListRecentTurns(threadID, limit) {
     return $Call.ByID(1083162294, threadID, limit).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType35($result);
+        return $$createType36($result);
     }));
 }
 
@@ -733,7 +754,7 @@ export function ListRecentTurns(threadID, limit) {
  */
 export function ListTerminals(threadID) {
     return $Call.ByID(2445206506, threadID).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType37($result);
+        return $$createType38($result);
     }));
 }
 
@@ -746,7 +767,7 @@ export function ListTerminals(threadID) {
  */
 export function ListThreadCheckpoints(threadID) {
     return $Call.ByID(1853132444, threadID).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType39($result);
+        return $$createType40($result);
     }));
 }
 
@@ -760,7 +781,7 @@ export function ListThreadCheckpoints(threadID) {
  */
 export function ListThreads() {
     return $Call.ByID(1090132042).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType40($result);
+        return $$createType41($result);
     }));
 }
 
@@ -773,7 +794,7 @@ export function ListThreads() {
  */
 export function OpenTerminal(threadID, opts) {
     return $Call.ByID(2247958725, threadID, opts).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType41($result);
+        return $$createType42($result);
     }));
 }
 
@@ -802,7 +823,7 @@ export function PostChannelMessage(channelID, content) {
  */
 export function ProbeClaudeAccount() {
     return $Call.ByID(1313986574).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType42($result);
+        return $$createType43($result);
     }));
 }
 
@@ -861,7 +882,7 @@ export function RenameThread(id, title) {
  */
 export function ReplayManager() {
     return $Call.ByID(3320777729).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType44($result);
+        return $$createType45($result);
     }));
 }
 
@@ -902,7 +923,7 @@ export function RespondToApproval(threadID, response) {
  */
 export function RestartTerminal(terminalID) {
     return $Call.ByID(4152403588, terminalID).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType41($result);
+        return $$createType42($result);
     }));
 }
 
@@ -968,7 +989,7 @@ export function SavePayloadToFile(payloadID) {
  */
 export function SearchThreadMessages(query, limit) {
     return $Call.ByID(3644945077, query, limit).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType46($result);
+        return $$createType47($result);
     }));
 }
 
@@ -982,7 +1003,7 @@ export function SearchThreadMessages(query, limit) {
  */
 export function SearchWorkspaceFiles(threadID, query, limit) {
     return $Call.ByID(3852272821, threadID, query, limit).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType47($result);
+        return $$createType48($result);
     }));
 }
 
@@ -1011,7 +1032,7 @@ export function SendMessage(threadID, content) {
  */
 export function SetThreadRuntimeMode(threadID, mode) {
     return $Call.ByID(1115610690, threadID, mode).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType48($result);
+        return $$createType49($result);
     }));
 }
 
@@ -1068,7 +1089,7 @@ export function SwitchThread(threadID) {
  */
 export function Telemetry() {
     return $Call.ByID(669486408).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType50($result);
+        return $$createType51($result);
     }));
 }
 
@@ -1128,7 +1149,7 @@ export function UpdateKeybindings(bindings) {
  */
 export function UpdateSettings(patch) {
     return $Call.ByID(2894041249, patch).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType17($result);
+        return $$createType18($result);
     }));
 }
 
@@ -1276,7 +1297,7 @@ export function UpdateThreadWorkspace(id, path) {
  */
 export function UploadAttachment(threadID, filename, mimeType, dataB64) {
     return $Call.ByID(2485473713, threadID, filename, mimeType, dataB64).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType23($result);
+        return $$createType24($result);
     }));
 }
 
@@ -1320,40 +1341,41 @@ const $$createType10 = $models.Keybinding.createFrom;
 const $$createType11 = $Create.Array($$createType10);
 const $$createType12 = provider$0.ModelInfo.createFrom;
 const $$createType13 = $Create.Array($$createType12);
-const $$createType14 = $models.PayloadPreview.createFrom;
-const $$createType15 = provider$0.ProviderStatus.createFrom;
-const $$createType16 = $Create.Array($$createType15);
-const $$createType17 = settings$0.Settings.createFrom;
-const $$createType18 = git$0.GitActionResult.createFrom;
-const $$createType19 = git$0.GitBranch.createFrom;
-const $$createType20 = $Create.Array($$createType19);
-const $$createType21 = git$0.Worktree.createFrom;
-const $$createType22 = $Create.Array($$createType21);
-const $$createType23 = store$0.Attachment.createFrom;
-const $$createType24 = $Create.Array($$createType23);
-const $$createType25 = store$0.DesignArtifact.createFrom;
-const $$createType26 = $Create.Array($$createType25);
-const $$createType27 = $Create.Array($$createType7);
-const $$createType28 = store$0.Item.createFrom;
-const $$createType29 = $Create.Array($$createType28);
-const $$createType30 = store$0.PayloadMeta.createFrom;
-const $$createType31 = $Create.Array($$createType30);
-const $$createType32 = store$0.ProjectWithCounts.createFrom;
-const $$createType33 = $Create.Array($$createType32);
-const $$createType34 = store$0.Turn.createFrom;
-const $$createType35 = $Create.Array($$createType34);
-const $$createType36 = terminal$0.SessionSummary.createFrom;
-const $$createType37 = $Create.Array($$createType36);
-const $$createType38 = store$0.Checkpoint.createFrom;
-const $$createType39 = $Create.Array($$createType38);
-const $$createType40 = $Create.Array($$createType2);
-const $$createType41 = $models.TerminalHandle.createFrom;
-const $$createType42 = provider$0.AccountInfo.createFrom;
-const $$createType43 = replay$0.Manager.createFrom;
-const $$createType44 = $Create.Nullable($$createType43);
-const $$createType45 = store$0.ThreadMessageHit.createFrom;
-const $$createType46 = $Create.Array($$createType45);
-const $$createType47 = $models.WorkspaceFileSearchResult.createFrom;
-const $$createType48 = $models.ThreadRuntimeModeChangedEvent.createFrom;
-const $$createType49 = otel$0.Provider.createFrom;
-const $$createType50 = $Create.Nullable($$createType49);
+const $$createType14 = $models.PayloadContent.createFrom;
+const $$createType15 = $models.PayloadPreview.createFrom;
+const $$createType16 = provider$0.ProviderStatus.createFrom;
+const $$createType17 = $Create.Array($$createType16);
+const $$createType18 = settings$0.Settings.createFrom;
+const $$createType19 = git$0.GitActionResult.createFrom;
+const $$createType20 = git$0.GitBranch.createFrom;
+const $$createType21 = $Create.Array($$createType20);
+const $$createType22 = git$0.Worktree.createFrom;
+const $$createType23 = $Create.Array($$createType22);
+const $$createType24 = store$0.Attachment.createFrom;
+const $$createType25 = $Create.Array($$createType24);
+const $$createType26 = store$0.DesignArtifact.createFrom;
+const $$createType27 = $Create.Array($$createType26);
+const $$createType28 = $Create.Array($$createType7);
+const $$createType29 = store$0.Item.createFrom;
+const $$createType30 = $Create.Array($$createType29);
+const $$createType31 = store$0.PayloadMeta.createFrom;
+const $$createType32 = $Create.Array($$createType31);
+const $$createType33 = store$0.ProjectWithCounts.createFrom;
+const $$createType34 = $Create.Array($$createType33);
+const $$createType35 = store$0.Turn.createFrom;
+const $$createType36 = $Create.Array($$createType35);
+const $$createType37 = terminal$0.SessionSummary.createFrom;
+const $$createType38 = $Create.Array($$createType37);
+const $$createType39 = store$0.Checkpoint.createFrom;
+const $$createType40 = $Create.Array($$createType39);
+const $$createType41 = $Create.Array($$createType2);
+const $$createType42 = $models.TerminalHandle.createFrom;
+const $$createType43 = provider$0.AccountInfo.createFrom;
+const $$createType44 = replay$0.Manager.createFrom;
+const $$createType45 = $Create.Nullable($$createType44);
+const $$createType46 = store$0.ThreadMessageHit.createFrom;
+const $$createType47 = $Create.Array($$createType46);
+const $$createType48 = $models.WorkspaceFileSearchResult.createFrom;
+const $$createType49 = $models.ThreadRuntimeModeChangedEvent.createFrom;
+const $$createType50 = otel$0.Provider.createFrom;
+const $$createType51 = $Create.Nullable($$createType50);

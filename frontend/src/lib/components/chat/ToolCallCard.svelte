@@ -30,7 +30,6 @@
     ProposedPlanMeta,
     ToolResultMeta,
   } from '../../types/models';
-  import { ansiToHtml } from '../../utils/ansi';
   import CommandOutput from './CommandOutput.svelte';
   import DiffPreview from './DiffPreview.svelte';
   import ProposedPlanCard from './ProposedPlanCard.svelte';
@@ -262,9 +261,9 @@
           </p>
         {:else if expansion.displayData !== null}
           <pre
-            class="max-h-60 overflow-auto whitespace-pre-wrap break-words px-3 py-2 font-mono text-xs leading-relaxed text-text-secondary"
+            class="ansi-body max-h-60 overflow-auto whitespace-pre-wrap break-words px-3 py-2 font-mono text-xs leading-relaxed text-text-secondary"
             data-testid="tool-call-card-output"
-          >{@html ansiToHtml(expansion.displayData)}</pre>
+          >{@html expansion.displayHtml ?? ''}</pre>
           {#if expansion.hasMore}
             <button
               type="button"

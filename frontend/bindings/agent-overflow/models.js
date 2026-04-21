@@ -421,6 +421,46 @@ export class Keybinding {
     }
 }
 
+/**
+ * PayloadContent bundles a payload's raw bytes (Data) with its pre-rendered
+ * display HTML (Html). Raw-data paths (copy to clipboard, save to file,
+ * transforms before re-render) read Data; view paths use Html directly.
+ */
+export class PayloadContent {
+    /**
+     * Creates a new PayloadContent instance.
+     * @param {Partial<PayloadContent>} [$$source = {}] - The source object to create the PayloadContent.
+     */
+    constructor($$source = {}) {
+        if (!("data" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["data"] = "";
+        }
+        if (!("html" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["html"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new PayloadContent instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {PayloadContent}
+     */
+    static createFrom($$source = {}) {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new PayloadContent(/** @type {Partial<PayloadContent>} */($$parsedSource));
+    }
+}
+
 export class PayloadPreview {
     /**
      * Creates a new PayloadPreview instance.
@@ -433,6 +473,18 @@ export class PayloadPreview {
              * @type {string}
              */
             this["data"] = "";
+        }
+        if (!("html" in $$source)) {
+            /**
+             * Html is the pre-rendered display HTML for the payload's kind
+             * (markdown → Chroma-highlighted fences; thinking / command_output /
+             * tool_result → terminal-to-html ANSI spans). Kinds the dispatcher
+             * does not server-render (diffs, unknown) leave this empty and the
+             * frontend falls back to its structured rendering path.
+             * @member
+             * @type {string}
+             */
+            this["html"] = "";
         }
         if (!("totalSize" in $$source)) {
             /**

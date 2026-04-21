@@ -1,7 +1,6 @@
 <script lang="ts">
   import { slide } from 'svelte/transition';
   import type { Item } from '../../types/models';
-  import { ansiToHtml } from '../../utils/ansi';
   import ToolDecisionChip from './ToolDecisionChip.svelte';
   import { createPayloadExpansion, formatPayloadSize } from './payloadExpansion.svelte';
 
@@ -180,9 +179,9 @@
         </p>
       {:else if expansion.displayData !== null}
         <pre
-          class="max-h-60 overflow-auto whitespace-pre-wrap break-words px-3 py-2 font-mono text-xs leading-relaxed text-text-secondary"
+          class="ansi-body max-h-60 overflow-auto whitespace-pre-wrap break-words px-3 py-2 font-mono text-xs leading-relaxed text-text-secondary"
           data-testid="tool-result-dropdown-output"
-        >{@html ansiToHtml(expansion.displayData)}</pre>
+        >{@html expansion.displayHtml ?? ''}</pre>
         {#if expansion.hasMore}
           <button
             type="button"

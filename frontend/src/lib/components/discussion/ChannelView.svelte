@@ -6,7 +6,6 @@
   import { getSettings } from '../../stores/settings.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import { relativeTime } from '../../utils/format';
-  import Markdown from '../shared/Markdown.svelte';
 
   let {
     pane,
@@ -224,9 +223,11 @@
               {relativeTime(msg.createdAt, getSettings().timestampFormat)}
             </span>
           </div>
-          <div class="text-sm text-text-primary break-words">
-            <Markdown content={msg.content} />
-          </div>
+          {#if msg.highlightedContent}
+            <div class="markdown-body text-sm text-text-primary break-words">{@html msg.highlightedContent}</div>
+          {:else}
+            <p class="whitespace-pre-wrap text-sm text-text-primary break-words">{msg.content}</p>
+          {/if}
         </div>
       {/each}
     {/if}

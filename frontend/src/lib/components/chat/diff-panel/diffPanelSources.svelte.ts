@@ -132,7 +132,7 @@ export function createDiffPanelSources(
     try {
       const text = await aggregateAgentDiffs(
         opts.getCumulativeEntries(),
-        (id) => GetPayloadData(id) as Promise<string>,
+        async (id) => (await GetPayloadData(id)).data,
         opts.store.cumulativeCache,
       );
       cumulativeText = text;

@@ -96,7 +96,8 @@ describe('<MessageTimeline>', () => {
   });
 
   it('renders proposed plans from payload-bearing tool rows', async () => {
-    setBindingMock('GetPayloadData', async () => '# Ship it');
+    setBindingMock('GetPayloadData', async () => ({ data: '# Ship it', html: '<h1>Ship it</h1>' }));
+    setBindingMock('HighlightMarkdown', async (md: string) => `<div>${md}</div>`);
     const pane = await buildPane(undefined, [
       makeItem({
         id: 'plan-1',
