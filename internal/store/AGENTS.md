@@ -59,6 +59,26 @@ session already has the answer.
   source of truth; `SessionOptions` in `thread_view.go` translates it
   for the provider.
 
+## Recent schema changes (v19) — server-rendered HTML
+
+- `items.highlighted_content` and `channel_messages.highlighted_content`
+  (both `TEXT NOT NULL DEFAULT ''`) store the display HTML the
+  frontend paints via `{@html}`. The renderer lives in
+  `internal/highlight/`; the store never imports it. Callers pass a
+  pre-rendered string on insert/upsert or use the two-method streaming
+  hot path described below.
+- **Streaming hot-path writer** is split into two single-purpose
+  methods so the render call runs outside the SQLite writer lock:
+  `AppendItemSummary(id, delta, updatedAt)` (summary + thread bump in
+  one TX) followed by the caller's own render then
+  `UpdateItemHighlight(id, html)` (one `UPDATE`). A reader can briefly
+  observe a newer summary with the prior render's HTML; that is
+  benign — `AssistantMessage.svelte` falls back to the previously
+  rendered HTML (not empty) until the next render catches up.
+- Empty `highlighted_content` is a legitimate state — the frontend
+  treats it as "render summary/content as plain text". Do NOT encode
+  "no render wanted" as a marker string.
+
 ## Extension points
 
 - To add a new column / index / CHECK: write a new migration — never

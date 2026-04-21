@@ -13,7 +13,17 @@ spans. Frontend consumers paint the pre-rendered HTML via `{@html}`.
   (`chromahtml.WithClasses(true)`, `chromahtml.ClassPrefix("ch-")`).
 - `ansi.go` — `buildkite/terminal-to-html/v3` wrapper.
 - `dispatch.go` — `RenderForKind` table and exported `Kind*` string
-  constants.
+  constants. The constants cover BOTH `items.kind` values (e.g.
+  `KindAssistantText`, `KindThinking`) and `payloads.kind` values (e.g.
+  `KindProposedPlan`, `KindCommandOutput`, `KindToolResult`) — the same
+  dispatcher serves both write paths (item persist in triage + payload
+  binding in `app.go`). `KindProposedPlan` is only reached via the
+  payload-binding route (`GetPayloadData`/`GetPayloadPreview`); items
+  of kind `proposed_plan` do not exist because the triage layer stores
+  proposed plans as `tool_call` rows with a `proposed_plan` payload.
+- `safelinks.go` — overrides goldmark's default AutoLink renderer with
+  one that runs `IsDangerousURL` on the URL; without this,
+  `<javascript:alert(1)>` et al. survive as live `href=`.
 - `highlight_test.go` — plain/markdown/fence/oversize/ansi/unicode cases
   plus concurrent-safety smoke.
 - `adversarial_test.go` — XSS and dangerous-URI cases kept separate so the

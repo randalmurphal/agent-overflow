@@ -110,10 +110,10 @@ Authoritative mental model:
 The Router carries a narrow set of per-thread maps (interrupt queue,
 open turn index, content-block counters, active streaming block flags,
 pending approvals / approval decisions, pending command inline diffs,
-captured-turn guard, turn spans, stopped-thread markers) that exist
-purely to correlate one event to the next within a turn — not to
-duplicate the store or the provider session. All of these are bounded
-and have an explicit cleanup path:
+captured-turn guard, turn spans, stopped-thread markers, streaming
+render throttle) that exist purely to correlate one event to the next
+within a turn — not to duplicate the store or the provider session.
+All of these are bounded and have an explicit cleanup path:
 
 - Per-turn state clears on `EventTurnComplete` (and on a matching
   error branch for errored turns).
@@ -124,6 +124,32 @@ and have an explicit cleanup path:
 The one deliberate exception is the interrupt queue, which can span a
 turn boundary because its contract is "persist queued events once the
 interrupt lifts."
+
+## Server-rendered display HTML
+
+Every `persistItem` call (and the streaming two-phase append) runs raw
+text through `internal/highlight/Renderer` so every row hitting SQLite
+carries its own `highlighted_content` — the frontend paints it via
+`{@html}` with no per-render cost on the UI thread. Constructors take a
+non-nil `*highlight.Renderer`; the same instance is shared across the
+Router and the `ChannelService`.
+
+Streaming uses the split `AppendItemSummary` + `UpdateItemHighlight`
+pair in `internal/store`, with the render running between them so the
+SQLite writer lock is never held while goldmark/chroma/terminal-to-html
+parses. Render frequency is throttled per-item via
+`Router.nextHighlightAt`: one render per
+`streamingHighlightIntervalMs` (50 ms) per streaming item id. Every
+settle path (`settleStreamingText`, `settleStreamingThinking`,
+`flipTurnItemsErrored`) clears `item.HighlightedContent` so
+`persistItem` forces a final render against the completed (or
+suffixed) summary — no throttled delta leaves the UI with stale HTML
+at turn end.
+
+`internal/highlight/dispatch.go` is the single source of truth for
+which kinds are server-rendered. Do NOT build a parallel dispatch
+table here; call `RenderForKind` and let the highlight package own the
+list.
 
 ## Extension points
 

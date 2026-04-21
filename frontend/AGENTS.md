@@ -61,6 +61,39 @@ Svelte 5 + Vite 8 (Rolldown) + Tailwind 4 + TypeScript.
 - `app.Event.On('error', ...)` — toast + status bar.
 - Custom event names per feature are defined in `stores/events.ts`.
 
+## Painter pattern (server-rendered HTML)
+
+Non-interactive content — assistant markdown, discussion channel
+messages, and the five ANSI payload-expansion surfaces
+(`ThinkingBlock`, `CommandOutput`, `LazyContentBlock`,
+`ToolResultDropdown`, `ToolCallCard`) — is rendered in Go by
+`internal/highlight/`. The frontend paints the result via `{@html}` and
+never pulls in a markdown / Shiki / ANSI library of its own. Each
+consumer follows the same three-line pattern:
+
+```svelte
+{#if item.highlightedContent}
+  <div class="markdown-body">{@html item.highlightedContent}</div>
+{:else}
+  <p class="whitespace-pre-wrap">{item.summary}</p>
+{/if}
+```
+
+Empty `highlightedContent` is a valid state — streaming renders are
+throttled in Go, and the plain-text fallback shows the latest summary
+until the next render catches up. Copy / download paths read the raw
+`summary` / `content` / `data` fields, never the HTML.
+
+Proposed plans are the one exception: they apply a markdown-level
+transform (`stripDisplayedPlanMarkdown`) before rendering and so call
+the `HighlightMarkdown` binding on demand instead of consuming the
+server-persisted HTML. Diffs stay frontend-rendered because they have
+per-line interactive structure.
+
+Do NOT re-introduce Shiki, marked, dompurify, or any ANSI-to-HTML
+parser in the webview. If a new content surface needs server-side
+rendering, extend `internal/highlight/RenderForKind`.
+
 ## Extension points
 
 - To add a new event kind rendered by chat: add a kind constant in
