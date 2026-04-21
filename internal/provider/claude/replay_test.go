@@ -497,6 +497,186 @@ func TestReplay_NDJsonTaskOutputMulti(t *testing.T) {
 	}
 }
 
+// TestReplay_NDJsonOutlivesTurn2 extends the outlives scenario by
+// continuing the same parser session into a fresh turn 2 captured
+// separately in /tmp/claude-bg-spike/ndjson_outlives_turn2.log.
+//
+// The captured session_id matches ndjson_outlives.log, which means the
+// same parser instance would observe both streams in production: turn
+// 1 fires the backgrounded Bash, turn 1's `result` closes the turn,
+// then the backgrounded bash's `task_updated` arrives — followed by a
+// fresh user message that starts a new turn 2 with its own init +
+// `result`. The spec invariant (invariant 24) says the bg task's
+// terminal must continue to key off the turn-1 tool_use_id even though
+// turn 2 is now active, and turn 2's own `result` envelope must emit
+// exactly one EventTurnComplete without retroactively touching the
+// turn-1 bg launch.
+//
+// Fixtures:
+//   - /tmp/claude-bg-spike/ndjson_outlives.log (turn 1 + task_updated
+//     after result; also contains the first re-init for turn 2 and
+//     its "Background task finished" result).
+//   - /tmp/claude-bg-spike/ndjson_outlives_turn2.log (a second fresh
+//     turn 2 capture for the same session — simulates the user typing
+//     "hi" and the agent responding while the parser has already
+//     forgotten the bg task in its task map).
+//
+// We replay both through ONE Parser so the cross-line state behaves
+// exactly as it would at runtime. The assertions then pin:
+//   - Exactly one EventBackgroundTaskTerminal for the bg Bash, keyed
+//     by the turn-1 tool_use_id (never re-attributed to turn 2).
+//   - Turn 2's result (the final `result` line in the second fixture)
+//     emits a single EventTurnComplete and does NOT produce any
+//     additional tool-lifecycle events for the turn-1 bg launch.
+func TestReplay_NDJsonOutlivesTurn2(t *testing.T) {
+	const (
+		outlivesPath = "/tmp/claude-bg-spike/ndjson_outlives.log"
+		turn2Path    = "/tmp/claude-bg-spike/ndjson_outlives_turn2.log"
+		bgBash       = "toolu_01NoZSorBGb7jSQMhNrs6qZj"
+		bgTaskID     = "bwh4ptwpo"
+	)
+
+	// Drive BOTH fixtures through the same Parser instance so the
+	// task_id ↔ tool_use_id correlation map carries across the session
+	// boundary just like the real CLI read loop would.
+	parser := NewParser()
+	var events []provider.ProviderEvent
+	for _, path := range []string{outlivesPath, turn2Path} {
+		lines := loadNDJSONFixture(t, path)
+		for i, line := range lines {
+			got, err := parser.ParseLine(testThread, line)
+			if err != nil {
+				t.Fatalf("%s line %d (%.80s): parse error: %v", path, i+1, line, err)
+			}
+			events = append(events, got...)
+		}
+	}
+
+	lifecycle := filterKinds(events,
+		provider.EventInit,
+		provider.EventToolStart,
+		provider.EventToolComplete,
+		provider.EventBackgroundTaskTerminal,
+		provider.EventTurnComplete,
+	)
+
+	// Count turn completes across both fixtures. ndjson_outlives.log
+	// already contains two `result` lines (turn 1 + the re-init turn
+	// after the bg task notification); ndjson_outlives_turn2.log adds a
+	// third. So we expect exactly three EventTurnComplete emissions —
+	// anything else means the parser started spuriously force-closing
+	// turn 1 on top of turn 2's real completion.
+	var turnCompletes []provider.ProviderEvent
+	for _, evt := range lifecycle {
+		if evt.Kind == provider.EventTurnComplete {
+			turnCompletes = append(turnCompletes, evt)
+		}
+	}
+	if len(turnCompletes) != 3 {
+		t.Fatalf("expected 3 EventTurnComplete (outlives turn1 + outlives turn2 + standalone turn2), got %d\n%s",
+			len(turnCompletes), dumpLifecycle(lifecycle))
+	}
+
+	// Exactly one EventBackgroundTaskTerminal for the bg Bash — the
+	// task_updated terminal in outlives.log. task_notification must NOT
+	// have produced a second terminal (invariant 21).
+	bgTerminals := 0
+	var bgTerminal provider.ProviderEvent
+	for _, evt := range lifecycle {
+		if evt.Kind != provider.EventBackgroundTaskTerminal {
+			continue
+		}
+		if evt.ItemID != bgBash {
+			t.Fatalf("EventBackgroundTaskTerminal with wrong item id: got %q, want %q", evt.ItemID, bgBash)
+		}
+		bgTerminal = evt
+		bgTerminals++
+	}
+	if bgTerminals != 1 {
+		t.Fatalf("expected exactly 1 EventBackgroundTaskTerminal for bg bash (invariant 24), got %d\n%s",
+			bgTerminals, dumpLifecycle(lifecycle))
+	}
+
+	// The terminal's Meta must carry the bg task_id (confirming the
+	// correlation map kept the turn-1 ↔ tool_use_id pairing rather than
+	// re-attributing to a turn-2 tool_use).
+	var terminalMeta map[string]any
+	if err := json.Unmarshal(bgTerminal.Meta, &terminalMeta); err != nil {
+		t.Fatalf("bg terminal meta unmarshal: %v", err)
+	}
+	if terminalMeta["task_id"] != bgTaskID {
+		t.Fatalf("bg terminal task_id = %v, want %s (re-attributed to turn 2?)", terminalMeta["task_id"], bgTaskID)
+	}
+
+	// The terminal must land BEFORE the final turn 2 result — it's the
+	// authoritative "bg work finished after turn-1 result" signal. The
+	// first turn_complete in lifecycle is turn 1's; the terminal
+	// follows it; the remaining turn_completes are turn 2 + standalone
+	// turn 2 and must come later than the terminal.
+	firstTurnComplete := -1
+	terminalIdx := -1
+	lastTurnComplete := -1
+	for i, evt := range lifecycle {
+		if evt.Kind == provider.EventTurnComplete {
+			if firstTurnComplete < 0 {
+				firstTurnComplete = i
+			}
+			lastTurnComplete = i
+		}
+		if evt.Kind == provider.EventBackgroundTaskTerminal && evt.ItemID == bgBash && terminalIdx < 0 {
+			terminalIdx = i
+		}
+	}
+	if firstTurnComplete < 0 || terminalIdx < 0 || lastTurnComplete < 0 {
+		t.Fatalf("missing anchor events in lifecycle:\n%s", dumpLifecycle(lifecycle))
+	}
+	if terminalIdx <= firstTurnComplete {
+		t.Fatalf("bg task terminal landed before turn-1 complete: terminalIdx=%d firstTurnComplete=%d\n%s",
+			terminalIdx, firstTurnComplete, dumpLifecycle(lifecycle))
+	}
+	if lastTurnComplete <= terminalIdx {
+		t.Fatalf("expected a later turn_complete after the bg terminal (turn 2 standalone): terminalIdx=%d lastTurnComplete=%d\n%s",
+			terminalIdx, lastTurnComplete, dumpLifecycle(lifecycle))
+	}
+
+	// Turn 2's result must not have produced any parser-side event for
+	// the turn-1 bg tool_use_id. Concretely: no EventToolComplete for
+	// bgBash after the first turn_complete — only the in-turn-1
+	// placeholder completion is legitimate.
+	bgCompletionsBeforeFirstTurn := 0
+	bgCompletionsAfterFirstTurn := 0
+	for i, evt := range lifecycle {
+		if evt.Kind != provider.EventToolComplete || evt.ItemID != bgBash {
+			continue
+		}
+		if i < firstTurnComplete {
+			bgCompletionsBeforeFirstTurn++
+		} else {
+			bgCompletionsAfterFirstTurn++
+		}
+	}
+	if bgCompletionsBeforeFirstTurn != 1 {
+		t.Fatalf("expected 1 bg placeholder EventToolComplete before turn-1 complete, got %d", bgCompletionsBeforeFirstTurn)
+	}
+	if bgCompletionsAfterFirstTurn != 0 {
+		t.Fatalf("turn 2's result spuriously emitted %d EventToolComplete for turn-1 bg tool_use_id (%s)\n%s",
+			bgCompletionsAfterFirstTurn, bgBash, dumpLifecycle(lifecycle))
+	}
+
+	// As a belt-and-braces check: no EventToolStart for bgBash after
+	// the first turn_complete either — turn 2 must not rewrite the
+	// turn-1 launch.
+	for i, evt := range lifecycle {
+		if i <= firstTurnComplete {
+			continue
+		}
+		if evt.Kind == provider.EventToolStart && evt.ItemID == bgBash {
+			t.Fatalf("turn 2 spuriously re-emitted EventToolStart for turn-1 bg tool_use_id at index %d\n%s",
+				i, dumpLifecycle(lifecycle))
+		}
+	}
+}
+
 // dumpLifecycle returns a printable listing of the lifecycle events
 // for use in fatal-message context. Keeps test failure output
 // self-contained without dumping the entire fixture.

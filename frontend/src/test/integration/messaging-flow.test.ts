@@ -288,4 +288,253 @@ describe('App integration — messaging flow', () => {
     const pane = paneMod.getMainPane();
     await waitFor(() => expect(pane.isTurnActive).toBe(false));
   });
+
+  // End-to-end turn lifecycle — every stage on the real wire path:
+  // turn_started → tool lifecycle → turn_completed → divider renders
+  // above the assistant message. This test is intentionally broad: it
+  // is the single integration test that proves all of the invariant-22
+  // pieces line up together (pane.activeTurn flip, pane.latestSettledTurn
+  // write, CompletionDivider DOM render, ChatWorkingIndicator DOM hide).
+  //
+  // We pick the ordering where turn_completed arrives BEFORE the final
+  // assistant_text upsert. That is the common real-wire ordering
+  // observed in captured ndjson_bash / ndjson_task fixtures — Claude's
+  // `result` envelope fires once the stream ends but the final
+  // `assistant` envelope's last content block has already been
+  // emitted upstream in the stream. The alternate ordering
+  // (assistant_text first) is the simpler of the two and is already
+  // covered implicitly by the "marks the pane idle" test above. We
+  // pick the harder one here so a regression that assumed items must
+  // arrive before the turn_completed gets caught.
+  it('end-to-end turn cycle: turn_started → tool lifecycle → turn_completed → divider renders', async () => {
+    const consoleErr = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const { queryByTestId, findByTestId, findByText } = await mountWithActiveThread();
+    const paneMod = await import('../../lib/stores/panes.svelte');
+    const pane = paneMod.getMainPane();
+
+    // 1. Turn starts. Working indicator becomes visible once the pane
+    // flips to an active turn; pane.activeTurn is populated; pane has
+    // no settled turn yet.
+    emitWailsEvent('provider:turn_started', {
+      threadId: 'thread-1',
+      turnId: 't1',
+      turnIndex: 0,
+      startedAt: 1,
+    });
+    await waitFor(() => {
+      expect(pane.activeTurn).toEqual({ turnId: 't1', turnIndex: 0, startedAt: 1 });
+    });
+    expect(pane.isTurnActive).toBe(true);
+    expect(pane.latestSettledTurn).toBeNull();
+    // ChatWorkingIndicator is mounted exclusively off pane.isTurnActive.
+    await findByTestId('chat-working-indicator');
+
+    // 2. Tool call upserts: running → completed. The row appears in
+    // the timeline as a ToolCallCard. This exercises the mid-turn
+    // item lifecycle — status flip from running to completed.
+    emitWailsEvent('provider:item_upsert', {
+      id: 'tool-xyz',
+      threadId: 'thread-1',
+      turnIndex: 0,
+      itemIndex: 0,
+      kind: 'tool_call',
+      role: 'assistant',
+      summary: 'Bash: echo hello',
+      status: 'running',
+      isBackground: false,
+      createdAt: 10,
+      updatedAt: 10,
+    });
+    await flush();
+    expect(await findByText(/Bash: echo hello/)).toBeInTheDocument();
+
+    emitWailsEvent('provider:item_upsert', {
+      id: 'tool-xyz',
+      threadId: 'thread-1',
+      turnIndex: 0,
+      itemIndex: 0,
+      kind: 'tool_call',
+      role: 'assistant',
+      summary: 'Bash: echo hello',
+      status: 'completed',
+      isBackground: false,
+      createdAt: 10,
+      updatedAt: 20,
+    });
+    await flush();
+
+    // 3. Turn completes. The provider sent turn_completed BEFORE the
+    // final assistant_text item landed — this is the real-world
+    // race. pane.activeTurn MUST flip to null immediately; the
+    // working indicator disappears; latestSettledTurn is populated
+    // with the assistant message id we're expecting to land next.
+    emitWailsEvent('provider:turn_completed', {
+      threadId: 'thread-1',
+      turnId: 't1',
+      turnIndex: 0,
+      startedAt: 1,
+      completedAt: 5000,
+      stopReason: 'end_turn',
+      assistantMessageId: 'assist1',
+      tokenUsage: JSON.stringify({
+        input_tokens: 42,
+        output_tokens: 18,
+        cache_read_input_tokens: 0,
+        total_cost_usd: 0.00123,
+      }),
+    });
+    await waitFor(() => {
+      expect(pane.activeTurn).toBeNull();
+    });
+    expect(pane.isTurnActive).toBe(false);
+    expect(pane.latestSettledTurn?.turnId).toBe('t1');
+    expect(pane.latestSettledTurn?.assistantMessageId).toBe('assist1');
+    expect(pane.latestSettledTurn?.tokenUsage).toEqual({
+      inputTokens: 42,
+      outputTokens: 18,
+      cacheReadInputTokens: 0,
+      totalCostUsd: 0.00123,
+    });
+    // ChatWorkingIndicator unmounts when activeTurn goes null.
+    await waitFor(() => expect(queryByTestId('chat-working-indicator')).toBeNull());
+
+    // At this point the divider has nothing to render above because
+    // assist1 hasn't landed in pane.items yet.
+    expect(queryByTestId('completion-divider')).toBeNull();
+
+    // 4. The final assistant_text arrives. CompletionDivider mounts
+    // immediately before it in the DOM because
+    // latestSettledTurn.assistantMessageId matches.
+    emitWailsEvent('provider:item_upsert', {
+      id: 'assist1',
+      threadId: 'thread-1',
+      turnIndex: 0,
+      itemIndex: 1,
+      kind: 'assistant_text',
+      role: 'assistant',
+      status: 'completed',
+      summary: 'Here is the result: hello\n',
+      createdAt: 6000,
+      updatedAt: 6000,
+    });
+    await flush();
+    const divider = await findByTestId('completion-divider');
+    expect(divider.getAttribute('data-turn-id')).toBe('t1');
+
+    // No console errors throughout — if a later emit handler threw
+    // or a listener swallowed an error, the divider would still
+    // mount but the side-effect would leak here.
+    expect(consoleErr).not.toHaveBeenCalled();
+    consoleErr.mockRestore();
+  });
+
+  // Backgrounded-launch integration: the launch row stays status=running
+  // after turn_completed (invariant 24), the BackgroundTaskTray renders
+  // it as a pending row, the "…" badge renders on the inline card, and
+  // when the sibling tool_completion finally lands the tray row updates
+  // rather than duplicating. This pins the cross-cutting behavior that
+  // was the chief migration risk out of forge's buffered mode.
+  //
+  // BackgroundTaskTray's retention clock is 2 s from completion.createdAt
+  // (COMPLETION_RETENTION_MS). We stamp createdAt using Date.now()
+  // rather than a small static number so the pruning window starts at
+  // test-wall-clock, otherwise the completion would be "aged out"
+  // before it ever renders.
+  it('backgrounded tool outlives turn; badge renders; sibling arrives after', async () => {
+    const { queryByTestId, findByTestId } = await mountWithActiveThread();
+    const paneMod = await import('../../lib/stores/panes.svelte');
+    const pane = paneMod.getMainPane();
+
+    const startedAt = Date.now();
+
+    // 1. Turn starts.
+    emitWailsEvent('provider:turn_started', {
+      threadId: 'thread-1',
+      turnId: 'tbg',
+      turnIndex: 0,
+      startedAt,
+    });
+    await waitFor(() => expect(pane.isTurnActive).toBe(true));
+
+    // 2. Backgrounded tool_call launch (run_in_background:true on the
+    // Claude wire). The launch row stays status=running per invariant
+    // 24 — triage never flips it even at turn-complete.
+    emitWailsEvent('provider:item_upsert', {
+      id: 'bg-launch',
+      threadId: 'thread-1',
+      turnIndex: 0,
+      itemIndex: 0,
+      kind: 'tool_call',
+      role: 'assistant',
+      summary: 'Bash: sleep 10 && echo done',
+      status: 'running',
+      isBackground: true,
+      toolName: 'Bash',
+      createdAt: startedAt + 10,
+      updatedAt: startedAt + 10,
+    });
+    await flush();
+
+    // The inline ToolCallCard renders the "…" backgrounded badge while
+    // status=running AND isBackground=true. This is the spec's sole
+    // render signal for "work dispatched, waiting for sibling."
+    const badge = await findByTestId('tool-call-backgrounded-badge');
+    expect(badge).toBeInTheDocument();
+
+    // 3. Turn ends while the backgrounded work is still in flight.
+    // pane.activeTurn clears, the working indicator hides, and the
+    // launch row is UNTOUCHED (no status flip, no sibling row yet).
+    emitWailsEvent('provider:turn_completed', {
+      threadId: 'thread-1',
+      turnId: 'tbg',
+      turnIndex: 0,
+      startedAt,
+      completedAt: startedAt + 500,
+      stopReason: 'end_turn',
+    });
+    await waitFor(() => expect(pane.activeTurn).toBeNull());
+    await waitFor(() => expect(queryByTestId('chat-working-indicator')).toBeNull());
+
+    // The "…" badge is still present — invariant 24. The launch row
+    // renders as background+running until the sibling terminal lands.
+    expect(queryByTestId('tool-call-backgrounded-badge')).toBeInTheDocument();
+
+    // The background tray now renders the launch — the tray consumes
+    // pane.items and only filters by isBackground/kind/completionOf,
+    // so it picks up the launch regardless of the turn state.
+    const tray = await findByTestId('background-task-tray');
+    expect(tray).toBeInTheDocument();
+    expect((await findByTestId('background-task-tray-count')).textContent).toBe('1');
+
+    // 4. The sibling tool_completion arrives later (task_updated via
+    // EventBackgroundTaskTerminal → triage idempotent sibling upsert).
+    // The tray must pair it with the launch and update the row in
+    // place rather than growing to 2 rows. The completion's createdAt
+    // is near the current wall clock so the tray's 2 s retention
+    // window starts NOW, not in the past.
+    emitWailsEvent('provider:item_upsert', {
+      id: 'complete:bg-launch',
+      threadId: 'thread-1',
+      turnIndex: 0,
+      itemIndex: 1,
+      kind: 'tool_completion',
+      role: 'assistant',
+      summary: 'Bash: sleep 10 && echo done -> done',
+      status: 'completed',
+      isBackground: true,
+      completionOf: 'bg-launch',
+      toolName: 'Bash',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    });
+    await flush();
+
+    // BackgroundTaskTray pairs launch + completion by completionOf;
+    // the tray count stays at 1 (one logical task), and the row
+    // status flips to completed.
+    expect((await findByTestId('background-task-tray-count')).textContent).toBe('1');
+    const rowStatus = await findByTestId('background-task-tray-row-status');
+    expect(rowStatus.getAttribute('data-status')).toBe('completed');
+  });
 });

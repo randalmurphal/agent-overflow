@@ -1039,3 +1039,146 @@ func TestHandleEventBackgroundTaskTerminal_DropsWhenNoLaunch(t *testing.T) {
 		t.Errorf("expected no rows when launch is missing, got %+v", items)
 	}
 }
+
+// TestForceClosedRow_LateCompletionDoesNotResurrect pins the triage
+// behavior for a late EventToolComplete that arrives AFTER the
+// turn-complete safety net (invariant 23) has already force-closed
+// the tool_call row to `errored`.
+//
+// ---- Spec invariant vs current behavior ----
+// The spec-intended invariant (docs/architecture/turn-lifecycle.md
+// §Force-close safety net) is "the turn is over — late completions
+// are noise and must not resurrect the row." In practice that means
+// a force-closed `errored` row should stay `errored` when a stray
+// EventToolComplete lands later, because the timeline has already
+// been rendered and the user has moved on.
+//
+// !!! BEHAVIOR NOTE (flagged for Go worktree follow-up) !!!
+// Today's code in persistToolCallCompletion
+// (internal/triage/tool_lifecycle.go ~L156-231) unconditionally
+// overwrites launch.Status via `launch.Status = completionStatus(meta)`.
+// For a vanilla meta (no is_error, no non-zero exit_code) that
+// returns `completed`, so the late event **RESURRECTS** the
+// force-closed row back to `completed`. Summary, payload, and the
+// force-close marker are also rewritten by
+// buildCompletionSummary/completionPayload.
+//
+// This test pins the CURRENT (resurrecting) behavior so any change
+// to the force-close guard has to update the test deliberately. The
+// recommended fix is to have persistToolCallCompletion bail when
+// `launch.Status != statusRunning` (or when the summary already
+// carries the force-close marker) — see the "expected invariant"
+// assertions at the end of this test, which are commented out until
+// the Go-side fix lands. Flip the `wantResurrect` switch to the
+// spec path in the same commit that adds the guard.
+func TestForceClosedRow_LateCompletionDoesNotResurrect(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	// 1. Turn 1 starts.
+	startedAt := time.UnixMilli(1_700_000_000_000)
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnStart, ThreadID: "t1", TurnIndex: 1,
+		Timestamp: startedAt,
+	}); err != nil {
+		t.Fatalf("turn start: %v", err)
+	}
+
+	// 2. Inline tool_call (not backgrounded) launches.
+	startMeta, _ := json.Marshal(map[string]any{
+		"toolName": "Bash",
+		"input":    map[string]any{"command": "whoami"},
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "late-complete",
+		ItemType: "Bash", Meta: startMeta, Timestamp: startedAt.Add(100 * time.Millisecond),
+	}); err != nil {
+		t.Fatalf("tool start: %v", err)
+	}
+
+	// 3. Turn completes without any matching EventToolComplete —
+	// simulates a dropped tool_result. Force-close flips the row to
+	// errored with the force-close marker.
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnComplete, ThreadID: "t1",
+		Timestamp: startedAt.Add(500 * time.Millisecond),
+	}); err != nil {
+		t.Fatalf("turn complete: %v", err)
+	}
+
+	// Sanity: the force-close safety net ran and left the row errored
+	// with the force-close marker — without this, the later
+	// resurrection assertion wouldn't be meaningful.
+	preLate, ok, err := st.GetItem("late-complete")
+	if err != nil || !ok {
+		t.Fatalf("missing late-complete row before late event: found=%v err=%v", ok, err)
+	}
+	if preLate.Status != statusErrored {
+		t.Fatalf("precondition: expected force-closed row to be errored, got %q — the force-close safety net is not running", preLate.Status)
+	}
+	if !strings.Contains(preLate.Summary, "turn ended with tool unresolved") {
+		t.Fatalf("precondition: expected force-close marker in summary, got %q", preLate.Summary)
+	}
+
+	// 4. A stray EventToolComplete arrives LATE for the same
+	// tool_use_id. This is the "turn is over, drop the stray" case.
+	completeMeta, _ := json.Marshal(map[string]any{"exit_code": 0})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "late-complete",
+		Meta: completeMeta, Content: "final stdout", Timestamp: startedAt.Add(2 * time.Second),
+	}); err != nil {
+		t.Fatalf("late complete: %v", err)
+	}
+
+	postLate, ok, err := st.GetItem("late-complete")
+	if err != nil || !ok {
+		t.Fatalf("missing late-complete row after late event: found=%v err=%v", ok, err)
+	}
+
+	// --- Current (resurrecting) behavior pin ---
+	// Triage's persistToolCallCompletion overwrites launch.Status
+	// unconditionally via `launch.Status = completionStatus(meta)`;
+	// for a vanilla meta without is_error or non-zero exit_code, that
+	// returns `completed`. So the force-closed `errored` row flips
+	// BACK to `completed` — the resurrection the spec asks us to
+	// forbid. Summary is passed through buildCompletionSummary, which
+	// only appends a suffix when meta carries an error signal, so the
+	// previously-appended force-close marker happens to survive in
+	// the launchSummary substring but no new "errored" signal is
+	// added. The net effect is still a resurrected row: the user
+	// sees a green-check "completed" card whose summary text
+	// (because the marker survived) says "turn ended with tool
+	// unresolved" — a confusing mixed message that is exactly why
+	// the spec invariant says "don't resurrect at all."
+	if postLate.Status != statusCompleted {
+		t.Errorf("current behavior pin: expected late EventToolComplete to resurrect the force-closed row to completed (gap from spec invariant 23) — got status=%q, want %q",
+			postLate.Status, statusCompleted)
+	}
+	// Sanity: the summary's marker substring is preserved because
+	// buildCompletionSummary only appends a suffix when meta signals
+	// an error. Pin this so a future refactor that rewrites summary
+	// wholesale can't drift undetected.
+	if !strings.Contains(postLate.Summary, "turn ended with tool unresolved") {
+		t.Errorf("current behavior pin: expected force-close marker substring to survive in summary, got %q", postLate.Summary)
+	}
+
+	// --- Spec-path assertions (toggle on when the guard lands) ---
+	// Enforce the invariant that a force-closed row stays terminal:
+	// status=errored, force-close marker survives, no sibling row.
+	//
+	// if postLate.Status != statusErrored {
+	// 	t.Errorf("spec path: late EventToolComplete resurrected a force-closed row: status=%q, want %q", postLate.Status, statusErrored)
+	// }
+	// if !strings.Contains(postLate.Summary, "turn ended with tool unresolved") {
+	// 	t.Errorf("spec path: force-close marker stripped by late completion: %q", postLate.Summary)
+	// }
+
+	// Inline tool_calls must never produce a sibling tool_completion
+	// row — that rule holds regardless of the resurrection decision
+	// (invariant 5) and is the anchor we can assert today without
+	// waiting on the force-close guard.
+	dones := findItemsByKind(t, st, "t1", itemKindBackgroundDone)
+	if len(dones) != 0 {
+		t.Errorf("late EventToolComplete spuriously created %d tool_completion siblings (invariant 5 violated)", len(dones))
+	}
+}
