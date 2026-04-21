@@ -180,6 +180,59 @@ func TestRenderMarkdownGFMLinkify(t *testing.T) {
 	}
 }
 
+// TestRenderMarkdownMermaidFence pins the mermaid extension: agents
+// emit diagrams inside ```mermaid fences and without the extension
+// those blocks render as raw ASCII-art via the unknown-lang fallback.
+// The output must be a `<pre class="mermaid">` block carrying the raw
+// source so the frontend's lazy mermaid loader can pick it up.
+func TestRenderMarkdownMermaidFence(t *testing.T) {
+	r := newTestRenderer(t)
+	in := "```mermaid\ngraph TD\n  A --> B\n  B --> C\n```\n"
+	out := r.RenderMarkdown(in)
+	if !strings.Contains(out, `<pre class="mermaid">`) {
+		t.Fatalf("missing <pre class=\"mermaid\">: %q", out)
+	}
+	for _, want := range []string{"graph TD", "A --&gt; B", "B --&gt; C"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q in output: %q", want, out)
+		}
+	}
+	// chroma must NOT have highlighted the mermaid source.
+	if strings.Contains(out, `class="ch-`) {
+		t.Fatalf("unexpected chroma classes on mermaid block: %q", out)
+	}
+	// The copy button wrapper should not wrap mermaid diagrams either
+	// (they're not code for copy-to-clipboard).
+	if strings.Contains(out, "ch-copy") {
+		t.Fatalf("mermaid block wrapped with code-copy button: %q", out)
+	}
+}
+
+// TestRenderMarkdownMermaidInfoStringTolerance confirms the lang-token
+// match is robust against the common ```mermaid title="x" variations.
+func TestRenderMarkdownMermaidInfoStringTolerance(t *testing.T) {
+	r := newTestRenderer(t)
+	out := r.RenderMarkdown("```mermaid title=\"x\"\ngraph LR\nA-->B\n```\n")
+	if !strings.Contains(out, `<pre class="mermaid">`) {
+		t.Fatalf("mermaid not detected with extra info attrs: %q", out)
+	}
+}
+
+// TestRenderMarkdownMermaidSourceIsEscaped confirms any angle-bracket
+// characters inside the mermaid source end up escaped — Mermaid parses
+// via textContent which reverses the escape, but the raw <pre> bytes
+// never contain live markup that could break out of the block.
+func TestRenderMarkdownMermaidSourceIsEscaped(t *testing.T) {
+	r := newTestRenderer(t)
+	out := r.RenderMarkdown("```mermaid\ngraph TD\n  A[<script>] --> B\n```\n")
+	if strings.Contains(out, "<script>") {
+		t.Fatalf("unescaped <script> in mermaid block: %q", out)
+	}
+	if !strings.Contains(out, "&lt;script&gt;") {
+		t.Fatalf("expected escaped <script> in source: %q", out)
+	}
+}
+
 // TestRenderMarkdownDetailsBlock pins <details>/<summary> passthrough.
 // Agents use collapsible blocks for long command output and optional
 // context; without the safeHTMLRenderer those would render as literal

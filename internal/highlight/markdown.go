@@ -31,6 +31,10 @@ func newGoldmark(style string) goldmark.Markdown {
 			// URLs, which are not in the dangerous-scheme set, but the
 			// hook keeps future attack surface covered.
 			extension.GFM,
+			// Must run before the highlighting extension so mermaid
+			// fences get rewritten into mermaidBlock nodes before
+			// chroma tries to lex them as source code.
+			mermaidExtension{},
 			highlighting.NewHighlighting(
 				highlighting.WithStyle(style),
 				highlighting.WithFormatOptions(

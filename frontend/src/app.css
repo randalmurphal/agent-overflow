@@ -216,6 +216,25 @@ body::selection {
   color: var(--text-secondary);
 }
 
+/* Mermaid diagrams — the Go renderer emits <pre class="mermaid"> and
+   the lazy loader swaps text for SVG. The raw-source state inherits
+   the <pre> styling; post-render we remove that padding/background so
+   the SVG sits clean on the message background. */
+.markdown-body pre.mermaid {
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 0.8125rem;
+}
+.markdown-body pre.mermaid.mermaid-rendered {
+  background: transparent;
+  border: none;
+  padding: 0.25rem 0;
+  overflow-x: auto;
+  max-width: 100%;
+}
+.markdown-body pre.mermaid.mermaid-error {
+  color: var(--error);
+}
+
 /* Collapsible <details>/<summary>. Passed through by safeHTMLRenderer. */
 .markdown-body details {
   border: 1px solid var(--border);
