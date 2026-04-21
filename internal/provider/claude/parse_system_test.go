@@ -262,12 +262,18 @@ func TestParseResult_NonMatchingErrorNoAbort(t *testing.T) {
 	}
 }
 
-// TestParseResult_IsErrorTrueStillEmitsEventError — we preserve the
-// legacy "is_error=true" → EventError path so a real crash keeps
-// rendering as an error rather than a normal turn-complete.
-func TestParseResult_IsErrorTrueStillEmitsEventError(t *testing.T) {
+// TestParseResult_IsErrorTrueEmitsTurnComplete pins the post-cleanup
+// behaviour: an `is_error: true` result does NOT branch into an
+// EventError. The Python SDK's SDKResultError shape has no `error`
+// (singular) field — only `errors: string[]` — so the legacy branch
+// that read raw["error"] always produced an EventError with empty
+// content (dead code). Instead a result with is_error=true settles
+// through the normal path; interrupted detection still runs via
+// detectInterrupted (reads errors[]), and other error subtypes
+// render as a turn-complete whose shape reflects the wire.
+func TestParseResult_IsErrorTrueEmitsTurnComplete(t *testing.T) {
 	parser := NewParser()
-	line := []byte(`{"type":"result","is_error":true,"error":"boom"}`)
+	line := []byte(`{"type":"result","is_error":true,"errors":["boom"]}`)
 	events, err := parser.ParseLine(testThread, line)
 	if err != nil {
 		t.Fatalf("result: %v", err)
@@ -275,10 +281,7 @@ func TestParseResult_IsErrorTrueStillEmitsEventError(t *testing.T) {
 	if len(events) != 1 {
 		t.Fatalf("expected 1 event, got %d", len(events))
 	}
-	if events[0].Kind != provider.EventError {
-		t.Fatalf("Kind: got %q, want %q", events[0].Kind, provider.EventError)
-	}
-	if events[0].Content != "boom" {
-		t.Fatalf("Content: got %q, want boom", events[0].Content)
+	if events[0].Kind != provider.EventTurnComplete {
+		t.Fatalf("Kind: got %q, want %q", events[0].Kind, provider.EventTurnComplete)
 	}
 }

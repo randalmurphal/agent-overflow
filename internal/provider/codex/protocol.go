@@ -152,35 +152,6 @@ func classifyItemNotification(threadID, method string, params json.RawMessage, n
 	case "item/completed":
 		return classifyItemCompleted(threadID, params, now), true
 
-	case "item/updated":
-		itemID := readNestedString(params, "item", "id")
-		itemType := classifyCodexItemType(params)
-		if itemType == "" {
-			return nil, true
-		}
-		// item/updated is an in-place refresh of a tool_call's summary/meta —
-		// it must NOT reset status back to "running" for rows that have
-		// already completed. Mark the meta with update_only:true so triage
-		// routes this as a partial update instead of a fresh start.
-		//
-		// Run enrichItemMeta first so collab-agent enrichments (toolName,
-		// input.agentsStates, etc.) land on item/updated too — the wire
-		// uses item/updated to push live agentsStates transitions onto
-		// the parent spawn_agent card, so the enrichment has to follow
-		// that path or the frontend sees an update with no live state.
-		updatedMeta := mergeMetaKeys(enrichItemMeta(params), map[string]any{
-			"update_only": true,
-		})
-		return []provider.ProviderEvent{{
-			Kind:      provider.EventToolStart,
-			ThreadID:  threadID,
-			ItemID:    itemID,
-			ItemType:  itemType,
-			Meta:      updatedMeta,
-			Replace:   true,
-			Timestamp: now,
-		}}, true
-
 	case "item/agentMessage/delta":
 		delta := readTopLevelString(params, "delta")
 		if delta == "" {

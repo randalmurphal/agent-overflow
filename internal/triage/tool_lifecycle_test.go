@@ -343,12 +343,14 @@ func TestToolStartWithoutItemIDIsNoop(t *testing.T) {
 	}
 }
 
-// TestToolStartIdempotentOnReplay covers Codex's item/started +
-// item/updated dual emission. The second start with the same id must
-// not collide on the UNIQUE id constraint; instead the row's summary
-// refreshes and is_background can flip if the classifier promoted the
-// tool to background mid-stream. Status stays as-is so a stray late
-// EventToolStart doesn't roll a completed row back to running.
+// TestToolStartIdempotentOnReplay covers duplicate EventToolStart
+// delivery — e.g. Claude's resynthesised system/task_started after a
+// reconnect, which lands a second EventToolStart with the same ItemID.
+// The second start must not collide on the UNIQUE id constraint;
+// instead the row's summary refreshes and is_background can flip if
+// the classifier promoted the tool to background mid-stream. Status
+// stays as-is so a stray late EventToolStart doesn't roll a completed
+// row back to running.
 func TestToolStartIdempotentOnReplay(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
@@ -364,7 +366,8 @@ func TestToolStartIdempotentOnReplay(t *testing.T) {
 		t.Fatalf("first start: %v", err)
 	}
 
-	// Item/updated arrives later with refined input + classifier promotion.
+	// A re-delivery of EventToolStart arrives with refined input +
+	// classifier promotion (e.g. reconnect-driven resynthesis).
 	startMeta2, _ := json.Marshal(map[string]any{
 		"toolName":      "Bash",
 		"input":         map[string]any{"command": "pending command --verbose"},
@@ -734,52 +737,6 @@ func TestTaskUpdatedUnmatchedMetaTaskIDIsDropped(t *testing.T) {
 	}
 }
 
-// TestItemUpdatedDoesNotReopenCompletedToolCall verifies that a Codex
-// item/updated notification arriving AFTER item/completed does not
-// reset the tool_call row's status back to "running". The protocol
-// emitter stamps update_only:true onto the meta and triage must
-// respect it by mutating Summary/Meta only — not Status.
-func TestItemUpdatedDoesNotReopenCompletedToolCall(t *testing.T) {
-	router, st, _ := newTestRouter(t)
-	createTestThread(t, st, "t1")
-
-	startMeta, _ := json.Marshal(map[string]any{"toolName": "Bash"})
-	if err := router.Handle(provider.ProviderEvent{
-		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "tool-u",
-		ItemType: "Bash", Meta: startMeta, Timestamp: time.Now(),
-	}); err != nil {
-		t.Fatalf("start: %v", err)
-	}
-
-	completeMeta, _ := json.Marshal(map[string]any{"exit_code": 0})
-	if err := router.Handle(provider.ProviderEvent{
-		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "tool-u",
-		Meta: completeMeta, Content: "ok", Timestamp: time.Now(),
-	}); err != nil {
-		t.Fatalf("complete: %v", err)
-	}
-
-	// Simulate a late item/updated arriving after completion.
-	updateMeta, _ := json.Marshal(map[string]any{
-		"toolName":    "Bash",
-		"update_only": true,
-	})
-	if err := router.Handle(provider.ProviderEvent{
-		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "tool-u",
-		ItemType: "Bash", Meta: updateMeta, Replace: true, Timestamp: time.Now(),
-	}); err != nil {
-		t.Fatalf("update: %v", err)
-	}
-
-	items := findItemsByKind(t, st, "t1", itemKindToolCall)
-	if len(items) != 1 {
-		t.Fatalf("expected 1 tool_call after update, got %d", len(items))
-	}
-	if items[0].Status != statusCompleted {
-		t.Errorf("status after update_only = %q, want %q (must not reopen)", items[0].Status, statusCompleted)
-	}
-}
-
 // TestHandleEventBackgroundTaskTerminal_InsertsSibling is the Wave 2
 // task-lifecycle contract. A backgrounded launch (is_background=true,
 // status=running) plus a single EventBackgroundTaskTerminal must
@@ -1040,37 +997,13 @@ func TestHandleEventBackgroundTaskTerminal_DropsWhenNoLaunch(t *testing.T) {
 	}
 }
 
-// TestForceClosedRow_LateCompletionDoesNotResurrect pins the triage
-// behavior for a late EventToolComplete that arrives AFTER the
-// turn-complete safety net (invariant 23) has already force-closed
-// the tool_call row to `errored`.
-//
-// ---- Spec invariant vs current behavior ----
-// The spec-intended invariant (docs/architecture/turn-lifecycle.md
-// §Force-close safety net) is "the turn is over — late completions
-// are noise and must not resurrect the row." In practice that means
-// a force-closed `errored` row should stay `errored` when a stray
-// EventToolComplete lands later, because the timeline has already
-// been rendered and the user has moved on.
-//
-// !!! BEHAVIOR NOTE (flagged for Go worktree follow-up) !!!
-// Today's code in persistToolCallCompletion
-// (internal/triage/tool_lifecycle.go ~L156-231) unconditionally
-// overwrites launch.Status via `launch.Status = completionStatus(meta)`.
-// For a vanilla meta (no is_error, no non-zero exit_code) that
-// returns `completed`, so the late event **RESURRECTS** the
-// force-closed row back to `completed`. Summary, payload, and the
-// force-close marker are also rewritten by
-// buildCompletionSummary/completionPayload.
-//
-// This test pins the CURRENT (resurrecting) behavior so any change
-// to the force-close guard has to update the test deliberately. The
-// recommended fix is to have persistToolCallCompletion bail when
-// `launch.Status != statusRunning` (or when the summary already
-// carries the force-close marker) — see the "expected invariant"
-// assertions at the end of this test, which are commented out until
-// the Go-side fix lands. Flip the `wantResurrect` switch to the
-// spec path in the same commit that adds the guard.
+// TestForceClosedRow_LateCompletionDoesNotResurrect pins spec
+// invariant 23 (docs/architecture/turn-lifecycle.md §Force-close
+// safety net): once the turn-complete handler has force-closed a
+// running tool_call to `errored`, a late EventToolComplete is noise
+// and must not resurrect the row. The row stays `errored`, the
+// force-close marker survives, and no sibling tool_completion is
+// written (invariant 5).
 func TestForceClosedRow_LateCompletionDoesNotResurrect(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
@@ -1135,48 +1068,29 @@ func TestForceClosedRow_LateCompletionDoesNotResurrect(t *testing.T) {
 		t.Fatalf("missing late-complete row after late event: found=%v err=%v", ok, err)
 	}
 
-	// --- Current (resurrecting) behavior pin ---
-	// Triage's persistToolCallCompletion overwrites launch.Status
-	// unconditionally via `launch.Status = completionStatus(meta)`;
-	// for a vanilla meta without is_error or non-zero exit_code, that
-	// returns `completed`. So the force-closed `errored` row flips
-	// BACK to `completed` — the resurrection the spec asks us to
-	// forbid. Summary is passed through buildCompletionSummary, which
-	// only appends a suffix when meta carries an error signal, so the
-	// previously-appended force-close marker happens to survive in
-	// the launchSummary substring but no new "errored" signal is
-	// added. The net effect is still a resurrected row: the user
-	// sees a green-check "completed" card whose summary text
-	// (because the marker survived) says "turn ended with tool
-	// unresolved" — a confusing mixed message that is exactly why
-	// the spec invariant says "don't resurrect at all."
-	if postLate.Status != statusCompleted {
-		t.Errorf("current behavior pin: expected late EventToolComplete to resurrect the force-closed row to completed (gap from spec invariant 23) — got status=%q, want %q",
-			postLate.Status, statusCompleted)
+	// Spec invariant 23: a force-closed `errored` row must stay
+	// errored when a stray EventToolComplete lands after turn-complete.
+	// The row has settled and the timeline has been rendered; the late
+	// event is noise.
+	if postLate.Status != statusErrored {
+		t.Errorf("spec invariant 23: late EventToolComplete resurrected a force-closed row: status=%q, want %q", postLate.Status, statusErrored)
 	}
-	// Sanity: the summary's marker substring is preserved because
-	// buildCompletionSummary only appends a suffix when meta signals
-	// an error. Pin this so a future refactor that rewrites summary
-	// wholesale can't drift undetected.
+	// The force-close marker must survive intact — neither stripped
+	// nor duplicated by the dropped late completion.
 	if !strings.Contains(postLate.Summary, "turn ended with tool unresolved") {
-		t.Errorf("current behavior pin: expected force-close marker substring to survive in summary, got %q", postLate.Summary)
+		t.Errorf("spec invariant 23: force-close marker stripped by late completion: %q", postLate.Summary)
 	}
-
-	// --- Spec-path assertions (toggle on when the guard lands) ---
-	// Enforce the invariant that a force-closed row stays terminal:
-	// status=errored, force-close marker survives, no sibling row.
-	//
-	// if postLate.Status != statusErrored {
-	// 	t.Errorf("spec path: late EventToolComplete resurrected a force-closed row: status=%q, want %q", postLate.Status, statusErrored)
-	// }
-	// if !strings.Contains(postLate.Summary, "turn ended with tool unresolved") {
-	// 	t.Errorf("spec path: force-close marker stripped by late completion: %q", postLate.Summary)
-	// }
+	// The pre-late summary and post-late summary must match
+	// byte-for-byte: a dropped event writes nothing at all.
+	if postLate.Summary != preLate.Summary {
+		t.Errorf("spec invariant 23: late completion rewrote summary: pre=%q post=%q", preLate.Summary, postLate.Summary)
+	}
+	if postLate.UpdatedAt != preLate.UpdatedAt {
+		t.Errorf("spec invariant 23: late completion bumped UpdatedAt: pre=%d post=%d", preLate.UpdatedAt, postLate.UpdatedAt)
+	}
 
 	// Inline tool_calls must never produce a sibling tool_completion
-	// row — that rule holds regardless of the resurrection decision
-	// (invariant 5) and is the anchor we can assert today without
-	// waiting on the force-close guard.
+	// row (invariant 5).
 	dones := findItemsByKind(t, st, "t1", itemKindBackgroundDone)
 	if len(dones) != 0 {
 		t.Errorf("late EventToolComplete spuriously created %d tool_completion siblings (invariant 5 violated)", len(dones))

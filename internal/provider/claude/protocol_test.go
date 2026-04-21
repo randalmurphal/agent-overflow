@@ -950,8 +950,15 @@ func TestParseLine_ResultSuccess(t *testing.T) {
 	}
 }
 
-func TestParseLine_ResultError(t *testing.T) {
-	line := []byte(`{"type":"result","is_error":true,"error":"something failed"}`)
+// TestParseLine_ResultIsErrorTrueEmitsTurnComplete pins the
+// post-cleanup behaviour: is_error=true on a result does not branch
+// into EventError. The Python SDK's SDKResultError has no `error`
+// (singular) field — only `errors: string[]` — so the legacy branch
+// was pinning a phantom wire field. The result now settles through
+// the normal EventTurnComplete path; interrupted detection uses
+// errors[] via detectInterrupted.
+func TestParseLine_ResultIsErrorTrueEmitsTurnComplete(t *testing.T) {
+	line := []byte(`{"type":"result","is_error":true,"errors":["something failed"]}`)
 	events, err := ParseLine(testThreadProto, line)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
@@ -959,11 +966,8 @@ func TestParseLine_ResultError(t *testing.T) {
 	if len(events) != 1 {
 		t.Fatalf("expected 1 event, got %d", len(events))
 	}
-	if events[0].Kind != provider.EventError {
-		t.Errorf("kind: got %q, want %q", events[0].Kind, provider.EventError)
-	}
-	if events[0].Content != "something failed" {
-		t.Errorf("content: got %q, want %q", events[0].Content, "something failed")
+	if events[0].Kind != provider.EventTurnComplete {
+		t.Errorf("kind: got %q, want %q", events[0].Kind, provider.EventTurnComplete)
 	}
 }
 

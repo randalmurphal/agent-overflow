@@ -705,16 +705,22 @@ func isChildTurnLifecycleNotification(method string) bool {
 // for the tag constants and `core/tests/suite/subagent_notifications.rs`
 // for the canonical wire shape (test fixture, lines 274-296).
 //
-// The tag payload is a JSON object with at least `agent_id` and
+// The tag payload is a JSON object with at least `agent_path` and
 // `status`; `status` is a CollabAgentStatus value
 // ("completed" | "errored" | "interrupted" | "shutdown" | ...).
 // Additional fields may appear in future Codex versions — we preserve
 // them in `extra` so downstream can opt into richer rendering without
 // a parser update.
+//
+// The wire field is `agent_path` (codex-source's
+// core/src/session_prefix.rs::format_subagent_notification_message).
+// An older field name `agent_id` is accepted as a fallback for
+// backward compatibility with any pre-rename builds; `agent_path` is
+// the fast path and what we forward on.
 type subagentNotification struct {
-	AgentID string         `json:"agent_id"`
-	Status  string         `json:"status"`
-	Extra   map[string]any `json:"-"`
+	AgentPath string         `json:"agent_path"`
+	Status    string         `json:"status"`
+	Extra     map[string]any `json:"-"`
 }
 
 // subagentNotificationPattern matches a single
@@ -728,11 +734,15 @@ var subagentNotificationPattern = regexp.MustCompile(`(?s)<subagent_notification
 // parseSubagentNotifications extracts every
 // <subagent_notification>...</subagent_notification> tag in text,
 // JSON-decoding each body into a subagentNotification. Malformed tags
-// (body isn't JSON, or missing agent_id / status) are silently skipped —
-// surfacing a parse error would leak a Codex-core detail into our UI
-// and a single broken notification should not block the user turn from
-// rendering. Multiple tags per text are supported and returned in the
-// order they appear.
+// (body isn't JSON, or missing agent_path / status) are silently
+// skipped — surfacing a parse error would leak a Codex-core detail
+// into our UI and a single broken notification should not block the
+// user turn from rendering. Multiple tags per text are supported and
+// returned in the order they appear.
+//
+// The production wire field is `agent_path`; an older `agent_id`
+// field is accepted as a fallback so pre-rename Codex builds still
+// round-trip correctly.
 func parseSubagentNotifications(text string) []subagentNotification {
 	if text == "" || !strings.Contains(text, "<subagent_notification>") {
 		return nil
@@ -751,17 +761,24 @@ func parseSubagentNotifications(text string) []subagentNotification {
 		if err := json.Unmarshal([]byte(body), &raw); err != nil {
 			continue
 		}
-		agentID, _ := raw["agent_id"].(string)
+		// Production wire: `agent_path`. Legacy fallback: `agent_id`.
+		// Check agent_path first so the fast path doesn't pay for the
+		// fallback when the field is present.
+		agentPath, _ := raw["agent_path"].(string)
+		if agentPath == "" {
+			agentPath, _ = raw["agent_id"].(string)
+		}
 		status, _ := raw["status"].(string)
-		if agentID == "" || status == "" {
+		if agentPath == "" || status == "" {
 			continue
 		}
+		delete(raw, "agent_path")
 		delete(raw, "agent_id")
 		delete(raw, "status")
 		notifications = append(notifications, subagentNotification{
-			AgentID: agentID,
-			Status:  status,
-			Extra:   raw,
+			AgentPath: agentPath,
+			Status:    status,
+			Extra:     raw,
 		})
 	}
 	if len(notifications) == 0 {
@@ -830,24 +847,24 @@ func extractSubagentNotificationsFromUserMessage(params json.RawMessage) []subag
 // into the json.RawMessage the triage handler forwards on
 // `provider:subagent_notification`. Any `Extra` fields are merged onto
 // the top level so future Codex core versions can add fields without a
-// parser update; the load-bearing `agent_id` / `status` keys win on
+// parser update; the load-bearing `agent_path` / `status` keys win on
 // collision so a stray Extra entry can't poison the contract.
 func buildSubagentNotificationMeta(n subagentNotification) json.RawMessage {
 	fields := make(map[string]any, 2+len(n.Extra))
 	for k, v := range n.Extra {
 		fields[k] = v
 	}
-	fields["agent_id"] = n.AgentID
+	fields["agent_path"] = n.AgentPath
 	fields["status"] = n.Status
 	meta, err := json.Marshal(fields)
 	if err != nil {
 		// Fallback to a minimal payload so the frontend still gets the
 		// load-bearing fields even if a malformed Extra entry trips
-		// Marshal. The parser already validated agent_id/status are
+		// Marshal. The parser already validated agent_path/status are
 		// strings, so this encode is safe.
 		minimal, _ := json.Marshal(map[string]string{
-			"agent_id": n.AgentID,
-			"status":   n.Status,
+			"agent_path": n.AgentPath,
+			"status":     n.Status,
 		})
 		log.Printf("codex: subagent_notification meta marshal fallback: %v", err)
 		return minimal
@@ -883,7 +900,7 @@ func (s *Session) deleteParentToolUseForProviderThread(providerThreadID string) 
 }
 
 func (s *Session) maybeRememberCollabReceiverThreads(method string, params json.RawMessage) {
-	if method != "item/completed" && method != "item/updated" {
+	if method != "item/completed" {
 		return
 	}
 	item := readNestedObject(params, "item")

@@ -2735,7 +2735,7 @@ func TestHandleEventSubagentNotification_EmitsPassthrough(t *testing.T) {
 	router, st, emissions := newTestRouter(t)
 	createTestThread(t, st, "t1")
 
-	meta := json.RawMessage(`{"agent_id":"child-123","status":"completed"}`)
+	meta := json.RawMessage(`{"agent_path":"child-123","status":"completed"}`)
 	if err := router.Handle(provider.ProviderEvent{
 		Kind:      provider.EventSubagentNotification,
 		ThreadID:  "t1",

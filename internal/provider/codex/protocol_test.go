@@ -97,34 +97,18 @@ func TestClassifyNotification_TurnAborted(t *testing.T) {
 	}
 }
 
-func TestClassifyNotification_ItemUpdated(t *testing.T) {
+// TestClassifyNotification_ItemUpdatedIsPhantom pins that the Codex
+// app-server wire protocol has NO `item/updated` method — it only
+// emits `item/started` and `item/completed`. Reference:
+// /Users/randy/repos/codex-source/codex-rs/app-server-protocol/schema/typescript/ServerNotification.ts.
+// Any classifier branch that produces events for `item/updated` would
+// be dispatching on a phantom method; this test locks that in by
+// asserting zero events come out for such a method.
+func TestClassifyNotification_ItemUpdatedIsPhantom(t *testing.T) {
 	params := `{"item":{"id":"item-9","type":"command_execution","status":"in_progress"}}`
 	events := ClassifyNotification("t1", "item/updated", json.RawMessage(params))
-
-	if len(events) != 1 {
-		t.Fatalf("expected 1 event, got %d", len(events))
-	}
-	evt := events[0]
-	if evt.Kind != provider.EventToolStart {
-		t.Errorf("kind: got %q, want %q", evt.Kind, provider.EventToolStart)
-	}
-	if evt.ItemID != "item-9" {
-		t.Errorf("itemID: got %q, want %q", evt.ItemID, "item-9")
-	}
-	if evt.ItemType != "command_execution" {
-		t.Errorf("itemType: got %q, want %q", evt.ItemType, "command_execution")
-	}
-	if !evt.Replace {
-		t.Error("expected Replace=true for item/updated")
-	}
-	// item/updated must carry an update_only:true flag so triage does
-	// not re-open a completed tool_call back to status=running.
-	var meta map[string]any
-	if err := json.Unmarshal(evt.Meta, &meta); err != nil {
-		t.Fatalf("unmarshal meta: %v", err)
-	}
-	if updateOnly, _ := meta["update_only"].(bool); !updateOnly {
-		t.Errorf("expected meta.update_only=true for item/updated, got %v", meta["update_only"])
+	if len(events) != 0 {
+		t.Errorf("expected no events for phantom method item/updated, got %d: %+v", len(events), events)
 	}
 }
 
@@ -336,15 +320,16 @@ func TestClassifyNotification_CollabSendInputUsesDedicatedType(t *testing.T) {
 // primary user of the agentsStates enrichment: the parent spawn_agent
 // card tracks each child thread's live status so the UI can render
 // "agent running…" / "agent completed" badges without subscribing to
-// every child thread's session status. item/updated is the wire event
-// that carries the status transitions.
+// every child thread's session status. Codex emits `agentsStates` on
+// `item/completed` (CollabAgentSpawnEnd in codex-source/.../app-server/
+// src/bespoke_event_handling.rs) — there is no `item/updated` method.
 func TestClassifyNotification_CollabSpawnSurfacesAgentsStates(t *testing.T) {
 	params := json.RawMessage(
 		`{"item":{"id":"call-1","type":"collabAgentToolCall","tool":"spawnAgent",` +
-			`"prompt":"Refactor auth","receiverThreadIds":["child-1"],"status":"inProgress",` +
+			`"prompt":"Refactor auth","receiverThreadIds":["child-1"],"status":"completed",` +
 			`"agentsStates":{"child-1":{"status":"running"}}}}`,
 	)
-	events := ClassifyNotification("t1", "item/updated", params)
+	events := ClassifyNotification("t1", "item/completed", params)
 	if len(events) != 1 {
 		t.Fatalf("expected 1 event, got %d", len(events))
 	}

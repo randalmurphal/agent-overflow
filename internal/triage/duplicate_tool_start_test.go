@@ -8,20 +8,19 @@ import (
 	"agent-overflow/internal/provider"
 )
 
-// TestItemUpdatedDoesNotReopenCompletedToolCall pins the invariant that a
-// late-arriving EventToolStart for an already-completed tool_call row
-// does NOT transition it back to running or streaming. Codex emits
-// `item/updated` notifications which the adapter layer translates into
-// EventToolStart with the existing ItemID; the Claude adapter exhibits
-// the same pattern when it resynthesises `system/task_started` after a
-// reconnect. Either way, the row is authoritative and must survive
-// re-delivery.
+// TestDuplicateToolStartPreservesCompletedToolCallStatus pins the
+// invariant that a late-arriving EventToolStart for an
+// already-completed tool_call row does NOT transition it back to
+// running or streaming. The Claude adapter can resynthesise
+// `system/task_started` after a reconnect, which lands as a duplicate
+// EventToolStart for the same ItemID; the row is authoritative and
+// must survive re-delivery.
 //
 // Regression guard: before the status preservation in
 // persistToolCallLaunch landed, a duplicate EventToolStart would rewrite
 // status to running, wiping the completed status and breaking the
 // frontend's collapsed-card rendering.
-func TestItemUpdatedPreservesCompletedToolCallStatus(t *testing.T) {
+func TestDuplicateToolStartPreservesCompletedToolCallStatus(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
 
@@ -46,9 +45,10 @@ func TestItemUpdatedPreservesCompletedToolCallStatus(t *testing.T) {
 		t.Fatalf("prerequisite: status after complete = %q, want completed", before.Status)
 	}
 
-	// Simulated item/updated: another EventToolStart arrives carrying
-	// the same ItemID. The router must not reset the status flag on
-	// the completed row.
+	// Simulated re-delivery: another EventToolStart arrives carrying
+	// the same ItemID (e.g. Claude's resynthesised system/task_started
+	// after a reconnect). The router must not reset the status flag
+	// on the completed row.
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "tool-ix",
 		ItemType: "Bash", Meta: startMeta, Replace: true, Timestamp: time.Now(),
@@ -58,7 +58,7 @@ func TestItemUpdatedPreservesCompletedToolCallStatus(t *testing.T) {
 
 	after, _, _ := st.GetThreadItem("t1", "tool-ix")
 	if after.Status != statusCompleted {
-		t.Errorf("status after duplicate start = %q, want completed (item/updated must not reopen)", after.Status)
+		t.Errorf("status after duplicate start = %q, want completed (duplicate EventToolStart must not reopen)", after.Status)
 	}
 	// CreatedAt must not shift — the row is the same entity.
 	if before.CreatedAt != after.CreatedAt {

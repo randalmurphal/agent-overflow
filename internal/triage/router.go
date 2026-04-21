@@ -800,7 +800,7 @@ func (r *Router) emitInline(evt provider.ProviderEvent) error {
 // `<subagent_notification>` tags. Emission is triage's job; persistence
 // is deliberately NOT — the notification isn't a timeline row today
 // (tray/subagent UI will decide what to render later). The handler only
-// forwards the Meta payload (agent_id, status, optional extras) onto
+// forwards the Meta payload (agent_path, status, optional extras) onto
 // `provider:subagent_notification` so the frontend can opt in without
 // the parser-side emission needing to land first.
 //

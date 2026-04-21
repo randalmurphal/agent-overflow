@@ -2516,20 +2516,65 @@ done
 
 // TestParseSubagentNotifications_SingleTag pins the canonical wire
 // shape emitted by codex-source
-// (core/src/contextual_user_message.rs): a single
-// <subagent_notification>{"agent_id":..,"status":..}</subagent_notification>
+// (core/src/session_prefix.rs::format_subagent_notification_message):
+// a single
+// <subagent_notification>{"agent_path":..,"status":..}</subagent_notification>
 // block whose JSON body round-trips to a subagentNotification value.
 func TestParseSubagentNotifications_SingleTag(t *testing.T) {
-	text := `<subagent_notification>{"agent_id":"child-1","status":"completed"}</subagent_notification>`
+	text := `<subagent_notification>{"agent_path":"child-1","status":"completed"}</subagent_notification>`
 	got := parseSubagentNotifications(text)
 	if len(got) != 1 {
 		t.Fatalf("len=%d, want 1 (got=%+v)", len(got), got)
 	}
-	if got[0].AgentID != "child-1" {
-		t.Errorf("AgentID: got %q, want %q", got[0].AgentID, "child-1")
+	if got[0].AgentPath != "child-1" {
+		t.Errorf("AgentPath: got %q, want %q", got[0].AgentPath, "child-1")
 	}
 	if got[0].Status != "completed" {
 		t.Errorf("Status: got %q, want %q", got[0].Status, "completed")
+	}
+}
+
+// TestParseSubagentNotifications_LegacyAgentIDFallback pins the
+// backward-compat branch: older (pre-rename) Codex builds emit
+// `agent_id` instead of `agent_path`. The parser accepts either so a
+// fleet straddling the rename doesn't silently drop notifications.
+// Production wire is `agent_path` and is the fast path.
+func TestParseSubagentNotifications_LegacyAgentIDFallback(t *testing.T) {
+	text := `<subagent_notification>{"agent_id":"legacy-child","status":"completed"}</subagent_notification>`
+	got := parseSubagentNotifications(text)
+	if len(got) != 1 {
+		t.Fatalf("len=%d, want 1 (got=%+v)", len(got), got)
+	}
+	if got[0].AgentPath != "legacy-child" {
+		t.Errorf("AgentPath: got %q, want %q (agent_id fallback)", got[0].AgentPath, "legacy-child")
+	}
+	if got[0].Status != "completed" {
+		t.Errorf("Status: got %q, want %q", got[0].Status, "completed")
+	}
+	// Legacy key must not leak into Extra — it has its own logical slot.
+	if _, dup := got[0].Extra["agent_id"]; dup {
+		t.Errorf("Extra should not preserve the legacy agent_id key: %+v", got[0].Extra)
+	}
+}
+
+// TestParseSubagentNotifications_AgentPathWinsOverAgentID locks the
+// precedence rule: when both the production key (`agent_path`) and the
+// legacy key (`agent_id`) are present (a weird mixed build but cheap
+// to define), the production key wins and neither key leaks into Extra.
+func TestParseSubagentNotifications_AgentPathWinsOverAgentID(t *testing.T) {
+	text := `<subagent_notification>{"agent_path":"new","agent_id":"old","status":"completed"}</subagent_notification>`
+	got := parseSubagentNotifications(text)
+	if len(got) != 1 {
+		t.Fatalf("len=%d, want 1 (got=%+v)", len(got), got)
+	}
+	if got[0].AgentPath != "new" {
+		t.Errorf("AgentPath: got %q, want %q (agent_path takes precedence over agent_id)", got[0].AgentPath, "new")
+	}
+	if _, dup := got[0].Extra["agent_id"]; dup {
+		t.Errorf("Extra should not preserve the legacy agent_id key: %+v", got[0].Extra)
+	}
+	if _, dup := got[0].Extra["agent_path"]; dup {
+		t.Errorf("Extra should not duplicate agent_path: %+v", got[0].Extra)
 	}
 }
 
@@ -2540,20 +2585,20 @@ func TestParseSubagentNotifications_SingleTag(t *testing.T) {
 func TestParseSubagentNotifications_MultipleTags(t *testing.T) {
 	text := `Ordinary prose.
 
-<subagent_notification>{"agent_id":"child-1","status":"completed"}</subagent_notification>
+<subagent_notification>{"agent_path":"child-1","status":"completed"}</subagent_notification>
 
 More prose.
 
-<subagent_notification>{"agent_id":"child-2","status":"errored"}</subagent_notification>
+<subagent_notification>{"agent_path":"child-2","status":"errored"}</subagent_notification>
 `
 	got := parseSubagentNotifications(text)
 	if len(got) != 2 {
 		t.Fatalf("len=%d, want 2 (got=%+v)", len(got), got)
 	}
-	if got[0].AgentID != "child-1" || got[0].Status != "completed" {
+	if got[0].AgentPath != "child-1" || got[0].Status != "completed" {
 		t.Errorf("entry 0: got %+v", got[0])
 	}
-	if got[1].AgentID != "child-2" || got[1].Status != "errored" {
+	if got[1].AgentPath != "child-2" || got[1].Status != "errored" {
 		t.Errorf("entry 1: got %+v", got[1])
 	}
 }
@@ -2563,12 +2608,12 @@ More prose.
 // tests pin a tight shape but the refactor plan flagged "be lenient on
 // whitespace" as a correctness criterion.
 func TestParseSubagentNotifications_WhitespaceLenient(t *testing.T) {
-	text := "<subagent_notification>\n  {\"agent_id\":\"child-3\",\"status\":\"interrupted\"}\n</subagent_notification>"
+	text := "<subagent_notification>\n  {\"agent_path\":\"child-3\",\"status\":\"interrupted\"}\n</subagent_notification>"
 	got := parseSubagentNotifications(text)
 	if len(got) != 1 {
 		t.Fatalf("len=%d, want 1 (got=%+v)", len(got), got)
 	}
-	if got[0].AgentID != "child-3" || got[0].Status != "interrupted" {
+	if got[0].AgentPath != "child-3" || got[0].Status != "interrupted" {
 		t.Errorf("got %+v", got[0])
 	}
 }
@@ -2576,10 +2621,10 @@ func TestParseSubagentNotifications_WhitespaceLenient(t *testing.T) {
 // TestParseSubagentNotifications_PreservesExtraFields keeps forward
 // compatibility: when Codex adds fields inside the notification JSON,
 // we preserve them on the Extra map so downstream can opt into richer
-// rendering without a parser update. The load-bearing `agent_id` and
+// rendering without a parser update. The load-bearing `agent_path` and
 // `status` keys are stripped from Extra (they have their own fields).
 func TestParseSubagentNotifications_PreservesExtraFields(t *testing.T) {
-	text := `<subagent_notification>{"agent_id":"child-1","status":"completed","message":"ok","duration_ms":1234}</subagent_notification>`
+	text := `<subagent_notification>{"agent_path":"child-1","status":"completed","message":"ok","duration_ms":1234}</subagent_notification>`
 	got := parseSubagentNotifications(text)
 	if len(got) != 1 {
 		t.Fatalf("len=%d, want 1", len(got))
@@ -2591,8 +2636,8 @@ func TestParseSubagentNotifications_PreservesExtraFields(t *testing.T) {
 	if got[0].Extra["duration_ms"].(float64) != 1234 {
 		t.Errorf("Extra.duration_ms: got %v, want 1234", got[0].Extra["duration_ms"])
 	}
-	if _, dup := got[0].Extra["agent_id"]; dup {
-		t.Errorf("Extra should not duplicate agent_id: %+v", got[0].Extra)
+	if _, dup := got[0].Extra["agent_path"]; dup {
+		t.Errorf("Extra should not duplicate agent_path: %+v", got[0].Extra)
 	}
 	if _, dup := got[0].Extra["status"]; dup {
 		t.Errorf("Extra should not duplicate status: %+v", got[0].Extra)
@@ -2605,14 +2650,14 @@ func TestParseSubagentNotifications_PreservesExtraFields(t *testing.T) {
 // still let the parent render the remaining user text.
 func TestParseSubagentNotifications_SkipsMalformed(t *testing.T) {
 	text := `<subagent_notification>not json at all</subagent_notification>
-<subagent_notification>{"agent_id":"child-1","status":"completed"}</subagent_notification>
-<subagent_notification>{"agent_id":"","status":"completed"}</subagent_notification>
-<subagent_notification>{"agent_id":"child-2"}</subagent_notification>`
+<subagent_notification>{"agent_path":"child-1","status":"completed"}</subagent_notification>
+<subagent_notification>{"agent_path":"","status":"completed"}</subagent_notification>
+<subagent_notification>{"agent_path":"child-2"}</subagent_notification>`
 	got := parseSubagentNotifications(text)
 	if len(got) != 1 {
 		t.Fatalf("len=%d, want 1 (got=%+v)", len(got), got)
 	}
-	if got[0].AgentID != "child-1" {
+	if got[0].AgentPath != "child-1" {
 		t.Errorf("got %+v", got[0])
 	}
 }
@@ -2641,7 +2686,7 @@ func TestExtractSubagentNotificationsFromUserMessage_WireShape(t *testing.T) {
 			"id":"user-msg-1",
 			"type":"userMessage",
 			"content":[
-				{"type":"text","text":"<subagent_notification>{\"agent_id\":\"child-1\",\"status\":\"completed\"}</subagent_notification>","text_elements":[]},
+				{"type":"text","text":"<subagent_notification>{\"agent_path\":\"child-1\",\"status\":\"completed\"}</subagent_notification>","text_elements":[]},
 				{"type":"text","text":"follow-up question","text_elements":[]}
 			]
 		}
@@ -2650,7 +2695,7 @@ func TestExtractSubagentNotificationsFromUserMessage_WireShape(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("len=%d, want 1 (got=%+v)", len(got), got)
 	}
-	if got[0].AgentID != "child-1" || got[0].Status != "completed" {
+	if got[0].AgentPath != "child-1" || got[0].Status != "completed" {
 		t.Errorf("got %+v", got[0])
 	}
 }
@@ -2665,7 +2710,7 @@ func TestExtractSubagentNotificationsFromUserMessage_NotUserMessage(t *testing.T
 		"item":{
 			"id":"asst-1",
 			"type":"agentMessage",
-			"text":"<subagent_notification>{\"agent_id\":\"child-1\",\"status\":\"completed\"}</subagent_notification>"
+			"text":"<subagent_notification>{\"agent_path\":\"child-1\",\"status\":\"completed\"}</subagent_notification>"
 		}
 	}`)
 	if got := extractSubagentNotificationsFromUserMessage(params); got != nil {
@@ -2697,7 +2742,7 @@ func TestExtractSubagentNotificationsFromUserMessage_NonTextContent(t *testing.T
 // contract: when an item/completed userMessage carries a
 // <subagent_notification> tag, dispatchLine must fire an
 // EventSubagentNotification with ThreadID and a Meta payload carrying
-// at least agent_id and status. This is the integration between the
+// at least agent_path and status. This is the integration between the
 // parser and the event emission path — the triage handler and UI
 // renderer downstream assume the event actually fires.
 func TestDispatchLineSubagentNotificationEmitsEvent(t *testing.T) {
@@ -2713,7 +2758,7 @@ func TestDispatchLineSubagentNotificationEmitsEvent(t *testing.T) {
 
 	// Shape mirrors the userMessage item/completed frame Codex core
 	// emits after a detached child agent reaches a terminal state.
-	line := []byte(`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"parent-thread","item":{"id":"user-msg-1","type":"userMessage","content":[{"type":"text","text":"<subagent_notification>{\"agent_id\":\"child-done\",\"status\":\"completed\"}</subagent_notification>"}]}}}`)
+	line := []byte(`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"parent-thread","item":{"id":"user-msg-1","type":"userMessage","content":[{"type":"text","text":"<subagent_notification>{\"agent_path\":\"child-done\",\"status\":\"completed\"}</subagent_notification>"}]}}}`)
 	s.dispatchLine(line)
 
 	var notif *provider.ProviderEvent
@@ -2734,8 +2779,8 @@ func TestDispatchLineSubagentNotificationEmitsEvent(t *testing.T) {
 	if err := json.Unmarshal(notif.Meta, &meta); err != nil {
 		t.Fatalf("meta unmarshal: %v", err)
 	}
-	if meta["agent_id"] != "child-done" {
-		t.Errorf("meta.agent_id: got %v, want child-done", meta["agent_id"])
+	if meta["agent_path"] != "child-done" {
+		t.Errorf("meta.agent_path: got %v, want child-done", meta["agent_path"])
 	}
 	if meta["status"] != "completed" {
 		t.Errorf("meta.status: got %v, want completed", meta["status"])
@@ -2758,7 +2803,7 @@ func TestDispatchLineSubagentNotificationMultipleTagsEmitOnce(t *testing.T) {
 		},
 	}
 
-	line := []byte(`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"parent-thread","item":{"id":"user-msg-1","type":"userMessage","content":[{"type":"text","text":"<subagent_notification>{\"agent_id\":\"child-1\",\"status\":\"completed\"}</subagent_notification>\n<subagent_notification>{\"agent_id\":\"child-2\",\"status\":\"errored\"}</subagent_notification>"}]}}}`)
+	line := []byte(`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"parent-thread","item":{"id":"user-msg-1","type":"userMessage","content":[{"type":"text","text":"<subagent_notification>{\"agent_path\":\"child-1\",\"status\":\"completed\"}</subagent_notification>\n<subagent_notification>{\"agent_path\":\"child-2\",\"status\":\"errored\"}</subagent_notification>"}]}}}`)
 	s.dispatchLine(line)
 
 	var agents []string
@@ -2770,7 +2815,7 @@ func TestDispatchLineSubagentNotificationMultipleTagsEmitOnce(t *testing.T) {
 		if err := json.Unmarshal(evt.Meta, &meta); err != nil {
 			t.Fatalf("meta unmarshal: %v", err)
 		}
-		agents = append(agents, meta["agent_id"].(string))
+		agents = append(agents, meta["agent_path"].(string))
 	}
 	if len(agents) != 2 {
 		t.Fatalf("expected 2 EventSubagentNotification events, got %d (agents=%v events=%+v)", len(agents), agents, events)
@@ -2783,18 +2828,18 @@ func TestDispatchLineSubagentNotificationMultipleTagsEmitOnce(t *testing.T) {
 // TestBuildSubagentNotificationMetaIncludesExtra pins the Extra-field
 // forward-compat promise: custom fields Codex core adds to the
 // notification JSON must round-trip through buildSubagentNotificationMeta
-// onto the frontend-facing meta blob. The load-bearing agent_id /
+// onto the frontend-facing meta blob. The load-bearing agent_path /
 // status keys always win on collision.
 func TestBuildSubagentNotificationMetaIncludesExtra(t *testing.T) {
 	n := subagentNotification{
-		AgentID: "child-extra",
-		Status:  "completed",
+		AgentPath: "child-extra",
+		Status:    "completed",
 		Extra: map[string]any{
 			"message":     "ok",
 			"duration_ms": float64(1234),
 			// Attempted collision — the canonical fields must win.
-			"agent_id": "clobber-attempt",
-			"status":   "clobber-attempt",
+			"agent_path": "clobber-attempt",
+			"status":     "clobber-attempt",
 		},
 	}
 	raw := buildSubagentNotificationMeta(n)
@@ -2802,8 +2847,8 @@ func TestBuildSubagentNotificationMetaIncludesExtra(t *testing.T) {
 	if err := json.Unmarshal(raw, &meta); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if meta["agent_id"] != "child-extra" {
-		t.Errorf("agent_id: got %v, want child-extra (Extra must not clobber)", meta["agent_id"])
+	if meta["agent_path"] != "child-extra" {
+		t.Errorf("agent_path: got %v, want child-extra (Extra must not clobber)", meta["agent_path"])
 	}
 	if meta["status"] != "completed" {
 		t.Errorf("status: got %v, want completed (Extra must not clobber)", meta["status"])

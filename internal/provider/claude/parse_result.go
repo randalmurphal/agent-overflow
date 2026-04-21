@@ -24,39 +24,15 @@ import (
 //
 // Interrupted detection: Claude does not expose a `"interrupted"`
 // stop_reason. Interruption surfaces as `subtype=error_during_execution`
-// + `is_error=false` + `errors[]` containing "aborted" or
-// "interrupted" (see forge's sdkMessageParsing.ts reference). When the
-// envelope is is_error=true the parser instead emits `EventError`
-// (legacy behaviour preserved) so a crash during execution is
-// surfaced as an error event rather than a turn-complete with
-// `aborted: true`.
+// + `errors[]` containing "aborted" or "interrupted" (see forge's
+// sdkMessageParsing.ts reference and the Python SDK's SDKResultError
+// shape, which uses `errors: string[]` — there is no `error`
+// (singular) field on the wire).
 //
 // After emitting, the parser's lastAssistantMessageID is cleared so it
 // cannot leak into the next turn's result.
 func (p *Parser) parseResult(threadID string, raw map[string]json.RawMessage, now time.Time, line []byte) ([]provider.ProviderEvent, error) {
 	model := p.currentModel()
-
-	var isError bool
-	if v, ok := raw["is_error"]; ok {
-		_ = json.Unmarshal(v, &isError)
-	}
-
-	if isError {
-		var errMsg string
-		if v, ok := raw["error"]; ok {
-			_ = json.Unmarshal(v, &errMsg)
-		}
-		// Clear the tracked assistant message id — either a fresh turn
-		// will seed a new one, or the session ends.
-		_ = p.takeLastAssistantMessageID()
-		return []provider.ProviderEvent{{
-			Kind:      provider.EventError,
-			ThreadID:  threadID,
-			Content:   errMsg,
-			Timestamp: now,
-			Raw:       line,
-		}}, nil
-	}
 
 	var events []provider.ProviderEvent
 
