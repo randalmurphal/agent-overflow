@@ -1,6 +1,7 @@
 package store
 
 import (
+	"fmt"
 	"testing"
 )
 
@@ -658,6 +659,226 @@ func TestPickInitialFloorTurn_EmptyThreadActiveOnlyReportsHasMoreForOlderRows(t 
 	if hasMore {
 		t.Error("hasMore: got true, want false (no older item rows, even with an older turn row)")
 	}
+}
+
+// Pins the cap on the active-turn floor adjustment: when honoring the
+// active turn would blow the caller's maxItems budget by a large
+// margin, the adjustment is skipped and `picked` stays at the
+// walk-derived floor. The active turn's items still reach the UI via
+// the streaming path, and the user can Load Older to surface it.
+func TestPickInitialFloorTurn_ActiveTurnAdjustmentRespectsMaxItems(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	// Two heavy completed turns (5k items each) and one far-below
+	// active turn. Walk picks turn 10 (cumulative=5000, fits
+	// maxItems=5000 exactly). If we naively lowered to activeFloor=1
+	// we'd pull in turn 5's 5000 items plus everything between →
+	// 10k+ items, violating the cap.
+	for i := 0; i < 5000; i++ {
+		seedItem(t, s, "t", idForItem(5, i), 5, i, "")
+	}
+	for i := 0; i < 5000; i++ {
+		seedItem(t, s, "t", idForItem(10, i), 10, i, "")
+	}
+	if err := s.InsertTurn(Turn{TurnID: "t1", ThreadID: "t", TurnIndex: 1, StartedAt: 100}); err != nil {
+		t.Fatalf("insert active turn: %v", err)
+	}
+	// Don't complete turn 1 — it's the crash-interrupted active row.
+
+	floor, _, err := s.PickInitialFloorTurn("t", 1, 0, 5000)
+	if err != nil {
+		t.Fatalf("pick: %v", err)
+	}
+	// Walk picks turn 10 first (5000 items = maxItems). Lowering to
+	// turn 1 would blow the budget; the cap keeps picked at 10.
+	if floor != 10 {
+		t.Errorf("floor: got %d, want 10 (cap preserves maxItems=5000 budget)", floor)
+	}
+}
+
+// The active-turn adjustment IS allowed when the gap is trivial —
+// one or two empty turns between picked and activeFloor. This covers
+// the common "just-started turn below newest settled turn" case.
+func TestPickInitialFloorTurn_ActiveTurnAdjacentEmptyTurnAllowed(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	if err := s.InsertTurn(Turn{TurnID: "t5", ThreadID: "t", TurnIndex: 5, StartedAt: 500}); err != nil {
+		t.Fatalf("insert turn 5: %v", err)
+	}
+	if err := s.UpdateTurnCompleted("t5", 550, "end_turn", "", "", ""); err != nil {
+		t.Fatalf("complete turn 5: %v", err)
+	}
+	seedItem(t, s, "t", "item-5", 5, 0, "")
+	// Turn 4: in-flight, no items yet. Gap of 1 turn.
+	if err := s.InsertTurn(Turn{TurnID: "t4", ThreadID: "t", TurnIndex: 4, StartedAt: 600}); err != nil {
+		t.Fatalf("insert active turn 4: %v", err)
+	}
+
+	floor, _, err := s.PickInitialFloorTurn("t", 1, 0, 10)
+	if err != nil {
+		t.Fatalf("pick: %v", err)
+	}
+	if floor != 4 {
+		t.Errorf("floor: got %d, want 4 (adjacent empty active turn must be covered)", floor)
+	}
+}
+
+// maxItems < minItems is a config accident; the coercion branch at
+// the top of PickInitialFloorTurn normalizes maxItems up to minItems
+// so the "window never drops below minItems when history exists"
+// invariant always holds. Without the coercion, a caller passing
+// maxItems=100 / minItems=500 would see windows truncated at the
+// MAX cap — half of what the caller specified as the minimum.
+func TestPickInitialFloorTurn_CoercesMaxBelowMin(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	// Seed 300 items spread across 3 turns (100 each). With
+	// maxItems=100, a naive walk would stop after turn 2 (100
+	// items, hits cap). The coercion should widen maxItems to
+	// minItems=500 and pick the oldest turn with everything loaded.
+	for turn := 0; turn < 3; turn++ {
+		if err := s.InsertTurn(Turn{
+			TurnID: idForTurn(turn), ThreadID: "t", TurnIndex: turn, StartedAt: int64(turn) * 1000,
+		}); err != nil {
+			t.Fatalf("insert turn %d: %v", turn, err)
+		}
+		if err := s.UpdateTurnCompleted(idForTurn(turn), int64(turn)*1000+500, "end_turn", "", "", ""); err != nil {
+			t.Fatalf("complete turn %d: %v", turn, err)
+		}
+		for i := 0; i < 100; i++ {
+			seedItem(t, s, "t", idForItem(turn, i), turn, i, "")
+		}
+	}
+
+	floor, _, err := s.PickInitialFloorTurn("t", 1, 500, 100)
+	if err != nil {
+		t.Fatalf("pick: %v", err)
+	}
+	if floor != 0 {
+		t.Errorf("floor: got %d, want 0 (minItems=500 must override maxItems=100 after coercion)", floor)
+	}
+}
+
+// Regression pin for the recursive-CTE's outer thread_id filter.
+// Seed an id collision on thread B that is NOT an ancestor of
+// anything on thread A — removing the outer `items.thread_id = ?`
+// predicate would let the collider through. The cross-thread
+// ancestor test already covers the ancestor branch; this test
+// covers the non-ancestor branch.
+func TestListRecentItemsWithAncestors_OuterThreadFilterRequired(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("a", "claude")); err != nil {
+		t.Fatalf("create thread a: %v", err)
+	}
+	if err := s.CreateThread(makeThread("b", "claude")); err != nil {
+		t.Fatalf("create thread b: %v", err)
+	}
+
+	// Thread A: one turn, one item whose id is "X". NO ancestors.
+	if err := s.InsertTurn(Turn{TurnID: "ta0", ThreadID: "a", TurnIndex: 0, StartedAt: 0}); err != nil {
+		t.Fatalf("insert turn a0: %v", err)
+	}
+	seedItem(t, s, "a", "X", 0, 0, "")
+
+	// Thread B: same id "X" but NOT an ancestor of anything on A.
+	// If the outer SELECT dropped `items.thread_id = ?`, this row
+	// could leak in via the `items.id IN (SELECT id FROM ancestors)`
+	// branch — except the ancestors CTE itself is empty here, so the
+	// real guarantee is the outer thread_id filter. We verify it
+	// explicitly by seeding a colliding id on thread B that the
+	// query must NOT return.
+	if err := s.InsertTurn(Turn{TurnID: "tb0", ThreadID: "b", TurnIndex: 0, StartedAt: 0}); err != nil {
+		t.Fatalf("insert turn b0: %v", err)
+	}
+	seedItem(t, s, "b", "X", 0, 0, "")
+
+	paged, err := s.ListRecentItemsWithAncestors("a", 0)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	for _, it := range paged.Items {
+		if it.ThreadID != "a" {
+			t.Errorf("returned item from wrong thread: id=%s threadID=%s", it.ID, it.ThreadID)
+		}
+	}
+	if len(paged.Items) != 1 {
+		t.Errorf("item count: got %d, want 1 (only thread A's X)", len(paged.Items))
+	}
+}
+
+// Regression pin for `ListItemsBeforeTurn` + ancestor dedup behavior.
+// When the recursive CTE pulls an ancestor in via a later loadOlder
+// call, the frontend must not duplicate the row in its `items`
+// array. The backend contract lives here: we assert that the same
+// ancestor-below-floor item is returned on successive paging calls
+// with different floors. The frontend deduplication layer in
+// `prependDedupById` is what actually prevents the timeline
+// duplication; this test locks in the backend half of the contract
+// so a future SQL change that silently stopped returning the
+// ancestor on the second call would be caught.
+func TestListItemsBeforeTurn_ReturnsAncestorOnEachEligiblePage(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	for i := 0; i < 5; i++ {
+		if err := s.InsertTurn(Turn{TurnID: idForTurn(i), ThreadID: "t", TurnIndex: i, StartedAt: int64(i) * 1000}); err != nil {
+			t.Fatalf("insert turn %d: %v", i, err)
+		}
+	}
+	seedItem(t, s, "t", "ancestor-0", 0, 0, "")
+	seedItem(t, s, "t", "child-2", 2, 0, "ancestor-0")
+	seedItem(t, s, "t", "child-3", 3, 0, "ancestor-0")
+	seedItem(t, s, "t", "filler-4", 4, 0, "")
+
+	// First page: before turn 3, turnLimit=1 → newFloor=2. Returns
+	// child-2 and its ancestor (ancestor-0) pulled from turn 0.
+	first, err := s.ListItemsBeforeTurn("t", 3, 1)
+	if err != nil {
+		t.Fatalf("first: %v", err)
+	}
+	gotFirst := collectIDs(first.Items)
+	wantFirst := []string{"ancestor-0", "child-2"}
+	if !equalStringSlice(gotFirst, wantFirst) {
+		t.Errorf("first page: got %v, want %v", gotFirst, wantFirst)
+	}
+
+	// Second page: before turn 2, turnLimit=1 → newFloor=1. Turn 1
+	// has no items, but the query is still legitimate. Nothing
+	// matches since ancestor-0 is below newFloor=1.
+	second, err := s.ListItemsBeforeTurn("t", 2, 1)
+	if err != nil {
+		t.Fatalf("second: %v", err)
+	}
+	// Turn 1 is empty and ancestor-0 sits at turn 0 (below newFloor=1),
+	// so the second page is empty. A later page at newFloor=0 would
+	// re-surface ancestor-0.
+	if len(second.Items) != 0 {
+		t.Errorf("second page: got %v, want empty (turn 1 has no items)", collectIDs(second.Items))
+	}
+
+	// Third page: before turn 1, turnLimit=1 → newFloor=0. Returns
+	// ancestor-0 again. The frontend's prependDedupById will skip
+	// it in the in-memory items array.
+	third, err := s.ListItemsBeforeTurn("t", 1, 1)
+	if err != nil {
+		t.Fatalf("third: %v", err)
+	}
+	gotThird := collectIDs(third.Items)
+	wantThird := []string{"ancestor-0"}
+	if !equalStringSlice(gotThird, wantThird) {
+		t.Errorf("third page: got %v, want %v", gotThird, wantThird)
+	}
+}
+
+func idForItem(turn, idx int) string {
+	return fmt.Sprintf("t%d-i%d", turn, idx)
 }
 
 func equalStringSlice(a, b []string) bool {

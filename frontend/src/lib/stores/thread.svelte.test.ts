@@ -798,6 +798,96 @@ describe('createThreadPane', () => {
       await pane.loadOlder();
       expect(postSwitchCalls).toBe(1);
     });
+
+    it('loadOlder dedupes by id when the backend re-returns an ancestor', async () => {
+      // Backend contract: `ListItemsBeforeTurn` can legitimately
+      // return an ancestor row that was already in the window (pulled
+      // in by the initial load via `ListRecentItemsWithAncestors`'s
+      // ancestor CTE). The store must not duplicate the row in
+      // `items` — the dedup happens via `prependDedupById`.
+      const pane = createThreadPane();
+      setBindingMock('ListRecentThreadItems', async () => ({
+        items: [
+          makeItem({ id: 'ancestor', threadId: 't', turnIndex: 0 }),
+          makeItem({ id: 'child', threadId: 't', turnIndex: 5 }),
+        ],
+        oldestTurnIndex: 5,
+        hasMore: true,
+      }));
+      setBindingMock('ListItemsBeforeTurn', async () => ({
+        // Backend legitimately returns the ancestor again (it sits
+        // below the new paging floor and the recursive CTE pulls it
+        // in for any child-in-range query).
+        items: [
+          makeItem({ id: 'ancestor', threadId: 't', turnIndex: 0 }),
+          makeItem({ id: 'between', threadId: 't', turnIndex: 3 }),
+        ],
+        oldestTurnIndex: 3,
+        hasMore: false,
+      }));
+
+      await pane.switchThread(makeThread({ id: 't' }));
+      expect(pane.items.map((it) => it.id)).toEqual(['ancestor', 'child']);
+
+      await pane.loadOlder();
+      // 'ancestor' appears once — duplicates are filtered out.
+      const ancestors = pane.items.filter((it) => it.id === 'ancestor');
+      expect(ancestors.length).toBe(1);
+      // Ordering: the newly prepended 'between' sits before the
+      // existing tail. The duplicate ancestor row was dropped so the
+      // original position is preserved.
+      expect(pane.items.map((it) => it.id)).toEqual(['ancestor', 'between', 'child']);
+    });
+
+    it('loadUntilItem dedupes by id when pulling in a below-floor target', async () => {
+      // Same contract as loadOlder's dedup, but via the
+      // scroll-to-item entry point. If `ListItemsBeforeTurn` returns
+      // a row already present by id (e.g. the subagent ancestor), no
+      // duplicate should land in the window.
+      const pane = createThreadPane();
+      setBindingMock('ListRecentThreadItems', async () => ({
+        items: [
+          makeItem({ id: 'ancestor', threadId: 't', turnIndex: 0 }),
+          makeItem({ id: 'tail', threadId: 't', turnIndex: 5 }),
+        ],
+        oldestTurnIndex: 5,
+        hasMore: true,
+      }));
+      setBindingMock('GetThreadItem', async () =>
+        makeItem({ id: 'deep', threadId: 't', turnIndex: 2 }),
+      );
+      setBindingMock('ListItemsBeforeTurn', async () => ({
+        items: [
+          makeItem({ id: 'ancestor', threadId: 't', turnIndex: 0 }),
+          makeItem({ id: 'deep', threadId: 't', turnIndex: 2 }),
+        ],
+        oldestTurnIndex: 2,
+        hasMore: false,
+      }));
+
+      await pane.switchThread(makeThread({ id: 't' }));
+      const ok = await pane.loadUntilItem('deep');
+      expect(ok).toBe(true);
+      expect(pane.items.filter((it) => it.id === 'ancestor').length).toBe(1);
+      expect(pane.items.some((it) => it.id === 'deep')).toBe(true);
+    });
+
+    it('upsertItem accepts new items when the pane floor is null (empty thread)', async () => {
+      // Regression: the floor guard short-circuits when
+      // `oldestLoadedTurnIndex` is null so streamed upserts on a
+      // fresh pane still land. Without the null check, every first
+      // item on a brand-new thread would be dropped.
+      const pane = createThreadPane();
+      setBindingMock('ListRecentThreadItems', async () => ({
+        items: [],
+        oldestTurnIndex: -1,
+        hasMore: false,
+      }));
+      await pane.switchThread(makeThread({ id: 't' }));
+      expect(pane.oldestLoadedTurnIndex).toBeNull();
+      pane.upsertItem(makeItem({ id: 'first', threadId: 't', turnIndex: 0, itemIndex: 0 }));
+      expect(pane.items.map((it) => it.id)).toEqual(['first']);
+    });
   });
 
   // --- Turn-lifecycle pane state (Wave 2) -----------------------------------

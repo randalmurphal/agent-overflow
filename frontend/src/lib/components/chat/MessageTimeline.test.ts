@@ -430,6 +430,56 @@ describe('<MessageTimeline>', () => {
       expect(scroll.scrollTop).not.toBe(atBottom);
       expect(scroll.scrollTop).toBe(1400 - 1000); // delta-preserved
     });
+
+    it('does not apply a scroll delta when Load Older returned no items', async () => {
+      // Regression pin: if the backend returns an empty page (e.g.
+      // hasMore was stale) AND a concurrent streaming upsert grew
+      // the timeline height during the await, the old code would
+      // misattribute the streaming height delta to the "prepend"
+      // and shift scrollTop. The fix snapshots items.length and
+      // skips the delta when nothing was prepended.
+      const pane = await buildWindowedPane({
+        items: [makeItem({ id: 'only', turnIndex: 10 })],
+        hasMore: true,
+        oldestTurnIndex: 10,
+      });
+      // Simulate an end-of-history response: no items, same floor.
+      setBindingMock('ListItemsBeforeTurn', async () => ({
+        items: [],
+        oldestTurnIndex: 10,
+        hasMore: false,
+      }));
+
+      const { getByTestId, container } = render(MessageTimeline, { props: { pane } });
+      const scroll = container.querySelector('[role="log"]') as HTMLElement;
+      let scrollHeightValue = 1000;
+      Object.defineProperty(scroll, 'scrollHeight', {
+        configurable: true,
+        get: () => scrollHeightValue,
+      });
+      Object.defineProperty(scroll, 'clientHeight', {
+        configurable: true,
+        get: () => 600,
+      });
+      scroll.scrollTop = 200; // user mid-scroll
+
+      const button = getByTestId('load-older-messages');
+      const clickPromise = fireEvent.click(button);
+      // Simulate a streaming upsert that grew the timeline DURING
+      // the load-older await. In the real app this happens when an
+      // agent turn is still emitting text; the scroll-height
+      // increases but no items were prepended by loadOlder.
+      scrollHeightValue = 1300;
+      await clickPromise;
+      await tick();
+      await tick();
+
+      // Items unchanged — loadOlder returned an empty page.
+      expect(pane.items.length).toBe(1);
+      // scrollTop MUST remain where the user left it; the streaming
+      // delta of 300 px should NOT be re-applied.
+      expect(scroll.scrollTop).toBe(200);
+    });
   });
 
   describe('completion divider integration', () => {

@@ -303,12 +303,50 @@ func (s *Store) PickInitialFloorTurn(
 	// would fall below the probe threshold. `GetActiveTurn` returns
 	// the latest in-flight turn; for the common happy path
 	// activeFloor >= picked and this is a no-op.
+	//
+	// Cap the lowering so a deep crashed-active-turn scenario can't
+	// silently blow the caller's maxItems budget. The walk above
+	// already has the per-turn counts for turns we scanned; if the
+	// active turn is within the scanned range we can check precisely,
+	// and for turns below the scan we fall back to a conservative
+	// "only lower if activeFloor is within one scan-overshoot of
+	// picked" heuristic. Keeping the original picked in the
+	// over-budget case is safe: the active turn's items will still
+	// reach the user via the streaming path (triage upserts them into
+	// the live pane), and the user can Load Older to scroll back to
+	// the in-flight row if it matters for context.
 	activeFloor, active, err := s.activeTurnFloor(threadID)
 	if err != nil {
 		return -1, false, err
 	}
 	if active && activeFloor < picked {
-		picked = activeFloor
+		// Sum items for every scanned turn whose turnIndex falls in
+		// the gap [activeFloor, picked). The scan returns every turn
+		// that has at least one item — a turn in the gap that doesn't
+		// appear was empty, so the GROUP BY undercount is zero.
+		extra := 0
+		for _, tc := range turns {
+			if tc.turnIndex >= activeFloor && tc.turnIndex < picked {
+				extra += tc.count
+			}
+		}
+		// "Reachable" means the scan reached deep enough that we've
+		// accounted for every item-bearing turn in the gap: the
+		// oldest scanned turn_index is at or below activeFloor. The
+		// scan is ORDER BY turn_index DESC so turns[last] is the
+		// oldest scanned row.
+		lastScanned := turns[len(turns)-1].turnIndex
+		reachable := lastScanned <= activeFloor
+		if reachable && cumulative+extra <= maxItems {
+			picked = activeFloor
+		} else if !reachable && picked-activeFloor <= 2 {
+			// Gap extends below the scan — fall back to a narrow-gap
+			// heuristic. Two-turn-and-under is safe because each
+			// unscanned turn can only carry whatever item_count
+			// triage will land; two adjacent empty turns are the
+			// common "just-started turn below picked" happy path.
+			picked = activeFloor
+		}
 	}
 
 	// The scan stops at scanLimit; if we walked every scanned row,

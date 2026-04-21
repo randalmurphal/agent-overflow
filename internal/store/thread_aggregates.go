@@ -27,9 +27,14 @@ import (
 // proposed should appear.
 func (s *Store) ListThreadProposedPlans(threadID string) ([]Item, error) {
 	rows, err := s.db.Query(
+		// INNER JOIN matches reader intent: the WHERE clause already
+		// requires payloads.kind='proposed_plan', so a row with no
+		// payload can never survive a LEFT JOIN here. Using JOIN
+		// signals that correlation explicitly and lets SQLite's
+		// planner skip the outer-join rewrite pass.
 		`SELECT `+itemColumns+`
 		   FROM items
-		   LEFT JOIN payloads ON payloads.id = items.payload_id
+		   JOIN payloads ON payloads.id = items.payload_id
 		  WHERE items.thread_id = ?
 		    AND items.role = 'assistant'
 		    AND payloads.kind = 'proposed_plan'
@@ -76,9 +81,12 @@ func (s *Store) ListThreadProposedPlans(threadID string) ([]Item, error) {
 // selector's expectation that entries arrive in chronological order.
 func (s *Store) ListThreadDiffPayloads(threadID string) ([]Item, error) {
 	rows, err := s.db.Query(
+		// INNER JOIN — the WHERE clause requires payloads.kind to be
+		// one of two literal values, so payload-less items can never
+		// match regardless of join flavor. Inner-join spells that out.
 		`SELECT `+itemColumns+`
 		   FROM items
-		   LEFT JOIN payloads ON payloads.id = items.payload_id
+		   JOIN payloads ON payloads.id = items.payload_id
 		  WHERE items.thread_id = ?
 		    AND (
 		      payloads.kind = 'diff'

@@ -129,13 +129,22 @@
     if (!scrollContainer) return;
     const prevScrollHeight = scrollContainer.scrollHeight;
     const prevScrollTop = scrollContainer.scrollTop;
+    // Snapshot the item count so we can tell whether loadOlder
+    // actually prepended anything. Without this check, streaming
+    // upserts that grow the timeline DURING the loadOlder await
+    // (e.g. a live agent turn continuing while the user clicks
+    // "Load older") look like a prepend delta and shift the
+    // viewport by the streaming height, stomping the user's anchor.
+    const prevItemCount = pane.items.length;
     suppressBottomAutoScroll = true;
     try {
       await pane.loadOlder();
       await tick();
       if (!scrollContainer) return;
-      const delta = scrollContainer.scrollHeight - prevScrollHeight;
-      scrollContainer.scrollTop = prevScrollTop + delta;
+      if (pane.items.length > prevItemCount) {
+        const delta = scrollContainer.scrollHeight - prevScrollHeight;
+        scrollContainer.scrollTop = prevScrollTop + delta;
+      }
       // Sync `userNearBottom` from the post-prepend scroll position
       // BEFORE we release the suppress flag. Svelte re-runs the
       // auto-scroll effect the moment `suppressBottomAutoScroll`

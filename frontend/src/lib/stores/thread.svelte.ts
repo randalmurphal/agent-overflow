@@ -295,6 +295,42 @@ export function createThreadPane() {
     }
   }
 
+  /**
+   * Merge `incoming` into `current` by id, returning a fresh array
+   * sorted by (turnIndex, itemIndex). Used by `loadOlder` /
+   * `loadUntilItem` where the backend can legitimately re-return an
+   * ancestor row that is already in the window (pulled in by the
+   * initial load via the ancestor CTE). A naive prepend would either
+   * duplicate the row or — if we filter dupes and still prepend —
+   * reorder the timeline (a dropped ancestor that already sat above
+   * the tail would leave the freshly prepended mid-turn row at
+   * position 0). The sorted-merge keeps both invariants: no
+   * duplicates, and stable (turnIndex, itemIndex) ordering.
+   *
+   * Returns the original `current` reference when `incoming` is
+   * empty OR every incoming row is already present, so callers can
+   * skip the reactive write and associated turn-diff rebuild.
+   */
+  function mergeItemsById(incoming: Item[], current: Item[]): Item[] {
+    if (incoming.length === 0) return current;
+    const byId = new Map<string, Item>();
+    for (const it of current) byId.set(it.id, it);
+    let added = false;
+    for (const it of incoming) {
+      if (!byId.has(it.id)) {
+        byId.set(it.id, it);
+        added = true;
+      }
+    }
+    if (!added) return current;
+    const merged = Array.from(byId.values());
+    merged.sort((a, b) => {
+      if (a.turnIndex !== b.turnIndex) return a.turnIndex - b.turnIndex;
+      return a.itemIndex - b.itemIndex;
+    });
+    return merged;
+  }
+
   function seedContextWindow(nextThread: Thread | null): ContextWindow | null {
     const raw = nextThread?.lastTokenUsage?.trim();
     if (!raw) return null;
@@ -562,8 +598,9 @@ export function createThreadPane() {
         const paged = await ListItemsBeforeTurn(currentThread.id, floor, LOAD_OLDER_TURN_BATCH);
         if (gen !== switchGeneration || pageGen !== pagingGeneration) return;
         const prepend = (paged.items ?? []) as Item[];
-        if (prepend.length > 0) {
-          items = [...prepend, ...items];
+        const next = mergeItemsById(prepend, items);
+        if (next !== items) {
+          items = next;
           rebuildTurnDiffViews(items);
         }
         const nextFloor =
@@ -670,8 +707,9 @@ export function createThreadPane() {
         const paged = await ListItemsBeforeTurn(currentThread.id, beforeTurn, turnSpan);
         if (gen !== switchGeneration || pageGen !== pagingGeneration) return false;
         const prepend = (paged.items ?? []) as Item[];
-        if (prepend.length > 0) {
-          items = [...prepend, ...items];
+        const next = mergeItemsById(prepend, items);
+        if (next !== items) {
+          items = next;
           rebuildTurnDiffViews(items);
         }
         oldestLoadedTurnIndex =

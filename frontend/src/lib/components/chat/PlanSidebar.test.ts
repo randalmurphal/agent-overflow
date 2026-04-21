@@ -209,4 +209,83 @@ describe('<PlanSidebar>', () => {
     expect(fetchCount).toBe(1);
     await waitFor(() => expect(fetchCount).toBe(1));
   });
+
+  it('discards a stale refresh whose promise resolves after a newer one', async () => {
+    // The refreshPlans cancellation uses a per-call `fetchSeq`. If
+    // two refreshes are in flight and the OLDER one resolves LAST,
+    // its result must not overwrite the newer fetch's `planRows`.
+    // Without the guard, a slow initial fetch could overwrite a fast
+    // post-upsert fetch with stale rows.
+    let releaseFirst!: (rows: ReturnType<typeof makeItem>[]) => void;
+    const firstFetchPending = new Promise<ReturnType<typeof makeItem>[]>((r) => {
+      releaseFirst = r;
+    });
+    let call = 0;
+    setBindingMock('ListThreadProposedPlans', async () => {
+      call += 1;
+      if (call === 1) return firstFetchPending;
+      // Second call resolves immediately with fresh rows.
+      return [
+        makeItem({
+          id: 'plan-fresh',
+          kind: 'tool_call',
+          payloadId: 'p-fresh',
+          payloadKind: 'proposed_plan',
+          payloadMeta: JSON.stringify({
+            title: 'Fresh plan',
+            preview: 'fresh',
+            lineCount: 1,
+            charCount: 5,
+          }),
+        }),
+      ];
+    });
+
+    const pane = await buildPane();
+    pane.setShowPlanSidebar(true);
+    const { findByText, queryByText } = await renderSidebar(pane);
+    // First fetch is pending; empty state visible.
+    expect(queryByText('Fresh plan')).toBeNull();
+
+    // Trigger a second fetch via a proposed_plan upsert. The debounce
+    // window is 100 ms; wait for the fresh rows to land.
+    emitWailsEvent('provider:item_upsert', {
+      id: 'plan-fresh',
+      threadId: pane.thread!.id,
+      turnIndex: 0,
+      itemIndex: 0,
+      kind: 'tool_call',
+      role: 'assistant',
+      status: 'completed',
+      summary: '',
+      highlightedContent: '',
+      payloadKind: 'proposed_plan',
+      createdAt: 0,
+      updatedAt: 0,
+    });
+    await findByText('Fresh plan', {}, { timeout: 500 });
+
+    // NOW resolve the original pending fetch with a stale row. The
+    // sidebar must NOT swap 'Fresh plan' out for 'Stale plan'.
+    releaseFirst([
+      makeItem({
+        id: 'plan-stale',
+        kind: 'tool_call',
+        payloadId: 'p-stale',
+        payloadKind: 'proposed_plan',
+        payloadMeta: JSON.stringify({
+          title: 'Stale plan',
+          preview: 'stale',
+          lineCount: 1,
+          charCount: 5,
+        }),
+      }),
+    ]);
+    // Give the microtask queue time to resolve.
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Fresh plan still there; stale plan never reaches the DOM.
+    await findByText('Fresh plan');
+    expect(queryByText('Stale plan')).toBeNull();
+  });
 });

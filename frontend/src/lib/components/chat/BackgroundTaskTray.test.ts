@@ -258,6 +258,85 @@ describe('<BackgroundTaskTray>', () => {
     expect(getByTestId('background-task-tray-more').textContent).toContain('+1 more');
   });
 
+  it('refreshes on upsert of a background launch (isBackground=true, completionOf empty)', async () => {
+    // Regression pin for the `isBackground || completionOf` filter in
+    // the provider:item_upsert handler. A background launch that has
+    // not yet been paired with a completion has `completionOf` empty;
+    // the handler must still trigger a refresh — flipping the `||`
+    // to `&&` would silently stop all launches from refreshing the
+    // tray.
+    vi.useRealTimers();
+    const wailsioMock = await import('../../../test/mocks/wailsio-runtime');
+    const { emitWailsEvent } = wailsioMock;
+    let fetchCalls = 0;
+    const pane = await buildPane();
+    setBindingMock('ListLiveBackgroundTasks', async () => {
+      fetchCalls += 1;
+      return [];
+    });
+    render(BackgroundTaskTray, { props: { pane } });
+    // Flush the mount fetch.
+    await tick();
+    await tick();
+    const mountCalls = fetchCalls;
+
+    emitWailsEvent('provider:item_upsert', {
+      id: 'fresh-launch',
+      threadId: pane.thread!.id,
+      turnIndex: 0,
+      itemIndex: 0,
+      kind: 'tool_call',
+      role: 'assistant',
+      status: 'running',
+      summary: 'Bash: sleep 1',
+      highlightedContent: '',
+      isBackground: true,
+      // completionOf deliberately empty — this is a pure launch row.
+      createdAt: 0,
+      updatedAt: 0,
+    });
+    // Debounce window is 100 ms; give it room.
+    await new Promise((r) => setTimeout(r, 150));
+    expect(fetchCalls).toBeGreaterThan(mountCalls);
+  });
+
+  it('ignores upserts with neither isBackground nor completionOf', async () => {
+    // Inverse of the test above: a plain diff-only upsert must NOT
+    // trigger a tray refresh. The filter keeps background-adjacent
+    // work out of the hot path — if it misfires on every upsert the
+    // debounced fetch still runs 10x/sec on a streaming turn.
+    vi.useRealTimers();
+    const wailsioMock = await import('../../../test/mocks/wailsio-runtime');
+    const { emitWailsEvent } = wailsioMock;
+    let fetchCalls = 0;
+    const pane = await buildPane();
+    setBindingMock('ListLiveBackgroundTasks', async () => {
+      fetchCalls += 1;
+      return [];
+    });
+    render(BackgroundTaskTray, { props: { pane } });
+    await tick();
+    await tick();
+    const mountCalls = fetchCalls;
+
+    emitWailsEvent('provider:item_upsert', {
+      id: 'diff-only',
+      threadId: pane.thread!.id,
+      turnIndex: 0,
+      itemIndex: 0,
+      kind: 'tool_call',
+      role: 'assistant',
+      status: 'running',
+      summary: 'Edit: foo.ts',
+      highlightedContent: '',
+      // isBackground + completionOf both falsy
+      createdAt: 0,
+      updatedAt: 0,
+    });
+    await new Promise((r) => setTimeout(r, 150));
+    expect(fetchCalls).toBe(mountCalls);
+  });
+
   it('orders rows by latest activity first', async () => {
     const pane = await makePaneWithBackground([
       item({ id: 'older', isBackground: true, status: 'running', summary: 'Older', createdAt: 1_000_000 - 4_000, updatedAt: 1_000_000 - 4_000 }),
