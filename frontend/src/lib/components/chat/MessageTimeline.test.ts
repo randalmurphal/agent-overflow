@@ -3,7 +3,23 @@ import { render } from '@testing-library/svelte';
 import { loadSettings } from '../../stores/settings.svelte';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { buildPane, makeItem } from '../../../test/helpers/chat';
+import type { SettledTurn } from '../../stores/thread.svelte';
 import MessageTimeline from './MessageTimeline.svelte';
+
+function makeSettledTurn(overrides: Partial<SettledTurn> = {}): SettledTurn {
+  return {
+    turnId: 'turn-1',
+    turnIndex: 0,
+    startedAt: 0,
+    completedAt: 12_000,
+    stopReason: 'end_turn',
+    assistantMessageId: null,
+    tokenUsage: null,
+    aborted: false,
+    errorMessage: '',
+    ...overrides,
+  };
+}
 
 beforeAll(() => {
   if (typeof (Element.prototype as unknown as { animate?: unknown }).animate !== 'function') {
@@ -172,5 +188,118 @@ describe('<MessageTimeline>', () => {
     await rerender({ pane });
 
     expect(getByTestId('turn-diff-badge').textContent ?? '').toContain('+5');
+  });
+
+  describe('completion divider integration', () => {
+    it('renders the divider before the matching assistant_text leaf', async () => {
+      const pane = await buildPane(undefined, [
+        makeItem({ id: 'user:0', kind: 'user_text', role: 'user', summary: 'hi' }),
+        makeItem({
+          id: 'text:0:0',
+          itemIndex: 1,
+          kind: 'assistant_text',
+          summary: 'final answer',
+        }),
+      ]);
+      pane.settleTurn(
+        makeSettledTurn({
+          assistantMessageId: 'text:0:0',
+          startedAt: 0,
+          completedAt: 12_000,
+        }),
+      );
+
+      const { getByTestId, container } = render(MessageTimeline, { props: { pane } });
+
+      const divider = getByTestId('completion-divider');
+      expect(divider).toBeInTheDocument();
+
+      // Pin the reading order: divider sits BEFORE the assistant leaf.
+      // The leaf is wrapped in a [data-item-id] div inside a
+      // [data-testid="message-timeline-node"] wrapper; the divider
+      // must appear in document order ahead of that wrapper.
+      const assistantLeafWrapper = container.querySelector('[data-item-id="text:0:0"]');
+      expect(assistantLeafWrapper).not.toBeNull();
+      // Node-ordering compare: DOCUMENT_POSITION_FOLLOWING = 4.
+      const following = divider.compareDocumentPosition(assistantLeafWrapper!) & 4;
+      expect(following).toBe(4);
+    });
+
+    it('renders zero dividers when latestSettledTurn is null', async () => {
+      const pane = await buildPane(undefined, [
+        makeItem({ id: 'text:0:0', kind: 'assistant_text', summary: 'hi' }),
+      ]);
+
+      const { queryAllByTestId } = render(MessageTimeline, { props: { pane } });
+
+      expect(queryAllByTestId('completion-divider')).toHaveLength(0);
+    });
+
+    it('renders zero dividers when latestSettledTurn.assistantMessageId is null', async () => {
+      // A turn that aborted before any assistant_text was emitted carries
+      // assistantMessageId=null. The divider lookup must no-op rather
+      // than matching against a null and attaching itself to the first
+      // leaf it sees.
+      const pane = await buildPane(undefined, [
+        makeItem({ id: 'text:0:0', kind: 'assistant_text', summary: 'partial' }),
+      ]);
+      pane.settleTurn(makeSettledTurn({ assistantMessageId: null, aborted: true }));
+
+      const { queryAllByTestId } = render(MessageTimeline, { props: { pane } });
+
+      expect(queryAllByTestId('completion-divider')).toHaveLength(0);
+    });
+
+    it('does not render the divider when no leaf id matches assistantMessageId', async () => {
+      // Historical case: the turn projection has an assistantMessageId that
+      // isn't present in the items list yet (delayed load, or an id that
+      // got pruned). The divider stays hidden rather than attaching to
+      // the first / last assistant leaf it finds.
+      const pane = await buildPane(undefined, [
+        makeItem({ id: 'text:0:0', kind: 'assistant_text', summary: 'a' }),
+      ]);
+      pane.settleTurn(
+        makeSettledTurn({ assistantMessageId: 'text:9:9', startedAt: 0, completedAt: 1_000 }),
+      );
+
+      const { queryAllByTestId } = render(MessageTimeline, { props: { pane } });
+
+      expect(queryAllByTestId('completion-divider')).toHaveLength(0);
+    });
+
+    it('shows "Interrupted" label when the settled turn is aborted', async () => {
+      const pane = await buildPane(undefined, [
+        makeItem({ id: 'text:0:0', kind: 'assistant_text', summary: 'hi' }),
+      ]);
+      pane.settleTurn(
+        makeSettledTurn({
+          assistantMessageId: 'text:0:0',
+          aborted: true,
+          stopReason: 'interrupted',
+        }),
+      );
+
+      const { getByTestId } = render(MessageTimeline, { props: { pane } });
+
+      expect(getByTestId('completion-divider-label').textContent).toContain('Interrupted');
+    });
+
+    it('shows "Error" label with inline errorMessage for an errored turn', async () => {
+      const pane = await buildPane(undefined, [
+        makeItem({ id: 'text:0:0', kind: 'assistant_text', summary: 'hi' }),
+      ]);
+      pane.settleTurn(
+        makeSettledTurn({
+          assistantMessageId: 'text:0:0',
+          stopReason: 'error',
+          errorMessage: 'rate_limited',
+        }),
+      );
+
+      const { getByTestId } = render(MessageTimeline, { props: { pane } });
+
+      expect(getByTestId('completion-divider-label').textContent).toContain('Error');
+      expect(getByTestId('completion-divider-error').textContent).toBe('rate_limited');
+    });
   });
 });

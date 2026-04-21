@@ -1,10 +1,11 @@
 <script lang="ts">
-  import type { ThreadPane } from '../../stores/thread.svelte';
+  import type { SettledTurn, ThreadPane } from '../../stores/thread.svelte';
   import type { Item } from '../../types/models';
   import { groupItemsBySubagent, type TimelineNode } from '../../utils/subagentGrouping';
   import { turnSummaryIsMeaningful } from '../../utils/turnDiffSummary';
   import AssistantMessage from './AssistantMessage.svelte';
   import ChangedFilesTree from './ChangedFilesTree.svelte';
+  import CompletionDivider from './CompletionDivider.svelte';
   import SubagentGroup from './SubagentGroup.svelte';
   import ThinkingBlock from './ThinkingBlock.svelte';
   import ToolCallCard from './ToolCallCard.svelte';
@@ -12,6 +13,31 @@
   import UserMessage from './UserMessage.svelte';
 
   let { pane }: { pane: ThreadPane } = $props();
+
+  /**
+   * Decide whether the completion divider renders immediately before this
+   * node in the timeline flow. Pure, exported for unit-testing via the
+   * MessageTimeline test — checks:
+   *   - there's a settled turn to render for
+   *   - that turn reported a terminal assistant message id
+   *   - the current node is the leaf whose id matches that message
+   * Subagent-group nodes and non-matching leaves render nothing.
+   *
+   * Spec: docs/architecture/turn-lifecycle.md §UI components driven by
+   * this state. See also t3-code's deriveCompletionDividerBeforeEntryId
+   * (apps/web/src/session-logic.ts) — we skip the time-range fallback
+   * since agent-overflow persists assistantMessageId directly on the
+   * turns row.
+   */
+  export function shouldRenderDividerBefore(
+    node: TimelineNode,
+    turn: SettledTurn | null,
+  ): boolean {
+    if (!turn) return false;
+    if (!turn.assistantMessageId) return false;
+    if (node.kind !== 'leaf') return false;
+    return node.item.id === turn.assistantMessageId;
+  }
 
   let scrollContainer: HTMLDivElement | undefined = $state(undefined);
 
@@ -140,6 +166,15 @@
     {/snippet}
 
     {#each groupedNodes as node, index (node.kind === 'group' ? `g:${node.parent.id}` : `l:${node.item.id}`)}
+      {#if pane.latestSettledTurn && shouldRenderDividerBefore(node, pane.latestSettledTurn)}
+        <!-- The divider renders BEFORE the assistant message that closed
+             the settled turn (t3-code pattern). The per-turn diff summary
+             + TurnDiffBadge render AFTER the turn's last root node below,
+             so the two don't conflict — the divider sits above the final
+             assistant message, the diff badge sits below it at the turn
+             boundary. -->
+        <CompletionDivider turn={pane.latestSettledTurn} />
+      {/if}
       <!-- content-visibility: auto lets the browser skip paint + layout for
            off-screen nodes. Pairs with contain-intrinsic-size as a layout
            placeholder so scroll height stays sane when nodes aren't measured
