@@ -10,7 +10,7 @@ import (
 // with the Item struct; adding a column means updating this list, the
 // INSERT sites below, and scanItemRow together.
 const itemColumns = `items.id, items.thread_id, items.turn_index, items.item_index,
-    items.kind, items.role, items.status, items.summary,
+    items.kind, items.role, items.status, items.summary, items.highlighted_content,
     COALESCE(items.payload_id, ''), COALESCE(payloads.kind, ''), COALESCE(payloads.meta, ''),
     items.parent_id, items.is_background, items.completion_of,
     items.tool_name, items.decision, items.meta, items.created_at, items.updated_at`
@@ -24,7 +24,7 @@ func scanItemRow(scanner interface{ Scan(...any) error }) (Item, error) {
 	var isBackground int
 	if err := scanner.Scan(
 		&it.ID, &it.ThreadID, &it.TurnIndex, &it.ItemIndex,
-		&it.Kind, &it.Role, &it.Status, &it.Summary,
+		&it.Kind, &it.Role, &it.Status, &it.Summary, &it.HighlightedContent,
 		&it.PayloadID, &it.PayloadKind, &it.PayloadMeta,
 		&it.ParentID, &isBackground, &it.CompletionOf,
 		&it.ToolName, &it.Decision, &it.Meta, &it.CreatedAt, &it.UpdatedAt,
@@ -78,11 +78,11 @@ func (s *Store) InsertItem(item Item) error {
 	defer tx.Rollback()
 
 	_, err = tx.Exec(
-		`INSERT INTO items (id, thread_id, turn_index, item_index, kind, role, status, summary,
+		`INSERT INTO items (id, thread_id, turn_index, item_index, kind, role, status, summary, highlighted_content,
 		    payload_id, parent_id, is_background, completion_of, tool_name, decision, meta,
 		    created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		item.ID, item.ThreadID, item.TurnIndex, item.ItemIndex, item.Kind, item.Role, item.Status, item.Summary,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		item.ID, item.ThreadID, item.TurnIndex, item.ItemIndex, item.Kind, item.Role, item.Status, item.Summary, item.HighlightedContent,
 		nilIfEmpty(item.PayloadID), item.ParentID,
 		boolToInt(item.IsBackground), item.CompletionOf, item.ToolName, item.Decision, item.Meta,
 		item.CreatedAt, item.UpdatedAt,
@@ -133,11 +133,11 @@ func (s *Store) AppendItem(item Item) (int, error) {
 	item.ItemIndex = next
 
 	if _, err := tx.Exec(
-		`INSERT INTO items (id, thread_id, turn_index, item_index, kind, role, status, summary,
+		`INSERT INTO items (id, thread_id, turn_index, item_index, kind, role, status, summary, highlighted_content,
 		    payload_id, parent_id, is_background, completion_of, tool_name, decision, meta,
 		    created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		item.ID, item.ThreadID, item.TurnIndex, item.ItemIndex, item.Kind, item.Role, item.Status, item.Summary,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		item.ID, item.ThreadID, item.TurnIndex, item.ItemIndex, item.Kind, item.Role, item.Status, item.Summary, item.HighlightedContent,
 		nilIfEmpty(item.PayloadID), item.ParentID,
 		boolToInt(item.IsBackground), item.CompletionOf, item.ToolName, item.Decision, item.Meta,
 		item.CreatedAt, item.UpdatedAt,
@@ -222,6 +222,96 @@ func (s *Store) AppendItemSummary(id, delta string, updatedAt int64) (Item, erro
 	}
 	if err := tx.Commit(); err != nil {
 		return Item{}, fmt.Errorf("store: commit append item summary tx: %w", err)
+	}
+	return updated, nil
+}
+
+// AppendItemSummaryAndHighlight extends AppendItemSummary with a second
+// write: after concatenating delta onto summary, it calls render with the
+// cumulative summary to produce display HTML and stores it in the
+// highlighted_content column. The whole sequence runs in a single
+// transaction so the two columns never drift out of sync — readers only
+// ever see the pair updated atomically.
+//
+// Used by triage's streaming-text and streaming-thinking paths, where each
+// provider delta must both extend the summary and update the rendered HTML
+// the timeline paints via {@html}. The render callback is caller-provided
+// so the store stays ignorant of markdown vs ANSI: the triage Router
+// passes its highlighter.RenderMarkdown for assistant_text and
+// RenderANSI for thinking.
+//
+// The SQLite `||` concatenation lets us avoid pulling the existing
+// summary through Go memory on every delta. The RETURNING clause on the
+// first UPDATE hands us the new cumulative summary, which we feed into
+// render without a separate SELECT.
+//
+// Returns sql.ErrNoRows (wrapped) if no item matches id; callers that
+// might race with item creation should UpsertItem for the first delta
+// and AppendItemSummaryAndHighlight for every subsequent delta.
+func (s *Store) AppendItemSummaryAndHighlight(
+	id, delta string,
+	render func(full string) string,
+	updatedAt int64,
+) (Item, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return Item{}, fmt.Errorf("store: begin append item summary+highlight tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Append delta inside SQLite, return the cumulative summary in one round-trip.
+	var newSummary string
+	if err := tx.QueryRow(
+		`UPDATE items SET summary = summary || ?, updated_at = ?
+		 WHERE id = ?
+		 RETURNING summary`,
+		delta, updatedAt, id,
+	).Scan(&newSummary); err != nil {
+		if err == sql.ErrNoRows {
+			return Item{}, fmt.Errorf("store: append item summary+highlight %s: no such item", id)
+		}
+		return Item{}, fmt.Errorf("store: append item summary+highlight %s: %w", id, err)
+	}
+
+	// Render the new cumulative summary to HTML. render must not panic on
+	// any input; the highlight package guarantees this (every failure
+	// path falls through to a safe <pre><code> fallback).
+	html := ""
+	if render != nil {
+		html = render(newSummary)
+	}
+
+	if _, err := tx.Exec(
+		`UPDATE items SET highlighted_content = ? WHERE id = ?`,
+		html, id,
+	); err != nil {
+		return Item{}, fmt.Errorf("store: write highlighted_content %s: %w", id, err)
+	}
+
+	// Bump the owning thread's updated_at so the sidebar resorts in sync
+	// with the stream — same semantics as AppendItemSummary.
+	if _, err := tx.Exec(
+		`UPDATE threads SET updated_at = ? WHERE id = (
+			SELECT thread_id FROM items WHERE id = ?
+		)`,
+		updatedAt, id,
+	); err != nil {
+		return Item{}, fmt.Errorf("store: touch thread for item %s: %w", id, err)
+	}
+
+	row := tx.QueryRow(
+		`SELECT `+itemColumns+`
+		   FROM items
+		   LEFT JOIN payloads ON payloads.id = items.payload_id
+		  WHERE items.id = ?`,
+		id,
+	)
+	updated, err := scanItemRow(row)
+	if err != nil {
+		return Item{}, fmt.Errorf("store: re-read appended item %s: %w", id, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return Item{}, fmt.Errorf("store: commit append item summary+highlight tx: %w", err)
 	}
 	return updated, nil
 }
@@ -322,11 +412,11 @@ func writeItem(tx *sql.Tx, item *Item) error {
 func updateExistingItem(tx *sql.Tx, item Item) error {
 	if _, err := tx.Exec(
 		`UPDATE items
-		 SET turn_index = ?, kind = ?, role = ?, status = ?, summary = ?,
+		 SET turn_index = ?, kind = ?, role = ?, status = ?, summary = ?, highlighted_content = ?,
 		     payload_id = ?, parent_id = ?, is_background = ?, completion_of = ?,
 		     tool_name = ?, decision = ?, meta = ?, updated_at = ?
 		 WHERE thread_id = ? AND id = ?`,
-		item.TurnIndex, item.Kind, item.Role, item.Status, item.Summary,
+		item.TurnIndex, item.Kind, item.Role, item.Status, item.Summary, item.HighlightedContent,
 		nilIfEmpty(item.PayloadID), item.ParentID, boolToInt(item.IsBackground), item.CompletionOf,
 		item.ToolName, item.Decision, item.Meta, item.UpdatedAt, item.ThreadID, item.ID,
 	); err != nil {
@@ -352,11 +442,11 @@ func insertNewItem(tx *sql.Tx, item *Item) error {
 		item.ItemIndex = int(maxIndex.Int64) + 1
 	}
 	if _, err := tx.Exec(
-		`INSERT INTO items (id, thread_id, turn_index, item_index, kind, role, status, summary,
+		`INSERT INTO items (id, thread_id, turn_index, item_index, kind, role, status, summary, highlighted_content,
 		    payload_id, parent_id, is_background, completion_of, tool_name, decision, meta,
 		    created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		item.ID, item.ThreadID, item.TurnIndex, item.ItemIndex, item.Kind, item.Role, item.Status, item.Summary,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		item.ID, item.ThreadID, item.TurnIndex, item.ItemIndex, item.Kind, item.Role, item.Status, item.Summary, item.HighlightedContent,
 		nilIfEmpty(item.PayloadID), item.ParentID, boolToInt(item.IsBackground), item.CompletionOf,
 		item.ToolName, item.Decision, item.Meta, item.CreatedAt, item.UpdatedAt,
 	); err != nil {
@@ -625,7 +715,7 @@ func (s *Store) ListTurnItems(threadID string, turnIndex int) ([]Item, error) {
 // turn-complete flip loop) so we skip the LEFT JOIN and the two string
 // scans. Column order in scanItemRowSansPayload must match exactly.
 const itemColumnsSansPayload = `items.id, items.thread_id, items.turn_index, items.item_index,
-    items.kind, items.role, items.status, items.summary,
+    items.kind, items.role, items.status, items.summary, items.highlighted_content,
     COALESCE(items.payload_id, ''),
     items.parent_id, items.is_background, items.completion_of,
     items.tool_name, items.decision, items.meta, items.created_at, items.updated_at`
@@ -638,7 +728,7 @@ func scanItemRowSansPayload(scanner interface{ Scan(...any) error }) (Item, erro
 	var isBackground int
 	if err := scanner.Scan(
 		&it.ID, &it.ThreadID, &it.TurnIndex, &it.ItemIndex,
-		&it.Kind, &it.Role, &it.Status, &it.Summary,
+		&it.Kind, &it.Role, &it.Status, &it.Summary, &it.HighlightedContent,
 		&it.PayloadID,
 		&it.ParentID, &isBackground, &it.CompletionOf,
 		&it.ToolName, &it.Decision, &it.Meta, &it.CreatedAt, &it.UpdatedAt,
@@ -1089,12 +1179,12 @@ func (s *Store) AppendCompletionItem(launch Item, completion Item, completionPay
 	}
 
 	if _, err := tx.Exec(
-		`INSERT INTO items (id, thread_id, turn_index, item_index, kind, role, status, summary,
+		`INSERT INTO items (id, thread_id, turn_index, item_index, kind, role, status, summary, highlighted_content,
 		    payload_id, parent_id, is_background, completion_of, tool_name, decision, meta,
 		    created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		completion.ID, completion.ThreadID, completion.TurnIndex, completion.ItemIndex,
-		completion.Kind, completion.Role, completion.Status, completion.Summary,
+		completion.Kind, completion.Role, completion.Status, completion.Summary, completion.HighlightedContent,
 		nilIfEmpty(completion.PayloadID), completion.ParentID,
 		boolToInt(completion.IsBackground), completion.CompletionOf,
 		completion.ToolName, completion.Decision, completion.Meta,

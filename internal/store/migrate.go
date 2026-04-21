@@ -575,6 +575,30 @@ CREATE TABLE turns (
 CREATE INDEX turns_thread_index ON turns(thread_id, turn_index DESC);
 `,
 	},
+	{
+		Version: 19,
+		Name:    "highlighted_content_columns",
+		// Pre-rendered HTML for items.summary and channel_messages.content.
+		// The full story is in internal/highlight/ — briefly: goldmark +
+		// Chroma for assistant_text and channel messages, terminal-to-html
+		// for thinking streams. Rendering happens at write time so the
+		// timeline/discussion views can paint {@html} directly without
+		// running any highlighter in the webview.
+		//
+		// NOT NULL DEFAULT '' keeps the column cheap for existing rows and
+		// for kinds that don't get server-rendered (user_text, tool_call,
+		// compactions, errors, etc.). Empty means "no html — use summary
+		// as plain text."
+		//
+		// Payloads are intentionally excluded: heavy payloads render on
+		// demand via the app binding (GetPayloadData / GetPayloadPreview)
+		// so the store never has to keep a derived render in sync with
+		// renderer updates.
+		SQL: `
+ALTER TABLE items            ADD COLUMN highlighted_content TEXT NOT NULL DEFAULT '';
+ALTER TABLE channel_messages ADD COLUMN highlighted_content TEXT NOT NULL DEFAULT '';
+`,
+	},
 }
 
 // v13SQL is the DROP-and-rebuild payload for migration v13. Extracted so

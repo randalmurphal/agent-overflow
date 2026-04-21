@@ -58,9 +58,10 @@ func (s *Store) DeleteChannel(id string) error {
 func (s *Store) InsertChannelMessage(msg ChannelMessage) error {
 	_, err := s.db.Exec(
 		`INSERT INTO channel_messages (
-			id, channel_id, sequence, from_type, from_id, from_role, content, created_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		msg.ID, msg.ChannelID, msg.Sequence, msg.FromType, msg.FromID, nilIfEmpty(msg.FromRole), msg.Content, msg.CreatedAt,
+			id, channel_id, sequence, from_type, from_id, from_role, content, highlighted_content, created_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		msg.ID, msg.ChannelID, msg.Sequence, msg.FromType, msg.FromID, nilIfEmpty(msg.FromRole),
+		msg.Content, msg.HighlightedContent, msg.CreatedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("store: insert channel message %s: %w", msg.ID, err)
@@ -72,14 +73,20 @@ func (s *Store) InsertChannelMessage(msg ChannelMessage) error {
 // computed sequence number. Returns the assigned sequence. This avoids the
 // race where two concurrent PostMessage calls read the same max sequence
 // and the second INSERT fails on the UNIQUE(channel_id, sequence) constraint.
+//
+// msg.HighlightedContent is written alongside msg.Content. Callers that
+// want server-rendered HTML should pre-render via highlight.Renderer
+// before calling in; leaving it empty is fine too (the frontend treats
+// empty as "render the raw content as plain text").
 func (s *Store) InsertChannelMessageAtomic(msg ChannelMessage) (int, error) {
 	var sequence int
 	err := s.db.QueryRow(
-		`INSERT INTO channel_messages (id, channel_id, sequence, from_type, from_id, from_role, content, created_at)
-		 SELECT ?, ?, COALESCE(MAX(sequence), -1) + 1, ?, ?, ?, ?, ?
+		`INSERT INTO channel_messages (id, channel_id, sequence, from_type, from_id, from_role, content, highlighted_content, created_at)
+		 SELECT ?, ?, COALESCE(MAX(sequence), -1) + 1, ?, ?, ?, ?, ?, ?
 		 FROM channel_messages WHERE channel_id = ?
 		 RETURNING sequence`,
-		msg.ID, msg.ChannelID, msg.FromType, msg.FromID, nilIfEmpty(msg.FromRole), msg.Content, msg.CreatedAt, msg.ChannelID,
+		msg.ID, msg.ChannelID, msg.FromType, msg.FromID, nilIfEmpty(msg.FromRole),
+		msg.Content, msg.HighlightedContent, msg.CreatedAt, msg.ChannelID,
 	).Scan(&sequence)
 	if err != nil {
 		return 0, fmt.Errorf("store: insert channel message atomic %s: %w", msg.ID, err)
@@ -88,7 +95,7 @@ func (s *Store) InsertChannelMessageAtomic(msg ChannelMessage) (int, error) {
 }
 
 func (s *Store) ListChannelMessages(channelID string, afterSeq, limit int) ([]ChannelMessage, error) {
-	baseQuery := `SELECT id, channel_id, sequence, from_type, from_id, COALESCE(from_role, ''), content, created_at
+	baseQuery := `SELECT id, channel_id, sequence, from_type, from_id, COALESCE(from_role, ''), content, highlighted_content, created_at
 		FROM channel_messages WHERE channel_id = ? AND sequence > ? ORDER BY sequence ASC`
 	args := []any{channelID, afterSeq}
 	if limit > 0 {
@@ -113,6 +120,7 @@ func (s *Store) ListChannelMessages(channelID string, afterSeq, limit int) ([]Ch
 			&msg.FromID,
 			&msg.FromRole,
 			&msg.Content,
+			&msg.HighlightedContent,
 			&msg.CreatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("store: scan channel message: %w", err)

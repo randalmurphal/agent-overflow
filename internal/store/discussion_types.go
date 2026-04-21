@@ -39,12 +39,16 @@ type Channel struct {
 
 // ChannelMessage is one ordered message within a channel.
 type ChannelMessage struct {
-	ID        string `json:"id"`
-	ChannelID string `json:"channelId"`
-	Sequence  int    `json:"sequence"`
-	FromType  string `json:"fromType"`
-	FromID    string `json:"fromId"`
-	FromRole  string `json:"fromRole,omitempty"`
-	Content   string `json:"content"`
-	CreatedAt int64  `json:"createdAt"`
+	ID                 string `json:"id"`
+	ChannelID          string `json:"channelId"`
+	Sequence           int    `json:"sequence"`
+	FromType           string `json:"fromType"`
+	FromID             string `json:"fromId"`
+	FromRole           string `json:"fromRole,omitempty"`
+	Content            string `json:"content"`
+	// HighlightedContent is the Chroma-rendered HTML for Content. Channel
+	// messages are always markdown, so this column is always populated for
+	// new writes. Empty for rows inserted before migration v19.
+	HighlightedContent string `json:"highlightedContent"`
+	CreatedAt          int64  `json:"createdAt"`
 }

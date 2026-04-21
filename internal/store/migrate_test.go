@@ -68,8 +68,8 @@ func TestMigrationVersionTracking(t *testing.T) {
 		t.Fatalf("rows err: %v", err)
 	}
 
-	if len(versions) != 18 {
-		t.Fatalf("expected 18 migration versions, got %d", len(versions))
+	if len(versions) != 19 {
+		t.Fatalf("expected 19 migration versions, got %d", len(versions))
 	}
 	if versions[0].version != 1 || versions[0].name != "initial_schema" {
 		t.Errorf("v1: got %d/%s", versions[0].version, versions[0].name)
@@ -125,6 +125,9 @@ func TestMigrationVersionTracking(t *testing.T) {
 	if versions[17].version != 18 || versions[17].name != "turns_table" {
 		t.Errorf("v18: got %d/%s", versions[17].version, versions[17].name)
 	}
+	if versions[18].version != 19 || versions[18].name != "highlighted_content_columns" {
+		t.Errorf("v19: got %d/%s", versions[18].version, versions[18].name)
+	}
 }
 
 func TestMigrationIdempotent(t *testing.T) {
@@ -144,8 +147,8 @@ func TestMigrationIdempotent(t *testing.T) {
 	if err := db.QueryRow("SELECT COUNT(*) FROM migration_versions").Scan(&count); err != nil {
 		t.Fatalf("count: %v", err)
 	}
-	if count != 18 {
-		t.Errorf("expected 18 version rows after idempotent re-run, got %d", count)
+	if count != 19 {
+		t.Errorf("expected 19 version rows after idempotent re-run, got %d", count)
 	}
 }
 
@@ -182,8 +185,8 @@ func TestMigrationExistingVersionedDBSkipsAppliedV1(t *testing.T) {
 	if err := db.QueryRow("SELECT COUNT(*) FROM migration_versions").Scan(&appliedVersions); err != nil {
 		t.Fatalf("count migration rows: %v", err)
 	}
-	if appliedVersions != 18 {
-		t.Fatalf("expected 18 applied migrations, got %d", appliedVersions)
+	if appliedVersions != 19 {
+		t.Fatalf("expected 19 applied migrations, got %d", appliedVersions)
 	}
 }
 
@@ -223,10 +226,10 @@ func TestMigrationExistingLegacyDBSeedsTrackingAndAppliesV2(t *testing.T) {
 		t.Fatalf("read migration rows: %v", err)
 	}
 
-	if len(versions) != 18 {
-		t.Fatalf("expected 18 applied migrations, got %d", len(versions))
+	if len(versions) != 19 {
+		t.Fatalf("expected 19 applied migrations, got %d", len(versions))
 	}
-	expected := []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18}
+	expected := []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19}
 	for i, want := range expected {
 		if versions[i] != want {
 			t.Fatalf("unexpected migration versions: %v", versions)
@@ -329,10 +332,10 @@ func TestMigrationExistingLegacyParityDBBackfillsVersionHistory(t *testing.T) {
 		t.Fatalf("read migration versions: %v", err)
 	}
 
-	if len(versions) != 18 {
-		t.Fatalf("expected 18 migration rows after legacy backfill + new migrations, got %d", len(versions))
+	if len(versions) != 19 {
+		t.Fatalf("expected 19 migration rows after legacy backfill + new migrations, got %d", len(versions))
 	}
-	expectedVersions := []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18}
+	expectedVersions := []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19}
 	for i, want := range expectedVersions {
 		if versions[i].version != want {
 			t.Fatalf("unexpected migration versions: %+v", versions)
