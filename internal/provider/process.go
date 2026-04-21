@@ -41,6 +41,7 @@ type Process struct {
 	cmd         *exec.Cmd
 	stdin       io.WriteCloser
 	stdout      *bufio.Reader
+	stdoutFile  *os.File
 	done        chan struct{}
 	err         error
 	mu          sync.Mutex
@@ -51,6 +52,10 @@ type Process struct {
 	// concurrent ReadLine failures (should never happen but defense in
 	// depth) do not double-signal the process group.
 	killOnce sync.Once
+	// stdoutCloseOnce closes the parent-side read pipe after ReadLine has
+	// drained it. We intentionally do not close this from the Wait goroutine:
+	// doing so races process exit against the last stdout bytes.
+	stdoutCloseOnce sync.Once
 }
 
 // SpawnConfig configures subprocess creation.
@@ -90,16 +95,25 @@ func Spawn(ctx context.Context, cfg SpawnConfig) (*Process, error) {
 		return nil, fmt.Errorf("provider: stdin pipe: %w", err)
 	}
 
-	stdoutPipe, err := cmd.StdoutPipe()
+	stdoutRead, stdoutWrite, err := os.Pipe()
 	if err != nil {
 		return nil, fmt.Errorf("provider: stdout pipe: %w", err)
 	}
+	cmd.Stdout = stdoutWrite
 
 	// Forward stderr so provider debug output is visible during development.
 	cmd.Stderr = os.Stderr
 
 	if err := cmd.Start(); err != nil {
+		stdoutRead.Close()
+		stdoutWrite.Close()
 		return nil, fmt.Errorf("provider: start %s: %w", cfg.Binary, err)
+	}
+	// The child inherited stdoutWrite. The parent must close its copy so the
+	// reader observes EOF after the child exits and its final bytes drain.
+	if err := stdoutWrite.Close(); err != nil {
+		stdoutRead.Close()
+		return nil, fmt.Errorf("provider: close parent stdout writer: %w", err)
 	}
 
 	// We use bufio.Reader (not Scanner) so we control the per-line size
@@ -107,12 +121,13 @@ func Spawn(ctx context.Context, cfg SpawnConfig) (*Process, error) {
 	// the subprocess alive; our readNDJSONLine below kills the process on
 	// overflow so no orphan remains. 64 KB initial buffer matches the
 	// previous Scanner sizing; the reader grows internally as needed.
-	reader := bufio.NewReaderSize(stdoutPipe, 64*1024)
+	reader := bufio.NewReaderSize(stdoutRead, 64*1024)
 
 	p := &Process{
 		cmd:         cmd,
 		stdin:       stdin,
 		stdout:      reader,
+		stdoutFile:  stdoutRead,
 		done:        make(chan struct{}),
 		eventLogger: cfg.EventLogger,
 		threadID:    cfg.ThreadID,
@@ -171,12 +186,21 @@ func (p *Process) ReadLine() ([]byte, error) {
 		// cmd.Wait() closes the stdout pipe, which can race with the read.
 		// Treat a closed-pipe error as EOF — the process is gone either way.
 		if err == io.EOF || isClosedPipeErr(err) {
+			p.closeStdout()
 			return nil, io.EOF
 		}
 		return nil, err
 	}
 	p.logEvent("in", line)
 	return line, nil
+}
+
+func (p *Process) closeStdout() {
+	p.stdoutCloseOnce.Do(func() {
+		if p.stdoutFile != nil {
+			_ = p.stdoutFile.Close()
+		}
+	})
 }
 
 // readBoundedLine returns the next newline-terminated line from stdout with

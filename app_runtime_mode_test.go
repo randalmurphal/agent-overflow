@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/settings"
 	"agent-overflow/internal/store"
 )
 
@@ -191,5 +192,26 @@ func TestCreateThreadUsesSettingsDefault(t *testing.T) {
 	}
 	if thread.RuntimeMode != string(provider.DefaultRuntimeMode) {
 		t.Errorf("new thread runtime_mode = %q, want %q", thread.RuntimeMode, provider.DefaultRuntimeMode)
+	}
+}
+
+func TestUpdateThreadRuntimeModePersistsDefaultForNewThreads(t *testing.T) {
+	app := newTestAppWithStore(t)
+	app.settings = settings.NewService(t.TempDir())
+
+	source, err := createTestThread(t, app, "claude", "/tmp/runtime-source", "claude-sonnet-4-6", "chat")
+	if err != nil {
+		t.Fatalf("create source thread: %v", err)
+	}
+	if _, err := app.UpdateThreadRuntimeMode(source.ID, string(provider.RuntimeApprovalRequired)); err != nil {
+		t.Fatalf("UpdateThreadRuntimeMode: %v", err)
+	}
+
+	next, err := createTestThread(t, app, "claude", "/tmp/runtime-next", "claude-sonnet-4-6", "")
+	if err != nil {
+		t.Fatalf("create next thread: %v", err)
+	}
+	if next.RuntimeMode != string(provider.RuntimeApprovalRequired) {
+		t.Fatalf("new thread runtime_mode = %q, want %q", next.RuntimeMode, provider.RuntimeApprovalRequired)
 	}
 }

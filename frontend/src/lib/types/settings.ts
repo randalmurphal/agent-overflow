@@ -19,12 +19,15 @@ export type ContextWindow = 200000 | 1000000;
  */
 export type ThreadMode = 'chat' | 'plan' | 'design' | 'discussion';
 
+export type RuntimeMode = 'approval-required' | 'auto-accept-edits' | 'full-access';
+
 export interface Settings {
   theme: 'system' | 'light' | 'dark';
   timestampFormat: 'locale' | '12-hour' | '24-hour';
   defaultProvider: 'claude' | 'codex';
   defaultModelClaude: string;
   defaultModelCodex: string;
+  modelContextWindows: Record<string, ContextWindow>;
   recentWorkspaces: string[];
   diffWordWrap: boolean;
   streamingEnabled: boolean;
@@ -34,8 +37,10 @@ export interface Settings {
   codexBinaryPath: string;
   claudeEnabled: boolean;
   codexEnabled: boolean;
-  /** Seeds the per-thread mode on new threads created without an override. */
+  /** Legacy setting kept for old settings files; normal new threads start in chat mode. */
   defaultMode: ThreadMode;
+  /** Seeds the per-thread runtime permissions mode. */
+  defaultRuntimeMode: RuntimeMode;
   /** Seeds the per-thread reasoning-effort tier. */
   defaultReasoningEffort: ReasoningEffort;
   /** Seeds the per-thread fast-mode toggle. */

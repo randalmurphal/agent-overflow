@@ -126,9 +126,10 @@ export function CreateProject(path: string): $CancellablePromise<store$0.Project
 
 /**
  * CreateThread persists a new thread rooted at a project. The options
- * struct carries every knob; any empty field is resolved via settings
- * defaults. "discussion" is rejected as a mode value because discussion
- * threads must come through StartDiscussion (which wires the
+ * struct carries every knob; any empty field except Mode is resolved via
+ * settings defaults. Mode defaults to chat so every normal new thread starts
+ * as a chat thread. "discussion" is rejected as a mode value because
+ * discussion threads must come through StartDiscussion (which wires the
  * deliberation channel).
  */
 export function CreateThread(opts: $models.CreateThreadOptions): $CancellablePromise<store$0.Thread> {

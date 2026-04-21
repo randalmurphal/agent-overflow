@@ -340,6 +340,73 @@ func TestUpdateThreadModelUpdatesStoredModelWithoutRestartWhenSessionInactive(t 
 	}
 }
 
+func TestUpdateThreadModelRemembersClaudeModelAndContextDefaults(t *testing.T) {
+	app := newTestAppWithStore(t)
+	app.settings = settings.NewService(t.TempDir())
+
+	thread, err := createTestThread(t, app, "claude", "/tmp/claude-model-context", "claude-sonnet-4-6", "")
+	if err != nil {
+		t.Fatalf("createTestThread: %v", err)
+	}
+	if thread.ContextWindow != 200000 {
+		t.Fatalf("initial sonnet context = %d, want 200000", thread.ContextWindow)
+	}
+
+	opus, err := app.UpdateThreadModel(thread.ID, "claude-opus-4-7")
+	if err != nil {
+		t.Fatalf("UpdateThreadModel(opus): %v", err)
+	}
+	if opus.ContextWindow != 1000000 {
+		t.Fatalf("opus context = %d, want 1000000", opus.ContextWindow)
+	}
+
+	sonnet, err := app.UpdateThreadModel(thread.ID, "claude-sonnet-4-6")
+	if err != nil {
+		t.Fatalf("UpdateThreadModel(sonnet): %v", err)
+	}
+	if sonnet.ContextWindow != 200000 {
+		t.Fatalf("remembered sonnet context = %d, want 200000", sonnet.ContextWindow)
+	}
+
+	cfg := app.settings.Get()
+	if cfg.DefaultModelClaude != "claude-sonnet-4-6" {
+		t.Fatalf("DefaultModelClaude = %q, want claude-sonnet-4-6", cfg.DefaultModelClaude)
+	}
+	if cfg.ModelContextWindows["claude-opus-4-7"] != 1000000 {
+		t.Fatalf("stored opus context = %d, want 1000000", cfg.ModelContextWindows["claude-opus-4-7"])
+	}
+	if cfg.ModelContextWindows["claude-sonnet-4-6"] != 200000 {
+		t.Fatalf("stored sonnet context = %d, want 200000", cfg.ModelContextWindows["claude-sonnet-4-6"])
+	}
+}
+
+func TestCreateThreadUsesRememberedClaudeModelAndContext(t *testing.T) {
+	app := newTestAppWithStore(t)
+	app.settings = settings.NewService(t.TempDir())
+
+	source, err := createTestThread(t, app, "claude", "/tmp/remember-source", "claude-sonnet-4-6", "")
+	if err != nil {
+		t.Fatalf("create source thread: %v", err)
+	}
+	if _, err := app.UpdateThreadModel(source.ID, "claude-opus-4-7"); err != nil {
+		t.Fatalf("UpdateThreadModel(opus): %v", err)
+	}
+
+	next, err := createTestThread(t, app, "claude", "/tmp/remember-next", "", "")
+	if err != nil {
+		t.Fatalf("create next thread: %v", err)
+	}
+	if next.Model != "claude-opus-4-7" {
+		t.Fatalf("next model = %q, want remembered opus", next.Model)
+	}
+	if next.ContextWindow != 1000000 {
+		t.Fatalf("next context = %d, want remembered 1000000", next.ContextWindow)
+	}
+	if next.Mode != "chat" {
+		t.Fatalf("next mode = %q, want chat", next.Mode)
+	}
+}
+
 func TestUpdateThreadModelRestartsActiveSession(t *testing.T) {
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-model-active")

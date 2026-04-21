@@ -1,29 +1,14 @@
 <script lang="ts">
   import { getSettings, updateSetting } from '../../stores/settings.svelte';
-  import type { ContextWindow, ReasoningEffort, ThreadMode } from '../../types/settings';
+  import type { RuntimeMode } from '../../types/settings';
   import ToggleSwitch from '../shared/ToggleSwitch.svelte';
 
   let settings = $derived(getSettings());
 
-  // Thread-default options. Discussion is reached via a separate flow,
-  // so it isn't offered as a "default mode" — seeding a thread in
-  // discussion mode without a deliberation channel would produce an
-  // orphan thread.
-  const MODE_OPTIONS: Array<{ value: ThreadMode; label: string }> = [
-    { value: 'chat', label: 'Chat' },
-    { value: 'plan', label: 'Plan' },
-    { value: 'design', label: 'Design' },
-  ];
-  const EFFORT_OPTIONS: Array<{ value: ReasoningEffort; label: string }> = [
-    { value: 'low', label: 'Low' },
-    { value: 'medium', label: 'Medium' },
-    { value: 'high', label: 'High' },
-    { value: 'xhigh', label: 'X-High' },
-    { value: 'max', label: 'Max' },
-  ];
-  const CONTEXT_OPTIONS: Array<{ value: ContextWindow; label: string }> = [
-    { value: 200000, label: '200k' },
-    { value: 1000000, label: '1M' },
+  const RUNTIME_OPTIONS: Array<{ value: RuntimeMode; label: string }> = [
+    { value: 'full-access', label: 'Full access' },
+    { value: 'auto-accept-edits', label: 'Auto-edits' },
+    { value: 'approval-required', label: 'Approval required' },
   ];
 </script>
 
@@ -128,73 +113,25 @@
       <p class="text-[11px] font-semibold uppercase tracking-[0.22em] text-text-secondary/70">Thread defaults</p>
       <h3 class="mt-1 text-base font-semibold text-text-primary">New-thread seeds</h3>
       <p class="mt-1 text-sm text-text-secondary">
-        Values used when a thread is created without an explicit override. Each
-        field is editable per-thread after creation.
+        New threads always start in chat mode. Chat model, effort, and context
+        defaults are remembered from the composer controls.
       </p>
     </div>
     <div class="space-y-3">
       <div class="flex items-center justify-between gap-4 rounded-2xl border border-border/55 bg-surface-0/55 px-4 py-3">
         <div>
-          <label for="default-mode" class="text-sm text-text-primary block">Default mode</label>
-          <p class="text-xs text-text-secondary/60">Mode seeded on new threads (chat / plan / design)</p>
+          <label for="default-runtime-mode" class="text-sm text-text-primary block">Default permissions</label>
+          <p class="text-xs text-text-secondary/60">Access mode seeded on new threads</p>
         </div>
         <select
-          id="default-mode"
-          data-testid="settings-default-mode"
-          value={settings.defaultMode}
-          onchange={(e) => updateSetting('defaultMode', (e.target as HTMLSelectElement).value as ThreadMode)}
+          id="default-runtime-mode"
+          data-testid="settings-default-runtime-mode"
+          value={settings.defaultRuntimeMode}
+          onchange={(e) => updateSetting('defaultRuntimeMode', (e.target as HTMLSelectElement).value as RuntimeMode)}
           class="min-w-[8rem] text-xs rounded-xl border border-border bg-surface-0 px-3 py-2 text-text-primary shadow-sm focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/50 transition-colors cursor-pointer"
         >
-          {#each MODE_OPTIONS as opt}
+          {#each RUNTIME_OPTIONS as opt}
             <option value={opt.value}>{opt.label}</option>
-          {/each}
-        </select>
-      </div>
-
-      <div class="flex items-center justify-between gap-4 rounded-2xl border border-border/55 bg-surface-0/55 px-4 py-3">
-        <div>
-          <label for="default-effort" class="text-sm text-text-primary block">Default reasoning effort</label>
-          <p class="text-xs text-text-secondary/60">How hard the provider should think before replying</p>
-        </div>
-        <select
-          id="default-effort"
-          data-testid="settings-default-effort"
-          value={settings.defaultReasoningEffort}
-          onchange={(e) => updateSetting('defaultReasoningEffort', (e.target as HTMLSelectElement).value as ReasoningEffort)}
-          class="min-w-[8rem] text-xs rounded-xl border border-border bg-surface-0 px-3 py-2 text-text-primary shadow-sm focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/50 transition-colors cursor-pointer"
-        >
-          {#each EFFORT_OPTIONS as opt}
-            <option value={opt.value}>{opt.label}</option>
-          {/each}
-        </select>
-      </div>
-
-      <div class="flex items-center justify-between gap-4 rounded-2xl border border-border/55 bg-surface-0/55 px-4 py-3">
-        <div>
-          <p class="text-sm text-text-primary">Default fast mode</p>
-          <p class="text-xs text-text-secondary/60">Launch new threads on the small-model tier</p>
-        </div>
-        <ToggleSwitch
-          checked={settings.defaultFastMode}
-          ariaLabel="Toggle default fast mode"
-          onToggle={(value) => updateSetting('defaultFastMode', value)}
-        />
-      </div>
-
-      <div class="flex items-center justify-between gap-4 rounded-2xl border border-border/55 bg-surface-0/55 px-4 py-3">
-        <div>
-          <label for="default-context" class="text-sm text-text-primary block">Default context window</label>
-          <p class="text-xs text-text-secondary/60">Claude uses this; Codex ignores the field</p>
-        </div>
-        <select
-          id="default-context"
-          data-testid="settings-default-context"
-          value={String(settings.defaultContextWindow)}
-          onchange={(e) => updateSetting('defaultContextWindow', Number((e.target as HTMLSelectElement).value) as ContextWindow)}
-          class="min-w-[8rem] text-xs rounded-xl border border-border bg-surface-0 px-3 py-2 text-text-primary shadow-sm focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/50 transition-colors cursor-pointer"
-        >
-          {#each CONTEXT_OPTIONS as opt}
-            <option value={String(opt.value)}>{opt.label}</option>
           {/each}
         </select>
       </div>

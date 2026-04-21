@@ -25,8 +25,40 @@ func (a *App) UpdateThreadModel(threadID string, model string) (threadResult sto
 	}
 
 	previousModel := thread.Model
+	previousContextWindow := thread.ContextWindow
+	nextContextWindow := a.defaultContextWindowForModel(thread.Provider, normalizedModel)
+	if thread.Provider != "claude" {
+		nextContextWindow = thread.ContextWindow
+		if !isValidContextWindow(nextContextWindow) {
+			nextContextWindow = a.defaultContextWindow()
+		}
+	}
+	settingsPatch := map[string]any{}
+	switch thread.Provider {
+	case "claude":
+		settingsPatch["defaultModelClaude"] = normalizedModel
+	case "codex":
+		settingsPatch["defaultModelCodex"] = normalizedModel
+	}
+	if thread.Provider == "claude" {
+		modelContexts := cloneModelContextWindows(a.currentSettings().ModelContextWindows)
+		if modelContexts == nil {
+			modelContexts = map[string]int{}
+		}
+		modelContexts[normalizedModel] = nextContextWindow
+		settingsPatch["modelContextWindows"] = modelContexts
+	}
+	rollbackSettings, err := a.applySettingsPatchWithRollback(settingsPatch)
+	if err != nil {
+		return store.Thread{}, fmt.Errorf("remember model default: %w", err)
+	}
+
 	thread.Model = normalizedModel
-	if err := a.store.UpdateModel(threadID, normalizedModel); err != nil {
+	thread.ContextWindow = nextContextWindow
+	if err := a.store.UpdateModelAndContextWindow(threadID, normalizedModel, nextContextWindow); err != nil {
+		if rollbackErr := rollbackSettings(); rollbackErr != nil {
+			return store.Thread{}, fmt.Errorf("update thread model: %w (settings rollback failed: %v)", err, rollbackErr)
+		}
 		return store.Thread{}, err
 	}
 
@@ -40,7 +72,10 @@ func (a *App) UpdateThreadModel(threadID string, model string) (threadResult sto
 		if err == nil {
 			return
 		}
-		if rollbackErr := a.store.UpdateModel(threadID, previousModel); rollbackErr != nil {
+		if settingsRollbackErr := rollbackSettings(); settingsRollbackErr != nil {
+			err = fmt.Errorf("restart session with updated model: %w (settings rollback failed: %v)", err, settingsRollbackErr)
+		}
+		if rollbackErr := a.store.UpdateModelAndContextWindow(threadID, previousModel, previousContextWindow); rollbackErr != nil {
 			err = fmt.Errorf("restart session with updated model: %w (rollback failed: %v)", err, rollbackErr)
 		}
 	}()

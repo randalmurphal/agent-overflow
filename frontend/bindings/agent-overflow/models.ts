@@ -33,7 +33,7 @@ export class CreateThreadOptions {
     "model"?: string;
 
     /**
-     * defaults to settings.DefaultMode
+     * defaults to chat
      */
     "mode"?: string;
 

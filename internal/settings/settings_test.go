@@ -34,6 +34,12 @@ func TestGetReturnsDefaultsOnMissingFile(t *testing.T) {
 	if got.DefaultModelCodex != "gpt-5.4" {
 		t.Errorf("DefaultModelCodex = %q, want %q", got.DefaultModelCodex, "gpt-5.4")
 	}
+	if got.DefaultRuntimeMode != "full-access" {
+		t.Errorf("DefaultRuntimeMode = %q, want %q", got.DefaultRuntimeMode, "full-access")
+	}
+	if got.ModelContextWindows != nil {
+		t.Errorf("ModelContextWindows = %v, want nil", got.ModelContextWindows)
+	}
 	if got.RecentWorkspaces != nil {
 		t.Errorf("RecentWorkspaces = %v, want nil", got.RecentWorkspaces)
 	}
@@ -308,6 +314,54 @@ func TestObservabilityDefaults(t *testing.T) {
 	}
 	if got.ObservabilityOtlpEndpoint != "" {
 		t.Errorf("ObservabilityOtlpEndpoint = %q, want empty by default", got.ObservabilityOtlpEndpoint)
+	}
+}
+
+func TestRuntimeAndModelContextSettingsRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	svc := NewService(dir)
+
+	updated, err := svc.Update(map[string]any{
+		"defaultRuntimeMode": "approval-required",
+		"modelContextWindows": map[string]int{
+			" claude-sonnet-4-6 ": 200000,
+			"claude-opus-4-7":     1000000,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if updated.DefaultRuntimeMode != "approval-required" {
+		t.Fatalf("DefaultRuntimeMode = %q, want approval-required", updated.DefaultRuntimeMode)
+	}
+	if _, ok := updated.ModelContextWindows[" claude-sonnet-4-6 "]; ok {
+		t.Fatalf("untrimmed model key survived: %v", updated.ModelContextWindows)
+	}
+	if updated.ModelContextWindows["claude-sonnet-4-6"] != 200000 {
+		t.Fatalf("sonnet context = %d, want 200000", updated.ModelContextWindows["claude-sonnet-4-6"])
+	}
+	if updated.ModelContextWindows["claude-opus-4-7"] != 1000000 {
+		t.Fatalf("opus context = %d, want 1000000", updated.ModelContextWindows["claude-opus-4-7"])
+	}
+
+	reloaded := NewService(dir).Get()
+	if reloaded.DefaultRuntimeMode != "approval-required" {
+		t.Fatalf("reloaded DefaultRuntimeMode = %q, want approval-required", reloaded.DefaultRuntimeMode)
+	}
+	if reloaded.ModelContextWindows["claude-sonnet-4-6"] != 200000 {
+		t.Fatalf("reloaded sonnet context = %d, want 200000", reloaded.ModelContextWindows["claude-sonnet-4-6"])
+	}
+}
+
+func TestInvalidModelContextWindowFailsUpdate(t *testing.T) {
+	svc := NewService(t.TempDir())
+	_, err := svc.Update(map[string]any{
+		"modelContextWindows": map[string]int{
+			"claude-sonnet-4-6": 123,
+		},
+	})
+	if err == nil {
+		t.Fatal("Update() error = nil, want invalid model context error")
 	}
 }
 

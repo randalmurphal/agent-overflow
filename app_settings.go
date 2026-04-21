@@ -75,3 +75,59 @@ func (a *App) providerBinaryPath(providerName string) string {
 		return ""
 	}
 }
+
+func (a *App) applySettingsPatchWithRollback(patch map[string]any) (func() error, error) {
+	if a.settings == nil || len(patch) == 0 {
+		return func() error { return nil }, nil
+	}
+
+	previous := a.settings.Get()
+	rollbackPatch := settingsRollbackPatch(previous, patch)
+	if _, err := a.settings.Update(patch); err != nil {
+		return nil, err
+	}
+
+	return func() error {
+		if len(rollbackPatch) == 0 {
+			return nil
+		}
+		_, err := a.settings.Update(rollbackPatch)
+		return err
+	}, nil
+}
+
+func settingsRollbackPatch(previous settings.Settings, patch map[string]any) map[string]any {
+	rollback := make(map[string]any, len(patch))
+	for key := range patch {
+		switch key {
+		case "defaultProvider":
+			rollback[key] = previous.DefaultProvider
+		case "defaultModelClaude":
+			rollback[key] = previous.DefaultModelClaude
+		case "defaultModelCodex":
+			rollback[key] = previous.DefaultModelCodex
+		case "defaultRuntimeMode":
+			rollback[key] = previous.DefaultRuntimeMode
+		case "defaultReasoningEffort":
+			rollback[key] = previous.DefaultReasoningEffort
+		case "defaultFastMode":
+			rollback[key] = previous.DefaultFastMode
+		case "defaultContextWindow":
+			rollback[key] = previous.DefaultContextWindow
+		case "modelContextWindows":
+			rollback[key] = cloneModelContextWindows(previous.ModelContextWindows)
+		}
+	}
+	return rollback
+}
+
+func cloneModelContextWindows(values map[string]int) map[string]int {
+	if len(values) == 0 {
+		return nil
+	}
+	cloned := make(map[string]int, len(values))
+	for model, tokens := range values {
+		cloned[model] = tokens
+	}
+	return cloned
+}

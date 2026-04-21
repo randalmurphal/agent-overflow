@@ -38,6 +38,11 @@ var (
 		"xhigh":  {},
 		"max":    {},
 	}
+	allowedRuntimeModes = map[string]struct{}{
+		"approval-required": {},
+		"auto-accept-edits": {},
+		"full-access":       {},
+	}
 	// allowedModes mirrors provider.AllInteractionModes.
 	allowedModes = map[string]struct{}{
 		"chat":       {},
@@ -82,7 +87,20 @@ func validateSettings(current Settings) (Settings, error) {
 	current.ClaudeBinaryPath = normalizeBinaryPath(current.ClaudeBinaryPath, DefaultSettings.ClaudeBinaryPath)
 	current.CodexBinaryPath = normalizeBinaryPath(current.CodexBinaryPath, DefaultSettings.CodexBinaryPath)
 	current.RecentWorkspaces = normalizeRecentWorkspaces(current.RecentWorkspaces)
+	current.ModelContextWindows, err = validateModelContextWindows(current.ModelContextWindows)
+	if err != nil {
+		return Settings{}, err
+	}
 	current.ObservabilityOtlpEndpoint = strings.TrimSpace(current.ObservabilityOtlpEndpoint)
+
+	current.DefaultRuntimeMode = strings.TrimSpace(current.DefaultRuntimeMode)
+	if err := validateOption(
+		"defaultRuntimeMode",
+		current.DefaultRuntimeMode,
+		allowedRuntimeModes,
+	); err != nil {
+		return Settings{}, err
+	}
 
 	current.DefaultReasoningEffort = strings.TrimSpace(current.DefaultReasoningEffort)
 	if err := validateOption(
@@ -161,8 +179,15 @@ func sanitizeLoadedSettings(current Settings) Settings {
 		DefaultSettings.CodexBinaryPath,
 	)
 	current.RecentWorkspaces = normalizeRecentWorkspaces(current.RecentWorkspaces)
+	current.ModelContextWindows = sanitizeModelContextWindows(current.ModelContextWindows)
 	current.ObservabilityOtlpEndpoint = strings.TrimSpace(current.ObservabilityOtlpEndpoint)
 
+	current.DefaultRuntimeMode = sanitizeOption(
+		"defaultRuntimeMode",
+		current.DefaultRuntimeMode,
+		DefaultSettings.DefaultRuntimeMode,
+		allowedRuntimeModes,
+	)
 	current.DefaultReasoningEffort = sanitizeOption(
 		"defaultReasoningEffort",
 		current.DefaultReasoningEffort,
@@ -277,6 +302,52 @@ func normalizeRecentWorkspaces(paths []string) []string {
 		return nil
 	}
 	return recent
+}
+
+func validateModelContextWindows(values map[string]int) (map[string]int, error) {
+	if len(values) == 0 {
+		return nil, nil
+	}
+
+	normalized := make(map[string]int, len(values))
+	for rawModel, tokens := range values {
+		model := strings.TrimSpace(rawModel)
+		if model == "" {
+			return nil, fmt.Errorf("modelContextWindows contains an empty model")
+		}
+		if _, ok := allowedContextWindows[tokens]; !ok {
+			return nil, fmt.Errorf("modelContextWindows[%q] must be one of 200000, 1000000", model)
+		}
+		normalized[model] = tokens
+	}
+	if len(normalized) == 0 {
+		return nil, nil
+	}
+	return normalized, nil
+}
+
+func sanitizeModelContextWindows(values map[string]int) map[string]int {
+	if len(values) == 0 {
+		return nil
+	}
+
+	normalized := make(map[string]int, len(values))
+	for rawModel, tokens := range values {
+		model := strings.TrimSpace(rawModel)
+		if model == "" {
+			log.Printf("settings: ignoring empty modelContextWindows key")
+			continue
+		}
+		if _, ok := allowedContextWindows[tokens]; !ok {
+			log.Printf("settings: invalid modelContextWindows[%q] %d, ignoring", model, tokens)
+			continue
+		}
+		normalized[model] = tokens
+	}
+	if len(normalized) == 0 {
+		return nil
+	}
+	return normalized
 }
 
 func joinAllowedValues(values map[string]struct{}) string {

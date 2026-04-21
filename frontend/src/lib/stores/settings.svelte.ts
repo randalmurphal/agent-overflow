@@ -8,6 +8,7 @@ const DEFAULT_SETTINGS: Settings = {
   defaultProvider: 'claude',
   defaultModelClaude: 'claude-sonnet-4-6',
   defaultModelCodex: 'gpt-5.4',
+  modelContextWindows: {},
   recentWorkspaces: [],
   diffWordWrap: false,
   streamingEnabled: true,
@@ -19,7 +20,10 @@ const DEFAULT_SETTINGS: Settings = {
   codexEnabled: true,
   // Thread defaults mirror internal/settings.DefaultSettings so a fresh
   // frontend seeing no backend response still picks the correct seed.
+  // defaultMode is legacy; CreateThread starts in chat unless explicitly
+  // overridden by a caller.
   defaultMode: 'chat',
+  defaultRuntimeMode: 'full-access',
   defaultReasoningEffort: 'high',
   defaultFastMode: false,
   defaultContextWindow: 1000000,
@@ -42,7 +46,11 @@ export async function loadSettings(): Promise<void> {
   try {
     const result = await GetSettings();
     if (result) {
-      settings = { ...DEFAULT_SETTINGS, ...result } as Settings;
+      settings = {
+        ...DEFAULT_SETTINGS,
+        ...result,
+        modelContextWindows: result.modelContextWindows ?? {},
+      } as Settings;
     }
   } catch (err) {
     console.error('Failed to load settings:', err);
@@ -59,7 +67,11 @@ export async function updateSetting<K extends keyof Settings>(
   try {
     const result = await UpdateSettings({ [key]: value });
     if (result) {
-      settings = { ...DEFAULT_SETTINGS, ...result } as Settings;
+      settings = {
+        ...DEFAULT_SETTINGS,
+        ...result,
+        modelContextWindows: result.modelContextWindows ?? {},
+      } as Settings;
     }
   } catch (err) {
     console.error('Failed to update setting:', err);

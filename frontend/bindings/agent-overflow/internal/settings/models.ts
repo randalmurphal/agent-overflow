@@ -14,6 +14,13 @@ export class Settings {
     "defaultProvider": string;
     "defaultModelClaude": string;
     "defaultModelCodex": string;
+
+    /**
+     * ModelContextWindows remembers the context-window preference per
+     * model slug. It lets Claude Sonnet stay on 200k while Opus stays on
+     * 1M, and preserves user overrides independently for each model.
+     */
+    "modelContextWindows": { [_ in string]?: number };
     "recentWorkspaces": string[];
     "diffWordWrap": boolean;
     "streamingEnabled": boolean;
@@ -58,6 +65,8 @@ export class Settings {
      * DefaultMode seeds the per-thread interaction mode (chat / plan /
      * design / discussion). Discussion is reached via a separate flow,
      * but is included in the enum for symmetry with provider.ModeDiscussion.
+     * New thread creation intentionally ignores this legacy field and
+     * starts in chat mode unless a caller explicitly passes a mode.
      */
     "defaultMode": string;
 
@@ -123,6 +132,9 @@ export class Settings {
         }
         if (!("defaultModelCodex" in $$source)) {
             this["defaultModelCodex"] = "";
+        }
+        if (!("modelContextWindows" in $$source)) {
+            this["modelContextWindows"] = {};
         }
         if (!("recentWorkspaces" in $$source)) {
             this["recentWorkspaces"] = [];
@@ -193,13 +205,18 @@ export class Settings {
      */
     static createFrom($$source: any = {}): Settings {
         const $$createField5_0 = $$createType0;
+        const $$createField6_0 = $$createType1;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("modelContextWindows" in $$parsedSource) {
+            $$parsedSource["modelContextWindows"] = $$createField5_0($$parsedSource["modelContextWindows"]);
+        }
         if ("recentWorkspaces" in $$parsedSource) {
-            $$parsedSource["recentWorkspaces"] = $$createField5_0($$parsedSource["recentWorkspaces"]);
+            $$parsedSource["recentWorkspaces"] = $$createField6_0($$parsedSource["recentWorkspaces"]);
         }
         return new Settings($$parsedSource as Partial<Settings>);
     }
 }
 
 // Private type creation functions
-const $$createType0 = $Create.Array($Create.Any);
+const $$createType0 = $Create.Map($Create.Any, $Create.Any);
+const $$createType1 = $Create.Array($Create.Any);

@@ -315,6 +315,20 @@ func (s *Store) UpdateModel(threadID, model string) error {
 	return requireRowsAffected(result, fmt.Sprintf("store: update model for %s", threadID))
 }
 
+func (s *Store) UpdateModelAndContextWindow(threadID, model string, tokens int) error {
+	if _, ok := legalContextWindows[tokens]; !ok {
+		return fmt.Errorf("%w: %d", ErrInvalidContextWindow, tokens)
+	}
+	result, err := s.db.Exec(
+		`UPDATE threads SET model = ?, context_window = ?, updated_at = ? WHERE id = ?`,
+		model, tokens, nowMillis(), threadID,
+	)
+	if err != nil {
+		return fmt.Errorf("store: update model/context for %s: %w", threadID, err)
+	}
+	return requireRowsAffected(result, fmt.Sprintf("store: update model/context for %s", threadID))
+}
+
 func (s *Store) UpdateLastTokenUsage(threadID, usage string) error {
 	result, err := s.db.Exec(
 		`UPDATE threads SET last_token_usage = ?, updated_at = ? WHERE id = ?`,

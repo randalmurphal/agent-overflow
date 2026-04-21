@@ -111,7 +111,11 @@ func TestTerm_WriteAndReadRoundTrip(t *testing.T) {
 func TestTerm_ResizeChangesCols(t *testing.T) {
 	ensurePTYAvailable(t)
 
-	m := NewManager(nil, nil)
+	outputSeen := make(chan struct{})
+	var outputSeenOnce sync.Once
+	m := NewManager(func(_, _ string, _ uint64, _ []byte) {
+		outputSeenOnce.Do(func() { close(outputSeen) })
+	}, nil)
 	summary, err := m.Open("thread-resize", SessionOptions{
 		Shell: "/bin/sh",
 		Args:  []string{"-c", "sleep 10"},
@@ -294,7 +298,11 @@ func TestTerm_MultipleThreadsIsolated(t *testing.T) {
 func TestTerm_ConcurrentWritesNoRace(t *testing.T) {
 	ensurePTYAvailable(t)
 
-	m := NewManager(nil, nil)
+	outputSeen := make(chan struct{})
+	var outputSeenOnce sync.Once
+	m := NewManager(func(_, _ string, _ uint64, _ []byte) {
+		outputSeenOnce.Do(func() { close(outputSeen) })
+	}, nil)
 	summary, err := m.Open("thread-concur", SessionOptions{
 		Shell: "/bin/sh",
 		Args:  []string{"-c", "cat"},
@@ -322,13 +330,19 @@ func TestTerm_ConcurrentWritesNoRace(t *testing.T) {
 	}
 	wg.Wait()
 
+	select {
+	case <-outputSeen:
+	case <-time.After(3 * time.Second):
+		t.Fatal("terminal output callback did not fire after concurrent writes")
+	}
+
 	// Replay snapshot should produce a byte slice we can scan without panic.
 	replay, err := m.Replay(summary.TerminalID)
 	if err != nil {
 		t.Fatalf("Replay: %v", err)
 	}
 	if len(replay) == 0 {
-		t.Error("replay empty after 250 writes")
+		t.Error("replay empty after output callback")
 	}
 }
 

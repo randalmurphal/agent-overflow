@@ -13,20 +13,24 @@ import (
 
 // Settings holds all user-configurable preferences.
 type Settings struct {
-	Theme              string   `json:"theme"`
-	TimestampFormat    string   `json:"timestampFormat"`
-	DefaultProvider    string   `json:"defaultProvider"`
-	DefaultModelClaude string   `json:"defaultModelClaude"`
-	DefaultModelCodex  string   `json:"defaultModelCodex"`
-	RecentWorkspaces   []string `json:"recentWorkspaces"`
-	DiffWordWrap       bool     `json:"diffWordWrap"`
-	StreamingEnabled   bool     `json:"streamingEnabled"`
-	ConfirmArchive     bool     `json:"confirmArchive"`
-	ConfirmDelete      bool     `json:"confirmDelete"`
-	ClaudeBinaryPath   string   `json:"claudeBinaryPath"`
-	CodexBinaryPath    string   `json:"codexBinaryPath"`
-	ClaudeEnabled      bool     `json:"claudeEnabled"`
-	CodexEnabled       bool     `json:"codexEnabled"`
+	Theme              string `json:"theme"`
+	TimestampFormat    string `json:"timestampFormat"`
+	DefaultProvider    string `json:"defaultProvider"`
+	DefaultModelClaude string `json:"defaultModelClaude"`
+	DefaultModelCodex  string `json:"defaultModelCodex"`
+	// ModelContextWindows remembers the context-window preference per
+	// model slug. It lets Claude Sonnet stay on 200k while Opus stays on
+	// 1M, and preserves user overrides independently for each model.
+	ModelContextWindows map[string]int `json:"modelContextWindows"`
+	RecentWorkspaces    []string       `json:"recentWorkspaces"`
+	DiffWordWrap        bool           `json:"diffWordWrap"`
+	StreamingEnabled    bool           `json:"streamingEnabled"`
+	ConfirmArchive      bool           `json:"confirmArchive"`
+	ConfirmDelete       bool           `json:"confirmDelete"`
+	ClaudeBinaryPath    string         `json:"claudeBinaryPath"`
+	CodexBinaryPath     string         `json:"codexBinaryPath"`
+	ClaudeEnabled       bool           `json:"claudeEnabled"`
+	CodexEnabled        bool           `json:"codexEnabled"`
 
 	// DefaultRuntimeMode is the three-tier approval axis applied to every
 	// new thread when the user hasn't picked a different mode at creation
@@ -53,6 +57,8 @@ type Settings struct {
 	// DefaultMode seeds the per-thread interaction mode (chat / plan /
 	// design / discussion). Discussion is reached via a separate flow,
 	// but is included in the enum for symmetry with provider.ModeDiscussion.
+	// New thread creation intentionally ignores this legacy field and
+	// starts in chat mode unless a caller explicitly passes a mode.
 	DefaultMode string `json:"defaultMode"`
 
 	// TextGenerationProvider selects which CLI drives non-chat text

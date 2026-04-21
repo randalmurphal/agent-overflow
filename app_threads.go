@@ -24,7 +24,7 @@ type CreateThreadOptions struct {
 	ProjectID         string `json:"projectId"`
 	Provider          string `json:"provider,omitempty"`          // defaults to settings.DefaultProvider
 	Model             string `json:"model,omitempty"`             // defaults to settings.DefaultModelClaude/Codex
-	Mode              string `json:"mode,omitempty"`              // defaults to settings.DefaultMode
+	Mode              string `json:"mode,omitempty"`              // defaults to chat
 	ReasoningEffort   string `json:"reasoningEffort,omitempty"`   // defaults to settings.DefaultReasoningEffort
 	FastMode          *bool  `json:"fastMode,omitempty"`          // nil = use setting default
 	ContextWindow     int    `json:"contextWindow,omitempty"`     // 0 = setting default
@@ -34,9 +34,10 @@ type CreateThreadOptions struct {
 }
 
 // CreateThread persists a new thread rooted at a project. The options
-// struct carries every knob; any empty field is resolved via settings
-// defaults. "discussion" is rejected as a mode value because discussion
-// threads must come through StartDiscussion (which wires the
+// struct carries every knob; any empty field except Mode is resolved via
+// settings defaults. Mode defaults to chat so every normal new thread starts
+// as a chat thread. "discussion" is rejected as a mode value because
+// discussion threads must come through StartDiscussion (which wires the
 // deliberation channel).
 func (a *App) CreateThread(opts CreateThreadOptions) (store.Thread, error) {
 	if a.store == nil {
@@ -78,7 +79,7 @@ func (a *App) CreateThread(opts CreateThreadOptions) (store.Thread, error) {
 
 	contextWindow := opts.ContextWindow
 	if contextWindow == 0 {
-		contextWindow = a.defaultContextWindow()
+		contextWindow = a.defaultContextWindowForModel(providerName, model)
 	}
 
 	runtimeMode := strings.TrimSpace(opts.RuntimeMode)
@@ -197,6 +198,32 @@ func (a *App) defaultContextWindow() int {
 	}
 }
 
+func (a *App) defaultContextWindowForModel(providerName, model string) int {
+	cfg := a.currentSettings()
+	if tokens, ok := cfg.ModelContextWindows[strings.TrimSpace(model)]; ok && isValidContextWindow(tokens) {
+		return tokens
+	}
+	return defaultContextWindowForProviderModel(providerName, model, cfg.DefaultContextWindow)
+}
+
+func defaultContextWindowForProviderModel(providerName, model string, fallback int) int {
+	if providerName == string(provider.Claude) {
+		lowered := strings.ToLower(strings.TrimSpace(model))
+		if strings.Contains(lowered, "opus") {
+			return 1000000
+		}
+		return 200000
+	}
+	if isValidContextWindow(fallback) {
+		return fallback
+	}
+	return 1000000
+}
+
+func isValidContextWindow(tokens int) bool {
+	return tokens == 200000 || tokens == 1000000
+}
+
 // ListThreads backs the frontend sidebar. It deliberately excludes
 // "draft" threads (newly created but never sent) so the sidebar stays
 // clean: a thread only becomes visible once its first item lands.
@@ -295,10 +322,26 @@ func (a *App) UpdateThreadProvider(id, providerName string) (store.Thread, error
 		return store.Thread{}, fmt.Errorf("update provider: store unavailable")
 	}
 	normalized := strings.TrimSpace(providerName)
+	rollbackSettings, err := a.applySettingsPatchWithRollback(map[string]any{
+		"defaultProvider": normalized,
+	})
+	if err != nil {
+		return store.Thread{}, fmt.Errorf("update provider default: %w", err)
+	}
 	if err := a.store.UpdateProvider(id, normalized); err != nil {
+		if rollbackErr := rollbackSettings(); rollbackErr != nil {
+			return store.Thread{}, fmt.Errorf("update provider: %w (settings rollback failed: %v)", err, rollbackErr)
+		}
 		return store.Thread{}, err
 	}
-	return a.restartSessionIfAffected(id, "provider")
+	refreshed, err := a.restartSessionIfAffected(id, "provider")
+	if err != nil {
+		if rollbackErr := rollbackSettings(); rollbackErr != nil {
+			return store.Thread{}, fmt.Errorf("update provider: %w (settings rollback failed: %v)", err, rollbackErr)
+		}
+		return store.Thread{}, err
+	}
+	return refreshed, nil
 }
 
 // UpdateThreadReasoningEffort persists the effort tier and restarts the
@@ -307,10 +350,26 @@ func (a *App) UpdateThreadReasoningEffort(id, effort string) (store.Thread, erro
 	if a.store == nil {
 		return store.Thread{}, fmt.Errorf("update effort: store unavailable")
 	}
+	rollbackSettings, err := a.applySettingsPatchWithRollback(map[string]any{
+		"defaultReasoningEffort": strings.TrimSpace(effort),
+	})
+	if err != nil {
+		return store.Thread{}, fmt.Errorf("update effort default: %w", err)
+	}
 	if err := a.store.UpdateReasoningEffort(id, effort); err != nil {
+		if rollbackErr := rollbackSettings(); rollbackErr != nil {
+			return store.Thread{}, fmt.Errorf("update effort: %w (settings rollback failed: %v)", err, rollbackErr)
+		}
 		return store.Thread{}, err
 	}
-	return a.restartSessionIfAffected(id, "effort")
+	refreshed, err := a.restartSessionIfAffected(id, "effort")
+	if err != nil {
+		if rollbackErr := rollbackSettings(); rollbackErr != nil {
+			return store.Thread{}, fmt.Errorf("update effort: %w (settings rollback failed: %v)", err, rollbackErr)
+		}
+		return store.Thread{}, err
+	}
+	return refreshed, nil
 }
 
 // UpdateThreadFastMode persists the fast-mode boolean and restarts the
@@ -321,10 +380,26 @@ func (a *App) UpdateThreadFastMode(id string, on bool) (store.Thread, error) {
 	if a.store == nil {
 		return store.Thread{}, fmt.Errorf("update fast mode: store unavailable")
 	}
+	rollbackSettings, err := a.applySettingsPatchWithRollback(map[string]any{
+		"defaultFastMode": on,
+	})
+	if err != nil {
+		return store.Thread{}, fmt.Errorf("update fast-mode default: %w", err)
+	}
 	if err := a.store.UpdateFastMode(id, on); err != nil {
+		if rollbackErr := rollbackSettings(); rollbackErr != nil {
+			return store.Thread{}, fmt.Errorf("update fast mode: %w (settings rollback failed: %v)", err, rollbackErr)
+		}
 		return store.Thread{}, err
 	}
-	return a.restartSessionIfAffected(id, "fastMode")
+	refreshed, err := a.restartSessionIfAffected(id, "fastMode")
+	if err != nil {
+		if rollbackErr := rollbackSettings(); rollbackErr != nil {
+			return store.Thread{}, fmt.Errorf("update fast mode: %w (settings rollback failed: %v)", err, rollbackErr)
+		}
+		return store.Thread{}, err
+	}
+	return refreshed, nil
 }
 
 // UpdateThreadContextWindow persists the context window size and
@@ -333,10 +408,39 @@ func (a *App) UpdateThreadContextWindow(id string, tokens int) (store.Thread, er
 	if a.store == nil {
 		return store.Thread{}, fmt.Errorf("update context window: store unavailable")
 	}
-	if err := a.store.UpdateContextWindow(id, tokens); err != nil {
+	thread, err := a.store.GetThread(id)
+	if err != nil {
 		return store.Thread{}, err
 	}
-	return a.restartSessionIfAffected(id, "contextWindow")
+	patch := map[string]any{
+		"defaultContextWindow": tokens,
+	}
+	if strings.TrimSpace(thread.Model) != "" {
+		modelContexts := cloneModelContextWindows(a.currentSettings().ModelContextWindows)
+		if modelContexts == nil {
+			modelContexts = map[string]int{}
+		}
+		modelContexts[strings.TrimSpace(thread.Model)] = tokens
+		patch["modelContextWindows"] = modelContexts
+	}
+	rollbackSettings, err := a.applySettingsPatchWithRollback(patch)
+	if err != nil {
+		return store.Thread{}, fmt.Errorf("update context-window default: %w", err)
+	}
+	if err := a.store.UpdateContextWindow(id, tokens); err != nil {
+		if rollbackErr := rollbackSettings(); rollbackErr != nil {
+			return store.Thread{}, fmt.Errorf("update context window: %w (settings rollback failed: %v)", err, rollbackErr)
+		}
+		return store.Thread{}, err
+	}
+	refreshed, err := a.restartSessionIfAffected(id, "contextWindow")
+	if err != nil {
+		if rollbackErr := rollbackSettings(); rollbackErr != nil {
+			return store.Thread{}, fmt.Errorf("update context window: %w (settings rollback failed: %v)", err, rollbackErr)
+		}
+		return store.Thread{}, err
+	}
+	return refreshed, nil
 }
 
 // UpdateThreadRuntimeMode persists the runtime mode and restarts the
@@ -353,10 +457,26 @@ func (a *App) UpdateThreadRuntimeMode(id, mode string) (store.Thread, error) {
 	default:
 		return store.Thread{}, fmt.Errorf("update runtime mode: invalid mode %q", mode)
 	}
+	rollbackSettings, err := a.applySettingsPatchWithRollback(map[string]any{
+		"defaultRuntimeMode": string(normalized),
+	})
+	if err != nil {
+		return store.Thread{}, fmt.Errorf("update runtime-mode default: %w", err)
+	}
 	if err := a.store.UpdateRuntimeMode(id, string(normalized)); err != nil {
+		if rollbackErr := rollbackSettings(); rollbackErr != nil {
+			return store.Thread{}, fmt.Errorf("update runtime mode: %w (settings rollback failed: %v)", err, rollbackErr)
+		}
 		return store.Thread{}, err
 	}
-	return a.restartSessionIfAffected(id, "runtimeMode")
+	refreshed, err := a.restartSessionIfAffected(id, "runtimeMode")
+	if err != nil {
+		if rollbackErr := rollbackSettings(); rollbackErr != nil {
+			return store.Thread{}, fmt.Errorf("update runtime mode: %w (settings rollback failed: %v)", err, rollbackErr)
+		}
+		return store.Thread{}, err
+	}
+	return refreshed, nil
 }
 
 // UpdateThreadBranch persists the branch column. Does NOT perform the
