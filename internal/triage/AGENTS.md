@@ -139,12 +139,18 @@ pair in `internal/store`, with the render running between them so the
 SQLite writer lock is never held while goldmark/chroma/terminal-to-html
 parses. Render frequency is throttled per-item via
 `Router.nextHighlightAt`: one render per
-`streamingHighlightIntervalMs` (50 ms) per streaming item id. Every
-settle path (`settleStreamingText`, `settleStreamingThinking`,
-`flipTurnItemsErrored`) clears `item.HighlightedContent` so
-`persistItem` forces a final render against the completed (or
-suffixed) summary — no throttled delta leaves the UI with stale HTML
-at turn end.
+`streamingHighlightIntervalMs` (50 ms) per streaming item id.
+
+`persistItem` renders `HighlightedContent` unconditionally against the
+current `Summary`. This is a defensive contract: a caller that loads a
+row from the store (its `HighlightedContent` already populated), mutates
+`Summary`, and calls `persistItem` would otherwise leave stale HTML on
+the row. Streaming hot paths bypass `persistItem` — they go through
+`AppendItemSummary` + `UpdateItemHighlight` directly — so the
+unconditional render only runs at event-boundary rate and its cost is
+noise. Settle paths (`settleStreamingText`, `settleStreamingThinking`,
+`flipTurnItemsErrored`) still clear `HighlightedContent` defensively,
+but the contract no longer depends on it.
 
 `internal/highlight/dispatch.go` is the single source of truth for
 which kinds are server-rendered. Do NOT build a parallel dispatch

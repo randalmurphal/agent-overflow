@@ -860,16 +860,16 @@ func (r *Router) persistItem(item store.Item, payload *store.Payload) error {
 		}
 	}
 
-	// Render the display HTML before we persist. Kinds that don't
-	// server-render (user_text, tool_call, compaction, ...) get an empty
-	// string; the frontend treats empty as "render summary as plain text",
-	// which matches the pre-highlight behaviour. Pre-populated
-	// HighlightedContent (from UpdateItemHighlight on the streaming path,
-	// for instance) is preserved; settle paths explicitly clear it to
-	// force a final render against the completed summary.
-	if item.HighlightedContent == "" {
-		item.HighlightedContent = r.highlighter.RenderForKind(item.Kind, item.Summary)
-	}
+	// Render the display HTML unconditionally against the current summary.
+	// Rendering on every persist — instead of trusting a caller-provided
+	// HighlightedContent — eliminates a class of staleness bugs where a
+	// caller loads a row from the store (HTML populated), mutates Summary,
+	// and calls persistItem without clearing the old HTML. Streaming hot
+	// paths bypass persistItem (they go through AppendItemSummary +
+	// UpdateItemHighlight), so this render only runs at event-boundary rate.
+	// Kinds that don't server-render return the empty string; the frontend
+	// treats empty as "paint summary as plain text".
+	item.HighlightedContent = r.highlighter.RenderForKind(item.Kind, item.Summary)
 
 	persisted, err := r.store.UpsertItem(item, payload)
 	if err != nil {
