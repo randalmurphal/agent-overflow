@@ -50,6 +50,34 @@ Every task must leave `go build`, `go test`, `npm run check`, and
    the provider operates (project root, or a separate worktree). Threads
    track both.
 
+## Improving As You Go
+
+This is a ground-up rewrite optimizing for performance, memory efficiency,
+and minimal code. Treat those goals as ongoing: if you spot a chance to
+improve architecture, cut allocations, tighten a hot path, or delete dead
+code while working on something else, take it. Don't be afraid to change
+existing code — nothing here is a cathedral yet. Don't leave the codebase
+slightly worse than you found it because the improvement wasn't in the
+ticket.
+
+Guardrails:
+
+- **Surface it.** Call out opportunistic changes alongside the primary
+  change so they can be reviewed on their own merits, not buried in the
+  diff.
+- **Stay adjacent.** Fix what you're touching or immediately adjacent to.
+  If a larger refactor looks warranted, propose it before starting.
+- **Don't shortcut by duplicating.** If the right fix lives in shared
+  code, change shared code — don't copy-paste a local workaround to avoid
+  a broader edit. "Not my file" isn't a reason to work around a bug.
+- **Don't violate Core Principles.** A cleanup that reintroduces in-memory
+  read models, forces a unified Claude/Codex abstraction, etc. is not an
+  improvement.
+- **Reliability under partial/failure conditions counts as quality.**
+  Streaming reconnects, provider restarts, partial NDJSON lines, session
+  resume — if you notice brittle handling while you're in the area, fix
+  it.
+
 ## Repo Map
 
 ```
