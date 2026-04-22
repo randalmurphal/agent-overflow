@@ -27,6 +27,74 @@ func TestBuildArgsIncludesPartialMessagesFlag(t *testing.T) {
 	t.Fatalf("missing --include-partial-messages flag; args=%v", args)
 }
 
+// TestAssistantEnvelopeDoesNotDuplicateStreamedText pins the contract
+// that — with `--include-partial-messages` on — the parser emits
+// EventTextDelta (and EventThinking) only from the stream_event path,
+// never from the final `assistant` envelope. Both envelope types carry
+// the same block content; emitting from both produces a cumulative
+// summary that contains the text twice. This was the root cause of a
+// user-visible rendering artefact where a single mermaid diagram in an
+// agent response was persisted and rendered twice.
+func TestAssistantEnvelopeDoesNotDuplicateStreamedText(t *testing.T) {
+	parser := NewParser()
+
+	// Stream the text deltas first — this is the source-of-truth path.
+	streamDelta := []byte(`{"type":"stream_event","event":"content_block_delta","data":{"type":"content_block_delta","delta":{"type":"text_delta","text":"hello "}}}`)
+	deltaEvents, err := parser.ParseLine(testThread, streamDelta)
+	if err != nil {
+		t.Fatalf("parse stream delta: %v", err)
+	}
+	if len(deltaEvents) != 1 || deltaEvents[0].Kind != provider.EventTextDelta {
+		t.Fatalf("expected one EventTextDelta from stream path, got %+v", deltaEvents)
+	}
+
+	// Now the coalesced assistant envelope arrives with the full text.
+	// The parser MUST NOT emit a second EventTextDelta — triage would
+	// append the content onto the already-streamed summary and the
+	// final row would contain duplicated text.
+	assistantLine := []byte(`{"type":"assistant","message":{"id":"msg_abc","role":"assistant","content":[{"type":"text","text":"hello world"}]}}`)
+	assistantEvents, err := parser.ParseLine(testThread, assistantLine)
+	if err != nil {
+		t.Fatalf("parse assistant: %v", err)
+	}
+	for _, e := range assistantEvents {
+		if e.Kind == provider.EventTextDelta {
+			t.Fatalf("assistant envelope emitted EventTextDelta, duplicating stream path: content=%q", e.Content)
+		}
+		if e.Kind == provider.EventThinking {
+			t.Fatalf("assistant envelope emitted EventThinking, duplicating stream path: content=%q", e.Content)
+		}
+	}
+}
+
+// TestAssistantEnvelopeStillEmitsToolUseAndUsage confirms the skip is
+// scoped to text/thinking — tool_use blocks and usage metadata are not
+// streamed via stream_event and MUST still come from the assistant
+// envelope.
+func TestAssistantEnvelopeStillEmitsToolUseAndUsage(t *testing.T) {
+	parser := NewParser()
+	line := []byte(`{"type":"assistant","message":{"id":"msg_abc","role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"ls"}}],"usage":{"input_tokens":10,"output_tokens":20}}}`)
+	events, err := parser.ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var sawToolStart, sawUsage bool
+	for _, e := range events {
+		switch e.Kind {
+		case provider.EventToolStart:
+			sawToolStart = true
+		case provider.EventTokenUsage:
+			sawUsage = true
+		}
+	}
+	if !sawToolStart {
+		t.Errorf("assistant envelope did not emit EventToolStart: %+v", events)
+	}
+	if !sawUsage {
+		t.Errorf("assistant envelope did not emit EventUsage: %+v", events)
+	}
+}
+
 func TestParseStreamEventThinkingDelta(t *testing.T) {
 	line := []byte(`{"type":"stream_event","event":"content_block_delta","data":{"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"considering..."}}}`)
 

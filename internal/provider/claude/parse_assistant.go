@@ -90,11 +90,19 @@ func (p *Parser) parseAssistant(threadID string, raw map[string]json.RawMessage,
 	for _, block := range msg.Content {
 		switch block.Type {
 		case "text":
-			events = appendTextEvent(events, threadID, msg.ID, parentToolUseID, now, block)
+			// Text content is already emitted delta-by-delta via the
+			// stream_event path (`parse_stream.go`) — `--include-partial-
+			// messages` is always on for our session. Emitting again
+			// from the coalesced assistant envelope would append the
+			// full block on top of the streamed partials, doubling the
+			// text in the cumulative summary. This manifested as a
+			// user-visible rendering bug (mermaid diagrams appearing
+			// twice) after the closure gate started actually rendering
+			// their content.
 		case "tool_use":
 			events = p.appendToolUseEvent(events, threadID, parentToolUseID, now, block)
 		case "thinking":
-			events = appendThinkingEvent(events, threadID, msg.ID, parentToolUseID, now, block)
+			// Same as text: streamed via stream_event thinking_delta.
 		}
 	}
 

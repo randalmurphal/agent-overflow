@@ -8,6 +8,7 @@
 package testutil
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -70,6 +71,41 @@ func WriteMockClaudeSession(t *testing.T, dir string, events []string) string {
 		t.Fatalf("WriteMockClaudeSession: %v", err)
 	}
 	return path
+}
+
+// MockClaudeStreamedText returns the NDJSON lines a real Claude CLI
+// (running with --include-partial-messages — always our case) emits for
+// one assistant text block: the stream_event deltas that carry the
+// actual content, plus the coalesced `assistant` envelope that closes
+// the block. The parser consumes text only from the stream_event path;
+// the assistant envelope's text blocks are intentionally skipped to
+// avoid doubling the cumulative summary.
+//
+// Mock tests should use this helper instead of inlining a single
+// `{"type":"assistant"...text}` line — that shape matched the
+// pre-partial-messages wire format and no longer produces text
+// events end-to-end.
+func MockClaudeStreamedText(msgID, text string) []string {
+	textJSON, _ := json.Marshal(text)
+	return []string{
+		`{"type":"stream_event","event":"content_block_start","data":{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}}`,
+		`{"type":"stream_event","event":"content_block_delta","data":{"type":"content_block_delta","delta":{"type":"text_delta","text":` + string(textJSON) + `}}}`,
+		`{"type":"stream_event","event":"content_block_stop","data":{"type":"content_block_stop","index":0}}`,
+		`{"type":"assistant","message":{"id":"` + msgID + `","role":"assistant","content":[{"type":"text","text":` + string(textJSON) + `}]}}`,
+	}
+}
+
+// MockClaudeStreamedThinking is the thinking-block equivalent of
+// MockClaudeStreamedText: stream_event thinking_delta carries the
+// content; the assistant envelope's thinking block is skipped.
+func MockClaudeStreamedThinking(msgID, thinking string) []string {
+	thinkingJSON, _ := json.Marshal(thinking)
+	return []string{
+		`{"type":"stream_event","event":"content_block_start","data":{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}}`,
+		`{"type":"stream_event","event":"content_block_delta","data":{"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":` + string(thinkingJSON) + `}}}`,
+		`{"type":"stream_event","event":"content_block_stop","data":{"type":"content_block_stop","index":0}}`,
+		`{"type":"assistant","message":{"id":"` + msgID + `","role":"assistant","content":[{"type":"thinking","thinking":` + string(thinkingJSON) + `}]}}`,
+	}
 }
 
 // WriteMockClaudeScript writes a Claude-like script that emits a sequence of

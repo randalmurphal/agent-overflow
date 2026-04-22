@@ -29,6 +29,7 @@
   import { registerCodeCopyListener } from './lib/utils/codeCopy';
   import { registerMermaidRenderer } from './lib/utils/mermaidRenderer';
   import { registerMathRenderer } from './lib/utils/mathRenderer';
+  import DiagramInteractionHost from './lib/components/chat/DiagramInteractionHost.svelte';
 
   let showSettings = $state(false);
   let discussionStartFor = $state<Thread | null>(null);
@@ -201,3 +202,4 @@
 <MessageSearch open={isMessageSearchOpen()} {pane} onClose={closeMessageSearch} />
 <UnifiedThreadPicker open={isThreadPickerOpen()} {pane} onClose={closeThreadPicker} />
 <Toast />
+<DiagramInteractionHost />

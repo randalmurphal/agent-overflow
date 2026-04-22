@@ -81,7 +81,15 @@ const CACHE_MAX = 128;
 type RegistryEntry<M> = {
   spec: PainterSpec<M>;
   loader: Promise<M> | null;
+  // Rendered-HTML cache keyed by source hash. Painted back into a
+  // fresh element when Svelte's `{@html}` wipe destroys the rendered
+  // DOM.
   cache: LRU<string, string>;
+  // Source-text cache keyed by source hash. Lets callers (e.g. the
+  // mermaid context-menu "Copy source" action) retrieve the original
+  // source after the renderer has replaced the element's textContent
+  // with its rendered output. Same LRU cap and eviction as `cache`.
+  sourceCache: LRU<string, string>;
 };
 
 // Registry is intentionally global: one observer + one debounce + one
@@ -107,6 +115,7 @@ export function registerPainter<M>(spec: PainterSpec<M>): void {
     spec: spec as PainterSpec<unknown>,
     loader: null,
     cache: new LRU(CACHE_MAX),
+    sourceCache: new LRU(CACHE_MAX),
   });
   ensureObserver();
   scheduleScan();
@@ -291,6 +300,7 @@ async function process<M>(el: HTMLElement, entry: RegistryEntry<M>, mod: M): Pro
     // that corruption from the cache.
     if (el.isConnected) {
       entry.cache.set(hash, el.innerHTML);
+      entry.sourceCache.set(hash, source);
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -299,8 +309,24 @@ async function process<M>(el: HTMLElement, entry: RegistryEntry<M>, mod: M): Pro
     // Cache the fallback only if the element survived. See above.
     if (el.isConnected) {
       entry.cache.set(hash, fallback);
+      entry.sourceCache.set(hash, source);
     }
   }
+}
+
+// getCachedSource returns the original textual source that produced
+// the rendered output on `el`, if the primitive has it cached. The
+// element must carry the painter's idempotency attribute
+// (`data-rendered-<key>`) — the attribute value IS the source hash,
+// which keys the source cache. Returns null when the element has no
+// marker (not rendered yet), when the painter is unregistered, or
+// when the hash has evicted from the LRU.
+export function getCachedSource(painterKey: string, el: HTMLElement): string | null {
+  const hash = el.getAttribute(`data-rendered-${painterKey}`);
+  if (!hash) return null;
+  const entry = registry.find((e) => e.spec.key === painterKey);
+  if (!entry) return null;
+  return entry.sourceCache.get(hash) ?? null;
 }
 
 // Failed-render fallback: keep the source visible so the user has

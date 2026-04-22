@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   __resetForTests,
+  getCachedSource,
   registerPainter,
   type PainterSpec,
 } from './lazyCompleteSourceRenderer';
@@ -515,6 +516,38 @@ describe('lazyCompleteSourceRenderer', () => {
     expect(render).toHaveBeenCalledTimes(2);
     const fresh = wrap.querySelector<HTMLElement>('pre.test-painter')!;
     expect(fresh.innerHTML).toContain('<r>only</r>');
+  });
+
+  it('getCachedSource returns the source that produced the rendered output on a marked element', async () => {
+    // After a successful render the primitive stashes the original
+    // source in a hash-keyed LRU so callers (e.g. the mermaid
+    // context-menu "Copy source" action) can recover it after
+    // textContent has been replaced with the rendered output.
+    const render = vi.fn<(el: HTMLElement, src: string, mod: unknown) => void>(
+      (el) => {
+        el.innerHTML = `<svg><text>rendered</text></svg>`;
+      },
+    );
+
+    const wrap = document.createElement('div');
+    wrap.className = 'markdown-body';
+    wrap.innerHTML = '<pre class="test-painter">graph-TD-a-to-b</pre>';
+    document.body.appendChild(wrap);
+
+    registerPainter(makeSpec({ render }));
+    await flushScan();
+
+    const el = wrap.querySelector<HTMLElement>('pre.test-painter')!;
+    expect(getCachedSource('test-painter', el)).toBe('graph-TD-a-to-b');
+
+    // An element without the idempotency attribute returns null.
+    const fresh = document.createElement('pre');
+    fresh.className = 'test-painter';
+    fresh.textContent = 'graph-TD-a-to-b';
+    expect(getCachedSource('test-painter', fresh)).toBeNull();
+
+    // Unknown painter keys return null rather than throwing.
+    expect(getCachedSource('no-such-painter', el)).toBeNull();
   });
 
   it('rewriteCached throwing logs and paints the raw cached html, never leaving the element stuck', async () => {

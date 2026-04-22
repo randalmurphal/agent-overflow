@@ -529,7 +529,6 @@ func TestSkippedMethods(t *testing.T) {
 		"thread/closed",
 		"item/autoApprovalReview/started",
 		"item/autoApprovalReview/completed",
-		"item/reasoning/summaryPartAdded",
 		"account/updated",
 		"account/login/completed",
 		"configWarning",
@@ -541,6 +540,25 @@ func TestSkippedMethods(t *testing.T) {
 		if len(events) != 0 {
 			t.Errorf("method %q: expected 0 events, got %d", method, len(events))
 		}
+	}
+}
+
+// TestClassifyReasoningSummaryPartAddedEmitsParagraphBreak pins the
+// section-boundary behaviour: when Codex's reasoning summary opens a
+// new section, we inject a "\n\n" thinking delta so the accumulated
+// thinking row renders with visible paragraph breaks between sections
+// instead of one run-on blob. Section content itself continues to
+// arrive via `summaryTextDelta` and concatenates onto the same row.
+func TestClassifyReasoningSummaryPartAddedEmitsParagraphBreak(t *testing.T) {
+	events := ClassifyNotification(testThread, "item/reasoning/summaryPartAdded", json.RawMessage(`{"itemId":"i1","summaryIndex":1}`))
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d: %+v", len(events), events)
+	}
+	if events[0].Kind != provider.EventThinking {
+		t.Errorf("kind: got %q, want EventThinking", events[0].Kind)
+	}
+	if events[0].Content != "\n\n" {
+		t.Errorf("content: got %q, want %q", events[0].Content, "\n\n")
 	}
 }
 

@@ -135,19 +135,19 @@ func TestParseLine_SystemUnknownSubtype(t *testing.T) {
 }
 
 func TestParseLine_AssistantText(t *testing.T) {
+	// Text blocks on the assistant envelope are intentionally skipped —
+	// stream_event content_block_delta is the sole source of text
+	// deltas (see parse_assistant.go and parse_stream.go). The
+	// corresponding stream-path test is TestParseStreamEventTextDelta.
 	line := []byte(`{"type":"assistant","message":{"id":"msg-1","content":[{"type":"text","text":"Hello"}],"role":"assistant"}}`)
 	events, err := ParseLine(testThreadProto, line)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	if len(events) != 1 {
-		t.Fatalf("expected 1 event, got %d", len(events))
-	}
-	if events[0].Kind != provider.EventTextDelta {
-		t.Errorf("kind: got %q, want %q", events[0].Kind, provider.EventTextDelta)
-	}
-	if events[0].Content != "Hello" {
-		t.Errorf("content: got %q, want %q", events[0].Content, "Hello")
+	for _, e := range events {
+		if e.Kind == provider.EventTextDelta {
+			t.Fatalf("assistant envelope emitted EventTextDelta: %+v", e)
+		}
 	}
 }
 

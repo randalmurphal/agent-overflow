@@ -142,10 +142,10 @@ func TestConcurrent_ListItemsDuringActiveSession(t *testing.T) {
 		`{"type":"system","subtype":"init","session_id":"sess-conc","model":"claude-opus-4-7","cwd":"/tmp","tools":[],"claude_code_version":"1.0"}`,
 	}
 	for i := 0; i < 10; i++ {
-		resp = append(resp, fmt.Sprintf(
-			`{"type":"assistant","message":{"id":"m%d","role":"assistant","content":[{"type":"text","text":"chunk-%d"}]}}`,
-			i, i,
-		))
+		resp = append(resp, testutil.MockClaudeStreamedText(
+			fmt.Sprintf("m%d", i),
+			fmt.Sprintf("chunk-%d", i),
+		)...)
 	}
 	resp = append(resp, `{"type":"result","subtype":"success","is_error":false}`)
 

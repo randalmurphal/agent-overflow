@@ -308,6 +308,9 @@ func TestE2E_FullClaudeSessionHappyPath(t *testing.T) {
 	responses := [][]string{
 		{
 			`{"type":"system","subtype":"init","session_id":"sess-happy","model":"claude-opus-4-7","cwd":"/tmp","tools":[],"claude_code_version":"1.0"}`,
+			`{"type":"stream_event","event":"content_block_start","data":{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}}`,
+			`{"type":"stream_event","event":"content_block_delta","data":{"type":"content_block_delta","delta":{"type":"text_delta","text":"hello from mock"}}}`,
+			`{"type":"stream_event","event":"content_block_stop","data":{"type":"content_block_stop","index":0}}`,
 			`{"type":"assistant","message":{"id":"msg-1","role":"assistant","content":[{"type":"text","text":"hello from mock"}]}}`,
 			`{"type":"result","subtype":"success","is_error":false}`,
 		},
@@ -441,10 +444,16 @@ func TestE2E_MultiTurnClaude(t *testing.T) {
 	responses := [][]string{
 		{
 			`{"type":"system","subtype":"init","session_id":"sess-multi","model":"claude-opus-4-7","cwd":"/tmp","tools":[],"claude_code_version":"1.0"}`,
+			`{"type":"stream_event","event":"content_block_start","data":{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}}`,
+			`{"type":"stream_event","event":"content_block_delta","data":{"type":"content_block_delta","delta":{"type":"text_delta","text":"turn one"}}}`,
+			`{"type":"stream_event","event":"content_block_stop","data":{"type":"content_block_stop","index":0}}`,
 			`{"type":"assistant","message":{"id":"m1","role":"assistant","content":[{"type":"text","text":"turn one"}]}}`,
 			`{"type":"result","subtype":"success","is_error":false}`,
 		},
 		{
+			`{"type":"stream_event","event":"content_block_start","data":{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}}`,
+			`{"type":"stream_event","event":"content_block_delta","data":{"type":"content_block_delta","delta":{"type":"text_delta","text":"turn two"}}}`,
+			`{"type":"stream_event","event":"content_block_stop","data":{"type":"content_block_stop","index":0}}`,
 			`{"type":"assistant","message":{"id":"m2","role":"assistant","content":[{"type":"text","text":"turn two"}]}}`,
 			`{"type":"result","subtype":"success","is_error":false}`,
 		},
@@ -509,12 +518,18 @@ func TestE2E_InterruptMidTurn(t *testing.T) {
 	responses := [][]string{
 		{
 			`{"type":"system","subtype":"init","session_id":"sess-int","model":"claude-opus-4-7","cwd":"/tmp","tools":[],"claude_code_version":"1.0"}`,
+			`{"type":"stream_event","event":"content_block_start","data":{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}}`,
+			`{"type":"stream_event","event":"content_block_delta","data":{"type":"content_block_delta","delta":{"type":"text_delta","text":"partial..."}}}`,
+			`{"type":"stream_event","event":"content_block_stop","data":{"type":"content_block_stop","index":0}}`,
 			`{"type":"assistant","message":{"id":"m1","role":"assistant","content":[{"type":"text","text":"partial..."}]}}`,
 		},
 		// 2nd stdin line is the interrupt. We just consume it silently.
 		{},
 		// 3rd stdin line is the next user message; emit full reply.
 		{
+			`{"type":"stream_event","event":"content_block_start","data":{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}}`,
+			`{"type":"stream_event","event":"content_block_delta","data":{"type":"content_block_delta","delta":{"type":"text_delta","text":"after interrupt"}}}`,
+			`{"type":"stream_event","event":"content_block_stop","data":{"type":"content_block_stop","index":0}}`,
 			`{"type":"assistant","message":{"id":"m2","role":"assistant","content":[{"type":"text","text":"after interrupt"}]}}`,
 			`{"type":"result","subtype":"success","is_error":false}`,
 		},
@@ -614,6 +629,9 @@ func TestE2E_ProviderExitsMidTurn(t *testing.T) {
 	binary2 := testutil.WriteMockClaudeScript(t, t.TempDir(), [][]string{
 		{
 			`{"type":"system","subtype":"init","session_id":"sess-exit-2","model":"claude-opus-4-7","cwd":"/tmp","tools":[],"claude_code_version":"1.0"}`,
+			`{"type":"stream_event","event":"content_block_start","data":{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}}`,
+			`{"type":"stream_event","event":"content_block_delta","data":{"type":"content_block_delta","delta":{"type":"text_delta","text":"back"}}}`,
+			`{"type":"stream_event","event":"content_block_stop","data":{"type":"content_block_stop","index":0}}`,
 			`{"type":"assistant","message":{"id":"m1","role":"assistant","content":[{"type":"text","text":"back"}]}}`,
 			`{"type":"result","subtype":"success","is_error":false}`,
 		},
@@ -654,6 +672,9 @@ func TestE2E_ReconnectToExistingSession(t *testing.T) {
 printf '%%s\n' "$*" > %s
 printf '%%s\n' '{"type":"system","subtype":"init","session_id":"sess-reconnected","model":"claude-opus-4-7","cwd":"/tmp","tools":[],"claude_code_version":"1.0"}'
 read -r _ || true
+printf '%%s\n' '{"type":"stream_event","event":"content_block_start","data":{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}}'
+printf '%%s\n' '{"type":"stream_event","event":"content_block_delta","data":{"type":"content_block_delta","delta":{"type":"text_delta","text":"resumed"}}}'
+printf '%%s\n' '{"type":"stream_event","event":"content_block_stop","data":{"type":"content_block_stop","index":0}}'
 printf '%%s\n' '{"type":"assistant","message":{"id":"m1","role":"assistant","content":[{"type":"text","text":"resumed"}]}}'
 printf '%%s\n' '{"type":"result","subtype":"success","is_error":false}'
 while read -r _; do :; done
@@ -714,6 +735,9 @@ func TestE2E_ParseErrorRecovery(t *testing.T) {
 		{
 			`this is not json at all`,
 			`{"type":"system","subtype":"init","session_id":"parse-err","model":"claude-opus-4-7","cwd":"/tmp","tools":[],"claude_code_version":"1.0"}`,
+			`{"type":"stream_event","event":"content_block_start","data":{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}}`,
+			`{"type":"stream_event","event":"content_block_delta","data":{"type":"content_block_delta","delta":{"type":"text_delta","text":"ok"}}}`,
+			`{"type":"stream_event","event":"content_block_stop","data":{"type":"content_block_stop","index":0}}`,
 			`{"type":"assistant","message":{"id":"m1","role":"assistant","content":[{"type":"text","text":"ok"}]}}`,
 			`{"type":"result","subtype":"success","is_error":false}`,
 		},
@@ -756,6 +780,9 @@ func TestE2E_SendMessageBeforeSessionStart(t *testing.T) {
 	responses := [][]string{
 		{
 			`{"type":"system","subtype":"init","session_id":"lazy-start","model":"claude-opus-4-7","cwd":"/tmp","tools":[],"claude_code_version":"1.0"}`,
+			`{"type":"stream_event","event":"content_block_start","data":{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}}`,
+			`{"type":"stream_event","event":"content_block_delta","data":{"type":"content_block_delta","delta":{"type":"text_delta","text":"pong"}}}`,
+			`{"type":"stream_event","event":"content_block_stop","data":{"type":"content_block_stop","index":0}}`,
 			`{"type":"assistant","message":{"id":"m1","role":"assistant","content":[{"type":"text","text":"pong"}]}}`,
 			`{"type":"result","subtype":"success","is_error":false}`,
 		},
@@ -799,6 +826,9 @@ func TestE2E_ToolCallFullCycle(t *testing.T) {
 		{
 			`{"type":"system","subtype":"init","session_id":"sess-tool","model":"claude-opus-4-7","cwd":"/tmp","tools":["Bash"],"claude_code_version":"1.0"}`,
 			`{"type":"assistant","message":{"id":"m1","role":"assistant","content":[{"type":"tool_use","id":"tu-1","name":"Bash","input":{"command":"ls"}}]}}`,
+			`{"type":"stream_event","event":"content_block_start","data":{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}}`,
+			`{"type":"stream_event","event":"content_block_delta","data":{"type":"content_block_delta","delta":{"type":"text_delta","text":"done"}}}`,
+			`{"type":"stream_event","event":"content_block_stop","data":{"type":"content_block_stop","index":0}}`,
 			`{"type":"assistant","message":{"id":"m2","role":"assistant","content":[{"type":"text","text":"done"}]}}`,
 			`{"type":"result","subtype":"success","is_error":false}`,
 		},
@@ -1080,6 +1110,15 @@ func TestE2E_ThinkingBlockPersistsAsItem(t *testing.T) {
 
 	resp := [][]string{{
 		`{"type":"system","subtype":"init","session_id":"sess-think","model":"claude-opus-4-7","cwd":"/tmp","tools":[],"claude_code_version":"1.0"}`,
+		// Thinking block (index 0) streamed as content_block_delta — the
+		// assistant envelope's thinking block is skipped by the parser.
+		`{"type":"stream_event","event":"content_block_start","data":{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}}`,
+		`{"type":"stream_event","event":"content_block_delta","data":{"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"reasoning about the problem"}}}`,
+		`{"type":"stream_event","event":"content_block_stop","data":{"type":"content_block_stop","index":0}}`,
+		// Text block (index 1) streamed as content_block_delta.
+		`{"type":"stream_event","event":"content_block_start","data":{"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}}`,
+		`{"type":"stream_event","event":"content_block_delta","data":{"type":"content_block_delta","delta":{"type":"text_delta","text":"answer"}}}`,
+		`{"type":"stream_event","event":"content_block_stop","data":{"type":"content_block_stop","index":1}}`,
 		`{"type":"assistant","message":{"id":"m1","role":"assistant","content":[{"type":"thinking","thinking":"reasoning about the problem"},{"type":"text","text":"answer"}]}}`,
 		`{"type":"result","subtype":"success","is_error":false}`,
 	}}
@@ -1095,15 +1134,23 @@ func TestE2E_ThinkingBlockPersistsAsItem(t *testing.T) {
 		t.Fatalf("SendMessage: %v", err)
 	}
 
-	// Wait for turn complete to flush accumulators.
+	// Wait until BOTH the thinking and the assistant-text items are
+	// persisted. With stream_event deltas, the thinking row appears
+	// first (as soon as the first thinking_delta lands), then the text
+	// row after the next content_block_start. Waiting on only one
+	// leaves the assertion racing the second block.
 	waitUntil(t, 5*time.Second, func() bool {
 		items, _ := app.store.ListItems(thread.ID)
+		var gotThinking, gotText bool
 		for _, it := range items {
 			if it.Kind == string(provider.ItemThinking) {
-				return true
+				gotThinking = true
+			}
+			if it.Kind == "assistant_text" {
+				gotText = true
 			}
 		}
-		return false
+		return gotThinking && gotText
 	})
 
 	items, _ := app.store.ListItems(thread.ID)

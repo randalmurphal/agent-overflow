@@ -54,29 +54,20 @@ func TestParseSystemInit(t *testing.T) {
 	}
 }
 
-func TestParseAssistantTextBlock(t *testing.T) {
+func TestParseAssistantTextBlockIsSkipped(t *testing.T) {
+	// Text blocks on the coalesced `assistant` envelope are skipped —
+	// the same content streams through stream_event content_block_delta
+	// (covered by TestParseStreamEventTextDelta). Emitting from both
+	// paths would double the cumulative summary in triage.
 	line := []byte(`{"type":"assistant","message":{"id":"msg-1","role":"assistant","content":[{"type":"text","text":"Hello world"}]}}`)
-
 	events, err := ParseLine(testThread, line)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	if len(events) != 1 {
-		t.Fatalf("expected 1 event, got %d", len(events))
-	}
-
-	evt := events[0]
-	if evt.Kind != provider.EventTextDelta {
-		t.Errorf("kind: got %q, want %q", evt.Kind, provider.EventTextDelta)
-	}
-	if evt.Content != "Hello world" {
-		t.Errorf("content: got %q, want %q", evt.Content, "Hello world")
-	}
-	if evt.Role != "assistant" {
-		t.Errorf("role: got %q, want %q", evt.Role, "assistant")
-	}
-	if evt.ItemID != "msg-1" {
-		t.Errorf("itemID: got %q, want %q", evt.ItemID, "msg-1")
+	for _, e := range events {
+		if e.Kind == provider.EventTextDelta {
+			t.Fatalf("assistant envelope emitted EventTextDelta for a text block: %+v", e)
+		}
 	}
 }
 
@@ -131,48 +122,39 @@ func TestParseAssistantExitPlanModeBlock(t *testing.T) {
 	}
 }
 
-func TestParseAssistantThinkingBlock(t *testing.T) {
+func TestParseAssistantThinkingBlockIsSkipped(t *testing.T) {
+	// Thinking blocks on the coalesced `assistant` envelope are skipped
+	// for the same reason as text blocks — stream_event thinking_delta
+	// is the sole source of thinking content.
 	line := []byte(`{"type":"assistant","message":{"id":"msg-1","role":"assistant","content":[{"type":"thinking","thinking":"Let me consider..."}]}}`)
-
 	events, err := ParseLine(testThread, line)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	if len(events) != 1 {
-		t.Fatalf("expected 1 event, got %d", len(events))
-	}
-
-	evt := events[0]
-	if evt.Kind != provider.EventThinking {
-		t.Errorf("kind: got %q, want %q", evt.Kind, provider.EventThinking)
-	}
-	if evt.Content != "Let me consider..." {
-		t.Errorf("content: got %q, want %q", evt.Content, "Let me consider...")
+	for _, e := range events {
+		if e.Kind == provider.EventThinking {
+			t.Fatalf("assistant envelope emitted EventThinking for a thinking block: %+v", e)
+		}
 	}
 }
 
 func TestParseAssistantWithUsage(t *testing.T) {
+	// Text blocks are skipped (streamed via stream_event); usage is still
+	// emitted from the assistant envelope.
 	line := []byte(`{"type":"assistant","message":{"id":"msg-1","role":"assistant","content":[{"type":"text","text":"hi"}],"usage":{"input_tokens":100,"output_tokens":50,"cache_read_input_tokens":80,"cache_creation_input_tokens":20}}}`)
 
 	events, err := ParseLine(testThread, line)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-
-	// text + usage = 2 events
-	if len(events) != 2 {
-		t.Fatalf("expected 2 events, got %d", len(events))
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event (usage only), got %d: %+v", len(events), events)
 	}
-
-	if events[0].Kind != provider.EventTextDelta {
-		t.Errorf("first event kind: got %q, want text_delta", events[0].Kind)
+	if events[0].Kind != provider.EventTokenUsage {
+		t.Errorf("kind: got %q, want token_usage", events[0].Kind)
 	}
-	if events[1].Kind != provider.EventTokenUsage {
-		t.Errorf("second event kind: got %q, want token_usage", events[1].Kind)
-	}
-
 	var usage provider.TokenUsage
-	if err := json.Unmarshal(events[1].Meta, &usage); err != nil {
+	if err := json.Unmarshal(events[0].Meta, &usage); err != nil {
 		t.Fatalf("unmarshal usage: %v", err)
 	}
 	if usage.InputTokens != 100 {
@@ -184,25 +166,19 @@ func TestParseAssistantWithUsage(t *testing.T) {
 }
 
 func TestParseAssistantMultipleBlocks(t *testing.T) {
+	// Thinking and text are skipped on the assistant envelope (streamed
+	// via stream_event). Only the tool_use fires.
 	line := []byte(`{"type":"assistant","message":{"id":"msg-1","role":"assistant","content":[{"type":"thinking","thinking":"hmm"},{"type":"text","text":"hello"},{"type":"tool_use","id":"t1","name":"Edit","input":{"file":"x"}}]}}`)
 
 	events, err := ParseLine(testThread, line)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-
-	if len(events) != 3 {
-		t.Fatalf("expected 3 events, got %d", len(events))
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event (tool_use only), got %d: %+v", len(events), events)
 	}
-
-	if events[0].Kind != provider.EventThinking {
-		t.Errorf("event[0]: got %q, want thinking", events[0].Kind)
-	}
-	if events[1].Kind != provider.EventTextDelta {
-		t.Errorf("event[1]: got %q, want text_delta", events[1].Kind)
-	}
-	if events[2].Kind != provider.EventToolStart {
-		t.Errorf("event[2]: got %q, want tool_start", events[2].Kind)
+	if events[0].Kind != provider.EventToolStart {
+		t.Errorf("kind: got %q, want tool_start", events[0].Kind)
 	}
 }
 
@@ -530,7 +506,13 @@ func TestParseUserTypeSkipped(t *testing.T) {
 	}
 }
 
-// TestParseRealCLIFixture validates the parser against real Claude CLI output.
+// TestParseRealCLIFixture validates the parser against real Claude CLI
+// output. The fixture predates `--include-partial-messages`, so text
+// reaches triage via `stream_event` deltas now rather than via the
+// coalesced `assistant` envelope — the `EventTextDelta` check that
+// previously ran here has moved to the unit tests in
+// `partial_messages_test.go`. This test's bar is "the parser handles
+// every line without error and recognises the session bookends."
 func TestParseRealCLIFixture(t *testing.T) {
 	f, err := os.Open("testdata/real_output.ndjson")
 	if err != nil {
@@ -542,7 +524,7 @@ func TestParseRealCLIFixture(t *testing.T) {
 	scanner.Buffer(make([]byte, 0, 64*1024), 10*1024*1024)
 
 	var lineNum int
-	var foundInit, foundAssistant, foundResult bool
+	var foundInit, foundResult bool
 
 	for scanner.Scan() {
 		lineNum++
@@ -571,13 +553,6 @@ func TestParseRealCLIFixture(t *testing.T) {
 				if info.Model == "" {
 					t.Errorf("line %d: init event has empty model", lineNum)
 				}
-
-			case provider.EventTextDelta:
-				foundAssistant = true
-				if evt.Content == "" {
-					t.Errorf("line %d: text delta has empty content", lineNum)
-				}
-
 			case provider.EventTurnComplete:
 				foundResult = true
 			}
@@ -591,15 +566,12 @@ func TestParseRealCLIFixture(t *testing.T) {
 	if !foundInit {
 		t.Error("fixture missing system/init event")
 	}
-	if !foundAssistant {
-		t.Error("fixture missing assistant text event")
-	}
 	if !foundResult {
 		t.Error("fixture missing result/turn_complete event")
 	}
 
-	t.Logf("processed %d lines from real fixture: init=%v assistant=%v result=%v",
-		lineNum, foundInit, foundAssistant, foundResult)
+	t.Logf("processed %d lines from real fixture: init=%v result=%v",
+		lineNum, foundInit, foundResult)
 }
 
 // -- Session unit tests (wire format verification) --
@@ -1038,7 +1010,11 @@ func TestSessionIDAccessor(t *testing.T) {
 func TestReadLoopDispatchesTextDelta(t *testing.T) {
 	s, eventCh := newTestClaudeSession(t)
 
-	line := []byte(`{"type":"assistant","message":{"id":"msg-1","role":"assistant","content":[{"type":"text","text":"streaming text"}]}}`)
+	// Text content reaches the read loop via stream_event envelopes
+	// (the CLI always runs with --include-partial-messages). The
+	// coalesced `assistant` envelope's text blocks are intentionally
+	// skipped by the parser to avoid doubling the summary.
+	line := []byte(`{"type":"stream_event","event":"content_block_delta","data":{"type":"content_block_delta","delta":{"type":"text_delta","text":"streaming text"}}}`)
 	if err := s.proc.WriteLine(line); err != nil {
 		t.Fatalf("write: %v", err)
 	}

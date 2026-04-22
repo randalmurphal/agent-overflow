@@ -183,6 +183,24 @@ func classifyItemNotification(threadID, method string, params json.RawMessage, n
 			Timestamp: now,
 		}}, true
 
+	// Reasoning deltas arrive via one of two mutually-exclusive channels
+	// depending on the model class (see
+	// codex-rs/app-server/README.md §reasoning notifications):
+	//
+	//   - `summaryTextDelta` — readable reasoning summaries produced by
+	//     OpenAI's proprietary reasoning models (o-series, GPT-5). The
+	//     raw chain-of-thought stays hidden; this is the user-facing
+	//     summary only.
+	//   - `textDelta`        — raw reasoning text emitted by
+	//     open-source reasoning models (e.g. DeepSeek-R1). These models
+	//     expose the full chain-of-thought directly.
+	//
+	// A given model emits ONE of these, never both, so routing both to
+	// `EventThinking` produces correct UX: whichever channel is active
+	// accumulates into the turn's thinking row. We intentionally ignore
+	// `contentIndex` / `summaryIndex` — multi-section reasoning is
+	// concatenated into the single row (`summaryPartAdded` below
+	// injects a paragraph break so sections stay readable).
 	case "item/reasoning/textDelta", "item/reasoning/summaryTextDelta":
 		delta := readTopLevelString(params, "delta")
 		if delta == "" {
@@ -201,11 +219,22 @@ func classifyItemNotification(threadID, method string, params json.RawMessage, n
 			Timestamp: now,
 		}}, true
 
+	// Boundary marker between consecutive reasoning-summary sections.
+	// Emit a paragraph-break delta so the thinking row reads as
+	// separate thoughts rather than one run-on blob — triage appends
+	// this onto the same streaming item like any other thinking delta.
+	case "item/reasoning/summaryPartAdded":
+		return []provider.ProviderEvent{{
+			Kind:      provider.EventThinking,
+			ThreadID:  threadID,
+			Content:   "\n\n",
+			Timestamp: now,
+		}}, true
+
 	case "item/commandExecution/terminalInteraction",
 		"item/mcpToolCall/progress",
 		"item/autoApprovalReview/started",
-		"item/autoApprovalReview/completed",
-		"item/reasoning/summaryPartAdded":
+		"item/autoApprovalReview/completed":
 		return nil, true
 	}
 	return nil, false
