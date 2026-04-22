@@ -807,3 +807,141 @@ func TestThreadMutationsReturnNotFoundForMissingRows(t *testing.T) {
 		t.Fatalf("UpdateModel() error = %v, want sql.ErrNoRows", err)
 	}
 }
+
+func TestUpdateThreadLastReadRoundTrip(t *testing.T) {
+	s := newTestStore(t)
+
+	thr := makeThread("thread-last-read", "claude")
+	if err := s.CreateThread(thr); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+
+	// Fresh threads start with last_read_at = NULL (nil pointer).
+	got, err := s.GetThread(thr.ID)
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+	if got.LastReadAt != nil {
+		t.Fatalf("fresh thread LastReadAt = %v, want nil", *got.LastReadAt)
+	}
+
+	// Set to a concrete timestamp.
+	ts := int64(1_700_000_000_000)
+	if err := s.UpdateThreadLastRead(thr.ID, &ts); err != nil {
+		t.Fatalf("UpdateThreadLastRead(set): %v", err)
+	}
+	got, err = s.GetThread(thr.ID)
+	if err != nil {
+		t.Fatalf("GetThread after set: %v", err)
+	}
+	if got.LastReadAt == nil || *got.LastReadAt != ts {
+		t.Fatalf("after set, LastReadAt = %v, want %d", got.LastReadAt, ts)
+	}
+
+	// Clear back to NULL via nil pointer.
+	if err := s.UpdateThreadLastRead(thr.ID, nil); err != nil {
+		t.Fatalf("UpdateThreadLastRead(clear): %v", err)
+	}
+	got, err = s.GetThread(thr.ID)
+	if err != nil {
+		t.Fatalf("GetThread after clear: %v", err)
+	}
+	if got.LastReadAt != nil {
+		t.Fatalf("after clear, LastReadAt = %v, want nil", *got.LastReadAt)
+	}
+
+	// Missing thread should surface sql.ErrNoRows, mirroring the other
+	// mutation helpers above.
+	if err := s.UpdateThreadLastRead("missing", &ts); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("UpdateThreadLastRead(missing) error = %v, want sql.ErrNoRows", err)
+	}
+}
+
+// TestUpdateThreadPreservesLastReadAt guards against a future refactor
+// accidentally dropping last_read_at into UpdateThread's write list —
+// which would nuke the user's read-state on every mode/title change.
+//
+// The assertion shape is important: we set last_read_at to `ts`, then
+// DELIBERATELY clear the field on the in-memory Thread struct before
+// calling UpdateThread. If UpdateThread wrote every field from the
+// struct we'd see `ts` get clobbered back to NULL. Only a write list
+// that deliberately skips last_read_at preserves it.
+func TestUpdateThreadPreservesLastReadAt(t *testing.T) {
+	s := newTestStore(t)
+
+	thr := makeThread("thread-preserve", "claude")
+	if err := s.CreateThread(thr); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	ts := int64(1_700_000_000_000)
+	if err := s.UpdateThreadLastRead(thr.ID, &ts); err != nil {
+		t.Fatalf("UpdateThreadLastRead: %v", err)
+	}
+
+	got, err := s.GetThread(thr.ID)
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+	// Mutate an unrelated field AND nuke the LastReadAt field on the
+	// struct — a future UpdateThread refactor that tries to write the
+	// struct's LastReadAt verbatim would silently clear the DB value.
+	got.Title = "Renamed"
+	got.LastReadAt = nil
+	if err := s.UpdateThread(got); err != nil {
+		t.Fatalf("UpdateThread: %v", err)
+	}
+
+	after, err := s.GetThread(thr.ID)
+	if err != nil {
+		t.Fatalf("GetThread after UpdateThread: %v", err)
+	}
+	if after.LastReadAt == nil || *after.LastReadAt != ts {
+		t.Fatalf("UpdateThread clobbered last_read_at: got %v, want %d", after.LastReadAt, ts)
+	}
+	if after.Title != "Renamed" {
+		t.Fatalf("UpdateThread failed to write title: got %q", after.Title)
+	}
+}
+
+// TestUpdateThreadLastReadDoesNotBumpUpdatedAt pins the invariant that
+// read-state is UI bookkeeping, not a thread mutation. Bumping updated_at
+// would reshuffle the sidebar on every thread open — which is precisely
+// what the sidebar's "most-recently-active-at-top" sort is trying to
+// represent.
+func TestUpdateThreadLastReadDoesNotBumpUpdatedAt(t *testing.T) {
+	s := newTestStore(t)
+
+	thr := makeThread("thread-no-bump", "claude")
+	if err := s.CreateThread(thr); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	before, err := s.GetThread(thr.ID)
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+
+	ts := int64(1_700_000_000_000)
+	if err := s.UpdateThreadLastRead(thr.ID, &ts); err != nil {
+		t.Fatalf("UpdateThreadLastRead(set): %v", err)
+	}
+	afterSet, err := s.GetThread(thr.ID)
+	if err != nil {
+		t.Fatalf("GetThread after set: %v", err)
+	}
+	if afterSet.UpdatedAt != before.UpdatedAt {
+		t.Fatalf("UpdateThreadLastRead(set) bumped updated_at: %d -> %d",
+			before.UpdatedAt, afterSet.UpdatedAt)
+	}
+
+	if err := s.UpdateThreadLastRead(thr.ID, nil); err != nil {
+		t.Fatalf("UpdateThreadLastRead(clear): %v", err)
+	}
+	afterClear, err := s.GetThread(thr.ID)
+	if err != nil {
+		t.Fatalf("GetThread after clear: %v", err)
+	}
+	if afterClear.UpdatedAt != before.UpdatedAt {
+		t.Fatalf("UpdateThreadLastRead(clear) bumped updated_at: %d -> %d",
+			before.UpdatedAt, afterClear.UpdatedAt)
+	}
+}

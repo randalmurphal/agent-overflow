@@ -97,6 +97,11 @@ export function seedSidebarProject(threads: Thread[]): Project {
 // git UI.
 export function installThreadViewDefaults(): void {
   setBindingMock('SwitchThread', async () => {});
+  // pane.switchThread fires MarkThreadRead fire-and-forget right after
+  // the SwitchThread call; default it to a no-op so integration tests
+  // that don't care about read-state don't see a mock-missing error.
+  setBindingMock('MarkThreadRead', async () => {});
+  setBindingMock('MarkThreadUnread', async () => {});
   setBindingMock('ListRecentThreadItems', async () => ({
     items: [],
     oldestTurnIndex: -1,

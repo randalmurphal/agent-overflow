@@ -210,31 +210,39 @@ describe('<ThreadRow> live status dot', () => {
     resetThreadStatuses();
   });
 
-  it('renders a placeholder (no dot) when the thread is idle', () => {
+  it('renders no dot at all when the thread is idle and read', () => {
     const pane = createThreadPane();
     const { queryByTestId } = render(ThreadRow, {
       props: { thread: makeThread({ id: 't-idle' }), pane },
     });
+    // Compact layout: idle + read = just the title and time, no dot.
     expect(queryByTestId('thread-row-status-dot')).toBeNull();
-    expect(queryByTestId('thread-row-status-placeholder')).toBeInTheDocument();
   });
 
-  it('renders an amber pulsing dot when the thread is running', () => {
+  it('renders an amber pulsing dot labelled Working when running in chat mode', () => {
     setThreadStatus('t-run', 'running');
     const pane = createThreadPane();
-    const { getByTestId, queryByTestId } = render(ThreadRow, {
-      props: { thread: makeThread({ id: 't-run' }), pane },
+    const { getByTestId } = render(ThreadRow, {
+      props: { thread: makeThread({ id: 't-run', mode: 'chat' }), pane },
     });
-    expect(queryByTestId('thread-row-status-placeholder')).toBeNull();
     const dot = getByTestId('thread-row-status-dot');
     expect(dot.getAttribute('data-status')).toBe('running');
-    expect(dot.getAttribute('aria-label')).toBe('Running');
-    expect(dot.getAttribute('title')).toBe('Running');
+    expect(dot.getAttribute('aria-label')).toBe('Working');
+    expect(dot.getAttribute('title')).toBe('Working');
     expect(dot.classList.contains('bg-warning')).toBe(true);
     expect(dot.classList.contains('animate-pulse')).toBe(true);
   });
 
-  it('renders an accent dot when an approval is pending', () => {
+  it('labels the pill "Planning" when running in plan mode', () => {
+    setThreadStatus('t-plan', 'running');
+    const pane = createThreadPane();
+    const { getByTestId } = render(ThreadRow, {
+      props: { thread: makeThread({ id: 't-plan', mode: 'plan' }), pane },
+    });
+    expect(getByTestId('thread-row-status-dot').getAttribute('aria-label')).toBe('Planning');
+  });
+
+  it('renders an accent dot labelled Pending approval when an approval is pending', () => {
     setThreadStatus('t-approval', 'pending-approval');
     const pane = createThreadPane();
     const { getByTestId } = render(ThreadRow, {
@@ -246,7 +254,7 @@ describe('<ThreadRow> live status dot', () => {
     expect(dot.classList.contains('bg-accent')).toBe(true);
   });
 
-  it('renders an error dot when the thread has errored', () => {
+  it('renders an error dot labelled Error when the thread has errored', () => {
     setThreadStatus('t-err', 'error');
     const pane = createThreadPane();
     const { getByTestId } = render(ThreadRow, {
@@ -351,6 +359,7 @@ describe('<ThreadRow> nested row chrome', () => {
       props: { thread: makeThread(), pane, indent: 1 },
     });
     const outer = container.querySelector('[role="button"]') as HTMLElement;
-    expect(outer.style.paddingLeft).toMatch(/calc\(0\.75rem \+ 0\.9rem\)/);
+    // Compact layout: 8px base + 12px per indent level; indent=1 → 20px.
+    expect(outer.style.paddingLeft).toBe('20px');
   });
 });

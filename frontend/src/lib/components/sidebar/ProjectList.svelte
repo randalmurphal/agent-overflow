@@ -12,11 +12,10 @@
     /** Map of project id -> visible threads for that project. */
     threadsByProject: Map<string, Thread[]>;
     pane: ThreadPane;
-    onStartDiscussion?: (thread: Thread) => void;
     onNewThread?: (projectId: string) => void;
   }
 
-  let { projects, threadsByProject, pane, onStartDiscussion, onNewThread }: Props = $props();
+  let { projects, threadsByProject, pane, onNewThread }: Props = $props();
 </script>
 
 {#if projects.length === 0}
@@ -36,7 +35,6 @@
         {project}
         threads={threadsByProject.get(project.project.id) ?? []}
         {pane}
-        {onStartDiscussion}
         {onNewThread}
       />
     {/each}

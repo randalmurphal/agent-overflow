@@ -27,13 +27,12 @@
     project: ProjectWithCounts;
     threads: Thread[];
     pane: ThreadPane;
-    onStartDiscussion?: (thread: Thread) => void;
     /** Called with the project id when the user clicks the hover pencil
      * (or otherwise signals "create a new thread in this project"). */
     onNewThread?: (projectId: string) => void;
   }
 
-  let { project, threads, pane, onStartDiscussion, onNewThread }: Props = $props();
+  let { project, threads, pane, onNewThread }: Props = $props();
 
   let rowEl: HTMLDivElement | undefined = $state(undefined);
   let contextMenuOpen = $state(false);
@@ -204,7 +203,7 @@
   </div>
 
   {#if expanded}
-    <ProjectThreadList {threads} {pane} {onStartDiscussion} />
+    <ProjectThreadList {threads} {pane} />
   {/if}
 </div>
 

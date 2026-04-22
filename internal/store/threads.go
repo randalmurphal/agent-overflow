@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"errors"
 	"fmt"
 )
@@ -8,13 +9,16 @@ import (
 // threadColumns lists every column in the order scanThread expects. The
 // COALESCE-ing of nullable text columns returns "" instead of NULL so the
 // Go struct has a clean empty-string value for unset optional fields.
+// last_read_at is deliberately NOT coalesced — scanThread keeps the
+// NULL / non-NULL distinction via a *int64 pointer so the frontend can
+// tell "never tracked" apart from "read at epoch 0".
 const threadColumns = `id, project_id, title, provider, model,
     workspace_path, COALESCE(worktree_path, ''), COALESCE(branch, ''),
     COALESCE(session_ref, ''), COALESCE(pending_fork_session_ref, ''),
     mode, reasoning_effort, fast_mode, context_window, runtime_mode,
     COALESCE(discussion_id, ''), COALESCE(parent_thread_id, ''),
     COALESCE(forked_from_thread_id, ''), last_token_usage,
-    created_at, updated_at, archived`
+    created_at, updated_at, archived, last_read_at`
 
 // -- Validation errors for enum fields. Each binding checks against the
 // -- list before hitting SQLite so the caller sees a typed error instead
@@ -63,18 +67,23 @@ var legalProviders = map[string]struct{}{
 func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
 	var t Thread
 	var archived, fastMode int
+	var lastReadAt sql.NullInt64
 	if err := scanner.Scan(
 		&t.ID, &t.ProjectID, &t.Title, &t.Provider, &t.Model,
 		&t.WorkspacePath, &t.WorktreePath, &t.Branch,
 		&t.SessionRef, &t.PendingForkRef,
 		&t.Mode, &t.ReasoningEffort, &fastMode, &t.ContextWindow, &t.RuntimeMode,
 		&t.DiscussionID, &t.ParentThreadID, &t.ForkedFromThreadID, &t.LastTokenUsage,
-		&t.CreatedAt, &t.UpdatedAt, &archived,
+		&t.CreatedAt, &t.UpdatedAt, &archived, &lastReadAt,
 	); err != nil {
 		return Thread{}, err
 	}
 	t.FastMode = fastMode != 0
 	t.Archived = archived != 0
+	if lastReadAt.Valid {
+		v := lastReadAt.Int64
+		t.LastReadAt = &v
+	}
 	return t, nil
 }
 
@@ -267,6 +276,50 @@ func (s *Store) UnarchiveThread(id string) error {
 		return fmt.Errorf("store: unarchive thread %s: %w", id, err)
 	}
 	return requireRowsAffected(result, fmt.Sprintf("store: unarchive thread %s", id))
+}
+
+// MarkThreadReadNow stamps last_read_at with the current unix-ms. The
+// App binding called MarkThreadRead delegates here so the store owns the
+// "now" timestamp — matching the convention used by UpdateTitle /
+// ArchiveThread / UnarchiveThread etc.
+//
+// Does NOT bump updated_at: read-state is UI bookkeeping, not a thread
+// mutation, and bumping would thrash the sidebar ordering.
+func (s *Store) MarkThreadReadNow(id string) error {
+	now := nowMillis()
+	return s.setThreadLastRead(id, &now)
+}
+
+// MarkThreadUnread clears last_read_at. Null < anything, so the
+// frontend's "last_read_at < updated_at" comparison always reads as
+// unread regardless of the current timestamp.
+func (s *Store) MarkThreadUnread(id string) error {
+	return s.setThreadLastRead(id, nil)
+}
+
+// setThreadLastRead is the shared primitive. Kept unexported — callers
+// should use the named MarkThreadReadNow / MarkThreadUnread wrappers so
+// the intent is visible at the call site.
+func (s *Store) setThreadLastRead(id string, ts *int64) error {
+	var arg any
+	if ts != nil {
+		arg = *ts
+	}
+	result, err := s.db.Exec(
+		`UPDATE threads SET last_read_at = ? WHERE id = ?`,
+		arg, id,
+	)
+	if err != nil {
+		return fmt.Errorf("store: update last_read_at for %s: %w", id, err)
+	}
+	return requireRowsAffected(result, fmt.Sprintf("store: update last_read_at for %s", id))
+}
+
+// UpdateThreadLastRead is a thin wrapper kept for the existing round-trip
+// test that drives both the set and clear paths through a single entry
+// point. App-level callers should prefer MarkThreadReadNow / MarkThreadUnread.
+func (s *Store) UpdateThreadLastRead(id string, ts *int64) error {
+	return s.setThreadLastRead(id, ts)
 }
 
 func (s *Store) UpdateSessionRef(threadID, ref string) error {

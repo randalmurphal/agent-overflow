@@ -15,19 +15,20 @@
 import {
   ArchiveThread,
   DeleteThread,
-  ForkThread,
   GitRemoveWorktree,
+  MarkThreadUnread,
   RenameThread,
   StopSession,
   UnarchiveThread,
 } from '../../stores/bindings';
 import {
-  prependThread,
   removeThread,
   replaceThread,
+  updateThreadLastRead,
   updateThreadTitle,
 } from '../../stores/threads.svelte';
 import { addToast } from '../../stores/toast.svelte';
+import { copyToClipboard } from '../../utils/clipboard';
 import { errString } from '../../utils/errors';
 import type { Thread } from '../../types/models';
 
@@ -108,14 +109,25 @@ export async function deleteThreadAction(ctx: ThreadActionCtx): Promise<void> {
   }
 }
 
-export async function forkThreadAction(ctx: ThreadActionCtx): Promise<void> {
+export async function markThreadUnreadAction(ctx: ThreadActionCtx): Promise<void> {
   try {
-    const forked = (await ForkThread(ctx.thread.id)) as Thread;
-    prependThread(forked);
-    await ctx.switchPane(forked);
-    addToast('info', `Forked "${ctx.thread.title}" into a new thread`);
+    await MarkThreadUnread(ctx.thread.id);
+    // Optimistic local patch: undefined in TS mirrors NULL in the DB so
+    // `hasUnread` reads unread until the user opens the thread again.
+    updateThreadLastRead(ctx.thread.id, undefined);
+    addToast('info', 'Marked unread');
   } catch (err) {
-    console.error('Failed to fork thread:', err);
-    ctx.reportError(`Failed to fork thread: ${errString(err)}`);
+    console.error('Failed to mark thread unread:', err);
+    addToast('error', `Mark unread failed: ${errString(err)}`);
   }
+}
+
+export async function copyThreadPathAction(ctx: ThreadActionCtx): Promise<void> {
+  const ok = await copyToClipboard(ctx.thread.workspacePath);
+  addToast(ok ? 'info' : 'error', ok ? 'Copied workspace path' : 'Copy failed');
+}
+
+export async function copyThreadIdAction(ctx: ThreadActionCtx): Promise<void> {
+  const ok = await copyToClipboard(ctx.thread.id);
+  addToast(ok ? 'info' : 'error', ok ? 'Copied thread ID' : 'Copy failed');
 }

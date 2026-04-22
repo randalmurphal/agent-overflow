@@ -42,6 +42,18 @@ export function replaceThread(thread: Thread): void {
 }
 
 /**
+ * Patches the thread's lastReadAt locally so the sidebar reflects a
+ * Mark-read / Mark-unread action immediately, without waiting for the
+ * next refreshThreads() round-trip. `undefined` encodes "never tracked"
+ * and mirrors the backend's NULL column.
+ */
+export function updateThreadLastRead(id: string, lastReadAt: number | undefined): void {
+  threads = threads.map((t) =>
+    t.id === id ? { ...t, lastReadAt } : t,
+  );
+}
+
+/**
  * Returns the thread with the given id, or undefined if the sidebar doesn't
  * currently track it (e.g. archived parent not in the filtered view).
  */

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, onDestroy } from 'svelte';
+  import { onMount, onDestroy, untrack } from 'svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import MessageTimeline from './MessageTimeline.svelte';
   import ApprovalPrompt from '../composer/ApprovalPrompt.svelte';
@@ -16,6 +16,8 @@
   import ChatHeader from './ChatHeader.svelte';
   import ChatWorkingIndicator from './ChatWorkingIndicator.svelte';
   import { createComposerDraftStore } from '../../stores/composerDraft.svelte';
+  import { MarkThreadRead } from '../../stores/bindings';
+  import { updateThreadLastRead } from '../../stores/threads.svelte';
 
   let { pane }: { pane: ThreadPane } = $props();
 
@@ -27,6 +29,29 @@
     if (current === lastHydratedThreadId) return;
     lastHydratedThreadId = current;
     void draft.setThread(current);
+  });
+
+  // Keep the active thread stamped as read — both on switch AND as its
+  // updatedAt advances (assistant turns, title generation, backend
+  // thread:updated events). Without this, the active thread would light
+  // up its own "Completed" pill the moment one of its own turns settles.
+  // Fire-and-forget: a failed mark-read is a latent sidebar pill, not
+  // a user-blocking error.
+  //
+  // `untrack` around the store writes is load-bearing: updateThreadLastRead
+  // reads the threads array in order to map-replace the matching row, so
+  // without untrack Svelte would register `threads` as a dependency of
+  // this effect and loop forever (read → write → re-run).
+  $effect(() => {
+    const thread = pane.thread;
+    if (!thread) return;
+    const readAt = Date.now();
+    untrack(() => {
+      updateThreadLastRead(thread.id, readAt);
+    });
+    void MarkThreadRead(thread.id).catch((err) => {
+      console.error('Failed to mark thread read:', err);
+    });
   });
 
   let inDiscussionMode = $derived(

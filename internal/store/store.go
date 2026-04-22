@@ -72,6 +72,12 @@ type Thread struct {
 	CreatedAt          int64  `json:"createdAt"`
 	UpdatedAt          int64  `json:"updatedAt"`
 	Archived           bool   `json:"archived"`
+	// LastReadAt is the Unix-ms timestamp of when the user last viewed
+	// the thread. NULL (nil) means "never tracked" and is treated as
+	// read by the UI so pre-migration rows don't all show as unread on
+	// first launch. Set by MarkThreadRead / cleared by MarkThreadUnread,
+	// and auto-refreshed when the user switches into a thread.
+	LastReadAt *int64 `json:"lastReadAt,omitempty"`
 }
 
 // Project represents a user-defined grouping of threads rooted at a

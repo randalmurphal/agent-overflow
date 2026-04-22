@@ -67,6 +67,8 @@ export const DeleteThread = dispatch('DeleteThread');
 export const ForkThread = dispatch('ForkThread');
 export const GetThread = dispatch('GetThread');
 export const ListThreads = dispatch('ListThreads');
+export const MarkThreadRead = dispatch('MarkThreadRead');
+export const MarkThreadUnread = dispatch('MarkThreadUnread');
 export const RenameThread = dispatch('RenameThread');
 export const SwitchThread = dispatch('SwitchThread');
 

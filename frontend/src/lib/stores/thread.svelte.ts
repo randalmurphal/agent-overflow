@@ -495,6 +495,14 @@ export function createThreadPane() {
       }
       if (gen !== switchGeneration) return;
 
+      // NOTE: mark-read is NOT fired here. ChatView.svelte owns that
+      // via a $effect keyed on `pane.thread?.id + pane.thread?.updatedAt`
+      // so the active thread also stays "read" across mid-session
+      // `thread:updated` events (title generation, model swap, backend
+      // bumps) — a switchThread-only hook would otherwise let the
+      // active row show a "Completed" pill at itself. Keeps this
+      // pane-store method free of sidebar-store writes.
+
       try {
         const paged = await ListRecentThreadItems(newThread.id, 0);
         if (gen !== switchGeneration) return;

@@ -32,10 +32,9 @@
 
   interface Props {
     pane: ThreadPane;
-    onStartDiscussion?: (thread: Thread) => void;
   }
 
-  let { pane, onStartDiscussion }: Props = $props();
+  let { pane }: Props = $props();
 
   let addProjectOpen = $state(false);
   let flashProjectId: string | null = $state(null);
@@ -213,7 +212,6 @@
       projects={visibleProjects}
       {threadsByProject}
       {pane}
-      {onStartDiscussion}
       onNewThread={handleNewThread}
     />
   </div>

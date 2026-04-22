@@ -61,6 +61,9 @@ function seedThread(): Thread {
 
 async function buildPane(): Promise<ReturnType<typeof createThreadPane>> {
   setBindingMock('SwitchThread', async () => {});
+  // ChatView's auto-mark-read $effect fires on every pane.thread change.
+  setBindingMock('MarkThreadRead', async () => {});
+  setBindingMock('MarkThreadUnread', async () => {});
   setBindingMock('ListItems', async () => []);
   setBindingMock('ListRecentThreadItems', async () => ({
     items: [],

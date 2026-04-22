@@ -599,6 +599,18 @@ ALTER TABLE items            ADD COLUMN highlighted_content TEXT NOT NULL DEFAUL
 ALTER TABLE channel_messages ADD COLUMN highlighted_content TEXT NOT NULL DEFAULT '';
 `,
 	},
+	{
+		Version: 20,
+		Name:    "thread_last_read_at",
+		// Adds a nullable last_read_at column so the sidebar can mark
+		// threads as unread. NULL means "never tracked" — the frontend
+		// treats it as read so pre-migration rows don't all light up
+		// on first launch. Written by MarkThreadRead / MarkThreadUnread
+		// and auto-refreshed when the user switches into a thread.
+		SQL: `
+ALTER TABLE threads ADD COLUMN last_read_at INTEGER;
+`,
+	},
 }
 
 // v13SQL is the DROP-and-rebuild payload for migration v13. Extracted so

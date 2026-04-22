@@ -174,7 +174,6 @@
     <Sidebar
       {pane}
       onOpenSettings={() => showSettings = true}
-      onStartDiscussion={handleStartDiscussion}
       registerFocusSearch={(focus) => (searchFocuser = focus)}
       registerOpenFromPR={(cb) => (openFromPR = cb)}
     />

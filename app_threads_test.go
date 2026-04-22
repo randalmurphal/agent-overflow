@@ -1,6 +1,8 @@
 package main
 
 import (
+	"database/sql"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -207,5 +209,52 @@ func TestUpdateThreadBranchAndWorkspace(t *testing.T) {
 	if _, err := app.UpdateThreadWorkspace(thread.ID, ""); err == nil ||
 		!strings.Contains(err.Error(), "path is required") {
 		t.Fatalf("UpdateThreadWorkspace(empty) error = %v, want 'path is required'", err)
+	}
+}
+
+// TestMarkThreadReadUnreadLifecycle walks MarkThreadRead then MarkThreadUnread
+// through the App binding surface, verifying each flips last_read_at as the
+// sidebar expects.
+func TestMarkThreadReadUnreadLifecycle(t *testing.T) {
+	app := newTestAppWithStore(t)
+	thread, err := createTestThread(t, app, "claude", "/tmp/read", "claude-sonnet-4-6", "")
+	if err != nil {
+		t.Fatalf("createTestThread: %v", err)
+	}
+
+	before := time.Now().UnixMilli()
+	if err := app.MarkThreadRead(thread.ID); err != nil {
+		t.Fatalf("MarkThreadRead: %v", err)
+	}
+	got, err := app.store.GetThread(thread.ID)
+	if err != nil {
+		t.Fatalf("GetThread after MarkThreadRead: %v", err)
+	}
+	if got.LastReadAt == nil {
+		t.Fatalf("LastReadAt = nil after MarkThreadRead")
+	}
+	if *got.LastReadAt < before {
+		t.Fatalf("LastReadAt = %d, want >= %d", *got.LastReadAt, before)
+	}
+
+	if err := app.MarkThreadUnread(thread.ID); err != nil {
+		t.Fatalf("MarkThreadUnread: %v", err)
+	}
+	got, err = app.store.GetThread(thread.ID)
+	if err != nil {
+		t.Fatalf("GetThread after MarkThreadUnread: %v", err)
+	}
+	if got.LastReadAt != nil {
+		t.Fatalf("LastReadAt = %d after MarkThreadUnread, want nil", *got.LastReadAt)
+	}
+
+	// Missing thread should surface sql.ErrNoRows — the store wraps
+	// but unwraps cleanly through errors.Is so callers can branch on
+	// the sentinel without string-matching.
+	if err := app.MarkThreadRead("missing"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("MarkThreadRead(missing) error = %v, want sql.ErrNoRows", err)
+	}
+	if err := app.MarkThreadUnread("missing"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("MarkThreadUnread(missing) error = %v, want sql.ErrNoRows", err)
 	}
 }

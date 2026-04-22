@@ -722,6 +722,26 @@ export function ListThreads(): $CancellablePromise<store$0.Thread[]> {
 }
 
 /**
+ * MarkThreadRead stamps the thread's last_read_at to "now" so the sidebar
+ * stops showing an unread badge. Fired automatically while a thread is
+ * open (see ChatView.svelte's $effect on pane.thread.updatedAt). The
+ * timestamp is owned by the store so the App layer stays free of
+ * nowMillis() calls — matching ArchiveThread / UpdateTitle etc.
+ */
+export function MarkThreadRead(id: string): $CancellablePromise<void> {
+    return $Call.ByID(1480646012, id);
+}
+
+/**
+ * MarkThreadUnread clears the last_read_at column. Null < anything, so
+ * the sidebar's "last_read_at < updated_at" comparison evaluates to
+ * unread regardless of the current timestamp.
+ */
+export function MarkThreadUnread(id: string): $CancellablePromise<void> {
+    return $Call.ByID(236597375, id);
+}
+
+/**
  * OpenTerminal starts a new PTY-backed terminal session bound to the given
  * thread.
  */

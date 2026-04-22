@@ -1,22 +1,19 @@
 // Re-export Wails v3 generated bindings used by components.
 //
-// Every entry here is produced by `wails3 generate bindings`. When a new
-// App method is added on the Go side, run the generator and re-export it
-// from this file — do not hand-wrap bindings.
+// Every entry here is produced by `wails3 generate bindings -ts`. When
+// a new App method is added on the Go side, run `task generate:bindings`
+// (or `go tool wails3 generate bindings -clean=true -ts`) and re-export
+// it from this file — do not hand-wrap bindings.
 export {
   // Thread management
-  //
-  // CreateThread is NOT re-exported from the generated app.js because
-  // the generated CreateThreadOptions class emits optional fields under
-  // an `if (false)` pattern that TypeScript infers as required. Callers
-  // pass `{ projectId }` or similar partials that the Go side treats as
-  // optional, so we re-wrap below against the Wails runtime directly.
   ArchiveThread,
   UnarchiveThread,
   DeleteThread,
   ForkThread,
   GetThread,
   ListThreads,
+  MarkThreadRead,
+  MarkThreadUnread,
   RenameThread,
   SwitchThread,
   UpdateThreadModel,
@@ -140,6 +137,15 @@ export {
   ListThreadDiffPayloads,
   ListLiveBackgroundTasks,
   GetThreadItem,
+
+  // Projects + directory browser
+  ArchiveProject,
+  BrowseDirectory,
+  CreateProject,
+  DeleteProject,
+  ListProjects,
+  RenameProject,
+  UnarchiveProject,
 } from '../../../bindings/agent-overflow/app.js';
 
 // Model classes needed for constructing RPC parameters.
@@ -159,34 +165,16 @@ export {
   TerminalOpenOptions,
 } from '../../../bindings/agent-overflow/models.js';
 
-// ---------------------------------------------------------------------------
-// Projects + directory-browser bindings.
-//
-// These landed on the Go side in Wave 1/2 (see /app_projects.go and
-// /app_directory.go) but the `wails3 generate bindings` output in this
-// checkout doesn't yet carry them. Hand-wrapping via Call.ByName keeps
-// the sidebar compiling and unblocks Wave 3a while we wait for the
-// generator to catch up. The tests drive the same Call.ByName path via
-// src/test/mocks/wailsio-runtime.ts, so mock + real call paths match.
-// ---------------------------------------------------------------------------
+// CreateThread wrapper. The generated `CreateThread(opts: CreateThreadOptions)`
+// types `opts` as a class instance; callers pass partial literals like
+// `{ projectId }` which TS accepts structurally at the function boundary
+// but trips when callers assign to a variable typed as the class. Keeping
+// a thin interface + wrapper here lets every call site hand a plain
+// object and cast the result without going through the class ceremony.
+import { CreateThread as CreateThreadRaw } from '../../../bindings/agent-overflow/app.js';
+import { CreateThreadOptions as CreateThreadOptionsClass } from '../../../bindings/agent-overflow/models.js';
+import type { Thread } from '../types/models';
 
-import { Call } from '@wailsio/runtime';
-import type {
-  DirectoryListing,
-  Project,
-  ProjectWithCounts,
-  Thread,
-} from '../types/models';
-
-/**
- * Options the frontend passes to CreateThread. Mirrors the Go
- * CreateThreadOptions struct (projectId required; every other field
- * defaults from settings when omitted). We keep a hand-written
- * interface here because the Wails-generated CreateThreadOptions class
- * encodes optional fields under an `if (false)` pattern that the
- * TypeScript inference engine reads as required — the generated class
- * is usable at runtime but not typeable on the call site.
- */
 export interface CreateThreadOptions {
   projectId: string;
   provider?: 'claude' | 'codex' | string;
@@ -200,49 +188,8 @@ export interface CreateThreadOptions {
   workspaceOverride?: string;
 }
 
-/**
- * CreateThread persists a new thread. Wrapped via Call.ByName so the
- * call site can pass a partial options bag without fighting the
- * generated class's over-strict TypeScript inference.
- */
 export function CreateThread(opts: CreateThreadOptions): Promise<Thread> {
-  return callApp<Thread>('CreateThread', opts);
-}
-
-function callApp<T>(method: string, ...args: unknown[]): Promise<T> {
-  return Call.ByName(`main.App.${method}`, ...args) as unknown as Promise<T>;
-}
-
-export function ListProjects(): Promise<ProjectWithCounts[]> {
-  return callApp<ProjectWithCounts[] | null>('ListProjects').then(
-    (result) => result ?? [],
-  );
-}
-
-export function CreateProject(path: string): Promise<Project> {
-  return callApp<Project>('CreateProject', path);
-}
-
-export function RenameProject(id: string, name: string): Promise<Project> {
-  return callApp<Project>('RenameProject', id, name);
-}
-
-export function DeleteProject(id: string): Promise<string[]> {
-  return callApp<string[] | null>('DeleteProject', id).then(
-    (result) => result ?? [],
-  );
-}
-
-export function ArchiveProject(id: string): Promise<void> {
-  return callApp<void>('ArchiveProject', id);
-}
-
-export function UnarchiveProject(id: string): Promise<Project> {
-  return callApp<Project>('UnarchiveProject', id);
-}
-
-export function BrowseDirectory(path: string): Promise<DirectoryListing> {
-  return callApp<DirectoryListing>('BrowseDirectory', path);
+  return CreateThreadRaw(new CreateThreadOptionsClass(opts)) as unknown as Promise<Thread>;
 }
 
 // Turn lifecycle `Turn` model is re-exported from the generated

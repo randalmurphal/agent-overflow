@@ -38,6 +38,11 @@ export function makeItem(overrides: Partial<Item> = {}): Item {
 
 export function installPaneMocks(items: Item[] = []): void {
   setBindingMock('SwitchThread', async () => {});
+  // pane.switchThread auto-marks the thread as read; default both
+  // read-state bindings to no-ops so component tests that don't care
+  // don't have to stub them.
+  setBindingMock('MarkThreadRead', async () => {});
+  setBindingMock('MarkThreadUnread', async () => {});
   // The pane now loads the tail of history via ListRecentThreadItems on
   // switch; ListItems remains mocked because a few component tests (and
   // a couple of integration fixtures) still reach for it directly.

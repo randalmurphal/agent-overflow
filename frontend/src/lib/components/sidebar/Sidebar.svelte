@@ -5,18 +5,22 @@
   // handler here, it probably belongs in the relevant child.
 
   import type { ThreadPane } from '../../stores/thread.svelte';
-  import type { Thread } from '../../types/models';
   import { refreshProjects } from '../../stores/projects.svelte';
   import { expandProjectsForActiveThread } from '../../stores/sidebar.svelte';
+  import {
+    getSidebarWidth,
+    persistSidebarWidth,
+    setSidebarWidthLive,
+  } from '../../stores/sidebarLayout.svelte';
   import SidebarSearch from './SidebarSearch.svelte';
   import ProjectsSection from './ProjectsSection.svelte';
   import SettingsFooter from './SettingsFooter.svelte';
+  import SidebarResizer from './SidebarResizer.svelte';
   import ThreadFromPRDialog from './ThreadFromPRDialog.svelte';
 
   interface Props {
     pane: ThreadPane;
     onOpenSettings?: () => void;
-    onStartDiscussion?: (thread: Thread) => void;
     /** Palette/command hook: receives a focus callback for the search input. */
     registerFocusSearch?: (focus: () => void) => void;
     /** Palette/command hook: receives a callback that opens the
@@ -29,7 +33,6 @@
   let {
     pane,
     onOpenSettings,
-    onStartDiscussion,
     registerFocusSearch,
     registerOpenFromPR,
   }: Props = $props();
@@ -58,12 +61,18 @@
 </script>
 
 <aside
-  class="w-[280px] shrink-0 border-r border-border-subtle bg-transparent flex flex-col h-full"
+  class="relative shrink-0 border-r border-border-subtle bg-transparent flex flex-col h-full"
+  style="width: {getSidebarWidth()}px"
   data-testid="sidebar"
 >
   <SidebarSearch {registerFocusSearch} />
-  <ProjectsSection {pane} {onStartDiscussion} />
+  <ProjectsSection {pane} />
   <SettingsFooter {onOpenSettings} />
+  <SidebarResizer
+    width={getSidebarWidth()}
+    onResizeLive={setSidebarWidthLive}
+    onResizeEnd={persistSidebarWidth}
+  />
 </aside>
 
 <ThreadFromPRDialog

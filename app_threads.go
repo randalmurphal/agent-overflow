@@ -270,6 +270,22 @@ func (a *App) RenameThread(id string, title string) error {
 	return a.store.UpdateThread(t)
 }
 
+// MarkThreadRead stamps the thread's last_read_at to "now" so the sidebar
+// stops showing an unread badge. Fired automatically while a thread is
+// open (see ChatView.svelte's $effect on pane.thread.updatedAt). The
+// timestamp is owned by the store so the App layer stays free of
+// nowMillis() calls — matching ArchiveThread / UpdateTitle etc.
+func (a *App) MarkThreadRead(id string) error {
+	return a.store.MarkThreadReadNow(id)
+}
+
+// MarkThreadUnread clears the last_read_at column. Null < anything, so
+// the sidebar's "last_read_at < updated_at" comparison evaluates to
+// unread regardless of the current timestamp.
+func (a *App) MarkThreadUnread(id string) error {
+	return a.store.MarkThreadUnread(id)
+}
+
 // sessionAffectingFields enumerates the thread columns that, when
 // changed, require a provider-session restart to take effect. The
 // centralized restartSessionIfAffected helper consults this list so
