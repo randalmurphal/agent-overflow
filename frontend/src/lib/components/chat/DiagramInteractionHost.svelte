@@ -54,12 +54,10 @@
     menu = { x: e.clientX, y: e.clientY, svg, context: 'inline' };
   }
 
-  // Context menu raised from within the modal. The modal passes its
-  // own SVG element via the event's target chain.
-  function handleModalContextMenu(e: MouseEvent): void {
-    if (!(e.target instanceof Element)) return;
-    const svg = e.target.closest<SVGSVGElement>('svg');
-    if (!svg) return;
+  // Context menu raised from within the modal. The modal resolves its
+  // own SVG reference (the event target is the canvas div because the
+  // transform host is pointer-events-none) and hands it to us.
+  function handleModalContextMenu(e: MouseEvent, svg: SVGSVGElement): void {
     e.preventDefault();
     menu = { x: e.clientX, y: e.clientY, svg, context: 'modal' };
   }

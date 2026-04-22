@@ -28,7 +28,7 @@
     open: boolean;
     svgHtml: string;
     onClose: () => void;
-    onContextMenu?: (e: MouseEvent) => void;
+    onContextMenu?: (e: MouseEvent, svg: SVGSVGElement) => void;
   }
 
   let { open, svgHtml, onClose, onContextMenu }: Props = $props();
@@ -62,6 +62,21 @@
     return Math.max(lo, Math.min(hi, n));
   }
 
+  // Mermaid ships SVGs with `width="100%"` + inline `max-width:<px>`
+  // which makes the rendered box depend on its containing block. Our
+  // transform host is absolute-positioned with no intrinsic width, so
+  // the SVG would collapse to mermaid's max-width while our fit math
+  // reads viewBox units — the two disagree and the diagram lands in
+  // the wrong spot at the wrong scale. Pin the SVG's CSS size to the
+  // viewBox so "scale=1" means "1:1 with the modelling units" and
+  // centering math lines up with pixels.
+  function normalizeSvg(svg: SVGSVGElement, width: number, height: number): void {
+    svg.setAttribute('width', String(width));
+    svg.setAttribute('height', String(height));
+    svg.style.maxWidth = 'none';
+    svg.style.maxHeight = 'none';
+  }
+
   // Recompute the "fit to canvas" transform. Used on initial open and
   // whenever the window resizes (so long as the user hasn't manually
   // panned/zoomed).
@@ -76,7 +91,13 @@
     const height = vb && vb.height > 0 ? vb.height : svg.getBBox().height;
     if (width <= 0 || height <= 0) return;
 
-    const newScale = Math.min(canvasRect.width / width, canvasRect.height / height, 1.0);
+    normalizeSvg(svg, width, height);
+
+    // No 1.0 clamp: let small diagrams scale up to fill the canvas.
+    // The 10× cap keeps a 20×10 diagram from ballooning to 2000×1000 —
+    // readable scale-up without absurd overshoot. Larger diagrams are
+    // always shrunk by `min()` regardless.
+    const newScale = Math.min(canvasRect.width / width, canvasRect.height / height, 10);
     scale = newScale;
     tx = (canvasRect.width - width * newScale) / 2;
     ty = (canvasRect.height - height * newScale) / 2;
@@ -228,7 +249,14 @@
           'flex-1 relative overflow-hidden select-none',
           isPanning ? 'cursor-grabbing' : 'cursor-grab',
         ].join(' ')}
-        oncontextmenu={onContextMenu}
+        oncontextmenu={(e) => {
+          // The transform host carries `pointer-events-none` so pans
+          // reach the canvas, which means `e.target.closest('svg')`
+          // would miss — the target is the canvas div. Query the SVG
+          // explicitly from the host and hand it to the caller.
+          const svg = transformHostEl?.querySelector<SVGSVGElement>('svg');
+          if (svg) onContextMenu?.(e, svg);
+        }}
         onwheel={handleWheel}
         onpointerdown={handlePointerDown}
         onpointermove={handlePointerMove}
