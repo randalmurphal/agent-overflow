@@ -13,6 +13,7 @@
   import { Worktree } from '../../../../../bindings/agent-overflow/internal/git/models';
   import { replaceThread } from '../../../stores/threads.svelte';
   import { addToast } from '../../../stores/toast.svelte';
+  import { errString } from '../../../utils/errors';
   import Popover from '../../primitives/Popover.svelte';
   import Menu from '../../primitives/Menu.svelte';
   import MenuItem from '../../primitives/MenuItem.svelte';
@@ -83,7 +84,7 @@
       addToast('info', `Workspace switched to ${basename(path) || path}`);
     } catch (err) {
       console.error('UpdateThreadWorkspace failed:', err);
-      addToast('error', `Failed to switch workspace: ${err}`);
+      addToast('error', `Failed to switch workspace: ${errString(err)}`);
     } finally {
       applying = false;
       closeMenu();

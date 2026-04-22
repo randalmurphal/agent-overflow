@@ -125,16 +125,49 @@
   }
 
   // Focus the first enabled menuitem on mount so keyboard users start
-  // inside the menu without an extra Tab. Run on the next tick so the
-  // children snippet has rendered.
+  // inside the menu without an extra Tab.
+  //
+  // Two wrinkles beyond the obvious `focus(0)` call:
+  //
+  // 1. The children snippet might hydrate synchronously OR async. The
+  //    cold-cache ProviderModelsSubmenu and DiscussionsSubmenu both
+  //    mount with a loading placeholder first and swap to the real
+  //    items after a binding round-trip. A one-shot queueMicrotask
+  //    would see 0 items and bail — leaving no item at tabindex=0
+  //    and breaking keyboard navigation. We watch `containerEl` with
+  //    a MutationObserver so the first batch of real items picks up
+  //    initial focus whenever it lands.
+  //
+  // 2. Svelte reconciles `tabindex={-1}` on every MenuItem re-render,
+  //    which wipes the roving-0 assignment `setFocus` applied. Each
+  //    render flushes through the same observer callback, so the
+  //    roving 0 is re-asserted whenever items mount/change.
+  let focusInitialized = false;
   $effect(() => {
     if (!containerEl) return;
-    queueMicrotask(() => {
+    const container = containerEl;
+
+    const tryFocus = () => {
+      if (focusInitialized) return;
       const items = getItems();
       if (items.length === 0) return;
       setFocus(0, items);
-    });
-    return () => clearTypeahead();
+      focusInitialized = true;
+    };
+
+    queueMicrotask(tryFocus);
+
+    // MutationObserver covers async-hydrated items. Once the first
+    // focus lands, subsequent mutations (navigation, typeahead, etc.)
+    // don't re-steal focus because `focusInitialized` is latched.
+    const observer = new MutationObserver(tryFocus);
+    observer.observe(container, { childList: true, subtree: true });
+
+    return () => {
+      observer.disconnect();
+      clearTypeahead();
+      focusInitialized = false;
+    };
   });
 </script>
 
@@ -145,7 +178,7 @@
   aria-orientation="vertical"
   aria-label={ariaLabel}
   onkeydown={handleKeydown}
-  class="bg-surface-1 border border-border rounded-lg shadow-xl py-1 min-w-[200px] focus-visible:outline-none"
+  class="bg-surface-1 border border-border-subtle rounded-[var(--radius-control)] shadow-menu py-1 min-w-[200px] focus-visible:outline-none"
   data-menu
 >
   {@render children()}

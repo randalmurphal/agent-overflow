@@ -10,6 +10,32 @@
   //
   // The floating element mounts only when `open === true` (via {#if open})
   // so closed popovers contribute zero DOM nodes and zero listeners.
+  //
+  // CONSTRAINTS / CALLER CONTRACTS (load-bearing — violate and things
+  // break in subtle ways):
+  //
+  // 1. Anchor DOM identity is stable across opens. When a nested
+  //    popover's anchor lives inside an ancestor popover's floating
+  //    element, the `__popoverAnchor` property we stamp is what
+  //    ancestor popovers use to detect descendant-click and
+  //    descendant-Escape. `other.__popoverAnchor` pointing at a
+  //    stale DOM node silently breaks the chain. Every current
+  //    consumer binds the anchor once and reuses the reference;
+  //    new callers must do the same.
+  //
+  // 2. Popovers are NOT rendered inside Modals today. Modal runs its
+  //    own focus trap and Escape handler on the backdrop; a Popover
+  //    inside would duplicate the Escape path and bypass the focus
+  //    trap (the portal to document.body lifts children out of the
+  //    Modal's panel subtree). If a future flow needs a picker-in-
+  //    dialog, coordinate: either route that picker through Modal as
+  //    a sub-dialog, or gate Popover's document Escape with a modal-
+  //    stack check. Do not simply rely on `stopPropagation`.
+  //
+  // 3. Callers do NOT re-parent the floating element themselves.
+  //    Popover moves it to <body> on mount and removes it on
+  //    teardown; a third party moving it would desync the cleanup
+  //    path and leak nodes between tests.
 
   import type { Snippet } from 'svelte';
 
@@ -56,6 +82,92 @@
   // means "not yet positioned" — the floating div is kept invisible so
   // there's no first-frame jump at the viewport's origin.
   let resolvedPlacement = $state<Placement | null>(null);
+
+  // Popover-on-floating-element property bag. Holding the anchor
+  // reference here lets other popovers reconstruct the "is this a
+  // descendant popover?" check at mousedown time: after portaling,
+  // DOM ancestry can't answer that question because every popover is
+  // a sibling under <body>, but every popover's anchor is still a DOM
+  // descendant of whichever popover opened it — so we chase the anchor.
+  type PopoverFloatingEl = HTMLDivElement & { __popoverAnchor?: HTMLElement };
+
+  // Portal the floating element into `document.body` on mount. Without
+  // this, a `position: fixed` popover rendered inside an ancestor that
+  // creates a new containing block (anything with `backdrop-filter`,
+  // `transform`, `filter`, `perspective`, `contain: paint`, etc.) would
+  // position relative to that ancestor's padding box instead of the
+  // viewport — and any `overflow: hidden` on the chain would then clip
+  // it out of sight. The composer card (backdrop-blur-sm + overflow-
+  // hidden) is the in-tree trigger, but the bug would reproduce under
+  // any fixed-CB ancestor.
+  //
+  // Cleanup explicitly `.remove()`s the node so it goes away with the
+  // component even if the caller's tree gets torn down externally
+  // (testing-library cleanup, manual unmount) — Svelte otherwise only
+  // knows to remove the node from its ORIGINAL parent, which no longer
+  // holds it after we portaled.
+  $effect(() => {
+    if (!floatingEl) return;
+    const node = floatingEl;
+    document.body.appendChild(node);
+    return () => {
+      node.remove();
+    };
+  });
+
+  // Keep the anchor reference attached to the floating element so
+  // ancestor popovers can walk their way back through the DOM at
+  // click time. Without this, clicking a menu item inside a nested
+  // submenu would close the parent popover first (both are body
+  // children after portaling, so the parent sees the click as
+  // "outside"), then the click event would never fire on the now-
+  // detached row — visible symptom: "menu opens but selections do
+  // nothing".
+  $effect(() => {
+    if (!floatingEl) return;
+    (floatingEl as PopoverFloatingEl).__popoverAnchor = anchor;
+  });
+
+  // Walk the anchor chain upward from a clicked popover to determine
+  // whether it is "my descendant" — i.e. I spawned it directly, or I
+  // spawned an intermediate popover that spawned it, etc. Used by
+  // both outside-mousedown (don't close me when a child swallows the
+  // click) and Escape (let the deepest popover handle the press).
+  //
+  // Max depth guard is defensive against a malformed cycle; real
+  // popover trees are rarely more than 2–3 deep.
+  function isPopoverDescendantOfMe(
+    other: PopoverFloatingEl,
+  ): boolean {
+    if (!floatingEl) return false;
+    if (other === floatingEl) return false;
+    let cur: PopoverFloatingEl | null = other;
+    for (let i = 0; i < 16 && cur; i++) {
+      const curAnchor = cur.__popoverAnchor;
+      if (!curAnchor) return false;
+      if (floatingEl.contains(curAnchor)) return true;
+      const next = curAnchor.closest('[data-popover]') as PopoverFloatingEl | null;
+      if (!next || next === cur) return false;
+      cur = next;
+    }
+    return false;
+  }
+
+  function isDescendantPopoverClick(target: Element): boolean {
+    const other = target.closest('[data-popover]') as PopoverFloatingEl | null;
+    if (!other) return false;
+    return isPopoverDescendantOfMe(other);
+  }
+
+  function hasOpenDescendantPopover(): boolean {
+    if (!floatingEl) return false;
+    const open = document.querySelectorAll<PopoverFloatingEl>('[data-popover]');
+    for (const p of open) {
+      if (p === floatingEl) continue;
+      if (isPopoverDescendantOfMe(p)) return true;
+    }
+    return false;
+  }
 
   // Core placement math. Given the anchor rect and the floating rect,
   // return {top,left} for each placement. Written as a pure function so
@@ -157,13 +269,31 @@
       if (!target) return;
       if (floatingEl?.contains(target)) return;
       if (anchor?.contains(target)) return;
+      // The click landed outside both my floating element and my
+      // anchor — but it might be inside a DESCENDANT popover whose
+      // anchor (or whose anchor's anchor, etc.) lives inside my
+      // floating element. Portaling turned every popover into a
+      // sibling under <body>, so DOM-contains can't see the parent/
+      // child relationship anymore. Walk the anchor chain to
+      // reconstruct it: each popover we visit has an `__popoverAnchor`
+      // pointer; if the anchor lives inside me, the clicked popover
+      // is my descendant (maybe transitively).
+      if (target instanceof Element && isDescendantPopoverClick(target)) return;
       onClose();
     };
     const handleKeydown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.stopPropagation();
-        onClose();
-      }
+      if (e.key !== 'Escape') return;
+      // Only the topmost open popover responds to Escape. When nested
+      // popovers are open (root menu → Codex submenu), both register
+      // document-level keydown listeners; `stopPropagation` does not
+      // stop sibling listeners on the same target. Without this check
+      // one Escape press would collapse the whole stack. Ask the DOM:
+      // does any open popover have me as an ancestor? If yes, it's
+      // deeper than me — let it handle this press; I'll handle the
+      // next one after it closes.
+      if (hasOpenDescendantPopover()) return;
+      e.stopPropagation();
+      onClose();
     };
     const handleScroll = () => updatePosition();
     const handleResize = () => updatePosition();

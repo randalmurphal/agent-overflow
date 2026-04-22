@@ -10,6 +10,7 @@
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { ChooseDesignOption } from '../../stores/bindings';
   import { addToast } from '../../stores/toast.svelte';
+  import Button from '../primitives/Button.svelte';
 
   let { pane }: { pane: ThreadPane } = $props();
 
@@ -64,15 +65,15 @@
 </script>
 
 {#if request}
-  <div class="border-t border-border bg-surface-1 p-3 shrink-0 flex flex-col gap-2">
+  <div class="border-t border-border-subtle bg-transparent p-3 shrink-0 flex flex-col gap-2">
     <div class="flex items-baseline gap-2">
-      <h3 class="text-sm font-medium text-text-primary">Pick a design direction</h3>
-      <span class="text-[10px] text-text-secondary/70" title="Request ID (debug)">
+      <h3 class="text-[13px] font-medium text-fg">Pick a design direction</h3>
+      <span class="text-[10px] text-fg-hint font-mono" title="Request ID (debug)">
         req {request.requestId.slice(0, 8)}
       </span>
     </div>
     {#if request.prompt}
-      <p class="text-xs text-text-secondary">{request.prompt}</p>
+      <p class="text-[12px] text-fg-muted leading-relaxed">{request.prompt}</p>
     {/if}
     <div class="flex flex-wrap gap-2">
       {#each request.options as option (option.id)}
@@ -83,27 +84,28 @@
           aria-label="Select design option {option.title}"
           disabled={submitting}
           onclick={() => handleSelect(option.id)}
-          class="flex-1 min-w-[140px] text-left rounded-md border px-3 py-2 transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 disabled:cursor-not-allowed
+          class="flex-1 min-w-[140px] text-left rounded-[var(--radius-control)] border px-3 py-2 transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed
             {isSelected
-              ? 'border-accent bg-accent/10 text-text-primary'
-              : 'border-border bg-surface-0 text-text-secondary hover:bg-surface-2 hover:text-text-primary'}"
+              ? 'border-accent/70 bg-accent/10 text-fg'
+              : 'border-border-subtle bg-card/30 text-fg-muted hover:bg-surface-2/30 hover:text-fg'}"
         >
-          <div class="text-xs font-semibold truncate">{option.title}</div>
+          <div class="text-[12px] font-semibold truncate">{option.title}</div>
           {#if option.description}
-            <div class="text-[11px] text-text-secondary/80 mt-0.5 line-clamp-2">{option.description}</div>
+            <div class="text-[11px] text-fg-muted/80 mt-0.5 line-clamp-2">{option.description}</div>
           {/if}
         </button>
       {/each}
     </div>
     <div class="flex justify-end">
-      <button
-        type="button"
+      <Button
+        variant="primary"
+        size="sm"
         onclick={handleConfirm}
-        disabled={submitting || !selectedOptionId}
-        class="rounded-md bg-accent text-surface-0 text-xs font-semibold px-3 py-1.5 shadow-[0_8px_20px_-16px_var(--accent)] hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+        disabled={!selectedOptionId}
+        loading={submitting}
       >
-        {submitting ? 'Choosing...' : 'Choose this option'}
-      </button>
+        {#snippet children()}{submitting ? 'Choosing…' : 'Choose this option'}{/snippet}
+      </Button>
     </div>
   </div>
 {/if}

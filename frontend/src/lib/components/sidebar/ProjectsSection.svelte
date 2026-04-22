@@ -4,11 +4,13 @@
   // the list only sees projects that match the current query (with their
   // matching threads).
 
+  import { onDestroy } from 'svelte';
   import type { Thread } from '../../types/models';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { getProjects } from '../../stores/projects.svelte';
   import {
     expandProject,
+    collapseProject,
     getSortDirection,
     toggleSortDirection,
   } from '../../stores/sidebar.svelte';
@@ -20,7 +22,11 @@
     getProjectDraft,
     setProjectDraft,
   } from '../../stores/draftThreads.svelte';
+  import ArrowDownUp from 'lucide-svelte/icons/arrow-down-up';
+  import Plus from 'lucide-svelte/icons/plus';
   import IconButton from '../primitives/IconButton.svelte';
+  import Icon from '../primitives/Icon.svelte';
+  import MicroLabel from '../primitives/MicroLabel.svelte';
   import ProjectList from './ProjectList.svelte';
   import AddProjectModal from './AddProjectModal.svelte';
 
@@ -80,11 +86,32 @@
 
   // When a search is active, auto-expand any project whose threads
   // matched so results are visible without a manual chevron click.
+  // The projects we auto-expanded on the previous render get tracked
+  // so we can collapse them again when the search clears — otherwise
+  // clearing the query left every matched project expanded, which
+  // isn't what the user asked for.
+  let searchAutoExpanded = new Set<string>();
   $effect(() => {
-    if (!query) return;
-    for (const [projectId, threads] of threadsByProject.entries()) {
-      if (threads.length > 0) expandProject(projectId);
+    if (!query) {
+      // Search cleared — undo anything we expanded for this session.
+      for (const id of searchAutoExpanded) collapseProject(id);
+      searchAutoExpanded = new Set<string>();
+      return;
     }
+    const next = new Set<string>();
+    for (const [projectId, threads] of threadsByProject.entries()) {
+      if (threads.length === 0) continue;
+      expandProject(projectId);
+      next.add(projectId);
+    }
+    // Collapse projects we previously auto-expanded that no longer
+    // match the refined query (user typed more characters, matches
+    // shrank). Leave ones the user had expanded manually before the
+    // search alone — we only touch ids we own.
+    for (const id of searchAutoExpanded) {
+      if (!next.has(id)) collapseProject(id);
+    }
+    searchAutoExpanded = next;
   });
 
   async function handleNewThread(projectId: string): Promise<void> {
@@ -123,14 +150,24 @@
     addProjectOpen = false;
   }
 
+  // Flash-clear timer — tracked so a quick unmount (or a back-to-back
+  // flash) doesn't leave a stale timer firing against a disposed
+  // component and writing to $state in an orphaned reactivity scope.
+  let flashTimer: ReturnType<typeof setTimeout> | null = null;
   function flashProject(id: string): void {
     expandProject(id);
     flashProjectId = id;
+    if (flashTimer) clearTimeout(flashTimer);
     // 1.2s feels substantial but not distracting.
-    setTimeout(() => {
+    flashTimer = setTimeout(() => {
       if (flashProjectId === id) flashProjectId = null;
+      flashTimer = null;
     }, 1200);
   }
+
+  onDestroy(() => {
+    if (flashTimer) clearTimeout(flashTimer);
+  });
 </script>
 
 <section
@@ -138,35 +175,21 @@
   aria-label="Projects"
   data-testid="sidebar-projects-section"
 >
-  <header class="flex items-center gap-1 px-3 py-2">
-    <h2
-      class="flex-1 text-[11px] font-semibold uppercase tracking-[0.22em] text-text-secondary/70 select-none"
-    >
-      Projects
-    </h2>
+  <header class="flex items-center gap-1 px-3 pt-2 pb-1.5">
+    <MicroLabel as="h2" class="flex-1 select-none">Projects</MicroLabel>
     <IconButton
       label={`Sort ${getSortDirection() === 'asc' ? 'descending' : 'ascending'}`}
       size="sm"
       onClick={toggleSortDirection}
     >
       {#snippet children()}
-        <svg
-          class="h-3.5 w-3.5"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="2"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-          aria-hidden="true"
+        <span
           data-testid="sidebar-sort-icon"
           data-direction={getSortDirection()}
+          class="flex items-center"
         >
-          <path d="m3 16 4 4 4-4" />
-          <path d="M7 20V4" />
-          <path d="m21 8-4-4-4 4" />
-          <path d="M17 4v16" />
-        </svg>
+          <Icon icon={ArrowDownUp} size={13} strokeWidth={2} class="opacity-80" />
+        </span>
       {/snippet}
     </IconButton>
     <IconButton
@@ -175,20 +198,9 @@
       onClick={handleAddClick}
     >
       {#snippet children()}
-        <svg
-          class="h-3.5 w-3.5"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="2.2"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-          aria-hidden="true"
-          data-testid="sidebar-add-project-icon"
-        >
-          <path d="M12 5v14" />
-          <path d="M5 12h14" />
-        </svg>
+        <span data-testid="sidebar-add-project-icon" class="flex items-center">
+          <Icon icon={Plus} size={14} strokeWidth={2.2} class="opacity-80" />
+        </span>
       {/snippet}
     </IconButton>
   </header>

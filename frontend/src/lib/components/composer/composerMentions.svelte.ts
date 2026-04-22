@@ -13,6 +13,7 @@
 
 import { GetThreadSlashCommands, SearchWorkspaceFiles } from '../../stores/bindings';
 import { addToast } from '../../stores/toast.svelte';
+import { errString } from '../../utils/errors';
 import type { WorkspaceFile, WorkspaceFileSearchResult } from '../../types/workspaceFile';
 import { applyMention, detectMentionTrigger, type MentionTrigger } from './mentionHelpers';
 import { applySlashCommand, detectSlashTrigger, type SlashTrigger } from './slashHelpers';
@@ -99,7 +100,7 @@ export function createComposerMentions(opts: ComposerMentionsOptions): ComposerM
       if (generation !== mentionSearchGeneration) return;
       console.error('SearchWorkspaceFiles failed:', err);
       mentionResults = [];
-      addToast('warning', `Workspace search failed: ${err}`);
+      addToast('warning', `Workspace search failed: ${errString(err)}`);
     } finally {
       if (generation === mentionSearchGeneration) {
         mentionLoading = false;

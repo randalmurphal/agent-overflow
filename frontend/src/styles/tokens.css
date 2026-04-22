@@ -1,0 +1,55 @@
+/*
+ * Design tokens. Imported before `@theme` expansion in app.css so the
+ * values here become the source of truth for the Tailwind v4 utility
+ * set plus any raw CSS that reads var(--*).
+ *
+ * Scales are additive — we do NOT override Tailwind's built-in
+ * `--radius-md` / `--spacing-*` tokens so existing utility classes keep
+ * working. New tokens introduce named roles (card/composer/hero) that
+ * compose with those defaults rather than replacing them.
+ */
+
+:root {
+  /* Typography scale. Body reads at 13px (--text-sm) — denser than the
+     browser default but legible at desktop viewing distance, and lines
+     up with the message column rhythm. */
+  --text-micro: 0.6875rem;   /* 11px — uppercase micro-labels */
+  --text-xs: 0.75rem;        /* 12px — tool row previews, badges */
+  --text-sm: 0.8125rem;      /* 13px — body, markdown, composer */
+  --text-base: 0.875rem;     /* 14px — input fields, menu rows */
+  --text-lg: 1rem;           /* 16px — section titles */
+
+  /* Radius scale. Named by role so usage reads semantically at call
+     sites and so we can tune the scale once without chasing raw pixel
+     values. */
+  --radius-field: 6px;       /* small chips, kbd pills */
+  --radius-control: 10px;    /* menus, tool-call rows, buttons */
+  --radius-card: 16px;       /* modals, content cards */
+  --radius-composer: 20px;   /* composer card, large sheets */
+
+  /* Shadow scale. All shadows use color-mix so they adapt to the
+     color-scheme rather than stamping a hard rgba value. Three roles
+     only: flush sheet, floating menu, modal. Raw `shadow-[...]` usages
+     should be migrated over time. */
+  --shadow-sheet: 0 1px 2px color-mix(in oklab, black 20%, transparent);
+  --shadow-menu: 0 8px 24px -12px color-mix(in oklab, black 40%, transparent);
+  --shadow-modal: 0 40px 80px -30px color-mix(in oklab, black 60%, transparent);
+
+  /* Foreground opacity hierarchy. Four levels mean "this is the focal
+     text," "this is supporting," "this is de-emphasized," "this is
+     almost invisible until you look." Replaces the binary
+     text-primary/text-secondary split. */
+  --fg-muted: color-mix(in oklab, var(--text-primary) 80%, transparent);
+  --fg-subtle: color-mix(in oklab, var(--text-primary) 55%, transparent);
+  --fg-hint: color-mix(in oklab, var(--text-primary) 30%, transparent);
+
+  /* Border softer variant. Used on ambient surfaces (tool-call rows,
+     thin card chrome, sidebar dividers) where the full --border is too
+     loud. */
+  --border-subtle: color-mix(in oklab, var(--border) 55%, transparent);
+
+  /* Semantic surface alias. Tool-call rows and ambient cards reference
+     this at low opacities (bg-card/25 etc.) so the ground color is one
+     named thing instead of surface-1 everywhere. */
+  --card: var(--surface-1);
+}

@@ -16,10 +16,12 @@
   import { decodeTerminalOutput } from '../../types/terminal';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { addToast } from '../../stores/toast.svelte';
+  import { errString } from '../../utils/errors';
   import {
     createThreadTerminalState,
     type ThreadTerminalStateHandle,
   } from './terminalStore.svelte';
+  import Drawer from '../primitives/Drawer.svelte';
   import TerminalTabStrip from './TerminalTabStrip.svelte';
   import TerminalBody from './TerminalBody.svelte';
 
@@ -45,9 +47,12 @@
   // thread ID in the parent, so switching threads remounts the drawer.
   const handle: ThreadTerminalStateHandle = createThreadTerminalState();
 
-  let dragging = false;
-  let dragStartY = 0;
-  let dragStartHeight = 0;
+  // Drawer primitive owns the pointer-capture resize math; we just
+  // push new heights into the persisted handle so remounts read back
+  // the user's preferred size.
+  function handleResize(size: number): void {
+    handle.setDrawerHeight(size);
+  }
 
   async function openTerminal() {
     if (!pane.thread) return;
@@ -61,7 +66,7 @@
       }
     } catch (err) {
       console.error('terminal: OpenTerminal failed', err);
-      addToast('error', `Could not open terminal: ${err}`);
+      addToast('error', `Could not open terminal: ${errString(err)}`);
     }
   }
 
@@ -120,62 +125,38 @@
     cancelOutput?.();
     cancelExit?.();
   });
-
-  function startDrag(e: PointerEvent) {
-    dragging = true;
-    dragStartY = e.clientY;
-    dragStartHeight = handle.drawerHeight;
-    (e.target as HTMLElement).setPointerCapture(e.pointerId);
-  }
-
-  function onDrag(e: PointerEvent) {
-    if (!dragging) return;
-    const delta = dragStartY - e.clientY;
-    handle.setDrawerHeight(dragStartHeight + delta);
-  }
-
-  function endDrag(e: PointerEvent) {
-    if (!dragging) return;
-    dragging = false;
-    (e.target as HTMLElement).releasePointerCapture(e.pointerId);
-  }
 </script>
 
-<div
-  class="flex flex-col border-t border-border bg-surface-0 shrink-0"
-  style={`height: ${handle.drawerHeight}px`}
-  data-testid="terminal-drawer"
->
-  <div
-    class="h-1.5 cursor-row-resize bg-surface-1 hover:bg-accent/30"
-    data-testid="terminal-drawer-resize"
-    role="separator"
-    aria-orientation="horizontal"
-    onpointerdown={startDrag}
-    onpointermove={onDrag}
-    onpointerup={endDrag}
-    onpointercancel={endDrag}
-  ></div>
-
-  <TerminalTabStrip
-    {handle}
-    onOpen={openTerminal}
-    onClose={closeTerminal}
-    onSelect={selectTerminal}
-    onCollapse={collapseDrawer}
-  />
-
-  {#if handle.activeTerminalID}
-    {#key handle.activeTerminalID}
-      <TerminalBody
+<div data-testid="terminal-drawer">
+  <Drawer
+    position="bottom"
+    size={handle.drawerHeight}
+    minSize={120}
+    resizable={true}
+    onResize={handleResize}
+  >
+    {#snippet children()}
+      <TerminalTabStrip
         {handle}
-        terminalID={handle.activeTerminalID}
-        onSendToComposer={onSendToComposer}
+        onOpen={openTerminal}
+        onClose={closeTerminal}
+        onSelect={selectTerminal}
+        onCollapse={collapseDrawer}
       />
-    {/key}
-  {:else}
-    <div class="flex-1 min-h-0 flex items-center justify-center text-text-secondary text-sm">
-      No active terminal.
-    </div>
-  {/if}
+
+      {#if handle.activeTerminalID}
+        {#key handle.activeTerminalID}
+          <TerminalBody
+            {handle}
+            terminalID={handle.activeTerminalID}
+            onSendToComposer={onSendToComposer}
+          />
+        {/key}
+      {:else}
+        <div class="flex-1 min-h-0 flex items-center justify-center text-fg-muted text-sm">
+          No active terminal.
+        </div>
+      {/if}
+    {/snippet}
+  </Drawer>
 </div>

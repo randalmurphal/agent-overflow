@@ -238,23 +238,29 @@ describe('<UnifiedThreadPicker> — keyboard', () => {
       makeThread({ id: 'c', title: 'Charlie' }),
     ]);
     const pane = makePane();
-    const { getByTestId } = render(UnifiedThreadPicker, {
+    const { getByTestId, container } = render(UnifiedThreadPicker, {
       open: true,
       pane,
       onClose: vi.fn(),
     });
-    const backdrop = getByTestId('thread-picker-backdrop');
+    // Arrow / Enter are now caught at the dialog body level (the
+    // `thread-picker` div) so the search <input> keeps receiving
+    // alphanumeric keystrokes it cares about. The backdrop still owns
+    // Escape via Modal.
+    const body = getByTestId('thread-picker');
     expect(getByTestId('thread-picker-hit-a').getAttribute('aria-current')).toBe('true');
-    await fireEvent.keyDown(backdrop, { key: 'ArrowDown' });
+    await fireEvent.keyDown(body, { key: 'ArrowDown' });
     expect(getByTestId('thread-picker-hit-b').getAttribute('aria-current')).toBe('true');
-    await fireEvent.keyDown(backdrop, { key: 'ArrowDown' });
+    await fireEvent.keyDown(body, { key: 'ArrowDown' });
     expect(getByTestId('thread-picker-hit-c').getAttribute('aria-current')).toBe('true');
     // Wrap forward.
-    await fireEvent.keyDown(backdrop, { key: 'ArrowDown' });
+    await fireEvent.keyDown(body, { key: 'ArrowDown' });
     expect(getByTestId('thread-picker-hit-a').getAttribute('aria-current')).toBe('true');
     // Wrap backward.
-    await fireEvent.keyDown(backdrop, { key: 'ArrowUp' });
+    await fireEvent.keyDown(body, { key: 'ArrowUp' });
     expect(getByTestId('thread-picker-hit-c').getAttribute('aria-current')).toBe('true');
+    // Backdrop is still the place Escape lands.
+    expect(container.querySelector('[data-modal-backdrop]')).not.toBeNull();
   });
 
   it('Enter switches to the highlighted thread and calls onClose', async () => {
@@ -265,9 +271,9 @@ describe('<UnifiedThreadPicker> — keyboard', () => {
     const onClose = vi.fn();
     const pane = makePane();
     const { getByTestId } = render(UnifiedThreadPicker, { open: true, pane, onClose });
-    const backdrop = getByTestId('thread-picker-backdrop');
-    await fireEvent.keyDown(backdrop, { key: 'ArrowDown' });
-    await fireEvent.keyDown(backdrop, { key: 'Enter' });
+    const body = getByTestId('thread-picker');
+    await fireEvent.keyDown(body, { key: 'ArrowDown' });
+    await fireEvent.keyDown(body, { key: 'Enter' });
     await waitFor(() => expect(onClose).toHaveBeenCalled());
     expect(pane.threadId).toBe('b');
   });
@@ -276,8 +282,9 @@ describe('<UnifiedThreadPicker> — keyboard', () => {
     await seedThreads([makeThread({ id: 'a', title: 'Alpha' })]);
     const onClose = vi.fn();
     const pane = makePane();
-    const { getByTestId } = render(UnifiedThreadPicker, { open: true, pane, onClose });
-    await fireEvent.keyDown(getByTestId('thread-picker-backdrop'), { key: 'Escape' });
+    const { container } = render(UnifiedThreadPicker, { open: true, pane, onClose });
+    const backdrop = container.querySelector('[data-modal-backdrop]')!;
+    await fireEvent.keyDown(backdrop, { key: 'Escape' });
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 });
@@ -299,10 +306,13 @@ describe('<UnifiedThreadPicker> — interactions', () => {
     await seedThreads([makeThread({ id: 'a', title: 'Alpha' })]);
     const onClose = vi.fn();
     const pane = makePane();
-    const { getByTestId } = render(UnifiedThreadPicker, { open: true, pane, onClose });
+    const { getByTestId, container } = render(UnifiedThreadPicker, { open: true, pane, onClose });
+    // Clicking the dialog body should not dismiss — Modal only closes
+    // when the click originates on the backdrop itself.
     await fireEvent.click(getByTestId('thread-picker'));
     expect(onClose).not.toHaveBeenCalled();
-    await fireEvent.click(getByTestId('thread-picker-backdrop'));
+    const backdrop = container.querySelector('[data-modal-backdrop]') as HTMLElement;
+    await fireEvent.click(backdrop);
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 });

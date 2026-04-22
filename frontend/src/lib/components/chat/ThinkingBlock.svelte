@@ -1,5 +1,7 @@
 <script lang="ts">
   import { slide } from 'svelte/transition';
+  import ChevronRight from 'lucide-svelte/icons/chevron-right';
+  import Icon from '../primitives/Icon.svelte';
   import type { Item } from '../../types/models';
   import { createPayloadExpansion, formatPayloadSize } from './payloadExpansion.svelte';
 
@@ -18,34 +20,40 @@
   });
 </script>
 
-<div class="mb-2 bg-surface-1 rounded border border-border overflow-hidden">
+<div class="mb-1.5 rounded-[var(--radius-control)] border border-border-subtle bg-card/20 overflow-hidden">
   <button
-    class="w-full px-3 py-2 flex items-center gap-2 text-left cursor-pointer hover:bg-surface-2/40"
+    class="w-full px-2.5 py-1.5 flex items-center gap-2 text-left cursor-pointer hover:bg-surface-2/20 transition-colors"
     onclick={() => expansion.toggle()}
     aria-expanded={expansion.expanded}
     aria-controls="thinking-{item.id}"
     aria-label="Toggle thinking block"
   >
-    <span class="text-xs text-text-secondary select-none" aria-hidden="true">{expansion.expanded ? '▼' : '▶'}</span>
-    <span class="text-xs text-text-secondary font-medium">Thinking</span>
+    <span
+      class="flex size-3 shrink-0 items-center justify-center text-fg-subtle select-none transition-transform duration-150"
+      class:rotate-90={expansion.expanded}
+      aria-hidden="true"
+    >
+      <Icon icon={ChevronRight} size={12} strokeWidth={2} class="opacity-70" />
+    </span>
+    <span class="text-[11px] text-fg-subtle font-medium uppercase tracking-[0.04em]">Thinking</span>
     {#if !expansion.expanded}
-      <span class="text-xs text-text-secondary/60 truncate flex-1 italic">{preview}</span>
+      <span class="text-[12px] text-fg-muted/70 truncate flex-1 italic">{preview}</span>
     {/if}
   </button>
 
   {#if expansion.expanded}
     <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-    <div id="thinking-{item.id}" transition:slide={{ duration: 150 }} class="border-t border-border px-3 py-2 max-h-80 overflow-y-auto" tabindex="0" role="region" aria-label="Thinking content">
+    <div id="thinking-{item.id}" transition:slide={{ duration: 150 }} class="border-t border-border-subtle px-3 py-2 max-h-80 overflow-y-auto bg-surface-0/50" tabindex="0" role="region" aria-label="Thinking content">
       {#if expansion.loading}
-        <p class="text-xs text-text-secondary animate-pulse" role="status" aria-live="polite">Loading thinking content...</p>
+        <p class="text-[11px] text-fg-subtle animate-pulse" role="status" aria-live="polite">Loading thinking content...</p>
       {:else if expansion.error}
-        <p class="text-xs text-error" role="alert">Failed to load: {expansion.error}</p>
+        <p class="text-[11px] text-error" role="alert">Failed to load: {expansion.error}</p>
       {:else}
-        <pre class="ansi-body text-xs text-text-secondary whitespace-pre-wrap font-mono leading-relaxed italic">{@html expansion.displayHtml ?? item.highlightedContent}</pre>
+        <pre class="ansi-body text-[11px] text-fg-muted whitespace-pre-wrap leading-relaxed italic">{@html expansion.displayHtml ?? item.highlightedContent}</pre>
         {#if expansion.hasMore}
           <button
             type="button"
-            class="mt-2 text-xs text-accent hover:underline cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 rounded"
+            class="mt-2 text-[11px] text-accent hover:underline cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 rounded"
             onclick={() => expansion.showFull()}
             data-testid="thinking-show-full"
           >

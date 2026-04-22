@@ -23,10 +23,15 @@
   import { wailsEventOn } from '../../../stores/events';
   import { replaceThread } from '../../../stores/threads.svelte';
   import { addToast } from '../../../stores/toast.svelte';
+  import { errString } from '../../../utils/errors';
+  import ChevronDown from 'lucide-svelte/icons/chevron-down';
   import Popover from '../../primitives/Popover.svelte';
   import Menu from '../../primitives/Menu.svelte';
   import MenuDivider from '../../primitives/MenuDivider.svelte';
   import MenuSubmenuItem from '../../primitives/MenuSubmenuItem.svelte';
+  import Icon from '../../primitives/Icon.svelte';
+  import ClaudeIcon from '../../primitives/brand/ClaudeIcon.svelte';
+  import OpenAIIcon from '../../primitives/brand/OpenAIIcon.svelte';
   import ProviderModelsSubmenu from './ProviderModelsSubmenu.svelte';
   import DiscussionsSubmenu from './DiscussionsSubmenu.svelte';
 
@@ -123,7 +128,7 @@
       addToast('info', `Switched to ${updated.model}`);
     } catch (err) {
       console.error('model/provider update failed:', err);
-      addToast('error', `Failed to switch model: ${err}`);
+      addToast('error', `Failed to switch model: ${errString(err)}`);
     } finally {
       applying = false;
       closeMenu();
@@ -132,8 +137,12 @@
 
   // Displayed label: "Claude — claude-opus-4-5 ▾". Keeping both the
   // provider and the model on the button means a user can read the
-  // active config at a glance without opening the menu.
-  let providerLabel = $derived(pane.thread?.provider === 'codex' ? 'Codex' : 'Claude');
+  // active config at a glance without opening the menu. The brand
+  // glyph (Anthropic's Claude mark / OpenAI rosette) reinforces the
+  // provider at a glance — lucide doesn't ship these, so we inline
+  // them as dedicated Svelte components under primitives/brand/.
+  let isCodex = $derived(pane.thread?.provider === 'codex');
+  let providerLabel = $derived(isCodex ? 'Codex' : 'Claude');
   let modelLabel = $derived(pane.thread?.model ?? 'No model');
 </script>
 
@@ -144,30 +153,31 @@
   disabled={!pane.thread || applying}
   aria-haspopup="menu"
   aria-expanded={open}
+  data-provider={pane.thread?.provider ?? ''}
   data-testid="composer-model-menu-trigger"
   class={[
-    'inline-flex items-center gap-1.5 rounded-md border border-border',
-    'px-2 py-1 text-xs text-text-secondary',
+    'inline-flex items-center gap-1.5 rounded-[var(--radius-field)]',
+    'px-1.5 py-1 text-[11px] text-fg-muted',
     'transition-colors cursor-pointer',
-    'hover:border-text-secondary hover:text-text-primary',
-    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50',
+    'hover:text-fg hover:bg-surface-2/30',
+    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40',
     'disabled:opacity-60 disabled:cursor-not-allowed',
   ].join(' ')}
 >
-  <span class="font-medium text-text-primary">{providerLabel}</span>
+  {#if isCodex}
+    <!-- OpenAI/Codex picks up the trigger's muted foreground so the
+         glyph + label read as one piece; t3-code uses the same pattern
+         (see apps/web/src/components/chat/ProviderModelPicker.tsx
+         providerIconClassName). -->
+    <OpenAIIcon size={13} class="opacity-95" />
+  {:else}
+    <!-- Claude is painted in Anthropic's signature coral (#d97757),
+         again matching t3-code's providerIconClassName. -->
+    <ClaudeIcon size={13} class="text-[#d97757] opacity-95" />
+  {/if}
+  <span class="font-medium text-fg">{providerLabel}</span>
   <span class="truncate max-w-[200px]">{modelLabel}</span>
-  <svg
-    viewBox="0 0 24 24"
-    class="h-3 w-3"
-    fill="none"
-    stroke="currentColor"
-    stroke-width="2"
-    stroke-linecap="round"
-    stroke-linejoin="round"
-    aria-hidden="true"
-  >
-    <path d="M6 9l6 6 6-6" />
-  </svg>
+  <Icon icon={ChevronDown} size={12} strokeWidth={2} class="opacity-60" />
 </button>
 
 <Popover
@@ -206,7 +216,7 @@
 
     <MenuSubmenuItem label="Discussions">
       {#snippet children()}
-        <DiscussionsSubmenu {pane} />
+        <DiscussionsSubmenu {pane} onSelect={closeMenu} />
       {/snippet}
     </MenuSubmenuItem>
   </Menu>

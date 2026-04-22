@@ -1,9 +1,10 @@
 <script lang="ts">
-  import { fade, scale } from 'svelte/transition';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { GetPayloadData, HighlightMarkdown, WriteThreadWorkspaceFile } from '../../stores/bindings';
   import { addToast } from '../../stores/toast.svelte';
   import { copyToClipboard } from '../../utils/clipboard';
+  import Modal from '../primitives/Modal.svelte';
+  import Button from '../primitives/Button.svelte';
   import type { ProposedPlanMeta } from '../../types/models';
   import {
     buildProposedPlanMarkdownFilename,
@@ -22,9 +23,6 @@
   let saving = $state(false);
   let copied = $state(false);
   let copyTimer: ReturnType<typeof setTimeout> | undefined;
-  let dialogEl: HTMLDivElement | undefined = $state(undefined);
-  let previousFocus: Element | null = null;
-  const dialogId = crypto.randomUUID().slice(0, 8);
 
   const title = $derived(meta.title || 'Proposed plan');
   const canCollapse = $derived(meta.charCount > 900 || meta.lineCount > 20);
@@ -145,54 +143,16 @@
   }
 
   function closeSaveDialog() {
-    if (previousFocus instanceof HTMLElement) {
-      previousFocus.focus();
-    }
-    previousFocus = null;
+    // Don't close mid-save — the RPC call is still in flight and the
+    // wizard state machine expects `saveDialogOpen` to stay true until
+    // the write resolves.
+    if (saving) return;
     saveDialogOpen = false;
-  }
-
-  function handleDialogBackdropClick(e: MouseEvent) {
-    if (e.target === e.currentTarget && !saving) {
-      closeSaveDialog();
-    }
-  }
-
-  function handleDialogKeydown(e: KeyboardEvent) {
-    if (e.key === 'Escape' && !saving) {
-      e.preventDefault();
-      closeSaveDialog();
-      return;
-    }
-    if (e.key === 'Tab' && dialogEl) {
-      const focusable = dialogEl.querySelectorAll<HTMLElement>(
-        'input:not([disabled]), button:not([disabled]), [tabindex]:not([tabindex="-1"])',
-      );
-      if (focusable.length === 0) return;
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      if (e.shiftKey && document.activeElement === first) {
-        e.preventDefault();
-        last.focus();
-      } else if (!e.shiftKey && document.activeElement === last) {
-        e.preventDefault();
-        first.focus();
-      }
-    }
   }
 
   $effect(() => {
     if (!canCollapse && planMarkdown === null) {
       void ensurePlanMarkdown();
-    }
-  });
-
-  $effect(() => {
-    if (saveDialogOpen && dialogEl) {
-      previousFocus = document.activeElement;
-      const input = dialogEl.querySelector<HTMLInputElement>('input');
-      input?.focus();
-      input?.select();
     }
   });
 </script>
@@ -247,57 +207,46 @@
   </div>
 </div>
 
-{#if saveDialogOpen}
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div
-    transition:fade={{ duration: 150 }}
-    class="fixed inset-0 z-[60] flex items-center justify-center bg-overlay backdrop-blur-sm"
-    onclick={handleDialogBackdropClick}
-    onkeydown={handleDialogKeydown}
-  >
-    <div
-      bind:this={dialogEl}
-      transition:scale={{ start: 0.95, duration: 150 }}
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="plan-save-title-{dialogId}"
-      aria-describedby="plan-save-desc-{dialogId}"
-      class="bg-surface-1 border border-border rounded-lg shadow-xl max-w-lg w-full mx-4 p-5"
+<Modal
+  open={saveDialogOpen}
+  title="Save plan to workspace"
+  onClose={closeSaveDialog}
+  width="lg"
+  padding="comfortable"
+>
+  {#snippet children()}
+    <p class="text-[13px] text-fg-muted mb-4 leading-relaxed">
+      Enter a path relative to <code class="font-mono text-[12px] bg-surface-2/50 px-1 rounded">{pane.thread?.workspacePath ?? 'the workspace'}</code>.
+    </p>
+
+    <label class="block">
+      <span class="mb-1 block text-[12px] text-fg-muted font-medium">Workspace path</span>
+      <input
+        data-autofocus
+        bind:value={savePath}
+        disabled={saving}
+        spellcheck={false}
+        placeholder="plans/my-plan.md"
+        class="w-full text-[13px] rounded-[var(--radius-control)] border border-border-subtle bg-surface-0 px-3 py-1.5 text-fg placeholder:text-fg-hint focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/40 transition-colors"
+      />
+    </label>
+  {/snippet}
+  {#snippet footer()}
+    <Button
+      variant="secondary"
+      size="sm"
+      onclick={closeSaveDialog}
+      disabled={saving}
     >
-      <h2 id="plan-save-title-{dialogId}" class="text-base font-semibold text-text-primary mb-1.5">
-        Save plan to workspace
-      </h2>
-      <p id="plan-save-desc-{dialogId}" class="text-sm text-text-secondary mb-4">
-        Enter a path relative to <code>{pane.thread?.workspacePath ?? 'the workspace'}</code>.
-      </p>
-
-      <label class="block">
-        <span class="mb-1 block text-xs text-text-secondary">Workspace path</span>
-        <input
-          bind:value={savePath}
-          disabled={saving}
-          spellcheck={false}
-          placeholder="plans/my-plan.md"
-          class="w-full text-sm rounded border border-border bg-surface-0 px-3 py-2 text-text-primary placeholder:text-text-secondary/40 focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/50 transition-colors"
-        />
-      </label>
-
-      <div class="mt-5 flex justify-end gap-2">
-        <button
-          onclick={closeSaveDialog}
-          disabled={saving}
-          class="px-4 py-2 text-sm rounded-md border border-border text-text-secondary hover:text-text-primary cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
-        >
-          Cancel
-        </button>
-        <button
-          onclick={handleSave}
-          disabled={saving}
-          class="px-4 py-2 text-sm rounded-md font-medium bg-accent text-surface-0 hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
-        >
-          {saving ? 'Saving...' : 'Save'}
-        </button>
-      </div>
-    </div>
-  </div>
-{/if}
+      {#snippet children()}Cancel{/snippet}
+    </Button>
+    <Button
+      variant="primary"
+      size="sm"
+      onclick={handleSave}
+      loading={saving}
+    >
+      {#snippet children()}{saving ? 'Saving…' : 'Save'}{/snippet}
+    </Button>
+  {/snippet}
+</Modal>

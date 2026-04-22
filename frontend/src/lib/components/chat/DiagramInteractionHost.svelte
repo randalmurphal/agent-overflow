@@ -16,7 +16,7 @@
    * actions allocate one Canvas per PNG copy and release immediately.
    */
 
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
   import DiagramModal from './DiagramModal.svelte';
   import DiagramContextMenu, {
     type DiagramAction,
@@ -107,6 +107,10 @@
   // aria-live region so screen readers still get feedback. Upgrade
   // to a real toast store in one place if/when we add it.
   let announcement: string = $state('');
+  // Tracked handle so repeat announcements don't leave a second timer
+  // firing after unmount. The host is a singleton in the app shell, so
+  // the leak window is small — but still worth the five extra lines.
+  let announceTimer: ReturnType<typeof setTimeout> | null = null;
   function announce(result: CopyResult): void {
     announcement = (
       result === 'png'
@@ -118,10 +122,16 @@
             : 'Copy failed'
     );
     // Clear after a short delay so repeated announcements re-fire.
-    setTimeout(() => {
+    if (announceTimer) clearTimeout(announceTimer);
+    announceTimer = setTimeout(() => {
       announcement = '';
+      announceTimer = null;
     }, 1500);
   }
+
+  onDestroy(() => {
+    if (announceTimer) clearTimeout(announceTimer);
+  });
 
   function dismissMenu(): void {
     menu = null;

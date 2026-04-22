@@ -30,7 +30,8 @@ import type { Item } from '../types/models';
 
 export const MAX_DEPTH = 3;
 export const MAX_PREVIEW_CHARS = 320;
-export const MAX_PREVIEW_ITEMS = 24;
+// Internal cap — only referenced from within this module.
+const MAX_PREVIEW_ITEMS = 24;
 
 /**
  * A node in the timeline tree returned by `groupItemsBySubagent`.

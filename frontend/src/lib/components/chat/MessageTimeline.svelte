@@ -4,6 +4,7 @@
   import type { Item } from '../../types/models';
   import { addToast } from '../../stores/toast.svelte';
   import { groupItemsBySubagent, type TimelineNode } from '../../utils/subagentGrouping';
+  import Button from '../primitives/Button.svelte';
   import { turnSummaryIsMeaningful } from '../../utils/turnDiffSummary';
   import AssistantMessage from './AssistantMessage.svelte';
   import ChangedFilesTree from './ChangedFilesTree.svelte';
@@ -206,9 +207,10 @@
   });
 </script>
 
-<div bind:this={scrollContainer} onscroll={handleScroll} class="flex-1 overflow-y-auto px-4 py-4" role="log" aria-label="Message history">
+<div bind:this={scrollContainer} onscroll={handleScroll} class="flex-1 overflow-y-auto" role="log" aria-label="Message history">
+  <div class="mx-auto w-full max-w-3xl px-6 py-8">
   {#if pane.loading}
-    <div class="flex items-center justify-center h-full text-text-secondary text-sm" role="status" aria-live="polite">
+    <div class="flex items-center justify-center h-full text-fg-subtle text-sm" role="status" aria-live="polite">
       <span class="animate-pulse">Loading thread...</span>
     </div>
   {:else}
@@ -231,14 +233,14 @@
         {:else if item.kind === 'thinking'}
           <ThinkingBlock {item} />
         {:else if item.kind === 'error'}
-          <div class="mb-3 rounded border border-error/30 bg-error/10 px-3 py-2 text-sm text-error">
+          <div class="mb-4 rounded-[var(--radius-control)] border border-error/30 bg-error/10 px-3 py-2 text-sm text-error">
             {item.summary}
           </div>
         {:else if item.kind === 'compaction'}
-          <div class="mb-3 flex items-center gap-3 text-xs uppercase tracking-wide text-text-secondary">
-            <div class="h-px flex-1 bg-border"></div>
+          <div class="mb-4 flex items-center gap-3 text-[10px] uppercase tracking-[0.18em] text-fg-subtle">
+            <div class="h-px flex-1 bg-border-subtle"></div>
             <span>{item.summary || 'Context compacted'}</span>
-            <div class="h-px flex-1 bg-border"></div>
+            <div class="h-px flex-1 bg-border-subtle"></div>
           </div>
         {:else}
           <AssistantMessage {item} />
@@ -258,15 +260,18 @@
       <!-- Paged history control. Sits above the timeline so it's always
            in view when the user scrolls to the top. Delta-based scroll
            preservation lives in handleLoadOlder. -->
-      <div class="mb-2 flex justify-center">
-        <button
-          data-testid="load-older-messages"
-          class="rounded border border-border px-3 py-1.5 text-sm text-text-secondary hover:text-text-primary disabled:opacity-50"
-          disabled={pane.loadingOlder}
+      <div class="mb-3 flex justify-center">
+        <Button
+          variant="secondary"
+          size="xs"
           onclick={handleLoadOlder}
+          loading={pane.loadingOlder}
+          testId="load-older-messages"
         >
-          {pane.loadingOlder ? 'Loading…' : 'Load older messages'}
-        </button>
+          {#snippet children()}
+            {pane.loadingOlder ? 'Loading…' : 'Load older messages'}
+          {/snippet}
+        </Button>
       </div>
     {/if}
 
@@ -300,9 +305,10 @@
     {/each}
 
     {#if pane.items.length === 0}
-      <div class="flex items-center justify-center h-full text-text-secondary text-sm">
+      <div class="flex items-center justify-center h-full text-fg-subtle text-sm">
         No messages yet. Send a message to get started.
       </div>
     {/if}
   {/if}
+  </div>
 </div>

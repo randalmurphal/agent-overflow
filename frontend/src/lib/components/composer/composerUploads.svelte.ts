@@ -13,6 +13,7 @@
 
 import { DeleteAttachment, UploadAttachment } from '../../stores/bindings';
 import { addToast } from '../../stores/toast.svelte';
+import { errString } from '../../utils/errors';
 import type { Attachment } from '../../types/attachment';
 import {
   DEFAULT_MAX_ATTACHMENT_SIZE,
@@ -72,7 +73,7 @@ export function createComposerUploads(opts: ComposerUploadsOptions): ComposerUpl
       }
     } catch (err) {
       console.error('UploadAttachment failed:', err);
-      addToast('error', `Upload failed: ${err}`);
+      addToast('error', `Upload failed: ${errString(err)}`);
     }
   }
 
@@ -125,7 +126,7 @@ export function createComposerUploads(opts: ComposerUploadsOptions): ComposerUpl
         await DeleteAttachment(id);
       } catch (err) {
         console.error('DeleteAttachment failed:', err);
-        addToast('warning', `Failed to delete attachment: ${err}`);
+        addToast('warning', `Failed to delete attachment: ${errString(err)}`);
       }
     },
   };

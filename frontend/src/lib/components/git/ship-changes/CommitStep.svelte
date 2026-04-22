@@ -6,6 +6,7 @@
   import type { GitStatus } from '../../../types/git';
   import { GenerateCommitMessage } from '../../../stores/bindings';
   import { addToast } from '../../../stores/toast.svelte';
+  import Button from '../../primitives/Button.svelte';
 
   // Renamed the destructured prop to `ship` so `$state(...)` doesn't trip the
   // Svelte 5 compiler's store-subscription heuristic (any local binding named
@@ -129,23 +130,24 @@
   {/if}
 
   <div class="flex justify-end gap-2 pt-1">
-    <button
-      type="button"
+    <Button
+      variant="secondary"
+      size="md"
       onclick={onSkip}
       disabled={busy}
-      data-testid="ship-changes-commit-skip"
-      class="px-3 py-2 text-xs rounded-md border border-border text-text-secondary hover:text-text-primary disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+      testId="ship-changes-commit-skip"
     >
-      {nothingToCommit ? 'Next' : 'Skip commit'}
-    </button>
-    <button
-      type="button"
+      {#snippet children()}{nothingToCommit ? 'Next' : 'Skip commit'}{/snippet}
+    </Button>
+    <Button
+      variant="primary"
+      size="md"
       onclick={onCommit}
-      disabled={!ship.canCommit || busy || nothingToCommit}
-      data-testid="ship-changes-commit-submit"
-      class="px-4 py-2 text-xs rounded-md font-medium bg-accent text-surface-0 hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+      disabled={!ship.canCommit || nothingToCommit}
+      loading={busy}
+      testId="ship-changes-commit-submit"
     >
-      {busy ? 'Committing…' : 'Commit'}
-    </button>
+      {#snippet children()}{busy ? 'Committing…' : 'Commit'}{/snippet}
+    </Button>
   </div>
 </div>

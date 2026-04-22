@@ -9,6 +9,7 @@
 
   import { untrack } from 'svelte';
   import Modal from '../primitives/Modal.svelte';
+  import Button from '../primitives/Button.svelte';
   import DirectoryBrowser from './DirectoryBrowser.svelte';
   import { CreateProject } from '../../stores/bindings';
   import {
@@ -128,22 +129,23 @@
     </div>
   {/snippet}
   {#snippet footer()}
-    <button
-      type="button"
+    <Button
+      variant="secondary"
+      size="sm"
       onclick={handleCancel}
-      data-testid="add-project-cancel"
-      class="px-4 py-1.5 text-xs rounded-md border border-border text-text-secondary hover:text-text-primary hover:border-text-secondary cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+      testId="add-project-cancel"
     >
-      Cancel
-    </button>
-    <button
-      type="button"
+      {#snippet children()}Cancel{/snippet}
+    </Button>
+    <Button
+      variant="primary"
+      size="sm"
       onclick={handleAdd}
-      disabled={submitting || !pendingPath.trim()}
-      data-testid="add-project-submit"
-      class="px-4 py-1.5 text-xs rounded-md bg-accent text-surface-0 font-semibold hover:opacity-90 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+      disabled={!pendingPath.trim()}
+      loading={submitting}
+      testId="add-project-submit"
     >
-      {submitting ? 'Adding…' : 'Add'}
-    </button>
+      {#snippet children()}{submitting ? 'Adding…' : 'Add'}{/snippet}
+    </Button>
   {/snippet}
 </Modal>

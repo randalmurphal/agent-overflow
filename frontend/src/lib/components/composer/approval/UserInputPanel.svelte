@@ -1,6 +1,8 @@
 <script lang="ts">
   import type { ApprovalRequest } from '../../../types/events';
   import { ApprovalResponse } from '../../../stores/bindings';
+  import { errString } from '../../../utils/errors';
+  import Button from '../../primitives/Button.svelte';
 
   interface Props {
     approval: ApprovalRequest;
@@ -27,7 +29,7 @@
       }));
     } catch (err) {
       console.error('Failed to submit user input:', err);
-      onError(`Failed to submit input: ${err}`);
+      onError(`Failed to submit input: ${errString(err)}`);
     }
   }
 
@@ -39,7 +41,7 @@
       }));
     } catch (err) {
       console.error('Failed to cancel user input:', err);
-      onError(`Failed to respond to approval: ${err}`);
+      onError(`Failed to respond to approval: ${errString(err)}`);
     }
   }
 </script>
@@ -84,20 +86,10 @@
 {/if}
 
 <div class="flex gap-2 mt-2.5 justify-end">
-  <button
-    type="button"
-    data-testid="user-input-submit"
-    onclick={submit}
-    class="px-3 py-1 text-xs rounded bg-accent text-surface-0 font-medium hover:opacity-90 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
-  >
-    Submit
-  </button>
-  <button
-    type="button"
-    data-testid="user-input-cancel"
-    onclick={cancel}
-    class="px-3 py-1 text-xs rounded border border-error/40 text-error hover:bg-error/10 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
-  >
-    Cancel
-  </button>
+  <Button variant="primary" size="sm" onclick={submit} testId="user-input-submit">
+    {#snippet children()}Submit{/snippet}
+  </Button>
+  <Button variant="danger-outline" size="sm" onclick={cancel} testId="user-input-cancel">
+    {#snippet children()}Cancel{/snippet}
+  </Button>
 </div>

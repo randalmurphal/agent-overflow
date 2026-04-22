@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@import "./styles/tokens.css";
 @import "./styles/chroma-dark.css";
 @import "./styles/chroma-light.css";
 
@@ -9,7 +10,9 @@
   --border: oklch(0.3 0.014 285.82);
   --text-primary: oklch(0.95 0.006 285.82);
   --text-secondary: oklch(0.7 0.006 285.82);
-  --accent: oklch(0.65 0.15 250);
+  /* Cobalt-violet primary. Replaces the prior generic dev-tool blue so
+     the app reads as a chosen color, not the default Tailwind accent. */
+  --accent: oklch(0.58 0.19 276);
   --success: oklch(0.7 0.17 150);
   --error: oklch(0.63 0.2 25);
   --warning: oklch(0.75 0.15 75);
@@ -29,7 +32,7 @@ html.light {
   --border: oklch(0.86 0.014 255);
   --text-primary: oklch(0.23 0.014 255);
   --text-secondary: oklch(0.48 0.018 255);
-  --accent: oklch(0.61 0.17 247);
+  --accent: oklch(0.55 0.18 276);
   --success: oklch(0.66 0.16 155);
   --error: oklch(0.61 0.19 27);
   --warning: oklch(0.78 0.16 78);
@@ -38,6 +41,13 @@ html.light {
 }
 
 @theme {
+  /* Fonts. Geist is self-hosted via @fontsource so the desktop build
+     has no network dependency. The system fallbacks keep rendering
+     during the first paint before the woff2 is parsed. */
+  --font-sans: 'Geist Sans', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'Geist Mono', ui-monospace, SFMono-Regular, Consolas, 'Liberation Mono', Menlo, monospace;
+
+  /* Existing semantic colors. */
   --color-surface-0: var(--surface-0);
   --color-surface-1: var(--surface-1);
   --color-surface-2: var(--surface-2);
@@ -50,6 +60,22 @@ html.light {
   --color-warning: var(--warning);
   --color-provider-codex: var(--provider-codex);
   --color-overlay: var(--overlay);
+
+  /* New semantic colors — the opacity-driven hierarchy layer. `fg` is
+     the focal text, `fg-muted` is body copy, `fg-subtle` is labels,
+     `fg-hint` is timestamps. Used via Tailwind utilities
+     (text-fg-muted, bg-card, border-border-subtle). */
+  --color-fg: var(--text-primary);
+  --color-fg-muted: var(--fg-muted);
+  --color-fg-subtle: var(--fg-subtle);
+  --color-fg-hint: var(--fg-hint);
+  --color-border-subtle: var(--border-subtle);
+  --color-card: var(--card);
+
+  /* Shadow scale exposed as utilities. */
+  --shadow-sheet: var(--shadow-sheet);
+  --shadow-menu: var(--shadow-menu);
+  --shadow-modal: var(--shadow-modal);
 }
 
 html,
@@ -60,15 +86,60 @@ body,
 
 body {
   margin: 0;
-  background:
-    radial-gradient(circle at top left, color-mix(in oklab, var(--accent) 16%, transparent) 0%, transparent 34%),
-    radial-gradient(circle at bottom right, color-mix(in oklab, var(--provider-codex) 10%, transparent) 0%, transparent 28%),
-    linear-gradient(180deg, color-mix(in oklab, var(--surface-1) 72%, transparent), var(--surface-0));
+  background: var(--surface-0);
   color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-feature-settings: "ss01", "cv11";
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Atmosphere layer 1 — vertical pinstripe. A 1px/1px alternating column
+   at 2% opacity gives the UI a fabric-like ground texture that reads
+   distinctly on retina without any cost at 1×. Positioned fixed so it
+   never scrolls, pointer-events none so it never catches clicks, and
+   mix-blend-mode overlay so it paints differently over light and dark
+   surfaces without needing two gradients. */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 9998;
+  opacity: 0.018;
+  mix-blend-mode: overlay;
+  background-image: repeating-linear-gradient(
+    to right,
+    transparent 0,
+    transparent 1px,
+    #ffffff 1px,
+    #ffffff 2px
+  );
+}
+
+/* Atmosphere layer 2 — fractal noise overlay. 3.5% opacity is the same
+   value t3-code lands on; higher makes the UI look dirty, lower and it
+   disappears. Encoded inline so there is no asset fetch. */
+body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 9999;
+  opacity: 0.035;
+  mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='220' height='220'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.82' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.55 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
 }
 
 body::selection {
   background: color-mix(in oklab, var(--accent) 28%, transparent);
+}
+
+/* Global monospace override for code-bearing surfaces. The markdown
+   body rules below are kept for specificity, but this catches any
+   <pre>/<code>/.ansi-body that is NOT inside .markdown-body. */
+pre, code, kbd, samp, .ansi-body {
+  font-family: var(--font-mono);
 }
 
 ::-webkit-scrollbar {
@@ -95,8 +166,8 @@ body::selection {
  * inside bubbles of any color works without override.
  */
 .markdown-body {
-  font-size: 0.875rem;
-  line-height: 1.55;
+  font-size: var(--text-sm);
+  line-height: 1.65;
 }
 .markdown-body > :first-child { margin-top: 0; }
 .markdown-body > :last-child { margin-bottom: 0; }
@@ -128,18 +199,18 @@ body::selection {
 .markdown-body a { color: var(--accent); }
 .markdown-body a:hover { text-decoration: underline; }
 .markdown-body code {
-  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 0.9em;
   background: var(--surface-0);
   padding: 0.05rem 0.3rem;
   border-radius: 0.25rem;
 }
 .markdown-body pre {
-  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 0.8125rem;
   background: var(--surface-0);
-  border: 1px solid var(--border);
-  border-radius: 0.375rem;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-field);
   padding: 0.75rem;
   margin: 0.5rem 0;
   overflow-x: auto;
@@ -202,7 +273,7 @@ body::selection {
    KaTeX renders they keep these class names so we can style the
    container + pre-render fallback. */
 .markdown-body .math-inline {
-  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
+  font-family: var(--font-mono);
 }
 .markdown-body .math-display {
   display: block;
@@ -222,7 +293,7 @@ body::selection {
    the <pre> styling; post-render we remove that padding/background so
    the SVG sits clean on the message background. */
 .markdown-body pre.mermaid {
-  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 0.8125rem;
 }
 .markdown-body pre.mermaid.mermaid-rendered {
@@ -246,7 +317,7 @@ body::selection {
 }
 .markdown-body .rendered-error {
   color: var(--error);
-  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 0.875em;
   padding: 0.25rem 0 0;
 }
@@ -372,3 +443,28 @@ body::selection {
 .ansi-body .term-fg3 { font-style: italic; }         /* italic */
 .ansi-body .term-fg4 { text-decoration: underline; } /* underline */
 .ansi-body .term-fg9 { text-decoration: line-through; } /* strike */
+
+/*
+ * Keyframes. `pulse-subtle` is a slower, less-jarring replacement for
+ * Tailwind's built-in animate-pulse — used on ChatWorkingIndicator so
+ * the "agent responding" strip doesn't strobe.
+ */
+@keyframes pulse-subtle {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+
+/*
+ * Reduced-motion reset. One place to silence every transition /
+ * animation so individual components don't have to care. Scroll
+ * behavior is also snapped so `scroll-smooth` usages don't fight a
+ * user's accessibility preference.
+ */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}

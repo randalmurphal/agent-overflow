@@ -204,4 +204,40 @@ describe('ThreadTerminalDrawer', () => {
       data: btoa('x'),
     })).not.toThrow();
   });
+
+  // Stage 4 refactor: the drawer chrome is now composed from the Drawer
+  // primitive so resize math / border / bg are shared with DiffPanel.
+  // These tests pin the integration so a lazy rewrite can't silently
+  // revert to the hand-rolled <aside> + pointer-capture code.
+  it('composes its chrome via the Drawer primitive (has data-drawer-position)', async () => {
+    const pane = makePane();
+    const { container } = render(ThreadTerminalDrawer, {
+      pane: pane as never,
+      manual: true,
+    });
+    await tick();
+    const drawerEl = container.querySelector('[data-drawer-position="bottom"]');
+    expect(drawerEl).not.toBeNull();
+    // The primitive owns the resize handle — not hand-rolled markup.
+    const handle = drawerEl!.querySelector('[role="separator"][aria-orientation="horizontal"]');
+    expect(handle).not.toBeNull();
+  });
+
+  it('renders the drawer height based on handle.drawerHeight', async () => {
+    const pane = makePane();
+    const { container } = render(ThreadTerminalDrawer, {
+      pane: pane as never,
+      manual: true,
+    });
+    await tick();
+    const drawerEl = container.querySelector('[data-drawer-position="bottom"]') as HTMLElement;
+    // The primitive renders height inline from the handle's current
+    // value. The exact default comes from terminalStore.svelte; we
+    // just assert that SOME non-zero px value is written so the layout
+    // math is plumbed through rather than pin the exact number (which
+    // is the store's contract to change freely).
+    expect(drawerEl.style.height).toMatch(/^\d+px$/);
+    const parsed = Number.parseInt(drawerEl.style.height, 10);
+    expect(parsed).toBeGreaterThanOrEqual(120);
+  });
 });

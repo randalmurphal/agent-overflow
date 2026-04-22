@@ -2,6 +2,7 @@
   import { slide } from 'svelte/transition';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import type { ComposerDraftStore } from '../../stores/composerDraft.svelte';
+  import Button from '../primitives/Button.svelte';
 
   interface Props {
     pane: ThreadPane;
@@ -65,34 +66,34 @@
     role="region"
     aria-label="Plan follow-up"
     data-testid="plan-followup-banner"
-    class="flex items-center gap-3 border-t border-border bg-accent/10 px-4 py-2 text-xs text-text-secondary"
+    class="mx-6 my-2 flex items-center gap-3 rounded-[var(--radius-control)] border border-border-subtle bg-accent/8 px-3 py-2 text-[12px] text-fg-muted"
   >
-    <span class="h-2 w-2 shrink-0 rounded-full bg-accent" aria-hidden="true"></span>
-    <p class="flex-1 text-text-primary">Plan ready. Implement now?</p>
-    <button
-      type="button"
+    <span class="h-1.5 w-1.5 shrink-0 rounded-full bg-accent" aria-hidden="true"></span>
+    <p class="flex-1 text-fg">Plan ready. Implement now?</p>
+    <Button
+      variant="tinted"
+      size="xs"
       onclick={handleImplement}
-      data-testid="plan-followup-implement"
-      class="rounded border border-accent/40 bg-accent/15 px-2 py-0.5 text-accent hover:bg-accent/25 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+      testId="plan-followup-implement"
     >
-      Implement
-    </button>
-    <button
-      type="button"
+      {#snippet children()}Implement{/snippet}
+    </Button>
+    <Button
+      variant="ghost"
+      size="xs"
       onclick={handleReview}
-      data-testid="plan-followup-review"
-      class="rounded border border-border px-2 py-0.5 text-text-secondary hover:text-text-primary hover:border-text-secondary cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+      testId="plan-followup-review"
     >
-      Review
-    </button>
-    <button
-      type="button"
+      {#snippet children()}Review{/snippet}
+    </Button>
+    <Button
+      variant="ghost"
+      size="xs"
       onclick={handleDismiss}
-      data-testid="plan-followup-dismiss"
-      aria-label="Dismiss plan follow-up"
-      class="rounded border border-border px-2 py-0.5 text-text-secondary hover:text-text-primary hover:border-text-secondary cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+      ariaLabel="Dismiss plan follow-up"
+      testId="plan-followup-dismiss"
     >
-      Dismiss
-    </button>
+      {#snippet children()}Dismiss{/snippet}
+    </Button>
   </div>
 {/if}

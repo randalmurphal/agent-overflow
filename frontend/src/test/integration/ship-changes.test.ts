@@ -46,18 +46,21 @@ async function mountWithThread(status: GitStatus = makeGitStatus({ hasChanges: t
 interface DrawerRendered {
   container: HTMLElement;
   getByTestId: (id: string) => HTMLElement;
+  findByRole: (role: string, opts?: { name?: string | RegExp }) => Promise<HTMLElement>;
 }
 
 async function openShipChangesDrawer(rendered: DrawerRendered) {
   // The "Ship Changes…" entry lives in the git-actions dropdown. Click the
-  // caret toggle to open the menu, then the Ship Changes item.
+  // caret toggle to open the menu, then the Ship Changes item. Post-Popover
+  // migration the dropdown renders as a portaled menu so we look up the
+  // menuitem by role rather than by its old hand-rolled testid.
   const menuTrigger = rendered.container.querySelector(
     'button[aria-label="More git actions"]',
   ) as HTMLButtonElement | null;
   expect(menuTrigger).not.toBeNull();
   await fireEvent.click(menuTrigger!);
   await flush();
-  const shipItem = rendered.getByTestId('git-actions-ship');
+  const shipItem = await rendered.findByRole('menuitem', { name: /Ship Changes/i });
   await fireEvent.click(shipItem);
   await flush(10);
 }

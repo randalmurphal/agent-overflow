@@ -67,21 +67,21 @@
   }
 </script>
 
-<div class="bg-surface-1 rounded border border-border overflow-hidden mb-2">
-  <div class="px-3 py-2 text-xs font-medium text-text-secondary border-b border-border">
+<div class="mb-1.5 rounded-[var(--radius-control)] border border-border-subtle bg-card/25 overflow-hidden">
+  <div class="px-2.5 py-1.5 text-[11px] font-medium uppercase tracking-[0.06em] text-fg-subtle border-b border-border-subtle">
     {files.length} file{files.length !== 1 ? 's' : ''} changed
   </div>
 
   {#each grouped as group (group.dir)}
     <button
-      class="w-full px-3 py-1.5 flex items-center gap-1.5 text-left cursor-pointer hover:bg-surface-2/40 border-b border-border/50"
+      class="w-full px-2.5 py-1 flex items-center gap-1.5 text-left cursor-pointer hover:bg-surface-2/25 border-b border-border-subtle/60 transition-colors"
       onclick={() => toggleDir(group.dir)}
       aria-expanded={expandedDirs.has(group.dir)}
       aria-label="Toggle directory: {group.dir}"
     >
-      <span class="text-xs text-text-secondary select-none" aria-hidden="true">{expandedDirs.has(group.dir) ? '▼' : '▶'}</span>
-      <span class="text-xs font-mono text-text-secondary truncate">{group.dir}/</span>
-      <span class="ml-auto text-xs text-text-secondary/60">{group.files.length}</span>
+      <span class="text-[11px] text-fg-subtle select-none" aria-hidden="true">{expandedDirs.has(group.dir) ? '▼' : '▶'}</span>
+      <span class="text-[11px] font-mono text-fg-muted truncate">{group.dir}/</span>
+      <span class="ml-auto text-[10px] text-fg-hint tabular-nums">{group.files.length}</span>
     </button>
 
     {#if expandedDirs.has(group.dir)}

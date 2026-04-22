@@ -32,7 +32,15 @@
         class:text-text-secondary={!isActive}
         data-testid={`terminal-tab-${tab.terminalID}`}
         onclick={() => onSelect(tab.terminalID)}
-        onkeydown={(e) => { if (e.key === 'Enter') onSelect(tab.terminalID); }}
+        onkeydown={(e) => {
+          // WAI-ARIA tab pattern activates on Enter AND Space. Previous
+          // version handled only Enter, so keyboard users couldn't
+          // activate tabs with Space.
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            onSelect(tab.terminalID);
+          }
+        }}
         role="tab"
         aria-selected={isActive}
         tabindex="0"

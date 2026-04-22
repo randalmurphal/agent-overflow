@@ -1,5 +1,6 @@
 <script lang="ts">
   import DiffViewer from './DiffViewer.svelte';
+  import Button from '../../primitives/Button.svelte';
   import type { DiffStats } from '../../../utils/diffAggregation';
 
   interface Props {
@@ -27,15 +28,16 @@
         {#if stats.deletions > 0}<span class="text-error">-{stats.deletions}</span>{/if}
       </span>
     {/if}
-    <button
-      type="button"
-      class="ml-auto rounded border border-border px-2 py-0.5 text-xs text-text-secondary hover:bg-surface-2/60 cursor-pointer"
-      data-testid="diff-cumulative-refresh"
-      aria-label="Refresh cumulative diff"
+    <Button
+      variant="secondary"
+      size="xs"
       onclick={onRefresh}
+      ariaLabel="Refresh cumulative diff"
+      testId="diff-cumulative-refresh"
+      class="ml-auto"
     >
-      Refresh
-    </button>
+      {#snippet children()}Refresh{/snippet}
+    </Button>
   </div>
   <div class="flex-1 min-h-0 overflow-auto">
     {#if loading}

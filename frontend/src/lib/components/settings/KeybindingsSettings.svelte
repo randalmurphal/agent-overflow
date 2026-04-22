@@ -13,6 +13,8 @@
     type KeybindingRule,
   } from '../../stores/keybindings.svelte';
   import { addToast } from '../../stores/toast.svelte';
+  import { errString } from '../../utils/errors';
+  import Button from '../primitives/Button.svelte';
 
   let loaded = $derived(isKeybindingsLoaded());
   let rules = $derived(getResolvedKeybindings());
@@ -63,7 +65,7 @@
       await saveKeybindings(next);
       addToast('success', `Rebound ${rule.rule.command} to ${newKey}`);
     } catch (err) {
-      addToast('error', `Failed to save keybinding: ${err}`);
+      addToast('error', `Failed to save keybinding: ${errString(err)}`);
     } finally {
       capturingFor = null;
       saving = false;
@@ -77,7 +79,7 @@
       await resetKeybindingsToDefaults();
       addToast('info', 'Keybindings reset to defaults');
     } catch (err) {
-      addToast('error', `Reset failed: ${err}`);
+      addToast('error', `Reset failed: ${errString(err)}`);
     } finally {
       saving = false;
     }
@@ -150,14 +152,9 @@
   </div>
 
   <div class="flex gap-2">
-    <button
-      type="button"
-      onclick={handleReset}
-      disabled={saving}
-      class="rounded-md border border-border/60 px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary hover:bg-surface-2/50 cursor-pointer disabled:cursor-not-allowed"
-    >
-      Reset all to defaults
-    </button>
+    <Button variant="secondary" size="sm" onclick={handleReset} disabled={saving}>
+      {#snippet children()}Reset all to defaults{/snippet}
+    </Button>
   </div>
 
 </div>

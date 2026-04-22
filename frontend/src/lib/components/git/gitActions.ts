@@ -16,6 +16,7 @@ import {
 } from '../../stores/bindings';
 import { replaceThread } from '../../stores/threads.svelte';
 import { addToast } from '../../stores/toast.svelte';
+import { errString } from '../../utils/errors';
 import type { GitActionResult, GitStatus } from '../../types/git';
 import type { Thread } from '../../types/models';
 
@@ -82,7 +83,7 @@ export async function runPushAction(ctx: GitActionCtx): Promise<void> {
     await ctx.refreshStatus();
   } catch (err) {
     console.error('Push failed:', err);
-    ctx.reportError(`Push failed: ${err}`);
+    ctx.reportError(`Push failed: ${errString(err)}`);
   }
 }
 
@@ -98,7 +99,7 @@ export async function runPullAction(ctx: GitActionCtx): Promise<void> {
     await ctx.refreshStatus();
   } catch (err) {
     console.error('Pull failed:', err);
-    ctx.reportError(`Pull failed: ${err}`);
+    ctx.reportError(`Pull failed: ${errString(err)}`);
   }
 }
 
@@ -114,7 +115,7 @@ export async function runCreatePRAction(ctx: GitActionCtx): Promise<void> {
     await ctx.refreshStatus();
   } catch (err) {
     console.error('Create PR failed:', err);
-    ctx.reportError(`Create PR failed: ${err}`);
+    ctx.reportError(`Create PR failed: ${errString(err)}`);
   }
 }
 
@@ -128,6 +129,6 @@ export async function runRemoveWorktreeAction(ctx: GitActionCtx): Promise<void> 
     await ctx.refreshStatus();
   } catch (err) {
     console.error('Remove worktree failed:', err);
-    ctx.reportError(`Remove worktree failed: ${err}`);
+    ctx.reportError(`Remove worktree failed: ${errString(err)}`);
   }
 }

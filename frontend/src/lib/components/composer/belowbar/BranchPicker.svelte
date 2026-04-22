@@ -15,6 +15,7 @@
   } from '../../../stores/bindings';
   import { replaceThread } from '../../../stores/threads.svelte';
   import { addToast } from '../../../stores/toast.svelte';
+  import { errString } from '../../../utils/errors';
   import Popover from '../../primitives/Popover.svelte';
   import Menu from '../../primitives/Menu.svelte';
   import MenuItem from '../../primitives/MenuItem.svelte';
@@ -74,7 +75,7 @@
       addToast('info', `Checked out ${name}`);
     } catch (err) {
       console.error('branch checkout failed:', err);
-      addToast('error', `Failed to checkout: ${err}`);
+      addToast('error', `Failed to checkout: ${errString(err)}`);
     } finally {
       applying = false;
       closeMenu();

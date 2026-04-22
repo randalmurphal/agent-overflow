@@ -58,7 +58,7 @@
 </script>
 
 <aside
-  class="w-[292px] shrink-0 border-r border-border/70 bg-surface-1/70 backdrop-blur-md flex flex-col h-full"
+  class="w-[280px] shrink-0 border-r border-border-subtle bg-transparent flex flex-col h-full"
   data-testid="sidebar"
 >
   <SidebarSearch {registerFocusSearch} />

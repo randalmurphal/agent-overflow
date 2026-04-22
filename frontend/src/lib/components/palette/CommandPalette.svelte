@@ -1,10 +1,16 @@
 <script lang="ts">
+  // Command palette. Routes backdrop + focus-trap + Escape + role=dialog
+  // through the Modal primitive (top-aligned, no body padding, no
+  // default header) so we don't reimplement any of that here. The
+  // custom header snippet renders the search input instead of the
+  // default title chrome, and the body is the filtered results list.
+
   import { tick } from 'svelte';
   import { closePalette, isPaletteOpen } from '../../stores/palette.svelte';
   import { enabledCommands, type Command, type CommandContext } from '../../stores/commandRegistry.svelte';
   import { fuzzyFilter } from '../../utils/fuzzy';
   import { formatChord, keybindingForCommand } from '../../stores/keybindings.svelte';
-  import { focusTrap } from '../../utils/focusTrap';
+  import Modal from '../primitives/Modal.svelte';
   import PaletteResultRow from './PaletteResultRow.svelte';
 
   let {
@@ -21,6 +27,8 @@
   let open = $derived(isPaletteOpen());
 
   // Every time the palette opens, reset state and focus the textbox.
+  // Modal's focusTrap doesn't autofocus the input by default (no
+  // [data-autofocus]) so we explicitly focus it after mount.
   $effect(() => {
     if (open) {
       query = '';
@@ -59,11 +67,8 @@
   });
 
   function handleInputKeydown(ev: KeyboardEvent): void {
-    if (ev.key === 'Escape') {
-      ev.preventDefault();
-      closePalette();
-      return;
-    }
+    // Escape is handled by Modal's backdrop-level keydown; don't
+    // double-fire here or we'd call closePalette twice.
     if (ev.key === 'ArrowDown') {
       ev.preventDefault();
       if (results.length === 0) return;
@@ -124,78 +129,61 @@
     });
   }
 
-  function handleBackdropClick(ev: MouseEvent): void {
-    if (ev.target === ev.currentTarget) closePalette();
-  }
-
-  function handleBackdropKeydown(ev: KeyboardEvent): void {
-    if (ev.key === 'Escape') {
-      ev.preventDefault();
-      closePalette();
-    }
-  }
-
   let activeId = $derived(results[activeIndex]?.command.id);
 </script>
 
-{#if open}
-  <!-- svelte-ignore a11y_click_events_have_key_events -->
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div
-    class="fixed inset-0 z-[70] flex items-start justify-center pt-[10vh] bg-overlay backdrop-blur-sm"
-    onclick={handleBackdropClick}
-    onkeydown={handleBackdropKeydown}
-    data-testid="command-palette-backdrop"
-  >
-    <div
-      use:focusTrap={{ active: open, autoFocus: false }}
-      role="dialog"
-      aria-modal="true"
-      aria-label="Command palette"
-      class="w-[560px] max-w-[calc(100vw-2rem)] rounded-2xl border border-border/70 bg-surface-1/95 shadow-[0_40px_80px_-30px_rgba(0,0,0,0.6)] overflow-hidden flex flex-col"
-    >
-      <div class="px-4 pt-4 pb-2 border-b border-border/60">
-        <input
-          bind:this={inputEl}
-          bind:value={query}
-          onkeydown={handleInputKeydown}
-          type="text"
-          role="combobox"
-          aria-expanded="true"
-          aria-controls="palette-listbox"
-          aria-autocomplete="list"
-          aria-activedescendant={activeId ? `palette-option-${activeId}` : undefined}
-          placeholder="Type a command..."
-          class="w-full bg-transparent text-base text-text-primary placeholder:text-text-secondary/50 outline-none"
-          data-testid="command-palette-input"
-        />
-      </div>
-      <div
-        bind:this={listEl}
-        role="listbox"
-        id="palette-listbox"
-        class="max-h-[360px] overflow-y-auto py-1"
-        aria-label="Commands"
-      >
-        {#each results as row, idx (row.command.id)}
-          <PaletteResultRow
-            command={row.command}
-            shortcut={row.shortcut}
-            selected={idx === activeIndex}
-            matchIndices={row.indices}
-            onMouseEnter={() => (activeIndex = idx)}
-            onClick={() => {
-              activeIndex = idx;
-              executeActive();
-            }}
-          />
-        {/each}
-        {#if results.length === 0}
-          <div class="px-4 py-6 text-center text-sm text-text-secondary/70" data-testid="command-palette-empty">
-            No commands match "{query}".
-          </div>
-        {/if}
-      </div>
+<Modal
+  {open}
+  onClose={closePalette}
+  ariaLabel="Command palette"
+  width="md"
+  padding="none"
+  align="top"
+>
+  {#snippet header()}
+    <div class="px-4 pt-3.5 pb-2 border-b border-border-subtle">
+      <input
+        bind:this={inputEl}
+        bind:value={query}
+        onkeydown={handleInputKeydown}
+        type="text"
+        role="combobox"
+        aria-expanded="true"
+        aria-controls="palette-listbox"
+        aria-autocomplete="list"
+        aria-activedescendant={activeId ? `palette-option-${activeId}` : undefined}
+        placeholder="Type a command…"
+        class="w-full bg-transparent text-[15px] text-fg placeholder:text-fg-hint outline-none"
+        data-testid="command-palette-input"
+      />
     </div>
-  </div>
-{/if}
+  {/snippet}
+  {#snippet children()}
+    <div
+      bind:this={listEl}
+      role="listbox"
+      id="palette-listbox"
+      class="max-h-[360px] overflow-y-auto py-1"
+      aria-label="Commands"
+    >
+      {#each results as row, idx (row.command.id)}
+        <PaletteResultRow
+          command={row.command}
+          shortcut={row.shortcut}
+          selected={idx === activeIndex}
+          matchIndices={row.indices}
+          onMouseEnter={() => (activeIndex = idx)}
+          onClick={() => {
+            activeIndex = idx;
+            executeActive();
+          }}
+        />
+      {/each}
+      {#if results.length === 0}
+        <div class="px-4 py-6 text-center text-[13px] text-fg-subtle" data-testid="command-palette-empty">
+          No commands match "{query}".
+        </div>
+      {/if}
+    </div>
+  {/snippet}
+</Modal>

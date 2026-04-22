@@ -10,6 +10,7 @@ import { InterruptTurn, SendMessage } from '../../stores/bindings';
 import type { Attachment } from '../../types/attachment';
 import type { TerminalChip } from '../../types/draft';
 import { addToast } from '../../stores/toast.svelte';
+import { errString } from '../../utils/errors';
 import {
   findDraftProjectId,
   clearProjectDraft,
@@ -67,10 +68,10 @@ export async function dispatchSend(opts: SendOptions): Promise<void> {
     if (opts.draftThreadId() !== opts.threadId) {
       addToast(
         'error',
-        `Message to the previous thread failed to send; draft preserved (${err}).`,
+        `Message to the previous thread failed to send; draft preserved (${errString(err)}).`,
       );
     } else {
-      opts.reportError(`Failed to send message: ${err}`);
+      opts.reportError(`Failed to send message: ${errString(err)}`);
     }
   }
 }
@@ -87,6 +88,6 @@ export async function dispatchInterrupt(
     await InterruptTurn(threadId);
   } catch (err) {
     console.error('Failed to interrupt turn:', err);
-    reportError(`Failed to interrupt: ${err}`);
+    reportError(`Failed to interrupt: ${errString(err)}`);
   }
 }

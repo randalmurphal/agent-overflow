@@ -80,9 +80,9 @@ describe('<GitActionsControl> repo gating (Bug C1)', () => {
     // the full menu including Ship Changes, which would then fire git RPCs
     // against a non-git directory.
     setBindingMock('GetGitStatus', async () => status({ isRepo: false, branch: '' }));
-    const { queryByTestId, container } = render(GitActionsControl, { props: { pane } });
+    const { queryByRole, queryByTestId, container } = render(GitActionsControl, { props: { pane } });
     await flush();
-    expect(queryByTestId('git-actions-ship')).toBeNull();
+    expect(queryByRole('menuitem', { name: /Ship Changes/i })).toBeNull();
     expect(queryByTestId('git-actions-error')).toBeNull();
     // Control renders no primary action button either.
     expect(container.querySelector('button[aria-label="More git actions"]')).toBeNull();
@@ -99,7 +99,7 @@ describe('<GitActionsControl> repo gating (Bug C1)', () => {
   it('renders the Ship Changes menu entry in a valid repo', async () => {
     const pane = await buildPane();
     setBindingMock('GetGitStatus', async () => status({ isRepo: true, hasChanges: true }));
-    const { container, queryByTestId } = render(GitActionsControl, { props: { pane } });
+    const { container, queryByTestId, findByRole } = render(GitActionsControl, { props: { pane } });
     await flush();
 
     // We're not in the error state.
@@ -109,7 +109,7 @@ describe('<GitActionsControl> repo gating (Bug C1)', () => {
     const trigger = container.querySelector<HTMLButtonElement>('button[aria-label="More git actions"]');
     expect(trigger).not.toBeNull();
     await fireEvent.click(trigger!);
-    await flush();
-    expect(queryByTestId('git-actions-ship')).not.toBeNull();
+    const shipRow = await findByRole('menuitem', { name: /Ship Changes/i });
+    expect(shipRow).toBeInTheDocument();
   });
 });

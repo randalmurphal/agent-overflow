@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { fade, scale } from 'svelte/transition';
+  import Modal from '../primitives/Modal.svelte';
+  import Button from '../primitives/Button.svelte';
   import { CreateThreadFromPR } from '../../stores/bindings';
   import { parsePRReference, type ParsedPRReference } from '../../utils/prReference';
   import { getSettings } from '../../stores/settings.svelte';
@@ -7,7 +8,6 @@
   import { prependThread } from '../../stores/threads.svelte';
   import type { Thread } from '../../types/models';
   import type { ThreadPane } from '../../stores/thread.svelte';
-  import { focusTrap } from '../../utils/focusTrap';
 
   let { open, pane, onClose }: {
     open: boolean;
@@ -20,7 +20,6 @@
   let model = $state('');
   let submitting = $state(false);
   let error = $state<string | null>(null);
-  let dialogEl: HTMLDivElement | undefined = $state(undefined);
   // Monotonic counter bumped whenever the dialog opens or closes. Each
   // submission captures this at start; if the user closes the dialog
   // before CreateThreadFromPR resolves the counter has moved, so we
@@ -55,25 +54,13 @@
     error = null;
     submitting = false;
     provider = getSettings().defaultProvider as 'claude' | 'codex';
-    // Focus routing is handled by the focusTrap action; [data-autofocus]
+    // Focus routing is handled by Modal's focusTrap action; [data-autofocus]
     // on the URL input picks it as the initial focus target.
   });
 
-  function close() {
-    // focus restoration is handled by the focusTrap action.
-    onClose();
-  }
-
-  function handleBackdropClick(e: MouseEvent) {
-    if (e.target === e.currentTarget) close();
-  }
-
-  function handleKeydown(e: KeyboardEvent) {
-    if (e.key === 'Escape') {
-      e.preventDefault();
-      close();
-      return;
-    }
+  // Enter-to-submit keybinding when focus is inside the body fields.
+  // Escape is handled by Modal's backdrop keydown listener.
+  function handleBodyKeydown(e: KeyboardEvent) {
     if (e.key === 'Enter' && !e.shiftKey && canSubmit) {
       e.preventDefault();
       void handleSubmit();
@@ -106,7 +93,7 @@
       prependThread(thread);
       await pane.switchThread(thread);
       addToast('success', `Thread created from PR #${prNumber}`);
-      close();
+      onClose();
     } catch (err) {
       if (submitGeneration !== startGeneration) {
         // Dialog is gone — don't paint an error onto a dismissed UI.
@@ -121,34 +108,30 @@
       }
     }
   }
+
+  const FIELD_CLASS =
+    'w-full text-[13px] rounded-[var(--radius-control)] border border-border-subtle bg-surface-0 px-3 py-1.5 ' +
+    'text-fg placeholder:text-fg-hint focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/40 ' +
+    'transition-colors';
 </script>
 
-{#if open}
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div
-    transition:fade={{ duration: 150 }}
-    class="fixed inset-0 z-[60] flex items-center justify-center bg-overlay backdrop-blur-sm"
-    data-testid="thread-from-pr-backdrop"
-    onclick={handleBackdropClick}
-    onkeydown={handleKeydown}
-  >
+<Modal
+  {open}
+  title="Start thread from PR"
+  onClose={onClose}
+  width="lg"
+  padding="comfortable"
+>
+  {#snippet children()}
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div
-      bind:this={dialogEl}
-      use:focusTrap={{ active: open }}
-      transition:scale={{ start: 0.95, duration: 150 }}
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="thread-from-pr-title"
+      class="space-y-4"
       data-testid="thread-from-pr-dialog"
-      class="bg-surface-1 border border-border rounded-lg shadow-xl max-w-lg w-full mx-4 p-5 space-y-4"
+      onkeydown={handleBodyKeydown}
     >
-      <h2 id="thread-from-pr-title" class="text-base font-semibold text-text-primary">
-        Start thread from PR
-      </h2>
-
       <div class="space-y-2">
-        <label for="pr-url-input" class="text-xs text-text-secondary block">
-          GitHub PR URL or <code class="text-[10px] bg-surface-2/60 px-1 rounded">OWNER/REPO#N</code>
+        <label for="pr-url-input" class="text-[12px] text-fg-muted block font-medium">
+          GitHub PR URL or <code class="text-[10px] bg-surface-2/60 px-1 rounded font-mono">OWNER/REPO#N</code>
         </label>
         <input
           id="pr-url-input"
@@ -157,15 +140,15 @@
           type="text"
           bind:value={url}
           placeholder="https://github.com/owner/repo/pull/123"
-          class="w-full text-sm rounded border border-border bg-surface-0 px-3 py-2 text-text-primary placeholder:text-text-secondary/40 focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/50 transition-colors"
+          class={FIELD_CLASS}
         />
         {#if parseErrorMessage}
-          <p class="text-xs text-error" role="alert" data-testid="thread-from-pr-parse-error">{parseErrorMessage}</p>
+          <p class="text-[12px] text-error" role="alert" data-testid="thread-from-pr-parse-error">{parseErrorMessage}</p>
         {/if}
       </div>
 
       <div class="space-y-2">
-        <span class="text-xs text-text-secondary block">Provider</span>
+        <span class="text-[12px] text-fg-muted block font-medium">Provider</span>
         <div class="flex gap-1" role="radiogroup" aria-label="Provider">
           {#each (['claude', 'codex'] as const) as choice}
             <button
@@ -175,10 +158,10 @@
               data-testid={`thread-from-pr-provider-${choice}`}
               onclick={() => (provider = choice)}
               class={[
-                'flex-1 text-xs py-1.5 rounded cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50',
+                'flex-1 text-[12px] py-1.5 rounded-[var(--radius-control)] cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 transition-colors',
                 provider === choice
                   ? 'bg-accent text-surface-0 font-medium'
-                  : 'bg-surface-2 text-text-secondary hover:text-text-primary',
+                  : 'bg-surface-2/40 text-fg-muted hover:text-fg hover:bg-surface-2/60',
               ].join(' ')}
             >
               {choice === 'claude' ? 'Claude' : 'Codex'}
@@ -188,38 +171,34 @@
       </div>
 
       <div class="space-y-1">
-        <label for="pr-model-input" class="text-xs text-text-secondary block">Model (optional)</label>
+        <label for="pr-model-input" class="text-[12px] text-fg-muted block font-medium">Model (optional)</label>
         <input
           id="pr-model-input"
           type="text"
           bind:value={model}
           placeholder={defaultModel ? `Model (default: ${defaultModel})` : 'Model (optional)'}
-          class="w-full text-xs rounded border border-border bg-surface-0 px-3 py-2 text-text-primary placeholder:text-text-secondary/40 focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/50 transition-colors"
+          class={FIELD_CLASS}
         />
       </div>
 
       {#if error}
-        <p class="text-xs text-error break-words" role="alert" data-testid="thread-from-pr-error">{error}</p>
+        <p class="text-[12px] text-error break-words" role="alert" data-testid="thread-from-pr-error">{error}</p>
       {/if}
-
-      <div class="flex justify-end gap-2 pt-1">
-        <button
-          type="button"
-          onclick={close}
-          class="px-4 py-2 text-sm rounded-md border border-border text-text-secondary hover:text-text-primary cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
-        >
-          Cancel
-        </button>
-        <button
-          type="button"
-          data-testid="thread-from-pr-submit"
-          onclick={() => void handleSubmit()}
-          disabled={!canSubmit}
-          class="px-4 py-2 text-sm rounded-md font-medium bg-accent text-surface-0 hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
-        >
-          {submitting ? 'Creating…' : 'Create'}
-        </button>
-      </div>
     </div>
-  </div>
-{/if}
+  {/snippet}
+  {#snippet footer()}
+    <Button variant="secondary" size="sm" onclick={onClose}>
+      {#snippet children()}Cancel{/snippet}
+    </Button>
+    <Button
+      variant="primary"
+      size="sm"
+      testId="thread-from-pr-submit"
+      onclick={() => void handleSubmit()}
+      disabled={!canSubmit}
+      loading={submitting}
+    >
+      {#snippet children()}{submitting ? 'Creating…' : 'Create'}{/snippet}
+    </Button>
+  {/snippet}
+</Modal>

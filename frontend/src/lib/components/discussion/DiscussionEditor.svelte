@@ -13,6 +13,7 @@
   import { addToast } from '../../stores/toast.svelte';
   import ConfirmDialog from '../shared/ConfirmDialog.svelte';
   import ParticipantForm from './ParticipantForm.svelte';
+  import Button from '../primitives/Button.svelte';
   import {
     addParticipant,
     cloneDef,
@@ -134,7 +135,7 @@
 </script>
 
 <form onsubmit={handleSubmit} class="space-y-4" aria-label={isNew ? 'Create discussion' : 'Edit discussion'}>
-  <section class="rounded-2xl border border-border/70 bg-surface-1/80 p-5 shadow-[0_10px_40px_-24px_rgba(0,0,0,0.45)]">
+  <section class="rounded-[var(--radius-control)] border border-border-subtle bg-card/30 p-5">
     <div class="mb-3">
       <p class="text-[11px] font-semibold uppercase tracking-[0.22em] text-text-secondary/70">Definition</p>
       <h3 class="mt-1 text-base font-semibold text-text-primary">
@@ -213,7 +214,7 @@
     </div>
   </section>
 
-  <section class="rounded-2xl border border-border/70 bg-surface-1/80 p-5 shadow-[0_10px_40px_-24px_rgba(0,0,0,0.45)]">
+  <section class="rounded-[var(--radius-control)] border border-border-subtle bg-card/30 p-5">
     <div class="mb-3 flex items-center justify-between gap-3">
       <div>
         <p class="text-[11px] font-semibold uppercase tracking-[0.22em] text-text-secondary/70">Participants</p>
@@ -249,40 +250,37 @@
 
   <div class="flex flex-wrap items-center justify-between gap-2">
     <div class="flex gap-2">
-      <button
+      <Button
+        variant="primary"
+        size="md"
         type="submit"
-        disabled={saving}
-        class="rounded-xl bg-accent px-4 py-2 text-xs font-semibold text-surface-0 hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+        loading={saving}
       >
-        {saving ? 'Saving...' : isNew ? 'Create' : 'Save changes'}
-      </button>
-      <button
-        type="button"
+        {#snippet children()}{saving ? 'Saving...' : isNew ? 'Create' : 'Save changes'}{/snippet}
+      </Button>
+      <Button
+        variant="secondary"
+        size="md"
         onclick={handleReset}
         disabled={saving}
-        class="rounded-xl border border-border px-4 py-2 text-xs text-text-secondary hover:text-text-primary cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
       >
-        Reset
-      </button>
+        {#snippet children()}Reset{/snippet}
+      </Button>
       {#if onCancel}
-        <button
-          type="button"
-          onclick={onCancel}
-          class="rounded-xl border border-border px-4 py-2 text-xs text-text-secondary hover:text-text-primary cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
-        >
-          Cancel
-        </button>
+        <Button variant="secondary" size="md" onclick={onCancel}>
+          {#snippet children()}Cancel{/snippet}
+        </Button>
       {/if}
     </div>
     {#if !isNew && onDeleted}
-      <button
-        type="button"
+      <Button
+        variant="danger-outline"
+        size="md"
         onclick={() => { showDeleteConfirm = true; }}
-        disabled={deleting}
-        class="rounded-xl border border-error/40 bg-error/10 px-4 py-2 text-xs font-medium text-error hover:bg-error/20 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-error/50"
+        loading={deleting}
       >
-        Delete discussion
-      </button>
+        {#snippet children()}Delete discussion{/snippet}
+      </Button>
     {/if}
   </div>
 </form>

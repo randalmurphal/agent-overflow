@@ -1,5 +1,7 @@
 <script lang="ts">
   import { slide } from 'svelte/transition';
+  import ChevronRight from 'lucide-svelte/icons/chevron-right';
+  import Icon from '../primitives/Icon.svelte';
   import type { DiffMeta, Item } from '../../types/models';
   import { parseDiffLines, type DiffLine } from '../../utils/diff';
   import { getSettings } from '../../stores/settings.svelte';
@@ -34,20 +36,26 @@
   });
 </script>
 
-<div class="bg-surface-1 rounded border border-border overflow-hidden mb-2">
+<div class="mb-1.5 rounded-[var(--radius-control)] border border-border-subtle bg-card/25 overflow-hidden">
   <!-- Header -->
   <button
-    class="w-full px-3 py-2 flex items-center gap-2 text-sm cursor-pointer hover:bg-surface-2/40"
+    class="w-full px-2.5 py-1.5 flex items-center gap-2 text-[13px] cursor-pointer hover:bg-surface-2/25 transition-colors"
     onclick={() => expansion.toggle()}
     aria-expanded={expansion.expanded}
     aria-controls="diff-content-{payloadId}"
     aria-label="Toggle diff: {meta.filePath}"
   >
-    <span class="text-xs text-text-secondary select-none" aria-hidden="true">{expansion.expanded ? '▼' : '▶'}</span>
-    <span class="font-mono text-xs text-text-primary truncate">{meta.filePath}</span>
-    <span class="px-1.5 py-0.5 rounded-full text-xs {badgeClasses}">{meta.changeKind}</span>
+    <span
+      class="flex size-3 shrink-0 items-center justify-center text-fg-subtle select-none transition-transform duration-150"
+      class:rotate-90={expansion.expanded}
+      aria-hidden="true"
+    >
+      <Icon icon={ChevronRight} size={12} strokeWidth={2} class="opacity-70" />
+    </span>
+    <span class="font-mono text-[12px] text-fg-muted truncate">{meta.filePath}</span>
+    <span class="px-1.5 py-0.5 rounded-[var(--radius-field)] text-[10px] font-medium {badgeClasses}">{meta.changeKind}</span>
     <ToolDecisionChip decision={item?.decision} />
-    <span class="ml-auto flex gap-2 text-xs shrink-0">
+    <span class="ml-auto flex gap-2 text-[11px] shrink-0 tabular-nums">
       {#if meta.insertions > 0}
         <span class="text-success">+{meta.insertions}</span>
       {/if}
@@ -59,7 +67,7 @@
 
   <!-- Diff content -->
   {#if expansion.expanded}
-    <div id="diff-content-{payloadId}" transition:slide={{ duration: 150 }} class="border-t border-border bg-surface-0 px-3 py-2 overflow-x-auto">
+    <div id="diff-content-{payloadId}" transition:slide={{ duration: 150 }} class="border-t border-border-subtle bg-surface-0/50 px-3 py-2 overflow-x-auto">
       {#if expansion.loading}
         <p class="text-xs text-text-secondary" role="status" aria-live="polite">Loading full diff…</p>
       {:else if expansion.error}

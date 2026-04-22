@@ -78,4 +78,16 @@ describe('<MenuItem>', () => {
     const { getByRole } = render(Harness, { props: { label: 'Delete', variant: 'danger' } });
     expect(getByRole('menuitem').className).toContain('text-error');
   });
+
+  // Stage 1 redesign: tighter hover + accent token migration.
+  it('default variant uses text-fg (not the legacy text-text-primary)', () => {
+    const { getByRole } = render(Harness, { props: { label: 'Item' } });
+    expect(getByRole('menuitem').className).toContain('text-fg');
+    expect(getByRole('menuitem').className).not.toContain('text-text-primary');
+  });
+
+  it('uses the softer hover tint (bg-surface-2/40)', () => {
+    const { getByRole } = render(Harness, { props: { label: 'Item' } });
+    expect(getByRole('menuitem').className).toContain('hover:bg-surface-2/40');
+  });
 });

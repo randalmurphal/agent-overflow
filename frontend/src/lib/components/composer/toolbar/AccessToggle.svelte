@@ -8,11 +8,19 @@
   // labels and long-form descriptions are taken verbatim from the old
   // picker so users coming from that UI see the same wording.
 
+  import Lock from 'lucide-svelte/icons/lock';
+  import LockOpen from 'lucide-svelte/icons/lock-open';
+  import PenLine from 'lucide-svelte/icons/pen-line';
   import type { ThreadPane } from '../../../stores/thread.svelte';
   import type { RuntimeMode, Thread } from '../../../types/models';
   import { UpdateThreadRuntimeMode } from '../../../stores/bindings';
   import { replaceThread } from '../../../stores/threads.svelte';
   import { addToast } from '../../../stores/toast.svelte';
+  import { errString } from '../../../utils/errors';
+  import Icon from '../../primitives/Icon.svelte';
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  type IconComponent = any;
 
   interface Props {
     pane: ThreadPane;
@@ -73,27 +81,21 @@
       replaceThread(updated);
     } catch (err) {
       console.error('access.toggle: UpdateThreadRuntimeMode failed', err);
-      addToast('error', `Failed to change access mode: ${err}`);
+      addToast('error', `Failed to change access mode: ${errString(err)}`);
     } finally {
       applying = false;
     }
   }
 
-  // Icon per tier. Drawn inline so the border / shackle transforms
-  // consistently as the user cycles. All three share the lock body; only
-  // the shackle changes so the control feels like one growing icon
-  // rather than three unrelated glyphs.
-  let iconPath = $derived.by(() => {
+  // Lucide icons by tier: closed lock → pen-line (edits allowed) →
+  // open lock. The graphics are distinct enough at 13px that users can
+  // read state without the label, but the label is kept because
+  // "Approval" vs "Auto-edits" is hard to mnemonize from icons alone.
+  let icon = $derived.by<IconComponent>(() => {
     switch (current) {
-      case 'approval-required':
-        // Closed shackle
-        return 'M7 11V7a5 5 0 0 1 10 0v4';
-      case 'auto-accept-edits':
-        // Half-open shackle (tilted)
-        return 'M7 11V7a5 5 0 0 1 9-3';
-      case 'full-access':
-        // Fully open shackle (offset right)
-        return 'M17 11V7a5 5 0 0 0-10 0';
+      case 'approval-required': return Lock;
+      case 'auto-accept-edits': return PenLine;
+      case 'full-access':       return LockOpen;
     }
   });
 </script>
@@ -107,26 +109,14 @@
   aria-label="Change runtime access mode"
   title={currentMeta.description}
   class={[
-    'inline-flex items-center gap-1.5 rounded-md border border-border',
-    'px-2 py-1 text-xs text-text-secondary',
+    'inline-flex items-center gap-1.5 rounded-[var(--radius-field)]',
+    'px-1.5 py-1 text-[11px] text-fg-muted',
     'transition-colors cursor-pointer',
-    'hover:border-text-secondary hover:text-text-primary',
-    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50',
+    'hover:text-fg hover:bg-surface-2/30',
+    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40',
     'disabled:opacity-60 disabled:cursor-not-allowed',
   ].join(' ')}
 >
-  <svg
-    viewBox="0 0 24 24"
-    class="h-3.5 w-3.5"
-    fill="none"
-    stroke="currentColor"
-    stroke-width="1.75"
-    stroke-linecap="round"
-    stroke-linejoin="round"
-    aria-hidden="true"
-  >
-    <rect x="5" y="11" width="14" height="10" rx="2" />
-    <path d={iconPath} />
-  </svg>
+  <Icon {icon} size={13} strokeWidth={1.75} class="opacity-80" />
   <span>{currentMeta.label}</span>
 </button>

@@ -235,6 +235,32 @@ describe('<MessageTimeline>', () => {
       expect(queryByTestId('load-older-messages')).toBeNull();
     });
 
+    // Stage 1 redesign: the button was restyled off raw border-border
+    // onto the subtle border + control radius + ghost-text hover pattern
+    // the rest of the app uses. Pin the class list so a lazy edit can't
+    // drift it back toward the old heavy chrome.
+    it('Load older button uses the redesigned token classes', async () => {
+      const pane = await buildWindowedPane({
+        items: [makeItem({ id: 'a', turnIndex: 10 })],
+        hasMore: true,
+        oldestTurnIndex: 10,
+      });
+
+      const { getByTestId } = render(MessageTimeline, { props: { pane } });
+      const button = getByTestId('load-older-messages');
+      const cls = button.className;
+      // Post-Button-migration the chrome comes from the primitive's
+      // `secondary` variant — we still assert the redesigned design
+      // tokens flow through (border-subtle at rest, muted fg, control
+      // radius, hover-to-foreground color). hover:border-border is
+      // expected on the secondary variant so we don't assert against
+      // it here.
+      expect(cls).toContain('border-border-subtle');
+      expect(cls).toContain('rounded-[var(--radius-control)]');
+      expect(cls).toContain('text-fg-muted');
+      expect(cls).toContain('hover:text-fg');
+    });
+
     it('clicking Load older invokes pane.loadOlder', async () => {
       const pane = await buildWindowedPane({
         items: [makeItem({ id: 'tail', turnIndex: 10 })],

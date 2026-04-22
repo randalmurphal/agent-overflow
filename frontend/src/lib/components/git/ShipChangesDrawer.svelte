@@ -1,17 +1,17 @@
 <script lang="ts">
-  // Ship Changes wizard — a 3-step drawer that walks the user through
+  // Ship Changes wizard — a 3-step dialog that walks the user through
   //   Commit -> Push -> Create PR
-  // without leaving the chat. The drawer is the *only* place in the UI that
-  // mutates the state machine; the step components render state and emit
-  // intent handlers which trigger the side effects declared here.
+  // without leaving the chat. The dialog is the *only* place in the UI
+  // that mutates the state machine; the step components render state
+  // and emit intent handlers which trigger the side effects declared
+  // here.
   //
-  // The drawer and the state machine stay loosely coupled on purpose:
-  //   * The drawer owns GetGitStatus + the three Git* RPC calls.
+  // The dialog and the state machine stay loosely coupled on purpose:
+  //   * The dialog owns GetGitStatus + the three Git* RPC calls.
   //   * The state machine owns phase transitions and error storage.
   //   * The step components only read state + call intent handlers.
 
   import { untrack } from 'svelte';
-  import { fade, fly } from 'svelte/transition';
   import {
     GetGitStatus,
     GitCommit,
@@ -19,13 +19,15 @@
     GitCreatePR,
   } from '../../stores/bindings';
   import { addToast } from '../../stores/toast.svelte';
+  import { errString } from '../../utils/errors';
   import type { GitActionResult, GitStatus } from '../../types/git';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import {
     createShipChangesState,
     type ShipChangesState,
   } from '../../stores/shipChanges.svelte';
-  import { focusTrap } from '../../utils/focusTrap';
+  import Modal from '../primitives/Modal.svelte';
+  import Button from '../primitives/Button.svelte';
   import StepIndicator from './ship-changes/StepIndicator.svelte';
   import CommitStep from './ship-changes/CommitStep.svelte';
   import PushStep from './ship-changes/PushStep.svelte';
@@ -44,7 +46,6 @@
   // prop updates — swapping the state store mid-wizard would be a bug.
   // Named `wizard` to avoid colliding with Svelte's `$state` rune.
   const wizard: ShipChangesState = untrack(() => externalState ?? createShipChangesState());
-  let dialogEl: HTMLDivElement | undefined = $state(undefined);
   let statusLoadGeneration = 0;
   // Track the thread the wizard was opened for so we can detect a switch
   // while the drawer is still open and bail out rather than silently
@@ -59,7 +60,7 @@
       wizard.setStatus(fetched);
     } catch (err) {
       console.error('ship-changes: GetGitStatus failed', err);
-      pane.setGeneralError(`Failed to load git status: ${err}`);
+      pane.setGeneralError(`Failed to load git status: ${errString(err)}`);
     }
   }
 
@@ -95,23 +96,6 @@
     openedForThreadId = threadId;
   });
 
-  function close(): void {
-    // focus restoration is handled by the focusTrap action applied to
-    // the drawer container.
-    onClose();
-  }
-
-  function handleKeydown(e: KeyboardEvent): void {
-    if (e.key === 'Escape') {
-      e.preventDefault();
-      close();
-    }
-  }
-
-  function handleBackdropClick(e: MouseEvent): void {
-    if (e.target === e.currentTarget) close();
-  }
-
   async function handleCommit(): Promise<void> {
     if (!pane.threadId) return;
     if (!wizard.canCommit) return;
@@ -121,7 +105,7 @@
     wizard.beginCommit();
     try {
       const result = (await GitCommit(pane.threadId, subject, body)) as GitActionResult;
-      // Drawer may have been closed (or reopened on a new thread) while the
+      // Dialog may have been closed (or reopened on a new thread) while the
       // commit was in flight; resuming would blow up the state machine.
       if (wizard.generation !== startGeneration) return;
       if (result.error) {
@@ -198,88 +182,68 @@
   }
 </script>
 
-{#if open}
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div
-    transition:fade={{ duration: 150 }}
-    class="fixed inset-0 z-[60] flex items-center justify-center bg-overlay backdrop-blur-sm"
-    data-testid="ship-changes-backdrop"
-    onclick={handleBackdropClick}
-    onkeydown={handleKeydown}
-  >
-    <div
-      bind:this={dialogEl}
-      use:focusTrap={{ active: open }}
-      transition:fly={{ y: 12, duration: 160 }}
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="ship-changes-title"
-      data-testid="ship-changes-drawer"
-      class="bg-surface-1 border border-border rounded-lg shadow-xl w-full max-w-lg mx-4 p-5 space-y-4"
-    >
-      <header class="flex items-center justify-between gap-3">
-        <h2 id="ship-changes-title" class="text-base font-semibold text-text-primary">
-          Ship Changes
-        </h2>
-        <StepIndicator phase={wizard.phase} />
-      </header>
-
+<Modal
+  {open}
+  title="Ship Changes"
+  onClose={onClose}
+  width="lg"
+  padding="comfortable"
+>
+  {#snippet headerActions()}
+    <StepIndicator phase={wizard.phase} />
+  {/snippet}
+  {#snippet children()}
+    <div data-testid="ship-changes-drawer" class="space-y-4">
       {#if wizard.phase === 'idle'}
-        <p class="text-xs text-text-secondary" data-testid="ship-changes-loading">Loading git status…</p>
+        <p class="text-[12px] text-fg-muted" data-testid="ship-changes-loading">Loading git status…</p>
       {:else if wizard.phase.startsWith('commit.')}
         <CommitStep state={wizard} onCommit={handleCommit} onSkip={handleSkipCommit} />
         {#if wizard.phase === 'commit.error'}
           <div class="flex justify-end">
-            <button
-              type="button"
+            <Button
+              variant="secondary"
+              size="sm"
               onclick={handleRetry}
-              data-testid="ship-changes-commit-retry"
-              class="px-3 py-2 text-xs rounded-md border border-border text-text-secondary hover:text-text-primary cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+              testId="ship-changes-commit-retry"
             >
-              Edit and retry
-            </button>
+              {#snippet children()}Edit and retry{/snippet}
+            </Button>
           </div>
         {/if}
       {:else if wizard.phase.startsWith('push.')}
         <PushStep state={wizard} onPush={handlePush} onSkip={handleSkipPush} />
         {#if wizard.phase === 'push.error'}
           <div class="flex justify-end">
-            <button
-              type="button"
+            <Button
+              variant="secondary"
+              size="sm"
               onclick={handleRetry}
-              data-testid="ship-changes-push-retry"
-              class="px-3 py-2 text-xs rounded-md border border-border text-text-secondary hover:text-text-primary cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+              testId="ship-changes-push-retry"
             >
-              Retry push
-            </button>
+              {#snippet children()}Retry push{/snippet}
+            </Button>
           </div>
         {/if}
       {:else}
         <PRStep state={wizard} onCreate={handleCreatePR} />
         {#if wizard.phase === 'pr.error'}
           <div class="flex justify-end">
-            <button
-              type="button"
+            <Button
+              variant="secondary"
+              size="sm"
               onclick={handleRetry}
-              data-testid="ship-changes-pr-retry"
-              class="px-3 py-2 text-xs rounded-md border border-border text-text-secondary hover:text-text-primary cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+              testId="ship-changes-pr-retry"
             >
-              Edit and retry
-            </button>
+              {#snippet children()}Edit and retry{/snippet}
+            </Button>
           </div>
         {/if}
       {/if}
-
-      <footer class="flex justify-end gap-2 pt-1">
-        <button
-          type="button"
-          onclick={close}
-          data-testid="ship-changes-close"
-          class="px-4 py-2 text-sm rounded-md border border-border text-text-secondary hover:text-text-primary cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
-        >
-          {wizard.finished ? 'Done' : 'Close'}
-        </button>
-      </footer>
     </div>
-  </div>
-{/if}
+  {/snippet}
+  {#snippet footer()}
+    <Button variant="secondary" size="sm" onclick={onClose} testId="ship-changes-close">
+      {#snippet children()}{wizard.finished ? 'Done' : 'Close'}{/snippet}
+    </Button>
+  {/snippet}
+</Modal>

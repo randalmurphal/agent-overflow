@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { DiscussionParticipant } from '../../types/discussion';
+  import Button from '../primitives/Button.svelte';
 
   let {
     participant,
@@ -32,28 +33,28 @@
 </script>
 
 <fieldset
-  class="rounded-2xl border border-border/60 bg-surface-0/55 p-4 shadow-[0_10px_40px_-24px_rgba(0,0,0,0.45)]"
+  class="rounded-[var(--radius-card)] border border-border-subtle bg-card/30 p-4"
   aria-label="Participant {index + 1}"
 >
   <div class="mb-3 flex items-center justify-between gap-2">
-    <legend class="text-[11px] font-semibold uppercase tracking-[0.22em] text-text-secondary/70">
+    <legend class="text-[11px] font-semibold uppercase tracking-[0.18em] text-fg-subtle">
       Participant {index + 1}
     </legend>
-    <button
-      type="button"
+    <Button
+      variant="danger-ghost"
+      size="xs"
       onclick={onRemove}
       disabled={!canRemove}
-      class="text-[11px] text-error/80 hover:text-error rounded-md px-2 py-1 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-error/50"
-      aria-label="Remove participant {index + 1}"
+      ariaLabel="Remove participant {index + 1}"
       title={canRemove ? 'Remove this participant' : 'At least two participants are required'}
     >
-      Remove
-    </button>
+      {#snippet children()}Remove{/snippet}
+    </Button>
   </div>
 
   <div class="grid grid-cols-1 gap-3 md:grid-cols-2">
     <div>
-      <label for={roleId} class="block text-xs font-medium text-text-primary mb-1">
+      <label for={roleId} class="block text-[12px] font-medium text-fg mb-1">
         Role <span class="text-error/80">*</span>
       </label>
       <input
@@ -62,29 +63,29 @@
         value={participant.role}
         oninput={(e) => update('role', (e.target as HTMLInputElement).value)}
         placeholder="e.g. advocate, critic"
-        class="w-full text-sm rounded-xl border border-border bg-surface-0 px-3 py-2 text-text-primary placeholder:text-text-secondary/50 focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/50 transition-colors"
+        class="w-full text-[13px] rounded-[var(--radius-control)] border border-border-subtle bg-surface-0 px-3 py-1.5 text-fg placeholder:text-fg-hint focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/40 transition-colors"
       />
     </div>
 
     <div>
-      <label for={descId} class="block text-xs font-medium text-text-primary mb-1">Description</label>
+      <label for={descId} class="block text-[12px] font-medium text-fg mb-1">Description</label>
       <input
         id={descId}
         type="text"
         value={participant.description}
         oninput={(e) => update('description', (e.target as HTMLInputElement).value)}
         placeholder="How this role behaves"
-        class="w-full text-sm rounded-xl border border-border bg-surface-0 px-3 py-2 text-text-primary placeholder:text-text-secondary/50 focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/50 transition-colors"
+        class="w-full text-[13px] rounded-[var(--radius-control)] border border-border-subtle bg-surface-0 px-3 py-1.5 text-fg placeholder:text-fg-hint focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/40 transition-colors"
       />
     </div>
 
     <div>
-      <label for={providerId} class="block text-xs font-medium text-text-primary mb-1">Provider</label>
+      <label for={providerId} class="block text-[12px] font-medium text-fg mb-1">Provider</label>
       <select
         id={providerId}
         value={participant.provider ?? ''}
         onchange={(e) => updateProvider((e.target as HTMLSelectElement).value)}
-        class="w-full text-sm rounded-xl border border-border bg-surface-0 px-3 py-2 text-text-primary focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/50 transition-colors cursor-pointer"
+        class="w-full text-[13px] rounded-[var(--radius-control)] border border-border-subtle bg-surface-0 px-3 py-1.5 text-fg focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/40 transition-colors cursor-pointer"
       >
         <option value="">Inherit from parent thread</option>
         <option value="claude">Claude</option>
@@ -93,20 +94,20 @@
     </div>
 
     <div>
-      <label for={modelId} class="block text-xs font-medium text-text-primary mb-1">Model</label>
+      <label for={modelId} class="block text-[12px] font-medium text-fg mb-1">Model</label>
       <input
         id={modelId}
         type="text"
         value={participant.model ?? ''}
         oninput={(e) => update('model', (e.target as HTMLInputElement).value)}
         placeholder="Inherit from parent thread"
-        class="w-full text-sm rounded-xl border border-border bg-surface-0 px-3 py-2 text-text-primary placeholder:text-text-secondary/50 focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/50 transition-colors"
+        class="w-full text-[13px] rounded-[var(--radius-control)] border border-border-subtle bg-surface-0 px-3 py-1.5 text-fg placeholder:text-fg-hint focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/40 transition-colors"
       />
     </div>
   </div>
 
   <div class="mt-3">
-    <label for={systemId} class="block text-xs font-medium text-text-primary mb-1">
+    <label for={systemId} class="block text-[12px] font-medium text-fg mb-1">
       System prompt <span class="text-error/80">*</span>
     </label>
     <textarea
@@ -114,8 +115,8 @@
       value={participant.system}
       oninput={(e) => update('system', (e.target as HTMLTextAreaElement).value)}
       rows={4}
-      placeholder="What this participant believes, argues, prioritizes..."
-      class="w-full text-sm rounded-xl border border-border bg-surface-0 px-3 py-2 text-text-primary placeholder:text-text-secondary/50 focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/50 transition-colors resize-y font-mono"
+      placeholder="What this participant believes, argues, prioritizes…"
+      class="w-full text-[13px] rounded-[var(--radius-control)] border border-border-subtle bg-surface-0 px-3 py-2 text-fg placeholder:text-fg-hint focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/40 transition-colors resize-y font-mono"
     ></textarea>
   </div>
 </fieldset>

@@ -2,6 +2,7 @@
   import { slide } from 'svelte/transition';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { ReconnectSession, ProbeClaudeAccount } from '../../stores/bindings';
+  import { errString } from '../../utils/errors';
   import {
     getProviderStatus,
     type ProviderStatusEvent,
@@ -76,6 +77,11 @@
     if (!providerStatus) return '';
     switch (providerStatus.status) {
       case 'not_found':
+        // "Install …" points to the install-docs URL supplied by Go. If
+        // the backend somehow shipped an empty `actionUrl`, a click on
+        // this button would be a silent no-op — hide the affordance
+        // entirely rather than lie to the user.
+        if (!providerStatus.actionUrl) return '';
         return providerStatus.provider === 'claude' ? 'Install Claude CLI' : 'Install Codex CLI';
       case 'unauthenticated':
         return 'Recheck';
@@ -92,7 +98,7 @@
       await ReconnectSession(pane.threadId);
     } catch (err) {
       console.error('Failed to reconnect:', err);
-      pane.setGeneralError(`Failed to reconnect: ${err}`);
+      pane.setGeneralError(`Failed to reconnect: ${errString(err)}`);
     } finally {
       reconnecting = false;
     }

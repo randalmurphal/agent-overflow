@@ -19,7 +19,7 @@
 </script>
 
 <div class="space-y-5">
-  <section class="rounded-2xl border border-border/70 bg-surface-1/80 p-5 shadow-[0_10px_40px_-24px_rgba(0,0,0,0.45)] backdrop-blur-sm">
+  <section class="rounded-[var(--radius-control)] border border-border-subtle bg-card/30 p-5">
     <div class="mb-4">
       <p class="text-[11px] font-semibold uppercase tracking-[0.22em] text-text-secondary/70">Tracing</p>
       <h3 class="mt-1 text-base font-semibold text-text-primary">OpenTelemetry OTLP</h3>
@@ -71,7 +71,7 @@
     </div>
   </section>
 
-  <section class="rounded-2xl border border-border/70 bg-surface-1/80 p-5 shadow-[0_10px_40px_-24px_rgba(0,0,0,0.45)] backdrop-blur-sm">
+  <section class="rounded-[var(--radius-control)] border border-border-subtle bg-card/30 p-5">
     <div class="mb-4">
       <p class="text-[11px] font-semibold uppercase tracking-[0.22em] text-text-secondary/70">Replay log</p>
       <h3 class="mt-1 text-base font-semibold text-text-primary">Per-thread event recorder</h3>

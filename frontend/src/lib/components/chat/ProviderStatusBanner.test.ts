@@ -69,4 +69,29 @@ describe('<ProviderStatusBanner>', () => {
 
     expect(reconnect).toHaveBeenCalledWith('thread-1');
   });
+
+  // Regression: when the backend emits `status='not_found'` without an
+  // `actionUrl`, the "Install Claude/Codex CLI" button used to render but
+  // silently no-op on click (handlePrimaryAction falls through with no
+  // branch that matches). Hide the affordance entirely instead so we
+  // don't lie to the user.
+  it('omits the Install button when the not-found event has no actionUrl', async () => {
+    const pane = await buildPane();
+    emitWailsEvent(
+      'provider:status',
+      statusEvent({ actionUrl: '', message: 'Claude CLI not found' }),
+    );
+
+    const { queryByTestId, getByTestId } = render(ProviderStatusBanner, { props: { pane } });
+    expect(getByTestId('provider-status-banner').textContent).toContain('Claude CLI not found');
+    expect(queryByTestId('provider-status-action')).toBeNull();
+  });
+
+  it('still renders the Install button when actionUrl is present', async () => {
+    const pane = await buildPane();
+    emitWailsEvent('provider:status', statusEvent());
+
+    const { getByTestId } = render(ProviderStatusBanner, { props: { pane } });
+    expect(getByTestId('provider-status-action').textContent).toMatch(/Install Claude CLI/);
+  });
 });

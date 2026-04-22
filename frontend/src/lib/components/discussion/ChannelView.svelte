@@ -5,7 +5,9 @@
   import { GetChannelMessages, PostChannelMessage } from '../../stores/bindings';
   import { getSettings } from '../../stores/settings.svelte';
   import { addToast } from '../../stores/toast.svelte';
+  import { errString } from '../../utils/errors';
   import { relativeTime } from '../../utils/format';
+  import Button from '../primitives/Button.svelte';
 
   let {
     pane,
@@ -16,10 +18,16 @@
   } = $props();
 
   const POLL_INTERVAL_MS = 2500;
+  const POLL_MAX_INTERVAL_MS = 40_000;
   const PAGE_LIMIT = 200;
 
   let pollGeneration = 0;
   let pollTimer: ReturnType<typeof setTimeout> | null = null;
+  // Consecutive-failure counter that drives exponential backoff. Reset
+  // to 0 on any successful poll. Without this, a persistently-erroring
+  // backend would keep hammering GetChannelMessages every 2.5s with
+  // the error banner stuck on screen.
+  let consecutiveErrors = 0;
   let lastChannelId = '';
   let composing = $state('');
   let posting = $state(false);
@@ -84,6 +92,7 @@
         pane.mergeChannelMessages(incoming);
       }
       pollError = null;
+      consecutiveErrors = 0;
       // Seed status to `open` on first successful load. The backend flips to
       // `concluded` via DB, not via an event, so status is inferred from the
       // deliberation engine's MaxTurns behavior and the Channel row — if we
@@ -95,13 +104,22 @@
     } catch (err) {
       if (generation !== pollGeneration) return;
       console.error('Channel poll failed:', err);
-      pollError = String(err);
+      pollError = errString(err);
+      consecutiveErrors += 1;
     } finally {
       if (generation === pollGeneration) {
         if (initial) {
           loadingInitial = false;
         }
-        pollTimer = setTimeout(() => pollOnce(generation, false), POLL_INTERVAL_MS);
+        // Exponential backoff on consecutive failures so a stuck backend
+        // doesn't spam the binding every 2.5s. Cap at 40s — long enough
+        // to notice persistent errors, short enough that the UI recovers
+        // quickly when the backend comes back.
+        const delay = Math.min(
+          POLL_INTERVAL_MS * 2 ** consecutiveErrors,
+          POLL_MAX_INTERVAL_MS,
+        );
+        pollTimer = setTimeout(() => pollOnce(generation, false), delay);
       }
     }
   }
@@ -142,7 +160,7 @@
     } catch (err) {
       console.error('Failed to post channel message:', err);
       composing = savedText;
-      addToast('error', `Failed to post message: ${err}`);
+      addToast('error', `Failed to post message: ${errString(err)}`);
     } finally {
       posting = false;
     }
@@ -157,9 +175,9 @@
 
   function messageAccentClass(msg: ChannelMessage): string {
     if (msg.fromType === 'human') {
-      return 'border-accent/30 bg-accent/5';
+      return 'border-accent/25 bg-accent/5';
     }
-    return 'border-border/60 bg-surface-1/55';
+    return 'border-border-subtle bg-card/30';
   }
 
   function roleLabel(msg: ChannelMessage): string {
@@ -169,9 +187,9 @@
 
   function roleBadgeClass(msg: ChannelMessage): string {
     if (msg.fromType === 'human') {
-      return 'bg-accent/15 text-accent border-accent/25';
+      return 'bg-accent/10 text-accent border-accent/25';
     }
-    return 'bg-surface-2/60 text-text-secondary border-border/60';
+    return 'bg-surface-2/40 text-fg-muted border-border-subtle';
   }
 
   function statusLabel(): string {
@@ -181,13 +199,13 @@
 </script>
 
 <div class="flex h-full flex-col min-h-0">
-  <div class="border-b border-border/60 bg-surface-1/70 px-4 py-2.5 flex items-center gap-3 shrink-0">
-    <span class="inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] font-medium
-      {concluded ? 'border-text-secondary/30 bg-surface-2/50 text-text-secondary' : 'border-success/30 bg-success/10 text-success'}">
-      <span class="w-1.5 h-1.5 rounded-full {concluded ? 'bg-text-secondary' : 'bg-success'}" aria-hidden="true"></span>
+  <div class="border-b border-border-subtle px-5 py-2 flex items-center gap-3 shrink-0">
+    <span class="inline-flex items-center gap-1.5 rounded-[var(--radius-field)] border px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide
+      {concluded ? 'border-border-subtle bg-surface-2/40 text-fg-muted' : 'border-success/30 bg-success/10 text-success'}">
+      <span class="w-1.5 h-1.5 rounded-full {concluded ? 'bg-fg-subtle' : 'bg-success'}" aria-hidden="true"></span>
       {statusLabel()}
     </span>
-    <span class="text-xs text-text-secondary">
+    <span class="text-[11px] text-fg-muted tabular-nums">
       {messages.length} {messages.length === 1 ? 'message' : 'messages'}
     </span>
     {#if pollError}
@@ -200,42 +218,42 @@
   <div
     bind:this={scrollContainer}
     onscroll={handleScroll}
-    class="flex-1 min-h-0 overflow-y-auto px-4 py-3 space-y-3"
+    class="flex-1 min-h-0 overflow-y-auto px-5 py-4 space-y-3"
     role="log"
     aria-live="polite"
     aria-label="Discussion channel messages"
   >
     {#if loadingInitial}
-      <div class="text-xs text-text-secondary/70">Loading channel messages...</div>
+      <div class="text-[12px] text-fg-subtle">Loading channel messages…</div>
     {:else if messages.length === 0}
-      <div class="text-xs text-text-secondary/70">
+      <div class="text-[12px] text-fg-subtle">
         No messages yet. Participants will begin speaking as their turns complete.
       </div>
     {:else}
       {#each messages as msg (msg.id || msg.sequence)}
-        <div class="rounded-2xl border {messageAccentClass(msg)} px-3 py-2.5">
+        <div class="rounded-[var(--radius-card)] border {messageAccentClass(msg)} px-3.5 py-2.5">
           <div class="flex items-center gap-2 mb-1.5">
-            <span class="rounded-md border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.14em] {roleBadgeClass(msg)}">
+            <span class="rounded-[var(--radius-field)] border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.14em] {roleBadgeClass(msg)}">
               {roleLabel(msg)}
             </span>
-            <span class="text-[11px] text-text-secondary/70">#{msg.sequence}</span>
-            <span class="ml-auto text-[11px] text-text-secondary/60">
+            <span class="text-[11px] text-fg-hint tabular-nums">#{msg.sequence}</span>
+            <span class="ml-auto text-[11px] text-fg-hint">
               {relativeTime(msg.createdAt, getSettings().timestampFormat)}
             </span>
           </div>
           {#if msg.highlightedContent}
-            <div class="markdown-body text-sm text-text-primary break-words">{@html msg.highlightedContent}</div>
+            <div class="markdown-body text-[13px] text-fg break-words">{@html msg.highlightedContent}</div>
           {:else}
-            <p class="whitespace-pre-wrap text-sm text-text-primary break-words">{msg.content}</p>
+            <p class="whitespace-pre-wrap text-[13px] text-fg break-words">{msg.content}</p>
           {/if}
         </div>
       {/each}
     {/if}
   </div>
 
-  <div class="border-t border-border/60 bg-surface-1/70 px-4 py-3 shrink-0">
+  <div class="border-t border-border-subtle px-5 py-3 shrink-0">
     {#if concluded}
-      <p class="text-xs text-text-secondary/80">
+      <p class="text-[12px] text-fg-muted">
         This discussion has concluded. Posting is disabled.
       </p>
     {:else}
@@ -247,16 +265,18 @@
           placeholder="Post to the channel (Shift+Enter for newline)"
           aria-label="Channel message input"
           rows={1}
-          class="flex-1 resize-none rounded-lg border border-border bg-surface-0 px-3 py-2.5 text-sm text-text-primary placeholder:text-text-secondary/50 focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/50 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          class="flex-1 resize-none rounded-[var(--radius-control)] border border-border-subtle bg-surface-0 px-3 py-2 text-[13px] text-fg placeholder:text-fg-hint focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/40 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
         ></textarea>
-        <button
-          type="button"
+        <Button
+          variant="primary"
+          size="md"
           onclick={handlePost}
           disabled={!canPost}
-          class="shrink-0 rounded-lg bg-accent px-4 py-2.5 text-sm font-medium text-surface-0 hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+          loading={posting}
+          class="shrink-0"
         >
-          {posting ? 'Posting...' : 'Post'}
-        </button>
+          {#snippet children()}{posting ? 'Posting…' : 'Post'}{/snippet}
+        </Button>
       </div>
     {/if}
   </div>

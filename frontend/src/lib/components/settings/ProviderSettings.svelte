@@ -73,7 +73,7 @@
 </script>
 
 <div class="space-y-8">
-  <section class="rounded-2xl border border-border/70 bg-surface-1/75 p-5 shadow-[0_10px_40px_-24px_rgba(0,0,0,0.45)] backdrop-blur-sm">
+  <section class="rounded-[var(--radius-control)] border border-border-subtle bg-card/30 p-5">
     <p class="text-[11px] font-semibold uppercase tracking-[0.22em] text-text-secondary/70">Providers</p>
     <h3 class="mt-1 text-base font-semibold text-text-primary">Provider health and binaries</h3>
     <p class="mt-1 text-sm text-text-secondary">Check installation state, override binary paths, and review the model lists each provider exposes.</p>
@@ -83,7 +83,7 @@
     { id: 'codex' as const, label: 'Codex', enabledKey: 'codexEnabled' as const, pathKey: 'codexBinaryPath' as const, models: codexModels },
   ] as provider}
     {@const status = getStatus(provider.id)}
-    <div class="rounded-2xl border border-border/70 bg-surface-1/80 p-5 shadow-[0_10px_40px_-24px_rgba(0,0,0,0.45)] backdrop-blur-sm">
+    <div class="rounded-[var(--radius-control)] border border-border-subtle bg-card/30 p-5">
       <div class="mb-4 flex items-start justify-between gap-4">
         <div class="space-y-1">
           <div class="flex items-center gap-2">
@@ -148,7 +148,7 @@
   {/each}
 
   <section
-    class="rounded-2xl border border-border/70 bg-surface-1/80 p-5 shadow-[0_10px_40px_-24px_rgba(0,0,0,0.45)] backdrop-blur-sm"
+    class="rounded-[var(--radius-control)] border border-border-subtle bg-card/30 p-5"
     data-testid="settings-text-generation"
   >
     <div class="mb-4">

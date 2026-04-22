@@ -1,10 +1,17 @@
 <script lang="ts">
-  import { fade } from 'svelte/transition';
+  // Donut meter + hover-revealed popover with token breakdown. The
+  // popover routes through the Popover primitive so it portals to body
+  // and won't be clipped by any ancestor with `overflow-hidden` /
+  // `backdrop-filter`. Hover + focus still drive `showPopover` locally;
+  // Popover.onClose fires on Escape or outside mousedown for AT users.
+
   import type { ContextWindow } from '../../types/events';
   import { formatTokens } from '../../utils/format';
+  import Popover from '../primitives/Popover.svelte';
 
   let { data }: { data: ContextWindow } = $props();
 
+  let buttonEl: HTMLButtonElement | undefined = $state(undefined);
   let showPopover = $state(false);
 
   const RADIUS = 9.75;
@@ -20,20 +27,21 @@
   let dashOffset = $derived(CIRCUMFERENCE - (percentage / 100) * CIRCUMFERENCE);
 
   let strokeColor = $derived(
-    percentage > 95 ? 'stroke-error' : percentage > 80 ? 'stroke-warning' : 'stroke-text-secondary',
+    percentage > 95 ? 'stroke-error' : percentage > 80 ? 'stroke-warning' : 'stroke-fg-subtle',
   );
 
   let displayPct = $derived(Math.round(percentage));
 </script>
 
 <button
+  bind:this={buttonEl}
   type="button"
   class="relative inline-flex items-center bg-transparent border-none p-0 cursor-help focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 rounded-full"
   aria-label="Context window: {displayPct}% used"
-  onmouseenter={() => showPopover = true}
-  onmouseleave={() => showPopover = false}
-  onfocus={() => showPopover = true}
-  onblur={() => showPopover = false}
+  onmouseenter={() => (showPopover = true)}
+  onmouseleave={() => (showPopover = false)}
+  onfocus={() => (showPopover = true)}
+  onblur={() => (showPopover = false)}
 >
   <svg class="w-6 h-6 -rotate-90" viewBox="0 0 24 24" aria-hidden="true">
     <circle
@@ -55,17 +63,28 @@
   <span class="absolute inset-0 flex items-center justify-center text-[7px] font-medium text-text-secondary rotate-0" aria-hidden="true">
     {displayPct}
   </span>
+</button>
 
-  {#if showPopover}
-    <div role="tooltip" transition:fade={{ duration: 100 }} class="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 z-30 bg-surface-1 border border-border rounded-md shadow-lg px-3 py-2 min-w-[160px]">
-      <p class="text-[10px] font-semibold text-text-secondary uppercase tracking-wider mb-1.5">Context window</p>
-      <div class="space-y-0.5 text-xs text-text-secondary">
+<Popover
+  anchor={buttonEl}
+  open={showPopover}
+  onClose={() => (showPopover = false)}
+  placement="top-end"
+  role="none"
+>
+  {#snippet children()}
+    <div
+      role="tooltip"
+      class="bg-surface-1 border border-border-subtle rounded-[var(--radius-control)] shadow-menu px-3 py-2 min-w-[160px]"
+    >
+      <p class="text-[10px] font-semibold text-fg-subtle uppercase tracking-wider mb-1.5">Context window</p>
+      <div class="space-y-0.5 text-xs text-fg-muted">
         <p>{displayPct}% used</p>
         <p>{formatTokens(data.usedTokens)}{maxTokens > 0 ? ` / ${formatTokens(maxTokens)}` : ''} tokens</p>
         {#if totalProcessed > data.usedTokens}
-          <p class="text-text-secondary/60">Total processed: {formatTokens(totalProcessed)}</p>
+          <p class="text-fg-hint">Total processed: {formatTokens(totalProcessed)}</p>
         {/if}
       </div>
     </div>
-  {/if}
-</button>
+  {/snippet}
+</Popover>

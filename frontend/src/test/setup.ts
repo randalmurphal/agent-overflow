@@ -13,6 +13,62 @@ if (typeof globalThis.ResizeObserver === 'undefined') {
   globalThis.ResizeObserver = StubResizeObserver as unknown as typeof ResizeObserver;
 }
 
+// Web Animations API stub. happy-dom does not implement element.animate,
+// so Svelte 5's built-in fade/scale/slide transitions throw when a
+// component that opts into them mounts under test. The stub returns an
+// Animation-shaped object whose `finished` promise is already resolved,
+// and which synchronously fires `finish` via onfinish so Svelte's
+// transition machinery completes on the next microtask (matching the
+// behavior tests expected back when transitions were effectively no-ops
+// because happy-dom silently swallowed the missing method).
+if (typeof Element !== 'undefined' && typeof Element.prototype.animate !== 'function') {
+  (Element.prototype as unknown as { animate: (...args: unknown[]) => Animation }).animate =
+    function stubAnimate(): Animation {
+      const handlers: { finish: Array<(e: Event) => void>; cancel: Array<(e: Event) => void> } = {
+        finish: [],
+        cancel: [],
+      };
+      const anim = {
+        cancel() {
+          for (const h of handlers.cancel) h(new Event('cancel'));
+          if (typeof anim.oncancel === 'function') {
+            anim.oncancel.call(anim as unknown as Animation, new Event('cancel'));
+          }
+        },
+        finish() {
+          for (const h of handlers.finish) h(new Event('finish'));
+          if (typeof anim.onfinish === 'function') {
+            anim.onfinish.call(anim as unknown as Animation, new Event('finish'));
+          }
+        },
+        play() {},
+        pause() {},
+        reverse() {},
+        addEventListener(type: string, cb: EventListenerOrEventListenerObject) {
+          const fn = cb as (e: Event) => void;
+          if (type === 'finish') handlers.finish.push(fn);
+          else if (type === 'cancel') handlers.cancel.push(fn);
+        },
+        removeEventListener(type: string, cb: EventListenerOrEventListenerObject) {
+          const fn = cb as (e: Event) => void;
+          if (type === 'finish') handlers.finish = handlers.finish.filter((h) => h !== fn);
+          else if (type === 'cancel') handlers.cancel = handlers.cancel.filter((h) => h !== fn);
+        },
+        dispatchEvent() { return true; },
+        currentTime: 0,
+        playState: 'finished' as AnimationPlayState,
+        finished: Promise.resolve() as unknown as Animation['finished'],
+        onfinish: null as ((this: Animation, ev: Event) => unknown) | null,
+        oncancel: null as ((this: Animation, ev: Event) => unknown) | null,
+      };
+      // Fire finish on the next microtask so Svelte's transition runner
+      // observes the "completed" state and tears down the DOM node in the
+      // same tick a real animation would.
+      queueMicrotask(() => anim.finish());
+      return anim as unknown as Animation;
+    };
+}
+
 if (typeof globalThis.matchMedia === 'undefined') {
   globalThis.matchMedia = (() => ({
     matches: false,

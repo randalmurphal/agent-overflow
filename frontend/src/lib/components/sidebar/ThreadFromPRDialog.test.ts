@@ -164,7 +164,7 @@ describe('<ThreadFromPRDialog>', () => {
   it('closes when Escape is pressed', async () => {
     const pane = await buildPane();
     let closed = 0;
-    const { getByTestId } = render(ThreadFromPRDialog, {
+    const { container } = render(ThreadFromPRDialog, {
       props: {
         open: true,
         pane,
@@ -172,8 +172,12 @@ describe('<ThreadFromPRDialog>', () => {
       },
     });
     await flush();
-    const dialog = getByTestId('thread-from-pr-backdrop');
-    await fireEvent.keyDown(dialog, { key: 'Escape' });
+    // Escape is routed through Modal's backdrop keydown listener. The
+    // `data-modal-backdrop` attribute is Modal's stable contract for
+    // tests; the previous `thread-from-pr-backdrop` testid went away
+    // with the consolidation onto the shared primitive.
+    const backdrop = container.querySelector('[data-modal-backdrop]')!;
+    await fireEvent.keyDown(backdrop, { key: 'Escape' });
     expect(closed).toBe(1);
   });
 

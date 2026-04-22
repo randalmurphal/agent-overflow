@@ -1,6 +1,5 @@
 <script lang="ts">
-  import { fade, scale } from 'svelte/transition';
-  import { focusTrap } from '../../utils/focusTrap';
+  import Modal from '../primitives/Modal.svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import type { Thread } from '../../types/models';
   import { getThreads } from '../../stores/threads.svelte';
@@ -99,12 +98,10 @@
     error: 'Error',
   };
 
-  function handleKeydown(e: KeyboardEvent): void {
-    if (e.key === 'Escape') {
-      e.preventDefault();
-      onClose();
-      return;
-    }
+  // Escape is handled by Modal. Enter / Arrow keys are caught at the
+  // body level so the search input keeps getting keystrokes it cares
+  // about (letters) while navigation / activation are intercepted.
+  function handleBodyKeydown(e: KeyboardEvent): void {
     if (hits.length === 0) return;
     if (e.key === 'ArrowDown') {
       e.preventDefault();
@@ -118,112 +115,97 @@
       if (hit) void openHit(hit.thread);
     }
   }
-
-  function handleBackdropClick(e: MouseEvent): void {
-    if (e.target === e.currentTarget) onClose();
-  }
 </script>
 
-{#if open}
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div
-    transition:fade={{ duration: 150 }}
-    class="fixed inset-0 z-[60] flex items-start justify-center pt-16 bg-overlay backdrop-blur-sm"
-    onclick={handleBackdropClick}
-    onkeydown={handleKeydown}
-    data-testid="thread-picker-backdrop"
-  >
-    <div
-      use:focusTrap={{ active: open }}
-      transition:scale={{ start: 0.95, duration: 150 }}
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="thread-picker-title"
-      data-testid="thread-picker"
-      class="bg-surface-1 border border-border rounded-lg shadow-xl max-w-2xl w-full mx-4 max-h-[80vh] flex flex-col"
-    >
-      <div class="px-5 pt-5 pb-3 border-b border-border">
-        <h2 id="thread-picker-title" class="text-base font-semibold text-text-primary">Jump to thread</h2>
-        <input
-          bind:this={searchEl}
-          bind:value={query}
-          type="text"
-          placeholder="Filter by title, project, or workspace…"
-          aria-label="Filter threads"
-          data-testid="thread-picker-input"
-          class="mt-3 w-full text-sm rounded border border-border bg-surface-0 px-2.5 py-1.5 text-text-primary focus:outline-none focus:ring-2 focus:ring-accent/50"
-        />
-      </div>
+<Modal
+  {open}
+  title="Jump to thread"
+  onClose={onClose}
+  width="lg"
+  padding="tight"
+  align="top"
+>
+  {#snippet children()}
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div data-testid="thread-picker" onkeydown={handleBodyKeydown}>
+      <input
+        bind:this={searchEl}
+        bind:value={query}
+        type="text"
+        placeholder="Filter by title, project, or workspace…"
+        aria-label="Filter threads"
+        data-testid="thread-picker-input"
+        class="w-full text-[13px] rounded-[var(--radius-control)] border border-border-subtle bg-surface-0 px-3 py-1.5 text-fg placeholder:text-fg-hint focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/40 transition-colors mb-3"
+      />
 
-      <div class="flex-1 overflow-y-auto">
-        {#if visibleThreads.length === 0}
-          <div class="px-5 py-4 text-xs text-text-secondary" data-testid="thread-picker-empty">
-            No threads yet — create one from the sidebar.
-          </div>
-        {:else if hits.length === 0}
-          <div class="px-5 py-4 text-xs text-text-secondary" data-testid="thread-picker-empty">
-            No threads match "{query.trim()}".
-          </div>
-        {:else}
-          <ul class="py-1" data-testid="thread-picker-results">
-            {#each hits as hit, i (hit.thread.id)}
-              {@const status = getThreadStatus(hit.thread.id)}
-              {@const basename = projectBasename(hit.thread.projectPath)}
-              <li>
-                <button
-                  type="button"
-                  data-testid="thread-picker-hit-{hit.thread.id}"
-                  onclick={() => openHit(hit.thread)}
-                  aria-current={activeIndex === i}
-                  class={[
-                    'w-full text-left px-5 py-2 flex items-center gap-2 cursor-pointer transition-colors',
-                    activeIndex === i ? 'bg-accent/15 text-text-primary' : 'hover:bg-surface-2/50 text-text-secondary',
-                  ].join(' ')}
-                >
-                  <span class="text-[10px] font-bold px-1 py-0.5 rounded shrink-0
-                      {hit.thread.provider === 'claude' ? 'bg-accent/20 text-accent' : 'bg-provider-codex/20 text-provider-codex'}" aria-hidden="true">
-                    {hit.thread.provider === 'claude' ? 'C' : 'X'}
-                  </span>
-                  {#if status === 'idle'}
-                    <span class="w-2 h-2 shrink-0" aria-hidden="true"></span>
-                  {:else}
-                    <span
-                      class="w-2 h-2 rounded-full shrink-0 {STATUS_CLASS[status]}"
-                      role="status"
-                      aria-label={STATUS_LABEL[status]}
-                      title={STATUS_LABEL[status]}
-                      data-testid="thread-picker-status-dot"
-                      data-status={status}
-                    ></span>
-                  {/if}
-                  <span class="text-sm truncate text-text-primary flex-1 min-w-0">
-                    {#each computeHighlightSegments(hit.thread.title || 'Untitled', query) as seg}
-                      {#if seg.type === 'match'}
-                        <mark class="bg-accent/30 text-text-primary rounded-sm px-0.5">{seg.value}</mark>
-                      {:else}{seg.value}{/if}
-                    {/each}
-                  </span>
-                  {#if hit.thread.worktreePath}
-                    <span class="text-[9px] px-1 py-0.5 rounded bg-accent/15 text-accent/70 shrink-0" title="Worktree: {hit.thread.worktreePath}">worktree</span>
-                  {/if}
-                  {#if basename}
-                    <span class="text-[10px] text-text-secondary/70 shrink-0 ml-auto truncate max-w-[12rem]">{basename}</span>
-                  {/if}
-                </button>
-              </li>
-            {/each}
-          </ul>
-        {/if}
-      </div>
-
-      <div class="px-5 py-2 border-t border-border text-[10px] text-text-secondary/70 flex items-center justify-between gap-3">
-        <span>↑↓ to navigate · ↵ to open · Esc to close</span>
-        {#if overflow > 0}
-          <span data-testid="thread-picker-overflow" class="text-text-secondary/80">
-            {overflow} more — refine your query.
-          </span>
-        {/if}
-      </div>
+      {#if visibleThreads.length === 0}
+        <div class="px-2 py-3 text-[12px] text-fg-muted" data-testid="thread-picker-empty">
+          No threads yet — create one from the sidebar.
+        </div>
+      {:else if hits.length === 0}
+        <div class="px-2 py-3 text-[12px] text-fg-muted" data-testid="thread-picker-empty">
+          No threads match "{query.trim()}".
+        </div>
+      {:else}
+        <ul class="py-1 -mx-1" data-testid="thread-picker-results">
+          {#each hits as hit, i (hit.thread.id)}
+            {@const status = getThreadStatus(hit.thread.id)}
+            {@const basename = projectBasename(hit.thread.projectPath)}
+            <li>
+              <button
+                type="button"
+                data-testid="thread-picker-hit-{hit.thread.id}"
+                onclick={() => openHit(hit.thread)}
+                aria-current={activeIndex === i}
+                class={[
+                  'w-full text-left px-3 py-1.5 flex items-center gap-2 cursor-pointer transition-colors rounded-[var(--radius-field)]',
+                  activeIndex === i ? 'bg-accent/10 text-fg' : 'hover:bg-surface-2/30 text-fg-muted',
+                ].join(' ')}
+              >
+                <span class="text-[9px] font-semibold px-1 py-0.5 rounded-[4px] shrink-0 tracking-wide
+                    {hit.thread.provider === 'claude' ? 'bg-accent/10 text-accent' : 'bg-provider-codex/10 text-provider-codex'}" aria-hidden="true">
+                  {hit.thread.provider === 'claude' ? 'C' : 'X'}
+                </span>
+                {#if status === 'idle'}
+                  <span class="w-2 h-2 shrink-0" aria-hidden="true"></span>
+                {:else}
+                  <span
+                    class="w-2 h-2 rounded-full shrink-0 {STATUS_CLASS[status]}"
+                    role="status"
+                    aria-label={STATUS_LABEL[status]}
+                    title={STATUS_LABEL[status]}
+                    data-testid="thread-picker-status-dot"
+                    data-status={status}
+                  ></span>
+                {/if}
+                <span class="text-[13px] truncate text-fg flex-1 min-w-0">
+                  {#each computeHighlightSegments(hit.thread.title || 'Untitled', query) as seg}
+                    {#if seg.type === 'match'}
+                      <mark class="bg-accent/30 text-fg rounded-sm px-0.5">{seg.value}</mark>
+                    {:else}{seg.value}{/if}
+                  {/each}
+                </span>
+                {#if hit.thread.worktreePath}
+                  <span class="text-[9px] px-1 py-0.5 rounded-[4px] bg-accent/10 text-accent/80 shrink-0" title="Worktree: {hit.thread.worktreePath}">worktree</span>
+                {/if}
+                {#if basename}
+                  <span class="text-[10px] text-fg-hint shrink-0 ml-auto truncate max-w-[12rem] font-mono">{basename}</span>
+                {/if}
+              </button>
+            </li>
+          {/each}
+        </ul>
+      {/if}
     </div>
-  </div>
-{/if}
+  {/snippet}
+  {#snippet footer()}
+    <div class="flex items-center justify-between gap-3 text-[10px] text-fg-hint w-full">
+      <span>↑↓ to navigate · ↵ to open · Esc to close</span>
+      {#if overflow > 0}
+        <span data-testid="thread-picker-overflow" class="text-fg-muted tabular-nums">
+          {overflow} more — refine your query.
+        </span>
+      {/if}
+    </div>
+  {/snippet}
+</Modal>

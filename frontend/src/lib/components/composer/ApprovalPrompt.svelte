@@ -46,14 +46,18 @@
     aria-live="assertive"
     aria-label="Tool approval required"
     data-testid="approval-prompt"
-    class="border-t border-border bg-surface-1 px-4 py-3 space-y-2"
+    class="px-6 py-3 space-y-2"
   >
     {#each pane.pendingApprovals as approval (approval.requestId)}
-      <div class="rounded border border-accent/40 bg-surface-0 px-3 py-2.5" data-testid="approval-card">
-        <div class="flex items-start justify-between gap-3">
+      <div
+        class="mx-auto w-full max-w-[52rem] rounded-[var(--radius-card)] border border-accent/30 bg-accent/5 px-4 py-3 shadow-sheet"
+        data-testid="approval-card"
+      >
+        <div class="flex items-start gap-2.5">
+          <span class="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-accent" aria-hidden="true"></span>
           <div class="min-w-0 flex-1">
-            <p class="text-sm font-medium text-accent">{approval.toolName}</p>
-            <p class="text-xs text-text-secondary mt-0.5">{approval.description || approval.title}</p>
+            <p class="text-[13px] font-medium text-fg">{approval.toolName}</p>
+            <p class="text-[12px] text-fg-muted mt-0.5">{approval.description || approval.title}</p>
           </div>
         </div>
 

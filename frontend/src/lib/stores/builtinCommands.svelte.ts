@@ -15,6 +15,7 @@ import { closePalette, openPalette } from './palette.svelte';
 import { closeThreadPicker, openThreadPicker } from './threadPicker.svelte';
 import { addToast } from './toast.svelte';
 import { removeThread, prependThread, replaceThread } from './threads.svelte';
+import { errString } from '../utils/errors';
 import { getTerminalFocused } from '../components/terminal/terminalStore.svelte';
 import {
   ArchiveThread,
@@ -143,13 +144,19 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     run: (ctx) =>
       withActiveThread(ctx, pane, async (t) => {
         try {
-          await StopSession(t.id).catch(() => {});
+          // StopSession can fail if the provider process is already gone;
+          // that's fine — we log and continue so the archive still lands.
+          // Swallowing silently would hide stuck-session errors that
+          // otherwise require a user-visible retry.
+          await StopSession(t.id).catch((stopErr) => {
+            console.error('Failed to stop session before archive:', stopErr);
+          });
           await ArchiveThread(t.id);
           removeThread(t.id);
           pane.clear();
           addToast('info', 'Thread archived');
         } catch (err) {
-          addToast('error', `Failed to archive thread: ${err}`);
+          addToast('error', `Failed to archive thread: ${errString(err)}`);
         }
       }),
   });
@@ -171,7 +178,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
           pane.replaceThread(restored);
           addToast('info', 'Thread unarchived');
         } catch (err) {
-          addToast('error', `Failed to unarchive thread: ${err}`);
+          addToast('error', `Failed to unarchive thread: ${errString(err)}`);
         }
       }),
   });
@@ -184,13 +191,18 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     run: (ctx) =>
       withActiveThread(ctx, pane, async (t) => {
         try {
-          await StopSession(t.id).catch(() => {});
+          // Same rationale as thread.archive above — log instead of
+          // silently swallowing a StopSession failure so the cleanup
+          // doesn't become invisible debt.
+          await StopSession(t.id).catch((stopErr) => {
+            console.error('Failed to stop session before delete:', stopErr);
+          });
           await DeleteThread(t.id);
           removeThread(t.id);
           pane.clear();
           addToast('info', 'Thread deleted');
         } catch (err) {
-          addToast('error', `Failed to delete thread: ${err}`);
+          addToast('error', `Failed to delete thread: ${errString(err)}`);
         }
       }),
   });
@@ -208,7 +220,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
           await pane.switchThread(forked);
           addToast('info', `Forked "${t.title}" into a new thread`);
         } catch (err) {
-          addToast('error', `Failed to fork thread: ${err}`);
+          addToast('error', `Failed to fork thread: ${errString(err)}`);
         }
       }),
   });
@@ -227,7 +239,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
           pane.replaceThread(updated);
           replaceThread(updated);
         } catch (err) {
-          addToast('error', `Failed to cycle mode: ${err}`);
+          addToast('error', `Failed to cycle mode: ${errString(err)}`);
         }
       }),
   });
@@ -385,7 +397,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
           await GitCommit(t.id, subject, '');
           addToast('success', 'Commit created');
         } catch (err) {
-          addToast('error', `Commit failed: ${err}`);
+          addToast('error', `Commit failed: ${errString(err)}`);
         }
       }),
   });
@@ -401,7 +413,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
           await GitPush(t.id);
           addToast('success', 'Pushed');
         } catch (err) {
-          addToast('error', `Push failed: ${err}`);
+          addToast('error', `Push failed: ${errString(err)}`);
         }
       }),
   });
@@ -417,7 +429,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
           await GitPull(t.id);
           addToast('success', 'Pulled');
         } catch (err) {
-          addToast('error', `Pull failed: ${err}`);
+          addToast('error', `Pull failed: ${errString(err)}`);
         }
       }),
   });
@@ -435,7 +447,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
           await GitCreatePR(t.id, title, '', false);
           addToast('success', 'Pull request opened');
         } catch (err) {
-          addToast('error', `PR failed: ${err}`);
+          addToast('error', `PR failed: ${errString(err)}`);
         }
       }),
   });

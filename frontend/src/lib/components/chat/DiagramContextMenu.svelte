@@ -67,9 +67,20 @@
         onDismiss();
       }
     };
+    // Keyboard dismissal — Escape anywhere in the document closes the
+    // menu. Without this, a user who opened the menu via keyboard (or
+    // tabbed into it from outside) had no way to cancel without
+    // picking an action, which violates the WAI-ARIA menu pattern.
+    const handleDocKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') {
+        onDismiss();
+      }
+    };
     document.addEventListener('mousedown', handleDocClick, true);
+    document.addEventListener('keydown', handleDocKey, true);
     return () => {
       document.removeEventListener('mousedown', handleDocClick, true);
+      document.removeEventListener('keydown', handleDocKey, true);
     };
   });
 

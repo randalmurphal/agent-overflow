@@ -165,19 +165,21 @@ describe('<MessageSearch> — keyboard navigation', () => {
     const { getByTestId, findByTestId } = render(MessageSearch, { open: true, pane, onClose: vi.fn() });
     await fireEvent.input(getByTestId('message-search-input'), { target: { value: 'x' } });
     await findByTestId('message-search-hit-t1-title');
-    const backdrop = getByTestId('message-search-backdrop');
+    // Arrow keys are caught at the dialog body level so the input keeps
+    // receiving letter keystrokes. Escape is the backdrop's contract.
+    const body = getByTestId('message-search');
 
     // Start at 0 (First).
     expect(getByTestId('message-search-hit-t1-title').getAttribute('aria-current')).toBe('true');
-    await fireEvent.keyDown(backdrop, { key: 'ArrowDown' });
+    await fireEvent.keyDown(body, { key: 'ArrowDown' });
     expect(getByTestId('message-search-hit-t2-a').getAttribute('aria-current')).toBe('true');
-    await fireEvent.keyDown(backdrop, { key: 'ArrowDown' });
+    await fireEvent.keyDown(body, { key: 'ArrowDown' });
     expect(getByTestId('message-search-hit-t3-b').getAttribute('aria-current')).toBe('true');
     // Wrap forward.
-    await fireEvent.keyDown(backdrop, { key: 'ArrowDown' });
+    await fireEvent.keyDown(body, { key: 'ArrowDown' });
     expect(getByTestId('message-search-hit-t1-title').getAttribute('aria-current')).toBe('true');
     // Wrap backward.
-    await fireEvent.keyDown(backdrop, { key: 'ArrowUp' });
+    await fireEvent.keyDown(body, { key: 'ArrowUp' });
     expect(getByTestId('message-search-hit-t3-b').getAttribute('aria-current')).toBe('true');
   });
 
@@ -191,9 +193,9 @@ describe('<MessageSearch> — keyboard navigation', () => {
     const { getByTestId, findByTestId } = render(MessageSearch, { open: true, pane, onClose });
     await fireEvent.input(getByTestId('message-search-input'), { target: { value: 'x' } });
     await findByTestId('message-search-hit-t1-title');
-    const backdrop = getByTestId('message-search-backdrop');
+    const body = getByTestId('message-search');
     // Default is first hit. Enter opens it.
-    await fireEvent.keyDown(backdrop, { key: 'Enter' });
+    await fireEvent.keyDown(body, { key: 'Enter' });
     await waitFor(() => expect(onClose).toHaveBeenCalled());
     expect(pane.threadId).toBe('t1');
   });
@@ -208,9 +210,9 @@ describe('<MessageSearch> — keyboard navigation', () => {
     const { getByTestId, findByTestId } = render(MessageSearch, { open: true, pane, onClose });
     await fireEvent.input(getByTestId('message-search-input'), { target: { value: 'x' } });
     await findByTestId('message-search-hit-t1-title');
-    const backdrop = getByTestId('message-search-backdrop');
-    await fireEvent.keyDown(backdrop, { key: 'ArrowDown' });
-    await fireEvent.keyDown(backdrop, { key: 'Enter' });
+    const body = getByTestId('message-search');
+    await fireEvent.keyDown(body, { key: 'ArrowDown' });
+    await fireEvent.keyDown(body, { key: 'Enter' });
     await waitFor(() => expect(onClose).toHaveBeenCalled());
     expect(pane.threadId).toBe('t2');
   });
@@ -291,8 +293,9 @@ describe('<MessageSearch> — interactions', () => {
     setBindingMock('SearchThreadMessages', async () => []);
     const onClose = vi.fn();
     const pane = makePane();
-    const { getByTestId } = render(MessageSearch, { open: true, pane, onClose });
-    await fireEvent.keyDown(getByTestId('message-search-backdrop'), { key: 'Escape' });
+    const { container } = render(MessageSearch, { open: true, pane, onClose });
+    const backdrop = container.querySelector('[data-modal-backdrop]')!;
+    await fireEvent.keyDown(backdrop, { key: 'Escape' });
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
@@ -300,10 +303,13 @@ describe('<MessageSearch> — interactions', () => {
     setBindingMock('SearchThreadMessages', async () => []);
     const onClose = vi.fn();
     const pane = makePane();
-    const { getByTestId } = render(MessageSearch, { open: true, pane, onClose });
+    const { getByTestId, container } = render(MessageSearch, { open: true, pane, onClose });
+    // Clicking the dialog body should not dismiss; Modal only fires
+    // onClose when the click originates on the backdrop itself.
     await fireEvent.click(getByTestId('message-search'));
     expect(onClose).not.toHaveBeenCalled();
-    await fireEvent.click(getByTestId('message-search-backdrop'));
+    const backdrop = container.querySelector('[data-modal-backdrop]') as HTMLElement;
+    await fireEvent.click(backdrop);
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 });

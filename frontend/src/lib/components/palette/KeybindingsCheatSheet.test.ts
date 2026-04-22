@@ -194,16 +194,17 @@ describe('<KeybindingsCheatSheet> — closing', () => {
   it('calls onClose on Escape', async () => {
     seedThreeCommands();
     const onClose = vi.fn();
-    const { getByTestId } = render(KeybindingsCheatSheet, { open: true, onClose });
-    await fireEvent.keyDown(getByTestId('keybindings-cheatsheet-backdrop'), { key: 'Escape' });
+    const { container } = render(KeybindingsCheatSheet, { open: true, onClose });
+    const backdrop = container.querySelector('[data-modal-backdrop]')!;
+    await fireEvent.keyDown(backdrop, { key: 'Escape' });
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
   it('calls onClose on backdrop click (but not on dialog click)', async () => {
     seedThreeCommands();
     const onClose = vi.fn();
-    const { getByTestId } = render(KeybindingsCheatSheet, { open: true, onClose });
-    const backdrop = getByTestId('keybindings-cheatsheet-backdrop');
+    const { getByTestId, container } = render(KeybindingsCheatSheet, { open: true, onClose });
+    const backdrop = container.querySelector('[data-modal-backdrop]') as HTMLElement;
     const dialog = getByTestId('keybindings-cheatsheet');
     // Clicking the dialog should NOT close (event.target != currentTarget).
     await fireEvent.click(dialog);

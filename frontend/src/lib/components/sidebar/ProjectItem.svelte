@@ -16,6 +16,10 @@
     toggleProject,
   } from '../../stores/sidebar.svelte';
   import { addToast } from '../../stores/toast.svelte';
+  import ChevronRight from 'lucide-svelte/icons/chevron-right';
+  import FolderOpen from 'lucide-svelte/icons/folder-open';
+  import Pencil from 'lucide-svelte/icons/pencil';
+  import Icon from '../primitives/Icon.svelte';
   import ProjectContextMenu from './ProjectContextMenu.svelte';
   import ProjectThreadList from './ProjectThreadList.svelte';
 
@@ -141,7 +145,7 @@
     aria-expanded={expanded}
     onclick={handleRowClick}
     onkeydown={handleRowKeydown}
-    class="flex items-center gap-1 px-2 py-1.5 rounded-md cursor-pointer text-text-primary hover:bg-surface-2/60 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+    class="flex items-center gap-1.5 px-2 py-1 rounded-[var(--radius-field)] cursor-pointer text-fg hover:bg-surface-2/40 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
   >
     <button
       type="button"
@@ -149,35 +153,16 @@
       aria-label={expanded ? 'Collapse project' : 'Expand project'}
       aria-expanded={expanded}
       data-testid="project-item-chevron"
-      class="flex h-4 w-4 items-center justify-center shrink-0 rounded text-text-secondary/70 hover:text-text-primary cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/50"
+      class="flex h-4 w-4 items-center justify-center shrink-0 rounded text-fg-subtle hover:text-fg cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
     >
-      <svg
-        class="h-3 w-3 transition-transform {expanded ? 'rotate-90' : ''}"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="2.5"
-        stroke-linecap="round"
-        stroke-linejoin="round"
-        aria-hidden="true"
-      >
-        <polyline points="9 18 15 12 9 6" />
-      </svg>
-    </button>
-    <svg
-      class="h-3.5 w-3.5 shrink-0 text-accent/80"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      stroke-width="2"
-      stroke-linecap="round"
-      stroke-linejoin="round"
-      aria-hidden="true"
-    >
-      <path
-        d="M20 19a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2z"
+      <Icon
+        icon={ChevronRight}
+        size={11}
+        strokeWidth={2.5}
+        class={'opacity-80 transition-transform ' + (expanded ? 'rotate-90' : '')}
       />
-    </svg>
+    </button>
+    <Icon icon={FolderOpen} size={13} strokeWidth={2} class="shrink-0 text-accent/80 opacity-100" />
     {#if renaming}
       <!-- svelte-ignore a11y_autofocus -->
       <input
@@ -188,18 +173,18 @@
         onclick={(e) => e.stopPropagation()}
         disabled={renameSaving}
         aria-label="Rename project"
-        class="text-sm flex-1 min-w-0 bg-surface-0 border border-accent rounded px-1 py-0.5 text-text-primary focus:outline-none"
+        class="text-[12.5px] flex-1 min-w-0 bg-surface-0 border border-accent/50 rounded-[var(--radius-field)] px-1 py-0.5 text-fg focus:outline-none"
       />
     {:else}
       <span
-        class="text-sm font-medium truncate flex-1"
+        class="text-[12.5px] font-medium truncate flex-1 text-fg"
         title={project.project.path}
       >
         {project.project.name}
       </span>
       {#if project.threadCount > 0}
         <span
-          class="ml-1 shrink-0 text-[10px] tabular-nums text-text-secondary/60"
+          class="ml-1 shrink-0 text-[10px] tabular-nums text-fg-hint"
           aria-hidden="true"
         >
           {project.threadCount}
@@ -211,21 +196,9 @@
         title="New thread in this project"
         aria-label="New thread in this project"
         data-testid="project-item-new-thread"
-        class="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity ml-1 shrink-0 flex h-5 w-5 items-center justify-center rounded text-text-secondary hover:text-text-primary hover:bg-surface-2/60 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+        class="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity ml-1 shrink-0 flex h-5 w-5 items-center justify-center rounded text-fg-subtle hover:text-fg hover:bg-surface-2/40 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
       >
-        <svg
-          class="h-3.5 w-3.5"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="2"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-          aria-hidden="true"
-        >
-          <path d="M12 20h9" />
-          <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z" />
-        </svg>
+        <Icon icon={Pencil} size={12} strokeWidth={2} class="opacity-90" />
       </button>
     {/if}
   </div>

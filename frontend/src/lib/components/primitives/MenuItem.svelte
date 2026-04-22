@@ -64,7 +64,7 @@
   // items still keep the default check column so they can be used in
   // radio groups (e.g. destructive selection in a confirmation menu).
   const VARIANT_TEXT: Record<NonNullable<Props['variant']>, string> = {
-    default: 'text-text-primary',
+    default: 'text-fg',
     danger: 'text-error',
   };
 </script>
@@ -84,23 +84,23 @@
     'w-full flex items-center gap-2 px-3 py-1.5 text-sm text-left',
     'cursor-pointer select-none',
     'focus-visible:outline-none',
-    'hover:bg-surface-2/60 focus:bg-surface-2/60',
+    'hover:bg-surface-2/40 focus:bg-surface-2/40',
     VARIANT_TEXT[variant],
     disabled ? 'opacity-50 cursor-not-allowed hover:bg-transparent focus:bg-transparent' : '',
   ].join(' ')}
 >
   {#if icon}
-    <span class="flex h-4 w-4 items-center justify-center text-text-secondary" aria-hidden="true">
+    <span class="flex h-4 w-4 items-center justify-center text-fg-subtle" aria-hidden="true">
       {@render icon()}
     </span>
   {/if}
   <span class="flex-1 truncate">{label}</span>
   {#if checked}
-    <span class="text-accent" aria-hidden="true">&#10003;</span>
+    <span class="text-accent/80" aria-hidden="true">&#10003;</span>
   {/if}
   {#if kbd}
     <span
-      class="ml-auto text-[10px] tracking-wide text-text-secondary/70"
+      class="ml-auto text-[10px] tracking-wide text-fg-hint"
       aria-hidden="true"
     >
       {kbd}

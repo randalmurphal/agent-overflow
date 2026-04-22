@@ -185,8 +185,10 @@ describe('<DiscussionEditor>', () => {
     expect(dialog).toBeInTheDocument();
     // Deletion hasn't happened yet.
     expect(deleteMock.mock.calls.length).toBe(0);
-    // Confirm
-    const confirm = dialog.querySelector<HTMLButtonElement>('[data-confirm]')!;
+    // Confirm. Post-Button migration the confirm button no longer
+    // carries `[data-confirm]`; it's found by role + name instead (the
+    // dialog only has two buttons — Cancel and the danger Confirm).
+    const confirm = dialog.querySelector<HTMLButtonElement>('button[data-autofocus]')!;
     await fireEvent.click(confirm);
     await Promise.resolve();
     await Promise.resolve();

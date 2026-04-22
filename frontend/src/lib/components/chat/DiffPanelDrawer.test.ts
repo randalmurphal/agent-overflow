@@ -189,4 +189,21 @@ describe('<DiffPanelDrawer>', () => {
 
     expect((await findByTestId('diff-panel-error')).textContent).toContain('payload gone');
   });
+
+  // Stage 4 refactor: DiffPanelDrawer composes from the shared Drawer
+  // primitive rather than hand-rolling its own <aside> chrome. The
+  // panel stays non-resizable (fixed 340px) — that's by design for
+  // this surface, which has its own internal tabs/scroll.
+  it('composes its chrome via the Drawer primitive at a fixed height', async () => {
+    const pane = await buildPane(makeThread({ id: 'thread-a' }));
+    const { container } = render(DiffPanelDrawer, { props: { pane } });
+    await flush();
+    const drawerEl = container.querySelector('[data-drawer-position="bottom"]') as HTMLElement;
+    expect(drawerEl).not.toBeNull();
+    expect(drawerEl.style.height).toBe('340px');
+    // Resizable=false so no separator/handle is rendered inside the
+    // diff panel specifically.
+    const handle = drawerEl.querySelector('[role="separator"][aria-orientation="horizontal"]');
+    expect(handle).toBeNull();
+  });
 });

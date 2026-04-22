@@ -189,24 +189,24 @@
 
 {#if count > 0}
   <div
-    class="mb-2 overflow-hidden rounded border border-border bg-surface-1"
+    class="mx-6 mb-2 overflow-hidden rounded-[var(--radius-control)] border border-border-subtle bg-card/30"
     role="region"
     aria-label="Background tasks"
     data-testid="background-task-tray"
   >
     <button
       type="button"
-      class="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-surface-2/40 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+      class="flex w-full items-center gap-2 px-2.5 py-1.5 text-left hover:bg-surface-2/25 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 transition-colors"
       onclick={toggle}
       onkeydown={headerKeydown}
       aria-expanded={expanded}
       aria-controls="background-task-tray-body"
       data-testid="background-task-tray-header"
     >
-      <span class="text-xs text-text-secondary select-none" aria-hidden="true">{expanded ? '▼' : '▶'}</span>
-      <span class="text-xs font-semibold uppercase tracking-wide text-text-secondary">Background</span>
+      <span class="text-[11px] text-fg-subtle select-none" aria-hidden="true">{expanded ? '▼' : '▶'}</span>
+      <span class="text-[11px] font-medium uppercase tracking-[0.1em] text-fg-subtle">Background</span>
       <span
-        class="rounded bg-accent/15 px-1.5 text-xs font-medium text-accent"
+        class="rounded-[var(--radius-field)] bg-accent/15 px-1.5 text-[10px] font-medium text-accent"
         data-testid="background-task-tray-count"
       >
         {count}
@@ -223,7 +223,7 @@
     {#if expanded}
       <div
         id="background-task-tray-body"
-        class="border-t border-border px-2 py-2"
+        class="border-t border-border-subtle px-2 py-2"
         data-testid="background-task-tray-body"
       >
         <ul class="flex flex-col gap-1">
@@ -231,7 +231,7 @@
             <li>
               <button
                 type="button"
-                class="flex w-full items-center gap-2 rounded border border-border/60 bg-surface-0 px-2 py-1.5 text-left hover:bg-surface-2/40 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+                class="flex w-full items-center gap-2 rounded-[var(--radius-field)] border border-border-subtle bg-surface-0/50 px-2 py-1 text-left hover:bg-surface-2/30 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 transition-colors"
                 onclick={() => onRowClick(task)}
                 onkeydown={(evt) => onRowKeydown(evt, task)}
                 data-testid="background-task-tray-row"

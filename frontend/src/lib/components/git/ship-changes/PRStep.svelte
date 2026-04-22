@@ -4,6 +4,7 @@
 
   import type { ShipChangesState } from '../../../stores/shipChanges.svelte';
   import type { GitStatus } from '../../../types/git';
+  import Button from '../../primitives/Button.svelte';
 
   let { state, onCreate }: {
     state: ShipChangesState;
@@ -103,15 +104,16 @@
 
   {#if !done && !alreadyHasPR}
     <div class="flex justify-end gap-2 pt-1">
-      <button
-        type="button"
+      <Button
+        variant="primary"
+        size="md"
         onclick={onCreate}
-        disabled={!state.canCreatePR || busy}
-        data-testid="ship-changes-pr-submit"
-        class="px-4 py-2 text-xs rounded-md font-medium bg-accent text-surface-0 hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+        disabled={!state.canCreatePR}
+        loading={busy}
+        testId="ship-changes-pr-submit"
       >
-        {busy ? 'Opening PR…' : 'Create PR'}
-      </button>
+        {#snippet children()}{busy ? 'Opening PR…' : 'Create PR'}{/snippet}
+      </Button>
     </div>
   {/if}
 </div>

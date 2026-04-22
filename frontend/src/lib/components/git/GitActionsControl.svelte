@@ -1,11 +1,26 @@
 <script lang="ts">
+  // Split-button control: primary action on the left, caret opens a menu
+  // with the remaining git actions. The dropdown composes the Popover +
+  // Menu + MenuItem primitives so it inherits portaling, arrow-key nav,
+  // typeahead, and focus management from the shared implementation —
+  // previously this file hand-rolled a `fixed`-backdrop + `absolute`-menu
+  // pattern that was vulnerable to the same overflow-clipping bug that
+  // hit the composer popovers.
+
   import { onMount, onDestroy } from 'svelte';
-  import { fade, fly } from 'svelte/transition';
+  import ChevronDown from 'lucide-svelte/icons/chevron-down';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import type { GitStatus } from '../../types/git';
+  import { errString } from '../../utils/errors';
   import CommitDialog from './CommitDialog.svelte';
   import ShipChangesDrawer from './ShipChangesDrawer.svelte';
   import ConfirmDialog from '../shared/ConfirmDialog.svelte';
+  import Popover from '../primitives/Popover.svelte';
+  import Menu from '../primitives/Menu.svelte';
+  import MenuItem from '../primitives/MenuItem.svelte';
+  import MenuDivider from '../primitives/MenuDivider.svelte';
+  import Icon from '../primitives/Icon.svelte';
+  import Button from '../primitives/Button.svelte';
   import {
     loadGitStatus,
     primaryActionFor,
@@ -43,7 +58,6 @@
   });
 
   let menuTriggerEl: HTMLButtonElement | undefined = $state(undefined);
-  let menuEl: HTMLDivElement | undefined = $state(undefined);
   let statusLoadGeneration = 0;
 
   let isWorktree = $derived(!!pane.thread?.worktreePath);
@@ -64,7 +78,7 @@
       console.error('Failed to get git status:', err);
       status = null;
       statusError = true;
-      pane.setGeneralError(`Failed to load git status: ${err}`);
+      pane.setGeneralError(`Failed to load git status: ${errString(err)}`);
     }
   }
 
@@ -119,31 +133,9 @@
     }
   }
 
-  // Focus the first enabled menuitem when dropdown opens.
-  $effect(() => {
-    if (showDropdown && menuEl) {
-      const first = menuEl.querySelector<HTMLElement>('button[role="menuitem"]:not([disabled])');
-      first?.focus();
-    }
-  });
-
-  function handleMenuKeydown(e: KeyboardEvent) {
-    if (e.key === 'Escape') {
-      showDropdown = false;
-      menuTriggerEl?.focus();
-      return;
-    }
-    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-      e.preventDefault();
-      if (!menuEl) return;
-      const items = [...menuEl.querySelectorAll<HTMLElement>('button[role="menuitem"]:not([disabled])')];
-      if (items.length === 0) return;
-      const current = items.indexOf(document.activeElement as HTMLElement);
-      const next = e.key === 'ArrowDown'
-        ? (current + 1) % items.length
-        : (current - 1 + items.length) % items.length;
-      items[next].focus();
-    }
+  function closeMenu(): void {
+    showDropdown = false;
+    menuTriggerEl?.focus();
   }
 
   function handleCommitClose() {
@@ -153,16 +145,17 @@
 </script>
 
 {#if statusError}
-  <button
+  <Button
+    variant="danger-outline"
+    size="sm"
     onclick={() => refreshStatus()}
-    data-testid="git-actions-error"
-    class="text-xs px-2 py-1 rounded border border-error/40 text-error/80 hover:text-error cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+    testId="git-actions-error"
     title="Failed to load git status. Click to retry."
   >
-    Git: error
-  </button>
+    {#snippet children()}Git: error{/snippet}
+  </Button>
 {:else if status && status.isRepo}
-  <div class="relative flex">
+  <div class="flex">
     <button
       onclick={executePrimary}
       disabled={primaryAction.disabled || actionLoading}
@@ -173,83 +166,90 @@
     </button>
     <button
       bind:this={menuTriggerEl}
-      onclick={() => showDropdown = !showDropdown}
+      onclick={() => (showDropdown = !showDropdown)}
       aria-label="More git actions"
       aria-expanded={showDropdown}
       aria-haspopup="menu"
       class="text-xs px-1 py-1 rounded-r border border-l-0 border-border text-text-secondary hover:text-text-primary hover:border-text-secondary cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
     >
-      <svg class="w-3 h-3" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
-        <path d="M3 5l3 3 3-3" />
-      </svg>
+      <Icon icon={ChevronDown} size={12} strokeWidth={2} class="opacity-80" />
     </button>
-
-    {#if showDropdown}
-      <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <div transition:fade={{ duration: 100 }} class="fixed inset-0 z-40" onclick={() => { showDropdown = false; menuTriggerEl?.focus(); }} onkeydown={(e) => { if (e.key === 'Escape') { showDropdown = false; menuTriggerEl?.focus(); } }}></div>
-      <!-- svelte-ignore a11y_interactive_supports_focus -->
-      <div bind:this={menuEl} onkeydown={handleMenuKeydown} transition:fly={{ y: -4, duration: 120 }} class="absolute top-full right-0 mt-1 z-50 bg-surface-1 border border-border rounded-lg shadow-lg min-w-[140px]" role="menu" aria-label="Git actions">
-        <button
-          onclick={() => { showDropdown = false; showCommit = true; }}
-          disabled={!status.hasChanges}
-          role="menuitem"
-          class="w-full text-left px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary hover:bg-surface-2/50 active:bg-surface-2/70 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-        >
-          Commit
-        </button>
-        <button
-          onclick={() => { showDropdown = false; void guard(() => runPushAction(ctx())); }}
-          disabled={status.aheadCount === 0}
-          role="menuitem"
-          class="w-full text-left px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary hover:bg-surface-2/50 active:bg-surface-2/70 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-        >
-          Push
-        </button>
-        <button
-          onclick={() => { showDropdown = false; void guard(() => runPullAction(ctx())); }}
-          disabled={status.behindCount === 0}
-          role="menuitem"
-          class="w-full text-left px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary hover:bg-surface-2/50 active:bg-surface-2/70 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-        >
-          Pull
-        </button>
-        <button
-          onclick={() => { showDropdown = false; void guard(() => runCreatePRAction(ctx())); }}
-          disabled={!canCreatePR}
-          role="menuitem"
-          class="w-full text-left px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary hover:bg-surface-2/50 active:bg-surface-2/70 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-        >
-          Create PR
-        </button>
-        <div class="border-t border-border my-0.5"></div>
-        <button
-          onclick={() => { showDropdown = false; showShip = true; }}
-          role="menuitem"
-          data-testid="git-actions-ship"
-          class="w-full text-left px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary hover:bg-surface-2/50 active:bg-surface-2/70 cursor-pointer transition-colors"
-        >
-          Ship Changes…
-        </button>
-        {#if isWorktree}
-          <div class="border-t border-border my-0.5"></div>
-          <button
-            onclick={() => { showDropdown = false; showRemoveWorktreeConfirm = true; }}
-            role="menuitem"
-            class="w-full text-left px-3 py-1.5 text-xs text-error/80 hover:text-error hover:bg-surface-2/50 active:bg-surface-2/70 cursor-pointer transition-colors"
-          >
-            Remove Worktree
-          </button>
-        {/if}
-      </div>
-    {/if}
   </div>
+
+  {@const menuStatus = status}
+  <Popover
+    anchor={menuTriggerEl}
+    open={showDropdown}
+    onClose={closeMenu}
+    placement="bottom-end"
+    role="none"
+  >
+    {#snippet children()}
+      <Menu ariaLabel="Git actions" onClose={closeMenu}>
+        <MenuItem
+          label="Commit"
+          disabled={!menuStatus.hasChanges}
+          onSelect={() => {
+            showDropdown = false;
+            showCommit = true;
+          }}
+        />
+        <MenuItem
+          label="Push"
+          disabled={menuStatus.aheadCount === 0}
+          onSelect={() => {
+            showDropdown = false;
+            void guard(() => runPushAction(ctx()));
+          }}
+        />
+        <MenuItem
+          label="Pull"
+          disabled={menuStatus.behindCount === 0}
+          onSelect={() => {
+            showDropdown = false;
+            void guard(() => runPullAction(ctx()));
+          }}
+        />
+        <MenuItem
+          label="Create PR"
+          disabled={!canCreatePR}
+          onSelect={() => {
+            showDropdown = false;
+            void guard(() => runCreatePRAction(ctx()));
+          }}
+        />
+        <MenuDivider />
+        <MenuItem
+          label="Ship Changes…"
+          onSelect={() => {
+            showDropdown = false;
+            showShip = true;
+          }}
+        />
+        {#if isWorktree}
+          <MenuDivider />
+          <MenuItem
+            label="Remove Worktree"
+            variant="danger"
+            onSelect={() => {
+              showDropdown = false;
+              showRemoveWorktreeConfirm = true;
+            }}
+          />
+        {/if}
+      </Menu>
+    {/snippet}
+  </Popover>
 
   <CommitDialog {pane} open={showCommit} onClose={handleCommitClose} />
 
   <ShipChangesDrawer
     {pane}
     open={showShip}
-    onClose={() => { showShip = false; refreshStatus(); }}
+    onClose={() => {
+      showShip = false;
+      refreshStatus();
+    }}
   />
 
   <ConfirmDialog
@@ -258,7 +258,12 @@
     description="This will remove the git worktree for this thread. The branch will be preserved but the working directory will be deleted."
     confirmLabel="Remove"
     destructive={true}
-    onConfirm={() => { showRemoveWorktreeConfirm = false; void guard(() => runRemoveWorktreeAction(ctx())); }}
-    onCancel={() => { showRemoveWorktreeConfirm = false; }}
+    onConfirm={() => {
+      showRemoveWorktreeConfirm = false;
+      void guard(() => runRemoveWorktreeAction(ctx()));
+    }}
+    onCancel={() => {
+      showRemoveWorktreeConfirm = false;
+    }}
   />
 {/if}

@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { fade, scale } from 'svelte/transition';
-  import { focusTrap } from '../../../utils/focusTrap';
+  import Modal from '../../primitives/Modal.svelte';
+  import Button from '../../primitives/Button.svelte';
   import type { RevertMode } from '../../../types/checkpoint';
 
   interface Props {
@@ -37,52 +37,28 @@
   function handleFork() {
     onRevert('fork');
   }
-
-  function handleKeydown(e: KeyboardEvent) {
-    if (e.key === 'Escape') {
-      e.preventDefault();
-      onCancel();
-    }
-  }
-
-  function handleBackdropClick(e: MouseEvent) {
-    if (e.target === e.currentTarget) onCancel();
-  }
 </script>
 
-{#if open}
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div
-    transition:fade={{ duration: 150 }}
-    class="fixed inset-0 z-[60] flex items-center justify-center bg-overlay backdrop-blur-sm"
-    onclick={handleBackdropClick}
-    onkeydown={handleKeydown}
-    data-testid="revert-dialog-backdrop"
-  >
-    <div
-      use:focusTrap={{ active: open }}
-      transition:scale={{ start: 0.95, duration: 150 }}
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="revert-title-{dialogId}"
-      aria-describedby="revert-desc-{dialogId}"
-      data-testid="revert-dialog"
-      class="bg-surface-1 border border-border rounded-lg shadow-xl max-w-md w-full mx-4 p-5"
-    >
-      <h2 id="revert-title-{dialogId}" class="text-base font-semibold text-text-primary mb-1.5">
-        Revert to turn {turnIndex}
-      </h2>
-      <p id="revert-desc-{dialogId}" class="text-sm text-text-secondary mb-3">
+<Modal
+  {open}
+  title={`Revert to turn ${turnIndex}`}
+  onClose={onCancel}
+  width="md"
+  padding="comfortable"
+>
+  {#snippet children()}
+    <div data-testid="revert-dialog">
+      <p id="revert-desc-{dialogId}" class="text-[13px] text-fg-muted mb-3 leading-relaxed">
         The checkpoint captures state from just before turn {turnIndex} ran, so
         anything from turn {turnIndex} onwards is dropped.
       </p>
 
-      <fieldset class="space-y-2 mb-4">
+      <fieldset class="space-y-2">
         <legend class="sr-only">Revert scope</legend>
 
         <label
-          class="flex items-start gap-2 rounded border border-border bg-surface-0 px-3 py-2 cursor-pointer hover:border-accent/40"
-          class:border-accent={selected === 'revert-both'}
+          class="flex items-start gap-2 rounded-[var(--radius-control)] border bg-surface-0 px-3 py-2 cursor-pointer transition-colors
+            {selected === 'revert-both' ? 'border-accent/60' : 'border-border-subtle hover:border-accent/40'}"
         >
           <input
             type="radio"
@@ -91,19 +67,19 @@
             checked={selected === 'revert-both'}
             onchange={() => (selected = 'revert-both')}
             data-testid="revert-mode-both"
-            class="mt-0.5"
+            class="mt-0.5 accent-accent"
           />
           <div class="min-w-0 flex-1">
-            <div class="text-sm font-medium text-text-primary">Revert conversation and files</div>
-            <div class="text-xs text-text-secondary">
+            <div class="text-[13px] font-medium text-fg">Revert conversation and files</div>
+            <div class="text-[12px] text-fg-muted leading-relaxed">
               Drop turns after this point and restore the workspace to the captured state.
             </div>
           </div>
         </label>
 
         <label
-          class="flex items-start gap-2 rounded border border-border bg-surface-0 px-3 py-2 cursor-pointer hover:border-accent/40"
-          class:border-accent={selected === 'revert-conversation'}
+          class="flex items-start gap-2 rounded-[var(--radius-control)] border bg-surface-0 px-3 py-2 cursor-pointer transition-colors
+            {selected === 'revert-conversation' ? 'border-accent/60' : 'border-border-subtle hover:border-accent/40'}"
         >
           <input
             type="radio"
@@ -112,11 +88,11 @@
             checked={selected === 'revert-conversation'}
             onchange={() => (selected = 'revert-conversation')}
             data-testid="revert-mode-conversation"
-            class="mt-0.5"
+            class="mt-0.5 accent-accent"
           />
           <div class="min-w-0 flex-1">
-            <div class="text-sm font-medium text-text-primary">Revert conversation only</div>
-            <div class="text-xs text-text-secondary">
+            <div class="text-[13px] font-medium text-fg">Revert conversation only</div>
+            <div class="text-[12px] text-fg-muted leading-relaxed">
               Drop turns after this point. Keep any file changes you want to hand-edit or
               commit. {isClaude ? 'Starts a fresh Claude session; the agent will not remember prior turns.' : ''}
             </div>
@@ -124,8 +100,8 @@
         </label>
 
         <label
-          class="flex items-start gap-2 rounded border border-border bg-surface-0 px-3 py-2 cursor-pointer hover:border-accent/40"
-          class:border-accent={selected === 'revert-code'}
+          class="flex items-start gap-2 rounded-[var(--radius-control)] border bg-surface-0 px-3 py-2 cursor-pointer transition-colors
+            {selected === 'revert-code' ? 'border-accent/60' : 'border-border-subtle hover:border-accent/40'}"
         >
           <input
             type="radio"
@@ -134,47 +110,44 @@
             checked={selected === 'revert-code'}
             onchange={() => (selected = 'revert-code')}
             data-testid="revert-mode-code"
-            class="mt-0.5"
+            class="mt-0.5 accent-accent"
           />
           <div class="min-w-0 flex-1">
-            <div class="text-sm font-medium text-text-primary">Revert files only</div>
-            <div class="text-xs text-text-secondary">
+            <div class="text-[13px] font-medium text-fg">Revert files only</div>
+            <div class="text-[12px] text-fg-muted leading-relaxed">
               Restore the workspace to the captured state. Conversation stays intact so the
               agent can keep working from where it left off.
             </div>
           </div>
         </label>
       </fieldset>
-
-      <div class="flex items-center justify-between gap-2">
-        <button
-          type="button"
-          onclick={handleFork}
-          data-testid="revert-fork"
-          class="text-xs text-text-secondary hover:text-accent cursor-pointer underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 rounded px-1"
-        >
-          Fork instead (new thread)
-        </button>
-        <div class="flex gap-2">
-          <button
-            type="button"
-            onclick={onCancel}
-            data-testid="revert-cancel"
-            class="px-4 py-2 text-sm rounded-md border border-border text-text-secondary hover:text-text-primary hover:border-text-secondary cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            data-autofocus
-            onclick={handleApply}
-            data-testid="revert-apply"
-            class="px-4 py-2 text-sm rounded-md font-medium bg-error text-surface-0 hover:opacity-90 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
-          >
-            Revert
-          </button>
-        </div>
-      </div>
     </div>
-  </div>
-{/if}
+  {/snippet}
+  {#snippet footer()}
+    <!--
+      "Fork instead" is a link-style action, not a standard CTA.
+      Keeping it hand-rolled so the label reads as a secondary
+      navigation choice rather than competing with Cancel/Revert.
+    -->
+    <button
+      type="button"
+      onclick={handleFork}
+      data-testid="revert-fork"
+      class="mr-auto text-[11px] text-fg-muted hover:text-accent cursor-pointer underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 rounded px-1 transition-colors"
+    >
+      Fork instead (new thread)
+    </button>
+    <Button variant="secondary" size="sm" onclick={onCancel} testId="revert-cancel">
+      {#snippet children()}Cancel{/snippet}
+    </Button>
+    <Button
+      variant="danger"
+      size="sm"
+      autofocus
+      onclick={handleApply}
+      testId="revert-apply"
+    >
+      {#snippet children()}Revert{/snippet}
+    </Button>
+  {/snippet}
+</Modal>

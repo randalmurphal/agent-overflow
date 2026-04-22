@@ -28,6 +28,7 @@ import {
   updateThreadTitle,
 } from '../../stores/threads.svelte';
 import { addToast } from '../../stores/toast.svelte';
+import { errString } from '../../utils/errors';
 import type { Thread } from '../../types/models';
 
 export interface ThreadActionCtx {
@@ -53,7 +54,7 @@ export async function renameThreadAction(
     updateThreadTitle(ctx.thread.id, trimmed);
   } catch (err) {
     console.error('Failed to rename thread:', err);
-    ctx.reportError(`Failed to rename thread: ${err}`);
+    ctx.reportError(`Failed to rename thread: ${errString(err)}`);
   }
 }
 
@@ -71,7 +72,7 @@ export async function archiveThreadAction(ctx: ThreadActionCtx): Promise<void> {
     }
   } catch (err) {
     console.error('Failed to archive thread:', err);
-    ctx.reportError(`Failed to archive thread: ${err}`);
+    ctx.reportError(`Failed to archive thread: ${errString(err)}`);
   }
 }
 
@@ -84,7 +85,7 @@ export async function unarchiveThreadAction(ctx: ThreadActionCtx): Promise<void>
     addToast('info', `Unarchived "${restored.title || 'thread'}"`);
   } catch (err) {
     console.error('Failed to unarchive thread:', err);
-    ctx.reportError(`Failed to unarchive thread: ${err}`);
+    ctx.reportError(`Failed to unarchive thread: ${errString(err)}`);
   }
 }
 
@@ -103,7 +104,7 @@ export async function deleteThreadAction(ctx: ThreadActionCtx): Promise<void> {
     }
   } catch (err) {
     console.error('Failed to delete thread:', err);
-    ctx.reportError(`Failed to delete thread: ${err}`);
+    ctx.reportError(`Failed to delete thread: ${errString(err)}`);
   }
 }
 
@@ -115,6 +116,6 @@ export async function forkThreadAction(ctx: ThreadActionCtx): Promise<void> {
     addToast('info', `Forked "${ctx.thread.title}" into a new thread`);
   } catch (err) {
     console.error('Failed to fork thread:', err);
-    ctx.reportError(`Failed to fork thread: ${err}`);
+    ctx.reportError(`Failed to fork thread: ${errString(err)}`);
   }
 }

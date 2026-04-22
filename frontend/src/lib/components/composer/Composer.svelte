@@ -177,7 +177,7 @@
 </script>
 
 <div
-  class="relative border-t border-border bg-surface-1"
+  class="relative px-6 pb-4 pt-1"
   ondragenter={uploads.handleDragEnter}
   ondragover={uploads.handleDragOver}
   ondragleave={uploads.handleDragLeave}
@@ -186,95 +186,113 @@
   aria-label="Message composer"
   data-testid="composer-root"
 >
-  <ComposerAttachmentRow
-    attachments={draft.attachments}
-    onRemove={uploads.removeAttachment}
-    dragActive={uploads.dragActive}
-  />
+  <div
+    class="mx-auto w-full max-w-[52rem] rounded-[var(--radius-composer)] border border-border-subtle bg-card/70 backdrop-blur-sm shadow-sheet overflow-hidden
+           focus-within:border-border focus-within:shadow-menu transition-[border-color,box-shadow] duration-200"
+  >
+    <ComposerAttachmentRow
+      attachments={draft.attachments}
+      onRemove={uploads.removeAttachment}
+      dragActive={uploads.dragActive}
+    />
 
-  {#if draft.terminalChips.length > 0}
-    <div
-      class="flex flex-col gap-1 border-b border-border bg-surface-0 px-4 py-2"
-      data-testid="terminal-chip-row"
-    >
-      {#each draft.terminalChips as chip (chip.id)}
-        <ComposerTerminalChip
-          {chip}
-          expanded={isChipExpanded(chip.id)}
-          onToggle={handleToggleChip}
-          onRemove={draft.removeTerminalChip}
+    {#if draft.terminalChips.length > 0}
+      <div
+        class="flex flex-col gap-1 border-b border-border-subtle bg-surface-0/40 px-4 py-2"
+        data-testid="terminal-chip-row"
+      >
+        {#each draft.terminalChips as chip (chip.id)}
+          <ComposerTerminalChip
+            {chip}
+            expanded={isChipExpanded(chip.id)}
+            onToggle={handleToggleChip}
+            onRemove={draft.removeTerminalChip}
+          />
+        {/each}
+      </div>
+    {/if}
+
+    {#if isTurnActive}
+      <div
+        class="flex items-center gap-2 border-b border-border-subtle bg-accent/10 px-4 py-1.5 text-[11px] text-fg-muted"
+        role="status"
+        aria-live="polite"
+        data-testid="composer-turn-banner"
+      >
+        <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-accent shrink-0" aria-hidden="true"></span>
+        <span class="truncate">Agent is responding.</span>
+      </div>
+    {/if}
+
+    <div class="px-4 pt-3 pb-2">
+      <div class="relative">
+        <ComposerMentionPopover
+          anchor={textarea}
+          open={mentions.mentionTrigger !== null}
+          query={mentions.mentionTrigger?.query ?? ''}
+          results={mentions.mentionResults}
+          activeIndex={mentions.mentionActiveIndex}
+          loading={mentions.mentionLoading}
+          onSelect={mentions.insertMention}
+          onClose={mentions.closeMention}
+          onHover={(idx) => mentions.setMentionActiveIndex(idx)}
         />
-      {/each}
-    </div>
-  {/if}
 
-  {#if isTurnActive}
-    <div
-      class="flex items-center gap-2 border-b border-border bg-accent/10 px-4 py-1.5 text-xs text-text-secondary"
-      role="status"
-      aria-live="polite"
-      data-testid="composer-turn-banner"
-    >
-      <span class="h-2 w-2 animate-pulse rounded-full bg-accent shrink-0" aria-hidden="true"></span>
-      <span class="truncate">Agent is responding.</span>
-    </div>
-  {/if}
+        <ComposerSlashPopover
+          anchor={textarea}
+          open={mentions.slashTrigger !== null}
+          query={mentions.slashTrigger?.text ?? ''}
+          commands={mentions.slashFilteredCommands}
+          activeIndex={mentions.slashActiveIndex}
+          onSelect={mentions.insertSlashCommand}
+          onClose={mentions.closeSlash}
+          onHover={(idx) => mentions.setSlashActiveIndex(idx)}
+        />
 
-  <div class="px-4 py-3">
-    <div class="relative">
-      <ComposerMentionPopover
-        open={mentions.mentionTrigger !== null}
-        query={mentions.mentionTrigger?.query ?? ''}
-        results={mentions.mentionResults}
-        activeIndex={mentions.mentionActiveIndex}
-        loading={mentions.mentionLoading}
-        onSelect={mentions.insertMention}
-        onHover={(idx) => mentions.setMentionActiveIndex(idx)}
-      />
+        <textarea
+          bind:this={textarea}
+          value={draft.content}
+          onkeydown={handleKeydown}
+          oninput={handleInput}
+          onselect={handleSelectionChange}
+          onkeyup={handleSelectionChange}
+          onclick={handleSelectionChange}
+          onpaste={uploads.handlePaste}
+          disabled={isDisabled}
+          placeholder={isDisabled
+            ? 'Select or create a thread to start'
+            : 'Send a message… (Shift+Enter for newline, @ to mention a file)'}
+          aria-label="Message input"
+          rows={1}
+          class="w-full resize-none bg-transparent px-1 py-1 text-[13px] leading-[1.55] text-fg placeholder:text-fg-hint focus:outline-none disabled:opacity-40 disabled:cursor-not-allowed"
+        ></textarea>
+      </div>
 
-      <ComposerSlashPopover
-        open={mentions.slashTrigger !== null}
-        query={mentions.slashTrigger?.text ?? ''}
-        commands={mentions.slashFilteredCommands}
-        activeIndex={mentions.slashActiveIndex}
-        onSelect={mentions.insertSlashCommand}
-        onHover={(idx) => mentions.setSlashActiveIndex(idx)}
-      />
-
-      <textarea
-        bind:this={textarea}
-        value={draft.content}
-        onkeydown={handleKeydown}
-        oninput={handleInput}
-        onselect={handleSelectionChange}
-        onkeyup={handleSelectionChange}
-        onclick={handleSelectionChange}
-        onpaste={uploads.handlePaste}
-        disabled={isDisabled}
-        placeholder={isDisabled
-          ? 'Select or create a thread to start'
-          : 'Send a message... (Shift+Enter for newline, @ to mention a file)'}
-        aria-label="Message input"
-        rows={1}
-        class="w-full resize-none rounded-lg border border-border bg-surface-0 px-3 py-2.5 text-sm text-text-primary placeholder:text-text-secondary/50 focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/50 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-      ></textarea>
+      {#if midTurnBlockMessage}
+        <div
+          class="mt-1 text-[11px] text-error/90"
+          role="alert"
+          aria-live="polite"
+          data-testid="composer-midturn-error"
+        >
+          {midTurnBlockMessage}
+        </div>
+      {:else}
+        <div
+          class="sr-only"
+          role="alert"
+          aria-live="polite"
+          data-testid="composer-midturn-error"
+        ></div>
+      {/if}
     </div>
 
-    <div
-      class="mt-1 min-h-[1rem] text-xs text-error/90"
-      role="alert"
-      aria-live="polite"
-      data-testid="composer-midturn-error"
-    >
-      {midTurnBlockMessage}
-    </div>
+    <ComposerToolbar
+      {pane}
+      {canSend}
+      {isTurnActive}
+      onSend={send}
+      onInterrupt={interrupt}
+    />
   </div>
-
-  <ComposerToolbar
-    {pane}
-    {canSend}
-    {isTurnActive}
-    onSend={send}
-    onInterrupt={interrupt}
-  />
 </div>

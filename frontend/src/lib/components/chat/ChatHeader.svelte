@@ -18,10 +18,12 @@
   import type { Thread } from '../../types/models';
   import { RenameThread, GetThread } from '../../stores/bindings';
   import { replaceThread } from '../../stores/threads.svelte';
+  import { errString } from '../../utils/errors';
   import { getProject } from '../../stores/projects.svelte';
   import { expandProject } from '../../stores/sidebar.svelte';
   import ContextWindowMeter from './ContextWindowMeter.svelte';
   import GitActionsControl from '../git/GitActionsControl.svelte';
+  import Button from '../primitives/Button.svelte';
 
   interface Props {
     pane: ThreadPane;
@@ -93,7 +95,7 @@
       replaceThread(updated);
     } catch (err) {
       console.error('Rename thread failed:', err);
-      pane.setGeneralError(`Failed to rename thread: ${err}`);
+      pane.setGeneralError(`Failed to rename thread: ${errString(err)}`);
     } finally {
       renamePending = false;
       editing = false;
@@ -120,16 +122,16 @@
 {#if pane.thread}
   <div
     data-testid="chat-header"
-    class="flex items-center gap-2 border-b border-border bg-surface-1 px-4 py-2.5 shrink-0 min-w-0 flex-nowrap"
+    class="flex items-center gap-2 border-b border-border-subtle bg-transparent px-5 py-2 shrink-0 min-w-0 flex-nowrap"
   >
     <!-- Provider chip: single letter pill, accent for Claude, provider-codex for Codex. -->
     <span
       data-testid="chat-header-provider"
       class={[
-        'text-xs font-medium px-1.5 py-0.5 rounded shrink-0',
+        'text-[10px] font-semibold px-1.5 py-0.5 rounded-[var(--radius-field)] shrink-0 tracking-wide',
         pane.thread.provider === 'claude'
-          ? 'bg-accent/20 text-accent'
-          : 'bg-provider-codex/20 text-provider-codex',
+          ? 'bg-accent/15 text-accent'
+          : 'bg-provider-codex/15 text-provider-codex',
       ].join(' ')}
       aria-label={`Provider: ${pane.thread.provider}`}
     >
@@ -147,7 +149,7 @@
         disabled={renamePending}
         data-testid="chat-header-title-input"
         aria-label="Rename thread"
-        class="text-sm font-medium text-text-primary bg-surface-2/60 rounded px-1.5 py-0.5 min-w-0 flex-1 outline-none focus-visible:ring-2 focus-visible:ring-accent/50 disabled:opacity-60"
+        class="text-sm font-medium text-fg bg-surface-2/60 rounded-[var(--radius-field)] px-1.5 py-0.5 min-w-0 flex-1 outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:opacity-60"
       />
     {:else}
       <button
@@ -155,21 +157,21 @@
         onclick={startRename}
         data-testid="chat-header-title"
         title={pane.thread.title}
-        class="text-sm font-medium text-text-primary truncate min-w-0 text-left bg-transparent border-none p-0 cursor-text hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 rounded"
+        class="text-sm font-medium text-fg truncate min-w-0 text-left bg-transparent border-none p-0 cursor-text hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 rounded transition-colors"
       >
         {pane.thread.title}
       </button>
     {/if}
 
     <!-- Right cluster: wraps, doesn't disappear, at narrow widths. -->
-    <div class="ml-auto flex items-center gap-2 shrink-0 flex-wrap justify-end">
+    <div class="ml-auto flex items-center gap-1.5 shrink-0 flex-wrap justify-end">
       {#if projectBadge}
         <button
           type="button"
           onclick={focusProjectInSidebar}
           data-testid="chat-header-project"
           title={`Project: ${projectBadge.name}`}
-          class="rounded-full border border-border bg-surface-2/40 px-2 py-0.5 text-[11px] text-text-secondary hover:text-text-primary hover:border-text-secondary cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 max-w-[160px] truncate"
+          class="rounded-[var(--radius-field)] border border-border-subtle px-1.5 py-0.5 text-[11px] text-fg-muted hover:text-fg hover:border-border transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 max-w-[160px] truncate"
         >
           {projectBadge.name}
         </button>
@@ -181,29 +183,31 @@
         </div>
       {/if}
 
-      <button
-        type="button"
-        class="rounded border border-border px-2 py-0.5 text-xs text-text-secondary hover:bg-surface-2/60 cursor-pointer shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
-        data-testid="diff-panel-toggle"
-        aria-pressed={pane.diffPanel.open}
-        aria-label="Toggle diff panel"
+      <Button
+        variant="ghost"
+        size="xs"
+        pressed={pane.diffPanel.open}
+        ariaLabel="Toggle diff panel"
         title="Toggle diff panel (⇧⌘G)"
         onclick={() => pane.toggleDiffPanel()}
+        testId="diff-panel-toggle"
+        class="shrink-0"
       >
-        Diffs
-      </button>
+        {#snippet children()}Diffs{/snippet}
+      </Button>
 
-      <button
-        type="button"
-        class="rounded border border-border px-2 py-0.5 text-xs text-text-secondary hover:bg-surface-2/60 cursor-pointer shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
-        data-testid="plan-sidebar-toggle"
-        aria-pressed={pane.showPlanSidebar}
-        aria-label="Toggle plan sidebar"
+      <Button
+        variant="ghost"
+        size="xs"
+        pressed={pane.showPlanSidebar}
+        ariaLabel="Toggle plan sidebar"
         title="Toggle plan sidebar"
         onclick={() => pane.togglePlanSidebar()}
+        testId="plan-sidebar-toggle"
+        class="shrink-0"
       >
-        Plans
-      </button>
+        {#snippet children()}Plans{/snippet}
+      </Button>
 
       <GitActionsControl {pane} />
     </div>

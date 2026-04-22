@@ -13,6 +13,7 @@
   import { addToast } from '../../stores/toast.svelte';
   import RevertDialog from './diff-panel/RevertDialog.svelte';
   import { getSettings, updateSetting } from '../../stores/settings.svelte';
+  import Drawer from '../primitives/Drawer.svelte';
   import CumulativeView from './diff-panel/CumulativeView.svelte';
   import ErrorBanner from './diff-panel/ErrorBanner.svelte';
   import PanelHeader from './diff-panel/PanelHeader.svelte';
@@ -227,56 +228,55 @@
   });
 </script>
 
-<aside
-  class="flex flex-col border-t border-border bg-surface-0 shrink-0"
-  style="height: 340px"
-  aria-label="Diff panel"
-  data-testid="diff-panel-drawer"
->
-  <PanelHeader
-    source={activeSource}
-    {turnTabVisible}
-    wordWrap={getSettings().diffWordWrap}
-    onSelectSource={handleSelectSource}
-    onToggleWordWrap={handleToggleWordWrap}
-    onClose={handleClose}
-  />
+<div aria-label="Diff panel" data-testid="diff-panel-drawer">
+  <Drawer position="bottom" size={340} minSize={200} resizable={false}>
+    {#snippet children()}
+      <PanelHeader
+        source={activeSource}
+        {turnTabVisible}
+        wordWrap={getSettings().diffWordWrap}
+        onSelectSource={handleSelectSource}
+        onToggleWordWrap={handleToggleWordWrap}
+        onClose={handleClose}
+      />
 
-  {#if store.error}
-    <ErrorBanner message={store.error} onDismiss={() => store.setError(null)} />
-  {/if}
+      {#if store.error}
+        <ErrorBanner message={store.error} onDismiss={() => store.setError(null)} />
+      {/if}
 
-  {#if store.checkpointsUnavailable && activeSource !== 'worktree'}
-    <div class="border-b border-border bg-surface-1 px-3 py-2 text-xs text-text-secondary">
-      Workspace is not a git repo — per-turn checkpoints are unavailable.
-    </div>
-  {/if}
+      {#if store.checkpointsUnavailable && activeSource !== 'worktree'}
+        <div class="border-b border-border-subtle bg-surface-1 px-3 py-2 text-xs text-fg-muted">
+          Workspace is not a git repo — per-turn checkpoints are unavailable.
+        </div>
+      {/if}
 
-  {#if activeSource === 'turn'}
-    <TurnDiffView
-      {store}
-      checkpoints={store.checkpoints}
-      loadingDiff={sources.loadingTurn}
-      diffText={sources.turnDiffText}
-      onSelectTurn={handleSelectTurn}
-      onCompareModeChange={handleCompareModeChange}
-      onRequestRevert={handleRequestRevert}
-    />
-  {:else if activeSource === 'worktree'}
-    <WorkingTreeView
-      loading={sources.worktreeLoading}
-      diffText={sources.worktreeText}
-      onRefresh={() => void sources.loadWorktreeDiff(true)}
-    />
-  {:else}
-    <CumulativeView
-      loading={sources.cumulativeLoading}
-      diffText={sources.cumulativeText}
-      stats={cumulative.stats}
-      onRefresh={() => void sources.loadCumulativeDiff(true)}
-    />
-  {/if}
-</aside>
+      {#if activeSource === 'turn'}
+        <TurnDiffView
+          {store}
+          checkpoints={store.checkpoints}
+          loadingDiff={sources.loadingTurn}
+          diffText={sources.turnDiffText}
+          onSelectTurn={handleSelectTurn}
+          onCompareModeChange={handleCompareModeChange}
+          onRequestRevert={handleRequestRevert}
+        />
+      {:else if activeSource === 'worktree'}
+        <WorkingTreeView
+          loading={sources.worktreeLoading}
+          diffText={sources.worktreeText}
+          onRefresh={() => void sources.loadWorktreeDiff(true)}
+        />
+      {:else}
+        <CumulativeView
+          loading={sources.cumulativeLoading}
+          diffText={sources.cumulativeText}
+          stats={cumulative.stats}
+          onRefresh={() => void sources.loadCumulativeDiff(true)}
+        />
+      {/if}
+    {/snippet}
+  </Drawer>
+</div>
 
 <RevertDialog
   open={revertOpen}

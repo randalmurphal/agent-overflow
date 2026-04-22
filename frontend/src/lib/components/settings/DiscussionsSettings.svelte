@@ -3,6 +3,7 @@
   import { createEmptyDiscussionDefinition } from '../../types/discussion';
   import { ListDiscussions } from '../../stores/bindings';
   import { addToast } from '../../stores/toast.svelte';
+  import { errString } from '../../utils/errors';
   import DiscussionListPanel from '../discussion/DiscussionListPanel.svelte';
   import DiscussionEditor from '../discussion/DiscussionEditor.svelte';
 
@@ -46,7 +47,7 @@
     } catch (err) {
       console.error('Failed to load discussions:', err);
       loadError = String(err);
-      addToast('error', `Failed to load discussions: ${err}`);
+      addToast('error', `Failed to load discussions: ${errString(err)}`);
     } finally {
       loading = false;
     }
@@ -80,7 +81,7 @@
   );
 </script>
 
-<section class="rounded-2xl border border-border/70 bg-surface-1/75 p-5 shadow-[0_10px_40px_-24px_rgba(0,0,0,0.45)] backdrop-blur-sm">
+<section class="rounded-[var(--radius-control)] border border-border-subtle bg-card/30 p-5">
   <div class="flex flex-wrap items-start justify-between gap-3">
     <div>
       <p class="text-[11px] font-semibold uppercase tracking-[0.22em] text-text-secondary/70">Discussions</p>

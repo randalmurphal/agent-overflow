@@ -27,6 +27,7 @@ const LOAD_OLDER_TURN_BATCH = 50;
 import { addToast } from './toast.svelte';
 import { createDiffPanelState, type DiffPanelState } from './diffPanel.svelte';
 import { buildTurnDiffView, type TurnDiffView } from '../utils/turnDiffSummary';
+import { errString } from '../utils/errors';
 
 /**
  * ActiveTurn is the live in-flight turn for the pane. Populated exclusively
@@ -508,7 +509,7 @@ export function createThreadPane() {
         turnDiffViews = new Map();
         oldestLoadedTurnIndex = null;
         hasMoreHistory = false;
-        generalError = `Failed to load thread items: ${err}`;
+        generalError = `Failed to load thread items: ${errString(err)}`;
         addToast('error', 'Failed to load thread items');
       }
 

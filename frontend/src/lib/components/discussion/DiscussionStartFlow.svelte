@@ -1,9 +1,11 @@
 <script lang="ts">
-  import { fade, scale } from 'svelte/transition';
+  import Modal from '../primitives/Modal.svelte';
+  import Button from '../primitives/Button.svelte';
   import type { DiscussionDefinition } from '../../types/discussion';
   import type { Thread } from '../../types/models';
   import { ListDiscussions, StartDiscussion, GetThread } from '../../stores/bindings';
   import { addToast } from '../../stores/toast.svelte';
+  import { errString } from '../../utils/errors';
   import { replaceThread as replaceThreadList } from '../../stores/threads.svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import DiscussionPicker from './DiscussionPicker.svelte';
@@ -26,7 +28,6 @@
   let selectedName = $state<string | null>(null);
   let loadError = $state<string | null>(null);
   let startError = $state<string | null>(null);
-  let dialogEl: HTMLDivElement | undefined = $state(undefined);
   let loadGeneration = 0;
 
   /**
@@ -78,13 +79,6 @@
     })();
   });
 
-  $effect(() => {
-    if (open && dialogEl) {
-      const focusable = dialogEl.querySelector<HTMLElement>('[role="option"], button');
-      focusable?.focus();
-    }
-  });
-
   function handleSelect(def: DiscussionDefinition): void {
     selectedName = def.name;
   }
@@ -107,67 +101,30 @@
     } catch (err) {
       console.error('Failed to start discussion:', err);
       startError = String(err);
-      addToast('error', `Failed to start discussion: ${err}`);
+      addToast('error', `Failed to start discussion: ${errString(err)}`);
     } finally {
       starting = false;
     }
   }
-
-  function handleKeydown(e: KeyboardEvent): void {
-    if (e.key === 'Escape') {
-      e.preventDefault();
-      onClose();
-    }
-  }
-
-  function handleBackdropClick(e: MouseEvent): void {
-    if (e.target === e.currentTarget) {
-      onClose();
-    }
-  }
 </script>
 
-{#if open}
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div
-    transition:fade={{ duration: 150 }}
-    class="fixed inset-0 z-[60] flex items-center justify-center bg-overlay backdrop-blur-sm"
-    onclick={handleBackdropClick}
-    onkeydown={handleKeydown}
-  >
-    <div
-      bind:this={dialogEl}
-      transition:scale={{ start: 0.95, duration: 150 }}
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="start-discussion-title"
-      class="bg-surface-1 border border-border rounded-2xl shadow-xl w-full max-w-xl mx-4 p-5 max-h-[85vh] flex flex-col"
-    >
-      <div class="flex items-start justify-between gap-3">
-        <div>
-          <p class="text-[11px] font-semibold uppercase tracking-[0.22em] text-text-secondary/70">Start discussion</p>
-          <h2 id="start-discussion-title" class="mt-1 text-base font-semibold text-text-primary">
-            {thread ? thread.title || 'Untitled thread' : 'Pick a discussion'}
-          </h2>
-          <p class="mt-1 text-xs text-text-secondary">
-            Participants spawn as child threads and deliberate in a shared channel.
-          </p>
-        </div>
-        <button
-          type="button"
-          onclick={onClose}
-          class="text-text-secondary hover:text-text-primary p-1 rounded cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
-          aria-label="Close"
-        >
-          <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
-            <path d="M18 6L6 18M6 6l12 12" />
-          </svg>
-        </button>
-      </div>
+<Modal
+  {open}
+  title={thread ? (thread.title || 'Untitled thread') : 'Pick a discussion'}
+  onClose={onClose}
+  width="xl"
+  padding="comfortable"
+>
+  {#snippet children()}
+    <div class="flex flex-col gap-3">
+      <p class="text-[11px] font-semibold uppercase tracking-[0.18em] text-fg-subtle">Start discussion</p>
+      <p class="text-[12px] text-fg-muted leading-relaxed">
+        Participants spawn as child threads and deliberate in a shared channel.
+      </p>
 
-      <div class="mt-4 flex-1 min-h-0 overflow-y-auto pr-1">
+      <div class="flex-1 min-h-0 overflow-y-auto pr-1">
         {#if loadError}
-          <div role="alert" class="rounded-xl border border-error/40 bg-error/12 px-3 py-2 text-xs text-error">
+          <div role="alert" class="rounded-[var(--radius-control)] border border-error/40 bg-error/10 px-3 py-2 text-[12px] text-error">
             Failed to load discussions: {loadError}
           </div>
         {:else}
@@ -182,28 +139,25 @@
       </div>
 
       {#if startError}
-        <div role="alert" aria-live="polite" class="mt-3 rounded-xl border border-error/40 bg-error/12 px-3 py-2 text-xs text-error">
+        <div role="alert" aria-live="polite" class="rounded-[var(--radius-control)] border border-error/40 bg-error/10 px-3 py-2 text-[12px] text-error">
           {startError}
         </div>
       {/if}
-
-      <div class="mt-4 flex justify-end gap-2 shrink-0">
-        <button
-          type="button"
-          onclick={onClose}
-          class="rounded-xl border border-border px-4 py-2 text-xs text-text-secondary hover:text-text-primary cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
-        >
-          Cancel
-        </button>
-        <button
-          type="button"
-          onclick={handleStart}
-          disabled={!thread || !selected || starting || loading}
-          class="rounded-xl bg-accent px-4 py-2 text-xs font-semibold text-surface-0 hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
-        >
-          {starting ? 'Starting...' : 'Start'}
-        </button>
-      </div>
     </div>
-  </div>
-{/if}
+  {/snippet}
+  {#snippet footer()}
+    <Button variant="secondary" size="sm" onclick={onClose}>
+      {#snippet children()}Cancel{/snippet}
+    </Button>
+    <Button
+      variant="primary"
+      size="sm"
+      autofocus
+      onclick={handleStart}
+      disabled={!thread || !selected || loading}
+      loading={starting}
+    >
+      {#snippet children()}{starting ? 'Starting…' : 'Start'}{/snippet}
+    </Button>
+  {/snippet}
+</Modal>

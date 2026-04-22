@@ -17,11 +17,14 @@
   } from '../../../stores/bindings';
   import { replaceThread } from '../../../stores/threads.svelte';
   import { addToast } from '../../../stores/toast.svelte';
+  import { errString } from '../../../utils/errors';
+  import ChevronDown from 'lucide-svelte/icons/chevron-down';
   import Popover from '../../primitives/Popover.svelte';
   import Menu from '../../primitives/Menu.svelte';
   import MenuItem from '../../primitives/MenuItem.svelte';
   import MenuDivider from '../../primitives/MenuDivider.svelte';
   import MenuSectionHeader from '../../primitives/MenuSectionHeader.svelte';
+  import Icon from '../../primitives/Icon.svelte';
 
   interface Props {
     pane: ThreadPane;
@@ -97,7 +100,7 @@
       replaceThread(updated);
     } catch (err) {
       console.error('UpdateThreadReasoningEffort failed:', err);
-      addToast('error', `Failed to set effort: ${err}`);
+      addToast('error', `Failed to set effort: ${errString(err)}`);
     } finally {
       closeMenu();
     }
@@ -114,7 +117,7 @@
       replaceThread(updated);
     } catch (err) {
       console.error('UpdateThreadFastMode failed:', err);
-      addToast('error', `Failed to set fast mode: ${err}`);
+      addToast('error', `Failed to set fast mode: ${errString(err)}`);
     } finally {
       closeMenu();
     }
@@ -131,7 +134,7 @@
       replaceThread(updated);
     } catch (err) {
       console.error('UpdateThreadContextWindow failed:', err);
-      addToast('error', `Failed to set context window: ${err}`);
+      addToast('error', `Failed to set context window: ${errString(err)}`);
     } finally {
       closeMenu();
     }
@@ -147,27 +150,16 @@
   aria-expanded={open}
   data-testid="composer-effort-trigger"
   class={[
-    'inline-flex items-center gap-1.5 rounded-md border border-border',
-    'px-2 py-1 text-xs text-text-secondary',
+    'inline-flex items-center gap-1.5 rounded-[var(--radius-field)]',
+    'px-1.5 py-1 text-[11px] text-fg-muted',
     'transition-colors cursor-pointer',
-    'hover:border-text-secondary hover:text-text-primary',
-    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50',
+    'hover:text-fg hover:bg-surface-2/30',
+    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40',
     'disabled:opacity-60 disabled:cursor-not-allowed',
   ].join(' ')}
 >
   <span>{triggerLabel}</span>
-  <svg
-    viewBox="0 0 24 24"
-    class="h-3 w-3"
-    fill="none"
-    stroke="currentColor"
-    stroke-width="2"
-    stroke-linecap="round"
-    stroke-linejoin="round"
-    aria-hidden="true"
-  >
-    <path d="M6 9l6 6 6-6" />
-  </svg>
+  <Icon icon={ChevronDown} size={12} strokeWidth={2} class="opacity-60" />
 </button>
 
 <Popover

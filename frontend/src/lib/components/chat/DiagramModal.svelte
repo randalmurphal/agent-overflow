@@ -240,7 +240,7 @@
   >
     <div
       use:focusTrap={{ active: open }}
-      class="relative w-[95vw] h-[95vh] bg-surface-1 border border-border rounded-lg shadow-xl overflow-hidden flex flex-col"
+      class="relative w-[95vw] h-[95vh] bg-surface-1 border border-border-subtle rounded-[var(--radius-card)] shadow-modal overflow-hidden flex flex-col"
       tabindex="-1"
     >
       <div

@@ -4,6 +4,8 @@
   import { getThreadById } from '../../stores/threads.svelte';
   import { getThreadStatus, type ThreadLiveStatus } from '../../stores/threadStatuses.svelte';
   import type { Thread } from '../../types/models';
+  import ChevronRight from 'lucide-svelte/icons/chevron-right';
+  import Icon from '../primitives/Icon.svelte';
   import ConfirmDialog from '../shared/ConfirmDialog.svelte';
   import { relativeTime } from '../../utils/format';
   import ThreadRowActions from './ThreadRowActions.svelte';
@@ -188,8 +190,8 @@
   role="button"
   tabindex={0}
   aria-pressed={selected}
-  class="group w-full text-left px-3 py-2 rounded-md cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50
-    {selected ? 'bg-accent/25 text-text-primary ring-1 ring-accent/50' : isActive ? 'bg-accent/15 text-text-primary' : 'text-text-secondary hover:bg-surface-2 hover:text-text-primary'}"
+  class="group w-full text-left px-3 py-1.5 rounded-[var(--radius-field)] cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40
+    {selected ? 'bg-accent/15 text-fg border-l-2 border-accent pl-[10px]' : isActive ? 'bg-accent/8 text-fg border-l-2 border-accent pl-[10px]' : 'text-fg-muted hover:bg-surface-2/30 hover:text-fg'}"
   style="padding-left: calc(0.75rem + {indent * 0.9}rem)"
 >
   <div class="flex items-center gap-2">
@@ -200,28 +202,22 @@
         data-testid="thread-row-expand"
         aria-label={expanded ? 'Collapse participants' : 'Expand participants'}
         aria-expanded={expanded}
-        class="flex items-center justify-center w-4 h-4 rounded text-text-secondary/70 hover:text-text-primary hover:bg-surface-2/50 shrink-0 cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/50"
+        class="flex items-center justify-center w-4 h-4 rounded text-fg-subtle hover:text-fg hover:bg-surface-2/30 shrink-0 cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
       >
-        <svg
-          class="w-3 h-3 transition-transform {expanded ? 'rotate-90' : ''}"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="2.5"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-          aria-hidden="true"
-        >
-          <polyline points="9 18 15 12 9 6" />
-        </svg>
+        <Icon
+          icon={ChevronRight}
+          size={11}
+          strokeWidth={2.5}
+          class={'opacity-80 transition-transform ' + (expanded ? 'rotate-90' : '')}
+        />
       </button>
     {:else if indent > 0}
       <!-- Alignment spacer for children so their provider badge lines
            up with the parent's title column. -->
       <span class="w-4 h-4 shrink-0" aria-hidden="true"></span>
     {/if}
-    <span class="text-[10px] font-bold px-1 py-0.5 rounded shrink-0
-      {thread.provider === 'claude' ? 'bg-accent/20 text-accent' : 'bg-provider-codex/20 text-provider-codex'}" aria-hidden="true">
+    <span class="text-[9px] font-semibold px-1 py-0.5 rounded-[4px] shrink-0 tracking-wide
+      {thread.provider === 'claude' ? 'bg-accent/10 text-accent' : 'bg-provider-codex/10 text-provider-codex'}" aria-hidden="true">
       {thread.provider === 'claude' ? 'C' : 'X'}
     </span>
     {#if liveStatus === 'idle'}
@@ -248,11 +244,11 @@
         onblur={saveRename}
         disabled={saving}
         aria-label="Rename thread"
-        class="text-sm flex-1 min-w-0 bg-surface-0 border border-accent rounded px-1 py-0.5 text-text-primary focus:outline-none"
+        class="text-[12.5px] flex-1 min-w-0 bg-surface-0 border border-accent/50 rounded-[var(--radius-field)] px-1 py-0.5 text-fg focus:outline-none"
         onclick={(e) => e.stopPropagation()}
       />
     {:else}
-      <span class="text-sm truncate flex-1">{thread.title || 'Untitled'}</span>
+      <span class="text-[12.5px] truncate flex-1">{thread.title || 'Untitled'}</span>
       <ThreadRowBadges {thread} {forkParent} onJumpToParent={handleJumpToParent} />
     {/if}
 
@@ -268,7 +264,7 @@
       />
     {/if}
   </div>
-  <div class="text-xs text-text-secondary/60 mt-0.5 ml-6">
+  <div class="text-[10px] text-fg-hint mt-0.5 ml-6">
     {relativeTime(thread.updatedAt, getSettings().timestampFormat)}
   </div>
 </div>

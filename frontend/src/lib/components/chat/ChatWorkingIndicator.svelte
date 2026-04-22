@@ -66,16 +66,16 @@
 
 {#if isWorking}
   <div
-    class="flex items-center gap-1.5 border-t border-border bg-surface-0 px-4 py-1 text-[11px] text-text-secondary/80"
+    class="flex items-center gap-1.5 border-t border-border-subtle px-5 py-1 text-[10px] text-fg-subtle"
     role="status"
     aria-live="polite"
     data-testid="chat-working-indicator"
+    style="animation: pulse-subtle 2.4s ease-in-out infinite"
   >
-    <span aria-hidden="true">·</span>
-    <span>Working</span>
+    <span class="h-1.5 w-1.5 rounded-full bg-accent" aria-hidden="true"></span>
+    <span class="uppercase tracking-[0.1em]">Working</span>
     <span aria-hidden="true">·</span>
     <span class="tabular-nums" data-testid="chat-working-indicator-elapsed">{elapsedSeconds}s</span>
-    <span aria-hidden="true">·</span>
-    <span class="text-text-secondary/60">Esc to interrupt</span>
+    <span class="ml-auto text-fg-hint">Esc to interrupt</span>
   </div>
 {/if}

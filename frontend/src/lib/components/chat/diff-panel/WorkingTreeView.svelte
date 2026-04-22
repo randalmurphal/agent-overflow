@@ -1,5 +1,6 @@
 <script lang="ts">
   import DiffViewer from './DiffViewer.svelte';
+  import Button from '../../primitives/Button.svelte';
 
   interface Props {
     loading: boolean;
@@ -13,15 +14,16 @@
 <div class="flex flex-1 min-h-0 flex-col" id="diff-panel-pane" role="tabpanel">
   <div class="flex items-center gap-2 border-b border-border px-3 py-2 text-xs">
     <span class="text-text-secondary">Uncommitted changes in the workspace.</span>
-    <button
-      type="button"
-      class="ml-auto rounded border border-border px-2 py-0.5 text-xs text-text-secondary hover:bg-surface-2/60 cursor-pointer"
-      data-testid="diff-worktree-refresh"
-      aria-label="Refresh working tree diff"
+    <Button
+      variant="secondary"
+      size="xs"
       onclick={onRefresh}
+      ariaLabel="Refresh working tree diff"
+      testId="diff-worktree-refresh"
+      class="ml-auto"
     >
-      Refresh
-    </button>
+      {#snippet children()}Refresh{/snippet}
+    </Button>
   </div>
   <div class="flex-1 min-h-0 overflow-auto">
     {#if loading}

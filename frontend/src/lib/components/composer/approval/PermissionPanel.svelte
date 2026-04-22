@@ -1,6 +1,8 @@
 <script lang="ts">
   import type { ApprovalRequest } from '../../../types/events';
   import { ApprovalResponse, PermissionProfile } from '../../../stores/bindings';
+  import { errString } from '../../../utils/errors';
+  import Button from '../../primitives/Button.svelte';
 
   interface Props {
     approval: ApprovalRequest;
@@ -28,7 +30,7 @@
       }));
     } catch (err) {
       console.error('Failed to grant permission:', err);
-      onError(`Failed to grant permission: ${err}`);
+      onError(`Failed to grant permission: ${errString(err)}`);
     }
   }
 
@@ -40,7 +42,7 @@
       }));
     } catch (err) {
       console.error('Failed to deny permission:', err);
-      onError(`Failed to respond to approval: ${err}`);
+      onError(`Failed to respond to approval: ${errString(err)}`);
     }
   }
 </script>
@@ -89,20 +91,10 @@
 </div>
 
 <div class="flex gap-2 mt-2.5 justify-end">
-  <button
-    type="button"
-    data-testid="permission-grant"
-    onclick={grant}
-    class="px-3 py-1 text-xs rounded bg-accent text-surface-0 font-medium hover:opacity-90 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
-  >
-    Grant
-  </button>
-  <button
-    type="button"
-    data-testid="permission-deny"
-    onclick={deny}
-    class="px-3 py-1 text-xs rounded border border-error/40 text-error hover:bg-error/10 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
-  >
-    Deny
-  </button>
+  <Button variant="primary" size="sm" onclick={grant} testId="permission-grant">
+    {#snippet children()}Grant{/snippet}
+  </Button>
+  <Button variant="danger-outline" size="sm" onclick={deny} testId="permission-deny">
+    {#snippet children()}Deny{/snippet}
+  </Button>
 </div>

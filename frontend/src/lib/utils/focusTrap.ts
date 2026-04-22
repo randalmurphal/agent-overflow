@@ -186,10 +186,17 @@ export const focusTrap: Action<HTMLElement, FocusTrapOptions | undefined> = (nod
     removeListenerIfIdle();
   }
 
-  attach(options);
+  // Track the latest options passed in so destroy() reads the current
+  // `restoreFocus` flag rather than whichever value happened to be
+  // bound at action-attach time. Without this, a caller that flips
+  // restoreFocus=false via update() would still see focus restored on
+  // unmount — exactly the opposite of what the update was asking for.
+  let current = options;
+  attach(current);
 
   return {
     update(next) {
+      current = next;
       const wasActive = instance !== null;
       const nowActive = next?.active ?? true;
       if (wasActive && !nowActive) {
@@ -199,7 +206,7 @@ export const focusTrap: Action<HTMLElement, FocusTrapOptions | undefined> = (nod
       }
     },
     destroy() {
-      detach(options);
+      detach(current);
     },
   };
 };

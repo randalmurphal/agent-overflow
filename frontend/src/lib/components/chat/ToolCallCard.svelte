@@ -23,6 +23,8 @@
   // Spec: docs/architecture/chat-rewrite.md §ToolCallCard.
 
   import { slide } from 'svelte/transition';
+  import ChevronRight from 'lucide-svelte/icons/chevron-right';
+  import Icon from '../primitives/Icon.svelte';
   import type {
     CommandOutputMeta,
     DiffMeta,
@@ -186,34 +188,41 @@
        matching the ToolResultMeta shape and rendering as an empty card. -->
   <ToolResultCard {item} meta={toolResultMeta} {payloadId} />
 {:else}
-  <!-- Generic fallback: per-tool-kind header + chevron body. Matches the
-       pre-extraction ToolResultDropdown visually but with a tool-kind
-       icon on the left and the classifier-derived label. -->
+  <!-- Generic fallback: per-tool-kind header + chevron body. Thin-chrome
+       treatment — near-invisible container, tiny icon, low-contrast
+       preview. The row should read as ambient chatter, not a card the
+       eye has to stop on. -->
   <div
-    class="mb-2 overflow-hidden rounded border border-border bg-surface-1"
+    class="group/tool mb-1.5 overflow-hidden rounded-[var(--radius-control)] border border-border-subtle bg-card/25"
     data-testid="tool-call-card"
     data-tool-kind={classification.icon}
   >
     <button
       type="button"
-      class="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-surface-2/40 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+      class="flex w-full items-center gap-2 px-2.5 py-1.5 text-left hover:bg-surface-2/25 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 transition-colors"
       onclick={toggle}
       onkeydown={handleKeydown}
       aria-expanded={expansion.expanded}
       aria-controls="tool-call-card-body-{item.id}"
       data-testid="tool-call-card-toggle"
     >
-      <span class="text-xs text-text-secondary select-none" aria-hidden="true">{expansion.expanded ? '▼' : '▶'}</span>
+      <span
+        class="flex size-3 shrink-0 items-center justify-center text-fg-subtle select-none transition-transform duration-150"
+        class:rotate-90={expansion.expanded}
+        aria-hidden="true"
+      >
+        <Icon icon={ChevronRight} size={12} strokeWidth={2} class="opacity-70" />
+      </span>
       <ToolKindIcon kind={classification.icon} ariaLabel={classification.label} />
-      <span class="text-xs font-medium text-text-secondary shrink-0" data-testid="tool-call-card-label">
+      <span class="text-[11px] font-medium text-fg-muted shrink-0 uppercase tracking-[0.04em]" data-testid="tool-call-card-label">
         {classification.label}
       </span>
-      <span class="min-w-0 flex-1 truncate text-sm text-text-primary" data-testid="tool-call-card-preview">
+      <span class="min-w-0 flex-1 truncate text-[12px] text-fg-muted/75" data-testid="tool-call-card-preview">
         {inputPreview}
       </span>
       <ToolDecisionChip decision={item.decision} />
       <span
-        class="shrink-0 text-xs {statusClass}"
+        class="shrink-0 text-[10px] {statusClass} opacity-70 transition-opacity group-hover/tool:opacity-100"
         data-testid="tool-call-card-status"
         data-status={item.status}
         title={isBackgroundedRunning ? 'Running in background' : undefined}
@@ -223,14 +232,14 @@
       </span>
       {#if exitCode !== null}
         <span
-          class="shrink-0 rounded-full px-1.5 py-0.5 text-xs {exitBadgeClass}"
+          class="shrink-0 rounded-[var(--radius-field)] px-1.5 py-0.5 text-[10px] font-medium {exitBadgeClass} opacity-70 transition-opacity group-hover/tool:opacity-100"
           data-testid="tool-call-card-exit"
         >
           exit {exitCode}
         </span>
       {:else if durationMs !== null}
         <span
-          class="shrink-0 tabular-nums text-xs text-text-secondary"
+          class="shrink-0 tabular-nums text-[10px] text-fg-hint opacity-70 transition-opacity group-hover/tool:opacity-100"
           data-testid="tool-call-card-duration"
         >
           {formatDuration(durationMs)}
@@ -242,30 +251,30 @@
       <div
         id="tool-call-card-body-{item.id}"
         transition:slide={{ duration: 150 }}
-        class="border-t border-border bg-surface-0"
+        class="border-t border-border-subtle bg-surface-0/60"
         data-testid="tool-call-card-body"
       >
         {#if expansion.loading}
           <p
-            class="px-3 py-2 text-xs text-text-secondary animate-pulse"
+            class="px-3 py-2 text-[11px] text-fg-subtle animate-pulse"
             role="status"
             aria-live="polite"
           >
             Loading…
           </p>
         {:else if expansion.error}
-          <p class="px-3 py-2 text-xs text-error" role="alert">
+          <p class="px-3 py-2 text-[11px] text-error" role="alert">
             Failed to load: {expansion.error}
           </p>
         {:else if expansion.displayData !== null}
           <pre
-            class="ansi-body max-h-60 overflow-auto whitespace-pre-wrap break-words px-3 py-2 font-mono text-xs leading-relaxed text-text-secondary"
+            class="ansi-body max-h-60 overflow-auto whitespace-pre-wrap break-words px-3 py-2 text-[11px] leading-relaxed text-fg-muted"
             data-testid="tool-call-card-output"
           >{@html expansion.displayHtml ?? ''}</pre>
           {#if expansion.hasMore}
             <button
               type="button"
-              class="mx-3 mb-3 text-xs text-accent hover:underline cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 rounded"
+              class="mx-3 mb-3 text-[11px] text-accent hover:underline cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 rounded"
               onclick={() => expansion.showFull()}
               data-testid="tool-call-card-show-full"
             >
@@ -273,7 +282,7 @@
             </button>
           {/if}
         {:else}
-          <p class="px-3 py-2 text-xs text-text-secondary italic">
+          <p class="px-3 py-2 text-[11px] text-fg-subtle italic">
             No stored payload for this tool result.
           </p>
         {/if}

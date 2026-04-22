@@ -48,11 +48,11 @@
   id="palette-option-{command.id}"
   onmouseenter={onMouseEnter}
   onclick={onClick}
-  class="w-full flex items-center gap-3 px-4 py-2.5 text-left text-sm cursor-pointer transition-colors focus:outline-none
-    {selected ? 'bg-accent/15 text-text-primary' : 'text-text-secondary hover:bg-surface-2/50 hover:text-text-primary'}"
+  class="w-full flex items-center gap-3 px-4 py-2 text-left text-[13px] cursor-pointer transition-colors focus:outline-none
+    {selected ? 'bg-accent/10 text-fg' : 'text-fg-muted hover:bg-surface-2/30 hover:text-fg'}"
 >
   {#if command.icon}
-    <span class="text-base leading-none w-4 text-center shrink-0 {selected ? 'text-accent' : 'text-text-secondary/70'}">{command.icon}</span>
+    <span class="text-base leading-none w-4 text-center shrink-0 {selected ? 'text-accent' : 'text-fg-subtle'}">{command.icon}</span>
   {:else}
     <span class="w-4 shrink-0" aria-hidden="true"></span>
   {/if}
@@ -66,6 +66,6 @@
     {/each}
   </span>
   {#if shortcut}
-    <kbd class="ml-2 shrink-0 rounded border border-border/60 bg-surface-0/70 px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wide text-text-secondary">{shortcut}</kbd>
+    <kbd class="ml-2 shrink-0 rounded-[var(--radius-field)] border border-border-subtle bg-surface-0/60 px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-[0.08em] text-fg-subtle">{shortcut}</kbd>
   {/if}
 </button>

@@ -1,6 +1,8 @@
 <script lang="ts">
   import type { ApprovalRequest } from '../../../types/events';
   import { ApprovalResponse } from '../../../stores/bindings';
+  import { errString } from '../../../utils/errors';
+  import Button from '../../primitives/Button.svelte';
 
   interface Props {
     approval: ApprovalRequest;
@@ -73,7 +75,7 @@
       }));
     } catch (err) {
       console.error('Failed to respond to approval:', err);
-      onError(`Failed to respond to approval: ${err}`);
+      onError(`Failed to respond to approval: ${errString(err)}`);
     }
   }
 
@@ -85,7 +87,7 @@
       }));
     } catch (err) {
       console.error('Failed to respond to approval:', err);
-      onError(`Failed to respond to approval: ${err}`);
+      onError(`Failed to respond to approval: ${errString(err)}`);
     }
   }
 
@@ -113,7 +115,7 @@
       closeEdit();
     } catch (err) {
       console.error('Failed to submit allow-with-edits:', err);
-      onError(`Failed to respond to approval: ${err}`);
+      onError(`Failed to respond to approval: ${errString(err)}`);
     }
   }
 </script>
@@ -155,40 +157,25 @@
 
 <div class="flex flex-wrap gap-2 mt-2.5 justify-end">
   {#if editable && !editing}
-    <button
-      type="button"
-      data-testid="approval-edit-toggle"
-      onclick={openEdit}
-      class="px-3 py-1 text-xs rounded border border-border text-text-secondary hover:text-accent hover:border-accent/40 cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
-    >
-      Edit input…
-    </button>
+    <Button variant="secondary" size="sm" onclick={openEdit} testId="approval-edit-toggle">
+      {#snippet children()}Edit input…{/snippet}
+    </Button>
   {/if}
   {#if editing}
-    <button
-      type="button"
-      data-testid="approval-allow-with-edits"
+    <Button
+      variant="primary"
+      size="sm"
       onclick={allowWithEdits}
-      class="px-3 py-1 text-xs rounded bg-accent text-surface-0 font-medium hover:bg-accent/85 cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+      testId="approval-allow-with-edits"
     >
-      Allow with edits
-    </button>
+      {#snippet children()}Allow with edits{/snippet}
+    </Button>
   {:else}
-    <button
-      type="button"
-      data-testid="approval-allow"
-      onclick={allow}
-      class="px-3 py-1 text-xs rounded bg-accent text-surface-0 font-medium hover:bg-accent/85 cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
-    >
-      Allow
-    </button>
+    <Button variant="primary" size="sm" onclick={allow} testId="approval-allow">
+      {#snippet children()}Allow{/snippet}
+    </Button>
   {/if}
-  <button
-    type="button"
-    data-testid="approval-deny"
-    onclick={deny}
-    class="px-3 py-1 text-xs rounded border border-error/40 text-error hover:bg-error/10 cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
-  >
-    Deny
-  </button>
+  <Button variant="danger-outline" size="sm" onclick={deny} testId="approval-deny">
+    {#snippet children()}Deny{/snippet}
+  </Button>
 </div>

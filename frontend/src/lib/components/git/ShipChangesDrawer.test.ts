@@ -265,10 +265,13 @@ describe('<ShipChangesDrawer>', () => {
     const pane = await buildPane();
     setBindingMock('GetGitStatus', async () => status({ hasChanges: true }));
     let closed = 0;
-    const { findByTestId } = render(ShipChangesDrawer, {
+    const { container, findByTestId } = render(ShipChangesDrawer, {
       props: { open: true, pane, onClose: () => { closed += 1; } },
     });
-    const backdrop = await findByTestId('ship-changes-backdrop');
+    // Wait for the drawer body before probing the backdrop so the
+    // dialog has actually mounted.
+    await findByTestId('ship-changes-drawer');
+    const backdrop = container.querySelector('[data-modal-backdrop]')!;
     await fireEvent.keyDown(backdrop, { key: 'Escape' });
     expect(closed).toBe(1);
   });

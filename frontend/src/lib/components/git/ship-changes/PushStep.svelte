@@ -4,6 +4,7 @@
 
   import type { ShipChangesState } from '../../../stores/shipChanges.svelte';
   import type { GitStatus } from '../../../types/git';
+  import Button from '../../primitives/Button.svelte';
 
   let { state, onPush, onSkip }: {
     state: ShipChangesState;
@@ -47,23 +48,24 @@
   {/if}
 
   <div class="flex justify-end gap-2 pt-1">
-    <button
-      type="button"
+    <Button
+      variant="secondary"
+      size="md"
       onclick={onSkip}
       disabled={busy}
-      data-testid="ship-changes-push-skip"
-      class="px-3 py-2 text-xs rounded-md border border-border text-text-secondary hover:text-text-primary disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+      testId="ship-changes-push-skip"
     >
-      {nothingToPush ? 'Next' : 'Skip push'}
-    </button>
-    <button
-      type="button"
+      {#snippet children()}{nothingToPush ? 'Next' : 'Skip push'}{/snippet}
+    </Button>
+    <Button
+      variant="primary"
+      size="md"
       onclick={onPush}
-      disabled={!state.canPush || busy}
-      data-testid="ship-changes-push-submit"
-      class="px-4 py-2 text-xs rounded-md font-medium bg-accent text-surface-0 hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+      disabled={!state.canPush}
+      loading={busy}
+      testId="ship-changes-push-submit"
     >
-      {busy ? 'Pushing…' : 'Push'}
-    </button>
+      {#snippet children()}{busy ? 'Pushing…' : 'Push'}{/snippet}
+    </Button>
   </div>
 </div>

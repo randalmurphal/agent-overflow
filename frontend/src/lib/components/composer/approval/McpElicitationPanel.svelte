@@ -2,7 +2,9 @@
   import type { ApprovalRequest } from '../../../types/events';
   import { ApprovalResponse, ElicitationResolution } from '../../../stores/bindings';
   import { parseElicitationSchema, type ElicitationField } from '../../../utils/elicitationSchema';
+  import { errString } from '../../../utils/errors';
   import McpElicitationField from './McpElicitationField.svelte';
+  import Button from '../../primitives/Button.svelte';
 
   interface Props {
     approval: ApprovalRequest;
@@ -168,7 +170,7 @@
       }));
     } catch (err) {
       console.error('Failed to respond to elicitation:', err);
-      onError(`Failed to respond to elicitation: ${err}`);
+      onError(`Failed to respond to elicitation: ${errString(err)}`);
     }
   }
 
@@ -249,29 +251,14 @@
   </div>
 
   <div class="flex flex-wrap gap-2 mt-2.5 justify-end">
-    <button
-      type="button"
-      data-testid="elicitation-cancel"
-      onclick={cancel}
-      class="px-3 py-1 text-xs rounded border border-border text-text-secondary hover:text-text-primary hover:border-text-secondary cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
-    >
-      Cancel
-    </button>
-    <button
-      type="button"
-      data-testid="elicitation-decline"
-      onclick={decline}
-      class="px-3 py-1 text-xs rounded border border-error/40 text-error hover:bg-error/10 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
-    >
-      Decline
-    </button>
-    <button
-      type="button"
-      data-testid="elicitation-accept"
-      onclick={accept}
-      class="px-3 py-1 text-xs rounded bg-accent text-surface-0 font-medium hover:opacity-90 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
-    >
-      Accept
-    </button>
+    <Button variant="secondary" size="sm" onclick={cancel} testId="elicitation-cancel">
+      {#snippet children()}Cancel{/snippet}
+    </Button>
+    <Button variant="danger-outline" size="sm" onclick={decline} testId="elicitation-decline">
+      {#snippet children()}Decline{/snippet}
+    </Button>
+    <Button variant="primary" size="sm" onclick={accept} testId="elicitation-accept">
+      {#snippet children()}Accept{/snippet}
+    </Button>
   </div>
 {/if}

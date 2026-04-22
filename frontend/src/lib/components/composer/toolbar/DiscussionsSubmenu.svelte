@@ -12,16 +12,28 @@
 
   import type { ThreadPane } from '../../../stores/thread.svelte';
   import type { DiscussionDefinition } from '../../../types/discussion';
-  import { ListDiscussions, StartDiscussion } from '../../../stores/bindings';
+  import type { Thread } from '../../../types/models';
+  import { GetThread, ListDiscussions, StartDiscussion } from '../../../stores/bindings';
+  import { replaceThread as replaceThreadList } from '../../../stores/threads.svelte';
   import { addToast } from '../../../stores/toast.svelte';
+  import { errString } from '../../../utils/errors';
   import MenuItem from '../../primitives/MenuItem.svelte';
   import MenuSectionHeader from '../../primitives/MenuSectionHeader.svelte';
 
   interface Props {
     pane: ThreadPane;
+    /**
+     * Called synchronously when a discussion is picked, BEFORE the
+     * async StartDiscussion round-trip begins. Lets the parent menu
+     * collapse the full stack on selection (otherwise the bubble-
+     * based collapse gets isolated by the popover portal-to-body and
+     * only the submenu would close, leaving the root menu open until
+     * an outside click).
+     */
+    onSelect?: () => void;
   }
 
-  let { pane }: Props = $props();
+  let { pane, onSelect }: Props = $props();
 
   let definitions: DiscussionDefinition[] = $state([]);
   let loading = $state(false);
@@ -72,12 +84,29 @@
 
   async function startDiscussion(name: string): Promise<void> {
     if (!pane.thread) return;
+    const threadId = pane.thread.id;
+    // Collapse the menu immediately on click. The async StartDiscussion
+    // work continues in the background — matches the Codex/Claude
+    // model-picker UX where the menu disappears on pick and the
+    // toast/state update lands a moment later.
+    onSelect?.();
     try {
-      await StartDiscussion(pane.thread.id, name);
+      await StartDiscussion(threadId, name);
+      // StartDiscussion does NOT emit `thread:updated`, so we refresh the
+      // thread manually — matching DiscussionStartFlow. Without this the
+      // ChatHeader, ModeCycleButton, and DiscussionView all keep showing
+      // the prior mode until the user reloads.
+      try {
+        const refreshed = (await GetThread(threadId)) as Thread;
+        pane.replaceThread(refreshed);
+        replaceThreadList(refreshed);
+      } catch (refreshErr) {
+        console.error('Failed to refresh thread after StartDiscussion:', refreshErr);
+      }
       addToast('info', `Started discussion "${name}"`);
     } catch (err) {
       console.error('StartDiscussion failed:', err);
-      addToast('error', `Failed to start discussion: ${err}`);
+      addToast('error', `Failed to start discussion: ${errString(err)}`);
     }
   }
 </script>

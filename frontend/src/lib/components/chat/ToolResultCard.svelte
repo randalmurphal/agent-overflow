@@ -50,14 +50,14 @@
   }
 </script>
 
-<div class="mb-3 rounded border border-border bg-surface-1">
-  <div class="flex items-start gap-3 px-3 py-2.5">
-    <span class="font-mono text-xs text-text-secondary">[F]</span>
+<div class="mb-1.5 rounded-[var(--radius-control)] border border-border-subtle bg-card/25">
+  <div class="flex items-start gap-2.5 px-2.5 py-2">
+    <span class="font-mono text-[10px] text-fg-subtle mt-0.5">[F]</span>
     <div class="min-w-0 flex-1">
       <div class="flex items-center gap-2">
-        <p class="truncate text-sm font-medium text-text-primary">{meta.title || item.summary}</p>
+        <p class="truncate text-[13px] font-medium text-fg">{meta.title || item.summary}</p>
         <ToolDecisionChip decision={item.decision} />
-        <span class="ml-auto text-xs text-success">done</span>
+        <span class="ml-auto text-[10px] text-success opacity-80">done</span>
       </div>
       {#if detailText}
         <div class="mt-1">

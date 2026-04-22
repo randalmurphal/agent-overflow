@@ -5,7 +5,7 @@
   // to see them); this panel just documents what the toggle does.
 </script>
 
-<section class="rounded-2xl border border-border/70 bg-surface-1/75 p-5 shadow-[0_10px_40px_-24px_rgba(0,0,0,0.45)] backdrop-blur-sm">
+<section class="rounded-[var(--radius-control)] border border-border-subtle bg-card/30 p-5">
   <div class="flex flex-wrap items-start justify-between gap-3">
     <div>
       <p class="text-[11px] font-semibold uppercase tracking-[0.22em] text-text-secondary/70">Archive</p>
@@ -22,7 +22,7 @@
   </div>
 </section>
 
-<div class="rounded-2xl border border-border/60 bg-surface-1/55 px-5 py-5 shadow-[0_10px_40px_-24px_rgba(0,0,0,0.45)]">
+<div class="rounded-[var(--radius-control)] border border-border-subtle bg-card/20 px-5 py-5">
   <div class="flex items-start gap-3">
     <div class="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl border border-border/60 bg-surface-0/70 text-text-secondary">
       <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">

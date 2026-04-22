@@ -6,6 +6,7 @@ import {
   ListAttachments,
   SaveDraft,
 } from './bindings';
+import { errString } from '../utils/errors';
 
 const DEFAULT_DEBOUNCE_MS = 500;
 
@@ -60,7 +61,7 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
       terminalChips = draft.terminalChips ?? [];
       content = draft.content ?? '';
     } catch (err) {
-      error = `Failed to load draft: ${err}`;
+      error = `Failed to load draft: ${errString(err)}`;
     } finally {
       if (threadId === id) {
         hydrating = false;
@@ -84,7 +85,7 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
           terminalChips,
         );
       } catch (err) {
-        error = `Failed to save draft: ${err}`;
+        error = `Failed to save draft: ${errString(err)}`;
       }
     }, debounceMs);
   }
@@ -101,7 +102,7 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
         terminalChips,
       );
     } catch (err) {
-      error = `Failed to save draft: ${err}`;
+      error = `Failed to save draft: ${errString(err)}`;
     }
   }
 
@@ -186,7 +187,7 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
       try {
         await ClearDraft(id);
       } catch (err) {
-        error = `Failed to clear draft: ${err}`;
+        error = `Failed to clear draft: ${errString(err)}`;
       }
     },
 
@@ -212,7 +213,7 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
           snapshot.terminalChips,
         );
       } catch (err) {
-        error = `Failed to restore draft: ${err}`;
+        error = `Failed to restore draft: ${errString(err)}`;
         return;
       }
       // If the store is still pointed at the same thread, mirror the
