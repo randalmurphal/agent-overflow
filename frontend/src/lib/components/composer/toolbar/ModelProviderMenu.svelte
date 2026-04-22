@@ -141,6 +141,26 @@
   // primitives/brand/.
   let isCodex = $derived(pane.thread?.provider === 'codex');
   let modelLabel = $derived(pane.thread?.model ?? 'No model');
+
+  // Once any item lands, the thread has picked a lane: a specific
+  // provider (Claude or Codex), or — after StartDiscussion — a specific
+  // discussion definition. Provider sessions and discussion runtimes
+  // aren't interchangeable; both transitions are rejected server-side
+  // (see UpdateThreadProvider and ensureDiscussionCanStart). Mirror
+  // that here so the picker doesn't offer doomed options: on a locked
+  // chat only the active provider's models are reachable, and on a
+  // discussion nothing in this menu applies — its runtime is driven by
+  // the child participant threads, each with their own provider.
+  let isLocked = $derived(pane.items.length > 0);
+  let isDiscussion = $derived(pane.thread?.mode === 'discussion');
+  let activeProvider = $derived(pane.thread?.provider ?? null);
+  let showCodexSubmenu = $derived(
+    !isDiscussion && (!isLocked || activeProvider === 'codex'),
+  );
+  let showClaudeSubmenu = $derived(
+    !isDiscussion && (!isLocked || activeProvider === 'claude'),
+  );
+  let showDiscussions = $derived(!isDiscussion && !isLocked);
 </script>
 
 <button
@@ -184,36 +204,42 @@
   role="none"
 >
   <Menu ariaLabel="Model and provider" onClose={closeMenu}>
-    <MenuSubmenuItem label="Codex">
-      {#snippet children()}
-        <ProviderModelsSubmenu
-          {pane}
-          provider="codex"
-          {getModels}
-          {ensureModels}
-          onSelect={(slug) => handleSelectModel('codex', slug)}
-        />
-      {/snippet}
-    </MenuSubmenuItem>
+    {#if showCodexSubmenu}
+      <MenuSubmenuItem label="Codex">
+        {#snippet children()}
+          <ProviderModelsSubmenu
+            {pane}
+            provider="codex"
+            {getModels}
+            {ensureModels}
+            onSelect={(slug) => handleSelectModel('codex', slug)}
+          />
+        {/snippet}
+      </MenuSubmenuItem>
+    {/if}
 
-    <MenuSubmenuItem label="Claude">
-      {#snippet children()}
-        <ProviderModelsSubmenu
-          {pane}
-          provider="claude"
-          {getModels}
-          {ensureModels}
-          onSelect={(slug) => handleSelectModel('claude', slug)}
-        />
-      {/snippet}
-    </MenuSubmenuItem>
+    {#if showClaudeSubmenu}
+      <MenuSubmenuItem label="Claude">
+        {#snippet children()}
+          <ProviderModelsSubmenu
+            {pane}
+            provider="claude"
+            {getModels}
+            {ensureModels}
+            onSelect={(slug) => handleSelectModel('claude', slug)}
+          />
+        {/snippet}
+      </MenuSubmenuItem>
+    {/if}
 
-    <MenuDivider />
+    {#if showDiscussions}
+      <MenuDivider />
 
-    <MenuSubmenuItem label="Discussions">
-      {#snippet children()}
-        <DiscussionsSubmenu {pane} onSelect={closeMenu} />
-      {/snippet}
-    </MenuSubmenuItem>
+      <MenuSubmenuItem label="Discussions">
+        {#snippet children()}
+          <DiscussionsSubmenu {pane} onSelect={closeMenu} />
+        {/snippet}
+      </MenuSubmenuItem>
+    {/if}
   </Menu>
 </Popover>

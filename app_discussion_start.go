@@ -52,6 +52,20 @@ func (a *App) ensureDiscussionCanStart(parent store.Thread) error {
 		return fmt.Errorf("thread %s already has an active discussion", parent.ID)
 	}
 
+	// Once a thread has carried a normal chat (any persisted item),
+	// promoting it into a discussion would orphan those messages behind
+	// the DiscussionView and leave the user without a way to see them.
+	// Same rule as the provider lock: once a thread has picked a lane,
+	// that's the lane. Discussion participants are spawned in fresh
+	// child threads instead.
+	hasItems, err := a.store.HasItems(parent.ID)
+	if err != nil {
+		return fmt.Errorf("check prior items for thread %s: %w", parent.ID, err)
+	}
+	if hasItems {
+		return fmt.Errorf("thread %s has chat history; start a new thread to begin a discussion", parent.ID)
+	}
+
 	threads, err := a.store.ListThreads()
 	if err != nil {
 		return err

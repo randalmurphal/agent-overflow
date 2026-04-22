@@ -3,6 +3,9 @@ package main
 import (
 	"strings"
 	"testing"
+	"time"
+
+	"agent-overflow/internal/store"
 )
 
 // Smoke tests for the per-field thread update bindings. These sit at the
@@ -28,6 +31,65 @@ func TestUpdateThreadProviderPersistsAndValidates(t *testing.T) {
 
 	if _, err := app.UpdateThreadProvider(thread.ID, "bogus"); err == nil {
 		t.Fatal("UpdateThreadProvider(bogus) error = nil, want validation error")
+	}
+}
+
+// TestUpdateThreadProviderLocksAfterFirstItem guards the "provider is
+// locked once the thread has been used" invariant. Once any item lands,
+// switching providers is rejected: the provider session ids aren't
+// interchangeable, so the reconnect would otherwise fail with an opaque
+// "no rollout found" from the new provider. Verified here by:
+//  1. creating a claude thread and persisting a single user_text item,
+//  2. asserting the cross-provider switch fails with a clear message
+//     and leaves the provider column untouched,
+//  3. asserting an idempotent same-provider call still succeeds.
+func TestUpdateThreadProviderLocksAfterFirstItem(t *testing.T) {
+	app := newTestAppWithStore(t)
+	thread, err := createTestThread(t, app, "claude", "/tmp/tlock", "claude-sonnet-4-6", "")
+	if err != nil {
+		t.Fatalf("createTestThread: %v", err)
+	}
+
+	now := time.Now().UnixMilli()
+	if err := app.store.InsertItem(store.Item{
+		ID:        "item-lock-1",
+		ThreadID:  thread.ID,
+		TurnIndex: 1,
+		ItemIndex: 0,
+		Kind:      "user_text",
+		Role:      "user",
+		Summary:   "hello",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("InsertItem: %v", err)
+	}
+
+	_, err = app.UpdateThreadProvider(thread.ID, "codex")
+	if err == nil {
+		t.Fatal("UpdateThreadProvider(codex) on used thread error = nil, want lock error")
+	}
+	if !strings.Contains(err.Error(), "locked to claude") {
+		t.Fatalf("UpdateThreadProvider error = %v, want 'locked to claude' context", err)
+	}
+
+	after, err := app.store.GetThread(thread.ID)
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+	if after.Provider != "claude" {
+		t.Fatalf("Provider = %q after rejected switch, want claude (no mutation)", after.Provider)
+	}
+
+	// Idempotent same-provider call MUST still succeed so the composer's
+	// "set provider then set model" pattern (which re-sends the current
+	// provider when only the model changed) doesn't get wedged by the lock.
+	same, err := app.UpdateThreadProvider(thread.ID, "claude")
+	if err != nil {
+		t.Fatalf("UpdateThreadProvider(claude) on used claude thread error = %v, want nil", err)
+	}
+	if same.Provider != "claude" {
+		t.Fatalf("Provider = %q after same-provider call, want claude", same.Provider)
 	}
 }
 

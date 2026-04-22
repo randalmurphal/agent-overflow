@@ -1078,6 +1078,15 @@ export function UpdateThreadModel(threadID: string, model: string): $Cancellable
 /**
  * UpdateThreadProvider persists the provider column and restarts the
  * session if one is live so the new provider takes effect.
+ * 
+ * A thread is locked to its provider once any item has been persisted:
+ * provider sessions are not interchangeable (Codex can't resume a Claude
+ * rollout and vice versa), so an in-flight switch would surface as a
+ * "thread/resume: no rollout found" error from the reconnect goroutine
+ * and leave the thread in a confusing half-switched state. Reject at the
+ * binding boundary with a user-facing message instead. Same-provider
+ * calls short-circuit so a UI that re-sends the current provider on
+ * every model change doesn't trip the lock.
  */
 export function UpdateThreadProvider(id: string, providerName: string): $CancellablePromise<store$0.Thread> {
     return $Call.ByID(665741969, id, providerName).then(($result: any) => {

@@ -317,11 +317,37 @@ func (a *App) restartSessionIfAffected(threadID, changedField string) (store.Thr
 
 // UpdateThreadProvider persists the provider column and restarts the
 // session if one is live so the new provider takes effect.
+//
+// A thread is locked to its provider once any item has been persisted:
+// provider sessions are not interchangeable (Codex can't resume a Claude
+// rollout and vice versa), so an in-flight switch would surface as a
+// "thread/resume: no rollout found" error from the reconnect goroutine
+// and leave the thread in a confusing half-switched state. Reject at the
+// binding boundary with a user-facing message instead. Same-provider
+// calls short-circuit so a UI that re-sends the current provider on
+// every model change doesn't trip the lock.
 func (a *App) UpdateThreadProvider(id, providerName string) (store.Thread, error) {
 	if a.store == nil {
 		return store.Thread{}, fmt.Errorf("update provider: store unavailable")
 	}
 	normalized := strings.TrimSpace(providerName)
+
+	current, err := a.store.GetThread(id)
+	if err != nil {
+		return store.Thread{}, fmt.Errorf("update provider: %w", err)
+	}
+	if current.Provider == normalized {
+		return current, nil
+	}
+
+	hasItems, err := a.store.HasItems(id)
+	if err != nil {
+		return store.Thread{}, fmt.Errorf("update provider: check prior items: %w", err)
+	}
+	if hasItems {
+		return store.Thread{}, fmt.Errorf("update provider: thread is locked to %s (start a new thread to use %s)", current.Provider, normalized)
+	}
+
 	rollbackSettings, err := a.applySettingsPatchWithRollback(map[string]any{
 		"defaultProvider": normalized,
 	})

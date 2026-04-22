@@ -3,7 +3,7 @@ import { fireEvent, render, waitFor } from '@testing-library/svelte';
 
 import ModelProviderMenu from './ModelProviderMenu.svelte';
 import { createThreadPane } from '../../../stores/thread.svelte';
-import type { Thread } from '../../../types/models';
+import type { Item, Thread } from '../../../types/models';
 import {
   getBindingMock,
   resetBindingMocks,
@@ -26,9 +26,34 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
   };
 }
 
-async function buildPane(thread: Thread) {
+function makeItem(overrides: Partial<Item> = {}): Item {
+  return {
+    id: 'item-1',
+    threadId: 'thread-1',
+    turnIndex: 1,
+    itemIndex: 0,
+    kind: 'user_text',
+    role: 'user',
+    status: 'completed',
+    summary: 'hello',
+    highlightedContent: '',
+    createdAt: 0,
+    updatedAt: 0,
+    ...overrides,
+  };
+}
+
+async function buildPane(thread: Thread, items: Item[] = []) {
   setBindingMock('SwitchThread', async () => {});
-  setBindingMock('ListItems', async () => []);
+  // ListRecentThreadItems is the binding switchThread actually calls;
+  // returning a populated `items` array is how we simulate a "used" thread
+  // (one with persisted history) without spinning a backend.
+  setBindingMock('ListRecentThreadItems', async () => ({
+    items,
+    oldestTurnIndex: items.length > 0 ? items[0].turnIndex : -1,
+    hasMore: false,
+  }));
+  setBindingMock('ListRecentTurns', async () => []);
   setBindingMock('ListPayloadMetas', async () => []);
   const pane = createThreadPane();
   await pane.switchThread(thread);
@@ -235,5 +260,47 @@ describe('<ModelProviderMenu>', () => {
       'thread-1',
       'gpt-5.4',
     ]);
+  });
+
+  // Provider lock: once a thread has been used (any item persisted), the
+  // thread has picked a lane. Locked chats expose only their own provider's
+  // models — never the other provider, and never the Discussions entry (a
+  // mid-conversation promotion to discussion would orphan the prior chat
+  // messages behind DiscussionView, which is why ensureDiscussionCanStart
+  // rejects it server-side). Unlocked (empty) threads still see all three.
+  it('on a locked chat, shows only the active provider — no other provider, no Discussions', async () => {
+    const pane = await buildPane(
+      makeThread({ provider: 'claude', model: 'claude-sonnet-4-6' }),
+      [makeItem()],
+    );
+    setBindingMock('GetModelsForProvider', async () => []);
+
+    const { getByTestId, queryByRole, findByRole } = render(ModelProviderMenu, {
+      props: { pane },
+    });
+    await fireEvent.click(getByTestId('composer-model-menu-trigger'));
+
+    // Active provider's submenu stays reachable so in-provider model swaps
+    // (sonnet ↔ opus) still work.
+    await findByRole('menuitem', { name: /Claude/i });
+    // Neither the other provider nor the discussion entry are offered.
+    expect(queryByRole('menuitem', { name: /Codex/i })).toBeNull();
+    expect(queryByRole('menuitem', { name: /Discussions/i })).toBeNull();
+  });
+
+  it('on a fresh (empty) thread, shows both providers AND Discussions', async () => {
+    const pane = await buildPane(
+      makeThread({ provider: 'claude', model: 'claude-sonnet-4-6' }),
+    );
+    setBindingMock('GetModelsForProvider', async () => []);
+
+    const { getByTestId, findByRole } = render(ModelProviderMenu, {
+      props: { pane },
+    });
+    await fireEvent.click(getByTestId('composer-model-menu-trigger'));
+
+    await findByRole('menuitem', { name: /Claude/i });
+    await findByRole('menuitem', { name: /Codex/i });
+    await findByRole('menuitem', { name: /Discussions/i });
   });
 });

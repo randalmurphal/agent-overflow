@@ -678,6 +678,71 @@ func TestSessionEventHandlerMirrorsDiscussionTurnsIntoChannelAndConcludes(t *tes
 	}
 }
 
+// TestStartDiscussionRejectsThreadWithChatHistory guards the "pick a
+// lane" rule: once a thread has carried a normal chat turn, promoting
+// it into a discussion would hide the existing messages behind
+// DiscussionView and leave them unreachable. The server refuses the
+// transition and the frontend picker also hides the entry-point; this
+// test covers the server half.
+func TestStartDiscussionRejectsThreadWithChatHistory(t *testing.T) {
+	app := newTestAppWithStore(t)
+	app.registry = discussion.NewRegistry(app.store)
+	app.channels = discussion.NewChannelService(app.store, app.highlighter)
+
+	thread := testThread("thread-discussion-used-chat")
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	if err := app.store.CreateDiscussionDef(store.DiscussionDefinition{
+		ID:        "def-used",
+		Name:      "Architects",
+		Scope:     "project",
+		ProjectID: projectPathForThread(t, app, thread),
+		Participants: []store.DiscussionParticipant{
+			{Role: "architect", System: "Design the change"},
+		},
+		Settings:  store.DiscussionSettings{MaxTurns: 3},
+		CreatedAt: time.Now().UnixMilli(),
+		UpdatedAt: time.Now().UnixMilli(),
+	}); err != nil {
+		t.Fatalf("CreateDiscussionDef: %v", err)
+	}
+
+	now := time.Now().UnixMilli()
+	if err := app.store.InsertItem(store.Item{
+		ID:        "used-chat-item-1",
+		ThreadID:  thread.ID,
+		TurnIndex: 1,
+		ItemIndex: 0,
+		Kind:      "user_text",
+		Role:      "user",
+		Summary:   "hey",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("InsertItem: %v", err)
+	}
+
+	err := app.StartDiscussion(thread.ID, "Architects")
+	if err == nil {
+		t.Fatal("StartDiscussion on used chat error = nil, want rejection")
+	}
+	if !strings.Contains(err.Error(), "chat history") {
+		t.Fatalf("StartDiscussion error = %v, want 'chat history' context", err)
+	}
+
+	after, err := app.store.GetThread(thread.ID)
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+	if after.Mode != "chat" {
+		t.Fatalf("Mode = %q after rejected StartDiscussion, want chat (no mutation)", after.Mode)
+	}
+	if after.DiscussionID != "" {
+		t.Fatalf("DiscussionID = %q after rejected StartDiscussion, want empty", after.DiscussionID)
+	}
+}
+
 func TestStartDiscussionRejectsEmptyName(t *testing.T) {
 	app := newTestAppWithStore(t)
 	app.registry = discussion.NewRegistry(app.store)
