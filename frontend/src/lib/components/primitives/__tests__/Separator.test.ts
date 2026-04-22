@@ -32,7 +32,7 @@ describe('<Separator>', () => {
   // (which matches behavior in Chromium/Safari but not happy-dom), we
   // verify the component re-renders without throwing when opacity
   // changes — the opacity prop path stays covered end-to-end by
-  // downstream visual consumers (ComposerToolbar, StatusBar).
+  // downstream visual consumers (ComposerToolbar).
   it('accepts a custom opacity prop without throwing', () => {
     const { container } = render(Separator, { props: { opacity: 0.4 } });
     expect(container.querySelector('[role="separator"]')).not.toBeNull();

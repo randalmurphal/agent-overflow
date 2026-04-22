@@ -6,7 +6,6 @@
   import BackgroundTaskTray from './BackgroundTaskTray.svelte';
   import Composer from '../composer/Composer.svelte';
   import BelowComposerBar from '../composer/belowbar/BelowComposerBar.svelte';
-  import StatusBar from '../shared/StatusBar.svelte';
   import ProviderStatusBanner from './ProviderStatusBanner.svelte';
   import ThreadTerminalDrawer from '../terminal/ThreadTerminalDrawer.svelte';
   import DiscussionView from '../discussion/DiscussionView.svelte';
@@ -81,7 +80,6 @@
       <Composer {pane} {draft} />
       <ChatWorkingIndicator {pane} />
       <BelowComposerBar {pane} />
-      <StatusBar {pane} />
       {#if pane.diffPanel.open && pane.thread}
         {#key pane.thread.id}
           <DiffPanelDrawer {pane} />

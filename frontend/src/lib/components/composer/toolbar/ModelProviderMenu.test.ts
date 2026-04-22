@@ -41,12 +41,15 @@ describe('<ModelProviderMenu>', () => {
     setBindingMock('ListDiscussions', async () => []);
   });
 
-  it('renders the pane provider + model on the trigger', async () => {
+  it('renders the active model slug on the trigger (brand is the glyph; no provider word)', async () => {
     const pane = await buildPane(makeThread({ provider: 'claude', model: 'claude-haiku-4-6' }));
     const { getByTestId } = render(ModelProviderMenu, { props: { pane } });
     const trigger = getByTestId('composer-model-menu-trigger');
-    expect(trigger.textContent ?? '').toMatch(/Claude/);
+    // Provider identification lives in the brand glyph (lucide-claude /
+    // lucide-openai); the label is the model slug only.
     expect(trigger.textContent ?? '').toMatch(/claude-haiku-4-6/);
+    expect(trigger.textContent ?? '').not.toMatch(/\bClaude\b/);
+    expect(trigger.textContent ?? '').not.toMatch(/\bCodex\b/);
   });
 
   // Per-picker provider brand glyph: Claude uses the Anthropic mark

@@ -125,7 +125,6 @@
       const updated = (await UpdateThreadModel(threadId, slug)) as Thread;
       pane.replaceThread(updated);
       replaceThread(updated);
-      addToast('info', `Switched to ${updated.model}`);
     } catch (err) {
       console.error('model/provider update failed:', err);
       addToast('error', `Failed to switch model: ${errString(err)}`);
@@ -135,14 +134,12 @@
     }
   }
 
-  // Displayed label: "Claude — claude-opus-4-5 ▾". Keeping both the
-  // provider and the model on the button means a user can read the
-  // active config at a glance without opening the menu. The brand
-  // glyph (Anthropic's Claude mark / OpenAI rosette) reinforces the
-  // provider at a glance — lucide doesn't ship these, so we inline
-  // them as dedicated Svelte components under primitives/brand/.
+  // Trigger label: brand glyph + active model name (no provider word —
+  // the glyph already identifies the provider, and doubling up the
+  // text made the button verbose). lucide doesn't ship these marks,
+  // so we inline them as dedicated Svelte components under
+  // primitives/brand/.
   let isCodex = $derived(pane.thread?.provider === 'codex');
-  let providerLabel = $derived(isCodex ? 'Codex' : 'Claude');
   let modelLabel = $derived(pane.thread?.model ?? 'No model');
 </script>
 
@@ -175,8 +172,7 @@
          again matching t3-code's providerIconClassName. -->
     <ClaudeIcon size={13} class="text-[#d97757] opacity-95" />
   {/if}
-  <span class="font-medium text-fg">{providerLabel}</span>
-  <span class="truncate max-w-[200px]">{modelLabel}</span>
+  <span class="truncate max-w-[200px] text-fg">{modelLabel}</span>
   <Icon icon={ChevronDown} size={12} strokeWidth={2} class="opacity-60" />
 </button>
 
