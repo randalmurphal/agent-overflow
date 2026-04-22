@@ -39,6 +39,17 @@
   }
 
   function onPointerDown(e: PointerEvent): void {
+    // preventDefault on pointerdown cancels the associated mousedown's
+    // default action — which, for mouse input, is what kicks off a
+    // browser text selection anchored on the handle. Without this,
+    // body.style.userSelect='none' (set below) only prevents NEW
+    // selections; an in-progress one that started on the mousedown
+    // would continue to extend as the pointer swept left/right into
+    // the sidebar or the chat pane.
+    e.preventDefault();
+    // Clear any stray selection (e.g. user had text highlighted before
+    // grabbing the handle) so the drag starts from a clean slate.
+    window.getSelection()?.removeAllRanges();
     dragging = true;
     startPointer = e.clientX;
     startWidth = width;
@@ -46,8 +57,9 @@
     // doesn't yank the handle.
     maxWidth = getSidebarMaxWidth();
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-    // Disable text selection across the whole document while dragging
-    // — otherwise the cursor sweep selects random sidebar text.
+    // Defense-in-depth: if preventDefault doesn't catch every browser
+    // edge case (Cmd-click, PenInput, etc) this still blocks selection
+    // for the rest of the drag.
     document.body.style.cursor = 'col-resize';
     document.body.style.userSelect = 'none';
   }
@@ -83,6 +95,10 @@
   aria-valuemin={SIDEBAR_MIN_WIDTH}
   class={[
     'absolute top-0 bottom-0 right-0 w-1 cursor-col-resize z-20',
+    // select-none disables the browser's text-selection anchor on the
+    // handle itself; touch-none disables native pan/zoom so a touch
+    // drag goes straight to our pointer handlers.
+    'select-none touch-none',
     'hover:bg-accent/30 transition-colors',
     dragging ? 'bg-accent/50' : '',
   ].join(' ')}
