@@ -92,6 +92,15 @@ func (mermaidTransformer) Transform(doc *ast.Document, reader text.Reader, _ par
 		if !bytes.EqualFold(lang, []byte("mermaid")) {
 			return ast.WalkContinue, nil
 		}
+		// Streaming safety: if the fence hasn't been closed yet, leave
+		// it as a FencedCodeBlock so goldmark renders the partial source
+		// as a plain code block. The frontend mermaid renderer can't
+		// parse incomplete source and would cascade parse errors;
+		// waiting for closure means the client only ever sees
+		// complete-source diagrams.
+		if !fencedBlockIsClosed(source, cb) {
+			return ast.WalkContinue, nil
+		}
 		// Copy the raw source out of the block's Lines segments. This
 		// is the text between the opening and closing fences.
 		var buf bytes.Buffer

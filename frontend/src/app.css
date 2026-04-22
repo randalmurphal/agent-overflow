@@ -212,14 +212,9 @@ body::selection {
   overflow-y: hidden;
 }
 /* Post-render KaTeX handles its own typography; undo the mono fallback. */
-.markdown-body .math-inline[data-math-rendered],
-.markdown-body .math-display[data-math-rendered] {
+.markdown-body .math-inline.math-rendered,
+.markdown-body .math-display.math-rendered {
   font-family: inherit;
-}
-.markdown-body .math-error {
-  color: var(--error);
-  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
-  font-size: 0.875em;
 }
 
 /* Mermaid diagrams — the Go renderer emits <pre class="mermaid"> and
@@ -237,8 +232,23 @@ body::selection {
   overflow-x: auto;
   max-width: 100%;
 }
-.markdown-body pre.mermaid.mermaid-error {
+
+/* Fallback surface used by lazyCompleteSourceRenderer when a complete
+   source fails to parse (invalid mermaid / KaTeX). The source sits in
+   a normal-looking code block and the error message appears below, so
+   the user sees exactly what the agent tried to render and why it
+   failed — never just the error alone. */
+.markdown-body .rendered-source {
+  /* Inherits the default `.markdown-body pre` styling (mono, border,
+     padding). The rule exists explicitly so the fallback surface is
+     visibly a surface, not just a reused <pre>. */
+  margin: 0;
+}
+.markdown-body .rendered-error {
   color: var(--error);
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 0.875em;
+  padding: 0.25rem 0 0;
 }
 
 /* Collapsible <details>/<summary>. Passed through by safeHTMLRenderer. */

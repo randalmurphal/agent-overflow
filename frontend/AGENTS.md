@@ -90,9 +90,27 @@ the `HighlightMarkdown` binding on demand instead of consuming the
 server-persisted HTML. Diffs stay frontend-rendered because they have
 per-line interactive structure.
 
+Two client-side renderers hydrate server-emitted placeholders: mermaid
+diagrams (`<pre class="mermaid">`) and KaTeX math (`<span
+class="math-inline">` / `<div class="math-display">`). Both go through
+`src/lib/utils/lazyCompleteSourceRenderer.ts` — the canonical primitive
+for "lazy-import a heavy library, find matching elements under
+`.markdown-body`, render each once, cache by source hash, fall back to
+source+error on failure." The Go pipeline gates emission of those
+placeholders on fence/delimiter closure, so the primitive only ever
+sees complete sources. Register a painter with a `selector`, `key`
+(stable namespace used for the `data-rendered-<key>` idempotency
+attribute and cache bucket), `load`, `render`, `readSource` — plus
+optional `rewriteCached` for per-paint element-id uniqueness (mermaid
+uses this). Thin wrappers live in `mermaidRenderer.ts` and
+`mathRenderer.ts`.
+
 Do NOT re-introduce Shiki, marked, dompurify, or any ANSI-to-HTML
 parser in the webview. If a new content surface needs server-side
-rendering, extend `internal/highlight/RenderForKind`.
+rendering, extend `internal/highlight/RenderForKind`. If a new content
+surface needs a complete-source client-side renderer (PlantUML,
+Graphviz, D2, etc.), register a painter via
+`lazyCompleteSourceRenderer` rather than writing another observer.
 
 ## Extension points
 

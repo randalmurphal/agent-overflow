@@ -53,6 +53,14 @@ type blockMathNode struct {
 	// close on its first visit. Stored on the node so the parser stays
 	// concurrent-safe (no shared global state).
 	tight bool
+	// closed is true once Open/Continue have seen the explicit closing
+	// `$$` delimiter. Streaming callers render a cumulative prefix that
+	// may not contain the closer yet — without this flag we'd emit a
+	// `<div class="math-display">` for unterminated blocks and the
+	// frontend KaTeX renderer would parse-fail on every 50 ms tick.
+	// Close fires on EOF regardless, so an unterminated node reaches
+	// the renderer with closed=false.
+	closed bool
 }
 
 func (blockMathNode) Kind() ast.NodeKind          { return kindBlockMath }
@@ -123,7 +131,7 @@ func (blockMathParser) Open(_ ast.Node, reader text.Reader, _ parser.Context) (a
 		// Tight form: opens and closes on the same line.
 		inner := make([]byte, closeIdx)
 		copy(inner, rest[:closeIdx])
-		node := &blockMathNode{source: inner, tight: true}
+		node := &blockMathNode{source: inner, tight: true, closed: true}
 		return node, parser.NoChildren
 	}
 	// Multi-line open: bare `$$` on its own line, optional trailing
@@ -147,6 +155,7 @@ func (blockMathParser) Continue(node ast.Node, reader text.Reader, _ parser.Cont
 		// part of the slice) is the exact byte count to consume so
 		// the framework's next iteration starts on the line after
 		// the close marker and doesn't re-open another math block.
+		n.closed = true
 		reader.Advance(len(line))
 		return parser.Close
 	}
@@ -184,6 +193,23 @@ func renderBlockMath(w util.BufWriter, _ []byte, node ast.Node, entering bool) (
 	}
 	n := node.(*blockMathNode)
 	src := bytes.TrimRight(n.source, "\r\n")
+	if !n.closed {
+		// Unterminated block — the user is still streaming the body
+		// between the opening `$$` and a closer that hasn't arrived.
+		// Emit the raw source (with the opener reinstated so the user
+		// sees that it's a math block in progress) as a plain code
+		// block. Mirrors how the mermaid transformer leaves unclosed
+		// fences as FencedCodeBlocks: the frontend sees nothing that
+		// triggers KaTeX, and the flip to rendered math is a single
+		// atomic paint once the closer arrives.
+		_, _ = w.WriteString(`<pre><code>$$`)
+		if len(src) > 0 {
+			_, _ = w.WriteString("\n")
+			_, _ = w.Write(util.EscapeHTML(src))
+		}
+		_, _ = w.WriteString(`</code></pre>`)
+		return ast.WalkContinue, nil
+	}
 	_, _ = w.WriteString(`<div class="math-display">`)
 	_, _ = w.Write(util.EscapeHTML(src))
 	_, _ = w.WriteString(`</div>`)

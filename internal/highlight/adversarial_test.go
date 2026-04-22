@@ -381,6 +381,27 @@ func containsLiveScript(out string) bool {
 	}
 }
 
+// TestMarkdownMermaidClosedBlockScriptIsEscaped confirms that a
+// properly-closed mermaid fence whose source contains markup-like bytes
+// (`</pre>`, `<script>`) has them HTML-escaped on emission. The
+// frontend reads textContent to obtain the source for mermaid.js, which
+// reverses the escape at parse time — so the diagram still renders
+// correctly while the raw <pre> in the HTML never contains a live tag
+// that could break out of the block.
+func TestMarkdownMermaidClosedBlockScriptIsEscaped(t *testing.T) {
+	r := New(Options{})
+	out := r.RenderMarkdown("```mermaid\ngraph TD\nA[\"</pre><script>alert(1)</script>\"] --> B\n```\n")
+	if containsLiveScript(out) {
+		t.Fatalf("live <script> inside closed mermaid block leaked: %q", out)
+	}
+	if strings.Contains(out, "</pre><script>") {
+		t.Fatalf("un-escaped </pre><script> in mermaid block: %q", out)
+	}
+	if !strings.Contains(out, "&lt;/pre&gt;&lt;script&gt;") {
+		t.Fatalf("expected escaped tags in mermaid source: %q", out)
+	}
+}
+
 func assertNoLiveTag(t *testing.T, out, tag string) {
 	t.Helper()
 	lower := strings.ToLower(out)

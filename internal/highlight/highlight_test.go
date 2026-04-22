@@ -253,6 +253,48 @@ func TestRenderMarkdownBlockMathTightForm(t *testing.T) {
 	}
 }
 
+// TestRenderMarkdownBlockMathUnterminatedStaysAsCodeBlock pins the
+// closure gate for multi-line `$$` blocks. While the closer hasn't
+// streamed in yet, the renderer must emit a fallback `<pre><code>` so
+// the frontend KaTeX painter doesn't parse-fail on every tick.
+func TestRenderMarkdownBlockMathUnterminatedStaysAsCodeBlock(t *testing.T) {
+	r := newTestRenderer(t)
+	in := "Before\n\n$$\nE = mc^2\n"
+	out := r.RenderMarkdown(in)
+	if strings.Contains(out, `<div class="math-display">`) {
+		t.Fatalf("unclosed block math wrongly emitted as math-display: %q", out)
+	}
+	if !strings.Contains(out, "$$") {
+		t.Fatalf("opener `$$` missing from fallback: %q", out)
+	}
+	if !strings.Contains(out, "E = mc^2") {
+		t.Fatalf("partial LaTeX missing from fallback: %q", out)
+	}
+}
+
+// TestRenderMarkdownBlockMathStreamingPrefixes confirms the math closure
+// gate holds across every streaming prefix of a complete block.
+func TestRenderMarkdownBlockMathStreamingPrefixes(t *testing.T) {
+	r := newTestRenderer(t)
+	full := "Before\n\n$$\nE = mc^2\n$$\n\nAfter\n"
+	minClosed := strings.Index(full, "$$\n\nAfter") + len("$$") // right after the closing `$$`
+	var firstClosedAt = -1
+	for i := 1; i <= len(full); i++ {
+		out := r.RenderMarkdown(full[:i])
+		if strings.Contains(out, `<div class="math-display">`) {
+			if firstClosedAt < 0 {
+				firstClosedAt = i
+			}
+		}
+	}
+	if firstClosedAt < 0 {
+		t.Fatalf("math block never rendered on any prefix")
+	}
+	if firstClosedAt < minClosed {
+		t.Fatalf("math block emitted before closer complete: at prefix %d, closer complete at %d", firstClosedAt, minClosed)
+	}
+}
+
 // TestRenderMarkdownMathIsEscaped confirms LaTeX source containing
 // angle brackets or HTML-flavored bytes are HTML-escaped on emission.
 // KaTeX reads textContent on render so the escape round-trips.
@@ -292,6 +334,66 @@ func TestRenderMarkdownMermaidFence(t *testing.T) {
 	// (they're not code for copy-to-clipboard).
 	if strings.Contains(out, "ch-copy") {
 		t.Fatalf("mermaid block wrapped with code-copy button: %q", out)
+	}
+}
+
+// TestRenderMarkdownMermaidUnclosedFenceStaysAsCodeBlock pins the
+// streaming-safety gate: a mermaid fence that hasn't been closed yet
+// must render as a plain code block (not `<pre class="mermaid">`), so
+// the frontend renderer never sees partial source.
+func TestRenderMarkdownMermaidUnclosedFenceStaysAsCodeBlock(t *testing.T) {
+	r := newTestRenderer(t)
+	in := "Here is a diagram:\n\n```mermaid\ngraph TD\nA-->B\n"
+	out := r.RenderMarkdown(in)
+	if strings.Contains(out, `<pre class="mermaid">`) {
+		t.Fatalf("unclosed mermaid fence wrongly emitted as mermaid block: %q", out)
+	}
+	if !strings.Contains(out, "graph TD") {
+		t.Fatalf("partial source missing from fallback code block: %q", out)
+	}
+}
+
+// TestRenderMarkdownMermaidStreamingPrefixes simulates a streaming
+// render: feed prefixes of a complete mermaid document to the renderer
+// one byte at a time and confirm no `<pre class="mermaid">` tag is
+// emitted until the prefix contains the closing fence.
+func TestRenderMarkdownMermaidStreamingPrefixes(t *testing.T) {
+	r := newTestRenderer(t)
+	full := "intro text\n\n```mermaid\ngraph TD\nA-->B\n```\n\ntrailing text\n"
+	// minClosed is the smallest prefix length that contains the whole
+	// closing `` ``` `` — measured as the byte index right after the
+	// closer's final backtick. A fence with the closer at EOF (no
+	// trailing newline) is valid, so this is the earliest prefix at
+	// which the mermaid block is legitimately complete.
+	minClosed := strings.Index(full, "```\n\n") + len("```")
+	var firstClosedAt = -1
+	for i := 1; i <= len(full); i++ {
+		out := r.RenderMarkdown(full[:i])
+		if strings.Contains(out, `<pre class="mermaid">`) {
+			if firstClosedAt < 0 {
+				firstClosedAt = i
+			}
+		}
+	}
+	if firstClosedAt < 0 {
+		t.Fatalf("mermaid block never rendered on any prefix")
+	}
+	if firstClosedAt < minClosed {
+		t.Fatalf("mermaid block emitted before closer complete: at prefix %d, closer complete at %d", firstClosedAt, minClosed)
+	}
+}
+
+// TestRenderMarkdownMermaidClosedOnCRLFInput pins the closer heuristic
+// against CRLF line endings. A closer `"```\r\n"` reaches the heuristic
+// as a line slice of `"```\r"` and must still be recognised as a valid
+// closer — otherwise a properly-terminated fence streamed on CRLF
+// input would stay as a plain code block forever.
+func TestRenderMarkdownMermaidClosedOnCRLFInput(t *testing.T) {
+	r := newTestRenderer(t)
+	in := "```mermaid\r\ngraph TD\r\nA-->B\r\n```\r\n"
+	out := r.RenderMarkdown(in)
+	if !strings.Contains(out, `<pre class="mermaid">`) {
+		t.Fatalf("CRLF-closed mermaid fence not emitted as mermaid block: %q", out)
 	}
 }
 

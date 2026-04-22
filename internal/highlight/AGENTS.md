@@ -12,6 +12,9 @@ spans. Frontend consumers paint the pre-rendered HTML via `{@html}`.
 - `markdown.go` — goldmark + `goldmark-highlighting` + Chroma wiring
   (`chromahtml.WithClasses(true)`, `chromahtml.ClassPrefix("ch-")`).
 - `ansi.go` — `buildkite/terminal-to-html/v3` wrapper.
+- `mermaid.go` — rewrites closed ```mermaid fences into `<pre class="mermaid">`; leaves unclosed fences as plain code blocks during streaming.
+- `math.go` — inline (`$...$`) and block (`$$...$$`) LaTeX parsers. Block math carries a `closed` flag so unterminated blocks fall back to a plain code block during streaming instead of emitting `<div class="math-display">` with partial source.
+- `closure.go` — `fencedBlockIsClosed`, a source byte-peek that reports whether a goldmark `FencedCodeBlock` ended on a matching closing fence or ran to EOF. Consumed by `mermaid.go` (and available to any future client-side-rendered fenced language) so the frontend renderer only ever sees complete-source blocks.
 - `dispatch.go` — `RenderForKind` table and exported `Kind*` string
   constants. The constants cover BOTH `items.kind` values (e.g.
   `KindAssistantText`, `KindThinking`) and `payloads.kind` values (e.g.
@@ -57,6 +60,12 @@ spans. Frontend consumers paint the pre-rendered HTML via `{@html}`.
 - To change the Chroma style, pass a non-empty `Options.Style`. Output is
   class-based (`ch-*`), so styles only affect Chroma's CSS generator; the
   rendered HTML stays the same.
+- To add another client-side-rendered fenced language (PlantUML, D2,
+  Graphviz, etc.): write a transformer mirroring `mermaid.go` that gates
+  the rewrite on `fencedBlockIsClosed`. Leave unclosed fences as
+  `FencedCodeBlock` so the frontend never sees partial source. Add a
+  streaming-prefix test like
+  `TestRenderMarkdownMermaidStreamingPrefixes` to pin the gate.
 
 ## Anti-patterns
 
