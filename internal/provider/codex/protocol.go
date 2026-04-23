@@ -129,6 +129,46 @@ func classifyTurnCompleted(threadID string, params json.RawMessage, now time.Tim
 	return events
 }
 
+// nonToolItemTypes is the deny-list for Codex item type strings that
+// arrive via `item/started` / `item/completed` but must NOT be routed
+// as tool_call rows. These are content channels with their own
+// dedicated triage paths:
+//
+//   - userMessage:             persisted by app.PersistItem on SendMessage
+//   - agentMessage / assistantMessage: written by handleTextDelta from the
+//                              item/agentMessage/delta stream; settled on
+//                              turn/completed
+//   - reasoning:               written by handleThinking from the
+//                              item/reasoning/*Delta stream
+//   - plan:                    item/completed is special-cased to emit
+//                              EventProposedPlan; item/started is noise
+//   - todoList:                no triage path yet; suppress rather than
+//                              pollute the tool_call stream until the
+//                              renderer knows what to do with it
+//
+// Routing any of these as EventToolStart creates ghost tool_call rows
+// that (a) show up as ToolCallCard in the timeline and (b) thrash the
+// sidebar live-status projection running -> idle -> running during
+// a turn because every new item/started flips the projection to
+// `running` and every item/completed flips it back, producing a
+// visible "Completed" pill in the gap between `userMessage` settling
+// and `agentMessage` starting.
+//
+// Codex wire reference: docs/references/codex-wire.md §Item lifecycle.
+var nonToolItemTypes = map[string]struct{}{
+	"userMessage":      {},
+	"agentMessage":     {},
+	"assistantMessage": {},
+	"reasoning":        {},
+	"plan":             {},
+	"todoList":         {},
+}
+
+func isNonToolCodexItemType(itemType string) bool {
+	_, nonTool := nonToolItemTypes[itemType]
+	return nonTool
+}
+
 // classifyItemNotification handles `item/*` methods — the tool-call
 // lifecycle (started/updated/completed) plus the streaming deltas and
 // reasoning channels.
@@ -137,7 +177,9 @@ func classifyItemNotification(threadID, method string, params json.RawMessage, n
 	case "item/started":
 		itemID := readNestedString(params, "item", "id")
 		itemType := classifyCodexItemType(params)
-		if itemType == "" {
+		if itemType == "" || isNonToolCodexItemType(itemType) {
+			// Drop non-tool item/started events; they have their own
+			// triage channels (see nonToolItemTypes doc above).
 			return nil, true
 		}
 		return []provider.ProviderEvent{{
@@ -249,6 +291,10 @@ func classifyItemCompleted(threadID string, params json.RawMessage, now time.Tim
 	if itemType == "" {
 		return nil
 	}
+	// Plan is the one non-tool type we DO route here — as a proposed-plan
+	// event, not as a tool_call completion. The remaining non-tool types
+	// (userMessage / agentMessage / reasoning / todoList) are handled by
+	// their own triage paths and must not settle a tool_call row.
 	if itemType == "plan" {
 		planMarkdown := extractCodexPlanMarkdown(params)
 		if planMarkdown == "" {
@@ -263,6 +309,9 @@ func classifyItemCompleted(threadID string, params json.RawMessage, now time.Tim
 			Meta:      params,
 			Timestamp: now,
 		}}
+	}
+	if isNonToolCodexItemType(itemType) {
+		return nil
 	}
 	return []provider.ProviderEvent{{
 		Kind:      provider.EventToolComplete,

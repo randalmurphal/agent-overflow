@@ -206,6 +206,46 @@ func TestItemCompleted(t *testing.T) {
 	}
 }
 
+// TestItemStartedDropsNonToolTypes guards the sidebar live-status
+// projection. Codex fires item/started for every ThreadItem variant —
+// including userMessage, agentMessage, reasoning — but only true tools
+// (command execution, file change, mcp tool calls, etc.) should land
+// as EventToolStart. Without this filter, every new turn writes ghost
+// tool_call rows that flicker the sidebar pill running -> idle during
+// the gap between userMessage settling and agentMessage streaming,
+// which is long enough for the "Completed" pill to render mid-turn.
+func TestItemStartedDropsNonToolTypes(t *testing.T) {
+	cases := []string{"userMessage", "agentMessage", "assistantMessage", "reasoning", "plan", "todoList"}
+	for _, itemType := range cases {
+		t.Run(itemType, func(t *testing.T) {
+			params := json.RawMessage(`{"item":{"id":"item-X","type":"` + itemType + `"}}`)
+			events := ClassifyNotification(testThread, "item/started", params)
+			if len(events) != 0 {
+				t.Fatalf("%s started should be dropped, got %d events: %+v", itemType, len(events), events)
+			}
+		})
+	}
+}
+
+// TestItemCompletedDropsNonToolContentTypes mirrors the started filter:
+// completions for userMessage / agentMessage / reasoning / todoList must
+// not settle as tool_call rows. Plan is deliberately exempt — it's
+// re-routed to EventProposedPlan by classifyItemCompleted (covered by
+// TestItemCompletedPlan below if present, otherwise by the plan payload
+// tests in triage).
+func TestItemCompletedDropsNonToolContentTypes(t *testing.T) {
+	cases := []string{"userMessage", "agentMessage", "assistantMessage", "reasoning", "todoList"}
+	for _, itemType := range cases {
+		t.Run(itemType, func(t *testing.T) {
+			params := json.RawMessage(`{"item":{"id":"item-X","type":"` + itemType + `"}}`)
+			events := ClassifyNotification(testThread, "item/completed", params)
+			if len(events) != 0 {
+				t.Fatalf("%s completed should be dropped, got %d events: %+v", itemType, len(events), events)
+			}
+		})
+	}
+}
+
 func TestCommandExecutionOutputDelta(t *testing.T) {
 	params := json.RawMessage(`{"delta":"output line\n"}`)
 	events := ClassifyNotification(testThread, "item/commandExecution/outputDelta", params)

@@ -233,6 +233,101 @@ describe('<ThreadRow> live status dot', () => {
     expect(dot.classList.contains('animate-pulse')).toBe(true);
   });
 
+  // Regression: row must react LIVE to status changes pushed into the
+  // projection store AFTER it mounted. This mirrors what happens in
+  // production when a running row first starts streaming items while
+  // the sidebar is already rendered. Before the fix, the pill never
+  // appeared because the $derived wasn't recomputing on statuses-store
+  // reassignment.
+  it('reactively shows the pill when status flips AFTER mount', async () => {
+    const pane = createThreadPane();
+    const { queryByTestId, getByTestId } = render(ThreadRow, {
+      props: { thread: makeThread({ id: 't-post', mode: 'chat' }), pane },
+    });
+    expect(queryByTestId('thread-row-status-dot')).toBeNull();
+
+    setThreadStatus('t-post', 'running');
+    // Drain microtasks so the $derived recomputes and the DOM
+    // reconciles.
+    for (let i = 0; i < 3; i += 1) await Promise.resolve();
+
+    const dot = getByTestId('thread-row-status-dot');
+    expect(dot.getAttribute('data-status')).toBe('running');
+    expect(dot.getAttribute('aria-label')).toBe('Working');
+  });
+
+  // Full-stack regression: drive the exact wire-level path the live app
+  // uses. provider:item_upsert → applyItemUpsert (in events.ts) →
+  // projectThreadItem → setThreadStatus → $derived → DOM. If this fails
+  // but the direct-setThreadStatus test above passes, the break is in
+  // the event plumbing, not the reactivity.
+  it('flips the pill to Working when a streaming assistant_text arrives via provider:item_upsert', async () => {
+    const { emitWailsEvent } = await import('../../../test/mocks/wailsio-runtime');
+    const { setupEventListeners } = await import('../../stores/events');
+    const cleanup = setupEventListeners();
+    try {
+      const pane = createThreadPane();
+      const { queryByTestId, getByTestId } = render(ThreadRow, {
+        props: { thread: makeThread({ id: 't-stream', mode: 'chat' }), pane },
+      });
+      expect(queryByTestId('thread-row-status-dot')).toBeNull();
+
+      emitWailsEvent('provider:item_upsert', {
+        id: 'item-1',
+        threadId: 't-stream',
+        turnIndex: 0,
+        itemIndex: 0,
+        kind: 'assistant_text',
+        role: 'assistant',
+        status: 'streaming',
+        summary: 'hello',
+        highlightedContent: '',
+        createdAt: 1,
+        updatedAt: 1,
+      });
+      for (let i = 0; i < 3; i += 1) await Promise.resolve();
+
+      const dot = getByTestId('thread-row-status-dot');
+      expect(dot.getAttribute('data-status')).toBe('running');
+      expect(dot.getAttribute('aria-label')).toBe('Working');
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('flips the pill to Working when a streaming thinking item arrives via provider:item_upsert', async () => {
+    const { emitWailsEvent } = await import('../../../test/mocks/wailsio-runtime');
+    const { setupEventListeners } = await import('../../stores/events');
+    const cleanup = setupEventListeners();
+    try {
+      const pane = createThreadPane();
+      const { queryByTestId, getByTestId } = render(ThreadRow, {
+        props: { thread: makeThread({ id: 't-think', mode: 'chat' }), pane },
+      });
+      expect(queryByTestId('thread-row-status-dot')).toBeNull();
+
+      emitWailsEvent('provider:item_upsert', {
+        id: 'thinking-1',
+        threadId: 't-think',
+        turnIndex: 0,
+        itemIndex: 0,
+        kind: 'thinking',
+        role: 'assistant',
+        status: 'streaming',
+        summary: 'pondering',
+        highlightedContent: '',
+        createdAt: 1,
+        updatedAt: 1,
+      });
+      for (let i = 0; i < 3; i += 1) await Promise.resolve();
+
+      const dot = getByTestId('thread-row-status-dot');
+      expect(dot.getAttribute('data-status')).toBe('running');
+    } finally {
+      cleanup();
+    }
+  });
+
   it('labels the pill "Planning" when running in plan mode', () => {
     setThreadStatus('t-plan', 'running');
     const pane = createThreadPane();
