@@ -38,16 +38,20 @@ export function hasUnread(thread: Pick<Thread, 'lastReadAt' | 'updatedAt'>): boo
  * resolveThreadStatusPill picks the right pill for a row. Returns
  * `null` when the row should show nothing more than its title + time
  * (the common idle case). Resolution order:
- *   1. error  → "Error"
- *   2. pending-approval → "Pending approval" (user must act)
- *   3. running → mode-aware (Planning / Designing / Discussing / Working)
- *   4. idle + unread → "Completed"
- *   5. idle + read   → null (no pill)
+ *   1. error            → "Error"
+ *   2. pending-approval → "Pending approval" (blocking tool permission)
+ *   3. awaiting-input   → "Awaiting input" (agent asking a question)
+ *   4. running          → mode-aware (Planning / Designing / Discussing / Working)
+ *   5. plan-ready       → "Plan ready" (settled plan awaiting accept/edit/reject)
+ *   6. idle + unread    → "Completed"
+ *   7. idle + read      → null (no pill)
  *
- * The full behaviour matches forge's `Sidebar.logic.ts`; we picked a
- * subset of the status kinds that map cleanly onto agent-overflow's
- * existing ThreadLiveStatus projection. If we later add richer states
- * (connecting, paused, plan-ready) extend this table.
+ * Priority matches forge's `Sidebar.logic.ts`. Colors — pending-approval
+ * shares the running amber because both are "agent pausing on an action
+ * the user needs to resolve"; awaiting-input and plan-ready use accent
+ * violet to read as calmer user-prompts. Plan-ready doesn't pulse — the
+ * plan isn't actively working; awaiting-input does pulse because the
+ * agent is actively stuck.
  */
 export function resolveThreadStatusPill(
   thread: Pick<Thread, 'mode' | 'lastReadAt' | 'updatedAt'>,
@@ -64,6 +68,14 @@ export function resolveThreadStatusPill(
   if (liveStatus === 'pending-approval') {
     return {
       label: 'Pending approval',
+      dotClass: 'bg-warning',
+      labelClass: 'text-warning',
+      pulse: true,
+    };
+  }
+  if (liveStatus === 'awaiting-input') {
+    return {
+      label: 'Awaiting input',
       dotClass: 'bg-accent',
       labelClass: 'text-accent',
       pulse: true,
@@ -85,6 +97,14 @@ export function resolveThreadStatusPill(
       default:
         return { label: 'Working', ...running };
     }
+  }
+  if (liveStatus === 'plan-ready') {
+    return {
+      label: 'Plan ready',
+      dotClass: 'bg-accent',
+      labelClass: 'text-accent',
+      pulse: false,
+    };
   }
   // idle
   if (hasUnread(thread)) {

@@ -360,7 +360,7 @@ describe('<ThreadRow> live status dot', () => {
     expect(getByTestId('thread-row-status-dot').getAttribute('aria-label')).toBe('Planning');
   });
 
-  it('renders an accent dot labelled Pending approval when an approval is pending', () => {
+  it('renders a warning dot labelled Pending approval when a blocking approval is pending', () => {
     setThreadStatus('t-approval', 'pending-approval');
     const pane = createThreadPane();
     const { getByTestId } = render(ThreadRow, {
@@ -369,7 +369,35 @@ describe('<ThreadRow> live status dot', () => {
     const dot = getByTestId('thread-row-status-dot');
     expect(dot.getAttribute('data-status')).toBe('pending-approval');
     expect(dot.getAttribute('aria-label')).toBe('Pending approval');
+    // Amber warning — pending-approval guards a destructive action,
+    // so it shares the running/amber palette. Awaiting-input uses
+    // accent violet instead. See threadStatusPill.ts.
+    expect(dot.classList.contains('bg-warning')).toBe(true);
+  });
+
+  it('renders an accent dot labelled Awaiting input for user-input approvals', () => {
+    setThreadStatus('t-input', 'awaiting-input');
+    const pane = createThreadPane();
+    const { getByTestId } = render(ThreadRow, {
+      props: { thread: makeThread({ id: 't-input' }), pane },
+    });
+    const dot = getByTestId('thread-row-status-dot');
+    expect(dot.getAttribute('data-status')).toBe('awaiting-input');
+    expect(dot.getAttribute('aria-label')).toBe('Awaiting input');
     expect(dot.classList.contains('bg-accent')).toBe(true);
+  });
+
+  it('renders a non-pulsing accent dot labelled Plan ready when a plan is waiting', () => {
+    setThreadStatus('t-plan-ready', 'plan-ready');
+    const pane = createThreadPane();
+    const { getByTestId } = render(ThreadRow, {
+      props: { thread: makeThread({ id: 't-plan-ready' }), pane },
+    });
+    const dot = getByTestId('thread-row-status-dot');
+    expect(dot.getAttribute('data-status')).toBe('plan-ready');
+    expect(dot.getAttribute('aria-label')).toBe('Plan ready');
+    expect(dot.classList.contains('bg-accent')).toBe(true);
+    expect(dot.classList.contains('animate-pulse')).toBe(false);
   });
 
   it('renders an error dot labelled Error when the thread has errored', () => {

@@ -156,7 +156,11 @@ function applyApprovalEvent(evt: ApprovalEvent): void {
   if (!evt) return;
 
   if (evt.action === 'request' && evt.request?.threadId) {
-    projectApprovalRequest(evt.request.threadId, evt.request.requestId);
+    projectApprovalRequest(
+      evt.request.threadId,
+      evt.request.requestId,
+      evt.request.kind,
+    );
     for (const pane of getAllPanes().values()) {
       if (pane.threadId === evt.request.threadId) {
         pane.addApproval(evt.request);

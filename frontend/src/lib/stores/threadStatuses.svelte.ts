@@ -1,3 +1,4 @@
+import type { ApprovalKind } from '../types/events';
 import type { Item } from '../types/models';
 
 // Global per-thread live-status projection for the sidebar. Chat state is
@@ -26,14 +27,35 @@ import type { Item } from '../types/models';
 // Any of the three → `running`. All three clear → step through
 // pending-approval → error → idle.
 
-export type ThreadLiveStatus = 'idle' | 'running' | 'pending-approval' | 'error';
+export type ThreadLiveStatus =
+  | 'idle'
+  | 'running'
+  | 'awaiting-input'
+  | 'pending-approval'
+  | 'plan-ready'
+  | 'error';
+
+/**
+ * Approval kinds that represent the agent asking the USER a question
+ * (or requesting structured input) — distinct from a permission ask
+ * for a destructive action. The sidebar renders these as
+ * `awaiting-input` rather than `pending-approval` so the user can
+ * distinguish "please fill in a form" from "the agent wants to rm -rf".
+ * Matches forge's Sidebar.logic.ts split.
+ */
+const AWAITING_INPUT_KINDS: ReadonlySet<ApprovalKind> = new Set([
+  'user-input',
+  'mcp-elicitation',
+]);
 
 let statuses: Map<string, ThreadLiveStatus> = $state(new Map());
 const activeItemIDsByThread = new Map<string, Set<string>>();
 const approvalIDsByThread = new Map<string, Set<string>>();
+const awaitingInputIDsByThread = new Map<string, Set<string>>();
 const approvalThreadByID = new Map<string, string>();
 const activeTurnIDsByThread = new Map<string, Set<string>>();
 const pendingSendThreads = new Set<string>();
+const planReadyThreads = new Set<string>();
 const errorThreads = new Set<string>();
 
 function trackedIDsFor(map: Map<string, Set<string>>, threadId: string): Set<string> {
@@ -62,8 +84,18 @@ function isActiveTimelineItem(item: Item): boolean {
 }
 
 function recalculateThreadStatus(threadId: string): void {
+  // Priority mirrors forge's Sidebar.logic.ts. Blocking approvals
+  // outrank everything else because the provider can't advance until
+  // the user acts; awaiting-input is a softer call-to-action that
+  // still blocks progress but isn't protecting a destructive action.
+  // Both sit above `running` for the same reason: the user needs to
+  // see them even if a background tool is still spinning.
   if ((approvalIDsByThread.get(threadId)?.size ?? 0) > 0) {
     setThreadStatus(threadId, 'pending-approval');
+    return;
+  }
+  if ((awaitingInputIDsByThread.get(threadId)?.size ?? 0) > 0) {
+    setThreadStatus(threadId, 'awaiting-input');
     return;
   }
   if (
@@ -72,6 +104,14 @@ function recalculateThreadStatus(threadId: string): void {
     || (activeItemIDsByThread.get(threadId)?.size ?? 0) > 0
   ) {
     setThreadStatus(threadId, 'running');
+    return;
+  }
+  // Plan-ready sits below running because while a plan exists, the
+  // turn that produced it has settled and the user's next decision
+  // drives the next turn. A fresh turn clears the plan-ready flag
+  // (see projectTurnStarted).
+  if (planReadyThreads.has(threadId)) {
+    setThreadStatus(threadId, 'plan-ready');
     return;
   }
   if (errorThreads.has(threadId)) {
@@ -116,13 +156,18 @@ export function clearThreadStatus(threadId: string): void {
   activeItemIDsByThread.delete(threadId);
   activeTurnIDsByThread.delete(threadId);
   pendingSendThreads.delete(threadId);
-  const approvalIDs = approvalIDsByThread.get(threadId);
-  if (approvalIDs) {
-    for (const requestId of approvalIDs) {
+  planReadyThreads.delete(threadId);
+  for (const requestIdSet of [
+    approvalIDsByThread.get(threadId),
+    awaitingInputIDsByThread.get(threadId),
+  ]) {
+    if (!requestIdSet) continue;
+    for (const requestId of requestIdSet) {
       approvalThreadByID.delete(requestId);
     }
-    approvalIDsByThread.delete(threadId);
   }
+  approvalIDsByThread.delete(threadId);
+  awaitingInputIDsByThread.delete(threadId);
   errorThreads.delete(threadId);
   if (!statuses.has(threadId)) return;
   const next = new Map(statuses);
@@ -172,8 +217,14 @@ export function projectTurnStarted(threadId: string, turnId: string): void {
   if (!threadId || !turnId) return;
   // Turn-started always supersedes a prior optimistic send flag (we
   // have real backend confirmation now) AND clears any prior error
-  // from an earlier turn on the same thread.
+  // from an earlier turn on the same thread. It also clears the
+  // plan-ready flag: if a plan was proposed and the user's acceptance
+  // kicked off a new turn, the plan is no longer "awaiting a decision"
+  // — the decision happened. Rejecting a plan also fires a new turn
+  // (agent adjusts and re-proposes), so clearing here is correct in
+  // both acceptance and rejection cases.
   pendingSendThreads.delete(threadId);
+  planReadyThreads.delete(threadId);
   errorThreads.delete(threadId);
   trackedIDsFor(activeTurnIDsByThread, threadId).add(turnId);
   recalculateThreadStatus(threadId);
@@ -218,17 +269,40 @@ export function projectThreadItem(item: Item): void {
     removeTrackedID(activeItemIDsByThread, item.threadId, item.id);
   }
 
+  // A completed proposed_plan item means the agent has produced a plan
+  // and is waiting on the user's Accept / Edit / Reject decision. The
+  // sidebar pill flips to "Plan ready" so an off-pane user doesn't have
+  // to open the thread to discover the plan is sitting there. Status
+  // 'errored' / 'declined' don't set plan-ready — those are terminal
+  // failures, not actionable plans.
+  if (item.kind === 'proposed_plan' && item.status === 'completed') {
+    planReadyThreads.add(item.threadId);
+  }
+
   recalculateThreadStatus(item.threadId);
 }
 
 /**
- * Feed an approval request into the projection. Pending approval dominates
- * every other status because the thread is blocked on the user.
+ * Feed an approval request into the projection. The `kind` discriminates
+ * a user-input / MCP-elicitation (→ awaiting-input) from a permission /
+ * command / file-change approval (→ pending-approval). An unknown or
+ * missing kind defaults to pending-approval because that's the safer
+ * read: a blocking approval the user didn't expect still gets their
+ * attention; a soft input prompt that accidentally rendered as
+ * pending-approval is lower-impact.
  */
-export function projectApprovalRequest(threadId: string, requestId: string): void {
+export function projectApprovalRequest(
+  threadId: string,
+  requestId: string,
+  kind?: ApprovalKind,
+): void {
   if (!threadId || !requestId) return;
   approvalThreadByID.set(requestId, threadId);
-  trackedIDsFor(approvalIDsByThread, threadId).add(requestId);
+  if (kind && AWAITING_INPUT_KINDS.has(kind)) {
+    trackedIDsFor(awaitingInputIDsByThread, threadId).add(requestId);
+  } else {
+    trackedIDsFor(approvalIDsByThread, threadId).add(requestId);
+  }
   errorThreads.delete(threadId);
   recalculateThreadStatus(threadId);
 }
@@ -236,7 +310,9 @@ export function projectApprovalRequest(threadId: string, requestId: string): voi
 /**
  * Feed an approval resolution into the projection. Resolve payloads should
  * include threadId, but we also track requestId -> threadId so late or
- * partial events still clean up correctly.
+ * partial events still clean up correctly. We remove from BOTH buckets
+ * unconditionally — the caller doesn't know which bucket the request
+ * landed in, and a resolution always clears the same id.
  */
 export function projectApprovalResolution(
   threadId: string | null | undefined,
@@ -247,7 +323,34 @@ export function projectApprovalResolution(
   if (!ownerThreadId) return;
   approvalThreadByID.delete(requestId);
   removeTrackedID(approvalIDsByThread, ownerThreadId, requestId);
+  removeTrackedID(awaitingInputIDsByThread, ownerThreadId, requestId);
   recalculateThreadStatus(ownerThreadId);
+}
+
+/**
+ * Mark a thread as having a proposed plan that the user hasn't acted
+ * on yet. Fires automatically from projectThreadItem when a
+ * proposed_plan item lands with a terminal (completed) status; also
+ * exposed so other call sites can force the flag if we add richer
+ * plan-resolution events later. Cleared on the next turn start
+ * (projectTurnStarted) or by an explicit projectPlanResolved.
+ */
+export function projectPlanReady(threadId: string): void {
+  if (!threadId) return;
+  planReadyThreads.add(threadId);
+  recalculateThreadStatus(threadId);
+}
+
+/**
+ * Clear the plan-ready flag. Called by projectTurnStarted (the user
+ * accepted / rejected / edited the plan and a new turn is running)
+ * or explicitly if the UI wires a distinct "dismiss plan" action.
+ */
+export function projectPlanResolved(threadId: string): void {
+  if (!threadId) return;
+  if (!planReadyThreads.has(threadId)) return;
+  planReadyThreads.delete(threadId);
+  recalculateThreadStatus(threadId);
 }
 
 /**
@@ -275,7 +378,9 @@ export function resetForTest(): void {
   activeItemIDsByThread.clear();
   activeTurnIDsByThread.clear();
   pendingSendThreads.clear();
+  planReadyThreads.clear();
   approvalIDsByThread.clear();
+  awaitingInputIDsByThread.clear();
   approvalThreadByID.clear();
   errorThreads.clear();
   if (statuses.size === 0) return;

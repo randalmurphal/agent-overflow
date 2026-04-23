@@ -3,6 +3,8 @@ import {
   getThreadStatus,
   projectApprovalRequest,
   projectApprovalResolution,
+  projectPlanReady,
+  projectPlanResolved,
   projectSendResolved,
   projectSendStarted,
   projectThreadItem,
@@ -176,6 +178,119 @@ describe('threadStatuses store', () => {
 
       projectApprovalResolution('thread-1', 'req-1');
       expect(getThreadStatus('thread-1')).toBe('running');
+    });
+  });
+
+  describe('awaiting-input (user-input / mcp-elicitation approvals)', () => {
+    it('flips to awaiting-input for user-input kind', () => {
+      projectApprovalRequest('thread-1', 'req-1', 'user-input');
+      expect(getThreadStatus('thread-1')).toBe('awaiting-input');
+
+      projectApprovalResolution('thread-1', 'req-1');
+      expect(getThreadStatus('thread-1')).toBe('idle');
+    });
+
+    it('flips to awaiting-input for mcp-elicitation kind', () => {
+      projectApprovalRequest('thread-1', 'req-1', 'mcp-elicitation');
+      expect(getThreadStatus('thread-1')).toBe('awaiting-input');
+    });
+
+    it.each(['command', 'file-read', 'file-change', 'permission'] as const)(
+      '%s kind still resolves to pending-approval',
+      (kind) => {
+        projectApprovalRequest('thread-1', 'req-1', kind);
+        expect(getThreadStatus('thread-1')).toBe('pending-approval');
+      },
+    );
+
+    it('missing kind defaults to pending-approval (safer fallback)', () => {
+      projectApprovalRequest('thread-1', 'req-1');
+      expect(getThreadStatus('thread-1')).toBe('pending-approval');
+    });
+
+    it('pending-approval dominates awaiting-input when both are outstanding', () => {
+      projectApprovalRequest('thread-1', 'req-input', 'user-input');
+      expect(getThreadStatus('thread-1')).toBe('awaiting-input');
+
+      projectApprovalRequest('thread-1', 'req-cmd', 'command');
+      expect(getThreadStatus('thread-1')).toBe('pending-approval');
+
+      // Clearing the command approval drops back to awaiting-input.
+      projectApprovalResolution('thread-1', 'req-cmd');
+      expect(getThreadStatus('thread-1')).toBe('awaiting-input');
+    });
+
+    it('awaiting-input dominates a running turn', () => {
+      projectTurnStarted('thread-1', 'turn-1');
+      projectApprovalRequest('thread-1', 'req-1', 'user-input');
+      expect(getThreadStatus('thread-1')).toBe('awaiting-input');
+    });
+  });
+
+  describe('plan-ready', () => {
+    it('flips to plan-ready on a completed proposed_plan item', () => {
+      projectThreadItem(makeItem({
+        id: 'plan-1',
+        kind: 'proposed_plan',
+        status: 'completed',
+      }));
+      expect(getThreadStatus('thread-1')).toBe('plan-ready');
+    });
+
+    it('does NOT flip on an errored proposed_plan', () => {
+      projectThreadItem(makeItem({
+        id: 'plan-1',
+        kind: 'proposed_plan',
+        status: 'errored',
+      }));
+      expect(getThreadStatus('thread-1')).toBe('idle');
+    });
+
+    it('does NOT flip on a streaming (in-progress) proposed_plan', () => {
+      projectThreadItem(makeItem({
+        id: 'plan-1',
+        kind: 'proposed_plan',
+        status: 'streaming',
+      }));
+      // Streaming items land as active-item → running, not plan-ready.
+      // The plan-ready flag only kicks in on terminal completed status.
+      expect(getThreadStatus('thread-1')).not.toBe('plan-ready');
+    });
+
+    it('turn_started clears plan-ready (user accepted or rejected)', () => {
+      projectPlanReady('thread-1');
+      expect(getThreadStatus('thread-1')).toBe('plan-ready');
+
+      projectTurnStarted('thread-1', 'turn-1');
+      expect(getThreadStatus('thread-1')).toBe('running');
+    });
+
+    it('explicit projectPlanResolved clears the flag', () => {
+      projectPlanReady('thread-1');
+      expect(getThreadStatus('thread-1')).toBe('plan-ready');
+
+      projectPlanResolved('thread-1');
+      expect(getThreadStatus('thread-1')).toBe('idle');
+    });
+
+    it('running trumps plan-ready while a tool_call is active', () => {
+      projectPlanReady('thread-1');
+      projectThreadItem(makeItem({
+        id: 'tool-1',
+        kind: 'tool_call',
+        status: 'running',
+        isBackground: false,
+      }));
+      expect(getThreadStatus('thread-1')).toBe('running');
+    });
+
+    it('pending-approval and awaiting-input both trump plan-ready', () => {
+      projectPlanReady('thread-1');
+      projectApprovalRequest('thread-1', 'req-1', 'user-input');
+      expect(getThreadStatus('thread-1')).toBe('awaiting-input');
+
+      projectApprovalRequest('thread-1', 'req-2', 'command');
+      expect(getThreadStatus('thread-1')).toBe('pending-approval');
     });
   });
 });

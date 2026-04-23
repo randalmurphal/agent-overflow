@@ -75,6 +75,22 @@ describe('resolveThreadStatusPill', () => {
     const pill = resolveThreadStatusPill(t({ mode: 'plan' }), 'pending-approval');
     expect(pill?.label).toBe('Pending approval');
     expect(pill?.pulse).toBe(true);
+    expect(pill?.dotClass).toContain('bg-warning');
+  });
+
+  it('awaiting-input renders a pulsing accent pill', () => {
+    const pill = resolveThreadStatusPill(t(), 'awaiting-input');
+    expect(pill?.label).toBe('Awaiting input');
+    expect(pill?.pulse).toBe(true);
+    expect(pill?.dotClass).toContain('bg-accent');
+    expect(pill?.labelClass).toContain('text-accent');
+  });
+
+  it('plan-ready renders a non-pulsing accent pill', () => {
+    const pill = resolveThreadStatusPill(t(), 'plan-ready');
+    expect(pill?.label).toBe('Plan ready');
+    expect(pill?.pulse).toBe(false);
+    expect(pill?.dotClass).toContain('bg-accent');
   });
 
   it('error wins over everything', () => {

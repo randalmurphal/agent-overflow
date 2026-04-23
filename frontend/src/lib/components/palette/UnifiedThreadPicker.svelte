@@ -84,17 +84,22 @@
   }
 
   // Status dot styling is identical to ThreadRow so the picker stays
-  // visually consistent with the sidebar.
+  // visually consistent with the sidebar. Keep in sync with
+  // resolveThreadStatusPill in components/sidebar/threadStatusPill.ts.
   const STATUS_CLASS: Record<ThreadLiveStatus, string> = {
     idle: '',
     running: 'bg-warning animate-pulse',
-    'pending-approval': 'bg-accent',
+    'awaiting-input': 'bg-accent animate-pulse',
+    'pending-approval': 'bg-warning animate-pulse',
+    'plan-ready': 'bg-accent',
     error: 'bg-error',
   };
   const STATUS_LABEL: Record<ThreadLiveStatus, string> = {
     idle: '',
     running: 'Running',
+    'awaiting-input': 'Awaiting input',
     'pending-approval': 'Pending approval',
+    'plan-ready': 'Plan ready',
     error: 'Error',
   };
 
