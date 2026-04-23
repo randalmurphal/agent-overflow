@@ -98,13 +98,13 @@ func TestSessionOptionsFastModeSwapsClaudeOpus(t *testing.T) {
 	}
 }
 
-// TestSessionOptionsFastModeSwapsCodexGpt5 — the Codex analogue: gpt-5.4
+// TestSessionOptionsFastModeSwapsCodexGpt5 — the Codex analogue: gpt-5.5
 // becomes gpt-5.4-mini after the translation.
 func TestSessionOptionsFastModeSwapsCodexGpt5(t *testing.T) {
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-fast-gpt5")
 	thread.Provider = string(provider.Codex)
-	thread.Model = "gpt-5.4"
+	thread.Model = "gpt-5.5"
 	thread.FastMode = true
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread: %v", err)

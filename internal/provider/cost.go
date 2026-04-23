@@ -31,23 +31,28 @@ var KnownPricing = map[string]ModelPricing{
 		CacheCreationPerMToken: 1.25,
 		CacheReadPerMToken:     0.10,
 	},
-	// "gpt-5" also serves as a prefix fallback for any gpt-5-* variant via
-	// matchPricing's progressive prefix stripping (e.g. "gpt-5-turbo" would
-	// match here after failing exact lookup).
+	// "gpt-5" serves as the family-level fallback for GPT-5 variants that
+	// do not have an explicit per-version entry yet (for example a future
+	// gpt-5.6 until/if we add distinct pricing).
 	"gpt-5": {
-		InputPerMToken:     1.75,
-		OutputPerMToken:    14.00,
-		CacheReadPerMToken: 0.175,
+		InputPerMToken:     1.25,
+		OutputPerMToken:    10.00,
+		CacheReadPerMToken: 0.125,
+	},
+	"gpt-5.5": {
+		InputPerMToken:     5.00,
+		OutputPerMToken:    30.00,
+		CacheReadPerMToken: 0.50,
 	},
 	"gpt-5.4": {
-		InputPerMToken:     1.75,
-		OutputPerMToken:    14.00,
-		CacheReadPerMToken: 0.175,
+		InputPerMToken:     2.50,
+		OutputPerMToken:    15.00,
+		CacheReadPerMToken: 0.25,
 	},
 	"gpt-5.4-mini": {
-		InputPerMToken:     0.25,
-		OutputPerMToken:    2.00,
-		CacheReadPerMToken: 0.025,
+		InputPerMToken:     0.75,
+		OutputPerMToken:    4.50,
+		CacheReadPerMToken: 0.075,
 	},
 	"o3": {
 		InputPerMToken:     1.75,
@@ -79,19 +84,26 @@ func CalculateCost(model string, usage TokenUsage) float64 {
 }
 
 // matchPricing finds pricing for a model slug by trying exact match first,
-// then progressively stripping trailing "-segment" pieces until a prefix matches.
-// Example: "claude-sonnet-4-6" tries "claude-sonnet-4-6", "claude-sonnet-4", "claude-sonnet".
+// then progressively stripping trailing family/version suffixes until a
+// prefix matches. We trim the rightmost "-" or "." segment each round so
+// both hyphen families (claude-sonnet-4-6 -> claude-sonnet) and dotted GPT
+// versions (gpt-5.6 -> gpt-5) resolve to their family pricing.
 func matchPricing(model string) (ModelPricing, bool) {
 	// Try exact match first.
 	if p, ok := KnownPricing[model]; ok {
 		return p, true
 	}
 
-	// Progressive prefix matching: strip trailing segments split on "-".
-	parts := strings.Split(model, "-")
-	for i := len(parts) - 1; i >= 1; i-- {
-		prefix := strings.Join(parts[:i], "-")
-		if p, ok := KnownPricing[prefix]; ok {
+	// Progressive prefix matching: trim the trailing "-" or "." segment
+	// each round until a known family prefix matches.
+	candidate := model
+	for {
+		cut := strings.LastIndexAny(candidate, "-.")
+		if cut <= 0 {
+			break
+		}
+		candidate = candidate[:cut]
+		if p, ok := KnownPricing[candidate]; ok {
 			return p, true
 		}
 	}

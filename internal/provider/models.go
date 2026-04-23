@@ -35,6 +35,12 @@ var ClaudeModels = []ModelInfo{
 // CodexModels lists models available through the Codex provider.
 var CodexModels = []ModelInfo{
 	{
+		Slug:         "gpt-5.5",
+		Name:         "GPT-5.5",
+		Provider:     "codex",
+		Capabilities: []string{ModelCapabilityFastMode},
+	},
+	{
 		Slug:         "gpt-5.4",
 		Name:         "GPT-5.4",
 		Provider:     "codex",

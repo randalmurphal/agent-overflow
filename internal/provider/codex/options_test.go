@@ -76,6 +76,7 @@ func TestFastModelForCodex(t *testing.T) {
 		current string
 		want    string
 	}{
+		{"gpt-5.5", "gpt-5.4-mini"},
 		{"gpt-5.4", "gpt-5.4-mini"},
 		{"gpt-5", "gpt-5.4-mini"},
 		{"gpt-5-turbo", "gpt-5.4-mini"},
@@ -138,12 +139,12 @@ func TestConfigFromOptionsRuntimeModesPair(t *testing.T) {
 	}
 }
 
-// TestConfigFromOptionsFastModeSwaps exercises the gpt-5 → gpt-5.4-mini
+// TestConfigFromOptionsFastModeSwaps exercises the gpt-5.5 → gpt-5.4-mini
 // swap at the translation boundary.
 func TestConfigFromOptionsFastModeSwaps(t *testing.T) {
 	cfg := ConfigFromOptions(provider.SessionOptions{
 		Provider: "codex",
-		Model:    "gpt-5.4",
+		Model:    "gpt-5.5",
 		FastMode: true,
 	})
 	if cfg.Model != "gpt-5.4-mini" {

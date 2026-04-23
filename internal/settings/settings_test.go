@@ -28,11 +28,11 @@ func TestGetReturnsDefaultsOnMissingFile(t *testing.T) {
 	if got.CodexEnabled != true {
 		t.Error("CodexEnabled = false, want true")
 	}
-	if got.DefaultModelClaude != "claude-sonnet-4-6" {
-		t.Errorf("DefaultModelClaude = %q, want %q", got.DefaultModelClaude, "claude-sonnet-4-6")
+	if got.DefaultModelClaude != "claude-opus-4-7" {
+		t.Errorf("DefaultModelClaude = %q, want %q", got.DefaultModelClaude, "claude-opus-4-7")
 	}
-	if got.DefaultModelCodex != "gpt-5.4" {
-		t.Errorf("DefaultModelCodex = %q, want %q", got.DefaultModelCodex, "gpt-5.4")
+	if got.DefaultModelCodex != "gpt-5.5" {
+		t.Errorf("DefaultModelCodex = %q, want %q", got.DefaultModelCodex, "gpt-5.5")
 	}
 	if got.DefaultRuntimeMode != "full-access" {
 		t.Errorf("DefaultRuntimeMode = %q, want %q", got.DefaultRuntimeMode, "full-access")

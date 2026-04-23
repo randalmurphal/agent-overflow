@@ -29,12 +29,40 @@ func TestCalculateCost_GPT54(t *testing.T) {
 		InputTokens:  2_000_000,
 		OutputTokens: 1_000_000,
 	}
-	// gpt-5.4 -> gpt-5.4 key: $1.75/M input + $14.00/M output
-	// 2M input * $1.75 = $3.50; 1M output * $14.00 = $14.00
-	want := 17.50
+	// gpt-5.4 -> gpt-5.4 key: $2.50/M input + $15.00/M output
+	// 2M input * $2.50 = $5.00; 1M output * $15.00 = $15.00
+	want := 20.00
 	got := CalculateCost("gpt-5.4", usage)
 	if !almostEqual(got, want, 0.001) {
 		t.Errorf("CalculateCost(gpt-5.4) = %f, want %f", got, want)
+	}
+}
+
+func TestCalculateCost_GPT55(t *testing.T) {
+	usage := TokenUsage{
+		InputTokens:  2_000_000,
+		OutputTokens: 1_000_000,
+	}
+	// gpt-5.5 has its own official pricing:
+	// 2M input * $5.00 = $10.00; 1M output * $30.00 = $30.00
+	want := 40.00
+	got := CalculateCost("gpt-5.5", usage)
+	if !almostEqual(got, want, 0.001) {
+		t.Errorf("CalculateCost(gpt-5.5) = %f, want %f", got, want)
+	}
+}
+
+func TestCalculateCost_GPT55WithCachedInput(t *testing.T) {
+	usage := TokenUsage{
+		InputTokens:          1_000_000,
+		OutputTokens:         1_000_000,
+		CacheReadInputTokens: 1_000_000,
+	}
+	// gpt-5.5: $5.00/M input + $30.00/M output + $0.50/M cached input
+	want := 35.50
+	got := CalculateCost("gpt-5.5", usage)
+	if !almostEqual(got, want, 0.001) {
+		t.Errorf("CalculateCost(gpt-5.5 with cache read) = %f, want %f", got, want)
 	}
 }
 
@@ -43,8 +71,8 @@ func TestCalculateCost_GPT54Mini(t *testing.T) {
 		InputTokens:  1_000_000,
 		OutputTokens: 1_000_000,
 	}
-	// gpt-5.4-mini key: $0.25/M input + $2.00/M output
-	want := 2.25
+	// gpt-5.4-mini key: $0.75/M input + $4.50/M output
+	want := 5.25
 	got := CalculateCost("gpt-5.4-mini", usage)
 	if !almostEqual(got, want, 0.001) {
 		t.Errorf("CalculateCost(gpt-5.4-mini) = %f, want %f", got, want)
@@ -168,6 +196,16 @@ func TestMatchPricing_PrefixMatch(t *testing.T) {
 	}
 	if p.InputPerMToken != 5.00 {
 		t.Errorf("InputPerMToken = %f, want 5.00", p.InputPerMToken)
+	}
+}
+
+func TestMatchPricing_DottedVersionFallback(t *testing.T) {
+	p, ok := matchPricing("gpt-5.6")
+	if !ok {
+		t.Fatal("expected match for gpt-5.6 via dotted fallback")
+	}
+	if p.InputPerMToken != 1.25 {
+		t.Errorf("InputPerMToken = %f, want 1.25", p.InputPerMToken)
 	}
 }
 

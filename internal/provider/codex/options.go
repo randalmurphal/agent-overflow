@@ -67,11 +67,12 @@ func runtimeModeToCodex(mode provider.RuntimeMode) codexRuntime {
 // fastModelForCodex swaps a heavier Codex model for its mini sibling when Fast
 // Mode is on. Codex's canonical "cheap and fast" tier is the `-mini` variant
 // of the current default (verified against internal/provider/models.go — the
-// current mini id is gpt-5.4-mini).
+// current mini id is gpt-5.4-mini; OpenAI's current docs expose GPT-5.5 in
+// Codex, but do not expose a gpt-5.5-mini sibling yet).
 //
 // Rules:
 //   - If the current model id starts with "gpt-5" but does NOT contain
-//     "mini", swap to "gpt-5.4-mini".
+//     "mini", swap to "gpt-5.4-mini" (the latest documented mini tier).
 //   - If it already contains "mini", leave it unchanged (user has already
 //     opted into the cheap tier).
 //   - For non-gpt-5 Codex models (o3, o4-mini, etc.) we leave the id alone;

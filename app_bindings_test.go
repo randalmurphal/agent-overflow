@@ -64,6 +64,16 @@ func TestGetModelsForProvider(t *testing.T) {
 	if claudeModels[0].Provider != "claude" {
 		t.Fatalf("Provider = %q, want claude", claudeModels[0].Provider)
 	}
+	codexModels, err := app.GetModelsForProvider("codex")
+	if err != nil {
+		t.Fatalf("GetModelsForProvider(codex) error = %v", err)
+	}
+	if len(codexModels) == 0 {
+		t.Fatal("expected codex models")
+	}
+	if codexModels[0].Slug != "gpt-5.5" {
+		t.Fatalf("first codex model = %q, want gpt-5.5", codexModels[0].Slug)
+	}
 
 	unknown, err := app.GetModelsForProvider("unknown")
 	if err != nil {

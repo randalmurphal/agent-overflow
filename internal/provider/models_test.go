@@ -48,6 +48,16 @@ func TestModelsForProvider_Codex(t *testing.T) {
 	}
 }
 
+func TestCodexModelsIncludeGPT55(t *testing.T) {
+	models := ModelsForProvider("codex")
+	if len(models) == 0 {
+		t.Fatal("expected codex models")
+	}
+	if models[0].Slug != "gpt-5.5" {
+		t.Fatalf("first codex model = %q, want gpt-5.5", models[0].Slug)
+	}
+}
+
 func TestModelsForProvider_Unknown(t *testing.T) {
 	models := ModelsForProvider("unknown")
 	if models != nil {
