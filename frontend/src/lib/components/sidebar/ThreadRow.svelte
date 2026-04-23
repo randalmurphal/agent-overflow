@@ -196,6 +196,8 @@
     {selected ? 'bg-accent/15 text-fg' : isActive ? 'bg-accent/10 text-fg' : 'text-fg-muted hover:bg-surface-2/30 hover:text-fg'}"
   style="padding-left: {8 + indentPx}px"
   data-testid="thread-row"
+  data-thread-id={thread.id}
+  data-live-status={liveStatus}
 >
   {#if hasChildren}
     <button
