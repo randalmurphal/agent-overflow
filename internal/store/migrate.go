@@ -611,6 +611,23 @@ ALTER TABLE channel_messages ADD COLUMN highlighted_content TEXT NOT NULL DEFAUL
 ALTER TABLE threads ADD COLUMN last_read_at INTEGER;
 `,
 	},
+	{
+		Version: 21,
+		Name:    "items_live_background_index",
+		// Partial covering index for the BackgroundTaskTray query. Without
+		// this, `ListLiveBackgroundTasks` scans the entire thread-scoped
+		// idx_items_thread range to find the running background launches,
+		// which grows linearly with a thread's item history on a query
+		// that fires per debounced tray refresh. The partial index
+		// restricts to the only rows that can match the launch branch
+		// and is tiny in practice (most threads have 0-few live bg
+		// tasks).
+		SQL: `
+CREATE INDEX IF NOT EXISTS idx_items_live_background
+  ON items(thread_id, id)
+  WHERE is_background = 1 AND status = 'running';
+`,
+	},
 }
 
 // v13SQL is the DROP-and-rebuild payload for migration v13. Extracted so

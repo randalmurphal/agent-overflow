@@ -94,8 +94,10 @@ func (a *App) ListThreadDiffPayloads(threadID string) ([]store.Item, error) {
 }
 
 // ListLiveBackgroundTasks returns running background launches plus
-// recently-completed completions (within the tray retention window) so
-// the BackgroundTaskTray can render without scanning `pane.items`.
+// their recently-completed siblings (within the tray retention window)
+// so the BackgroundTaskTray can render without scanning `pane.items`.
+// Pairs age out together — a launch whose completion has fallen past
+// the cutoff is dropped with it.
 func (a *App) ListLiveBackgroundTasks(threadID string) ([]store.Item, error) {
 	cutoff := time.Now().UnixMilli() - backgroundTaskRetentionMillis
 	items, err := a.store.ListLiveBackgroundTasks(threadID, cutoff)

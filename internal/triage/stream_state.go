@@ -3,6 +3,7 @@ package triage
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -66,18 +67,25 @@ func (r *Router) drainInterruptQueueIfIdle(threadID string) {
 		return
 	}
 	if err := r.drainInterruptQueue(threadID, false); err != nil {
-		// Queue drain is best-effort at this layer; the turn/error handlers
-		// already surface persistence failures via their own return path.
+		// drainInterruptQueue logs per-item failures itself; the idle
+		// drain has no upstream caller to surface the aggregate to, so
+		// swallow it here.
 		return
 	}
 }
 
+// drainInterruptQueue persists every queued item for the thread. The
+// queue is handed off before iteration (cleared from the map under the
+// lock), so an early return on persist failure would silently strand
+// the remaining items. We log each failure and return the first error
+// once the full queue has been attempted.
 func (r *Router) drainInterruptQueue(threadID string, forceErrored bool) error {
 	r.mu.Lock()
 	queue := r.interruptQueue[threadID]
 	delete(r.interruptQueue, threadID)
 	r.mu.Unlock()
 
+	var firstErr error
 	for _, queued := range queue {
 		item := queued.item
 		if forceErrored {
@@ -86,10 +94,13 @@ func (r *Router) drainInterruptQueue(threadID string, forceErrored bool) error {
 			item.UpdatedAt = time.Now().UnixMilli()
 		}
 		if err := r.persistItem(item, queued.payload); err != nil {
-			return err
+			log.Printf("triage: drain persist failed for item %s on thread %s: %v", item.ID, threadID, err)
+			if firstErr == nil {
+				firstErr = err
+			}
 		}
 	}
-	return nil
+	return firstErr
 }
 
 // settleTurnStreaming collects every active streaming scope in

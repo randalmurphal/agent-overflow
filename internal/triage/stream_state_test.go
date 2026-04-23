@@ -345,6 +345,119 @@ func TestSettleStreamingThinkingNonStreamingRowStillDrainsQueue(t *testing.T) {
 	}
 }
 
+// TestDrainInterruptQueueContinuesAfterPersistError pins the contract
+// that one failing item in the interrupt queue MUST NOT starve the
+// rest: drainInterruptQueue used to early-return on the first persist
+// error, leaving every later queued item stranded in the already-
+// deleted queue.
+//
+// Case 1 (three items, middle fails, forceErrored=false): the valid
+// items before AND after the failing one both land; the error
+// propagates.
+//
+// Case 2 (two items, first fails, forceErrored=true): the mutated
+// status/summary on the second (forced-error) path still applies —
+// a regression would reorder the branch so a failing first item
+// bypasses the mutation for the second.
+func TestDrainInterruptQueueContinuesAfterPersistError(t *testing.T) {
+	t.Run("middle_failure_allows_later_items", func(t *testing.T) {
+		router, st, _ := newTestRouter(t)
+		createTestThread(t, st, "t1")
+		insertToolCallItem(t, st, "t1", "launch-pre", "Bash pre", "Bash", statusRunning)
+		insertToolCallItem(t, st, "t1", "launch-post", "Bash post", "Bash", statusRunning)
+
+		router.mu.Lock()
+		router.interruptQueue["t1"] = []queuedPersistence{
+			validDrainCompletion("complete:launch-pre", "launch-pre", 10, 1),
+			{item: store.Item{
+				ID: "bad-kind", ThreadID: "t1", TurnIndex: 0, ItemIndex: 11,
+				Kind:   "not_a_valid_kind", // CHECK constraint violation
+				Role:   "assistant", Status: statusCompleted,
+				Summary: "bad", CreatedAt: 2, UpdatedAt: 2,
+			}},
+			validDrainCompletion("complete:launch-post", "launch-post", 12, 3),
+		}
+		router.mu.Unlock()
+
+		if err := router.drainInterruptQueue("t1", false); err == nil {
+			t.Fatal("expected first persist error to propagate")
+		}
+
+		done := findItemsByKind(t, st, "t1", itemKindBackgroundDone)
+		got := map[string]bool{}
+		for _, it := range done {
+			got[it.ID] = true
+		}
+		for _, want := range []string{"complete:launch-pre", "complete:launch-post"} {
+			if !got[want] {
+				t.Errorf("drain skipped %q — %v", want, got)
+			}
+		}
+
+		router.mu.Lock()
+		remaining := len(router.interruptQueue["t1"])
+		router.mu.Unlock()
+		if remaining != 0 {
+			t.Errorf("interruptQueue residue: %d", remaining)
+		}
+	})
+
+	t.Run("force_errored_mutation_applies_past_failure", func(t *testing.T) {
+		router, st, _ := newTestRouter(t)
+		createTestThread(t, st, "t1")
+		insertToolCallItem(t, st, "t1", "launch-ok", "Bash", "Bash", statusRunning)
+
+		valid := validDrainCompletion("complete:launch-ok", "launch-ok", 11, 2)
+		valid.item.Status = statusCompleted // drain must flip this to errored
+		router.mu.Lock()
+		router.interruptQueue["t1"] = []queuedPersistence{
+			{item: store.Item{
+				ID: "bad-kind", ThreadID: "t1", TurnIndex: 0, ItemIndex: 10,
+				Kind:   "not_a_valid_kind",
+				Role:   "assistant", Status: statusCompleted,
+				Summary: "bad", CreatedAt: 1, UpdatedAt: 1,
+			}},
+			valid,
+		}
+		router.mu.Unlock()
+
+		if err := router.drainInterruptQueue("t1", true); err == nil {
+			t.Fatal("expected first persist error to propagate")
+		}
+
+		done := findItemsByKind(t, st, "t1", itemKindBackgroundDone)
+		if len(done) != 1 || done[0].ID != "complete:launch-ok" {
+			t.Fatalf("expected only complete:launch-ok, got %+v", done)
+		}
+		if done[0].Status != statusErrored {
+			t.Errorf("forceErrored not applied to later item: status=%q, want %q", done[0].Status, statusErrored)
+		}
+		if !strings.Contains(done[0].Summary, "— interrupted") {
+			t.Errorf("forceErrored suffix missing: summary=%q", done[0].Summary)
+		}
+	})
+}
+
+// validDrainCompletion builds a production-shaped background completion
+// suitable for direct queue seeding. Keeps the two drain sub-tests from
+// diverging on incidental Item fields.
+func validDrainCompletion(id, launchID string, itemIndex int, createdAt int64) queuedPersistence {
+	return queuedPersistence{item: store.Item{
+		ID:           id,
+		ThreadID:     "t1",
+		TurnIndex:    0,
+		ItemIndex:    itemIndex,
+		Kind:         itemKindBackgroundDone,
+		Role:         "assistant",
+		Status:       statusCompleted,
+		Summary:      id,
+		CompletionOf: launchID,
+		IsBackground: true,
+		CreatedAt:    createdAt,
+		UpdatedAt:    createdAt,
+	}}
+}
+
 // TestMarkUserInterruptRefreshesHighlightedContent guards against the
 // regression where interrupted/stopped streaming rows carried stale HTML:
 // settleStreamingText mutated item.Summary (" — stopped") but persistItem

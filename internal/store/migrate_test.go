@@ -68,8 +68,8 @@ func TestMigrationVersionTracking(t *testing.T) {
 		t.Fatalf("rows err: %v", err)
 	}
 
-	if len(versions) != 20 {
-		t.Fatalf("expected 20 migration versions, got %d", len(versions))
+	if len(versions) != 21 {
+		t.Fatalf("expected 21 migration versions, got %d", len(versions))
 	}
 	if versions[0].version != 1 || versions[0].name != "initial_schema" {
 		t.Errorf("v1: got %d/%s", versions[0].version, versions[0].name)
@@ -131,6 +131,9 @@ func TestMigrationVersionTracking(t *testing.T) {
 	if versions[19].version != 20 || versions[19].name != "thread_last_read_at" {
 		t.Errorf("v20: got %d/%s", versions[19].version, versions[19].name)
 	}
+	if versions[20].version != 21 || versions[20].name != "items_live_background_index" {
+		t.Errorf("v21: got %d/%s", versions[20].version, versions[20].name)
+	}
 }
 
 func TestMigrationIdempotent(t *testing.T) {
@@ -150,8 +153,8 @@ func TestMigrationIdempotent(t *testing.T) {
 	if err := db.QueryRow("SELECT COUNT(*) FROM migration_versions").Scan(&count); err != nil {
 		t.Fatalf("count: %v", err)
 	}
-	if count != 20 {
-		t.Errorf("expected 20 version rows after idempotent re-run, got %d", count)
+	if count != 21 {
+		t.Errorf("expected 21 version rows after idempotent re-run, got %d", count)
 	}
 }
 
@@ -188,8 +191,8 @@ func TestMigrationExistingVersionedDBSkipsAppliedV1(t *testing.T) {
 	if err := db.QueryRow("SELECT COUNT(*) FROM migration_versions").Scan(&appliedVersions); err != nil {
 		t.Fatalf("count migration rows: %v", err)
 	}
-	if appliedVersions != 20 {
-		t.Fatalf("expected 20 applied migrations, got %d", appliedVersions)
+	if appliedVersions != 21 {
+		t.Fatalf("expected 21 applied migrations, got %d", appliedVersions)
 	}
 }
 
@@ -229,10 +232,10 @@ func TestMigrationExistingLegacyDBSeedsTrackingAndAppliesV2(t *testing.T) {
 		t.Fatalf("read migration rows: %v", err)
 	}
 
-	if len(versions) != 20 {
-		t.Fatalf("expected 20 applied migrations, got %d", len(versions))
+	if len(versions) != 21 {
+		t.Fatalf("expected 21 applied migrations, got %d", len(versions))
 	}
-	expected := []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20}
+	expected := []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21}
 	for i, want := range expected {
 		if versions[i] != want {
 			t.Fatalf("unexpected migration versions: %v", versions)
@@ -335,10 +338,10 @@ func TestMigrationExistingLegacyParityDBBackfillsVersionHistory(t *testing.T) {
 		t.Fatalf("read migration versions: %v", err)
 	}
 
-	if len(versions) != 20 {
-		t.Fatalf("expected 20 migration rows after legacy backfill + new migrations, got %d", len(versions))
+	if len(versions) != 21 {
+		t.Fatalf("expected 21 migration rows after legacy backfill + new migrations, got %d", len(versions))
 	}
-	expectedVersions := []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20}
+	expectedVersions := []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21}
 	for i, want := range expectedVersions {
 		if versions[i].version != want {
 			t.Fatalf("unexpected migration versions: %+v", versions)
@@ -1300,6 +1303,55 @@ func TestMigrationV18UpgradesFromV17(t *testing.T) {
 	}
 	if remaining != 0 {
 		t.Errorf("expected CASCADE to drop turn rows, still have %d", remaining)
+	}
+}
+
+// TestMigrationV21AddsLiveBackgroundIndex pins the partial covering
+// index for the BackgroundTaskTray query. The index is both shape-
+// asserted (partial WHERE predicate stays aligned with the SQL's
+// launch-branch filter) and usage-asserted via EXPLAIN — a future
+// refactor that widens the WHERE, or a query-shape drift that stops
+// using it, regresses this test instead of silently degrading to a
+// full thread scan.
+func TestMigrationV21AddsLiveBackgroundIndex(t *testing.T) {
+	s := newTestStore(t)
+
+	var sqlText string
+	if err := s.db.QueryRow(
+		`SELECT sql FROM sqlite_master WHERE name = 'idx_items_live_background'`,
+	).Scan(&sqlText); err != nil {
+		t.Fatalf("read idx_items_live_background sql: %v", err)
+	}
+	if !strings.Contains(sqlText, "is_background = 1") || !strings.Contains(sqlText, "status = 'running'") {
+		t.Errorf("expected partial predicate on is_background=1 AND status='running', got: %s", sqlText)
+	}
+
+	// The launch branch of ListLiveBackgroundTasks filters by
+	// (thread_id, is_background=1, status='running'). EXPLAIN must
+	// show the planner consults idx_items_live_background — a regression
+	// here lands the query back on the generic idx_items_thread scan.
+	rows, err := s.db.Query(
+		`EXPLAIN QUERY PLAN
+		 SELECT id FROM items
+		  WHERE thread_id = ? AND is_background = 1 AND status = 'running'`,
+		"t",
+	)
+	if err != nil {
+		t.Fatalf("explain: %v", err)
+	}
+	defer rows.Close()
+	var plan strings.Builder
+	for rows.Next() {
+		var id, parent, notused sql.NullInt64
+		var detail string
+		if err := rows.Scan(&id, &parent, &notused, &detail); err != nil {
+			t.Fatalf("scan plan: %v", err)
+		}
+		plan.WriteString(detail)
+		plan.WriteString("\n")
+	}
+	if !strings.Contains(plan.String(), "idx_items_live_background") {
+		t.Errorf("query plan did not use idx_items_live_background: %s", plan.String())
 	}
 }
 

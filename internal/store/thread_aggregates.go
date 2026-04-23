@@ -117,17 +117,18 @@ func (s *Store) ListThreadDiffPayloads(threadID string) ([]Item, error) {
 	return out, nil
 }
 
-// ListLiveBackgroundTasks returns the item set the BackgroundTaskTray
-// consumes: every still-running background launch plus every completion
-// row whose `completion_of` points at a background launch and whose
-// `created_at` is at or after `retentionCutoffMillis` (the tray keeps
-// completed rows visible for a brief grace window so users can see the
-// "finished" state).
+// ListLiveBackgroundTasks returns the tray's item set: live background
+// launches plus their completion siblings whose `created_at` is inside
+// the retention window.
 //
-// Thread-scoped. Running tasks are returned regardless of their
-// turn_index so a background task launched in a now-paged-out turn still
-// surfaces in the tray. Ordering is (turn_index, item_index) so launch
-// rows appear before their completion in the returned slice.
+// A background launch stays `status='running'` forever (spec invariant
+// — the sibling completion row carries the final state). The launch
+// and its completion must age out together: returning an orphan launch
+// whose completion was pruned would re-render it as "running"
+// indefinitely. A launch with no completion yet still surfaces.
+//
+// Thread-scoped. Live launches surface regardless of turn_index.
+// Ordering is (turn_index, item_index) so launches precede completions.
 func (s *Store) ListLiveBackgroundTasks(threadID string, retentionCutoffMillis int64) ([]Item, error) {
 	rows, err := s.db.Query(
 		`SELECT `+itemColumns+`
@@ -135,7 +136,23 @@ func (s *Store) ListLiveBackgroundTasks(threadID string, retentionCutoffMillis i
 		   LEFT JOIN payloads ON payloads.id = items.payload_id
 		  WHERE items.thread_id = ?
 		    AND (
-		      (items.is_background = 1 AND items.status = 'running')
+		      (
+		        items.is_background = 1
+		        AND items.status = 'running'
+		        AND (
+		          NOT EXISTS (
+		            SELECT 1 FROM items c
+		             WHERE c.thread_id = items.thread_id
+		               AND c.completion_of = items.id
+		          )
+		          OR EXISTS (
+		            SELECT 1 FROM items c
+		             WHERE c.thread_id = items.thread_id
+		               AND c.completion_of = items.id
+		               AND c.created_at >= ?
+		          )
+		        )
+		      )
 		      OR (
 		        items.completion_of <> ''
 		        AND items.created_at >= ?
@@ -146,7 +163,7 @@ func (s *Store) ListLiveBackgroundTasks(threadID string, retentionCutoffMillis i
 		      )
 		    )
 		  ORDER BY items.turn_index, items.item_index`,
-		threadID, retentionCutoffMillis, threadID,
+		threadID, retentionCutoffMillis, retentionCutoffMillis, threadID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("store: list live background tasks for %s: %w", threadID, err)
