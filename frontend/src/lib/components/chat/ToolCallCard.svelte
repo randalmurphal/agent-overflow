@@ -139,12 +139,17 @@
     if (isBackgroundedRunning) return '…';
     if (item.status === 'running' || item.status === 'streaming') return 'running';
     if (item.status === 'errored') return 'failed';
+    // `killed` is a user-initiated stop (Claude stop_task) — distinct
+    // from `errored` so the chrome color matches the tray's gray
+    // "Stopped" badge and not the red "Failed" one.
+    if (item.status === 'killed') return 'stopped';
     return 'done';
   });
 
   let statusClass = $derived.by(() => {
     if (item.status === 'running' || item.status === 'streaming') return 'text-accent';
     if (item.status === 'errored') return 'text-error';
+    if (item.status === 'killed') return 'text-text-secondary';
     return 'text-success';
   });
 

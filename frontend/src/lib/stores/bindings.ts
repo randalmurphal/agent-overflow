@@ -34,6 +34,10 @@ export {
   InterruptTurn,
   RespondToApproval,
 
+  // Background tasks (per-item + thread-wide stop primitives)
+  StopClaudeTask,
+  CleanCodexBackgroundTerminals,
+
   // Data access
   GetPayloadPreview,
   GetPayloadData,

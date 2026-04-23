@@ -1,6 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import type { Item } from '../types/models';
-import { completionStatusFor, deriveTrayTasks } from './backgroundTray';
+import {
+  completionStatusFor,
+  deriveTrayTasks,
+  extractClaudeTaskID,
+  formatElapsed,
+  isCodexSubagentTask,
+  statusClass,
+  statusGlyph,
+  statusLabel,
+  trayTaskLabel,
+  type TrayTask,
+} from './backgroundTray';
 
 function makeItem(overrides: Partial<Item> = {}): Item {
   const createdAt = overrides.createdAt ?? 0;
@@ -21,10 +32,27 @@ function makeItem(overrides: Partial<Item> = {}): Item {
   };
 }
 
+function makeTrayTask(overrides: Partial<TrayTask> = {}): TrayTask {
+  const launch = overrides.launch ?? makeItem({ id: 'L' });
+  return {
+    rowId: launch.id,
+    anchor: launch,
+    launch,
+    completion: null,
+    status: 'running',
+    elapsedMs: 0,
+    ...overrides,
+  };
+}
+
 describe('completionStatusFor', () => {
-  it('maps errored / declined / everything-else distinctly', () => {
+  it('maps errored / declined / killed / everything-else distinctly', () => {
     expect(completionStatusFor(makeItem({ status: 'errored' }))).toBe('errored');
     expect(completionStatusFor(makeItem({ status: 'declined' }))).toBe('declined');
+    // `killed` is a distinct terminal — user-initiated stop. Must NOT
+    // collapse into `errored` (which would paint it red) or `completed`
+    // (which would paint it green).
+    expect(completionStatusFor(makeItem({ status: 'killed' }))).toBe('killed');
     expect(completionStatusFor(makeItem({ status: 'completed' }))).toBe('completed');
     // Unknown status lands on the completed bucket rather than crashing;
     // the backend contract is clear but callers shouldn't hard-fault if
@@ -32,6 +60,195 @@ describe('completionStatusFor', () => {
     expect(completionStatusFor(makeItem({ status: 'mystery' as Item['status'] }))).toBe(
       'completed',
     );
+  });
+});
+
+describe('extractClaudeTaskID', () => {
+  it('returns the task_id from a well-formed meta JSON', () => {
+    const item = makeItem({ meta: JSON.stringify({ task_id: 'tsk-42' }) });
+    expect(extractClaudeTaskID(item)).toBe('tsk-42');
+  });
+
+  it('tolerates extra meta fields (triage merges unrelated data in)', () => {
+    const item = makeItem({ meta: JSON.stringify({ task_id: 'tsk-99', other: 'x' }) });
+    expect(extractClaudeTaskID(item)).toBe('tsk-99');
+  });
+
+  it('returns null when meta is missing or empty', () => {
+    expect(extractClaudeTaskID(makeItem({ meta: undefined }))).toBeNull();
+    expect(extractClaudeTaskID(makeItem({ meta: '' }))).toBeNull();
+  });
+
+  it('returns null when meta parses but has no task_id', () => {
+    const item = makeItem({ meta: JSON.stringify({ other: 'x' }) });
+    expect(extractClaudeTaskID(item)).toBeNull();
+  });
+
+  it('returns null when task_id is the wrong type', () => {
+    const item = makeItem({ meta: JSON.stringify({ task_id: 42 }) });
+    expect(extractClaudeTaskID(item)).toBeNull();
+  });
+
+  it('returns null when meta is malformed JSON', () => {
+    const item = makeItem({ meta: '{not:json' });
+    expect(extractClaudeTaskID(item)).toBeNull();
+  });
+
+  it('returns null when task_id is the empty string', () => {
+    const item = makeItem({ meta: JSON.stringify({ task_id: '' }) });
+    expect(extractClaudeTaskID(item)).toBeNull();
+  });
+});
+
+describe('isCodexSubagentTask', () => {
+  it('detects Codex subagent rows by toolName=collab_agent on the launch', () => {
+    expect(
+      isCodexSubagentTask(makeTrayTask({
+        launch: makeItem({ id: 'L', toolName: 'collab_agent' }),
+      })),
+    ).toBe(true);
+  });
+
+  it('falls back to the completion toolName when launch is null (orphan completion)', () => {
+    expect(
+      isCodexSubagentTask(makeTrayTask({
+        launch: null,
+        completion: makeItem({ id: 'C', toolName: 'collab_agent', status: 'completed' }),
+        anchor: makeItem({ id: 'C', toolName: 'collab_agent', status: 'completed' }),
+      })),
+    ).toBe(true);
+  });
+
+  it('returns false for unifiedExec rows (no toolName, or other Codex tools)', () => {
+    expect(
+      isCodexSubagentTask(makeTrayTask({
+        launch: makeItem({ id: 'L', toolName: 'exec_command' }),
+      })),
+    ).toBe(false);
+    expect(
+      isCodexSubagentTask(makeTrayTask({
+        launch: makeItem({ id: 'L', toolName: undefined }),
+      })),
+    ).toBe(false);
+  });
+
+  it('returns false for Claude rows (toolName=Bash, Task, etc.)', () => {
+    expect(
+      isCodexSubagentTask(makeTrayTask({
+        launch: makeItem({ id: 'L', toolName: 'Bash' }),
+      })),
+    ).toBe(false);
+    expect(
+      isCodexSubagentTask(makeTrayTask({
+        launch: makeItem({ id: 'L', toolName: 'Task' }),
+      })),
+    ).toBe(false);
+  });
+});
+
+describe('statusGlyph / statusLabel / statusClass', () => {
+  it('labels all five statuses with distinct human-readable strings', () => {
+    expect(statusLabel('running')).toBe('Running');
+    expect(statusLabel('completed')).toBe('Completed');
+    expect(statusLabel('errored')).toBe('Failed');
+    expect(statusLabel('declined')).toBe('Declined');
+    // `killed` must NOT collapse into "Failed" — it's a user-initiated
+    // stop; the label difference is the whole point of the phase.
+    expect(statusLabel('killed')).toBe('Stopped');
+  });
+
+  it('gives each status a distinct glyph', () => {
+    const glyphs = new Set([
+      statusGlyph('running'),
+      statusGlyph('completed'),
+      statusGlyph('errored'),
+      statusGlyph('declined'),
+      statusGlyph('killed'),
+    ]);
+    expect(glyphs.size).toBe(5);
+  });
+
+  it('paints killed on muted-gray and keeps errored/declined on the error palette', () => {
+    expect(statusClass('running')).toBe('text-accent');
+    expect(statusClass('completed')).toBe('text-success');
+    expect(statusClass('errored')).toBe('text-error');
+    expect(statusClass('declined')).toBe('text-error');
+    // The phase spec calls for killed to read distinct from errored;
+    // the class MUST NOT be the error palette.
+    expect(statusClass('killed')).toBe('text-text-secondary');
+    expect(statusClass('killed')).not.toBe('text-error');
+  });
+});
+
+describe('formatElapsed', () => {
+  it('formats sub-minute durations as whole seconds', () => {
+    expect(formatElapsed(0)).toBe('0s');
+    expect(formatElapsed(999)).toBe('0s');
+    expect(formatElapsed(1_000)).toBe('1s');
+    expect(formatElapsed(59_999)).toBe('59s');
+  });
+
+  it('formats minute-granularity durations as `Nm Ss`', () => {
+    expect(formatElapsed(60_000)).toBe('1m 0s');
+    expect(formatElapsed(125_000)).toBe('2m 5s');
+    expect(formatElapsed(59 * 60_000 + 59_000)).toBe('59m 59s');
+  });
+
+  it('formats hour-granularity durations as `Nh Mm`', () => {
+    expect(formatElapsed(3_600_000)).toBe('1h 0m');
+    expect(formatElapsed(3_600_000 + 12 * 60_000)).toBe('1h 12m');
+  });
+});
+
+describe('trayTaskLabel', () => {
+  it('prefers the launch summary over the completion summary', () => {
+    const launch = makeItem({ id: 'L', summary: 'Bash: sleep 30' });
+    const completion = makeItem({
+      id: 'C',
+      summary: 'Bash -> done',
+      completionOf: 'L',
+      status: 'completed',
+    });
+    const task: TrayTask = {
+      rowId: 'L',
+      anchor: launch,
+      launch,
+      completion,
+      status: 'completed',
+      elapsedMs: 0,
+    };
+    expect(trayTaskLabel(task)).toBe('Bash: sleep 30');
+  });
+
+  it('falls back to the completion summary when no launch is present', () => {
+    const completion = makeItem({
+      id: 'C',
+      summary: 'Bash',
+      completionOf: 'gone',
+      status: 'completed',
+    });
+    const task: TrayTask = {
+      rowId: 'C',
+      anchor: completion,
+      launch: null,
+      completion,
+      status: 'completed',
+      elapsedMs: null,
+    };
+    expect(trayTaskLabel(task)).toBe('Bash');
+  });
+
+  it('falls back to "Tool" when neither side has a usable summary', () => {
+    const launch = makeItem({ id: 'L', summary: '   ' });
+    const task: TrayTask = {
+      rowId: 'L',
+      anchor: launch,
+      launch,
+      completion: null,
+      status: 'running',
+      elapsedMs: 0,
+    };
+    expect(trayTaskLabel(task)).toBe('Tool');
   });
 });
 
@@ -55,6 +272,21 @@ describe('deriveTrayTasks', () => {
     expect(out[0].launch?.id).toBe('L');
     expect(out[0].completion?.id).toBe('C');
     expect(out[0].elapsedMs).toBe(500);
+  });
+
+  it('maps a killed completion through to the killed status', () => {
+    const launch = makeItem({ id: 'L', status: 'running', createdAt: 100, updatedAt: 100 });
+    const completion = makeItem({
+      id: 'C',
+      status: 'killed',
+      completionOf: 'L',
+      createdAt: 500,
+      updatedAt: 500,
+      isBackground: false,
+    });
+    const out = deriveTrayTasks([launch, completion], 600, RETENTION_MS);
+    expect(out).toHaveLength(1);
+    expect(out[0].status).toBe('killed');
   });
 
   it('running launch without completion stays in the list and reports elapsed', () => {

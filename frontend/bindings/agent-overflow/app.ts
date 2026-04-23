@@ -90,6 +90,34 @@ export function ChooseDesignOption(threadID: string, requestID: string, optionID
 }
 
 /**
+ * CleanCodexBackgroundTerminals asks the Codex app-server to terminate
+ * every running unified-exec background PTY for `threadID`. This is the
+ * thread-wide "Stop all" primitive for Codex — the protocol exposes no
+ * per-process kill RPC for model-initiated backgrounded commands
+ * (see docs/references/codex.md#known-upstream-constraints). The
+ * frontend Stop-all button lands in Phase 5; this binding is the
+ * plumbing it will call.
+ * 
+ * After the RPC succeeds, Codex emits one `item/completed` notification
+ * per terminated PTY. Those flow through our existing triage path —
+ * Phase 2's sibling-synthesis stamps the `tool_completion` row and the
+ * tray reconciles on its own. No follow-up work is needed here.
+ * 
+ * Returns typed errors for:
+ * 
+ *   - session-missing: no Codex session for this thread. The caller
+ *     reached the binding before Start / after Close.
+ *   - provider-mismatch: the thread exists but it's a Claude session.
+ *     Claude has its own per-row stop primitive (StopClaudeTask); the
+ *     frontend must branch on provider before reaching for this.
+ *   - timeout / provider error: surfaced verbatim so the UI can render
+ *     the CLI-supplied message.
+ */
+export function CleanCodexBackgroundTerminals(threadID: string): $CancellablePromise<void> {
+    return $Call.ByID(16360282, threadID);
+}
+
+/**
  * ClearDraft deletes any stored draft for a thread. Missing rows are not
  * treated as an error because the caller just wants the thread to have no
  * draft.
@@ -607,8 +635,10 @@ export function ListItemsBeforeTurn(threadID: string, beforeTurnIndex: number, t
 
 /**
  * ListLiveBackgroundTasks returns running background launches plus
- * recently-completed completions (within the tray retention window) so
- * the BackgroundTaskTray can render without scanning `pane.items`.
+ * their recently-completed siblings (within the tray retention window)
+ * so the BackgroundTaskTray can render without scanning `pane.items`.
+ * Pairs age out together — a launch whose completion has fallen past
+ * the cutoff is dropped with it.
  */
 export function ListLiveBackgroundTasks(threadID: string): $CancellablePromise<store$0.Item[]> {
     return $Call.ByID(320784263, threadID).then(($result: any) => {
@@ -952,6 +982,29 @@ export function StartDiscussion(threadID: string, discussionName: string): $Canc
  */
 export function StartSession(threadID: string): $CancellablePromise<void> {
     return $Call.ByID(2850159713, threadID);
+}
+
+/**
+ * StopClaudeTask asks the Claude CLI to kill a backgrounded task
+ * (run_in_background Bash or a Task subagent) identified by `taskID`.
+ * On success the CLI emits a follow-up `system/task_updated` with
+ * `patch.status:"killed"` on the normal event stream, which flows
+ * through triage into the sibling `tool_completion` row as
+ * status=killed — rendered as a distinct "Stopped" badge in the UI.
+ * 
+ * Returns typed errors for:
+ * 
+ *   - session-missing: no Claude session for this thread. The caller
+ *     started a stop before Start / after Close.
+ *   - provider-mismatch: the thread exists but it's a Codex session,
+ *     not a Claude one. Codex has no per-row stop primitive
+ *     (see docs/references/codex.md#known-upstream-constraints); the
+ *     frontend must branch on provider before reaching for this.
+ *   - timeout / provider error: surfaced verbatim so the UI can render
+ *     the CLI-supplied message.
+ */
+export function StopClaudeTask(threadID: string, taskID: string): $CancellablePromise<void> {
+    return $Call.ByID(536320598, threadID, taskID);
 }
 
 /**

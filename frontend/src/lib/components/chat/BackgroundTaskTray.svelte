@@ -1,14 +1,23 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
-  import { ListLiveBackgroundTasks } from '../../stores/bindings';
+  import {
+    CleanCodexBackgroundTerminals,
+    ListLiveBackgroundTasks,
+    StopClaudeTask,
+  } from '../../stores/bindings';
   import { wailsEventOn } from '../../stores/events';
+  import { addToast } from '../../stores/toast.svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import type { Item } from '../../types/models';
   import {
     deriveTrayTasks,
+    extractClaudeTaskID,
+    isCodexSubagentTask,
     type TrayTask,
   } from '../../utils/backgroundTray';
+  import BackgroundTaskTrayRow from './BackgroundTaskTrayRow.svelte';
   import { debounce } from '../../utils/debounce';
+  import { errString } from '../../utils/errors';
 
   interface Props {
     pane: ThreadPane;
@@ -51,6 +60,7 @@
   // because the local clock keeps ticking between refreshes.
   let backgroundItems: Item[] = $state([]);
   let threadId = $derived(pane.thread?.id ?? null);
+  let provider = $derived(pane.thread?.provider ?? null);
 
   let fetchSeq = 0;
   async function refreshItems(): Promise<void> {
@@ -114,6 +124,41 @@
   const visibleTasks = $derived(tasks.slice(0, MAX_VISIBLE_ROWS));
   const hiddenCount = $derived(Math.max(0, tasks.length - MAX_VISIBLE_ROWS));
 
+  // A running task is stoppable via the Stop-all button when we have
+  // any kill primitive for it. Claude: per-task StopClaudeTask (needs
+  // a resolvable task_id on the launch's meta). Codex: thread-wide
+  // CleanCodexBackgroundTerminals, which handles every unifiedExec PTY
+  // but CANNOT touch spawn_agent children (`collab_agent`). If the
+  // tray's only running rows are Codex subagents, Stop-all has no
+  // effect — hide it rather than render a button that does nothing.
+  //
+  // Both branches gate on provider to match the dispatch in
+  // `onStopAll`. Without this, a Codex thread that somehow surfaced a
+  // task_id in item.meta (pre-Phase-1 fixture, triage bug, etc.)
+  // would show Stop-all and then silently no-op on click because
+  // neither dispatch branch matches.
+  const claudeStoppableTaskIDs = $derived.by<string[]>(() => {
+    if (provider !== 'claude') return [];
+    const ids: string[] = [];
+    for (const t of tasks) {
+      if (t.status !== 'running' || t.launch === null) continue;
+      const id = extractClaudeTaskID(t.launch);
+      if (id !== null) ids.push(id);
+    }
+    return ids;
+  });
+  const hasCodexStoppable = $derived(
+    provider === 'codex'
+      && tasks.some((t) => t.status === 'running' && !isCodexSubagentTask(t)),
+  );
+  const canStopAll = $derived(claudeStoppableTaskIDs.length > 0 || hasCodexStoppable);
+
+  // Tracks in-flight stop requests so the button(s) disable while the
+  // RPC is pending. Keyed by task rowId for per-row buttons; the
+  // Stop-all button has its own flag.
+  let stoppingRows = $state<Set<string>>(new Set());
+  let stopAllInFlight = $state(false);
+
   // Tray opens by default; clicking the header collapses the body.
   let expanded = $state(true);
 
@@ -128,62 +173,67 @@
     }
   }
 
-  function onRowClick(task: TrayTask) {
-    // Route the scroll request through the pane so MessageTimeline can
-    // page in the target turn if the launch/completion is below the
-    // loaded window floor.
-    pane.requestScrollToItem(task.rowId);
+  function markStopping(rowId: string, on: boolean) {
+    const next = new Set(stoppingRows);
+    if (on) next.add(rowId);
+    else next.delete(rowId);
+    stoppingRows = next;
   }
 
-  function onRowKeydown(evt: KeyboardEvent, task: TrayTask) {
-    if (evt.key === 'Enter' || evt.key === ' ') {
-      evt.preventDefault();
-      onRowClick(task);
+  // The row only renders the Stop button when it already resolved a
+  // non-null taskID (via `rowStopTarget`), so the handler takes the
+  // resolved id directly — no need to re-parse item.meta here.
+  async function onStopRow(rowId: string, taskID: string) {
+    const tid = threadId;
+    if (!tid) return;
+    markStopping(rowId, true);
+    try {
+      await StopClaudeTask(tid, taskID);
+    } catch (err) {
+      addToast('error', `Failed to stop task: ${errString(err)}`);
+    } finally {
+      markStopping(rowId, false);
     }
   }
 
-  function formatElapsed(ms: number): string {
-    const seconds = Math.floor(ms / 1000);
-    if (seconds < 60) return `${seconds}s`;
-    const minutes = Math.floor(seconds / 60);
-    const remSec = seconds % 60;
-    if (minutes < 60) return `${minutes}m ${remSec}s`;
-    const hours = Math.floor(minutes / 60);
-    const remMin = minutes % 60;
-    return `${hours}h ${remMin}m`;
+  async function onStopAll() {
+    const tid = threadId;
+    if (!tid) return;
+    stopAllInFlight = true;
+    try {
+      if (provider === 'claude') {
+        // Fan out one StopClaudeTask per resolvable task_id. Running
+        // in parallel; Promise.allSettled so one failure doesn't abort
+        // the others. Every failure produces its own toast so the
+        // user can see exactly which stop call blew up.
+        const results = await Promise.allSettled(
+          claudeStoppableTaskIDs.map((id) => StopClaudeTask(tid, id)),
+        );
+        for (const r of results) {
+          if (r.status === 'rejected') {
+            addToast('error', `Failed to stop task: ${errString(r.reason)}`);
+          }
+        }
+      } else if (provider === 'codex') {
+        await CleanCodexBackgroundTerminals(tid);
+      }
+    } catch (err) {
+      addToast('error', `Failed to stop tasks: ${errString(err)}`);
+    } finally {
+      stopAllInFlight = false;
+    }
   }
 
-  function toolNameOf(task: TrayTask): string {
-    // Prefer the launch's summary (Claude/Codex adapters fill it with the
-    // tool name). Fall back to the completion's summary, then "Tool".
-    const fromLaunch = (task.launch?.summary ?? '').trim();
-    if (fromLaunch) return fromLaunch;
-    const fromCompletion = (task.completion?.summary ?? '').trim();
-    if (fromCompletion) return fromCompletion;
-    return 'Tool';
-  }
-
-  function statusGlyph(status: TrayTask['status']): string {
-    if (status === 'running') return '◐';
-    if (status === 'errored') return '!';
-    if (status === 'declined') return '×';
-    return '✓';
-  }
-
-  function statusLabel(status: TrayTask['status']): string {
-    if (status === 'running') return 'Running';
-    if (status === 'errored') return 'Failed';
-    if (status === 'declined') return 'Declined';
-    return 'Completed';
-  }
-
-  function statusClass(status: TrayTask['status']): string {
-    if (status === 'running') return 'text-accent';
-    // `declined` shares the error palette with ToolDecisionChip — a
-    // user-declined tool run is not a success, and the rest of the UI
-    // already colors it the same way a tool failure is colored.
-    if (status === 'errored' || status === 'declined') return 'text-error';
-    return 'text-success';
+  // Per-row Stop button is visible only when the row represents a
+  // Claude task we can kill. The tray is single-thread (single-
+  // provider), but the per-row button relies on a resolvable task_id
+  // on the launch's meta — if that's missing (a rare pre-Phase-1
+  // row, or a Codex launch), we hide the button rather than render
+  // an enabled control that would fail at click time. A non-running
+  // row never renders the button regardless.
+  function rowStopTarget(task: TrayTask): string | null {
+    if (task.status !== 'running' || !task.launch) return null;
+    return extractClaudeTaskID(task.launch);
   }
 </script>
 
@@ -194,31 +244,45 @@
     aria-label="Background tasks"
     data-testid="background-task-tray"
   >
-    <button
-      type="button"
-      class="flex w-full items-center gap-2 px-2.5 py-1.5 text-left hover:bg-surface-2/25 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 transition-colors"
-      onclick={toggle}
-      onkeydown={headerKeydown}
-      aria-expanded={expanded}
-      aria-controls="background-task-tray-body"
-      data-testid="background-task-tray-header"
-    >
-      <span class="text-[11px] text-fg-subtle select-none" aria-hidden="true">{expanded ? '▼' : '▶'}</span>
-      <span class="text-[11px] font-medium uppercase tracking-[0.1em] text-fg-subtle">Background</span>
-      <span
-        class="rounded-[var(--radius-field)] bg-accent/15 px-1.5 text-[10px] font-medium text-accent"
-        data-testid="background-task-tray-count"
+    <div class="flex w-full items-center gap-2">
+      <button
+        type="button"
+        class="flex flex-1 items-center gap-2 px-2.5 py-1.5 text-left hover:bg-surface-2/25 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 transition-colors"
+        onclick={toggle}
+        onkeydown={headerKeydown}
+        aria-expanded={expanded}
+        aria-controls="background-task-tray-body"
+        data-testid="background-task-tray-header"
       >
-        {count}
-      </span>
-      {#if anyRunning}
+        <span class="text-[11px] text-fg-subtle select-none" aria-hidden="true">{expanded ? '▼' : '▶'}</span>
+        <span class="text-[11px] font-medium uppercase tracking-[0.1em] text-fg-subtle">Background</span>
         <span
-          class="h-1.5 w-1.5 rounded-full bg-accent animate-pulse"
-          aria-hidden="true"
-          data-testid="background-task-tray-pulse"
-        ></span>
+          class="rounded-[var(--radius-field)] bg-accent/15 px-1.5 text-[10px] font-medium text-accent"
+          data-testid="background-task-tray-count"
+        >
+          {count}
+        </span>
+        {#if anyRunning}
+          <span
+            class="h-1.5 w-1.5 rounded-full bg-accent animate-pulse"
+            aria-hidden="true"
+            data-testid="background-task-tray-pulse"
+          ></span>
+        {/if}
+      </button>
+      {#if canStopAll}
+        <button
+          type="button"
+          class="mr-1.5 rounded-[var(--radius-field)] border border-border-subtle bg-surface-0/60 px-2 py-0.5 text-[11px] font-medium text-text-secondary hover:bg-surface-2/40 hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+          onclick={onStopAll}
+          disabled={stopAllInFlight}
+          data-testid="background-task-tray-stop-all"
+          aria-label="Stop all background tasks"
+        >
+          {stopAllInFlight ? 'Stopping…' : 'Stop all'}
+        </button>
       {/if}
-    </button>
+    </div>
 
     {#if expanded}
       <div
@@ -229,36 +293,12 @@
         <ul class="flex flex-col gap-1">
           {#each visibleTasks as task (task.rowId)}
             <li>
-              <button
-                type="button"
-                class="flex w-full items-center gap-2 rounded-[var(--radius-field)] border border-border-subtle bg-surface-0/50 px-2 py-1 text-left hover:bg-surface-2/30 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 transition-colors"
-                onclick={() => onRowClick(task)}
-                onkeydown={(evt) => onRowKeydown(evt, task)}
-                data-testid="background-task-tray-row"
-                data-row-id={task.rowId}
-              >
-                <span class="font-mono text-xs text-text-secondary shrink-0" aria-hidden="true">[T]</span>
-                <span class="min-w-0 flex-1 truncate text-xs text-text-primary">{toolNameOf(task)}</span>
-                <span
-                  class="inline-flex items-center gap-1 shrink-0 text-xs {statusClass(task.status)}"
-                  data-testid="background-task-tray-row-status"
-                  data-status={task.status}
-                >
-                  <span
-                    class="inline-block {task.status === 'running' ? 'animate-spin' : ''}"
-                    aria-hidden="true"
-                  >{statusGlyph(task.status)}</span>
-                  <span>{statusLabel(task.status)}</span>
-                </span>
-                {#if task.elapsedMs !== null}
-                  <span
-                    class="shrink-0 tabular-nums text-xs text-text-secondary"
-                    data-testid="background-task-tray-row-elapsed"
-                  >
-                    {formatElapsed(task.elapsedMs)}
-                  </span>
-                {/if}
-              </button>
+              <BackgroundTaskTrayRow
+                {task}
+                stopTarget={rowStopTarget(task)}
+                isStopping={stoppingRows.has(task.rowId)}
+                onStop={onStopRow}
+              />
             </li>
           {/each}
         </ul>

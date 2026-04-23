@@ -66,7 +66,7 @@ export interface Item {
   itemIndex: number;
   kind: string;
   role: string;
-  status: "streaming" | "running" | "completed" | "errored" | "declined";
+  status: "streaming" | "running" | "completed" | "errored" | "declined" | "killed";
   summary: string;
   /**
    * Pre-rendered display HTML. Populated by the Go highlighter at write

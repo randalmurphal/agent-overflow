@@ -16,7 +16,7 @@
    * that type extension lands so this component compiles with the
    * current baseline.
    */
-  type StatusFields = { status?: 'running' | 'completed' | 'errored' };
+  type StatusFields = { status?: 'running' | 'completed' | 'errored' | 'killed' };
   const itemStatus = $derived((item as unknown as StatusFields).status ?? 'completed');
 
   const expansion = createPayloadExpansion(() => item.payloadId);
@@ -69,12 +69,16 @@
   const statusLabel = $derived.by(() => {
     if (itemStatus === 'running') return 'running';
     if (itemStatus === 'errored') return 'failed';
+    // `killed` is a user-initiated stop (Claude stop_task) — distinct
+    // from `errored`, rendered as a muted "stopped" chip.
+    if (itemStatus === 'killed') return 'stopped';
     return 'done';
   });
 
   const statusClass = $derived.by(() => {
     if (itemStatus === 'running') return 'text-accent';
     if (itemStatus === 'errored') return 'text-error';
+    if (itemStatus === 'killed') return 'text-text-secondary';
     return 'text-success';
   });
 

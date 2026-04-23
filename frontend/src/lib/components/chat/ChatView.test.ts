@@ -146,16 +146,13 @@ describe('<ChatView>', () => {
     expect(getByText('Select or create a thread')).toBeInTheDocument();
   });
 
-  it('clicking a background tray row scrolls the timeline to the matching inline item', async () => {
-    // Spec: docs/architecture/chat-rewrite.md §"Tray rows" — "Clicking
-    // a tray row scrolls/expands the corresponding inline item."
-    // Post-windowing wiring: BackgroundTaskTray sources its rows from
-    // ListLiveBackgroundTasks (thread-scoped, independent of the
-    // timeline's loaded window). A tray click publishes a scroll
-    // request on the pane; MessageTimeline's effect picks that up and
-    // runs loadUntilItem + scrollIntoView. This test verifies the
-    // end-to-end loop: backend row → rendered tray → click → scrollIntoView
-    // on the [data-item-id] wrapper inside the timeline.
+  it('clicking a background tray row does NOT scroll the timeline (rows are informational)', async () => {
+    // Phase 5 of the background-tasks plan removed click-to-scroll on
+    // tray rows: they are now purely informational, with per-row Stop
+    // buttons and a header-level Stop-all button as the only
+    // affordances. A plain click on the row body must NOT publish a
+    // scroll request on the pane or invoke scrollIntoView on the
+    // timeline item.
     const scrollSpy = vi.fn();
     const originalScrollIntoView = HTMLElement.prototype.scrollIntoView;
     HTMLElement.prototype.scrollIntoView = scrollSpy as typeof HTMLElement.prototype.scrollIntoView;
@@ -177,29 +174,21 @@ describe('<ChatView>', () => {
       };
       const pane = await buildPane();
       setBindingMock('ListLiveBackgroundTasks', async () => [launch]);
-      // Put the launch in the pane's loaded window so loadUntilItem
-      // short-circuits without a GetThreadItem/ListItemsBeforeTurn
-      // round-trip. Mirrors what the real streaming path produces.
       pane.upsertItem(launch);
 
       const { getByTestId } = render(ChatView, { props: { pane } });
-      // Let onMount fire the ListLiveBackgroundTasks fetch + render the row.
       await tick();
       await tick();
 
       const row = getByTestId('background-task-tray-row');
       expect(row.getAttribute('data-row-id')).toBe('launch-a');
+      expect(row.tagName).not.toBe('BUTTON');
 
       await fireEvent.click(row);
-      // pane.requestScrollToItem bumps a nonce; MessageTimeline's $effect
-      // then awaits loadUntilItem + tick before scrollIntoView. Two
-      // ticks cover both async hops.
       await tick();
       await tick();
 
-      expect(scrollSpy).toHaveBeenCalledTimes(1);
-      const thisArg = scrollSpy.mock.contexts[0] as HTMLElement;
-      expect(thisArg.getAttribute('data-item-id')).toBe('launch-a');
+      expect(scrollSpy).not.toHaveBeenCalled();
     } finally {
       HTMLElement.prototype.scrollIntoView = originalScrollIntoView;
     }

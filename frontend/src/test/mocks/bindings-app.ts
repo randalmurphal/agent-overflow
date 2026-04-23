@@ -88,6 +88,10 @@ export const SendMessage = dispatch('SendMessage');
 export const InterruptTurn = dispatch('InterruptTurn');
 export const RespondToApproval = dispatch('RespondToApproval');
 
+// Background tasks (per-item + thread-wide stop primitives)
+export const StopClaudeTask = dispatch('StopClaudeTask');
+export const CleanCodexBackgroundTerminals = dispatch('CleanCodexBackgroundTerminals');
+
 // Thread-scoped model / workspace / message-search / commit-message bindings
 // (previously hand-wrapped with Call.ByName; now re-exported through the
 // generated app.js). Tests stub these through setBindingMock by method name.

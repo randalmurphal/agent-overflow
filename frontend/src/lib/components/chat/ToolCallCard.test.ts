@@ -398,4 +398,26 @@ describe('<ToolCallCard> status dispatch', () => {
 
     expect(getByTestId('tool-call-card-status').textContent).toBe('done');
   });
+
+  it('shows "stopped" for killed tool calls, distinct from errored', async () => {
+    // `killed` is a user-initiated stop (Claude stop_task) — must NOT
+    // paint red ("failed") or green ("done"). Lands on muted text so
+    // the inline card matches the tray's gray "Stopped" badge.
+    const pane = await buildPane();
+    const item = makeItem({
+      id: 't',
+      kind: 'tool_completion',
+      status: 'killed',
+      toolName: 'Bash',
+      summary: 'stopped',
+    });
+
+    const { getByTestId } = render(ToolCallCard, { props: { pane, item } });
+
+    const status = getByTestId('tool-call-card-status');
+    expect(status.textContent).toBe('stopped');
+    expect(status.className).toContain('text-text-secondary');
+    expect(status.className).not.toContain('text-error');
+    expect(status.className).not.toContain('text-success');
+  });
 });
