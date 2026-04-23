@@ -73,6 +73,23 @@ func (a *App) startSessionNow(threadID string) error {
 		return fmt.Errorf("start session: %w", err)
 	}
 
+	// Flip any persisted `is_background=running` rows for a Codex thread
+	// to errored/lost BEFORE spawning the new subprocess. Those rows
+	// point at PTYs / spawned child threads owned by a prior subprocess
+	// that is guaranteed dead (we just stopped the existing session, if
+	// any, and startup is now running against either a fresh process or
+	// an on-reopen cold state). Must land before spawnProviderSession so
+	// no replay `item/started` can race with the flip — the store is the
+	// only source of truth for this reconcile, the probe happens
+	// downstream in reconcileCodexAfterStart once the live session
+	// exists. See app_codex_reconcile.go for the rationale + warm-
+	// reconnect fallback. Claude threads are not flipped here (their
+	// `stop_task` primitive and natural completion handle the same
+	// concern on a different rail).
+	if t.Provider == string(provider.Codex) {
+		a.flipCodexGhostBackgroundRowsOnStart(threadID)
+	}
+
 	newSess, err := a.spawnProviderSession(threadID, sessionToken, t, opts, designCfg, onEvent)
 	if err != nil {
 		a.teardownDesignThread(threadID)

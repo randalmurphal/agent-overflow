@@ -5,7 +5,9 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log"
 
+	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 )
 
@@ -48,6 +50,37 @@ func (a *App) deleteThreadTree(threadID string) error {
 	for _, child := range children {
 		if err := a.deleteThreadTree(child.ID); err != nil {
 			errs = append(errs, fmt.Errorf("delete child %s: %w", child.ID, err))
+		}
+	}
+
+	// Clean Codex background terminals BEFORE stopping the session. The
+	// `thread/backgroundTerminals/clean` RPC needs a live JSON-RPC
+	// transport — once stopSession closes the subprocess, the wire is
+	// gone and any PTYs Codex was managing leak (the child processes
+	// linger until the OS eventually reaps them). Best-effort: if the
+	// RPC fails we log and carry on so the delete still completes. User
+	// intent on delete is "this thread is done" — a stuck RPC must not
+	// block that.
+	//
+	// Threads with no active Codex session are a no-op: without a
+	// transport to Codex we have no way to issue the clean RPC. Any PTYs
+	// left by a previously-closed session were already killed when that
+	// subprocess exited; deletion of a dormant thread only needs to drop
+	// the store rows.
+	//
+	// Claude threads skip this entirely: their per-task stop primitive
+	// is `stop_task`, which is a turn-scoped control, not a teardown
+	// primitive. Deleting a Claude thread drops its subprocess via
+	// stopSession; the kernel reaps any remaining child processes the
+	// CLI spawned.
+	if threadFound && thread.Provider == string(provider.Codex) {
+		if _, hasSession := a.activeCodexSession(threadID); hasSession {
+			if err := a.CleanCodexBackgroundTerminals(threadID); err != nil {
+				// Not added to errs: the delete intent is terminal, and
+				// the clean RPC is advisory. Log so we can diagnose PTY
+				// leaks without blocking user-visible delete flow.
+				log.Printf("delete thread %s: clean codex background terminals: %v", threadID, err)
+			}
 		}
 	}
 

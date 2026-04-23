@@ -347,3 +347,116 @@ func containsText(haystack, needle string) bool {
 	}
 	return false
 }
+
+// TestForkThread_ExcludesBackgroundRunningRows pins Phase-4's fork
+// exclusion contract. The forked thread must NOT carry over any
+// `is_background=true AND status='running'` rows from the parent —
+// those point at PTYs / subagents owned by the parent's provider
+// subprocess, and the fork gets its own subprocess that can never
+// reach them. The parent thread is untouched; its backgrounded
+// launches keep running under its own session.
+//
+// Everything else copies normally: user text, assistant text,
+// completed backgrounded rows, and non-background running rows (those
+// DO copy — the reconciler's force-close will settle any that don't
+// naturally complete, and they're valid to carry into the fork since
+// the fork's own session inherits the conversational state anyway).
+func TestForkThread_ExcludesBackgroundRunningRows(t *testing.T) {
+	app := newTestAppWithStore(t)
+
+	source := testThread("thread-fork-bg-exclusion-source")
+	source.Provider = string(provider.Claude)
+	source.SessionRef = "claude-session-bg"
+	if err := app.store.CreateThread(source); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+
+	// Seed a mix: user text + assistant text (copy normally) + running
+	// backgrounded row (EXCLUDED) + completed backgrounded row (copy) +
+	// running non-background row (copy).
+	now := time.Now().UnixMilli()
+	seedItems := []store.Item{
+		{
+			ID: "item-user-0", ThreadID: source.ID, TurnIndex: 1, ItemIndex: 0,
+			Kind: "user_text", Role: "user", Summary: "hi", CreatedAt: now,
+		},
+		{
+			ID: "item-assistant-1", ThreadID: source.ID, TurnIndex: 1, ItemIndex: 1,
+			Kind: "assistant_text", Role: "assistant", Summary: "hello",
+			Status: "completed", CreatedAt: now,
+		},
+		{
+			ID: "item-bg-running", ThreadID: source.ID, TurnIndex: 1, ItemIndex: 2,
+			Kind: "tool_call", Role: "assistant", Status: "running",
+			IsBackground: true, Summary: "Bash: sleep 60",
+			ToolName: "Bash", CreatedAt: now,
+		},
+		{
+			ID: "item-bg-done", ThreadID: source.ID, TurnIndex: 1, ItemIndex: 3,
+			Kind: "tool_call", Role: "assistant", Status: "completed",
+			IsBackground: true, Summary: "Bash: echo done",
+			ToolName: "Bash", CreatedAt: now,
+		},
+		{
+			ID: "item-inline-running", ThreadID: source.ID, TurnIndex: 1, ItemIndex: 4,
+			Kind: "tool_call", Role: "assistant", Status: "running",
+			Summary: "Read: /tmp/x", ToolName: "Read", CreatedAt: now,
+		},
+	}
+	for _, it := range seedItems {
+		if err := app.store.InsertItem(it); err != nil {
+			t.Fatalf("InsertItem %s: %v", it.ID, err)
+		}
+	}
+
+	forked, err := app.ForkThread(source.ID)
+	if err != nil {
+		t.Fatalf("ForkThread: %v", err)
+	}
+
+	forkedItems, err := app.store.ListItems(forked.ID)
+	if err != nil {
+		t.Fatalf("ListItems(forked): %v", err)
+	}
+
+	// Four rows should have copied; the running backgrounded one is
+	// excluded.
+	if len(forkedItems) != 4 {
+		var summaries []string
+		for _, it := range forkedItems {
+			summaries = append(summaries, fmt.Sprintf("%s[%s]", it.Kind, it.Summary))
+		}
+		t.Fatalf("forked items = %d (%v), want 4 (running bg row excluded)", len(forkedItems), summaries)
+	}
+
+	// Assert the specific exclusion: no forked row carries the bg-running
+	// summary or the is_background+running combination.
+	for _, it := range forkedItems {
+		if it.IsBackground && it.Status == "running" {
+			t.Errorf("forked thread carries a backgrounded running row: id=%s summary=%q status=%q",
+				it.ID, it.Summary, it.Status)
+		}
+		if it.Summary == "Bash: sleep 60" {
+			t.Errorf("forked thread copied the bg-running row by summary: %+v", it)
+		}
+	}
+
+	// Parent thread is untouched — the bg-running row is still present.
+	parentItems, err := app.store.ListItems(source.ID)
+	if err != nil {
+		t.Fatalf("ListItems(parent): %v", err)
+	}
+	var parentBgRunning *store.Item
+	for i, it := range parentItems {
+		if it.ID == "item-bg-running" {
+			parentBgRunning = &parentItems[i]
+			break
+		}
+	}
+	if parentBgRunning == nil {
+		t.Fatal("parent bg-running row was removed (fork must not mutate parent)")
+	}
+	if parentBgRunning.Status != "running" {
+		t.Errorf("parent bg-running row status = %q, want running", parentBgRunning.Status)
+	}
+}

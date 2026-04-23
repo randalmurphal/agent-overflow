@@ -1389,3 +1389,194 @@ func TestForceCloseRunningToolCallsInTurnEmptyNoOp(t *testing.T) {
 		t.Errorf("empty force-close returned %+v, want nil", flipped)
 	}
 }
+
+// TestFlipGhostBackgroundRowsOnStartFlipsOnlyRunningBackgroundToolCalls
+// pins the narrow scope of the Phase-4 store-level flip: a row flips
+// iff (kind=tool_call, status=running, is_background=1). Anything else
+// stays untouched. The filter pushes into SQLite so a thread with deep
+// history doesn't pay deserialization cost for rows the flip can't
+// touch.
+func TestFlipGhostBackgroundRowsOnStartFlipsOnlyRunningBackgroundToolCalls(t *testing.T) {
+	s := newTestStore(t)
+	now := int64(1)
+	if err := s.CreateThread(Thread{
+		ID: "t-ghost", ProjectID: defaultTestProjectID, Title: "T", Provider: "codex", WorkspacePath: "/tmp",
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+
+	// Running background tool_call — must flip.
+	if _, err := s.UpsertItem(Item{
+		ID: "ghost-match", ThreadID: "t-ghost", TurnIndex: 0, Kind: "tool_call",
+		Role: "assistant", Status: "running", Summary: "Bash: sleep 10",
+		IsBackground: true, CreatedAt: now, UpdatedAt: now,
+	}, nil); err != nil {
+		t.Fatalf("upsert ghost-match: %v", err)
+	}
+	// Completed background tool_call — must NOT flip.
+	if _, err := s.UpsertItem(Item{
+		ID: "ghost-done", ThreadID: "t-ghost", TurnIndex: 0, Kind: "tool_call",
+		Role: "assistant", Status: "completed", Summary: "Bash: echo hi",
+		IsBackground: true, CreatedAt: now, UpdatedAt: now,
+	}, nil); err != nil {
+		t.Fatalf("upsert ghost-done: %v", err)
+	}
+	// Running inline (non-background) tool_call — must NOT flip.
+	if _, err := s.UpsertItem(Item{
+		ID: "ghost-inline", ThreadID: "t-ghost", TurnIndex: 0, Kind: "tool_call",
+		Role: "assistant", Status: "running", Summary: "Read: /tmp/x",
+		IsBackground: false, CreatedAt: now, UpdatedAt: now,
+	}, nil); err != nil {
+		t.Fatalf("upsert ghost-inline: %v", err)
+	}
+	// Streaming (assistant_text, not tool_call) — must NOT flip even if
+	// someone set is_background=true (no production caller does this; the
+	// filter is intentionally defensive).
+	if _, err := s.UpsertItem(Item{
+		ID: "ghost-text", ThreadID: "t-ghost", TurnIndex: 0, Kind: "assistant_text",
+		Role: "assistant", Status: "running", Summary: "thinking...",
+		IsBackground: true, CreatedAt: now, UpdatedAt: now,
+	}, nil); err != nil {
+		t.Fatalf("upsert ghost-text: %v", err)
+	}
+
+	updatedAt := now + 100
+	summariser := func(prior string) string {
+		return strings.TrimSpace(prior) + " — session ended"
+	}
+	flipped, err := s.FlipGhostBackgroundRowsOnStart("t-ghost", summariser, updatedAt)
+	if err != nil {
+		t.Fatalf("FlipGhostBackgroundRowsOnStart: %v", err)
+	}
+	if len(flipped) != 1 {
+		t.Fatalf("flipped=%d, want 1 (ghost-match only)", len(flipped))
+	}
+	if flipped[0].ID != "ghost-match" {
+		t.Errorf("flipped[0].ID = %q, want ghost-match", flipped[0].ID)
+	}
+	if flipped[0].Status != "errored" {
+		t.Errorf("flipped[0].Status = %q, want errored", flipped[0].Status)
+	}
+	if flipped[0].Decision != "lost" {
+		t.Errorf("flipped[0].Decision = %q, want lost", flipped[0].Decision)
+	}
+	if !strings.HasSuffix(flipped[0].Summary, " — session ended") {
+		t.Errorf("flipped[0].Summary = %q, want trailing ' — session ended'", flipped[0].Summary)
+	}
+	if flipped[0].UpdatedAt != updatedAt {
+		t.Errorf("flipped[0].UpdatedAt = %d, want %d", flipped[0].UpdatedAt, updatedAt)
+	}
+
+	// Cross-check persisted state matches the returned rows.
+	match, ok, err := s.GetItem("ghost-match")
+	if err != nil || !ok {
+		t.Fatalf("get ghost-match: found=%v err=%v", ok, err)
+	}
+	if match.Status != "errored" || match.Decision != "lost" {
+		t.Errorf("ghost-match persisted state wrong: status=%q decision=%q", match.Status, match.Decision)
+	}
+
+	// Everything else is unchanged.
+	for _, id := range []string{"ghost-done", "ghost-inline", "ghost-text"} {
+		it, ok, err := s.GetItem(id)
+		if err != nil || !ok {
+			t.Fatalf("get %s: found=%v err=%v", id, ok, err)
+		}
+		if id == "ghost-done" && it.Status != "completed" {
+			t.Errorf("%s persisted state wrong: status=%q, want completed", id, it.Status)
+		}
+		if id == "ghost-inline" && it.Status != "running" {
+			t.Errorf("%s persisted state wrong: status=%q, want running", id, it.Status)
+		}
+		if id == "ghost-text" && it.Status != "running" {
+			t.Errorf("%s persisted state wrong: status=%q, want running", id, it.Status)
+		}
+		if it.Decision != "" {
+			t.Errorf("%s got decision %q without a flip", id, it.Decision)
+		}
+	}
+}
+
+// TestFlipGhostBackgroundRowsOnStartEmptyThreadNoOp pins the zero-
+// ghost-rows fast path: the TX commits cleanly, no thread-touch
+// runs, no rows returned.
+func TestFlipGhostBackgroundRowsOnStartEmptyThreadNoOp(t *testing.T) {
+	s := newTestStore(t)
+	now := int64(1)
+	if err := s.CreateThread(Thread{
+		ID: "t-ghost-empty", ProjectID: defaultTestProjectID, Title: "T", Provider: "codex", WorkspacePath: "/tmp",
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+
+	// Verify threads.updated_at did not bump.
+	before, err := s.GetThread("t-ghost-empty")
+	if err != nil {
+		t.Fatalf("GetThread before: %v", err)
+	}
+	flipped, err := s.FlipGhostBackgroundRowsOnStart("t-ghost-empty", func(s string) string { return s }, now+1)
+	if err != nil {
+		t.Fatalf("empty ghost-flip: %v", err)
+	}
+	if flipped != nil {
+		t.Errorf("empty ghost-flip returned %+v, want nil", flipped)
+	}
+	after, err := s.GetThread("t-ghost-empty")
+	if err != nil {
+		t.Fatalf("GetThread after: %v", err)
+	}
+	if after.UpdatedAt != before.UpdatedAt {
+		t.Errorf("empty ghost-flip bumped threads.updated_at: before=%d after=%d", before.UpdatedAt, after.UpdatedAt)
+	}
+}
+
+// TestFlipGhostBackgroundRowsOnStartScopedPerThread pins cross-thread
+// isolation: a flip on thread A must not touch thread B, even when B
+// has an identical running+background row. Matters for the restart
+// case where multiple Codex threads share the same store.
+func TestFlipGhostBackgroundRowsOnStartScopedPerThread(t *testing.T) {
+	s := newTestStore(t)
+	now := int64(1)
+	for _, id := range []string{"t-ghost-a", "t-ghost-b"} {
+		if err := s.CreateThread(Thread{
+			ID: id, ProjectID: defaultTestProjectID, Title: "T", Provider: "codex", WorkspacePath: "/tmp",
+			CreatedAt: now, UpdatedAt: now,
+		}); err != nil {
+			t.Fatalf("create thread %s: %v", id, err)
+		}
+		if _, err := s.UpsertItem(Item{
+			ID: id + "-row", ThreadID: id, TurnIndex: 0, Kind: "tool_call",
+			Role: "assistant", Status: "running", Summary: "Bash: sleep",
+			IsBackground: true, CreatedAt: now, UpdatedAt: now,
+		}, nil); err != nil {
+			t.Fatalf("upsert %s row: %v", id, err)
+		}
+	}
+
+	_, err := s.FlipGhostBackgroundRowsOnStart("t-ghost-a",
+		func(p string) string { return p + " — session ended" }, now+1)
+	if err != nil {
+		t.Fatalf("flip a: %v", err)
+	}
+
+	aRow, _, err := s.GetItem("t-ghost-a-row")
+	if err != nil {
+		t.Fatalf("get a row: %v", err)
+	}
+	if aRow.Status != "errored" {
+		t.Errorf("t-ghost-a row status = %q, want errored", aRow.Status)
+	}
+
+	bRow, _, err := s.GetItem("t-ghost-b-row")
+	if err != nil {
+		t.Fatalf("get b row: %v", err)
+	}
+	if bRow.Status != "running" {
+		t.Errorf("t-ghost-b row flipped by A's flip (cross-thread leak): status = %q", bRow.Status)
+	}
+	if bRow.Decision != "" {
+		t.Errorf("t-ghost-b row picked up decision: %q", bRow.Decision)
+	}
+}

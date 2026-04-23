@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -304,6 +305,12 @@ var threadIDsSeededForReconcileTests = []string{
 	"thread-reconcile-start",
 	"thread-reconcile-alive",
 	"thread-reconcile-systemerr",
+	"thread-ghost-flip",
+	"thread-ghost-flip-foreground",
+	"thread-ghost-flip-claude",
+	"thread-ghost-flip-scoping-codex",
+	"thread-ghost-flip-empty",
+	"thread-ghost-flip-idempotent",
 }
 
 // getItem walks every thread this file seeds looking for a row with
@@ -461,3 +468,217 @@ func TestStartSessionTriggersCodexReconcileSkipsResumeOnSystemError(t *testing.T
 	}
 }
 
+// TestReconcileCodexOnStart_FlipsGhostBackgroundRows covers the Phase-4
+// ghost-flip contract: every persisted `is_background=1 AND
+// status='running'` tool_call for a Codex thread must be flipped to
+// errored/lost with a " — session ended" summary suffix on the next
+// session start. This is session-start unconditional — it runs for
+// every new or resumed Codex session because a prior subprocess dying
+// takes its PTYs with it regardless of what the probe would report.
+func TestReconcileCodexOnStart_FlipsGhostBackgroundRows(t *testing.T) {
+	st := newMemoryStore(t)
+	a := newAppWithStore(t, st)
+
+	threadID := seedCodexThread(t, st, "thread-ghost-flip")
+	runningID := seedRunningBackgroundTool(t, st, threadID, "tool-bg-ghost")
+
+	// Observe the provider:item_upsert emission. Phase-4's flip should
+	// fan out one emit per flipped row so the tray subscribers update
+	// without waiting for the next event cycle.
+	var emitted []store.Item
+	a.testEmitHook = func(name string, data any) {
+		if name != "provider:item_upsert" {
+			return
+		}
+		env, ok := data.(SeqEnvelope)
+		if !ok {
+			return
+		}
+		if item, ok := env.Data.(store.Item); ok {
+			emitted = append(emitted, item)
+		}
+	}
+
+	a.flipCodexGhostBackgroundRowsOnStart(threadID)
+
+	running := getItem(t, st, runningID)
+	if running.Status != "errored" {
+		t.Fatalf("running row status = %q, want errored", running.Status)
+	}
+	if running.Decision != "lost" {
+		t.Fatalf("running row decision = %q, want lost", running.Decision)
+	}
+	if !strings.HasSuffix(running.Summary, " — session ended") {
+		t.Fatalf("running row summary = %q, want ' — session ended' suffix", running.Summary)
+	}
+
+	if len(emitted) != 1 {
+		t.Fatalf("provider:item_upsert emitted %d times, want 1", len(emitted))
+	}
+	if emitted[0].ID != runningID {
+		t.Fatalf("emitted item id = %q, want %q", emitted[0].ID, runningID)
+	}
+	if emitted[0].Status != "errored" {
+		t.Fatalf("emitted item status = %q, want errored (post-flip state)", emitted[0].Status)
+	}
+}
+
+// TestReconcileCodexOnStart_LeavesForegroundRunningRowsAlone pins the
+// scope of the Phase-4 ghost flip: it MUST NOT touch non-background
+// running rows. Those are the existing reconciler's concern (the
+// forceCloseOrphanToolCalls safety net kicks in at turn-complete time;
+// the systemError probe branch of ReconcileCodexOnReopen handles the
+// truly-lost case). Phase-4's flip widens the "what flips on start"
+// only for backgrounded rows, not inline ones.
+func TestReconcileCodexOnStart_LeavesForegroundRunningRowsAlone(t *testing.T) {
+	st := newMemoryStore(t)
+	a := newAppWithStore(t, st)
+
+	threadID := seedCodexThread(t, st, "thread-ghost-flip-foreground")
+	inlineID := seedRunningInlineTool(t, st, threadID, "tool-inline-fg-run")
+	completedBgID := seedCompletedBackgroundTool(t, st, threadID, "tool-bg-fg-done")
+
+	a.flipCodexGhostBackgroundRowsOnStart(threadID)
+
+	inline := getItem(t, st, inlineID)
+	if inline.Status != "running" {
+		t.Fatalf("foreground running row flipped by Phase-4 ghost flip: status = %q", inline.Status)
+	}
+	if inline.Decision != "" {
+		t.Fatalf("foreground running row picked up decision: %q", inline.Decision)
+	}
+
+	completed := getItem(t, st, completedBgID)
+	if completed.Status != "completed" {
+		t.Fatalf("already-completed bg row flipped: status = %q", completed.Status)
+	}
+}
+
+// TestReconcileCodexOnStart_ClaudeThreadsUntouched pins the provider-
+// scope guard in startSessionNow: the Phase-4 ghost flip runs ONLY on
+// the `t.Provider == codex` branch. Claude's background-task lifecycle
+// uses `stop_task` / natural completion as the signal; a Claude
+// subprocess restart doesn't invalidate running backgrounded Bash tasks
+// the same way a Codex subprocess restart invalidates PTYs.
+//
+// The test exercises the scoping decision directly: a Claude thread
+// with a seeded backgrounded row is cross-thread-verified to retain
+// `status='running'` after we exercise the Codex-only flip helper for a
+// DIFFERENT thread. A regression that broadened the flip's SQL scope
+// beyond the supplied threadID would also flip the unrelated Claude
+// row and fail this test.
+func TestReconcileCodexOnStart_ClaudeThreadsUntouched(t *testing.T) {
+	st := newMemoryStore(t)
+	a := newAppWithStore(t, st)
+
+	// Seed a Claude thread with a backgrounded Bash launch (status
+	// running) — exactly what a Claude run_in_background Bash row looks
+	// like between the launch and its task_updated terminal. Phase 4
+	// must not flip this on any Codex session start for an UNRELATED
+	// thread.
+	claudeThreadID := "thread-ghost-flip-claude"
+	now := time.Now().UnixMilli()
+	if err := st.CreateThread(store.Thread{
+		ID:            claudeThreadID,
+		ProjectID:     codexReconcileTestProjectID,
+		Title:         "Claude bg",
+		Provider:      "claude",
+		WorkspacePath: "/tmp/claude",
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	claudeBgID := seedRunningBackgroundTool(t, st, claudeThreadID, "tool-bg-claude")
+
+	// Run the Codex flip for a different (and in this case empty) Codex
+	// thread. If the SQL scope is right (threadID-specific), the Claude
+	// row is untouched; if the scope were broadened to "all rows in all
+	// threads", the Claude row would flip.
+	otherCodex := seedCodexThread(t, st, "thread-ghost-flip-scoping-codex")
+	a.flipCodexGhostBackgroundRowsOnStart(otherCodex)
+
+	claudeRunning := getItem(t, st, claudeBgID)
+	if claudeRunning.Status != "running" {
+		t.Fatalf("claude bg row status = %q, want running (flip must be scoped per-thread)", claudeRunning.Status)
+	}
+	if claudeRunning.Decision != "" {
+		t.Fatalf("claude bg row decision = %q, want empty", claudeRunning.Decision)
+	}
+}
+
+// TestReconcileCodexOnStart_IdempotentAcrossRepeatedStarts pins the
+// suffix-idempotency contract. A row that already carries the
+// " — session ended" suffix must not accumulate duplicates on a second
+// flip (startup → flip → Codex replays item/started to running →
+// subprocess crashes again → next startup → flip again).
+func TestReconcileCodexOnStart_IdempotentAcrossRepeatedStarts(t *testing.T) {
+	st := newMemoryStore(t)
+	a := newAppWithStore(t, st)
+
+	threadID := seedCodexThread(t, st, "thread-ghost-flip-idempotent")
+	runningID := seedRunningBackgroundTool(t, st, threadID, "tool-bg-idempotent")
+
+	a.flipCodexGhostBackgroundRowsOnStart(threadID)
+
+	// Simulate the warm-reconnect re-upsert by putting the row back to
+	// running with the already-suffixed summary (the real path uses
+	// UpsertItem; we only need the state shape for this idempotency
+	// check).
+	flipped := getItem(t, st, runningID)
+	flipped.Status = "running"
+	flipped.Decision = ""
+	flipped.UpdatedAt = time.Now().UnixMilli()
+	if _, err := st.UpsertItem(flipped, nil); err != nil {
+		t.Fatalf("re-upsert to running: %v", err)
+	}
+
+	a.flipCodexGhostBackgroundRowsOnStart(threadID)
+
+	final := getItem(t, st, runningID)
+	// The summary must contain the suffix exactly once.
+	suffix := " — session ended"
+	idx := strings.Index(final.Summary, suffix)
+	if idx < 0 {
+		t.Fatalf("final summary missing suffix: %q", final.Summary)
+	}
+	if strings.Index(final.Summary[idx+len(suffix):], suffix) >= 0 {
+		t.Fatalf("final summary accumulated duplicate suffix: %q", final.Summary)
+	}
+}
+
+// TestReconcileCodexOnStart_EmptyThreadNoOp pins the no-op path: a
+// Codex thread with zero ghost rows must not bump threads.updated_at
+// or emit anything. The WAL commit is kept cheap but the visible state
+// stays put.
+func TestReconcileCodexOnStart_EmptyThreadNoOp(t *testing.T) {
+	st := newMemoryStore(t)
+	a := newAppWithStore(t, st)
+
+	threadID := seedCodexThread(t, st, "thread-ghost-flip-empty")
+
+	var emitted []any
+	a.testEmitHook = func(name string, data any) {
+		emitted = append(emitted, data)
+	}
+
+	thread, err := st.GetThread(threadID)
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+	beforeTouch := thread.UpdatedAt
+
+	a.flipCodexGhostBackgroundRowsOnStart(threadID)
+
+	if len(emitted) != 0 {
+		t.Fatalf("empty-thread flip emitted %d events, want 0", len(emitted))
+	}
+
+	after, err := st.GetThread(threadID)
+	if err != nil {
+		t.Fatalf("GetThread after flip: %v", err)
+	}
+	if after.UpdatedAt != beforeTouch {
+		t.Fatalf("empty-thread flip bumped updated_at: before=%d after=%d", beforeTouch, after.UpdatedAt)
+	}
+}

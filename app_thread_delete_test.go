@@ -6,12 +6,14 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"agent-overflow/internal/attachment"
 	"agent-overflow/internal/observability/replay"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/store"
 )
 
@@ -664,6 +666,166 @@ func TestDeleteThreadReplayLogMissingIsNotError(t *testing.T) {
 	}
 	if err := app.DeleteThread(thread.ID); err != nil {
 		t.Errorf("DeleteThread with no replay log returned %v, want nil", err)
+	}
+}
+
+// TestDeleteThread_CleansCodexBackgroundTerminals pins Phase-4's
+// delete-time PTY cleanup: a Codex thread with a live session must have
+// `thread/backgroundTerminals/clean` fired against it BEFORE stopSession
+// closes the subprocess (otherwise the RPC has no transport). The test
+// wires a stub Codex session whose CleanBackgroundTerminals callback
+// records the call, then confirms both that it ran and that it ran
+// before the session close.
+func TestDeleteThread_CleansCodexBackgroundTerminals(t *testing.T) {
+	app := newTestAppWithStore(t)
+
+	thread := testThread("thread-delete-codex-clean")
+	thread.Provider = string(provider.Codex)
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+
+	// Track call ordering: the clean RPC must land before stopSession
+	// runs, because once the session closes there's no JSON-RPC wire.
+	var order []string
+	var cleanCalls atomic.Int32
+	fakeSess := codex.NewCleanBackgroundTerminalsTestSession(func(ctx context.Context) error {
+		cleanCalls.Add(1)
+		order = append(order, "clean")
+		return nil
+	})
+	app.sessions[thread.ID] = session{
+		provider: string(provider.Codex),
+		token:    "delete-codex-clean-token",
+		codex:    fakeSess,
+	}
+
+	app.stopSessionFn = func(threadID string) error {
+		order = append(order, "stopSession")
+		// Simulate the real StopSession emptying the sessions map.
+		app.mu.Lock()
+		delete(app.sessions, threadID)
+		app.mu.Unlock()
+		return nil
+	}
+
+	if err := app.DeleteThread(thread.ID); err != nil {
+		t.Fatalf("DeleteThread: %v", err)
+	}
+
+	if got := cleanCalls.Load(); got != 1 {
+		t.Fatalf("CleanBackgroundTerminals calls = %d, want 1", got)
+	}
+	if len(order) < 2 || order[0] != "clean" || order[1] != "stopSession" {
+		t.Fatalf("call order = %v, want [clean, stopSession]", order)
+	}
+
+	// Thread row must be gone (delete completed).
+	if _, err := app.store.GetThread(thread.ID); err == nil {
+		t.Fatal("expected thread row deletion")
+	}
+}
+
+// TestDeleteThread_ClaudeNoCleanCodexCall pins the provider-scope guard:
+// a Claude thread must NOT invoke the Codex-specific clean RPC during
+// delete. Claude has no analogous primitive; reaching for it would be a
+// programming error.
+func TestDeleteThread_ClaudeNoCleanCodexCall(t *testing.T) {
+	app := newTestAppWithStore(t)
+
+	thread := testThread("thread-delete-claude-noclean")
+	thread.Provider = string(provider.Claude)
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+
+	// Install a fake Codex clean session under the Claude thread id. If
+	// the delete path wrongly reached for it, this callback would fire.
+	var cleanCalls atomic.Int32
+	fakeSess := codex.NewCleanBackgroundTerminalsTestSession(func(ctx context.Context) error {
+		cleanCalls.Add(1)
+		return nil
+	})
+	// Place it as a Claude session (provider field is "claude", not
+	// "codex") so the activeCodexSession guard in delete correctly
+	// treats this as "not Codex-backed".
+	app.sessions[thread.ID] = session{
+		provider: string(provider.Claude),
+		token:    "claude-noclean-token",
+		codex:    fakeSess, // deliberately inconsistent — guard should
+		// rely on thread.Provider, not sess.codex being non-nil.
+	}
+	app.stopSessionFn = func(string) error { return nil }
+
+	if err := app.DeleteThread(thread.ID); err != nil {
+		t.Fatalf("DeleteThread: %v", err)
+	}
+
+	if got := cleanCalls.Load(); got != 0 {
+		t.Fatalf("clean calls = %d, want 0 on Claude delete", got)
+	}
+}
+
+// TestDeleteThread_CodexNoActiveSessionSkipsClean covers the dormant-
+// thread branch: a Codex thread with no live session can't be cleaned
+// (no JSON-RPC wire), and the delete path must skip the RPC instead of
+// logging a spurious "no active session" error. Any PTYs from a
+// previously-closed session were already killed when that subprocess
+// exited.
+func TestDeleteThread_CodexNoActiveSessionSkipsClean(t *testing.T) {
+	app := newTestAppWithStore(t)
+
+	thread := testThread("thread-delete-codex-dormant")
+	thread.Provider = string(provider.Codex)
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+
+	// No session installed — simulating a thread the user hasn't opened
+	// this app-run.
+	app.stopSessionFn = func(string) error { return nil }
+
+	if err := app.DeleteThread(thread.ID); err != nil {
+		t.Fatalf("DeleteThread: %v", err)
+	}
+	if _, err := app.store.GetThread(thread.ID); err == nil {
+		t.Fatal("thread row should be gone")
+	}
+}
+
+// TestDeleteThread_CodexCleanFailureDoesNotBlockDelete pins the "best-
+// effort" contract: if the clean RPC errors (thread not found upstream,
+// timeout, etc.) the delete still completes — user intent on delete is
+// terminal. The error is logged but not joined into the return value.
+func TestDeleteThread_CodexCleanFailureDoesNotBlockDelete(t *testing.T) {
+	app := newTestAppWithStore(t)
+
+	thread := testThread("thread-delete-codex-clean-fail")
+	thread.Provider = string(provider.Codex)
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+
+	fakeSess := codex.NewCleanBackgroundTerminalsTestSession(func(_ context.Context) error {
+		return errors.New("codex: clean: thread not found")
+	})
+	app.sessions[thread.ID] = session{
+		provider: string(provider.Codex),
+		token:    "clean-fail-token",
+		codex:    fakeSess,
+	}
+	app.stopSessionFn = func(threadID string) error {
+		app.mu.Lock()
+		delete(app.sessions, threadID)
+		app.mu.Unlock()
+		return nil
+	}
+
+	if err := app.DeleteThread(thread.ID); err != nil {
+		t.Fatalf("DeleteThread: %v; delete must survive clean RPC failure", err)
+	}
+	if _, err := app.store.GetThread(thread.ID); err == nil {
+		t.Fatal("thread row should be gone despite clean failure")
 	}
 }
 
