@@ -69,11 +69,16 @@ Summary:
 - **Turn lifecycle** — `turn/completed.lastAssistantMessageId` is
   the authoritative final-message marker; use it for the `turns`
   row.
-- **⚠ Codex has NO task lifecycle.** There is no `run_in_background`
-  concept; no Codex tool gets `is_background=true`. The sibling
-  `tool_completion` row model and `BackgroundTaskTray` are
-  Claude-specific. The `BackgroundClassifier` must not stamp
-  `is_background` on any Codex tool.
+- **Background terminals (planned, not yet implemented).** Codex has no
+  `run_in_background` flag, but `exec_command` can yield back to the
+  model while its PTY keeps running. `CommandExecution.source ==
+  "unifiedExecStartup"` is the wire-typed signal; stamping
+  `is_background=true` on such items is the only sanctioned path
+  (per [invariant 25](../../../docs/architecture/invariants.md#25-codex-backgrounding-uses-wire-typed-signals-never-heuristics)).
+  Heuristic event-ordering classifiers are forbidden — they produced
+  ghost rows in the retired `BackgroundClassifier`. Per-row stop for
+  backgrounded commands is blocked on an upstream protocol change; see
+  [`codex.md §Known upstream constraints`](../../../docs/references/codex.md#known-upstream-constraints).
 
 ## Collab agent lifecycle (spawn_agent / wait / close_agent / send_input / resume_agent)
 

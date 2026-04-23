@@ -611,29 +611,46 @@ arrives later.
 
 ---
 
-## 25. Codex has no backgrounded-tool concept
+## 25. Codex backgrounding uses wire-typed signals, never heuristics
 
-**Rule.** No Codex tool ever gets `is_background=true`. The sibling
-`tool_completion` row model and `BackgroundTaskTray` are
-Claude-specific. Codex's concurrency model (parallel tool calls,
-`spawn_agent` child threads) is fundamentally different from
-Claude's `run_in_background`.
+**Rule.** `is_background=true` may only be set on a Codex item when a
+**wire-typed** source field authorizes it. The only sanctioned signal today
+is `CommandExecution.source == "unifiedExecStartup"` (see
+[`codex-wire.md`](../references/codex-wire.md)). Heuristic classifiers
+("assistant text after tool start", "turn still open while tool running",
+etc.) are forbidden — that path produced ghost tray rows in the former
+`BackgroundClassifier`.
 
-**Rationale.** Codex's `spawn_agent` tool completes immediately when
-the spawn request is accepted; the child runs on a separate
-`thread_id`. Stamping `is_background` on Codex tools (as the old
-`BackgroundClassifier` did via a broken heuristic) produced ghost
-tray rows that never completed, because nothing on the Codex wire
-ever emits a task-lifecycle terminal to pair with them.
+**Rationale.** Codex has no `run_in_background` flag on ThreadItems, but
+it does have backgrounded execution: `exec_command` yields to the model
+after `yield_time_ms` (10s default) while the PTY keeps running in
+`UnifiedExecProcessManager`. The tool call item stays `inProgress` until
+`spawn_exit_watcher` eventually fires `ExecCommandEnd` — potentially
+across turns, up to `background_terminal_max_timeout` (1h default).
+`source: "unifiedExecStartup"` is the unambiguous wire signal for "this
+item is a background-terminal candidate"; treating such items as
+backgrounded is not the ghost-row problem the old classifier had.
 
-**Enforcement.** No Codex code stamps `is_background=true`. The
-former `BackgroundClassifier` at `internal/provider/codex/background.go`
-has been retired (file deleted); nothing in `internal/provider/codex/`
-sets the flag. The `BackgroundTaskTray` component renders nothing
-when no items have `is_background=true`.
+`spawn_agent` child threads are a separate concept and NOT tracked via
+`is_background` — they live on their own `thread_id` and the parent's
+`spawn_agent` tool_call completes immediately.
 
-**Test.** Codex integration test: run a `spawn_agent` flow; assert
-no item in the timeline carries `is_background=true`.
+**Enforcement.** Only `internal/provider/codex/` code that inspects the
+wire-typed `source` field may set `is_background=true`. No heuristic
+derivation. The former `BackgroundClassifier` at
+`internal/provider/codex/background.go` remains deleted. The
+`BackgroundTaskTray` component renders nothing when no items have
+`is_background=true`.
+
+**Test.** Codex integration test: assert `source != "unifiedExecStartup"`
+items never carry `is_background=true`; assert a yielded unifiedExec
+command DOES carry the flag.
+
+**Upstream gap.** The app-server protocol exposes only thread-wide
+cleanup (`thread/backgroundTerminals/clean`). Per-process termination
+requires model-facing tools (`write_stdin`) that aren't client-callable.
+Per-row stop for Codex background terminals is deferred pending upstream
+(see [`codex.md §Known upstream constraints`](../references/codex.md#known-upstream-constraints)).
 
 **See also.** [`codex-wire.md §The two critical differences from Claude`](../references/codex-wire.md#the-two-critical-differences-from-claude).
 

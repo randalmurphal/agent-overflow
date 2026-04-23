@@ -83,10 +83,12 @@ type Session struct {
 	// thread are re-emitted onto the parent thread with ParentToolUseID set
 	// to this card id.
 	//
-	// There is deliberately no background-tool classifier here: Codex has
-	// no `run_in_background` concept (invariant 25, see docs/architecture/
-	// invariants.md). Every Codex tool closes via `item/completed`; we do
-	// not stamp `is_background=true` on any Codex item.
+	// No heuristic background-tool classifier runs here (invariant 25).
+	// Codex has no `run_in_background` flag; the wire-typed signal for a
+	// backgroundable command is `CommandExecution.source == "unifiedExecStartup"`
+	// and that's the only sanctioned way to stamp `is_background=true`
+	// on a Codex item. Current code doesn't project unifiedExec items into
+	// the tray yet; see docs/references/codex.md §Background terminals.
 	childParentByThread map[string]string
 	// probeFn is a test-only override for Probe(). When non-nil, Probe
 	// skips the wire call and returns the result from this function.
@@ -674,12 +676,11 @@ func (s *Session) dispatchLine(line []byte) {
 				s.mu.Unlock()
 				s.clearTurnStart(evt.TurnID)
 			}
-			// No background-tool classification is performed here —
-			// Codex has no `run_in_background` concept (invariant 25).
-			// Stamping `is_background=true` on Codex items produced
-			// ghost tray rows that never completed because nothing on
-			// the Codex wire emits a task-lifecycle terminal to pair
-			// with them.
+			// No heuristic background classification here (invariant 25).
+			// The sanctioned wire signal for a backgroundable command is
+			// `CommandExecution.source == "unifiedExecStartup"`; heuristic
+			// event-ordering classifiers produced ghost rows in the
+			// retired `BackgroundClassifier` and stay forbidden.
 			s.onEvent(*evt)
 		}
 		return

@@ -127,6 +127,14 @@ the project to confirm the behavior, then port the learning in. See
 See [docs/references/codex.md](docs/references/codex.md) for how to use
 these when touching Codex code.
 
+**Known upstream constraint (Codex):** `exec_command` can yield back to
+the model while the PTY keeps running; `source: "unifiedExecStartup"` is
+the wire-typed signal for these background terminals. The app-server
+protocol exposes only thread-wide `thread/backgroundTerminals/clean` —
+per-process termination requires an upstream change. See
+[docs/references/codex.md §Known upstream constraints](docs/references/codex.md#known-upstream-constraints)
+and [invariant 25](docs/architecture/invariants.md#25-codex-backgrounding-uses-wire-typed-signals-never-heuristics).
+
 ## Deferred (Not Currently in Scope)
 
 These are intentional non-goals for the current phase — don't implement

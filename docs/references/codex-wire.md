@@ -45,14 +45,33 @@ has no per-tool backgrounding flag**. Every tool is either:
   "backgrounded," but the lifecycle model is fundamentally different
   (see §Collab agent lifecycle below).
 
-**Implication for agent-overflow**: the `tool_completion` sibling-row
-model and the `BackgroundTaskTray` are **Claude-specific**. Codex
-tool_calls always close via `item/completed`; there is no sibling row
-to append. No Codex code stamps `is_background=true`; the former
+**But Codex does have background terminals** — just not via a flag on
+items. `exec_command` (`source: "unifiedExecStartup"`) yields to the
+model after `yield_time_ms` (default 10s) with whatever output
+accumulated, and the PTY keeps running in `UnifiedExecProcessManager`.
+The item stays `status: inProgress` until `spawn_exit_watcher` fires
+`ExecCommandEnd` — potentially across multiple turns, up to
+`background_terminal_max_timeout` (1h default). See
+`codex-rs/core/src/tools/handlers/unified_exec.rs`,
+`codex-rs/core/src/unified_exec/async_watcher.rs`.
+
+**Implication for agent-overflow**:
+`source: "unifiedExecStartup"` is the wire-typed signal that an item
+may become a background terminal. Per
+[invariant 25](../architecture/invariants.md#25-codex-backgrounding-uses-wire-typed-signals-never-heuristics),
+setting `is_background=true` on such items when they yield is the
+sanctioned path — heuristic classifiers (event-ordering, etc.) are
+forbidden because that's what produced ghost rows in the former
 `BackgroundClassifier` (previously at
-`internal/provider/codex/background.go`) was retired because its
-heuristic ("assistant text after tool started = background") didn't
-map to anything real on the Codex wire.
+`internal/provider/codex/background.go`, retired).
+
+On the wire, Codex items close via `item/completed` using the same
+`item_id` — the status flips in place, no sibling row is emitted.
+Clients that want tray-pair semantics (Claude-style launch + sibling
+completion) synthesize the sibling row at the `item/completed`
+boundary themselves. See
+[`codex.md §Known upstream constraints`](codex.md#known-upstream-constraints)
+for the per-row stop gap.
 
 ### 2. Items carry their own status on the wire
 
