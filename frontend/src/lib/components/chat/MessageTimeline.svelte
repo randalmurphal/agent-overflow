@@ -10,6 +10,7 @@
   import ChangedFilesTree from './ChangedFilesTree.svelte';
   import CompletionDivider from './CompletionDivider.svelte';
   import SubagentGroup from './SubagentGroup.svelte';
+  import TerminalInteractionRow from './TerminalInteractionRow.svelte';
   import ThinkingBlock from './ThinkingBlock.svelte';
   import ToolCallCard from './ToolCallCard.svelte';
   import TurnDiffBadge from './TurnDiffBadge.svelte';
@@ -232,6 +233,8 @@
           <ToolCallCard {pane} {item} />
         {:else if item.kind === 'thinking'}
           <ThinkingBlock {item} />
+        {:else if item.kind === 'terminal_interaction'}
+          <TerminalInteractionRow {item} />
         {:else if item.kind === 'error'}
           <div class="mb-4 rounded-[var(--radius-control)] border border-error/30 bg-error/10 px-3 py-2 text-sm text-error">
             {item.summary}

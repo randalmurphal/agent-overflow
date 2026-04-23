@@ -59,12 +59,31 @@ export interface Thread {
   lastReadAt?: number;
 }
 
+/**
+ * Item.kind discriminates how the timeline renders a persisted row.
+ * Values mirror the CHECK enum on items.kind in the Go store (see
+ * internal/store/migrate.go — v15, v23).
+ *
+ * - `terminal_interaction` is the Codex-only "Waited for background
+ *   terminal" marker persisted when the model polls a backgrounded PTY
+ *   via `write_stdin` with empty input.
+ */
+export type ItemKind =
+  | "user_text"
+  | "assistant_text"
+  | "thinking"
+  | "tool_call"
+  | "tool_completion"
+  | "error"
+  | "compaction"
+  | "terminal_interaction";
+
 export interface Item {
   id: string;
   threadId: string;
   turnIndex: number;
   itemIndex: number;
-  kind: string;
+  kind: ItemKind | string;
   role: string;
   status: "streaming" | "running" | "completed" | "errored" | "declined" | "killed";
   summary: string;

@@ -37,6 +37,7 @@ func TestItemKindUniqueness(t *testing.T) {
 	kinds := []ItemKind{
 		ItemUserText, ItemAssistantText, ItemThinking, ItemToolCall,
 		ItemToolCompletion, ItemError, ItemCompaction,
+		ItemTerminalInteraction,
 	}
 
 	seen := make(map[ItemKind]bool, len(kinds))
@@ -50,8 +51,8 @@ func TestItemKindUniqueness(t *testing.T) {
 		seen[k] = true
 	}
 
-	if len(seen) != 7 {
-		t.Errorf("expected 7 unique ItemKind values, got %d", len(seen))
+	if len(seen) != 8 {
+		t.Errorf("expected 8 unique ItemKind values, got %d", len(seen))
 	}
 }
 

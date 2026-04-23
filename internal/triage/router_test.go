@@ -76,6 +76,7 @@ func TestAllEventKindsListIsComplete(t *testing.T) {
 		provider.EventContentBlockStop:     true,
 		provider.EventBackgroundTaskTerminal: true, // Wave 1 — new, Wave 2 wires triage
 		provider.EventSubagentNotification:   true, // reserved for Codex subagent UI
+		provider.EventTerminalInteraction:    true, // Codex polling marker; triage persists empty-stdin variant
 		provider.EventDiff:                 true,
 		provider.EventCommandOutput:        true,
 		provider.EventThinking:             true,

@@ -35,6 +35,13 @@ none fits.
   `maybeDeferOrPersist`. Authorized by the wire-typed signals
   enriched onto Meta in `internal/provider/codex/protocol.go` (see
   invariant 25).
+- `terminal_interaction.go` — Codex-specific "Waited for background
+  terminal" row persistence. Handles `EventTerminalInteraction` for
+  the empty-stdin (polling) variant emitted when the model calls
+  `write_stdin` against a backgrounded unified-exec PTY. Non-empty
+  stdin is dropped (Phase 6 scope); parser still emits the event so
+  future phases can render "Interacted with background terminal"
+  without a parser change.
 - `tool_result_file_change.go` — `file_change` tool-result normalisation
   (inline diff projection, unified patch assembly).
 - `tool_result_diff_upgrade.go` — late-arriving diff upgrades that
@@ -70,6 +77,7 @@ none fits.
 | Turn metadata (cost, tokens, context) | Inline to frontend, persist on `threads`. |
 | Background task terminal (Claude) | `tool_completion` sibling row upsert (idempotent). See `turn-lifecycle.md`. |
 | Codex unifiedExec / spawn_agent | Projector stamps `is_background=true` on yield/turn-close; sibling `tool_completion` synthesized at item/completed via `maybeDeferOrPersist`. See `codex_background.go` + invariant 25. |
+| Codex terminal interaction (empty stdin) | `terminal_interaction` row on the current open turn. Non-empty stdin dropped. See `terminal_interaction.go`. |
 | Turn start/complete | Write `turns` row; emit `provider:turn_*` to frontend; force-close orphan tool_calls on complete. |
 | Error | Distinct event kind; frontend renders as status/alert. |
 | Unknown | Log with full context, do not drop silently. |

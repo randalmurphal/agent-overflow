@@ -113,6 +113,13 @@ type Router struct {
 	// codex_background.go for the lifecycle details and invariant 25 for
 	// the wire-typed-signal rule this implements.
 	codexBackground map[string]*codexBackgroundState
+	// terminalInteractionSeq counts persisted "Waited for background
+	// terminal" rows per (thread, turn, processID) so each poll lands
+	// at its own id (waited:<pid>:<turn>:<seq>). Bounded the same way
+	// other per-turn counters are: prefix-swept on clearOpenTurn and
+	// CleanupThread so a long-lived session doesn't accumulate stale
+	// entries. See terminal_interaction.go for the handler.
+	terminalInteractionSeq map[string]int
 	// eventHook is a test-only seam: when set, the Router invokes it for
 	// every Handle call AFTER the routing switch runs. Production code
 	// never sets a hook (the call site in Handle is nil-checked so the
@@ -176,6 +183,7 @@ func NewRouter(st *store.Store, emit func(eventName string, data any), h *highli
 		stoppedThreads:             make(map[string]struct{}),
 		unknownSessionStatusLogged: make(map[string]struct{}),
 		codexBackground:            make(map[string]*codexBackgroundState),
+		terminalInteractionSeq:     make(map[string]int),
 	}
 }
 
@@ -283,6 +291,8 @@ func (r *Router) Handle(evt provider.ProviderEvent) error {
 		return r.handleBackgroundTaskTerminal(evt)
 	case provider.EventSubagentNotification:
 		return r.handleSubagentNotification(evt)
+	case provider.EventTerminalInteraction:
+		return r.handleTerminalInteraction(evt)
 	case provider.EventDiff:
 		return r.handleDiff(evt)
 	case provider.EventCommandOutput:

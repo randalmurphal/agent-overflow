@@ -68,8 +68,8 @@ func TestMigrationVersionTracking(t *testing.T) {
 		t.Fatalf("rows err: %v", err)
 	}
 
-	if len(versions) != 22 {
-		t.Fatalf("expected 22 migration versions, got %d", len(versions))
+	if len(versions) != 23 {
+		t.Fatalf("expected 23 migration versions, got %d", len(versions))
 	}
 	if versions[0].version != 1 || versions[0].name != "initial_schema" {
 		t.Errorf("v1: got %d/%s", versions[0].version, versions[0].name)
@@ -137,6 +137,9 @@ func TestMigrationVersionTracking(t *testing.T) {
 	if versions[21].version != 22 || versions[21].name != "items_status_killed" {
 		t.Errorf("v22: got %d/%s", versions[21].version, versions[21].name)
 	}
+	if versions[22].version != 23 || versions[22].name != "items_kind_terminal_interaction" {
+		t.Errorf("v23: got %d/%s", versions[22].version, versions[22].name)
+	}
 }
 
 func TestMigrationIdempotent(t *testing.T) {
@@ -156,8 +159,8 @@ func TestMigrationIdempotent(t *testing.T) {
 	if err := db.QueryRow("SELECT COUNT(*) FROM migration_versions").Scan(&count); err != nil {
 		t.Fatalf("count: %v", err)
 	}
-	if count != 22 {
-		t.Errorf("expected 22 version rows after idempotent re-run, got %d", count)
+	if count != 23 {
+		t.Errorf("expected 23 version rows after idempotent re-run, got %d", count)
 	}
 }
 
@@ -194,8 +197,8 @@ func TestMigrationExistingVersionedDBSkipsAppliedV1(t *testing.T) {
 	if err := db.QueryRow("SELECT COUNT(*) FROM migration_versions").Scan(&appliedVersions); err != nil {
 		t.Fatalf("count migration rows: %v", err)
 	}
-	if appliedVersions != 22 {
-		t.Fatalf("expected 22 applied migrations, got %d", appliedVersions)
+	if appliedVersions != 23 {
+		t.Fatalf("expected 23 applied migrations, got %d", appliedVersions)
 	}
 }
 
@@ -235,10 +238,10 @@ func TestMigrationExistingLegacyDBSeedsTrackingAndAppliesV2(t *testing.T) {
 		t.Fatalf("read migration rows: %v", err)
 	}
 
-	if len(versions) != 22 {
-		t.Fatalf("expected 22 applied migrations, got %d", len(versions))
+	if len(versions) != 23 {
+		t.Fatalf("expected 23 applied migrations, got %d", len(versions))
 	}
-	expected := []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22}
+	expected := []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23}
 	for i, want := range expected {
 		if versions[i] != want {
 			t.Fatalf("unexpected migration versions: %v", versions)
@@ -341,10 +344,10 @@ func TestMigrationExistingLegacyParityDBBackfillsVersionHistory(t *testing.T) {
 		t.Fatalf("read migration versions: %v", err)
 	}
 
-	if len(versions) != 22 {
-		t.Fatalf("expected 22 migration rows after legacy backfill + new migrations, got %d", len(versions))
+	if len(versions) != 23 {
+		t.Fatalf("expected 23 migration rows after legacy backfill + new migrations, got %d", len(versions))
 	}
-	expectedVersions := []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22}
+	expectedVersions := []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23}
 	for i, want := range expectedVersions {
 		if versions[i].version != want {
 			t.Fatalf("unexpected migration versions: %+v", versions)
@@ -1520,6 +1523,153 @@ func TestMigrationV22PreservesExistingItems(t *testing.T) {
 		}
 		if gotStatus != it.status {
 			t.Errorf("%s: status = %q, want %q (v22 must preserve row values)", it.id, gotStatus, it.status)
+		}
+		if gotKind != it.kind {
+			t.Errorf("%s: kind = %q, want %q", it.id, gotKind, it.kind)
+		}
+	}
+}
+
+// TestMigrationV23AddsTerminalInteractionKind pins the Phase 6 contract
+// for the Codex "Waited for background terminal" cell: the items.kind
+// CHECK enum must contain the exact literal 'terminal_interaction' and
+// an INSERT with that kind must succeed on a post-v23 DB. The widening
+// is strict — bogus kinds must still fail.
+func TestMigrationV23AddsTerminalInteractionKind(t *testing.T) {
+	s := newTestStore(t)
+
+	var itemsSQL string
+	if err := s.db.QueryRow(
+		`SELECT sql FROM sqlite_master WHERE type='table' AND name='items'`,
+	).Scan(&itemsSQL); err != nil {
+		t.Fatalf("read items table sql: %v", err)
+	}
+	if !strings.Contains(itemsSQL, "'terminal_interaction'") {
+		t.Errorf("expected items.kind CHECK to include 'terminal_interaction', got table sql:\n%s", itemsSQL)
+	}
+
+	if _, err := s.db.Exec(`
+		INSERT INTO threads (id, project_id, title, provider, workspace_path, model,
+			created_at, updated_at, archived, mode)
+		VALUES ('t-ti', ?, 'T', 'codex', '/tmp', '', 1, 1, 0, 'chat')
+	`, defaultTestProjectID); err != nil {
+		t.Fatalf("seed thread: %v", err)
+	}
+	if _, err := s.db.Exec(`
+		INSERT INTO items (id, thread_id, turn_index, item_index, kind, role, status,
+			summary, parent_id, is_background, completion_of, tool_name, decision,
+			meta, created_at, updated_at)
+		VALUES ('i-waited', 't-ti', 0, 0, 'terminal_interaction', 'assistant', 'completed',
+			'Waited for background terminal', '', 0, '', '', '', '{}', 1, 1)
+	`); err != nil {
+		t.Fatalf("INSERT with kind='terminal_interaction' must succeed post-v23: %v", err)
+	}
+
+	var got string
+	if err := s.db.QueryRow(`SELECT kind FROM items WHERE id = 'i-waited'`).Scan(&got); err != nil {
+		t.Fatalf("read terminal_interaction row: %v", err)
+	}
+	if got != "terminal_interaction" {
+		t.Errorf("kind round-trip: got %q, want terminal_interaction", got)
+	}
+
+	// A bogus kind must still fail — the widening adds exactly one value
+	// without opening the CHECK to everything.
+	if _, err := s.db.Exec(`
+		INSERT INTO items (id, thread_id, turn_index, item_index, kind, role, status,
+			summary, parent_id, is_background, completion_of, tool_name, decision,
+			meta, created_at, updated_at)
+		VALUES ('i-bogus', 't-ti', 1, 0, 'not_a_kind', 'assistant', 'completed',
+			'Bogus', '', 0, '', '', '', '{}', 1, 1)
+	`); err == nil {
+		t.Error("INSERT with kind='not_a_kind' must violate CHECK (widening didn't open the enum)")
+	}
+}
+
+// TestMigrationV23PreservesExistingItems drives the v23 migration on a
+// database stepped through v22 with real row data, then confirms every
+// row survives the rebuild with its original column values intact. The
+// v23 migration widens the kind CHECK enum; drift that lost data here
+// would be a silent regression in the rebuild-and-copy pattern.
+func TestMigrationV23PreservesExistingItems(t *testing.T) {
+	db := openSQLiteDB(t)
+
+	if err := configureDatabase(db); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	if err := ensureMigrationTable(db); err != nil {
+		t.Fatalf("ensure migration table: %v", err)
+	}
+	for _, m := range migrations {
+		if m.Version >= 23 {
+			break
+		}
+		if err := applyMigration(db, m); err != nil {
+			t.Fatalf("apply v%d: %v", m.Version, err)
+		}
+	}
+
+	if _, err := db.Exec(`INSERT INTO projects
+		(id, path, name, created_at, updated_at)
+		VALUES ('p-v23', '/tmp/v23', 'v23', 1, 1)`); err != nil {
+		t.Fatalf("seed project: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO threads
+		(id, project_id, title, provider, workspace_path, model,
+		 created_at, updated_at, archived, mode)
+		VALUES ('t-v23', 'p-v23', 'T', 'codex', '/tmp', '', 1, 1, 0, 'chat')`); err != nil {
+		t.Fatalf("seed thread: %v", err)
+	}
+
+	// Seed a row for each kind allowed by the v22 enum plus one with
+	// status='killed' to prove the v22 status widening survives v23.
+	seedItems := []struct {
+		id, kind, role, status, summary string
+		isBackground                    int
+	}{
+		{"i-user", "user_text", "user", "completed", "hi", 0},
+		{"i-asst", "assistant_text", "assistant", "completed", "yo", 0},
+		{"i-think", "thinking", "assistant", "streaming", "thinking...", 0},
+		{"i-call", "tool_call", "assistant", "running", "Bash", 0},
+		{"i-done", "tool_completion", "assistant", "completed", "Bash done", 0},
+		{"i-err", "error", "system", "completed", "err", 0},
+		{"i-comp", "compaction", "system", "completed", "compacted", 0},
+		{"i-killed", "tool_completion", "assistant", "killed", "stopped", 1},
+	}
+	for i, it := range seedItems {
+		if _, err := db.Exec(`INSERT INTO items
+			(id, thread_id, turn_index, item_index, kind, role, status, summary,
+			 parent_id, is_background, completion_of, tool_name, decision,
+			 meta, created_at, updated_at, highlighted_content)
+			VALUES (?, 't-v23', 0, ?, ?, ?, ?, ?, '', ?, '', '', '', '{}', 1, 1, '')`,
+			it.id, i, it.kind, it.role, it.status, it.summary,
+			it.isBackground); err != nil {
+			t.Fatalf("seed item %s: %v", it.id, err)
+		}
+	}
+
+	var v23 *Migration
+	for i := range migrations {
+		if migrations[i].Version == 23 {
+			v23 = &migrations[i]
+			break
+		}
+	}
+	if v23 == nil {
+		t.Fatal("v23 migration missing from list")
+	}
+	if err := applyMigration(db, *v23); err != nil {
+		t.Fatalf("apply v23: %v", err)
+	}
+
+	for _, it := range seedItems {
+		var gotStatus, gotKind string
+		if err := db.QueryRow(`SELECT status, kind FROM items WHERE id = ?`, it.id).Scan(&gotStatus, &gotKind); err != nil {
+			t.Errorf("%s: post-v23 lookup: %v", it.id, err)
+			continue
+		}
+		if gotStatus != it.status {
+			t.Errorf("%s: status = %q, want %q (v23 must preserve row values)", it.id, gotStatus, it.status)
 		}
 		if gotKind != it.kind {
 			t.Errorf("%s: kind = %q, want %q", it.id, gotKind, it.kind)

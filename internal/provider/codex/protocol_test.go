@@ -575,13 +575,76 @@ func TestClassifyNotification_ItemCompletedEachStatus(t *testing.T) {
 
 // -- progress notifications dropped --
 
-func TestClassifyNotification_TerminalInteractionDropped(t *testing.T) {
+// TestClassifyNotification_TerminalInteractionEmptyStdin pins the
+// empty-stdin variant of `item/commandExecution/terminalInteraction`: the
+// Codex model called `write_stdin` with no input to poll a backgrounded
+// PTY. The event must carry the thread/turn/item routing fields plus an
+// empty Content so the Phase 6 triage handler can persist a "Waited for
+// background terminal" row. Meta carries the process id for debugging.
+func TestClassifyNotification_TerminalInteractionEmptyStdin(t *testing.T) {
 	params := json.RawMessage(
-		`{"threadId":"th-1","turnId":"t1","itemId":"cmd-1","processId":"pid-42","stdin":"password:"}`,
+		`{"threadId":"th-1","turnId":"turn-2","itemId":"cmd-1","processId":"pid-42","stdin":""}`,
 	)
 	events := ClassifyNotification("th-1", "item/commandExecution/terminalInteraction", params)
-	if len(events) != 0 {
-		t.Fatalf("expected terminalInteraction to be dropped, got %d event(s)", len(events))
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event for empty-stdin terminalInteraction, got %d", len(events))
+	}
+	evt := events[0]
+	if evt.Kind != provider.EventTerminalInteraction {
+		t.Errorf("Kind = %q, want %q", evt.Kind, provider.EventTerminalInteraction)
+	}
+	if evt.ThreadID != "th-1" {
+		t.Errorf("ThreadID = %q, want th-1", evt.ThreadID)
+	}
+	if evt.TurnID != "turn-2" {
+		t.Errorf("TurnID = %q, want turn-2", evt.TurnID)
+	}
+	if evt.ItemID != "cmd-1" {
+		t.Errorf("ItemID = %q, want cmd-1", evt.ItemID)
+	}
+	if evt.Content != "" {
+		t.Errorf("Content = %q, want empty string (polling variant)", evt.Content)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(evt.Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if meta["process_id"] != "pid-42" {
+		t.Errorf("meta.process_id = %v, want pid-42", meta["process_id"])
+	}
+	if meta["stdin"] != "" {
+		t.Errorf("meta.stdin = %v, want empty string", meta["stdin"])
+	}
+}
+
+// TestClassifyNotification_TerminalInteractionNonEmptyStdin pins the
+// non-empty-stdin variant: the model forwarded actual keystrokes to the
+// backgrounded PTY. The parser must STILL emit the event (rather than
+// dropping it) so triage stays the single source of truth for "what
+// renders in the timeline". Phase 6 triage drops the non-empty branch;
+// future phases can render "Interacted with background terminal"
+// without a parser change.
+func TestClassifyNotification_TerminalInteractionNonEmptyStdin(t *testing.T) {
+	params := json.RawMessage(
+		`{"threadId":"th-1","turnId":"turn-2","itemId":"cmd-1","processId":"pid-42","stdin":"y\n"}`,
+	)
+	events := ClassifyNotification("th-1", "item/commandExecution/terminalInteraction", params)
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event for non-empty-stdin terminalInteraction, got %d", len(events))
+	}
+	evt := events[0]
+	if evt.Kind != provider.EventTerminalInteraction {
+		t.Errorf("Kind = %q, want %q", evt.Kind, provider.EventTerminalInteraction)
+	}
+	if evt.Content != "y\n" {
+		t.Errorf("Content = %q, want \"y\\n\" (stdin passthrough)", evt.Content)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(evt.Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if meta["stdin"] != "y\n" {
+		t.Errorf("meta.stdin = %v, want \"y\\n\"", meta["stdin"])
 	}
 }
 

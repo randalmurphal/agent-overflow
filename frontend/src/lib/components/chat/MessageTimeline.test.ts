@@ -69,6 +69,27 @@ describe('<MessageTimeline>', () => {
     expect(getByText('Context compacted')).toBeInTheDocument();
   });
 
+  it('dispatches terminal_interaction items to TerminalInteractionRow', async () => {
+    // Phase 6: `terminal_interaction` items land in the timeline as
+    // muted "Waited for background terminal" markers — a distinct
+    // render path from AssistantMessage / ToolCallCard / the compaction
+    // divider. Pinning the dispatch here keeps the MessageTimeline
+    // switch honest as new kinds get added.
+    const pane = await buildPane(undefined, [
+      makeItem({
+        id: 'waited:pid-42:0:0',
+        kind: 'terminal_interaction',
+        role: 'assistant',
+        summary: 'Waited for background terminal',
+      }),
+    ]);
+
+    const { getByTestId } = render(MessageTimeline, { props: { pane } });
+
+    const row = getByTestId('terminal-interaction-row');
+    expect(row.textContent).toContain('Waited for background terminal');
+  });
+
   it('renders changed-files and turn-diff summaries from tool-result payloads', async () => {
     const pane = await buildPane(undefined, [
       makeItem({

@@ -487,6 +487,19 @@ func (r *Router) currentTurnIndex(threadID string) (int, error) {
 	return r.store.LastTurnIndex(threadID)
 }
 
+// openTurnIndex returns the router's currently-open turn for threadID,
+// or (_, false) when no turn is in flight. Distinct from
+// currentTurnIndex: this does NOT fall back to the store's
+// LastTurnIndex, so callers that must drop rather than attach a live
+// event to a closed turn can do so without a separate is-turn-open
+// check.
+func (r *Router) openTurnIndex(threadID string) (int, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	turnIndex, ok := r.openTurns[threadID]
+	return turnIndex, ok
+}
+
 func (r *Router) setOpenTurn(threadID string, turnIndex int) {
 	r.mu.Lock()
 	r.openTurns[threadID] = turnIndex
@@ -509,6 +522,7 @@ func (r *Router) clearOpenTurn(threadID string) {
 		deleteByPrefix(r.activeTextBlocks, prefix)
 		deleteByPrefix(r.activeThinkingBlocks, prefix)
 		deleteByPrefix(r.errorSeqByScope, prefix)
+		deleteByPrefix(r.terminalInteractionSeq, prefix)
 	}
 	delete(r.openTurns, threadID)
 	delete(r.interruptQueue, threadID)
@@ -686,6 +700,7 @@ func (r *Router) CleanupThread(threadID string) {
 	deleteByPrefix(r.activeThinkingBlocks, prefix)
 	deleteByPrefix(r.errorSeqByScope, prefix)
 	deleteByPrefix(r.nextHighlightAt, prefix)
+	deleteByPrefix(r.terminalInteractionSeq, prefix)
 	// Drop the Codex background projector's per-thread trackers. A
 	// restarted session never inherits trackers from a prior session —
 	// the wire replays item/started for still-inProgress items and the

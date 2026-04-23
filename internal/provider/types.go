@@ -165,6 +165,20 @@ const (
 	// Codex injected the notification into the parent's next user turn.
 	EventSubagentNotification EventKind = "subagent_notification"
 
+	// EventTerminalInteraction surfaces Codex's
+	// `TerminalInteractionNotification` — the wire signal when the model
+	// calls `write_stdin` against a backgrounded unified-exec PTY. An
+	// empty `Stdin` is the "polling" variant (agent asked to wait
+	// without sending input); a non-empty value carries the keystrokes
+	// Codex forwarded. Triage persists a lightweight
+	// `terminal_interaction` row for the empty case so the timeline can
+	// render "Waited for background terminal" inline, mirroring Codex's
+	// own TUI (chatwidget.rs:618). The non-empty case is currently
+	// dropped by triage — the parser still emits the event so future
+	// phases can render "Interacted with background terminal" without
+	// changing the parser.
+	EventTerminalInteraction EventKind = "terminal_interaction"
+
 	// Heavy events — persisted to SQLite, meta emitted to frontend.
 	EventDiff          EventKind = "diff"
 	EventCommandOutput EventKind = "command_output"
@@ -197,6 +211,7 @@ var AllEventKinds = []EventKind{
 	EventContentBlockStop,
 	EventBackgroundTaskTerminal,
 	EventSubagentNotification,
+	EventTerminalInteraction,
 	EventDiff,
 	EventCommandOutput,
 	EventThinking,
@@ -207,13 +222,19 @@ var AllEventKinds = []EventKind{
 type ItemKind string
 
 const (
-	ItemUserText       ItemKind = "user_text"
-	ItemAssistantText  ItemKind = "assistant_text"
-	ItemThinking       ItemKind = "thinking"
-	ItemToolCall       ItemKind = "tool_call"
-	ItemToolCompletion ItemKind = "tool_completion"
-	ItemError          ItemKind = "error"
-	ItemCompaction     ItemKind = "compaction"
+	ItemUserText            ItemKind = "user_text"
+	ItemAssistantText       ItemKind = "assistant_text"
+	ItemThinking            ItemKind = "thinking"
+	ItemToolCall            ItemKind = "tool_call"
+	ItemToolCompletion      ItemKind = "tool_completion"
+	ItemError               ItemKind = "error"
+	ItemCompaction          ItemKind = "compaction"
+	// ItemTerminalInteraction is the minimal "Waited for background
+	// terminal" marker persisted when the Codex model polled a
+	// backgrounded PTY via an empty-stdin `write_stdin` call. No
+	// payload — the kind alone carries the semantic; meta carries
+	// process_id for debugging.
+	ItemTerminalInteraction ItemKind = "terminal_interaction"
 )
 
 // ProviderEvent is the normalized event emitted by both provider protocols.

@@ -274,13 +274,46 @@ func classifyItemNotification(threadID, method string, params json.RawMessage, n
 			Timestamp: now,
 		}}, true
 
-	case "item/commandExecution/terminalInteraction",
-		"item/mcpToolCall/progress",
+	case "item/commandExecution/terminalInteraction":
+		// Codex emits this whenever the model calls `write_stdin` on a
+		// backgrounded unified-exec PTY. Two variants:
+		//   - stdin == "": polling-only ("waited for background terminal")
+		//   - stdin != "": actual keystrokes were forwarded
+		// We surface BOTH variants as EventTerminalInteraction so triage
+		// can decide what to persist (Phase 6 only renders the empty
+		// variant; the non-empty branch stays parsed so future phases
+		// don't need a parser change).
+		return []provider.ProviderEvent{{
+			Kind:      provider.EventTerminalInteraction,
+			ThreadID:  threadID,
+			TurnID:    readTopLevelString(params, "turnId"),
+			ItemID:    readTopLevelString(params, "itemId"),
+			Content:   readTopLevelString(params, "stdin"),
+			Meta:      buildTerminalInteractionMeta(params),
+			Timestamp: now,
+		}}, true
+
+	case "item/mcpToolCall/progress",
 		"item/autoApprovalReview/started",
 		"item/autoApprovalReview/completed":
 		return nil, true
 	}
 	return nil, false
+}
+
+// buildTerminalInteractionMeta packages the notification fields triage
+// needs to persist the "waited" row. Meta preserves the raw `stdin`
+// (so the frontend / future phases can differentiate empty-poll from
+// real input) alongside the PTY process_id for debugging.
+func buildTerminalInteractionMeta(params json.RawMessage) json.RawMessage {
+	encoded, err := json.Marshal(map[string]any{
+		"process_id": readTopLevelString(params, "processId"),
+		"stdin":      readTopLevelString(params, "stdin"),
+	})
+	if err != nil {
+		return params
+	}
+	return encoded
 }
 
 // classifyItemCompleted breaks out item/completed because the plan-item
