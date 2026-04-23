@@ -19,6 +19,10 @@ import {
   getThreadById,
   prependThread,
 } from '../../stores/threads.svelte';
+import {
+  projectSendResolved,
+  projectSendStarted,
+} from '../../stores/threadStatuses.svelte';
 import type { Thread } from '../../types/models';
 
 export interface SendOptions {
@@ -56,10 +60,22 @@ export async function dispatchSend(opts: SendOptions): Promise<void> {
     clearProjectDraft(draftProjectId);
   }
 
+  // Optimistically flip the sidebar pill to Working the moment the
+  // user clicks Send. Provider sessions for brand-new threads take
+  // seconds to cold-start before the backend emits `turn_started`;
+  // without this, the row would sit idle for that whole window while
+  // the agent is clearly "working" from the user's POV. Cleared by
+  // applyTurnStarted (takeover on real backend signal) or by the
+  // catch branch below if SendMessage itself rejects.
+  projectSendStarted(opts.threadId);
+
   try {
     await SendMessage(opts.threadId, opts.message);
   } catch (err) {
     console.error('Failed to send message:', err);
+    // Flip to error so the sidebar pill reads "Error" — the user
+    // should see the failure without having to open the thread.
+    projectSendResolved(opts.threadId, { error: true });
     // restoreDraft always persists to the captured thread; it only touches
     // the local draft store if it's still on that thread. If the user has
     // moved on, surface a toast so the failed send is visible rather than

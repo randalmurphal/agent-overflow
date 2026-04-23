@@ -13,7 +13,13 @@ import { getAllPanes } from './panes.svelte';
 import { recordProviderStatus } from './providerStatus.svelte';
 import { addToast } from './toast.svelte';
 import { getThreads, replaceThread } from './threads.svelte';
-import { projectApprovalRequest, projectApprovalResolution, projectThreadItem } from './threadStatuses.svelte';
+import {
+  projectApprovalRequest,
+  projectApprovalResolution,
+  projectThreadItem,
+  projectTurnCompleted,
+  projectTurnStarted,
+} from './threadStatuses.svelte';
 import { parseTokenUsage } from './thread.svelte';
 
 /**
@@ -300,6 +306,11 @@ function applyThreadUpdated(updated: Thread): void {
  */
 function applyTurnStarted(evt: TurnStartedEvent): void {
   if (!evt?.threadId || !evt.turnId) return;
+  // Feed the sidebar live-status projection first so the pill flips to
+  // Working the moment the backend confirms the turn has started —
+  // before we wait on any streaming item deltas. Matches forge's
+  // behavior and fixes the "idle during thinking" gap.
+  projectTurnStarted(evt.threadId, evt.turnId);
   for (const pane of getAllPanes().values()) {
     if (pane.threadId !== evt.threadId) continue;
     pane.setActiveTurn({
@@ -335,6 +346,13 @@ function applyTurnCompleted(evt: TurnCompletedEvent): void {
     aborted: Boolean(evt.aborted),
     errorMessage: evt.errorMessage ?? '',
   };
+  // Clear the turn from the sidebar projection. Aborted / errored
+  // turns flip the pill to Error so the row surfaces the failure
+  // without the user having to open the thread.
+  projectTurnCompleted(evt.threadId, evt.turnId, {
+    aborted: settled.aborted,
+    errorMessage: settled.errorMessage,
+  });
   for (const pane of getAllPanes().values()) {
     if (pane.threadId !== evt.threadId) continue;
     pane.settleTurn(settled);
