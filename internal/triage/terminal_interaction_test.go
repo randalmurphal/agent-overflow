@@ -80,6 +80,68 @@ func TestTerminalInteraction_EmptyStdinPersistsRow(t *testing.T) {
 	}
 }
 
+func TestTerminalInteraction_SplitsScopedAssistantTextAroundWait(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+	const parentToolUseID = "task-tool-1"
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:            provider.EventTextDelta,
+		ThreadID:        "t1",
+		Content:         "The 5s foreground sleep finished.",
+		ParentToolUseID: parentToolUseID,
+		Timestamp:       time.Now(),
+	}); err != nil {
+		t.Fatalf("handle first text delta: %v", err)
+	}
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:            provider.EventTerminalInteraction,
+		ThreadID:        "t1",
+		TurnID:          "turn-0",
+		ItemID:          "cmd-1",
+		Content:         "",
+		ParentToolUseID: parentToolUseID,
+		Meta:            terminalInteractionMetaBlob(t, "pid-42", ""),
+		Timestamp:       time.Now(),
+	}); err != nil {
+		t.Fatalf("handle terminal interaction: %v", err)
+	}
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:            provider.EventTextDelta,
+		ThreadID:        "t1",
+		Content:         "Done. Both background sleeps completed.",
+		ParentToolUseID: parentToolUseID,
+		Timestamp:       time.Now(),
+	}); err != nil {
+		t.Fatalf("handle second text delta: %v", err)
+	}
+
+	items, err := st.ListTurnItems("t1", 0)
+	if err != nil {
+		t.Fatalf("list turn items: %v", err)
+	}
+	if len(items) != 3 {
+		t.Fatalf("expected text, terminal interaction, text; got %d items: %+v", len(items), items)
+	}
+	if items[0].Kind != "assistant_text" || items[0].Summary != "The 5s foreground sleep finished." {
+		t.Fatalf("first item = (%q, %q), want first assistant sentence", items[0].Kind, items[0].Summary)
+	}
+	if items[1].Kind != string(provider.ItemTerminalInteraction) {
+		t.Fatalf("second item kind = %q, want terminal_interaction", items[1].Kind)
+	}
+	if items[2].Kind != "assistant_text" || items[2].Summary != "Done. Both background sleeps completed." {
+		t.Fatalf("third item = (%q, %q), want post-wait assistant sentence", items[2].Kind, items[2].Summary)
+	}
+	for _, item := range items {
+		if item.ParentID != parentToolUseID {
+			t.Fatalf("item %s parent_id = %q, want %q", item.ID, item.ParentID, parentToolUseID)
+		}
+	}
+}
+
 // TestTerminalInteraction_NonEmptyStdinDropped pins Phase 6 scope: the
 // non-empty-stdin (keystrokes-forwarded) variant is parsed by the Codex
 // protocol but MUST NOT persist a row. The event is observable on the

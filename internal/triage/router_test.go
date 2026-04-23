@@ -2198,6 +2198,109 @@ func TestErrorPersistsTimelineItem(t *testing.T) {
 	}
 }
 
+func TestErrorSplitsAssistantTextAroundVisibleErrorRow(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTextDelta,
+		ThreadID:  "t1",
+		Content:   "before error",
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("first text delta: %v", err)
+	}
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventError,
+		ThreadID:  "t1",
+		Content:   "recoverable provider warning",
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("error: %v", err)
+	}
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTextDelta,
+		ThreadID:  "t1",
+		Content:   "after error",
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("second text delta: %v", err)
+	}
+
+	items, err := st.ListTurnItems("t1", 0)
+	if err != nil {
+		t.Fatalf("list turn items: %v", err)
+	}
+	if len(items) != 3 {
+		t.Fatalf("expected text, error, text; got %d items: %+v", len(items), items)
+	}
+	if items[0].Kind != "assistant_text" || items[0].Summary != "before error" {
+		t.Fatalf("first item = (%q, %q), want pre-error assistant text", items[0].Kind, items[0].Summary)
+	}
+	if items[1].Kind != "error" || items[1].Summary != "recoverable provider warning" {
+		t.Fatalf("second item = (%q, %q), want error row", items[1].Kind, items[1].Summary)
+	}
+	if items[2].Kind != "assistant_text" || items[2].Summary != "after error" {
+		t.Fatalf("third item = (%q, %q), want post-error assistant text", items[2].Kind, items[2].Summary)
+	}
+}
+
+func TestUnscopedErrorSplitsScopedAssistantTextAroundVisibleErrorRow(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+	const parentToolUseID = "task-tool-1"
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:            provider.EventTextDelta,
+		ThreadID:        "t1",
+		Content:         "scoped before error",
+		ParentToolUseID: parentToolUseID,
+		Timestamp:       time.Now(),
+	}); err != nil {
+		t.Fatalf("first scoped text delta: %v", err)
+	}
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventError,
+		ThreadID:  "t1",
+		Content:   "root provider warning",
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("unscoped error: %v", err)
+	}
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:            provider.EventTextDelta,
+		ThreadID:        "t1",
+		Content:         "scoped after error",
+		ParentToolUseID: parentToolUseID,
+		Timestamp:       time.Now(),
+	}); err != nil {
+		t.Fatalf("second scoped text delta: %v", err)
+	}
+
+	items, err := st.ListTurnItems("t1", 0)
+	if err != nil {
+		t.Fatalf("list turn items: %v", err)
+	}
+	if len(items) != 3 {
+		t.Fatalf("expected scoped text, unscoped error, scoped text; got %d items: %+v", len(items), items)
+	}
+	if items[0].Kind != "assistant_text" || items[0].Summary != "scoped before error" || items[0].ParentID != parentToolUseID {
+		t.Fatalf("first item = (%q, %q, parent %q), want pre-error scoped assistant text", items[0].Kind, items[0].Summary, items[0].ParentID)
+	}
+	if items[1].Kind != "error" || items[1].Summary != "root provider warning" || items[1].ParentID != "" {
+		t.Fatalf("second item = (%q, %q, parent %q), want unscoped error row", items[1].Kind, items[1].Summary, items[1].ParentID)
+	}
+	if items[2].Kind != "assistant_text" || items[2].Summary != "scoped after error" || items[2].ParentID != parentToolUseID {
+		t.Fatalf("third item = (%q, %q, parent %q), want post-error scoped assistant text", items[2].Kind, items[2].Summary, items[2].ParentID)
+	}
+}
+
 // TestFatalErrorOrderingMatchesSpec pins the ordering contract on a
 // fatal EventError, per chat-rewrite §"Live provider-crash flip":
 //

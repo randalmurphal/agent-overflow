@@ -8,7 +8,7 @@
   import Composer from '../composer/Composer.svelte';
   import BelowComposerBar from '../composer/belowbar/BelowComposerBar.svelte';
   import ProviderStatusBanner from './ProviderStatusBanner.svelte';
-  import ThreadTerminalDrawer from '../terminal/ThreadTerminalDrawer.svelte';
+  import LazyThreadTerminalDrawer from '../terminal/LazyThreadTerminalDrawer.svelte';
   import DiscussionView from '../discussion/DiscussionView.svelte';
   import DesignView from '../design/DesignView.svelte';
   import DiffPanelDrawer from './DiffPanelDrawer.svelte';
@@ -112,7 +112,7 @@
       {/if}
       {#if pane.showTerminal && pane.thread}
         {#key pane.thread.id}
-          <ThreadTerminalDrawer {pane} onSendToComposer={addTerminalChipToDraft} />
+          <LazyThreadTerminalDrawer {pane} onSendToComposer={addTerminalChipToDraft} />
         {/key}
       {/if}
     </div>

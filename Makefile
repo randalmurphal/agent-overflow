@@ -1,4 +1,4 @@
-.PHONY: install dev build test check generate-css
+.PHONY: install dev build test check generate-css go-build go-test
 
 ifeq ($(shell uname -s),Darwin)
 HOST_ARCH := $(shell uname -m)
@@ -15,6 +15,15 @@ export CGO_CFLAGS := -mmacosx-version-min=$(MACOSX_DEPLOYMENT_TARGET)
 export CGO_CXXFLAGS := -mmacosx-version-min=$(MACOSX_DEPLOYMENT_TARGET)
 export CGO_LDFLAGS := -mmacosx-version-min=$(MACOSX_DEPLOYMENT_TARGET)
 endif
+
+# Use these targets for Go verification instead of bare `go build` / `go test`.
+# On Darwin, the exported CGO flags keep Wails Objective-C objects and the final
+# binary on the same macOS deployment target, avoiding noisy linker warnings.
+go-build:
+	go build ./...
+
+go-test:
+	go test ./...
 
 install:
 	go install tool
@@ -34,9 +43,9 @@ build: generate-css
 	wails3 build
 
 test:
-	go test ./...
+	$(MAKE) go-test
 	cd frontend && npm test
 
 check: generate-css
-	go build ./...
+	$(MAKE) go-build
 	cd frontend && npm run check

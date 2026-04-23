@@ -322,10 +322,28 @@ func (r *Router) fireEventHook(evt provider.ProviderEvent) {
 	}
 }
 
-func (r *Router) handleToolStart(evt provider.ProviderEvent) error {
-	if err := r.settleStreamingScope(evt.ThreadID, evt.ParentToolUseID); err != nil {
-		log.Printf("triage: settle streaming scope before tool start: %v", err)
+func (r *Router) settleStreamingBeforeTimelineBoundary(evt provider.ProviderEvent, boundary string) {
+	if !r.hasActiveStreamingItem(evt.ThreadID) {
+		return
 	}
+	if strings.TrimSpace(evt.ParentToolUseID) == "" {
+		turnIndex, err := r.currentTurnIndex(evt.ThreadID)
+		if err != nil {
+			log.Printf("triage: settle streaming before %s: %v", boundary, err)
+			return
+		}
+		if err := r.settleTurnStreaming(evt.ThreadID, turnIndex, statusCompleted); err != nil {
+			log.Printf("triage: settle streaming before %s: %v", boundary, err)
+		}
+		return
+	}
+	if err := r.settleStreamingScope(evt.ThreadID, evt.ParentToolUseID); err != nil {
+		log.Printf("triage: settle streaming before %s: %v", boundary, err)
+	}
+}
+
+func (r *Router) handleToolStart(evt provider.ProviderEvent) error {
+	r.settleStreamingBeforeTimelineBoundary(evt, "tool start")
 	// Lifecycle row first so the file-change / command-mutation helpers
 	// below find an existing item to attach their rich payload onto via
 	// UpdateItemPayload — otherwise they'd race to AppendItem with the
@@ -534,6 +552,8 @@ func (r *Router) handleError(evt provider.ProviderEvent) error {
 		if err := r.markTurnItemsErrored(evt.ThreadID, turnIndex, now); err != nil {
 			return err
 		}
+	} else if r.hasActiveStreamingItem(evt.ThreadID) {
+		r.settleStreamingBeforeTimelineBoundary(evt, "error item")
 	}
 
 	scope := strings.TrimSpace(evt.ParentToolUseID)

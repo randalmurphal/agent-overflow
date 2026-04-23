@@ -89,6 +89,12 @@ func (r *Router) handleTerminalInteraction(evt provider.ProviderEvent) error {
 		return nil
 	}
 
+	// A terminal interaction is a timeline boundary even though Codex does
+	// not emit a normal tool-start event for it. Close the current assistant
+	// text/thinking block first so any post-wait assistant text starts a new
+	// row instead of appending onto the pre-wait sentence.
+	r.settleStreamingBeforeTimelineBoundary(evt, "terminal interaction")
+
 	now := eventTimestampMillis(evt)
 	seq := r.nextTerminalInteractionSequence(evt.ThreadID, turnIndex, meta.ProcessID)
 
@@ -115,6 +121,7 @@ func (r *Router) handleTerminalInteraction(evt provider.ProviderEvent) error {
 		Role:      "assistant",
 		Status:    statusCompleted,
 		Summary:   "Waited for background terminal",
+		ParentID:  eventParentID(evt),
 		Meta:      string(metaBlob),
 		CreatedAt: now,
 		UpdatedAt: now,

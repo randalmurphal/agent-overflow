@@ -14,7 +14,6 @@
     TerminalSessionSummary,
   } from '../../types/terminal';
   import { decodeTerminalOutput } from '../../types/terminal';
-  import type { ThreadPane } from '../../stores/thread.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import { errString } from '../../utils/errors';
   import {
@@ -24,24 +23,9 @@
   import Drawer from '../primitives/Drawer.svelte';
   import TerminalTabStrip from './TerminalTabStrip.svelte';
   import TerminalBody from './TerminalBody.svelte';
+  import type { ThreadTerminalDrawerProps } from './terminalDrawerTypes';
 
-  interface SendToComposerChip {
-    id: string;
-    label: string;
-    preview: string;
-    content: string;
-    createdAt: number;
-  }
-
-  interface Props {
-    pane: ThreadPane;
-    /** Injected by tests to skip auto-ListTerminals/OpenTerminal on mount. */
-    manual?: boolean;
-    /** Called when the user captures selected terminal text as a chip. */
-    onSendToComposer?: (chip: SendToComposerChip) => void;
-  }
-
-  let { pane, manual = false, onSendToComposer }: Props = $props();
+  let { pane, manual = false, onSendToComposer }: ThreadTerminalDrawerProps = $props();
 
   // One state container per drawer instance. The drawer is keyed on the
   // thread ID in the parent, so switching threads remounts the drawer.

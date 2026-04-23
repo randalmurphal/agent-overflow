@@ -100,6 +100,62 @@ func TestToolStartPersistsLifecycleItem(t *testing.T) {
 	}
 }
 
+func TestToolStartSplitsAssistantTextAroundVisibleToolRow(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTextDelta,
+		ThreadID:  "t1",
+		Content:   "before tool",
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("first text delta: %v", err)
+	}
+
+	meta, _ := json.Marshal(map[string]any{
+		"toolName": "Bash",
+		"input":    map[string]any{"command": "pwd"},
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventToolStart,
+		ThreadID:  "t1",
+		ItemID:    "tool-boundary",
+		ItemType:  "Bash",
+		Meta:      meta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("tool start: %v", err)
+	}
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTextDelta,
+		ThreadID:  "t1",
+		Content:   "after tool",
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("second text delta: %v", err)
+	}
+
+	items, err := st.ListTurnItems("t1", 0)
+	if err != nil {
+		t.Fatalf("list turn items: %v", err)
+	}
+	if len(items) != 3 {
+		t.Fatalf("expected text, tool, text; got %d items: %+v", len(items), items)
+	}
+	if items[0].Kind != "assistant_text" || items[0].Summary != "before tool" {
+		t.Fatalf("first item = (%q, %q), want pre-tool assistant text", items[0].Kind, items[0].Summary)
+	}
+	if items[1].Kind != itemKindToolCall || items[1].ID != "tool-boundary" {
+		t.Fatalf("second item = (%q, %q), want tool_call tool-boundary", items[1].Kind, items[1].ID)
+	}
+	if items[2].Kind != "assistant_text" || items[2].Summary != "after tool" {
+		t.Fatalf("third item = (%q, %q), want post-tool assistant text", items[2].Kind, items[2].Summary)
+	}
+}
+
 // TestToolStartCarriesBackgroundFlag verifies the is_background bit
 // rides through Meta into the persisted row. Claude sets this from
 // run_in_background; Codex's classifier sets it via the same key.

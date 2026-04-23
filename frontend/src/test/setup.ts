@@ -100,16 +100,11 @@ const memoryStorage: Storage = {
     return Array.from(__storage.keys())[index] ?? null;
   },
 };
-if (
-  typeof globalThis.localStorage === 'undefined' ||
-  typeof (globalThis.localStorage as Storage | undefined)?.setItem !== 'function'
-) {
-  Object.defineProperty(globalThis, 'localStorage', {
-    value: memoryStorage,
-    configurable: true,
-    writable: true,
-  });
-}
+Object.defineProperty(globalThis, 'localStorage', {
+  value: memoryStorage,
+  configurable: true,
+  writable: true,
+});
 if (typeof globalThis.window !== 'undefined') {
   // Keep window.localStorage in sync so components that reach through
   // window explicitly see the same store as globalThis.localStorage.
