@@ -105,6 +105,14 @@ type Router struct {
 	// expected but the first sighting is worth flagging so a new
 	// provider subtype doesn't silently disappear.
 	unknownSessionStatusLogged map[string]struct{}
+	// codexBackground is the Codex-specific background-terminal projector
+	// state, keyed by threadID. Tracks inProgress unifiedExec items +
+	// spawn_agent rows with running children so we can stamp
+	// is_background=true on the first wire-typed yield signal (text /
+	// reasoning delta) or at turn/completed (the catchall). See
+	// codex_background.go for the lifecycle details and invariant 25 for
+	// the wire-typed-signal rule this implements.
+	codexBackground map[string]*codexBackgroundState
 	// eventHook is a test-only seam: when set, the Router invokes it for
 	// every Handle call AFTER the routing switch runs. Production code
 	// never sets a hook (the call site in Handle is nil-checked so the
@@ -167,6 +175,7 @@ func NewRouter(st *store.Store, emit func(eventName string, data any), h *highli
 		turnSpans:                  make(map[string]trace.Span),
 		stoppedThreads:             make(map[string]struct{}),
 		unknownSessionStatusLogged: make(map[string]struct{}),
+		codexBackground:            make(map[string]*codexBackgroundState),
 	}
 }
 
@@ -318,6 +327,12 @@ func (r *Router) handleToolStart(evt provider.ProviderEvent) error {
 	if err := r.capturePendingCommandInlineDiff(evt); err != nil {
 		return err
 	}
+	// Codex background-terminal projector observes unifiedExec /
+	// spawn_agent starts so it can stamp is_background=true on the
+	// first yield (text/reasoning) or at turn/completed. See
+	// codex_background.go + invariant 25. Runs AFTER persist so the
+	// stamp target row is guaranteed to exist.
+	r.observeCodexToolStart(evt)
 	return r.emitInline(evt)
 }
 
@@ -334,6 +349,15 @@ func (r *Router) handleToolComplete(evt provider.ProviderEvent) error {
 		return err
 	}
 	if err := r.persistToolCallCompletion(evt); err != nil {
+		return err
+	}
+	// Codex background-terminal projector synthesizes a tool_completion
+	// sibling row when a backgrounded unifiedExec closes, and refreshes
+	// the running-children flag for spawn_agent completions. Runs AFTER
+	// persistToolCallCompletion so the sibling lands relative to the
+	// final launch-row state (the launch stays status=running for
+	// backgrounded unifiedExec per invariant 24).
+	if err := r.observeCodexToolComplete(evt); err != nil {
 		return err
 	}
 	return r.emitInline(evt)
@@ -618,11 +642,17 @@ func (r *Router) emitInline(evt provider.ProviderEvent) error {
 // docs/archive/turn-lifecycle-refactor-plan.md WT-codex-parser for the
 // emission-side plan.
 func (r *Router) handleSubagentNotification(evt provider.ProviderEvent) error {
+	// Forward to the frontend channel first so UI observers don't
+	// depend on the projector's synthesis having run yet. The
+	// projector checks whether any backgrounded spawn_agent rows are
+	// waiting on the just-closed child; if so, the sibling completion
+	// row is synthesized at the current tail (via maybeDeferOrPersist,
+	// same stream-safety as the unifiedExec path).
 	r.emit("provider:subagent_notification", SubagentNotificationEvent{
 		ThreadID: evt.ThreadID,
 		Meta:     evt.Meta,
 	})
-	return nil
+	return r.observeCodexSubagentNotification(evt.ThreadID, evt.Meta)
 }
 
 func (r *Router) emitThreadUpdated(threadID string) {

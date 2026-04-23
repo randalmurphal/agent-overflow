@@ -597,6 +597,91 @@ func TestClassifyNotification_McpToolCallProgressDropped(t *testing.T) {
 
 // -- turn/completed surface test --
 
+// TestClassifyNotification_ItemStartedUnifiedExecCarriesProcessID
+// verifies the unifiedExecStartup source wire signal lands in Meta
+// alongside the process_id for downstream backgrounding projection.
+// Both fields live on the `item` subobject on the wire (processId is
+// rendered camelCase via the Rust `rename_all` attribute). The
+// projector reads these top-level to decide "this command can be
+// backgrounded" without walking nested JSON.
+func TestClassifyNotification_ItemStartedUnifiedExecCarriesProcessID(t *testing.T) {
+	params := json.RawMessage(
+		`{"threadId":"th-1","turnId":"turn-42",` +
+			`"item":{"id":"cmd-1","type":"commandExecution",` +
+			`"source":"unifiedExecStartup","processId":"pid-12345",` +
+			`"status":"inProgress"}}`,
+	)
+	events := ClassifyNotification("th-1", "item/started", params)
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	evt := events[0]
+	if evt.Kind != provider.EventToolStart {
+		t.Fatalf("kind: got %q, want %q", evt.Kind, provider.EventToolStart)
+	}
+	if evt.TurnID != "turn-42" {
+		t.Errorf("evt.TurnID: got %q, want %q (needed for projector turn correlation)", evt.TurnID, "turn-42")
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(evt.Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if meta["source"] != "unifiedExecStartup" {
+		t.Errorf("meta.source: got %v, want %q", meta["source"], "unifiedExecStartup")
+	}
+	if meta["process_id"] != "pid-12345" {
+		t.Errorf("meta.process_id: got %v, want %q", meta["process_id"], "pid-12345")
+	}
+}
+
+// TestClassifyNotification_ItemStartedAgentSourceOmitsProcessID pins
+// the "only include when populated" rule on process_id. An
+// agent-sourced CommandExecution typically has no wire processId
+// (buffered exec gets an internal id Codex doesn't expose); the Meta
+// key must then be absent, not an empty string — a missing key is the
+// load-bearing signal for "no PTY handle to track."
+func TestClassifyNotification_ItemStartedAgentSourceOmitsProcessID(t *testing.T) {
+	params := json.RawMessage(
+		`{"threadId":"th-1","turnId":"turn-3",` +
+			`"item":{"id":"cmd-2","type":"commandExecution",` +
+			`"source":"agent","status":"inProgress"}}`,
+	)
+	events := ClassifyNotification("th-1", "item/started", params)
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if meta["source"] != "agent" {
+		t.Errorf("meta.source: got %v, want %q", meta["source"], "agent")
+	}
+	if _, present := meta["process_id"]; present {
+		t.Errorf("meta.process_id must be absent when wire omits it; got %v", meta["process_id"])
+	}
+}
+
+// TestClassifyNotification_ItemCompletedCarriesTurnID pins the
+// turnId propagation on item/completed. The projector uses evt.TurnID
+// to mark which turn owns a completing item so the completion sibling
+// row can still land at the current timeline tail even if that turn
+// is long gone by completion time.
+func TestClassifyNotification_ItemCompletedCarriesTurnID(t *testing.T) {
+	params := json.RawMessage(
+		`{"threadId":"th-1","turnId":"turn-99",` +
+			`"item":{"id":"cmd-1","type":"commandExecution",` +
+			`"source":"unifiedExecStartup","status":"completed","exitCode":0}}`,
+	)
+	events := ClassifyNotification("th-1", "item/completed", params)
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if events[0].TurnID != "turn-99" {
+		t.Errorf("evt.TurnID: got %q, want %q", events[0].TurnID, "turn-99")
+	}
+}
+
 // TestClassifyNotification_TurnCompletedStatus asserts that turn.status
 // (TurnStatus: "completed" | "interrupted" | "failed" | "inProgress")
 // is lifted into the turn-complete event's Meta.

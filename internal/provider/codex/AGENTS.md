@@ -69,15 +69,22 @@ Summary:
 - **Turn lifecycle** — `turn/completed.lastAssistantMessageId` is
   the authoritative final-message marker; use it for the `turns`
   row.
-- **Background terminals (planned, not yet implemented).** Codex has no
-  `run_in_background` flag, but `exec_command` can yield back to the
-  model while its PTY keeps running. `CommandExecution.source ==
-  "unifiedExecStartup"` is the wire-typed signal; stamping
-  `is_background=true` on such items is the only sanctioned path
-  (per [invariant 25](../../../docs/architecture/invariants.md#25-codex-backgrounding-uses-wire-typed-signals-never-heuristics)).
-  Heuristic event-ordering classifiers are forbidden — they produced
-  ghost rows in the retired `BackgroundClassifier`. Per-row stop for
-  backgrounded commands is blocked on an upstream protocol change; see
+- **Background terminals.** Codex has no `run_in_background` flag, but
+  `exec_command` can yield back to the model while its PTY keeps
+  running. `CommandExecution.source == "unifiedExecStartup"` is the
+  wire-typed authorizing signal (per
+  [invariant 25](../../../docs/architecture/invariants.md#25-codex-backgrounding-uses-wire-typed-signals-never-heuristics)).
+  This package surfaces `source`, `item_status`, `process_id`,
+  `agentsStates`, and `receiverThreadIds` on the event Meta via
+  `enrichItemMeta`; the projector in
+  `internal/triage/codex_background.go` stamps `is_background=true` on
+  the first model-produced yield (text/reasoning delta) or at
+  `turn/completed` as the catchall, and synthesizes the sibling
+  `tool_completion` row at completion time via `maybeDeferOrPersist`.
+  Heuristic event-ordering classifiers are still forbidden as the
+  authorization — the yield moment is just the observable trigger for
+  an already wire-authorized commitment. Per-row stop for backgrounded
+  commands is blocked on an upstream protocol change; see
   [`codex.md §Known upstream constraints`](../../../docs/references/codex.md#known-upstream-constraints).
 
 ## Collab agent lifecycle (spawn_agent / wait / close_agent / send_input / resume_agent)

@@ -614,12 +614,25 @@ arrives later.
 ## 25. Codex backgrounding uses wire-typed signals, never heuristics
 
 **Rule.** `is_background=true` may only be set on a Codex item when a
-**wire-typed** source field authorizes it. The only sanctioned signal today
-is `CommandExecution.source == "unifiedExecStartup"` (see
-[`codex-wire.md`](../references/codex-wire.md)). Heuristic classifiers
-("assistant text after tool start", "turn still open while tool running",
-etc.) are forbidden — that path produced ghost tray rows in the former
-`BackgroundClassifier`.
+**wire-typed** source field authorizes it. Two sanctioned signals today:
+
+1. `CommandExecution.source == "unifiedExecStartup"` — the classifier
+   for backgrounded shell commands. See
+   [`codex-wire.md`](../references/codex-wire.md).
+2. `collabAgentToolCall` with `tool == "spawnAgent"` whose
+   `agentsStates` map reports a non-terminal child at the parent's
+   `turn/completed` boundary. The spawn row itself completes on the
+   wire immediately; backgrounding reflects that work continues on
+   the child thread past the parent's turn.
+
+Heuristic classifiers ("assistant text after tool start", "turn still
+open while tool running", etc.) are forbidden as the AUTHORIZATION for
+setting `is_background`. That rule is what protects against the
+ghost-row problem the former `BackgroundClassifier` had. The TRIGGER
+for stamping an already-authorized row — on a model-produced yield
+(text/reasoning delta) or the turn boundary catchall — is not a
+classifier; it's the observable moment at which the wire-typed
+commitment becomes visible. See `internal/triage/codex_background.go`.
 
 **Rationale.** Codex has no `run_in_background` flag on ThreadItems, but
 it does have backgrounded execution: `exec_command` yields to the model
@@ -631,20 +644,31 @@ across turns, up to `background_terminal_max_timeout` (1h default).
 item is a background-terminal candidate"; treating such items as
 backgrounded is not the ghost-row problem the old classifier had.
 
-`spawn_agent` child threads are a separate concept and NOT tracked via
-`is_background` — they live on their own `thread_id` and the parent's
-`spawn_agent` tool_call completes immediately.
+`spawn_agent` child threads live on their own `thread_id` and the
+parent's `spawn_agent` tool_call completes on the wire immediately. The
+`is_background` flag on the parent's tool_call row reflects that the
+referenced child thread may still be running — authorized by the
+wire's `agentsStates` map, not by any event-ordering heuristic.
 
-**Enforcement.** Only `internal/provider/codex/` code that inspects the
-wire-typed `source` field may set `is_background=true`. No heuristic
-derivation. The former `BackgroundClassifier` at
+**Enforcement.** Only `internal/triage/codex_background.go` and the
+`internal/provider/codex/` enrichment that feeds it may set
+`is_background=true` on Codex items. No heuristic derivation elsewhere.
+The former `BackgroundClassifier` at
 `internal/provider/codex/background.go` remains deleted. The
 `BackgroundTaskTray` component renders nothing when no items have
 `is_background=true`.
 
-**Test.** Codex integration test: assert `source != "unifiedExecStartup"`
-items never carry `is_background=true`; assert a yielded unifiedExec
-command DOES carry the flag.
+**Test.** Codex projector unit tests:
+- `TestCodexBackgroundProjector_TextDeltaAfterYieldStampsBackground` —
+  yield stamps a unifiedExec row.
+- `TestCodexBackgroundProjector_ItemCompletedBeforeYieldLeavesNormal` —
+  synchronous command (no yield) never gets flagged.
+- `TestCodexBackgroundProjector_ParallelSiblingsDontTriggerYield` —
+  sibling tool-starts don't imply a yield.
+- `TestCodexBackgroundProjector_TurnCompletedStampsBackgroundOnRemaining`
+  — turn-close catchall.
+- `TestCodexSubagentRunningPastTurnEnd_Backgrounded` — spawn_agent
+  with running child past turn end.
 
 **Upstream gap.** The app-server protocol exposes only thread-wide
 cleanup (`thread/backgroundTerminals/clean`). Per-process termination

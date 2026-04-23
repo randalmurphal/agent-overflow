@@ -185,6 +185,7 @@ func classifyItemNotification(threadID, method string, params json.RawMessage, n
 		return []provider.ProviderEvent{{
 			Kind:      provider.EventToolStart,
 			ThreadID:  threadID,
+			TurnID:    readTopLevelString(params, "turnId"),
 			ItemID:    itemID,
 			ItemType:  itemType,
 			Meta:      enrichItemMeta(params),
@@ -288,6 +289,7 @@ func classifyItemNotification(threadID, method string, params json.RawMessage, n
 func classifyItemCompleted(threadID string, params json.RawMessage, now time.Time) []provider.ProviderEvent {
 	itemID := readNestedString(params, "item", "id")
 	itemType := classifyCodexItemType(params)
+	turnID := readTopLevelString(params, "turnId")
 	if itemType == "" {
 		return nil
 	}
@@ -303,6 +305,7 @@ func classifyItemCompleted(threadID string, params json.RawMessage, now time.Tim
 		return []provider.ProviderEvent{{
 			Kind:      provider.EventProposedPlan,
 			ThreadID:  threadID,
+			TurnID:    turnID,
 			ItemID:    itemID,
 			ItemType:  itemType,
 			Content:   planMarkdown,
@@ -316,6 +319,7 @@ func classifyItemCompleted(threadID string, params json.RawMessage, now time.Tim
 	return []provider.ProviderEvent{{
 		Kind:      provider.EventToolComplete,
 		ThreadID:  threadID,
+		TurnID:    turnID,
 		ItemID:    itemID,
 		ItemType:  itemType,
 		Meta:      enrichItemMeta(params),
@@ -627,23 +631,29 @@ func readRawString(m map[string]json.RawMessage, key string) string {
 
 // enrichItemMeta augments the raw item/started or item/completed params with
 // discoverable top-level keys: `source` (CommandExecutionSource —
-// "agent" | "userShell" | "unifiedExecStartup" | "unifiedExecInteraction")
-// and `item_status` (CommandExecutionStatus / McpToolCallStatus / etc. —
-// "inProgress" | "completed" | "failed" | "declined"). Both live inside
-// `params.item` on the wire; surfacing them at the top of Meta means
-// downstream consumers don't need to know the nested path. The original
-// params are preserved so anything that already reads `item.xxx` still
-// works. If marshaling fails (it shouldn't — we're round-tripping decoded
-// JSON) the raw params are returned unmodified rather than dropping data.
+// "agent" | "userShell" | "unifiedExecStartup" | "unifiedExecInteraction"),
+// `item_status` (CommandExecutionStatus / McpToolCallStatus / etc. —
+// "inProgress" | "completed" | "failed" | "declined"), and `process_id`
+// (the PTY handle for unifiedExec commands, optional on the wire). All
+// three live inside `params.item`; surfacing them at the top of Meta
+// means downstream consumers (the Codex background-terminal projector,
+// the renderer) don't need to know the nested path. The original params
+// are preserved so anything that already reads `item.xxx` still works.
+// If marshaling fails (it shouldn't — we're round-tripping decoded JSON)
+// the raw params are returned unmodified rather than dropping data.
 func enrichItemMeta(params json.RawMessage) json.RawMessage {
 	source := readNestedString(params, "item", "source")
 	status := readNestedString(params, "item", "status")
+	processID := readNestedString(params, "item", "processId")
 	extras := map[string]any{}
 	if source != "" {
 		extras["source"] = source
 	}
 	if status != "" {
 		extras["item_status"] = status
+	}
+	if processID != "" {
+		extras["process_id"] = processID
 	}
 	if item := readNestedObject(params, "item"); item != nil {
 		if readRawString(item, "type") == "collabAgentToolCall" {

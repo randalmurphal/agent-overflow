@@ -309,6 +309,20 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 		}
 	}
 
+	// Codex background-terminal catchall: any inProgress unifiedExec
+	// items or spawn_agent rows with running children that reached the
+	// turn boundary without an earlier yield get stamped is_background
+	// here. Must run BEFORE forceCloseOrphanToolCalls so the invariant-24
+	// exemption (background rows skip force-close) kicks in on the
+	// newly-stamped rows — otherwise forceClose would flip them to
+	// errored a moment before we mark them backgrounded. Truncated turns
+	// skip this path: an interrupted turn is not a yield, it's a
+	// termination, and markTurnItemsErrored has already handled the
+	// non-background rows.
+	if persistErr == nil && err == nil && !truncated {
+		r.observeCodexTurnComplete(evt.ThreadID)
+	}
+
 	// Invariant 23: force-close orphan running non-background tool_calls.
 	// Backgrounded launches are exempt (invariant 24). Runs after the
 	// truncation flip so we don't double-flip items that
@@ -672,6 +686,13 @@ func (r *Router) CleanupThread(threadID string) {
 	deleteByPrefix(r.activeThinkingBlocks, prefix)
 	deleteByPrefix(r.errorSeqByScope, prefix)
 	deleteByPrefix(r.nextHighlightAt, prefix)
+	// Drop the Codex background projector's per-thread trackers. A
+	// restarted session never inherits trackers from a prior session —
+	// the wire replays item/started for still-inProgress items and the
+	// projector re-observes them fresh. Keeping stale trackers would
+	// cause the first yield in the new session to stamp a row that
+	// belongs to an entirely different process id.
+	delete(r.codexBackground, threadID)
 	r.mu.Unlock()
 
 	if orphanSpan != nil {

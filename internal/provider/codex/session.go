@@ -84,11 +84,13 @@ type Session struct {
 	// to this card id.
 	//
 	// No heuristic background-tool classifier runs here (invariant 25).
-	// Codex has no `run_in_background` flag; the wire-typed signal for a
-	// backgroundable command is `CommandExecution.source == "unifiedExecStartup"`
-	// and that's the only sanctioned way to stamp `is_background=true`
-	// on a Codex item. Current code doesn't project unifiedExec items into
-	// the tray yet; see docs/references/codex.md §Background terminals.
+	// The wire-typed signals for a backgrounded item are
+	// `CommandExecution.source == "unifiedExecStartup"` and
+	// `collabAgentToolCall` with a running child in `agentsStates`; those
+	// are what authorize `is_background=true`. The actual stamp happens in
+	// `internal/triage/codex_background.go` on the first model-produced
+	// yield or at the turn-close catchall — this session package only
+	// surfaces the wire fields; it doesn't project them.
 	childParentByThread map[string]string
 	// probeFn is a test-only override for Probe(). When non-nil, Probe
 	// skips the wire call and returns the result from this function.
@@ -677,10 +679,13 @@ func (s *Session) dispatchLine(line []byte) {
 				s.clearTurnStart(evt.TurnID)
 			}
 			// No heuristic background classification here (invariant 25).
-			// The sanctioned wire signal for a backgroundable command is
-			// `CommandExecution.source == "unifiedExecStartup"`; heuristic
-			// event-ordering classifiers produced ghost rows in the
-			// retired `BackgroundClassifier` and stay forbidden.
+			// The wire-typed signals are exposed in evt.Meta
+			// (enrichItemMeta lifts `source`, `item_status`, `process_id`,
+			// `agentsStates`); the projector in
+			// internal/triage/codex_background.go reads those and stamps
+			// `is_background=true` on the first model-produced yield or
+			// at the turn-close catchall. Keeping projection out of the
+			// session package preserves the "provider → triage" seam.
 			s.onEvent(*evt)
 		}
 		return

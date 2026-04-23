@@ -26,7 +26,15 @@ none fits.
   (open turns, interrupt queue, captured-turn guard, stopped-thread
   markers, turn span bookkeeping, cleanup paths).
 - `tool_lifecycle.go` — tool-call launch/completion rows,
-  background-task pairing, summary/status derivation.
+  background-task pairing (Claude), summary/status derivation.
+- `codex_background.go` — Codex-specific background-terminal
+  projection. Tracks inProgress unifiedExec items and spawn_agent
+  rows, stamps `is_background=true` on the first model-produced
+  yield (text/reasoning) or turn-close catchall, and synthesizes
+  sibling `tool_completion` rows at completion time via
+  `maybeDeferOrPersist`. Authorized by the wire-typed signals
+  enriched onto Meta in `internal/provider/codex/protocol.go` (see
+  invariant 25).
 - `tool_result_file_change.go` — `file_change` tool-result normalisation
   (inline diff projection, unified patch assembly).
 - `tool_result_diff_upgrade.go` — late-arriving diff upgrades that
@@ -61,6 +69,7 @@ none fits.
 | Thinking block | SQLite payload + preview to frontend. |
 | Turn metadata (cost, tokens, context) | Inline to frontend, persist on `threads`. |
 | Background task terminal (Claude) | `tool_completion` sibling row upsert (idempotent). See `turn-lifecycle.md`. |
+| Codex unifiedExec / spawn_agent | Projector stamps `is_background=true` on yield/turn-close; sibling `tool_completion` synthesized at item/completed via `maybeDeferOrPersist`. See `codex_background.go` + invariant 25. |
 | Turn start/complete | Write `turns` row; emit `provider:turn_*` to frontend; force-close orphan tool_calls on complete. |
 | Error | Distinct event kind; frontend renders as status/alert. |
 | Unknown | Log with full context, do not drop silently. |
@@ -80,6 +89,18 @@ Authoritative mental model:
   INSERT-OR-UPDATE semantics). Both `task_updated` terminal and
   TaskOutput enrichment arrive via this event; the upsert coalesces
   them in place, with the richer payload winning.
+- **Background-terminal projection (Codex only)** —
+  `codex_background.go` observes inProgress unifiedExec items and
+  spawn_agent rows with running children, then stamps
+  `is_background=true` on the first model-produced yield
+  (EventTextDelta / EventThinking) or at `EventTurnComplete` as the
+  catchall. At item/completed for a backgrounded unifiedExec (or a
+  wait_agent / subagent_notification for a backgrounded spawn), the
+  projector synthesizes the sibling `tool_completion` via
+  `maybeDeferOrPersist` — same stable `complete:<launchID>` id and
+  stream-deferral semantics as the Claude path. Authorized only by
+  the wire-typed signals in Meta (invariant 25); no heuristic
+  classifiers.
 - **Turn lifecycle** — `EventTurnStart` writes a `turns` row with
   `completed_at=null`; `EventTurnComplete` updates it and emits
   `provider:turn_completed` to the frontend. Triage force-closes any

@@ -28,6 +28,13 @@ func (r *Router) handleTextDelta(evt provider.ProviderEvent) error {
 	if evt.Content == "" {
 		return nil
 	}
+	// Codex background projector: a text delta is a MODEL-PRODUCED event,
+	// which is the wire-typed yield signal. Any inProgress unifiedExec
+	// items for the thread get stamped is_background=true before the
+	// delta persists. Safe to call before the block-start check — the
+	// projector no-ops when there are no trackers. See invariant 25.
+	r.observeCodexModelYield(evt.ThreadID)
+
 	turnIndex, err := r.currentTurnIndex(evt.ThreadID)
 	if err != nil {
 		return fmt.Errorf("text delta turn index: %w", err)
@@ -107,6 +114,11 @@ func (r *Router) handleThinking(evt provider.ProviderEvent) error {
 	if evt.Content == "" {
 		return nil
 	}
+	// Reasoning deltas count as a yield for the Codex background-terminal
+	// projector — the model has moved on while any inProgress unifiedExec
+	// command is still running. Mirrors the handleTextDelta yield hook.
+	r.observeCodexModelYield(evt.ThreadID)
+
 	turnIndex, err := r.currentTurnIndex(evt.ThreadID)
 	if err != nil {
 		return fmt.Errorf("thinking turn index: %w", err)
