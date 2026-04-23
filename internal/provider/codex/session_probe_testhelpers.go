@@ -41,3 +41,19 @@ func NewProbeAndResumeTestSession(
 		resumeFn: resumeFn,
 	}
 }
+
+// NewCleanBackgroundTerminalsTestSession returns a *Session whose
+// CleanBackgroundTerminals method resolves exclusively from the supplied
+// function, skipping the app-server wire call. Like the probe-only
+// helper, the rest of the session is left at zero — callers MUST NOT
+// call Send / Interrupt / Close on it.
+//
+// The app-layer binding test (app_codex_background_test.go) uses this to
+// verify session lookup + provider-mismatch plumbing without spinning up
+// a real Codex app-server. Production code never constructs Session
+// through this path.
+func NewCleanBackgroundTerminalsTestSession(cleanFn func(ctx context.Context) error) *Session {
+	return &Session{
+		cleanBackgroundTerminalsFn: cleanFn,
+	}
+}

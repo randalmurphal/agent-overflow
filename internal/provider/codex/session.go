@@ -101,6 +101,11 @@ type Session struct {
 	// path without needing a live app-server. Production NewSession
 	// never sets it.
 	resumeFn func(ctx context.Context) error
+	// cleanBackgroundTerminalsFn mirrors probeFn for
+	// CleanBackgroundTerminals(). Used by app_codex_background_test.go to
+	// verify the binding wires through to a Codex session without
+	// spinning up a real app-server. Production NewSession never sets it.
+	cleanBackgroundTerminalsFn func(ctx context.Context) error
 }
 
 // pendingApproval tracks one in-flight approval so the timer can be
