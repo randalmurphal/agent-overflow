@@ -68,8 +68,11 @@ unavailable via the app-server protocol.** What exists:
 - `command/exec/terminate { process_id }` — works only for
   client-initiated `command/exec` PTYs (client supplies the process_id).
   Not applicable to model-initiated `exec_command` items.
-- `close_agent`, `write_stdin`, `KillShell` — **model tools**, not
-  client-callable.
+- `close_agent`, `write_stdin` — **model tools**, not client-callable.
+  (Claude's `KillShell` is similarly a model tool but ALSO reachable via
+  the client-sent `stop_task` control_request on the stdio NDJSON
+  channel — see [`claude-wire.md §stop_task`](claude-wire.md#stop_task).
+  Codex has no equivalent client RPC.)
 - `process_group_id` (the real OS PID) is stored internally on
   `SpawnedPty` (`codex-rs/utils/pty/src/pty.rs`) but never serialized
   onto the wire; clients can't kill by OS PID.

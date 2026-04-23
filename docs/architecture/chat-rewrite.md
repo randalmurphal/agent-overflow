@@ -676,11 +676,16 @@ indicator and elapsed time, but NO stop button. Clicking a tray row
 scrolls/expands the corresponding inline item. The global Stop
 button is the only stop affordance.
 
-**Future consideration (not in v1)**: per-subagent stop (call
-`turn/interrupt` against the child thread_id for Codex; `KillShell`
-per-shell-id for Claude Bash). Deferred until we see real demand —
-the Stop-UI surface area grows with it and CLIs don't expose it by
-default either.
+**Per-item stop (post-v1 extension, primitives verified)**: Claude
+exposes a client-sent `stop_task` control_request with unified
+`task_id` namespace covering both `run_in_background` Bash and Task
+subagents — see
+[`claude-wire.md §stop_task`](../references/claude-wire.md#stop_task).
+Codex exposes only thread-wide `thread/backgroundTerminals/clean`;
+per-process termination is an upstream gap tracked in
+[`codex.md §Known upstream constraints`](../references/codex.md#known-upstream-constraints).
+Codex `spawn_agent` child threads have no client kill path today —
+`close_agent` is a model tool only.
 
 **On app reopen** with a `running && is_background` launch and no
 matching completion: the adapter probes session liveness and

@@ -78,7 +78,11 @@ Summary of what `ParseLine` dispatches:
 - `stream_event` — streaming deltas (requires
   `include_partial_messages: true`).
 - `result` — **turn-complete signal**. Emits `EventTurnComplete`.
-- `control_request`: `CanUseTool` and `exit_plan_mode`.
+- `control_request`: inbound from the CLI carries `CanUseTool` and
+  `exit_plan_mode`; outbound from us (not yet wired) carries
+  `interrupt` and `stop_task` (kill a backgrounded Bash / Task subagent
+  by `task_id`). See [`claude-wire.md §control_request`](../../../docs/references/claude-wire.md#control_request)
+  for the full schema and the verified `stop_task` flow.
 - `rate_limit_event` — rate-limit state.
 
 `parent_tool_use_id` on tool events correlates subagent (`Task`) work
@@ -93,7 +97,11 @@ back to the parent tool call.
   `run_in_background:true`, Task subagent) emit
   `EventBackgroundTaskTerminal` via `task_updated` terminal or
   TaskOutput enrichment. Triage writes a `tool_completion` sibling
-  row idempotently.
+  row idempotently. User-initiated stop is a client-sent
+  `stop_task` control_request (see `claude-wire.md §stop_task`); the
+  CLI replies with `control_response{subtype:success}` and fires
+  `task_updated` with `patch.status:"killed"` — the same terminal
+  channel normal completion uses, routed by task_id.
 - **Turn lifecycle** — `result` envelope is the authoritative
   turn-complete signal. No heuristics, no wait-for-tools.
 

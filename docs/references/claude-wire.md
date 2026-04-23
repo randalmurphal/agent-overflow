@@ -41,7 +41,7 @@ The CLI emits newline-delimited JSON. Every line has a top-level
 | `user` | `parseUser` | `tool_result` blocks echoed back after tool execution. |
 | `stream_event` | `parseStreamEvent` | Incremental deltas (requires `include_partial_messages:true`). |
 | `result` | `parseResult` | **Turn-complete signal.** One per CLI turn. |
-| `control_request` | `parseControlRequest` | Approval (`CanUseTool`) and `exit_plan_mode` requests. |
+| `control_request` | `parseControlRequest` | Bidirectional. Inbound: `can_use_tool`, `exit_plan_mode`. Outbound (client → CLI): `interrupt`, `stop_task`. |
 | `rate_limit_event` | `parseRateLimitEvent` | Rate limit state changes. |
 
 Unknown `type` values are dropped silently by the dispatcher, logged
@@ -491,13 +491,108 @@ final `message_stop` and any trailing tool round-trips settle).
 
 ## `control_request`
 
-Wrapped `CanUseTool` (approval) and `exit_plan_mode` requests. See
-`parse_control.go` — gated behind a `bytes.HasPrefix` check in
-`session.readLoop` so streaming text/thinking lines don't pay a
-second `json.Unmarshal`.
+Bidirectional control channel shared by the CLI and the client. The CLI
+emits inbound control_requests for approval (`CanUseTool`) and
+`exit_plan_mode`; the client can emit outbound control_requests to
+interrupt a turn or stop a backgrounded task. Responses use
+`control_response` envelopes keyed by `request_id`.
 
-Includes `UpdatedInput` / `UpdatedPermissions` on `CanUseTool`
-for the approval round-trip.
+### Inbound (CLI → client)
+
+Handled by `parse_control.go`, gated behind a `bytes.HasPrefix` check in
+`session.readLoop` so streaming text/thinking lines don't pay a second
+`json.Unmarshal`.
+
+- `subtype: "can_use_tool"` — approval for a tool invocation. Includes
+  `tool_name`, `input`, optional `permission_suggestions`,
+  `updatedInput` / `updatedPermissions` for the approval round-trip.
+- `subtype: "exit_plan_mode"` — plan-mode exit signal with proposed
+  plan markdown.
+
+### Outbound (client → CLI)
+
+The CLI accepts several control_request subtypes on the stdio
+`--input-format stream-json` channel. The full schema list lives in the
+CLI binary; the subtypes we use or plan to use:
+
+- `subtype: "interrupt"` — abort the current turn. No additional params.
+- `subtype: "stop_task"` — kill a specific backgrounded task (Bash with
+  `run_in_background:true` OR Task subagent). Takes `task_id` (the id
+  from `system/task_started`). See [§stop_task](#stop_task) below.
+
+### Response envelope
+
+Both directions share the same response shape:
+
+```json
+{
+  "type": "control_response",
+  "response": {
+    "subtype": "success",
+    "request_id": "<id from the request>",
+    "response": { ... optional subtype-specific payload ... }
+  }
+}
+```
+
+Error form:
+
+```json
+{
+  "type": "control_response",
+  "response": {
+    "subtype": "error",
+    "request_id": "<id>",
+    "error": "<human message>"
+  }
+}
+```
+
+### stop_task
+
+**Wire shape (request):**
+
+```json
+{
+  "type": "control_request",
+  "request_id": "caller-unique-id",
+  "request": {
+    "subtype": "stop_task",
+    "task_id": "<id from system/task_started>"
+  }
+}
+```
+
+**Wire shape (response):**
+
+```json
+{"type":"control_response",
+ "response":{"subtype":"success","request_id":"caller-unique-id","response":{}}}
+```
+
+**Follow-up notification:** the CLI fires `system/task_updated` with
+`patch.status: "killed"` for that `task_id`:
+
+```json
+{"type":"system","subtype":"task_updated",
+ "task_id":"<same id>",
+ "patch":{"status":"killed","end_time":<unix ms>}}
+```
+
+Unifies across task types — `task_started.task_type` is `local_bash`
+for a backgrounded Bash, `local_agent` for a Task subagent, but
+`stop_task` accepts any of them because they share the same task
+registry. The deprecated `shell_id` parameter is aliased to `task_id`
+in the CLI; use `task_id` only.
+
+**Verified via spike on Claude CLI 2.1.112** — spawn with
+`--print --input-format stream-json --output-format stream-json
+--permission-mode bypassPermissions`, send a user message prompting a
+backgrounded `sleep`, capture the `task_started.task_id`, write the
+request above to stdin. Response lands immediately; `task_updated`
+with `status:killed` follows within a few ms. This is the primitive
+that powers per-item stop and "Stop all" for Claude background
+tasks in the [BackgroundTaskTray](../architecture/chat-rewrite.md).
 
 ---
 
