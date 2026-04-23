@@ -41,16 +41,21 @@ tasks:
     cmds:
       - go build {{.BUILD_FLAGS}} -o {{.OUTPUT}}
     vars:
+      TARGET_ARCH: '{{.ARCH | default ARCH}}'
+      # Apple Silicon requires macOS 11.0+. Keep Intel at 10.15 so the
+      # universal build does not raise the x86_64 floor unnecessarily.
+      MACOS_MIN_VERSION: '{{if eq .TARGET_ARCH "arm64"}}11.0{{else}}10.15{{end}}'
       BUILD_FLAGS: '{{if eq .DEV "true"}}{{if .EXTRA_TAGS}}-tags {{.EXTRA_TAGS}} {{end}}-buildvcs=false -gcflags=all="-l"{{else}}-tags production{{if .EXTRA_TAGS}},{{.EXTRA_TAGS}}{{end}} -trimpath -buildvcs=false -ldflags="-w -s"{{end}}'
       DEFAULT_OUTPUT: '{{.BIN_DIR}}/{{.APP_NAME}}'
       OUTPUT: '{{ .OUTPUT | default .DEFAULT_OUTPUT }}'
     env:
       GOOS: darwin
       CGO_ENABLED: 1
-      GOARCH: '{{.ARCH | default ARCH}}'
-      CGO_CFLAGS: "-mmacosx-version-min=10.15"
-      CGO_LDFLAGS: "-mmacosx-version-min=10.15"
-      MACOSX_DEPLOYMENT_TARGET: "10.15"
+      GOARCH: '{{.TARGET_ARCH}}'
+      CGO_CFLAGS: "-mmacosx-version-min={{.MACOS_MIN_VERSION}}"
+      CGO_CXXFLAGS: "-mmacosx-version-min={{.MACOS_MIN_VERSION}}"
+      CGO_LDFLAGS: "-mmacosx-version-min={{.MACOS_MIN_VERSION}}"
+      MACOSX_DEPLOYMENT_TARGET: "{{.MACOS_MIN_VERSION}}"
 
   build:docker:
     summary: Cross-compiles for macOS using Docker (for Linux/Windows hosts)
