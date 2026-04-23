@@ -105,12 +105,12 @@ describe('App integration — messaging flow', () => {
     });
     await flush();
 
-    // Banner + Interrupt button are visible; Enter must not fire SendMessage.
-    expect(getByTestId('composer-turn-banner')).toBeInTheDocument();
+    // Enter must not fire SendMessage while a turn is active — the
+    // interrupt button is the only path to cancellation. A polite
+    // mid-turn error is announced inline in the composer.
     await fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
     await flush();
     expect(sendMock).not.toHaveBeenCalled();
-    // A polite error is announced.
     const err = getByTestId('composer-midturn-error');
     expect(err.textContent).toMatch(/Cannot send/);
   });
@@ -294,7 +294,7 @@ describe('App integration — messaging flow', () => {
   // above the assistant message. This test is intentionally broad: it
   // is the single integration test that proves all of the invariant-22
   // pieces line up together (pane.activeTurn flip, pane.latestSettledTurn
-  // write, CompletionDivider DOM render, ChatWorkingIndicator DOM hide).
+  // write, CompletionDivider DOM render).
   //
   // We pick the ordering where turn_completed arrives BEFORE the final
   // assistant_text upsert. That is the common real-wire ordering
@@ -313,9 +313,9 @@ describe('App integration — messaging flow', () => {
     const paneMod = await import('../../lib/stores/panes.svelte');
     const pane = paneMod.getMainPane();
 
-    // 1. Turn starts. Working indicator becomes visible once the pane
-    // flips to an active turn; pane.activeTurn is populated; pane has
-    // no settled turn yet.
+    // 1. Turn starts. pane.activeTurn is populated; pane has no
+    // settled turn yet. The sidebar pill is the user-facing surface
+    // for "turn is running" and is covered by its own tests.
     emitWailsEvent('provider:turn_started', {
       threadId: 'thread-1',
       turnId: 't1',
@@ -327,8 +327,6 @@ describe('App integration — messaging flow', () => {
     });
     expect(pane.isTurnActive).toBe(true);
     expect(pane.latestSettledTurn).toBeNull();
-    // ChatWorkingIndicator is mounted exclusively off pane.isTurnActive.
-    await findByTestId('chat-working-indicator');
 
     // 2. Tool call upserts: running → completed. The row appears in
     // the timeline as a ToolCallCard. This exercises the mid-turn
@@ -396,9 +394,6 @@ describe('App integration — messaging flow', () => {
       cacheReadInputTokens: 0,
       totalCostUsd: 0.00123,
     });
-    // ChatWorkingIndicator unmounts when activeTurn goes null.
-    await waitFor(() => expect(queryByTestId('chat-working-indicator')).toBeNull());
-
     // At this point the divider has nothing to render above because
     // assist1 hasn't landed in pane.items yet.
     expect(queryByTestId('completion-divider')).toBeNull();

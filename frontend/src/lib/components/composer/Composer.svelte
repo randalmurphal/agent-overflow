@@ -212,18 +212,6 @@
       </div>
     {/if}
 
-    {#if isTurnActive}
-      <div
-        class="flex items-center gap-2 border-b border-border-subtle bg-accent/10 px-4 py-1.5 text-[11px] text-fg-muted"
-        role="status"
-        aria-live="polite"
-        data-testid="composer-turn-banner"
-      >
-        <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-accent shrink-0" aria-hidden="true"></span>
-        <span class="truncate">Agent is responding.</span>
-      </div>
-    {/if}
-
     <div class="px-4 pt-3 pb-2">
       <div class="relative">
         <ComposerMentionPopover

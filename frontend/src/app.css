@@ -445,16 +445,6 @@ pre, code, kbd, samp, .ansi-body {
 .ansi-body .term-fg9 { text-decoration: line-through; } /* strike */
 
 /*
- * Keyframes. `pulse-subtle` is a slower, less-jarring replacement for
- * Tailwind's built-in animate-pulse — used on ChatWorkingIndicator so
- * the "agent responding" strip doesn't strobe.
- */
-@keyframes pulse-subtle {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.55; }
-}
-
-/*
  * Reduced-motion reset. One place to silence every transition /
  * animation so individual components don't have to care. Scroll
  * behavior is also snapped so `scroll-smooth` usages don't fight a

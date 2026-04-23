@@ -14,7 +14,6 @@
   import PlanSidebar from './PlanSidebar.svelte';
   import PlanFollowUpBanner from './PlanFollowUpBanner.svelte';
   import ChatHeader from './ChatHeader.svelte';
-  import ChatWorkingIndicator from './ChatWorkingIndicator.svelte';
   import { createComposerDraftStore } from '../../stores/composerDraft.svelte';
   import { MarkThreadRead } from '../../stores/bindings';
   import { updateThreadLastRead } from '../../stores/threads.svelte';
@@ -103,7 +102,6 @@
       <BackgroundTaskTray {pane} />
       <PlanFollowUpBanner {pane} {draft} />
       <Composer {pane} {draft} />
-      <ChatWorkingIndicator {pane} />
       <BelowComposerBar {pane} />
       {#if pane.diffPanel.open && pane.thread}
         {#key pane.thread.id}
