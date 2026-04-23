@@ -193,7 +193,8 @@
   tabindex={0}
   aria-pressed={selected}
   class="group/thread-row relative flex items-center gap-1.5 h-7 pr-1 rounded-[var(--radius-field)] cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40
-    {selected ? 'bg-accent/15 text-fg' : isActive ? 'bg-accent/10 text-fg' : 'text-fg-muted hover:bg-surface-2/30 hover:text-fg'}"
+    {selected ? 'bg-accent/15 text-fg' : isActive ? 'bg-accent/10 text-fg' : 'text-fg-muted hover:bg-surface-2/30 hover:text-fg'}
+    {pill?.glowClass ?? ''}"
   style="padding-left: {8 + indentPx}px"
   data-testid="thread-row"
   data-thread-id={thread.id}

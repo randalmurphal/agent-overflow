@@ -445,6 +445,50 @@ pre, code, kbd, samp, .ansi-body {
 .ansi-body .term-fg9 { text-decoration: line-through; } /* strike */
 
 /*
+ * Sidebar status glow. When a thread is pending user action — either
+ * a blocking approval (amber) or an input/elicitation prompt (accent)
+ * — the row paints a thin 1px border that pulses its inner glow. The
+ * ::before overlay respects the row's border-radius, disables pointer
+ * events so it never blocks the click target, and sits behind the
+ * row's text. Matches forge's Sidebar.logic.ts glow-ring-* treatment.
+ *
+ * Keyframes shift between a subtle outer shadow and a stronger inset
+ * lift; 2.5s is slow enough to read as a "hey, over here" attention
+ * pulse without strobing. Reduced-motion users get the static border
+ * (no animation) via the @media block below.
+ */
+.status-glow-warning,
+.status-glow-accent {
+  position: relative;
+}
+.status-glow-warning::before,
+.status-glow-accent::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  border: 1px solid currentColor;
+  animation: status-glow-pulse 2.5s ease-in-out infinite;
+}
+.status-glow-warning::before {
+  color: var(--warning);
+}
+.status-glow-accent::before {
+  color: var(--accent);
+}
+@keyframes status-glow-pulse {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgb(from currentColor r g b / 0);
+    opacity: 0.7;
+  }
+  50% {
+    box-shadow: 0 0 0 2px rgb(from currentColor r g b / 0.22);
+    opacity: 1;
+  }
+}
+
+/*
  * Reduced-motion reset. One place to silence every transition /
  * animation so individual components don't have to care. Scroll
  * behavior is also snapped so `scroll-smooth` usages don't fight a

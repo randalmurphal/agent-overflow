@@ -387,6 +387,39 @@ describe('<ThreadRow> live status dot', () => {
     expect(dot.classList.contains('bg-accent')).toBe(true);
   });
 
+  it('applies the pulsing warning glow class to the row when pending approval', () => {
+    setThreadStatus('t-glow-approval', 'pending-approval');
+    const pane = createThreadPane();
+    const { getByTestId } = render(ThreadRow, {
+      props: { thread: makeThread({ id: 't-glow-approval' }), pane },
+    });
+    const row = getByTestId('thread-row');
+    expect(row.classList.contains('status-glow-warning')).toBe(true);
+    expect(row.classList.contains('status-glow-accent')).toBe(false);
+  });
+
+  it('applies the pulsing accent glow class to the row when awaiting input', () => {
+    setThreadStatus('t-glow-input', 'awaiting-input');
+    const pane = createThreadPane();
+    const { getByTestId } = render(ThreadRow, {
+      props: { thread: makeThread({ id: 't-glow-input' }), pane },
+    });
+    const row = getByTestId('thread-row');
+    expect(row.classList.contains('status-glow-accent')).toBe(true);
+    expect(row.classList.contains('status-glow-warning')).toBe(false);
+  });
+
+  it('does not apply a glow class when the row is merely running', () => {
+    setThreadStatus('t-glow-run', 'running');
+    const pane = createThreadPane();
+    const { getByTestId } = render(ThreadRow, {
+      props: { thread: makeThread({ id: 't-glow-run' }), pane },
+    });
+    const row = getByTestId('thread-row');
+    expect(row.classList.contains('status-glow-warning')).toBe(false);
+    expect(row.classList.contains('status-glow-accent')).toBe(false);
+  });
+
   it('renders a non-pulsing accent dot labelled Plan ready when a plan is waiting', () => {
     setThreadStatus('t-plan-ready', 'plan-ready');
     const pane = createThreadPane();

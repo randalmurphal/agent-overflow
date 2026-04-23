@@ -21,6 +21,14 @@ export interface ThreadStatusPill {
   labelClass: string;
   /** True when the dot should animate (running / awaiting input). */
   pulse: boolean;
+  /**
+   * Optional utility class applied to the row's outer container. Used
+   * for the pulsing glow-ring around pending-approval / awaiting-input
+   * rows so the sidebar can catch the user's attention when the
+   * provider is blocked on them. `null` / undefined → no glow.
+   * Defined in app.css (`.status-glow-warning`, `.status-glow-accent`).
+   */
+  glowClass?: string;
 }
 
 /**
@@ -71,6 +79,7 @@ export function resolveThreadStatusPill(
       dotClass: 'bg-warning',
       labelClass: 'text-warning',
       pulse: true,
+      glowClass: 'status-glow-warning',
     };
   }
   if (liveStatus === 'awaiting-input') {
@@ -79,6 +88,7 @@ export function resolveThreadStatusPill(
       dotClass: 'bg-accent',
       labelClass: 'text-accent',
       pulse: true,
+      glowClass: 'status-glow-accent',
     };
   }
   if (liveStatus === 'running') {

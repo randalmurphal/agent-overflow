@@ -78,13 +78,27 @@ describe('resolveThreadStatusPill', () => {
     expect(pill?.dotClass).toContain('bg-warning');
   });
 
-  it('awaiting-input renders a pulsing accent pill', () => {
+  it('awaiting-input renders a pulsing accent pill with accent glow', () => {
     const pill = resolveThreadStatusPill(t(), 'awaiting-input');
     expect(pill?.label).toBe('Awaiting input');
     expect(pill?.pulse).toBe(true);
     expect(pill?.dotClass).toContain('bg-accent');
     expect(pill?.labelClass).toContain('text-accent');
+    expect(pill?.glowClass).toBe('status-glow-accent');
   });
+
+  it('pending-approval carries the warning glow', () => {
+    const pill = resolveThreadStatusPill(t(), 'pending-approval');
+    expect(pill?.glowClass).toBe('status-glow-warning');
+  });
+
+  it.each(['error', 'running', 'plan-ready', 'idle'] as const)(
+    '%s state carries no glow',
+    (status) => {
+      const pill = resolveThreadStatusPill(t({ lastReadAt: 1, updatedAt: 2 }), status);
+      expect(pill?.glowClass).toBeUndefined();
+    },
+  );
 
   it('plan-ready renders a non-pulsing accent pill', () => {
     const pill = resolveThreadStatusPill(t(), 'plan-ready');
