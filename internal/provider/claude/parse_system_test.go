@@ -48,37 +48,72 @@ func TestParseTaskLifecycleEvent_CompletedPatchEmitsBackgroundTerminal(t *testin
 }
 
 // TestParseTaskLifecycleEvent_FailedPatchMarksIsError covers the
-// `failed` and `killed` terminal mappings — the event is normalized to
-// status=failed and is_error=true.
+// `failed` terminal mapping — the event is normalized to status=failed
+// and is_error=true. `killed` has its own distinct status (see
+// TestParseTaskLifecycleEvent_KilledPatchPreservesStatus) so it can
+// render as a gray "Stopped" badge rather than the red "Failed" bucket.
 func TestParseTaskLifecycleEvent_FailedPatchMarksIsError(t *testing.T) {
-	for _, wireStatus := range []string{"failed", "killed"} {
-		t.Run(wireStatus, func(t *testing.T) {
-			parser := NewParser()
-			if _, err := parser.ParseLine(testThread, []byte(`{"type":"system","subtype":"task_started","task_id":"t1","tool_use_id":"tu1"}`)); err != nil {
-				t.Fatalf("task_started: %v", err)
-			}
-			line := []byte(`{"type":"system","subtype":"task_updated","task_id":"t1","patch":{"status":"` + wireStatus + `"}}`)
-			events, err := parser.ParseLine(testThread, line)
-			if err != nil {
-				t.Fatalf("task_updated: %v", err)
-			}
-			if len(events) != 1 {
-				t.Fatalf("expected 1 event, got %d", len(events))
-			}
-			if events[0].Kind != provider.EventBackgroundTaskTerminal {
-				t.Fatalf("Kind: got %q", events[0].Kind)
-			}
-			var meta map[string]any
-			if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
-				t.Fatalf("unmarshal: %v", err)
-			}
-			if meta["status"] != "failed" {
-				t.Fatalf("meta.status: got %v, want failed", meta["status"])
-			}
-			if meta["is_error"] != true {
-				t.Fatalf("meta.is_error: got %v, want true", meta["is_error"])
-			}
-		})
+	parser := NewParser()
+	if _, err := parser.ParseLine(testThread, []byte(`{"type":"system","subtype":"task_started","task_id":"t1","tool_use_id":"tu1"}`)); err != nil {
+		t.Fatalf("task_started: %v", err)
+	}
+	line := []byte(`{"type":"system","subtype":"task_updated","task_id":"t1","patch":{"status":"failed"}}`)
+	events, err := parser.ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("task_updated: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if events[0].Kind != provider.EventBackgroundTaskTerminal {
+		t.Fatalf("Kind: got %q", events[0].Kind)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if meta["status"] != "failed" {
+		t.Fatalf("meta.status: got %v, want failed", meta["status"])
+	}
+	if meta["is_error"] != true {
+		t.Fatalf("meta.is_error: got %v, want true", meta["is_error"])
+	}
+}
+
+// TestParseTaskLifecycleEvent_KilledPatchPreservesStatus confirms the
+// `killed` wire value survives the parser normalizer untouched. The CLI
+// emits this on the follow-up task_updated after a successful
+// stop_task control_request; triage maps it onto the distinct
+// `statusKilled` row state so the UI can render a "Stopped" badge
+// instead of conflating user-initiated stops with errors.
+func TestParseTaskLifecycleEvent_KilledPatchPreservesStatus(t *testing.T) {
+	parser := NewParser()
+	if _, err := parser.ParseLine(testThread, []byte(`{"type":"system","subtype":"task_started","task_id":"t1","tool_use_id":"tu1"}`)); err != nil {
+		t.Fatalf("task_started: %v", err)
+	}
+	line := []byte(`{"type":"system","subtype":"task_updated","task_id":"t1","patch":{"status":"killed","end_time":1776915081647}}`)
+	events, err := parser.ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("task_updated: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if events[0].Kind != provider.EventBackgroundTaskTerminal {
+		t.Fatalf("Kind: got %q", events[0].Kind)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if meta["status"] != "killed" {
+		t.Fatalf("meta.status: got %v, want killed", meta["status"])
+	}
+	if meta["is_error"] != true {
+		t.Fatalf("meta.is_error: got %v, want true (killed is still a non-completed terminal)", meta["is_error"])
+	}
+	if meta["end_time"] != float64(1776915081647) {
+		t.Fatalf("meta.end_time: got %v, want 1776915081647", meta["end_time"])
 	}
 }
 

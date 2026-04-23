@@ -68,8 +68,8 @@ func TestMigrationVersionTracking(t *testing.T) {
 		t.Fatalf("rows err: %v", err)
 	}
 
-	if len(versions) != 21 {
-		t.Fatalf("expected 21 migration versions, got %d", len(versions))
+	if len(versions) != 22 {
+		t.Fatalf("expected 22 migration versions, got %d", len(versions))
 	}
 	if versions[0].version != 1 || versions[0].name != "initial_schema" {
 		t.Errorf("v1: got %d/%s", versions[0].version, versions[0].name)
@@ -134,6 +134,9 @@ func TestMigrationVersionTracking(t *testing.T) {
 	if versions[20].version != 21 || versions[20].name != "items_live_background_index" {
 		t.Errorf("v21: got %d/%s", versions[20].version, versions[20].name)
 	}
+	if versions[21].version != 22 || versions[21].name != "items_status_killed" {
+		t.Errorf("v22: got %d/%s", versions[21].version, versions[21].name)
+	}
 }
 
 func TestMigrationIdempotent(t *testing.T) {
@@ -153,8 +156,8 @@ func TestMigrationIdempotent(t *testing.T) {
 	if err := db.QueryRow("SELECT COUNT(*) FROM migration_versions").Scan(&count); err != nil {
 		t.Fatalf("count: %v", err)
 	}
-	if count != 21 {
-		t.Errorf("expected 21 version rows after idempotent re-run, got %d", count)
+	if count != 22 {
+		t.Errorf("expected 22 version rows after idempotent re-run, got %d", count)
 	}
 }
 
@@ -191,8 +194,8 @@ func TestMigrationExistingVersionedDBSkipsAppliedV1(t *testing.T) {
 	if err := db.QueryRow("SELECT COUNT(*) FROM migration_versions").Scan(&appliedVersions); err != nil {
 		t.Fatalf("count migration rows: %v", err)
 	}
-	if appliedVersions != 21 {
-		t.Fatalf("expected 21 applied migrations, got %d", appliedVersions)
+	if appliedVersions != 22 {
+		t.Fatalf("expected 22 applied migrations, got %d", appliedVersions)
 	}
 }
 
@@ -232,10 +235,10 @@ func TestMigrationExistingLegacyDBSeedsTrackingAndAppliesV2(t *testing.T) {
 		t.Fatalf("read migration rows: %v", err)
 	}
 
-	if len(versions) != 21 {
-		t.Fatalf("expected 21 applied migrations, got %d", len(versions))
+	if len(versions) != 22 {
+		t.Fatalf("expected 22 applied migrations, got %d", len(versions))
 	}
-	expected := []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21}
+	expected := []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22}
 	for i, want := range expected {
 		if versions[i] != want {
 			t.Fatalf("unexpected migration versions: %v", versions)
@@ -338,10 +341,10 @@ func TestMigrationExistingLegacyParityDBBackfillsVersionHistory(t *testing.T) {
 		t.Fatalf("read migration versions: %v", err)
 	}
 
-	if len(versions) != 21 {
-		t.Fatalf("expected 21 migration rows after legacy backfill + new migrations, got %d", len(versions))
+	if len(versions) != 22 {
+		t.Fatalf("expected 22 migration rows after legacy backfill + new migrations, got %d", len(versions))
 	}
-	expectedVersions := []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21}
+	expectedVersions := []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22}
 	for i, want := range expectedVersions {
 		if versions[i].version != want {
 			t.Fatalf("unexpected migration versions: %+v", versions)
@@ -1352,6 +1355,175 @@ func TestMigrationV21AddsLiveBackgroundIndex(t *testing.T) {
 	}
 	if !strings.Contains(plan.String(), "idx_items_live_background") {
 		t.Errorf("query plan did not use idx_items_live_background: %s", plan.String())
+	}
+}
+
+// TestMigrationV22AddsKilledStatus pins the Phase 1 contract for
+// user-initiated stops: the items.status CHECK enum must include the
+// literal 'killed', and an INSERT with status='killed' must succeed on
+// a post-v22 DB. This is the store-level half of the feature that
+// Claude's stop_task control_request flows through (see the parser,
+// triage, and Wails-binding sides in internal/provider/claude,
+// internal/triage, and app_claude_stop.go).
+func TestMigrationV22AddsKilledStatus(t *testing.T) {
+	s := newTestStore(t)
+
+	// The CHECK clause must contain the exact literal 'killed'. A
+	// refactor that widened the enum by any other spelling would
+	// silently let the frontend render a status the UI doesn't branch
+	// on — this check keeps the spelling honest.
+	var itemsSQL string
+	if err := s.db.QueryRow(
+		`SELECT sql FROM sqlite_master WHERE type='table' AND name='items'`,
+	).Scan(&itemsSQL); err != nil {
+		t.Fatalf("read items table sql: %v", err)
+	}
+	if !strings.Contains(itemsSQL, "'killed'") {
+		t.Errorf("expected items.status CHECK to include 'killed', got table sql:\n%s", itemsSQL)
+	}
+
+	// Seed the parent rows so the FK holds, then insert a row with
+	// status='killed'. An INSERT that violates the CHECK would return
+	// a constraint error — a silent success here is the signal we
+	// actually widened the enum.
+	if _, err := s.db.Exec(`
+		INSERT INTO threads (id, project_id, title, provider, workspace_path, model,
+			created_at, updated_at, archived, mode)
+		VALUES ('t-killed', ?, 'T', 'claude', '/tmp', '', 1, 1, 0, 'chat')
+	`, defaultTestProjectID); err != nil {
+		t.Fatalf("seed thread: %v", err)
+	}
+	if _, err := s.db.Exec(`
+		INSERT INTO items (id, thread_id, turn_index, item_index, kind, role, status,
+			summary, parent_id, is_background, completion_of, tool_name, decision,
+			meta, created_at, updated_at)
+		VALUES ('i-killed', 't-killed', 0, 0, 'tool_completion', 'assistant', 'killed',
+			'Stopped by user', '', 1, 'i-launch', 'Bash', '', '{}', 1, 1)
+	`); err != nil {
+		t.Fatalf("INSERT with status='killed' must succeed post-v22: %v", err)
+	}
+
+	var got string
+	if err := s.db.QueryRow(`SELECT status FROM items WHERE id = 'i-killed'`).Scan(&got); err != nil {
+		t.Fatalf("read killed row: %v", err)
+	}
+	if got != "killed" {
+		t.Errorf("status round-trip: got %q, want killed", got)
+	}
+
+	// A bogus status must still fail — the widening adds one value
+	// without opening the CHECK to everything.
+	if _, err := s.db.Exec(`
+		INSERT INTO items (id, thread_id, turn_index, item_index, kind, role, status,
+			summary, parent_id, is_background, completion_of, tool_name, decision,
+			meta, created_at, updated_at)
+		VALUES ('i-bogus', 't-killed', 1, 0, 'tool_completion', 'assistant', 'stopped',
+			'Bogus', '', 0, '', 'Bash', '', '{}', 1, 1)
+	`); err == nil {
+		t.Error("INSERT with status='stopped' must violate CHECK (widening didn't open the enum)")
+	}
+}
+
+// TestMigrationV22PreservesExistingItems drives the v22 migration on a
+// database that's been stepped through v21 with real row data, then
+// confirms every row survives the rebuild with its original column
+// values intact. The v22 migration widens a CHECK constraint; any
+// drift that lost data here would be a silent regression in the
+// rebuild-and-copy pattern.
+func TestMigrationV22PreservesExistingItems(t *testing.T) {
+	db := openSQLiteDB(t)
+
+	if err := configureDatabase(db); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	if err := ensureMigrationTable(db); err != nil {
+		t.Fatalf("ensure migration table: %v", err)
+	}
+	for _, m := range migrations {
+		if m.Version >= 22 {
+			break
+		}
+		if err := applyMigration(db, m); err != nil {
+			t.Fatalf("apply v%d: %v", m.Version, err)
+		}
+	}
+
+	// Seed: project, thread, and a mix of items covering every kind
+	// and status the v15 enum allowed. Status=killed is NOT seeded
+	// because it doesn't yet exist — the v22 test above validates
+	// inserting it post-migration.
+	if _, err := db.Exec(`INSERT INTO projects
+		(id, path, name, created_at, updated_at)
+		VALUES ('p-v22', '/tmp/v22', 'v22', 1, 1)`); err != nil {
+		t.Fatalf("seed project: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO threads
+		(id, project_id, title, provider, workspace_path, model,
+		 created_at, updated_at, archived, mode)
+		VALUES ('t-v22', 'p-v22', 'T', 'claude', '/tmp', '', 1, 1, 0, 'chat')`); err != nil {
+		t.Fatalf("seed thread: %v", err)
+	}
+
+	seedItems := []struct {
+		id, kind, role, status, summary string
+		isBackground                    int
+		completionOf                    string
+	}{
+		{"i-user", "user_text", "user", "completed", "hi", 0, ""},
+		{"i-asst", "assistant_text", "assistant", "completed", "yo", 0, ""},
+		{"i-bash", "tool_call", "assistant", "running", "Bash: sleep 30", 1, ""},
+		{"i-done", "tool_completion", "assistant", "errored", "Bash: failed", 1, "i-bash"},
+		{"i-stream", "thinking", "assistant", "streaming", "thinking...", 0, ""},
+		{"i-declined", "tool_call", "assistant", "declined", "user said no", 0, ""},
+	}
+	for i, it := range seedItems {
+		if _, err := db.Exec(`INSERT INTO items
+			(id, thread_id, turn_index, item_index, kind, role, status, summary,
+			 parent_id, is_background, completion_of, tool_name, decision,
+			 meta, created_at, updated_at, highlighted_content)
+			VALUES (?, 't-v22', 0, ?, ?, ?, ?, ?, '', ?, ?, '', '', '{}', 1, 1, '')`,
+			it.id, i, it.kind, it.role, it.status, it.summary,
+			it.isBackground, it.completionOf); err != nil {
+			t.Fatalf("seed item %s: %v", it.id, err)
+		}
+	}
+
+	var preCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM items WHERE thread_id = 't-v22'`).Scan(&preCount); err != nil {
+		t.Fatalf("pre-v22 count: %v", err)
+	}
+	if preCount != len(seedItems) {
+		t.Fatalf("pre-v22 seeded %d items but found %d", len(seedItems), preCount)
+	}
+
+	// Apply v22 in isolation.
+	var v22 *Migration
+	for i := range migrations {
+		if migrations[i].Version == 22 {
+			v22 = &migrations[i]
+			break
+		}
+	}
+	if v22 == nil {
+		t.Fatal("v22 migration missing from list")
+	}
+	if err := applyMigration(db, *v22); err != nil {
+		t.Fatalf("apply v22: %v", err)
+	}
+
+	// Every seeded row must survive with matching status / kind.
+	for _, it := range seedItems {
+		var gotStatus, gotKind string
+		if err := db.QueryRow(`SELECT status, kind FROM items WHERE id = ?`, it.id).Scan(&gotStatus, &gotKind); err != nil {
+			t.Errorf("%s: post-v22 lookup: %v", it.id, err)
+			continue
+		}
+		if gotStatus != it.status {
+			t.Errorf("%s: status = %q, want %q (v22 must preserve row values)", it.id, gotStatus, it.status)
+		}
+		if gotKind != it.kind {
+			t.Errorf("%s: kind = %q, want %q", it.id, gotKind, it.kind)
+		}
 	}
 }
 

@@ -199,7 +199,13 @@ func normalizeTaskTerminalStatus(status string) string {
 	switch status {
 	case "completed":
 		return "completed"
-	case "failed", "killed", "error", "errored", "interrupted", "stopped":
+	case "killed":
+		// Preserve `killed` distinctly so triage can render a gray "Stopped"
+		// badge instead of the generic red "Failed" bucket. The CLI emits
+		// this on the follow-up task_updated that fires after a successful
+		// stop_task control_request.
+		return "killed"
+	case "failed", "error", "errored", "interrupted", "stopped":
 		return "failed"
 	default:
 		return ""

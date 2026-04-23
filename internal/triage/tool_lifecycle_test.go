@@ -1096,3 +1096,61 @@ func TestForceClosedRow_LateCompletionDoesNotResurrect(t *testing.T) {
 		t.Errorf("late EventToolComplete spuriously created %d tool_completion siblings (invariant 5 violated)", len(dones))
 	}
 }
+
+// TestBackgroundTerminalStatus_KilledMapping locks in the Phase 1
+// distinction between killed (user-initiated stop) and errored
+// (runtime failure). A backgroundTaskTerminalMeta with status=killed
+// must map to statusKilled — even when is_error=true (the parser
+// stamps is_error on every non-completed terminal, so the status
+// precedence has to favour killed over the generic errored bucket).
+// Every other non-completed status still collapses to statusErrored
+// so an unknown wire value never renders as a success badge.
+func TestBackgroundTerminalStatus_KilledMapping(t *testing.T) {
+	cases := []struct {
+		name string
+		in   backgroundTaskTerminalMeta
+		want string
+	}{
+		{
+			name: "killed+is_error renders as killed (user stop takes precedence)",
+			in:   backgroundTaskTerminalMeta{Status: "killed", IsError: true},
+			want: statusKilled,
+		},
+		{
+			name: "bare killed still renders as killed",
+			in:   backgroundTaskTerminalMeta{Status: "killed"},
+			want: statusKilled,
+		},
+		{
+			name: "failed stays errored",
+			in:   backgroundTaskTerminalMeta{Status: "failed", IsError: true},
+			want: statusErrored,
+		},
+		{
+			name: "completed stays completed",
+			in:   backgroundTaskTerminalMeta{Status: "completed"},
+			want: statusCompleted,
+		},
+		{
+			name: "unknown status falls back to errored",
+			in:   backgroundTaskTerminalMeta{Status: "mystery"},
+			want: statusErrored,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := backgroundTerminalStatus(tc.in)
+			if got != tc.want {
+				t.Errorf("backgroundTerminalStatus(%+v) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+
+	// statusKilled must be the literal 'killed' — the store CHECK
+	// constraint (migration v22) pins this literal, and the frontend
+	// renders the Stopped badge off this exact string. A rename would
+	// silently slip past the other tests in this file.
+	if statusKilled != "killed" {
+		t.Errorf("statusKilled = %q, want %q", statusKilled, "killed")
+	}
+}

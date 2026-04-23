@@ -21,6 +21,13 @@ const (
 	statusStreaming = "streaming"
 	statusCompleted = "completed"
 	statusErrored   = "errored"
+	// statusKilled is a distinct terminal state for user-initiated stops
+	// (Claude's stop_task control_request). It stays separate from
+	// statusErrored so the UI can render a gray "Stopped" badge rather
+	// than the red "Failed" bucket — the task didn't fail, the user
+	// cancelled it. Added alongside the Phase 1 stop_task primitive; see
+	// docs/archive/background-tasks-plan.md.
+	statusKilled = "killed"
 )
 
 type toolStartMeta struct {
@@ -333,9 +340,19 @@ func (r *Router) handleBackgroundTaskTerminal(evt provider.ProviderEvent) error 
 // backgroundTerminalStatus maps the task-lifecycle status to the
 // canonical item status enum. task_updated uses completed | failed |
 // killed — TaskOutput uses completed with an is_error / exit_code
-// signal. We treat any non-completed status as errored so the UI can
-// render a distinct "failed" badge.
+// signal. `killed` maps to its own statusKilled (user-initiated stop
+// via stop_task control_request); every other non-completed status
+// collapses to statusErrored so the UI renders a distinct "failed"
+// badge.
 func backgroundTerminalStatus(meta backgroundTaskTerminalMeta) string {
+	// `killed` takes precedence over the generic IsError / ExitCode
+	// flags: the parser sets is_error=true for every non-completed
+	// terminal (so triage has a uniform "this row did not succeed"
+	// marker), but a user-initiated stop is still distinct from a
+	// runtime failure and must render as Stopped, not Failed.
+	if meta.Status == "killed" {
+		return statusKilled
+	}
 	if meta.IsError {
 		return statusErrored
 	}
@@ -345,7 +362,7 @@ func backgroundTerminalStatus(meta backgroundTaskTerminalMeta) string {
 	switch meta.Status {
 	case "completed":
 		return statusCompleted
-	case "", "failed", "killed", "interrupted", "errored":
+	case "", "failed", "interrupted", "errored":
 		if meta.Status == "" {
 			return statusCompleted
 		}

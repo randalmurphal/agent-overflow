@@ -628,6 +628,28 @@ CREATE INDEX IF NOT EXISTS idx_items_live_background
   WHERE is_background = 1 AND status = 'running';
 `,
 	},
+	{
+		Version: 22,
+		Name:    "items_status_killed",
+		// Adds 'killed' to the items.status CHECK enum so triage can
+		// persist user-initiated stops (Claude's stop_task primitive) as
+		// a distinct terminal state from 'errored'. A killed row is
+		// rendered as a gray "Stopped" badge; an errored row is red
+		// "Failed". Conflating them loses the "the user cancelled this"
+		// signal.
+		//
+		// SQLite can't ALTER a CHECK constraint in place, so we rebuild
+		// the items table. Data is PRESERVED — this is a widening change,
+		// not a reset. Every existing row's status value is already in
+		// the new enum (the widened set is a strict superset of the old
+		// one), so the copy succeeds without normalisation.
+		//
+		// Indices and the trg_items_gc_payload trigger are dropped on
+		// the old table and recreated against the new one. The v15-era
+		// shape is preserved byte-for-byte; the only change is the
+		// extended status enum.
+		SQL: v22SQL,
+	},
 }
 
 // v13SQL is the DROP-and-rebuild payload for migration v13. Extracted so
@@ -822,6 +844,123 @@ CREATE TABLE thread_checkpoints (
 );
 CREATE INDEX idx_thread_checkpoints_thread_turn
     ON thread_checkpoints(thread_id, turn_index);
+`
+
+// v22SQL rebuilds the items table with 'killed' added to the status
+// CHECK enum. Data is preserved — the widened enum is a strict
+// superset of the prior set, so every existing row survives the copy.
+//
+// All items-table indices (see v15 + v16 + v17 + v21) and the
+// trg_items_gc_payload trigger are dropped on the old table and
+// recreated against the rebuilt one so the planner stays healthy.
+// The new table is named items_v22 during the copy, then renamed to
+// `items` in a single atomic step.
+const v22SQL = `
+-- Drop indices + trigger attached to the old items table. SQLite
+-- destroys indices automatically when the table goes away, but
+-- DROP INDEX IF EXISTS here is explicit so the migration is
+-- diffable against the original DDL in v15 / v16 / v17 / v21.
+DROP INDEX IF EXISTS idx_items_thread;
+DROP INDEX IF EXISTS idx_items_id;
+DROP INDEX IF EXISTS idx_items_thread_turn_item_unique;
+DROP INDEX IF EXISTS idx_items_parent;
+DROP INDEX IF EXISTS idx_items_completion_of;
+DROP INDEX IF EXISTS idx_items_payload_id;
+DROP INDEX IF EXISTS idx_items_meta_task_id;
+DROP INDEX IF EXISTS idx_items_live_background;
+DROP TRIGGER IF EXISTS trg_items_gc_payload;
+
+CREATE TABLE items_v22 (
+    id                  TEXT    NOT NULL,
+    thread_id           TEXT    NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+    turn_index          INTEGER NOT NULL,
+    item_index          INTEGER NOT NULL,
+    kind                TEXT    NOT NULL CHECK(kind IN (
+        'user_text',
+        'assistant_text',
+        'thinking',
+        'tool_call',
+        'tool_completion',
+        'error',
+        'compaction'
+    )),
+    role                TEXT    NOT NULL CHECK(role IN ('assistant', 'user', 'system')),
+    status              TEXT    NOT NULL DEFAULT 'completed' CHECK(status IN (
+        'streaming',
+        'running',
+        'completed',
+        'errored',
+        'declined',
+        'killed'
+    )),
+    summary             TEXT    NOT NULL DEFAULT '',
+    payload_id          TEXT    REFERENCES payloads(id),
+    parent_id           TEXT    NOT NULL DEFAULT '',
+    is_background       INTEGER NOT NULL DEFAULT 0 CHECK(is_background IN (0, 1)),
+    completion_of       TEXT    NOT NULL DEFAULT '',
+    tool_name           TEXT    NOT NULL DEFAULT '',
+    decision            TEXT    NOT NULL DEFAULT '' CHECK(decision IN (
+        '',
+        'approved',
+        'declined',
+        'amended',
+        'timeout',
+        'lost'
+    )),
+    meta                TEXT    NOT NULL DEFAULT '{}',
+    created_at          INTEGER NOT NULL,
+    updated_at          INTEGER NOT NULL,
+    highlighted_content TEXT    NOT NULL DEFAULT '',
+    PRIMARY KEY (thread_id, id)
+);
+
+INSERT INTO items_v22
+    (id, thread_id, turn_index, item_index, kind, role, status, summary,
+     payload_id, parent_id, is_background, completion_of, tool_name,
+     decision, meta, created_at, updated_at, highlighted_content)
+SELECT id, thread_id, turn_index, item_index, kind, role, status, summary,
+       payload_id, parent_id, is_background, completion_of, tool_name,
+       decision, meta, created_at, updated_at, highlighted_content
+FROM items;
+
+DROP TABLE items;
+ALTER TABLE items_v22 RENAME TO items;
+
+-- Recreate indices from v15 + v16 + v17 + v21. Shape matches the
+-- originals exactly; a drift here would be a regression in the
+-- underlying query-planner coverage tests (e.g.
+-- TestMigrationV17AddsMetaTaskIDIndex,
+-- TestMigrationV21AddsLiveBackgroundIndex).
+CREATE INDEX idx_items_thread
+    ON items(thread_id, turn_index, item_index);
+CREATE INDEX idx_items_id
+    ON items(id);
+CREATE UNIQUE INDEX idx_items_thread_turn_item_unique
+    ON items(thread_id, turn_index, item_index);
+CREATE INDEX idx_items_parent
+    ON items(thread_id, parent_id) WHERE parent_id <> '';
+CREATE INDEX idx_items_completion_of
+    ON items(thread_id, completion_of) WHERE completion_of <> '';
+CREATE INDEX idx_items_payload_id
+    ON items(payload_id) WHERE payload_id IS NOT NULL;
+CREATE INDEX idx_items_meta_task_id
+    ON items(thread_id, json_extract(meta, '$.task_id'))
+ WHERE json_extract(meta, '$.task_id') IS NOT NULL;
+CREATE INDEX idx_items_live_background
+    ON items(thread_id, id)
+ WHERE is_background = 1 AND status = 'running';
+
+-- Rebuild the payload GC trigger on the rebuilt table.
+CREATE TRIGGER trg_items_gc_payload
+AFTER DELETE ON items
+WHEN OLD.payload_id IS NOT NULL
+BEGIN
+    DELETE FROM payloads
+     WHERE id = OLD.payload_id
+       AND NOT EXISTS (
+           SELECT 1 FROM items WHERE payload_id = OLD.payload_id
+       );
+END;
 `
 
 // runMigrations sets PRAGMAs, creates the version tracking table, and applies

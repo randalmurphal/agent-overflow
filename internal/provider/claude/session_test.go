@@ -450,6 +450,36 @@ func TestParseControlRequestUnknownSubtype(t *testing.T) {
 	}
 }
 
+// TestParseLine_ControlResponseSuccess confirms that a control_response
+// line (the CLI's reply to our outbound stop_task control_request) is
+// routed silently through the top-level dispatch: no ProviderEvent is
+// emitted, the line isn't misclassified as a control_request, and no
+// parse error surfaces. The session-level readLoop handles routing to
+// pending StopTask callers via handleControlResponseLine; ParseLine's
+// job is just to not mangle the envelope.
+func TestParseLine_ControlResponseSuccess(t *testing.T) {
+	successLine := []byte(`{"type":"control_response","response":{"subtype":"success","request_id":"so-1","response":{}}}`)
+	events, err := ParseLine(testThread, successLine)
+	if err != nil {
+		t.Fatalf("parse success: %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("control_response must emit 0 events, got %d: %+v", len(events), events)
+	}
+
+	// Error form must parse cleanly too — the parser never mistakes it
+	// for an inbound control_request (which would misroute it into
+	// parseControlRequest as a malformed approval).
+	errorLine := []byte(`{"type":"control_response","response":{"subtype":"error","request_id":"so-2","error":"boom"}}`)
+	events, err = ParseLine(testThread, errorLine)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("control_response(error) must emit 0 events, got %d: %+v", len(events), events)
+	}
+}
+
 func TestParseUnknownType(t *testing.T) {
 	line := []byte(`{"type":"some_future_event","data":{}}`)
 
@@ -1743,5 +1773,259 @@ func TestReadLoopEmitsErrorStatusOnUnexpectedExit(t *testing.T) {
 		case <-timeout:
 			t.Fatal("timeout waiting for unexpected-exit events")
 		}
+	}
+}
+
+// stopTaskResponderScript is a bash fake-CLI that reads stdin line by
+// line and writes a canned control_response for every stop_task
+// request it sees. The response shape is parameterised by mode:
+//   - "success": subtype=success, echoes back the request_id
+//   - "error":   subtype=error with a provider-side message
+//   - "silent":  drops the line; never responds (timeout path)
+//   - "stray":   writes a control_response with a different request_id
+//     (unknown-id-dropped path)
+//
+// The script terminates when stdin closes (Session.Close → proc.Close
+// shuts the pipe). Written to a temp file so the test doesn't rely on
+// a specific shell quoting pattern.
+func stopTaskResponderScript(mode string) string {
+	const header = `#!/bin/sh
+set -u
+while IFS= read -r line; do
+    case "$line" in
+        *'"stop_task"'*)
+            reqid=$(printf '%s' "$line" | sed -n 's/.*"request_id":"\([^"]*\)".*/\1/p')
+`
+	const footer = `
+            ;;
+    esac
+done
+`
+	var body string
+	switch mode {
+	case "success":
+		body = `            printf '{"type":"control_response","response":{"subtype":"success","request_id":"%s","response":{}}}\n' "$reqid"`
+	case "error":
+		body = `            printf '{"type":"control_response","response":{"subtype":"error","request_id":"%s","error":"task not found"}}\n' "$reqid"`
+	case "silent":
+		body = `            : # drop the line deliberately to exercise the timeout path`
+	case "stray":
+		body = `            printf '{"type":"control_response","response":{"subtype":"success","request_id":"not-the-real-one","response":{}}}\n'`
+	default:
+		body = `            : # unknown mode — never happens in tests`
+	}
+	return header + body + footer
+}
+
+// newStopTaskResponderSession spawns a Session backed by the fake-CLI
+// script returned by stopTaskResponderScript. Wraps the boilerplate
+// shared by the four StopTask tests.
+func newStopTaskResponderSession(t *testing.T, mode string, stopTimeout time.Duration) *Session {
+	t.Helper()
+	scriptDir := t.TempDir()
+	scriptPath := scriptDir + "/fake-claude"
+	if err := os.WriteFile(scriptPath, []byte(stopTaskResponderScript(mode)), 0755); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	proc, err := provider.Spawn(ctx, provider.SpawnConfig{Binary: scriptPath})
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+	s := &Session{
+		proc:     proc,
+		threadID: testThread,
+		onEvent:  func(evt provider.ProviderEvent) { _ = evt },
+		cancel:   cancel,
+		readDone: make(chan struct{}),
+		// Short timeout so a "silent" mode doesn't stall the suite.
+		stopTaskTimeout: stopTimeout,
+	}
+	go s.readLoop()
+	t.Cleanup(func() {
+		_ = s.Close()
+	})
+	return s
+}
+
+// TestSession_StopTask_SuccessRoundTrip drives the happy path end to
+// end: StopTask writes a stop_task control_request, the fake CLI
+// matches the request_id and replies with subtype=success, and
+// StopTask returns nil.
+func TestSession_StopTask_SuccessRoundTrip(t *testing.T) {
+	s := newStopTaskResponderSession(t, "success", 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := s.StopTask(ctx, "task-abc"); err != nil {
+		t.Fatalf("StopTask success: %v", err)
+	}
+}
+
+// TestSession_StopTask_ErrorResponse confirms that a subtype=error
+// response surfaces as a non-nil error whose message contains the
+// provider-supplied detail so the caller can render it to the user.
+func TestSession_StopTask_ErrorResponse(t *testing.T) {
+	s := newStopTaskResponderSession(t, "error", 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	err := s.StopTask(ctx, "task-bad")
+	if err == nil {
+		t.Fatal("StopTask error: expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "task not found") {
+		t.Errorf("error message missing server detail: %v", err)
+	}
+}
+
+// TestSession_StopTask_Timeout exercises the watchdog: the fake CLI
+// consumes the request and goes silent; StopTask must return a
+// timeout error within the configured window.
+func TestSession_StopTask_Timeout(t *testing.T) {
+	// Use a generous test context so the timeout error comes from
+	// Session.stopTaskTimeout, not the caller context.
+	s := newStopTaskResponderSession(t, "silent", 150*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	err := s.StopTask(ctx, "task-wait")
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("StopTask timeout: expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "timeout") {
+		t.Errorf("error should mention timeout, got: %v", err)
+	}
+	// Generous upper bound so flaky CI doesn't trip — we just want to
+	// confirm the session didn't sit there for the 10s default.
+	if elapsed > 2*time.Second {
+		t.Errorf("StopTask took %s, expected near 150ms", elapsed)
+	}
+}
+
+// TestSession_StopTask_EmptyTaskID fails fast when the caller passes
+// a blank task_id — a silent no-op here would strand the per-row UI
+// "Stop" button without feedback. TrimSpace covers stray-whitespace
+// ids picked up from a UI surface.
+//
+// The test pins both the error MESSAGE (must mention empty task_id, NOT
+// just "timeout") and the elapsed time — without the TrimSpace gate
+// the call would write a stop_task to stdin, sit on the stopTaskTimeout
+// for seconds, then return a timeout error that still trips `err != nil`
+// but masks the programming bug. A tight 300ms ceiling proves we
+// rejected the input without ever hitting the wire.
+func TestSession_StopTask_EmptyTaskID(t *testing.T) {
+	s := newStopTaskResponderSession(t, "silent", 5*time.Second)
+	for _, tid := range []string{"", "   ", "\t\n"} {
+		start := time.Now()
+		err := s.StopTask(context.Background(), tid)
+		elapsed := time.Since(start)
+		if err == nil {
+			t.Errorf("StopTask(%q): expected error, got nil", tid)
+			continue
+		}
+		if !strings.Contains(err.Error(), "empty task_id") {
+			t.Errorf("StopTask(%q): error should mention empty task_id, got: %v", tid, err)
+		}
+		// A missing TrimSpace would write to the fake CLI and wait the
+		// full stopTaskTimeout (5s). 300ms is a generous upper bound that
+		// still catches the regression.
+		if elapsed > 300*time.Millisecond {
+			t.Errorf("StopTask(%q) took %s, expected <300ms (suggests the input check fell through to the wire)", tid, elapsed)
+		}
+	}
+}
+
+// TestSession_StopTask_UnknownRequestIDDropped confirms the read loop
+// silently drops control_response envelopes whose request_id doesn't
+// match any pending StopTask. The in-flight StopTask still reaches
+// its timeout and the session keeps processing lines.
+func TestSession_StopTask_UnknownRequestIDDropped(t *testing.T) {
+	s := newStopTaskResponderSession(t, "stray", 200*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	err := s.StopTask(ctx, "task-x")
+	if err == nil {
+		t.Fatal("StopTask with stray response: expected timeout, got nil")
+	}
+	if !strings.Contains(err.Error(), "timeout") {
+		t.Errorf("unexpected error shape: %v", err)
+	}
+
+	// Session must still be alive — a second call should work if we
+	// wired one up. We don't have a second responder, so instead
+	// confirm the subprocess hasn't died (the stray line didn't take
+	// the read loop down).
+	select {
+	case <-s.proc.Done():
+		t.Fatal("session died after stray control_response — read loop must survive unknown request_ids")
+	default:
+	}
+}
+
+// TestSession_StopTask_SubprocessDeathUnblocksCaller pins the behavior
+// the readLoop's deferred clearPendingStopTasks buys us: when the CLI
+// subprocess exits on its own while a StopTask is parked, the caller
+// must unblock promptly with a clean error — NOT sit on its 10-second
+// DefaultStopTaskTimeout waiting for a response that will never come.
+// Without this guarantee the tray "Stop all" flow would freeze the UI
+// for seconds per pending task after an unclean CLI exit.
+func TestSession_StopTask_SubprocessDeathUnblocksCaller(t *testing.T) {
+	// Fake CLI reads the first line (the stop_task), pauses briefly so
+	// the StopTask goroutine is demonstrably parked on its pending
+	// channel, then exits with status 0 — no response ever written.
+	// This is exactly what an unclean subprocess death looks like to
+	// the read loop: io.EOF with a pending caller.
+	scriptDir := t.TempDir()
+	scriptPath := scriptDir + "/fake-claude"
+	script := `#!/bin/sh
+set -u
+# Drain exactly one line, then exit without writing anything back.
+read -r _discard
+sleep 0.05
+exit 0
+`
+	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	proc, err := provider.Spawn(ctx, provider.SpawnConfig{Binary: scriptPath})
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+	s := &Session{
+		proc:     proc,
+		threadID: testThread,
+		onEvent:  func(evt provider.ProviderEvent) { _ = evt },
+		cancel:   cancel,
+		readDone: make(chan struct{}),
+		// Generous per-call timeout so the fast-unblock comes from the
+		// readLoop cleanup, not from the timeout path. A failing
+		// regression would wait this entire window.
+		stopTaskTimeout: 5 * time.Second,
+	}
+	go s.readLoop()
+	t.Cleanup(func() { _ = s.Close() })
+
+	start := time.Now()
+	err = s.StopTask(context.Background(), "task-vanish")
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("StopTask after subprocess death: expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "session closed") {
+		t.Errorf("error should mention session close, got: %v", err)
+	}
+	// The subprocess exits ~50ms in; the read loop then drains and
+	// signals the pending entry via clearPendingStopTasks. 1s is a
+	// generous upper bound that still proves we didn't silently wait
+	// the full 5s timeout.
+	if elapsed > time.Second {
+		t.Errorf("StopTask took %s after subprocess death, expected <1s (suggests timeout path, not readLoop signal)", elapsed)
 	}
 }

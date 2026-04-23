@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -22,6 +23,18 @@ import (
 // the hot path during streaming). False positives are benign — the
 // subsequent Request.Subtype / ToolName check still filters.
 var controlRequestPrefix = []byte(`{"type":"control_request"`)
+
+// controlResponsePrefix matches the CLI's reply to our outbound
+// control_requests (today only stop_task; more to come). Prefix-gating
+// it the same way as controlRequestPrefix keeps streaming deltas off
+// the secondary json.Unmarshal path.
+var controlResponsePrefix = []byte(`{"type":"control_response"`)
+
+// DefaultStopTaskTimeout bounds how long StopTask waits for the CLI's
+// control_response before returning a timeout error. The verified spike
+// observed sub-100ms round-trips on Claude CLI 2.1.112; ten seconds is
+// a generous ceiling that still fails loudly if the CLI is wedged.
+const DefaultStopTaskTimeout = 10 * time.Second
 
 // DefaultIdleTimeout is how long the watchdog waits for ANY stdout line
 // after a Send before declaring the provider wedged. Claude streaming
@@ -94,6 +107,35 @@ type Session struct {
 	// approvalsClosed is set when Close has disarmed all pending timers
 	// so late-arriving approvals do not schedule new ones.
 	approvalsClosed bool
+	// stopTaskTimeout overrides DefaultStopTaskTimeout when non-zero.
+	// Tests set this to a short window so a non-responsive fake CLI
+	// doesn't stall the suite. Production leaves it zero.
+	stopTaskTimeout time.Duration
+	// stopTaskMu guards pendingStopTasks and stopTaskSeq.
+	stopTaskMu sync.Mutex
+	// pendingStopTasks maps the request_id we send on an outbound
+	// stop_task control_request to the channel the read loop delivers
+	// the matching control_response on. Entry is created under the mu
+	// by StopTask before the write, drained by the control_response
+	// dispatch in readLoop (or by StopTask itself on timeout /
+	// cancellation).
+	pendingStopTasks map[string]chan *stopTaskResult
+	// stopTaskSeq is a per-session counter so two concurrent StopTask
+	// calls never collide on request_id. The session pointer is mixed
+	// in (by map lifetime — a second session allocates a fresh map)
+	// so request_ids don't need to be globally unique, only unique
+	// within a single CLI subprocess.
+	stopTaskSeq uint64
+}
+
+// stopTaskResult carries the outcome of a stop_task round-trip from the
+// read loop back to the awaiting StopTask caller. Exactly one of errMsg
+// or ok is set: ok=true on subtype=success, errMsg populated on
+// subtype=error. A nil pointer means the session closed before the
+// response arrived.
+type stopTaskResult struct {
+	ok     bool
+	errMsg string
 }
 
 // pendingApproval tracks a single in-flight tool-use approval so we can
@@ -346,6 +388,176 @@ func (s *Session) Interrupt(ctx context.Context) error {
 	return s.proc.WriteLine(data)
 }
 
+// StopTask kills a backgrounded Claude task (Bash with
+// run_in_background:true or a Task subagent) by sending a `stop_task`
+// control_request and awaiting the matching control_response. The
+// `task_id` argument is the id the CLI emitted on `system/task_started`
+// — the Claude control protocol accepts the same id for both task
+// types.
+//
+// On success the CLI replies with
+// `{"type":"control_response","response":{"subtype":"success", ...}}`
+// and fires a follow-up `system/task_updated` with
+// `patch.status:"killed"` on the normal event stream (routed through
+// triage just like a natural terminal). On error the response carries
+// `subtype:"error"` with a human-readable message that StopTask wraps
+// into the returned error.
+//
+// Returns a timeout error after stopTaskTimeout (or ctx.Done) if the
+// CLI never answers.
+func (s *Session) StopTask(ctx context.Context, taskID string) error {
+	taskID = strings.TrimSpace(taskID)
+	if taskID == "" {
+		return fmt.Errorf("claude: stop_task: empty task_id")
+	}
+
+	requestID := s.allocateStopTaskRequestID()
+	ch := make(chan *stopTaskResult, 1)
+	if !s.registerStopTask(requestID, ch) {
+		return fmt.Errorf("claude: stop_task: session closing")
+	}
+
+	msg := map[string]any{
+		"type":       "control_request",
+		"request_id": requestID,
+		"request": map[string]any{
+			"subtype": "stop_task",
+			"task_id": taskID,
+		},
+	}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		s.releaseStopTask(requestID)
+		return fmt.Errorf("claude: marshal stop_task: %w", err)
+	}
+
+	if err := s.proc.WriteLine(data); err != nil {
+		s.releaseStopTask(requestID)
+		return fmt.Errorf("claude: write stop_task: %w", err)
+	}
+
+	timeout := s.stopTaskTimeout
+	if timeout <= 0 {
+		timeout = DefaultStopTaskTimeout
+	}
+
+	select {
+	case <-ctx.Done():
+		s.releaseStopTask(requestID)
+		return fmt.Errorf("claude: stop_task %s: %w", taskID, ctx.Err())
+	case <-time.After(timeout):
+		s.releaseStopTask(requestID)
+		return fmt.Errorf("claude: stop_task %s: timeout after %s", taskID, timeout)
+	case res, ok := <-ch:
+		if !ok || res == nil {
+			return fmt.Errorf("claude: stop_task %s: session closed before response", taskID)
+		}
+		if res.ok {
+			return nil
+		}
+		if res.errMsg == "" {
+			return fmt.Errorf("claude: stop_task %s: provider returned unspecified error", taskID)
+		}
+		return fmt.Errorf("claude: stop_task %s: %s", taskID, res.errMsg)
+	}
+}
+
+// allocateStopTaskRequestID generates a request_id unique within the
+// session. Format is a short "so-<n>" prefix so logs and wire samples
+// make it clear the id originated here (forge's stop-task tooling
+// uses the same convention).
+func (s *Session) allocateStopTaskRequestID() string {
+	s.stopTaskMu.Lock()
+	s.stopTaskSeq++
+	seq := s.stopTaskSeq
+	s.stopTaskMu.Unlock()
+	return fmt.Sprintf("so-%d", seq)
+}
+
+// registerStopTask stores the pending channel under the request_id.
+// Returns false when Close has run (the closing flag flipped and the
+// pending map has been drained) so late StopTask callers fail fast
+// instead of parking on a channel nobody will deliver to.
+//
+// The closing check happens UNDER stopTaskMu so the clearPendingStopTasks
+// / registerStopTask pair serialises correctly: if Close wins the
+// lock first, the registration fails; if a concurrent StopTask wins
+// it first, the entry is visible to the subsequent clearPendingStopTasks
+// drain. Without this ordering, a late registration could leak a
+// pending entry past Close.
+func (s *Session) registerStopTask(requestID string, ch chan *stopTaskResult) bool {
+	s.stopTaskMu.Lock()
+	defer s.stopTaskMu.Unlock()
+	if s.closing.Load() {
+		return false
+	}
+	if s.pendingStopTasks == nil {
+		s.pendingStopTasks = make(map[string]chan *stopTaskResult)
+	}
+	s.pendingStopTasks[requestID] = ch
+	return true
+}
+
+// releaseStopTask removes the pending entry and drains the channel so
+// a late read-loop delivery lands in a discarded buffer. Called from
+// timeout / cancel / error branches so the map never leaks entries and
+// the single-slot channel never blocks a reader that already gave up.
+func (s *Session) releaseStopTask(requestID string) {
+	s.stopTaskMu.Lock()
+	ch, ok := s.pendingStopTasks[requestID]
+	if ok {
+		delete(s.pendingStopTasks, requestID)
+	}
+	s.stopTaskMu.Unlock()
+	if !ok {
+		return
+	}
+	select {
+	case <-ch:
+	default:
+	}
+}
+
+// deliverStopTaskResponse is the read-loop-side half: it matches an
+// inbound control_response to a pending StopTask and delivers the
+// result. Unknown request_ids are returned as (false) so the caller
+// can log once and drop.
+func (s *Session) deliverStopTaskResponse(requestID string, res *stopTaskResult) bool {
+	s.stopTaskMu.Lock()
+	ch, ok := s.pendingStopTasks[requestID]
+	if ok {
+		delete(s.pendingStopTasks, requestID)
+	}
+	s.stopTaskMu.Unlock()
+	if !ok {
+		return false
+	}
+	select {
+	case ch <- res:
+	default:
+		// Channel already drained by timeout — nothing to do.
+	}
+	return true
+}
+
+// clearPendingStopTasks closes every outstanding stop_task waiter so
+// Close doesn't strand a StopTask caller. Mirrors clearPendingApprovals.
+func (s *Session) clearPendingStopTasks() {
+	s.stopTaskMu.Lock()
+	pending := s.pendingStopTasks
+	s.pendingStopTasks = nil
+	s.stopTaskMu.Unlock()
+	for _, ch := range pending {
+		// A nil send signals "session closing" — StopTask returns a
+		// clean error rather than hanging forever waiting on a
+		// control_response the dead subprocess will never emit.
+		select {
+		case ch <- nil:
+		default:
+		}
+	}
+}
+
 // RespondToApproval sends a tool-use approval decision back to the CLI.
 // Accepts both Codex-native values (accept, acceptForSession, decline, cancel)
 // and legacy values (allow, allow_session, deny) for backward compatibility.
@@ -542,6 +754,7 @@ func (s *Session) Close() error {
 	s.closing.Store(true)
 	s.disarmIdleWatchdog()
 	s.clearPendingApprovals()
+	s.clearPendingStopTasks()
 	err := s.proc.Close()
 	s.cancel()
 	if s.readDone != nil {
@@ -571,6 +784,15 @@ func (s *Session) readLoop() {
 		// already fired we let the original error stand and skip the
 		// generic close-error event.
 		s.disarmIdleWatchdog()
+
+		// Release any StopTask callers still parked on a pending
+		// control_response. If the subprocess died on its own (io.EOF,
+		// crash, watchdog kill) Close won't be the path that drains
+		// the map, so the caller would otherwise sit idle until its
+		// own timeout fires. Signalling here surfaces "session closed
+		// before response" within a handful of milliseconds of the
+		// subprocess exit.
+		s.clearPendingStopTasks()
 
 		if !s.closing.Load() && !s.watchdogFired.Load() {
 			exitErr := provider.WaitProcessExitErr(s.proc)
@@ -647,6 +869,16 @@ func (s *Session) readLoop() {
 			}
 		}
 
+		// Same prefix gating for control_response — the CLI emits these
+		// only in reply to our outbound control_requests (today,
+		// stop_task). Parse once here and deliver to the waiting
+		// StopTask caller so we don't pay a second json.Unmarshal on
+		// the streaming hot path.
+		if bytes.HasPrefix(line, controlResponsePrefix) {
+			s.handleControlResponseLine(line)
+			continue
+		}
+
 		events, err := s.parser.ParseLine(s.threadID, line)
 		if err != nil {
 			log.Printf("claude: parse error: %v (line: %s)", err, string(line[:min(len(line), 200)]))
@@ -719,4 +951,60 @@ func (s *Session) maybeHandleExitPlanModeRequest(line []byte) (bool, error) {
 		return true, fmt.Errorf("claude: send exit plan mode response: %w", err)
 	}
 	return true, nil
+}
+
+// handleControlResponseLine decodes a `control_response` NDJSON line
+// and routes it to the waiting StopTask caller by request_id. Called
+// only from the read loop's prefix-gated branch, so all the work
+// happens off the streaming hot path.
+//
+// Unknown request_ids are logged and dropped — the CLI might emit a
+// duplicate or late reply after the session has already released its
+// pending entry; silently discarding it keeps the read loop alive
+// while still leaving a breadcrumb. These lines are rare in practice
+// (one per out-of-band reply) so the log isn't rate-limited. Malformed
+// JSON is likewise logged (not fatal): a garbled control_response
+// shouldn't take the subprocess down.
+func (s *Session) handleControlResponseLine(line []byte) {
+	var raw struct {
+		Type     string `json:"type"`
+		Response struct {
+			Subtype   string `json:"subtype"`
+			RequestID string `json:"request_id"`
+			Error     string `json:"error"`
+		} `json:"response"`
+	}
+	if err := json.Unmarshal(line, &raw); err != nil {
+		log.Printf("claude: malformed control_response line: %v", err)
+		return
+	}
+	if raw.Type != "control_response" {
+		// Prefix-only false positive (e.g. an unrelated envelope whose
+		// serialized bytes happened to start with `{"type":"control_response`
+		// — shouldn't happen in practice, but the check is cheap).
+		return
+	}
+
+	requestID := raw.Response.RequestID
+	if requestID == "" {
+		log.Printf("claude: control_response missing request_id: %s", string(line[:min(len(line), 200)]))
+		return
+	}
+
+	res := &stopTaskResult{}
+	switch raw.Response.Subtype {
+	case "success":
+		res.ok = true
+	case "error":
+		res.errMsg = raw.Response.Error
+	default:
+		// The CLI only emits success / error per the wire reference;
+		// unknown subtypes get recorded as errors so the StopTask caller
+		// surfaces a clear message rather than silently hanging.
+		res.errMsg = fmt.Sprintf("unexpected control_response subtype %q", raw.Response.Subtype)
+	}
+
+	if !s.deliverStopTaskResponse(requestID, res) {
+		log.Printf("claude: control_response with no pending request_id %q (subtype=%s)", requestID, raw.Response.Subtype)
+	}
 }

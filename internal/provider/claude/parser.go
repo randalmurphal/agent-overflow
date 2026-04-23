@@ -144,6 +144,16 @@ func (p *Parser) ParseLine(threadID string, line []byte) ([]provider.ProviderEve
 		return p.parseStreamEvent(threadID, raw, now)
 	case "control_request":
 		return parseControlRequest(threadID, raw, now, line)
+	case "control_response":
+		// The CLI emits control_response envelopes only as replies to
+		// outbound client control_requests (today: stop_task). The
+		// Session-level readLoop intercepts these before ParseLine via
+		// the controlResponsePrefix gate and routes them to the
+		// awaiting StopTask caller. If a control_response somehow
+		// reaches ParseLine (stateless test harness, tool that calls
+		// ParseLine directly), it is a no-op — no triage or event
+		// consumer has a view on this envelope.
+		return nil, nil
 	case "rate_limit_event":
 		return parseRateLimitEvent(threadID, raw, now)
 	default:
