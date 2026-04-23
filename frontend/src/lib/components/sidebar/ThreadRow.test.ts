@@ -295,6 +295,29 @@ describe('<ThreadRow> live status dot', () => {
     }
   });
 
+  // Regression: the mode-aware label must flip when the thread prop
+  // updates. In production this comes from the sidebar's {#each} loop
+  // re-rendering the row with a new thread object after replaceThread;
+  // here we drive it via rerender({ thread: ... }).
+  it('flips the pill label when thread.mode changes mid-turn', async () => {
+    setThreadStatus('t-mode', 'running');
+    const pane = createThreadPane();
+    const chat = makeThread({ id: 't-mode', mode: 'chat' });
+    const { getByTestId, rerender } = render(ThreadRow, {
+      props: { thread: chat, pane },
+    });
+    expect(getByTestId('thread-row-status-dot').getAttribute('aria-label')).toBe('Working');
+
+    await rerender({ thread: { ...chat, mode: 'plan' }, pane });
+    expect(getByTestId('thread-row-status-dot').getAttribute('aria-label')).toBe('Planning');
+
+    await rerender({ thread: { ...chat, mode: 'design' }, pane });
+    expect(getByTestId('thread-row-status-dot').getAttribute('aria-label')).toBe('Designing');
+
+    await rerender({ thread: { ...chat, mode: 'discussion' }, pane });
+    expect(getByTestId('thread-row-status-dot').getAttribute('aria-label')).toBe('Discussing');
+  });
+
   it('flips the pill to Working when a streaming thinking item arrives via provider:item_upsert', async () => {
     const { emitWailsEvent } = await import('../../../test/mocks/wailsio-runtime');
     const { setupEventListeners } = await import('../../stores/events');
