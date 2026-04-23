@@ -1,7 +1,7 @@
 # Turn-Lifecycle Refactor Plan
 
-**Status**: archived execution plan. Refer to this while the work is
-in flight; once shipped, the living documentation is:
+**Status**: archived execution plan. The implementation has shipped; keep
+this file as historical context only. The living documentation is:
 
 - [`docs/architecture/turn-lifecycle.md`](../architecture/turn-lifecycle.md)
   — the three-lifecycle mental model
@@ -30,8 +30,10 @@ task, turn), resulting in:
    `is_background`.
 5. **No final-message separator** in the timeline marking turn end.
 6. **Codex `BackgroundClassifier` stamps `is_background` via a wrong
-   heuristic** — Codex has no `run_in_background` concept, so no
-   Codex tool should be marked as backgrounded.
+   heuristic** — Codex has no `run_in_background` field, but it does
+   have backgrounded work. The fix is to remove heuristic
+   backgrounding and project only from wire-typed signals
+   (`unifiedExecStartup`, `spawn_agent` child state).
 
 ## Solution: three independent lifecycles
 
@@ -43,9 +45,11 @@ mental model. TL;DR:
   tools' placeholders still emit completion; triage handles the
   "keep running" per-spec behavior).
 - **Task lifecycle** — Claude-only, layered on top. `task_updated`
-  terminal OR TaskOutput enrichment → `EventBackgroundTaskTerminal`
-  → idempotent `tool_completion` sibling row. `task_notification`
-  dropped.
+  terminal → `EventBackgroundTaskTerminal` → idempotent
+  `tool_completion` sibling row. TaskOutput can enrich/fallback when
+  the agent explicitly retrieves a still-retained task.
+  `task_notification` is not a completion source; if surfaced, it must
+  be a separate notification row.
 - **Turn lifecycle** — wire-pushed. `result` / `turn/completed` →
   `EventTurnComplete` → frontend `provider:turn_completed`. New
   `turns` table. Force-close orphan running tool_calls as safety net.
@@ -84,7 +88,7 @@ sibling `tool_completion` row pattern handles the task lifecycle.
 
 | Event | When | Key fields |
 |---|---|---|
-| `EventBackgroundTaskTerminal` (new) | `task_updated` terminal or TaskOutput | `task_id`, `tool_use_id`, `status`, `exit_code`, `output_file`, content |
+| `EventBackgroundTaskTerminal` (new) | `task_updated` terminal; optional TaskOutput enrichment/fallback | `task_id`, `tool_use_id`, `status`, `exit_code`, `output_file`, content |
 | `EventTurnStart` (wire emission new) | `SendMessage` (Claude) or `turn/started` (Codex) | `turn_id`, `thread_id`, `started_at` |
 | `EventTurnComplete` (wire emission new) | `result` (Claude) or `turn/completed` (Codex) | `turn_id`, `thread_id`, `completed_at`, `stop_reason`, `assistant_message_id`, `token_usage` |
 
@@ -95,7 +99,7 @@ sibling `tool_completion` row pattern handles the task lifecycle.
 | `provider:turn_started` | `{threadId, turnId, startedAt}` | `events.ts` → pane.setActiveTurn |
 | `provider:turn_completed` | `{threadId, turnId, startedAt, completedAt, stopReason, assistantMessageId, tokenUsage}` | `events.ts` → pane.settleTurn |
 
-## Execution: three waves
+## Execution History: three waves
 
 ### Wave 1 — foundational (parallel worktrees)
 
@@ -121,7 +125,7 @@ or frontend.
 **Scope**: refactor `internal/provider/claude/` so every `tool_use`
 gets exactly one `EventToolComplete` for its own id, task lifecycle
 is separately `EventBackgroundTaskTerminal`, and `task_notification`
-is dropped.
+does not affect lifecycle state.
 **Files**:
 - `internal/provider/claude/parse_user.go` — drop short-circuit;
   always run standard completion for own id; emit
@@ -129,9 +133,8 @@ is dropped.
   matches
 - `internal/provider/claude/parse_system.go` —
   `parseTaskLifecycleEvent` emits new event type;
-  `parseTaskNotificationEvent` returns nil (keeps parser map
-  bookkeeping for dedup guards the adapter still needs, but emits
-  nothing)
+  `parseTaskNotificationEvent` emits a distinct notification event for
+  summary/output_file without mutating lifecycle state
 - `internal/provider/claude/parser.go` — collapse correlation state:
   keep `backgroundToolUses` (spec-facing) and `taskToolUses`
   (task_id↔tool_use_id), remove `completedTasks`,
@@ -139,7 +142,7 @@ is dropped.
   triage via idempotent upsert)
 - `internal/provider/claude/protocol_test.go` — update existing
   tests to the new event split; add tests using
-  `/tmp/claude-bg-spike/*.ndjson` as fixtures
+  `docs/references/fixtures/claude/*.ndjson` as fixtures
 - `internal/provider/provider.go` — add `EventBackgroundTaskTerminal`
   kind constant
 
@@ -155,21 +158,21 @@ is dropped.
   and one `EventBackgroundTaskTerminal(task_id)`
 
 #### WT-codex-parser
-**Scope**: remove incorrect backgrounding stamps; fix `wait` enum;
-parse `<subagent_notification>` (emit a new event, UI surface
-deferred).
+**Scope**: remove incorrect heuristic backgrounding stamps; fix
+`wait` enum; parse `<subagent_notification>` and emit
+`EventSubagentNotification` for the triage projector.
 **Files**:
 - `internal/provider/codex/protocol.go` — route `"wait"` to a
   distinct itemType (`"wait_agent"`); surface `agentsStates` in
   `enrichItemMeta`
 - `internal/provider/codex/background.go` — retired (file deleted in
-  commit `f9065f8`). No Codex code stamps `is_background=true`; the
-  former `BackgroundClassifier` was removed because its heuristic
-  didn't map to Codex's real concurrency model.
+  commit `f9065f8`). Provider code does not stamp
+  `is_background=true`; triage stamps it only after seeing
+  wire-typed Codex background signals.
 - `internal/provider/codex/session.go` — detect
   `<subagent_notification>` tags in user-message items, emit a new
-  internal event (`EventSubagentNotification`); **rendering is
-  deferred — the emission is a no-op UI-wise for now**
+  internal event (`EventSubagentNotification`) so triage can resolve
+  backgrounded subagent launches.
 - Tests updated accordingly
 
 **Out of scope**: Claude, triage, frontend.
@@ -177,7 +180,9 @@ deferred).
 **Success criteria**:
 - Existing Codex tests pass; new tests for the wait enum fix and
   neutered classifier added
-- No Codex tool appears with `is_background=true` in integration tests
+- Codex tools get `is_background=true` only for yielded
+  `unifiedExecStartup` commands or `spawn_agent` rows whose children
+  outlive the parent turn
 
 ### Wave 2 — wiring (sequential, depends on Wave 1)
 
@@ -269,18 +274,18 @@ Fix + cycle until clean.
 
 **Authoritative captured wire samples**:
 
-- `/tmp/claude-bg-spike/ndjson_bash.log` — backgrounded + foreground
+- `docs/references/fixtures/claude/ndjson_bash.log` — backgrounded + foreground
   Bash + Read
-- `/tmp/claude-bg-spike/ndjson_task.log` — backgrounded Task subagent
+- `docs/references/fixtures/claude/ndjson_task.log` — backgrounded Task subagent
   + TaskOutput
-- `/tmp/claude-bg-spike/ndjson_outlives.log` — backgrounded task
+- `docs/references/fixtures/claude/ndjson_outlives.log` — backgrounded task
   outliving its turn
-- `/tmp/taskoutput-multi-spike/ndjson.log` — two parallel bg Bashes
+- `docs/references/fixtures/claude/taskoutput_multi.ndjson` — two parallel bg Bashes
   + blocking TaskOutput on one
 
-Use these directly in parser tests (do not copy into the repo —
-reference by `/tmp/...` path so they can be refreshed from
-`AGENT_OVERFLOW_DEBUG=provider` runs).
+Use these directly in parser tests. Refresh them from new
+`AGENT_OVERFLOW_DEBUG=provider` captures when the upstream wire
+changes, then update the checked-in fixtures in the same commit.
 
 ## Invariants added (to `docs/architecture/invariants.md`)
 
@@ -288,8 +293,9 @@ reference by `/tmp/...` path so they can be refreshed from
    `EventToolStart` and exactly one `EventToolComplete` keyed by its
    own `tool_use_id`. No ID rewriting, no consumption by other
    handlers.
-2. **`task_notification` is not a completion source**: dropped at the
-   parser layer.
+2. **`task_notification` is not a completion source**: no lifecycle
+   state transition; if surfaced, it must use a distinct notification
+   event/row.
 3. **Turn-active is wire-pushed**: `isTurnActive` derives only from
    `pane.activeTurn !== null`. Never from items.
 4. **Turn-complete force-closes orphan tool_calls**: triage flips any
@@ -297,8 +303,10 @@ reference by `/tmp/...` path so they can be refreshed from
    to `errored` at turn-complete.
 5. **Backgrounded work outlives turns**: a backgrounded tool_call can
    be `running` after its launching turn completes. This is expected.
-6. **Codex has no backgrounded tools**: no Codex tool gets
-   `is_background=true`. Sibling-row model is Claude-specific.
+6. **Codex backgrounding uses wire-typed signals**: Codex has no
+   `run_in_background` field, but yielded `unifiedExecStartup`
+   commands and `spawn_agent` rows with running children are projected
+   into the same inline launch + sibling completion UI model.
 
 ## Success criteria (whole refactor)
 

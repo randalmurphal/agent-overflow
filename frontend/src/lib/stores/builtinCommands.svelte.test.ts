@@ -83,6 +83,47 @@ describe('makeCommandContext', () => {
     const ctx = makeCommandContext(pane, { terminalFocus: false });
     expect(ctx.terminalFocus).toBe(false);
   });
+
+  it('turnActive follows the live pane turn state', () => {
+    const pane = readyPane();
+    expect(makeCommandContext(pane, {}).turnActive).toBe(false);
+
+    pane.setActiveTurn({ turnId: 'turn-1', turnIndex: 0, startedAt: 123 });
+    expect(makeCommandContext(pane, {}).turnActive).toBe(true);
+  });
+});
+
+describe('thread.interrupt command', () => {
+  beforeEach(() => {
+    clearCommandRegistry();
+  });
+
+  it('is disabled without an active turn and enabled while working', () => {
+    const pane = readyPane();
+    registerFixtureCommands(pane);
+    expect(getCommand('thread.interrupt')).toBeDefined();
+
+    expect(isCommandEnabled('thread.interrupt', makeCommandContext(pane, {}))).toBe(false);
+
+    pane.setActiveTurn({ turnId: 'turn-1', turnIndex: 0, startedAt: 123 });
+    expect(isCommandEnabled('thread.interrupt', makeCommandContext(pane, {}))).toBe(true);
+  });
+
+  it('calls InterruptTurn for the active thread', async () => {
+    const pane = readyPane();
+    pane.setActiveTurn({ turnId: 'turn-1', turnIndex: 0, startedAt: 123 });
+    const calls: string[] = [];
+    setBindingMock('InterruptTurn', async (id: unknown) => {
+      calls.push(id as string);
+    });
+    registerFixtureCommands(pane);
+
+    const command = getCommand('thread.interrupt');
+    if (!command) throw new Error('thread.interrupt was not registered');
+    await command.run(makeCommandContext(pane, {}));
+
+    expect(calls).toEqual(['thread-1']);
+  });
 });
 
 // --- search.messages wiring ---

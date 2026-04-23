@@ -119,7 +119,8 @@ Authoritative mental model:
 [`invariants.md`](../../docs/architecture/invariants.md)):
 
 - `task_notification` is NOT a completion source; drop parser
-  emission.
+  emission into the lifecycle. Route it through a distinct
+  notification row instead.
 - Turn activity on the frontend is wire-pushed only — never derived
   from item state.
 - No session-liveness probing for turn state inference.

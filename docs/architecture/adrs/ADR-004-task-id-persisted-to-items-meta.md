@@ -6,11 +6,12 @@ Date: 2026-04-18
 ## Context
 
 Claude backgrounded tools (`run_in_background` Bash, `Task` subagent)
-correlate `task_started` → `task_updated` / `task_notification` via
-a `task_id`. Our `tool_call` row uses the `tool_use.id` as its primary
-id. The mapping `task_id ↔ tool_use_id` has to live somewhere so that
-when a terminal `task_updated` arrives, we can find the right row to
-flip to `completed`.
+correlate `task_started` → terminal `task_updated` (and any later
+TaskOutput retrieval) via a `task_id`. Our `tool_call` row uses the
+`tool_use.id` as its primary id. The mapping `task_id ↔ tool_use_id`
+has to live somewhere so that when a terminal `task_updated` arrives,
+we can find the right launch row and write the separate
+`tool_completion` sibling.
 
 Two options:
 
@@ -63,8 +64,7 @@ Considered alternatives:
   future keys (thinking signatures, receiverThreadIds) live
   alongside. See `internal/provider/claude/AGENTS.md` for the
   current set.
-- Dedupe: the adapter still maintains `completedToolUseIDs` and
-  `completedTasks` sets in memory because both `task_updated` and
-  `task_notification` can independently report completion. The
-  persisted copy doesn't help here — the sets are transient
-  within-session guards.
+- Dedupe/coalescing lives at the stable `tool_completion` sibling id.
+  `task_notification` is not a completion source; if surfaced, it
+  must use a distinct notification path and must not participate in
+  lifecycle dedupe.

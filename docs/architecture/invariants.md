@@ -493,10 +493,10 @@ the tool-completion event. Codex's `item/started`/`item/completed`
 are symmetric one-shot upserts by design.
 
 **Test.** Replay
-`/tmp/claude-bg-spike/ndjson_task.log` and
-`/tmp/taskoutput-multi-spike/ndjson.log` through the parser; assert
-TaskOutput's own `tool_use_id` receives an `EventToolComplete` in
-addition to any task-terminal events.
+`docs/references/fixtures/claude/ndjson_task.log` and
+`docs/references/fixtures/claude/taskoutput_multi.ndjson` through the
+parser; assert TaskOutput's own `tool_use_id` receives an
+`EventToolComplete` in addition to any task-terminal events.
 
 **See also.** [`turn-lifecycle.md §Tool lifecycle`](turn-lifecycle.md#1-tool-lifecycle);
 [`claude-wire.md §tool_result`](../references/claude-wire.md#user-message--tool_result-blocks).
@@ -505,11 +505,10 @@ addition to any task-terminal events.
 
 ## 21. `task_notification` is not a completion source
 
-**Rule.** The Claude `system/task_notification` envelope is dropped
-at the parser — no `EventBackgroundTaskTerminal`,
-no `EventToolComplete`, no other state transition. Its sole field of
-interest (`summary` human-readable completion text) is information we
-knowingly discard.
+**Rule.** The Claude `system/task_notification` envelope is not a
+completion source — no `EventBackgroundTaskTerminal`, no
+`EventToolComplete`, no task state transition. If rendered, it must
+flow through a distinct notification event/row.
 
 **Rationale.** `task_notification` is an "attention signal" that
 Claude fires so the next user turn's prompt includes the task's
@@ -520,12 +519,13 @@ the task lifecycle. `system/task_updated` with terminal
 only authoritative task-terminal sources.
 
 **Enforcement.** `parseTaskNotificationEvent` in `parse_system.go`
-returns no events. If we want a human-readable notification in the
-UI later, add a NEW event kind — do not re-wire
-`task_notification` through the task lifecycle.
+emits `EventBackgroundTaskNotification`, never a lifecycle terminal or
+tool completion. Triage persists it as a notification row and may
+ingest `output_file` into SQLite, but lifecycle state still comes only
+from `task_updated` / TaskOutput.
 
-**Test.** `parse_system_test.go` asserts zero events emitted for
-every shape of `task_notification` envelope.
+**Test.** `parse_system_test.go` asserts `task_notification` emits one
+`EventBackgroundTaskNotification` and zero lifecycle events.
 
 **See also.** [`turn-lifecycle.md §Task lifecycle`](turn-lifecycle.md#2-task-lifecycle-claude-only);
 [`claude-wire.md §task_notification`](../references/claude-wire.md#systemtask_notification).
@@ -585,29 +585,34 @@ flips any matching rows before emitting `provider:turn_completed`.
 
 ## 24. Backgrounded work outlives its launching turn
 
-**Rule.** A Claude `tool_call` with `is_background=true` can remain
+**Rule.** A `tool_call` with `is_background=true` can remain
 `status='running'` after its launching turn has completed. This is
-expected and must render correctly (the backgrounded tool tray shows
-it; the timeline shows the launch and, when it lands, the sibling
-`tool_completion` row).
+expected for Claude background Bash / Task and for Codex projected
+background commands / subagents. The background tray shows the live
+launch, and the timeline shows both the launch and, when it lands, the
+sibling `tool_completion` row.
 
-**Rationale.** Claude's `task_updated` terminal and TaskOutput
-enrichment events can arrive AFTER the `result` envelope. Captured
-evidence: `/tmp/claude-bg-spike/ndjson_outlives.log` shows the
-turn-1 `result` landing before the backgrounded task's
-`task_updated`. Agents expect this — they send messages that
-dispatch background work and move on.
+**Rationale.** Claude's `task_updated` terminal / TaskOutput
+enrichment and Codex's background terminal / subagent completion
+signals can arrive AFTER the turn that launched the work. Agents
+expect this — they send messages that dispatch background work and
+move on. Captured Claude evidence:
+`docs/references/fixtures/claude/ndjson_outlives.log` shows the turn-1 `result`
+landing before the backgrounded task's `task_updated`.
 
 **Enforcement.** Triage's force-close (invariant 23) exempts
-`is_background=true` rows. Tray derivation clocks retention off the
-completion row's `createdAt`, not turn boundaries.
+`is_background=true` rows. Background completions append at the
+current thread write head when one is open, otherwise the latest
+persisted turn. Tray derivation clocks retention off the completion
+row's `createdAt`, not turn boundaries.
 
 **Test.** Replay `ndjson_outlives.log` through the full pipeline;
 assert the turn closes cleanly and the background task's
 `tool_completion` sibling row is written when its `task_updated`
 arrives later.
 
-**See also.** [`turn-lifecycle.md §Task lifecycle`](turn-lifecycle.md#2-task-lifecycle-claude-only).
+**See also.** [`turn-lifecycle.md §Task lifecycle`](turn-lifecycle.md#2-task-lifecycle-claude-only)
+and [`turn-lifecycle.md §Codex background projection`](turn-lifecycle.md#codex-background-projection).
 
 ---
 
@@ -668,7 +673,10 @@ The former `BackgroundClassifier` at
 - `TestCodexBackgroundProjector_TurnCompletedStampsBackgroundOnRemaining`
   — turn-close catchall.
 - `TestCodexSubagentRunningPastTurnEnd_Backgrounded` — spawn_agent
-  with running child past turn end.
+  with running child stamps background at parent turn close.
+- `TestCodexSubagentCompletion_WaitResolvesBackgroundedSpawn` and
+  `TestCodexSubagentCompletion_SynthesizesSiblingAtTail` — wait and
+  notification terminal paths synthesize sibling completions.
 
 **Upstream gap.** The app-server protocol exposes only thread-wide
 cleanup (`thread/backgroundTerminals/clean`). Per-process termination

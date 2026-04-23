@@ -9,8 +9,8 @@ confirm against the Python SDK or captured samples before coding.
 
 **Shape-of-truth, in priority order:**
 
-1. **Captured wire samples** (real NDJSON from live sessions) at
-   `/tmp/claude-bg-spike/` and `/tmp/taskoutput-multi-spike/` — see
+1. **Captured wire samples** (real NDJSON from live sessions) in
+   `docs/references/fixtures/claude/` — see
    [§Captured samples](#captured-samples).
 2. **Python SDK** at `/Users/randy/repos/claude-agent-sdk-python`.
    The dataclasses in `src/claude_agent_sdk/types.py` and the parser at
@@ -209,6 +209,23 @@ intermediate patches and should be treated as no-ops.
 - `error` — failure message when `status == "failed"`
 - `description` — human-readable description, may change
 
+### What `task_updated` does NOT carry
+
+Fresh app-style spikes in `docs/references/fixtures/claude/`
+confirmed that terminal `task_updated` is only a lifecycle update for
+ordinary background Bash tasks:
+
+- successful background Bash: `patch.status="completed"`,
+  `patch.end_time`, no `exitCode`, no `output`, no `output_file`
+- failed background Bash: `patch.status="failed"`, `patch.end_time`,
+  no exit code, no output text, no output file path
+- `TaskOutput(block=true)` while the task is still running does NOT
+  replace this signal; the observed order was `task_updated` first,
+  then the TaskOutput `tool_result`
+
+Use `task_updated` to decide that a background task reached terminal
+state. Do not expect it to contain the command/subagent result body.
+
 ### `tool_use_id` resolution
 
 The envelope **does not reliably carry `tool_use_id`** — resolve via
@@ -221,8 +238,9 @@ back to `items.meta.task_id` lookup at the triage layer.
 `task_updated` can arrive BEFORE, CONCURRENT WITH, or AFTER the
 owning turn's `result` envelope. A backgrounded task that runs longer
 than its launching turn will emit `task_updated` after `result`.
-Triage writes the `tool_completion` sibling row whenever it arrives;
-it is never blocked on turn state. See
+Triage writes the `tool_completion` sibling row whenever it arrives,
+at the current thread write head when one exists; it is never blocked
+on the launch turn's state. See
 [`turn-lifecycle.md`](../architecture/turn-lifecycle.md) for rules.
 
 ---
@@ -247,7 +265,7 @@ Fires even for trivial foreground commands with `output_file: ""`.
 
 ### ⚠ NOT a completion signal
 
-We do **NOT** emit any event from `task_notification`.
+Do not route `task_notification` through the task lifecycle.
 
 **Rationale**: `task_updated` carries the authoritative task-terminal
 signal (with richer `patch` content). `task_notification` is an
@@ -256,12 +274,21 @@ a human-readable summary. Treating it as a completion source
 introduces race conditions (dedupe against `task_updated`) and adds
 state to the parser for no correctness benefit.
 
-**Information we knowingly discard**: `summary` (user-friendly
-completion text like `"Background command foo completed (exit code
-0)"`), `output_file` (path to the full log). If future UX wants these
-surfaced (e.g., in a notification log), re-enable emission of a
-distinct `EventBackgroundTaskNotification` event — do not conflate
-it with the `EventBackgroundTaskTerminal` from `task_updated`.
+`task_notification` DOES carry useful notification material:
+
+- `summary` — user-friendly completion text, often including exit code
+- `output_file` — path to the full task output file
+- `tool_use_id` — usually present inline
+
+If the UI surfaces this, emit a distinct notification event/row. Do
+not conflate it with `EventBackgroundTaskTerminal`, do not use it to
+set completion state, and do not dedupe task lifecycle against it.
+
+Fresh app-style spikes also showed that, when the CLI process stays
+alive after the turn, `task_notification` can be followed by an
+assistant message/result generated for the agent, e.g. "Background
+task ... completed (exit code 0)." That follow-up text is agent-visible
+conversation, not a replacement for the task lifecycle.
 
 ---
 
@@ -388,6 +415,33 @@ TaskOutput's `task.exitCode` is **camelCase**. Regular Bash's
 
 Triage's sibling-row upsert is idempotent; task_updated + TaskOutput
 for the same task is expected and handled by the store layer.
+
+### Retention and ordering
+
+TaskOutput is an explicit tool call made by the agent. It is not a
+durable task-history lookup.
+
+Fresh app-style spikes in `docs/references/fixtures/claude/`
+confirmed:
+
+- If the agent calls `TaskOutput(block=true)` while the background task
+  is still running, Claude emits terminal `task_updated` and then the
+  TaskOutput `tool_result`.
+- In those immediate TaskOutput cases, no `task_notification` was
+  observed in the captured window; the TaskOutput result carried the
+  output and exit code.
+- If the task has already completed and its `task_notification` has
+  been delivered, a later `TaskOutput` call can return
+  `<tool_use_error>No task found with ID: ...</tool_use_error>` with
+  `tool_use_result` as an error string.
+
+So the lifecycle rule is:
+
+- `task_updated` is enough to mark the background task done/failed.
+- `TaskOutput` may add rich details because the agent explicitly asked
+  for them.
+- `task_notification.output_file` is the durable handle after task
+  cleanup; TaskOutput cannot be assumed available later.
 
 ### E4 — Orphan `tool_result`
 
@@ -621,7 +675,7 @@ All three captures are real wire output from claude-code CLI version
 authoritative test fixtures for parser refactor work — do not
 fabricate shapes when these samples cover the scenario.
 
-### `/tmp/claude-bg-spike/ndjson_bash.log`
+### `docs/references/fixtures/claude/ndjson_bash.log`
 **Scenario**: one `run_in_background:true` Bash + one foreground
 `sleep 6` + one `Read` of the output file.
 
@@ -631,7 +685,7 @@ foreground), `user` backgrounded placeholder (E2), `system/task_updated`
 terminal, `system/task_notification`, `user` inline tool_result (E1),
 `result` envelope.
 
-### `/tmp/claude-bg-spike/ndjson_task.log`
+### `docs/references/fixtures/claude/ndjson_task.log`
 **Scenario**: `Task` subagent with `run_in_background: true` + `TaskOutput`
 retrieval.
 
@@ -639,7 +693,7 @@ retrieval.
 and `prompt`, `user` TaskOutput tool_result (E3),
 `assistant` streams with `parent_tool_use_id` for the subagent.
 
-### `/tmp/claude-bg-spike/ndjson_outlives.log` + `ndjson_outlives_turn2.log`
+### `docs/references/fixtures/claude/ndjson_outlives.log` + `ndjson_outlives_turn2.log`
 **Scenario**: backgrounded Bash that outlives its launching turn —
 first turn's `result` arrives BEFORE the task's `task_updated`.
 
@@ -648,13 +702,51 @@ invariant. The turn closes normally; terminal signals for the
 backgrounded task land afterward on the stream (they address the same
 `thread_id` via `session_id` correlation).
 
-### `/tmp/taskoutput-multi-spike/ndjson.log`
+### `docs/references/fixtures/claude/taskoutput_multi.ndjson`
 **Scenario**: two parallel `run_in_background:true` Bashes + one
 blocking `TaskOutput` on the longer one.
 
 **Shapes covered**: two independent `task_started` envelopes,
 two `task_updated` terminals for different `task_id`s, single
 TaskOutput `tool_result` enrichment for one of them.
+
+### `docs/references/fixtures/claude/interactive_outlives_taskoutput_monitor.ndjson`
+**Scenario**: app-style long-lived CLI process. Turn 1 launches a
+background Bash and ends immediately. The process stays alive long
+enough to receive `task_updated` + `task_notification`. A later turn
+tries `TaskOutput` for the completed task. Another turn launches a
+second background Bash, then a later turn uses `Monitor` against the
+notification output file.
+
+**Shapes covered**: `task_updated` after `result`,
+`task_notification` carrying `output_file`, later `TaskOutput` failure
+for an already-cleaned task, and `Monitor` as a separate background
+task that reads the output file.
+
+**Critical for**: TaskOutput retention. Once the completed task has
+been notified/cleaned, TaskOutput can return "No task found"; do not
+rely on TaskOutput as durable history.
+
+### `docs/references/fixtures/claude/blocking_taskoutput.ndjson`
+**Scenario**: background Bash sleeps for 10 seconds, then the agent
+immediately calls `TaskOutput(block=true)` while it is still running.
+
+**Shapes covered**: `task_updated` fires before the TaskOutput
+`tool_result`; TaskOutput carries `task.output` and `task.exitCode`.
+
+### `docs/references/fixtures/claude/blocking_taskoutput_failure.ndjson`
+**Scenario**: same as above, but the background Bash exits with code 7.
+
+**Shapes covered**: failed `task_updated` has only
+`patch.status="failed"` + `end_time`; TaskOutput carries `exitCode: 7`
+and merged stdout/stderr in `task.output`.
+
+### `docs/references/fixtures/claude/plain_failure_outlives.ndjson`
+**Scenario**: failed background Bash without TaskOutput retrieval.
+
+**Shapes covered**: `task_updated` terminal plus
+`task_notification.summary` containing exit code and
+`task_notification.output_file` containing the durable output path.
 
 ### Using samples in tests
 
@@ -668,10 +760,10 @@ func loadCapturedFixture(t *testing.T, path string) []string {
 ```
 
 Replay the lines through `(*Parser).ParseLine(threadID, line)` and
-assert the emitted `ProviderEvent` sequence. Do not copy the NDJSON
-into the repo — keep it at `/tmp/` and reference by path in test
-constants so samples can be refreshed from fresh `AGENT_OVERFLOW_DEBUG`
-runs without a repo change.
+assert the emitted `ProviderEvent` sequence. These fixtures live in the
+repo because the parser/tests/docs depend on them. Refresh them from a
+new `AGENT_OVERFLOW_DEBUG=provider` capture when upstream wire behavior
+changes, then update the checked-in fixture and this doc together.
 
 ---
 
@@ -686,8 +778,9 @@ without a fresh spike.**
    Our adapter should keep non-terminal as no-op.
 2. `task_type` is open-ended. `local_bash`, `local_agent`,
    `background` confirmed; don't branch on exact values.
-3. TaskOutput `task.output_file` is speculative — forge fixtures show
-   it only on `task_notification`. Reading it from both is harmless.
+3. TaskOutput `task.output_file` is speculative — fresh and forge
+   fixtures show durable output paths on `task_notification`, not
+   reliably on TaskOutput. Reading it from both is harmless.
 4. `exitCode` vs `exit_code` inconsistency — TaskOutput uses
    camelCase on `task`, Bash uses snake_case on `tool_use_result`.
 5. `interrupted` is not a `stop_reason` — detect via

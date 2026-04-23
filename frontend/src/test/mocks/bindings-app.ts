@@ -109,6 +109,7 @@ export const SearchThreadMessages = dispatch('SearchThreadMessages');
 export const GenerateCommitMessage = dispatch('GenerateCommitMessage');
 
 export const GetPayloadPreview = dispatch('GetPayloadPreview');
+export const GetPayloadChunk = dispatch('GetPayloadChunk');
 export const GetPayloadData = dispatch('GetPayloadData');
 export const HighlightMarkdown = dispatch('HighlightMarkdown');
 export const ListItems = dispatch('ListItems');

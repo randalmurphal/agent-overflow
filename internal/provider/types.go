@@ -141,10 +141,10 @@ const (
 	EventError            EventKind = "error"
 
 	// Inline/system events that do not render as timeline rows.
-	EventCompactBoundary EventKind = "compact_boundary"
-	EventRateLimits      EventKind = "rate_limits"
-	EventModelRerouted   EventKind = "model_rerouted"
-	EventThreadRenamed   EventKind = "thread_renamed"
+	EventCompactBoundary   EventKind = "compact_boundary"
+	EventRateLimits        EventKind = "rate_limits"
+	EventModelRerouted     EventKind = "model_rerouted"
+	EventThreadRenamed     EventKind = "thread_renamed"
 	EventContentBlockStart EventKind = "content_block_start"
 	EventContentBlockStop  EventKind = "content_block_stop"
 
@@ -157,6 +157,12 @@ const (
 	// docs/architecture/turn-lifecycle.md §Task lifecycle and
 	// docs/architecture/invariants.md invariant 20.
 	EventBackgroundTaskTerminal EventKind = "background_task_terminal"
+
+	// EventBackgroundTaskNotification surfaces Claude `system/task_notification`
+	// as a non-lifecycle notification row. It may carry a durable output_file
+	// path that triage reads into SQLite for later expansion, but it must never
+	// mark a task complete or failed by itself.
+	EventBackgroundTaskNotification EventKind = "background_task_notification"
 
 	// EventSubagentNotification surfaces Codex's `<subagent_notification>`
 	// tag detections (session.go parser → triage handler →
@@ -210,6 +216,7 @@ var AllEventKinds = []EventKind{
 	EventContentBlockStart,
 	EventContentBlockStop,
 	EventBackgroundTaskTerminal,
+	EventBackgroundTaskNotification,
 	EventSubagentNotification,
 	EventTerminalInteraction,
 	EventDiff,
@@ -222,13 +229,14 @@ var AllEventKinds = []EventKind{
 type ItemKind string
 
 const (
-	ItemUserText            ItemKind = "user_text"
-	ItemAssistantText       ItemKind = "assistant_text"
-	ItemThinking            ItemKind = "thinking"
-	ItemToolCall            ItemKind = "tool_call"
-	ItemToolCompletion      ItemKind = "tool_completion"
-	ItemError               ItemKind = "error"
-	ItemCompaction          ItemKind = "compaction"
+	ItemUserText       ItemKind = "user_text"
+	ItemAssistantText  ItemKind = "assistant_text"
+	ItemThinking       ItemKind = "thinking"
+	ItemToolCall       ItemKind = "tool_call"
+	ItemToolCompletion ItemKind = "tool_completion"
+	ItemError          ItemKind = "error"
+	ItemCompaction     ItemKind = "compaction"
+	ItemNotification   ItemKind = "notification"
 	// ItemTerminalInteraction is the minimal "Waited for background
 	// terminal" marker persisted when the Codex model polled a
 	// backgrounded PTY via an empty-stdin `write_stdin` call. No

@@ -80,7 +80,7 @@ func (r *Router) handleCommandOutput(evt provider.ProviderEvent) error {
 				return fmt.Errorf("command output create tool_call %s: %w", itemID, err)
 			}
 		}
-		return r.attachPayloadToItem(item, evt, "command_output", item.Summary, false)
+		return r.attachPayloadToItem(item, evt, "command_output", item.Summary, evt.Replace)
 	}
 
 	item, found, err := r.findLatestToolCall(evt.ThreadID, "command_execution", "bash")
@@ -104,7 +104,7 @@ func (r *Router) handleCommandOutput(evt provider.ProviderEvent) error {
 			return fmt.Errorf("command output fallback tool_call: %w", err)
 		}
 	}
-	return r.attachPayloadToItem(item, evt, "command_output", item.Summary, false)
+	return r.attachPayloadToItem(item, evt, "command_output", item.Summary, evt.Replace)
 }
 
 func (r *Router) handleProposedPlan(evt provider.ProviderEvent) error {
@@ -153,7 +153,10 @@ func eventItemID(evt provider.ProviderEvent) string {
 	if evt.ItemID != "" {
 		return strings.TrimSpace(evt.ItemID)
 	}
-	return strings.TrimSpace(metaNestedString(evt.Meta, "item", "id"))
+	if id := strings.TrimSpace(metaNestedString(evt.Meta, "item", "id")); id != "" {
+		return id
+	}
+	return strings.TrimSpace(metaNestedString(evt.Meta, "itemId"))
 }
 
 func metaNestedString(raw json.RawMessage, path ...string) string {
@@ -310,11 +313,16 @@ func buildPayloadMeta(payloadKind string, evt provider.ProviderEvent) string {
 		cm := ExtractCommandOutputMeta(evt.Content, "", 0)
 		if evt.Meta != nil {
 			var parsed struct {
-				Command  string `json:"command"`
-				ExitCode int    `json:"exitCode"`
+				Command       string `json:"command"`
+				ExitCode      int    `json:"exitCode"`
+				ExitCodeSnake int    `json:"exit_code"`
 			}
 			if json.Unmarshal(evt.Meta, &parsed) == nil {
-				cm = ExtractCommandOutputMeta(evt.Content, parsed.Command, parsed.ExitCode)
+				exitCode := parsed.ExitCode
+				if exitCode == 0 && parsed.ExitCodeSnake != 0 {
+					exitCode = parsed.ExitCodeSnake
+				}
+				cm = ExtractCommandOutputMeta(evt.Content, parsed.Command, exitCode)
 			}
 		}
 		data, err := json.Marshal(cm)

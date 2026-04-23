@@ -83,6 +83,15 @@ type Session struct {
 	// thread are re-emitted onto the parent thread with ParentToolUseID set
 	// to this card id.
 	//
+	// childParentByAgentPath maps Codex's subagent_notification
+	// `agent_path` value back to the same parent card. Named Codex agents
+	// report a path such as `/root/researcher`, not the receiver thread id,
+	// so the detached-completion path cannot rely on receiverThreadIds
+	// alone.
+	//
+	// agentPathByThread is the inverse index used to delete path mappings
+	// when a close_agent event closes a receiver thread.
+	//
 	// No heuristic background-tool classifier runs here (invariant 25).
 	// The wire-typed signals for a backgrounded item are
 	// `CommandExecution.source == "unifiedExecStartup"` and
@@ -91,7 +100,9 @@ type Session struct {
 	// `internal/triage/codex_background.go` on the first model-produced
 	// yield or at the turn-close catchall — this session package only
 	// surfaces the wire fields; it doesn't project them.
-	childParentByThread map[string]string
+	childParentByThread    map[string]string
+	childParentByAgentPath map[string]string
+	agentPathByThread      map[string]string
 	// probeFn is a test-only override for Probe(). When non-nil, Probe
 	// skips the wire call and returns the result from this function.
 	// Production Session construction (NewSession) never sets it.
@@ -157,15 +168,17 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 	}
 
 	s := &Session{
-		proc:                proc,
-		threadID:            threadID,
-		model:               cfg.Model,
-		reasoningEffort:     cfg.ReasoningEffort,
-		pending:             make(map[int64]chan json.RawMessage),
-		onEvent:             onEvent,
-		cancel:              cancel,
-		readDone:            make(chan struct{}),
-		childParentByThread: make(map[string]string),
+		proc:                   proc,
+		threadID:               threadID,
+		model:                  cfg.Model,
+		reasoningEffort:        cfg.ReasoningEffort,
+		pending:                make(map[int64]chan json.RawMessage),
+		onEvent:                onEvent,
+		cancel:                 cancel,
+		readDone:               make(chan struct{}),
+		childParentByThread:    make(map[string]string),
+		childParentByAgentPath: make(map[string]string),
+		agentPathByThread:      make(map[string]string),
 	}
 
 	// Start stdout reader goroutine before sending any requests.
@@ -368,6 +381,8 @@ func (s *Session) Close() error {
 	s.mu.Lock()
 	s.seenTurnStarts = nil
 	s.childParentByThread = nil
+	s.childParentByAgentPath = nil
+	s.agentPathByThread = nil
 	s.mu.Unlock()
 	return err
 }
@@ -624,8 +639,11 @@ func (s *Session) dispatchLine(line []byte) {
 
 	// Notification: has method, no id.
 	if msg.Method != "" {
-		providerThreadID := readTopLevelString(msg.Params, "threadId")
+		providerThreadID := providerThreadIDFromParams(msg.Params)
 		parentToolUseID := s.parentToolUseForProviderThread(providerThreadID)
+		if parentToolUseID != "" {
+			s.rememberAgentPathForProviderThread(providerThreadID, parentToolUseID, msg.Params)
+		}
 		if parentToolUseID != "" && isChildTurnLifecycleNotification(msg.Method) {
 			return
 		}
@@ -644,9 +662,11 @@ func (s *Session) dispatchLine(line []byte) {
 		if msg.Method == "item/completed" {
 			if notifications := extractSubagentNotificationsFromUserMessage(msg.Params); len(notifications) > 0 {
 				for _, n := range notifications {
+					parentItemID := s.parentToolUseForAgentPath(n.AgentPath)
 					s.onEvent(provider.ProviderEvent{
 						Kind:      provider.EventSubagentNotification,
 						ThreadID:  s.threadID,
+						ItemID:    parentItemID,
 						Meta:      buildSubagentNotificationMeta(n),
 						Timestamp: time.Now(),
 					})
@@ -715,11 +735,23 @@ func (s *Session) parentToolUseForProviderThread(providerThreadID string) string
 	return s.childParentByThread[providerThreadID]
 }
 
+func (s *Session) parentToolUseForAgentPath(agentPath string) string {
+	if agentPath == "" {
+		return ""
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.childParentByAgentPath[agentPath]
+}
+
 func (s *Session) setParentToolUseForProviderThread(providerThreadID, parentToolUseID string) {
 	if providerThreadID == "" || parentToolUseID == "" {
 		return
 	}
 	s.mu.Lock()
+	if s.childParentByThread == nil {
+		s.childParentByThread = make(map[string]string)
+	}
 	s.childParentByThread[providerThreadID] = parentToolUseID
 	s.mu.Unlock()
 }
@@ -729,8 +761,51 @@ func (s *Session) deleteParentToolUseForProviderThread(providerThreadID string) 
 		return
 	}
 	s.mu.Lock()
+	if agentPath := s.agentPathByThread[providerThreadID]; agentPath != "" {
+		delete(s.childParentByAgentPath, agentPath)
+		delete(s.agentPathByThread, providerThreadID)
+	}
 	delete(s.childParentByThread, providerThreadID)
 	s.mu.Unlock()
+}
+
+func (s *Session) rememberAgentPathForProviderThread(providerThreadID, parentToolUseID string, params json.RawMessage) {
+	agentPath := subagentThreadStartedAgentPath(params)
+	if providerThreadID == "" || parentToolUseID == "" || agentPath == "" {
+		return
+	}
+	s.mu.Lock()
+	if s.childParentByAgentPath == nil {
+		s.childParentByAgentPath = make(map[string]string)
+	}
+	if s.agentPathByThread == nil {
+		s.agentPathByThread = make(map[string]string)
+	}
+	s.childParentByAgentPath[agentPath] = parentToolUseID
+	s.agentPathByThread[providerThreadID] = agentPath
+	s.mu.Unlock()
+}
+
+func providerThreadIDFromParams(params json.RawMessage) string {
+	if id := readTopLevelString(params, "threadId"); id != "" {
+		return id
+	}
+	return readNestedString(params, "thread", "id")
+}
+
+func subagentThreadStartedAgentPath(params json.RawMessage) string {
+	candidates := []string{
+		readNestedString(params, "thread", "source", "subAgent", "thread_spawn", "agent_path"),
+		readNestedString(params, "thread", "source", "subAgent", "threadSpawn", "agentPath"),
+		readNestedString(params, "thread", "source", "subAgent", "thread_spawn", "agentPath"),
+		readNestedString(params, "thread", "source", "subAgent", "threadSpawn", "agent_path"),
+	}
+	for _, candidate := range candidates {
+		if candidate != "" {
+			return candidate
+		}
+	}
+	return ""
 }
 
 func (s *Session) maybeRememberCollabReceiverThreads(method string, params json.RawMessage) {

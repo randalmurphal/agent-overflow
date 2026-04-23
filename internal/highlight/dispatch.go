@@ -9,6 +9,7 @@ const (
 	KindThinking       = "thinking"
 	KindCommandOutput  = "command_output"
 	KindToolResult     = "tool_result"
+	KindToolCallResult = "tool_call_result"
 	KindDiff           = "diff"
 	KindUserText       = "user_text"
 	KindToolCall       = "tool_call"
@@ -31,7 +32,7 @@ func (r *Renderer) renderForKind(kind, content string) string {
 	switch kind {
 	case KindAssistantText, KindProposedPlan:
 		return r.renderMarkdown(content)
-	case KindThinking, KindCommandOutput, KindToolResult:
+	case KindThinking, KindCommandOutput, KindToolResult, KindToolCallResult:
 		return r.renderANSI(content)
 	default:
 		return ""

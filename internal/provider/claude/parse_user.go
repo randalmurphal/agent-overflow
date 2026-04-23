@@ -9,6 +9,7 @@ package claude
 
 import (
 	"encoding/json"
+	"strings"
 	"time"
 
 	"agent-overflow/internal/provider"
@@ -174,6 +175,7 @@ func (p *Parser) appendTaskOutputCompletion(
 	metaFields := map[string]any{
 		"task_id": taskOutput.TaskID,
 		"status":  status,
+		"source":  "task_output",
 	}
 	if originalToolUseID != "" {
 		metaFields["tool_use_id"] = originalToolUseID
@@ -193,7 +195,7 @@ func (p *Parser) appendTaskOutputCompletion(
 		Kind:      provider.EventBackgroundTaskTerminal,
 		ThreadID:  threadID,
 		ItemID:    originalToolUseID,
-		Content:   firstNonEmpty(taskOutput.Summary, content),
+		Content:   firstNonEmpty(taskOutput.Output, taskOutput.Summary, content),
 		Meta:      meta,
 		Timestamp: now,
 		Raw:       line,
@@ -311,6 +313,7 @@ func extractExitCode(content json.RawMessage, toolUseResult json.RawMessage) (in
 type taskOutputCompletion struct {
 	TaskID     string
 	Summary    string
+	Output     string
 	IsError    bool
 	ExitCode   *int
 	OutputFile string
@@ -336,6 +339,7 @@ func extractTaskOutputCompletion(content json.RawMessage, toolUseResult json.Raw
 	result := taskOutputCompletion{
 		TaskID:     taskID,
 		Summary:    firstNonEmpty(readRawString(task["description"]), extractToolResultText(content)),
+		Output:     extractTaskOutputBody(task),
 		IsError:    status != "completed",
 		OutputFile: firstNonEmpty(readRawString(task["output_file"]), readRawString(task["outputFile"]), readRawString(payload["output_file"]), readRawString(payload["outputFile"])),
 	}
@@ -355,6 +359,39 @@ func extractTaskOutputCompletion(content json.RawMessage, toolUseResult json.Raw
 	}
 
 	return result, true
+}
+
+func extractTaskOutputBody(task map[string]json.RawMessage) string {
+	for _, key := range []string{"output", "stdout", "stderr"} {
+		if value := readRawString(task[key]); value != "" {
+			return value
+		}
+	}
+
+	resultRaw := task["result"]
+	if len(resultRaw) == 0 {
+		return ""
+	}
+	if value := readRawString(resultRaw); value != "" {
+		return value
+	}
+
+	var result map[string]json.RawMessage
+	if json.Unmarshal(resultRaw, &result) == nil {
+		var parts []string
+		for _, key := range []string{"output", "stdout", "stderr", "message", "summary"} {
+			if value := readRawString(result[key]); value != "" {
+				parts = append(parts, value)
+			}
+		}
+		if len(parts) > 0 {
+			return strings.Join(parts, "\n")
+		}
+	}
+	if string(resultRaw) != "null" {
+		return string(resultRaw)
+	}
+	return ""
 }
 
 // readIntValueFromTask reads exit_code / exitCode from the task

@@ -26,6 +26,7 @@ import {
   GitPull,
   GitPush,
   GitCreatePR,
+  InterruptTurn,
   UnarchiveThread,
   UpdateThreadMode,
 } from './bindings';
@@ -69,6 +70,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     requestThreadJump,
     requestThreadStep,
   } = hooks;
+  let interruptInFlight = false;
 
   registerCommand({
     id: 'palette.open',
@@ -223,6 +225,26 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
           addToast('error', `Failed to fork thread: ${errString(err)}`);
         }
       }),
+  });
+
+  registerCommand({
+    id: 'thread.interrupt',
+    label: 'Thread: Interrupt Turn',
+    icon: '■',
+    when: 'hasActiveThread && turnActive && !anyModalOpen',
+    run: async () => {
+      const threadID = pane.threadId;
+      if (!threadID || !pane.activeTurn || interruptInFlight) return;
+      interruptInFlight = true;
+      try {
+        await InterruptTurn(threadID);
+      } catch (err) {
+        console.error('Failed to interrupt turn:', err);
+        pane.setGeneralError(`Failed to interrupt: ${errString(err)}`);
+      } finally {
+        interruptInFlight = false;
+      }
+    },
   });
 
   registerCommand({
@@ -479,10 +501,10 @@ export function makeCommandContext(pane: ThreadPane, extra: Partial<CommandConte
     approvalPending: pane.pendingApprovals.length > 0,
     anyModalOpen: false,
     hasActiveThread: thread !== null,
+    turnActive: pane.isTurnActive,
     canForkActiveThread: !!thread?.sessionRef,
     canStartDiscussion:
       !!thread && thread.mode !== 'discussion' && !thread.discussionId && !thread.parentThreadId,
     ...extra,
   } as CommandContext;
 }
-

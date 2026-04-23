@@ -3,7 +3,7 @@ import { render, fireEvent } from '@testing-library/svelte';
 import LazyContentBlock from './LazyContentBlock.svelte';
 import { getBindingMock, setBindingMock } from '../../../test/mocks/bindings-app';
 import { MAX_INLINE_BYTES } from '../../utils/inlineThreshold';
-import { DEFAULT_PAYLOAD_PREVIEW_BYTES } from './payloadExpansion.svelte';
+import { DEFAULT_PAYLOAD_CHUNK_BYTES, DEFAULT_PAYLOAD_PREVIEW_BYTES } from './payloadExpansion.svelte';
 
 describe('<LazyContentBlock>', () => {
   it('renders the preview verbatim and no toggle when preview is short', () => {
@@ -66,9 +66,16 @@ describe('<LazyContentBlock>', () => {
       totalSize: 12,
       isComplete: true,
     }));
-    const full = setBindingMock('GetPayloadData', async () => ({ data: 'FULL BODY', html: 'FULL BODY' }));
+    const full = setBindingMock('GetPayloadChunk', async () => ({
+      data: 'FULL BODY',
+      html: 'FULL BODY',
+      offset: 7,
+      nextOffset: 9,
+      totalSize: 9,
+      isComplete: true,
+    }));
     render(LazyContentBlock, {
-      props: { payloadId: 'p1', preview: 'a'.repeat(MAX_INLINE_BYTES + 1) },
+      props: { threadId: 'thread-1', payloadId: 'p1', preview: 'a'.repeat(MAX_INLINE_BYTES + 1) },
     });
     expect(preview).not.toHaveBeenCalled();
     expect(full).not.toHaveBeenCalled();
@@ -81,10 +88,17 @@ describe('<LazyContentBlock>', () => {
       totalSize: 64 * 1024,
       isComplete: false,
     }));
-    setBindingMock('GetPayloadData', async () => ({ data: 'FULL BODY CONTENT', html: 'FULL BODY CONTENT' }));
+    setBindingMock('GetPayloadChunk', async () => ({
+      data: 'FULL BODY CONTENT',
+      html: 'FULL BODY CONTENT',
+      offset: 'PREVIEW BODY'.length,
+      nextOffset: 'FULL BODY CONTENT'.length,
+      totalSize: 'FULL BODY CONTENT'.length,
+      isComplete: true,
+    }));
     const preview = 'a'.repeat(MAX_INLINE_BYTES + 1);
     const { getByTestId } = render(LazyContentBlock, {
-      props: { payloadId: 'p1', preview },
+      props: { threadId: 'thread-1', payloadId: 'p1', preview },
     });
 
     const toggle = getByTestId('lazy-content-toggle');
@@ -92,8 +106,8 @@ describe('<LazyContentBlock>', () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    expect(getBindingMock('GetPayloadPreview')).toHaveBeenCalledWith('p1', DEFAULT_PAYLOAD_PREVIEW_BYTES);
-    expect(getBindingMock('GetPayloadData')).not.toHaveBeenCalled();
+    expect(getBindingMock('GetPayloadPreview')).toHaveBeenCalledWith('thread-1', 'p1', DEFAULT_PAYLOAD_PREVIEW_BYTES);
+    expect(getBindingMock('GetPayloadChunk')).not.toHaveBeenCalled();
     expect(getByTestId('lazy-content-preview').textContent).toBe('PREVIEW BODY');
     expect(getByTestId('lazy-content-show-full').textContent).toContain('64.0 KB');
 
@@ -101,7 +115,12 @@ describe('<LazyContentBlock>', () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    expect(getBindingMock('GetPayloadData')).toHaveBeenCalledWith('p1');
+    expect(getBindingMock('GetPayloadChunk')).toHaveBeenCalledWith(
+      'thread-1',
+      'p1',
+      'PREVIEW BODY'.length,
+      DEFAULT_PAYLOAD_CHUNK_BYTES,
+    );
     expect(getByTestId('lazy-content-full').textContent).toBe('FULL BODY CONTENT');
   });
 
@@ -112,10 +131,17 @@ describe('<LazyContentBlock>', () => {
       totalSize: 8 * 1024,
       isComplete: true,
     }));
-    setBindingMock('GetPayloadData', async () => ({ data: 'FULL', html: 'FULL' }));
+    setBindingMock('GetPayloadChunk', async () => ({
+      data: 'FULL',
+      html: 'FULL',
+      offset: 7,
+      nextOffset: 4,
+      totalSize: 4,
+      isComplete: true,
+    }));
     const preview = 'a'.repeat(MAX_INLINE_BYTES + 1);
     const { getByTestId, queryByTestId } = render(LazyContentBlock, {
-      props: { payloadId: 'p1', preview },
+      props: { threadId: 'thread-1', payloadId: 'p1', preview },
     });
 
     const toggle = getByTestId('lazy-content-toggle');
@@ -140,7 +166,7 @@ describe('<LazyContentBlock>', () => {
     });
     const preview = 'a'.repeat(MAX_INLINE_BYTES + 1);
     const { getByTestId } = render(LazyContentBlock, {
-      props: { payloadId: 'p1', preview },
+      props: { threadId: 'thread-1', payloadId: 'p1', preview },
     });
     await fireEvent.click(getByTestId('lazy-content-toggle'));
     await Promise.resolve();

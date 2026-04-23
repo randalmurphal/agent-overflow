@@ -1,6 +1,7 @@
-import { GetPayloadData, GetPayloadPreview } from '../../stores/bindings';
+import { GetPayloadChunk, GetPayloadPreview } from '../../stores/bindings';
 
 export const DEFAULT_PAYLOAD_PREVIEW_BYTES = 32 * 1024;
+export const DEFAULT_PAYLOAD_CHUNK_BYTES = 256 * 1024;
 
 export interface PayloadExpansionHandle {
   readonly expanded: boolean;
@@ -29,10 +30,13 @@ export interface PayloadExpansionHandle {
 }
 
 type PayloadIDSource = string | undefined | (() => string | undefined);
+type ThreadIDSource = string | undefined | (() => string | undefined);
 
 export function createPayloadExpansion(
   payloadID: PayloadIDSource,
+  threadID: ThreadIDSource,
   previewBytes = DEFAULT_PAYLOAD_PREVIEW_BYTES,
+  chunkBytes = DEFAULT_PAYLOAD_CHUNK_BYTES,
 ): PayloadExpansionHandle {
   let expanded = $state(false);
   let loadingPreview = $state(false);
@@ -44,11 +48,16 @@ export function createPayloadExpansion(
   let fullHtml = $state<string | null>(null);
   let totalSize = $state(0);
   let isComplete = $state(true);
+  let loadedBytes = $state(0);
 
   let requestGeneration = 0;
 
   function currentPayloadID(): string | undefined {
     return typeof payloadID === 'function' ? payloadID() : payloadID;
+  }
+
+  function currentThreadID(): string | undefined {
+    return typeof threadID === 'function' ? threadID() : threadID;
   }
 
   function cancelInflight(): number {
@@ -64,11 +73,17 @@ export function createPayloadExpansion(
     fullHtml = null;
     totalSize = 0;
     isComplete = true;
+    loadedBytes = 0;
   }
 
   async function loadPreview(): Promise<void> {
     const id = currentPayloadID();
+    const ownerThreadID = currentThreadID();
     if (!id || previewData !== null || fullData !== null) return;
+    if (!ownerThreadID) {
+      error = 'Missing thread context for payload read';
+      return;
+    }
 
     const generation = cancelInflight();
     loadingPreview = true;
@@ -76,12 +91,13 @@ export function createPayloadExpansion(
     error = null;
 
     try {
-      const result = await GetPayloadPreview(id, previewBytes);
+      const result = await GetPayloadPreview(ownerThreadID, id, previewBytes);
       if (generation !== requestGeneration || !expanded) return;
       previewData = result.data;
       previewHtml = result.html ?? '';
       totalSize = result.totalSize;
       isComplete = result.isComplete;
+      loadedBytes = result.data.length;
     } catch (err) {
       if (generation !== requestGeneration || !expanded) return;
       error = err instanceof Error ? err.message : String(err);
@@ -116,7 +132,12 @@ export function createPayloadExpansion(
 
   async function showFull(): Promise<void> {
     const id = currentPayloadID();
-    if (!expanded || !id || fullData !== null || isComplete) return;
+    const ownerThreadID = currentThreadID();
+    if (!expanded || !id || isComplete) return;
+    if (!ownerThreadID) {
+      error = 'Missing thread context for payload read';
+      return;
+    }
 
     const generation = cancelInflight();
     loadingPreview = false;
@@ -124,11 +145,16 @@ export function createPayloadExpansion(
     error = null;
 
     try {
-      const content = await GetPayloadData(id);
+      const offset = loadedBytes;
+      const content = await GetPayloadChunk(ownerThreadID, id, offset, chunkBytes);
       if (generation !== requestGeneration || !expanded) return;
       fullData = content.data;
       fullHtml = content.html ?? '';
-      totalSize = Math.max(totalSize, content.data.length);
+      previewData = null;
+      previewHtml = null;
+      totalSize = content.totalSize;
+      loadedBytes = content.nextOffset;
+      isComplete = content.isComplete;
     } catch (err) {
       if (generation !== requestGeneration || !expanded) return;
       error = err instanceof Error ? err.message : String(err);
@@ -152,7 +178,7 @@ export function createPayloadExpansion(
     get totalSize() { return totalSize; },
     get isComplete() { return isComplete; },
     get hasMore() {
-      return expanded && previewData !== null && !isComplete && fullData === null;
+      return expanded && (fullData !== null || previewData !== null) && !isComplete;
     },
     get displayData() { return fullData ?? previewData; },
     get displayHtml() { return fullHtml ?? previewHtml; },

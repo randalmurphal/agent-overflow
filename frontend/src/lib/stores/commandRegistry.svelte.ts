@@ -27,6 +27,8 @@ export interface CommandContext {
   anyModalOpen: boolean;
   /** Whether there is an active thread. */
   hasActiveThread: boolean;
+  /** True while the active thread has a live provider turn. */
+  turnActive: boolean;
   /** Thread metadata fields used by fork / discussion commands. */
   canForkActiveThread: boolean;
   canStartDiscussion: boolean;

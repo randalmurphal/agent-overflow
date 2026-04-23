@@ -255,16 +255,16 @@ describe('App integration — diff panel', () => {
       diffItem('d3', 1, { itemIndex: 0 }),
     ];
     const { getByTestId, findByTestId } = await mountAppWithThread({ items });
-    const getPayload = setBindingMock('GetPayloadData', async (id) => ({ data: `payload-${String(id)}`, html: '' }));
+    const getPayload = setBindingMock('GetPayloadData', async (_threadId, id) => ({ data: `payload-${String(id)}`, html: '' }));
     await fireEvent.click(getByTestId('diff-panel-toggle'));
     await flush();
     await fireEvent.click(getByTestId('diff-source-tab-cumulative'));
     await flush(10);
 
     await waitFor(() => {
-      expect(getPayload).toHaveBeenCalledWith('d1-payload');
-      expect(getPayload).toHaveBeenCalledWith('d2-payload');
-      expect(getPayload).toHaveBeenCalledWith('d3-payload');
+      expect(getPayload).toHaveBeenCalledWith('thread-1', 'd1-payload');
+      expect(getPayload).toHaveBeenCalledWith('thread-1', 'd2-payload');
+      expect(getPayload).toHaveBeenCalledWith('thread-1', 'd3-payload');
     });
     const viewer = await findByTestId('diff-viewer');
     expect(viewer.textContent).toContain('payload-d1-payload');

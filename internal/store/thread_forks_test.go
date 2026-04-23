@@ -78,3 +78,71 @@ func TestCloneThreadItemsExcludesRunningBackgroundRows(t *testing.T) {
 		t.Error("source bg-run row vanished (clone must not mutate source)")
 	}
 }
+
+// TestCloneThreadItemsNoBackgroundRowsCopiesEverything guards the
+// no-op branch of Phase-4's fork filter: a thread with ZERO background
+// rows must clone every row verbatim. Phase 4's filter is a narrow
+// WHERE-negation; a regression that broadened the predicate (e.g. to
+// "any running row") would silently drop legitimate inline tool_calls
+// during the fork. Keeping a dedicated test for the empty-bg case
+// means a future fork-filter change gets caught here before it reaches
+// callers.
+func TestCloneThreadItemsNoBackgroundRowsCopiesEverything(t *testing.T) {
+	s := newTestStore(t)
+	now := int64(1)
+	for _, id := range []string{"t-fork-nobg-src", "t-fork-nobg-dst"} {
+		if err := s.CreateThread(Thread{
+			ID: id, ProjectID: defaultTestProjectID, Title: "T",
+			Provider: "claude", WorkspacePath: "/tmp",
+			CreatedAt: now, UpdatedAt: now,
+		}); err != nil {
+			t.Fatalf("create thread %s: %v", id, err)
+		}
+	}
+
+	// Mix spanning every non-background-running shape — user turn,
+	// assistant text, inline running tool_call, completed tool_call,
+	// and a tool_completion sibling. No IsBackground anywhere.
+	items := []Item{
+		{ID: "user-0", ThreadID: "t-fork-nobg-src", TurnIndex: 1, ItemIndex: 0, Kind: "user_text", Role: "user", Summary: "hi", CreatedAt: now, UpdatedAt: now},
+		{ID: "asst-1", ThreadID: "t-fork-nobg-src", TurnIndex: 1, ItemIndex: 1, Kind: "assistant_text", Role: "assistant", Summary: "hello", Status: "completed", CreatedAt: now, UpdatedAt: now},
+		{ID: "tool-run", ThreadID: "t-fork-nobg-src", TurnIndex: 1, ItemIndex: 2, Kind: "tool_call", Role: "assistant", Status: "running", Summary: "Edit: foo.ts", ToolName: "Edit", CreatedAt: now, UpdatedAt: now},
+		{ID: "tool-done", ThreadID: "t-fork-nobg-src", TurnIndex: 1, ItemIndex: 3, Kind: "tool_call", Role: "assistant", Status: "completed", Summary: "Read: bar.ts", ToolName: "Read", CreatedAt: now, UpdatedAt: now},
+		{ID: "sibling", ThreadID: "t-fork-nobg-src", TurnIndex: 1, ItemIndex: 4, Kind: "tool_completion", Role: "assistant", Status: "completed", CompletionOf: "tool-done", Summary: "Read: bar.ts -> done", ToolName: "Read", CreatedAt: now, UpdatedAt: now},
+	}
+	for _, it := range items {
+		if err := s.InsertItem(it); err != nil {
+			t.Fatalf("InsertItem %s: %v", it.ID, err)
+		}
+	}
+
+	if err := s.CloneThreadItems("t-fork-nobg-src", "t-fork-nobg-dst"); err != nil {
+		t.Fatalf("CloneThreadItems: %v", err)
+	}
+
+	dst, err := s.ListItems("t-fork-nobg-dst")
+	if err != nil {
+		t.Fatalf("ListItems(dst): %v", err)
+	}
+	if len(dst) != len(items) {
+		t.Fatalf("dst items = %d, want %d (filter broadened beyond bg-running?)", len(dst), len(items))
+	}
+	// CloneThreadItems reassigns ids to avoid FK collisions on the
+	// destination thread; match seeded rows by (kind, summary) pair
+	// instead. A broadened filter would drop at least one pair.
+	want := make(map[string]bool)
+	for _, it := range items {
+		want[it.Kind+"|"+it.Summary] = true
+	}
+	for _, it := range dst {
+		key := it.Kind + "|" + it.Summary
+		if !want[key] {
+			t.Errorf("unexpected cloned row %s (summary=%q)", it.Kind, it.Summary)
+			continue
+		}
+		delete(want, key)
+	}
+	for key := range want {
+		t.Errorf("seeded row %q missing from clone (fork filter may be over-eager)", key)
+	}
+}

@@ -1,0 +1,148 @@
+{
+  "cmd": [
+    "claude",
+    "--input-format",
+    "stream-json",
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--permission-prompt-tool",
+    "stdio",
+    "--include-partial-messages",
+    "--permission-mode",
+    "bypassPermissions",
+    "--model",
+    "claude-sonnet-4-6",
+    "--allowedTools",
+    "Bash TaskOutput"
+  ],
+  "events": 122,
+  "task_started": [
+    {
+      "type": "system",
+      "subtype": "task_started",
+      "task_id": "b53m1n7to",
+      "tool_use_id": "toolu_01G2PQZPmGDiUqjBJ6BAQ2Mw",
+      "description": "Run sleep+print in background",
+      "task_type": "local_bash",
+      "uuid": "89261ad8-34d8-43b1-b4a8-12158a313d54",
+      "session_id": "ab9fb71b-f0e3-4b6e-8182-91af13576df9"
+    }
+  ],
+  "task_updated": [
+    {
+      "type": "system",
+      "subtype": "task_updated",
+      "task_id": "b53m1n7to",
+      "patch": {
+        "status": "completed",
+        "end_time": 1776960145125
+      },
+      "uuid": "3d1daeff-cac9-4eb8-ba43-c45080a61f84",
+      "session_id": "ab9fb71b-f0e3-4b6e-8182-91af13576df9"
+    }
+  ],
+  "task_notification": [],
+  "taskoutput_tool_results": [
+    {
+      "type": "user",
+      "message": {
+        "role": "user",
+        "content": [
+          {
+            "tool_use_id": "toolu_01Mo43E4K9B1pJmD4s7kJjQh",
+            "type": "tool_result",
+            "content": "<retrieval_status>success</retrieval_status>\n\n<task_id>b53m1n7to</task_id>\n\n<task_type>local_bash</task_type>\n\n<status>completed</status>\n\n<exit_code>0</exit_code>\n\n<output>\nAO_SPIKE_TASKOUTPUT_DONE\n</output>"
+          }
+        ]
+      },
+      "parent_tool_use_id": null,
+      "session_id": "ab9fb71b-f0e3-4b6e-8182-91af13576df9",
+      "uuid": "b60e6717-0b74-4c18-92b7-4238272d1f36",
+      "timestamp": "2026-04-23T16:02:25.196Z",
+      "tool_use_result": {
+        "retrieval_status": "success",
+        "task": {
+          "task_id": "b53m1n7to",
+          "task_type": "local_bash",
+          "status": "completed",
+          "description": "Run sleep+print in background",
+          "output": "AO_SPIKE_TASKOUTPUT_DONE\n",
+          "exitCode": 0
+        }
+      }
+    }
+  ],
+  "results": [
+    {
+      "type": "result",
+      "subtype": "success",
+      "is_error": false,
+      "api_error_status": null,
+      "duration_ms": 20627,
+      "duration_api_ms": 18911,
+      "num_turns": 4,
+      "result": "**Result:** `TaskOutput` with `block=true` and `timeout=30000` successfully blocked until the 10-second sleep finished, then returned `AO_SPIKE_TASKOUTPUT_DONE` with `status: completed` and `exit_code: 0`. Blocking works correctly for in-flight tasks.",
+      "stop_reason": "end_turn",
+      "session_id": "ab9fb71b-f0e3-4b6e-8182-91af13576df9",
+      "total_cost_usd": 0.06760530000000001,
+      "usage": {
+        "input_tokens": 36,
+        "cache_creation_input_tokens": 9576,
+        "cache_read_input_tokens": 73201,
+        "output_tokens": 606,
+        "server_tool_use": {
+          "web_search_requests": 0,
+          "web_fetch_requests": 0
+        },
+        "service_tier": "standard",
+        "cache_creation": {
+          "ephemeral_1h_input_tokens": 0,
+          "ephemeral_5m_input_tokens": 9576
+        },
+        "inference_geo": "",
+        "iterations": [
+          {
+            "input_tokens": 8,
+            "output_tokens": 137,
+            "cache_read_input_tokens": 20942,
+            "cache_creation_input_tokens": 479,
+            "cache_creation": {
+              "ephemeral_5m_input_tokens": 479,
+              "ephemeral_1h_input_tokens": 0
+            },
+            "type": "message"
+          }
+        ],
+        "speed": "standard"
+      },
+      "modelUsage": {
+        "claude-haiku-4-5-20251001": {
+          "inputTokens": 462,
+          "outputTokens": 15,
+          "cacheReadInputTokens": 0,
+          "cacheCreationInputTokens": 0,
+          "webSearchRequests": 0,
+          "costUSD": 0.000537,
+          "contextWindow": 200000,
+          "maxOutputTokens": 32000
+        },
+        "claude-sonnet-4-6": {
+          "inputTokens": 36,
+          "outputTokens": 606,
+          "cacheReadInputTokens": 73201,
+          "cacheCreationInputTokens": 9576,
+          "webSearchRequests": 0,
+          "costUSD": 0.0670683,
+          "contextWindow": 200000,
+          "maxOutputTokens": 32000
+        }
+      },
+      "permission_denials": [],
+      "terminal_reason": "completed",
+      "fast_mode_state": "off",
+      "uuid": "c21ddbd1-0e82-4682-98eb-c409e9dffef2"
+    }
+  ],
+  "stderr_tail": ""
+}

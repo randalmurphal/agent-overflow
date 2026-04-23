@@ -110,7 +110,7 @@ describe('<CommandOutput>', () => {
   });
 
   it('does not load full payload until the user asks for it', async () => {
-    // The preview is rendered inline from meta; GetPayloadData should
+    // The preview is rendered inline from meta; GetPayloadChunk should
     // only fire on explicit "Show full output" click. This pins the
     // lazy-content guarantee that keeps memory bounded.
     const previewMock = setBindingMock('GetPayloadPreview', async () => ({
@@ -119,7 +119,14 @@ describe('<CommandOutput>', () => {
       totalSize: 2048,
       isComplete: false,
     }));
-    const dataMock = setBindingMock('GetPayloadData', async () => ({ data: 'full body', html: 'full body' }));
+    const chunkMock = setBindingMock('GetPayloadChunk', async () => ({
+      data: 'full body',
+      html: 'full body',
+      offset: DEFAULT_PAYLOAD_PREVIEW_BYTES,
+      nextOffset: DEFAULT_PAYLOAD_PREVIEW_BYTES + 9,
+      totalSize: 2048,
+      isComplete: true,
+    }));
 
     const { getByRole } = render(CommandOutput, {
       props: {
@@ -134,13 +141,13 @@ describe('<CommandOutput>', () => {
     });
     // Before expand: neither binding fires.
     expect(previewMock).not.toHaveBeenCalled();
-    expect(dataMock).not.toHaveBeenCalled();
+    expect(chunkMock).not.toHaveBeenCalled();
 
     await fireEvent.click(getByRole('button', { name: /Toggle command output/i }));
     await Promise.resolve();
     await Promise.resolve();
     // Expand loads the preview but NOT the full body.
-    expect(previewMock).toHaveBeenCalledWith('pay-3', DEFAULT_PAYLOAD_PREVIEW_BYTES);
-    expect(dataMock).not.toHaveBeenCalled();
+    expect(previewMock).toHaveBeenCalledWith('thread-1', 'pay-3', DEFAULT_PAYLOAD_PREVIEW_BYTES);
+    expect(chunkMock).not.toHaveBeenCalled();
   });
 });

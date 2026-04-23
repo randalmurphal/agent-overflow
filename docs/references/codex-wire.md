@@ -224,7 +224,9 @@ Enum values are `camelCase` on the wire (`#[serde(rename_all =
 
 The closest Codex analog to Claude's backgrounded tools, but
 structurally different — **a spawn creates a child thread**, not a
-backgrounded tool.
+backgrounded process inside the parent tool call. Agent Overflow
+projects this into the shared background UI when that child is still
+non-terminal after the parent turn closes.
 
 ### The `CollabAgentTool` enum
 
@@ -234,10 +236,10 @@ Defined at `codex-rs/app-server-protocol/src/protocol/v2.rs:4977`:
 CollabAgentTool = "spawnAgent" | "sendInput" | "resumeAgent" | "wait" | "closeAgent"
 ```
 
-⚠ **The wire value for "wait" is `"wait"`, NOT `"waitAgent"`.** Our
-`protocol.go:640-655` `normalizeCollabToolName` should accept `"wait"`
-and route it to a distinct itemType (currently it returns `"wait"`
-but the downstream switch doesn't branch on it).
+⚠ **The wire value for "wait" is `"wait"`, NOT `"waitAgent"`.**
+`protocol.go` normalizes that to `wait_agent` and routes it as a distinct
+itemType; keep accepting the older `"waitAgent"` spelling only as a
+defensive alias.
 
 ### Spawn flow (parent thread)
 
@@ -273,7 +275,7 @@ user message includes:
 
 ```
 <subagent_notification>
-{"agent_id":"<child_thread_id>","status":"completed"}
+{"agent_path":"<child_thread_reference>","status":"completed"}
 </subagent_notification>
 ```
 
@@ -283,11 +285,12 @@ Test coverage:
 ### Parent turn vs child lifecycle
 
 The parent's `turn/completed` fires **without waiting** for spawned
-children. There is NO signal like "parent done, still awaiting child."
-Child runs independently on its own thread id, producing its own
-`turn/completed` stream relayed through the session's
-`childParentByThread` map (`internal/provider/codex/session.go:85-97`,
-`710-736`).
+children. The spawn item's `agentsStates` tells us whether the child
+was still running when spawn completed; Agent Overflow stamps the
+parent's spawn row `is_background=true` at parent turn completion if
+that state is still non-terminal. Child runs independently on its own
+thread id, producing its own `turn/completed` stream relayed through
+the session's child/parent map.
 
 ### Child thread rejoining
 
@@ -408,23 +411,26 @@ Produced by `format_subagent_notification_message` at
 
 ```
 <subagent_notification>
-{"agent_path":"<child_thread_reference>","status":"<AgentStatus>"}
+{"agent_path":"<child_agent_reference>","status":"<AgentStatus>"}
 </subagent_notification>
 ```
 
-⚠ **The wire field is `agent_path`, NOT `agent_id`.** It's a
-reference to the child thread (thread-id-style path), not a bare id.
-The `status` value is a serialized `AgentStatus` — one of Codex's
-`CollabAgentStatus` variants.
+⚠ **The wire field is `agent_path`, NOT `agent_id`.** Named Codex agents
+report a path such as `/root/researcher`; unnamed or older flows may use
+the child thread id as the reference. The `status` value is serialized
+from Codex core's `AgentStatus`, so terminal variants may be objects such
+as `{"completed":"final message"}` or `{"errored":"boom"}`, not just
+plain strings.
 
 ### Current state in agent-overflow
 
-Extraction is **wired at the parser** (`session.go` pulls
-`<subagent_notification>` fragments out of user-message item text) but
-emission to the frontend is **deferred** — the parser produces no
-visible UI event yet, because the UX for a detached-subagent
-completion notice hasn't landed. The internal event exists as a stub
-so the plumbing can be turned on without another parser change.
+Extraction is wired at the parser (`session.go` pulls
+`<subagent_notification>` fragments out of user-message item text) and
+emits `EventSubagentNotification`. The provider maps named `agent_path`
+values back to the parent `spawn_agent` item when it has seen the child
+`thread/started`; triage falls back to receiver-thread matching for
+legacy unnamed flows. Either path writes the same `tool_completion`
+sibling row used by explicit `wait_agent` completion.
 
 ---
 

@@ -156,6 +156,7 @@ func (p *Parser) parseTaskLifecycleEvent(threadID string, raw map[string]json.Ra
 	metaFields := map[string]any{
 		"task_id": taskID,
 		"status":  status,
+		"source":  "task_updated",
 	}
 	if toolUseID != "" {
 		metaFields["tool_use_id"] = toolUseID
@@ -178,21 +179,48 @@ func (p *Parser) parseTaskLifecycleEvent(threadID string, raw map[string]json.Ra
 	}}, nil
 }
 
-// parseTaskNotificationEvent is intentionally a no-op. Claude fires
-// `system/task_notification` as an attention signal (to nudge the next
-// user prompt) for every foreground AND background Bash/Task terminal;
-// it is NOT a task-lifecycle terminal source. The authoritative
-// terminals are `system/task_updated` and TaskOutput
-// `tool_use_result.task.status`. Emitting from task_notification
-// introduces races and corrupts the lifecycle — see
-// docs/architecture/invariants.md invariant 21 and
-// docs/references/claude-wire.md §task_notification.
-//
-// The `summary` field is information we knowingly discard. If a future
-// UX wants a notification log, add a distinct `EventBackgroundTaskNotification`
-// kind; do NOT conflate with `EventBackgroundTaskTerminal`.
+// parseTaskNotificationEvent surfaces Claude's non-lifecycle
+// `system/task_notification` attention signal. This event must never be
+// interpreted as task completion; triage persists it as a lightweight
+// notification row and may read the referenced output_file into SQLite
+// for later expansion on an already-terminal sibling row.
 func (p *Parser) parseTaskNotificationEvent(threadID string, raw map[string]json.RawMessage, now time.Time) ([]provider.ProviderEvent, error) {
-	return nil, nil
+	taskID := readRawString(raw["task_id"])
+	if taskID == "" {
+		return nil, nil
+	}
+	toolUseID := firstNonEmpty(
+		readRawString(raw["tool_use_id"]),
+		readRawString(raw["toolUseId"]),
+		p.taskToolUse(taskID),
+	)
+	status := strings.TrimSpace(firstNonEmpty(readRawString(raw["status"]), readRawString(raw["patch"])))
+	summary := readRawString(raw["summary"])
+	outputFile := firstNonEmpty(readRawString(raw["output_file"]), readRawString(raw["outputFile"]))
+
+	metaFields := map[string]any{
+		"task_id": taskID,
+		"source":  "task_notification",
+	}
+	if toolUseID != "" {
+		metaFields["tool_use_id"] = toolUseID
+	}
+	if status != "" {
+		metaFields["status"] = status
+	}
+	if outputFile != "" {
+		metaFields["output_file"] = outputFile
+	}
+	meta, _ := json.Marshal(metaFields)
+
+	return []provider.ProviderEvent{{
+		Kind:      provider.EventBackgroundTaskNotification,
+		ThreadID:  threadID,
+		ItemID:    toolUseID,
+		Content:   summary,
+		Meta:      meta,
+		Timestamp: now,
+	}}, nil
 }
 
 func normalizeTaskTerminalStatus(status string) string {

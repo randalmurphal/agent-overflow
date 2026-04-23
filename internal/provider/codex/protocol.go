@@ -136,15 +136,15 @@ func classifyTurnCompleted(threadID string, params json.RawMessage, now time.Tim
 //
 //   - userMessage:             persisted by app.PersistItem on SendMessage
 //   - agentMessage / assistantMessage: written by handleTextDelta from the
-//                              item/agentMessage/delta stream; settled on
-//                              turn/completed
+//     item/agentMessage/delta stream; settled on
+//     turn/completed
 //   - reasoning:               written by handleThinking from the
-//                              item/reasoning/*Delta stream
+//     item/reasoning/*Delta stream
 //   - plan:                    item/completed is special-cased to emit
-//                              EventProposedPlan; item/started is noise
+//     EventProposedPlan; item/started is noise
 //   - todoList:                no triage path yet; suppress rather than
-//                              pollute the tool_call stream until the
-//                              renderer knows what to do with it
+//     pollute the tool_call stream until the
+//     renderer knows what to do with it
 //
 // Routing any of these as EventToolStart creates ghost tool_call rows
 // that (a) show up as ToolCallCard in the timeline and (b) thrash the
@@ -212,6 +212,8 @@ func classifyItemNotification(threadID, method string, params json.RawMessage, n
 		return []provider.ProviderEvent{{
 			Kind:      provider.EventCommandOutput,
 			ThreadID:  threadID,
+			TurnID:    readTopLevelString(params, "turnId"),
+			ItemID:    readTopLevelString(params, "itemId"),
 			Content:   readTopLevelString(params, "delta"),
 			Meta:      params,
 			Timestamp: now,
@@ -221,6 +223,8 @@ func classifyItemNotification(threadID, method string, params json.RawMessage, n
 		return []provider.ProviderEvent{{
 			Kind:      provider.EventDiff,
 			ThreadID:  threadID,
+			TurnID:    readTopLevelString(params, "turnId"),
+			ItemID:    readTopLevelString(params, "itemId"),
 			Content:   readTopLevelString(params, "delta"),
 			Meta:      params,
 			Timestamp: now,
@@ -349,7 +353,23 @@ func classifyItemCompleted(threadID string, params json.RawMessage, now time.Tim
 	if isNonToolCodexItemType(itemType) {
 		return nil
 	}
-	return []provider.ProviderEvent{{
+	events := make([]provider.ProviderEvent, 0, 2)
+	if isCommandExecutionItemType(itemType) {
+		if output := readNestedString(params, "item", "aggregatedOutput"); output != "" {
+			events = append(events, provider.ProviderEvent{
+				Kind:      provider.EventCommandOutput,
+				ThreadID:  threadID,
+				TurnID:    turnID,
+				ItemID:    itemID,
+				ItemType:  itemType,
+				Content:   output,
+				Meta:      enrichItemMeta(params),
+				Replace:   true,
+				Timestamp: now,
+			})
+		}
+	}
+	events = append(events, provider.ProviderEvent{
 		Kind:      provider.EventToolComplete,
 		ThreadID:  threadID,
 		TurnID:    turnID,
@@ -357,7 +377,8 @@ func classifyItemCompleted(threadID string, params json.RawMessage, now time.Tim
 		ItemType:  itemType,
 		Meta:      enrichItemMeta(params),
 		Timestamp: now,
-	}}
+	})
+	return events
 }
 
 // classifyThreadNotification handles `thread/*` methods — the name-change,
@@ -689,6 +710,27 @@ func enrichItemMeta(params json.RawMessage) json.RawMessage {
 		extras["process_id"] = processID
 	}
 	if item := readNestedObject(params, "item"); item != nil {
+		if isCommandExecutionItemType(readRawString(item, "type")) {
+			extras["toolName"] = "Bash"
+			input := map[string]any{}
+			if command := readRawString(item, "command"); command != "" {
+				input["command"] = command
+				extras["command"] = command
+			}
+			if cwd := readRawString(item, "cwd"); cwd != "" {
+				input["cwd"] = cwd
+			}
+			if exitCode, ok := readRawInt(item, "exitCode"); ok {
+				extras["exitCode"] = exitCode
+				extras["exit_code"] = exitCode
+			}
+			if durationMs, ok := readRawInt(item, "durationMs"); ok {
+				extras["durationMs"] = durationMs
+			}
+			if len(input) > 0 {
+				extras["input"] = input
+			}
+		}
 		if readRawString(item, "type") == "collabAgentToolCall" {
 			tool := normalizeCollabToolName(readRawString(item, "tool"))
 			// toolName mirrors the itemType classification so the
@@ -755,6 +797,10 @@ func classifyCodexItemType(params json.RawMessage) string {
 	}
 }
 
+func isCommandExecutionItemType(itemType string) bool {
+	return itemType == "commandExecution" || itemType == "command_execution"
+}
+
 // normalizeCollabToolName folds the wire forms of CollabAgentTool into our
 // internal snake_case names. Wire values come from codex-source
 // `codex-rs/app-server-protocol/src/protocol/v2.rs` with
@@ -814,6 +860,18 @@ func readRawStringArray(m map[string]json.RawMessage, key string) []string {
 		return nil
 	}
 	return values
+}
+
+func readRawInt(m map[string]json.RawMessage, key string) (int, bool) {
+	raw, ok := m[key]
+	if !ok {
+		return 0, false
+	}
+	var value int
+	if json.Unmarshal(raw, &value) != nil {
+		return 0, false
+	}
+	return value, true
 }
 
 // readRawJSONObject decodes the value at key as a `map[string]any` so it

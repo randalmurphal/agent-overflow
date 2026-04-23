@@ -52,6 +52,7 @@ var DefaultKeybindings = []Keybinding{
 	{Key: "mod+,", Command: "settings.open"},
 	{Key: "mod+shift+[", Command: "thread.previous"},
 	{Key: "mod+shift+]", Command: "thread.next"},
+	{Key: "esc", Command: "thread.interrupt", When: "hasActiveThread && turnActive && !anyModalOpen"},
 	{Key: "mod+1", Command: "thread.jump.1"},
 	{Key: "mod+2", Command: "thread.jump.2"},
 	{Key: "mod+3", Command: "thread.jump.3"},

@@ -16,7 +16,7 @@ never complete).
 | Lifecycle | Identity | Terminal signal | Storage |
 |---|---|---|---|
 | **Tool** | `tool_use_id` | provider `tool_result` / `item/completed` | `items` row, `kind="tool_call"` |
-| **Task** | `task_id` (Claude only) | `task_updated` terminal OR TaskOutput | `items` row, `kind="tool_completion"`, `completion_of=<launch_id>` |
+| **Task** | `task_id` (Claude only) | `task_updated` terminal; TaskOutput can enrich/fallback | `items` row, `kind="tool_completion"`, `completion_of=<launch_id>` |
 | **Turn** | `turn_id` | provider `result` / `turn/completed` | `turns` row |
 
 The rules below say when each lifecycle fires, what owns its state,
@@ -42,10 +42,10 @@ invocation the agent makes produces exactly one `tool_call` row.
   Task subagent) — completion is the **placeholder** tool_result
   (`backgroundTaskId: ...`); actual task result lands via the task
   lifecycle (below).
-- TaskOutput — a regular inline tool. Its own `tool_use_id`'s
-  completion is the `retrieval_status` result. The task-lifecycle
-  enrichment it triggers is a **separate** event (see
-  [§Task lifecycle](#2-task-lifecycle-claude-only)).
+- TaskOutput — a regular inline tool the agent may call to retrieve a
+  still-retained background task. Its own `tool_use_id`'s completion
+  is the retrieval result. Any background-task details it surfaces are
+  additive and must not replace the TaskOutput tool row.
 - Codex tools (shell, mcp, fileChange, collab spawn/wait/resume/close)
   — all complete via `item/completed`.
 
@@ -63,14 +63,29 @@ two historically accurate rows. The launch row's `status='running'`
 (see [chat-rewrite.md §Background tray](chat-rewrite.md)); it is not
 a claim that the tool is currently executing.
 
-### Codex does NOT have backgrounded tools
+### Codex background projection
 
-Codex's `spawn_agent` is a regular inline tool — it completes
-immediately with `item/completed` once the child thread is created.
-The child thread runs independently but on a different `thread_id`.
-The sibling-row and `BackgroundTaskTray` model does NOT apply to
-Codex. Codex's `BackgroundClassifier` must not stamp `is_background`
-on any item.
+Codex has no `run_in_background` flag, but it still has backgrounded
+work. Triage may stamp `is_background=true` only from wire-typed
+signals:
+
+- `CommandExecution.source == "unifiedExecStartup"` for a yielded
+  `exec_command` whose PTY keeps running after the model moves on.
+- `collabAgentToolCall` `spawn_agent` whose `agentsStates` still
+  reports a non-terminal child when the parent yields or reaches
+  `turn/completed`.
+
+Once stamped, the Codex launch row follows the same UI contract as
+Claude: it stays `status='running'`, renders the `…` badge inline,
+appears in the background tray, and later gets a separate
+`tool_completion` sibling. Codex reports terminal state via
+`item/completed` for commands, `wait_agent`, or injected
+`<subagent_notification>` fragments for detached child agents.
+
+The retired `BackgroundClassifier` heuristic must not come back.
+Background authorization comes from the wire fields above; model
+text/thinking or turn completion is only the trigger that marks an
+already-authorized launch as having moved to the background.
 
 ### Force-close safety net (turn-complete)
 
@@ -93,39 +108,73 @@ lifecycle.
   into `items.meta.task_id` so reconnect can correlate by task_id
   alone.
 - `system/task_updated` with `patch.status` in
-  `{completed, failed, killed}` — **authoritative basic terminal**.
-  Emits `EventBackgroundTaskTerminal`.
+  `{completed, failed, killed}` — **authoritative lifecycle
+  terminal**. Emits `EventBackgroundTaskTerminal`.
 - `user` tool_result for TaskOutput with
-  `tool_use_result.task.status` terminal — **authoritative enriched
-  terminal** (exit_code, output_file, actual output bytes). Emits
-  `EventBackgroundTaskTerminal` with the richer payload, idempotent
-  upsert against whatever task_updated wrote.
-- `system/task_notification` — **not a completion source**. Dropped.
-  See [claude-wire.md §task_notification](../references/claude-wire.md#systemtask_notification).
+  `tool_use_result.task.status` terminal — explicit agent retrieval of
+  a still-retained task. It can carry `exitCode`, `output`, `result`,
+  `description`, and sometimes `output_file`. It is useful as
+  enrichment/fallback, but the UI lifecycle must not depend on the
+  agent choosing to call it.
+- `system/task_notification` — **not a completion source**. It is an
+  agent notification. It may carry `summary` and `output_file` that the
+  UI can render as a separate notification row, but it must not mutate
+  task completion state. See
+  [claude-wire.md §task_notification](../references/claude-wire.md#systemtask_notification).
 
-### Dedup rule
+### Merge rule
 
-Both `task_updated` and TaskOutput can arrive for the same
-`task_id`. The order is undefined. Triage's
-`AppendCompletionItem` upsert is idempotent — later events with
-richer payloads update in place. No parser-level dedup required.
+`task_updated` and TaskOutput can arrive for the same `task_id`.
+Fresh spikes show `task_updated` arrives before the TaskOutput
+`tool_result` when TaskOutput blocks on a running task. A plain
+`task_updated` can also arrive without any TaskOutput call at all.
+
+Triage must coalesce by stable completion id and preserve richer
+existing payload data if a later poorer signal arrives. No parser-level
+dedup is required, but store-level merging must be monotonic: status
+can move to terminal, but output/exit-code/output-file data should not
+be erased by a later lifecycle-only event.
 
 ### Output
 
 Triage writes a `tool_completion` row:
-- `id` = `"task-complete:<launch.id>"` (stable; idempotent upsert)
+- `id` = `"complete:<launch.id>"` (stable; idempotent upsert)
 - `completion_of` = the backgrounded tool's launch `tool_use_id`
 - `kind` = `"tool_completion"`
-- `status` = `completed` / `errored`
-- payload with `{output_file, exit_code, output_payload_id}`
+- `status` = `completed` / `errored` / `killed`
+- payload metadata may include `{output_file, exit_code, end_time}`
+- payload data may include TaskOutput `task.output` / `task.result`
+  when the agent explicitly retrieved it, or a lazy pointer to
+  `task_notification.output_file` when the notification is available
 
 ### Task-lifecycle events can outlive the owning turn
 
 A `task_updated` for a backgrounded task can arrive AFTER the
 turn that launched it has completed. Triage writes the
-`tool_completion` row regardless of the turn's state. The tray
-renders it on its own retention clock. See
-`/tmp/claude-bg-spike/ndjson_outlives.log` for a captured example.
+`tool_completion` row at the current thread write head when one is
+open, otherwise at the latest persisted turn. The tray renders it on
+its own retention clock. See
+`docs/references/fixtures/claude/ndjson_outlives.log` for a captured example.
+
+### Desired chat-history contract
+
+The UI should not expose Claude/Codex implementation differences. The
+history contract is:
+
+- The launch row stays where the agent made the call. Once backgrounded
+  it renders a `...` badge and appears in the background tray.
+- The launch row does not flip to completed when background work ends;
+  it remains the historical "started background work" row.
+- A separate `tool_completion` row appears where the completion was
+  presented to the agent/user stream. If completion lands while
+  assistant text is streaming, defer the row until the active streaming
+  block closes so the transcript stays readable.
+- The completion row shows success/failure/stopped in collapsed form.
+  Expanding the row lazy-loads output details when available. Keep
+  large command output out of the always-loaded timeline window.
+- Provider notification rows, such as Claude `task_notification` and
+  Codex terminal/subagent notifications, may render as muted chat
+  markers. They never decide lifecycle state.
 
 ## 3. Turn lifecycle
 
@@ -214,8 +263,8 @@ cases only — it must not feed turn detection.
 | Claude bg placeholder `tool_result` | `EventToolComplete` | `provider:item_upsert` | Per-spec: keep `status=running`, record `is_background=true` |
 | Claude `system/task_started` | `EventToolStart` (meta-only) | `provider:item_upsert` | Merge `task_id` into `items.meta` |
 | Claude `system/task_updated` terminal | `EventBackgroundTaskTerminal` | `provider:item_upsert` | Idempotent `tool_completion` sibling |
-| Claude TaskOutput `tool_result` | `EventToolComplete` + `EventBackgroundTaskTerminal` | `provider:item_upsert` (×2) | Close TaskOutput row; enrich sibling row |
-| Claude `system/task_notification` | — | — | Dropped |
+| Claude TaskOutput `tool_result` | `EventToolComplete` + optional `EventBackgroundTaskTerminal` | `provider:item_upsert` | Close TaskOutput row; optional sibling enrichment/fallback |
+| Claude `system/task_notification` | — today; future notification event only | — today; future row only | No lifecycle state mutation |
 | Claude `result` | `EventTurnComplete` | `provider:turn_completed` | Update `turns` row, force-close orphans |
 | Codex `item/started` | `EventToolStart` | `provider:item_upsert` | Upsert item row |
 | Codex `item/completed` | `EventToolComplete` | `provider:item_upsert` | Update item row |
@@ -283,8 +332,8 @@ active."
 |---|---|---|
 | `ChatWorkingIndicator` | `pane.activeTurn.startedAt` | Self-ticking timer, appears iff `activeTurn !== null`. |
 | `MessageTimeline` (completion divider) | `pane.latestSettledTurn.{assistantMessageId, tokenUsage}` | Separator rendered before the item whose id matches `assistantMessageId`. Label `"Response • Worked for Xs · Yk tokens"`. |
-| `ToolCallCard` (backgrounded badge) | `item.isBackground && item.status === 'running'` | Renders a `"…"` blue badge next to the tool name. |
-| `BackgroundTaskTray` | `items` (unchanged from existing) | Pairs launch + completion siblings; drops pair on retention. |
+| `ToolCallCard` (backgrounded badge) | `item.isBackground && item.status === 'running'` | Renders a `…` status badge on the inline launch row. |
+| `BackgroundTaskTray` | `ListLiveBackgroundTasks(threadId)` | Pairs launch + completion siblings; drops pair on retention. |
 
 ## Anti-patterns (forbidden)
 
@@ -311,5 +360,5 @@ active."
 - Event taxonomy full routing: [`triage-routing.md`](triage-routing.md).
 - Data flow end-to-end: [`data-flow.md`](data-flow.md).
 - Invariants (authoritative guardrails): [`invariants.md`](invariants.md).
-- Captured wire samples: `/tmp/claude-bg-spike/*.log`,
-  `/tmp/taskoutput-multi-spike/ndjson.log`.
+- Captured wire samples: `docs/references/fixtures/claude/*.log`,
+  `docs/references/fixtures/claude/taskoutput_multi.ndjson`.

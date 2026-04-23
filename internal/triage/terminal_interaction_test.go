@@ -2,6 +2,7 @@ package triage
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -199,6 +200,55 @@ func TestTerminalInteraction_IdempotentReplay(t *testing.T) {
 	}
 	if count != 1 {
 		t.Errorf("idempotent replay produced %d rows, want 1", count)
+	}
+}
+
+// TestTerminalInteraction_EmptyProcessIDSubstitutesDash pins the
+// fallback in terminalInteractionID: when the wire omits processId
+// (older Codex builds or partial frames), the id substitutes "-" so
+// it stays well-formed. Multiple polls in the same turn with empty
+// processIDs still differentiate by seq, so this test also verifies
+// two empty-processID events land as two distinct rows rather than
+// one overwriting the other.
+func TestTerminalInteraction_EmptyProcessIDSubstitutesDash(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+
+	for i := 0; i < 2; i++ {
+		evt := provider.ProviderEvent{
+			Kind:      provider.EventTerminalInteraction,
+			ThreadID:  "t1",
+			TurnID:    "turn-0",
+			ItemID:    "cmd-1",
+			Content:   "",
+			Meta:      terminalInteractionMetaBlob(t, "", ""),
+			Timestamp: time.Now(),
+		}
+		if err := router.Handle(evt); err != nil {
+			t.Fatalf("handle empty-process poll %d: %v", i, err)
+		}
+	}
+
+	items, err := st.ListTurnItems("t1", 0)
+	if err != nil {
+		t.Fatalf("list turn items: %v", err)
+	}
+	seenIDs := make(map[string]struct{})
+	for _, it := range items {
+		if it.Kind != string(provider.ItemTerminalInteraction) {
+			continue
+		}
+		seenIDs[it.ID] = struct{}{}
+		// Every persisted row must carry the dash fallback in its id
+		// so a listing that filters by id prefix / shape stays sane
+		// even when processId was missing on the wire.
+		if !strings.HasPrefix(it.ID, "waited:-:") {
+			t.Errorf("row id %q missing 'waited:-:' prefix — empty processID fallback broke", it.ID)
+		}
+	}
+	if len(seenIDs) != 2 {
+		t.Errorf("expected 2 distinct rows for two empty-processID polls, got %d (seq counter may not advance when processID is empty)", len(seenIDs))
 	}
 }
 

@@ -103,15 +103,15 @@ describe('<DiffPanelDrawer>', () => {
       }),
     ]);
     const pane = await buildPane(makeThread({ id: 'thread-a' }));
-    const getPayload = setBindingMock('GetPayloadData', async (payloadId: string) => ({ data: `diff:${payloadId}`, html: '' }));
+    const getPayload = setBindingMock('GetPayloadData', async (_threadId: string, payloadId: string) => ({ data: `diff:${payloadId}`, html: '' }));
 
     const { getByTestId, findByTestId } = render(DiffPanelDrawer, { props: { pane } });
     await flush();
     await fireEvent.click(getByTestId('diff-source-tab-cumulative'));
     await flush();
 
-    await waitFor(() => expect(getPayload).toHaveBeenCalledWith('p1'));
-    expect(getPayload).toHaveBeenCalledWith('p2');
+    await waitFor(() => expect(getPayload).toHaveBeenCalledWith('thread-a', 'p1'));
+    expect(getPayload).toHaveBeenCalledWith('thread-a', 'p2');
     expect((await findByTestId('diff-viewer')).textContent).toContain('diff:p1');
   });
 

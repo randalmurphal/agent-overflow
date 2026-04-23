@@ -4,6 +4,7 @@
   import MessageTimeline from './MessageTimeline.svelte';
   import ApprovalPrompt from '../composer/ApprovalPrompt.svelte';
   import BackgroundTaskTray from './BackgroundTaskTray.svelte';
+  import ChatWorkingIndicator from './ChatWorkingIndicator.svelte';
   import Composer from '../composer/Composer.svelte';
   import BelowComposerBar from '../composer/belowbar/BelowComposerBar.svelte';
   import ProviderStatusBanner from './ProviderStatusBanner.svelte';
@@ -102,6 +103,7 @@
       <BackgroundTaskTray {pane} />
       <PlanFollowUpBanner {pane} {draft} />
       <Composer {pane} {draft} />
+      <ChatWorkingIndicator {pane} />
       <BelowComposerBar {pane} />
       {#if pane.diffPanel.open && pane.thread}
         {#key pane.thread.id}

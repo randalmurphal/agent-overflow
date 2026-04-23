@@ -77,7 +77,7 @@
   // body to the same GetPayloadPreview flow that ToolResultDropdown uses.
   let classification = $derived(classifyToolName(item.toolName ?? item.summary));
 
-  const expansion = createPayloadExpansion(() => item.payloadId);
+  const expansion = createPayloadExpansion(() => item.payloadId, () => item.threadId);
 
   $effect(() => {
     item.id;
@@ -89,6 +89,18 @@
   // the same payloadMeta dumping ground ToolResultDropdown used to read.
   let summaryMeta = $derived.by<Record<string, unknown> | null>(() => {
     const raw = item.payloadMeta;
+    if (!raw) return null;
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      if (parsed && typeof parsed === 'object') return parsed as Record<string, unknown>;
+      return null;
+    } catch {
+      return null;
+    }
+  });
+
+  let itemMeta = $derived.by<Record<string, unknown> | null>(() => {
+    const raw = item.meta;
     if (!raw) return null;
     try {
       const parsed = JSON.parse(raw) as unknown;
@@ -156,6 +168,18 @@
   let exitBadgeClass = $derived.by(() => {
     if (exitCode === null) return '';
     return exitCode === 0 ? 'bg-success/20 text-success' : 'bg-error/20 text-error';
+  });
+
+  let deferredOutputState = $derived.by(() => {
+    if (!itemMeta) return '';
+    const state = itemMeta.notification_output_state ?? itemMeta.output_file_state;
+    return typeof state === 'string' ? state : '';
+  });
+
+  let deferredOutputError = $derived.by(() => {
+    if (!itemMeta) return '';
+    const error = itemMeta.notification_output_error ?? itemMeta.output_file_error;
+    return typeof error === 'string' ? error : '';
   });
 
   function formatDuration(ms: number): string {
@@ -283,9 +307,21 @@
               onclick={() => expansion.showFull()}
               data-testid="tool-call-card-show-full"
             >
-              Show full output ({formatPayloadSize(expansion.totalSize)}) ↓
+              Load more output ({formatPayloadSize(expansion.totalSize)}) ↓
             </button>
           {/if}
+        {:else if deferredOutputState === 'loading'}
+          <p
+            class="px-3 py-2 text-[11px] text-fg-subtle animate-pulse"
+            role="status"
+            aria-live="polite"
+          >
+            Loading…
+          </p>
+        {:else if deferredOutputState === 'error'}
+          <p class="px-3 py-2 text-[11px] text-error" role="alert">
+            Failed to load: {deferredOutputError || 'Background output could not be loaded.'}
+          </p>
         {:else}
           <p class="px-3 py-2 text-[11px] text-fg-subtle italic">
             No stored payload for this tool result.

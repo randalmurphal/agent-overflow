@@ -921,7 +921,7 @@ func TestE2E_DiffItemPersistsWithPayload(t *testing.T) {
 	}
 
 	// Round-trip the payload via the binding.
-	got, err := app.GetPayloadData(diffItem.PayloadID)
+	got, err := app.GetPayloadData(thread.ID, diffItem.PayloadID)
 	if err != nil {
 		t.Fatalf("GetPayloadData: %v", err)
 	}
@@ -1222,7 +1222,7 @@ func TestE2E_CommandOutputPersistsToPayload(t *testing.T) {
 		t.Fatalf("command item missing payload: %+v", cmd)
 	}
 
-	got, err := app.GetPayloadData(cmd.PayloadID)
+	got, err := app.GetPayloadData(thread.ID, cmd.PayloadID)
 	if err != nil {
 		t.Fatalf("GetPayloadData: %v", err)
 	}
@@ -1255,7 +1255,7 @@ func TestE2E_RenameThreadUpdatesTitle(t *testing.T) {
 // return an error, not silent empty string.
 func TestE2E_GetPayloadDataReturnsEmptyForMissing(t *testing.T) {
 	app, _ := setupE2EApp(t)
-	_, err := app.GetPayloadData("no-such-id")
+	_, err := app.GetPayloadData("thread-missing", "no-such-id")
 	if err == nil {
 		t.Fatal("GetPayloadData missing: err = nil, want error")
 	}
@@ -1303,7 +1303,7 @@ func TestE2E_GetPayloadDataRendersHtmlForCommandOutput(t *testing.T) {
 		t.Fatalf("command item missing payload: %+v", cmd)
 	}
 
-	got, err := app.GetPayloadData(cmd.PayloadID)
+	got, err := app.GetPayloadData(thread.ID, cmd.PayloadID)
 	if err != nil {
 		t.Fatalf("GetPayloadData: %v", err)
 	}

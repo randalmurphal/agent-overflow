@@ -553,6 +553,52 @@ describe('<BackgroundTaskTray>', () => {
     expect(stopMock).not.toHaveBeenCalled();
   });
 
+  it('Stop-all stays visible on a Codex tray that mixes unifiedExec and subagent rows, and clicking it fires CleanCodexBackgroundTerminals exactly once', async () => {
+    // Regression pin for the Codex stop-all visibility predicate: the
+    // tray filters out pure-subagent trays (no kill path) but MUST
+    // still show Stop-all when at least one unifiedExec row is
+    // present. The RPC is thread-wide and terminates every bg PTY for
+    // the thread — subagents are unaffected but the unifiedExec kills
+    // still land. A regression that required every row to be
+    // cleanable would hide Stop-all whenever a subagent coexisted,
+    // leaving the user without any primitive for the terminals.
+    const pane = await makePaneWithBackground(
+      [
+        item({
+          id: 'launch-exec',
+          isBackground: true,
+          status: 'running',
+          summary: 'npm run server',
+          toolName: 'exec_command',
+          createdAt: 1_000_000 - 1_000,
+        }),
+        item({
+          id: 'launch-subagent',
+          isBackground: true,
+          status: 'running',
+          summary: 'spawn_agent: helper',
+          toolName: 'collab_agent',
+          createdAt: 1_000_000 - 2_000,
+        }),
+      ],
+      makeThread({ provider: 'codex' }),
+    );
+    const cleanMock = setBindingMock('CleanCodexBackgroundTerminals', async () => {});
+    const stopMock = setBindingMock('StopClaudeTask', async () => {});
+
+    const { getByTestId } = await renderTray(pane);
+    await fireEvent.click(getByTestId('background-task-tray-stop-all'));
+    await tick();
+
+    // Thread-wide primitive fires exactly once — not one call per
+    // unifiedExec row.
+    expect(cleanMock).toHaveBeenCalledTimes(1);
+    expect(cleanMock).toHaveBeenCalledWith(pane.thread!.id);
+    // Claude stop primitive MUST NOT fire on a Codex thread, even with
+    // a subagent row present.
+    expect(stopMock).not.toHaveBeenCalled();
+  });
+
   it('hides the Stop-all button when the Codex tray only contains subagent rows', async () => {
     // `collab_agent` spawn children have no client-side kill path —
     // CleanCodexBackgroundTerminals only touches unifiedExec PTYs, so

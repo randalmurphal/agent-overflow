@@ -40,6 +40,7 @@ export {
 
   // Data access
   GetPayloadPreview,
+  GetPayloadChunk,
   GetPayloadData,
   HighlightMarkdown,
   ListItems,

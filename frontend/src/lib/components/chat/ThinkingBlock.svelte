@@ -7,7 +7,7 @@
 
   let { item }: { item: Item } = $props();
 
-  const expansion = createPayloadExpansion(() => item.payloadId);
+  const expansion = createPayloadExpansion(() => item.payloadId, () => item.threadId);
 
   let preview = $derived(
     item.summary.length > 200 ? item.summary.slice(0, 200) + '...' : item.summary,
@@ -15,6 +15,7 @@
 
   $effect(() => {
     item.id;
+    item.threadId;
     item.payloadId;
     expansion.reset();
   });

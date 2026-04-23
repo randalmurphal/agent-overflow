@@ -14,7 +14,7 @@
   // so detailText doesn't get a payloadId — it's truncate-only.
   const detailText = $derived(meta.detail || meta.preview || '');
 
-  const expansion = createPayloadExpansion(() => payloadId);
+  const expansion = createPayloadExpansion(() => payloadId, () => item.threadId);
 
   const hasInlineDiff = $derived(Boolean(meta.inlineDiff && meta.inlineDiff.files.length > 0));
   const hasExactPatch = $derived(meta.inlineDiff?.availability === 'exact_patch' && Boolean(payloadId));
@@ -25,6 +25,7 @@
   });
 
   $effect(() => {
+    item.threadId;
     payloadId;
     expansion.reset();
   });

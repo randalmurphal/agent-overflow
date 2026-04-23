@@ -10,26 +10,13 @@ import (
 	"agent-overflow/internal/store"
 )
 
-// TestSavePayloadToFileWritesBytesAndReturnsPath covers the happy path:
-// the picker returns a chosen path, SavePayloadToFile writes the
-// payload body to disk, and the returned value is the chosen path.
-func TestSavePayloadToFileWritesBytesAndReturnsPath(t *testing.T) {
-	app := newTestAppWithStore(t)
-	thread := testThread("thread-save-payload")
+func seedPayloadOwner(t *testing.T, app *App, thread store.Thread, payload store.Payload, itemID string) {
+	t.Helper()
 	if err := app.store.CreateThread(thread); err != nil {
-		t.Fatalf("CreateThread: %v", err)
-	}
-
-	// Seed a payload + item that references it.
-	payload := store.Payload{
-		ID:        "payload-1",
-		Kind:      "command_output",
-		Meta:      "{}",
-		Data:      []byte("hello bytes"),
-		CreatedAt: time.Now().UnixMilli(),
+		t.Fatalf("CreateThread(%s): %v", thread.ID, err)
 	}
 	item := store.Item{
-		ID:          "item-1",
+		ID:          itemID,
 		ThreadID:    thread.ID,
 		TurnIndex:   1,
 		Kind:        "tool_call",
@@ -43,8 +30,97 @@ func TestSavePayloadToFileWritesBytesAndReturnsPath(t *testing.T) {
 		UpdatedAt:   payload.CreatedAt,
 	}
 	if _, err := app.store.UpsertItem(item, &payload); err != nil {
-		t.Fatalf("UpsertItem: %v", err)
+		t.Fatalf("UpsertItem(%s): %v", itemID, err)
 	}
+}
+
+func TestGetPayloadBindingsRequireOwningThread(t *testing.T) {
+	app := newTestAppWithStore(t)
+	now := time.Now().UnixMilli()
+	owner := testThread("thread-owner")
+	other := testThread("thread-other")
+	if err := app.store.CreateThread(owner); err != nil {
+		t.Fatalf("CreateThread(owner): %v", err)
+	}
+	if err := app.store.CreateThread(other); err != nil {
+		t.Fatalf("CreateThread(other): %v", err)
+	}
+
+	payload := store.Payload{
+		ID:        "payload-owned",
+		Kind:      "command_output",
+		Meta:      "{}",
+		Data:      []byte("hello bytes"),
+		CreatedAt: now,
+	}
+	if _, err := app.store.UpsertItem(store.Item{
+		ID:          "owner-item",
+		ThreadID:    owner.ID,
+		TurnIndex:   1,
+		Kind:        "tool_call",
+		Role:        "assistant",
+		Status:      "completed",
+		Summary:     "Bash: echo hi",
+		ToolName:    "Bash",
+		PayloadID:   payload.ID,
+		PayloadKind: payload.Kind,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}, &payload); err != nil {
+		t.Fatalf("UpsertItem(owner-item): %v", err)
+	}
+
+	got, err := app.GetPayloadData(owner.ID, payload.ID)
+	if err != nil {
+		t.Fatalf("GetPayloadData(owner): %v", err)
+	}
+	if got.Data != "hello bytes" {
+		t.Fatalf("GetPayloadData(owner) = %q, want hello bytes", got.Data)
+	}
+
+	preview, err := app.GetPayloadPreview(owner.ID, payload.ID, 5)
+	if err != nil {
+		t.Fatalf("GetPayloadPreview(owner): %v", err)
+	}
+	if preview.Data != "hello" {
+		t.Fatalf("GetPayloadPreview(owner) = %q, want hello", preview.Data)
+	}
+
+	chunk, err := app.GetPayloadChunk(owner.ID, payload.ID, 5, 64)
+	if err != nil {
+		t.Fatalf("GetPayloadChunk(owner): %v", err)
+	}
+	if chunk.Data != "hello bytes" {
+		t.Fatalf("GetPayloadChunk(owner) = %q, want full cumulative payload", chunk.Data)
+	}
+
+	if _, err := app.GetPayloadData(other.ID, payload.ID); err == nil {
+		t.Fatal("GetPayloadData(other): err = nil, want ownership error")
+	}
+	if _, err := app.GetPayloadPreview(other.ID, payload.ID, 5); err == nil {
+		t.Fatal("GetPayloadPreview(other): err = nil, want ownership error")
+	}
+	if _, err := app.GetPayloadChunk(other.ID, payload.ID, 0, 5); err == nil {
+		t.Fatal("GetPayloadChunk(other): err = nil, want ownership error")
+	}
+}
+
+// TestSavePayloadToFileWritesBytesAndReturnsPath covers the happy path:
+// the picker returns a chosen path, SavePayloadToFile writes the
+// payload body to disk, and the returned value is the chosen path.
+func TestSavePayloadToFileWritesBytesAndReturnsPath(t *testing.T) {
+	app := newTestAppWithStore(t)
+	thread := testThread("thread-save-payload")
+
+	// Seed a payload + item that references it.
+	payload := store.Payload{
+		ID:        "payload-1",
+		Kind:      "command_output",
+		Meta:      "{}",
+		Data:      []byte("hello bytes"),
+		CreatedAt: time.Now().UnixMilli(),
+	}
+	seedPayloadOwner(t, app, thread, payload, "item-1")
 
 	dest := filepath.Join(t.TempDir(), "out.txt")
 	var pickedFilename string
@@ -81,9 +157,6 @@ func TestSavePayloadToFileWritesBytesAndReturnsPath(t *testing.T) {
 func TestSavePayloadToFileCancelledReturnsEmptyPath(t *testing.T) {
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-save-cancel")
-	if err := app.store.CreateThread(thread); err != nil {
-		t.Fatalf("CreateThread: %v", err)
-	}
 
 	payload := store.Payload{
 		ID:        "payload-cancel",
@@ -92,22 +165,7 @@ func TestSavePayloadToFileCancelledReturnsEmptyPath(t *testing.T) {
 		Data:      []byte("secret"),
 		CreatedAt: time.Now().UnixMilli(),
 	}
-	item := store.Item{
-		ID:          "item-cancel",
-		ThreadID:    thread.ID,
-		TurnIndex:   1,
-		Kind:        "tool_call",
-		Role:        "assistant",
-		Status:      "completed",
-		Summary:     "Diff",
-		PayloadID:   payload.ID,
-		PayloadKind: payload.Kind,
-		CreatedAt:   payload.CreatedAt,
-		UpdatedAt:   payload.CreatedAt,
-	}
-	if _, err := app.store.UpsertItem(item, &payload); err != nil {
-		t.Fatalf("UpsertItem: %v", err)
-	}
+	seedPayloadOwner(t, app, thread, payload, "item-cancel")
 
 	app.savePayloadPickerFn = func(filename string) (string, error) {
 		return "", nil // user cancelled
@@ -128,9 +186,6 @@ func TestSavePayloadToFileCancelledReturnsEmptyPath(t *testing.T) {
 func TestSavePayloadToFileDialogErrorSurfaces(t *testing.T) {
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-save-err")
-	if err := app.store.CreateThread(thread); err != nil {
-		t.Fatalf("CreateThread: %v", err)
-	}
 
 	payload := store.Payload{
 		ID:        "p-err",
@@ -139,22 +194,7 @@ func TestSavePayloadToFileDialogErrorSurfaces(t *testing.T) {
 		Data:      []byte("thoughts"),
 		CreatedAt: time.Now().UnixMilli(),
 	}
-	item := store.Item{
-		ID:          "item-err",
-		ThreadID:    thread.ID,
-		TurnIndex:   1,
-		Kind:        "assistant_text",
-		Role:        "assistant",
-		Status:      "completed",
-		Summary:     "tldr",
-		PayloadID:   payload.ID,
-		PayloadKind: payload.Kind,
-		CreatedAt:   payload.CreatedAt,
-		UpdatedAt:   payload.CreatedAt,
-	}
-	if _, err := app.store.UpsertItem(item, &payload); err != nil {
-		t.Fatalf("UpsertItem: %v", err)
-	}
+	seedPayloadOwner(t, app, thread, payload, "item-err")
 
 	app.savePayloadPickerFn = func(filename string) (string, error) {
 		return "", errors.New("boom")

@@ -517,27 +517,6 @@ func (a *App) ListItems(threadID string) ([]store.Item, error) {
 
 // --- Payload operations ---
 
-// GetPayloadData returns a payload body alongside its pre-rendered
-// display HTML for the frontend. The kind-dispatched renderer runs on
-// demand here rather than persisting a column on the payloads table —
-// payload expansions are cold reads (only when the user expands) and
-// render cost is ~1 ms per 32 KB, so paying at binding time keeps the
-// data fresh on renderer upgrades and avoids a wasted streaming write.
-func (a *App) GetPayloadData(payloadID string) (PayloadContent, error) {
-	data, err := a.store.GetPayloadData(payloadID)
-	if err != nil {
-		return PayloadContent{}, err
-	}
-	meta, err := a.store.GetPayloadMeta(payloadID)
-	if err != nil {
-		return PayloadContent{}, err
-	}
-	return PayloadContent{
-		Data: string(data),
-		Html: a.highlighter.RenderForKind(meta.Kind, string(data)),
-	}, nil
-}
-
 // HighlightMarkdown renders arbitrary markdown through the shared
 // highlighter. Surfaces that transform raw markdown before display
 // (ProposedPlanCard strips the title heading, truncates for collapsed

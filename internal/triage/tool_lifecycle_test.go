@@ -839,6 +839,116 @@ func TestHandleEventBackgroundTaskTerminal_InsertsSibling(t *testing.T) {
 	}
 }
 
+// TestHandleEventBackgroundTaskTerminal_AppendsAtCurrentTurn pins the
+// history model for background work: the launch row stays where the
+// agent dispatched it, but the terminal row lands where completion was
+// observed. A background Bash can finish several turns later, and the
+// chat timeline must show that as a separate later event.
+func TestHandleEventBackgroundTaskTerminal_AppendsAtCurrentTurn(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+
+	startMeta, _ := json.Marshal(map[string]any{
+		"toolName":      "Bash",
+		"is_background": true,
+		"input":         map[string]any{"command": "sleep 30"},
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "bg-late",
+		ItemType: "Bash", Meta: startMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("seed launch: %v", err)
+	}
+
+	// Simulate later chat activity: turn 2 is now the active write
+	// head when the background task reports terminal.
+	seedOpenTurn(t, router, st, "t1", 2)
+	terminalMeta, _ := json.Marshal(map[string]any{
+		"task_id":     "tsk-late",
+		"tool_use_id": "bg-late",
+		"status":      "completed",
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventBackgroundTaskTerminal, ThreadID: "t1", ItemID: "bg-late",
+		Meta: terminalMeta, Content: "done", Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("bg terminal: %v", err)
+	}
+
+	launch, ok, err := st.GetThreadItem("t1", "bg-late")
+	if err != nil || !ok {
+		t.Fatalf("lookup launch: ok=%v err=%v", ok, err)
+	}
+	if launch.TurnIndex != 0 {
+		t.Fatalf("launch turn_index = %d, want 0", launch.TurnIndex)
+	}
+
+	dones := findItemsByKind(t, st, "t1", itemKindBackgroundDone)
+	if len(dones) != 1 {
+		t.Fatalf("expected 1 tool_completion sibling, got %d", len(dones))
+	}
+	if dones[0].TurnIndex != 2 {
+		t.Errorf("completion turn_index = %d, want 2 (current write head)", dones[0].TurnIndex)
+	}
+	if dones[0].CompletionOf != "bg-late" {
+		t.Errorf("completion_of = %q, want bg-late", dones[0].CompletionOf)
+	}
+}
+
+// TestHandleEventBackgroundTaskTerminal_AppendsToLatestPersistedTurn
+// covers the no-open-turn fallback. The turns table can legitimately
+// know about a later turn even when that turn produced no items; the
+// completion should still land at the latest recorded history position,
+// not back on the launch turn.
+func TestHandleEventBackgroundTaskTerminal_AppendsToLatestPersistedTurn(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+
+	startMeta, _ := json.Marshal(map[string]any{
+		"toolName":      "Bash",
+		"is_background": true,
+		"input":         map[string]any{"command": "sleep 30"},
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "bg-empty-turn",
+		ItemType: "Bash", Meta: startMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("seed launch: %v", err)
+	}
+	router.clearOpenTurn("t1")
+
+	if err := st.InsertTurn(store.Turn{
+		TurnID:    "turn-3",
+		ThreadID:  "t1",
+		TurnIndex: 3,
+		StartedAt: time.Now().UnixMilli(),
+	}); err != nil {
+		t.Fatalf("insert itemless later turn: %v", err)
+	}
+
+	terminalMeta, _ := json.Marshal(map[string]any{
+		"task_id":     "tsk-empty-turn",
+		"tool_use_id": "bg-empty-turn",
+		"status":      "completed",
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventBackgroundTaskTerminal, ThreadID: "t1", ItemID: "bg-empty-turn",
+		Meta: terminalMeta, Content: "done", Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("bg terminal: %v", err)
+	}
+
+	dones := findItemsByKind(t, st, "t1", itemKindBackgroundDone)
+	if len(dones) != 1 {
+		t.Fatalf("expected 1 tool_completion sibling, got %d", len(dones))
+	}
+	if dones[0].TurnIndex != 3 {
+		t.Errorf("completion turn_index = %d, want latest persisted turn 3", dones[0].TurnIndex)
+	}
+}
+
 // TestHandleEventBackgroundTaskTerminal_Enriches covers the two-event
 // task-updated + TaskOutput sequence where the second call carries a
 // richer payload (exit_code, output_file) than the first. The sibling
@@ -915,6 +1025,70 @@ func TestHandleEventBackgroundTaskTerminal_Enriches(t *testing.T) {
 	}
 	if string(data) != "stdout body here" {
 		t.Errorf("expected enriched payload data to be replaced, got %q", string(data))
+	}
+}
+
+func TestHandleEventBackgroundTaskTerminal_EnrichmentPreservesCompletionTurn(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+
+	startMeta, _ := json.Marshal(map[string]any{
+		"toolName":      "Bash",
+		"is_background": true,
+		"input":         map[string]any{"command": "sleep 5; echo done"},
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "bg-stable-turn",
+		ItemType: "Bash", Meta: startMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("seed launch: %v", err)
+	}
+
+	basicMeta, _ := json.Marshal(map[string]any{
+		"task_id":     "tsk-stable-turn",
+		"tool_use_id": "bg-stable-turn",
+		"status":      "completed",
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventBackgroundTaskTerminal, ThreadID: "t1", ItemID: "bg-stable-turn",
+		Meta: basicMeta, Content: "", Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("basic terminal: %v", err)
+	}
+	initial, ok, err := st.GetThreadItem("t1", nextToolCompletionID("bg-stable-turn"))
+	if err != nil || !ok {
+		t.Fatalf("lookup initial sibling: ok=%v err=%v", ok, err)
+	}
+	if initial.TurnIndex != 0 {
+		t.Fatalf("initial turn_index=%d, want 0", initial.TurnIndex)
+	}
+
+	seedOpenTurn(t, router, st, "t1", 2)
+	exit := 0
+	enrichedMeta, _ := json.Marshal(map[string]any{
+		"task_id":     "tsk-stable-turn",
+		"tool_use_id": "bg-stable-turn",
+		"status":      "completed",
+		"exit_code":   exit,
+		"output_file": "/tmp/bg-output.txt",
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventBackgroundTaskTerminal, ThreadID: "t1", ItemID: "bg-stable-turn",
+		Meta: enrichedMeta, Content: "stdout body here", Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("enriched terminal: %v", err)
+	}
+
+	after, ok, err := st.GetThreadItem("t1", nextToolCompletionID("bg-stable-turn"))
+	if err != nil || !ok {
+		t.Fatalf("lookup enriched sibling: ok=%v err=%v", ok, err)
+	}
+	if after.TurnIndex != initial.TurnIndex {
+		t.Fatalf("enrichment moved completion turn_index from %d to %d", initial.TurnIndex, after.TurnIndex)
+	}
+	if after.ItemIndex != initial.ItemIndex {
+		t.Fatalf("enrichment moved item_index from %d to %d", initial.ItemIndex, after.ItemIndex)
 	}
 }
 

@@ -136,18 +136,15 @@ func TestParseTaskLifecycleEvent_NonTerminalPatchIsNoOp(t *testing.T) {
 	}
 }
 
-// TestParseTaskNotificationEvent_EmitsNothing is the invariant-21
-// guard: every shape of task_notification — with or without
-// tool_use_id, with or without a status — emits zero events. The
-// summary field is information we knowingly discard.
-func TestParseTaskNotificationEvent_EmitsNothing(t *testing.T) {
+// TestParseTaskNotificationEvent_EmitsNotificationOnly is the invariant-21
+// guard: task_notification emits a distinct notification event, never a
+// lifecycle terminal.
+func TestParseTaskNotificationEvent_EmitsNotificationOnly(t *testing.T) {
 	parser := NewParser()
 
 	cases := []string{
 		`{"type":"system","subtype":"task_notification","task_id":"t1","tool_use_id":"tu1","status":"completed","summary":"done"}`,
 		`{"type":"system","subtype":"task_notification","task_id":"t1","status":"failed","summary":"whoops"}`,
-		`{"type":"system","subtype":"task_notification","tool_use_id":"tu1"}`, // no task_id, no status
-		`{"type":"system","subtype":"task_notification"}`,                     // empty
 		`{"type":"system","subtype":"task_notification","task_id":"t-fg","tool_use_id":"tu-fg","status":"completed","summary":"Background command \"echo\" completed (exit code 0)","output_file":""}`, // foreground bash form
 	}
 	for _, line := range cases {
@@ -155,8 +152,25 @@ func TestParseTaskNotificationEvent_EmitsNothing(t *testing.T) {
 		if err != nil {
 			t.Fatalf("parse %q: %v", line, err)
 		}
+		if len(events) != 1 || events[0].Kind != provider.EventBackgroundTaskNotification {
+			t.Errorf("task_notification must emit one notification event for %s, got %+v", line, events)
+			continue
+		}
+		if events[0].Kind == provider.EventBackgroundTaskTerminal {
+			t.Fatalf("task_notification emitted lifecycle terminal: %+v", events[0])
+		}
+	}
+
+	for _, line := range []string{
+		`{"type":"system","subtype":"task_notification","tool_use_id":"tu1"}`,
+		`{"type":"system","subtype":"task_notification"}`,
+	} {
+		events, err := parser.ParseLine(testThread, []byte(line))
+		if err != nil {
+			t.Fatalf("parse %q: %v", line, err)
+		}
 		if len(events) != 0 {
-			t.Errorf("task_notification must emit zero events (invariant 21) for %s, got %+v", line, events)
+			t.Errorf("malformed task_notification should emit no event for %s, got %+v", line, events)
 		}
 	}
 }

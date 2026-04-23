@@ -15,8 +15,8 @@ import (
 //     `EventBackgroundTaskTerminal` (NOT `EventToolComplete` — the
 //     tool-lifecycle completion was already emitted by the
 //     backgrounded placeholder's `tool_result`).
-//  3. `task_notification` is informational only — it MUST NOT emit
-//     any event (invariant 21).
+//  3. `task_notification` is informational only — it emits a distinct
+//     notification event, never a task terminal (invariant 21).
 //  4. A replayed `task_updated` re-emits (dedup is triage's
 //     responsibility via idempotent AppendCompletionItem upsert);
 //     the parser no longer carries dedup sets.
@@ -60,14 +60,14 @@ func TestTaskLifecycleSignalsPostRefactor(t *testing.T) {
 		t.Fatalf("task_updated itemID = %q, want tool-dedup", events[0].ItemID)
 	}
 
-	// 3. task_notification MUST emit zero events (invariant 21).
+	// 3. task_notification emits notification only (invariant 21).
 	notifLine := []byte(`{"type":"system","subtype":"task_notification","task_id":"task-dedup","tool_use_id":"tool-dedup","status":"completed","summary":"noise"}`)
 	notifEvents, err := parser.ParseLine(testThread, notifLine)
 	if err != nil {
 		t.Fatalf("task_notification: %v", err)
 	}
-	if len(notifEvents) != 0 {
-		t.Fatalf("task_notification must emit no events (invariant 21), got %d: %+v", len(notifEvents), notifEvents)
+	if len(notifEvents) != 1 || notifEvents[0].Kind != provider.EventBackgroundTaskNotification {
+		t.Fatalf("task_notification must emit one notification event, got %d: %+v", len(notifEvents), notifEvents)
 	}
 
 	// 4. A replayed task_updated re-emits — the parser no longer

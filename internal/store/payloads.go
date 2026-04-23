@@ -262,6 +262,29 @@ func (s *Store) GetPayloadPreview(id string, maxBytes int) ([]byte, int, bool, e
 	return head, total, total <= maxBytes, nil
 }
 
+// GetPayloadChunk returns a bounded payload slice starting at byte offset.
+// Slicing happens inside SQLite, so loading the next 256 KB chunk of a 50 MB
+// command output never materializes the full blob in Go memory.
+func (s *Store) GetPayloadChunk(id string, offset, maxBytes int) ([]byte, int, bool, error) {
+	if offset < 0 {
+		offset = 0
+	}
+	if maxBytes < 0 {
+		maxBytes = 0
+	}
+	var chunk []byte
+	var total int
+	err := s.db.QueryRow(
+		`SELECT substr(data, ?, ?) AS chunk, length(data) AS total FROM payloads WHERE id = ?`,
+		offset+1, maxBytes, id,
+	).Scan(&chunk, &total)
+	if err != nil {
+		return nil, 0, false, fmt.Errorf("store: get payload chunk %s: %w", id, err)
+	}
+	nextOffset := offset + len(chunk)
+	return chunk, total, nextOffset >= total, nil
+}
+
 // AppendPayloadData appends delta to an existing payload's data blob
 // in-place, updating its meta and created_at stamp inside one UPDATE.
 // Unlike read-append-write (which pulled the full blob through Go on

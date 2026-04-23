@@ -623,6 +623,99 @@ func TestCodexSubagentRunningPastTurnEnd_Backgrounded(t *testing.T) {
 	}
 }
 
+func TestCodexSubagentModelYieldBackgroundsRunningSpawn(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+
+	spawnMeta := buildSpawnAgentMeta(t, "child-yield", "running")
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "spawn-yield",
+		ItemType: "collab_agent", TurnID: "turn-0", Meta: spawnMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("spawn start: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "spawn-yield",
+		ItemType: "collab_agent", TurnID: "turn-0", Meta: spawnMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("spawn complete: %v", err)
+	}
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTextDelta, ThreadID: "t1",
+		Content: "I'll continue while that agent works", Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("text delta: %v", err)
+	}
+
+	after, ok, err := st.GetThreadItem("t1", "spawn-yield")
+	if err != nil || !ok {
+		t.Fatalf("lookup spawn row: ok=%v err=%v", ok, err)
+	}
+	if !after.IsBackground {
+		t.Fatal("spawn_agent with running child was not backgrounded on model yield")
+	}
+	if after.Status != statusRunning {
+		t.Fatalf("spawn status=%q, want running", after.Status)
+	}
+}
+
+func TestCodexSubagentCloseAgentDoesNotBecomeBackgroundedSpawn(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+
+	meta, err := json.Marshal(map[string]any{
+		"item_status": "completed",
+		"toolName":    "collab_agent",
+		"input": map[string]any{
+			"tool":              "close_agent",
+			"receiverThreadIds": []string{"child-1"},
+			"agentsStates": map[string]any{
+				"child-1": map[string]any{"status": "running"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal close_agent meta: %v", err)
+	}
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "close-1",
+		ItemType: "collab_agent", TurnID: "turn-0", Meta: meta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("close start: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "close-1",
+		ItemType: "collab_agent", TurnID: "turn-0", Meta: meta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("close complete: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnComplete, ThreadID: "t1", TurnID: "turn-0",
+		Meta: json.RawMessage(`{"turn_status":"completed"}`), Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn complete: %v", err)
+	}
+
+	row, ok, err := st.GetThreadItem("t1", "close-1")
+	if err != nil || !ok {
+		t.Fatalf("lookup close row: ok=%v err=%v", ok, err)
+	}
+	if row.IsBackground {
+		t.Fatal("close_agent was treated as a backgroundable spawn_agent")
+	}
+	if siblings := findItemsByKind(t, st, "t1", itemKindBackgroundDone); len(siblings) != 0 {
+		t.Fatalf("close_agent produced background sibling rows: %+v", siblings)
+	}
+}
+
 // TestCodexSubagentCompletion_SynthesizesSiblingAtTail covers the
 // detached-child closure: a <subagent_notification> arrives for a
 // running child → projector synthesizes a tool_completion sibling for
@@ -695,6 +788,64 @@ func TestCodexSubagentCompletion_SynthesizesSiblingAtTail(t *testing.T) {
 	}
 	if !sibling.IsBackground {
 		t.Error("subagent sibling is_background=false")
+	}
+}
+
+func TestCodexSubagentCompletion_UsesMappedLaunchIDForNamedAgentPath(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnStart, ThreadID: "t1", TurnID: "turn-0",
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn 0 start: %v", err)
+	}
+	spawnMeta := buildSpawnAgentMeta(t, "child-thread-1", "running")
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "spawn-named",
+		ItemType: "collab_agent", TurnID: "turn-0", Meta: spawnMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("spawn start: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "spawn-named",
+		ItemType: "collab_agent", TurnID: "turn-0", Meta: spawnMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("spawn complete: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnComplete, ThreadID: "t1", TurnID: "turn-0",
+		Meta: json.RawMessage(`{"turn_status":"completed"}`), Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn 0 complete: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnStart, ThreadID: "t1", TurnID: "turn-1",
+		TurnIndex: 1, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn 1 start: %v", err)
+	}
+
+	notifyMeta, _ := json.Marshal(map[string]any{
+		"agent_path": "/root/researcher",
+		"status":     "completed",
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventSubagentNotification, ThreadID: "t1",
+		ItemID: "spawn-named", Meta: notifyMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("subagent notification: %v", err)
+	}
+
+	siblings := findItemsByKind(t, st, "t1", itemKindBackgroundDone)
+	if len(siblings) != 1 {
+		t.Fatalf("expected 1 subagent sibling, got %d", len(siblings))
+	}
+	if siblings[0].CompletionOf != "spawn-named" {
+		t.Fatalf("completion_of=%q, want spawn-named", siblings[0].CompletionOf)
 	}
 }
 

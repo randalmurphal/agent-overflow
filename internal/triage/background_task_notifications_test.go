@@ -1,0 +1,374 @@
+package triage
+
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"agent-overflow/internal/provider"
+)
+
+func decodeItemMetaMap(t *testing.T, raw string) map[string]any {
+	t.Helper()
+	if raw == "" {
+		return map[string]any{}
+	}
+	var meta map[string]any
+	if err := json.Unmarshal([]byte(raw), &meta); err != nil {
+		t.Fatalf("decode item meta %q: %v", raw, err)
+	}
+	return meta
+}
+
+func TestBackgroundTaskNotification_PersistsNotificationWithoutMutatingLifecycle(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	startMeta, _ := json.Marshal(map[string]any{
+		"toolName":      "Bash",
+		"is_background": true,
+		"input":         map[string]any{"command": "sleep 30"},
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventToolStart,
+		ThreadID:  "t1",
+		ItemID:    "bg-notify",
+		ItemType:  "Bash",
+		Meta:      startMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	notificationMeta, _ := json.Marshal(map[string]any{
+		"task_id":     "task-notify",
+		"tool_use_id": "bg-notify",
+		"status":      "completed",
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventBackgroundTaskNotification,
+		ThreadID:  "t1",
+		ItemID:    "bg-notify",
+		Meta:      notificationMeta,
+		Content:   `Background command "sleep 30" completed`,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("notification: %v", err)
+	}
+
+	notifications := findItemsByKind(t, st, "t1", itemKindNotification)
+	if len(notifications) != 1 {
+		t.Fatalf("expected 1 notification row, got %d", len(notifications))
+	}
+	notification := notifications[0]
+	if notification.PayloadID != "" {
+		t.Fatalf("notification payload should be empty without output_file, got %q", notification.PayloadID)
+	}
+	if notification.Summary != `Background command "sleep 30" completed` {
+		t.Fatalf("notification summary = %q", notification.Summary)
+	}
+	meta := decodeItemMetaMap(t, notification.Meta)
+	if got := meta["task_id"]; got != "task-notify" {
+		t.Fatalf("notification task_id = %v, want task-notify", got)
+	}
+	if got := meta["output_file_state"]; got != "ready" {
+		t.Fatalf("notification output_file_state = %v, want ready", got)
+	}
+
+	launch, ok, err := st.GetThreadItem("t1", "bg-notify")
+	if err != nil || !ok {
+		t.Fatalf("lookup launch: ok=%v err=%v", ok, err)
+	}
+	if launch.Status != statusRunning {
+		t.Fatalf("launch status = %q, want running", launch.Status)
+	}
+	if !launch.IsBackground {
+		t.Fatal("launch lost background flag")
+	}
+
+	dones := findItemsByKind(t, st, "t1", itemKindBackgroundDone)
+	if len(dones) != 0 {
+		t.Fatalf("notification must not synthesize completion rows, got %d", len(dones))
+	}
+}
+
+func TestBackgroundTaskNotification_OutputFileFeedsLaterTerminal(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	startMeta, _ := json.Marshal(map[string]any{
+		"toolName":      "Bash",
+		"is_background": true,
+		"input":         map[string]any{"command": "sleep 5; echo done"},
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventToolStart,
+		ThreadID:  "t1",
+		ItemID:    "bg-output",
+		ItemType:  "Bash",
+		Meta:      startMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	outputPath := filepath.Join(t.TempDir(), "bg-output.txt")
+	if err := os.WriteFile(outputPath, []byte("line 1\nline 2\n"), 0o644); err != nil {
+		t.Fatalf("write output file: %v", err)
+	}
+
+	notificationMeta, _ := json.Marshal(map[string]any{
+		"task_id":     "task-output",
+		"tool_use_id": "bg-output",
+		"status":      "completed",
+		"output_file": outputPath,
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventBackgroundTaskNotification,
+		ThreadID:  "t1",
+		ItemID:    "bg-output",
+		Meta:      notificationMeta,
+		Content:   `Background command "sleep 5; echo done" completed`,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("notification: %v", err)
+	}
+
+	notifications := findItemsByKind(t, st, "t1", itemKindNotification)
+	if len(notifications) != 1 {
+		t.Fatalf("expected 1 notification row, got %d", len(notifications))
+	}
+	notification := notifications[0]
+	if notification.PayloadID == "" {
+		t.Fatal("notification should store output_file payload")
+	}
+	notificationData, err := st.GetPayloadData(notification.PayloadID)
+	if err != nil {
+		t.Fatalf("read notification payload: %v", err)
+	}
+	if string(notificationData) != "line 1\nline 2\n" {
+		t.Fatalf("notification payload = %q", string(notificationData))
+	}
+
+	terminalMeta, _ := json.Marshal(map[string]any{
+		"task_id":     "task-output",
+		"tool_use_id": "bg-output",
+		"status":      "completed",
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventBackgroundTaskTerminal,
+		ThreadID:  "t1",
+		ItemID:    "bg-output",
+		Meta:      terminalMeta,
+		Content:   "",
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("terminal: %v", err)
+	}
+
+	dones := findItemsByKind(t, st, "t1", itemKindBackgroundDone)
+	if len(dones) != 1 {
+		t.Fatalf("expected 1 completion row, got %d", len(dones))
+	}
+	done := dones[0]
+	if done.PayloadID != notification.PayloadID {
+		t.Fatalf("completion payload = %q, want %q", done.PayloadID, notification.PayloadID)
+	}
+	doneData, err := st.GetPayloadData(done.PayloadID)
+	if err != nil {
+		t.Fatalf("read completion payload: %v", err)
+	}
+	if string(doneData) != "line 1\nline 2\n" {
+		t.Fatalf("completion payload = %q", string(doneData))
+	}
+	doneMeta := decodeItemMetaMap(t, done.Meta)
+	if got := doneMeta["output_file"]; got != outputPath {
+		t.Fatalf("completion output_file = %v, want %s", got, outputPath)
+	}
+}
+
+func TestBackgroundTaskNotification_EnrichesExistingCompletionWithLoadingAndLoadedStates(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+
+	startMeta, _ := json.Marshal(map[string]any{
+		"toolName":      "Bash",
+		"is_background": true,
+		"input":         map[string]any{"command": "sleep 5; echo done"},
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventToolStart,
+		ThreadID:  "t1",
+		ItemID:    "bg-enrich-notify",
+		ItemType:  "Bash",
+		Meta:      startMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	terminalMeta, _ := json.Marshal(map[string]any{
+		"task_id":     "task-enrich-notify",
+		"tool_use_id": "bg-enrich-notify",
+		"status":      "completed",
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventBackgroundTaskTerminal,
+		ThreadID:  "t1",
+		ItemID:    "bg-enrich-notify",
+		Meta:      terminalMeta,
+		Content:   "",
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("terminal: %v", err)
+	}
+
+	initial, ok, err := st.GetThreadItem("t1", nextToolCompletionID("bg-enrich-notify"))
+	if err != nil || !ok {
+		t.Fatalf("lookup initial completion: ok=%v err=%v", ok, err)
+	}
+	if initial.PayloadID != "" {
+		t.Fatalf("initial completion should not have payload yet, got %q", initial.PayloadID)
+	}
+
+	outputPath := filepath.Join(t.TempDir(), "later-output.txt")
+	if err := os.WriteFile(outputPath, []byte("later output\n"), 0o644); err != nil {
+		t.Fatalf("write output file: %v", err)
+	}
+
+	before := len(*emissions)
+	notificationMeta, _ := json.Marshal(map[string]any{
+		"task_id":     "task-enrich-notify",
+		"tool_use_id": "bg-enrich-notify",
+		"status":      "completed",
+		"output_file": outputPath,
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventBackgroundTaskNotification,
+		ThreadID:  "t1",
+		ItemID:    "bg-enrich-notify",
+		Meta:      notificationMeta,
+		Content:   `Background command "sleep 5; echo done" completed`,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("notification: %v", err)
+	}
+
+	after, ok, err := st.GetThreadItem("t1", nextToolCompletionID("bg-enrich-notify"))
+	if err != nil || !ok {
+		t.Fatalf("lookup enriched completion: ok=%v err=%v", ok, err)
+	}
+	if after.TurnIndex != initial.TurnIndex {
+		t.Fatalf("completion turn_index moved from %d to %d", initial.TurnIndex, after.TurnIndex)
+	}
+	if after.ItemIndex != initial.ItemIndex {
+		t.Fatalf("completion item_index moved from %d to %d", initial.ItemIndex, after.ItemIndex)
+	}
+	if after.PayloadID == "" {
+		t.Fatal("completion should gain a payload from notification output_file")
+	}
+	meta := decodeItemMetaMap(t, after.Meta)
+	if got := meta["notification_output_state"]; got != "loaded" {
+		t.Fatalf("final notification_output_state = %v, want loaded", got)
+	}
+
+	upserts := findUpsertedItems((*emissions)[before:])
+	var completionStates []string
+	for _, item := range upserts {
+		if item.ID != nextToolCompletionID("bg-enrich-notify") {
+			continue
+		}
+		meta := decodeItemMetaMap(t, item.Meta)
+		if state, ok := meta["notification_output_state"].(string); ok && state != "" {
+			completionStates = append(completionStates, state)
+		}
+	}
+	if len(completionStates) < 2 {
+		t.Fatalf("expected completion upserts for loading + loaded states, got %v", completionStates)
+	}
+	if completionStates[0] != "loading" {
+		t.Fatalf("first completion state = %q, want loading", completionStates[0])
+	}
+	if completionStates[len(completionStates)-1] != "loaded" {
+		t.Fatalf("last completion state = %q, want loaded", completionStates[len(completionStates)-1])
+	}
+}
+
+func TestBackgroundTaskNotification_ReplayPreservesOriginalTimelinePosition(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+
+	startMeta, _ := json.Marshal(map[string]any{
+		"toolName":      "Bash",
+		"is_background": true,
+		"input":         map[string]any{"command": "sleep 1"},
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventToolStart,
+		ThreadID:  "t1",
+		ItemID:    "bg-replay",
+		ItemType:  "Bash",
+		Meta:      startMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	notificationMeta, _ := json.Marshal(map[string]any{
+		"task_id":     "task-replay",
+		"tool_use_id": "bg-replay",
+		"status":      "completed",
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventBackgroundTaskNotification,
+		ThreadID:  "t1",
+		ItemID:    "bg-replay",
+		Meta:      notificationMeta,
+		Content:   `Background command "sleep 1" completed`,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("first notification: %v", err)
+	}
+
+	initial, ok, err := st.GetThreadItem("t1", nextTaskNotificationID("task-replay"))
+	if err != nil || !ok {
+		t.Fatalf("lookup initial notification: ok=%v err=%v", ok, err)
+	}
+
+	seedOpenTurn(t, router, st, "t1", 3)
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventBackgroundTaskNotification,
+		ThreadID:  "t1",
+		ItemID:    "bg-replay",
+		Meta:      notificationMeta,
+		Content:   `Background command "sleep 1" completed`,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("replayed notification: %v", err)
+	}
+
+	after, ok, err := st.GetThreadItem("t1", nextTaskNotificationID("task-replay"))
+	if err != nil || !ok {
+		t.Fatalf("lookup replayed notification: ok=%v err=%v", ok, err)
+	}
+	if after.TurnIndex != initial.TurnIndex {
+		t.Fatalf("notification turn_index moved from %d to %d", initial.TurnIndex, after.TurnIndex)
+	}
+	if after.ItemIndex != initial.ItemIndex {
+		t.Fatalf("notification item_index moved from %d to %d", initial.ItemIndex, after.ItemIndex)
+	}
+}
+
+func TestReadClaudeTaskOutputFileRejectsPathsOutsideAllowedTempRoots(t *testing.T) {
+	repoFile, err := filepath.Abs("../../go.mod")
+	if err != nil {
+		t.Fatalf("abs path: %v", err)
+	}
+	if _, _, err := readClaudeTaskOutputFile(repoFile, 1024); err == nil {
+		t.Fatal("expected non-temp repo path to be rejected")
+	}
+}

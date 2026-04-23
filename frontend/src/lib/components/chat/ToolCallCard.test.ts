@@ -16,6 +16,14 @@ beforeEach(() => {
     isComplete: true,
   }));
   setBindingMock('GetPayloadData', async () => ({ data: '', html: '' }));
+  setBindingMock('GetPayloadChunk', async () => ({
+    data: '',
+    html: '',
+    offset: 0,
+    nextOffset: 0,
+    totalSize: 0,
+    isComplete: true,
+  }));
 });
 
 describe('<ToolCallCard> header dispatcher', () => {
@@ -292,6 +300,22 @@ describe('<ToolCallCard> backgrounded status label', () => {
     expect(queryByTestId('tool-call-backgrounded-badge')).toBeNull();
   });
 
+  it('shows "…" for backgrounded Codex subagent launches too', async () => {
+    const pane = await buildPane();
+    const item = makeItem({
+      id: 'spawn-bg',
+      kind: 'tool_call',
+      status: 'running',
+      toolName: 'collab_agent',
+      summary: 'spawn_agent: worker',
+      isBackground: true,
+    });
+
+    const { getByTestId } = render(ToolCallCard, { props: { pane, item } });
+
+    expect(getByTestId('tool-call-card-status').textContent?.trim()).toBe('…');
+  });
+
   it('renders "running" (not "…") when !isBackground && status === "running"', async () => {
     const pane = await buildPane();
     const item = makeItem({
@@ -349,6 +373,27 @@ describe('<ToolCallCard> backgrounded status label', () => {
     const status = getByTestId('tool-call-card-status');
     expect(status.textContent?.trim()).toBe('running');
     expect(status.getAttribute('aria-label')).toBeNull();
+  });
+
+  it('shows a loading body when background output ingestion is still in flight', async () => {
+    const pane = await buildPane();
+    const item = makeItem({
+      id: 'bg-loading',
+      kind: 'tool_completion',
+      status: 'completed',
+      toolName: 'Bash',
+      summary: 'sleep 60 &',
+      isBackground: true,
+      meta: JSON.stringify({
+        task_id: 'task-1',
+        notification_output_state: 'loading',
+      }),
+    });
+
+    const { getByTestId, getByText } = render(ToolCallCard, { props: { pane, item } });
+    await getByTestId('tool-call-card-toggle').click();
+
+    expect(getByText('Loading…')).toBeInTheDocument();
   });
 });
 

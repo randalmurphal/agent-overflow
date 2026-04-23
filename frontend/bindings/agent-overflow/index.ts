@@ -13,6 +13,7 @@ export {
     Draft,
     GeneratedCommitMessage,
     Keybinding,
+    PayloadChunk,
     PayloadContent,
     PayloadPreview,
     TerminalChip,

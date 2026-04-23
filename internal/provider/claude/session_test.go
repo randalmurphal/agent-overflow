@@ -2029,3 +2029,62 @@ exit 0
 		t.Errorf("StopTask took %s after subprocess death, expected <1s (suggests timeout path, not readLoop signal)", elapsed)
 	}
 }
+
+// TestSession_StopTask_ConcurrentSameTaskIDDistinctRequestIDs pins the
+// per-request correlation contract when the frontend's Stop-all fan-out
+// (or a double-click on the per-row Stop button) issues two StopTask
+// calls for the SAME task_id within the same session. Each outbound
+// control_request must carry a unique request_id so the CLI's reply
+// resolves back to the right pending channel — a regression that
+// reused a single request_id across concurrent stops on the same
+// task_id would race: the first success unblocks BOTH callers if the
+// map keyed by task_id, or only one call would land if the second
+// overwrote the pending entry.
+//
+// The allocateStopTaskRequestID counter guarantees uniqueness per
+// session; this test pins that behavior end-to-end by tripping the
+// fake-CLI to echo back each request_id and checking both StopTask
+// calls resolve with no cross-talk.
+func TestSession_StopTask_ConcurrentSameTaskIDDistinctRequestIDs(t *testing.T) {
+	s := newStopTaskResponderSession(t, "success", 3*time.Second)
+
+	// Two goroutines: both call StopTask with the SAME task_id. Each
+	// allocates its own request_id via the seq counter; the fake CLI
+	// echoes back whichever request_id it read, and deliverStopTaskResponse
+	// routes the two replies to their respective pending channels.
+	const task = "task-double"
+	done := make(chan error, 2)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		done <- s.StopTask(ctx, task)
+	}()
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		done <- s.StopTask(ctx, task)
+	}()
+
+	for i := 0; i < 2; i++ {
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("concurrent StopTask #%d: %v", i, err)
+			}
+		case <-time.After(4 * time.Second):
+			t.Fatalf("concurrent StopTask #%d never returned — request_id collision suspected", i)
+		}
+	}
+
+	// The two request_ids must be distinct. allocateStopTaskRequestID
+	// bumps stopTaskSeq under a lock, so two serialized StopTask calls
+	// (the fake CLI's `read -r` is line-buffered) land at seq=1 and
+	// seq=2. Observing seq >= 2 is sufficient — the third slot is
+	// unallocated.
+	s.stopTaskMu.Lock()
+	seq := s.stopTaskSeq
+	s.stopTaskMu.Unlock()
+	if seq < 2 {
+		t.Errorf("stopTaskSeq = %d after two concurrent StopTasks, want >= 2 (each call must allocate)", seq)
+	}
+}

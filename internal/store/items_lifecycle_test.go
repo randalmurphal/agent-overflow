@@ -223,7 +223,7 @@ func TestInsertItemDefaultsStatusToCompleted(t *testing.T) {
 	}
 	if err := s.InsertItem(Item{
 		ID: "i", ThreadID: "t", TurnIndex: 0, ItemIndex: 0,
-		Kind:      "assistant_text", Role: "assistant", Summary: "hi", CreatedAt: now,
+		Kind: "assistant_text", Role: "assistant", Summary: "hi", CreatedAt: now,
 	}); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
@@ -379,7 +379,7 @@ func TestAppendCompletionItemPairsLaunchAndCompletion(t *testing.T) {
 	// A sibling text item lands in between so item_index assignment has
 	// something to bump past.
 	if _, err := s.AppendItem(Item{
-		ID: "text", ThreadID: "t", TurnIndex: 2, Kind:      "assistant_text",
+		ID: "text", ThreadID: "t", TurnIndex: 2, Kind: "assistant_text",
 		Role: "assistant", Summary: "notes", CreatedAt: 1500,
 	}); err != nil {
 		t.Fatalf("append text: %v", err)
@@ -387,7 +387,7 @@ func TestAppendCompletionItemPairsLaunchAndCompletion(t *testing.T) {
 
 	completion := Item{
 		ID: "completion", ThreadID: "t", TurnIndex: 2,
-		Kind:      "tool_completion", Role: "assistant", Summary: "build ok",
+		Kind: "tool_completion", Role: "assistant", Summary: "build ok",
 		CreatedAt: 2000,
 	}
 	idx, err := s.AppendCompletionItem(launch, completion, nil)
@@ -448,11 +448,11 @@ func TestAppendCompletionItemForcesInvariants(t *testing.T) {
 
 	completion := Item{
 		ID: "completion", ThreadID: "t", TurnIndex: 0,
-		Kind:      "tool_completion", Role: "assistant",
+		Kind: "tool_completion", Role: "assistant",
 		// Caller tries to pre-stamp lies:
-		IsBackground:       false,
+		IsBackground: false,
 		CompletionOf: "some-other-item",
-		CreatedAt:          2,
+		CreatedAt:    2,
 	}
 	if _, err := s.AppendCompletionItem(launch, completion, nil); err != nil {
 		t.Fatalf("append: %v", err)
@@ -492,7 +492,7 @@ func TestAppendCompletionItemWithPayloadPersistsAtomically(t *testing.T) {
 	}
 	completion := Item{
 		ID: "completion", ThreadID: "t", TurnIndex: 0,
-		Kind:      "tool_completion", Role: "assistant", Summary: "done",
+		Kind: "tool_completion", Role: "assistant", Summary: "done",
 		CreatedAt: 2,
 	}
 	idx, err := s.AppendCompletionItem(launch, completion, payload)
@@ -548,7 +548,7 @@ func TestConcurrentAppendCompletionItemAssignsUniqueIndex(t *testing.T) {
 			defer wg.Done()
 			_, err := s.AppendCompletionItem(launch, Item{
 				ID: fmt.Sprintf("done-%d", n), ThreadID: "t", TurnIndex: 0,
-				Kind:      "tool_completion", Role: "assistant", CreatedAt: int64(10 + n),
+				Kind: "tool_completion", Role: "assistant", CreatedAt: int64(10 + n),
 			}, nil)
 			if err != nil {
 				errs <- fmt.Errorf("completion %d: %w", n, err)
@@ -610,7 +610,7 @@ func TestListItemsIncludesLifecycleFields(t *testing.T) {
 		t.Fatalf("insert: %v", err)
 	}
 	if _, err := s.AppendCompletionItem(launch, Item{
-		ID: "done", ThreadID: "t", TurnIndex: 0, Kind:      "tool_completion",
+		ID: "done", ThreadID: "t", TurnIndex: 0, Kind: "tool_completion",
 		Role: "assistant", Summary: "ok", CreatedAt: 2,
 	}, nil); err != nil {
 		t.Fatalf("append completion: %v", err)
@@ -996,6 +996,103 @@ func TestGetPayloadPreviewSliceInsideSQLite(t *testing.T) {
 	}
 }
 
+func TestGetPayloadChunkSliceInsideSQLite(t *testing.T) {
+	s := newTestStore(t)
+	const total = 32 * 1024
+	const first = 3 * 1024
+	const second = 5 * 1024
+
+	full := make([]byte, total)
+	for i := range full {
+		full[i] = byte('a' + (i % 26))
+	}
+	if err := s.InsertPayload(Payload{
+		ID: "p-chunk", Kind: "command_output", Meta: "{}",
+		Data: full, CreatedAt: 1,
+	}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	chunk1, total1, complete1, err := s.GetPayloadChunk("p-chunk", 0, first)
+	if err != nil {
+		t.Fatalf("chunk1: %v", err)
+	}
+	if total1 != total {
+		t.Fatalf("total1 = %d, want %d", total1, total)
+	}
+	if complete1 {
+		t.Fatal("chunk1 should not complete the payload")
+	}
+	if len(chunk1) != first {
+		t.Fatalf("len(chunk1) = %d, want %d", len(chunk1), first)
+	}
+	for i := range chunk1 {
+		if chunk1[i] != full[i] {
+			t.Fatalf("chunk1[%d] = %v, want %v", i, chunk1[i], full[i])
+		}
+	}
+
+	chunk2, total2, complete2, err := s.GetPayloadChunk("p-chunk", len(chunk1), second)
+	if err != nil {
+		t.Fatalf("chunk2: %v", err)
+	}
+	if total2 != total {
+		t.Fatalf("total2 = %d, want %d", total2, total)
+	}
+	if complete2 {
+		t.Fatal("chunk2 should not complete the payload")
+	}
+	if len(chunk2) != second {
+		t.Fatalf("len(chunk2) = %d, want %d", len(chunk2), second)
+	}
+	for i := range chunk2 {
+		want := full[len(chunk1)+i]
+		if chunk2[i] != want {
+			t.Fatalf("chunk2[%d] = %v, want %v", i, chunk2[i], want)
+		}
+	}
+}
+
+func TestFindNotificationItemByTaskIDReturnsNewestNotification(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(Thread{
+		ID: "t-notify", ProjectID: defaultTestProjectID, Title: "T",
+		Provider: "claude", WorkspacePath: "/tmp", CreatedAt: 1, UpdatedAt: 1,
+	}); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	if err := s.InsertItem(Item{
+		ID: "note-old", ThreadID: "t-notify", TurnIndex: 0, ItemIndex: 0,
+		Kind: "notification", Role: "system", Summary: "older",
+		Meta:      `{"task_id":"task-1","output_file_state":"loading"}`,
+		CreatedAt: 1, UpdatedAt: 1,
+	}); err != nil {
+		t.Fatalf("insert old notification: %v", err)
+	}
+	if err := s.InsertItem(Item{
+		ID: "note-new", ThreadID: "t-notify", TurnIndex: 0, ItemIndex: 1,
+		Kind: "notification", Role: "system", Summary: "newer",
+		Meta:      `{"task_id":"task-1","output_file_state":"loaded"}`,
+		CreatedAt: 2, UpdatedAt: 2,
+	}); err != nil {
+		t.Fatalf("insert new notification: %v", err)
+	}
+
+	got, found, err := s.FindNotificationItemByTaskID("t-notify", "task-1")
+	if err != nil {
+		t.Fatalf("lookup: %v", err)
+	}
+	if !found {
+		t.Fatal("expected notification lookup to find a row")
+	}
+	if got.ID != "note-new" {
+		t.Fatalf("got %q, want note-new", got.ID)
+	}
+	if got.Summary != "newer" {
+		t.Fatalf("got summary %q, want newer", got.Summary)
+	}
+}
+
 // TestGetItemByPayloadIDUsesIndex verifies the direct lookup replaces
 // the O(threads × items) walk the app layer used to do. A missing
 // payload returns (zero, false, nil); a hit returns the owning item.
@@ -1041,6 +1138,68 @@ func TestGetItemByPayloadIDUsesIndex(t *testing.T) {
 	}
 	if found2 {
 		t.Error("expected found=false for missing payload")
+	}
+}
+
+func TestGetThreadItemByPayloadIDScopesLookupToOwnerThread(t *testing.T) {
+	s := newTestStore(t)
+	now := int64(1)
+	for _, threadID := range []string{"t-a", "t-b"} {
+		if err := s.CreateThread(Thread{
+			ID: threadID, ProjectID: defaultTestProjectID, Title: threadID, Provider: "claude", WorkspacePath: "/tmp",
+			CreatedAt: now, UpdatedAt: now,
+		}); err != nil {
+			t.Fatalf("create thread %s: %v", threadID, err)
+		}
+	}
+	if err := s.InsertPayload(Payload{
+		ID: "shared-payload", Kind: "command_output", Meta: "{}", Data: []byte("body"), CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("insert payload: %v", err)
+	}
+	if err := s.InsertItem(Item{
+		ID: "owner-a", ThreadID: "t-a", TurnIndex: 0, ItemIndex: 0,
+		Kind: "tool_call", Role: "assistant", Summary: "owner a",
+		PayloadID: "shared-payload", CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("insert owner-a: %v", err)
+	}
+	if err := s.InsertItem(Item{
+		ID: "owner-b", ThreadID: "t-b", TurnIndex: 0, ItemIndex: 0,
+		Kind: "tool_call", Role: "assistant", Summary: "owner b",
+		PayloadID: "shared-payload", CreatedAt: now + 1, UpdatedAt: now + 1,
+	}); err != nil {
+		t.Fatalf("insert owner-b: %v", err)
+	}
+
+	gotA, foundA, err := s.GetThreadItemByPayloadID("t-a", "shared-payload")
+	if err != nil {
+		t.Fatalf("lookup t-a: %v", err)
+	}
+	if !foundA {
+		t.Fatal("expected payload lookup to find thread owner")
+	}
+	if gotA.ID != "owner-a" {
+		t.Fatalf("thread-scoped lookup returned %q, want owner-a", gotA.ID)
+	}
+
+	gotB, foundB, err := s.GetThreadItemByPayloadID("t-b", "shared-payload")
+	if err != nil {
+		t.Fatalf("lookup t-b: %v", err)
+	}
+	if !foundB {
+		t.Fatal("expected payload lookup to find second thread owner")
+	}
+	if gotB.ID != "owner-b" {
+		t.Fatalf("thread-scoped lookup returned %q, want owner-b", gotB.ID)
+	}
+
+	_, foundMissing, err := s.GetThreadItemByPayloadID("t-missing", "shared-payload")
+	if err != nil {
+		t.Fatalf("lookup missing thread: %v", err)
+	}
+	if foundMissing {
+		t.Fatal("expected missing thread lookup to return found=false")
 	}
 }
 

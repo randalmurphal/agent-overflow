@@ -3,6 +3,7 @@
   import { createPayloadExpansion, formatPayloadSize } from './payloadExpansion.svelte';
 
   interface Props {
+    threadId?: string;
     /**
      * Payload id the full body lives under, or undefined if only `preview`
      * is available. When undefined, the "Show all" button is suppressed
@@ -21,9 +22,9 @@
     label?: string;
   }
 
-  let { payloadId, preview, label = 'Show all' }: Props = $props();
+  let { threadId, payloadId, preview, label = 'Show all' }: Props = $props();
 
-  const expansion = createPayloadExpansion(() => payloadId);
+  const expansion = createPayloadExpansion(() => payloadId, () => threadId);
 
   // Threshold check is on the preview text itself. A caller that already
   // knows the preview is short but still wants the button can pass any
@@ -33,6 +34,7 @@
   const displayPreview = $derived(truncateForPreview(preview, MAX_INLINE_BYTES));
 
   $effect(() => {
+    threadId;
     payloadId;
     preview;
     expansion.reset();

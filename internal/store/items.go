@@ -648,6 +648,30 @@ func (s *Store) GetItemByPayloadID(payloadID string) (Item, bool, error) {
 	return item, true, nil
 }
 
+// GetThreadItemByPayloadID returns the newest item on threadID whose
+// payload_id matches payloadID. This is the thread-scoped variant of
+// GetItemByPayloadID for frontend payload reads, so a payload id is not
+// usable outside the thread that references it.
+func (s *Store) GetThreadItemByPayloadID(threadID, payloadID string) (Item, bool, error) {
+	row := s.db.QueryRow(
+		`SELECT `+itemColumns+`
+		   FROM items
+		   LEFT JOIN payloads ON payloads.id = items.payload_id
+		  WHERE items.thread_id = ? AND items.payload_id = ?
+		  ORDER BY items.updated_at DESC
+		  LIMIT 1`,
+		threadID, payloadID,
+	)
+	item, err := scanItemRow(row)
+	if err == sql.ErrNoRows {
+		return Item{}, false, nil
+	}
+	if err != nil {
+		return Item{}, false, fmt.Errorf("store: get item by payload id %s on thread %s: %w", payloadID, threadID, err)
+	}
+	return item, true, nil
+}
+
 func (s *Store) GetThreadItem(threadID, id string) (Item, bool, error) {
 	row := s.db.QueryRow(
 		`SELECT `+itemColumns+`
@@ -663,6 +687,35 @@ func (s *Store) GetThreadItem(threadID, id string) (Item, bool, error) {
 	}
 	if err != nil {
 		return Item{}, false, fmt.Errorf("store: get item %s on thread %s: %w", id, threadID, err)
+	}
+	return item, true, nil
+}
+
+// FindNotificationItemByTaskID returns the newest notification row whose
+// meta.task_id matches taskID. Claude task_notification rows use this to let
+// later task terminals attach the durable output_file payload without treating
+// the notification itself as lifecycle state.
+func (s *Store) FindNotificationItemByTaskID(threadID, taskID string) (Item, bool, error) {
+	if taskID == "" {
+		return Item{}, false, nil
+	}
+	row := s.db.QueryRow(
+		`SELECT `+itemColumns+`
+		   FROM items
+		   LEFT JOIN payloads ON payloads.id = items.payload_id
+		  WHERE items.thread_id = ?
+		    AND items.kind = 'notification'
+		    AND json_extract(items.meta, '$.task_id') = ?
+		  ORDER BY items.turn_index DESC, items.item_index DESC
+		  LIMIT 1`,
+		threadID, taskID,
+	)
+	item, err := scanItemRow(row)
+	if err == sql.ErrNoRows {
+		return Item{}, false, nil
+	}
+	if err != nil {
+		return Item{}, false, fmt.Errorf("store: find notification by task_id %s: %w", taskID, err)
 	}
 	return item, true, nil
 }

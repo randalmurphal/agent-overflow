@@ -14,6 +14,7 @@ import (
 const (
 	itemKindToolCall       = "tool_call"
 	itemKindBackgroundDone = "tool_completion"
+	itemKindNotification   = "notification"
 
 	payloadKindToolCallResult = "tool_call_result"
 
@@ -235,6 +236,7 @@ type backgroundTaskTerminalMeta struct {
 	TaskID     string `json:"task_id"`
 	ToolUseID  string `json:"tool_use_id,omitempty"`
 	Status     string `json:"status"`
+	Source     string `json:"source,omitempty"`
 	IsError    bool   `json:"is_error,omitempty"`
 	ExitCode   *int   `json:"exit_code,omitempty"`
 	OutputFile string `json:"output_file,omitempty"`
@@ -270,42 +272,43 @@ func decodeBackgroundTaskTerminalMeta(raw json.RawMessage) backgroundTaskTermina
 // item_index assignment).
 func (r *Router) handleBackgroundTaskTerminal(evt provider.ProviderEvent) error {
 	meta := decodeBackgroundTaskTerminalMeta(evt.Meta)
+	if meta.Source == "" {
+		meta.Source = "task_updated"
+	}
 
 	// Resolve launch: prefer the explicit tool_use_id the parser
 	// passed via evt.ItemID, else fall back to the task_id lookup.
-	launchID := strings.TrimSpace(evt.ItemID)
-	if launchID == "" {
-		launchID = strings.TrimSpace(meta.ToolUseID)
-	}
-	var launch store.Item
-	var found bool
-	if launchID != "" {
-		var err error
-		launch, found, err = r.store.GetThreadItem(evt.ThreadID, launchID)
-		if err != nil {
-			return fmt.Errorf("bg task terminal lookup %s: %w", launchID, err)
-		}
-	}
-	if !found && meta.TaskID != "" {
-		resolved, ok, err := r.findToolCallByTaskID(evt.ThreadID, meta.TaskID)
-		if err != nil {
-			return fmt.Errorf("bg task terminal task_id lookup %s: %w", meta.TaskID, err)
-		}
-		if ok {
-			launch = resolved
-			found = true
-		}
+	launch, found, err := r.resolveBackgroundTaskLaunch(evt.ThreadID, evt.ItemID, meta.ToolUseID, meta.TaskID)
+	if err != nil {
+		return err
 	}
 	if !found || launch.Kind != itemKindToolCall {
 		log.Printf("triage: background task terminal with no matching tool_call on thread %s (task_id=%q tool_use_id=%q); dropping",
 			evt.ThreadID, meta.TaskID, meta.ToolUseID)
 		return nil
 	}
+	var notification store.Item
+	var notificationFound bool
+	if meta.TaskID != "" {
+		if item, found, err := r.findTaskNotificationItem(evt.ThreadID, meta.TaskID); err != nil {
+			log.Printf("triage: lookup task notification for %s: %v", meta.TaskID, err)
+		} else if found {
+			notification = item
+			notificationFound = true
+			notificationMeta := decodeBackgroundTaskNotificationMeta(json.RawMessage(notification.Meta))
+			if meta.OutputFile == "" && notificationMeta.OutputFile != "" {
+				meta.OutputFile = notificationMeta.OutputFile
+			}
+		}
+	}
 
 	now := eventTimestampMillis(evt)
 	status := backgroundTerminalStatus(meta)
 	completionID := nextToolCompletionID(launch.ID)
-	turnIndex := launch.TurnIndex // sibling lands on the launching turn so ordering follows the launch row
+	turnIndex, err := r.backgroundCompletionTurnIndex(evt.ThreadID, launch.TurnIndex)
+	if err != nil {
+		log.Printf("triage: background task terminal turn index %s: %v", launch.ID, err)
+	}
 
 	completion := store.Item{
 		ID:           completionID,
@@ -322,18 +325,52 @@ func (r *Router) handleBackgroundTaskTerminal(evt provider.ProviderEvent) error 
 		CreatedAt:    now,
 		UpdatedAt:    now,
 	}
+	itemMeta := backgroundCompletionItemMeta(meta, backgroundTerminalHasRichSummary(evt.Content, meta))
+	if notificationFound {
+		notificationMeta := decodeBackgroundTaskNotificationMeta(json.RawMessage(notification.Meta))
+		outputState, readError := notificationOutputState(notification.Meta)
+		itemMeta = mergeBackgroundCompletionItemMeta(
+			itemMeta,
+			backgroundNotificationCompletionMeta(notificationMeta, notification.PayloadID != "", outputState, readError),
+		)
+	}
+	completion.Meta = itemMeta
 
 	// Preserve an already-persisted sibling's created_at and
 	// item_index (persistItem keeps item_index on update), but
 	// overwrite the mutable fields so a second call with richer
 	// payload enriches the row.
-	if existing, ok, err := r.store.GetThreadItem(evt.ThreadID, completionID); err == nil && ok {
-		completion.CreatedAt = existing.CreatedAt
+	var existing *store.Item
+	if persisted, ok, err := r.store.GetThreadItem(evt.ThreadID, completionID); err == nil && ok {
+		existing = &persisted
+		completion.CreatedAt = persisted.CreatedAt
+		completion.TurnIndex = persisted.TurnIndex
+		completion.ItemIndex = persisted.ItemIndex
+		completion.PayloadID = persisted.PayloadID
+		completion.Meta = mergeBackgroundCompletionItemMeta(persisted.Meta, itemMeta)
+		if shouldKeepExistingBackgroundStatus(persisted.Meta, meta.Source) {
+			completion.Status = persisted.Status
+		}
+		if shouldKeepExistingBackgroundSummary(persisted.Meta, evt.Content, meta) {
+			completion.Summary = persisted.Summary
+		}
 	} else if err != nil {
 		return fmt.Errorf("bg task terminal existing lookup %s: %w", completionID, err)
 	}
+	if notificationFound && notification.PayloadID != "" {
+		completion.PayloadID = notification.PayloadID
+	}
 
-	payload := backgroundTerminalPayload(launch.ID, evt, meta, now)
+	var payload *store.Payload
+	if completion.PayloadID == "" && meta.OutputFile != "" {
+		payload = r.backgroundOutputFilePayload(launch.ID, meta.OutputFile, now)
+	}
+	if payload == nil && completion.PayloadID == "" {
+		payload = backgroundTerminalPayload(launch.ID, evt, meta, now)
+	}
+	if payload == nil && existing != nil && existing.PayloadID != "" {
+		completion.PayloadID = existing.PayloadID
+	}
 	return r.maybeDeferOrPersist(evt.ThreadID, completion, payload)
 }
 
@@ -455,6 +492,43 @@ func backgroundTerminalPayload(itemID string, evt provider.ProviderEvent, meta b
 		Data:      []byte(evt.Content),
 		CreatedAt: now,
 	}
+}
+
+// backgroundCompletionTurnIndex returns the turn where a background
+// completion sibling should be appended. Background work can outlive
+// its launching turn by minutes or hours; when it completes during a
+// later turn, the terminal row belongs at the current write head so
+// chat history shows when the completion actually arrived. If no turn
+// is open, fall back to the newest persisted turn row and the newest
+// persisted item turn; older installs and sparse tests may have one
+// without the other. The max guard keeps a sparse or freshly-started
+// thread from placing a completion before the launch row.
+func (r *Router) backgroundCompletionTurnIndex(threadID string, launchTurnIndex int) (int, error) {
+	if turnIndex, ok := r.openTurnIndex(threadID); ok {
+		if turnIndex < launchTurnIndex {
+			return launchTurnIndex, nil
+		}
+		return turnIndex, nil
+	}
+
+	turnIndex := launchTurnIndex
+	itemTurnIndex, itemErr := r.store.LastTurnIndex(threadID)
+	if itemErr == nil && itemTurnIndex > turnIndex {
+		turnIndex = itemTurnIndex
+	}
+
+	recentTurns, turnErr := r.store.ListRecentTurns(threadID, 1)
+	if turnErr == nil && len(recentTurns) > 0 && recentTurns[0].TurnIndex > turnIndex {
+		turnIndex = recentTurns[0].TurnIndex
+	}
+
+	if itemErr != nil {
+		return turnIndex, itemErr
+	}
+	if turnErr != nil {
+		return turnIndex, turnErr
+	}
+	return turnIndex, nil
 }
 
 // rebuildCommandOutputMeta recomputes command_output payload meta from

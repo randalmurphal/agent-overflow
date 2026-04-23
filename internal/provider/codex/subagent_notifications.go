@@ -16,8 +16,10 @@ import (
 // for the canonical wire shape (test fixture, lines 274-296).
 //
 // The tag payload is a JSON object with at least `agent_path` and
-// `status`; `status` is a CollabAgentStatus value
-// ("completed" | "errored" | "interrupted" | "shutdown" | ...).
+// `status`; `status` is serialized from Codex core's AgentStatus. Unit
+// variants are strings ("running", "shutdown", ...), while terminal
+// variants with payloads can be objects ({"completed":"done"},
+// {"errored":"boom"}).
 // Additional fields may appear in future Codex versions — we preserve
 // them in `extra` so downstream can opt into richer rendering without
 // a parser update.
@@ -78,13 +80,18 @@ func parseSubagentNotifications(text string) []subagentNotification {
 		if agentPath == "" {
 			agentPath, _ = raw["agent_id"].(string)
 		}
-		status, _ := raw["status"].(string)
+		status, message, hasMessage := normalizeSubagentStatus(raw["status"])
 		if agentPath == "" || status == "" {
 			continue
 		}
 		delete(raw, "agent_path")
 		delete(raw, "agent_id")
 		delete(raw, "status")
+		if hasMessage {
+			if _, exists := raw["message"]; !exists {
+				raw["message"] = message
+			}
+		}
 		notifications = append(notifications, subagentNotification{
 			AgentPath: agentPath,
 			Status:    status,
@@ -95,6 +102,47 @@ func parseSubagentNotifications(text string) []subagentNotification {
 		return nil
 	}
 	return notifications
+}
+
+func normalizeSubagentStatus(raw any) (status string, message any, hasMessage bool) {
+	switch value := raw.(type) {
+	case string:
+		return value, nil, false
+	case map[string]any:
+		if status, ok := value["status"].(string); ok {
+			message, hasMessage := value["message"]
+			return status, message, hasMessage
+		}
+		for _, variant := range []string{
+			"completed",
+			"errored",
+			"interrupted",
+			"shutdown",
+			"not_found",
+			"notFound",
+			"pending_init",
+			"pendingInit",
+			"running",
+		} {
+			message, ok := value[variant]
+			if !ok {
+				continue
+			}
+			return canonicalSubagentStatus(variant), message, message != nil
+		}
+	}
+	return "", nil, false
+}
+
+func canonicalSubagentStatus(status string) string {
+	switch status {
+	case "not_found":
+		return "notFound"
+	case "pending_init":
+		return "pendingInit"
+	default:
+		return status
+	}
 }
 
 // extractSubagentNotificationsFromUserMessage inspects an item/completed

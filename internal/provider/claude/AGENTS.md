@@ -55,7 +55,7 @@ of truth.
 Summary of what `ParseLine` dispatches:
 
 - `system` subtypes: `init`, `compact_boundary`, `task_started`,
-  `task_updated`, `task_notification` (dropped — see below),
+  `task_updated`, `task_notification`,
   `session_state_changed`, `api_retry`. `tool_progress` is
   intentionally dropped.
 - `system.task_started` — meta-only `EventToolStart` emission that
@@ -65,7 +65,9 @@ Summary of what `ParseLine` dispatches:
   `{completed, failed, killed}`) — emits
   `EventBackgroundTaskTerminal` keyed by task_id + resolved
   tool_use_id.
-- `system.task_notification` — **NOT a completion source**. Dropped.
+- `system.task_notification` — **NOT a completion source**. Emits
+  `EventBackgroundTaskNotification` so triage can persist a distinct
+  notification row and optionally ingest `output_file` into SQLite.
   See [`claude-wire.md §task_notification`](../../../docs/references/claude-wire.md#systemtask_notification)
   and [`turn-lifecycle.md §Task lifecycle`](../../../docs/architecture/turn-lifecycle.md#2-task-lifecycle-claude-only).
 - `assistant` — text deltas, tool_use, thinking, exit_plan_mode,
@@ -105,23 +107,24 @@ back to the parent tool call.
 - **Turn lifecycle** — `result` envelope is the authoritative
   turn-complete signal. No heuristics, no wait-for-tools.
 
-Do NOT derive turn activity from item state. Do NOT emit anything
-from `task_notification`. Do NOT rewrite `tool_use_id` between
+Do NOT derive turn activity from item state. Do NOT emit lifecycle
+state from `task_notification`. Do NOT rewrite `tool_use_id` between
 start and complete. These are load-bearing rules enforced by
 [`invariants.md`](../../../docs/architecture/invariants.md).
 
 ## Captured wire samples (authoritative test fixtures)
 
-- `/tmp/claude-bg-spike/ndjson_bash.log` — backgrounded + foreground
+- `docs/references/fixtures/claude/ndjson_bash.log` — backgrounded + foreground
   Bash + Read
-- `/tmp/claude-bg-spike/ndjson_task.log` — Task subagent + TaskOutput
-- `/tmp/claude-bg-spike/ndjson_outlives.log` — bg task outliving its
+- `docs/references/fixtures/claude/ndjson_task.log` — Task subagent + TaskOutput
+- `docs/references/fixtures/claude/ndjson_outlives.log` — bg task outliving its
   turn
-- `/tmp/taskoutput-multi-spike/ndjson.log` — two parallel bg Bashes
+- `docs/references/fixtures/claude/taskoutput_multi.ndjson` — two parallel bg Bashes
   + blocking TaskOutput
 
-Use these in tests via file path. Do NOT copy into the repo — they
-refresh via `AGENT_OVERFLOW_DEBUG=provider` re-runs.
+Use these in tests via file path. When fresh captures prove wire drift,
+refresh the checked-in fixtures from a new `AGENT_OVERFLOW_DEBUG=provider`
+run and update `docs/references/claude-wire.md` in the same commit.
 
 ## Responsibility boundary
 

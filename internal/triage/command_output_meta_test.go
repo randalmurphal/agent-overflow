@@ -102,3 +102,51 @@ func TestCommandOutputMetaStabilisesOnComplete(t *testing.T) {
 		t.Errorf("final preview missing tail: %q", finalMeta.Preview)
 	}
 }
+
+func TestCommandOutputReplaceOverridesEarlierDeltas(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	startMeta, _ := json.Marshal(map[string]any{"toolName": "Bash"})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "cmd-replace",
+		ItemType: "command_execution", Meta: startMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	cmdMeta, _ := json.Marshal(map[string]any{"command": "go test", "exitCode": 0})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventCommandOutput,
+		ThreadID:  "t1",
+		ItemID:    "cmd-replace",
+		Content:   "partial\n",
+		Meta:      cmdMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("delta: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventCommandOutput,
+		ThreadID:  "t1",
+		ItemID:    "cmd-replace",
+		Content:   "full output\n",
+		Meta:      cmdMeta,
+		Replace:   true,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("replace: %v", err)
+	}
+
+	item, ok, err := st.GetThreadItem("t1", "cmd-replace")
+	if err != nil || !ok {
+		t.Fatalf("lookup: ok=%v err=%v", ok, err)
+	}
+	data, err := st.GetPayloadData(item.PayloadID)
+	if err != nil {
+		t.Fatalf("payload: %v", err)
+	}
+	if string(data) != "full output\n" {
+		t.Fatalf("payload data = %q, want replacement only", string(data))
+	}
+}

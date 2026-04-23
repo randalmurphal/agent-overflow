@@ -199,6 +199,72 @@ func TestSession_CleanBackgroundTerminals_ContextCanceled(t *testing.T) {
 	}
 }
 
+// TestSession_CleanBackgroundTerminals_MidWaitCancel pins the
+// mid-wait cancel path: a caller whose context is canceled AFTER the
+// request frame is on the wire but BEFORE the response arrives must
+// still unblock promptly with ctx.Err(). Distinct from the pre-cancel
+// case — that takes the fast path inside sendRequest before the
+// pending-channel register; this one exercises the <-ctx.Done() arm
+// of the select that parks on the response. A regression that, say,
+// dropped the ctx.Done branch would sit on the full 30s request
+// timeout instead.
+func TestSession_CleanBackgroundTerminals_MidWaitCancel(t *testing.T) {
+	procCtx, cancelProc := context.WithCancel(context.Background())
+	proc, err := provider.Spawn(procCtx, provider.SpawnConfig{
+		Binary: "sh",
+		Args:   []string{"-c", "cat > /dev/null"},
+	})
+	if err != nil {
+		t.Fatalf("spawn quiet process: %v", err)
+	}
+	t.Cleanup(func() {
+		cancelProc()
+		_ = proc.Close()
+	})
+
+	s := &Session{
+		proc:          proc,
+		threadID:      testThread,
+		codexThreadID: "codex-thread-bg-midcancel",
+		pending:       make(map[int64]chan json.RawMessage),
+		onEvent:       func(provider.ProviderEvent) {},
+		cancel:        cancelProc,
+	}
+	go s.readLoop()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cleanDone := make(chan error, 1)
+	go func() {
+		cleanDone <- s.CleanBackgroundTerminals(ctx)
+	}()
+
+	// Wait until sendRequest has parked on a pending-channel — proves
+	// the frame hit the wire and we're mid-wait, not mid-WriteLine.
+	_, _ = waitForPending(t, s, 3*time.Second)
+
+	// Now cancel. The pending select must observe ctx.Done and
+	// unblock; the 30s deadline never fires.
+	start := time.Now()
+	cancel()
+	select {
+	case err := <-cleanDone:
+		elapsed := time.Since(start)
+		if err == nil {
+			t.Fatal("CleanBackgroundTerminals: expected ctx.Canceled error after mid-wait cancel, got nil")
+		}
+		if !strings.Contains(err.Error(), context.Canceled.Error()) {
+			t.Errorf("error should wrap context.Canceled, got: %v", err)
+		}
+		if elapsed > 2*time.Second {
+			t.Errorf("mid-wait cancel took %v, want <2s (pending-select ctx.Done arm may be missing)", elapsed)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("CleanBackgroundTerminals never returned after mid-wait ctx cancel (regression: ctx.Done arm missing)")
+	}
+}
+
 // waitForPending blocks until exactly one pending request is registered
 // on s and returns its channel + id. Used by tests that drive the
 // pending channel directly instead of through a subprocess echo.

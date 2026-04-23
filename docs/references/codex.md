@@ -51,8 +51,9 @@ Codex has no `run_in_background` flag, but it does background work via
   later turn, up to `background_terminal_max_timeout` (1h default).
 - On the wire: one `item/*` pair. `item/started` (status `inProgress`),
   optional streaming output deltas, eventual `item/completed` (status
-  flips in place, same `item_id`). No "yielded" event, no `is_background`
-  flag, no sibling row.
+  flips in place, same `item_id`). No "yielded" event and no
+  `is_background` flag. Agent Overflow synthesizes the sibling
+  `tool_completion` row for background-tray/history parity.
 - `exec_command` supports parallel tool calls (`supports_parallel_tool_calls = true`).
   Each parallel call has its own `call_id` and random-i32 `process_id`.
 - `TerminalInteractionNotification` with empty `stdin` = the model

@@ -39,11 +39,12 @@ listener, one list**.
 The rewrite requires some provider and schema work beyond "purely
 additive." Called out up front so scope is clear:
 
-- **Claude adapter**: preserve `content_block_start`/`stop` (currently
-  discarded); handle `system/task_started`/`task_updated`/
-  `task_notification` for background lifecycle; stop treating
-  backgrounded-ack `tool_result` echoes as terminal; persist
-  thinking `signature` blobs for API replay.
+- **Claude adapter**: preserve `content_block_start`/`stop`; handle
+  `system/task_started`/`task_updated` for background lifecycle; keep
+  `task_notification` out of lifecycle state and surface it only as an
+  optional notification row; keep backgrounded-ack `tool_result`
+  echoes on the tool's own lifecycle; persist thinking `signature`
+  blobs for API replay.
 - **Codex adapter**: handle `CollabAgentToolCall` variants (spawn,
   send, wait, close, resume); open child-thread subscriptions on
   SpawnAgent completion; rewrite the header-comment claim that
@@ -470,8 +471,9 @@ Inline (foreground) tool call:
 
 Backgrounded tool call:
 - `tool_call` row stays `running`, `is_background=true`.
-- A separate `tool_completion` row is appended at the
-  post-streaming-boundary position (see the interrupt queue below).
+- A separate `tool_completion` row is appended at the current thread
+  write head (or the latest persisted turn when no turn is open),
+  deferred behind active streaming output when necessary.
 - `tool_completion.summary` **restates the original command** plus the
   outcome — e.g. `"npm install → exit 0 in 12s"`. Without this the
   late-arriving row is decontextualized.
@@ -491,19 +493,12 @@ ends. Carries `task_id` only, so the adapter must hold a
 `system/task_started`, persisted to `items.meta` so it survives
 reconnect).
 
-**Parallel signal: `system/task_notification`.** Fires downstream
-of task_updated (for out-of-turn completions the user-facing
-notification system generates this to get the model's attention on
-next turn). Carries BOTH `task_id` AND `tool_use_id` inline.
-Forge uses task_notification as a parallel completion trigger
-with dedup — either signal can fire first, whichever does emits
-`task.completed`, the other is suppressed by the `completedToolUseIDs`
-set. In practice `task_updated` arrives first (seen in our spike by
-~1-2 seconds); but adapter should handle both defensively — they
-can drift in edge cases (SDK event-queue backpressure, reconnect
-timing), and `task_notification`'s inline `tool_use_id` is a
-self-sufficient terminal signal even without a prior
-`task_started` in memory.
+**Notification signal: `system/task_notification`.** Fires after the
+terminal task state as an agent-facing notification. Carries
+`task_id`, usually `tool_use_id`, `status`, `summary`, and
+`output_file`. It is NOT a completion source. If surfaced in the UI,
+it must be a distinct notification row and must not mutate task state
+or dedupe against `task_updated`.
 
 **TaskOutput tool_result**: when the model calls the `TaskOutput`
 tool to poll a backgrounded item, the result content carries
@@ -517,11 +512,21 @@ Verified by live spike: if TaskOutput polls task A and task B
 finishes during the wait, `task_updated` fires independently for
 task B and TaskOutput's returned content contains only task A.
 
-Implication: we do NOT need to parse TaskOutput content as a
-completion signal. `task_updated` already fires per-task
-independently. TaskOutput's value is purely its richer result
-payload (useful for populating the tool_completion's summary /
-inline output), not its terminal signal — that's already covered.
+Fresh app-style spikes under
+`docs/references/fixtures/claude/` confirmed that TaskOutput does
+not consume or replace `task_updated`: when TaskOutput blocks on a
+running task, `task_updated` lands first and the TaskOutput
+`tool_result` lands second. If a task has already completed and its
+notification was delivered, later TaskOutput can return "No task
+found". TaskOutput is an explicit retained-task retrieval, not a
+durable history lookup.
+
+Implication: `task_updated` is the normal lifecycle completion signal.
+TaskOutput's value is output/exit-code detail because the agent
+explicitly asked for it. The UI should not rely on TaskOutput for
+normal background completion, and should avoid duplicating its content
+into the background completion row unless that row is expanded or
+needs a fallback detail source.
 
 **Claude adapter execution work required:**
 - The `parse_system.go` `task_started` / `task_updated` /
@@ -529,21 +534,18 @@ inline output), not its terminal signal — that's already covered.
   - `task_started` → store `task_id ↔ tool_use_id` mapping; persist
     to `items.meta` for reconnect recovery.
   - `task_updated` with terminal status → look up tool_use_id from
-    the map; emit `EventToolComplete` and add tool_use_id to
-    `completedToolUseIDs`.
-  - `task_notification` → carries both ids inline; if
-    tool_use_id not already in `completedToolUseIDs`, emit
-    `EventToolComplete` and add to the set. Redundant in the
-    happy path, load-bearing when `task_updated` is delayed or
-    missed.
+    the map; emit the task-lifecycle terminal event for the
+    background completion sibling.
+  - `task_notification` → optionally emit a distinct notification
+    event/row. Do not emit a task completion from it.
 - The `parse_user.go` `tool_result` echo path must suppress
-  `EventToolComplete` when the tool_use is in
-  `backgroundToolUses` — the echo is informational; wait for
-  `task_updated` / `task_notification` to terminate.
+  status mutation when the result is a background placeholder, but it
+  still emits the tool's own `EventToolComplete`; triage keeps the
+  launch row `running`.
 - When `TaskOutput`'s tool_result arrives, extract its output /
-  exit code / result text into the corresponding `tool_completion`
-  item's payload. Do NOT use it as a completion signal — it's
-  purely a content source.
+  exit code / result text as optional enrichment/fallback for the
+  corresponding `tool_completion` item's payload. Do not depend on
+  TaskOutput for normal completion.
 
 **Provider-specific `item.ID` sources for tool_call:**
 - **Claude**: `tool_use.id` from the assistant message content block.
@@ -618,14 +620,21 @@ it lands at the post-streaming boundary.
 
 ### Stop control
 
-One stop mechanism: a global "Stop" button in the Composer (replaces
-Send while `isTurnActive === true`). Adapter sends the interrupt
-signal; everything else falls out of the wire.
+Stop controls split by scope:
+- The Composer "Stop" button interrupts the active foreground turn.
+- The background tray manages outliving work after the turn yields:
+  Claude exposes per-row stop where upstream supports `stop_task`,
+  plus stop-all; Codex exposes stop-all background terminals only.
 
 **Wire calls per provider:**
 - **Codex**: `turn/interrupt { threadId, turnId }`.
-- **Claude**: the existing interrupt path (SDK `abort('interrupt')`
-  on the shared controller, as `REPL.tsx` does upstream).
+- **Claude foreground turn**: the existing interrupt path (SDK
+  `abort('interrupt')` on the shared controller, as `REPL.tsx` does
+  upstream).
+- **Claude background task**: `stop_task` control_request keyed by
+  `task_id`.
+- **Codex background tray**: `thread/backgroundTerminals/clean`
+  (thread-wide only; no per-row terminal/subagent stop upstream).
 
 **Cascade behavior — what survives a user interrupt** (verified
 against codex-source and claude-code-source-code; tables below
@@ -725,14 +734,15 @@ as errored with the completion partner.
 
 ### Background tray (frontend derivation)
 
-Pure derivation over `pane.items`:
-- Show items where `is_background == true && status == 'running'`.
+Pure derivation over `ListLiveBackgroundTasks(threadId)` so old live
+background work does not need to be loaded in the timeline window:
+- Show launch items where `is_background == true && status == 'running'`.
 - Pair with their `tool_completion` partner if present.
 - Keep a row visible for 2s after its completion lands, then remove.
 - **Cap visible rows at 3**, with a "+N more" stack collapsing older
   entries. Order newest-first.
 - Tray is a mirror — launch and completion rows ALSO render inline
-  in the main timeline at their (post-streaming-boundary) positions.
+  in the main timeline at their persisted history positions.
   Tray is a duplicate view for "what's running RIGHT NOW," NOT a
   relocation. We keep both because the inline rows preserve history;
   the tray gives an at-a-glance "what's the agent waiting on."
@@ -844,7 +854,7 @@ has explicitly expanded it AND asked for the full load. Collapse
 releases. No client cache.
 
 **Stage 1 — Peek** (cheap, automatic on expand):
-- Binding: `GetPayloadPreview(payloadId, maxBytes) -> {data, totalSize, isComplete}`
+- Binding: `GetPayloadPreview(threadId, payloadId, maxBytes) -> {data, totalSize, isComplete}`
 - Default `maxBytes = 32KB`. Fetches from the head of the payload.
 - `isComplete=true` if totalSize ≤ maxBytes — that's the whole payload
   and stage 2 is skipped.
@@ -854,7 +864,7 @@ releases. No client cache.
 **Stage 2 — Full load** (on demand, explicit):
 - If stage 1's `isComplete=false`, show a footer inside the dropdown:
   `Show full output (2.3 MB) ↓` (or similar, with the formatted size).
-- Click → binding `GetPayloadData(payloadId) -> {data}` returns the
+- Click → binding `GetPayloadData(threadId, payloadId) -> {data}` returns the
   full payload (up to the 4MB cap — see size limits below).
 - Replaces the stage 1 render. Same ANSI rendering.
 
@@ -1263,7 +1273,7 @@ On `truncated: true`, the router additionally:
 |-----------------------------|-------------------------------------------------------------------------------------------------------|
 | `EventTextDelta`            | upsert `assistant_text`; id = `text:<turnId>:<segmentIndex>`; append delta to summary; status=streaming |
 | `EventThinking`             | upsert `thinking`; id = `think:<turn_index>:<block_index>` (block_index monotonic across turn, not per-API-cycle); append delta to summary; preserve `signature` on payload/meta for API replay |
-| `EventToolStart`            | upsert `tool_call`; id = evt.ItemID; status=running; is_background from the per-provider classifier (Codex: `BackgroundClassifier` in `internal/provider/codex/`; Claude: `backgroundToolUses` map in the parser); tool_name set |
+| `EventToolStart`            | upsert `tool_call`; id = evt.ItemID; status=running; `is_background` only from provider wire facts (Claude `run_in_background` / Task tracking; Codex triage projection from `unifiedExecStartup` and `spawn_agent` child state); tool_name set |
 | `EventToolComplete` inline  | upsert same `tool_call`; status=completed/errored (errored only when is_error=true); attach payload  |
 | `EventToolComplete` bg      | route through `maybeDeferOrPersist` for the new `tool_completion`; summary restates command          |
 | `EventDiff`                 | find/create the related `tool_call`, attach diff as its payload                                       |
@@ -1339,7 +1349,7 @@ Add `UpsertItem(item Item, payload *Payload) (Item, error)`:
 - If payload non-nil, upsert payload in same transaction.
 - Returns the canonical persisted Item (with assigned item_index).
 
-Add `GetPayloadPreview(payloadID string, maxBytes int) (data []byte, totalSize int, err error)`:
+Add `GetPayloadPreview(threadID string, payloadID string, maxBytes int) (data []byte, totalSize int, err error)`:
 - Reads the full payload blob but returns only the head up to maxBytes
   (accepting the 4MB-cap as the worst case). Also returns total size
   so the frontend can render the "show full (N KB)" button.
@@ -1537,9 +1547,9 @@ Where:
 - Header line: per-tool-kind dispatcher on `tool_name`. Shows icon,
   label, brief input preview, status badge, decision chip (if set),
   exit code or duration on completion.
-- Chevron expand: fetch peek via `GetPayloadPreview(payloadId, 32768)`.
+- Chevron expand: fetch peek via `GetPayloadPreview(threadId, payloadId, 32768)`.
   Render peek. If `!isComplete`, show a "Show full output (N KB) ↓"
-  footer button. Button click: fetch full via `GetPayloadData(payloadId)`
+  footer button. Button click: fetch full via `GetPayloadData(threadId, payloadId)`
   and replace the rendered body.
 - Body switch on `payload.kind`: command_output / diff / tool_result /
   proposed_plan / text. `command_output` and any text-style payload
@@ -1564,12 +1574,16 @@ Where:
 
 ### Background tray
 
-Renders items where `is_background && status == 'running'`, plus
-pairs whose `tool_completion` is younger than 2s. Cap at 3 visible
-rows + "+N more". Click a tray row to scroll the main timeline to
-that tool_call and expand its inline output. No per-row stop
-button — stopping runs through the global Stop button in the
-Composer (see Stop control).
+Backed by `ListLiveBackgroundTasks(threadId)`, not the loaded timeline
+window. Renders running background launches plus pairs whose
+`tool_completion` is younger than 2s. Cap at 3 visible rows +
+"+N more". Tray rows are informational; the launch and completion
+also render inline in chat history.
+
+Stop controls follow provider capabilities: Claude rows can show
+per-row Stop when `task_id` is known, Claude Stop-all fans out
+`StopClaudeTask`, Codex Stop-all calls `thread/backgroundTerminals/clean`
+for unified exec PTYs, and Codex subagent rows have no stop control.
 
 ### Working indicator
 
@@ -1577,8 +1591,8 @@ A small footer component (`ChatWorkingIndicator.svelte`) below the
 Composer. Pure derivation:
 
 ```ts
-let isWorking = $derived(pane.isTurnActive);
-let elapsed = /* computed from earliest streaming/running item's createdAt */;
+let isWorking = $derived(pane.activeTurn !== null);
+let elapsed = /* computed from pane.activeTurn.startedAt */;
 ```
 
 Renders `· Working · 12s · Esc to interrupt` when isWorking. Hidden
@@ -1769,8 +1783,8 @@ One sequential pass. Each step ends with green tests.
    with depth cap, scroll invariants.
 9. **Working indicator + Context meter** — new components, wire to
    pane state.
-10. **Background tray polish** — "+N more" cap, row-click scroll to
-    timeline item.
+10. **Background tray polish** — "+N more" cap and provider-specific
+    stop controls.
 11. **Tests** — integration test for the full flow: provider events
     in, single upsert stream out, frontend renders correctly with no
     shifts at turn boundary, crash recovery (kill mid-turn, reopen,

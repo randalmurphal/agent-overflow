@@ -52,14 +52,14 @@ type TurnMetrics struct {
 
 // Router classifies provider events and routes them.
 type Router struct {
-	store                *store.Store
-	emit                 func(eventName string, data any) // wraps app.Event.Emit
+	store *store.Store
+	emit  func(eventName string, data any) // wraps app.Event.Emit
 	// highlighter renders items.summary → items.highlighted_content on
 	// every item persist and at the throttled render boundary on streaming
 	// deltas. Required — NewRouter panics on nil. Concurrent-safe; one
 	// instance is shared across the whole Router.
 	highlighter          *highlight.Renderer
-	checkpoints          CheckpointCapture                // nil-safe; no-op when nil
+	checkpoints          CheckpointCapture // nil-safe; no-op when nil
 	tracer               trace.Tracer
 	metrics              TurnMetrics
 	mu                   sync.Mutex
@@ -289,6 +289,8 @@ func (r *Router) Handle(evt provider.ProviderEvent) error {
 		return r.handleTurnComplete(evt)
 	case provider.EventBackgroundTaskTerminal:
 		return r.handleBackgroundTaskTerminal(evt)
+	case provider.EventBackgroundTaskNotification:
+		return r.handleBackgroundTaskNotification(evt)
 	case provider.EventSubagentNotification:
 		return r.handleSubagentNotification(evt)
 	case provider.EventTerminalInteraction:
@@ -662,7 +664,7 @@ func (r *Router) handleSubagentNotification(evt provider.ProviderEvent) error {
 		ThreadID: evt.ThreadID,
 		Meta:     evt.Meta,
 	})
-	return r.observeCodexSubagentNotification(evt.ThreadID, evt.Meta)
+	return r.observeCodexSubagentNotification(evt)
 }
 
 func (r *Router) emitThreadUpdated(threadID string) {

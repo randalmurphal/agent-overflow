@@ -67,6 +67,8 @@ export interface Thread {
  * - `terminal_interaction` is the Codex-only "Waited for background
  *   terminal" marker persisted when the model polls a backgrounded PTY
  *   via `write_stdin` with empty input.
+ * - `notification` is a provider notification row that must not mutate
+ *   tool/task lifecycle state.
  */
 export type ItemKind =
   | "user_text"
@@ -76,7 +78,8 @@ export type ItemKind =
   | "tool_completion"
   | "error"
   | "compaction"
-  | "terminal_interaction";
+  | "terminal_interaction"
+  | "notification";
 
 export interface Item {
   id: string;

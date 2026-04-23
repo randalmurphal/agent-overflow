@@ -8,11 +8,23 @@
   import ToolDecisionChip from './ToolDecisionChip.svelte';
   import { createPayloadExpansion, formatPayloadSize } from './payloadExpansion.svelte';
 
-  let { item, meta, payloadId }: { item?: Item; meta: DiffMeta; payloadId: string } = $props();
+  let {
+    item,
+    meta,
+    payloadId,
+    threadId,
+  }: {
+    item?: Item;
+    meta: DiffMeta;
+    payloadId: string;
+    threadId?: string;
+  } = $props();
 
-  const expansion = createPayloadExpansion(() => payloadId);
+  const expansion = createPayloadExpansion(() => payloadId, () => item?.threadId ?? threadId);
 
   $effect(() => {
+    item?.threadId;
+    threadId;
     payloadId;
     expansion.reset();
   });

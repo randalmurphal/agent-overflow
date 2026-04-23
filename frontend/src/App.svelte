@@ -62,6 +62,7 @@
   );
 
   function handleGlobalKeydown(ev: KeyboardEvent): void {
+    if (ev.defaultPrevented) return;
     // Let free-text inputs keep their typing behaviour. The palette overlay
     // mounts its own input handler that bypasses this branch naturally.
     const target = ev.target as HTMLElement | null;
@@ -79,7 +80,9 @@
     const isSidebarOrPaletteChord =
       (ev.metaKey || ev.ctrlKey) && ev.key.toLowerCase() === 'k' && !ev.altKey;
     const isShiftTab = ev.key === 'Tab' && ev.shiftKey && !ev.metaKey && !ev.ctrlKey && !ev.altKey;
-    if (editable && !isSidebarOrPaletteChord && !isShiftTab) return;
+    const isPlainEscape =
+      ev.key === 'Escape' && !ev.metaKey && !ev.ctrlKey && !ev.altKey && !ev.shiftKey;
+    if (editable && !isSidebarOrPaletteChord && !isShiftTab && !isPlainEscape) return;
 
     const handled = dispatchKey(ev, paletteContext);
     if (handled) ev.preventDefault();

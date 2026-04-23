@@ -3,7 +3,7 @@ import { cleanup, fireEvent, render } from '@testing-library/svelte';
 import ToolResultDropdown from './ToolResultDropdown.svelte';
 import { makeItem } from '../../../test/helpers/chat';
 import { getBindingMock, resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
-import { DEFAULT_PAYLOAD_PREVIEW_BYTES } from './payloadExpansion.svelte';
+import { DEFAULT_PAYLOAD_CHUNK_BYTES, DEFAULT_PAYLOAD_PREVIEW_BYTES } from './payloadExpansion.svelte';
 
 beforeAll(() => {
   if (typeof (Element.prototype as unknown as { animate?: unknown }).animate !== 'function') {
@@ -52,7 +52,14 @@ describe('<ToolResultDropdown>', () => {
       totalSize: 20,
       isComplete: true,
     }));
-    setBindingMock('GetPayloadData', async () => ({ data: 'unused', html: 'unused' }));
+    setBindingMock('GetPayloadChunk', async () => ({
+      data: 'unused',
+      html: 'unused',
+      offset: 0,
+      nextOffset: 6,
+      totalSize: 6,
+      isComplete: true,
+    }));
     const { getByTestId } = render(ToolResultDropdown, {
       props: {
         item: makeItem({
@@ -66,8 +73,8 @@ describe('<ToolResultDropdown>', () => {
 
     await fireEvent.click(getByTestId('tool-result-dropdown-toggle'));
 
-    expect(getBindingMock('GetPayloadPreview')).toHaveBeenCalledWith('payload-1', DEFAULT_PAYLOAD_PREVIEW_BYTES);
-    expect(getBindingMock('GetPayloadData')).not.toHaveBeenCalled();
+    expect(getBindingMock('GetPayloadPreview')).toHaveBeenCalledWith('thread-1', 'payload-1', DEFAULT_PAYLOAD_PREVIEW_BYTES);
+    expect(getBindingMock('GetPayloadChunk')).not.toHaveBeenCalled();
     expect(getByTestId('tool-result-dropdown-output').textContent).toContain('line 1');
     expect(getByTestId('tool-result-dropdown-exit').textContent).toContain('exit 1');
   });
@@ -98,7 +105,14 @@ describe('<ToolResultDropdown>', () => {
       totalSize: 128 * 1024,
       isComplete: false,
     }));
-    setBindingMock('GetPayloadData', async () => ({ data: 'full body', html: 'full body' }));
+    setBindingMock('GetPayloadChunk', async () => ({
+      data: 'full body',
+      html: 'full body',
+      offset: 'preview body'.length,
+      nextOffset: 'full body'.length,
+      totalSize: 'full body'.length,
+      isComplete: true,
+    }));
     const { getByTestId } = render(ToolResultDropdown, {
       props: {
         item: makeItem({
@@ -117,7 +131,12 @@ describe('<ToolResultDropdown>', () => {
     await fireEvent.click(getByTestId('tool-result-dropdown-show-full'));
     await Promise.resolve();
     await Promise.resolve();
-    expect(getBindingMock('GetPayloadData')).toHaveBeenCalledTimes(1);
+    expect(getBindingMock('GetPayloadChunk')).toHaveBeenCalledWith(
+      'thread-1',
+      'payload-1',
+      'preview body'.length,
+      DEFAULT_PAYLOAD_CHUNK_BYTES,
+    );
     expect(getByTestId('tool-result-dropdown-output').textContent).toContain('full body');
 
     await fireEvent.click(getByTestId('tool-result-dropdown-toggle'));

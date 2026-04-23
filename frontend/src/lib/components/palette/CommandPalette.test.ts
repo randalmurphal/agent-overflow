@@ -20,6 +20,7 @@ function baseCtx(extra: Partial<CommandContext> = {}): CommandContext {
     approvalPending: false,
     anyModalOpen: false,
     hasActiveThread: false,
+    turnActive: false,
     canForkActiveThread: false,
     canStartDiscussion: false,
     ...extra,

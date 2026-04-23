@@ -9,27 +9,29 @@ import (
 	"agent-overflow/internal/provider"
 )
 
-// These replay tests load captured Claude CLI NDJSON from /tmp spike
-// directories and feed each line through (*Parser).ParseLine, then
-// assert the resulting event sequence matches the new
-// turn/tool/task-lifecycle contract. The fixtures refresh via
-// `AGENT_OVERFLOW_DEBUG=provider` re-runs — we never copy them into
-// the repo so real-wire evolution stays visible.
-//
-// See docs/references/claude-wire.md §Captured samples and
-// docs/architecture/turn-lifecycle.md §Captured wire samples for the
-// mapping from scenario to file.
+const (
+	fixtureNDJSONBash          = "../../../docs/references/fixtures/claude/ndjson_bash.log"
+	fixtureNDJSONTask          = "../../../docs/references/fixtures/claude/ndjson_task.log"
+	fixtureNDJSONOutlives      = "../../../docs/references/fixtures/claude/ndjson_outlives.log"
+	fixtureNDJSONOutlivesTurn2 = "../../../docs/references/fixtures/claude/ndjson_outlives_turn2.log"
+	fixtureTaskOutputMulti     = "../../../docs/references/fixtures/claude/taskoutput_multi.ndjson"
+)
+
+// These replay tests load captured Claude CLI NDJSON from the repo's
+// checked-in fixtures and feed each line through (*Parser).ParseLine,
+// then assert the resulting event sequence matches the new
+// turn/tool/task-lifecycle contract. Refresh fixtures from fresh
+// `AGENT_OVERFLOW_DEBUG=provider` captures when the upstream wire
+// changes, then update docs/references/claude-wire.md in the same
+// commit.
 
 // loadNDJSONFixture reads a captured NDJSON log and returns its lines
-// with blank entries dropped. Missing files skip the test rather than
-// fail so CI environments without the spike captures don't break.
+// with blank entries dropped. These fixtures are checked into the repo,
+// so a missing file is a real test failure.
 func loadNDJSONFixture(t *testing.T, path string) [][]byte {
 	t.Helper()
 	data, err := os.ReadFile(path)
 	if err != nil {
-		if os.IsNotExist(err) {
-			t.Skipf("fixture %s not present — run the spike capture to regenerate", path)
-		}
 		t.Fatalf("read fixture %s: %v", path, err)
 	}
 	var out [][]byte
@@ -81,7 +83,7 @@ func filterKinds(events []provider.ProviderEvent, kinds ...provider.EventKind) [
 
 // TestReplay_NDJsonBash validates the backgrounded-Bash + foreground
 // Bash + Read + result scenario in
-// /tmp/claude-bg-spike/ndjson_bash.log.
+// docs/references/fixtures/claude/ndjson_bash.log.
 //
 // Expected lifecycle sequence (ignoring text/thinking/usage deltas):
 //
@@ -92,13 +94,13 @@ func filterKinds(events []provider.ProviderEvent, kinds ...provider.EventKind) [
 //  5. EventToolStart  (foreground bash: toolu_0153SNjjDKJC6Y2u6BVP8tyE)
 //  6. EventToolStart  (task_started for fg bash, meta-only)
 //  7. EventBackgroundTaskTerminal (bg bash task_updated)
-//     (task_notification for fg bash DROPPED — invariant 21)
+//     plus a foreground task_notification row
 //  8. EventToolComplete (foreground bash result)
 //  9. EventToolStart  (Read)
 //  10. EventToolComplete (Read result)
 //  11. EventTurnComplete (with lastAssistantMessageID populated)
 func TestReplay_NDJsonBash(t *testing.T) {
-	events := replayFixture(t, "/tmp/claude-bg-spike/ndjson_bash.log")
+	events := replayFixture(t, fixtureNDJSONBash)
 
 	lifecycle := filterKinds(events,
 		provider.EventInit,
@@ -138,7 +140,7 @@ func TestReplay_NDJsonBash(t *testing.T) {
 		// task_updated for bg bash (terminal)
 		{provider.EventBackgroundTaskTerminal, bgBash},
 
-		// task_notification for fg bash dropped
+		// foreground/background task_notification events are asserted separately
 
 		// foreground bash result
 		{provider.EventToolComplete, fgBash},
@@ -192,7 +194,7 @@ func TestReplay_NDJsonBash(t *testing.T) {
 		}
 	}
 
-	// Fg task_notification must NOT have left any event behind.
+	// Foreground task_notification must not masquerade as a lifecycle terminal.
 	for _, evt := range lifecycle {
 		if evt.Kind != provider.EventBackgroundTaskTerminal {
 			continue
@@ -202,6 +204,21 @@ func TestReplay_NDJsonBash(t *testing.T) {
 		if meta["task_id"] == fgTaskID {
 			t.Fatalf("unexpected EventBackgroundTaskTerminal for foreground task (invariant 21 violated): %+v", meta)
 		}
+	}
+
+	notifications := filterKinds(events, provider.EventBackgroundTaskNotification)
+	if len(notifications) != 1 {
+		t.Fatalf("expected 1 EventBackgroundTaskNotification (foreground bash), got %d", len(notifications))
+	}
+	var notificationMeta map[string]any
+	if err := json.Unmarshal(notifications[0].Meta, &notificationMeta); err != nil {
+		t.Fatalf("notification unmarshal: %v", err)
+	}
+	if notificationMeta["task_id"] != fgTaskID {
+		t.Fatalf("notification task_id = %v, want %s", notificationMeta["task_id"], fgTaskID)
+	}
+	if notificationMeta["tool_use_id"] != fgBash {
+		t.Fatalf("notification tool_use_id = %v, want %s", notificationMeta["tool_use_id"], fgBash)
 	}
 
 	// EventTurnComplete must carry the last assistant.message.id.
@@ -224,7 +241,7 @@ func TestReplay_NDJsonBash(t *testing.T) {
 }
 
 // TestReplay_NDJsonTask validates the Task subagent + TaskOutput scenario
-// in /tmp/claude-bg-spike/ndjson_task.log.
+// in docs/references/fixtures/claude/ndjson_task.log.
 //
 // Expected lifecycle:
 //
@@ -240,7 +257,7 @@ func TestReplay_NDJsonBash(t *testing.T) {
 //  10. EventBackgroundTaskTerminal (enrichment for the Agent task)
 //  11. EventTurnComplete
 func TestReplay_NDJsonTask(t *testing.T) {
-	events := replayFixture(t, "/tmp/claude-bg-spike/ndjson_task.log")
+	events := replayFixture(t, fixtureNDJSONTask)
 
 	lifecycle := filterKinds(events,
 		provider.EventInit,
@@ -311,7 +328,7 @@ func TestReplay_NDJsonTask(t *testing.T) {
 }
 
 // TestReplay_NDJsonOutlives validates the outlives-turn scenario in
-// /tmp/claude-bg-spike/ndjson_outlives.log: a backgrounded bash whose
+// docs/references/fixtures/claude/ndjson_outlives.log: a backgrounded bash whose
 // `task_updated` / `task_notification` arrive AFTER the turn's
 // `result`. This is the canonical "turn closes while background work
 // is still in flight" shape (invariant 24).
@@ -324,11 +341,11 @@ func TestReplay_NDJsonTask(t *testing.T) {
 //  4. EventToolComplete (bg placeholder, is_background=true)
 //  5. EventTurnComplete  <-- turn closes
 //  6. EventBackgroundTaskTerminal (late task_updated)
-//     (task_notification dropped)
+//     plus a separate notification event/row
 //  7. EventInit (second turn starts; sample has a turn 2)
 //  8. EventTurnComplete (end of second turn)
 func TestReplay_NDJsonOutlives(t *testing.T) {
-	events := replayFixture(t, "/tmp/claude-bg-spike/ndjson_outlives.log")
+	events := replayFixture(t, fixtureNDJSONOutlives)
 
 	lifecycle := filterKinds(events,
 		provider.EventInit,
@@ -398,7 +415,7 @@ func TestReplay_NDJsonOutlives(t *testing.T) {
 }
 
 // TestReplay_NDJsonTaskOutputMulti validates the scenario in
-// /tmp/taskoutput-multi-spike/ndjson.log: two parallel
+// docs/references/fixtures/claude/taskoutput_multi.ndjson: two parallel
 // `run_in_background:true` Bashes, then a blocking `TaskOutput` on the
 // longer one.
 //
@@ -411,7 +428,7 @@ func TestReplay_NDJsonOutlives(t *testing.T) {
 //     enrichment for the task it polled
 //   - EventTurnComplete
 func TestReplay_NDJsonTaskOutputMulti(t *testing.T) {
-	events := replayFixture(t, "/tmp/taskoutput-multi-spike/ndjson.log")
+	events := replayFixture(t, fixtureTaskOutputMulti)
 
 	lifecycle := filterKinds(events,
 		provider.EventInit,
@@ -499,7 +516,7 @@ func TestReplay_NDJsonTaskOutputMulti(t *testing.T) {
 
 // TestReplay_NDJsonOutlivesTurn2 extends the outlives scenario by
 // continuing the same parser session into a fresh turn 2 captured
-// separately in /tmp/claude-bg-spike/ndjson_outlives_turn2.log.
+// separately in docs/references/fixtures/claude/ndjson_outlives_turn2.log.
 //
 // The captured session_id matches ndjson_outlives.log, which means the
 // same parser instance would observe both streams in production: turn
@@ -513,10 +530,10 @@ func TestReplay_NDJsonTaskOutputMulti(t *testing.T) {
 // turn-1 bg launch.
 //
 // Fixtures:
-//   - /tmp/claude-bg-spike/ndjson_outlives.log (turn 1 + task_updated
+//   - docs/references/fixtures/claude/ndjson_outlives.log (turn 1 + task_updated
 //     after result; also contains the first re-init for turn 2 and
 //     its "Background task finished" result).
-//   - /tmp/claude-bg-spike/ndjson_outlives_turn2.log (a second fresh
+//   - docs/references/fixtures/claude/ndjson_outlives_turn2.log (a second fresh
 //     turn 2 capture for the same session — simulates the user typing
 //     "hi" and the agent responding while the parser has already
 //     forgotten the bg task in its task map).
@@ -530,8 +547,8 @@ func TestReplay_NDJsonTaskOutputMulti(t *testing.T) {
 //     additional tool-lifecycle events for the turn-1 bg launch.
 func TestReplay_NDJsonOutlivesTurn2(t *testing.T) {
 	const (
-		outlivesPath = "/tmp/claude-bg-spike/ndjson_outlives.log"
-		turn2Path    = "/tmp/claude-bg-spike/ndjson_outlives_turn2.log"
+		outlivesPath = fixtureNDJSONOutlives
+		turn2Path    = fixtureNDJSONOutlivesTurn2
 		bgBash       = "toolu_01NoZSorBGb7jSQMhNrs6qZj"
 		bgTaskID     = "bwh4ptwpo"
 	)

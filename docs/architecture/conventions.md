@@ -163,11 +163,10 @@ mandatory. The triage router's `AGENTS.md` (see
 **If you add a new map, document its cleanup path in the owning
 `AGENTS.md` in the same commit.** No silent long-lived state.
 
-Soft caps on dedup sets: the Claude parser's `completedToolUseIDs` /
-`completedTasks` sets (`internal/provider/claude/parser.go`) cap at the
-session's expected tool count with an explicit rationale in the parser's
-header comment. If you add a dedup set, put a cap or an explicit clear
-at the lifetime boundary.
+Soft caps on dedup sets: if you add a long-lived dedup/correlation set,
+put a cap or an explicit clear at the lifetime boundary. The current
+Claude task lifecycle avoids parser-level completion dedupe; coalescing
+happens through stable sibling ids in triage.
 
 ## Svelte 5
 

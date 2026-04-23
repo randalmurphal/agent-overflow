@@ -1,0 +1,131 @@
+{
+  "root": "/tmp/ao-claude-bg-20260423-105853",
+  "workdir": "/tmp/ao-claude-bg-20260423-105853/workspace",
+  "cmd": [
+    "claude",
+    "--input-format",
+    "stream-json",
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--permission-prompt-tool",
+    "stdio",
+    "--include-partial-messages",
+    "--permission-mode",
+    "bypassPermissions",
+    "--model",
+    "claude-sonnet-4-6",
+    "--allowedTools",
+    "Bash TaskOutput Monitor"
+  ],
+  "session_id": "465b82c8-6824-44e2-82a3-207836654a5a",
+  "first_task_id": "bheovc34q",
+  "second_task_id": "blmdxdhds",
+  "event_count": 369,
+  "result_count": 7,
+  "task_started": [
+    {
+      "type": "system",
+      "subtype": "task_started",
+      "task_id": "bheovc34q",
+      "tool_use_id": "toolu_01XeyWDFLwTg5SU1LRANTG96",
+      "description": "Sleep 10 seconds then print done signal",
+      "task_type": "local_bash",
+      "uuid": "afc2598d-9a46-446b-9ded-fe16a68adbb3",
+      "session_id": "465b82c8-6824-44e2-82a3-207836654a5a"
+    },
+    {
+      "type": "system",
+      "subtype": "task_started",
+      "task_id": "blmdxdhds",
+      "tool_use_id": "toolu_01FQiUQNFgaKFgE4jrUAGYK1",
+      "description": "Sleep 10 seconds then print monitor done signal",
+      "task_type": "local_bash",
+      "uuid": "ab0fe449-1530-40c9-91fa-0db7ecfb6f24",
+      "session_id": "465b82c8-6824-44e2-82a3-207836654a5a"
+    },
+    {
+      "type": "system",
+      "subtype": "task_started",
+      "task_id": "bs4lpywrh",
+      "tool_use_id": "toolu_01Qu3VQXVRCvPAaay44pz5kE",
+      "description": "Read output file for task blmdxdhds",
+      "task_type": "local_bash",
+      "uuid": "f542a55e-d3f5-46af-a92c-e73d8c9fab7c",
+      "session_id": "465b82c8-6824-44e2-82a3-207836654a5a"
+    }
+  ],
+  "task_updated": [
+    {
+      "type": "system",
+      "subtype": "task_updated",
+      "task_id": "bheovc34q",
+      "patch": {
+        "status": "completed",
+        "end_time": 1776960029386
+      },
+      "uuid": "f0c9739a-2724-43b7-8f20-52aaa8563927",
+      "session_id": "465b82c8-6824-44e2-82a3-207836654a5a"
+    },
+    {
+      "type": "system",
+      "subtype": "task_updated",
+      "task_id": "blmdxdhds",
+      "patch": {
+        "status": "completed",
+        "end_time": 1776960062295
+      },
+      "uuid": "df88a72b-dca0-497a-af68-dc936e4543ea",
+      "session_id": "465b82c8-6824-44e2-82a3-207836654a5a"
+    },
+    {
+      "type": "system",
+      "subtype": "task_updated",
+      "task_id": "bs4lpywrh",
+      "patch": {
+        "status": "completed",
+        "end_time": 1776960080229
+      },
+      "uuid": "5e745ae4-dedf-41f8-936f-868c9b96808a",
+      "session_id": "465b82c8-6824-44e2-82a3-207836654a5a"
+    }
+  ],
+  "task_notification": [
+    {
+      "type": "system",
+      "subtype": "task_notification",
+      "task_id": "bheovc34q",
+      "tool_use_id": "toolu_01XeyWDFLwTg5SU1LRANTG96",
+      "status": "completed",
+      "output_file": "/private/tmp/claude-502/-private-tmp-ao-claude-bg-20260423-105853-workspace/465b82c8-6824-44e2-82a3-207836654a5a/tasks/bheovc34q.output",
+      "summary": "Background command \"Sleep 10 seconds then print done signal\" completed (exit code 0)",
+      "session_id": "465b82c8-6824-44e2-82a3-207836654a5a",
+      "uuid": "b733fbc6-41f5-4b1c-927d-d9018dad4909"
+    },
+    {
+      "type": "system",
+      "subtype": "task_notification",
+      "task_id": "blmdxdhds",
+      "tool_use_id": "toolu_01FQiUQNFgaKFgE4jrUAGYK1",
+      "status": "completed",
+      "output_file": "/private/tmp/claude-502/-private-tmp-ao-claude-bg-20260423-105853-workspace/465b82c8-6824-44e2-82a3-207836654a5a/tasks/blmdxdhds.output",
+      "summary": "Background command \"Sleep 10 seconds then print monitor done signal\" completed (exit code 0)",
+      "session_id": "465b82c8-6824-44e2-82a3-207836654a5a",
+      "uuid": "2118821b-04ec-42f3-a239-9c3485ecae89"
+    },
+    {
+      "type": "system",
+      "subtype": "task_notification",
+      "task_id": "bs4lpywrh",
+      "tool_use_id": "toolu_01Qu3VQXVRCvPAaay44pz5kE",
+      "status": "completed",
+      "output_file": "/private/tmp/claude-502/-private-tmp-ao-claude-bg-20260423-105853-workspace/465b82c8-6824-44e2-82a3-207836654a5a/tasks/bs4lpywrh.output",
+      "summary": "Monitor \"Read output file for task blmdxdhds\" stream ended",
+      "session_id": "465b82c8-6824-44e2-82a3-207836654a5a",
+      "uuid": "59e344c8-3553-4772-b950-26d9fe863a7e"
+    }
+  ],
+  "taskoutput_results": [],
+  "stderr_tail": "",
+  "elapsed_seconds": 80.19
+}

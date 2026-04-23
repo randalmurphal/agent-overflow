@@ -6,11 +6,23 @@
   import ToolDecisionChip from './ToolDecisionChip.svelte';
   import { createPayloadExpansion, formatPayloadSize } from './payloadExpansion.svelte';
 
-  let { item, meta, payloadId }: { item?: Item; meta: CommandOutputMeta; payloadId: string } = $props();
+  let {
+    item,
+    meta,
+    payloadId,
+    threadId,
+  }: {
+    item?: Item;
+    meta: CommandOutputMeta;
+    payloadId: string;
+    threadId?: string;
+  } = $props();
 
-  const expansion = createPayloadExpansion(() => payloadId);
+  const expansion = createPayloadExpansion(() => payloadId, () => item?.threadId ?? threadId);
 
   $effect(() => {
+    item?.threadId;
+    threadId;
     payloadId;
     expansion.reset();
   });
@@ -64,7 +76,7 @@
             onclick={() => expansion.showFull()}
             data-testid="command-output-show-full"
           >
-            Show full output ({formatPayloadSize(expansion.totalSize)}) ↓
+            Load more output ({formatPayloadSize(expansion.totalSize)}) ↓
           </button>
         {/if}
       {/if}

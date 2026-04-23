@@ -1,0 +1,199 @@
+{
+  "cmd": [
+    "claude",
+    "--input-format",
+    "stream-json",
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--permission-prompt-tool",
+    "stdio",
+    "--include-partial-messages",
+    "--permission-mode",
+    "bypassPermissions",
+    "--model",
+    "claude-sonnet-4-6",
+    "--allowedTools",
+    "Bash"
+  ],
+  "events": 98,
+  "task_started": [
+    {
+      "type": "system",
+      "subtype": "task_started",
+      "task_id": "b6d8rvqwm",
+      "tool_use_id": "toolu_01Su1Ua2WsLvrJEBmTZF6srV",
+      "description": "Background spike task that sleeps, prints, and exits with code 7",
+      "task_type": "local_bash",
+      "uuid": "54d49cc6-5754-415d-b935-fa3fbc80a619",
+      "session_id": "ff78c28a-44c5-4b16-8234-6598b8e28c42"
+    }
+  ],
+  "task_updated": [
+    {
+      "type": "system",
+      "subtype": "task_updated",
+      "task_id": "b6d8rvqwm",
+      "patch": {
+        "status": "failed",
+        "end_time": 1776960256794
+      },
+      "uuid": "e3b956cf-64a2-4547-870c-1c521d950e60",
+      "session_id": "ff78c28a-44c5-4b16-8234-6598b8e28c42"
+    }
+  ],
+  "task_notification": [
+    {
+      "type": "system",
+      "subtype": "task_notification",
+      "task_id": "b6d8rvqwm",
+      "tool_use_id": "toolu_01Su1Ua2WsLvrJEBmTZF6srV",
+      "status": "failed",
+      "output_file": "/private/tmp/claude-502/-private-tmp-ao-claude-bg-20260423-105853-workspace-plain-failure/ff78c28a-44c5-4b16-8234-6598b8e28c42/tasks/b6d8rvqwm.output",
+      "summary": "Background command \"Background spike task that sleeps, prints, and exits with code 7\" failed with exit code 7",
+      "session_id": "ff78c28a-44c5-4b16-8234-6598b8e28c42",
+      "uuid": "6adc313d-60e5-49ff-90c0-9128c363f794"
+    }
+  ],
+  "results": [
+    {
+      "type": "result",
+      "subtype": "success",
+      "is_error": false,
+      "api_error_status": null,
+      "duration_ms": 5293,
+      "duration_api_ms": 5886,
+      "num_turns": 2,
+      "result": "PLAIN_FAIL_LAUNCHED",
+      "stop_reason": "end_turn",
+      "session_id": "ff78c28a-44c5-4b16-8234-6598b8e28c42",
+      "total_cost_usd": 0.046055200000000004,
+      "usage": {
+        "input_tokens": 18,
+        "cache_creation_input_tokens": 8544,
+        "cache_read_input_tokens": 31914,
+        "output_tokens": 255,
+        "server_tool_use": {
+          "web_search_requests": 0,
+          "web_fetch_requests": 0
+        },
+        "service_tier": "standard",
+        "cache_creation": {
+          "ephemeral_1h_input_tokens": 0,
+          "ephemeral_5m_input_tokens": 8544
+        },
+        "inference_geo": "",
+        "iterations": [
+          {
+            "input_tokens": 8,
+            "output_tokens": 50,
+            "cache_read_input_tokens": 20069,
+            "cache_creation_input_tokens": 320,
+            "cache_creation": {
+              "ephemeral_5m_input_tokens": 320,
+              "ephemeral_1h_input_tokens": 0
+            },
+            "type": "message"
+          }
+        ],
+        "speed": "standard"
+      },
+      "modelUsage": {
+        "claude-haiku-4-5-20251001": {
+          "inputTokens": 487,
+          "outputTokens": 15,
+          "cacheReadInputTokens": 0,
+          "cacheCreationInputTokens": 0,
+          "webSearchRequests": 0,
+          "costUSD": 0.000562,
+          "contextWindow": 200000,
+          "maxOutputTokens": 32000
+        },
+        "claude-sonnet-4-6": {
+          "inputTokens": 18,
+          "outputTokens": 255,
+          "cacheReadInputTokens": 31914,
+          "cacheCreationInputTokens": 8544,
+          "webSearchRequests": 0,
+          "costUSD": 0.045493200000000004,
+          "contextWindow": 200000,
+          "maxOutputTokens": 32000
+        }
+      },
+      "permission_denials": [],
+      "terminal_reason": "completed",
+      "fast_mode_state": "off",
+      "uuid": "a237182b-5af1-4f38-8892-4af4a5fc4284"
+    },
+    {
+      "type": "result",
+      "subtype": "success",
+      "is_error": false,
+      "api_error_status": null,
+      "duration_ms": 2412,
+      "duration_api_ms": 8290,
+      "num_turns": 1,
+      "result": "Background task `b6d8rvqwm` completed \u2014 failed with exit code 7, as expected.",
+      "stop_reason": "end_turn",
+      "session_id": "ff78c28a-44c5-4b16-8234-6598b8e28c42",
+      "total_cost_usd": 0.054106900000000006,
+      "usage": {
+        "input_tokens": 10,
+        "cache_creation_input_tokens": 248,
+        "cache_read_input_tokens": 20389,
+        "output_tokens": 65,
+        "server_tool_use": {
+          "web_search_requests": 0,
+          "web_fetch_requests": 0
+        },
+        "service_tier": "standard",
+        "cache_creation": {
+          "ephemeral_1h_input_tokens": 0,
+          "ephemeral_5m_input_tokens": 248
+        },
+        "inference_geo": "",
+        "iterations": [
+          {
+            "input_tokens": 10,
+            "output_tokens": 65,
+            "cache_read_input_tokens": 20389,
+            "cache_creation_input_tokens": 248,
+            "cache_creation": {
+              "ephemeral_5m_input_tokens": 248,
+              "ephemeral_1h_input_tokens": 0
+            },
+            "type": "message"
+          }
+        ],
+        "speed": "standard"
+      },
+      "modelUsage": {
+        "claude-haiku-4-5-20251001": {
+          "inputTokens": 487,
+          "outputTokens": 15,
+          "cacheReadInputTokens": 0,
+          "cacheCreationInputTokens": 0,
+          "webSearchRequests": 0,
+          "costUSD": 0.000562,
+          "contextWindow": 200000,
+          "maxOutputTokens": 32000
+        },
+        "claude-sonnet-4-6": {
+          "inputTokens": 28,
+          "outputTokens": 320,
+          "cacheReadInputTokens": 52303,
+          "cacheCreationInputTokens": 8792,
+          "webSearchRequests": 0,
+          "costUSD": 0.053544900000000006,
+          "contextWindow": 200000,
+          "maxOutputTokens": 32000
+        }
+      },
+      "permission_denials": [],
+      "terminal_reason": "completed",
+      "fast_mode_state": "off",
+      "uuid": "9c6eb71a-d768-4801-abbb-5fb8d92134b4"
+    }
+  ],
+  "stderr_tail": ""
+}

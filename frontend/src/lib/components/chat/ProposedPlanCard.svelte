@@ -32,15 +32,20 @@
   });
 
   async function ensurePlanMarkdown(): Promise<string> {
+    const threadId = pane.threadId;
     if (planMarkdown !== null) {
       return planMarkdown;
     }
     if (loading) {
       return '';
     }
+    if (!threadId) {
+      addToast('error', 'Failed to load proposed plan');
+      return '';
+    }
     loading = true;
     try {
-      const content = await GetPayloadData(payloadId);
+      const content = await GetPayloadData(threadId, payloadId);
       planMarkdown = content.data;
       return content.data;
     } catch (err) {

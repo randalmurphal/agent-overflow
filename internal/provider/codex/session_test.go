@@ -966,6 +966,61 @@ func TestDispatchLineCollabSpawnRemembersReceiverThread(t *testing.T) {
 	}
 }
 
+func TestDispatchLineThreadStartedRemembersAgentPath(t *testing.T) {
+	s := &Session{
+		threadID:               "parent-thread",
+		pending:                make(map[int64]chan json.RawMessage),
+		childParentByThread:    map[string]string{"child-provider-1": "call-collab-1"},
+		childParentByAgentPath: make(map[string]string),
+		agentPathByThread:      make(map[string]string),
+		onEvent:                func(provider.ProviderEvent) {},
+	}
+
+	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"thread/started","params":{"thread":{"id":"child-provider-1","source":{"subAgent":{"thread_spawn":{"parent_thread_id":"provider-parent","depth":1,"agent_path":"/root/researcher"}}}}}}`))
+
+	if got := s.parentToolUseForAgentPath("/root/researcher"); got != "call-collab-1" {
+		t.Fatalf("agent path mapping: got %q, want %q", got, "call-collab-1")
+	}
+}
+
+func TestDispatchLineSubagentNotificationUsesAgentPathMapping(t *testing.T) {
+	var events []provider.ProviderEvent
+	s := &Session{
+		threadID:               "parent-thread",
+		pending:                make(map[int64]chan json.RawMessage),
+		childParentByThread:    make(map[string]string),
+		childParentByAgentPath: map[string]string{"/root/researcher": "call-collab-1"},
+		agentPathByThread:      make(map[string]string),
+		onEvent: func(evt provider.ProviderEvent) {
+			events = append(events, evt)
+		},
+	}
+
+	line := []byte(`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"parent-thread","item":{"id":"user-msg-1","type":"userMessage","content":[{"type":"text","text":"<subagent_notification>{\"agent_path\":\"/root/researcher\",\"status\":{\"completed\":\"done\"}}</subagent_notification>"}]}}}`)
+	s.dispatchLine(line)
+
+	for _, evt := range events {
+		if evt.Kind != provider.EventSubagentNotification {
+			continue
+		}
+		if evt.ItemID != "call-collab-1" {
+			t.Fatalf("ItemID: got %q, want call-collab-1", evt.ItemID)
+		}
+		var meta map[string]any
+		if err := json.Unmarshal(evt.Meta, &meta); err != nil {
+			t.Fatalf("meta unmarshal: %v", err)
+		}
+		if meta["status"] != "completed" {
+			t.Fatalf("meta.status: got %v, want completed", meta["status"])
+		}
+		if meta["message"] != "done" {
+			t.Fatalf("meta.message: got %v, want done", meta["message"])
+		}
+		return
+	}
+	t.Fatalf("expected EventSubagentNotification, got %+v", events)
+}
+
 func TestDispatchLineCloseAgentRewritesToParentCardID(t *testing.T) {
 	var events []provider.ProviderEvent
 	s := &Session{
@@ -2699,6 +2754,21 @@ func TestParseSubagentNotifications_PreservesExtraFields(t *testing.T) {
 	}
 	if _, dup := got[0].Extra["status"]; dup {
 		t.Errorf("Extra should not duplicate status: %+v", got[0].Extra)
+	}
+}
+
+func TestParseSubagentNotifications_ObjectStatus(t *testing.T) {
+	text := `<subagent_notification>{"agent_path":"child-1","status":{"completed":"done"}}</subagent_notification>
+<subagent_notification>{"agent_path":"child-2","status":{"errored":"boom"}}</subagent_notification>`
+	got := parseSubagentNotifications(text)
+	if len(got) != 2 {
+		t.Fatalf("len=%d, want 2 (got=%+v)", len(got), got)
+	}
+	if got[0].Status != "completed" || got[0].Extra["message"] != "done" {
+		t.Errorf("entry 0: got %+v, want completed with message", got[0])
+	}
+	if got[1].Status != "errored" || got[1].Extra["message"] != "boom" {
+		t.Errorf("entry 1: got %+v, want errored with message", got[1])
 	}
 }
 

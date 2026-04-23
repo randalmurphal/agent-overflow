@@ -19,7 +19,7 @@
   type StatusFields = { status?: 'running' | 'completed' | 'errored' | 'killed' };
   const itemStatus = $derived((item as unknown as StatusFields).status ?? 'completed');
 
-  const expansion = createPayloadExpansion(() => item.payloadId);
+  const expansion = createPayloadExpansion(() => item.payloadId, () => item.threadId);
 
   /**
    * payloadMeta.meta is stored as a JSON string so kind-specific data
@@ -100,6 +100,7 @@
 
   $effect(() => {
     item.id;
+    item.threadId;
     item.payloadId;
     expansion.reset();
   });

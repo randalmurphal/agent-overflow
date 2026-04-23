@@ -90,6 +90,22 @@ describe('<MessageTimeline>', () => {
     expect(row.textContent).toContain('Waited for background terminal');
   });
 
+  it('renders notification rows without routing them through tool lifecycle cards', async () => {
+    const pane = await buildPane(undefined, [
+      makeItem({
+        id: 'notif-1',
+        kind: 'notification',
+        role: 'system',
+        summary: 'Background command "sleep 10" completed',
+      }),
+    ]);
+
+    const { getByTestId, queryByTestId } = render(MessageTimeline, { props: { pane } });
+
+    expect(getByTestId('notification-row').textContent).toContain('Background command "sleep 10" completed');
+    expect(queryByTestId('tool-call-card')).toBeNull();
+  });
+
   it('renders changed-files and turn-diff summaries from tool-result payloads', async () => {
     const pane = await buildPane(undefined, [
       makeItem({

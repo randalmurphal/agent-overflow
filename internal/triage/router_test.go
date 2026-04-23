@@ -57,30 +57,31 @@ func TestHandleEveryEventKindCovered(t *testing.T) {
 // drift surfaces at CI time.
 func TestAllEventKindsListIsComplete(t *testing.T) {
 	expected := map[provider.EventKind]bool{
-		provider.EventInit:                 true,
-		provider.EventTextDelta:            true,
-		provider.EventToolStart:            true,
-		provider.EventToolComplete:         true,
-		provider.EventTurnStart:            true,
-		provider.EventTurnComplete:         true,
-		provider.EventApprovalRequest:      true,
-		provider.EventApprovalResolved:     true,
-		provider.EventSessionStatus:        true,
-		provider.EventTokenUsage:           true,
-		provider.EventError:                true,
-		provider.EventCompactBoundary:      true,
-		provider.EventRateLimits:           true,
-		provider.EventModelRerouted:        true,
-		provider.EventThreadRenamed:        true,
-		provider.EventContentBlockStart:    true,
-		provider.EventContentBlockStop:     true,
-		provider.EventBackgroundTaskTerminal: true, // Wave 1 — new, Wave 2 wires triage
-		provider.EventSubagentNotification:   true, // reserved for Codex subagent UI
-		provider.EventTerminalInteraction:    true, // Codex polling marker; triage persists empty-stdin variant
-		provider.EventDiff:                 true,
-		provider.EventCommandOutput:        true,
-		provider.EventThinking:             true,
-		provider.EventProposedPlan:         true,
+		provider.EventInit:                       true,
+		provider.EventTextDelta:                  true,
+		provider.EventToolStart:                  true,
+		provider.EventToolComplete:               true,
+		provider.EventTurnStart:                  true,
+		provider.EventTurnComplete:               true,
+		provider.EventApprovalRequest:            true,
+		provider.EventApprovalResolved:           true,
+		provider.EventSessionStatus:              true,
+		provider.EventTokenUsage:                 true,
+		provider.EventError:                      true,
+		provider.EventCompactBoundary:            true,
+		provider.EventRateLimits:                 true,
+		provider.EventModelRerouted:              true,
+		provider.EventThreadRenamed:              true,
+		provider.EventContentBlockStart:          true,
+		provider.EventContentBlockStop:           true,
+		provider.EventBackgroundTaskTerminal:     true, // Wave 1 — new, Wave 2 wires triage
+		provider.EventBackgroundTaskNotification: true, // Claude task_notification is a notification, not a terminal lifecycle signal
+		provider.EventSubagentNotification:       true, // reserved for Codex subagent UI
+		provider.EventTerminalInteraction:        true, // Codex polling marker; triage persists empty-stdin variant
+		provider.EventDiff:                       true,
+		provider.EventCommandOutput:              true,
+		provider.EventThinking:                   true,
+		provider.EventProposedPlan:               true,
 	}
 
 	got := make(map[provider.EventKind]bool, len(provider.AllEventKinds))
@@ -2028,6 +2029,7 @@ func TestTurnCompleteDoesNotAutoRenameClaudeThread(t *testing.T) {
 //   - Self-reference drops the link with a log.
 //   - An existing non-tool_call parent drops the link.
 //   - Cycles along the parent chain drop the link.
+//
 // A parent that doesn't exist yet is intentionally NOT dropped —
 // subagent streaming text/thinking can reference a Task tool_call that
 // materializes later in the same turn.
@@ -2199,11 +2201,11 @@ func TestErrorPersistsTimelineItem(t *testing.T) {
 // TestFatalErrorOrderingMatchesSpec pins the ordering contract on a
 // fatal EventError, per chat-rewrite §"Live provider-crash flip":
 //
-//   1. flip every streaming/running item in the turn to errored
-//   2. persist the error row
-//   3. drain any queued completions as errored
-//   4. synthesize TurnComplete{truncated:true} when no wire
-//      TurnComplete is expected
+//  1. flip every streaming/running item in the turn to errored
+//  2. persist the error row
+//  3. drain any queued completions as errored
+//  4. synthesize TurnComplete{truncated:true} when no wire
+//     TurnComplete is expected
 //
 // Earlier code drained before creating the error row; the emission
 // ordering below locks the spec sequence so a regression surfaces as

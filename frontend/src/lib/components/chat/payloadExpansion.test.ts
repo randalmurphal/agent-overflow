@@ -9,27 +9,31 @@ describe('payloadExpansion', () => {
 
   it('loads preview before full payload and discards both on collapse', async () => {
     setBindingMock('GetPayloadPreview', async () => ({
-      data: 'PREVIEW',
-      html: '<p>PREVIEW</p>',
+      data: 'PREVIEW ',
+      html: '<p>PREVIEW </p>',
       totalSize: 40_960,
       isComplete: false,
     }));
-    setBindingMock('GetPayloadData', async () => ({
-      data: 'FULL PAYLOAD',
-      html: '<p>FULL PAYLOAD</p>',
+    setBindingMock('GetPayloadChunk', async () => ({
+      data: 'PREVIEW FULL PAYLOAD',
+      html: '<p>PREVIEW FULL PAYLOAD</p>',
+      offset: 8,
+      nextOffset: 20,
+      totalSize: 40_960,
+      isComplete: true,
     }));
 
-    const expansion = createPayloadExpansion('payload-1');
+    const expansion = createPayloadExpansion('payload-1', 'thread-1');
     await expansion.expand();
 
     expect(expansion.expanded).toBe(true);
-    expect(expansion.previewData).toBe('PREVIEW');
+    expect(expansion.previewData).toBe('PREVIEW ');
     expect(expansion.hasMore).toBe(true);
-    expect(getBindingMock('GetPayloadData')).not.toHaveBeenCalled();
+    expect(getBindingMock('GetPayloadChunk')).not.toHaveBeenCalled();
 
     await expansion.showFull();
-    expect(expansion.fullData).toBe('FULL PAYLOAD');
-    expect(expansion.displayData).toBe('FULL PAYLOAD');
+    expect(expansion.fullData).toBe('PREVIEW FULL PAYLOAD');
+    expect(expansion.displayData).toBe('PREVIEW FULL PAYLOAD');
 
     expansion.collapse();
     expect(expansion.expanded).toBe(false);

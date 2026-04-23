@@ -328,6 +328,47 @@ export class Keybinding {
     }
 }
 
+export class PayloadChunk {
+    "data": string;
+    "html": string;
+    "offset": number;
+    "nextOffset": number;
+    "totalSize": number;
+    "isComplete": boolean;
+
+    /** Creates a new PayloadChunk instance. */
+    constructor($$source: Partial<PayloadChunk> = {}) {
+        if (!("data" in $$source)) {
+            this["data"] = "";
+        }
+        if (!("html" in $$source)) {
+            this["html"] = "";
+        }
+        if (!("offset" in $$source)) {
+            this["offset"] = 0;
+        }
+        if (!("nextOffset" in $$source)) {
+            this["nextOffset"] = 0;
+        }
+        if (!("totalSize" in $$source)) {
+            this["totalSize"] = 0;
+        }
+        if (!("isComplete" in $$source)) {
+            this["isComplete"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new PayloadChunk instance from a string or object.
+     */
+    static createFrom($$source: any = {}): PayloadChunk {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new PayloadChunk($$parsedSource as Partial<PayloadChunk>);
+    }
+}
+
 /**
  * PayloadContent bundles a payload's raw bytes (Data) with its pre-rendered
  * display HTML (Html). Raw-data paths (copy to clipboard, save to file,

@@ -691,12 +691,12 @@ func TestParser_TaskOutputEmitsOwnCompleteAndBackgroundTerminal(t *testing.T) {
 	}
 }
 
-// TestParser_TaskNotificationEmitsNoEvents verifies invariant 21:
-// `system/task_notification` is NOT a completion source and must emit
-// zero events. The authoritative task-terminal signals are
+// TestParser_TaskNotificationEmitsNotificationOnly verifies invariant 21:
+// `system/task_notification` is NOT a completion source and emits only a
+// non-lifecycle notification event. The authoritative task-terminal signals are
 // `system/task_updated` (basic) and TaskOutput `tool_use_result.task`
 // (enriched). See docs/references/claude-wire.md §task_notification.
-func TestParser_TaskNotificationEmitsNoEvents(t *testing.T) {
+func TestParser_TaskNotificationEmitsNotificationOnly(t *testing.T) {
 	parser := NewParser()
 
 	startEvents, err := parser.ParseLine(testThreadProto, []byte(`{"type":"system","subtype":"task_started","task_id":"task-1","tool_use_id":"tool-bg"}`))
@@ -711,8 +711,14 @@ func TestParser_TaskNotificationEmitsNoEvents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("task_notification: %v", err)
 	}
-	if len(events) != 0 {
-		t.Fatalf("expected 0 events from task_notification (see invariant 21), got %d: %+v", len(events), events)
+	if len(events) != 1 || events[0].Kind != provider.EventBackgroundTaskNotification {
+		t.Fatalf("expected 1 EventBackgroundTaskNotification, got %d: %+v", len(events), events)
+	}
+	if events[0].ItemID != "tool-bg" {
+		t.Fatalf("notification ItemID: got %q, want tool-bg", events[0].ItemID)
+	}
+	if events[0].Content != "done" {
+		t.Fatalf("notification content: got %q, want done", events[0].Content)
 	}
 }
 
@@ -774,7 +780,7 @@ func TestParser_TaskStartedSkipsWhenIDsAreEmpty(t *testing.T) {
 // TestParser_FullTaskLifecycleEmitsSingleBackgroundTerminal covers
 // the canonical sequence — task_started (meta-only EventToolStart),
 // task_updated(completed) (one EventBackgroundTaskTerminal), then
-// task_notification (MUST drop). Any idempotent fold of later
+// task_notification (notification only). Any idempotent fold of later
 // terminals into the sibling row is triage's job.
 func TestParser_FullTaskLifecycleEmitsSingleBackgroundTerminal(t *testing.T) {
 	parser := NewParser()
@@ -795,8 +801,8 @@ func TestParser_FullTaskLifecycleEmitsSingleBackgroundTerminal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("task_notification: %v", err)
 	}
-	if len(notifyEvents) != 0 {
-		t.Fatalf("expected 0 events from task_notification (invariant 21), got %+v", notifyEvents)
+	if len(notifyEvents) != 1 || notifyEvents[0].Kind != provider.EventBackgroundTaskNotification {
+		t.Fatalf("expected 1 EventBackgroundTaskNotification from task_notification, got %+v", notifyEvents)
 	}
 }
 
@@ -837,7 +843,7 @@ func TestParser_TaskUpdatedAloneEmitsBackgroundTerminal(t *testing.T) {
 // TestParser_TaskNotificationOnlyFiresNoTerminal is the reinforcement
 // case for invariant 21: even when task_notification is the ONLY
 // terminal signal seen (e.g. task_updated was dropped), the parser
-// emits nothing. Triage's force-close safety net or the idempotent
+// emits only a notification. Triage's force-close safety net or the idempotent
 // upsert by a later replay will handle the row eventually.
 func TestParser_TaskNotificationOnlyFiresNoTerminal(t *testing.T) {
 	parser := NewParser()
@@ -846,8 +852,8 @@ func TestParser_TaskNotificationOnlyFiresNoTerminal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("task_notification: %v", err)
 	}
-	if len(events) != 0 {
-		t.Fatalf("expected 0 events from task_notification (invariant 21), got %+v", events)
+	if len(events) != 1 || events[0].Kind != provider.EventBackgroundTaskNotification {
+		t.Fatalf("expected 1 EventBackgroundTaskNotification from task_notification, got %+v", events)
 	}
 
 	// A subsequent task_updated for the same task DOES emit the
@@ -862,7 +868,7 @@ func TestParser_TaskNotificationOnlyFiresNoTerminal(t *testing.T) {
 }
 
 // TestParser_TaskNotificationFirstThenUpdatedEmitsTerminal reverses
-// the arrival order: notification fires first (dropped), then
+// the arrival order: notification fires first, then
 // task_updated arrives. The terminal fires on task_updated, not
 // blocked by the earlier notification.
 func TestParser_TaskNotificationFirstThenUpdatedEmitsTerminal(t *testing.T) {
@@ -876,8 +882,8 @@ func TestParser_TaskNotificationFirstThenUpdatedEmitsTerminal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("task_notification: %v", err)
 	}
-	if len(notifyEvents) != 0 {
-		t.Fatalf("expected 0 events from task_notification (invariant 21), got %+v", notifyEvents)
+	if len(notifyEvents) != 1 || notifyEvents[0].Kind != provider.EventBackgroundTaskNotification {
+		t.Fatalf("expected 1 EventBackgroundTaskNotification from task_notification, got %+v", notifyEvents)
 	}
 
 	updatedEvents, err := parser.ParseLine(testThreadProto, []byte(`{"type":"system","subtype":"task_updated","task_id":"t1","patch":{"status":"completed"}}`))
