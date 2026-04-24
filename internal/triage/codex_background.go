@@ -537,6 +537,17 @@ func (r *Router) observeCodexCommandOutput(evt provider.ProviderEvent) bool {
 	return true
 }
 
+func (r *Router) observeCodexTopLevelToolBoundary(evt provider.ProviderEvent) {
+	if strings.TrimSpace(evt.ParentToolUseID) != "" {
+		return
+	}
+	// A top-level tool after a terminal poll means the model moved on from
+	// that poll. If the background PTY completes later, keep it in the tray
+	// until the model explicitly polls again instead of mutating the stale
+	// "waited" row.
+	r.clearCodexPendingTerminalWaits(evt.ThreadID)
+}
+
 // observeCodexUnifiedExecComplete owns item/completed for tracked
 // unified exec startups. Quick commands that completed before the model
 // moved on become normal command rows. Commands that yielded stay

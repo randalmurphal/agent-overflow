@@ -2,6 +2,7 @@ package codex
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"agent-overflow/internal/provider"
@@ -655,6 +656,156 @@ func TestClassifyNotification_McpToolCallProgressDropped(t *testing.T) {
 	events := ClassifyNotification("th-1", "item/mcpToolCall/progress", params)
 	if len(events) != 0 {
 		t.Fatalf("expected mcpToolCall/progress to be dropped, got %d event(s)", len(events))
+	}
+}
+
+func TestClassifyNotification_WebSearchEnrichesToolMeta(t *testing.T) {
+	params := json.RawMessage(
+		`{"threadId":"th-1","turnId":"t1","item":{"id":"web-1","type":"webSearch","query":"svelte 5 runes","status":"completed"}}`,
+	)
+	events := ClassifyNotification("th-1", "item/started", params)
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if meta["toolName"] != "WebSearch" {
+		t.Fatalf("toolName = %v, want WebSearch", meta["toolName"])
+	}
+	input, ok := meta["input"].(map[string]any)
+	if !ok {
+		t.Fatalf("input missing or wrong type: %#v", meta["input"])
+	}
+	if input["query"] != "svelte 5 runes" {
+		t.Fatalf("input.query = %v, want query", input["query"])
+	}
+}
+
+func TestClassifyNotification_McpToolCallEnrichesToolMeta(t *testing.T) {
+	params := json.RawMessage(
+		`{"threadId":"th-1","turnId":"t1","item":{"id":"mcp-1","type":"mcpToolCall","server":"docs","tool":"lookup","arguments":{"q":"wails"},"durationMs":42,"status":"completed"}}`,
+	)
+	events := ClassifyNotification("th-1", "item/started", params)
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if meta["toolName"] != "MCP/lookup" {
+		t.Fatalf("toolName = %v, want MCP/lookup", meta["toolName"])
+	}
+	if _, ok := meta["durationMs"]; ok {
+		t.Fatalf("durationMs should not be surfaced until the UI has a persisted contract for it: %v", meta["durationMs"])
+	}
+	input, ok := meta["input"].(map[string]any)
+	if !ok {
+		t.Fatalf("input missing or wrong type: %#v", meta["input"])
+	}
+	if input["description"] != "docs/lookup" {
+		t.Fatalf("input.description = %v, want docs/lookup", input["description"])
+	}
+	if _, ok := input["arguments"]; ok {
+		t.Fatalf("input.arguments should not duplicate raw item.arguments: %#v", input["arguments"])
+	}
+}
+
+func TestClassifyNotification_McpToolCallCompletionCarriesResultContent(t *testing.T) {
+	params := json.RawMessage(
+		`{"threadId":"th-1","turnId":"t1","item":{"id":"mcp-1","type":"mcpToolCall","server":"docs","tool":"lookup","status":"completed","result":{"content":[{"type":"text","text":"Lookup result"}],"structuredContent":{"id":"123"}}}}`,
+	)
+	events := ClassifyNotification("th-1", "item/completed", params)
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if events[0].Kind != provider.EventToolComplete {
+		t.Fatalf("kind = %q, want %q", events[0].Kind, provider.EventToolComplete)
+	}
+	if !strings.Contains(events[0].Content, "Lookup result") {
+		t.Fatalf("content missing MCP text result: %q", events[0].Content)
+	}
+	if !strings.Contains(events[0].Content, `"id": "123"`) {
+		t.Fatalf("content missing structured content: %q", events[0].Content)
+	}
+}
+
+func TestClassifyNotification_DynamicToolCallCompletionCarriesContentItems(t *testing.T) {
+	params := json.RawMessage(
+		`{"threadId":"th-1","turnId":"t1","item":{"id":"dyn-1","type":"dynamicToolCall","namespace":"codex_app","tool":"lookup_ticket","status":"completed","contentItems":[{"type":"inputText","text":"Ticket is open"}]}}`,
+	)
+	events := ClassifyNotification("th-1", "item/completed", params)
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if events[0].Content != "Ticket is open" {
+		t.Fatalf("content = %q, want dynamic tool output", events[0].Content)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if meta["toolName"] != "lookup_ticket" {
+		t.Fatalf("toolName = %v, want lookup_ticket", meta["toolName"])
+	}
+}
+
+func TestClassifyNotification_WebSearchCompletionDoesNotInventResultContent(t *testing.T) {
+	tests := []struct {
+		name   string
+		action string
+	}{
+		{
+			name:   "matching search query",
+			action: `{"type":"search","query":"codex app-server"}`,
+		},
+		{
+			name:   "alternate search query",
+			action: `{"type":"search","query":"codex protocol"}`,
+		},
+		{
+			name:   "query list",
+			action: `{"type":"search","queries":["codex protocol","codex app-server"]}`,
+		},
+		{
+			name:   "open page",
+			action: `{"type":"openPage","url":"https://example.com"}`,
+		},
+		{
+			name:   "find in page",
+			action: `{"type":"findInPage","url":"https://example.com","pattern":"needle"}`,
+		},
+		{
+			name:   "other",
+			action: `{"type":"other","extra":"value"}`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			params := json.RawMessage(
+				`{"threadId":"th-1","turnId":"t1","item":{"id":"web-1","type":"webSearch","query":"codex app-server","action":` + tt.action + `}}`,
+			)
+			events := ClassifyNotification("th-1", "item/completed", params)
+			if len(events) != 1 {
+				t.Fatalf("expected 1 event, got %d", len(events))
+			}
+			if events[0].Content != "" {
+				t.Fatalf("webSearch action has no result body on the wire; got content %q", events[0].Content)
+			}
+			var meta map[string]any
+			if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
+				t.Fatalf("unmarshal meta: %v", err)
+			}
+			input, ok := meta["input"].(map[string]any)
+			if !ok {
+				t.Fatalf("input missing or wrong type: %#v", meta["input"])
+			}
+			if input["query"] != "codex app-server" {
+				t.Fatalf("input.query = %v, want final query", input["query"])
+			}
+		})
 	}
 }
 

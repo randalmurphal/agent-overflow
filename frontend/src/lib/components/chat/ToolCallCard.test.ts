@@ -85,12 +85,49 @@ describe('<ToolCallCard> header dispatcher', () => {
 
   it('renders a globe icon for WebFetch and WebSearch', async () => {
     const pane = await buildPane();
-    for (const toolName of ['WebFetch', 'WebSearch']) {
+    for (const toolName of ['WebFetch', 'WebSearch', 'webSearch']) {
       const item = makeItem({ id: toolName, kind: 'tool_call', status: 'running', toolName });
       const { getByTestId, unmount } = render(ToolCallCard, { props: { pane, item } });
       expect(getByTestId('tool-call-card').getAttribute('data-tool-kind')).toBe('globe');
       unmount();
     }
+  });
+
+  it('surfaces Codex webSearch metadata and the row timestamp', async () => {
+    const pane = await buildPane();
+    const createdAt = Date.UTC(2026, 0, 2, 15, 4);
+    const item = makeItem({
+      id: 'web-1',
+      kind: 'tool_call',
+      status: 'completed',
+      toolName: 'WebSearch',
+      summary: 'WebSearch: codex app-server webSearch',
+      createdAt,
+    });
+
+    const { getByTestId, queryByTestId } = render(ToolCallCard, { props: { pane, item } });
+
+    expect(getByTestId('tool-call-card').getAttribute('data-tool-kind')).toBe('globe');
+    expect(getByTestId('tool-call-card-preview').textContent).toContain('codex app-server webSearch');
+    expect(getByTestId('tool-call-card-time').getAttribute('datetime')).toBe(new Date(createdAt).toISOString());
+    expect(queryByTestId('tool-call-card-toggle')).toBeNull();
+  });
+
+  it('omits the dropdown control when a generic tool has no payload or deferred output', async () => {
+    const pane = await buildPane();
+    const item = makeItem({
+      id: 'empty-result',
+      kind: 'tool_call',
+      status: 'completed',
+      toolName: 'WebSearch',
+      summary: 'WebSearch: current Wails release',
+    });
+
+    const { getByTestId, queryByTestId } = render(ToolCallCard, { props: { pane, item } });
+
+    expect(getByTestId('tool-call-card-row')).toBeInTheDocument();
+    expect(queryByTestId('tool-call-card-toggle')).toBeNull();
+    expect(queryByTestId('tool-call-card-body')).toBeNull();
   });
 
   it('renders a robot icon + "Subagent" label for Task and collab_agent', async () => {
@@ -138,6 +175,23 @@ describe('<ToolCallCard> header dispatcher', () => {
     expect(getByTestId('tool-call-card').getAttribute('data-tool-kind')).toBe('puzzle');
     expect(getByTestId('tool-call-card-label').textContent).toBe('MCP');
     expect(getByTestId('tool-call-card-preview').textContent).toContain('browser_snapshot');
+  });
+
+  it('surfaces Codex mcpToolCall metadata', async () => {
+    const pane = await buildPane();
+    const item = makeItem({
+      id: 'mcp-2',
+      kind: 'tool_call',
+      status: 'completed',
+      toolName: 'MCP/lookup',
+      summary: 'MCP/lookup: docs/lookup',
+    });
+
+    const { getByTestId } = render(ToolCallCard, { props: { pane, item } });
+
+    expect(getByTestId('tool-call-card').getAttribute('data-tool-kind')).toBe('puzzle');
+    expect(getByTestId('tool-call-card-label').textContent).toBe('MCP');
+    expect(getByTestId('tool-call-card-preview').textContent).toContain('docs/lookup');
   });
 
   it('falls back to the generic icon + "Tool" label for an unknown tool', async () => {

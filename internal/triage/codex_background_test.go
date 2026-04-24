@@ -460,6 +460,98 @@ func TestCodexTerminalInteractionDoesNotAttachAfterModelMovesOn(t *testing.T) {
 	}
 }
 
+func TestCodexTerminalInteractionDoesNotAttachAfterLaterToolStart(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "cmd-bg",
+		ItemType: "commandExecution", TurnID: "turn-0",
+		Meta:      buildUnifiedExecStartMeta(t, "pid-bg", "sleep 10"),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("tool start: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTextDelta, ThreadID: "t1", Content: "continuing",
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("text delta: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTerminalInteraction, ThreadID: "t1",
+		Meta:      json.RawMessage(`{"process_id":"pid-bg","stdin":""}`),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("terminal interaction: %v", err)
+	}
+
+	webMeta, _ := json.Marshal(map[string]any{
+		"toolName": "webSearch",
+		"input": map[string]any{
+			"query": "background terminal semantics",
+		},
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "web-1",
+		ItemType: "webSearch", TurnID: "turn-0", Meta: webMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("web search start: %v", err)
+	}
+
+	completeMeta := buildUnifiedExecCompleteMeta(t, "failed", "pid-bg", "sleep 10", 1)
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventCommandOutput, ThreadID: "t1", ItemID: "cmd-bg",
+		ItemType: "commandExecution", TurnID: "turn-0", Content: "late failure\n",
+		Meta: completeMeta, Replace: true, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("command output: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "cmd-bg",
+		ItemType: "commandExecution", TurnID: "turn-0", Meta: completeMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("tool complete: %v", err)
+	}
+
+	waits := findItemsByKind(t, st, "t1", string(provider.ItemTerminalInteraction))
+	if len(waits) != 1 {
+		t.Fatalf("wait rows = %d, want 1", len(waits))
+	}
+	if waits[0].PayloadID != "" {
+		t.Fatalf("stale wait row was mutated with payload %q", waits[0].PayloadID)
+	}
+	live := router.ListLiveCodexBackgroundTasks("t1", time.Now().UnixMilli(), 0)
+	if len(live) != 2 || live[1].CompletionOf != "cmd-bg" || live[1].Status != statusErrored {
+		t.Fatalf("completed background output should stay in tray until next wait, got %+v", live)
+	}
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTerminalInteraction, ThreadID: "t1",
+		Meta:      json.RawMessage(`{"process_id":"pid-bg","stdin":""}`),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("second terminal interaction: %v", err)
+	}
+	waits = findItemsByKind(t, st, "t1", string(provider.ItemTerminalInteraction))
+	if len(waits) != 2 {
+		t.Fatalf("wait rows after second poll = %d, want 2", len(waits))
+	}
+	if waits[1].PayloadKind != "command_output" {
+		t.Fatalf("second wait payload kind = %q, want command_output", waits[1].PayloadKind)
+	}
+	data, err := st.GetPayloadData(waits[1].PayloadID)
+	if err != nil {
+		t.Fatalf("second wait payload data: %v", err)
+	}
+	if string(data) != "late failure\n" {
+		t.Fatalf("second wait payload = %q, want late failure newline", string(data))
+	}
+}
+
 func TestCodexTerminalInteractionAttachesWhenProcessIDArrivesOnCompletion(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")

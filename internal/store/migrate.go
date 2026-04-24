@@ -694,6 +694,31 @@ CREATE INDEX IF NOT EXISTS idx_turns_thread_completed
   WHERE completed_at IS NOT NULL;
 `,
 	},
+	{
+		Version: 27,
+		Name:    "drop_empty_tool_call_result_payloads",
+		// A parser bug created tool_call_result payloads for metadata-only
+		// tool completions, most visibly Codex WebSearch rows. Those payloads
+		// have no data, so the UI rendered an expandable row that opened to
+		// nothing. Payloads are a cache of heavy content; unlinking empty
+		// result payloads preserves the timeline row while removing the false
+		// "there is output here" signal.
+		SQL: `
+UPDATE items
+   SET payload_id = NULL
+ WHERE payload_id IN (
+       SELECT id
+         FROM payloads
+        WHERE kind = 'tool_call_result'
+          AND length(data) = 0
+ );
+
+DELETE FROM payloads
+ WHERE kind = 'tool_call_result'
+   AND length(data) = 0
+   AND id NOT IN (SELECT payload_id FROM items WHERE payload_id IS NOT NULL);
+`,
+	},
 }
 
 // v13SQL is the DROP-and-rebuild payload for migration v13. Extracted so

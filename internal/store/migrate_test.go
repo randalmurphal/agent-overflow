@@ -149,6 +149,9 @@ func TestMigrationVersionTracking(t *testing.T) {
 	if versions[25].version != 26 || versions[25].name != "turns_thread_completed_index" {
 		t.Errorf("v26: got %d/%s", versions[25].version, versions[25].name)
 	}
+	if versions[26].version != 27 || versions[26].name != "drop_empty_tool_call_result_payloads" {
+		t.Errorf("v27: got %d/%s", versions[26].version, versions[26].name)
+	}
 }
 
 func TestMigrationIdempotent(t *testing.T) {
@@ -1731,6 +1734,97 @@ func TestMigrationV23PreservesExistingItems(t *testing.T) {
 		}
 		if gotKind != it.kind {
 			t.Errorf("%s: kind = %q, want %q", it.id, gotKind, it.kind)
+		}
+	}
+}
+
+func TestMigrationV27DropsEmptyToolCallResultPayloads(t *testing.T) {
+	db := openSQLiteDB(t)
+
+	if err := configureDatabase(db); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	if err := ensureMigrationTable(db); err != nil {
+		t.Fatalf("ensure migration table: %v", err)
+	}
+	for _, m := range migrations {
+		if m.Version >= 27 {
+			break
+		}
+		if err := applyMigration(db, m); err != nil {
+			t.Fatalf("apply v%d: %v", m.Version, err)
+		}
+	}
+
+	if _, err := db.Exec(`INSERT INTO projects
+		(id, path, name, created_at, updated_at)
+		VALUES ('p-v27', '/tmp/v27', 'v27', 1, 1)`); err != nil {
+		t.Fatalf("seed project: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO threads
+		(id, project_id, title, provider, workspace_path, model,
+		 created_at, updated_at, archived, mode)
+		VALUES ('t-v27', 'p-v27', 'T', 'codex', '/tmp', '', 1, 1, 0, 'chat')`); err != nil {
+		t.Fatalf("seed thread: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO payloads (id, kind, meta, data, created_at)
+		VALUES
+			('p-empty', 'tool_call_result', '{}', '', 1),
+			('p-body', 'tool_call_result', '{}', 'real output', 1),
+			('p-command-empty', 'command_output', '{}', '', 1)`); err != nil {
+		t.Fatalf("seed payloads: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO items
+		(id, thread_id, turn_index, item_index, kind, role, status, summary,
+		 payload_id, parent_id, is_background, completion_of, tool_name, decision,
+		 meta, created_at, updated_at)
+		VALUES
+			('i-empty', 't-v27', 0, 0, 'tool_call', 'assistant', 'completed',
+			 'WebSearch', 'p-empty', '', 0, '', 'WebSearch', '', '{}', 1, 1),
+			('i-body', 't-v27', 0, 1, 'tool_call', 'assistant', 'completed',
+			 'MCP', 'p-body', '', 0, '', 'MCP/lookup', '', '{}', 1, 1),
+			('i-command-empty', 't-v27', 0, 2, 'tool_call', 'assistant', 'completed',
+			 'Bash', 'p-command-empty', '', 0, '', 'Bash', '', '{}', 1, 1)`); err != nil {
+		t.Fatalf("seed items: %v", err)
+	}
+
+	var v27 *Migration
+	for i := range migrations {
+		if migrations[i].Version == 27 {
+			v27 = &migrations[i]
+			break
+		}
+	}
+	if v27 == nil {
+		t.Fatal("v27 migration missing from list")
+	}
+	if err := applyMigration(db, *v27); err != nil {
+		t.Fatalf("apply v27: %v", err)
+	}
+
+	var emptyPayloadID string
+	if err := db.QueryRow(`SELECT COALESCE(payload_id, '') FROM items WHERE id = 'i-empty'`).Scan(&emptyPayloadID); err != nil {
+		t.Fatalf("read empty item: %v", err)
+	}
+	if emptyPayloadID != "" {
+		t.Fatalf("empty tool_call_result payload still linked: %q", emptyPayloadID)
+	}
+
+	var emptyPayloadRows int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM payloads WHERE id = 'p-empty'`).Scan(&emptyPayloadRows); err != nil {
+		t.Fatalf("count empty payload: %v", err)
+	}
+	if emptyPayloadRows != 0 {
+		t.Fatalf("empty tool_call_result payload was not deleted")
+	}
+
+	for _, id := range []string{"i-body", "i-command-empty"} {
+		var payloadID string
+		if err := db.QueryRow(`SELECT COALESCE(payload_id, '') FROM items WHERE id = ?`, id).Scan(&payloadID); err != nil {
+			t.Fatalf("read %s: %v", id, err)
+		}
+		if payloadID == "" {
+			t.Fatalf("%s payload was incorrectly unlinked", id)
 		}
 	}
 }

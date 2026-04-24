@@ -81,8 +81,15 @@ describe('classifyToolName', () => {
     expect(classifyToolName(name).icon).toBe('search');
   });
 
-  it.each(['WebFetch', 'WebSearch'])('%s maps to globe icon', (name) => {
+  it.each(['WebFetch', 'WebSearch', 'webSearch', 'web_search'])('%s maps to globe icon', (name) => {
     expect(classifyToolName(name).icon).toBe('globe');
+  });
+
+  it('bare MCP maps to the MCP tool bucket', () => {
+    const out = classifyToolName('MCP');
+    expect(out.icon).toBe('puzzle');
+    expect(out.label).toBe('MCP');
+    expect(out.displayName).toBe('MCP tool');
   });
 
   it('Task classifies as subagent and uses robot icon', () => {

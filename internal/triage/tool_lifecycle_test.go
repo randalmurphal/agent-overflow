@@ -91,6 +91,73 @@ func TestToolStartPersistsLifecycleItem(t *testing.T) {
 	}
 }
 
+func TestToolStartPersistsCodexToolPreviewSummary(t *testing.T) {
+	cases := []struct {
+		name        string
+		itemID      string
+		itemType    string
+		toolName    string
+		input       map[string]any
+		wantTool    string
+		wantPreview string
+	}{
+		{
+			name:        "web search",
+			itemID:      "web-1",
+			itemType:    "webSearch",
+			toolName:    "WebSearch",
+			input:       map[string]any{"query": "codex app-server webSearch"},
+			wantTool:    "WebSearch",
+			wantPreview: "codex app-server webSearch",
+		},
+		{
+			name:        "mcp tool",
+			itemID:      "mcp-1",
+			itemType:    "mcpToolCall",
+			toolName:    "MCP/lookup",
+			input:       map[string]any{"description": "docs/lookup"},
+			wantTool:    "MCP/lookup",
+			wantPreview: "docs/lookup",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			router, st, _ := newTestRouter(t)
+			createTestThread(t, st, "t1")
+
+			meta, _ := json.Marshal(map[string]any{
+				"toolName": tc.toolName,
+				"input":    tc.input,
+			})
+			if err := router.Handle(provider.ProviderEvent{
+				Kind:      provider.EventToolStart,
+				ThreadID:  "t1",
+				ItemID:    tc.itemID,
+				ItemType:  tc.itemType,
+				Meta:      meta,
+				Timestamp: time.Now(),
+			}); err != nil {
+				t.Fatalf("handle: %v", err)
+			}
+
+			item, found, err := st.GetThreadItem("t1", tc.itemID)
+			if err != nil || !found {
+				t.Fatalf("item missing: found=%v err=%v", found, err)
+			}
+			if item.ToolName != tc.wantTool {
+				t.Fatalf("ToolName = %q, want %q", item.ToolName, tc.wantTool)
+			}
+			if !strings.Contains(item.Summary, tc.wantTool) {
+				t.Fatalf("Summary = %q, want tool name %q", item.Summary, tc.wantTool)
+			}
+			if !strings.Contains(item.Summary, tc.wantPreview) {
+				t.Fatalf("Summary = %q, want preview %q", item.Summary, tc.wantPreview)
+			}
+		})
+	}
+}
+
 func TestToolStartSplitsAssistantTextAroundVisibleToolRow(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
@@ -550,6 +617,75 @@ func TestInlineCompletionAttachesPayloadWhenNoneExists(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "total 0") {
 		t.Errorf("payload data lost stdout body: %q", string(data))
+	}
+}
+
+func TestToolCompletionWithoutContentDoesNotAttachEmptyPayload(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	startMeta, _ := json.Marshal(map[string]any{"toolName": "WebSearch"})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "web-1",
+		ItemType: "webSearch", Meta: startMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	completeMeta, _ := json.Marshal(map[string]any{
+		"toolName":    "WebSearch",
+		"item_status": "completed",
+		"input":       map[string]any{"query": "codex app-server webSearch"},
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "web-1",
+		ItemType: "webSearch", Meta: completeMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+
+	item, _, _ := st.GetItem("web-1")
+	if item.PayloadID != "" {
+		t.Fatalf("metadata-only completion attached empty payload %q", item.PayloadID)
+	}
+	if item.Summary != "WebSearch: codex app-server webSearch" {
+		t.Fatalf("summary = %q, want final web query", item.Summary)
+	}
+}
+
+func TestMcpCompletionContentAttachesPayload(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	startMeta, _ := json.Marshal(map[string]any{
+		"toolName": "MCP/lookup",
+		"input":    map[string]any{"description": "docs/lookup"},
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "mcp-1",
+		ItemType: "mcpToolCall", Meta: startMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	completeMeta, _ := json.Marshal(map[string]any{"item_status": "completed"})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "mcp-1",
+		ItemType: "mcpToolCall", Meta: completeMeta, Content: "Lookup result", Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+
+	item, _, _ := st.GetItem("mcp-1")
+	if item.PayloadID == "" {
+		t.Fatal("expected MCP result payload")
+	}
+	data, err := st.GetPayloadData(item.PayloadID)
+	if err != nil {
+		t.Fatalf("read payload: %v", err)
+	}
+	if string(data) != "Lookup result" {
+		t.Fatalf("payload = %q, want MCP result content", string(data))
 	}
 }
 

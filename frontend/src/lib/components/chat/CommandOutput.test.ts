@@ -137,4 +137,18 @@ describe('<CommandOutput>', () => {
     expect(previewMock).toHaveBeenCalledWith('thread-1', 'pay-3', DEFAULT_PAYLOAD_PREVIEW_BYTES);
     expect(chunkMock).not.toHaveBeenCalled();
   });
+
+  it('shows the item timestamp in the header instead of the line count', () => {
+    const createdAt = Date.UTC(2026, 0, 2, 15, 4);
+    const { getByTestId, queryByText } = render(CommandOutput, {
+      props: {
+        item: makeItem({ id: 'tool-cmd', kind: 'tool_call', createdAt }),
+        meta: commandMeta({ command: 'npm test', lineCount: 87 }),
+        payloadId: 'cmd-payload',
+      },
+    });
+
+    expect(queryByText('87 lines')).toBeNull();
+    expect(getByTestId('command-output-time').getAttribute('datetime')).toBe(new Date(createdAt).toISOString());
+  });
 });

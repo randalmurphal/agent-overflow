@@ -41,11 +41,13 @@ type toolStartMeta struct {
 }
 
 type toolCompleteMeta struct {
-	IsBackground bool   `json:"is_background"`
-	IsError      bool   `json:"is_error"`
-	ExitCode     *int   `json:"exit_code,omitempty"`
-	ItemStatus   string `json:"item_status,omitempty"`
-	TaskID       string `json:"task_id,omitempty"`
+	IsBackground bool            `json:"is_background"`
+	IsError      bool            `json:"is_error"`
+	ExitCode     *int            `json:"exit_code,omitempty"`
+	ItemStatus   string          `json:"item_status,omitempty"`
+	TaskID       string          `json:"task_id,omitempty"`
+	ToolName     string          `json:"toolName,omitempty"`
+	Input        json.RawMessage `json:"input,omitempty"`
 }
 
 func (r *Router) persistToolCallLaunch(evt provider.ProviderEvent) error {
@@ -196,7 +198,10 @@ func (r *Router) persistToolCallCompletion(evt provider.ProviderEvent) error {
 
 	status := completionStatus(meta)
 	launch.Status = status
-	launch.Summary = buildCompletionSummary(launch.Summary, meta)
+	launch.Summary = buildCompletionSummary(completionBaseSummary(launch, meta, evt.ItemType), meta)
+	if strings.TrimSpace(meta.ToolName) != "" {
+		launch.ToolName = strings.TrimSpace(meta.ToolName)
+	}
 	launch.UpdatedAt = now
 
 	// Command-output payloads accumulate meta jitter across the streaming
@@ -628,6 +633,19 @@ func buildCompletionSummary(launchSummary string, meta toolCompleteMeta) string 
 	return launchSummary + " " + suffix
 }
 
+func completionBaseSummary(launch store.Item, meta toolCompleteMeta, itemType string) string {
+	preview := toolInputPreview(meta.Input)
+	if preview == "" {
+		return launch.Summary
+	}
+	toolName := stringsx.FirstNonEmptyTrimmed(meta.ToolName, launch.ToolName, itemType, "tool")
+	current := strings.TrimSpace(launch.Summary)
+	if current == "" || current == strings.TrimSpace(launch.ToolName) || current == strings.TrimSpace(itemType) || !strings.Contains(current, ":") {
+		return toolName + ": " + preview
+	}
+	return launch.Summary
+}
+
 func completionSuffix(meta toolCompleteMeta) string {
 	switch {
 	case meta.IsError:
@@ -684,7 +702,7 @@ func truncatePreview(s string, max int) string {
 }
 
 func completionPayload(itemID string, evt provider.ProviderEvent, meta toolCompleteMeta, now int64) *store.Payload {
-	if evt.Content == "" && len(evt.Meta) == 0 {
+	if evt.Content == "" {
 		return nil
 	}
 	header := map[string]any{}

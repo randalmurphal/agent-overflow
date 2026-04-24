@@ -49,6 +49,15 @@ export function classifyToolName(toolName: string | undefined | null): ToolKindV
 
   // MCP tools arrive prefixed as `MCP/<toolName>` — preserve the suffix so
   // the user still sees which MCP call ran.
+  if (raw === 'MCP') {
+    return {
+      icon: 'puzzle',
+      label: 'MCP',
+      displayName: 'MCP tool',
+      isSubagent: false,
+    };
+  }
+
   if (raw.startsWith('MCP/')) {
     const suffix = raw.slice(4);
     return {
@@ -73,6 +82,8 @@ export function classifyToolName(toolName: string | undefined | null): ToolKindV
       return { icon: 'search', label: raw, displayName: raw, isSubagent: false };
     case 'WebFetch':
     case 'WebSearch':
+    case 'webSearch':
+    case 'web_search':
       return { icon: 'globe', label: raw, displayName: raw, isSubagent: false };
     case 'Task':
       return { icon: 'robot', label: 'Subagent', displayName: 'Task', isSubagent: true };

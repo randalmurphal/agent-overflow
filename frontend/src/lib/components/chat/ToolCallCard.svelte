@@ -1,30 +1,8 @@
 <script lang="ts">
   // ToolCallCard dispatches a `tool_call` / `tool_completion` item to the
-  // correct renderer. Two switches:
-  //
-  //   1. Payload-kind switch. If the item carries a structured payload
-  //      (`proposed_plan`, `diff`, `command_output`, `tool_result`), we
-  //      hand off to the existing specialized component which renders its
-  //      own per-kind header + chevron body. These already ship with the
-  //      right visual weight.
-  //
-  //   2. Per-tool-kind header switch for the generic fallback. When a tool
-  //      call has no structured payload — the common case for Bash while
-  //      running, for Grep, for MCP tools, etc. — we render a header row
-  //      tagged with a tool-kind icon + label + decision chip + status,
-  //      and defer the expandable body to ToolResultDropdown's existing
-  //      GetPayloadPreview flow.
-  //
-  // Child subagent recursion stays in MessageTimeline's renderNode snippet
-  // (passed through SubagentGroup). ToolCallCard does not take a children
-  // prop in the current wiring; subagent grouping is handled upstream by
-  // `groupItemsBySubagent` before we see the item.
-  //
-  // Spec: docs/architecture/chat-rewrite.md §ToolCallCard.
+  // correct renderer. Structured payloads go to their rich components; all
+  // other tools use GenericToolCallRow's lightweight header/body.
 
-  import { slide } from 'svelte/transition';
-  import ChevronRight from 'lucide-svelte/icons/chevron-right';
-  import Icon from '../primitives/Icon.svelte';
   import type {
     CommandOutputMeta,
     DiffMeta,
@@ -32,16 +10,12 @@
     ProposedPlanMeta,
     ToolResultMeta,
   } from '../../types/models';
+  import type { ThreadPane } from '../../stores/thread.svelte';
   import CommandOutput from './CommandOutput.svelte';
   import DiffPreview from './DiffPreview.svelte';
+  import GenericToolCallRow from './GenericToolCallRow.svelte';
   import ProposedPlanCard from './ProposedPlanCard.svelte';
-  import ToolDecisionChip from './ToolDecisionChip.svelte';
-  import ToolKindIcon from './ToolKindIcon.svelte';
   import ToolResultCard from './ToolResultCard.svelte';
-  import { classifyToolName } from './toolCardHeader';
-  import { createPayloadExpansion, formatPayloadSize } from './payloadExpansion.svelte';
-  import AnsiText from './AnsiText.svelte';
-  import type { ThreadPane } from '../../stores/thread.svelte';
 
   let { pane, item }: { pane: ThreadPane; item: Item } = $props();
 
@@ -54,9 +28,6 @@
     }
   }
 
-  // Structured-payload routing. `payloadKind` + a present payloadId are
-  // required — a missing payloadId means the provider hasn't finished
-  // emitting the content yet, and the generic header renders until it does.
   let payloadKind = $derived(item.payloadKind);
   let payloadId = $derived(item.payloadId);
 
@@ -72,136 +43,6 @@
   let toolResultMeta = $derived<ToolResultMeta | null>(
     payloadKind === 'tool_result' && payloadId ? parseMeta<ToolResultMeta>(item.payloadMeta) : null,
   );
-
-  // Generic-header fallback: when none of the structured-payload paths fire,
-  // we render the tool-kind header ourselves and delegate the expandable
-  // body to the same GetPayloadPreview flow that ToolResultDropdown uses.
-  let classification = $derived(classifyToolName(item.toolName ?? item.summary));
-
-  const expansion = createPayloadExpansion(() => item.payloadId, () => item.threadId);
-
-  $effect(() => {
-    item.id;
-    item.payloadId;
-    expansion.reset();
-  });
-
-  // Status/exit/duration parsing for the generic header. These come out of
-  // the same payloadMeta dumping ground ToolResultDropdown used to read.
-  let summaryMeta = $derived.by<Record<string, unknown> | null>(() => {
-    const raw = item.payloadMeta;
-    if (!raw) return null;
-    try {
-      const parsed = JSON.parse(raw) as unknown;
-      if (parsed && typeof parsed === 'object') return parsed as Record<string, unknown>;
-      return null;
-    } catch {
-      return null;
-    }
-  });
-
-  let itemMeta = $derived.by<Record<string, unknown> | null>(() => {
-    const raw = item.meta;
-    if (!raw) return null;
-    try {
-      const parsed = JSON.parse(raw) as unknown;
-      if (parsed && typeof parsed === 'object') return parsed as Record<string, unknown>;
-      return null;
-    } catch {
-      return null;
-    }
-  });
-
-  let inputPreview = $derived.by<string>(() => {
-    // Prefer the provider-supplied short summary. Fall back to the metadata
-    // title (populated by server-side helpers) so Bash shows its command
-    // even when the provider didn't set summary.
-    const fromSummary = (item.summary ?? '').trim();
-    if (fromSummary) return fromSummary;
-    if (summaryMeta) {
-      const title = summaryMeta.title;
-      if (typeof title === 'string' && title.trim()) return title.trim();
-    }
-    return classification.displayName;
-  });
-
-  let exitCode = $derived.by<number | null>(() => {
-    if (!summaryMeta) return null;
-    const code = summaryMeta.exitCode;
-    return typeof code === 'number' ? code : null;
-  });
-
-  let durationMs = $derived.by<number | null>(() => {
-    if (!summaryMeta) return null;
-    const d = summaryMeta.durationMs;
-    if (typeof d === 'number' && d >= 0) return d;
-    return null;
-  });
-
-  // Status label replaces the plain "running" with "…" for
-  // backgrounded launches so the row visually communicates "the agent
-  // dispatched this and moved on" instead of "the tool is actively
-  // executing right now." Spec invariant 24 (backgrounded work
-  // outlives turns) — see docs/architecture/turn-lifecycle.md §UI
-  // components driven by this state.
-  let isBackgroundedRunning = $derived(
-    item.kind === 'tool_call' && item.isBackground === true && item.status === 'running',
-  );
-
-  let statusLabel = $derived.by(() => {
-    if (isBackgroundedRunning) return '…';
-    if (item.status === 'running' || item.status === 'streaming') return 'running';
-    if (item.status === 'errored') return 'failed';
-    // `killed` is a user-initiated stop (Claude stop_task) — distinct
-    // from `errored` so the chrome color matches the tray's gray
-    // "Stopped" badge and not the red "Failed" one.
-    if (item.status === 'killed') return 'stopped';
-    return 'done';
-  });
-
-  let statusClass = $derived.by(() => {
-    if (item.status === 'running' || item.status === 'streaming') return 'text-accent';
-    if (item.status === 'errored') return 'text-error';
-    if (item.status === 'killed') return 'text-text-secondary';
-    return 'text-success';
-  });
-
-  let exitBadgeClass = $derived.by(() => {
-    if (exitCode === null) return '';
-    return exitCode === 0 ? 'bg-success/20 text-success' : 'bg-error/20 text-error';
-  });
-
-  let deferredOutputState = $derived.by(() => {
-    if (!itemMeta) return '';
-    const state = itemMeta.notification_output_state ?? itemMeta.output_file_state;
-    return typeof state === 'string' ? state : '';
-  });
-
-  let deferredOutputError = $derived.by(() => {
-    if (!itemMeta) return '';
-    const error = itemMeta.notification_output_error ?? itemMeta.output_file_error;
-    return typeof error === 'string' ? error : '';
-  });
-
-  function formatDuration(ms: number): string {
-    if (ms < 1000) return `${ms}ms`;
-    const seconds = ms / 1000;
-    if (seconds < 60) return `${seconds.toFixed(1)}s`;
-    const minutes = Math.floor(seconds / 60);
-    const remSec = Math.round(seconds - minutes * 60);
-    return `${minutes}m ${remSec}s`;
-  }
-
-  async function toggle() {
-    await expansion.toggle();
-  }
-
-  function handleKeydown(evt: KeyboardEvent) {
-    if (evt.key === 'Enter' || evt.key === ' ') {
-      evt.preventDefault();
-      toggle();
-    }
-  }
 </script>
 
 {#if planMeta && payloadId}
@@ -218,119 +59,5 @@
        matching the ToolResultMeta shape and rendering as an empty card. -->
   <ToolResultCard {item} meta={toolResultMeta} {payloadId} />
 {:else}
-  <!-- Generic fallback: per-tool-kind header + chevron body. Thin-chrome
-       treatment — near-invisible container, tiny icon, low-contrast
-       preview. The row should read as ambient chatter, not a card the
-       eye has to stop on. -->
-  <div
-    class="group/tool mb-1.5 overflow-hidden rounded-[var(--radius-control)] border border-border-subtle bg-card/25"
-    data-testid="tool-call-card"
-    data-tool-kind={classification.icon}
-  >
-    <button
-      type="button"
-      class="flex w-full items-center gap-2 px-2.5 py-1.5 text-left hover:bg-surface-2/25 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 transition-colors"
-      onclick={toggle}
-      onkeydown={handleKeydown}
-      aria-expanded={expansion.expanded}
-      aria-controls="tool-call-card-body-{item.id}"
-      data-testid="tool-call-card-toggle"
-    >
-      <span
-        class="flex size-3 shrink-0 items-center justify-center text-fg-subtle select-none transition-transform duration-150"
-        class:rotate-90={expansion.expanded}
-        aria-hidden="true"
-      >
-        <Icon icon={ChevronRight} size={12} strokeWidth={2} class="opacity-70" />
-      </span>
-      <ToolKindIcon kind={classification.icon} ariaLabel={classification.label} />
-      <span class="text-[11px] font-medium text-fg-muted shrink-0 uppercase tracking-[0.04em]" data-testid="tool-call-card-label">
-        {classification.label}
-      </span>
-      <span class="min-w-0 flex-1 truncate text-[12px] text-fg-muted/75" data-testid="tool-call-card-preview">
-        {inputPreview}
-      </span>
-      <ToolDecisionChip decision={item.decision} />
-      <span
-        class="shrink-0 text-[10px] {statusClass} opacity-70 transition-opacity group-hover/tool:opacity-100"
-        data-testid="tool-call-card-status"
-        data-status={item.status}
-        title={isBackgroundedRunning ? 'Running in background' : undefined}
-        aria-label={isBackgroundedRunning ? 'Backgrounded' : undefined}
-      >
-        {statusLabel}
-      </span>
-      {#if exitCode !== null}
-        <span
-          class="shrink-0 rounded-[var(--radius-field)] px-1.5 py-0.5 text-[10px] font-medium {exitBadgeClass} opacity-70 transition-opacity group-hover/tool:opacity-100"
-          data-testid="tool-call-card-exit"
-        >
-          exit {exitCode}
-        </span>
-      {:else if durationMs !== null}
-        <span
-          class="shrink-0 tabular-nums text-[10px] text-fg-hint opacity-70 transition-opacity group-hover/tool:opacity-100"
-          data-testid="tool-call-card-duration"
-        >
-          {formatDuration(durationMs)}
-        </span>
-      {/if}
-    </button>
-
-    {#if expansion.expanded}
-      <div
-        id="tool-call-card-body-{item.id}"
-        transition:slide={{ duration: 150 }}
-        class="border-t border-border-subtle bg-surface-0/60"
-        data-testid="tool-call-card-body"
-      >
-        {#if expansion.loading}
-          <p
-            class="px-3 py-2 text-[11px] text-fg-subtle animate-pulse"
-            role="status"
-            aria-live="polite"
-          >
-            Loading…
-          </p>
-        {:else if expansion.error}
-          <p class="px-3 py-2 text-[11px] text-error" role="alert">
-            Failed to load: {expansion.error}
-          </p>
-        {:else if expansion.displayData !== null}
-          <div
-            class="ansi-body max-h-60 overflow-auto whitespace-pre-wrap break-words px-3 py-2 text-[11px] leading-relaxed text-fg-muted"
-            data-testid="tool-call-card-output"
-          >
-            <AnsiText source={expansion.displayData} />
-          </div>
-          {#if expansion.hasMore}
-            <button
-              type="button"
-              class="mx-3 mb-3 text-[11px] text-accent hover:underline cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 rounded"
-              onclick={() => expansion.showFull()}
-              data-testid="tool-call-card-show-full"
-            >
-              Load more output ({formatPayloadSize(expansion.totalSize)}) ↓
-            </button>
-          {/if}
-        {:else if deferredOutputState === 'loading'}
-          <p
-            class="px-3 py-2 text-[11px] text-fg-subtle animate-pulse"
-            role="status"
-            aria-live="polite"
-          >
-            Loading…
-          </p>
-        {:else if deferredOutputState === 'error'}
-          <p class="px-3 py-2 text-[11px] text-error" role="alert">
-            Failed to load: {deferredOutputError || 'Background output could not be loaded.'}
-          </p>
-        {:else}
-          <p class="px-3 py-2 text-[11px] text-fg-subtle italic">
-            No stored payload for this tool result.
-          </p>
-        {/if}
-      </div>
-    {/if}
-  </div>
+  <GenericToolCallRow {item} />
 {/if}

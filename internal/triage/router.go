@@ -326,6 +326,7 @@ func (r *Router) settleStreamingBeforeTimelineBoundary(evt provider.ProviderEven
 
 func (r *Router) handleToolStart(evt provider.ProviderEvent) error {
 	r.settleStreamingBeforeTimelineBoundary(evt, "tool start")
+	r.observeCodexTopLevelToolBoundary(evt)
 	if r.observeCodexToolStart(evt) {
 		return r.emitInline(evt)
 	}

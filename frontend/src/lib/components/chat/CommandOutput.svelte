@@ -35,12 +35,21 @@
       ? 'bg-success/20 text-success'
       : 'bg-error/20 text-error'
   );
+
+  let time = $derived(
+    item
+      ? new Date(item.createdAt).toLocaleTimeString(undefined, {
+          hour: 'numeric',
+          minute: '2-digit',
+        })
+      : '',
+  );
 </script>
 
-<div class="mb-1.5 rounded-[var(--radius-control)] border border-border-subtle bg-card/25 overflow-hidden">
+<div class="mb-1.5 overflow-hidden">
   <!-- Header -->
   <button
-    class="w-full px-2.5 py-1.5 flex items-center gap-2 text-[13px] cursor-pointer hover:bg-surface-2/25 transition-colors"
+    class="w-full rounded-[var(--radius-control)] px-1 py-1 flex items-center gap-2 text-[12px] cursor-pointer hover:bg-surface-2/20 transition-colors"
     onclick={() => expansion.toggle()}
     aria-expanded={expansion.expanded}
     aria-controls="cmd-output-{payloadId}"
@@ -58,14 +67,20 @@
     <span class="px-1.5 py-0.5 rounded-[var(--radius-field)] text-[10px] font-medium {exitBadgeClasses}">
       exit {meta.exitCode}
     </span>
-    <span class="ml-auto text-[10px] text-fg-hint shrink-0 tabular-nums">
-      {meta.lineCount} lines
-    </span>
+    {#if item}
+      <time
+        class="ml-auto text-[10px] text-fg-hint shrink-0 tabular-nums"
+        datetime={new Date(item.createdAt).toISOString()}
+        data-testid="command-output-time"
+      >
+        {time}
+      </time>
+    {/if}
   </button>
 
   <!-- Output content -->
   {#if expansion.expanded}
-    <div id="cmd-output-{payloadId}" transition:slide={{ duration: 150 }} class="border-t border-border-subtle bg-surface-0/50 px-3 py-2 overflow-x-auto">
+    <div id="cmd-output-{payloadId}" transition:slide={{ duration: 150 }} class="ml-5 border-l border-border-subtle bg-surface-0/35 px-3 py-2 overflow-x-auto">
       {#if expansion.loading}
         <p class="text-[11px] text-fg-subtle" role="status" aria-live="polite">Loading full output…</p>
       {:else if expansion.error}

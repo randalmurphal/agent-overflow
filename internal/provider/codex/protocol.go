@@ -2,6 +2,7 @@ package codex
 
 import (
 	"encoding/json"
+	"strings"
 	"time"
 
 	"agent-overflow/internal/provider"
@@ -324,8 +325,9 @@ func buildTerminalInteractionMeta(params json.RawMessage) json.RawMessage {
 // branch (itemType=="plan") produces a different event kind than the
 // generic tool-complete branch.
 func classifyItemCompleted(threadID string, params json.RawMessage, now time.Time) []provider.ProviderEvent {
-	itemID := readNestedString(params, "item", "id")
-	itemType := classifyCodexItemType(params)
+	item := readNestedObject(params, "item")
+	itemID := readRawString(item, "id")
+	itemType := classifyCodexItemTypeFromItem(item)
 	turnID := readTopLevelString(params, "turnId")
 	if itemType == "" {
 		return nil
@@ -355,7 +357,7 @@ func classifyItemCompleted(threadID string, params json.RawMessage, now time.Tim
 	}
 	events := make([]provider.ProviderEvent, 0, 2)
 	if isCommandExecutionItemType(itemType) {
-		if output := readNestedString(params, "item", "aggregatedOutput"); output != "" {
+		if output := readRawString(item, "aggregatedOutput"); output != "" {
 			events = append(events, provider.ProviderEvent{
 				Kind:      provider.EventCommandOutput,
 				ThreadID:  threadID,
@@ -363,7 +365,7 @@ func classifyItemCompleted(threadID string, params json.RawMessage, now time.Tim
 				ItemID:    itemID,
 				ItemType:  itemType,
 				Content:   output,
-				Meta:      enrichItemMeta(params),
+				Meta:      enrichItemMetaFromItem(params, item),
 				Replace:   true,
 				Timestamp: now,
 			})
@@ -375,7 +377,8 @@ func classifyItemCompleted(threadID string, params json.RawMessage, now time.Tim
 		TurnID:    turnID,
 		ItemID:    itemID,
 		ItemType:  itemType,
-		Meta:      enrichItemMeta(params),
+		Content:   codexToolResultContent(item, itemType),
+		Meta:      enrichItemMetaFromItem(params, item),
 		Timestamp: now,
 	})
 	return events
@@ -683,6 +686,77 @@ func readRawString(m map[string]json.RawMessage, key string) string {
 	return s
 }
 
+func readRawObject(m map[string]json.RawMessage, key string) map[string]json.RawMessage {
+	raw, ok := m[key]
+	if !ok {
+		return nil
+	}
+	var obj map[string]json.RawMessage
+	if json.Unmarshal(raw, &obj) != nil {
+		return nil
+	}
+	return obj
+}
+
+func firstRaw(m map[string]json.RawMessage, keys ...string) json.RawMessage {
+	for _, key := range keys {
+		if raw, ok := m[key]; ok {
+			return raw
+		}
+	}
+	return nil
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func prettyJSONIfMeaningful(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var value any
+	if json.Unmarshal(raw, &value) != nil || value == nil {
+		return ""
+	}
+	switch typed := value.(type) {
+	case string:
+		if typed == "" {
+			return ""
+		}
+	case []any:
+		if len(typed) == 0 {
+			return ""
+		}
+	case map[string]any:
+		if len(typed) == 0 {
+			return ""
+		}
+	}
+	out, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		return strings.TrimSpace(string(raw))
+	}
+	return string(out)
+}
+
+func compactJSON(raw json.RawMessage) string {
+	var value any
+	if json.Unmarshal(raw, &value) != nil {
+		return strings.TrimSpace(string(raw))
+	}
+	out, err := json.Marshal(value)
+	if err != nil {
+		return strings.TrimSpace(string(raw))
+	}
+	return string(out)
+}
+
 // enrichItemMeta augments the raw item/started or item/completed params with
 // discoverable top-level keys: `source` (CommandExecutionSource —
 // "agent" | "userShell" | "unifiedExecStartup" | "unifiedExecInteraction"),
@@ -696,6 +770,10 @@ func readRawString(m map[string]json.RawMessage, key string) string {
 // If marshaling fails (it shouldn't — we're round-tripping decoded JSON)
 // the raw params are returned unmodified rather than dropping data.
 func enrichItemMeta(params json.RawMessage) json.RawMessage {
+	return enrichItemMetaFromItem(params, readNestedObject(params, "item"))
+}
+
+func enrichItemMetaFromItem(params json.RawMessage, item map[string]json.RawMessage) json.RawMessage {
 	source := readNestedString(params, "item", "source")
 	status := readNestedString(params, "item", "status")
 	processID := readNestedString(params, "item", "processId")
@@ -709,69 +787,8 @@ func enrichItemMeta(params json.RawMessage) json.RawMessage {
 	if processID != "" {
 		extras["process_id"] = processID
 	}
-	if item := readNestedObject(params, "item"); item != nil {
-		if isCommandExecutionItemType(readRawString(item, "type")) {
-			extras["toolName"] = "Bash"
-			input := map[string]any{}
-			if command := readRawString(item, "command"); command != "" {
-				input["command"] = command
-				extras["command"] = command
-			}
-			if cwd := readRawString(item, "cwd"); cwd != "" {
-				input["cwd"] = cwd
-			}
-			if exitCode, ok := readRawInt(item, "exitCode"); ok {
-				extras["exitCode"] = exitCode
-				extras["exit_code"] = exitCode
-			}
-			if durationMs, ok := readRawInt(item, "durationMs"); ok {
-				extras["durationMs"] = durationMs
-			}
-			if len(input) > 0 {
-				extras["input"] = input
-			}
-		}
-		if readRawString(item, "type") == "collabAgentToolCall" {
-			tool := normalizeCollabToolName(readRawString(item, "tool"))
-			// toolName mirrors the itemType classification so the
-			// frontend can pick a renderer without having to inspect
-			// input.tool. Keep in sync with classifyCodexItemType's
-			// collabAgentToolCall branch.
-			toolName := "collab_agent"
-			switch tool {
-			case "send_input":
-				toolName = "send_input"
-			case "wait_agent":
-				toolName = "wait_agent"
-			}
-			input := map[string]any{
-				"tool": tool,
-			}
-			if prompt := readRawString(item, "prompt"); prompt != "" {
-				input["prompt"] = prompt
-			}
-			if model := readRawString(item, "model"); model != "" {
-				input["model"] = model
-			}
-			if reasoningEffort := readRawString(item, "reasoningEffort"); reasoningEffort != "" {
-				input["reasoningEffort"] = reasoningEffort
-			}
-			if receiverThreadIDs := readRawStringArray(item, "receiverThreadIds"); len(receiverThreadIDs) > 0 {
-				input["receiverThreadIds"] = receiverThreadIDs
-			}
-			// Surface agentsStates — a map of child thread ID →
-			// {status, message?} — that the parent spawn/wait card
-			// tracks. See codex-source v2.rs:4462 (`agents_states`)
-			// and codex-wire.md §Collab agent lifecycle. The UI can
-			// render a live child-status badge from this without
-			// needing to subscribe to every child thread's
-			// session-status events.
-			if agentsStates := readRawJSONObject(item, "agentsStates"); agentsStates != nil {
-				input["agentsStates"] = agentsStates
-			}
-			extras["toolName"] = toolName
-			extras["input"] = input
-		}
+	if item != nil {
+		mergeMap(extras, codexItemMetaExtras(item))
 	}
 	if len(extras) == 0 {
 		return params
@@ -779,12 +796,224 @@ func enrichItemMeta(params json.RawMessage) json.RawMessage {
 	return mergeMetaKeys(params, extras)
 }
 
+func codexItemMetaExtras(item map[string]json.RawMessage) map[string]any {
+	itemType := readRawString(item, "type")
+	switch itemType {
+	case "collabAgentToolCall":
+		return collabAgentMetaExtras(item)
+	case "webSearch", "web_search":
+		return webSearchMetaExtras(item)
+	case "mcpToolCall", "mcp_tool_call":
+		return mcpToolCallMetaExtras(item)
+	case "dynamicToolCall", "dynamic_tool_call":
+		return dynamicToolCallMetaExtras(item)
+	default:
+		if isCommandExecutionItemType(itemType) {
+			return commandExecutionMetaExtras(item)
+		}
+		return nil
+	}
+}
+
+func commandExecutionMetaExtras(item map[string]json.RawMessage) map[string]any {
+	extras := map[string]any{"toolName": "Bash"}
+	input := map[string]any{}
+	if command := readRawString(item, "command"); command != "" {
+		input["command"] = command
+		extras["command"] = command
+	}
+	if cwd := readRawString(item, "cwd"); cwd != "" {
+		input["cwd"] = cwd
+	}
+	if exitCode, ok := readRawInt(item, "exitCode"); ok {
+		extras["exitCode"] = exitCode
+		extras["exit_code"] = exitCode
+	}
+	if len(input) > 0 {
+		extras["input"] = input
+	}
+	return extras
+}
+
+func collabAgentMetaExtras(item map[string]json.RawMessage) map[string]any {
+	tool := normalizeCollabToolName(readRawString(item, "tool"))
+	// toolName mirrors the itemType classification so the frontend can pick
+	// a renderer without having to inspect input.tool.
+	toolName := "collab_agent"
+	switch tool {
+	case "send_input":
+		toolName = "send_input"
+	case "wait_agent":
+		toolName = "wait_agent"
+	}
+	input := map[string]any{"tool": tool}
+	if prompt := readRawString(item, "prompt"); prompt != "" {
+		input["prompt"] = prompt
+	}
+	if model := readRawString(item, "model"); model != "" {
+		input["model"] = model
+	}
+	if reasoningEffort := readRawString(item, "reasoningEffort"); reasoningEffort != "" {
+		input["reasoningEffort"] = reasoningEffort
+	}
+	if receiverThreadIDs := readRawStringArray(item, "receiverThreadIds"); len(receiverThreadIDs) > 0 {
+		input["receiverThreadIds"] = receiverThreadIDs
+	}
+	if agentsStates := readRawJSONObject(item, "agentsStates"); agentsStates != nil {
+		input["agentsStates"] = agentsStates
+	}
+	return map[string]any{"toolName": toolName, "input": input}
+}
+
+func webSearchMetaExtras(item map[string]json.RawMessage) map[string]any {
+	extras := map[string]any{"toolName": "WebSearch"}
+	input := map[string]any{}
+	if query := readRawString(item, "query"); query != "" {
+		input["query"] = query
+	}
+	if len(input) > 0 {
+		extras["input"] = input
+	}
+	return extras
+}
+
+func mcpToolCallMetaExtras(item map[string]json.RawMessage) map[string]any {
+	server := readRawString(item, "server")
+	tool := readRawString(item, "tool")
+	input := toolDescriptionInput(server, tool)
+	toolName := "MCP"
+	if tool != "" {
+		toolName = "MCP/" + tool
+	}
+	extras := map[string]any{"toolName": toolName}
+	if len(input) > 0 {
+		extras["input"] = input
+	}
+	return extras
+}
+
+func dynamicToolCallMetaExtras(item map[string]json.RawMessage) map[string]any {
+	namespace := readRawString(item, "namespace")
+	tool := readRawString(item, "tool")
+	input := toolDescriptionInput(namespace, tool)
+	extras := map[string]any{}
+	if tool != "" {
+		extras["toolName"] = tool
+	}
+	if len(input) > 0 {
+		extras["input"] = input
+	}
+	return extras
+}
+
+func toolDescriptionInput(scope, tool string) map[string]any {
+	input := map[string]any{}
+	switch {
+	case scope != "" && tool != "":
+		input["description"] = scope + "/" + tool
+	case tool != "":
+		input["description"] = tool
+	case scope != "":
+		input["description"] = scope
+	}
+	return input
+}
+
+func codexToolResultContent(item map[string]json.RawMessage, itemType string) string {
+	switch itemType {
+	case "mcpToolCall", "mcp_tool_call":
+		return mcpToolCallContent(item)
+	case "dynamicToolCall", "dynamic_tool_call":
+		return dynamicToolCallContent(item)
+	default:
+		return ""
+	}
+}
+
+func mcpToolCallContent(item map[string]json.RawMessage) string {
+	parts := make([]string, 0, 3)
+	if errObj := readRawObject(item, "error"); errObj != nil {
+		if message := readRawString(errObj, "message"); message != "" {
+			parts = append(parts, "Error: "+message)
+		}
+	}
+	if result := readRawObject(item, "result"); result != nil {
+		if content := contentBlocksText(result["content"]); content != "" {
+			parts = append(parts, content)
+		}
+		if structured := prettyJSONIfMeaningful(firstRaw(result, "structuredContent", "structured_content")); structured != "" {
+			parts = append(parts, "Structured content:\n"+structured)
+		}
+	}
+	return strings.Join(parts, "\n\n")
+}
+
+func dynamicToolCallContent(item map[string]json.RawMessage) string {
+	return dynamicContentItemsText(firstRaw(item, "contentItems", "content_items"))
+}
+
+func contentBlocksText(raw json.RawMessage) string {
+	var blocks []json.RawMessage
+	if len(raw) == 0 || json.Unmarshal(raw, &blocks) != nil {
+		return ""
+	}
+	parts := make([]string, 0, len(blocks))
+	for _, blockRaw := range blocks {
+		var block map[string]json.RawMessage
+		if json.Unmarshal(blockRaw, &block) == nil {
+			if readRawString(block, "type") == "text" {
+				if text := readRawString(block, "text"); text != "" {
+					parts = append(parts, text)
+					continue
+				}
+			}
+		}
+		if compact := compactJSON(blockRaw); compact != "" {
+			parts = append(parts, compact)
+		}
+	}
+	return strings.Join(parts, "\n\n")
+}
+
+func dynamicContentItemsText(raw json.RawMessage) string {
+	var items []json.RawMessage
+	if len(raw) == 0 || json.Unmarshal(raw, &items) != nil {
+		return ""
+	}
+	parts := make([]string, 0, len(items))
+	for _, itemRaw := range items {
+		var item map[string]json.RawMessage
+		if json.Unmarshal(itemRaw, &item) == nil {
+			switch readRawString(item, "type") {
+			case "inputText":
+				if text := readRawString(item, "text"); text != "" {
+					parts = append(parts, text)
+					continue
+				}
+			case "inputImage":
+				if imageURL := firstNonEmptyString(readRawString(item, "imageUrl"), readRawString(item, "image_url")); imageURL != "" {
+					parts = append(parts, "Image: "+imageURL)
+					continue
+				}
+			}
+		}
+		if compact := compactJSON(itemRaw); compact != "" {
+			parts = append(parts, compact)
+		}
+	}
+	return strings.Join(parts, "\n\n")
+}
+
 func classifyCodexItemType(params json.RawMessage) string {
-	itemType := readNestedString(params, "item", "type")
+	return classifyCodexItemTypeFromItem(readNestedObject(params, "item"))
+}
+
+func classifyCodexItemTypeFromItem(item map[string]json.RawMessage) string {
+	itemType := readRawString(item, "type")
 	if itemType != "collabAgentToolCall" {
 		return itemType
 	}
-	switch normalizeCollabToolName(readNestedString(params, "item", "tool")) {
+	switch normalizeCollabToolName(readRawString(item, "tool")) {
 	case "wait_agent":
 		// The parent agent is blocking on one or more children. Surface
 		// it as a dedicated item type so the timeline can render it as
@@ -794,6 +1023,12 @@ func classifyCodexItemType(params json.RawMessage) string {
 		return "send_input"
 	default:
 		return "collab_agent"
+	}
+}
+
+func mergeMap(target map[string]any, source map[string]any) {
+	for key, value := range source {
+		target[key] = value
 	}
 }
 
