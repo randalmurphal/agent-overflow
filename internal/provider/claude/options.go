@@ -102,12 +102,45 @@ func ConfigFromOptions(opts provider.SessionOptions) Config {
 	systemPrompt := composeSystemPrompt(effortSystemPrefix(opts.ReasoningEffort), opts.SystemPrompt)
 
 	return Config{
-		Model:           model,
-		WorkDir:         opts.WorkDir,
-		Resume:          opts.Resume,
-		ForkSession:     opts.ForkSession,
-		SystemPrompt:    systemPrompt,
-		PermissionFlags: provider.ClaudePermissionFlags(opts.RuntimeMode),
-		Env:             envForContextWindow(opts.ContextWindow),
+		Model:              model,
+		WorkDir:            opts.WorkDir,
+		Resume:             opts.Resume,
+		ForkSession:        opts.ForkSession,
+		SystemPrompt:       systemPrompt,
+		PermissionFlags:    claudePermissionFlags(opts.RuntimeMode),
+		BasePermissionMode: claudeBasePermissionMode(opts.RuntimeMode),
+		InteractionMode:    opts.Mode,
+		Env:                envForContextWindow(opts.ContextWindow),
+	}
+}
+
+// claudePermissionFlags maps a RuntimeMode to the raw CLI flag sequence the
+// Claude SDK would send to headless `claude -p`.
+func claudePermissionFlags(mode provider.RuntimeMode) []string {
+	permissionMode := claudeBasePermissionMode(mode)
+	if permissionMode == "default" {
+		return nil
+	}
+	flags := []string{"--permission-mode", permissionMode}
+	if permissionMode == "bypassPermissions" {
+		flags = append(flags, "--allow-dangerously-skip-permissions")
+	}
+	return flags
+}
+
+// claudeBasePermissionMode maps a RuntimeMode to Claude's permission-mode
+// value. Unlike claudePermissionFlags, it returns "default" for supervised
+// mode so sessions can restore the base mode via set_permission_mode after a
+// plan turn.
+func claudeBasePermissionMode(mode provider.RuntimeMode) string {
+	switch mode {
+	case provider.RuntimeAutoAcceptEdits:
+		return "acceptEdits"
+	case provider.RuntimeFullAccess:
+		return "bypassPermissions"
+	case provider.RuntimeApprovalRequired:
+		fallthrough
+	default:
+		return "default"
 	}
 }

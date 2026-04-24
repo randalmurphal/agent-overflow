@@ -181,8 +181,14 @@ export {
 // but trips when callers assign to a variable typed as the class. Keeping
 // a thin interface + wrapper here lets every call site hand a plain
 // object and cast the result without going through the class ceremony.
-import { CreateThread as CreateThreadRaw } from '../../../bindings/agent-overflow/app.js';
-import { CreateThreadOptions as CreateThreadOptionsClass } from '../../../bindings/agent-overflow/models.js';
+import {
+  CreateThread as CreateThreadRaw,
+  SendMessageWithOptions as SendMessageWithOptionsRaw,
+} from '../../../bindings/agent-overflow/app.js';
+import {
+  CreateThreadOptions as CreateThreadOptionsClass,
+  SendMessageOptions as SendMessageOptionsClass,
+} from '../../../bindings/agent-overflow/models.js';
 import type { Thread } from '../types/models';
 
 export interface CreateThreadOptions {
@@ -200,6 +206,23 @@ export interface CreateThreadOptions {
 
 export function CreateThread(opts: CreateThreadOptions): Promise<Thread> {
   return CreateThreadRaw(new CreateThreadOptionsClass(opts)) as unknown as Promise<Thread>;
+}
+
+export interface SendMessageOptions {
+  attachmentIds?: string[];
+  runtimeMode?: string;
+}
+
+export function SendMessageWithOptions(
+  threadId: string,
+  content: string,
+  opts: SendMessageOptions,
+): Promise<Thread> {
+  return SendMessageWithOptionsRaw(
+    threadId,
+    content,
+    new SendMessageOptionsClass(opts),
+  ) as unknown as Promise<Thread>;
 }
 
 // Turn lifecycle `Turn` model is re-exported from the generated

@@ -6,7 +6,7 @@
 // store for state changes. Keeping this pure functional makes the send
 // path easy to trace from the click handler all the way to SendMessage.
 
-import { InterruptTurn, SendMessage } from '../../stores/bindings';
+import { InterruptTurn, SendMessageWithOptions } from '../../stores/bindings';
 import type { Attachment } from '../../types/attachment';
 import type { TerminalChip } from '../../types/draft';
 import { addToast } from '../../stores/toast.svelte';
@@ -18,12 +18,18 @@ import {
 import {
   getThreadById,
   prependThread,
+  replaceThread,
 } from '../../stores/threads.svelte';
 import {
   projectSendResolved,
   projectSendStarted,
 } from '../../stores/threadStatuses.svelte';
 import type { Thread } from '../../types/models';
+import {
+  clearRuntimeModeDraft,
+  hasRuntimeModeDraft,
+  runtimeModeForThread,
+} from '../../stores/runtimeModeDraft.svelte';
 
 export interface SendOptions {
   threadId: string;
@@ -37,6 +43,7 @@ export interface SendOptions {
   };
   /** Currently-focused Thread object — needed to promote a draft thread. */
   currentThread: Thread | null;
+  replaceCurrentThread: (thread: Thread) => void;
   restoreDraft: (threadId: string, snapshot: SendOptions['snapshot']) => Promise<void>;
   draftThreadId: () => string | null;
   reportError: (message: string) => void;
@@ -71,7 +78,17 @@ export async function dispatchSend(opts: SendOptions): Promise<void> {
   projectSendStarted(opts.threadId);
 
   try {
-    await SendMessage(opts.threadId, opts.message, opts.attachmentIds);
+    const runtimeMode = opts.currentThread?.id === opts.threadId && hasRuntimeModeDraft(opts.currentThread)
+      ? runtimeModeForThread(opts.currentThread)
+      : undefined;
+    const sendOptions: { attachmentIds: string[]; runtimeMode?: string } = {
+      attachmentIds: opts.attachmentIds,
+    };
+    if (runtimeMode) sendOptions.runtimeMode = runtimeMode;
+    const updated = (await SendMessageWithOptions(opts.threadId, opts.message, sendOptions)) as Thread;
+    opts.replaceCurrentThread(updated);
+    replaceThread(updated);
+    clearRuntimeModeDraft(opts.threadId);
   } catch (err) {
     console.error('Failed to send message:', err);
     // Flip to error so the sidebar pill reads "Error" — the user

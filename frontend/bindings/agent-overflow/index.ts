@@ -16,6 +16,7 @@ export {
     PayloadChunk,
     PayloadContent,
     PayloadPreview,
+    SendMessageOptions,
     TerminalChip,
     TerminalHandle,
     TerminalOpenOptions,

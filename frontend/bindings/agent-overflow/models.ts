@@ -424,6 +424,37 @@ export class PayloadPreview {
 }
 
 /**
+ * SendMessageOptions carries send-time composer settings. AttachmentIDs is the
+ * current attachment payload; RuntimeMode is an optional draft override applied
+ * immediately before the provider turn starts.
+ */
+export class SendMessageOptions {
+    "attachmentIds": string[];
+    "runtimeMode"?: string;
+
+    /** Creates a new SendMessageOptions instance. */
+    constructor($$source: Partial<SendMessageOptions> = {}) {
+        if (!("attachmentIds" in $$source)) {
+            this["attachmentIds"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new SendMessageOptions instance from a string or object.
+     */
+    static createFrom($$source: any = {}): SendMessageOptions {
+        const $$createField0_0 = $$createType2;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("attachmentIds" in $$parsedSource) {
+            $$parsedSource["attachmentIds"] = $$createField0_0($$parsedSource["attachmentIds"]);
+        }
+        return new SendMessageOptions($$parsedSource as Partial<SendMessageOptions>);
+    }
+}
+
+/**
  * TerminalChip is the frontend-owned shape of a "terminal context" snippet
  * captured from the terminal drawer. The Go side treats these as opaque —
  * we store and echo them back intact.
@@ -532,10 +563,9 @@ export class TerminalOpenOptions {
 
 /**
  * ThreadRuntimeModeChangedEvent is the payload emitted after the runtime
- * mode for a thread is updated. Mirrors the interaction-mode event so the
- * frontend has a uniform shape for "settings changed — do you need to
- * reconnect?" banners. needsReconnect is true when an active session is
- * running; the provider honors the new mode only after restart.
+ * mode for a thread is updated. Mirrors the interaction-mode event shape for
+ * compatibility with older frontend code. Runtime-mode changes now restart
+ * active sessions synchronously, so needsReconnect is always false on success.
  */
 export class ThreadRuntimeModeChangedEvent {
     "threadId": string;

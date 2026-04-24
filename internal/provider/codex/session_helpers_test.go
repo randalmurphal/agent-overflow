@@ -587,8 +587,8 @@ func TestBuildThreadParamsReadOnly(t *testing.T) {
 		Sandbox:        "read-only",
 		ApprovalPolicy: "on-request",
 	})
-	if params["sandboxPolicy"] != "read-only" {
-		t.Errorf("sandboxPolicy: got %v, want %q", params["sandboxPolicy"], "read-only")
+	if params["sandbox"] != "read-only" {
+		t.Errorf("sandbox: got %v, want %q", params["sandbox"], "read-only")
 	}
 	if params["approvalPolicy"] != "on-request" {
 		t.Errorf("approvalPolicy: got %v, want %q", params["approvalPolicy"], "on-request")
@@ -596,13 +596,13 @@ func TestBuildThreadParamsReadOnly(t *testing.T) {
 }
 
 func TestBuildThreadParamsUnknownSandbox(t *testing.T) {
-	// Unknown sandbox value falls through to default case.
+	// Unknown sandbox value falls through to the safest thread-start value.
 	params := buildThreadParams(Config{
 		Sandbox:        "custom-sandbox",
 		ApprovalPolicy: "untrusted",
 	})
-	if params["sandboxPolicy"] != "read-only" {
-		t.Errorf("sandboxPolicy: got %v, want %q", params["sandboxPolicy"], "read-only")
+	if params["sandbox"] != "read-only" {
+		t.Errorf("sandbox: got %v, want %q", params["sandbox"], "read-only")
 	}
 	if params["approvalPolicy"] != "untrusted" {
 		t.Errorf("approvalPolicy: got %v, want %q", params["approvalPolicy"], "untrusted")

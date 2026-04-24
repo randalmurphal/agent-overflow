@@ -89,6 +89,60 @@ func TestSendMessageLazyStartsSession(t *testing.T) {
 	}
 }
 
+func TestSendMessageWithOptionsAppliesRuntimeModeBeforeLazyStart(t *testing.T) {
+	app := newTestAppWithStore(t)
+	emissions := captureEmissions(app)
+	thread := testThread("thread-send-runtime-before-start")
+	thread.RuntimeMode = string(provider.RuntimeApprovalRequired)
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+
+	var startCalls int
+	app.startSessionFn = func(threadID string) error {
+		startCalls++
+		if threadID != thread.ID {
+			t.Fatalf("startSessionFn threadID = %q, want %q", threadID, thread.ID)
+		}
+		stored, err := app.store.GetThread(thread.ID)
+		if err != nil {
+			t.Fatalf("GetThread during lazy start: %v", err)
+		}
+		if stored.RuntimeMode != string(provider.RuntimeFullAccess) {
+			t.Fatalf("lazy start saw runtime mode = %q, want full-access", stored.RuntimeMode)
+		}
+		app.mu.Lock()
+		app.sessions[threadID] = session{provider: string(provider.Codex), token: "lazy"}
+		app.mu.Unlock()
+		return nil
+	}
+
+	_, err := app.SendMessageWithOptions(thread.ID, "Hello", SendMessageOptions{
+		RuntimeMode: string(provider.RuntimeFullAccess),
+	})
+	if err == nil {
+		t.Fatal("SendMessageWithOptions() error = nil, want fake provider send failure")
+	}
+	if !strings.Contains(err.Error(), "session has no provider") {
+		t.Fatalf("SendMessageWithOptions() error = %v, want fake provider send failure", err)
+	}
+	if startCalls != 1 {
+		t.Fatalf("startSessionFn calls = %d, want 1", startCalls)
+	}
+
+	stored, err := app.store.GetThread(thread.ID)
+	if err != nil {
+		t.Fatalf("GetThread() error = %v", err)
+	}
+	if stored.RuntimeMode != string(provider.RuntimeFullAccess) {
+		t.Fatalf("stored runtime mode = %q, want full-access", stored.RuntimeMode)
+	}
+	fired := emissionsFor(emissions, "thread:runtime_mode_changed")
+	if len(fired) != 1 {
+		t.Fatalf("runtime_mode_changed emissions = %d, want 1", len(fired))
+	}
+}
+
 func TestSendMessageReturnsLazyStartError(t *testing.T) {
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-send-lazy-start-fail")

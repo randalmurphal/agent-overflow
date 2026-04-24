@@ -18,29 +18,24 @@ const (
 
 // RuntimeMode is the three-tier approval axis (mirrors t3-code). It controls
 // whether the agent prompts for tool use, auto-approves file edits, or
-// bypasses approvals entirely. Orthogonal to InteractionMode ("plan" /
-// "design" / "discussion"), which shapes *what* the agent does, not how
-// much friction is in the way.
+// bypasses approvals entirely. Provider packages own the wire-level mapping.
+// Orthogonal to InteractionMode ("plan" / "design" / "discussion"), which
+// shapes *what* the agent does, not how much friction is in the way.
 type RuntimeMode string
 
 const (
-	// RuntimeApprovalRequired prompts the user for every tool use. Safest
-	// default; maps to Claude permission mode "default" and Codex approval
-	// policy "untrusted" with a read-only sandbox.
+	// RuntimeApprovalRequired prompts the user for every tool use.
 	RuntimeApprovalRequired RuntimeMode = "approval-required"
 
 	// RuntimeAutoAcceptEdits auto-approves file edits inside the workspace
-	// but still prompts for shell commands and other escalation. Maps to
-	// Claude "acceptEdits" and Codex "on-request" with a workspace-write
-	// sandbox.
+	// but still prompts for shell commands and other escalation.
 	RuntimeAutoAcceptEdits RuntimeMode = "auto-accept-edits"
 
-	// RuntimeFullAccess bypasses approvals entirely. Maps to Claude
-	// "bypassPermissions" and Codex "never" with a danger-full-access
-	// sandbox. This is the agent-overflow default — chosen deliberately
-	// over safer defaults because our target user is an agent operator
-	// who explicitly wants frictionless runs and will opt in to the
-	// stricter tiers on a per-thread basis.
+	// RuntimeFullAccess bypasses approvals entirely. This is the
+	// agent-overflow default — chosen deliberately over safer defaults
+	// because our target user is an agent operator who explicitly wants
+	// frictionless runs and will opt in to the stricter tiers on a
+	// per-thread basis.
 	RuntimeFullAccess RuntimeMode = "full-access"
 )
 
@@ -67,61 +62,6 @@ func NormalizeRuntimeMode(mode string) RuntimeMode {
 		return RuntimeMode(mode)
 	default:
 		return DefaultRuntimeMode
-	}
-}
-
-// ClaudePermissionFlags maps a RuntimeMode to the raw CLI flag sequence the
-// Claude CLI expects. Returning a []string (rather than a single string) lets
-// us represent boolean-style flags that take no value, most notably
-// `--dangerously-skip-permissions` for full-access.
-//
-//   - RuntimeApprovalRequired: no flags (CLI's built-in default prompts for
-//     each tool use).
-//   - RuntimeAutoAcceptEdits:  `--permission-mode acceptEdits`.
-//   - RuntimeFullAccess:       `--dangerously-skip-permissions` (canonical
-//     name of the bypass flag — `--permission-mode bypassPermissions` is an
-//     alias but the skip flag is what the current CLI docs surface).
-func ClaudePermissionFlags(mode RuntimeMode) []string {
-	switch mode {
-	case RuntimeAutoAcceptEdits:
-		return []string{"--permission-mode", "acceptEdits"}
-	case RuntimeFullAccess:
-		return []string{"--dangerously-skip-permissions"}
-	case RuntimeApprovalRequired:
-		fallthrough
-	default:
-		// Claude CLI without a permission flag is its built-in default
-		// mode — prompts for every tool. Returning nil signals the caller
-		// to pass no permission flag.
-		return nil
-	}
-}
-
-// CodexApprovalPolicy maps a RuntimeMode to Codex's approval_policy field.
-func CodexApprovalPolicy(mode RuntimeMode) string {
-	switch mode {
-	case RuntimeAutoAcceptEdits:
-		return "on-request"
-	case RuntimeFullAccess:
-		return "never"
-	case RuntimeApprovalRequired:
-		fallthrough
-	default:
-		return "untrusted"
-	}
-}
-
-// CodexSandbox maps a RuntimeMode to Codex's sandbox_mode field.
-func CodexSandbox(mode RuntimeMode) string {
-	switch mode {
-	case RuntimeAutoAcceptEdits:
-		return "workspace-write"
-	case RuntimeFullAccess:
-		return "danger-full-access"
-	case RuntimeApprovalRequired:
-		fallthrough
-	default:
-		return "read-only"
 	}
 }
 

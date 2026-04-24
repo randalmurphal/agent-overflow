@@ -26,7 +26,7 @@ beforeAll(installAnimateShim);
 // Mount App with a single existing thread already selected. Returns the
 // rendered result for assertions.
 //
-// NOTE: callers should install SendMessage / InterruptTurn mocks themselves
+// NOTE: callers should install SendMessageWithOptions / InterruptTurn mocks themselves
 // before calling this function. The helper intentionally does not overwrite
 // them so per-test mocks survive.
 async function mountWithActiveThread(thread: Thread = makeThread({ title: 'Messaging Spec Thread' })) {
@@ -48,16 +48,16 @@ async function mountWithActiveThread(thread: Thread = makeThread({ title: 'Messa
 describe('App integration — messaging flow', () => {
   beforeEach(() => {
     resetAppState();
-    // Default SendMessage + InterruptTurn mocks — tests that need to spy
+    // Default SendMessageWithOptions + InterruptTurn mocks — tests that need to spy
     // or reject reassign these with fresh `setBindingMock` calls.
-    setBindingMock('SendMessage', async () => {});
+    setBindingMock('SendMessageWithOptions', async () => makeThread({ id: 'thread-1' }));
     setBindingMock('InterruptTurn', async () => {});
   });
 
   it('sends a message and clears the composer draft', async () => {
     const { getByLabelText, getByTestId } = await mountWithActiveThread();
     // Re-assign the mock AFTER mount so the call count starts at 0.
-    const sendMock = setBindingMock('SendMessage', async () => {});
+    const sendMock = setBindingMock('SendMessageWithOptions', async () => makeThread({ id: 'thread-1' }));
 
     // Composer textarea is keyed with aria-label "Message input".
     const textarea = getByLabelText('Message input') as HTMLTextAreaElement;
@@ -72,13 +72,15 @@ describe('App integration — messaging flow', () => {
 
     expect(sendMock.mock.calls[0][0]).toBe('thread-1');
     expect(sendMock.mock.calls[0][1]).toBe('hello agent');
-    expect(sendMock.mock.calls[0][2]).toEqual([]);
+    expect(sendMock.mock.calls[0][2]).toEqual({
+      attachmentIds: [],
+    });
     expect(textarea.value).toBe('');
   });
 
   it('blocks Enter during an active turn and surfaces the mid-turn banner', async () => {
     const { getByLabelText, getByTestId } = await mountWithActiveThread();
-    const sendMock = setBindingMock('SendMessage', async () => {});
+    const sendMock = setBindingMock('SendMessageWithOptions', async () => makeThread({ id: 'thread-1' }));
     const textarea = getByLabelText('Message input') as HTMLTextAreaElement;
     await fireEvent.input(textarea, { target: { value: 'queued message' } });
     await flush();
@@ -107,7 +109,7 @@ describe('App integration — messaging flow', () => {
     });
     await flush();
 
-    // Enter must not fire SendMessage while a turn is active — the
+    // Enter must not fire SendMessageWithOptions while a turn is active — the
     // interrupt button is the only path to cancellation. A polite
     // mid-turn error is announced inline in the composer.
     await fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -213,11 +215,11 @@ describe('App integration — messaging flow', () => {
     expect(queryByText(/Running 2 tools/i)).toBeNull();
   });
 
-  it('handles SendMessage rejection by restoring draft and logging the error', async () => {
+  it('handles SendMessageWithOptions rejection by restoring draft and logging the error', async () => {
     const consoleErr = vi.spyOn(console, 'error').mockImplementation(() => {});
     const { getByLabelText, getByTestId } = await mountWithActiveThread();
-    // Override SendMessage to reject AFTER mount so earlier calls don't trip.
-    setBindingMock('SendMessage', async () => {
+    // Override SendMessageWithOptions to reject AFTER mount so earlier calls don't trip.
+    setBindingMock('SendMessageWithOptions', async () => {
       throw new Error('rpc down');
     });
     const textarea = getByLabelText('Message input') as HTMLTextAreaElement;

@@ -19,17 +19,9 @@ func buildThreadParams(cfg Config) map[string]any {
 	}
 
 	if cfg.Sandbox != "" {
-		switch cfg.Sandbox {
-		case "danger-full-access":
-			params["approvalPolicy"] = "never"
-			params["sandboxPolicy"] = "none"
-		case "workspace-write":
-			params["approvalPolicy"] = cfg.ApprovalPolicy
-			params["sandboxPolicy"] = "workspace"
-		default:
-			params["approvalPolicy"] = cfg.ApprovalPolicy
-			params["sandboxPolicy"] = "read-only"
-		}
+		sandbox := normalizeThreadSandbox(cfg.Sandbox)
+		params["approvalPolicy"] = defaultApprovalPolicy(cfg.ApprovalPolicy, sandbox)
+		params["sandbox"] = sandbox
 	}
 
 	if cfg.SystemPrompt != "" {
@@ -53,6 +45,42 @@ func buildThreadParams(cfg Config) map[string]any {
 	}
 
 	return params
+}
+
+func normalizeThreadSandbox(sandbox string) string {
+	switch sandbox {
+	case "read-only", "workspace-write", "danger-full-access":
+		return sandbox
+	default:
+		return "read-only"
+	}
+}
+
+func defaultApprovalPolicy(policy string, sandbox string) string {
+	if policy != "" {
+		return policy
+	}
+	switch sandbox {
+	case "danger-full-access":
+		return "never"
+	case "workspace-write":
+		return "on-request"
+	default:
+		return "untrusted"
+	}
+}
+
+func turnSandboxPolicy(sandbox string) (map[string]any, error) {
+	switch sandbox {
+	case "read-only":
+		return map[string]any{"type": "readOnly"}, nil
+	case "workspace-write":
+		return map[string]any{"type": "workspaceWrite"}, nil
+	case "danger-full-access":
+		return map[string]any{"type": "dangerFullAccess"}, nil
+	default:
+		return nil, fmt.Errorf("codex: unsupported sandbox %q", sandbox)
+	}
 }
 
 func readRouteFields(params json.RawMessage) (string, string) {

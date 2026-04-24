@@ -964,18 +964,28 @@ export function SearchWorkspaceFiles(threadID: string, query: string, limit: num
 }
 
 /**
- * SendMessage is the Wails-bound entry point for user-typed content.
- * The real work lives in app_send.go.
+ * SendMessage is the Wails-bound compatibility entry point for user-typed
+ * content. The options-aware path below owns newer composer controls.
  */
 export function SendMessage(threadID: string, content: string, attachmentIDs: string[]): $CancellablePromise<void> {
     return $Call.ByID(1496882310, threadID, content, attachmentIDs);
 }
 
 /**
+ * SendMessageWithOptions applies send-time composer settings and dispatches the
+ * user turn. RuntimeMode is staged in the composer and persisted here, under
+ * the same per-thread send lock as provider session start/send.
+ */
+export function SendMessageWithOptions(threadID: string, content: string, opts: $models.SendMessageOptions): $CancellablePromise<store$0.Thread> {
+    return $Call.ByID(3632185196, threadID, content, opts).then(($result: any) => {
+        return $$createType2($result);
+    });
+}
+
+/**
  * SetThreadRuntimeMode is the legacy binding name preserved only while
  * the frontend migration lands (Wave 2c+). The implementation routes to
- * UpdateThreadRuntimeMode, emits the same runtime-mode-changed event,
- * and returns the older event struct.
+ * UpdateThreadRuntimeMode and returns the older event struct.
  * 
  * The new per-field binding UpdateThreadRuntimeMode in app_threads.go
  * is the going-forward surface and returns store.Thread directly.

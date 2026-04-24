@@ -1,6 +1,7 @@
 package claude
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -145,16 +146,19 @@ func TestConfigFromOptionsTwoHundredKContextOmitsEnv(t *testing.T) {
 	}
 }
 
-// TestConfigFromOptionsRuntimeModeFullAccessFlag pins down the
-// full-access → --dangerously-skip-permissions mapping at the
-// ConfigFromOptions boundary.
+// TestConfigFromOptionsRuntimeModeFullAccessFlag pins down the full-access
+// SDK-equivalent bypassPermissions mapping at the ConfigFromOptions boundary.
 func TestConfigFromOptionsRuntimeModeFullAccessFlag(t *testing.T) {
 	cfg := ConfigFromOptions(provider.SessionOptions{
 		Provider:    "claude",
 		RuntimeMode: provider.RuntimeFullAccess,
 	})
-	if len(cfg.PermissionFlags) != 1 || cfg.PermissionFlags[0] != "--dangerously-skip-permissions" {
-		t.Errorf("PermissionFlags = %v, want [--dangerously-skip-permissions]", cfg.PermissionFlags)
+	want := []string{"--permission-mode", "bypassPermissions", "--allow-dangerously-skip-permissions"}
+	if !slices.Equal(cfg.PermissionFlags, want) {
+		t.Errorf("PermissionFlags = %v, want %v", cfg.PermissionFlags, want)
+	}
+	if cfg.BasePermissionMode != "bypassPermissions" {
+		t.Errorf("BasePermissionMode = %q, want bypassPermissions", cfg.BasePermissionMode)
 	}
 }
 
@@ -259,8 +263,8 @@ func TestConfigFromOptionsThreadsIntoBuildArgs(t *testing.T) {
 	args := buildArgs(cfg)
 
 	joined := strings.Join(args, " ")
-	if !strings.Contains(joined, "--dangerously-skip-permissions") {
-		t.Errorf("args missing --dangerously-skip-permissions: %v", args)
+	if !strings.Contains(joined, "--permission-mode bypassPermissions --allow-dangerously-skip-permissions") {
+		t.Errorf("args missing bypass permission flags: %v", args)
 	}
 	if !strings.Contains(joined, "--system-prompt think hard\n\nBe an agent.") {
 		// The prompt contains a literal newline, so exact substring matching

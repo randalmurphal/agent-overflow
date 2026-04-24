@@ -731,31 +731,30 @@ func TestBuildArgsNoPermissionFlagsOmitsAll(t *testing.T) {
 	args := buildArgs(Config{PermissionFlags: nil})
 
 	for _, a := range args {
-		if a == "--permission-mode" || a == "--dangerously-skip-permissions" {
+		if a == "--permission-mode" || a == "--allow-dangerously-skip-permissions" {
 			t.Errorf("permission flag %q should be omitted when PermissionFlags is nil", a)
 		}
 	}
 }
 
-// TestBuildArgsDangerousSkipPermissions confirms the full-access flow
-// emits the bare flag with no value argument — a regression guard around
-// the []string shape of PermissionFlags.
+// TestBuildArgsDangerousSkipPermissions confirms the full-access flow emits
+// the bypass permission mode plus the bare dangerous-skip allow flag.
 func TestBuildArgsDangerousSkipPermissions(t *testing.T) {
-	args := buildArgs(Config{PermissionFlags: []string{"--dangerously-skip-permissions"}})
+	args := buildArgs(Config{PermissionFlags: []string{"--permission-mode", "bypassPermissions", "--allow-dangerously-skip-permissions"}})
 	found := false
 	for i, a := range args {
-		if a != "--dangerously-skip-permissions" {
+		if a != "--allow-dangerously-skip-permissions" {
 			continue
 		}
 		found = true
 		// Next arg should not be a companion value — either end of slice
 		// or another flag.
 		if i+1 < len(args) && !isFlagToken(args[i+1]) {
-			t.Errorf("--dangerously-skip-permissions should not carry a value; got %q", args[i+1])
+			t.Errorf("--allow-dangerously-skip-permissions should not carry a value; got %q", args[i+1])
 		}
 	}
 	if !found {
-		t.Errorf("expected --dangerously-skip-permissions in args: %v", args)
+		t.Errorf("expected --allow-dangerously-skip-permissions in args: %v", args)
 	}
 }
 
@@ -959,6 +958,26 @@ func waitEvent(t *testing.T, ch <-chan provider.ProviderEvent) provider.Provider
 	}
 }
 
+func waitCapturedLines(t *testing.T, path string, want int) []string {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		data, err := os.ReadFile(path)
+		if err == nil {
+			lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+			if len(lines) >= want && lines[0] != "" {
+				return lines
+			}
+		} else if !os.IsNotExist(err) {
+			t.Fatalf("read capture file: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	data, _ := os.ReadFile(path)
+	t.Fatalf("timed out waiting for %d captured lines in %s; got %q", want, path, string(data))
+	return nil
+}
+
 func TestNewSessionWithMock(t *testing.T) {
 	// NewSession passes CLI flags (--input-format, --output-format, --verbose)
 	// that real `cat` rejects. Use a bash one-liner that ignores args and echoes.
@@ -1028,8 +1047,243 @@ func TestNewSessionSpawnsAndRunsReadLoop(t *testing.T) {
 
 func TestSessionSend(t *testing.T) {
 	s, _ := newTestClaudeSession(t)
-	if err := s.Send(context.Background(), "hello world"); err != nil {
+	if err := s.Send(context.Background(), "hello world", provider.SendOptions{}); err != nil {
 		t.Fatalf("Send: %v", err)
+	}
+}
+
+func TestSessionSendSetsPlanPermissionModeBeforeUserMessage(t *testing.T) {
+	scriptPath := filepath.Join(t.TempDir(), "fake-claude")
+	capturePath := filepath.Join(t.TempDir(), "stdin.ndjson")
+	script := `#!/bin/sh
+set -eu
+capture="${CAPTURE_FILE:?}"
+while IFS= read -r line; do
+    printf '%s\n' "$line" >> "$capture"
+    case "$line" in
+        *'"set_permission_mode"'*)
+            reqid=$(printf '%s' "$line" | sed -n 's/.*"request_id":"\([^"]*\)".*/\1/p')
+            printf '{"type":"control_response","response":{"subtype":"success","request_id":"%s","response":{}}}\n' "$reqid"
+            ;;
+        *'"type":"user"'*)
+            exit 0
+            ;;
+    esac
+done
+`
+	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
+		t.Fatalf("write fake claude script: %v", err)
+	}
+
+	s, err := NewSession(context.Background(), testThread, Config{
+		Binary:             scriptPath,
+		BasePermissionMode: "default",
+		InteractionMode:    provider.ModePlan,
+		Env: map[string]string{
+			"CAPTURE_FILE": capturePath,
+		},
+	}, func(provider.ProviderEvent) {})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer s.Close()
+	s.controlRequestTimeout = 2 * time.Second
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := s.Send(ctx, "draft a plan", provider.SendOptions{}); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	lines := waitCapturedLines(t, capturePath, 2)
+	var first struct {
+		Type    string `json:"type"`
+		Request struct {
+			Subtype string `json:"subtype"`
+			Mode    string `json:"mode"`
+		} `json:"request"`
+	}
+	if err := json.Unmarshal([]byte(lines[0]), &first); err != nil {
+		t.Fatalf("unmarshal first captured line: %v", err)
+	}
+	if first.Type != "control_request" || first.Request.Subtype != "set_permission_mode" || first.Request.Mode != "plan" {
+		t.Fatalf("first captured line = %+v, want set_permission_mode plan", first)
+	}
+
+	var second struct {
+		Type    string `json:"type"`
+		Message struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		} `json:"message"`
+	}
+	if err := json.Unmarshal([]byte(lines[1]), &second); err != nil {
+		t.Fatalf("unmarshal second captured line: %v", err)
+	}
+	if second.Type != "user" || second.Message.Role != "user" || second.Message.Content != "draft a plan" {
+		t.Fatalf("second captured line = %+v, want user message", second)
+	}
+	if got := s.getCurrentPermissionMode(); got != "plan" {
+		t.Fatalf("currentPermissionMode = %q, want plan", got)
+	}
+}
+
+func TestSessionSendRestoresBasePermissionModeAfterPlanTurn(t *testing.T) {
+	for _, baseMode := range []string{"default", "acceptEdits", "bypassPermissions"} {
+		t.Run(baseMode, func(t *testing.T) {
+			scriptPath := filepath.Join(t.TempDir(), "fake-claude")
+			capturePath := filepath.Join(t.TempDir(), "stdin.ndjson")
+			script := `#!/bin/sh
+set -eu
+capture="${CAPTURE_FILE:?}"
+users=0
+while IFS= read -r line; do
+    printf '%s\n' "$line" >> "$capture"
+    case "$line" in
+        *'"set_permission_mode"'*)
+            reqid=$(printf '%s' "$line" | sed -n 's/.*"request_id":"\([^"]*\)".*/\1/p')
+            printf '{"type":"control_response","response":{"subtype":"success","request_id":"%s","response":{}}}\n' "$reqid"
+            ;;
+        *'"type":"user"'*)
+            users=$((users + 1))
+            if [ "$users" -ge 2 ]; then
+                exit 0
+            fi
+            ;;
+    esac
+done
+`
+			if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
+				t.Fatalf("write fake claude script: %v", err)
+			}
+
+			s, err := NewSession(context.Background(), testThread, Config{
+				Binary:             scriptPath,
+				BasePermissionMode: baseMode,
+				InteractionMode:    provider.ModeChat,
+				Env: map[string]string{
+					"CAPTURE_FILE": capturePath,
+				},
+			}, func(provider.ProviderEvent) {})
+			if err != nil {
+				t.Fatalf("NewSession: %v", err)
+			}
+			defer s.Close()
+			s.controlRequestTimeout = 2 * time.Second
+
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			if err := s.Send(ctx, "draft a plan", provider.SendOptions{InteractionMode: provider.ModePlan}); err != nil {
+				t.Fatalf("plan Send: %v", err)
+			}
+			if err := s.Send(ctx, "implement it", provider.SendOptions{InteractionMode: provider.ModeChat}); err != nil {
+				t.Fatalf("chat Send: %v", err)
+			}
+
+			lines := waitCapturedLines(t, capturePath, 4)
+			var modes []string
+			for _, line := range lines {
+				var raw struct {
+					Type    string `json:"type"`
+					Request struct {
+						Subtype string `json:"subtype"`
+						Mode    string `json:"mode"`
+					} `json:"request"`
+				}
+				if err := json.Unmarshal([]byte(line), &raw); err != nil {
+					t.Fatalf("unmarshal captured line %q: %v", line, err)
+				}
+				if raw.Type == "control_request" && raw.Request.Subtype == "set_permission_mode" {
+					modes = append(modes, raw.Request.Mode)
+				}
+			}
+			if want := []string{"plan", baseMode}; !reflect.DeepEqual(modes, want) {
+				t.Fatalf("set_permission_mode sequence = %v, want %v", modes, want)
+			}
+			if got := s.getCurrentPermissionMode(); got != baseMode {
+				t.Fatalf("currentPermissionMode = %q, want %q", got, baseMode)
+			}
+		})
+	}
+}
+
+func TestFullAccessToolRequestDoesNotAutoApproveInPlanMode(t *testing.T) {
+	s := &Session{
+		basePermissionMode:    "bypassPermissions",
+		currentPermissionMode: "plan",
+		interactionMode:       provider.ModePlan,
+	}
+	handled, err := s.maybeHandleFullAccessToolRequest([]byte(`{"type":"control_request","request_id":"req-1","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"ls"}}}`))
+	if err != nil {
+		t.Fatalf("maybeHandleFullAccessToolRequest: %v", err)
+	}
+	if handled {
+		t.Fatal("plan-mode session auto-approved full-access tool request")
+	}
+}
+
+func TestFullAccessToolRequestAutoApprovesRegularTools(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	capturePath := filepath.Join(t.TempDir(), "stdin.ndjson")
+	proc, err := provider.Spawn(ctx, provider.SpawnConfig{
+		Binary: "bash",
+		Args:   []string{"-c", `while IFS= read -r line; do printf '%s\n' "$line" >> "$CAPTURE"; done`},
+		Env: map[string]string{
+			"CAPTURE": capturePath,
+		},
+	})
+	if err != nil {
+		t.Fatalf("spawn capture process: %v", err)
+	}
+	defer cancel()
+	t.Cleanup(func() { _ = proc.Close() })
+
+	s := &Session{
+		proc:                  proc,
+		currentPermissionMode: "bypassPermissions",
+	}
+	handled, err := s.maybeHandleFullAccessToolRequest([]byte(`{"type":"control_request","request_id":"req-1","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"ls"}}}`))
+	if err != nil {
+		t.Fatalf("maybeHandleFullAccessToolRequest: %v", err)
+	}
+	if !handled {
+		t.Fatal("full-access regular tool request was not auto-approved")
+	}
+	lines := waitCapturedLines(t, capturePath, 1)
+	var response struct {
+		Type     string `json:"type"`
+		Response struct {
+			Subtype   string `json:"subtype"`
+			RequestID string `json:"request_id"`
+			Response  struct {
+				Behavior string `json:"behavior"`
+			} `json:"response"`
+		} `json:"response"`
+	}
+	if err := json.Unmarshal([]byte(lines[0]), &response); err != nil {
+		t.Fatalf("unmarshal auto-approval response: %v", err)
+	}
+	if response.Type != "control_response" ||
+		response.Response.Subtype != "success" ||
+		response.Response.RequestID != "req-1" ||
+		response.Response.Response.Behavior != "allow" {
+		t.Fatalf("auto-approval response = %+v, want allow for req-1", response)
+	}
+}
+
+func TestFullAccessToolRequestLeavesInteractiveExceptionsPending(t *testing.T) {
+	for _, toolName := range []string{"AskUserQuestion", "ExitPlanMode"} {
+		t.Run(toolName, func(t *testing.T) {
+			s := &Session{currentPermissionMode: "bypassPermissions"}
+			line := []byte(`{"type":"control_request","request_id":"req-1","request":{"subtype":"can_use_tool","tool_name":"` + toolName + `"}}`)
+			handled, err := s.maybeHandleFullAccessToolRequest(line)
+			if err != nil {
+				t.Fatalf("maybeHandleFullAccessToolRequest: %v", err)
+			}
+			if handled {
+				t.Fatalf("%s should remain interactive in full-access mode", toolName)
+			}
+		})
 	}
 }
 
@@ -1625,7 +1879,7 @@ func TestIdleWatchdogFiresAfterSilence(t *testing.T) {
 	}
 	go s.readLoop()
 
-	if err := s.Send(context.Background(), "hello"); err != nil {
+	if err := s.Send(context.Background(), "hello", provider.SendOptions{}); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 
@@ -1658,7 +1912,7 @@ func TestIdleWatchdogFiresAfterSilence(t *testing.T) {
 func TestIdleWatchdogResetByOutput(t *testing.T) {
 	s, eventCh := newTestClaudeSessionWithIdleTimeout(t, 200*time.Millisecond)
 
-	if err := s.Send(context.Background(), "ping"); err != nil {
+	if err := s.Send(context.Background(), "ping", provider.SendOptions{}); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 
@@ -1722,7 +1976,7 @@ func TestIdleWatchdogDoesNotRunBetweenTurns(t *testing.T) {
 func TestIdleWatchdogStopsAtTurnComplete(t *testing.T) {
 	s, eventCh := newTestClaudeSessionWithIdleTimeout(t, 80*time.Millisecond)
 
-	if err := s.Send(context.Background(), "hello"); err != nil {
+	if err := s.Send(context.Background(), "hello", provider.SendOptions{}); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 	// Feed a terminal result line immediately so the session observes
@@ -1969,7 +2223,7 @@ func newStopTaskResponderSession(t *testing.T, mode string, stopTimeout time.Dur
 		cancel:   cancel,
 		readDone: make(chan struct{}),
 		// Short timeout so a "silent" mode doesn't stall the suite.
-		stopTaskTimeout: stopTimeout,
+		controlRequestTimeout: stopTimeout,
 	}
 	go s.readLoop()
 	t.Cleanup(func() {
@@ -2012,7 +2266,7 @@ func TestSession_StopTask_ErrorResponse(t *testing.T) {
 // timeout error within the configured window.
 func TestSession_StopTask_Timeout(t *testing.T) {
 	// Use a generous test context so the timeout error comes from
-	// Session.stopTaskTimeout, not the caller context.
+	// Session.controlRequestTimeout, not the caller context.
 	s := newStopTaskResponderSession(t, "silent", 150*time.Millisecond)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -2041,7 +2295,7 @@ func TestSession_StopTask_Timeout(t *testing.T) {
 //
 // The test pins both the error MESSAGE (must mention empty task_id, NOT
 // just "timeout") and the elapsed time — without the TrimSpace gate
-// the call would write a stop_task to stdin, sit on the stopTaskTimeout
+// the call would write a stop_task to stdin, sit on the controlRequestTimeout
 // for seconds, then return a timeout error that still trips `err != nil`
 // but masks the programming bug. A tight 300ms ceiling proves we
 // rejected the input without ever hitting the wire.
@@ -2059,7 +2313,7 @@ func TestSession_StopTask_EmptyTaskID(t *testing.T) {
 			t.Errorf("StopTask(%q): error should mention empty task_id, got: %v", tid, err)
 		}
 		// A missing TrimSpace would write to the fake CLI and wait the
-		// full stopTaskTimeout (5s). 300ms is a generous upper bound that
+		// full controlRequestTimeout (5s). 300ms is a generous upper bound that
 		// still catches the regression.
 		if elapsed > 300*time.Millisecond {
 			t.Errorf("StopTask(%q) took %s, expected <300ms (suggests the input check fell through to the wire)", tid, elapsed)
@@ -2096,10 +2350,10 @@ func TestSession_StopTask_UnknownRequestIDDropped(t *testing.T) {
 }
 
 // TestSession_StopTask_SubprocessDeathUnblocksCaller pins the behavior
-// the readLoop's deferred clearPendingStopTasks buys us: when the CLI
+// the readLoop's deferred clearPendingControlRequests buys us: when the CLI
 // subprocess exits on its own while a StopTask is parked, the caller
 // must unblock promptly with a clean error — NOT sit on its 10-second
-// DefaultStopTaskTimeout waiting for a response that will never come.
+// DefaultControlRequestTimeout waiting for a response that will never come.
 // Without this guarantee the tray "Stop all" flow would freeze the UI
 // for seconds per pending task after an unclean CLI exit.
 func TestSession_StopTask_SubprocessDeathUnblocksCaller(t *testing.T) {
@@ -2136,7 +2390,7 @@ exit 0
 		// Generous per-call timeout so the fast-unblock comes from the
 		// readLoop cleanup, not from the timeout path. A failing
 		// regression would wait this entire window.
-		stopTaskTimeout: 5 * time.Second,
+		controlRequestTimeout: 5 * time.Second,
 	}
 	go s.readLoop()
 	t.Cleanup(func() { _ = s.Close() })
@@ -2152,7 +2406,7 @@ exit 0
 		t.Errorf("error should mention session close, got: %v", err)
 	}
 	// The subprocess exits ~50ms in; the read loop then drains and
-	// signals the pending entry via clearPendingStopTasks. 1s is a
+	// signals the pending entry via clearPendingControlRequests. 1s is a
 	// generous upper bound that still proves we didn't silently wait
 	// the full 5s timeout.
 	if elapsed > time.Second {
@@ -2171,7 +2425,7 @@ exit 0
 // map keyed by task_id, or only one call would land if the second
 // overwrote the pending entry.
 //
-// The allocateStopTaskRequestID counter guarantees uniqueness per
+// The allocateControlRequestID counter guarantees uniqueness per
 // session; this test pins that behavior end-to-end by tripping the
 // fake-CLI to echo back each request_id and checking both StopTask
 // calls resolve with no cross-talk.
@@ -2180,7 +2434,7 @@ func TestSession_StopTask_ConcurrentSameTaskIDDistinctRequestIDs(t *testing.T) {
 
 	// Two goroutines: both call StopTask with the SAME task_id. Each
 	// allocates its own request_id via the seq counter; the fake CLI
-	// echoes back whichever request_id it read, and deliverStopTaskResponse
+	// echoes back whichever request_id it read, and deliverControlResponse
 	// routes the two replies to their respective pending channels.
 	const task = "task-double"
 	done := make(chan error, 2)
@@ -2206,15 +2460,15 @@ func TestSession_StopTask_ConcurrentSameTaskIDDistinctRequestIDs(t *testing.T) {
 		}
 	}
 
-	// The two request_ids must be distinct. allocateStopTaskRequestID
-	// bumps stopTaskSeq under a lock, so two serialized StopTask calls
+	// The two request_ids must be distinct. allocateControlRequestID
+	// bumps controlRequestSeq under a lock, so two serialized StopTask calls
 	// (the fake CLI's `read -r` is line-buffered) land at seq=1 and
 	// seq=2. Observing seq >= 2 is sufficient — the third slot is
 	// unallocated.
-	s.stopTaskMu.Lock()
-	seq := s.stopTaskSeq
-	s.stopTaskMu.Unlock()
+	s.controlRequestMu.Lock()
+	seq := s.controlRequestSeq
+	s.controlRequestMu.Unlock()
 	if seq < 2 {
-		t.Errorf("stopTaskSeq = %d after two concurrent StopTasks, want >= 2 (each call must allocate)", seq)
+		t.Errorf("controlRequestSeq = %d after two concurrent StopTasks, want >= 2 (each call must allocate)", seq)
 	}
 }

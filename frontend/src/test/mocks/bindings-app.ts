@@ -85,6 +85,7 @@ export const StartSession = dispatch('StartSession');
 export const StopSession = dispatch('StopSession');
 export const ReconnectSession = dispatch('ReconnectSession');
 export const SendMessage = dispatch('SendMessage');
+export const SendMessageWithOptions = dispatch('SendMessageWithOptions');
 export const InterruptTurn = dispatch('InterruptTurn');
 export const RespondToApproval = dispatch('RespondToApproval');
 export const RespondToUserInput = dispatch('RespondToUserInput');

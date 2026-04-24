@@ -47,11 +47,6 @@ func codexEffortFromOption(effort provider.ReasoningEffort) string {
 // expects for a given RuntimeMode. Splitting into one helper keeps the
 // translation intentional — a RuntimeMode change must touch both fields in
 // lockstep, and routing through a single function makes that obvious.
-//
-// The actual string values are owned by internal/provider/types.go via
-// CodexApprovalPolicy / CodexSandbox; we just compose them here so
-// ConfigFromOptions doesn't have to call both helpers separately and risk
-// drifting.
 type codexRuntime struct {
 	ApprovalPolicy string
 	Sandbox        string
@@ -59,8 +54,34 @@ type codexRuntime struct {
 
 func runtimeModeToCodex(mode provider.RuntimeMode) codexRuntime {
 	return codexRuntime{
-		ApprovalPolicy: provider.CodexApprovalPolicy(mode),
-		Sandbox:        provider.CodexSandbox(mode),
+		ApprovalPolicy: codexApprovalPolicy(mode),
+		Sandbox:        codexSandbox(mode),
+	}
+}
+
+func codexApprovalPolicy(mode provider.RuntimeMode) string {
+	switch mode {
+	case provider.RuntimeAutoAcceptEdits:
+		return "on-request"
+	case provider.RuntimeFullAccess:
+		return "never"
+	case provider.RuntimeApprovalRequired:
+		fallthrough
+	default:
+		return "untrusted"
+	}
+}
+
+func codexSandbox(mode provider.RuntimeMode) string {
+	switch mode {
+	case provider.RuntimeAutoAcceptEdits:
+		return "workspace-write"
+	case provider.RuntimeFullAccess:
+		return "danger-full-access"
+	case provider.RuntimeApprovalRequired:
+		fallthrough
+	default:
+		return "read-only"
 	}
 }
 

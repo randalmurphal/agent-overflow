@@ -85,6 +85,12 @@ func (a *App) CreateThread(opts CreateThreadOptions) (store.Thread, error) {
 	runtimeMode := strings.TrimSpace(opts.RuntimeMode)
 	if runtimeMode == "" {
 		runtimeMode = a.defaultRuntimeModeForNewThread()
+	} else {
+		parsedRuntimeMode, err := parseRuntimeMode(runtimeMode)
+		if err != nil {
+			return store.Thread{}, fmt.Errorf("create thread: %w", err)
+		}
+		runtimeMode = string(parsedRuntimeMode)
 	}
 
 	workspace := strings.TrimSpace(opts.WorkspaceOverride)
@@ -296,7 +302,6 @@ var sessionAffectingFields = map[string]struct{}{
 	"effort":        {},
 	"fastMode":      {},
 	"contextWindow": {},
-	"runtimeMode":   {},
 	"workspace":     {},
 }
 
@@ -491,33 +496,14 @@ func (a *App) UpdateThreadRuntimeMode(id, mode string) (store.Thread, error) {
 	if a.store == nil {
 		return store.Thread{}, fmt.Errorf("update runtime mode: store unavailable")
 	}
-	normalized := provider.RuntimeMode(mode)
-	switch normalized {
-	case provider.RuntimeApprovalRequired, provider.RuntimeAutoAcceptEdits, provider.RuntimeFullAccess:
-		// ok
-	default:
-		return store.Thread{}, fmt.Errorf("update runtime mode: invalid mode %q", mode)
-	}
-	rollbackSettings, err := a.applySettingsPatchWithRollback(map[string]any{
-		"defaultRuntimeMode": string(normalized),
-	})
+	normalized, err := parseRuntimeMode(mode)
 	if err != nil {
-		return store.Thread{}, fmt.Errorf("update runtime-mode default: %w", err)
+		return store.Thread{}, fmt.Errorf("update runtime mode: %w", err)
 	}
-	if err := a.store.UpdateRuntimeMode(id, string(normalized)); err != nil {
-		if rollbackErr := rollbackSettings(); rollbackErr != nil {
-			return store.Thread{}, fmt.Errorf("update runtime mode: %w (settings rollback failed: %v)", err, rollbackErr)
-		}
-		return store.Thread{}, err
+	if err := a.applyRuntimeMode(id, normalized); err != nil {
+		return store.Thread{}, fmt.Errorf("update runtime mode: %w", err)
 	}
-	refreshed, err := a.restartSessionIfAffected(id, "runtimeMode")
-	if err != nil {
-		if rollbackErr := rollbackSettings(); rollbackErr != nil {
-			return store.Thread{}, fmt.Errorf("update runtime mode: %w (settings rollback failed: %v)", err, rollbackErr)
-		}
-		return store.Thread{}, err
-	}
-	return refreshed, nil
+	return a.store.GetThread(id)
 }
 
 // UpdateThreadBranch persists the branch column. Does NOT perform the

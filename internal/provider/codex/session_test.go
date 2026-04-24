@@ -659,7 +659,7 @@ func TestSendTurnStartFormat(t *testing.T) {
 	// (has both id and method), handleServerRequest sees "turn/start" as unknown
 	// and returns a JSON-RPC error which becomes the sendRequest response.
 	// Send returns an error from the RPC layer, which is expected here.
-	_ = s.Send(context.Background(), "hello")
+	_ = s.Send(context.Background(), "hello", provider.SendOptions{})
 
 	// Drain the event channel: the echoed server request triggers
 	// writeErrorResponse, whose echo arrives as a response (routed to pending).
@@ -724,8 +724,8 @@ func TestBuildThreadParams(t *testing.T) {
 	if params["model"] != "gpt-4.1" {
 		t.Errorf("model: got %v, want %q", params["model"], "gpt-4.1")
 	}
-	if params["sandboxPolicy"] != "workspace" {
-		t.Errorf("sandboxPolicy: got %v, want %q", params["sandboxPolicy"], "workspace")
+	if params["sandbox"] != "workspace-write" {
+		t.Errorf("sandbox: got %v, want %q", params["sandbox"], "workspace-write")
 	}
 	if params["approvalPolicy"] != "on-request" {
 		t.Errorf("approvalPolicy: got %v, want %q", params["approvalPolicy"], "on-request")
@@ -742,8 +742,8 @@ func TestBuildThreadParamsDangerMode(t *testing.T) {
 	if params["approvalPolicy"] != "never" {
 		t.Errorf("approvalPolicy: got %v, want %q", params["approvalPolicy"], "never")
 	}
-	if params["sandboxPolicy"] != "none" {
-		t.Errorf("sandboxPolicy: got %v, want %q", params["sandboxPolicy"], "none")
+	if params["sandbox"] != "danger-full-access" {
+		t.Errorf("sandbox: got %v, want %q", params["sandbox"], "danger-full-access")
 	}
 }
 
@@ -1215,7 +1215,7 @@ func TestTurnStartEmittedExactlyOncePerTurn(t *testing.T) {
 
 	sendDone := make(chan error, 1)
 	go func() {
-		sendDone <- s.Send(context.Background(), "hi")
+		sendDone <- s.Send(context.Background(), "hi", provider.SendOptions{})
 	}()
 
 	// Poll until Send has registered its pending channel, then inject a
@@ -2067,7 +2067,7 @@ func TestCodexSend(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	err := s.Send(ctx, "hello world")
+	err := s.Send(ctx, "hello world", provider.SendOptions{})
 	// Expected to fail because cat echo + handleServerRequest produces error response.
 	if err == nil {
 		t.Fatal("expected error from Send via cat echo")
@@ -2802,21 +2802,25 @@ done
 	}
 
 	s, err := NewSession(context.Background(), testThread, Config{
-		Binary:  scriptPath,
-		Model:   "test-model",
-		WorkDir: "/tmp",
+		Binary:         scriptPath,
+		Model:          "test-model",
+		WorkDir:        "/tmp",
+		ApprovalPolicy: "on-request",
+		Sandbox:        "workspace-write",
 	}, func(provider.ProviderEvent) {})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
 	t.Cleanup(func() { _ = s.Close() })
 
-	err = s.Send(context.Background(), "", provider.ImageAttachment{
-		ID:       "att-1",
-		Filename: "snap.png",
-		MimeType: "image/png",
-		Size:     8,
-		Data:     []byte{0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A},
+	err = s.Send(context.Background(), "", provider.SendOptions{
+		Attachments: []provider.ImageAttachment{{
+			ID:       "att-1",
+			Filename: "snap.png",
+			MimeType: "image/png",
+			Size:     8,
+			Data:     []byte{0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A},
+		}},
 	})
 	if err != nil {
 		t.Fatalf("Send: %v", err)
@@ -2841,6 +2845,13 @@ done
 		t.Fatalf("captured no turn/start request: %s", string(captured))
 	}
 	params := turnStart["params"].(map[string]any)
+	if params["approvalPolicy"] != "on-request" {
+		t.Fatalf("approvalPolicy = %v, want on-request", params["approvalPolicy"])
+	}
+	sandboxPolicy := params["sandboxPolicy"].(map[string]any)
+	if sandboxPolicy["type"] != "workspaceWrite" {
+		t.Fatalf("sandboxPolicy.type = %v, want workspaceWrite", sandboxPolicy["type"])
+	}
 	input := params["input"].([]any)
 	if len(input) != 1 {
 		t.Fatalf("input length = %d, want image-only input", len(input))
@@ -2852,6 +2863,101 @@ done
 	wantURL := "data:image/png;base64,iVBORw0KGgo="
 	if imageInput["url"] != wantURL {
 		t.Fatalf("image url = %v, want %s", imageInput["url"], wantURL)
+	}
+}
+
+func TestSessionSendIncludesRuntimeAccessPolicyForEveryMode(t *testing.T) {
+	cases := []struct {
+		name            string
+		approvalPolicy  string
+		sandbox         string
+		wantSandboxType string
+	}{
+		{
+			name:            "approval-required",
+			approvalPolicy:  "untrusted",
+			sandbox:         "read-only",
+			wantSandboxType: "readOnly",
+		},
+		{
+			name:            "auto-accept-edits",
+			approvalPolicy:  "on-request",
+			sandbox:         "workspace-write",
+			wantSandboxType: "workspaceWrite",
+		},
+		{
+			name:            "full-access",
+			approvalPolicy:  "never",
+			sandbox:         "danger-full-access",
+			wantSandboxType: "dangerFullAccess",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			capturePath := filepath.Join(t.TempDir(), "codex-stdin.log")
+			script := fmt.Sprintf(`#!/bin/bash
+while IFS= read -r line; do
+    printf '%%s\n' "$line" >> %q
+    id=$(echo "$line" | grep -o '"id":[0-9]*' | head -1 | grep -o '[0-9]*')
+    if [ -z "$id" ]; then
+        continue
+    fi
+    if echo "$line" | grep -q '"method":"turn/start"'; then
+        echo "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"turn\":{\"id\":\"turn-runtime\"}}}"
+    else
+        echo "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"thread\":{\"id\":\"mock-thread-123\"}}}"
+    fi
+done
+`, capturePath)
+			scriptPath := filepath.Join(t.TempDir(), "codex")
+			if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+				t.Fatalf("write mock script: %v", err)
+			}
+
+			s, err := NewSession(context.Background(), testThread, Config{
+				Binary:         scriptPath,
+				Model:          "test-model",
+				WorkDir:        "/tmp",
+				ApprovalPolicy: tc.approvalPolicy,
+				Sandbox:        tc.sandbox,
+			}, func(provider.ProviderEvent) {})
+			if err != nil {
+				t.Fatalf("NewSession: %v", err)
+			}
+			t.Cleanup(func() { _ = s.Close() })
+
+			if err := s.Send(context.Background(), "hello", provider.SendOptions{}); err != nil {
+				t.Fatalf("Send: %v", err)
+			}
+			_ = s.Close()
+
+			captured, err := os.ReadFile(capturePath)
+			if err != nil {
+				t.Fatalf("read capture: %v", err)
+			}
+			var turnStart map[string]any
+			for _, line := range strings.Split(string(captured), "\n") {
+				if !strings.Contains(line, `"method":"turn/start"`) {
+					continue
+				}
+				if err := json.Unmarshal([]byte(line), &turnStart); err != nil {
+					t.Fatalf("unmarshal turn/start: %v", err)
+				}
+				break
+			}
+			if turnStart == nil {
+				t.Fatalf("captured no turn/start request: %s", string(captured))
+			}
+			params := turnStart["params"].(map[string]any)
+			if params["approvalPolicy"] != tc.approvalPolicy {
+				t.Fatalf("approvalPolicy = %v, want %s", params["approvalPolicy"], tc.approvalPolicy)
+			}
+			sandboxPolicy := params["sandboxPolicy"].(map[string]any)
+			if sandboxPolicy["type"] != tc.wantSandboxType {
+				t.Fatalf("sandboxPolicy.type = %v, want %s", sandboxPolicy["type"], tc.wantSandboxType)
+			}
+		})
 	}
 }
 

@@ -71,7 +71,7 @@ async function mountAndActivateThread(
 describe('App integration — windowed thread history', () => {
   beforeEach(() => {
     resetAppState();
-    setBindingMock('SendMessage', async () => {});
+    setBindingMock('SendMessageWithOptions', async () => makeThread({ id: 'thread-1' }));
     setBindingMock('InterruptTurn', async () => {});
   });
 

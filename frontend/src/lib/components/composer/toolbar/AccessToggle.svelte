@@ -1,23 +1,23 @@
 <script lang="ts">
-  // Runtime-mode cycle button: approval-required → auto-accept-edits →
-  // full-access. Replaces the old RuntimeModePicker dropdown with a
-  // three-tier single-click cycle to match the screenshot spec.
-  //
-  // The icon evolves from a closed padlock (safest) through a half-open
-  // padlock to an unlocked padlock (most friction-free). The tier
-  // labels and long-form descriptions are taken verbatim from the old
-  // picker so users coming from that UI see the same wording.
+  // Runtime/access mode selector. The selected value is a composer draft until
+  // send; dispatchSend applies it to the thread immediately before starting the
+  // provider turn.
 
+  import ChevronDown from 'lucide-svelte/icons/chevron-down';
   import Lock from 'lucide-svelte/icons/lock';
   import LockOpen from 'lucide-svelte/icons/lock-open';
   import PenLine from 'lucide-svelte/icons/pen-line';
   import type { ThreadPane } from '../../../stores/thread.svelte';
-  import type { RuntimeMode, Thread } from '../../../types/models';
-  import { UpdateThreadRuntimeMode } from '../../../stores/bindings';
-  import { replaceThread } from '../../../stores/threads.svelte';
-  import { addToast } from '../../../stores/toast.svelte';
-  import { errString } from '../../../utils/errors';
+  import type { RuntimeMode } from '../../../types/models';
+  import {
+    hasRuntimeModeDraft,
+    runtimeModeForThread,
+    setRuntimeModeDraft,
+  } from '../../../stores/runtimeModeDraft.svelte';
   import Icon from '../../primitives/Icon.svelte';
+  import Popover from '../../primitives/Popover.svelte';
+  import Menu from '../../primitives/Menu.svelte';
+  import MenuItem from '../../primitives/MenuItem.svelte';
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   type IconComponent = any;
@@ -28,85 +28,75 @@
 
   let { pane }: Props = $props();
 
-  let applying = $state(false);
+  let triggerEl: HTMLButtonElement | undefined = $state(undefined);
+  let open = $state(false);
 
   interface TierMeta {
     mode: RuntimeMode;
     label: string;
     description: string;
+    icon: IconComponent;
   }
 
-  // Order = cycle order. Safest first, friction-free last.
   const TIERS: readonly TierMeta[] = [
     {
       mode: 'approval-required',
-      label: 'Approval',
-      description:
-        'Approval required — the agent asks before writing files or running commands.',
+      label: 'Supervised',
+      description: 'Ask before commands and file changes.',
+      icon: Lock,
     },
     {
       mode: 'auto-accept-edits',
-      label: 'Auto-edits',
-      description:
-        'Auto-accept edits — file edits in the workspace run without prompts; commands still ask.',
+      label: 'Auto-accept edits',
+      description: 'Auto-approve edits, ask before other actions.',
+      icon: PenLine,
     },
     {
       mode: 'full-access',
       label: 'Full access',
-      description: 'Full access — no prompts. The agent runs every tool unattended.',
+      description: 'Allow commands and edits without prompts.',
+      icon: LockOpen,
     },
   ];
 
-  // Pane thread may surface without a runtimeMode (pre-v12 fixture); we
-  // default to full-access because that's what the backend treats as the
-  // "no prompts" baseline.
-  let current = $derived<RuntimeMode>(
-    (pane.thread?.runtimeMode as RuntimeMode | undefined) ?? 'full-access',
-  );
+  let current = $derived<RuntimeMode>(runtimeModeForThread(pane.thread));
+  let staged = $derived(hasRuntimeModeDraft(pane.thread));
   let currentMeta = $derived(TIERS.find((t) => t.mode === current) ?? TIERS[2]);
 
-  function nextTier(mode: RuntimeMode): RuntimeMode {
-    const idx = TIERS.findIndex((t) => t.mode === mode);
-    const nextIdx = idx < 0 ? 0 : (idx + 1) % TIERS.length;
-    return TIERS[nextIdx].mode;
+  function closeMenu(): void {
+    open = false;
+    triggerEl?.focus();
   }
 
-  async function handleClick(): Promise<void> {
-    if (applying || !pane.thread) return;
-    const target = nextTier(current);
-    applying = true;
-    try {
-      const updated = (await UpdateThreadRuntimeMode(pane.thread.id, target)) as Thread;
-      pane.replaceThread(updated);
-      replaceThread(updated);
-    } catch (err) {
-      console.error('access.toggle: UpdateThreadRuntimeMode failed', err);
-      addToast('error', `Failed to change access mode: ${errString(err)}`);
-    } finally {
-      applying = false;
-    }
+  function handleTrigger(): void {
+    open = !open;
   }
 
-  // Lucide icons by tier: closed lock → pen-line (edits allowed) →
-  // open lock. The graphics are distinct enough at 13px that users can
-  // read state without the label, but the label is kept because
-  // "Approval" vs "Auto-edits" is hard to mnemonize from icons alone.
-  let icon = $derived.by<IconComponent>(() => {
-    switch (current) {
-      case 'approval-required': return Lock;
-      case 'auto-accept-edits': return PenLine;
-      case 'full-access':       return LockOpen;
+  function selectMode(mode: RuntimeMode): void {
+    if (!pane.thread) {
+      closeMenu();
+      return;
     }
-  });
+    if (mode === current) {
+      closeMenu();
+      return;
+    }
+    setRuntimeModeDraft(pane.thread.id, mode);
+    closeMenu();
+  }
 </script>
 
 <button
+  bind:this={triggerEl}
   type="button"
-  onclick={handleClick}
-  disabled={applying || !pane.thread}
+  onclick={handleTrigger}
+  disabled={!pane.thread}
+  aria-haspopup="menu"
+  aria-expanded={open}
+  aria-label="Runtime access mode"
   data-testid="composer-access-toggle"
   data-mode={current}
-  aria-label="Change runtime access mode"
+  data-staged={staged}
   title={currentMeta.description}
   class={[
     'inline-flex items-center gap-1.5 rounded-[var(--radius-field)]',
@@ -117,6 +107,30 @@
     'disabled:opacity-60 disabled:cursor-not-allowed',
   ].join(' ')}
 >
-  <Icon {icon} size={13} strokeWidth={1.75} class="opacity-80" />
+  <Icon icon={currentMeta.icon} size={13} strokeWidth={1.75} class="opacity-80" />
   <span>{currentMeta.label}</span>
+  <Icon icon={ChevronDown} size={12} strokeWidth={2} class="opacity-60" />
 </button>
+
+<Popover
+  anchor={triggerEl}
+  {open}
+  onClose={closeMenu}
+  placement="top-start"
+  role="none"
+>
+  <Menu ariaLabel="Runtime access mode" onClose={closeMenu}>
+    {#each TIERS as tier (tier.mode)}
+      <MenuItem
+        label={tier.label}
+        description={tier.description}
+        checked={tier.mode === current}
+        onSelect={() => selectMode(tier.mode)}
+      >
+        {#snippet icon()}
+          <Icon icon={tier.icon} size={14} strokeWidth={1.75} />
+        {/snippet}
+      </MenuItem>
+    {/each}
+  </Menu>
+</Popover>

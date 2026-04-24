@@ -225,13 +225,34 @@ func (a *App) spawnProviderSession(
 	}
 }
 
-// SendMessage is the Wails-bound entry point for user-typed content.
-// The real work lives in app_send.go.
+// SendMessageOptions carries send-time composer settings. AttachmentIDs is the
+// current attachment payload; RuntimeMode is an optional draft override applied
+// immediately before the provider turn starts.
+type SendMessageOptions struct {
+	AttachmentIDs []string `json:"attachmentIds"`
+	RuntimeMode   string   `json:"runtimeMode,omitempty"`
+}
+
+// SendMessage is the Wails-bound compatibility entry point for user-typed
+// content. The options-aware path below owns newer composer controls.
 func (a *App) SendMessage(threadID string, content string, attachmentIDs []string) error {
 	if a.shuttingDown.Load() {
 		return ErrShuttingDown
 	}
 	return a.sendMessage(threadID, content, attachmentIDs)
+}
+
+// SendMessageWithOptions applies send-time composer settings and dispatches the
+// user turn. RuntimeMode is staged in the composer and persisted here, under
+// the same per-thread send lock as provider session start/send.
+func (a *App) SendMessageWithOptions(threadID string, content string, opts SendMessageOptions) (store.Thread, error) {
+	if a.shuttingDown.Load() {
+		return store.Thread{}, ErrShuttingDown
+	}
+	if err := a.sendMessageWithOptions(threadID, content, sendMessageOptions(opts)); err != nil {
+		return store.Thread{}, err
+	}
+	return a.store.GetThread(threadID)
 }
 
 // InterruptTurn fires a provider-level interrupt on the thread's active

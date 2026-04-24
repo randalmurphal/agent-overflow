@@ -74,15 +74,29 @@ func (r *threadMutexRegistry) ForgetThread(threadID string) {
 	r.mu.Unlock()
 }
 
+type sendMessageOptions struct {
+	AttachmentIDs []string
+	RuntimeMode   string
+}
+
 func (a *App) sendMessage(threadID string, content string, attachmentIDs []string) error {
+	return a.sendMessageWithOptions(threadID, content, sendMessageOptions{AttachmentIDs: attachmentIDs})
+}
+
+func (a *App) sendMessageWithOptions(threadID string, content string, opts sendMessageOptions) error {
 	if a.shuttingDown.Load() {
 		return ErrShuttingDown
 	}
 	if a.sendMessageFn != nil {
-		return a.sendMessageFn(threadID, content, attachmentIDs)
+		return a.sendMessageFn(threadID, content, opts.AttachmentIDs)
 	}
 
-	providerAttachments, persistedAttachments, err := a.resolveSendMessageAttachments(threadID, attachmentIDs)
+	runtimeMode, hasRuntimeMode, err := parseOptionalRuntimeMode(opts.RuntimeMode)
+	if err != nil {
+		return fmt.Errorf("send message: %w", err)
+	}
+
+	providerAttachments, persistedAttachments, err := a.resolveSendMessageAttachments(threadID, opts.AttachmentIDs)
 	if err != nil {
 		return fmt.Errorf("send message: attachments: %w", err)
 	}
@@ -99,6 +113,12 @@ func (a *App) sendMessage(threadID string, content string, attachmentIDs []strin
 	// ordering.
 	unlock := sendThreadMuRegistry.lockFor(threadID)
 	defer unlock()
+
+	if hasRuntimeMode {
+		if err := a.applyRuntimeModeLocked(threadID, runtimeMode); err != nil {
+			return fmt.Errorf("send message: runtime mode: %w", err)
+		}
+	}
 
 	// A thread is session-less until the first message is sent — we don't
 	// spawn the provider subprocess at thread creation. Lazy-start here so
@@ -176,7 +196,7 @@ func (a *App) sendMessage(threadID string, content string, attachmentIDs []strin
 		return fmt.Errorf("send message: persist user message: %w", err)
 	}
 
-	if err := sendToProvider(sess, threadID, content, providerAttachments); err != nil {
+	if err := sendToProvider(sess, threadID, content, provider.NormalizeInteractionMode(thread.Mode), providerAttachments); err != nil {
 		// Allocate an error id from the same per-turn counter the
 		// EventError handler uses so a subsequent provider error on
 		// the same turn doesn't collide on "error:<turn>:0".
@@ -271,11 +291,20 @@ func marshalUserMessageMeta(attachments []store.Attachment) (string, error) {
 // sendToProvider forwards the user content to the active provider
 // session. Extracted so sendMessage keeps the provider routing and
 // logging in one place after persisting the optimistic user item.
-func sendToProvider(sess session, threadID, content string, attachments []provider.ImageAttachment) error {
+func sendToProvider(
+	sess session,
+	threadID string,
+	content string,
+	mode provider.InteractionMode,
+	attachments []provider.ImageAttachment,
+) error {
 	providerSess := sess.providerSession()
 	if providerSess == nil {
 		log.Printf("send message: session for thread %s has no provider", threadID)
 		return fmt.Errorf("session has no provider")
 	}
-	return providerSess.Send(context.Background(), content, attachments...)
+	return providerSess.Send(context.Background(), content, provider.SendOptions{
+		InteractionMode: mode,
+		Attachments:     attachments,
+	})
 }

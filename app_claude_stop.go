@@ -13,7 +13,7 @@ import (
 //
 // The spike saw sub-100ms round-trips on Claude CLI 2.1.112. Ten
 // seconds is a generous ceiling that still fails loudly; the per-
-// session stop_task timeout (DefaultStopTaskTimeout) is the same
+// session control-request timeout is the same
 // value, so the binding only adds a second layer against a wedged
 // session.mu acquisition in the claude package itself.
 const stopClaudeTaskTimeout = 10 * time.Second

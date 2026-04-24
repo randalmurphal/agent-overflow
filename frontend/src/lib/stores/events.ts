@@ -148,10 +148,9 @@ interface ModeChangedPayload {
 
 /**
  * Payload for thread:runtime_mode_changed — emitted whenever
- * SetThreadRuntimeMode persists a change. NeedsReconnect means the backend
- * is already restarting the active session; the frontend just refreshes
- * its cached thread row and surfaces a toast via the composer toolbar's
- * AccessToggle / the settings flow.
+ * SetThreadRuntimeMode persists a change. Runtime-mode changes restart
+ * active sessions synchronously, so needsReconnect is false on success and
+ * kept only for compatibility with the older event shape.
  */
 interface RuntimeModeChangedPayload {
   threadId: string;
@@ -591,10 +590,9 @@ export function setupEventListeners(): () => void {
   });
 
   // thread:runtime_mode_changed — backend persisted a new three-tier
-  // approval mode. Refresh the sidebar cache and active pane; the backend
-  // kicks off a session reconnect itself when needed, so the frontend just
-  // needs to keep its thread shape in sync (AccessToggle's own optimistic
-  // update already covered the pane that triggered the change).
+  // approval mode. Refresh the sidebar cache and active pane; AccessToggle
+  // only stages draft intent, so this event or SendMessageWithOptions'
+  // returned Thread is what makes persisted runtime state visible.
   const cancelRuntimeModeChanged = wailsEventOn<RuntimeModeChangedPayload>(
     'thread:runtime_mode_changed',
     (payload) => {

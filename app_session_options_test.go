@@ -37,8 +37,9 @@ func TestSessionOptionsFromThreadToClaudeConfigXHigh(t *testing.T) {
 	if cfg.Env["ANTHROPIC_BETAS"] == "" {
 		t.Errorf("1M context should set ANTHROPIC_BETAS; got env %v", cfg.Env)
 	}
-	if len(cfg.PermissionFlags) != 1 || cfg.PermissionFlags[0] != "--dangerously-skip-permissions" {
-		t.Errorf("PermissionFlags = %v, want [--dangerously-skip-permissions]", cfg.PermissionFlags)
+	wantFlags := []string{"--permission-mode", "bypassPermissions", "--allow-dangerously-skip-permissions"}
+	if strings.Join(cfg.PermissionFlags, " ") != strings.Join(wantFlags, " ") {
+		t.Errorf("PermissionFlags = %v, want %v", cfg.PermissionFlags, wantFlags)
 	}
 }
 
@@ -122,8 +123,8 @@ func TestSessionOptionsFastModeSwapsCodexGpt5(t *testing.T) {
 
 // TestClaudeConfigBuildsArgsWithDangerousSkipFromFullAccess — end-to-end
 // check: a full-access thread → SessionOptions → claude.Config → buildArgs
-// ultimately ships the --dangerously-skip-permissions flag on the CLI
-// command line.
+// ultimately ships the bypass-permissions mode plus the explicit skip flag on
+// the CLI command line.
 func TestClaudeConfigBuildsArgsWithDangerousSkipFromFullAccess(t *testing.T) {
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-fullaccess-args")
@@ -140,15 +141,18 @@ func TestClaudeConfigBuildsArgsWithDangerousSkipFromFullAccess(t *testing.T) {
 	opts := provider.SessionOptionsFromThread(stored, "", false)
 	cfg := claude.ConfigFromOptions(opts)
 
-	found := false
+	foundMode := false
+	foundSkip := false
 	for _, a := range claudeBuildArgsProxy(cfg) {
-		if a == "--dangerously-skip-permissions" {
-			found = true
-			break
+		if a == "bypassPermissions" {
+			foundMode = true
+		}
+		if a == "--allow-dangerously-skip-permissions" {
+			foundSkip = true
 		}
 	}
-	if !found {
-		t.Errorf("expected --dangerously-skip-permissions in args; cfg=%+v", cfg)
+	if !foundMode || !foundSkip {
+		t.Errorf("expected bypassPermissions and --allow-dangerously-skip-permissions in args; cfg=%+v", cfg)
 	}
 }
 

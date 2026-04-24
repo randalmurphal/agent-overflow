@@ -46,6 +46,8 @@ type Session struct {
 	activeTurnID       string // current active turn ID from turn/started; cleared on turn/completed
 	model              string // model name for cost calculation
 	reasoningEffort    string // per-turn reasoning effort override; empty means inherit thread default
+	approvalPolicy     string // per-turn approval override; empty means inherit thread default
+	sandbox            string // per-turn sandbox override; empty means inherit thread default
 	nextID             atomic.Int64
 	mu                 sync.Mutex
 	pending            map[int64]chan json.RawMessage
@@ -176,6 +178,8 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 		threadID:               threadID,
 		model:                  cfg.Model,
 		reasoningEffort:        cfg.ReasoningEffort,
+		approvalPolicy:         cfg.ApprovalPolicy,
+		sandbox:                cfg.Sandbox,
 		pending:                make(map[int64]chan json.RawMessage),
 		onEvent:                onEvent,
 		cancel:                 cancel,
@@ -258,7 +262,8 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 // produced two EventTurnStart per user send (Bug B6). We still record the
 // turn ID locally so Interrupt has something to cancel even if the
 // notification has not yet arrived.
-func (s *Session) Send(ctx context.Context, content string, attachments ...provider.ImageAttachment) error {
+func (s *Session) Send(ctx context.Context, content string, opts provider.SendOptions) error {
+	attachments := opts.Attachments
 	input := make([]map[string]any, 0, 1+len(attachments))
 	if strings.TrimSpace(content) != "" {
 		input = append(input, map[string]any{
@@ -289,6 +294,16 @@ func (s *Session) Send(ctx context.Context, content string, attachments ...provi
 	// "inherit the thread default set during thread/start".
 	if s.reasoningEffort != "" {
 		params["effort"] = s.reasoningEffort
+	}
+	if s.approvalPolicy != "" {
+		params["approvalPolicy"] = s.approvalPolicy
+	}
+	if s.sandbox != "" {
+		sandboxPolicy, err := turnSandboxPolicy(s.sandbox)
+		if err != nil {
+			return err
+		}
+		params["sandboxPolicy"] = sandboxPolicy
 	}
 
 	resp, err := s.sendRequest(ctx, "turn/start", params)

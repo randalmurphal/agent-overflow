@@ -147,7 +147,10 @@ func (b *capturedEventBus) nextApprovalEvent(t *testing.T, action string, d time
 	for {
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
-			t.Fatalf("timed out waiting for provider:approval action %q", action)
+			b.mu.Lock()
+			recent := append([]capturedEvent(nil), b.all...)
+			b.mu.Unlock()
+			t.Fatalf("timed out waiting for provider:approval action %q (captured: %s)", action, summarizeEvents(recent))
 			return provider.ApprovalEvent{}
 		}
 		select {
@@ -163,7 +166,10 @@ func (b *capturedEventBus) nextApprovalEvent(t *testing.T, action string, d time
 				return evt
 			}
 		case <-time.After(remaining):
-			t.Fatalf("timed out waiting for provider:approval action %q", action)
+			b.mu.Lock()
+			recent := append([]capturedEvent(nil), b.all...)
+			b.mu.Unlock()
+			t.Fatalf("timed out waiting for provider:approval action %q (captured: %s)", action, summarizeEvents(recent))
 			return provider.ApprovalEvent{}
 		}
 	}
@@ -438,6 +444,16 @@ func TestE2E_MultiTurnClaude(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
+	if _, err := app.UpdateThreadRuntimeMode(thread.ID, string(provider.RuntimeApprovalRequired)); err != nil {
+		t.Fatalf("UpdateThreadRuntimeMode: %v", err)
+	}
+	storedThread, err := app.store.GetThread(thread.ID)
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+	if storedThread.RuntimeMode != string(provider.RuntimeApprovalRequired) {
+		t.Fatalf("runtime mode = %q, want approval-required", storedThread.RuntimeMode)
+	}
 
 	responses := [][]string{
 		{
@@ -511,6 +527,9 @@ func TestE2E_InterruptMidTurn(t *testing.T) {
 	thread, err := createTestThread(t, app, string(provider.Claude), workspace, "claude-opus-4-7", "chat")
 	if err != nil {
 		t.Fatalf("CreateThread: %v", err)
+	}
+	if _, err := app.UpdateThreadRuntimeMode(thread.ID, string(provider.RuntimeApprovalRequired)); err != nil {
+		t.Fatalf("UpdateThreadRuntimeMode: %v", err)
 	}
 
 	responses := [][]string{
@@ -994,6 +1013,9 @@ func TestE2E_ClaudeApprovalRoundTrip(t *testing.T) {
 	thread, err := createTestThread(t, app, string(provider.Claude), workspace, "claude-opus-4-7", "chat")
 	if err != nil {
 		t.Fatalf("CreateThread: %v", err)
+	}
+	if _, err := app.UpdateThreadRuntimeMode(thread.ID, string(provider.RuntimeApprovalRequired)); err != nil {
+		t.Fatalf("UpdateThreadRuntimeMode: %v", err)
 	}
 
 	responses := [][]string{

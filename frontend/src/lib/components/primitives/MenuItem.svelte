@@ -14,6 +14,7 @@
 
   interface Props {
     label: string;
+    description?: string;
     icon?: Snippet;
     kbd?: string;
     checked?: boolean;
@@ -24,6 +25,7 @@
 
   let {
     label,
+    description,
     icon,
     kbd,
     checked = false,
@@ -94,7 +96,12 @@
       {@render icon()}
     </span>
   {/if}
-  <span class="flex-1 truncate">{label}</span>
+  <span class="min-w-0 flex-1">
+    <span class="block truncate">{label}</span>
+    {#if description}
+      <span class="block truncate text-[11px] leading-4 text-fg-hint">{description}</span>
+    {/if}
+  </span>
   {#if checked}
     <span class="text-accent/80" aria-hidden="true">&#10003;</span>
   {/if}

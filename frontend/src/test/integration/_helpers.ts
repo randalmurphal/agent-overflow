@@ -23,6 +23,7 @@ import type { GitStatus } from '../../lib/types/git';
 import { resetProjectsForTest } from '../../lib/stores/projects.svelte';
 import { resetSidebarForTest, expandProject } from '../../lib/stores/sidebar.svelte';
 import { getAllDrafts, resetForTest as resetDraftThreadsForTest } from '../../lib/stores/draftThreads.svelte';
+import { resetRuntimeModeDraftsForTest } from '../../lib/stores/runtimeModeDraft.svelte';
 import { getThreads } from '../../lib/stores/threads.svelte';
 
 // Drain microtasks + Svelte reactions so $effects and async mounts settle.
@@ -50,6 +51,7 @@ export function resetAppState(): void {
   // by test B's "New Thread" click and the backend mock for the
   // second test never fires.
   resetDraftThreadsForTest();
+  resetRuntimeModeDraftsForTest();
 }
 
 // Every binding that App (or anything App mounts during bootstrap) calls on

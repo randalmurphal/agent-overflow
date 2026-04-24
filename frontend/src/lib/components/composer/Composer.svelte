@@ -119,6 +119,7 @@
     sending = true;
 
     const threadId = pane.threadId;
+    const thread = pane.thread;
     // Capture the pre-send draft contents bound to THIS thread. If the user
     // switches threads before SendMessage resolves and the send rejects, we
     // must not bleed the snapshot into the new pane's local composer.
@@ -138,7 +139,12 @@
         message,
         attachmentIds: snapshot.attachments.map((attachment) => attachment.id),
         snapshot,
-        currentThread: pane.thread,
+        currentThread: thread,
+        replaceCurrentThread: (updated) => {
+          if (pane.threadId === updated.id) {
+            pane.replaceThread(updated);
+          }
+        },
         restoreDraft: (tid, snap) => draft.restoreDraftFor(tid, snap),
         draftThreadId: () => draft.threadId,
         reportError: (msg) => pane.setGeneralError(msg),

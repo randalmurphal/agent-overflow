@@ -4,9 +4,14 @@ import { tick } from 'svelte';
 import Composer from './Composer.svelte';
 import { createComposerDraftStore } from '../../stores/composerDraft.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
-import { buildPane } from '../../../test/helpers/chat';
+import { buildPane, makeThread as makeTestThread } from '../../../test/helpers/chat';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import type { Attachment } from '../../types/attachment';
+import {
+  hasRuntimeModeDraft,
+  resetRuntimeModeDraftsForTest,
+  setRuntimeModeDraft,
+} from '../../stores/runtimeModeDraft.svelte';
 
 function installDraftMocks() {
   setBindingMock('GetDraft', async (threadId: string) => ({
@@ -64,8 +69,9 @@ function makeClipboardPaste(files: File[]): ClipboardEvent {
 describe('<Composer>', () => {
   beforeEach(() => {
     resetBindingMocks();
+    resetRuntimeModeDraftsForTest();
     installDraftMocks();
-    setBindingMock('SendMessage', async () => {});
+    setBindingMock('SendMessageWithOptions', async () => makeTestThread({ runtimeMode: 'full-access' }));
     setBindingMock('InterruptTurn', async () => {});
     setBindingMock('DeleteAttachment', async () => {});
     setBindingMock('UploadAttachment', async (
@@ -88,7 +94,8 @@ describe('<Composer>', () => {
   it('sends the draft and clears it on success', async () => {
     const pane = await buildPane();
     const draft = await buildDraft();
-    const send = setBindingMock('SendMessage', async () => {});
+    const send = setBindingMock('SendMessageWithOptions', async () =>
+      makeTestThread({ runtimeMode: 'full-access' }));
 
     const { getByLabelText, getByTestId } = render(Composer, { props: { pane, draft } });
     const textarea = getByLabelText('Message input') as HTMLTextAreaElement;
@@ -96,24 +103,93 @@ describe('<Composer>', () => {
     await fireEvent.input(textarea, { target: { value: 'hello world' } });
     await fireEvent.click(getByTestId('composer-send'));
 
-    expect(send).toHaveBeenCalledWith('thread-1', 'hello world', []);
+    expect(send).toHaveBeenCalledWith('thread-1', 'hello world', {
+      attachmentIds: [],
+    });
     expect(draft.content).toBe('');
+  });
+
+  it('sends a staged runtime mode and clears the staged value on success', async () => {
+    const pane = await buildPane(makeTestThread({ runtimeMode: 'approval-required' }));
+    const draft = await buildDraft();
+    setRuntimeModeDraft('thread-1', 'auto-accept-edits');
+    const send = setBindingMock('SendMessageWithOptions', async () =>
+      makeTestThread({ runtimeMode: 'auto-accept-edits' }));
+
+    const { getByLabelText, getByTestId } = render(Composer, { props: { pane, draft } });
+    await fireEvent.input(getByLabelText('Message input'), { target: { value: 'use this access' } });
+    await fireEvent.click(getByTestId('composer-send'));
+
+    expect(send).toHaveBeenCalledWith('thread-1', 'use this access', {
+      attachmentIds: [],
+      runtimeMode: 'auto-accept-edits',
+    });
+    expect(hasRuntimeModeDraft(pane.thread)).toBe(false);
+  });
+
+  it('does not synthesize a runtime override from a missing thread value', async () => {
+    const pane = await buildPane(makeTestThread({ runtimeMode: undefined }));
+    const draft = await buildDraft();
+    const send = setBindingMock('SendMessageWithOptions', async () =>
+      makeTestThread({ runtimeMode: 'approval-required' }));
+
+    const { getByLabelText, getByTestId } = render(Composer, { props: { pane, draft } });
+    await fireEvent.input(getByLabelText('Message input'), { target: { value: 'use persisted mode' } });
+    await fireEvent.click(getByTestId('composer-send'));
+
+    expect(send).toHaveBeenCalledWith('thread-1', 'use persisted mode', {
+      attachmentIds: [],
+    });
+  });
+
+  it('keeps the send bound to the original thread if the pane switches while clearing the draft', async () => {
+    const threadOne = makeTestThread({ id: 'thread-1', runtimeMode: 'approval-required' });
+    const threadTwo = makeTestThread({ id: 'thread-2', runtimeMode: 'full-access' });
+    const pane = await buildPane(threadOne);
+    const draft = await buildDraft('thread-1');
+    setRuntimeModeDraft('thread-1', 'auto-accept-edits');
+
+    let releaseClear!: () => void;
+    const clearStarted = vi.fn();
+    setBindingMock('ClearDraft', async () => {
+      clearStarted();
+      await new Promise<void>((resolve) => {
+        releaseClear = resolve;
+      });
+    });
+    const send = setBindingMock('SendMessageWithOptions', async () =>
+      makeTestThread({ id: 'thread-1', runtimeMode: 'auto-accept-edits' }));
+
+    const { getByLabelText, getByTestId } = render(Composer, { props: { pane, draft } });
+    await fireEvent.input(getByLabelText('Message input'), { target: { value: 'race send' } });
+    void fireEvent.click(getByTestId('composer-send'));
+    await waitFor(() => expect(clearStarted).toHaveBeenCalled());
+
+    await pane.switchThread(threadTwo);
+    releaseClear();
+
+    await waitFor(() => {
+      expect(send).toHaveBeenCalledWith('thread-1', 'race send', {
+        attachmentIds: [],
+        runtimeMode: 'auto-accept-edits',
+      });
+    });
+    expect(pane.thread?.id).toBe('thread-2');
   });
 
   it('sends image-only drafts with a visible image placeholder and attachment ids', async () => {
     const pane = await buildPane();
     const draft = await buildDraft();
     draft.setContentAndAttachments('[Image #1]', [makeAttachment('att-1', 'hero.png')]);
-    const send = setBindingMock('SendMessage', async () => {});
+    const send = setBindingMock('SendMessageWithOptions', async () =>
+      makeTestThread({ runtimeMode: 'full-access' }));
 
     const { getByTestId } = render(Composer, { props: { pane, draft } });
     await fireEvent.click(getByTestId('composer-send'));
 
-    expect(send).toHaveBeenCalledWith(
-      'thread-1',
-      '[Image #1]',
-      ['att-1'],
-    );
+    expect(send).toHaveBeenCalledWith('thread-1', '[Image #1]', {
+      attachmentIds: ['att-1'],
+    });
   });
 
   it('pasting images inserts image placeholders at the cursor and sends ordered attachment ids', async () => {
@@ -129,7 +205,8 @@ describe('<Composer>', () => {
       threadId,
       mimeType,
     }));
-    const send = setBindingMock('SendMessage', async () => {});
+    const send = setBindingMock('SendMessageWithOptions', async () =>
+      makeTestThread({ runtimeMode: 'full-access' }));
 
     const { getByLabelText, getByTestId } = render(Composer, { props: { pane, draft } });
     const textarea = getByLabelText('Message input') as HTMLTextAreaElement;
@@ -146,11 +223,9 @@ describe('<Composer>', () => {
     expect(draft.attachments.map((attachment) => attachment.id)).toEqual(['att-1', 'att-2']);
 
     await fireEvent.click(getByTestId('composer-send'));
-    expect(send).toHaveBeenCalledWith(
-      'thread-1',
-      'please inspect [Image #1] [Image #2]',
-      ['att-1', 'att-2'],
-    );
+    expect(send).toHaveBeenCalledWith('thread-1', 'please inspect [Image #1] [Image #2]', {
+      attachmentIds: ['att-1', 'att-2'],
+    });
   });
 
   it('backspace after an image placeholder removes the whole placeholder and attachment', async () => {
@@ -263,7 +338,8 @@ describe('<Composer>', () => {
     // derivation.
     pane.setActiveTurn({ turnId: 't1', turnIndex: 0, startedAt: 0 });
     const draft = await buildDraft();
-    const send = setBindingMock('SendMessage', async () => {});
+    const send = setBindingMock('SendMessageWithOptions', async () =>
+      makeTestThread({ runtimeMode: 'full-access' }));
 
     const { getByLabelText } = render(Composer, { props: { pane, draft } });
     const textarea = getByLabelText('Message input') as HTMLTextAreaElement;
@@ -309,7 +385,7 @@ describe('<Composer>', () => {
   it('restores the draft and surfaces an error when send fails', async () => {
     const pane = await buildPane();
     const draft = await buildDraft();
-    setBindingMock('SendMessage', async () => {
+    setBindingMock('SendMessageWithOptions', async () => {
       throw new Error('rpc down');
     });
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});

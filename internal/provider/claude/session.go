@@ -26,16 +26,27 @@ import (
 var controlRequestPrefix = []byte(`{"type":"control_request"`)
 
 // controlResponsePrefix matches the CLI's reply to our outbound
-// control_requests (today only stop_task; more to come). Prefix-gating
+// control_requests (stop_task, set_permission_mode). Prefix-gating
 // it the same way as controlRequestPrefix keeps streaming deltas off
 // the secondary json.Unmarshal path.
 var controlResponsePrefix = []byte(`{"type":"control_response"`)
 
-// DefaultStopTaskTimeout bounds how long StopTask waits for the CLI's
-// control_response before returning a timeout error. The verified spike
-// observed sub-100ms round-trips on Claude CLI 2.1.112; ten seconds is
-// a generous ceiling that still fails loudly if the CLI is wedged.
-const DefaultStopTaskTimeout = 10 * time.Second
+type controlRequestEnvelope struct {
+	Type      string `json:"type"`
+	RequestID string `json:"request_id"`
+	Request   struct {
+		Subtype  string          `json:"subtype"`
+		ToolName string          `json:"tool_name"`
+		Input    json.RawMessage `json:"input"`
+	} `json:"request"`
+}
+
+// DefaultControlRequestTimeout bounds how long outbound Claude control
+// requests wait for the CLI's control_response before returning a timeout
+// error. The verified stop_task spike observed sub-100ms round-trips on
+// Claude CLI 2.1.112; ten seconds is a generous ceiling that still fails
+// loudly if the CLI is wedged.
+const DefaultControlRequestTimeout = 10 * time.Second
 
 // DefaultIdleTimeout is how long the watchdog waits for ANY stdout line
 // after a Send before declaring the provider wedged. Claude streaming
@@ -64,6 +75,13 @@ type Session struct {
 	cancel    context.CancelFunc
 	closing   atomic.Bool
 	readDone  chan struct{}
+	// basePermissionMode is the runtime/access mode restored after a plan
+	// turn. currentPermissionMode mirrors the last successful
+	// set_permission_mode request so we avoid redundant control round-trips.
+	permissionModeMu      sync.RWMutex
+	basePermissionMode    string
+	currentPermissionMode string
+	interactionMode       provider.InteractionMode
 	// parser holds per-session NDJSON parse state so tool_use / tool_result
 	// pairs can share metadata (e.g. the `is_background` flag) across the
 	// two messages that carry them.
@@ -108,33 +126,31 @@ type Session struct {
 	// approvalsClosed is set when Close has disarmed all pending timers
 	// so late-arriving approvals do not schedule new ones.
 	approvalsClosed bool
-	// stopTaskTimeout overrides DefaultStopTaskTimeout when non-zero.
+	// controlRequestTimeout overrides DefaultControlRequestTimeout when non-zero.
 	// Tests set this to a short window so a non-responsive fake CLI
 	// doesn't stall the suite. Production leaves it zero.
-	stopTaskTimeout time.Duration
-	// stopTaskMu guards pendingStopTasks and stopTaskSeq.
-	stopTaskMu sync.Mutex
-	// pendingStopTasks maps the request_id we send on an outbound
-	// stop_task control_request to the channel the read loop delivers
-	// the matching control_response on. Entry is created under the mu
-	// by StopTask before the write, drained by the control_response
-	// dispatch in readLoop (or by StopTask itself on timeout /
-	// cancellation).
-	pendingStopTasks map[string]chan *stopTaskResult
-	// stopTaskSeq is a per-session counter so two concurrent StopTask
-	// calls never collide on request_id. The session pointer is mixed
+	controlRequestTimeout time.Duration
+	// controlRequestMu guards pendingControlRequests and controlRequestSeq.
+	controlRequestMu sync.Mutex
+	// pendingControlRequests maps an outbound control_request id to the
+	// channel the read loop delivers the matching control_response on.
+	// Entry is created before the write, then drained by readLoop or by the
+	// caller on timeout / cancellation.
+	pendingControlRequests map[string]chan *controlResponseResult
+	// controlRequestSeq is a per-session counter so concurrent outbound
+	// control_requests never collide on request_id. The session pointer is mixed
 	// in (by map lifetime — a second session allocates a fresh map)
 	// so request_ids don't need to be globally unique, only unique
 	// within a single CLI subprocess.
-	stopTaskSeq uint64
+	controlRequestSeq uint64
 }
 
-// stopTaskResult carries the outcome of a stop_task round-trip from the
-// read loop back to the awaiting StopTask caller. Exactly one of errMsg
-// or ok is set: ok=true on subtype=success, errMsg populated on
-// subtype=error. A nil pointer means the session closed before the
-// response arrived.
-type stopTaskResult struct {
+// controlResponseResult carries the outcome of an outbound control_request
+// round-trip from the read loop back to the waiting caller. Exactly one of
+// errMsg or ok is set: ok=true on subtype=success, errMsg populated on
+// subtype=error. A nil pointer means the session closed before the response
+// arrived.
+type controlResponseResult struct {
 	ok     bool
 	errMsg string
 }
@@ -157,12 +173,12 @@ type Config struct {
 	ForkSession  bool
 	SystemPrompt string
 	AllowedTools []string
-	// PermissionFlags carries the full `--permission-mode <value>` or
-	// `--dangerously-skip-permissions` sequence emitted by
-	// provider.ClaudePermissionFlags. Nil / empty means "don't pass any
-	// permission-related flag".
-	PermissionFlags []string
-	MaxTurns        int
+	// PermissionFlags carries the full permission flag sequence. Nil / empty
+	// means "don't pass any permission-related flag".
+	PermissionFlags    []string
+	BasePermissionMode string
+	InteractionMode    provider.InteractionMode
+	MaxTurns           int
 	// Env carries per-session environment variables appended on top of the
 	// caller's process env (e.g. ANTHROPIC_BETAS for the 1M-context beta).
 	// The provider.SpawnConfig.Env hook already reads this shape; we just
@@ -198,13 +214,16 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 	}
 
 	s := &Session{
-		proc:     proc,
-		threadID: threadID,
-		model:    cfg.Model,
-		onEvent:  onEvent,
-		cancel:   cancel,
-		readDone: make(chan struct{}),
-		parser:   NewParser(),
+		proc:                  proc,
+		threadID:              threadID,
+		model:                 cfg.Model,
+		onEvent:               onEvent,
+		cancel:                cancel,
+		readDone:              make(chan struct{}),
+		parser:                NewParser(),
+		basePermissionMode:    normalizeClaudePermissionMode(cfg.BasePermissionMode),
+		currentPermissionMode: normalizeClaudePermissionMode(cfg.BasePermissionMode),
+		interactionMode:       cfg.InteractionMode,
 	}
 	// Seed the parser with the configured model so early assistant usage
 	// events can be priced even if the init envelope lands late. The
@@ -245,9 +264,8 @@ func buildArgs(cfg Config) []string {
 	if cfg.SystemPrompt != "" {
 		args = append(args, "--system-prompt", cfg.SystemPrompt)
 	}
-	// PermissionFlags is either nil (default CLI prompting), a two-element
-	// slice for `--permission-mode <value>`, or a single-element slice for
-	// boolean-style flags like `--dangerously-skip-permissions`.
+	// PermissionFlags is either nil (default CLI prompting) or a complete
+	// permission-related CLI flag sequence for the selected runtime mode.
 	args = append(args, cfg.PermissionFlags...)
 	if cfg.MaxTurns > 0 {
 		args = append(args, "--max-turns", strconv.Itoa(cfg.MaxTurns))
@@ -259,11 +277,105 @@ func buildArgs(cfg Config) []string {
 	return args
 }
 
+func normalizeClaudePermissionMode(mode string) string {
+	switch mode {
+	case "acceptEdits", "bypassPermissions", "plan":
+		return mode
+	default:
+		return "default"
+	}
+}
+
+func (s *Session) desiredPermissionModeForTurn(mode provider.InteractionMode) string {
+	if provider.NormalizeInteractionMode(string(mode)) == provider.ModePlan {
+		return "plan"
+	}
+	return s.basePermissionMode
+}
+
+func (s *Session) getCurrentPermissionMode() string {
+	s.permissionModeMu.RLock()
+	defer s.permissionModeMu.RUnlock()
+	return normalizeClaudePermissionMode(s.currentPermissionMode)
+}
+
+func (s *Session) setCurrentPermissionMode(mode string) {
+	s.permissionModeMu.Lock()
+	s.currentPermissionMode = normalizeClaudePermissionMode(mode)
+	s.permissionModeMu.Unlock()
+}
+
+func (s *Session) setPermissionMode(ctx context.Context, mode string) error {
+	mode = normalizeClaudePermissionMode(mode)
+	if mode == s.getCurrentPermissionMode() {
+		return nil
+	}
+	requestID := s.allocateControlRequestID()
+	ch := make(chan *controlResponseResult, 1)
+	if !s.registerControlRequest(requestID, ch) {
+		return fmt.Errorf("claude: set permission mode: session closing")
+	}
+
+	msg := map[string]any{
+		"type":       "control_request",
+		"request_id": requestID,
+		"request": map[string]any{
+			"subtype": "set_permission_mode",
+			"mode":    mode,
+		},
+	}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		s.releaseControlRequest(requestID)
+		return fmt.Errorf("claude: marshal set_permission_mode: %w", err)
+	}
+	if err := s.proc.WriteLine(data); err != nil {
+		s.releaseControlRequest(requestID)
+		return fmt.Errorf("claude: write set_permission_mode: %w", err)
+	}
+
+	timeout := s.controlRequestTimeout
+	if timeout <= 0 {
+		timeout = DefaultControlRequestTimeout
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		s.releaseControlRequest(requestID)
+		return fmt.Errorf("claude: set permission mode %s: %w", mode, ctx.Err())
+	case <-timer.C:
+		s.releaseControlRequest(requestID)
+		return fmt.Errorf("claude: set permission mode %s: timeout after %s", mode, timeout)
+	case res, ok := <-ch:
+		if !ok || res == nil {
+			return fmt.Errorf("claude: set permission mode %s: session closed before response", mode)
+		}
+		if res.ok {
+			s.setCurrentPermissionMode(mode)
+			return nil
+		}
+		if res.errMsg == "" {
+			return fmt.Errorf("claude: set permission mode %s: provider returned unspecified error", mode)
+		}
+		return fmt.Errorf("claude: set permission mode %s: %s", mode, res.errMsg)
+	}
+}
+
 // Send sends a user message. The message is written as a JSON object to stdin.
 // Send also arms the idle watchdog: if no stdout line arrives within the
 // configured idle window, the watchdog closes the session and emits a
 // timeout error so the UI is never left waiting on a wedged subprocess.
-func (s *Session) Send(ctx context.Context, content string, attachments ...provider.ImageAttachment) error {
+func (s *Session) Send(ctx context.Context, content string, opts provider.SendOptions) error {
+	interactionMode := opts.InteractionMode
+	if interactionMode == "" {
+		interactionMode = s.interactionMode
+	}
+	if err := s.setPermissionMode(ctx, s.desiredPermissionModeForTurn(interactionMode)); err != nil {
+		return err
+	}
+	attachments := opts.Attachments
+
 	message := map[string]any{
 		"role": "user",
 	}
@@ -432,7 +544,7 @@ func (s *Session) Interrupt(ctx context.Context) error {
 // `subtype:"error"` with a human-readable message that StopTask wraps
 // into the returned error.
 //
-// Returns a timeout error after stopTaskTimeout (or ctx.Done) if the
+// Returns a timeout error after controlRequestTimeout (or ctx.Done) if the
 // CLI never answers.
 func (s *Session) StopTask(ctx context.Context, taskID string) error {
 	taskID = strings.TrimSpace(taskID)
@@ -440,9 +552,9 @@ func (s *Session) StopTask(ctx context.Context, taskID string) error {
 		return fmt.Errorf("claude: stop_task: empty task_id")
 	}
 
-	requestID := s.allocateStopTaskRequestID()
-	ch := make(chan *stopTaskResult, 1)
-	if !s.registerStopTask(requestID, ch) {
+	requestID := s.allocateControlRequestID()
+	ch := make(chan *controlResponseResult, 1)
+	if !s.registerControlRequest(requestID, ch) {
 		return fmt.Errorf("claude: stop_task: session closing")
 	}
 
@@ -456,26 +568,28 @@ func (s *Session) StopTask(ctx context.Context, taskID string) error {
 	}
 	data, err := json.Marshal(msg)
 	if err != nil {
-		s.releaseStopTask(requestID)
+		s.releaseControlRequest(requestID)
 		return fmt.Errorf("claude: marshal stop_task: %w", err)
 	}
 
 	if err := s.proc.WriteLine(data); err != nil {
-		s.releaseStopTask(requestID)
+		s.releaseControlRequest(requestID)
 		return fmt.Errorf("claude: write stop_task: %w", err)
 	}
 
-	timeout := s.stopTaskTimeout
+	timeout := s.controlRequestTimeout
 	if timeout <= 0 {
-		timeout = DefaultStopTaskTimeout
+		timeout = DefaultControlRequestTimeout
 	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
 
 	select {
 	case <-ctx.Done():
-		s.releaseStopTask(requestID)
+		s.releaseControlRequest(requestID)
 		return fmt.Errorf("claude: stop_task %s: %w", taskID, ctx.Err())
-	case <-time.After(timeout):
-		s.releaseStopTask(requestID)
+	case <-timer.C:
+		s.releaseControlRequest(requestID)
 		return fmt.Errorf("claude: stop_task %s: timeout after %s", taskID, timeout)
 	case res, ok := <-ch:
 		if !ok || res == nil {
@@ -491,53 +605,52 @@ func (s *Session) StopTask(ctx context.Context, taskID string) error {
 	}
 }
 
-// allocateStopTaskRequestID generates a request_id unique within the
+// allocateControlRequestID generates a request_id unique within the
 // session. Format is a short "so-<n>" prefix so logs and wire samples
-// make it clear the id originated here (forge's stop-task tooling
-// uses the same convention).
-func (s *Session) allocateStopTaskRequestID() string {
-	s.stopTaskMu.Lock()
-	s.stopTaskSeq++
-	seq := s.stopTaskSeq
-	s.stopTaskMu.Unlock()
+// make it clear the id originated here.
+func (s *Session) allocateControlRequestID() string {
+	s.controlRequestMu.Lock()
+	s.controlRequestSeq++
+	seq := s.controlRequestSeq
+	s.controlRequestMu.Unlock()
 	return fmt.Sprintf("so-%d", seq)
 }
 
-// registerStopTask stores the pending channel under the request_id.
+// registerControlRequest stores the pending channel under the request_id.
 // Returns false when Close has run (the closing flag flipped and the
-// pending map has been drained) so late StopTask callers fail fast
+// pending map has been drained) so late control callers fail fast
 // instead of parking on a channel nobody will deliver to.
 //
-// The closing check happens UNDER stopTaskMu so the clearPendingStopTasks
-// / registerStopTask pair serialises correctly: if Close wins the
-// lock first, the registration fails; if a concurrent StopTask wins
-// it first, the entry is visible to the subsequent clearPendingStopTasks
+// The closing check happens UNDER controlRequestMu so the clearPendingControlRequests
+// / registerControlRequest pair serialises correctly: if Close wins the
+// lock first, the registration fails; if a concurrent control request wins
+// it first, the entry is visible to the subsequent clearPendingControlRequests
 // drain. Without this ordering, a late registration could leak a
 // pending entry past Close.
-func (s *Session) registerStopTask(requestID string, ch chan *stopTaskResult) bool {
-	s.stopTaskMu.Lock()
-	defer s.stopTaskMu.Unlock()
+func (s *Session) registerControlRequest(requestID string, ch chan *controlResponseResult) bool {
+	s.controlRequestMu.Lock()
+	defer s.controlRequestMu.Unlock()
 	if s.closing.Load() {
 		return false
 	}
-	if s.pendingStopTasks == nil {
-		s.pendingStopTasks = make(map[string]chan *stopTaskResult)
+	if s.pendingControlRequests == nil {
+		s.pendingControlRequests = make(map[string]chan *controlResponseResult)
 	}
-	s.pendingStopTasks[requestID] = ch
+	s.pendingControlRequests[requestID] = ch
 	return true
 }
 
-// releaseStopTask removes the pending entry and drains the channel so
+// releaseControlRequest removes the pending entry and drains the channel so
 // a late read-loop delivery lands in a discarded buffer. Called from
 // timeout / cancel / error branches so the map never leaks entries and
 // the single-slot channel never blocks a reader that already gave up.
-func (s *Session) releaseStopTask(requestID string) {
-	s.stopTaskMu.Lock()
-	ch, ok := s.pendingStopTasks[requestID]
+func (s *Session) releaseControlRequest(requestID string) {
+	s.controlRequestMu.Lock()
+	ch, ok := s.pendingControlRequests[requestID]
 	if ok {
-		delete(s.pendingStopTasks, requestID)
+		delete(s.pendingControlRequests, requestID)
 	}
-	s.stopTaskMu.Unlock()
+	s.controlRequestMu.Unlock()
 	if !ok {
 		return
 	}
@@ -547,17 +660,17 @@ func (s *Session) releaseStopTask(requestID string) {
 	}
 }
 
-// deliverStopTaskResponse is the read-loop-side half: it matches an
-// inbound control_response to a pending StopTask and delivers the
+// deliverControlResponse is the read-loop-side half: it matches an
+// inbound control_response to a pending outbound control_request and delivers the
 // result. Unknown request_ids are returned as (false) so the caller
 // can log once and drop.
-func (s *Session) deliverStopTaskResponse(requestID string, res *stopTaskResult) bool {
-	s.stopTaskMu.Lock()
-	ch, ok := s.pendingStopTasks[requestID]
+func (s *Session) deliverControlResponse(requestID string, res *controlResponseResult) bool {
+	s.controlRequestMu.Lock()
+	ch, ok := s.pendingControlRequests[requestID]
 	if ok {
-		delete(s.pendingStopTasks, requestID)
+		delete(s.pendingControlRequests, requestID)
 	}
-	s.stopTaskMu.Unlock()
+	s.controlRequestMu.Unlock()
 	if !ok {
 		return false
 	}
@@ -569,15 +682,15 @@ func (s *Session) deliverStopTaskResponse(requestID string, res *stopTaskResult)
 	return true
 }
 
-// clearPendingStopTasks closes every outstanding stop_task waiter so
-// Close doesn't strand a StopTask caller. Mirrors clearPendingApprovals.
-func (s *Session) clearPendingStopTasks() {
-	s.stopTaskMu.Lock()
-	pending := s.pendingStopTasks
-	s.pendingStopTasks = nil
-	s.stopTaskMu.Unlock()
+// clearPendingControlRequests closes every outstanding control-request waiter so
+// Close doesn't strand a caller. Mirrors clearPendingApprovals.
+func (s *Session) clearPendingControlRequests() {
+	s.controlRequestMu.Lock()
+	pending := s.pendingControlRequests
+	s.pendingControlRequests = nil
+	s.controlRequestMu.Unlock()
 	for _, ch := range pending {
-		// A nil send signals "session closing" — StopTask returns a
+		// A nil send signals "session closing" — the caller returns a
 		// clean error rather than hanging forever waiting on a
 		// control_response the dead subprocess will never emit.
 		select {
@@ -833,7 +946,7 @@ func (s *Session) Close() error {
 	s.closing.Store(true)
 	s.disarmIdleWatchdog()
 	s.clearPendingApprovals()
-	s.clearPendingStopTasks()
+	s.clearPendingControlRequests()
 	err := s.proc.Close()
 	s.cancel()
 	if s.readDone != nil {
@@ -864,14 +977,14 @@ func (s *Session) readLoop() {
 		// generic close-error event.
 		s.disarmIdleWatchdog()
 
-		// Release any StopTask callers still parked on a pending
+		// Release any control_request callers still parked on a pending
 		// control_response. If the subprocess died on its own (io.EOF,
 		// crash, watchdog kill) Close won't be the path that drains
 		// the map, so the caller would otherwise sit idle until its
 		// own timeout fires. Signalling here surfaces "session closed
 		// before response" within a handful of milliseconds of the
 		// subprocess exit.
-		s.clearPendingStopTasks()
+		s.clearPendingControlRequests()
 
 		if !s.closing.Load() && !s.watchdogFired.Load() {
 			exitErr := provider.WaitProcessExitErr(s.proc)
@@ -912,47 +1025,41 @@ func (s *Session) readLoop() {
 		// Any output keeps the watchdog happy — even lines we drop below.
 		s.pulseIdleWatchdog()
 
-		// Gate the ExitPlanMode pre-parse on a byte-prefix check so
-		// every streaming text_delta line doesn't pay a second
+		// Gate control_request pre-handling on a byte-prefix check so
+		// every streaming text_delta line doesn't pay an extra
 		// json.Unmarshal. ParseLine below still handles the line if
 		// the gate skips this branch.
 		if bytes.HasPrefix(line, controlRequestPrefix) {
-			handled, err := s.maybeHandleExitPlanModeRequest(line)
-			if err != nil {
-				if handled {
-					// Bug B7: we identified an ExitPlanMode request but
-					// failed to write the synthetic deny response.
-					// Leaving Claude hanging for a reply it will never
-					// get is worse than exiting — surface the failure
-					// and tear the subprocess down.
-					meta, _ := json.Marshal(map[string]any{"fatal": true})
-					s.onEvent(provider.ProviderEvent{
-						Kind:      provider.EventError,
-						ThreadID:  s.threadID,
-						Content:   fmt.Sprintf("claude: exit plan mode response failed: %v", err),
-						Meta:      meta,
-						Timestamp: time.Now(),
-					})
-					_ = s.proc.Close()
-					return
+			var raw controlRequestEnvelope
+			if err := json.Unmarshal(line, &raw); err != nil {
+				log.Printf("claude: control_request handling error: %v", err)
+			} else if raw.Type == "control_request" {
+				handled, fatalMessage, err := s.handleControlRequest(raw)
+				if err != nil {
+					if fatalMessage != "" {
+						meta, _ := json.Marshal(map[string]any{"fatal": true})
+						s.onEvent(provider.ProviderEvent{
+							Kind:      provider.EventError,
+							ThreadID:  s.threadID,
+							Content:   fmt.Sprintf("%s: %v", fatalMessage, err),
+							Meta:      meta,
+							Timestamp: time.Now(),
+						})
+						_ = s.proc.Close()
+						return
+					}
+					log.Printf("claude: control_request handling error: %v", err)
 				}
-				// !handled + err: JSON parse failure for a line that
-				// looked like a control_request by prefix but was
-				// malformed. Log and continue — ParseLine below will
-				// reject the same line and we don't want to tear the
-				// session down for malformed stdout.
-				log.Printf("claude: exit plan mode handling error: %v", err)
-			}
-			if handled {
-				continue
+				if handled {
+					continue
+				}
 			}
 		}
 
 		// Same prefix gating for control_response — the CLI emits these
-		// only in reply to our outbound control_requests (today,
-		// stop_task). Parse once here and deliver to the waiting
-		// StopTask caller so we don't pay a second json.Unmarshal on
-		// the streaming hot path.
+		// only in reply to our outbound control_requests. Parse once
+		// here and deliver to the waiting caller so we don't pay a
+		// second json.Unmarshal on the streaming hot path.
 		if bytes.HasPrefix(line, controlResponsePrefix) {
 			s.handleControlResponseLine(line)
 			continue
@@ -987,19 +1094,70 @@ func (s *Session) readLoop() {
 	}
 }
 
-func (s *Session) maybeHandleExitPlanModeRequest(line []byte) (bool, error) {
-	var raw struct {
-		Type      string `json:"type"`
-		RequestID string `json:"request_id"`
-		Request   struct {
-			Subtype  string          `json:"subtype"`
-			ToolName string          `json:"tool_name"`
-			Input    json.RawMessage `json:"input"`
-		} `json:"request"`
-	}
+func (s *Session) maybeHandleFullAccessToolRequest(line []byte) (bool, error) {
+	var raw controlRequestEnvelope
 	if err := json.Unmarshal(line, &raw); err != nil {
 		return false, err
 	}
+	return s.handleFullAccessToolRequest(raw)
+}
+
+func (s *Session) handleControlRequest(raw controlRequestEnvelope) (handled bool, fatalMessage string, err error) {
+	handled, err = s.handleExitPlanModeRequest(raw)
+	if err != nil || handled {
+		if err != nil && handled {
+			return handled, "claude: exit plan mode response failed", err
+		}
+		return handled, "", err
+	}
+	handled, err = s.handleFullAccessToolRequest(raw)
+	if err != nil && handled {
+		return handled, "claude: full-access approval response failed", err
+	}
+	return handled, "", err
+}
+
+func (s *Session) handleFullAccessToolRequest(raw controlRequestEnvelope) (bool, error) {
+	if s.getCurrentPermissionMode() != "bypassPermissions" {
+		return false, nil
+	}
+	if raw.Type != "control_request" || raw.Request.Subtype != "can_use_tool" {
+		return false, nil
+	}
+	switch raw.Request.ToolName {
+	case "AskUserQuestion", "ExitPlanMode":
+		return false, nil
+	}
+
+	msg := map[string]any{
+		"type": "control_response",
+		"response": map[string]any{
+			"subtype":    "success",
+			"request_id": raw.RequestID,
+			"response": map[string]any{
+				"behavior": "allow",
+			},
+		},
+	}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return true, fmt.Errorf("claude: marshal full-access approval response: %w", err)
+	}
+	if err := s.proc.WriteLine(data); err != nil {
+		return true, fmt.Errorf("claude: send full-access approval response: %w", err)
+	}
+	return true, nil
+}
+
+func (s *Session) maybeHandleExitPlanModeRequest(line []byte) (bool, error) {
+	var raw controlRequestEnvelope
+	if err := json.Unmarshal(line, &raw); err != nil {
+		return false, err
+	}
+	return s.handleExitPlanModeRequest(raw)
+}
+
+func (s *Session) handleExitPlanModeRequest(raw controlRequestEnvelope) (bool, error) {
 	if raw.Type != "control_request" || raw.Request.Subtype != "can_use_tool" || raw.Request.ToolName != "ExitPlanMode" {
 		return false, nil
 	}
@@ -1038,7 +1196,7 @@ func (s *Session) maybeHandleExitPlanModeRequest(line []byte) (bool, error) {
 }
 
 // handleControlResponseLine decodes a `control_response` NDJSON line
-// and routes it to the waiting StopTask caller by request_id. Called
+// and routes it to the waiting control-request caller by request_id. Called
 // only from the read loop's prefix-gated branch, so all the work
 // happens off the streaming hot path.
 //
@@ -1075,7 +1233,7 @@ func (s *Session) handleControlResponseLine(line []byte) {
 		return
 	}
 
-	res := &stopTaskResult{}
+	res := &controlResponseResult{}
 	switch raw.Response.Subtype {
 	case "success":
 		res.ok = true
@@ -1083,12 +1241,12 @@ func (s *Session) handleControlResponseLine(line []byte) {
 		res.errMsg = raw.Response.Error
 	default:
 		// The CLI only emits success / error per the wire reference;
-		// unknown subtypes get recorded as errors so the StopTask caller
+		// unknown subtypes get recorded as errors so the waiting caller
 		// surfaces a clear message rather than silently hanging.
 		res.errMsg = fmt.Sprintf("unexpected control_response subtype %q", raw.Response.Subtype)
 	}
 
-	if !s.deliverStopTaskResponse(requestID, res) {
+	if !s.deliverControlResponse(requestID, res) {
 		log.Printf("claude: control_response with no pending request_id %q (subtype=%s)", requestID, raw.Response.Subtype)
 	}
 }
