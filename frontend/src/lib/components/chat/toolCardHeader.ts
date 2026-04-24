@@ -1,8 +1,9 @@
 // Per-tool-kind header dispatcher for ToolCallCard.
 //
 // The chat spec (§ToolCallCard) classifies tool calls into a small set of
-// visual kinds — Bash, Edit, Read, Grep, Web, Task/subagent, send_input,
-// Plan, MCP/<tool>, unknown — each with its own icon + label. This module
+// visual kinds — Bash, Edit, Read, Grep, Web, Image, Task/subagent,
+// send_input, wait_agent, Plan, MCP/<tool>, unknown — each with its own
+// icon + label. This module
 // pins that classification down so the render path stays a thin table
 // lookup rather than a nest of `toolName.startsWith` conditionals scattered
 // in the template.
@@ -85,6 +86,9 @@ export function classifyToolName(toolName: string | undefined | null): ToolKindV
     case 'webSearch':
     case 'web_search':
       return { icon: 'globe', label: raw, displayName: raw, isSubagent: false };
+    case 'ViewImage':
+    case 'ImageGeneration':
+      return { icon: 'eye', label: 'Image', displayName: raw, isSubagent: false };
     case 'Task':
       return { icon: 'robot', label: 'Subagent', displayName: 'Task', isSubagent: true };
     case 'collab_agent':
@@ -99,6 +103,13 @@ export function classifyToolName(toolName: string | undefined | null): ToolKindV
         icon: 'speech-bubble',
         label: 'send_input',
         displayName: 'send_input',
+        isSubagent: false,
+      };
+    case 'wait_agent':
+      return {
+        icon: 'robot',
+        label: 'wait_agent',
+        displayName: 'wait_agent',
         isSubagent: false,
       };
     case 'Plan':

@@ -752,6 +752,151 @@ func TestClassifyNotification_DynamicToolCallCompletionCarriesContentItems(t *te
 	}
 }
 
+func TestClassifyNotification_CollabAgentCompletionCarriesAgentMessage(t *testing.T) {
+	params := json.RawMessage(
+		`{"threadId":"th-1","turnId":"t1","item":{"id":"wait-1","type":"collabAgentToolCall","tool":"wait","status":"completed","receiverThreadIds":["child-1"],"agentsStates":{"child-1":{"status":"completed","message":"Final child answer"}}}}`,
+	)
+	events := ClassifyNotification("th-1", "item/completed", params)
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	evt := events[0]
+	if evt.Kind != provider.EventToolComplete {
+		t.Fatalf("kind = %q, want %q", evt.Kind, provider.EventToolComplete)
+	}
+	if evt.ItemType != "wait_agent" {
+		t.Fatalf("itemType = %q, want wait_agent", evt.ItemType)
+	}
+	if evt.Content != "Final child answer" {
+		t.Fatalf("content = %q, want child final answer", evt.Content)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(evt.Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if meta["toolName"] != "wait_agent" {
+		t.Fatalf("toolName = %v, want wait_agent", meta["toolName"])
+	}
+	input, ok := meta["input"].(map[string]any)
+	if !ok {
+		t.Fatalf("input missing or wrong type: %#v", meta["input"])
+	}
+	if _, ok := input["agentsStates"].(map[string]any); !ok {
+		t.Fatalf("input.agentsStates missing or wrong type: %#v", input["agentsStates"])
+	}
+}
+
+func TestClassifyNotification_SpawnAgentSurfacesPromptAndFinalMessage(t *testing.T) {
+	params := json.RawMessage(
+		`{"threadId":"th-1","turnId":"t1","item":{"id":"spawn-1","type":"collabAgentToolCall","tool":"spawnAgent","status":"completed","prompt":"Inspect the parser","model":"gpt-5.4","reasoningEffort":"high","receiverThreadIds":["child-1"],"agentsStates":{"child-1":{"status":"completed","message":"Parser looks fine"}}}}`,
+	)
+	events := ClassifyNotification("th-1", "item/completed", params)
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	evt := events[0]
+	if evt.ItemType != "collab_agent" {
+		t.Fatalf("itemType = %q, want collab_agent", evt.ItemType)
+	}
+	if evt.Content != "Parser looks fine" {
+		t.Fatalf("content = %q, want final subagent output", evt.Content)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(evt.Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	input, ok := meta["input"].(map[string]any)
+	if !ok {
+		t.Fatalf("input missing or wrong type: %#v", meta["input"])
+	}
+	if input["prompt"] != "Inspect the parser" {
+		t.Fatalf("input.prompt = %v, want original spawn prompt", input["prompt"])
+	}
+}
+
+func TestClassifyNotification_SendInputSurfacesPromptAndFinalMessage(t *testing.T) {
+	params := json.RawMessage(
+		`{"threadId":"th-1","turnId":"t1","item":{"id":"send-1","type":"collabAgentToolCall","tool":"sendInput","status":"completed","prompt":"Please inspect this follow-up","receiverThreadIds":["child-1"],"agentsStates":{"child-1":{"status":"completed","message":"Follow-up handled"}}}}`,
+	)
+	events := ClassifyNotification("th-1", "item/completed", params)
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	evt := events[0]
+	if evt.ItemType != "send_input" {
+		t.Fatalf("itemType = %q, want send_input", evt.ItemType)
+	}
+	if evt.Content != "Follow-up handled" {
+		t.Fatalf("content = %q, want final subagent output", evt.Content)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(evt.Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	input, ok := meta["input"].(map[string]any)
+	if !ok {
+		t.Fatalf("input missing or wrong type: %#v", meta["input"])
+	}
+	if input["prompt"] != "Please inspect this follow-up" {
+		t.Fatalf("input.prompt = %v, want sent prompt", input["prompt"])
+	}
+}
+
+func TestClassifyNotification_ImageToolsSurfaceUsefulMetadata(t *testing.T) {
+	t.Run("image view path", func(t *testing.T) {
+		params := json.RawMessage(
+			`{"threadId":"th-1","turnId":"t1","item":{"id":"view-1","type":"imageView","path":"/tmp/screenshot.png"}}`,
+		)
+		events := ClassifyNotification("th-1", "item/started", params)
+		if len(events) != 1 {
+			t.Fatalf("expected 1 event, got %d", len(events))
+		}
+		var meta map[string]any
+		if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
+			t.Fatalf("unmarshal meta: %v", err)
+		}
+		if meta["toolName"] != "ViewImage" {
+			t.Fatalf("toolName = %v, want ViewImage", meta["toolName"])
+		}
+		input, ok := meta["input"].(map[string]any)
+		if !ok {
+			t.Fatalf("input missing or wrong type: %#v", meta["input"])
+		}
+		if input["path"] != "/tmp/screenshot.png" {
+			t.Fatalf("input.path = %v, want image path", input["path"])
+		}
+	})
+
+	t.Run("image generation saved path", func(t *testing.T) {
+		params := json.RawMessage(
+			`{"threadId":"th-1","turnId":"t1","item":{"id":"img-1","type":"imageGeneration","status":"completed","revisedPrompt":"A quiet dashboard","result":"base64-image-data","savedPath":"/tmp/generated.png"}}`,
+		)
+		events := ClassifyNotification("th-1", "item/completed", params)
+		if len(events) != 1 {
+			t.Fatalf("expected 1 event, got %d", len(events))
+		}
+		if !strings.Contains(events[0].Content, "A quiet dashboard") {
+			t.Fatalf("content missing revised prompt: %q", events[0].Content)
+		}
+		if !strings.Contains(events[0].Content, "/tmp/generated.png") {
+			t.Fatalf("content missing saved path: %q", events[0].Content)
+		}
+		if strings.Contains(events[0].Content, "base64-image-data") {
+			t.Fatalf("content must not expose raw image data: %q", events[0].Content)
+		}
+		var meta map[string]any
+		if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
+			t.Fatalf("unmarshal meta: %v", err)
+		}
+		if strings.Contains(string(events[0].Meta), "base64-image-data") {
+			t.Fatalf("meta must not preserve raw image result bytes: %s", string(events[0].Meta))
+		}
+		if meta["toolName"] != "ImageGeneration" {
+			t.Fatalf("toolName = %v, want ImageGeneration", meta["toolName"])
+		}
+	})
+}
+
 func TestClassifyNotification_WebSearchCompletionDoesNotInventResultContent(t *testing.T) {
 	tests := []struct {
 		name   string

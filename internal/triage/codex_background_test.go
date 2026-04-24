@@ -612,21 +612,40 @@ func TestCodexTerminalInteractionAttachesWhenProcessIDArrivesOnCompletion(t *tes
 
 func buildSpawnAgentMeta(t *testing.T, childID, childStatus string) json.RawMessage {
 	t.Helper()
+	return buildSpawnAgentMetaWithMessage(t, childID, childStatus, "")
+}
+
+func buildSpawnAgentMetaWithMessage(t *testing.T, childID, childStatus, message string) json.RawMessage {
+	t.Helper()
+	return buildCollabAgentMetaWithMessage(t, "collab_agent", "spawn_agent", childID, childStatus, message)
+}
+
+func buildWaitAgentMetaWithMessage(t *testing.T, childID, childStatus, message string) json.RawMessage {
+	t.Helper()
+	return buildCollabAgentMetaWithMessage(t, "wait_agent", "wait_agent", childID, childStatus, message)
+}
+
+func buildCollabAgentMetaWithMessage(t *testing.T, toolName, tool, childID, childStatus, message string) json.RawMessage {
+	t.Helper()
+	childState := map[string]any{"status": childStatus}
+	if message != "" {
+		childState["message"] = message
+	}
 	m := map[string]any{
 		"source":      "",
 		"item_status": "completed",
-		"toolName":    "collab_agent",
+		"toolName":    toolName,
 		"input": map[string]any{
-			"tool":              "spawn_agent",
+			"tool":              tool,
 			"receiverThreadIds": []string{childID},
 			"agentsStates": map[string]any{
-				childID: map[string]any{"status": childStatus},
+				childID: childState,
 			},
 		},
 	}
 	out, err := json.Marshal(m)
 	if err != nil {
-		t.Fatalf("marshal spawn_agent meta: %v", err)
+		t.Fatalf("marshal %s meta: %v", toolName, err)
 	}
 	return out
 }
@@ -699,6 +718,115 @@ func TestCodexSubagentCompletionSignalsCreateTranscriptSibling(t *testing.T) {
 	}
 	if siblings[0].CompletionOf != "spawn-abc" {
 		t.Fatalf("completion_of=%q, want spawn-abc", siblings[0].CompletionOf)
+	}
+}
+
+func TestCodexSubagentWaitCompletionCarriesFinalOutputPayload(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+
+	spawnMeta := buildSpawnAgentMeta(t, "child-wait", "running")
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "spawn-wait",
+		ItemType: "collab_agent", TurnID: "turn-0", Meta: spawnMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("spawn start: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "spawn-wait",
+		ItemType: "collab_agent", TurnID: "turn-0", Meta: spawnMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("spawn complete: %v", err)
+	}
+
+	waitMeta := buildWaitAgentMetaWithMessage(t, "child-wait", "completed", "Final child output")
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "wait-child",
+		ItemType: "wait_agent", TurnID: "turn-0", Meta: waitMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("wait start: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "wait-child",
+		ItemType: "wait_agent", TurnID: "turn-0", Content: "Final child output",
+		Meta: waitMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("wait complete: %v", err)
+	}
+
+	siblings := findItemsByKind(t, st, "t1", itemKindBackgroundDone)
+	if len(siblings) != 1 {
+		t.Fatalf("expected 1 subagent sibling, got %d", len(siblings))
+	}
+	if siblings[0].PayloadKind != payloadKindToolCallResult {
+		t.Fatalf("payload kind = %q, want %s", siblings[0].PayloadKind, payloadKindToolCallResult)
+	}
+	waitRow, found, err := st.GetThreadItem("t1", "wait-child")
+	if err != nil || !found {
+		t.Fatalf("wait row missing: found=%v err=%v", found, err)
+	}
+	if siblings[0].PayloadID != waitRow.PayloadID {
+		t.Fatalf("sibling payload id = %q, want shared wait payload %q", siblings[0].PayloadID, waitRow.PayloadID)
+	}
+	data, err := st.GetPayloadData(siblings[0].PayloadID)
+	if err != nil {
+		t.Fatalf("payload data: %v", err)
+	}
+	if string(data) != "Final child output" {
+		t.Fatalf("payload = %q, want final child output", string(data))
+	}
+}
+
+func TestCodexSubagentNotificationCarriesFinalOutputPayload(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+
+	spawnMeta := buildSpawnAgentMeta(t, "child-notify", "running")
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "spawn-notify",
+		ItemType: "collab_agent", TurnID: "turn-0", Meta: spawnMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("spawn start: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "spawn-notify",
+		ItemType: "collab_agent", TurnID: "turn-0", Meta: spawnMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("spawn complete: %v", err)
+	}
+
+	notifyMeta, _ := json.Marshal(map[string]any{
+		"agent_path": "child-notify",
+		"status":     "completed",
+		"message":    "Done from notification",
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventSubagentNotification, ThreadID: "t1",
+		Meta: notifyMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("subagent notification: %v", err)
+	}
+
+	siblings := findItemsByKind(t, st, "t1", itemKindBackgroundDone)
+	if len(siblings) != 1 {
+		t.Fatalf("expected 1 subagent sibling, got %d", len(siblings))
+	}
+	if siblings[0].PayloadKind != payloadKindToolCallResult {
+		t.Fatalf("payload kind = %q, want %s", siblings[0].PayloadKind, payloadKindToolCallResult)
+	}
+	data, err := st.GetPayloadData(siblings[0].PayloadID)
+	if err != nil {
+		t.Fatalf("payload data: %v", err)
+	}
+	if string(data) != "Done from notification" {
+		t.Fatalf("payload = %q, want notification final output", string(data))
 	}
 }
 

@@ -85,6 +85,14 @@ describe('classifyToolName', () => {
     expect(classifyToolName(name).icon).toBe('globe');
   });
 
+  it.each(['ViewImage', 'ImageGeneration'])('%s maps to the image bucket', (name) => {
+    const out = classifyToolName(name);
+    expect(out.icon).toBe('eye');
+    expect(out.label).toBe('Image');
+    expect(out.displayName).toBe(name);
+    expect(out.isSubagent).toBe(false);
+  });
+
   it('bare MCP maps to the MCP tool bucket', () => {
     const out = classifyToolName('MCP');
     expect(out.icon).toBe('puzzle');
@@ -108,6 +116,13 @@ describe('classifyToolName', () => {
   it('send_input maps to speech-bubble icon', () => {
     const out = classifyToolName('send_input');
     expect(out.icon).toBe('speech-bubble');
+    expect(out.isSubagent).toBe(false);
+  });
+
+  it('wait_agent maps to robot icon without becoming a subagent parent', () => {
+    const out = classifyToolName('wait_agent');
+    expect(out.icon).toBe('robot');
+    expect(out.label).toBe('wait_agent');
     expect(out.isSubagent).toBe(false);
   });
 

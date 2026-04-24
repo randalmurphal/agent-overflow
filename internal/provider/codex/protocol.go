@@ -2,6 +2,7 @@ package codex
 
 import (
 	"encoding/json"
+	"sort"
 	"strings"
 	"time"
 
@@ -757,26 +758,34 @@ func compactJSON(raw json.RawMessage) string {
 	return string(out)
 }
 
-// enrichItemMeta augments the raw item/started or item/completed params with
-// discoverable top-level keys: `source` (CommandExecutionSource —
-// "agent" | "userShell" | "unifiedExecStartup" | "unifiedExecInteraction"),
-// `item_status` (CommandExecutionStatus / McpToolCallStatus / etc. —
-// "inProgress" | "completed" | "failed" | "declined"), and `process_id`
-// (the PTY handle for unifiedExec commands, optional on the wire). All
-// three live inside `params.item`; surfacing them at the top of Meta
-// means downstream consumers (the Codex background-terminal projector,
-// the renderer) don't need to know the nested path. The original params
-// are preserved so anything that already reads `item.xxx` still works.
-// If marshaling fails (it shouldn't — we're round-tripping decoded JSON)
-// the raw params are returned unmodified rather than dropping data.
+// enrichItemMeta augments item/started and item/completed params with the
+// normalized Meta contract used by triage and the renderer:
+//
+//   - source, item_status, process_id from the raw Codex item
+//   - toolName plus concise input fields for row labels/previews
+//   - raw item params for debugging and adjacent consumers
+//
+// Image generation is the one exception to raw preservation: its result field
+// is base64 image bytes, so it is stripped from Meta while revisedPrompt and
+// savedPath stay available through input/content.
 func enrichItemMeta(params json.RawMessage) json.RawMessage {
 	return enrichItemMetaFromItem(params, readNestedObject(params, "item"))
 }
 
 func enrichItemMetaFromItem(params json.RawMessage, item map[string]json.RawMessage) json.RawMessage {
-	source := readNestedString(params, "item", "source")
-	status := readNestedString(params, "item", "status")
-	processID := readNestedString(params, "item", "processId")
+	metaParams := params
+	source := ""
+	status := ""
+	processID := ""
+	if item != nil {
+		source = readRawString(item, "source")
+		status = readRawString(item, "status")
+		processID = readRawString(item, "processId")
+	} else {
+		source = readNestedString(params, "item", "source")
+		status = readNestedString(params, "item", "status")
+		processID = readNestedString(params, "item", "processId")
+	}
 	extras := map[string]any{}
 	if source != "" {
 		extras["source"] = source
@@ -789,11 +798,38 @@ func enrichItemMetaFromItem(params json.RawMessage, item map[string]json.RawMess
 	}
 	if item != nil {
 		mergeMap(extras, codexItemMetaExtras(item))
+		metaParams = stripImageGenerationResultFromMeta(params, item)
 	}
 	if len(extras) == 0 {
+		return metaParams
+	}
+	return mergeMetaKeys(metaParams, extras)
+}
+
+func stripImageGenerationResultFromMeta(params json.RawMessage, item map[string]json.RawMessage) json.RawMessage {
+	itemType := readRawString(item, "type")
+	if itemType != "imageGeneration" && itemType != "image_generation" {
 		return params
 	}
-	return mergeMetaKeys(params, extras)
+	if _, ok := item["result"]; !ok {
+		return params
+	}
+	strippedItem := make(map[string]json.RawMessage, len(item)-1)
+	for key, raw := range item {
+		if key == "result" {
+			continue
+		}
+		strippedItem[key] = raw
+	}
+	itemJSON, err := json.Marshal(strippedItem)
+	if err != nil {
+		return params
+	}
+	out, err := json.Marshal(map[string]json.RawMessage{"item": itemJSON})
+	if err != nil {
+		return params
+	}
+	return out
 }
 
 func codexItemMetaExtras(item map[string]json.RawMessage) map[string]any {
@@ -807,6 +843,10 @@ func codexItemMetaExtras(item map[string]json.RawMessage) map[string]any {
 		return mcpToolCallMetaExtras(item)
 	case "dynamicToolCall", "dynamic_tool_call":
 		return dynamicToolCallMetaExtras(item)
+	case "imageView", "image_view":
+		return imageViewMetaExtras(item)
+	case "imageGeneration", "image_generation":
+		return imageGenerationMetaExtras(item)
 	default:
 		if isCommandExecutionItemType(itemType) {
 			return commandExecutionMetaExtras(item)
@@ -865,6 +905,33 @@ func collabAgentMetaExtras(item map[string]json.RawMessage) map[string]any {
 	return map[string]any{"toolName": toolName, "input": input}
 }
 
+func imageViewMetaExtras(item map[string]json.RawMessage) map[string]any {
+	extras := map[string]any{"toolName": "ViewImage"}
+	input := map[string]any{}
+	if path := readRawString(item, "path"); path != "" {
+		input["path"] = path
+	}
+	if len(input) > 0 {
+		extras["input"] = input
+	}
+	return extras
+}
+
+func imageGenerationMetaExtras(item map[string]json.RawMessage) map[string]any {
+	extras := map[string]any{"toolName": "ImageGeneration"}
+	input := map[string]any{}
+	if path := firstNonEmptyString(readRawString(item, "savedPath"), readRawString(item, "saved_path")); path != "" {
+		input["path"] = path
+	}
+	if prompt := firstNonEmptyString(readRawString(item, "revisedPrompt"), readRawString(item, "revised_prompt")); prompt != "" {
+		input["prompt"] = prompt
+	}
+	if len(input) > 0 {
+		extras["input"] = input
+	}
+	return extras
+}
+
 func webSearchMetaExtras(item map[string]json.RawMessage) map[string]any {
 	extras := map[string]any{"toolName": "WebSearch"}
 	input := map[string]any{}
@@ -921,13 +988,88 @@ func toolDescriptionInput(scope, tool string) map[string]any {
 
 func codexToolResultContent(item map[string]json.RawMessage, itemType string) string {
 	switch itemType {
+	case "collab_agent", "send_input", "wait_agent":
+		return collabAgentContent(item)
 	case "mcpToolCall", "mcp_tool_call":
 		return mcpToolCallContent(item)
 	case "dynamicToolCall", "dynamic_tool_call":
 		return dynamicToolCallContent(item)
+	case "imageGeneration", "image_generation":
+		return imageGenerationContent(item)
 	default:
 		return ""
 	}
+}
+
+func collabAgentContent(item map[string]json.RawMessage) string {
+	rawStates := firstRaw(item, "agentsStates", "agents_states")
+	var states map[string]json.RawMessage
+	if len(rawStates) == 0 || json.Unmarshal(rawStates, &states) != nil {
+		return ""
+	}
+	decoded := make(map[string]collabAgentState, len(states))
+	ids := make([]string, 0, len(states))
+	for id, raw := range states {
+		state := decodeCollabAgentState(raw)
+		if state.message != "" {
+			decoded[id] = state
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	if len(ids) == 0 {
+		return ""
+	}
+	if len(ids) == 1 {
+		return decoded[ids[0]].message
+	}
+	parts := make([]string, 0, len(ids))
+	for _, id := range ids {
+		state := decoded[id]
+		header := "Agent " + id
+		if state.status != "" {
+			header += " (" + state.status + ")"
+		}
+		parts = append(parts, header+":\n"+state.message)
+	}
+	return strings.Join(parts, "\n\n")
+}
+
+type collabAgentState struct {
+	status  string
+	message string
+}
+
+func decodeCollabAgentState(raw json.RawMessage) collabAgentState {
+	if len(raw) == 0 {
+		return collabAgentState{}
+	}
+	var bare string
+	if json.Unmarshal(raw, &bare) == nil {
+		return collabAgentState{status: bare}
+	}
+	var parsed struct {
+		Status  string `json:"status"`
+		Message string `json:"message"`
+	}
+	if json.Unmarshal(raw, &parsed) != nil {
+		return collabAgentState{}
+	}
+	return collabAgentState{
+		status:  parsed.Status,
+		message: strings.TrimSpace(parsed.Message),
+	}
+}
+
+func imageGenerationContent(item map[string]json.RawMessage) string {
+	parts := make([]string, 0, 2)
+	if prompt := firstNonEmptyString(readRawString(item, "revisedPrompt"), readRawString(item, "revised_prompt")); prompt != "" {
+		parts = append(parts, "Revised prompt:\n"+prompt)
+	}
+	if path := firstNonEmptyString(readRawString(item, "savedPath"), readRawString(item, "saved_path")); path != "" {
+		parts = append(parts, "Saved to:\n"+path)
+	}
+	return strings.Join(parts, "\n\n")
 }
 
 func mcpToolCallContent(item map[string]json.RawMessage) string {
