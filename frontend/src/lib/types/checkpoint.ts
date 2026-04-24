@@ -4,26 +4,24 @@ export interface Checkpoint {
   id: string;
   threadId: string;
   turnIndex: number;
+  checkpointTurnCount: number;
+  turnId?: string;
   refName: string;
   baselineSha?: string;
+  status: string;
+  files: Array<{
+    path: string;
+    kind: string;
+    additions: number;
+    deletions: number;
+  }>;
+  assistantMessageId?: string;
+  completedAt?: number;
   capturedAt: number;
   workspacePath: string;
 }
 
-/**
- * Modes accepted by RevertToTurn. The four modes map to the backend
- * constants in app_checkpoint.go:
- *
- * - `fork`: create a new thread forked at this turn; leave the source
- *   thread and its worktree untouched.
- * - `revert-both`: in-place revert of both conversation history and
- *   working tree to the captured state.
- * - `revert-conversation`: in-place revert of conversation history only;
- *   worktree is untouched.
- * - `revert-code`: restore the worktree only; conversation history and
- *   provider session state are untouched.
- */
-export type RevertMode = 'fork' | 'revert-both' | 'revert-conversation' | 'revert-code';
+export type RevertMode = 'conversation-and-files' | 'conversation-only';
 
 /**
  * Activity event emitted via `checkpoint:captured` when the triage layer
@@ -32,6 +30,7 @@ export type RevertMode = 'fork' | 'revert-both' | 'revert-conversation' | 'rever
 export interface CheckpointCapturedEvent {
   threadId: string;
   turnIndex: number;
+  checkpointTurnCount: number;
   refName: string;
   capturedAt: number;
 }
@@ -52,5 +51,6 @@ export interface CheckpointUnavailableEvent {
 export interface CheckpointErrorEvent {
   threadId: string;
   turnIndex: number;
+  checkpointTurnCount: number;
   error: string;
 }

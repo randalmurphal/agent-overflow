@@ -102,6 +102,18 @@
 
       <div class={ROW_CLASS}>
         <div>
+          <p class="text-[13px] text-fg font-medium">End-of-turn diffs</p>
+          <p class="text-[12px] text-fg-muted">Show a compact diff card when an agent turn completes</p>
+        </div>
+        <ToggleSwitch
+          checked={settings.showEndOfTurnDiffs}
+          ariaLabel="Toggle end-of-turn diffs"
+          onToggle={(value) => updateSetting('showEndOfTurnDiffs', value)}
+        />
+      </div>
+
+      <div class={ROW_CLASS}>
+        <div>
           <p class="text-[13px] text-fg font-medium">Streaming enabled</p>
           <p class="text-[12px] text-fg-muted">Show text as it arrives from the provider</p>
         </div>

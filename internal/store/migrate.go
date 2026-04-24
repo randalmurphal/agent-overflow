@@ -719,6 +719,30 @@ DELETE FROM payloads
    AND id NOT IN (SELECT payload_id FROM items WHERE payload_id IS NOT NULL);
 `,
 	},
+	{
+		Version: 28,
+		Name:    "checkpoint_turn_counts",
+		SQL: `
+ALTER TABLE thread_checkpoints ADD COLUMN checkpoint_turn_count INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE thread_checkpoints ADD COLUMN turn_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE thread_checkpoints ADD COLUMN status TEXT NOT NULL DEFAULT 'ready';
+ALTER TABLE thread_checkpoints ADD COLUMN files TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE thread_checkpoints ADD COLUMN assistant_message_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE thread_checkpoints ADD COLUMN completed_at INTEGER NOT NULL DEFAULT 0;
+
+UPDATE thread_checkpoints
+   SET checkpoint_turn_count = CASE
+       WHEN COALESCE((SELECT provider FROM threads WHERE threads.id = thread_checkpoints.thread_id), '') = 'codex'
+        AND turn_index > 0 THEN turn_index - 1
+       ELSE turn_index
+   END;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_thread_checkpoints_thread_count_unique
+	ON thread_checkpoints(thread_id, checkpoint_turn_count);
+CREATE INDEX IF NOT EXISTS idx_thread_checkpoints_thread_count
+	ON thread_checkpoints(thread_id, checkpoint_turn_count);
+`,
+	},
 }
 
 // v13SQL is the DROP-and-rebuild payload for migration v13. Extracted so
@@ -900,7 +924,7 @@ CREATE TABLE thread_drafts (
     updated_at     INTEGER NOT NULL
 );
 
--- Thread checkpoints (v8: composite UNIQUE on thread+turn).
+-- Thread checkpoints (v8).
 CREATE TABLE thread_checkpoints (
     id             TEXT    PRIMARY KEY,
     thread_id      TEXT    NOT NULL REFERENCES threads(id) ON DELETE CASCADE,

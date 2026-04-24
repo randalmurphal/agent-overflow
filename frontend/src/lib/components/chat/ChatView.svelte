@@ -208,11 +208,6 @@
       <PlanFollowUpBanner {pane} {draft} />
       <Composer {pane} {draft} onImageExpand={openImagePreview} />
       <BelowComposerBar {pane} />
-      {#if pane.diffPanel.open && pane.thread}
-        {#key pane.thread.id}
-          <DiffPanelDrawer {pane} />
-        {/key}
-      {/if}
       {#if pane.showTerminal && pane.thread}
         {#key pane.thread.id}
           <LazyThreadTerminalDrawer {pane} onSendToComposer={addTerminalChipToDraft} />
@@ -220,6 +215,11 @@
       {/if}
     </div>
     <PlanSidebar {pane} />
+    {#if pane.diffPanel.open && pane.thread}
+      {#key pane.thread.id}
+        <DiffPanelDrawer {pane} />
+      {/key}
+    {/if}
     {#if inDesignMode}
       <div class="flex-1 min-w-0">
         <DesignView {pane} />

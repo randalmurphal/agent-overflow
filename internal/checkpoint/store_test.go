@@ -104,6 +104,31 @@ func TestCaptureBaselineAndDiffHappyPath(t *testing.T) {
 	}
 }
 
+func TestDiffRefToRefRejectsOversizePatch(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	initRepo(t, dir)
+	s := NewStore()
+
+	originalLimit := maxDiffOutputBytes
+	maxDiffOutputBytes = 128
+	t.Cleanup(func() { maxDiffOutputBytes = originalLimit })
+
+	r0, err := s.CaptureBaseline(ctx, dir, "t1", 0)
+	if err != nil {
+		t.Fatalf("capture r0: %v", err)
+	}
+	writeTestFile(t, dir, "large.txt", strings.Repeat("x\n", 200))
+	r1, err := s.CaptureBaseline(ctx, dir, "t1", 1)
+	if err != nil {
+		t.Fatalf("capture r1: %v", err)
+	}
+
+	if _, err := s.DiffRefToRef(ctx, dir, r0, r1); err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("DiffRefToRef error = %v, want exceeds limit", err)
+	}
+}
+
 func TestCaptureIncludesUntrackedFiles(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()

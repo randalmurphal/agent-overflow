@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"agent-overflow/internal/diffsummary"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/stringsx"
@@ -34,7 +35,9 @@ var ErrUnhandledEventKind = errors.New("triage: unhandled event kind")
 // at turn-start. Kept as an interface so tests can inject a stub.
 type CheckpointCapture interface {
 	IsGitRepository(ctx context.Context, workspace string) bool
-	CaptureBaseline(ctx context.Context, workspace, threadID string, turnIndex int) (string, error)
+	CaptureBaseline(ctx context.Context, workspace, threadID string, turnCount int) (string, error)
+	DiffRefToRef(ctx context.Context, workspace, fromRef, toRef string) ([]byte, error)
+	DiffRefToRefSummary(ctx context.Context, workspace, fromRef, toRef string) ([]diffsummary.File, error)
 	DeleteRef(ctx context.Context, workspace, ref string) error
 }
 

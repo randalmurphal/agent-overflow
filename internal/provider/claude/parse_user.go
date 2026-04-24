@@ -231,8 +231,18 @@ func appendToolResultCompletion(
 		_ = json.Unmarshal(v, &isError)
 	}
 
+	toolResultJSON, marshalErr := json.Marshal(block)
 	metaFields := map[string]any{
 		"is_error": isError,
+	}
+	if marshalErr != nil {
+		metaFields["tool_result"] = json.RawMessage(`{}`)
+		metaFields["tool_result_marshal_error"] = marshalErr.Error()
+	} else {
+		metaFields["tool_result"] = json.RawMessage(toolResultJSON)
+	}
+	if len(toolUseResult) > 0 {
+		metaFields["tool_use_result"] = json.RawMessage(toolUseResult)
 	}
 	if isBackground {
 		metaFields["is_background"] = true

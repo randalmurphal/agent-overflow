@@ -293,11 +293,12 @@ export function GetChannelMessages(channelID: string, afterSeq: number, limit: n
 }
 
 /**
- * GetCheckpointToWorktreeDiff returns the diff between a specific checkpoint
- * ref and the current worktree. Used by the three-source diff panel.
+ * GetCheckpointRangeDiff returns the unified diff between two finalized
+ * checkpoint turn counts. Turn count 0 is the baseline before the first turn;
+ * turn count N is the workspace after completed turn N.
  */
-export function GetCheckpointToWorktreeDiff(threadID: string, turnIndex: number): $CancellablePromise<string> {
-    return $Call.ByID(3483878958, threadID, turnIndex);
+export function GetCheckpointRangeDiff(threadID: string, fromTurnCount: number, toTurnCount: number): $CancellablePromise<string> {
+    return $Call.ByID(3292511153, threadID, fromTurnCount, toTurnCount);
 }
 
 /**
@@ -454,21 +455,6 @@ export function GetThreadSlashCommands(threadID: string): $CancellablePromise<st
     return $Call.ByID(520969054, threadID).then(($result: any) => {
         return $$createType3($result);
     });
-}
-
-/**
- * GetTurnDiff returns the unified diff produced by a single turn.
- * 
- * Semantics:
- *   - Between the checkpoint captured at the START of turn N and the
- *     checkpoint captured at the start of turn N+1 (if one exists), or
- *   - Between the checkpoint at turn N and the current worktree if this is
- *     the most recent captured turn.
- * 
- * The frontend uses this to render "what did this turn change" diffs.
- */
-export function GetTurnDiff(threadID: string, turnIndex: number): $CancellablePromise<string> {
-    return $Call.ByID(1809996571, threadID, turnIndex);
 }
 
 /**
@@ -730,17 +716,6 @@ export function ListThreadCheckpoints(threadID: string): $CancellablePromise<sto
 }
 
 /**
- * ListThreadDiffPayloads returns every diff or tool_result item for a
- * thread so the diff panel's cumulative view can summarize the entire
- * thread independent of the timeline window.
- */
-export function ListThreadDiffPayloads(threadID: string): $CancellablePromise<store$0.Item[]> {
-    return $Call.ByID(2341943393, threadID).then(($result: any) => {
-        return $$createType31($result);
-    });
-}
-
-/**
  * ListThreadProposedPlans returns every proposed-plan item for a thread,
  * newest-first. Backs PlanSidebar, which needs the full plan history
  * regardless of the timeline window.
@@ -915,26 +890,12 @@ export function RestartTerminal(terminalID: string): $CancellablePromise<$models
 }
 
 /**
- * RevertToTurn rolls a thread back to a prior turn's captured state. The
- * checkpoint at turnIndex records the state *before* turn turnIndex ran, so
- * every revert mode drops turn turnIndex and everything after it.
- * 
- * Modes:
- *   - "fork": create a new thread forked from this one at the checkpoint,
- *     leave the source thread untouched. Returns the new thread ID.
- *   - "revert-both": in-place revert of both conversation history and
- *     working tree.
- *   - "revert-conversation": in-place revert of conversation history only
- *     (working tree untouched). Codex uses its native thread/rollback;
- *     Claude clears the session ref so the next message starts fresh.
- *   - "revert-code": restore the working tree only, leave conversation
- *     history and provider session state untouched.
- * 
- * All in-place modes stop the active session first. Fork does not touch
- * the source session.
+ * RevertToCheckpoint rolls a thread back to a checkpoint turn count. The
+ * conversation-only mode keeps the current worktree and recaptures that kept
+ * state as the new checkpoint baseline.
  */
-export function RevertToTurn(threadID: string, turnIndex: number, mode: string): $CancellablePromise<string> {
-    return $Call.ByID(3569172301, threadID, turnIndex, mode);
+export function RevertToCheckpoint(threadID: string, checkpointTurnCount: number, mode: string): $CancellablePromise<void> {
+    return $Call.ByID(3403186872, threadID, checkpointTurnCount, mode);
 }
 
 /**

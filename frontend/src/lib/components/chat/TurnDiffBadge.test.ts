@@ -97,8 +97,7 @@ describe('<TurnDiffBadge>', () => {
     });
     await fireEvent.click(getByTestId('turn-diff-badge'));
     expect(pane.diffPanel.open).toBe(true);
-    expect(pane.diffPanel.source).toBe('turn');
-    expect(pane.diffPanel.selectedTurnIndex).toBe(4);
+    expect(pane.diffPanel.selectedCheckpointTurnCount).toBe(5);
   });
 
   it('carries a descriptive aria-label for screen readers', async () => {
@@ -111,7 +110,6 @@ describe('<TurnDiffBadge>', () => {
       },
     });
     const badge = getByTestId('turn-diff-badge');
-    // turn indices are 0-based in the data; users see them 1-based.
     expect(badge.getAttribute('aria-label') ?? '').toMatch(/turn 3/i);
     expect(badge.getAttribute('aria-label') ?? '').toMatch(/10 insertions/);
     expect(badge.getAttribute('aria-label') ?? '').toMatch(/3 deletions/);

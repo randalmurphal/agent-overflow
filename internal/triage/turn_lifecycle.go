@@ -36,7 +36,7 @@ func (r *Router) handleTurnStart(evt provider.ProviderEvent) error {
 	}
 	r.setOpenTurn(evt.ThreadID, turnIndex)
 	r.openTurnSpan(evt)
-	r.captureBaselineForTurn(context.Background(), evt.ThreadID)
+	r.captureBaselineForTurn(context.Background(), evt.ThreadID, turnIndex)
 
 	startedAt := eventTimestampMillis(evt)
 	turnID := resolveTurnID(evt, turnIndex)
@@ -136,7 +136,7 @@ func (r *Router) openTurnSpan(evt provider.ProviderEvent) {
 }
 
 // captureBaselineForTurn runs checkpoint capture + SQLite persistence for the
-// current turn. Errors are logged and surfaced as activity events so the UI
+// current turn boundary. Errors are logged and surfaced as activity events so the UI
 // can show "checkpoints unavailable" without blocking the turn.
 //
 // The operation is idempotent by design. A provider can fire EventTurnStart
@@ -147,9 +147,12 @@ func (r *Router) openTurnSpan(evt provider.ProviderEvent) {
 // have to reconcile drift between git and SQLite later. If SaveCheckpoint
 // fails after the new ref is written, we remove the new ref so the two
 // sides stay in lockstep — either both exist, or neither does.
-func (r *Router) captureBaselineForTurn(ctx context.Context, threadID string) {
+func (r *Router) captureBaselineForTurn(ctx context.Context, threadID string, currentTurnIndex int) {
 	cap := r.checkpointStore()
 	if cap == nil {
+		return
+	}
+	if currentTurnIndex != 0 {
 		return
 	}
 	thread, err := r.store.GetThread(threadID)
@@ -168,12 +171,8 @@ func (r *Router) captureBaselineForTurn(ctx context.Context, threadID string) {
 		})
 		return
 	}
-	turnIndex, err := r.store.LastTurnIndex(threadID)
-	if err != nil {
-		log.Printf("triage: checkpoint turn index %s: %v", threadID, err)
-		return
-	}
-	if r.markTurnCaptured(threadID, turnIndex) {
+	turnCount := 0
+	if r.markTurnCaptured(threadID, turnCount) {
 		return // already captured for this (thread, turn)
 	}
 
@@ -181,51 +180,158 @@ func (r *Router) captureBaselineForTurn(ctx context.Context, threadID string) {
 	// previous capture partially succeeded or we're re-capturing. Drop both
 	// sides — DB row first (SQLite write is the cheap one to roll back),
 	// then the backing git ref — so the upcoming capture starts clean.
-	if staleRef, hadRow, err := r.store.DeleteCheckpointByThreadTurn(threadID, turnIndex); err != nil {
-		log.Printf("triage: checkpoint stale row thread=%s turn=%d: %v", threadID, turnIndex, err)
-		r.unmarkTurnCaptured(threadID, turnIndex)
+	if staleRef, hadRow, err := r.store.DeleteCheckpointByThreadTurnCount(threadID, turnCount); err != nil {
+		log.Printf("triage: checkpoint stale row thread=%s turn=%d: %v", threadID, turnCount, err)
+		r.unmarkTurnCaptured(threadID, turnCount)
 		return
-	} else if hadRow && staleRef != "" {
-		if err := cap.DeleteRef(ctx, workspace, staleRef); err != nil {
-			log.Printf("triage: checkpoint delete stale ref %s: %v", staleRef, err)
+	} else if hadRow && staleRef.RefName != "" {
+		if err := cap.DeleteRef(ctx, staleRef.WorkspacePath, staleRef.RefName); err != nil {
+			log.Printf("triage: checkpoint delete stale ref %s: %v", staleRef.RefName, err)
 		}
 	}
 
-	ref, err := cap.CaptureBaseline(ctx, workspace, threadID, turnIndex)
+	ref, err := cap.CaptureBaseline(ctx, workspace, threadID, turnCount)
 	if err != nil {
-		r.unmarkTurnCaptured(threadID, turnIndex)
+		r.unmarkTurnCaptured(threadID, turnCount)
 		r.emit("checkpoint:error", map[string]any{
-			"threadId":  threadID,
-			"turnIndex": turnIndex,
-			"error":     err.Error(),
+			"threadId":            threadID,
+			"turnIndex":           turnCount,
+			"checkpointTurnCount": turnCount,
+			"error":               err.Error(),
 		})
-		log.Printf("triage: checkpoint capture thread=%s turn=%d: %v", threadID, turnIndex, err)
+		log.Printf("triage: checkpoint capture thread=%s turn=%d: %v", threadID, turnCount, err)
 		return
 	}
 	now := time.Now().UnixMilli()
 	record := store.Checkpoint{
-		ID:            uuid.NewString(),
-		ThreadID:      threadID,
-		TurnIndex:     turnIndex,
-		RefName:       ref,
-		CapturedAt:    now,
-		WorkspacePath: workspace,
+		ID:                  uuid.NewString(),
+		ThreadID:            threadID,
+		TurnIndex:           turnCount,
+		CheckpointTurnCount: turnCount,
+		RefName:             ref,
+		Status:              "ready",
+		CapturedAt:          now,
+		WorkspacePath:       workspace,
 	}
 	if err := r.store.SaveCheckpoint(record); err != nil {
-		log.Printf("triage: checkpoint persist thread=%s turn=%d: %v", threadID, turnIndex, err)
+		log.Printf("triage: checkpoint persist thread=%s turn=%d: %v", threadID, turnCount, err)
 		// DB row never landed — don't let the git ref linger.
 		if derr := cap.DeleteRef(ctx, workspace, ref); derr != nil {
 			log.Printf("triage: checkpoint rollback ref %s: %v", ref, derr)
 		}
-		r.unmarkTurnCaptured(threadID, turnIndex)
+		r.unmarkTurnCaptured(threadID, turnCount)
 		return
 	}
 	r.emit("checkpoint:captured", map[string]any{
-		"threadId":   threadID,
-		"turnIndex":  turnIndex,
-		"refName":    ref,
-		"capturedAt": now,
+		"threadId":            threadID,
+		"turnIndex":           turnCount,
+		"checkpointTurnCount": turnCount,
+		"refName":             ref,
+		"capturedAt":          now,
 	})
+}
+
+func (r *Router) captureCompletedTurnCheckpoint(ctx context.Context, settled TurnCompletedEvent) {
+	cap := r.checkpointStore()
+	if cap == nil {
+		return
+	}
+	thread, err := r.store.GetThread(settled.ThreadID)
+	if err != nil {
+		log.Printf("triage: checkpoint complete load thread %s: %v", settled.ThreadID, err)
+		return
+	}
+	workspace := checkpointWorkspacePath(thread)
+	if workspace == "" || !cap.IsGitRepository(ctx, workspace) {
+		return
+	}
+
+	turnCount := settled.TurnIndex + 1
+	if turnCount < 1 {
+		return
+	}
+	previous, ok, err := r.store.GetCheckpointByTurnCount(settled.ThreadID, turnCount-1)
+	if err != nil {
+		log.Printf("triage: checkpoint complete previous thread=%s turn=%d: %v", settled.ThreadID, turnCount-1, err)
+		return
+	}
+	if !ok {
+		err := fmt.Errorf("missing previous checkpoint for turn count %d", turnCount-1)
+		r.emit("checkpoint:error", map[string]any{
+			"threadId":            settled.ThreadID,
+			"turnIndex":           turnCount,
+			"checkpointTurnCount": turnCount,
+			"error":               err.Error(),
+		})
+		log.Printf("triage: checkpoint complete missing previous thread=%s turn=%d", settled.ThreadID, turnCount-1)
+		return
+	}
+
+	if staleRef, hadRow, err := r.store.DeleteCheckpointByThreadTurnCount(settled.ThreadID, turnCount); err != nil {
+		log.Printf("triage: checkpoint complete stale row thread=%s turn=%d: %v", settled.ThreadID, turnCount, err)
+		return
+	} else if hadRow && staleRef.RefName != "" {
+		if err := cap.DeleteRef(ctx, staleRef.WorkspacePath, staleRef.RefName); err != nil {
+			log.Printf("triage: checkpoint complete delete stale ref %s: %v", staleRef.RefName, err)
+		}
+	}
+
+	ref, err := cap.CaptureBaseline(ctx, workspace, settled.ThreadID, turnCount)
+	if err != nil {
+		r.emit("checkpoint:error", map[string]any{
+			"threadId":            settled.ThreadID,
+			"turnIndex":           turnCount,
+			"checkpointTurnCount": turnCount,
+			"error":               err.Error(),
+		})
+		log.Printf("triage: checkpoint complete capture thread=%s turn=%d: %v", settled.ThreadID, turnCount, err)
+		return
+	}
+	files, err := cap.DiffRefToRefSummary(ctx, workspace, previous.RefName, ref)
+	if err != nil {
+		log.Printf("triage: checkpoint complete diff summary thread=%s turn=%d: %v", settled.ThreadID, turnCount, err)
+		files = nil
+	}
+	now := time.Now().UnixMilli()
+	record := store.Checkpoint{
+		ID:                  uuid.NewString(),
+		ThreadID:            settled.ThreadID,
+		TurnIndex:           turnCount,
+		CheckpointTurnCount: turnCount,
+		TurnID:              settled.TurnID,
+		RefName:             ref,
+		Status:              checkpointStatusForTurn(settled),
+		Files:               files,
+		AssistantMessageID:  settled.AssistantMessageID,
+		CompletedAt:         settled.CompletedAt,
+		CapturedAt:          now,
+		WorkspacePath:       workspace,
+	}
+	if err := r.store.SaveCheckpoint(record); err != nil {
+		log.Printf("triage: checkpoint complete persist thread=%s turn=%d: %v", settled.ThreadID, turnCount, err)
+		if derr := cap.DeleteRef(ctx, workspace, ref); derr != nil {
+			log.Printf("triage: checkpoint complete rollback ref %s: %v", ref, derr)
+		}
+		return
+	}
+	r.emit("checkpoint:updated", map[string]any{
+		"threadId":            settled.ThreadID,
+		"turnIndex":           turnCount,
+		"checkpointTurnCount": turnCount,
+		"refName":             ref,
+		"files":               files,
+		"capturedAt":          now,
+	})
+}
+
+func checkpointStatusForTurn(settled TurnCompletedEvent) string {
+	if settled.Aborted {
+		return "interrupted"
+	}
+	if strings.TrimSpace(settled.ErrorMessage) != "" || settled.StopReason == "error" {
+		return "error"
+	}
+	return "ready"
 }
 
 func (r *Router) checkpointStore() CheckpointCapture {
@@ -340,6 +446,7 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 	// reporting) sees the real failure.
 	settled := r.settleTurnRow(evt, turnIndex, now, meta, persistErr)
 	r.emit("provider:turn_completed", settled)
+	r.captureCompletedTurnCheckpoint(context.Background(), settled)
 
 	// The captured-turn guard only needs to hold for the duration of
 	// this turn — once the turn is complete the baseline checkpoint is
@@ -348,7 +455,7 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 	// capturedTurns bounded by concurrency rather than by session
 	// lifetime, which mattered for long-running sessions that would
 	// otherwise accumulate one entry per turn until CleanupThread.
-	r.unmarkTurnCaptured(evt.ThreadID, turnIndex)
+	r.unmarkTurnCaptured(evt.ThreadID, max(0, turnIndex-1))
 	r.clearOpenTurn(evt.ThreadID)
 	r.closeTurnSpan(evt.ThreadID, persistErr)
 	return persistErr

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/checkpoint"
+	"agent-overflow/internal/diffsummary"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/store"
@@ -136,12 +137,13 @@ func captureE2E(t *testing.T, app *App, threadID, workspace string, turn int) st
 		t.Fatalf("capture baseline: %v", err)
 	}
 	record := store.Checkpoint{
-		ID:            uuid.NewString(),
-		ThreadID:      threadID,
-		TurnIndex:     turn,
-		RefName:       ref,
-		CapturedAt:    time.Now().UnixMilli(),
-		WorkspacePath: workspace,
+		ID:                  uuid.NewString(),
+		ThreadID:            threadID,
+		TurnIndex:           turn,
+		CheckpointTurnCount: turn,
+		RefName:             ref,
+		CapturedAt:          time.Now().UnixMilli(),
+		WorkspacePath:       workspace,
 	}
 	if err := app.store.SaveCheckpoint(record); err != nil {
 		t.Fatalf("save checkpoint: %v", err)
@@ -253,6 +255,12 @@ func (s *e2eErroringStore) CaptureBaseline(ctx context.Context, workspace, threa
 func (s *e2eErroringStore) DeleteRef(ctx context.Context, workspace, ref string) error {
 	return s.inner.DeleteRef(ctx, workspace, ref)
 }
+func (s *e2eErroringStore) DiffRefToRef(ctx context.Context, workspace, fromRef, toRef string) ([]byte, error) {
+	return s.inner.DiffRefToRef(ctx, workspace, fromRef, toRef)
+}
+func (s *e2eErroringStore) DiffRefToRefSummary(ctx context.Context, workspace, fromRef, toRef string) ([]diffsummary.File, error) {
+	return s.inner.DiffRefToRefSummary(ctx, workspace, fromRef, toRef)
+}
 
 // #23 — A CaptureBaseline failure must emit checkpoint:error, must NOT
 // persist a checkpoint row, and must NOT return an error from Handle (turn
@@ -318,9 +326,9 @@ func TestAppE2E_DuplicateCaptureDedupedPerTurn(t *testing.T) {
 	}
 }
 
-// #25 — GetTurnDiff between adjacent captured turns returns the diff between
+// #25 — GetCheckpointRangeDiff between adjacent captured turns returns the diff between
 // their trees.
-func TestAppE2E_GetTurnDiffAdjacentTurns(t *testing.T) {
+func TestAppE2E_GetCheckpointRangeDiffAdjacentTurns(t *testing.T) {
 	e := newE2EApp(t)
 	workspace := t.TempDir()
 	initE2ERepo(t, workspace)
@@ -330,161 +338,21 @@ func TestAppE2E_GetTurnDiffAdjacentTurns(t *testing.T) {
 	writeE2EFile(t, workspace, "README", "turn 1 edit\n")
 	captureE2E(t, e.app, "t1", workspace, 1)
 
-	diff, err := e.app.GetTurnDiff("t1", 0)
+	diff, err := e.app.GetCheckpointRangeDiff("t1", 0, 1)
 	if err != nil {
-		t.Fatalf("get turn diff: %v", err)
+		t.Fatalf("get checkpoint range diff: %v", err)
 	}
 	if !strings.Contains(diff, "+turn 1 edit") {
 		t.Errorf("expected +turn 1 edit in diff; got:\n%s", diff)
 	}
 }
 
-// #26 — GetTurnDiff for the latest turn falls back to checkpoint→worktree.
-func TestAppE2E_GetTurnDiffLatestTurnUsesWorktree(t *testing.T) {
-	e := newE2EApp(t)
-	workspace := t.TempDir()
-	initE2ERepo(t, workspace)
-	seedE2EThread(t, e.app, "t1", workspace, provider.Codex)
-
-	captureE2E(t, e.app, "t1", workspace, 0)
-	writeE2EFile(t, workspace, "README", "live edits only\n")
-	// No second checkpoint: turn 0 is the latest.
-
-	diff, err := e.app.GetTurnDiff("t1", 0)
-	if err != nil {
-		t.Fatalf("get turn diff: %v", err)
-	}
-	if !strings.Contains(diff, "+live edits only") {
-		t.Errorf("expected live worktree diff against turn 0; got:\n%s", diff)
-	}
-}
-
-// #27 — GetCheckpointToWorktreeDiff against an earlier captured turn shows
-// *all* changes accumulated across subsequent turns + worktree drift.
-func TestAppE2E_GetCheckpointToWorktreeDiffAfterManyChanges(t *testing.T) {
-	e := newE2EApp(t)
-	workspace := t.TempDir()
-	initE2ERepo(t, workspace)
-	seedE2EThread(t, e.app, "t1", workspace, provider.Codex)
-
-	// Turn 0: pristine README.
-	captureE2E(t, e.app, "t1", workspace, 0)
-	// Turn 1: add file.
-	writeE2EFile(t, workspace, "turn1.txt", "one\n")
-	captureE2E(t, e.app, "t1", workspace, 1)
-	// Turn 2: modify README.
-	writeE2EFile(t, workspace, "README", "hello\nturn 2\n")
-	captureE2E(t, e.app, "t1", workspace, 2)
-	// Worktree-only change AFTER the latest turn.
-	writeE2EFile(t, workspace, "live.txt", "uncommitted\n")
-
-	diff, err := e.app.GetCheckpointToWorktreeDiff("t1", 0)
-	if err != nil {
-		t.Fatalf("diff: %v", err)
-	}
-	// Must include every change made since turn 0.
-	for _, token := range []string{"turn1.txt", "turn 2", "live.txt"} {
-		if !strings.Contains(diff, token) {
-			t.Errorf("expected %q in checkpoint→worktree diff; got:\n%s", token, diff)
-		}
-	}
-}
-
-// #28 — RevertToTurn(fork) creates a new thread forked from the source.
-// Per the current implementation (app_thread_fork.go): the fork clones ALL
-// of the source's items, not items-up-to-turn-N. The source thread is left
-// untouched. The returned ID is NEW and resolvable.
-//
-// Flip-verification: if the fork ever silently returned the SAME thread id
-// (a regression that would collapse fork into no-op), the newID == source
-// assertion below would fail, as would the retrieval asserting a new row.
-func TestAppE2E_RevertToTurnForkCreatesChildThread(t *testing.T) {
-	e := newE2EApp(t)
-	workspace := t.TempDir()
-	initE2ERepo(t, workspace)
-
-	// Claude thread with SessionRef set: exercises the "pending fork ref"
-	// branch of resolveForkResumeState (no need for a real Codex binary).
-	thread := seedE2EThread(t, e.app, "t-src", workspace, provider.Claude)
-	thread.SessionRef = "claude-session-abc"
-	if err := e.app.store.UpdateThread(thread); err != nil {
-		t.Fatalf("update thread: %v", err)
-	}
-
-	// ForkThread requires at least one item to prevent creating orphan forks.
-	for i, body := range []string{"hello", "world"} {
-		if err := e.app.store.InsertItem(store.Item{
-			ID:        fmt.Sprintf("item-%d", i),
-			ThreadID:  "t-src",
-			TurnIndex: i,
-			ItemIndex: 0,
-			Kind:      "user_text",
-			Role:      "user",
-			Summary:   body,
-			CreatedAt: time.Now().UnixMilli() + int64(i),
-		}); err != nil {
-			t.Fatalf("insert item %d: %v", i, err)
-		}
-	}
-
-	// Capture turns 0 and 1 so the revert has a legitimate target.
-	captureE2E(t, e.app, "t-src", workspace, 0)
-	writeE2EFile(t, workspace, "README", "turn 1\n")
-	captureE2E(t, e.app, "t-src", workspace, 1)
-
-	newID, err := e.app.RevertToTurn("t-src", 0, "fork")
-	if err != nil {
-		t.Fatalf("revert fork: %v", err)
-	}
-	if newID == "" {
-		t.Fatal("fork returned empty thread id")
-	}
-	if newID == "t-src" {
-		t.Errorf("fork returned source id — expected a NEW thread")
-	}
-
-	// New thread exists.
-	forked, err := e.app.store.GetThread(newID)
-	if err != nil {
-		t.Fatalf("forked thread not retrievable: %v", err)
-	}
-	if forked.ForkedFromThreadID != "t-src" {
-		t.Errorf("expected ForkedFromThreadID=t-src, got %q", forked.ForkedFromThreadID)
-	}
-
-	// Source thread survives untouched.
-	src, err := e.app.store.GetThread("t-src")
-	if err != nil {
-		t.Fatalf("source thread gone: %v", err)
-	}
-	if src.Archived {
-		t.Errorf("source thread should not have been archived")
-	}
-
-	// Workspace itself must NOT have been restored. Turn 1 modified README.
-	data, _ := os.ReadFile(filepath.Join(workspace, "README"))
-	if string(data) != "turn 1\n" {
-		t.Errorf("fork should not touch worktree; README is %q", data)
-	}
-
-	// Forked thread has items cloned from source (current contract: ALL items,
-	// not "up to turn N"). Document the actual behavior so any future change
-	// to item trimming is a conscious decision with a test change.
-	items, err := e.app.store.ListItems(newID)
-	if err != nil {
-		t.Fatalf("list forked items: %v", err)
-	}
-	if len(items) != 2 {
-		t.Errorf("expected all 2 source items cloned (no turn-trim); got %d", len(items))
-	}
-}
-
-// #29 — revert-both on a Claude thread clears the session ref and restores
+// #29 — conversation-and-files revert on a Claude thread clears the session ref and restores
 // the worktree in one atomic operation. Claude has no wire-level rollback
 // primitive, so the conversation side of "both" is expressed by clearing
 // SessionRef — the next turn spawns a fresh session with no provider-side
 // context. The old Claude session file on disk is intentionally left alone.
-func TestAppE2E_RevertToTurnRevertBothOnClaudeClearsSessionAndRestores(t *testing.T) {
+func TestAppE2E_RevertToCheckpointConversationAndFilesOnClaudeClearsSessionAndRestores(t *testing.T) {
 	e := newE2EApp(t)
 	workspace := t.TempDir()
 	initE2ERepo(t, workspace)
@@ -496,8 +364,8 @@ func TestAppE2E_RevertToTurnRevertBothOnClaudeClearsSessionAndRestores(t *testin
 	captureE2E(t, e.app, "t-claude", workspace, 0)
 	writeE2EFile(t, workspace, "README", "dirty\n")
 
-	if _, err := e.app.RevertToTurn("t-claude", 0, "revert-both"); err != nil {
-		t.Fatalf("revert-both on Claude: %v", err)
+	if err := e.app.RevertToCheckpoint("t-claude", 0, RevertModeConversationAndFiles); err != nil {
+		t.Fatalf("revert checkpoint on Claude: %v", err)
 	}
 
 	got, _ := e.app.store.GetThread("t-claude")
@@ -520,7 +388,7 @@ func TestAppE2E_RevertToTurnRevertBothOnClaudeClearsSessionAndRestores(t *testin
 // app layer short-circuits out of rollbackCodexThread's temp-resume
 // branch. Full provider-integrated coverage lives under the test matrix
 // task (see docs for the missing-pieces backlog).
-func TestAppE2E_RevertToTurnRevertBothOnCodexRestoresWorkspace(t *testing.T) {
+func TestAppE2E_RevertToCheckpointConversationAndFilesOnCodexPropagatesMissingSessionRef(t *testing.T) {
 	e := newE2EApp(t)
 	workspace := t.TempDir()
 	initE2ERepo(t, workspace)
@@ -534,7 +402,7 @@ func TestAppE2E_RevertToTurnRevertBothOnCodexRestoresWorkspace(t *testing.T) {
 	// no live session is registered. rollbackCodexThread returns a
 	// "missing codex thread reference" error in that case, which we
 	// assert propagates cleanly.
-	_, err := e.app.RevertToTurn("t-codex", 0, "revert-both")
+	err := e.app.RevertToCheckpoint("t-codex", 0, RevertModeConversationAndFiles)
 	if err == nil {
 		t.Fatal("expected rollback error when SessionRef is empty")
 	}
@@ -550,36 +418,6 @@ func TestAppE2E_RevertToTurnRevertBothOnCodexRestoresWorkspace(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(workspace, "junk.txt")); err != nil {
 		t.Errorf("junk.txt should still exist when revert aborted; stat err: %v", err)
-	}
-}
-
-// #30b — revert-code on a Codex thread restores the worktree without
-// touching provider state. This is the mode users pick when they want
-// to throw away file changes but keep the conversation going.
-func TestAppE2E_RevertToTurnRevertCodeOnCodexRestoresWorkspaceOnly(t *testing.T) {
-	e := newE2EApp(t)
-	workspace := t.TempDir()
-	initE2ERepo(t, workspace)
-	thread := seedE2EThread(t, e.app, "t-codex", workspace, provider.Codex)
-	thread.SessionRef = "codex-thread-abc"
-	if err := e.app.store.UpdateThread(thread); err != nil {
-		t.Fatalf("update thread: %v", err)
-	}
-	captureE2E(t, e.app, "t-codex", workspace, 0)
-	writeE2EFile(t, workspace, "README", "dirty\n")
-
-	if _, err := e.app.RevertToTurn("t-codex", 0, "revert-code"); err != nil {
-		t.Fatalf("revert-code: %v", err)
-	}
-
-	got, _ := e.app.store.GetThread("t-codex")
-	// SessionRef must survive — revert-code is a worktree-only operation.
-	if got.SessionRef != "codex-thread-abc" {
-		t.Errorf("revert-code must not clear SessionRef; got %q", got.SessionRef)
-	}
-	data, _ := os.ReadFile(filepath.Join(workspace, "README"))
-	if string(data) != "hello\n" {
-		t.Errorf("README should be restored; got %q", data)
 	}
 }
 
@@ -649,7 +487,7 @@ func seedCodexItems(t *testing.T, app *App, threadID string, turnIndices ...int)
 // the provider with the correct numTurns, truncate SQLite items, and preserve
 // SessionRef + worktree. Uses a bash-mock Codex binary that records the
 // rollback request to a sentinel file.
-func TestAppE2E_RevertToTurnRevertConversationOnCodexCallsRollback(t *testing.T) {
+func TestAppE2E_RevertToCheckpointConversationOnlyOnCodexCallsRollback(t *testing.T) {
 	e := newE2EApp(t)
 	workspace := t.TempDir()
 	initE2ERepo(t, workspace)
@@ -676,8 +514,8 @@ func TestAppE2E_RevertToTurnRevertConversationOnCodexCallsRollback(t *testing.T)
 	// leaves it alone.
 	writeE2EFile(t, workspace, "README", "user-edit-after-capture\n")
 
-	if _, err := e.app.RevertToTurn("t-codex", 1, "revert-conversation"); err != nil {
-		t.Fatalf("revert-conversation: %v", err)
+	if err := e.app.RevertToCheckpoint("t-codex", 1, RevertModeConversationOnly); err != nil {
+		t.Fatalf("revert checkpoint: %v", err)
 	}
 
 	// Sentinel must contain the rollback request with numTurns=2.
@@ -716,7 +554,7 @@ func TestAppE2E_RevertToTurnRevertConversationOnCodexCallsRollback(t *testing.T)
 
 // #31b — revert-both on a Codex thread calls thread/rollback AND restores
 // the worktree from the checkpoint.
-func TestAppE2E_RevertToTurnRevertBothOnCodexFullRoundTrip(t *testing.T) {
+func TestAppE2E_RevertToCheckpointConversationAndFilesOnCodexFullRoundTrip(t *testing.T) {
 	e := newE2EApp(t)
 	workspace := t.TempDir()
 	initE2ERepo(t, workspace)
@@ -738,8 +576,8 @@ func TestAppE2E_RevertToTurnRevertBothOnCodexFullRoundTrip(t *testing.T) {
 	writeE2EFile(t, workspace, "README", "dirty-tree\n")
 	writeE2EFile(t, workspace, "junk.txt", "agent-added\n")
 
-	if _, err := e.app.RevertToTurn("t-codex", 0, "revert-both"); err != nil {
-		t.Fatalf("revert-both: %v", err)
+	if err := e.app.RevertToCheckpoint("t-codex", 0, RevertModeConversationAndFiles); err != nil {
+		t.Fatalf("revert checkpoint: %v", err)
 	}
 
 	// Rollback was issued with numTurns = 0+1 - 0 via lastTurn+1-target = 2.
@@ -766,7 +604,7 @@ func TestAppE2E_RevertToTurnRevertBothOnCodexFullRoundTrip(t *testing.T) {
 // #31c — If the Codex provider call fails, revert aborts before touching the
 // worktree or truncating items. The failure ordering is deliberate: don't
 // leave a half-reverted state the user can't recover from.
-func TestAppE2E_RevertToTurnProviderFailureAbortsWorktree(t *testing.T) {
+func TestAppE2E_RevertToCheckpointProviderFailureAbortsWorktree(t *testing.T) {
 	e := newE2EApp(t)
 	workspace := t.TempDir()
 	initE2ERepo(t, workspace)
@@ -792,7 +630,7 @@ func TestAppE2E_RevertToTurnProviderFailureAbortsWorktree(t *testing.T) {
 	captureE2E(t, e.app, "t-codex", workspace, 0)
 	writeE2EFile(t, workspace, "README", "dirty\n")
 
-	_, err := e.app.RevertToTurn("t-codex", 0, "revert-both")
+	err := e.app.RevertToCheckpoint("t-codex", 0, RevertModeConversationAndFiles)
 	if err == nil {
 		t.Fatal("expected provider error to propagate")
 	}
@@ -811,7 +649,7 @@ func TestAppE2E_RevertToTurnProviderFailureAbortsWorktree(t *testing.T) {
 // #31d — Revert target == last captured turn is a degenerate but valid case:
 // numTurns = 1 (drop just the last turn). The provider rollback must still
 // be issued.
-func TestAppE2E_RevertToTurnTargetEqualsLastTurn(t *testing.T) {
+func TestAppE2E_RevertToCheckpointDropsLastTurn(t *testing.T) {
 	e := newE2EApp(t)
 	workspace := t.TempDir()
 	initE2ERepo(t, workspace)
@@ -832,8 +670,8 @@ func TestAppE2E_RevertToTurnTargetEqualsLastTurn(t *testing.T) {
 	captureE2E(t, e.app, "t-codex", workspace, 0)
 	captureE2E(t, e.app, "t-codex", workspace, 1)
 
-	// Revert to turn 1: drop turn 1 only. numTurns = 2 - 1 = 1.
-	if _, err := e.app.RevertToTurn("t-codex", 1, "revert-conversation"); err != nil {
+	// Revert to checkpoint count 1: keep turn 0, drop turn 1.
+	if err := e.app.RevertToCheckpoint("t-codex", 1, RevertModeConversationOnly); err != nil {
 		t.Fatalf("revert: %v", err)
 	}
 	data, _ := os.ReadFile(sentinel)
@@ -849,7 +687,7 @@ func TestAppE2E_RevertToTurnTargetEqualsLastTurn(t *testing.T) {
 // #31e — Revert with target > last turn is a no-op for the provider (the
 // server has nothing to drop) but still fires the SQL truncation path
 // harmlessly (nothing to truncate).
-func TestAppE2E_RevertToTurnTargetBeyondLastTurnIsNoop(t *testing.T) {
+func TestAppE2E_RevertToCheckpointBeyondLastTurnIsNoop(t *testing.T) {
 	e := newE2EApp(t)
 	workspace := t.TempDir()
 	initE2ERepo(t, workspace)
@@ -869,9 +707,9 @@ func TestAppE2E_RevertToTurnTargetBeyondLastTurnIsNoop(t *testing.T) {
 	seedCodexItems(t, e.app, "t-codex", 0)
 	captureE2E(t, e.app, "t-codex", workspace, 5) // target-future checkpoint
 
-	// Revert to turn 5 when last turn is 0: numTurns = 0+1 - 5 = -4 → parser
-	// short-circuits and doesn't call provider.
-	if _, err := e.app.RevertToTurn("t-codex", 5, "revert-conversation"); err != nil {
+	// Revert to checkpoint count 5 when last turn is 0: no provider rollback
+	// is needed.
+	if err := e.app.RevertToCheckpoint("t-codex", 5, RevertModeConversationOnly); err != nil {
 		t.Fatalf("revert: %v", err)
 	}
 	if _, err := os.Stat(sentinel); err == nil {
@@ -886,45 +724,6 @@ func TestAppE2E_RevertToTurnTargetBeyondLastTurnIsNoop(t *testing.T) {
 	items, _ := e.app.store.ListItems("t-codex")
 	if len(items) != 1 || items[0].TurnIndex != 0 {
 		t.Errorf("expected item at turn 0 to survive; got %+v", items)
-	}
-}
-
-// #31f — revert-code on Codex with a real binary configured must NOT call
-// the provider. The rollback path is conversation-only.
-func TestAppE2E_RevertToTurnRevertCodeDoesNotCallProvider(t *testing.T) {
-	e := newE2EApp(t)
-	workspace := t.TempDir()
-	initE2ERepo(t, workspace)
-
-	sentinel := filepath.Join(t.TempDir(), "rollback-params.txt")
-	binary := writeMockCodexRollbackBinary(t, sentinel)
-	e.app.settings = settings.NewService(t.TempDir())
-	if _, err := e.app.settings.Update(map[string]any{"codexBinaryPath": binary}); err != nil {
-		t.Fatalf("set binary: %v", err)
-	}
-
-	thread := seedE2EThread(t, e.app, "t-codex", workspace, provider.Codex)
-	thread.SessionRef = "stored-codex-id"
-	if err := e.app.store.UpdateThread(thread); err != nil {
-		t.Fatalf("update thread: %v", err)
-	}
-	seedCodexItems(t, e.app, "t-codex", 0, 1)
-	captureE2E(t, e.app, "t-codex", workspace, 0)
-	writeE2EFile(t, workspace, "README", "dirty\n")
-
-	if _, err := e.app.RevertToTurn("t-codex", 0, "revert-code"); err != nil {
-		t.Fatalf("revert-code: %v", err)
-	}
-	if _, err := os.Stat(sentinel); err == nil {
-		data, _ := os.ReadFile(sentinel)
-		if len(data) > 0 {
-			t.Errorf("revert-code must not call provider; got: %q", data)
-		}
-	}
-	// Items survive (code-only revert doesn't truncate).
-	items, _ := e.app.store.ListItems("t-codex")
-	if len(items) != 2 {
-		t.Errorf("revert-code must not touch items; got %d", len(items))
 	}
 }
 

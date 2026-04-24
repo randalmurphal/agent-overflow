@@ -2,11 +2,13 @@ package triage
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"testing"
 	"time"
 
+	"agent-overflow/internal/diffsummary"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 )
@@ -50,6 +52,14 @@ func (f *fakeCheckpointStore) CaptureBaseline(_ context.Context, workspace, thre
 	}
 	f.liveRefs[ref] = true
 	return ref, nil
+}
+
+func (f *fakeCheckpointStore) DiffRefToRef(_ context.Context, _ string, _, _ string) ([]byte, error) {
+	return nil, nil
+}
+
+func (f *fakeCheckpointStore) DiffRefToRefSummary(_ context.Context, _ string, _, _ string) ([]diffsummary.File, error) {
+	return nil, nil
 }
 
 func (f *fakeCheckpointStore) DeleteRef(_ context.Context, _ string, ref string) error {
@@ -225,6 +235,202 @@ func TestHandleTurnStartDoubleFiresAreDedupedPerTurn(t *testing.T) {
 	}
 }
 
+func TestHandleTurnStartOnlyCapturesInitialBaseline(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	fake := &fakeCheckpointStore{isRepo: true}
+	router.SetCheckpointStore(fake)
+
+	for _, turnIndex := range []int{0, 1} {
+		if err := router.Handle(provider.ProviderEvent{
+			Kind:      provider.EventTurnStart,
+			ThreadID:  "t1",
+			TurnIndex: turnIndex,
+			Timestamp: time.Now(),
+		}); err != nil {
+			t.Fatalf("handle turn %d: %v", turnIndex, err)
+		}
+	}
+
+	if len(fake.capturedCalls) != 1 {
+		t.Fatalf("capture calls = %d, want initial baseline only", len(fake.capturedCalls))
+	}
+	if fake.capturedCalls[0].TurnIndex != 0 {
+		t.Fatalf("first checkpoint turn = %d, want 0", fake.capturedCalls[0].TurnIndex)
+	}
+
+	rows, err := st.ListCheckpoints("t1")
+	if err != nil {
+		t.Fatalf("list checkpoints: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("checkpoint rows = %d, want 1", len(rows))
+	}
+	if rows[0].CheckpointTurnCount != 0 {
+		t.Fatalf("checkpoint turn = %d, want 0", rows[0].CheckpointTurnCount)
+	}
+}
+
+func TestHandleTurnCompleteCapturesErroredTurnCheckpoint(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	fake := &fakeCheckpointStore{isRepo: true}
+	router.SetCheckpointStore(fake)
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTurnStart,
+		ThreadID:  "t1",
+		TurnID:    "turn-1",
+		TurnIndex: 0,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle start: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTurnComplete,
+		ThreadID:  "t1",
+		TurnID:    "turn-1",
+		TurnIndex: 0,
+		Meta:      json.RawMessage(`{"error":"tool failed"}`),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle complete: %v", err)
+	}
+
+	if len(fake.capturedCalls) != 2 {
+		t.Fatalf("capture calls = %d, want baseline + completed checkpoint", len(fake.capturedCalls))
+	}
+	if fake.capturedCalls[1].TurnIndex != 1 {
+		t.Fatalf("completed checkpoint turn = %d, want 1", fake.capturedCalls[1].TurnIndex)
+	}
+	got, ok, err := st.GetCheckpointByTurnCount("t1", 1)
+	if err != nil || !ok {
+		t.Fatalf("checkpoint turn 1 missing: ok=%v err=%v", ok, err)
+	}
+	if got.Status != "error" {
+		t.Fatalf("checkpoint status = %q, want error", got.Status)
+	}
+}
+
+func TestHandleTurnCompleteCapturesInterruptedTurnCheckpoint(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	fake := &fakeCheckpointStore{isRepo: true}
+	router.SetCheckpointStore(fake)
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTurnStart,
+		ThreadID:  "t1",
+		TurnID:    "turn-1",
+		TurnIndex: 0,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle start: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTurnComplete,
+		ThreadID:  "t1",
+		TurnID:    "turn-1",
+		TurnIndex: 0,
+		Meta:      json.RawMessage(`{"turn_status":"interrupted"}`),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle complete: %v", err)
+	}
+
+	got, ok, err := st.GetCheckpointByTurnCount("t1", 1)
+	if err != nil || !ok {
+		t.Fatalf("checkpoint turn 1 missing: ok=%v err=%v", ok, err)
+	}
+	if got.Status != "interrupted" {
+		t.Fatalf("checkpoint status = %q, want interrupted", got.Status)
+	}
+}
+
+func TestHandleTurnStartDoesNotReplaceCompletedCheckpoint(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	fake := &fakeCheckpointStore{isRepo: true}
+	router.SetCheckpointStore(fake)
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTurnStart,
+		ThreadID:  "t1",
+		TurnID:    "turn-0",
+		TurnIndex: 0,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle start turn 0: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTurnComplete,
+		ThreadID:  "t1",
+		TurnID:    "turn-0",
+		TurnIndex: 0,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle complete turn 0: %v", err)
+	}
+	before, ok, err := st.GetCheckpointByTurnCount("t1", 1)
+	if err != nil || !ok {
+		t.Fatalf("checkpoint turn 1 missing before next start: ok=%v err=%v", ok, err)
+	}
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTurnStart,
+		ThreadID:  "t1",
+		TurnID:    "turn-1",
+		TurnIndex: 1,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle start turn 1: %v", err)
+	}
+
+	after, ok, err := st.GetCheckpointByTurnCount("t1", 1)
+	if err != nil || !ok {
+		t.Fatalf("checkpoint turn 1 missing after next start: ok=%v err=%v", ok, err)
+	}
+	if after.RefName != before.RefName || after.CapturedAt != before.CapturedAt {
+		t.Fatalf("checkpoint turn 1 changed after next turn start: before=%+v after=%+v", before, after)
+	}
+	if len(fake.capturedCalls) != 2 {
+		t.Fatalf("capture calls = %d, want baseline + completed checkpoint only", len(fake.capturedCalls))
+	}
+}
+
+func TestHandleTurnCompleteDoesNotBackfillMissingPreviousCheckpoint(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	fake := &fakeCheckpointStore{isRepo: true}
+	router.SetCheckpointStore(fake)
+	router.setOpenTurn("t1", 1)
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTurnComplete,
+		ThreadID:  "t1",
+		TurnID:    "turn-1",
+		TurnIndex: 1,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle complete: %v", err)
+	}
+
+	if len(fake.capturedCalls) != 0 {
+		t.Fatalf("capture calls = %+v, want none when prior checkpoint is missing", fake.capturedCalls)
+	}
+	if _, ok, err := st.GetCheckpointByTurnCount("t1", 2); err != nil || ok {
+		t.Fatalf("checkpoint turn 2 ok=%v err=%v, want missing", ok, err)
+	}
+	if got := len(filterEmissions(*emissions, "checkpoint:error")); got != 1 {
+		t.Fatalf("checkpoint:error emissions = %d, want 1", got)
+	}
+}
+
 func TestHandleTurnStartCapturesWorkspacePathWhenWorktreeMetadataIsStale(t *testing.T) {
 	// WorkspacePath is the provider cwd. WorktreePath is retained as metadata
 	// for owned worktrees, so checkpoint capture must follow WorkspacePath.
@@ -276,8 +482,9 @@ func TestCleanupThreadClearsCheckpointTrackingState(t *testing.T) {
 	}
 	router.CleanupThread("t1")
 
-	// After cleanup, a second turn_start must be allowed to re-capture. We
-	// need another item in the store to advance the turn index — simulate it.
+	// After cleanup, later turn starts must route normally but must not
+	// synthesize a checkpoint. Checkpoints after turn 0 are captured on
+	// completion, where the previous checkpoint boundary is known.
 	if _, err := st.GetThread("t1"); err != nil {
 		t.Fatalf("thread gone: %v", err)
 	}
@@ -311,8 +518,8 @@ func TestCleanupThreadClearsCheckpointTrackingState(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("handle second turn: %v", err)
 	}
-	if len(fake.capturedCalls) != 2 {
-		t.Errorf("expected 2 captures across turns, got %d", len(fake.capturedCalls))
+	if len(fake.capturedCalls) != 1 {
+		t.Errorf("expected only the initial baseline capture, got %d", len(fake.capturedCalls))
 	}
 }
 
@@ -465,6 +672,14 @@ func (f *ddlBombCheckpointStore) CaptureBaseline(_ context.Context, workspace, t
 		f.beforeSaveHook()
 	}
 	return ref, nil
+}
+
+func (f *ddlBombCheckpointStore) DiffRefToRef(_ context.Context, _ string, _, _ string) ([]byte, error) {
+	return nil, nil
+}
+
+func (f *ddlBombCheckpointStore) DiffRefToRefSummary(_ context.Context, _ string, _, _ string) ([]diffsummary.File, error) {
+	return nil, nil
 }
 
 func (f *ddlBombCheckpointStore) DeleteRef(_ context.Context, _ string, ref string) error {

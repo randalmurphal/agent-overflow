@@ -218,21 +218,6 @@ func TestListThreadProposedPlans_NilNormalization(t *testing.T) {
 	}
 }
 
-func TestListThreadDiffPayloads_NilNormalization(t *testing.T) {
-	app := newTestAppWithStore(t)
-	thread, err := createTestThread(t, app, "claude", "/tmp/w-diffs", "claude-sonnet-4-6", "")
-	if err != nil {
-		t.Fatalf("createTestThread: %v", err)
-	}
-	diffs, err := app.ListThreadDiffPayloads(thread.ID)
-	if err != nil {
-		t.Fatalf("ListThreadDiffPayloads: %v", err)
-	}
-	if diffs == nil {
-		t.Fatal("diffs should be []Item{}, not nil")
-	}
-}
-
 func TestListLiveBackgroundTasks_RetentionCutoffUsesWallClock(t *testing.T) {
 	// The binding computes `cutoff = now - backgroundTaskRetentionMillis`
 	// on each call. A completion whose created_at is within the

@@ -4,10 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"agent-overflow/internal/diffsummary"
 )
 
 // Store shells out to `git` to capture, diff, and restore workspace snapshots.
@@ -25,6 +28,10 @@ const (
 	authorName  = "Agent Overflow"
 	authorEmail = "agent-overflow@users.noreply.github.com"
 )
+
+var maxDiffOutputBytes int64 = 10 * 1024 * 1024
+
+var errGitOutputTooLarge = errors.New("git output exceeded limit")
 
 // CaptureBaseline snapshots the current worktree at (threadID, turnIndex). It
 // returns the ref name that was written so callers can persist it alongside
@@ -125,12 +132,43 @@ func (s *Store) DiffRefToRef(ctx context.Context, workspace, fromRef, toRef stri
 	if from == "" || to == "" {
 		return nil, fmt.Errorf("checkpoint: diff refs unavailable: from=%q to=%q", fromRef, toRef)
 	}
-	stdout, _, _, err := runGit(ctx, workspace, nil, false,
-		"diff", "--patch", "--minimal", "--no-color", from, to)
+	stdout, _, _, err := runGitWithStdoutLimit(ctx, workspace, nil, false, maxDiffOutputBytes,
+		"diff", "--patch", "--minimal", "--no-color", "--no-ext-diff", "--no-textconv", from, to)
+	if errors.Is(err, errGitOutputTooLarge) {
+		return nil, fmt.Errorf("checkpoint: diff %s..%s exceeds %d byte limit", fromRef, toRef, maxDiffOutputBytes)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("checkpoint: diff %s..%s: %w", fromRef, toRef, err)
 	}
 	return []byte(stdout), nil
+}
+
+// DiffRefToRefSummary returns compact per-file diff metadata between two refs
+// without materializing the full patch text.
+func (s *Store) DiffRefToRefSummary(ctx context.Context, workspace, fromRef, toRef string) ([]diffsummary.File, error) {
+	from, err := s.resolveRefCommit(ctx, workspace, fromRef)
+	if err != nil {
+		return nil, err
+	}
+	to, err := s.resolveRefCommit(ctx, workspace, toRef)
+	if err != nil {
+		return nil, err
+	}
+	if from == "" || to == "" {
+		return nil, fmt.Errorf("checkpoint: diff refs unavailable: from=%q to=%q", fromRef, toRef)
+	}
+
+	nameStatus, _, _, err := runGit(ctx, workspace, nil, false,
+		"diff", "--name-status", "--no-renames", "-z", "--no-color", "--no-ext-diff", "--no-textconv", from, to)
+	if err != nil {
+		return nil, fmt.Errorf("checkpoint: diff name-status %s..%s: %w", fromRef, toRef, err)
+	}
+	numstat, _, _, err := runGit(ctx, workspace, nil, false,
+		"diff", "--numstat", "--no-renames", "-z", "--no-color", "--no-ext-diff", "--no-textconv", from, to)
+	if err != nil {
+		return nil, fmt.Errorf("checkpoint: diff numstat %s..%s: %w", fromRef, toRef, err)
+	}
+	return diffsummary.ParseGitNameStatusNumstat(nameStatus, numstat), nil
 }
 
 // DiffRefToWorktree returns the unified patch from the checkpoint ref to the
@@ -144,11 +182,16 @@ func (s *Store) DiffRefToWorktree(ctx context.Context, workspace, ref string) ([
 		return nil, fmt.Errorf("checkpoint: ref %q is unavailable", ref)
 	}
 
-	tracked, _, _, err := runGit(ctx, workspace, nil, false,
-		"diff", "--patch", "--minimal", "--no-color", oid, "--")
+	remainingBytes := maxDiffOutputBytes
+	tracked, _, _, err := runGitWithStdoutLimit(ctx, workspace, nil, false, remainingBytes,
+		"diff", "--patch", "--minimal", "--no-color", "--no-ext-diff", "--no-textconv", oid, "--")
+	if errors.Is(err, errGitOutputTooLarge) {
+		return nil, fmt.Errorf("checkpoint: diff worktree exceeds %d byte limit", maxDiffOutputBytes)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("checkpoint: diff tracked: %w", err)
 	}
+	remainingBytes -= int64(len(tracked))
 
 	untracked, _, code, err := runGit(ctx, workspace, nil, true,
 		"ls-files", "--others", "--exclude-standard", "-z")
@@ -166,11 +209,17 @@ func (s *Store) DiffRefToWorktree(ctx context.Context, workspace, ref string) ([
 			if p == "" {
 				continue
 			}
+			if remainingBytes <= 0 {
+				return nil, fmt.Errorf("checkpoint: diff worktree exceeds %d byte limit", maxDiffOutputBytes)
+			}
 			// `git diff --no-index` exits 1 when files differ (expected). Any
 			// other non-zero exit is a hard error.
-			patch, _, exit, err := runGit(ctx, workspace, nil, true,
-				"diff", "--no-index", "--patch", "--minimal", "--no-color", "--",
+			patch, _, exit, err := runGitWithStdoutLimit(ctx, workspace, nil, true, remainingBytes,
+				"diff", "--no-index", "--patch", "--minimal", "--no-color", "--no-ext-diff", "--no-textconv", "--",
 				"/dev/null", p)
+			if errors.Is(err, errGitOutputTooLarge) {
+				return nil, fmt.Errorf("checkpoint: diff worktree exceeds %d byte limit", maxDiffOutputBytes)
+			}
 			if err != nil {
 				return nil, fmt.Errorf("checkpoint: diff new file %s: %w", p, err)
 			}
@@ -180,6 +229,7 @@ func (s *Store) DiffRefToWorktree(ctx context.Context, workspace, ref string) ([
 			if t := strings.TrimSpace(patch); t != "" {
 				parts = append(parts, t)
 			}
+			remainingBytes -= int64(len(patch))
 		}
 	}
 	return []byte(strings.Join(parts, "\n\n")), nil
@@ -317,9 +367,7 @@ func runGit(
 ) (stdout, stderr string, code int, err error) {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = workspace
-	if len(extraEnv) > 0 {
-		cmd.Env = append(os.Environ(), extraEnv...)
-	}
+	cmd.Env = gitEnv(extraEnv)
 	var out, errBuf strings.Builder
 	cmd.Stdout = &out
 	cmd.Stderr = &errBuf
@@ -338,4 +386,80 @@ func runGit(
 	}
 	return stdout, stderr, code, fmt.Errorf("git %s: exit=%d: %s",
 		strings.Join(args, " "), code, strings.TrimSpace(stderr))
+}
+
+func runGitWithStdoutLimit(
+	ctx context.Context,
+	workspace string,
+	extraEnv []string,
+	allowNonZero bool,
+	maxStdoutBytes int64,
+	args ...string,
+) (stdout, stderr string, code int, err error) {
+	if maxStdoutBytes <= 0 {
+		return runGit(ctx, workspace, extraEnv, allowNonZero, args...)
+	}
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = workspace
+	cmd.Env = gitEnv(extraEnv)
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		return "", "", 0, fmt.Errorf("git %s: stdout pipe: %w", strings.Join(args, " "), err)
+	}
+	stderrPipe, err := cmd.StderrPipe()
+	if err != nil {
+		return "", "", 0, fmt.Errorf("git %s: stderr pipe: %w", strings.Join(args, " "), err)
+	}
+	if err := cmd.Start(); err != nil {
+		return "", "", 0, fmt.Errorf("git %s: start: %w", strings.Join(args, " "), err)
+	}
+
+	var errBuf strings.Builder
+	stderrDone := make(chan error, 1)
+	go func() {
+		_, copyErr := io.Copy(&errBuf, stderrPipe)
+		stderrDone <- copyErr
+	}()
+
+	data, readErr := io.ReadAll(io.LimitReader(stdoutPipe, maxStdoutBytes+1))
+	if int64(len(data)) > maxStdoutBytes {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		<-stderrDone
+		return "", errBuf.String(), 0, errGitOutputTooLarge
+	}
+	waitErr := cmd.Wait()
+	stderrErr := <-stderrDone
+	stdout = string(data)
+	stderr = errBuf.String()
+	if readErr != nil {
+		return stdout, stderr, 0, fmt.Errorf("git %s: read stdout: %w", strings.Join(args, " "), readErr)
+	}
+	if stderrErr != nil {
+		return stdout, stderr, 0, fmt.Errorf("git %s: read stderr: %w", strings.Join(args, " "), stderrErr)
+	}
+	if waitErr == nil {
+		return stdout, stderr, 0, nil
+	}
+	var exitErr *exec.ExitError
+	if errors.As(waitErr, &exitErr) {
+		code = exitErr.ExitCode()
+		if allowNonZero {
+			return stdout, stderr, code, nil
+		}
+	}
+	return stdout, stderr, code, fmt.Errorf("git %s: exit=%d: %s",
+		strings.Join(args, " "), code, strings.TrimSpace(stderr))
+}
+
+func gitEnv(extraEnv []string) []string {
+	env := make([]string, 0, len(os.Environ())+len(extraEnv)+2)
+	for _, entry := range os.Environ() {
+		if strings.HasPrefix(entry, "GIT_EXTERNAL_DIFF=") || strings.HasPrefix(entry, "GIT_DIFF_OPTS=") {
+			continue
+		}
+		env = append(env, entry)
+	}
+	env = append(env, "GIT_EXTERNAL_DIFF=", "GIT_DIFF_OPTS=")
+	return append(env, extraEnv...)
 }

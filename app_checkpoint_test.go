@@ -65,15 +65,15 @@ func seedCheckpointThread(t *testing.T, app *App, threadID, workspace string, pr
 	t.Helper()
 	now := time.Now().UnixMilli()
 	thread := store.Thread{
-		ID:              threadID,
+		ID:            threadID,
 		ProjectID:     defaultTestProjectID,
-		Title:           "Checkpoint Test",
-		Provider:        provider,
-		WorkspacePath:   workspace,
-		Model:           "test",
-		Mode: "chat",
-		CreatedAt:       now,
-		UpdatedAt:       now,
+		Title:         "Checkpoint Test",
+		Provider:      provider,
+		WorkspacePath: workspace,
+		Model:         "test",
+		Mode:          "chat",
+		CreatedAt:     now,
+		UpdatedAt:     now,
 	}
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("create thread: %v", err)
@@ -88,12 +88,13 @@ func captureForTest(t *testing.T, app *App, threadID, workspace string, turnInde
 		t.Fatalf("capture baseline: %v", err)
 	}
 	record := store.Checkpoint{
-		ID:            "chk-" + threadID + "-" + string(rune('0'+turnIndex)),
-		ThreadID:      threadID,
-		TurnIndex:     turnIndex,
-		RefName:       ref,
-		CapturedAt:    time.Now().UnixMilli(),
-		WorkspacePath: workspace,
+		ID:                  "chk-" + threadID + "-" + string(rune('0'+turnIndex)),
+		ThreadID:            threadID,
+		TurnIndex:           turnIndex,
+		CheckpointTurnCount: turnIndex,
+		RefName:             ref,
+		CapturedAt:          time.Now().UnixMilli(),
+		WorkspacePath:       workspace,
 	}
 	if err := app.store.SaveCheckpoint(record); err != nil {
 		t.Fatalf("save checkpoint: %v", err)
@@ -103,7 +104,7 @@ func captureForTest(t *testing.T, app *App, threadID, workspace string, turnInde
 
 // -- tests --
 
-func TestGetTurnDiffBetweenTwoCheckpoints(t *testing.T) {
+func TestGetCheckpointRangeDiffBetweenTwoCheckpoints(t *testing.T) {
 	app, workspace := newCheckpointTestApp(t)
 	seedCheckpointThread(t, app, "t1", workspace, string(provider.Codex))
 
@@ -112,131 +113,25 @@ func TestGetTurnDiffBetweenTwoCheckpoints(t *testing.T) {
 	writeCheckpointFile(t, workspace, "README", "modified\n")
 	captureForTest(t, app, "t1", workspace, 1)
 
-	diff, err := app.GetTurnDiff("t1", 0)
+	diff, err := app.GetCheckpointRangeDiff("t1", 0, 1)
 	if err != nil {
-		t.Fatalf("get turn diff: %v", err)
+		t.Fatalf("get checkpoint range diff: %v", err)
 	}
 	if !strings.Contains(diff, "+modified") {
 		t.Errorf("expected +modified in diff, got:\n%s", diff)
 	}
 }
 
-func TestGetTurnDiffLatestTurnUsesWorktree(t *testing.T) {
+func TestGetCheckpointRangeDiffMissingCheckpointErrors(t *testing.T) {
 	app, workspace := newCheckpointTestApp(t)
 	seedCheckpointThread(t, app, "t1", workspace, string(provider.Codex))
 
-	captureForTest(t, app, "t1", workspace, 0)
-	// No turn 1 checkpoint. Modify worktree directly.
-	writeCheckpointFile(t, workspace, "README", "live edit\n")
-
-	diff, err := app.GetTurnDiff("t1", 0)
-	if err != nil {
-		t.Fatalf("get turn diff: %v", err)
-	}
-	if !strings.Contains(diff, "+live edit") {
-		t.Errorf("expected +live edit in worktree diff, got:\n%s", diff)
-	}
-}
-
-func TestGetTurnDiffMissingCheckpointErrors(t *testing.T) {
-	app, workspace := newCheckpointTestApp(t)
-	seedCheckpointThread(t, app, "t1", workspace, string(provider.Codex))
-
-	if _, err := app.GetTurnDiff("t1", 0); err == nil {
+	if _, err := app.GetCheckpointRangeDiff("t1", 0, 1); err == nil {
 		t.Errorf("expected error when no checkpoint exists")
 	}
 }
 
-func TestGetCheckpointToWorktreeDiffShowsPendingChanges(t *testing.T) {
-	app, workspace := newCheckpointTestApp(t)
-	seedCheckpointThread(t, app, "t1", workspace, string(provider.Codex))
-
-	captureForTest(t, app, "t1", workspace, 0)
-	writeCheckpointFile(t, workspace, "new-file.txt", "brand new\n")
-
-	diff, err := app.GetCheckpointToWorktreeDiff("t1", 0)
-	if err != nil {
-		t.Fatalf("diff: %v", err)
-	}
-	if !strings.Contains(diff, "new-file.txt") {
-		t.Errorf("expected new-file.txt in diff, got:\n%s", diff)
-	}
-}
-
-func TestRevertToTurnForkReturnsNewThreadID(t *testing.T) {
-	app, workspace := newCheckpointTestApp(t)
-	// Claude thread so fork path picks the pending-ref branch.
-	thread := seedCheckpointThread(t, app, "t-claude", workspace, string(provider.Claude))
-	thread.SessionRef = "claude-session-ref"
-	if err := app.store.UpdateThread(thread); err != nil {
-		t.Fatalf("update thread: %v", err)
-	}
-	// ForkThread requires at least one timeline item.
-	if err := app.store.InsertItem(store.Item{
-		ID: "item-1", ThreadID: "t-claude", TurnIndex: 1, ItemIndex: 0,
-		Kind: "user_text", Role: "user", Summary: "hi", CreatedAt: time.Now().UnixMilli(),
-	}); err != nil {
-		t.Fatalf("insert item: %v", err)
-	}
-	captureForTest(t, app, "t-claude", workspace, 0)
-
-	newID, err := app.RevertToTurn("t-claude", 0, "fork")
-	if err != nil {
-		t.Fatalf("revert fork: %v", err)
-	}
-	if newID == "" {
-		t.Errorf("expected new thread ID from fork")
-	}
-	if newID == "t-claude" {
-		t.Errorf("fork should create a NEW thread, got same id")
-	}
-	if _, err := app.store.GetThread(newID); err != nil {
-		t.Errorf("forked thread should be retrievable: %v", err)
-	}
-}
-
-// TestRevertToTurnRevertCodeOnlyRestoresWorktreeKeepsItems confirms that
-// revert-code touches only the filesystem. Items and checkpoints stay put,
-// and the provider session is left alone (no SessionRef rewrite). This is
-// the mode users pick when they want to toss file changes from the last
-// turn while keeping the conversation intact.
-func TestRevertToTurnRevertCodeOnlyRestoresWorktreeKeepsItems(t *testing.T) {
-	app, workspace := newCheckpointTestApp(t)
-	seedCheckpointThread(t, app, "t-code", workspace, string(provider.Codex))
-	// Seed items across turns 0 and 1 so we can assert none are dropped.
-	for i, turn := range []int{0, 1} {
-		if err := app.store.InsertItem(store.Item{
-			ID: "item-" + strings.Repeat("x", i+1), ThreadID: "t-code",
-			TurnIndex: turn, ItemIndex: 0, Kind: "user_text", Role: "user",
-			Summary: "x", CreatedAt: time.Now().UnixMilli(),
-		}); err != nil {
-			t.Fatalf("insert item: %v", err)
-		}
-	}
-	captureForTest(t, app, "t-code", workspace, 0)
-	writeCheckpointFile(t, workspace, "README", "junk\n")
-
-	if _, err := app.RevertToTurn("t-code", 0, "revert-code"); err != nil {
-		t.Fatalf("revert-code: %v", err)
-	}
-
-	if got, _ := os.ReadFile(filepath.Join(workspace, "README")); string(got) != "hello\n" {
-		t.Errorf("README not restored by revert-code: %q", got)
-	}
-	items, err := app.store.ListItems("t-code")
-	if err != nil {
-		t.Fatalf("list items: %v", err)
-	}
-	if len(items) != 2 {
-		t.Errorf("revert-code must not truncate items; got %d", len(items))
-	}
-}
-
-// TestRevertToTurnRevertConversationOnClaudeClearsSessionRef confirms that
-// Claude's revert-conversation path stops short of touching the worktree
-// but wipes the session ref and truncates items past the target turn. The
-// old session file on disk is intentionally left where it was.
-func TestRevertToTurnRevertConversationOnClaudeClearsSessionRef(t *testing.T) {
+func TestRevertToCheckpointConversationOnlyOnClaudeClearsSessionRef(t *testing.T) {
 	app, workspace := newCheckpointTestApp(t)
 	thread := seedCheckpointThread(t, app, "t-claude", workspace, string(provider.Claude))
 	thread.SessionRef = "claude-session-old"
@@ -254,11 +149,9 @@ func TestRevertToTurnRevertConversationOnClaudeClearsSessionRef(t *testing.T) {
 	}
 	captureForTest(t, app, "t-claude", workspace, 1)
 
-	// Revert to turn 1 → drop turns 1 and 2; keep turn 0.
-	// Worktree is untouched by revert-conversation even if dirty.
 	writeCheckpointFile(t, workspace, "README", "still dirty\n")
-	if _, err := app.RevertToTurn("t-claude", 1, "revert-conversation"); err != nil {
-		t.Fatalf("revert-conversation: %v", err)
+	if err := app.RevertToCheckpoint("t-claude", 1, RevertModeConversationOnly); err != nil {
+		t.Fatalf("revert checkpoint: %v", err)
 	}
 
 	got, err := app.store.GetThread("t-claude")
@@ -280,10 +173,42 @@ func TestRevertToTurnRevertConversationOnClaudeClearsSessionRef(t *testing.T) {
 	}
 }
 
-// TestRevertToTurnRevertBothOnClaudeRestoresWorktreeAndClearsSession confirms
-// the combined path for Claude: clears session ref, restores worktree, and
-// truncates items past the target turn.
-func TestRevertToTurnRevertBothOnClaudeRestoresWorktreeAndClearsSession(t *testing.T) {
+func TestRevertToCheckpointKeepsConversationThroughCheckpointTurn(t *testing.T) {
+	app, workspace := newCheckpointTestApp(t)
+	thread := seedCheckpointThread(t, app, "t-claude", workspace, string(provider.Claude))
+	thread.SessionRef = "claude-session-old"
+	if err := app.store.UpdateThread(thread); err != nil {
+		t.Fatalf("update thread: %v", err)
+	}
+	for _, turn := range []int{0, 1, 2} {
+		if err := app.store.InsertItem(store.Item{
+			ID: "item-checkpoint-" + string(rune('0'+turn)), ThreadID: "t-claude",
+			TurnIndex: turn, ItemIndex: 0, Kind: "user_text", Role: "user",
+			Summary: "x", CreatedAt: time.Now().UnixMilli(),
+		}); err != nil {
+			t.Fatalf("insert item: %v", err)
+		}
+	}
+	captureForTest(t, app, "t-claude", workspace, 1)
+	writeCheckpointFile(t, workspace, "README", "dirty\n")
+
+	if err := app.RevertToCheckpoint("t-claude", 1, RevertModeConversationOnly); err != nil {
+		t.Fatalf("revert checkpoint: %v", err)
+	}
+
+	items, _ := app.store.ListItems("t-claude")
+	if len(items) != 1 {
+		t.Fatalf("expected only turn 0 to survive, got %d items", len(items))
+	}
+	if items[0].TurnIndex != 0 {
+		t.Fatalf("surviving turn = %d; want 0", items[0].TurnIndex)
+	}
+	if data, _ := os.ReadFile(filepath.Join(workspace, "README")); string(data) != "dirty\n" {
+		t.Fatalf("conversation-only should keep current worktree, got %q", data)
+	}
+}
+
+func TestRevertToCheckpointConversationAndFilesOnClaudeRestoresWorktreeAndClearsSession(t *testing.T) {
 	app, workspace := newCheckpointTestApp(t)
 	thread := seedCheckpointThread(t, app, "t-claude", workspace, string(provider.Claude))
 	thread.SessionRef = "claude-session-old"
@@ -302,8 +227,8 @@ func TestRevertToTurnRevertBothOnClaudeRestoresWorktreeAndClearsSession(t *testi
 	captureForTest(t, app, "t-claude", workspace, 0)
 	writeCheckpointFile(t, workspace, "README", "dirty\n")
 
-	if _, err := app.RevertToTurn("t-claude", 0, "revert-both"); err != nil {
-		t.Fatalf("revert-both on Claude: %v", err)
+	if err := app.RevertToCheckpoint("t-claude", 0, RevertModeConversationAndFiles); err != nil {
+		t.Fatalf("revert checkpoint on Claude: %v", err)
 	}
 
 	got, _ := app.store.GetThread("t-claude")
@@ -319,12 +244,12 @@ func TestRevertToTurnRevertBothOnClaudeRestoresWorktreeAndClearsSession(t *testi
 	}
 }
 
-func TestRevertToTurnUnknownModeErrors(t *testing.T) {
+func TestRevertToCheckpointUnknownModeErrors(t *testing.T) {
 	app, workspace := newCheckpointTestApp(t)
 	seedCheckpointThread(t, app, "t1", workspace, string(provider.Codex))
 	captureForTest(t, app, "t1", workspace, 0)
 
-	if _, err := app.RevertToTurn("t1", 0, "wat"); err == nil {
+	if err := app.RevertToCheckpoint("t1", 0, "wat"); err == nil {
 		t.Errorf("expected error for unknown mode")
 	}
 }

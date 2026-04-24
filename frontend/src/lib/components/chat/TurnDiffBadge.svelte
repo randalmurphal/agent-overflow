@@ -11,14 +11,14 @@
   let { pane, turnIndex, summary }: Props = $props();
 
   function open() {
-    pane.diffPanel.setSource('turn');
-    pane.diffPanel.selectTurn(turnIndex);
+    pane.diffPanel.selectCheckpointTurnCount(turnIndex + 1);
     pane.setDiffPanelOpen(true);
   }
 
   let fileLabel = $derived(`${summary.fileCount} file${summary.fileCount === 1 ? '' : 's'}`);
+  let turnNumber = $derived(turnIndex + 1);
   let ariaLabel = $derived(
-    `Open diff panel on turn ${turnIndex + 1}: ${summary.insertions} insertions, ${summary.deletions} deletions across ${fileLabel}`,
+    `Open diff panel on turn ${turnNumber}: ${summary.insertions} insertions, ${summary.deletions} deletions across ${fileLabel}`,
   );
 </script>
 

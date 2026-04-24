@@ -58,7 +58,6 @@ export {
   // Git operations
   GenerateCommitMessage,
   GetGitStatus,
-  GetWorkingTreeDiff,
   GitListBranches,
   GitListWorktrees,
   GitCommit,
@@ -115,9 +114,8 @@ export {
   ResetKeybindings,
 
   // Checkpoints (per-turn git-ref snapshots for diff panel + revert UX)
-  GetTurnDiff,
-  GetCheckpointToWorktreeDiff,
-  RevertToTurn,
+  GetCheckpointRangeDiff,
+  RevertToCheckpoint,
   ListThreadCheckpoints,
 
   // Thread runtime mode (three-tier approval axis)
@@ -139,12 +137,11 @@ export {
 
   // Windowed history + thread-wide aggregates. See /app_paging.go.
   // `ListRecentThreadItems` replaces `ListItems` on thread switch; the
-  // others back dedicated panel/sidebar surfaces (plans, diffs, tray)
+  // others back dedicated panel/sidebar surfaces (plans, tray)
   // so they don't under-report against a partial timeline window.
   ListRecentThreadItems,
   ListItemsBeforeTurn,
   ListThreadProposedPlans,
-  ListThreadDiffPayloads,
   ListLiveBackgroundTasks,
   GetThreadItem,
 

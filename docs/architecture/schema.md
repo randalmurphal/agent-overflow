@@ -18,6 +18,7 @@ the migrations win.
 | `design_artifacts` | Design-mode HTML artifacts. `html_path` points at the on-disk file. |
 | `attachments` | Message attachments. `mime_type`, `size`, `relative_path` on disk. |
 | `turns` | Per-turn records (one row per user → assistant round-trip). `turn_id` PK, `thread_id` FK, `turn_index`, `started_at`, nullable `completed_at` (NULL = in-flight or crashed), `stop_reason`, `assistant_message_id`, `token_usage_json`, `error_message`. |
+| `thread_checkpoints` | Git checkpoint metadata per thread. `checkpoint_turn_count` is the canonical boundary: `0` is before the first turn, `N` is after completed turn `N`. Rows also carry `turn_id`, `status`, compact `files` JSON, `assistant_message_id`, `completed_at`, `captured_at`, `ref_name`, and `workspace_path`. |
 
 ## Always-Loaded vs On-Demand
 
@@ -38,6 +39,8 @@ the migrations win.
 - `idx_channels_thread`, `idx_design_artifacts_thread` — per-thread feature lookups.
 - `turns_thread_index` on `turns(thread_id, turn_index DESC)` — backs `ListRecentTurns` for the newest-first rehydration the frontend runs on thread-switch.
 - `idx_turns_thread_completed` on `turns(thread_id, completed_at DESC) WHERE completed_at IS NOT NULL` — backs sidebar read-state checks against the newest completed turn.
+- `idx_thread_checkpoints_thread_count_unique` on `thread_checkpoints(thread_id, checkpoint_turn_count)` — enforces one checkpoint per thread boundary.
+- `idx_thread_checkpoints_thread_count` on `thread_checkpoints(thread_id, checkpoint_turn_count)` — backs checkpoint drawer listing, range diff, and revert lookups.
 
 ## Migration Policy
 

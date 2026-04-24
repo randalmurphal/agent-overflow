@@ -31,7 +31,7 @@ func TestSaveAndGetCheckpointRoundTrip(t *testing.T) {
 		t.Fatalf("save: %v", err)
 	}
 
-	got, ok, err := s.GetCheckpoint("t1", 0)
+	got, ok, err := s.GetCheckpointByTurnCount("t1", 0)
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
@@ -47,7 +47,7 @@ func TestGetCheckpointMissingReturnsFalse(t *testing.T) {
 	s := newTestStore(t)
 	mustCreateThreadForCheckpoint(t, s, "t1")
 
-	_, ok, err := s.GetCheckpoint("t1", 42)
+	_, ok, err := s.GetCheckpointByTurnCount("t1", 42)
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
@@ -256,8 +256,11 @@ func TestDeleteCheckpointsAfterTurnScopesAndReturnsRefs(t *testing.T) {
 		t.Fatalf("returned refs: got %v, want %v", refs, want)
 	}
 	for i := range want {
-		if refs[i] != want[i] {
-			t.Errorf("refs[%d] = %q, want %q", i, refs[i], want[i])
+		if refs[i].RefName != want[i] {
+			t.Errorf("refs[%d] = %q, want %q", i, refs[i].RefName, want[i])
+		}
+		if refs[i].WorkspacePath != "/tmp/w" {
+			t.Errorf("refs[%d].WorkspacePath = %q, want /tmp/w", i, refs[i].WorkspacePath)
 		}
 	}
 
@@ -280,6 +283,45 @@ func TestDeleteCheckpointsAfterTurnScopesAndReturnsRefs(t *testing.T) {
 	}
 	if len(t2Remaining) != 3 {
 		t.Errorf("t2 remaining count: got %d, want 3 (unaffected)", len(t2Remaining))
+	}
+}
+
+func TestDeleteCheckpointsAfterTurnReturnsWorkspacePerRef(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThreadForCheckpoint(t, s, "t1")
+
+	saveAt := func(turn int, workspace string) {
+		if err := s.SaveCheckpoint(Checkpoint{
+			ID:            fmt.Sprintf("chk-%d", turn),
+			ThreadID:      "t1",
+			TurnIndex:     turn,
+			RefName:       fmt.Sprintf("refs/t1/turn/%d", turn),
+			CapturedAt:    int64(turn),
+			WorkspacePath: workspace,
+		}); err != nil {
+			t.Fatalf("save turn %d: %v", turn, err)
+		}
+	}
+	saveAt(0, "/repo/a")
+	saveAt(1, "/repo/a")
+	saveAt(2, "/repo/b")
+	saveAt(3, "/repo/c")
+
+	refs, err := s.DeleteCheckpointsAfterTurn("t1", 1)
+	if err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	want := []CheckpointRef{
+		{RefName: "refs/t1/turn/2", WorkspacePath: "/repo/b"},
+		{RefName: "refs/t1/turn/3", WorkspacePath: "/repo/c"},
+	}
+	if len(refs) != len(want) {
+		t.Fatalf("refs = %+v, want %+v", refs, want)
+	}
+	for i := range want {
+		if refs[i] != want[i] {
+			t.Errorf("refs[%d] = %+v, want %+v", i, refs[i], want[i])
+		}
 	}
 }
 

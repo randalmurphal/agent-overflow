@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -151,6 +152,9 @@ func TestMigrationVersionTracking(t *testing.T) {
 	}
 	if versions[26].version != 27 || versions[26].name != "drop_empty_tool_call_result_payloads" {
 		t.Errorf("v27: got %d/%s", versions[26].version, versions[26].name)
+	}
+	if versions[27].version != 28 || versions[27].name != "checkpoint_turn_counts" {
+		t.Errorf("v28: got %d/%s", versions[27].version, versions[27].name)
 	}
 }
 
@@ -600,23 +604,23 @@ func TestMigrationV8ThreadCheckpointsUniqueThreadTurn(t *testing.T) {
 	}
 
 	if _, err := s.db.Exec(`INSERT INTO thread_checkpoints
-		(id, thread_id, turn_index, ref_name, baseline_sha, captured_at, workspace_path)
-		VALUES ('chk-1', 't1', 0, 'refs/agent-overflow/x/0', 'deadbeef', 1000, '/tmp')`); err != nil {
+		(id, thread_id, turn_index, checkpoint_turn_count, ref_name, baseline_sha, captured_at, workspace_path)
+		VALUES ('chk-1', 't1', 0, 0, 'refs/agent-overflow/x/0', 'deadbeef', 1000, '/tmp')`); err != nil {
 		t.Fatalf("insert checkpoint: %v", err)
 	}
 
 	// A different ref_name at the SAME (thread, turn) must violate the new
 	// composite UNIQUE — this is the whole point of v8.
 	if _, err := s.db.Exec(`INSERT INTO thread_checkpoints
-		(id, thread_id, turn_index, ref_name, baseline_sha, captured_at, workspace_path)
-		VALUES ('chk-2', 't1', 0, 'refs/agent-overflow/x/different', '', 2000, '/tmp')`); err == nil {
+		(id, thread_id, turn_index, checkpoint_turn_count, ref_name, baseline_sha, captured_at, workspace_path)
+		VALUES ('chk-2', 't1', 0, 0, 'refs/agent-overflow/x/different', '', 2000, '/tmp')`); err == nil {
 		t.Error("expected unique constraint violation for duplicate (thread_id, turn_index)")
 	}
 
 	// A different (thread, turn) pair must still be allowed.
 	if _, err := s.db.Exec(`INSERT INTO thread_checkpoints
-		(id, thread_id, turn_index, ref_name, baseline_sha, captured_at, workspace_path)
-		VALUES ('chk-3', 't1', 1, 'refs/agent-overflow/x/1', '', 2000, '/tmp')`); err != nil {
+		(id, thread_id, turn_index, checkpoint_turn_count, ref_name, baseline_sha, captured_at, workspace_path)
+		VALUES ('chk-3', 't1', 1, 1, 'refs/agent-overflow/x/1', '', 2000, '/tmp')`); err != nil {
 		t.Errorf("second turn insert should succeed: %v", err)
 	}
 }
@@ -1826,6 +1830,90 @@ func TestMigrationV27DropsEmptyToolCallResultPayloads(t *testing.T) {
 		if payloadID == "" {
 			t.Fatalf("%s payload was incorrectly unlinked", id)
 		}
+	}
+}
+
+func TestMigrationV28BackfillsCheckpointTurnCountsByProvider(t *testing.T) {
+	db := openSQLiteDB(t)
+
+	if err := configureDatabase(db); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	if err := ensureMigrationTable(db); err != nil {
+		t.Fatalf("ensure migration table: %v", err)
+	}
+	for _, m := range migrations {
+		if m.Version >= 28 {
+			break
+		}
+		if err := applyMigration(db, m); err != nil {
+			t.Fatalf("apply v%d: %v", m.Version, err)
+		}
+	}
+
+	if _, err := db.Exec(`INSERT INTO projects
+		(id, path, name, created_at, updated_at)
+		VALUES ('p-v28', '/tmp/v28', 'v28', 1, 1)`); err != nil {
+		t.Fatalf("seed project: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO threads
+		(id, project_id, title, provider, workspace_path, model,
+		 created_at, updated_at, archived, mode)
+		VALUES
+			('t-codex', 'p-v28', 'Codex', 'codex', '/tmp', '', 1, 1, 0, 'chat'),
+			('t-claude', 'p-v28', 'Claude', 'claude', '/tmp', '', 1, 1, 0, 'chat')`); err != nil {
+		t.Fatalf("seed threads: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO thread_checkpoints
+		(id, thread_id, turn_index, ref_name, baseline_sha, captured_at, workspace_path)
+		VALUES
+			('codex-baseline', 't-codex', 1, 'refs/agent-overflow/codex/1', '', 1, '/tmp'),
+			('codex-turn-1', 't-codex', 2, 'refs/agent-overflow/codex/2', '', 2, '/tmp'),
+			('claude-baseline', 't-claude', 0, 'refs/agent-overflow/claude/0', '', 1, '/tmp'),
+			('claude-turn-1', 't-claude', 1, 'refs/agent-overflow/claude/1', '', 2, '/tmp')`); err != nil {
+		t.Fatalf("seed checkpoints: %v", err)
+	}
+
+	var v28 *Migration
+	for i := range migrations {
+		if migrations[i].Version == 28 {
+			v28 = &migrations[i]
+			break
+		}
+	}
+	if v28 == nil {
+		t.Fatal("v28 migration missing from list")
+	}
+	if err := applyMigration(db, *v28); err != nil {
+		t.Fatalf("apply v28: %v", err)
+	}
+
+	got := map[string]int{}
+	rows, err := db.Query(`SELECT id, checkpoint_turn_count FROM thread_checkpoints`)
+	if err != nil {
+		t.Fatalf("query checkpoints: %v", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		var turnCount int
+		if err := rows.Scan(&id, &turnCount); err != nil {
+			t.Fatalf("scan checkpoint: %v", err)
+		}
+		got[id] = turnCount
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows err: %v", err)
+	}
+
+	want := map[string]int{
+		"codex-baseline":  0,
+		"codex-turn-1":    1,
+		"claude-baseline": 0,
+		"claude-turn-1":   1,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("checkpoint turn counts = %#v, want %#v", got, want)
 	}
 }
 

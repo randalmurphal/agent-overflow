@@ -15,6 +15,7 @@
   import type { SettledTurn, ThreadPane } from '../../stores/thread.svelte';
   import type { Item } from '../../types/models';
   import { addToast } from '../../stores/toast.svelte';
+  import { getSettings } from '../../stores/settings.svelte';
   import { isScrollPinnedToBottom } from '../../utils/scrollPosition';
   import { groupItemsBySubagent, type TimelineNode } from '../../utils/subagentGrouping';
   import {
@@ -557,7 +558,7 @@
         {#if isLastRootInTurn(row.index)}
           {@const turnIndex = rootTurnIndex(row.node)}
           {@const turnView = turnDiffViews.get(turnIndex)}
-          {#if turnView}
+          {#if turnView && getSettings().showEndOfTurnDiffs}
             <ChangedFilesTree files={turnView.files} />
             {#if turnSummaryIsMeaningful(turnView.summary)}
               <TurnDiffBadge {pane} {turnIndex} summary={turnView.summary} />

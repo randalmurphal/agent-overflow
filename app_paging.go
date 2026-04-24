@@ -79,20 +79,6 @@ func (a *App) ListThreadProposedPlans(threadID string) ([]store.Item, error) {
 	return items, nil
 }
 
-// ListThreadDiffPayloads returns every diff or tool_result item for a
-// thread so the diff panel's cumulative view can summarize the entire
-// thread independent of the timeline window.
-func (a *App) ListThreadDiffPayloads(threadID string) ([]store.Item, error) {
-	items, err := a.store.ListThreadDiffPayloads(threadID)
-	if err != nil {
-		return nil, fmt.Errorf("list thread diff payloads: %w", err)
-	}
-	if items == nil {
-		return []store.Item{}, nil
-	}
-	return items, nil
-}
-
 // ListLiveBackgroundTasks returns running launches plus their
 // recently-completed siblings (within the tray retention window) so the
 // BackgroundTaskTray can render without scanning `pane.items`. SQLite

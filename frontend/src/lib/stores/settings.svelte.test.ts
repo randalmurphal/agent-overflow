@@ -12,6 +12,7 @@ const FULL_SETTINGS: Settings = {
   modelContextWindows: {},
   recentWorkspaces: ['/tmp/a'],
   diffWordWrap: true,
+  showEndOfTurnDiffs: true,
   backgroundTrayExpanded: false,
   streamingEnabled: true,
   confirmArchive: true,

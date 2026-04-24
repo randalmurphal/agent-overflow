@@ -3,11 +3,10 @@ import { cleanup, fireEvent, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import DiffPanelDrawer from './DiffPanelDrawer.svelte';
 import type { Checkpoint } from '../../types/checkpoint';
-import type { Item } from '../../types/models';
 import { loadSettings } from '../../stores/settings.svelte';
-import { buildPane, emitItemEventUpsert, makeItem, makeThread } from '../../../test/helpers/chat';
+import { buildPane, makeThread } from '../../../test/helpers/chat';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
-import { resetWailsMocks } from '../../../test/mocks/wailsio-runtime';
+import { emitWailsEvent, resetWailsMocks } from '../../../test/mocks/wailsio-runtime';
 import { setupEventListeners } from '../../stores/events';
 
 beforeAll(() => {
@@ -26,15 +25,29 @@ beforeAll(() => {
   }
 });
 
-function checkpoint(turnIndex: number): Checkpoint {
+function checkpoint(turnCount: number): Checkpoint {
   return {
-    id: `cp-${turnIndex}`,
+    id: `cp-${turnCount}`,
     threadId: 'thread-a',
-    turnIndex,
-    refName: `refs/ao/thread-a/${turnIndex}`,
-    capturedAt: Date.UTC(2026, 0, 1, 0, turnIndex),
+    turnIndex: turnCount,
+    checkpointTurnCount: turnCount,
+    refName: `refs/ao/thread-a/${turnCount}`,
+    status: 'ready',
+    files: [],
+    capturedAt: Date.UTC(2026, 0, 1, 0, turnCount),
     workspacePath: '/tmp/workspace',
   };
+}
+
+function patch(path = 'src/file.ts', body = '+const value = 1;'): string {
+  return [
+    `diff --git a/${path} b/${path}`,
+    `--- a/${path}`,
+    `+++ b/${path}`,
+    '@@ -1 +1 @@',
+    body,
+    '',
+  ].join('\n');
 }
 
 async function flush() {
@@ -52,15 +65,12 @@ describe('<DiffPanelDrawer>', () => {
     cleanupEvents = setupEventListeners();
     setBindingMock('GetSettings', async () => null);
     await loadSettings();
-    setBindingMock('ListThreadCheckpoints', async () => []);
-    setBindingMock('GetTurnDiff', async () => '');
-    setBindingMock('GetCheckpointToWorktreeDiff', async () => '');
-    setBindingMock('GetWorkingTreeDiff', async () => '');
+    setBindingMock('ListThreadCheckpoints', async () => [checkpoint(0), checkpoint(1), checkpoint(2)]);
+    setBindingMock('GetCheckpointRangeDiff', async (_threadId: string, from: number, to: number) =>
+      patch(`turn-${from}-${to}.ts`),
+    );
+    setBindingMock('RevertToCheckpoint', async () => undefined);
     setBindingMock('GetPayloadData', async () => ({ data: '' }));
-    // Cumulative diffs are now sourced from a dedicated thread-wide
-    // binding so the panel stays accurate with a paged timeline. Each
-    // test overrides this below when it needs non-empty rows.
-    setBindingMock('ListThreadDiffPayloads', async () => []);
   });
 
   afterEach(() => {
@@ -68,152 +78,79 @@ describe('<DiffPanelDrawer>', () => {
     cleanupEvents?.();
   });
 
-  it('loads checkpoints on mount and auto-selects the latest turn diff', async () => {
-    setBindingMock('ListThreadCheckpoints', async () => [checkpoint(0), checkpoint(1)]);
-    setBindingMock('GetTurnDiff', async (_threadId: string, turnIndex: number) => `turn-${turnIndex}`);
+  it('loads checkpoints and renders the all-turn checkpoint diff', async () => {
+    const getRange = setBindingMock('GetCheckpointRangeDiff', async (_threadId: string, from: number, to: number) =>
+      patch(`range-${from}-${to}.ts`),
+    );
     const pane = await buildPane(makeThread({ id: 'thread-a' }));
 
     const { getByTestId, findByTestId } = render(DiffPanelDrawer, { props: { pane } });
-    await flush();
 
-    expect(getByTestId('diff-turn-0')).toBeInTheDocument();
+    await waitFor(() => expect(getRange).toHaveBeenCalledWith('thread-a', 0, 2));
     expect(getByTestId('diff-turn-1')).toBeInTheDocument();
-    expect((await findByTestId('diff-viewer')).textContent).toContain('turn-1');
+    expect(getByTestId('diff-turn-2')).toBeInTheDocument();
+    expect((await findByTestId('diff-viewer')).textContent).toContain('range-0-2.ts');
   });
 
-  it('aggregates exact tool-result and diff payloads in cumulative mode', async () => {
-    setBindingMock('ListThreadDiffPayloads', async () => [
-      makeItem({
-        id: 'tool-1',
-        threadId: 'thread-a',
-        kind: 'tool_call',
-        payloadId: 'p1',
-        payloadKind: 'tool_result',
-        payloadMeta: JSON.stringify({
-          inlineDiff: {
-            availability: 'exact_patch',
-            files: [{ path: 'a.ts', insertions: 3, deletions: 1 }],
-          },
-        }),
-      }),
-      makeItem({
-        id: 'diff-1',
-        threadId: 'thread-a',
-        itemIndex: 1,
-        kind: 'tool_call',
-        payloadId: 'p2',
-        payloadKind: 'diff',
-        payloadMeta: JSON.stringify({
-          filePath: 'b.ts',
-          changeKind: 'modified',
-          insertions: 2,
-          deletions: 0,
-          preview: '',
-        }),
-      }),
-    ]);
+  it('loads an adjacent checkpoint range when a turn chip is selected', async () => {
+    const getRange = setBindingMock('GetCheckpointRangeDiff', async (_threadId: string, from: number, to: number) =>
+      patch(`range-${from}-${to}.ts`),
+    );
     const pane = await buildPane(makeThread({ id: 'thread-a' }));
-    const getPayload = setBindingMock('GetPayloadData', async (_threadId: string, payloadId: string) => ({ data: `diff:${payloadId}` }));
-
     const { getByTestId, findByTestId } = render(DiffPanelDrawer, { props: { pane } });
     await flush();
-    await fireEvent.click(getByTestId('diff-source-tab-cumulative'));
-    await flush();
 
-    await waitFor(() => expect(getPayload).toHaveBeenCalledWith('thread-a', 'p1'));
-    expect(getPayload).toHaveBeenCalledWith('thread-a', 'p2');
-    expect((await findByTestId('diff-viewer')).textContent).toContain('diff:p1');
+    getRange.mockClear();
+    await fireEvent.click(getByTestId('diff-turn-1'));
+
+    await waitFor(() => expect(getRange).toHaveBeenCalledWith('thread-a', 0, 1));
+    expect((await findByTestId('diff-viewer')).textContent).toContain('range-0-1.ts');
+    expect(getByTestId('diff-turn-revert')).toBeInTheDocument();
   });
 
-  it('re-fetches diff items on diff-kind upsert and ignores plain tool_results', async () => {
-    // The debounced refresh listener must fire for diff payloads
-    // always and for tool_result payloads only when their meta carries
-    // `inlineDiff.availability=="exact_patch"` — matching the SQL
-    // filter. Mismatched events must not provoke a fetch.
-    let responses: Item[] = [];
-    let calls = 0;
-    setBindingMock('ListThreadDiffPayloads', async () => {
-      calls += 1;
-      return responses;
-    });
+  it('shows an empty checkpoint state before any checkpoints exist', async () => {
+    setBindingMock('ListThreadCheckpoints', async () => []);
     const pane = await buildPane(makeThread({ id: 'thread-a' }));
-    render(DiffPanelDrawer, { props: { pane } });
+    const { getByText } = render(DiffPanelDrawer, { props: { pane } });
     await flush();
-    expect(calls).toBe(1); // initial mount fetch
 
-    // Plain tool_result with no inlineDiff meta — must NOT refetch.
-    emitItemEventUpsert(makeItem({
-      id: 'plain',
+    expect(getByText('No checkpoints yet.')).toBeInTheDocument();
+  });
+
+  it('refreshes checkpoints when checkpoint events arrive', async () => {
+    let rows = [checkpoint(0), checkpoint(1)];
+    setBindingMock('ListThreadCheckpoints', async () => rows);
+    const pane = await buildPane(makeThread({ id: 'thread-a' }));
+    const { getByTestId, queryByTestId } = render(DiffPanelDrawer, { props: { pane } });
+    await waitFor(() => expect(getByTestId('diff-turn-1')).toBeInTheDocument());
+    expect(queryByTestId('diff-turn-2')).toBeNull();
+
+    rows = [checkpoint(0), checkpoint(1), checkpoint(2)];
+    emitWailsEvent('checkpoint:updated', {
       threadId: 'thread-a',
-      kind: 'tool_completion',
-      payloadKind: 'tool_result',
-      payloadMeta: '{}',
-    }));
-    await new Promise((r) => setTimeout(r, 150));
-    expect(calls).toBe(1);
-
-    // tool_result carrying inlineDiff meta — triggers refetch.
-    responses = [
-      makeItem({
-        id: 'inline',
-        threadId: 'thread-a',
-        kind: 'tool_completion',
-        payloadId: 'pi',
-        payloadKind: 'tool_result',
-        payloadMeta: JSON.stringify({
-          inlineDiff: {
-            availability: 'exact_patch',
-            files: [{ path: 'c.ts', insertions: 1, deletions: 0 }],
-          },
-        }),
-      }),
-    ];
-    emitItemEventUpsert(responses[0]);
-    await waitFor(() => expect(calls).toBeGreaterThanOrEqual(2), { timeout: 500 });
-  });
-
-  it('surfaces cumulative aggregation failures as an error banner', async () => {
-    setBindingMock('ListThreadDiffPayloads', async () => [
-      makeItem({
-        id: 'tool-1',
-        threadId: 'thread-a',
-        kind: 'tool_call',
-        payloadId: 'p1',
-        payloadKind: 'tool_result',
-        payloadMeta: JSON.stringify({
-          inlineDiff: {
-            availability: 'exact_patch',
-            files: [{ path: 'a.ts', insertions: 1, deletions: 0 }],
-          },
-        }),
-      }),
-    ]);
-    const pane = await buildPane(makeThread({ id: 'thread-a' }));
-    setBindingMock('GetPayloadData', async () => {
-      throw new Error('payload gone');
+      turnIndex: 2,
+      checkpointTurnCount: 2,
+      refName: 'refs/ao/thread-a/2',
+      capturedAt: 0,
     });
 
-    const { getByTestId, findByTestId } = render(DiffPanelDrawer, { props: { pane } });
-    await flush();
-    await fireEvent.click(getByTestId('diff-source-tab-cumulative'));
-
-    expect((await findByTestId('diff-panel-error')).textContent).toContain('payload gone');
+    await waitFor(() => expect(getByTestId('diff-turn-2')).toBeInTheDocument());
   });
 
-  // Stage 4 refactor: DiffPanelDrawer composes from the shared Drawer
-  // primitive rather than hand-rolling its own <aside> chrome. The
-  // panel stays non-resizable (fixed 340px) — that's by design for
-  // this surface, which has its own internal tabs/scroll.
-  it('composes its chrome via the Drawer primitive at a fixed height', async () => {
+  it('surfaces checkpoint errors and closes through the pane state', async () => {
     const pane = await buildPane(makeThread({ id: 'thread-a' }));
-    const { container } = render(DiffPanelDrawer, { props: { pane } });
-    await flush();
-    const drawerEl = container.querySelector('[data-drawer-position="bottom"]') as HTMLElement;
-    expect(drawerEl).not.toBeNull();
-    expect(drawerEl.style.height).toBe('340px');
-    // Resizable=false so no separator/handle is rendered inside the
-    // diff panel specifically.
-    const handle = drawerEl.querySelector('[role="separator"][aria-orientation="horizontal"]');
-    expect(handle).toBeNull();
+    pane.setDiffPanelOpen(true);
+    const { getByTestId } = render(DiffPanelDrawer, { props: { pane } });
+
+    emitWailsEvent('checkpoint:error', {
+      threadId: 'thread-a',
+      turnIndex: 1,
+      checkpointTurnCount: 1,
+      error: 'capture failed',
+    });
+
+    await waitFor(() => expect(getByTestId('diff-panel-error').textContent).toContain('capture failed'));
+    await fireEvent.click(getByTestId('diff-panel-close'));
+    expect(pane.diffPanel.open).toBe(false);
   });
 });

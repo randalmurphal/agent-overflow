@@ -1,27 +1,30 @@
 <script lang="ts">
-  import { onMount, onDestroy } from 'svelte';
-  import { wailsEventOn } from '../../stores/events';
+  import { onDestroy, onMount } from 'svelte';
+  import X from 'lucide-svelte/icons/x';
+  import Columns2 from 'lucide-svelte/icons/columns-2';
+  import Rows3 from 'lucide-svelte/icons/rows-3';
+  import WrapText from 'lucide-svelte/icons/wrap-text';
+  import RotateCcw from 'lucide-svelte/icons/rotate-ccw';
+  import ChevronDown from 'lucide-svelte/icons/chevron-down';
+  import Icon from '../primitives/Icon.svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
+  import { getSettings, updateSetting } from '../../stores/settings.svelte';
+  import { addToast } from '../../stores/toast.svelte';
+  import { wailsEventOn } from '../../stores/events';
+  import {
+    GetCheckpointRangeDiff,
+    ListThreadCheckpoints,
+    RevertToCheckpoint,
+  } from '../../stores/bindings';
   import type {
+    Checkpoint,
     CheckpointCapturedEvent,
     CheckpointErrorEvent,
     CheckpointUnavailableEvent,
+    RevertMode,
   } from '../../types/checkpoint';
-  import type { DiffPanelSource, TurnCompareMode } from '../../stores/diffPanel.svelte';
-  import { RevertToTurn } from '../../stores/bindings';
-  import type { RevertMode } from '../../types/checkpoint';
-  import { addToast } from '../../stores/toast.svelte';
+  import { buildSplitRows, parsePatchFiles, type PatchFile, type SplitDiffRow } from '../../utils/patchFiles';
   import RevertDialog from './diff-panel/RevertDialog.svelte';
-  import { getSettings, updateSetting } from '../../stores/settings.svelte';
-  import Drawer from '../primitives/Drawer.svelte';
-  import CumulativeView from './diff-panel/CumulativeView.svelte';
-  import ErrorBanner from './diff-panel/ErrorBanner.svelte';
-  import PanelHeader from './diff-panel/PanelHeader.svelte';
-  import TurnDiffView from './diff-panel/TurnDiffView.svelte';
-  import WorkingTreeView from './diff-panel/WorkingTreeView.svelte';
-  import { createCumulativeDiffItems } from './diff-panel/cumulativeDiffItems.svelte';
-  import { createDiffPanelSources } from './diff-panel/diffPanelSources.svelte';
-  import { selectTurnForKey } from './diff-panel/diffPanelKeyboard';
 
   interface Props {
     pane: ThreadPane;
@@ -29,259 +32,331 @@
 
   let { pane }: Props = $props();
 
-  const store = $derived(pane.diffPanel);
-  const threadId = $derived(pane.thread?.id ?? null);
-
-  // Cumulative diff state is sourced from ListThreadDiffPayloads — a
-  // dedicated backend binding that returns every diff- or tool_result-
-  // kind item for the thread, independent of the pane's loaded window.
-  // The factory owns the fetch/debounce/subscribe wiring so this file
-  // stays focused on panel composition.
-  const cumulative = createCumulativeDiffItems({
-    getThreadId: () => pane.thread?.id ?? null,
-  });
-
-  // pane.diffPanel is stable for the lifetime of the pane (created once in
-  // createThreadPane and reset internally), so passing the initial reference
-  // is intentional. Svelte's static check can't see that — but the module
-  // never captures `pane` directly, only this dereferenced store.
-  // svelte-ignore state_referenced_locally
-  const diffPanelStore = pane.diffPanel;
-  const sources = createDiffPanelSources({
-    getThreadId: () => pane.thread?.id ?? null,
-    store: diffPanelStore,
-    getCumulativeEntries: () => cumulative.entries,
-  });
-
-  // Active-tab derivation stays in sync with the store.
-  let activeSource = $derived<DiffPanelSource>(store.source);
-
-  // A thread "has had turns" when the pane knows a loaded floor. The
-  // pane sets `oldestLoadedTurnIndex` to a non-null value when the
-  // backend returned any paged items from ListRecentThreadItems — this
-  // is semantically identical to "at least one persisted item exists"
-  // but costs O(1) instead of O(window). Keeps working with a paged
-  // window where pane.items is a bounded tail.
-  let threadHasTurns = $derived(pane.oldestLoadedTurnIndex !== null);
-  let turnTabVisible = $derived.by(() => {
-    if (store.checkpointsUnavailable) return false;
-    if (store.checkpointsLoaded && store.checkpoints.length === 0 && threadHasTurns) {
-      return false;
-    }
-    return true;
-  });
-
-  // --- Event handlers wired to the panel header & views ---
-
-  function handleSelectSource(next: DiffPanelSource): void {
-    store.setSource(next);
-  }
-
-  function handleSelectTurn(turnIndex: number): void {
-    store.selectTurn(turnIndex);
-  }
-
-  function handleCompareModeChange(mode: TurnCompareMode): void {
-    store.setTurnCompareMode(mode);
-  }
-
-  // --- Revert dialog state and wiring ---
-
+  const checkpoints = $derived(pane.diffPanel.checkpoints);
+  const selectedTurnCount = $derived(pane.diffPanel.selectedCheckpointTurnCount);
+  const error = $derived(pane.diffPanel.error);
+  const viewMode = $derived(pane.diffPanel.viewMode);
+  let diffText = $state('');
+  let loading = $state(false);
+  let expanded = $state<Set<string>>(new Set());
+  let splitRowsCache = $state<Map<string, SplitDiffRow[]>>(new Map());
   let revertOpen = $state(false);
-  let revertTurn = $state<number | null>(null);
   let reverting = $state(false);
+  let checkpointRequestID = 0;
+  let diffRequestID = 0;
 
-  function handleRequestRevert(turnIndex: number): void {
-    revertTurn = turnIndex;
-    revertOpen = true;
+  const threadId = $derived(pane.thread?.id ?? null);
+  const latestTurnCount = $derived.by(() => {
+    const latest = checkpoints.at(-1);
+    return latest ? checkpointTurnCount(latest) : 0;
+  });
+  const selectedRange = $derived.by(() => {
+    if (selectedTurnCount === null) return { from: 0, to: latestTurnCount };
+    return { from: Math.max(0, selectedTurnCount - 1), to: selectedTurnCount };
+  });
+  const files = $derived(parsePatchFiles(diffText));
+  const totals = $derived.by(() => files.reduce(
+    (acc, file) => ({
+      files: acc.files + 1,
+      additions: acc.additions + file.additions,
+      deletions: acc.deletions + file.deletions,
+    }),
+    { files: 0, additions: 0, deletions: 0 },
+  ));
+  const wordWrap = $derived(getSettings().diffWordWrap);
+
+  async function refreshCheckpoints(): Promise<void> {
+    const requestID = ++checkpointRequestID;
+    if (!threadId) {
+      pane.diffPanel.setCheckpoints([]);
+      return;
+    }
+    try {
+      const next = ((await ListThreadCheckpoints(threadId)) ?? []) as Checkpoint[];
+      if (requestID !== checkpointRequestID) return;
+      const sorted = [...next].sort((a, b) => checkpointTurnCount(a) - checkpointTurnCount(b));
+      pane.diffPanel.setCheckpoints(sorted);
+      if (selectedTurnCount !== null && !sorted.some((c) => checkpointTurnCount(c) === selectedTurnCount)) {
+        pane.diffPanel.selectCheckpointTurnCount(null);
+      }
+    } catch (err) {
+      if (requestID !== checkpointRequestID) return;
+      pane.diffPanel.setError(err instanceof Error ? err.message : String(err));
+    }
   }
 
-  function handleRevertCancel(): void {
-    if (reverting) return; // Don't close while an in-flight revert is running.
-    revertOpen = false;
-    revertTurn = null;
+  async function loadDiff(): Promise<void> {
+    const requestID = ++diffRequestID;
+    if (!threadId || checkpoints.length === 0) {
+      if (requestID === diffRequestID) diffText = '';
+      return;
+    }
+    loading = true;
+    pane.diffPanel.setError(null);
+    try {
+      const range = selectedRange;
+      const nextDiff = ((await GetCheckpointRangeDiff(threadId, range.from, range.to)) ?? '') as string;
+      if (requestID !== diffRequestID) return;
+      diffText = nextDiff;
+      expanded = new Set();
+      splitRowsCache = new Map();
+    } catch (err) {
+      if (requestID !== diffRequestID) return;
+      diffText = '';
+      pane.diffPanel.setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      if (requestID === diffRequestID) loading = false;
+    }
+  }
+
+  function selectCheckpoint(turnCount: number | null): void {
+    pane.diffPanel.selectCheckpointTurnCount(turnCount);
+  }
+
+  function checkpointTurnCount(checkpoint: Checkpoint): number {
+    return checkpoint.checkpointTurnCount;
+  }
+
+  function toggleFile(path: string): void {
+    const next = new Set(expanded);
+    if (next.has(path)) next.delete(path);
+    else next.add(path);
+    expanded = next;
+  }
+
+  function setAllFiles(open: boolean): void {
+    if (open && totals.files > 40 && !window.confirm(`Expand all ${totals.files} changed files? Large diffs can take a moment to render.`)) {
+      return;
+    }
+    expanded = open ? new Set(files.map((file) => file.path)) : new Set();
+  }
+
+  function splitCellClass(line: PatchFile['lines'][number] | null): string {
+    if (!line) return 'text-fg-muted/40';
+    if (line.type === 'add') return 'bg-success/10 text-success';
+    if (line.type === 'del') return 'bg-error/10 text-error';
+    if (line.type === 'meta') return 'text-accent/75';
+    return 'text-fg-muted';
+  }
+
+  function splitRowsFor(file: PatchFile): SplitDiffRow[] {
+    const cached = splitRowsCache.get(file.path);
+    if (cached) return cached;
+    const rows = buildSplitRows(file.lines);
+    splitRowsCache = new Map(splitRowsCache).set(file.path, rows);
+    return rows;
   }
 
   async function handleRevert(mode: RevertMode): Promise<void> {
-    if (revertTurn === null || !threadId || !pane.thread) return;
+    if (!threadId || selectedTurnCount === null || !pane.thread || reverting) return;
     reverting = true;
     try {
-      await RevertToTurn(threadId, revertTurn, mode);
+      await RevertToCheckpoint(threadId, selectedTurnCount, mode);
       revertOpen = false;
-      revertTurn = null;
-      addToast('success', mode === 'fork' ? 'Thread forked' : 'Thread reverted');
-      // Reload the pane against the same thread — truncates in-memory items,
-      // resets streaming state, and refreshes checkpoints.
+      addToast('success', mode === 'conversation-only' ? 'Conversation reverted' : 'Conversation and files reverted');
       await pane.switchThread(pane.thread);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      addToast('error', `Revert failed: ${msg}`);
+      addToast('error', `Revert failed: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       reverting = false;
     }
   }
 
-  function handleClose(): void {
-    pane.setDiffPanelOpen(false);
-  }
-
-  function handleToggleWordWrap(): void {
-    void updateSetting('diffWordWrap', !getSettings().diffWordWrap);
-  }
-
-  // Keyboard nav: ← / → step through the checkpoint list in the turn view.
-  // Pure dispatch lives in diffPanelKeyboard.ts; this shell just forwards
-  // the DOM event fields and acts on the suggested turn index.
-  function handleKeydown(ev: KeyboardEvent): void {
-    const target = ev.target as HTMLElement | null;
-    const nextTurn = selectTurnForKey({
-      key: ev.key,
-      metaKey: ev.metaKey,
-      ctrlKey: ev.ctrlKey,
-      altKey: ev.altKey,
-      targetTag: target?.tagName,
-      source: store.source,
-      panelOpen: store.open,
-      checkpoints: store.checkpoints,
-      selectedTurnIndex: store.selectedTurnIndex,
-    });
-    if (nextTurn === null) return;
-    ev.preventDefault();
-    store.selectTurn(nextTurn);
-  }
-
-  // --- Wails event subscriptions ---
-
   let cancelCaptured: (() => void) | null = null;
+  let cancelUpdated: (() => void) | null = null;
   let cancelUnavailable: (() => void) | null = null;
   let cancelError: (() => void) | null = null;
 
   onMount(() => {
     cancelCaptured = wailsEventOn<CheckpointCapturedEvent | null>('checkpoint:captured', (payload) => {
       if (!payload || payload.threadId !== threadId) return;
-      // A recapture produces a new diff, so drop every cached entry for this
-      // turn across compare modes; cumulative is invalidated too because
-      // any turn's diff contributes to it.
-      store.invalidateTurn(payload.threadId, payload.turnIndex);
-      if (store.source === 'turn' && store.selectedTurnIndex === payload.turnIndex) {
-        void sources.loadSelectedTurnDiff();
-      }
-      void sources.refreshCheckpoints();
+      void refreshCheckpoints();
+    });
+    cancelUpdated = wailsEventOn<CheckpointCapturedEvent | null>('checkpoint:updated', (payload) => {
+      if (!payload || payload.threadId !== threadId) return;
+      void refreshCheckpoints();
     });
     cancelUnavailable = wailsEventOn<CheckpointUnavailableEvent | null>('checkpoint:unavailable', (payload) => {
       if (!payload || payload.threadId !== threadId) return;
-      store.markCheckpointsUnavailable(payload.reason ?? 'unknown');
+      pane.diffPanel.markCheckpointsUnavailable(payload.reason);
+      pane.diffPanel.setError('Workspace is not a git repo. Checkpoint diffs are unavailable.');
     });
     cancelError = wailsEventOn<CheckpointErrorEvent | null>('checkpoint:error', (payload) => {
       if (!payload || payload.threadId !== threadId) return;
-      store.setError(`Checkpoint capture failed (turn ${payload.turnIndex}): ${payload.error}`);
+      pane.diffPanel.setError(`Checkpoint failed: ${payload.error}`);
     });
-
-    window.addEventListener('keydown', handleKeydown);
-    void sources.refreshCheckpoints();
   });
 
   onDestroy(() => {
     cancelCaptured?.();
+    cancelUpdated?.();
     cancelUnavailable?.();
     cancelError?.();
-    window.removeEventListener('keydown', handleKeydown);
   });
 
-  // Auto-select the latest checkpoint the first time the list lands so the
-  // user doesn't see a bare "pick a turn" screen.
-  let lastAutoSelected = $state<number | null>(null);
   $effect(() => {
-    const list = store.checkpoints;
-    if (list.length === 0) return;
-    if (store.selectedTurnIndex !== null) return;
-    if (lastAutoSelected !== null) return;
-    const latest = list[list.length - 1]!;
-    store.selectTurn(latest.turnIndex);
-    lastAutoSelected = latest.turnIndex;
+    threadId;
+    void refreshCheckpoints();
   });
 
-  // If the Turn tab becomes invisible (e.g. checkpoint:unavailable), drop the
-  // user to the working-tree view so they're never stuck on a hidden tab.
   $effect(() => {
-    if (activeSource === 'turn' && !turnTabVisible) {
-      store.setSource('worktree');
-    }
-  });
-
-  // Reload turn diff whenever its inputs change.
-  $effect(() => {
-    store.selectedTurnIndex;
-    store.turnCompareMode;
-    if (activeSource === 'turn') {
-      void sources.loadSelectedTurnDiff();
-    }
-  });
-
-  // Lazy-load worktree and cumulative views when the user first opens them.
-  $effect(() => {
-    if (activeSource === 'worktree') {
-      void sources.loadWorktreeDiff(false);
-    } else if (activeSource === 'cumulative') {
-      void sources.loadCumulativeDiff(false);
-    }
+    threadId;
+    selectedTurnCount;
+    latestTurnCount;
+    void loadDiff();
   });
 </script>
 
-<div aria-label="Diff panel" data-testid="diff-panel-drawer">
-  <Drawer position="bottom" size={340} minSize={200} resizable={false}>
-    {#snippet children()}
-      <PanelHeader
-        source={activeSource}
-        {turnTabVisible}
-        wordWrap={getSettings().diffWordWrap}
-        onSelectSource={handleSelectSource}
-        onToggleWordWrap={handleToggleWordWrap}
-        onClose={handleClose}
-      />
+<aside
+  aria-label="Diff panel"
+  data-testid="diff-panel-drawer"
+  class="flex h-full w-[min(48vw,620px)] min-w-[380px] shrink-0 flex-col border-l border-border bg-surface-0"
+>
+  <header class="border-b border-border bg-surface-1/70">
+    <div class="flex items-center gap-2 px-3 py-2">
+      <div class="min-w-0 flex-1">
+        <div class="text-[12px] font-semibold uppercase tracking-[0.08em] text-fg-muted">Checkpoint diff</div>
+        <div class="mt-0.5 flex items-center gap-2 text-[12px] text-fg-muted">
+          <span>{totals.files} files</span>
+          <span class="text-success">+{totals.additions}</span>
+          <span class="text-error">-{totals.deletions}</span>
+        </div>
+      </div>
+      <button
+        class="rounded p-1.5 hover:bg-surface-2 {viewMode === 'stacked' ? 'bg-surface-2 text-fg' : 'text-fg-muted'}"
+        title="Stacked view"
+        aria-pressed={viewMode === 'stacked'}
+        onclick={() => pane.diffPanel.setViewMode('stacked')}
+      >
+        <Icon icon={Rows3} size={15} />
+      </button>
+      <button
+        class="rounded p-1.5 hover:bg-surface-2 {viewMode === 'split' ? 'bg-surface-2 text-fg' : 'text-fg-muted'}"
+        title="Split view"
+        aria-pressed={viewMode === 'split'}
+        onclick={() => pane.diffPanel.setViewMode('split')}
+      >
+        <Icon icon={Columns2} size={15} />
+      </button>
+      <button
+        class="rounded p-1.5 hover:bg-surface-2 {wordWrap ? 'bg-surface-2 text-fg' : 'text-fg-muted'}"
+        title="Wrap lines"
+        aria-pressed={wordWrap}
+        onclick={() => updateSetting('diffWordWrap', !wordWrap)}
+      >
+        <Icon icon={WrapText} size={15} />
+      </button>
+      <button class="rounded p-1.5 text-fg-muted hover:bg-surface-2" aria-label="Close diff panel" data-testid="diff-panel-close" onclick={() => pane.setDiffPanelOpen(false)}>
+        <Icon icon={X} size={15} />
+      </button>
+    </div>
 
-      {#if store.error}
-        <ErrorBanner message={store.error} onDismiss={() => store.setError(null)} />
+    <div class="flex gap-1 overflow-x-auto border-t border-border-subtle px-3 py-2">
+      <button
+        class="shrink-0 rounded border px-2.5 py-1 text-[12px] {selectedTurnCount === null ? 'border-accent/60 bg-accent/15 text-accent' : 'border-border-subtle text-fg-muted hover:bg-surface-2'}"
+        onclick={() => selectCheckpoint(null)}
+        data-testid="diff-all-turns"
+      >
+        All turns
+      </button>
+      {#each checkpoints as checkpoint (checkpoint.id)}
+        <button
+          class="shrink-0 rounded border px-2.5 py-1 text-[12px] {selectedTurnCount === checkpointTurnCount(checkpoint) ? 'border-accent/60 bg-accent/15 text-accent' : 'border-border-subtle text-fg-muted hover:bg-surface-2'}"
+          onclick={() => selectCheckpoint(checkpointTurnCount(checkpoint))}
+          data-testid={`diff-turn-${checkpointTurnCount(checkpoint)}`}
+        >
+          {checkpointTurnCount(checkpoint) === 0 ? 'Baseline' : `Turn ${checkpointTurnCount(checkpoint)}`}
+          {#if checkpoint.status && checkpoint.status !== 'ready'}
+            <span class="ml-1 text-[10px] text-warning">{checkpoint.status}</span>
+          {/if}
+        </button>
+      {/each}
+      {#if selectedTurnCount !== null}
+        <button
+          class="ml-auto inline-flex shrink-0 items-center gap-1 rounded border border-error/40 px-2.5 py-1 text-[12px] text-error hover:bg-error/10"
+          onclick={() => (revertOpen = true)}
+          disabled={reverting}
+          data-testid="diff-turn-revert"
+        >
+          <Icon icon={RotateCcw} size={13} />
+          Revert
+        </button>
       {/if}
+    </div>
+  </header>
 
-      {#if store.checkpointsUnavailable && activeSource !== 'worktree'}
-        <div class="border-b border-border-subtle bg-surface-1 px-3 py-2 text-xs text-fg-muted">
-          Workspace is not a git repo — per-turn checkpoints are unavailable.
+  <div class="flex min-h-0 flex-1 flex-col">
+    {#if error}
+      <div class="border-b border-error/30 bg-error/10 px-3 py-2 text-[12px] text-error" data-testid="diff-panel-error">{error}</div>
+    {/if}
+    <div class="flex items-center gap-2 border-b border-border-subtle px-3 py-2">
+      <button class="rounded border border-border-subtle px-2 py-1 text-[11px] text-fg-muted hover:bg-surface-2" onclick={() => setAllFiles(true)}>Expand all</button>
+      <button class="rounded border border-border-subtle px-2 py-1 text-[11px] text-fg-muted hover:bg-surface-2" onclick={() => setAllFiles(false)}>Collapse all</button>
+      <span class="ml-auto text-[11px] text-fg-muted">
+        {selectedRange.from} → {selectedRange.to}
+      </span>
+    </div>
+
+    <div class="min-h-0 flex-1 overflow-auto px-3 py-3">
+      {#if loading}
+        <div class="py-8 text-center text-[13px] text-fg-muted" role="status">Loading diff...</div>
+      {:else if checkpoints.length === 0}
+        <div class="py-8 text-center text-[13px] text-fg-muted">No checkpoints yet.</div>
+      {:else if files.length === 0}
+        <div class="py-8 text-center text-[13px] text-fg-muted">No changes in this range.</div>
+      {:else}
+        <div class="space-y-2" data-testid="diff-viewer">
+          {#each files as file (file.path)}
+            {@render FileCard(file, expanded.has(file.path), viewMode, wordWrap, () => toggleFile(file.path))}
+          {/each}
         </div>
       {/if}
-
-      {#if activeSource === 'turn'}
-        <TurnDiffView
-          {store}
-          checkpoints={store.checkpoints}
-          loadingDiff={sources.loadingTurn}
-          diffText={sources.turnDiffText}
-          onSelectTurn={handleSelectTurn}
-          onCompareModeChange={handleCompareModeChange}
-          onRequestRevert={handleRequestRevert}
-        />
-      {:else if activeSource === 'worktree'}
-        <WorkingTreeView
-          loading={sources.worktreeLoading}
-          diffText={sources.worktreeText}
-          onRefresh={() => void sources.loadWorktreeDiff(true)}
-        />
-      {:else}
-        <CumulativeView
-          loading={sources.cumulativeLoading}
-          diffText={sources.cumulativeText}
-          stats={cumulative.stats}
-          onRefresh={() => void sources.loadCumulativeDiff(true)}
-        />
-      {/if}
-    {/snippet}
-  </Drawer>
-</div>
+    </div>
+  </div>
+</aside>
 
 <RevertDialog
   open={revertOpen}
-  turnIndex={revertTurn ?? 0}
+  checkpointTurnCount={selectedTurnCount ?? 0}
   provider={(pane.thread?.provider ?? '').toLowerCase()}
+  reverting={reverting}
   onRevert={handleRevert}
-  onCancel={handleRevertCancel}
+  onCancel={() => {
+    if (!reverting) revertOpen = false;
+  }}
 />
+
+{#snippet FileCard(file: PatchFile, open: boolean, viewMode: 'stacked' | 'split', wordWrap: boolean, onToggle: () => void)}
+  <section class="overflow-hidden rounded-[var(--radius-control)] border border-border-subtle bg-card/30">
+    <button class="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-surface-2/40" onclick={onToggle}>
+      <Icon icon={ChevronDown} size={14} class={open ? '' : '-rotate-90'} />
+      <span class="rounded bg-accent/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-accent">FileChange</span>
+      <span class="min-w-0 flex-1 truncate font-mono text-[12px] text-fg">{file.path}</span>
+      <span class="text-[11px] text-success">+{file.additions}</span>
+      <span class="text-[11px] text-error">-{file.deletions}</span>
+    </button>
+    {#if open}
+      {#if viewMode === 'split'}
+        <div class="max-h-[42rem] overflow-auto border-t border-border-subtle bg-surface-0 font-mono text-[12px] leading-relaxed">
+          {#each splitRowsFor(file) as row}
+            <div class="grid grid-cols-2 border-b border-border-subtle/40 last:border-b-0">
+              <pre class="min-w-0 border-r border-border-subtle/50 px-3 py-0.5 {wordWrap ? 'whitespace-pre-wrap break-all' : 'whitespace-pre'} {splitCellClass(row.left)}">{row.left?.content ?? ''}</pre>
+              <pre class="min-w-0 px-3 py-0.5 {wordWrap ? 'whitespace-pre-wrap break-all' : 'whitespace-pre'} {splitCellClass(row.right)}">{row.right?.content ?? ''}</pre>
+            </div>
+          {/each}
+        </div>
+      {:else}
+      <pre class="max-h-[42rem] overflow-auto border-t border-border-subtle bg-surface-0 p-3 font-mono text-[12px] leading-relaxed {wordWrap ? 'whitespace-pre-wrap break-all' : 'whitespace-pre'}">{#each file.lines as line}<span class={
+          line.type === 'add'
+            ? 'block bg-success/10 text-success'
+            : line.type === 'del'
+              ? 'block bg-error/10 text-error'
+              : line.type === 'meta'
+                ? 'block text-accent/75'
+                : 'block text-fg-muted'
+        }>{line.content}
+</span>{/each}</pre>
+      {/if}
+    {/if}
+  </section>
+{/snippet}

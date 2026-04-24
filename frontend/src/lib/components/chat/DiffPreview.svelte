@@ -4,6 +4,7 @@
   import Icon from '../primitives/Icon.svelte';
   import type { DiffMeta, Item } from '../../types/models';
   import { parseDiffLines, type DiffLine } from '../../utils/diff';
+  import { extractPatchFile } from '../../utils/patchFiles';
   import { getSettings } from '../../stores/settings.svelte';
   import ToolDecisionChip from './ToolDecisionChip.svelte';
   import { createPayloadExpansion, formatPayloadSize } from './payloadExpansion.svelte';
@@ -13,11 +14,13 @@
     meta,
     payloadId,
     threadId,
+    filePathFilter,
   }: {
     item?: Item;
     meta: DiffMeta;
     payloadId: string;
     threadId?: string;
+    filePathFilter?: string;
   } = $props();
 
   const expansion = createPayloadExpansion(() => payloadId, () => item?.threadId ?? threadId);
@@ -32,7 +35,13 @@
   let previewLines = $derived(parseDiffLines(meta.preview));
   let displayLines = $derived.by<DiffLine[]>(() => {
     const text = expansion.displayData;
-    if (text !== null) return parseDiffLines(text);
+    if (text !== null) {
+      if (filePathFilter) {
+        const filePatch = extractPatchFile(text, filePathFilter);
+        if (filePatch) return parseDiffLines(filePatch);
+      }
+      return parseDiffLines(text);
+    }
     return previewLines;
   });
 

@@ -127,12 +127,11 @@ export function installThreadViewDefaults(): void {
   setBindingMock('GetGitStatus', async () => makeGitStatus());
   setBindingMock('GitListBranches', async () => []);
   setBindingMock('ListThreadCheckpoints', async () => []);
-  // Thread-wide aggregate surfaces (PlanSidebar / DiffPanelDrawer /
-  // BackgroundTaskTray) fetch these bindings on mount / thread-switch.
+  // Thread-wide aggregate surfaces (PlanSidebar / BackgroundTaskTray) fetch
+  // these bindings on mount / thread-switch.
   // Default to empty lists so tests that don't assert on those
   // surfaces don't have to stub each one themselves.
   setBindingMock('ListThreadProposedPlans', async () => []);
-  setBindingMock('ListThreadDiffPayloads', async () => []);
   setBindingMock('ListLiveBackgroundTasks', async () => []);
 }
 

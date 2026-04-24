@@ -124,7 +124,6 @@ export const GetModelsForProvider = dispatch('GetModelsForProvider');
 export const ProbeClaudeAccount = dispatch('ProbeClaudeAccount');
 
 export const GetGitStatus = dispatch('GetGitStatus');
-export const GetWorkingTreeDiff = dispatch('GetWorkingTreeDiff');
 export const GitListBranches = dispatch('GitListBranches');
 export const GitListWorktrees = dispatch('GitListWorktrees');
 export const GitCommit = dispatch('GitCommit');
@@ -166,9 +165,8 @@ export const UpdateKeybindings = dispatch('UpdateKeybindings');
 export const ResetKeybindings = dispatch('ResetKeybindings');
 
 // Checkpoints
-export const GetTurnDiff = dispatch('GetTurnDiff');
-export const GetCheckpointToWorktreeDiff = dispatch('GetCheckpointToWorktreeDiff');
-export const RevertToTurn = dispatch('RevertToTurn');
+export const GetCheckpointRangeDiff = dispatch('GetCheckpointRangeDiff');
+export const RevertToCheckpoint = dispatch('RevertToCheckpoint');
 export const ListThreadCheckpoints = dispatch('ListThreadCheckpoints');
 
 // Thread runtime mode
@@ -202,11 +200,10 @@ export const ListRecentTurns = dispatch('ListRecentTurns');
 // Windowed history + thread-wide aggregates. The frontend reads the
 // tail of a thread via ListRecentThreadItems on switch and pages
 // backward via ListItemsBeforeTurn; the three thread-wide bindings
-// back dedicated panel / sidebar / tray surfaces that need the full
+// back dedicated sidebar / tray surfaces that need the full
 // thread regardless of the timeline window.
 export const ListRecentThreadItems = dispatch('ListRecentThreadItems');
 export const ListItemsBeforeTurn = dispatch('ListItemsBeforeTurn');
 export const ListThreadProposedPlans = dispatch('ListThreadProposedPlans');
-export const ListThreadDiffPayloads = dispatch('ListThreadDiffPayloads');
 export const ListLiveBackgroundTasks = dispatch('ListLiveBackgroundTasks');
 export const GetThreadItem = dispatch('GetThreadItem');

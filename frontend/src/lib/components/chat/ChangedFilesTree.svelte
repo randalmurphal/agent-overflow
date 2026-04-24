@@ -107,7 +107,7 @@
 
         {#if expandedFile === file.path}
           <div transition:slide={{ duration: 150 }} class="pl-7 pr-3 pb-2">
-            <DiffPreview meta={diffMeta(file)} payloadId={file.payloadId} />
+            <DiffPreview meta={diffMeta(file)} payloadId={file.payloadId} filePathFilter={file.path} />
           </div>
         {/if}
       {/each}

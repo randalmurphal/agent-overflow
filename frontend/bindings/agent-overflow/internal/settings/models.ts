@@ -23,6 +23,7 @@ export class Settings {
     "modelContextWindows": { [_ in string]?: number };
     "recentWorkspaces": string[];
     "diffWordWrap": boolean;
+    "showEndOfTurnDiffs": boolean;
 
     /**
      * BackgroundTrayExpanded remembers the user's global background-task
@@ -163,6 +164,9 @@ export class Settings {
         }
         if (!("diffWordWrap" in $$source)) {
             this["diffWordWrap"] = false;
+        }
+        if (!("showEndOfTurnDiffs" in $$source)) {
+            this["showEndOfTurnDiffs"] = false;
         }
         if (!("backgroundTrayExpanded" in $$source)) {
             this["backgroundTrayExpanded"] = false;

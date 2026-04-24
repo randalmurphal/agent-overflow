@@ -14,6 +14,7 @@ const BASE_SETTINGS: Settings = {
   modelContextWindows: {},
   recentWorkspaces: [],
   diffWordWrap: false,
+  showEndOfTurnDiffs: true,
   backgroundTrayExpanded: false,
   streamingEnabled: true,
   confirmArchive: true,

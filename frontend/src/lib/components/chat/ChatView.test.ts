@@ -101,11 +101,10 @@ async function buildPane(
   }));
   setBindingMock('ListRecentTurns', async () => []);
   setBindingMock('ListPayloadMetas', async () => []);
-  // Thread-wide aggregate bindings — PlanSidebar / DiffPanelDrawer /
-  // BackgroundTaskTray fetch these on mount. Default to empty; tests
+  // Thread-wide aggregate bindings — PlanSidebar / BackgroundTaskTray fetch
+  // these on mount. Default to empty; tests
   // that need a populated tray override these before rendering.
   setBindingMock('ListThreadProposedPlans', async () => []);
-  setBindingMock('ListThreadDiffPayloads', async () => []);
   setBindingMock('ListLiveBackgroundTasks', async () => []);
   // GitActionsControl calls GetGitStatus on mount; return "not a repo"
   // so the control renders nothing — we don't need a branch chip.
