@@ -31,6 +31,13 @@
   const draft = createComposerDraftStore();
   let chatRoot: HTMLDivElement | undefined = $state(undefined);
   let lastHydratedThreadId: string | null = null;
+  let lastReadMarker: string | null = null;
+  let lastReadPersistStartedAt = 0;
+  let readPersistInFlight = false;
+  let queuedReadThreadId: string | null = null;
+  let queuedReadTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const READ_PERSIST_DEBOUNCE_MS = 100;
 
   $effect(() => {
     const current = pane.thread?.id ?? null;
@@ -38,6 +45,51 @@
     lastHydratedThreadId = current;
     void draft.setThread(current);
   });
+
+  function startPersistThreadRead(threadId: string): void {
+    lastReadPersistStartedAt = Date.now();
+    readPersistInFlight = true;
+    void MarkThreadRead(threadId)
+      .catch((err) => {
+        console.error('Failed to mark thread read:', err);
+      })
+      .finally(() => {
+        readPersistInFlight = false;
+        if (queuedReadThreadId && queuedReadTimer === null) {
+          schedulePersistThreadRead(queuedReadThreadId);
+        }
+      });
+  }
+
+  function flushQueuedThreadRead(): void {
+    queuedReadTimer = null;
+    if (readPersistInFlight) return;
+    const threadId = queuedReadThreadId;
+    queuedReadThreadId = null;
+    if (threadId) {
+      startPersistThreadRead(threadId);
+    }
+  }
+
+  function schedulePersistThreadRead(threadId: string): void {
+    const elapsed = Date.now() - lastReadPersistStartedAt;
+    const canPersistNow =
+      !readPersistInFlight
+      && queuedReadTimer === null
+      && queuedReadThreadId === null
+      && elapsed >= READ_PERSIST_DEBOUNCE_MS;
+    if (canPersistNow) {
+      startPersistThreadRead(threadId);
+      return;
+    }
+
+    queuedReadThreadId = threadId;
+    if (queuedReadTimer !== null) {
+      clearTimeout(queuedReadTimer);
+    }
+    const delay = Math.max(READ_PERSIST_DEBOUNCE_MS - elapsed, 0);
+    queuedReadTimer = setTimeout(flushQueuedThreadRead, delay);
+  }
 
   // Keep the active thread stamped as read — both on switch AND as its
   // updatedAt advances (assistant turns, title generation, backend
@@ -53,13 +105,19 @@
   $effect(() => {
     const thread = pane.thread;
     if (!thread) return;
+    const marker = [
+      thread.id,
+      thread.updatedAt,
+      pane.timelineRevision,
+      pane.latestSettledTurn?.turnId ?? '',
+    ].join(':');
+    if (marker === lastReadMarker) return;
+    lastReadMarker = marker;
     const readAt = Date.now();
     untrack(() => {
       updateThreadLastRead(thread.id, readAt);
     });
-    void MarkThreadRead(thread.id).catch((err) => {
-      console.error('Failed to mark thread read:', err);
-    });
+    schedulePersistThreadRead(thread.id);
   });
 
   $effect(() => {
@@ -111,6 +169,15 @@
 
   onDestroy(() => {
     window.removeEventListener('keydown', handleKeydown);
+    if (queuedReadTimer !== null) {
+      clearTimeout(queuedReadTimer);
+      queuedReadTimer = null;
+    }
+    if (queuedReadThreadId && !readPersistInFlight) {
+      const threadId = queuedReadThreadId;
+      queuedReadThreadId = null;
+      startPersistThreadRead(threadId);
+    }
   });
 </script>
 

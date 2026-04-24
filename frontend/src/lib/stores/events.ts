@@ -14,7 +14,7 @@ import type { DesignArtifact, DesignChoiceResolved, DesignOptionsRequest } from 
 import { getAllPanes } from './panes.svelte';
 import { recordProviderStatus } from './providerStatus.svelte';
 import { addToast } from './toast.svelte';
-import { getThreads, replaceThread } from './threads.svelte';
+import { getThreadById, getThreads, replaceThread } from './threads.svelte';
 import {
   projectApprovalRequest,
   projectApprovalResolution,
@@ -157,11 +157,30 @@ interface RuntimeModeChangedPayload {
 }
 
 function syncThreadRow(updated: Thread): void {
-  replaceThread(updated);
+  let lastReadAt = updated.lastReadAt;
+  const cachedThread = getThreadById(updated.id);
+  if (cachedThread?.lastReadAt !== undefined) {
+    lastReadAt =
+      lastReadAt === undefined
+        ? cachedThread.lastReadAt
+        : Math.max(lastReadAt, cachedThread.lastReadAt);
+  }
+
   for (const pane of getAllPanes().values()) {
-    if (pane.threadId === updated.id && pane.thread) {
-      pane.replaceThread(updated);
+    if (pane.threadId !== updated.id || !pane.thread) continue;
+    if (pane.thread.lastReadAt !== undefined) {
+      lastReadAt =
+        lastReadAt === undefined
+          ? pane.thread.lastReadAt
+          : Math.max(lastReadAt, pane.thread.lastReadAt);
     }
+  }
+
+  const merged = { ...updated, lastReadAt };
+  replaceThread(merged);
+  for (const pane of getAllPanes().values()) {
+    if (pane.threadId !== updated.id || !pane.thread) continue;
+    pane.replaceThread(merged);
   }
 }
 

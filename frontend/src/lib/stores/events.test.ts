@@ -249,23 +249,36 @@ describe('setupEventListeners', () => {
 
   it('updates cached thread rows from thread:updated', async () => {
     setBindingMock('ListThreads', async () => [
-      makeThread({ id: 'thread-1', title: 'Old', model: 'claude-sonnet-4-6' }),
+      makeThread({
+        id: 'thread-1',
+        title: 'Old',
+        model: 'claude-sonnet-4-6',
+        lastReadAt: 300,
+      }),
     ]);
     await refreshThreads();
 
-    const pane = await buildPane(makeThread({ id: 'thread-1', title: 'Old', model: 'claude-sonnet-4-6' }));
+    const pane = await buildPane(makeThread({
+      id: 'thread-1',
+      title: 'Old',
+      model: 'claude-sonnet-4-6',
+      lastReadAt: 200,
+    }));
     getAllPanes().set('main', pane);
 
     emitWailsEvent('thread:updated', makeThread({
       id: 'thread-1',
       title: 'New title',
       model: 'claude-opus-4-1',
+      lastReadAt: 100,
     }));
 
     expect(pane.thread?.title).toBe('New title');
     expect(pane.thread?.model).toBe('claude-opus-4-1');
+    expect(pane.thread?.lastReadAt).toBe(300);
     expect(getThreads()[0]?.title).toBe('New title');
     expect(getThreads()[0]?.model).toBe('claude-opus-4-1');
+    expect(getThreads()[0]?.lastReadAt).toBe(300);
   });
 
   it('updates pane providerBanner from provider:status', async () => {

@@ -10,6 +10,7 @@ import { fireEvent, render } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import ChatView from './ChatView.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
+import { getThreads, refreshThreads } from '../../stores/threads.svelte';
 import type { Item, Thread } from '../../types/models';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 
@@ -144,6 +145,50 @@ describe('<ChatView>', () => {
     await tick();
     expect(queryByTestId('chat-header')).toBeNull();
     expect(getByText('Select or create a thread')).toBeInTheDocument();
+  });
+
+  it('marks the active thread read locally and coalesces persisted writes when new timeline items arrive', async () => {
+    vi.useFakeTimers();
+    try {
+      const thread = seedThread();
+      setBindingMock('ListThreads', async () => [thread]);
+      await refreshThreads();
+      const pane = await buildPane();
+      const markRead = setBindingMock('MarkThreadRead', async () => {});
+
+      vi.setSystemTime(1_000);
+      render(ChatView, { props: { pane } });
+      await tick();
+
+      expect(markRead).toHaveBeenCalledTimes(1);
+      expect(markRead).toHaveBeenLastCalledWith('thread-1');
+      expect(getThreads()[0]?.lastReadAt).toBe(1_000);
+
+      vi.setSystemTime(1_010);
+      pane.upsertItem({
+        id: 'assistant-1',
+        threadId: 'thread-1',
+        turnIndex: 0,
+        itemIndex: 0,
+        kind: 'assistant_text',
+        role: 'assistant',
+        status: 'completed',
+        summary: 'done',
+        createdAt: 10,
+        updatedAt: 10,
+      });
+      await tick();
+
+      expect(getThreads()[0]?.lastReadAt).toBe(1_010);
+      expect(markRead).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(100);
+
+      expect(markRead).toHaveBeenCalledTimes(2);
+      expect(markRead).toHaveBeenLastCalledWith('thread-1');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('clicking a background tray row does NOT scroll the timeline (rows are informational)', async () => {
