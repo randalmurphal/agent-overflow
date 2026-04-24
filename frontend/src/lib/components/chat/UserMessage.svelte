@@ -22,7 +22,7 @@
       <p class="whitespace-pre-wrap">{item.summary}</p>
     </div>
     <time
-      class="text-[10px] text-fg-hint opacity-0 transition-opacity duration-150 group-hover:opacity-100"
+      class="text-[10px] text-fg-hint"
       datetime={new Date(item.createdAt).toISOString()}
     >
       {time}

@@ -21,7 +21,7 @@
     <ChatMarkdown source={item.summary} streaming={item.status === 'streaming'} />
   </div>
   <time
-    class="mt-1.5 block text-[10px] text-fg-hint opacity-0 transition-opacity duration-150 group-hover:opacity-100"
+    class="mt-1.5 block text-[10px] text-fg-hint"
     datetime={new Date(item.createdAt).toISOString()}
   >
     {time}
