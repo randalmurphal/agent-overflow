@@ -33,6 +33,7 @@ export {
   SendMessage,
   InterruptTurn,
   RespondToApproval,
+  RespondToUserInput,
 
   // Background tasks (per-item + thread-wide stop primitives)
   StopClaudeTask,
@@ -161,6 +162,7 @@ export {
   ApprovalResponse,
   ElicitationResolution,
   PermissionProfile,
+  UserInputResponse,
 } from '../../../bindings/agent-overflow/internal/provider/models.js';
 
 // Structured response types surfaced to components.

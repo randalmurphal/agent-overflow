@@ -887,6 +887,13 @@ export function RespondToApproval(threadID: string, response: provider$0.Approva
 }
 
 /**
+ * RespondToUserInput forwards structured answers to the active provider session.
+ */
+export function RespondToUserInput(threadID: string, response: provider$0.UserInputResponse): $CancellablePromise<void> {
+    return $Call.ByID(1071592868, threadID, response);
+}
+
+/**
  * RestartTerminal kills the given terminal and spawns a fresh replacement
  * with the same configuration.
  */

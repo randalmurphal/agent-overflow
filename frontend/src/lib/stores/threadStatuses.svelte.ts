@@ -35,19 +35,6 @@ export type ThreadLiveStatus =
   | 'plan-ready'
   | 'error';
 
-/**
- * Approval kinds that represent the agent asking the USER a question
- * (or requesting structured input) — distinct from a permission ask
- * for a destructive action. The sidebar renders these as
- * `awaiting-input` rather than `pending-approval` so the user can
- * distinguish "please fill in a form" from "the agent wants to rm -rf".
- * Matches forge's Sidebar.logic.ts split.
- */
-const AWAITING_INPUT_KINDS: ReadonlySet<ApprovalKind> = new Set([
-  'user-input',
-  'mcp-elicitation',
-]);
-
 let statuses: Map<string, ThreadLiveStatus> = $state(new Map());
 const activeItemIDsByThread = new Map<string, Set<string>>();
 const approvalIDsByThread = new Map<string, Set<string>>();
@@ -283,13 +270,11 @@ export function projectThreadItem(item: Item): void {
 }
 
 /**
- * Feed an approval request into the projection. The `kind` discriminates
- * a user-input / MCP-elicitation (→ awaiting-input) from a permission /
- * command / file-change approval (→ pending-approval). An unknown or
- * missing kind defaults to pending-approval because that's the safer
- * read: a blocking approval the user didn't expect still gets their
- * attention; a soft input prompt that accidentally rendered as
- * pending-approval is lower-impact.
+ * Feed an approval request into the projection. MCP elicitation,
+ * permission, command, and file-change requests are blocking approvals;
+ * structured user input flows through provider:user_input instead.
+ * Unknown or missing kind defaults to pending-approval because that's
+ * the safer read for a blocking provider request.
  */
 export function projectApprovalRequest(
   threadId: string,
@@ -298,11 +283,8 @@ export function projectApprovalRequest(
 ): void {
   if (!threadId || !requestId) return;
   approvalThreadByID.set(requestId, threadId);
-  if (kind && AWAITING_INPUT_KINDS.has(kind)) {
-    trackedIDsFor(awaitingInputIDsByThread, threadId).add(requestId);
-  } else {
-    trackedIDsFor(approvalIDsByThread, threadId).add(requestId);
-  }
+  void kind;
+  trackedIDsFor(approvalIDsByThread, threadId).add(requestId);
   errorThreads.delete(threadId);
   recalculateThreadStatus(threadId);
 }
@@ -323,6 +305,26 @@ export function projectApprovalResolution(
   if (!ownerThreadId) return;
   approvalThreadByID.delete(requestId);
   removeTrackedID(approvalIDsByThread, ownerThreadId, requestId);
+  removeTrackedID(awaitingInputIDsByThread, ownerThreadId, requestId);
+  recalculateThreadStatus(ownerThreadId);
+}
+
+export function projectUserInputRequest(threadId: string, requestId: string): void {
+  if (!threadId || !requestId) return;
+  approvalThreadByID.set(requestId, threadId);
+  trackedIDsFor(awaitingInputIDsByThread, threadId).add(requestId);
+  errorThreads.delete(threadId);
+  recalculateThreadStatus(threadId);
+}
+
+export function projectUserInputResolution(
+  threadId: string | null | undefined,
+  requestId: string,
+): void {
+  if (!requestId) return;
+  const ownerThreadId = threadId ?? approvalThreadByID.get(requestId);
+  if (!ownerThreadId) return;
+  approvalThreadByID.delete(requestId);
   removeTrackedID(awaitingInputIDsByThread, ownerThreadId, requestId);
   recalculateThreadStatus(ownerThreadId);
 }

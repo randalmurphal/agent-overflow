@@ -50,6 +50,28 @@ func parseControlRequest(threadID string, raw map[string]json.RawMessage, now ti
 		toolUseID = req.ToolUseIDCamel
 	}
 
+	if req.ToolName == "AskUserQuestion" {
+		questions := parseAskUserQuestions(req.Input)
+		if len(questions) > 0 {
+			meta, _ := json.Marshal(provider.UserInputRequest{
+				RequestID: requestID,
+				ThreadID:  threadID,
+				ToolUseID: toolUseID,
+				ToolName:  req.ToolName,
+				Title:     "User Input Required",
+				Questions: questions,
+			})
+			return []provider.ProviderEvent{{
+				Kind:      provider.EventUserInputRequest,
+				ThreadID:  threadID,
+				ItemID:    requestID,
+				Meta:      meta,
+				Timestamp: now,
+				Raw:       line,
+			}}, nil
+		}
+	}
+
 	approvalMeta, _ := json.Marshal(provider.ApprovalRequest{
 		RequestID:             requestID,
 		ThreadID:              threadID,
@@ -69,6 +91,19 @@ func parseControlRequest(threadID string, raw map[string]json.RawMessage, now ti
 		Timestamp: now,
 		Raw:       line,
 	}}, nil
+}
+
+func parseAskUserQuestions(input json.RawMessage) []provider.UserInputQuestion {
+	var payload struct {
+		Questions *[]provider.UserInputQuestion `json:"questions"`
+	}
+	if json.Unmarshal(input, &payload) != nil {
+		return nil
+	}
+	if payload.Questions == nil {
+		return nil
+	}
+	return provider.NormalizeUserInputQuestions(*payload.Questions)
 }
 
 // parseRateLimitEvent handles Claude's rate_limit_event message type.
@@ -110,4 +145,3 @@ func parseRateLimitEvent(threadID string, raw map[string]json.RawMessage, now ti
 		Timestamp: now,
 	}}, nil
 }
-

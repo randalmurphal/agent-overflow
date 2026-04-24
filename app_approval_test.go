@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -9,11 +10,10 @@ import (
 	"agent-overflow/internal/provider/codex"
 )
 
-// TestRespondToApprovalHappyPathCodex covers the Codex routing branch in
+// TestRespondToApprovalRejectsUntrackedCodexRequest covers the Codex routing branch in
 // app_approval.go. The Claude branch and the "no active session" /
-// "no provider" branches are already covered in app_send_test.go; this adds
-// the missing codex case so every branch of RespondToApproval has a test.
-func TestRespondToApprovalHappyPathCodex(t *testing.T) {
+// "no provider" branches are already covered in app_send_test.go.
+func TestRespondToApprovalRejectsUntrackedCodexRequest(t *testing.T) {
 	app := newTestAppWithStore(t)
 
 	thread := testThread("thread-approval-codex")
@@ -44,13 +44,12 @@ func TestRespondToApprovalHappyPathCodex(t *testing.T) {
 		codex:    sess,
 	}
 
-	// RequestID must parse as an int64 — RespondToApproval returns an error
-	// otherwise. "42" is the same value used in the codex session tests.
-	if err := app.RespondToApproval(thread.ID, provider.ApprovalResponse{
+	err = app.RespondToApproval(thread.ID, provider.ApprovalResponse{
 		RequestID: "42",
 		Decision:  "accept",
-	}); err != nil {
-		t.Fatalf("RespondToApproval() error = %v", err)
+	})
+	if !errors.Is(err, provider.ErrStaleInteractiveRequest) {
+		t.Fatalf("RespondToApproval() error = %v, want stale interactive request", err)
 	}
 }
 

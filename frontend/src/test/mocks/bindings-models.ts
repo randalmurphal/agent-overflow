@@ -8,7 +8,6 @@ export class ApprovalResponse {
   requestId: string;
   decision: string;
   input: unknown;
-  answers?: Record<string, unknown>;
   permissions?: { network?: { enabled?: boolean }; fileSystem?: { read?: string[]; write?: string[] } } | null;
   scope?: string;
   elicitation?: ElicitationResolution | null;
@@ -18,12 +17,22 @@ export class ApprovalResponse {
     this.requestId = data.requestId ?? '';
     this.decision = data.decision ?? '';
     this.input = data.input ?? undefined;
-    this.answers = data.answers;
     this.permissions = data.permissions;
     this.scope = data.scope;
     this.elicitation = data.elicitation;
     this.updatedInput = data.updatedInput;
     this.updatedPermissions = data.updatedPermissions;
+  }
+}
+
+export class UserInputResponse {
+  requestId: string;
+  decision: string;
+  answers?: Record<string, unknown>;
+  constructor(data: Partial<UserInputResponse> = {}) {
+    this.requestId = data.requestId ?? '';
+    this.decision = data.decision ?? '';
+    this.answers = data.answers;
   }
 }
 

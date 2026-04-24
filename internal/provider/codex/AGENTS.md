@@ -116,13 +116,18 @@ for the wire sequence. Key points:
     should only see the normalized `provider.Event` types.
   - SQLite writes, `app.Event.Emit`, or cross-thread orchestration.
 
-## Approvals
+## Interactive Requests
 
 Sandbox method requests (`file/write`, `command/execute`, ...) are
 translated into the shared `ApprovalRequest` shape before leaving this
 package. MCP elicitation comes in as its own method and currently maps
 to `Kind: "mcp-elicitation"` — confirm the frontend has a branch for
 this before relying on it.
+
+`item/tool/requestUserInput` is a separate structured user-input flow, not
+an approval kind. Validate that at least one question is present before
+emitting, track it with the user-input resolve kind, and answer through
+`RespondToUserInput`.
 
 ## Extension points
 

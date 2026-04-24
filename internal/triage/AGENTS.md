@@ -22,6 +22,8 @@ none fits.
   status strings from polluting steady-state logs.
 - `approvals.go` — approval-request lifecycle: pending-approval map,
   approval-resolved fan-out, decision → item projection.
+- `user_inputs.go` — structured user-input request lifecycle and
+  provider:user_input frontend event fan-out.
 - `turn_lifecycle.go` — per-turn and per-thread correlation state
   (open turns, interrupt queue, captured-turn guard, stopped-thread
   markers, turn span bookkeeping, cleanup paths).

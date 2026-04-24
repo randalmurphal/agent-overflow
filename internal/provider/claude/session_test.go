@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -435,6 +437,49 @@ func TestParseControlRequestCanUseTool(t *testing.T) {
 	}
 	if string(approval.Input) != `{"command":"rm -rf /"}` {
 		t.Errorf("input: got %s, want %s", approval.Input, `{"command":"rm -rf /"}`)
+	}
+}
+
+func TestParseControlRequestAskUserQuestionNormalizesQuestionIDs(t *testing.T) {
+	line := []byte(`{"type":"control_request","request_id":"req-ask","request":{"subtype":"can_use_tool","tool_name":"AskUserQuestion","input":{"questions":[{"header":"Framework","question":"Pick one","options":[{"label":"React","description":""}]},{"question":"Pick mode","options":[{"label":"Plan","description":""}]},{"id":"__proto__","header":"constructor","question":"Reserved","options":[{"label":"Safe","description":""}]}]}}}`)
+
+	events, err := ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if events[0].Kind != provider.EventUserInputRequest {
+		t.Fatalf("kind: got %q, want %q", events[0].Kind, provider.EventUserInputRequest)
+	}
+
+	var request provider.UserInputRequest
+	if err := json.Unmarshal(events[0].Meta, &request); err != nil {
+		t.Fatalf("unmarshal user input: %v", err)
+	}
+	if len(request.Questions) != 3 {
+		t.Fatalf("questions len = %d, want 3", len(request.Questions))
+	}
+	got := []string{request.Questions[0].ID, request.Questions[1].ID, request.Questions[2].ID}
+	want := []string{"Framework", "Pick mode", "Reserved"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("question IDs = %#v, want %#v", got, want)
+	}
+}
+
+func TestParseControlRequestMalformedAskUserQuestionFallsBackToApproval(t *testing.T) {
+	line := []byte(`{"type":"control_request","request_id":"req-bad-ask","request":{"subtype":"can_use_tool","tool_name":"AskUserQuestion","input":{"questions":[]}}}`)
+
+	events, err := ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if events[0].Kind != provider.EventApprovalRequest {
+		t.Fatalf("kind: got %q, want %q", events[0].Kind, provider.EventApprovalRequest)
 	}
 }
 
@@ -1006,6 +1051,7 @@ func TestSessionRespondToApproval(t *testing.T) {
 	decisions := []string{"allow", "deny", "allow_session"}
 	for _, d := range decisions {
 		t.Run(d, func(t *testing.T) {
+			s.startApprovalTimer("req-"+d, provider.EventApprovalResolved)
 			err := s.RespondToApproval(context.Background(), provider.ApprovalResponse{
 				RequestID: "req-" + d,
 				Decision:  d,
@@ -1014,6 +1060,90 @@ func TestSessionRespondToApproval(t *testing.T) {
 				t.Fatalf("RespondToApproval(%s): %v", d, err)
 			}
 		})
+	}
+}
+
+func TestSessionRespondToUserInputIncludesQuestionsInUpdatedInput(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	capturePath := filepath.Join(t.TempDir(), "stdin.ndjson")
+	proc, err := provider.Spawn(ctx, provider.SpawnConfig{
+		Binary: "bash",
+		Args:   []string{"-c", `while IFS= read -r line; do printf '%s\n' "$line" >> "$CAPTURE"; done`},
+		Env: map[string]string{
+			"CAPTURE": capturePath,
+		},
+	})
+	if err != nil {
+		t.Fatalf("spawn capture process: %v", err)
+	}
+	s := &Session{
+		proc:            proc,
+		threadID:        testThread,
+		approvalTimeout: 5 * time.Second,
+		onEvent:         func(provider.ProviderEvent) {},
+		cancel:          cancel,
+	}
+	t.Cleanup(func() {
+		cancel()
+		proc.Close()
+	})
+
+	questions := []provider.UserInputQuestion{{
+		ID:       "framework",
+		Header:   "Framework",
+		Question: "Pick one",
+		Options: []provider.UserInputQuestionOption{{
+			Label:       "Svelte",
+			Description: "Use Svelte",
+		}},
+	}}
+	s.startApprovalTimerWithQuestions("req-user-input", provider.EventUserInputResolved, questions)
+
+	err = s.RespondToUserInput(context.Background(), provider.UserInputResponse{
+		RequestID: "req-user-input",
+		Decision:  "accept",
+		Answers: map[string]provider.UserInputAnswer{
+			"framework": provider.SingleUserInputAnswer("Svelte"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("RespondToUserInput: %v", err)
+	}
+
+	var captured []byte
+	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); {
+		captured, err = os.ReadFile(capturePath)
+		if err == nil && len(captured) > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(captured) == 0 {
+		t.Fatalf("capture file was empty: %v", err)
+	}
+
+	var msg struct {
+		Response struct {
+			Response struct {
+				Behavior     string `json:"behavior"`
+				UpdatedInput struct {
+					Answers   map[string]string            `json:"answers"`
+					Questions []provider.UserInputQuestion `json:"questions"`
+				} `json:"updatedInput"`
+			} `json:"response"`
+		} `json:"response"`
+	}
+	if err := json.Unmarshal(captured, &msg); err != nil {
+		t.Fatalf("unmarshal captured response: %v (data=%s)", err, captured)
+	}
+	if msg.Response.Response.Behavior != "allow" {
+		t.Fatalf("behavior = %q, want allow", msg.Response.Response.Behavior)
+	}
+	if msg.Response.Response.UpdatedInput.Answers["framework"] != "Svelte" {
+		t.Fatalf("answers = %+v, want framework=Svelte", msg.Response.Response.UpdatedInput.Answers)
+	}
+	if !reflect.DeepEqual(msg.Response.Response.UpdatedInput.Questions, questions) {
+		t.Fatalf("questions = %+v, want %+v", msg.Response.Response.UpdatedInput.Questions, questions)
 	}
 }
 

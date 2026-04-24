@@ -7,10 +7,11 @@
   interface Props {
     approval: ApprovalRequest;
     onResolve: (response: ApprovalResponse) => Promise<void>;
-    onError: (message: string) => void;
+    onError?: (message: string) => void;
+    responding?: boolean;
   }
 
-  let { approval, onResolve, onError }: Props = $props();
+  let { approval, onResolve, onError, responding = false }: Props = $props();
 
   // ---- Edit-input-before-approve state (Claude CanUseTool UpdatedInput) ----
   //
@@ -67,27 +68,14 @@
     return null;
   });
 
-  async function allow() {
+  async function respond(decision: 'accept' | 'acceptForSession' | 'decline' | 'cancel') {
     try {
       await onResolve(new ApprovalResponse({
         requestId: approval.requestId,
-        decision: 'allow',
+        decision,
       }));
     } catch (err) {
-      console.error('Failed to respond to approval:', err);
-      onError(`Failed to respond to approval: ${errString(err)}`);
-    }
-  }
-
-  async function deny() {
-    try {
-      await onResolve(new ApprovalResponse({
-        requestId: approval.requestId,
-        decision: 'deny',
-      }));
-    } catch (err) {
-      console.error('Failed to respond to approval:', err);
-      onError(`Failed to respond to approval: ${errString(err)}`);
+      onError?.(`Failed to respond to approval: ${errString(err)}`);
     }
   }
 
@@ -107,15 +95,14 @@
       // internal/provider/types.go:ApprovalResponse.UpdatedInput.
       await onResolve(new ApprovalResponse({
         requestId: approval.requestId,
-        decision: 'allow',
+        decision: 'accept',
         updatedInput: parsed,
       } as ConstructorParameters<typeof ApprovalResponse>[0] & { updatedInput: unknown }));
       // Close the editor on success; the approval row will drop as the
       // provider consumes the response.
       closeEdit();
     } catch (err) {
-      console.error('Failed to submit allow-with-edits:', err);
-      onError(`Failed to respond to approval: ${errString(err)}`);
+      onError?.(`Failed to respond to approval: ${errString(err)}`);
     }
   }
 </script>
@@ -157,25 +144,38 @@
 
 <div class="flex flex-wrap gap-2 mt-2.5 justify-end">
   {#if editable && !editing}
-    <Button variant="secondary" size="sm" onclick={openEdit} testId="approval-edit-toggle">
+    <Button variant="secondary" size="sm" onclick={openEdit} testId="approval-edit-toggle" disabled={responding}>
       {#snippet children()}Edit input…{/snippet}
     </Button>
   {/if}
   {#if editing}
+    <Button variant="danger-ghost" size="sm" onclick={() => respond('cancel')} testId="approval-cancel" disabled={responding}>
+      {#snippet children()}Cancel turn{/snippet}
+    </Button>
+    <Button variant="danger-outline" size="sm" onclick={() => respond('decline')} testId="approval-deny" disabled={responding}>
+      {#snippet children()}Decline{/snippet}
+    </Button>
     <Button
       variant="primary"
       size="sm"
       onclick={allowWithEdits}
       testId="approval-allow-with-edits"
+      loading={responding}
     >
       {#snippet children()}Allow with edits{/snippet}
     </Button>
   {:else}
-    <Button variant="primary" size="sm" onclick={allow} testId="approval-allow">
-      {#snippet children()}Allow{/snippet}
+    <Button variant="danger-ghost" size="sm" onclick={() => respond('cancel')} testId="approval-cancel" disabled={responding}>
+      {#snippet children()}Cancel turn{/snippet}
+    </Button>
+    <Button variant="danger-outline" size="sm" onclick={() => respond('decline')} testId="approval-deny" disabled={responding}>
+      {#snippet children()}Decline{/snippet}
+    </Button>
+    <Button variant="secondary" size="sm" onclick={() => respond('acceptForSession')} testId="approval-allow-session" disabled={responding}>
+      {#snippet children()}Always allow this session{/snippet}
+    </Button>
+    <Button variant="primary" size="sm" onclick={() => respond('accept')} testId="approval-allow" loading={responding}>
+      {#snippet children()}Approve once{/snippet}
     </Button>
   {/if}
-  <Button variant="danger-outline" size="sm" onclick={deny} testId="approval-deny">
-    {#snippet children()}Deny{/snippet}
-  </Button>
 </div>

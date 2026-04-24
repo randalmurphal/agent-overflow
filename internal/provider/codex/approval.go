@@ -17,7 +17,18 @@ func (s *Session) RespondToApproval(ctx context.Context, resp provider.ApprovalR
 	if err != nil {
 		return err
 	}
-	if !s.claimApproval(resp.RequestID) {
+	if !s.claimApproval(resp.RequestID, provider.EventApprovalResolved) {
+		return ErrApprovalAlreadyResolved
+	}
+	return s.writeResponse(rpcID, result)
+}
+
+func (s *Session) RespondToUserInput(ctx context.Context, resp provider.UserInputResponse) error {
+	rpcID, result, err := buildUserInputResponseResult(resp)
+	if err != nil {
+		return err
+	}
+	if !s.claimApproval(resp.RequestID, provider.EventUserInputResolved) {
 		return ErrApprovalAlreadyResolved
 	}
 	return s.writeResponse(rpcID, result)
@@ -27,12 +38,6 @@ func buildApprovalResponseResult(resp provider.ApprovalResponse) (int64, any, er
 	rpcID, err := parseApprovalRequestID(resp.RequestID)
 	if err != nil {
 		return 0, nil, err
-	}
-
-	if len(resp.Answers) > 0 {
-		return rpcID, map[string]any{
-			"answers": buildCodexUserInputAnswers(resp.Answers),
-		}, nil
 	}
 
 	if resp.Scope != "" || resp.Permissions != nil {
@@ -64,6 +69,19 @@ func buildApprovalResponseResult(resp provider.ApprovalResponse) (int64, any, er
 	return rpcID, map[string]any{"decision": decision}, nil
 }
 
+func buildUserInputResponseResult(resp provider.UserInputResponse) (int64, any, error) {
+	rpcID, err := parseApprovalRequestID(resp.RequestID)
+	if err != nil {
+		return 0, nil, err
+	}
+	if _, err := provider.NormalizeUserInputDecision(resp.Decision); err != nil {
+		return 0, nil, err
+	}
+	return rpcID, map[string]any{
+		"answers": buildCodexUserInputAnswers(resp.Answers),
+	}, nil
+}
+
 func parseApprovalRequestID(requestID string) (int64, error) {
 	rpcID, err := strconv.ParseInt(requestID, 10, 64)
 	if err != nil {
@@ -79,4 +97,3 @@ func buildCodexUserInputAnswers(answers map[string]provider.UserInputAnswer) map
 	}
 	return result
 }
-

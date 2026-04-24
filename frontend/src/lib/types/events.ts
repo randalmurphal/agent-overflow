@@ -4,16 +4,15 @@ export type ApprovalKind =
   | 'command'
   | 'file-read'
   | 'file-change'
-  | 'user-input'
   | 'permission'
   | 'mcp-elicitation';
 
-interface UserInputQuestionOption {
+export interface UserInputQuestionOption {
   label: string;
   description: string;
 }
 
-interface UserInputQuestion {
+export interface UserInputQuestion {
   id: string;
   header: string;
   question: string;
@@ -69,7 +68,6 @@ export interface ApprovalRequest {
   input: unknown;
   title: string;
   kind?: ApprovalKind;
-  questions?: UserInputQuestion[];
   permissions?: PermissionProfile;
   elicitation?: ElicitationRequest;
 }
@@ -90,11 +88,31 @@ export interface ContextWindow {
 }
 
 export interface ApprovalEvent {
-  action: 'request' | 'resolve';
+  action: 'request' | 'resolve' | 'fail';
   threadId?: string;
   request?: ApprovalRequest;
   requestId?: string;
-  decision?: '' | 'approved' | 'declined' | 'amended' | 'timeout' | 'lost';
+  decision?: '' | 'approved' | 'declined' | 'amended' | 'timeout' | 'lost' | 'failed';
+  detail?: string;
+}
+
+export interface UserInputRequest {
+  requestId: string;
+  threadId: string;
+  turnId?: string;
+  toolUseId?: string;
+  toolName: string;
+  title: string;
+  questions: UserInputQuestion[];
+}
+
+export interface UserInputEvent {
+  action: 'request' | 'resolve' | 'fail';
+  threadId?: string;
+  request?: UserInputRequest;
+  requestId?: string;
+  decision?: '' | 'answered' | 'declined' | 'timeout' | 'lost' | 'failed';
+  detail?: string;
 }
 
 export interface ItemDeltaEvent {

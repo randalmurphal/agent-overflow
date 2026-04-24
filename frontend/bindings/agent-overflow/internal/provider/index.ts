@@ -9,7 +9,8 @@ export {
     ModelInfo,
     NetworkPermissions,
     PermissionProfile,
-    ProviderStatus
+    ProviderStatus,
+    UserInputResponse
 } from "./models.js";
 
 export type {

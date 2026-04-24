@@ -10,9 +10,10 @@
     approval: ApprovalRequest;
     onResolve: (response: ApprovalResponse) => Promise<void>;
     onError: (message: string) => void;
+    responding?: boolean;
   }
 
-  let { approval, onResolve, onError }: Props = $props();
+  let { approval, onResolve, onError, responding = false }: Props = $props();
 
   // Schema arrives once per approval — parse once up front and reuse.
   const fields: ElicitationField[] = $derived(
@@ -23,8 +24,22 @@
 
   // Field values keyed by field name. Typed as unknown because values can be
   // string, number, boolean, or string[] depending on field.kind.
-  let values: Record<string, unknown> = $state({});
-  let errors: Record<string, string> = $state({});
+  function createFieldMap<T>(): Record<string, T> {
+    return Object.create(null) as Record<string, T>;
+  }
+
+  let values: Record<string, unknown> = $state(createFieldMap<unknown>());
+  let errors: Record<string, string> = $state(createFieldMap<string>());
+
+  function safeExternalURL(raw: string | undefined): string | null {
+    if (!raw) return null;
+    try {
+      const url = new URL(raw);
+      return url.protocol === 'https:' || url.protocol === 'http:' ? url.href : null;
+    } catch {
+      return null;
+    }
+  }
 
   function getValue(field: ElicitationField): unknown {
     if (Object.prototype.hasOwnProperty.call(values, field.name)) {
@@ -34,10 +49,10 @@
   }
 
   function setValue(name: string, value: unknown) {
-    values = { ...values, [name]: value };
+    values = Object.assign(createFieldMap<unknown>(), values, { [name]: value });
     // Clear any stale error on this field — the user is trying to fix it.
     if (errors[name]) {
-      const cleared = { ...errors };
+      const cleared = Object.assign(createFieldMap<string>(), errors);
       delete cleared[name];
       errors = cleared;
     }
@@ -82,7 +97,7 @@
   }
 
   function validateForm(): boolean {
-    const errs: Record<string, string> = {};
+    const errs: Record<string, string> = createFieldMap<string>();
     for (const field of fields) {
       const value = getValue(field);
       const empty =
@@ -144,7 +159,7 @@
   }
 
   function buildContent(): Record<string, unknown> {
-    const out: Record<string, unknown> = {};
+    const out: Record<string, unknown> = createFieldMap<unknown>();
     for (const field of fields) {
       const value = getValue(field);
       if (value === undefined) continue;
@@ -192,9 +207,14 @@
   }
 
   function handleOpenURL(url: string) {
+    const safeURL = safeExternalURL(url);
+    if (!safeURL) {
+      onError('MCP server provided an unsupported approval URL.');
+      return;
+    }
     // The system webview will hand this off to the OS browser. Using
     // noopener/noreferrer so the tab can't reach back into the app context.
-    window.open(url, '_blank', 'noopener,noreferrer');
+    window.open(safeURL, '_blank', 'noopener,noreferrer');
   }
 </script>
 
@@ -211,24 +231,31 @@
     {/if}
 
     {#if el.mode === 'url' && el.url}
+      {@const safeURL = safeExternalURL(el.url)}
       <div
         class="rounded border border-border bg-surface-1 px-2.5 py-2"
         data-testid="elicitation-url-panel"
       >
         <p class="text-[10px] text-text-secondary/70 mb-1">External approval URL</p>
-        <a
-          href={el.url}
-          target="_blank"
-          rel="noopener noreferrer"
-          class="text-xs text-accent break-all hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 rounded"
-          data-testid="elicitation-url-link"
-          onclick={(e) => { e.preventDefault(); handleOpenURL(el.url!); }}
-        >
-          {el.url}
-        </a>
-        <p class="text-[10px] text-text-secondary/70 mt-1">
-          Click "Accept" after completing the flow in your browser.
-        </p>
+        {#if safeURL}
+          <a
+            href={safeURL}
+            target="_blank"
+            rel="noopener noreferrer"
+            class="text-xs text-accent break-all hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 rounded"
+            data-testid="elicitation-url-link"
+            onclick={(e) => { e.preventDefault(); handleOpenURL(safeURL); }}
+          >
+            {safeURL}
+          </a>
+          <p class="text-[10px] text-text-secondary/70 mt-1">
+            Click "Accept" after completing the flow in your browser.
+          </p>
+        {:else}
+          <p class="break-all text-xs text-error/90" data-testid="elicitation-url-blocked">
+            Unsupported approval URL: {el.url}
+          </p>
+        {/if}
       </div>
     {:else if fields.length === 0}
       <p class="text-xs italic text-text-secondary" data-testid="elicitation-empty-schema">
@@ -251,13 +278,13 @@
   </div>
 
   <div class="flex flex-wrap gap-2 mt-2.5 justify-end">
-    <Button variant="secondary" size="sm" onclick={cancel} testId="elicitation-cancel">
+    <Button variant="secondary" size="sm" onclick={cancel} testId="elicitation-cancel" disabled={responding}>
       {#snippet children()}Cancel{/snippet}
     </Button>
-    <Button variant="danger-outline" size="sm" onclick={decline} testId="elicitation-decline">
+    <Button variant="danger-outline" size="sm" onclick={decline} testId="elicitation-decline" disabled={responding}>
       {#snippet children()}Decline{/snippet}
     </Button>
-    <Button variant="primary" size="sm" onclick={accept} testId="elicitation-accept">
+    <Button variant="primary" size="sm" onclick={accept} testId="elicitation-accept" loading={responding}>
       {#snippet children()}Accept{/snippet}
     </Button>
   </div>

@@ -181,4 +181,37 @@ describe('<Composer>', () => {
     expect(pane.generalError).toMatch(/Failed to send message/);
     consoleError.mockRestore();
   });
+
+  it('keeps a pending user-input answer separate from the normal draft', async () => {
+    const pane = await buildPane();
+    pane.addUserInput({
+      requestId: 'req-input',
+      threadId: 'thread-1',
+      toolName: 'AskUserQuestion',
+      title: 'Input requested',
+      questions: [{ id: 'name', header: 'Name', question: 'Name?' }],
+    });
+    const draft = await buildDraft();
+    draft.setContent('normal prompt stays here');
+    const respond = setBindingMock('RespondToUserInput', async () => {});
+
+    const { getByLabelText, getByTestId } = render(Composer, { props: { pane, draft } });
+    const textarea = getByLabelText('Message input') as HTMLTextAreaElement;
+
+    expect(textarea.value).toBe('');
+    await fireEvent.input(textarea, { target: { value: 'Randy' } });
+    await tick();
+    await fireEvent.click(getByTestId('user-input-submit'));
+
+    expect(draft.content).toBe('normal prompt stays here');
+    expect(respond).toHaveBeenCalledTimes(1);
+    expect(respond.mock.calls[0]).toMatchObject([
+      'thread-1',
+      {
+        requestId: 'req-input',
+        decision: 'accept',
+        answers: { name: 'Randy' },
+      },
+    ]);
+  });
 });

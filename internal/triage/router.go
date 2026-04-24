@@ -60,6 +60,7 @@ type Router struct {
 	pendingCommandDiffs  map[string]pendingCommandInlineDiff
 	pendingApprovals     map[string]pendingApprovalState
 	pendingApprovalItems map[string]string
+	pendingUserInputs    map[string]provider.UserInputRequest
 	interruptQueue       map[string][]queuedPersistence
 	openTurns            map[string]int
 	segmentIndexByScope  map[string]int
@@ -151,6 +152,7 @@ func NewRouter(st *store.Store, emit func(eventName string, data any)) *Router {
 		pendingCommandDiffs:        make(map[string]pendingCommandInlineDiff),
 		pendingApprovals:           make(map[string]pendingApprovalState),
 		pendingApprovalItems:       make(map[string]string),
+		pendingUserInputs:          make(map[string]provider.UserInputRequest),
 		interruptQueue:             make(map[string][]queuedPersistence),
 		openTurns:                  make(map[string]int),
 		segmentIndexByScope:        make(map[string]int),
@@ -247,6 +249,10 @@ func (r *Router) Handle(evt provider.ProviderEvent) error {
 		return r.handleApprovalRequest(evt)
 	case provider.EventApprovalResolved:
 		return r.handleApprovalResolved(evt)
+	case provider.EventUserInputRequest:
+		return r.handleUserInputRequest(evt)
+	case provider.EventUserInputResolved:
+		return r.handleUserInputResolved(evt)
 	case provider.EventCompactBoundary:
 		return r.handleCompaction(evt)
 	case provider.EventContentBlockStart:

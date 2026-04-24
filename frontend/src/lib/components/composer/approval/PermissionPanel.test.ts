@@ -44,21 +44,7 @@ describe('<PermissionPanel>', () => {
     expect(getByText(/Write: \/tmp/)).toBeInTheDocument();
   });
 
-  it('defaults scope to "turn"', () => {
-    const { getByTestId } = render(PermissionPanel, {
-      props: {
-        approval: baseApproval(),
-        onResolve: makeResolver(),
-        onError: vi.fn(),
-      },
-    });
-    const turn = getByTestId('permission-scope-turn') as HTMLInputElement;
-    const session = getByTestId('permission-scope-session') as HTMLInputElement;
-    expect(turn.checked).toBe(true);
-    expect(session.checked).toBe(false);
-  });
-
-  it('Grant sends { decision: allow, scope: turn } with the permissions forwarded', async () => {
+  it('Approve once sends { decision: accept, scope: turn } with the permissions forwarded', async () => {
     const onResolve = makeResolver();
     const { getByTestId } = render(PermissionPanel, {
       props: {
@@ -69,7 +55,7 @@ describe('<PermissionPanel>', () => {
     });
     await fireEvent.click(getByTestId('permission-grant'));
     const response = onResolve.mock.calls[0][0] as ApprovalResponse;
-    expect(response.decision).toBe('allow');
+    expect(response.decision).toBe('accept');
     expect(response.scope).toBe('turn');
     // The permissions object is wrapped into a PermissionProfile but carries
     // the same shape.
@@ -79,7 +65,7 @@ describe('<PermissionPanel>', () => {
     });
   });
 
-  it('Grant with scope=session upgrades the scope field on the response', async () => {
+  it('Always allow this session sends scope=session', async () => {
     const onResolve = makeResolver();
     const { getByTestId } = render(PermissionPanel, {
       props: {
@@ -88,13 +74,13 @@ describe('<PermissionPanel>', () => {
         onError: vi.fn(),
       },
     });
-    await fireEvent.click(getByTestId('permission-scope-session'));
-    await fireEvent.click(getByTestId('permission-grant'));
+    await fireEvent.click(getByTestId('permission-grant-session'));
     const response = onResolve.mock.calls[0][0] as ApprovalResponse;
+    expect(response.decision).toBe('acceptForSession');
     expect(response.scope).toBe('session');
   });
 
-  it('Deny sends decision=deny with no permissions payload', async () => {
+  it('Decline sends decision=decline with no permissions payload', async () => {
     const onResolve = makeResolver();
     const { getByTestId } = render(PermissionPanel, {
       props: {
@@ -105,7 +91,7 @@ describe('<PermissionPanel>', () => {
     });
     await fireEvent.click(getByTestId('permission-deny'));
     const response = onResolve.mock.calls[0][0] as ApprovalResponse;
-    expect(response.decision).toBe('deny');
+    expect(response.decision).toBe('decline');
     expect(response.permissions).toBeUndefined();
     expect(response.scope).toBeUndefined();
   });
@@ -119,8 +105,7 @@ describe('<PermissionPanel>', () => {
       },
     });
     // Summary row is conditional on approval.permissions — absent here.
-    // Scope radios + buttons still render so the panel is functional.
-    expect(getByTestId('permission-scope-turn')).toBeInTheDocument();
+    // Buttons still render so the panel is functional.
     expect(getByTestId('permission-grant')).toBeInTheDocument();
   });
 

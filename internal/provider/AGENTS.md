@@ -36,19 +36,23 @@ hand those options to the provider-specific `Config.From(opts)`.
 Provider-specific knobs (context window, reasoning effort, fast mode)
 live in the options; the provider packages stay free of SQLite types.
 
-## Approvals
+## Interactive Requests
 
-The two providers disagree about everything except that there is an
-approval. We normalize early:
+The two providers disagree about the wire format for interactive prompts,
+so normalize early and keep the frontend branches explicit:
 
 - Both produce `ApprovalRequest` values with a `Kind` the frontend can
-  branch on (`user-input`, `permission`, `file-change`, `file-read`,
-  `command`, `mcp-elicitation`).
+  branch on (`permission`, `file-change`, `file-read`, `command`,
+  `mcp-elicitation`).
+- Structured answer collection is not an approval. It leaves this package
+  as a `UserInputRequest` and resolves through `RespondToUserInput`, matching
+  t3-code's separate `user-input.requested` / `user-input.resolved` flow.
 - The original provider shape is preserved where we need it to send a
   response back, but the frontend never sees it.
 - When the provider introduces a new request type, add a new `Kind`
-  here and make sure the frontend has a branch for it before shipping.
-  A `Kind` the frontend doesn't render is a silent dead-end.
+  or `UserInputRequest` shape here and make sure the frontend has a branch
+  for it before shipping. A prompt the frontend doesn't render is a silent
+  dead-end.
 
 ## Extension points
 
@@ -56,9 +60,9 @@ approval. We normalize early:
   `docs/architecture/how-to.md#add-a-new-provider`. Sub-package under
   `provider/<name>/`, implement the shared Session interface, register
   in `app.go`.
-- To add a new approval Kind: add the constant in this package, add the
-  frontend branch, then wire the adapter — tests for both sides in the
-  same PR.
+- To add a new approval Kind or structured user-input shape: add the shared
+  type here, add the frontend branch, then wire the adapter — tests for both
+  sides in the same PR.
 
 ## Anti-patterns
 

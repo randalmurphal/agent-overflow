@@ -261,18 +261,19 @@ func isJSONNull(raw json.RawMessage) bool {
 
 func buildUserInputMeta(threadID, turnID string, rpcID int64, params json.RawMessage) json.RawMessage {
 	questions := parseUserInputQuestions(params)
+	return buildUserInputMetaFromQuestions(threadID, turnID, rpcID, questions)
+}
 
-	approval := provider.ApprovalRequest{
+func buildUserInputMetaFromQuestions(threadID, turnID string, rpcID int64, questions []provider.UserInputQuestion) json.RawMessage {
+	request := provider.UserInputRequest{
 		RequestID: fmt.Sprintf("%d", rpcID),
 		ThreadID:  threadID,
 		TurnID:    turnID,
 		ToolName:  "user_input",
-		Input:     params,
-		Kind:      "user-input",
 		Questions: questions,
 		Title:     "User Input Required",
 	}
-	data, _ := json.Marshal(approval)
+	data, _ := json.Marshal(request)
 	return data
 }
 
@@ -296,12 +297,15 @@ func buildPermissionMeta(threadID, turnID string, rpcID int64, params json.RawMe
 
 func parseUserInputQuestions(params json.RawMessage) []provider.UserInputQuestion {
 	var payload struct {
-		Questions []provider.UserInputQuestion `json:"questions"`
+		Questions *[]provider.UserInputQuestion `json:"questions"`
 	}
 	if err := json.Unmarshal(params, &payload); err != nil {
 		return nil
 	}
-	return payload.Questions
+	if payload.Questions == nil {
+		return nil
+	}
+	return provider.NormalizeUserInputQuestions(*payload.Questions)
 }
 
 func parsePermissionRequest(params json.RawMessage) (string, *provider.PermissionProfile) {

@@ -142,7 +142,9 @@ type stopTaskResult struct {
 // cancel its auto-deny timer when the user responds (Bug B3) and so we can
 // reject duplicate responses for the same request ID (Bug B9).
 type pendingApproval struct {
-	cancel chan struct{}
+	cancel             chan struct{}
+	resolveKind        provider.EventKind
+	userInputQuestions []provider.UserInputQuestion
 }
 
 // Config for creating a Claude session.
@@ -569,10 +571,41 @@ func (s *Session) clearPendingStopTasks() {
 // (Bug B9). The first response also cancels the auto-deny timer started
 // for that request by Bug B3's timeout watchdog.
 func (s *Session) RespondToApproval(ctx context.Context, resp provider.ApprovalResponse) error {
-	if !s.claimApproval(resp.RequestID) {
+	if !s.claimApproval(resp.RequestID, provider.EventApprovalResolved) {
 		return ErrApprovalAlreadyResolved
 	}
 	data, err := buildApprovalResponse(resp)
+	if err != nil {
+		return err
+	}
+	return s.proc.WriteLine(data)
+}
+
+func (s *Session) RespondToUserInput(ctx context.Context, resp provider.UserInputResponse) error {
+	decision, err := provider.NormalizeUserInputDecision(resp.Decision)
+	if err != nil {
+		return err
+	}
+	questions := s.pendingUserInputQuestions(resp.RequestID)
+	if !s.claimApproval(resp.RequestID, provider.EventUserInputResolved) {
+		return ErrApprovalAlreadyResolved
+	}
+	approval := provider.ApprovalResponse{
+		RequestID: resp.RequestID,
+		Decision:  decision,
+	}
+	inputFields := map[string]any{
+		"answers": resp.Answers,
+	}
+	if len(questions) > 0 {
+		inputFields["questions"] = questions
+	}
+	input, err := json.Marshal(inputFields)
+	if err != nil {
+		return fmt.Errorf("claude: marshal user input answers: %w", err)
+	}
+	approval.UpdatedInput = input
+	data, err := buildApprovalResponse(approval)
 	if err != nil {
 		return err
 	}
@@ -583,12 +616,16 @@ func (s *Session) RespondToApproval(ctx context.Context, resp provider.ApprovalR
 // request ID has already been answered (either by an earlier response or
 // by the auto-deny timeout) so callers can surface a clear message instead
 // of silently shadowing the previous decision.
-var ErrApprovalAlreadyResolved = fmt.Errorf("claude: approval already resolved")
+var ErrApprovalAlreadyResolved = fmt.Errorf("claude: approval already resolved: %w", provider.ErrStaleInteractiveRequest)
 
 // startApprovalTimer registers a pending approval and arms the auto-deny
 // timer. Subsequent responses (from the user) or calls to Close cancel
 // the timer via claimApproval / clearPendingApprovals.
-func (s *Session) startApprovalTimer(requestID string) {
+func (s *Session) startApprovalTimer(requestID string, resolveKind provider.EventKind) {
+	s.startApprovalTimerWithQuestions(requestID, resolveKind, nil)
+}
+
+func (s *Session) startApprovalTimerWithQuestions(requestID string, resolveKind provider.EventKind, questions []provider.UserInputQuestion) {
 	if requestID == "" {
 		return
 	}
@@ -610,19 +647,33 @@ func (s *Session) startApprovalTimer(requestID string) {
 		// we replace the prior timer to avoid leaking it.
 		close(existing.cancel)
 	}
-	s.pendingApprovals[requestID] = &pendingApproval{cancel: cancel}
+	s.pendingApprovals[requestID] = &pendingApproval{
+		cancel:             cancel,
+		resolveKind:        resolveKind,
+		userInputQuestions: append([]provider.UserInputQuestion(nil), questions...),
+	}
 	// Starting a new timer re-opens the ID in case the provider
 	// re-sent the request after a response.
 	delete(s.resolvedApprovals, requestID)
 	s.approvalsMu.Unlock()
 
-	go s.runApprovalTimer(requestID, timeout, cancel)
+	go s.runApprovalTimer(requestID, timeout, cancel, resolveKind)
+}
+
+func (s *Session) pendingUserInputQuestions(requestID string) []provider.UserInputQuestion {
+	s.approvalsMu.Lock()
+	defer s.approvalsMu.Unlock()
+	pending := s.pendingApprovals[requestID]
+	if pending == nil || len(pending.userInputQuestions) == 0 {
+		return nil
+	}
+	return append([]provider.UserInputQuestion(nil), pending.userInputQuestions...)
 }
 
 // runApprovalTimer fires the auto-deny when the user fails to respond in
 // time. A cancel signal on `cancel` means the user responded first or the
 // session is closing.
-func (s *Session) runApprovalTimer(requestID string, timeout time.Duration, cancel <-chan struct{}) {
+func (s *Session) runApprovalTimer(requestID string, timeout time.Duration, cancel <-chan struct{}, resolveKind provider.EventKind) {
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 	select {
@@ -631,14 +682,18 @@ func (s *Session) runApprovalTimer(requestID string, timeout time.Duration, canc
 	case <-timer.C:
 	}
 
-	if !s.claimApproval(requestID) {
+	if !s.claimApproval(requestID, resolveKind) {
 		return
 	}
 
+	timeoutSubject := "approval"
+	if resolveKind == provider.EventUserInputResolved {
+		timeoutSubject = "user input"
+	}
 	s.onEvent(provider.ProviderEvent{
 		Kind:      provider.EventError,
 		ThreadID:  s.threadID,
-		Content:   fmt.Sprintf("claude: approval timed out for request %s after %s — auto-denied to keep session alive", requestID, timeout),
+		Content:   fmt.Sprintf("claude: %s timed out for request %s after %s — auto-denied to keep session alive", timeoutSubject, requestID, timeout),
 		Timestamp: time.Now(),
 	})
 	meta, _ := json.Marshal(map[string]any{
@@ -646,7 +701,7 @@ func (s *Session) runApprovalTimer(requestID string, timeout time.Duration, canc
 		"decision":  "timeout",
 	})
 	s.onEvent(provider.ProviderEvent{
-		Kind:      provider.EventApprovalResolved,
+		Kind:      resolveKind,
 		ThreadID:  s.threadID,
 		ItemID:    requestID,
 		Meta:      meta,
@@ -669,21 +724,18 @@ func (s *Session) runApprovalTimer(requestID string, timeout time.Duration, canc
 // approval for requestID. False means either we already answered (Bug B9
 // dedup) or the session is closing. Cancels any pending auto-deny timer
 // so the goroutine exits.
-//
-// The absence of a pending entry is NOT an error — some callers (legacy
-// tests, programmatic flows) may respond without the request having gone
-// through the normal readLoop path. Only a repeat response for the same
-// ID is rejected.
-func (s *Session) claimApproval(requestID string) bool {
+func (s *Session) claimApproval(requestID string, expectedKind provider.EventKind) bool {
 	s.approvalsMu.Lock()
 	if _, already := s.resolvedApprovals[requestID]; already {
 		s.approvalsMu.Unlock()
 		return false
 	}
 	pending, hadPending := s.pendingApprovals[requestID]
-	if hadPending {
-		delete(s.pendingApprovals, requestID)
+	if !hadPending || pending.resolveKind != expectedKind {
+		s.approvalsMu.Unlock()
+		return false
 	}
+	delete(s.pendingApprovals, requestID)
 	if s.resolvedApprovals == nil {
 		s.resolvedApprovals = make(map[string]struct{})
 	}
@@ -723,7 +775,7 @@ func (s *Session) clearPendingApprovals() {
 			"decision":  "lost",
 		})
 		s.onEvent(provider.ProviderEvent{
-			Kind:      provider.EventApprovalResolved,
+			Kind:      p.resolveKind,
 			ThreadID:  s.threadID,
 			ItemID:    requestID,
 			Meta:      meta,
@@ -896,7 +948,12 @@ func (s *Session) readLoop() {
 				s.disarmIdleWatchdog()
 			}
 			if evt.Kind == provider.EventApprovalRequest && evt.ItemID != "" {
-				s.startApprovalTimer(evt.ItemID)
+				s.startApprovalTimer(evt.ItemID, provider.EventApprovalResolved)
+			}
+			if evt.Kind == provider.EventUserInputRequest && evt.ItemID != "" {
+				var request provider.UserInputRequest
+				_ = json.Unmarshal(evt.Meta, &request)
+				s.startApprovalTimerWithQuestions(evt.ItemID, provider.EventUserInputResolved, request.Questions)
 			}
 			s.onEvent(evt)
 		}

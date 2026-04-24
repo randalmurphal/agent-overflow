@@ -8,6 +8,7 @@ import type {
   TurnCompletedEvent,
   TurnStartedEvent,
   UsageEvent,
+  UserInputEvent,
 } from '../types/events';
 import type { Item, Thread } from '../types/models';
 import type { DesignArtifact, DesignChoiceResolved, DesignOptionsRequest } from '../types/design';
@@ -21,6 +22,8 @@ import {
   projectThreadItem,
   projectTurnCompleted,
   projectTurnStarted,
+  projectUserInputRequest,
+  projectUserInputResolution,
 } from './threadStatuses.svelte';
 import { parseTokenUsage } from './thread.svelte';
 
@@ -250,13 +253,43 @@ function applyApprovalEvent(evt: ApprovalEvent): void {
     return;
   }
 
-  if (evt.action === 'resolve' && evt.requestId) {
+  if ((evt.action === 'resolve' || evt.action === 'fail') && evt.requestId) {
     projectApprovalResolution(evt.threadId, evt.requestId);
     for (const pane of getAllPanes().values()) {
       if (evt.threadId && pane.threadId !== evt.threadId) continue;
       const hadApproval = pane.pendingApprovals.some((approval) => approval.requestId === evt.requestId);
       if (!hadApproval) continue;
       pane.removeApproval(evt.requestId);
+      if (evt.action === 'fail' && evt.detail) {
+        pane.setGeneralError(`Failed to respond to approval: ${evt.detail}`);
+      }
+    }
+  }
+}
+
+function applyUserInputEvent(evt: UserInputEvent): void {
+  if (!evt) return;
+
+  if (evt.action === 'request' && evt.request?.threadId) {
+    projectUserInputRequest(evt.request.threadId, evt.request.requestId);
+    for (const pane of getAllPanes().values()) {
+      if (pane.threadId === evt.request.threadId) {
+        pane.addUserInput(evt.request);
+      }
+    }
+    return;
+  }
+
+  if ((evt.action === 'resolve' || evt.action === 'fail') && evt.requestId) {
+    projectUserInputResolution(evt.threadId, evt.requestId);
+    for (const pane of getAllPanes().values()) {
+      if (evt.threadId && pane.threadId !== evt.threadId) continue;
+      const hadRequest = pane.pendingUserInputs.some((request) => request.requestId === evt.requestId);
+      if (!hadRequest) continue;
+      pane.removeUserInput(evt.requestId);
+      if (evt.action === 'fail' && evt.detail) {
+        pane.setGeneralError(`Failed to submit input: ${evt.detail}`);
+      }
     }
   }
 }
@@ -491,6 +524,7 @@ export function setupEventListeners(): () => void {
   resetSeqTracking();
 
   const cancelApproval = wailsEventOn<ApprovalEvent>('provider:approval', applyApprovalEvent);
+  const cancelUserInput = wailsEventOn<UserInputEvent>('provider:user_input', applyUserInputEvent);
 
   const cancelUsage = wailsEventOn<UsageEvent>('provider:usage', applyUsageEvent);
 
@@ -607,6 +641,7 @@ export function setupEventListeners(): () => void {
 
   return () => {
     cancelApproval();
+    cancelUserInput();
     cancelUsage();
     cancelProviderStatus();
     cancelItemEvent();

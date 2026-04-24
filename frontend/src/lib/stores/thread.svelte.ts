@@ -6,6 +6,7 @@ import type {
   ProviderStatusEvent,
   SubagentNotificationEvent,
   TokenUsageSummary,
+  UserInputRequest,
 } from '../types/events';
 import type { ChannelMessage } from '../types/discussion';
 import type { DesignArtifact, DesignOptionsRequest, DesignViewport } from '../types/design';
@@ -170,6 +171,7 @@ export function createThreadPane() {
   // is the render gate in MessageTimeline; absent turns skip the tree+badge.
   let turnDiffViews: Map<number, TurnDiffView> = $state(new Map());
   let pendingApprovals: ApprovalRequest[] = $state([]);
+  let pendingUserInputs: UserInputRequest[] = $state([]);
   let contextWindow: ContextWindow | null = $state(null);
   let providerBanner: ProviderStatusEvent | null = $state(null);
   // generalError is the grab-bag pane-level error slot surfaced by
@@ -425,6 +427,7 @@ export function createThreadPane() {
      */
     get turnDiffViews() { return turnDiffViews; },
     get pendingApprovals() { return pendingApprovals; },
+    get pendingUserInputs() { return pendingUserInputs; },
     get contextWindow() { return contextWindow; },
     get providerBanner() { return providerBanner; },
     get generalError() { return generalError; },
@@ -497,6 +500,7 @@ export function createThreadPane() {
 
     async switchThread(newThread: Thread): Promise<void> {
       pendingApprovals = [];
+      pendingUserInputs = [];
       contextWindow = seedContextWindow(newThread);
       providerBanner = null;
       generalError = null;
@@ -625,6 +629,7 @@ export function createThreadPane() {
       itemStatusById.clear();
       turnDiffViews = new Map();
       pendingApprovals = [];
+      pendingUserInputs = [];
       contextWindow = null;
       providerBanner = null;
       generalError = null;
@@ -825,11 +830,25 @@ export function createThreadPane() {
     // --- Mutations (called by event router) ---
 
     addApproval(approval: ApprovalRequest): void {
-      pendingApprovals = [...pendingApprovals, approval];
+      pendingApprovals = [
+        ...pendingApprovals.filter((a) => a.requestId !== approval.requestId),
+        approval,
+      ];
     },
 
     removeApproval(requestId: string): void {
       pendingApprovals = pendingApprovals.filter((a) => a.requestId !== requestId);
+    },
+
+    addUserInput(request: UserInputRequest): void {
+      pendingUserInputs = [
+        ...pendingUserInputs.filter((r) => r.requestId !== request.requestId),
+        request,
+      ];
+    },
+
+    removeUserInput(requestId: string): void {
+      pendingUserInputs = pendingUserInputs.filter((r) => r.requestId !== requestId);
     },
 
     /**

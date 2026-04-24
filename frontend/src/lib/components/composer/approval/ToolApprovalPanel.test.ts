@@ -52,7 +52,7 @@ describe('<ToolApprovalPanel>', () => {
     expect(getByText('File')).toBeInTheDocument();
   });
 
-  it('Allow sends decision=allow with no updatedInput', async () => {
+  it('Approve once sends decision=accept with no updatedInput', async () => {
     const onResolve = makeResolver();
     const { getByTestId } = render(ToolApprovalPanel, {
       props: {
@@ -64,11 +64,11 @@ describe('<ToolApprovalPanel>', () => {
     await fireEvent.click(getByTestId('approval-allow'));
     await waitFor(() => expect(onResolve).toHaveBeenCalled());
     const response = onResolve.mock.calls[0][0] as ApprovalResponse;
-    expect(response.decision).toBe('allow');
+    expect(response.decision).toBe('accept');
     expect(response.updatedInput).toBeUndefined();
   });
 
-  it('Deny sends decision=deny', async () => {
+  it('Decline sends decision=decline', async () => {
     const onResolve = makeResolver();
     const { getByTestId } = render(ToolApprovalPanel, {
       props: {
@@ -79,7 +79,7 @@ describe('<ToolApprovalPanel>', () => {
     });
     await fireEvent.click(getByTestId('approval-deny'));
     await waitFor(() => expect(onResolve).toHaveBeenCalled());
-    expect((onResolve.mock.calls[0][0] as ApprovalResponse).decision).toBe('deny');
+    expect((onResolve.mock.calls[0][0] as ApprovalResponse).decision).toBe('decline');
   });
 
   it('Edit toggle is hidden when input is null', () => {
@@ -122,7 +122,7 @@ describe('<ToolApprovalPanel>', () => {
     await fireEvent.click(getByTestId('approval-allow-with-edits'));
     await waitFor(() => expect(onResolve).toHaveBeenCalled());
     const response = onResolve.mock.calls[0][0] as ApprovalResponse;
-    expect(response.decision).toBe('allow');
+    expect(response.decision).toBe('accept');
     expect(response.updatedInput).toEqual({ command: 'pwd' });
   });
 

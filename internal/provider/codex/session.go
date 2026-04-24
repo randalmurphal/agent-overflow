@@ -24,7 +24,7 @@ const DefaultApprovalTimeout = 10 * time.Minute
 // request ID has already been answered (either by an earlier response or
 // by the auto-deny timeout). Prevents a second write landing at the
 // provider with a stale decision.
-var ErrApprovalAlreadyResolved = fmt.Errorf("codex: approval already resolved")
+var ErrApprovalAlreadyResolved = fmt.Errorf("codex: approval already resolved: %w", provider.ErrStaleInteractiveRequest)
 
 // DynamicToolHandler is called when the provider invokes a dynamic tool (item/tool/call
 // or dynamicToolCall). The handler receives the tool name and arguments, and returns
@@ -122,7 +122,9 @@ type Session struct {
 // pendingApproval tracks one in-flight approval so the timer can be
 // cancelled when the user responds (Bug B3) or the session closes.
 type pendingApproval struct {
-	cancel chan struct{}
+	cancel              chan struct{}
+	resolveKind         provider.EventKind
+	timeoutResponseKind string
 }
 
 // Config for creating a Codex session.
@@ -914,12 +916,12 @@ func (s *Session) handleServerRequest(method string, id *json.Number, params jso
 		"execCommandApproval":
 
 		meta := buildApprovalMeta(s.threadID, turnID, method, rpcID, params)
-		s.startApprovalTimer(rpcID)
+		s.startApprovalTimer(rpcID, provider.EventApprovalResolved)
 		s.onEvent(buildApprovalEvent(s.threadID, turnID, itemID, meta, line))
 
 	case "mcpServer/elicitation/request":
 		meta := buildElicitationMeta(s.threadID, turnID, rpcID, params)
-		s.startApprovalTimer(rpcID)
+		s.startApprovalTimer(rpcID, provider.EventApprovalResolved, "mcp-elicitation")
 		s.onEvent(buildApprovalEvent(s.threadID, turnID, itemID, meta, line))
 
 	case "item/tool/call", "dynamicToolCall":
@@ -936,13 +938,20 @@ func (s *Session) handleServerRequest(method string, id *json.Number, params jso
 		}
 
 	case "item/tool/requestUserInput":
-		meta := buildUserInputMeta(s.threadID, turnID, rpcID, params)
-		s.startApprovalTimer(rpcID)
-		s.onEvent(buildApprovalEvent(s.threadID, turnID, itemID, meta, line))
+		questions := parseUserInputQuestions(params)
+		if len(questions) == 0 {
+			if err := s.writeErrorResponse(rpcID, -32602, "requestUserInput requires at least one question"); err != nil {
+				log.Printf("codex: failed to send invalid requestUserInput response: %v", err)
+			}
+			return
+		}
+		meta := buildUserInputMetaFromQuestions(s.threadID, turnID, rpcID, questions)
+		s.startApprovalTimer(rpcID, provider.EventUserInputResolved)
+		s.onEvent(buildUserInputEvent(s.threadID, turnID, itemID, meta, line))
 
 	case "item/permissions/requestApproval":
 		meta := buildPermissionMeta(s.threadID, turnID, rpcID, params)
-		s.startApprovalTimer(rpcID)
+		s.startApprovalTimer(rpcID, provider.EventApprovalResolved)
 		s.onEvent(buildApprovalEvent(s.threadID, turnID, itemID, meta, line))
 
 	default:
@@ -955,7 +964,7 @@ func (s *Session) handleServerRequest(method string, id *json.Number, params jso
 // startApprovalTimer registers the approval and arms the auto-deny timer.
 // Uses the numeric JSON-RPC id rendered as a string so dedup (Bug B9) and
 // response routing both use the same key.
-func (s *Session) startApprovalTimer(rpcID int64) {
+func (s *Session) startApprovalTimer(rpcID int64, resolveKind provider.EventKind, timeoutResponseKind ...string) {
 	requestID := fmt.Sprintf("%d", rpcID)
 	timeout := s.approvalTimeout
 	if timeout <= 0 {
@@ -973,19 +982,27 @@ func (s *Session) startApprovalTimer(rpcID int64) {
 	if existing, ok := s.pendingApprovals[requestID]; ok {
 		close(existing.cancel)
 	}
-	s.pendingApprovals[requestID] = &pendingApproval{cancel: cancel}
+	responseKind := ""
+	if len(timeoutResponseKind) > 0 {
+		responseKind = timeoutResponseKind[0]
+	}
+	s.pendingApprovals[requestID] = &pendingApproval{
+		cancel:              cancel,
+		resolveKind:         resolveKind,
+		timeoutResponseKind: responseKind,
+	}
 	// Starting a new timer re-opens the ID: e.g. if we previously
 	// resolved it and the provider re-sent the request (unusual, but
 	// cheap to support).
 	delete(s.resolvedApprovals, requestID)
 	s.approvalsMu.Unlock()
-	go s.runApprovalTimer(rpcID, requestID, timeout, cancel)
+	go s.runApprovalTimer(rpcID, requestID, timeout, cancel, resolveKind, responseKind)
 }
 
 // runApprovalTimer fires the auto-decline when the user fails to respond
 // in time. The cancel signal means the user answered first or the session
 // is shutting down.
-func (s *Session) runApprovalTimer(rpcID int64, requestID string, timeout time.Duration, cancel <-chan struct{}) {
+func (s *Session) runApprovalTimer(rpcID int64, requestID string, timeout time.Duration, cancel <-chan struct{}, resolveKind provider.EventKind, timeoutResponseKind string) {
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 	select {
@@ -994,14 +1011,20 @@ func (s *Session) runApprovalTimer(rpcID int64, requestID string, timeout time.D
 	case <-timer.C:
 	}
 
-	if !s.claimApproval(requestID) {
+	if !s.claimApproval(requestID, resolveKind) {
 		return
 	}
 
+	timeoutSubject := "approval"
+	if resolveKind == provider.EventUserInputResolved {
+		timeoutSubject = "user input"
+	} else if timeoutResponseKind == "mcp-elicitation" {
+		timeoutSubject = "MCP elicitation"
+	}
 	s.onEvent(provider.ProviderEvent{
 		Kind:      provider.EventError,
 		ThreadID:  s.threadID,
-		Content:   fmt.Sprintf("codex: approval timed out for request %s after %s — auto-denied to keep session alive", requestID, timeout),
+		Content:   fmt.Sprintf("codex: %s timed out for request %s after %s — auto-denied to keep session alive", timeoutSubject, requestID, timeout),
 		Timestamp: time.Now(),
 	})
 	meta, _ := json.Marshal(map[string]any{
@@ -1009,12 +1032,24 @@ func (s *Session) runApprovalTimer(rpcID int64, requestID string, timeout time.D
 		"decision":  "timeout",
 	})
 	s.onEvent(provider.ProviderEvent{
-		Kind:      provider.EventApprovalResolved,
+		Kind:      resolveKind,
 		ThreadID:  s.threadID,
 		ItemID:    requestID,
 		Meta:      meta,
 		Timestamp: time.Now(),
 	})
+	if resolveKind == provider.EventUserInputResolved {
+		if err := s.writeErrorResponse(rpcID, -32000, "user input timed out"); err != nil {
+			log.Printf("codex: write user-input timeout for %s: %v", requestID, err)
+		}
+		return
+	}
+	if timeoutResponseKind == "mcp-elicitation" {
+		if err := s.writeResponse(rpcID, map[string]any{"action": "decline"}); err != nil {
+			log.Printf("codex: write MCP elicitation timeout for %s: %v", requestID, err)
+		}
+		return
+	}
 	if err := s.writeResponse(rpcID, map[string]any{"decision": "decline"}); err != nil {
 		log.Printf("codex: write auto-deny for %s: %v", requestID, err)
 	}
@@ -1024,21 +1059,18 @@ func (s *Session) runApprovalTimer(rpcID int64, requestID string, timeout time.D
 // approval for requestID. False means either we already answered (Bug B9
 // dedup) or the session is closing. Cancels any pending auto-deny timer
 // so the goroutine exits.
-//
-// Callers that want to respond even when no request was tracked (e.g. the
-// legacy app-level callers that don't wait for handleServerRequest) should
-// still succeed on the first call: the absence of a pending entry is not
-// an error — but a second call for the same ID is.
-func (s *Session) claimApproval(requestID string) bool {
+func (s *Session) claimApproval(requestID string, expectedKind provider.EventKind) bool {
 	s.approvalsMu.Lock()
 	if _, already := s.resolvedApprovals[requestID]; already {
 		s.approvalsMu.Unlock()
 		return false
 	}
 	pending, hadPending := s.pendingApprovals[requestID]
-	if hadPending {
-		delete(s.pendingApprovals, requestID)
+	if !hadPending || pending.resolveKind != expectedKind {
+		s.approvalsMu.Unlock()
+		return false
 	}
+	delete(s.pendingApprovals, requestID)
 	if s.resolvedApprovals == nil {
 		s.resolvedApprovals = make(map[string]struct{})
 	}
@@ -1076,7 +1108,7 @@ func (s *Session) clearPendingApprovals() {
 			"decision":  "lost",
 		})
 		s.onEvent(provider.ProviderEvent{
-			Kind:      provider.EventApprovalResolved,
+			Kind:      p.resolveKind,
 			ThreadID:  s.threadID,
 			ItemID:    requestID,
 			Meta:      meta,
@@ -1095,6 +1127,18 @@ const resolvedApprovalsSoftCap = 1000
 func buildApprovalEvent(threadID, turnID, itemID string, meta json.RawMessage, raw json.RawMessage) provider.ProviderEvent {
 	return provider.ProviderEvent{
 		Kind:      provider.EventApprovalRequest,
+		ThreadID:  threadID,
+		TurnID:    turnID,
+		ItemID:    itemID,
+		Meta:      meta,
+		Timestamp: time.Now(),
+		Raw:       raw,
+	}
+}
+
+func buildUserInputEvent(threadID, turnID, itemID string, meta json.RawMessage, raw json.RawMessage) provider.ProviderEvent {
+	return provider.ProviderEvent{
+		Kind:      provider.EventUserInputRequest,
 		ThreadID:  threadID,
 		TurnID:    turnID,
 		ItemID:    itemID,

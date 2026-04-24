@@ -372,7 +372,7 @@ describe('<ThreadRow> live status dot', () => {
     expect(dot.classList.contains('bg-warning')).toBe(true);
   });
 
-  it('renders an accent dot labelled Awaiting input for user-input approvals', () => {
+  it('renders an accent dot labelled Awaiting input for user-input requests', () => {
     setThreadStatus('t-input', 'awaiting-input');
     const pane = createThreadPane();
     const { getByTestId } = render(ThreadRow, {

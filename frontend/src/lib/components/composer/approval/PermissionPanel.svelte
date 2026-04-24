@@ -7,42 +7,36 @@
   interface Props {
     approval: ApprovalRequest;
     onResolve: (response: ApprovalResponse) => Promise<void>;
-    onError: (message: string) => void;
+    onError?: (message: string) => void;
+    responding?: boolean;
   }
 
-  let { approval, onResolve, onError }: Props = $props();
+  let { approval, onResolve, onError, responding = false }: Props = $props();
 
-  // Radio state for 'this turn only' vs 'this session'.
-  let scope: 'turn' | 'session' = $state('turn');
-
-  async function grant() {
+  async function grant(scope: 'turn' | 'session') {
+    const perms = new PermissionProfile(
+      approval.permissions as Partial<InstanceType<typeof PermissionProfile>> ?? {},
+    );
     try {
-      // Cast needed: our local PermissionProfile interface uses optional fields,
-      // while the Wails binding class uses required-but-nullable fields.
-      const perms = new PermissionProfile(
-        approval.permissions as Partial<InstanceType<typeof PermissionProfile>> ?? {},
-      );
       await onResolve(new ApprovalResponse({
         requestId: approval.requestId,
-        decision: 'allow',
+        decision: scope === 'session' ? 'acceptForSession' : 'accept',
         permissions: perms,
         scope,
       }));
     } catch (err) {
-      console.error('Failed to grant permission:', err);
-      onError(`Failed to grant permission: ${errString(err)}`);
+      onError?.(`Failed to grant permission: ${errString(err)}`);
     }
   }
 
-  async function deny() {
+  async function respond(decision: 'decline' | 'cancel') {
     try {
       await onResolve(new ApprovalResponse({
         requestId: approval.requestId,
-        decision: 'deny',
+        decision,
       }));
     } catch (err) {
-      console.error('Failed to deny permission:', err);
-      onError(`Failed to respond to approval: ${errString(err)}`);
+      onError?.(`Failed to respond to approval: ${errString(err)}`);
     }
   }
 </script>
@@ -64,37 +58,17 @@
   </div>
 {/if}
 
-<div class="mt-2 flex items-center gap-3">
-  <span class="text-xs text-text-secondary">Scope:</span>
-  <label class="flex items-center gap-1 text-xs text-text-primary cursor-pointer">
-    <input
-      type="radio"
-      name="scope-{approval.requestId}"
-      value="turn"
-      data-testid="permission-scope-turn"
-      checked={scope === 'turn'}
-      onchange={() => { scope = 'turn'; }}
-    />
-    This turn only
-  </label>
-  <label class="flex items-center gap-1 text-xs text-text-primary cursor-pointer">
-    <input
-      type="radio"
-      name="scope-{approval.requestId}"
-      value="session"
-      data-testid="permission-scope-session"
-      checked={scope === 'session'}
-      onchange={() => { scope = 'session'; }}
-    />
-    This session
-  </label>
-</div>
-
-<div class="flex gap-2 mt-2.5 justify-end">
-  <Button variant="primary" size="sm" onclick={grant} testId="permission-grant">
-    {#snippet children()}Grant{/snippet}
+<div class="flex flex-wrap gap-2 mt-2.5 justify-end">
+  <Button variant="danger-ghost" size="sm" onclick={() => respond('cancel')} testId="permission-cancel" disabled={responding}>
+    {#snippet children()}Cancel turn{/snippet}
   </Button>
-  <Button variant="danger-outline" size="sm" onclick={deny} testId="permission-deny">
-    {#snippet children()}Deny{/snippet}
+  <Button variant="danger-outline" size="sm" onclick={() => respond('decline')} testId="permission-deny" disabled={responding}>
+    {#snippet children()}Decline{/snippet}
+  </Button>
+  <Button variant="secondary" size="sm" onclick={() => grant('session')} testId="permission-grant-session" disabled={responding}>
+    {#snippet children()}Always allow this session{/snippet}
+  </Button>
+  <Button variant="primary" size="sm" onclick={() => grant('turn')} testId="permission-grant" loading={responding}>
+    {#snippet children()}Approve once{/snippet}
   </Button>
 </div>

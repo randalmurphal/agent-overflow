@@ -18,6 +18,9 @@ type Session interface {
 	// RespondToApproval forwards the user's decision on a pending
 	// interactive request back to the provider.
 	RespondToApproval(ctx context.Context, resp ApprovalResponse) error
+	// RespondToUserInput forwards answers for a structured user-input
+	// request back to the provider.
+	RespondToUserInput(ctx context.Context, resp UserInputResponse) error
 	// Close tears down the session and any provider subprocess it owns.
 	Close() error
 }

@@ -9,7 +9,7 @@
 // Anything we can't make sense of — bogus `type`, non-object root, mixed
 // variants — falls back to an empty field list so the dialog still renders
 // (with just Accept / Decline / Cancel) rather than erroring the whole
-// ApprovalPrompt.
+// the composer approval panel.
 
 export type ElicitationFormatHint = 'email' | 'uri' | 'date' | 'date-time';
 
@@ -79,11 +79,16 @@ export function parseElicitationSchema(schema: unknown): ElicitationField[] {
 
   const fields: ElicitationField[] = [];
   for (const [name, rawProp] of Object.entries(properties)) {
+    if (isReservedObjectKey(name)) continue;
     if (!isPlainObject(rawProp)) continue;
     const field = normalizeProperty(name, rawProp, requiredSet.has(name));
     if (field) fields.push(field);
   }
   return fields;
+}
+
+function isReservedObjectKey(name: string): boolean {
+  return name === '__proto__' || name === 'prototype' || name === 'constructor';
 }
 
 function coerceObject(input: unknown): Record<string, unknown> | null {

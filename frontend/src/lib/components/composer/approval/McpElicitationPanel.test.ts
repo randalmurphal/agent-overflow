@@ -12,7 +12,7 @@ function makeResolver(
 }
 
 // The bulk of MCP elicitation flow is covered in the full-stack
-// <ApprovalPrompt> elicitation suite; these tests exercise the panel in
+// Composer approval elicitation suite; these tests exercise the panel in
 // isolation so regressions here don't silently coast on the dispatcher
 // wrapping it.
 
@@ -159,6 +159,30 @@ describe('<McpElicitationPanel>', () => {
       '_blank',
       'noopener,noreferrer',
     );
+    openSpy.mockRestore();
+  });
+
+  it('blocks unsupported URL schemes in URL mode', () => {
+    const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null);
+    const onError = vi.fn();
+    const { getByTestId, queryByTestId } = render(McpElicitationPanel, {
+      props: {
+        approval: urlApproval({
+          elicitation: {
+            mode: 'url',
+            message: 'Approve in the browser',
+            url: 'javascript:alert(1)',
+          },
+        }),
+        onResolve: makeResolver(),
+        onError,
+      },
+    });
+
+    expect(queryByTestId('elicitation-url-link')).toBeNull();
+    expect(getByTestId('elicitation-url-blocked').textContent).toContain('javascript:alert(1)');
+    expect(openSpy).not.toHaveBeenCalled();
+    expect(onError).not.toHaveBeenCalled();
     openSpy.mockRestore();
   });
 

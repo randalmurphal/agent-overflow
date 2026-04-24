@@ -3,6 +3,7 @@ package codex
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"testing"
 
 	"agent-overflow/internal/provider"
@@ -394,16 +395,16 @@ func TestIsJSONNull(t *testing.T) {
 		{" null", true},
 		{"null ", true}, // trailing whitespace is ignored for our purposes
 		{"  \t\nnull", true},
-		{"nullx", true},    // starts with null — isJSONNull only checks prefix after trim
-		{"nul", false},     // too short
-		{"n", false},       // truncated
-		{"", false},        // empty
-		{"true", false},    // other literal
-		{`"null"`, false},  // quoted string
-		{"0", false},       // number
-		{"{}", false},      // object
-		{`   `, false},     // all whitespace, no content
-		{"Null", false},    // JSON is case-sensitive — only lowercase null is the literal
+		{"nullx", true},   // starts with null — isJSONNull only checks prefix after trim
+		{"nul", false},    // too short
+		{"n", false},      // truncated
+		{"", false},       // empty
+		{"true", false},   // other literal
+		{`"null"`, false}, // quoted string
+		{"0", false},      // number
+		{"{}", false},     // object
+		{`   `, false},    // all whitespace, no content
+		{"Null", false},   // JSON is case-sensitive — only lowercase null is the literal
 	}
 	for _, tc := range cases {
 		t.Run(tc.in, func(t *testing.T) {
@@ -504,6 +505,19 @@ func TestParseUserInputQuestions_Valid(t *testing.T) {
 	}
 	if questions[0].ID != "q1" {
 		t.Errorf("id: got %q, want %q", questions[0].ID, "q1")
+	}
+}
+
+func TestParseUserInputQuestions_NormalizesMissingAndReservedIDs(t *testing.T) {
+	params := json.RawMessage(`{"questions":[{"header":"Framework","question":"Q","options":[{"label":"A"}]},{"question":"Mode","options":[{"label":"B"}]},{"id":"__proto__","header":"constructor","question":"Safe","options":[{"label":"C"}]}]}`)
+	questions := parseUserInputQuestions(params)
+	if len(questions) != 3 {
+		t.Fatalf("len = %d, want 3", len(questions))
+	}
+	got := []string{questions[0].ID, questions[1].ID, questions[2].ID}
+	want := []string{"Framework", "Mode", "Safe"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ids = %#v, want %#v", got, want)
 	}
 }
 

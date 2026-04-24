@@ -3,8 +3,10 @@ package codex
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -682,6 +684,7 @@ func TestSendTurnStartFormat(t *testing.T) {
 
 func TestRespondToApprovalAccept(t *testing.T) {
 	s, _ := newTestCodexSession(t)
+	s.startApprovalTimer(42, provider.EventApprovalResolved)
 
 	// Call the actual RespondToApproval method with an accept decision.
 	// The cat-backed session writes the JSON-RPC response to stdin successfully.
@@ -696,6 +699,7 @@ func TestRespondToApprovalAccept(t *testing.T) {
 
 func TestRespondToApprovalDecline(t *testing.T) {
 	s, _ := newTestCodexSession(t)
+	s.startApprovalTimer(42, provider.EventApprovalResolved)
 
 	// Call the actual RespondToApproval method with a decline decision.
 	err := s.RespondToApproval(context.Background(), provider.ApprovalResponse{
@@ -804,28 +808,22 @@ func TestBuildUserInputMeta(t *testing.T) {
 	params := json.RawMessage(`{"turn":{"id":"turn-2"},"questions":[{"id":"sandbox_mode","header":"Sandbox","question":"Which mode should be used?","options":[{"label":"workspace-write","description":"Allow workspace writes only"}],"multiSelect":true}]}`)
 	meta := buildUserInputMeta("t1", "turn-2", 42, params)
 
-	var approval provider.ApprovalRequest
-	if err := json.Unmarshal(meta, &approval); err != nil {
-		t.Fatalf("unmarshal approval: %v", err)
+	var request provider.UserInputRequest
+	if err := json.Unmarshal(meta, &request); err != nil {
+		t.Fatalf("unmarshal user input request: %v", err)
 	}
 
-	if approval.Kind != "user-input" {
-		t.Errorf("kind: got %q, want %q", approval.Kind, "user-input")
+	if request.TurnID != "turn-2" {
+		t.Errorf("turnID: got %q, want %q", request.TurnID, "turn-2")
 	}
-	if approval.TurnID != "turn-2" {
-		t.Errorf("turnID: got %q, want %q", approval.TurnID, "turn-2")
+	if request.ToolName != "user_input" {
+		t.Errorf("toolName: got %q, want %q", request.ToolName, "user_input")
 	}
-	if approval.ToolName != "user_input" {
-		t.Errorf("toolName: got %q, want %q", approval.ToolName, "user_input")
+	if len(request.Questions) != 1 {
+		t.Fatalf("questions len: got %d, want 1", len(request.Questions))
 	}
-	if len(approval.Questions) != 1 {
-		t.Fatalf("questions len: got %d, want 1", len(approval.Questions))
-	}
-	if !approval.Questions[0].MultiSelect {
+	if !request.Questions[0].MultiSelect {
 		t.Fatal("expected multiSelect=true")
-	}
-	if string(approval.Input) != string(params) {
-		t.Errorf("input: got %s, want %s", approval.Input, params)
 	}
 }
 
@@ -1375,6 +1373,56 @@ func TestApprovalTimeoutAutoDeniesCodex(t *testing.T) {
 	}
 }
 
+func TestUserInputTimeoutResolvesUserInputChannelCodex(t *testing.T) {
+	s, eventCh := newTestCodexSessionWithApprovalTimeout(t, 100*time.Millisecond)
+
+	line := []byte(`{"jsonrpc":"2.0","id":43,"method":"item/tool/requestUserInput","params":{"questions":[{"id":"scope","header":"Scope","question":"Choose","options":[{"label":"turn","description":"This turn"}]}]}}`)
+	s.dispatchLine(line)
+
+	var gotRequest, gotResolved bool
+	deadline := time.After(3 * time.Second)
+	for !(gotRequest && gotResolved) {
+		select {
+		case evt := <-eventCh:
+			switch evt.Kind {
+			case provider.EventUserInputRequest:
+				gotRequest = true
+			case provider.EventUserInputResolved:
+				gotResolved = true
+				var meta struct {
+					RequestID string `json:"requestId"`
+					Decision  string `json:"decision"`
+				}
+				if err := json.Unmarshal(evt.Meta, &meta); err != nil {
+					t.Fatalf("unmarshal resolved meta: %v", err)
+				}
+				if meta.RequestID != "43" || meta.Decision != "timeout" {
+					t.Fatalf("resolved meta = (%q, %q), want (43, timeout)", meta.RequestID, meta.Decision)
+				}
+			case provider.EventApprovalResolved:
+				t.Fatalf("user input timeout resolved on approval channel: %+v", evt)
+			}
+		case <-deadline:
+			t.Fatalf("timeout (request=%v resolved=%v)", gotRequest, gotResolved)
+		}
+	}
+}
+
+func TestCodexRejectsRequestUserInputWithoutQuestions(t *testing.T) {
+	s, eventCh := newTestCodexSession(t)
+
+	line := []byte(`{"jsonrpc":"2.0","id":44,"method":"item/tool/requestUserInput","params":{"questions":[]}}`)
+	s.dispatchLine(line)
+
+	select {
+	case evt := <-eventCh:
+		if evt.Kind == provider.EventUserInputRequest {
+			t.Fatalf("empty requestUserInput emitted user-input request: %+v", evt)
+		}
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
 // TestApprovalResponseCancelsTimeoutCodex confirms the happy path.
 func TestApprovalResponseCancelsTimeoutCodex(t *testing.T) {
 	s, eventCh := newTestCodexSessionWithApprovalTimeout(t, 500*time.Millisecond)
@@ -1519,8 +1567,8 @@ func TestBuildApprovalResponseResultDecision(t *testing.T) {
 	}
 }
 
-func TestBuildApprovalResponseResultUserInput(t *testing.T) {
-	rpcID, result, err := buildApprovalResponseResult(provider.ApprovalResponse{
+func TestBuildUserInputResponseResultAnswers(t *testing.T) {
+	rpcID, result, err := buildUserInputResponseResult(provider.UserInputResponse{
 		RequestID: "7",
 		Answers: map[string]provider.UserInputAnswer{
 			"framework": provider.SingleUserInputAnswer("React"),
@@ -1547,6 +1595,20 @@ func TestBuildApprovalResponseResultUserInput(t *testing.T) {
 	}
 	if got := answers["scope"].Answers; len(got) != 2 || got[0] != "turn" || got[1] != "session" {
 		t.Fatalf("scope answers = %v, want [turn session]", got)
+	}
+}
+
+func TestBuildUserInputResponseResultRejectsApprovalDecisions(t *testing.T) {
+	for _, decision := range []string{"decline", "cancel", "bogus"} {
+		t.Run(decision, func(t *testing.T) {
+			_, _, err := buildUserInputResponseResult(provider.UserInputResponse{
+				RequestID: "7",
+				Decision:  decision,
+			})
+			if !errors.Is(err, provider.ErrInvalidUserInputDecision) {
+				t.Fatalf("error = %v, want ErrInvalidUserInputDecision", err)
+			}
+		})
 	}
 }
 
@@ -1587,6 +1649,7 @@ func TestBuildApprovalResponseResultInvalidRequestID(t *testing.T) {
 
 func TestCodexRespondToApprovalMethod(t *testing.T) {
 	s, _ := newTestCodexSession(t)
+	s.startApprovalTimer(42, provider.EventApprovalResolved)
 
 	err := s.RespondToApproval(context.Background(), provider.ApprovalResponse{
 		RequestID: "42",
@@ -1700,8 +1763,8 @@ func TestCodexHandleServerRequestUserInput(t *testing.T) {
 	}
 
 	evt := codexWaitEvent(t, eventCh)
-	if evt.Kind != provider.EventApprovalRequest {
-		t.Fatalf("kind: got %q, want %q", evt.Kind, provider.EventApprovalRequest)
+	if evt.Kind != provider.EventUserInputRequest {
+		t.Fatalf("kind: got %q, want %q", evt.Kind, provider.EventUserInputRequest)
 	}
 	if evt.TurnID != "turn-3" {
 		t.Errorf("turnID: got %q, want %q", evt.TurnID, "turn-3")
@@ -1710,18 +1773,15 @@ func TestCodexHandleServerRequestUserInput(t *testing.T) {
 		t.Errorf("itemID: got %q, want %q", evt.ItemID, "item-8")
 	}
 
-	var approval provider.ApprovalRequest
-	if err := json.Unmarshal(evt.Meta, &approval); err != nil {
-		t.Fatalf("unmarshal approval: %v", err)
+	var request provider.UserInputRequest
+	if err := json.Unmarshal(evt.Meta, &request); err != nil {
+		t.Fatalf("unmarshal user input request: %v", err)
 	}
-	if approval.Kind != "user-input" {
-		t.Errorf("kind: got %q, want %q", approval.Kind, "user-input")
+	if len(request.Questions) != 1 {
+		t.Fatalf("questions len: got %d, want 1", len(request.Questions))
 	}
-	if len(approval.Questions) != 1 {
-		t.Fatalf("questions len: got %d, want 1", len(approval.Questions))
-	}
-	if approval.Questions[0].ID != "scope" {
-		t.Errorf("question id: got %q, want %q", approval.Questions[0].ID, "scope")
+	if request.Questions[0].ID != "scope" {
+		t.Errorf("question id: got %q, want %q", request.Questions[0].ID, "scope")
 	}
 }
 
@@ -2481,6 +2541,80 @@ func TestCodexHandleServerRequestElicitation(t *testing.T) {
 	}
 	if approval.Description != "Please authorize" {
 		t.Errorf("description: got %q, want %q", approval.Description, "Please authorize")
+	}
+}
+
+func TestCodexMcpElicitationTimeoutWritesDeclineAction(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	capturePath := filepath.Join(t.TempDir(), "stdin.ndjson")
+	proc, err := provider.Spawn(ctx, provider.SpawnConfig{
+		Binary: "bash",
+		Args:   []string{"-c", `printf '%s\n' '{"jsonrpc":"2.0","id":5,"method":"mcpServer/elicitation/request","params":{"serverName":"my-mcp","message":"Authorize"}}'; while IFS= read -r line; do printf '%s\n' "$line" >> "$CAPTURE"; done`},
+		Env: map[string]string{
+			"CAPTURE": capturePath,
+		},
+	})
+	if err != nil {
+		t.Fatalf("spawn capture process: %v", err)
+	}
+	eventCh := make(chan provider.ProviderEvent, 10)
+	s := &Session{
+		proc:            proc,
+		threadID:        testThread,
+		approvalTimeout: 50 * time.Millisecond,
+		onEvent: func(evt provider.ProviderEvent) {
+			eventCh <- evt
+		},
+		cancel: cancel,
+	}
+	go s.readLoop()
+	t.Cleanup(func() {
+		cancel()
+		proc.Close()
+	})
+
+	for {
+		select {
+		case evt := <-eventCh:
+			if evt.Kind == provider.EventApprovalRequest {
+				goto waitForTimeoutResponse
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("timeout waiting for MCP elicitation request")
+		}
+	}
+
+waitForTimeoutResponse:
+	var captured []byte
+	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); {
+		captured, err = os.ReadFile(capturePath)
+		if err == nil && len(captured) > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(captured) == 0 {
+		t.Fatalf("capture file was empty: %v", err)
+	}
+
+	var frame struct {
+		ID     int64 `json:"id"`
+		Result struct {
+			Action   string `json:"action"`
+			Decision string `json:"decision"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(captured, &frame); err != nil {
+		t.Fatalf("unmarshal captured response: %v (data=%s)", err, captured)
+	}
+	if frame.ID != 5 {
+		t.Fatalf("id = %d, want 5", frame.ID)
+	}
+	if frame.Result.Action != "decline" {
+		t.Fatalf("action = %q, want decline", frame.Result.Action)
+	}
+	if frame.Result.Decision != "" {
+		t.Fatalf("decision should be omitted for MCP elicitation timeout, got %q", frame.Result.Decision)
 	}
 }
 

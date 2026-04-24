@@ -87,6 +87,7 @@ export const ReconnectSession = dispatch('ReconnectSession');
 export const SendMessage = dispatch('SendMessage');
 export const InterruptTurn = dispatch('InterruptTurn');
 export const RespondToApproval = dispatch('RespondToApproval');
+export const RespondToUserInput = dispatch('RespondToUserInput');
 
 // Background tasks (per-item + thread-wide stop primitives)
 export const StopClaudeTask = dispatch('StopClaudeTask');

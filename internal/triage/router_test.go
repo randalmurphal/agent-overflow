@@ -64,6 +64,8 @@ func TestAllEventKindsListIsComplete(t *testing.T) {
 		provider.EventTurnComplete:               true,
 		provider.EventApprovalRequest:            true,
 		provider.EventApprovalResolved:           true,
+		provider.EventUserInputRequest:           true,
+		provider.EventUserInputResolved:          true,
 		provider.EventSessionStatus:              true,
 		provider.EventTokenUsage:                 true,
 		provider.EventError:                      true,

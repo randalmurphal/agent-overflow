@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -446,7 +447,7 @@ func TestRespondToApprovalNoActiveSessionError(t *testing.T) {
 	}
 }
 
-func TestRespondToApprovalHappyPathClaude(t *testing.T) {
+func TestRespondToApprovalRejectsUntrackedClaudeRequest(t *testing.T) {
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-approval-claude")
 	thread.Provider = string(provider.Claude)
@@ -479,8 +480,8 @@ func TestRespondToApprovalHappyPathClaude(t *testing.T) {
 		RequestID: "42",
 		Decision:  "accept",
 	})
-	if err != nil {
-		t.Fatalf("RespondToApproval() error = %v", err)
+	if !errors.Is(err, provider.ErrStaleInteractiveRequest) {
+		t.Fatalf("RespondToApproval() error = %v, want stale interactive request", err)
 	}
 }
 

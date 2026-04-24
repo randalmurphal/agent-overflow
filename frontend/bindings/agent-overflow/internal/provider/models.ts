@@ -49,11 +49,6 @@ export class ApprovalResponse {
     "decision": string;
 
     /**
-     * for user-input responses
-     */
-    "answers"?: { [_ in string]?: UserInputAnswer };
-
-    /**
      * for granted permissions
      */
     "permissions"?: PermissionProfile | null;
@@ -98,18 +93,14 @@ export class ApprovalResponse {
      * Creates a new ApprovalResponse instance from a string or object.
      */
     static createFrom($$source: any = {}): ApprovalResponse {
-        const $$createField2_0 = $$createType0;
-        const $$createField3_0 = $$createType2;
-        const $$createField5_0 = $$createType4;
+        const $$createField2_0 = $$createType1;
+        const $$createField4_0 = $$createType3;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
-        if ("answers" in $$parsedSource) {
-            $$parsedSource["answers"] = $$createField2_0($$parsedSource["answers"]);
-        }
         if ("permissions" in $$parsedSource) {
-            $$parsedSource["permissions"] = $$createField3_0($$parsedSource["permissions"]);
+            $$parsedSource["permissions"] = $$createField2_0($$parsedSource["permissions"]);
         }
         if ("elicitation" in $$parsedSource) {
-            $$parsedSource["elicitation"] = $$createField5_0($$parsedSource["elicitation"]);
+            $$parsedSource["elicitation"] = $$createField4_0($$parsedSource["elicitation"]);
         }
         return new ApprovalResponse($$parsedSource as Partial<ApprovalResponse>);
     }
@@ -158,8 +149,8 @@ export class FileSystemPermissions {
      * Creates a new FileSystemPermissions instance from a string or object.
      */
     static createFrom($$source: any = {}): FileSystemPermissions {
-        const $$createField0_0 = $$createType5;
-        const $$createField1_0 = $$createType5;
+        const $$createField0_0 = $$createType4;
+        const $$createField1_0 = $$createType4;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("read" in $$parsedSource) {
             $$parsedSource["read"] = $$createField0_0($$parsedSource["read"]);
@@ -199,7 +190,7 @@ export class ModelInfo {
      * Creates a new ModelInfo instance from a string or object.
      */
     static createFrom($$source: any = {}): ModelInfo {
-        const $$createField3_0 = $$createType5;
+        const $$createField3_0 = $$createType4;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("capabilities" in $$parsedSource) {
             $$parsedSource["capabilities"] = $$createField3_0($$parsedSource["capabilities"]);
@@ -246,8 +237,8 @@ export class PermissionProfile {
      * Creates a new PermissionProfile instance from a string or object.
      */
     static createFrom($$source: any = {}): PermissionProfile {
-        const $$createField0_0 = $$createType7;
-        const $$createField1_0 = $$createType9;
+        const $$createField0_0 = $$createType6;
+        const $$createField1_0 = $$createType8;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("network" in $$parsedSource) {
             $$parsedSource["network"] = $$createField0_0($$parsedSource["network"]);
@@ -314,14 +305,52 @@ export class ProviderStatus {
  */
 export type UserInputAnswer = any;
 
+/**
+ * UserInputResponse is sent back to the provider for a structured user-input
+ * request.
+ */
+export class UserInputResponse {
+    "requestId": string;
+
+    /**
+     * accept; empty is treated as accept
+     */
+    "decision": string;
+    "answers"?: { [_ in string]?: UserInputAnswer };
+
+    /** Creates a new UserInputResponse instance. */
+    constructor($$source: Partial<UserInputResponse> = {}) {
+        if (!("requestId" in $$source)) {
+            this["requestId"] = "";
+        }
+        if (!("decision" in $$source)) {
+            this["decision"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new UserInputResponse instance from a string or object.
+     */
+    static createFrom($$source: any = {}): UserInputResponse {
+        const $$createField2_0 = $$createType9;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("answers" in $$parsedSource) {
+            $$parsedSource["answers"] = $$createField2_0($$parsedSource["answers"]);
+        }
+        return new UserInputResponse($$parsedSource as Partial<UserInputResponse>);
+    }
+}
+
 // Private type creation functions
-const $$createType0 = $Create.Map($Create.Any, $Create.Any);
-const $$createType1 = PermissionProfile.createFrom;
-const $$createType2 = $Create.Nullable($$createType1);
-const $$createType3 = ElicitationResolution.createFrom;
-const $$createType4 = $Create.Nullable($$createType3);
-const $$createType5 = $Create.Array($Create.Any);
-const $$createType6 = NetworkPermissions.createFrom;
-const $$createType7 = $Create.Nullable($$createType6);
-const $$createType8 = FileSystemPermissions.createFrom;
-const $$createType9 = $Create.Nullable($$createType8);
+const $$createType0 = PermissionProfile.createFrom;
+const $$createType1 = $Create.Nullable($$createType0);
+const $$createType2 = ElicitationResolution.createFrom;
+const $$createType3 = $Create.Nullable($$createType2);
+const $$createType4 = $Create.Array($Create.Any);
+const $$createType5 = NetworkPermissions.createFrom;
+const $$createType6 = $Create.Nullable($$createType5);
+const $$createType7 = FileSystemPermissions.createFrom;
+const $$createType8 = $Create.Nullable($$createType7);
+const $$createType9 = $Create.Map($Create.Any, $Create.Any);

@@ -11,7 +11,8 @@ func TestEventKindUniqueness(t *testing.T) {
 	kinds := []EventKind{
 		EventInit, EventTextDelta, EventToolStart, EventToolComplete,
 		EventTurnStart, EventTurnComplete, EventApprovalRequest,
-		EventApprovalResolved, EventSessionStatus, EventTokenUsage,
+		EventApprovalResolved, EventUserInputRequest, EventUserInputResolved,
+		EventSessionStatus, EventTokenUsage,
 		EventError, EventCompactBoundary, EventRateLimits,
 		EventModelRerouted, EventThreadRenamed, EventDiff,
 		EventCommandOutput, EventThinking, EventProposedPlan,
@@ -28,8 +29,8 @@ func TestEventKindUniqueness(t *testing.T) {
 		seen[k] = true
 	}
 
-	if len(seen) != 19 {
-		t.Errorf("expected 19 unique EventKind values, got %d", len(seen))
+	if len(seen) != 21 {
+		t.Errorf("expected 21 unique EventKind values, got %d", len(seen))
 	}
 }
 
@@ -355,21 +356,9 @@ func TestApprovalRequestStructuredFields(t *testing.T) {
 	req := ApprovalRequest{
 		RequestID:   "req-002",
 		ThreadID:    "t1",
-		ToolName:    "ask",
-		Description: "User input needed",
-		Kind:        "user-input",
-		Questions: []UserInputQuestion{
-			{
-				ID:       "q1",
-				Header:   "Choose framework",
-				Question: "Which framework?",
-				Options: []UserInputQuestionOption{
-					{Label: "React", Description: "React.js"},
-					{Label: "Vue", Description: "Vue.js"},
-				},
-				MultiSelect: false,
-			},
-		},
+		ToolName:    "permissions",
+		Description: "Permission needed",
+		Kind:        "permission",
 		Permissions: &PermissionProfile{
 			Network: &NetworkPermissions{Enabled: &enabled},
 			FileSystem: &FileSystemPermissions{
@@ -389,17 +378,8 @@ func TestApprovalRequestStructuredFields(t *testing.T) {
 		t.Fatalf("unmarshal: %v", err)
 	}
 
-	if decoded.Kind != "user-input" {
-		t.Errorf("Kind: got %q, want user-input", decoded.Kind)
-	}
-	if len(decoded.Questions) != 1 {
-		t.Fatalf("Questions len: got %d, want 1", len(decoded.Questions))
-	}
-	if decoded.Questions[0].ID != "q1" {
-		t.Errorf("Question ID: got %q, want q1", decoded.Questions[0].ID)
-	}
-	if len(decoded.Questions[0].Options) != 2 {
-		t.Errorf("Options len: got %d, want 2", len(decoded.Questions[0].Options))
+	if decoded.Kind != "permission" {
+		t.Errorf("Kind: got %q, want permission", decoded.Kind)
 	}
 	if decoded.Permissions == nil {
 		t.Fatal("Permissions is nil")
@@ -412,14 +392,49 @@ func TestApprovalRequestStructuredFields(t *testing.T) {
 	}
 }
 
+func TestUserInputRequestJSONRoundTrip(t *testing.T) {
+	req := UserInputRequest{
+		RequestID: "req-questions",
+		ThreadID:  "t1",
+		ToolName:  "AskUserQuestion",
+		Title:     "User Input Required",
+		Questions: []UserInputQuestion{
+			{
+				ID:       "q1",
+				Header:   "Choose framework",
+				Question: "Which framework?",
+				Options: []UserInputQuestionOption{
+					{Label: "React", Description: "React.js"},
+					{Label: "Vue", Description: "Vue.js"},
+				},
+			},
+		},
+	}
+
+	data, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var decoded UserInputRequest
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(decoded.Questions) != 1 {
+		t.Fatalf("Questions len: got %d, want 1", len(decoded.Questions))
+	}
+	if decoded.Questions[0].ID != "q1" {
+		t.Errorf("Question ID: got %q, want q1", decoded.Questions[0].ID)
+	}
+	if len(decoded.Questions[0].Options) != 2 {
+		t.Errorf("Options len: got %d, want 2", len(decoded.Questions[0].Options))
+	}
+}
+
 func TestApprovalResponseStructuredFields(t *testing.T) {
 	resp := ApprovalResponse{
-		RequestID: "req-003",
-		Decision:  "allow",
-		Answers: map[string]UserInputAnswer{
-			"q1": SingleUserInputAnswer("React"),
-			"q2": UserInputAnswer{"turn", "session"},
-		},
+		RequestID:   "req-003",
+		Decision:    "allow",
 		Permissions: &PermissionProfile{Network: &NetworkPermissions{}},
 		Scope:       "session",
 	}
@@ -434,17 +449,38 @@ func TestApprovalResponseStructuredFields(t *testing.T) {
 		t.Fatalf("unmarshal: %v", err)
 	}
 
-	if got := decoded.Answers["q1"]; len(got) != 1 || got[0] != "React" {
-		t.Errorf("Answers[q1]: got %v, want [React]", got)
-	}
-	if got := decoded.Answers["q2"]; len(got) != 2 || got[0] != "turn" || got[1] != "session" {
-		t.Errorf("Answers[q2]: got %v, want [turn session]", got)
-	}
 	if decoded.Scope != "session" {
 		t.Errorf("Scope: got %q, want session", decoded.Scope)
 	}
 	if decoded.Permissions == nil {
 		t.Error("Permissions is nil")
+	}
+}
+
+func TestUserInputResponseJSON(t *testing.T) {
+	resp := UserInputResponse{
+		RequestID: "req-003",
+		Decision:  "accept",
+		Answers: map[string]UserInputAnswer{
+			"q1": SingleUserInputAnswer("React"),
+			"q2": UserInputAnswer{"turn", "session"},
+		},
+	}
+
+	data, err := json.Marshal(resp)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var decoded UserInputResponse
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got := decoded.Answers["q1"]; len(got) != 1 || got[0] != "React" {
+		t.Errorf("Answers[q1]: got %v, want [React]", got)
+	}
+	if got := decoded.Answers["q2"]; len(got) != 2 || got[0] != "turn" || got[1] != "session" {
+		t.Errorf("Answers[q2]: got %v, want [turn session]", got)
 	}
 }
 

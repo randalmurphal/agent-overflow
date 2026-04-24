@@ -14,10 +14,14 @@
   import ComposerTerminalChip from './ComposerTerminalChip.svelte';
   import ComposerToolbar from './toolbar/ComposerToolbar.svelte';
   import BackgroundTaskTray from './BackgroundTaskTray.svelte';
+  import ComposerPendingApprovalPanel from './ComposerPendingApprovalPanel.svelte';
+  import ComposerPendingUserInputPanel from './ComposerPendingUserInputPanel.svelte';
   import { handleMentionPopoverKeydown } from './composerKeyboard';
   import { createComposerMentions } from './composerMentions.svelte';
   import { createComposerUploads } from './composerUploads.svelte';
   import { dispatchInterrupt, dispatchSend } from './composerSend';
+  import { RespondToApproval, RespondToUserInput, type ApprovalResponse, type UserInputResponse } from '../../stores/bindings';
+  import { addToast } from '../../stores/toast.svelte';
 
   interface Props {
     pane: ThreadPane;
@@ -48,13 +52,29 @@
   // Interrupt first. Editing and uploading stay enabled so the next message can
   // be prepared in advance.
   let isTurnActive = $derived(pane.isTurnActive);
+  let blockingApprovals = $derived(pane.pendingApprovals);
+  let activeApproval = $derived(blockingApprovals[0]);
+  let activeUserInput = $derived(pane.pendingUserInputs[0]);
+  let hasBlockingPrompt = $derived(Boolean(activeApproval));
+  let hasUserInputPrompt = $derived(!hasBlockingPrompt && Boolean(activeUserInput));
+  let hasInteractivePrompt = $derived(hasBlockingPrompt || hasUserInputPrompt);
+  let userInputSubmitSignal = $state(0);
+  let userInputCustomAnswer = $state('');
   let sending = $state(false);
   let hasDraftContent = $derived(
     draft.content.trim().length > 0 ||
       draft.attachments.length > 0 ||
       draft.terminalChips.length > 0,
   );
-  let canSend = $derived(!isDisabled && !isTurnActive && !sending && hasDraftContent);
+  let canSend = $derived(!isDisabled && !isTurnActive && !sending && !hasBlockingPrompt && !hasUserInputPrompt && hasDraftContent);
+  let inputDisabled = $derived(isDisabled || hasBlockingPrompt);
+  let inputValue = $derived(hasUserInputPrompt ? userInputCustomAnswer : draft.content);
+  let placeholder = $derived.by(() => {
+    if (isDisabled) return 'Select or create a thread to start';
+    if (hasBlockingPrompt) return 'Respond to the approval request to continue';
+    if (hasUserInputPrompt) return 'Type a custom answer, or choose an option above';
+    return 'Send a message… (Shift+Enter for newline, @ to mention a file)';
+  });
   // Polite aria-live error raised when the user hits Enter during an active
   // turn. Cleared when the turn ends or the user types a new character so it
   // doesn't re-announce on every subsequent keystroke.
@@ -62,6 +82,11 @@
 
   $effect(() => {
     if (!isTurnActive) midTurnBlockMessage = '';
+  });
+
+  $effect(() => {
+    activeUserInput?.requestId;
+    userInputCustomAnswer = '';
   });
 
   // Reset slash cache when the pane's thread changes. Pane-scoped state lives
@@ -137,6 +162,11 @@
 
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
+      if (hasUserInputPrompt) {
+        userInputSubmitSignal += 1;
+        return;
+      }
+      if (hasBlockingPrompt) return;
       if (isTurnActive) {
         midTurnBlockMessage = 'Cannot send during an active turn. Press Interrupt first.';
         return;
@@ -147,10 +177,64 @@
 
   function handleInput(event: Event) {
     const value = (event.target as HTMLTextAreaElement).value;
-    draft.setContent(value);
+    if (hasUserInputPrompt) {
+      userInputCustomAnswer = value;
+    } else {
+      draft.setContent(value);
+    }
     autosizeTextarea();
     mentions.refreshTriggers();
     if (midTurnBlockMessage) midTurnBlockMessage = '';
+  }
+
+  function blockPromptAttachment(event: DragEvent | ClipboardEvent, notify = true): boolean {
+    if (!hasInteractivePrompt) return false;
+    event.preventDefault();
+    if (notify) {
+      addToast('warning', 'Answer the pending prompt before attaching files');
+    }
+    return true;
+  }
+
+  function handleDragEnter(event: DragEvent): void {
+    if (blockPromptAttachment(event, false)) return;
+    uploads.handleDragEnter(event);
+  }
+
+  function handleDragOver(event: DragEvent): void {
+    if (blockPromptAttachment(event, false)) return;
+    uploads.handleDragOver(event);
+  }
+
+  function handleDrop(event: DragEvent): void {
+    if (blockPromptAttachment(event)) return;
+    void uploads.handleDrop(event);
+  }
+
+  function handlePaste(event: ClipboardEvent): void {
+    if (blockPromptAttachment(event)) return;
+    void uploads.handlePaste(event);
+  }
+
+  async function resolveApproval(response: ApprovalResponse): Promise<void> {
+    const threadId = pane.threadId;
+    if (!threadId) return;
+    await RespondToApproval(threadId, response);
+  }
+
+  async function resolveUserInput(response: UserInputResponse): Promise<void> {
+    const threadId = pane.threadId;
+    if (!threadId) return;
+    await RespondToUserInput(threadId, response);
+  }
+
+  function handlePromptResolved(): void {
+    userInputCustomAnswer = '';
+    resetTextareaHeight();
+  }
+
+  function handlePromptError(message: string): void {
+    pane.setGeneralError(message);
   }
 
   function handleSelectionChange() {
@@ -179,10 +263,10 @@
 
 <div
   class="relative px-6 pb-4 pt-1"
-  ondragenter={uploads.handleDragEnter}
-  ondragover={uploads.handleDragOver}
+  ondragenter={handleDragEnter}
+  ondragover={handleDragOver}
   ondragleave={uploads.handleDragLeave}
-  ondrop={uploads.handleDrop}
+  ondrop={handleDrop}
   role="region"
   aria-label="Message composer"
   data-testid="composer-root"
@@ -193,13 +277,41 @@
   >
     <BackgroundTaskTray {pane} />
 
-    <ComposerAttachmentRow
-      attachments={draft.attachments}
-      onRemove={uploads.removeAttachment}
-      dragActive={uploads.dragActive}
-    />
+    {#if activeApproval}
+      {#key activeApproval.requestId}
+        <ComposerPendingApprovalPanel
+          approval={activeApproval}
+          count={blockingApprovals.length}
+          onResolve={resolveApproval}
+          onError={handlePromptError}
+        />
+      {/key}
+    {:else if activeUserInput && pane.threadId}
+      {#key activeUserInput.requestId}
+        <ComposerPendingUserInputPanel
+          request={activeUserInput}
+          customAnswer={userInputCustomAnswer}
+          submitSignal={userInputSubmitSignal}
+          setCustomAnswerText={(value) => {
+            userInputCustomAnswer = value;
+            queueMicrotask(autosizeTextarea);
+          }}
+          onResolve={resolveUserInput}
+          onResolved={handlePromptResolved}
+          onError={handlePromptError}
+        />
+      {/key}
+    {/if}
 
-    {#if draft.terminalChips.length > 0}
+    {#if !hasInteractivePrompt}
+      <ComposerAttachmentRow
+        attachments={draft.attachments}
+        onRemove={uploads.removeAttachment}
+        dragActive={uploads.dragActive}
+      />
+    {/if}
+
+    {#if !hasInteractivePrompt && draft.terminalChips.length > 0}
       <div
         class="flex flex-col gap-1 border-b border-border-subtle bg-surface-0/40 px-4 py-2"
         data-testid="terminal-chip-row"
@@ -242,19 +354,17 @@
 
         <textarea
           bind:this={textarea}
-          value={draft.content}
           onkeydown={handleKeydown}
           oninput={handleInput}
           onselect={handleSelectionChange}
           onkeyup={handleSelectionChange}
           onclick={handleSelectionChange}
-          onpaste={uploads.handlePaste}
-          disabled={isDisabled}
-          placeholder={isDisabled
-            ? 'Select or create a thread to start'
-            : 'Send a message… (Shift+Enter for newline, @ to mention a file)'}
+          onpaste={handlePaste}
+          disabled={inputDisabled}
+          placeholder={placeholder}
           aria-label="Message input"
           rows={1}
+          value={inputValue}
           class="w-full resize-none bg-transparent px-1 py-1 text-[13px] leading-[1.55] text-fg placeholder:text-fg-hint focus:outline-none disabled:opacity-40 disabled:cursor-not-allowed"
         ></textarea>
       </div>
@@ -278,12 +388,14 @@
       {/if}
     </div>
 
-    <ComposerToolbar
-      {pane}
-      {canSend}
-      {isTurnActive}
-      onSend={send}
-      onInterrupt={interrupt}
-    />
+    {#if !hasInteractivePrompt}
+      <ComposerToolbar
+        {pane}
+        {canSend}
+        {isTurnActive}
+        onSend={send}
+        onInterrupt={interrupt}
+      />
+    {/if}
   </div>
 </div>

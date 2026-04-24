@@ -694,6 +694,7 @@ func (r *Router) CleanupThread(threadID string) {
 	approvalPrefix := threadID + ":"
 	deleteByPrefix(r.pendingApprovals, approvalPrefix)
 	deleteByPrefix(r.pendingApprovalItems, approvalPrefix)
+	deleteByPrefix(r.pendingUserInputs, approvalPrefix)
 	prefix := threadID + "|"
 	deleteByPrefix(r.capturedTurns, prefix)
 	deleteByPrefix(r.segmentIndexByScope, prefix)

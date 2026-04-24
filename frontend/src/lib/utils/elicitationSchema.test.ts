@@ -18,6 +18,20 @@ describe('parseElicitationSchema', () => {
     });
   });
 
+  it('drops reserved object keys from MCP-provided form schemas', () => {
+    const fields = parseElicitationSchema(JSON.parse(`{
+      "type": "object",
+      "properties": {
+        "safe": { "type": "string", "title": "Safe" },
+        "__proto__": { "type": "string", "title": "Proto" },
+        "constructor": { "type": "string", "title": "Constructor" },
+        "prototype": { "type": "string", "title": "Prototype" }
+      }
+    }`));
+
+    expect(fields.map((field) => field.name)).toEqual(['safe']);
+  });
+
   it('parses a string property with every optional attribute', () => {
     const fields = parseElicitationSchema({
       type: 'object',

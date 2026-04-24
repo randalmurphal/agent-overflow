@@ -10,6 +10,8 @@ import {
   projectThreadItem,
   projectTurnCompleted,
   projectTurnStarted,
+  projectUserInputRequest,
+  projectUserInputResolution,
   resetForTest,
 } from './threadStatuses.svelte';
 import { makeItem } from '../../test/helpers/chat';
@@ -181,18 +183,18 @@ describe('threadStatuses store', () => {
     });
   });
 
-  describe('awaiting-input (user-input / mcp-elicitation approvals)', () => {
-    it('flips to awaiting-input for user-input kind', () => {
-      projectApprovalRequest('thread-1', 'req-1', 'user-input');
+  describe('awaiting-input user-input requests', () => {
+    it('flips to awaiting-input for structured user input', () => {
+      projectUserInputRequest('thread-1', 'req-1');
       expect(getThreadStatus('thread-1')).toBe('awaiting-input');
 
-      projectApprovalResolution('thread-1', 'req-1');
+      projectUserInputResolution('thread-1', 'req-1');
       expect(getThreadStatus('thread-1')).toBe('idle');
     });
 
-    it('flips to awaiting-input for mcp-elicitation kind', () => {
+    it('mcp-elicitation is a blocking approval', () => {
       projectApprovalRequest('thread-1', 'req-1', 'mcp-elicitation');
-      expect(getThreadStatus('thread-1')).toBe('awaiting-input');
+      expect(getThreadStatus('thread-1')).toBe('pending-approval');
     });
 
     it.each(['command', 'file-read', 'file-change', 'permission'] as const)(
@@ -209,7 +211,7 @@ describe('threadStatuses store', () => {
     });
 
     it('pending-approval dominates awaiting-input when both are outstanding', () => {
-      projectApprovalRequest('thread-1', 'req-input', 'user-input');
+      projectUserInputRequest('thread-1', 'req-input');
       expect(getThreadStatus('thread-1')).toBe('awaiting-input');
 
       projectApprovalRequest('thread-1', 'req-cmd', 'command');
@@ -222,7 +224,7 @@ describe('threadStatuses store', () => {
 
     it('awaiting-input dominates a running turn', () => {
       projectTurnStarted('thread-1', 'turn-1');
-      projectApprovalRequest('thread-1', 'req-1', 'user-input');
+      projectUserInputRequest('thread-1', 'req-1');
       expect(getThreadStatus('thread-1')).toBe('awaiting-input');
     });
   });
@@ -286,7 +288,7 @@ describe('threadStatuses store', () => {
 
     it('pending-approval and awaiting-input both trump plan-ready', () => {
       projectPlanReady('thread-1');
-      projectApprovalRequest('thread-1', 'req-1', 'user-input');
+      projectUserInputRequest('thread-1', 'req-1');
       expect(getThreadStatus('thread-1')).toBe('awaiting-input');
 
       projectApprovalRequest('thread-1', 'req-2', 'command');
