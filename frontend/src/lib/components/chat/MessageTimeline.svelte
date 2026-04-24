@@ -13,6 +13,7 @@
   import ChangedFilesTree from './ChangedFilesTree.svelte';
   import CompletionDivider from './CompletionDivider.svelte';
   import SubagentGroup from './SubagentGroup.svelte';
+  import { createTimelineMeasurementActions } from './timelineMeasurementActions';
   import TimelineLeaf from './TimelineLeaf.svelte';
   import TurnDiffBadge from './TurnDiffBadge.svelte';
   import {
@@ -168,37 +169,23 @@
     return virtualLayout.offsets[Math.min(Math.max(index, 0), virtualLayout.rows.length)] ?? 0;
   }
 
-  function measureScrollContainer(node: HTMLElement) {
-    scrollContainer = node as HTMLDivElement;
-    syncScrollState();
-    const observer = new ResizeObserver(syncScrollState);
-    observer.observe(node);
-    return {
-      destroy() {
-        observer.disconnect();
-      },
-    };
-  }
-
-  function measureTimelineRow(node: HTMLElement, key: string) {
-    let lastHeight = 0;
-    const update = () => {
-      const nextHeight = Math.ceil(node.getBoundingClientRect().height);
-      if (nextHeight > 0 && nextHeight !== lastHeight) {
-        lastHeight = nextHeight;
-        rowHeights.set(key, nextHeight);
-        rowHeightRevision += 1;
-      }
-    };
-    update();
-    const observer = new ResizeObserver(update);
-    observer.observe(node);
-    return {
-      destroy() {
-        observer.disconnect();
-      },
-    };
-  }
+  const timelineMeasurementActions = createTimelineMeasurementActions({
+    estimatedRowHeight: ESTIMATED_ROW_HEIGHT,
+    getRowHeight: (key) => rowHeights.get(key),
+    getScrollContainer: () => scrollContainer,
+    getUserNearBottom: () => userNearBottom,
+    onRowHeightChanged: () => {
+      rowHeightRevision += 1;
+    },
+    setRowHeight: (key, height) => {
+      rowHeights.set(key, height);
+    },
+    setScrollContainer: (node) => {
+      scrollContainer = node;
+    },
+    syncScrollState,
+  });
+  const { measureScrollContainer, measureTimelineRow } = timelineMeasurementActions;
 
   function nodeContainsItem(node: TimelineNode, itemId: string): boolean {
     if (node.kind === 'leaf') {
@@ -229,6 +216,7 @@
   $effect(() => {
     pane.items.length;
     pane.timelineRevision;
+    rowHeightRevision;
 
     if (suppressBottomAutoScroll) return;
     if (scrollContainer && userNearBottom) {

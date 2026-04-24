@@ -73,7 +73,12 @@ async function enhanceMermaid(container: HTMLElement, options: EnhanceOptions) {
   if (mermaidBlocks.length === 0) return;
 
   const mermaid = (await import('mermaid')).default;
-  mermaid.initialize({ startOnLoad: false, securityLevel: 'strict', theme: 'dark' });
+  mermaid.initialize({
+    startOnLoad: false,
+    securityLevel: 'strict',
+    theme: 'dark',
+    htmlLabels: false,
+  });
   for (const [blockIndex, code] of mermaidBlocks.entries()) {
     if (!options.isCurrent(options.generation)) return;
 
