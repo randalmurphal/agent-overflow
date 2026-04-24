@@ -299,7 +299,8 @@ func (s *Session) Interrupt(ctx context.Context) error {
 	}
 
 	_, err := s.sendRequest(ctx, "turn/interrupt", map[string]any{
-		"turnId": turnID,
+		"threadId": s.codexThreadID,
+		"turnId":   turnID,
 	})
 	return err
 }

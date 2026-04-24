@@ -21,19 +21,17 @@ tasks:
   build:
     summary: Creates a build of the application for Android
     deps:
+      - task: common:generate:icons
+    cmds:
       - task: common:go:mod:tidy
       - task: generate:android:bindings
         vars:
           BUILD_FLAGS:
             ref: .BUILD_FLAGS
-      - task: common:build:frontend
+      - task: common:build:frontend:no-bindings
         vars:
-          BUILD_FLAGS:
-            ref: .BUILD_FLAGS
           PRODUCTION:
             ref: .PRODUCTION
-      - task: common:generate:icons
-    cmds:
       - echo "Building Android app {{.APP_NAME}}..."
       - task: compile:go:shared
         vars:
@@ -147,7 +145,7 @@ tasks:
     generates:
       - frontend/bindings/**/*
     cmds:
-      - wails3 generate bindings -f '{{.BUILD_FLAGS}}' -clean=true
+      - wails3 generate bindings -f '{{.BUILD_FLAGS}}' -clean=true -ts
     env:
       GOOS: android
       CGO_ENABLED: 1

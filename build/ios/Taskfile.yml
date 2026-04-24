@@ -25,19 +25,17 @@ tasks:
     deps:
       - task: generate:ios:overlay
       - task: generate:ios:xcode
+      - task: common:generate:icons
+    cmds:
       - task: common:go:mod:tidy
       - task: generate:ios:bindings
         vars:
           BUILD_FLAGS:
             ref: .BUILD_FLAGS
-      - task: common:build:frontend
+      - task: common:build:frontend:no-bindings
         vars:
-          BUILD_FLAGS:
-            ref: .BUILD_FLAGS
           PRODUCTION:
             ref: .PRODUCTION
-      - task: common:generate:icons
-    cmds:
       - echo "Building iOS app {{.APP_NAME}}..."
       - go build -buildmode=c-archive -overlay build/ios/xcode/overlay.json {{.BUILD_FLAGS}} -o {{.OUTPUT}}.a
     vars:
@@ -149,7 +147,7 @@ tasks:
       SDK_PATH:
         sh: xcrun --sdk iphonesimulator --show-sdk-path
     cmds:
-      - wails3 generate bindings -f '{{.BUILD_FLAGS}}' -clean=true
+      - wails3 generate bindings -f '{{.BUILD_FLAGS}}' -clean=true -ts
     env:
       GOOS: ios
       CGO_ENABLED: 1

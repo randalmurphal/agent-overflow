@@ -1,9 +1,9 @@
 // Re-export Wails v3 generated bindings used by components.
 //
 // Every entry here is produced by `wails3 generate bindings -ts`. When
-// a new App method is added on the Go side, run `task generate:bindings`
-// (or `go tool wails3 generate bindings -clean=true -ts`) and re-export
-// it from this file — do not hand-wrap bindings.
+// a new App method is added on the Go side, run
+// `wails3 task common:generate:bindings` and re-export it from this file
+// -- do not hand-wrap bindings.
 export {
   // Thread management
   ArchiveThread,

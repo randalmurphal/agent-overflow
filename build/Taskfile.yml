@@ -43,6 +43,24 @@ tasks:
     vars:
       BUILD_COMMAND: '{{if eq .DEV "true"}}build:dev{{else}}build{{end}}'
 
+  build:frontend:no-bindings:
+    label: build:frontend:no-bindings (DEV={{.DEV}})
+    summary: Build the frontend project after platform-specific bindings were generated
+    dir: frontend
+    sources:
+      - "**/*"
+      - exclude: node_modules/**/*
+    generates:
+      - dist/**/*
+    deps:
+      - task: install:frontend:deps
+    cmds:
+      - npm run {{.BUILD_COMMAND}} -q
+    env:
+      PRODUCTION: '{{if eq .DEV "true"}}false{{else}}true{{end}}'
+    vars:
+      BUILD_COMMAND: '{{if eq .DEV "true"}}build:dev{{else}}build{{end}}'
+
 
   frontend:vendor:puppertino:
     summary: Fetches Puppertino CSS into frontend/public for consistent mobile styling

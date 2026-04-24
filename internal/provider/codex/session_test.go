@@ -2045,6 +2045,72 @@ func TestCodexInterruptWithActiveTurn(t *testing.T) {
 	}
 }
 
+func TestCodexInterruptSendsThreadAndTurnID(t *testing.T) {
+	capturePath := t.TempDir() + "/request.json"
+	ctx, cancel := context.WithCancel(context.Background())
+	proc, err := provider.Spawn(ctx, provider.SpawnConfig{
+		Binary: "sh",
+		Args: []string{"-c", `
+			IFS= read -r line || exit 1
+			printf '%s\n' "$line" > "$CAPTURE_PATH"
+			printf '{"jsonrpc":"2.0","id":1,"result":{}}\n'
+		`},
+		Env: map[string]string{"CAPTURE_PATH": capturePath},
+	})
+	if err != nil {
+		t.Fatalf("spawn recorder: %v", err)
+	}
+
+	s := &Session{
+		proc:          proc,
+		threadID:      testThread,
+		codexThreadID: "codex-thread-1",
+		activeTurnID:  "turn-1",
+		pending:       make(map[int64]chan json.RawMessage),
+		onEvent:       func(provider.ProviderEvent) {},
+		cancel:        cancel,
+	}
+	go s.readLoop()
+
+	t.Cleanup(func() {
+		cancel()
+		_ = proc.Close()
+	})
+
+	interruptCtx, interruptCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer interruptCancel()
+
+	if err := s.Interrupt(interruptCtx); err != nil {
+		t.Fatalf("interrupt: %v", err)
+	}
+
+	data, err := os.ReadFile(capturePath)
+	if err != nil {
+		t.Fatalf("read captured request: %v", err)
+	}
+
+	var frame struct {
+		Method string `json:"method"`
+		Params struct {
+			ThreadID string `json:"threadId"`
+			TurnID   string `json:"turnId"`
+		} `json:"params"`
+	}
+	if err := json.Unmarshal(data, &frame); err != nil {
+		t.Fatalf("unmarshal captured request: %v", err)
+	}
+
+	if frame.Method != "turn/interrupt" {
+		t.Fatalf("method = %q, want turn/interrupt", frame.Method)
+	}
+	if frame.Params.ThreadID != "codex-thread-1" {
+		t.Fatalf("params.threadId = %q, want codex-thread-1", frame.Params.ThreadID)
+	}
+	if frame.Params.TurnID != "turn-1" {
+		t.Fatalf("params.turnId = %q, want turn-1", frame.Params.TurnID)
+	}
+}
+
 func TestCodexReadLoopEmitsDisconnectedOnExit(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	proc, err := provider.Spawn(ctx, provider.SpawnConfig{Binary: "cat"})

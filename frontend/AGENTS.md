@@ -84,8 +84,8 @@ Copy/download paths read raw `summary` / `content` / `data`.
   `docs/architecture/how-to.md#add-a-new-event-kind`.
 - To add a composer mode / picker: compose the primitives under
   `components/primitives/`; don't roll custom positioning.
-- To regenerate Wails bindings: run `wails dev` / `wails build`. Never
-  edit files in `bindings/` by hand.
+- To regenerate Wails bindings: run `wails3 task common:generate:bindings`,
+  which passes `-ts`. Never edit files in `bindings/` by hand.
 
 ## Anti-patterns
 

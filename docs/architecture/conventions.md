@@ -180,8 +180,9 @@ happens through stable sibling ids in triage.
   the template. Templates should read like HTML with variable
   substitution — nothing more.
 - **Typed bindings.** Import from `stores/bindings.ts`. Never call
-  `window.runtime` directly; never edit `frontend/bindings/` by hand
-  (it's regenerated from Go).
+  `window.runtime` directly; never edit `frontend/bindings/` by hand.
+  Regenerate with `wails3 task common:generate:bindings`, which passes
+  `-ts` so Wails emits TypeScript bindings.
 - **Heavy content on demand.** Diffs, command output, thinking — fetch
   via a Wails binding when the user expands, don't preload. The `items`
   list the frontend receives already omits `payload.data`; fetching it

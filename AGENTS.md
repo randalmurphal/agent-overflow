@@ -107,7 +107,8 @@ down if more depth is needed.
 - Tailwind v4: CSS-native config via `@theme` in `app.css`. No
   `tailwind.config.js`.
 - Wails bindings live in `frontend/bindings/` and are regenerated —
-  never edit by hand.
+  never edit by hand. Always pass `-ts` to `wails3 generate bindings`
+  so Wails emits TypeScript files instead of JS bindings.
 - Events go Go → frontend via `app.Event.Emit`; frontend calls Go via
   the typed wrappers in `frontend/src/lib/stores/bindings.ts`.
 
