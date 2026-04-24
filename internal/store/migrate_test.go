@@ -146,6 +146,9 @@ func TestMigrationVersionTracking(t *testing.T) {
 	if versions[24].version != 25 || versions[24].name != "remove_rendered_chat_html" {
 		t.Errorf("v25: got %d/%s", versions[24].version, versions[24].name)
 	}
+	if versions[25].version != 26 || versions[25].name != "turns_thread_completed_index" {
+		t.Errorf("v26: got %d/%s", versions[25].version, versions[25].name)
+	}
 }
 
 func TestMigrationIdempotent(t *testing.T) {
@@ -1313,6 +1316,57 @@ func TestMigrationV18UpgradesFromV17(t *testing.T) {
 	}
 	if remaining != 0 {
 		t.Errorf("expected CASCADE to drop turn rows, still have %d", remaining)
+	}
+}
+
+// TestMigrationV26AddsTurnCompletionIndex pins the partial covering index
+// used by thread list reads and MarkThreadReadNow when they need the newest
+// completed turn for a thread. In-flight rows have completed_at=NULL and are
+// deliberately excluded from both the index and the aggregate query.
+func TestMigrationV26AddsTurnCompletionIndex(t *testing.T) {
+	s := newTestStore(t)
+
+	var sqlText string
+	if err := s.db.QueryRow(
+		`SELECT sql FROM sqlite_master WHERE name = 'idx_turns_thread_completed'`,
+	).Scan(&sqlText); err != nil {
+		t.Fatalf("read idx_turns_thread_completed sql: %v", err)
+	}
+	if !strings.Contains(sqlText, "thread_id") || !strings.Contains(sqlText, "completed_at DESC") {
+		t.Errorf("expected index on (thread_id, completed_at DESC), got: %s", sqlText)
+	}
+	if !strings.Contains(sqlText, "completed_at IS NOT NULL") {
+		t.Errorf("expected partial predicate on completed_at IS NOT NULL, got: %s", sqlText)
+	}
+
+	rows, err := s.db.Query(
+		`EXPLAIN QUERY PLAN
+		 SELECT MAX(completed_at)
+		   FROM turns
+		  WHERE thread_id = ?
+		    AND completed_at IS NOT NULL`,
+		"thread-1",
+	)
+	if err != nil {
+		t.Fatalf("explain latest completed turn query: %v", err)
+	}
+	defer rows.Close()
+
+	var plan strings.Builder
+	for rows.Next() {
+		var id, parent, notused sql.NullInt64
+		var detail string
+		if err := rows.Scan(&id, &parent, &notused, &detail); err != nil {
+			t.Fatalf("scan plan: %v", err)
+		}
+		plan.WriteString(detail)
+		plan.WriteString("\n")
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate plan: %v", err)
+	}
+	if !strings.Contains(plan.String(), "idx_turns_thread_completed") {
+		t.Errorf("query plan did not use idx_turns_thread_completed: %s", plan.String())
 	}
 }
 

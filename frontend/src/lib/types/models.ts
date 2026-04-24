@@ -49,6 +49,12 @@ export interface Thread {
   model: string;
   createdAt: number;
   updatedAt: number;
+  /**
+   * Latest completed turn timestamp. Sidebar completed/unread state keys off
+   * this rather than broad thread updatedAt so metadata-only changes do not
+   * look like new agent output.
+   */
+  latestTurnCompletedAt?: number;
   archived: boolean;
   /**
    * Unix-ms timestamp of when the user last viewed the thread. Undefined

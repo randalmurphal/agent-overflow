@@ -89,10 +89,9 @@
     queuedReadTimer = setTimeout(flushQueuedThreadRead, delay);
   }
 
-  // Keep the active thread stamped as read — both on switch AND as its
-  // updatedAt advances (assistant turns, title generation, backend
-  // thread:updated events). Without this, the active thread would light
-  // up its own "Completed" pill the moment one of its own turns settles.
+  // Keep the active thread stamped as read — both on switch and as turns
+  // settle. Without this, the active thread would light up its own
+  // "Completed" pill the moment one of its own turns completes.
   // Fire-and-forget: a failed mark-read is a latent sidebar pill, not
   // a user-blocking error.
   //
@@ -105,16 +104,20 @@
     if (!thread) return;
     const marker = [
       thread.id,
-      thread.updatedAt,
+      thread.latestTurnCompletedAt ?? '',
       pane.timelineRevision,
       pane.latestSettledTurn?.turnId ?? '',
     ].join(':');
     if (marker === lastReadMarker) return;
     lastReadMarker = marker;
-    if (thread.lastReadAt !== undefined && thread.lastReadAt >= thread.updatedAt) {
+    const readTarget = thread.latestTurnCompletedAt ?? pane.latestSettledTurn?.completedAt;
+    if (readTarget === undefined) {
       return;
     }
-    const readAt = Math.max(Date.now(), thread.updatedAt);
+    if (thread.lastReadAt !== undefined && thread.lastReadAt >= readTarget) {
+      return;
+    }
+    const readAt = Math.max(Date.now(), readTarget);
     untrack(() => {
       updateThreadLastRead(thread.id, readAt);
     });

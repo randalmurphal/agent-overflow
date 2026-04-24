@@ -158,9 +158,13 @@ interface RuntimeModeChangedPayload {
 
 function syncThreadRow(updated: Thread): void {
   const readMarkers = [updated.lastReadAt];
+  const latestCompletions = [updated.latestTurnCompletedAt];
   const cachedThread = getThreadById(updated.id);
   if (cachedThread?.lastReadAt !== undefined) {
     readMarkers.push(cachedThread.lastReadAt);
+  }
+  if (cachedThread?.latestTurnCompletedAt !== undefined) {
+    latestCompletions.push(cachedThread.latestTurnCompletedAt);
   }
 
   for (const pane of getAllPanes().values()) {
@@ -168,10 +172,14 @@ function syncThreadRow(updated: Thread): void {
     if (pane.thread.lastReadAt !== undefined) {
       readMarkers.push(pane.thread.lastReadAt);
     }
+    if (pane.thread.latestTurnCompletedAt !== undefined) {
+      latestCompletions.push(pane.thread.latestTurnCompletedAt);
+    }
   }
 
-  const lastReadAt = mergeLastReadAt(readMarkers);
-  const merged = { ...updated, lastReadAt };
+  const lastReadAt = mergeReadMarkersPreservingUnread(readMarkers);
+  const latestTurnCompletedAt = mergeLatestTurnCompletedAt(latestCompletions);
+  const merged = { ...updated, lastReadAt, latestTurnCompletedAt };
   replaceThread(merged);
   for (const pane of getAllPanes().values()) {
     if (pane.threadId !== updated.id || !pane.thread) continue;
@@ -179,7 +187,23 @@ function syncThreadRow(updated: Thread): void {
   }
 }
 
-function mergeLastReadAt(readMarkers: Array<number | undefined>): number | undefined {
+function syncLatestTurnCompleted(evt: TurnCompletedEvent): void {
+  const cachedThread = getThreadById(evt.threadId)
+    ?? [...getAllPanes().values()].find((pane) => pane.threadId === evt.threadId)?.thread;
+  if (!cachedThread) {
+    return;
+  }
+  const latestTurnCompletedAt = Math.max(
+    cachedThread.latestTurnCompletedAt ?? Number.NEGATIVE_INFINITY,
+    evt.completedAt,
+  );
+  syncThreadRow({
+    ...cachedThread,
+    latestTurnCompletedAt,
+  });
+}
+
+function mergeReadMarkersPreservingUnread(readMarkers: Array<number | undefined>): number | undefined {
   const definedReadMarkers = readMarkers.filter((value): value is number => value !== undefined);
   if (definedReadMarkers.length === 0) {
     return undefined;
@@ -188,6 +212,14 @@ function mergeLastReadAt(readMarkers: Array<number | undefined>): number | undef
     return 0;
   }
   return Math.max(...definedReadMarkers);
+}
+
+function mergeLatestTurnCompletedAt(completions: Array<number | undefined>): number | undefined {
+  const definedCompletions = completions.filter((value): value is number => value !== undefined);
+  if (definedCompletions.length === 0) {
+    return undefined;
+  }
+  return Math.max(...definedCompletions);
 }
 
 function updateThreadUsageCache(threadId: string, raw: string): void {
@@ -432,6 +464,7 @@ function applyTurnCompleted(evt: TurnCompletedEvent): void {
     if (pane.threadId !== evt.threadId) continue;
     pane.settleTurn(settled);
   }
+  syncLatestTurnCompleted(evt);
 }
 
 /**

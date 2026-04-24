@@ -37,6 +37,7 @@ the migrations win.
 - `idx_threads_forked_from` — fork lineage walks.
 - `idx_channels_thread`, `idx_design_artifacts_thread` — per-thread feature lookups.
 - `turns_thread_index` on `turns(thread_id, turn_index DESC)` — backs `ListRecentTurns` for the newest-first rehydration the frontend runs on thread-switch.
+- `idx_turns_thread_completed` on `turns(thread_id, completed_at DESC) WHERE completed_at IS NOT NULL` — backs sidebar read-state checks against the newest completed turn.
 
 ## Migration Policy
 
@@ -79,6 +80,7 @@ Columns:
 
 Indexes:
 - `turns_thread_index` on (thread_id, turn_index DESC) for ListRecentTurns
+- `idx_turns_thread_completed` on (thread_id, completed_at DESC) where completed_at is not NULL for sidebar read-state
 
 Rules:
 - Inserted at turn-start with `completed_at=NULL`; updated at turn-complete.

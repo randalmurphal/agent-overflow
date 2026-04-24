@@ -861,14 +861,15 @@ func TestSetThreadLastReadRoundTrip(t *testing.T) {
 	}
 }
 
-func TestMarkThreadReadNowClampsToThreadUpdatedAt(t *testing.T) {
+func TestMarkThreadReadNowClampsToLatestCompletedTurn(t *testing.T) {
 	s := newTestStore(t)
 
 	thr := makeThread("thread-read-clamp", "claude")
-	thr.UpdatedAt = time.Now().UnixMilli() + 60_000
 	if err := s.CreateThread(thr); err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
+	completedAt := time.Now().UnixMilli() + 60_000
+	insertCompletedTurn(t, s, thr.ID, "turn-read-clamp", completedAt-1000, completedAt)
 
 	if err := s.MarkThreadReadNow(thr.ID); err != nil {
 		t.Fatalf("MarkThreadReadNow: %v", err)
@@ -878,10 +879,13 @@ func TestMarkThreadReadNowClampsToThreadUpdatedAt(t *testing.T) {
 		t.Fatalf("GetThread: %v", err)
 	}
 	if got.LastReadAt == nil {
-		t.Fatalf("LastReadAt = nil, want %d", thr.UpdatedAt)
+		t.Fatalf("LastReadAt = nil, want %d", completedAt)
 	}
-	if *got.LastReadAt != thr.UpdatedAt {
-		t.Fatalf("LastReadAt = %d, want updated_at %d", *got.LastReadAt, thr.UpdatedAt)
+	if got.LatestTurnCompletedAt == nil || *got.LatestTurnCompletedAt != completedAt {
+		t.Fatalf("LatestTurnCompletedAt = %v, want %d", got.LatestTurnCompletedAt, completedAt)
+	}
+	if *got.LastReadAt != completedAt {
+		t.Fatalf("LastReadAt = %d, want latest completed turn %d", *got.LastReadAt, completedAt)
 	}
 }
 
@@ -889,10 +893,10 @@ func TestMarkThreadReadNowAlreadyReadDoesNotRewrite(t *testing.T) {
 	s := newTestStore(t)
 
 	thr := makeThread("thread-read-noop", "claude")
-	thr.UpdatedAt = 1000
 	if err := s.CreateThread(thr); err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
+	insertCompletedTurn(t, s, thr.ID, "turn-read-noop", 500, 1000)
 
 	ts := int64(2000)
 	if err := s.setThreadLastRead(thr.ID, &ts); err != nil {
@@ -908,6 +912,51 @@ func TestMarkThreadReadNowAlreadyReadDoesNotRewrite(t *testing.T) {
 	}
 	if got.LastReadAt == nil || *got.LastReadAt != ts {
 		t.Fatalf("LastReadAt = %v, want %d", got.LastReadAt, ts)
+	}
+}
+
+func TestMarkThreadReadNowIgnoresMetadataOnlyUpdatedAt(t *testing.T) {
+	s := newTestStore(t)
+
+	thr := makeThread("thread-read-metadata", "claude")
+	thr.UpdatedAt = 5000
+	if err := s.CreateThread(thr); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	insertCompletedTurn(t, s, thr.ID, "turn-read-metadata", 500, 1000)
+
+	ts := int64(1000)
+	if err := s.setThreadLastRead(thr.ID, &ts); err != nil {
+		t.Fatalf("setThreadLastRead: %v", err)
+	}
+	if err := s.MarkThreadReadNow(thr.ID); err != nil {
+		t.Fatalf("MarkThreadReadNow: %v", err)
+	}
+
+	got, err := s.GetThread(thr.ID)
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+	if got.LastReadAt == nil || *got.LastReadAt != ts {
+		t.Fatalf("LastReadAt = %v, want %d", got.LastReadAt, ts)
+	}
+	if got.UpdatedAt != thr.UpdatedAt {
+		t.Fatalf("UpdatedAt = %d, want %d", got.UpdatedAt, thr.UpdatedAt)
+	}
+}
+
+func insertCompletedTurn(t *testing.T, s *Store, threadID, turnID string, startedAt, completedAt int64) {
+	t.Helper()
+	if err := s.InsertTurn(Turn{
+		TurnID:    turnID,
+		ThreadID:  threadID,
+		TurnIndex: 0,
+		StartedAt: startedAt,
+	}); err != nil {
+		t.Fatalf("InsertTurn(%s): %v", turnID, err)
+	}
+	if err := s.UpdateTurnCompleted(turnID, completedAt, "end_turn", "", "", ""); err != nil {
+		t.Fatalf("UpdateTurnCompleted(%s): %v", turnID, err)
 	}
 }
 

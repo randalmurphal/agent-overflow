@@ -565,7 +565,7 @@ export function createThreadPane() {
       if (gen !== switchGeneration) return;
 
       // SwitchThread persists read state for the selection itself. ChatView
-      // keeps the active row read as live updates advance updatedAt.
+      // keeps the active row read as completed turns settle.
 
       try {
         const paged = await ListRecentThreadItems(newThread.id, 0);

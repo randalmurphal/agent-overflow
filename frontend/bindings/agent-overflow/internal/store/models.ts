@@ -588,6 +588,13 @@ export class Thread {
     "lastTokenUsage"?: string;
     "createdAt": number;
     "updatedAt": number;
+
+    /**
+     * LatestTurnCompletedAt is the newest completed turn timestamp for
+     * sidebar read-state. Unlike UpdatedAt, it ignores metadata-only changes
+     * such as session refs, title/model changes, and settings edits.
+     */
+    "latestTurnCompletedAt"?: number | null;
     "archived": boolean;
 
     /**

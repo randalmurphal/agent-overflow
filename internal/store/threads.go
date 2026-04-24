@@ -18,7 +18,10 @@ const threadColumns = `id, project_id, title, provider, model,
     mode, reasoning_effort, fast_mode, context_window, runtime_mode,
     COALESCE(discussion_id, ''), COALESCE(parent_thread_id, ''),
     COALESCE(forked_from_thread_id, ''), last_token_usage,
-    created_at, updated_at, archived, last_read_at`
+    created_at, updated_at,
+    (SELECT MAX(completed_at) FROM turns
+      WHERE turns.thread_id = threads.id AND completed_at IS NOT NULL),
+    archived, last_read_at`
 
 // -- Validation errors for enum fields. Each binding checks against the
 // -- list before hitting SQLite so the caller sees a typed error instead
@@ -67,19 +70,23 @@ var legalProviders = map[string]struct{}{
 func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
 	var t Thread
 	var archived, fastMode int
-	var lastReadAt sql.NullInt64
+	var latestTurnCompletedAt, lastReadAt sql.NullInt64
 	if err := scanner.Scan(
 		&t.ID, &t.ProjectID, &t.Title, &t.Provider, &t.Model,
 		&t.WorkspacePath, &t.WorktreePath, &t.Branch,
 		&t.SessionRef, &t.PendingForkRef,
 		&t.Mode, &t.ReasoningEffort, &fastMode, &t.ContextWindow, &t.RuntimeMode,
 		&t.DiscussionID, &t.ParentThreadID, &t.ForkedFromThreadID, &t.LastTokenUsage,
-		&t.CreatedAt, &t.UpdatedAt, &archived, &lastReadAt,
+		&t.CreatedAt, &t.UpdatedAt, &latestTurnCompletedAt, &archived, &lastReadAt,
 	); err != nil {
 		return Thread{}, err
 	}
 	t.FastMode = fastMode != 0
 	t.Archived = archived != 0
+	if latestTurnCompletedAt.Valid {
+		v := latestTurnCompletedAt.Int64
+		t.LatestTurnCompletedAt = &v
+	}
 	if lastReadAt.Valid {
 		v := lastReadAt.Int64
 		t.LastReadAt = &v
@@ -279,39 +286,60 @@ func (s *Store) UnarchiveThread(id string) error {
 }
 
 // MarkThreadReadNow stamps last_read_at with the current unix-ms, clamped to
-// the thread's updated_at. The clamp is load-bearing: a read marker only
-// resolves the sidebar's completed/unread pill when last_read_at >=
-// updated_at, and item timestamps can occasionally be ahead of wall-clock
-// now when the frontend asks to mark the thread read.
+// the latest completed turn. The clamp is load-bearing: a read marker only
+// resolves the sidebar's completed/unread pill when last_read_at >= the
+// latest settled turn, and provider timestamps can occasionally be ahead of
+// wall-clock now when the frontend asks to mark the thread read.
 //
 // Does NOT bump updated_at: read-state is UI bookkeeping, not a thread
 // mutation, and bumping would thrash the sidebar ordering.
 func (s *Store) MarkThreadReadNow(id string) error {
 	now := nowMillis()
-	result, err := s.db.Exec(
-		`UPDATE threads
-		    SET last_read_at = CASE WHEN updated_at > ? THEN updated_at ELSE ? END
-		  WHERE id = ?
-		    AND (last_read_at IS NULL OR last_read_at < updated_at)`,
-		now, now, id,
-	)
+	tx, err := s.db.Begin()
 	if err != nil {
-		return fmt.Errorf("store: mark thread read %s: %w", id, err)
+		return fmt.Errorf("store: begin mark thread read %s: %w", id, err)
 	}
-	rows, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("store: mark thread read %s rows affected: %w", id, err)
-	}
-	if rows > 0 {
-		return nil
-	}
+	defer tx.Rollback()
 
-	var exists int
-	if err := s.db.QueryRow(`SELECT 1 FROM threads WHERE id = ?`, id).Scan(&exists); err != nil {
+	var latestTurnCompletedAt, lastReadAt sql.NullInt64
+	err = tx.QueryRow(
+		`SELECT
+		    (SELECT MAX(completed_at) FROM turns
+		      WHERE thread_id = threads.id AND completed_at IS NOT NULL),
+		    last_read_at
+		   FROM threads
+		  WHERE id = ?`,
+		id,
+	).Scan(&latestTurnCompletedAt, &lastReadAt)
+	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("store: mark thread read %s: %w", id, sql.ErrNoRows)
 		}
-		return fmt.Errorf("store: check thread read target %s: %w", id, err)
+		return fmt.Errorf("store: read thread read-state %s: %w", id, err)
+	}
+
+	if lastReadAt.Valid {
+		if !latestTurnCompletedAt.Valid || lastReadAt.Int64 >= latestTurnCompletedAt.Int64 {
+			if err := tx.Commit(); err != nil {
+				return fmt.Errorf("store: commit mark thread read no-op %s: %w", id, err)
+			}
+			return nil
+		}
+	}
+
+	readAt := now
+	if latestTurnCompletedAt.Valid && latestTurnCompletedAt.Int64 > readAt {
+		readAt = latestTurnCompletedAt.Int64
+	}
+	result, err := tx.Exec(`UPDATE threads SET last_read_at = ? WHERE id = ?`, readAt, id)
+	if err != nil {
+		return fmt.Errorf("store: mark thread read %s: %w", id, err)
+	}
+	if err := requireRowsAffected(result, fmt.Sprintf("store: mark thread read %s", id)); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("store: commit mark thread read %s: %w", id, err)
 	}
 	return nil
 }

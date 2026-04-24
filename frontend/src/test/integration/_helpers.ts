@@ -22,7 +22,8 @@ import type { Project, ProjectWithCounts, Thread } from '../../lib/types/models'
 import type { GitStatus } from '../../lib/types/git';
 import { resetProjectsForTest } from '../../lib/stores/projects.svelte';
 import { resetSidebarForTest, expandProject } from '../../lib/stores/sidebar.svelte';
-import { resetForTest as resetDraftThreadsForTest } from '../../lib/stores/draftThreads.svelte';
+import { getAllDrafts, resetForTest as resetDraftThreadsForTest } from '../../lib/stores/draftThreads.svelte';
+import { getThreads } from '../../lib/stores/threads.svelte';
 
 // Drain microtasks + Svelte reactions so $effects and async mounts settle.
 // `n` should be generous for integration tests that depend on $effects
@@ -96,20 +97,17 @@ export function seedSidebarProject(threads: Thread[]): Project {
 // switch into a thread need these mocked even if they don't assert on
 // git UI.
 export function installThreadViewDefaults(): void {
-  setBindingMock('SwitchThread', async (threadId: unknown) => ({
-    id: typeof threadId === 'string' ? threadId : 'thread-1',
-    title: 'Test thread',
-    provider: 'claude',
-    workspacePath: '/tmp/workspace',
-    projectPath: '/tmp/workspace',
-    mode: 'chat',
-    model: 'claude-sonnet-4-6',
-    createdAt: 0,
-    updatedAt: 0,
-    archived: false,
-  }));
+  setBindingMock('SwitchThread', async (threadId: unknown) => {
+    const id = typeof threadId === 'string' ? threadId : 'thread-1';
+    const listedThread = getThreads().find((thread) => thread.id === id);
+    if (listedThread) return listedThread;
+    for (const draft of getAllDrafts().values()) {
+      if (draft.id === id) return draft;
+    }
+    return makeThread({ id });
+  });
   // ChatView may fire MarkThreadRead while keeping the active thread row
-  // read after live updatedAt changes; default it to a no-op so tests that
+  // read as completed turns settle; default it to a no-op so tests that
   // do not care about read-state do not need their own mock.
   setBindingMock('MarkThreadRead', async () => {});
   setBindingMock('MarkThreadUnread', async () => {});

@@ -681,6 +681,19 @@ CREATE INDEX IF NOT EXISTS idx_items_live_background
 		// so persisted server-rendered HTML is no longer part of the schema.
 		SQL: v25SQL,
 	},
+	{
+		Version: 26,
+		Name:    "turns_thread_completed_index",
+		// Sidebar read-state compares each thread's last_read_at against its
+		// newest completed turn. The partial index keeps that aggregate off
+		// the hot path for thread list reads while excluding in-flight turns,
+		// whose NULL completed_at can never resolve a Completed pill.
+		SQL: `
+CREATE INDEX IF NOT EXISTS idx_turns_thread_completed
+  ON turns(thread_id, completed_at DESC)
+  WHERE completed_at IS NOT NULL;
+`,
+	},
 }
 
 // v13SQL is the DROP-and-rebuild payload for migration v13. Extracted so

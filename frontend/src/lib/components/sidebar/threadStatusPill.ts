@@ -33,13 +33,15 @@ export interface ThreadStatusPill {
 
 /**
  * hasUnread returns true when the thread has activity the user hasn't
- * seen yet. Null `lastReadAt` counts as read so pre-migration rows
- * don't all light up on first deploy — the auto-mark-read effect
- * populates the column the first time the user switches in.
+ * seen yet. The activity clock is the latest completed turn, not broad
+ * thread updatedAt; metadata-only changes should not show "Completed".
+ * Null `lastReadAt` counts as read so pre-migration rows don't all light up
+ * on first deploy.
  */
-export function hasUnread(thread: Pick<Thread, 'lastReadAt' | 'updatedAt'>): boolean {
+export function hasUnread(thread: Pick<Thread, 'lastReadAt' | 'latestTurnCompletedAt'>): boolean {
+  if (thread.latestTurnCompletedAt == null) return false;
   if (thread.lastReadAt == null) return false;
-  return thread.updatedAt > thread.lastReadAt;
+  return thread.latestTurnCompletedAt > thread.lastReadAt;
 }
 
 /**
@@ -62,7 +64,7 @@ export function hasUnread(thread: Pick<Thread, 'lastReadAt' | 'updatedAt'>): boo
  * agent is actively stuck.
  */
 export function resolveThreadStatusPill(
-  thread: Pick<Thread, 'mode' | 'lastReadAt' | 'updatedAt'>,
+  thread: Pick<Thread, 'mode' | 'lastReadAt' | 'latestTurnCompletedAt'>,
   liveStatus: ThreadLiveStatus,
 ): ThreadStatusPill | null {
   if (liveStatus === 'error') {

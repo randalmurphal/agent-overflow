@@ -254,6 +254,7 @@ describe('setupEventListeners', () => {
         title: 'Old',
         model: 'claude-sonnet-4-6',
         lastReadAt: 300,
+        latestTurnCompletedAt: 300,
       }),
     ]);
     await refreshThreads();
@@ -263,6 +264,7 @@ describe('setupEventListeners', () => {
       title: 'Old',
       model: 'claude-sonnet-4-6',
       lastReadAt: 200,
+      latestTurnCompletedAt: 200,
     }));
     getAllPanes().set('main', pane);
     await refreshThreads();
@@ -272,14 +274,17 @@ describe('setupEventListeners', () => {
       title: 'New title',
       model: 'claude-opus-4-1',
       lastReadAt: 100,
+      latestTurnCompletedAt: 100,
     }));
 
     expect(pane.thread?.title).toBe('New title');
     expect(pane.thread?.model).toBe('claude-opus-4-1');
     expect(pane.thread?.lastReadAt).toBe(300);
+    expect(pane.thread?.latestTurnCompletedAt).toBe(300);
     expect(getThreads()[0]?.title).toBe('New title');
     expect(getThreads()[0]?.model).toBe('claude-opus-4-1');
     expect(getThreads()[0]?.lastReadAt).toBe(300);
+    expect(getThreads()[0]?.latestTurnCompletedAt).toBe(300);
   });
 
   it('preserves an explicit unread marker when thread:updated is stale', async () => {
@@ -288,6 +293,7 @@ describe('setupEventListeners', () => {
         id: 'thread-1',
         title: 'Old',
         lastReadAt: 0,
+        latestTurnCompletedAt: 300,
       }),
     ]);
     await refreshThreads();
@@ -296,6 +302,7 @@ describe('setupEventListeners', () => {
       id: 'thread-1',
       title: 'New title',
       lastReadAt: 300,
+      latestTurnCompletedAt: 300,
     }));
 
     expect(getThreads()[0]?.title).toBe('New title');
@@ -461,6 +468,8 @@ describe('setupEventListeners', () => {
   });
 
   it('routes provider:turn_completed to pane.settleTurn and clears activeTurn', async () => {
+    setBindingMock('ListThreads', async () => [makeThread({ id: 'thread-1' })]);
+    await refreshThreads();
     const pane = await buildPane(makeThread({ id: 'thread-1' }));
     getAllPanes().set('main', pane);
 
@@ -488,6 +497,8 @@ describe('setupEventListeners', () => {
     expect(pane.latestSettledTurn?.assistantMessageId).toBe('text:0:3');
     expect(pane.latestSettledTurn?.completedAt).toBe(2000);
     expect(pane.latestSettledTurn?.stopReason).toBe('end_turn');
+    expect(pane.thread?.latestTurnCompletedAt).toBe(2000);
+    expect(getThreads().find((thread) => thread.id === 'thread-1')?.latestTurnCompletedAt).toBe(2000);
   });
 
   it('parses tokenUsage JSON from provider:turn_completed into a typed summary', async () => {

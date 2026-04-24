@@ -71,7 +71,11 @@ type Thread struct {
 	LastTokenUsage     string `json:"lastTokenUsage,omitempty"`
 	CreatedAt          int64  `json:"createdAt"`
 	UpdatedAt          int64  `json:"updatedAt"`
-	Archived           bool   `json:"archived"`
+	// LatestTurnCompletedAt is the newest completed turn timestamp for
+	// sidebar read-state. Unlike UpdatedAt, it ignores metadata-only changes
+	// such as session refs, title/model changes, and settings edits.
+	LatestTurnCompletedAt *int64 `json:"latestTurnCompletedAt,omitempty"`
+	Archived              bool   `json:"archived"`
 	// LastReadAt is the Unix-ms timestamp of when the user last viewed
 	// the thread. NULL (nil) means "never tracked" and is treated as
 	// read by the UI so pre-migration rows don't all show as unread on

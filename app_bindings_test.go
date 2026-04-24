@@ -201,6 +201,7 @@ func TestSwitchThreadAutoResumeSessionInitDoesNotTouchUpdatedAt(t *testing.T) {
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
+	insertCompletedTurnForAppTest(t, app, thread.ID, "turn-auto-preserve-updated", 1200, 1500)
 
 	started := make(chan struct{}, 1)
 	app.startSessionFn = func(threadID string) error {
@@ -231,39 +232,49 @@ func TestSwitchThreadAutoResumeSessionInitDoesNotTouchUpdatedAt(t *testing.T) {
 	if stored.LastReadAt == nil {
 		t.Fatalf("LastReadAt = nil, want thread marked read")
 	}
-	if *stored.LastReadAt < stored.UpdatedAt {
-		t.Fatalf("LastReadAt = %d, want >= updatedAt %d", *stored.LastReadAt, stored.UpdatedAt)
+	if stored.LatestTurnCompletedAt == nil {
+		t.Fatalf("LatestTurnCompletedAt = nil, want completed turn")
+	}
+	if *stored.LastReadAt < *stored.LatestTurnCompletedAt {
+		t.Fatalf("LastReadAt = %d, want >= latest turn completed %d", *stored.LastReadAt, *stored.LatestTurnCompletedAt)
 	}
 }
 
 func TestSwitchThreadMarksThreadReadBeforeReturning(t *testing.T) {
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-switch-read")
-	thread.UpdatedAt = time.Now().UnixMilli() + 60_000
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
+	completedAt := time.Now().UnixMilli() + 60_000
+	insertCompletedTurnForAppTest(t, app, thread.ID, "turn-switch-read", completedAt-1000, completedAt)
 
 	got, err := app.SwitchThread(thread.ID)
 	if err != nil {
 		t.Fatalf("SwitchThread() error = %v", err)
 	}
-	if got.LastReadAt == nil {
-		t.Fatalf("returned LastReadAt = nil, want >= updatedAt")
+	if got.LatestTurnCompletedAt == nil {
+		t.Fatalf("returned LatestTurnCompletedAt = nil, want completed turn")
 	}
-	if *got.LastReadAt < got.UpdatedAt {
-		t.Fatalf("returned LastReadAt = %d, want >= updatedAt %d", *got.LastReadAt, got.UpdatedAt)
+	if got.LastReadAt == nil {
+		t.Fatalf("returned LastReadAt = nil, want >= latest turn completed")
+	}
+	if *got.LastReadAt < *got.LatestTurnCompletedAt {
+		t.Fatalf("returned LastReadAt = %d, want >= latest turn completed %d", *got.LastReadAt, *got.LatestTurnCompletedAt)
 	}
 
 	stored, err := app.store.GetThread(thread.ID)
 	if err != nil {
 		t.Fatalf("GetThread() error = %v", err)
 	}
-	if stored.LastReadAt == nil {
-		t.Fatalf("stored LastReadAt = nil, want >= updatedAt")
+	if stored.LatestTurnCompletedAt == nil {
+		t.Fatalf("stored LatestTurnCompletedAt = nil, want completed turn")
 	}
-	if *stored.LastReadAt < stored.UpdatedAt {
-		t.Fatalf("stored LastReadAt = %d, want >= updatedAt %d", *stored.LastReadAt, stored.UpdatedAt)
+	if stored.LastReadAt == nil {
+		t.Fatalf("stored LastReadAt = nil, want >= latest turn completed")
+	}
+	if *stored.LastReadAt < *stored.LatestTurnCompletedAt {
+		t.Fatalf("stored LastReadAt = %d, want >= latest turn completed %d", *stored.LastReadAt, *stored.LatestTurnCompletedAt)
 	}
 }
 
@@ -622,6 +633,21 @@ func newTestAppWithStore(t *testing.T) *App {
 	}
 	ensureDefaultTestProject(t, app)
 	return app
+}
+
+func insertCompletedTurnForAppTest(t *testing.T, app *App, threadID, turnID string, startedAt, completedAt int64) {
+	t.Helper()
+	if err := app.store.InsertTurn(store.Turn{
+		TurnID:    turnID,
+		ThreadID:  threadID,
+		TurnIndex: 0,
+		StartedAt: startedAt,
+	}); err != nil {
+		t.Fatalf("InsertTurn(%s): %v", turnID, err)
+	}
+	if err := app.store.UpdateTurnCompleted(turnID, completedAt, "end_turn", "", "", ""); err != nil {
+		t.Fatalf("UpdateTurnCompleted(%s): %v", turnID, err)
+	}
 }
 
 // testThread returns a Thread with the v13 shape, pre-attached to a
