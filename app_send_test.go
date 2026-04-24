@@ -473,16 +473,16 @@ func TestSendMessageRenamesTemporaryWorktreeBranchOnFirstTurn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetThread() error = %v", err)
 	}
-	if stored.Branch != "forge/feature/reconnect-spinner" {
-		t.Fatalf("stored Branch = %q, want forge/feature/reconnect-spinner", stored.Branch)
+	if stored.Branch != "ao-feature-reconnect-spinner" {
+		t.Fatalf("stored Branch = %q, want ao-feature-reconnect-spinner", stored.Branch)
 	}
 
 	status, err := app.GetGitStatus(thread.ID)
 	if err != nil {
 		t.Fatalf("GetGitStatus() error = %v", err)
 	}
-	if status.Branch != "forge/feature/reconnect-spinner" {
-		t.Fatalf("status.Branch = %q, want forge/feature/reconnect-spinner", status.Branch)
+	if status.Branch != "ao-feature-reconnect-spinner" {
+		t.Fatalf("status.Branch = %q, want ao-feature-reconnect-spinner", status.Branch)
 	}
 }
 

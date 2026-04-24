@@ -74,6 +74,18 @@ func (c *Core) Checkout(cwd, branch string) error {
 		return err
 	}
 
+	if local, ok := c.localBranchFromRemote(cwd, branch); ok {
+		if err := validateBranchName(local); err != nil {
+			return err
+		}
+		if c.branchExists(cwd, local) {
+			_, _, err := c.Execute(cwd, "checkout", local)
+			return err
+		}
+		_, _, err := c.Execute(cwd, "checkout", "--track", branch)
+		return err
+	}
+
 	_, _, err := c.Execute(cwd, "checkout", branch)
 	return err
 }
@@ -195,4 +207,19 @@ func (c *Core) pushRemoteName(cwd string) (string, error) {
 func (c *Core) branchExists(cwd, branch string) bool {
 	result, err := c.run(cwd, "show-ref", "--verify", "--quiet", "refs/heads/"+branch)
 	return err == nil && result.exitCode == 0
+}
+
+func (c *Core) localBranchFromRemote(cwd, branch string) (string, bool) {
+	for _, remote := range c.listRemoteNames(cwd) {
+		prefix := remote + "/"
+		if !strings.HasPrefix(branch, prefix) {
+			continue
+		}
+		local := strings.TrimPrefix(branch, prefix)
+		if local == "" || strings.HasSuffix(local, "/HEAD") {
+			return "", false
+		}
+		return local, true
+	}
+	return "", false
 }

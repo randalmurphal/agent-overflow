@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	gitops "agent-overflow/internal/git"
+	"agent-overflow/internal/store"
 	"agent-overflow/internal/testutil"
 )
 
@@ -200,10 +201,147 @@ func TestGitCreateWorktreeUsesTemporaryBranchWhenEmpty(t *testing.T) {
 		t.Fatalf("GetThread() error = %v", err)
 	}
 	if !gitops.IsTemporaryWorktreeBranch(stored.Branch) {
-		t.Fatalf("stored Branch = %q, want forge/<8-hex>", stored.Branch)
+		t.Fatalf("stored Branch = %q, want ao-<8-hex>", stored.Branch)
 	}
-	if !strings.Contains(worktreePath, "forge-") {
-		t.Fatalf("worktreePath = %q, want forge-prefixed temp path", worktreePath)
+	if !strings.Contains(worktreePath, "ao-") {
+		t.Fatalf("worktreePath = %q, want ao-prefixed temp path", worktreePath)
+	}
+}
+
+func TestWorktreeMutationRejectsActiveTurnWithoutSession(t *testing.T) {
+	app := newTestAppWithStore(t)
+	repo := testutil.InitGitRepo(t)
+
+	project, err := app.ensureProjectForWorkspace(repo)
+	if err != nil {
+		t.Fatalf("ensureProjectForWorkspace() error = %v", err)
+	}
+	thread := testThread("thread-worktree-active-turn")
+	thread.ProjectID = project.ID
+	thread.WorkspacePath = repo
+	thread.Branch = "main"
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+	if err := app.store.InsertTurn(store.Turn{
+		TurnID:    "turn-worktree-active",
+		ThreadID:  thread.ID,
+		TurnIndex: 0,
+		StartedAt: 1,
+	}); err != nil {
+		t.Fatalf("InsertTurn() error = %v", err)
+	}
+
+	_, err = app.PrepareThreadWorktree(thread.ID, "main", "feature/blocked")
+	if err == nil || !strings.Contains(err.Error(), "cannot switch workspace while turn 0 is active") {
+		t.Fatalf("PrepareThreadWorktree() error = %v, want active-turn rejection", err)
+	}
+}
+
+func TestGitRemoveWorktreeRejectsOtherThreadWorkspaceReference(t *testing.T) {
+	app := newTestAppWithStore(t)
+	repo := testutil.InitGitRepo(t)
+
+	project, err := app.ensureProjectForWorkspace(repo)
+	if err != nil {
+		t.Fatalf("ensureProjectForWorkspace() error = %v", err)
+	}
+	owner := testThread("thread-worktree-owner")
+	owner.ProjectID = project.ID
+	owner.WorkspacePath = repo
+	if err := app.store.CreateThread(owner); err != nil {
+		t.Fatalf("CreateThread(owner) error = %v", err)
+	}
+	worktreePath, err := app.GitCreateWorktree(owner.ID, "feature/shared")
+	if err != nil {
+		t.Fatalf("GitCreateWorktree() error = %v", err)
+	}
+
+	other := testThread("thread-worktree-user")
+	other.ProjectID = project.ID
+	other.WorkspacePath = worktreePath
+	other.Branch = "feature/shared"
+	if err := app.store.CreateThread(other); err != nil {
+		t.Fatalf("CreateThread(other) error = %v", err)
+	}
+
+	err = app.GitRemoveWorktree(owner.ID)
+	if err == nil || !strings.Contains(err.Error(), "used by another thread") {
+		t.Fatalf("GitRemoveWorktree() error = %v, want shared worktree rejection", err)
+	}
+}
+
+func TestGitRemoveWorktreeRejectsArchivedThreadWorkspaceReference(t *testing.T) {
+	app := newTestAppWithStore(t)
+	repo := testutil.InitGitRepo(t)
+
+	project, err := app.ensureProjectForWorkspace(repo)
+	if err != nil {
+		t.Fatalf("ensureProjectForWorkspace() error = %v", err)
+	}
+	owner := testThread("thread-worktree-owner-archived-ref")
+	owner.ProjectID = project.ID
+	owner.WorkspacePath = repo
+	if err := app.store.CreateThread(owner); err != nil {
+		t.Fatalf("CreateThread(owner) error = %v", err)
+	}
+	worktreePath, err := app.GitCreateWorktree(owner.ID, "feature/archived-shared")
+	if err != nil {
+		t.Fatalf("GitCreateWorktree() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = app.gitCore().RemoveWorktreeForce(repo, worktreePath, true)
+	})
+
+	other := testThread("thread-worktree-archived-user")
+	other.ProjectID = project.ID
+	other.WorkspacePath = worktreePath
+	other.WorktreePath = worktreePath
+	other.Branch = "feature/archived-shared"
+	other.Archived = true
+	if err := app.store.CreateThread(other); err != nil {
+		t.Fatalf("CreateThread(other) error = %v", err)
+	}
+
+	err = app.GitRemoveWorktree(owner.ID)
+	if err == nil || !strings.Contains(err.Error(), "used by another thread") {
+		t.Fatalf("GitRemoveWorktree() error = %v, want archived shared worktree rejection", err)
+	}
+}
+
+func TestPrepareThreadWorktreeBranchesFromSelectedBase(t *testing.T) {
+	app := newTestAppWithStore(t)
+	repo := testutil.InitGitRepo(t)
+
+	testutil.RunGit(t, repo, "checkout", "-b", "release")
+	if err := os.WriteFile(filepath.Join(repo, "BASE.txt"), []byte("release\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	testutil.RunGit(t, repo, "add", "BASE.txt")
+	testutil.RunGit(t, repo, "commit", "-m", "release base")
+	testutil.RunGit(t, repo, "checkout", "main")
+
+	project, err := app.ensureProjectForWorkspace(repo)
+	if err != nil {
+		t.Fatalf("ensureProjectForWorkspace() error = %v", err)
+	}
+	thread := testThread("thread-worktree-base")
+	thread.ProjectID = project.ID
+	thread.WorkspacePath = repo
+	thread.Branch = "main"
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+
+	updated, err := app.PrepareThreadWorktree(thread.ID, "release", "feature/base")
+	if err != nil {
+		t.Fatalf("PrepareThreadWorktree() error = %v", err)
+	}
+	if updated.Branch != "feature/base" {
+		t.Fatalf("Branch = %q, want feature/base", updated.Branch)
+	}
+	if _, err := os.Stat(filepath.Join(updated.WorktreePath, "BASE.txt")); err != nil {
+		t.Fatalf("expected worktree to branch from release: %v", err)
 	}
 }
 
@@ -235,6 +373,85 @@ func TestGitCheckoutUpdatesStoredBranch(t *testing.T) {
 	}
 	if stored.Branch != "feature/checkout" {
 		t.Fatalf("stored Branch = %q, want feature/checkout", stored.Branch)
+	}
+}
+
+func TestGitCheckoutRejectsActiveTurn(t *testing.T) {
+	app := newTestAppWithStore(t)
+	repo := testutil.InitGitRepo(t)
+
+	testutil.RunGit(t, repo, "branch", "feature/checkout")
+
+	project, err := app.ensureProjectForWorkspace(repo)
+	if err != nil {
+		t.Fatalf("ensureProjectForWorkspace() error = %v", err)
+	}
+	thread := testThread("thread-checkout-active-turn")
+	thread.ProjectID = project.ID
+	thread.WorkspacePath = repo
+	thread.Branch = "main"
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+	if err := app.store.InsertTurn(store.Turn{
+		TurnID:    "turn-checkout-active",
+		ThreadID:  thread.ID,
+		TurnIndex: 0,
+		StartedAt: 1,
+	}); err != nil {
+		t.Fatalf("InsertTurn() error = %v", err)
+	}
+
+	err = app.GitCheckout(thread.ID, "feature/checkout")
+	if err == nil || !strings.Contains(err.Error(), "cannot switch workspace while turn 0 is active") {
+		t.Fatalf("GitCheckout() error = %v, want active-turn rejection", err)
+	}
+}
+
+func TestGitCheckoutDefaultBranchFromWorktreeReturnsToProjectRoot(t *testing.T) {
+	app := newTestAppWithStore(t)
+	repo := testutil.InitGitRepo(t)
+	worktreePath := filepath.Join(filepath.Dir(repo), filepath.Base(repo)+"-feature")
+
+	testutil.RunGit(t, repo, "branch", "dev")
+	testutil.RunGit(t, repo, "worktree", "add", "-b", "feature/worktree", worktreePath, "main")
+	t.Cleanup(func() {
+		_ = app.gitCore().RemoveWorktreeForce(repo, worktreePath, true)
+	})
+	testutil.RunGit(t, repo, "checkout", "dev")
+
+	project, err := app.ensureProjectForWorkspace(repo)
+	if err != nil {
+		t.Fatalf("ensureProjectForWorkspace() error = %v", err)
+	}
+	thread := testThread("thread-checkout-default-from-worktree")
+	thread.ProjectID = project.ID
+	thread.WorkspacePath = worktreePath
+	thread.WorktreePath = worktreePath
+	thread.Branch = "feature/worktree"
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+
+	if err := app.GitCheckout(thread.ID, "main"); err != nil {
+		t.Fatalf("GitCheckout(main) error = %v", err)
+	}
+
+	if got := currentGitBranch(app.gitCore(), repo); got != "main" {
+		t.Fatalf("project root branch = %q, want main", got)
+	}
+	stored, err := app.store.GetThread(thread.ID)
+	if err != nil {
+		t.Fatalf("GetThread() error = %v", err)
+	}
+	if !samePath(stored.WorkspacePath, repo) {
+		t.Fatalf("WorkspacePath = %q, want %q", stored.WorkspacePath, repo)
+	}
+	if stored.WorktreePath != "" {
+		t.Fatalf("WorktreePath = %q, want empty", stored.WorktreePath)
+	}
+	if stored.Branch != "main" {
+		t.Fatalf("Branch = %q, want main", stored.Branch)
 	}
 }
 

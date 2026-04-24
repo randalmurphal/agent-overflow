@@ -1,19 +1,26 @@
 <script lang="ts">
-  // "Local ▾" trigger in the below-composer bar. Lists the thread's
-  // project root plus any worktrees so the user can switch where the
-  // provider operates without leaving the chat view.
+  // Workspace trigger in the below-composer bar. Lists the project root,
+  // staged new-worktree intent, and registered worktrees so the user can
+  // choose where the next provider turn runs without leaving the chat.
   //
-  // Selecting the project root or a worktree fires
-  // UpdateThreadWorkspace; the backend restart flow handles reconnecting
-  // the live session at the new path.
+  // Existing paths persist via UpdateThreadWorkspace. New worktree intent
+  // is staged locally and materialized by the next send.
 
   import type { ThreadPane } from '../../../stores/thread.svelte';
   import type { Thread } from '../../../types/models';
+  import ChevronDown from 'lucide-svelte/icons/chevron-down';
   import { GitListWorktrees, UpdateThreadWorkspace } from '../../../stores/bindings';
-  import { Worktree } from '../../../../../bindings/agent-overflow/internal/git/models';
+  import type { Worktree } from '../../../types/git';
   import { replaceThread } from '../../../stores/threads.svelte';
   import { addToast } from '../../../stores/toast.svelte';
   import { errString } from '../../../utils/errors';
+  import { sameNormalizedPath } from '../../../utils/path';
+  import {
+    clearWorktreeIntent,
+    setThreadEnvMode,
+    worktreeIntentForThread,
+  } from '../../../stores/worktreeIntent.svelte';
+  import type { WorkspaceChangeLockState } from '../../../stores/workspaceChangeLock.svelte';
   import Popover from '../../primitives/Popover.svelte';
   import Menu from '../../primitives/Menu.svelte';
   import MenuItem from '../../primitives/MenuItem.svelte';
@@ -21,9 +28,10 @@
 
   interface Props {
     pane: ThreadPane;
+    workspaceLock: WorkspaceChangeLockState;
   }
 
-  let { pane }: Props = $props();
+  let { pane, workspaceLock }: Props = $props();
 
   let triggerEl: HTMLButtonElement | undefined = $state(undefined);
   let open = $state(false);
@@ -33,11 +41,11 @@
 
   let projectPath = $derived(pane.thread?.projectPath ?? '');
   let currentWorkspace = $derived(pane.thread?.workspacePath ?? '');
-  let isAtProjectRoot = $derived(currentWorkspace === projectPath);
+  let isAtProjectRoot = $derived(sameNormalizedPath(currentWorkspace, projectPath));
+  let intent = $derived(worktreeIntentForThread(pane.thread));
 
-  // Short display label for the trigger. Prefer the worktree basename
-  // so the bar doesn't swallow horizontal space; fall back to "Local"
-  // when we're sitting at the project root.
+  // Keep path details in menu descriptions. The trigger itself stays
+  // mode-shaped so it matches t3-code's "Current checkout/worktree" labels.
   function basename(path: string): string {
     if (!path) return '';
     const trimmed = path.replace(/\/$/, '');
@@ -45,7 +53,13 @@
     return idx >= 0 ? trimmed.slice(idx + 1) : trimmed;
   }
 
-  let triggerLabel = $derived(isAtProjectRoot ? 'Local' : basename(currentWorkspace) || 'Local');
+  let triggerLabel = $derived.by(() => {
+    if (intent.mode === 'new-worktree') return 'New worktree';
+    if (isAtProjectRoot) return 'Current checkout';
+    return 'Current worktree';
+  });
+  let disabledReason = $derived(workspaceLock.reason);
+  let workspaceChangingDisabled = $derived(workspaceLock.locked);
 
   async function handleTrigger(): Promise<void> {
     open = !open;
@@ -71,8 +85,14 @@
 
   async function selectPath(path: string): Promise<void> {
     if (!pane.thread || applying) return;
+    if (workspaceChangingDisabled) return;
     const threadId = pane.thread.id;
-    if (path === currentWorkspace) {
+    if (sameNormalizedPath(path, projectPath)) {
+      setThreadEnvMode(pane.thread, 'local');
+    } else {
+      clearWorktreeIntent(threadId);
+    }
+    if (sameNormalizedPath(path, currentWorkspace)) {
       closeMenu();
       return;
     }
@@ -89,6 +109,13 @@
       applying = false;
       closeMenu();
     }
+  }
+
+  function selectNewWorktree(): void {
+    if (!pane.thread) return;
+    if (workspaceChangingDisabled) return;
+    setThreadEnvMode(pane.thread, 'new-worktree');
+    closeMenu();
   }
 </script>
 
@@ -110,18 +137,7 @@
   ].join(' ')}
 >
   <span class="truncate max-w-[160px]">{triggerLabel}</span>
-  <svg
-    viewBox="0 0 24 24"
-    class="h-3 w-3"
-    fill="none"
-    stroke="currentColor"
-    stroke-width="2"
-    stroke-linecap="round"
-    stroke-linejoin="round"
-    aria-hidden="true"
-  >
-    <path d="M6 9l6 6 6-6" />
-  </svg>
+  <ChevronDown class="h-3 w-3" aria-hidden="true" />
 </button>
 
 <Popover
@@ -133,10 +149,20 @@
 >
   <Menu ariaLabel="Workspace" onClose={closeMenu}>
     <MenuItem
-      label={projectPath ? `Local (${basename(projectPath)})` : 'Local'}
-      checked={isAtProjectRoot}
-      disabled={!projectPath}
+      label="Current checkout"
+      description={projectPath ? basename(projectPath) : undefined}
+      checked={isAtProjectRoot && intent.mode !== 'new-worktree'}
+      disabled={!projectPath || workspaceChangingDisabled}
+      title={workspaceChangingDisabled ? disabledReason : undefined}
       onSelect={() => selectPath(projectPath)}
+    />
+    <MenuItem
+      label="New worktree"
+      description="Create before the next send"
+      checked={intent.mode === 'new-worktree'}
+      disabled={workspaceChangingDisabled}
+      title={workspaceChangingDisabled ? disabledReason : undefined}
+      onSelect={selectNewWorktree}
     />
     {#if loading}
       <div
@@ -149,10 +175,13 @@
     {:else if worktrees.length > 0}
       <MenuDivider />
       {#each worktrees as wt (wt.path)}
-        {#if wt.path !== projectPath}
+        {#if !sameNormalizedPath(wt.path, projectPath)}
           <MenuItem
-            label={basename(wt.path) || wt.path}
-            checked={currentWorkspace === wt.path}
+            label="Current worktree"
+            description={wt.branch ? `${wt.branch} · ${basename(wt.path) || wt.path}` : basename(wt.path) || wt.path}
+            checked={sameNormalizedPath(currentWorkspace, wt.path) && intent.mode !== 'new-worktree'}
+            disabled={workspaceChangingDisabled}
+            title={workspaceChangingDisabled ? disabledReason : undefined}
             onSelect={() => selectPath(wt.path)}
           />
         {/if}

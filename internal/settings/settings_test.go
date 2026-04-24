@@ -37,6 +37,12 @@ func TestGetReturnsDefaultsOnMissingFile(t *testing.T) {
 	if got.DefaultRuntimeMode != "full-access" {
 		t.Errorf("DefaultRuntimeMode = %q, want %q", got.DefaultRuntimeMode, "full-access")
 	}
+	if got.DefaultThreadEnvMode != "local" {
+		t.Errorf("DefaultThreadEnvMode = %q, want %q", got.DefaultThreadEnvMode, "local")
+	}
+	if got.WorktreeBranchPrefix != "ao-" {
+		t.Errorf("WorktreeBranchPrefix = %q, want %q", got.WorktreeBranchPrefix, "ao-")
+	}
 	if got.ModelContextWindows != nil {
 		t.Errorf("ModelContextWindows = %v, want nil", got.ModelContextWindows)
 	}

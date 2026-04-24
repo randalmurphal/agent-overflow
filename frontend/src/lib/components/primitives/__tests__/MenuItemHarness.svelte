@@ -8,6 +8,8 @@
   let {
     label = 'Apple',
     kbd = undefined as string | undefined,
+    suffix = undefined as string | undefined,
+    title = undefined as string | undefined,
     checked = false,
     disabled = false,
     onSelect = undefined as (() => void) | undefined,
@@ -16,6 +18,8 @@
   }: {
     label?: string;
     kbd?: string;
+    suffix?: string;
+    title?: string;
     checked?: boolean;
     disabled?: boolean;
     onSelect?: () => void;
@@ -25,11 +29,11 @@
 </script>
 
 {#if showIcon}
-  <MenuItem {label} {kbd} {checked} {disabled} {onSelect} {variant}>
+  <MenuItem {label} {kbd} {suffix} {title} {checked} {disabled} {onSelect} {variant}>
     {#snippet icon()}
       <span data-testid="menuitem-icon">*</span>
     {/snippet}
   </MenuItem>
 {:else}
-  <MenuItem {label} {kbd} {checked} {disabled} {onSelect} {variant} />
+  <MenuItem {label} {kbd} {suffix} {title} {checked} {disabled} {onSelect} {variant} />
 {/if}

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/testutil"
 )
 
 // Smoke tests for the per-field thread update bindings. These sit at the
@@ -198,17 +199,61 @@ func TestUpdateThreadBranchAndWorkspace(t *testing.T) {
 		t.Fatalf("Branch = %q, want feat/abc", updated.Branch)
 	}
 
-	updated, err = app.UpdateThreadWorkspace(thread.ID, "/tmp/alt-workspace")
-	if err != nil {
-		t.Fatalf("UpdateThreadWorkspace: %v", err)
-	}
-	if updated.WorkspacePath != "/tmp/alt-workspace" {
-		t.Fatalf("WorkspacePath = %q, want /tmp/alt-workspace", updated.WorkspacePath)
-	}
-
 	if _, err := app.UpdateThreadWorkspace(thread.ID, ""); err == nil ||
 		!strings.Contains(err.Error(), "path is required") {
 		t.Fatalf("UpdateThreadWorkspace(empty) error = %v, want 'path is required'", err)
+	}
+}
+
+func TestUpdateThreadWorkspaceSwitchesRegisteredWorktree(t *testing.T) {
+	app := newTestAppWithStore(t)
+	repo := testutil.InitGitRepo(t)
+	project, err := app.ensureProjectForWorkspace(repo)
+	if err != nil {
+		t.Fatalf("ensureProjectForWorkspace() error = %v", err)
+	}
+	thread := testThread("thread-workspace-switch")
+	thread.ProjectID = project.ID
+	thread.WorkspacePath = repo
+	thread.Branch = "main"
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+
+	worktreePath, err := app.GitCreateWorktree(thread.ID, "feature/workspace")
+	if err != nil {
+		t.Fatalf("GitCreateWorktree() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = app.gitCore().RemoveWorktreeForce(repo, worktreePath, true)
+	})
+
+	updated, err := app.UpdateThreadWorkspace(thread.ID, repo)
+	if err != nil {
+		t.Fatalf("UpdateThreadWorkspace(repo) error = %v", err)
+	}
+	if updated.WorktreePath != "" {
+		t.Fatalf("WorktreePath after root switch = %q, want empty", updated.WorktreePath)
+	}
+	if !samePath(updated.WorkspacePath, repo) {
+		t.Fatalf("WorkspacePath after root switch = %q, want %q", updated.WorkspacePath, repo)
+	}
+	if updated.Branch != "main" {
+		t.Fatalf("Branch after root switch = %q, want main", updated.Branch)
+	}
+
+	updated, err = app.UpdateThreadWorkspace(thread.ID, worktreePath)
+	if err != nil {
+		t.Fatalf("UpdateThreadWorkspace(worktree) error = %v", err)
+	}
+	if !samePath(updated.WorkspacePath, worktreePath) {
+		t.Fatalf("WorkspacePath after worktree switch = %q, want %q", updated.WorkspacePath, worktreePath)
+	}
+	if !samePath(updated.WorktreePath, worktreePath) {
+		t.Fatalf("WorktreePath after worktree switch = %q, want %q", updated.WorktreePath, worktreePath)
+	}
+	if updated.Branch != "feature/workspace" {
+		t.Fatalf("Branch after worktree switch = %q, want feature/workspace", updated.Branch)
 	}
 }
 

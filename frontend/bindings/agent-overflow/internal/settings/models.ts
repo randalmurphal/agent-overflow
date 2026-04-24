@@ -49,6 +49,21 @@ export class Settings {
     "defaultRuntimeMode": string;
 
     /**
+     * DefaultThreadEnvMode seeds the workspace mode for new draft threads.
+     * Accepts "local" or "worktree"; unknown values fall back to "local"
+     * when settings are loaded.
+     */
+    "defaultThreadEnvMode": string;
+
+    /**
+     * WorktreeBranchPrefix is prepended to auto-generated temporary and
+     * semantic worktree branch names. It is intentionally flat (default
+     * "ao-") rather than namespace-like ("ao/") so generated branches
+     * read like normal feature branches.
+     */
+    "worktreeBranchPrefix": string;
+
+    /**
      * DefaultReasoningEffort is the effort tier seeded on every new
      * thread. Accepts the five values the provider package exposes
      * (low / medium / high / xhigh / max); unknown values coerce to
@@ -175,6 +190,12 @@ export class Settings {
         }
         if (!("defaultRuntimeMode" in $$source)) {
             this["defaultRuntimeMode"] = "";
+        }
+        if (!("defaultThreadEnvMode" in $$source)) {
+            this["defaultThreadEnvMode"] = "";
+        }
+        if (!("worktreeBranchPrefix" in $$source)) {
+            this["worktreeBranchPrefix"] = "";
         }
         if (!("defaultReasoningEffort" in $$source)) {
             this["defaultReasoningEffort"] = "";

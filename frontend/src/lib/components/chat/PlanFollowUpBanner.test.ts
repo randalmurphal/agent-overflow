@@ -3,7 +3,7 @@ import { fireEvent, render } from '@testing-library/svelte';
 import PlanFollowUpBanner from './PlanFollowUpBanner.svelte';
 import { createComposerDraftStore } from '../../stores/composerDraft.svelte';
 import { buildPane, makeItem } from '../../../test/helpers/chat';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { getBindingMock, resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { installAnimateShim } from '../../../test/integration/_helpers';
 
 beforeAll(installAnimateShim);
@@ -15,6 +15,7 @@ describe('<PlanFollowUpBanner>', () => {
     setBindingMock('ListAttachments', async () => []);
     setBindingMock('SaveDraft', async () => {});
     setBindingMock('ClearDraft', async () => {});
+    setBindingMock('UpdateThreadMode', async () => ({}));
   });
 
   it('shows for the latest proposed-plan payload item and seeds the implement prompt', async () => {
@@ -38,6 +39,38 @@ describe('<PlanFollowUpBanner>', () => {
     await fireEvent.click(getByTestId('plan-followup-implement'));
 
     expect(draft.content).toBe('Please implement the plan above.');
+  });
+
+  it('switches plan-mode threads back to chat when implementing', async () => {
+    const thread = {
+      id: 'thread-1',
+      title: 'Test thread',
+      provider: 'claude' as const,
+      workspacePath: '/tmp/workspace',
+      projectPath: '/tmp/workspace',
+      mode: 'plan' as const,
+      model: 'claude-sonnet-4-6',
+      createdAt: 0,
+      updatedAt: 0,
+      archived: false,
+    };
+    const updated = { ...thread, mode: 'chat' as const };
+    const pane = await buildPane(thread, [
+      makeItem({
+        id: 'plan-1',
+        kind: 'tool_call',
+        payloadId: 'plan-payload',
+        payloadKind: 'proposed_plan',
+      }),
+    ]);
+    const draft = createComposerDraftStore();
+    setBindingMock('UpdateThreadMode', async () => updated);
+
+    const { getByTestId } = render(PlanFollowUpBanner, { props: { pane, draft } });
+    await fireEvent.click(getByTestId('plan-followup-implement'));
+
+    expect(getBindingMock('UpdateThreadMode')!.mock.calls[0]).toEqual(['thread-1', 'chat']);
+    expect(pane.thread?.mode).toBe('chat');
   });
 
   it('hides after dismissing the latest plan item', async () => {

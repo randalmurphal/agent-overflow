@@ -22,6 +22,8 @@ const FULL_SETTINGS: Settings = {
   codexEnabled: false,
   defaultMode: 'chat',
   defaultRuntimeMode: 'full-access',
+  defaultThreadEnvMode: 'local',
+  worktreeBranchPrefix: 'ao-',
   defaultReasoningEffort: 'high',
   defaultFastMode: false,
   defaultContextWindow: 1000000,

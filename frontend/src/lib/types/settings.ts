@@ -21,6 +21,8 @@ export type ThreadMode = 'chat' | 'plan' | 'design' | 'discussion';
 
 export type RuntimeMode = 'approval-required' | 'auto-accept-edits' | 'full-access';
 
+export type ThreadEnvMode = 'local' | 'worktree';
+
 export interface Settings {
   theme: 'system' | 'light' | 'dark';
   timestampFormat: 'locale' | '12-hour' | '24-hour';
@@ -42,6 +44,10 @@ export interface Settings {
   defaultMode: ThreadMode;
   /** Seeds the per-thread runtime permissions mode. */
   defaultRuntimeMode: RuntimeMode;
+  /** Seeds whether new draft threads start on the current checkout or a new worktree. */
+  defaultThreadEnvMode: ThreadEnvMode;
+  /** Prefix used for auto-generated worktree branch names. */
+  worktreeBranchPrefix: string;
   /** Seeds the per-thread reasoning-effort tier. */
   defaultReasoningEffort: ReasoningEffort;
   /** Seeds the per-thread fast-mode toggle. */

@@ -553,15 +553,16 @@ export class ProjectWithCounts {
 /**
  * Thread represents a conversation thread.
  * 
- * The shape changed at migration v13: ProjectPath is gone (replaced by the
- * ProjectID FK to the projects table), InteractionMode is renamed to Mode,
- * and three new per-thread composer controls (ReasoningEffort, FastMode,
- * ContextWindow) are persisted so two threads sharing a project can
- * diverge on these axes.
+ * The shape changed at migration v13: ProjectPath is no longer persisted on
+ * threads (ProjectID is the FK to the projects table), InteractionMode is
+ * renamed to Mode, and three new per-thread composer controls
+ * (ReasoningEffort, FastMode, ContextWindow) are persisted so two threads
+ * sharing a project can diverge on these axes.
  */
 export class Thread {
     "id": string;
     "projectId": string;
+    "projectPath": string;
     "title": string;
     "provider": string;
     "model": string;
@@ -614,6 +615,9 @@ export class Thread {
         }
         if (!("projectId" in $$source)) {
             this["projectId"] = "";
+        }
+        if (!("projectPath" in $$source)) {
+            this["projectPath"] = "";
         }
         if (!("title" in $$source)) {
             this["title"] = "";

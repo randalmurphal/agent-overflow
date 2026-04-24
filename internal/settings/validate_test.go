@@ -41,6 +41,22 @@ func TestUpdateRejectsInvalidEnumeratedValues(t *testing.T) {
 			name:  "textGenerationReasoningEffort",
 			patch: map[string]any{"textGenerationReasoningEffort": "turbo"},
 		},
+		{
+			name:  "defaultThreadEnvMode",
+			patch: map[string]any{"defaultThreadEnvMode": "remote"},
+		},
+		{
+			name:  "worktreeBranchPrefixSlash",
+			patch: map[string]any{"worktreeBranchPrefix": "ao/"},
+		},
+		{
+			name:  "worktreeBranchPrefixEmpty",
+			patch: map[string]any{"worktreeBranchPrefix": "   "},
+		},
+		{
+			name:  "worktreeBranchPrefixDot",
+			patch: map[string]any{"worktreeBranchPrefix": ".ao-"},
+		},
 	}
 
 	for _, tc := range testCases {
@@ -63,6 +79,8 @@ func TestGetSanitizesInvalidLoadedValues(t *testing.T) {
   "defaultModelCodex": "",
   "claudeBinaryPath": " /custom/claude ",
   "codexBinaryPath": "   ",
+  "defaultThreadEnvMode": "remote",
+  "worktreeBranchPrefix": "bad/prefix",
   "recentWorkspaces": ["", " /tmp/one ", "/tmp/one", "/tmp/two"]
 }
 `)
@@ -92,6 +110,12 @@ func TestGetSanitizesInvalidLoadedValues(t *testing.T) {
 	}
 	if got.CodexBinaryPath != DefaultSettings.CodexBinaryPath {
 		t.Fatalf("CodexBinaryPath = %q, want %q", got.CodexBinaryPath, DefaultSettings.CodexBinaryPath)
+	}
+	if got.DefaultThreadEnvMode != DefaultSettings.DefaultThreadEnvMode {
+		t.Fatalf("DefaultThreadEnvMode = %q, want %q", got.DefaultThreadEnvMode, DefaultSettings.DefaultThreadEnvMode)
+	}
+	if got.WorktreeBranchPrefix != DefaultSettings.WorktreeBranchPrefix {
+		t.Fatalf("WorktreeBranchPrefix = %q, want %q", got.WorktreeBranchPrefix, DefaultSettings.WorktreeBranchPrefix)
 	}
 	if len(got.RecentWorkspaces) != 2 {
 		t.Fatalf("len(RecentWorkspaces) = %d, want 2", len(got.RecentWorkspaces))

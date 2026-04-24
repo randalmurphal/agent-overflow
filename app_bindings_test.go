@@ -129,6 +129,9 @@ func TestCreateThreadDetectsGitProjectPath(t *testing.T) {
 	if !samePath(project.Path, repo) {
 		t.Fatalf("returned project.Path = %q, want %q", project.Path, repo)
 	}
+	if !samePath(thread.ProjectPath, repo) {
+		t.Fatalf("returned thread.ProjectPath = %q, want %q", thread.ProjectPath, repo)
+	}
 
 	stored, err := app.store.GetThread(thread.ID)
 	if err != nil {
@@ -136,6 +139,9 @@ func TestCreateThreadDetectsGitProjectPath(t *testing.T) {
 	}
 	if stored.ProjectID != project.ID {
 		t.Fatalf("stored ProjectID = %q, want %q", stored.ProjectID, project.ID)
+	}
+	if !samePath(stored.ProjectPath, repo) {
+		t.Fatalf("stored ProjectPath = %q, want %q", stored.ProjectPath, repo)
 	}
 }
 

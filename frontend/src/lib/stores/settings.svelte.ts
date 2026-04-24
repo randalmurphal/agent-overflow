@@ -25,6 +25,8 @@ const DEFAULT_SETTINGS: Settings = {
   // overridden by a caller.
   defaultMode: 'chat',
   defaultRuntimeMode: 'full-access',
+  defaultThreadEnvMode: 'local',
+  worktreeBranchPrefix: 'ao-',
   defaultReasoningEffort: 'high',
   defaultFastMode: false,
   defaultContextWindow: 1000000,

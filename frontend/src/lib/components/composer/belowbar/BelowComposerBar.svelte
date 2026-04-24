@@ -7,12 +7,15 @@
   import type { ThreadPane } from '../../../stores/thread.svelte';
   import EnvPicker from './EnvPicker.svelte';
   import BranchPicker from './BranchPicker.svelte';
+  import WorktreeNameInput from './WorktreeNameInput.svelte';
+  import { createWorkspaceChangeLockState } from '../../../stores/workspaceChangeLock.svelte';
 
   interface Props {
     pane: ThreadPane;
   }
 
   let { pane }: Props = $props();
+  let workspaceLock = createWorkspaceChangeLockState(() => pane);
 </script>
 
 {#if pane.thread}
@@ -20,7 +23,10 @@
     class="flex items-center justify-between gap-2 px-4 py-1.5 text-[11px] text-text-secondary"
     data-testid="below-composer-bar"
   >
-    <EnvPicker {pane} />
-    <BranchPicker {pane} />
+    <div class="flex min-w-0 items-center gap-2">
+      <EnvPicker {pane} {workspaceLock} />
+      <WorktreeNameInput {pane} />
+    </div>
+    <BranchPicker {pane} {workspaceLock} />
   </div>
 {/if}

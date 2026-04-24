@@ -6,7 +6,11 @@
 // store for state changes. Keeping this pure functional makes the send
 // path easy to trace from the click handler all the way to SendMessage.
 
-import { InterruptTurn, SendMessageWithOptions } from '../../stores/bindings';
+import {
+  InterruptTurn,
+  PrepareThreadWorktree,
+  SendMessageWithOptions,
+} from '../../stores/bindings';
 import type { Attachment } from '../../types/attachment';
 import type { TerminalChip } from '../../types/draft';
 import { addToast } from '../../stores/toast.svelte';
@@ -30,6 +34,10 @@ import {
   hasRuntimeModeDraft,
   runtimeModeForThread,
 } from '../../stores/runtimeModeDraft.svelte';
+import {
+  clearWorktreeIntent,
+  worktreeIntentForThread,
+} from '../../stores/worktreeIntent.svelte';
 
 export interface SendOptions {
   threadId: string;
@@ -47,6 +55,8 @@ export interface SendOptions {
   restoreDraft: (threadId: string, snapshot: SendOptions['snapshot']) => Promise<void>;
   draftThreadId: () => string | null;
   reportError: (message: string) => void;
+  onWorktreePrepareStarted?: () => void;
+  onWorktreePrepareFinished?: () => void;
 }
 
 /**
@@ -56,30 +66,52 @@ export interface SendOptions {
  * flight state — this function intentionally knows nothing about it.
  */
 export async function dispatchSend(opts: SendOptions): Promise<void> {
-  // Promote a draft thread to the sidebar the moment the user hits send —
-  // not after the backend confirms delivery. A failed send leaves the
-  // thread visible. Clear the draft-thread pointer so a follow-up "New
-  // Thread" for the same project spins up a fresh draft.
-  const draftProjectId = findDraftProjectId(opts.threadId);
-  if (draftProjectId) {
-    if (opts.currentThread && !getThreadById(opts.threadId)) {
-      prependThread(opts.currentThread);
-    }
-    clearProjectDraft(draftProjectId);
-  }
-
-  // Optimistically flip the sidebar pill to Working the moment the
-  // user clicks Send. Provider sessions for brand-new threads take
-  // seconds to cold-start before the backend emits `turn_started`;
-  // without this, the row would sit idle for that whole window while
-  // the agent is clearly "working" from the user's POV. Cleared by
-  // applyTurnStarted (takeover on real backend signal) or by the
-  // catch branch below if SendMessage itself rejects.
-  projectSendStarted(opts.threadId);
-
+  let sendStarted = false;
   try {
-    const runtimeMode = opts.currentThread?.id === opts.threadId && hasRuntimeModeDraft(opts.currentThread)
-      ? runtimeModeForThread(opts.currentThread)
+    let threadForSend = opts.currentThread;
+    const worktreeIntent = worktreeIntentForThread(threadForSend);
+    if (threadForSend && worktreeIntent.mode === 'new-worktree') {
+      opts.onWorktreePrepareStarted?.();
+      let updated: Thread;
+      try {
+        updated = (await PrepareThreadWorktree(
+          opts.threadId,
+          worktreeIntent.baseBranch,
+          worktreeIntent.branchName,
+        )) as Thread;
+      } finally {
+        opts.onWorktreePrepareFinished?.();
+      }
+      threadForSend = updated;
+      opts.replaceCurrentThread(updated);
+      replaceThread(updated);
+      clearWorktreeIntent(opts.threadId);
+    }
+
+    // Promote a draft thread to the sidebar the moment the user hits send —
+    // not after the backend confirms delivery. A failed send leaves the
+    // thread visible. Clear the draft-thread pointer so a follow-up "New
+    // Thread" for the same project spins up a fresh draft.
+    const draftProjectId = findDraftProjectId(opts.threadId);
+    if (draftProjectId) {
+      if (threadForSend && !getThreadById(opts.threadId)) {
+        prependThread(threadForSend);
+      }
+      clearProjectDraft(draftProjectId);
+    }
+
+    // Optimistically flip the sidebar pill to Working the moment the
+    // user clicks Send. Provider sessions for brand-new threads take
+    // seconds to cold-start before the backend emits `turn_started`;
+    // without this, the row would sit idle for that whole window while
+    // the agent is clearly "working" from the user's POV. Cleared by
+    // applyTurnStarted (takeover on real backend signal) or by the
+    // catch branch below if SendMessage itself rejects.
+    projectSendStarted(opts.threadId);
+    sendStarted = true;
+
+    const runtimeMode = threadForSend?.id === opts.threadId && hasRuntimeModeDraft(threadForSend)
+      ? runtimeModeForThread(threadForSend)
       : undefined;
     const sendOptions: { attachmentIds: string[]; runtimeMode?: string } = {
       attachmentIds: opts.attachmentIds,
@@ -93,7 +125,9 @@ export async function dispatchSend(opts: SendOptions): Promise<void> {
     console.error('Failed to send message:', err);
     // Flip to error so the sidebar pill reads "Error" — the user
     // should see the failure without having to open the thread.
-    projectSendResolved(opts.threadId, { error: true });
+    if (sendStarted) {
+      projectSendResolved(opts.threadId, { error: true });
+    }
     // restoreDraft always persists to the captured thread; it only touches
     // the local draft store if it's still on that thread. If the user has
     // moved on, surface a toast so the failed send is visible rather than

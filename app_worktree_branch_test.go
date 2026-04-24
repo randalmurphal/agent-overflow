@@ -12,7 +12,7 @@ import (
 )
 
 // TestMaybeRenameTemporaryWorktreeBranchRenamesOnFirstMessage covers the
-// happy path: a thread with a temporary forge/<8-hex> branch in a real
+// happy path: a thread with a temporary ao-<8-hex> branch in a real
 // worktree is renamed to a descriptive target derived from the user message.
 func TestMaybeRenameTemporaryWorktreeBranchRenamesOnFirstMessage(t *testing.T) {
 	app := newTestAppWithStore(t)
@@ -54,8 +54,8 @@ func TestMaybeRenameTemporaryWorktreeBranchRenamesOnFirstMessage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetThread() error = %v", err)
 	}
-	if stored.Branch != "forge/describe-the-work" {
-		t.Fatalf("stored Branch = %q, want forge/describe-the-work", stored.Branch)
+	if stored.Branch != "ao-describe-the-work" {
+		t.Fatalf("stored Branch = %q, want ao-describe-the-work", stored.Branch)
 	}
 
 	// The actual worktree head should agree.
@@ -63,8 +63,8 @@ func TestMaybeRenameTemporaryWorktreeBranchRenamesOnFirstMessage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("rev-parse error = %v", err)
 	}
-	if strings.TrimSpace(status) != "forge/describe-the-work" {
-		t.Fatalf("worktree HEAD branch = %q, want forge/describe-the-work", strings.TrimSpace(status))
+	if strings.TrimSpace(status) != "ao-describe-the-work" {
+		t.Fatalf("worktree HEAD branch = %q, want ao-describe-the-work", strings.TrimSpace(status))
 	}
 }
 
@@ -95,7 +95,7 @@ func TestMaybeRenameTemporaryWorktreeBranchSkipsNonWorktreeThread(t *testing.T) 
 }
 
 // TestMaybeRenameTemporaryWorktreeBranchSkipsNonTemporaryBranch ensures we
-// don't overwrite an already-descriptive branch name. Only the forge/<8-hex>
+// don't overwrite an already-descriptive branch name. Only the ao-<8-hex>
 // placeholder is a rename candidate.
 func TestMaybeRenameTemporaryWorktreeBranchSkipsNonTemporaryBranch(t *testing.T) {
 	app := newTestAppWithStore(t)
@@ -179,7 +179,7 @@ func TestMaybeRenameTemporaryWorktreeBranchGeneratorErrorIsNonFatal(t *testing.T
 
 // TestMaybeRenameTemporaryWorktreeBranchFallsBackOnEmptyMessage confirms the
 // branchNameFromUserMessage fallback ("update") kicks in when the user
-// message has no usable words — and gets wrapped to "forge/update".
+// message has no usable words and gets wrapped to "ao-update".
 func TestMaybeRenameTemporaryWorktreeBranchFallsBackOnEmptyMessage(t *testing.T) {
 	app := newTestAppWithStore(t)
 	repo := testutil.InitGitRepo(t)
@@ -208,8 +208,8 @@ func TestMaybeRenameTemporaryWorktreeBranchFallsBackOnEmptyMessage(t *testing.T)
 	if err != nil {
 		t.Fatalf("GetThread() error = %v", err)
 	}
-	if stored.Branch != "forge/update" {
-		t.Fatalf("stored Branch = %q, want forge/update", stored.Branch)
+	if stored.Branch != "ao-update" {
+		t.Fatalf("stored Branch = %q, want ao-update", stored.Branch)
 	}
 }
 
@@ -251,8 +251,8 @@ func TestMaybeRenameTemporaryWorktreeBranchIsIdempotentWhenSkipped(t *testing.T)
 	if err != nil {
 		t.Fatalf("GetThread() error = %v", err)
 	}
-	if stored.Branch != "forge/first-rename" {
-		t.Fatalf("branch after first rename = %q, want forge/first-rename", stored.Branch)
+	if stored.Branch != "ao-first-rename" {
+		t.Fatalf("branch after first rename = %q, want ao-first-rename", stored.Branch)
 	}
 
 	// Second call should short-circuit inside the "not temporary" gate.
@@ -265,7 +265,7 @@ func TestMaybeRenameTemporaryWorktreeBranchIsIdempotentWhenSkipped(t *testing.T)
 	if err != nil {
 		t.Fatalf("GetThread() error = %v", err)
 	}
-	if stored.Branch != "forge/first-rename" {
+	if stored.Branch != "ao-first-rename" {
 		t.Fatalf("branch after second call = %q, want preserved", stored.Branch)
 	}
 }

@@ -108,6 +108,9 @@ func TestCreateAndGetThreadRoundTrip(t *testing.T) {
 	if got.WorkspacePath != thr.WorkspacePath {
 		t.Errorf("WorkspacePath: got %q, want %q", got.WorkspacePath, thr.WorkspacePath)
 	}
+	if got.ProjectPath != "/tmp/test" {
+		t.Errorf("ProjectPath: got %q, want /tmp/test", got.ProjectPath)
+	}
 	if got.Model != thr.Model {
 		t.Errorf("Model: got %q, want %q", got.Model, thr.Model)
 	}

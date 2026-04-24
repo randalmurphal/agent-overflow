@@ -175,6 +175,7 @@ func (a *App) CreateThreadFromPR(
 	thread := store.Thread{
 		ID:            uuid.NewString(),
 		ProjectID:     project.ID,
+		ProjectPath:   project.Path,
 		Title:         title,
 		Provider:      providerName,
 		WorkspacePath: workspace,

@@ -22,6 +22,7 @@
     getProjectDraft,
     setProjectDraft,
   } from '../../stores/draftThreads.svelte';
+  import { seedDefaultWorktreeIntentForDraft } from '../../stores/worktreeIntent.svelte';
   import ArrowDownUp from 'lucide-svelte/icons/arrow-down-up';
   import Plus from 'lucide-svelte/icons/plus';
   import IconButton from '../primitives/IconButton.svelte';
@@ -132,6 +133,7 @@
       // first SendMessage promotes it (lazy session start in
       // app_send.go; sidebar prepend in Composer.send()).
       const thread = (await CreateThread({ projectId })) as Thread;
+      seedDefaultWorktreeIntentForDraft(thread);
       setProjectDraft(projectId, thread);
       await pane.switchThread(thread);
     } catch (err) {

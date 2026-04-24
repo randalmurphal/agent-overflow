@@ -2,6 +2,11 @@
   import { slide } from 'svelte/transition';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import type { ComposerDraftStore } from '../../stores/composerDraft.svelte';
+  import type { Thread } from '../../types/models';
+  import { UpdateThreadMode } from '../../stores/bindings';
+  import { replaceThread } from '../../stores/threads.svelte';
+  import { addToast } from '../../stores/toast.svelte';
+  import { errString } from '../../utils/errors';
   import Button from '../primitives/Button.svelte';
 
   interface Props {
@@ -33,11 +38,24 @@
     latestPlanItemId !== null && dismissedPlanItemId !== latestPlanItemId,
   );
 
-  function handleImplement() {
+  async function switchPlanThreadToChat(): Promise<void> {
+    if (!pane.thread || pane.thread.mode !== 'plan') return;
+    try {
+      const updated = (await UpdateThreadMode(pane.thread.id, 'chat')) as Thread;
+      pane.replaceThread(updated);
+      replaceThread(updated);
+    } catch (err) {
+      console.error('PlanFollowUpBanner: UpdateThreadMode failed:', err);
+      addToast('error', `Failed to switch to chat mode: ${errString(err)}`);
+    }
+  }
+
+  async function handleImplement() {
     // Pre-fill without auto-send so the user can still edit before firing.
     const current = draft.content.trim();
     const next = current.length > 0 ? `${draft.content}\n\n${IMPLEMENT_PROMPT}` : IMPLEMENT_PROMPT;
     draft.setContent(next);
+    await switchPlanThreadToChat();
   }
 
   function handleReview() {
@@ -73,7 +91,7 @@
     <Button
       variant="tinted"
       size="xs"
-      onclick={handleImplement}
+      onclick={() => void handleImplement()}
       testId="plan-followup-implement"
     >
       {#snippet children()}Implement{/snippet}

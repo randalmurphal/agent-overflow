@@ -801,6 +801,17 @@ export function PostChannelMessage(channelID: string, content: string): $Cancell
 }
 
 /**
+ * PrepareThreadWorktree creates a new worktree from baseBranch, switches the
+ * thread to it, and returns the updated thread. requestedBranch is optional:
+ * blank means "create a temporary auto branch using the configured prefix".
+ */
+export function PrepareThreadWorktree(threadID: string, baseBranch: string, requestedBranch: string): $CancellablePromise<store$0.Thread> {
+    return $Call.ByID(2870364785, threadID, baseBranch, requestedBranch).then(($result: any) => {
+        return $$createType2($result);
+    });
+}
+
+/**
  * ProbeClaudeAccount spawns a short-lived Claude CLI subprocess with
  * `--max-turns 0` and returns the authenticated account metadata from
  * the emitted `system/init` message. Results are cached per binary path
@@ -1117,9 +1128,9 @@ export function UpdateSettings(patch: { [_ in string]?: any }): $CancellableProm
 
 /**
  * UpdateThreadBranch persists the branch column. Does NOT perform the
- * git checkout — that flow lives in GitCheckout. This binding exists
- * because the EnvPicker in the new UI needs to attach a branch string
- * to a thread without forcing a checkout.
+ * git checkout — that flow lives in GitCheckout. Kept as a narrow metadata
+ * binding for callers that need to repair/import thread state without touching
+ * the repository checkout.
  */
 export function UpdateThreadBranch(id: string, branch: string): $CancellablePromise<store$0.Thread> {
     return $Call.ByID(2929723500, id, branch).then(($result: any) => {

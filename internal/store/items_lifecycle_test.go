@@ -1304,6 +1304,26 @@ func TestListRunningBackgroundToolCallsFiltersCorrectly(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed skip-running-non-tool: %v", err)
 	}
+	// Seed (should NOT match): background launch that has a completion
+	// sibling. Background launches stay status=running by design, but the
+	// sibling is the settled-state marker.
+	if _, err := s.AppendItem(Item{
+		ID: "skip-settled-bg", ThreadID: "t-reconcile", TurnIndex: 1,
+		Kind: "tool_call", Role: "assistant", Status: "running",
+		IsBackground: true, Summary: "Bash: settled", ToolName: "Bash",
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed skip-settled-bg: %v", err)
+	}
+	if _, err := s.AppendItem(Item{
+		ID: "skip-settled-bg-complete", ThreadID: "t-reconcile", TurnIndex: 2,
+		Kind: "tool_completion", Role: "assistant", Status: "completed",
+		IsBackground: true, CompletionOf: "skip-settled-bg",
+		Summary: "Bash: settled complete", ToolName: "Bash",
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed skip-settled-bg-complete: %v", err)
+	}
 	// Seed a second running bg on a different thread — must NOT come
 	// back when scoping to t-reconcile.
 	if err := s.CreateThread(Thread{

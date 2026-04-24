@@ -99,6 +99,7 @@ func buildDiscussionParticipantPlans(
 		child := store.Thread{
 			ID:             uuid.NewString(),
 			ProjectID:      parent.ProjectID,
+			ProjectPath:    parent.ProjectPath,
 			Title:          fmt.Sprintf("%s - %s", parent.Title, formatDiscussionRole(role)),
 			Provider:       providerName,
 			WorkspacePath:  parent.WorkspacePath,

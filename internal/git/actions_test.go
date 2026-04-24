@@ -216,6 +216,19 @@ func TestCheckoutRejectsInvalidBranchName(t *testing.T) {
 	}
 }
 
+func TestCheckoutRejectsInvalidLocalNameDerivedFromRemote(t *testing.T) {
+	repo := testutil.InitGitRepo(t)
+	core := NewCore()
+
+	testutil.RunGit(t, repo, "remote", "add", "origin", repo)
+	testutil.RunGit(t, repo, "update-ref", "refs/heads/-f", "HEAD")
+
+	err := core.Checkout(repo, "origin/-f")
+	if err == nil || !strings.Contains(err.Error(), "must not start with -") {
+		t.Fatalf("Checkout(origin/-f) error = %v, want invalid local branch rejection", err)
+	}
+}
+
 func TestCreateBranchRejectsInvalidName(t *testing.T) {
 	repo := testutil.InitGitRepo(t)
 	core := NewCore()

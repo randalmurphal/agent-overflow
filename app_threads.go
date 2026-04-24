@@ -6,7 +6,6 @@ import (
 	"strings"
 	"time"
 
-	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 
@@ -110,11 +109,15 @@ func (a *App) CreateThread(opts CreateThreadOptions) (store.Thread, error) {
 		worktreePath = wtPath
 		branch = wtBranch
 	}
+	if branch == "" {
+		branch = currentGitBranch(a.gitCore(), workspace)
+	}
 
 	now := time.Now().UnixMilli()
 	t := store.Thread{
 		ID:              uuid.New().String(),
 		ProjectID:       project.ID,
+		ProjectPath:     project.Path,
 		Title:           "New Thread",
 		Provider:        providerName,
 		WorkspacePath:   workspace,
@@ -135,19 +138,20 @@ func (a *App) CreateThread(opts CreateThreadOptions) (store.Thread, error) {
 	if a.settings != nil {
 		a.settings.AddRecentWorkspace(workspace)
 	}
-	return t, nil
+	return a.store.GetThread(t.ID)
 }
 
 // createWorktreeForNewThread is the small helper CreateThread uses when
 // WorktreeBranch is non-empty. Extracted from CreateThread so the inline
 // logic there stays focused on building the Thread row.
 func (a *App) createWorktreeForNewThread(projectPath, branch string) (string, string, error) {
-	resolvedBranch := strings.TrimSpace(branch)
-	if resolvedBranch == "" {
-		resolvedBranch = gitops.BuildTemporaryWorktreeBranchName()
+	resolvedBranch := a.resolveWorktreeBranch(branch)
+	worktreePath, err := a.defaultWorktreePath(projectPath, resolvedBranch)
+	if err != nil {
+		return "", "", err
 	}
-	worktreePath := defaultWorktreePath(projectPath, resolvedBranch)
-	if err := a.gitCore().CreateWorktree(projectPath, worktreePath, resolvedBranch); err != nil {
+	baseBranch := currentGitBranch(a.gitCore(), projectPath)
+	if err := a.gitCore().CreateWorktreeFromBranch(projectPath, worktreePath, baseBranch, resolvedBranch); err != nil {
 		return "", "", err
 	}
 	return worktreePath, resolvedBranch, nil
@@ -507,9 +511,9 @@ func (a *App) UpdateThreadRuntimeMode(id, mode string) (store.Thread, error) {
 }
 
 // UpdateThreadBranch persists the branch column. Does NOT perform the
-// git checkout — that flow lives in GitCheckout. This binding exists
-// because the EnvPicker in the new UI needs to attach a branch string
-// to a thread without forcing a checkout.
+// git checkout — that flow lives in GitCheckout. Kept as a narrow metadata
+// binding for callers that need to repair/import thread state without touching
+// the repository checkout.
 func (a *App) UpdateThreadBranch(id, branch string) (store.Thread, error) {
 	if a.store == nil {
 		return store.Thread{}, fmt.Errorf("update branch: store unavailable")
@@ -525,15 +529,5 @@ func (a *App) UpdateThreadBranch(id, branch string) (store.Thread, error) {
 // without creating the worktree itself. Restarts the session if one is
 // live because the provider CWD is part of its launch config.
 func (a *App) UpdateThreadWorkspace(id, path string) (store.Thread, error) {
-	if a.store == nil {
-		return store.Thread{}, fmt.Errorf("update workspace: store unavailable")
-	}
-	normalized := strings.TrimSpace(path)
-	if normalized == "" {
-		return store.Thread{}, fmt.Errorf("update workspace: path is required")
-	}
-	if err := a.store.UpdateWorkspacePath(id, normalized); err != nil {
-		return store.Thread{}, err
-	}
-	return a.restartSessionIfAffected(id, "workspace")
+	return a.switchThreadWorkspace(id, path)
 }

@@ -134,6 +134,7 @@ export const GitCheckout = dispatch('GitCheckout');
 export const GitCreateBranch = dispatch('GitCreateBranch');
 export const GitCreatePR = dispatch('GitCreatePR');
 export const GitCreateWorktree = dispatch('GitCreateWorktree');
+export const PrepareThreadWorktree = dispatch('PrepareThreadWorktree');
 export const GitRemoveWorktree = dispatch('GitRemoveWorktree');
 
 export const ListDiscussions = dispatch('ListDiscussions');

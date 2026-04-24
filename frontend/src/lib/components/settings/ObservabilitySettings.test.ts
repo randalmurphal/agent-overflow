@@ -24,6 +24,8 @@ const BASE_SETTINGS: Settings = {
   codexEnabled: true,
   defaultMode: 'chat',
   defaultRuntimeMode: 'full-access',
+  defaultThreadEnvMode: 'local',
+  worktreeBranchPrefix: 'ao-',
   defaultReasoningEffort: 'high',
   defaultFastMode: false,
   defaultContextWindow: 1000000,

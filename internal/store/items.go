@@ -901,11 +901,12 @@ func (s *Store) ForceCloseRunningToolCallsInTurn(
 }
 
 // ListRunningBackgroundToolCalls returns every still-`running` +
-// `is_background=1` `tool_call` row for the given thread. The on-reopen
-// Codex reconciler uses it to scope its flip when the probe reports a
-// systemError — those are the only rows whose disposition is uncertain
-// after a session restart (inline tool calls complete or error in the
-// same turn; non-running rows are already settled).
+// `is_background=1` `tool_call` row with no completion sibling for the
+// given thread. The on-reopen Codex reconciler uses it to scope its flip
+// when the probe reports a systemError — those are the only rows whose
+// disposition is uncertain after a session restart (inline tool calls
+// complete or error in the same turn; background rows with completion
+// siblings are already settled).
 //
 // The filter pushes down into SQLite (vs. fetching ListItems and
 // filtering in Go) so threads with deep history don't pay the
@@ -921,6 +922,11 @@ func (s *Store) ListRunningBackgroundToolCalls(threadID string) ([]Item, error) 
 		    AND items.kind = 'tool_call'
 		    AND items.status = 'running'
 		    AND items.is_background = 1
+		    AND NOT EXISTS (
+		      SELECT 1 FROM items c
+		       WHERE c.thread_id = items.thread_id
+		         AND c.completion_of = items.id
+		    )
 		  ORDER BY items.turn_index, items.item_index`,
 		threadID,
 	)

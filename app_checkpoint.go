@@ -275,8 +275,5 @@ func (a *App) checkpointStore() *checkpoint.Store {
 // checkpointWorkspaceForThread picks the right directory to snapshot. Mirrors
 // the helper in internal/triage so backend and binding code agree.
 func checkpointWorkspaceForThread(t store.Thread) string {
-	if t.WorktreePath != "" {
-		return t.WorktreePath
-	}
 	return t.WorkspacePath
 }

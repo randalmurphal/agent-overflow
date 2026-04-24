@@ -69,6 +69,7 @@ export {
   GitCreatePR,
   GitCreateWorktree,
   GitRemoveWorktree,
+  PrepareThreadWorktree,
 
   // Terminal operations
   CloseTerminal,

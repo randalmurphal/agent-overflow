@@ -17,8 +17,10 @@
     description?: string;
     icon?: Snippet;
     kbd?: string;
+    suffix?: string;
     checked?: boolean;
     disabled?: boolean;
+    title?: string;
     onSelect?: () => void;
     variant?: 'default' | 'danger';
   }
@@ -28,8 +30,10 @@
     description,
     icon,
     kbd,
+    suffix,
     checked = false,
     disabled = false,
+    title,
     onSelect,
     variant = 'default',
   }: Props = $props();
@@ -80,6 +84,7 @@
   data-menuitem
   data-disabled={disabled ? 'true' : undefined}
   tabindex={-1}
+  title={title}
   onclick={handleClick}
   onkeydown={handleKeydown}
   class={[
@@ -111,6 +116,11 @@
       aria-hidden="true"
     >
       {kbd}
+    </span>
+  {/if}
+  {#if suffix}
+    <span class="ml-auto text-[10px] text-fg-hint">
+      {suffix}
     </span>
   {/if}
 </button>

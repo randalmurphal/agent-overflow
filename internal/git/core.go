@@ -60,17 +60,34 @@ func (c *Core) Execute(cwd string, args ...string) (stdout, stderr string, err e
 
 // CreateWorktree creates a new worktree backed by a new branch.
 func (c *Core) CreateWorktree(cwd, path, branch string) error {
+	return c.CreateWorktreeFromBranch(cwd, path, "", branch)
+}
+
+// CreateWorktreeFromBranch creates a new worktree backed by newBranch from an
+// explicit base branch. Empty baseBranch lets git use the current HEAD.
+func (c *Core) CreateWorktreeFromBranch(cwd, path, baseBranch, newBranch string) error {
 	if strings.TrimSpace(path) == "" {
 		return errors.New("git worktree path is required")
 	}
-	if strings.TrimSpace(branch) == "" {
+	newBranch = strings.TrimSpace(newBranch)
+	baseBranch = strings.TrimSpace(baseBranch)
+	if newBranch == "" {
 		return errors.New("git worktree branch is required")
 	}
-	if err := validateBranchName(branch); err != nil {
+	if err := validateBranchName(newBranch); err != nil {
 		return err
 	}
+	if baseBranch != "" {
+		if err := validateBranchName(baseBranch); err != nil {
+			return err
+		}
+	}
 
-	_, stderr, err := c.Execute(cwd, "worktree", "add", "-b", branch, path)
+	args := []string{"worktree", "add", "-b", newBranch, path}
+	if baseBranch != "" {
+		args = append(args, baseBranch)
+	}
+	_, stderr, err := c.Execute(cwd, args...)
 	if err != nil {
 		message := strings.TrimSpace(stderr)
 		if message == "" {
@@ -83,11 +100,22 @@ func (c *Core) CreateWorktree(cwd, path, branch string) error {
 
 // RemoveWorktree removes a worktree from a repository.
 func (c *Core) RemoveWorktree(cwd, path string) error {
+	return c.RemoveWorktreeForce(cwd, path, false)
+}
+
+// RemoveWorktreeForce removes a worktree from a repository, optionally using
+// git's force flag for app-owned cleanup paths.
+func (c *Core) RemoveWorktreeForce(cwd, path string, force bool) error {
 	if strings.TrimSpace(path) == "" {
 		return errors.New("git worktree path is required")
 	}
 
-	_, stderr, err := c.Execute(cwd, "worktree", "remove", path)
+	args := []string{"worktree", "remove"}
+	if force {
+		args = append(args, "--force")
+	}
+	args = append(args, path)
+	_, stderr, err := c.Execute(cwd, args...)
 	if err != nil {
 		message := strings.TrimSpace(stderr)
 		if message == "" {

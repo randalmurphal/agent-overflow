@@ -77,6 +77,7 @@
   let userInputSubmitSignal = $state(0);
   let userInputCustomAnswer = $state('');
   let sending = $state(false);
+  let preparingWorktree = $state(false);
   let hasDraftContent = $derived(
     draft.content.trim().length > 0 ||
       draft.attachments.length > 0 ||
@@ -148,8 +149,15 @@
         restoreDraft: (tid, snap) => draft.restoreDraftFor(tid, snap),
         draftThreadId: () => draft.threadId,
         reportError: (msg) => pane.setGeneralError(msg),
+        onWorktreePrepareStarted: () => {
+          preparingWorktree = true;
+        },
+        onWorktreePrepareFinished: () => {
+          preparingWorktree = false;
+        },
       });
     } finally {
+      preparingWorktree = false;
       sending = false;
     }
   }
@@ -419,6 +427,15 @@
     </div>
 
     {#if !hasInteractivePrompt}
+      {#if preparingWorktree}
+        <div
+          class="px-4 pb-1 text-[11px] text-text-secondary/70"
+          aria-live="polite"
+          data-testid="composer-worktree-preparing"
+        >
+          Preparing worktree...
+        </div>
+      {/if}
       <ComposerToolbar
         {pane}
         {canSend}

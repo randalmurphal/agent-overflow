@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"unicode"
 )
 
 var (
@@ -42,6 +43,10 @@ var (
 		"approval-required": {},
 		"auto-accept-edits": {},
 		"full-access":       {},
+	}
+	allowedThreadEnvModes = map[string]struct{}{
+		"local":    {},
+		"worktree": {},
 	}
 	// allowedModes mirrors provider.AllInteractionModes.
 	allowedModes = map[string]struct{}{
@@ -99,6 +104,20 @@ func validateSettings(current Settings) (Settings, error) {
 		current.DefaultRuntimeMode,
 		allowedRuntimeModes,
 	); err != nil {
+		return Settings{}, err
+	}
+
+	current.DefaultThreadEnvMode = strings.TrimSpace(current.DefaultThreadEnvMode)
+	if err := validateOption(
+		"defaultThreadEnvMode",
+		current.DefaultThreadEnvMode,
+		allowedThreadEnvModes,
+	); err != nil {
+		return Settings{}, err
+	}
+
+	current.WorktreeBranchPrefix, err = validateWorktreeBranchPrefix(current.WorktreeBranchPrefix)
+	if err != nil {
 		return Settings{}, err
 	}
 
@@ -188,6 +207,13 @@ func sanitizeLoadedSettings(current Settings) Settings {
 		DefaultSettings.DefaultRuntimeMode,
 		allowedRuntimeModes,
 	)
+	current.DefaultThreadEnvMode = sanitizeOption(
+		"defaultThreadEnvMode",
+		current.DefaultThreadEnvMode,
+		DefaultSettings.DefaultThreadEnvMode,
+		allowedThreadEnvModes,
+	)
+	current.WorktreeBranchPrefix = sanitizeWorktreeBranchPrefix(current.WorktreeBranchPrefix)
 	current.DefaultReasoningEffort = sanitizeOption(
 		"defaultReasoningEffort",
 		current.DefaultReasoningEffort,
@@ -232,6 +258,46 @@ func validateOption(field, value string, allowed map[string]struct{}) error {
 		return fmt.Errorf("%s must be one of %s", field, joinAllowedValues(allowed))
 	}
 	return nil
+}
+
+func validateWorktreeBranchPrefix(value string) (string, error) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return "", fmt.Errorf("worktreeBranchPrefix cannot be empty")
+	}
+	if strings.HasPrefix(trimmed, "-") {
+		return "", fmt.Errorf("worktreeBranchPrefix must not start with -")
+	}
+	if strings.HasPrefix(trimmed, ".") {
+		return "", fmt.Errorf("worktreeBranchPrefix must not start with .")
+	}
+	if strings.Contains(trimmed, "/") {
+		return "", fmt.Errorf("worktreeBranchPrefix must not contain /")
+	}
+	if strings.Contains(trimmed, "..") {
+		return "", fmt.Errorf("worktreeBranchPrefix must not contain ..")
+	}
+	for _, r := range trimmed {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '-' || r == '_' || r == '.' {
+			continue
+		}
+		return "", fmt.Errorf("worktreeBranchPrefix contains invalid character %q", r)
+	}
+	return trimmed, nil
+}
+
+func sanitizeWorktreeBranchPrefix(value string) string {
+	prefix, err := validateWorktreeBranchPrefix(value)
+	if err == nil {
+		return prefix
+	}
+	log.Printf(
+		"settings: invalid worktreeBranchPrefix %q, using default %q: %v",
+		value,
+		DefaultSettings.WorktreeBranchPrefix,
+		err,
+	)
+	return DefaultSettings.WorktreeBranchPrefix
 }
 
 func validateRequiredString(field, value string) (string, error) {
@@ -361,6 +427,7 @@ func joinAllowedValues(values map[string]struct{}) string {
 		"claude", "codex",
 		"low", "medium", "high", "xhigh", "max",
 		"chat", "plan", "design", "discussion",
+		"local", "worktree",
 	}
 	for _, candidate := range candidates {
 		if _, ok := values[candidate]; ok {

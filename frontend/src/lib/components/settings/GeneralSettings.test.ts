@@ -24,6 +24,8 @@ const BASE_SETTINGS: Settings = {
   codexEnabled: true,
   defaultMode: 'chat',
   defaultRuntimeMode: 'full-access',
+  defaultThreadEnvMode: 'local',
+  worktreeBranchPrefix: 'ao-',
   defaultReasoningEffort: 'high',
   defaultFastMode: false,
   defaultContextWindow: 1000000,
@@ -55,6 +57,8 @@ describe('<GeneralSettings> — Thread defaults section', () => {
     const { getByTestId } = render(GeneralSettings);
     expect(getByTestId('settings-thread-defaults')).toBeTruthy();
     expect(getByTestId('settings-default-runtime-mode')).toBeTruthy();
+    expect(getByTestId('settings-default-thread-env-mode')).toBeTruthy();
+    expect(getByTestId('settings-worktree-branch-prefix')).toBeTruthy();
   });
 
   it('offers the three runtime permission modes', async () => {
@@ -73,5 +77,27 @@ describe('<GeneralSettings> — Thread defaults section', () => {
     const mock = getBindingMock('UpdateSettings');
     expect(mock).toBeDefined();
     expect(mock!.mock.calls[0][0]).toEqual({ defaultRuntimeMode: 'approval-required' });
+  });
+
+  it('dispatches defaultThreadEnvMode patch on change', async () => {
+    const { getByTestId } = render(GeneralSettings);
+    const select = getByTestId('settings-default-thread-env-mode') as HTMLSelectElement;
+    select.value = 'worktree';
+    await fireEvent.change(select);
+
+    const mock = getBindingMock('UpdateSettings');
+    expect(mock).toBeDefined();
+    expect(mock!.mock.calls[0][0]).toEqual({ defaultThreadEnvMode: 'worktree' });
+  });
+
+  it('dispatches worktreeBranchPrefix patch on blur', async () => {
+    const { getByTestId } = render(GeneralSettings);
+    const input = getByTestId('settings-worktree-branch-prefix') as HTMLInputElement;
+    input.value = 'task-';
+    await fireEvent.blur(input);
+
+    const mock = getBindingMock('UpdateSettings');
+    expect(mock).toBeDefined();
+    expect(mock!.mock.calls[0][0]).toEqual({ worktreeBranchPrefix: 'task-' });
   });
 });

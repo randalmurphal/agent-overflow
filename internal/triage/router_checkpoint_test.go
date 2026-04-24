@@ -225,9 +225,9 @@ func TestHandleTurnStartDoubleFiresAreDedupedPerTurn(t *testing.T) {
 	}
 }
 
-func TestHandleTurnStartCapturesWorktreePathWhenSet(t *testing.T) {
-	// When a thread has a worktree_path (git worktree), capture should
-	// target that directory rather than the project root.
+func TestHandleTurnStartCapturesWorkspacePathWhenWorktreeMetadataIsStale(t *testing.T) {
+	// WorkspacePath is the provider cwd. WorktreePath is retained as metadata
+	// for owned worktrees, so checkpoint capture must follow WorkspacePath.
 	router, st, _ := newTestRouter(t)
 	ensureTriageProject(t, st)
 	now := time.Now().UnixMilli()
@@ -256,7 +256,7 @@ func TestHandleTurnStartCapturesWorktreePathWhenSet(t *testing.T) {
 	if len(fake.capturedCalls) != 1 {
 		t.Fatalf("expected 1 capture, got %d", len(fake.capturedCalls))
 	}
-	if fake.capturedCalls[0].Workspace != "/tmp/project/.worktrees/feature" {
+	if fake.capturedCalls[0].Workspace != "/tmp/project" {
 		t.Errorf("workspace mismatch: got %q", fake.capturedCalls[0].Workspace)
 	}
 }

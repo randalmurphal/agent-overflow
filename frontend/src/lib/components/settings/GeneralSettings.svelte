@@ -1,6 +1,6 @@
 <script lang="ts">
   import { getSettings, updateSetting } from '../../stores/settings.svelte';
-  import type { RuntimeMode } from '../../types/settings';
+  import type { RuntimeMode, ThreadEnvMode } from '../../types/settings';
   import ToggleSwitch from '../shared/ToggleSwitch.svelte';
   import MicroLabel from '../primitives/MicroLabel.svelte';
 
@@ -10,6 +10,11 @@
     { value: 'full-access', label: 'Full access' },
     { value: 'auto-accept-edits', label: 'Auto-edits' },
     { value: 'approval-required', label: 'Approval required' },
+  ];
+
+  const ENV_OPTIONS: Array<{ value: ThreadEnvMode; label: string }> = [
+    { value: 'local', label: 'Current checkout' },
+    { value: 'worktree', label: 'New worktree' },
   ];
 
   const SELECT_CLASS =
@@ -133,6 +138,39 @@
             <option value={opt.value}>{opt.label}</option>
           {/each}
         </select>
+      </div>
+
+      <div class={ROW_CLASS}>
+        <div>
+          <label for="default-thread-env-mode" class="text-[13px] text-fg block font-medium">Default environment</label>
+          <p class="text-[12px] text-fg-muted">Workspace mode seeded on new draft threads</p>
+        </div>
+        <select
+          id="default-thread-env-mode"
+          data-testid="settings-default-thread-env-mode"
+          value={settings.defaultThreadEnvMode}
+          onchange={(e) => updateSetting('defaultThreadEnvMode', (e.target as HTMLSelectElement).value as ThreadEnvMode)}
+          class={SELECT_CLASS}
+        >
+          {#each ENV_OPTIONS as opt}
+            <option value={opt.value}>{opt.label}</option>
+          {/each}
+        </select>
+      </div>
+
+      <div class={ROW_CLASS}>
+        <div>
+          <label for="worktree-branch-prefix" class="text-[13px] text-fg block font-medium">Worktree branch prefix</label>
+          <p class="text-[12px] text-fg-muted">Prefix for generated worktree branches</p>
+        </div>
+        <input
+          id="worktree-branch-prefix"
+          data-testid="settings-worktree-branch-prefix"
+          type="text"
+          value={settings.worktreeBranchPrefix}
+          onblur={(e) => updateSetting('worktreeBranchPrefix', (e.target as HTMLInputElement).value)}
+          class={SELECT_CLASS}
+        />
       </div>
     </div>
   </section>

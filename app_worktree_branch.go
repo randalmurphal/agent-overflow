@@ -15,9 +15,9 @@ func (a *App) generatedWorktreeBranchName(thread store.Thread, message string) (
 		if err != nil {
 			return "", err
 		}
-		return gitops.BuildGeneratedWorktreeBranchName(raw), nil
+		return gitops.BuildGeneratedWorktreeBranchNameWithPrefix(raw, a.worktreeBranchPrefix()), nil
 	}
-	return gitops.BuildGeneratedWorktreeBranchName(branchNameFromUserMessage(message)), nil
+	return gitops.BuildGeneratedWorktreeBranchNameWithPrefix(branchNameFromUserMessage(message), a.worktreeBranchPrefix()), nil
 }
 
 func (a *App) maybeRenameTemporaryWorktreeBranch(threadID, message string) {
@@ -27,7 +27,8 @@ func (a *App) maybeRenameTemporaryWorktreeBranch(threadID, message string) {
 		return
 	}
 
-	if strings.TrimSpace(thread.WorktreePath) == "" || !gitops.IsTemporaryWorktreeBranch(thread.Branch) {
+	if strings.TrimSpace(thread.WorktreePath) == "" ||
+		!gitops.IsTemporaryWorktreeBranchWithPrefix(thread.Branch, a.worktreeBranchPrefix()) {
 		return
 	}
 

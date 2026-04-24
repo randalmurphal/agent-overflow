@@ -40,14 +40,15 @@ func (s *Store) Close() error {
 
 // Thread represents a conversation thread.
 //
-// The shape changed at migration v13: ProjectPath is gone (replaced by the
-// ProjectID FK to the projects table), InteractionMode is renamed to Mode,
-// and three new per-thread composer controls (ReasoningEffort, FastMode,
-// ContextWindow) are persisted so two threads sharing a project can
-// diverge on these axes.
+// The shape changed at migration v13: ProjectPath is no longer persisted on
+// threads (ProjectID is the FK to the projects table), InteractionMode is
+// renamed to Mode, and three new per-thread composer controls
+// (ReasoningEffort, FastMode, ContextWindow) are persisted so two threads
+// sharing a project can diverge on these axes.
 type Thread struct {
 	ID              string `json:"id"`
 	ProjectID       string `json:"projectId"`
+	ProjectPath     string `json:"projectPath"`
 	Title           string `json:"title"`
 	Provider        string `json:"provider"`
 	Model           string `json:"model"`
@@ -83,6 +84,15 @@ type Thread struct {
 	// MarkThreadUnread, and auto-refreshed when the user switches into a
 	// thread.
 	LastReadAt *int64 `json:"lastReadAt,omitempty"`
+}
+
+// ThreadWorkspaceRef is the narrow thread shape needed for workspace/worktree
+// ownership checks. It deliberately includes archived threads because archived
+// rows can be restored later and must not point at a removed worktree.
+type ThreadWorkspaceRef struct {
+	ID            string
+	WorkspacePath string
+	WorktreePath  string
 }
 
 // Project represents a user-defined grouping of threads rooted at a

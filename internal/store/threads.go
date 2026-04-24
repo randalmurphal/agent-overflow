@@ -12,7 +12,9 @@ import (
 // last_read_at is deliberately NOT coalesced — scanThread keeps the
 // NULL / non-NULL distinction via a *int64 pointer so the frontend can
 // tell "never tracked" apart from "read at epoch 0".
-const threadColumns = `id, project_id, title, provider, model,
+const threadColumns = `id, project_id,
+    COALESCE((SELECT path FROM projects WHERE projects.id = threads.project_id), ''),
+    title, provider, model,
     workspace_path, COALESCE(worktree_path, ''), COALESCE(branch, ''),
     COALESCE(session_ref, ''), COALESCE(pending_fork_session_ref, ''),
     mode, reasoning_effort, fast_mode, context_window, runtime_mode,
@@ -72,7 +74,7 @@ func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
 	var archived, fastMode int
 	var latestTurnCompletedAt, lastReadAt sql.NullInt64
 	if err := scanner.Scan(
-		&t.ID, &t.ProjectID, &t.Title, &t.Provider, &t.Model,
+		&t.ID, &t.ProjectID, &t.ProjectPath, &t.Title, &t.Provider, &t.Model,
 		&t.WorkspacePath, &t.WorktreePath, &t.Branch,
 		&t.SessionRef, &t.PendingForkRef,
 		&t.Mode, &t.ReasoningEffort, &fastMode, &t.ContextWindow, &t.RuntimeMode,
@@ -227,6 +229,29 @@ func (s *Store) ListChildThreads(parentID string) ([]Thread, error) {
 		threads = append(threads, t)
 	}
 	return threads, rows.Err()
+}
+
+// ListThreadWorkspaceRefs returns workspace/worktree pointers for all thread
+// rows, including archived ones. Worktree removal uses this to avoid deleting a
+// checkout that an archived thread would reference if restored.
+func (s *Store) ListThreadWorkspaceRefs() ([]ThreadWorkspaceRef, error) {
+	rows, err := s.db.Query(
+		`SELECT id, workspace_path, COALESCE(worktree_path, '') FROM threads`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: list thread workspace refs: %w", err)
+	}
+	defer rows.Close()
+
+	var refs []ThreadWorkspaceRef
+	for rows.Next() {
+		var ref ThreadWorkspaceRef
+		if err := rows.Scan(&ref.ID, &ref.WorkspacePath, &ref.WorktreePath); err != nil {
+			return nil, fmt.Errorf("store: scan thread workspace ref: %w", err)
+		}
+		refs = append(refs, ref)
+	}
+	return refs, rows.Err()
 }
 
 func (s *Store) UpdateThread(t Thread) error {

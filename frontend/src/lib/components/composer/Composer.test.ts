@@ -12,6 +12,12 @@ import {
   resetRuntimeModeDraftsForTest,
   setRuntimeModeDraft,
 } from '../../stores/runtimeModeDraft.svelte';
+import {
+  resetForTest as resetWorktreeIntent,
+  setThreadEnvMode,
+  setWorktreeBaseBranch,
+  setWorktreeBranchName,
+} from '../../stores/worktreeIntent.svelte';
 
 function installDraftMocks() {
   setBindingMock('GetDraft', async (threadId: string) => ({
@@ -70,6 +76,7 @@ describe('<Composer>', () => {
   beforeEach(() => {
     resetBindingMocks();
     resetRuntimeModeDraftsForTest();
+    resetWorktreeIntent();
     installDraftMocks();
     setBindingMock('SendMessageWithOptions', async () => makeTestThread({ runtimeMode: 'full-access' }));
     setBindingMock('InterruptTurn', async () => {});
@@ -139,6 +146,71 @@ describe('<Composer>', () => {
 
     expect(send).toHaveBeenCalledWith('thread-1', 'use persisted mode', {
       attachmentIds: [],
+    });
+  });
+
+  it('prepares a pending worktree before sending', async () => {
+    const initialThread = makeTestThread({ branch: 'main' });
+    const worktreeThread = makeTestThread({
+      branch: 'feature/custom',
+      workspacePath: '/tmp/wt-feature',
+      worktreePath: '/tmp/wt-feature',
+    });
+    const pane = await buildPane(initialThread);
+    const draft = await buildDraft();
+    if (!pane.thread) throw new Error('missing test thread');
+    setThreadEnvMode(pane.thread, 'new-worktree');
+    setWorktreeBaseBranch(pane.thread, 'release');
+    setWorktreeBranchName(pane.thread, 'feature/custom');
+
+    const prepare = setBindingMock('PrepareThreadWorktree', async () => worktreeThread);
+    const send = setBindingMock('SendMessageWithOptions', async () => worktreeThread);
+
+    const { getByLabelText, getByTestId } = render(Composer, { props: { pane, draft } });
+    await fireEvent.input(getByLabelText('Message input'), { target: { value: 'work there' } });
+    await fireEvent.click(getByTestId('composer-send'));
+
+    expect(prepare).toHaveBeenCalledWith('thread-1', 'release', 'feature/custom');
+    expect(send).toHaveBeenCalledWith('thread-1', 'work there', {
+      attachmentIds: [],
+    });
+    expect(prepare.mock.invocationCallOrder[0]).toBeLessThan(send.mock.invocationCallOrder[0]);
+    expect(pane.thread?.worktreePath).toBe('/tmp/wt-feature');
+  });
+
+  it('shows worktree preparation status while creating the worktree', async () => {
+    const initialThread = makeTestThread({ branch: 'main' });
+    const worktreeThread = makeTestThread({
+      branch: 'feature/custom',
+      workspacePath: '/tmp/wt-feature',
+      worktreePath: '/tmp/wt-feature',
+    });
+    const pane = await buildPane(initialThread);
+    const draft = await buildDraft();
+    if (!pane.thread) throw new Error('missing test thread');
+    setThreadEnvMode(pane.thread, 'new-worktree');
+
+    let finishPrepare!: () => void;
+    setBindingMock('PrepareThreadWorktree', async () => {
+      await new Promise<void>((resolve) => {
+        finishPrepare = resolve;
+      });
+      return worktreeThread;
+    });
+    setBindingMock('SendMessageWithOptions', async () => worktreeThread);
+
+    const { getByLabelText, getByTestId, queryByTestId } = render(Composer, { props: { pane, draft } });
+    await fireEvent.input(getByLabelText('Message input'), { target: { value: 'work there' } });
+    void fireEvent.click(getByTestId('composer-send'));
+
+    await waitFor(() => {
+      expect(getByTestId('composer-worktree-preparing').textContent).toContain('Preparing worktree...');
+    });
+
+    finishPrepare();
+
+    await waitFor(() => {
+      expect(queryByTestId('composer-worktree-preparing')).toBeNull();
     });
   });
 

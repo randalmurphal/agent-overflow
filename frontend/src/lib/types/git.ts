@@ -28,6 +28,12 @@ export interface GitBranch {
   worktreePath?: string;
 }
 
+export interface Worktree {
+  path: string;
+  branch?: string;
+  head: string;
+}
+
 export interface GitActionResult {
   action: string;
   branch?: string;

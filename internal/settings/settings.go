@@ -44,6 +44,17 @@ type Settings struct {
 	// app into an invalid mode.
 	DefaultRuntimeMode string `json:"defaultRuntimeMode"`
 
+	// DefaultThreadEnvMode seeds the workspace mode for new draft threads.
+	// Accepts "local" or "worktree"; unknown values fall back to "local"
+	// when settings are loaded.
+	DefaultThreadEnvMode string `json:"defaultThreadEnvMode"`
+
+	// WorktreeBranchPrefix is prepended to auto-generated temporary and
+	// semantic worktree branch names. It is intentionally flat (default
+	// "ao-") rather than namespace-like ("ao/") so generated branches
+	// read like normal feature branches.
+	WorktreeBranchPrefix string `json:"worktreeBranchPrefix"`
+
 	// DefaultReasoningEffort is the effort tier seeded on every new
 	// thread. Accepts the five values the provider package exposes
 	// (low / medium / high / xhigh / max); unknown values coerce to
@@ -123,7 +134,9 @@ var DefaultSettings = Settings{
 	// DefaultRuntimeMode mirrors provider.DefaultRuntimeMode. Duplicated as
 	// a string literal rather than imported so internal/settings doesn't
 	// pull in the provider package (tiny leaf package, kept leaf).
-	DefaultRuntimeMode: "full-access",
+	DefaultRuntimeMode:   "full-access",
+	DefaultThreadEnvMode: "local",
+	WorktreeBranchPrefix: "ao-",
 	// DefaultReasoningEffort mirrors provider.DefaultReasoningEffort.
 	DefaultReasoningEffort: "high",
 	// DefaultFastMode defaults to off — power users opt in per thread.

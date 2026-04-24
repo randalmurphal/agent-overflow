@@ -253,11 +253,9 @@ func (r *Router) unmarkTurnCaptured(threadID string, turnIndex int) {
 }
 
 // checkpointWorkspacePath picks the on-disk directory we should snapshot.
-// Prefers worktree_path (where the agent actually edits) over workspace_path.
+// WorkspacePath is the effective provider cwd and may be the project root or a
+// registered worktree.
 func checkpointWorkspacePath(t store.Thread) string {
-	if t.WorktreePath != "" {
-		return t.WorktreePath
-	}
 	return t.WorkspacePath
 }
 

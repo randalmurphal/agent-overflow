@@ -69,6 +69,16 @@ describe('<MenuItem>', () => {
     expect(container.textContent).toContain('mod+K');
   });
 
+  it('renders the suffix hint when provided', () => {
+    const { container } = render(Harness, { props: { label: 'Apple', suffix: 'remote' } });
+    expect(container.textContent).toContain('remote');
+  });
+
+  it('applies title when provided', () => {
+    const { getByRole } = render(Harness, { props: { label: 'Apple', title: 'Unavailable' } });
+    expect(getByRole('menuitem')).toHaveAttribute('title', 'Unavailable');
+  });
+
   it('renders the icon slot when provided', () => {
     const { getByTestId } = render(Harness, { props: { label: 'Apple', showIcon: true } });
     expect(getByTestId('menuitem-icon')).toBeInTheDocument();

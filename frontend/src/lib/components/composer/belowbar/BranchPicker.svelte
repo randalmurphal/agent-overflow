@@ -4,6 +4,8 @@
   // creation of new branches remains available through the Git Actions
   // command palette entries, so this picker stays scoped to selection.
 
+  import ChevronDown from 'lucide-svelte/icons/chevron-down';
+  import GitBranchIcon from 'lucide-svelte/icons/git-branch';
   import type { ThreadPane } from '../../../stores/thread.svelte';
   import type { GitBranch } from '../../../types/git';
   import type { Thread } from '../../../types/models';
@@ -11,28 +13,48 @@
     GetThread,
     GitCheckout,
     GitListBranches,
-    UpdateThreadBranch,
+    UpdateThreadWorkspace,
   } from '../../../stores/bindings';
   import { replaceThread } from '../../../stores/threads.svelte';
   import { addToast } from '../../../stores/toast.svelte';
   import { errString } from '../../../utils/errors';
+  import { sameNormalizedPath } from '../../../utils/path';
+  import {
+    setWorktreeBaseBranch,
+    worktreeIntentForThread,
+  } from '../../../stores/worktreeIntent.svelte';
+  import type { WorkspaceChangeLockState } from '../../../stores/workspaceChangeLock.svelte';
   import Popover from '../../primitives/Popover.svelte';
   import Menu from '../../primitives/Menu.svelte';
   import MenuItem from '../../primitives/MenuItem.svelte';
 
   interface Props {
     pane: ThreadPane;
+    workspaceLock: WorkspaceChangeLockState;
   }
 
-  let { pane }: Props = $props();
+  let { pane, workspaceLock }: Props = $props();
 
   let triggerEl: HTMLButtonElement | undefined = $state(undefined);
   let open = $state(false);
   let branches: GitBranch[] = $state([]);
+  let query = $state('');
   let loading = $state(false);
   let applying = $state(false);
 
   let currentBranch = $derived(pane.thread?.branch ?? '');
+  let currentWorkspace = $derived(pane.thread?.workspacePath ?? '');
+  let projectPath = $derived(pane.thread?.projectPath ?? '');
+  let intent = $derived(worktreeIntentForThread(pane.thread));
+  let triggerBranch = $derived(intent.mode === 'new-worktree' ? intent.baseBranch || currentBranch : currentBranch);
+  let triggerLabel = $derived(intent.mode === 'new-worktree' ? `From ${triggerBranch || 'branch'}` : currentBranch || 'No branch');
+  let disabledReason = $derived(workspaceLock.reason);
+  let workspaceChangingDisabled = $derived(workspaceLock.locked);
+  let filteredBranches = $derived.by(() => {
+    const needle = query.trim().toLowerCase();
+    if (!needle) return branches;
+    return branches.filter((branch) => branch.name.toLowerCase().includes(needle));
+  });
 
   async function handleTrigger(): Promise<void> {
     open = !open;
@@ -51,28 +73,68 @@
 
   function closeMenu(): void {
     open = false;
+    query = '';
     triggerEl?.focus();
   }
 
-  async function selectBranch(name: string): Promise<void> {
-    if (!pane.thread || applying || name === currentBranch) {
+  function branchBadge(branch: GitBranch): string | undefined {
+    if (branch.worktreePath && !sameNormalizedPath(branch.worktreePath, currentWorkspace)) return 'worktree';
+    if (branch.isDefault) return 'default';
+    if (branch.isRemote) return 'remote';
+    return undefined;
+  }
+
+  function isSelectedBranch(branch: GitBranch): boolean {
+    if (branch.name !== currentBranch) return false;
+    if (branch.worktreePath) return sameNormalizedPath(branch.worktreePath, currentWorkspace);
+    return true;
+  }
+
+  function handleSearchKeydown(event: KeyboardEvent): void {
+    event.stopPropagation();
+  }
+
+  async function selectBranch(branch: GitBranch): Promise<void> {
+    if (!pane.thread || applying) {
+      closeMenu();
+      return;
+    }
+    if (workspaceChangingDisabled) {
+      closeMenu();
+      return;
+    }
+    if (intent.mode === 'new-worktree') {
+      setWorktreeBaseBranch(pane.thread, branch.name);
+      closeMenu();
+      return;
+    }
+    if (isSelectedBranch(branch)) {
       closeMenu();
       return;
     }
     applying = true;
     try {
-      await GitCheckout(pane.thread.id, name);
-      await UpdateThreadBranch(pane.thread.id, name);
-      // Refresh the thread so the sidebar and the trigger both reflect
-      // the checkout — UpdateThreadBranch already returns the updated
-      // row, but GetThread is the single-source read after a filesystem
-      // checkout so we pick up any other branch-driven fields too.
-      const refreshed = (await GetThread(pane.thread.id)) as Thread | null;
+      let refreshed: Thread | null;
+      const shouldReturnToProjectRoot =
+        branch.isDefault &&
+        projectPath &&
+        !sameNormalizedPath(currentWorkspace, projectPath) &&
+        (!branch.worktreePath || sameNormalizedPath(branch.worktreePath, projectPath));
+
+      if (shouldReturnToProjectRoot) {
+        await GitCheckout(pane.thread.id, branch.name);
+        refreshed = (await GetThread(pane.thread.id)) as Thread | null;
+      } else if (branch.worktreePath && !sameNormalizedPath(branch.worktreePath, currentWorkspace)) {
+        refreshed = (await UpdateThreadWorkspace(pane.thread.id, branch.worktreePath)) as Thread;
+      } else {
+        await GitCheckout(pane.thread.id, branch.name);
+        refreshed = (await GetThread(pane.thread.id)) as Thread | null;
+      }
       if (refreshed) {
         pane.replaceThread(refreshed);
         replaceThread(refreshed);
       }
-      addToast('info', `Checked out ${name}`);
+      addToast('info', `Checked out ${branch.name}`);
     } catch (err) {
       console.error('branch checkout failed:', err);
       addToast('error', `Failed to checkout: ${errString(err)}`);
@@ -100,31 +162,9 @@
     'disabled:opacity-60 disabled:cursor-not-allowed',
   ].join(' ')}
 >
-  <svg
-    viewBox="0 0 24 24"
-    class="h-3 w-3"
-    fill="none"
-    stroke="currentColor"
-    stroke-width="2"
-    stroke-linecap="round"
-    stroke-linejoin="round"
-    aria-hidden="true"
-  >
-    <path d="M6 3v12M18 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM6 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM18 9a9 9 0 0 1-9 9" />
-  </svg>
-  <span class="truncate max-w-[160px]">{currentBranch || 'No branch'}</span>
-  <svg
-    viewBox="0 0 24 24"
-    class="h-3 w-3"
-    fill="none"
-    stroke="currentColor"
-    stroke-width="2"
-    stroke-linecap="round"
-    stroke-linejoin="round"
-    aria-hidden="true"
-  >
-    <path d="M6 9l6 6 6-6" />
-  </svg>
+  <GitBranchIcon class="h-3 w-3" aria-hidden="true" />
+  <span class="truncate max-w-[160px]">{triggerLabel}</span>
+  <ChevronDown class="h-3 w-3" aria-hidden="true" />
 </button>
 
 <Popover
@@ -135,6 +175,20 @@
   role="none"
 >
   <Menu ariaLabel="Branches" onClose={closeMenu}>
+    <div class="px-2 pb-1">
+      <input
+        type="search"
+        value={query}
+        placeholder="Search branches"
+        onkeydown={handleSearchKeydown}
+        oninput={(e) => (query = (e.target as HTMLInputElement).value)}
+        class={[
+          'h-7 w-72 rounded border border-border-subtle bg-surface-0',
+          'px-2 text-xs text-text-primary placeholder:text-fg-hint',
+          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40',
+        ].join(' ')}
+      />
+    </div>
     {#if loading}
       <div
         class="px-3 py-1.5 text-xs text-text-secondary/60"
@@ -143,22 +197,27 @@
       >
         Loading branches…
       </div>
-    {:else if branches.length === 0}
+    {:else if filteredBranches.length === 0}
       <div
         class="px-3 py-1.5 text-xs text-text-secondary/60"
         role="presentation"
         data-testid="branch-picker-empty"
       >
-        No branches
+      No branches
       </div>
     {:else}
-      {#each branches as branch (branch.name)}
+      <div class="max-h-56 overflow-y-auto">
+      {#each filteredBranches as branch (branch.name)}
         <MenuItem
           label={branch.name}
-          checked={branch.isCurrent || branch.name === currentBranch}
-          onSelect={() => selectBranch(branch.name)}
+          suffix={branchBadge(branch)}
+          checked={intent.mode === 'new-worktree' ? branch.name === triggerBranch : isSelectedBranch(branch)}
+          disabled={workspaceChangingDisabled}
+          title={workspaceChangingDisabled ? disabledReason : undefined}
+          onSelect={() => selectBranch(branch)}
         />
       {/each}
+      </div>
     {/if}
   </Menu>
 </Popover>
