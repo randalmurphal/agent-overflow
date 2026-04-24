@@ -7,7 +7,6 @@ import { buildPane, emitItemEventUpsert, makeThread } from '../../../test/helper
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { resetWailsMocks } from '../../../test/mocks/wailsio-runtime';
 import { setupEventListeners } from '../../stores/events';
-import { loadSettings } from '../../stores/settings.svelte';
 import { getToasts } from '../../stores/toast.svelte';
 
 /**
@@ -59,11 +58,6 @@ describe('<BackgroundTaskTray>', () => {
     resetWailsMocks();
     resetBindingMocks();
     cleanupEvents = setupEventListeners();
-    setBindingMock('GetSettings', async () => ({ backgroundTrayExpanded: true }));
-    setBindingMock('UpdateSettings', async (patch: { backgroundTrayExpanded?: boolean }) => ({
-      backgroundTrayExpanded: patch.backgroundTrayExpanded ?? true,
-    }));
-    await loadSettings();
     // Default the two stop primitives to resolved no-ops; tests that
     // care about specific call shapes or error surfacing override
     // these.
@@ -105,68 +99,11 @@ describe('<BackgroundTaskTray>', () => {
 
     const { getByTestId } = await renderTray(pane);
     expect(getByTestId('background-task-tray')).toBeInTheDocument();
-    expect(getByTestId('background-task-tray-header').textContent).toContain('Running');
+    expect(getByTestId('background-task-tray-header').textContent).toContain('Background');
     expect(getByTestId('background-task-tray-count').textContent).toBe('2');
   });
 
-  it('defaults collapsed and persists the tray expansion across thread switches', async () => {
-    setBindingMock('GetSettings', async () => ({ backgroundTrayExpanded: false }));
-    const updateMock = setBindingMock(
-      'UpdateSettings',
-      async (patch: { backgroundTrayExpanded?: boolean }) => ({
-        backgroundTrayExpanded: patch.backgroundTrayExpanded ?? false,
-      }),
-    );
-    await loadSettings();
-
-    const pane = await makePaneWithBackground([
-      item({
-        id: 'launch-a',
-        isBackground: true,
-        status: 'running',
-        summary: 'Bash',
-        createdAt: 1_000_000 - 5_000,
-      }),
-    ]);
-    const rendered = await renderTray(pane);
-
-    expect(rendered.getByTestId('background-task-tray-header').getAttribute('aria-expanded')).toBe('false');
-    expect(rendered.queryByTestId('background-task-tray-body')).toBeNull();
-
-    await fireEvent.click(rendered.getByTestId('background-task-tray-header'));
-    await tick();
-
-    expect(updateMock).toHaveBeenCalledWith({ backgroundTrayExpanded: true });
-    expect(rendered.getByTestId('background-task-tray-body')).toBeInTheDocument();
-
-    cleanup();
-    const nextPane = await makePaneWithBackground(
-      [
-        item({
-          id: 'launch-b',
-          threadId: 'thread-2',
-          isBackground: true,
-          status: 'running',
-          summary: 'Grep',
-          createdAt: 1_000_000 - 2_000,
-        }),
-      ],
-      makeThread({ id: 'thread-2' }),
-    );
-    const rerendered = await renderTray(nextPane);
-
-    expect(rerendered.getByTestId('background-task-tray-header').getAttribute('aria-expanded')).toBe('true');
-    expect(rerendered.getByTestId('background-task-tray-body')).toBeInTheDocument();
-  });
-
-  it('persists tray collapse across thread switches', async () => {
-    const updateMock = setBindingMock(
-      'UpdateSettings',
-      async (patch: { backgroundTrayExpanded?: boolean }) => ({
-        backgroundTrayExpanded: patch.backgroundTrayExpanded ?? true,
-      }),
-    );
-
+  it('defaults expanded when fewer than five tasks are visible', async () => {
     const pane = await makePaneWithBackground([
       item({
         id: 'launch-a',
@@ -180,32 +117,65 @@ describe('<BackgroundTaskTray>', () => {
 
     expect(rendered.getByTestId('background-task-tray-header').getAttribute('aria-expanded')).toBe('true');
     expect(rendered.getByTestId('background-task-tray-body')).toBeInTheDocument();
+  });
+
+  it('defaults collapsed when five or more tasks are visible', async () => {
+    const tasks = Array.from({ length: 5 }, (_, index) => item({
+      id: `launch-${index}`,
+      isBackground: true,
+      status: 'running',
+      summary: `Task ${index}`,
+      createdAt: 1_000_000 - index * 1_000,
+    }));
+    const pane = await makePaneWithBackground(tasks);
+    const rendered = await renderTray(pane);
+
+    expect(rendered.getByTestId('background-task-tray-header').getAttribute('aria-expanded')).toBe('false');
+    expect(rendered.queryByTestId('background-task-tray-body')).toBeNull();
 
     await fireEvent.click(rendered.getByTestId('background-task-tray-header'));
     await tick();
 
-    expect(updateMock).toHaveBeenCalledWith({ backgroundTrayExpanded: false });
+    expect(rendered.getByTestId('background-task-tray-header').getAttribute('aria-expanded')).toBe('true');
+    expect(rendered.getByTestId('background-task-tray-body')).toBeInTheDocument();
+  });
+
+  it('defaults expansion from the first loaded task count after a thread switch', async () => {
+    const pane = await buildPane(makeThread({ id: 'thread-1' }));
+    setBindingMock('ListLiveBackgroundTasks', async (threadId: string) => {
+      if (threadId === 'thread-1') {
+        return [
+          item({
+            id: 'one',
+            threadId: 'thread-1',
+            isBackground: true,
+            status: 'running',
+            summary: 'One',
+            createdAt: 1_000_000 - 1_000,
+          }),
+        ];
+      }
+      return Array.from({ length: 5 }, (_, index) => item({
+        id: `many-${index}`,
+        threadId: 'thread-2',
+        isBackground: true,
+        status: 'running',
+        summary: `Many ${index}`,
+        createdAt: 1_000_000 - index * 1_000,
+      }));
+    });
+
+    const rendered = await renderTray(pane);
+    expect(rendered.getByTestId('background-task-tray-header').getAttribute('aria-expanded')).toBe('true');
+
+    await pane.switchThread(makeThread({ id: 'thread-2' }));
+    await tick();
+    await tick();
+    await tick();
+
+    expect(rendered.getByTestId('background-task-tray-count').textContent).toBe('5');
     expect(rendered.getByTestId('background-task-tray-header').getAttribute('aria-expanded')).toBe('false');
     expect(rendered.queryByTestId('background-task-tray-body')).toBeNull();
-
-    cleanup();
-    const nextPane = await makePaneWithBackground(
-      [
-        item({
-          id: 'launch-b',
-          threadId: 'thread-2',
-          isBackground: true,
-          status: 'running',
-          summary: 'Grep',
-          createdAt: 1_000_000 - 2_000,
-        }),
-      ],
-      makeThread({ id: 'thread-2' }),
-    );
-    const rerendered = await renderTray(nextPane);
-
-    expect(rerendered.getByTestId('background-task-tray-header').getAttribute('aria-expanded')).toBe('false');
-    expect(rerendered.queryByTestId('background-task-tray-body')).toBeNull();
   });
 
   it('shows the pulsing dot when at least one task is running and hides it for a standalone completion', async () => {
@@ -322,7 +292,7 @@ describe('<BackgroundTaskTray>', () => {
     const status = getByTestId('background-task-tray-row-status');
     expect(status.getAttribute('data-status')).toBe('declined');
     expect(status.className).toContain('text-error');
-    expect(status.textContent).toContain('Declined');
+    expect(status.textContent).toContain('declined');
   });
 
   it('renders a killed completion with gray "Stopped" styling, distinct from failed', async () => {
@@ -349,7 +319,7 @@ describe('<BackgroundTaskTray>', () => {
     const { getByTestId } = await renderTray(pane);
     const status = getByTestId('background-task-tray-row-status');
     expect(status.getAttribute('data-status')).toBe('killed');
-    expect(status.textContent).toContain('Stopped');
+    expect(status.textContent).toContain('stopped');
     // Must NOT read as an error — red palette is reserved for actual
     // failures, and killed is a user-initiated stop.
     expect(status.className).not.toContain('text-error');
@@ -374,7 +344,7 @@ describe('<BackgroundTaskTray>', () => {
     expect(queryByTestId('background-task-tray-row-elapsed')).toBeNull();
   });
 
-  it('caps visible rows at three and shows the hidden count', async () => {
+  it('renders all rows when expanded', async () => {
     const pane = await makePaneWithBackground([
       item({ id: 'a', isBackground: true, status: 'running', summary: 'A', createdAt: 1_000_000 - 1_000 }),
       item({ id: 'b', isBackground: true, status: 'running', summary: 'B', createdAt: 1_000_000 - 2_000 }),
@@ -382,9 +352,9 @@ describe('<BackgroundTaskTray>', () => {
       item({ id: 'd', isBackground: true, status: 'running', summary: 'D', createdAt: 1_000_000 - 4_000 }),
     ]);
 
-    const { getAllByTestId, getByTestId } = await renderTray(pane);
-    expect(getAllByTestId('background-task-tray-row')).toHaveLength(3);
-    expect(getByTestId('background-task-tray-more').textContent).toContain('+1 more');
+    const { getAllByTestId, queryByTestId } = await renderTray(pane);
+    expect(getAllByTestId('background-task-tray-row')).toHaveLength(4);
+    expect(queryByTestId('background-task-tray-more')).toBeNull();
   });
 
   it('refreshes on upsert of a background launch (isBackground=true, completionOf empty)', async () => {
@@ -464,7 +434,7 @@ describe('<BackgroundTaskTray>', () => {
     expect(fetchCalls).toBe(mountCalls);
   });
 
-  it('orders rows by latest activity first', async () => {
+  it('orders rows by oldest created task first', async () => {
     const pane = await makePaneWithBackground([
       item({ id: 'older', isBackground: true, status: 'running', summary: 'Older', createdAt: 1_000_000 - 4_000, updatedAt: 1_000_000 - 4_000 }),
       item({ id: 'newer', isBackground: true, status: 'running', summary: 'Newer', createdAt: 1_000_000 - 1_000, updatedAt: 1_000_000 - 1_000 }),
@@ -472,8 +442,8 @@ describe('<BackgroundTaskTray>', () => {
 
     const { getAllByTestId } = await renderTray(pane);
     const rows = getAllByTestId('background-task-tray-row');
-    expect(rows[0]?.getAttribute('data-row-id')).toBe('newer');
-    expect(rows[1]?.getAttribute('data-row-id')).toBe('older');
+    expect(rows[0]?.getAttribute('data-row-id')).toBe('older');
+    expect(rows[1]?.getAttribute('data-row-id')).toBe('newer');
   });
 
   it('does not render a per-row Stop button when the launch has no task_id', async () => {
@@ -487,6 +457,23 @@ describe('<BackgroundTaskTray>', () => {
         status: 'running',
         summary: 'exec_command',
         toolName: 'exec_command',
+        createdAt: 1_000_000 - 1_000,
+      }),
+    ], makeThread({ provider: 'codex' }));
+
+    const { queryByTestId } = await renderTray(pane);
+    expect(queryByTestId('background-task-tray-row-stop')).toBeNull();
+  });
+
+  it('does not render a per-row Stop button for a Codex row with stray task_id metadata', async () => {
+    const pane = await makePaneWithBackground([
+      item({
+        id: 'launch-codex-weird',
+        isBackground: true,
+        status: 'running',
+        summary: 'exec_command',
+        toolName: 'exec_command',
+        meta: JSON.stringify({ task_id: 'not-a-claude-task' }),
         createdAt: 1_000_000 - 1_000,
       }),
     ], makeThread({ provider: 'codex' }));
@@ -641,7 +628,7 @@ describe('<BackgroundTaskTray>', () => {
 
     const { getByTestId, queryByTestId } = await renderTray(pane);
     expect(getByTestId('background-task-tray-row')).toBeInTheDocument();
-    expect(getByTestId('background-task-tray-row-status').textContent).toContain('Running');
+    expect(getByTestId('background-task-tray-row-status').textContent).toContain('running');
     expect(queryByTestId('background-task-tray-stop-all')).toBeNull();
   });
 
@@ -856,11 +843,7 @@ describe('<BackgroundTaskTray>', () => {
     expect(queryByTestId('background-task-tray-row-stop')).toBeNull();
   });
 
-  it('rows are no longer clickable (click-to-scroll removed)', async () => {
-    // Phase 5 replaced the row-level button with a plain div so the
-    // tray is purely informational. The <button> wrapper would have
-    // been reachable via data-testid="background-task-tray-row" —
-    // assert the rendered element is a non-button.
+  it('non-output rows do not request timeline scroll when clicked', async () => {
     const pane = await makePaneWithBackground([
       item({
         id: 'launch-a',
@@ -876,6 +859,55 @@ describe('<BackgroundTaskTray>', () => {
     const row = getByTestId('background-task-tray-row');
     expect(row.tagName).not.toBe('BUTTON');
     await fireEvent.click(row);
+    expect(scrollSpy).not.toHaveBeenCalled();
+  });
+
+  it('command output rows expand a preview without requesting timeline scroll or full payload chunks', async () => {
+    const preview = setBindingMock('GetPayloadPreview', async () => ({
+      data: 'preview output',
+      totalSize: 200_000,
+      isComplete: false,
+      nextOffset: 14,
+    }));
+    const chunk = setBindingMock('GetPayloadChunk', async () => {
+      throw new Error('tray should not fetch full output');
+    });
+    const pane = await makePaneWithBackground([
+      item({
+        id: 'launch-a',
+        isBackground: true,
+        status: 'running',
+        summary: 'Bash',
+        toolName: 'Bash',
+        payloadKind: 'command_output',
+        payloadId: 'payload-a',
+        payloadMeta: JSON.stringify({
+          command: 'sleep 1; echo done',
+          exitCode: 0,
+          lineCount: 1,
+          preview: 'preview output',
+        }),
+        createdAt: 1_000_000 - 1_000,
+      }),
+    ]);
+    const scrollSpy = vi.spyOn(pane, 'requestScrollToItem');
+
+    const rendered = await renderTray(pane);
+    expect(rendered.queryByTestId('background-task-tray-row-output')).toBeNull();
+
+    await fireEvent.click(rendered.getByRole('button', { name: /Toggle command output/i }));
+    await tick();
+    await tick();
+
+    expect(rendered.getByTestId('background-task-tray-row-output')).toBeInTheDocument();
+    const outputToggles = rendered.getAllByRole('button', { name: /Toggle command output: sleep 1; echo done/i });
+    await fireEvent.click(outputToggles[outputToggles.length - 1]!);
+    await tick();
+    await tick();
+
+    expect(preview).toHaveBeenCalledWith('thread-1', 'payload-a', expect.any(Number));
+    expect(chunk).not.toHaveBeenCalled();
+    expect(rendered.queryByTestId('command-output-show-full')).toBeNull();
     expect(scrollSpy).not.toHaveBeenCalled();
   });
 

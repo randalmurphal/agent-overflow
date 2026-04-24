@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render } from '@testing-library/svelte';
+import { tick } from 'svelte';
 import Composer from './Composer.svelte';
 import { createComposerDraftStore } from '../../stores/composerDraft.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
@@ -17,6 +18,7 @@ function installDraftMocks() {
   setBindingMock('SaveDraft', async () => {});
   setBindingMock('ClearDraft', async () => {});
   setBindingMock('ListAttachments', async () => []);
+  setBindingMock('ListLiveBackgroundTasks', async () => []);
   setBindingMock('GetThreadSlashCommands', async () => []);
   setBindingMock('SearchWorkspaceFiles', async () => ({
     files: [],
@@ -79,6 +81,35 @@ describe('<Composer>', () => {
     await fireEvent.click(getByTestId('composer-interrupt'));
 
     expect(interrupt).toHaveBeenCalledWith('thread-1');
+  });
+
+  it('renders the background tray inside the composer card before the input', async () => {
+    const pane = await buildPane();
+    setBindingMock('ListLiveBackgroundTasks', async () => [{
+      id: 'launch-a',
+      threadId: 'thread-1',
+      turnIndex: 0,
+      itemIndex: 0,
+      kind: 'tool_call',
+      role: 'assistant',
+      status: 'running',
+      summary: 'Bash',
+      isBackground: true,
+      createdAt: Date.now() - 1_000,
+      updatedAt: Date.now() - 1_000,
+    }]);
+    const draft = await buildDraft();
+
+    const { getByTestId, getByLabelText } = render(Composer, { props: { pane, draft } });
+    await tick();
+    await tick();
+
+    const root = getByTestId('composer-root');
+    const tray = getByTestId('background-task-tray');
+    const input = getByLabelText('Message input');
+
+    expect(root.contains(tray)).toBe(true);
+    expect(tray.compareDocumentPosition(input) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it('does not send while a turn is active', async () => {

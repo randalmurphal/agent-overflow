@@ -3,7 +3,6 @@
   import type { ThreadPane } from '../../stores/thread.svelte';
   import MessageTimeline from './MessageTimeline.svelte';
   import ApprovalPrompt from '../composer/ApprovalPrompt.svelte';
-  import BackgroundTaskTray from './BackgroundTaskTray.svelte';
   import Composer from '../composer/Composer.svelte';
   import BelowComposerBar from '../composer/belowbar/BelowComposerBar.svelte';
   import ProviderStatusBanner from './ProviderStatusBanner.svelte';
@@ -191,7 +190,6 @@
 
       <MessageTimeline {pane} />
       <ApprovalPrompt {pane} />
-      <BackgroundTaskTray {pane} />
       <PlanFollowUpBanner {pane} {draft} />
       <Composer {pane} {draft} />
       <BelowComposerBar {pane} />

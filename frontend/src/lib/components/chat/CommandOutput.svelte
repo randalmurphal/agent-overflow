@@ -12,11 +12,13 @@
     meta,
     payloadId,
     threadId,
+    allowShowFull = true,
   }: {
     item?: Item;
     meta: CommandOutputMeta;
     payloadId: string;
     threadId?: string;
+    allowShowFull?: boolean;
   } = $props();
 
   const expansion = createPayloadExpansion(() => payloadId, () => item?.threadId ?? threadId);
@@ -70,7 +72,7 @@
         <p class="text-[11px] text-error" role="alert">Failed to load output: {expansion.error}</p>
       {:else}
         <AnsiText source={expansion.displayData ?? ''} class="text-[11px] whitespace-pre text-fg-muted leading-relaxed" />
-        {#if expansion.hasMore}
+        {#if expansion.hasMore && allowShowFull}
           <button
             type="button"
             class="mt-2 text-[11px] text-accent hover:underline cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 rounded"
@@ -79,6 +81,10 @@
           >
             Load more output ({formatPayloadSize(expansion.totalSize)}) ↓
           </button>
+        {:else if expansion.hasMore}
+          <p class="mt-2 text-[11px] text-fg-subtle">
+            Preview truncated ({formatPayloadSize(expansion.totalSize)})
+          </p>
         {/if}
       {/if}
     </div>

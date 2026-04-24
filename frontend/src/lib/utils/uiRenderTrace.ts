@@ -256,9 +256,12 @@ export function snapshotChatDomForTrace(root: HTMLElement | undefined): Record<s
         textPreview: preview(el.textContent ?? ''),
       })),
     approvalCount: root.querySelectorAll('[data-testid="approval-card"]').length,
-    backgroundTray: snapshotTestIdText(root, 'background-task-tray'),
+    backgroundTrayMounted: root.querySelector('[data-testid="background-task-tray"]') !== null,
     backgroundRows: Array.from(root.querySelectorAll<HTMLElement>('[data-testid="background-task-tray-row"]'))
-      .map((el) => preview(el.textContent ?? '')),
+      .map((el) => ({
+        rowId: el.dataset.rowId ?? '',
+        status: el.querySelector<HTMLElement>('[data-testid="background-task-tray-row-status"]')?.dataset.status ?? '',
+      })),
     workingIndicator: snapshotTestIdText(root, 'chat-working-indicator'),
     composerDisabled: root.querySelector<HTMLTextAreaElement>('textarea')?.disabled ?? null,
     scroll: snapshotScroll(root.querySelector<HTMLElement>('[data-testid="message-timeline-scroll"]')),

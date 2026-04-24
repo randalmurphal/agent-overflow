@@ -13,6 +13,7 @@
   import ComposerSlashPopover from './ComposerSlashPopover.svelte';
   import ComposerTerminalChip from './ComposerTerminalChip.svelte';
   import ComposerToolbar from './toolbar/ComposerToolbar.svelte';
+  import BackgroundTaskTray from './BackgroundTaskTray.svelte';
   import { handleMentionPopoverKeydown } from './composerKeyboard';
   import { createComposerMentions } from './composerMentions.svelte';
   import { createComposerUploads } from './composerUploads.svelte';
@@ -190,6 +191,8 @@
     class="mx-auto w-full max-w-[52rem] rounded-[var(--radius-composer)] border border-border-subtle bg-card/70 backdrop-blur-sm shadow-sheet overflow-hidden
            focus-within:border-border focus-within:shadow-menu transition-[border-color,box-shadow] duration-200"
   >
+    <BackgroundTaskTray {pane} />
+
     <ComposerAttachmentRow
       attachments={draft.attachments}
       onRemove={uploads.removeAttachment}

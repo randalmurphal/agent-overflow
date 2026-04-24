@@ -96,29 +96,13 @@ export function trayTaskLabel(task: TrayTask): string {
   return 'Tool';
 }
 
-/**
- * Single-character status glyph for the row badge. `running` spins,
- * `killed` uses a solid block to read as a user-initiated terminal,
- * everything else picks a shape that matches the rest of the UI.
- */
-export function statusGlyph(status: TrayTask['status']): string {
-  if (status === 'running') return '◐';
-  if (status === 'errored') return '!';
-  if (status === 'declined') return '×';
-  // `killed` — user-initiated stop reached terminal. Solid block to
-  // sit next to the "Stopped" label; distinct from the hollow dot a
-  // spinner would use and the checkmark of a clean completion.
-  if (status === 'killed') return '■';
-  return '✓';
-}
-
 /** Status label rendered next to the glyph on a tray row. */
 export function statusLabel(status: TrayTask['status']): string {
-  if (status === 'running') return 'Running';
-  if (status === 'errored') return 'Failed';
-  if (status === 'declined') return 'Declined';
-  if (status === 'killed') return 'Stopped';
-  return 'Completed';
+  if (status === 'running') return 'running';
+  if (status === 'errored') return 'failed';
+  if (status === 'declined') return 'declined';
+  if (status === 'killed') return 'stopped';
+  return '';
 }
 
 /**
@@ -133,7 +117,7 @@ export function statusClass(status: TrayTask['status']): string {
   if (status === 'running') return 'text-accent';
   if (status === 'errored' || status === 'declined') return 'text-error';
   if (status === 'killed') return 'text-text-secondary';
-  return 'text-success';
+  return 'rounded bg-success/10 px-1 py-px text-success';
 }
 
 /**
@@ -155,8 +139,9 @@ export function formatElapsed(ms: number): string {
 
 /**
  * Group each running launch with its tool_completion sibling, prune
- * pairs whose completion has aged past `retentionMs`, and sort so the
- * most recently active pair is first.
+ * pairs whose completion has aged past `retentionMs`, and sort oldest
+ * created first to match the composer-attached tray's stable reading
+ * order.
  *
  * Persisted background rows arrive as independent immutable rows: the
  * launch stays `status='running'` forever (spec invariant — see
@@ -232,13 +217,5 @@ export function deriveTrayTasks(
     });
   }
 
-  // The launch's updatedAt doesn't bump when the completion lands,
-  // so a just-completed pair would otherwise sort below a launch
-  // that's been running for ages. Take the max of the two so active
-  // rows bubble to the top.
-  return out.sort((a, b) => {
-    const aAct = Math.max(a.launch?.updatedAt ?? 0, a.completion?.updatedAt ?? 0);
-    const bAct = Math.max(b.launch?.updatedAt ?? 0, b.completion?.updatedAt ?? 0);
-    return bAct - aAct;
-  });
+  return out.sort((a, b) => a.anchor.createdAt - b.anchor.createdAt);
 }

@@ -8,7 +8,6 @@ import {
   isCodexStoppableTask,
   isCodexSubagentTask,
   statusClass,
-  statusGlyph,
   statusLabel,
   trayTaskLabel,
   type TrayTask,
@@ -170,31 +169,22 @@ describe('isCodexStoppableTask', () => {
   });
 });
 
-describe('statusGlyph / statusLabel / statusClass', () => {
-  it('labels all five statuses with distinct human-readable strings', () => {
-    expect(statusLabel('running')).toBe('Running');
-    expect(statusLabel('completed')).toBe('Completed');
-    expect(statusLabel('errored')).toBe('Failed');
-    expect(statusLabel('declined')).toBe('Declined');
+describe('statusLabel / statusClass', () => {
+  it('labels active/error statuses in the compact tray style', () => {
+    expect(statusLabel('running')).toBe('running');
+    // Completed rows use Forge-style icon-only success chrome.
+    expect(statusLabel('completed')).toBe('');
+    expect(statusLabel('errored')).toBe('failed');
+    expect(statusLabel('declined')).toBe('declined');
     // `killed` must NOT collapse into "Failed" — it's a user-initiated
     // stop; the label difference is the whole point of the phase.
-    expect(statusLabel('killed')).toBe('Stopped');
-  });
-
-  it('gives each status a distinct glyph', () => {
-    const glyphs = new Set([
-      statusGlyph('running'),
-      statusGlyph('completed'),
-      statusGlyph('errored'),
-      statusGlyph('declined'),
-      statusGlyph('killed'),
-    ]);
-    expect(glyphs.size).toBe(5);
+    expect(statusLabel('killed')).toBe('stopped');
   });
 
   it('paints killed on muted-gray and keeps errored/declined on the error palette', () => {
     expect(statusClass('running')).toBe('text-accent');
-    expect(statusClass('completed')).toBe('text-success');
+    expect(statusClass('completed')).toContain('text-success');
+    expect(statusClass('completed')).toContain('bg-success/10');
     expect(statusClass('errored')).toBe('text-error');
     expect(statusClass('declined')).toBe('text-error');
     // The phase spec calls for killed to read distinct from errored;
@@ -352,7 +342,7 @@ describe('deriveTrayTasks', () => {
     expect(out[0].elapsedMs).toBeNull();
   });
 
-  it('sorts by max(launch.updatedAt, completion.updatedAt) so just-completed pairs bubble up', () => {
+  it('sorts oldest created task first', () => {
     const staleLaunch = makeItem({ id: 'stale', createdAt: 0, updatedAt: 0 });
     const freshLaunch = makeItem({ id: 'fresh', createdAt: 10, updatedAt: 10 });
     const freshCompletion = makeItem({
@@ -364,7 +354,7 @@ describe('deriveTrayTasks', () => {
       isBackground: false,
     });
     const out = deriveTrayTasks([staleLaunch, freshLaunch, freshCompletion], 600, RETENTION_MS);
-    expect(out.map((t) => t.rowId)).toEqual(['fresh', 'stale']);
+    expect(out.map((t) => t.rowId)).toEqual(['stale', 'fresh']);
   });
 
   it('picks the highest-createdAt completion when duplicates arrive out of order', () => {
