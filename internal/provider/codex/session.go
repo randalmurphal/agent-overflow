@@ -2,10 +2,12 @@ package codex
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -256,14 +258,29 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 // produced two EventTurnStart per user send (Bug B6). We still record the
 // turn ID locally so Interrupt has something to cancel even if the
 // notification has not yet arrived.
-func (s *Session) Send(ctx context.Context, content string) error {
-	params := map[string]any{
-		"threadId": s.codexThreadID,
-		"input": []map[string]any{{
+func (s *Session) Send(ctx context.Context, content string, attachments ...provider.ImageAttachment) error {
+	input := make([]map[string]any, 0, 1+len(attachments))
+	if strings.TrimSpace(content) != "" {
+		input = append(input, map[string]any{
 			"type":          "text",
 			"text":          content,
 			"text_elements": []any{},
-		}},
+		})
+	}
+	for _, attachment := range attachments {
+		encoded := base64.StdEncoding.EncodeToString(attachment.Data)
+		input = append(input, map[string]any{
+			"type": "image",
+			"url":  "data:" + attachment.MimeType + ";base64," + encoded,
+		})
+	}
+	if len(input) == 0 {
+		return fmt.Errorf("codex: turn/start requires text or image input")
+	}
+
+	params := map[string]any{
+		"threadId": s.codexThreadID,
+		"input":    input,
 	}
 	// Per-turn effort override — Codex's TurnStartParams takes `effort` at
 	// the top level. Threading it here (rather than only at thread-start)

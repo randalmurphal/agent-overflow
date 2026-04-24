@@ -23,15 +23,15 @@ func newAttachmentTestApp(t *testing.T) *App {
 	app.attachments = attStore
 
 	thread := store.Thread{
-		ID:              "thr-a",
+		ID:            "thr-a",
 		ProjectID:     defaultTestProjectID,
-		Title:           "Thread A",
-		Provider:        "claude",
-		WorkspacePath:   "/tmp/work",
-		Model:           "claude",
-		Mode: "chat",
-		CreatedAt:       time.Now().UnixMilli(),
-		UpdatedAt:       time.Now().UnixMilli(),
+		Title:         "Thread A",
+		Provider:      "claude",
+		WorkspacePath: "/tmp/work",
+		Model:         "claude",
+		Mode:          "chat",
+		CreatedAt:     time.Now().UnixMilli(),
+		UpdatedAt:     time.Now().UnixMilli(),
 	}
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread: %v", err)
@@ -73,7 +73,7 @@ func TestGetAttachmentDataReturnsBase64(t *testing.T) {
 		t.Fatalf("UploadAttachment: %v", err)
 	}
 
-	b64, err := app.GetAttachmentData(record.ID)
+	b64, err := app.GetAttachmentData(record.ThreadID, record.ID)
 	if err != nil {
 		t.Fatalf("GetAttachmentData: %v", err)
 	}
@@ -87,9 +87,26 @@ func TestGetAttachmentDataReturnsBase64(t *testing.T) {
 
 func TestGetAttachmentDataMissingReturnsError(t *testing.T) {
 	app := newAttachmentTestApp(t)
-	_, err := app.GetAttachmentData("nope")
+	_, err := app.GetAttachmentData("thr-a", "nope")
 	if err == nil {
 		t.Fatal("expected error for missing attachment")
+	}
+}
+
+func TestGetAttachmentDataRejectsCrossThreadID(t *testing.T) {
+	app := newAttachmentTestApp(t)
+
+	record, err := app.UploadAttachment("thr-a", "hero.png", "image/png", pngBase64(t))
+	if err != nil {
+		t.Fatalf("UploadAttachment: %v", err)
+	}
+
+	_, err = app.GetAttachmentData("thr-b", record.ID)
+	if err == nil {
+		t.Fatal("expected cross-thread attachment rejection")
+	}
+	if !strings.Contains(err.Error(), "belongs to thread") {
+		t.Fatalf("GetAttachmentData error = %v, want ownership rejection", err)
 	}
 }
 

@@ -17,18 +17,21 @@
   import ComposerPendingApprovalPanel from './ComposerPendingApprovalPanel.svelte';
   import ComposerPendingUserInputPanel from './ComposerPendingUserInputPanel.svelte';
   import { handleMentionPopoverKeydown } from './composerKeyboard';
+  import { createComposerImagePlaceholders } from './composerImagePlaceholders';
   import { createComposerMentions } from './composerMentions.svelte';
   import { createComposerUploads } from './composerUploads.svelte';
   import { dispatchInterrupt, dispatchSend } from './composerSend';
   import { RespondToApproval, RespondToUserInput, type ApprovalResponse, type UserInputResponse } from '../../stores/bindings';
   import { addToast } from '../../stores/toast.svelte';
+  import type { ExpandedImagePreview } from '../../utils/attachmentPreview.svelte';
 
   interface Props {
     pane: ThreadPane;
     draft: ComposerDraftStore;
+    onImageExpand?: (preview: ExpandedImagePreview) => void;
   }
 
-  let { pane, draft }: Props = $props();
+  let { pane, draft, onImageExpand }: Props = $props();
 
   let textarea: HTMLTextAreaElement | undefined = $state(undefined);
   let expandedChips = new Set<string>();
@@ -42,8 +45,21 @@
 
   const uploads = createComposerUploads({
     getThreadId: () => pane.threadId,
-    addAttachment: (a) => draft.addAttachment(a),
+    getAttachmentCount: () => draft.attachments.length,
+    addAttachment: (a, insertion) => imagePlaceholders.addUploadedAttachment(a, insertion),
     removeAttachment: (id) => draft.removeAttachment(id),
+  });
+
+  const imagePlaceholders = createComposerImagePlaceholders({
+    getTextarea: () => textarea,
+    getContent: () => draft.content,
+    getAttachments: () => draft.attachments,
+    setContentAndAttachments: (content, attachments) => draft.setContentAndAttachments(content, attachments),
+    removeAttachment: (id) => draft.removeAttachment(id),
+    deleteAttachmentRecord: (id) => void uploads.deleteAttachmentRecord(id),
+    refreshTriggers: () => mentions.refreshTriggers(),
+    autosizeTextarea,
+    hasUserInputPrompt: () => hasUserInputPrompt,
   });
 
   let isDisabled = $derived(!pane.threadId);
@@ -98,7 +114,8 @@
   async function send() {
     if (!pane.threadId || !canSend) return;
     midTurnBlockMessage = '';
-    const message = draft.composeOutgoingMessage();
+    const composedMessage = draft.composeOutgoingMessage();
+    const message = composedMessage;
     sending = true;
 
     const threadId = pane.threadId;
@@ -119,6 +136,7 @@
       await dispatchSend({
         threadId,
         message,
+        attachmentIds: snapshot.attachments.map((attachment) => attachment.id),
         snapshot,
         currentThread: pane.thread,
         restoreDraft: (tid, snap) => draft.restoreDraftFor(tid, snap),
@@ -160,6 +178,8 @@
     // was consumed; otherwise we fall through to the send guard below.
     if (handleMentionPopoverKeydown(e, mentions)) return;
 
+    if (imagePlaceholders.handleAtomicPlaceholderKeydown(e)) return;
+
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       if (hasUserInputPrompt) {
@@ -180,7 +200,9 @@
     if (hasUserInputPrompt) {
       userInputCustomAnswer = value;
     } else {
-      draft.setContent(value);
+      if (!imagePlaceholders.reconcileContent(value)) {
+        draft.setContent(value);
+      }
     }
     autosizeTextarea();
     mentions.refreshTriggers();
@@ -208,12 +230,12 @@
 
   function handleDrop(event: DragEvent): void {
     if (blockPromptAttachment(event)) return;
-    void uploads.handleDrop(event);
+    void uploads.handleDrop(event, imagePlaceholders.currentUploadInsertion());
   }
 
   function handlePaste(event: ClipboardEvent): void {
     if (blockPromptAttachment(event)) return;
-    void uploads.handlePaste(event);
+    void uploads.handlePaste(event, imagePlaceholders.currentUploadInsertion());
   }
 
   async function resolveApproval(response: ApprovalResponse): Promise<void> {
@@ -306,7 +328,8 @@
     {#if !hasInteractivePrompt}
       <ComposerAttachmentRow
         attachments={draft.attachments}
-        onRemove={uploads.removeAttachment}
+        onRemove={imagePlaceholders.removeAttachmentFromComposer}
+        onExpand={onImageExpand}
         dragActive={uploads.dragActive}
       />
     {/if}
@@ -354,6 +377,7 @@
 
         <textarea
           bind:this={textarea}
+          onbeforeinput={imagePlaceholders.handleBeforeInput}
           onkeydown={handleKeydown}
           oninput={handleInput}
           onselect={handleSelectionChange}

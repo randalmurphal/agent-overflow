@@ -20,6 +20,11 @@ import (
 // configurable via Config.MaxSize but defaults to 10 MiB to match forge.
 const DefaultMaxSize int64 = 10 * 1024 * 1024
 
+// DefaultMaxCount is the largest number of image attachments accepted for a
+// single user turn. Kept with the attachment policy constants so UI/backend
+// mirrors have one backend source of truth.
+const DefaultMaxCount = 8
+
 // allowedMIMEs maps MIME types to the filename extension we persist them as.
 // Keeping this tight (images only) makes the attachment dir safe to serve as
 // static content.
@@ -114,6 +119,9 @@ func (s *Store) Upload(threadID, filename, mimeType, dataB64 string, createdAt i
 	if err != nil {
 		return store.Attachment{}, err
 	}
+	if err := validateImagePayload(normalizedMIME, data); err != nil {
+		return store.Attachment{}, err
+	}
 
 	id := uuid.NewString()
 	relativePath := filepath.Join(sanitizeThreadID(threadID), id+ext)
@@ -195,6 +203,27 @@ func (s *Store) ReadBytes(attachmentID string) (store.Attachment, []byte, error)
 	}
 	if !ok {
 		return store.Attachment{}, nil, fmt.Errorf("attachment: id %q not found", attachmentID)
+	}
+	data, err := os.ReadFile(absolutePath)
+	if err != nil {
+		return store.Attachment{}, nil, fmt.Errorf("attachment: read file: %w", err)
+	}
+	return record, data, nil
+}
+
+// ReadThreadBytes returns bytes only when the attachment belongs to the
+// expected thread. Ownership is checked from metadata before reading the file
+// so stale cross-thread IDs cannot force unnecessary large reads.
+func (s *Store) ReadThreadBytes(threadID, attachmentID string) (store.Attachment, []byte, error) {
+	record, absolutePath, ok, err := s.Get(attachmentID)
+	if err != nil {
+		return store.Attachment{}, nil, err
+	}
+	if !ok {
+		return store.Attachment{}, nil, fmt.Errorf("attachment: id %q not found", attachmentID)
+	}
+	if record.ThreadID != threadID {
+		return store.Attachment{}, nil, fmt.Errorf("attachment %q belongs to thread %s, not %s", attachmentID, record.ThreadID, threadID)
 	}
 	data, err := os.ReadFile(absolutePath)
 	if err != nil {
@@ -298,6 +327,33 @@ func validateType(mimeType, filename string) (string, string, error) {
 		return "", "", fmt.Errorf("attachment: unable to infer image type from filename %q", filename)
 	}
 	return "", "", fmt.Errorf("attachment: disallowed mime type %q", mime)
+}
+
+func validateImagePayload(mimeType string, data []byte) error {
+	if len(data) < 4 {
+		return fmt.Errorf("attachment: image payload is too short")
+	}
+	switch mimeType {
+	case "image/png":
+		if len(data) >= 8 &&
+			data[0] == 0x89 && data[1] == 'P' && data[2] == 'N' && data[3] == 'G' &&
+			data[4] == 0x0D && data[5] == 0x0A && data[6] == 0x1A && data[7] == 0x0A {
+			return nil
+		}
+	case "image/jpeg", "image/jpg":
+		if len(data) >= 3 && data[0] == 0xFF && data[1] == 0xD8 && data[2] == 0xFF {
+			return nil
+		}
+	case "image/gif":
+		if len(data) >= 6 && (string(data[:6]) == "GIF87a" || string(data[:6]) == "GIF89a") {
+			return nil
+		}
+	case "image/webp":
+		if len(data) >= 12 && string(data[:4]) == "RIFF" && string(data[8:12]) == "WEBP" {
+			return nil
+		}
+	}
+	return fmt.Errorf("attachment: payload does not match %s", mimeType)
 }
 
 // sanitizeThreadID strips path separators from the thread id so it can be

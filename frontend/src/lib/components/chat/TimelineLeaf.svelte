@@ -7,15 +7,18 @@
   import ThinkingBlock from './ThinkingBlock.svelte';
   import ToolCallCard from './ToolCallCard.svelte';
   import UserMessage from './UserMessage.svelte';
+  import type { ExpandedImagePreview } from '../../utils/attachmentPreview.svelte';
 
   let {
     pane,
     item,
     orphan = false,
+    onImageExpand,
   }: {
     pane: ThreadPane;
     item: Item;
     orphan?: boolean;
+    onImageExpand?: (preview: ExpandedImagePreview) => void;
   } = $props();
 
   const displayItem = $derived.by(() => {
@@ -39,7 +42,7 @@
     </div>
   {/if}
   {#if displayItem.kind === 'user_text'}
-    <UserMessage item={displayItem} />
+    <UserMessage item={displayItem} {onImageExpand} />
   {:else if displayItem.kind === 'tool_call' || displayItem.kind === 'tool_completion'}
     <ToolCallCard {pane} item={displayItem} />
   {:else if displayItem.kind === 'thinking'}

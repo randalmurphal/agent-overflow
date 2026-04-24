@@ -28,6 +28,7 @@ import type { Thread } from '../../types/models';
 export interface SendOptions {
   threadId: string;
   message: string;
+  attachmentIds: string[];
   /** Draft snapshot used to restore the composer on send failure. */
   snapshot: {
     content: string;
@@ -70,7 +71,7 @@ export async function dispatchSend(opts: SendOptions): Promise<void> {
   projectSendStarted(opts.threadId);
 
   try {
-    await SendMessage(opts.threadId, opts.message);
+    await SendMessage(opts.threadId, opts.message, opts.attachmentIds);
   } catch (err) {
     console.error('Failed to send message:', err);
     // Flip to error so the sidebar pill reads "Error" — the user

@@ -7,6 +7,7 @@ import {
   SaveDraft,
 } from './bindings';
 import { errString } from '../utils/errors';
+import { ensureImagePlaceholders } from '../utils/imagePlaceholders';
 
 const DEFAULT_DEBOUNCE_MS = 500;
 
@@ -59,7 +60,7 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
       const attachmentIds = new Set(draft.attachmentIds ?? []);
       attachments = records.filter((rec) => attachmentIds.has(rec.id));
       terminalChips = draft.terminalChips ?? [];
-      content = draft.content ?? '';
+      content = ensureImagePlaceholders(draft.content ?? '', attachments);
     } catch (err) {
       error = `Failed to load draft: ${errString(err)}`;
     } finally {
@@ -142,9 +143,9 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
       queueSave();
     },
 
-    addAttachment(att: Attachment): void {
-      if (attachments.some((a) => a.id === att.id)) return;
-      attachments = [...attachments, att];
+    setContentAndAttachments(nextContent: string, nextAttachments: Attachment[]): void {
+      content = nextContent;
+      attachments = [...nextAttachments];
       queueSave();
     },
 
@@ -228,18 +229,16 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
     },
 
     /**
-     * Build the outgoing message payload for Send. Terminal chip contents
-     * are inlined as fenced blocks and attachments are appended as
-     * markdown image references when they have a known path.
+     * Build the outgoing text payload for Send. Terminal chip contents
+     * are inlined as fenced blocks; image attachments travel separately as
+     * structured attachment ids so providers receive real image inputs.
      */
     composeOutgoingMessage(): string {
+      const messageContent = ensureImagePlaceholders(content, attachments);
       const chipsBlock = terminalChips
         .map((chip) => `\n\n\`\`\`terminal ${chip.label}\n${chip.content}\n\`\`\``)
         .join('');
-      const attachmentsBlock = attachments
-        .map((att) => `\n\n![${att.filename}](attachment://${att.id})`)
-        .join('');
-      return content + chipsBlock + attachmentsBlock;
+      return messageContent + chipsBlock;
     },
   };
 }

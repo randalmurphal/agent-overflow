@@ -40,14 +40,14 @@ func (a *App) DeleteAttachment(attachmentID string) error {
 	return a.attachments.Delete(attachmentID)
 }
 
-// GetAttachmentData returns the base64-encoded raw bytes for rendering the
-// attachment inline in the UI. Keeping this behind RPC avoids exposing a
-// static file server.
-func (a *App) GetAttachmentData(attachmentID string) (string, error) {
+// GetAttachmentData returns the base64-encoded raw bytes for rendering a
+// thread-owned attachment inline in the UI. Keeping this behind RPC avoids
+// exposing a static file server.
+func (a *App) GetAttachmentData(threadID, attachmentID string) (string, error) {
 	if a.attachments == nil {
 		return "", fmt.Errorf("attachment store not initialized")
 	}
-	_, data, err := a.attachments.ReadBytes(attachmentID)
+	_, data, err := a.attachments.ReadThreadBytes(threadID, attachmentID)
 	if err != nil {
 		return "", err
 	}

@@ -25,7 +25,7 @@ func TestSendMessageHappyPath(t *testing.T) {
 	}
 
 	var sentThread, sentContent string
-	app.sendMessageFn = func(threadID, content string) error {
+	app.sendMessageFn = func(threadID, content string, attachmentIDs []string) error {
 		sentThread = threadID
 		sentContent = content
 		return nil
@@ -35,7 +35,7 @@ func TestSendMessageHappyPath(t *testing.T) {
 	// sendMessageFn shortcut is exercised.
 	app.sessions[thread.ID] = session{provider: string(provider.Codex)}
 
-	if err := app.SendMessage(thread.ID, "Hello"); err != nil {
+	if err := app.SendMessage(thread.ID, "Hello", nil); err != nil {
 		t.Fatalf("SendMessage() error = %v", err)
 	}
 	if sentThread != thread.ID {
@@ -76,14 +76,14 @@ func TestSendMessageLazyStartsSession(t *testing.T) {
 
 	// Don't use sendMessageFn: it short-circuits before the lazy-start
 	// check, so we'd never hit the code under test.
-	_ = app.SendMessage(thread.ID, "Hello")
+	_ = app.SendMessage(thread.ID, "Hello", nil)
 	if startCalls != 1 {
 		t.Fatalf("startSessionFn calls = %d, want 1 (lazy-start must fire for session-less thread)", startCalls)
 	}
 
 	// A second send on the now-populated session must not re-trigger
 	// lazy-start — the session is already live.
-	_ = app.SendMessage(thread.ID, "Second")
+	_ = app.SendMessage(thread.ID, "Second", nil)
 	if startCalls != 1 {
 		t.Fatalf("startSessionFn calls = %d after second send, want 1 (no double-start)", startCalls)
 	}
@@ -100,7 +100,7 @@ func TestSendMessageReturnsLazyStartError(t *testing.T) {
 		return fmt.Errorf("synthetic start failure")
 	}
 
-	err := app.SendMessage(thread.ID, "Hello")
+	err := app.SendMessage(thread.ID, "Hello", nil)
 	if err == nil {
 		t.Fatal("SendMessage() error = nil, want lazy-start error")
 	}
@@ -154,7 +154,7 @@ func TestSendMessageIncrementsTurnIndex(t *testing.T) {
 		claude:   sess,
 	}
 
-	if err := app.SendMessage(thread.ID, "Next message"); err != nil {
+	if err := app.SendMessage(thread.ID, "Next message", nil); err != nil {
 		t.Fatalf("SendMessage() error = %v", err)
 	}
 
@@ -230,7 +230,7 @@ func TestSendMessageGeneratesClaudeThreadTitleOnFirstTurn(t *testing.T) {
 		claude:   sess,
 	}
 
-	if err := app.SendMessage(thread.ID, "Fix reconnect spinner on resume"); err != nil {
+	if err := app.SendMessage(thread.ID, "Fix reconnect spinner on resume", nil); err != nil {
 		t.Fatalf("SendMessage() error = %v", err)
 	}
 
@@ -320,7 +320,7 @@ func TestSendMessageDoesNotOverwriteRenamedThreadTitle(t *testing.T) {
 		claude:   sess,
 	}
 
-	if err := app.SendMessage(thread.ID, "Fix reconnect spinner on resume"); err != nil {
+	if err := app.SendMessage(thread.ID, "Fix reconnect spinner on resume", nil); err != nil {
 		t.Fatalf("SendMessage() error = %v", err)
 	}
 	if err := app.RenameThread(thread.ID, "Keep this custom title"); err != nil {
@@ -411,7 +411,7 @@ func TestSendMessageRenamesTemporaryWorktreeBranchOnFirstTurn(t *testing.T) {
 		claude:   sess,
 	}
 
-	if err := app.SendMessage(thread.ID, "Fix reconnect spinner on resume"); err != nil {
+	if err := app.SendMessage(thread.ID, "Fix reconnect spinner on resume", nil); err != nil {
 		t.Fatalf("SendMessage() error = %v", err)
 	}
 
@@ -859,7 +859,7 @@ func TestSendMessageSerialPerThread(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			if err := app.SendMessage(thread.ID, fmt.Sprintf("msg-%d", i)); err != nil {
+			if err := app.SendMessage(thread.ID, fmt.Sprintf("msg-%d", i), nil); err != nil {
 				errCh <- err
 			}
 		}(i)
@@ -947,10 +947,10 @@ func TestSendMessageParallelDifferentThreads(t *testing.T) {
 	app.sessions[threadA.ID] = session{provider: string(provider.Claude), token: "a", claude: sessA}
 	app.sessions[threadB.ID] = session{provider: string(provider.Claude), token: "b", claude: sessB}
 
-	if err := app.SendMessage(threadA.ID, "a"); err != nil {
+	if err := app.SendMessage(threadA.ID, "a", nil); err != nil {
 		t.Fatalf("send A: %v", err)
 	}
-	if err := app.SendMessage(threadB.ID, "b"); err != nil {
+	if err := app.SendMessage(threadB.ID, "b", nil); err != nil {
 		t.Fatalf("send B: %v", err)
 	}
 
@@ -998,7 +998,7 @@ func TestSendMessagePersistsUserItemAndErrorWhenProviderSendFails(t *testing.T) 
 		claude:   sess,
 	}
 
-	err = app.SendMessage(thread.ID, "doomed content")
+	err = app.SendMessage(thread.ID, "doomed content", nil)
 	if err == nil {
 		t.Fatal("expected Send to fail with a closed session, got nil")
 	}
@@ -1080,7 +1080,7 @@ func TestSendMessageGoesThroughRouter(t *testing.T) {
 	}
 
 	// Expected to fail because the session is closed.
-	if err := app.SendMessage(thread.ID, "will-fail"); err == nil {
+	if err := app.SendMessage(thread.ID, "will-fail", nil); err == nil {
 		t.Fatal("expected send failure on closed session")
 	}
 
@@ -1156,7 +1156,7 @@ func TestSendMessagePersistsUserItemOnSuccess(t *testing.T) {
 		claude:   sess,
 	}
 
-	if err := app.SendMessage(thread.ID, "hello world"); err != nil {
+	if err := app.SendMessage(thread.ID, "hello world", nil); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 

@@ -227,11 +227,11 @@ func (a *App) spawnProviderSession(
 
 // SendMessage is the Wails-bound entry point for user-typed content.
 // The real work lives in app_send.go.
-func (a *App) SendMessage(threadID string, content string) error {
+func (a *App) SendMessage(threadID string, content string, attachmentIDs []string) error {
 	if a.shuttingDown.Load() {
 		return ErrShuttingDown
 	}
-	return a.sendMessage(threadID, content)
+	return a.sendMessage(threadID, content, attachmentIDs)
 }
 
 // InterruptTurn fires a provider-level interrupt on the thread's active

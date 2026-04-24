@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"sync"
 	"time"
 
+	attachmentstore "agent-overflow/internal/attachment"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/triage"
@@ -21,6 +23,18 @@ import (
 // max(turn_index) instead of the turn that actually spoke.
 var sendThreadMuRegistry = &threadMutexRegistry{
 	mus: make(map[string]*sync.Mutex),
+}
+
+type userMessageMeta struct {
+	Attachments []userMessageAttachmentMeta `json:"attachments,omitempty"`
+}
+
+type userMessageAttachmentMeta struct {
+	ID       string `json:"id"`
+	ThreadID string `json:"threadId"`
+	Filename string `json:"filename"`
+	MimeType string `json:"mimeType"`
+	Size     int64  `json:"size"`
 }
 
 type threadMutexRegistry struct {
@@ -60,12 +74,21 @@ func (r *threadMutexRegistry) ForgetThread(threadID string) {
 	r.mu.Unlock()
 }
 
-func (a *App) sendMessage(threadID string, content string) error {
+func (a *App) sendMessage(threadID string, content string, attachmentIDs []string) error {
 	if a.shuttingDown.Load() {
 		return ErrShuttingDown
 	}
 	if a.sendMessageFn != nil {
-		return a.sendMessageFn(threadID, content)
+		return a.sendMessageFn(threadID, content, attachmentIDs)
+	}
+
+	providerAttachments, persistedAttachments, err := a.resolveSendMessageAttachments(threadID, attachmentIDs)
+	if err != nil {
+		return fmt.Errorf("send message: attachments: %w", err)
+	}
+	userMeta, err := marshalUserMessageMeta(persistedAttachments)
+	if err != nil {
+		return fmt.Errorf("send message: attachments meta: %w", err)
 	}
 
 	// Per-thread critical section: only one Send per thread at a time.
@@ -142,6 +165,7 @@ func (a *App) sendMessage(threadID string, content string) error {
 		Role:      "user",
 		Status:    "completed",
 		Summary:   content,
+		Meta:      userMeta,
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
@@ -152,7 +176,7 @@ func (a *App) sendMessage(threadID string, content string) error {
 		return fmt.Errorf("send message: persist user message: %w", err)
 	}
 
-	if err := sendToProvider(sess, threadID, content); err != nil {
+	if err := sendToProvider(sess, threadID, content, providerAttachments); err != nil {
 		// Allocate an error id from the same per-turn counter the
 		// EventError handler uses so a subsequent provider error on
 		// the same turn doesn't collide on "error:<turn>:0".
@@ -191,14 +215,67 @@ func (a *App) sendMessage(threadID string, content string) error {
 	return nil
 }
 
+// resolveSendMessageAttachments validates the requested attachment IDs,
+// checks thread ownership, and loads the provider-ready bytes.
+func (a *App) resolveSendMessageAttachments(threadID string, attachmentIDs []string) ([]provider.ImageAttachment, []store.Attachment, error) {
+	if len(attachmentIDs) == 0 {
+		return nil, nil, nil
+	}
+	if len(attachmentIDs) > attachmentstore.DefaultMaxCount {
+		return nil, nil, fmt.Errorf("too many attachments: got %d, max %d", len(attachmentIDs), attachmentstore.DefaultMaxCount)
+	}
+	if a.attachments == nil {
+		return nil, nil, fmt.Errorf("attachment store not initialized")
+	}
+
+	providerAttachments := make([]provider.ImageAttachment, 0, len(attachmentIDs))
+	persistedAttachments := make([]store.Attachment, 0, len(attachmentIDs))
+	for _, attachmentID := range attachmentIDs {
+		record, data, err := a.attachments.ReadThreadBytes(threadID, attachmentID)
+		if err != nil {
+			return nil, nil, err
+		}
+		persistedAttachments = append(persistedAttachments, record)
+		providerAttachments = append(providerAttachments, provider.ImageAttachment{
+			ID:       record.ID,
+			Filename: record.Filename,
+			MimeType: record.MimeType,
+			Size:     record.Size,
+			Data:     data,
+		})
+	}
+	return providerAttachments, persistedAttachments, nil
+}
+
+func marshalUserMessageMeta(attachments []store.Attachment) (string, error) {
+	if len(attachments) == 0 {
+		return "", nil
+	}
+	metaAttachments := make([]userMessageAttachmentMeta, 0, len(attachments))
+	for _, attachment := range attachments {
+		metaAttachments = append(metaAttachments, userMessageAttachmentMeta{
+			ID:       attachment.ID,
+			ThreadID: attachment.ThreadID,
+			Filename: attachment.Filename,
+			MimeType: attachment.MimeType,
+			Size:     attachment.Size,
+		})
+	}
+	data, err := json.Marshal(userMessageMeta{Attachments: metaAttachments})
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
 // sendToProvider forwards the user content to the active provider
 // session. Extracted so sendMessage keeps the provider routing and
 // logging in one place after persisting the optimistic user item.
-func sendToProvider(sess session, threadID, content string) error {
+func sendToProvider(sess session, threadID, content string, attachments []provider.ImageAttachment) error {
 	providerSess := sess.providerSession()
 	if providerSess == nil {
 		log.Printf("send message: session for thread %s has no provider", threadID)
 		return fmt.Errorf("session has no provider")
 	}
-	return providerSess.Send(context.Background(), content)
+	return providerSess.Send(context.Background(), content, attachments...)
 }

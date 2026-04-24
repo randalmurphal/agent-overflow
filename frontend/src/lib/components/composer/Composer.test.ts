@@ -1,11 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render } from '@testing-library/svelte';
+import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import Composer from './Composer.svelte';
 import { createComposerDraftStore } from '../../stores/composerDraft.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
 import { buildPane } from '../../../test/helpers/chat';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import type { Attachment } from '../../types/attachment';
 
 function installDraftMocks() {
   setBindingMock('GetDraft', async (threadId: string) => ({
@@ -18,6 +19,7 @@ function installDraftMocks() {
   setBindingMock('SaveDraft', async () => {});
   setBindingMock('ClearDraft', async () => {});
   setBindingMock('ListAttachments', async () => []);
+  setBindingMock('GetAttachmentData', async () => 'iVBORw0KGgo=');
   setBindingMock('ListLiveBackgroundTasks', async () => []);
   setBindingMock('GetThreadSlashCommands', async () => []);
   setBindingMock('SearchWorkspaceFiles', async () => ({
@@ -33,12 +35,44 @@ async function buildDraft(threadId: string | null = 'thread-1') {
   return draft;
 }
 
+function makeAttachment(id: string, filename = `${id}.png`): Attachment {
+  return {
+    id,
+    threadId: 'thread-1',
+    filename,
+    mimeType: 'image/png',
+    size: 128,
+    relativePath: `thread-1/${id}.png`,
+    createdAt: 1,
+  };
+}
+
+function makeClipboardPaste(files: File[]): ClipboardEvent {
+  const event = new Event('paste', { bubbles: true, cancelable: true }) as ClipboardEvent;
+  Object.defineProperty(event, 'clipboardData', {
+    value: {
+      items: files.map((file) => ({
+        kind: 'file',
+        type: file.type,
+        getAsFile: () => file,
+      })),
+    },
+  });
+  return event;
+}
+
 describe('<Composer>', () => {
   beforeEach(() => {
     resetBindingMocks();
     installDraftMocks();
     setBindingMock('SendMessage', async () => {});
     setBindingMock('InterruptTurn', async () => {});
+    setBindingMock('DeleteAttachment', async () => {});
+    setBindingMock('UploadAttachment', async (
+      _threadId: string,
+      filename: string,
+      _mimeType: string,
+    ) => makeAttachment(`att-${filename}`, filename));
   });
 
   it('disables input when no thread is selected', async () => {
@@ -62,8 +96,118 @@ describe('<Composer>', () => {
     await fireEvent.input(textarea, { target: { value: 'hello world' } });
     await fireEvent.click(getByTestId('composer-send'));
 
-    expect(send).toHaveBeenCalledWith('thread-1', 'hello world');
+    expect(send).toHaveBeenCalledWith('thread-1', 'hello world', []);
     expect(draft.content).toBe('');
+  });
+
+  it('sends image-only drafts with a visible image placeholder and attachment ids', async () => {
+    const pane = await buildPane();
+    const draft = await buildDraft();
+    draft.setContentAndAttachments('[Image #1]', [makeAttachment('att-1', 'hero.png')]);
+    const send = setBindingMock('SendMessage', async () => {});
+
+    const { getByTestId } = render(Composer, { props: { pane, draft } });
+    await fireEvent.click(getByTestId('composer-send'));
+
+    expect(send).toHaveBeenCalledWith(
+      'thread-1',
+      '[Image #1]',
+      ['att-1'],
+    );
+  });
+
+  it('pasting images inserts image placeholders at the cursor and sends ordered attachment ids', async () => {
+    const pane = await buildPane();
+    const draft = await buildDraft();
+    let nextId = 1;
+    const upload = setBindingMock('UploadAttachment', async (
+      threadId: string,
+      filename: string,
+      mimeType: string,
+    ) => ({
+      ...makeAttachment(`att-${nextId++}`, filename),
+      threadId,
+      mimeType,
+    }));
+    const send = setBindingMock('SendMessage', async () => {});
+
+    const { getByLabelText, getByTestId } = render(Composer, { props: { pane, draft } });
+    const textarea = getByLabelText('Message input') as HTMLTextAreaElement;
+
+    await fireEvent.input(textarea, { target: { value: 'please inspect' } });
+    textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+    await fireEvent(textarea, makeClipboardPaste([
+      new File(['png-one'], 'one.png', { type: 'image/png' }),
+      new File(['png-two'], 'two.png', { type: 'image/png' }),
+    ]));
+
+    await waitFor(() => expect(upload).toHaveBeenCalledTimes(2));
+    expect(draft.content).toBe('please inspect [Image #1] [Image #2]');
+    expect(draft.attachments.map((attachment) => attachment.id)).toEqual(['att-1', 'att-2']);
+
+    await fireEvent.click(getByTestId('composer-send'));
+    expect(send).toHaveBeenCalledWith(
+      'thread-1',
+      'please inspect [Image #1] [Image #2]',
+      ['att-1', 'att-2'],
+    );
+  });
+
+  it('backspace after an image placeholder removes the whole placeholder and attachment', async () => {
+    const pane = await buildPane();
+    const draft = await buildDraft();
+    draft.setContentAndAttachments('before [Image #1] after', [makeAttachment('att-1', 'hero.png')]);
+    const remove = setBindingMock('DeleteAttachment', async () => {});
+
+    const { getByLabelText } = render(Composer, { props: { pane, draft } });
+    const textarea = getByLabelText('Message input') as HTMLTextAreaElement;
+    const cursor = 'before [Image #1]'.length;
+    textarea.setSelectionRange(cursor, cursor);
+
+    await fireEvent.keyDown(textarea, { key: 'Backspace' });
+
+    expect(draft.content).toBe('before after');
+    expect(draft.attachments).toHaveLength(0);
+    await waitFor(() => expect(remove).toHaveBeenCalledWith('att-1'));
+  });
+
+  it('delete before or inside an image placeholder removes the whole placeholder and attachment', async () => {
+    const pane = await buildPane();
+    const draft = await buildDraft();
+    draft.setContentAndAttachments('before [Image #1] after', [makeAttachment('att-1', 'hero.png')]);
+    const remove = setBindingMock('DeleteAttachment', async () => {});
+
+    const { getByLabelText } = render(Composer, { props: { pane, draft } });
+    const textarea = getByLabelText('Message input') as HTMLTextAreaElement;
+    const cursor = 'before [Ima'.length;
+    textarea.setSelectionRange(cursor, cursor);
+
+    await fireEvent.keyDown(textarea, { key: 'Delete' });
+
+    expect(draft.content).toBe('before after');
+    expect(draft.attachments).toHaveLength(0);
+    await waitFor(() => expect(remove).toHaveBeenCalledWith('att-1'));
+  });
+
+  it('removing an attachment with the thumbnail X removes its placeholder and renumbers later images', async () => {
+    const pane = await buildPane();
+    const draft = await buildDraft();
+    draft.setContentAndAttachments(
+      '[Image #1] [Image #2] [Image #3]',
+      [
+        makeAttachment('att-1', 'first.png'),
+        makeAttachment('att-2', 'second.png'),
+        makeAttachment('att-3', 'third.png'),
+      ],
+    );
+    const remove = setBindingMock('DeleteAttachment', async () => {});
+
+    const { getByLabelText } = render(Composer, { props: { pane, draft } });
+    await fireEvent.click(getByLabelText('Remove second.png'));
+
+    expect(draft.content).toBe('[Image #1] [Image #2]');
+    expect(draft.attachments.map((attachment) => attachment.id)).toEqual(['att-1', 'att-3']);
+    await waitFor(() => expect(remove).toHaveBeenCalledWith('att-2'));
   });
 
   it('shows the interrupt affordance while a turn is active and interrupts on click', async () => {

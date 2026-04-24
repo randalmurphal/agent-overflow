@@ -157,7 +157,7 @@ func TestConcurrent_ListItemsDuringActiveSession(t *testing.T) {
 	if err := app.StartSession(thread.ID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
-	if err := app.SendMessage(thread.ID, "go"); err != nil {
+	if err := app.SendMessage(thread.ID, "go", nil); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 

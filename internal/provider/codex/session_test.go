@@ -2780,6 +2780,81 @@ done
 	}
 }
 
+func TestSendImageOnlyTurnStartFormat(t *testing.T) {
+	capturePath := filepath.Join(t.TempDir(), "codex-stdin.log")
+	script := fmt.Sprintf(`#!/bin/bash
+while IFS= read -r line; do
+    printf '%%s\n' "$line" >> %q
+    id=$(echo "$line" | grep -o '"id":[0-9]*' | head -1 | grep -o '[0-9]*')
+    if [ -z "$id" ]; then
+        continue
+    fi
+    if echo "$line" | grep -q '"method":"turn/start"'; then
+        echo "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"turn\":{\"id\":\"turn-image\"}}}"
+    else
+        echo "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"thread\":{\"id\":\"mock-thread-123\"}}}"
+    fi
+done
+`, capturePath)
+	scriptPath := filepath.Join(t.TempDir(), "codex")
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write mock script: %v", err)
+	}
+
+	s, err := NewSession(context.Background(), testThread, Config{
+		Binary:  scriptPath,
+		Model:   "test-model",
+		WorkDir: "/tmp",
+	}, func(provider.ProviderEvent) {})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	err = s.Send(context.Background(), "", provider.ImageAttachment{
+		ID:       "att-1",
+		Filename: "snap.png",
+		MimeType: "image/png",
+		Size:     8,
+		Data:     []byte{0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A},
+	})
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	_ = s.Close()
+
+	captured, err := os.ReadFile(capturePath)
+	if err != nil {
+		t.Fatalf("read capture: %v", err)
+	}
+	var turnStart map[string]any
+	for _, line := range strings.Split(string(captured), "\n") {
+		if !strings.Contains(line, `"method":"turn/start"`) {
+			continue
+		}
+		if err := json.Unmarshal([]byte(line), &turnStart); err != nil {
+			t.Fatalf("unmarshal turn/start: %v", err)
+		}
+		break
+	}
+	if turnStart == nil {
+		t.Fatalf("captured no turn/start request: %s", string(captured))
+	}
+	params := turnStart["params"].(map[string]any)
+	input := params["input"].([]any)
+	if len(input) != 1 {
+		t.Fatalf("input length = %d, want image-only input", len(input))
+	}
+	imageInput := input[0].(map[string]any)
+	if imageInput["type"] != "image" {
+		t.Fatalf("input type = %v, want image", imageInput["type"])
+	}
+	wantURL := "data:image/png;base64,iVBORw0KGgo="
+	if imageInput["url"] != wantURL {
+		t.Fatalf("image url = %v, want %s", imageInput["url"], wantURL)
+	}
+}
+
 func TestSessionForkWithMock(t *testing.T) {
 	script := `#!/bin/bash
 while IFS= read -r line; do

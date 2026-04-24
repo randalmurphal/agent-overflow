@@ -1,7 +1,8 @@
-import { describe, expect, it, vi } from 'vitest';
-import { render, fireEvent } from '@testing-library/svelte';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import ComposerAttachmentRow from './ComposerAttachmentRow.svelte';
 import type { Attachment } from '../../types/attachment';
+import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 
 function makeAttachment(id: string, filename = `${id}.png`, size = 512): Attachment {
   return {
@@ -16,6 +17,11 @@ function makeAttachment(id: string, filename = `${id}.png`, size = 512): Attachm
 }
 
 describe('<ComposerAttachmentRow>', () => {
+  beforeEach(() => {
+    resetBindingMocks();
+    setBindingMock('GetAttachmentData', async () => 'iVBORw0KGgo=');
+  });
+
   it('renders nothing when empty and not dragging', () => {
     const { container } = render(ComposerAttachmentRow, {
       props: { attachments: [], onRemove: vi.fn(), dragActive: false },
@@ -30,15 +36,19 @@ describe('<ComposerAttachmentRow>', () => {
     expect(getByText(/Drop an image/)).toBeInTheDocument();
   });
 
-  it('renders each attachment chip with filename and size', () => {
-    const { getByText } = render(ComposerAttachmentRow, {
+  it('renders each attachment as a thumbnail button', async () => {
+    const { getByLabelText, getByText } = render(ComposerAttachmentRow, {
       props: {
         attachments: [makeAttachment('a1', 'hero.png', 2048)],
         onRemove: vi.fn(),
       },
     });
-    expect(getByText('hero.png')).toBeInTheDocument();
-    expect(getByText('2.0 KB')).toBeInTheDocument();
+    const previewButton = getByLabelText('Preview hero.png');
+    expect(previewButton).toBeInTheDocument();
+    expect(getByText('#1')).toBeInTheDocument();
+    await waitFor(() => {
+      expect(previewButton.querySelector('img')).not.toBeNull();
+    });
   });
 
   it('clicking remove invokes onRemove with the attachment id', async () => {

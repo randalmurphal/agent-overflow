@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -41,15 +42,15 @@ func composerSeedThread(t *testing.T, app *App, id, workspacePath string) store.
 	}
 	now := time.Now().UnixMilli()
 	thread := store.Thread{
-		ID:              id,
+		ID:            id,
 		ProjectID:     defaultTestProjectID,
-		Title:           "Composer Thread",
-		Provider:        string(provider.Claude),
-		WorkspacePath:   workspacePath,
-		Model:           "claude-sonnet",
-		Mode: "chat",
-		CreatedAt:       now,
-		UpdatedAt:       now,
+		Title:         "Composer Thread",
+		Provider:      string(provider.Claude),
+		WorkspacePath: workspacePath,
+		Model:         "claude-sonnet",
+		Mode:          "chat",
+		CreatedAt:     now,
+		UpdatedAt:     now,
 	}
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread: %v", err)
@@ -293,7 +294,7 @@ func TestComposer_AttachmentReferenceInDraft(t *testing.T) {
 		t.Fatalf("AttachmentIDs = %+v", got.AttachmentIDs)
 	}
 	for _, id := range got.AttachmentIDs {
-		if _, err := app.GetAttachmentData(id); err != nil {
+		if _, err := app.GetAttachmentData("thr-att-draft", id); err != nil {
 			t.Fatalf("GetAttachmentData(%s): %v", id, err)
 		}
 	}
@@ -335,8 +336,8 @@ func TestComposer_SendMessageWithAttachmentPersistsOnItem(t *testing.T) {
 		claude:   sess,
 	}
 
-	msg := "please review this image\n\n![cover.png](attachment://" + record.ID + ")"
-	if err := app.SendMessage(thread.ID, msg); err != nil {
+	msg := "please review this image"
+	if err := app.SendMessage(thread.ID, msg, []string{record.ID}); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 
@@ -354,11 +355,18 @@ func TestComposer_SendMessageWithAttachmentPersistsOnItem(t *testing.T) {
 	if userItem.ID == "" {
 		t.Fatal("expected persisted user item")
 	}
-	if !strings.Contains(userItem.Summary, "attachment://"+record.ID) {
-		t.Fatalf("user item Summary should embed attachment ref, got %q", userItem.Summary)
+	if strings.Contains(userItem.Summary, "attachment://") {
+		t.Fatalf("user item Summary should not embed attachment refs, got %q", userItem.Summary)
+	}
+	var meta userMessageMeta
+	if err := json.Unmarshal([]byte(userItem.Meta), &meta); err != nil {
+		t.Fatalf("unmarshal user item meta: %v", err)
+	}
+	if len(meta.Attachments) != 1 || meta.Attachments[0].ID != record.ID {
+		t.Fatalf("expected attachment metadata on user item, got %+v", meta.Attachments)
 	}
 	// Attachment must still be retrievable post-send.
-	if _, err := app.GetAttachmentData(record.ID); err != nil {
+	if _, err := app.GetAttachmentData(record.ThreadID, record.ID); err != nil {
 		t.Fatalf("GetAttachmentData after send: %v", err)
 	}
 	list, err := app.ListAttachments(thread.ID)
@@ -370,14 +378,37 @@ func TestComposer_SendMessageWithAttachmentPersistsOnItem(t *testing.T) {
 	}
 }
 
+func TestComposer_SendMessageRejectsAttachmentFromDifferentThread(t *testing.T) {
+	app, _ := newComposerTestApp(t)
+	sourceThread := composerSeedThread(t, app, "thr-attachment-source", "")
+	targetThread := composerSeedThread(t, app, "thr-attachment-target", "")
+
+	record, err := app.UploadAttachment(sourceThread.ID, "cover.png", "image/png", tinyPNGBase64())
+	if err != nil {
+		t.Fatalf("UploadAttachment: %v", err)
+	}
+
+	err = app.SendMessage(targetThread.ID, "please review this image", []string{record.ID})
+	if err == nil {
+		t.Fatal("SendMessage error = nil, want cross-thread attachment rejection")
+	}
+	if !strings.Contains(err.Error(), "belongs to thread") {
+		t.Fatalf("SendMessage error = %v, want ownership rejection", err)
+	}
+	items, err := app.store.ListItems(targetThread.ID)
+	if err != nil {
+		t.Fatalf("ListItems: %v", err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("expected no user item after rejected attachment, got %+v", items)
+	}
+}
+
 // TestComposer_SendMessageWithTerminalChipFormatsAsFencedCodeBlock verifies
 // that whatever formatted text the frontend passes to SendMessage is written
 // verbatim to the provider stdin. The frontend emits terminal chips as
-// ```terminal ...``` fenced blocks and attachments as ![name](attachment://id)
-// markdown (see frontend/src/lib/stores/composerDraft.svelte.ts:
-// composeOutgoingMessage). This test feeds that exact formatted string to
-// SendMessage and asserts the provider's stdin received a JSON frame whose
-// "content" field matches byte-for-byte.
+// ```terminal ...``` fenced blocks, while image attachments travel as
+// structured provider content blocks.
 func TestComposer_SendMessageWithTerminalChipFormatsAsFencedCodeBlock(t *testing.T) {
 	app, _ := newComposerTestApp(t)
 	thread := composerSeedThread(t, app, "thr-outgoing", "")
@@ -414,8 +445,8 @@ func TestComposer_SendMessageWithTerminalChipFormatsAsFencedCodeBlock(t *testing
 		claude:   sess,
 	}
 
-	outgoing := "initial question\n\n```terminal shell\n$ ls\nREADME.md\n```\n\n![snap.png](attachment://" + record.ID + ")"
-	if err := app.SendMessage(thread.ID, outgoing); err != nil {
+	outgoing := "initial question\n\n```terminal shell\n$ ls\nREADME.md\n```"
+	if err := app.SendMessage(thread.ID, outgoing, []string{record.ID}); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 
@@ -441,24 +472,26 @@ func TestComposer_SendMessageWithTerminalChipFormatsAsFencedCodeBlock(t *testing
 		t.Fatal("mock captured no stdin; session did not send")
 	}
 
-	// The capture file contains a JSON frame whose "content" field is the
-	// outgoing markdown. Rather than parse JSON (the frame embeds escaped
-	// newlines), we verify the payload bytes — with JSON string escaping —
-	// land verbatim in the capture.
+	// The capture file contains a JSON frame whose content blocks include the
+	// outgoing text and a Claude-compatible image source.
 	escapedOutgoing := jsonEscapeContent(outgoing)
 	if !strings.Contains(string(captured), escapedOutgoing) {
 		t.Fatalf("captured stdin missing expected content block.\nwant substring: %q\nfull capture: %q",
 			escapedOutgoing, string(captured))
 	}
-	// Sanity: the three structural markers — fenced terminal block, attachment
-	// ref — must be present in their escaped form too.
+	// Sanity: the terminal marker stays in the text block, and the attachment
+	// is sent as an image block rather than an attachment:// markdown ref.
 	for _, marker := range []string{
 		"```terminal shell",
-		"attachment://" + record.ID,
+		`"type":"image"`,
+		`"media_type":"image/png"`,
 	} {
 		if !strings.Contains(string(captured), marker) {
 			t.Fatalf("captured stdin missing marker %q in %q", marker, string(captured))
 		}
+	}
+	if strings.Contains(string(captured), "attachment://") {
+		t.Fatalf("captured stdin should not contain attachment markdown refs: %q", string(captured))
 	}
 }
 
@@ -498,7 +531,7 @@ func TestComposer_AttachmentNotLostOnDraftSave(t *testing.T) {
 	}
 
 	// Attachment metadata row is still there.
-	if _, err := app.GetAttachmentData(record.ID); err != nil {
+	if _, err := app.GetAttachmentData(record.ThreadID, record.ID); err != nil {
 		t.Fatalf("attachment lost after draft save: %v", err)
 	}
 	// Disk file is still there.
@@ -538,7 +571,7 @@ func TestComposer_SendMessageClearsDraft(t *testing.T) {
 		claude:   sess,
 	}
 
-	if err := app.SendMessage(thread.ID, "Actual message"); err != nil {
+	if err := app.SendMessage(thread.ID, "Actual message", nil); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 
@@ -683,15 +716,15 @@ func TestComposer_DraftSurvivesRestart(t *testing.T) {
 	}
 	ensureDefaultTestProject(t, app1)
 	thread := store.Thread{
-		ID:              threadID,
+		ID:            threadID,
 		ProjectID:     defaultTestProjectID,
-		Title:           "Restart",
-		Provider:        string(provider.Claude),
-		WorkspacePath:   "/tmp",
-		Model:           "claude",
-		Mode: "chat",
-		CreatedAt:       time.Now().UnixMilli(),
-		UpdatedAt:       time.Now().UnixMilli(),
+		Title:         "Restart",
+		Provider:      string(provider.Claude),
+		WorkspacePath: "/tmp",
+		Model:         "claude",
+		Mode:          "chat",
+		CreatedAt:     time.Now().UnixMilli(),
+		UpdatedAt:     time.Now().UnixMilli(),
 	}
 	if err := app1.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread: %v", err)
@@ -729,4 +762,3 @@ func TestComposer_DraftSurvivesRestart(t *testing.T) {
 		t.Fatalf("TerminalChips post-restart = %+v", got.TerminalChips)
 	}
 }
-

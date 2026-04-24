@@ -139,7 +139,7 @@ func TestClaudeDesignOptionChoiceSendsFollowUpMessage(t *testing.T) {
 	setThreadProvider(t, app, "thread-design", string(provider.Claude))
 
 	sent := make(chan string, 1)
-	app.sendMessageFn = func(threadID, content string) error {
+	app.sendMessageFn = func(threadID, content string, attachmentIDs []string) error {
 		if threadID != "thread-design" {
 			t.Fatalf("threadID = %q, want thread-design", threadID)
 		}

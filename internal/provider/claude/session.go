@@ -3,6 +3,7 @@ package claude
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -262,13 +263,39 @@ func buildArgs(cfg Config) []string {
 // Send also arms the idle watchdog: if no stdout line arrives within the
 // configured idle window, the watchdog closes the session and emits a
 // timeout error so the UI is never left waiting on a wedged subprocess.
-func (s *Session) Send(ctx context.Context, content string) error {
+func (s *Session) Send(ctx context.Context, content string, attachments ...provider.ImageAttachment) error {
+	message := map[string]any{
+		"role": "user",
+	}
+	if len(attachments) == 0 {
+		message["content"] = content
+	} else {
+		blocks := make([]map[string]any, 0, 1+len(attachments))
+		if strings.TrimSpace(content) != "" {
+			blocks = append(blocks, map[string]any{
+				"type": "text",
+				"text": content,
+			})
+		}
+		for _, attachment := range attachments {
+			blocks = append(blocks, map[string]any{
+				"type": "image",
+				"source": map[string]any{
+					"type":       "base64",
+					"media_type": attachment.MimeType,
+					"data":       base64.StdEncoding.EncodeToString(attachment.Data),
+				},
+			})
+		}
+		if len(blocks) == 0 {
+			return fmt.Errorf("claude: user message requires text or image content")
+		}
+		message["content"] = blocks
+	}
+
 	msg := map[string]any{
-		"type": "user",
-		"message": map[string]string{
-			"role":    "user",
-			"content": content,
-		},
+		"type":    "user",
+		"message": message,
 	}
 	data, err := json.Marshal(msg)
 	if err != nil {

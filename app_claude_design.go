@@ -89,7 +89,7 @@ func (a *App) runClaudeDesignOptions(threadID string, rawInput json.RawMessage) 
 		return
 	}
 
-	if err := a.sendMessage(threadID, formatClaudeDesignChoice(result)); err != nil {
+	if err := a.sendMessage(threadID, formatClaudeDesignChoice(result), nil); err != nil {
 		a.emitErrorToThread(threadID, fmt.Sprintf("design option selection: %v", err))
 	}
 }

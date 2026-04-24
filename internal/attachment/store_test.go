@@ -60,6 +60,11 @@ func pngData(t *testing.T) string {
 	return base64.StdEncoding.EncodeToString(payload)
 }
 
+func jpegData(t *testing.T) string {
+	t.Helper()
+	return base64.StdEncoding.EncodeToString([]byte{0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10})
+}
+
 func TestNewStoreRejectsMissingRoot(t *testing.T) {
 	meta, err := store.New(":memory:")
 	if err != nil {
@@ -138,12 +143,22 @@ func TestUploadInfersMimeFromFilename(t *testing.T) {
 	seedThread(t, meta, "t1")
 
 	// No mime type provided — should infer from extension.
-	record, err := attStore.Upload("t1", "chart.jpg", "", pngData(t), 0)
+	record, err := attStore.Upload("t1", "chart.jpg", "", jpegData(t), 0)
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
 	if record.MimeType != "image/jpeg" {
 		t.Fatalf("MimeType inferred: got %q want image/jpeg", record.MimeType)
+	}
+}
+
+func TestUploadRejectsMismatchedImagePayload(t *testing.T) {
+	attStore, meta := newTestStores(t)
+	seedThread(t, meta, "t1")
+
+	_, err := attStore.Upload("t1", "pic.png", "image/png", jpegData(t), 0)
+	if err == nil || !strings.Contains(err.Error(), "payload does not match image/png") {
+		t.Fatalf("expected payload mismatch error, got %v", err)
 	}
 }
 

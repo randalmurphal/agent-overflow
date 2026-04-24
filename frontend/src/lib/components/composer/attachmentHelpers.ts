@@ -8,7 +8,10 @@ import {
   isAllowedAttachmentMime,
 } from '../../types/attachment';
 
-export { DEFAULT_MAX_ATTACHMENT_SIZE } from '../../types/attachment';
+export {
+  DEFAULT_MAX_ATTACHMENT_COUNT,
+  DEFAULT_MAX_ATTACHMENT_SIZE,
+} from '../../types/attachment';
 
 /**
  * Return the non-null data URL payload as base64 (without the

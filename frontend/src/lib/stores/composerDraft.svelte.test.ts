@@ -50,7 +50,7 @@ describe('composerDraft store', () => {
     });
     const store = createComposerDraftStore({ debounceMs: 0 });
     await store.setThread('thread-1');
-    expect(store.content).toBe('hello');
+    expect(store.content).toBe('hello [Image #1]');
     expect(store.attachments.map((a) => a.id)).toEqual(['att-1']);
     expect(store.terminalChips.map((c) => c.id)).toEqual(['chip-1']);
   });
@@ -71,20 +71,21 @@ describe('composerDraft store', () => {
     expect(last[1]).toBe('abc');
   });
 
-  it('addAttachment queues a save with the attachment id list', async () => {
+  it('setContentAndAttachments queues one save with matching content and attachment ids', async () => {
     const saveMock = setBindingMock('SaveDraft', async () => {});
     const store = createComposerDraftStore({ debounceMs: 0 });
     await store.setThread('thread-1');
-    store.addAttachment(sampleAttachment('att-new'));
+    store.setContentAndAttachments('[Image #1]', [sampleAttachment('att-new')]);
     await new Promise((r) => setTimeout(r, 10));
     const last = saveMock.mock.calls[saveMock.mock.calls.length - 1];
+    expect(last[1]).toBe('[Image #1]');
     expect(last[2]).toContain('att-new');
   });
 
   it('removeAttachment drops it from the local list', async () => {
     const store = createComposerDraftStore({ debounceMs: 0 });
     await store.setThread('thread-1');
-    store.addAttachment(sampleAttachment('att-x'));
+    store.setContentAndAttachments('[Image #1]', [sampleAttachment('att-x')]);
     expect(store.attachments).toHaveLength(1);
     store.removeAttachment('att-x');
     expect(store.attachments).toHaveLength(0);
@@ -95,14 +96,14 @@ describe('composerDraft store', () => {
     const store = createComposerDraftStore({ debounceMs: 0 });
     await store.setThread('thread-1');
     store.setContent('about to send');
-    store.addAttachment(sampleAttachment('att-1'));
+    store.setContentAndAttachments('about to send [Image #1]', [sampleAttachment('att-1')]);
     await store.clearAfterSend();
     expect(store.content).toBe('');
     expect(store.attachments).toHaveLength(0);
     expect(clearMock).toHaveBeenCalledWith('thread-1');
   });
 
-  it('composeOutgoingMessage appends chips and attachments to the text', async () => {
+  it('composeOutgoingMessage appends chips and keeps visible image placeholders structured', async () => {
     const store = createComposerDraftStore({ debounceMs: 0 });
     await store.setThread('thread-1');
     store.setContent('look at this:');
@@ -113,12 +114,13 @@ describe('composerDraft store', () => {
       content: '$ ls\nREADME',
       createdAt: 0,
     });
-    store.addAttachment(sampleAttachment('att-1'));
+    store.setContentAndAttachments('look at this: [Image #1]', [sampleAttachment('att-1')]);
     const outgoing = store.composeOutgoingMessage();
-    expect(outgoing).toContain('look at this:');
+    expect(outgoing).toContain('look at this: [Image #1]');
     expect(outgoing).toContain('```terminal');
     expect(outgoing).toContain('README');
-    expect(outgoing).toContain('attachment://att-1');
+    expect(outgoing).not.toContain('attachment://att-1');
+    expect(store.attachments.map((attachment) => attachment.id)).toEqual(['att-1']);
   });
 
   it('switching threads discards pending saves from the previous thread', async () => {
@@ -164,9 +166,10 @@ describe('composerDraft store', () => {
     store.setContent('hi');
     expect(store.hasDraft).toBe(true);
     store.setContent('');
-    store.addAttachment(sampleAttachment('att-1'));
+    store.setContentAndAttachments('[Image #1]', [sampleAttachment('att-1')]);
     expect(store.hasDraft).toBe(true);
     store.removeAttachment('att-1');
+    store.setContent('');
     expect(store.hasDraft).toBe(false);
   });
 });

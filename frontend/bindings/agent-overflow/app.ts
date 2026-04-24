@@ -275,12 +275,12 @@ export function GenerateCommitMessage(threadID: string): $CancellablePromise<$mo
 }
 
 /**
- * GetAttachmentData returns the base64-encoded raw bytes for rendering the
- * attachment inline in the UI. Keeping this behind RPC avoids exposing a
- * static file server.
+ * GetAttachmentData returns the base64-encoded raw bytes for rendering a
+ * thread-owned attachment inline in the UI. Keeping this behind RPC avoids
+ * exposing a static file server.
  */
-export function GetAttachmentData(attachmentID: string): $CancellablePromise<string> {
-    return $Call.ByID(71154490, attachmentID);
+export function GetAttachmentData(threadID: string, attachmentID: string): $CancellablePromise<string> {
+    return $Call.ByID(71154490, threadID, attachmentID);
 }
 
 /**
@@ -967,8 +967,8 @@ export function SearchWorkspaceFiles(threadID: string, query: string, limit: num
  * SendMessage is the Wails-bound entry point for user-typed content.
  * The real work lives in app_send.go.
  */
-export function SendMessage(threadID: string, content: string): $CancellablePromise<void> {
-    return $Call.ByID(1496882310, threadID, content);
+export function SendMessage(threadID: string, content: string, attachmentIDs: string[]): $CancellablePromise<void> {
+    return $Call.ByID(1496882310, threadID, content, attachmentIDs);
 }
 
 /**

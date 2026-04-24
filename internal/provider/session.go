@@ -2,6 +2,17 @@ package provider
 
 import "context"
 
+// ImageAttachment is the provider-ready form of a user-attached image.
+// Bytes are kept out of the store timeline metadata and loaded only for the
+// provider send that needs them.
+type ImageAttachment struct {
+	ID       string
+	Filename string
+	MimeType string
+	Size     int64
+	Data     []byte
+}
+
 // Session is the minimal interface both provider.{claude,codex}.Session
 // satisfy. The app layer uses this to avoid branching on
 // `switch { case sess.claude != nil: ...; case sess.codex != nil: ... }`
@@ -12,7 +23,7 @@ import "context"
 // pointers so those call sites are unaffected.
 type Session interface {
 	// Send delivers a user turn to the provider.
-	Send(ctx context.Context, content string) error
+	Send(ctx context.Context, content string, attachments ...ImageAttachment) error
 	// Interrupt asks the provider to abort the current turn.
 	Interrupt(ctx context.Context) error
 	// RespondToApproval forwards the user's decision on a pending

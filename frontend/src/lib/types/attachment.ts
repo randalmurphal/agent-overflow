@@ -26,6 +26,7 @@ export const ALLOWED_ATTACHMENT_MIME_TYPES = new Set<string>([
 ]);
 
 export const DEFAULT_MAX_ATTACHMENT_SIZE = 10 * 1024 * 1024;
+export const DEFAULT_MAX_ATTACHMENT_COUNT = 8;
 
 export function isAllowedAttachmentMime(mime: string | undefined | null): boolean {
   if (!mime) return false;

@@ -282,7 +282,7 @@ func TestHandleClaudeDesignToolTeardownCancelsPendingOptions(t *testing.T) {
 	errorEvents := collectErrorItemUpserts(t, app, 4)
 
 	sent := make(chan string, 1)
-	app.sendMessageFn = func(threadID, content string) error {
+	app.sendMessageFn = func(threadID, content string, attachmentIDs []string) error {
 		sent <- content
 		return nil
 	}

@@ -86,7 +86,7 @@ type App struct {
 	// Test-only injection points for binding helpers that need to observe start/stop.
 	startSessionFn        func(string) error
 	stopSessionFn         func(string) error
-	sendMessageFn         func(string, string) error
+	sendMessageFn         func(string, string, []string) error
 	generateBranchNameFn  func(store.Thread, string) (string, error)
 	generateThreadTitleFn func(store.Thread, string) (string, error)
 	// commitExecutor stubs the provider-CLI invocation used by

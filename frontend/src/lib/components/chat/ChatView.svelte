@@ -12,6 +12,8 @@
   import PlanSidebar from './PlanSidebar.svelte';
   import PlanFollowUpBanner from './PlanFollowUpBanner.svelte';
   import ChatHeader from './ChatHeader.svelte';
+  import ExpandedImageDialog from './ExpandedImageDialog.svelte';
+  import type { ExpandedImagePreview } from '../../utils/attachmentPreview.svelte';
   import { createComposerDraftStore } from '../../stores/composerDraft.svelte';
   import { MarkThreadRead } from '../../stores/bindings';
   import { updateThreadLastRead } from '../../stores/threads.svelte';
@@ -27,6 +29,7 @@
 
   const draft = createComposerDraftStore();
   let chatRoot: HTMLDivElement | undefined = $state(undefined);
+  let expandedImagePreview: ExpandedImagePreview | null = $state(null);
   let lastHydratedThreadId: string | null = null;
   let lastReadMarker: string | null = null;
   let lastReadPersistStartedAt = 0;
@@ -166,6 +169,14 @@
     pane.toggleTerminal();
   }
 
+  function openImagePreview(preview: ExpandedImagePreview): void {
+    expandedImagePreview = preview;
+  }
+
+  function closeImagePreview(): void {
+    expandedImagePreview = null;
+  }
+
   onMount(() => {
     window.addEventListener('keydown', handleKeydown);
   });
@@ -193,9 +204,9 @@
 
       <ProviderStatusBanner {pane} />
 
-      <MessageTimeline {pane} />
+      <MessageTimeline {pane} onImageExpand={openImagePreview} />
       <PlanFollowUpBanner {pane} {draft} />
-      <Composer {pane} {draft} />
+      <Composer {pane} {draft} onImageExpand={openImagePreview} />
       <BelowComposerBar {pane} />
       {#if pane.diffPanel.open && pane.thread}
         {#key pane.thread.id}
@@ -213,6 +224,9 @@
       <div class="flex-1 min-w-0">
         <DesignView {pane} />
       </div>
+    {/if}
+    {#if expandedImagePreview}
+      <ExpandedImageDialog preview={expandedImagePreview} onClose={closeImagePreview} />
     {/if}
   </div>
 {:else}

@@ -30,6 +30,7 @@
   import { createTimelineMeasurementActions } from './timelineMeasurementActions';
   import TimelineLeaf from './TimelineLeaf.svelte';
   import TurnDiffBadge from './TurnDiffBadge.svelte';
+  import type { ExpandedImagePreview } from '../../utils/attachmentPreview.svelte';
   import {
     isUiRenderTraceEnabled,
     recordUiTrace,
@@ -37,7 +38,13 @@
     summarizeItemsForTrace,
   } from '../../utils/uiRenderTrace';
 
-  let { pane }: { pane: ThreadPane } = $props();
+  let {
+    pane,
+    onImageExpand,
+  }: {
+    pane: ThreadPane;
+    onImageExpand?: (preview: ExpandedImagePreview) => void;
+  } = $props();
 
   /**
    * Decide whether the completion divider renders immediately before this
@@ -498,7 +505,7 @@
     </div>
   {:else}
     {#snippet leafContent(item: Item, orphan: boolean)}
-      <TimelineLeaf {pane} {item} {orphan} />
+      <TimelineLeaf {pane} {item} {orphan} {onImageExpand} />
     {/snippet}
 
     {#snippet renderNode(node: TimelineNode, depth: number)}

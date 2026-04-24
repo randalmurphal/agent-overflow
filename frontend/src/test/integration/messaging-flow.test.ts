@@ -72,6 +72,7 @@ describe('App integration — messaging flow', () => {
 
     expect(sendMock.mock.calls[0][0]).toBe('thread-1');
     expect(sendMock.mock.calls[0][1]).toBe('hello agent');
+    expect(sendMock.mock.calls[0][2]).toEqual([]);
     expect(textarea.value).toBe('');
   });
 
