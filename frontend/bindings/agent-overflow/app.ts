@@ -658,12 +658,13 @@ export function ListItemsBeforeTurn(threadID: string, beforeTurnIndex: number, t
 }
 
 /**
- * ListLiveBackgroundTasks returns running background launches plus their
+ * ListLiveBackgroundTasks returns running launches plus their
  * recently-completed siblings (within the tray retention window) so the
  * BackgroundTaskTray can render without scanning `pane.items`. SQLite
  * rows cover persisted Claude / Codex subagent launches; the triage
  * router appends transient Codex unified-exec tasks that intentionally
- * do not exist in chat history.
+ * do not exist in chat history. Pending Codex unifiedExec launches
+ * surface here before they are known to be backgrounded.
  */
 export function ListLiveBackgroundTasks(threadID: string): $CancellablePromise<store$0.Item[]> {
     return $Call.ByID(320784263, threadID).then(($result: any) => {

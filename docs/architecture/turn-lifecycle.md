@@ -82,6 +82,16 @@ appears in the background tray, and later gets a separate
 `item/completed` for commands, `wait_agent`, or injected
 `<subagent_notification>` fragments for detached child agents.
 
+Codex `unifiedExecStartup` command executions are the exception to the
+persisted-launch-row shape. Their starts are tracked as transient
+running-tray state so the user can see the command immediately, but
+they are not written into transcript history at start time. If the
+command completes before a yield, triage persists one normal command
+row with its output. If Codex yields while the command is still
+running, the transient tray item flips to `is_background=true`; its
+output becomes chat history only when Codex explicitly polls the
+terminal.
+
 The retired `BackgroundClassifier` heuristic must not come back.
 Background authorization comes from the wire fields above; model
 text/thinking or turn completion is only the trigger that marks an
@@ -333,7 +343,7 @@ active."
 | `ChatWorkingIndicator` | `pane.activeTurn.startedAt` | Self-ticking timer, appears iff `activeTurn !== null`. |
 | `MessageTimeline` (completion divider) | `pane.latestSettledTurn.{assistantMessageId, tokenUsage}` | Separator rendered before the item whose id matches `assistantMessageId`. Label `"Response • Worked for Xs · Yk tokens"`. |
 | `ToolCallCard` (backgrounded badge) | `item.isBackground && item.status === 'running'` | Renders a `…` status badge on the inline launch row. |
-| `BackgroundTaskTray` | `ListLiveBackgroundTasks(threadId)` | Pairs launch + completion siblings; drops pair on retention. |
+| `BackgroundTaskTray` | `ListLiveBackgroundTasks(threadId)` | Shows running launches, pending Codex unifiedExec commands, and recent completion siblings; drops completed pairs on retention. |
 
 ## Anti-patterns (forbidden)
 

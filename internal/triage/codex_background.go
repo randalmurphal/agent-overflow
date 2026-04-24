@@ -26,11 +26,13 @@ import (
 //
 // The projector sits between the wire signal and the is_background stamp.
 // It tracks per-thread inProgress unifiedExec items in transient state
-// and spawn_agent launch rows in SQLite. A yielded unifiedExec is shown
-// in the tray, then completed output is attached to the explicit
-// terminal wait/poll row. A spawn_agent with running children still
-// stamps its persisted launch row is_background=true because that tool
-// call is real transcript history.
+// and spawn_agent launch rows in SQLite. A unifiedExec is shown in the
+// running-task tray immediately, but it only becomes a background task
+// when a yield signal proves Codex moved on while the PTY kept running.
+// Completed background output is attached to the explicit terminal
+// wait/poll row. A spawn_agent with running children still stamps its
+// persisted launch row is_background=true because that tool call is
+// real transcript history.
 //
 // The correlation is bounded: quick unifiedExec entries are dropped on
 // item/completed, completed backgrounded unifiedExec entries are
@@ -53,10 +55,11 @@ const (
 // unifiedExecTracker is the per-thread per-launchID state tracked for
 // Codex unified exec command executions. Unlike Claude background
 // tasks, these rows are not timeline history while they are live:
-// Codex's own TUI keeps yielded PTYs in a running-tasks area and only
-// renders output in chat when the model explicitly polls with
-// write_stdin. The tracker therefore feeds the tray and wait-row
-// enrichment, not a persisted launch row.
+// they first appear only in the running-task tray. If the command
+// completes before a yield, it becomes a normal command row. If Codex
+// yields while it is still running, the tracker flips to backgrounded
+// tray state and later output only renders in chat when the model
+// explicitly polls with write_stdin.
 type unifiedExecTracker struct {
 	backgrounded bool
 	completed    bool
@@ -339,8 +342,8 @@ func (r *Router) markCodexUnifiedExecBackgrounded(threadID, excludeItemID string
 //
 // Branches:
 //   - unifiedExec startup: wire-typed `source == "unifiedExecStartup"`.
-//     Tracked as transient live state for the tray; not persisted as a
-//     launch row.
+//     Tracked as transient live state for the running tray; not
+//     persisted as a launch row.
 //   - collabAgentToolCall spawn_agent: tracked so item/completed can stamp
 //     the persisted row backgrounded if agentsStates reports a running
 //     child. The spawn row itself closes on the wire immediately.
@@ -750,7 +753,9 @@ func (r *Router) clearCodexCompletedOutputTracker(threadID, processID string) {
 }
 
 // ListLiveCodexBackgroundTasks returns transient Codex unified exec tray
-// rows. These are intentionally not persisted timeline items.
+// rows. Pending foreground commands are included with IsBackground=false;
+// yielded PTYs are included with IsBackground=true. These are
+// intentionally not persisted timeline items.
 func (r *Router) ListLiveCodexBackgroundTasks(threadID string, nowMillis, retentionCutoffMillis int64) []store.Item {
 	r.mu.Lock()
 	state := r.codexBackground[threadID]
@@ -761,9 +766,6 @@ func (r *Router) ListLiveCodexBackgroundTasks(threadID string, nowMillis, retent
 	trackers := make([]unifiedExecTracker, 0, len(state.unifiedExec))
 	for _, tracker := range state.unifiedExec {
 		if tracker == nil {
-			continue
-		}
-		if !tracker.backgrounded {
 			continue
 		}
 		if tracker.completed && tracker.completedAt < nowMillis-codexCompletedOutputRetentionMillis {
@@ -795,7 +797,7 @@ func (r *Router) ListLiveCodexBackgroundTasks(threadID string, nowMillis, retent
 			Status:       statusRunning,
 			Summary:      tracker.summary,
 			ParentID:     tracker.parentID,
-			IsBackground: true,
+			IsBackground: tracker.backgrounded,
 			ToolName:     "command_execution",
 			Meta:         `{"source":"unifiedExecStartup"}`,
 			CreatedAt:    tracker.createdAt,

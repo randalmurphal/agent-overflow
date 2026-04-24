@@ -13,7 +13,7 @@
   import {
     deriveTrayTasks,
     extractClaudeTaskID,
-    isCodexSubagentTask,
+    isCodexStoppableTask,
     trayTaskLabel,
     type TrayTask,
   } from '../../utils/backgroundTray';
@@ -56,10 +56,11 @@
     return () => clearInterval(id);
   });
 
-  // Thread-wide snapshot of running background launches + recent
-  // completions. Sourced from ListLiveBackgroundTasks so a running
-  // background task launched 200 turns ago (now paged out of the
-  // timeline window) still appears in the tray. The 2s retention cutoff
+  // Thread-wide snapshot of running launches + recent completions.
+  // Sourced from ListLiveBackgroundTasks so a running task launched 200
+  // turns ago (now paged out of the timeline window) still appears in
+  // the tray. For Codex, this includes pending unifiedExec commands
+  // before they are known to be backgrounded. The 2s retention cutoff
   // is enforced both in SQL and again in the `tasks` derivation below,
   // because the local clock keeps ticking between refreshes.
   let backgroundItems: Item[] = $state([]);
@@ -142,10 +143,10 @@
   // A running task is stoppable via the Stop-all button when we have
   // any kill primitive for it. Claude: per-task StopClaudeTask (needs
   // a resolvable task_id on the launch's meta). Codex: thread-wide
-  // CleanCodexBackgroundTerminals, which handles every unifiedExec PTY
-  // but CANNOT touch spawn_agent children (`collab_agent`). If the
-  // tray's only running rows are Codex subagents, Stop-all has no
-  // effect — hide it rather than render a button that does nothing.
+  // CleanCodexBackgroundTerminals, which handles every backgrounded
+  // unifiedExec PTY but CANNOT touch pending foreground commands or
+  // spawn_agent children (`collab_agent`). Hide Stop-all unless at
+  // least one row has a real kill path.
   //
   // Both branches gate on provider to match the dispatch in
   // `onStopAll`. Without this, a Codex thread that somehow surfaced a
@@ -164,7 +165,7 @@
   });
   const hasCodexStoppable = $derived(
     provider === 'codex'
-      && tasks.some((t) => t.status === 'running' && !isCodexSubagentTask(t)),
+      && tasks.some((t) => t.status === 'running' && isCodexStoppableTask(t)),
   );
   const canStopAll = $derived(claudeStoppableTaskIDs.length > 0 || hasCodexStoppable);
 
@@ -289,7 +290,7 @@
     bind:this={trayRoot}
     class="mx-6 mb-2 overflow-hidden rounded-[var(--radius-control)] border border-border-subtle bg-card/30"
     role="region"
-    aria-label="Background tasks"
+    aria-label="Running tasks"
     data-testid="background-task-tray"
   >
     <div class="flex w-full items-center gap-2">
@@ -303,7 +304,7 @@
         data-testid="background-task-tray-header"
       >
         <span class="text-[11px] text-fg-subtle select-none" aria-hidden="true">{expanded ? '▼' : '▶'}</span>
-        <span class="text-[11px] font-medium uppercase tracking-[0.1em] text-fg-subtle">Background</span>
+        <span class="text-[11px] font-medium uppercase tracking-[0.1em] text-fg-subtle">Running</span>
         <span
           class="rounded-[var(--radius-field)] bg-accent/15 px-1.5 text-[10px] font-medium text-accent"
           data-testid="background-task-tray-count"
@@ -325,7 +326,7 @@
           onclick={onStopAll}
           disabled={stopAllInFlight}
           data-testid="background-task-tray-stop-all"
-          aria-label="Stop all background tasks"
+          aria-label="Stop all running background tasks"
         >
           {stopAllInFlight ? 'Stopping…' : 'Stop all'}
         </button>

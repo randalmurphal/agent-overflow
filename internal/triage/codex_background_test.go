@@ -64,7 +64,7 @@ func seedOpenTurn(t *testing.T, router *Router, st *store.Store, threadID string
 	}
 }
 
-func TestCodexUnifiedExecStartIsTrayOnlyAfterYield(t *testing.T) {
+func TestCodexUnifiedExecStartIsVisibleBeforeYield(t *testing.T) {
 	router, st, emissions := newTestRouter(t)
 	createTestThread(t, st, "t1")
 	seedOpenTurn(t, router, st, "t1", 0)
@@ -82,8 +82,11 @@ func TestCodexUnifiedExecStartIsTrayOnlyAfterYield(t *testing.T) {
 		t.Fatalf("unified exec start should not persist timeline row: found=%v err=%v", found, err)
 	}
 	live := router.ListLiveCodexBackgroundTasks("t1", time.Now().UnixMilli(), 0)
-	if len(live) != 0 {
-		t.Fatalf("pre-yield tray item count = %d, want 0", len(live))
+	if len(live) != 1 {
+		t.Fatalf("pre-yield tray item count = %d, want 1", len(live))
+	}
+	if live[0].ID != "cmd-live" || live[0].IsBackground || live[0].Status != statusRunning {
+		t.Fatalf("unexpected pre-yield running item: %+v", live[0])
 	}
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventTextDelta, ThreadID: "t1", Content: "continuing",
@@ -116,6 +119,10 @@ func TestCodexUnifiedExecQuickCompletionPersistsNormalCommand(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("tool start: %v", err)
 	}
+	live := router.ListLiveCodexBackgroundTasks("t1", time.Now().UnixMilli(), 0)
+	if len(live) != 1 || live[0].ID != "cmd-quick" || live[0].IsBackground {
+		t.Fatalf("quick command should be visible as pending running item before completion: %+v", live)
+	}
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventCommandOutput, ThreadID: "t1", ItemID: "cmd-quick",
 		ItemType: "commandExecution", TurnID: "turn-0", Content: "ok\n",
@@ -142,6 +149,10 @@ func TestCodexUnifiedExecQuickCompletionPersistsNormalCommand(t *testing.T) {
 	}
 	if row.Status != statusCompleted || row.PayloadKind != "command_output" {
 		t.Fatalf("quick row status/payload = %q/%q", row.Status, row.PayloadKind)
+	}
+	live = router.ListLiveCodexBackgroundTasks("t1", time.Now().UnixMilli(), 0)
+	if len(live) != 0 {
+		t.Fatalf("quick command should leave running tray after completion: %+v", live)
 	}
 	data, err := st.GetPayloadData(row.PayloadID)
 	if err != nil {

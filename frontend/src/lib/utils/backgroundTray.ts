@@ -71,6 +71,18 @@ export function isCodexSubagentTask(task: TrayTask): boolean {
 }
 
 /**
+ * Codex can only stop yielded unifiedExec PTYs via
+ * CleanCodexBackgroundTerminals. Pending foreground commands are
+ * visible in the same running tray, but they are not background
+ * terminals yet, so rendering Stop-all for them would promise a kill
+ * primitive the backend does not have.
+ */
+export function isCodexStoppableTask(task: TrayTask): boolean {
+  if (isCodexSubagentTask(task)) return false;
+  return task.launch?.isBackground === true;
+}
+
+/**
  * Primary visible label for a tray row. Launch summary wins (the
  * provider adapters already fill it with the tool name); completion
  * summary is the fallback for orphan completions; "Tool" is the last
@@ -142,19 +154,21 @@ export function formatElapsed(ms: number): string {
 }
 
 /**
- * Group each backgrounded launch with its tool_completion sibling,
- * prune pairs whose completion has aged past `retentionMs`, and sort
- * so the most recently active pair is first.
+ * Group each running launch with its tool_completion sibling, prune
+ * pairs whose completion has aged past `retentionMs`, and sort so the
+ * most recently active pair is first.
  *
- * The backend persists the two as independent immutable rows: the
+ * Persisted background rows arrive as independent immutable rows: the
  * launch stays `status='running'` forever (spec invariant — see
  * docs/architecture/chat-rewrite.md "Background tray"), and the
  * completion is a separate row linked via `completionOf`. The tray
- * can't treat "launch.status === 'running'" as liveness — it must
- * treat a (launch, completion) pair as a single logical task and drop
- * BOTH once the completion ages past the retention window. Otherwise
- * the launch would re-render as "Running" forever after retention
- * elapsed.
+ * can't treat "launch.status === 'running'" as liveness for those rows
+ * — it must treat a (launch, completion) pair as a single logical task
+ * and drop BOTH once the completion ages past the retention window.
+ * Otherwise the launch would re-render as "Running" forever after
+ * retention elapsed. Pending Codex foreground commands are transient
+ * launches with no completion sibling until they either complete
+ * quickly or become backgrounded.
  */
 export function deriveTrayTasks(
   items: readonly Item[],

@@ -5,6 +5,7 @@ import {
   deriveTrayTasks,
   extractClaudeTaskID,
   formatElapsed,
+  isCodexStoppableTask,
   isCodexSubagentTask,
   statusClass,
   statusGlyph,
@@ -141,6 +142,30 @@ describe('isCodexSubagentTask', () => {
     expect(
       isCodexSubagentTask(makeTrayTask({
         launch: makeItem({ id: 'L', toolName: 'Task' }),
+      })),
+    ).toBe(false);
+  });
+});
+
+describe('isCodexStoppableTask', () => {
+  it('returns true only for backgrounded Codex unifiedExec rows', () => {
+    expect(
+      isCodexStoppableTask(makeTrayTask({
+        launch: makeItem({ id: 'bg', isBackground: true, toolName: 'exec_command' }),
+      })),
+    ).toBe(true);
+
+    expect(
+      isCodexStoppableTask(makeTrayTask({
+        launch: makeItem({ id: 'pending', isBackground: false, toolName: 'exec_command' }),
+      })),
+    ).toBe(false);
+  });
+
+  it('returns false for Codex subagents even when they are background rows', () => {
+    expect(
+      isCodexStoppableTask(makeTrayTask({
+        launch: makeItem({ id: 'agent', isBackground: true, toolName: 'collab_agent' }),
       })),
     ).toBe(false);
   });

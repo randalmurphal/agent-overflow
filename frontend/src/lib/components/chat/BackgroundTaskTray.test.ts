@@ -73,7 +73,7 @@ describe('<BackgroundTaskTray>', () => {
     expect(container.textContent?.trim() ?? '').toBe('');
   });
 
-  it('renders the header with a count when there is at least one background task', async () => {
+  it('renders the header with a count when there is at least one running task', async () => {
     const pane = await makePaneWithBackground([
       item({
         id: 'launch-a',
@@ -93,6 +93,7 @@ describe('<BackgroundTaskTray>', () => {
 
     const { getByTestId } = await renderTray(pane);
     expect(getByTestId('background-task-tray')).toBeInTheDocument();
+    expect(getByTestId('background-task-tray-header').textContent).toContain('Running');
     expect(getByTestId('background-task-tray-count').textContent).toBe('2');
   });
 
@@ -514,6 +515,27 @@ describe('<BackgroundTaskTray>', () => {
     expect(stopMock).not.toHaveBeenCalled();
   });
 
+  it('shows pending Codex unifiedExec rows but hides Stop-all until they are backgrounded', async () => {
+    const pane = await makePaneWithBackground(
+      [
+        item({
+          id: 'launch-pending',
+          isBackground: false,
+          status: 'running',
+          summary: 'exec_command',
+          toolName: 'exec_command',
+          createdAt: 1_000_000 - 1_000,
+        }),
+      ],
+      makeThread({ provider: 'codex' }),
+    );
+
+    const { getByTestId, queryByTestId } = await renderTray(pane);
+    expect(getByTestId('background-task-tray-row')).toBeInTheDocument();
+    expect(getByTestId('background-task-tray-row-status').textContent).toContain('Running');
+    expect(queryByTestId('background-task-tray-stop-all')).toBeNull();
+  });
+
   it('hides the Stop-all button on a Codex thread even when a row somehow carries a task_id in meta', async () => {
     // Defensive: if a Codex row ever surfaced `task_id` in item.meta
     // (triage bug, replay corruption), the old `hasClaudeStoppable`
@@ -786,4 +808,3 @@ describe('<BackgroundTaskTray>', () => {
     expect(btn.disabled).toBe(false);
   });
 });
-

@@ -18,10 +18,11 @@ import (
 
 // TestE2E_Codex_YieldingCommand_ProjectsAsBackgrounded covers the
 // wire-typed Codex projection: an item/started for a unifiedExecStartup
-// command is tracked transiently without creating a transcript row.
-// It becomes live tray state only after the model yields. When the
-// command completes after that yield, the completion remains tray-only
-// until Codex explicitly polls the background PTY with
+// command is tracked transiently without creating a transcript row. It
+// appears in the running tray immediately, then becomes a background
+// task only after the model yields. When the command completes after
+// that yield, the completion remains tray-only until Codex explicitly
+// polls the background PTY with
 // TerminalInteractionNotification. That wait row is where completed
 // command output becomes chat history.
 //
@@ -78,8 +79,9 @@ func TestE2E_Codex_YieldingCommand_ProjectsAsBackgrounded(t *testing.T) {
 		t.Fatalf("tool start: %v", err)
 	}
 
-	// Sanity: Codex unified exec starts are transcript-free, but they
-	// are not tray-visible until the model actually yields.
+	// Sanity: Codex unified exec starts are transcript-free, but still
+	// visible in the running tray before the model yields. They are not
+	// background tasks yet, so IsBackground stays false.
 	if _, found, err := app.store.GetThreadItem(thread.ID, "cmd-e2e"); err != nil || found {
 		t.Fatalf("unified exec start should be tray-only: found=%v err=%v", found, err)
 	}
@@ -87,7 +89,7 @@ func TestE2E_Codex_YieldingCommand_ProjectsAsBackgrounded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListLiveBackgroundTasks pre-yield: %v", err)
 	}
-	if len(liveBefore) != 0 {
+	if len(liveBefore) != 1 || liveBefore[0].ID != "cmd-e2e" || liveBefore[0].IsBackground {
 		t.Fatalf("unexpected pre-yield tray state: %+v", liveBefore)
 	}
 
