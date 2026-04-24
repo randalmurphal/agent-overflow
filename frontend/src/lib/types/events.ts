@@ -1,3 +1,5 @@
+import type { Item } from './models';
+
 export type ApprovalKind =
   | 'command'
   | 'file-read'
@@ -102,6 +104,14 @@ export interface ItemDeltaEvent {
   delta: string;
   updatedAt: number;
 }
+
+export type ItemStreamEvent =
+  | {
+      action: 'upsert';
+      threadId: string;
+      item: Item;
+    }
+  | ({ action: 'delta' } & ItemDeltaEvent);
 
 /**
  * RateLimitsSnapshot mirrors the Go `provider.RateLimitsSnapshot` payload.

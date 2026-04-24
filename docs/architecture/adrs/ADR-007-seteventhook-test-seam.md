@@ -12,7 +12,7 @@ Without a synchronization point, tests either:
   slow, and obscures test intent.
 - **Use `time.Sleep`.** Forbidden by our test discipline
   (see [`conventions.md`](../conventions.md)).
-- **Subscribe to `provider:item_upsert`.** Works for persistence
+- **Subscribe to `provider:item_event`.** Works for timeline mutation
   events but doesn't fire for inline passthroughs (text deltas,
   approvals routed only to the approval channel, etc.).
 

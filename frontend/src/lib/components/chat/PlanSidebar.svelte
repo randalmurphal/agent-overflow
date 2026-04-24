@@ -2,7 +2,7 @@
   import { onMount, onDestroy } from 'svelte';
   import { fly } from 'svelte/transition';
   import { ListThreadProposedPlans } from '../../stores/bindings';
-  import { wailsEventOn } from '../../stores/events';
+  import { onItemUpsert } from '../../stores/events';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import type { Item, ProposedPlanMeta } from '../../types/models';
   import { debounce } from '../../utils/debounce';
@@ -123,8 +123,8 @@
 
   let cancelItemUpsert: (() => void) | null = null;
   onMount(() => {
-    cancelItemUpsert = wailsEventOn<Item>('provider:item_upsert', (item) => {
-      if (!item || !item.threadId) return;
+    cancelItemUpsert = onItemUpsert((item) => {
+      if (!item.threadId) return;
       if (item.threadId !== threadId) return;
       if (item.payloadKind !== 'proposed_plan') return;
       debouncedRefresh();

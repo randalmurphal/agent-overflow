@@ -18,15 +18,14 @@ import (
 func TestAppEmitStampsMonotonicSeq(t *testing.T) {
 	a := &App{}
 
-	// With a.app nil the emit helper is a no-op — but the seq counter
-	// must still advance so the gap-detection contract holds across a
-	// missing-Wails boot (tests, service-start failures).
+	// With a.app nil the emit helper is a no-op, and the seq counter
+	// must not advance because no frontend subscriber can observe a gap.
 	//
 	// Why not advance on the no-op path? Because the seq is an
 	// observability guard for the FRONTEND. A missed event on the Go
 	// side without a Wails runtime is not something the frontend ever
 	// sees. So we deliberately don't bump — verify this is the behavior.
-	a.emit("provider:item_upsert", provider.ProviderEvent{ThreadID: "t1"})
+	a.emit("test:seq", provider.ProviderEvent{ThreadID: "t1"})
 	if got := a.seq.Load(); got != 0 {
 		t.Fatalf("seq = %d after no-Wails emit, want 0 (counter must not advance when nothing was emitted)", got)
 	}
@@ -50,15 +49,15 @@ func TestAppEmitEnvelopeSeqAdvancesAcrossCalls(t *testing.T) {
 
 	evt := provider.ProviderEvent{ThreadID: "t1", Kind: provider.EventTextDelta}
 	for i := 1; i <= 5; i++ {
-		a.emit("provider:item_upsert", evt)
+		a.emit("test:seq", evt)
 	}
 
 	if got := len(spy.events); got != 5 {
 		t.Fatalf("spy captured %d emits, want 5", got)
 	}
 	for i, rec := range spy.events {
-		if rec.name != "provider:item_upsert" {
-			t.Fatalf("emit[%d].name = %q, want provider:item_upsert", i, rec.name)
+		if rec.name != "test:seq" {
+			t.Fatalf("emit[%d].name = %q, want test:seq", i, rec.name)
 		}
 		env, ok := rec.data.(SeqEnvelope)
 		if !ok {
@@ -90,7 +89,7 @@ func TestTriageRouterEmitsFlowThroughEnvelope(t *testing.T) {
 	// seq and pushes to the spy.
 	emit := a.emitWithReplay()
 	for i := 1; i <= 5; i++ {
-		emit("provider:item_upsert", provider.ProviderEvent{
+		emit("test:seq", provider.ProviderEvent{
 			ThreadID: "t1",
 			Kind:     provider.EventTextDelta,
 			Content:  fmt.Sprintf("chunk-%d", i),
@@ -119,9 +118,9 @@ func TestAppEmitSeqSharedAcrossEventNames(t *testing.T) {
 	spy := newEmitSpy()
 	a := newAppWithEmitSpy(spy)
 
-	a.emit("provider:item_upsert", provider.ProviderEvent{ThreadID: "t1"})
+	a.emit("test:seq", provider.ProviderEvent{ThreadID: "t1"})
 	a.emit("terminal:output", TerminalOutputEvent{TerminalID: "term-1", ThreadID: "t1"})
-	a.emit("provider:item_upsert", provider.ProviderEvent{ThreadID: "t1"})
+	a.emit("test:seq", provider.ProviderEvent{ThreadID: "t1"})
 
 	if len(spy.events) != 3 {
 		t.Fatalf("spy captured %d emits, want 3", len(spy.events))

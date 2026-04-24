@@ -6,9 +6,10 @@
 import { describe, expect, it, beforeAll, beforeEach, vi } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import App from '../../App.svelte';
-import type { Thread } from '../../lib/types/models';
+import type { Item, Thread } from '../../lib/types/models';
 import { setBindingMock } from '../mocks/bindings-app';
 import { emitWailsEvent } from '../mocks/wailsio-runtime';
+import { emitItemEventDelta, emitItemEventUpsert } from '../helpers/chat';
 import {
   flush,
   installAnimateShim,
@@ -91,7 +92,7 @@ describe('App integration — messaging flow', () => {
       turnIndex: 0,
       startedAt: 1,
     });
-    emitWailsEvent('provider:item_upsert', {
+    emitItemEventUpsert({
       id: 'text:0:0',
       threadId: 'thread-1',
       turnIndex: 0,
@@ -125,7 +126,7 @@ describe('App integration — messaging flow', () => {
       turnIndex: 0,
       startedAt: 1,
     });
-    emitWailsEvent('provider:item_upsert', {
+    emitItemEventUpsert({
       id: 'text:0:0',
       threadId: 'thread-1',
       turnIndex: 0,
@@ -145,7 +146,7 @@ describe('App integration — messaging flow', () => {
 
   it('renders streaming assistant item updates as they arrive', async () => {
     await mountWithActiveThread();
-    emitWailsEvent('provider:item_upsert', {
+    emitItemEventUpsert({
       id: 'text:0:0',
       threadId: 'thread-1',
       turnIndex: 0,
@@ -158,7 +159,7 @@ describe('App integration — messaging flow', () => {
       updatedAt: 1,
     });
     await flush();
-    emitWailsEvent('provider:item_delta', {
+    emitItemEventDelta({
       threadId: 'thread-1',
       itemId: 'text:0:0',
       kind: 'assistant_text',
@@ -172,12 +173,12 @@ describe('App integration — messaging flow', () => {
     });
   });
 
-  it('renders tool_call rows inline as provider:item_upsert events arrive', async () => {
+  it('renders tool_call rows inline as provider:item_event upserts arrive', async () => {
     const { queryByText, findByText } = await mountWithActiveThread();
 
     // Backend persisted a tool_call item and pushed the upsert; the
     // timeline should reflect it without any transient grouping.
-    emitWailsEvent('provider:item_upsert', {
+    emitItemEventUpsert({
       id: 'tool-1',
       threadId: 'thread-1',
       turnIndex: 0,
@@ -188,12 +189,13 @@ describe('App integration — messaging flow', () => {
       status: 'running',
       isBackground: false,
       createdAt: 1,
+      updatedAt: 1,
     });
     expect(await findByText(/Bash: ls -la/)).toBeInTheDocument();
 
     // A second concurrent tool_call shows up as its own row — no
     // grouping chip, no relocation.
-    emitWailsEvent('provider:item_upsert', {
+    emitItemEventUpsert({
       id: 'tool-2',
       threadId: 'thread-1',
       turnIndex: 0,
@@ -204,6 +206,7 @@ describe('App integration — messaging flow', () => {
       status: 'running',
       isBackground: false,
       createdAt: 2,
+      updatedAt: 2,
     });
     expect(await findByText(/Read: README.md/)).toBeInTheDocument();
     expect(queryByText(/Running 2 tools/i)).toBeNull();
@@ -245,7 +248,7 @@ describe('App integration — messaging flow', () => {
       turnIndex: 0,
       startedAt: 1,
     });
-    emitWailsEvent('provider:item_upsert', {
+    emitItemEventUpsert({
       id: 'text:0:0',
       threadId: 'thread-1',
       turnIndex: 0,
@@ -257,7 +260,7 @@ describe('App integration — messaging flow', () => {
       createdAt: 1,
       updatedAt: 1,
     });
-    emitWailsEvent('provider:item_upsert', {
+    emitItemEventUpsert({
       id: 'text:0:0',
       threadId: 'thread-1',
       turnIndex: 0,
@@ -326,7 +329,7 @@ describe('App integration — messaging flow', () => {
     // 2. Tool call upserts: running → completed. The row appears in
     // the timeline as a ToolCallCard. This exercises the mid-turn
     // item lifecycle — status flip from running to completed.
-    emitWailsEvent('provider:item_upsert', {
+    emitItemEventUpsert({
       id: 'tool-xyz',
       threadId: 'thread-1',
       turnIndex: 0,
@@ -342,7 +345,7 @@ describe('App integration — messaging flow', () => {
     await flush();
     expect(await findByText(/Bash: echo hello/)).toBeInTheDocument();
 
-    emitWailsEvent('provider:item_upsert', {
+    emitItemEventUpsert({
       id: 'tool-xyz',
       threadId: 'thread-1',
       turnIndex: 0,
@@ -396,7 +399,7 @@ describe('App integration — messaging flow', () => {
     // 4. The final assistant_text arrives. CompletionDivider mounts
     // immediately before it in the DOM because
     // latestSettledTurn.assistantMessageId matches.
-    emitWailsEvent('provider:item_upsert', {
+    emitItemEventUpsert({
       id: 'assist1',
       threadId: 'thread-1',
       turnIndex: 0,
@@ -440,9 +443,9 @@ describe('App integration — messaging flow', () => {
     // (thread-scoped, independent of the paged timeline). Install a
     // stateful mock AFTER mount so it isn't overwritten by the
     // installThreadViewDefaults → empty default. Each
-    // provider:item_upsert that also mutates `liveBackgroundItems`
+    // provider:item_event upsert that also mutates `liveBackgroundItems`
     // lands in the tray after its 100 ms debounced refresh fires.
-    const liveBackgroundItems: Array<Record<string, unknown>> = [];
+    const liveBackgroundItems: Item[] = [];
     setBindingMock('ListLiveBackgroundTasks', async () => [...liveBackgroundItems]);
 
     const startedAt = Date.now();
@@ -459,7 +462,7 @@ describe('App integration — messaging flow', () => {
     // 2. Backgrounded tool_call launch (run_in_background:true on the
     // Claude wire). The launch row stays status=running per invariant
     // 24 — triage never flips it even at turn-complete.
-    const launchItem = {
+    const launchItem: Item = {
       id: 'bg-launch',
       threadId: 'thread-1',
       turnIndex: 0,
@@ -474,7 +477,7 @@ describe('App integration — messaging flow', () => {
       updatedAt: startedAt + 10,
     };
     liveBackgroundItems.push(launchItem);
-    emitWailsEvent('provider:item_upsert', launchItem);
+    emitItemEventUpsert(launchItem);
     await flush();
 
     // The inline ToolCallCard renders "…" in the status chip while
@@ -517,7 +520,7 @@ describe('App integration — messaging flow', () => {
     // place rather than growing to 2 rows. The completion's createdAt
     // is near the current wall clock so the tray's 2 s retention
     // window starts NOW, not in the past.
-    const completionItem = {
+    const completionItem: Item = {
       id: 'complete:bg-launch',
       threadId: 'thread-1',
       turnIndex: 0,
@@ -533,7 +536,7 @@ describe('App integration — messaging flow', () => {
       updatedAt: Date.now(),
     };
     liveBackgroundItems.push(completionItem);
-    emitWailsEvent('provider:item_upsert', completionItem);
+    emitItemEventUpsert(completionItem);
     await flush();
 
     // BackgroundTaskTray pairs launch + completion by completionOf;

@@ -803,7 +803,7 @@ func (s *Store) ListTurnItemsSansPayload(threadID string, turnIndex int) ([]Item
 //
 // Returns the flipped rows (with status/summary/updated_at already
 // reflecting the post-write state) so the caller can fan out one
-// `provider:item_upsert` per row — the store handles the write, the
+// `provider:item_event` upsert per row — the store handles the write, the
 // caller handles the emit, matching the existing persistItem
 // contract.
 //
@@ -949,7 +949,7 @@ func (s *Store) ListRunningBackgroundToolCalls(threadID string) ([]Item, error) 
 //
 // Returns the flipped rows (with status/summary/decision/updated_at
 // already reflecting the post-write state) so the caller can fan out
-// one `provider:item_upsert` per row.
+// one `provider:item_event` upsert per row.
 //
 // Called on EVERY Codex session start — new OR resume — because a prior
 // subprocess dying takes its PTYs with it, so any persisted

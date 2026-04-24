@@ -50,7 +50,7 @@ func streamPersistKey(threadID, itemID string) string {
 }
 
 func (r *Router) emitItemDelta(evt ItemDeltaEvent) {
-	r.emit("provider:item_delta", evt)
+	r.emit("provider:item_event", newItemStreamDelta(evt))
 }
 
 func (r *Router) bufferTextPersistence(threadID, itemID, delta string, updatedAt int64) error {

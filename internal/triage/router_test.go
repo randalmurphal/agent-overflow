@@ -495,14 +495,11 @@ func TestInlineEventEmit(t *testing.T) {
 		t.Fatalf("handle: %v", err)
 	}
 
-	upserts := filterEmissions(*emissions, "provider:item_upsert")
+	upserts := filterItemEventUpserts(*emissions)
 	if len(upserts) != 1 {
-		t.Fatalf("expected 1 provider:item_upsert emission, got %d", len(upserts))
+		t.Fatalf("expected 1 provider:item_event upsert, got %d", len(upserts))
 	}
-	item, ok := upserts[0].data.(store.Item)
-	if !ok {
-		t.Fatalf("item upsert type = %T, want store.Item", upserts[0].data)
-	}
+	item := upserts[0]
 	if item.Kind != "assistant_text" {
 		t.Fatalf("item kind: got %q, want assistant_text", item.Kind)
 	}
@@ -527,7 +524,7 @@ func TestCompactBoundaryAndRateLimitsEmit(t *testing.T) {
 	}
 
 	// Neither event should land on the legacy passthrough channel —
-	// compact-boundary produces an item_upsert + usage reset, and
+	// compact-boundary produces an item_event upsert + usage reset, and
 	// rate-limits now folds onto provider:usage per the chat-rewrite
 	// spec (Channels section).
 	if got := len(filterEmissions(*emissions, "provider:event")); got != 0 {
@@ -546,7 +543,7 @@ func TestCompactBoundaryAndRateLimitsEmit(t *testing.T) {
 	if got := usageEmits[1].data.(provider.UsageEvent).Action; got != "rate_limits" {
 		t.Fatalf("rate-limits usage action = %q, want %q", got, "rate_limits")
 	}
-	if len(filterEmissions(*emissions, "provider:item_upsert")) != 1 {
+	if len(filterItemEventUpserts(*emissions)) != 1 {
 		t.Fatalf("expected compact boundary item upsert, got %+v", *emissions)
 	}
 }
@@ -1481,31 +1478,34 @@ func TestTextDeltaEmitsSemanticDeltasWithoutSnapshotSpam(t *testing.T) {
 		}
 	}
 
-	upserts := filterEmissions(*emissions, "provider:item_upsert")
-	if len(upserts) != 1 {
-		t.Fatalf("provider:item_upsert count = %d, want 1 initial row: %+v", len(upserts), upserts)
+	events := filterItemStreamEvents(*emissions)
+	if len(events) != 3 {
+		t.Fatalf("provider:item_event count = %d, want 3 ordered events: %+v", len(events), events)
 	}
-
-	deltas := filterEmissions(*emissions, "provider:item_delta")
-	if len(deltas) != 2 {
-		t.Fatalf("provider:item_delta count = %d, want 2 follow-up deltas: %+v", len(deltas), deltas)
+	if events[0].Action != itemStreamActionUpsert || events[0].Item == nil {
+		t.Fatalf("event[0] = %+v, want initial upsert with item", events[0])
 	}
-	got := ""
-	for _, emission := range deltas {
-		delta, ok := emission.data.(ItemDeltaEvent)
-		if !ok {
-			t.Fatalf("provider:item_delta payload = %T, want ItemDeltaEvent", emission.data)
+	if events[0].Item.Summary != "first " {
+		t.Fatalf("initial upsert summary = %q, want first ", events[0].Item.Summary)
+	}
+	wantDeltas := []string{"second", " third"}
+	for i, want := range wantDeltas {
+		event := events[i+1]
+		if event.Action != itemStreamActionDelta {
+			t.Fatalf("event[%d].action = %q, want delta", i+1, event.Action)
 		}
-		got += delta.Delta
-	}
-	if got != "second third" {
-		t.Fatalf("delta payloads = %q, want %q", got, "second third")
+		if event.Delta != want {
+			t.Fatalf("event[%d].delta = %q, want %q", i+1, event.Delta, want)
+		}
+		if event.ThreadID != "t1" || event.ItemID == "" || event.Kind != string(provider.ItemAssistantText) {
+			t.Fatalf("event[%d] malformed delta metadata: %+v", i+1, event)
+		}
 	}
 }
 
 // filterEmissions returns the subset of emissions on the given channel
 // name. Tests that target a specific Wails channel use this so the
-// presence of unrelated channels (provider:item_upsert, provider:meta,
+// presence of unrelated channels (provider:item_event, provider:meta,
 // etc.) doesn't perturb count assertions.
 func filterEmissions(emissions []emitted, channel string) []emitted {
 	out := make([]emitted, 0, len(emissions))
@@ -1513,6 +1513,57 @@ func filterEmissions(emissions []emitted, channel string) []emitted {
 		if e.eventName == channel {
 			out = append(out, e)
 		}
+	}
+	return out
+}
+
+func filterItemEventUpserts(emissions []emitted) []store.Item {
+	out := make([]store.Item, 0)
+	for _, e := range emissions {
+		if e.eventName != "provider:item_event" {
+			continue
+		}
+		event, ok := e.data.(ItemStreamEvent)
+		if !ok || event.Action != itemStreamActionUpsert || event.Item == nil {
+			continue
+		}
+		out = append(out, *event.Item)
+	}
+	return out
+}
+
+func filterItemStreamEvents(emissions []emitted) []ItemStreamEvent {
+	out := make([]ItemStreamEvent, 0)
+	for _, e := range emissions {
+		if e.eventName != "provider:item_event" {
+			continue
+		}
+		event, ok := e.data.(ItemStreamEvent)
+		if !ok {
+			continue
+		}
+		out = append(out, event)
+	}
+	return out
+}
+
+func filterItemEventDeltas(emissions []emitted) []ItemDeltaEvent {
+	out := make([]ItemDeltaEvent, 0)
+	for _, e := range emissions {
+		if e.eventName != "provider:item_event" {
+			continue
+		}
+		event, ok := e.data.(ItemStreamEvent)
+		if !ok || event.Action != itemStreamActionDelta {
+			continue
+		}
+		out = append(out, ItemDeltaEvent{
+			ThreadID:  event.ThreadID,
+			ItemID:    event.ItemID,
+			Kind:      event.Kind,
+			Delta:     event.Delta,
+			UpdatedAt: event.UpdatedAt,
+		})
 	}
 	return out
 }
@@ -1535,9 +1586,9 @@ func TestDiffPersistsHeavy(t *testing.T) {
 		t.Fatalf("handle: %v", err)
 	}
 
-	upserts := filterEmissions(*emissions, "provider:item_upsert")
+	upserts := filterItemEventUpserts(*emissions)
 	if len(upserts) == 0 {
-		t.Fatal("expected at least one provider:item_upsert emission")
+		t.Fatal("expected at least one provider:item_event upsert")
 	}
 
 	items, err := st.ListItems("t1")
@@ -1607,8 +1658,8 @@ func TestDiffReplaceUpsertsExistingPayload(t *testing.T) {
 	if !strings.Contains(string(data), "+newer") {
 		t.Fatalf("expected replacement diff content, got %q", string(data))
 	}
-	if len(filterEmissions(*emissions, "provider:item_upsert")) < 2 {
-		t.Fatalf("expected at least 2 item upserts, got %d", len(filterEmissions(*emissions, "provider:item_upsert")))
+	if len(filterItemEventUpserts(*emissions)) < 2 {
+		t.Fatalf("expected at least 2 item upserts, got %d", len(filterItemEventUpserts(*emissions)))
 	}
 }
 
@@ -1674,9 +1725,9 @@ func TestCommandOutputPersistsHeavy(t *testing.T) {
 		t.Fatalf("handle: %v", err)
 	}
 
-	upserts := filterEmissions(*emissions, "provider:item_upsert")
+	upserts := filterItemEventUpserts(*emissions)
 	if len(upserts) == 0 {
-		t.Fatal("expected at least one provider:item_upsert emission")
+		t.Fatal("expected at least one provider:item_event upsert")
 	}
 
 	items, err := st.ListItems("t1")
@@ -1824,8 +1875,8 @@ func TestProposedPlanPersistsHeavy(t *testing.T) {
 		t.Fatalf("item summary: got %q, want %q", items[0].Summary, "Ship it")
 	}
 
-	if len(filterEmissions(*emissions, "provider:item_upsert")) == 0 {
-		t.Fatalf("expected provider:item_upsert emission, got %+v", *emissions)
+	if len(filterItemEventUpserts(*emissions)) == 0 {
+		t.Fatalf("expected provider:item_event upsert, got %+v", *emissions)
 	}
 }
 
@@ -1918,7 +1969,7 @@ func TestReasoningDeltasPersistOnTurnComplete(t *testing.T) {
 		t.Fatalf("status after turn complete: got %q, want completed", items[0].Status)
 	}
 
-	if len(filterEmissions(*emissions, "provider:item_upsert")) < 2 {
+	if len(filterItemEventUpserts(*emissions)) < 2 {
 		t.Fatalf("expected initial streaming upsert plus settle upsert, got %+v", *emissions)
 	}
 }
@@ -1979,13 +2030,13 @@ func TestThinkingDeltaEmitsSemanticDeltasWithoutSnapshotSpam(t *testing.T) {
 		}
 	}
 
-	upserts := filterEmissions(*emissions, "provider:item_upsert")
+	upserts := filterItemEventUpserts(*emissions)
 	if len(upserts) != 1 {
-		t.Fatalf("provider:item_upsert count = %d, want 1 initial row: %+v", len(upserts), upserts)
+		t.Fatalf("provider:item_event upsert count = %d, want 1 initial row: %+v", len(upserts), upserts)
 	}
-	deltas := filterEmissions(*emissions, "provider:item_delta")
+	deltas := filterItemEventDeltas(*emissions)
 	if len(deltas) != 2 {
-		t.Fatalf("provider:item_delta count = %d, want 2 follow-up deltas: %+v", len(deltas), deltas)
+		t.Fatalf("provider:item_event delta count = %d, want 2 follow-up deltas: %+v", len(deltas), deltas)
 	}
 
 	if err := router.Wait(context.Background()); err != nil {
@@ -2135,7 +2186,7 @@ func TestTurnCompleteWithAccumulatedText(t *testing.T) {
 		t.Errorf("status: got %q, want completed", items[0].Status)
 	}
 
-	upserts := filterEmissions(*emissions, "provider:item_upsert")
+	upserts := filterItemEventUpserts(*emissions)
 	if len(upserts) != 2 {
 		t.Errorf("expected initial streaming upsert plus settle upsert, got %d", len(upserts))
 	}
@@ -2164,7 +2215,7 @@ func TestTurnCompleteWithoutAccumulatedText(t *testing.T) {
 	// provider:turn_completed push so the frontend clears its working
 	// indicator even for turns that carry no text; assert that shape but
 	// nothing else.
-	upserts := filterEmissions(*emissions, "provider:item_upsert")
+	upserts := filterItemEventUpserts(*emissions)
 	if len(upserts) != 0 {
 		t.Errorf("expected 0 item upserts for empty turn, got %d: %+v", len(upserts), upserts)
 	}
@@ -2401,9 +2452,9 @@ func TestErrorPersistsTimelineItem(t *testing.T) {
 		t.Fatalf("summary: got %q, want provider blew up", items[0].Summary)
 	}
 
-	upserts := filterEmissions(*emissions, "provider:item_upsert")
+	upserts := filterItemEventUpserts(*emissions)
 	if len(upserts) != 1 {
-		t.Fatalf("expected 1 provider:item_upsert emission, got %+v", *emissions)
+		t.Fatalf("expected 1 provider:item_event upsert, got %+v", *emissions)
 	}
 }
 
@@ -2594,13 +2645,9 @@ func TestFatalErrorOrderingMatchesSpec(t *testing.T) {
 	//   - the flipped streaming text item (Kind=assistant_text, Status=errored)
 	//   - the new error row (Kind=error)
 	//   - the drained background_done row (Kind=background_done, Status=errored)
-	upserts := filterEmissions(*emissions, "provider:item_upsert")
+	upserts := filterItemEventUpserts(*emissions)
 	var sequence []string
-	for _, e := range upserts {
-		item, ok := e.data.(store.Item)
-		if !ok {
-			continue
-		}
+	for _, item := range upserts {
 		switch {
 		case item.Kind == "assistant_text" && item.Status == "errored":
 			sequence = append(sequence, "flip_text")
@@ -2805,7 +2852,7 @@ func TestFatalErrorFlipsStreamingItemsToErrored(t *testing.T) {
 		t.Fatalf("second item kind: got %q, want error", items[1].Kind)
 	}
 
-	upserts := filterEmissions(*emissions, "provider:item_upsert")
+	upserts := filterItemEventUpserts(*emissions)
 	if len(upserts) < 3 {
 		t.Fatalf("expected streaming upsert, flip upsert, and error upsert; got %+v", *emissions)
 	}

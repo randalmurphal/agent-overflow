@@ -9,6 +9,7 @@ import (
 
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/triage"
 )
 
 // codexSessionEndedSuffix is appended to a ghost row's summary so the
@@ -88,7 +89,7 @@ func (a *App) flipCodexGhostBackgroundRowsOnStart(threadID string) {
 		return
 	}
 	for _, item := range flipped {
-		a.emit("provider:item_upsert", item)
+		a.emit("provider:item_event", triage.NewItemStreamUpsert(item))
 	}
 }
 
@@ -97,21 +98,21 @@ func (a *App) flipCodexGhostBackgroundRowsOnStart(threadID string) {
 // result the caller uses to sequence follow-up work:
 //
 //   - idle / active   → session is alive. No flip needed here — Phase 4's
-//                       pre-spawn ghost flip already handled any dead-
-//                       subprocess rows, and live completions will
-//                       arrive over the wire.
+//     pre-spawn ghost flip already handled any dead-
+//     subprocess rows, and live completions will
+//     arrive over the wire.
 //   - notLoaded       → call `thread/resume` to rehydrate. We return a
-//                       NeedsResume hint so the caller can sequence it.
+//     NeedsResume hint so the caller can sequence it.
 //   - systemError     → the warm-reconnect rarity: Phase 4 flipped
-//                       ghost rows before spawn, then the replay
-//                       re-upserted some back to running (warm
-//                       reconnect), and the subprocess has since died.
-//                       Flip those re-resurrected rows via the same
-//                       helper Phase 4 uses so the summary suffix stays
-//                       idempotent. The vast majority of reopens see
-//                       zero rows here.
+//     ghost rows before spawn, then the replay
+//     re-upserted some back to running (warm
+//     reconnect), and the subprocess has since died.
+//     Flip those re-resurrected rows via the same
+//     helper Phase 4 uses so the summary suffix stays
+//     idempotent. The vast majority of reopens see
+//     zero rows here.
 //   - unknown kind    → log and fall back to systemError behaviour so a
-//                       new enum value doesn't silently mask lost work.
+//     new enum value doesn't silently mask lost work.
 //
 // The Codex adapter must already be connected (i.e., Session is in
 // `a.sessions[threadID]`). An error only surfaces transport/database
@@ -229,4 +230,3 @@ type ReconcileResult struct {
 	Flipped     int                    `json:"flipped"`     // count we transitioned to errored/lost
 	NeedsResume bool                   `json:"needsResume"` // true when status=notLoaded
 }
-

@@ -1,13 +1,14 @@
-import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { fireEvent, render, waitFor } from '@testing-library/svelte';
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { cleanup, fireEvent, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import DiffPanelDrawer from './DiffPanelDrawer.svelte';
 import type { Checkpoint } from '../../types/checkpoint';
 import type { Item } from '../../types/models';
 import { loadSettings } from '../../stores/settings.svelte';
-import { buildPane, makeItem, makeThread } from '../../../test/helpers/chat';
+import { buildPane, emitItemEventUpsert, makeItem, makeThread } from '../../../test/helpers/chat';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
-import { emitWailsEvent } from '../../../test/mocks/wailsio-runtime';
+import { resetWailsMocks } from '../../../test/mocks/wailsio-runtime';
+import { setupEventListeners } from '../../stores/events';
 
 beforeAll(() => {
   if (typeof (Element.prototype as unknown as { animate?: unknown }).animate !== 'function') {
@@ -43,8 +44,12 @@ async function flush() {
 }
 
 describe('<DiffPanelDrawer>', () => {
+  let cleanupEvents: () => void;
+
   beforeEach(async () => {
+    resetWailsMocks();
     resetBindingMocks();
+    cleanupEvents = setupEventListeners();
     setBindingMock('GetSettings', async () => null);
     await loadSettings();
     setBindingMock('ListThreadCheckpoints', async () => []);
@@ -56,6 +61,11 @@ describe('<DiffPanelDrawer>', () => {
     // binding so the panel stays accurate with a paged timeline. Each
     // test overrides this below when it needs non-empty rows.
     setBindingMock('ListThreadDiffPayloads', async () => []);
+  });
+
+  afterEach(() => {
+    cleanup();
+    cleanupEvents?.();
   });
 
   it('loads checkpoints on mount and auto-selects the latest turn diff', async () => {
@@ -132,7 +142,7 @@ describe('<DiffPanelDrawer>', () => {
     expect(calls).toBe(1); // initial mount fetch
 
     // Plain tool_result with no inlineDiff meta — must NOT refetch.
-    emitWailsEvent('provider:item_upsert', makeItem({
+    emitItemEventUpsert(makeItem({
       id: 'plain',
       threadId: 'thread-a',
       kind: 'tool_completion',
@@ -158,7 +168,7 @@ describe('<DiffPanelDrawer>', () => {
         }),
       }),
     ];
-    emitWailsEvent('provider:item_upsert', responses[0]);
+    emitItemEventUpsert(responses[0]);
     await waitFor(() => expect(calls).toBeGreaterThanOrEqual(2), { timeout: 500 });
   });
 

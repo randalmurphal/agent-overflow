@@ -281,7 +281,7 @@ backgrounded mid-stream completions.
 
 **Rule.** Every timeline row that lands in SQLite goes through
 `Router.persistItem`. The same function handles `parent_id` cycle
-guards, store upsert, `provider:item_upsert` emission, and the
+guards, store upsert, canonical `provider:item_event` emission, and the
 persisted-items counter.
 
 **Rationale.** Split write/emit paths are how "item appears in DB but
@@ -384,12 +384,12 @@ unhandled-kind sentinel; the latter guards the drift between the
 **Test.** `TestHandleEveryEventKindCovered` and
 `TestAllEventKindsListIsComplete` (router_test.go).
 
-**Frontend.** The frontend subscribes to typed channels
-(`provider:item_upsert`, `provider:approval`, `provider:usage`,
-`provider:status`) rather than branching on individual
-`EventKind`s, so this invariant is Go-only today. If the frontend
-ever starts branching on a new enum it receives over the wire, add
-a `never`-guard pattern at that switch.
+**Frontend.** The frontend subscribes to typed routing channels
+(`provider:item_event`, approval, usage/status, turn lifecycle,
+subagent/background notifications, and app-shell events) rather than
+branching on individual `EventKind`s, so this invariant is Go-only
+today. If the frontend ever starts branching on a new enum it receives
+over the wire, add a `never`-guard pattern at that switch.
 
 ---
 

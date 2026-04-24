@@ -46,8 +46,7 @@ describe('setupEventListeners', () => {
     expect(wailsListenerCount('provider:approval')).toBe(1);
     expect(wailsListenerCount('provider:usage')).toBe(1);
     expect(wailsListenerCount('provider:status')).toBe(1);
-    expect(wailsListenerCount('provider:item_upsert')).toBe(1);
-    expect(wailsListenerCount('provider:item_delta')).toBe(1);
+    expect(wailsListenerCount('provider:item_event')).toBe(1);
     expect(wailsListenerCount('provider:turn_started')).toBe(1);
     expect(wailsListenerCount('provider:turn_completed')).toBe(1);
     expect(wailsListenerCount('provider:subagent_notification')).toBe(1);
@@ -58,8 +57,7 @@ describe('setupEventListeners', () => {
     expect(wailsListenerCount('provider:approval')).toBe(0);
     expect(wailsListenerCount('provider:usage')).toBe(0);
     expect(wailsListenerCount('provider:status')).toBe(0);
-    expect(wailsListenerCount('provider:item_upsert')).toBe(0);
-    expect(wailsListenerCount('provider:item_delta')).toBe(0);
+    expect(wailsListenerCount('provider:item_event')).toBe(0);
     expect(wailsListenerCount('provider:turn_started')).toBe(0);
     expect(wailsListenerCount('provider:turn_completed')).toBe(0);
     expect(wailsListenerCount('provider:subagent_notification')).toBe(0);
@@ -68,24 +66,29 @@ describe('setupEventListeners', () => {
     cleanup = setupEventListeners();
   });
 
-  it('routes provider:item_upsert only to the matching pane', async () => {
+  it('routes item_event upserts only to the matching pane', async () => {
     const paneA = await buildPane(makeThread({ id: 'thread-a' }));
     const paneB = await buildPane(makeThread({ id: 'thread-b' }));
     getAllPanes().set('a', paneA);
     getAllPanes().set('b', paneB);
 
-    emitWailsEvent('provider:item_upsert', makeItem({
+    const item = makeItem({
       id: 'tool-1',
       threadId: 'thread-a',
       kind: 'tool_call',
       status: 'running',
-    }));
+    });
+    emitWailsEvent('provider:item_event', {
+      action: 'upsert',
+      threadId: item.threadId,
+      item,
+    });
 
     expect(paneA.items.map((item) => item.id)).toEqual(['tool-1']);
     expect(paneB.items).toEqual([]);
   });
 
-  it('routes provider:item_delta only to the matching pane', async () => {
+  it('routes item_event deltas only to the matching pane', async () => {
     const paneA = await buildPane(makeThread({ id: 'thread-a' }));
     const paneB = await buildPane(makeThread({ id: 'thread-b' }));
     paneA.upsertItem(makeItem({
@@ -105,7 +108,8 @@ describe('setupEventListeners', () => {
     getAllPanes().set('a', paneA);
     getAllPanes().set('b', paneB);
 
-    emitWailsEvent('provider:item_delta', {
+    emitWailsEvent('provider:item_event', {
+      action: 'delta',
       threadId: 'thread-a',
       itemId: 'text:0:0',
       kind: 'assistant_text',
@@ -153,33 +157,94 @@ describe('setupEventListeners', () => {
     const pane = await buildPane();
     getAllPanes().set('main', pane);
 
-    emitWailsEvent('provider:item_upsert', makeItem({
+    const item = makeItem({
       id: 'error-1',
       kind: 'error',
       role: 'system',
       summary: 'boom',
-    }));
+    });
+    emitWailsEvent('provider:item_event', { action: 'upsert', threadId: item.threadId, item });
 
     expect(getThreadStatus('thread-1')).toBe('error');
   });
 
-  it('projects running -> idle from provider:item_upsert without provider:event', async () => {
+  it('projects running -> idle from ordered item_event upserts', async () => {
     const pane = await buildPane();
     getAllPanes().set('main', pane);
 
-    emitWailsEvent('provider:item_upsert', makeItem({
+    const streamingItem = makeItem({
       id: 'text-1',
       kind: 'assistant_text',
       status: 'streaming',
-    }));
+    });
+    emitWailsEvent('provider:item_event', {
+      action: 'upsert',
+      threadId: streamingItem.threadId,
+      item: streamingItem,
+    });
     expect(getThreadStatus('thread-1')).toBe('running');
 
-    emitWailsEvent('provider:item_upsert', makeItem({
+    const completedItem = makeItem({
       id: 'text-1',
       kind: 'assistant_text',
       status: 'completed',
-    }));
+    });
+    emitWailsEvent('provider:item_event', {
+      action: 'upsert',
+      threadId: completedItem.threadId,
+      item: completedItem,
+    });
     expect(getThreadStatus('thread-1')).toBe('idle');
+  });
+
+  it('ignores stale item_event deltas after the item has completed', async () => {
+    const pane = await buildPane();
+    getAllPanes().set('main', pane);
+
+    const streamingItem = makeItem({
+      id: 'text-1',
+      kind: 'assistant_text',
+      status: 'streaming',
+      summary: 'yield ',
+    });
+    emitWailsEvent('provider:item_event', {
+      action: 'upsert',
+      threadId: streamingItem.threadId,
+      item: streamingItem,
+    });
+    emitWailsEvent('provider:item_event', {
+      action: 'delta',
+      threadId: 'thread-1',
+      itemId: 'text-1',
+      kind: 'assistant_text',
+      delta: 'timeouts',
+      updatedAt: 2,
+    });
+    await nextFrame();
+    expect(pane.liveItemSummaries['text-1']).toBe('yield timeouts');
+
+    emitWailsEvent('provider:item_event', {
+      action: 'upsert',
+      threadId: 'thread-1',
+      item: makeItem({
+        id: 'text-1',
+        kind: 'assistant_text',
+        status: 'completed',
+        summary: 'yield timeouts',
+      }),
+    });
+    emitWailsEvent('provider:item_event', {
+      action: 'delta',
+      threadId: 'thread-1',
+      itemId: 'text-1',
+      kind: 'assistant_text',
+      delta: ' stale',
+      updatedAt: 3,
+    });
+    await nextFrame();
+
+    expect(pane.items.find((item) => item.id === 'text-1')?.summary).toBe('yield timeouts');
+    expect(pane.liveItemSummaries['text-1']).toBeUndefined();
   });
 
   it('updates cached thread rows from thread:updated', async () => {

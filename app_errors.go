@@ -36,7 +36,7 @@ func (a *App) emitEvent(eventName string, data any) {
 }
 
 // emitErrorToThread persists a provider error item for the given thread
-// via triage (which owns the provider:item_upsert chokepoint). The
+// via triage (which owns the provider:item_event chokepoint). The
 // triage-nil path logs instead of emitting — if the router is not wired
 // yet, we have neither a store to persist into nor a typed channel to
 // drop the error on, so it degrades to an observability breadcrumb.

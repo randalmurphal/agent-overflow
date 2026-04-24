@@ -140,17 +140,10 @@ func TestInterruptQueueDrainsInArrivalOrder(t *testing.T) {
 	}
 
 	// Mirror check on the emission stream: the order in which
-	// provider:item_upsert events fire for the two completions must also
+	// provider:item_event events fire for the two completions must also
 	// be A → B (the frontend reconciler replays emissions in order).
 	upsertOrder := []string{}
-	for _, e := range *emissions {
-		if e.eventName != "provider:item_upsert" {
-			continue
-		}
-		item, ok := e.data.(store.Item)
-		if !ok {
-			continue
-		}
+	for _, item := range filterItemEventUpserts(*emissions) {
 		if item.Kind != itemKindBackgroundDone {
 			continue
 		}

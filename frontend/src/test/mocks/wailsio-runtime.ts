@@ -10,6 +10,7 @@ import { __bindingMocksInternal } from './bindings-app';
 type Handler = (ev: { name: string; data: unknown }) => void;
 
 const listeners: Map<string, Set<Handler>> = new Map();
+let seq = 0;
 
 /**
  * Mock of the Wails runtime's `Call.ByName` RPC. Routes `main.App.<Method>`
@@ -126,9 +127,12 @@ export const Events = {
 export function emitWailsEvent(name: string, data: unknown): void {
   const set = listeners.get(name);
   if (!set) return;
+  const payload = name.startsWith('provider:')
+    ? { seq: ++seq, data }
+    : data;
   // Copy to avoid mutation-during-iteration if handlers unsubscribe.
   for (const handler of [...set]) {
-    handler({ name, data });
+    handler({ name, data: payload });
   }
 }
 
@@ -145,4 +149,5 @@ export function wailsListenerCount(name: string): number {
  */
 export function resetWailsMocks(): void {
   listeners.clear();
+  seq = 0;
 }

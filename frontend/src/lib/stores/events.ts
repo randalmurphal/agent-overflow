@@ -2,6 +2,7 @@ import { Events } from '@wailsio/runtime';
 import type {
   ApprovalEvent,
   ItemDeltaEvent,
+  ItemStreamEvent,
   ProviderStatusEvent,
   SubagentNotificationEvent,
   TurnCompletedEvent,
@@ -59,17 +60,35 @@ function isSeqEnvelope(value: unknown): value is SeqEnvelope {
  * trigger spurious gap warnings.
  */
 const lastSeenSeq: Map<string, number> = new Map();
+const itemUpsertSubscribers: Set<(item: Item) => void> = new Set();
 
 function resetSeqTracking(): void {
   lastSeenSeq.clear();
 }
 
+function requiresSeqEnvelope(name: string): boolean {
+  return name.startsWith('provider:');
+}
+
+export function onItemUpsert(handler: (item: Item) => void): () => void {
+  itemUpsertSubscribers.add(handler);
+  return () => {
+    itemUpsertSubscribers.delete(handler);
+  };
+}
+
+function notifyItemUpsert(item: Item): void {
+  for (const handler of [...itemUpsertSubscribers]) {
+    handler(item);
+  }
+}
+
 /**
  * wailsEventOn wraps Events.On to (a) unwrap SeqEnvelope payloads back
  * to the original Go shape, and (b) track per-channel seq gaps. The
- * wrapper is robust against raw payloads: if `ev.data` is not a seq
- * envelope (older emits during rollout, tests driving raw data), the
- * handler receives the raw payload and no gap tracking runs.
+ * Provider channels must arrive in the envelope so the frontend can
+ * enforce the ordering/gap contract. Non-provider app-shell channels may
+ * still pass raw payloads through this helper.
  *
  * Exported so subscribers outside this file (terminal drawer, diff
  * panel) can share the same gap-detection + unwrapping logic without
@@ -104,8 +123,12 @@ export function wailsEventOn<T = unknown>(
       handler(raw.data as T);
       return;
     }
-    // Raw payload: pass through unchanged so legacy emit callers and
-    // tests driving raw data continue to work without special casing.
+    if (requiresSeqEnvelope(name)) {
+      console.warn(`dropping unenveloped provider event on ${name}`);
+      return;
+    }
+    // Raw payload: pass through unchanged for app-shell channels that do
+    // not participate in provider stream ordering.
     handler(raw as T);
   });
 }
@@ -241,6 +264,19 @@ function applyItemDelta(evt: ItemDeltaEvent): void {
   for (const pane of getAllPanes().values()) {
     if (pane.threadId !== evt.threadId) continue;
     pane.applyItemDelta(evt);
+  }
+}
+
+function applyItemStreamEvent(evt: ItemStreamEvent): void {
+  if (!evt || !evt.threadId) return;
+  if (evt.action === 'upsert') {
+    if (!evt.item) return;
+    applyItemUpsert(evt.item);
+    notifyItemUpsert(evt.item);
+    return;
+  }
+  if (evt.action === 'delta') {
+    applyItemDelta(evt);
   }
 }
 
@@ -402,12 +438,10 @@ export function setupEventListeners(): () => void {
 
   const cancelProviderStatus = wailsEventOn<ProviderStatusEvent>('provider:status', applyProviderStatus);
 
-  // provider:item_upsert — backend persisted (or updated) a timeline
-  // item. Streaming rows use this for lifecycle boundaries only; live
-  // text arrives separately on provider:item_delta so panes do not clone
-  // and regroup their item arrays on each token.
-  const cancelItemUpsert = wailsEventOn<Item>('provider:item_upsert', applyItemUpsert);
-  const cancelItemDelta = wailsEventOn<ItemDeltaEvent>('provider:item_delta', applyItemDelta);
+  // provider:item_event is the canonical ordered timeline mutation stream.
+  // Upserts and deltas intentionally share one Wails channel so streaming
+  // text cannot race lifecycle snapshots across separate event names.
+  const cancelItemEvent = wailsEventOn<ItemStreamEvent>('provider:item_event', applyItemStreamEvent);
 
   // provider:turn_{started,completed} — wire-pushed turn lifecycle.
   // These are the sole drivers of `pane.activeTurn` /
@@ -517,8 +551,7 @@ export function setupEventListeners(): () => void {
     cancelApproval();
     cancelUsage();
     cancelProviderStatus();
-    cancelItemUpsert();
-    cancelItemDelta();
+    cancelItemEvent();
     cancelTurnStarted();
     cancelTurnCompleted();
     cancelSubagentNotification();

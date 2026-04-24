@@ -167,11 +167,13 @@ Triage persists raw item summaries and raw payload data only. It must not
 render markdown, ANSI, Mermaid, KaTeX, or code blocks. The frontend owns
 chat rendering because it knows which rows are mounted and visible.
 
-Streaming text/thinking rows create a row on first content, emit follow-up
-raw text on `provider:item_delta`, and flush to SQLite through the stream
-persistence buffer. `provider:item_upsert` is for row creation and lifecycle
-state snapshots, not token transport. Do not add another rendered cache
-column or a server-side kind-to-renderer dispatch table.
+Streaming text/thinking rows create a row on first content, then emit all
+timeline row mutations on the ordered `provider:item_event` channel:
+`action=upsert` for row creation/lifecycle snapshots and `action=delta`
+for follow-up raw text. SQLite receives the same raw text through the
+stream persistence buffer. Do not split streaming text across separate UI
+event channels, and do not add another rendered cache column or a
+server-side kind-to-renderer dispatch table.
 
 ## Extension points
 

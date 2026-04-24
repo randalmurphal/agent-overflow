@@ -268,16 +268,16 @@ cases only — it must not feed turn detection.
 
 | Wire envelope | Internal event (Go) | Frontend event | Triage action |
 |---|---|---|---|
-| Claude `tool_use` | `EventToolStart` | `provider:item_upsert` | Upsert `tool_call` row, status=running |
-| Claude inline `tool_result` | `EventToolComplete` | `provider:item_upsert` | Update `tool_call` to terminal |
-| Claude bg placeholder `tool_result` | `EventToolComplete` | `provider:item_upsert` | Per-spec: keep `status=running`, record `is_background=true` |
-| Claude `system/task_started` | `EventToolStart` (meta-only) | `provider:item_upsert` | Merge `task_id` into `items.meta` |
-| Claude `system/task_updated` terminal | `EventBackgroundTaskTerminal` | `provider:item_upsert` | Idempotent `tool_completion` sibling |
-| Claude TaskOutput `tool_result` | `EventToolComplete` + optional `EventBackgroundTaskTerminal` | `provider:item_upsert` | Close TaskOutput row; optional sibling enrichment/fallback |
+| Claude `tool_use` | `EventToolStart` | `provider:item_event` upsert | Upsert `tool_call` row, status=running |
+| Claude inline `tool_result` | `EventToolComplete` | `provider:item_event` upsert | Update `tool_call` to terminal |
+| Claude bg placeholder `tool_result` | `EventToolComplete` | `provider:item_event` upsert | Per-spec: keep `status=running`, record `is_background=true` |
+| Claude `system/task_started` | `EventToolStart` (meta-only) | `provider:item_event` upsert | Merge `task_id` into `items.meta` |
+| Claude `system/task_updated` terminal | `EventBackgroundTaskTerminal` | `provider:item_event` upsert | Idempotent `tool_completion` sibling |
+| Claude TaskOutput `tool_result` | `EventToolComplete` + optional `EventBackgroundTaskTerminal` | `provider:item_event` upsert | Close TaskOutput row; optional sibling enrichment/fallback |
 | Claude `system/task_notification` | — today; future notification event only | — today; future row only | No lifecycle state mutation |
 | Claude `result` | `EventTurnComplete` | `provider:turn_completed` | Update `turns` row, force-close orphans |
-| Codex `item/started` | `EventToolStart` | `provider:item_upsert` | Upsert item row |
-| Codex `item/completed` | `EventToolComplete` | `provider:item_upsert` | Update item row |
+| Codex `item/started` | `EventToolStart` | `provider:item_event` upsert | Upsert item row |
+| Codex `item/completed` | `EventToolComplete` | `provider:item_event` upsert | Update item row |
 | Codex `turn/started` | `EventTurnStart` | `provider:turn_started` | Insert `turns` row |
 | Codex `turn/completed` / `turn/aborted` | `EventTurnComplete` | `provider:turn_completed` | Update `turns` row, force-close orphans |
 

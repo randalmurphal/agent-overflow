@@ -215,6 +215,28 @@ describe('createThreadPane', () => {
     expect(pane.items.find((item) => item.id === 'text:0:0')?.summary).toBe('hello world');
   });
 
+  it('ignores stale deltas for an item that already settled', async () => {
+    const pane = createThreadPane();
+    pane.upsertItem(makeItem({
+      id: 'text:0:0',
+      kind: 'assistant_text',
+      status: 'completed',
+      summary: 'yield timeouts',
+    }));
+
+    pane.applyItemDelta({
+      threadId: 'thread-1',
+      itemId: 'text:0:0',
+      kind: 'assistant_text',
+      delta: 'outs',
+      updatedAt: 124,
+    });
+    await nextFrame();
+
+    expect(pane.liveItemSummaries['text:0:0']).toBeUndefined();
+    expect(pane.items.find((item) => item.id === 'text:0:0')?.summary).toBe('yield timeouts');
+  });
+
   it('merges deltas that arrive before the initial streaming row', async () => {
     const pane = createThreadPane();
 

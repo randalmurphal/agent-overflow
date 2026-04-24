@@ -1,19 +1,29 @@
-import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, waitFor } from '@testing-library/svelte';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { cleanup, fireEvent, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import PlanSidebar from './PlanSidebar.svelte';
-import { buildPane, makeItem } from '../../../test/helpers/chat';
+import { buildPane, emitItemEventUpsert, makeItem } from '../../../test/helpers/chat';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
-import { emitWailsEvent } from '../../../test/mocks/wailsio-runtime';
+import { resetWailsMocks } from '../../../test/mocks/wailsio-runtime';
+import { setupEventListeners } from '../../stores/events';
 import { installAnimateShim } from '../../../test/integration/_helpers';
 
 beforeAll(installAnimateShim);
 
 describe('<PlanSidebar>', () => {
+  let cleanupEvents: () => void;
+
   beforeEach(() => {
+    resetWailsMocks();
     resetBindingMocks();
     // Default: no plans. Individual tests override this before render.
     setBindingMock('ListThreadProposedPlans', async () => []);
+    cleanupEvents = setupEventListeners();
+  });
+
+  afterEach(() => {
+    cleanup();
+    cleanupEvents?.();
   });
 
   async function renderSidebar(pane: Awaited<ReturnType<typeof buildPane>>) {
@@ -141,7 +151,7 @@ describe('<PlanSidebar>', () => {
       }),
     ];
 
-    emitWailsEvent('provider:item_upsert', {
+    emitItemEventUpsert({
       id: 'plan-fresh',
       threadId: pane.thread!.id,
       turnIndex: 0,
@@ -172,7 +182,7 @@ describe('<PlanSidebar>', () => {
     expect(fetchCount).toBe(1);
 
     // Wrong thread.
-    emitWailsEvent('provider:item_upsert', {
+    emitItemEventUpsert({
       id: 'x',
       threadId: 'other-thread',
       turnIndex: 0,
@@ -186,7 +196,7 @@ describe('<PlanSidebar>', () => {
       updatedAt: 0,
     });
     // Different payload kind.
-    emitWailsEvent('provider:item_upsert', {
+    emitItemEventUpsert({
       id: 'y',
       threadId: pane.thread!.id,
       turnIndex: 0,
@@ -246,7 +256,7 @@ describe('<PlanSidebar>', () => {
 
     // Trigger a second fetch via a proposed_plan upsert. The debounce
     // window is 100 ms; wait for the fresh rows to land.
-    emitWailsEvent('provider:item_upsert', {
+    emitItemEventUpsert({
       id: 'plan-fresh',
       threadId: pane.thread!.id,
       turnIndex: 0,

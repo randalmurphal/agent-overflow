@@ -10,21 +10,12 @@ import (
 	"agent-overflow/internal/store"
 )
 
-// findUpsertedItems pulls every store.Item that triage published on the
-// provider:item_upsert channel, in emission order. Tests assert against
+// findUpsertedItems pulls every store.Item that triage published as a
+// provider:item_event upsert, in emission order. Tests assert against
 // this slice to verify the lifecycle item flows into the frontend's
 // reconciliation pipeline as it would in production.
 func findUpsertedItems(emissions []emitted) []store.Item {
-	var out []store.Item
-	for _, e := range emissions {
-		if e.eventName != "provider:item_upsert" {
-			continue
-		}
-		if item, ok := e.data.(store.Item); ok {
-			out = append(out, item)
-		}
-	}
-	return out
+	return filterItemEventUpserts(emissions)
 }
 
 // findItemsByKind returns persisted items of the given kind for a thread.
@@ -875,17 +866,10 @@ func TestHandleEventBackgroundTaskTerminal_InsertsSibling(t *testing.T) {
 		t.Fatalf("expected 1 tool_completion after duplicate terminal (idempotent upsert), got %d", len(dones))
 	}
 
-	// Sibling emission lands as provider:item_upsert with the same id
+	// Sibling emission lands as provider:item_event with the same id
 	// so the frontend reconciler merges in place.
 	siblingUpserts := 0
-	for _, e := range *emissions {
-		if e.eventName != "provider:item_upsert" {
-			continue
-		}
-		item, ok := e.data.(store.Item)
-		if !ok {
-			continue
-		}
+	for _, item := range filterItemEventUpserts(*emissions) {
 		if item.ID == nextToolCompletionID("bg-insert") {
 			siblingUpserts++
 		}

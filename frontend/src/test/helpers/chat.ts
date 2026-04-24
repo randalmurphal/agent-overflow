@@ -1,6 +1,8 @@
 import { createThreadPane, type ThreadPane } from '../../lib/stores/thread.svelte';
+import type { ItemDeltaEvent } from '../../lib/types/events';
 import type { Item, Thread } from '../../lib/types/models';
 import { setBindingMock } from '../mocks/bindings-app';
+import { emitWailsEvent } from '../mocks/wailsio-runtime';
 
 export function makeThread(overrides: Partial<Thread> = {}): Thread {
   return {
@@ -33,6 +35,21 @@ export function makeItem(overrides: Partial<Item> = {}): Item {
     updatedAt: overrides.updatedAt ?? createdAt,
     ...overrides,
   };
+}
+
+export function emitItemEventUpsert(item: Item): void {
+  emitWailsEvent('provider:item_event', {
+    action: 'upsert',
+    threadId: item.threadId,
+    item,
+  });
+}
+
+export function emitItemEventDelta(delta: ItemDeltaEvent): void {
+  emitWailsEvent('provider:item_event', {
+    action: 'delta',
+    ...delta,
+  });
 }
 
 export function installPaneMocks(items: Item[] = []): void {

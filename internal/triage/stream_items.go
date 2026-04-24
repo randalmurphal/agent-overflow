@@ -92,9 +92,9 @@ func (r *Router) handleThinking(evt provider.ProviderEvent) error {
 	}
 
 	// Payload id is deterministic so subsequent deltas can address the
-	// same blob without a Store round-trip. The live UI gets
-	// provider:item_delta immediately; SQLite receives buffered appends
-	// by interval, threshold, or lifecycle boundary.
+	// same blob without a Store round-trip. The live UI gets an ordered
+	// provider:item_event delta immediately; SQLite receives buffered
+	// appends by interval, threshold, or lifecycle boundary.
 	payloadID := "thinking:" + itemID
 
 	if firstBlock {

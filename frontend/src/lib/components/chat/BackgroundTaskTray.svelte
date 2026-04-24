@@ -5,7 +5,7 @@
     ListLiveBackgroundTasks,
     StopClaudeTask,
   } from '../../stores/bindings';
-  import { wailsEventOn } from '../../stores/events';
+  import { onItemUpsert, wailsEventOn } from '../../stores/events';
   import { addToast } from '../../stores/toast.svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import type { BackgroundTasksChangedEvent } from '../../types/events';
@@ -99,8 +99,8 @@
   let cancelItemUpsert: (() => void) | null = null;
   let cancelBackgroundTasksChanged: (() => void) | null = null;
   onMount(() => {
-    cancelItemUpsert = wailsEventOn<Item>('provider:item_upsert', (item) => {
-      if (!item || item.threadId !== threadId) return;
+    cancelItemUpsert = onItemUpsert((item) => {
+      if (item.threadId !== threadId) return;
       // Refresh when a background launch, its completion, OR anything
       // that looks like it could be either of those lands. The backend
       // filters authoritatively on the next fetch; we stay permissive

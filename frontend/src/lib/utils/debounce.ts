@@ -1,6 +1,6 @@
 // Minimal trailing-edge debounce used by thread-wide refresh surfaces
 // (PlanSidebar, DiffPanelDrawer, BackgroundTaskTray) to collapse a
-// burst of provider:item_upsert events into a single backend
+// burst of provider:item_event events into a single backend
 // re-fetch. Each call resets the timer; the wrapped `fn` runs exactly
 // once `ms` after the last call with no further arrivals.
 //

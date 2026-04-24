@@ -3,8 +3,10 @@ import { render, fireEvent, cleanup } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import BackgroundTaskTray from './BackgroundTaskTray.svelte';
 import type { Item, Thread } from '../../types/models';
-import { buildPane, makeThread } from '../../../test/helpers/chat';
+import { buildPane, emitItemEventUpsert, makeThread } from '../../../test/helpers/chat';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { resetWailsMocks } from '../../../test/mocks/wailsio-runtime';
+import { setupEventListeners } from '../../stores/events';
 import { getToasts } from '../../stores/toast.svelte';
 
 /**
@@ -48,10 +50,14 @@ async function renderTray(pane: Awaited<ReturnType<typeof buildPane>>) {
 }
 
 describe('<BackgroundTaskTray>', () => {
+  let cleanupEvents: () => void;
+
   beforeEach(() => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(1_000_000));
+    resetWailsMocks();
     resetBindingMocks();
+    cleanupEvents = setupEventListeners();
     // Default the two stop primitives to resolved no-ops; tests that
     // care about specific call shapes or error surfacing override
     // these.
@@ -61,6 +67,7 @@ describe('<BackgroundTaskTray>', () => {
 
   afterEach(() => {
     cleanup();
+    cleanupEvents?.();
     vi.useRealTimers();
   });
 
@@ -277,7 +284,7 @@ describe('<BackgroundTaskTray>', () => {
 
   it('refreshes on upsert of a background launch (isBackground=true, completionOf empty)', async () => {
     // Regression pin for the `isBackground || completionOf` filter in
-    // the provider:item_upsert handler. A background launch that has
+    // the provider:item_event handler. A background launch that has
     // not yet been paired with a completion has `completionOf` empty;
     // the handler must still trigger a refresh — flipping the `||`
     // to `&&` would silently stop all launches from refreshing the
@@ -297,7 +304,7 @@ describe('<BackgroundTaskTray>', () => {
     await tick();
     const mountCalls = fetchCalls;
 
-    emitWailsEvent('provider:item_upsert', {
+    emitItemEventUpsert({
       id: 'fresh-launch',
       threadId: pane.thread!.id,
       turnIndex: 0,
@@ -335,7 +342,7 @@ describe('<BackgroundTaskTray>', () => {
     await tick();
     const mountCalls = fetchCalls;
 
-    emitWailsEvent('provider:item_upsert', {
+    emitItemEventUpsert({
       id: 'diff-only',
       threadId: pane.thread!.id,
       turnIndex: 0,

@@ -49,9 +49,9 @@ func TestParentToolUseIDFlowsThroughInlineEmit(t *testing.T) {
 	// parent_id, and that lands on the upsert channel — use the
 	// emissions sink to assert the outbound contract without depending
 	// on a retired passthrough channel.
-	upserts := filterEmissions(*emissions, "provider:item_upsert")
+	upserts := filterItemEventUpserts(*emissions)
 	if len(upserts) == 0 {
-		t.Fatalf("expected at least 1 provider:item_upsert emission, got %d", len(upserts))
+		t.Fatalf("expected at least 1 provider:item_event upsert, got %d", len(upserts))
 	}
 }
 

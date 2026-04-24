@@ -4,7 +4,7 @@
 // independently unit-testable.
 
 import { onDestroy, onMount } from 'svelte';
-import { wailsEventOn } from '../../../stores/events';
+import { onItemUpsert } from '../../../stores/events';
 import { ListThreadDiffPayloads } from '../../../stores/bindings';
 import type { Item } from '../../../types/models';
 import {
@@ -25,7 +25,7 @@ export interface CumulativeDiffItems {
 
 /**
  * Thread-wide cumulative diff state, refreshed on thread switch and
- * on provider:item_upsert events for diff-bearing payloads. Callers
+ * on provider:item_event upserts for diff-bearing payloads. Callers
  * pass a reactive `getThreadId()` closure so the factory can re-fetch
  * when the pane's thread changes. Every `$state` lives inside the
  * factory — the consuming component just reads the returned getters.
@@ -89,8 +89,8 @@ export function createCumulativeDiffItems(opts: {
     // unrelated tool_results (bash, read-file, etc.) don't trigger a
     // refresh on every upsert during streaming. The debounce still
     // collapses the tool_call → tool_completion burst into one query.
-    cancelItemUpsert = wailsEventOn<Item>('provider:item_upsert', (item) => {
-      if (!item || item.threadId !== opts.getThreadId()) return;
+    cancelItemUpsert = onItemUpsert((item) => {
+      if (item.threadId !== opts.getThreadId()) return;
       if (item.payloadKind === 'diff') {
         debouncedRefresh();
         return;

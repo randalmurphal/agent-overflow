@@ -8,7 +8,7 @@ import (
 // event. It surfaces provider-level health (install / version / auth)
 // to the frontend so ProviderStatusBanner can render actionable
 // guidance. This is a separate channel from the triage router's
-// per-turn `provider:item_upsert` stream — those describe timeline
+// per-turn `provider:item_event` stream — those describe timeline
 // content; these describe the binary itself.
 type ProviderStatusEvent struct {
 	// Provider is "claude" or "codex".
@@ -166,4 +166,3 @@ func (a *App) emitProviderStatusOnSessionStartError(providerName string) {
 	}
 	a.emitProviderStatus(providerStatusEventFromDetect(status))
 }
-

@@ -110,7 +110,7 @@ func TestE2E_Codex_YieldingCommand_ProjectsAsBackgrounded(t *testing.T) {
 	})
 
 	// The tray refresh is driven by a dedicated live-state event rather
-	// than a provider:item_upsert, because no timeline row exists.
+	// than a provider:item_event upsert, because no timeline row exists.
 	sawTrayRefreshEmission := false
 	for _, e := range bus.allEvents() {
 		if e.Name == "provider:background_tasks_changed" {
@@ -354,7 +354,7 @@ func TestE2E_Codex_StopAll_CleanRPC(t *testing.T) {
 // — that's the same helper startSessionNow calls BEFORE spawning the
 // new subprocess. The rest of the reconcile path has unit coverage in
 // app_codex_reconcile_test.go; this test pins the end-to-end visible
-// state: ghost row → errored/lost, emitted via provider:item_upsert so
+// state: ghost row → errored/lost, emitted via provider:item_event so
 // the tray reconciles.
 func TestE2E_Codex_AppRestart_GhostRowsFlipped(t *testing.T) {
 	app, _ := setupE2EApp(t)
@@ -370,14 +370,10 @@ func TestE2E_Codex_AppRestart_GhostRowsFlipped(t *testing.T) {
 	}
 	var flipEmits []capturedFlipEmit
 	app.testEmitHook = func(name string, data any) {
-		if name != "provider:item_upsert" {
+		if name != "provider:item_event" {
 			return
 		}
-		env, ok := data.(SeqEnvelope)
-		if !ok {
-			return
-		}
-		item, ok := env.Data.(store.Item)
+		item, ok := itemFromItemStreamEnvelope(data)
 		if !ok {
 			return
 		}
@@ -418,7 +414,7 @@ func TestE2E_Codex_AppRestart_GhostRowsFlipped(t *testing.T) {
 		t.Fatalf("ghost row summary = %q, want ' — session ended' suffix", got.Summary)
 	}
 
-	// The flip must emit provider:item_upsert with the new state so
+	// The flip must emit provider:item_event with the new state so
 	// the tray re-renders without waiting on a provider event.
 	var sawFlipEmission bool
 	for _, emit := range flipEmits {
@@ -428,7 +424,7 @@ func TestE2E_Codex_AppRestart_GhostRowsFlipped(t *testing.T) {
 		}
 	}
 	if !sawFlipEmission {
-		t.Errorf("no provider:item_upsert with the errored ghost row emitted; got %d emissions", len(flipEmits))
+		t.Errorf("no provider:item_event upsert with the errored ghost row emitted; got %d emissions", len(flipEmits))
 	}
 }
 

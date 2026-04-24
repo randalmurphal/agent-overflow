@@ -482,19 +482,15 @@ func TestReconcileCodexOnStart_FlipsGhostBackgroundRows(t *testing.T) {
 	threadID := seedCodexThread(t, st, "thread-ghost-flip")
 	runningID := seedRunningBackgroundTool(t, st, threadID, "tool-bg-ghost")
 
-	// Observe the provider:item_upsert emission. Phase-4's flip should
+	// Observe the provider:item_event upsert. Phase-4's flip should
 	// fan out one emit per flipped row so the tray subscribers update
 	// without waiting for the next event cycle.
 	var emitted []store.Item
 	a.testEmitHook = func(name string, data any) {
-		if name != "provider:item_upsert" {
+		if name != "provider:item_event" {
 			return
 		}
-		env, ok := data.(SeqEnvelope)
-		if !ok {
-			return
-		}
-		if item, ok := env.Data.(store.Item); ok {
+		if item, ok := itemFromItemStreamEnvelope(data); ok {
 			emitted = append(emitted, item)
 		}
 	}
@@ -513,7 +509,7 @@ func TestReconcileCodexOnStart_FlipsGhostBackgroundRows(t *testing.T) {
 	}
 
 	if len(emitted) != 1 {
-		t.Fatalf("provider:item_upsert emitted %d times, want 1", len(emitted))
+		t.Fatalf("provider:item_event upsert emitted %d times, want 1", len(emitted))
 	}
 	if emitted[0].ID != runningID {
 		t.Fatalf("emitted item id = %q, want %q", emitted[0].ID, runningID)

@@ -1031,8 +1031,7 @@ unions.
 
 | channel                  | payload Go struct                          | purpose                                                |
 |--------------------------|--------------------------------------------|--------------------------------------------------------|
-| `provider:item_upsert`   | `store.Item` (full row)                    | timeline row creation and lifecycle/state snapshots    |
-| `provider:item_delta`    | `triage.ItemDeltaEvent`                    | live assistant text/thinking deltas                    |
+| `provider:item_event`    | `triage.ItemStreamEvent`                   | ordered timeline upserts and live text/thinking deltas |
 | `provider:approval`      | `ApprovalEvent` (discriminated, see below) | approval overlay state                                 |
 | `provider:usage`         | `UsageEvent` (discriminated, see below)    | context meter; not displayed as items                  |
 | `provider:status`        | `ProviderStatusEvent`                      | persistent provider banner                             |
@@ -1099,7 +1098,11 @@ as-is. Toast channel for fatal infra errors stays as-is.
 func (r *Router) persistItem(item store.Item, payload *store.Payload) error {
     persisted, err := r.store.UpsertItem(item, payload)
     if err != nil { return err }
-    r.emit("provider:item_upsert", persisted)
+    r.emit("provider:item_event", ItemStreamEvent{
+        Action:   "upsert",
+        ThreadID: persisted.ThreadID,
+        Item:     &persisted,
+    })
     return nil
 }
 ```
@@ -1324,7 +1327,7 @@ retries.
 **Strict ordering in the handler:**
 1. First: flip every `status=streaming` and `status=running` item in
    the active turn to `errored` with summary suffix " — interrupted".
-   Each flip emits its own `provider:item_upsert` event.
+   Each flip emits its own `provider:item_event` upsert.
 2. Then: upsert the `error` item (new row).
 3. Finally: drain any pending queued completions to `errored`
    items (not `completed`, since we don't know the real outcome).
@@ -1442,7 +1445,7 @@ mutation.
 ### Sending a message — no optimistic shadow
 
 User clicks send → `SendMessage` binding runs → app_send.go persists
-the `user_text` item and emits `provider:item_upsert`. The round trip
+the `user_text` item and emits a `provider:item_event` upsert. The round trip
 is SQLite write + Wails event ≈ <10ms on local hardware. The user
 sees their message appear without perceivable lag. No `pendingMessage`
 optimistic render needed.
@@ -1481,7 +1484,10 @@ returns.
 ### Listeners
 
 ```ts
-on('provider:item_upsert', (item) => pane.upsertItem(item));
+on('provider:item_event', (event) => {
+  if (event.action === 'upsert') pane.upsertItem(event.item);
+  else pane.applyItemDelta(event.delta);
+});
 on('provider:approval', (msg) => {
   if (msg.action === 'request') pane.addApproval(msg.request);
   else pane.removeApproval(msg.requestId);

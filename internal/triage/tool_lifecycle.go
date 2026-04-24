@@ -580,7 +580,7 @@ func (r *Router) turnIndexForEvent(evt provider.ProviderEvent) (int, error) {
 }
 
 func (r *Router) emitItemUpsert(item store.Item) {
-	r.emit("provider:item_upsert", item)
+	r.emit("provider:item_event", NewItemStreamUpsert(item))
 }
 
 func decodeToolStartMeta(raw json.RawMessage) toolStartMeta {

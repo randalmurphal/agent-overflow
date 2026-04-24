@@ -375,7 +375,7 @@ func turnCompleteIsTruncated(meta turnCompleteMeta) bool {
 //
 // The DB writes are batched inside store.ForceCloseRunningToolCallsInTurn
 // (one TX, one thread-touch) to cut per-orphan roundtrips; the
-// frontend-bound `provider:item_upsert` emissions stay per-row so the
+// frontend-bound `provider:item_event` upserts stay per-row so the
 // UI still updates each card independently.
 func (r *Router) forceCloseOrphanToolCalls(threadID string, turnIndex int, now int64) error {
 	flipped, err := r.store.ForceCloseRunningToolCallsInTurn(threadID, turnIndex, forceCloseSummary, now)

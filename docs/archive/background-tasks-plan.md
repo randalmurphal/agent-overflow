@@ -117,7 +117,7 @@ heuristics.
    - On first **model-produced** event (`EventTextDelta`,
      `EventThinking`, `EventTurnComplete`) for the originating turn
      while such an item is still inProgress → stamp
-     `is_background=true`, emit `provider:item_upsert` with the
+     `is_background=true`, emit `provider:item_event` with the
      updated row.
    - Ignores `EventToolStart` for sibling parallel-batch tool calls
      (distinguished by same `turn_id` with no model output between).

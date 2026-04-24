@@ -7,6 +7,7 @@ import { refreshThreads, getThreads } from '../../stores/threads.svelte';
 import { resetForTest as resetThreadStatuses, setThreadStatus } from '../../stores/threadStatuses.svelte';
 import type { Thread } from '../../types/models';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
+import { emitItemEventUpsert } from '../../../test/helpers/chat';
 
 function makeThread(overrides: Partial<Thread> = {}): Thread {
   return {
@@ -257,12 +258,11 @@ describe('<ThreadRow> live status dot', () => {
   });
 
   // Full-stack regression: drive the exact wire-level path the live app
-  // uses. provider:item_upsert → applyItemUpsert (in events.ts) →
+  // uses. provider:item_event upsert → applyItemStreamEvent (in events.ts) →
   // projectThreadItem → setThreadStatus → $derived → DOM. If this fails
   // but the direct-setThreadStatus test above passes, the break is in
   // the event plumbing, not the reactivity.
-  it('flips the pill to Working when a streaming assistant_text arrives via provider:item_upsert', async () => {
-    const { emitWailsEvent } = await import('../../../test/mocks/wailsio-runtime');
+  it('flips the pill to Working when a streaming assistant_text arrives via provider:item_event', async () => {
     const { setupEventListeners } = await import('../../stores/events');
     const cleanup = setupEventListeners();
     try {
@@ -272,7 +272,7 @@ describe('<ThreadRow> live status dot', () => {
       });
       expect(queryByTestId('thread-row-status-dot')).toBeNull();
 
-      emitWailsEvent('provider:item_upsert', {
+      emitItemEventUpsert({
         id: 'item-1',
         threadId: 't-stream',
         turnIndex: 0,
@@ -317,8 +317,7 @@ describe('<ThreadRow> live status dot', () => {
     expect(getByTestId('thread-row-status-dot').getAttribute('aria-label')).toBe('Discussing');
   });
 
-  it('flips the pill to Working when a streaming thinking item arrives via provider:item_upsert', async () => {
-    const { emitWailsEvent } = await import('../../../test/mocks/wailsio-runtime');
+  it('flips the pill to Working when a streaming thinking item arrives via provider:item_event', async () => {
     const { setupEventListeners } = await import('../../stores/events');
     const cleanup = setupEventListeners();
     try {
@@ -328,7 +327,7 @@ describe('<ThreadRow> live status dot', () => {
       });
       expect(queryByTestId('thread-row-status-dot')).toBeNull();
 
-      emitWailsEvent('provider:item_upsert', {
+      emitItemEventUpsert({
         id: 'thinking-1',
         threadId: 't-think',
         turnIndex: 0,

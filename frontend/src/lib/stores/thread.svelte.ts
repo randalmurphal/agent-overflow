@@ -161,6 +161,7 @@ export function createThreadPane() {
   let timelineRevision = $state(0);
   let liveItemSummaries: Record<string, string> = $state({});
   const liveDeltaChunks: Map<string, string[]> = new Map();
+  const itemStatusById: Map<string, Item['status']> = new Map();
   let liveSummaryFrame: number | null = null;
   // Per-turn diff view index. Keyed by turnIndex. Incrementally updated on
   // upsertItem rather than rebuilt from scratch — with hundreds of items the
@@ -342,6 +343,13 @@ export function createThreadPane() {
     liveItemSummaries = {};
   }
 
+  function rebuildItemStatusIndex(nextItems: Item[]): void {
+    itemStatusById.clear();
+    for (const item of nextItems) {
+      itemStatusById.set(item.id, item.status);
+    }
+  }
+
   function itemsForThread(nextItems: Item[] | null | undefined, threadId: string): Item[] {
     return (nextItems ?? []).filter((item) => item.threadId === threadId);
   }
@@ -518,6 +526,7 @@ export function createThreadPane() {
       loading = true;
       items = [];
       resetLiveBuffers();
+      itemStatusById.clear();
       turnDiffViews = new Map();
       // Windowed-history reset. A null floor disables the upsert floor
       // check until the backend tells us otherwise, which is correct:
@@ -560,6 +569,7 @@ export function createThreadPane() {
         const paged = await ListRecentThreadItems(newThread.id, 0);
         if (gen !== switchGeneration) return;
         items = itemsForThread((paged.items ?? []) as Item[], newThread.id);
+        rebuildItemStatusIndex(items);
         oldestLoadedTurnIndex = paged.oldestTurnIndex >= 0 ? paged.oldestTurnIndex : null;
         hasMoreHistory = paged.hasMore ?? false;
         rebuildTurnDiffViews(items);
@@ -567,6 +577,7 @@ export function createThreadPane() {
         if (gen !== switchGeneration) return;
         console.error('Failed to load items:', err);
         items = [];
+        itemStatusById.clear();
         turnDiffViews = new Map();
         oldestLoadedTurnIndex = null;
         hasMoreHistory = false;
@@ -609,6 +620,7 @@ export function createThreadPane() {
       thread = null;
       items = [];
       resetLiveBuffers();
+      itemStatusById.clear();
       turnDiffViews = new Map();
       pendingApprovals = [];
       contextWindow = null;
@@ -664,6 +676,7 @@ export function createThreadPane() {
         const next = mergeItemsById(prepend, items);
         if (next !== items) {
           items = next;
+          rebuildItemStatusIndex(items);
           rebuildTurnDiffViews(items);
         }
         const nextFloor =
@@ -773,6 +786,7 @@ export function createThreadPane() {
         const next = mergeItemsById(prepend, items);
         if (next !== items) {
           items = next;
+          rebuildItemStatusIndex(items);
           rebuildTurnDiffViews(items);
         }
         oldestLoadedTurnIndex =
@@ -817,7 +831,7 @@ export function createThreadPane() {
     },
 
     /**
-     * Merge a single Item from a `provider:item_upsert` event into the
+     * Merge a single Item from a `provider:item_event` upsert into the
      * timeline. New ids append in (turnIndex, itemIndex) order; existing
      * ids replace in place so the row's status/summary/payload_id can
      * mutate without losing position. The backend is authoritative for
@@ -857,6 +871,7 @@ export function createThreadPane() {
         const next = items.slice();
         next[idx] = item;
         items = next;
+        itemStatusById.set(item.id, item.status);
         timelineRevision++;
         refreshTurnDiffView(next, item.turnIndex);
         if (prevTurnIndex !== item.turnIndex) {
@@ -890,6 +905,7 @@ export function createThreadPane() {
       const next = items.slice();
       next.splice(insertAt, 0, item);
       items = next;
+      itemStatusById.set(item.id, item.status);
       timelineRevision++;
       refreshTurnDiffView(next, item.turnIndex);
     },
@@ -897,6 +913,8 @@ export function createThreadPane() {
     applyItemDelta(evt: ItemDeltaEvent): void {
       if (!evt.itemId || !evt.delta) return;
       if (thread && evt.threadId !== thread.id) return;
+      const status = itemStatusById.get(evt.itemId);
+      if (status && status !== 'streaming') return;
       const chunks = liveDeltaChunks.get(evt.itemId);
       if (chunks) {
         chunks.push(evt.delta);

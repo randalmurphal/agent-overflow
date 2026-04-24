@@ -1048,9 +1048,9 @@ func TestSendMessageGoesThroughRouter(t *testing.T) {
 	app.triage = triage.NewRouter(app.store, func(name string, data any) {
 		mu.Lock()
 		emissions = append(emissions, name)
-		if name == "provider:item_upsert" {
-			if item, ok := data.(store.Item); ok {
-				upsertedIDs = append(upsertedIDs, item.ID)
+		if name == "provider:item_event" {
+			if event, ok := data.(triage.ItemStreamEvent); ok && event.Action == "upsert" && event.Item != nil {
+				upsertedIDs = append(upsertedIDs, event.Item.ID)
 			}
 		}
 		mu.Unlock()
@@ -1087,7 +1087,7 @@ func TestSendMessageGoesThroughRouter(t *testing.T) {
 	defer mu.Unlock()
 
 	// Both the user item and the error item must have been emitted as
-	// provider:item_upsert — that only happens when the router's
+	// provider:item_event — that only happens when the router's
 	// persistItem runs, not when we call store.UpsertItem directly.
 	wantUserID := "user:1"
 	var sawUser, sawError bool

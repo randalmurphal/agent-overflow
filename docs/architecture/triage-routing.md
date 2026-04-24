@@ -10,29 +10,30 @@ Every normalized `ProviderEvent` flows through `Router.Handle` in
 | EventKind | Disposition |
 |---|---|
 | `init` | `handleInit` — upsert `session_ref` on `threads`. |
-| `text_delta` | `handleTextDelta` — create the streaming row on first content, emit `provider:item_delta` for follow-up text, flush raw text to SQLite from the stream buffer. |
-| `tool_start` | `handleToolStart` — persist tool-use lifecycle row, capture pending inline diff, emit `provider:item_upsert`. |
-| `tool_complete` | `handleToolComplete` — persist tool result (inc. inline diffs), flip status, emit `provider:item_upsert`. |
+| `text_delta` | `handleTextDelta` — create the streaming row on first content, emit ordered `provider:item_event` deltas for follow-up text, flush raw text to SQLite from the stream buffer. |
+| `tool_start` | `handleToolStart` — persist tool-use lifecycle row, capture pending inline diff, emit `provider:item_event` upsert. |
+| `tool_complete` | `handleToolComplete` — persist tool result (inc. inline diffs), flip status, emit `provider:item_event` upsert. |
 | `turn_start` | `handleTurnStart` — open turn span, capture git baseline. |
 | `turn_complete` | `handleTurnComplete` — drain accumulators, persist text/thinking/plan, close span. |
 | `approval_request` | `handleApprovalRequest` — record pending, emit `provider:approval` (request). |
 | `approval_resolved` | `handleApprovalResolved` — fold decision onto the row, emit `provider:approval` (resolve). |
 | `session_status` | `handleSessionStatus` — precise mapping to `ProviderStatusEventKind`, emit `provider:status` when persistent. |
 | `token_usage` | `handleTokenUsage` — emit `provider:usage` (cost pre-computed in the provider adapter). |
-| `error` | `handleError` — persist error row, mark turn items errored on fatal, emit `provider:item_upsert`. |
+| `error` | `handleError` — persist error row, mark turn items errored on fatal, emit `provider:item_event` upsert. |
 | `compact_boundary` | `handleCompaction` — persist compaction marker, emit `provider:usage` (reset). |
 | `rate_limits` | `handleRateLimits` — emit `provider:usage` (rate_limits). |
 | `content_block_start` / `content_block_stop` | Streaming text/thinking block markers; settle streaming rows on stop. |
 | `model_rerouted` | `handleThreadModelUpdate` — persist new model, emit `thread:updated`. |
 | `thread_renamed` | `handleThreadRename` — persist new title, emit `thread:updated`. |
-| `diff` | `handleDiff` — persist payload + meta, upgrade summary-only tool results, emit `provider:item_upsert`. |
-| `command_output` | `handleCommandOutput` — persist command_output payload, emit `provider:item_upsert`. |
-| `thinking` | `handleThinking` — create the thinking row/payload on first content, emit `provider:item_delta` for follow-up reasoning, flush summary preview + payload data from the stream buffer. |
-| `proposed_plan` | `handleProposedPlan` — persist plan payload, emit `provider:item_upsert`. |
+| `diff` | `handleDiff` — persist payload + meta, upgrade summary-only tool results, emit `provider:item_event` upsert. |
+| `command_output` | `handleCommandOutput` — persist command_output payload, emit `provider:item_event` upsert. |
+| `thinking` | `handleThinking` — create the thinking row/payload on first content, emit ordered `provider:item_event` deltas for follow-up reasoning, flush summary preview + payload data from the stream buffer. |
+| `proposed_plan` | `handleProposedPlan` — persist plan payload, emit `provider:item_event` upsert. |
 
-Routing lands on typed channels: `provider:item_upsert` (timeline
-lifecycle/state snapshots), `provider:item_delta` (live text/thinking
-deltas), `provider:approval`, `provider:usage`, and `provider:status`.
+Routing lands on typed channels. Timeline mutations use
+`provider:item_event` (ordered upserts and live text/thinking deltas);
+approvals, usage/status, turn lifecycle, subagent notifications, and
+background-task changes each use their own typed channel.
 There is no generic `provider:event` passthrough — the router exposes a
 `SetEventHook` test-only observer so Go tests can synchronize on the
 routing pipeline without a wire channel.

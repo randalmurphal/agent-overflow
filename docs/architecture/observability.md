@@ -51,7 +51,7 @@ avoid otel's global lookups (see `otel.NewProvider` in
 `replay.Manager` owns one `Writer` per threadID, writing to
 `<dbDir>/replay/<threadID>.jsonl`. Every event flowing through
 `App.emitWithReplay` (in `app_emit.go`) is mirrored into the log when
-enabled — including the typed routing channels (`provider:item_upsert`,
+enabled — including the typed routing channels (`provider:item_event`,
 `provider:approval`, `provider:usage`, `provider:status`) and the
 design / checkpoint event families. Records are
 `{ts, threadId, kind, data}` with `data` as opaque JSON.

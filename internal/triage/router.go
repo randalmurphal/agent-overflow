@@ -69,8 +69,8 @@ type Router struct {
 	streamingItemCounts  map[string]int
 	errorSeqByScope      map[string]int
 	// streamPersistBuffers decouple the live UI stream from durable
-	// history writes. Text/thinking deltas emit immediately on
-	// provider:item_delta, then flush to SQLite by interval, byte
+	// history writes. Text/thinking deltas emit immediately on ordered
+	// provider:item_event deltas, then flush to SQLite by interval, byte
 	// threshold, or lifecycle boundary.
 	streamPersistBuffers map[string]*streamPersistBuffer
 	// capturedTurns guards against double-capture when a provider emits
@@ -631,9 +631,8 @@ func (r *Router) synthesizeTruncatedTurnComplete(threadID string, turnIndex int,
 }
 
 // emitInline is a no-op kept as an explicit marker at handler exit for
-// events that triage routes purely through the typed channels
-// (provider:item_upsert, provider:approval, provider:usage,
-// provider:status). The router exposes an eventHook observer (see
+// events that triage routes through typed channels instead of a generic
+// provider-event passthrough. The router exposes an eventHook observer (see
 // SetEventHook) for tests that need to synchronize on the routing
 // pipeline; wire-level passthroughs are intentionally absent so the
 // frontend can rely on a single typed contract per channel.

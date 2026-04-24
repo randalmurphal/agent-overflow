@@ -5,8 +5,8 @@ Date: 2026-04-18
 
 ## Context
 
-Every timeline row lands in SQLite and fires a
-`provider:item_upsert` frontend event. Before the chokepoint rule was
+Every timeline row lands in SQLite and fires a canonical
+`provider:item_event` upsert. Before the chokepoint rule was
 formalized, handlers called `store.UpsertItem` directly and then
 (usually) also called `emitItemUpsert`. Two failure modes recurred:
 
@@ -28,7 +28,7 @@ All timeline-row persistence goes through `Router.persistItem` in
 1. Runs the `parent_id` cycle / dangling-reference guard (invariant
    #7).
 2. Calls `store.UpsertItem`.
-3. Emits `provider:item_upsert` via `emitItemUpsert`.
+3. Emits a `provider:item_event` upsert via `emitItemUpsert`.
 4. Bumps the `items.persisted` metric.
 5. Bumps the `payloads.persisted` metric if a payload was attached.
 

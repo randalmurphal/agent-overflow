@@ -36,7 +36,7 @@ chat rewrite.
 4. **Frontend listener (if user-facing).** Subscribe to the
    appropriate typed channel in
    `frontend/src/lib/stores/events.ts` via `wailsEventOn`. The
-   frontend branches on routing channel (`provider:item_upsert`,
+   frontend branches on routing channel (`provider:item_event`,
    `provider:approval`, `provider:usage`, `provider:status`) rather
    than on individual EventKinds — if your new kind's payload fits
    an existing channel, no new subscription is needed. A new
@@ -277,9 +277,10 @@ split into `tool_lifecycle.go`, `turn_lifecycle.go`, `stream_items.go`,
 
 ## Add a New Routing Channel
 
-Use sparingly — we have four typed channels today (`provider:item_upsert`,
-`provider:approval`, `provider:usage`, `provider:status`) and
-deliberately avoid adding more.
+Use sparingly. Prefer the existing typed routing surface
+(`provider:item_event`, approval, usage/status, turn lifecycle,
+subagent/background notifications, and app-shell channels) unless the
+new payload has a distinct lifecycle that cannot fit cleanly there.
 
 Only add a new channel when:
 
