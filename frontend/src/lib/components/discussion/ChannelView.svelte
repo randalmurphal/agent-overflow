@@ -6,6 +6,7 @@
   import { getSettings } from '../../stores/settings.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import { errString } from '../../utils/errors';
+  import { isScrollPinnedToBottom } from '../../utils/scrollPosition';
   import { relativeTime } from '../../utils/format';
   import Button from '../primitives/Button.svelte';
   import ChatMarkdown from '../chat/ChatMarkdown.svelte';
@@ -35,8 +36,8 @@
   let pollError = $state<string | null>(null);
   let loadingInitial = $state(true);
   let scrollContainer: HTMLDivElement | undefined = $state(undefined);
-  let userNearBottom = $state(true);
-  const NEAR_BOTTOM_THRESHOLD = 80;
+  let userPinnedToBottom = $state(true);
+  let bottomScrollFrame: number | null = null;
 
   let messages = $derived(pane.channelMessages);
   let status = $derived(pane.channelStatus ?? 'open');
@@ -76,6 +77,10 @@
     if (pollTimer) {
       clearTimeout(pollTimer);
       pollTimer = null;
+    }
+    if (bottomScrollFrame !== null) {
+      cancelAnimationFrame(bottomScrollFrame);
+      bottomScrollFrame = null;
     }
   });
 
@@ -126,17 +131,25 @@
   }
 
   $effect(() => {
-    // Auto-scroll on new messages when user hasn't scrolled away. Only track
-    // `messages.length` here — reading `userNearBottom` tracked would cause
+    // Stick to bottom on new messages only when the user is already pinned.
+    // Only track `messages.length` here — reading `userPinnedToBottom` tracked would cause
     // the scroll-triggered handler to re-invalidate this effect in a loop.
     const len = messages.length;
     if (len === 0) return;
     untrack(() => {
-      if (scrollContainer && userNearBottom) {
-        requestAnimationFrame(() => {
-          if (scrollContainer) {
-            scrollContainer.scrollTop = scrollContainer.scrollHeight;
+      if (scrollContainer && userPinnedToBottom) {
+        if (bottomScrollFrame !== null) return;
+        bottomScrollFrame = requestAnimationFrame(() => {
+          bottomScrollFrame = null;
+          if (!scrollContainer) return;
+          if (!isScrollPinnedToBottom(
+            scrollContainer.scrollTop,
+            scrollContainer.scrollHeight,
+            scrollContainer.clientHeight,
+          )) {
+            return;
           }
+          scrollContainer.scrollTop = scrollContainer.scrollHeight;
         });
       }
     });
@@ -145,7 +158,11 @@
   function handleScroll(): void {
     if (!scrollContainer) return;
     const { scrollTop, scrollHeight, clientHeight } = scrollContainer;
-    userNearBottom = scrollHeight - scrollTop - clientHeight <= NEAR_BOTTOM_THRESHOLD;
+    userPinnedToBottom = isScrollPinnedToBottom(scrollTop, scrollHeight, clientHeight);
+    if (!userPinnedToBottom && bottomScrollFrame !== null) {
+      cancelAnimationFrame(bottomScrollFrame);
+      bottomScrollFrame = null;
+    }
   }
 
   async function handlePost(): Promise<void> {
@@ -223,6 +240,7 @@
     role="log"
     aria-live="polite"
     aria-label="Discussion channel messages"
+    data-testid="channel-message-list"
   >
     {#if loadingInitial}
       <div class="text-[12px] text-fg-subtle">Loading channel messages…</div>

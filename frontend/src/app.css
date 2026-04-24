@@ -286,6 +286,16 @@ pre, code, kbd, samp, .ansi-body {
   font-family: var(--font-mono);
   font-size: 0.8125rem;
 }
+.markdown-body pre.mermaid.mermaid-pending {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-secondary);
+}
+.markdown-body .mermaid-placeholder {
+  font-family: var(--font-sans);
+  font-size: 0.8125rem;
+}
 .markdown-body pre.mermaid.mermaid-rendered {
   background: transparent;
   border: none;

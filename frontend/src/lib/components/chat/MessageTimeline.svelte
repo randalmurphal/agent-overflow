@@ -3,6 +3,7 @@
   import type { SettledTurn, ThreadPane } from '../../stores/thread.svelte';
   import type { Item } from '../../types/models';
   import { addToast } from '../../stores/toast.svelte';
+  import { isScrollPinnedToBottom } from '../../utils/scrollPosition';
   import { groupItemsBySubagent, type TimelineNode } from '../../utils/subagentGrouping';
   import {
     buildVirtualLayout,
@@ -58,23 +59,22 @@
   const ESTIMATED_ROW_HEIGHT = 140;
   const OVERSCAN_PX = 900;
 
-  /**
-   * Track whether the user is near the bottom of the scroll container.
-   * Only auto-scroll when the user hasn't scrolled away from bottom.
-   */
-  let userNearBottom = $state(true);
-  const NEAR_BOTTOM_THRESHOLD = 100; // px
+  let userPinnedToBottom = $state(true);
 
   function syncScrollState() {
     if (!scrollContainer) return;
     const { scrollTop, scrollHeight, clientHeight } = scrollContainer;
     viewportScrollTop = scrollTop;
     viewportHeight = clientHeight;
-    userNearBottom = scrollHeight - scrollTop - clientHeight <= NEAR_BOTTOM_THRESHOLD;
+    userPinnedToBottom = isScrollPinnedToBottom(scrollTop, scrollHeight, clientHeight);
   }
 
   function handleScroll() {
     syncScrollState();
+    if (!userPinnedToBottom && bottomScrollFrame !== null) {
+      cancelAnimationFrame(bottomScrollFrame);
+      bottomScrollFrame = null;
+    }
   }
 
   /**
@@ -173,7 +173,7 @@
     estimatedRowHeight: ESTIMATED_ROW_HEIGHT,
     getRowHeight: (key) => rowHeights.get(key),
     getScrollContainer: () => scrollContainer,
-    getUserNearBottom: () => userNearBottom,
+    getUserPinnedToBottom: () => userPinnedToBottom,
     onRowHeightChanged: () => {
       rowHeightRevision += 1;
     },
@@ -195,12 +195,12 @@
   }
 
   /**
-   * Suppress the "stick to bottom" auto-scroll while a Load Older
-   * round-trip is in flight. Without this, a short thread whose whole
-   * window fits in the viewport keeps `userNearBottom` true throughout
-   * the prepend. When items.length grows, the effect would scroll the
-   * container to the new bottom a frame after our handleLoadOlder
-   * delta-apply — snapping the user past the newly revealed history.
+   * Suppress bottom stickiness while a Load Older round-trip is in
+   * flight. Without this, a short thread whose whole window fits in the
+   * viewport keeps `userPinnedToBottom` true throughout the prepend.
+   * When items.length grows, the effect would scroll the container to
+   * the new bottom a frame after our handleLoadOlder delta-apply —
+   * snapping the user past the newly revealed history.
    */
   let suppressBottomAutoScroll = $state(false);
   let bottomScrollFrame: number | null = null;
@@ -212,18 +212,25 @@
     }
   });
 
-  // Auto-scroll only when the user is already near the bottom.
+  // Stick to bottom only when the user is already pinned to the bottom.
   $effect(() => {
     pane.items.length;
     pane.timelineRevision;
     rowHeightRevision;
 
     if (suppressBottomAutoScroll) return;
-    if (scrollContainer && userNearBottom) {
+    if (scrollContainer && userPinnedToBottom) {
       if (bottomScrollFrame !== null) return;
       bottomScrollFrame = requestAnimationFrame(() => {
         bottomScrollFrame = null;
         if (!scrollContainer) return;
+        if (!isScrollPinnedToBottom(
+          scrollContainer.scrollTop,
+          scrollContainer.scrollHeight,
+          scrollContainer.clientHeight,
+        )) {
+          return;
+        }
         scrollContainer.scrollTop = scrollContainer.scrollHeight;
       });
     }
@@ -236,10 +243,10 @@
    * reflects the new rows. The growth delta is re-applied to scrollTop
    * so the row the user was reading stays at the same viewport
    * position. `suppressBottomAutoScroll` is raised across the await so
-   * the near-bottom auto-scroll effect can't fire on the
+   * the bottom-stick effect can't fire on the
    * items-length-change and snap past the newly revealed rows — short
    * threads whose window already fits the viewport would otherwise
-   * keep `userNearBottom` true throughout the prepend.
+   * keep `userPinnedToBottom` true throughout the prepend.
    */
   async function handleLoadOlder(): Promise<void> {
     if (!scrollContainer) return;
@@ -261,10 +268,10 @@
         const delta = scrollContainer.scrollHeight - prevScrollHeight;
         scrollContainer.scrollTop = prevScrollTop + delta;
       }
-      // Sync `userNearBottom` from the post-prepend scroll position
+      // Sync `userPinnedToBottom` from the post-prepend scroll position
       // BEFORE we release the suppress flag. Svelte re-runs the
       // auto-scroll effect the moment `suppressBottomAutoScroll`
-      // flips false; if userNearBottom is still stale-`true` from
+      // flips false; if userPinnedToBottom is still stale-`true` from
       // before the load (short thread whose window fit the viewport),
       // the effect would snap to the new bottom and stomp the row
       // the user was anchored on. Programmatic scrollTop assignment

@@ -8,7 +8,7 @@ describe('scrollDeltaForMeasuredRowChange', () => {
       nextHeight: 260,
       rowBottom: 40,
       viewportTop: 100,
-      userNearBottom: false,
+      userPinnedToBottom: false,
     })).toBe(160);
   });
 
@@ -18,7 +18,7 @@ describe('scrollDeltaForMeasuredRowChange', () => {
       nextHeight: 260,
       rowBottom: 140,
       viewportTop: 100,
-      userNearBottom: false,
+      userPinnedToBottom: false,
     })).toBe(160);
   });
 
@@ -28,7 +28,7 @@ describe('scrollDeltaForMeasuredRowChange', () => {
       nextHeight: 100,
       rowBottom: -120,
       viewportTop: 100,
-      userNearBottom: false,
+      userPinnedToBottom: false,
     })).toBe(-160);
   });
 
@@ -38,7 +38,7 @@ describe('scrollDeltaForMeasuredRowChange', () => {
       nextHeight: 260,
       rowBottom: 40,
       viewportTop: 100,
-      userNearBottom: true,
+      userPinnedToBottom: true,
     })).toBe(0);
   });
 
@@ -48,7 +48,7 @@ describe('scrollDeltaForMeasuredRowChange', () => {
       nextHeight: 260,
       rowBottom: 40,
       viewportTop: 100,
-      userNearBottom: false,
+      userPinnedToBottom: false,
     })).toBe(0);
 
     expect(scrollDeltaForMeasuredRowChange({
@@ -56,7 +56,7 @@ describe('scrollDeltaForMeasuredRowChange', () => {
       nextHeight: 260,
       rowBottom: 280,
       viewportTop: 100,
-      userNearBottom: false,
+      userPinnedToBottom: false,
     })).toBe(0);
   });
 });

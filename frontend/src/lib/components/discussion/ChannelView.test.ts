@@ -183,4 +183,43 @@ describe('<ChannelView>', () => {
     expect(pane.channelMessages.length).toBe(3);
     expect(pane.channelMessages.map((m) => m.sequence)).toEqual([1, 2, 3]);
   });
+
+  it('cancels a scheduled bottom stick frame when the user scrolls away before it runs', async () => {
+    const pane = await buildPane();
+    let callCount = 0;
+    setBindingMock('GetChannelMessages', async () => {
+      callCount++;
+      if (callCount === 1) {
+        return [makeMsg({ id: 'a', sequence: 1, content: 'first' })];
+      }
+      return [makeMsg({ id: 'b', sequence: 2, content: 'second' })];
+    });
+
+    const { getByTestId } = render(ChannelView, { props: { pane, channelId: 'channel-1' } });
+    const scroll = getByTestId('channel-message-list') as HTMLElement;
+    let scrollHeightValue = 1000;
+    Object.defineProperty(scroll, 'scrollHeight', {
+      configurable: true,
+      get: () => scrollHeightValue,
+    });
+    Object.defineProperty(scroll, 'clientHeight', {
+      configurable: true,
+      get: () => 600,
+    });
+
+    await vi.advanceTimersByTimeAsync(0);
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+    scroll.scrollTop = 400;
+    await fireEvent.scroll(scroll);
+
+    scrollHeightValue = 1100;
+    await vi.advanceTimersByTimeAsync(2500);
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+    scroll.scrollTop = 350;
+    await fireEvent.scroll(scroll);
+    await vi.advanceTimersByTimeAsync(16);
+    for (let i = 0; i < 3; i++) await Promise.resolve();
+
+    expect(scroll.scrollTop).toBe(350);
+  });
 });

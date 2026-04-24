@@ -1,5 +1,5 @@
 import { rememberDiagramSource } from './diagramSourceCache';
-import { sanitizeRenderedSvg } from './markdownRender';
+import { escapeHtml, sanitizeRenderedSvg } from './markdownRender';
 
 type CodeHighlighter = {
   codeToHtml: (code: string, options: { lang: string; theme: string }) => string;
@@ -18,14 +18,18 @@ export async function enhanceMarkdown(container: HTMLElement, options: EnhanceOp
   if (options.streaming) {
     return;
   }
+  const mermaidBlocks = prepareMermaidBlocks(container, options);
   attachCopyButtons(container);
   await enhanceMath(container, options);
-  await enhanceMermaid(container, options);
+  await enhanceMermaid(mermaidBlocks, options);
   await enhanceCode(container, options);
 }
 
 function attachCopyButtons(container: HTMLElement) {
   for (const pre of container.querySelectorAll('pre')) {
+    if (!pre.querySelector(':scope > code')) {
+      continue;
+    }
     if (pre.querySelector(':scope > button[data-code-copy]')) {
       continue;
     }
@@ -66,40 +70,101 @@ async function enhanceMath(container: HTMLElement, options: EnhanceOptions) {
   }
 }
 
-async function enhanceMermaid(container: HTMLElement, options: EnhanceOptions) {
-  const mermaidBlocks = Array.from(
-    container.querySelectorAll<HTMLElement>('pre > code.language-mermaid, pre > code.lang-mermaid'),
-  );
+async function enhanceMermaid(mermaidBlocks: PendingMermaidBlock[], options: EnhanceOptions) {
   if (mermaidBlocks.length === 0) return;
 
-  const mermaid = (await import('mermaid')).default;
-  mermaid.initialize({
-    startOnLoad: false,
-    securityLevel: 'strict',
-    theme: 'dark',
-    htmlLabels: false,
-  });
-  for (const [blockIndex, code] of mermaidBlocks.entries()) {
+  const mermaid = await loadMermaidRenderer(mermaidBlocks, options);
+  if (!mermaid) return;
+
+  for (const block of mermaidBlocks) {
     if (!options.isCurrent(options.generation)) return;
 
+    try {
+      const rendered = await mermaid.render(block.id, block.sourceText);
+      const sanitizedSvg = sanitizeRenderedSvg(rendered.svg);
+      if (options.isCurrent(options.generation)) {
+        block.pre.classList.remove('mermaid-pending');
+        block.pre.classList.add('mermaid-rendered');
+        block.pre.style.minHeight = '';
+        block.pre.dataset.renderedMermaid = block.id;
+        rememberDiagramSource(block.pre, block.sourceText);
+        block.pre.innerHTML = sanitizedSvg;
+      }
+    } catch {
+      restoreMermaidSource(block, options);
+    }
+  }
+}
+
+type MermaidRenderer = {
+  initialize: (config: {
+    startOnLoad: boolean;
+    securityLevel: 'strict';
+    theme: 'dark';
+    htmlLabels: boolean;
+  }) => void;
+  render: (id: string, sourceText: string) => Promise<{ svg: string }>;
+};
+
+async function loadMermaidRenderer(
+  mermaidBlocks: PendingMermaidBlock[],
+  options: EnhanceOptions,
+): Promise<MermaidRenderer | null> {
+  try {
+    const mermaid = (await import('mermaid')).default as MermaidRenderer;
+    mermaid.initialize({
+      startOnLoad: false,
+      securityLevel: 'strict',
+      theme: 'dark',
+      htmlLabels: false,
+    });
+    return mermaid;
+  } catch {
+    for (const block of mermaidBlocks) {
+      restoreMermaidSource(block, options);
+    }
+    return null;
+  }
+}
+
+type PendingMermaidBlock = {
+  id: string;
+  pre: HTMLPreElement;
+  sourceText: string;
+};
+
+function prepareMermaidBlocks(container: HTMLElement, options: EnhanceOptions): PendingMermaidBlock[] {
+  const codeBlocks = Array.from(
+    container.querySelectorAll<HTMLElement>('pre > code.language-mermaid, pre > code.lang-mermaid'),
+  );
+
+  return codeBlocks.flatMap((code, blockIndex): PendingMermaidBlock[] => {
     const pre = code.parentElement;
-    if (!pre) continue;
+    if (!pre || pre.tagName !== 'PRE') return [];
 
     const sourceText = code.textContent ?? '';
     const id = `${options.renderScope}-mermaid-${options.generation}-${blockIndex}-${hashString(sourceText)}`;
-    try {
-      const rendered = await mermaid.render(id, sourceText);
-      const sanitizedSvg = sanitizeRenderedSvg(rendered.svg);
-      if (options.isCurrent(options.generation)) {
-        pre.classList.add('mermaid', 'mermaid-rendered');
-        pre.dataset.renderedMermaid = id;
-        rememberDiagramSource(pre, sourceText);
-        pre.innerHTML = sanitizedSvg;
-      }
-    } catch {
-      pre.classList.add('mermaid-error');
-    }
-  }
+    pre.classList.add('mermaid', 'mermaid-pending');
+    pre.style.minHeight = `${estimateMermaidPlaceholderHeight(sourceText)}px`;
+    pre.innerHTML = '<div class="mermaid-placeholder" aria-live="polite">Rendering diagram...</div>';
+
+    return [{ id, pre: pre as HTMLPreElement, sourceText }];
+  });
+}
+
+function estimateMermaidPlaceholderHeight(sourceText: string): number {
+  const lineCount = sourceText.split('\n').length;
+  return Math.min(520, Math.max(180, lineCount * 34));
+}
+
+function restoreMermaidSource(block: PendingMermaidBlock, options: EnhanceOptions) {
+  if (!options.isCurrent(options.generation)) return;
+
+  block.pre.classList.remove('mermaid-pending');
+  block.pre.classList.add('mermaid-error');
+  block.pre.style.minHeight = '';
+  block.pre.innerHTML = `<code class="language-mermaid">${escapeHtml(block.sourceText)}</code>`;
+  attachCopyButtons(block.pre.parentElement ?? block.pre);
 }
 
 async function enhanceCode(container: HTMLElement, options: EnhanceOptions) {

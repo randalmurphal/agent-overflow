@@ -33,7 +33,7 @@ describe('createTimelineMeasurementActions', () => {
       estimatedRowHeight: 140,
       getRowHeight: (key) => rowHeights.get(key),
       getScrollContainer: () => scrollContainer,
-      getUserNearBottom: () => false,
+      getUserPinnedToBottom: () => false,
       onRowHeightChanged: () => {
         revisionCount += 1;
       },
@@ -76,7 +76,7 @@ describe('createTimelineMeasurementActions', () => {
       estimatedRowHeight: 140,
       getRowHeight: (key) => rowHeights.get(key),
       getScrollContainer: () => scrollContainer,
-      getUserNearBottom: () => true,
+      getUserPinnedToBottom: () => true,
       onRowHeightChanged: () => {},
       setRowHeight: (key, height) => {
         rowHeights.set(key, height);

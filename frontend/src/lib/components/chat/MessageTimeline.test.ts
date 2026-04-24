@@ -444,9 +444,9 @@ describe('<MessageTimeline>', () => {
 
     it('does not snap to the bottom after Load older when the window fits the viewport', async () => {
       // Regression guard: the `suppressBottomAutoScroll` flag must
-      // keep the near-bottom effect dormant across the prepend AND
-      // across the tick where the flag flips back to false. Recompute
-      // userNearBottom from the post-prepend scroll position so the
+      // keep bottom-stickiness dormant across the prepend AND across
+      // the tick where the flag flips back to false. Recompute
+      // userPinnedToBottom from the post-prepend scroll position so the
       // effect's re-run sees the refreshed state.
       const pane = await buildWindowedPane({
         items: [makeItem({ id: 'only', turnIndex: 5 })],
@@ -461,11 +461,9 @@ describe('<MessageTimeline>', () => {
 
       const { getByTestId, container } = render(MessageTimeline, { props: { pane } });
       const scroll = container.querySelector('[role="log"]') as HTMLElement;
-      // Short thread: total content fits the viewport (1000 content
-      // px, 600 viewport px → scrollTop=0 IS near-bottom per the 100 px
-      // threshold). A stale userNearBottom-true after the load would
-      // scroll us to scrollHeight; the fix keeps scrollTop at the
-      // handleLoadOlder-computed position.
+      // Overflowing thread. A stale userPinnedToBottom=true after the
+      // load would scroll us to the new bottom; the fix keeps
+      // scrollTop at the handleLoadOlder-computed position.
       let scrollHeightValue = 1000;
       Object.defineProperty(scroll, 'scrollHeight', {
         configurable: true,
@@ -476,9 +474,7 @@ describe('<MessageTimeline>', () => {
         get: () => 600,
       });
       // User is at the top when they click Load Older; fire a scroll
-      // event so handleScroll runs once to flip userNearBottom to false
-      // for a moment, then reset to the top to simulate "at top" which
-      // for a short thread also counts as near-bottom (600-0-600=0).
+      // event so handleScroll records the initial pinned state.
       scroll.scrollTop = 0;
       await fireEvent.scroll(scroll);
 
@@ -542,6 +538,76 @@ describe('<MessageTimeline>', () => {
       // scrollTop MUST remain where the user left it; the streaming
       // delta of 300 px should NOT be re-applied.
       expect(scroll.scrollTop).toBe(200);
+    });
+
+    it('does not snap to bottom when the user is close to bottom but not pinned', async () => {
+      const pane = await buildWindowedPane({
+        items: [makeItem({ id: 'tail', turnIndex: 10, summary: 'tail' })],
+      });
+
+      const { container, rerender } = render(MessageTimeline, { props: { pane } });
+      const scroll = container.querySelector('[role="log"]') as HTMLElement;
+      let scrollHeightValue = 1000;
+      Object.defineProperty(scroll, 'scrollHeight', {
+        configurable: true,
+        get: () => scrollHeightValue,
+      });
+      Object.defineProperty(scroll, 'clientHeight', {
+        configurable: true,
+        get: () => 600,
+      });
+      scroll.scrollTop = 350;
+      await fireEvent.scroll(scroll);
+
+      pane.upsertItem(makeItem({
+        id: 'new-tail',
+        turnIndex: 11,
+        itemIndex: 0,
+        summary: 'new tail',
+      }));
+      scrollHeightValue = 1100;
+      await rerender({ pane });
+      await tick();
+      await tick();
+
+      expect(scroll.scrollTop).toBe(350);
+    });
+
+    it('cancels a scheduled bottom stick frame when the user scrolls away before it runs', async () => {
+      const pane = await buildWindowedPane({
+        items: [makeItem({ id: 'tail', turnIndex: 10, summary: 'tail' })],
+      });
+
+      const { container, rerender } = render(MessageTimeline, { props: { pane } });
+      const scroll = container.querySelector('[role="log"]') as HTMLElement;
+      let scrollHeightValue = 1000;
+      Object.defineProperty(scroll, 'scrollHeight', {
+        configurable: true,
+        get: () => scrollHeightValue,
+      });
+      Object.defineProperty(scroll, 'clientHeight', {
+        configurable: true,
+        get: () => 600,
+      });
+      scroll.scrollTop = 400;
+      await fireEvent.scroll(scroll);
+
+      pane.upsertItem(makeItem({
+        id: 'new-tail',
+        turnIndex: 11,
+        itemIndex: 0,
+        summary: 'new tail',
+      }));
+      scrollHeightValue = 1100;
+      await rerender({ pane });
+      await tick();
+
+      scroll.scrollTop = 350;
+      await fireEvent.scroll(scroll);
+      await tick();
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+
+      expect(scroll.scrollTop).toBe(350);
     });
   });
 

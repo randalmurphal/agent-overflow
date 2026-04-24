@@ -4,7 +4,7 @@ type TimelineMeasurementOptions = {
   estimatedRowHeight: number;
   getRowHeight: (key: string) => number | undefined;
   getScrollContainer: () => HTMLDivElement | undefined;
-  getUserNearBottom: () => boolean;
+  getUserPinnedToBottom: () => boolean;
   onRowHeightChanged: () => void;
   setRowHeight: (key: string, height: number) => void;
   setScrollContainer: (node: HTMLDivElement | undefined) => void;
@@ -38,7 +38,7 @@ export function createTimelineMeasurementActions(options: TimelineMeasurementOpt
       if (nextHeight <= 0 || nextHeight === previousHeight) return;
 
       const scrollContainer = options.getScrollContainer();
-      if (scrollContainer && previousHeight > 0 && !options.getUserNearBottom()) {
+      if (scrollContainer && previousHeight > 0 && !options.getUserPinnedToBottom()) {
         const rowRect = node.getBoundingClientRect();
         const viewportRect = scrollContainer.getBoundingClientRect();
         const scrollDelta = scrollDeltaForMeasuredRowChange({
@@ -46,7 +46,7 @@ export function createTimelineMeasurementActions(options: TimelineMeasurementOpt
           nextHeight,
           rowBottom: rowRect.bottom,
           viewportTop: viewportRect.top,
-          userNearBottom: false,
+          userPinnedToBottom: false,
         });
         if (scrollDelta !== 0) {
           scrollContainer.scrollTop += scrollDelta;
