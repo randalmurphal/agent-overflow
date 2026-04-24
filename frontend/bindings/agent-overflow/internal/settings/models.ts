@@ -23,6 +23,13 @@ export class Settings {
     "modelContextWindows": { [_ in string]?: number };
     "recentWorkspaces": string[];
     "diffWordWrap": boolean;
+
+    /**
+     * BackgroundTrayExpanded remembers the user's global background-task
+     * tray preference. False keeps fresh installs collapsed; opening the
+     * tray persists across thread switches and app restarts.
+     */
+    "backgroundTrayExpanded": boolean;
     "streamingEnabled": boolean;
     "confirmArchive": boolean;
     "confirmDelete": boolean;
@@ -141,6 +148,9 @@ export class Settings {
         }
         if (!("diffWordWrap" in $$source)) {
             this["diffWordWrap"] = false;
+        }
+        if (!("backgroundTrayExpanded" in $$source)) {
+            this["backgroundTrayExpanded"] = false;
         }
         if (!("streamingEnabled" in $$source)) {
             this["streamingEnabled"] = false;

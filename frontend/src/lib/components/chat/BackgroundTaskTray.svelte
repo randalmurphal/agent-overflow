@@ -6,6 +6,7 @@
     StopClaudeTask,
   } from '../../stores/bindings';
   import { onItemUpsert, wailsEventOn } from '../../stores/events';
+  import { getSettings, updateSetting } from '../../stores/settings.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import type { BackgroundTasksChangedEvent } from '../../types/events';
@@ -175,8 +176,7 @@
   let stoppingRows = $state<Set<string>>(new Set());
   let stopAllInFlight = $state(false);
 
-  // Tray opens by default; clicking the header collapses the body.
-  let expanded = $state(true);
+  let expanded = $derived(getSettings().backgroundTrayExpanded);
 
   $effect(() => {
     threadId;
@@ -211,7 +211,7 @@
   });
 
   function toggle() {
-    expanded = !expanded;
+    void updateSetting('backgroundTrayExpanded', !expanded);
   }
 
   function headerKeydown(evt: KeyboardEvent) {

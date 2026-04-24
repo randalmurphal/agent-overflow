@@ -11,6 +11,7 @@ const DEFAULT_SETTINGS: Settings = {
   modelContextWindows: {},
   recentWorkspaces: [],
   diffWordWrap: false,
+  backgroundTrayExpanded: false,
   streamingEnabled: true,
   confirmArchive: true,
   confirmDelete: true,

@@ -7,6 +7,7 @@ import { buildPane, emitItemEventUpsert, makeThread } from '../../../test/helper
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { resetWailsMocks } from '../../../test/mocks/wailsio-runtime';
 import { setupEventListeners } from '../../stores/events';
+import { loadSettings } from '../../stores/settings.svelte';
 import { getToasts } from '../../stores/toast.svelte';
 
 /**
@@ -52,12 +53,17 @@ async function renderTray(pane: Awaited<ReturnType<typeof buildPane>>) {
 describe('<BackgroundTaskTray>', () => {
   let cleanupEvents: () => void;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(1_000_000));
     resetWailsMocks();
     resetBindingMocks();
     cleanupEvents = setupEventListeners();
+    setBindingMock('GetSettings', async () => ({ backgroundTrayExpanded: true }));
+    setBindingMock('UpdateSettings', async (patch: { backgroundTrayExpanded?: boolean }) => ({
+      backgroundTrayExpanded: patch.backgroundTrayExpanded ?? true,
+    }));
+    await loadSettings();
     // Default the two stop primitives to resolved no-ops; tests that
     // care about specific call shapes or error surfacing override
     // these.
@@ -101,6 +107,105 @@ describe('<BackgroundTaskTray>', () => {
     expect(getByTestId('background-task-tray')).toBeInTheDocument();
     expect(getByTestId('background-task-tray-header').textContent).toContain('Running');
     expect(getByTestId('background-task-tray-count').textContent).toBe('2');
+  });
+
+  it('defaults collapsed and persists the tray expansion across thread switches', async () => {
+    setBindingMock('GetSettings', async () => ({ backgroundTrayExpanded: false }));
+    const updateMock = setBindingMock(
+      'UpdateSettings',
+      async (patch: { backgroundTrayExpanded?: boolean }) => ({
+        backgroundTrayExpanded: patch.backgroundTrayExpanded ?? false,
+      }),
+    );
+    await loadSettings();
+
+    const pane = await makePaneWithBackground([
+      item({
+        id: 'launch-a',
+        isBackground: true,
+        status: 'running',
+        summary: 'Bash',
+        createdAt: 1_000_000 - 5_000,
+      }),
+    ]);
+    const rendered = await renderTray(pane);
+
+    expect(rendered.getByTestId('background-task-tray-header').getAttribute('aria-expanded')).toBe('false');
+    expect(rendered.queryByTestId('background-task-tray-body')).toBeNull();
+
+    await fireEvent.click(rendered.getByTestId('background-task-tray-header'));
+    await tick();
+
+    expect(updateMock).toHaveBeenCalledWith({ backgroundTrayExpanded: true });
+    expect(rendered.getByTestId('background-task-tray-body')).toBeInTheDocument();
+
+    cleanup();
+    const nextPane = await makePaneWithBackground(
+      [
+        item({
+          id: 'launch-b',
+          threadId: 'thread-2',
+          isBackground: true,
+          status: 'running',
+          summary: 'Grep',
+          createdAt: 1_000_000 - 2_000,
+        }),
+      ],
+      makeThread({ id: 'thread-2' }),
+    );
+    const rerendered = await renderTray(nextPane);
+
+    expect(rerendered.getByTestId('background-task-tray-header').getAttribute('aria-expanded')).toBe('true');
+    expect(rerendered.getByTestId('background-task-tray-body')).toBeInTheDocument();
+  });
+
+  it('persists tray collapse across thread switches', async () => {
+    const updateMock = setBindingMock(
+      'UpdateSettings',
+      async (patch: { backgroundTrayExpanded?: boolean }) => ({
+        backgroundTrayExpanded: patch.backgroundTrayExpanded ?? true,
+      }),
+    );
+
+    const pane = await makePaneWithBackground([
+      item({
+        id: 'launch-a',
+        isBackground: true,
+        status: 'running',
+        summary: 'Bash',
+        createdAt: 1_000_000 - 5_000,
+      }),
+    ]);
+    const rendered = await renderTray(pane);
+
+    expect(rendered.getByTestId('background-task-tray-header').getAttribute('aria-expanded')).toBe('true');
+    expect(rendered.getByTestId('background-task-tray-body')).toBeInTheDocument();
+
+    await fireEvent.click(rendered.getByTestId('background-task-tray-header'));
+    await tick();
+
+    expect(updateMock).toHaveBeenCalledWith({ backgroundTrayExpanded: false });
+    expect(rendered.getByTestId('background-task-tray-header').getAttribute('aria-expanded')).toBe('false');
+    expect(rendered.queryByTestId('background-task-tray-body')).toBeNull();
+
+    cleanup();
+    const nextPane = await makePaneWithBackground(
+      [
+        item({
+          id: 'launch-b',
+          threadId: 'thread-2',
+          isBackground: true,
+          status: 'running',
+          summary: 'Grep',
+          createdAt: 1_000_000 - 2_000,
+        }),
+      ],
+      makeThread({ id: 'thread-2' }),
+    );
+    const rerendered = await renderTray(nextPane);
+
+    expect(rerendered.getByTestId('background-task-tray-header').getAttribute('aria-expanded')).toBe('false');
+    expect(rerendered.queryByTestId('background-task-tray-body')).toBeNull();
   });
 
   it('shows the pulsing dot when at least one task is running and hides it for a standalone completion', async () => {

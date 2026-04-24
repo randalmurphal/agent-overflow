@@ -30,6 +30,7 @@ export interface Settings {
   modelContextWindows: Record<string, ContextWindow>;
   recentWorkspaces: string[];
   diffWordWrap: boolean;
+  backgroundTrayExpanded: boolean;
   streamingEnabled: boolean;
   confirmArchive: boolean;
   confirmDelete: boolean;

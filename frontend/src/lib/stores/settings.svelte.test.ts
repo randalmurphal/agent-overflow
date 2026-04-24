@@ -12,6 +12,7 @@ const FULL_SETTINGS: Settings = {
   modelContextWindows: {},
   recentWorkspaces: ['/tmp/a'],
   diffWordWrap: true,
+  backgroundTrayExpanded: false,
   streamingEnabled: true,
   confirmArchive: true,
   confirmDelete: true,
@@ -51,6 +52,7 @@ describe('settings store', () => {
       // Unspecified fields fall back to defaults.
       expect(getSettings().timestampFormat).toBe('locale');
       expect(getSettings().claudeEnabled).toBe(true);
+      expect(getSettings().backgroundTrayExpanded).toBe(false);
     });
 
     it('does nothing when GetSettings returns null', async () => {
@@ -130,6 +132,19 @@ describe('settings store', () => {
 
       await updateSetting('codexEnabled', true);
       expect(getSettings().codexEnabled).toBe(false);
+    });
+
+    it('persists background tray expansion through UpdateSettings', async () => {
+      setBindingMock('UpdateSettings', async () => ({
+        ...FULL_SETTINGS,
+        backgroundTrayExpanded: true,
+      }));
+
+      await updateSetting('backgroundTrayExpanded', true);
+
+      expect(getSettings().backgroundTrayExpanded).toBe(true);
+      const mock = getBindingMock('UpdateSettings');
+      expect(mock!.mock.calls[0][0]).toEqual({ backgroundTrayExpanded: true });
     });
   });
 });

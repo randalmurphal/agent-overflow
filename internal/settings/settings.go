@@ -24,13 +24,17 @@ type Settings struct {
 	ModelContextWindows map[string]int `json:"modelContextWindows"`
 	RecentWorkspaces    []string       `json:"recentWorkspaces"`
 	DiffWordWrap        bool           `json:"diffWordWrap"`
-	StreamingEnabled    bool           `json:"streamingEnabled"`
-	ConfirmArchive      bool           `json:"confirmArchive"`
-	ConfirmDelete       bool           `json:"confirmDelete"`
-	ClaudeBinaryPath    string         `json:"claudeBinaryPath"`
-	CodexBinaryPath     string         `json:"codexBinaryPath"`
-	ClaudeEnabled       bool           `json:"claudeEnabled"`
-	CodexEnabled        bool           `json:"codexEnabled"`
+	// BackgroundTrayExpanded remembers the user's global background-task
+	// tray preference. False keeps fresh installs collapsed; opening the
+	// tray persists across thread switches and app restarts.
+	BackgroundTrayExpanded bool   `json:"backgroundTrayExpanded"`
+	StreamingEnabled       bool   `json:"streamingEnabled"`
+	ConfirmArchive         bool   `json:"confirmArchive"`
+	ConfirmDelete          bool   `json:"confirmDelete"`
+	ClaudeBinaryPath       string `json:"claudeBinaryPath"`
+	CodexBinaryPath        string `json:"codexBinaryPath"`
+	ClaudeEnabled          bool   `json:"claudeEnabled"`
+	CodexEnabled           bool   `json:"codexEnabled"`
 
 	// DefaultRuntimeMode is the three-tier approval axis applied to every
 	// new thread when the user hasn't picked a different mode at creation
@@ -102,19 +106,20 @@ type Settings struct {
 
 // DefaultSettings provides sane defaults for all settings fields.
 var DefaultSettings = Settings{
-	Theme:              "system",
-	TimestampFormat:    "locale",
-	DefaultProvider:    "claude",
-	DefaultModelClaude: "claude-opus-4-7",
-	DefaultModelCodex:  "gpt-5.5",
-	DiffWordWrap:       false,
-	StreamingEnabled:   true,
-	ConfirmArchive:     true,
-	ConfirmDelete:      true,
-	ClaudeBinaryPath:   "claude",
-	CodexBinaryPath:    "codex",
-	ClaudeEnabled:      true,
-	CodexEnabled:       true,
+	Theme:                  "system",
+	TimestampFormat:        "locale",
+	DefaultProvider:        "claude",
+	DefaultModelClaude:     "claude-opus-4-7",
+	DefaultModelCodex:      "gpt-5.5",
+	DiffWordWrap:           false,
+	BackgroundTrayExpanded: false,
+	StreamingEnabled:       true,
+	ConfirmArchive:         true,
+	ConfirmDelete:          true,
+	ClaudeBinaryPath:       "claude",
+	CodexBinaryPath:        "codex",
+	ClaudeEnabled:          true,
+	CodexEnabled:           true,
 	// DefaultRuntimeMode mirrors provider.DefaultRuntimeMode. Duplicated as
 	// a string literal rather than imported so internal/settings doesn't
 	// pull in the provider package (tiny leaf package, kept leaf).
