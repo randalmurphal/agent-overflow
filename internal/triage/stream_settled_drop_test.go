@@ -151,13 +151,13 @@ func TestAppendItemSummaryInterruptRaceUnderLoad(t *testing.T) {
 		go func(id string) {
 			defer wg.Done()
 			for j := 0; j < 5; j++ {
-				row, err := s.AppendItemSummary(id, "x", int64(j+10))
+				row, err := s.AppendItemSummary("t-race", id, "x", int64(j+10))
 				if err != nil {
 					// ErrItemSettled is a legitimate outcome under race.
 					return
 				}
 				html := "<p>" + row.Summary + "</p>"
-				_ = s.UpdateItemHighlight(id, html)
+				_ = s.UpdateItemHighlight("t-race", id, html)
 			}
 		}(id)
 
@@ -231,4 +231,3 @@ func mustHandle(t *testing.T, r *Router, evt provider.ProviderEvent) {
 		t.Fatalf("handle %s: %v", evt.Kind, err)
 	}
 }
-

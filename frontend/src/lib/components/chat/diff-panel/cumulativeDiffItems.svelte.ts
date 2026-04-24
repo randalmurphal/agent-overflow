@@ -58,9 +58,11 @@ export function createCumulativeDiffItems(opts: {
     try {
       const fetched = (await ListThreadDiffPayloads(id)) as Item[] | null;
       if (seq !== fetchSeq) return;
-      items = fetched ?? [];
+      if (id !== opts.getThreadId()) return;
+      items = (fetched ?? []).filter((item) => item.threadId === id);
     } catch (err) {
       if (seq !== fetchSeq) return;
+      if (id !== opts.getThreadId()) return;
       console.error('cumulativeDiffItems: ListThreadDiffPayloads failed:', err);
       // Keep the previous `items` snapshot so the cumulative view
       // doesn't flash empty on a transient failure. The next

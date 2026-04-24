@@ -775,7 +775,7 @@ func TestAppendItemSummaryConcatenatesInPlace(t *testing.T) {
 		t.Fatalf("insert first: %v", err)
 	}
 
-	got, err := s.AppendItemSummary("stream", "world", 3000)
+	got, err := s.AppendItemSummary("t", "stream", "world", 3000)
 	if err != nil {
 		t.Fatalf("append: %v", err)
 	}
@@ -793,7 +793,7 @@ func TestAppendItemSummaryConcatenatesInPlace(t *testing.T) {
 	}
 
 	// A second append chains onto the new state, not the original.
-	got2, err := s.AppendItemSummary("stream", "!", 4000)
+	got2, err := s.AppendItemSummary("t", "stream", "!", 4000)
 	if err != nil {
 		t.Fatalf("append2: %v", err)
 	}
@@ -813,7 +813,7 @@ func TestAppendItemSummaryConcatenatesInPlace(t *testing.T) {
 
 func TestAppendItemSummaryErrorsOnMissingItem(t *testing.T) {
 	s := newTestStore(t)
-	_, err := s.AppendItemSummary("nonexistent", "x", 100)
+	_, err := s.AppendItemSummary("t", "nonexistent", "x", 100)
 	if err == nil {
 		t.Fatal("expected error for missing item")
 	}
@@ -847,7 +847,7 @@ func BenchmarkTextDeltaGrowth(b *testing.B) {
 			b.Fatalf("insert: %v", err)
 		}
 		for i := 1; i < deltas; i++ {
-			if _, err := s.AppendItemSummary(id, delta, int64(2+i)); err != nil {
+			if _, err := s.AppendItemSummary("t", id, delta, int64(2+i)); err != nil {
 				b.Fatalf("append: %v", err)
 			}
 		}

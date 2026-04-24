@@ -29,6 +29,7 @@
   import { registerCodeCopyListener } from './lib/utils/codeCopy';
   import { registerMermaidRenderer } from './lib/utils/mermaidRenderer';
   import { registerMathRenderer } from './lib/utils/mathRenderer';
+  import { installUiRenderTraceApi } from './lib/utils/uiRenderTrace';
   import DiagramInteractionHost from './lib/components/chat/DiagramInteractionHost.svelte';
 
   let showSettings = $state(false);
@@ -124,6 +125,7 @@
     registerCodeCopyListener();
     registerMermaidRenderer();
     registerMathRenderer();
+    installUiRenderTraceApi();
 
     // Register the built-in commands. The hooks close over stable references
     // so commands see the live pane state each time they run.
@@ -184,7 +186,9 @@
       {#if showSettings}
         <SettingsView onClose={() => showSettings = false} />
       {:else}
-        <ChatView {pane} />
+        {#key pane.threadId}
+          <ChatView {pane} />
+        {/key}
       {/if}
     </div>
   </div>

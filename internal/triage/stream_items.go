@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log"
 	"time"
 
 	"agent-overflow/internal/provider"
@@ -23,6 +24,14 @@ import (
 // render regardless of the throttle, so the last visible state always
 // reflects the completed summary.
 const streamingHighlightIntervalMs int64 = 50
+
+// streamingUpsertIntervalMs caps how often an in-progress text/thinking
+// row is pushed over provider:item_upsert. The backend still appends
+// every delta to SQLite immediately; this only batches the expensive UI
+// work (pane array clone, timeline regroup, markdown DOM replacement).
+// 33 ms is roughly 30 fps, which is responsive without asking the
+// webview to reconcile a full transcript on every token.
+const streamingUpsertIntervalMs int64 = 33
 
 func (r *Router) handleTextDelta(evt provider.ProviderEvent) error {
 	if evt.Content == "" {
@@ -59,16 +68,18 @@ func (r *Router) handleTextDelta(evt provider.ProviderEvent) error {
 	// render frequency to streamingHighlightIntervalMs regardless of
 	// provider delta rate.
 	if !firstBlock {
-		updated, err := r.store.AppendItemSummary(itemID, evt.Content, now)
+		updated, err := r.store.AppendItemSummary(evt.ThreadID, itemID, evt.Content, now)
 		if err == nil {
 			if r.shouldRenderHighlight(evt.ThreadID, itemID, now) {
 				html := r.highlighter.RenderMarkdown(updated.Summary)
-				if err := r.store.UpdateItemHighlight(itemID, html); err != nil {
+				if err := r.store.UpdateItemHighlight(evt.ThreadID, itemID, html); err != nil {
 					return fmt.Errorf("text delta highlight %s: %w", itemID, err)
 				}
 				updated.HighlightedContent = html
 			}
-			r.emitItemUpsert(updated)
+			if r.shouldEmitStreamingItemUpsert(evt.ThreadID, itemID, now) {
+				r.emitItemUpsert(updated)
+			}
 			return r.emitInline(evt)
 		}
 		// An interrupt or settle has already committed a terminal status
@@ -107,6 +118,7 @@ func (r *Router) handleTextDelta(evt provider.ProviderEvent) error {
 	// persistItem just rendered — reset the throttle window so the next
 	// real delta doesn't race the render it just triggered.
 	r.markHighlighted(evt.ThreadID, itemID, now)
+	r.markStreamingItemUpserted(evt.ThreadID, itemID, now)
 	return r.emitInline(evt)
 }
 
@@ -152,19 +164,21 @@ func (r *Router) handleThinking(evt provider.ProviderEvent) error {
 		// because thinking often carries escape sequences; the payload
 		// blob stays raw. Payload HTML is rendered on demand at
 		// GetPayloadData time (see app_payloads.go).
-		updated, err := r.store.AppendItemSummary(itemID, evt.Content, now)
+		updated, err := r.store.AppendItemSummary(evt.ThreadID, itemID, evt.Content, now)
 		if err == nil {
 			if err := r.store.AppendPayloadData(payloadID, []byte(evt.Content), updated.PayloadMeta, now); err != nil {
 				return fmt.Errorf("thinking delta append payload %s: %w", payloadID, err)
 			}
 			if r.shouldRenderHighlight(evt.ThreadID, itemID, now) {
 				html := r.highlighter.RenderANSI(updated.Summary)
-				if err := r.store.UpdateItemHighlight(itemID, html); err != nil {
+				if err := r.store.UpdateItemHighlight(evt.ThreadID, itemID, html); err != nil {
 					return fmt.Errorf("thinking delta highlight %s: %w", itemID, err)
 				}
 				updated.HighlightedContent = html
 			}
-			r.emitItemUpsert(updated)
+			if r.shouldEmitStreamingItemUpsert(evt.ThreadID, itemID, now) {
+				r.emitItemUpsert(updated)
+			}
 			return r.emitInline(evt)
 		}
 		// Settled row: interrupt or settle beat this delta to the row.
@@ -206,6 +220,7 @@ func (r *Router) handleThinking(evt provider.ProviderEvent) error {
 		return err
 	}
 	r.markHighlighted(evt.ThreadID, itemID, now)
+	r.markStreamingItemUpserted(evt.ThreadID, itemID, now)
 	return r.emitInline(evt)
 }
 
@@ -252,6 +267,80 @@ func (r *Router) forgetHighlighted(threadID, itemID string) {
 	r.mu.Lock()
 	delete(r.nextHighlightAt, key)
 	r.mu.Unlock()
+}
+
+func streamingUpsertThrottleKey(threadID, itemID string) string {
+	return threadID + "|" + itemID
+}
+
+func (r *Router) shouldEmitStreamingItemUpsert(threadID, itemID string, nowMs int64) bool {
+	key := streamingUpsertThrottleKey(threadID, itemID)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	next, ok := r.nextStreamingUpsertAt[key]
+	if ok && nowMs < next {
+		r.scheduleTrailingStreamingItemUpsertLocked(key, threadID, itemID)
+		return false
+	}
+	r.cancelTrailingStreamingItemUpsertLocked(key)
+	r.nextStreamingUpsertAt[key] = nowMs + streamingUpsertIntervalMs
+	return true
+}
+
+func (r *Router) markStreamingItemUpserted(threadID, itemID string, nowMs int64) {
+	key := streamingUpsertThrottleKey(threadID, itemID)
+	r.mu.Lock()
+	r.cancelTrailingStreamingItemUpsertLocked(key)
+	r.nextStreamingUpsertAt[key] = nowMs + streamingUpsertIntervalMs
+	r.mu.Unlock()
+}
+
+func (r *Router) forgetStreamingItemUpsert(threadID, itemID string) {
+	key := streamingUpsertThrottleKey(threadID, itemID)
+	r.mu.Lock()
+	r.cancelTrailingStreamingItemUpsertLocked(key)
+	delete(r.nextStreamingUpsertAt, key)
+	r.mu.Unlock()
+}
+
+func (r *Router) scheduleTrailingStreamingItemUpsertLocked(key, threadID, itemID string) {
+	if _, exists := r.streamingUpsertTimers[key]; exists {
+		return
+	}
+	var timer *time.Timer
+	timer = time.AfterFunc(time.Duration(streamingUpsertIntervalMs)*time.Millisecond, func() {
+		r.flushTrailingStreamingItemUpsert(key, threadID, itemID, timer)
+	})
+	r.streamingUpsertTimers[key] = timer
+}
+
+func (r *Router) cancelTrailingStreamingItemUpsertLocked(key string) {
+	timer := r.streamingUpsertTimers[key]
+	if timer != nil {
+		timer.Stop()
+		delete(r.streamingUpsertTimers, key)
+	}
+}
+
+func (r *Router) flushTrailingStreamingItemUpsert(key, threadID, itemID string, timer *time.Timer) {
+	r.mu.Lock()
+	current := r.streamingUpsertTimers[key]
+	if current != timer {
+		r.mu.Unlock()
+		return
+	}
+	delete(r.streamingUpsertTimers, key)
+	r.mu.Unlock()
+
+	item, found, err := r.store.GetThreadItem(threadID, itemID)
+	if err != nil {
+		log.Printf("triage: trailing streaming upsert lookup %s: %v", itemID, err)
+		return
+	}
+	if !found || item.Status != statusStreaming {
+		return
+	}
+	r.emitItemUpsert(item)
 }
 
 func scopeCounterKey(threadID string, turnIndex int, scope string) string {

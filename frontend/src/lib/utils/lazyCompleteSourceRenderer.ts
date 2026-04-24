@@ -124,7 +124,7 @@ export function registerPainter<M>(spec: PainterSpec<M>): void {
 function ensureObserver(): void {
   if (observer !== null) return;
   observer = new MutationObserver((mutations) => {
-    if (!mutationsTouchMarkdownBody(mutations)) return;
+    if (!mutationsTouchPainterTarget(mutations)) return;
     // Fast path: paint cache hits synchronously from the observer
     // callback. During streaming, Svelte's `{@html}` replaces the
     // whole markdown-body's children every ~50 ms and the 80 ms
@@ -187,19 +187,54 @@ function paintFromCache<M>(el: HTMLElement, entry: RegistryEntry<M>): void {
   el.innerHTML = painted;
 }
 
-// A mutation matters when it touches (or introduces) a `.markdown-body`
-// subtree. Chat messages are the only surface that emits rendered
-// markdown today, and they all live under that class. Filtering here
-// avoids scheduling scans for every tooltip, composer focus tick, and
-// sidebar refresh happening elsewhere in the app.
-function mutationsTouchMarkdownBody(mutations: MutationRecord[]): boolean {
+// A mutation matters only when it touches a subtree that contains a
+// registered painter target. Ordinary markdown streaming replaces
+// `.markdown-body` children frequently; waking Mermaid/KaTeX for every
+// paragraph update costs work without any chance of painting.
+function mutationsTouchPainterTarget(mutations: MutationRecord[]): boolean {
+  if (registry.length === 0) return false;
   for (const m of mutations) {
     const t = m.target;
-    if (t instanceof Element && t.closest('.markdown-body')) return true;
+    if (t instanceof Element && mutationTargetHasPainterTarget(t)) return true;
     for (const n of Array.from(m.addedNodes)) {
       if (!(n instanceof Element)) continue;
-      if (n.matches?.('.markdown-body') || n.querySelector?.('.markdown-body')) return true;
+      if (addedNodeHasPainterTarget(n)) return true;
     }
+  }
+  return false;
+}
+
+function mutationTargetHasPainterTarget(target: Element): boolean {
+  const markdownRoot = target.closest('.markdown-body');
+  if (!markdownRoot) return false;
+  return elementOrDescendantMatchesPainter(target);
+}
+
+function addedNodeHasPainterTarget(node: Element): boolean {
+  if (node.closest('.markdown-body')) {
+    return elementOrDescendantMatchesPainter(node);
+  }
+  if (node.matches?.('.markdown-body') && markdownRootHasPainterTarget(node)) {
+    return true;
+  }
+  for (const markdownRoot of Array.from(node.querySelectorAll?.('.markdown-body') ?? [])) {
+    if (markdownRootHasPainterTarget(markdownRoot)) return true;
+  }
+  return false;
+}
+
+function markdownRootHasPainterTarget(root: Element): boolean {
+  for (const entry of registry) {
+    if (root.matches?.(entry.spec.selector)) return true;
+    if (root.querySelector?.(entry.spec.selector)) return true;
+  }
+  return false;
+}
+
+function elementOrDescendantMatchesPainter(el: Element): boolean {
+  for (const entry of registry) {
+    if (el.matches?.(entry.spec.selector)) return true;
+    if (el.querySelector?.(entry.spec.selector)) return true;
   }
   return false;
 }

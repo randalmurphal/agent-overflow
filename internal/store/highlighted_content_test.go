@@ -169,7 +169,7 @@ func TestUpdateItemHighlight(t *testing.T) {
 		t.Fatalf("insert: %v", err)
 	}
 
-	if err := s.UpdateItemHighlight("u-1", "<p>hello</p>"); err != nil {
+	if err := s.UpdateItemHighlight("t-u", "u-1", "<p>hello</p>"); err != nil {
 		t.Fatalf("update highlight: %v", err)
 	}
 	got, ok, err := s.GetItem("u-1")
@@ -188,7 +188,7 @@ func TestUpdateItemHighlight(t *testing.T) {
 
 	// Empty html is a legitimate write — it triggers the plain-text
 	// fallback in the frontend.
-	if err := s.UpdateItemHighlight("u-1", ""); err != nil {
+	if err := s.UpdateItemHighlight("t-u", "u-1", ""); err != nil {
 		t.Fatalf("update empty: %v", err)
 	}
 	got, _, _ = s.GetItem("u-1")
@@ -199,7 +199,7 @@ func TestUpdateItemHighlight(t *testing.T) {
 
 func TestUpdateItemHighlightMissingItem(t *testing.T) {
 	s := newTestStore(t)
-	err := s.UpdateItemHighlight("nope", "<p>x</p>")
+	err := s.UpdateItemHighlight("t-missing", "nope", "<p>x</p>")
 	if err == nil {
 		t.Fatal("expected error for missing item")
 	}
@@ -232,7 +232,7 @@ func TestUpdateItemHighlightSkipsSettledRow(t *testing.T) {
 
 	// Late delta's render tries to flush stale "hello" HTML; the row is
 	// already settled (status='errored'), so the write is a no-op.
-	if err := s.UpdateItemHighlight("race-1", "<p>hello</p>"); err != nil {
+	if err := s.UpdateItemHighlight("t-race2", "race-1", "<p>hello</p>"); err != nil {
 		t.Fatalf("update highlight on settled row should silently skip: %v", err)
 	}
 	got, _, _ := s.GetItem("race-1")
@@ -329,7 +329,7 @@ func TestAppendItemSummarySkipsSettledRow(t *testing.T) {
 		t.Fatalf("insert: %v", err)
 	}
 
-	_, err := s.AppendItemSummary("race-2", "stale delta", 3)
+	_, err := s.AppendItemSummary("t-race3", "race-2", "stale delta", 3)
 	if !errors.Is(err, ErrItemSettled) {
 		t.Fatalf("expected ErrItemSettled for settled row, got %v", err)
 	}
@@ -340,8 +340,59 @@ func TestAppendItemSummarySkipsSettledRow(t *testing.T) {
 
 	// Genuinely missing row still returns sql.ErrNoRows so the caller's
 	// UpsertItem fallback path stays untouched.
-	if _, err := s.AppendItemSummary("not-here", "x", 1); !errors.Is(err, sql.ErrNoRows) {
+	if _, err := s.AppendItemSummary("t-race3", "not-here", "x", 1); !errors.Is(err, sql.ErrNoRows) {
 		t.Errorf("missing row should return sql.ErrNoRows, got %v", err)
+	}
+}
+
+func TestStreamingWritesAreScopedByThread(t *testing.T) {
+	s := newTestStore(t)
+	for _, threadID := range []string{"thread-a", "thread-b"} {
+		if err := s.CreateThread(makeThread(threadID, "claude")); err != nil {
+			t.Fatalf("create thread %s: %v", threadID, err)
+		}
+		if err := s.InsertItem(Item{
+			ID: "text:1:0", ThreadID: threadID, TurnIndex: 1, ItemIndex: 0,
+			Kind: "assistant_text", Role: "assistant",
+			Status: "streaming", Summary: threadID + ":",
+			HighlightedContent: "<p>" + threadID + "</p>",
+			CreatedAt:          1, UpdatedAt: 1,
+		}); err != nil {
+			t.Fatalf("insert %s: %v", threadID, err)
+		}
+	}
+
+	row, err := s.AppendItemSummary("thread-b", "text:1:0", "new", 2)
+	if err != nil {
+		t.Fatalf("append thread-b: %v", err)
+	}
+	if row.ThreadID != "thread-b" || row.Summary != "thread-b:new" {
+		t.Fatalf("append returned %+v, want thread-b:new", row)
+	}
+	if err := s.UpdateItemHighlight("thread-b", "text:1:0", "<p>thread-b:new</p>"); err != nil {
+		t.Fatalf("highlight thread-b: %v", err)
+	}
+
+	a, ok, err := s.GetThreadItem("thread-a", "text:1:0")
+	if err != nil || !ok {
+		t.Fatalf("get thread-a: err=%v ok=%v", err, ok)
+	}
+	if a.Summary != "thread-a:" {
+		t.Fatalf("thread-a summary was cross-mutated: %q", a.Summary)
+	}
+	if a.HighlightedContent != "<p>thread-a</p>" {
+		t.Fatalf("thread-a html was cross-mutated: %q", a.HighlightedContent)
+	}
+
+	b, ok, err := s.GetThreadItem("thread-b", "text:1:0")
+	if err != nil || !ok {
+		t.Fatalf("get thread-b: err=%v ok=%v", err, ok)
+	}
+	if b.Summary != "thread-b:new" {
+		t.Fatalf("thread-b summary = %q", b.Summary)
+	}
+	if b.HighlightedContent != "<p>thread-b:new</p>" {
+		t.Fatalf("thread-b html = %q", b.HighlightedContent)
 	}
 }
 
@@ -381,13 +432,13 @@ func TestTwoPhaseStreamingWriteAtomic(t *testing.T) {
 		go func(id string, base int) {
 			defer wg.Done()
 			for j := 0; j < deltas; j++ {
-				row, err := s.AppendItemSummary(id, "a", int64(base*1000+j+1))
+				row, err := s.AppendItemSummary("t-race", id, "a", int64(base*1000+j+1))
 				if err != nil {
 					t.Errorf("append %s[%d]: %v", id, j, err)
 					return
 				}
 				html := render(row.Summary)
-				if err := s.UpdateItemHighlight(id, html); err != nil {
+				if err := s.UpdateItemHighlight("t-race", id, html); err != nil {
 					t.Errorf("update highlight %s[%d]: %v", id, j, err)
 					return
 				}

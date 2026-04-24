@@ -1879,8 +1879,8 @@ func TestReasoningDeltasPersistOnTurnComplete(t *testing.T) {
 		t.Fatalf("status after turn complete: got %q, want completed", items[0].Status)
 	}
 
-	if len(filterEmissions(*emissions, "provider:item_upsert")) < 4 {
-		t.Fatalf("expected streaming upserts plus settle upsert, got %+v", *emissions)
+	if len(filterEmissions(*emissions, "provider:item_upsert")) < 2 {
+		t.Fatalf("expected initial streaming upsert plus settle upsert, got %+v", *emissions)
 	}
 }
 
@@ -1927,8 +1927,8 @@ func TestTurnCompleteWithAccumulatedText(t *testing.T) {
 	}
 
 	upserts := filterEmissions(*emissions, "provider:item_upsert")
-	if len(upserts) != 3 {
-		t.Errorf("expected 3 item upserts, got %d", len(upserts))
+	if len(upserts) != 2 {
+		t.Errorf("expected initial streaming upsert plus settle upsert, got %d", len(upserts))
 	}
 }
 

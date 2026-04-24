@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { formatElapsedSeconds } from '../../utils/format';
+  import { isUiRenderTraceEnabled, recordUiTrace } from '../../utils/uiRenderTrace';
   import { dispatchInterrupt } from '../composer/composerSend';
 
   interface Props {
@@ -28,6 +29,26 @@
     if (!activeTurn) return '0s';
     const elapsedSeconds = Math.max(0, Math.floor((now - activeTurn.startedAt) / 1_000));
     return formatElapsedSeconds(elapsedSeconds);
+  });
+
+  $effect(() => {
+    pane.threadId;
+    activeTurn?.turnId;
+    interrupting;
+
+    if (!isUiRenderTraceEnabled()) return;
+    recordUiTrace('working-indicator.state', {
+      threadId: pane.threadId,
+      activeTurn: activeTurn
+        ? {
+            turnId: activeTurn.turnId,
+            turnIndex: activeTurn.turnIndex,
+            startedAt: activeTurn.startedAt,
+          }
+        : null,
+      interrupting,
+      visible: isWorking,
+    });
   });
 
   async function interrupt(): Promise<void> {

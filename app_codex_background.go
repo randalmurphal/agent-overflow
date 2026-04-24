@@ -23,9 +23,10 @@ const cleanCodexBackgroundTerminalsTimeout = 10 * time.Second
 // plumbing it will call.
 //
 // After the RPC succeeds, Codex emits one `item/completed` notification
-// per terminated PTY. Those flow through our existing triage path —
-// Phase 2's sibling-synthesis stamps the `tool_completion` row and the
-// tray reconciles on its own. No follow-up work is needed here.
+// per terminated PTY. Those update triage's transient tray state; the
+// command output becomes transcript history only if the model explicitly
+// waits/polls the terminal with write_stdin. No follow-up work is needed
+// here.
 //
 // Returns typed errors for:
 //

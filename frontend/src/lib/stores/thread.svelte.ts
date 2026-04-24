@@ -157,6 +157,7 @@ export function parseTokenUsage(raw: string | null | undefined): TokenUsageSumma
 export function createThreadPane() {
   let thread: Thread | null = $state(null);
   let items: Item[] = $state([]);
+  let timelineRevision = $state(0);
   // Per-turn diff view index. Keyed by turnIndex. Incrementally updated on
   // upsertItem rather than rebuilt from scratch — with hundreds of items the
   // old $derived recomputation was O(turns · items) per upsert. Map presence
@@ -296,6 +297,10 @@ export function createThreadPane() {
     }
   }
 
+  function itemsForThread(nextItems: Item[] | null | undefined, threadId: string): Item[] {
+    return (nextItems ?? []).filter((item) => item.threadId === threadId);
+  }
+
   /**
    * Merge `incoming` into `current` by id, returning a fresh array
    * sorted by (turnIndex, itemIndex). Used by `loadOlder` /
@@ -357,6 +362,7 @@ export function createThreadPane() {
     get thread() { return thread; },
     get threadId() { return thread?.id ?? null; },
     get items() { return items; },
+    get timelineRevision() { return timelineRevision; },
     /**
      * Per-turn diff view. Keyed by `turnIndex`. Incrementally maintained by
      * `upsertItem` so MessageTimeline can render the ChangedFilesTree and
@@ -506,7 +512,7 @@ export function createThreadPane() {
       try {
         const paged = await ListRecentThreadItems(newThread.id, 0);
         if (gen !== switchGeneration) return;
-        items = (paged.items ?? []) as Item[];
+        items = itemsForThread((paged.items ?? []) as Item[], newThread.id);
         oldestLoadedTurnIndex = paged.oldestTurnIndex >= 0 ? paged.oldestTurnIndex : null;
         hasMoreHistory = paged.hasMore ?? false;
         rebuildTurnDiffViews(items);
@@ -606,7 +612,7 @@ export function createThreadPane() {
       try {
         const paged = await ListItemsBeforeTurn(currentThread.id, floor, LOAD_OLDER_TURN_BATCH);
         if (gen !== switchGeneration || pageGen !== pagingGeneration) return;
-        const prepend = (paged.items ?? []) as Item[];
+        const prepend = itemsForThread((paged.items ?? []) as Item[], currentThread.id);
         const next = mergeItemsById(prepend, items);
         if (next !== items) {
           items = next;
@@ -715,7 +721,7 @@ export function createThreadPane() {
       try {
         const paged = await ListItemsBeforeTurn(currentThread.id, beforeTurn, turnSpan);
         if (gen !== switchGeneration || pageGen !== pagingGeneration) return false;
-        const prepend = (paged.items ?? []) as Item[];
+        const prepend = itemsForThread((paged.items ?? []) as Item[], currentThread.id);
         const next = mergeItemsById(prepend, items);
         if (next !== items) {
           items = next;
@@ -777,6 +783,9 @@ export function createThreadPane() {
      * the full thread.
      */
     upsertItem(item: Item): void {
+      if (thread && item.threadId !== thread.id) {
+        return;
+      }
       const idx = items.findIndex((existing) => existing.id === item.id);
       if (idx >= 0) {
         // Existing-id path: always accept. If we already have this id in
@@ -787,6 +796,7 @@ export function createThreadPane() {
         const next = items.slice();
         next[idx] = item;
         items = next;
+        timelineRevision++;
         refreshTurnDiffView(next, item.turnIndex);
         if (prevTurnIndex !== item.turnIndex) {
           refreshTurnDiffView(next, prevTurnIndex);
@@ -819,6 +829,7 @@ export function createThreadPane() {
       const next = items.slice();
       next.splice(insertAt, 0, item);
       items = next;
+      timelineRevision++;
       refreshTurnDiffView(next, item.turnIndex);
     },
 

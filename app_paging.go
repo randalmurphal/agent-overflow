@@ -93,16 +93,21 @@ func (a *App) ListThreadDiffPayloads(threadID string) ([]store.Item, error) {
 	return items, nil
 }
 
-// ListLiveBackgroundTasks returns running background launches plus
-// their recently-completed siblings (within the tray retention window)
-// so the BackgroundTaskTray can render without scanning `pane.items`.
-// Pairs age out together — a launch whose completion has fallen past
-// the cutoff is dropped with it.
+// ListLiveBackgroundTasks returns running background launches plus their
+// recently-completed siblings (within the tray retention window) so the
+// BackgroundTaskTray can render without scanning `pane.items`. SQLite
+// rows cover persisted Claude / Codex subagent launches; the triage
+// router appends transient Codex unified-exec tasks that intentionally
+// do not exist in chat history.
 func (a *App) ListLiveBackgroundTasks(threadID string) ([]store.Item, error) {
-	cutoff := time.Now().UnixMilli() - backgroundTaskRetentionMillis
+	now := time.Now().UnixMilli()
+	cutoff := now - backgroundTaskRetentionMillis
 	items, err := a.store.ListLiveBackgroundTasks(threadID, cutoff)
 	if err != nil {
 		return nil, fmt.Errorf("list live background tasks: %w", err)
+	}
+	if a.triage != nil {
+		items = append(items, a.triage.ListLiveCodexBackgroundTasks(threadID, now, cutoff)...)
 	}
 	if items == nil {
 		return []store.Item{}, nil

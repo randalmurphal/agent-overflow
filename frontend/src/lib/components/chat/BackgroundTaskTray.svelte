@@ -8,16 +8,19 @@
   import { wailsEventOn } from '../../stores/events';
   import { addToast } from '../../stores/toast.svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
+  import type { BackgroundTasksChangedEvent } from '../../types/events';
   import type { Item } from '../../types/models';
   import {
     deriveTrayTasks,
     extractClaudeTaskID,
     isCodexSubagentTask,
+    trayTaskLabel,
     type TrayTask,
   } from '../../utils/backgroundTray';
   import BackgroundTaskTrayRow from './BackgroundTaskTrayRow.svelte';
   import { debounce } from '../../utils/debounce';
   import { errString } from '../../utils/errors';
+  import { isUiRenderTraceEnabled, recordUiTrace, scheduleDomUiTrace } from '../../utils/uiRenderTrace';
 
   interface Props {
     pane: ThreadPane;
@@ -35,6 +38,7 @@
   // Local clock used for retention pruning + elapsed-duration labels.
   // Updated by a 1 s interval in the $effect below.
   let now = $state(Date.now());
+  let trayRoot: HTMLDivElement | undefined = $state(undefined);
 
   // The clock only needs to tick while there's at least one tray row —
   // an empty tray has no elapsed labels to advance and no completions
@@ -73,9 +77,11 @@
     try {
       const items = (await ListLiveBackgroundTasks(id)) as Item[] | null;
       if (seq !== fetchSeq) return;
-      backgroundItems = items ?? [];
+      if (id !== threadId) return;
+      backgroundItems = (items ?? []).filter((item) => item.threadId === id);
     } catch (err) {
       if (seq !== fetchSeq) return;
+      if (id !== threadId) return;
       console.error('BackgroundTaskTray: ListLiveBackgroundTasks failed:', err);
       backgroundItems = [];
     }
@@ -90,6 +96,7 @@
   });
 
   let cancelItemUpsert: (() => void) | null = null;
+  let cancelBackgroundTasksChanged: (() => void) | null = null;
   onMount(() => {
     cancelItemUpsert = wailsEventOn<Item>('provider:item_upsert', (item) => {
       if (!item || item.threadId !== threadId) return;
@@ -102,10 +109,18 @@
         debouncedRefresh();
       }
     });
+    cancelBackgroundTasksChanged = wailsEventOn<BackgroundTasksChangedEvent>(
+      'provider:background_tasks_changed',
+      (evt) => {
+        if (!evt || evt.threadId !== threadId) return;
+        debouncedRefresh();
+      },
+    );
   });
 
   onDestroy(() => {
     cancelItemUpsert?.();
+    cancelBackgroundTasksChanged?.();
     debouncedRefresh.cancel();
   });
 
@@ -161,6 +176,38 @@
 
   // Tray opens by default; clicking the header collapses the body.
   let expanded = $state(true);
+
+  $effect(() => {
+    threadId;
+    backgroundItems.length;
+    tasks.length;
+    expanded;
+
+    if (!isUiRenderTraceEnabled()) return;
+    recordUiTrace('background-tray.state', {
+      threadId,
+      backgroundItemCount: backgroundItems.length,
+      taskCount: tasks.length,
+      expanded,
+      tasks: tasks.map((task) => ({
+        rowId: task.rowId,
+        status: task.status,
+        launchId: task.launch?.id ?? '',
+        launchThreadId: task.launch?.threadId ?? '',
+        completionId: task.completion?.id ?? '',
+        completionThreadId: task.completion?.threadId ?? '',
+        label: trayTaskLabel(task),
+      })),
+    });
+    scheduleDomUiTrace('background-tray', 'background-tray.dom', () => ({
+      threadId,
+      rows: Array.from(trayRoot?.querySelectorAll<HTMLElement>('[data-testid="background-task-tray-row"]') ?? [])
+        .map((el) => ({
+          status: el.querySelector<HTMLElement>('[data-testid="background-task-tray-row-status"]')?.dataset.status ?? '',
+          textPreview: (el.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, 120),
+        })),
+    }));
+  });
 
   function toggle() {
     expanded = !expanded;
@@ -239,6 +286,7 @@
 
 {#if count > 0}
   <div
+    bind:this={trayRoot}
     class="mx-6 mb-2 overflow-hidden rounded-[var(--radius-control)] border border-border-subtle bg-card/30"
     role="region"
     aria-label="Background tasks"

@@ -1,5 +1,9 @@
 .PHONY: install dev build test check generate-css go-build go-test
 
+# `make dev DEBUG=1` enables lightweight frontend UI render tracing.
+# `UI_TRACE=1` is the explicit form; DEBUG=1 is the short dev-mode alias.
+UI_TRACE ?= $(DEBUG)
+
 ifeq ($(shell uname -s),Darwin)
 HOST_ARCH := $(shell uname -m)
 # Apple Silicon macOS binaries cannot target earlier than 11.0. Keep
@@ -37,7 +41,7 @@ generate-css:
 	go run ./cmd/gen-chroma-css
 
 dev: generate-css
-	wails3 dev
+	VITE_AGENT_OVERFLOW_UI_TRACE=$(UI_TRACE) wails3 dev
 
 build: generate-css
 	wails3 build

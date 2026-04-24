@@ -5,6 +5,7 @@
   import PermissionPanel from './approval/PermissionPanel.svelte';
   import McpElicitationPanel from './approval/McpElicitationPanel.svelte';
   import ToolApprovalPanel from './approval/ToolApprovalPanel.svelte';
+  import { isUiRenderTraceEnabled, recordUiTrace, scheduleDomUiTrace } from '../../utils/uiRenderTrace';
 
   let { pane }: { pane: ThreadPane } = $props();
 
@@ -24,6 +25,28 @@
       previousFocus.focus();
       previousFocus = null;
     }
+  });
+
+  $effect(() => {
+    pane.threadId;
+    pane.pendingApprovals.length;
+
+    if (!isUiRenderTraceEnabled()) return;
+    recordUiTrace('approval.state', {
+      threadId: pane.threadId,
+      approvals: pane.pendingApprovals.map((approval) => ({
+        requestId: approval.requestId,
+        threadId: approval.threadId,
+        kind: approval.kind ?? '',
+        toolName: approval.toolName,
+        title: approval.title,
+      })),
+    });
+    scheduleDomUiTrace('approval', 'approval.dom', () => ({
+      threadId: pane.threadId,
+      cardCount: containerEl?.querySelectorAll('[data-testid="approval-card"]').length ?? 0,
+      textPreview: (containerEl?.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, 160),
+    }));
   });
 
   // One place that actually calls the binding. Panels hand us a fully-built

@@ -18,17 +18,18 @@ import (
 
 // TestE2E_Codex_YieldingCommand_ProjectsAsBackgrounded covers the
 // wire-typed Codex projection: an item/started for a unifiedExecStartup
-// command, followed by a text_delta (the model yielded while the PTY is
-// still running), stamps is_background=true on the launch row and
-// emits provider:item_upsert with the flag set. When item/completed
-// later arrives, the sibling tool_completion row lands at the latest
-// turn's tail.
+// command is tracked transiently without creating a transcript row.
+// It becomes live tray state only after the model yields. When the
+// command completes after that yield, the completion remains tray-only
+// until Codex explicitly polls the background PTY with
+// TerminalInteractionNotification. That wait row is where completed
+// command output becomes chat history.
 //
 // The Codex wire path is driven by direct triage.Handle calls because
 // the fake app-server harness only responds to requests — it can't
 // push unsolicited notifications into the session. For the integration
 // test we want to exercise the triage router end-to-end (projector +
-// sibling synthesis + ListLiveBackgroundTasks) rather than the
+// transient tray state + ListLiveBackgroundTasks) rather than the
 // notification parser, which has its own unit tests.
 func TestE2E_Codex_YieldingCommand_ProjectsAsBackgrounded(t *testing.T) {
 	app, bus := setupE2EApp(t)
@@ -77,17 +78,22 @@ func TestE2E_Codex_YieldingCommand_ProjectsAsBackgrounded(t *testing.T) {
 		t.Fatalf("tool start: %v", err)
 	}
 
-	// Sanity: the launch lands running, NOT backgrounded yet.
-	launchBefore, found, err := app.store.GetThreadItem(thread.ID, "cmd-e2e")
-	if err != nil || !found {
-		t.Fatalf("launch lookup (pre-yield): found=%v err=%v", found, err)
+	// Sanity: Codex unified exec starts are transcript-free, but they
+	// are not tray-visible until the model actually yields.
+	if _, found, err := app.store.GetThreadItem(thread.ID, "cmd-e2e"); err != nil || found {
+		t.Fatalf("unified exec start should be tray-only: found=%v err=%v", found, err)
 	}
-	if launchBefore.IsBackground {
-		t.Fatal("launch IsBackground=true before any model yield — projector triggered too early")
+	liveBefore, err := app.ListLiveBackgroundTasks(thread.ID)
+	if err != nil {
+		t.Fatalf("ListLiveBackgroundTasks pre-yield: %v", err)
+	}
+	if len(liveBefore) != 0 {
+		t.Fatalf("unexpected pre-yield tray state: %+v", liveBefore)
 	}
 
 	// Model yield: the first text delta authorizes the projector to
-	// stamp is_background=true and emit the upsert.
+	// classify the running PTY as backgrounded internally. This still
+	// does not create a transcript row.
 	if err := app.triage.Handle(provider.ProviderEvent{
 		Kind: provider.EventTextDelta, ThreadID: thread.ID,
 		Content:   "letting the server keep running...",
@@ -96,31 +102,22 @@ func TestE2E_Codex_YieldingCommand_ProjectsAsBackgrounded(t *testing.T) {
 		t.Fatalf("text delta: %v", err)
 	}
 
-	// The projector's stamp emission fires synchronously from the text-
-	// delta handler; poll the store to confirm the row is updated.
-	waitUntilE2E(t, 3*time.Second, "projector stamps is_background", func() bool {
-		row, _, err := app.store.GetThreadItem(thread.ID, "cmd-e2e")
-		return err == nil && row.IsBackground && row.Status == "running"
+	waitUntilE2E(t, 3*time.Second, "projector keeps command in live tray", func() bool {
+		live, err := app.ListLiveBackgroundTasks(thread.ID)
+		return err == nil && len(live) == 1 && live[0].ID == "cmd-e2e" && live[0].Status == "running"
 	})
 
-	// Drain provider:item_upsert emissions off the bus looking for the
-	// stamped row. The projector emits exactly once per stamp.
-	sawStampEmission := false
+	// The tray refresh is driven by a dedicated live-state event rather
+	// than a provider:item_upsert, because no timeline row exists.
+	sawTrayRefreshEmission := false
 	for _, e := range bus.allEvents() {
-		if e.Name != "provider:item_upsert" {
-			continue
-		}
-		item, ok := e.Data.(store.Item)
-		if !ok || item.ID != "cmd-e2e" {
-			continue
-		}
-		if item.IsBackground {
-			sawStampEmission = true
+		if e.Name == "provider:background_tasks_changed" {
+			sawTrayRefreshEmission = true
 			break
 		}
 	}
-	if !sawStampEmission {
-		t.Error("no provider:item_upsert with IsBackground=true emitted for cmd-e2e")
+	if !sawTrayRefreshEmission {
+		t.Error("no provider:background_tasks_changed emitted for cmd-e2e")
 	}
 
 	// Close the streaming text block so the completion sibling isn't
@@ -134,12 +131,22 @@ func TestE2E_Codex_YieldingCommand_ProjectsAsBackgrounded(t *testing.T) {
 		t.Fatalf("content block stop: %v", err)
 	}
 
-	// item/completed for the unifiedExec — arrives "eventually" after
-	// the command exits. Triage's projector synthesizes a
-	// tool_completion sibling at the latest turn's tail.
+	if err := app.triage.Handle(provider.ProviderEvent{
+		Kind: provider.EventCommandOutput, ThreadID: thread.ID, ItemID: "cmd-e2e",
+		ItemType: "commandExecution", TurnID: "turn-0", Content: "server ready\n",
+		Replace: true, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("command output: %v", err)
+	}
+
+	// item/completed for the unifiedExec arrives "eventually" after the
+	// command exits. Backgrounded Codex completions update the live tray;
+	// they do not synthesize transcript siblings.
 	completeMeta, _ := json.Marshal(map[string]any{
 		"source":      "unifiedExecStartup",
 		"item_status": "completed",
+		"process_id":  "pid-777",
+		"command":     "npm run server",
 	})
 	if err := app.triage.Handle(provider.ProviderEvent{
 		Kind: provider.EventToolComplete, ThreadID: thread.ID, ItemID: "cmd-e2e",
@@ -149,27 +156,49 @@ func TestE2E_Codex_YieldingCommand_ProjectsAsBackgrounded(t *testing.T) {
 		t.Fatalf("tool complete: %v", err)
 	}
 
-	// The sibling tool_completion must land with is_background=true,
-	// status=completed, and completion_of pointing at the launch.
-	waitUntilE2E(t, 3*time.Second, "sibling tool_completion persisted", func() bool {
-		items, _ := app.store.ListItems(thread.ID)
-		for _, it := range items {
-			if it.Kind == "tool_completion" && it.CompletionOf == "cmd-e2e" {
-				return it.Status == "completed" && it.IsBackground
-			}
+	waitUntilE2E(t, 3*time.Second, "completed command visible in tray", func() bool {
+		live, err := app.ListLiveBackgroundTasks(thread.ID)
+		if err != nil || len(live) != 2 {
+			return false
 		}
-		return false
+		return live[1].Kind == "tool_completion" && live[1].CompletionOf == "cmd-e2e" && live[1].Status == "completed"
 	})
+
+	if siblings := findItemsByKindE2E(t, app.store, thread.ID, "tool_completion"); len(siblings) != 0 {
+		t.Fatalf("Codex command completion should not create transcript sibling: %+v", siblings)
+	}
+
+	if err := app.triage.Handle(provider.ProviderEvent{
+		Kind: provider.EventTerminalInteraction, ThreadID: thread.ID,
+		Meta:      json.RawMessage(`{"process_id":"pid-777","stdin":""}`),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("terminal interaction: %v", err)
+	}
+	waits := findItemsByKindE2E(t, app.store, thread.ID, string(provider.ItemTerminalInteraction))
+	if len(waits) != 1 {
+		t.Fatalf("wait rows = %d, want 1", len(waits))
+	}
+	if waits[0].PayloadKind != "command_output" {
+		t.Fatalf("wait payload kind = %q, want command_output", waits[0].PayloadKind)
+	}
+	data, err := app.store.GetPayloadData(waits[0].PayloadID)
+	if err != nil {
+		t.Fatalf("wait payload: %v", err)
+	}
+	if string(data) != "server ready\n" {
+		t.Fatalf("wait payload = %q, want server ready newline", string(data))
+	}
 }
 
 // --- Codex scenario 4: stop-all → clean RPC + per-terminal siblings ---
 
 // TestE2E_Codex_StopAll_CleanRPC drives the Codex Stop-all primitive.
-// Two backgrounded Codex terminals on one thread, one
+// Two live Codex terminals on one thread, one
 // CleanCodexBackgroundTerminals binding call that fires the
 // thread/backgroundTerminals/clean RPC, then simulated item/completed
-// events (one per terminated PTY) that triage synthesizes sibling rows
-// for. Verifies exactly ONE RPC fired — thread-wide, not per-row.
+// events (one per terminated PTY) that update the live tray. Verifies
+// exactly ONE RPC fired — thread-wide, not per-row.
 func TestE2E_Codex_StopAll_CleanRPC(t *testing.T) {
 	app, bus := setupE2EApp(t)
 
@@ -227,17 +256,9 @@ func TestE2E_Codex_StopAll_CleanRPC(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("content block stop: %v", err)
 	}
-	waitUntilE2E(t, 3*time.Second, "both launches backgrounded", func() bool {
-		for _, id := range []string{"cmd-stop-1", "cmd-stop-2"} {
-			row, found, err := app.store.GetThreadItem(thread.ID, id)
-			if err != nil || !found {
-				return false
-			}
-			if !row.IsBackground {
-				return false
-			}
-		}
-		return true
+	waitUntilE2E(t, 3*time.Second, "both launches in live tray", func() bool {
+		live, err := app.ListLiveBackgroundTasks(thread.ID)
+		return err == nil && len(live) == 2
 	})
 
 	// Install a fake Codex session whose Clean callback records the
@@ -261,6 +282,11 @@ func TestE2E_Codex_StopAll_CleanRPC(t *testing.T) {
 		codex:    fakeSess,
 	}
 	app.mu.Unlock()
+	t.Cleanup(func() {
+		app.mu.Lock()
+		delete(app.sessions, thread.ID)
+		app.mu.Unlock()
+	})
 
 	if err := app.CleanCodexBackgroundTerminals(thread.ID); err != nil {
 		t.Fatalf("CleanCodexBackgroundTerminals: %v", err)
@@ -270,10 +296,9 @@ func TestE2E_Codex_StopAll_CleanRPC(t *testing.T) {
 	}
 
 	// The app-server responds by emitting item/completed for each
-	// terminated PTY. Triage synthesizes one tool_completion sibling
-	// per terminated command. A real app-server would also deliver a
-	// failed or completed item_status — we use completed here for the
-	// clean-shutdown case.
+	// terminated PTY. Triage updates the live tray for each completed
+	// command. A real app-server would also deliver a failed or completed
+	// item_status — we use completed here for the clean-shutdown case.
 	for _, id := range []string{"cmd-stop-1", "cmd-stop-2"} {
 		completeMeta, _ := json.Marshal(map[string]any{
 			"source":      "unifiedExecStartup",
@@ -288,15 +313,18 @@ func TestE2E_Codex_StopAll_CleanRPC(t *testing.T) {
 		}
 	}
 
-	waitUntilE2E(t, 3*time.Second, "two sibling completions", func() bool {
-		items, _ := app.store.ListItems(thread.ID)
-		siblings := 0
-		for _, it := range items {
+	waitUntilE2E(t, 3*time.Second, "two live tray completions", func() bool {
+		live, err := app.ListLiveBackgroundTasks(thread.ID)
+		if err != nil {
+			return false
+		}
+		completions := 0
+		for _, it := range live {
 			if it.Kind == "tool_completion" && (it.CompletionOf == "cmd-stop-1" || it.CompletionOf == "cmd-stop-2") {
-				siblings++
+				completions++
 			}
 		}
-		return siblings == 2
+		return completions == 2
 	})
 
 	// Drain bus so the test cleanup doesn't trip on an oversized channel.

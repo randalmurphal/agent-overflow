@@ -18,10 +18,18 @@
   import { createComposerDraftStore } from '../../stores/composerDraft.svelte';
   import { MarkThreadRead } from '../../stores/bindings';
   import { updateThreadLastRead } from '../../stores/threads.svelte';
+  import {
+    isUiRenderTraceEnabled,
+    recordUiTrace,
+    scheduleDomUiTrace,
+    snapshotChatDomForTrace,
+    summarizePaneForTrace,
+  } from '../../utils/uiRenderTrace';
 
   let { pane }: { pane: ThreadPane } = $props();
 
   const draft = createComposerDraftStore();
+  let chatRoot: HTMLDivElement | undefined = $state(undefined);
   let lastHydratedThreadId: string | null = null;
 
   $effect(() => {
@@ -52,6 +60,23 @@
     void MarkThreadRead(thread.id).catch((err) => {
       console.error('Failed to mark thread read:', err);
     });
+  });
+
+  $effect(() => {
+    pane.threadId;
+    pane.loading;
+    pane.items.length;
+    pane.timelineRevision;
+    pane.pendingApprovals.length;
+    pane.activeTurn?.turnId;
+    pane.latestSettledTurn?.turnId;
+    pane.showTerminal;
+    pane.showPlanSidebar;
+    pane.diffPanel.open;
+
+    if (!isUiRenderTraceEnabled()) return;
+    recordUiTrace('chat.state', summarizePaneForTrace(pane));
+    scheduleDomUiTrace('chat', 'chat.dom', () => snapshotChatDomForTrace(chatRoot));
   });
 
   let inDiscussionMode = $derived(
@@ -92,7 +117,7 @@
 {#if pane.thread && inDiscussionMode}
   <DiscussionView {pane} />
 {:else if pane.thread}
-  <div class="flex h-full min-h-0">
+  <div bind:this={chatRoot} data-ui-surface="chat" data-thread-id={pane.thread.id} class="flex h-full min-h-0">
     <div class="flex flex-col {inDesignMode ? 'flex-1 min-w-0 border-r border-border' : 'flex-1 min-w-0'}">
       <ChatHeader {pane} />
 
@@ -124,7 +149,7 @@
     {/if}
   </div>
 {:else}
-  <div class="flex items-center justify-center h-full">
+  <div bind:this={chatRoot} data-ui-surface="chat-empty" data-thread-id="" class="flex items-center justify-center h-full">
     <div class="text-center">
       <svg class="w-10 h-10 text-text-secondary/30 mx-auto mb-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />

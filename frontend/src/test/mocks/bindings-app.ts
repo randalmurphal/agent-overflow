@@ -176,6 +176,10 @@ export const SetThreadRuntimeMode = dispatch('SetThreadRuntimeMode');
 // Slash commands (Claude-only)
 export const GetThreadSlashCommands = dispatch('GetThreadSlashCommands');
 
+// Dev-only UI render tracing
+export const AppendUIRenderTraceBatch = dispatch('AppendUIRenderTraceBatch');
+export const GetUIRenderTracePath = dispatch('GetUIRenderTracePath');
+
 // PR-based thread creation
 export const CreateThreadFromPR = dispatch('CreateThreadFromPR');
 

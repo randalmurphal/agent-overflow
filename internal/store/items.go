@@ -186,7 +186,7 @@ func (s *Store) AppendItem(item Item) (int, error) {
 // Returns sql.ErrNoRows (wrapped) if no item matches id. Callers that
 // need to create the item on the first delta should call UpsertItem for
 // the initial delta and AppendItemSummary for every subsequent delta.
-func (s *Store) AppendItemSummary(id, delta string, updatedAt int64) (Item, error) {
+func (s *Store) AppendItemSummary(threadID, id, delta string, updatedAt int64) (Item, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return Item{}, fmt.Errorf("store: begin append item summary tx: %w", err)
@@ -194,15 +194,15 @@ func (s *Store) AppendItemSummary(id, delta string, updatedAt int64) (Item, erro
 	defer tx.Rollback()
 
 	result, err := tx.Exec(
-		`UPDATE items SET summary = summary || ?, updated_at = ? WHERE id = ? AND status = 'streaming'`,
-		delta, updatedAt, id,
+		`UPDATE items SET summary = summary || ?, updated_at = ? WHERE thread_id = ? AND id = ? AND status = 'streaming'`,
+		delta, updatedAt, threadID, id,
 	)
 	if err != nil {
-		return Item{}, fmt.Errorf("store: append item summary %s: %w", id, err)
+		return Item{}, fmt.Errorf("store: append item summary %s/%s: %w", threadID, id, err)
 	}
 	affected, err := result.RowsAffected()
 	if err != nil {
-		return Item{}, fmt.Errorf("store: rows affected append item summary %s: %w", id, err)
+		return Item{}, fmt.Errorf("store: rows affected append item summary %s/%s: %w", threadID, id, err)
 	}
 	if affected == 0 {
 		// The UPDATE matched no rows — either the row is missing or it is
@@ -211,12 +211,12 @@ func (s *Store) AppendItemSummary(id, delta string, updatedAt int64) (Item, erro
 		// drop late deltas that arrive after an interrupt/settle has
 		// already committed a terminal status.
 		var status string
-		probeErr := tx.QueryRow(`SELECT status FROM items WHERE id = ?`, id).Scan(&status)
+		probeErr := tx.QueryRow(`SELECT status FROM items WHERE thread_id = ? AND id = ?`, threadID, id).Scan(&status)
 		if errors.Is(probeErr, sql.ErrNoRows) {
 			return Item{}, sql.ErrNoRows
 		}
 		if probeErr != nil {
-			return Item{}, fmt.Errorf("store: probe status for append item summary %s: %w", id, probeErr)
+			return Item{}, fmt.Errorf("store: probe status for append item summary %s/%s: %w", threadID, id, probeErr)
 		}
 		return Item{}, ErrItemSettled
 	}
@@ -224,24 +224,22 @@ func (s *Store) AppendItemSummary(id, delta string, updatedAt int64) (Item, erro
 	// Bump the owning thread's updated_at in the same transaction so the
 	// sidebar ordering stays in lockstep with the stream.
 	if _, err := tx.Exec(
-		`UPDATE threads SET updated_at = ? WHERE id = (
-			SELECT thread_id FROM items WHERE id = ?
-		)`,
-		updatedAt, id,
+		`UPDATE threads SET updated_at = ? WHERE id = ?`,
+		updatedAt, threadID,
 	); err != nil {
-		return Item{}, fmt.Errorf("store: touch thread for item %s: %w", id, err)
+		return Item{}, fmt.Errorf("store: touch thread for item %s/%s: %w", threadID, id, err)
 	}
 
 	row := tx.QueryRow(
 		`SELECT `+itemColumns+`
 		   FROM items
 		   LEFT JOIN payloads ON payloads.id = items.payload_id
-		  WHERE items.id = ?`,
-		id,
+		  WHERE items.thread_id = ? AND items.id = ?`,
+		threadID, id,
 	)
 	updated, err := scanItemRow(row)
 	if err != nil {
-		return Item{}, fmt.Errorf("store: re-read appended item %s: %w", id, err)
+		return Item{}, fmt.Errorf("store: re-read appended item %s/%s: %w", threadID, id, err)
 	}
 	if err := tx.Commit(); err != nil {
 		return Item{}, fmt.Errorf("store: commit append item summary tx: %w", err)
@@ -272,28 +270,28 @@ func (s *Store) AppendItemSummary(id, delta string, updatedAt int64) (Item, erro
 // kicked off before the interrupt landed). The status filter drops the
 // stale write silently. A genuinely missing row still returns
 // sql.ErrNoRows so the caller can distinguish.
-func (s *Store) UpdateItemHighlight(id, html string) error {
+func (s *Store) UpdateItemHighlight(threadID, id, html string) error {
 	result, err := s.db.Exec(
-		`UPDATE items SET highlighted_content = ? WHERE id = ? AND status = 'streaming'`,
-		html, id,
+		`UPDATE items SET highlighted_content = ? WHERE thread_id = ? AND id = ? AND status = 'streaming'`,
+		html, threadID, id,
 	)
 	if err != nil {
-		return fmt.Errorf("store: write highlighted_content %s: %w", id, err)
+		return fmt.Errorf("store: write highlighted_content %s/%s: %w", threadID, id, err)
 	}
 	affected, err := result.RowsAffected()
 	if err != nil {
-		return fmt.Errorf("store: rows affected write highlighted_content %s: %w", id, err)
+		return fmt.Errorf("store: rows affected write highlighted_content %s/%s: %w", threadID, id, err)
 	}
 	if affected > 0 {
 		return nil
 	}
 	// Zero rows: row missing OR already settled. Probe once to distinguish.
 	var status string
-	if err := s.db.QueryRow(`SELECT status FROM items WHERE id = ?`, id).Scan(&status); err != nil {
+	if err := s.db.QueryRow(`SELECT status FROM items WHERE thread_id = ? AND id = ?`, threadID, id).Scan(&status); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("store: write highlighted_content %s: %w", id, sql.ErrNoRows)
+			return fmt.Errorf("store: write highlighted_content %s/%s: %w", threadID, id, sql.ErrNoRows)
 		}
-		return fmt.Errorf("store: probe status for highlighted_content %s: %w", id, err)
+		return fmt.Errorf("store: probe status for highlighted_content %s/%s: %w", threadID, id, err)
 	}
 	// Row exists but settled — the interrupt/settle's write is authoritative.
 	return nil

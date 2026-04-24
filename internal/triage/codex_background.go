@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 	"time"
 
@@ -24,43 +25,77 @@ import (
 //      the parent yields or its turn closes.
 //
 // The projector sits between the wire signal and the is_background stamp.
-// It tracks per-thread inProgress unifiedExec items and spawn_agent
-// launch rows, then flips the row on the first MODEL-PRODUCED event
-// following the launch once the provider has shown that work is still
-// running (text delta, reasoning delta, or turn-completed as the
-// catchall). A yield moment is the unambiguous "the agent has moved on
-// while this work is still running" signal — i.e. this is no longer a
-// synchronous tool call.
+// It tracks per-thread inProgress unifiedExec items in transient state
+// and spawn_agent launch rows in SQLite. A yielded unifiedExec is shown
+// in the tray, then completed output is attached to the explicit
+// terminal wait/poll row. A spawn_agent with running children still
+// stamps its persisted launch row is_background=true because that tool
+// call is real transcript history.
 //
-// The correlation is bounded: completed unifiedExec entries are dropped
-// on item/completed, completed spawn_agent entries are dropped on
-// wait/subagent notification, and all thread state clears on
-// CleanupThread. Nothing persists across sessions.
+// The correlation is bounded: quick unifiedExec entries are dropped on
+// item/completed, completed backgrounded unifiedExec entries are
+// retained only long enough for tray visibility / wait-row enrichment,
+// completed spawn_agent entries are dropped on wait/subagent
+// notification, and all thread state clears on CleanupThread. Nothing
+// persists across sessions.
 //
-// Claude's handleBackgroundTaskTerminal is the shape-of-truth for the
-// completion sibling row; keep the two paths aligned so the tray and
-// timeline render backgrounded tasks consistently across providers.
+// Claude's handleBackgroundTaskTerminal remains the shape-of-truth for
+// persisted completion sibling rows. Codex unifiedExec intentionally
+// diverges: live/completed state feeds the tray, and command output only
+// becomes transcript history on an explicit terminal wait row.
 
-// unifiedExecTracker is the per-thread per-launchID state tracked by
-// the projector between item/started and item/completed. backgrounded
-// is set once a yield has been observed and the row has been stamped
-// is_background=true — prevents double-emission. The sibling-synthesis
-// path pulls the current turn index from the store at completion time
-// so the sibling row lands at the timeline tail, not the launch turn;
-// no launch-time turn index is retained here.
+const (
+	codexLiveCommandOutputMaxBytes       = 1024 * 1024
+	codexCompletedOutputRetentionMillis  = 30 * 60 * 1000
+	codexBackgroundTasksChangedEventName = "provider:background_tasks_changed"
+)
+
+// unifiedExecTracker is the per-thread per-launchID state tracked for
+// Codex unified exec command executions. Unlike Claude background
+// tasks, these rows are not timeline history while they are live:
+// Codex's own TUI keeps yielded PTYs in a running-tasks area and only
+// renders output in chat when the model explicitly polls with
+// write_stdin. The tracker therefore feeds the tray and wait-row
+// enrichment, not a persisted launch row.
 type unifiedExecTracker struct {
 	backgrounded bool
-	// processID is kept purely for logging / future tray enrichment.
-	processID string
+	completed    bool
+	launchID     string
+	processID    string
+	command      string
+	summary      string
+	parentID     string
+	status       string
+	exitCode     int
+	output       cappedCommandOutput
+	createdAt    int64
+	updatedAt    int64
+	completedAt  int64
 }
 
-// spawnAgentTracker mirrors unifiedExecTracker for collabAgentToolCall
-// items. hasRunningChildren is refreshed on each item/completed envelope
-// carrying agentsStates; the spawn_agent tool_call closes immediately on
-// the wire but its child thread may outlive the parent turn. The
-// projector stamps is_background=true on the first model yield after
-// that running child is observed, with parent turn/completed as a
-// fallback.
+type cappedCommandOutput struct {
+	data  []byte
+	ring  bool
+	start int
+	size  int
+}
+
+type pendingTerminalWait struct {
+	itemID    string
+	turnIndex int
+	createdAt int64
+}
+
+type BackgroundTasksChangedEvent struct {
+	ThreadID string `json:"threadId"`
+}
+
+// spawnAgentTracker tracks collabAgentToolCall items. hasRunningChildren
+// is refreshed on each item/completed envelope carrying agentsStates;
+// the spawn_agent tool_call closes immediately on the wire but its
+// child thread may outlive the parent turn. The projector stamps
+// is_background=true as soon as that completion envelope reports a
+// running child.
 type spawnAgentTracker struct {
 	hasRunningChildren bool
 	backgrounded       bool
@@ -74,25 +109,35 @@ type spawnAgentTracker struct {
 // projector is responsible for its own synchronization.
 type codexBackgroundState struct {
 	// unifiedExec maps launchID → tracker for inProgress unifiedExec
-	// command_execution items.
+	// command_execution items and recently-completed backgrounded PTYs
+	// retained for tray badge / explicit wait-row enrichment.
 	unifiedExec map[string]*unifiedExecTracker
-	// pendingUnifiedExec is the number of unifiedExec trackers that have
-	// not yet been stamped backgrounded. Text/thinking deltas are hot-path
-	// events; this lets observeCodexModelYield skip the map scan once all
-	// tracked commands have already yielded.
+	// unifiedExecByProcess maps process_id → launchID so
+	// TerminalInteraction events can attach the completed output to the
+	// "Waited for background terminal" row without scanning every
+	// tracker in the hot path.
+	unifiedExecByProcess map[string]string
+	// pendingUnifiedExec counts trackers that have not yet been marked
+	// backgrounded. Text/thinking deltas are hot-path events, so this
+	// prevents repeated scans once every live command has already yielded.
 	pendingUnifiedExec int
+	// pendingWaitByProcess maps process_id → latest empty-stdin
+	// terminal_interaction row waiting on a still-running backgrounded
+	// unifiedExec. If the command completes before the next model yield,
+	// output attaches to that row. Any later text/thinking/tool-start
+	// clears this so old wait rows do not receive ghost completions.
+	pendingWaitByProcess map[string]pendingTerminalWait
 	// spawnAgent maps launchID → tracker for collabAgentToolCall
 	// spawn_agent items that may outlive their parent turn.
 	spawnAgent map[string]*spawnAgentTracker
-	// pendingSpawnAgent is the number of spawnAgent trackers that have
-	// observed running children but have not yet been stamped backgrounded.
-	pendingSpawnAgent int
 }
 
 func newCodexBackgroundState() *codexBackgroundState {
 	return &codexBackgroundState{
-		unifiedExec: make(map[string]*unifiedExecTracker),
-		spawnAgent:  make(map[string]*spawnAgentTracker),
+		unifiedExec:          make(map[string]*unifiedExecTracker),
+		unifiedExecByProcess: make(map[string]string),
+		pendingWaitByProcess: make(map[string]pendingTerminalWait),
+		spawnAgent:           make(map[string]*spawnAgentTracker),
 	}
 }
 
@@ -107,56 +152,267 @@ func (r *Router) codexBackgroundForThread(threadID string) *codexBackgroundState
 	return state
 }
 
-// observeCodexToolStart records inProgress Codex items that may become
-// backgrounded. Called from handleToolStart AFTER the lifecycle row has
-// persisted so the projector can find the row on subsequent events.
+func (r *Router) emitCodexBackgroundTasksChanged(threadID string) {
+	if strings.TrimSpace(threadID) == "" {
+		return
+	}
+	r.emit(codexBackgroundTasksChangedEventName, BackgroundTasksChangedEvent{ThreadID: threadID})
+}
+
+func codexCommandFromMeta(raw json.RawMessage) string {
+	var parsed struct {
+		Command string `json:"command"`
+		Input   struct {
+			Command string `json:"command"`
+		} `json:"input"`
+	}
+	if len(raw) == 0 || json.Unmarshal(raw, &parsed) != nil {
+		return ""
+	}
+	if strings.TrimSpace(parsed.Command) != "" {
+		return parsed.Command
+	}
+	return parsed.Input.Command
+}
+
+func codexExitCodeFromMeta(raw json.RawMessage) int {
+	var parsed struct {
+		ExitCode      int `json:"exitCode"`
+		ExitCodeSnake int `json:"exit_code"`
+	}
+	if len(raw) == 0 || json.Unmarshal(raw, &parsed) != nil {
+		return 0
+	}
+	if parsed.ExitCode != 0 {
+		return parsed.ExitCode
+	}
+	return parsed.ExitCodeSnake
+}
+
+func (o *cappedCommandOutput) Append(delta string) {
+	if delta == "" {
+		return
+	}
+	if len(delta) >= codexLiveCommandOutputMaxBytes {
+		o.data = []byte(delta[len(delta)-codexLiveCommandOutputMaxBytes:])
+		o.ring = false
+		o.start = 0
+		o.size = len(o.data)
+		return
+	}
+	if !o.ring && o.size+len(delta) <= codexLiveCommandOutputMaxBytes {
+		o.data = append(o.data, delta...)
+		o.size = len(o.data)
+		return
+	}
+	if !o.ring {
+		next := make([]byte, codexLiveCommandOutputMaxBytes)
+		copy(next, o.data)
+		o.data = next
+		o.ring = true
+		o.start = 0
+	}
+	for i := 0; i < len(delta); i++ {
+		if o.size < codexLiveCommandOutputMaxBytes {
+			pos := (o.start + o.size) % codexLiveCommandOutputMaxBytes
+			o.data[pos] = delta[i]
+			o.size++
+			continue
+		}
+		o.data[o.start] = delta[i]
+		o.start = (o.start + 1) % codexLiveCommandOutputMaxBytes
+	}
+}
+
+func (o *cappedCommandOutput) Replace(output string) {
+	*o = cappedCommandOutput{}
+	o.Append(output)
+}
+
+func (o cappedCommandOutput) String() string {
+	if o.size == 0 {
+		return ""
+	}
+	if !o.ring {
+		return string(o.data[:o.size])
+	}
+	out := make([]byte, o.size)
+	first := copy(out, o.data[o.start:])
+	copy(out[first:], o.data[:o.size-first])
+	return string(out)
+}
+
+func (o cappedCommandOutput) Bytes() []byte {
+	if o.size == 0 {
+		return nil
+	}
+	if !o.ring {
+		out := make([]byte, o.size)
+		copy(out, o.data[:o.size])
+		return out
+	}
+	out := make([]byte, o.size)
+	first := copy(out, o.data[o.start:])
+	copy(out[first:], o.data[:o.size-first])
+	return out
+}
+
+func (o cappedCommandOutput) Empty() bool {
+	return o.size == 0
+}
+
+func (r *Router) pruneExpiredCodexCompletedTrackersLocked(state *codexBackgroundState, now int64) bool {
+	if state == nil {
+		return false
+	}
+	cutoff := now - codexCompletedOutputRetentionMillis
+	changed := false
+	for id, tracker := range state.unifiedExec {
+		if tracker == nil || !tracker.completed || tracker.completedAt >= cutoff {
+			continue
+		}
+		if tracker.processID != "" {
+			delete(state.unifiedExecByProcess, tracker.processID)
+			delete(state.pendingWaitByProcess, tracker.processID)
+		}
+		delete(state.unifiedExec, id)
+		changed = true
+	}
+	return changed
+}
+
+func (r *Router) scheduleCodexCompletedTrackerPrune(threadID, launchID string) {
+	time.AfterFunc(time.Duration(codexCompletedOutputRetentionMillis)*time.Millisecond, func() {
+		pruned := false
+		now := time.Now().UnixMilli()
+		r.mu.Lock()
+		state := r.codexBackground[threadID]
+		if state != nil {
+			tracker := state.unifiedExec[launchID]
+			if tracker != nil && tracker.completed && tracker.completedAt <= now-codexCompletedOutputRetentionMillis {
+				if tracker.processID != "" {
+					delete(state.unifiedExecByProcess, tracker.processID)
+					delete(state.pendingWaitByProcess, tracker.processID)
+				}
+				delete(state.unifiedExec, launchID)
+				pruned = true
+			}
+		}
+		r.mu.Unlock()
+		if pruned {
+			r.emitCodexBackgroundTasksChanged(threadID)
+		}
+	})
+}
+
+func (r *Router) markCodexUnifiedExecBackgrounded(threadID, excludeItemID string) {
+	changed := false
+	r.mu.Lock()
+	state := r.codexBackground[threadID]
+	if state != nil {
+		if state.pendingUnifiedExec == 0 {
+			r.mu.Unlock()
+			return
+		}
+		for id, tracker := range state.unifiedExec {
+			if id == excludeItemID || tracker.backgrounded || tracker.completed {
+				continue
+			}
+			tracker.backgrounded = true
+			tracker.updatedAt = time.Now().UnixMilli()
+			if state.pendingUnifiedExec > 0 {
+				state.pendingUnifiedExec--
+			}
+			changed = true
+		}
+	}
+	r.mu.Unlock()
+	if changed {
+		r.emitCodexBackgroundTasksChanged(threadID)
+	}
+}
+
+// observeCodexToolStart records Codex items that may outlive the parent
+// turn. It returns true when the event is fully handled by the Codex
+// live projector and should not continue through the normal tool_call
+// persistence path.
 //
 // Branches:
 //   - unifiedExec startup: wire-typed `source == "unifiedExecStartup"`.
-//     Tracked; stamped is_background on the first yield (text/reasoning/
-//     turn-complete).
-//   - collabAgentToolCall spawn_agent: tracked; stamped on the first model
-//     yield after agentsStates reports a running child, or on turn/completed
-//     as a fallback. The spawn row itself closes on the wire immediately —
-//     observeCodexToolComplete refreshes the running-children flag from the
-//     end envelope.
+//     Tracked as transient live state for the tray; not persisted as a
+//     launch row.
+//   - collabAgentToolCall spawn_agent: tracked so item/completed can stamp
+//     the persisted row backgrounded if agentsStates reports a running
+//     child. The spawn row itself closes on the wire immediately.
 //
 // No-op for any other item type / provider — Claude runs a different
 // background projection entirely (EventBackgroundTaskTerminal).
-func (r *Router) observeCodexToolStart(evt provider.ProviderEvent) {
+func (r *Router) observeCodexToolStart(evt provider.ProviderEvent) bool {
 	itemID := strings.TrimSpace(evt.ItemID)
 	if itemID == "" {
-		return
+		return false
 	}
 	isUnifiedExecCandidate := evt.ItemType == "commandExecution" || evt.ItemType == "command_execution"
 	isSpawnAgentCandidate := evt.ItemType == "collab_agent"
 	if !isUnifiedExecCandidate && !isSpawnAgentCandidate {
-		return
+		return false
 	}
 	meta := decodeCodexItemMeta(evt.Meta)
 	if meta.Source != "unifiedExecStartup" && !(isSpawnAgentCandidate && meta.Tool == "spawn_agent") {
-		return
+		return false
 	}
 
+	// A subsequent tool call means the model has moved past earlier
+	// unified exec calls. Mark existing live commands as backgrounded
+	// before registering the new one; this avoids treating "sleep 15
+	// yielded, then run another command" as a quick synchronous command
+	// just because no assistant text streamed between the calls.
+	r.clearCodexPendingTerminalWaits(evt.ThreadID)
+	r.markCodexUnifiedExecBackgrounded(evt.ThreadID, itemID)
+
+	emitChanged := false
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	state := r.codexBackgroundForThread(evt.ThreadID)
+	now := eventTimestampMillis(evt)
+	if r.pruneExpiredCodexCompletedTrackersLocked(state, now) {
+		emitChanged = true
+	}
 
 	switch {
 	case meta.Source == "unifiedExecStartup":
-		// Idempotent replay guard: on session resume Codex re-emits
-		// item/started for any still-inProgress command. If we already
-		// tracked this launch and have already stamped it backgrounded,
-		// leave the existing entry alone so the replay doesn't reset
-		// the flag or clobber the processID.
 		if existing, ok := state.unifiedExec[itemID]; ok {
-			existing.processID = meta.ProcessID
-			return
+			rebindCodexUnifiedExecProcessLocked(state, existing, meta.ProcessID)
+			r.mu.Unlock()
+			if emitChanged {
+				r.emitCodexBackgroundTasksChanged(evt.ThreadID)
+			}
+			return true
+		}
+		startMeta := decodeToolStartMeta(evt.Meta)
+		summary := buildToolCallSummary(startMeta, evt.ItemType)
+		if strings.TrimSpace(summary) == "" {
+			summary = "Bash"
 		}
 		state.unifiedExec[itemID] = &unifiedExecTracker{
+			launchID:  itemID,
 			processID: meta.ProcessID,
+			command:   codexCommandFromMeta(evt.Meta),
+			summary:   summary,
+			parentID:  eventParentID(evt),
+			status:    statusRunning,
+			createdAt: now,
+			updatedAt: now,
+		}
+		if meta.ProcessID != "" {
+			state.unifiedExecByProcess[meta.ProcessID] = itemID
 		}
 		state.pendingUnifiedExec++
+		emitChanged = true
+		r.mu.Unlock()
+		if emitChanged {
+			r.emitCodexBackgroundTasksChanged(evt.ThreadID)
+		}
+		return true
 	case isSpawnAgentCandidate && meta.Tool == "spawn_agent":
 		// Spawn_agent rows rarely stay inProgress — the item/started event
 		// is a very short-lived marker before the immediate completed
@@ -165,25 +421,418 @@ func (r *Router) observeCodexToolStart(evt provider.ProviderEvent) {
 		// tracker so the later refresh can attach the running-children
 		// flag and receiver ids.
 		if _, ok := state.spawnAgent[itemID]; ok {
-			return
+			r.mu.Unlock()
+			if emitChanged {
+				r.emitCodexBackgroundTasksChanged(evt.ThreadID)
+			}
+			return false
 		}
 		state.spawnAgent[itemID] = &spawnAgentTracker{}
 	}
+	r.mu.Unlock()
+	if emitChanged {
+		r.emitCodexBackgroundTasksChanged(evt.ThreadID)
+	}
+	return false
 }
 
-// observeCodexToolComplete handles three distinct cases on item/completed:
+func (r *Router) clearCodexPendingTerminalWaits(threadID string) {
+	r.mu.Lock()
+	state := r.codexBackground[threadID]
+	if state != nil && len(state.pendingWaitByProcess) > 0 {
+		state.pendingWaitByProcess = make(map[string]pendingTerminalWait)
+	}
+	r.mu.Unlock()
+}
+
+func (r *Router) trackCodexPendingTerminalWait(threadID, processID, itemID string, turnIndex int, createdAt int64) {
+	processID = strings.TrimSpace(processID)
+	if processID == "" {
+		return
+	}
+	r.mu.Lock()
+	state := r.codexBackground[threadID]
+	if state == nil {
+		r.mu.Unlock()
+		return
+	}
+	launchID := state.unifiedExecByProcess[processID]
+	tracker := state.unifiedExec[launchID]
+	if tracker != nil && tracker.backgrounded && !tracker.completed {
+		state.pendingWaitByProcess[processID] = pendingTerminalWait{
+			itemID:    itemID,
+			turnIndex: turnIndex,
+			createdAt: createdAt,
+		}
+	} else {
+		for _, candidate := range state.unifiedExec {
+			if candidate != nil && candidate.processID == "" && candidate.backgrounded && !candidate.completed {
+				state.pendingWaitByProcess[processID] = pendingTerminalWait{
+					itemID:    itemID,
+					turnIndex: turnIndex,
+					createdAt: createdAt,
+				}
+				break
+			}
+		}
+	}
+	r.mu.Unlock()
+}
+
+func rebindCodexUnifiedExecProcessLocked(state *codexBackgroundState, tracker *unifiedExecTracker, processID string) {
+	processID = strings.TrimSpace(processID)
+	if state == nil || tracker == nil || processID == "" || tracker.processID == processID {
+		return
+	}
+	if tracker.processID != "" {
+		delete(state.unifiedExecByProcess, tracker.processID)
+		delete(state.pendingWaitByProcess, tracker.processID)
+	}
+	tracker.processID = processID
+	state.unifiedExecByProcess[processID] = tracker.launchID
+}
+
+// observeCodexCommandOutput buffers output for live Codex unified exec
+// commands and prevents the generic command-output path from creating
+// ghost timeline rows for background PTYs.
+func (r *Router) observeCodexCommandOutput(evt provider.ProviderEvent) bool {
+	itemID := strings.TrimSpace(eventItemID(evt))
+	if itemID == "" {
+		return false
+	}
+	r.mu.Lock()
+	state := r.codexBackground[evt.ThreadID]
+	if state == nil {
+		r.mu.Unlock()
+		return false
+	}
+	now := eventTimestampMillis(evt)
+	pruned := r.pruneExpiredCodexCompletedTrackersLocked(state, now)
+	tracker := state.unifiedExec[itemID]
+	if tracker == nil {
+		r.mu.Unlock()
+		if pruned {
+			r.emitCodexBackgroundTasksChanged(evt.ThreadID)
+		}
+		return false
+	}
+	meta := decodeCodexItemMeta(evt.Meta)
+	rebindCodexUnifiedExecProcessLocked(state, tracker, meta.ProcessID)
+	if evt.Replace {
+		tracker.output.Replace(evt.Content)
+	} else {
+		tracker.output.Append(evt.Content)
+	}
+	if command := codexCommandFromMeta(evt.Meta); strings.TrimSpace(command) != "" {
+		tracker.command = command
+	}
+	tracker.updatedAt = now
+	r.mu.Unlock()
+	if pruned {
+		r.emitCodexBackgroundTasksChanged(evt.ThreadID)
+	}
+	return true
+}
+
+// observeCodexUnifiedExecComplete owns item/completed for tracked
+// unified exec startups. Quick commands that completed before the model
+// moved on become normal command rows. Commands that yielded stay
+// tray-only until an explicit terminal wait/poll surfaces their output.
+func (r *Router) observeCodexUnifiedExecComplete(evt provider.ProviderEvent) (bool, error) {
+	itemID := strings.TrimSpace(eventItemID(evt))
+	if itemID == "" {
+		return false, nil
+	}
+
+	var tracker unifiedExecTracker
+	var pendingWait pendingTerminalWait
+	handled := false
+	backgrounded := false
+	hasPendingWait := false
+	r.mu.Lock()
+	state := r.codexBackground[evt.ThreadID]
+	now := eventTimestampMillis(evt)
+	pruned := false
+	if state != nil {
+		pruned = r.pruneExpiredCodexCompletedTrackersLocked(state, now)
+	}
+	if state != nil && state.unifiedExec[itemID] != nil {
+		live := state.unifiedExec[itemID]
+		handled = true
+		backgrounded = live.backgrounded
+		live.completed = true
+		live.status = codexBackgroundCompletionStatus(evt.Meta)
+		live.exitCode = codexExitCodeFromMeta(evt.Meta)
+		live.completedAt = now
+		live.updatedAt = now
+		if command := codexCommandFromMeta(evt.Meta); strings.TrimSpace(command) != "" {
+			live.command = command
+		}
+		meta := decodeCodexItemMeta(evt.Meta)
+		rebindCodexUnifiedExecProcessLocked(state, live, meta.ProcessID)
+		if evt.Content != "" {
+			live.output.Replace(evt.Content)
+		}
+		tracker = *live
+		if !live.backgrounded {
+			if live.processID != "" {
+				delete(state.unifiedExecByProcess, live.processID)
+				delete(state.pendingWaitByProcess, live.processID)
+			}
+			if state.pendingUnifiedExec > 0 {
+				state.pendingUnifiedExec--
+			}
+			delete(state.unifiedExec, itemID)
+		} else {
+			if live.processID != "" {
+				if wait, ok := state.pendingWaitByProcess[live.processID]; ok {
+					pendingWait = wait
+					hasPendingWait = true
+				}
+			}
+			r.scheduleCodexCompletedTrackerPrune(evt.ThreadID, itemID)
+		}
+	}
+	r.mu.Unlock()
+	if !handled {
+		if pruned {
+			r.emitCodexBackgroundTasksChanged(evt.ThreadID)
+		}
+		return false, nil
+	}
+	if backgrounded {
+		if hasPendingWait {
+			if err := r.attachCodexCompletionToPendingWait(evt, tracker, pendingWait); err != nil {
+				return true, err
+			}
+			r.clearCodexCompletedOutputTracker(evt.ThreadID, tracker.processID)
+			return true, nil
+		}
+		r.emitCodexBackgroundTasksChanged(evt.ThreadID)
+		return true, nil
+	}
+	r.emitCodexBackgroundTasksChanged(evt.ThreadID)
+	return true, r.persistQuickCodexCommand(evt, tracker)
+}
+
+func (r *Router) persistQuickCodexCommand(evt provider.ProviderEvent, tracker unifiedExecTracker) error {
+	meta := decodeToolStartMeta(evt.Meta)
+	summary := buildToolCallSummary(meta, evt.ItemType)
+	if strings.TrimSpace(summary) == "" {
+		summary = tracker.summary
+	}
+	turnIndex, err := r.turnIndexForEvent(evt)
+	if err != nil {
+		return fmt.Errorf("codex quick command turn index %s: %w", tracker.launchID, err)
+	}
+	now := eventTimestampMillis(evt)
+	item := store.Item{
+		ID:        tracker.launchID,
+		ThreadID:  evt.ThreadID,
+		TurnIndex: turnIndex,
+		Kind:      itemKindToolCall,
+		Role:      "assistant",
+		Status:    tracker.status,
+		Summary:   buildCompletionSummary(summary, decodeToolCompleteMeta(evt.Meta)),
+		ParentID:  tracker.parentID,
+		ToolName:  "command_execution",
+		CreatedAt: tracker.createdAt,
+		UpdatedAt: now,
+	}
+	if item.CreatedAt == 0 {
+		item.CreatedAt = now
+	}
+	output := tracker.output.String()
+	if output == "" {
+		return r.persistItem(item, nil)
+	}
+	outputEvt := evt
+	outputEvt.Content = output
+	outputEvt.Replace = true
+	return r.attachPayloadToItem(item, outputEvt, "command_output", item.Summary, true)
+}
+
+func codexCompletedOutputPayloadFromTracker(snapshot unifiedExecTracker, itemID string, fallbackMeta json.RawMessage, now int64) (*store.Payload, string) {
+	output := snapshot.output.String()
+	metaEvt := provider.ProviderEvent{
+		Content: output,
+		Meta:    fallbackMeta,
+	}
+	if snapshot.command != "" || snapshot.exitCode != 0 {
+		metaJSON, err := json.Marshal(map[string]any{
+			"command":   snapshot.command,
+			"exitCode":  snapshot.exitCode,
+			"exit_code": snapshot.exitCode,
+		})
+		if err == nil {
+			metaEvt.Meta = metaJSON
+		}
+	}
+	payload := &store.Payload{
+		ID:        "command-output:" + itemID,
+		Kind:      "command_output",
+		Meta:      buildPayloadMeta("command_output", metaEvt),
+		Data:      []byte(output),
+		CreatedAt: now,
+	}
+	summary := "Waited for background terminal"
+	if snapshot.summary != "" {
+		summary = summary + ": " + snapshot.summary
+	}
+	return payload, summary
+}
+
+func (r *Router) attachCodexCompletionToPendingWait(evt provider.ProviderEvent, tracker unifiedExecTracker, wait pendingTerminalWait) error {
+	item, found, err := r.store.GetThreadItem(evt.ThreadID, wait.itemID)
+	if err != nil {
+		return fmt.Errorf("codex pending wait lookup %s: %w", wait.itemID, err)
+	}
+	if !found {
+		return fmt.Errorf("codex pending wait %s disappeared before completion attach", wait.itemID)
+	}
+	if item.Kind != string(provider.ItemTerminalInteraction) {
+		return fmt.Errorf("codex pending wait %s kind = %q, want terminal_interaction", wait.itemID, item.Kind)
+	}
+	now := eventTimestampMillis(evt)
+	payload, summary := codexCompletedOutputPayloadFromTracker(tracker, item.ID, evt.Meta, now)
+	item.Status = statusCompleted
+	item.Summary = summary
+	item.UpdatedAt = now
+	return r.persistItem(item, payload)
+}
+
+func (r *Router) codexCompletedOutputPayloadForProcess(threadID, processID, itemID string, fallbackMeta json.RawMessage, now int64) (*store.Payload, string) {
+	processID = strings.TrimSpace(processID)
+	if processID == "" {
+		return nil, ""
+	}
+	var tracker *unifiedExecTracker
+	r.mu.Lock()
+	state := r.codexBackground[threadID]
+	if state != nil {
+		if launchID := state.unifiedExecByProcess[processID]; launchID != "" {
+			tracker = state.unifiedExec[launchID]
+		}
+	}
+	var snapshot unifiedExecTracker
+	if tracker != nil {
+		snapshot = *tracker
+	}
+	r.mu.Unlock()
+	if tracker == nil || !snapshot.completed || !snapshot.backgrounded {
+		return nil, ""
+	}
+	return codexCompletedOutputPayloadFromTracker(snapshot, itemID, fallbackMeta, now)
+}
+
+func (r *Router) clearCodexCompletedOutputTracker(threadID, processID string) {
+	processID = strings.TrimSpace(processID)
+	if processID == "" {
+		return
+	}
+	cleared := false
+	r.mu.Lock()
+	state := r.codexBackground[threadID]
+	if state != nil {
+		launchID := state.unifiedExecByProcess[processID]
+		tracker := state.unifiedExec[launchID]
+		if tracker != nil && tracker.completed && tracker.backgrounded {
+			delete(state.unifiedExecByProcess, processID)
+			delete(state.pendingWaitByProcess, processID)
+			delete(state.unifiedExec, launchID)
+			cleared = true
+		}
+	}
+	r.mu.Unlock()
+	if cleared {
+		r.emitCodexBackgroundTasksChanged(threadID)
+	}
+}
+
+// ListLiveCodexBackgroundTasks returns transient Codex unified exec tray
+// rows. These are intentionally not persisted timeline items.
+func (r *Router) ListLiveCodexBackgroundTasks(threadID string, nowMillis, retentionCutoffMillis int64) []store.Item {
+	r.mu.Lock()
+	state := r.codexBackground[threadID]
+	if state == nil {
+		r.mu.Unlock()
+		return nil
+	}
+	trackers := make([]unifiedExecTracker, 0, len(state.unifiedExec))
+	for _, tracker := range state.unifiedExec {
+		if tracker == nil {
+			continue
+		}
+		if !tracker.backgrounded {
+			continue
+		}
+		if tracker.completed && tracker.completedAt < nowMillis-codexCompletedOutputRetentionMillis {
+			continue
+		}
+		if tracker.completed && tracker.completedAt < retentionCutoffMillis {
+			continue
+		}
+		trackers = append(trackers, *tracker)
+	}
+	r.mu.Unlock()
+
+	sort.SliceStable(trackers, func(i, j int) bool {
+		if trackers[i].createdAt != trackers[j].createdAt {
+			return trackers[i].createdAt < trackers[j].createdAt
+		}
+		return trackers[i].launchID < trackers[j].launchID
+	})
+
+	items := make([]store.Item, 0, len(trackers)*2)
+	for _, tracker := range trackers {
+		launch := store.Item{
+			ID:           tracker.launchID,
+			ThreadID:     threadID,
+			TurnIndex:    0,
+			ItemIndex:    0,
+			Kind:         itemKindToolCall,
+			Role:         "assistant",
+			Status:       statusRunning,
+			Summary:      tracker.summary,
+			ParentID:     tracker.parentID,
+			IsBackground: true,
+			ToolName:     "command_execution",
+			Meta:         `{"source":"unifiedExecStartup"}`,
+			CreatedAt:    tracker.createdAt,
+			UpdatedAt:    tracker.updatedAt,
+		}
+		items = append(items, launch)
+		if tracker.completed {
+			completionMeta, _ := json.Marshal(map[string]any{"item_status": tracker.status})
+			items = append(items, store.Item{
+				ID:           nextToolCompletionID(tracker.launchID),
+				ThreadID:     threadID,
+				TurnIndex:    0,
+				ItemIndex:    1,
+				Kind:         itemKindBackgroundDone,
+				Role:         "assistant",
+				Status:       tracker.status,
+				Summary:      buildCodexBackgroundCompletionSummary(tracker.summary, completionMeta),
+				IsBackground: true,
+				CompletionOf: tracker.launchID,
+				ToolName:     "command_execution",
+				CreatedAt:    tracker.completedAt,
+				UpdatedAt:    tracker.completedAt,
+			})
+		}
+	}
+	return items
+}
+
+// observeCodexToolComplete handles spawn_agent and wait_agent completion:
 //
-//  1. A tracked unifiedExec command closed — the row flips to a terminal
-//     status via tool_lifecycle. If the row was backgrounded, synthesize
-//     the tool_completion sibling at the LATEST turn's tail (not the
-//     launching turn — long commands can complete multiple turns later).
-//
-//  2. A spawn_agent item closed — the spawn row itself is `completed`
+//  1. A spawn_agent item closed — the spawn row itself is `completed`
 //     on the wire immediately, but the child thread may still be
 //     running. Refresh hasRunningChildren from the end envelope's
-//     agentsStates so turn/completed can see the final state.
+//     agentsStates and stamp the persisted spawn row as backgrounded
+//     immediately when any child is still live.
 //
-//  3. A wait_agent item closed — the agent used `wait` to block on
+//  2. A wait_agent item closed — the agent used `wait` to block on
 //     children; the wait's agentsStates reports each awaited child's
 //     terminal status. Any backgrounded spawn_agent tracker whose
 //     children are now terminal gets a sibling completion row, and is
@@ -200,64 +849,32 @@ func (r *Router) observeCodexToolComplete(evt provider.ProviderEvent) error {
 
 	r.mu.Lock()
 	state := r.codexBackground[evt.ThreadID]
-	var unifiedTracker *unifiedExecTracker
 	var spawnTracker *spawnAgentTracker
 	if state != nil {
-		unifiedTracker = state.unifiedExec[itemID]
 		spawnTracker = state.spawnAgent[itemID]
 	}
 	r.mu.Unlock()
 
-	if unifiedTracker != nil {
-		// Clear the tracker first so a duplicate item/completed (rare but
-		// possible on reconnect / replay) can't double-synthesize. The
-		// sibling upsert itself is idempotent by stable id, but clearing
-		// here keeps the inProgress map bounded. Re-fetch the state
-		// under the lock because CleanupThread may have dropped it
-		// between the earlier unlock and here.
-		r.mu.Lock()
-		if state := r.codexBackground[evt.ThreadID]; state != nil {
-			if !unifiedTracker.backgrounded && state.pendingUnifiedExec > 0 {
-				state.pendingUnifiedExec--
-			}
-			delete(state.unifiedExec, itemID)
-		}
-		r.mu.Unlock()
-		if unifiedTracker.backgrounded {
-			return r.synthesizeCodexBackgroundCompletion(evt, itemID)
-		}
-		return nil
-	}
-
 	if spawnTracker != nil {
 		meta := decodeCodexItemMeta(evt.Meta)
 		running := hasRunningChild(meta.AgentsStates)
+		shouldStamp := false
 		r.mu.Lock()
-		wasPending := spawnTracker.hasRunningChildren && !spawnTracker.backgrounded
 		spawnTracker.hasRunningChildren = running
 		spawnTracker.receiverThreadIDs = meta.ReceiverThreadIDs
-		isPending := spawnTracker.hasRunningChildren && !spawnTracker.backgrounded
-		switch {
-		case !wasPending && isPending:
-			if state := r.codexBackground[evt.ThreadID]; state != nil {
-				state.pendingSpawnAgent++
-			}
-		case wasPending && !isPending:
-			if state := r.codexBackground[evt.ThreadID]; state != nil && state.pendingSpawnAgent > 0 {
-				state.pendingSpawnAgent--
-			}
+		if running && !spawnTracker.backgrounded {
+			spawnTracker.backgrounded = true
+			shouldStamp = true
 		}
-		// Only clear the tracker when no children remain running. When
-		// at least one child is still active we keep it so turn/completed
-		// can decide whether to stamp is_background. Re-fetch the state
-		// under the lock so a concurrent CleanupThread doesn't cause a
-		// nil-map access.
 		if !spawnTracker.hasRunningChildren {
 			if state := r.codexBackground[evt.ThreadID]; state != nil {
 				delete(state.spawnAgent, itemID)
 			}
 		}
 		r.mu.Unlock()
+		if shouldStamp {
+			return r.stampCodexItemBackgrounded(evt.ThreadID, itemID)
+		}
 	}
 
 	// wait_agent completion: the parent just resumed after blocking on
@@ -378,53 +995,13 @@ func subagentStatusToItemStatusMeta(agentStatus string) json.RawMessage {
 // explicitly does NOT participate in yield detection — sibling tool starts
 // in a parallel batch fire before any model text.
 func (r *Router) observeCodexModelYield(threadID string) {
-	r.mu.Lock()
-	state := r.codexBackground[threadID]
-	if state == nil || (state.pendingUnifiedExec == 0 && state.pendingSpawnAgent == 0) {
-		r.mu.Unlock()
-		return
-	}
-	toFlip := make([]string, 0, state.pendingUnifiedExec)
-	for id, tracker := range state.unifiedExec {
-		if tracker.backgrounded {
-			continue
-		}
-		tracker.backgrounded = true
-		if state.pendingUnifiedExec > 0 {
-			state.pendingUnifiedExec--
-		}
-		toFlip = append(toFlip, id)
-	}
-	spawnToFlip := make([]string, 0, state.pendingSpawnAgent)
-	for id, tracker := range state.spawnAgent {
-		if tracker.backgrounded || !tracker.hasRunningChildren {
-			continue
-		}
-		tracker.backgrounded = true
-		if state.pendingSpawnAgent > 0 {
-			state.pendingSpawnAgent--
-		}
-		spawnToFlip = append(spawnToFlip, id)
-	}
-	r.mu.Unlock()
-
-	for _, id := range toFlip {
-		if err := r.stampCodexItemBackgrounded(threadID, id); err != nil {
-			log.Printf("triage: codex-background stamp %s: %v", id, err)
-		}
-	}
-	for _, id := range spawnToFlip {
-		if err := r.stampCodexItemBackgrounded(threadID, id); err != nil {
-			log.Printf("triage: codex-background stamp spawn %s: %v", id, err)
-		}
-	}
+	r.clearCodexPendingTerminalWaits(threadID)
+	r.markCodexUnifiedExecBackgrounded(threadID, "")
 }
 
-// observeCodexTurnComplete is the catchall. Runs before the tool
-// lifecycle's force-close pass so any unifiedExec or spawn_agent item
-// that remained inProgress / has running children through the turn
-// boundary is stamped backgrounded in time for the invariant-24
-// force-close exemption.
+// observeCodexTurnComplete is the unifiedExec catchall. If a tracked
+// command stayed inProgress through the turn boundary, Codex has yielded
+// while the PTY is still running, so the command becomes live tray state.
 func (r *Router) observeCodexTurnComplete(threadID string) {
 	r.mu.Lock()
 	state := r.codexBackground[threadID]
@@ -432,39 +1009,24 @@ func (r *Router) observeCodexTurnComplete(threadID string) {
 		r.mu.Unlock()
 		return
 	}
-	unifiedToFlip := make([]string, 0, len(state.unifiedExec))
-	for id, tracker := range state.unifiedExec {
-		if tracker.backgrounded {
+	if state.pendingUnifiedExec == 0 {
+		r.mu.Unlock()
+		return
+	}
+	unifiedChanged := false
+	for _, tracker := range state.unifiedExec {
+		if tracker.backgrounded || tracker.completed {
 			continue
 		}
 		tracker.backgrounded = true
 		if state.pendingUnifiedExec > 0 {
 			state.pendingUnifiedExec--
 		}
-		unifiedToFlip = append(unifiedToFlip, id)
-	}
-	spawnToFlip := make([]string, 0, len(state.spawnAgent))
-	for id, tracker := range state.spawnAgent {
-		if tracker.backgrounded || !tracker.hasRunningChildren {
-			continue
-		}
-		tracker.backgrounded = true
-		if state.pendingSpawnAgent > 0 {
-			state.pendingSpawnAgent--
-		}
-		spawnToFlip = append(spawnToFlip, id)
+		unifiedChanged = true
 	}
 	r.mu.Unlock()
-
-	for _, id := range unifiedToFlip {
-		if err := r.stampCodexItemBackgrounded(threadID, id); err != nil {
-			log.Printf("triage: codex-background turn-close stamp unified %s: %v", id, err)
-		}
-	}
-	for _, id := range spawnToFlip {
-		if err := r.stampCodexItemBackgrounded(threadID, id); err != nil {
-			log.Printf("triage: codex-background turn-close stamp spawn %s: %v", id, err)
-		}
+	if unifiedChanged {
+		r.emitCodexBackgroundTasksChanged(threadID)
 	}
 }
 

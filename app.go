@@ -57,6 +57,7 @@ type App struct {
 	telemetry      *obsotel.Provider
 	replay         *replay.Manager
 	configDir      string
+	uiTraceMu      sync.Mutex
 	// seq is a monotonic counter stamped on every event emitted through
 	// a.emit. Frontend subscribers use it to log gaps; the counter is
 	// scaffolding for a future remote-access transport where gap recovery

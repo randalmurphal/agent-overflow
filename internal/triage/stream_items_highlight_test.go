@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/highlight"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 )
@@ -224,4 +225,71 @@ func TestShouldRenderHighlightRaceOnePerWindow(t *testing.T) {
 	if !router.shouldRenderHighlight("t-race", "text:0:1", now) {
 		t.Fatalf("distinct itemID did not get its own grant")
 	}
+}
+
+func TestStreamingItemUpsertThrottleBatchesRapidDeltas(t *testing.T) {
+	st, err := store.New(":memory:")
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	var mu sync.Mutex
+	var emissions []emitted
+	router := NewRouter(st, func(eventName string, data any) {
+		mu.Lock()
+		defer mu.Unlock()
+		emissions = append(emissions, emitted{eventName: eventName, data: data})
+	}, highlight.New(highlight.Options{}))
+	createTestThread(t, st, "t1")
+	countUpserts := func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		return countAssistantTextUpserts(emissions)
+	}
+
+	start := time.Now()
+	for i, d := range []string{"one ", "two ", "three ", "four ", "five"} {
+		if err := router.Handle(provider.ProviderEvent{
+			Kind: provider.EventTextDelta, ThreadID: "t1",
+			Content: d, Timestamp: start.Add(time.Duration(i) * time.Millisecond),
+		}); err != nil {
+			t.Fatalf("delta %d: %v", i, err)
+		}
+	}
+
+	item := firstItemByKind(t, st, "t1", "assistant_text")
+	if item.Summary != "one two three four five" {
+		t.Fatalf("summary = %q, want full accumulated stream", item.Summary)
+	}
+	if got := countUpserts(); got != 1 {
+		t.Fatalf("assistant_text upserts before settle = %d, want first snapshot only", got)
+	}
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for countUpserts() < 2 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := countUpserts(); got != 2 {
+		t.Fatalf("assistant_text upserts after trailing flush = %d, want first snapshot + trailing", got)
+	}
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventContentBlockStop, ThreadID: "t1",
+		Meta: json.RawMessage(`{"blockType":"text"}`), Timestamp: start.Add(10 * time.Millisecond),
+	}); err != nil {
+		t.Fatalf("content block stop: %v", err)
+	}
+	if got := countUpserts(); got != 3 {
+		t.Fatalf("assistant_text upserts after settle = %d, want first snapshot + trailing + final", got)
+	}
+}
+
+func countAssistantTextUpserts(emissions []emitted) int {
+	count := 0
+	for _, e := range filterEmissions(emissions, "provider:item_upsert") {
+		item, ok := e.data.(store.Item)
+		if ok && item.Kind == "assistant_text" {
+			count++
+		}
+	}
+	return count
 }

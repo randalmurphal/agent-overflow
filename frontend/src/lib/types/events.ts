@@ -116,6 +116,10 @@ export interface UsageEvent {
   rateLimits?: RateLimitsSnapshot;
 }
 
+export interface BackgroundTasksChangedEvent {
+  threadId: string;
+}
+
 /**
  * Persistent provider-status kinds carried on `provider:status` by the
  * chat-rewrite router (closed set — see docs/architecture/chat-rewrite.md

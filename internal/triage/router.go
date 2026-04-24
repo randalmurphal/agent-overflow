@@ -81,6 +81,16 @@ type Router struct {
 	// the length of the summary. Cleared on settle / turn end / thread
 	// cleanup alongside activeTextBlocks / activeThinkingBlocks.
 	nextHighlightAt map[string]int64
+	// nextStreamingUpsertAt throttles frontend timeline updates for
+	// streaming text/thinking rows. SQLite still receives every delta;
+	// the UI gets batched snapshots so a fast token stream does not force
+	// a full pane.items clone + timeline regroup + DOM patch on each token.
+	nextStreamingUpsertAt map[string]int64
+	// streamingUpsertTimers hold the trailing flush for throttled
+	// streaming item updates. Without this, a burst inside one throttle
+	// window followed by provider silence would leave the visible row
+	// stale until the next delta or settle event.
+	streamingUpsertTimers map[string]*time.Timer
 	// capturedTurns guards against double-capture when a provider emits
 	// multiple EventTurnStart events for the same (thread, turn) — which
 	// happens when Claude re-sends a system.init after an interrupt.
@@ -178,6 +188,8 @@ func NewRouter(st *store.Store, emit func(eventName string, data any), h *highli
 		streamingItemCounts:        make(map[string]int),
 		errorSeqByScope:            make(map[string]int),
 		nextHighlightAt:            make(map[string]int64),
+		nextStreamingUpsertAt:      make(map[string]int64),
+		streamingUpsertTimers:      make(map[string]*time.Timer),
 		capturedTurns:              make(map[string]bool),
 		turnSpans:                  make(map[string]trace.Span),
 		stoppedThreads:             make(map[string]struct{}),
@@ -344,6 +356,9 @@ func (r *Router) settleStreamingBeforeTimelineBoundary(evt provider.ProviderEven
 
 func (r *Router) handleToolStart(evt provider.ProviderEvent) error {
 	r.settleStreamingBeforeTimelineBoundary(evt, "tool start")
+	if r.observeCodexToolStart(evt) {
+		return r.emitInline(evt)
+	}
 	// Lifecycle row first so the file-change / command-mutation helpers
 	// below find an existing item to attach their rich payload onto via
 	// UpdateItemPayload — otherwise they'd race to AppendItem with the
@@ -357,16 +372,13 @@ func (r *Router) handleToolStart(evt provider.ProviderEvent) error {
 	if err := r.capturePendingCommandInlineDiff(evt); err != nil {
 		return err
 	}
-	// Codex background-terminal projector observes unifiedExec /
-	// spawn_agent starts so it can stamp is_background=true on the
-	// first yield (text/reasoning) or at turn/completed. See
-	// codex_background.go + invariant 25. Runs AFTER persist so the
-	// stamp target row is guaranteed to exist.
-	r.observeCodexToolStart(evt)
 	return r.emitInline(evt)
 }
 
 func (r *Router) handleToolComplete(evt provider.ProviderEvent) error {
+	if handled, err := r.observeCodexUnifiedExecComplete(evt); handled || err != nil {
+		return err
+	}
 	// Same ordering rationale as handleToolStart: keep the lifecycle row
 	// authoritative on id ownership, let the rich-payload helpers update
 	// it in place, then flip status last so the final summary reflects
@@ -381,12 +393,10 @@ func (r *Router) handleToolComplete(evt provider.ProviderEvent) error {
 	if err := r.persistToolCallCompletion(evt); err != nil {
 		return err
 	}
-	// Codex background-terminal projector synthesizes a tool_completion
-	// sibling row when a backgrounded unifiedExec closes, and refreshes
-	// the running-children flag for spawn_agent completions. Runs AFTER
-	// persistToolCallCompletion so the sibling lands relative to the
-	// final launch-row state (the launch stays status=running for
-	// backgrounded unifiedExec per invariant 24).
+	// Codex background projector handles persisted spawn_agent / wait_agent
+	// completion state. Unified exec completion is handled above by
+	// observeCodexUnifiedExecComplete because those commands are transient
+	// tray state, not persisted launch rows.
 	if err := r.observeCodexToolComplete(evt); err != nil {
 		return err
 	}

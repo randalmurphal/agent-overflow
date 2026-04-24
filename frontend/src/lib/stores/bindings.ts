@@ -126,6 +126,10 @@ export {
   // Slash commands (Claude-only)
   GetThreadSlashCommands,
 
+  // Dev-only UI render tracing
+  AppendUIRenderTraceBatch,
+  GetUIRenderTracePath,
+
   // PR-based thread creation
   CreateThreadFromPR,
 

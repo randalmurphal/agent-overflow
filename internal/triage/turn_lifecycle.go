@@ -700,6 +700,12 @@ func (r *Router) CleanupThread(threadID string) {
 	deleteByPrefix(r.activeThinkingBlocks, prefix)
 	deleteByPrefix(r.errorSeqByScope, prefix)
 	deleteByPrefix(r.nextHighlightAt, prefix)
+	deleteByPrefix(r.nextStreamingUpsertAt, prefix)
+	for key := range r.streamingUpsertTimers {
+		if strings.HasPrefix(key, prefix) {
+			r.cancelTrailingStreamingItemUpsertLocked(key)
+		}
+	}
 	deleteByPrefix(r.terminalInteractionSeq, prefix)
 	// Drop the Codex background projector's per-thread trackers. A
 	// restarted session never inherits trackers from a prior session —

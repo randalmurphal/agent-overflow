@@ -97,6 +97,7 @@ func (r *Router) handleTerminalInteraction(evt provider.ProviderEvent) error {
 
 	now := eventTimestampMillis(evt)
 	seq := r.nextTerminalInteractionSequence(evt.ThreadID, turnIndex, meta.ProcessID)
+	itemID := terminalInteractionID(meta.ProcessID, turnIndex, seq)
 
 	// Store only process_id in the persisted meta. The raw stdin bytes
 	// from the wire event MUST NOT land in SQLite — Phase 6 only
@@ -114,7 +115,7 @@ func (r *Router) handleTerminalInteraction(evt provider.ProviderEvent) error {
 	}
 
 	item := store.Item{
-		ID:        terminalInteractionID(meta.ProcessID, turnIndex, seq),
+		ID:        itemID,
 		ThreadID:  evt.ThreadID,
 		TurnIndex: turnIndex,
 		Kind:      string(provider.ItemTerminalInteraction),
@@ -126,7 +127,26 @@ func (r *Router) handleTerminalInteraction(evt provider.ProviderEvent) error {
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
-	return r.persistItem(item, nil)
+	if existing, found, err := r.store.GetThreadItem(evt.ThreadID, item.ID); err == nil && found {
+		item.CreatedAt = existing.CreatedAt
+		item.ItemIndex = existing.ItemIndex
+		item.PayloadID = existing.PayloadID
+	} else if err != nil {
+		return fmt.Errorf("terminal_interaction existing lookup %s: %w", item.ID, err)
+	}
+	payload, outputSummary := r.codexCompletedOutputPayloadForProcess(evt.ThreadID, meta.ProcessID, item.ID, evt.Meta, now)
+	if outputSummary != "" {
+		item.Summary = outputSummary
+	}
+	if err := r.persistItem(item, payload); err != nil {
+		return err
+	}
+	if payload != nil {
+		r.clearCodexCompletedOutputTracker(evt.ThreadID, meta.ProcessID)
+	} else {
+		r.trackCodexPendingTerminalWait(evt.ThreadID, meta.ProcessID, item.ID, turnIndex, now)
+	}
+	return nil
 }
 
 // terminalInteractionID builds the stable id for a persisted "waited"

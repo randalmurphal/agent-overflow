@@ -184,6 +184,7 @@ func (r *Router) settleStreamingText(threadID string, turnIndex int, scope strin
 	// store lookup, so a lookup miss or already-settled row can still
 	// release the map slot instead of waiting for CleanupThread.
 	r.forgetHighlighted(threadID, itemID)
+	r.forgetStreamingItemUpsert(threadID, itemID)
 	item, found, err := r.store.GetThreadItem(threadID, itemID)
 	if err != nil || !found {
 		return err
@@ -230,6 +231,7 @@ func (r *Router) settleStreamingThinking(threadID string, turnIndex int, scope s
 	// Drop the throttle entry first so a lookup miss still releases the
 	// map slot; mirrors settleStreamingText.
 	r.forgetHighlighted(threadID, itemID)
+	r.forgetStreamingItemUpsert(threadID, itemID)
 	item, found, err := r.store.GetThreadItem(threadID, itemID)
 	if err != nil || !found {
 		return err

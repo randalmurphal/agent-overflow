@@ -40,6 +40,16 @@ import * as terminal$0 from "./internal/terminal/models.js";
 import * as $models from "./models.js";
 
 /**
+ * AppendUIRenderTraceBatch appends compact dev-only UI render trace records.
+ * The frontend batches calls so rendering never waits on disk. This binding
+ * still validates each line because it writes directly into the user's config
+ * directory.
+ */
+export function AppendUIRenderTraceBatch(lines: string[]): $CancellablePromise<string> {
+    return $Call.ByID(2157691816, lines);
+}
+
+/**
  * ArchiveProject hides the project without deleting it.
  */
 export function ArchiveProject(id: string): $CancellablePromise<void> {
@@ -99,9 +109,10 @@ export function ChooseDesignOption(threadID: string, requestID: string, optionID
  * plumbing it will call.
  * 
  * After the RPC succeeds, Codex emits one `item/completed` notification
- * per terminated PTY. Those flow through our existing triage path —
- * Phase 2's sibling-synthesis stamps the `tool_completion` row and the
- * tray reconciles on its own. No follow-up work is needed here.
+ * per terminated PTY. Those update triage's transient tray state; the
+ * command output becomes transcript history only if the model explicitly
+ * waits/polls the terminal with write_stdin. No follow-up work is needed
+ * here.
  * 
  * Returns typed errors for:
  * 
@@ -462,6 +473,15 @@ export function GetTurnDiff(threadID: string, turnIndex: number): $CancellablePr
 }
 
 /**
+ * GetUIRenderTracePath returns the dev trace file path used by
+ * AppendUIRenderTraceBatch. The frontend exposes it through the console trace
+ * API so a debug run can be inspected after a visual glitch.
+ */
+export function GetUIRenderTracePath(): $CancellablePromise<string> {
+    return $Call.ByID(1009213933);
+}
+
+/**
  * GetWorkingTreeDiff returns the current combined staged and unstaged diff.
  */
 export function GetWorkingTreeDiff(threadID: string): $CancellablePromise<string> {
@@ -638,11 +658,12 @@ export function ListItemsBeforeTurn(threadID: string, beforeTurnIndex: number, t
 }
 
 /**
- * ListLiveBackgroundTasks returns running background launches plus
- * their recently-completed siblings (within the tray retention window)
- * so the BackgroundTaskTray can render without scanning `pane.items`.
- * Pairs age out together — a launch whose completion has fallen past
- * the cutoff is dropped with it.
+ * ListLiveBackgroundTasks returns running background launches plus their
+ * recently-completed siblings (within the tray retention window) so the
+ * BackgroundTaskTray can render without scanning `pane.items`. SQLite
+ * rows cover persisted Claude / Codex subagent launches; the triage
+ * router appends transient Codex unified-exec tasks that intentionally
+ * do not exist in chat history.
  */
 export function ListLiveBackgroundTasks(threadID: string): $CancellablePromise<store$0.Item[]> {
     return $Call.ByID(320784263, threadID).then(($result: any) => {

@@ -48,4 +48,22 @@ describe('<TerminalInteractionRow>', () => {
     expect(row.className).toContain('italic');
     expect(row.className).toContain('text-fg-subtle');
   });
+
+  it('renders attached command output when the wait row carries a command payload', () => {
+    const item = makeItem({
+      payloadKind: 'command_output',
+      payloadId: 'command-output:waited:pid-42:0:0',
+      payloadMeta: JSON.stringify({
+        command: 'sleep 1; echo done',
+        exitCode: 0,
+        lineCount: 1,
+        preview: 'done\n',
+      }),
+    });
+    const { getByRole } = render(TerminalInteractionRow, { props: { item } });
+
+    const toggle = getByRole('button', { name: /Toggle command output: sleep 1; echo done/i });
+    expect(toggle.textContent).toContain('sleep 1; echo done');
+    expect(toggle.textContent).toContain('exit 0');
+  });
 });

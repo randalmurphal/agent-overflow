@@ -200,6 +200,21 @@ func seedBackgroundLaunchRowE2E(
 	}
 }
 
+func findItemsByKindE2E(t *testing.T, st *store.Store, threadID, kind string) []store.Item {
+	t.Helper()
+	items, err := st.ListItems(threadID)
+	if err != nil {
+		t.Fatalf("list items for %s: %v", threadID, err)
+	}
+	var matches []store.Item
+	for _, item := range items {
+		if item.Kind == kind {
+			matches = append(matches, item)
+		}
+	}
+	return matches
+}
+
 // findStopTaskLine returns the single stop_task control_request line
 // from the captured stdin trace. Fails the test if zero or multiple
 // matches exist.

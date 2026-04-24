@@ -2,12 +2,14 @@
   import type { TimelineNode as _TNode } from '../../utils/subagentGrouping';
 
   /**
-   * Deterministic key for the `{#each}` binding. Group keys use the parent
-   * id; leaf keys use the item id. Module-scoped so the component instance
-   * doesn't need a closure per render.
+   * Deterministic key for the `{#each}` binding. Item ids are only unique
+   * within a thread, so the thread id is part of the key to prevent DOM
+   * reuse between two different threads that both have text:1:0-style ids.
    */
   export function nodeKey(node: _TNode): string {
-    return node.kind === 'group' ? `g:${node.parent.id}` : `l:${node.item.id}`;
+    return node.kind === 'group'
+      ? `g:${node.parent.threadId}:${node.parent.id}`
+      : `l:${node.item.threadId}:${node.item.id}`;
   }
 </script>
 

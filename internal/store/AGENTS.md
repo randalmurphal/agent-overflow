@@ -69,9 +69,9 @@ session already has the answer.
   hot path described below.
 - **Streaming hot-path writer** is split into two single-purpose
   methods so the render call runs outside the SQLite writer lock:
-  `AppendItemSummary(id, delta, updatedAt)` (summary + thread bump in
+  `AppendItemSummary(threadID, id, delta, updatedAt)` (summary + thread bump in
   one TX) followed by the caller's own render then
-  `UpdateItemHighlight(id, html)` (one `UPDATE`). A reader can briefly
+  `UpdateItemHighlight(threadID, id, html)` (one `UPDATE`). A reader can briefly
   observe a newer summary with the prior render's HTML; that is
   benign — `AssistantMessage.svelte` falls back to the previously
   rendered HTML (not empty) until the next render catches up.

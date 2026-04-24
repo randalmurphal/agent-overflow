@@ -61,6 +61,9 @@ func (r *Router) handleDiff(evt provider.ProviderEvent) error {
 }
 
 func (r *Router) handleCommandOutput(evt provider.ProviderEvent) error {
+	if r.observeCodexCommandOutput(evt) {
+		return nil
+	}
 	itemID := eventItemID(evt)
 	if itemID != "" {
 		item, found, err := r.store.GetThreadItem(evt.ThreadID, itemID)

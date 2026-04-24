@@ -6,6 +6,7 @@
   import type { ThreadPane } from '../../stores/thread.svelte';
   import type { Item, ProposedPlanMeta } from '../../types/models';
   import { debounce } from '../../utils/debounce';
+  import { isUiRenderTraceEnabled, recordUiTrace, scheduleDomUiTrace } from '../../utils/uiRenderTrace';
 
   interface Props {
     pane: ThreadPane;
@@ -60,6 +61,7 @@
   // turns ago must still show up in the sidebar even when it's been
   // paged out of the timeline window.
   let planRows: PlanRow[] = $state([]);
+  let sidebarRoot: HTMLElement | undefined = $state(undefined);
   let visible = $derived(pane.showPlanSidebar);
   let threadId = $derived(pane.thread?.id ?? null);
 
@@ -74,9 +76,11 @@
     try {
       const items = (await ListThreadProposedPlans(id)) as Item[] | null;
       if (seq !== fetchSeq) return;
-      planRows = itemsToRows(items ?? []);
+      if (id !== threadId) return;
+      planRows = itemsToRows((items ?? []).filter((item) => item.threadId === id));
     } catch (err) {
       if (seq !== fetchSeq) return;
+      if (id !== threadId) return;
       console.error('PlanSidebar: ListThreadProposedPlans failed:', err);
       planRows = [];
     }
@@ -89,6 +93,32 @@
     // Track the thread id so a switch retriggers the effect.
     threadId;
     void refreshPlans();
+  });
+
+  $effect(() => {
+    threadId;
+    visible;
+    planRows.length;
+
+    if (!isUiRenderTraceEnabled()) return;
+    recordUiTrace('plan-sidebar.state', {
+      threadId,
+      visible,
+      rows: planRows.map((row) => ({
+        itemId: row.itemId,
+        turnIndex: row.turnIndex,
+        title: row.title,
+      })),
+    });
+    scheduleDomUiTrace('plan-sidebar', 'plan-sidebar.dom', () => ({
+      threadId,
+      visible,
+      rows: Array.from(sidebarRoot?.querySelectorAll<HTMLElement>('[data-testid="plan-sidebar-row"]') ?? [])
+        .map((el) => ({
+          itemId: el.dataset.itemId ?? '',
+          textPreview: (el.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, 120),
+        })),
+    }));
   });
 
   let cancelItemUpsert: (() => void) | null = null;
@@ -123,6 +153,7 @@
 
 {#if visible}
   <aside
+    bind:this={sidebarRoot}
     transition:fly={{ x: 280, duration: 150 }}
     aria-label="Proposed plans"
     data-testid="plan-sidebar"

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { tick } from 'svelte';
+  import { onDestroy, tick } from 'svelte';
   import type { SettledTurn, ThreadPane } from '../../stores/thread.svelte';
   import type { Item } from '../../types/models';
   import { addToast } from '../../stores/toast.svelte';
@@ -16,6 +16,12 @@
   import ToolCallCard from './ToolCallCard.svelte';
   import TurnDiffBadge from './TurnDiffBadge.svelte';
   import UserMessage from './UserMessage.svelte';
+  import {
+    isUiRenderTraceEnabled,
+    recordUiTrace,
+    scheduleDomUiTrace,
+    summarizeItemsForTrace,
+  } from '../../utils/uiRenderTrace';
 
   let { pane }: { pane: ThreadPane } = $props();
 
@@ -75,6 +81,53 @@
    */
   let groupedNodes = $derived<TimelineNode[]>(groupItemsBySubagent(pane.items));
 
+  $effect(() => {
+    pane.threadId;
+    pane.items.length;
+    pane.timelineRevision;
+    groupedNodes.length;
+
+    if (!isUiRenderTraceEnabled()) return;
+    recordUiTrace('timeline.state', {
+      threadId: pane.threadId,
+      itemCount: pane.items.length,
+      timelineRevision: pane.timelineRevision,
+      groupedNodeCount: groupedNodes.length,
+      nodes: groupedNodes.slice(0, 120).map((node) => (
+        node.kind === 'leaf'
+          ? {
+              kind: 'leaf',
+              itemId: node.item.id,
+              itemThreadId: node.item.threadId,
+              itemKind: node.item.kind,
+              turnIndex: node.item.turnIndex,
+              orphan: node.orphan === true,
+            }
+          : {
+              kind: 'group',
+              parentId: node.parent.id,
+              parentThreadId: node.parent.threadId,
+              childCount: node.children.length,
+              turnIndex: node.parent.turnIndex,
+            }
+      )),
+      items: summarizeItemsForTrace(pane.items),
+    });
+    scheduleDomUiTrace('timeline', 'timeline.dom', () => ({
+      threadId: pane.threadId,
+      rowCount: scrollContainer?.querySelectorAll('[data-item-id]').length ?? 0,
+      rows: Array.from(scrollContainer?.querySelectorAll<HTMLElement>('[data-item-id]') ?? [])
+        .slice(0, 160)
+        .map((el) => ({
+          itemId: el.dataset.itemId ?? '',
+          textPreview: (el.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, 120),
+        })),
+      scrollTop: scrollContainer ? Math.round(scrollContainer.scrollTop) : 0,
+      scrollHeight: scrollContainer ? Math.round(scrollContainer.scrollHeight) : 0,
+      clientHeight: scrollContainer ? Math.round(scrollContainer.clientHeight) : 0,
+    }));
+  });
+
   /**
    * Turn boundaries on the root-node stream: we emit the ChangedFilesTree
    * summary at the end of every turn that has diff activity. Subagent
@@ -93,6 +146,12 @@
     return rootTurnIndex(current) !== rootTurnIndex(next);
   }
 
+  function nodeKey(node: TimelineNode): string {
+    return node.kind === 'group'
+      ? `g:${node.parent.threadId}:${node.parent.id}`
+      : `l:${node.item.threadId}:${node.item.id}`;
+  }
+
   /**
    * Suppress the "stick to bottom" auto-scroll while a Load Older
    * round-trip is in flight. Without this, a short thread whose whole
@@ -102,14 +161,25 @@
    * delta-apply — snapping the user past the newly revealed history.
    */
   let suppressBottomAutoScroll = $state(false);
+  let bottomScrollFrame: number | null = null;
+
+  onDestroy(() => {
+    if (bottomScrollFrame !== null) {
+      cancelAnimationFrame(bottomScrollFrame);
+      bottomScrollFrame = null;
+    }
+  });
 
   // Auto-scroll only when the user is already near the bottom.
   $effect(() => {
     pane.items.length;
+    pane.timelineRevision;
 
     if (suppressBottomAutoScroll) return;
     if (scrollContainer && userNearBottom) {
-      requestAnimationFrame(() => {
+      if (bottomScrollFrame !== null) return;
+      bottomScrollFrame = requestAnimationFrame(() => {
+        bottomScrollFrame = null;
         if (!scrollContainer) return;
         scrollContainer.scrollTop = scrollContainer.scrollHeight;
       });
@@ -209,7 +279,7 @@
   });
 </script>
 
-<div bind:this={scrollContainer} onscroll={handleScroll} class="flex-1 overflow-y-auto" role="log" aria-label="Message history">
+<div bind:this={scrollContainer} onscroll={handleScroll} class="flex-1 overflow-y-auto" role="log" aria-label="Message history" data-testid="message-timeline-scroll">
   <div class="mx-auto w-full max-w-3xl px-6 py-8">
   {#if pane.loading}
     <div class="flex items-center justify-center h-full text-fg-subtle text-sm" role="status" aria-live="polite">
@@ -281,7 +351,7 @@
       </div>
     {/if}
 
-    {#each groupedNodes as node, index (node.kind === 'group' ? `g:${node.parent.id}` : `l:${node.item.id}`)}
+    {#each groupedNodes as node, index (nodeKey(node))}
       {#if pane.latestSettledTurn && shouldRenderDividerBefore(node, pane.latestSettledTurn)}
         <!-- The divider renders BEFORE the assistant message that closed
              the settled turn (t3-code pattern). The per-turn diff summary

@@ -63,6 +63,22 @@ describe('createThreadPane', () => {
     });
   });
 
+  it('drops wrong-thread rows from initial history hydration', async () => {
+    const pane = createThreadPane();
+    setBindingMock('ListRecentThreadItems', async () => ({
+      items: [
+        makeItem({ id: 'current', threadId: 'thread-a' }),
+        makeItem({ id: 'leaked', threadId: 'thread-b' }),
+      ],
+      oldestTurnIndex: 0,
+      hasMore: false,
+    }));
+
+    await pane.switchThread(makeThread({ id: 'thread-a' }));
+
+    expect(pane.items.map((item) => item.id)).toEqual(['current']);
+  });
+
   it('clears pane-local state on thread switch', async () => {
     const pane = createThreadPane();
     await pane.switchThread(makeThread({ id: 'thread-a' }));
@@ -131,6 +147,16 @@ describe('createThreadPane', () => {
 
     expect(pane.items.map((item) => item.id)).toEqual(['first', 'early', 'late']);
     expect(pane.items.find((item) => item.id === 'early')?.summary).toBe('updated');
+  });
+
+  it('drops wrong-thread upserts for an active pane', async () => {
+    const pane = createThreadPane();
+    await pane.switchThread(makeThread({ id: 'thread-a' }));
+
+    pane.upsertItem(makeItem({ id: 'leaked', threadId: 'thread-b' }));
+    pane.upsertItem(makeItem({ id: 'current', threadId: 'thread-a' }));
+
+    expect(pane.items.map((item) => item.id)).toEqual(['current']);
   });
 
   it('derives isTurnActive strictly from activeTurn (invariant 22)', () => {
@@ -353,6 +379,7 @@ describe('createThreadPane', () => {
     const items = [
       makeItem({
         id: 'tool-0',
+        threadId: 'thread-a',
         turnIndex: 0,
         kind: 'tool_call',
         payloadId: 'p0',
@@ -385,7 +412,7 @@ describe('createThreadPane', () => {
     it('upsertItem drops new items below the window floor', async () => {
       const pane = createThreadPane();
       const seed: Item[] = [
-        makeItem({ id: 'at-floor', turnIndex: 5, itemIndex: 0 }),
+        makeItem({ id: 'at-floor', threadId: 'thread-windowed', turnIndex: 5, itemIndex: 0 }),
       ];
       setBindingMock('ListRecentThreadItems', async () => ({
         items: seed,
@@ -398,14 +425,14 @@ describe('createThreadPane', () => {
       // Upsert for a turn below the floor (e.g. interrupt-queue replay
       // of an older tool_completion). Must NOT land in the window — the
       // canonical row stays in SQLite and surfaces via loadOlder later.
-      pane.upsertItem(makeItem({ id: 'below', turnIndex: 2, itemIndex: 0 }));
+      pane.upsertItem(makeItem({ id: 'below', threadId: 'thread-windowed', turnIndex: 2, itemIndex: 0 }));
       expect(pane.items.map((it) => it.id)).toEqual(['at-floor']);
     });
 
     it('upsertItem still accepts replacements for known ids below the floor', async () => {
       const pane = createThreadPane();
       const seed: Item[] = [
-        makeItem({ id: 'known', turnIndex: 5, itemIndex: 0, summary: 'old' }),
+        makeItem({ id: 'known', threadId: 't', turnIndex: 5, itemIndex: 0, summary: 'old' }),
       ];
       setBindingMock('ListRecentThreadItems', async () => ({
         items: seed,
@@ -416,14 +443,14 @@ describe('createThreadPane', () => {
 
       // Known id, turn below floor — cross-turn correction path. Must
       // still replace because the id is clearly in-window already.
-      pane.upsertItem(makeItem({ id: 'known', turnIndex: 2, itemIndex: 0, summary: 'new' }));
+      pane.upsertItem(makeItem({ id: 'known', threadId: 't', turnIndex: 2, itemIndex: 0, summary: 'new' }));
       expect(pane.items.find((it) => it.id === 'known')?.summary).toBe('new');
     });
 
     it('loadOlder prepends older items and updates the floor + hasMore', async () => {
       const pane = createThreadPane();
       const tail: Item[] = [
-        makeItem({ id: 't5', turnIndex: 5, itemIndex: 0 }),
+        makeItem({ id: 't5', threadId: 't', turnIndex: 5, itemIndex: 0 }),
       ];
       setBindingMock('ListRecentThreadItems', async () => ({
         items: tail,
@@ -432,8 +459,8 @@ describe('createThreadPane', () => {
       }));
       setBindingMock('ListItemsBeforeTurn', async () => ({
         items: [
-          makeItem({ id: 't3', turnIndex: 3, itemIndex: 0 }),
-          makeItem({ id: 't4', turnIndex: 4, itemIndex: 0 }),
+          makeItem({ id: 't3', threadId: 't', turnIndex: 3, itemIndex: 0 }),
+          makeItem({ id: 't4', threadId: 't', turnIndex: 4, itemIndex: 0 }),
         ],
         oldestTurnIndex: 3,
         hasMore: true,
@@ -499,7 +526,7 @@ describe('createThreadPane', () => {
     it('loadUntilItem returns true when the item is already in-window', async () => {
       const pane = createThreadPane();
       setBindingMock('ListRecentThreadItems', async () => ({
-        items: [makeItem({ id: 'here', turnIndex: 5 })],
+        items: [makeItem({ id: 'here', threadId: 't', turnIndex: 5 })],
         oldestTurnIndex: 5,
         hasMore: true,
       }));
