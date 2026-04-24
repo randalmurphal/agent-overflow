@@ -53,6 +53,34 @@ describe('<MessageTimeline>', () => {
     expect(getByText(/No messages yet/i)).toBeInTheDocument();
   });
 
+  it('renders the working indicator as the last timeline row while a turn is active', async () => {
+    const pane = await buildPane(undefined, [
+      makeItem({ id: 'user:0', kind: 'user_text', role: 'user', summary: 'hi' }),
+    ]);
+    pane.setActiveTurn({ turnId: 'turn-1', turnIndex: 0, startedAt: Date.now() - 3_000 });
+
+    const { getByTestId } = render(MessageTimeline, { props: { pane } });
+
+    const scroll = getByTestId('message-timeline-scroll');
+    const indicator = getByTestId('chat-working-indicator');
+    const rows = Array.from(
+      scroll.querySelectorAll('[data-testid="message-timeline-node"], [data-testid="chat-working-indicator"]'),
+    );
+    expect(scroll).toContainElement(indicator);
+    expect(indicator.textContent).toContain('Working for');
+    expect(rows.at(-1)).toBe(indicator);
+  });
+
+  it('hides the empty state while a blank thread is working', async () => {
+    const pane = await buildPane();
+    pane.setActiveTurn({ turnId: 'turn-1', turnIndex: 0, startedAt: Date.now() - 3_000 });
+
+    const { getByTestId, queryByText } = render(MessageTimeline, { props: { pane } });
+
+    expect(getByTestId('chat-working-indicator')).toBeInTheDocument();
+    expect(queryByText(/No messages yet/i)).toBeNull();
+  });
+
   it('renders user, assistant, error, and compaction rows from unified items', async () => {
     const pane = await buildPane(undefined, [
       makeItem({ id: 'user:0', kind: 'user_text', role: 'user', summary: 'hi' }),

@@ -2,7 +2,9 @@
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { formatElapsedSeconds } from '../../utils/format';
   import { isUiRenderTraceEnabled, recordUiTrace } from '../../utils/uiRenderTrace';
+  import Icon from '../primitives/Icon.svelte';
   import { dispatchInterrupt } from '../composer/composerSend';
+  import Square from 'lucide-svelte/icons/square';
 
   interface Props {
     pane: ThreadPane;
@@ -65,26 +67,31 @@
 
 {#if isWorking}
   <div
-    class="mx-6 mb-2 flex items-center justify-center gap-2 text-[11px] text-text-secondary"
+    class="group mb-6 flex items-center gap-2 py-0.5 pl-1.5 text-[11px] text-fg-hint"
     role="status"
     aria-live="polite"
     data-testid="chat-working-indicator"
     data-turn-id={activeTurn?.turnId}
   >
-    <span class="h-1.5 w-1.5 rounded-full bg-accent animate-pulse" aria-hidden="true"></span>
-    <span>Working</span>
-    <span aria-hidden="true">·</span>
-    <span class="tabular-nums" data-testid="chat-working-indicator-elapsed">{elapsedLabel}</span>
-    <span aria-hidden="true">·</span>
+    <span class="inline-flex items-center gap-[3px]" aria-hidden="true">
+      <span class="h-1 w-1 rounded-full bg-fg-hint/65 animate-pulse"></span>
+      <span class="h-1 w-1 rounded-full bg-fg-hint/65 animate-pulse [animation-delay:200ms]"></span>
+      <span class="h-1 w-1 rounded-full bg-fg-hint/65 animate-pulse [animation-delay:400ms]"></span>
+    </span>
+    <span>
+      Working for
+      <span class="tabular-nums" data-testid="chat-working-indicator-elapsed">{elapsedLabel}</span>
+    </span>
     <button
       type="button"
-      class="rounded-[var(--radius-field)] px-1.5 py-0.5 text-[11px] text-text-secondary hover:bg-surface-2/40 hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-60"
+      class="inline-flex h-5 w-5 items-center justify-center rounded-full text-fg-hint/65 opacity-0 transition-opacity hover:bg-surface-2/50 hover:text-fg-muted focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/35 disabled:cursor-not-allowed disabled:opacity-40 group-hover:opacity-100"
       onclick={interrupt}
       disabled={interrupting}
       data-testid="chat-working-indicator-interrupt"
       aria-label="Interrupt current turn"
+      title="Interrupt current turn"
     >
-      {interrupting ? 'Interrupting...' : 'Esc to interrupt'}
+      <Icon icon={Square} size={10} strokeWidth={2.5} class={interrupting ? 'animate-pulse' : ''} />
     </button>
   </div>
 {/if}

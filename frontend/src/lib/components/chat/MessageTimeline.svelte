@@ -12,6 +12,7 @@
   import Button from '../primitives/Button.svelte';
   import { turnSummaryIsMeaningful } from '../../utils/turnDiffSummary';
   import ChangedFilesTree from './ChangedFilesTree.svelte';
+  import ChatWorkingIndicator from './ChatWorkingIndicator.svelte';
   import CompletionDivider from './CompletionDivider.svelte';
   import SubagentGroup from './SubagentGroup.svelte';
   import { createTimelineMeasurementActions } from './timelineMeasurementActions';
@@ -216,6 +217,7 @@
   $effect(() => {
     pane.items.length;
     pane.timelineRevision;
+    pane.activeTurn?.turnId;
     rowHeightRevision;
 
     if (suppressBottomAutoScroll) return;
@@ -409,7 +411,9 @@
     {/each}
     <div style:height={`${virtualWindow.after}px`} aria-hidden="true"></div>
 
-    {#if pane.items.length === 0}
+    <ChatWorkingIndicator {pane} />
+
+    {#if pane.items.length === 0 && !pane.activeTurn}
       <div class="flex items-center justify-center h-full text-fg-subtle text-sm">
         No messages yet. Send a message to get started.
       </div>
