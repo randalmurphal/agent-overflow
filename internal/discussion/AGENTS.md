@@ -8,12 +8,8 @@ messaging, and in-memory deliberation turn tracking.
 - `registry.go` — `Registry` service for persisted discussion
   definitions (templates + participant lists). Pure store wrapper.
 - `channel.go` — `ChannelService` for ordered channel messages.
-  Messages persist via `internal/store`. Takes a
-  `*highlight.Renderer` at construction and pre-renders
-  `ChannelMessage.Content` → `HighlightedContent` before insert so the
-  frontend paints `{@html msg.highlightedContent}` with no per-message
-  UI-thread cost; the raw `content` field is preserved for copy /
-  export paths.
+  Messages persist raw `ChannelMessage.Content` via `internal/store`.
+  The frontend renders discussion markdown.
 - `deliberation.go` — `Deliberation` + `DeliberationState`. The only
   in-memory state in this package: current speaker, turn count,
   conclusion proposals. Coordinates one discussion at a time.

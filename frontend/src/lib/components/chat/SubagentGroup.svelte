@@ -1,5 +1,6 @@
 <script lang="ts" module>
   import type { TimelineNode as _TNode } from '../../utils/subagentGrouping';
+  import { timelineNodeKey } from '../../utils/timelineVirtualization';
 
   /**
    * Deterministic key for the `{#each}` binding. Item ids are only unique
@@ -7,9 +8,7 @@
    * reuse between two different threads that both have text:1:0-style ids.
    */
   export function nodeKey(node: _TNode): string {
-    return node.kind === 'group'
-      ? `g:${node.parent.threadId}:${node.parent.id}`
-      : `l:${node.item.threadId}:${node.item.id}`;
+    return timelineNodeKey(node);
   }
 </script>
 

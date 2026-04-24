@@ -4,6 +4,12 @@ import type { Item } from '../types/models';
 import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
 import { makeItem, makeThread } from '../../test/helpers/chat';
 
+function nextFrame(): Promise<void> {
+  return new Promise((resolve) => {
+    requestAnimationFrame(() => resolve());
+  });
+}
+
 describe('createThreadPane', () => {
   beforeEach(() => {
     resetBindingMocks();
@@ -147,6 +153,87 @@ describe('createThreadPane', () => {
 
     expect(pane.items.map((item) => item.id)).toEqual(['first', 'early', 'late']);
     expect(pane.items.find((item) => item.id === 'early')?.summary).toBe('updated');
+  });
+
+  it('keeps streaming deltas out of the timeline item array', async () => {
+    const pane = createThreadPane();
+    pane.upsertItem(makeItem({
+      id: 'text:0:0',
+      kind: 'assistant_text',
+      status: 'streaming',
+      summary: 'hello',
+    }));
+    const initialItems = pane.items;
+    const initialRevision = pane.timelineRevision;
+
+    pane.applyItemDelta({
+      threadId: 'thread-1',
+      itemId: 'text:0:0',
+      kind: 'assistant_text',
+      delta: ' world',
+      updatedAt: 123,
+    });
+    pane.applyItemDelta({
+      threadId: 'thread-1',
+      itemId: 'text:0:0',
+      kind: 'assistant_text',
+      delta: '!',
+      updatedAt: 124,
+    });
+    await nextFrame();
+
+    expect(pane.items).toBe(initialItems);
+    expect(pane.timelineRevision).toBe(initialRevision);
+    expect(pane.liveItemSummaries['text:0:0']).toBe('hello world!');
+  });
+
+  it('clears live summary buffers when a streaming item settles', async () => {
+    const pane = createThreadPane();
+    pane.upsertItem(makeItem({
+      id: 'text:0:0',
+      kind: 'assistant_text',
+      status: 'streaming',
+      summary: 'hello',
+    }));
+    pane.applyItemDelta({
+      threadId: 'thread-1',
+      itemId: 'text:0:0',
+      kind: 'assistant_text',
+      delta: ' world',
+      updatedAt: 123,
+    });
+    await nextFrame();
+
+    pane.upsertItem(makeItem({
+      id: 'text:0:0',
+      kind: 'assistant_text',
+      status: 'completed',
+      summary: 'hello world',
+    }));
+
+    expect(pane.liveItemSummaries['text:0:0']).toBeUndefined();
+    expect(pane.items.find((item) => item.id === 'text:0:0')?.summary).toBe('hello world');
+  });
+
+  it('merges deltas that arrive before the initial streaming row', async () => {
+    const pane = createThreadPane();
+
+    pane.applyItemDelta({
+      threadId: 'thread-1',
+      itemId: 'text:0:0',
+      kind: 'assistant_text',
+      delta: ' world',
+      updatedAt: 123,
+    });
+    pane.upsertItem(makeItem({
+      id: 'text:0:0',
+      kind: 'assistant_text',
+      status: 'streaming',
+      summary: 'hello',
+    }));
+    await nextFrame();
+
+    expect(pane.liveItemSummaries['text:0:0']).toBe('hello world');
   });
 
   it('drops wrong-thread upserts for an active pane', async () => {

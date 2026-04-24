@@ -102,7 +102,7 @@ func (a *App) sendMessage(threadID string, content string) error {
 		return fmt.Errorf("send message: get thread: %w", err)
 	}
 	if a.triage == nil {
-		a.triage = triage.NewRouter(a.store, a.emitWithReplay(), a.highlighter)
+		a.triage = triage.NewRouter(a.store, a.emitWithReplay())
 	}
 	hasPriorItems, err := a.store.HasItems(threadID)
 	if err != nil {

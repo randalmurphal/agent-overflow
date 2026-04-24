@@ -330,7 +330,6 @@ export class Keybinding {
 
 export class PayloadChunk {
     "data": string;
-    "html": string;
     "offset": number;
     "nextOffset": number;
     "totalSize": number;
@@ -340,9 +339,6 @@ export class PayloadChunk {
     constructor($$source: Partial<PayloadChunk> = {}) {
         if (!("data" in $$source)) {
             this["data"] = "";
-        }
-        if (!("html" in $$source)) {
-            this["html"] = "";
         }
         if (!("offset" in $$source)) {
             this["offset"] = 0;
@@ -370,21 +366,16 @@ export class PayloadChunk {
 }
 
 /**
- * PayloadContent bundles a payload's raw bytes (Data) with its pre-rendered
- * display HTML (Html). Raw-data paths (copy to clipboard, save to file,
- * transforms before re-render) read Data; view paths use Html directly.
+ * PayloadContent returns a payload's raw bytes. Rendering is a frontend
+ * projection based on the payload kind.
  */
 export class PayloadContent {
     "data": string;
-    "html": string;
 
     /** Creates a new PayloadContent instance. */
     constructor($$source: Partial<PayloadContent> = {}) {
         if (!("data" in $$source)) {
             this["data"] = "";
-        }
-        if (!("html" in $$source)) {
-            this["html"] = "";
         }
 
         Object.assign(this, $$source);
@@ -401,15 +392,7 @@ export class PayloadContent {
 
 export class PayloadPreview {
     "data": string;
-
-    /**
-     * Html is the pre-rendered display HTML for the payload's kind
-     * (markdown → Chroma-highlighted fences; thinking / command_output /
-     * tool_result → terminal-to-html ANSI spans). Kinds the dispatcher
-     * does not server-render (diffs, unknown) leave this empty and the
-     * frontend falls back to its structured rendering path.
-     */
-    "html": string;
+    "nextOffset": number;
     "totalSize": number;
     "isComplete": boolean;
 
@@ -418,8 +401,8 @@ export class PayloadPreview {
         if (!("data" in $$source)) {
             this["data"] = "";
         }
-        if (!("html" in $$source)) {
-            this["html"] = "";
+        if (!("nextOffset" in $$source)) {
+            this["nextOffset"] = 0;
         }
         if (!("totalSize" in $$source)) {
             this["totalSize"] = 0;

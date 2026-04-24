@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 )
 
@@ -180,11 +179,9 @@ func (r *Router) settleStreamingText(threadID string, turnIndex int, scope strin
 	defer r.drainInterruptQueueIfIdle(threadID)
 
 	itemID := textItemID(turnIndex, scope, index)
-	// Drop the throttle entry first: the itemID is known before the
-	// store lookup, so a lookup miss or already-settled row can still
-	// release the map slot instead of waiting for CleanupThread.
-	r.forgetHighlighted(threadID, itemID)
-	r.forgetStreamingItemUpsert(threadID, itemID)
+	if err := r.flushStreamingItem(threadID, itemID); err != nil {
+		return err
+	}
 	item, found, err := r.store.GetThreadItem(threadID, itemID)
 	if err != nil || !found {
 		return err
@@ -196,11 +193,6 @@ func (r *Router) settleStreamingText(threadID string, turnIndex int, scope strin
 	if status == statusErrored {
 		item.Summary = interruptedSummary(item.Summary)
 	}
-	// Clear the streaming-rendered HTML unconditionally so persistItem
-	// re-renders against the final summary. The throttle in
-	// shouldRenderHighlight means the last N deltas may not have
-	// triggered a render; this is the settle point where we catch up.
-	item.HighlightedContent = ""
 	item.UpdatedAt = time.Now().UnixMilli()
 	return r.persistItem(item, nil)
 }
@@ -228,10 +220,9 @@ func (r *Router) settleStreamingThinking(threadID string, turnIndex int, scope s
 	defer r.drainInterruptQueueIfIdle(threadID)
 
 	itemID := thinkingItemID(turnIndex, scope, index)
-	// Drop the throttle entry first so a lookup miss still releases the
-	// map slot; mirrors settleStreamingText.
-	r.forgetHighlighted(threadID, itemID)
-	r.forgetStreamingItemUpsert(threadID, itemID)
+	if err := r.flushStreamingItem(threadID, itemID); err != nil {
+		return err
+	}
 	item, found, err := r.store.GetThreadItem(threadID, itemID)
 	if err != nil || !found {
 		return err
@@ -243,9 +234,6 @@ func (r *Router) settleStreamingThinking(threadID string, turnIndex int, scope s
 	if status == statusErrored {
 		item.Summary = interruptedSummary(item.Summary)
 	}
-	// Force a final render against the (possibly suffixed) summary; see
-	// settleStreamingText for the throttle rationale.
-	item.HighlightedContent = ""
 	item.UpdatedAt = time.Now().UnixMilli()
 
 	// Now that the block has closed, refresh the thinking-meta preview so
@@ -257,7 +245,11 @@ func (r *Router) settleStreamingThinking(threadID string, turnIndex int, scope s
 	// must survive the refresh, so we reuse the existing payload meta
 	// JSON and only replace the summary-derived fields.
 	if item.PayloadID != "" && item.PayloadKind == "thinking" {
-		metaBase := buildPayloadMeta("thinking", provider.ProviderEvent{Content: item.Summary})
+		_, totalSize, _, err := r.store.GetPayloadPreview(item.PayloadID, 0)
+		if err != nil {
+			return err
+		}
+		metaBase := buildThinkingPayloadMeta(item.Summary, totalSize, "")
 		merged := metaBase
 		if item.PayloadMeta != "" && item.PayloadMeta != "{}" {
 			// Preserve the signature field set by persistThinkingSignature

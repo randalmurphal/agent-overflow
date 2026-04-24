@@ -854,19 +854,21 @@ has explicitly expanded it AND asked for the full load. Collapse
 releases. No client cache.
 
 **Stage 1 — Peek** (cheap, automatic on expand):
-- Binding: `GetPayloadPreview(threadId, payloadId, maxBytes) -> {data, totalSize, isComplete}`
+- Binding: `GetPayloadPreview(threadId, payloadId, maxBytes) -> {data, nextOffset, totalSize, isComplete}`
 - Default `maxBytes = 32KB`. Fetches from the head of the payload.
 - `isComplete=true` if totalSize ≤ maxBytes — that's the whole payload
   and stage 2 is skipped.
-- Rendered in a scrollable block using `<pre>` + ANSI-to-HTML via a
-  tiny library (`anser` or equivalent) for colorized tool output.
+- Rendered as raw text through the client-side payload renderer
+  (`AnsiText` for terminal-style output).
 
 **Stage 2 — Full load** (on demand, explicit):
 - If stage 1's `isComplete=false`, show a footer inside the dropdown:
   `Show full output (2.3 MB) ↓` (or similar, with the formatted size).
-- Click → binding `GetPayloadData(threadId, payloadId) -> {data}` returns the
-  full payload (up to the 4MB cap — see size limits below).
-- Replaces the stage 1 render. Same ANSI rendering.
+- Click → repeated `GetPayloadChunk(threadId, payloadId, offset, maxBytes)`
+  calls append raw chunks from `nextOffset` until `isComplete=true`
+  (bounded by the 4MB cap — see size limits below).
+- Replaces the stage 1 render with the assembled raw content. Same
+  client-side renderer.
 
 **No cache:**
 - Collapsing the dropdown discards the loaded data.
@@ -895,7 +897,7 @@ releases. No client cache.
   renders in a `<pre>` with `overflow:auto`. Chrome/Firefox handle
   4MB of preformatted text fine (no virtual scrolling needed).
 - **Save-to-file escape hatch:** a small "Save to file..." button in
-  the dropdown header calls `SavePayloadToFile(payloadId)` which
+  the dropdown header calls `SavePayloadToFile(threadId, payloadId)` which
   writes the full captured payload (up to 4MB) to a user-chosen path
   via the OS save-file dialog. For users who want to grep / diff /
   editor-view the raw output. No larger-than-4MB recovery — what
@@ -1029,7 +1031,8 @@ unions.
 
 | channel                  | payload Go struct                          | purpose                                                |
 |--------------------------|--------------------------------------------|--------------------------------------------------------|
-| `provider:item_upsert`   | `store.Item` (full row)                    | every timeline state change                            |
+| `provider:item_upsert`   | `store.Item` (full row)                    | timeline row creation and lifecycle/state snapshots    |
+| `provider:item_delta`    | `triage.ItemDeltaEvent`                    | live assistant text/thinking deltas                    |
 | `provider:approval`      | `ApprovalEvent` (discriminated, see below) | approval overlay state                                 |
 | `provider:usage`         | `UsageEvent` (discriminated, see below)    | context meter; not displayed as items                  |
 | `provider:status`        | `ProviderStatusEvent`                      | persistent provider banner                             |
@@ -1549,11 +1552,12 @@ Where:
   exit code or duration on completion.
 - Chevron expand: fetch peek via `GetPayloadPreview(threadId, payloadId, 32768)`.
   Render peek. If `!isComplete`, show a "Show full output (N KB) ↓"
-  footer button. Button click: fetch full via `GetPayloadData(threadId, payloadId)`
-  and replace the rendered body.
+  footer button. Button click: load chunks with
+  `GetPayloadChunk(threadId, payloadId, nextOffset, maxBytes)` until
+  complete and replace the rendered body.
 - Body switch on `payload.kind`: command_output / diff / tool_result /
   proposed_plan / text. `command_output` and any text-style payload
-  runs through an ANSI-to-HTML library for colorized output.
+  renders as raw text through the frontend ANSI renderer.
 - Expanded content held in component-local `$state`; discarded on
   collapse. No cross-card cache.
 - Children (if subagent): rendered nested when the card is expanded,

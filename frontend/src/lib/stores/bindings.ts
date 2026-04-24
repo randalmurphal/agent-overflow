@@ -42,7 +42,6 @@ export {
   GetPayloadPreview,
   GetPayloadChunk,
   GetPayloadData,
-  HighlightMarkdown,
   ListItems,
   ListPayloadMetas,
 

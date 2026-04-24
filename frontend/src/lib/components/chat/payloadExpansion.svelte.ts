@@ -17,11 +17,6 @@ export interface PayloadExpansionHandle {
    * any caller that needs to run a transform before rendering.
    */
   readonly displayData: string | null;
-  /**
-   * Pre-rendered display HTML from Go. Use with {@html}. Empty for
-   * payload kinds the backend does not server-render (diffs, unknown).
-   */
-  readonly displayHtml: string | null;
   toggle(): Promise<void>;
   expand(): Promise<void>;
   collapse(): void;
@@ -43,9 +38,7 @@ export function createPayloadExpansion(
   let loadingFull = $state(false);
   let error = $state<string | null>(null);
   let previewData = $state<string | null>(null);
-  let previewHtml = $state<string | null>(null);
   let fullData = $state<string | null>(null);
-  let fullHtml = $state<string | null>(null);
   let totalSize = $state(0);
   let isComplete = $state(true);
   let loadedBytes = $state(0);
@@ -68,9 +61,7 @@ export function createPayloadExpansion(
   function clearLoadedData(): void {
     error = null;
     previewData = null;
-    previewHtml = null;
     fullData = null;
-    fullHtml = null;
     totalSize = 0;
     isComplete = true;
     loadedBytes = 0;
@@ -94,10 +85,9 @@ export function createPayloadExpansion(
       const result = await GetPayloadPreview(ownerThreadID, id, previewBytes);
       if (generation !== requestGeneration || !expanded) return;
       previewData = result.data;
-      previewHtml = result.html ?? '';
       totalSize = result.totalSize;
       isComplete = result.isComplete;
-      loadedBytes = result.data.length;
+      loadedBytes = result.nextOffset;
     } catch (err) {
       if (generation !== requestGeneration || !expanded) return;
       error = err instanceof Error ? err.message : String(err);
@@ -148,10 +138,8 @@ export function createPayloadExpansion(
       const offset = loadedBytes;
       const content = await GetPayloadChunk(ownerThreadID, id, offset, chunkBytes);
       if (generation !== requestGeneration || !expanded) return;
-      fullData = content.data;
-      fullHtml = content.html ?? '';
+      fullData = (fullData ?? previewData ?? '') + content.data;
       previewData = null;
-      previewHtml = null;
       totalSize = content.totalSize;
       loadedBytes = content.nextOffset;
       isComplete = content.isComplete;
@@ -181,7 +169,6 @@ export function createPayloadExpansion(
       return expanded && (fullData !== null || previewData !== null) && !isComplete;
     },
     get displayData() { return fullData ?? previewData; },
-    get displayHtml() { return fullHtml ?? previewHtml; },
     toggle,
     expand,
     collapse,

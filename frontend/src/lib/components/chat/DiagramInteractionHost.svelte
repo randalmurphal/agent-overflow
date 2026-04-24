@@ -3,13 +3,10 @@
    * Top-level host for mermaid diagram interactions: right-click
    * context menu + full-viewport expand modal + clipboard actions.
    *
-   * Mounted once from `App.svelte`; owns all interaction state so the
-   * mermaid painter (DOM-only, called from
-   * `lazyCompleteSourceRenderer`) doesn't need to know about Svelte.
-   * A single delegated `contextmenu` listener on `document` handles
-   * right-clicks on any rendered mermaid block — matches the
-   * `codeCopy.ts` delegation pattern and costs zero memory per
-   * diagram.
+   * Mounted once from `App.svelte`; owns all interaction state for
+   * row-local Mermaid SVGs. A single delegated `contextmenu` listener
+   * on `document` handles right-clicks on any rendered mermaid block,
+   * so rows do not allocate per-diagram interaction handlers.
    *
    * Memory model: the menu holds four scalars (coords + context);
    * the modal holds the cached SVG string only while open. Clipboard
@@ -21,13 +18,13 @@
   import DiagramContextMenu, {
     type DiagramAction,
   } from './DiagramContextMenu.svelte';
-  import { getCachedSource } from '../../utils/lazyCompleteSourceRenderer';
   import {
     copyAsPNG,
     copyAsSVG,
     copySource,
     type CopyResult,
   } from '../../utils/diagramClipboard';
+  import { readDiagramSource } from '../../utils/diagramSourceCache';
 
   type MenuState = {
     x: number;
@@ -41,9 +38,9 @@
   let modalOpen: boolean = $derived(modalHtml.length > 0);
 
   // Inline delegated listener: filter every contextmenu event for one
-  // that lands on a rendered mermaid block. The painter writes
-  // `data-rendered-mermaid` on successfully-rendered `<pre class="mermaid">`
-  // elements; the attribute value is the cached source hash.
+  // that lands on a rendered mermaid block. `ChatMarkdown` writes
+  // `data-rendered-mermaid` after replacing a complete Mermaid source
+  // block with its SVG projection.
   function handleInlineContextMenu(e: MouseEvent): void {
     if (!(e.target instanceof Element)) return;
     const pre = e.target.closest<HTMLElement>('pre.mermaid[data-rendered-mermaid]');
@@ -76,13 +73,11 @@
         result = await copyAsSVG(current.svg);
         break;
       case 'copy-source': {
-        // The inline painter caches source by hash. The modal copy of
-        // the SVG doesn't carry the idempotency attribute, so we fall
-        // back to serialising the SVG source when the hash lookup
-        // can't find the original mermaid text (e.g. user copies from
-        // inside the modal).
+        // The inline block carries the original Mermaid source while
+        // it is mounted. The modal copy does not, so copying from the
+        // modal falls back to SVG.
         const pre = current.svg.closest<HTMLElement>('pre.mermaid[data-rendered-mermaid]');
-        const raw = pre ? getCachedSource('mermaid', pre) : null;
+        const raw = pre ? readDiagramSource(pre) : null;
         if (raw) {
           result = await copySource(raw);
         } else {

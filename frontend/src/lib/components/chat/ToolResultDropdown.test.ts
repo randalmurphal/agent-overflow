@@ -48,13 +48,11 @@ describe('<ToolResultDropdown>', () => {
   it('loads payload data on expand and shows the body', async () => {
     setBindingMock('GetPayloadPreview', async () => ({
       data: 'line 1\nline 2',
-      html: 'line 1\nline 2',
       totalSize: 20,
       isComplete: true,
     }));
     setBindingMock('GetPayloadChunk', async () => ({
       data: 'unused',
-      html: 'unused',
       offset: 0,
       nextOffset: 6,
       totalSize: 6,
@@ -101,13 +99,12 @@ describe('<ToolResultDropdown>', () => {
   it('discards expanded payload data on collapse and refetches preview on re-open', async () => {
     setBindingMock('GetPayloadPreview', async () => ({
       data: 'preview body',
-      html: 'preview body',
+      nextOffset: 'preview body'.length,
       totalSize: 128 * 1024,
       isComplete: false,
     }));
     setBindingMock('GetPayloadChunk', async () => ({
       data: 'full body',
-      html: 'full body',
       offset: 'preview body'.length,
       nextOffset: 'full body'.length,
       totalSize: 'full body'.length,

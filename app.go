@@ -15,7 +15,6 @@ import (
 	"agent-overflow/internal/design"
 	"agent-overflow/internal/discussion"
 	gitops "agent-overflow/internal/git"
-	"agent-overflow/internal/highlight"
 	"agent-overflow/internal/logging"
 	obsotel "agent-overflow/internal/observability/otel"
 	"agent-overflow/internal/observability/replay"
@@ -42,7 +41,6 @@ type App struct {
 	store          *store.Store
 	git            *gitops.Core
 	settings       *settings.Service
-	highlighter    *highlight.Renderer
 	triage         *triage.Router
 	checkpoints    *checkpoint.Store
 	registry       *discussion.Registry
@@ -281,14 +279,7 @@ func (a *App) initObservability(ctx context.Context, dbDir string) error {
 func (a *App) initSubsystems(dbDir string, st *store.Store) error {
 	telemetryMetrics := a.telemetry.Metrics()
 
-	// One shared highlight renderer is wired through every site that needs
-	// to convert raw text to display HTML: triage (timeline items), the
-	// channel service (discussion messages), and the payload bindings
-	// (GetPayloadData / GetPayloadPreview render on demand, see
-	// app_payloads.go). The renderer is concurrent-safe after construction.
-	a.highlighter = highlight.New(highlight.Options{})
-
-	a.triage = triage.NewRouter(st, a.emitWithReplay(), a.highlighter)
+	a.triage = triage.NewRouter(st, a.emitWithReplay())
 	a.triage.SetTelemetry(a.telemetry.Tracer(), triage.TurnMetrics{
 		TurnsStarted:      telemetryMetrics.TurnsStarted,
 		TurnsCompleted:    telemetryMetrics.TurnsCompleted,
@@ -299,7 +290,7 @@ func (a *App) initSubsystems(dbDir string, st *store.Store) error {
 	a.checkpoints = checkpoint.NewStore()
 	a.triage.SetCheckpointStore(a.checkpoints)
 	a.registry = discussion.NewRegistry(st)
-	a.channels = discussion.NewChannelService(st, a.highlighter)
+	a.channels = discussion.NewChannelService(st)
 	a.artifacts = design.NewArtifactStore(filepath.Join(dbDir, "design-artifacts"), st)
 	a.reactor = design.NewReactor(a.artifacts, a.emit)
 	a.designMCP = codex.NewDesignMCPServer(a.reactor)
@@ -517,16 +508,6 @@ func (a *App) ListItems(threadID string) ([]store.Item, error) {
 }
 
 // --- Payload operations ---
-
-// HighlightMarkdown renders arbitrary markdown through the shared
-// highlighter. Surfaces that transform raw markdown before display
-// (ProposedPlanCard strips the title heading, truncates for collapsed
-// previews) can't use a pre-rendered payload HTML blob because the
-// transforms must happen at the markdown level. They call this binding
-// after applying their transforms.
-func (a *App) HighlightMarkdown(input string) string {
-	return a.highlighter.RenderMarkdown(input)
-}
 
 // ListPayloadMetas returns all payload metadata for a thread without the body.
 func (a *App) ListPayloadMetas(threadID string) ([]store.PayloadMeta, error) {

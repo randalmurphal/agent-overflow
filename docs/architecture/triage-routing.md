@@ -10,7 +10,7 @@ Every normalized `ProviderEvent` flows through `Router.Handle` in
 | EventKind | Disposition |
 |---|---|
 | `init` | `handleInit` — upsert `session_ref` on `threads`. |
-| `text_delta` | `handleTextDelta` — append streaming item via SQLite append, emit `provider:item_upsert`. |
+| `text_delta` | `handleTextDelta` — create the streaming row on first content, emit `provider:item_delta` for follow-up text, flush raw text to SQLite from the stream buffer. |
 | `tool_start` | `handleToolStart` — persist tool-use lifecycle row, capture pending inline diff, emit `provider:item_upsert`. |
 | `tool_complete` | `handleToolComplete` — persist tool result (inc. inline diffs), flip status, emit `provider:item_upsert`. |
 | `turn_start` | `handleTurnStart` — open turn span, capture git baseline. |
@@ -27,14 +27,15 @@ Every normalized `ProviderEvent` flows through `Router.Handle` in
 | `thread_renamed` | `handleThreadRename` — persist new title, emit `thread:updated`. |
 | `diff` | `handleDiff` — persist payload + meta, upgrade summary-only tool results, emit `provider:item_upsert`. |
 | `command_output` | `handleCommandOutput` — persist command_output payload, emit `provider:item_upsert`. |
-| `thinking` | `handleThinking` — persist + append streaming thinking block, emit `provider:item_upsert`. |
+| `thinking` | `handleThinking` — create the thinking row/payload on first content, emit `provider:item_delta` for follow-up reasoning, flush summary preview + payload data from the stream buffer. |
 | `proposed_plan` | `handleProposedPlan` — persist plan payload, emit `provider:item_upsert`. |
 
-Routing lands on typed channels: `provider:item_upsert` (every
-timeline state change), `provider:approval`, `provider:usage`, and
-`provider:status`. There is no generic `provider:event` passthrough —
-the router exposes a `SetEventHook` test-only observer so Go tests can
-synchronize on the routing pipeline without a wire channel.
+Routing lands on typed channels: `provider:item_upsert` (timeline
+lifecycle/state snapshots), `provider:item_delta` (live text/thinking
+deltas), `provider:approval`, `provider:usage`, and `provider:status`.
+There is no generic `provider:event` passthrough — the router exposes a
+`SetEventHook` test-only observer so Go tests can synchronize on the
+routing pipeline without a wire channel.
 
 ## The Sentinel
 

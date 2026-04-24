@@ -281,7 +281,6 @@ describe('<ThreadRow> live status dot', () => {
         role: 'assistant',
         status: 'streaming',
         summary: 'hello',
-        highlightedContent: '',
         createdAt: 1,
         updatedAt: 1,
       });
@@ -338,7 +337,6 @@ describe('<ThreadRow> live status dot', () => {
         role: 'assistant',
         status: 'streaming',
         summary: 'pondering',
-        highlightedContent: '',
         createdAt: 1,
         updatedAt: 1,
       });

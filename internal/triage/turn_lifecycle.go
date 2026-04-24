@@ -563,6 +563,9 @@ func (r *Router) flipTurnItemsErrored(
 	now int64,
 	summaryFn func(string) string,
 ) error {
+	if err := r.flushStreamingThread(threadID); err != nil {
+		return fmt.Errorf("error flip flush streaming buffers: %w", err)
+	}
 	items, err := r.store.ListTurnItems(threadID, turnIndex)
 	if err != nil {
 		return fmt.Errorf("error flip list turn items: %w", err)
@@ -576,11 +579,6 @@ func (r *Router) flipTurnItemsErrored(
 		}
 		item.Status = statusErrored
 		item.Summary = summaryFn(item.Summary)
-		// Force persistItem to re-render against the now-suffixed summary;
-		// the streaming render throttle means the latest HTML may be
-		// several deltas behind the summary at flip time.
-		item.HighlightedContent = ""
-		r.forgetHighlighted(item.ThreadID, item.ID)
 		item.UpdatedAt = now
 		if err := r.persistItem(item, nil); err != nil {
 			return fmt.Errorf("error flip item %s: %w", item.ID, err)
@@ -659,7 +657,7 @@ func (r *Router) Wait(ctx context.Context) error {
 	}()
 	select {
 	case <-done:
-		return nil
+		return r.flushAllStreamPersistence()
 	case <-ctx.Done():
 		return ctx.Err()
 	}
@@ -671,6 +669,10 @@ func (r *Router) Wait(ctx context.Context) error {
 // readLoop line that was already in-flight when StopSession returned — is
 // dropped instead of persisting under the torn-down session (Bug B5).
 func (r *Router) CleanupThread(threadID string) {
+	if err := r.flushStreamingThread(threadID); err != nil {
+		log.Printf("triage: cleanup flush stream buffers for thread %s: %v", threadID, err)
+	}
+
 	r.mu.Lock()
 	// Set the stopped flag BEFORE dropping other state so Handle observes
 	// a consistent snapshot: any concurrent Handle call either sees a live
@@ -699,11 +701,12 @@ func (r *Router) CleanupThread(threadID string) {
 	deleteByPrefix(r.activeTextBlocks, prefix)
 	deleteByPrefix(r.activeThinkingBlocks, prefix)
 	deleteByPrefix(r.errorSeqByScope, prefix)
-	deleteByPrefix(r.nextHighlightAt, prefix)
-	deleteByPrefix(r.nextStreamingUpsertAt, prefix)
-	for key := range r.streamingUpsertTimers {
+	for key := range r.streamPersistBuffers {
 		if strings.HasPrefix(key, prefix) {
-			r.cancelTrailingStreamingItemUpsertLocked(key)
+			if buffer := r.streamPersistBuffers[key]; buffer != nil && buffer.timer != nil {
+				buffer.timer.Stop()
+			}
+			delete(r.streamPersistBuffers, key)
 		}
 	}
 	deleteByPrefix(r.terminalInteractionSeq, prefix)

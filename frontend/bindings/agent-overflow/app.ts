@@ -363,8 +363,7 @@ export function GetPayloadChunk(threadID: string, payloadID: string, offset: num
 }
 
 /**
- * GetPayloadData returns a payload body alongside its pre-rendered
- * display HTML for the frontend. The caller must supply the owning
+ * GetPayloadData returns a payload body. The caller must supply the owning
  * thread so payload ids cannot be read outside the thread timeline that
  * references them.
  */
@@ -579,18 +578,6 @@ export function GitRemoveWorktree(threadID: string): $CancellablePromise<void> {
  */
 export function GitStageAll(threadID: string): $CancellablePromise<void> {
     return $Call.ByID(548906954, threadID);
-}
-
-/**
- * HighlightMarkdown renders arbitrary markdown through the shared
- * highlighter. Surfaces that transform raw markdown before display
- * (ProposedPlanCard strips the title heading, truncates for collapsed
- * previews) can't use a pre-rendered payload HTML blob because the
- * transforms must happen at the markdown level. They call this binding
- * after applying their transforms.
- */
-export function HighlightMarkdown(input: string): $CancellablePromise<string> {
-    return $Call.ByID(1566741474, input);
 }
 
 /**
@@ -940,8 +927,8 @@ export function SaveDraft(threadID: string, content: string, attachmentIDs: stri
     return $Call.ByID(3025273299, threadID, content, attachmentIDs, terminalChips);
 }
 
-export function SavePayloadToFile(payloadID: string): $CancellablePromise<string> {
-    return $Call.ByID(3576148797, payloadID);
+export function SavePayloadToFile(threadID: string, payloadID: string): $CancellablePromise<string> {
+    return $Call.ByID(3576148797, threadID, payloadID);
 }
 
 /**

@@ -1,6 +1,7 @@
 import { Events } from '@wailsio/runtime';
 import type {
   ApprovalEvent,
+  ItemDeltaEvent,
   ProviderStatusEvent,
   SubagentNotificationEvent,
   TurnCompletedEvent,
@@ -234,6 +235,15 @@ function applyItemUpsert(item: Item): void {
   }
 }
 
+function applyItemDelta(evt: ItemDeltaEvent): void {
+  if (!evt || !evt.threadId || !evt.itemId || !evt.delta) return;
+
+  for (const pane of getAllPanes().values()) {
+    if (pane.threadId !== evt.threadId) continue;
+    pane.applyItemDelta(evt);
+  }
+}
+
 // kindToLegacyStatus maps the chat-rewrite closed kind enum onto the legacy
 // `status` vocabulary the ProviderStatusBanner already renders. Keeps the
 // banner component untouched while the router adopts the new vocabulary —
@@ -393,11 +403,11 @@ export function setupEventListeners(): () => void {
   const cancelProviderStatus = wailsEventOn<ProviderStatusEvent>('provider:status', applyProviderStatus);
 
   // provider:item_upsert — backend persisted (or updated) a timeline
-  // item. Triage emits this for every tool_call lifecycle row + every
-  // background tool_completion sibling so the frontend can show the
-  // row inline as soon as it lands, without waiting for the
-  // turn-complete ListItems reconcile.
+  // item. Streaming rows use this for lifecycle boundaries only; live
+  // text arrives separately on provider:item_delta so panes do not clone
+  // and regroup their item arrays on each token.
   const cancelItemUpsert = wailsEventOn<Item>('provider:item_upsert', applyItemUpsert);
+  const cancelItemDelta = wailsEventOn<ItemDeltaEvent>('provider:item_delta', applyItemDelta);
 
   // provider:turn_{started,completed} — wire-pushed turn lifecycle.
   // These are the sole drivers of `pane.activeTurn` /
@@ -508,6 +518,7 @@ export function setupEventListeners(): () => void {
     cancelUsage();
     cancelProviderStatus();
     cancelItemUpsert();
+    cancelItemDelta();
     cancelTurnStarted();
     cancelTurnCompleted();
     cancelSubagentNotification();

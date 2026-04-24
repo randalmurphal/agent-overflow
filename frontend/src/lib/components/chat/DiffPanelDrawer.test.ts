@@ -51,7 +51,7 @@ describe('<DiffPanelDrawer>', () => {
     setBindingMock('GetTurnDiff', async () => '');
     setBindingMock('GetCheckpointToWorktreeDiff', async () => '');
     setBindingMock('GetWorkingTreeDiff', async () => '');
-    setBindingMock('GetPayloadData', async () => ({ data: '', html: '' }));
+    setBindingMock('GetPayloadData', async () => ({ data: '' }));
     // Cumulative diffs are now sourced from a dedicated thread-wide
     // binding so the panel stays accurate with a paged timeline. Each
     // test overrides this below when it needs non-empty rows.
@@ -103,7 +103,7 @@ describe('<DiffPanelDrawer>', () => {
       }),
     ]);
     const pane = await buildPane(makeThread({ id: 'thread-a' }));
-    const getPayload = setBindingMock('GetPayloadData', async (_threadId: string, payloadId: string) => ({ data: `diff:${payloadId}`, html: '' }));
+    const getPayload = setBindingMock('GetPayloadData', async (_threadId: string, payloadId: string) => ({ data: `diff:${payloadId}` }));
 
     const { getByTestId, findByTestId } = render(DiffPanelDrawer, { props: { pane } });
     await flush();

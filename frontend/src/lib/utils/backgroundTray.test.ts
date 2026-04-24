@@ -25,7 +25,6 @@ function makeItem(overrides: Partial<Item> = {}): Item {
     role: 'assistant',
     status: 'running',
     summary: 'tool',
-    highlightedContent: '',
     isBackground: true,
     createdAt,
     updatedAt: overrides.updatedAt ?? createdAt,

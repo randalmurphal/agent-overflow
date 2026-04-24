@@ -13,7 +13,6 @@ function makeItem(overrides: Partial<Item> = {}): Item {
     role: 'assistant',
     status: 'completed',
     summary: 'Waited for background terminal',
-    highlightedContent: '',
     createdAt: 0,
     updatedAt: 0,
     ...overrides,

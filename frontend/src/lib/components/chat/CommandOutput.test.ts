@@ -44,14 +44,9 @@ describe('<CommandOutput>', () => {
     cleanup();
   });
 
-  it('paints server-rendered ANSI html in the expanded <pre>', async () => {
-    // The Go-side ANSI renderer emits stable `term-*` classes around
-    // colored segments. CommandOutput paints the HTML via {@html}, so we
-    // stub GetPayloadPreview to hand back the span the server would
-    // produce, then verify it lands in the DOM under the expected class.
+  it('renders raw ANSI payloads in the expanded output', async () => {
     setBindingMock('GetPayloadPreview', async () => ({
       data: '\x1b[31mred\x1b[0m then plain',
-      html: '<span class="term-fg31">red</span> then plain',
       totalSize: 32,
       isComplete: true,
     }));
@@ -70,23 +65,16 @@ describe('<CommandOutput>', () => {
 
     const pre = container.querySelector('pre');
     if (!pre) throw new Error('expected <pre> for the command output body');
-    const styledSpans = pre.querySelectorAll('span.term-fg31');
+    const styledSpans = pre.querySelectorAll('span.ansi-fg-31');
     expect(styledSpans.length).toBeGreaterThan(0);
     expect(styledSpans[0]?.textContent).toBe('red');
     expect(pre.textContent).toContain(' then plain');
-    // The raw escape must not land in the DOM — server strips it.
     expect(pre.innerHTML).not.toContain('\u001b[');
   });
 
-  it('paints server-escaped HTML so script tags never become live nodes', async () => {
-    // The Go renderer escapes HTML before handing bytes to the frontend,
-    // so the html channel is safe to drop through {@html}. This test
-    // pins that contract by stubbing what the backend would return for
-    // a dangerous payload and verifying no live <script> ends up in
-    // the DOM.
+  it('escapes raw HTML payloads so script tags never become live nodes', async () => {
     setBindingMock('GetPayloadPreview', async () => ({
       data: '<script>alert(1)</script>',
-      html: '&lt;script&gt;alert(1)&lt;/script&gt;',
       totalSize: 30,
       isComplete: true,
     }));
@@ -115,13 +103,12 @@ describe('<CommandOutput>', () => {
     // lazy-content guarantee that keeps memory bounded.
     const previewMock = setBindingMock('GetPayloadPreview', async () => ({
       data: '\u001b[32mok\u001b[0m',
-      html: '<span class="term-fg32">ok</span>',
+      nextOffset: DEFAULT_PAYLOAD_PREVIEW_BYTES,
       totalSize: 2048,
       isComplete: false,
     }));
     const chunkMock = setBindingMock('GetPayloadChunk', async () => ({
       data: 'full body',
-      html: 'full body',
       offset: DEFAULT_PAYLOAD_PREVIEW_BYTES,
       nextOffset: DEFAULT_PAYLOAD_PREVIEW_BYTES + 9,
       totalSize: 2048,

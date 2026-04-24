@@ -36,7 +36,6 @@ function makeItem(overrides: Partial<Item> = {}): Item {
     role: 'user',
     status: 'completed',
     summary: 'hello',
-    highlightedContent: '',
     createdAt: 0,
     updatedAt: 0,
     ...overrides,

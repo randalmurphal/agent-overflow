@@ -143,6 +143,9 @@ func TestMigrationVersionTracking(t *testing.T) {
 	if versions[23].version != 24 || versions[23].name != "items_kind_notification" {
 		t.Errorf("v24: got %d/%s", versions[23].version, versions[23].name)
 	}
+	if versions[24].version != 25 || versions[24].name != "remove_rendered_chat_html" {
+		t.Errorf("v25: got %d/%s", versions[24].version, versions[24].name)
+	}
 }
 
 func TestMigrationIdempotent(t *testing.T) {

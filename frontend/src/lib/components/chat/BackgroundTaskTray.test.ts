@@ -23,7 +23,6 @@ function item(overrides: Partial<Item> & { id: string }): Item {
     role: 'assistant',
     status: 'running',
     summary: '',
-    highlightedContent: '',
     createdAt: 0,
     updatedAt: 0,
     ...overrides,
@@ -307,7 +306,6 @@ describe('<BackgroundTaskTray>', () => {
       role: 'assistant',
       status: 'running',
       summary: 'Bash: sleep 1',
-      highlightedContent: '',
       isBackground: true,
       // completionOf deliberately empty — this is a pure launch row.
       createdAt: 0,
@@ -346,7 +344,6 @@ describe('<BackgroundTaskTray>', () => {
       role: 'assistant',
       status: 'running',
       summary: 'Edit: foo.ts',
-      highlightedContent: '',
       // isBackground + completionOf both falsy
       createdAt: 0,
       updatedAt: 0,

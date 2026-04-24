@@ -20,7 +20,7 @@ var errDiscussionStartFailed = errors.New("discussion start failed")
 func TestDiscussionBindingsCRUD(t *testing.T) {
 	app := newTestAppWithStore(t)
 	app.registry = discussion.NewRegistry(app.store)
-	app.channels = discussion.NewChannelService(app.store, app.highlighter)
+	app.channels = discussion.NewChannelService(app.store)
 
 	def := store.DiscussionDefinition{
 		Name:  "Critics",
@@ -179,7 +179,7 @@ func TestResolveDiscussionDefinitionDoesNotHideProjectDefinitionErrors(t *testin
 func TestStartDiscussionCreatesChannelChildrenAndParticipantSessions(t *testing.T) {
 	app := newTestAppWithStore(t)
 	app.registry = discussion.NewRegistry(app.store)
-	app.channels = discussion.NewChannelService(app.store, app.highlighter)
+	app.channels = discussion.NewChannelService(app.store)
 
 	var started []string
 	app.startSessionFn = func(threadID string) error {
@@ -276,7 +276,7 @@ func TestStartDiscussionCreatesChannelChildrenAndParticipantSessions(t *testing.
 func TestStartDiscussionCleansUpOnParticipantSessionFailure(t *testing.T) {
 	app := newTestAppWithStore(t)
 	app.registry = discussion.NewRegistry(app.store)
-	app.channels = discussion.NewChannelService(app.store, app.highlighter)
+	app.channels = discussion.NewChannelService(app.store)
 
 	thread := testThread("thread-discussion-fail")
 	if err := app.store.CreateThread(thread); err != nil {
@@ -337,8 +337,8 @@ func TestStartDiscussionCleansUpOnParticipantSessionFailure(t *testing.T) {
 func TestStartDiscussionMirrorsEarlyParticipantTurnDuringStartup(t *testing.T) {
 	app := newTestAppWithStore(t)
 	app.registry = discussion.NewRegistry(app.store)
-	app.channels = discussion.NewChannelService(app.store, app.highlighter)
-	app.triage = triage.NewRouter(app.store, func(string, any) {}, app.highlighter)
+	app.channels = discussion.NewChannelService(app.store)
+	app.triage = triage.NewRouter(app.store, func(string, any) {})
 
 	thread := testThread("thread-discussion-early-turn")
 	if err := app.store.CreateThread(thread); err != nil {
@@ -419,18 +419,18 @@ func TestStartDiscussionMirrorsEarlyParticipantTurnDuringStartup(t *testing.T) {
 func TestPostChannelMessageAndGetChannelMessages(t *testing.T) {
 	app := newTestAppWithStore(t)
 	app.registry = discussion.NewRegistry(app.store)
-	app.channels = discussion.NewChannelService(app.store, app.highlighter)
+	app.channels = discussion.NewChannelService(app.store)
 
 	thread := store.Thread{
-		ID:              "thread-channel",
+		ID:            "thread-channel",
 		ProjectID:     defaultTestProjectID,
-		Title:           "Channel Thread",
-		Provider:        string(provider.Codex),
-		WorkspacePath:   "/tmp/workspace",
-		Model:           "gpt-5.4",
-		Mode: "discussion",
-		CreatedAt:       time.Now().UnixMilli(),
-		UpdatedAt:       time.Now().UnixMilli(),
+		Title:         "Channel Thread",
+		Provider:      string(provider.Codex),
+		WorkspacePath: "/tmp/workspace",
+		Model:         "gpt-5.4",
+		Mode:          "discussion",
+		CreatedAt:     time.Now().UnixMilli(),
+		UpdatedAt:     time.Now().UnixMilli(),
 	}
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
@@ -459,7 +459,7 @@ func TestPostChannelMessageAndGetChannelMessages(t *testing.T) {
 func TestDeleteThreadRemovesDiscussionChildrenAndRuntimeState(t *testing.T) {
 	app := newTestAppWithStore(t)
 	app.registry = discussion.NewRegistry(app.store)
-	app.channels = discussion.NewChannelService(app.store, app.highlighter)
+	app.channels = discussion.NewChannelService(app.store)
 
 	thread := testThread("thread-discussion-delete")
 	if err := app.store.CreateThread(thread); err != nil {
@@ -535,21 +535,21 @@ func TestDeleteThreadRemovesDiscussionChildrenAndRuntimeState(t *testing.T) {
 
 func TestSessionEventHandlerMirrorsDiscussionTurnsIntoChannelAndConcludes(t *testing.T) {
 	app := newTestAppWithStore(t)
-	app.channels = discussion.NewChannelService(app.store, app.highlighter)
-	app.triage = triage.NewRouter(app.store, func(string, any) {}, app.highlighter)
+	app.channels = discussion.NewChannelService(app.store)
+	app.triage = triage.NewRouter(app.store, func(string, any) {})
 
 	now := time.Now().UnixMilli()
 	parent := store.Thread{
-		ID:              "thread-parent",
+		ID:            "thread-parent",
 		ProjectID:     defaultTestProjectID,
-		Title:           "Architecture Review",
-		Provider:        string(provider.Codex),
-		WorkspacePath:   "/tmp/workspace",
-		Model:           "gpt-5.4",
-		Mode: "discussion",
-		DiscussionID:    "channel-1",
-		CreatedAt:       now,
-		UpdatedAt:       now,
+		Title:         "Architecture Review",
+		Provider:      string(provider.Codex),
+		WorkspacePath: "/tmp/workspace",
+		Model:         "gpt-5.4",
+		Mode:          "discussion",
+		DiscussionID:  "channel-1",
+		CreatedAt:     now,
+		UpdatedAt:     now,
 	}
 	if err := app.store.CreateThread(parent); err != nil {
 		t.Fatalf("CreateThread(parent) error = %v", err)
@@ -687,7 +687,7 @@ func TestSessionEventHandlerMirrorsDiscussionTurnsIntoChannelAndConcludes(t *tes
 func TestStartDiscussionRejectsThreadWithChatHistory(t *testing.T) {
 	app := newTestAppWithStore(t)
 	app.registry = discussion.NewRegistry(app.store)
-	app.channels = discussion.NewChannelService(app.store, app.highlighter)
+	app.channels = discussion.NewChannelService(app.store)
 
 	thread := testThread("thread-discussion-used-chat")
 	if err := app.store.CreateThread(thread); err != nil {
@@ -746,7 +746,7 @@ func TestStartDiscussionRejectsThreadWithChatHistory(t *testing.T) {
 func TestStartDiscussionRejectsEmptyName(t *testing.T) {
 	app := newTestAppWithStore(t)
 	app.registry = discussion.NewRegistry(app.store)
-	app.channels = discussion.NewChannelService(app.store, app.highlighter)
+	app.channels = discussion.NewChannelService(app.store)
 
 	thread := testThread("thread-discussion-empty-name")
 	if err := app.store.CreateThread(thread); err != nil {

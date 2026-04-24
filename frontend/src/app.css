@@ -1,7 +1,5 @@
 @import "tailwindcss";
 @import "./styles/tokens.css";
-@import "./styles/chroma-dark.css";
-@import "./styles/chroma-light.css";
 
 :root {
   --surface-0: oklch(0.145 0.014 285.82);
@@ -159,11 +157,9 @@ pre, code, kbd, samp, .ansi-body {
 }
 
 /*
- * Markdown rendering. The server emits plain goldmark-shaped HTML
- * (<h1>/<ul>/<p>/<pre>/...); these rules port the visual spacing and
- * sizing that the former Svelte Markdown component applied inline via
- * Tailwind classes. The container reads the ambient color, so nesting
- * inside bubbles of any color works without override.
+ * Markdown rendering. Rows project raw text into sanitized HTML on the
+ * client; these rules keep that projection visually stable inside any
+ * chat surface.
  */
 .markdown-body {
   font-size: var(--text-sm);
@@ -228,7 +224,7 @@ pre, code, kbd, samp, .ansi-body {
   margin: 0.5rem 0;
 }
 
-/* GFM tables — goldmark emits <table><thead><tr><th>…</th></tr></thead><tbody>… */
+/* GFM tables. */
 .markdown-body table {
   border-collapse: collapse;
   margin: 0.5rem 0;
@@ -252,7 +248,7 @@ pre, code, kbd, samp, .ansi-body {
   background: color-mix(in oklab, var(--surface-0) 50%, transparent);
 }
 
-/* GFM task lists — goldmark renders as <li><input type="checkbox" disabled ...> text</li>. */
+/* GFM task lists. */
 .markdown-body li:has(> input[type="checkbox"]) {
   list-style: none;
   margin-left: -1.25rem;
@@ -268,10 +264,7 @@ pre, code, kbd, samp, .ansi-body {
   color: var(--text-secondary);
 }
 
-/* LaTeX math — emitted by internal/highlight/math.go as
-   <span class="math-inline"> and <div class="math-display">. Once
-   KaTeX renders they keep these class names so we can style the
-   container + pre-render fallback. */
+/* LaTeX math starts as escaped source and upgrades to KaTeX when visible. */
 .markdown-body .math-inline {
   font-family: var(--font-mono);
 }
@@ -288,10 +281,7 @@ pre, code, kbd, samp, .ansi-body {
   font-family: inherit;
 }
 
-/* Mermaid diagrams — the Go renderer emits <pre class="mermaid"> and
-   the lazy loader swaps text for SVG. The raw-source state inherits
-   the <pre> styling; post-render we remove that padding/background so
-   the SVG sits clean on the message background. */
+/* Mermaid diagrams upgrade from raw source blocks to SVG when visible. */
 .markdown-body pre.mermaid {
   font-family: var(--font-mono);
   font-size: 0.8125rem;
@@ -304,25 +294,7 @@ pre, code, kbd, samp, .ansi-body {
   max-width: 100%;
 }
 
-/* Fallback surface used by lazyCompleteSourceRenderer when a complete
-   source fails to parse (invalid mermaid / KaTeX). The source sits in
-   a normal-looking code block and the error message appears below, so
-   the user sees exactly what the agent tried to render and why it
-   failed — never just the error alone. */
-.markdown-body .rendered-source {
-  /* Inherits the default `.markdown-body pre` styling (mono, border,
-     padding). The rule exists explicitly so the fallback surface is
-     visibly a surface, not just a reused <pre>. */
-  margin: 0;
-}
-.markdown-body .rendered-error {
-  color: var(--error);
-  font-family: var(--font-mono);
-  font-size: 0.875em;
-  padding: 0.25rem 0 0;
-}
-
-/* Collapsible <details>/<summary>. Passed through by safeHTMLRenderer. */
+/* Collapsible <details>/<summary> passed through sanitized client markdown. */
 .markdown-body details {
   border: 1px solid var(--border);
   border-radius: 0.375rem;
@@ -351,15 +323,8 @@ pre, code, kbd, samp, .ansi-body {
   color: var(--text-primary);
 }
 
-/*
- * Code-block wrapper + copy button. Emitted by the Go markdown renderer
- * around every fenced block (see internal/highlight/markdown.go).
- * The delegated click listener in codeCopy.ts reads the sibling <pre>'s
- * text content; styles only set the position, hover reveal, and success /
- * error states.
- */
-.markdown-body .ch-wrap { position: relative; }
-.markdown-body .ch-wrap .ch-copy {
+.markdown-body pre { position: relative; }
+.markdown-body .code-copy-button {
   position: absolute;
   top: 0.4rem;
   right: 0.4rem;
@@ -374,75 +339,31 @@ pre, code, kbd, samp, .ansi-body {
   opacity: 0;
   transition: opacity 0.12s ease-out;
 }
-.markdown-body .ch-wrap:hover .ch-copy,
-.markdown-body .ch-wrap .ch-copy:focus-visible {
+.markdown-body pre:hover .code-copy-button,
+.markdown-body .code-copy-button:focus-visible {
   opacity: 1;
 }
-.markdown-body .ch-wrap .ch-copy[data-copy-state="copied"] {
-  color: var(--success);
-  border-color: color-mix(in oklab, var(--success) 45%, transparent);
-}
-.markdown-body .ch-wrap .ch-copy[data-copy-state="error"] {
-  color: var(--error);
-  border-color: color-mix(in oklab, var(--error) 45%, transparent);
-}
 
-/*
- * ANSI rendering. terminal-to-html emits stable `term-fg<code>` and
- * `term-bg<code>` classes matching SGR codes. These rules map the
- * most common color codes to the design-token palette so colored
- * command output, colored tool results, and colored thinking blocks
- * read the same color identity as the rest of the UI.
- */
 .ansi-body { color: inherit; }
-.ansi-body .term-fg30 { color: #4b5563; }
-.ansi-body .term-fg31 { color: oklch(0.7 0.17 27); }   /* red */
-.ansi-body .term-fg32 { color: oklch(0.75 0.15 150); } /* green */
-.ansi-body .term-fg33 { color: oklch(0.82 0.14 85); }  /* yellow */
-.ansi-body .term-fg34 { color: oklch(0.72 0.14 250); } /* blue */
-.ansi-body .term-fg35 { color: oklch(0.75 0.16 320); } /* magenta */
-.ansi-body .term-fg36 { color: oklch(0.8 0.12 205); }  /* cyan */
-.ansi-body .term-fg37 { color: var(--text-primary); }  /* white */
-/* Bright/intense variants. terminal-to-html emits `term-fgi{N}` and
-   `term-bgi{N}` for SGR codes 90-97 and 100-107 (the "i" marks
-   intense). Earlier builds mis-named these as `term-fg90`/`term-bg100`
-   which never matched anything — many agent tools (ripgrep, prettier,
-   fd, bat) render bright-colored output and those colors silently
-   inherited the default foreground. */
-.ansi-body .term-fgi90 { color: var(--text-secondary); }
-.ansi-body .term-fgi91 { color: oklch(0.78 0.15 27); }
-.ansi-body .term-fgi92 { color: oklch(0.82 0.14 150); }
-.ansi-body .term-fgi93 { color: oklch(0.88 0.13 85); }
-.ansi-body .term-fgi94 { color: oklch(0.8 0.13 250); }
-.ansi-body .term-fgi95 { color: oklch(0.82 0.15 320); }
-.ansi-body .term-fgi96 { color: oklch(0.86 0.11 205); }
-.ansi-body .term-fgi97 { color: #ffffff; }
-.ansi-body .term-bg40 { background: #111827; }
-.ansi-body .term-bg41 { background: color-mix(in oklab, oklch(0.55 0.18 27) 60%, transparent); }
-.ansi-body .term-bg42 { background: color-mix(in oklab, oklch(0.55 0.16 150) 55%, transparent); }
-.ansi-body .term-bg43 { background: color-mix(in oklab, oklch(0.7 0.15 85) 50%, transparent); }
-.ansi-body .term-bg44 { background: color-mix(in oklab, oklch(0.55 0.14 250) 55%, transparent); }
-.ansi-body .term-bg45 { background: color-mix(in oklab, oklch(0.6 0.17 320) 55%, transparent); }
-.ansi-body .term-bg46 { background: color-mix(in oklab, oklch(0.65 0.13 205) 55%, transparent); }
-.ansi-body .term-bg47 { background: color-mix(in oklab, var(--text-primary) 15%, transparent); }
-.ansi-body .term-bgi100 { background: color-mix(in oklab, var(--text-secondary) 25%, transparent); }
-.ansi-body .term-bgi101 { background: color-mix(in oklab, oklch(0.78 0.15 27) 40%, transparent); }
-.ansi-body .term-bgi102 { background: color-mix(in oklab, oklch(0.82 0.14 150) 40%, transparent); }
-.ansi-body .term-bgi103 { background: color-mix(in oklab, oklch(0.88 0.13 85) 40%, transparent); }
-.ansi-body .term-bgi104 { background: color-mix(in oklab, oklch(0.8 0.13 250) 40%, transparent); }
-.ansi-body .term-bgi105 { background: color-mix(in oklab, oklch(0.82 0.15 320) 40%, transparent); }
-.ansi-body .term-bgi106 { background: color-mix(in oklab, oklch(0.86 0.11 205) 40%, transparent); }
-.ansi-body .term-bgi107 { background: color-mix(in oklab, #ffffff 25%, transparent); }
-
-/* SGR attribute codes. terminal-to-html emits `term-fg{N}` for 1/3/4/9
-   (bold/italic/underline/strike) the same way it emits `term-fg{30..37}`
-   for color codes — parameter number wins, context is lost. That's fine
-   because 30-37 map to colors and 1/3/4/9 map to attributes, so the
-   class namespaces don't overlap in practice. */
-.ansi-body .term-fg1 { font-weight: 600; }           /* bold */
-.ansi-body .term-fg3 { font-style: italic; }         /* italic */
-.ansi-body .term-fg4 { text-decoration: underline; } /* underline */
-.ansi-body .term-fg9 { text-decoration: line-through; } /* strike */
+.ansi-body .ansi-fg-30 { color: #4b5563; }
+.ansi-body .ansi-fg-31 { color: oklch(0.7 0.17 27); }
+.ansi-body .ansi-fg-32 { color: oklch(0.75 0.15 150); }
+.ansi-body .ansi-fg-33 { color: oklch(0.82 0.14 85); }
+.ansi-body .ansi-fg-34 { color: oklch(0.72 0.14 250); }
+.ansi-body .ansi-fg-35 { color: oklch(0.75 0.16 320); }
+.ansi-body .ansi-fg-36 { color: oklch(0.8 0.12 205); }
+.ansi-body .ansi-fg-37 { color: var(--text-primary); }
+.ansi-body .ansi-fg-90 { color: var(--text-secondary); }
+.ansi-body .ansi-fg-91 { color: oklch(0.78 0.15 27); }
+.ansi-body .ansi-fg-92 { color: oklch(0.82 0.14 150); }
+.ansi-body .ansi-fg-93 { color: oklch(0.88 0.13 85); }
+.ansi-body .ansi-fg-94 { color: oklch(0.8 0.13 250); }
+.ansi-body .ansi-fg-95 { color: oklch(0.82 0.15 320); }
+.ansi-body .ansi-fg-96 { color: oklch(0.86 0.11 205); }
+.ansi-body .ansi-fg-97 { color: #ffffff; }
+.ansi-body .ansi-bold { font-weight: 600; }
+.ansi-body .ansi-italic { font-style: italic; }
+.ansi-body .ansi-underline { text-decoration: underline; }
 
 /*
  * Sidebar status glow. When a thread is pending user action — either

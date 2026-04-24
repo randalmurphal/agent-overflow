@@ -40,6 +40,7 @@
   import ToolResultCard from './ToolResultCard.svelte';
   import { classifyToolName } from './toolCardHeader';
   import { createPayloadExpansion, formatPayloadSize } from './payloadExpansion.svelte';
+  import AnsiText from './AnsiText.svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
 
   let { pane, item }: { pane: ThreadPane; item: Item } = $props();
@@ -296,10 +297,12 @@
             Failed to load: {expansion.error}
           </p>
         {:else if expansion.displayData !== null}
-          <pre
+          <div
             class="ansi-body max-h-60 overflow-auto whitespace-pre-wrap break-words px-3 py-2 text-[11px] leading-relaxed text-fg-muted"
             data-testid="tool-call-card-output"
-          >{@html expansion.displayHtml ?? ''}</pre>
+          >
+            <AnsiText source={expansion.displayData} />
+          </div>
           {#if expansion.hasMore}
             <button
               type="button"

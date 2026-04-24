@@ -12,7 +12,6 @@ import (
 	"sync"
 	"time"
 
-	"agent-overflow/internal/highlight"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/stringsx"
@@ -52,14 +51,9 @@ type TurnMetrics struct {
 
 // Router classifies provider events and routes them.
 type Router struct {
-	store *store.Store
-	emit  func(eventName string, data any) // wraps app.Event.Emit
-	// highlighter renders items.summary → items.highlighted_content on
-	// every item persist and at the throttled render boundary on streaming
-	// deltas. Required — NewRouter panics on nil. Concurrent-safe; one
-	// instance is shared across the whole Router.
-	highlighter          *highlight.Renderer
-	checkpoints          CheckpointCapture // nil-safe; no-op when nil
+	store                *store.Store
+	emit                 func(eventName string, data any) // wraps app.Event.Emit
+	checkpoints          CheckpointCapture                // nil-safe; no-op when nil
 	tracer               trace.Tracer
 	metrics              TurnMetrics
 	mu                   sync.Mutex
@@ -74,23 +68,11 @@ type Router struct {
 	activeThinkingBlocks map[string]bool
 	streamingItemCounts  map[string]int
 	errorSeqByScope      map[string]int
-	// nextHighlightAt throttles the render-on-delta path to one render per
-	// streamingHighlightIntervalMs per streaming item id. Without it, a
-	// long turn at Claude's ~40 deltas/sec stream rate re-renders the
-	// cumulative summary on every delta — O(N²) CPU and allocations in
-	// the length of the summary. Cleared on settle / turn end / thread
-	// cleanup alongside activeTextBlocks / activeThinkingBlocks.
-	nextHighlightAt map[string]int64
-	// nextStreamingUpsertAt throttles frontend timeline updates for
-	// streaming text/thinking rows. SQLite still receives every delta;
-	// the UI gets batched snapshots so a fast token stream does not force
-	// a full pane.items clone + timeline regroup + DOM patch on each token.
-	nextStreamingUpsertAt map[string]int64
-	// streamingUpsertTimers hold the trailing flush for throttled
-	// streaming item updates. Without this, a burst inside one throttle
-	// window followed by provider silence would leave the visible row
-	// stale until the next delta or settle event.
-	streamingUpsertTimers map[string]*time.Timer
+	// streamPersistBuffers decouple the live UI stream from durable
+	// history writes. Text/thinking deltas emit immediately on
+	// provider:item_delta, then flush to SQLite by interval, byte
+	// threshold, or lifecycle boundary.
+	streamPersistBuffers map[string]*streamPersistBuffer
 	// capturedTurns guards against double-capture when a provider emits
 	// multiple EventTurnStart events for the same (thread, turn) — which
 	// happens when Claude re-sends a system.init after an interrupt.
@@ -148,16 +130,7 @@ type Router struct {
 
 // NewRouter creates a triage router. Telemetry is off by default; wire a
 // tracer and metrics via SetTelemetry to enable spans and counters.
-//
-// The highlighter is required — every persistItem and streaming append
-// runs raw text through it before writing the highlighted_content column
-// so the frontend can paint {@html} directly. Passing nil is a bug and
-// panics; tests that don't care about rendering can pass
-// highlight.New(highlight.Options{}) to get the zero-config default.
-func NewRouter(st *store.Store, emit func(eventName string, data any), h *highlight.Renderer) *Router {
-	if h == nil {
-		panic("triage: NewRouter requires a non-nil highlight renderer")
-	}
+func NewRouter(st *store.Store, emit func(eventName string, data any)) *Router {
 	noopMeter := metricnoop.NewMeterProvider().Meter("triage/router")
 	ts, _ := noopMeter.Int64Counter("turns.started")
 	tc, _ := noopMeter.Int64Counter("turns.completed")
@@ -165,10 +138,9 @@ func NewRouter(st *store.Store, emit func(eventName string, data any), h *highli
 	ip, _ := noopMeter.Int64Counter("items.persisted")
 	pp, _ := noopMeter.Int64Counter("payloads.persisted")
 	return &Router{
-		store:       st,
-		emit:        emit,
-		highlighter: h,
-		tracer:      tracenoop.NewTracerProvider().Tracer("triage/router"),
+		store:  st,
+		emit:   emit,
+		tracer: tracenoop.NewTracerProvider().Tracer("triage/router"),
 		metrics: TurnMetrics{
 			TurnsStarted:      ts,
 			TurnsCompleted:    tc,
@@ -187,9 +159,7 @@ func NewRouter(st *store.Store, emit func(eventName string, data any), h *highli
 		activeThinkingBlocks:       make(map[string]bool),
 		streamingItemCounts:        make(map[string]int),
 		errorSeqByScope:            make(map[string]int),
-		nextHighlightAt:            make(map[string]int64),
-		nextStreamingUpsertAt:      make(map[string]int64),
-		streamingUpsertTimers:      make(map[string]*time.Timer),
+		streamPersistBuffers:       make(map[string]*streamPersistBuffer),
 		capturedTurns:              make(map[string]bool),
 		turnSpans:                  make(map[string]trace.Span),
 		stoppedThreads:             make(map[string]struct{}),
@@ -717,17 +687,6 @@ func (r *Router) persistItem(item store.Item, payload *store.Payload) error {
 			item.ParentID = ""
 		}
 	}
-
-	// Render the display HTML unconditionally against the current summary.
-	// Rendering on every persist — instead of trusting a caller-provided
-	// HighlightedContent — eliminates a class of staleness bugs where a
-	// caller loads a row from the store (HTML populated), mutates Summary,
-	// and calls persistItem without clearing the old HTML. Streaming hot
-	// paths bypass persistItem (they go through AppendItemSummary +
-	// UpdateItemHighlight), so this render only runs at event-boundary rate.
-	// Kinds that don't server-render return the empty string; the frontend
-	// treats empty as "paint summary as plain text".
-	item.HighlightedContent = r.highlighter.RenderForKind(item.Kind, item.Summary)
 
 	persisted, err := r.store.UpsertItem(item, payload)
 	if err != nil {

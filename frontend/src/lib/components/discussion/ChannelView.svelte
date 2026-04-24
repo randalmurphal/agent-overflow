@@ -8,6 +8,7 @@
   import { errString } from '../../utils/errors';
   import { relativeTime } from '../../utils/format';
   import Button from '../primitives/Button.svelte';
+  import ChatMarkdown from '../chat/ChatMarkdown.svelte';
 
   let {
     pane,
@@ -241,11 +242,7 @@
               {relativeTime(msg.createdAt, getSettings().timestampFormat)}
             </span>
           </div>
-          {#if msg.highlightedContent}
-            <div class="markdown-body text-[13px] text-fg break-words">{@html msg.highlightedContent}</div>
-          {:else}
-            <p class="whitespace-pre-wrap text-[13px] text-fg break-words">{msg.content}</p>
-          {/if}
+          <ChatMarkdown source={msg.content} class="text-[13px] text-fg break-words" />
         </div>
       {/each}
     {/if}

@@ -18,6 +18,12 @@ function providerStatusEvent(overrides: Partial<ProviderStatusEvent> = {}): Prov
   };
 }
 
+function nextFrame(): Promise<void> {
+  return new Promise((resolve) => {
+    requestAnimationFrame(() => resolve());
+  });
+}
+
 describe('setupEventListeners', () => {
   let cleanup: () => void;
 
@@ -41,6 +47,7 @@ describe('setupEventListeners', () => {
     expect(wailsListenerCount('provider:usage')).toBe(1);
     expect(wailsListenerCount('provider:status')).toBe(1);
     expect(wailsListenerCount('provider:item_upsert')).toBe(1);
+    expect(wailsListenerCount('provider:item_delta')).toBe(1);
     expect(wailsListenerCount('provider:turn_started')).toBe(1);
     expect(wailsListenerCount('provider:turn_completed')).toBe(1);
     expect(wailsListenerCount('provider:subagent_notification')).toBe(1);
@@ -52,6 +59,7 @@ describe('setupEventListeners', () => {
     expect(wailsListenerCount('provider:usage')).toBe(0);
     expect(wailsListenerCount('provider:status')).toBe(0);
     expect(wailsListenerCount('provider:item_upsert')).toBe(0);
+    expect(wailsListenerCount('provider:item_delta')).toBe(0);
     expect(wailsListenerCount('provider:turn_started')).toBe(0);
     expect(wailsListenerCount('provider:turn_completed')).toBe(0);
     expect(wailsListenerCount('provider:subagent_notification')).toBe(0);
@@ -75,6 +83,39 @@ describe('setupEventListeners', () => {
 
     expect(paneA.items.map((item) => item.id)).toEqual(['tool-1']);
     expect(paneB.items).toEqual([]);
+  });
+
+  it('routes provider:item_delta only to the matching pane', async () => {
+    const paneA = await buildPane(makeThread({ id: 'thread-a' }));
+    const paneB = await buildPane(makeThread({ id: 'thread-b' }));
+    paneA.upsertItem(makeItem({
+      id: 'text:0:0',
+      threadId: 'thread-a',
+      kind: 'assistant_text',
+      status: 'streaming',
+      summary: 'hello',
+    }));
+    paneB.upsertItem(makeItem({
+      id: 'text:0:0',
+      threadId: 'thread-b',
+      kind: 'assistant_text',
+      status: 'streaming',
+      summary: 'hello',
+    }));
+    getAllPanes().set('a', paneA);
+    getAllPanes().set('b', paneB);
+
+    emitWailsEvent('provider:item_delta', {
+      threadId: 'thread-a',
+      itemId: 'text:0:0',
+      kind: 'assistant_text',
+      delta: ' world',
+      updatedAt: 123,
+    });
+    await nextFrame();
+
+    expect(paneA.liveItemSummaries['text:0:0']).toBe('hello world');
+    expect(paneB.liveItemSummaries['text:0:0']).toBe('hello');
   });
 
   it('adds and resolves pending approvals through provider:approval', async () => {

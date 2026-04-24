@@ -3,6 +3,7 @@
   import type { Item } from '../../types/models';
   import ToolDecisionChip from './ToolDecisionChip.svelte';
   import { createPayloadExpansion, formatPayloadSize } from './payloadExpansion.svelte';
+  import AnsiText from './AnsiText.svelte';
 
   interface Props {
     item: Item;
@@ -10,14 +11,7 @@
 
   let { item }: Props = $props();
 
-  /**
-   * The Item fields we read (`status`) are being added to
-   * `src/lib/types/models.ts` by another agent. Access defensively until
-   * that type extension lands so this component compiles with the
-   * current baseline.
-   */
-  type StatusFields = { status?: 'running' | 'completed' | 'errored' | 'killed' };
-  const itemStatus = $derived((item as unknown as StatusFields).status ?? 'completed');
+  const itemStatus = $derived(item.status ?? 'completed');
 
   const expansion = createPayloadExpansion(() => item.payloadId, () => item.threadId);
 
@@ -183,10 +177,12 @@
           Failed to load: {expansion.error}
         </p>
       {:else if expansion.displayData !== null}
-        <pre
+        <div
           class="ansi-body max-h-60 overflow-auto whitespace-pre-wrap break-words px-3 py-2 font-mono text-xs leading-relaxed text-text-secondary"
           data-testid="tool-result-dropdown-output"
-        >{@html expansion.displayHtml ?? ''}</pre>
+        >
+          <AnsiText source={expansion.displayData} />
+        </div>
         {#if expansion.hasMore}
           <button
             type="button"

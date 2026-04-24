@@ -12,6 +12,8 @@ import (
 )
 
 const (
+	itemKindAssistantText  = "assistant_text"
+	itemKindThinking       = "thinking"
 	itemKindToolCall       = "tool_call"
 	itemKindBackgroundDone = "tool_completion"
 	itemKindNotification   = "notification"

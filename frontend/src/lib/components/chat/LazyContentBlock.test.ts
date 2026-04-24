@@ -62,13 +62,11 @@ describe('<LazyContentBlock>', () => {
   it('does not call payload bindings on mount — only on click', () => {
     const preview = setBindingMock('GetPayloadPreview', async () => ({
       data: 'PREVIEW',
-      html: 'PREVIEW',
       totalSize: 12,
       isComplete: true,
     }));
     const full = setBindingMock('GetPayloadChunk', async () => ({
       data: 'FULL BODY',
-      html: 'FULL BODY',
       offset: 7,
       nextOffset: 9,
       totalSize: 9,
@@ -84,13 +82,12 @@ describe('<LazyContentBlock>', () => {
   it('fetches the preview on expand and the full body only when requested', async () => {
     setBindingMock('GetPayloadPreview', async () => ({
       data: 'PREVIEW BODY',
-      html: 'PREVIEW BODY',
+      nextOffset: 'PREVIEW BODY'.length,
       totalSize: 64 * 1024,
       isComplete: false,
     }));
     setBindingMock('GetPayloadChunk', async () => ({
       data: 'FULL BODY CONTENT',
-      html: 'FULL BODY CONTENT',
       offset: 'PREVIEW BODY'.length,
       nextOffset: 'FULL BODY CONTENT'.length,
       totalSize: 'FULL BODY CONTENT'.length,
@@ -121,19 +118,17 @@ describe('<LazyContentBlock>', () => {
       'PREVIEW BODY'.length,
       DEFAULT_PAYLOAD_CHUNK_BYTES,
     );
-    expect(getByTestId('lazy-content-full').textContent).toBe('FULL BODY CONTENT');
+    expect(getByTestId('lazy-content-full').textContent).toBe('PREVIEW BODYFULL BODY CONTENT');
   });
 
   it('discarding on collapse causes re-expand to refetch the preview', async () => {
     setBindingMock('GetPayloadPreview', async () => ({
       data: 'PREVIEW',
-      html: 'PREVIEW',
       totalSize: 8 * 1024,
       isComplete: true,
     }));
     setBindingMock('GetPayloadChunk', async () => ({
       data: 'FULL',
-      html: 'FULL',
       offset: 7,
       nextOffset: 4,
       totalSize: 4,

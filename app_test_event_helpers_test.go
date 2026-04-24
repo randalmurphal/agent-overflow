@@ -22,6 +22,6 @@ func collectErrorItemUpserts(t *testing.T, app *App, buffer int) chan store.Item
 		if item.Kind == "error" {
 			items <- item
 		}
-	}, app.highlighter)
+	})
 	return items
 }

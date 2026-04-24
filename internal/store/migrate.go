@@ -578,12 +578,9 @@ CREATE INDEX turns_thread_index ON turns(thread_id, turn_index DESC);
 	{
 		Version: 19,
 		Name:    "highlighted_content_columns",
-		// Pre-rendered HTML for items.summary and channel_messages.content.
-		// The full story is in internal/highlight/ — briefly: goldmark +
-		// Chroma for assistant_text and channel messages, terminal-to-html
-		// for thinking streams. Rendering happens at write time so the
-		// timeline/discussion views can paint {@html} directly without
-		// running any highlighter in the webview.
+		// Historical pre-rendered HTML for items.summary and
+		// channel_messages.content. Migration v25 removes these columns;
+		// raw content is now canonical and the frontend owns rendering.
 		//
 		// NOT NULL DEFAULT '' keeps the column cheap for existing rows and
 		// for kinds that don't get server-rendered (user_text, tool_call,
@@ -676,6 +673,13 @@ CREATE INDEX IF NOT EXISTS idx_items_live_background
 		// Codex subagent notifications) without routing them through tool or
 		// task lifecycle state.
 		SQL: v24SQL,
+	},
+	{
+		Version: 25,
+		Name:    "remove_rendered_chat_html",
+		// Raw content is canonical. Rendering is now a frontend projection,
+		// so persisted server-rendered HTML is no longer part of the schema.
+		SQL: v25SQL,
 	},
 }
 
@@ -1201,6 +1205,127 @@ BEGIN
            SELECT 1 FROM items WHERE payload_id = OLD.payload_id
        );
 END;
+`
+
+// v25SQL removes the rendered HTML cache from timeline items and discussion
+// messages. Raw summaries, payloads, and channel content are preserved.
+const v25SQL = `
+DROP INDEX IF EXISTS idx_items_thread;
+DROP INDEX IF EXISTS idx_items_id;
+DROP INDEX IF EXISTS idx_items_thread_turn_item_unique;
+DROP INDEX IF EXISTS idx_items_parent;
+DROP INDEX IF EXISTS idx_items_completion_of;
+DROP INDEX IF EXISTS idx_items_payload_id;
+DROP INDEX IF EXISTS idx_items_meta_task_id;
+DROP INDEX IF EXISTS idx_items_live_background;
+DROP TRIGGER IF EXISTS trg_items_gc_payload;
+
+CREATE TABLE items_v25 (
+    id                  TEXT    NOT NULL,
+    thread_id           TEXT    NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+    turn_index          INTEGER NOT NULL,
+    item_index          INTEGER NOT NULL,
+    kind                TEXT    NOT NULL CHECK(kind IN (
+        'user_text',
+        'assistant_text',
+        'thinking',
+        'tool_call',
+        'tool_completion',
+        'error',
+        'compaction',
+        'terminal_interaction',
+        'notification'
+    )),
+    role                TEXT    NOT NULL CHECK(role IN ('assistant', 'user', 'system')),
+    status              TEXT    NOT NULL DEFAULT 'completed' CHECK(status IN (
+        'streaming',
+        'running',
+        'completed',
+        'errored',
+        'declined',
+        'killed'
+    )),
+    summary             TEXT    NOT NULL DEFAULT '',
+    payload_id          TEXT    REFERENCES payloads(id),
+    parent_id           TEXT    NOT NULL DEFAULT '',
+    is_background       INTEGER NOT NULL DEFAULT 0 CHECK(is_background IN (0, 1)),
+    completion_of       TEXT    NOT NULL DEFAULT '',
+    tool_name           TEXT    NOT NULL DEFAULT '',
+    decision            TEXT    NOT NULL DEFAULT '' CHECK(decision IN (
+        '',
+        'approved',
+        'declined',
+        'amended',
+        'timeout',
+        'lost'
+    )),
+    meta                TEXT    NOT NULL DEFAULT '{}',
+    created_at          INTEGER NOT NULL,
+    updated_at          INTEGER NOT NULL,
+    PRIMARY KEY (thread_id, id)
+);
+
+INSERT INTO items_v25
+    (id, thread_id, turn_index, item_index, kind, role, status, summary,
+     payload_id, parent_id, is_background, completion_of, tool_name,
+     decision, meta, created_at, updated_at)
+SELECT id, thread_id, turn_index, item_index, kind, role, status, summary,
+       payload_id, parent_id, is_background, completion_of, tool_name,
+       decision, meta, created_at, updated_at
+FROM items;
+
+DROP TABLE items;
+ALTER TABLE items_v25 RENAME TO items;
+
+CREATE INDEX idx_items_thread
+    ON items(thread_id, turn_index, item_index);
+CREATE INDEX idx_items_id
+    ON items(id);
+CREATE UNIQUE INDEX idx_items_thread_turn_item_unique
+    ON items(thread_id, turn_index, item_index);
+CREATE INDEX idx_items_parent
+    ON items(thread_id, parent_id) WHERE parent_id <> '';
+CREATE INDEX idx_items_completion_of
+    ON items(thread_id, completion_of) WHERE completion_of <> '';
+CREATE INDEX idx_items_payload_id
+    ON items(payload_id) WHERE payload_id IS NOT NULL;
+CREATE INDEX idx_items_meta_task_id
+    ON items(thread_id, json_extract(meta, '$.task_id'))
+ WHERE json_extract(meta, '$.task_id') IS NOT NULL;
+CREATE INDEX idx_items_live_background
+    ON items(thread_id, id)
+ WHERE is_background = 1 AND status = 'running';
+
+CREATE TRIGGER trg_items_gc_payload
+AFTER DELETE ON items
+WHEN OLD.payload_id IS NOT NULL
+BEGIN
+    DELETE FROM payloads
+     WHERE id = OLD.payload_id
+       AND NOT EXISTS (
+           SELECT 1 FROM items WHERE payload_id = OLD.payload_id
+       );
+END;
+
+CREATE TABLE channel_messages_v25 (
+    id          TEXT    PRIMARY KEY,
+    channel_id  TEXT    NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+    sequence    INTEGER NOT NULL,
+    from_type   TEXT    NOT NULL,
+    from_id     TEXT    NOT NULL,
+    from_role   TEXT,
+    content     TEXT    NOT NULL,
+    created_at  INTEGER NOT NULL,
+    UNIQUE(channel_id, sequence)
+);
+
+INSERT INTO channel_messages_v25
+    (id, channel_id, sequence, from_type, from_id, from_role, content, created_at)
+SELECT id, channel_id, sequence, from_type, from_id, from_role, content, created_at
+FROM channel_messages;
+
+DROP TABLE channel_messages;
+ALTER TABLE channel_messages_v25 RENAME TO channel_messages;
 `
 
 // runMigrations sets PRAGMAs, creates the version tracking table, and applies

@@ -135,8 +135,7 @@ describe('<MessageTimeline>', () => {
   });
 
   it('renders proposed plans from payload-bearing tool rows', async () => {
-    setBindingMock('GetPayloadData', async () => ({ data: '# Ship it', html: '<h1>Ship it</h1>' }));
-    setBindingMock('HighlightMarkdown', async (md: string) => `<div>${md}</div>`);
+    setBindingMock('GetPayloadData', async () => ({ data: '# Ship it' }));
     const pane = await buildPane(undefined, [
       makeItem({
         id: 'plan-1',
@@ -158,7 +157,7 @@ describe('<MessageTimeline>', () => {
     expect(getAllByText('Ship it').length).toBeGreaterThan(0);
   });
 
-  it('renders one wrapper per root timeline node', async () => {
+  it('virtualizes root timeline node wrappers', async () => {
     const items = Array.from({ length: 50 }, (_, i) =>
       makeItem({
         id: `text:${i}`,
@@ -172,7 +171,8 @@ describe('<MessageTimeline>', () => {
     const { container } = render(MessageTimeline, { props: { pane } });
 
     const wrappers = container.querySelectorAll('[data-testid="message-timeline-node"]');
-    expect(wrappers.length).toBe(50);
+    expect(wrappers.length).toBeGreaterThan(0);
+    expect(wrappers.length).toBeLessThan(50);
   });
 
   it('rebuilds turn summaries incrementally via the pane (not per-upsert full scan)', async () => {

@@ -158,16 +158,11 @@ describe('App integration — messaging flow', () => {
       updatedAt: 1,
     });
     await flush();
-    emitWailsEvent('provider:item_upsert', {
-      id: 'text:0:0',
+    emitWailsEvent('provider:item_delta', {
       threadId: 'thread-1',
-      turnIndex: 0,
-      itemIndex: 0,
+      itemId: 'text:0:0',
       kind: 'assistant_text',
-      role: 'assistant',
-      status: 'streaming',
-      summary: 'first second',
-      createdAt: 1,
+      delta: 'second',
       updatedAt: 2,
     });
     await flush();

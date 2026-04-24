@@ -174,14 +174,14 @@ func TestInterruptQueueDrainsInArrivalOrder(t *testing.T) {
 // queued completion for that thread.
 //
 // Scenario:
-//   1. Streaming text opens for a turn (counter = 1, row inserted as streaming).
-//   2. A background tool completes and queues behind the streaming block.
-//   3. Before the block closes, the row's status is flipped OUT of streaming
-//      (simulating a crash-flip handler that got in first, or any path that
-//      mutated the row's status while the block was still tracked active).
-//   4. Content block stop fires: settle decrements the counter to 0 but the
-//      row is now non-streaming. The drain still has to run — otherwise the
-//      queued completion sits in `interruptQueue[threadID]` forever.
+//  1. Streaming text opens for a turn (counter = 1, row inserted as streaming).
+//  2. A background tool completes and queues behind the streaming block.
+//  3. Before the block closes, the row's status is flipped OUT of streaming
+//     (simulating a crash-flip handler that got in first, or any path that
+//     mutated the row's status while the block was still tracked active).
+//  4. Content block stop fires: settle decrements the counter to 0 but the
+//     row is now non-streaming. The drain still has to run — otherwise the
+//     queued completion sits in `interruptQueue[threadID]` forever.
 func TestSettleNonStreamingRowStillDrainsQueue(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
@@ -371,8 +371,8 @@ func TestDrainInterruptQueueContinuesAfterPersistError(t *testing.T) {
 			validDrainCompletion("complete:launch-pre", "launch-pre", 10, 1),
 			{item: store.Item{
 				ID: "bad-kind", ThreadID: "t1", TurnIndex: 0, ItemIndex: 11,
-				Kind:   "not_a_valid_kind", // CHECK constraint violation
-				Role:   "assistant", Status: statusCompleted,
+				Kind: "not_a_valid_kind", // CHECK constraint violation
+				Role: "assistant", Status: statusCompleted,
 				Summary: "bad", CreatedAt: 2, UpdatedAt: 2,
 			}},
 			validDrainCompletion("complete:launch-post", "launch-post", 12, 3),
@@ -413,8 +413,8 @@ func TestDrainInterruptQueueContinuesAfterPersistError(t *testing.T) {
 		router.interruptQueue["t1"] = []queuedPersistence{
 			{item: store.Item{
 				ID: "bad-kind", ThreadID: "t1", TurnIndex: 0, ItemIndex: 10,
-				Kind:   "not_a_valid_kind",
-				Role:   "assistant", Status: statusCompleted,
+				Kind: "not_a_valid_kind",
+				Role: "assistant", Status: statusCompleted,
 				Summary: "bad", CreatedAt: 1, UpdatedAt: 1,
 			}},
 			valid,
@@ -456,43 +456,4 @@ func validDrainCompletion(id, launchID string, itemIndex int, createdAt int64) q
 		CreatedAt:    createdAt,
 		UpdatedAt:    createdAt,
 	}}
-}
-
-// TestMarkUserInterruptRefreshesHighlightedContent guards against the
-// regression where interrupted/stopped streaming rows carried stale HTML:
-// settleStreamingText mutated item.Summary (" — stopped") but persistItem
-// only re-rendered when HighlightedContent was empty, so the DOM showed
-// pre-suffix markup next to post-suffix text.
-func TestMarkUserInterruptRefreshesHighlightedContent(t *testing.T) {
-	router, st, _ := newTestRouter(t)
-	createTestThread(t, st, "t1")
-
-	if err := router.Handle(provider.ProviderEvent{
-		Kind: provider.EventTextDelta, ThreadID: "t1",
-		Content: "**hello**", Timestamp: time.Now(),
-	}); err != nil {
-		t.Fatalf("text delta: %v", err)
-	}
-
-	// Pre-interrupt: streaming row carries rendered markdown in
-	// HighlightedContent with no "— stopped" suffix.
-	pre := firstItemByKind(t, st, "t1", "assistant_text")
-	if pre.HighlightedContent == "" {
-		t.Fatalf("pre-interrupt HighlightedContent should be populated, got empty")
-	}
-	if strings.Contains(pre.HighlightedContent, "stopped") {
-		t.Fatalf("pre-interrupt HighlightedContent should not contain 'stopped': %q", pre.HighlightedContent)
-	}
-
-	if _, err := router.MarkUserInterrupt("t1"); err != nil {
-		t.Fatalf("mark user interrupt: %v", err)
-	}
-
-	post := firstItemByKind(t, st, "t1", "assistant_text")
-	if !strings.Contains(post.Summary, "— stopped") {
-		t.Fatalf("post-interrupt Summary should contain '— stopped', got %q", post.Summary)
-	}
-	if !strings.Contains(post.HighlightedContent, "— stopped") {
-		t.Fatalf("post-interrupt HighlightedContent should contain '— stopped', got %q", post.HighlightedContent)
-	}
 }

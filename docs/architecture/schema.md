@@ -22,8 +22,8 @@ the migrations win.
 ## Always-Loaded vs On-Demand
 
 - `threads` — list, always loaded for sidebar.
-- `items` — loaded per visible thread. `summary` is the rendered preview;
-  full body lives in the linked payload.
+- `items` — loaded per visible thread. `summary` is raw always-loaded
+  text or a bounded raw preview; full body lives in the linked payload.
 - `payloads.meta` — loaded alongside items (JSON preview/stats).
 - `payloads.data` — BLOB, fetched only when the user expands.
 

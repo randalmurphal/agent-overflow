@@ -4,6 +4,7 @@
   import Icon from '../primitives/Icon.svelte';
   import type { Item } from '../../types/models';
   import { createPayloadExpansion, formatPayloadSize } from './payloadExpansion.svelte';
+  import AnsiText from './AnsiText.svelte';
 
   let { item }: { item: Item } = $props();
 
@@ -50,7 +51,7 @@
       {:else if expansion.error}
         <p class="text-[11px] text-error" role="alert">Failed to load: {expansion.error}</p>
       {:else}
-        <pre class="ansi-body text-[11px] text-fg-muted whitespace-pre-wrap leading-relaxed italic">{@html expansion.displayHtml ?? item.highlightedContent}</pre>
+        <AnsiText source={expansion.displayData ?? item.summary} class="text-[11px] text-fg-muted whitespace-pre-wrap leading-relaxed italic" />
         {#if expansion.hasMore}
           <button
             type="button"

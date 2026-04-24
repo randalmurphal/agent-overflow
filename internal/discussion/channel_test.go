@@ -4,7 +4,6 @@ import (
 	"testing"
 	"time"
 
-	"agent-overflow/internal/highlight"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/testutil"
 )
@@ -36,7 +35,7 @@ func modelForProvider(p string) string {
 
 func TestChannelServiceOrdersMessagesAndCloses(t *testing.T) {
 	st := newDiscussionTestStore(t)
-	channelSvc := NewChannelService(st, highlight.New(highlight.Options{}))
+	channelSvc := NewChannelService(st)
 	thread := makeDiscussionThread(t, st, "thread-1", "codex")
 	if err := st.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
@@ -97,7 +96,7 @@ func TestChannelServiceOrdersMessagesAndCloses(t *testing.T) {
 
 func TestChannelServiceRejectsPostingToConcludedChannel(t *testing.T) {
 	st := newDiscussionTestStore(t)
-	channelSvc := NewChannelService(st, highlight.New(highlight.Options{}))
+	channelSvc := NewChannelService(st)
 	thread := makeDiscussionThread(t, st, "thread-concluded", "codex")
 	if err := st.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
@@ -123,7 +122,7 @@ func TestChannelServiceRejectsPostingToConcludedChannel(t *testing.T) {
 
 func TestChannelServiceDefaultsAndValidation(t *testing.T) {
 	st := newDiscussionTestStore(t)
-	channelSvc := NewChannelService(st, highlight.New(highlight.Options{}))
+	channelSvc := NewChannelService(st)
 
 	thread := makeDiscussionThread(t, st, "thread-2", "claude")
 	if err := st.CreateThread(thread); err != nil {

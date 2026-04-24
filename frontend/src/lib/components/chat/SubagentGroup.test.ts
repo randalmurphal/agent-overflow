@@ -51,7 +51,6 @@ function mkItem(overrides: Partial<Item> & { id: string }): Item {
     role: 'assistant',
     status: 'completed',
     summary: '',
-    highlightedContent: '',
     createdAt,
     updatedAt: overrides.updatedAt ?? createdAt,
     ...overrides,

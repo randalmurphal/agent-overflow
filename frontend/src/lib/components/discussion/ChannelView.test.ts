@@ -44,7 +44,6 @@ function makeMsg(overrides: Partial<ChannelMessage> = {}): ChannelMessage {
     fromId: 'agent-id',
     fromRole: 'advocate',
     content: 'hello',
-    highlightedContent: '',
     createdAt: 0,
     ...overrides,
   };

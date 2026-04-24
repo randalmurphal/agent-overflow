@@ -238,7 +238,6 @@ export function summarizeItemsForTrace(items: Item[]): Array<Record<string, unkn
     payloadKind: item.payloadKind ?? '',
     isBackground: item.isBackground ?? false,
     summaryPreview: preview(item.summary),
-    highlightedPreview: preview(item.highlightedContent ?? ''),
   }));
 }
 

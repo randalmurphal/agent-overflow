@@ -67,12 +67,6 @@ export interface ChannelMessage {
   fromId: string;
   fromRole: string | undefined;
   content: string;
-  /**
-   * Pre-rendered display HTML for the markdown content, produced by
-   * the Go highlighter at PostMessage-time. Render via {@html}. All
-   * untrusted text is HTML-escaped server-side.
-   */
-  highlightedContent: string;
   createdAt: number;
 }
 

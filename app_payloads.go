@@ -9,37 +9,31 @@ import (
 )
 
 type PayloadPreview struct {
-	Data string `json:"data"`
-	// Html is the pre-rendered display HTML for the payload's kind
-	// (markdown → Chroma-highlighted fences; thinking / command_output /
-	// tool_result → terminal-to-html ANSI spans). Kinds the dispatcher
-	// does not server-render (diffs, unknown) leave this empty and the
-	// frontend falls back to its structured rendering path.
-	Html       string `json:"html"`
+	Data       string `json:"data"`
+	NextOffset int    `json:"nextOffset"`
 	TotalSize  int    `json:"totalSize"`
 	IsComplete bool   `json:"isComplete"`
 }
 
 type PayloadChunk struct {
 	Data       string `json:"data"`
-	Html       string `json:"html"`
 	Offset     int    `json:"offset"`
 	NextOffset int    `json:"nextOffset"`
 	TotalSize  int    `json:"totalSize"`
 	IsComplete bool   `json:"isComplete"`
 }
 
-// PayloadContent bundles a payload's raw bytes (Data) with its pre-rendered
-// display HTML (Html). Raw-data paths (copy to clipboard, save to file,
-// transforms before re-render) read Data; view paths use Html directly.
+// PayloadContent returns a payload's raw bytes. Rendering is a frontend
+// projection based on the payload kind.
 type PayloadContent struct {
 	Data string `json:"data"`
-	Html string `json:"html"`
 }
 
 func (a *App) GetPayloadPreview(threadID string, payloadID string, maxBytes int) (PayloadPreview, error) {
-	meta, err := a.getThreadPayloadMeta(threadID, payloadID)
-	if err != nil {
+	if err := a.flushThreadPayloadBuffers(threadID); err != nil {
+		return PayloadPreview{}, err
+	}
+	if _, err := a.getThreadPayloadMeta(threadID, payloadID); err != nil {
 		return PayloadPreview{}, err
 	}
 	data, totalSize, isComplete, err := a.store.GetPayloadPreview(payloadID, maxBytes)
@@ -48,46 +42,40 @@ func (a *App) GetPayloadPreview(threadID string, payloadID string, maxBytes int)
 	}
 	return PayloadPreview{
 		Data:       string(data),
-		Html:       a.highlighter.RenderForKind(meta.Kind, string(data)),
-		TotalSize:  totalSize,
-		IsComplete: isComplete,
-	}, nil
-}
-
-func (a *App) GetPayloadChunk(threadID string, payloadID string, offset int, maxBytes int) (PayloadChunk, error) {
-	meta, err := a.getThreadPayloadMeta(threadID, payloadID)
-	if err != nil {
-		return PayloadChunk{}, err
-	}
-	// Return the cumulative prefix through nextOffset rather than a
-	// standalone slice. ANSI/markdown rendering is not chunk-safe across
-	// arbitrary byte boundaries, so the frontend replaces its loaded body
-	// with the cumulatively rendered prefix on each "load more".
-	limit := offset + maxBytes
-	if limit < 0 {
-		limit = 0
-	}
-	data, totalSize, isComplete, err := a.store.GetPayloadPreview(payloadID, limit)
-	if err != nil {
-		return PayloadChunk{}, err
-	}
-	return PayloadChunk{
-		Data:       string(data),
-		Html:       a.highlighter.RenderForKind(meta.Kind, string(data)),
-		Offset:     offset,
 		NextOffset: len(data),
 		TotalSize:  totalSize,
 		IsComplete: isComplete,
 	}, nil
 }
 
-// GetPayloadData returns a payload body alongside its pre-rendered
-// display HTML for the frontend. The caller must supply the owning
+func (a *App) GetPayloadChunk(threadID string, payloadID string, offset int, maxBytes int) (PayloadChunk, error) {
+	if err := a.flushThreadPayloadBuffers(threadID); err != nil {
+		return PayloadChunk{}, err
+	}
+	if _, err := a.getThreadPayloadMeta(threadID, payloadID); err != nil {
+		return PayloadChunk{}, err
+	}
+	data, totalSize, isComplete, err := a.store.GetPayloadChunk(payloadID, offset, maxBytes)
+	if err != nil {
+		return PayloadChunk{}, err
+	}
+	return PayloadChunk{
+		Data:       string(data),
+		Offset:     offset,
+		NextOffset: offset + len(data),
+		TotalSize:  totalSize,
+		IsComplete: isComplete,
+	}, nil
+}
+
+// GetPayloadData returns a payload body. The caller must supply the owning
 // thread so payload ids cannot be read outside the thread timeline that
 // references them.
 func (a *App) GetPayloadData(threadID string, payloadID string) (PayloadContent, error) {
-	meta, err := a.getThreadPayloadMeta(threadID, payloadID)
-	if err != nil {
+	if err := a.flushThreadPayloadBuffers(threadID); err != nil {
+		return PayloadContent{}, err
+	}
+	if _, err := a.getThreadPayloadMeta(threadID, payloadID); err != nil {
 		return PayloadContent{}, err
 	}
 	data, err := a.store.GetPayloadData(payloadID)
@@ -96,7 +84,6 @@ func (a *App) GetPayloadData(threadID string, payloadID string) (PayloadContent,
 	}
 	return PayloadContent{
 		Data: string(data),
-		Html: a.highlighter.RenderForKind(meta.Kind, string(data)),
 	}, nil
 }
 
@@ -118,13 +105,16 @@ func (a *App) resolveSavePayloadPicker() savePayloadPicker {
 	}
 }
 
-func (a *App) SavePayloadToFile(payloadID string) (string, error) {
+func (a *App) SavePayloadToFile(threadID string, payloadID string) (string, error) {
+	if err := a.flushThreadPayloadBuffers(threadID); err != nil {
+		return "", err
+	}
 	picker := a.resolveSavePayloadPicker()
 	if picker == nil {
 		return "", fmt.Errorf("app: save payload to file requires active application")
 	}
 
-	item, err := a.findItemByPayloadID(payloadID)
+	item, err := a.findThreadItemByPayloadID(threadID, payloadID)
 	if err != nil {
 		return "", err
 	}
@@ -155,6 +145,16 @@ func (a *App) SavePayloadToFile(payloadID string) (string, error) {
 	return path, nil
 }
 
+func (a *App) flushThreadPayloadBuffers(threadID string) error {
+	if a.triage == nil {
+		return nil
+	}
+	if err := a.triage.FlushThread(threadID); err != nil {
+		return fmt.Errorf("flush live payload buffers for thread %s: %w", threadID, err)
+	}
+	return nil
+}
+
 func (a *App) getThreadPayloadMeta(threadID string, payloadID string) (store.PayloadMeta, error) {
 	if threadID == "" {
 		return store.PayloadMeta{}, fmt.Errorf("thread id is required")
@@ -170,17 +170,6 @@ func (a *App) getThreadPayloadMeta(threadID string, payloadID string) (store.Pay
 		return store.PayloadMeta{}, err
 	}
 	return meta, nil
-}
-
-func (a *App) findItemByPayloadID(payloadID string) (store.Item, error) {
-	item, found, err := a.store.GetItemByPayloadID(payloadID)
-	if err != nil {
-		return store.Item{}, fmt.Errorf("find item by payload id: %w", err)
-	}
-	if !found {
-		return store.Item{}, fmt.Errorf("payload %s not linked to any item", payloadID)
-	}
-	return item, nil
 }
 
 func (a *App) findThreadItemByPayloadID(threadID string, payloadID string) (store.Item, error) {

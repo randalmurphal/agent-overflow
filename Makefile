@@ -1,4 +1,4 @@
-.PHONY: install dev build test check generate-css go-build go-test
+.PHONY: install dev build test check go-build go-test
 
 # `make dev DEBUG=1` enables lightweight frontend UI render tracing.
 # `UI_TRACE=1` is the explicit form; DEBUG=1 is the short dev-mode alias.
@@ -33,23 +33,16 @@ install:
 	go install tool
 	cd frontend && npm install
 
-# generate-css re-derives frontend/src/styles/chroma-{dark,light}.css
-# from Chroma's style tables. The output is committed so clean checkouts
-# don't need a Go build step to view highlighted code, but every
-# build/check path runs it so the CSS never drifts from the Go renderer.
-generate-css:
-	go run ./cmd/gen-chroma-css
-
-dev: generate-css
+dev:
 	VITE_AGENT_OVERFLOW_UI_TRACE=$(UI_TRACE) wails3 dev
 
-build: generate-css
+build:
 	wails3 build
 
 test:
 	$(MAKE) go-test
 	cd frontend && npm test
 
-check: generate-css
+check:
 	$(MAKE) go-build
 	cd frontend && npm run check

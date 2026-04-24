@@ -61,56 +61,20 @@ Svelte 5 + Vite 8 (Rolldown) + Tailwind 4 + TypeScript.
 - `app.Event.On('error', ...)` — toast + status bar.
 - Custom event names per feature are defined in `stores/events.ts`.
 
-## Painter pattern (server-rendered HTML)
+## Raw-content rendering
 
-Non-interactive content — assistant markdown, discussion channel
-messages, and the five ANSI payload-expansion surfaces
-(`ThinkingBlock`, `CommandOutput`, `LazyContentBlock`,
-`ToolResultDropdown`, `ToolCallCard`) — is rendered in Go by
-`internal/highlight/`. The frontend paints the result via `{@html}` and
-never pulls in a markdown / Shiki / ANSI library of its own. Each
-consumer follows the same three-line pattern:
+Raw content is canonical. Go sends raw item summaries, channel message
+content, and payload data; the frontend owns rendering as a viewport-local
+projection.
 
-```svelte
-{#if item.highlightedContent}
-  <div class="markdown-body">{@html item.highlightedContent}</div>
-{:else}
-  <p class="whitespace-pre-wrap">{item.summary}</p>
-{/if}
-```
+Assistant text, discussion messages, and proposed plans render through
+`ChatMarkdown.svelte`. The cheap markdown pass is synchronous; heavy
+enrichments such as Shiki, Mermaid, and KaTeX are dynamically imported
+from the mounted row and discarded if the source changes. ANSI-like
+payloads render through `AnsiText.svelte` from raw bytes.
 
-Empty `highlightedContent` is a valid state — streaming renders are
-throttled in Go, and the plain-text fallback shows the latest summary
-until the next render catches up. Copy / download paths read the raw
-`summary` / `content` / `data` fields, never the HTML.
-
-Proposed plans are the one exception: they apply a markdown-level
-transform (`stripDisplayedPlanMarkdown`) before rendering and so call
-the `HighlightMarkdown` binding on demand instead of consuming the
-server-persisted HTML. Diffs stay frontend-rendered because they have
-per-line interactive structure.
-
-Two client-side renderers hydrate server-emitted placeholders: mermaid
-diagrams (`<pre class="mermaid">`) and KaTeX math (`<span
-class="math-inline">` / `<div class="math-display">`). Both go through
-`src/lib/utils/lazyCompleteSourceRenderer.ts` — the canonical primitive
-for "lazy-import a heavy library, find matching elements under
-`.markdown-body`, render each once, cache by source hash, fall back to
-source+error on failure." The Go pipeline gates emission of those
-placeholders on fence/delimiter closure, so the primitive only ever
-sees complete sources. Register a painter with a `selector`, `key`
-(stable namespace used for the `data-rendered-<key>` idempotency
-attribute and cache bucket), `load`, `render`, `readSource` — plus
-optional `rewriteCached` for per-paint element-id uniqueness (mermaid
-uses this). Thin wrappers live in `mermaidRenderer.ts` and
-`mathRenderer.ts`.
-
-Do NOT re-introduce Shiki, marked, dompurify, or any ANSI-to-HTML
-parser in the webview. If a new content surface needs server-side
-rendering, extend `internal/highlight/RenderForKind`. If a new content
-surface needs a complete-source client-side renderer (PlantUML,
-Graphviz, D2, etc.), register a painter via
-`lazyCompleteSourceRenderer` rather than writing another observer.
+Do not add a server-rendered chat HTML field or a global DOM observer.
+Copy/download paths read raw `summary` / `content` / `data`.
 
 ## Extension points
 

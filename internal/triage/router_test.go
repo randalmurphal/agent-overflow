@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"agent-overflow/internal/highlight"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 )
@@ -440,7 +439,7 @@ func newTestRouter(t *testing.T) (*Router, *store.Store, *[]emitted) {
 		emissions = append(emissions, emitted{eventName, data})
 	}
 
-	router := NewRouter(st, emit, highlight.New(highlight.Options{}))
+	router := NewRouter(st, emit)
 	return router, st, &emissions
 }
 
@@ -1448,6 +1447,9 @@ func TestTextDeltaAccumulation(t *testing.T) {
 		}
 		router.Handle(evt)
 	}
+	if err := router.Wait(context.Background()); err != nil {
+		t.Fatalf("wait flush: %v", err)
+	}
 
 	items, err := st.ListItems("t1")
 	if err != nil {
@@ -1461,6 +1463,43 @@ func TestTextDeltaAccumulation(t *testing.T) {
 	}
 	if items[0].Status != "streaming" {
 		t.Fatalf("status: got %q, want streaming", items[0].Status)
+	}
+}
+
+func TestTextDeltaEmitsSemanticDeltasWithoutSnapshotSpam(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	for _, text := range []string{"first ", "second", " third"} {
+		if err := router.Handle(provider.ProviderEvent{
+			Kind:      provider.EventTextDelta,
+			ThreadID:  "t1",
+			Content:   text,
+			Timestamp: time.Now(),
+		}); err != nil {
+			t.Fatalf("handle text delta: %v", err)
+		}
+	}
+
+	upserts := filterEmissions(*emissions, "provider:item_upsert")
+	if len(upserts) != 1 {
+		t.Fatalf("provider:item_upsert count = %d, want 1 initial row: %+v", len(upserts), upserts)
+	}
+
+	deltas := filterEmissions(*emissions, "provider:item_delta")
+	if len(deltas) != 2 {
+		t.Fatalf("provider:item_delta count = %d, want 2 follow-up deltas: %+v", len(deltas), deltas)
+	}
+	got := ""
+	for _, emission := range deltas {
+		delta, ok := emission.data.(ItemDeltaEvent)
+		if !ok {
+			t.Fatalf("provider:item_delta payload = %T, want ItemDeltaEvent", emission.data)
+		}
+		got += delta.Delta
+	}
+	if got != "second third" {
+		t.Fatalf("delta payloads = %q, want %q", got, "second third")
 	}
 }
 
@@ -1881,6 +1920,176 @@ func TestReasoningDeltasPersistOnTurnComplete(t *testing.T) {
 
 	if len(filterEmissions(*emissions, "provider:item_upsert")) < 2 {
 		t.Fatalf("expected initial streaming upsert plus settle upsert, got %+v", *emissions)
+	}
+}
+
+func TestReasoningSummaryIsBoundedButPayloadKeepsFullContent(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	chunks := []string{strings.Repeat("a", 180), strings.Repeat("b", 80)}
+	for _, chunk := range chunks {
+		if err := router.Handle(provider.ProviderEvent{
+			Kind:      provider.EventThinking,
+			ThreadID:  "t1",
+			Content:   chunk,
+			Timestamp: time.Now(),
+		}); err != nil {
+			t.Fatalf("handle reasoning delta: %v", err)
+		}
+	}
+	if err := router.Wait(context.Background()); err != nil {
+		t.Fatalf("wait flush: %v", err)
+	}
+
+	items, err := st.ListItems("t1")
+	if err != nil {
+		t.Fatalf("list items: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("items = %d, want 1", len(items))
+	}
+	if len([]rune(items[0].Summary)) != 203 {
+		t.Fatalf("summary runes = %d, want 203", len([]rune(items[0].Summary)))
+	}
+	if !strings.HasSuffix(items[0].Summary, "...") {
+		t.Fatalf("summary should be ellipsized, got %q", items[0].Summary)
+	}
+	data, err := st.GetPayloadData(items[0].PayloadID)
+	if err != nil {
+		t.Fatalf("get payload: %v", err)
+	}
+	if string(data) != chunks[0]+chunks[1] {
+		t.Fatalf("payload = %d bytes, want full reasoning", len(data))
+	}
+}
+
+func TestThinkingDeltaEmitsSemanticDeltasWithoutSnapshotSpam(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	for _, text := range []string{"plan ", "more", " done"} {
+		if err := router.Handle(provider.ProviderEvent{
+			Kind:      provider.EventThinking,
+			ThreadID:  "t1",
+			Content:   text,
+			Timestamp: time.Now(),
+		}); err != nil {
+			t.Fatalf("handle thinking delta: %v", err)
+		}
+	}
+
+	upserts := filterEmissions(*emissions, "provider:item_upsert")
+	if len(upserts) != 1 {
+		t.Fatalf("provider:item_upsert count = %d, want 1 initial row: %+v", len(upserts), upserts)
+	}
+	deltas := filterEmissions(*emissions, "provider:item_delta")
+	if len(deltas) != 2 {
+		t.Fatalf("provider:item_delta count = %d, want 2 follow-up deltas: %+v", len(deltas), deltas)
+	}
+
+	if err := router.Wait(context.Background()); err != nil {
+		t.Fatalf("wait flush: %v", err)
+	}
+	items, err := st.ListItems("t1")
+	if err != nil {
+		t.Fatalf("list items: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("items = %d, want 1", len(items))
+	}
+	data, err := st.GetPayloadData(items[0].PayloadID)
+	if err != nil {
+		t.Fatalf("get payload: %v", err)
+	}
+	if string(data) != "plan more done" {
+		t.Fatalf("payload = %q, want full thinking content", string(data))
+	}
+}
+
+func TestLateTextDeltaDoesNotResurrectSettledRow(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTextDelta,
+		ThreadID:  "t1",
+		Content:   "hello",
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle initial text: %v", err)
+	}
+	if err := st.UpdateItemStatus("text:0:1", statusCompleted, "hello", "", time.Now().UnixMilli()); err != nil {
+		t.Fatalf("settle text row: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTextDelta,
+		ThreadID:  "t1",
+		Content:   " late",
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle late text: %v", err)
+	}
+
+	item, found, err := st.GetThreadItem("t1", "text:0:1")
+	if err != nil || !found {
+		t.Fatalf("get text row: found=%v err=%v", found, err)
+	}
+	if item.Status != statusCompleted {
+		t.Fatalf("status = %q, want completed", item.Status)
+	}
+	if item.Summary != "hello" {
+		t.Fatalf("late delta mutated summary: %q", item.Summary)
+	}
+}
+
+func TestLateThinkingDeltaDoesNotResurrectSettledRowOrPayload(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventThinking,
+		ThreadID:  "t1",
+		Content:   "first",
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle initial thinking: %v", err)
+	}
+	item, found, err := st.GetThreadItem("t1", "think:0:1")
+	if err != nil || !found {
+		t.Fatalf("get thinking row: found=%v err=%v", found, err)
+	}
+	if err := st.UpdateItemStatus(item.ID, statusCompleted, item.Summary, item.PayloadID, time.Now().UnixMilli()); err != nil {
+		t.Fatalf("settle thinking row: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventThinking,
+		ThreadID:  "t1",
+		Content:   " late",
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle late thinking: %v", err)
+	}
+	if err := router.Wait(context.Background()); err != nil {
+		t.Fatalf("wait flush late thinking: %v", err)
+	}
+
+	settled, found, err := st.GetThreadItem("t1", item.ID)
+	if err != nil || !found {
+		t.Fatalf("get settled thinking row: found=%v err=%v", found, err)
+	}
+	if settled.Status != statusCompleted {
+		t.Fatalf("status = %q, want completed", settled.Status)
+	}
+	if settled.Summary != "first" {
+		t.Fatalf("late delta mutated summary: %q", settled.Summary)
+	}
+	data, err := st.GetPayloadData(item.PayloadID)
+	if err != nil {
+		t.Fatalf("get thinking payload: %v", err)
+	}
+	if string(data) != "first" {
+		t.Fatalf("late delta mutated payload: %q", string(data))
 	}
 }
 
@@ -2556,6 +2765,14 @@ func TestFatalErrorFlipsStreamingItemsToErrored(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("text delta: %v", err)
 	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTextDelta,
+		ThreadID:  "t1",
+		Content:   " buffered",
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("buffered text delta: %v", err)
+	}
 
 	meta, _ := json.Marshal(map[string]any{"fatal": true})
 	if err := router.Handle(provider.ProviderEvent{
@@ -2581,8 +2798,8 @@ func TestFatalErrorFlipsStreamingItemsToErrored(t *testing.T) {
 	if items[0].Status != "errored" {
 		t.Fatalf("text status: got %q, want errored", items[0].Status)
 	}
-	if !strings.HasSuffix(items[0].Summary, " — interrupted") {
-		t.Fatalf("text summary missing interrupted suffix: %q", items[0].Summary)
+	if items[0].Summary != "hello buffered — interrupted" {
+		t.Fatalf("text summary after fatal flip = %q, want buffered text plus interrupted suffix", items[0].Summary)
 	}
 	if items[1].Kind != "error" {
 		t.Fatalf("second item kind: got %q, want error", items[1].Kind)

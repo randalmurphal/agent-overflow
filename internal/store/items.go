@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-// ErrItemSettled is returned by AppendItemSummary / UpdateItemHighlight
+// ErrItemSettled is returned by AppendItemSummary
 // when the target row exists but is no longer streaming — i.e. an
 // interrupt or settle has already transitioned it to a terminal status
 // on a different goroutine. Callers in the streaming hot path treat this
@@ -19,7 +19,7 @@ var ErrItemSettled = errors.New("store: item is no longer streaming")
 // with the Item struct; adding a column means updating this list, the
 // INSERT sites below, and scanItemRow together.
 const itemColumns = `items.id, items.thread_id, items.turn_index, items.item_index,
-    items.kind, items.role, items.status, items.summary, items.highlighted_content,
+    items.kind, items.role, items.status, items.summary,
     COALESCE(items.payload_id, ''), COALESCE(payloads.kind, ''), COALESCE(payloads.meta, ''),
     items.parent_id, items.is_background, items.completion_of,
     items.tool_name, items.decision, items.meta, items.created_at, items.updated_at`
@@ -33,7 +33,7 @@ func scanItemRow(scanner interface{ Scan(...any) error }) (Item, error) {
 	var isBackground int
 	if err := scanner.Scan(
 		&it.ID, &it.ThreadID, &it.TurnIndex, &it.ItemIndex,
-		&it.Kind, &it.Role, &it.Status, &it.Summary, &it.HighlightedContent,
+		&it.Kind, &it.Role, &it.Status, &it.Summary,
 		&it.PayloadID, &it.PayloadKind, &it.PayloadMeta,
 		&it.ParentID, &isBackground, &it.CompletionOf,
 		&it.ToolName, &it.Decision, &it.Meta, &it.CreatedAt, &it.UpdatedAt,
@@ -87,11 +87,11 @@ func (s *Store) InsertItem(item Item) error {
 	defer tx.Rollback()
 
 	_, err = tx.Exec(
-		`INSERT INTO items (id, thread_id, turn_index, item_index, kind, role, status, summary, highlighted_content,
+		`INSERT INTO items (id, thread_id, turn_index, item_index, kind, role, status, summary,
 		    payload_id, parent_id, is_background, completion_of, tool_name, decision, meta,
 		    created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		item.ID, item.ThreadID, item.TurnIndex, item.ItemIndex, item.Kind, item.Role, item.Status, item.Summary, item.HighlightedContent,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		item.ID, item.ThreadID, item.TurnIndex, item.ItemIndex, item.Kind, item.Role, item.Status, item.Summary,
 		nilIfEmpty(item.PayloadID), item.ParentID,
 		boolToInt(item.IsBackground), item.CompletionOf, item.ToolName, item.Decision, item.Meta,
 		item.CreatedAt, item.UpdatedAt,
@@ -142,11 +142,11 @@ func (s *Store) AppendItem(item Item) (int, error) {
 	item.ItemIndex = next
 
 	if _, err := tx.Exec(
-		`INSERT INTO items (id, thread_id, turn_index, item_index, kind, role, status, summary, highlighted_content,
+		`INSERT INTO items (id, thread_id, turn_index, item_index, kind, role, status, summary,
 		    payload_id, parent_id, is_background, completion_of, tool_name, decision, meta,
 		    created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		item.ID, item.ThreadID, item.TurnIndex, item.ItemIndex, item.Kind, item.Role, item.Status, item.Summary, item.HighlightedContent,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		item.ID, item.ThreadID, item.TurnIndex, item.ItemIndex, item.Kind, item.Role, item.Status, item.Summary,
 		nilIfEmpty(item.PayloadID), item.ParentID,
 		boolToInt(item.IsBackground), item.CompletionOf, item.ToolName, item.Decision, item.Meta,
 		item.CreatedAt, item.UpdatedAt,
@@ -247,54 +247,75 @@ func (s *Store) AppendItemSummary(threadID, id, delta string, updatedAt int64) (
 	return updated, nil
 }
 
-// UpdateItemHighlight rewrites the highlighted_content column in a
-// single-statement write (no open transaction, no bundled summary or
-// thread-updated_at update). The streaming hot path calls this AFTER
-// AppendItemSummary has committed so the render call — which can take
-// ~1 ms on an 80 KB buffer for markdown and ~100+ µs for ANSI — runs
-// outside the SQLite writer lock instead of pinning concurrent writes
-// against the WAL for the duration of the render.
-//
-// The resulting two-phase write leaves a narrow window where a reader
-// can observe a newer summary paired with the prior render of an
-// earlier summary. That is benign: AssistantMessage.svelte shows the
-// previously rendered HTML (shorter than the new summary by a handful
-// of characters) until the next render catches up — no empty state, no
-// flash of plain text.
-//
-// UpdateItemHighlight only writes to rows whose status is still
-// 'streaming'. Once an interrupt or settle flips the status to a
-// terminal value on a parallel goroutine, a late streaming render would
-// otherwise overwrite the interrupt's own HTML with the pre-suffix
-// rendering (summary column carries the suffix but the re-render was
-// kicked off before the interrupt landed). The status filter drops the
-// stale write silently. A genuinely missing row still returns
-// sql.ErrNoRows so the caller can distinguish.
-func (s *Store) UpdateItemHighlight(threadID, id, html string) error {
-	result, err := s.db.Exec(
-		`UPDATE items SET highlighted_content = ? WHERE thread_id = ? AND id = ? AND status = 'streaming'`,
-		html, threadID, id,
+// AppendItemSummaryPreview appends delta to a streaming item's summary while
+// keeping the stored value bounded to maxRunes plus ellipsis. Use this for
+// timeline rows whose full content lives in payloads.data and whose summary is
+// only a collapsed-row preview.
+func (s *Store) AppendItemSummaryPreview(threadID, id, delta string, maxRunes int, ellipsis string, updatedAt int64) (Item, error) {
+	if maxRunes < 0 {
+		maxRunes = 0
+	}
+	cappedLength := maxRunes + len([]rune(ellipsis))
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return Item{}, fmt.Errorf("store: begin append item summary preview tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	result, err := tx.Exec(
+		`UPDATE items
+		    SET summary = CASE
+		            WHEN length(summary) >= ? THEN summary
+		            WHEN length(summary || ?) > ? THEN substr(summary || ?, 1, ?) || ?
+		            ELSE summary || ?
+		        END,
+		        updated_at = ?
+		  WHERE thread_id = ? AND id = ? AND status = 'streaming'`,
+		cappedLength, delta, maxRunes, delta, maxRunes, ellipsis, delta,
+		updatedAt, threadID, id,
 	)
 	if err != nil {
-		return fmt.Errorf("store: write highlighted_content %s/%s: %w", threadID, id, err)
+		return Item{}, fmt.Errorf("store: append item summary preview %s/%s: %w", threadID, id, err)
 	}
 	affected, err := result.RowsAffected()
 	if err != nil {
-		return fmt.Errorf("store: rows affected write highlighted_content %s/%s: %w", threadID, id, err)
+		return Item{}, fmt.Errorf("store: rows affected append item summary preview %s/%s: %w", threadID, id, err)
 	}
-	if affected > 0 {
-		return nil
-	}
-	// Zero rows: row missing OR already settled. Probe once to distinguish.
-	var status string
-	if err := s.db.QueryRow(`SELECT status FROM items WHERE thread_id = ? AND id = ?`, threadID, id).Scan(&status); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("store: write highlighted_content %s/%s: %w", threadID, id, sql.ErrNoRows)
+	if affected == 0 {
+		var status string
+		probeErr := tx.QueryRow(`SELECT status FROM items WHERE thread_id = ? AND id = ?`, threadID, id).Scan(&status)
+		if errors.Is(probeErr, sql.ErrNoRows) {
+			return Item{}, sql.ErrNoRows
 		}
-		return fmt.Errorf("store: probe status for highlighted_content %s/%s: %w", threadID, id, err)
+		if probeErr != nil {
+			return Item{}, fmt.Errorf("store: probe status for append item summary preview %s/%s: %w", threadID, id, probeErr)
+		}
+		return Item{}, ErrItemSettled
 	}
-	// Row exists but settled — the interrupt/settle's write is authoritative.
-	return nil
+
+	if _, err := tx.Exec(
+		`UPDATE threads SET updated_at = ? WHERE id = ?`,
+		updatedAt, threadID,
+	); err != nil {
+		return Item{}, fmt.Errorf("store: touch thread for item summary preview %s/%s: %w", threadID, id, err)
+	}
+
+	row := tx.QueryRow(
+		`SELECT `+itemColumns+`
+		   FROM items
+		   LEFT JOIN payloads ON payloads.id = items.payload_id
+		  WHERE items.thread_id = ? AND items.id = ?`,
+		threadID, id,
+	)
+	updated, err := scanItemRow(row)
+	if err != nil {
+		return Item{}, fmt.Errorf("store: re-read preview-appended item %s/%s: %w", threadID, id, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return Item{}, fmt.Errorf("store: commit append item summary preview tx: %w", err)
+	}
+	return updated, nil
 }
 
 // UpsertItem persists `item` (inserting or updating depending on whether a
@@ -393,11 +414,11 @@ func writeItem(tx *sql.Tx, item *Item) error {
 func updateExistingItem(tx *sql.Tx, item Item) error {
 	if _, err := tx.Exec(
 		`UPDATE items
-		 SET turn_index = ?, kind = ?, role = ?, status = ?, summary = ?, highlighted_content = ?,
+		 SET turn_index = ?, kind = ?, role = ?, status = ?, summary = ?,
 		     payload_id = ?, parent_id = ?, is_background = ?, completion_of = ?,
 		     tool_name = ?, decision = ?, meta = ?, updated_at = ?
 		 WHERE thread_id = ? AND id = ?`,
-		item.TurnIndex, item.Kind, item.Role, item.Status, item.Summary, item.HighlightedContent,
+		item.TurnIndex, item.Kind, item.Role, item.Status, item.Summary,
 		nilIfEmpty(item.PayloadID), item.ParentID, boolToInt(item.IsBackground), item.CompletionOf,
 		item.ToolName, item.Decision, item.Meta, item.UpdatedAt, item.ThreadID, item.ID,
 	); err != nil {
@@ -423,11 +444,11 @@ func insertNewItem(tx *sql.Tx, item *Item) error {
 		item.ItemIndex = int(maxIndex.Int64) + 1
 	}
 	if _, err := tx.Exec(
-		`INSERT INTO items (id, thread_id, turn_index, item_index, kind, role, status, summary, highlighted_content,
+		`INSERT INTO items (id, thread_id, turn_index, item_index, kind, role, status, summary,
 		    payload_id, parent_id, is_background, completion_of, tool_name, decision, meta,
 		    created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		item.ID, item.ThreadID, item.TurnIndex, item.ItemIndex, item.Kind, item.Role, item.Status, item.Summary, item.HighlightedContent,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		item.ID, item.ThreadID, item.TurnIndex, item.ItemIndex, item.Kind, item.Role, item.Status, item.Summary,
 		nilIfEmpty(item.PayloadID), item.ParentID, boolToInt(item.IsBackground), item.CompletionOf,
 		item.ToolName, item.Decision, item.Meta, item.CreatedAt, item.UpdatedAt,
 	); err != nil {
@@ -617,39 +638,9 @@ func (s *Store) FindToolCallItemByTaskID(threadID, taskID string) (Item, bool, e
 	return item, true, nil
 }
 
-// GetItemByPayloadID returns the item whose payload_id matches payloadID.
-// Used by the "save payload to file" flow so it does not have to iterate
-// threads × items to find the owner. A missing payload returns (Item{},
-// false, nil). When two items happen to share a payload (e.g. forked
-// threads retaining a reference) the caller gets the most recently
-// updated item — this matches the forward-only intent of the save flow.
-//
-// The query is O(log N) thanks to the partial idx_items_payload_id index
-// added in migration v16.
-func (s *Store) GetItemByPayloadID(payloadID string) (Item, bool, error) {
-	row := s.db.QueryRow(
-		`SELECT `+itemColumns+`
-		   FROM items
-		   LEFT JOIN payloads ON payloads.id = items.payload_id
-		  WHERE items.payload_id = ?
-		  ORDER BY items.updated_at DESC
-		  LIMIT 1`,
-		payloadID,
-	)
-	item, err := scanItemRow(row)
-	if err == sql.ErrNoRows {
-		return Item{}, false, nil
-	}
-	if err != nil {
-		return Item{}, false, fmt.Errorf("store: get item by payload id %s: %w", payloadID, err)
-	}
-	return item, true, nil
-}
-
 // GetThreadItemByPayloadID returns the newest item on threadID whose
-// payload_id matches payloadID. This is the thread-scoped variant of
-// GetItemByPayloadID for frontend payload reads, so a payload id is not
-// usable outside the thread that references it.
+// payload_id matches payloadID, so a payload id is not usable outside
+// the thread that references it.
 func (s *Store) GetThreadItemByPayloadID(threadID, payloadID string) (Item, bool, error) {
 	row := s.db.QueryRow(
 		`SELECT `+itemColumns+`
@@ -749,7 +740,7 @@ func (s *Store) ListTurnItems(threadID string, turnIndex int) ([]Item, error) {
 // turn-complete flip loop) so we skip the LEFT JOIN and the two string
 // scans. Column order in scanItemRowSansPayload must match exactly.
 const itemColumnsSansPayload = `items.id, items.thread_id, items.turn_index, items.item_index,
-    items.kind, items.role, items.status, items.summary, items.highlighted_content,
+    items.kind, items.role, items.status, items.summary,
     COALESCE(items.payload_id, ''),
     items.parent_id, items.is_background, items.completion_of,
     items.tool_name, items.decision, items.meta, items.created_at, items.updated_at`
@@ -762,7 +753,7 @@ func scanItemRowSansPayload(scanner interface{ Scan(...any) error }) (Item, erro
 	var isBackground int
 	if err := scanner.Scan(
 		&it.ID, &it.ThreadID, &it.TurnIndex, &it.ItemIndex,
-		&it.Kind, &it.Role, &it.Status, &it.Summary, &it.HighlightedContent,
+		&it.Kind, &it.Role, &it.Status, &it.Summary,
 		&it.PayloadID,
 		&it.ParentID, &isBackground, &it.CompletionOf,
 		&it.ToolName, &it.Decision, &it.Meta, &it.CreatedAt, &it.UpdatedAt,
@@ -1172,14 +1163,8 @@ func (s *Store) UpdateItemPayload(id, payloadID, summary string, createdAt int64
 	}
 	defer tx.Rollback()
 
-	// Clear highlighted_content alongside the summary rewrite so any
-	// subsequent persistItem on a server-rendered kind re-renders from
-	// the new summary instead of shipping HTML computed from the old
-	// one. No production caller uses UpdateItemPayload today — this
-	// keeps the method safe for future callers on assistant_text /
-	// thinking / tool_result rows.
 	result, err := tx.Exec(
-		`UPDATE items SET payload_id = ?, summary = ?, highlighted_content = '', updated_at = ? WHERE id = ?`,
+		`UPDATE items SET payload_id = ?, summary = ?, updated_at = ? WHERE id = ?`,
 		nilIfEmpty(payloadID), summary, createdAt, id,
 	)
 	if err != nil {
@@ -1232,13 +1217,9 @@ func (s *Store) UpdateItemStatus(id, status, summary, payloadID string, createdA
 	}
 	defer tx.Rollback()
 
-	// Clear highlighted_content so any later re-render picks up the new
-	// summary cleanly; mirrors UpdateItemPayload above. Callers today
-	// only use this for tool_call transitions (no server-rendered HTML),
-	// but future callers on server-rendered kinds need the guarantee.
 	result, err := tx.Exec(
 		`UPDATE items
-		 SET status = ?, summary = ?, payload_id = ?, highlighted_content = '', updated_at = ?
+		 SET status = ?, summary = ?, payload_id = ?, updated_at = ?
 		 WHERE id = ?`,
 		status, summary, nilIfEmpty(payloadID), createdAt, id,
 	)
@@ -1331,12 +1312,12 @@ func (s *Store) AppendCompletionItem(launch Item, completion Item, completionPay
 	}
 
 	if _, err := tx.Exec(
-		`INSERT INTO items (id, thread_id, turn_index, item_index, kind, role, status, summary, highlighted_content,
+		`INSERT INTO items (id, thread_id, turn_index, item_index, kind, role, status, summary,
 		    payload_id, parent_id, is_background, completion_of, tool_name, decision, meta,
 		    created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		completion.ID, completion.ThreadID, completion.TurnIndex, completion.ItemIndex,
-		completion.Kind, completion.Role, completion.Status, completion.Summary, completion.HighlightedContent,
+		completion.Kind, completion.Role, completion.Status, completion.Summary,
 		nilIfEmpty(completion.PayloadID), completion.ParentID,
 		boolToInt(completion.IsBackground), completion.CompletionOf,
 		completion.ToolName, completion.Decision, completion.Meta,

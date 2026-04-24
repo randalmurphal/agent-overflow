@@ -2,6 +2,7 @@ import type { Item, Thread } from '../types/models';
 import type {
   ApprovalRequest,
   ContextWindow,
+  ItemDeltaEvent,
   ProviderStatusEvent,
   SubagentNotificationEvent,
   TokenUsageSummary,
@@ -158,6 +159,9 @@ export function createThreadPane() {
   let thread: Thread | null = $state(null);
   let items: Item[] = $state([]);
   let timelineRevision = $state(0);
+  let liveItemSummaries: Record<string, string> = $state({});
+  const liveDeltaChunks: Map<string, string[]> = new Map();
+  let liveSummaryFrame: number | null = null;
   // Per-turn diff view index. Keyed by turnIndex. Incrementally updated on
   // upsertItem rather than rebuilt from scratch — with hundreds of items the
   // old $derived recomputation was O(turns · items) per upsert. Map presence
@@ -297,6 +301,47 @@ export function createThreadPane() {
     }
   }
 
+  function requestFrame(callback: () => void): number {
+    if (typeof requestAnimationFrame === 'function') {
+      return requestAnimationFrame(callback);
+    }
+    return window.setTimeout(callback, 0);
+  }
+
+  function cancelFrame(handle: number): void {
+    if (typeof cancelAnimationFrame === 'function') {
+      cancelAnimationFrame(handle);
+    } else {
+      window.clearTimeout(handle);
+    }
+  }
+
+  function flushLiveDeltaChunks(): void {
+    liveSummaryFrame = null;
+    if (liveDeltaChunks.size === 0) return;
+    const next = { ...liveItemSummaries };
+    for (const [itemID, chunks] of liveDeltaChunks) {
+      const persisted = items.find((item) => item.id === itemID)?.summary ?? '';
+      next[itemID] = (next[itemID] ?? persisted) + chunks.join('');
+    }
+    liveDeltaChunks.clear();
+    liveItemSummaries = next;
+  }
+
+  function scheduleLiveDeltaFlush(): void {
+    if (liveSummaryFrame !== null) return;
+    liveSummaryFrame = requestFrame(flushLiveDeltaChunks);
+  }
+
+  function resetLiveBuffers(): void {
+    if (liveSummaryFrame !== null) {
+      cancelFrame(liveSummaryFrame);
+      liveSummaryFrame = null;
+    }
+    liveDeltaChunks.clear();
+    liveItemSummaries = {};
+  }
+
   function itemsForThread(nextItems: Item[] | null | undefined, threadId: string): Item[] {
     return (nextItems ?? []).filter((item) => item.threadId === threadId);
   }
@@ -363,6 +408,7 @@ export function createThreadPane() {
     get threadId() { return thread?.id ?? null; },
     get items() { return items; },
     get timelineRevision() { return timelineRevision; },
+    get liveItemSummaries() { return liveItemSummaries; },
     /**
      * Per-turn diff view. Keyed by `turnIndex`. Incrementally maintained by
      * `upsertItem` so MessageTimeline can render the ChangedFilesTree and
@@ -471,6 +517,7 @@ export function createThreadPane() {
       diffPanel.clearForThread();
       loading = true;
       items = [];
+      resetLiveBuffers();
       turnDiffViews = new Map();
       // Windowed-history reset. A null floor disables the upsert floor
       // check until the backend tells us otherwise, which is correct:
@@ -561,6 +608,7 @@ export function createThreadPane() {
     clear(): void {
       thread = null;
       items = [];
+      resetLiveBuffers();
       turnDiffViews = new Map();
       pendingApprovals = [];
       contextWindow = null;
@@ -786,6 +834,19 @@ export function createThreadPane() {
       if (thread && item.threadId !== thread.id) {
         return;
       }
+      if (item.status !== 'streaming') {
+        const nextLive = { ...liveItemSummaries };
+        delete nextLive[item.id];
+        liveItemSummaries = nextLive;
+        liveDeltaChunks.delete(item.id);
+      } else if (liveItemSummaries[item.id] === undefined && item.summary) {
+        const pending = liveDeltaChunks.get(item.id)?.join('') ?? '';
+        liveDeltaChunks.delete(item.id);
+        liveItemSummaries = {
+          ...liveItemSummaries,
+          [item.id]: item.summary + pending,
+        };
+      }
       const idx = items.findIndex((existing) => existing.id === item.id);
       if (idx >= 0) {
         // Existing-id path: always accept. If we already have this id in
@@ -831,6 +892,18 @@ export function createThreadPane() {
       items = next;
       timelineRevision++;
       refreshTurnDiffView(next, item.turnIndex);
+    },
+
+    applyItemDelta(evt: ItemDeltaEvent): void {
+      if (!evt.itemId || !evt.delta) return;
+      if (thread && evt.threadId !== thread.id) return;
+      const chunks = liveDeltaChunks.get(evt.itemId);
+      if (chunks) {
+        chunks.push(evt.delta);
+      } else {
+        liveDeltaChunks.set(evt.itemId, [evt.delta]);
+      }
+      scheduleLiveDeltaFlush();
     },
 
     setGeneralError(message: string | null): void {

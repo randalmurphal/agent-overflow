@@ -26,9 +26,6 @@
   import { clearCommandRegistry } from './lib/stores/commandRegistry.svelte';
   import { registerBuiltinCommands, makeCommandContext } from './lib/stores/builtinCommands.svelte';
   import { filterThreads } from './lib/stores/threadFilter.svelte';
-  import { registerCodeCopyListener } from './lib/utils/codeCopy';
-  import { registerMermaidRenderer } from './lib/utils/mermaidRenderer';
-  import { registerMathRenderer } from './lib/utils/mathRenderer';
   import { installUiRenderTraceApi } from './lib/utils/uiRenderTrace';
   import DiagramInteractionHost from './lib/components/chat/DiagramInteractionHost.svelte';
 
@@ -122,9 +119,6 @@
     const cleanupEvents = setupEventListeners();
     refreshThreads();
     loadSettings();
-    registerCodeCopyListener();
-    registerMermaidRenderer();
-    registerMathRenderer();
     installUiRenderTraceApi();
 
     // Register the built-in commands. The hooks close over stable references

@@ -52,7 +52,7 @@ func newE2EApp(t *testing.T) *e2eTestApp {
 		lock.Unlock()
 	}
 
-	app.triage = triage.NewRouter(app.store, emit, app.highlighter)
+	app.triage = triage.NewRouter(app.store, emit)
 	app.triage.SetCheckpointStore(app.checkpoints)
 
 	return &e2eTestApp{app: app, emissions: &emissions, emissLock: &lock}
@@ -110,15 +110,15 @@ func seedE2EThread(t *testing.T, app *App, id, workspace string, p provider.Prov
 	t.Helper()
 	now := time.Now().UnixMilli()
 	thread := store.Thread{
-		ID:              id,
+		ID:            id,
 		ProjectID:     defaultTestProjectID,
-		Title:           "e2e",
-		Provider:        string(p),
-		WorkspacePath:   workspace,
-		Model:           "test",
-		Mode: "chat",
-		CreatedAt:       now,
-		UpdatedAt:       now,
+		Title:         "e2e",
+		Provider:      string(p),
+		WorkspacePath: workspace,
+		Model:         "test",
+		Mode:          "chat",
+		CreatedAt:     now,
+		UpdatedAt:     now,
 	}
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("create thread: %v", err)

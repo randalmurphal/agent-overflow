@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { ThreadPane } from '../../stores/thread.svelte';
-  import { GetPayloadData, HighlightMarkdown, WriteThreadWorkspaceFile } from '../../stores/bindings';
+  import { GetPayloadData, WriteThreadWorkspaceFile } from '../../stores/bindings';
   import { addToast } from '../../stores/toast.svelte';
   import { copyToClipboard } from '../../utils/clipboard';
   import Modal from '../primitives/Modal.svelte';
@@ -12,6 +12,7 @@
     normalizePlanMarkdownForExport,
     stripDisplayedPlanMarkdown,
   } from '../../utils/proposedPlan';
+  import ChatMarkdown from './ChatMarkdown.svelte';
 
   let { pane, payloadId, meta }: { pane: ThreadPane; payloadId: string; meta: ProposedPlanMeta } = $props();
 
@@ -56,30 +57,6 @@
       loading = false;
     }
   }
-
-  // ProposedPlanCard applies markdown-level transforms
-  // (stripDisplayedPlanMarkdown strips the title heading; the collapsed
-  // path would truncate) BEFORE rendering, so we can't reuse the
-  // pre-rendered HTML returned by GetPayloadData. Render on demand via
-  // the HighlightMarkdown binding, memoised by the exact markdown we
-  // hand it so flipping expanded ↔ collapsed hits the same cache key
-  // when the underlying source hasn't changed.
-  let displayedHtml = $state<string>('');
-  let lastRenderedSource = '';
-  $effect(() => {
-    const source = displayedMarkdown;
-    if (source === lastRenderedSource) return;
-    lastRenderedSource = source;
-    if (!source) {
-      displayedHtml = '';
-      return;
-    }
-    HighlightMarkdown(source).then((html) => {
-      if (lastRenderedSource === source) {
-        displayedHtml = html;
-      }
-    });
-  });
 
   async function handleToggleExpanded() {
     if (!expanded) {
@@ -194,7 +171,7 @@
 
   <div class="mt-4">
     <div class:overflow-hidden={canCollapse && !expanded} class:max-h-104={canCollapse && !expanded} class="relative">
-      <div class="markdown-body">{@html displayedHtml}</div>
+      <ChatMarkdown source={displayedMarkdown} />
       {#if canCollapse && !expanded}
         <div class="pointer-events-none absolute inset-x-0 bottom-0 h-24 bg-linear-to-t from-surface-1 via-surface-1/80 to-transparent"></div>
       {/if}

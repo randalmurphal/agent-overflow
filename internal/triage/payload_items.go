@@ -356,6 +356,20 @@ func buildPayloadMeta(payloadKind string, evt provider.ProviderEvent) string {
 	}
 }
 
+func buildThinkingPayloadMeta(preview string, totalBytes int, signature string) string {
+	tm := ThinkingMeta{
+		TokenCount: totalBytes / 4,
+		Preview:    preview,
+		Signature:  signature,
+	}
+	data, err := json.Marshal(tm)
+	if err != nil {
+		log.Printf("triage: marshal thinking meta: %v", err)
+		return "{}"
+	}
+	return string(data)
+}
+
 // buildSummary creates a short human-readable summary from meta.
 func buildSummary(payloadKind, metaJSON string) string {
 	switch payloadKind {

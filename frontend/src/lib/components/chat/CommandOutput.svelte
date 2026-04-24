@@ -5,6 +5,7 @@
   import type { CommandOutputMeta, Item } from '../../types/models';
   import ToolDecisionChip from './ToolDecisionChip.svelte';
   import { createPayloadExpansion, formatPayloadSize } from './payloadExpansion.svelte';
+  import AnsiText from './AnsiText.svelte';
 
   let {
     item,
@@ -68,7 +69,7 @@
       {:else if expansion.error}
         <p class="text-[11px] text-error" role="alert">Failed to load output: {expansion.error}</p>
       {:else}
-        <pre class="ansi-body text-[11px] whitespace-pre text-fg-muted leading-relaxed">{@html expansion.displayHtml ?? ''}</pre>
+        <AnsiText source={expansion.displayData ?? ''} class="text-[11px] whitespace-pre text-fg-muted leading-relaxed" />
         {#if expansion.hasMore}
           <button
             type="button"

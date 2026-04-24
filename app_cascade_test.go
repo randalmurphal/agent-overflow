@@ -12,7 +12,6 @@ import (
 	"agent-overflow/internal/attachment"
 	"agent-overflow/internal/checkpoint"
 	"agent-overflow/internal/discussion"
-	"agent-overflow/internal/highlight"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/store"
@@ -49,13 +48,12 @@ func setupCascadeApp(t *testing.T) (*App, *capturedEventBus, string) {
 		deliberations:       make(map[string]*discussion.Deliberation),
 		configDir:           dbDir,
 	}
-	app.highlighter = highlight.New(highlight.Options{})
-	app.triage = triage.NewRouter(st, bus.emit, app.highlighter)
+	app.triage = triage.NewRouter(st, bus.emit)
 	app.triage.SetEventHook(bus.observeRouterEvent)
 	app.checkpoints = checkpoint.NewStore()
 	app.triage.SetCheckpointStore(app.checkpoints)
 	app.registry = discussion.NewRegistry(st)
-	app.channels = discussion.NewChannelService(st, app.highlighter)
+	app.channels = discussion.NewChannelService(st)
 	app.terminals = terminal.NewManager(nil, nil)
 	ensureDefaultTestProject(t, app)
 
@@ -463,14 +461,14 @@ func TestCascade_UnarchiveRestoresToSidebar(t *testing.T) {
 func e2eThreadCascade(id string, prov provider.ProviderKind, workspace string) store.Thread {
 	now := time.Now().UnixMilli()
 	return store.Thread{
-		ID:              id,
+		ID:            id,
 		ProjectID:     defaultTestProjectID,
-		Title:           "Cascade Thread",
-		Provider:        string(prov),
-		WorkspacePath:   workspace,
-		Model:           "claude-opus-4-7",
-		Mode: "chat",
-		CreatedAt:       now,
-		UpdatedAt:       now,
+		Title:         "Cascade Thread",
+		Provider:      string(prov),
+		WorkspacePath: workspace,
+		Model:         "claude-opus-4-7",
+		Mode:          "chat",
+		CreatedAt:     now,
+		UpdatedAt:     now,
 	}
 }

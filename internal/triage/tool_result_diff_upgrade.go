@@ -72,11 +72,6 @@ func (r *Router) upgradeSummaryOnlyToolResults(threadID string, turnIndex int, t
 		}
 		candidate.item.PayloadID = candidate.payloadID
 		candidate.item.Summary = summarizeToolResult(candidate.meta)
-		// Clear the previously rendered HTML so persistItem re-renders
-		// against the upgraded summary; otherwise the row keeps ANSI
-		// markup from the pre-upgrade summary_only text while
-		// Summary now reflects the exact-patch view.
-		candidate.item.HighlightedContent = ""
 		candidate.item.UpdatedAt = now
 		if err := r.persistItem(candidate.item, &payload); err != nil {
 			return false, fmt.Errorf("persist upgraded tool result item: %w", err)

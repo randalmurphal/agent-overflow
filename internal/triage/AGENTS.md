@@ -161,37 +161,17 @@ The one deliberate exception is the interrupt queue, which can span a
 turn boundary because its contract is "persist queued events once the
 interrupt lifts."
 
-## Server-rendered display HTML
+## Raw chat content
 
-Every `persistItem` call (and the streaming two-phase append) runs raw
-text through `internal/highlight/Renderer` so every row hitting SQLite
-carries its own `highlighted_content` — the frontend paints it via
-`{@html}` with no per-render cost on the UI thread. Constructors take a
-non-nil `*highlight.Renderer`; the same instance is shared across the
-Router and the `ChannelService`.
+Triage persists raw item summaries and raw payload data only. It must not
+render markdown, ANSI, Mermaid, KaTeX, or code blocks. The frontend owns
+chat rendering because it knows which rows are mounted and visible.
 
-Streaming uses the split `AppendItemSummary` + `UpdateItemHighlight`
-pair in `internal/store`, with the render running between them so the
-SQLite writer lock is never held while goldmark/chroma/terminal-to-html
-parses. Render frequency is throttled per-item via
-`Router.nextHighlightAt`: one render per
-`streamingHighlightIntervalMs` (50 ms) per streaming item id.
-
-`persistItem` renders `HighlightedContent` unconditionally against the
-current `Summary`. This is a defensive contract: a caller that loads a
-row from the store (its `HighlightedContent` already populated), mutates
-`Summary`, and calls `persistItem` would otherwise leave stale HTML on
-the row. Streaming hot paths bypass `persistItem` — they go through
-`AppendItemSummary` + `UpdateItemHighlight` directly — so the
-unconditional render only runs at event-boundary rate and its cost is
-noise. Settle paths (`settleStreamingText`, `settleStreamingThinking`,
-`flipTurnItemsErrored`) still clear `HighlightedContent` defensively,
-but the contract no longer depends on it.
-
-`internal/highlight/dispatch.go` is the single source of truth for
-which kinds are server-rendered. Do NOT build a parallel dispatch
-table here; call `RenderForKind` and let the highlight package own the
-list.
+Streaming text/thinking rows create a row on first content, emit follow-up
+raw text on `provider:item_delta`, and flush to SQLite through the stream
+persistence buffer. `provider:item_upsert` is for row creation and lifecycle
+state snapshots, not token transport. Do not add another rendered cache
+column or a server-side kind-to-renderer dispatch table.
 
 ## Extension points
 

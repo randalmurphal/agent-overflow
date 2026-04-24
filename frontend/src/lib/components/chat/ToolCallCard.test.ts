@@ -11,14 +11,12 @@ beforeEach(() => {
   // chevron path to not blow up if something races.
   setBindingMock('GetPayloadPreview', async () => ({
     data: '',
-    html: '',
     totalSize: 0,
     isComplete: true,
   }));
-  setBindingMock('GetPayloadData', async () => ({ data: '', html: '' }));
+  setBindingMock('GetPayloadData', async () => ({ data: '' }));
   setBindingMock('GetPayloadChunk', async () => ({
     data: '',
-    html: '',
     offset: 0,
     nextOffset: 0,
     totalSize: 0,
@@ -161,7 +159,6 @@ describe('<ToolCallCard> header dispatcher', () => {
 
   it('delegates to ProposedPlanCard when payloadKind=proposed_plan', async () => {
     const pane = await buildPane();
-    setBindingMock('HighlightMarkdown', async (md: string) => `<p>${md}</p>`);
     const item = makeItem({
       id: 'plan',
       kind: 'tool_call',

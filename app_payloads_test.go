@@ -7,7 +7,9 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/triage"
 )
 
 func seedPayloadOwner(t *testing.T, app *App, thread store.Thread, payload store.Payload, itemID string) {
@@ -90,8 +92,8 @@ func TestGetPayloadBindingsRequireOwningThread(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetPayloadChunk(owner): %v", err)
 	}
-	if chunk.Data != "hello bytes" {
-		t.Fatalf("GetPayloadChunk(owner) = %q, want full cumulative payload", chunk.Data)
+	if chunk.Data != " bytes" {
+		t.Fatalf("GetPayloadChunk(owner) = %q, want requested raw slice", chunk.Data)
 	}
 
 	if _, err := app.GetPayloadData(other.ID, payload.ID); err == nil {
@@ -102,6 +104,40 @@ func TestGetPayloadBindingsRequireOwningThread(t *testing.T) {
 	}
 	if _, err := app.GetPayloadChunk(other.ID, payload.ID, 0, 5); err == nil {
 		t.Fatal("GetPayloadChunk(other): err = nil, want ownership error")
+	}
+}
+
+func TestGetPayloadDataFlushesLiveThinkingBuffer(t *testing.T) {
+	app := newTestAppWithStore(t)
+	app.triage = triage.NewRouter(app.store, func(string, any) {})
+	thread := testThread("thread-live-thinking")
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+
+	if err := app.triage.Handle(provider.ProviderEvent{
+		Kind:      provider.EventThinking,
+		ThreadID:  thread.ID,
+		Content:   "first",
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("thinking first: %v", err)
+	}
+	if err := app.triage.Handle(provider.ProviderEvent{
+		Kind:      provider.EventThinking,
+		ThreadID:  thread.ID,
+		Content:   " second",
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("thinking second: %v", err)
+	}
+
+	got, err := app.GetPayloadData(thread.ID, "thinking:think:0:1")
+	if err != nil {
+		t.Fatalf("GetPayloadData: %v", err)
+	}
+	if got.Data != "first second" {
+		t.Fatalf("GetPayloadData = %q, want flushed thinking payload", got.Data)
 	}
 }
 
@@ -129,7 +165,7 @@ func TestSavePayloadToFileWritesBytesAndReturnsPath(t *testing.T) {
 		return dest, nil
 	}
 
-	path, err := app.SavePayloadToFile("payload-1")
+	path, err := app.SavePayloadToFile(thread.ID, "payload-1")
 	if err != nil {
 		t.Fatalf("SavePayloadToFile: %v", err)
 	}
@@ -171,7 +207,7 @@ func TestSavePayloadToFileCancelledReturnsEmptyPath(t *testing.T) {
 		return "", nil // user cancelled
 	}
 
-	path, err := app.SavePayloadToFile("payload-cancel")
+	path, err := app.SavePayloadToFile(thread.ID, "payload-cancel")
 	if err != nil {
 		t.Fatalf("SavePayloadToFile on cancel: %v", err)
 	}
@@ -200,7 +236,32 @@ func TestSavePayloadToFileDialogErrorSurfaces(t *testing.T) {
 		return "", errors.New("boom")
 	}
 
-	if _, err := app.SavePayloadToFile("p-err"); err == nil {
+	if _, err := app.SavePayloadToFile(thread.ID, "p-err"); err == nil {
 		t.Fatal("SavePayloadToFile: err = nil, want wrapped dialog error")
+	}
+}
+
+func TestSavePayloadToFileRejectsPayloadFromOtherThread(t *testing.T) {
+	app := newTestAppWithStore(t)
+	thread := testThread("thread-owner")
+	otherThread := testThread("thread-other")
+	payload := store.Payload{
+		ID:        "payload-private",
+		Kind:      "thinking",
+		Meta:      "{}",
+		Data:      []byte("private"),
+		CreatedAt: time.Now().UnixMilli(),
+	}
+	seedPayloadOwner(t, app, thread, payload, "item-private")
+	if err := app.store.CreateThread(otherThread); err != nil {
+		t.Fatalf("create other thread: %v", err)
+	}
+	app.savePayloadPickerFn = func(filename string) (string, error) {
+		t.Fatalf("picker should not open for payload outside owning thread")
+		return "", nil
+	}
+
+	if _, err := app.SavePayloadToFile(otherThread.ID, payload.ID); err == nil {
+		t.Fatal("SavePayloadToFile wrong thread: err = nil, want ownership error")
 	}
 }

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { MAX_INLINE_BYTES, shouldLazyLoad, truncateForPreview } from '../../utils/inlineThreshold';
   import { createPayloadExpansion, formatPayloadSize } from './payloadExpansion.svelte';
+  import AnsiText from './AnsiText.svelte';
 
   interface Props {
     threadId?: string;
@@ -56,7 +57,9 @@
       Failed to load: {expansion.error}
     </p>
   {:else}
-    <pre class="ansi-body whitespace-pre-wrap break-words text-xs text-text-secondary" data-testid={expansion.fullData !== null ? 'lazy-content-full' : 'lazy-content-preview'}>{@html expansion.displayHtml ?? ''}</pre>
+    <div data-testid={expansion.fullData !== null ? 'lazy-content-full' : 'lazy-content-preview'}>
+      <AnsiText source={expansion.displayData ?? ''} class="whitespace-pre-wrap break-words text-xs text-text-secondary" />
+    </div>
     {#if expansion.hasMore}
       <button
         type="button"

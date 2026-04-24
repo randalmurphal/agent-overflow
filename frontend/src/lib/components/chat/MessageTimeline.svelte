@@ -4,18 +4,17 @@
   import type { Item } from '../../types/models';
   import { addToast } from '../../stores/toast.svelte';
   import { groupItemsBySubagent, type TimelineNode } from '../../utils/subagentGrouping';
+  import {
+    buildVirtualLayout,
+    computeVirtualWindow,
+  } from '../../utils/timelineVirtualization';
   import Button from '../primitives/Button.svelte';
   import { turnSummaryIsMeaningful } from '../../utils/turnDiffSummary';
-  import AssistantMessage from './AssistantMessage.svelte';
   import ChangedFilesTree from './ChangedFilesTree.svelte';
   import CompletionDivider from './CompletionDivider.svelte';
-  import NotificationRow from './NotificationRow.svelte';
   import SubagentGroup from './SubagentGroup.svelte';
-  import TerminalInteractionRow from './TerminalInteractionRow.svelte';
-  import ThinkingBlock from './ThinkingBlock.svelte';
-  import ToolCallCard from './ToolCallCard.svelte';
+  import TimelineLeaf from './TimelineLeaf.svelte';
   import TurnDiffBadge from './TurnDiffBadge.svelte';
-  import UserMessage from './UserMessage.svelte';
   import {
     isUiRenderTraceEnabled,
     recordUiTrace,
@@ -51,6 +50,12 @@
   }
 
   let scrollContainer: HTMLDivElement | undefined = $state(undefined);
+  let viewportScrollTop = $state(0);
+  let viewportHeight = $state(0);
+  let rowHeightRevision = $state(0);
+  const rowHeights = new Map<string, number>();
+  const ESTIMATED_ROW_HEIGHT = 140;
+  const OVERSCAN_PX = 900;
 
   /**
    * Track whether the user is near the bottom of the scroll container.
@@ -59,10 +64,16 @@
   let userNearBottom = $state(true);
   const NEAR_BOTTOM_THRESHOLD = 100; // px
 
-  function handleScroll() {
+  function syncScrollState() {
     if (!scrollContainer) return;
     const { scrollTop, scrollHeight, clientHeight } = scrollContainer;
+    viewportScrollTop = scrollTop;
+    viewportHeight = clientHeight;
     userNearBottom = scrollHeight - scrollTop - clientHeight <= NEAR_BOTTOM_THRESHOLD;
+  }
+
+  function handleScroll() {
+    syncScrollState();
   }
 
   /**
@@ -80,6 +91,13 @@
    * deterministic, so `$derived` re-runs exactly when `pane.items` changes.
    */
   let groupedNodes = $derived<TimelineNode[]>(groupItemsBySubagent(pane.items));
+  let virtualLayout = $derived.by(() => {
+    rowHeightRevision;
+    return buildVirtualLayout(groupedNodes, rowHeights, ESTIMATED_ROW_HEIGHT);
+  });
+  let virtualWindow = $derived(
+    computeVirtualWindow(virtualLayout, viewportScrollTop, viewportHeight, OVERSCAN_PX),
+  );
 
   $effect(() => {
     pane.threadId;
@@ -146,10 +164,47 @@
     return rootTurnIndex(current) !== rootTurnIndex(next);
   }
 
-  function nodeKey(node: TimelineNode): string {
-    return node.kind === 'group'
-      ? `g:${node.parent.threadId}:${node.parent.id}`
-      : `l:${node.item.threadId}:${node.item.id}`;
+  function offsetForIndex(index: number): number {
+    return virtualLayout.offsets[Math.min(Math.max(index, 0), virtualLayout.rows.length)] ?? 0;
+  }
+
+  function measureScrollContainer(node: HTMLElement) {
+    scrollContainer = node as HTMLDivElement;
+    syncScrollState();
+    const observer = new ResizeObserver(syncScrollState);
+    observer.observe(node);
+    return {
+      destroy() {
+        observer.disconnect();
+      },
+    };
+  }
+
+  function measureTimelineRow(node: HTMLElement, key: string) {
+    let lastHeight = 0;
+    const update = () => {
+      const nextHeight = Math.ceil(node.getBoundingClientRect().height);
+      if (nextHeight > 0 && nextHeight !== lastHeight) {
+        lastHeight = nextHeight;
+        rowHeights.set(key, nextHeight);
+        rowHeightRevision += 1;
+      }
+    };
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(node);
+    return {
+      destroy() {
+        observer.disconnect();
+      },
+    };
+  }
+
+  function nodeContainsItem(node: TimelineNode, itemId: string): boolean {
+    if (node.kind === 'leaf') {
+      return node.item.id === itemId;
+    }
+    return node.parent.id === itemId || node.children.some((child) => nodeContainsItem(child, itemId));
   }
 
   /**
@@ -255,6 +310,15 @@
     }
     await tick();
     if (!scrollContainer) return;
+    const targetIndex = groupedNodes.findIndex((node) => nodeContainsItem(node, id));
+    if (targetIndex >= 0) {
+      scrollContainer.scrollTop = Math.max(
+        0,
+        offsetForIndex(targetIndex) - Math.round(scrollContainer.clientHeight / 2),
+      );
+      handleScroll();
+      await tick();
+    }
     const el = scrollContainer.querySelector(`[data-item-id="${CSS.escape(id)}"]`);
     if (el instanceof HTMLElement) {
       el.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -279,7 +343,7 @@
   });
 </script>
 
-<div bind:this={scrollContainer} onscroll={handleScroll} class="flex-1 overflow-y-auto" role="log" aria-label="Message history" data-testid="message-timeline-scroll">
+<div bind:this={scrollContainer} use:measureScrollContainer onscroll={handleScroll} class="flex-1 overflow-y-auto" role="log" aria-label="Message history" data-testid="message-timeline-scroll">
   <div class="mx-auto w-full max-w-3xl px-6 py-8">
   {#if pane.loading}
     <div class="flex items-center justify-center h-full text-fg-subtle text-sm" role="status" aria-live="polite">
@@ -287,41 +351,7 @@
     </div>
   {:else}
     {#snippet leafContent(item: Item, orphan: boolean)}
-      <div data-item-id={item.id}>
-        {#if orphan}
-          <div
-            class="mb-1 flex items-center gap-2 text-xs text-warning"
-            role="status"
-            aria-label="Orphan subagent item"
-          >
-            <span aria-hidden="true">⚠</span>
-            <span>Orphan subagent entry — parent tool call not found.</span>
-          </div>
-        {/if}
-        {#if item.kind === 'user_text'}
-          <UserMessage {item} />
-        {:else if item.kind === 'tool_call' || item.kind === 'tool_completion'}
-          <ToolCallCard {pane} {item} />
-        {:else if item.kind === 'thinking'}
-          <ThinkingBlock {item} />
-        {:else if item.kind === 'terminal_interaction'}
-          <TerminalInteractionRow {item} />
-        {:else if item.kind === 'notification'}
-          <NotificationRow {item} />
-        {:else if item.kind === 'error'}
-          <div class="mb-4 rounded-[var(--radius-control)] border border-error/30 bg-error/10 px-3 py-2 text-sm text-error">
-            {item.summary}
-          </div>
-        {:else if item.kind === 'compaction'}
-          <div class="mb-4 flex items-center gap-3 text-[10px] uppercase tracking-[0.18em] text-fg-subtle">
-            <div class="h-px flex-1 bg-border-subtle"></div>
-            <span>{item.summary || 'Context compacted'}</span>
-            <div class="h-px flex-1 bg-border-subtle"></div>
-          </div>
-        {:else}
-          <AssistantMessage {item} />
-        {/if}
-      </div>
+      <TimelineLeaf {pane} {item} {orphan} />
     {/snippet}
 
     {#snippet renderNode(node: TimelineNode, depth: number)}
@@ -351,34 +381,38 @@
       </div>
     {/if}
 
-    {#each groupedNodes as node, index (nodeKey(node))}
-      {#if pane.latestSettledTurn && shouldRenderDividerBefore(node, pane.latestSettledTurn)}
-        <!-- The divider renders BEFORE the assistant message that closed
-             the settled turn (t3-code pattern). The per-turn diff summary
-             + TurnDiffBadge render AFTER the turn's last root node below,
-             so the two don't conflict — the divider sits above the final
-             assistant message, the diff badge sits below it at the turn
-             boundary. -->
-        <CompletionDivider turn={pane.latestSettledTurn} />
-      {/if}
-      <!-- Root nodes feed in at depth=1 so SubagentGroup's GRANDCHILD
-           cap aligns with the spec numbering (first card=1, child=2,
-           grandchild=3 marker-only plateau). -->
-      <div data-testid="message-timeline-node">
-        {@render renderNode(node, 1)}
-      </div>
+    <div style:height={`${virtualWindow.before}px`} aria-hidden="true"></div>
+    {#each virtualWindow.rows as row (row.key)}
+      <div use:measureTimelineRow={row.key}>
+        {#if pane.latestSettledTurn && shouldRenderDividerBefore(row.node, pane.latestSettledTurn)}
+          <!-- The divider renders BEFORE the assistant message that closed
+               the settled turn (t3-code pattern). The per-turn diff summary
+               + TurnDiffBadge render AFTER the turn's last root node below,
+               so the two don't conflict — the divider sits above the final
+               assistant message, the diff badge sits below it at the turn
+               boundary. -->
+          <CompletionDivider turn={pane.latestSettledTurn} />
+        {/if}
+        <!-- Root nodes feed in at depth=1 so SubagentGroup's GRANDCHILD
+             cap aligns with the spec numbering (first card=1, child=2,
+             grandchild=3 marker-only plateau). -->
+        <div data-testid="message-timeline-node">
+          {@render renderNode(row.node, 1)}
+        </div>
 
-      {#if isLastRootInTurn(index)}
-        {@const turnIndex = rootTurnIndex(node)}
-        {@const turnView = turnDiffViews.get(turnIndex)}
-        {#if turnView}
-          <ChangedFilesTree files={turnView.files} />
-          {#if turnSummaryIsMeaningful(turnView.summary)}
-            <TurnDiffBadge {pane} {turnIndex} summary={turnView.summary} />
+        {#if isLastRootInTurn(row.index)}
+          {@const turnIndex = rootTurnIndex(row.node)}
+          {@const turnView = turnDiffViews.get(turnIndex)}
+          {#if turnView}
+            <ChangedFilesTree files={turnView.files} />
+            {#if turnSummaryIsMeaningful(turnView.summary)}
+              <TurnDiffBadge {pane} {turnIndex} summary={turnView.summary} />
+            {/if}
           {/if}
         {/if}
-      {/if}
+      </div>
     {/each}
+    <div style:height={`${virtualWindow.after}px`} aria-hidden="true"></div>
 
     {#if pane.items.length === 0}
       <div class="flex items-center justify-center h-full text-fg-subtle text-sm">

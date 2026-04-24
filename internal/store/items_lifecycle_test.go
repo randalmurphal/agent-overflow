@@ -819,6 +819,39 @@ func TestAppendItemSummaryErrorsOnMissingItem(t *testing.T) {
 	}
 }
 
+func TestAppendItemSummaryPreviewCapsSummary(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(Thread{
+		ID: "t", ProjectID: defaultTestProjectID, Title: "T", Provider: "claude", WorkspacePath: "/tmp",
+		CreatedAt: 1000, UpdatedAt: 1000,
+	}); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	if err := s.InsertItem(Item{
+		ID: "think", ThreadID: "t", TurnIndex: 0, ItemIndex: 0,
+		Kind: "thinking", Role: "assistant", Status: "streaming",
+		Summary: "abcd", CreatedAt: 2000, UpdatedAt: 2000,
+	}); err != nil {
+		t.Fatalf("insert item: %v", err)
+	}
+
+	got, err := s.AppendItemSummaryPreview("t", "think", "efgh", 6, "...", 3000)
+	if err != nil {
+		t.Fatalf("append preview: %v", err)
+	}
+	if got.Summary != "abcdef..." {
+		t.Fatalf("summary after cap = %q, want %q", got.Summary, "abcdef...")
+	}
+
+	got, err = s.AppendItemSummaryPreview("t", "think", "ijkl", 6, "...", 4000)
+	if err != nil {
+		t.Fatalf("append preview after cap: %v", err)
+	}
+	if got.Summary != "abcdef..." {
+		t.Fatalf("summary after capped append = %q, want unchanged", got.Summary)
+	}
+}
+
 // BenchmarkTextDeltaGrowth approximates the streaming hot path: a
 // single row receives many deltas totalling the same final size. With
 // the old GetThreadItem → concat → UpsertItem path the work was
@@ -1090,54 +1123,6 @@ func TestFindNotificationItemByTaskIDReturnsNewestNotification(t *testing.T) {
 	}
 	if got.Summary != "newer" {
 		t.Fatalf("got summary %q, want newer", got.Summary)
-	}
-}
-
-// TestGetItemByPayloadIDUsesIndex verifies the direct lookup replaces
-// the O(threads × items) walk the app layer used to do. A missing
-// payload returns (zero, false, nil); a hit returns the owning item.
-func TestGetItemByPayloadIDUsesIndex(t *testing.T) {
-	s := newTestStore(t)
-	if err := s.CreateThread(Thread{
-		ID: "t", ProjectID: defaultTestProjectID, Title: "T", Provider: "claude", WorkspacePath: "/tmp",
-		CreatedAt: 1, UpdatedAt: 1,
-	}); err != nil {
-		t.Fatalf("create thread: %v", err)
-	}
-	if err := s.InsertPayload(Payload{
-		ID: "p", Kind: "diff", Meta: "{}", Data: []byte("body"), CreatedAt: 1,
-	}); err != nil {
-		t.Fatalf("insert payload: %v", err)
-	}
-	if err := s.InsertItem(Item{
-		ID: "owner", ThreadID: "t", TurnIndex: 0, ItemIndex: 0,
-		Kind: "tool_call", Role: "assistant", Summary: "s",
-		PayloadID: "p", CreatedAt: 1, UpdatedAt: 1,
-	}); err != nil {
-		t.Fatalf("insert owner: %v", err)
-	}
-
-	got, found, err := s.GetItemByPayloadID("p")
-	if err != nil {
-		t.Fatalf("lookup: %v", err)
-	}
-	if !found {
-		t.Fatal("expected payload lookup to find owner")
-	}
-	if got.ID != "owner" {
-		t.Errorf("got item id %q, want owner", got.ID)
-	}
-	if got.PayloadKind != "diff" {
-		t.Errorf("got PayloadKind = %q, want diff", got.PayloadKind)
-	}
-
-	// Missing payload: no error, found=false.
-	_, found2, err := s.GetItemByPayloadID("no-such-payload")
-	if err != nil {
-		t.Fatalf("missing lookup error: %v", err)
-	}
-	if found2 {
-		t.Error("expected found=false for missing payload")
 	}
 }
 

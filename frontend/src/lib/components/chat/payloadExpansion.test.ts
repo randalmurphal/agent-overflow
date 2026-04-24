@@ -10,13 +10,12 @@ describe('payloadExpansion', () => {
   it('loads preview before full payload and discards both on collapse', async () => {
     setBindingMock('GetPayloadPreview', async () => ({
       data: 'PREVIEW ',
-      html: '<p>PREVIEW </p>',
+      nextOffset: 8,
       totalSize: 40_960,
       isComplete: false,
     }));
     setBindingMock('GetPayloadChunk', async () => ({
-      data: 'PREVIEW FULL PAYLOAD',
-      html: '<p>PREVIEW FULL PAYLOAD</p>',
+      data: 'FULL PAYLOAD',
       offset: 8,
       nextOffset: 20,
       totalSize: 40_960,
@@ -42,6 +41,34 @@ describe('payloadExpansion', () => {
 
     await expansion.expand();
     expect(getBindingMock('GetPayloadPreview')).toHaveBeenCalledTimes(2);
+  });
+
+  it('uses backend byte offsets instead of UTF-16 string length', async () => {
+    setBindingMock('GetPayloadPreview', async () => ({
+      data: 'éé',
+      nextOffset: 4,
+      totalSize: 8,
+      isComplete: false,
+    }));
+    setBindingMock('GetPayloadChunk', async () => ({
+      data: ' tail',
+      offset: 4,
+      nextOffset: 9,
+      totalSize: 9,
+      isComplete: true,
+    }));
+
+    const expansion = createPayloadExpansion('payload-1', 'thread-1');
+    await expansion.expand();
+    await expansion.showFull();
+
+    expect(getBindingMock('GetPayloadChunk')).toHaveBeenCalledWith(
+      'thread-1',
+      'payload-1',
+      4,
+      256 * 1024,
+    );
+    expect(expansion.fullData).toBe('éé tail');
   });
 
   it('formats byte sizes for preview footer labels', () => {

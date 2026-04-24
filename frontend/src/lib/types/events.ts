@@ -95,6 +95,14 @@ export interface ApprovalEvent {
   decision?: '' | 'approved' | 'declined' | 'amended' | 'timeout' | 'lost';
 }
 
+export interface ItemDeltaEvent {
+  threadId: string;
+  itemId: string;
+  kind: string;
+  delta: string;
+  updatedAt: number;
+}
+
 /**
  * RateLimitsSnapshot mirrors the Go `provider.RateLimitsSnapshot` payload.
  * Lives here because the chat-rewrite `UsageEvent` now folds rate-limit

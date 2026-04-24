@@ -46,7 +46,6 @@ function diffItem(id: string, turnIndex: number, overrides: Partial<Item> = {}):
     role: 'assistant',
     status: 'completed',
     summary: '',
-    highlightedContent: '',
     payloadId: `${id}-payload`,
     payloadKind: 'diff',
     createdAt,
@@ -75,7 +74,7 @@ async function mountAppWithThread(opts: {
   setBindingMock('GetWorkingTreeDiff', async () => '');
   setBindingMock('GetTurnDiff', async () => '');
   setBindingMock('GetCheckpointToWorktreeDiff', async () => '');
-  setBindingMock('GetPayloadData', async () => ({ data: '', html: '' }));
+  setBindingMock('GetPayloadData', async () => ({ data: '' }));
 
   const rendered = render(App);
   await flush();
@@ -120,7 +119,7 @@ describe('App integration — diff panel', () => {
     // empty-string mocks don't overwrite them.
     const getTurnDiff = setBindingMock('GetTurnDiff', async () => 'TURN-DIFF');
     const getWorktree = setBindingMock('GetWorkingTreeDiff', async () => 'WORKTREE-DIFF');
-    setBindingMock('GetPayloadData', async () => ({ data: '', html: '' }));
+    setBindingMock('GetPayloadData', async () => ({ data: '' }));
     // Open via Diffs button in the chat header.
     await fireEvent.click(getByTestId('diff-panel-toggle'));
     await flush();
@@ -255,7 +254,7 @@ describe('App integration — diff panel', () => {
       diffItem('d3', 1, { itemIndex: 0 }),
     ];
     const { getByTestId, findByTestId } = await mountAppWithThread({ items });
-    const getPayload = setBindingMock('GetPayloadData', async (_threadId, id) => ({ data: `payload-${String(id)}`, html: '' }));
+    const getPayload = setBindingMock('GetPayloadData', async (_threadId, id) => ({ data: `payload-${String(id)}` }));
     await fireEvent.click(getByTestId('diff-panel-toggle'));
     await flush();
     await fireEvent.click(getByTestId('diff-source-tab-cumulative'));
