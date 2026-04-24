@@ -361,8 +361,8 @@ func TestUpdateSessionRef(t *testing.T) {
 	if got.SessionRef != "session-new" {
 		t.Errorf("SessionRef: got %q, want %q", got.SessionRef, "session-new")
 	}
-	if got.UpdatedAt <= 1000 {
-		t.Errorf("expected updated_at to be bumped from 1000, got %d", got.UpdatedAt)
+	if got.UpdatedAt != 1000 {
+		t.Errorf("UpdatedAt: got %d, want 1000", got.UpdatedAt)
 	}
 }
 

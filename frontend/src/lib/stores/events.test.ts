@@ -265,6 +265,7 @@ describe('setupEventListeners', () => {
       lastReadAt: 200,
     }));
     getAllPanes().set('main', pane);
+    await refreshThreads();
 
     emitWailsEvent('thread:updated', makeThread({
       id: 'thread-1',
@@ -279,6 +280,26 @@ describe('setupEventListeners', () => {
     expect(getThreads()[0]?.title).toBe('New title');
     expect(getThreads()[0]?.model).toBe('claude-opus-4-1');
     expect(getThreads()[0]?.lastReadAt).toBe(300);
+  });
+
+  it('preserves an explicit unread marker when thread:updated is stale', async () => {
+    setBindingMock('ListThreads', async () => [
+      makeThread({
+        id: 'thread-1',
+        title: 'Old',
+        lastReadAt: 0,
+      }),
+    ]);
+    await refreshThreads();
+
+    emitWailsEvent('thread:updated', makeThread({
+      id: 'thread-1',
+      title: 'New title',
+      lastReadAt: 300,
+    }));
+
+    expect(getThreads()[0]?.title).toBe('New title');
+    expect(getThreads()[0]?.lastReadAt).toBe(0);
   });
 
   it('updates pane providerBanner from provider:status', async () => {

@@ -96,10 +96,21 @@ export function seedSidebarProject(threads: Thread[]): Project {
 // switch into a thread need these mocked even if they don't assert on
 // git UI.
 export function installThreadViewDefaults(): void {
-  setBindingMock('SwitchThread', async () => {});
-  // pane.switchThread fires MarkThreadRead fire-and-forget right after
-  // the SwitchThread call; default it to a no-op so integration tests
-  // that don't care about read-state don't see a mock-missing error.
+  setBindingMock('SwitchThread', async (threadId: unknown) => ({
+    id: typeof threadId === 'string' ? threadId : 'thread-1',
+    title: 'Test thread',
+    provider: 'claude',
+    workspacePath: '/tmp/workspace',
+    projectPath: '/tmp/workspace',
+    mode: 'chat',
+    model: 'claude-sonnet-4-6',
+    createdAt: 0,
+    updatedAt: 0,
+    archived: false,
+  }));
+  // ChatView may fire MarkThreadRead while keeping the active thread row
+  // read after live updatedAt changes; default it to a no-op so tests that
+  // do not care about read-state do not need their own mock.
   setBindingMock('MarkThreadRead', async () => {});
   setBindingMock('MarkThreadUnread', async () => {});
   setBindingMock('ListRecentThreadItems', async () => ({

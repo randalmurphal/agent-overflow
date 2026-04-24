@@ -244,8 +244,11 @@ func TestMarkThreadReadUnreadLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetThread after MarkThreadUnread: %v", err)
 	}
-	if got.LastReadAt != nil {
-		t.Fatalf("LastReadAt = %d after MarkThreadUnread, want nil", *got.LastReadAt)
+	if got.LastReadAt == nil {
+		t.Fatalf("LastReadAt = nil after MarkThreadUnread, want 0")
+	}
+	if *got.LastReadAt != 0 {
+		t.Fatalf("LastReadAt = %d after MarkThreadUnread, want 0", *got.LastReadAt)
 	}
 
 	// Missing thread should surface sql.ErrNoRows — the store wraps

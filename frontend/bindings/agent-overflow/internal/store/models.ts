@@ -594,8 +594,9 @@ export class Thread {
      * LastReadAt is the Unix-ms timestamp of when the user last viewed
      * the thread. NULL (nil) means "never tracked" and is treated as
      * read by the UI so pre-migration rows don't all show as unread on
-     * first launch. Set by MarkThreadRead / cleared by MarkThreadUnread,
-     * and auto-refreshed when the user switches into a thread.
+     * first launch. Set by MarkThreadRead, stamped to zero by
+     * MarkThreadUnread, and auto-refreshed when the user switches into a
+     * thread.
      */
     "lastReadAt"?: number | null;
 

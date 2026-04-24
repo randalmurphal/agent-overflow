@@ -193,6 +193,80 @@ func TestSwitchThreadAutoResumesStoredSession(t *testing.T) {
 	}
 }
 
+func TestSwitchThreadAutoResumeSessionInitDoesNotTouchUpdatedAt(t *testing.T) {
+	app := newTestAppWithStore(t)
+	thread := testThread("thread-auto-preserve-updated")
+	thread.SessionRef = "provider-session-1"
+	thread.UpdatedAt = 1000
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+
+	started := make(chan struct{}, 1)
+	app.startSessionFn = func(threadID string) error {
+		if err := app.store.UpdateSessionRef(threadID, "provider-session-2"); err != nil {
+			return err
+		}
+		started <- struct{}{}
+		return nil
+	}
+
+	if _, err := app.SwitchThread(thread.ID); err != nil {
+		t.Fatalf("SwitchThread() error = %v", err)
+	}
+
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for auto-resume")
+	}
+
+	stored, err := app.store.GetThread(thread.ID)
+	if err != nil {
+		t.Fatalf("GetThread() error = %v", err)
+	}
+	if stored.UpdatedAt != thread.UpdatedAt {
+		t.Fatalf("UpdatedAt = %d, want %d", stored.UpdatedAt, thread.UpdatedAt)
+	}
+	if stored.LastReadAt == nil {
+		t.Fatalf("LastReadAt = nil, want thread marked read")
+	}
+	if *stored.LastReadAt < stored.UpdatedAt {
+		t.Fatalf("LastReadAt = %d, want >= updatedAt %d", *stored.LastReadAt, stored.UpdatedAt)
+	}
+}
+
+func TestSwitchThreadMarksThreadReadBeforeReturning(t *testing.T) {
+	app := newTestAppWithStore(t)
+	thread := testThread("thread-switch-read")
+	thread.UpdatedAt = time.Now().UnixMilli() + 60_000
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+
+	got, err := app.SwitchThread(thread.ID)
+	if err != nil {
+		t.Fatalf("SwitchThread() error = %v", err)
+	}
+	if got.LastReadAt == nil {
+		t.Fatalf("returned LastReadAt = nil, want >= updatedAt")
+	}
+	if *got.LastReadAt < got.UpdatedAt {
+		t.Fatalf("returned LastReadAt = %d, want >= updatedAt %d", *got.LastReadAt, got.UpdatedAt)
+	}
+
+	stored, err := app.store.GetThread(thread.ID)
+	if err != nil {
+		t.Fatalf("GetThread() error = %v", err)
+	}
+	if stored.LastReadAt == nil {
+		t.Fatalf("stored LastReadAt = nil, want >= updatedAt")
+	}
+	if *stored.LastReadAt < stored.UpdatedAt {
+		t.Fatalf("stored LastReadAt = %d, want >= updatedAt %d", *stored.LastReadAt, stored.UpdatedAt)
+	}
+}
+
 func TestSwitchThreadCoalescesConcurrentAutoResume(t *testing.T) {
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-auto-coalesce")

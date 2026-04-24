@@ -111,7 +111,10 @@
     ].join(':');
     if (marker === lastReadMarker) return;
     lastReadMarker = marker;
-    const readAt = Date.now();
+    if (thread.lastReadAt !== undefined && thread.lastReadAt >= thread.updatedAt) {
+      return;
+    }
+    const readAt = Math.max(Date.now(), thread.updatedAt);
     untrack(() => {
       updateThreadLastRead(thread.id, readAt);
     });

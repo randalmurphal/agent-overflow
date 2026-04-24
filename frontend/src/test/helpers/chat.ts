@@ -53,10 +53,11 @@ export function emitItemEventDelta(delta: ItemDeltaEvent): void {
 }
 
 export function installPaneMocks(items: Item[] = []): void {
-  setBindingMock('SwitchThread', async () => {});
-  // pane.switchThread auto-marks the thread as read; default both
-  // read-state bindings to no-ops so component tests that don't care
-  // don't have to stub them.
+  setBindingMock('SwitchThread', async (threadId: unknown) =>
+    makeThread({ id: typeof threadId === 'string' ? threadId : 'thread-1' }));
+  // ChatView may mark the active thread read as live updates advance
+  // updatedAt; default both read-state bindings to no-ops so component
+  // tests that don't care don't have to stub them.
   setBindingMock('MarkThreadRead', async () => {});
   setBindingMock('MarkThreadUnread', async () => {});
   // The pane now loads the tail of history via ListRecentThreadItems on
@@ -81,6 +82,7 @@ export async function buildPane(
   items: Item[] = [],
 ): Promise<ThreadPane> {
   installPaneMocks(items);
+  setBindingMock('SwitchThread', async () => thread);
   const pane = createThreadPane();
   await pane.switchThread(thread);
   return pane;

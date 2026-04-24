@@ -54,7 +54,7 @@ export interface Thread {
    * Unix-ms timestamp of when the user last viewed the thread. Undefined
    * means "never tracked" (pre-v20 rows and freshly-created threads) and
    * is treated as read so sidebar pills don't flood on first deploy.
-   * Written by MarkThreadRead / cleared by MarkThreadUnread.
+   * Written by MarkThreadRead; explicit MarkThreadUnread persists 0.
    */
   lastReadAt?: number;
 }

@@ -60,8 +60,8 @@ function seedThread(): Thread {
   };
 }
 
-async function buildPane(): Promise<ReturnType<typeof createThreadPane>> {
-  setBindingMock('SwitchThread', async () => {});
+async function buildPane(thread: Thread = seedThread()): Promise<ReturnType<typeof createThreadPane>> {
+  setBindingMock('SwitchThread', async () => thread);
   // ChatView's auto-mark-read $effect fires on every pane.thread change.
   setBindingMock('MarkThreadRead', async () => {});
   setBindingMock('MarkThreadUnread', async () => {});
@@ -101,7 +101,7 @@ async function buildPane(): Promise<ReturnType<typeof createThreadPane>> {
   setBindingMock('GetThreadSlashCommands', async () => []);
 
   const pane = createThreadPane();
-  await pane.switchThread(seedThread());
+  await pane.switchThread(thread);
   return pane;
 }
 
@@ -189,6 +189,41 @@ describe('<ChatView>', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('clamps the local read marker to thread.updatedAt', async () => {
+    vi.useFakeTimers();
+    try {
+      const updatedAt = 2_000;
+      const thread = { ...seedThread(), updatedAt };
+      setBindingMock('ListThreads', async () => [thread]);
+      await refreshThreads();
+      const pane = await buildPane();
+      pane.replaceThread({ ...pane.thread!, updatedAt });
+      setBindingMock('MarkThreadRead', async () => {});
+
+      vi.setSystemTime(1_000);
+      render(ChatView, { props: { pane } });
+      await tick();
+
+      expect(getThreads()[0]?.lastReadAt).toBe(updatedAt);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not rewrite read state when the active thread is already read', async () => {
+    const thread = { ...seedThread(), updatedAt: 1_000, lastReadAt: 1_500 };
+    setBindingMock('ListThreads', async () => [thread]);
+    await refreshThreads();
+    const pane = await buildPane(thread);
+    const markRead = setBindingMock('MarkThreadRead', async () => {});
+
+    render(ChatView, { props: { pane } });
+    await tick();
+
+    expect(getThreads()[0]?.lastReadAt).toBe(1_500);
+    expect(markRead).not.toHaveBeenCalled();
   });
 
   it('clicking a background tray row does NOT scroll the timeline (rows are informational)', async () => {

@@ -7,9 +7,13 @@ import (
 	"agent-overflow/internal/store"
 )
 
-// SwitchThread returns the requested thread and auto-resumes its provider
-// session in the background when the thread has a stored session reference.
+// SwitchThread returns the requested thread, marks it read durably, and
+// auto-resumes its provider session in the background when the thread has a
+// stored session reference.
 func (a *App) SwitchThread(threadID string) (store.Thread, error) {
+	if err := a.store.MarkThreadReadNow(threadID); err != nil {
+		return store.Thread{}, err
+	}
 	thread, err := a.store.GetThread(threadID)
 	if err != nil {
 		return store.Thread{}, err

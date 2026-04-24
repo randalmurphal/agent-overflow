@@ -112,9 +112,9 @@ export async function deleteThreadAction(ctx: ThreadActionCtx): Promise<void> {
 export async function markThreadUnreadAction(ctx: ThreadActionCtx): Promise<void> {
   try {
     await MarkThreadUnread(ctx.thread.id);
-    // Optimistic local patch: undefined in TS mirrors NULL in the DB so
-    // `hasUnread` reads unread until the user opens the thread again.
-    updateThreadLastRead(ctx.thread.id, undefined);
+    // Explicit unread is persisted as epoch 0. Undefined means "never
+    // tracked" and is intentionally treated as read for old rows.
+    updateThreadLastRead(ctx.thread.id, 0);
     addToast('info', 'Marked unread');
   } catch (err) {
     console.error('Failed to mark thread unread:', err);

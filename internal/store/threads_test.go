@@ -269,6 +269,7 @@ func TestUpdateSessionRefClearsPendingForkRef(t *testing.T) {
 	thread := makeThread("thread-clear-pending", "claude")
 	thread.ProjectID = proj.ID
 	thread.PendingForkRef = "pending-123"
+	thread.UpdatedAt = 1000
 	if err := s.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
@@ -286,6 +287,9 @@ func TestUpdateSessionRefClearsPendingForkRef(t *testing.T) {
 	}
 	if got.PendingForkRef != "" {
 		t.Fatalf("PendingForkRef = %q, want empty", got.PendingForkRef)
+	}
+	if got.UpdatedAt != thread.UpdatedAt {
+		t.Fatalf("UpdatedAt = %d, want %d", got.UpdatedAt, thread.UpdatedAt)
 	}
 }
 
@@ -808,7 +812,7 @@ func TestThreadMutationsReturnNotFoundForMissingRows(t *testing.T) {
 	}
 }
 
-func TestUpdateThreadLastReadRoundTrip(t *testing.T) {
+func TestSetThreadLastReadRoundTrip(t *testing.T) {
 	s := newTestStore(t)
 
 	thr := makeThread("thread-last-read", "claude")
@@ -827,8 +831,8 @@ func TestUpdateThreadLastReadRoundTrip(t *testing.T) {
 
 	// Set to a concrete timestamp.
 	ts := int64(1_700_000_000_000)
-	if err := s.UpdateThreadLastRead(thr.ID, &ts); err != nil {
-		t.Fatalf("UpdateThreadLastRead(set): %v", err)
+	if err := s.setThreadLastRead(thr.ID, &ts); err != nil {
+		t.Fatalf("setThreadLastRead(set): %v", err)
 	}
 	got, err = s.GetThread(thr.ID)
 	if err != nil {
@@ -839,8 +843,8 @@ func TestUpdateThreadLastReadRoundTrip(t *testing.T) {
 	}
 
 	// Clear back to NULL via nil pointer.
-	if err := s.UpdateThreadLastRead(thr.ID, nil); err != nil {
-		t.Fatalf("UpdateThreadLastRead(clear): %v", err)
+	if err := s.setThreadLastRead(thr.ID, nil); err != nil {
+		t.Fatalf("setThreadLastRead(clear): %v", err)
 	}
 	got, err = s.GetThread(thr.ID)
 	if err != nil {
@@ -852,8 +856,58 @@ func TestUpdateThreadLastReadRoundTrip(t *testing.T) {
 
 	// Missing thread should surface sql.ErrNoRows, mirroring the other
 	// mutation helpers above.
-	if err := s.UpdateThreadLastRead("missing", &ts); !errors.Is(err, sql.ErrNoRows) {
-		t.Fatalf("UpdateThreadLastRead(missing) error = %v, want sql.ErrNoRows", err)
+	if err := s.setThreadLastRead("missing", &ts); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("setThreadLastRead(missing) error = %v, want sql.ErrNoRows", err)
+	}
+}
+
+func TestMarkThreadReadNowClampsToThreadUpdatedAt(t *testing.T) {
+	s := newTestStore(t)
+
+	thr := makeThread("thread-read-clamp", "claude")
+	thr.UpdatedAt = time.Now().UnixMilli() + 60_000
+	if err := s.CreateThread(thr); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+
+	if err := s.MarkThreadReadNow(thr.ID); err != nil {
+		t.Fatalf("MarkThreadReadNow: %v", err)
+	}
+	got, err := s.GetThread(thr.ID)
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+	if got.LastReadAt == nil {
+		t.Fatalf("LastReadAt = nil, want %d", thr.UpdatedAt)
+	}
+	if *got.LastReadAt != thr.UpdatedAt {
+		t.Fatalf("LastReadAt = %d, want updated_at %d", *got.LastReadAt, thr.UpdatedAt)
+	}
+}
+
+func TestMarkThreadReadNowAlreadyReadDoesNotRewrite(t *testing.T) {
+	s := newTestStore(t)
+
+	thr := makeThread("thread-read-noop", "claude")
+	thr.UpdatedAt = 1000
+	if err := s.CreateThread(thr); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+
+	ts := int64(2000)
+	if err := s.setThreadLastRead(thr.ID, &ts); err != nil {
+		t.Fatalf("setThreadLastRead: %v", err)
+	}
+	if err := s.MarkThreadReadNow(thr.ID); err != nil {
+		t.Fatalf("MarkThreadReadNow: %v", err)
+	}
+
+	got, err := s.GetThread(thr.ID)
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+	if got.LastReadAt == nil || *got.LastReadAt != ts {
+		t.Fatalf("LastReadAt = %v, want %d", got.LastReadAt, ts)
 	}
 }
 
@@ -874,8 +928,8 @@ func TestUpdateThreadPreservesLastReadAt(t *testing.T) {
 		t.Fatalf("CreateThread: %v", err)
 	}
 	ts := int64(1_700_000_000_000)
-	if err := s.UpdateThreadLastRead(thr.ID, &ts); err != nil {
-		t.Fatalf("UpdateThreadLastRead: %v", err)
+	if err := s.setThreadLastRead(thr.ID, &ts); err != nil {
+		t.Fatalf("setThreadLastRead: %v", err)
 	}
 
 	got, err := s.GetThread(thr.ID)
@@ -903,12 +957,12 @@ func TestUpdateThreadPreservesLastReadAt(t *testing.T) {
 	}
 }
 
-// TestUpdateThreadLastReadDoesNotBumpUpdatedAt pins the invariant that
+// TestSetThreadLastReadDoesNotBumpUpdatedAt pins the invariant that
 // read-state is UI bookkeeping, not a thread mutation. Bumping updated_at
 // would reshuffle the sidebar on every thread open — which is precisely
 // what the sidebar's "most-recently-active-at-top" sort is trying to
 // represent.
-func TestUpdateThreadLastReadDoesNotBumpUpdatedAt(t *testing.T) {
+func TestSetThreadLastReadDoesNotBumpUpdatedAt(t *testing.T) {
 	s := newTestStore(t)
 
 	thr := makeThread("thread-no-bump", "claude")
@@ -921,27 +975,27 @@ func TestUpdateThreadLastReadDoesNotBumpUpdatedAt(t *testing.T) {
 	}
 
 	ts := int64(1_700_000_000_000)
-	if err := s.UpdateThreadLastRead(thr.ID, &ts); err != nil {
-		t.Fatalf("UpdateThreadLastRead(set): %v", err)
+	if err := s.setThreadLastRead(thr.ID, &ts); err != nil {
+		t.Fatalf("setThreadLastRead(set): %v", err)
 	}
 	afterSet, err := s.GetThread(thr.ID)
 	if err != nil {
 		t.Fatalf("GetThread after set: %v", err)
 	}
 	if afterSet.UpdatedAt != before.UpdatedAt {
-		t.Fatalf("UpdateThreadLastRead(set) bumped updated_at: %d -> %d",
+		t.Fatalf("setThreadLastRead(set) bumped updated_at: %d -> %d",
 			before.UpdatedAt, afterSet.UpdatedAt)
 	}
 
-	if err := s.UpdateThreadLastRead(thr.ID, nil); err != nil {
-		t.Fatalf("UpdateThreadLastRead(clear): %v", err)
+	if err := s.setThreadLastRead(thr.ID, nil); err != nil {
+		t.Fatalf("setThreadLastRead(clear): %v", err)
 	}
 	afterClear, err := s.GetThread(thr.ID)
 	if err != nil {
 		t.Fatalf("GetThread after clear: %v", err)
 	}
 	if afterClear.UpdatedAt != before.UpdatedAt {
-		t.Fatalf("UpdateThreadLastRead(clear) bumped updated_at: %d -> %d",
+		t.Fatalf("setThreadLastRead(clear) bumped updated_at: %d -> %d",
 			before.UpdatedAt, afterClear.UpdatedAt)
 	}
 }

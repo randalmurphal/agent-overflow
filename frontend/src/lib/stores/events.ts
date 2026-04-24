@@ -157,31 +157,37 @@ interface RuntimeModeChangedPayload {
 }
 
 function syncThreadRow(updated: Thread): void {
-  let lastReadAt = updated.lastReadAt;
+  const readMarkers = [updated.lastReadAt];
   const cachedThread = getThreadById(updated.id);
   if (cachedThread?.lastReadAt !== undefined) {
-    lastReadAt =
-      lastReadAt === undefined
-        ? cachedThread.lastReadAt
-        : Math.max(lastReadAt, cachedThread.lastReadAt);
+    readMarkers.push(cachedThread.lastReadAt);
   }
 
   for (const pane of getAllPanes().values()) {
     if (pane.threadId !== updated.id || !pane.thread) continue;
     if (pane.thread.lastReadAt !== undefined) {
-      lastReadAt =
-        lastReadAt === undefined
-          ? pane.thread.lastReadAt
-          : Math.max(lastReadAt, pane.thread.lastReadAt);
+      readMarkers.push(pane.thread.lastReadAt);
     }
   }
 
+  const lastReadAt = mergeLastReadAt(readMarkers);
   const merged = { ...updated, lastReadAt };
   replaceThread(merged);
   for (const pane of getAllPanes().values()) {
     if (pane.threadId !== updated.id || !pane.thread) continue;
     pane.replaceThread(merged);
   }
+}
+
+function mergeLastReadAt(readMarkers: Array<number | undefined>): number | undefined {
+  const definedReadMarkers = readMarkers.filter((value): value is number => value !== undefined);
+  if (definedReadMarkers.length === 0) {
+    return undefined;
+  }
+  if (definedReadMarkers.includes(0)) {
+    return 0;
+  }
+  return Math.max(...definedReadMarkers);
 }
 
 function updateThreadUsageCache(threadId: string, raw: string): void {

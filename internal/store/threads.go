@@ -278,23 +278,51 @@ func (s *Store) UnarchiveThread(id string) error {
 	return requireRowsAffected(result, fmt.Sprintf("store: unarchive thread %s", id))
 }
 
-// MarkThreadReadNow stamps last_read_at with the current unix-ms. The
-// App binding called MarkThreadRead delegates here so the store owns the
-// "now" timestamp — matching the convention used by UpdateTitle /
-// ArchiveThread / UnarchiveThread etc.
+// MarkThreadReadNow stamps last_read_at with the current unix-ms, clamped to
+// the thread's updated_at. The clamp is load-bearing: a read marker only
+// resolves the sidebar's completed/unread pill when last_read_at >=
+// updated_at, and item timestamps can occasionally be ahead of wall-clock
+// now when the frontend asks to mark the thread read.
 //
 // Does NOT bump updated_at: read-state is UI bookkeeping, not a thread
 // mutation, and bumping would thrash the sidebar ordering.
 func (s *Store) MarkThreadReadNow(id string) error {
 	now := nowMillis()
-	return s.setThreadLastRead(id, &now)
+	result, err := s.db.Exec(
+		`UPDATE threads
+		    SET last_read_at = CASE WHEN updated_at > ? THEN updated_at ELSE ? END
+		  WHERE id = ?
+		    AND (last_read_at IS NULL OR last_read_at < updated_at)`,
+		now, now, id,
+	)
+	if err != nil {
+		return fmt.Errorf("store: mark thread read %s: %w", id, err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("store: mark thread read %s rows affected: %w", id, err)
+	}
+	if rows > 0 {
+		return nil
+	}
+
+	var exists int
+	if err := s.db.QueryRow(`SELECT 1 FROM threads WHERE id = ?`, id).Scan(&exists); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("store: mark thread read %s: %w", id, sql.ErrNoRows)
+		}
+		return fmt.Errorf("store: check thread read target %s: %w", id, err)
+	}
+	return nil
 }
 
-// MarkThreadUnread clears last_read_at. Null < anything, so the
-// frontend's "last_read_at < updated_at" comparison always reads as
-// unread regardless of the current timestamp.
+// MarkThreadUnread stamps last_read_at to zero. NULL is reserved for
+// "never tracked" and is treated as read by the frontend so old rows do not
+// light up on first launch; an explicit unread action needs a concrete value
+// that is older than every real thread update.
 func (s *Store) MarkThreadUnread(id string) error {
-	return s.setThreadLastRead(id, nil)
+	var zero int64
+	return s.setThreadLastRead(id, &zero)
 }
 
 // setThreadLastRead is the shared primitive. Kept unexported — callers
@@ -315,19 +343,15 @@ func (s *Store) setThreadLastRead(id string, ts *int64) error {
 	return requireRowsAffected(result, fmt.Sprintf("store: update last_read_at for %s", id))
 }
 
-// UpdateThreadLastRead is a thin wrapper kept for the existing round-trip
-// test that drives both the set and clear paths through a single entry
-// point. App-level callers should prefer MarkThreadReadNow / MarkThreadUnread.
-func (s *Store) UpdateThreadLastRead(id string, ts *int64) error {
-	return s.setThreadLastRead(id, ts)
-}
-
+// UpdateSessionRef records the provider resume cursor without touching
+// updated_at. Provider init can happen during sidebar-driven auto-resume, and
+// opening a thread must not count as new thread activity.
 func (s *Store) UpdateSessionRef(threadID, ref string) error {
 	result, err := s.db.Exec(
 		`UPDATE threads
-		 SET session_ref = ?, pending_fork_session_ref = NULL, updated_at = ?
+		 SET session_ref = ?, pending_fork_session_ref = NULL
 		 WHERE id = ?`,
-		ref, nowMillis(), threadID,
+		ref, threadID,
 	)
 	if err != nil {
 		return fmt.Errorf("store: update session ref for %s: %w", threadID, err)

@@ -26,6 +26,10 @@ describe('hasUnread', () => {
   it('returns true when activity postdates the last read', () => {
     expect(hasUnread(t({ lastReadAt: 1_000, updatedAt: 2_000 }))).toBe(true);
   });
+
+  it('returns true for explicit unread marker at epoch 0', () => {
+    expect(hasUnread(t({ lastReadAt: 0, updatedAt: 2_000 }))).toBe(true);
+  });
 });
 
 describe('resolveThreadStatusPill', () => {

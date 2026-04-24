@@ -1370,6 +1370,14 @@ func TestInlineEventDoesNotCallStore(t *testing.T) {
 func TestEventInitUpdatesSessionRef(t *testing.T) {
 	router, st, emissions := newTestRouter(t)
 	createTestThread(t, st, "t1")
+	thread, err := st.GetThread("t1")
+	if err != nil {
+		t.Fatalf("get thread fixture: %v", err)
+	}
+	thread.UpdatedAt = 1000
+	if err := st.UpdateThread(thread); err != nil {
+		t.Fatalf("update thread fixture: %v", err)
+	}
 
 	info := provider.SessionInfo{SessionID: "session-abc", Model: "opus"}
 	meta, _ := json.Marshal(info)
@@ -1398,6 +1406,9 @@ func TestEventInitUpdatesSessionRef(t *testing.T) {
 	}
 	if thr.SessionRef != "session-abc" {
 		t.Errorf("session ref: got %q, want %q", thr.SessionRef, "session-abc")
+	}
+	if thr.UpdatedAt != 1000 {
+		t.Errorf("updated_at: got %d, want 1000", thr.UpdatedAt)
 	}
 }
 

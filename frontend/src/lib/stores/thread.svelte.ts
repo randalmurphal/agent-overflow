@@ -16,6 +16,7 @@ import {
   ListRecentTurns,
   SwitchThread,
 } from './bindings';
+import { replaceThread } from './threads.svelte';
 
 /**
  * Default batch size for "Load older" fetches. Matches the initial window
@@ -548,22 +549,23 @@ export function createThreadPane() {
       // out if the user has already switched away (or back).
       const gen = ++switchGeneration;
 
-      // Notify the backend so it can auto-start sessions for threads with session_ref.
+      // Notify the backend so it can mark the thread read durably and
+      // auto-start sessions for threads with session_ref.
       try {
-        await SwitchThread(newThread.id);
+        const switched = await SwitchThread(newThread.id) as Thread;
+        if (gen !== switchGeneration) return;
+        if (switched.id === newThread.id) {
+          thread = switched;
+          replaceThread(switched);
+        }
       } catch (err) {
         console.error('Failed to notify backend of thread switch:', err);
         addToast('warning', 'Backend was not notified of thread switch');
       }
       if (gen !== switchGeneration) return;
 
-      // NOTE: mark-read is NOT fired here. ChatView.svelte owns that
-      // via a $effect keyed on `pane.thread?.id + pane.thread?.updatedAt`
-      // so the active thread also stays "read" across mid-session
-      // `thread:updated` events (title generation, model swap, backend
-      // bumps) — a switchThread-only hook would otherwise let the
-      // active row show a "Completed" pill at itself. Keeps this
-      // pane-store method free of sidebar-store writes.
+      // SwitchThread persists read state for the selection itself. ChatView
+      // keeps the active row read as live updates advance updatedAt.
 
       try {
         const paged = await ListRecentThreadItems(newThread.id, 0);

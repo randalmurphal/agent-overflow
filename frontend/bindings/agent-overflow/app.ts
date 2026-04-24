@@ -765,20 +765,20 @@ export function ListThreads(): $CancellablePromise<store$0.Thread[]> {
 }
 
 /**
- * MarkThreadRead stamps the thread's last_read_at to "now" so the sidebar
- * stops showing an unread badge. Fired automatically while a thread is
- * open (see ChatView.svelte's $effect on pane.thread.updatedAt). The
- * timestamp is owned by the store so the App layer stays free of
- * nowMillis() calls — matching ArchiveThread / UpdateTitle etc.
+ * MarkThreadRead stamps the thread's last_read_at to at least its updated_at
+ * so the sidebar stops showing an unread badge. Fired automatically while a
+ * thread is open (see ChatView.svelte's $effect on pane.thread.updatedAt). The
+ * timestamp is owned by the store so the App layer stays free of nowMillis()
+ * calls — matching ArchiveThread / UpdateTitle etc.
  */
 export function MarkThreadRead(id: string): $CancellablePromise<void> {
     return $Call.ByID(1480646012, id);
 }
 
 /**
- * MarkThreadUnread clears the last_read_at column. Null < anything, so
- * the sidebar's "last_read_at < updated_at" comparison evaluates to
- * unread regardless of the current timestamp.
+ * MarkThreadUnread stamps last_read_at to zero. NULL is reserved for
+ * "never tracked" rows that should not flood the sidebar as unread after
+ * migration; explicit unread uses a concrete old timestamp.
  */
 export function MarkThreadUnread(id: string): $CancellablePromise<void> {
     return $Call.ByID(236597375, id);
@@ -1030,8 +1030,9 @@ export function StopSession(threadID: string): $CancellablePromise<void> {
 }
 
 /**
- * SwitchThread returns the requested thread and auto-resumes its provider
- * session in the background when the thread has a stored session reference.
+ * SwitchThread returns the requested thread, marks it read durably, and
+ * auto-resumes its provider session in the background when the thread has a
+ * stored session reference.
  */
 export function SwitchThread(threadID: string): $CancellablePromise<store$0.Thread> {
     return $Call.ByID(3897387725, threadID).then(($result: any) => {

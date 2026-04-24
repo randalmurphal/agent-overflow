@@ -13,7 +13,8 @@ function nextFrame(): Promise<void> {
 describe('createThreadPane', () => {
   beforeEach(() => {
     resetBindingMocks();
-    setBindingMock('SwitchThread', async () => {});
+    setBindingMock('SwitchThread', async (threadId: unknown) =>
+      makeThread({ id: typeof threadId === 'string' ? threadId : 'thread-1' }));
     // switchThread loads items via ListRecentThreadItems. Tests override
     // the mock to supply specific items; the default is an empty thread
     // so unrelated tests don't have to plumb it.
@@ -67,6 +68,20 @@ describe('createThreadPane', () => {
       maxTokens: 200000,
       usedPercentage: 0.6,
     });
+  });
+
+  it('uses the backend-returned thread from switchThread', async () => {
+    const pane = createThreadPane();
+    const selected = makeThread({ id: 'thread-a', lastReadAt: 100 });
+    setBindingMock('SwitchThread', async () => ({
+      ...selected,
+      lastReadAt: 300,
+    }));
+
+    await pane.switchThread(selected);
+
+    expect(pane.thread?.id).toBe('thread-a');
+    expect(pane.thread?.lastReadAt).toBe(300);
   });
 
   it('drops wrong-thread rows from initial history hydration', async () => {
