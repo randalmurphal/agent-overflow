@@ -130,6 +130,38 @@ describe('<Composer>', () => {
     expect(send).not.toHaveBeenCalled();
   });
 
+  it('autosizes multiline input and clamps at the maximum composer height', async () => {
+    const pane = await buildPane();
+    const draft = await buildDraft();
+
+    const { getByLabelText } = render(Composer, { props: { pane, draft } });
+    const textarea = getByLabelText('Message input') as HTMLTextAreaElement;
+    Object.defineProperty(textarea, 'scrollHeight', {
+      configurable: true,
+      get: () => 260,
+    });
+
+    await fireEvent.input(textarea, { target: { value: 'one\ntwo\nthree\nfour' } });
+
+    expect(textarea.style.height).toBe('200px');
+  });
+
+  it('autosizes multiline input below the maximum composer height', async () => {
+    const pane = await buildPane();
+    const draft = await buildDraft();
+
+    const { getByLabelText } = render(Composer, { props: { pane, draft } });
+    const textarea = getByLabelText('Message input') as HTMLTextAreaElement;
+    Object.defineProperty(textarea, 'scrollHeight', {
+      configurable: true,
+      get: () => 96,
+    });
+
+    await fireEvent.input(textarea, { target: { value: 'one\ntwo' } });
+
+    expect(textarea.style.height).toBe('96px');
+  });
+
   it('restores the draft and surfaces an error when send fails', async () => {
     const pane = await buildPane();
     const draft = await buildDraft();

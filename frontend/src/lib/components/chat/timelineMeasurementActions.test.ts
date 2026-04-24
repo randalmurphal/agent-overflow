@@ -41,7 +41,7 @@ describe('createTimelineMeasurementActions', () => {
         rowHeights.set(key, height);
       },
       setScrollContainer: () => {},
-      syncScrollState: () => {
+      syncViewportState: () => {
         syncCount += 1;
       },
     });
@@ -82,7 +82,7 @@ describe('createTimelineMeasurementActions', () => {
         rowHeights.set(key, height);
       },
       setScrollContainer: () => {},
-      syncScrollState: () => {},
+      syncViewportState: () => {},
     });
 
     const action = actions.measureTimelineRow(row, 'row-1');
@@ -92,5 +92,45 @@ describe('createTimelineMeasurementActions', () => {
     expect(rowHeights.get('row-1')).toBe(260);
 
     action.destroy();
+  });
+
+  it('syncs viewport state on scroll container resize without touching bottom intent', () => {
+    let synced = 0;
+    const previous = globalThis.ResizeObserver;
+    const callbacks: ResizeObserverCallback[] = [];
+    class StubResizeObserver {
+      constructor(cb: ResizeObserverCallback) {
+        callbacks.push(cb);
+      }
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    }
+    globalThis.ResizeObserver = StubResizeObserver as unknown as typeof ResizeObserver;
+    try {
+      const actions = createTimelineMeasurementActions({
+        estimatedRowHeight: 140,
+        getRowHeight: () => undefined,
+        getScrollContainer: () => undefined,
+        getUserPinnedToBottom: () => {
+          throw new Error('container resize must not inspect bottom intent');
+        },
+        onRowHeightChanged: () => {},
+        setRowHeight: () => {},
+        setScrollContainer: () => {},
+        syncViewportState: () => {
+          synced += 1;
+        },
+      });
+
+      const action = actions.measureScrollContainer({} as HTMLElement);
+      expect(callbacks).toHaveLength(1);
+      callbacks[0]([], {} as ResizeObserver);
+
+      expect(synced).toBe(2);
+      action.destroy();
+    } finally {
+      globalThis.ResizeObserver = previous;
+    }
   });
 });

@@ -6,7 +6,7 @@ import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-
 import { buildPane, makeItem, makeThread } from '../../../test/helpers/chat';
 import { createThreadPane, type SettledTurn } from '../../stores/thread.svelte';
 import { getToasts } from '../../stores/toast.svelte';
-import MessageTimeline from './MessageTimeline.svelte';
+import MessageTimeline, { clearMessageTimelineScrollSnapshotsForTest } from './MessageTimeline.svelte';
 
 function makeSettledTurn(overrides: Partial<SettledTurn> = {}): SettledTurn {
   return {
@@ -20,6 +20,75 @@ function makeSettledTurn(overrides: Partial<SettledTurn> = {}): SettledTurn {
     aborted: false,
     errorMessage: '',
     ...overrides,
+  };
+}
+
+function rect(partial: Partial<DOMRect>): DOMRect {
+  return {
+    bottom: 0,
+    height: 0,
+    left: 0,
+    right: 0,
+    top: 0,
+    width: 0,
+    x: 0,
+    y: 0,
+    toJSON: () => ({}),
+    ...partial,
+  };
+}
+
+function setElementRect(el: Element, partial: Partial<DOMRect>): void {
+  Object.defineProperty(el, 'getBoundingClientRect', {
+    configurable: true,
+    value: () => rect(partial),
+  });
+}
+
+function setScrollGeometry(
+  el: HTMLElement,
+  geometry: { scrollHeight: () => number; clientHeight: () => number; top?: number },
+): void {
+  Object.defineProperty(el, 'scrollHeight', {
+    configurable: true,
+    get: geometry.scrollHeight,
+  });
+  Object.defineProperty(el, 'clientHeight', {
+    configurable: true,
+    get: geometry.clientHeight,
+  });
+  setElementRect(el, {
+    top: geometry.top ?? 0,
+    bottom: (geometry.top ?? 0) + geometry.clientHeight(),
+    height: geometry.clientHeight(),
+  });
+}
+
+async function nextFrame(): Promise<void> {
+  await new Promise((resolve) => requestAnimationFrame(resolve));
+}
+
+function installControllableResizeObserver() {
+  const previous = globalThis.ResizeObserver;
+  const callbacks: ResizeObserverCallback[] = [];
+  class StubResizeObserver {
+    constructor(callback: ResizeObserverCallback) {
+      callbacks.push(callback);
+    }
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  }
+  globalThis.ResizeObserver = StubResizeObserver as unknown as typeof ResizeObserver;
+  return {
+    trigger() {
+      for (const callback of callbacks) {
+        callback([], {} as ResizeObserver);
+      }
+    },
+    restore() {
+      globalThis.ResizeObserver = previous;
+    },
   };
 }
 
@@ -42,6 +111,7 @@ beforeAll(() => {
 describe('<MessageTimeline>', () => {
   beforeEach(async () => {
     resetBindingMocks();
+    clearMessageTimelineScrollSnapshotsForTest();
     setBindingMock('GetSettings', async () => null);
     await loadSettings();
   });
@@ -410,6 +480,176 @@ describe('<MessageTimeline>', () => {
       expect(added.some((t) => t.type === 'warning')).toBe(true);
     });
 
+    it('opens a populated thread at the bottom when no scroll snapshot exists', async () => {
+      const pane = await buildWindowedPane({
+        items: [makeItem({ id: 'tail', turnIndex: 10 })],
+      });
+
+      const { getByTestId } = render(MessageTimeline, { props: { pane } });
+      const scroll = getByTestId('message-timeline-scroll') as HTMLElement;
+      setScrollGeometry(scroll, {
+        scrollHeight: () => 1800,
+        clientHeight: () => 600,
+      });
+
+      await tick();
+      await nextFrame();
+
+      expect(scroll.scrollTop).toBe(1200);
+    });
+
+    it('restores a saved anchor position for a previously opened thread', async () => {
+      const items = Array.from({ length: 8 }, (_, i) =>
+        makeItem({ id: `text:${i}`, turnIndex: i, itemIndex: 0, summary: `message ${i}` }),
+      );
+      const firstPane = await buildWindowedPane({ items });
+      const first = render(MessageTimeline, { props: { pane: firstPane } });
+      const firstScroll = first.getByTestId('message-timeline-scroll') as HTMLElement;
+      setScrollGeometry(firstScroll, {
+        scrollHeight: () => 2000,
+        clientHeight: () => 600,
+        top: 100,
+      });
+      const anchor = first.container.querySelector('[data-item-id="text:4"]');
+      expect(anchor).not.toBeNull();
+      setElementRect(anchor!, { top: 140, bottom: 260, height: 120 });
+
+      firstScroll.scrollTop = 500;
+      await fireEvent.scroll(firstScroll);
+      first.unmount();
+
+      const secondPane = await buildWindowedPane({ items });
+      const second = render(MessageTimeline, { props: { pane: secondPane } });
+      const secondScroll = second.getByTestId('message-timeline-scroll') as HTMLElement;
+      setScrollGeometry(secondScroll, {
+        scrollHeight: () => 2000,
+        clientHeight: () => 600,
+        top: 100,
+      });
+      const restoredAnchor = second.container.querySelector('[data-item-id="text:4"]');
+      expect(restoredAnchor).not.toBeNull();
+      setElementRect(restoredAnchor!, { top: 140, bottom: 260, height: 120 });
+
+      await tick();
+      await nextFrame();
+      await tick();
+
+      expect(secondScroll.scrollTop).toBe(520);
+    });
+
+    it('restores a saved anchor even when newer items exist below it', async () => {
+      const originalItems = Array.from({ length: 8 }, (_, i) =>
+        makeItem({ id: `text:${i}`, turnIndex: i, itemIndex: 0, summary: `message ${i}` }),
+      );
+      const firstPane = await buildWindowedPane({ items: originalItems });
+      const first = render(MessageTimeline, { props: { pane: firstPane } });
+      const firstScroll = first.getByTestId('message-timeline-scroll') as HTMLElement;
+      setScrollGeometry(firstScroll, {
+        scrollHeight: () => 2000,
+        clientHeight: () => 600,
+        top: 100,
+      });
+      const anchor = first.container.querySelector('[data-item-id="text:3"]');
+      expect(anchor).not.toBeNull();
+      setElementRect(anchor!, { top: 160, bottom: 280, height: 120 });
+
+      firstScroll.scrollTop = 420;
+      await fireEvent.scroll(firstScroll);
+      first.unmount();
+
+      const newerItems = [
+        ...originalItems,
+        makeItem({ id: 'newer:8', turnIndex: 8, itemIndex: 0, summary: 'newer' }),
+        makeItem({ id: 'newer:9', turnIndex: 9, itemIndex: 0, summary: 'newer still' }),
+      ];
+      const secondPane = await buildWindowedPane({ items: newerItems });
+      const second = render(MessageTimeline, { props: { pane: secondPane } });
+      const secondScroll = second.getByTestId('message-timeline-scroll') as HTMLElement;
+      setScrollGeometry(secondScroll, {
+        scrollHeight: () => 2400,
+        clientHeight: () => 600,
+        top: 100,
+      });
+      const restoredAnchor = second.container.querySelector('[data-item-id="text:3"]');
+      expect(restoredAnchor).not.toBeNull();
+      setElementRect(restoredAnchor!, { top: 160, bottom: 280, height: 120 });
+
+      await tick();
+      await nextFrame();
+      await tick();
+
+      expect(secondScroll.scrollTop).toBe(360);
+    });
+
+    it('falls back to bottom when the saved anchor is no longer loadable', async () => {
+      const firstPane = await buildWindowedPane({
+        items: [makeItem({ id: 'anchor', turnIndex: 3 })],
+      });
+      const first = render(MessageTimeline, { props: { pane: firstPane } });
+      const firstScroll = first.getByTestId('message-timeline-scroll') as HTMLElement;
+      setScrollGeometry(firstScroll, {
+        scrollHeight: () => 1000,
+        clientHeight: () => 600,
+        top: 100,
+      });
+      const anchor = first.container.querySelector('[data-item-id="anchor"]');
+      expect(anchor).not.toBeNull();
+      setElementRect(anchor!, { top: 130, bottom: 250, height: 120 });
+      firstScroll.scrollTop = 200;
+      await fireEvent.scroll(firstScroll);
+      first.unmount();
+
+      const secondPane = await buildWindowedPane({
+        items: [makeItem({ id: 'only-visible', turnIndex: 10 })],
+      });
+      vi.spyOn(secondPane, 'loadUntilItem').mockResolvedValue(false);
+      const second = render(MessageTimeline, { props: { pane: secondPane } });
+      const secondScroll = second.getByTestId('message-timeline-scroll') as HTMLElement;
+      setScrollGeometry(secondScroll, {
+        scrollHeight: () => 1500,
+        clientHeight: () => 600,
+      });
+
+      await tick();
+      await nextFrame();
+      await tick();
+
+      expect(secondScroll.scrollTop).toBe(900);
+    });
+
+    it('restores a saved bottom position as the current bottom', async () => {
+      const firstPane = await buildWindowedPane({
+        items: [makeItem({ id: 'tail', turnIndex: 10 })],
+      });
+      const first = render(MessageTimeline, { props: { pane: firstPane } });
+      const firstScroll = first.getByTestId('message-timeline-scroll') as HTMLElement;
+      setScrollGeometry(firstScroll, {
+        scrollHeight: () => 1000,
+        clientHeight: () => 600,
+      });
+      firstScroll.scrollTop = 400;
+      await fireEvent.scroll(firstScroll);
+      first.unmount();
+
+      const secondPane = await buildWindowedPane({
+        items: [
+          makeItem({ id: 'tail', turnIndex: 10 }),
+          makeItem({ id: 'new-tail', turnIndex: 11 }),
+        ],
+      });
+      const second = render(MessageTimeline, { props: { pane: secondPane } });
+      const secondScroll = second.getByTestId('message-timeline-scroll') as HTMLElement;
+      setScrollGeometry(secondScroll, {
+        scrollHeight: () => 1400,
+        clientHeight: () => 600,
+      });
+
+      await tick();
+      await nextFrame();
+
+      expect(secondScroll.scrollTop).toBe(800);
+    });
+
     it('preserves the visible anchor row when Load older prepends history', async () => {
       // Scroll-preservation contract: the row the user was reading
       // (captured via prevScrollTop) must stay in the same viewport
@@ -566,6 +806,74 @@ describe('<MessageTimeline>', () => {
       // scrollTop MUST remain where the user left it; the streaming
       // delta of 300 px should NOT be re-applied.
       expect(scroll.scrollTop).toBe(200);
+    });
+
+    it('keeps a pinned user at the bottom when a new item grows the timeline', async () => {
+      const pane = await buildWindowedPane({
+        items: [makeItem({ id: 'tail', turnIndex: 10, summary: 'tail' })],
+      });
+
+      const { container, rerender } = render(MessageTimeline, { props: { pane } });
+      const scroll = container.querySelector('[role="log"]') as HTMLElement;
+      let scrollHeightValue = 1000;
+      Object.defineProperty(scroll, 'scrollHeight', {
+        configurable: true,
+        get: () => scrollHeightValue,
+      });
+      Object.defineProperty(scroll, 'clientHeight', {
+        configurable: true,
+        get: () => 600,
+      });
+      scroll.scrollTop = 400;
+      await fireEvent.scroll(scroll);
+
+      pane.upsertItem(makeItem({
+        id: 'new-tail',
+        turnIndex: 11,
+        itemIndex: 0,
+        summary: 'new tail',
+      }));
+      scrollHeightValue = 1100;
+      await rerender({ pane });
+      await tick();
+      await nextFrame();
+
+      expect(scroll.scrollTop).toBe(500);
+    });
+
+    it('keeps a pinned user at the bottom when a measured row grows', async () => {
+      const resize = installControllableResizeObserver();
+      try {
+        const pane = await buildWindowedPane({
+          items: [makeItem({ id: 'tail', turnIndex: 10, summary: 'tail' })],
+        });
+
+        const { container, getByTestId } = render(MessageTimeline, { props: { pane } });
+        const scroll = container.querySelector('[role="log"]') as HTMLElement;
+        let scrollHeightValue = 1000;
+        Object.defineProperty(scroll, 'scrollHeight', {
+          configurable: true,
+          get: () => scrollHeightValue,
+        });
+        Object.defineProperty(scroll, 'clientHeight', {
+          configurable: true,
+          get: () => 600,
+        });
+        scroll.scrollTop = 400;
+        await fireEvent.scroll(scroll);
+
+        const measuredRow = getByTestId('message-timeline-node').parentElement;
+        expect(measuredRow).not.toBeNull();
+        setElementRect(measuredRow!, { top: 100, bottom: 360, height: 260 });
+        scrollHeightValue = 1120;
+        resize.trigger();
+        await tick();
+        await nextFrame();
+
+        expect(scroll.scrollTop).toBe(520);
+      } finally {
+        resize.restore();
+      }
     });
 
     it('does not snap to bottom when the user is close to bottom but not pinned', async () => {

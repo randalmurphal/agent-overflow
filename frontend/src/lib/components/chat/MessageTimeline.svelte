@@ -1,5 +1,17 @@
+<script lang="ts" module>
+  type ScrollSnapshot =
+    | { kind: 'bottom' }
+    | { kind: 'anchor'; itemId: string; offsetTop: number };
+
+  const threadScrollSnapshots = new Map<string, ScrollSnapshot>();
+
+  export function clearMessageTimelineScrollSnapshotsForTest(): void {
+    threadScrollSnapshots.clear();
+  }
+</script>
+
 <script lang="ts">
-  import { onDestroy, tick } from 'svelte';
+  import { onDestroy, tick, untrack } from 'svelte';
   import type { SettledTurn, ThreadPane } from '../../stores/thread.svelte';
   import type { Item } from '../../types/models';
   import { addToast } from '../../stores/toast.svelte';
@@ -53,6 +65,7 @@
   }
 
   let scrollContainer: HTMLDivElement | undefined = $state(undefined);
+  const componentThreadId = untrack(() => pane.threadId);
   let viewportScrollTop = $state(0);
   let viewportHeight = $state(0);
   let rowHeightRevision = $state(0);
@@ -61,17 +74,31 @@
   const OVERSCAN_PX = 900;
 
   let userPinnedToBottom = $state(true);
+  let restoredThreadId: string | null = $state(null);
+  let restoringScroll = false;
 
-  function syncScrollState() {
+  function syncViewportState(): void {
     if (!scrollContainer) return;
-    const { scrollTop, scrollHeight, clientHeight } = scrollContainer;
+    const { scrollTop, clientHeight } = scrollContainer;
     viewportScrollTop = scrollTop;
     viewportHeight = clientHeight;
+  }
+
+  function syncUserScrollState(): void {
+    if (!scrollContainer) return;
+    const { scrollTop, scrollHeight, clientHeight } = scrollContainer;
+    syncViewportState();
     userPinnedToBottom = isScrollPinnedToBottom(scrollTop, scrollHeight, clientHeight);
   }
 
-  function handleScroll() {
-    syncScrollState();
+  function handleScroll(): void {
+    if (initialRestoreFrame !== null) {
+      cancelAnimationFrame(initialRestoreFrame);
+      initialRestoreFrame = null;
+      restoringScroll = false;
+    }
+    syncUserScrollState();
+    saveScrollSnapshot();
     if (!userPinnedToBottom && bottomScrollFrame !== null) {
       cancelAnimationFrame(bottomScrollFrame);
       bottomScrollFrame = null;
@@ -184,7 +211,7 @@
     setScrollContainer: (node) => {
       scrollContainer = node;
     },
-    syncScrollState,
+    syncViewportState,
   });
   const { measureScrollContainer, measureTimelineRow } = timelineMeasurementActions;
 
@@ -205,37 +232,160 @@
    */
   let suppressBottomAutoScroll = $state(false);
   let bottomScrollFrame: number | null = null;
+  let initialRestoreFrame: number | null = null;
 
   onDestroy(() => {
+    saveScrollSnapshot();
+    if (initialRestoreFrame !== null) {
+      cancelAnimationFrame(initialRestoreFrame);
+      initialRestoreFrame = null;
+    }
     if (bottomScrollFrame !== null) {
       cancelAnimationFrame(bottomScrollFrame);
       bottomScrollFrame = null;
     }
   });
 
+  function snapshotThreadId(): string | null {
+    return componentThreadId || pane.threadId || null;
+  }
+
+  function saveScrollSnapshot(): void {
+    const threadId = snapshotThreadId();
+    if (!threadId || !scrollContainer || pane.loading || restoredThreadId !== threadId) return;
+    if (userPinnedToBottom) {
+      threadScrollSnapshots.set(threadId, { kind: 'bottom' });
+      return;
+    }
+
+    const anchor = firstVisibleItemAnchor();
+    if (anchor) {
+      threadScrollSnapshots.set(threadId, anchor);
+    }
+  }
+
+  function firstVisibleItemAnchor(): ScrollSnapshot | null {
+    if (!scrollContainer) return null;
+    const viewport = scrollContainer.getBoundingClientRect();
+    const itemElements = Array.from(
+      scrollContainer.querySelectorAll<HTMLElement>('[data-item-id]'),
+    );
+    for (const el of itemElements) {
+      const rect = el.getBoundingClientRect();
+      if (rect.bottom < viewport.top) continue;
+      const itemId = el.dataset.itemId ?? '';
+      if (!itemId) continue;
+      return {
+        kind: 'anchor',
+        itemId,
+        offsetTop: rect.top - viewport.top,
+      };
+    }
+    return null;
+  }
+
+  function scrollToBottom(): void {
+    if (!scrollContainer) return;
+    scrollContainer.scrollTop = Math.max(
+      0,
+      scrollContainer.scrollHeight - scrollContainer.clientHeight,
+    );
+    syncViewportState();
+    userPinnedToBottom = true;
+    saveScrollSnapshot();
+  }
+
+  function scheduleScrollToBottom(): void {
+    if (!scrollContainer || bottomScrollFrame !== null) return;
+    const targetThreadId = pane.threadId;
+    bottomScrollFrame = requestAnimationFrame(() => {
+      bottomScrollFrame = null;
+      if (!scrollContainer || pane.threadId !== targetThreadId) return;
+      if (!userPinnedToBottom) return;
+      scrollToBottom();
+    });
+  }
+
+  async function restoreInitialScroll(threadId: string): Promise<void> {
+    if (!scrollContainer) return;
+    const snapshot = threadScrollSnapshots.get(threadId);
+    suppressBottomAutoScroll = true;
+    try {
+      if (snapshot?.kind === 'anchor') {
+        const restored = await restoreAnchorSnapshot(snapshot);
+        if (restored) {
+          syncUserScrollState();
+          saveScrollSnapshot();
+          return;
+        }
+      }
+      scrollToBottom();
+    } finally {
+      restoringScroll = false;
+      suppressBottomAutoScroll = false;
+    }
+  }
+
+  async function restoreAnchorSnapshot(snapshot: Extract<ScrollSnapshot, { kind: 'anchor' }>): Promise<boolean> {
+    if (!scrollContainer || !snapshot.itemId) return false;
+    const found = await pane.loadUntilItem(snapshot.itemId);
+    if (!found || !scrollContainer) return false;
+    await tick();
+    if (!scrollContainer) return false;
+
+    const targetIndex = groupedNodes.findIndex((node) => nodeContainsItem(node, snapshot.itemId));
+    if (targetIndex < 0) return false;
+
+    scrollContainer.scrollTop = Math.max(0, offsetForIndex(targetIndex) - snapshot.offsetTop);
+    syncViewportState();
+    await tick();
+    if (!scrollContainer) return false;
+
+    const el = scrollContainer.querySelector(`[data-item-id="${CSS.escape(snapshot.itemId)}"]`);
+    if (!(el instanceof HTMLElement)) return false;
+
+    const viewport = scrollContainer.getBoundingClientRect();
+    const rect = el.getBoundingClientRect();
+    scrollContainer.scrollTop += rect.top - viewport.top - snapshot.offsetTop;
+    syncViewportState();
+    return true;
+  }
+
+  $effect(() => {
+    const threadId = pane.threadId;
+    const loading = pane.loading;
+    pane.items.length;
+    rowHeightRevision;
+    viewportHeight;
+    const containerReady = scrollContainer !== undefined;
+
+    if (!threadId || loading || !containerReady) return;
+    if (restoredThreadId === threadId) return;
+    restoredThreadId = threadId;
+    restoringScroll = true;
+    initialRestoreFrame = requestAnimationFrame(() => {
+      initialRestoreFrame = null;
+      void restoreInitialScroll(threadId);
+    });
+  });
+
   // Stick to bottom only when the user is already pinned to the bottom.
   $effect(() => {
+    const threadId = pane.threadId;
+    const loading = pane.loading;
     pane.items.length;
     pane.timelineRevision;
     pane.activeTurn?.turnId;
     rowHeightRevision;
+    viewportHeight;
+    const containerReady = scrollContainer !== undefined;
 
+    if (!threadId || loading || !containerReady) return;
+    if (restoredThreadId !== threadId || restoringScroll) return;
     if (suppressBottomAutoScroll) return;
-    if (scrollContainer && userPinnedToBottom) {
-      if (bottomScrollFrame !== null) return;
-      bottomScrollFrame = requestAnimationFrame(() => {
-        bottomScrollFrame = null;
-        if (!scrollContainer) return;
-        if (!isScrollPinnedToBottom(
-          scrollContainer.scrollTop,
-          scrollContainer.scrollHeight,
-          scrollContainer.clientHeight,
-        )) {
-          return;
-        }
-        scrollContainer.scrollTop = scrollContainer.scrollHeight;
-      });
-    }
+    untrack(() => {
+      if (userPinnedToBottom) scheduleScrollToBottom();
+    });
   });
 
   /**
@@ -340,7 +490,7 @@
   });
 </script>
 
-<div bind:this={scrollContainer} use:measureScrollContainer onscroll={handleScroll} class="flex-1 overflow-y-auto" role="log" aria-label="Message history" data-testid="message-timeline-scroll">
+<div bind:this={scrollContainer} use:measureScrollContainer onscroll={handleScroll} class="flex-1 min-h-0 overflow-y-auto" role="log" aria-label="Message history" data-testid="message-timeline-scroll">
   <div class="mx-auto w-full max-w-3xl px-6 py-8">
   {#if pane.loading}
     <div class="flex items-center justify-center h-full text-fg-subtle text-sm" role="status" aria-live="polite">

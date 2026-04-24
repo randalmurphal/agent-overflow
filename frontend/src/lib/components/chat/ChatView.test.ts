@@ -13,6 +13,7 @@ import { createThreadPane } from '../../stores/thread.svelte';
 import { getThreads, refreshThreads } from '../../stores/threads.svelte';
 import type { Item, Thread } from '../../types/models';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
+import { makeItem } from '../../../test/helpers/chat';
 
 beforeAll(() => {
   // Svelte transitions used by children call element.animate; happy-dom
@@ -60,15 +61,42 @@ function seedThread(): Thread {
   };
 }
 
-async function buildPane(thread: Thread = seedThread()): Promise<ReturnType<typeof createThreadPane>> {
+function installControllableResizeObserver() {
+  const previous = globalThis.ResizeObserver;
+  const callbacks: ResizeObserverCallback[] = [];
+  class StubResizeObserver {
+    constructor(callback: ResizeObserverCallback) {
+      callbacks.push(callback);
+    }
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  }
+  globalThis.ResizeObserver = StubResizeObserver as unknown as typeof ResizeObserver;
+  return {
+    trigger() {
+      for (const callback of callbacks) {
+        callback([], {} as ResizeObserver);
+      }
+    },
+    restore() {
+      globalThis.ResizeObserver = previous;
+    },
+  };
+}
+
+async function buildPane(
+  thread: Thread = seedThread(),
+  items: Item[] = [],
+): Promise<ReturnType<typeof createThreadPane>> {
   setBindingMock('SwitchThread', async () => thread);
   // ChatView's auto-mark-read $effect fires on every pane.thread change.
   setBindingMock('MarkThreadRead', async () => {});
   setBindingMock('MarkThreadUnread', async () => {});
-  setBindingMock('ListItems', async () => []);
+  setBindingMock('ListItems', async () => items);
   setBindingMock('ListRecentThreadItems', async () => ({
-    items: [],
-    oldestTurnIndex: -1,
+    items,
+    oldestTurnIndex: items.length > 0 ? items[0].turnIndex : -1,
     hasMore: false,
   }));
   setBindingMock('ListRecentTurns', async () => []);
@@ -212,6 +240,45 @@ describe('<ChatView>', () => {
 
     expect(getThreads()[0]?.lastReadAt).toBe(1_500);
     expect(markRead).not.toHaveBeenCalled();
+  });
+
+  it('keeps the timeline pinned when multiline composer input shrinks the viewport', async () => {
+    const resize = installControllableResizeObserver();
+    try {
+      const pane = await buildPane(seedThread(), [
+        makeItem({ id: 'tail', turnIndex: 10, summary: 'tail' }),
+      ]);
+
+      const { getByTestId, getByLabelText } = render(ChatView, { props: { pane } });
+      const scroll = getByTestId('message-timeline-scroll') as HTMLElement;
+      let clientHeightValue = 600;
+      Object.defineProperty(scroll, 'scrollHeight', {
+        configurable: true,
+        get: () => 1000,
+      });
+      Object.defineProperty(scroll, 'clientHeight', {
+        configurable: true,
+        get: () => clientHeightValue,
+      });
+      scroll.scrollTop = 400;
+      await fireEvent.scroll(scroll);
+
+      const textarea = getByLabelText('Message input') as HTMLTextAreaElement;
+      Object.defineProperty(textarea, 'scrollHeight', {
+        configurable: true,
+        get: () => 120,
+      });
+      await fireEvent.input(textarea, { target: { value: 'one\ntwo\nthree\nfour' } });
+
+      clientHeightValue = 520;
+      resize.trigger();
+      await tick();
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+
+      expect(scroll.scrollTop).toBe(480);
+    } finally {
+      resize.restore();
+    }
   });
 
   it('clicking a background tray row does NOT scroll the timeline (rows are informational)', async () => {

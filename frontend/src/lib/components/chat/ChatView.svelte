@@ -189,7 +189,7 @@
   <DiscussionView {pane} />
 {:else if pane.thread}
   <div bind:this={chatRoot} data-ui-surface="chat" data-thread-id={pane.thread.id} class="flex h-full min-h-0">
-    <div class="flex flex-col {inDesignMode ? 'flex-1 min-w-0 border-r border-border' : 'flex-1 min-w-0'}">
+    <div class="flex flex-col min-h-0 {inDesignMode ? 'flex-1 min-w-0 border-r border-border' : 'flex-1 min-w-0'}">
       <ChatHeader {pane} />
 
       <ProviderStatusBanner {pane} />

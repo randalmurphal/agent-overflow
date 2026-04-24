@@ -8,15 +8,15 @@ type TimelineMeasurementOptions = {
   onRowHeightChanged: () => void;
   setRowHeight: (key: string, height: number) => void;
   setScrollContainer: (node: HTMLDivElement | undefined) => void;
-  syncScrollState: () => void;
+  syncViewportState: () => void;
 };
 
 export function createTimelineMeasurementActions(options: TimelineMeasurementOptions) {
   function measureScrollContainer(node: HTMLElement) {
     options.setScrollContainer(node as HTMLDivElement);
-    options.syncScrollState();
+    options.syncViewportState();
 
-    const observer = new ResizeObserver(options.syncScrollState);
+    const observer = new ResizeObserver(options.syncViewportState);
     observer.observe(node);
 
     return {
@@ -50,7 +50,7 @@ export function createTimelineMeasurementActions(options: TimelineMeasurementOpt
         });
         if (scrollDelta !== 0) {
           scrollContainer.scrollTop += scrollDelta;
-          options.syncScrollState();
+          options.syncViewportState();
         }
       }
 
