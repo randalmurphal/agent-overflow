@@ -80,6 +80,16 @@ export class NetworkSettings {
  * underlying record. LastUsedAt is updated by the settings UI's
  * "Connect" affordance — the settings layer doesn't observe runtime
  * connection state.
+ * 
+ * SECURITY: this struct is the on-disk persistence shape — it carries
+ * the plaintext Token because the launcher needs it when the user
+ * chooses to --connect. It MUST NOT be returned directly to the wire;
+ * the bound App methods in app_remote.go project it onto
+ * RemoteEndpointSummary (no Token field) before crossing the
+ * transport boundary, with a single explicit GetRemoteEndpointToken
+ * path for token retrieval. Adding a JSON tag here that hides Token
+ * would break persistence; the protection lives at the wire shape
+ * instead.
  */
 export class RemoteEndpoint {
     "id": string;

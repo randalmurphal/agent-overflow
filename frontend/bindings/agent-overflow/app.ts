@@ -979,7 +979,10 @@ export function RenameProject(id: string, name: string): $CancellablePromise<sto
 }
 
 /**
- * RenameThread updates the thread title.
+ * RenameThread updates the thread title and emits a thread:updated
+ * event so any other observer (chat header, multi-tab clients, future
+ * remote viewers) re-renders with the new title without a follow-up
+ * poll. Mirrors the emit shape used by applyGeneratedThreadTitle.
  */
 export function RenameThread(id: string, title: string): $CancellablePromise<void> {
     return $Call.ByID(727416435, id, title);
@@ -1309,6 +1312,14 @@ export function UpdateRemoteEndpoint(id: string, name: string, url: string, toke
  * toggles that can flip at runtime (e.g. replay log) are reconciled here.
  * Tracing changes are persisted but require a restart to take effect — the
  * UI shows a banner when that path is taken.
+ * 
+ * When the patch touches "editor", the catalog detection cache is
+ * invalidated so the next ListAvailableEditors call surfaces fresh
+ * state. The dedicated SetEditorSettings binding does the same; this
+ * generic path needs the parallel hook because the frontend Settings
+ * panel writes through UpdateSettings for any field — a stale cache
+ * after a generic update would leave the picker showing the wrong
+ * availability flags until the next app launch.
  */
 export function UpdateSettings(patch: { [_ in string]?: any }): $CancellablePromise<settings$0.Settings> {
     return $Call.ByID(2894041249, patch).then(($result: any) => {

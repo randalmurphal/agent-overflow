@@ -31,3 +31,4 @@ ralph-*.log
 # Build artifacts
 frontend/package.json.md5
 .claude/
+.playwright-mcp
