@@ -1,8 +1,8 @@
 # internal/clientmode/
 
-Phase F `agent-overflow --connect <url>` remote-client mode. The
-desktop binary skips booting a local transport and points its Wails
-webview at a remote-hosted backend over WebSocket.
+`agent-overflow --connect <url>` remote-client mode. The desktop binary
+skips booting a local transport and points its Wails webview at a
+remote-hosted backend over WebSocket.
 
 ## Layout
 
@@ -25,16 +25,15 @@ webview at a remote-hosted backend over WebSocket.
   - Authenticating the remote server's TLS certificate. The OS trust
     store handles that; clientmode does not pin or verify beyond
     what `wss://` already gives you.
-  - Any RPC dispatch, event bus, or `/ws` endpoint. Phase A's
-    `internal/transport` owns those — and `clientmode` deliberately
-    skips that whole stack so connecting clients don't ship a
-    second backend.
+  - Any RPC dispatch, event bus, or `/ws` endpoint. `internal/transport`
+    owns those — and `clientmode` deliberately skips that whole stack
+    so connecting clients don't ship a second backend.
 
 ## Bootstrap injection
 
-The browser-side wsClient (Phase B) reads `window.__AO_BOOTSTRAP__`
-on first call and uses it instead of fetching `/bootstrap.json`. We
-inject the manifest into the SPA shell at server-boot time:
+The browser-side wsClient reads `window.__AO_BOOTSTRAP__` on first call
+and uses it instead of fetching `/bootstrap.json`. We inject the
+manifest into the SPA shell at server-boot time:
 
 1. Read `index.html` from the embedded asset fs.
 2. Find the literal `<head>` opener.
@@ -66,8 +65,7 @@ hostile token literal can't break out of the inline `<script>` tag.
 
 ## References
 
-- Phase B: `frontend/src/lib/transport/wsClient.ts` —
-  `defaultBootstrap` reads `window.__AO_BOOTSTRAP__` before falling
-  back to `/bootstrap.json`.
-- Phase A: `internal/transport/server.go` — the in-process
-  HTTP+WS server skipped on `--connect`.
+- `frontend/src/lib/transport/wsClient.ts` — `defaultBootstrap` reads
+  `window.__AO_BOOTSTRAP__` before falling back to `/bootstrap.json`.
+- `internal/transport/server.go` — the in-process HTTP+WS server
+  skipped on `--connect`.

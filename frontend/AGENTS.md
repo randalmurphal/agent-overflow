@@ -28,6 +28,10 @@ Svelte 5 + Vite 8 (Rolldown) + Tailwind 4 + TypeScript.
   per-feature component groups.
 - `src/lib/types/` — shared TypeScript types.
 - `src/lib/utils/` — pure helpers.
+- `src/lib/transport/` — WebSocket client + the `@wailsio/runtime` shim
+  the production build aliases the Wails generator's import to. Bindings
+  end up calling `wsClient.ts` over WS in production. Don't import from
+  here directly in feature code; go through `stores/bindings.ts`.
 - `bindings/` — Wails-generated TypeScript. Never edit by hand.
 
 ## Responsibility boundary

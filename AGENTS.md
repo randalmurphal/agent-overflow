@@ -6,11 +6,14 @@ performance, memory efficiency, and minimal code.
 
 ## Stack
 
-- **Backend**: Go 1.25, Wails v3 (system webview), SQLite via `modernc.org/sqlite`
-  (pure Go, no CGO). WAL mode.
+- **Backend**: Go 1.25, Wails v3 (system webview shell only), SQLite via
+  `modernc.org/sqlite` (pure Go, no CGO). WAL mode.
 - **Frontend**: Svelte 5 (runes), Vite 8 (Rolldown), Tailwind CSS 4, TypeScript.
-- **IPC**: Wails bindings (auto-generated TS from Go structs) for request/response;
-  `app.Event.Emit` for server push.
+- **IPC**: HTTP+WebSocket via `internal/transport/`. Wails' binding generator
+  still emits the typed TS wrappers; in production `@wailsio/runtime` resolves
+  to `frontend/src/lib/transport/runtime.ts`, which forwards calls over WS.
+  Server push goes through the per-channel event ring on the same connection.
+  The same wire shape backs the embedded webview and `agent-overflow --connect`.
 - **Providers**: Claude Code CLI (NDJSON over stdio) and Codex app-server
   (JSON-RPC 2.0 over stdio).
 
@@ -110,8 +113,10 @@ down if more depth is needed.
 - Wails bindings live in `frontend/bindings/` and are regenerated —
   never edit by hand. Always pass `-ts` to `wails3 generate bindings`
   so Wails emits TypeScript files instead of JS bindings.
-- Events go Go → frontend via `app.Event.Emit`; frontend calls Go via
-  the typed wrappers in `frontend/src/lib/stores/bindings.ts`.
+- Events go Go → frontend via `a.emit(name, data)` (the transport-aware
+  helper on `*App`); frontend calls Go via the typed wrappers in
+  `frontend/src/lib/stores/bindings.ts`. Both flow through
+  `internal/transport/` over the same WebSocket.
 
 ## When Behavior Is Unclear
 

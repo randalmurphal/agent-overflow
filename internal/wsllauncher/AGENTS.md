@@ -1,8 +1,8 @@
 # internal/wsllauncher/
 
 Detects WSL distros and orchestrates spawning the agent-overflow Linux
-backend inside one. Used by `cmd/agent-overflow-windows` (the Phase D
-Windows entry point) and nothing else.
+backend inside one. Used by `cmd/agent-overflow-windows` (the Windows
+entry point) and nothing else.
 
 ## Layout
 

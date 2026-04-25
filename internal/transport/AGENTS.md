@@ -81,8 +81,10 @@ exported `App` method without regenerating fails the test.
 
 ## References
 
-- Root `CLAUDE.md` § "Deferred — Remote/web access" (now being
-  implemented across phases A–F).
+- Root `CLAUDE.md` § "Implemented (was previously deferred) — Remote/web
+  access" for the cross-cutting boundary rules.
 - `docs/architecture/data-flow.md` — how triage events reach the bus.
 - `frontend/bindings/agent-overflow/app.ts` — generated TS bindings
   the wire-format must keep working.
+- `frontend/src/lib/transport/` — the wsClient + `@wailsio/runtime` shim
+  on the other side of this wire.
