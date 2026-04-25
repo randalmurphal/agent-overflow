@@ -21,14 +21,32 @@ function mkThread(id: string, overrides: Partial<Thread> = {}): Thread {
 }
 
 describe('<ProjectThreadList>', () => {
-  it('shows the "No threads yet" empty state when threads is empty', () => {
+  it('shows a "+ New Thread" empty-state button when threads is empty', () => {
     const pane = createThreadPane();
     const { getByTestId } = render(ProjectThreadList, {
       props: { projectId: 'p1', threads: [], pane },
     });
     expect(getByTestId('project-thread-list-empty')).toHaveTextContent(
-      /No threads yet/i,
+      /New thread/i,
     );
+  });
+
+  it('empty-state button calls onNewThread with the projectId', async () => {
+    let capturedId: string | null = null;
+    const pane = createThreadPane();
+    const { getByTestId } = render(ProjectThreadList, {
+      props: {
+        projectId: 'proj-42',
+        threads: [],
+        pane,
+        onNewThread: (id: string) => {
+          capturedId = id;
+        },
+      },
+    });
+    const btn = getByTestId('project-thread-list-empty');
+    btn.click();
+    expect(capturedId).toBe('proj-42');
   });
 
   it('renders thread rows when threads are present', () => {

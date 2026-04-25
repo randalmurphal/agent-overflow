@@ -34,6 +34,7 @@ const FULL_SETTINGS: Settings = {
   observabilityTracingEnabled: false,
   observabilityOtlpEndpoint: '',
   observabilityEventLogEnabled: false,
+  network: { bindAll: false },
 };
 
 describe('settings store', () => {

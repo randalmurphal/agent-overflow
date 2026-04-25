@@ -6,9 +6,128 @@
 import { Create as $Create } from "@wailsio/runtime";
 
 /**
+ * EditorSettings groups the open-in-editor preferences. Lives in its
+ * own nested object so future fields (custom argv template, last-used
+ * editor for analytics, etc.) can land without reshuffling the
+ * top-level Settings struct.
+ */
+export class EditorSettings {
+    /**
+     * Preference is the editor ID (e.g. "code", "cursor",
+     * "env:editor") the user explicitly selected. Empty falls back
+     * to the catalog priority order in internal/editor.Resolve.
+     */
+    "preference": string;
+
+    /** Creates a new EditorSettings instance. */
+    constructor($$source: Partial<EditorSettings> = {}) {
+        if (!("preference" in $$source)) {
+            this["preference"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new EditorSettings instance from a string or object.
+     */
+    static createFrom($$source: any = {}): EditorSettings {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new EditorSettings($$parsedSource as Partial<EditorSettings>);
+    }
+}
+
+/**
+ * NetworkSettings groups LAN-bind preferences for the embedded
+ * transport server. Persisted as a nested object so the JSON shape
+ * stays stable when more network fields land (origin allow-list,
+ * TLS hints, etc.).
+ */
+export class NetworkSettings {
+    /**
+     * BindAll, when true, asks the transport server to listen on
+     * 0.0.0.0 so other devices on the LAN can reach the app. Default
+     * false keeps the bind on 127.0.0.1 — the safe loopback behaviour.
+     */
+    "bindAll": boolean;
+
+    /** Creates a new NetworkSettings instance. */
+    constructor($$source: Partial<NetworkSettings> = {}) {
+        if (!("bindAll" in $$source)) {
+            this["bindAll"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new NetworkSettings instance from a string or object.
+     */
+    static createFrom($$source: any = {}): NetworkSettings {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new NetworkSettings($$parsedSource as Partial<NetworkSettings>);
+    }
+}
+
+/**
+ * RemoteEndpoint is one stored `--connect` target. The desktop binary
+ * takes a URL+token from this list (or from --connect on the command
+ * line) and points the Wails webview at the remote backend instead of
+ * booting a local transport.
+ * 
+ * IDs are opaque strings the settings layer mints; the UI keys list
+ * rows by ID so a rename/edit doesn't require re-targeting the
+ * underlying record. LastUsedAt is updated by the settings UI's
+ * "Connect" affordance — the settings layer doesn't observe runtime
+ * connection state.
+ */
+export class RemoteEndpoint {
+    "id": string;
+    "name": string;
+    "url": string;
+    "token": string;
+    "lastUsedAt"?: number;
+
+    /** Creates a new RemoteEndpoint instance. */
+    constructor($$source: Partial<RemoteEndpoint> = {}) {
+        if (!("id" in $$source)) {
+            this["id"] = "";
+        }
+        if (!("name" in $$source)) {
+            this["name"] = "";
+        }
+        if (!("url" in $$source)) {
+            this["url"] = "";
+        }
+        if (!("token" in $$source)) {
+            this["token"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new RemoteEndpoint instance from a string or object.
+     */
+    static createFrom($$source: any = {}): RemoteEndpoint {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new RemoteEndpoint($$parsedSource as Partial<RemoteEndpoint>);
+    }
+}
+
+/**
  * Settings holds all user-configurable preferences.
  */
 export class Settings {
+    /**
+     * SchemaVersion is the version of the on-disk shape this struct
+     * expects. Older files (or files written before versioning) load as
+     * SchemaVersion=0 and the Service treats them identically to
+     * CurrentSchemaVersion until a future shape change introduces a
+     * migration step. Never written by users; always overwritten to
+     * CurrentSchemaVersion on any save via writeSparse.
+     */
+    "$schemaVersion"?: number;
     "theme": string;
     "timestampFormat": string;
     "defaultProvider": string;
@@ -124,20 +243,54 @@ export class Settings {
      * Observability — all opt-in. Empty/false defaults leave the app quiet.
      * 
      * SECURITY NOTE: this file is stored on disk in plaintext and is
-     * read/written without any encryption. That is fine for the fields
-     * we currently persist — an OTLP endpoint is not a secret (it's a
-     * gRPC/HTTP URL the user already exposes to every app running on
-     * their machine). If a future field stores anything that could
-     * reasonably be called a secret (API keys, bearer tokens, user
-     * credentials), do NOT put it here: settings.json is written with
-     * 0644 permissions, landed in a user-visible config dir, and may
-     * be synced to cloud backup without the user realising. Put secrets
-     * in the OS keychain via a dedicated package and keep this struct
-     * for non-sensitive preferences only.
+     * read/written without any encryption. settings.json itself lands
+     * at 0600 (the default os.CreateTemp picks for the temp file we
+     * rename in over the destination), and the parent directory is
+     * created at 0700 since this struct now persists per-launch tokens.
+     * Even with restrictive perms, anything that could reasonably be
+     * called a long-lived secret (API keys, OAuth refresh tokens, user
+     * credentials) does NOT belong here: this file lives in a
+     * user-visible config dir and may be swept into cloud backup tools
+     * without the user realising. Put long-lived secrets in the OS
+     * keychain via a dedicated package and keep this struct for
+     * preferences plus per-launch bootstrap material only.
      */
     "observabilityTracingEnabled": boolean;
     "observabilityOtlpEndpoint": string;
     "observabilityEventLogEnabled": boolean;
+
+    /**
+     * Network groups LAN-bind preferences. Default zero value keeps
+     * the transport on loopback; flipping BindAll triggers a
+     * transport-server rebind to 0.0.0.0 without restarting the app.
+     */
+    "network": NetworkSettings;
+
+    /**
+     * Editor holds the open-in-editor preferences. Default zero value
+     * lets internal/editor pick the best available editor via catalog
+     * priority; setting Editor.Preference pins a specific one even
+     * when later WSL detection finds a higher-priority option.
+     */
+    "editor": EditorSettings;
+
+    /**
+     * RemoteEndpoints stores the user's `--connect` targets: remote-
+     * hosted backends the desktop binary can attach to instead of
+     * booting a local transport. Persisted as a flat list keyed by
+     * stable IDs so the settings UI can rename / re-order without
+     * disturbing the connect commands the user has already shared.
+     * 
+     * SECURITY NOTE: this list contains ephemeral session tokens. They
+     * are stored in plaintext alongside settings.json (file lands at
+     * 0600, parent dir at 0700). That matches the threat model
+     * documented above — settings.json must not contain anything more
+     * sensitive than what a local-process attacker could already read
+     * out of running webviews. If the remote endpoints' tokens ever
+     * become long-lived bearer tokens, move this field to a
+     * keychain-backed store and remove the JSON persistence path.
+     */
+    "remoteEndpoints"?: RemoteEndpoint[];
 
     /** Creates a new Settings instance. */
     constructor($$source: Partial<Settings> = {}) {
@@ -231,6 +384,12 @@ export class Settings {
         if (!("observabilityEventLogEnabled" in $$source)) {
             this["observabilityEventLogEnabled"] = false;
         }
+        if (!("network" in $$source)) {
+            this["network"] = (new NetworkSettings());
+        }
+        if (!("editor" in $$source)) {
+            this["editor"] = (new EditorSettings());
+        }
 
         Object.assign(this, $$source);
     }
@@ -239,14 +398,26 @@ export class Settings {
      * Creates a new Settings instance from a string or object.
      */
     static createFrom($$source: any = {}): Settings {
-        const $$createField5_0 = $$createType0;
-        const $$createField6_0 = $$createType1;
+        const $$createField6_0 = $$createType0;
+        const $$createField7_0 = $$createType1;
+        const $$createField31_0 = $$createType2;
+        const $$createField32_0 = $$createType3;
+        const $$createField33_0 = $$createType5;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("modelContextWindows" in $$parsedSource) {
-            $$parsedSource["modelContextWindows"] = $$createField5_0($$parsedSource["modelContextWindows"]);
+            $$parsedSource["modelContextWindows"] = $$createField6_0($$parsedSource["modelContextWindows"]);
         }
         if ("recentWorkspaces" in $$parsedSource) {
-            $$parsedSource["recentWorkspaces"] = $$createField6_0($$parsedSource["recentWorkspaces"]);
+            $$parsedSource["recentWorkspaces"] = $$createField7_0($$parsedSource["recentWorkspaces"]);
+        }
+        if ("network" in $$parsedSource) {
+            $$parsedSource["network"] = $$createField31_0($$parsedSource["network"]);
+        }
+        if ("editor" in $$parsedSource) {
+            $$parsedSource["editor"] = $$createField32_0($$parsedSource["editor"]);
+        }
+        if ("remoteEndpoints" in $$parsedSource) {
+            $$parsedSource["remoteEndpoints"] = $$createField33_0($$parsedSource["remoteEndpoints"]);
         }
         return new Settings($$parsedSource as Partial<Settings>);
     }
@@ -255,3 +426,7 @@ export class Settings {
 // Private type creation functions
 const $$createType0 = $Create.Map($Create.Any, $Create.Any);
 const $$createType1 = $Create.Array($Create.Any);
+const $$createType2 = NetworkSettings.createFrom;
+const $$createType3 = EditorSettings.createFrom;
+const $$createType4 = RemoteEndpoint.createFrom;
+const $$createType5 = $Create.Array($$createType4);

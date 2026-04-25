@@ -4,7 +4,7 @@
   // the list only sees projects that match the current query (with their
   // matching threads).
 
-  import { onDestroy } from 'svelte';
+  import { onDestroy, onMount } from 'svelte';
   import type { Thread } from '../../types/models';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import {
@@ -21,6 +21,7 @@
   import { getThreads } from '../../stores/threads.svelte';
   import { CreateThread, UpdateProjectSortPositions } from '../../stores/bindings';
   import { addToast } from '../../stores/toast.svelte';
+  import { userFacingError } from '../../utils/userFacingError';
   import {
     getProjectDraft,
     setProjectDraft,
@@ -166,8 +167,7 @@
       await pane.switchThread(thread);
     } catch (err) {
       console.error('Failed to create thread:', err);
-      const message = err instanceof Error ? err.message : String(err);
-      addToast('error', `Create Thread Failed: ${message}`);
+      addToast('error', userFacingError(err));
     }
   }
 
@@ -186,10 +186,7 @@
       await UpdateProjectSortPositions(newOrderedIds);
     } catch (err) {
       console.error('Failed to persist project order:', err);
-      addToast(
-        'error',
-        `Reorder Failed: ${err instanceof Error ? err.message : err}`,
-      );
+      addToast('error', userFacingError(err));
       await refreshProjects();
     }
   }
@@ -197,6 +194,32 @@
   function handleAddClick(): void {
     addProjectOpen = true;
   }
+
+  // Welcome panel + command palette both surface "Add Project" affordances
+  // outside the sidebar. They dispatch this CustomEvent so the modal
+  // ownership stays in this component — same pattern as the
+  // `agent-overflow:open-ship-changes` plumbing in GitActionsControl.
+  function handleOpenAddProject(): void {
+    addProjectOpen = true;
+  }
+  // The welcome panel needs an entry point that picks "the right
+  // project" without owning the project list. We pick the first
+  // visibleProjects entry (already sorted by current sort mode) and
+  // delegate to handleNewThread, which knows how to seed the draft and
+  // switch the pane.
+  function handleNewThreadInActive(): void {
+    const first = visibleProjects[0];
+    if (!first) return;
+    void handleNewThread(first.project.id);
+  }
+  onMount(() => {
+    window.addEventListener('agent-overflow:open-add-project', handleOpenAddProject);
+    window.addEventListener('agent-overflow:new-thread-in-active-project', handleNewThreadInActive);
+    return () => {
+      window.removeEventListener('agent-overflow:open-add-project', handleOpenAddProject);
+      window.removeEventListener('agent-overflow:new-thread-in-active-project', handleNewThreadInActive);
+    };
+  });
 
   function handleAddClose(): void {
     addProjectOpen = false;
@@ -253,6 +276,7 @@
       {pane}
       onNewThread={handleNewThread}
       onReorder={handleReorder}
+      onAddProject={handleAddClick}
     />
   </div>
 </section>

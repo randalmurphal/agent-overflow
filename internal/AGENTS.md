@@ -23,6 +23,10 @@ one closest to what you're touching.
 | `workspacefiles/` | Workspace-scoped file search for @-mention completion. |
 | `testutil/` | Shared test helpers (mock provider scripts, git repo, project fixtures). |
 | `stringsx/` | Tiny stdlib-only string helpers. |
+| `transport/` | HTTP+WebSocket wire protocol (RPC dispatch + event push) used by the embedded webview and any remote client. |
+| `clientmode/` | `--connect <url>` remote-client stub: tiny loopback HTTP server that injects `window.__AO_BOOTSTRAP__` into the embedded SPA so the desktop binary attaches to a remote backend instead of booting a local transport. |
+| `editor/` | Open-in-editor detection (catalog + WSL bridge) and detached-spawn helper. Backs the `OpenInEditor` and `ListAvailableEditors` bindings. |
+| `wsllauncher/` | Detects WSL distros and spawns the Linux backend pinned to a Win32 Job Object. Used only by `cmd/agent-overflow-windows`. |
 
 ## Responsibility boundary
 
@@ -63,6 +67,11 @@ one closest to what you're touching.
 
 - Do NOT introduce global mutable state beyond `main.go` / `app.go`
   wiring. Use `New*` constructors and pass the result explicitly.
+  - Carve-out: process-global caches behind `sync.Mutex` are allowed
+    when bounded by TTL and explicitly justified — see
+    `internal/editor/AGENTS.md` for the pattern. The justification
+    must be traceability (one cache, one TTL, named in the area
+    guide), not "passing a struct around was annoying."
 - Do NOT create circular imports. If you feel the need, re-read this
   map — the boundaries exist for a reason.
 - Do NOT leak provider-specific types out of `provider/{claude,codex}`.

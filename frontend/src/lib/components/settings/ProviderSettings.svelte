@@ -1,8 +1,18 @@
 <script lang="ts">
+  // ProviderSettings: provider health, binary paths, and the
+  // text-generation routing knobs.
+  //
+  // Layout aligns with GeneralSettings / EditorSection / NetworkSection
+  // — section header (MicroLabel + heading + sentence intro) followed
+  // by `divide-y divide-border-subtle` rows. The previous card-heavy
+  // styling read as a different app when the user tabbed across
+  // sections; the row pattern keeps the visual rhythm consistent.
+
   import { GetProviderStatuses, GetModelsForProvider } from '../../stores/bindings';
   import { getSettings, updateSetting } from '../../stores/settings.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import type { ModelInfo, ProviderStatus, ReasoningEffort } from '../../types/settings';
+  import MicroLabel from '../primitives/MicroLabel.svelte';
   import ToggleSwitch from '../shared/ToggleSwitch.svelte';
 
   // Mirror of internal/settings text-generation defaults so the model-input
@@ -42,19 +52,19 @@
         statuses = (statusResult.value ?? []) as ProviderStatus[];
       } else {
         console.error('Failed to load provider statuses:', statusResult.reason);
-        addToast('error', 'Failed to load provider statuses');
+        addToast('error', 'Failed to load provider statuses.');
       }
       if (claudeResult.status === 'fulfilled') {
         claudeModels = (claudeResult.value ?? []) as ModelInfo[];
       } else {
         console.error('Failed to load Claude models:', claudeResult.reason);
-        addToast('error', 'Failed to load Claude models');
+        addToast('error', 'Failed to load Claude models.');
       }
       if (codexResult.status === 'fulfilled') {
         codexModels = (codexResult.value ?? []) as ModelInfo[];
       } else {
         console.error('Failed to load Codex models:', codexResult.reason);
-        addToast('error', 'Failed to load Codex models');
+        addToast('error', 'Failed to load Codex models.');
       }
     })();
   });
@@ -67,119 +77,136 @@
     switch (status) {
       case 'ready': return 'bg-success';
       case 'error': return 'bg-error';
-      default: return 'bg-text-secondary/30';
+      case 'not_found': return 'bg-error';
+      case 'version_too_old': return 'bg-warning';
+      case 'unauthenticated': return 'bg-warning';
+      default: return 'bg-fg-subtle';
     }
   }
+
+  const SELECT_CLASS =
+    'min-w-[8rem] text-[12px] rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 ' +
+    'px-2.5 py-1 text-fg focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/40 ' +
+    'transition-colors cursor-pointer';
+
+  const INPUT_CLASS =
+    'w-full text-[12px] rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 ' +
+    'px-2.5 py-1.5 text-fg placeholder:text-fg-muted focus:outline-none focus:border-accent ' +
+    'focus-visible:ring-2 focus-visible:ring-accent/40 transition-colors';
+
+  const ROW_CLASS = 'flex items-center justify-between gap-4 py-2.5';
 </script>
 
-<div class="space-y-8">
-  <section class="rounded-[var(--radius-control)] border border-border-subtle bg-card/30 p-5">
-    <p class="text-[11px] font-semibold uppercase tracking-[0.22em] text-text-secondary/70">Providers</p>
-    <h3 class="mt-1 text-base font-semibold text-text-primary">Provider Health and Binaries</h3>
-    <p class="mt-1 text-sm text-text-secondary">Check installation state, override binary paths, and review the model lists each provider exposes.</p>
-  </section>
+<div class="flex flex-col gap-8">
   {#each [
     { id: 'claude' as const, label: 'Claude', enabledKey: 'claudeEnabled' as const, pathKey: 'claudeBinaryPath' as const, models: claudeModels },
     { id: 'codex' as const, label: 'Codex', enabledKey: 'codexEnabled' as const, pathKey: 'codexBinaryPath' as const, models: codexModels },
   ] as provider}
     {@const status = getStatus(provider.id)}
-    <div class="rounded-[var(--radius-control)] border border-border-subtle bg-card/30 p-5">
-      <div class="mb-4 flex items-start justify-between gap-4">
-        <div class="space-y-1">
-          <div class="flex items-center gap-2">
-            <h3 class="text-base font-semibold text-text-primary">{provider.label}</h3>
-            <span class="inline-flex items-center gap-1 rounded-full border border-border/60 bg-surface-0/70 px-2 py-0.5 text-[11px] text-text-secondary">
-              <span class="h-1.5 w-1.5 rounded-full {statusDotColor(status?.status ?? 'unknown')}" aria-hidden="true"></span>
-              {status?.status ?? 'checking'}
-            </span>
+    <section data-testid="settings-provider-{provider.id}">
+      <MicroLabel as="p">Provider</MicroLabel>
+      <div class="mt-1 flex items-center gap-2">
+        <h3 class="text-[15px] font-semibold text-fg">{provider.label}</h3>
+        <span
+          class="inline-flex items-center gap-1 rounded-full border border-border-subtle bg-surface-0 px-2 py-0.5 text-[11px] text-fg-muted"
+          data-testid="settings-provider-status-pill"
+          data-status={status?.status ?? 'checking'}
+        >
+          <span class="h-1.5 w-1.5 rounded-full {statusDotColor(status?.status ?? 'unknown')}" aria-hidden="true"></span>
+          {status?.status ?? 'checking'}
+        </span>
+      </div>
+      <p class="mt-1 max-w-2xl text-[12px] text-fg-muted">
+        {status?.message || `Configure ${provider.label} availability for thread creation and session reconnects.`}
+      </p>
+      <div class="mt-3 divide-y divide-border-subtle">
+        <div class={ROW_CLASS}>
+          <div>
+            <p class="text-[13px] text-fg font-medium">Enabled</p>
+            <p class="text-[12px] text-fg-muted">Allow new threads to use this provider.</p>
           </div>
-          <p class="text-sm text-text-secondary">
-            {status?.message || `Configure ${provider.label} availability for thread creation and session reconnects.`}
-          </p>
-        </div>
-        <div class="flex items-center gap-3 rounded-full border border-border/60 bg-surface-0/65 px-3 py-2">
-          <span class="text-xs font-medium text-text-secondary">Enabled</span>
           <ToggleSwitch
             checked={settings[provider.enabledKey]}
             ariaLabel={`Toggle ${provider.label}`}
             onToggle={(value) => updateSetting(provider.enabledKey, value)}
           />
         </div>
-      </div>
 
-      <div class="space-y-3">
-        <div class="rounded-2xl border border-border/55 bg-surface-0/55 px-4 py-3">
-          <label for="{provider.id}-path" class="text-xs text-text-secondary block mb-1">Binary path</label>
+        <div class={ROW_CLASS}>
+          <div class="flex-1 min-w-0">
+            <label for="{provider.id}-path" class="text-[13px] text-fg block font-medium">Binary path</label>
+            <p class="text-[12px] text-fg-muted">Override the auto-detected CLI binary.</p>
+          </div>
           <input
             id="{provider.id}-path"
             type="text"
             value={settings[provider.pathKey]}
             onchange={(e) => updateSetting(provider.pathKey, (e.target as HTMLInputElement).value)}
             placeholder="Auto-detect"
-            class="w-full text-xs rounded-xl border border-border bg-surface-0 px-3 py-2 text-text-primary placeholder:text-text-secondary/40 shadow-sm focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/50 transition-colors"
+            class="{INPUT_CLASS} max-w-[16rem]"
           />
         </div>
 
-        <div class="grid gap-3 md:grid-cols-2">
-          <div class="rounded-2xl border border-border/55 bg-surface-0/55 px-4 py-3">
-            <p class="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-secondary/70">Version</p>
-            <p class="mt-2 text-sm text-text-primary">{status?.version || 'Unavailable'}</p>
+        <div class={ROW_CLASS}>
+          <div>
+            <p class="text-[13px] text-fg font-medium">Version</p>
+            <p class="text-[12px] text-fg-muted">Reported by the resolved binary.</p>
           </div>
-          <div class="rounded-2xl border border-border/55 bg-surface-0/55 px-4 py-3">
-            <p class="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-secondary/70">Detected status</p>
-            <p class="mt-2 text-sm text-text-primary">{status?.status || 'checking'}</p>
-          </div>
+          <span class="text-[12px] text-fg" data-testid="settings-provider-version">
+            {status?.version || 'Unavailable'}
+          </span>
         </div>
 
-        <div class="rounded-2xl border border-border/55 bg-surface-0/55 px-4 py-3">
-          <p class="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-secondary/70">Known models</p>
+        <div class="py-2.5">
+          <p class="text-[13px] text-fg font-medium">Known models</p>
+          <p class="text-[12px] text-fg-muted">Models exposed by the provider's catalog.</p>
           {#if provider.models.length > 0}
-            <div class="mt-3 flex flex-wrap gap-2">
+            <div class="mt-2 flex flex-wrap gap-1.5" data-testid="settings-provider-models">
               {#each provider.models as model}
-                <span class="rounded-full border border-border/60 bg-surface-1 px-2.5 py-1 text-[11px] text-text-secondary">{model.name || model.slug}</span>
+                <span class="rounded-full border border-border-subtle bg-surface-1 px-2.5 py-0.5 text-[11px] text-fg-muted">
+                  {model.name || model.slug}
+                </span>
               {/each}
             </div>
           {:else}
-            <p class="mt-2 text-sm text-text-secondary/70">No models available</p>
+            <p class="mt-2 text-[12px] text-fg-muted">No models available.</p>
           {/if}
         </div>
       </div>
-    </div>
+    </section>
   {/each}
 
-  <section
-    class="rounded-[var(--radius-control)] border border-border-subtle bg-card/30 p-5"
-    data-testid="settings-text-generation"
-  >
-    <div class="mb-4">
-      <p class="text-[11px] font-semibold uppercase tracking-[0.22em] text-text-secondary/70">Text generation</p>
-      <h3 class="mt-1 text-base font-semibold text-text-primary">Commit + PR message CLI</h3>
-      <p class="mt-1 text-sm text-text-secondary">
-        Which CLI writes commit messages, PR bodies, and generated thread
-        titles. Independent of the chat provider so Claude users can still
-        spend Codex cycles on short text.
-      </p>
-    </div>
-    <div class="space-y-3">
-      <div class="flex items-center justify-between gap-4 rounded-2xl border border-border/55 bg-surface-0/55 px-4 py-3">
+  <section data-testid="settings-text-generation">
+    <MicroLabel as="p">Text generation</MicroLabel>
+    <h3 class="mt-1 text-[15px] font-semibold text-fg">Commit and PR Message CLI</h3>
+    <p class="mt-1 max-w-2xl text-[12px] text-fg-muted">
+      Which CLI writes commit messages, PR bodies, and generated thread titles.
+      Independent of the chat provider so Claude users can still spend Codex
+      cycles on short text.
+    </p>
+    <div class="mt-3 divide-y divide-border-subtle">
+      <div class={ROW_CLASS}>
         <div>
-          <label for="textgen-provider" class="text-sm text-text-primary block">Provider</label>
-          <p class="text-xs text-text-secondary/60">CLI that generates non-chat text</p>
+          <label for="textgen-provider" class="text-[13px] text-fg block font-medium">Provider</label>
+          <p class="text-[12px] text-fg-muted">CLI that generates non-chat text.</p>
         </div>
         <select
           id="textgen-provider"
           data-testid="settings-textgen-provider"
           value={settings.textGenerationProvider}
           onchange={(e) => updateSetting('textGenerationProvider', (e.target as HTMLSelectElement).value as 'claude' | 'codex')}
-          class="min-w-[8rem] text-xs rounded-xl border border-border bg-surface-0 px-3 py-2 text-text-primary shadow-sm focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/50 transition-colors cursor-pointer"
+          class={SELECT_CLASS}
         >
           <option value="codex">Codex</option>
           <option value="claude">Claude</option>
         </select>
       </div>
 
-      <div class="rounded-2xl border border-border/55 bg-surface-0/55 px-4 py-3">
-        <label for="textgen-model" class="text-xs text-text-secondary block mb-1">Model</label>
+      <div class={ROW_CLASS}>
+        <div class="flex-1 min-w-0">
+          <label for="textgen-model" class="text-[13px] text-fg block font-medium">Model</label>
+          <p class="text-[12px] text-fg-muted">Leave empty to use the provider's default small-text model.</p>
+        </div>
         <input
           id="textgen-model"
           type="text"
@@ -187,22 +214,21 @@
           value={settings.textGenerationModel}
           onchange={(e) => updateSetting('textGenerationModel', (e.target as HTMLInputElement).value)}
           placeholder={`Default: ${TEXTGEN_DEFAULT_MODEL[settings.textGenerationProvider]}`}
-          class="w-full text-xs rounded-xl border border-border bg-surface-0 px-3 py-2 text-text-primary placeholder:text-text-secondary/40 shadow-sm focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/50 transition-colors"
+          class="{INPUT_CLASS} max-w-[16rem]"
         />
-        <p class="mt-1 text-[11px] text-text-secondary/60">Leave empty to use the provider's default small-text model.</p>
       </div>
 
-      <div class="flex items-center justify-between gap-4 rounded-2xl border border-border/55 bg-surface-0/55 px-4 py-3">
+      <div class={ROW_CLASS}>
         <div>
-          <label for="textgen-effort" class="text-sm text-text-primary block">Reasoning effort</label>
-          <p class="text-xs text-text-secondary/60">Budget for commit/PR text generation</p>
+          <label for="textgen-effort" class="text-[13px] text-fg block font-medium">Reasoning effort</label>
+          <p class="text-[12px] text-fg-muted">Budget for commit/PR text generation.</p>
         </div>
         <select
           id="textgen-effort"
           data-testid="settings-textgen-effort"
           value={settings.textGenerationReasoningEffort}
           onchange={(e) => updateSetting('textGenerationReasoningEffort', (e.target as HTMLSelectElement).value as ReasoningEffort)}
-          class="min-w-[8rem] text-xs rounded-xl border border-border bg-surface-0 px-3 py-2 text-text-primary shadow-sm focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/50 transition-colors cursor-pointer"
+          class={SELECT_CLASS}
         >
           {#each TEXTGEN_EFFORT_OPTIONS as opt}
             <option value={opt.value}>{opt.label}</option>

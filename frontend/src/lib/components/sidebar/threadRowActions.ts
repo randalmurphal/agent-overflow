@@ -17,6 +17,7 @@ import {
   DeleteThread,
   GitRemoveWorktree,
   MarkThreadUnread,
+  OpenInEditor,
   PinThread,
   RenameThread,
   StopSession,
@@ -32,7 +33,7 @@ import {
 } from '../../stores/threads.svelte';
 import { addToast } from '../../stores/toast.svelte';
 import { copyToClipboard } from '../../utils/clipboard';
-import { errString } from '../../utils/errors';
+import { userFacingError } from '../../utils/userFacingError';
 import type { Thread } from '../../types/models';
 
 export interface ThreadActionCtx {
@@ -45,6 +46,10 @@ export interface ThreadActionCtx {
   switchPane: (thread: Thread) => Promise<void>;
   /** Forward an error message to the pane's status row. */
   reportError: (message: string) => void;
+  /** Replace the active pane's thread struct in place. Used after a
+   * rename so the chat header re-renders immediately rather than
+   * waiting on the thread:updated event round-trip. */
+  replacePaneThread?: (thread: Thread) => void;
 }
 
 export async function renameThreadAction(
@@ -56,9 +61,17 @@ export async function renameThreadAction(
   try {
     await RenameThread(ctx.thread.id, trimmed);
     updateThreadTitle(ctx.thread.id, trimmed);
+    // The thread:updated event fires from the backend, but waiting on
+    // it leaves the chat header stale for a frame. Patch the pane's
+    // own copy synchronously so the rename feels instant — the event
+    // arrives shortly after and re-applies the same payload, which is
+    // a harmless no-op.
+    if (ctx.isActive && ctx.replacePaneThread) {
+      ctx.replacePaneThread({ ...ctx.thread, title: trimmed });
+    }
   } catch (err) {
     console.error('Failed to rename thread:', err);
-    ctx.reportError(`Failed to rename thread: ${errString(err)}`);
+    ctx.reportError(userFacingError(err));
   }
 }
 
@@ -76,7 +89,7 @@ export async function archiveThreadAction(ctx: ThreadActionCtx): Promise<void> {
     }
   } catch (err) {
     console.error('Failed to archive thread:', err);
-    ctx.reportError(`Failed to archive thread: ${errString(err)}`);
+    ctx.reportError(userFacingError(err));
   }
 }
 
@@ -90,10 +103,10 @@ export async function unarchiveThreadAction(ctx: ThreadActionCtx): Promise<void>
     // Patch the in-memory list so the row loses its archived style
     // immediately. Sidebar's filter uses the `archived` flag directly.
     replaceThread(restored);
-    addToast('info', `Unarchived "${restored.title || 'thread'}"`);
+    addToast('info', `Unarchived "${restored.title || 'thread'}".`);
   } catch (err) {
     console.error('Failed to unarchive thread:', err);
-    ctx.reportError(`Failed to unarchive thread: ${errString(err)}`);
+    ctx.reportError(userFacingError(err));
   }
 }
 
@@ -112,7 +125,7 @@ export async function deleteThreadAction(ctx: ThreadActionCtx): Promise<void> {
     }
   } catch (err) {
     console.error('Failed to delete thread:', err);
-    ctx.reportError(`Failed to delete thread: ${errString(err)}`);
+    ctx.reportError(userFacingError(err));
   }
 }
 
@@ -122,21 +135,35 @@ export async function markThreadUnreadAction(ctx: ThreadActionCtx): Promise<void
     // Explicit unread is persisted as epoch 0. Undefined means "never
     // tracked" and is intentionally treated as read for old rows.
     updateThreadLastRead(ctx.thread.id, 0);
-    addToast('info', 'Marked Unread');
+    addToast('info', 'Marked unread.');
   } catch (err) {
     console.error('Failed to mark thread unread:', err);
-    addToast('error', `Mark Unread Failed: ${errString(err)}`);
+    addToast('error', userFacingError(err));
   }
 }
 
 export async function copyThreadPathAction(ctx: ThreadActionCtx): Promise<void> {
   const ok = await copyToClipboard(ctx.thread.workspacePath);
-  addToast(ok ? 'info' : 'error', ok ? 'Copied Workspace Path' : 'Copy Failed');
+  addToast(ok ? 'info' : 'error', ok ? 'Copied workspace path.' : 'Copy failed.');
+}
+
+export async function openThreadWorkspaceInEditorAction(
+  ctx: ThreadActionCtx,
+): Promise<void> {
+  // The thread's workspace is the worktree path when present, the
+  // project root otherwise — the same value the rest of the UI uses
+  // when "this thread's workspace" is the right unit. OpenInEditor's
+  // (0, 0) couple skips cursor placement.
+  try {
+    await OpenInEditor(ctx.thread.workspacePath, 0, 0);
+  } catch (err) {
+    addToast('error', userFacingError(err));
+  }
 }
 
 export async function copyThreadIdAction(ctx: ThreadActionCtx): Promise<void> {
   const ok = await copyToClipboard(ctx.thread.id);
-  addToast(ok ? 'info' : 'error', ok ? 'Copied Thread ID' : 'Copy Failed');
+  addToast(ok ? 'info' : 'error', ok ? 'Copied thread ID.' : 'Copy failed.');
 }
 
 export async function pinThreadAction(ctx: ThreadActionCtx): Promise<void> {
@@ -147,7 +174,7 @@ export async function pinThreadAction(ctx: ThreadActionCtx): Promise<void> {
     updateThreadPinnedAt(ctx.thread.id, updated.pinnedAt ?? undefined);
   } catch (err) {
     console.error('Failed to pin thread:', err);
-    addToast('error', `Pin Failed: ${errString(err)}`);
+    addToast('error', userFacingError(err));
   }
 }
 
@@ -157,6 +184,6 @@ export async function unpinThreadAction(ctx: ThreadActionCtx): Promise<void> {
     updateThreadPinnedAt(ctx.thread.id, undefined);
   } catch (err) {
     console.error('Failed to unpin thread:', err);
-    addToast('error', `Unpin Failed: ${errString(err)}`);
+    addToast('error', userFacingError(err));
   }
 }

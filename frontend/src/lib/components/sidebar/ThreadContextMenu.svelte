@@ -26,6 +26,7 @@
     copyThreadPathAction,
     deleteThreadAction,
     markThreadUnreadAction,
+    openThreadWorkspaceInEditorAction,
     pinThreadAction,
     unpinThreadAction,
     type ThreadActionCtx,
@@ -215,6 +216,13 @@
             onSelect={() => {
               onClose();
               void copyThreadPathAction(ctx());
+            }}
+          />
+          <MenuItem
+            label="Open Workspace in Editor"
+            onSelect={() => {
+              onClose();
+              void openThreadWorkspaceInEditorAction(ctx());
             }}
           />
           <MenuItem

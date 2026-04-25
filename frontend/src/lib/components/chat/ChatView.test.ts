@@ -166,12 +166,16 @@ describe('<ChatView>', () => {
     expect(queryByTestId('compact-header-menu-trigger')).toBeNull();
   });
 
-  it('renders the empty-state when no thread is selected', async () => {
+  it('renders the welcome panel when no thread is selected', async () => {
     const pane = createThreadPane();
     const { queryByTestId, getByText } = render(ChatView, { props: { pane } });
     await tick();
     expect(queryByTestId('chat-header')).toBeNull();
-    expect(getByText('Select or create a thread')).toBeInTheDocument();
+    // The welcome panel replaces the older passive "Select or create a
+    // thread" copy. Its heading is the load-bearing assertion — the
+    // welcome-panel testid is on the inner container.
+    expect(queryByTestId('welcome-panel')).not.toBeNull();
+    expect(getByText('Welcome to Agent Overflow')).toBeInTheDocument();
   });
 
   it('marks the active thread read locally and coalesces persisted writes when completed turns arrive', async () => {

@@ -490,7 +490,7 @@ func TestReconcileCodexOnStart_FlipsGhostBackgroundRows(t *testing.T) {
 		if name != "provider:item_event" {
 			return
 		}
-		if item, ok := itemFromItemStreamEnvelope(data); ok {
+		if item, ok := itemFromItemStreamEvent(data); ok {
 			emitted = append(emitted, item)
 		}
 	}

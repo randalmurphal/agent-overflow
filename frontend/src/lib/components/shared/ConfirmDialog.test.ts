@@ -175,7 +175,7 @@ describe('<ConfirmDialog>', () => {
     expect(confirmBtn.className).not.toContain('bg-error');
   });
 
-  it('confirm button carries data-autofocus so focusTrap lands focus there', async () => {
+  it('non-destructive: confirm button carries data-autofocus so focusTrap lands focus there', async () => {
     const { getByText } = render(ConfirmDialog, {
       props: {
         open: true,
@@ -187,6 +187,26 @@ describe('<ConfirmDialog>', () => {
     });
     await flushFocus();
     const confirmBtn = getByText('Confirm');
+    const cancelBtn = getByText('Cancel');
     expect(confirmBtn.hasAttribute('data-autofocus')).toBe(true);
+    expect(cancelBtn.hasAttribute('data-autofocus')).toBe(false);
+  });
+
+  it('destructive: cancel button carries data-autofocus so a stray Enter does not confirm', async () => {
+    const { getByText } = render(ConfirmDialog, {
+      props: {
+        open: true,
+        title: 't',
+        description: 'd',
+        destructive: true,
+        onConfirm: () => {},
+        onCancel: () => {},
+      },
+    });
+    await flushFocus();
+    const confirmBtn = getByText('Confirm');
+    const cancelBtn = getByText('Cancel');
+    expect(cancelBtn.hasAttribute('data-autofocus')).toBe(true);
+    expect(confirmBtn.hasAttribute('data-autofocus')).toBe(false);
   });
 });

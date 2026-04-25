@@ -12,6 +12,7 @@ import type {
 } from '../types/events';
 import type { Item, Thread } from '../types/models';
 import type { DesignArtifact, DesignChoiceResolved, DesignOptionsRequest } from '../types/design';
+import { transportGapChannel } from '../transport/wsClient';
 import { getAllPanes } from './panes.svelte';
 import { recordProviderStatus } from './providerStatus.svelte';
 import { addToast } from './toast.svelte';
@@ -27,42 +28,6 @@ import {
 } from './threadStatuses.svelte';
 import { parseTokenUsage } from './thread.svelte';
 
-/**
- * SeqEnvelope mirrors the Go-side `SeqEnvelope` in app.go. Every Wails
- * emission stamps a monotonic `seq` so subscribers can detect gaps
- * (scaffolding for future remote-access transport). The envelope also
- * carries a `data` field with the original Go payload.
- *
- * We keep the detection shape duck-typed instead of using `instanceof`
- * or a JSON-schema check — the Go runtime serialises the envelope
- * through encoding/json, so what arrives in the webview is a plain
- * object with `seq` + `data` keys.
- */
-interface SeqEnvelope<T = unknown> {
-  seq: number;
-  data: T;
-}
-
-function isSeqEnvelope(value: unknown): value is SeqEnvelope {
-  return (
-    value !== null
-    && typeof value === 'object'
-    && 'seq' in value
-    && typeof (value as { seq: unknown }).seq === 'number'
-    && 'data' in value
-  );
-}
-
-/**
- * Per-event-name last-seen seq table. Keys are event names; values are
- * the most recent seq observed on that channel. Undefined = never seen,
- * so the first emission on a channel does not warn.
- *
- * We reset the table when setupEventListeners() is called again — tests
- * re-install listeners between cases, and a stale last-seen would
- * trigger spurious gap warnings.
- */
-const lastSeenSeq: Map<string, number> = new Map();
 const itemUpsertSubscribers: Set<(item: Item) => void> = new Set();
 const ITEM_EVENT_FLUSH_MAX_DELAY_MS = 50;
 const ITEM_EVENT_FLUSH_MAX_EVENTS = 500;
@@ -72,10 +37,6 @@ let itemEventQueue: ItemStreamEvent[] = [];
 let itemEventQueueStart = 0;
 let itemEventFlushFrame: number | null = null;
 let itemEventFlushTimeout: number | null = null;
-
-function resetSeqTracking(): void {
-  lastSeenSeq.clear();
-}
 
 function requestFrame(callback: () => void): number {
   if (typeof requestAnimationFrame === 'function') {
@@ -143,10 +104,6 @@ function isValidItemForThread(item: Item | null | undefined, threadId: string): 
   return true;
 }
 
-function requiresSeqEnvelope(name: string): boolean {
-  return name.startsWith('provider:');
-}
-
 export function onItemUpsert(handler: (item: Item) => void): () => void {
   itemUpsertSubscribers.add(handler);
   return () => {
@@ -165,53 +122,26 @@ function notifyItemUpserts(items: Item[]): void {
 }
 
 /**
- * wailsEventOn wraps Events.On to (a) unwrap SeqEnvelope payloads back
- * to the original Go shape, and (b) track per-channel seq gaps. The
- * Provider channels must arrive in the envelope so the frontend can
- * enforce the ordering/gap contract. Non-provider app-shell channels may
- * still pass raw payloads through this helper.
+ * wailsEventOn wraps Events.On so callers receive the inner Go payload.
+ * The transport (wsClient.ts) is payload-agnostic and Phase C made the
+ * production wire deliver raw payloads, so this helper is just an
+ * import-path shim — the wsClient already hands `ev.data` through as
+ * the bare payload.
+ *
+ * Per-channel gap detection lives in the transport: the wsClient
+ * surfaces gaps via the synthetic `transport:gap` channel and the
+ * `gap:true` flag on `event` frames. Subscribers that care about gap
+ * recovery should consume that channel directly rather than
+ * re-implementing seq tracking here.
  *
  * Exported so subscribers outside this file (terminal drawer, diff
- * panel) can share the same gap-detection + unwrapping logic without
- * re-implementing the boilerplate.
+ * panel) keep a single import path.
  */
 export function wailsEventOn<T = unknown>(
   name: string,
   handler: (data: T) => void,
 ): () => void {
-  return Events.On(name, (ev) => {
-    const raw = ev.data as unknown;
-    if (isSeqEnvelope(raw)) {
-      const prev = lastSeenSeq.get(name);
-      // A strictly-increasing seq means no gap; anything else (drop,
-      // retransmit, out-of-order) produces a warn with the missing
-      // range. We warn once per gap and still deliver the event — the
-      // seq is an observability scaffold, not a back-pressure knob.
-      if (prev !== undefined && raw.seq > prev + 1) {
-        const missingCount = raw.seq - prev - 1;
-        const firstMissing = prev + 1;
-        const lastMissing = raw.seq - 1;
-        console.warn(
-          `event seq gap on ${name}: missing ${missingCount} event(s) ` +
-          `(ids ${firstMissing}..${lastMissing})`,
-        );
-      }
-      // Track the highest seq we've seen so a stale re-delivery doesn't
-      // roll the pointer backward.
-      if (prev === undefined || raw.seq > prev) {
-        lastSeenSeq.set(name, raw.seq);
-      }
-      handler(raw.data as T);
-      return;
-    }
-    if (requiresSeqEnvelope(name)) {
-      console.warn(`dropping unenveloped provider event on ${name}`);
-      return;
-    }
-    // Raw payload: pass through unchanged for app-shell channels that do
-    // not participate in provider stream ordering.
-    handler(raw as T);
-  });
+  return Events.On(name, (ev) => handler(ev.data as T));
 }
 
 /**
@@ -706,10 +636,6 @@ function applySubagentNotification(evt: SubagentNotificationEvent): void {
  * Returns a cleanup function that removes all listeners.
  */
 export function setupEventListeners(): () => void {
-  // Reset the gap-detection table so a previous setupEventListeners call
-  // (tests re-wire between cases) does not bleed its last-seen seq into
-  // the new listener set and trigger spurious warnings.
-  resetSeqTracking();
   resetItemEventQueue();
 
   const cancelApproval = wailsEventOn<ApprovalEvent>('provider:approval', applyApprovalEvent);
@@ -739,6 +665,71 @@ export function setupEventListeners(): () => void {
   );
 
   const cancelThreadUpdated = wailsEventOn<Thread>('thread:updated', applyThreadUpdated);
+
+  // provider:default_swapped — backend auto-flipped the default
+  // provider because the saved one was not_found and the other was
+  // ready. Surface a toast so the user notices the change before they
+  // wonder why the next thread routed to a different CLI; the value
+  // can still be reverted manually in Settings.
+  interface DefaultSwappedPayload {
+    from?: string;
+    to?: string;
+    fromCli?: string;
+    otherCli?: string;
+    reason?: string;
+  }
+  const cancelDefaultSwapped = wailsEventOn<DefaultSwappedPayload>(
+    'provider:default_swapped',
+    (payload) => {
+      if (!payload || !payload.to) return;
+      const next = payload.otherCli || payload.to;
+      const prev = payload.fromCli || payload.from || 'previous default';
+      addToast(
+        'info',
+        `Default provider switched to ${next} — ${prev} CLI not detected.`,
+      );
+    },
+  );
+
+  // transport:gap — synthetic event fired by wsClient.ts when the
+  // server reports a missed seq on a channel. Coarse-grained recovery:
+  // re-fetch the active pane's window so SQLite (the authoritative
+  // history cache) backfills whatever was lost. We don't try to be
+  // surgical because the gap signal doesn't carry the missed range.
+  //
+  // The handler matches on the channel name we lost rather than each
+  // payload kind because a single gap on `provider:item_event` can
+  // straddle upserts AND deltas; refreshing the whole pane is the
+  // simplest correct response.
+  const cancelTransportGap = wailsEventOn<{ channel: string; seq: number }>(
+    transportGapChannel,
+    (gap) => {
+      if (!gap || typeof gap.channel !== 'string') return;
+      switch (gap.channel) {
+        case 'provider:item_event':
+        case 'provider:turn_started':
+        case 'provider:turn_completed':
+        case 'thread:updated': {
+          for (const pane of getAllPanes().values()) {
+            if (!pane.threadId) continue;
+            void pane.refreshFromBackend();
+          }
+          return;
+        }
+        default:
+          // Unknown channel: log a breadcrumb and refresh active panes
+          // anyway. Refreshing is cheap; missing a refresh on a future
+          // channel that needs one would be silent data drift.
+          console.warn(
+            `events: transport gap on unknown channel "${gap.channel}" — refreshing active panes`,
+          );
+          for (const pane of getAllPanes().values()) {
+            if (!pane.threadId) continue;
+            void pane.refreshFromBackend();
+          }
+      }
+    },
+  );
 
   // design:artifact — a new rendered artifact. Append to the owning pane's
   // history. The preview panel auto-tracks the latest unless the user has
@@ -838,6 +829,8 @@ export function setupEventListeners(): () => void {
     cancelTurnCompleted();
     cancelSubagentNotification();
     cancelThreadUpdated();
+    cancelDefaultSwapped();
+    cancelTransportGap();
     cancelDesignArtifact();
     cancelDesignOptions();
     cancelDesignChosen();

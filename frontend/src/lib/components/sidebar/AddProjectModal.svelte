@@ -69,7 +69,7 @@
     try {
       const created = (await CreateProject(pendingPath.trim())) as Project;
       addProjectLocal(created);
-      addToast('info', `Added Project "${created.name}"`);
+      addToast('info', `Added project "${created.name}".`);
       onCreated?.(created);
       onClose();
     } catch (err) {
@@ -86,7 +86,7 @@
           onClose();
           return;
         }
-        submitError = 'Already a project.';
+        submitError = 'That folder is already a project.';
       } else {
         submitError = message;
       }

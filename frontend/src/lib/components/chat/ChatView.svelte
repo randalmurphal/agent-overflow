@@ -13,6 +13,7 @@
   import PlanFollowUpBanner from './PlanFollowUpBanner.svelte';
   import ChatHeader from './ChatHeader.svelte';
   import ExpandedImageDialog from './ExpandedImageDialog.svelte';
+  import WelcomePanel from './WelcomePanel.svelte';
   import type { ExpandedImagePreview } from '../../utils/attachmentPreview.svelte';
   import { createComposerDraftStore } from '../../stores/composerDraft.svelte';
   import { MarkThreadRead } from '../../stores/bindings';
@@ -230,13 +231,7 @@
     {/if}
   </div>
 {:else}
-  <div bind:this={chatRoot} data-ui-surface="chat-empty" data-thread-id="" class="flex items-center justify-center h-full">
-    <div class="text-center">
-      <svg class="w-10 h-10 text-text-secondary/30 mx-auto mb-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-      </svg>
-      <p class="text-text-secondary text-lg">Select or create a thread</p>
-      <p class="text-text-secondary/60 text-sm mt-1">Use the sidebar to get started</p>
-    </div>
+  <div bind:this={chatRoot} data-ui-surface="chat-empty" data-thread-id="" class="flex h-full">
+    <WelcomePanel {pane} />
   </div>
 {/if}

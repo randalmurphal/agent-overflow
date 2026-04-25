@@ -6,13 +6,55 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
 )
 
+// NetworkSettings groups LAN-bind preferences for the embedded
+// transport server. Persisted as a nested object so the JSON shape
+// stays stable when more network fields land (origin allow-list,
+// TLS hints, etc.).
+type NetworkSettings struct {
+	// BindAll, when true, asks the transport server to listen on
+	// 0.0.0.0 so other devices on the LAN can reach the app. Default
+	// false keeps the bind on 127.0.0.1 — the safe loopback behaviour.
+	BindAll bool `json:"bindAll"`
+}
+
+// EditorSettings groups the open-in-editor preferences. Lives in its
+// own nested object so future fields (custom argv template, last-used
+// editor for analytics, etc.) can land without reshuffling the
+// top-level Settings struct.
+type EditorSettings struct {
+	// Preference is the editor ID (e.g. "code", "cursor",
+	// "env:editor") the user explicitly selected. Empty falls back
+	// to the catalog priority order in internal/editor.Resolve.
+	Preference string `json:"preference"`
+}
+
+// CurrentSchemaVersion is the version stamped on every Update-written
+// settings file. Bump on any breaking shape change so a future loader
+// can branch on the version and run a one-shot migration before
+// merging defaults.
+//
+// Backwards compatibility convention: bump only when an existing field
+// changes shape or semantics. Adding a new field, even with a
+// non-zero default, does not require a bump because the sparse-load
+// path tolerates absent keys naturally.
+const CurrentSchemaVersion = 1
+
 // Settings holds all user-configurable preferences.
 type Settings struct {
+	// SchemaVersion is the version of the on-disk shape this struct
+	// expects. Older files (or files written before versioning) load as
+	// SchemaVersion=0 and the Service treats them identically to
+	// CurrentSchemaVersion until a future shape change introduces a
+	// migration step. Never written by users; always overwritten to
+	// CurrentSchemaVersion on any save via writeSparse.
+	SchemaVersion int `json:"$schemaVersion,omitempty"`
+
 	Theme              string `json:"theme"`
 	TimestampFormat    string `json:"timestampFormat"`
 	DefaultProvider    string `json:"defaultProvider"`
@@ -101,19 +143,47 @@ type Settings struct {
 	// Observability — all opt-in. Empty/false defaults leave the app quiet.
 	//
 	// SECURITY NOTE: this file is stored on disk in plaintext and is
-	// read/written without any encryption. That is fine for the fields
-	// we currently persist — an OTLP endpoint is not a secret (it's a
-	// gRPC/HTTP URL the user already exposes to every app running on
-	// their machine). If a future field stores anything that could
-	// reasonably be called a secret (API keys, bearer tokens, user
-	// credentials), do NOT put it here: settings.json is written with
-	// 0644 permissions, landed in a user-visible config dir, and may
-	// be synced to cloud backup without the user realising. Put secrets
-	// in the OS keychain via a dedicated package and keep this struct
-	// for non-sensitive preferences only.
+	// read/written without any encryption. settings.json itself lands
+	// at 0600 (the default os.CreateTemp picks for the temp file we
+	// rename in over the destination), and the parent directory is
+	// created at 0700 since this struct now persists per-launch tokens.
+	// Even with restrictive perms, anything that could reasonably be
+	// called a long-lived secret (API keys, OAuth refresh tokens, user
+	// credentials) does NOT belong here: this file lives in a
+	// user-visible config dir and may be swept into cloud backup tools
+	// without the user realising. Put long-lived secrets in the OS
+	// keychain via a dedicated package and keep this struct for
+	// preferences plus per-launch bootstrap material only.
 	ObservabilityTracingEnabled  bool   `json:"observabilityTracingEnabled"`
 	ObservabilityOtlpEndpoint    string `json:"observabilityOtlpEndpoint"`
 	ObservabilityEventLogEnabled bool   `json:"observabilityEventLogEnabled"`
+
+	// Network groups LAN-bind preferences. Default zero value keeps
+	// the transport on loopback; flipping BindAll triggers a
+	// transport-server rebind to 0.0.0.0 without restarting the app.
+	Network NetworkSettings `json:"network"`
+
+	// Editor holds the open-in-editor preferences. Default zero value
+	// lets internal/editor pick the best available editor via catalog
+	// priority; setting Editor.Preference pins a specific one even
+	// when later WSL detection finds a higher-priority option.
+	Editor EditorSettings `json:"editor"`
+
+	// RemoteEndpoints stores the user's `--connect` targets: remote-
+	// hosted backends the desktop binary can attach to instead of
+	// booting a local transport. Persisted as a flat list keyed by
+	// stable IDs so the settings UI can rename / re-order without
+	// disturbing the connect commands the user has already shared.
+	//
+	// SECURITY NOTE: this list contains ephemeral session tokens. They
+	// are stored in plaintext alongside settings.json (file lands at
+	// 0600, parent dir at 0700). That matches the threat model
+	// documented above — settings.json must not contain anything more
+	// sensitive than what a local-process attacker could already read
+	// out of running webviews. If the remote endpoints' tokens ever
+	// become long-lived bearer tokens, move this field to a
+	// keychain-backed store and remove the JSON persistence path.
+	RemoteEndpoints []RemoteEndpoint `json:"remoteEndpoints,omitempty"`
 }
 
 // DefaultSettings provides sane defaults for all settings fields.
@@ -229,7 +299,20 @@ func (s *Service) Get() Settings {
 
 // Update applies a partial patch to the current settings, persists the result
 // with sparse serialization, and returns the new full settings.
+//
+// The "remoteEndpoints" key is rejected at the patch boundary: applyPatch
+// merges top-level keys via wholesale assignment, so a caller doing
+// `GetSettings -> mutate one field -> Update(full struct)` would clobber
+// every saved endpoint's token with the redacted (empty) values returned
+// by GetSettings. Tokens are only mutated through the dedicated CRUD
+// helpers (AddRemoteEndpoint / UpdateRemoteEndpoint / DeleteRemoteEndpoint
+// / TouchRemoteEndpoint) which read the persisted token before writing.
+// This guard keeps a future caller — including a refactor or remote
+// loopback path — from regressing the contract.
 func (s *Service) Update(patch map[string]any) (Settings, error) {
+	if _, ok := patch["remoteEndpoints"]; ok {
+		return Settings{}, fmt.Errorf("settings: use AddRemoteEndpoint / UpdateRemoteEndpoint / DeleteRemoteEndpoint to mutate remote endpoints")
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -294,6 +377,15 @@ func (s *Service) AddRecentWorkspace(path string) {
 // Returns DefaultSettings if the file is missing or malformed. Must be called
 // with s.mu held (either read or write). Captures any unknown top-level keys
 // into s.unknownFields so a follow-up write preserves them.
+//
+// On a JSON parse failure we rename the broken file aside as
+// `settings.json.corrupt-<unix>` BEFORE returning defaults, so a
+// subsequent writeSparse can't silently overwrite the original. The
+// corrupt file is left on disk for the user to inspect or copy fields
+// out of — losing remote-endpoint tokens or recent workspaces because
+// of one bad write would erase work the user expects to be durable.
+// The rename is best-effort; if it fails we still return defaults so
+// the app can boot, but we log loudly.
 func (s *Service) loadFromFile() Settings {
 	data, err := os.ReadFile(s.path)
 	if err != nil {
@@ -305,7 +397,12 @@ func (s *Service) loadFromFile() Settings {
 	// Start from defaults, then overlay file values.
 	result := copyDefaults()
 	if err := json.Unmarshal(data, &result); err != nil {
-		log.Printf("settings: malformed JSON in %s, using defaults: %v", s.path, err)
+		preservedPath := s.path + fmt.Sprintf(".corrupt-%d", time.Now().Unix())
+		if renameErr := os.Rename(s.path, preservedPath); renameErr != nil {
+			log.Printf("settings: malformed JSON in %s and could not preserve original (%v); falling back to defaults: %v", s.path, renameErr, err)
+		} else {
+			log.Printf("settings: malformed JSON in %s; original preserved at %s, falling back to defaults: %v", s.path, preservedPath, err)
+		}
 		s.unknownFields = nil
 		return copyDefaults()
 	}
@@ -335,22 +432,33 @@ func captureUnknownFields(raw []byte) map[string]json.RawMessage {
 	return unknown
 }
 
-// knownSettingsFieldNames returns the set of JSON field names the Settings
-// struct serializes. Computed by marshalling the default Settings value and
-// reading its keys — this keeps the set in sync with the struct definition
-// automatically as fields are added or renamed.
+// knownSettingsFieldNames returns the set of JSON field names the
+// Settings struct serializes. Computed by reflecting on the struct's
+// fields rather than marshalling DefaultSettings — `omitempty` fields
+// with zero defaults (e.g. RemoteEndpoints) would be missing from the
+// marshalled view, which would mis-classify a user-written value as
+// "unknown" and double-publish it through unknownFields preservation.
+//
+// The reflection path keeps the set in sync with the struct definition
+// automatically as fields are added or renamed, same as the marshal
+// approach, but without the `omitempty` blind spot.
 func knownSettingsFieldNames() map[string]struct{} {
-	data, err := json.Marshal(DefaultSettings)
-	if err != nil {
-		return map[string]struct{}{}
-	}
-	var m map[string]json.RawMessage
-	if err := json.Unmarshal(data, &m); err != nil {
-		return map[string]struct{}{}
-	}
-	known := make(map[string]struct{}, len(m))
-	for k := range m {
-		known[k] = struct{}{}
+	t := reflect.TypeOf(Settings{})
+	known := make(map[string]struct{}, t.NumField())
+	for i := 0; i < t.NumField(); i++ {
+		tag := t.Field(i).Tag.Get("json")
+		if tag == "" || tag == "-" {
+			continue
+		}
+		// JSON tag may be "name,omitempty" — split and keep just the name.
+		name := tag
+		if idx := strings.Index(tag, ","); idx >= 0 {
+			name = tag[:idx]
+		}
+		if name == "" {
+			continue
+		}
+		known[name] = struct{}{}
 	}
 	return known
 }
@@ -359,7 +467,13 @@ func knownSettingsFieldNames() map[string]struct{} {
 // Uses atomic write (temp file + rename). Unknown fields previously read
 // from the file are preserved alongside the sparse known fields so
 // forward-compat / downgrade values are not dropped by an Update.
+//
+// Stamps SchemaVersion = CurrentSchemaVersion on every write so a
+// future loader can branch on a missing/older version and run a
+// migration. Older files written before versioning load as 0; future
+// writes by this build re-stamp them to the current version.
 func (s *Service) writeSparse(current Settings) error {
+	current.SchemaVersion = CurrentSchemaVersion
 	sparse, err := buildSparseMap(current)
 	if err != nil {
 		return fmt.Errorf("settings: build sparse map: %w", err)
@@ -383,9 +497,14 @@ func (s *Service) writeSparse(current Settings) error {
 	}
 	data = append(data, '\n')
 
-	// Ensure the directory exists.
+	// Ensure the directory exists. 0700 because this struct now stores
+	// per-launch tokens (RemoteEndpoints[*].Token); even though the
+	// renamed temp file lands at 0600 itself, a 0755 parent would let
+	// other local accounts list the dir contents. MkdirAll is a no-op
+	// when dir already exists with looser perms — that's acceptable
+	// because the file's own 0600 still gates the contents.
 	dir := filepath.Dir(s.path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("settings: create config dir: %w", err)
 	}
 

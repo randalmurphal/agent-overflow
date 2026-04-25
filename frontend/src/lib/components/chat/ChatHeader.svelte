@@ -24,6 +24,7 @@
   import ContextWindowMeter from './ContextWindowMeter.svelte';
   import GitActionsControl from '../git/GitActionsControl.svelte';
   import Button from '../primitives/Button.svelte';
+  import EditorLink from '../common/EditorLink.svelte';
 
   interface Props {
     pane: ThreadPane;
@@ -57,7 +58,11 @@
     if (!projectId) return null;
     const project = getProject(projectId);
     if (!project) return null;
-    return { id: project.project.id, name: project.project.name };
+    return {
+      id: project.project.id,
+      name: project.project.name,
+      path: project.project.path,
+    };
   });
 
   function startRename(): void {
@@ -175,6 +180,15 @@
         >
           {projectBadge.name}
         </button>
+        <!-- Open the project root in the user's editor. Stays adjacent
+             to the badge it acts on; the icon-only button keeps the
+             header dense at narrow widths. -->
+        <EditorLink
+          path={projectBadge.path}
+          asIcon
+          label={`Open ${projectBadge.name} in editor`}
+          class="shrink-0"
+        />
       {/if}
 
       {#if pane.contextWindow}

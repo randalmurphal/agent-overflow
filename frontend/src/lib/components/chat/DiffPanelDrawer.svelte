@@ -7,6 +7,7 @@
   import RotateCcw from 'lucide-svelte/icons/rotate-ccw';
   import ChevronDown from 'lucide-svelte/icons/chevron-down';
   import Icon from '../primitives/Icon.svelte';
+  import EditorLink from '../common/EditorLink.svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { getSettings, updateSetting } from '../../stores/settings.svelte';
   import { addToast } from '../../stores/toast.svelte';
@@ -328,13 +329,31 @@
 
 {#snippet FileCard(file: PatchFile, open: boolean, viewMode: 'stacked' | 'split', wordWrap: boolean, onToggle: () => void)}
   <section class="overflow-hidden rounded-[var(--radius-control)] border border-border-subtle bg-card/30">
-    <button class="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-surface-2/40" onclick={onToggle}>
-      <Icon icon={ChevronDown} size={14} class={open ? '' : '-rotate-90'} />
-      <span class="rounded bg-accent/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-accent">FileChange</span>
-      <span class="min-w-0 flex-1 truncate font-mono text-[12px] text-fg">{file.path}</span>
-      <span class="text-[11px] text-success">+{file.additions}</span>
-      <span class="text-[11px] text-error">-{file.deletions}</span>
-    </button>
+    <!--
+      Header: button toggles open/closed, EditorLink sibling opens the
+      file in the user's editor. Same dual-control layout used by
+      DiffPreview to avoid nested interactives.
+    -->
+    <div class="group/diff-panel-file flex w-full items-center gap-2 px-3 py-2 hover:bg-surface-2/40">
+      <button
+        class="flex flex-1 min-w-0 items-center gap-2 text-left bg-transparent border-0 p-0 cursor-pointer"
+        onclick={onToggle}
+        data-testid="diff-panel-file-toggle"
+        data-path={file.path}
+      >
+        <Icon icon={ChevronDown} size={14} class={open ? '' : '-rotate-90'} />
+        <span class="rounded bg-accent/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-accent">FileChange</span>
+        <span class="min-w-0 flex-1 truncate font-mono text-[12px] text-fg">{file.path}</span>
+        <span class="text-[11px] text-success">+{file.additions}</span>
+        <span class="text-[11px] text-error">-{file.deletions}</span>
+      </button>
+      <EditorLink
+        path={file.path}
+        asIcon
+        stopPropagation
+        class="opacity-0 group-hover/diff-panel-file:opacity-100 focus-visible:opacity-100"
+      />
+    </div>
     {#if open}
       {#if viewMode === 'split'}
         <div class="max-h-[42rem] overflow-auto border-t border-border-subtle bg-surface-0 font-mono text-[12px] leading-relaxed">

@@ -184,6 +184,18 @@ func TestSavePayloadToFileWritesBytesAndReturnsPath(t *testing.T) {
 	if pickedFilename != "Bash.txt" {
 		t.Errorf("picker filename = %q, want Bash.txt", pickedFilename)
 	}
+
+	// Saved payloads land at 0o600 — the file may carry tool output or
+	// provider responses the user wouldn't want world-readable on a
+	// shared host. Pin the mode so a future regression that silently
+	// loosens it is caught immediately.
+	info, statErr := os.Stat(dest)
+	if statErr != nil {
+		t.Fatalf("stat dest: %v", statErr)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Errorf("file mode = %o, want 0o600 (saved payloads are user-private)", got)
+	}
 }
 
 // TestSavePayloadToFileCancelledReturnsEmptyPath verifies that when the

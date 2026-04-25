@@ -13,7 +13,7 @@
 
 import { DeleteAttachment, UploadAttachment } from '../../stores/bindings';
 import { addToast } from '../../stores/toast.svelte';
-import { errString } from '../../utils/errors';
+import { userFacingError } from '../../utils/userFacingError';
 import type { Attachment } from '../../types/attachment';
 import {
   DEFAULT_MAX_ATTACHMENT_COUNT,
@@ -69,6 +69,10 @@ export function createComposerUploads(opts: ComposerUploadsOptions): ComposerUpl
     file: File,
     insertion: UploadInsertionPoint | null,
   ): Promise<boolean> {
+    // Pre-upload guard: reject by size + MIME / extension before we
+    // burn cycles on base64 + ship the bytes over the wire. The same
+    // check runs server-side, but failing early here keeps a
+    // misclicked 50MB drop from freezing the UI for the round-trip.
     const rejection = rejectionReason(file, maxSize);
     if (rejection) {
       addToast('warning', rejection);
@@ -90,7 +94,7 @@ export function createComposerUploads(opts: ComposerUploadsOptions): ComposerUpl
       }
     } catch (err) {
       console.error('UploadAttachment failed:', err);
-      addToast('error', `Upload failed: ${errString(err)}`);
+      addToast('error', userFacingError(err));
     }
     return false;
   }
@@ -104,7 +108,7 @@ export function createComposerUploads(opts: ComposerUploadsOptions): ComposerUpl
     const existingCount = opts.getAttachmentCount?.() ?? 0;
     const availableSlots = Math.max(0, maxAttachments - existingCount);
     if (availableSlots === 0) {
-      addToast('warning', `You can attach up to ${maxAttachments} images per message`);
+      addToast('warning', `You can attach up to ${maxAttachments} images per message.`);
       return;
     }
     const list = Array.from(files);
@@ -117,7 +121,7 @@ export function createComposerUploads(opts: ComposerUploadsOptions): ComposerUpl
       if (accepted) acceptedCount += 1;
     }
     if (processedCount < list.length) {
-      addToast('warning', `Only the first ${availableSlots} valid image${availableSlots === 1 ? '' : 's'} were attached`);
+      addToast('warning', `Only the first ${availableSlots} valid image${availableSlots === 1 ? '' : 's'} were attached.`);
     }
   }
 
@@ -126,7 +130,7 @@ export function createComposerUploads(opts: ComposerUploadsOptions): ComposerUpl
       await DeleteAttachment(id);
     } catch (err) {
       console.error('DeleteAttachment failed:', err);
-      addToast('warning', `Failed to delete attachment: ${errString(err)}`);
+      addToast('warning', userFacingError(err));
     }
   }
 

@@ -1,0 +1,8 @@
+The Linux ELF backend (agent-overflow-linux) is dropped here at build time
+by `task common:windows:build`. The cmd/agent-overflow-windows main.go
+embeds it via //go:embed payload/agent-overflow-linux.
+
+If this directory is empty when you run `go build ./cmd/agent-overflow-windows`,
+the embed directive falls back to a placeholder file (see embed_placeholder.txt
+in the same directory) so the build still succeeds; the launcher errors at
+runtime when it tries to install the payload.

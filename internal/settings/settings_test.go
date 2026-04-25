@@ -87,6 +87,52 @@ func TestGetReturnsDefaultsOnMalformedJSON(t *testing.T) {
 	}
 }
 
+func TestMalformedJSONPreservesOriginalFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+	rawCorrupt := []byte("{this is broken")
+	if err := os.WriteFile(path, rawCorrupt, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	svc := NewService(dir)
+	_ = svc.Get()
+
+	// The original settings.json must be moved aside, not silently
+	// dropped. Find a sibling matching settings.json.corrupt-* and
+	// confirm it carries the bytes we wrote.
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var preservedPath string
+	for _, ent := range entries {
+		name := ent.Name()
+		if name == "settings.json" || ent.IsDir() {
+			continue
+		}
+		if len(name) > len("settings.json.corrupt-") && name[:len("settings.json.corrupt-")] == "settings.json.corrupt-" {
+			preservedPath = filepath.Join(dir, name)
+			break
+		}
+	}
+	if preservedPath == "" {
+		t.Fatalf("expected a settings.json.corrupt-* file in %s; got %d entries", dir, len(entries))
+	}
+	preserved, err := os.ReadFile(preservedPath)
+	if err != nil {
+		t.Fatalf("read preserved corrupt file: %v", err)
+	}
+	if string(preserved) != string(rawCorrupt) {
+		t.Errorf("preserved corrupt file = %q, want %q", preserved, rawCorrupt)
+	}
+	// settings.json itself should now be absent (we moved it aside)
+	// until the next writeSparse re-creates it.
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("settings.json still present after corruption-aside; expected ENOENT, got %v", err)
+	}
+}
+
 func TestUpdatePersistsAndSparseSerializes(t *testing.T) {
 	dir := t.TempDir()
 	svc := NewService(dir)
@@ -110,12 +156,65 @@ func TestUpdatePersistsAndSparseSerializes(t *testing.T) {
 		t.Fatalf("unmarshal settings file: %v", err)
 	}
 
-	// Only "theme" should be in the file (everything else matches defaults).
-	if len(fileMap) != 1 {
-		t.Errorf("file contains %d keys, want 1; contents: %s", len(fileMap), string(data))
+	// "theme" is the user-set value; "$schemaVersion" is stamped on
+	// every write so a future loader can branch on a missing/older
+	// version. Two entries total — anything else means a sparse-write
+	// regression that's writing default-valued fields.
+	if len(fileMap) != 2 {
+		t.Errorf("file contains %d keys, want 2 (theme + $schemaVersion); contents: %s", len(fileMap), string(data))
 	}
 	if fileMap["theme"] != "dark" {
 		t.Errorf("file theme = %v, want %q", fileMap["theme"], "dark")
+	}
+	// SchemaVersion stamped at write time. The literal value matches
+	// CurrentSchemaVersion; if the version bumps we update both.
+	if got, _ := fileMap["$schemaVersion"].(float64); int(got) != CurrentSchemaVersion {
+		t.Errorf("file $schemaVersion = %v, want %d", fileMap["$schemaVersion"], CurrentSchemaVersion)
+	}
+}
+
+// TestNetworkSettingsBindAllRoundTripAndSparseDefault confirms the
+// Phase E LAN-bind toggle persists through the same path as every
+// other setting: Update writes the patch, the file omits the key when
+// it equals the default, and a fresh service reload yields the same
+// in-memory value.
+func TestNetworkSettingsBindAllRoundTripAndSparseDefault(t *testing.T) {
+	dir := t.TempDir()
+	svc := NewService(dir)
+
+	updated, err := svc.Update(map[string]any{"network": map[string]any{"bindAll": true}})
+	if err != nil {
+		t.Fatalf("Update(bindAll=true) error = %v", err)
+	}
+	if !updated.Network.BindAll {
+		t.Fatal("Network.BindAll = false, want true")
+	}
+
+	reloaded := NewService(dir).Get()
+	if !reloaded.Network.BindAll {
+		t.Fatal("reloaded Network.BindAll = false, want true")
+	}
+
+	// Toggle back to default; file must omit the network key entirely
+	// since the zero-valued struct equals DefaultSettings.Network.
+	updated, err = svc.Update(map[string]any{"network": map[string]any{"bindAll": false}})
+	if err != nil {
+		t.Fatalf("Update(bindAll=false) error = %v", err)
+	}
+	if updated.Network.BindAll {
+		t.Fatal("Network.BindAll = true, want false")
+	}
+
+	data, err := os.ReadFile(filepath.Join(dir, "settings.json"))
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	var fileMap map[string]any
+	if err := json.Unmarshal(data, &fileMap); err != nil {
+		t.Fatalf("unmarshal settings file: %v", err)
+	}
+	if _, ok := fileMap["network"]; ok {
+		t.Fatalf("settings file = %s, want network omitted when default", string(data))
 	}
 }
 
@@ -348,8 +447,14 @@ func TestBlankBinaryPathsSerializeAsDefaults(t *testing.T) {
 	if err := json.Unmarshal(data, &fileMap); err != nil {
 		t.Fatalf("unmarshal settings file: %v", err)
 	}
-	if len(fileMap) != 0 {
-		t.Fatalf("settings file = %s, want empty sparse object", string(data))
+	// SchemaVersion is the only key that should land — every user-set
+	// value validated to the default and was sparse-omitted, but the
+	// version stamp goes on every write.
+	if len(fileMap) != 1 {
+		t.Fatalf("settings file = %s, want only $schemaVersion", string(data))
+	}
+	if got, _ := fileMap["$schemaVersion"].(float64); int(got) != CurrentSchemaVersion {
+		t.Fatalf("settings file = %s, want $schemaVersion = %d", string(data), CurrentSchemaVersion)
 	}
 }
 
@@ -642,5 +747,115 @@ func TestObservabilityOtlpEndpointBlankSerializesAsDefault(t *testing.T) {
 	}
 	if _, present := fileMap["observabilityOtlpEndpoint"]; present {
 		t.Errorf("file contains observabilityOtlpEndpoint when it should be sparse-omitted: %s", string(data))
+	}
+}
+
+// TestUpdateSettings_RejectsRemoteEndpointsKey pins the patch-boundary
+// guard added to Service.Update: a caller that includes
+// "remoteEndpoints" in a generic patch must be refused outright. The
+// underlying applyPatch does wholesale top-level merge, so an accepted
+// patch carrying a redacted (token-empty) slice would clobber every
+// saved token. The dedicated CRUD helpers (AddRemoteEndpoint /
+// UpdateRemoteEndpoint / DeleteRemoteEndpoint / TouchRemoteEndpoint)
+// are the only sanctioned write path for that field.
+func TestUpdateSettings_RejectsRemoteEndpointsKey(t *testing.T) {
+	dir := t.TempDir()
+	svc := NewService(dir)
+
+	patches := []map[string]any{
+		{"remoteEndpoints": []any{}},
+		{"remoteEndpoints": nil},
+		{"theme": "dark", "remoteEndpoints": []any{map[string]any{"id": "x", "url": "ws://h/", "token": ""}}},
+	}
+	for i, patch := range patches {
+		if _, err := svc.Update(patch); err == nil {
+			t.Errorf("patch %d: Update accepted patch carrying remoteEndpoints, want error", i)
+		}
+	}
+
+	// The companion patch with theme set should not have persisted —
+	// reject-at-boundary means atomicity: no half-applied write.
+	got := svc.Get()
+	if got.Theme == "dark" {
+		t.Errorf("theme leaked through despite rejected patch: %+v", got)
+	}
+}
+
+// TestGetSettings_UpdateSettings_RoundTripPreservesTokens guards the
+// full round-trip: GetSettings (token-redacted) -> mutate one field ->
+// Update(full-struct-as-patch). Even though today's frontend uses
+// sparse patches, a future caller / refactor must not be able to clobber
+// the persisted tokens. With the patch-boundary guard, Update returns
+// an error and the on-disk tokens remain intact.
+func TestGetSettings_UpdateSettings_RoundTripPreservesTokens(t *testing.T) {
+	dir := t.TempDir()
+	svc := NewService(dir)
+
+	if _, err := svc.AddRemoteEndpoint("Tailnet", "ws://10.0.0.5:54321/", "real-secret-token"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// Simulate a hostile / regressing caller doing
+	// GetSettings -> mutate -> Update(full struct as map).
+	full := svc.Get()
+	// Redact tokens like GetSettings on App does.
+	for i := range full.RemoteEndpoints {
+		full.RemoteEndpoints[i].Token = ""
+	}
+	patch := map[string]any{
+		"theme":           "dark",
+		"remoteEndpoints": full.RemoteEndpoints,
+	}
+
+	if _, err := svc.Update(patch); err == nil {
+		t.Fatal("Update accepted full-struct patch with remoteEndpoints, want error")
+	}
+
+	// The persisted token must remain intact — neither the rejection
+	// path nor any partial-write fallout is allowed to drop the value.
+	reloaded := NewService(dir).Get()
+	if len(reloaded.RemoteEndpoints) != 1 {
+		t.Fatalf("endpoint count after rejected patch = %d, want 1; %+v", len(reloaded.RemoteEndpoints), reloaded.RemoteEndpoints)
+	}
+	if reloaded.RemoteEndpoints[0].Token != "real-secret-token" {
+		t.Fatalf("token clobbered by rejected patch: %q", reloaded.RemoteEndpoints[0].Token)
+	}
+	// Theme should also be untouched (atomicity of the rejection).
+	if reloaded.Theme == "dark" {
+		t.Fatalf("theme leaked through despite rejected patch: %+v", reloaded)
+	}
+}
+
+// TestLoad_AcceptsFileWithoutSchemaVersion documents the backward-compat
+// guarantee for files written by older builds that pre-date schema
+// versioning. The loader must not refuse / reset such files.
+func TestLoad_AcceptsFileWithoutSchemaVersion(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+	if err := os.WriteFile(path, []byte(`{"theme":"dark"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got := NewService(dir).Get()
+	if got.Theme != "dark" {
+		t.Fatalf("Theme = %q, want dark (loader rejected unversioned file?)", got.Theme)
+	}
+}
+
+// TestLoad_AcceptsForwardCompatSchemaVersion documents the
+// forward-compat guarantee: a file from a future build (higher schema
+// version) loads with whatever fields the current struct knows about,
+// rather than refusing the whole file. captureUnknownFields preserves
+// any future keys for a re-write.
+func TestLoad_AcceptsForwardCompatSchemaVersion(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+	if err := os.WriteFile(path, []byte(`{"$schemaVersion":99,"theme":"dark"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got := NewService(dir).Get()
+	if got.Theme != "dark" {
+		t.Fatalf("Theme = %q, want dark (loader rejected forward-version file?)", got.Theme)
 	}
 }

@@ -1444,6 +1444,18 @@ func configureDatabase(db *sql.DB) error {
 	if _, err := db.Exec("PRAGMA foreign_keys=ON"); err != nil {
 		return fmt.Errorf("enable foreign keys: %w", err)
 	}
+	// busy_timeout=5000 lets SQLite poll the lock for up to 5s before
+	// surfacing a SQLITE_BUSY to the caller. WAL allows concurrent
+	// readers + one writer, but UI threads, the checkpoint capture, the
+	// replay writer, and the triage flusher all write — without this
+	// timeout the rare contention window surfaces as "database is
+	// locked" toasts. Five seconds is the canonical SQLite recommendation
+	// for a UI-attached database; a turn rarely needs longer than that
+	// to land its writes, and longer windows would just mask a real
+	// deadlock.
+	if _, err := db.Exec("PRAGMA busy_timeout=5000"); err != nil {
+		return fmt.Errorf("set busy timeout: %w", err)
+	}
 	return nil
 }
 

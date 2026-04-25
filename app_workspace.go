@@ -27,7 +27,13 @@ func (a *App) WriteThreadWorkspaceFile(threadID, relativePath, content string) (
 	if err := os.MkdirAll(filepath.Dir(absolutePath), 0o755); err != nil {
 		return "", fmt.Errorf("create parent directories: %w", err)
 	}
-	if err := os.WriteFile(absolutePath, []byte(content), 0o644); err != nil {
+	// 0o600 — workspace files written via this binding originate from
+	// thread content (drafts, tool output snippets the UI persists for
+	// editing). They can carry secrets or partial provider responses
+	// the user wouldn't want world-readable on a shared host. Match the
+	// security posture of settings.json and saved payloads rather than
+	// leaving the file world-readable by default.
+	if err := os.WriteFile(absolutePath, []byte(content), 0o600); err != nil {
 		return "", fmt.Errorf("write workspace file: %w", err)
 	}
 	return normalizedPath, nil

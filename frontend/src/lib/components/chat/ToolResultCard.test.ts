@@ -4,10 +4,11 @@
 // `is_error` flag in payload meta — meaning a failed Edit rendered as
 // success. These tests pin the unified-badge wiring and the bug fix.
 
-import { describe, expect, it } from 'vitest';
-import { render } from '@testing-library/svelte';
+import { describe, expect, it, beforeEach, vi } from 'vitest';
+import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import ToolResultCard from './ToolResultCard.svelte';
 import { makeItem } from '../../../test/helpers/chat';
+import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import type { ToolResultMeta } from '../../types/models';
 
 function meta(overrides: Partial<ToolResultMeta> = {}): ToolResultMeta {
@@ -93,5 +94,61 @@ describe('<ToolResultCard>', () => {
     });
 
     expect(getByTestId('completion-badge').getAttribute('data-status')).toBe('failure');
+  });
+});
+
+describe('<ToolResultCard> editor-link wiring', () => {
+  beforeEach(() => {
+    resetBindingMocks();
+    setBindingMock('GetPayloadPreview', vi.fn(async () => ({ data: '', size: 0, isComplete: true })));
+  });
+
+  it('renders an editor-link icon next to each inline-diff chip', () => {
+    const item = makeItem({
+      kind: 'tool_completion',
+      status: 'completed',
+      payloadKind: 'tool_result',
+      payloadMeta: JSON.stringify({ itemType: 'file_change', title: 'Edit applied' }),
+    });
+    const m: ToolResultMeta = {
+      itemType: 'file_change',
+      title: 'Edit applied',
+      inlineDiff: {
+        availability: 'summary_only',
+        files: [{ path: 'src/lib/foo.ts', insertions: 4, deletions: 1, kind: 'modified' }],
+      },
+    };
+    const { getByTestId } = render(ToolResultCard, { props: { item, meta: m } });
+    const region = getByTestId('tool-result-inline-diffs');
+    const links = region.querySelectorAll('[data-testid="editor-link-icon"]');
+    expect(links.length).toBe(1);
+    expect(links[0].getAttribute('data-path')).toBe('src/lib/foo.ts');
+  });
+
+  it('clicking the editor-link invokes OpenInEditor', async () => {
+    const openMock = setBindingMock('OpenInEditor', vi.fn(async () => undefined));
+    const item = makeItem({
+      kind: 'tool_completion',
+      status: 'completed',
+      payloadKind: 'tool_result',
+      payloadMeta: JSON.stringify({ itemType: 'file_change', title: 'Edit applied' }),
+    });
+    const m: ToolResultMeta = {
+      itemType: 'file_change',
+      title: 'Edit applied',
+      inlineDiff: {
+        availability: 'summary_only',
+        files: [{ path: 'src/lib/foo.ts', insertions: 4, deletions: 1, kind: 'modified' }],
+      },
+    };
+    const { getByTestId } = render(ToolResultCard, { props: { item, meta: m } });
+    const region = getByTestId('tool-result-inline-diffs');
+    const link = region.querySelector('[data-testid="editor-link-icon"]') as HTMLElement;
+
+    await fireEvent.click(link);
+    await waitFor(() => {
+      expect(openMock).toHaveBeenCalledTimes(1);
+    });
+    expect(openMock.mock.calls[0][0]).toBe('src/lib/foo.ts');
   });
 });

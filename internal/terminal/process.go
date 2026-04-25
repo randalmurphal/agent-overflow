@@ -1,3 +1,5 @@
+//go:build !windows
+
 // Package terminal manages PTY-backed shell processes for thread-scoped
 // terminals. The package exposes three types:
 //
@@ -9,6 +11,11 @@
 //
 // Errors are surfaced explicitly: spawn failures return errors to the caller,
 // read failures close the output channel and feed into an exit event.
+//
+// This file is POSIX-only. The Windows binary (cmd/agent-overflow-windows)
+// never spawns terminals — it's a launcher around wsl.exe — so a stubbed
+// Windows variant in process_windows.go satisfies the //... cross-compile
+// without forcing a full Windows PTY port.
 package terminal
 
 import (

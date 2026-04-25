@@ -30,12 +30,12 @@ func collectErrorItemUpserts(t *testing.T, app *App, buffer int) chan store.Item
 	return items
 }
 
-func itemFromItemStreamEnvelope(data any) (store.Item, bool) {
-	env, ok := data.(SeqEnvelope)
-	if !ok {
-		return store.Item{}, false
-	}
-	event, ok := env.Data.(triage.ItemStreamEvent)
+// itemFromItemStreamEvent peels the upsert payload out of a
+// provider:item_event emission. Returns the item and true on a
+// well-formed upsert; (zero, false) on any other action or shape so
+// tests can decide whether to fail or skip.
+func itemFromItemStreamEvent(data any) (store.Item, bool) {
+	event, ok := data.(triage.ItemStreamEvent)
 	if !ok || event.Action != "upsert" || event.Item == nil {
 		return store.Item{}, false
 	}

@@ -9,9 +9,10 @@
   import ToolKindIcon from './ToolKindIcon.svelte';
   import { classifyToolName } from './toolCardHeader';
   import { parseJsonObject } from '../../utils/parseJsonObject';
-  import { toolCardInputPreview } from './toolCardPreview';
+  import { decodeToolCardPreview, toolCardInputPreview } from './toolCardPreview';
   import { createPayloadExpansion, formatPayloadSize } from './payloadExpansion.svelte';
   import AnsiText from './AnsiText.svelte';
+  import EditorLink from '../common/EditorLink.svelte';
 
   let { item }: { item: Item } = $props();
 
@@ -37,6 +38,12 @@
   let inputPreview = $derived.by<string>(() => {
     return toolCardInputPreview(item, classification, summaryMeta, itemMeta);
   });
+
+  // When the preview leads with a path, surface a sibling EditorLink
+  // so the row is launchable without forcing the user to expand it.
+  // The detection is a leading-only match — see decodeToolCardPreview
+  // for why we don't linkify mid-sentence path tokens.
+  let previewDecoded = $derived(decodeToolCardPreview(inputPreview));
 
   let durationMs = $derived.by<number | null>(() => {
     if (!summaryMeta) return null;
@@ -116,6 +123,16 @@
   <span class="min-w-0 flex-1 truncate text-[12px] text-fg-muted/75" data-testid="tool-call-card-preview">
     {inputPreview}
   </span>
+  {#if previewDecoded.path}
+    <EditorLink
+      path={previewDecoded.path.path}
+      line={previewDecoded.path.line ?? 0}
+      col={previewDecoded.path.col ?? 0}
+      asIcon
+      stopPropagation
+      class="opacity-0 group-hover/tool:opacity-100 focus-visible:opacity-100"
+    />
+  {/if}
   <ToolDecisionChip decision={item.decision} />
   {#if runningLabel !== null}
     <span

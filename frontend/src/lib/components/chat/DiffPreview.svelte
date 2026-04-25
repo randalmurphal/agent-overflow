@@ -2,6 +2,7 @@
   import { slide } from 'svelte/transition';
   import ChevronRight from 'lucide-svelte/icons/chevron-right';
   import Icon from '../primitives/Icon.svelte';
+  import EditorLink from '../common/EditorLink.svelte';
   import type { DiffMeta, Item } from '../../types/models';
   import { parseDiffLines, type DiffLine } from '../../utils/diff';
   import { extractPatchFile } from '../../utils/patchFiles';
@@ -57,34 +58,53 @@
   });
 </script>
 
-<div class="mb-1.5 rounded-[var(--radius-control)] border border-border-subtle bg-card/25 overflow-hidden">
-  <!-- Header -->
-  <button
-    class="w-full px-2.5 py-1.5 flex items-center gap-2 text-[13px] cursor-pointer hover:bg-surface-2/25 transition-colors"
-    onclick={() => expansion.toggle()}
-    aria-expanded={expansion.expanded}
-    aria-controls="diff-content-{payloadId}"
-    aria-label="Toggle Diff: {meta.filePath}"
+<div class="group/diff mb-1.5 rounded-[var(--radius-control)] border border-border-subtle bg-card/25 overflow-hidden">
+  <!--
+    Header. The chevron + path + badges row is a `<div>` — not a single
+    button — so we can host both a wide toggle hit-area and a separate
+    EditorLink without nesting interactive controls. The toggle is an
+    inline button that covers the same hit-area visually, and the
+    EditorLink sits as a sibling on the right side.
+  -->
+  <div
+    class="flex items-center gap-2 px-2.5 py-1.5 text-[13px] hover:bg-surface-2/25 transition-colors"
+    data-testid="diff-preview-header"
   >
-    <span
-      class="flex size-3 shrink-0 items-center justify-center text-fg-subtle select-none transition-transform duration-150"
-      class:rotate-90={expansion.expanded}
-      aria-hidden="true"
+    <button
+      type="button"
+      class="flex flex-1 min-w-0 items-center gap-2 text-left cursor-pointer bg-transparent border-0 p-0"
+      onclick={() => expansion.toggle()}
+      aria-expanded={expansion.expanded}
+      aria-controls="diff-content-{payloadId}"
+      aria-label="Toggle Diff: {meta.filePath}"
+      data-testid="diff-preview-toggle"
     >
-      <Icon icon={ChevronRight} size={12} strokeWidth={2} class="opacity-70" />
-    </span>
-    <span class="font-mono text-[12px] text-fg-muted truncate">{meta.filePath}</span>
-    <span class="px-1.5 py-0.5 rounded-[var(--radius-field)] text-[10px] font-medium {badgeClasses}">{meta.changeKind}</span>
-    <ToolDecisionChip decision={item?.decision} />
-    <span class="ml-auto flex gap-2 text-[11px] shrink-0 tabular-nums">
-      {#if meta.insertions > 0}
-        <span class="text-success">+{meta.insertions}</span>
-      {/if}
-      {#if meta.deletions > 0}
-        <span class="text-error">-{meta.deletions}</span>
-      {/if}
-    </span>
-  </button>
+      <span
+        class="flex size-3 shrink-0 items-center justify-center text-fg-subtle select-none transition-transform duration-150"
+        class:rotate-90={expansion.expanded}
+        aria-hidden="true"
+      >
+        <Icon icon={ChevronRight} size={12} strokeWidth={2} class="opacity-70" />
+      </span>
+      <span class="font-mono text-[12px] text-fg-muted truncate">{meta.filePath}</span>
+      <span class="px-1.5 py-0.5 rounded-[var(--radius-field)] text-[10px] font-medium {badgeClasses}">{meta.changeKind}</span>
+      <ToolDecisionChip decision={item?.decision} />
+      <span class="ml-auto flex gap-2 text-[11px] shrink-0 tabular-nums">
+        {#if meta.insertions > 0}
+          <span class="text-success">+{meta.insertions}</span>
+        {/if}
+        {#if meta.deletions > 0}
+          <span class="text-error">-{meta.deletions}</span>
+        {/if}
+      </span>
+    </button>
+    <EditorLink
+      path={meta.filePath}
+      asIcon
+      stopPropagation
+      class="opacity-0 group-hover/diff:opacity-100 focus-visible:opacity-100"
+    />
+  </div>
 
   <!-- Diff content -->
   {#if expansion.expanded}

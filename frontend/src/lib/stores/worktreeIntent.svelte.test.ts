@@ -41,6 +41,7 @@ const SETTINGS: Settings = {
   observabilityTracingEnabled: false,
   observabilityOtlpEndpoint: '',
   observabilityEventLogEnabled: false,
+  network: { bindAll: false },
 };
 
 function makeThread(overrides: Partial<Thread> = {}): Thread {

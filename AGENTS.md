@@ -88,6 +88,7 @@ Guardrails:
 ```
 /                             root guides (this file)
 /main.go, /app.go, /app_*.go  Wails entry + bound methods
+/cmd/                         alternative entry-point binaries (Windows WSL launcher)
 /internal/                    Go packages (see internal/AGENTS.md)
 /frontend/                    Svelte 5 app (see frontend/AGENTS.md)
 /docs/architecture/           deep-dive design docs
@@ -141,6 +142,24 @@ per-process termination requires an upstream change. See
 [docs/references/codex.md §Known upstream constraints](docs/references/codex.md#known-upstream-constraints)
 and [invariant 25](docs/architecture/invariants.md#25-codex-backgrounding-uses-wire-typed-signals-never-heuristics).
 
+## Permanent invariants
+
+- **Transport boundary stays clean.** Go → frontend goes through
+  `app.Event.Emit` and Wails bindings only; UI code must never reach
+  into Go internals in ways that lock out the existing HTTP+WS
+  network transport. The webview path and the `--connect` remote
+  client share the same wire shape (`internal/transport/frame.go`);
+  any new App-bound method you add immediately becomes both a Wails
+  binding and a wire RPC — that's deliberate, don't add a parallel
+  back-channel. Methods that touch the local FS, spawn external
+  processes (provider CLIs, git, gh), control provider sessions,
+  mutate settings, or write attachments must additionally be
+  classified into `internal/transport/internalmethods.go`
+  `LocalOnlyMethods` so they're refused from non-loopback peers.
+  The dispatcher returns the same `method_not_found` shape for both
+  unregistered and LAN-blocked methods, so the privileged surface
+  stays unenumerable from the wire.
+
 ## Deferred (Not Currently in Scope)
 
 These are intentional non-goals for the current phase — don't implement
@@ -150,12 +169,6 @@ them without a scope conversation first.
   (`apps/server/src/workflow/`); the underlying idea ported from
   `/Users/randy/repos/orc` (see `docs/specs/TASK_TEMPLATES.md`,
   `docs/decisions/ADR-007-human-gates.md`). Not a core feature for v1.
-- **Remote / web access.** Forge's `REMOTE.md` model (HTTP+WS server,
-  auth token, Tailnet bind) is a planned future capability but is not
-  being built yet. Until then: keep the transport boundary clean —
-  Go → frontend goes through `app.Event.Emit` and Wails bindings only;
-  don't let UI code reach into Go internals in ways that would lock out
-  a future network transport.
 - **Auto-updater wiring.** Wails v3 ships a built-in updater
   (https://v3alpha.wails.io/guides/distribution/auto-updates/); enable
   it when we're ready to distribute. No custom updater required.
@@ -168,3 +181,14 @@ them without a scope conversation first.
   Revisit only if workflows land. If a "let me course-correct
   mid-turn" primitive is wanted independently, it becomes its own
   feature, not forge parity.
+
+## Implemented (was previously deferred)
+
+- **Remote / web access** — implemented across `internal/transport/`
+  (HTTP+WebSocket dispatch + event push), `internal/clientmode/`
+  (`agent-overflow --connect <url>` stub), and the LAN-bind toggle in
+  Settings. Method-level authz refuses RCE-equivalent and
+  settings-mutation methods from non-loopback peers
+  (`internal/transport/internalmethods.go` `LocalOnlyMethods`). TLS
+  termination is out-of-process — public exposure goes behind
+  Tailscale Serve / SSH tunnel / reverse proxy.

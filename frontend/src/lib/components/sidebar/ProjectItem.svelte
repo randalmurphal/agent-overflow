@@ -27,6 +27,7 @@
   } from '../../stores/sidebar.svelte';
   import { getThreadStatus } from '../../stores/threadStatuses.svelte';
   import { addToast } from '../../stores/toast.svelte';
+  import { userFacingError } from '../../utils/userFacingError';
   import ChevronRight from 'lucide-svelte/icons/chevron-right';
   import FolderOpen from 'lucide-svelte/icons/folder-open';
   import Pencil from 'lucide-svelte/icons/pencil';
@@ -158,10 +159,7 @@
       updateProjectLocal(updated);
     } catch (err) {
       console.error('Failed to rename project:', err);
-      addToast(
-        'error',
-        `Rename Failed: ${err instanceof Error ? err.message : err}`,
-      );
+      addToast('error', userFacingError(err));
     } finally {
       renameSaving = false;
       renaming = false;
@@ -330,7 +328,7 @@
   </div>
 
   {#if expanded}
-    <ProjectThreadList projectId={project.project.id} {threads} {pane} />
+    <ProjectThreadList projectId={project.project.id} {threads} {pane} {onNewThread} />
   {:else if activeWhenCollapsed}
     <!--
       Active-thread pin: the user is reading this thread but the project

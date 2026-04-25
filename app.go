@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sync"
@@ -24,6 +25,7 @@ import (
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/terminal"
+	"agent-overflow/internal/transport"
 	"agent-overflow/internal/triage"
 	"agent-overflow/internal/workspacefiles"
 
@@ -56,11 +58,20 @@ type App struct {
 	replay         *replay.Manager
 	configDir      string
 	uiTraceMu      sync.Mutex
-	// seq is a monotonic counter stamped on every event emitted through
-	// a.emit. Frontend subscribers use it to log gaps; the counter is
-	// scaffolding for a future remote-access transport where gap recovery
-	// matters, but today it is purely observability.
-	seq atomic.Uint64
+	// eventBus is the Phase C transport that owns per-channel seq stamping
+	// and fan-out to connected webview / remote clients. main.go wires it
+	// in via SetEventBus; the atomic.Pointer means SetEventBus and
+	// concurrent a.emit readers don't race even if wiring lands after
+	// background goroutines have started. Production leaves this set;
+	// tests that don't need a real bus leave it nil and observe emissions
+	// via testEmitHook instead.
+	eventBus atomic.Pointer[transport.EventBus]
+	// transportServer is the Phase C HTTP+WS transport. Set by main.go
+	// via SetTransportServer before app.Run() so Shutdown can drain
+	// in-flight RPCs BEFORE App subsystems (store, telemetry, sessions)
+	// close. atomic.Pointer matches eventBus — wiring can land any time
+	// without racing Shutdown's reader.
+	transportServer atomic.Pointer[transport.Server]
 	// shuttingDown is flipped to true once Shutdown begins. Binding entry
 	// points that spin up new work (StartSession, SendMessage, ReconnectSession)
 	// check it and fail fast with ErrShuttingDown so late RPCs can't race
@@ -108,11 +119,13 @@ type App struct {
 	// failures across specific steps.
 	shutdownInjectErrFn func(step string, err error) error
 	// testEmitHook is a test-only observer for a.emit. Production
-	// leaves it nil and a.emit reaches for a.app. Tests that want to
-	// observe the envelope shape without wiring up a full Wails
-	// application install a hook here; when set, a.emit ALSO calls
-	// the hook with the (name, envelope) it would have sent through
-	// the Wails event bus.
+	// leaves it nil and a.emit forwards to the loaded eventBus pointer.
+	// Tests that want to observe emissions without wiring up a real
+	// transport bus install a hook here; when set, a.emit ALSO calls
+	// the hook with the (name, data) pair it would have published. data
+	// is the raw payload — the transport bus assigns its own per-channel
+	// seq when it emits, so test observers see the same shape the
+	// downstream code emitted.
 	testEmitHook func(name string, data any)
 	// savePayloadPickerFn is a test-only override for the save-file
 	// dialog used by SavePayloadToFile. Production leaves it nil and
@@ -157,6 +170,30 @@ func NewApp() *App {
 		threadSlashCommands: make(map[string][]string),
 		deliberations:       make(map[string]*discussion.Deliberation),
 	}
+}
+
+// SetEventBus wires the Phase C transport event bus into the App so
+// a.emit forwards every event through it. The atomic.Pointer storage
+// means SetEventBus and concurrent a.emit readers do not race — boot
+// ordering is no longer load-bearing, so callers may wire the bus at
+// any point in startup. Tests that don't exercise the wire path leave
+// the bus nil and rely on testEmitHook for observation.
+//
+//wails:ignore
+func (a *App) SetEventBus(b *transport.EventBus) {
+	a.eventBus.Store(b)
+}
+
+// SetTransportServer hands the Phase C HTTP+WS server to the App so
+// Shutdown can drain in-flight RPCs before tearing down subsystems.
+// main.go calls this once after constructing the server and before
+// app.Run(). The atomic.Pointer means SetTransportServer and the
+// Shutdown reader cannot race even if a Wails-driven shutdown beats
+// the wiring goroutine.
+//
+//wails:ignore
+func (a *App) SetTransportServer(s *transport.Server) {
+	a.transportServer.Store(s)
 }
 
 // ServiceStartup is called by Wails v3 when the service is initialised.
@@ -337,6 +374,13 @@ const (
 	// telemetryShutdownTimeout bounds the OTLP exporter flush. The otel
 	// package applies its own internal cap on top of this.
 	telemetryShutdownTimeout = 5 * time.Second
+
+	// transportShutdownDrainTimeout caps how long Shutdown waits for the
+	// embedded HTTP+WS server to drain in-flight RPCs before continuing
+	// with subsystem teardown. Short by design — once subsystems start
+	// closing, any RPC still running would observe closed-store errors
+	// anyway, so we pay a bounded delay to let the polite ones finish.
+	transportShutdownDrainTimeout = 3 * time.Second
 )
 
 // Shutdown tears the App down in a documented order. See the numbered steps
@@ -354,6 +398,25 @@ const (
 //
 //wails:ignore
 func (a *App) Shutdown(ctx context.Context) error {
+	// Step 0 (pre-shutdown): drain the transport server while every
+	// subsystem is still alive. Without this, a webview WS client that
+	// fires an RPC during the window between the App's subsystem-close
+	// (Step 9 closes SQLite, Step 6 closes terminals, etc) and the
+	// post-Run main.go call to srv.Shutdown would hit closed subsystems
+	// and race teardown. transport.Server.Shutdown is idempotent (stopOnce),
+	// so a later main.go call lands as a no-op.
+	if srv := a.transportServer.Load(); srv != nil {
+		drainCtx, cancel := contextWithTimeout(ctx, transportShutdownDrainTimeout)
+		// Note: we call this BEFORE flipping shuttingDown so any RPCs
+		// already mid-flight finish through the existing handlers; new
+		// RPCs that arrive after Shutdown is wired bounce off the
+		// rootCtx cancellation that Server.Shutdown triggers.
+		if err := srv.Shutdown(drainCtx); err != nil {
+			log.Printf("transport: drain on app shutdown: %v", err)
+		}
+		cancel()
+	}
+
 	// Step 1: stop accepting new work. Binding entry points check this
 	// atomic on every call, so any concurrent RPC after this line fails
 	// fast with ErrShuttingDown instead of starting a session we'd have

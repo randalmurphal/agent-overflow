@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { enhanceMarkdown } from './markdownEnhance';
+import { waitFor } from '@testing-library/svelte';
+import { enhanceMarkdown, __resetPathLinkDelegateForTest } from './markdownEnhance';
 import mermaid from 'mermaid';
+import { setBindingMock, getBindingMock } from '../../test/mocks/bindings-app';
 
 vi.mock('mermaid', () => ({
   default: {
@@ -153,5 +155,100 @@ describe('enhanceMarkdown', () => {
     expect(pre?.classList.contains('mermaid-error')).toBe(true);
     expect(pre?.querySelector('code.language-mermaid')?.textContent).toContain('flowchart TD');
     expect(pre?.querySelector('[data-code-copy]')).not.toBeNull();
+  });
+});
+
+describe('enhanceMarkdown — path linkify', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    __resetPathLinkDelegateForTest();
+  });
+
+  it('replaces inline file paths in prose with editor-link anchors', async () => {
+    const container = document.createElement('div');
+    container.innerHTML = '<p>see src/lib/foo.ts:12 for context</p>';
+
+    await enhanceMarkdown(container, {
+      generation: 1,
+      renderScope: 'test',
+      streaming: false,
+      isCurrent: () => true,
+    });
+
+    const link = container.querySelector('a.editor-link');
+    expect(link).not.toBeNull();
+    expect(link?.getAttribute('data-path')).toBe('src/lib/foo.ts');
+    expect(link?.getAttribute('data-line')).toBe('12');
+    expect(link?.textContent).toBe('src/lib/foo.ts:12');
+  });
+
+  it('does not linkify paths inside <pre><code> blocks', async () => {
+    const container = document.createElement('div');
+    container.innerHTML = '<pre><code>see src/lib/foo.ts here</code></pre>';
+
+    await enhanceMarkdown(container, {
+      generation: 1,
+      renderScope: 'test',
+      streaming: false,
+      isCurrent: () => true,
+    });
+
+    expect(container.querySelector('a.editor-link')).toBeNull();
+  });
+
+  it('linkifies paths inside inline <code> outside <pre>', async () => {
+    const container = document.createElement('div');
+    container.innerHTML = '<p>see <code>src/lib/foo.ts</code> note</p>';
+
+    await enhanceMarkdown(container, {
+      generation: 1,
+      renderScope: 'test',
+      streaming: false,
+      isCurrent: () => true,
+    });
+
+    const link = container.querySelector('code a.editor-link');
+    expect(link).not.toBeNull();
+    expect(link?.getAttribute('data-path')).toBe('src/lib/foo.ts');
+  });
+
+  it('skips URL-shaped tokens', async () => {
+    const container = document.createElement('div');
+    container.innerHTML = '<p>visit https://example.com/foo for docs</p>';
+
+    await enhanceMarkdown(container, {
+      generation: 1,
+      renderScope: 'test',
+      streaming: false,
+      isCurrent: () => true,
+    });
+
+    expect(container.querySelector('a.editor-link')).toBeNull();
+  });
+
+  it('invokes OpenInEditor when an editor-link is clicked', async () => {
+    const mock = setBindingMock('OpenInEditor', vi.fn(async () => undefined));
+    const container = document.createElement('div');
+    container.innerHTML = '<p>see src/lib/foo.ts:12 for context</p>';
+    document.body.appendChild(container);
+
+    await enhanceMarkdown(container, {
+      generation: 1,
+      renderScope: 'test',
+      streaming: false,
+      isCurrent: () => true,
+    });
+
+    const link = container.querySelector('a.editor-link') as HTMLAnchorElement;
+    link.click();
+    // The delegate dispatches the binding through a dynamic import, so
+    // assertion must wait for both the import resolution and the await
+    // chain inside the handler before the mock is observed.
+    await waitFor(() => {
+      expect(mock).toHaveBeenCalledTimes(1);
+    });
+    expect(mock.mock.calls[0]).toEqual(['src/lib/foo.ts', 12, 0]);
+    container.remove();
+    void getBindingMock; // keep helper reachable for future cases
   });
 });

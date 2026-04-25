@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { ThreadTerminalStateHandle } from './terminalStore.svelte';
+  import EditorLink from '../common/EditorLink.svelte';
 
   interface Props {
     handle: ThreadTerminalStateHandle;
@@ -7,9 +8,13 @@
     onClose: (terminalID: string) => void;
     onSelect: (terminalID: string) => void;
     onCollapse: () => void;
+    /** Workspace path for the terminal's owning thread. Optional —
+     *  falls back to hiding the open-in-editor button when absent so
+     *  detached / pre-thread states stay quiet. */
+    workspacePath?: string;
   }
 
-  let { handle, onOpen, onClose, onSelect, onCollapse }: Props = $props();
+  let { handle, onOpen, onClose, onSelect, onCollapse, workspacePath }: Props = $props();
 
   function labelFor(shell: string): string {
     if (!shell) return 'shell';
@@ -72,6 +77,20 @@
     onclick={onOpen}
     aria-label="Open New Terminal"
   >+</button>
+  {#if workspacePath}
+    <!-- Open the terminal's working directory in the user's editor.
+         The terminal is bound to `cwd: pane.thread.workspacePath`
+         (see ThreadTerminalDrawer), so re-using that path keeps the
+         affordance correct after the user `cd`s — we point at the
+         original workspace root, not a derived current directory. -->
+    <div class="mr-1" data-testid="terminal-open-in-editor">
+      <EditorLink
+        path={workspacePath}
+        asIcon
+        label="Open Workspace in Editor"
+      />
+    </div>
+  {/if}
   <button
     type="button"
     class="h-6 px-2 rounded hover:bg-surface-2 text-text-secondary hover:text-text-primary mr-1"

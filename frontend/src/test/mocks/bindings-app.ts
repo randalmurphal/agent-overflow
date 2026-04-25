@@ -118,6 +118,57 @@ export const ListPayloadMetas = dispatch('ListPayloadMetas');
 
 export const GetSettings = dispatch('GetSettings');
 export const UpdateSettings = dispatch('UpdateSettings');
+export const GetNetworkSettings = dispatch('GetNetworkSettings');
+export const SetNetworkSettings = dispatch('SetNetworkSettings');
+
+// Editor (Phase G/H). OpenInEditor is the user-facing launcher; the
+// catalog + persistence pair powers the settings picker. The
+// EditorInfo / EditorSettings classes are re-exported from
+// internal/settings/models.js + models.js (not aliased), so tests use
+// the real generated classes — only the RPC functions need stubs.
+export const OpenInEditor = dispatch('OpenInEditor');
+export const ListAvailableEditors = dispatch('ListAvailableEditors');
+export const GetEditorSettings = dispatch('GetEditorSettings');
+export const SetEditorSettings = dispatch('SetEditorSettings');
+export const ListRemoteEndpoints = dispatch('ListRemoteEndpoints');
+export const AddRemoteEndpoint = dispatch('AddRemoteEndpoint');
+export const UpdateRemoteEndpoint = dispatch('UpdateRemoteEndpoint');
+export const DeleteRemoteEndpoint = dispatch('DeleteRemoteEndpoint');
+export const TouchRemoteEndpoint = dispatch('TouchRemoteEndpoint');
+export const GetRemoteEndpointToken = dispatch('GetRemoteEndpointToken');
+// RemoteEndpoint mirrors the Phase F generated class; tests stub the
+// list/add/update calls and read fields off the returned objects.
+export class RemoteEndpoint {
+  id: string;
+  name: string;
+  url: string;
+  token: string;
+  lastUsedAt?: number;
+  constructor(s: Partial<RemoteEndpoint> = {}) {
+    this.id = s.id ?? '';
+    this.name = s.name ?? '';
+    this.url = s.url ?? '';
+    this.token = s.token ?? '';
+    this.lastUsedAt = s.lastUsedAt;
+  }
+}
+// NetworkSettings is a class re-exported alongside the bindings; the
+// mock just needs a constructor-compatible stand-in so test code that
+// builds `new NetworkSettings({ bindAll })` doesn't try to load the
+// real generated module. Real instantiation (createFrom) is exercised
+// in component tests that run against the live binding.
+export class NetworkSettings {
+  bindAll: boolean;
+  url: string;
+  token: string;
+  insecure: boolean;
+  constructor(s: Partial<NetworkSettings> = {}) {
+    this.bindAll = s.bindAll ?? false;
+    this.url = s.url ?? '';
+    this.token = s.token ?? '';
+    this.insecure = s.insecure ?? false;
+  }
+}
 
 export const GetProviderStatuses = dispatch('GetProviderStatuses');
 export const GetModelsForProvider = dispatch('GetModelsForProvider');

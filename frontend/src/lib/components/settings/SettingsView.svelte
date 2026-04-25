@@ -3,20 +3,33 @@
   import Icon from '../primitives/Icon.svelte';
   import MicroLabel from '../primitives/MicroLabel.svelte';
   import GeneralSettings from './GeneralSettings.svelte';
+  import NetworkSection from './NetworkSection.svelte';
+  import RemoteEndpointsSection from './RemoteEndpointsSection.svelte';
   import ProviderSettings from './ProviderSettings.svelte';
   import ArchivedThreads from './ArchivedThreads.svelte';
   import DiscussionsSettings from './DiscussionsSettings.svelte';
+  import EditorSection from './EditorSection.svelte';
   import KeybindingsSettings from './KeybindingsSettings.svelte';
   import ObservabilitySettings from './ObservabilitySettings.svelte';
 
   let { onClose }: { onClose: () => void } = $props();
 
-  type Section = 'general' | 'providers' | 'discussions' | 'keybindings' | 'observability' | 'archived';
+  type Section =
+    | 'general'
+    | 'providers'
+    | 'editor'
+    | 'network'
+    | 'discussions'
+    | 'keybindings'
+    | 'observability'
+    | 'archived';
   let activeSection: Section = $state('general');
 
   const sections: Array<{ id: Section; label: string }> = [
     { id: 'general', label: 'General' },
     { id: 'providers', label: 'Providers' },
+    { id: 'editor', label: 'Editor' },
+    { id: 'network', label: 'Network' },
     { id: 'discussions', label: 'Discussions' },
     { id: 'keybindings', label: 'Keybindings' },
     { id: 'observability', label: 'Observability' },
@@ -104,6 +117,13 @@
           <GeneralSettings />
         {:else if activeSection === 'providers'}
           <ProviderSettings />
+        {:else if activeSection === 'editor'}
+          <EditorSection />
+        {:else if activeSection === 'network'}
+          <NetworkSection />
+          <div class="mt-10">
+            <RemoteEndpointsSection />
+          </div>
         {:else if activeSection === 'discussions'}
           <DiscussionsSettings />
         {:else if activeSection === 'keybindings'}

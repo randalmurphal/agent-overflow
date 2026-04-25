@@ -7,6 +7,7 @@
   import CompletionBadge from './CompletionBadge.svelte';
   import LazyContentBlock from './LazyContentBlock.svelte';
   import ToolDecisionChip from './ToolDecisionChip.svelte';
+  import EditorLink from '../common/EditorLink.svelte';
   import { createPayloadExpansion, formatPayloadSize } from './payloadExpansion.svelte';
 
   let { item, meta, payloadId }: { item: Item; meta: ToolResultMeta; payloadId?: string } = $props();
@@ -75,13 +76,27 @@
         </div>
       {/if}
       {#if hasInlineDiff}
-        <div class="mt-2 flex flex-wrap gap-2">
+        <div class="mt-2 flex flex-wrap gap-2" data-testid="tool-result-inline-diffs">
           {#each meta.inlineDiff?.files ?? [] as file (file.path)}
+            <!--
+              Each chip is a span with a sibling EditorLink. The chip
+              itself isn't a clickable target (the parent card has its
+              own toggle below), so the EditorLink doesn't need
+              stopPropagation here — but we keep the icon visible at
+              rest because the chip otherwise has no affordance for
+              opening the file.
+            -->
             <span class="inline-flex items-center gap-2 rounded-full px-2 py-1 text-[11px] {kindClasses(file)}">
               <span class="font-mono">{file.path}</span>
               {#if file.insertions || file.deletions}
                 <span class="text-text-secondary">{fileStats(file)}</span>
               {/if}
+              <EditorLink
+                path={file.path}
+                asIcon
+                stopPropagation
+                class="opacity-70 hover:opacity-100"
+              />
             </span>
           {/each}
         </div>

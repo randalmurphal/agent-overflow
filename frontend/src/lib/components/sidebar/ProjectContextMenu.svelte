@@ -9,10 +9,12 @@
   import {
     ArchiveProject,
     DeleteProject,
+    OpenInEditor,
   } from '../../stores/bindings';
   import { removeProjectLocal } from '../../stores/projects.svelte';
   import { removeThread } from '../../stores/threads.svelte';
   import { addToast } from '../../stores/toast.svelte';
+  import { userFacingError } from '../../utils/userFacingError';
   import ConfirmDialog from '../shared/ConfirmDialog.svelte';
   import Popover from '../primitives/Popover.svelte';
   import Menu from '../primitives/Menu.svelte';
@@ -40,13 +42,18 @@
     try {
       await ArchiveProject(project.project.id);
       removeProjectLocal(project.project.id);
-      addToast('info', `Archived Project "${project.project.name}"`);
+      addToast('info', `Archived project "${project.project.name}".`);
     } catch (err) {
       console.error('Failed to archive project:', err);
-      addToast(
-        'error',
-        `Archive Failed: ${err instanceof Error ? err.message : err}`,
-      );
+      addToast('error', userFacingError(err));
+    }
+  }
+
+  async function doOpenInEditor(): Promise<void> {
+    try {
+      await OpenInEditor(project.project.path, 0, 0);
+    } catch (err) {
+      addToast('error', userFacingError(err));
     }
   }
 
@@ -56,13 +63,10 @@
       for (const id of threadIds) removeThread(id);
       removeProjectLocal(project.project.id);
       if (pane.thread && threadIds.includes(pane.thread.id)) pane.clear();
-      addToast('info', `Deleted Project "${project.project.name}"`);
+      addToast('info', `Deleted project "${project.project.name}".`);
     } catch (err) {
       console.error('Failed to delete project:', err);
-      addToast(
-        'error',
-        `Delete Failed: ${err instanceof Error ? err.message : err}`,
-      );
+      addToast('error', userFacingError(err));
     }
   }
 </script>
@@ -83,6 +87,13 @@
           onSelect={() => {
             onClose();
             onRename();
+          }}
+        />
+        <MenuItem
+          label="Open in Editor"
+          onSelect={() => {
+            onClose();
+            void doOpenInEditor();
           }}
         />
         <MenuItem

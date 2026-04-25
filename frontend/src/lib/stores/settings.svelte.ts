@@ -38,6 +38,10 @@ const DEFAULT_SETTINGS: Settings = {
   observabilityTracingEnabled: false,
   observabilityOtlpEndpoint: '',
   observabilityEventLogEnabled: false,
+  // Phase E LAN-bind preference defaults to false — loopback is the
+  // safe out-of-the-box behaviour. Toggling on through Settings →
+  // Network rebinds the transport without restarting the app.
+  network: { bindAll: false },
 };
 
 let settings: Settings = $state({ ...DEFAULT_SETTINGS });

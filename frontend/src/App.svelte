@@ -8,6 +8,7 @@
   import Sidebar from './lib/components/sidebar/Sidebar.svelte';
   import ChatView from './lib/components/chat/ChatView.svelte';
   import Toast from './lib/components/shared/Toast.svelte';
+  import TransportStatusBanner from './lib/components/shared/TransportStatusBanner.svelte';
   import SettingsView from './lib/components/settings/SettingsView.svelte';
   import DiscussionStartFlow from './lib/components/discussion/DiscussionStartFlow.svelte';
   import CommandPalette from './lib/components/palette/CommandPalette.svelte';
@@ -187,8 +188,9 @@
   });
 </script>
 
-<main class="app-shell relative h-screen w-screen overflow-hidden text-text-primary">
-  <div class="relative flex h-full w-full">
+<main class="app-shell relative h-screen w-screen overflow-hidden text-text-primary flex flex-col">
+  <TransportStatusBanner />
+  <div class="relative flex flex-1 min-h-0 w-full">
     <Sidebar
       {pane}
       onOpenSettings={() => showSettings = true}

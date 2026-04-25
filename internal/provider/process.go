@@ -75,7 +75,11 @@ type SpawnConfig struct {
 func Spawn(ctx context.Context, cfg SpawnConfig) (*Process, error) {
 	cmd := exec.CommandContext(ctx, cfg.Binary, cfg.Args...)
 	cmd.Dir = cfg.Dir
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	// applySysProcAttr is platform-split: POSIX wires up Setpgid so we
+	// can signal the whole tree later; the Windows stub leaves the
+	// default attrs in place because the launcher never spawns provider
+	// children on Windows (the WSL-side Linux backend does).
+	applySysProcAttr(cmd)
 
 	// Build env: inherit current env + overrides.
 	// PATH is treated as additive (prepend to existing PATH) rather than replacing it.
@@ -285,13 +289,15 @@ func (p *Process) Kill() error {
 	return p.err
 }
 
-// signalGroup sends a signal to the process group.
+// signalGroup sends a signal to the process group. The actual syscall
+// is in the platform-split file (signalGroupPlatform). Windows has no
+// process-group concept here; the stub returns without acting because
+// the Windows binary never spawns provider children.
 func (p *Process) signalGroup(sig syscall.Signal) {
 	if p.cmd.Process == nil {
 		return
 	}
-	// Negative PID sends to the process group.
-	_ = syscall.Kill(-p.cmd.Process.Pid, sig)
+	signalGroupPlatform(p.cmd.Process.Pid, sig)
 }
 
 func (p *Process) logEvent(direction string, data []byte) {

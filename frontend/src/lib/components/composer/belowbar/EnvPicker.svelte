@@ -13,7 +13,7 @@
   import type { Worktree } from '../../../types/git';
   import { replaceThread } from '../../../stores/threads.svelte';
   import { addToast } from '../../../stores/toast.svelte';
-  import { errString } from '../../../utils/errors';
+  import { userFacingError } from '../../../utils/userFacingError';
   import { sameNormalizedPath } from '../../../utils/path';
   import {
     clearWorktreeIntent,
@@ -104,7 +104,7 @@
       addToast('info', `Workspace switched to ${basename(path) || path}`);
     } catch (err) {
       console.error('UpdateThreadWorkspace failed:', err);
-      addToast('error', `Failed to switch workspace: ${errString(err)}`);
+      addToast('error', userFacingError(err));
     } finally {
       applying = false;
       closeMenu();

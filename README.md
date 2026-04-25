@@ -27,6 +27,62 @@ make check      # go build + frontend type check
 make test       # go test + frontend unit tests
 ```
 
+## Remote access
+
+Agent Overflow's transport (the HTTP+WebSocket layer between the Svelte
+SPA and the Go backend) defaults to loopback-only and binds to a fresh
+ephemeral port at every launch. The launch URL — `http://127.0.0.1:<port>/?t=<token>` —
+is what the embedded webview attaches to.
+
+A handful of opt-in modes extend that:
+
+- **`--listen <addr>`** binds the transport to a different interface
+  (e.g. `0.0.0.0:54321` for LAN). The same launch URL works from any
+  host that can reach the bound interface; the token gates access.
+  Equivalent to flipping the "Allow remote access" toggle in Settings →
+  Network, which persists the preference across launches.
+- **`--connect ws://host:port/?token=<value>`** runs the desktop
+  binary as a thin client against a remote backend. The local
+  process boots a stub static-asset server, injects the bootstrap
+  manifest, and points the webview at the remote backend over
+  WebSocket. No local transport, store, or providers are started.
+- **Windows + WSL silent mode** (`agent-overflow-windows.exe`) drops
+  the Linux backend into a chosen WSL distro, runs it headless, and
+  forwards `localhost:<port>` from inside the distro to the Windows
+  host via WSL2's vEthernet bridge. The WebView2 attaches like any
+  other local launch.
+
+### Trust model
+
+**Anyone holding the bootstrap token can RPC the host as the user that
+launched the binary.** The transport's `LocalOnlyMethods` set refuses a
+narrow surface (terminal spawn, git mutators, settings writes,
+credential retrieval) for non-loopback peers — that's defense-in-depth
+against a token leak on a shared LAN, not a security boundary you can
+expose to the public internet.
+
+For non-trusted networks, deploy behind a tunnel that handles
+authentication and TLS:
+
+- [Tailscale Serve](https://tailscale.com/kb/1242/tailscale-serve) —
+  HTTPS on a `*.ts.net` hostname, ACL-gated.
+- SSH local port forward (`ssh -L 54321:localhost:54321 host`).
+- Reverse proxy (Caddy / Nginx / Cloudflare Tunnel) terminating TLS
+  in front of the backend.
+
+### Token hygiene
+
+The token lives in the launch URL — which means it persists in browser
+history, shell history, and any place that records URLs. Treat it as a
+password. The token is regenerated on every launch, so closing and
+reopening the app rotates it; if you've shared a launch URL, restart to
+invalidate.
+
+Tokens for saved `--connect` endpoints are stored plaintext in the
+local settings file (the launcher needs to replay them when you click
+Connect). The Settings UI exposes them only behind explicit "Show" /
+"Copy" actions; bulk reads through `ListRemoteEndpoints` strip them.
+
 ## Docs
 
 Start at [`AGENTS.md`](AGENTS.md) for the project overview, stack,

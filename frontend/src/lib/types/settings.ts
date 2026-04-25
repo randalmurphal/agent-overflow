@@ -72,6 +72,38 @@ export interface Settings {
   observabilityTracingEnabled: boolean;
   observabilityOtlpEndpoint: string;
   observabilityEventLogEnabled: boolean;
+  /**
+   * Phase E LAN-bind preferences. Persisted alongside the rest of the
+   * settings so a re-launch reapplies the toggle. Mirrors the Go
+   * settings.NetworkSettings shape.
+   */
+  network: NetworkPersistedSettings;
+
+  /**
+   * Phase F --connect target list. Optional in the wire shape because
+   * the Go side persists with `omitempty` — fresh installs have no
+   * remoteEndpoints key and TS callers should treat undefined as the
+   * empty list.
+   */
+  remoteEndpoints?: RemoteEndpointPersisted[];
+}
+
+export interface NetworkPersistedSettings {
+  /** When true, the transport server binds to 0.0.0.0 instead of 127.0.0.1. */
+  bindAll: boolean;
+}
+
+/**
+ * RemoteEndpointPersisted mirrors settings.RemoteEndpoint from the Go
+ * side. The `lastUsedAt` field is a Unix-seconds timestamp, omitted
+ * when the endpoint has never been used.
+ */
+export interface RemoteEndpointPersisted {
+  id: string;
+  name: string;
+  url: string;
+  token: string;
+  lastUsedAt?: number;
 }
 
 export interface ProviderStatus {

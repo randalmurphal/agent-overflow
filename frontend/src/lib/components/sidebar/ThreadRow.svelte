@@ -75,6 +75,7 @@
       clearPane: () => pane.clear(),
       switchPane: (t) => pane.switchThread(t),
       reportError: (msg) => pane.setGeneralError(msg),
+      replacePaneThread: (t) => pane.replaceThread(t),
     };
   }
 

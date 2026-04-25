@@ -9,54 +9,45 @@ import (
 	"agent-overflow/internal/observability/replay"
 )
 
-// SeqEnvelope is the shape every event takes on the Wails wire. The
-// Go→frontend boundary in a.emit wraps the caller's payload into this
-// envelope so the frontend can log seq gaps. The replay log takes the
-// un-enveloped payload because its format records provider events, not
-// wire envelopes.
+// emit publishes an event onto the transport's event bus. The bus
+// assigns a per-channel monotonic seq when it accepts the event; the
+// frontend's WS client peels seq + data back out of the wire frame.
 //
-// Keeping the nesting (rather than mutating arbitrary payload structs
-// in place) lets every caller keep using its existing Go type and
-// lets the frontend deserialise a stable `{seq, data}` shape. Wails'
-// CustomEvent runs `json.Marshal(&envelope)` which produces
-// `{"seq": N, "data": <payload>}`.
-type SeqEnvelope struct {
-	Seq  uint64 `json:"seq"`
-	Data any    `json:"data"`
-}
-
-// emit stamps a monotonic seq on every Wails event and forwards the
-// wrapped envelope through the Wails event bus. The frontend's
-// wrapEventOn helper peels the envelope back off — subscribers see the
-// same Go payload shape they would have without the envelope.
-//
-// When a.app is nil AND no test hook is installed, the helper is a
-// silent no-op — this matches the pre-Shutdown boot path (Wails may
-// not be initialised) and keeps tests free to construct an App with
-// just the fields they need. Tests that want to observe the envelope
-// install testEmitHook.
+// When a.eventBus is unset AND no test hook is installed, the helper
+// is a silent no-op — this matches the pre-Startup boot path (the bus
+// may not be wired) and lets tests construct an App with just the
+// fields they need. Tests that want to observe emissions install
+// testEmitHook; it sees the same (name, data) pair the bus would have
+// published.
 func (a *App) emit(name string, data any) {
-	if a.app == nil && a.testEmitHook == nil {
+	// Snapshot the bus pointer once so a concurrent SetEventBus cannot
+	// flip nil/non-nil between the guard and the Emit call.
+	bus := a.eventBus.Load()
+	if bus == nil && a.testEmitHook == nil {
 		return
 	}
-	seq := a.seq.Add(1)
-	env := SeqEnvelope{Seq: seq, Data: data}
-	if a.app != nil {
-		a.app.Event.Emit(name, env)
+	if bus != nil {
+		if _, err := bus.Emit(name, data); err != nil {
+			// json.Marshal failure on a payload we own — log and drop.
+			// The bus is best-effort by design (drops on full subscriber
+			// channels) so we don't propagate an error to callers.
+			log.Printf("emit: bus marshal %s: %v", name, err)
+		}
 	}
 	if a.testEmitHook != nil {
-		a.testEmitHook(name, env)
+		a.testEmitHook(name, data)
 	}
 }
 
-// emitWithReplay returns an event emitter that both pushes to the Wails
-// frontend and mirrors the event into the per-thread replay log when the
-// event is thread-scoped. We inspect the payload for a `threadId` field so
-// we don't introduce a hard dependency on any single event shape.
+// emitWithReplay returns an event emitter that both publishes to the
+// transport bus and mirrors the event into the per-thread replay log
+// when the event is thread-scoped. We inspect the payload for a
+// `threadId` field so we don't introduce a hard dependency on any
+// single event shape.
 //
-// The emission goes through a.emit so every event gets the seq envelope;
-// the replay log receives the raw (un-enveloped) payload because the
-// replay format records provider events, not Wails wire envelopes.
+// The emission goes through a.emit so the bus stamps its per-channel
+// seq; the replay log receives the same payload because the replay
+// format records provider events, not wire envelopes.
 func (a *App) emitWithReplay() func(string, any) {
 	return func(eventName string, data any) {
 		a.emit(eventName, data)
@@ -168,4 +159,3 @@ func runParallelClosers(closers []threadCloser, timeout time.Duration) []error {
 	}
 	return errs
 }
-

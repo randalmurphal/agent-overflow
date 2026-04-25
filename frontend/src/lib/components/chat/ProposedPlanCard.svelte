@@ -5,6 +5,7 @@
   import { copyToClipboard } from '../../utils/clipboard';
   import Modal from '../primitives/Modal.svelte';
   import Button from '../primitives/Button.svelte';
+  import EditorLink from '../common/EditorLink.svelte';
   import type { ProposedPlanMeta } from '../../types/models';
   import {
     buildProposedPlanMarkdownFilename,
@@ -198,7 +199,15 @@
 >
   {#snippet children()}
     <p class="text-[13px] text-fg-muted mb-4 leading-relaxed">
-      Enter a path relative to <code class="font-mono text-[12px] bg-surface-2/50 px-1 rounded">{pane.thread?.workspacePath ?? 'the workspace'}</code>.
+      Enter a path relative to
+      {#if pane.thread?.workspacePath}
+        <span class="inline-flex items-center gap-1 align-baseline">
+          <code class="font-mono text-[12px] bg-surface-2/50 px-1 rounded">{pane.thread.workspacePath}</code>
+          <EditorLink path={pane.thread.workspacePath} asIcon class="opacity-70 hover:opacity-100" />
+        </span>
+      {:else}
+        <code class="font-mono text-[12px] bg-surface-2/50 px-1 rounded">the workspace</code>
+      {/if}.
     </p>
 
     <label class="block">

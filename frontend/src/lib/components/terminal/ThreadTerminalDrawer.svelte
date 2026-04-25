@@ -126,6 +126,7 @@
         onClose={closeTerminal}
         onSelect={selectTerminal}
         onCollapse={collapseDrawer}
+        workspacePath={pane.thread?.workspacePath}
       />
 
       {#if handle.activeTerminalID}

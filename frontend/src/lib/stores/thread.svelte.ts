@@ -792,6 +792,52 @@ export function createThreadPane() {
       loading = false;
     },
 
+    /**
+     * Re-fetch the visible window from the backend without resetting
+     * pane-scoped UI state (terminal / diff panel / draft). Used by the
+     * transport-gap consumer when a missed event window forces a full
+     * reconcile of the active pane. Honours the switch generation so a
+     * thread swap mid-fetch invalidates the late resolution.
+     *
+     * Coarse on purpose — when we know we lost events, the cheap fix is
+     * to re-pull from SQLite which is the authoritative history cache.
+     * Surgical reconciliation would need the channel + seq window the
+     * transport doesn't expose to the consumer today.
+     */
+    async refreshFromBackend(): Promise<void> {
+      const currentThread = thread;
+      if (!currentThread) return;
+      const gen = switchGeneration;
+      try {
+        const paged = await ListRecentThreadItems(currentThread.id, 0);
+        if (gen !== switchGeneration) return;
+        items = itemsForThread((paged.items ?? []) as Item[], currentThread.id);
+        rebuildItemIndexes(items);
+        oldestLoadedTurnIndex = paged.oldestTurnIndex >= 0 ? paged.oldestTurnIndex : null;
+        hasMoreHistory = paged.hasMore ?? false;
+        rebuildTurnDiffViews();
+      } catch (err) {
+        if (gen !== switchGeneration) return;
+        console.error('Failed to refresh thread items after gap:', err);
+        return;
+      }
+      try {
+        const recent = (await ListRecentTurns(currentThread.id, 2)) as TurnRow[] | null;
+        if (gen !== switchGeneration) return;
+        if (recent && recent.length > 0) {
+          const settled = recent.find(
+            (row) => row.completedAt !== null && row.completedAt !== undefined,
+          );
+          if (settled) {
+            latestSettledTurn = turnRowToSettled(settled);
+          }
+        }
+      } catch (err) {
+        if (gen !== switchGeneration) return;
+        console.error('Failed to refresh recent turns after gap:', err);
+      }
+    },
+
     clear(): void {
       thread = null;
       items = [];

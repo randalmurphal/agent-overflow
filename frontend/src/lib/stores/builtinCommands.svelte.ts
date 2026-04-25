@@ -15,7 +15,7 @@ import { closePalette, openPalette } from './palette.svelte';
 import { closeThreadPicker, openThreadPicker } from './threadPicker.svelte';
 import { addToast } from './toast.svelte';
 import { removeThread, prependThread, replaceThread } from './threads.svelte';
-import { errString } from '../utils/errors';
+import { userFacingError } from '../utils/userFacingError';
 import { getTerminalFocused } from '../components/terminal/terminalStore.svelte';
 import {
   ArchiveThread,
@@ -51,7 +51,7 @@ function withActiveThread(
   run: (thread: Thread) => void | Promise<void>,
 ): void {
   if (!ctx.hasActiveThread || !pane.thread) {
-    addToast('warning', 'No active thread');
+    addToast('warning', 'Open a thread before running this command.');
     return;
   }
   void run(pane.thread);
@@ -156,9 +156,9 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
           await ArchiveThread(t.id);
           removeThread(t.id);
           pane.clear();
-          addToast('info', 'Thread archived');
+          addToast('info', 'Thread archived.');
         } catch (err) {
-          addToast('error', `Failed to archive thread: ${errString(err)}`);
+          addToast('error', userFacingError(err));
         }
       }),
   });
@@ -171,16 +171,16 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     run: (ctx) =>
       withActiveThread(ctx, pane, async (t) => {
         if (!t.archived) {
-          addToast('info', 'Thread is not archived');
+          addToast('info', 'Thread is not archived.');
           return;
         }
         try {
           const restored = (await UnarchiveThread(t.id)) as Thread;
           replaceThread(restored);
           pane.replaceThread(restored);
-          addToast('info', 'Thread unarchived');
+          addToast('info', 'Thread unarchived.');
         } catch (err) {
-          addToast('error', `Failed to unarchive thread: ${errString(err)}`);
+          addToast('error', userFacingError(err));
         }
       }),
   });
@@ -202,9 +202,9 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
           await DeleteThread(t.id);
           removeThread(t.id);
           pane.clear();
-          addToast('info', 'Thread deleted');
+          addToast('info', 'Thread deleted.');
         } catch (err) {
-          addToast('error', `Failed to delete thread: ${errString(err)}`);
+          addToast('error', userFacingError(err));
         }
       }),
   });
@@ -220,9 +220,9 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
           const forked = (await ForkThread(t.id)) as Thread;
           prependThread(forked);
           await pane.switchThread(forked);
-          addToast('info', `Forked "${t.title}" into a new thread`);
+          addToast('info', `Forked "${t.title}" into a new thread.`);
         } catch (err) {
-          addToast('error', `Failed to fork thread: ${errString(err)}`);
+          addToast('error', userFacingError(err));
         }
       }),
   });
@@ -240,7 +240,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
         await InterruptTurn(threadID);
       } catch (err) {
         console.error('Failed to interrupt turn:', err);
-        pane.setGeneralError(`Failed to interrupt: ${errString(err)}`);
+        pane.setGeneralError(userFacingError(err));
       } finally {
         interruptInFlight = false;
       }
@@ -261,7 +261,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
           pane.replaceThread(updated);
           replaceThread(updated);
         } catch (err) {
-          addToast('error', `Failed to cycle mode: ${errString(err)}`);
+          addToast('error', userFacingError(err));
         }
       }),
   });
@@ -417,9 +417,9 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
         if (!subject) return;
         try {
           await GitCommit(t.id, subject, '');
-          addToast('success', 'Commit created');
+          addToast('success', 'Commit created.');
         } catch (err) {
-          addToast('error', `Commit failed: ${errString(err)}`);
+          addToast('error', userFacingError(err));
         }
       }),
   });
@@ -433,9 +433,9 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
       withActiveThread(ctx, pane, async (t) => {
         try {
           await GitPush(t.id);
-          addToast('success', 'Pushed');
+          addToast('success', 'Pushed.');
         } catch (err) {
-          addToast('error', `Push failed: ${errString(err)}`);
+          addToast('error', userFacingError(err));
         }
       }),
   });
@@ -449,9 +449,9 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
       withActiveThread(ctx, pane, async (t) => {
         try {
           await GitPull(t.id);
-          addToast('success', 'Pulled');
+          addToast('success', 'Pulled.');
         } catch (err) {
-          addToast('error', `Pull failed: ${errString(err)}`);
+          addToast('error', userFacingError(err));
         }
       }),
   });
@@ -467,9 +467,9 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
         if (!title) return;
         try {
           await GitCreatePR(t.id, title, '', false);
-          addToast('success', 'Pull request opened');
+          addToast('success', 'Pull request opened.');
         } catch (err) {
-          addToast('error', `PR failed: ${errString(err)}`);
+          addToast('error', userFacingError(err));
         }
       }),
   });

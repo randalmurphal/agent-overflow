@@ -36,6 +36,7 @@ const BASE_SETTINGS: Settings = {
   observabilityTracingEnabled: false,
   observabilityOtlpEndpoint: '',
   observabilityEventLogEnabled: false,
+  network: { bindAll: false },
 };
 
 async function seed(overrides: Partial<Settings> = {}): Promise<Settings> {

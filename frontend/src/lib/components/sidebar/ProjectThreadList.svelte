@@ -25,6 +25,8 @@
   } from '../../stores/threadFilter.svelte';
   import { getThreadStatus } from '../../stores/threadStatuses.svelte';
   import { autoAnimate } from '../../utils/autoAnimate';
+  import Plus from 'lucide-svelte/icons/plus';
+  import Icon from '../primitives/Icon.svelte';
   import ThreadRow from './ThreadRow.svelte';
   import {
     buildSidebarThreadTree,
@@ -39,9 +41,11 @@
     projectId: string;
     threads: Thread[];
     pane: ThreadPane;
+    /** Click handler for the empty-state "+ New Thread" button. */
+    onNewThread?: (projectId: string) => void;
   }
 
-  let { projectId, threads, pane }: Props = $props();
+  let { projectId, threads, pane, onNewThread }: Props = $props();
 
   // Tree is built per-render: cheap (small N) and lets us reactively
   // pick up live-status changes through getThreadStatus.
@@ -117,12 +121,15 @@
 </script>
 
 {#if threads.length === 0}
-  <p
-    class="ml-6 mr-2 my-1 text-[11px] text-fg-hint italic select-none"
+  <button
+    type="button"
+    onclick={() => onNewThread?.(projectId)}
     data-testid="project-thread-list-empty"
+    class="ml-6 mr-2 my-1 inline-flex items-center gap-1 rounded-[var(--radius-field)] px-2 py-1 text-[11px] text-fg-hint hover:bg-surface-2/30 hover:text-fg cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
   >
-    No Threads Yet
-  </p>
+    <Icon icon={Plus} size={11} strokeWidth={2.2} class="opacity-80" />
+    <span>New Thread</span>
+  </button>
 {:else}
   <div
     class="flex flex-col gap-px px-1"

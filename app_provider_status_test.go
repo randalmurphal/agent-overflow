@@ -17,11 +17,7 @@ func collectProviderStatusEmissions(a *App) *[]ProviderStatusEvent {
 		if name != "provider:status" {
 			return
 		}
-		env, ok := data.(SeqEnvelope)
-		if !ok {
-			return
-		}
-		evt, ok := env.Data.(ProviderStatusEvent)
+		evt, ok := data.(ProviderStatusEvent)
 		if !ok {
 			return
 		}
@@ -33,7 +29,9 @@ func collectProviderStatusEmissions(a *App) *[]ProviderStatusEvent {
 // TestGetProviderStatusesEmitsNotFoundForMissingBinary is the headline
 // case: a Claude binary that doesn't exist produces a provider:status
 // event with Status="not_found" and a non-empty Message. The emit flows
-// through a.emit so the seq envelope is stamped automatically.
+// through a.emit so the transport bus stamps its per-channel seq before
+// the wire frame goes out — the test observes the raw payload via the
+// testEmitHook seam.
 func TestGetProviderStatusesEmitsNotFoundForMissingBinary(t *testing.T) {
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
@@ -198,6 +196,78 @@ func TestEmitProviderStatusesFromDetectIsIdempotent(t *testing.T) {
 		if ev.Provider != string(provider.Codex) {
 			t.Fatalf("emission[%d].Provider = %q, want codex", i, ev.Provider)
 		}
+	}
+}
+
+// TestMaybeAutoFlipDefaultProviderSwitchesWhenCurrentNotFound covers the
+// happy path: defaultProvider points at a not_found provider while the
+// other provider is ready, so the helper swaps the default and emits a
+// `provider:default_swapped` event the frontend can render as a toast.
+func TestMaybeAutoFlipDefaultProviderSwitchesWhenCurrentNotFound(t *testing.T) {
+	app := newTestAppWithStore(t)
+	app.settings = settings.NewService(t.TempDir())
+	if _, err := app.settings.Update(map[string]any{"defaultProvider": "claude"}); err != nil {
+		t.Fatalf("settings.Update: %v", err)
+	}
+
+	swaps := 0
+	app.testEmitHook = func(name string, _ any) {
+		if name == "provider:default_swapped" {
+			swaps++
+		}
+	}
+
+	app.maybeAutoFlipDefaultProvider([]provider.ProviderStatus{
+		{Provider: "claude", Status: "not_found", Message: "not found"},
+		{Provider: "codex", Status: "ready"},
+	})
+
+	if got := app.settings.Get().DefaultProvider; got != "codex" {
+		t.Fatalf("DefaultProvider = %q, want codex (auto-flip)", got)
+	}
+	if swaps != 1 {
+		t.Fatalf("want 1 default_swapped emission, got %d", swaps)
+	}
+}
+
+// TestMaybeAutoFlipDefaultProviderNoOpWhenCurrentReady ensures the
+// helper never re-flips when the default is already healthy, even if
+// the other provider is also ready.
+func TestMaybeAutoFlipDefaultProviderNoOpWhenCurrentReady(t *testing.T) {
+	app := newTestAppWithStore(t)
+	app.settings = settings.NewService(t.TempDir())
+	if _, err := app.settings.Update(map[string]any{"defaultProvider": "claude"}); err != nil {
+		t.Fatalf("settings.Update: %v", err)
+	}
+
+	app.maybeAutoFlipDefaultProvider([]provider.ProviderStatus{
+		{Provider: "claude", Status: "ready"},
+		{Provider: "codex", Status: "ready"},
+	})
+
+	if got := app.settings.Get().DefaultProvider; got != "claude" {
+		t.Fatalf("DefaultProvider = %q, want claude (no flip when ready)", got)
+	}
+}
+
+// TestMaybeAutoFlipDefaultProviderNoOpWhenOtherUnhealthy ensures the
+// helper does NOT swap to a provider that's also unhealthy — replacing
+// not_found with unauthenticated would just trade one broken default
+// for another.
+func TestMaybeAutoFlipDefaultProviderNoOpWhenOtherUnhealthy(t *testing.T) {
+	app := newTestAppWithStore(t)
+	app.settings = settings.NewService(t.TempDir())
+	if _, err := app.settings.Update(map[string]any{"defaultProvider": "claude"}); err != nil {
+		t.Fatalf("settings.Update: %v", err)
+	}
+
+	app.maybeAutoFlipDefaultProvider([]provider.ProviderStatus{
+		{Provider: "claude", Status: "not_found"},
+		{Provider: "codex", Status: "version_too_old"},
+	})
+
+	if got := app.settings.Get().DefaultProvider; got != "claude" {
+		t.Fatalf("DefaultProvider = %q, want claude (no flip when other unhealthy)", got)
 	}
 }
 

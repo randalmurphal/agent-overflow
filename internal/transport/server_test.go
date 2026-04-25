@@ -1,0 +1,1183 @@
+package transport
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net"
+	"net/http"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/coder/websocket"
+)
+
+// serverFixture wires a real listener + dispatcher + bus so tests
+// exercise the same boot path production uses. Caller invokes Close
+// via t.Cleanup; tests that crash midway leak the goroutine, which
+// the test runner reports as still-running on completion.
+type serverFixture struct {
+	t   *testing.T
+	srv *Server
+	app *fakeApp
+	bus *EventBus
+}
+
+func newServerFixture(t *testing.T) *serverFixture {
+	t.Helper()
+	d := NewDispatcher()
+	app := &fakeApp{}
+	if _, err := d.Register(app, RegisterOptions{Package: "main", TypeName: "App"}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	bus := NewEventBus(20)
+	srv, err := New(Config{
+		Dispatcher: d,
+		EventBus:   bus,
+		Token:      "test-token",
+	})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatalf("start server: %v", err)
+	}
+	t.Cleanup(func() {
+		shutCtx, c := context.WithTimeout(context.Background(), 2*time.Second)
+		defer c()
+		_ = srv.Shutdown(shutCtx)
+	})
+	return &serverFixture{t: t, srv: srv, app: app, bus: bus}
+}
+
+func (f *serverFixture) dial(t *testing.T) *websocket.Conn {
+	t.Helper()
+	url := "ws://" + f.srv.Addr() + "/ws?token=test-token"
+	conn, _, err := websocket.Dial(context.Background(), url, nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close(websocket.StatusNormalClosure, "") })
+	return conn
+}
+
+// rpc sends an RPC request and returns the matching response frame.
+// Doesn't filter event frames — caller arranges that no events arrive
+// during the test or buffers them separately.
+func (f *serverFixture) rpc(t *testing.T, conn *websocket.Conn, methodID uint32, methodName string, params ...any) ServerFrame {
+	t.Helper()
+	rawParams := make([]json.RawMessage, len(params))
+	for i, p := range params {
+		buf, err := json.Marshal(p)
+		if err != nil {
+			t.Fatalf("marshal param %d: %v", i, err)
+		}
+		rawParams[i] = buf
+	}
+	frame := ClientFrame{
+		Type:     frameTypeRPC,
+		ID:       fmt.Sprintf("req-%d", time.Now().UnixNano()),
+		MethodID: methodID,
+		Method:   methodName,
+		Params:   rawParams,
+	}
+	buf, err := json.Marshal(frame)
+	if err != nil {
+		t.Fatalf("marshal frame: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := conn.Write(ctx, websocket.MessageText, buf); err != nil {
+		t.Fatalf("ws write: %v", err)
+	}
+
+	for {
+		_, raw, err := conn.Read(ctx)
+		if err != nil {
+			t.Fatalf("ws read: %v", err)
+		}
+		var resp ServerFrame
+		if err := json.Unmarshal(raw, &resp); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		if resp.Type == frameTypeRPC && resp.ID == frame.ID {
+			return resp
+		}
+	}
+}
+
+func TestServer_RPCRoundTrip(t *testing.T) {
+	f := newServerFixture(t)
+	conn := f.dial(t)
+
+	// Greet method via name lookup.
+	resp := f.rpc(t, conn, 0, "Greet", "world")
+	if resp.Error != nil {
+		t.Fatalf("rpc error: %+v", resp.Error)
+	}
+	if string(resp.Result) != `"hello, world"` {
+		t.Fatalf("unexpected result: %s", string(resp.Result))
+	}
+
+	// Same method via ID lookup. fakeApp registers under main.App.Greet.
+	id := fnvHash("main.App.Greet")
+	resp = f.rpc(t, conn, id, "", "again")
+	if resp.Error != nil {
+		t.Fatalf("rpc error: %+v", resp.Error)
+	}
+	if string(resp.Result) != `"hello, again"` {
+		t.Fatalf("unexpected result: %s", string(resp.Result))
+	}
+}
+
+func TestServer_AuthRequiresToken(t *testing.T) {
+	f := newServerFixture(t)
+	url := "ws://" + f.srv.Addr() + "/ws"
+	_, _, err := websocket.Dial(context.Background(), url, nil)
+	if err == nil {
+		t.Fatalf("dial without token should fail")
+	}
+}
+
+func TestServer_AuthRejectsWrongToken(t *testing.T) {
+	f := newServerFixture(t)
+	url := "ws://" + f.srv.Addr() + "/ws?token=wrong"
+	_, _, err := websocket.Dial(context.Background(), url, nil)
+	if err == nil {
+		t.Fatalf("dial with wrong token should fail")
+	}
+}
+
+func TestServer_BootstrapEndpoint(t *testing.T) {
+	f := newServerFixture(t)
+	resp, err := http.Get(fmt.Sprintf("http://%s/bootstrap.json?t=test-token", f.srv.Addr()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("bootstrap status: %d", resp.StatusCode)
+	}
+	var b Bootstrap
+	if err := json.NewDecoder(resp.Body).Decode(&b); err != nil {
+		t.Fatal(err)
+	}
+	if b.Token != "test-token" {
+		t.Fatalf("bootstrap token wrong: %s", b.Token)
+	}
+	if !strings.HasPrefix(b.WSURL, "ws://") || !strings.HasSuffix(b.WSURL, "/ws") {
+		t.Fatalf("bootstrap WS URL malformed: %s", b.WSURL)
+	}
+	// The wsUrl host MUST be derived from the request, not from the
+	// server's bind. Even on a 0.0.0.0 bind, hitting bootstrap from a
+	// real client gives that client's resolved host back.
+	if !strings.Contains(b.WSURL, f.srv.Addr()) {
+		t.Fatalf("wsUrl should reflect request Host, got %q (server addr %q)", b.WSURL, f.srv.Addr())
+	}
+}
+
+func TestServer_BootstrapRejectsBadToken(t *testing.T) {
+	f := newServerFixture(t)
+	resp, err := http.Get(fmt.Sprintf("http://%s/bootstrap.json?t=wrong", f.srv.Addr()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	// Indistinguishable from "no such path" — 404, not 401, so a LAN
+	// scanner can't fingerprint the agent-overflow server.
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", resp.StatusCode)
+	}
+}
+
+func TestServer_BootstrapRejectsEmptyToken(t *testing.T) {
+	f := newServerFixture(t)
+	resp, err := http.Get(fmt.Sprintf("http://%s/bootstrap.json", f.srv.Addr()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", resp.StatusCode)
+	}
+}
+
+func TestServer_EventLiveDelivery(t *testing.T) {
+	f := newServerFixture(t)
+	conn := f.dial(t)
+
+	// Wait for pump-events goroutine to attach via the public
+	// SubscriberCount accessor — no reaching into private fields.
+	if !waitFor(func() bool {
+		return f.bus.SubscriberCount() >= 1
+	}, 500*time.Millisecond) {
+		t.Fatalf("server never registered subscriber")
+	}
+
+	want := map[string]string{"hello": "world"}
+	f.bus.Emit("ch1", want)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+	for {
+		_, raw, err := conn.Read(ctx)
+		if err != nil {
+			t.Fatalf("ws read: %v", err)
+		}
+		var frame ServerFrame
+		if err := json.Unmarshal(raw, &frame); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if frame.Type != frameTypeEvent {
+			continue
+		}
+		if frame.Channel != "ch1" {
+			t.Fatalf("wrong channel: %s", frame.Channel)
+		}
+		var got map[string]string
+		if err := json.Unmarshal(frame.Data, &got); err != nil {
+			t.Fatalf("decode event payload: %v", err)
+		}
+		if got["hello"] != "world" {
+			t.Fatalf("payload lost: %+v", got)
+		}
+		if frame.Seq != 1 {
+			t.Fatalf("first event should be seq=1, got %d", frame.Seq)
+		}
+		return
+	}
+}
+
+func TestServer_ReplayMissedEvents(t *testing.T) {
+	f := newServerFixture(t)
+
+	// Emit some events BEFORE any client connects. They fill the ring
+	// but never go to a live subscriber.
+	for i := 0; i < 3; i++ {
+		f.bus.Emit("ch1", i)
+	}
+
+	conn := f.dial(t)
+
+	// Send a replay frame asking for everything since seq 0. The
+	// server should respond with three event frames, in order.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	frame := ClientFrame{
+		Type: frameTypeReplay,
+		LastSeqByChannel: map[string]uint64{
+			"ch1": 0,
+		},
+	}
+	buf, err := json.Marshal(frame)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.Write(ctx, websocket.MessageText, buf); err != nil {
+		t.Fatalf("ws write: %v", err)
+	}
+
+	got := make([]ServerFrame, 0, 3)
+	for len(got) < 3 {
+		_, raw, err := conn.Read(ctx)
+		if err != nil {
+			t.Fatalf("ws read: %v", err)
+		}
+		var f ServerFrame
+		if err := json.Unmarshal(raw, &f); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if f.Type != frameTypeEvent {
+			continue
+		}
+		got = append(got, f)
+	}
+	for i, frm := range got {
+		if frm.Channel != "ch1" {
+			t.Fatalf("event %d wrong channel: %s", i, frm.Channel)
+		}
+		if frm.Seq != uint64(i+1) {
+			t.Fatalf("event %d wrong seq: %d", i, frm.Seq)
+		}
+		if frm.Gap {
+			t.Fatalf("event %d unexpectedly gap-flagged", i)
+		}
+	}
+}
+
+func TestServer_ReplayGapMarker(t *testing.T) {
+	d := NewDispatcher()
+	app := &fakeApp{}
+	d.Register(app, RegisterOptions{Package: "main", TypeName: "App"})
+	bus := NewEventBus(2) // tiny ring forces eviction
+	srv, err := New(Config{Dispatcher: d, EventBus: bus, Token: "test-token"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		shutCtx, c := context.WithTimeout(context.Background(), 2*time.Second)
+		defer c()
+		_ = srv.Shutdown(shutCtx)
+	})
+
+	// Emit 5 events into a 2-cap ring — oldest 3 evicted.
+	for i := 0; i < 5; i++ {
+		bus.Emit("ch1", i)
+	}
+
+	url := "ws://" + srv.Addr() + "/ws?token=test-token"
+	conn, _, err := websocket.Dial(context.Background(), url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	frame := ClientFrame{
+		Type:             frameTypeReplay,
+		LastSeqByChannel: map[string]uint64{"ch1": 0}, // out of window
+	}
+	buf, _ := json.Marshal(frame)
+	if err := conn.Write(ctx, websocket.MessageText, buf); err != nil {
+		t.Fatal(err)
+	}
+
+	for {
+		_, raw, err := conn.Read(ctx)
+		if err != nil {
+			t.Fatalf("ws read: %v", err)
+		}
+		var f ServerFrame
+		if err := json.Unmarshal(raw, &f); err != nil {
+			t.Fatal(err)
+		}
+		if f.Type != frameTypeEvent {
+			continue
+		}
+		if !f.Gap {
+			t.Fatalf("expected gap=true marker, got %+v", f)
+		}
+		if f.Seq != 5 {
+			t.Fatalf("gap should carry head seq=5, got %d", f.Seq)
+		}
+		return
+	}
+}
+
+// Replay frames with too many channels must be rejected at the wire
+// before reaching the bus, capping memory exposure on adversarial
+// input.
+func TestServer_ReplayMapTooLarge(t *testing.T) {
+	f := newServerFixture(t)
+	conn := f.dial(t)
+
+	huge := make(map[string]uint64, MaxReplayChannels+1)
+	for i := 0; i <= MaxReplayChannels; i++ {
+		huge[fmt.Sprintf("ch%d", i)] = 0
+	}
+	frame := ClientFrame{
+		Type:             frameTypeReplay,
+		LastSeqByChannel: huge,
+	}
+	buf, _ := json.Marshal(frame)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := conn.Write(ctx, websocket.MessageText, buf); err != nil {
+		t.Fatalf("ws write: %v", err)
+	}
+
+	_, raw, err := conn.Read(ctx)
+	if err != nil {
+		t.Fatalf("ws read: %v", err)
+	}
+	var resp ServerFrame
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Error == nil || resp.Error.Code != ErrCodeBadParams {
+		t.Fatalf("expected bad_params error frame, got %+v", resp)
+	}
+}
+
+func TestServer_ConcurrentRPCs(t *testing.T) {
+	f := newServerFixture(t)
+	conn := f.dial(t)
+
+	// Drive 50 concurrent Add calls on the same connection. Each
+	// expects a unique (id, result) — we serialize writes via the
+	// websocket library but issue from a worker pool to exercise the
+	// per-RPC goroutine in handleRPC.
+	const n = 50
+	type result struct {
+		id   string
+		val  int
+		fail bool
+	}
+	requests := make(chan int, n)
+	results := make(chan result, n)
+	var wg sync.WaitGroup
+
+	// Single reader goroutine because the WS lib doesn't support
+	// concurrent reads. It collects responses and routes them by id.
+	pending := make(map[string]chan ServerFrame)
+	var pendingMu sync.Mutex
+
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		for {
+			_, raw, err := conn.Read(ctx)
+			if err != nil {
+				return
+			}
+			var resp ServerFrame
+			if err := json.Unmarshal(raw, &resp); err != nil {
+				continue
+			}
+			if resp.Type != frameTypeRPC {
+				continue
+			}
+			pendingMu.Lock()
+			ch, ok := pending[resp.ID]
+			pendingMu.Unlock()
+			if ok {
+				ch <- resp
+			}
+		}
+	}()
+
+	// 4 workers driving the request channel.
+	var writeMu sync.Mutex
+	for w := 0; w < 4; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for x := range requests {
+				id := fmt.Sprintf("req-%d", x)
+				ch := make(chan ServerFrame, 1)
+				pendingMu.Lock()
+				pending[id] = ch
+				pendingMu.Unlock()
+
+				params := []json.RawMessage{
+					json.RawMessage(fmt.Sprintf("%d", x)),
+					json.RawMessage(fmt.Sprintf("%d", x)),
+				}
+				frame := ClientFrame{
+					Type:     frameTypeRPC,
+					ID:       id,
+					MethodID: fnvHash("main.App.Add"),
+					Params:   params,
+				}
+				buf, _ := json.Marshal(frame)
+				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+				writeMu.Lock()
+				err := conn.Write(ctx, websocket.MessageText, buf)
+				writeMu.Unlock()
+				cancel()
+				if err != nil {
+					results <- result{id: id, fail: true}
+					continue
+				}
+
+				select {
+				case resp := <-ch:
+					if resp.Error != nil {
+						results <- result{id: id, fail: true}
+						continue
+					}
+					var v int
+					json.Unmarshal(resp.Result, &v)
+					results <- result{id: id, val: v}
+				case <-time.After(2 * time.Second):
+					results <- result{id: id, fail: true}
+				}
+			}
+		}()
+	}
+
+	for i := 0; i < n; i++ {
+		requests <- i
+	}
+	close(requests)
+	wg.Wait()
+	close(results)
+
+	got := 0
+	for r := range results {
+		if r.fail {
+			t.Errorf("request %s failed", r.id)
+		} else {
+			got++
+		}
+	}
+	if got != n {
+		t.Fatalf("got %d successes, want %d", got, n)
+	}
+}
+
+func TestServer_BadFrameReturnsError(t *testing.T) {
+	f := newServerFixture(t)
+	conn := f.dial(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := conn.Write(ctx, websocket.MessageText, []byte("not-json")); err != nil {
+		t.Fatal(err)
+	}
+	_, raw, err := conn.Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var resp ServerFrame
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Error == nil {
+		t.Fatalf("expected error frame for malformed input")
+	}
+	if resp.Error.Code != ErrCodeBadParams {
+		t.Fatalf("expected bad_params, got %s", resp.Error.Code)
+	}
+}
+
+func TestServer_MethodNotFound(t *testing.T) {
+	f := newServerFixture(t)
+	conn := f.dial(t)
+	resp := f.rpc(t, conn, 0, "DoesNotExist")
+	if resp.Error == nil {
+		t.Fatalf("expected error frame")
+	}
+	if resp.Error.Code != ErrCodeMethodNotFound {
+		t.Fatalf("expected method_not_found, got %s", resp.Error.Code)
+	}
+}
+
+// Server.Start is one-shot — a second call must error rather than
+// installing a parallel listener. Without this, double-Start leaked
+// the first listener's goroutine and Shutdown couldn't clean it up.
+func TestServer_StartTwiceIsError(t *testing.T) {
+	d := NewDispatcher()
+	app := &fakeApp{}
+	d.Register(app, RegisterOptions{Package: "main", TypeName: "App"})
+	bus := NewEventBus(10)
+	srv, err := New(Config{Dispatcher: d, EventBus: bus, Token: "t"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		shutCtx, c := context.WithTimeout(context.Background(), 2*time.Second)
+		defer c()
+		_ = srv.Shutdown(shutCtx)
+	})
+
+	if err := srv.Start(); err == nil {
+		t.Fatalf("second Start should error")
+	}
+	// First listener still serving.
+	if !strings.Contains(srv.Addr(), ":") {
+		t.Fatalf("Addr corrupted after second Start: %q", srv.Addr())
+	}
+}
+
+// TestServer_AppURL_PreStartIsEmpty pins the documented contract on
+// the pre-Start path: AppURL returns the empty string so callers can
+// detect the not-ready state. main.go fatals on empty AppURL — that
+// path stays meaningful only if AppURL really returns "" before Start
+// rather than emitting a port-less fallback (which earlier code did,
+// hitting port 80 and confusing users).
+func TestServer_AppURL_PreStartIsEmpty(t *testing.T) {
+	d := NewDispatcher()
+	bus := NewEventBus(10)
+	srv, err := New(Config{Dispatcher: d, EventBus: bus, Token: "tok"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := srv.AppURL(); got != "" {
+		t.Fatalf("AppURL pre-Start = %q, want empty (so callers can fatal on missing URL)", got)
+	}
+}
+
+// TestServer_AppURL_PostStartIncludesPort guarantees that the URL the
+// webview actually loads always carries the resolved port. The caller
+// (main.go) hands this to Wails verbatim; a port-less URL would hit
+// port 80, which is unrelated to our listener.
+func TestServer_AppURL_PostStartIncludesPort(t *testing.T) {
+	f := newServerFixture(t)
+	url := f.srv.AppURL()
+	if !strings.HasPrefix(url, "http://127.0.0.1:") {
+		t.Fatalf("AppURL %q does not start with http://127.0.0.1:<port>", url)
+	}
+	// The actual addr's port must appear in the URL.
+	_, port, err := net.SplitHostPort(f.srv.Addr())
+	if err != nil {
+		t.Fatalf("SplitHostPort %q: %v", f.srv.Addr(), err)
+	}
+	if !strings.Contains(url, ":"+port+"/") {
+		t.Fatalf("AppURL %q does not embed live port %q", url, port)
+	}
+	// Token query param must round-trip.
+	if !strings.HasSuffix(url, "?t=test-token") {
+		t.Fatalf("AppURL %q missing token query param", url)
+	}
+}
+
+// TestRebind_NewAddrAccepts verifies that after Rebind, new WS
+// connections route to the new listener. We rebind to a fresh ephemeral
+// loopback port and confirm an RPC over the new addr succeeds.
+func TestRebind_NewAddrAccepts(t *testing.T) {
+	f := newServerFixture(t)
+	originalAddr := f.srv.Addr()
+
+	if err := f.srv.Rebind("127.0.0.1:0", nil); err != nil {
+		t.Fatalf("rebind: %v", err)
+	}
+	if f.srv.Addr() == originalAddr {
+		t.Fatalf("Addr did not change after rebind: %q", f.srv.Addr())
+	}
+
+	url := "ws://" + f.srv.Addr() + "/ws?token=test-token"
+	conn, _, err := websocket.Dial(context.Background(), url, nil)
+	if err != nil {
+		t.Fatalf("dial new addr: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close(websocket.StatusNormalClosure, "") })
+
+	resp := f.rpc(t, conn, 0, "Greet", "rebind")
+	if resp.Error != nil {
+		t.Fatalf("rpc on new addr error: %+v", resp.Error)
+	}
+	if string(resp.Result) != `"hello, rebind"` {
+		t.Fatalf("unexpected result on new addr: %s", string(resp.Result))
+	}
+}
+
+// TestRebind_OldAddrStopsAccepting verifies that after Rebind, the
+// previous listener stops accepting new connections. The old listener's
+// http.Server is gracefully shut down and the kernel surrenders the
+// port (or, at minimum, refuses to upgrade).
+func TestRebind_OldAddrStopsAccepting(t *testing.T) {
+	f := newServerFixture(t)
+	oldAddr := f.srv.Addr()
+
+	if err := f.srv.Rebind("127.0.0.1:0", nil); err != nil {
+		t.Fatalf("rebind: %v", err)
+	}
+
+	// Wait for the old listener's serve goroutine to wind down. The
+	// retired http.Server.Shutdown is async — give it up to 2s to
+	// release the port. Looping with short sleeps keeps the test fast
+	// when shutdown is quick.
+	ok := waitFor(func() bool {
+		dialCtx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		defer cancel()
+		// We dial bare TCP rather than a full WS handshake — even if
+		// the kernel hasn't fully released the port, a conn that
+		// closes immediately on accept is enough to prove the old
+		// http.Server stopped serving requests.
+		conn, dialErr := (&net.Dialer{}).DialContext(dialCtx, "tcp", oldAddr)
+		if dialErr != nil {
+			return true
+		}
+		// If we did connect, attempt a WS upgrade — if that fails,
+		// new accepts on the old port are no longer being routed
+		// through our handler stack.
+		_ = conn.Close()
+		wsCtx, wsCancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		defer wsCancel()
+		c, _, wsErr := websocket.Dial(wsCtx, "ws://"+oldAddr+"/ws?token=test-token", nil)
+		if wsErr != nil {
+			return true
+		}
+		_ = c.Close(websocket.StatusNormalClosure, "")
+		return false
+	}, 2*time.Second)
+	if !ok {
+		t.Fatalf("old addr %q still accepting new WS connections after rebind", oldAddr)
+	}
+}
+
+// TestRebind_ExistingWSContinues verifies that a WebSocket connection
+// established before Rebind keeps working after the rebind. The
+// hijacked TCP connection is owned by the handleWS goroutine; the
+// old http.Server.Shutdown does not sever it.
+func TestRebind_ExistingWSContinues(t *testing.T) {
+	f := newServerFixture(t)
+	conn := f.dial(t)
+
+	// Confirm the connection works pre-rebind.
+	resp := f.rpc(t, conn, 0, "Greet", "before")
+	if resp.Error != nil {
+		t.Fatalf("rpc pre-rebind: %+v", resp.Error)
+	}
+
+	if err := f.srv.Rebind("127.0.0.1:0", nil); err != nil {
+		t.Fatalf("rebind: %v", err)
+	}
+
+	// Same connection, same RPC. Must succeed — the WS conn is hijacked
+	// off the old listener and lives independently of the listener's
+	// http.Server lifecycle.
+	resp = f.rpc(t, conn, 0, "Greet", "after")
+	if resp.Error != nil {
+		t.Fatalf("rpc post-rebind: %+v", resp.Error)
+	}
+	if string(resp.Result) != `"hello, after"` {
+		t.Fatalf("unexpected post-rebind result: %s", string(resp.Result))
+	}
+}
+
+// TestRebind_ConcurrentWithShutdown verifies that running Rebind and
+// Shutdown concurrently doesn't corrupt server state. Either the
+// rebind wins and Shutdown cleans up the new listener too, or the
+// shutdown wins and Rebind drops with an error.
+func TestRebind_ConcurrentWithShutdown(t *testing.T) {
+	d := NewDispatcher()
+	app := &fakeApp{}
+	if _, err := d.Register(app, RegisterOptions{Package: "main", TypeName: "App"}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	bus := NewEventBus(10)
+	srv, err := New(Config{Dispatcher: d, EventBus: bus, Token: "t"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatal(err)
+	}
+
+	var rebindErr, shutdownErr error
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		rebindErr = srv.Rebind("127.0.0.1:0", nil)
+	}()
+	go func() {
+		defer wg.Done()
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		shutdownErr = srv.Shutdown(ctx)
+	}()
+	wg.Wait()
+
+	// Whatever the ordering, Shutdown must complete cleanly. Rebind
+	// either succeeded (and Shutdown then cleaned up its listener via
+	// formerSrvs) or returned the "shut down" sentinel.
+	if shutdownErr != nil {
+		t.Fatalf("shutdown returned error: %v", shutdownErr)
+	}
+	if rebindErr != nil && !strings.Contains(rebindErr.Error(), "shut down") {
+		t.Fatalf("rebind returned unexpected error: %v", rebindErr)
+	}
+
+	// A second Shutdown call must remain a no-op regardless of which
+	// branch ran first, proving stopOnce / shutDown stayed coherent.
+	if err := srv.Shutdown(context.Background()); err != nil {
+		t.Fatalf("second Shutdown: %v", err)
+	}
+}
+
+// Shutdown without Start must not panic and must be a clean no-op.
+func TestServer_ShutdownWithoutStart(t *testing.T) {
+	d := NewDispatcher()
+	bus := NewEventBus(10)
+	srv, err := New(Config{Dispatcher: d, EventBus: bus, Token: "t"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown without Start should not error: %v", err)
+	}
+	// Idempotent.
+	if err := srv.Shutdown(ctx); err != nil {
+		t.Fatalf("second Shutdown should not error: %v", err)
+	}
+}
+
+// TestRebind_InvalidAddrLeavesStateIntact pins the state-intact
+// contract: a Rebind that fails to acquire its listener (here an
+// invalid host) MUST leave the server's observable state exactly as
+// it was. Without the contract, callers would have to maintain their
+// own rollback bookkeeping on top of a partially-mutated server.
+func TestRebind_InvalidAddrLeavesStateIntact(t *testing.T) {
+	f := newServerFixture(t)
+	preAddr := f.srv.Addr()
+	conn := f.dial(t)
+
+	// 999.999.999.999 is not a valid IPv4 — net.Listen rejects it before
+	// any state is mutated.
+	err := f.srv.Rebind("999.999.999.999:0", nil)
+	if err == nil {
+		t.Fatalf("expected rebind to fail on invalid addr")
+	}
+
+	if got := f.srv.Addr(); got != preAddr {
+		t.Fatalf("Addr changed after failed rebind: pre=%q post=%q", preAddr, got)
+	}
+
+	// Original WS connection still works — the failed rebind didn't
+	// touch the live http.Server / listener pair.
+	resp := f.rpc(t, conn, 0, "Greet", "still-alive")
+	if resp.Error != nil {
+		t.Fatalf("rpc on original conn errored after failed rebind: %+v", resp.Error)
+	}
+	if string(resp.Result) != `"hello, still-alive"` {
+		t.Fatalf("unexpected result on original conn: %s", string(resp.Result))
+	}
+}
+
+// TestRebind_SameAddrIsNoOp documents the no-op shortcut: passing the
+// current addr with no opts changes returns nil without churning the
+// listener. Callers can fire Rebind blindly when settings change
+// without comparing addrs themselves.
+func TestRebind_SameAddrIsNoOp(t *testing.T) {
+	f := newServerFixture(t)
+	preAddr := f.srv.Addr()
+
+	// Pre-rebind connection — must continue working untouched after
+	// the no-op call.
+	conn := f.dial(t)
+	resp := f.rpc(t, conn, 0, "Greet", "before")
+	if resp.Error != nil {
+		t.Fatalf("rpc pre-noop: %+v", resp.Error)
+	}
+
+	if err := f.srv.Rebind(preAddr, nil); err != nil {
+		t.Fatalf("rebind to same addr should be a no-op: %v", err)
+	}
+
+	if got := f.srv.Addr(); got != preAddr {
+		t.Fatalf("Addr mutated on no-op rebind: pre=%q post=%q", preAddr, got)
+	}
+
+	// Same connection, same RPC.
+	resp = f.rpc(t, conn, 0, "Greet", "after")
+	if resp.Error != nil {
+		t.Fatalf("rpc post-noop: %+v", resp.Error)
+	}
+}
+
+// TestRebind_OriginPatternsTakeEffect verifies that the WS upgrader
+// reads the live (post-rebind) origin allow-list, not the static
+// Config value frozen at New(). This is the CSWSH guard for the
+// LAN-bind toggle.
+func TestRebind_OriginPatternsTakeEffect(t *testing.T) {
+	f := newServerFixture(t)
+
+	// Default (loopback) bind has no origin patterns → InsecureSkipVerify
+	// → any Origin header is accepted. Tighten the policy to a single
+	// allowed origin and prove the upgrader rejects everything else.
+	if err := f.srv.Rebind("127.0.0.1:0", &RebindOptions{
+		OriginPatterns: []string{"http://allowed.example:*"},
+	}); err != nil {
+		t.Fatalf("rebind with origin patterns: %v", err)
+	}
+
+	wsURL := "ws://" + f.srv.Addr() + "/ws?token=test-token"
+
+	// Browsers send Origin on cross-origin upgrades. The websocket lib
+	// uses Host as a default; we explicitly set Origin to a disallowed
+	// value to drive the rejection branch.
+	disallowedHeader := http.Header{}
+	disallowedHeader.Set("Origin", "http://attacker.example")
+	_, _, err := websocket.Dial(context.Background(), wsURL, &websocket.DialOptions{
+		HTTPHeader: disallowedHeader,
+	})
+	if err == nil {
+		t.Fatalf("upgrade with disallowed Origin should have been rejected")
+	}
+
+	// Sanity check: an allowed Origin still goes through.
+	allowedHeader := http.Header{}
+	allowedHeader.Set("Origin", "http://allowed.example:8080")
+	conn, _, err := websocket.Dial(context.Background(), wsURL, &websocket.DialOptions{
+		HTTPHeader: allowedHeader,
+	})
+	if err != nil {
+		t.Fatalf("upgrade with allowed Origin failed: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close(websocket.StatusNormalClosure, "") })
+}
+
+// TestServer_BootstrapRejectsRebindHost pins the DNS-rebinding defence
+// on the HTTP side. In loopback mode (default), a request whose Host
+// header names anything other than a loopback alias gets 404. A
+// hostile site resolving attacker.tld to 127.0.0.1 cannot harvest the
+// bootstrap token by tricking the user into navigating there.
+func TestServer_BootstrapRejectsRebindHost(t *testing.T) {
+	f := newServerFixture(t)
+
+	// Forge a request with a non-loopback Host. http.Get sets Host
+	// from the URL, so we go through the lower-level NewRequest path
+	// to override.
+	req, err := http.NewRequest("GET", "http://"+f.srv.Addr()+"/bootstrap.json?t=test-token", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Host = "attacker.tld"
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404 for rebind Host, got %d", resp.StatusCode)
+	}
+}
+
+// TestServer_BootstrapAcceptsLoopbackHosts walks the small set of
+// loopback host names the rebind defence whitelists. All three
+// canonical forms (127.0.0.1, localhost, [::1]) must reach the
+// handler — the guard is for non-loopback Hosts, not all-Hosts.
+func TestServer_BootstrapAcceptsLoopbackHosts(t *testing.T) {
+	f := newServerFixture(t)
+	cases := []string{
+		"127.0.0.1",
+		"localhost",
+		"[::1]",
+	}
+	for _, host := range cases {
+		t.Run(host, func(t *testing.T) {
+			req, err := http.NewRequest("GET", "http://"+f.srv.Addr()+"/bootstrap.json?t=test-token", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Host = host
+
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("Do: %v", err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("Host %q got %d, want 200", host, resp.StatusCode)
+			}
+		})
+	}
+}
+
+// TestServer_BootstrapAcceptsAnyHostInLANMode pins the LAN-bind
+// release: when the origin allow-list is non-empty, the loopback Host
+// guard is a pass-through. A LAN host hitting the bootstrap by IP must
+// still reach the handler.
+func TestServer_BootstrapAcceptsAnyHostInLANMode(t *testing.T) {
+	f := newServerFixture(t)
+	// Tighten origin patterns to enter LAN mode without rebinding —
+	// SetOriginPatterns flips the allow-list for the live server.
+	f.srv.SetOriginPatterns([]string{"http://10.0.0.5:*"})
+
+	req, err := http.NewRequest("GET", "http://"+f.srv.Addr()+"/bootstrap.json?t=test-token", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Non-loopback Host: under loopback-mode guard this would 404, but
+	// LAN mode skips the check. Token still validates so a 200 is the
+	// expected outcome.
+	req.Host = "10.0.0.5"
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("LAN mode: Host %q got %d, want 200", req.Host, resp.StatusCode)
+	}
+}
+
+// TestRebind_FormerSrvsBounded pins the cap on retained retired
+// http.Servers. A pathological rebind storm (e.g. a UI bug that toggles
+// BindAll repeatedly) must not accumulate http.Server instances
+// indefinitely; the slice is capped at MaxRetainedFormerSrvs. We rebind
+// past the cap synchronously so the goroutine that drains old entries
+// after their graceful Shutdown can't beat us to the assertion.
+func TestRebind_FormerSrvsBounded(t *testing.T) {
+	f := newServerFixture(t)
+	for i := 0; i < MaxRetainedFormerSrvs+2; i++ {
+		if err := f.srv.Rebind("127.0.0.1:0", nil); err != nil {
+			t.Fatalf("rebind %d: %v", i, err)
+		}
+	}
+	f.srv.mu.Lock()
+	got := len(f.srv.formerSrvs)
+	f.srv.mu.Unlock()
+	if got > MaxRetainedFormerSrvs {
+		t.Fatalf("formerSrvs len = %d, want <= %d", got, MaxRetainedFormerSrvs)
+	}
+}
+
+// TestRebind_FormerSrvsDrainsOnShutdownComplete pins the natural drain
+// path: when the deferred graceful shutdown returns, the entry is
+// removed from formerSrvs. Real apps spend most of their time in this
+// regime — graceful shutdown completes well within 5s, the slice goes
+// back to empty, and the cap is only reached on adversarial rebind
+// loops.
+func TestRebind_FormerSrvsDrainsOnShutdownComplete(t *testing.T) {
+	f := newServerFixture(t)
+
+	if err := f.srv.Rebind("127.0.0.1:0", nil); err != nil {
+		t.Fatalf("rebind: %v", err)
+	}
+
+	// The graceful shutdown the rebind kicked off runs on its own
+	// goroutine. Poll until the slice drains; bounded retry so a
+	// regression doesn't hang the test.
+	ok := waitFor(func() bool {
+		f.srv.mu.Lock()
+		empty := len(f.srv.formerSrvs) == 0
+		f.srv.mu.Unlock()
+		return empty
+	}, 6*time.Second)
+	if !ok {
+		f.srv.mu.Lock()
+		got := len(f.srv.formerSrvs)
+		f.srv.mu.Unlock()
+		t.Fatalf("formerSrvs did not drain after graceful shutdown: len=%d", got)
+	}
+}
+
+// TestServer_SetOriginPatterns_LiveRotation pins the helper that
+// updates the allow-list without rebinding. Callers (e.g. a future
+// "trusted origins" UI) can flip the policy mid-session.
+func TestServer_SetOriginPatterns_LiveRotation(t *testing.T) {
+	f := newServerFixture(t)
+
+	// Tighten the policy without rebinding.
+	f.srv.SetOriginPatterns([]string{"http://only.example:*"})
+	wsURL := "ws://" + f.srv.Addr() + "/ws?token=test-token"
+	hdr := http.Header{}
+	hdr.Set("Origin", "http://attacker.example")
+	if _, _, err := websocket.Dial(context.Background(), wsURL, &websocket.DialOptions{
+		HTTPHeader: hdr,
+	}); err == nil {
+		t.Fatalf("upgrade should fail under tightened policy")
+	}
+
+	// Loosen back to "any origin" by clearing.
+	f.srv.SetOriginPatterns(nil)
+	conn, _, err := websocket.Dial(context.Background(), wsURL, nil)
+	if err != nil {
+		t.Fatalf("upgrade should succeed under cleared policy: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close(websocket.StatusNormalClosure, "") })
+}
+
+// TestServer_LocalOnlyMethodEnforcement_LoopbackPathAllowed proves the
+// wire-level dispatch routes a LocalOnlyMethods call from a real
+// loopback peer through to the receiver. The serverFixture binds on
+// 127.0.0.1, so any connection it accepts is by definition loopback —
+// dialling it via websocket.Dial drives the same RemoteAddr capture
+// path production uses.
+func TestServer_LocalOnlyMethodEnforcement_LoopbackPathAllowed(t *testing.T) {
+	d := NewDispatcher()
+	app := &privilegedApp{}
+	if _, err := d.Register(app, RegisterOptions{Package: "main", TypeName: "App"}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	bus := NewEventBus(20)
+	srv, err := New(Config{Dispatcher: d, EventBus: bus, Token: "test-token"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		shutCtx, c := context.WithTimeout(context.Background(), 2*time.Second)
+		defer c()
+		_ = srv.Shutdown(shutCtx)
+	})
+
+	conn, _, err := websocket.Dial(context.Background(), "ws://"+srv.Addr()+"/ws?token=test-token", nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close(websocket.StatusNormalClosure, "") })
+
+	// OpenTerminal is in LocalOnlyMethods. From a 127.0.0.1 peer the
+	// dispatcher must allow it (the embedded webview path is the
+	// canonical user).
+	frame := ClientFrame{
+		Type:     frameTypeRPC,
+		ID:       "loopback-1",
+		MethodID: fnvHash("main.App.OpenTerminal"),
+	}
+	buf, _ := json.Marshal(frame)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := conn.Write(ctx, websocket.MessageText, buf); err != nil {
+		t.Fatal(err)
+	}
+	for {
+		_, raw, err := conn.Read(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var resp ServerFrame
+		if err := json.Unmarshal(raw, &resp); err != nil {
+			t.Fatal(err)
+		}
+		if resp.Type != frameTypeRPC || resp.ID != "loopback-1" {
+			continue
+		}
+		if resp.Error != nil {
+			t.Fatalf("loopback peer refused privileged method: %+v", resp.Error)
+		}
+		return
+	}
+}
+
+// TestRemoteAddrIsLoopback walks the small set of forms r.RemoteAddr
+// can take so the LocalOnly enforcement flag stays correct across
+// IPv4, IPv6, and the malformed cases httptest sometimes produces.
+func TestRemoteAddrIsLoopback(t *testing.T) {
+	cases := []struct {
+		addr string
+		want bool
+	}{
+		{"127.0.0.1:54321", true},
+		{"127.0.0.1:0", true},
+		{"[::1]:54321", true},
+		// IPv4-mapped IPv6 loopback — IsLoopback recognises it.
+		{"[::ffff:127.0.0.1]:1234", true},
+		{"10.0.0.5:54321", false},
+		{"192.168.1.5:8080", false},
+		{"[fe80::1234]:1234", false},
+		{"", false},
+		// Malformed: expect false (fail closed) so a synthetic test
+		// request can't accidentally bypass LocalOnly enforcement.
+		{"not an address", false},
+	}
+	for _, c := range cases {
+		if got := remoteAddrIsLoopback(c.addr); got != c.want {
+			t.Errorf("remoteAddrIsLoopback(%q) = %v, want %v", c.addr, got, c.want)
+		}
+	}
+}
+
+func waitFor(cond func() bool, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return true
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	return cond()
+}

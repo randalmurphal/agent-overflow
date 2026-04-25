@@ -22,16 +22,16 @@ func wrapLifecycleError(action string, err error) error {
 	return fmt.Errorf("%s: %w", action, err)
 }
 
-// emitEvent sends an arbitrary Wails event to the frontend. Prefer this over
-// calling a.app.Event.Emit directly so tests can intercept emissions via
-// emitEventFn without wiring a full Wails application.
+// emitEvent sends an arbitrary event to the frontend. Prefer this over
+// reaching for the transport bus directly so tests can intercept
+// emissions via emitEventFn without wiring a real transport bus.
 func (a *App) emitEvent(eventName string, data any) {
 	if a.emitEventFn != nil {
 		a.emitEventFn(eventName, data)
 		return
 	}
-	// Route through a.emit so every wire emission carries a monotonic
-	// seq envelope matching the one applied by the triage router.
+	// Route through a.emit so the transport bus stamps its per-channel
+	// seq alongside every other wire emission.
 	a.emit(eventName, data)
 }
 

@@ -185,10 +185,13 @@ describe('<DiscussionEditor>', () => {
     expect(dialog).toBeInTheDocument();
     // Deletion hasn't happened yet.
     expect(deleteMock.mock.calls.length).toBe(0);
-    // Confirm. Post-Button migration the confirm button no longer
-    // carries `[data-confirm]`; it's found by role + name instead (the
-    // dialog only has two buttons — Cancel and the danger Confirm).
-    const confirm = dialog.querySelector<HTMLButtonElement>('button[data-autofocus]')!;
+    // Confirm. The dialog only has two buttons — Cancel and the
+    // danger Confirm. Destructive ConfirmDialogs autofocus Cancel, so
+    // we resolve Confirm by name instead of by [data-autofocus] like
+    // the older non-destructive variant did.
+    const confirm = dialog.querySelector<HTMLButtonElement>('button.bg-error, button[class*="bg-error"]')
+      ?? Array.from(dialog.querySelectorAll<HTMLButtonElement>('button')).find((b) => /confirm|delete/i.test(b.textContent ?? ''));
+    if (!confirm) throw new Error('confirm button not found');
     await fireEvent.click(confirm);
     await Promise.resolve();
     await Promise.resolve();

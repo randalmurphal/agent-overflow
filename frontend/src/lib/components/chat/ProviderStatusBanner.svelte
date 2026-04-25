@@ -1,8 +1,12 @@
 <script lang="ts">
   import { slide } from 'svelte/transition';
   import type { ThreadPane } from '../../stores/thread.svelte';
-  import { ReconnectSession, ProbeClaudeAccount } from '../../stores/bindings';
-  import { errString } from '../../utils/errors';
+  import {
+    GetProviderStatuses,
+    ProbeClaudeAccount,
+    ReconnectSession,
+  } from '../../stores/bindings';
+  import { userFacingError } from '../../utils/userFacingError';
   import {
     getProviderStatus,
     type ProviderStatusEvent,
@@ -98,7 +102,7 @@
       await ReconnectSession(pane.threadId);
     } catch (err) {
       console.error('Failed to reconnect:', err);
-      pane.setGeneralError(`Failed to reconnect: ${errString(err)}`);
+      pane.setGeneralError(userFacingError(err));
     } finally {
       reconnecting = false;
     }
@@ -114,6 +118,23 @@
       await ProbeClaudeAccount();
     } catch (err) {
       console.error('Failed to probe Claude account:', err);
+    } finally {
+      rechecking = false;
+    }
+  }
+
+  // Recheck is also exposed on `not_found` so a user who just ran
+  // `npm i -g @anthropic-ai/claude-code` can clear the banner without
+  // restarting the app. Re-running the binary detection emits the
+  // refreshed provider:status which the store consumes — same path
+  // the boot probe takes.
+  async function handleRecheckBinary() {
+    if (rechecking) return;
+    rechecking = true;
+    try {
+      await GetProviderStatuses();
+    } catch (err) {
+      console.error('Failed to recheck provider status:', err);
     } finally {
       rechecking = false;
     }
@@ -143,6 +164,16 @@
     <p class="text-xs flex-1 line-clamp-2" title={providerBannerMessage}>
       {providerBannerMessage}
     </p>
+    {#if providerStatus.status === 'not_found'}
+      <button
+        onclick={handleRecheckBinary}
+        disabled={rechecking}
+        data-testid="provider-status-recheck"
+        class="text-xs px-2 py-0.5 rounded border border-current/30 hover:bg-white/5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+      >
+        {rechecking ? 'Checking…' : 'Recheck'}
+      </button>
+    {/if}
     {#if providerStatus.actionable && primaryActionLabel}
       <button
         onclick={handlePrimaryAction}
@@ -150,7 +181,7 @@
         data-testid="provider-status-action"
         class="text-xs px-2 py-0.5 rounded border border-current/30 hover:bg-white/5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
       >
-        {rechecking ? 'Checking...' : primaryActionLabel}
+        {rechecking ? 'Checking…' : primaryActionLabel}
       </button>
     {/if}
   </div>

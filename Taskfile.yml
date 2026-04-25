@@ -58,3 +58,19 @@ tasks:
     summary: Builds and runs the Docker image
     cmds:
       - task: common:run:docker
+
+  build:wsl:
+    summary: |
+      Phase D: builds the Windows .exe + bundled Linux ELF for WSL-backed deployment.
+      See build/windows/Taskfile.yml task `build:wsl` for details. The .exe runs the
+      picker on first launch, spawns the Linux backend inside the chosen distro, and
+      points WebView2 at the WSL-side localhost port.
+    cmds:
+      - task: windows:build:wsl
+
+  package:wsl:zip:
+    summary: |
+      Phase D: zips the Windows .exe + Linux ELF for distribution from a non-Windows host.
+      Run `iscc build/windows/installer.iss` on a Windows host for the real installer.
+    cmds:
+      - task: windows:package:wsl:zip

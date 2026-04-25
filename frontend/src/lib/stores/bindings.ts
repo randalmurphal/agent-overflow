@@ -52,6 +52,26 @@ export {
   GetSettings,
   UpdateSettings,
 
+  // Network bindings (LAN-bind toggle for the embedded transport).
+  GetNetworkSettings,
+  SetNetworkSettings,
+
+  // Open-in-editor: catalog + persistence + user-facing entry point.
+  OpenInEditor,
+  ListAvailableEditors,
+  GetEditorSettings,
+  SetEditorSettings,
+
+  // Remote endpoint storage. Token-redacted Summary on every read
+  // path; explicit GetRemoteEndpointToken for the copy-launch-command
+  // flow. See app_remote.go for the threat model.
+  ListRemoteEndpoints,
+  AddRemoteEndpoint,
+  UpdateRemoteEndpoint,
+  DeleteRemoteEndpoint,
+  TouchRemoteEndpoint,
+  GetRemoteEndpointToken,
+
   // Provider detection
   GetProviderStatuses,
   GetModelsForProvider,
@@ -171,8 +191,15 @@ export {
   ThreadMessageHit,
 } from '../../../bindings/agent-overflow/internal/store/models.js';
 export {
+  EditorSettings,
+  RemoteEndpoint,
+} from '../../../bindings/agent-overflow/internal/settings/models.js';
+export {
+  EditorInfo,
   GeneratedCommitMessage,
   Keybinding,
+  NetworkSettings,
+  RemoteEndpointSummary,
   TerminalOpenOptions,
 } from '../../../bindings/agent-overflow/models.js';
 

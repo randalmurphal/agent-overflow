@@ -30,6 +30,16 @@ func TestWriteThreadWorkspaceFile(t *testing.T) {
 	if string(data) != "# Ship it\n" {
 		t.Fatalf("file contents = %q, want %q", string(data), "# Ship it\n")
 	}
+	// File mode is 0o600 — workspace writes can carry user content
+	// the user wouldn't want world-readable on a shared host. Pin
+	// the mode so a future change can't loosen it without surfacing.
+	info, err := os.Stat(filepath.Join(workspace, writtenPath))
+	if err != nil {
+		t.Fatalf("Stat() error = %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("file mode = %o, want 0o600 (workspace writes are user-private)", got)
+	}
 }
 
 func TestWriteThreadWorkspaceFileRejectsParentEscape(t *testing.T) {

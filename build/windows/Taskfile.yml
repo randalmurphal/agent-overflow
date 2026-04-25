@@ -28,6 +28,99 @@ tasks:
       # Default to CGO_ENABLED=0 if not explicitly set
       CGO_ENABLED: '{{.CGO_ENABLED | default "0"}}'
 
+  build:wsl:
+    summary: |
+      Phase D: builds the WSL-backed Windows binary + the Linux ELF
+      payload that runs inside WSL.
+
+      This is the daily-driver Windows build. It does NOT use Wails'
+      embedded asset host — the WSL-side backend serves the SPA over
+      HTTP+WS via the Phase C transport. The Windows .exe is a thin
+      launcher that:
+        1. Picks a WSL distro (first launch) or reuses the saved one.
+        2. Drops the bundled Linux ELF into ~/.local/bin inside WSL.
+        3. Spawns the backend pinned to a Job Object so it dies with
+           the Windows process.
+        4. Points WebView2 at http://localhost:<port>/?t=<token>.
+
+      Output:
+        bin/agent-overflow.exe
+        cmd/agent-overflow-windows/payload/agent-overflow-linux
+
+      The Linux payload is rebuilt every time so a stale binary doesn't
+      sneak into the embed. macOS hosts: this target writes a placeholder
+      binary if Linux cross-compilation is unsupported by the toolchain.
+    cmds:
+      - task: build:wsl:linux-payload
+      - task: build:wsl:windows-launcher
+        vars:
+          ARCH: '{{.ARCH | default "amd64"}}'
+
+  build:wsl:linux-payload:
+    summary: |
+      Cross-compile the Linux ELF backend bundled into the Windows .exe.
+
+      Linux requires CGO (GTK bindings) for the full Wails build, and
+      the alpha-76 -tags server path has a known interface mismatch
+      that blocks pure-Go cross-compile. This task is a placeholder:
+      run it on a Linux host or under Docker (build/docker/Dockerfile.cross
+      via `task setup:docker`) where CGO + GTK are available.
+
+      On macOS without Docker, this leaves the existing
+      cmd/agent-overflow-windows/payload/agent-overflow-linux placeholder
+      in place; the Windows .exe still builds but its embedded payload
+      is not a real binary. Document this constraint in the release runbook.
+    internal: true
+    cmds:
+      - mkdir -p cmd/agent-overflow-windows/payload
+      - cmd: GOOS=linux GOARCH=amd64 CGO_ENABLED=1 CC=x86_64-linux-gnu-gcc go build -o cmd/agent-overflow-windows/payload/agent-overflow-linux ./
+        platforms: [linux]
+      - cmd: |
+          if command -v docker > /dev/null 2>&1 && docker image inspect wails-cross > /dev/null 2>&1; then
+            docker run --rm -v "$(pwd):/app" -w /app wails-cross sh -c \
+              'GOOS=linux GOARCH=amd64 CGO_ENABLED=1 go build -o cmd/agent-overflow-windows/payload/agent-overflow-linux ./'
+          else
+            echo "WARNING: skipping Linux payload cross-compile (run on Linux or set up Docker via 'task setup:docker')."
+            echo "         The existing cmd/agent-overflow-windows/payload/agent-overflow-linux placeholder is unchanged."
+          fi
+        platforms: [darwin]
+    sources:
+      - "main.go"
+      - "app*.go"
+      - "internal/**/*.go"
+      - "go.mod"
+      - "go.sum"
+    generates:
+      - cmd/agent-overflow-windows/payload/agent-overflow-linux
+
+  build:wsl:windows-launcher:
+    summary: Cross-compile the Windows .exe launcher
+    internal: true
+    deps:
+      - task: build:wsl:linux-payload
+    cmds:
+      - GOOS=windows GOARCH={{.ARCH}} CGO_ENABLED=0 go build -trimpath -ldflags "-H windowsgui -X main.payloadVersion={{.VERSION | default "dev"}}" -o {{.BIN_DIR | default "bin"}}/{{.APP_NAME | default "agent-overflow"}}.exe ./cmd/agent-overflow-windows
+    sources:
+      - "cmd/agent-overflow-windows/**/*"
+      - "internal/wsllauncher/**/*"
+    generates:
+      - "{{.BIN_DIR | default \"bin\"}}/{{.APP_NAME | default \"agent-overflow\"}}.exe"
+
+  package:wsl:zip:
+    summary: |
+      Bundles the WSL-backed Windows binary + Linux payload into a zip.
+      Use this on macOS / Linux hosts where Inno Setup isn't installed.
+      For a real installer, run `iscc build/windows/installer.iss` on
+      a Windows host with Inno Setup 6+ available on PATH.
+    deps:
+      - task: build:wsl
+    cmds:
+      - mkdir -p {{.BIN_DIR | default "bin"}}/wsl-zip
+      - cp {{.BIN_DIR | default "bin"}}/agent-overflow.exe {{.BIN_DIR | default "bin"}}/wsl-zip/
+      - cp cmd/agent-overflow-windows/payload/agent-overflow-linux {{.BIN_DIR | default "bin"}}/wsl-zip/
+      - cd {{.BIN_DIR | default "bin"}}/wsl-zip && zip -r ../agent-overflow-wsl.zip ./*
+      - rm -rf {{.BIN_DIR | default "bin"}}/wsl-zip
+
   build:native:
     summary: Builds the application using native Go cross-compilation
     internal: true

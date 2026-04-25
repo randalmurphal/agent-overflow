@@ -6,6 +6,7 @@
 
   import type { WorkspaceFile } from '../../types/workspaceFile';
   import Popover from '../primitives/Popover.svelte';
+  import EditorLink from '../common/EditorLink.svelte';
 
   interface Props {
     anchor?: HTMLElement | undefined;
@@ -54,12 +55,12 @@
         <ul class="py-1">
           {#each results as file, index (file.path)}
             {@const active = index === activeIndex}
-            <li>
+            <li class="group/mention relative flex items-stretch">
               <button
                 type="button"
                 role="option"
                 aria-selected={active}
-                class="flex w-full items-center justify-between gap-3 px-3 py-1.5 text-left text-[13px] hover:bg-surface-2/40 focus-visible:outline-none transition-colors"
+                class="flex w-full items-center justify-between gap-3 px-3 py-1.5 pr-9 text-left text-[13px] hover:bg-surface-2/40 focus-visible:outline-none transition-colors"
                 class:bg-accent={active}
                 class:text-surface-0={active}
                 data-testid="mention-option"
@@ -71,6 +72,15 @@
                   {file.kind === 'directory' ? 'dir' : 'file'}
                 </span>
               </button>
+              <!--
+                Secondary affordance: hover-revealed icon that opens the
+                file in the user's editor without inserting it into the
+                composer. The primary action (insert into composer)
+                stays the row click.
+              -->
+              <div class="absolute right-2 top-1/2 -translate-y-1/2 opacity-0 group-hover/mention:opacity-100 transition-opacity">
+                <EditorLink path={file.path} asIcon stopPropagation />
+              </div>
             </li>
           {/each}
         </ul>

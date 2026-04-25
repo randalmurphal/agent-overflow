@@ -153,4 +153,27 @@ describe('<DiffPanelDrawer>', () => {
     await fireEvent.click(getByTestId('diff-panel-close'));
     expect(pane.diffPanel.open).toBe(false);
   });
+
+  it('clicking a file editor-link does NOT toggle the file card', async () => {
+    setBindingMock('GetCheckpointRangeDiff', async () => patch('src/lib/foo.ts', '+const value = 1;'));
+    const openMock = setBindingMock('OpenInEditor', async () => undefined);
+    const pane = await buildPane(makeThread({ id: 'thread-a' }));
+    const { findAllByTestId } = render(DiffPanelDrawer, { props: { pane } });
+
+    // Wait for FileCard rows to render after the patch parses.
+    const toggles = await findAllByTestId('diff-panel-file-toggle');
+    const fooToggle = toggles.find((t) => t.getAttribute('data-path') === 'src/lib/foo.ts');
+    expect(fooToggle).toBeTruthy();
+    // The toggle and the editor-link icon are sibling buttons under
+    // the same flex header; the wrapping <section> is the closest
+    // ancestor. Use that as the search root.
+    const fileCard = fooToggle!.closest('section') as HTMLElement;
+    const link = fileCard.querySelector('[data-testid="editor-link-icon"]') as HTMLElement;
+    expect(link).not.toBeNull();
+
+    await fireEvent.click(link);
+    await waitFor(() => {
+      expect(openMock).toHaveBeenCalledWith('src/lib/foo.ts', 0, 0);
+    });
+  });
 });

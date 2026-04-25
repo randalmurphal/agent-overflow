@@ -373,7 +373,7 @@ func TestE2E_Codex_AppRestart_GhostRowsFlipped(t *testing.T) {
 		if name != "provider:item_event" {
 			return
 		}
-		item, ok := itemFromItemStreamEnvelope(data)
+		item, ok := itemFromItemStreamEvent(data)
 		if !ok {
 			return
 		}

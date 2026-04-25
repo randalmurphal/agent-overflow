@@ -7,10 +7,16 @@ forward-compatible).
 ## Layout
 
 - `settings.go` — `Settings` struct, `Load` / `Save`, the sparse
-  JSON marshal/unmarshal.
+  JSON marshal/unmarshal, schema versioning (`CurrentSchemaVersion`).
 - `validate.go` — enum allow-lists (theme, timestamp format, provider,
-  reasoning effort, text-generation provider) with a single `Validate`
-  entry point.
+  reasoning effort, text-generation provider) plus the
+  `ValidateRemoteEndpointURL` / `ValidateRemoteEndpointToken` helpers
+  used by both the App-level remote-endpoint mutators and the
+  `--connect` URL parser. Single `Validate` entry point for the
+  Settings struct as a whole.
+- `remote.go` — the `RemoteEndpoint` shape and its CRUD helpers
+  (`Add` / `Update` / `Delete` / `Touch`). Backs the `--connect`
+  target list the desktop binary's settings panel exposes.
 
 ## Responsibility boundary
 

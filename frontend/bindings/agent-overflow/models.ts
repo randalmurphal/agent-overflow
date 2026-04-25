@@ -267,6 +267,45 @@ export class Draft {
 }
 
 /**
+ * EditorInfo is the wire shape of an editor row exposed to the
+ * frontend by ListAvailableEditors. We deliberately publish a subset
+ * of editor.Editor — ResolvedPath stays internal because it would
+ * leak filesystem layout (e.g. "/mnt/c/Users/<actual-username>/...")
+ * to any code that can read settings, including future remote
+ * surfaces. The frontend only needs ID / Name / Available to render
+ * the picker.
+ */
+export class EditorInfo {
+    "id": string;
+    "name": string;
+    "available": boolean;
+    "envFallback"?: boolean;
+
+    /** Creates a new EditorInfo instance. */
+    constructor($$source: Partial<EditorInfo> = {}) {
+        if (!("id" in $$source)) {
+            this["id"] = "";
+        }
+        if (!("name" in $$source)) {
+            this["name"] = "";
+        }
+        if (!("available" in $$source)) {
+            this["available"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new EditorInfo instance from a string or object.
+     */
+    static createFrom($$source: any = {}): EditorInfo {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new EditorInfo($$parsedSource as Partial<EditorInfo>);
+    }
+}
+
+/**
  * GeneratedCommitMessage is the structured output the frontend fills
  * the commit dialog with. Subject is capped at 72 chars (imperative,
  * no trailing period); body may be empty or multi-paragraph Markdown.
@@ -325,6 +364,74 @@ export class Keybinding {
     static createFrom($$source: any = {}): Keybinding {
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         return new Keybinding($$parsedSource as Partial<Keybinding>);
+    }
+}
+
+/**
+ * NetworkSettings is the wire-shaped network preferences a settings
+ * UI reads / writes. Mirrors settings.NetworkSettings (which only
+ * persists user-controlled state) plus server-derived URL + Token
+ * fields the user can copy. The URL and Token are read-only on
+ * SetNetworkSettings — the server owns those.
+ */
+export class NetworkSettings {
+    /**
+     * BindAll, when true, asks the transport server to listen on the
+     * LAN-reachable bind (0.0.0.0) so other devices on the network can
+     * reach the app. Default false keeps the server on 127.0.0.1.
+     */
+    "bindAll": boolean;
+
+    /**
+     * URL is the http://host:port/?t=<token> URL the user can paste
+     * into a remote browser. Server-derived: when BindAll is true and
+     * a non-loopback interface IP is discoverable, the URL points at
+     * the LAN IP; otherwise it falls back to the server's own Addr.
+     */
+    "url": string;
+
+    /**
+     * Token is the current ephemeral auth token. Surfaced for
+     * debugging / advanced wiring; the user shouldn't normally need
+     * to touch it directly.
+     */
+    "token": string;
+
+    /**
+     * Insecure is true when the URL above traverses an untrusted
+     * network in cleartext. Today that's any LAN bind: the URL is
+     * http://, the token is in the query string, and a network
+     * observer on the same Wi-Fi can read both. The frontend renders
+     * a warning banner when Insecure is true so the user knows to
+     * front the bind with Tailscale Serve, an SSH tunnel, or a
+     * reverse proxy before sharing.
+     */
+    "insecure": boolean;
+
+    /** Creates a new NetworkSettings instance. */
+    constructor($$source: Partial<NetworkSettings> = {}) {
+        if (!("bindAll" in $$source)) {
+            this["bindAll"] = false;
+        }
+        if (!("url" in $$source)) {
+            this["url"] = "";
+        }
+        if (!("token" in $$source)) {
+            this["token"] = "";
+        }
+        if (!("insecure" in $$source)) {
+            this["insecure"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new NetworkSettings instance from a string or object.
+     */
+    static createFrom($$source: any = {}): NetworkSettings {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new NetworkSettings($$parsedSource as Partial<NetworkSettings>);
     }
 }
 
@@ -420,6 +527,45 @@ export class PayloadPreview {
     static createFrom($$source: any = {}): PayloadPreview {
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         return new PayloadPreview($$parsedSource as Partial<PayloadPreview>);
+    }
+}
+
+/**
+ * RemoteEndpointSummary is the wire shape returned by
+ * ListRemoteEndpoints. It mirrors settings.RemoteEndpoint with the
+ * Token deliberately omitted: a LAN-attached token-holder calling
+ * ListRemoteEndpoints must not be able to harvest credentials for
+ * other backends. Callers that need the token (the "Copy launch
+ * command" affordance) fetch it explicitly through
+ * GetRemoteEndpointToken, which is logged server-side.
+ */
+export class RemoteEndpointSummary {
+    "id": string;
+    "name": string;
+    "url": string;
+    "lastUsedAt"?: number;
+
+    /** Creates a new RemoteEndpointSummary instance. */
+    constructor($$source: Partial<RemoteEndpointSummary> = {}) {
+        if (!("id" in $$source)) {
+            this["id"] = "";
+        }
+        if (!("name" in $$source)) {
+            this["name"] = "";
+        }
+        if (!("url" in $$source)) {
+            this["url"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new RemoteEndpointSummary instance from a string or object.
+     */
+    static createFrom($$source: any = {}): RemoteEndpointSummary {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new RemoteEndpointSummary($$parsedSource as Partial<RemoteEndpointSummary>);
     }
 }
 

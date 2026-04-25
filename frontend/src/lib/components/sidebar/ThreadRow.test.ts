@@ -94,7 +94,7 @@ describe('<ThreadRow> unarchive', () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    expect(pane.generalError ?? '').toMatch(/Failed to unarchive thread/);
+    expect(pane.generalError ?? '').toMatch(/Rpc down\.|rpc down/i);
   });
 
   it('clicking the row with a modifier on an archived thread still invokes the select handler', async () => {

@@ -97,6 +97,12 @@ func (a *App) resolveSavePayloadPicker() savePayloadPicker {
 	if a.savePayloadPickerFn != nil {
 		return a.savePayloadPickerFn
 	}
+	// Headless mode (Phase D's WSL backend) doesn't construct a Wails
+	// app — the native save dialog is replaced by a frontend-side
+	// download path. Returning nil makes SavePayloadToFile error out
+	// with a clear "requires active application" message; the WSL
+	// frontend never invokes this path because its UI uses the
+	// download fallback.
 	if a.app == nil {
 		return nil
 	}
@@ -139,7 +145,11 @@ func (a *App) SavePayloadToFile(threadID string, payloadID string) (string, erro
 	if err != nil {
 		return "", err
 	}
-	if err := os.WriteFile(path, data, 0644); err != nil {
+	// 0600 — saved payloads can carry tool output and provider responses
+	// the user wouldn't want world-readable on a shared host. The user
+	// picked the path explicitly, so it's deliberate persistence; lock
+	// the file mode down rather than leave it world-readable by default.
+	if err := os.WriteFile(path, data, 0o600); err != nil {
 		return "", fmt.Errorf("write payload to %s: %w", path, err)
 	}
 	return path, nil

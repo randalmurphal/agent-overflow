@@ -160,6 +160,13 @@ func validateSettings(current Settings) (Settings, error) {
 	); err != nil {
 		return Settings{}, err
 	}
+
+	// Editor.Preference is open-vocabulary because detection mints
+	// dynamic IDs (catalog editors plus "env:editor" / "env:visual"
+	// fallbacks). We trim but don't enum-validate — an unknown value
+	// just falls through to the catalog priority at resolve time, no
+	// schema migration required when a new editor lands.
+	current.Editor.Preference = strings.TrimSpace(current.Editor.Preference)
 	return current, nil
 }
 
@@ -250,6 +257,7 @@ func sanitizeLoadedSettings(current Settings) Settings {
 		DefaultSettings.TextGenerationReasoningEffort,
 		allowedReasoningEfforts,
 	)
+	current.Editor.Preference = strings.TrimSpace(current.Editor.Preference)
 	return current
 }
 

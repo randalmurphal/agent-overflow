@@ -5,10 +5,12 @@
   // to Modal. Destructive variant swaps the confirm button to the error
   // palette so dangerous actions read as such.
   //
-  // The Modal primitive's built-in focus trap autofocuses the first
-  // element with [data-autofocus] inside the dialog, so the Confirm
-  // button gets focus on open without extra wiring — Button exposes
-  // `autofocus` which stamps the attribute on the underlying <button>.
+  // Focus policy: non-destructive dialogs autofocus Confirm so a single
+  // Enter accepts the prompt. Destructive dialogs autofocus Cancel
+  // instead — matches macOS Finder, GitHub, Linear conventions, and
+  // protects against an accidentally-spammed Enter key wiping the
+  // user's work. The Modal primitive's focus trap looks for the
+  // [data-autofocus] attribute Button stamps via its `autofocus` prop.
   import Modal from '../primitives/Modal.svelte';
   import Button from '../primitives/Button.svelte';
 
@@ -47,13 +49,18 @@
     </p>
   {/snippet}
   {#snippet footer()}
-    <Button variant="secondary" size="sm" onclick={onCancel}>
+    <Button
+      variant="secondary"
+      size="sm"
+      autofocus={destructive}
+      onclick={onCancel}
+    >
       {#snippet children()}{cancelLabel}{/snippet}
     </Button>
     <Button
       variant={destructive ? 'danger' : 'primary'}
       size="sm"
-      autofocus
+      autofocus={!destructive}
       onclick={onConfirm}
     >
       {#snippet children()}{confirmLabel}{/snippet}

@@ -3,6 +3,7 @@ module agent-overflow
 go 1.25.0
 
 require (
+	github.com/coder/websocket v1.8.14
 	github.com/creack/pty v1.1.24
 	github.com/google/uuid v1.6.0
 	github.com/wailsapp/wails/v3 v3.0.0-alpha.76
@@ -14,6 +15,7 @@ require (
 	go.opentelemetry.io/otel/sdk v1.43.0
 	go.opentelemetry.io/otel/sdk/metric v1.43.0
 	go.opentelemetry.io/otel/trace v1.43.0
+	golang.org/x/sys v0.42.0
 	modernc.org/sqlite v1.48.2
 )
 
@@ -60,7 +62,6 @@ require (
 	github.com/clipperhouse/stringish v0.1.1 // indirect
 	github.com/clipperhouse/uax29/v2 v2.4.0 // indirect
 	github.com/cloudflare/circl v1.6.3 // indirect
-	github.com/coder/websocket v1.8.14 // indirect
 	github.com/containerd/console v1.0.5 // indirect
 	github.com/cyphar/filepath-securejoin v0.6.1 // indirect
 	github.com/danieljoos/wincred v1.2.3 // indirect
@@ -163,7 +164,6 @@ require (
 	golang.org/x/mod v0.33.0 // indirect
 	golang.org/x/net v0.52.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
-	golang.org/x/sys v0.42.0 // indirect
 	golang.org/x/term v0.41.0 // indirect
 	golang.org/x/text v0.35.0 // indirect
 	golang.org/x/tools v0.42.0 // indirect
