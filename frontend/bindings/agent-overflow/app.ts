@@ -706,8 +706,8 @@ export function ListTerminals(threadID: string): $CancellablePromise<terminal$0.
 
 /**
  * ListThreadCheckpoints returns every persisted checkpoint row for a thread.
- * Ordering is ascending by turn_index so the UI can render a turn-navigation
- * strip without additional sorting.
+ * Ordering is ascending by checkpoint turn count so the UI can render a
+ * turn-navigation strip without additional sorting.
  */
 export function ListThreadCheckpoints(threadID: string): $CancellablePromise<store$0.Checkpoint[]> {
     return $Call.ByID(1853132444, threadID).then(($result: any) => {
