@@ -7,9 +7,6 @@
 // screen but have different lifecycles (data refreshes; view state
 // persists across refreshes).
 
-import { getThreads } from './threads.svelte';
-import { getProjects } from './projects.svelte';
-
 const EXPANDED_STORAGE_KEY = 'agent-overflow:sidebar:expandedProjects';
 const SORT_MODE_KEY = 'agent-overflow:sidebar:projectSortMode';
 const EXPANDED_DISCUSSIONS_KEY = 'agent-overflow:sidebar:expandedDiscussions';
@@ -116,23 +113,6 @@ export function collapseProject(id: string): void {
   next.delete(id);
   expandedProjects = next;
   writeExpanded(next);
-}
-
-/**
- * Ensure the project containing the active thread is expanded. Additive
- * only — we never auto-collapse on thread change. Called from the sidebar
- * whenever the active thread changes so the user always sees their
- * current thread in context.
- */
-export function expandProjectsForActiveThread(threadId: string | null): void {
-  if (!threadId) return;
-  const thread = getThreads().find((t) => t.id === threadId);
-  // The Thread shape carries a projectId once Wave 3 backend changes land.
-  const projectId = (thread as { projectId?: string } | undefined)?.projectId;
-  if (!projectId) return;
-  if (getProjects().some((p) => p.project.id === projectId)) {
-    expandProject(projectId);
-  }
 }
 
 export function getProjectSortMode(): ProjectSortMode {

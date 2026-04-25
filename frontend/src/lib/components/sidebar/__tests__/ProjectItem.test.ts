@@ -8,7 +8,15 @@ import {
   isProjectExpanded,
   resetSidebarForTest,
 } from '../../../stores/sidebar.svelte';
-import type { Project, ProjectWithCounts } from '../../../types/models';
+import {
+  resetForTest as resetThreadStatuses,
+  setThreadStatus,
+} from '../../../stores/threadStatuses.svelte';
+import type { Item, Project, ProjectWithCounts, Thread } from '../../../types/models';
+import {
+  resetBindingMocks,
+  setBindingMock,
+} from '../../../../test/mocks/bindings-app';
 
 function wrap(id: string, overrides: Partial<Project> = {}): ProjectWithCounts {
   return {
@@ -27,9 +35,35 @@ function wrap(id: string, overrides: Partial<Project> = {}): ProjectWithCounts {
   };
 }
 
+function thread(id: string, overrides: Partial<Thread> = {}): Thread {
+  return {
+    id,
+    title: `Thread ${id}`,
+    provider: 'claude',
+    workspacePath: '/tmp/ws',
+    projectPath: '/tmp/ws',
+    projectId: 'p1',
+    mode: 'chat',
+    model: 'claude-sonnet-4-6',
+    createdAt: 0,
+    updatedAt: 0,
+    archived: false,
+    ...overrides,
+  };
+}
+
 describe('<ProjectItem>', () => {
   beforeEach(() => {
     resetSidebarForTest();
+    resetThreadStatuses();
+    resetBindingMocks();
+    setBindingMock('SwitchThread', async (threadId: string) => thread(threadId));
+    setBindingMock('ListRecentThreadItems', async () => ({
+      items: [] as Item[],
+      oldestTurnIndex: -1,
+      hasMore: false,
+    }));
+    setBindingMock('ListRecentTurns', async () => []);
   });
 
   it('renders collapsed by default and exposes an aria-expanded chevron', () => {
@@ -108,5 +142,29 @@ describe('<ProjectItem>', () => {
     // The click should not have toggled expansion — only onNewThread fires.
     expect(isProjectExpanded('p1')).toBe(false);
     expect(onNewThread).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps an active running project collapsed and shows status plus active thread pin', async () => {
+    const pane = createThreadPane();
+    const runningThread = thread('t-running', { title: 'Active work' });
+    await pane.switchThread(runningThread);
+    setThreadStatus(runningThread.id, 'running');
+
+    const { getByTestId, queryByTestId, getByText } = render(ProjectItem, {
+      props: {
+        project: wrap('p1'),
+        threads: [runningThread],
+        pane,
+      },
+    });
+
+    await tick();
+
+    expect(isProjectExpanded('p1')).toBe(false);
+    expect(getByTestId('project-item-chevron').getAttribute('aria-expanded')).toBe('false');
+    expect(getByTestId('project-item-status-dot').getAttribute('data-status')).toBe('running');
+    expect(getByTestId('project-item-active-pin')).toBeInTheDocument();
+    expect(getByText('Active work')).toBeInTheDocument();
+    expect(queryByTestId('project-thread-list')).toBeNull();
   });
 });

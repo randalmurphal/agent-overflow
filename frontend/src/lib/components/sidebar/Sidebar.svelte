@@ -7,7 +7,6 @@
   import { onDestroy } from 'svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { refreshProjects } from '../../stores/projects.svelte';
-  import { expandProjectsForActiveThread } from '../../stores/sidebar.svelte';
   import { subscribeJumpHints } from '../../stores/keyboardModifiers.svelte';
   import {
     getSidebarWidth,
@@ -47,12 +46,6 @@
         showFromPR = true;
       });
     }
-  });
-
-  // Keep the project of the currently-open thread expanded so the user
-  // never sees their active thread hidden behind a collapsed chevron.
-  $effect(() => {
-    expandProjectsForActiveThread(pane.threadId);
   });
 
   // Kick off the projects fetch on mount. Callers refresh threads from
