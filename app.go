@@ -88,14 +88,14 @@ type App struct {
 	stopSessionFn         func(string) error
 	sendMessageFn         func(string, string, []string) error
 	generateBranchNameFn  func(store.Thread, string) (string, error)
-	generateThreadTitleFn func(store.Thread, string) (string, error)
-	// commitExecutor stubs the provider-CLI invocation used by
-	// GenerateCommitMessage. Production leaves it nil — the commit path
-	// calls execCommitCLI directly. Tests install a fake that returns
-	// a canned stdout/stderr/exitCode triple so the test suite runs
-	// without `codex` / `claude` binaries on PATH.
-	commitExecutor commitCLIExecutor
-	emitEventFn    func(eventName string, data any)
+	generateThreadTitleFn func(store.Thread, string, []store.Attachment) (string, error)
+	// textGenerationExecutor stubs the provider-CLI invocation used by short
+	// text-generation helpers. Production leaves it nil — call sites use
+	// execTextGenerationCLI directly. Tests install a fake that returns a
+	// canned stdout/stderr/exitCode triple so the test suite runs without
+	// `codex` / `claude` binaries on PATH.
+	textGenerationExecutor textGenerationCLIExecutor
+	emitEventFn            func(eventName string, data any)
 	// shutdownStepFn is a test-only hook fired after every step of
 	// Shutdown. Production leaves this nil. Order tests install it to
 	// record the step sequence and observe per-step errors without

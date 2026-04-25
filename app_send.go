@@ -231,7 +231,7 @@ func (a *App) sendMessageWithOptions(threadID string, content string, opts sendM
 		return err
 	}
 
-	a.maybeGenerateThreadTitle(thread, content, hasPriorItems)
+	a.maybeGenerateThreadTitleWithAttachments(thread, content, hasPriorItems, persistedAttachments)
 	return nil
 }
 

@@ -245,7 +245,7 @@ func TestSendMessageGeneratesClaudeThreadTitleOnFirstTurn(t *testing.T) {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
 
-	app.generateThreadTitleFn = func(thread store.Thread, message string) (string, error) {
+	app.generateThreadTitleFn = func(thread store.Thread, message string, _ []store.Attachment) (string, error) {
 		if message != "Fix reconnect spinner on resume" {
 			t.Fatalf("message = %q, want first user turn", message)
 		}
@@ -331,7 +331,7 @@ func TestSendMessageDoesNotOverwriteRenamedThreadTitle(t *testing.T) {
 	// release the generator and wait for it to settle.
 	generatorGate := make(chan struct{})
 	generatorDone := make(chan struct{})
-	app.generateThreadTitleFn = func(store.Thread, string) (string, error) {
+	app.generateThreadTitleFn = func(store.Thread, string, []store.Attachment) (string, error) {
 		<-generatorGate
 		defer close(generatorDone)
 		return "Generated title", nil

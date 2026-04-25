@@ -263,18 +263,18 @@ func TestGenerateCommitMessage_CodexPathHappy(t *testing.T) {
 	// Install the commit executor stub: write a realistic output.json
 	// to the --output-last-message path so the real file-read path is
 	// exercised end-to-end.
-	var gotSpec commitCLISpec
-	app.commitExecutor = func(_ context.Context, spec commitCLISpec) (commitCLIResult, error) {
+	var gotSpec textGenerationCLISpec
+	app.textGenerationExecutor = func(_ context.Context, spec textGenerationCLISpec) (textGenerationCLIResult, error) {
 		gotSpec = spec
 		payload := []byte(`{"subject":"Add world to README","body":"Mention the new world line."}`)
 		outputPath := extractCodexOutputPath(spec.Args)
 		if outputPath == "" {
-			t.Fatalf("commitCLISpec has no --output-last-message; args=%v", spec.Args)
+			t.Fatalf("textGenerationCLISpec has no --output-last-message; args=%v", spec.Args)
 		}
 		if err := os.WriteFile(outputPath, payload, 0o600); err != nil {
-			return commitCLIResult{}, err
+			return textGenerationCLIResult{}, err
 		}
-		return commitCLIResult{ExitCode: 0}, nil
+		return textGenerationCLIResult{ExitCode: 0}, nil
 	}
 
 	now := time.Now().UnixMilli()
@@ -303,9 +303,9 @@ func TestGenerateCommitMessage_CodexPathHappy(t *testing.T) {
 	if !argsContain(gotSpec.Args, "--model") {
 		t.Errorf("codex args missing '--model'; got %v", gotSpec.Args)
 	}
-	// Default model for codex commit-message is gpt-5.4-mini.
-	if modelArg := nextArgAfter(gotSpec.Args, "--model"); modelArg != defaultCommitCodexModel {
-		t.Errorf("codex model arg = %q, want %q", modelArg, defaultCommitCodexModel)
+	// Default model for codex text generation is gpt-5.4-mini.
+	if modelArg := nextArgAfter(gotSpec.Args, "--model"); modelArg != defaultTextGenerationCodexModel {
+		t.Errorf("codex model arg = %q, want %q", modelArg, defaultTextGenerationCodexModel)
 	}
 	// Default reasoning effort is "low".
 	if !argsContainSubstring(gotSpec.Args, `model_reasoning_effort="low"`) {
@@ -326,10 +326,10 @@ func TestGenerateCommitMessage_ClaudePathHappy(t *testing.T) {
 	}
 
 	// Claude returns the envelope as the last stdout line.
-	var gotSpec commitCLISpec
-	app.commitExecutor = func(_ context.Context, spec commitCLISpec) (commitCLIResult, error) {
+	var gotSpec textGenerationCLISpec
+	app.textGenerationExecutor = func(_ context.Context, spec textGenerationCLISpec) (textGenerationCLIResult, error) {
 		gotSpec = spec
-		return commitCLIResult{
+		return textGenerationCLIResult{
 			Stdout: `{"session_id":"abc"}
 {"structured_output":{"subject":"Translate README greeting","body":""}}`,
 			ExitCode: 0,
@@ -358,8 +358,8 @@ func TestGenerateCommitMessage_ClaudePathHappy(t *testing.T) {
 	if !argsContain(gotSpec.Args, "--dangerously-skip-permissions") {
 		t.Errorf("claude args missing '--dangerously-skip-permissions'; got %v", gotSpec.Args)
 	}
-	if modelArg := nextArgAfter(gotSpec.Args, "--model"); modelArg != defaultCommitClaudeModel {
-		t.Errorf("claude model arg = %q, want %q", modelArg, defaultCommitClaudeModel)
+	if modelArg := nextArgAfter(gotSpec.Args, "--model"); modelArg != defaultTextGenerationClaudeModel {
+		t.Errorf("claude model arg = %q, want %q", modelArg, defaultTextGenerationClaudeModel)
 	}
 }
 
@@ -394,15 +394,15 @@ func TestGenerateCommitMessage_RoutingRespectsSettings(t *testing.T) {
 				t.Fatalf("set provider: %v", err)
 			}
 
-			var gotSpec commitCLISpec
-			app.commitExecutor = func(_ context.Context, spec commitCLISpec) (commitCLIResult, error) {
+			var gotSpec textGenerationCLISpec
+			app.textGenerationExecutor = func(_ context.Context, spec textGenerationCLISpec) (textGenerationCLIResult, error) {
 				gotSpec = spec
 				if tc.provider == "codex" {
 					outputPath := extractCodexOutputPath(spec.Args)
 					_ = os.WriteFile(outputPath, []byte(`{"subject":"ok","body":""}`), 0o600)
-					return commitCLIResult{ExitCode: 0}, nil
+					return textGenerationCLIResult{ExitCode: 0}, nil
 				}
-				return commitCLIResult{
+				return textGenerationCLIResult{
 					Stdout:   `{"structured_output":{"subject":"ok","body":""}}`,
 					ExitCode: 0,
 				}, nil
@@ -440,12 +440,12 @@ func TestGenerateCommitMessage_RoutingCustomEffortAndModel(t *testing.T) {
 		t.Fatalf("create thread: %v", err)
 	}
 
-	var gotSpec commitCLISpec
-	app.commitExecutor = func(_ context.Context, spec commitCLISpec) (commitCLIResult, error) {
+	var gotSpec textGenerationCLISpec
+	app.textGenerationExecutor = func(_ context.Context, spec textGenerationCLISpec) (textGenerationCLIResult, error) {
 		gotSpec = spec
 		outputPath := extractCodexOutputPath(spec.Args)
 		_ = os.WriteFile(outputPath, []byte(`{"subject":"x","body":""}`), 0o600)
-		return commitCLIResult{ExitCode: 0}, nil
+		return textGenerationCLIResult{ExitCode: 0}, nil
 	}
 
 	if _, err := app.GenerateCommitMessage("t-custom"); err != nil {
@@ -473,9 +473,9 @@ func TestGenerateCommitMessage_CLIMissingReturnsFriendlyError(t *testing.T) {
 		t.Fatalf("create thread: %v", err)
 	}
 
-	app.commitExecutor = func(_ context.Context, _ commitCLISpec) (commitCLIResult, error) {
+	app.textGenerationExecutor = func(_ context.Context, _ textGenerationCLISpec) (textGenerationCLIResult, error) {
 		// Emulate exec.LookPath failure shape — a PathError wrapping ENOENT.
-		return commitCLIResult{}, exec.ErrNotFound
+		return textGenerationCLIResult{}, exec.ErrNotFound
 	}
 	_, err := app.GenerateCommitMessage("t-missing")
 	if err == nil {
@@ -500,8 +500,8 @@ func TestGenerateCommitMessage_CLIFailureSurfacesStderr(t *testing.T) {
 		t.Fatalf("create thread: %v", err)
 	}
 
-	app.commitExecutor = func(_ context.Context, _ commitCLISpec) (commitCLIResult, error) {
-		return commitCLIResult{
+	app.textGenerationExecutor = func(_ context.Context, _ textGenerationCLISpec) (textGenerationCLIResult, error) {
+		return textGenerationCLIResult{
 			Stderr:   "boom",
 			ExitCode: 1,
 		}, nil
@@ -553,7 +553,7 @@ func TestGenerateCommitMessage_InvalidProviderCoercesToDefault(t *testing.T) {
 		t.Fatalf("create thread: %v", err)
 	}
 
-	app.commitExecutor = func(_ context.Context, spec commitCLISpec) (commitCLIResult, error) {
+	app.textGenerationExecutor = func(_ context.Context, spec textGenerationCLISpec) (textGenerationCLIResult, error) {
 		// Confirm we landed on the codex path — if the default coercion
 		// broke, we'd see claude's '-p' here instead.
 		if !argsContain(spec.Args, "exec") {
@@ -561,7 +561,7 @@ func TestGenerateCommitMessage_InvalidProviderCoercesToDefault(t *testing.T) {
 		}
 		outputPath := extractCodexOutputPath(spec.Args)
 		_ = os.WriteFile(outputPath, []byte(`{"subject":"ok","body":""}`), 0o600)
-		return commitCLIResult{ExitCode: 0}, nil
+		return textGenerationCLIResult{ExitCode: 0}, nil
 	}
 	if _, err := app.GenerateCommitMessage("t-coerce"); err != nil {
 		t.Fatalf("handler should succeed after provider coercion; got: %v", err)
@@ -622,7 +622,7 @@ func nextArgAfter(args []string, flag string) string {
 }
 
 // extractCodexOutputPath pulls the --output-last-message path out of a
-// Codex commitCLISpec so test stubs can populate the file the real CLI
+// Codex textGenerationCLISpec so test stubs can populate the file the real CLI
 // would write. Returns "" if the flag isn't present.
 func extractCodexOutputPath(args []string) string {
 	return nextArgAfter(args, "--output-last-message")
