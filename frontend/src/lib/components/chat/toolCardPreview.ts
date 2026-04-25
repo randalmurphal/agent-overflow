@@ -1,17 +1,6 @@
 import type { Item } from '../../types/models';
 import type { ToolKindVisual } from './toolCardHeader';
 
-export function parseToolCardMeta(raw: string | undefined): Record<string, unknown> | null {
-  if (!raw) return null;
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    if (parsed && typeof parsed === 'object') return parsed as Record<string, unknown>;
-  } catch {
-    return null;
-  }
-  return null;
-}
-
 export function toolCardInputPreview(
   item: Item,
   classification: ToolKindVisual,

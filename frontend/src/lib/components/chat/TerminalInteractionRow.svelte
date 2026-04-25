@@ -2,22 +2,14 @@
   import Timer from 'lucide-svelte/icons/timer';
   import Icon from '../primitives/Icon.svelte';
   import type { CommandOutputMeta, Item } from '../../types/models';
+  import { parseJsonObject } from '../../utils/parseJsonObject';
   import CommandOutput from './CommandOutput.svelte';
 
   let { item }: { item: Item } = $props();
 
-  function parseCommandOutputMeta(raw: string | undefined): CommandOutputMeta | null {
-    if (!raw) return null;
-    try {
-      return JSON.parse(raw) as CommandOutputMeta;
-    } catch {
-      return null;
-    }
-  }
-
   let commandOutputMeta = $derived<CommandOutputMeta | null>(
     item.payloadKind === 'command_output' && item.payloadId
-      ? parseCommandOutputMeta(item.payloadMeta)
+      ? (parseJsonObject(item.payloadMeta) as CommandOutputMeta | null)
       : null,
   );
 

@@ -3,6 +3,8 @@
   import { getSettings } from '../../stores/settings.svelte';
   import type { Item, ToolInlineDiffFile, ToolResultMeta } from '../../types/models';
   import { parseDiffLines, type DiffLine } from '../../utils/diff';
+  import { deriveCompletionStatus } from '../../utils/toolCompletionStatus';
+  import CompletionBadge from './CompletionBadge.svelte';
   import LazyContentBlock from './LazyContentBlock.svelte';
   import ToolDecisionChip from './ToolDecisionChip.svelte';
   import { createPayloadExpansion, formatPayloadSize } from './payloadExpansion.svelte';
@@ -19,6 +21,11 @@
   const hasInlineDiff = $derived(Boolean(meta.inlineDiff && meta.inlineDiff.files.length > 0));
   const hasExactPatch = $derived(meta.inlineDiff?.availability === 'exact_patch' && Boolean(payloadId));
   const wrapClass = $derived(getSettings().diffWordWrap ? 'whitespace-pre-wrap break-all' : 'whitespace-pre');
+  // Re-parse payloadMeta inside the helper rather than reusing the
+  // `meta: ToolResultMeta` prop: ToolResultMeta does not declare
+  // `is_error` or `exit_code`, so the typed view is an incomplete
+  // signal source. payloadMeta is the canonical record.
+  const completionStatus = $derived(deriveCompletionStatus(item));
   const patchLines = $derived.by<DiffLine[] | null>(() => {
     if (expansion.displayData === null) return null;
     return parseDiffLines(expansion.displayData);
@@ -58,7 +65,9 @@
       <div class="flex items-center gap-2">
         <p class="truncate text-[13px] font-medium text-fg">{meta.title || item.summary}</p>
         <ToolDecisionChip decision={item.decision} />
-        <span class="ml-auto text-[10px] text-success opacity-80">done</span>
+        {#if completionStatus !== null}
+          <CompletionBadge status={completionStatus} class="ml-auto opacity-80" />
+        {/if}
       </div>
       {#if detailText}
         <div class="mt-1">

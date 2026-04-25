@@ -440,7 +440,14 @@ describe('<ToolCallCard> backgrounded status label', () => {
     expect(status.getAttribute('title')).toBeNull();
   });
 
-  it('renders "done" (not "…") when isBackground && status === "completed"', async () => {
+  it('keeps "…" with no badge when a backgrounded launch row is somehow status=completed', async () => {
+    // Per the transcript stability invariant
+    // (docs/architecture/turn-lifecycle.md §1, plus the user-facing
+    // requirement that persisted launch rows do not mutate visually),
+    // a backgrounded tool_call launch row keeps its `…` affordance for
+    // the lifetime of the transcript even if its status flips. The
+    // completion lands on a separate tool_completion sibling row, and
+    // that's where the unified CompletionBadge renders.
     const pane = await buildPane();
     const item = makeItem({
       id: 'bg-done',
@@ -451,11 +458,12 @@ describe('<ToolCallCard> backgrounded status label', () => {
       isBackground: true,
     });
 
-    const { getByTestId } = render(ToolCallCard, { props: { pane, item } });
+    const { getByTestId, queryByTestId } = render(ToolCallCard, { props: { pane, item } });
 
     const status = getByTestId('tool-call-card-status');
-    expect(status.textContent?.trim()).toBe('done');
-    expect(status.getAttribute('aria-label')).toBeNull();
+    expect(status.textContent?.trim()).toBe('…');
+    expect(status.getAttribute('aria-label')).toBe('Backgrounded');
+    expect(queryByTestId('completion-badge')).toBeNull();
   });
 
   it('renders "running" (not "…") for tool_completion kind even when the flags match', async () => {
@@ -519,7 +527,29 @@ describe('<ToolCallCard> status dispatch', () => {
     expect(getByTestId('tool-call-card-status').getAttribute('data-status')).toBe('running');
   });
 
-  it('shows "failed" for errored tool calls', async () => {
+  it('renders the success badge for an inline tool_call that completed (non-background)', async () => {
+    // Helper coverage in toolCompletionStatus.test.ts pins the
+    // derivation; this pins the wiring in GenericToolCallRow's
+    // template — that the badge renders in the same slot the old
+    // status text occupied when the row resolves to success.
+    const pane = await buildPane();
+    const item = makeItem({
+      id: 't',
+      kind: 'tool_call',
+      status: 'completed',
+      isBackground: false,
+      toolName: 'Bash',
+      summary: 'ls',
+    });
+
+    const { getByTestId, queryByTestId } = render(ToolCallCard, { props: { pane, item } });
+
+    expect(queryByTestId('tool-call-card-status')).toBeNull();
+    const badge = getByTestId('completion-badge');
+    expect(badge.getAttribute('data-status')).toBe('success');
+  });
+
+  it('renders the failure badge for errored tool calls', async () => {
     const pane = await buildPane();
     const item = makeItem({
       id: 't',
@@ -529,12 +559,15 @@ describe('<ToolCallCard> status dispatch', () => {
       summary: 'oops',
     });
 
-    const { getByTestId } = render(ToolCallCard, { props: { pane, item } });
+    const { getByTestId, queryByTestId } = render(ToolCallCard, { props: { pane, item } });
 
-    expect(getByTestId('tool-call-card-status').textContent).toBe('failed');
+    expect(queryByTestId('tool-call-card-status')).toBeNull();
+    const badge = getByTestId('completion-badge');
+    expect(badge.getAttribute('data-status')).toBe('failure');
+    expect(badge.className).toContain('text-error');
   });
 
-  it('shows "done" for completed tool calls', async () => {
+  it('renders the success badge for completed tool calls', async () => {
     const pane = await buildPane();
     const item = makeItem({
       id: 't',
@@ -544,15 +577,20 @@ describe('<ToolCallCard> status dispatch', () => {
       summary: 'ok',
     });
 
-    const { getByTestId } = render(ToolCallCard, { props: { pane, item } });
+    const { getByTestId, queryByTestId } = render(ToolCallCard, { props: { pane, item } });
 
-    expect(getByTestId('tool-call-card-status').textContent).toBe('done');
+    expect(queryByTestId('tool-call-card-status')).toBeNull();
+    const badge = getByTestId('completion-badge');
+    expect(badge.getAttribute('data-status')).toBe('success');
+    expect(badge.className).toContain('text-success');
   });
 
-  it('shows "stopped" for killed tool calls, distinct from errored', async () => {
-    // `killed` is a user-initiated stop (Claude stop_task) — must NOT
-    // paint red ("failed") or green ("done"). Lands on muted text so
-    // the inline card matches the tray's gray "Stopped" badge.
+  it('collapses killed into the failure badge (user stop is a non-success terminal)', async () => {
+    // Pre-unification the row had a third "stopped" muted style. The
+    // unified badge collapses errored/killed/declined into a single
+    // failure variant per the design choice in the planning step —
+    // simpler vocabulary, fewer ad-hoc colors. The decision chip /
+    // tray still differentiate the cause (stopped vs failed).
     const pane = await buildPane();
     const item = makeItem({
       id: 't',
@@ -562,12 +600,12 @@ describe('<ToolCallCard> status dispatch', () => {
       summary: 'stopped',
     });
 
-    const { getByTestId } = render(ToolCallCard, { props: { pane, item } });
+    const { getByTestId, queryByTestId } = render(ToolCallCard, { props: { pane, item } });
 
-    const status = getByTestId('tool-call-card-status');
-    expect(status.textContent).toBe('stopped');
-    expect(status.className).toContain('text-text-secondary');
-    expect(status.className).not.toContain('text-error');
-    expect(status.className).not.toContain('text-success');
+    expect(queryByTestId('tool-call-card-status')).toBeNull();
+    const badge = getByTestId('completion-badge');
+    expect(badge.getAttribute('data-status')).toBe('failure');
+    expect(badge.className).toContain('text-error');
+    expect(badge.className).not.toContain('text-success');
   });
 });

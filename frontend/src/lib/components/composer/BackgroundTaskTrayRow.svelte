@@ -20,6 +20,7 @@
     type TrayTask,
   } from '../../utils/backgroundTray';
   import type { CommandOutputMeta, Item } from '../../types/models';
+  import { parseJsonObject } from '../../utils/parseJsonObject';
 
   interface Props {
     task: TrayTask;
@@ -39,21 +40,14 @@
   let { task, stopTarget, isStopping, onStop }: Props = $props();
   let expanded = $state(false);
 
-  function parseCommandOutputMeta(item: Item | null): CommandOutputMeta | null {
-    if (!item || item.payloadKind !== 'command_output' || !item.payloadId || !item.payloadMeta) return null;
-    try {
-      return JSON.parse(item.payloadMeta) as CommandOutputMeta;
-    } catch {
-      return null;
-    }
-  }
-
   let outputItem = $derived.by<Item | null>(() => {
     if (task.completion?.payloadKind === 'command_output' && task.completion.payloadId) return task.completion;
     if (task.launch?.payloadKind === 'command_output' && task.launch.payloadId) return task.launch;
     return null;
   });
-  let outputMeta = $derived(parseCommandOutputMeta(outputItem));
+  let outputMeta = $derived<CommandOutputMeta | null>(
+    parseJsonObject(outputItem?.payloadMeta) as CommandOutputMeta | null,
+  );
   let hasOutput = $derived(outputItem !== null && outputMeta !== null && !!outputItem.payloadId);
   let taskLabel = $derived(trayTaskLabel(task));
   let heading = $derived(task.anchor.toolName || task.launch?.toolName || task.completion?.toolName || 'Command');
@@ -138,7 +132,13 @@
   </div>
   {#if hasOutput && expanded && outputItem && outputMeta && outputItem.payloadId}
     <div class="ml-7 mr-2 mb-2" data-testid="background-task-tray-row-output">
-      <CommandOutput item={outputItem} meta={outputMeta} payloadId={outputItem.payloadId} allowShowFull={false} />
+      <CommandOutput
+        item={outputItem}
+        meta={outputMeta}
+        payloadId={outputItem.payloadId}
+        allowShowFull={false}
+        showCompletionBadge={false}
+      />
     </div>
   {/if}
 </div>

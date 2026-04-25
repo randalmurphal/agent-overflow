@@ -21,9 +21,14 @@ function makeItem(overrides: Partial<Item> = {}): Item {
 
 describe('<TerminalInteractionRow>', () => {
   it('renders the "Waited for background terminal" label from item.summary', () => {
-    const { getByTestId } = render(TerminalInteractionRow, { props: { item: makeItem() } });
+    const { getByTestId, container } = render(TerminalInteractionRow, { props: { item: makeItem() } });
     const row = getByTestId('terminal-interaction-row');
     expect(row.textContent).toContain('Waited for background terminal');
+    // Without an attached command_output payload there's no embedded
+    // CommandOutput card to render — and therefore no completion
+    // badge. Pin the negative so a refactor that always shows the
+    // badge here would fail this test.
+    expect(container.querySelector('[data-testid="completion-badge"]')).toBeNull();
   });
 
   it('falls back to the canonical label when summary is empty', () => {
@@ -63,6 +68,13 @@ describe('<TerminalInteractionRow>', () => {
 
     const toggle = getByRole('button', { name: /Toggle command output: sleep 1; echo done/i });
     expect(toggle.textContent).toContain('sleep 1; echo done');
-    expect(toggle.textContent).toContain('exit 0');
+    // exit-code text is gone; the unified completion badge carries the
+    // success/failure signal now (success because exitCode === 0).
+    // Pin the badge's *location* inside the toggle subtree so a future
+    // refactor that hides the badge behind the disclosure body still
+    // fails this test.
+    const badge = toggle.querySelector('[data-testid="completion-badge"]');
+    expect(badge).not.toBeNull();
+    expect(badge!.getAttribute('data-status')).toBe('success');
   });
 });

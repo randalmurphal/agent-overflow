@@ -551,5 +551,23 @@ describe('App integration — messaging flow', () => {
       const rowStatus = await findByTestId('background-task-tray-row-status');
       expect(rowStatus.getAttribute('data-status')).toBe('completed');
     });
+
+    // Cross-cutting end-to-end check: the sibling tool_completion row
+    // in the chat timeline must render the unified success badge
+    // (kind=tool_completion + status=completed → success per
+    // deriveCompletionStatus). The launch row above it still shows
+    // `…` per the transcript-stability invariant — pin both.
+    await waitFor(async () => {
+      const badges = document.querySelectorAll('[data-testid="completion-badge"]');
+      const successBadge = Array.from(badges).find(
+        (b) => b.getAttribute('data-status') === 'success',
+      );
+      expect(successBadge).toBeDefined();
+    });
+    // The launch row keeps `…` even after the sibling completes.
+    const launchStatus = document.querySelector(
+      '[data-testid="tool-call-card-status"][data-status="running"]',
+    );
+    expect(launchStatus?.textContent?.trim()).toBe('…');
   });
 });

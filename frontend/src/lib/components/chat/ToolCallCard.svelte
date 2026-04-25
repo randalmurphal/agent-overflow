@@ -11,6 +11,7 @@
     ToolResultMeta,
   } from '../../types/models';
   import type { ThreadPane } from '../../stores/thread.svelte';
+  import { parseJsonObject } from '../../utils/parseJsonObject';
   import CommandOutput from './CommandOutput.svelte';
   import DiffPreview from './DiffPreview.svelte';
   import GenericToolCallRow from './GenericToolCallRow.svelte';
@@ -19,29 +20,28 @@
 
   let { pane, item }: { pane: ThreadPane; item: Item } = $props();
 
-  function parseMeta<T>(raw: string | undefined): T | null {
-    if (!raw) return null;
-    try {
-      return JSON.parse(raw) as T;
-    } catch {
-      return null;
-    }
-  }
-
   let payloadKind = $derived(item.payloadKind);
   let payloadId = $derived(item.payloadId);
 
   let planMeta = $derived<ProposedPlanMeta | null>(
-    payloadKind === 'proposed_plan' && payloadId ? parseMeta<ProposedPlanMeta>(item.payloadMeta) : null,
+    payloadKind === 'proposed_plan' && payloadId
+      ? (parseJsonObject(item.payloadMeta) as ProposedPlanMeta | null)
+      : null,
   );
   let diffMeta = $derived<DiffMeta | null>(
-    payloadKind === 'diff' && payloadId ? parseMeta<DiffMeta>(item.payloadMeta) : null,
+    payloadKind === 'diff' && payloadId
+      ? (parseJsonObject(item.payloadMeta) as DiffMeta | null)
+      : null,
   );
   let cmdMeta = $derived<CommandOutputMeta | null>(
-    payloadKind === 'command_output' && payloadId ? parseMeta<CommandOutputMeta>(item.payloadMeta) : null,
+    payloadKind === 'command_output' && payloadId
+      ? (parseJsonObject(item.payloadMeta) as CommandOutputMeta | null)
+      : null,
   );
   let toolResultMeta = $derived<ToolResultMeta | null>(
-    payloadKind === 'tool_result' && payloadId ? parseMeta<ToolResultMeta>(item.payloadMeta) : null,
+    payloadKind === 'tool_result' && payloadId
+      ? (parseJsonObject(item.payloadMeta) as ToolResultMeta | null)
+      : null,
   );
 </script>
 

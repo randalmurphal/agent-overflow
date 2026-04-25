@@ -2,11 +2,14 @@
   import { slide } from 'svelte/transition';
   import ChevronRight from 'lucide-svelte/icons/chevron-right';
   import Icon from '../primitives/Icon.svelte';
+  import CompletionBadge from './CompletionBadge.svelte';
   import type { Item } from '../../types/models';
+  import { deriveCompletionStatus } from '../../utils/toolCompletionStatus';
   import ToolDecisionChip from './ToolDecisionChip.svelte';
   import ToolKindIcon from './ToolKindIcon.svelte';
   import { classifyToolName } from './toolCardHeader';
-  import { parseToolCardMeta, toolCardInputPreview } from './toolCardPreview';
+  import { parseJsonObject } from '../../utils/parseJsonObject';
+  import { toolCardInputPreview } from './toolCardPreview';
   import { createPayloadExpansion, formatPayloadSize } from './payloadExpansion.svelte';
   import AnsiText from './AnsiText.svelte';
 
@@ -21,8 +24,8 @@
     expansion.reset();
   });
 
-  let summaryMeta = $derived(parseToolCardMeta(item.payloadMeta));
-  let itemMeta = $derived(parseToolCardMeta(item.meta));
+  let summaryMeta = $derived(parseJsonObject(item.payloadMeta));
+  let itemMeta = $derived(parseJsonObject(item.meta));
 
   let time = $derived(
     new Date(item.createdAt).toLocaleTimeString(undefined, {
@@ -35,12 +38,6 @@
     return toolCardInputPreview(item, classification, summaryMeta, itemMeta);
   });
 
-  let exitCode = $derived.by<number | null>(() => {
-    if (!summaryMeta) return null;
-    const code = summaryMeta.exitCode;
-    return typeof code === 'number' ? code : null;
-  });
-
   let durationMs = $derived.by<number | null>(() => {
     if (!summaryMeta) return null;
     const d = summaryMeta.durationMs;
@@ -48,29 +45,22 @@
     return null;
   });
 
-  let isBackgroundedRunning = $derived(
-    item.kind === 'tool_call' && item.isBackground === true && item.status === 'running',
+  // Backgrounded launch rows are stable transcript records — they keep
+  // the `…` affordance for the lifetime of the row regardless of any
+  // status drift. The actual completion lands as a sibling
+  // tool_completion row that runs through `deriveCompletionStatus` and
+  // renders the unified badge.
+  let isBackgroundedLaunch = $derived(
+    item.kind === 'tool_call' && item.isBackground === true,
   );
 
-  let statusLabel = $derived.by(() => {
-    if (isBackgroundedRunning) return '…';
+  let runningLabel = $derived.by<string | null>(() => {
+    if (isBackgroundedLaunch) return '…';
     if (item.status === 'running' || item.status === 'streaming') return 'running';
-    if (item.status === 'errored') return 'failed';
-    if (item.status === 'killed') return 'stopped';
-    return 'done';
+    return null;
   });
 
-  let statusClass = $derived.by(() => {
-    if (item.status === 'running' || item.status === 'streaming') return 'text-accent';
-    if (item.status === 'errored') return 'text-error';
-    if (item.status === 'killed') return 'text-text-secondary';
-    return 'text-success';
-  });
-
-  let exitBadgeClass = $derived.by(() => {
-    if (exitCode === null) return '';
-    return exitCode === 0 ? 'bg-success/20 text-success' : 'bg-error/20 text-error';
-  });
+  let completionStatus = $derived(deriveCompletionStatus(item, { meta: summaryMeta }));
 
   let deferredOutputState = $derived.by(() => {
     if (!itemMeta) return '';
@@ -127,23 +117,23 @@
     {inputPreview}
   </span>
   <ToolDecisionChip decision={item.decision} />
-  <span
-    class="shrink-0 text-[10px] {statusClass} opacity-70 transition-opacity group-hover/tool:opacity-100"
-    data-testid="tool-call-card-status"
-    data-status={item.status}
-    title={isBackgroundedRunning ? 'Running in background' : undefined}
-    aria-label={isBackgroundedRunning ? 'Backgrounded' : undefined}
-  >
-    {statusLabel}
-  </span>
-  {#if exitCode !== null}
+  {#if runningLabel !== null}
     <span
-      class="shrink-0 rounded-[var(--radius-field)] px-1.5 py-0.5 text-[10px] font-medium {exitBadgeClass} opacity-70 transition-opacity group-hover/tool:opacity-100"
-      data-testid="tool-call-card-exit"
+      class="shrink-0 text-[10px] text-accent opacity-70 transition-opacity group-hover/tool:opacity-100"
+      data-testid="tool-call-card-status"
+      data-status={item.status}
+      title={isBackgroundedLaunch ? 'Running in background' : undefined}
+      aria-label={isBackgroundedLaunch ? 'Backgrounded' : undefined}
     >
-      exit {exitCode}
+      {runningLabel}
     </span>
-  {:else if durationMs !== null}
+  {:else if completionStatus !== null}
+    <CompletionBadge
+      status={completionStatus}
+      class="opacity-80 transition-opacity group-hover/tool:opacity-100"
+    />
+  {/if}
+  {#if durationMs !== null}
     <span
       class="shrink-0 tabular-nums text-[10px] text-fg-hint opacity-70 transition-opacity group-hover/tool:opacity-100"
       data-testid="tool-call-card-duration"

@@ -2,7 +2,9 @@
   import { slide } from 'svelte/transition';
   import ChevronRight from 'lucide-svelte/icons/chevron-right';
   import Icon from '../primitives/Icon.svelte';
+  import CompletionBadge from './CompletionBadge.svelte';
   import type { CommandOutputMeta, Item } from '../../types/models';
+  import { deriveCompletionStatus } from '../../utils/toolCompletionStatus';
   import ToolDecisionChip from './ToolDecisionChip.svelte';
   import { createPayloadExpansion, formatPayloadSize } from './payloadExpansion.svelte';
   import AnsiText from './AnsiText.svelte';
@@ -11,38 +13,40 @@
     item,
     meta,
     payloadId,
-    threadId,
     allowShowFull = true,
+    showCompletionBadge = true,
   }: {
-    item?: Item;
+    item: Item;
     meta: CommandOutputMeta;
     payloadId: string;
-    threadId?: string;
     allowShowFull?: boolean;
+    /** Suppress the completion badge in surfaces where the parent
+     * already renders a status icon (e.g. BackgroundTaskTrayRow's
+     * Loader/Check/AlertCircle/Square). Defaults to true so the
+     * chat-timeline rendering is unaffected. */
+    showCompletionBadge?: boolean;
   } = $props();
 
-  const expansion = createPayloadExpansion(() => payloadId, () => item?.threadId ?? threadId);
+  const expansion = createPayloadExpansion(() => payloadId, () => item.threadId);
 
   $effect(() => {
-    item?.threadId;
-    threadId;
+    item.threadId;
     payloadId;
     expansion.reset();
   });
 
-  let exitBadgeClasses = $derived(
-    meta.exitCode === 0
-      ? 'bg-success/20 text-success'
-      : 'bg-error/20 text-error'
+  let time = $derived(
+    new Date(item.createdAt).toLocaleTimeString(undefined, {
+      hour: 'numeric',
+      minute: '2-digit',
+    }),
   );
 
-  let time = $derived(
-    item
-      ? new Date(item.createdAt).toLocaleTimeString(undefined, {
-          hour: 'numeric',
-          minute: '2-digit',
-        })
-      : '',
+  // Pass the parent's typed meta inline so the helper does not re-parse
+  // payloadMeta. The runtime object retains is_error / exit_code keys
+  // even when the typed view drops them.
+  let completionStatus = $derived(
+    deriveCompletionStatus(item, { meta: meta as unknown as Record<string, unknown> }),
   );
 </script>
 
@@ -63,19 +67,17 @@
       <Icon icon={ChevronRight} size={12} strokeWidth={2} class="opacity-70" />
     </span>
     <span class="font-mono text-[12px] text-fg-muted truncate">{meta.command}</span>
-    <ToolDecisionChip decision={item?.decision} />
-    <span class="px-1.5 py-0.5 rounded-[var(--radius-field)] text-[10px] font-medium {exitBadgeClasses}">
-      exit {meta.exitCode}
-    </span>
-    {#if item}
-      <time
-        class="ml-auto text-[10px] text-fg-hint shrink-0 tabular-nums"
-        datetime={new Date(item.createdAt).toISOString()}
-        data-testid="command-output-time"
-      >
-        {time}
-      </time>
+    <ToolDecisionChip decision={item.decision} />
+    {#if showCompletionBadge && completionStatus !== null}
+      <CompletionBadge status={completionStatus} />
     {/if}
+    <time
+      class="ml-auto text-[10px] text-fg-hint shrink-0 tabular-nums"
+      datetime={new Date(item.createdAt).toISOString()}
+      data-testid="command-output-time"
+    >
+      {time}
+    </time>
   </button>
 
   <!-- Output content -->

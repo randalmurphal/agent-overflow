@@ -7,8 +7,7 @@ import type { CommandOutputMeta } from '../../types/models';
 import { DEFAULT_PAYLOAD_PREVIEW_BYTES } from './payloadExpansion.svelte';
 
 // Some Svelte transitions call Element.prototype.animate; jsdom doesn't
-// implement it. Stub it the same way ToolResultDropdown.test.ts does so
-// expand/collapse doesn't throw.
+// implement it. Stub it so expand/collapse doesn't throw.
 beforeAll(() => {
   if (typeof (Element.prototype as unknown as { animate?: unknown }).animate !== 'function') {
     (Element.prototype as unknown as { animate: (...args: unknown[]) => unknown }).animate =
@@ -136,6 +135,52 @@ describe('<CommandOutput>', () => {
     // Expand loads the preview but NOT the full body.
     expect(previewMock).toHaveBeenCalledWith('thread-1', 'pay-3', DEFAULT_PAYLOAD_PREVIEW_BYTES);
     expect(chunkMock).not.toHaveBeenCalled();
+  });
+
+  it('renders the success badge for an exitCode=0 command', () => {
+    const { getByTestId } = render(CommandOutput, {
+      props: {
+        item: makeItem({ id: 'tool-cmd', kind: 'tool_completion', status: 'completed' }),
+        meta: commandMeta({ command: 'ls', exitCode: 0 }),
+        payloadId: 'cmd-payload',
+      },
+    });
+    const badge = getByTestId('completion-badge');
+    expect(badge.getAttribute('data-status')).toBe('success');
+    expect(badge.className).toContain('text-success');
+  });
+
+  it('renders the failure badge for a non-zero exit code', () => {
+    // Pre-unification this row carried an `exit 7` rose pill. Now the
+    // failure verdict is conveyed by the unified badge alone — no
+    // exit-code text in the chat.
+    const { getByTestId, queryByText } = render(CommandOutput, {
+      props: {
+        item: makeItem({ id: 'tool-cmd', kind: 'tool_completion', status: 'completed' }),
+        meta: commandMeta({ command: 'false', exitCode: 7 }),
+        payloadId: 'cmd-payload',
+      },
+    });
+    const badge = getByTestId('completion-badge');
+    expect(badge.getAttribute('data-status')).toBe('failure');
+    expect(badge.className).toContain('text-error');
+    // The old `exit 7` text must not return.
+    expect(queryByText(/exit 7/)).toBeNull();
+  });
+
+  it('renders the failure badge when the parent item was killed even if the command reports exit 0', () => {
+    // Codex reports "command finished" before the kill signal lands;
+    // the parent item carries `status='killed'` and the unified
+    // helper must collapse that to failure regardless of the exit
+    // code in meta.
+    const { getByTestId } = render(CommandOutput, {
+      props: {
+        item: makeItem({ id: 'tool-cmd', kind: 'tool_completion', status: 'killed' }),
+        meta: commandMeta({ command: 'sleep 60', exitCode: 0 }),
+        payloadId: 'cmd-payload',
+      },
+    });
+    expect(getByTestId('completion-badge').getAttribute('data-status')).toBe('failure');
   });
 
   it('shows the item timestamp in the header instead of the line count', () => {
