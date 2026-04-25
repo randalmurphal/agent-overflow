@@ -4,6 +4,19 @@
     | { kind: 'anchor'; itemId: string; offsetTop: number };
 
   const threadScrollSnapshots = new Map<string, ScrollSnapshot>();
+  const MAX_THREAD_SCROLL_SNAPSHOTS = 100;
+
+  function setThreadScrollSnapshot(threadId: string, snapshot: ScrollSnapshot): void {
+    if (threadScrollSnapshots.has(threadId)) {
+      threadScrollSnapshots.delete(threadId);
+    }
+    threadScrollSnapshots.set(threadId, snapshot);
+    while (threadScrollSnapshots.size > MAX_THREAD_SCROLL_SNAPSHOTS) {
+      const oldestThreadId = threadScrollSnapshots.keys().next().value;
+      if (oldestThreadId === undefined) break;
+      threadScrollSnapshots.delete(oldestThreadId);
+    }
+  }
 
   export function clearMessageTimelineScrollSnapshotsForTest(): void {
     threadScrollSnapshots.clear();
@@ -21,9 +34,17 @@
   import {
     buildVirtualLayout,
     computeVirtualWindow,
+    timelineNodeKey,
   } from '../../utils/timelineVirtualization';
+  import {
+    DEFAULT_TIMELINE_ROW_HEIGHT,
+    estimateTimelineNodeHeight,
+    isLastRootInTurn as nodeIsLastRootInTurn,
+    rootTurnIndex,
+    timelineNodeHeightSignature,
+  } from '../../utils/timelineRowHeights';
   import Button from '../primitives/Button.svelte';
-  import { turnSummaryIsMeaningful } from '../../utils/turnDiffSummary';
+  import { turnSummaryIsMeaningful, type TurnDiffView } from '../../utils/turnDiffSummary';
   import ChangedFilesTree from './ChangedFilesTree.svelte';
   import ChatWorkingIndicator from './ChatWorkingIndicator.svelte';
   import CompletionDivider from './CompletionDivider.svelte';
@@ -73,16 +94,16 @@
   }
 
   let scrollContainer: HTMLDivElement | undefined = $state(undefined);
-  const componentThreadId = untrack(() => pane.threadId);
   let viewportScrollTop = $state(0);
   let viewportHeight = $state(0);
   let rowHeightRevision = $state(0);
   const rowHeights = new Map<string, number>();
-  const ESTIMATED_ROW_HEIGHT = 140;
+  const rowHeightSignatures = new Map<string, string>();
   const OVERSCAN_PX = 900;
 
   let userPinnedToBottom = $state(true);
   let restoredThreadId: string | null = $state(null);
+  let scrollSnapshotThreadId: string | null = $state(null);
   let restoringScroll = false;
 
   function syncViewportState(): void {
@@ -100,6 +121,11 @@
   }
 
   function handleScroll(): void {
+    liveAnchorRestoreToken += 1;
+    initialScrollRestoreToken += 1;
+    loadOlderRestoreToken += 1;
+    pendingLiveAnchor = null;
+    pendingLiveAnchorRevision = -1;
     if (initialRestoreFrame !== null) {
       cancelAnimationFrame(initialRestoreFrame);
       initialRestoreFrame = null;
@@ -128,9 +154,23 @@
    * deterministic, so `$derived` re-runs exactly when `pane.items` changes.
    */
   let groupedNodes = $derived<TimelineNode[]>(groupItemsBySubagent(pane.items));
+  $effect.pre(() => {
+    const showEndOfTurnDiffs = getSettings().showEndOfTurnDiffs;
+    const latestSettledTurn = pane.latestSettledTurn;
+    const diffViews = pane.turnDiffViews;
+    const changed = invalidateChangedRowHeights(
+      groupedNodes,
+      showEndOfTurnDiffs,
+      latestSettledTurn,
+      diffViews,
+    );
+    if (changed) {
+      rowHeightRevision += 1;
+    }
+  });
   let virtualLayout = $derived.by(() => {
     rowHeightRevision;
-    return buildVirtualLayout(groupedNodes, rowHeights, ESTIMATED_ROW_HEIGHT);
+    return buildVirtualLayout(groupedNodes, rowHeights, estimateTimelineNodeHeight);
   });
   let virtualWindow = $derived(
     computeVirtualWindow(virtualLayout, viewportScrollTop, viewportHeight, OVERSCAN_PX),
@@ -189,24 +229,49 @@
    * children share their parent's turnIndex (triage uses LastTurnIndex for
    * child persistence), so the turn of a group node is the parent's turn.
    */
-  function rootTurnIndex(node: TimelineNode): number {
-    return node.kind === 'leaf' ? node.item.turnIndex : node.parent.turnIndex;
-  }
-
   function isLastRootInTurn(index: number): boolean {
-    const current = groupedNodes[index];
-    const next = groupedNodes[index + 1];
-    if (!current) return false;
-    if (!next) return true;
-    return rootTurnIndex(current) !== rootTurnIndex(next);
+    return nodeIsLastRootInTurn(index, groupedNodes);
   }
 
   function offsetForIndex(index: number): number {
     return virtualLayout.offsets[Math.min(Math.max(index, 0), virtualLayout.rows.length)] ?? 0;
   }
 
+  function invalidateChangedRowHeights(
+    nodes: TimelineNode[],
+    showEndOfTurnDiffs: boolean,
+    latestSettledTurn: SettledTurn | null,
+    diffViews: ReadonlyMap<number, TurnDiffView>,
+  ): boolean {
+    const activeKeys = new Set<string>();
+    let changed = false;
+    for (let index = 0; index < nodes.length; index += 1) {
+      const node = nodes[index];
+      const key = timelineNodeKey(node);
+      const signature = timelineNodeHeightSignature(
+        node,
+        index,
+        nodes,
+        showEndOfTurnDiffs,
+        latestSettledTurn,
+        diffViews,
+      );
+      activeKeys.add(key);
+      if (rowHeightSignatures.get(key) === signature) continue;
+      rowHeightSignatures.set(key, signature);
+      if (rowHeights.delete(key)) changed = true;
+    }
+    for (const key of rowHeightSignatures.keys()) {
+      if (!activeKeys.has(key)) {
+        rowHeightSignatures.delete(key);
+        if (rowHeights.delete(key)) changed = true;
+      }
+    }
+    return changed;
+  }
+
   const timelineMeasurementActions = createTimelineMeasurementActions({
-    estimatedRowHeight: ESTIMATED_ROW_HEIGHT,
+    estimatedRowHeight: DEFAULT_TIMELINE_ROW_HEIGHT,
     getRowHeight: (key) => rowHeights.get(key),
     getScrollContainer: () => scrollContainer,
     getUserPinnedToBottom: () => userPinnedToBottom,
@@ -239,8 +304,28 @@
    * snapping the user past the newly revealed history.
    */
   let suppressBottomAutoScroll = $state(false);
+  let bottomAutoScrollSuppressionDepth = 0;
   let bottomScrollFrame: number | null = null;
   let initialRestoreFrame: number | null = null;
+  let pendingLiveAnchor: Extract<ScrollSnapshot, { kind: 'anchor' }> | null = null;
+  let pendingLiveAnchorRevision = -1;
+  let observedLiveAnchorThreadId: string | null = null;
+  let observedLiveAnchorRevision = -1;
+  let liveAnchorRestoreToken = 0;
+  let initialScrollRestoreToken = 0;
+  let loadOlderRestoreToken = 0;
+
+  function suppressBottomAutoScrollUntilReleased(): () => void {
+    let released = false;
+    bottomAutoScrollSuppressionDepth += 1;
+    suppressBottomAutoScroll = true;
+    return () => {
+      if (released) return;
+      released = true;
+      bottomAutoScrollSuppressionDepth = Math.max(0, bottomAutoScrollSuppressionDepth - 1);
+      suppressBottomAutoScroll = bottomAutoScrollSuppressionDepth > 0;
+    };
+  }
 
   onDestroy(() => {
     saveScrollSnapshot();
@@ -255,20 +340,25 @@
   });
 
   function snapshotThreadId(): string | null {
-    return componentThreadId || pane.threadId || null;
+    return pane.threadId || null;
   }
 
   function saveScrollSnapshot(): void {
     const threadId = snapshotThreadId();
-    if (!threadId || !scrollContainer || pane.loading || restoredThreadId !== threadId) return;
+    if (!threadId) return;
+    saveScrollSnapshotForThread(threadId, false);
+  }
+
+  function saveScrollSnapshotForThread(threadId: string, ignoreLoading: boolean): void {
+    if (!scrollContainer || (!ignoreLoading && pane.loading) || restoredThreadId !== threadId) return;
     if (userPinnedToBottom) {
-      threadScrollSnapshots.set(threadId, { kind: 'bottom' });
+      setThreadScrollSnapshot(threadId, { kind: 'bottom' });
       return;
     }
 
     const anchor = firstVisibleItemAnchor();
     if (anchor) {
-      threadScrollSnapshots.set(threadId, anchor);
+      setThreadScrollSnapshot(threadId, anchor);
     }
   }
 
@@ -280,6 +370,7 @@
     );
     for (const el of itemElements) {
       const rect = el.getBoundingClientRect();
+      if (rect.height <= 0) continue;
       if (rect.bottom < viewport.top) continue;
       const itemId = el.dataset.itemId ?? '';
       if (!itemId) continue;
@@ -314,46 +405,85 @@
     });
   }
 
-  async function restoreInitialScroll(threadId: string): Promise<void> {
+  async function restoreInitialScroll(threadId: string, restoreToken: number): Promise<void> {
     if (!scrollContainer) return;
     const snapshot = threadScrollSnapshots.get(threadId);
-    suppressBottomAutoScroll = true;
+    const releaseBottomAutoScroll = suppressBottomAutoScrollUntilReleased();
+    const shouldContinue = () => (
+      initialScrollRestoreToken === restoreToken
+      && pane.threadId === threadId
+      && restoredThreadId === threadId
+      && scrollContainer !== undefined
+    );
     try {
       if (snapshot?.kind === 'anchor') {
-        const restored = await restoreAnchorSnapshot(snapshot);
+        const restored = await restoreAnchorSnapshot(snapshot, shouldContinue);
         if (restored) {
           syncUserScrollState();
           saveScrollSnapshot();
           return;
         }
       }
+      if (!shouldContinue()) return;
       scrollToBottom();
     } finally {
       restoringScroll = false;
-      suppressBottomAutoScroll = false;
+      releaseBottomAutoScroll();
     }
   }
 
-  async function restoreAnchorSnapshot(snapshot: Extract<ScrollSnapshot, { kind: 'anchor' }>): Promise<boolean> {
-    if (!scrollContainer || !snapshot.itemId) return false;
+  async function restoreAnchorSnapshot(
+    snapshot: Extract<ScrollSnapshot, { kind: 'anchor' }>,
+    shouldContinue: () => boolean = () => true,
+  ): Promise<boolean> {
+    if (!scrollContainer || !snapshot.itemId || !shouldContinue()) return false;
     const found = await pane.loadUntilItem(snapshot.itemId);
-    if (!found || !scrollContainer) return false;
+    if (!found || !scrollContainer || !shouldContinue()) return false;
+    return restoreLoadedAnchorSnapshot(snapshot, shouldContinue);
+  }
+
+  async function restoreLoadedAnchorSnapshot(
+    snapshot: Extract<ScrollSnapshot, { kind: 'anchor' }>,
+    shouldContinue: () => boolean = () => true,
+  ): Promise<boolean> {
+    if (!scrollContainer || !snapshot.itemId) return false;
     await tick();
-    if (!scrollContainer) return false;
+    if (!scrollContainer || !shouldContinue()) return false;
 
     const targetIndex = groupedNodes.findIndex((node) => nodeContainsItem(node, snapshot.itemId));
     if (targetIndex < 0) return false;
 
+    const previousScrollTop = scrollContainer.scrollTop;
     scrollContainer.scrollTop = Math.max(0, offsetForIndex(targetIndex) - snapshot.offsetTop);
+    const approximatedScrollTop = scrollContainer.scrollTop;
     syncViewportState();
     await tick();
-    if (!scrollContainer) return false;
+    if (!scrollContainer || !shouldContinue()) {
+      if (scrollContainer && scrollContainer.scrollTop === approximatedScrollTop) {
+        scrollContainer.scrollTop = previousScrollTop;
+        syncViewportState();
+      }
+      return false;
+    }
 
     const el = scrollContainer.querySelector(`[data-item-id="${CSS.escape(snapshot.itemId)}"]`);
-    if (!(el instanceof HTMLElement)) return false;
+    if (!(el instanceof HTMLElement)) {
+      if (scrollContainer.scrollTop === approximatedScrollTop) {
+        scrollContainer.scrollTop = previousScrollTop;
+        syncViewportState();
+      }
+      return false;
+    }
 
     const viewport = scrollContainer.getBoundingClientRect();
     const rect = el.getBoundingClientRect();
+    if (!shouldContinue()) {
+      if (scrollContainer.scrollTop === approximatedScrollTop) {
+        scrollContainer.scrollTop = previousScrollTop;
+        syncViewportState();
+      }
+      return false;
+    }
     scrollContainer.scrollTop += rect.top - viewport.top - snapshot.offsetTop;
     syncViewportState();
     return true;
@@ -371,9 +501,88 @@
     if (restoredThreadId === threadId) return;
     restoredThreadId = threadId;
     restoringScroll = true;
+    const restoreToken = ++initialScrollRestoreToken;
     initialRestoreFrame = requestAnimationFrame(() => {
       initialRestoreFrame = null;
-      void restoreInitialScroll(threadId);
+      if (initialScrollRestoreToken !== restoreToken || pane.threadId !== threadId) {
+        restoringScroll = false;
+        return;
+      }
+      void restoreInitialScroll(threadId, restoreToken);
+    });
+  });
+
+  $effect.pre(() => {
+    const nextThreadId = pane.threadId;
+    if (scrollSnapshotThreadId && scrollSnapshotThreadId !== nextThreadId) {
+      saveScrollSnapshotForThread(scrollSnapshotThreadId, true);
+      restoredThreadId = null;
+      liveAnchorRestoreToken += 1;
+      initialScrollRestoreToken += 1;
+      loadOlderRestoreToken += 1;
+      pendingLiveAnchor = null;
+      pendingLiveAnchorRevision = -1;
+    }
+    scrollSnapshotThreadId = nextThreadId;
+  });
+
+  $effect.pre(() => {
+    const revision = pane.timelineRevision;
+    const threadId = pane.threadId;
+    const containerReady = scrollContainer !== undefined;
+
+    if (!threadId || !containerReady) return;
+    if (observedLiveAnchorThreadId !== threadId) {
+      liveAnchorRestoreToken += 1;
+      observedLiveAnchorThreadId = threadId;
+      observedLiveAnchorRevision = revision;
+      pendingLiveAnchor = null;
+      pendingLiveAnchorRevision = -1;
+      return;
+    }
+    if (observedLiveAnchorRevision === revision) return;
+    liveAnchorRestoreToken += 1;
+    observedLiveAnchorRevision = revision;
+    if (restoredThreadId !== threadId || restoringScroll) return;
+    if (userPinnedToBottom) {
+      pendingLiveAnchor = null;
+      pendingLiveAnchorRevision = -1;
+      return;
+    }
+
+    const anchor = firstVisibleItemAnchor();
+    pendingLiveAnchor = anchor?.kind === 'anchor' ? anchor : null;
+    pendingLiveAnchorRevision = pendingLiveAnchor ? revision : -1;
+  });
+
+  $effect(() => {
+    const revision = pane.timelineRevision;
+    const threadId = pane.threadId;
+    const anchor = pendingLiveAnchor;
+    const containerReady = scrollContainer !== undefined;
+
+    if (!threadId || !containerReady || !anchor) return;
+    if (pendingLiveAnchorRevision !== revision) return;
+    if (restoredThreadId !== threadId || restoringScroll || userPinnedToBottom) return;
+
+    pendingLiveAnchor = null;
+    pendingLiveAnchorRevision = -1;
+    const restoreThreadId = threadId;
+    const restoreRevision = revision;
+    const restoreToken = ++liveAnchorRestoreToken;
+    const releaseBottomAutoScroll = suppressBottomAutoScrollUntilReleased();
+    const shouldContinue = () => (
+      liveAnchorRestoreToken === restoreToken
+      && pane.threadId === restoreThreadId
+      && pane.timelineRevision === restoreRevision
+      && !userPinnedToBottom
+      && !restoringScroll
+    );
+    void restoreLoadedAnchorSnapshot(anchor, shouldContinue).finally(() => {
+      releaseBottomAutoScroll();
+      if (!shouldContinue()) return;
+      syncUserScrollState();
+      saveScrollSnapshot();
     });
   });
 
@@ -398,33 +607,35 @@
 
   /**
    * Fetch older history and preserve the user's visual anchor row. We
-   * capture the pre-prepend scrollHeight/scrollTop, wait for the store
-   * to prepend + rebuild turn diff views, then await a tick so the DOM
-   * reflects the new rows. The growth delta is re-applied to scrollTop
-   * so the row the user was reading stays at the same viewport
-   * position. `suppressBottomAutoScroll` is raised across the await so
-   * the bottom-stick effect can't fire on the
-   * items-length-change and snap past the newly revealed rows — short
-   * threads whose window already fits the viewport would otherwise
-   * keep `userPinnedToBottom` true throughout the prepend.
+   * prefer restoring the actual first visible item because ancestor rows
+   * can sit above the loaded floor; "inserted before items[0]" is not the
+   * same thing as "inserted before what the user was reading".
    */
   async function handleLoadOlder(): Promise<void> {
     if (!scrollContainer) return;
     const prevScrollHeight = scrollContainer.scrollHeight;
     const prevScrollTop = scrollContainer.scrollTop;
-    // Snapshot the item count so we can tell whether loadOlder
-    // actually prepended anything. Without this check, streaming
-    // upserts that grow the timeline DURING the loadOlder await
-    // (e.g. a live agent turn continuing while the user clicks
-    // "Load older") look like a prepend delta and shift the
-    // viewport by the streaming height, stomping the user's anchor.
-    const prevItemCount = pane.items.length;
-    suppressBottomAutoScroll = true;
+    const anchor = firstVisibleItemAnchor();
+    const restoreThreadId = pane.threadId;
+    const restoreToken = ++loadOlderRestoreToken;
+    const releaseBottomAutoScroll = suppressBottomAutoScrollUntilReleased();
+    const shouldContinue = () => (
+      loadOlderRestoreToken === restoreToken
+      && pane.threadId === restoreThreadId
+      && scrollContainer !== undefined
+    );
     try {
-      await pane.loadOlder();
+      const result = await pane.loadOlder();
       await tick();
       if (!scrollContainer) return;
-      if (pane.items.length > prevItemCount) {
+      if (anchor?.kind === 'anchor' && shouldContinue()) {
+        const restored = await restoreLoadedAnchorSnapshot(anchor, shouldContinue);
+        if (restored) {
+          handleScroll();
+          return;
+        }
+      }
+      if (result.insertedRows || result.insertedBeforeWindow) {
         const delta = scrollContainer.scrollHeight - prevScrollHeight;
         scrollContainer.scrollTop = prevScrollTop + delta;
       }
@@ -439,7 +650,7 @@
       // effect run — so we recompute inline.
       handleScroll();
     } finally {
-      suppressBottomAutoScroll = false;
+      releaseBottomAutoScroll();
     }
   }
 
@@ -538,7 +749,7 @@
 
     <div style:height={`${virtualWindow.before}px`} aria-hidden="true"></div>
     {#each virtualWindow.rows as row (row.key)}
-      <div use:measureTimelineRow={row.key}>
+      <div use:measureTimelineRow={{ key: row.key, estimatedHeight: row.estimatedHeight }}>
         {#if pane.latestSettledTurn && shouldRenderDividerBefore(row.node, pane.latestSettledTurn)}
           <!-- The divider renders BEFORE the assistant message that closed
                the settled turn (t3-code pattern). The per-turn diff summary

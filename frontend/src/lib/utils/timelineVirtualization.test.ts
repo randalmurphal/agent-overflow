@@ -41,7 +41,7 @@ describe('timelineVirtualization', () => {
     expect(timelineNodeKey(group)).toBe('g:thread-b:same-id');
   });
 
-  it('builds offsets from measured row heights and prunes stale measurements', () => {
+  it('builds offsets from measured row heights without mutating the measurement cache', () => {
     const rows: TimelineNode[] = [
       { kind: 'leaf', item: item('one') },
       { kind: 'leaf', item: item('two') },
@@ -57,7 +57,25 @@ describe('timelineVirtualization', () => {
 
     expect(layout.offsets).toEqual([0, 30, 80, 150]);
     expect(layout.totalHeight).toBe(150);
-    expect(rowHeights.has('l:thread-1:stale')).toBe(false);
+    expect(layout.rows.map((row) => row.estimatedHeight)).toEqual([50, 50, 50]);
+    expect(rowHeights.has('l:thread-1:stale')).toBe(true);
+  });
+
+  it('keeps the per-row estimate even when an actual height is measured', () => {
+    const rows: TimelineNode[] = [
+      { kind: 'leaf', item: item('one') },
+      { kind: 'leaf', item: item('two') },
+    ];
+    const rowHeights = new Map([
+      ['l:thread-1:one', 30],
+    ]);
+
+    const layout = buildVirtualLayout(rows, rowHeights, (node) => (
+      node.kind === 'leaf' && node.item.id === 'one' ? 80 : 120
+    ));
+
+    expect(layout.rows.map((row) => row.height)).toEqual([30, 120]);
+    expect(layout.rows.map((row) => row.estimatedHeight)).toEqual([80, 120]);
   });
 
   it('returns an overscanned row window with before and after spacers', () => {

@@ -1,7 +1,13 @@
 import type { TimelineNode } from './subagentGrouping';
 
 export type VirtualLayout = {
-  rows: Array<{ node: TimelineNode; index: number; key: string; height: number }>;
+  rows: Array<{
+    node: TimelineNode;
+    index: number;
+    key: string;
+    height: number;
+    estimatedHeight: number;
+  }>;
   offsets: number[];
   totalHeight: number;
 };
@@ -11,7 +17,12 @@ export type VirtualWindow = {
   end: number;
   before: number;
   after: number;
-  rows: Array<{ node: TimelineNode; index: number; key: string }>;
+  rows: Array<{
+    node: TimelineNode;
+    index: number;
+    key: string;
+    estimatedHeight: number;
+  }>;
 };
 
 export function timelineNodeKey(node: TimelineNode): string {
@@ -23,23 +34,22 @@ export function timelineNodeKey(node: TimelineNode): string {
 export function buildVirtualLayout(
   nodes: TimelineNode[],
   rowHeights: Map<string, number>,
-  estimatedRowHeight: number,
+  estimatedRowHeight: number | ((node: TimelineNode) => number),
 ): VirtualLayout {
+  const estimateForNode = typeof estimatedRowHeight === 'function'
+    ? estimatedRowHeight
+    : () => estimatedRowHeight;
   const rows = nodes.map((node, index) => {
     const key = timelineNodeKey(node);
+    const estimatedHeight = estimateForNode(node);
     return {
       node,
       index,
       key,
-      height: rowHeights.get(key) ?? estimatedRowHeight,
+      height: rowHeights.get(key) ?? estimatedHeight,
+      estimatedHeight,
     };
   });
-  const activeKeys = new Set(rows.map((row) => row.key));
-  for (const key of rowHeights.keys()) {
-    if (!activeKeys.has(key)) {
-      rowHeights.delete(key);
-    }
-  }
 
   const offsets = new Array<number>(rows.length + 1);
   offsets[0] = 0;

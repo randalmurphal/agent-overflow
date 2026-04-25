@@ -6,6 +6,7 @@
   import ToolDecisionChip from './ToolDecisionChip.svelte';
   import ToolKindIcon from './ToolKindIcon.svelte';
   import { classifyToolName } from './toolCardHeader';
+  import { parseToolCardMeta, toolCardInputPreview } from './toolCardPreview';
   import { createPayloadExpansion, formatPayloadSize } from './payloadExpansion.svelte';
   import AnsiText from './AnsiText.svelte';
 
@@ -20,19 +21,8 @@
     expansion.reset();
   });
 
-  function parseObject(raw: string | undefined): Record<string, unknown> | null {
-    if (!raw) return null;
-    try {
-      const parsed = JSON.parse(raw) as unknown;
-      if (parsed && typeof parsed === 'object') return parsed as Record<string, unknown>;
-    } catch {
-      return null;
-    }
-    return null;
-  }
-
-  let summaryMeta = $derived(parseObject(item.payloadMeta));
-  let itemMeta = $derived(parseObject(item.meta));
+  let summaryMeta = $derived(parseToolCardMeta(item.payloadMeta));
+  let itemMeta = $derived(parseToolCardMeta(item.meta));
 
   let time = $derived(
     new Date(item.createdAt).toLocaleTimeString(undefined, {
@@ -42,13 +32,7 @@
   );
 
   let inputPreview = $derived.by<string>(() => {
-    const fromSummary = (item.summary ?? '').trim();
-    if (fromSummary) return fromSummary;
-    if (summaryMeta) {
-      const title = summaryMeta.title;
-      if (typeof title === 'string' && title.trim()) return title.trim();
-    }
-    return classification.displayName;
+    return toolCardInputPreview(item, classification, summaryMeta, itemMeta);
   });
 
   let exitCode = $derived.by<number | null>(() => {

@@ -83,9 +83,54 @@ describe('setupEventListeners', () => {
       threadId: item.threadId,
       item,
     });
+    await nextFrame();
 
     expect(paneA.items.map((item) => item.id)).toEqual(['tool-1']);
     expect(paneB.items).toEqual([]);
+  });
+
+  it('drops item_event upserts whose item thread does not match the event envelope', async () => {
+    const paneA = await buildPane(makeThread({ id: 'thread-a' }));
+    const paneB = await buildPane(makeThread({ id: 'thread-b' }));
+    getAllPanes().set('a', paneA);
+    getAllPanes().set('b', paneB);
+
+    emitWailsEvent('provider:item_event', {
+      action: 'upsert',
+      threadId: 'thread-a',
+      item: makeItem({
+        id: 'cross-thread',
+        threadId: 'thread-b',
+        kind: 'assistant_text',
+        status: 'streaming',
+      }),
+    });
+    await nextFrame();
+
+    expect(paneA.items).toEqual([]);
+    expect(paneB.items).toEqual([]);
+    expect(getThreadStatus('thread-a')).toBe('idle');
+    expect(getThreadStatus('thread-b')).toBe('idle');
+  });
+
+  it('drops item_event upserts without a stable item id', async () => {
+    const pane = await buildPane(makeThread({ id: 'thread-a' }));
+    getAllPanes().set('a', pane);
+
+    emitWailsEvent('provider:item_event', {
+      action: 'upsert',
+      threadId: 'thread-a',
+      item: makeItem({
+        id: '',
+        threadId: 'thread-a',
+        kind: 'assistant_text',
+        status: 'streaming',
+      }),
+    });
+    await nextFrame();
+
+    expect(pane.items).toEqual([]);
+    expect(getThreadStatus('thread-a')).toBe('idle');
   });
 
   it('routes item_event deltas only to the matching pane', async () => {
@@ -164,6 +209,7 @@ describe('setupEventListeners', () => {
       summary: 'boom',
     });
     emitWailsEvent('provider:item_event', { action: 'upsert', threadId: item.threadId, item });
+    await nextFrame();
 
     expect(getThreadStatus('thread-1')).toBe('error');
   });
@@ -182,6 +228,7 @@ describe('setupEventListeners', () => {
       threadId: streamingItem.threadId,
       item: streamingItem,
     });
+    await nextFrame();
     expect(getThreadStatus('thread-1')).toBe('running');
 
     const completedItem = makeItem({
@@ -194,7 +241,103 @@ describe('setupEventListeners', () => {
       threadId: completedItem.threadId,
       item: completedItem,
     });
+    await nextFrame();
     expect(getThreadStatus('thread-1')).toBe('idle');
+  });
+
+  it('projects item status synchronously while timeline upserts wait for the frame batch', async () => {
+    const pane = await buildPane();
+    getAllPanes().set('main', pane);
+
+    const streamingItem = makeItem({
+      id: 'text-1',
+      kind: 'assistant_text',
+      status: 'streaming',
+    });
+    emitWailsEvent('provider:item_event', {
+      action: 'upsert',
+      threadId: streamingItem.threadId,
+      item: streamingItem,
+    });
+
+    expect(getThreadStatus('thread-1')).toBe('running');
+    expect(pane.items).toEqual([]);
+
+    await nextFrame();
+    expect(pane.items.map((item) => item.id)).toEqual(['text-1']);
+  });
+
+  it('flushes item_event batches on a bounded timeout when animation frames are delayed', async () => {
+    const originalRAF = globalThis.requestAnimationFrame;
+    const originalCancelRAF = globalThis.cancelAnimationFrame;
+    vi.useFakeTimers();
+    vi.stubGlobal('requestAnimationFrame', vi.fn(() => 1));
+    vi.stubGlobal('cancelAnimationFrame', vi.fn());
+    try {
+      const pane = await buildPane();
+      getAllPanes().set('main', pane);
+
+      const item = makeItem({ id: 'timeout-flush', kind: 'terminal_interaction' });
+      emitWailsEvent('provider:item_event', {
+        action: 'upsert',
+        threadId: item.threadId,
+        item,
+      });
+
+      expect(pane.items).toEqual([]);
+      await vi.advanceTimersByTimeAsync(60);
+
+      expect(pane.items.map((item) => item.id)).toEqual(['timeout-flush']);
+    } finally {
+      vi.useRealTimers();
+      vi.stubGlobal('requestAnimationFrame', originalRAF);
+      vi.stubGlobal('cancelAnimationFrame', originalCancelRAF);
+    }
+  });
+
+  it('cancels a queued item_event batch on listener cleanup', async () => {
+    const originalRAF = globalThis.requestAnimationFrame;
+    const originalCancelRAF = globalThis.cancelAnimationFrame;
+    vi.useFakeTimers();
+    vi.stubGlobal('requestAnimationFrame', vi.fn(() => 1));
+    vi.stubGlobal('cancelAnimationFrame', vi.fn());
+    try {
+      const pane = await buildPane();
+      getAllPanes().set('main', pane);
+
+      const item = makeItem({ id: 'cancelled-flush', kind: 'terminal_interaction' });
+      emitWailsEvent('provider:item_event', {
+        action: 'upsert',
+        threadId: item.threadId,
+        item,
+      });
+      cleanup();
+      cleanup = () => {};
+
+      await vi.advanceTimersByTimeAsync(60);
+
+      expect(pane.items).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+      vi.stubGlobal('requestAnimationFrame', originalRAF);
+      vi.stubGlobal('cancelAnimationFrame', originalCancelRAF);
+    }
+  });
+
+  it('applies same-frame upsert bursts as one timeline revision', async () => {
+    const pane = await buildPane();
+    getAllPanes().set('main', pane);
+
+    const first = makeItem({ id: 'wait-1', kind: 'terminal_interaction', itemIndex: 2 });
+    const second = makeItem({ id: 'wait-2', kind: 'terminal_interaction', itemIndex: 1 });
+    emitWailsEvent('provider:item_event', { action: 'upsert', threadId: first.threadId, item: first });
+    emitWailsEvent('provider:item_event', { action: 'upsert', threadId: second.threadId, item: second });
+
+    expect(pane.items).toEqual([]);
+    await nextFrame();
+
+    expect(pane.items.map((item) => item.id)).toEqual(['wait-2', 'wait-1']);
+    expect(pane.timelineRevision).toBe(1);
   });
 
   it('ignores stale item_event deltas after the item has completed', async () => {
@@ -245,6 +388,72 @@ describe('setupEventListeners', () => {
 
     expect(pane.items.find((item) => item.id === 'text-1')?.summary).toBe('yield timeouts');
     expect(pane.liveItemSummaries['text-1']).toBeUndefined();
+  });
+
+  it('coalesces contiguous deltas without crossing upsert boundaries', async () => {
+    const pane = await buildPane();
+    getAllPanes().set('main', pane);
+
+    emitWailsEvent('provider:item_event', {
+      action: 'delta',
+      threadId: 'thread-1',
+      itemId: 'text-1',
+      kind: 'assistant_text',
+      delta: 'pre ',
+      updatedAt: 1,
+    });
+    emitWailsEvent('provider:item_event', {
+      action: 'upsert',
+      threadId: 'thread-1',
+      item: makeItem({
+        id: 'text-1',
+        kind: 'assistant_text',
+        status: 'streaming',
+        summary: 'base ',
+      }),
+    });
+    emitWailsEvent('provider:item_event', {
+      action: 'delta',
+      threadId: 'thread-1',
+      itemId: 'text-1',
+      kind: 'assistant_text',
+      delta: 'post',
+      updatedAt: 2,
+    });
+    emitWailsEvent('provider:item_event', {
+      action: 'delta',
+      threadId: 'thread-1',
+      itemId: 'text-1',
+      kind: 'assistant_text',
+      delta: ' stream',
+      updatedAt: 3,
+    });
+    await nextFrame();
+
+    expect(pane.liveItemSummaries['text-1']).toBe('base pre post stream');
+  });
+
+  it('drops item_event payloads with unknown actions', async () => {
+    const pane = await buildPane();
+    pane.upsertItem(makeItem({
+      id: 'text-1',
+      kind: 'assistant_text',
+      status: 'streaming',
+      summary: 'stable',
+    }));
+    getAllPanes().set('main', pane);
+
+    emitWailsEvent('provider:item_event', {
+      action: 'mystery',
+      threadId: 'thread-1',
+      itemId: 'text-1',
+      kind: 'assistant_text',
+      delta: ' mutated',
+      updatedAt: 2,
+    });
+    await nextFrame();
+
+    expect(pane.liveItemSummaries['text-1']).toBe('stable');
   });
 
   it('updates cached thread rows from thread:updated', async () => {

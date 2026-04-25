@@ -95,6 +95,20 @@ describe('groupItemsBySubagent', () => {
     expect(group.children.map((c) => expectLeaf(c).item.id)).toEqual(['child-a', 'child-b']);
   });
 
+  it('preserves input order for rows with equal timeline coordinates', () => {
+    const items = [
+      mkItem({ id: 'first-arrived', itemIndex: 1, createdAt: 200 }),
+      mkItem({ id: 'second-arrived', itemIndex: 1, createdAt: 100 }),
+    ];
+
+    const nodes = groupItemsBySubagent(items);
+
+    expect(nodes.map((node) => expectLeaf(node).item.id)).toEqual([
+      'first-arrived',
+      'second-arrived',
+    ]);
+  });
+
   it('nests grandchildren inside child groups (parent -> child -> grandchild)', () => {
     const items = [
       mkItem({ id: 'root', itemIndex: 0, kind: 'tool_call', summary: 'outer task' }),

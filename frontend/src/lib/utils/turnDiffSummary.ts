@@ -1,7 +1,6 @@
-// Pure helper for the per-turn "+N −M · K files" badge rendered at the end of
-// each turn in the message timeline. Takes the items for a turn + a parser
-// that returns DiffMeta for an item's payload id, and produces the aggregate
-// line counts and file count.
+// Pure helpers for the per-turn changed-files tree and "+N −M · K files" badge
+// rendered at the end of each turn in the message timeline. The helpers parse
+// item.payloadMeta defensively and drop malformed diff entries.
 
 import type { ChangedFile, DiffMeta, Item, ToolResultMeta } from '../types/models';
 
@@ -28,6 +27,40 @@ export const EMPTY_TURN_DIFF_SUMMARY: TurnDiffSummary = {
   fileCount: 0,
 };
 
+function isFiniteNonNegativeNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0;
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+function isChangeKind(value: unknown): value is DiffMeta['changeKind'] {
+  return value === 'added'
+    || value === 'modified'
+    || value === 'deleted'
+    || value === 'renamed';
+}
+
+function normalizeChangedFile(file: {
+  path: unknown;
+  insertions: unknown;
+  deletions: unknown;
+  kind: unknown;
+  payloadId: string;
+}): ChangedFile | null {
+  if (!isNonEmptyString(file.path)) return null;
+  if (!isFiniteNonNegativeNumber(file.insertions)) return null;
+  if (!isFiniteNonNegativeNumber(file.deletions)) return null;
+  return {
+    path: file.path,
+    insertions: file.insertions,
+    deletions: file.deletions,
+    kind: isChangeKind(file.kind) ? file.kind : 'modified',
+    payloadId: file.payloadId,
+  };
+}
+
 /**
  * Aggregate the insertions/deletions/file-count for every diff-bearing item in
  * a turn. File-change tool results contribute through `payloadKind=tool_result`
@@ -47,31 +80,13 @@ export function summarizeTurnDiffs(
   const seenPaths = new Set<string>();
   for (const item of items) {
     if (item.turnIndex !== turnIndex) continue;
-    if (!item.payloadMeta) continue;
-    try {
-      if (item.payloadKind === 'diff') {
-        const meta = JSON.parse(item.payloadMeta) as DiffMeta;
-        insertions += meta.insertions;
-        deletions += meta.deletions;
-        if (!seenPaths.has(meta.filePath)) {
-          seenPaths.add(meta.filePath);
-          fileCount += 1;
-        }
-        continue;
+    for (const file of changedFilesForItem(item)) {
+      insertions += file.insertions;
+      deletions += file.deletions;
+      if (!seenPaths.has(file.path)) {
+        seenPaths.add(file.path);
+        fileCount += 1;
       }
-      if (item.payloadKind !== 'tool_result') continue;
-      const meta = JSON.parse(item.payloadMeta) as ToolResultMeta;
-      const files = meta.inlineDiff?.files ?? [];
-      for (const file of files) {
-        insertions += file.insertions ?? 0;
-        deletions += file.deletions ?? 0;
-        if (!seenPaths.has(file.path)) {
-          seenPaths.add(file.path);
-          fileCount += 1;
-        }
-      }
-    } catch {
-      // Ignore malformed payload metadata.
     }
   }
   return { insertions, deletions, fileCount };
@@ -89,26 +104,35 @@ export function changedFilesForItem(item: Item): ChangedFile[] {
   try {
     if (item.payloadKind === 'diff' && item.payloadId) {
       const meta = JSON.parse(item.payloadMeta) as DiffMeta;
-      return [{
+      const file = normalizeChangedFile({
         path: meta.filePath,
         insertions: meta.insertions,
         deletions: meta.deletions,
         kind: meta.changeKind,
         payloadId: item.payloadId,
-      }];
+      });
+      return file ? [file] : [];
     }
     if (item.payloadKind !== 'tool_result' || !item.payloadId) return [];
     const meta = JSON.parse(item.payloadMeta) as ToolResultMeta;
-    return (meta.inlineDiff?.files ?? []).map((file) => ({
-      path: file.path,
-      insertions: file.insertions ?? 0,
-      deletions: file.deletions ?? 0,
-      kind: file.kind ?? 'modified',
-      payloadId: item.payloadId!,
-    }));
+    return (meta.inlineDiff?.files ?? []).flatMap((file) => {
+      const changedFile = normalizeChangedFile({
+        path: file.path,
+        insertions: file.insertions ?? 0,
+        deletions: file.deletions ?? 0,
+        kind: file.kind,
+        payloadId: item.payloadId!,
+      });
+      return changedFile ? [changedFile] : [];
+    });
   } catch {
     return [];
   }
+}
+
+export function itemMayAffectDiffView(item: Item): boolean {
+  if (!item.payloadMeta) return false;
+  return item.payloadKind === 'diff' || item.payloadKind === 'tool_result';
 }
 
 /**
@@ -122,6 +146,17 @@ export function buildTurnDiffView(
   items: readonly Item[],
   turnIndex: number,
 ): TurnDiffView | null {
+  return buildDiffViewForItems(items.filter((item) => item.turnIndex === turnIndex));
+}
+
+/**
+ * Build a combined diff view from items that already belong to the same turn.
+ * Pane state keeps an item-id index per visible turn, so hot-path upserts can
+ * call this without scanning unrelated visible rows.
+ */
+export function buildDiffViewForItems(
+  items: readonly Item[],
+): TurnDiffView | null {
   const files: ChangedFile[] = [];
   let insertions = 0;
   let deletions = 0;
@@ -129,7 +164,6 @@ export function buildTurnDiffView(
   const seenPaths = new Set<string>();
 
   for (const item of items) {
-    if (item.turnIndex !== turnIndex) continue;
     const itemFiles = changedFilesForItem(item);
     if (itemFiles.length === 0) continue;
     for (const file of itemFiles) {

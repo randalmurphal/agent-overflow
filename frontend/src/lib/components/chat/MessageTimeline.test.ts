@@ -402,7 +402,11 @@ describe('<MessageTimeline>', () => {
         hasMore: true,
         oldestTurnIndex: 10,
       });
-      const loadOlderSpy = vi.spyOn(pane, 'loadOlder').mockResolvedValue();
+      const loadOlderSpy = vi.spyOn(pane, 'loadOlder').mockResolvedValue({
+        status: 'noop',
+        insertedBeforeWindow: false,
+        insertedRows: false,
+      });
 
       const { getByTestId } = render(MessageTimeline, { props: { pane } });
       await fireEvent.click(getByTestId('load-older-messages'));
@@ -534,7 +538,7 @@ describe('<MessageTimeline>', () => {
       await nextFrame();
       await tick();
 
-      expect(secondScroll.scrollTop).toBe(520);
+      expect(secondScroll.scrollTop).toBe(440);
     });
 
     it('restores a saved anchor even when newer items exist below it', async () => {
@@ -578,7 +582,7 @@ describe('<MessageTimeline>', () => {
       await nextFrame();
       await tick();
 
-      expect(secondScroll.scrollTop).toBe(360);
+      expect(secondScroll.scrollTop).toBe(300);
     });
 
     it('falls back to bottom when the saved anchor is no longer loadable', async () => {
@@ -808,6 +812,39 @@ describe('<MessageTimeline>', () => {
       expect(scroll.scrollTop).toBe(200);
     });
 
+    it('does not treat concurrent live tail upserts as older prepends', async () => {
+      const pane = await buildWindowedPane({
+        items: [makeItem({ id: 'only', turnIndex: 10 })],
+        hasMore: true,
+        oldestTurnIndex: 10,
+      });
+      vi.spyOn(pane, 'loadOlder').mockImplementation(async () => {
+        pane.upsertItem(makeItem({ id: 'live-tail', turnIndex: 11, itemIndex: 0 }));
+        return { status: 'loaded', insertedBeforeWindow: false, insertedRows: false };
+      });
+
+      const { getByTestId, container } = render(MessageTimeline, { props: { pane } });
+      const scroll = container.querySelector('[role="log"]') as HTMLElement;
+      let scrollHeightValue = 1000;
+      Object.defineProperty(scroll, 'scrollHeight', {
+        configurable: true,
+        get: () => scrollHeightValue,
+      });
+      Object.defineProperty(scroll, 'clientHeight', {
+        configurable: true,
+        get: () => 600,
+      });
+      scroll.scrollTop = 200;
+
+      const clickPromise = fireEvent.click(getByTestId('load-older-messages'));
+      scrollHeightValue = 1300;
+      await clickPromise;
+      await tick();
+
+      expect(pane.items.map((item) => item.id)).toContain('live-tail');
+      expect(scroll.scrollTop).toBe(200);
+    });
+
     it('keeps a pinned user at the bottom when a new item grows the timeline', async () => {
       const pane = await buildWindowedPane({
         items: [makeItem({ id: 'tail', turnIndex: 10, summary: 'tail' })],
@@ -905,6 +942,41 @@ describe('<MessageTimeline>', () => {
       await rerender({ pane });
       await tick();
       await tick();
+
+      expect(scroll.scrollTop).toBe(350);
+    });
+
+    it('does not restore a live anchor during ordinary user scroll without a timeline update', async () => {
+      const pane = await buildWindowedPane({
+        items: [
+          makeItem({ id: 'first', turnIndex: 10, itemIndex: 0, summary: 'first' }),
+          makeItem({ id: 'second', turnIndex: 10, itemIndex: 1, summary: 'second' }),
+          makeItem({ id: 'third', turnIndex: 10, itemIndex: 2, summary: 'third' }),
+        ],
+      });
+
+      const { container } = render(MessageTimeline, { props: { pane } });
+      const scroll = container.querySelector('[role="log"]') as HTMLElement;
+      setScrollGeometry(scroll, {
+        scrollHeight: () => 1200,
+        clientHeight: () => 600,
+      });
+      await nextFrame();
+      await tick();
+
+      const itemEls = Array.from(container.querySelectorAll('[data-item-id]'));
+      itemEls.forEach((el, index) => {
+        setElementRect(el, {
+          top: index * 120,
+          bottom: index * 120 + 80,
+          height: 80,
+        });
+      });
+
+      scroll.scrollTop = 350;
+      await fireEvent.scroll(scroll);
+      await tick();
+      await nextFrame();
 
       expect(scroll.scrollTop).toBe(350);
     });

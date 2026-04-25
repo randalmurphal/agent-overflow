@@ -170,6 +170,78 @@ describe('createThreadPane', () => {
     expect(pane.items.find((item) => item.id === 'early')?.summary).toBe('updated');
   });
 
+  it('allows upsertItem to be used as an unbound callback', () => {
+    const pane = createThreadPane();
+    const { upsertItem } = pane;
+
+    upsertItem(makeItem({ id: 'unbound', turnIndex: 0, itemIndex: 0 }));
+
+    expect(pane.items.map((item) => item.id)).toEqual(['unbound']);
+  });
+
+  it('upsertItems merges bursts in order and bumps timeline revision once', () => {
+    const pane = createThreadPane();
+
+    pane.upsertItems([
+      makeItem({ id: 'late', turnIndex: 1, itemIndex: 0 }),
+      makeItem({ id: 'early', turnIndex: 0, itemIndex: 1 }),
+      makeItem({ id: 'first', turnIndex: 0, itemIndex: 0 }),
+    ]);
+
+    expect(pane.items.map((item) => item.id)).toEqual(['first', 'early', 'late']);
+    expect(pane.timelineRevision).toBe(1);
+
+    pane.upsertItems([
+      makeItem({ id: 'late', turnIndex: 0, itemIndex: 2, summary: 'moved' }),
+      makeItem({ id: 'early', turnIndex: 0, itemIndex: 1, summary: 'updated' }),
+    ]);
+
+    expect(pane.items.map((item) => item.id)).toEqual(['first', 'early', 'late']);
+    expect(pane.items.find((item) => item.id === 'late')?.summary).toBe('moved');
+    expect(pane.timelineRevision).toBe(2);
+  });
+
+  it('collapses same-batch wait-row enrichment into one final row', () => {
+    const pane = createThreadPane();
+
+    pane.upsertItems([
+      makeItem({
+        id: 'wait:pid-1:0',
+        kind: 'terminal_interaction',
+        summary: 'Waited for background terminal',
+      }),
+      makeItem({
+        id: 'wait:pid-1:0',
+        kind: 'terminal_interaction',
+        summary: 'Background terminal completed',
+        payloadId: 'payload-1',
+        payloadKind: 'command_output',
+        payloadMeta: JSON.stringify({ exitCode: 0 }),
+      }),
+    ]);
+
+    expect(pane.items).toHaveLength(1);
+    expect(pane.items[0].payloadKind).toBe('command_output');
+    expect(pane.items[0].payloadId).toBe('payload-1');
+    expect(pane.timelineRevision).toBe(1);
+  });
+
+  it('preserves arrival order for rows with the same turn and item position', () => {
+    const pane = createThreadPane();
+
+    pane.upsertItems([
+      makeItem({ id: 'later-position', turnIndex: 1, itemIndex: 0 }),
+      makeItem({ id: 'first-arrived', turnIndex: 0, itemIndex: 0, createdAt: 200 }),
+      makeItem({ id: 'second-arrived', turnIndex: 0, itemIndex: 0, createdAt: 100 }),
+    ]);
+
+    expect(pane.items.map((item) => item.id)).toEqual([
+      'first-arrived',
+      'second-arrived',
+      'later-position',
+    ]);
+  });
+
   it('keeps streaming deltas out of the timeline item array', async () => {
     const pane = createThreadPane();
     pane.upsertItem(makeItem({
@@ -571,6 +643,28 @@ describe('createThreadPane', () => {
       expect(pane.items.find((it) => it.id === 'known')?.summary).toBe('new');
     });
 
+    it('upsertItem drops live buffers for new streaming rows below the floor', async () => {
+      const pane = createThreadPane();
+      setBindingMock('ListRecentThreadItems', async () => ({
+        items: [makeItem({ id: 'at-floor', threadId: 't', turnIndex: 5, itemIndex: 0 })],
+        oldestTurnIndex: 5,
+        hasMore: true,
+      }));
+      await pane.switchThread(makeThread({ id: 't' }));
+
+      pane.upsertItem(makeItem({
+        id: 'below-streaming',
+        threadId: 't',
+        turnIndex: 2,
+        itemIndex: 0,
+        status: 'streaming',
+        summary: 'old output',
+      }));
+
+      expect(pane.items.map((it) => it.id)).toEqual(['at-floor']);
+      expect(pane.liveItemSummaries['below-streaming']).toBeUndefined();
+    });
+
     it('loadOlder prepends older items and updates the floor + hasMore', async () => {
       const pane = createThreadPane();
       const tail: Item[] = [
@@ -590,12 +684,13 @@ describe('createThreadPane', () => {
         hasMore: true,
       }));
       await pane.switchThread(makeThread({ id: 't' }));
-      await pane.loadOlder();
+      const result = await pane.loadOlder();
 
       expect(pane.items.map((it) => it.id)).toEqual(['t3', 't4', 't5']);
       expect(pane.oldestLoadedTurnIndex).toBe(3);
       expect(pane.hasMoreHistory).toBe(true);
       expect(pane.loadingOlder).toBe(false);
+      expect(result).toEqual({ status: 'loaded', insertedBeforeWindow: true, insertedRows: true });
     });
 
     it('loadOlder is a no-op when hasMoreHistory is false', async () => {
@@ -611,8 +706,9 @@ describe('createThreadPane', () => {
         return { items: [], oldestTurnIndex: -1, hasMore: false };
       });
       await pane.switchThread(makeThread({ id: 't' }));
-      await pane.loadOlder();
+      const result = await pane.loadOlder();
       expect(calls).toBe(0);
+      expect(result).toEqual({ status: 'noop', insertedBeforeWindow: false, insertedRows: false });
     });
 
     it('loadOlder guards against a thread swap mid-fetch', async () => {
@@ -771,7 +867,7 @@ describe('createThreadPane', () => {
 
       const ok = await pane.loadUntilItem('deep');
       expect(ok).toBe(true);
-      expect(beforeTurnCalled).not.toBeNull();
+      expect(beforeTurnCalled).toBe(4);
       expect(pane.items.some((it) => it.id === 'deep')).toBe(true);
       expect(pane.oldestLoadedTurnIndex).toBe(3);
     });
@@ -885,8 +981,10 @@ describe('createThreadPane', () => {
       setBindingMock('GetThreadItem', async () =>
         makeItem({ id: 'deep', threadId: 't', turnIndex: 3 }),
       );
+      let capturedBeforeTurn: number | null = null;
       let capturedLimit: number | null = null;
-      setBindingMock('ListItemsBeforeTurn', async (_id, _before, limit) => {
+      setBindingMock('ListItemsBeforeTurn', async (_id, beforeTurn, limit) => {
+        capturedBeforeTurn = beforeTurn as number;
         capturedLimit = limit as number;
         return {
           items: [makeItem({ id: 'deep', threadId: 't', turnIndex: 3 })],
@@ -903,6 +1001,7 @@ describe('createThreadPane', () => {
       // like Number.MAX_SAFE_INTEGER.
       expect(capturedLimit).toBeLessThanOrEqual(200);
       expect(capturedLimit).toBeGreaterThan(0);
+      expect(capturedBeforeTurn).toBe(4);
     });
 
     it('pagingGeneration stays monotonic across switchThread', async () => {
@@ -988,6 +1087,72 @@ describe('createThreadPane', () => {
       // existing tail. The duplicate ancestor row was dropped so the
       // original position is preserved.
       expect(pane.items.map((it) => it.id)).toEqual(['ancestor', 'between', 'child']);
+    });
+
+    it('loadOlder replaces duplicate rows with enriched backend copies', async () => {
+      const pane = createThreadPane();
+      setBindingMock('ListRecentThreadItems', async () => ({
+        items: [
+          makeItem({
+            id: 'ancestor',
+            threadId: 't',
+            turnIndex: 0,
+            summary: 'summary-only',
+          }),
+          makeItem({ id: 'child', threadId: 't', turnIndex: 5 }),
+        ],
+        oldestTurnIndex: 5,
+        hasMore: true,
+      }));
+      setBindingMock('ListItemsBeforeTurn', async () => ({
+        items: [
+          makeItem({
+            id: 'ancestor',
+            threadId: 't',
+            turnIndex: 0,
+            summary: 'enriched',
+            payloadId: 'payload-ancestor',
+          }),
+          makeItem({ id: 'between', threadId: 't', turnIndex: 3 }),
+        ],
+        oldestTurnIndex: 3,
+        hasMore: false,
+      }));
+
+      await pane.switchThread(makeThread({ id: 't' }));
+      await pane.loadOlder();
+
+      const ancestor = pane.items.find((it) => it.id === 'ancestor');
+      expect(ancestor?.summary).toBe('enriched');
+      expect(ancestor?.payloadId).toBe('payload-ancestor');
+      expect(pane.items.filter((it) => it.id === 'ancestor')).toHaveLength(1);
+    });
+
+    it('loadOlder reports rows inserted after an ancestor above the floor', async () => {
+      const pane = createThreadPane();
+      setBindingMock('ListRecentThreadItems', async () => ({
+        items: [
+          makeItem({ id: 'ancestor', threadId: 't', turnIndex: 0 }),
+          makeItem({ id: 'child', threadId: 't', turnIndex: 5 }),
+        ],
+        oldestTurnIndex: 5,
+        hasMore: true,
+      }));
+      setBindingMock('ListItemsBeforeTurn', async () => ({
+        items: [makeItem({ id: 'between', threadId: 't', turnIndex: 3 })],
+        oldestTurnIndex: 3,
+        hasMore: false,
+      }));
+
+      await pane.switchThread(makeThread({ id: 't' }));
+      const result = await pane.loadOlder();
+
+      expect(pane.items.map((it) => it.id)).toEqual(['ancestor', 'between', 'child']);
+      expect(result).toEqual({
+        status: 'loaded',
+        insertedBeforeWindow: false,
+        insertedRows: true,
+      });
     });
 
     it('loadUntilItem dedupes by id when pulling in a below-floor target', async () => {

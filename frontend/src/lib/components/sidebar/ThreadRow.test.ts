@@ -30,6 +30,12 @@ async function primeSettings() {
   await loadSettings();
 }
 
+function nextFrame(): Promise<void> {
+  return new Promise((resolve) => {
+    requestAnimationFrame(() => resolve());
+  });
+}
+
 describe('<ThreadRow> unarchive', () => {
   beforeEach(async () => {
     await primeSettings();
@@ -284,7 +290,7 @@ describe('<ThreadRow> live status dot', () => {
         createdAt: 1,
         updatedAt: 1,
       });
-      for (let i = 0; i < 3; i += 1) await Promise.resolve();
+      await nextFrame();
 
       const dot = getByTestId('thread-row-status-dot');
       expect(dot.getAttribute('data-status')).toBe('running');
@@ -339,7 +345,7 @@ describe('<ThreadRow> live status dot', () => {
         createdAt: 1,
         updatedAt: 1,
       });
-      for (let i = 0; i < 3; i += 1) await Promise.resolve();
+      await nextFrame();
 
       const dot = getByTestId('thread-row-status-dot');
       expect(dot.getAttribute('data-status')).toBe('running');

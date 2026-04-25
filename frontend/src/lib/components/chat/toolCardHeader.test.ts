@@ -122,7 +122,8 @@ describe('classifyToolName', () => {
   it('wait_agent maps to robot icon without becoming a subagent parent', () => {
     const out = classifyToolName('wait_agent');
     expect(out.icon).toBe('robot');
-    expect(out.label).toBe('wait_agent');
+    expect(out.label).toBe('Wait');
+    expect(out.displayName).toBe('Wait for agent');
     expect(out.isSubagent).toBe(false);
   });
 

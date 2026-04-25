@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   EMPTY_TURN_DIFF_SUMMARY,
+  buildDiffViewForItems,
   buildTurnDiffView,
   changedFilesForItem,
   summarizeTurnDiffs,
@@ -154,6 +155,38 @@ describe('changedFilesForItem', () => {
     });
     expect(changedFilesForItem(item)).toEqual([]);
   });
+
+  it('drops malformed diff metadata instead of producing NaN rows', () => {
+    expect(changedFilesForItem(makeItem({
+      id: 'bad-diff',
+      payloadId: 'p',
+      payloadKind: 'diff',
+      payloadMeta: JSON.stringify({
+        filePath: '',
+        changeKind: 'modified',
+        insertions: Number.NaN,
+        deletions: 0,
+        preview: '',
+      }),
+    }))).toEqual([]);
+
+    expect(changedFilesForItem(makeItem({
+      id: 'bad-tool',
+      payloadId: 'p2',
+      payloadKind: 'tool_result',
+      payloadMeta: JSON.stringify({
+        inlineDiff: {
+          files: [
+            { path: 'valid.ts', insertions: 1, deletions: 0 },
+            { path: '', insertions: 2, deletions: 1 },
+            { path: 'nan.ts', insertions: 'many', deletions: 0 },
+          ],
+        },
+      }),
+    }))).toEqual([
+      { path: 'valid.ts', insertions: 1, deletions: 0, kind: 'modified', payloadId: 'p2' },
+    ]);
+  });
 });
 
 describe('buildTurnDiffView', () => {
@@ -265,5 +298,28 @@ describe('buildTurnDiffView', () => {
       deletions: 1,
       fileCount: 1,
     });
+  });
+});
+
+describe('buildDiffViewForItems', () => {
+  it('builds from pre-filtered turn items without requiring a turn scan', () => {
+    const view = buildDiffViewForItems([
+      makeItem({
+        id: 'diff-1',
+        turnIndex: 4,
+        payloadId: 'p1',
+        payloadKind: 'diff',
+        payloadMeta: JSON.stringify({
+          filePath: 'indexed.ts',
+          changeKind: 'modified',
+          insertions: 2,
+          deletions: 1,
+          preview: '',
+        }),
+      }),
+    ]);
+
+    expect(view?.files.map((file) => file.path)).toEqual(['indexed.ts']);
+    expect(view?.summary).toEqual({ insertions: 2, deletions: 1, fileCount: 1 });
   });
 });

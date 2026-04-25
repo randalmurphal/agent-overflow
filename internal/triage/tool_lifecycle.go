@@ -116,6 +116,7 @@ func (r *Router) persistToolCallLaunch(evt provider.ProviderEvent) error {
 		ParentID:     eventParentID(evt),
 		IsBackground: meta.IsBackground,
 		ToolName:     toolName,
+		Meta:         validJSONObjectString(evt.Meta),
 		CreatedAt:    now,
 		UpdatedAt:    now,
 	}
@@ -126,6 +127,7 @@ func (r *Router) persistToolCallLaunch(evt provider.ProviderEvent) error {
 		item.ParentID = stringsx.FirstNonEmptyTrimmed(eventParentID(evt), existing.ParentID)
 		item.ToolName = toolName
 		item.IsBackground = existing.IsBackground || meta.IsBackground
+		item.Meta = mergeItemMetaJSON(existing.Meta, evt.Meta)
 		if existing.Status == "" {
 			item.Status = statusRunning
 		}
@@ -202,6 +204,7 @@ func (r *Router) persistToolCallCompletion(evt provider.ProviderEvent) error {
 	if strings.TrimSpace(meta.ToolName) != "" {
 		launch.ToolName = strings.TrimSpace(meta.ToolName)
 	}
+	launch.Meta = mergeItemMetaJSON(launch.Meta, evt.Meta)
 	launch.UpdatedAt = now
 
 	// Command-output payloads accumulate meta jitter across the streaming
@@ -608,6 +611,48 @@ func decodeToolCompleteMeta(raw json.RawMessage) toolCompleteMeta {
 		return toolCompleteMeta{}
 	}
 	return m
+}
+
+func validJSONObjectString(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var parsed map[string]json.RawMessage
+	if json.Unmarshal(raw, &parsed) != nil || parsed == nil {
+		return ""
+	}
+	encoded, err := json.Marshal(parsed)
+	if err != nil {
+		return ""
+	}
+	return string(encoded)
+}
+
+func mergeItemMetaJSON(existing string, incoming json.RawMessage) string {
+	if len(incoming) == 0 {
+		return existing
+	}
+	var merged map[string]json.RawMessage
+	if strings.TrimSpace(existing) != "" {
+		if json.Unmarshal([]byte(existing), &merged) != nil {
+			merged = map[string]json.RawMessage{}
+		}
+	}
+	if merged == nil {
+		merged = map[string]json.RawMessage{}
+	}
+	var next map[string]json.RawMessage
+	if json.Unmarshal(incoming, &next) != nil || next == nil {
+		return existing
+	}
+	for key, value := range next {
+		merged[key] = value
+	}
+	out, err := json.Marshal(merged)
+	if err != nil {
+		return existing
+	}
+	return string(out)
 }
 
 func buildToolCallSummary(meta toolStartMeta, itemType string) string {

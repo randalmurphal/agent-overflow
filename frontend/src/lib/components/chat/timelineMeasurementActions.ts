@@ -11,6 +11,11 @@ type TimelineMeasurementOptions = {
   syncViewportState: () => void;
 };
 
+type TimelineRowMeasurement = {
+  key: string;
+  estimatedHeight: number;
+};
+
 export function createTimelineMeasurementActions(options: TimelineMeasurementOptions) {
   function measureScrollContainer(node: HTMLElement) {
     options.setScrollContainer(node as HTMLDivElement);
@@ -29,9 +34,9 @@ export function createTimelineMeasurementActions(options: TimelineMeasurementOpt
     };
   }
 
-  function measureTimelineRow(node: HTMLElement, key: string) {
-    let currentKey = key;
-    let previousHeight = previousKnownHeight(currentKey, options);
+  function measureTimelineRow(node: HTMLElement, measurement: TimelineRowMeasurement) {
+    let current = measurement;
+    let previousHeight = previousKnownHeight(current, options);
 
     const update = () => {
       const nextHeight = Math.ceil(node.getBoundingClientRect().height);
@@ -55,7 +60,7 @@ export function createTimelineMeasurementActions(options: TimelineMeasurementOpt
       }
 
       previousHeight = nextHeight;
-      options.setRowHeight(currentKey, nextHeight);
+      options.setRowHeight(current.key, nextHeight);
       options.onRowHeightChanged();
     };
 
@@ -65,11 +70,11 @@ export function createTimelineMeasurementActions(options: TimelineMeasurementOpt
     observer.observe(node);
 
     return {
-      update(nextKey: string) {
-        if (nextKey === currentKey) return;
+      update(next: TimelineRowMeasurement) {
+        if (next.key === current.key && next.estimatedHeight === current.estimatedHeight) return;
 
-        currentKey = nextKey;
-        previousHeight = previousKnownHeight(currentKey, options);
+        current = next;
+        previousHeight = previousKnownHeight(current, options);
         update();
       },
       destroy() {
@@ -84,6 +89,9 @@ export function createTimelineMeasurementActions(options: TimelineMeasurementOpt
   };
 }
 
-function previousKnownHeight(key: string, options: TimelineMeasurementOptions): number {
-  return options.getRowHeight(key) ?? options.estimatedRowHeight;
+function previousKnownHeight(
+  measurement: TimelineRowMeasurement,
+  options: TimelineMeasurementOptions,
+): number {
+  return options.getRowHeight(measurement.key) ?? measurement.estimatedHeight ?? options.estimatedRowHeight;
 }

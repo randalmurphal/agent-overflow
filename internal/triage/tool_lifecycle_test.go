@@ -84,6 +84,17 @@ func TestToolStartPersistsLifecycleItem(t *testing.T) {
 	if item.PayloadID != "" {
 		t.Errorf("item.PayloadID = %q, want empty at launch", item.PayloadID)
 	}
+	var persistedMeta map[string]any
+	if err := json.Unmarshal([]byte(item.Meta), &persistedMeta); err != nil {
+		t.Fatalf("item.Meta invalid JSON: %v", err)
+	}
+	input, ok := persistedMeta["input"].(map[string]any)
+	if !ok {
+		t.Fatalf("item.Meta input missing or wrong type: %#v", persistedMeta["input"])
+	}
+	if input["command"] != "ls -la" {
+		t.Errorf("item.Meta input.command = %v, want ls -la", input["command"])
+	}
 
 	upserted := findUpsertedItems(*emissions)
 	if len(upserted) != 1 || upserted[0].ID != scopedID {
@@ -650,6 +661,58 @@ func TestToolCompletionWithoutContentDoesNotAttachEmptyPayload(t *testing.T) {
 	}
 	if item.Summary != "WebSearch: codex app-server webSearch" {
 		t.Fatalf("summary = %q, want final web query", item.Summary)
+	}
+}
+
+func TestToolCompletionMergesCodexWaitAgentMeta(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	startMeta, _ := json.Marshal(map[string]any{
+		"toolName": "wait_agent",
+		"input": map[string]any{
+			"tool":              "wait_agent",
+			"receiverThreadIds": []string{"child-1"},
+		},
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "wait-1",
+		ItemType: "wait_agent", Meta: startMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	completeMeta, _ := json.Marshal(map[string]any{
+		"toolName":    "wait_agent",
+		"item_status": "completed",
+		"input": map[string]any{
+			"tool":              "wait_agent",
+			"receiverThreadIds": []string{"child-1", "child-2"},
+			"agentsStates": map[string]any{
+				"child-1": map[string]any{"status": "completed"},
+				"child-2": map[string]any{"status": "completed"},
+			},
+		},
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "wait-1",
+		ItemType: "wait_agent", Meta: completeMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+
+	item, _, _ := st.GetItem("wait-1")
+	var meta map[string]any
+	if err := json.Unmarshal([]byte(item.Meta), &meta); err != nil {
+		t.Fatalf("parse item meta: %v", err)
+	}
+	input, ok := meta["input"].(map[string]any)
+	if !ok {
+		t.Fatalf("input missing: %#v", meta)
+	}
+	receivers, ok := input["receiverThreadIds"].([]any)
+	if !ok || len(receivers) != 2 {
+		t.Fatalf("receiverThreadIds = %#v, want two ids", input["receiverThreadIds"])
 	}
 }
 

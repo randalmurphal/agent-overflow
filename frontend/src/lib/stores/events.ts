@@ -64,9 +64,83 @@ function isSeqEnvelope(value: unknown): value is SeqEnvelope {
  */
 const lastSeenSeq: Map<string, number> = new Map();
 const itemUpsertSubscribers: Set<(item: Item) => void> = new Set();
+const ITEM_EVENT_FLUSH_MAX_DELAY_MS = 50;
+const ITEM_EVENT_FLUSH_MAX_EVENTS = 500;
+const ITEM_EVENT_QUEUE_FORCE_FLUSH_EVENTS = 2_000;
+const ITEM_EVENT_TEXT_FIELD_MAX_CHARS = 2_000_000;
+let itemEventQueue: ItemStreamEvent[] = [];
+let itemEventQueueStart = 0;
+let itemEventFlushFrame: number | null = null;
+let itemEventFlushTimeout: number | null = null;
 
 function resetSeqTracking(): void {
   lastSeenSeq.clear();
+}
+
+function requestFrame(callback: () => void): number {
+  if (typeof requestAnimationFrame === 'function') {
+    return requestAnimationFrame(callback);
+  }
+  return window.setTimeout(callback, 0);
+}
+
+function cancelFrame(handle: number): void {
+  if (typeof cancelAnimationFrame === 'function') {
+    cancelAnimationFrame(handle);
+  } else {
+    window.clearTimeout(handle);
+  }
+}
+
+function cancelItemEventFlushSchedule(): void {
+  if (itemEventFlushFrame !== null) {
+    cancelFrame(itemEventFlushFrame);
+    itemEventFlushFrame = null;
+  }
+  if (itemEventFlushTimeout !== null) {
+    window.clearTimeout(itemEventFlushTimeout);
+    itemEventFlushTimeout = null;
+  }
+}
+
+function scheduleItemEventFlush(): void {
+  if (itemEventFlushFrame !== null || itemEventFlushTimeout !== null) return;
+  itemEventFlushFrame = requestFrame(flushItemEventQueue);
+  itemEventFlushTimeout = window.setTimeout(flushItemEventQueue, ITEM_EVENT_FLUSH_MAX_DELAY_MS);
+}
+
+function resetItemEventQueue(): void {
+  cancelItemEventFlushSchedule();
+  itemEventQueue = [];
+  itemEventQueueStart = 0;
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
+function isBoundedString(value: unknown, maxChars = ITEM_EVENT_TEXT_FIELD_MAX_CHARS): value is string {
+  return typeof value === 'string' && value.length <= maxChars;
+}
+
+function isValidItemForThread(item: Item | null | undefined, threadId: string): item is Item {
+  if (!item || item.threadId !== threadId) return false;
+  if (!isBoundedString(item.id, 512) || item.id.trim() === '') return false;
+  if (!isBoundedString(item.threadId, 512) || item.threadId.trim() === '') return false;
+  if (!isFiniteNumber(item.turnIndex) || !isFiniteNumber(item.itemIndex)) return false;
+  if (!isBoundedString(item.kind, 128)) return false;
+  if (!isBoundedString(item.role, 128)) return false;
+  if (!isBoundedString(item.status, 128)) return false;
+  if (!isBoundedString(item.summary)) return false;
+  if (item.payloadId !== undefined && !isBoundedString(item.payloadId, 512)) return false;
+  if (item.payloadKind !== undefined && !isBoundedString(item.payloadKind, 128)) return false;
+  if (item.payloadMeta !== undefined && !isBoundedString(item.payloadMeta)) return false;
+  if (item.parentId !== undefined && !isBoundedString(item.parentId, 512)) return false;
+  if (item.completionOf !== undefined && !isBoundedString(item.completionOf, 512)) return false;
+  if (item.toolName !== undefined && !isBoundedString(item.toolName, 256)) return false;
+  if (item.meta !== undefined && !isBoundedString(item.meta)) return false;
+  if (!isFiniteNumber(item.createdAt) || !isFiniteNumber(item.updatedAt)) return false;
+  return true;
 }
 
 function requiresSeqEnvelope(name: string): boolean {
@@ -80,9 +154,13 @@ export function onItemUpsert(handler: (item: Item) => void): () => void {
   };
 }
 
-function notifyItemUpsert(item: Item): void {
-  for (const handler of [...itemUpsertSubscribers]) {
-    handler(item);
+function notifyItemUpserts(items: Item[]): void {
+  if (items.length === 0 || itemUpsertSubscribers.size === 0) return;
+  const subscribers = [...itemUpsertSubscribers];
+  for (const item of items) {
+    for (const handler of subscribers) {
+      handler(item);
+    }
   }
 }
 
@@ -337,18 +415,29 @@ function applyUsageEvent(evt: UsageEvent): void {
   );
 }
 
-function applyItemUpsert(item: Item): void {
-  if (!item || !item.threadId) return;
-  projectThreadItem(item);
-
+function applyItemUpserts(items: Item[]): void {
+  if (items.length === 0) return;
+  const itemsByThread = new Map<string, Item[]>();
+  for (const item of items) {
+    const list = itemsByThread.get(item.threadId);
+    if (list) {
+      list.push(item);
+    } else {
+      itemsByThread.set(item.threadId, [item]);
+    }
+  }
   for (const pane of getAllPanes().values()) {
-    if (pane.threadId !== item.threadId) continue;
-    pane.upsertItem(item);
+    const threadItems = pane.threadId ? itemsByThread.get(pane.threadId) : undefined;
+    if (!threadItems) continue;
+    pane.upsertItems(threadItems);
   }
 }
 
 function applyItemDelta(evt: ItemDeltaEvent): void {
   if (!evt || !evt.threadId || !evt.itemId || !evt.delta) return;
+  if (!isBoundedString(evt.threadId, 512) || !isBoundedString(evt.itemId, 512)) return;
+  if (!isBoundedString(evt.kind, 128) || !isBoundedString(evt.delta)) return;
+  if (!isFiniteNumber(evt.updatedAt)) return;
 
   for (const pane of getAllPanes().values()) {
     if (pane.threadId !== evt.threadId) continue;
@@ -358,14 +447,114 @@ function applyItemDelta(evt: ItemDeltaEvent): void {
 
 function applyItemStreamEvent(evt: ItemStreamEvent): void {
   if (!evt || !evt.threadId) return;
-  if (evt.action === 'upsert') {
-    if (!evt.item) return;
-    applyItemUpsert(evt.item);
-    notifyItemUpsert(evt.item);
+  if (evt.action === 'upsert' && evt.item) {
+    if (!isValidItemForThread(evt.item, evt.threadId)) return;
+    projectThreadItem(evt.item);
+  } else if (evt.action === 'delta') {
+    if (!isBoundedString(evt.threadId, 512)) return;
+    if (!isBoundedString(evt.itemId, 512) || evt.itemId.trim() === '') return;
+    if (!isBoundedString(evt.kind, 128)) return;
+    if (!isBoundedString(evt.delta) || evt.delta === '') return;
+    if (!isFiniteNumber(evt.updatedAt)) return;
+  } else {
     return;
   }
-  if (evt.action === 'delta') {
-    applyItemDelta(evt);
+  if (itemEventQueue.length - itemEventQueueStart >= ITEM_EVENT_QUEUE_FORCE_FLUSH_EVENTS) {
+    flushItemEventQueue();
+  }
+  itemEventQueue.push(evt);
+  scheduleItemEventFlush();
+}
+
+function flushItemEventQueue(): void {
+  cancelItemEventFlushSchedule();
+  if (itemEventQueueStart >= itemEventQueue.length) {
+    itemEventQueue = [];
+    itemEventQueueStart = 0;
+    return;
+  }
+
+  const itemEventQueueEnd = Math.min(
+    itemEventQueueStart + ITEM_EVENT_FLUSH_MAX_EVENTS,
+    itemEventQueue.length,
+  );
+  const events = itemEventQueue.slice(itemEventQueueStart, itemEventQueueEnd);
+  if (itemEventQueueEnd >= itemEventQueue.length) {
+    itemEventQueue = [];
+    itemEventQueueStart = 0;
+  } else {
+    itemEventQueueStart = itemEventQueueEnd;
+    if (itemEventQueueStart > ITEM_EVENT_FLUSH_MAX_EVENTS * 4) {
+      itemEventQueue = itemEventQueue.slice(itemEventQueueStart);
+      itemEventQueueStart = 0;
+    }
+  }
+  const pendingUpserts: Item[] = [];
+  const notifiedUpserts: Item[] = [];
+  const pendingDeltas = new Map<string, ItemDeltaEvent & { chunks: string[] }>();
+  const deltaThreadIds = new Set<string>();
+
+  const flushPendingUpserts = () => {
+    if (pendingUpserts.length === 0) return;
+    applyItemUpserts(pendingUpserts);
+    notifiedUpserts.push(...pendingUpserts);
+    pendingUpserts.length = 0;
+  };
+
+  const queueDelta = (evt: ItemDeltaEvent) => {
+    const key = `${evt.threadId}\u0000${evt.itemId}\u0000${evt.kind}`;
+    const existing = pendingDeltas.get(key);
+    if (existing) {
+      existing.chunks.push(evt.delta);
+      existing.updatedAt = Math.max(existing.updatedAt, evt.updatedAt);
+      return;
+    }
+    pendingDeltas.set(key, { ...evt, delta: '', chunks: [evt.delta] });
+  };
+
+  const flushPendingDeltas = () => {
+    if (pendingDeltas.size === 0) return;
+    for (const delta of pendingDeltas.values()) {
+      const coalesced: ItemDeltaEvent = {
+        threadId: delta.threadId,
+        itemId: delta.itemId,
+        kind: delta.kind,
+        delta: delta.chunks.join(''),
+        updatedAt: delta.updatedAt,
+      };
+      applyItemDelta(coalesced);
+      deltaThreadIds.add(coalesced.threadId);
+    }
+    pendingDeltas.clear();
+  };
+
+  for (const evt of events) {
+    if (!evt || !evt.threadId) continue;
+    if (evt.action === 'upsert') {
+      flushPendingDeltas();
+      if (!isValidItemForThread(evt.item, evt.threadId)) continue;
+      pendingUpserts.push(evt.item);
+      continue;
+    }
+    if (evt.action !== 'delta') continue;
+
+    flushPendingUpserts();
+    queueDelta(evt);
+  }
+
+  flushPendingDeltas();
+  flushPendingUpserts();
+  if (deltaThreadIds.size > 0) {
+    for (const pane of getAllPanes().values()) {
+      const threadId = pane.threadId;
+      if (threadId && deltaThreadIds.has(threadId)) {
+        pane.flushLiveDeltas();
+      }
+    }
+  }
+  notifyItemUpserts(notifiedUpserts);
+  if (itemEventQueueStart < itemEventQueue.length) {
+    scheduleItemEventFlush();
   }
 }
 
@@ -521,6 +710,7 @@ export function setupEventListeners(): () => void {
   // (tests re-wire between cases) does not bleed its last-seen seq into
   // the new listener set and trigger spurious warnings.
   resetSeqTracking();
+  resetItemEventQueue();
 
   const cancelApproval = wailsEventOn<ApprovalEvent>('provider:approval', applyApprovalEvent);
   const cancelUserInput = wailsEventOn<UserInputEvent>('provider:user_input', applyUserInputEvent);
@@ -638,6 +828,7 @@ export function setupEventListeners(): () => void {
   );
 
   return () => {
+    resetItemEventQueue();
     cancelApproval();
     cancelUserInput();
     cancelUsage();

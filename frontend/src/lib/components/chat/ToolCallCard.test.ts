@@ -150,6 +150,60 @@ describe('<ToolCallCard> header dispatcher', () => {
     expect(getByTestId('tool-call-card').getAttribute('data-tool-kind')).toBe('speech-bubble');
   });
 
+  it('renders wait_agent as a human wait row with receiver count', async () => {
+    const pane = await buildPane();
+    const cases = [
+      {
+        status: 'running' as const,
+        meta: JSON.stringify({ input: { receiverThreadIds: ['child-1', 'child-2'] } }),
+        expected: 'Waiting on 2 agents',
+      },
+      {
+        status: 'running' as const,
+        meta: JSON.stringify({ input: { receiverThreadIds: ['child-1'] } }),
+        expected: 'Waiting on 1 agent',
+      },
+      {
+        status: 'completed' as const,
+        meta: JSON.stringify({ input: { receiverThreadIds: ['child-1'] } }),
+        expected: 'Waited on 1 agent',
+      },
+      {
+        status: 'completed' as const,
+        meta: '',
+        expected: 'Waited on agents',
+      },
+      {
+        status: 'running' as const,
+        meta: '{',
+        expected: 'Waiting on agents',
+      },
+      {
+        status: 'running' as const,
+        meta: JSON.stringify({ input: { receiverThreadIds: 'child-1' } }),
+        expected: 'Waiting on agents',
+      },
+    ];
+
+    for (const testCase of cases) {
+      const item = makeItem({
+        id: `wait-agent-${testCase.expected}`,
+        kind: 'tool_call',
+        status: testCase.status,
+        toolName: 'wait_agent',
+        summary: 'raw summary should not win',
+        meta: testCase.meta,
+      });
+
+      const { getByTestId, unmount } = render(ToolCallCard, { props: { pane, item } });
+
+      expect(getByTestId('tool-call-card').getAttribute('data-tool-kind')).toBe('robot');
+      expect(getByTestId('tool-call-card-label').textContent).toBe('Wait');
+      expect(getByTestId('tool-call-card-preview').textContent).toContain(testCase.expected);
+      unmount();
+    }
+  });
+
   it('renders a checklist icon for Plan / ExitPlanMode', async () => {
     const pane = await buildPane();
     for (const toolName of ['Plan', 'ExitPlanMode']) {

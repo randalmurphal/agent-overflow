@@ -29,7 +29,11 @@ import { replaceThread } from './threads.svelte';
 const LOAD_OLDER_TURN_BATCH = 50;
 import { addToast } from './toast.svelte';
 import { createDiffPanelState, type DiffPanelState } from './diffPanel.svelte';
-import { buildTurnDiffView, type TurnDiffView } from '../utils/turnDiffSummary';
+import {
+  buildDiffViewForItems,
+  itemMayAffectDiffView,
+  type TurnDiffView,
+} from '../utils/turnDiffSummary';
 import { errString } from '../utils/errors';
 
 /**
@@ -64,6 +68,20 @@ export interface SettledTurn {
   tokenUsage: TokenUsageSummary | null;
   aborted: boolean;
   errorMessage: string;
+}
+
+export type LoadOlderResult = {
+  insertedBeforeWindow: boolean;
+  insertedRows: boolean;
+  status: 'loaded' | 'noop' | 'stale' | 'error';
+};
+
+function loadOlderResult(
+  status: LoadOlderResult['status'],
+  insertedBeforeWindow = false,
+  insertedRows = false,
+): LoadOlderResult {
+  return { status, insertedBeforeWindow, insertedRows };
 }
 
 /**
@@ -164,6 +182,9 @@ export function createThreadPane() {
   let liveItemSummaries: Record<string, string> = $state({});
   const liveDeltaChunks: Map<string, string[]> = new Map();
   const itemStatusById: Map<string, Item['status']> = new Map();
+  const itemIndexById: Map<string, number> = new Map();
+  const itemSummaryById: Map<string, string> = new Map();
+  const itemIdsByTurn: Map<number, string[]> = new Map();
   let liveSummaryFrame: number | null = null;
   // Per-turn diff view index. Keyed by turnIndex. Incrementally updated on
   // upsertItem rather than rebuilt from scratch — with hundreds of items the
@@ -280,8 +301,23 @@ export function createThreadPane() {
    * to allocate a fresh Map per upsert (which would be O(turns) alloc per
    * mutation and defeat the point of moving this out of MessageTimeline).
    */
-  function refreshTurnDiffView(nextItems: Item[], turnIndex: number): void {
-    const view = buildTurnDiffView(nextItems, turnIndex);
+  function itemsForTurn(turnIndex: number): Item[] {
+    const ids = itemIdsByTurn.get(turnIndex);
+    if (!ids || ids.length === 0) return [];
+    const turnItems: Item[] = [];
+    for (const id of ids) {
+      const index = itemIndexById.get(id);
+      if (index === undefined) continue;
+      const item = items[index];
+      if (item && item.turnIndex === turnIndex) {
+        turnItems.push(item);
+      }
+    }
+    return turnItems;
+  }
+
+  function refreshTurnDiffView(turnIndex: number): void {
+    const view = buildDiffViewForItems(itemsForTurn(turnIndex));
     if (view) {
       turnDiffViews.set(turnIndex, view);
     } else {
@@ -295,12 +331,10 @@ export function createThreadPane() {
    * appropriate. Clears the reactive map in place for the same "no
    * per-mutation alloc" reason.
    */
-  function rebuildTurnDiffViews(nextItems: Item[]): void {
+  function rebuildTurnDiffViews(): void {
     turnDiffViews.clear();
-    const byTurn = new Set<number>();
-    for (const item of nextItems) byTurn.add(item.turnIndex);
-    for (const turnIndex of byTurn) {
-      const view = buildTurnDiffView(nextItems, turnIndex);
+    for (const turnIndex of itemIdsByTurn.keys()) {
+      const view = buildDiffViewForItems(itemsForTurn(turnIndex));
       if (view) turnDiffViews.set(turnIndex, view);
     }
   }
@@ -325,7 +359,7 @@ export function createThreadPane() {
     if (liveDeltaChunks.size === 0) return;
     const next = { ...liveItemSummaries };
     for (const [itemID, chunks] of liveDeltaChunks) {
-      const persisted = items.find((item) => item.id === itemID)?.summary ?? '';
+      const persisted = itemSummaryById.get(itemID) ?? '';
       next[itemID] = (next[itemID] ?? persisted) + chunks.join('');
     }
     liveDeltaChunks.clear();
@@ -346,11 +380,73 @@ export function createThreadPane() {
     liveItemSummaries = {};
   }
 
-  function rebuildItemStatusIndex(nextItems: Item[]): void {
+  function rebuildItemIndexes(nextItems: Item[]): void {
     itemStatusById.clear();
-    for (const item of nextItems) {
+    itemIndexById.clear();
+    itemSummaryById.clear();
+    itemIdsByTurn.clear();
+    for (let index = 0; index < nextItems.length; index += 1) {
+      const item = nextItems[index];
       itemStatusById.set(item.id, item.status);
+      itemIndexById.set(item.id, index);
+      itemSummaryById.set(item.id, item.summary);
+      appendItemIdToTurn(item.turnIndex, item.id);
     }
+  }
+
+  function appendItemIdToTurn(turnIndex: number, itemId: string): void {
+    const ids = itemIdsByTurn.get(turnIndex);
+    if (ids) {
+      ids.push(itemId);
+      return;
+    }
+    itemIdsByTurn.set(turnIndex, [itemId]);
+  }
+
+  function addUniqueItemIdToTurn(turnIndex: number, itemId: string): void {
+    const ids = itemIdsByTurn.get(turnIndex);
+    if (ids) {
+      if (!ids.includes(itemId)) ids.push(itemId);
+      return;
+    }
+    itemIdsByTurn.set(turnIndex, [itemId]);
+  }
+
+  function removeItemIdFromTurn(turnIndex: number, itemId: string): void {
+    const ids = itemIdsByTurn.get(turnIndex);
+    if (!ids) return;
+    const next = ids.filter((id) => id !== itemId);
+    if (next.length > 0) {
+      itemIdsByTurn.set(turnIndex, next);
+    } else {
+      itemIdsByTurn.delete(turnIndex);
+    }
+  }
+
+  function compareItemsByTimelinePosition(a: Item, b: Item): number {
+    if (a.turnIndex !== b.turnIndex) return a.turnIndex - b.turnIndex;
+    if (a.itemIndex !== b.itemIndex) return a.itemIndex - b.itemIndex;
+    return 0;
+  }
+
+  function applyLiveStateForUpsert(item: Item, nextLive: Record<string, string>): boolean {
+    if (item.status !== 'streaming') {
+      const hadLiveSummary = nextLive[item.id] !== undefined;
+      const hadDeltaChunks = liveDeltaChunks.delete(item.id);
+      if (hadLiveSummary) {
+        delete nextLive[item.id];
+      }
+      return hadLiveSummary || hadDeltaChunks;
+    }
+
+    if (nextLive[item.id] !== undefined || !item.summary) {
+      return false;
+    }
+
+    const pending = liveDeltaChunks.get(item.id)?.join('') ?? '';
+    liveDeltaChunks.delete(item.id);
+    nextLive[item.id] = item.summary + pending;
+    return true;
   }
 
   function itemsForThread(nextItems: Item[] | null | undefined, threadId: string): Item[] {
@@ -377,19 +473,17 @@ export function createThreadPane() {
     if (incoming.length === 0) return current;
     const byId = new Map<string, Item>();
     for (const it of current) byId.set(it.id, it);
-    let added = false;
+    let changed = false;
     for (const it of incoming) {
-      if (!byId.has(it.id)) {
+      const existing = byId.get(it.id);
+      if (existing !== it) {
         byId.set(it.id, it);
-        added = true;
+        changed = true;
       }
     }
-    if (!added) return current;
+    if (!changed) return current;
     const merged = Array.from(byId.values());
-    merged.sort((a, b) => {
-      if (a.turnIndex !== b.turnIndex) return a.turnIndex - b.turnIndex;
-      return a.itemIndex - b.itemIndex;
-    });
+    merged.sort(compareItemsByTimelinePosition);
     return merged;
   }
 
@@ -413,6 +507,82 @@ export function createThreadPane() {
     }
   }
 
+  function upsertItemsBatch(incoming: Item[]): void {
+    if (incoming.length === 0) return;
+
+    const currentThreadId = thread?.id ?? null;
+    const next = items.slice();
+
+    const affectedTurns = new Set<number>();
+    const nextLive = { ...liveItemSummaries };
+    let changed = false;
+    let liveChanged = false;
+    let needsSort = false;
+
+    for (const item of incoming) {
+      if (currentThreadId !== null && item.threadId !== currentThreadId) continue;
+
+      const existingIndex = itemIndexById.get(item.id);
+      if (existingIndex !== undefined) {
+        liveChanged = applyLiveStateForUpsert(item, nextLive) || liveChanged;
+        const previous = next[existingIndex];
+        next[existingIndex] = item;
+        itemStatusById.set(item.id, item.status);
+        itemSummaryById.set(item.id, item.summary);
+        if (previous.turnIndex !== item.turnIndex) {
+          removeItemIdFromTurn(previous.turnIndex, item.id);
+          addUniqueItemIdToTurn(item.turnIndex, item.id);
+        }
+        if (itemMayAffectDiffView(previous) || itemMayAffectDiffView(item)) {
+          affectedTurns.add(previous.turnIndex);
+          affectedTurns.add(item.turnIndex);
+        }
+        if (compareItemsByTimelinePosition(previous, item) !== 0) {
+          needsSort = true;
+        }
+        changed = true;
+        continue;
+      }
+
+      // Window-floor guard for NEW items. Existing-id replacements above
+      // already bypass this because an in-window row can legitimately be
+      // corrected below the floor.
+      if (oldestLoadedTurnIndex !== null && item.turnIndex < oldestLoadedTurnIndex) {
+        continue;
+      }
+
+      liveChanged = applyLiveStateForUpsert(item, nextLive) || liveChanged;
+      const previousTail = next.at(-1);
+      if (previousTail && compareItemsByTimelinePosition(previousTail, item) > 0) {
+        needsSort = true;
+      }
+      itemIndexById.set(item.id, next.length);
+      next.push(item);
+      itemStatusById.set(item.id, item.status);
+      itemSummaryById.set(item.id, item.summary);
+      appendItemIdToTurn(item.turnIndex, item.id);
+      if (itemMayAffectDiffView(item)) {
+        affectedTurns.add(item.turnIndex);
+      }
+      changed = true;
+    }
+
+    if (liveChanged) {
+      liveItemSummaries = nextLive;
+    }
+    if (!changed) return;
+
+    if (needsSort) {
+      next.sort(compareItemsByTimelinePosition);
+      rebuildItemIndexes(next);
+    }
+    items = next;
+    timelineRevision++;
+    for (const turnIndex of affectedTurns) {
+      refreshTurnDiffView(turnIndex);
+    }
+  }
+
   return {
     // --- Getters (reactive reads) ---
     get thread() { return thread; },
@@ -425,7 +595,7 @@ export function createThreadPane() {
      * `upsertItem` so MessageTimeline can render the ChangedFilesTree and
      * TurnDiffBadge without re-scanning the full items array each upsert.
      */
-    get turnDiffViews() { return turnDiffViews; },
+    get turnDiffViews(): ReadonlyMap<number, TurnDiffView> { return turnDiffViews; },
     get pendingApprovals() { return pendingApprovals; },
     get pendingUserInputs() { return pendingUserInputs; },
     get contextWindow() { return contextWindow; },
@@ -531,7 +701,7 @@ export function createThreadPane() {
       loading = true;
       items = [];
       resetLiveBuffers();
-      itemStatusById.clear();
+      rebuildItemIndexes(items);
       turnDiffViews = new Map();
       // Windowed-history reset. A null floor disables the upsert floor
       // check until the backend tells us otherwise, which is correct:
@@ -575,15 +745,15 @@ export function createThreadPane() {
         const paged = await ListRecentThreadItems(newThread.id, 0);
         if (gen !== switchGeneration) return;
         items = itemsForThread((paged.items ?? []) as Item[], newThread.id);
-        rebuildItemStatusIndex(items);
+        rebuildItemIndexes(items);
         oldestLoadedTurnIndex = paged.oldestTurnIndex >= 0 ? paged.oldestTurnIndex : null;
         hasMoreHistory = paged.hasMore ?? false;
-        rebuildTurnDiffViews(items);
+        rebuildTurnDiffViews();
       } catch (err) {
         if (gen !== switchGeneration) return;
         console.error('Failed to load items:', err);
         items = [];
-        itemStatusById.clear();
+        rebuildItemIndexes(items);
         turnDiffViews = new Map();
         oldestLoadedTurnIndex = null;
         hasMoreHistory = false;
@@ -626,7 +796,7 @@ export function createThreadPane() {
       thread = null;
       items = [];
       resetLiveBuffers();
-      itemStatusById.clear();
+      rebuildItemIndexes(items);
       turnDiffViews = new Map();
       pendingApprovals = [];
       pendingUserInputs = [];
@@ -664,27 +834,39 @@ export function createThreadPane() {
      * clicks or keyboard repeats). On success the per-turn diff-view map
      * is rebuilt to include the newly loaded turns; because paging is
      * turn-boundary aligned the refresh is safe — no turn can straddle
-     * the window edge and produce a partial diff.
+     * the window edge and produce a partial diff. The return value is for
+     * scroll anchoring: `insertedBeforeWindow` means at least one new row
+     * sorted before the current in-memory first row. Components that know
+     * the actual visible anchor still restore that anchor directly.
      */
-    async loadOlder(): Promise<void> {
+    async loadOlder(): Promise<LoadOlderResult> {
       const currentThread = thread;
-      if (!currentThread) return;
-      if (!hasMoreHistory || loadingOlder) return;
+      if (!currentThread) return loadOlderResult('noop');
+      if (!hasMoreHistory || loadingOlder) return loadOlderResult('noop');
       const floor = oldestLoadedTurnIndex;
-      if (floor === null) return;
+      if (floor === null) return loadOlderResult('noop');
 
       const gen = switchGeneration;
       const pageGen = ++pagingGeneration;
       loadingOlder = true;
       try {
         const paged = await ListItemsBeforeTurn(currentThread.id, floor, LOAD_OLDER_TURN_BATCH);
-        if (gen !== switchGeneration || pageGen !== pagingGeneration) return;
+        if (gen !== switchGeneration || pageGen !== pagingGeneration) return loadOlderResult('stale');
         const prepend = itemsForThread((paged.items ?? []) as Item[], currentThread.id);
+        const currentIds = new Set(items.map((item) => item.id));
+        const insertedRows = prepend.some((item) => !currentIds.has(item.id));
+        const currentFirst = items[0] ?? null;
+        const insertedBeforeWindow = currentFirst === null
+          ? insertedRows
+          : prepend.some((item) => (
+              !currentIds.has(item.id)
+              && compareItemsByTimelinePosition(item, currentFirst) < 0
+            ));
         const next = mergeItemsById(prepend, items);
         if (next !== items) {
           items = next;
-          rebuildItemStatusIndex(items);
-          rebuildTurnDiffViews(items);
+          rebuildItemIndexes(items);
+          rebuildTurnDiffViews();
         }
         const nextFloor =
           paged.oldestTurnIndex >= 0 ? paged.oldestTurnIndex : floor;
@@ -700,10 +882,12 @@ export function createThreadPane() {
         } else {
           hasMoreHistory = paged.hasMore ?? false;
         }
+        return loadOlderResult('loaded', insertedBeforeWindow, insertedRows);
       } catch (err) {
-        if (gen !== switchGeneration || pageGen !== pagingGeneration) return;
+        if (gen !== switchGeneration || pageGen !== pagingGeneration) return loadOlderResult('stale');
         console.error('loadOlder failed:', err);
         addToast('error', 'Failed to load older messages');
+        return loadOlderResult('error');
       } finally {
         // Always clear the button's busy flag. The generation guard on
         // the happy path protects state mutation from late resolutions,
@@ -771,16 +955,13 @@ export function createThreadPane() {
       // existing floor. A single ListItemsBeforeTurn with a turnLimit
       // sized to cover that distance does it in one shot.
       //
-      // When `currentFloor` is null (empty window — thread never
-      // loaded items, or cleared pane state) we hand the backend the
-      // default batch and let its `smallestTurnIndexBefore` fallback
-      // walk to the real floor. Passing `MAX_SAFE_INTEGER - targetFloor`
-      // as turnSpan would work but poisons the query with a sentinel
-      // value that looks like a DoS vector at the SQL layer; keeping
-      // turnSpan to the default batch size is cleaner and
-      // semantically equivalent.
+      // When `currentFloor` is null (empty window — thread never loaded
+      // items, or cleared pane state), ask for the target turn directly
+      // with a bounded default batch. The old MAX_SAFE_INTEGER sentinel
+      // made the query broad and could still miss the target depending
+      // on backend paging behavior.
       const targetFloor = fetched.turnIndex;
-      const beforeTurn = currentFloor ?? Number.MAX_SAFE_INTEGER;
+      const beforeTurn = currentFloor ?? targetFloor + 1;
       const turnSpan = currentFloor === null
         ? LOAD_OLDER_TURN_BATCH
         : Math.max(LOAD_OLDER_TURN_BATCH, beforeTurn - targetFloor + 1);
@@ -793,11 +974,11 @@ export function createThreadPane() {
         const next = mergeItemsById(prepend, items);
         if (next !== items) {
           items = next;
-          rebuildItemStatusIndex(items);
-          rebuildTurnDiffViews(items);
+          rebuildItemIndexes(items);
+          rebuildTurnDiffViews();
         }
         oldestLoadedTurnIndex =
-          paged.oldestTurnIndex >= 0 ? paged.oldestTurnIndex : beforeTurn;
+          paged.oldestTurnIndex >= 0 ? paged.oldestTurnIndex : currentFloor;
         hasMoreHistory = paged.hasMore ?? false;
       } catch (err) {
         if (gen !== switchGeneration || pageGen !== pagingGeneration) return false;
@@ -852,83 +1033,21 @@ export function createThreadPane() {
     },
 
     /**
-     * Merge a single Item from a `provider:item_event` upsert into the
-     * timeline. New ids append in (turnIndex, itemIndex) order; existing
-     * ids replace in place so the row's status/summary/payload_id can
-     * mutate without losing position. The backend is authoritative for
-     * ordering — we never reshuffle by anything other than those two
-     * fields, so a tool_call row stays exactly where it was inserted.
-     *
-     * Also refreshes the turnDiffViews entry for the item's turn (and, on
-     * replace, the prior item's turn if it differed — defensive against
-     * cross-turn corrections). Only the affected turn(s) are recomputed,
-     * keeping per-upsert work bounded by the turn's item count rather than
-     * the full thread.
+     * One-item compatibility wrapper around the batched upsert path.
+     * Event routing uses `upsertItems` so bursts of wait rows and payload
+     * enrichments hit the timeline in one paint.
      */
     upsertItem(item: Item): void {
-      if (thread && item.threadId !== thread.id) {
-        return;
-      }
-      if (item.status !== 'streaming') {
-        const nextLive = { ...liveItemSummaries };
-        delete nextLive[item.id];
-        liveItemSummaries = nextLive;
-        liveDeltaChunks.delete(item.id);
-      } else if (liveItemSummaries[item.id] === undefined && item.summary) {
-        const pending = liveDeltaChunks.get(item.id)?.join('') ?? '';
-        liveDeltaChunks.delete(item.id);
-        liveItemSummaries = {
-          ...liveItemSummaries,
-          [item.id]: item.summary + pending,
-        };
-      }
-      const idx = items.findIndex((existing) => existing.id === item.id);
-      if (idx >= 0) {
-        // Existing-id path: always accept. If we already have this id in
-        // the window, the item is in-window by construction regardless
-        // of any window-floor math. This branch also handles cross-turn
-        // corrections where the server reassigns turn_index on a known id.
-        const prevTurnIndex = items[idx].turnIndex;
-        const next = items.slice();
-        next[idx] = item;
-        items = next;
-        itemStatusById.set(item.id, item.status);
-        timelineRevision++;
-        refreshTurnDiffView(next, item.turnIndex);
-        if (prevTurnIndex !== item.turnIndex) {
-          refreshTurnDiffView(next, prevTurnIndex);
-        }
-        return;
-      }
-      // Window-floor guard for NEW items. Upserts can legitimately fire
-      // for older turns (triage interrupt-queue replay, late background
-      // tool_completion siblings, codex reconcile flips). If the
-      // coordinate is below the loaded window, silently drop — the row
-      // is safely persisted in SQLite and will pull in on the next
-      // `loadOlder` click.
-      if (oldestLoadedTurnIndex !== null && item.turnIndex < oldestLoadedTurnIndex) {
-        return;
-      }
-      // Find the insertion point that preserves (turnIndex, itemIndex).
-      // Linear scan is fine — the loaded window is bounded by
-      // INITIAL_TURN_WINDOW (~50 turns, typically a few hundred items).
-      let insertAt = items.length;
-      for (let i = 0; i < items.length; i++) {
-        const cur = items[i];
-        if (
-          cur.turnIndex > item.turnIndex
-          || (cur.turnIndex === item.turnIndex && cur.itemIndex > item.itemIndex)
-        ) {
-          insertAt = i;
-          break;
-        }
-      }
-      const next = items.slice();
-      next.splice(insertAt, 0, item);
-      items = next;
-      itemStatusById.set(item.id, item.status);
-      timelineRevision++;
-      refreshTurnDiffView(next, item.turnIndex);
+      upsertItemsBatch([item]);
+    },
+
+    /**
+     * Merge a batch of Items from `provider:item_event` into the timeline.
+     * The final state is still the backend-authored transcript, but bursts
+     * only allocate/sort/bump revision once.
+     */
+    upsertItems(incoming: Item[]): void {
+      upsertItemsBatch(incoming);
     },
 
     applyItemDelta(evt: ItemDeltaEvent): void {
@@ -943,6 +1062,14 @@ export function createThreadPane() {
         liveDeltaChunks.set(evt.itemId, [evt.delta]);
       }
       scheduleLiveDeltaFlush();
+    },
+
+    flushLiveDeltas(): void {
+      if (liveSummaryFrame !== null) {
+        cancelFrame(liveSummaryFrame);
+        liveSummaryFrame = null;
+      }
+      flushLiveDeltaChunks();
     },
 
     setGeneralError(message: string | null): void {

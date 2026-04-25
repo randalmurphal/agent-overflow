@@ -108,8 +108,8 @@ export function classifyToolName(toolName: string | undefined | null): ToolKindV
     case 'wait_agent':
       return {
         icon: 'robot',
-        label: 'wait_agent',
-        displayName: 'wait_agent',
+        label: 'Wait',
+        displayName: 'Wait for agent',
         isSubagent: false,
       };
     case 'Plan':

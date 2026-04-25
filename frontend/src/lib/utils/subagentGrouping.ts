@@ -64,14 +64,16 @@ export interface SubagentGroupNode {
 }
 
 /**
- * Compare two items by their (turnIndex, itemIndex, createdAt) coordinate.
+ * Compare two items by their (turnIndex, itemIndex) coordinate.
  * Callers usually feed the store's listing in order, but this keeps the
  * grouping deterministic when consumers concatenate from multiple sources.
+ * Equal coordinates intentionally return 0 so stable sort preserves the
+ * backend/store arrival order used by the transcript.
  */
 function compareItems(a: Item, b: Item): number {
   if (a.turnIndex !== b.turnIndex) return a.turnIndex - b.turnIndex;
   if (a.itemIndex !== b.itemIndex) return a.itemIndex - b.itemIndex;
-  return a.createdAt - b.createdAt;
+  return 0;
 }
 
 /**
