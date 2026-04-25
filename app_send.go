@@ -155,7 +155,9 @@ func (a *App) sendMessageWithOptions(threadID string, content string, opts sendM
 	if err != nil {
 		return fmt.Errorf("send message: get turn index: %w", err)
 	}
-	turnIndex++
+	if hasPriorItems {
+		turnIndex++
+	}
 	a.maybeRenameTemporaryWorktreeBranch(threadID, content)
 
 	now := time.Now().UnixMilli()

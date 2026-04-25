@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"agent-overflow/internal/diffsummary"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 
@@ -255,17 +256,7 @@ func (r *Router) captureCompletedTurnCheckpoint(ctx context.Context, settled Tur
 		log.Printf("triage: checkpoint complete previous thread=%s turn=%d: %v", settled.ThreadID, turnCount-1, err)
 		return
 	}
-	if !ok {
-		err := fmt.Errorf("missing previous checkpoint for turn count %d", turnCount-1)
-		r.emit("checkpoint:error", map[string]any{
-			"threadId":            settled.ThreadID,
-			"turnIndex":           turnCount,
-			"checkpointTurnCount": turnCount,
-			"error":               err.Error(),
-		})
-		log.Printf("triage: checkpoint complete missing previous thread=%s turn=%d", settled.ThreadID, turnCount-1)
-		return
-	}
+	hasPrevious := ok
 
 	if staleRef, hadRow, err := r.store.DeleteCheckpointByThreadTurnCount(settled.ThreadID, turnCount); err != nil {
 		log.Printf("triage: checkpoint complete stale row thread=%s turn=%d: %v", settled.ThreadID, turnCount, err)
@@ -287,10 +278,13 @@ func (r *Router) captureCompletedTurnCheckpoint(ctx context.Context, settled Tur
 		log.Printf("triage: checkpoint complete capture thread=%s turn=%d: %v", settled.ThreadID, turnCount, err)
 		return
 	}
-	files, err := cap.DiffRefToRefSummary(ctx, workspace, previous.RefName, ref)
-	if err != nil {
-		log.Printf("triage: checkpoint complete diff summary thread=%s turn=%d: %v", settled.ThreadID, turnCount, err)
-		files = nil
+	var files []diffsummary.File
+	if hasPrevious {
+		files, err = cap.DiffRefToRefSummary(ctx, workspace, previous.RefName, ref)
+		if err != nil {
+			log.Printf("triage: checkpoint complete diff summary thread=%s turn=%d: %v", settled.ThreadID, turnCount, err)
+			files = nil
+		}
 	}
 	now := time.Now().UnixMilli()
 	record := store.Checkpoint{

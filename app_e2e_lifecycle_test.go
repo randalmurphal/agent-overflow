@@ -495,24 +495,24 @@ func TestE2E_MultiTurnClaude(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListItems: %v", err)
 	}
-	// Expect: turn 1 user "first", turn 1 assistant "turn one",
-	//         turn 2 user "second", turn 2 assistant "turn two"
+	// Expect: turn 0 user "first", turn 0 assistant "turn one",
+	//         turn 1 user "second", turn 1 assistant "turn two"
 	// (exact ordering depends on persist timing; check items per turn).
+	turn0Summaries := map[string]bool{}
 	turn1Summaries := map[string]bool{}
-	turn2Summaries := map[string]bool{}
 	for _, it := range items {
 		switch it.TurnIndex {
+		case 0:
+			turn0Summaries[it.Summary] = true
 		case 1:
 			turn1Summaries[it.Summary] = true
-		case 2:
-			turn2Summaries[it.Summary] = true
 		}
 	}
-	if !turn1Summaries["first"] || !turn1Summaries["turn one"] {
-		t.Fatalf("turn 1 missing expected summaries: %v", turn1Summaries)
+	if !turn0Summaries["first"] || !turn0Summaries["turn one"] {
+		t.Fatalf("turn 0 missing expected summaries: %v", turn0Summaries)
 	}
-	if !turn2Summaries["second"] || !turn2Summaries["turn two"] {
-		t.Fatalf("turn 2 missing expected summaries: %v", turn2Summaries)
+	if !turn1Summaries["second"] || !turn1Summaries["turn two"] {
+		t.Fatalf("turn 1 missing expected summaries: %v", turn1Summaries)
 	}
 
 	_ = app.StopSession(thread.ID)

@@ -183,8 +183,9 @@ don't get re-derived (or accidentally violated) in implementation.
 2. **`item.id` is stable from stream start through completion.** A
    streaming `assistant_text` with id `text:5:2` stays `text:5:2` when
    it flips to completed. No ID rewrite at state transitions.
-3. **`turn_index` is monotonic per thread.** Assigned by triage from
-   `LastTurnIndex(threadID) + 1` under the per-thread send mutex.
+3. **`turn_index` is monotonic per thread.** Empty threads start at
+   `0`; later sends use `LastTurnIndex(threadID) + 1` under the
+   per-thread send mutex.
 4. **FIFO drain for the interrupt queue.** Parallel tool completions
    that queued during one streaming cycle must flush in arrival order
    so a `_End` never renders before its `_Begin` partner.
@@ -1190,12 +1191,12 @@ func (r *Router) drainInterruptQueue(threadID string) {
 
 ### Turn lifecycle synthesis
 
-Turn boundaries are synthesized in the Go triage layer. We don't
-depend on the wire for TurnStart — Claude doesn't emit one, and
-Codex does (`turn/started` notification, handled at the Codex
-adapter's `ClassifyNotification` entry point) but we still synthesize
-to keep `turn_index` monotonic per thread, server-assigned, and
-provider-independent. Any wire TurnStart is absorbed idempotently.
+Turn boundaries enter the Go triage layer through provider-specific
+signals. Claude has no wire turn-start event, so `App.sendMessage`
+synthesizes one before sending. Codex emits `turn/started`, so
+`App.sendMessage` persists the user item first and lets the Codex wire
+event open the turn. Both paths use the same local `turn_index`
+semantics so item grouping stays provider-independent.
 
 **`turn_index` semantics**: this is a LOCAL counter on agent-overflow's
 thread, not a provider turn id. Provider turn ids (Codex's
@@ -1206,12 +1207,16 @@ internally loop through multiple API cycles under one of our
 turns), and that's fine: our `turn_index` is the UI unit, the
 provider's turn id is the wire unit.
 
-**TurnStart** — emitted from `App.sendMessage` BEFORE calling
-`provider.Send`:
+**TurnStart** — for Claude, emitted from `App.sendMessage` before
+calling `provider.Send`; for Codex, emitted from the `turn/started`
+wire notification after the user item has been persisted:
 
 1. Acquire the per-thread mutex (existing `sendThreadMuRegistry`).
-2. `turnIndex = store.LastTurnIndex(threadID) + 1`.
-3. Triage emits `EventTurnStart{threadID, turnIndex}` synchronously.
+2. If the thread has no prior items, `turnIndex = 0`; otherwise
+   `turnIndex = store.LastTurnIndex(threadID) + 1`.
+3. Claude routes `EventTurnStart{threadID, turnIndex}` synchronously;
+   Codex later routes the provider's `turn/started` event, which falls
+   back to the already-persisted user item's `turn_index`.
 4. Router handler: reset `segmentIndexByScope[threadID][turnIndex][""] = 0`,
    open turn telemetry span, capture git baseline (existing
    `handleTurnStart` behavior).

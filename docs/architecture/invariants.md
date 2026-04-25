@@ -65,9 +65,10 @@ replay re-upserts find the same row, which requires id stability).
 
 ## 3. `turn_index` is monotonic per thread
 
-**Rule.** `turn_index` on `items` is assigned by triage from
-`LastTurnIndex(threadID) + 1` under the per-thread send mutex. It
-never decreases within a thread's history.
+**Rule.** `turn_index` on `items` is assigned under the per-thread send
+mutex. The first item in an empty thread uses turn index `0`; later
+user sends use `LastTurnIndex(threadID) + 1`. It never decreases within
+a thread's history.
 
 **Rationale.** Turn ordering is how we group items, capture git
 baselines, and scope the interrupt queue. A non-monotonic turn_index
@@ -76,9 +77,9 @@ or split one turn into two (orphan items, orphan baseline).
 
 **Enforcement.** `App.SendMessage` in `app_send.go` holds the
 per-thread mutex (`sendThreadMuRegistry.lockFor(threadID)`) while
-`LastTurnIndex` → compute → insert happens. Combined with the store's
-`SetMaxOpenConns(1)` in `internal/store/store.go`, this means no two
-events race on turn_index assignment.
+`HasItems` / `LastTurnIndex` → compute → insert happens. Combined with
+the store's `SetMaxOpenConns(1)` in `internal/store/store.go`, this
+means no two events race on turn_index assignment.
 
 **Test.** `TestSendMessageIncrementsTurnIndex` in
 `app_send_test.go`, plus the concurrent-write coverage in

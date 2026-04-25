@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/checkpoint"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/store"
@@ -232,6 +233,80 @@ func TestSendMessageIncrementsTurnIndex(t *testing.T) {
 	}
 	if userItem.Summary != "Next message" {
 		t.Fatalf("user item Summary = %q, want Next message", userItem.Summary)
+	}
+}
+
+func TestSendMessageFirstTurnCapturesInitialAndCompletedCheckpoints(t *testing.T) {
+	app := newTestAppWithStore(t)
+	app.checkpoints = checkpoint.NewStore()
+	app.triage = triage.NewRouter(app.store, func(string, any) {})
+	app.triage.SetCheckpointStore(app.checkpoints)
+
+	workspace := t.TempDir()
+	initE2ERepo(t, workspace)
+	thread := testThread("thread-send-first-checkpoint")
+	thread.Provider = string(provider.Claude)
+	thread.WorkspacePath = workspace
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+
+	sess, err := claude.NewSession(
+		context.Background(),
+		thread.ID,
+		claude.Config{
+			Binary:  writeClaudePassthroughBinary(t),
+			WorkDir: thread.WorkspacePath,
+		},
+		func(provider.ProviderEvent) {},
+	)
+	if err != nil {
+		t.Fatalf("NewSession() error = %v", err)
+	}
+	t.Cleanup(func() { _ = sess.Close() })
+
+	app.sessions[thread.ID] = session{
+		provider: string(provider.Claude),
+		token:    "test-token",
+		claude:   sess,
+	}
+
+	if err := app.SendMessage(thread.ID, "first turn", nil); err != nil {
+		t.Fatalf("SendMessage() error = %v", err)
+	}
+
+	items, err := app.store.ListItems(thread.ID)
+	if err != nil {
+		t.Fatalf("ListItems() error = %v", err)
+	}
+	var userItem store.Item
+	for _, item := range items {
+		if item.Role == "user" {
+			userItem = item
+			break
+		}
+	}
+	if userItem.ID == "" {
+		t.Fatal("expected persisted user item")
+	}
+	if userItem.TurnIndex != 0 {
+		t.Fatalf("first user item TurnIndex = %d, want 0", userItem.TurnIndex)
+	}
+
+	if _, ok, err := app.store.GetCheckpointByTurnCount(thread.ID, 0); err != nil || !ok {
+		t.Fatalf("checkpoint turn 0 missing after first send: ok=%v err=%v", ok, err)
+	}
+
+	writeE2EFile(t, workspace, "agent-output.txt", "created during first turn\n")
+	if err := app.triage.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTurnComplete,
+		ThreadID:  thread.ID,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle turn complete: %v", err)
+	}
+	if _, ok, err := app.store.GetCheckpointByTurnCount(thread.ID, 1); err != nil || !ok {
+		t.Fatalf("checkpoint turn 1 missing after first completion: ok=%v err=%v", ok, err)
 	}
 }
 
@@ -929,7 +1004,7 @@ func TestSendMessageSerialPerThread(t *testing.T) {
 		t.Fatalf("ListItems: %v", err)
 	}
 	// Each SendMessage should have inserted exactly one user item with
-	// a unique turnIndex in [1..N]. A regression would produce either
+	// a unique turnIndex in [0..N-1]. A regression would produce either
 	// duplicate turnIndex (UNIQUE violation aborts the second insert),
 	// or a count mismatch.
 	seenTurns := make(map[int]bool)
@@ -945,7 +1020,7 @@ func TestSendMessageSerialPerThread(t *testing.T) {
 	if len(seenTurns) != N {
 		t.Fatalf("persisted user turns = %d, want %d", len(seenTurns), N)
 	}
-	for i := 1; i <= N; i++ {
+	for i := 0; i < N; i++ {
 		if !seenTurns[i] {
 			t.Fatalf("missing turnIndex %d in persisted items", i)
 		}
@@ -1144,13 +1219,13 @@ func TestSendMessageGoesThroughRouter(t *testing.T) {
 	// Both the user item and the error item must have been emitted as
 	// provider:item_event — that only happens when the router's
 	// persistItem runs, not when we call store.UpsertItem directly.
-	wantUserID := "user:1"
+	wantUserID := "user:0"
 	var sawUser, sawError bool
 	for _, id := range upsertedIDs {
 		if id == wantUserID {
 			sawUser = true
 		}
-		if strings.HasPrefix(id, "error:1:") {
+		if strings.HasPrefix(id, "error:0:") {
 			sawError = true
 		}
 	}
@@ -1162,7 +1237,7 @@ func TestSendMessageGoesThroughRouter(t *testing.T) {
 	}
 
 	// The send-failure error id MUST use the router's sequence counter —
-	// not a hardcoded :0 suffix. First error on turn 1 → seq 0 → error:1:0.
+	// not a hardcoded :0 suffix. First error on turn 0 → seq 0 → error:0:0.
 	// If a future refactor reverts to a hardcoded :0 this still matches,
 	// so the distinguishing signal is the prefix format (error:<turn>:<seq>)
 	// rather than a numeric collision check alone.
@@ -1173,8 +1248,8 @@ func TestSendMessageGoesThroughRouter(t *testing.T) {
 			break
 		}
 	}
-	if sendFailureID != "error:1:0" {
-		t.Errorf("first send-failure error id = %q, want error:1:0", sendFailureID)
+	if sendFailureID != "error:0:0" {
+		t.Errorf("first send-failure error id = %q, want error:0:0", sendFailureID)
 	}
 }
 

@@ -402,7 +402,7 @@ func TestHandleTurnStartDoesNotReplaceCompletedCheckpoint(t *testing.T) {
 	}
 }
 
-func TestHandleTurnCompleteDoesNotBackfillMissingPreviousCheckpoint(t *testing.T) {
+func TestHandleTurnCompleteCapturesCheckpointWhenPreviousMissing(t *testing.T) {
 	router, st, emissions := newTestRouter(t)
 	createTestThread(t, st, "t1")
 
@@ -420,14 +420,17 @@ func TestHandleTurnCompleteDoesNotBackfillMissingPreviousCheckpoint(t *testing.T
 		t.Fatalf("handle complete: %v", err)
 	}
 
-	if len(fake.capturedCalls) != 0 {
-		t.Fatalf("capture calls = %+v, want none when prior checkpoint is missing", fake.capturedCalls)
+	if len(fake.capturedCalls) != 1 {
+		t.Fatalf("capture calls = %+v, want completed checkpoint even when prior checkpoint is missing", fake.capturedCalls)
 	}
-	if _, ok, err := st.GetCheckpointByTurnCount("t1", 2); err != nil || ok {
-		t.Fatalf("checkpoint turn 2 ok=%v err=%v, want missing", ok, err)
+	if fake.capturedCalls[0].TurnIndex != 2 {
+		t.Fatalf("captured checkpoint turn = %d, want 2", fake.capturedCalls[0].TurnIndex)
 	}
-	if got := len(filterEmissions(*emissions, "checkpoint:error")); got != 1 {
-		t.Fatalf("checkpoint:error emissions = %d, want 1", got)
+	if _, ok, err := st.GetCheckpointByTurnCount("t1", 2); err != nil || !ok {
+		t.Fatalf("checkpoint turn 2 ok=%v err=%v, want present", ok, err)
+	}
+	if got := len(filterEmissions(*emissions, "checkpoint:error")); got != 0 {
+		t.Fatalf("checkpoint:error emissions = %d, want 0 when capture succeeds", got)
 	}
 }
 
