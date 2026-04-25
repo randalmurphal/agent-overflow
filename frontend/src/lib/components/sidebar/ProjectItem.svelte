@@ -6,15 +6,26 @@
   // Keeping the rename flow inline (not in the context menu component)
   // lets the row render the input in-place of the project name without
   // piping state across a component boundary.
+  //
+  // Collapsed-state polish (matches forge):
+  //   - The chevron crossfades with a "project status rollup" dot — the
+  //     most-important display status across this project's top-level
+  //     threads. The dot tells the user "something needs attention in
+  //     here" without expanding; the chevron reappears on hover.
+  //   - If the active thread belongs to this project, it renders as a
+  //     single row underneath the collapsed header so the user never
+  //     loses sight of where they are.
 
   import type { ProjectWithCounts, Thread } from '../../types/models';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { RenameProject } from '../../stores/bindings';
   import { updateProjectLocal } from '../../stores/projects.svelte';
   import {
+    getProjectSortMode,
     isProjectExpanded,
     toggleProject,
   } from '../../stores/sidebar.svelte';
+  import { getThreadStatus } from '../../stores/threadStatuses.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import ChevronRight from 'lucide-svelte/icons/chevron-right';
   import FolderOpen from 'lucide-svelte/icons/folder-open';
@@ -22,6 +33,17 @@
   import Icon from '../primitives/Icon.svelte';
   import ProjectContextMenu from './ProjectContextMenu.svelte';
   import ProjectThreadList from './ProjectThreadList.svelte';
+  import ThreadRow from './ThreadRow.svelte';
+  import { buildSidebarThreadTree, rollupDisplayStatus } from '../../utils/sidebarTree';
+  import {
+    beginProjectDrag,
+    computeReorderedIds,
+    endProjectDrag,
+    getDraggingProjectId,
+    getDropPosition,
+    getDropTargetProjectId,
+    updateDropTarget,
+  } from '../../stores/projectDnd.svelte';
 
   interface Props {
     project: ProjectWithCounts;
@@ -30,9 +52,15 @@
     /** Called with the project id when the user clicks the hover pencil
      * (or otherwise signals "create a new thread in this project"). */
     onNewThread?: (projectId: string) => void;
+    /** Current rendered ordering of project ids (visible projects in
+     *  ProjectsSection). Required for DnD to compute the new order on
+     *  drop without an extra round-trip. */
+    orderedIds?: readonly string[];
+    /** Commit a new ordering. Caller updates store + persists. */
+    onReorder?: (newOrderedIds: string[]) => void;
   }
 
-  let { project, threads, pane, onNewThread }: Props = $props();
+  let { project, threads, pane, onNewThread, orderedIds, onReorder }: Props = $props();
 
   let rowEl: HTMLDivElement | undefined = $state(undefined);
   let contextMenuOpen = $state(false);
@@ -45,6 +73,32 @@
   let renameSaving = $state(false);
 
   let expanded = $derived(isProjectExpanded(project.project.id));
+
+  // Tree + rollup are only meaningful when the project is collapsed —
+  // when expanded, the nested ProjectThreadList computes its own. We
+  // skip the build entirely when expanded so the hot path (status
+  // streaming → re-derive across every project) doesn't pay a per-tick
+  // cost for output we'd throw away.
+  let rollup = $derived.by(() => {
+    if (expanded) return null;
+    const tree = buildSidebarThreadTree({
+      threads,
+      liveStatusOf: (id) => getThreadStatus(id),
+    });
+    return rollupDisplayStatus(tree);
+  });
+
+  // When collapsed, find the active-thread row (if any) so we render
+  // it inline beneath the project row. We do a flat `find` rather than
+  // walking the tree because we render the row at indent=1 regardless
+  // of where it sits in the discussion hierarchy — keeps the inline
+  // pin from looking like a "floating indented row".
+  let activeWhenCollapsed = $derived.by<Thread | null>(() => {
+    if (expanded) return null;
+    const activeId = pane.threadId;
+    if (!activeId) return null;
+    return threads.find((t) => t.id === activeId) ?? null;
+  });
 
   function handleToggle(e: MouseEvent): void {
     e.stopPropagation();
@@ -106,7 +160,7 @@
       console.error('Failed to rename project:', err);
       addToast(
         'error',
-        `Rename failed: ${err instanceof Error ? err.message : err}`,
+        `Rename Failed: ${err instanceof Error ? err.message : err}`,
       );
     } finally {
       renameSaving = false;
@@ -127,40 +181,121 @@
       cancelRename();
     }
   }
+
+  // Manual-mode DnD — the whole project row is the drag activator
+  // (matches forge / t3-code: cursor-grab on the row, no separate grip
+  // icon). Click still toggles expand because click fires only when no
+  // drag completed; HTML5 suppresses click after a successful drag.
+  let manualMode = $derived(getProjectSortMode() === 'manual');
+  let isDragging = $derived(getDraggingProjectId() === project.project.id);
+  let dropMarker = $derived.by<'before' | 'after' | null>(() => {
+    if (getDropTargetProjectId() !== project.project.id) return null;
+    return getDropPosition();
+  });
+
+  function handleDragStart(e: DragEvent): void {
+    if (!manualMode) {
+      e.preventDefault();
+      return;
+    }
+    beginProjectDrag(project.project.id, e);
+  }
+
+  function handleDragOver(e: DragEvent): void {
+    if (!manualMode || !rowEl) return;
+    if (getDraggingProjectId() === null) return;
+    updateDropTarget(project.project.id, e, rowEl);
+  }
+
+  function handleDrop(e: DragEvent): void {
+    if (!manualMode) return;
+    e.preventDefault();
+    if (!orderedIds || !onReorder) {
+      endProjectDrag();
+      return;
+    }
+    const next = computeReorderedIds(orderedIds);
+    if (next) onReorder(next);
+    endProjectDrag();
+  }
+
+  function handleDragEnd(): void {
+    endProjectDrag();
+  }
 </script>
 
 <div
   bind:this={rowEl}
   role="group"
-  aria-label={`Project ${project.project.name}`}
+  aria-label={`Project: ${project.project.name}`}
   data-testid="project-item"
   data-project-id={project.project.id}
   oncontextmenu={handleContextMenu}
-  class="group relative flex flex-col"
+  ondragover={handleDragOver}
+  ondrop={handleDrop}
+  ondragend={handleDragEnd}
+  class={'group relative flex flex-col transition-opacity ' + (isDragging ? 'opacity-40' : '')}
 >
+  {#if dropMarker === 'before'}
+    <div
+      aria-hidden="true"
+      data-testid="project-item-drop-indicator"
+      data-position="before"
+      class="absolute -top-px left-2 right-2 h-0.5 bg-accent rounded-full pointer-events-none"
+    ></div>
+  {/if}
   <div
     role="button"
     tabindex={0}
     aria-expanded={expanded}
+    draggable={manualMode}
+    ondragstart={handleDragStart}
     onclick={handleRowClick}
     onkeydown={handleRowKeydown}
-    class="flex items-center gap-1.5 px-2 py-1 rounded-[var(--radius-field)] cursor-pointer text-fg hover:bg-surface-2/40 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+    class={
+      'flex items-center gap-1.5 px-2 py-1 rounded-[var(--radius-field)] text-fg hover:bg-surface-2/40 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 ' +
+      (manualMode ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer')
+    }
   >
-    <button
-      type="button"
-      onclick={handleToggle}
-      aria-label={expanded ? 'Collapse project' : 'Expand project'}
-      aria-expanded={expanded}
-      data-testid="project-item-chevron"
-      class="flex h-4 w-4 items-center justify-center shrink-0 rounded text-fg-subtle hover:text-fg cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
-    >
-      <Icon
-        icon={ChevronRight}
-        size={11}
-        strokeWidth={2.5}
-        class={'opacity-80 transition-transform ' + (expanded ? 'rotate-90' : '')}
-      />
-    </button>
+    <!--
+      Chevron + status-rollup dot share one 16px slot. When collapsed
+      and any thread is non-idle, the rollup dot is visible by default
+      and the chevron fades in on row hover. When expanded, the chevron
+      is always visible (and rotated). This avoids layout shift across
+      the swap and matches forge's behavior.
+    -->
+    <div class="relative flex h-4 w-4 items-center justify-center shrink-0">
+      <button
+        type="button"
+        onclick={handleToggle}
+        aria-label={expanded ? 'Collapse Project' : 'Expand Project'}
+        aria-expanded={expanded}
+        data-testid="project-item-chevron"
+        class={
+          'absolute inset-0 flex items-center justify-center rounded text-fg-subtle hover:text-fg cursor-pointer transition-opacity focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 ' +
+          (rollup && !expanded ? 'opacity-0 group-hover:opacity-100 focus-visible:opacity-100' : 'opacity-100')
+        }
+      >
+        <Icon
+          icon={ChevronRight}
+          size={11}
+          strokeWidth={2.5}
+          class={'opacity-80 transition-transform ' + (expanded ? 'rotate-90' : '')}
+        />
+      </button>
+      {#if rollup && !expanded}
+        <span
+          class="pointer-events-none absolute inset-0 flex items-center justify-center transition-opacity opacity-100 group-hover:opacity-0"
+          aria-hidden="true"
+          data-testid="project-item-status-dot"
+          data-status={rollup.liveStatus}
+        >
+          <span
+            class="w-2 h-2 rounded-full {rollup.pill.dotClass} {rollup.pill.pulse ? 'animate-pulse' : ''}"
+          ></span>
+        </span>
+      {/if}
+    </div>
     <Icon icon={FolderOpen} size={13} strokeWidth={2} class="shrink-0 text-accent/80 opacity-100" />
     {#if renaming}
       <!-- svelte-ignore a11y_autofocus -->
@@ -171,7 +306,7 @@
         onblur={commitRename}
         onclick={(e) => e.stopPropagation()}
         disabled={renameSaving}
-        aria-label="Rename project"
+        aria-label="Rename Project"
         class="text-[12.5px] flex-1 min-w-0 bg-surface-0 border border-accent/50 rounded-[var(--radius-field)] px-1 py-0.5 text-fg focus:outline-none"
       />
     {:else}
@@ -181,19 +316,11 @@
       >
         {project.project.name}
       </span>
-      {#if project.threadCount > 0}
-        <span
-          class="ml-1 shrink-0 text-[10px] tabular-nums text-fg-hint"
-          aria-hidden="true"
-        >
-          {project.threadCount}
-        </span>
-      {/if}
       <button
         type="button"
         onclick={handlePencilClick}
-        title="New thread in this project"
-        aria-label="New thread in this project"
+        title="New Thread in This Project"
+        aria-label="New Thread in This Project"
         data-testid="project-item-new-thread"
         class="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity ml-1 shrink-0 flex h-5 w-5 items-center justify-center rounded text-fg-subtle hover:text-fg hover:bg-surface-2/40 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
       >
@@ -203,7 +330,25 @@
   </div>
 
   {#if expanded}
-    <ProjectThreadList {threads} {pane} />
+    <ProjectThreadList projectId={project.project.id} {threads} {pane} />
+  {:else if activeWhenCollapsed}
+    <!--
+      Active-thread pin: the user is reading this thread but the project
+      is collapsed. Render the row inline so they don't lose context.
+      Indent=1 matches a top-level row under an expanded project.
+    -->
+    <div class="flex flex-col gap-px px-1" data-testid="project-item-active-pin">
+      <ThreadRow thread={activeWhenCollapsed} {pane} indent={1} />
+    </div>
+  {/if}
+
+  {#if dropMarker === 'after'}
+    <div
+      aria-hidden="true"
+      data-testid="project-item-drop-indicator"
+      data-position="after"
+      class="absolute -bottom-px left-2 right-2 h-0.5 bg-accent rounded-full pointer-events-none"
+    ></div>
   {/if}
 </div>
 

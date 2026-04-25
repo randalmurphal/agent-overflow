@@ -84,6 +84,11 @@ type Thread struct {
 	// MarkThreadUnread, and auto-refreshed when the user switches into a
 	// thread.
 	LastReadAt *int64 `json:"lastReadAt,omitempty"`
+	// PinnedAt is the Unix-ms timestamp of when the user pinned the
+	// thread. NULL (nil) = unpinned. Pinned threads sort into a
+	// dedicated tier above needs-attention in the sidebar. Set by
+	// PinThread; cleared by UnpinThread.
+	PinnedAt *int64 `json:"pinnedAt,omitempty"`
 }
 
 // ThreadWorkspaceRef is the narrow thread shape needed for workspace/worktree

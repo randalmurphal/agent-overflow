@@ -1048,3 +1048,134 @@ func TestSetThreadLastReadDoesNotBumpUpdatedAt(t *testing.T) {
 			before.UpdatedAt, afterClear.UpdatedAt)
 	}
 }
+
+// TestPinUnpinLifecycle covers the full pin → re-pin → unpin → unpin
+// (no-op semantics) walk.
+func TestPinUnpinLifecycle(t *testing.T) {
+	s := newTestStore(t)
+
+	thr := makeThread("thread-pin", "claude")
+	if err := s.CreateThread(thr); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+
+	if err := s.PinThread(thr.ID); err != nil {
+		t.Fatalf("PinThread: %v", err)
+	}
+	pinned, err := s.GetThread(thr.ID)
+	if err != nil {
+		t.Fatalf("GetThread after pin: %v", err)
+	}
+	if pinned.PinnedAt == nil {
+		t.Fatalf("PinnedAt = nil after PinThread")
+	}
+	first := *pinned.PinnedAt
+
+	// Re-pinning bumps the timestamp so the row floats inside the
+	// pinned tier. We wait at least 1ms so PinThread's nowMillis is
+	// distinguishable from the first call's value.
+	time.Sleep(2 * time.Millisecond)
+	if err := s.PinThread(thr.ID); err != nil {
+		t.Fatalf("PinThread (repeat): %v", err)
+	}
+	repinned, err := s.GetThread(thr.ID)
+	if err != nil {
+		t.Fatalf("GetThread after re-pin: %v", err)
+	}
+	if repinned.PinnedAt == nil || *repinned.PinnedAt <= first {
+		t.Fatalf("re-pin did not bump pinnedAt: first=%d second=%v", first, repinned.PinnedAt)
+	}
+
+	if err := s.UnpinThread(thr.ID); err != nil {
+		t.Fatalf("UnpinThread: %v", err)
+	}
+	unpinned, err := s.GetThread(thr.ID)
+	if err != nil {
+		t.Fatalf("GetThread after unpin: %v", err)
+	}
+	if unpinned.PinnedAt != nil {
+		t.Fatalf("PinnedAt = %v after UnpinThread, want nil", *unpinned.PinnedAt)
+	}
+}
+
+// TestPinDoesNotBumpUpdatedAt mirrors the read-state invariant: pinning
+// is presentation, not activity. Bumping updated_at would shuffle the
+// project's lastActivity sort and obscure real thread work.
+func TestPinDoesNotBumpUpdatedAt(t *testing.T) {
+	s := newTestStore(t)
+
+	thr := makeThread("thread-pin-quiet", "claude")
+	if err := s.CreateThread(thr); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	before, err := s.GetThread(thr.ID)
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+
+	if err := s.PinThread(thr.ID); err != nil {
+		t.Fatalf("PinThread: %v", err)
+	}
+	afterPin, err := s.GetThread(thr.ID)
+	if err != nil {
+		t.Fatalf("GetThread after pin: %v", err)
+	}
+	if afterPin.UpdatedAt != before.UpdatedAt {
+		t.Fatalf("PinThread bumped updated_at: %d -> %d", before.UpdatedAt, afterPin.UpdatedAt)
+	}
+
+	if err := s.UnpinThread(thr.ID); err != nil {
+		t.Fatalf("UnpinThread: %v", err)
+	}
+	afterUnpin, err := s.GetThread(thr.ID)
+	if err != nil {
+		t.Fatalf("GetThread after unpin: %v", err)
+	}
+	if afterUnpin.UpdatedAt != before.UpdatedAt {
+		t.Fatalf("UnpinThread bumped updated_at: %d -> %d", before.UpdatedAt, afterUnpin.UpdatedAt)
+	}
+}
+
+// TestUpdateThreadPreservesPinnedAt mirrors the LastReadAt guard above:
+// a future UpdateThread refactor that writes every struct field would
+// silently nuke the user's pin state on every rename / mode toggle.
+func TestUpdateThreadPreservesPinnedAt(t *testing.T) {
+	s := newTestStore(t)
+
+	thr := makeThread("thread-pin-preserve", "claude")
+	if err := s.CreateThread(thr); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	if err := s.PinThread(thr.ID); err != nil {
+		t.Fatalf("PinThread: %v", err)
+	}
+
+	got, err := s.GetThread(thr.ID)
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+	if got.PinnedAt == nil {
+		t.Fatalf("expected pinnedAt set after PinThread")
+	}
+	pinnedTs := *got.PinnedAt
+
+	// Mutate an unrelated field AND nuke PinnedAt on the struct so a
+	// regression that adds pinned_at to UpdateThread's write list would
+	// clear the DB value.
+	got.Title = "Renamed"
+	got.PinnedAt = nil
+	if err := s.UpdateThread(got); err != nil {
+		t.Fatalf("UpdateThread: %v", err)
+	}
+
+	after, err := s.GetThread(thr.ID)
+	if err != nil {
+		t.Fatalf("GetThread after UpdateThread: %v", err)
+	}
+	if after.PinnedAt == nil || *after.PinnedAt != pinnedTs {
+		t.Fatalf("UpdateThread clobbered pinned_at: got %v, want %d", after.PinnedAt, pinnedTs)
+	}
+	if after.Title != "Renamed" {
+		t.Fatalf("UpdateThread failed to write title: got %q", after.Title)
+	}
+}

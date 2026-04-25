@@ -48,7 +48,7 @@
         <button
           onclick={() => removeToast(toast.id)}
           class="shrink-0 opacity-60 hover:opacity-100 cursor-pointer rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 transition-opacity"
-          aria-label="Dismiss notification"
+          aria-label="Dismiss Notification"
         >
           <Icon icon={X} size={13} strokeWidth={2.5} class="opacity-100" />
         </button>

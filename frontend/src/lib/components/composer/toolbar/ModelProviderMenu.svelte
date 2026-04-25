@@ -203,7 +203,7 @@
   placement="top-start"
   role="none"
 >
-  <Menu ariaLabel="Model and provider" onClose={closeMenu}>
+  <Menu ariaLabel="Model and Provider" onClose={closeMenu}>
     {#if showCodexSubmenu}
       <MenuSubmenuItem label="Codex">
         {#snippet children()}

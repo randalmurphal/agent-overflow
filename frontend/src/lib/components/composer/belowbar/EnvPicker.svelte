@@ -54,9 +54,9 @@
   }
 
   let triggerLabel = $derived.by(() => {
-    if (intent.mode === 'new-worktree') return 'New worktree';
-    if (isAtProjectRoot) return 'Current checkout';
-    return 'Current worktree';
+    if (intent.mode === 'new-worktree') return 'New Worktree';
+    if (isAtProjectRoot) return 'Current Checkout';
+    return 'Current Worktree';
   });
   let disabledReason = $derived(workspaceLock.reason);
   let workspaceChangingDisabled = $derived(workspaceLock.locked);
@@ -149,7 +149,7 @@
 >
   <Menu ariaLabel="Workspace" onClose={closeMenu}>
     <MenuItem
-      label="Current checkout"
+      label="Current Checkout"
       description={projectPath ? basename(projectPath) : undefined}
       checked={isAtProjectRoot && intent.mode !== 'new-worktree'}
       disabled={!projectPath || workspaceChangingDisabled}
@@ -157,7 +157,7 @@
       onSelect={() => selectPath(projectPath)}
     />
     <MenuItem
-      label="New worktree"
+      label="New Worktree"
       description="Create before the next send"
       checked={intent.mode === 'new-worktree'}
       disabled={workspaceChangingDisabled}
@@ -177,7 +177,7 @@
       {#each worktrees as wt (wt.path)}
         {#if !sameNormalizedPath(wt.path, projectPath)}
           <MenuItem
-            label="Current worktree"
+            label="Current Worktree"
             description={wt.branch ? `${wt.branch} · ${basename(wt.path) || wt.path}` : basename(wt.path) || wt.path}
             checked={sameNormalizedPath(currentWorkspace, wt.path) && intent.mode !== 'new-worktree'}
             disabled={workspaceChangingDisabled}

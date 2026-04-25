@@ -245,7 +245,7 @@
     bind:this={trayRoot}
     class="overflow-hidden border-b border-border-subtle bg-card transition-[opacity,transform] duration-200"
     role="region"
-    aria-label="Running tasks"
+    aria-label="Running Tasks"
     data-testid="background-task-tray"
   >
     <BackgroundTaskTrayHeader

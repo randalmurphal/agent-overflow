@@ -115,7 +115,7 @@ describe('<ChannelView>', () => {
     await vi.advanceTimersByTimeAsync(0);
     for (let i = 0; i < 5; i++) await Promise.resolve();
 
-    const textarea = container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Channel message input"]')!;
+    const textarea = container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Channel Message Input"]')!;
     await fireEvent.input(textarea, { target: { value: 'my intervention' } });
     const sendBtn = getByRole('button', { name: /post/i }) as HTMLButtonElement;
     await fireEvent.click(sendBtn);
@@ -149,7 +149,7 @@ describe('<ChannelView>', () => {
     await vi.advanceTimersByTimeAsync(0);
     for (let i = 0; i < 3; i++) await Promise.resolve();
 
-    const textarea = container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Channel message input"]')!;
+    const textarea = container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Channel Message Input"]')!;
     await fireEvent.input(textarea, { target: { value: 'fails' } });
     await fireEvent.click(getByRole('button', { name: /post/i }));
     for (let i = 0; i < 5; i++) await Promise.resolve();

@@ -62,7 +62,7 @@
     <button
       onclick={onClose}
       class="ml-auto text-fg-subtle hover:text-fg cursor-pointer p-1 rounded-[var(--radius-field)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 transition-colors"
-      aria-label="Close settings"
+      aria-label="Close Settings"
     >
       <Icon icon={X} size={14} strokeWidth={2} class="opacity-90" />
     </button>
@@ -72,7 +72,7 @@
     <div
       class="w-56 shrink-0 border-r border-border-subtle px-3 pt-5 pb-4 flex flex-col gap-0.5"
       role="tablist"
-      aria-label="Settings sections"
+      aria-label="Settings Sections"
     >
       {#each sections as section}
         <button

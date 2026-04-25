@@ -40,7 +40,7 @@
     <div class="min-w-0">
       <div class="flex items-center gap-2">
         <p class="text-[10px] font-semibold uppercase tracking-[0.08em] text-fg-muted">
-          Pending approval
+          Pending Approval
         </p>
         {#if count > 1}
           <span class="rounded-full border border-border-subtle px-1.5 py-0.5 text-[10px] text-fg-muted">

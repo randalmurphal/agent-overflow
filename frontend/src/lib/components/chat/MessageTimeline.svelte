@@ -709,7 +709,7 @@
   });
 </script>
 
-<div bind:this={scrollContainer} use:measureScrollContainer onscroll={handleScroll} class="flex-1 min-h-0 overflow-y-auto" role="log" aria-label="Message history" data-testid="message-timeline-scroll">
+<div bind:this={scrollContainer} use:measureScrollContainer onscroll={handleScroll} class="flex-1 min-h-0 overflow-y-auto" role="log" aria-label="Message History" data-testid="message-timeline-scroll">
   <div class="mx-auto w-full max-w-3xl px-6 py-8">
   {#if pane.loading}
     <div class="flex items-center justify-center h-full text-fg-subtle text-sm" role="status" aria-live="polite">

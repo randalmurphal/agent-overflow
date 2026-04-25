@@ -155,17 +155,17 @@
   <aside
     bind:this={sidebarRoot}
     transition:fly={{ x: 280, duration: 150 }}
-    aria-label="Proposed plans"
+    aria-label="Proposed Plans"
     data-testid="plan-sidebar"
     class="flex w-[280px] shrink-0 flex-col border-l border-border bg-surface-1"
   >
     <div class="flex items-center justify-between gap-2 border-b border-border px-3 py-2">
-      <h3 class="text-xs font-semibold uppercase tracking-wide text-text-secondary">Proposed plans</h3>
+      <h3 class="text-xs font-semibold uppercase tracking-wide text-text-secondary">Proposed Plans</h3>
       <button
         type="button"
         onclick={() => pane.setShowPlanSidebar(false)}
         data-testid="plan-sidebar-close"
-        aria-label="Close plan sidebar"
+        aria-label="Close Plan Sidebar"
         class="rounded p-1 text-text-secondary hover:text-text-primary cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
       >
         <svg class="h-3.5 w-3.5" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">

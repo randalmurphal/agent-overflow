@@ -77,7 +77,7 @@ export function resolveThreadStatusPill(
   }
   if (liveStatus === 'pending-approval') {
     return {
-      label: 'Pending approval',
+      label: 'Pending Approval',
       dotClass: 'bg-warning',
       labelClass: 'text-warning',
       pulse: true,
@@ -86,7 +86,7 @@ export function resolveThreadStatusPill(
   }
   if (liveStatus === 'awaiting-input') {
     return {
-      label: 'Awaiting input',
+      label: 'Awaiting Input',
       dotClass: 'bg-accent',
       labelClass: 'text-accent',
       pulse: true,
@@ -112,7 +112,7 @@ export function resolveThreadStatusPill(
   }
   if (liveStatus === 'plan-ready') {
     return {
-      label: 'Plan ready',
+      label: 'Plan Ready',
       dotClass: 'bg-accent',
       labelClass: 'text-accent',
       pulse: false,

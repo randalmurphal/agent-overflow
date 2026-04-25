@@ -75,7 +75,7 @@
 <div class="space-y-8">
   <section class="rounded-[var(--radius-control)] border border-border-subtle bg-card/30 p-5">
     <p class="text-[11px] font-semibold uppercase tracking-[0.22em] text-text-secondary/70">Providers</p>
-    <h3 class="mt-1 text-base font-semibold text-text-primary">Provider health and binaries</h3>
+    <h3 class="mt-1 text-base font-semibold text-text-primary">Provider Health and Binaries</h3>
     <p class="mt-1 text-sm text-text-secondary">Check installation state, override binary paths, and review the model lists each provider exposes.</p>
   </section>
   {#each [

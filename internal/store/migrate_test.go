@@ -156,6 +156,63 @@ func TestMigrationVersionTracking(t *testing.T) {
 	if versions[27].version != 28 || versions[27].name != "checkpoint_turn_counts" {
 		t.Errorf("v28: got %d/%s", versions[27].version, versions[27].name)
 	}
+	if versions[28].version != 29 || versions[28].name != "thread_pinned_at" {
+		t.Errorf("v29: got %d/%s", versions[28].version, versions[28].name)
+	}
+}
+
+// TestMigrationV29ThreadPinnedAt asserts the v29 migration adds the
+// pinned_at column AND the partial index. A regression that drops the
+// `WHERE pinned_at IS NOT NULL` predicate (turning the index into a
+// dense index over every row) wouldn't fail any other test today.
+func TestMigrationV29ThreadPinnedAt(t *testing.T) {
+	s := newTestStore(t)
+
+	// Column exists with INTEGER affinity.
+	rows, err := s.db.Query(`PRAGMA table_info(threads)`)
+	if err != nil {
+		t.Fatalf("PRAGMA table_info: %v", err)
+	}
+	defer rows.Close()
+	var found bool
+	for rows.Next() {
+		var (
+			cid       int
+			name, typ string
+			notnull   int
+			dflt      sql.NullString
+			pk        int
+		)
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
+			t.Fatalf("scan column: %v", err)
+		}
+		if name == "pinned_at" {
+			found = true
+			if typ != "INTEGER" {
+				t.Errorf("pinned_at type = %q, want INTEGER", typ)
+			}
+			if notnull != 0 {
+				t.Errorf("pinned_at NOT NULL = %d, want 0 (nullable)", notnull)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("pinned_at column missing from threads table")
+	}
+
+	// Partial index exists with the expected WHERE clause.
+	var indexSQL sql.NullString
+	if err := s.db.QueryRow(
+		`SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_threads_pinned_at'`,
+	).Scan(&indexSQL); err != nil {
+		t.Fatalf("look up index: %v", err)
+	}
+	if !indexSQL.Valid {
+		t.Fatalf("idx_threads_pinned_at index missing")
+	}
+	if !strings.Contains(indexSQL.String, "WHERE pinned_at IS NOT NULL") {
+		t.Errorf("expected partial index predicate; got %q", indexSQL.String)
+	}
 }
 
 func TestMigrationIdempotent(t *testing.T) {

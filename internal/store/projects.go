@@ -161,6 +161,42 @@ func (s *Store) UpdateProjectName(id, name string) error {
 	return requireRowsAffected(result, fmt.Sprintf("store: update project name %s", id))
 }
 
+// UpdateProjectSortPositions assigns a fresh sort_position to each id in
+// the order supplied. The sidebar uses this when the user drag-reorders
+// the project list under the "manual" sort mode. Positions are dense
+// 0..N-1 — the bulk update normalises any gaps left by archive / delete.
+//
+// Runs as a single transaction so a partial write doesn't leave the
+// list half-reordered if SQLite errors mid-batch. Ids not present in
+// the supplied slice keep their existing positions.
+func (s *Store) UpdateProjectSortPositions(orderedIDs []string) error {
+	if len(orderedIDs) == 0 {
+		return nil
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("store: update project sort positions: begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.Prepare(`UPDATE projects SET sort_position = ?, updated_at = ? WHERE id = ?`)
+	if err != nil {
+		return fmt.Errorf("store: update project sort positions: prepare: %w", err)
+	}
+	defer stmt.Close()
+
+	now := nowMillis()
+	for index, id := range orderedIDs {
+		if _, err := stmt.Exec(index, now, id); err != nil {
+			return fmt.Errorf("store: update project sort position %s: %w", id, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("store: update project sort positions: commit: %w", err)
+	}
+	return nil
+}
+
 // ArchiveProject hides the project from default listings. Threads remain
 // intact; UnarchiveProject reverses it.
 func (s *Store) ArchiveProject(id string) error {

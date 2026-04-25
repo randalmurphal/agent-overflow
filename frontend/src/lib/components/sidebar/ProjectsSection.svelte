@@ -7,28 +7,31 @@
   import { onDestroy } from 'svelte';
   import type { Thread } from '../../types/models';
   import type { ThreadPane } from '../../stores/thread.svelte';
-  import { getProjects } from '../../stores/projects.svelte';
+  import {
+    getProjects,
+    refreshProjects,
+    updateProjectLocal,
+  } from '../../stores/projects.svelte';
   import {
     expandProject,
     collapseProject,
-    getSortDirection,
-    toggleSortDirection,
+    getProjectSortMode,
   } from '../../stores/sidebar.svelte';
   import { getThreadFilterQuery } from '../../stores/threadFilter.svelte';
   import { getThreads } from '../../stores/threads.svelte';
-  import { CreateThread } from '../../stores/bindings';
+  import { CreateThread, UpdateProjectSortPositions } from '../../stores/bindings';
   import { addToast } from '../../stores/toast.svelte';
   import {
     getProjectDraft,
     setProjectDraft,
   } from '../../stores/draftThreads.svelte';
   import { seedDefaultWorktreeIntentForDraft } from '../../stores/worktreeIntent.svelte';
-  import ArrowDownUp from 'lucide-svelte/icons/arrow-down-up';
   import Plus from 'lucide-svelte/icons/plus';
   import IconButton from '../primitives/IconButton.svelte';
   import Icon from '../primitives/Icon.svelte';
   import MicroLabel from '../primitives/MicroLabel.svelte';
   import ProjectList from './ProjectList.svelte';
+  import ProjectSortMenu from './ProjectSortMenu.svelte';
   import AddProjectModal from './AddProjectModal.svelte';
 
   interface Props {
@@ -66,10 +69,12 @@
   });
 
   // Visible projects: respect search (name match OR thread match) and
-  // the current sort direction. We sort by `updatedAt` desc as the
-  // default — active-first matches the t3-code reference.
+  // the current sort mode. Three modes mirror forge / t3-code:
+  //   - lastActivity: most-recently-touched thread first (sidebar default).
+  //   - createdAt: project creation time, newest first.
+  //   - manual: user-defined via DnD; persisted in Project.sortPosition.
   let visibleProjects = $derived.by(() => {
-    const dir = getSortDirection();
+    const mode = getProjectSortMode();
     const entries = getProjects()
       .filter((p) => !p.project.archived)
       .filter((p) => {
@@ -77,11 +82,29 @@
         if (p.project.name.toLowerCase().includes(query)) return true;
         return (threadsByProject.get(p.project.id)?.length ?? 0) > 0;
       });
-    const sorted = [...entries].sort((a, b) => {
-      const nameCmp = a.project.name.localeCompare(b.project.name);
-      return dir === 'asc' ? nameCmp : -nameCmp;
+    return [...entries].sort((a, b) => {
+      switch (mode) {
+        case 'manual': {
+          const cmp = a.project.sortPosition - b.project.sortPosition;
+          if (cmp !== 0) return cmp;
+          return a.project.createdAt - b.project.createdAt;
+        }
+        case 'createdAt':
+          return b.project.createdAt - a.project.createdAt;
+        case 'lastActivity':
+        default: {
+          const aActive = a.lastActive ?? 0;
+          const bActive = b.lastActive ?? 0;
+          // Fall back to project.updatedAt when no thread has touched
+          // this project yet — the sidebar still surfaces a freshly
+          // renamed / added project even with zero threads.
+          const aRank = aActive > 0 ? aActive : a.project.updatedAt;
+          const bRank = bActive > 0 ? bActive : b.project.updatedAt;
+          if (aRank !== bRank) return bRank - aRank;
+          return a.project.name.localeCompare(b.project.name);
+        }
+      }
     });
-    return sorted;
   });
 
   // When a search is active, auto-expand any project whose threads
@@ -90,6 +113,11 @@
   // so we can collapse them again when the search clears — otherwise
   // clearing the query left every matched project expanded, which
   // isn't what the user asked for.
+  // Plain `let`, NOT $state — the $effect below reads AND writes this
+  // set. If it were reactive, every assignment would re-trigger the
+  // effect on the same `query` value and loop infinitely. The set
+  // exists only to remember which auto-expansions to roll back when the
+  // query clears; nothing else reads it.
   let searchAutoExpanded = new Set<string>();
   $effect(() => {
     if (!query) {
@@ -139,7 +167,30 @@
     } catch (err) {
       console.error('Failed to create thread:', err);
       const message = err instanceof Error ? err.message : String(err);
-      addToast('error', `Create thread failed: ${message}`);
+      addToast('error', `Create Thread Failed: ${message}`);
+    }
+  }
+
+  /**
+   * Commit a manual reorder. Updates each project's sortPosition
+   * locally so the next derive() reorders without a refresh-flicker,
+   * then persists to the backend. On error we re-fetch to recover.
+   */
+  async function handleReorder(newOrderedIds: string[]): Promise<void> {
+    for (const [index, id] of newOrderedIds.entries()) {
+      const existing = getProjects().find((p) => p.project.id === id);
+      if (!existing) continue;
+      updateProjectLocal({ ...existing.project, sortPosition: index });
+    }
+    try {
+      await UpdateProjectSortPositions(newOrderedIds);
+    } catch (err) {
+      console.error('Failed to persist project order:', err);
+      addToast(
+        'error',
+        `Reorder Failed: ${err instanceof Error ? err.message : err}`,
+      );
+      await refreshProjects();
     }
   }
 
@@ -178,23 +229,9 @@
 >
   <header class="flex items-center gap-1 px-3 pt-2 pb-1.5">
     <MicroLabel as="h2" class="flex-1 select-none">Projects</MicroLabel>
+    <ProjectSortMenu />
     <IconButton
-      label={`Sort ${getSortDirection() === 'asc' ? 'descending' : 'ascending'}`}
-      size="sm"
-      onClick={toggleSortDirection}
-    >
-      {#snippet children()}
-        <span
-          data-testid="sidebar-sort-icon"
-          data-direction={getSortDirection()}
-          class="flex items-center"
-        >
-          <Icon icon={ArrowDownUp} size={13} strokeWidth={2} class="opacity-80" />
-        </span>
-      {/snippet}
-    </IconButton>
-    <IconButton
-      label="Add project"
+      label="Add Project"
       size="sm"
       onClick={handleAddClick}
     >
@@ -215,6 +252,7 @@
       {threadsByProject}
       {pane}
       onNewThread={handleNewThread}
+      onReorder={handleReorder}
     />
   </div>
 </section>

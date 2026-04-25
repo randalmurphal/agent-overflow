@@ -77,7 +77,7 @@
   onclick={handleClick}
   disabled={applying || !pane.thread}
   data-testid="composer-mode-cycle"
-  aria-label="Cycle interaction mode (Shift+Tab)"
+  aria-label="Cycle Interaction Mode (Shift+Tab)"
   title={`Mode: ${meta.label} — Shift+Tab to cycle`}
   class={[
     'inline-flex items-center gap-1.5 rounded-[var(--radius-field)]',

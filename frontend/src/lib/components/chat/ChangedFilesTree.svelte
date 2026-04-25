@@ -77,7 +77,7 @@
       class="w-full px-2.5 py-1 flex items-center gap-1.5 text-left cursor-pointer hover:bg-surface-2/25 border-b border-border-subtle/60 transition-colors"
       onclick={() => toggleDir(group.dir)}
       aria-expanded={expandedDirs.has(group.dir)}
-      aria-label="Toggle directory: {group.dir}"
+      aria-label="Toggle Directory: {group.dir}"
     >
       <span class="text-[11px] text-fg-subtle select-none" aria-hidden="true">{expandedDirs.has(group.dir) ? '▼' : '▶'}</span>
       <span class="text-[11px] font-mono text-fg-muted truncate">{group.dir}/</span>
@@ -91,7 +91,7 @@
           class="w-full pl-7 pr-3 py-1 flex items-center gap-2 text-left cursor-pointer hover:bg-surface-2/30"
           onclick={() => toggleFile(file.path)}
           aria-expanded={expandedFile === file.path}
-          aria-label="Toggle diff: {fileName(file.path)}, {file.kind}, +{file.insertions} -{file.deletions}"
+          aria-label="Toggle Diff: {fileName(file.path)}, {file.kind}, +{file.insertions} -{file.deletions}"
         >
           <span class="text-xs font-mono text-text-primary truncate flex-1">{fileName(file.path)}</span>
           <span class="px-1.5 py-0.5 rounded-full text-[10px] {kindBadge(file.kind)}">{file.kind}</span>

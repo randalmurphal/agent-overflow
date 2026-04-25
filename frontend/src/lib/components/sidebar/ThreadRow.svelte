@@ -1,4 +1,8 @@
 <script lang="ts">
+  import {
+    getJumpHintsVisible,
+    jumpLabelForThread,
+  } from '../../stores/keyboardModifiers.svelte';
   import { getSettings } from '../../stores/settings.svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { getThreadById } from '../../stores/threads.svelte';
@@ -11,6 +15,7 @@
   import ThreadRowActions from './ThreadRowActions.svelte';
   import ThreadRowBadges from './ThreadRowBadges.svelte';
   import ThreadContextMenu from './ThreadContextMenu.svelte';
+  import ThreadRowPinButton from './ThreadRowPinButton.svelte';
   import {
     archiveThreadAction,
     renameThreadAction,
@@ -158,6 +163,21 @@
     }
   }
 
+  // The pin affordance only shows for top-level rows. Nested discussion
+  // children don't pin individually — the parent thread is the pin
+  // target for that whole subtree.
+  let showPinAffordance = $derived(indent <= 1);
+  let isPinned = $derived(thread.pinnedAt != null);
+
+  // Jump-hint label for this row when the user holds Cmd/Ctrl. Reactive:
+  // when modifier press fires, the keyboardModifiers store rescans the
+  // DOM and updates the labels map — Svelte re-derives this row's label
+  // and the pill renders.
+  let jumpLabel = $derived.by<string | null>(() => {
+    if (!getJumpHintsVisible()) return null;
+    return jumpLabelForThread(thread.id) ?? null;
+  });
+
   async function handleUnarchive(e: MouseEvent) {
     e.stopPropagation();
     await unarchiveThreadAction(ctx());
@@ -176,10 +196,11 @@
     ctxOpen = false;
   }
 
-  // Indent scale for discussion children. Cap at 2 so a deeply nested
-  // participant doesn't push the title off-screen in a narrow sidebar.
-  const INDENT_PX = [0, 12, 24];
-  let indentPx = $derived(INDENT_PX[Math.min(indent, 2)]);
+  // Indent scale for discussion children. Cap matches the tree's
+  // maxDepth (2 grandchildren below a top-level row → indent 3) plus a
+  // safety clamp so deeper malformed chains don't push titles off-screen.
+  const INDENT_PX = [0, 12, 22, 32];
+  let indentPx = $derived(INDENT_PX[Math.min(indent, INDENT_PX.length - 1)]);
 </script>
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -197,9 +218,12 @@
     {pill?.glowClass ?? ''}"
   style="padding-left: {8 + indentPx}px"
   data-testid="thread-row"
-  data-thread-id={thread.id}
+  data-sidebar-thread-id={thread.id}
   data-live-status={liveStatus}
 >
+  {#if showPinAffordance}
+    <ThreadRowPinButton {isPinned} buildCtx={ctx} />
+  {/if}
   {#if hasChildren}
     <button
       type="button"
@@ -243,7 +267,7 @@
       onkeydown={handleRenameKeydown}
       onblur={saveRename}
       disabled={saving}
-      aria-label="Rename thread"
+      aria-label="Rename Thread"
       class="text-xs flex-1 min-w-0 bg-surface-0 border border-accent/50 rounded-[var(--radius-field)] px-1 py-0.5 text-fg focus:outline-none"
       onclick={(e) => e.stopPropagation()}
     />
@@ -262,12 +286,27 @@
       the time without pushing layout.
     -->
     <div class="ml-auto relative shrink-0 flex items-center justify-end min-w-12">
-      <span
-        class="text-[10px] tabular-nums text-fg-hint transition-opacity duration-150 pointer-events-none group-hover/thread-row:opacity-0 group-focus-within/thread-row:opacity-0"
-        data-testid="thread-row-time"
-      >
-        {relativeTime(thread.updatedAt, getSettings().timestampFormat)}
-      </span>
+      {#if jumpLabel}
+        <!--
+          Cmd-held jump-hint pill. Fades in on the right side, replacing
+          the relative-time stamp. The Cmd+N keybinding navigates to
+          this row when active.
+        -->
+        <span
+          class="inline-flex h-5 items-center rounded-[var(--radius-field)] border border-border-subtle bg-surface-1/90 px-1.5 font-mono text-[10px] font-medium text-fg shadow-sm pointer-events-none"
+          aria-hidden="true"
+          data-testid="thread-row-jump-hint"
+        >
+          ⌘{jumpLabel}
+        </span>
+      {:else}
+        <span
+          class="text-[10px] tabular-nums text-fg-hint transition-opacity duration-150 pointer-events-none group-hover/thread-row:opacity-0 group-focus-within/thread-row:opacity-0"
+          data-testid="thread-row-time"
+        >
+          {relativeTime(thread.updatedAt, getSettings().timestampFormat)}
+        </span>
+      {/if}
       <div
         class="absolute inset-y-0 right-0 flex items-center opacity-0 pointer-events-none transition-opacity duration-150 group-hover/thread-row:opacity-100 group-hover/thread-row:pointer-events-auto group-focus-within/thread-row:opacity-100 group-focus-within/thread-row:pointer-events-auto"
       >
@@ -293,7 +332,7 @@
 
 <ConfirmDialog
   open={showArchiveConfirm}
-  title="Archive thread"
+  title="Archive Thread"
   description="This will hide the thread from the sidebar. Toggle 'Include archived' and use the Unarchive action to bring it back."
   confirmLabel="Archive"
   onConfirm={() => { showArchiveConfirm = false; void archiveThreadAction(ctx()); }}

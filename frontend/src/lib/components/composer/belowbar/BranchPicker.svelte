@@ -179,7 +179,7 @@
       <input
         type="search"
         value={query}
-        placeholder="Search branches"
+        placeholder="Search Branches"
         onkeydown={handleSearchKeydown}
         oninput={(e) => (query = (e.target as HTMLInputElement).value)}
         class={[

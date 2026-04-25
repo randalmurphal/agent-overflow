@@ -17,11 +17,11 @@
 </script>
 
 {#if thread.mode === 'discussion'}
-  <span class="text-[8.5px] px-1 py-[1px] rounded-[4px] bg-accent/10 text-accent shrink-0" title="Discussion parent thread" aria-label="Discussion parent thread">D</span>
+  <span class="text-[8.5px] px-1 py-[1px] rounded-[4px] bg-accent/10 text-accent shrink-0" title="Discussion Parent Thread" aria-label="Discussion Parent Thread">D</span>
 {:else if thread.parentThreadId}
-  <span class="text-[8.5px] px-1 py-[1px] rounded-[4px] bg-provider-codex/10 text-provider-codex shrink-0" title="Discussion participant" aria-label="Discussion participant">Dp</span>
+  <span class="text-[8.5px] px-1 py-[1px] rounded-[4px] bg-provider-codex/10 text-provider-codex shrink-0" title="Discussion Participant" aria-label="Discussion Participant">Dp</span>
 {:else if thread.mode === 'design'}
-  <span class="text-[8.5px] px-1 py-[1px] rounded-[4px] bg-provider-codex/10 text-provider-codex shrink-0" title="Design mode thread" aria-label="Design mode thread">Dsn</span>
+  <span class="text-[8.5px] px-1 py-[1px] rounded-[4px] bg-provider-codex/10 text-provider-codex shrink-0" title="Design Mode Thread" aria-label="Design Mode Thread">Dsn</span>
 {/if}
 {#if thread.worktreePath}
   <span class="text-[8.5px] px-1 py-[1px] rounded-[4px] bg-accent/10 text-accent/80 shrink-0" title="Worktree: {thread.worktreePath}">WT</span>
@@ -36,7 +36,7 @@
     title={forkParent
       ? `Forked from "${forkParent.title || 'Untitled'}" — click to open parent`
       : 'Forked thread (parent not loaded in sidebar)'}
-    aria-label="Fork lineage"
+    aria-label="Fork Lineage"
   >
     F↩
   </button>

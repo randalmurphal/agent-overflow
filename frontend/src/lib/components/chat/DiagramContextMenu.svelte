@@ -95,10 +95,10 @@
   style:left="{adjustedX}px"
   style:top="{adjustedY}px"
 >
-  <Menu ariaLabel="Diagram actions" onClose={onDismiss}>
+  <Menu ariaLabel="Diagram Actions" onClose={onDismiss}>
     <MenuItem label="Copy as PNG" onSelect={() => pick('copy-png')} />
     <MenuItem label="Copy as SVG" onSelect={() => pick('copy-svg')} />
-    <MenuItem label="Copy source" onSelect={() => pick('copy-source')} />
+    <MenuItem label="Copy Source" onSelect={() => pick('copy-source')} />
     <MenuDivider />
     {#if context === 'inline'}
       <MenuItem label="Expand" onSelect={() => pick('expand')} />

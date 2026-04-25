@@ -235,7 +235,7 @@
     onkeydown={handleKeydown}
     role="dialog"
     aria-modal="true"
-    aria-label="Diagram viewer"
+    aria-label="Diagram Viewer"
     tabindex="-1"
   >
     <div
@@ -282,21 +282,21 @@
         <button
           class="px-2 py-1 text-text-secondary hover:text-text-primary"
           onclick={() => zoomCenter(0.8)}
-          aria-label="Zoom out"
+          aria-label="Zoom Out"
         >
           −
         </button>
         <button
           class="px-2 py-1 text-text-secondary hover:text-text-primary"
           onclick={reset}
-          aria-label="Fit to view"
+          aria-label="Fit to View"
         >
           Fit
         </button>
         <button
           class="px-2 py-1 text-text-secondary hover:text-text-primary"
           onclick={() => zoomCenter(1.25)}
-          aria-label="Zoom in"
+          aria-label="Zoom In"
         >
           +
         </button>

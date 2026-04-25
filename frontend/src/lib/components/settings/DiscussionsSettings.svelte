@@ -85,7 +85,7 @@
   <div class="flex flex-wrap items-start justify-between gap-3">
     <div>
       <p class="text-[11px] font-semibold uppercase tracking-[0.22em] text-text-secondary/70">Discussions</p>
-      <h3 class="mt-1 text-base font-semibold text-text-primary">Manage discussion definitions</h3>
+      <h3 class="mt-1 text-base font-semibold text-text-primary">Manage Discussion Definitions</h3>
       <p class="mt-1 max-w-2xl text-sm text-text-secondary">
         Configure multi-participant deliberations. Global definitions are available everywhere;
         project-scoped definitions take precedence for threads inside their project path.

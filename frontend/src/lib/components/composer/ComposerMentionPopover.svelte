@@ -32,7 +32,7 @@
   }: Props = $props();
 </script>
 
-<Popover {anchor} {open} {onClose} placement="top-start" role="listbox" ariaLabel="Workspace file mentions">
+<Popover {anchor} {open} {onClose} placement="top-start" role="listbox" ariaLabel="Workspace File Mentions">
   {#snippet children()}
     <div
       class="w-[22rem] max-h-72 overflow-y-auto rounded-[var(--radius-control)] border border-border-subtle bg-surface-1 shadow-menu"

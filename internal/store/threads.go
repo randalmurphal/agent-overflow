@@ -9,9 +9,10 @@ import (
 // threadColumns lists every column in the order scanThread expects. The
 // COALESCE-ing of nullable text columns returns "" instead of NULL so the
 // Go struct has a clean empty-string value for unset optional fields.
-// last_read_at is deliberately NOT coalesced — scanThread keeps the
-// NULL / non-NULL distinction via a *int64 pointer so the frontend can
-// tell "never tracked" apart from "read at epoch 0".
+// last_read_at and pinned_at are deliberately NOT coalesced — scanThread
+// keeps the NULL / non-NULL distinction via *int64 pointers so the
+// frontend can tell "never tracked" / "unpinned" apart from a zero
+// timestamp.
 const threadColumns = `id, project_id,
     COALESCE((SELECT path FROM projects WHERE projects.id = threads.project_id), ''),
     title, provider, model,
@@ -23,7 +24,7 @@ const threadColumns = `id, project_id,
     created_at, updated_at,
     (SELECT MAX(completed_at) FROM turns
       WHERE turns.thread_id = threads.id AND completed_at IS NOT NULL),
-    archived, last_read_at`
+    archived, last_read_at, pinned_at`
 
 // -- Validation errors for enum fields. Each binding checks against the
 // -- list before hitting SQLite so the caller sees a typed error instead
@@ -72,14 +73,14 @@ var legalProviders = map[string]struct{}{
 func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
 	var t Thread
 	var archived, fastMode int
-	var latestTurnCompletedAt, lastReadAt sql.NullInt64
+	var latestTurnCompletedAt, lastReadAt, pinnedAt sql.NullInt64
 	if err := scanner.Scan(
 		&t.ID, &t.ProjectID, &t.ProjectPath, &t.Title, &t.Provider, &t.Model,
 		&t.WorkspacePath, &t.WorktreePath, &t.Branch,
 		&t.SessionRef, &t.PendingForkRef,
 		&t.Mode, &t.ReasoningEffort, &fastMode, &t.ContextWindow, &t.RuntimeMode,
 		&t.DiscussionID, &t.ParentThreadID, &t.ForkedFromThreadID, &t.LastTokenUsage,
-		&t.CreatedAt, &t.UpdatedAt, &latestTurnCompletedAt, &archived, &lastReadAt,
+		&t.CreatedAt, &t.UpdatedAt, &latestTurnCompletedAt, &archived, &lastReadAt, &pinnedAt,
 	); err != nil {
 		return Thread{}, err
 	}
@@ -92,6 +93,10 @@ func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
 	if lastReadAt.Valid {
 		v := lastReadAt.Int64
 		t.LastReadAt = &v
+	}
+	if pinnedAt.Valid {
+		v := pinnedAt.Int64
+		t.PinnedAt = &v
 	}
 	return t, nil
 }
@@ -394,6 +399,39 @@ func (s *Store) setThreadLastRead(id string, ts *int64) error {
 		return fmt.Errorf("store: update last_read_at for %s: %w", id, err)
 	}
 	return requireRowsAffected(result, fmt.Sprintf("store: update last_read_at for %s", id))
+}
+
+// PinThread stamps pinned_at with the current unix-ms. Idempotent — the
+// caller can re-pin to bump the position within the pinned tier without
+// special-casing.
+func (s *Store) PinThread(id string) error {
+	now := nowMillis()
+	return s.setThreadPinnedAt(id, &now)
+}
+
+// UnpinThread clears pinned_at, returning the thread to the regular
+// status-aware sort order.
+func (s *Store) UnpinThread(id string) error {
+	return s.setThreadPinnedAt(id, nil)
+}
+
+// setThreadPinnedAt is the shared primitive. We deliberately do NOT
+// touch updated_at here: pinning is a sidebar-presentation tweak, not
+// thread activity, and bumping updated_at would shuffle the project's
+// `lastActivity` ordering.
+func (s *Store) setThreadPinnedAt(id string, ts *int64) error {
+	var arg any
+	if ts != nil {
+		arg = *ts
+	}
+	result, err := s.db.Exec(
+		`UPDATE threads SET pinned_at = ? WHERE id = ?`,
+		arg, id,
+	)
+	if err != nil {
+		return fmt.Errorf("store: update pinned_at for %s: %w", id, err)
+	}
+	return requireRowsAffected(result, fmt.Sprintf("store: update pinned_at for %s", id))
 }
 
 // UpdateSessionRef records the provider resume cursor without touching

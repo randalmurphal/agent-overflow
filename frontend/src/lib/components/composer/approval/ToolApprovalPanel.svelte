@@ -129,7 +129,7 @@
     </div>
     <textarea
       data-testid="approval-edit-textarea"
-      aria-label="Tool input JSON"
+      aria-label="Tool Input JSON"
       class="w-full text-xs font-mono rounded border border-border bg-surface-1 px-2 py-1.5 text-text-primary min-h-32"
       value={editText}
       oninput={(e) => setEditText((e.target as HTMLTextAreaElement).value)}

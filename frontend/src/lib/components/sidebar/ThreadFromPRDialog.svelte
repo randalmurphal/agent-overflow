@@ -117,7 +117,7 @@
 
 <Modal
   {open}
-  title="Start thread from PR"
+  title="Start Thread From PR"
   onClose={onClose}
   width="lg"
   padding="comfortable"

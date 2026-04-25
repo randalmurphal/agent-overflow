@@ -304,7 +304,7 @@
   ondragleave={uploads.handleDragLeave}
   ondrop={handleDrop}
   role="region"
-  aria-label="Message composer"
+  aria-label="Message Composer"
   data-testid="composer-root"
 >
   <div
@@ -400,7 +400,7 @@
           onpaste={handlePaste}
           disabled={inputDisabled}
           placeholder={placeholder}
-          aria-label="Message input"
+          aria-label="Message Input"
           rows={1}
           value={inputValue}
           class="w-full resize-none bg-transparent px-1 py-1 text-[13px] leading-[1.55] text-fg placeholder:text-fg-hint focus:outline-none disabled:opacity-40 disabled:cursor-not-allowed"

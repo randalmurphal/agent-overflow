@@ -154,7 +154,7 @@
   <ul
     bind:this={listboxEl}
     role="listbox"
-    aria-label="Directory entries"
+    aria-label="Directory Entries"
     tabindex={0}
     onkeydown={handleListKeydown}
     data-testid="directory-browser-list"
@@ -170,11 +170,11 @@
         data-testid="directory-browser-no-matches"
         aria-hidden="true"
       >
-        No matches
+        No Matches
       </li>
     {:else if browser.listing && browser.listing.entries.length === 0}
       <li class="px-3 py-2 text-xs text-text-secondary/70" aria-hidden="true">
-        Empty directory
+        Empty Directory
       </li>
     {:else if browser.listing}
       {#each browser.listing.entries as entry, i (entry.name)}
@@ -219,8 +219,8 @@
           {#if entry.isRepo}
             <span
               class="shrink-0 text-[9px] font-semibold uppercase tracking-wide text-accent/80"
-              title="Git repository"
-              aria-label="Git repository"
+              title="Git Repository"
+              aria-label="Git Repository"
             >
               git
             </span>

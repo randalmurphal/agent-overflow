@@ -95,6 +95,16 @@ func (a *App) UnarchiveProject(id string) (store.Project, error) {
 	return a.store.GetProject(id)
 }
 
+// UpdateProjectSortPositions re-orders the projects list. The frontend
+// emits the full ordered list when the user drops a drag-reorder so the
+// store assigns dense positions 0..N-1 in one transaction.
+func (a *App) UpdateProjectSortPositions(orderedIDs []string) error {
+	if a.store == nil {
+		return fmt.Errorf("update project sort positions: store unavailable")
+	}
+	return a.store.UpdateProjectSortPositions(orderedIDs)
+}
+
 // DeleteProject cascades through the threads FK and returns the list of
 // thread ids that were dropped so the frontend can purge pane state.
 func (a *App) DeleteProject(id string) ([]string, error) {

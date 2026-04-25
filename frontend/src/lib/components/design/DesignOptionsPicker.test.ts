@@ -75,7 +75,7 @@ describe('<DesignOptionsPicker>', () => {
     expect(getByText(/pick a direction/i)).toBeInTheDocument();
     // All three options rendered (plus the Choose button — filter by aria-label).
     const optionButtons = getAllByRole('button').filter((b) =>
-      b.getAttribute('aria-label')?.startsWith('Select design option'),
+      b.getAttribute('aria-label')?.startsWith('Select Design Option:'),
     );
     expect(optionButtons).toHaveLength(3);
     expect(getByText(/req req-1/i)).toBeInTheDocument();
@@ -97,7 +97,7 @@ describe('<DesignOptionsPicker>', () => {
     const { getByLabelText } = render(DesignOptionsPicker, { props: { pane } });
     await Promise.resolve();
 
-    await fireEvent.click(getByLabelText('Select design option Minimal'));
+    await fireEvent.click(getByLabelText('Select Design Option: Minimal'));
     await Promise.resolve();
     expect(pane.activeArtifactId).toBe('art-B');
   });
@@ -108,7 +108,7 @@ describe('<DesignOptionsPicker>', () => {
     const chooseMock = setBindingMock('ChooseDesignOption', async () => {});
     const { getByLabelText, getByRole } = render(DesignOptionsPicker, { props: { pane } });
 
-    await fireEvent.click(getByLabelText('Select design option Classic'));
+    await fireEvent.click(getByLabelText('Select Design Option: Classic'));
     await Promise.resolve();
     const confirmBtn = getByRole('button', { name: /choose this option/i });
     await fireEvent.click(confirmBtn);
@@ -146,7 +146,7 @@ describe('<DesignOptionsPicker>', () => {
     await Promise.resolve();
     const choosingBtn = getByRole('button', { name: /choosing/i }) as HTMLButtonElement;
     expect(choosingBtn.disabled).toBe(true);
-    const optionA = getByLabelText('Select design option Bold') as HTMLButtonElement;
+    const optionA = getByLabelText('Select Design Option: Bold') as HTMLButtonElement;
     expect(optionA.disabled).toBe(true);
 
     // Resolve and re-observe state.

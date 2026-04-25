@@ -35,8 +35,8 @@
     onclick={onUnarchive}
     data-testid="thread-row-unarchive"
     class={btnClass}
-    aria-label="Unarchive thread"
-    title="Unarchive thread"
+    aria-label="Unarchive Thread"
+    title="Unarchive Thread"
   >
     <Icon icon={ArchiveRestore} size={12} strokeWidth={2} class="opacity-90" />
   </button>
@@ -46,8 +46,8 @@
     onclick={onArchive}
     data-testid="thread-row-archive"
     class={btnClass}
-    aria-label="Archive thread"
-    title="Archive thread"
+    aria-label="Archive Thread"
+    title="Archive Thread"
   >
     <Icon icon={Archive} size={12} strokeWidth={2} class="opacity-90" />
   </button>

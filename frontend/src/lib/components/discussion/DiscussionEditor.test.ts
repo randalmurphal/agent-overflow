@@ -213,14 +213,14 @@ describe('<DiscussionEditor>', () => {
     fieldsets = selectFieldsets();
     expect(fieldsets.length).toBe(3);
 
-    const removeButtons = fieldsets.map((fs) => fs.querySelector<HTMLButtonElement>('button[aria-label^="Remove participant"]')!);
+    const removeButtons = fieldsets.map((fs) => fs.querySelector<HTMLButtonElement>('button[aria-label^="Remove Participant"]')!);
     expect(removeButtons[2].disabled).toBe(false);
     await fireEvent.click(removeButtons[2]);
     fieldsets = selectFieldsets();
     expect(fieldsets.length).toBe(2);
 
     // Both remove buttons are now disabled (minimum of two enforced).
-    const stillThere = fieldsets.map((fs) => fs.querySelector<HTMLButtonElement>('button[aria-label^="Remove participant"]')!);
+    const stillThere = fieldsets.map((fs) => fs.querySelector<HTMLButtonElement>('button[aria-label^="Remove Participant"]')!);
     expect(stillThere[0].disabled).toBe(true);
     expect(stillThere[1].disabled).toBe(true);
   });

@@ -57,7 +57,7 @@ describe('<EnvPicker>', () => {
   it('shows the current checkout at the project root', async () => {
     const pane = await buildPane(makeThread({ workspacePath: '/repo' }));
     const { getByTestId } = render(EnvPicker, { props: { pane, workspaceLock: makeWorkspaceLock() } });
-    expect(getByTestId('env-picker-trigger').textContent ?? '').toMatch(/Current checkout/);
+    expect(getByTestId('env-picker-trigger').textContent ?? '').toMatch(/Current Checkout/);
   });
 
   it('shows when the thread is on a worktree', async () => {
@@ -65,7 +65,7 @@ describe('<EnvPicker>', () => {
       makeThread({ workspacePath: '/tmp/wt-feature', projectPath: '/repo' }),
     );
     const { getByTestId } = render(EnvPicker, { props: { pane, workspaceLock: makeWorkspaceLock() } });
-    expect(getByTestId('env-picker-trigger').textContent ?? '').toMatch(/Current worktree/);
+    expect(getByTestId('env-picker-trigger').textContent ?? '').toMatch(/Current Worktree/);
   });
 
   it('lists worktrees on open and switches via UpdateThreadWorkspace', async () => {
@@ -97,10 +97,10 @@ describe('<EnvPicker>', () => {
 
     const { getByTestId, findByRole } = render(EnvPicker, { props: { pane, workspaceLock: makeWorkspaceLock() } });
     await fireEvent.click(getByTestId('env-picker-trigger'));
-    const row = await findByRole('menuitem', { name: /New worktree/ });
+    const row = await findByRole('menuitem', { name: /New Worktree/ });
     await fireEvent.click(row);
 
-    expect(getByTestId('env-picker-trigger').textContent ?? '').toMatch(/New worktree/);
+    expect(getByTestId('env-picker-trigger').textContent ?? '').toMatch(/New Worktree/);
     expect(getBindingMock('UpdateThreadWorkspace')).toBeUndefined();
   });
 
@@ -120,7 +120,7 @@ describe('<EnvPicker>', () => {
 
     const { getByTestId, findByRole } = render(EnvPicker, { props: { pane, workspaceLock } });
     await fireEvent.click(getByTestId('env-picker-trigger'));
-    const newWorktreeRow = await findByRole('menuitem', { name: /New worktree/ });
+    const newWorktreeRow = await findByRole('menuitem', { name: /New Worktree/ });
     expect(newWorktreeRow).toHaveAttribute('aria-disabled', 'true');
     const wtRow = await findByRole('menuitem', { name: /wt-feature/ });
     expect(wtRow).toHaveAttribute('aria-disabled', 'true');
@@ -130,7 +130,7 @@ describe('<EnvPicker>', () => {
     await fireEvent.click(newWorktreeRow);
 
     expect(getBindingMock('UpdateThreadWorkspace')).not.toHaveBeenCalled();
-    expect(getByTestId('env-picker-trigger').textContent ?? '').toMatch(/Current checkout/);
+    expect(getByTestId('env-picker-trigger').textContent ?? '').toMatch(/Current Checkout/);
   });
 
   it('disables workspace changes while background tasks are running', async () => {
@@ -150,7 +150,7 @@ describe('<EnvPicker>', () => {
 
     const { getByTestId, findByRole } = render(EnvPicker, { props: { pane, workspaceLock } });
     await fireEvent.click(getByTestId('env-picker-trigger'));
-    const newWorktreeRow = await findByRole('menuitem', { name: /New worktree/ });
+    const newWorktreeRow = await findByRole('menuitem', { name: /New Worktree/ });
     expect(newWorktreeRow).toHaveAttribute('aria-disabled', 'true');
     const wtRow = await findByRole('menuitem', { name: /wt-feature/ });
 
@@ -163,6 +163,6 @@ describe('<EnvPicker>', () => {
     await fireEvent.click(newWorktreeRow);
 
     expect(getBindingMock('UpdateThreadWorkspace')).not.toHaveBeenCalled();
-    expect(getByTestId('env-picker-trigger').textContent ?? '').toMatch(/Current checkout/);
+    expect(getByTestId('env-picker-trigger').textContent ?? '').toMatch(/Current Checkout/);
   });
 });

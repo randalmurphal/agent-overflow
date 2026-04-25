@@ -743,6 +743,22 @@ CREATE INDEX IF NOT EXISTS idx_thread_checkpoints_thread_count
 	ON thread_checkpoints(thread_id, checkpoint_turn_count);
 `,
 	},
+	{
+		Version: 29,
+		Name:    "thread_pinned_at",
+		// Sidebar pinning: a unix-ms timestamp of when the user pinned the
+		// thread. NULL = unpinned. The partial index keeps the "list
+		// pinned threads" path cheap if we ever need it; today the sort
+		// is in-memory in the frontend and the column is loaded eagerly
+		// alongside other thread metadata.
+		SQL: `
+ALTER TABLE threads ADD COLUMN pinned_at INTEGER;
+
+CREATE INDEX IF NOT EXISTS idx_threads_pinned_at
+  ON threads(pinned_at)
+  WHERE pinned_at IS NOT NULL;
+`,
+	},
 }
 
 // v13SQL is the DROP-and-rebuild payload for migration v13. Extracted so

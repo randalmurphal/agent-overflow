@@ -94,7 +94,7 @@ describe('<Composer>', () => {
 
     const { getByLabelText, getByTestId } = render(Composer, { props: { pane, draft } });
 
-    expect((getByLabelText('Message input') as HTMLTextAreaElement).disabled).toBe(true);
+    expect((getByLabelText('Message Input') as HTMLTextAreaElement).disabled).toBe(true);
     expect((getByTestId('composer-send') as HTMLButtonElement).disabled).toBe(true);
   });
 
@@ -105,7 +105,7 @@ describe('<Composer>', () => {
       makeTestThread({ runtimeMode: 'full-access' }));
 
     const { getByLabelText, getByTestId } = render(Composer, { props: { pane, draft } });
-    const textarea = getByLabelText('Message input') as HTMLTextAreaElement;
+    const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
 
     await fireEvent.input(textarea, { target: { value: 'hello world' } });
     await fireEvent.click(getByTestId('composer-send'));
@@ -124,7 +124,7 @@ describe('<Composer>', () => {
       makeTestThread({ runtimeMode: 'auto-accept-edits' }));
 
     const { getByLabelText, getByTestId } = render(Composer, { props: { pane, draft } });
-    await fireEvent.input(getByLabelText('Message input'), { target: { value: 'use this access' } });
+    await fireEvent.input(getByLabelText('Message Input'), { target: { value: 'use this access' } });
     await fireEvent.click(getByTestId('composer-send'));
 
     expect(send).toHaveBeenCalledWith('thread-1', 'use this access', {
@@ -141,7 +141,7 @@ describe('<Composer>', () => {
       makeTestThread({ runtimeMode: 'approval-required' }));
 
     const { getByLabelText, getByTestId } = render(Composer, { props: { pane, draft } });
-    await fireEvent.input(getByLabelText('Message input'), { target: { value: 'use persisted mode' } });
+    await fireEvent.input(getByLabelText('Message Input'), { target: { value: 'use persisted mode' } });
     await fireEvent.click(getByTestId('composer-send'));
 
     expect(send).toHaveBeenCalledWith('thread-1', 'use persisted mode', {
@@ -167,7 +167,7 @@ describe('<Composer>', () => {
     const send = setBindingMock('SendMessageWithOptions', async () => worktreeThread);
 
     const { getByLabelText, getByTestId } = render(Composer, { props: { pane, draft } });
-    await fireEvent.input(getByLabelText('Message input'), { target: { value: 'work there' } });
+    await fireEvent.input(getByLabelText('Message Input'), { target: { value: 'work there' } });
     await fireEvent.click(getByTestId('composer-send'));
 
     expect(prepare).toHaveBeenCalledWith('thread-1', 'release', 'feature/custom');
@@ -200,7 +200,7 @@ describe('<Composer>', () => {
     setBindingMock('SendMessageWithOptions', async () => worktreeThread);
 
     const { getByLabelText, getByTestId, queryByTestId } = render(Composer, { props: { pane, draft } });
-    await fireEvent.input(getByLabelText('Message input'), { target: { value: 'work there' } });
+    await fireEvent.input(getByLabelText('Message Input'), { target: { value: 'work there' } });
     void fireEvent.click(getByTestId('composer-send'));
 
     await waitFor(() => {
@@ -233,7 +233,7 @@ describe('<Composer>', () => {
       makeTestThread({ id: 'thread-1', runtimeMode: 'auto-accept-edits' }));
 
     const { getByLabelText, getByTestId } = render(Composer, { props: { pane, draft } });
-    await fireEvent.input(getByLabelText('Message input'), { target: { value: 'race send' } });
+    await fireEvent.input(getByLabelText('Message Input'), { target: { value: 'race send' } });
     void fireEvent.click(getByTestId('composer-send'));
     await waitFor(() => expect(clearStarted).toHaveBeenCalled());
 
@@ -281,7 +281,7 @@ describe('<Composer>', () => {
       makeTestThread({ runtimeMode: 'full-access' }));
 
     const { getByLabelText, getByTestId } = render(Composer, { props: { pane, draft } });
-    const textarea = getByLabelText('Message input') as HTMLTextAreaElement;
+    const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
 
     await fireEvent.input(textarea, { target: { value: 'please inspect' } });
     textarea.setSelectionRange(textarea.value.length, textarea.value.length);
@@ -307,7 +307,7 @@ describe('<Composer>', () => {
     const remove = setBindingMock('DeleteAttachment', async () => {});
 
     const { getByLabelText } = render(Composer, { props: { pane, draft } });
-    const textarea = getByLabelText('Message input') as HTMLTextAreaElement;
+    const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
     const cursor = 'before [Image #1]'.length;
     textarea.setSelectionRange(cursor, cursor);
 
@@ -325,7 +325,7 @@ describe('<Composer>', () => {
     const remove = setBindingMock('DeleteAttachment', async () => {});
 
     const { getByLabelText } = render(Composer, { props: { pane, draft } });
-    const textarea = getByLabelText('Message input') as HTMLTextAreaElement;
+    const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
     const cursor = 'before [Ima'.length;
     textarea.setSelectionRange(cursor, cursor);
 
@@ -397,7 +397,7 @@ describe('<Composer>', () => {
 
     const root = getByTestId('composer-root');
     const tray = getByTestId('background-task-tray');
-    const input = getByLabelText('Message input');
+    const input = getByLabelText('Message Input');
 
     expect(root.contains(tray)).toBe(true);
     expect(tray.compareDocumentPosition(input) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
@@ -414,7 +414,7 @@ describe('<Composer>', () => {
       makeTestThread({ runtimeMode: 'full-access' }));
 
     const { getByLabelText } = render(Composer, { props: { pane, draft } });
-    const textarea = getByLabelText('Message input') as HTMLTextAreaElement;
+    const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
 
     await fireEvent.input(textarea, { target: { value: 'should not send' } });
     await fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -427,7 +427,7 @@ describe('<Composer>', () => {
     const draft = await buildDraft();
 
     const { getByLabelText } = render(Composer, { props: { pane, draft } });
-    const textarea = getByLabelText('Message input') as HTMLTextAreaElement;
+    const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
     Object.defineProperty(textarea, 'scrollHeight', {
       configurable: true,
       get: () => 260,
@@ -443,7 +443,7 @@ describe('<Composer>', () => {
     const draft = await buildDraft();
 
     const { getByLabelText } = render(Composer, { props: { pane, draft } });
-    const textarea = getByLabelText('Message input') as HTMLTextAreaElement;
+    const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
     Object.defineProperty(textarea, 'scrollHeight', {
       configurable: true,
       get: () => 96,
@@ -463,7 +463,7 @@ describe('<Composer>', () => {
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
 
     const { getByLabelText, getByTestId } = render(Composer, { props: { pane, draft } });
-    const textarea = getByLabelText('Message input') as HTMLTextAreaElement;
+    const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
 
     await fireEvent.input(textarea, { target: { value: 'fails' } });
     await fireEvent.click(getByTestId('composer-send'));
@@ -488,7 +488,7 @@ describe('<Composer>', () => {
     const respond = setBindingMock('RespondToUserInput', async () => {});
 
     const { getByLabelText, getByTestId } = render(Composer, { props: { pane, draft } });
-    const textarea = getByLabelText('Message input') as HTMLTextAreaElement;
+    const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
 
     expect(textarea.value).toBe('');
     await fireEvent.input(textarea, { target: { value: 'Randy' } });

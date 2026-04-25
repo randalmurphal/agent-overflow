@@ -53,20 +53,20 @@
   class="fixed inset-0 z-[90] flex items-center justify-center bg-black/88 p-4"
   role="dialog"
   aria-modal="true"
-  aria-label={image?.filename ?? 'Image preview'}
+  aria-label={image?.filename ?? 'Image Preview'}
   tabindex="-1"
   onkeydown={handleKeydown}
 >
   <button
     type="button"
-    aria-label="Close image preview"
+    aria-label="Close Image Preview"
     class="absolute inset-0 cursor-default"
     onclick={onClose}
   ></button>
   {#if image}
     <button
       type="button"
-      aria-label="Close image preview"
+      aria-label="Close Image Preview"
       class="absolute right-4 top-4 rounded-full bg-white/10 p-2 text-white transition hover:bg-white/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70"
       onclick={(event) => {
         event.stopPropagation();
@@ -79,7 +79,7 @@
     {#if hasMultiple}
       <button
         type="button"
-        aria-label="Previous image"
+        aria-label="Previous Image"
         class="absolute left-4 top-1/2 -translate-y-1/2 rounded-full bg-white/10 p-2 text-white transition hover:bg-white/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70"
         onclick={(event) => {
           event.stopPropagation();
@@ -90,7 +90,7 @@
       </button>
       <button
         type="button"
-        aria-label="Next image"
+        aria-label="Next Image"
         class="absolute right-4 top-1/2 -translate-y-1/2 rounded-full bg-white/10 p-2 text-white transition hover:bg-white/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70"
         onclick={(event) => {
           event.stopPropagation();

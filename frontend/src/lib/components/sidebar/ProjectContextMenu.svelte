@@ -40,12 +40,12 @@
     try {
       await ArchiveProject(project.project.id);
       removeProjectLocal(project.project.id);
-      addToast('info', `Archived project "${project.project.name}"`);
+      addToast('info', `Archived Project "${project.project.name}"`);
     } catch (err) {
       console.error('Failed to archive project:', err);
       addToast(
         'error',
-        `Archive failed: ${err instanceof Error ? err.message : err}`,
+        `Archive Failed: ${err instanceof Error ? err.message : err}`,
       );
     }
   }
@@ -56,12 +56,12 @@
       for (const id of threadIds) removeThread(id);
       removeProjectLocal(project.project.id);
       if (pane.thread && threadIds.includes(pane.thread.id)) pane.clear();
-      addToast('info', `Deleted project "${project.project.name}"`);
+      addToast('info', `Deleted Project "${project.project.name}"`);
     } catch (err) {
       console.error('Failed to delete project:', err);
       addToast(
         'error',
-        `Delete failed: ${err instanceof Error ? err.message : err}`,
+        `Delete Failed: ${err instanceof Error ? err.message : err}`,
       );
     }
   }
@@ -73,20 +73,20 @@
   {onClose}
   placement="bottom-start"
   role="menu"
-  ariaLabel="Project actions"
+  ariaLabel="Project Actions"
 >
   {#snippet children()}
-    <Menu ariaLabel="Project actions" {onClose}>
+    <Menu ariaLabel="Project Actions" {onClose}>
       {#snippet children()}
         <MenuItem
-          label="Rename"
+          label="Rename Project"
           onSelect={() => {
             onClose();
             onRename();
           }}
         />
         <MenuItem
-          label="Archive"
+          label="Archive Project"
           onSelect={() => {
             onClose();
             showArchiveConfirm = true;
@@ -94,7 +94,7 @@
         />
         <MenuDivider />
         <MenuItem
-          label="Delete"
+          label="Delete Project"
           variant="danger"
           onSelect={() => {
             onClose();
@@ -108,7 +108,7 @@
 
 <ConfirmDialog
   open={showArchiveConfirm}
-  title="Archive project"
+  title="Archive Project"
   description={`Hide "${project.project.name}" from the sidebar. Threads remain and the project can be unarchived from Settings.`}
   confirmLabel="Archive"
   onConfirm={() => {
@@ -122,7 +122,7 @@
 
 <ConfirmDialog
   open={showDeleteConfirm}
-  title="Delete project"
+  title="Delete Project"
   description={`Permanently delete "${project.project.name}" and all ${project.threadCount} thread${project.threadCount === 1 ? '' : 's'} it contains. This cannot be undone.`}
   confirmLabel="Delete"
   destructive={true}

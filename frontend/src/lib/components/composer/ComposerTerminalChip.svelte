@@ -29,7 +29,7 @@
     </button>
     <button
       type="button"
-      aria-label="Remove terminal context"
+      aria-label="Remove Terminal Context"
       class="rounded p-0.5 text-text-secondary hover:text-text-primary hover:bg-surface-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
       onclick={() => onRemove(chip.id)}
     >

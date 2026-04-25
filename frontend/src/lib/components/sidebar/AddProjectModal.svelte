@@ -69,7 +69,7 @@
     try {
       const created = (await CreateProject(pendingPath.trim())) as Project;
       addProjectLocal(created);
-      addToast('info', `Added project "${created.name}"`);
+      addToast('info', `Added Project "${created.name}"`);
       onCreated?.(created);
       onClose();
     } catch (err) {
@@ -100,7 +100,7 @@
   }
 </script>
 
-<Modal {open} title="Add project" onClose={handleCancel} width="md">
+<Modal {open} title="Add Project" onClose={handleCancel} width="md">
   {#snippet children()}
     <div class="flex flex-col gap-3 min-h-[320px]">
       <p class="text-xs text-text-secondary">

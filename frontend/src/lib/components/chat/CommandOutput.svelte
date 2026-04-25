@@ -57,7 +57,7 @@
     onclick={() => expansion.toggle()}
     aria-expanded={expansion.expanded}
     aria-controls="cmd-output-{payloadId}"
-    aria-label="Toggle command output: {meta.command}"
+    aria-label="Toggle Command Output: {meta.command}"
   >
     <span
       class="flex size-3 shrink-0 items-center justify-center text-fg-subtle select-none transition-transform duration-150"

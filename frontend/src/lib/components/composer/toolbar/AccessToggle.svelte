@@ -93,7 +93,7 @@
   disabled={!pane.thread}
   aria-haspopup="menu"
   aria-expanded={open}
-  aria-label="Runtime access mode"
+  aria-label="Runtime Access Mode"
   data-testid="composer-access-toggle"
   data-mode={current}
   data-staged={staged}
@@ -119,7 +119,7 @@
   placement="top-start"
   role="none"
 >
-  <Menu ariaLabel="Runtime access mode" onClose={closeMenu}>
+  <Menu ariaLabel="Runtime Access Mode" onClose={closeMenu}>
     {#each TIERS as tier (tier.mode)}
       <MenuItem
         label={tier.label}

@@ -17,14 +17,17 @@ import {
   DeleteThread,
   GitRemoveWorktree,
   MarkThreadUnread,
+  PinThread,
   RenameThread,
   StopSession,
   UnarchiveThread,
+  UnpinThread,
 } from '../../stores/bindings';
 import {
   removeThread,
   replaceThread,
   updateThreadLastRead,
+  updateThreadPinnedAt,
   updateThreadTitle,
 } from '../../stores/threads.svelte';
 import { addToast } from '../../stores/toast.svelte';
@@ -79,6 +82,10 @@ export async function archiveThreadAction(ctx: ThreadActionCtx): Promise<void> {
 
 export async function unarchiveThreadAction(ctx: ThreadActionCtx): Promise<void> {
   try {
+    // Cast bridges the Wails-generated `Thread` type (provider: string)
+    // and the local frontend `Thread` type (provider: 'claude' | 'codex').
+    // The two are structurally identical at runtime — only the literal
+    // narrowing of `provider` differs.
     const restored = (await UnarchiveThread(ctx.thread.id)) as Thread;
     // Patch the in-memory list so the row loses its archived style
     // immediately. Sidebar's filter uses the `archived` flag directly.
@@ -115,19 +122,41 @@ export async function markThreadUnreadAction(ctx: ThreadActionCtx): Promise<void
     // Explicit unread is persisted as epoch 0. Undefined means "never
     // tracked" and is intentionally treated as read for old rows.
     updateThreadLastRead(ctx.thread.id, 0);
-    addToast('info', 'Marked unread');
+    addToast('info', 'Marked Unread');
   } catch (err) {
     console.error('Failed to mark thread unread:', err);
-    addToast('error', `Mark unread failed: ${errString(err)}`);
+    addToast('error', `Mark Unread Failed: ${errString(err)}`);
   }
 }
 
 export async function copyThreadPathAction(ctx: ThreadActionCtx): Promise<void> {
   const ok = await copyToClipboard(ctx.thread.workspacePath);
-  addToast(ok ? 'info' : 'error', ok ? 'Copied workspace path' : 'Copy failed');
+  addToast(ok ? 'info' : 'error', ok ? 'Copied Workspace Path' : 'Copy Failed');
 }
 
 export async function copyThreadIdAction(ctx: ThreadActionCtx): Promise<void> {
   const ok = await copyToClipboard(ctx.thread.id);
-  addToast(ok ? 'info' : 'error', ok ? 'Copied thread ID' : 'Copy failed');
+  addToast(ok ? 'info' : 'error', ok ? 'Copied Thread ID' : 'Copy Failed');
+}
+
+export async function pinThreadAction(ctx: ThreadActionCtx): Promise<void> {
+  try {
+    const updated = await PinThread(ctx.thread.id);
+    // Wails surfaces a nullable Go pointer as `number | null | undefined`;
+    // the local store uses `number | undefined` (undefined = unpinned).
+    updateThreadPinnedAt(ctx.thread.id, updated.pinnedAt ?? undefined);
+  } catch (err) {
+    console.error('Failed to pin thread:', err);
+    addToast('error', `Pin Failed: ${errString(err)}`);
+  }
+}
+
+export async function unpinThreadAction(ctx: ThreadActionCtx): Promise<void> {
+  try {
+    await UnpinThread(ctx.thread.id);
+    updateThreadPinnedAt(ctx.thread.id, undefined);
+  } catch (err) {
+    console.error('Failed to unpin thread:', err);
+    addToast('error', `Unpin Failed: ${errString(err)}`);
+  }
 }

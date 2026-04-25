@@ -14,7 +14,7 @@
     <div class="border-b border-border-subtle px-5 py-2 flex items-center gap-2 shrink-0">
       <span
         class="text-[10px] font-semibold px-1.5 py-0.5 rounded-[var(--radius-field)] bg-accent/15 text-accent tracking-wide"
-        aria-label="Discussion thread"
+        aria-label="Discussion Thread"
       >D</span>
       <h2 class="text-sm font-medium text-fg truncate">{thread?.title ?? 'Discussion'}</h2>
       <span class="text-[11px] text-fg-subtle">Discussion channel</span>

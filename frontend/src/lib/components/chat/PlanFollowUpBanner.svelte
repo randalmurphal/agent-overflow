@@ -82,12 +82,12 @@
   <div
     transition:slide={{ duration: 150 }}
     role="region"
-    aria-label="Plan follow-up"
+    aria-label="Plan Follow-Up"
     data-testid="plan-followup-banner"
     class="mx-6 my-2 flex items-center gap-3 rounded-[var(--radius-control)] border border-border-subtle bg-accent/8 px-3 py-2 text-[12px] text-fg-muted"
   >
     <span class="h-1.5 w-1.5 shrink-0 rounded-full bg-accent" aria-hidden="true"></span>
-    <p class="flex-1 text-fg">Plan ready. Implement now?</p>
+    <p class="flex-1 text-fg">Plan Ready. Implement now?</p>
     <Button
       variant="tinted"
       size="xs"
@@ -108,7 +108,7 @@
       variant="ghost"
       size="xs"
       onclick={handleDismiss}
-      ariaLabel="Dismiss plan follow-up"
+      ariaLabel="Dismiss Plan Follow-Up"
       testId="plan-followup-dismiss"
     >
       {#snippet children()}Dismiss{/snippet}

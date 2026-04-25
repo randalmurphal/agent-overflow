@@ -14,6 +14,8 @@ export {
   ListThreads,
   MarkThreadRead,
   MarkThreadUnread,
+  PinThread,
+  UnpinThread,
   RenameThread,
   SwitchThread,
   UpdateThreadModel,
@@ -153,6 +155,7 @@ export {
   ListProjects,
   RenameProject,
   UnarchiveProject,
+  UpdateProjectSortPositions,
 } from '../../../bindings/agent-overflow/app.js';
 
 // Model classes needed for constructing RPC parameters.

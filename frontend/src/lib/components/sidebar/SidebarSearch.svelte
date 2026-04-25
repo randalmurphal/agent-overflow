@@ -52,8 +52,8 @@
       type="search"
       value={query}
       oninput={handleInput}
-      placeholder="Search projects & threads…"
-      aria-label="Search projects and threads"
+      placeholder="Search Projects & Threads…"
+      aria-label="Search Projects and Threads"
       data-testid="sidebar-thread-search"
       class="w-full rounded-[var(--radius-control)] border border-border-subtle bg-surface-0/60 pl-8 pr-14 py-1.5 text-[12px] text-fg placeholder:text-fg-hint focus:outline-none focus:border-border focus-visible:ring-2 focus-visible:ring-accent/40 transition-colors"
     />
@@ -61,7 +61,7 @@
       <button
         type="button"
         onclick={handleClear}
-        aria-label="Clear search"
+        aria-label="Clear Search"
         data-testid="sidebar-thread-search-clear"
         class="absolute right-2 top-1/2 -translate-y-1/2 flex h-5 w-5 items-center justify-center rounded-[var(--radius-field)] text-fg-subtle hover:text-fg hover:bg-surface-2/40 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 transition-colors"
       >

@@ -28,7 +28,7 @@
     onclick={() => expansion.toggle()}
     aria-expanded={expansion.expanded}
     aria-controls="thinking-{item.id}"
-    aria-label="Toggle thinking block"
+    aria-label="Toggle Thinking Block"
   >
     <span
       class="flex size-3 shrink-0 items-center justify-center text-fg-subtle select-none transition-transform duration-150"
@@ -45,7 +45,7 @@
 
   {#if expansion.expanded}
     <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-    <div id="thinking-{item.id}" transition:slide={{ duration: 150 }} class="border-t border-border-subtle px-3 py-2 max-h-80 overflow-y-auto bg-surface-0/50" tabindex="0" role="region" aria-label="Thinking content">
+    <div id="thinking-{item.id}" transition:slide={{ duration: 150 }} class="border-t border-border-subtle px-3 py-2 max-h-80 overflow-y-auto bg-surface-0/50" tabindex="0" role="region" aria-label="Thinking Content">
       {#if expansion.loading}
         <p class="text-[11px] text-fg-subtle animate-pulse" role="status" aria-live="polite">Loading thinking content...</p>
       {:else if expansion.error}

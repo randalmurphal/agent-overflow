@@ -24,7 +24,7 @@
 
 <div class="space-y-3" data-testid="ship-changes-step-push">
   <header class="space-y-1">
-    <h3 class="text-sm font-semibold text-text-primary">Push to remote</h3>
+    <h3 class="text-sm font-semibold text-text-primary">Push to Remote</h3>
     {#if status}
       <p class="text-[11px] text-text-secondary" data-testid="ship-changes-push-summary">
         {#if !status.hasUpstream}

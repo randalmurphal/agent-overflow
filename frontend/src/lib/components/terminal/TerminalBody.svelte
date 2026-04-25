@@ -194,11 +194,11 @@
         type="button"
         disabled={!selection.trim()}
         onclick={handleSendSelection}
-        aria-label="Send selection to composer"
+        aria-label="Send Selection to Composer"
         data-testid="terminal-send-to-composer"
         class="rounded px-2 py-0.5 font-medium text-text-primary hover:bg-accent/30 disabled:opacity-40 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
       >
-        Send selection to composer
+        Send Selection to Composer
       </button>
     </div>
   {/if}

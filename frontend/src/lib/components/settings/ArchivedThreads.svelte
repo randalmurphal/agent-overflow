@@ -9,7 +9,7 @@
   <div class="flex flex-wrap items-start justify-between gap-3">
     <div>
       <p class="text-[11px] font-semibold uppercase tracking-[0.22em] text-text-secondary/70">Archive</p>
-      <h3 class="mt-1 text-base font-semibold text-text-primary">Archived threads</h3>
+      <h3 class="mt-1 text-base font-semibold text-text-primary">Archived Threads</h3>
       <p class="mt-1 max-w-2xl text-sm text-text-secondary">
         Archived threads are hidden from the default sidebar. Toggle
         <span class="font-medium text-text-primary">Archived</span> in the sidebar filter row to see them, then use

@@ -635,6 +635,14 @@ export class Thread {
      */
     "lastReadAt"?: number | null;
 
+    /**
+     * PinnedAt is the Unix-ms timestamp of when the user pinned the
+     * thread. NULL (nil) = unpinned. Pinned threads sort into a
+     * dedicated tier above needs-attention in the sidebar. Set by
+     * PinThread; cleared by UnpinThread.
+     */
+    "pinnedAt"?: number | null;
+
     /** Creates a new Thread instance. */
     constructor($$source: Partial<Thread> = {}) {
         if (!("id" in $$source)) {

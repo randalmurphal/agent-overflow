@@ -148,7 +148,7 @@
         onblur={() => void commitRename()}
         disabled={renamePending}
         data-testid="chat-header-title-input"
-        aria-label="Rename thread"
+        aria-label="Rename Thread"
         class="text-sm font-medium text-fg bg-surface-2/60 rounded-[var(--radius-field)] px-1.5 py-0.5 min-w-0 flex-1 outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:opacity-60"
       />
     {:else}
@@ -187,8 +187,8 @@
         variant="ghost"
         size="xs"
         pressed={pane.diffPanel.open}
-        ariaLabel="Toggle diff panel"
-        title="Toggle diff panel (⇧⌘G)"
+        ariaLabel="Toggle Diff Panel"
+        title="Toggle Diff Panel (⇧⌘G)"
         onclick={() => pane.toggleDiffPanel()}
         testId="diff-panel-toggle"
         class="shrink-0"
@@ -200,8 +200,8 @@
         variant="ghost"
         size="xs"
         pressed={pane.showPlanSidebar}
-        ariaLabel="Toggle plan sidebar"
-        title="Toggle plan sidebar"
+        ariaLabel="Toggle Plan Sidebar"
+        title="Toggle Plan Sidebar"
         onclick={() => pane.togglePlanSidebar()}
         testId="plan-sidebar-toggle"
         class="shrink-0"

@@ -67,7 +67,7 @@
 {#if request}
   <div class="border-t border-border-subtle bg-transparent p-3 shrink-0 flex flex-col gap-2">
     <div class="flex items-baseline gap-2">
-      <h3 class="text-[13px] font-medium text-fg">Pick a design direction</h3>
+      <h3 class="text-[13px] font-medium text-fg">Pick a Design Direction</h3>
       <span class="text-[10px] text-fg-hint font-mono" title="Request ID (debug)">
         req {request.requestId.slice(0, 8)}
       </span>
@@ -81,7 +81,7 @@
         <button
           type="button"
           aria-pressed={isSelected}
-          aria-label="Select design option {option.title}"
+          aria-label="Select Design Option: {option.title}"
           disabled={submitting}
           onclick={() => handleSelect(option.id)}
           class="flex-1 min-w-[140px] text-left rounded-[var(--radius-control)] border px-3 py-2 transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed

@@ -28,7 +28,7 @@
     data-testid="worktree-branch-name-input"
     type="text"
     value={intent.branchName}
-    placeholder="Branch name"
+    placeholder="Branch Name"
     oninput={(e) => updateBranchName((e.target as HTMLInputElement).value)}
     class={[
       'h-6 w-[11rem] min-w-0 rounded border border-border bg-transparent',

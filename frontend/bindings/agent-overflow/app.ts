@@ -769,6 +769,19 @@ export function OpenTerminal(threadID: string, opts: $models.TerminalOpenOptions
 }
 
 /**
+ * PinThread marks the thread as pinned. Pinned threads sort into a
+ * dedicated tier above needs-attention so the user can keep a reference
+ * thread permanently visible without status churn shuffling it.
+ * Re-pinning an already-pinned thread bumps its pinnedAt, which moves
+ * it within the pinned tier.
+ */
+export function PinThread(id: string): $CancellablePromise<store$0.Thread> {
+    return $Call.ByID(1748405812, id).then(($result: any) => {
+        return $$createType2($result);
+    });
+}
+
+/**
  * PostChannelMessage posts a human-authored intervention into the channel.
  */
 export function PostChannelMessage(channelID: string, content: string): $CancellablePromise<void> {
@@ -1060,6 +1073,16 @@ export function UnarchiveThread(id: string): $CancellablePromise<store$0.Thread>
 }
 
 /**
+ * UnpinThread clears the thread's pinned_at and returns the refreshed
+ * row so the frontend can reconcile its store without a list refetch.
+ */
+export function UnpinThread(id: string): $CancellablePromise<store$0.Thread> {
+    return $Call.ByID(3175043037, id).then(($result: any) => {
+        return $$createType2($result);
+    });
+}
+
+/**
  * UpdateDiscussion replaces an existing persisted discussion definition.
  */
 export function UpdateDiscussion(prevName: string, prevScope: string, def: store$0.DiscussionDefinition): $CancellablePromise<void> {
@@ -1073,6 +1096,15 @@ export function UpdateDiscussion(prevName: string, prevScope: string, def: store
  */
 export function UpdateKeybindings(bindings: $models.Keybinding[]): $CancellablePromise<void> {
     return $Call.ByID(3490094229, bindings);
+}
+
+/**
+ * UpdateProjectSortPositions re-orders the projects list. The frontend
+ * emits the full ordered list when the user drops a drag-reorder so the
+ * store assigns dense positions 0..N-1 in one transaction.
+ */
+export function UpdateProjectSortPositions(orderedIDs: string[]): $CancellablePromise<void> {
+    return $Call.ByID(3717363955, orderedIDs);
 }
 
 /**

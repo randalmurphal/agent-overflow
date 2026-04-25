@@ -60,7 +60,7 @@ describe('App integration — messaging flow', () => {
     const sendMock = setBindingMock('SendMessageWithOptions', async () => makeThread({ id: 'thread-1' }));
 
     // Composer textarea is keyed with aria-label "Message input".
-    const textarea = getByLabelText('Message input') as HTMLTextAreaElement;
+    const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
     expect(textarea.disabled).toBe(false);
     await fireEvent.input(textarea, { target: { value: 'hello agent' } });
     await flush();
@@ -81,7 +81,7 @@ describe('App integration — messaging flow', () => {
   it('blocks Enter during an active turn and surfaces the mid-turn banner', async () => {
     const { getByLabelText, getByTestId } = await mountWithActiveThread();
     const sendMock = setBindingMock('SendMessageWithOptions', async () => makeThread({ id: 'thread-1' }));
-    const textarea = getByLabelText('Message input') as HTMLTextAreaElement;
+    const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
     await fireEvent.input(textarea, { target: { value: 'queued message' } });
     await flush();
 
@@ -222,7 +222,7 @@ describe('App integration — messaging flow', () => {
     setBindingMock('SendMessageWithOptions', async () => {
       throw new Error('rpc down');
     });
-    const textarea = getByLabelText('Message input') as HTMLTextAreaElement;
+    const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
 
     await fireEvent.input(textarea, { target: { value: 'will fail' } });
     await flush();

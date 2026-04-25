@@ -20,7 +20,7 @@
 
 <div class="space-y-3" data-testid="ship-changes-step-pr">
   <header class="space-y-1">
-    <h3 class="text-sm font-semibold text-text-primary">Open pull request</h3>
+    <h3 class="text-sm font-semibold text-text-primary">Open Pull Request</h3>
     {#if alreadyHasPR}
       <p class="text-[11px] text-text-secondary">
         A PR is already open for this branch:

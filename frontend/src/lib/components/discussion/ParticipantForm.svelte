@@ -45,8 +45,8 @@
       size="xs"
       onclick={onRemove}
       disabled={!canRemove}
-      ariaLabel="Remove participant {index + 1}"
-      title={canRemove ? 'Remove this participant' : 'At least two participants are required'}
+      ariaLabel="Remove Participant {index + 1}"
+      title={canRemove ? 'Remove This Participant' : 'At least two participants are required'}
     >
       {#snippet children()}Remove{/snippet}
     </Button>

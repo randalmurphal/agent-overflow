@@ -59,7 +59,7 @@ describe('<ObservabilitySettings>', () => {
     // We expect exactly two toggles: tracing + event log.
     expect(switches.length).toBe(2);
     expect(switches[0].getAttribute('aria-label')).toBe('Toggle OpenTelemetry tracing');
-    expect(switches[1].getAttribute('aria-label')).toBe('Toggle event replay log');
+    expect(switches[1].getAttribute('aria-label')).toBe('Toggle Event Replay Log');
   });
 
   it('disables the OTLP endpoint input when tracing is off', async () => {

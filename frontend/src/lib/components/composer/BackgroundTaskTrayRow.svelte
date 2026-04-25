@@ -124,7 +124,7 @@
         disabled={isStopping}
         data-testid="background-task-tray-row-stop"
         data-row-stop-id={task.rowId}
-        aria-label="Stop task"
+        aria-label="Stop Task"
       >
         {isStopping ? 'Stopping…' : 'Stop'}
       </button>

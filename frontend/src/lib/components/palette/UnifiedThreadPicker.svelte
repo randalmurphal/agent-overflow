@@ -97,9 +97,9 @@
   const STATUS_LABEL: Record<ThreadLiveStatus, string> = {
     idle: '',
     running: 'Running',
-    'awaiting-input': 'Awaiting input',
-    'pending-approval': 'Pending approval',
-    'plan-ready': 'Plan ready',
+    'awaiting-input': 'Awaiting Input',
+    'pending-approval': 'Pending Approval',
+    'plan-ready': 'Plan Ready',
     error: 'Error',
   };
 

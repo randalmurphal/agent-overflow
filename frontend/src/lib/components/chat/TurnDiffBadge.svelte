@@ -29,7 +29,7 @@
     aria-label={ariaLabel}
     data-testid="turn-diff-badge"
     data-turn-index={turnIndex}
-    title="Open diff panel on this turn"
+    title="Open Diff Panel on This Turn"
     class="inline-flex items-center gap-2 rounded-full border border-border bg-surface-1 px-3 py-1 text-xs text-text-secondary hover:bg-surface-2/60 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
   >
     <span aria-hidden="true" class="text-text-secondary/70">✎</span>

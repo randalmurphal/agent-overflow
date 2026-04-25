@@ -84,12 +84,12 @@
 
     <div class="flex items-center justify-between gap-4 rounded-2xl border border-border/55 bg-surface-0/55 px-4 py-3">
       <div>
-        <p class="text-sm text-text-primary">Enable event replay log</p>
+        <p class="text-sm text-text-primary">Enable Event Replay Log</p>
         <p class="text-xs text-text-secondary/60">Takes effect immediately — no restart needed.</p>
       </div>
       <ToggleSwitch
         checked={settings.observabilityEventLogEnabled}
-        ariaLabel="Toggle event replay log"
+        ariaLabel="Toggle Event Replay Log"
         onToggle={(value) => updateSetting('observabilityEventLogEnabled', value)}
       />
     </div>

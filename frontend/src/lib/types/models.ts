@@ -63,6 +63,13 @@ export interface Thread {
    * Written by MarkThreadRead; explicit MarkThreadUnread persists 0.
    */
   lastReadAt?: number;
+  /**
+   * Unix-ms timestamp of when the user pinned the thread. Undefined /
+   * null means unpinned. Pinned threads sort into a dedicated tier above
+   * needs-attention so the user can keep a reference thread visible.
+   * Set by PinThread / cleared by UnpinThread.
+   */
+  pinnedAt?: number;
 }
 
 /**

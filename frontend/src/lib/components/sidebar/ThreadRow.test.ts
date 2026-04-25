@@ -101,7 +101,7 @@ describe('<ThreadRow> unarchive', () => {
     const thread = makeThread({ id: 'archived-click', archived: true });
     let invokedWith: string | null = null;
     const pane = createThreadPane();
-    const { getByRole } = render(ThreadRow, {
+    const { getByTestId } = render(ThreadRow, {
       props: {
         thread,
         pane,
@@ -111,7 +111,7 @@ describe('<ThreadRow> unarchive', () => {
         },
       },
     });
-    await fireEvent.click(getByRole('button', { pressed: false }), { metaKey: true });
+    await fireEvent.click(getByTestId('thread-row'), { metaKey: true });
     expect(invokedWith).toBe('toggle');
   });
 });
@@ -371,7 +371,7 @@ describe('<ThreadRow> live status dot', () => {
     });
     const dot = getByTestId('thread-row-status-dot');
     expect(dot.getAttribute('data-status')).toBe('pending-approval');
-    expect(dot.getAttribute('aria-label')).toBe('Pending approval');
+    expect(dot.getAttribute('aria-label')).toBe('Pending Approval');
     // Amber warning — pending-approval guards a destructive action,
     // so it shares the running/amber palette. Awaiting-input uses
     // accent violet instead. See threadStatusPill.ts.
@@ -386,7 +386,7 @@ describe('<ThreadRow> live status dot', () => {
     });
     const dot = getByTestId('thread-row-status-dot');
     expect(dot.getAttribute('data-status')).toBe('awaiting-input');
-    expect(dot.getAttribute('aria-label')).toBe('Awaiting input');
+    expect(dot.getAttribute('aria-label')).toBe('Awaiting Input');
     expect(dot.classList.contains('bg-accent')).toBe(true);
   });
 
@@ -431,7 +431,7 @@ describe('<ThreadRow> live status dot', () => {
     });
     const dot = getByTestId('thread-row-status-dot');
     expect(dot.getAttribute('data-status')).toBe('plan-ready');
-    expect(dot.getAttribute('aria-label')).toBe('Plan ready');
+    expect(dot.getAttribute('aria-label')).toBe('Plan Ready');
     expect(dot.classList.contains('bg-accent')).toBe(true);
     expect(dot.classList.contains('animate-pulse')).toBe(false);
   });

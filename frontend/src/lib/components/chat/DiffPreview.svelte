@@ -64,7 +64,7 @@
     onclick={() => expansion.toggle()}
     aria-expanded={expansion.expanded}
     aria-controls="diff-content-{payloadId}"
-    aria-label="Toggle diff: {meta.filePath}"
+    aria-label="Toggle Diff: {meta.filePath}"
   >
     <span
       class="flex size-3 shrink-0 items-center justify-center text-fg-subtle select-none transition-transform duration-150"

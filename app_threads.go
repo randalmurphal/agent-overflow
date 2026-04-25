@@ -295,6 +295,27 @@ func (a *App) MarkThreadUnread(id string) error {
 	return a.store.MarkThreadUnread(id)
 }
 
+// PinThread marks the thread as pinned. Pinned threads sort into a
+// dedicated tier above needs-attention so the user can keep a reference
+// thread permanently visible without status churn shuffling it.
+// Re-pinning an already-pinned thread bumps its pinnedAt, which moves
+// it within the pinned tier.
+func (a *App) PinThread(id string) (store.Thread, error) {
+	if err := a.store.PinThread(id); err != nil {
+		return store.Thread{}, err
+	}
+	return a.store.GetThread(id)
+}
+
+// UnpinThread clears the thread's pinned_at and returns the refreshed
+// row so the frontend can reconcile its store without a list refetch.
+func (a *App) UnpinThread(id string) (store.Thread, error) {
+	if err := a.store.UnpinThread(id); err != nil {
+		return store.Thread{}, err
+	}
+	return a.store.GetThread(id)
+}
+
 // sessionAffectingFields enumerates the thread columns that, when
 // changed, require a provider-session restart to take effect. The
 // centralized restartSessionIfAffected helper consults this list so

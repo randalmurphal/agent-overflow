@@ -55,7 +55,7 @@
 
 <div class="space-y-3" data-testid="ship-changes-step-commit">
   <header class="space-y-1">
-    <h3 class="text-sm font-semibold text-text-primary">Commit changes</h3>
+    <h3 class="text-sm font-semibold text-text-primary">Commit Changes</h3>
     {#if status}
       <p class="text-[11px] text-text-secondary" data-testid="ship-changes-diff-summary">
         {#if status.hasChanges}

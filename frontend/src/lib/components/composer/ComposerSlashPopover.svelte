@@ -29,7 +29,7 @@
   }: Props = $props();
 </script>
 
-<Popover {anchor} {open} {onClose} placement="top-start" role="listbox" ariaLabel="Slash commands">
+<Popover {anchor} {open} {onClose} placement="top-start" role="listbox" ariaLabel="Slash Commands">
   {#snippet children()}
     <div
       class="w-[22rem] max-h-72 overflow-y-auto rounded-[var(--radius-control)] border border-border-subtle bg-surface-1 shadow-menu"

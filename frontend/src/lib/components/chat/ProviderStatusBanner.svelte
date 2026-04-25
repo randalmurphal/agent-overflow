@@ -171,7 +171,7 @@
     <button
       onclick={() => pane.clearGeneralError()}
       class="text-xs hover:opacity-70 cursor-pointer shrink-0 px-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 rounded"
-      aria-label="Dismiss banner"
+      aria-label="Dismiss Banner"
     >
       Dismiss
     </button>

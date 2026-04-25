@@ -54,6 +54,16 @@ export function updateThreadLastRead(id: string, lastReadAt: number | undefined)
 }
 
 /**
+ * Patches the thread's pinnedAt locally so the sidebar reorders before
+ * the next refreshThreads() round-trip. `undefined` clears the pin.
+ */
+export function updateThreadPinnedAt(id: string, pinnedAt: number | undefined): void {
+  threads = threads.map((t) =>
+    t.id === id ? { ...t, pinnedAt } : t,
+  );
+}
+
+/**
  * Returns the thread with the given id, or undefined if the sidebar doesn't
  * currently track it (e.g. archived parent not in the filtered view).
  */

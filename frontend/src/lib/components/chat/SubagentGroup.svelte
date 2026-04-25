@@ -147,7 +147,7 @@
         transition:slide={{ duration: 150 }}
         class="border-t border-border/60 px-3 py-2"
         role="region"
-        aria-label="Subagent timeline"
+        aria-label="Subagent Timeline"
       >
         {#if group.children.length === 0}
           <p class="text-xs text-text-secondary italic">No child entries captured.</p>

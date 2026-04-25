@@ -208,14 +208,14 @@
 </script>
 
 <aside
-  aria-label="Diff panel"
+  aria-label="Diff Panel"
   data-testid="diff-panel-drawer"
   class="flex h-full w-[min(48vw,620px)] min-w-[380px] shrink-0 flex-col border-l border-border bg-surface-0"
 >
   <header class="border-b border-border bg-surface-1/70">
     <div class="flex items-center gap-2 px-3 py-2">
       <div class="min-w-0 flex-1">
-        <div class="text-[12px] font-semibold uppercase tracking-[0.08em] text-fg-muted">Checkpoint diff</div>
+        <div class="text-[12px] font-semibold uppercase tracking-[0.08em] text-fg-muted">Checkpoint Diff</div>
         <div class="mt-0.5 flex items-center gap-2 text-[12px] text-fg-muted">
           <span>{totals.files} files</span>
           <span class="text-success">+{totals.additions}</span>
@@ -224,7 +224,7 @@
       </div>
       <button
         class="rounded p-1.5 hover:bg-surface-2 {viewMode === 'stacked' ? 'bg-surface-2 text-fg' : 'text-fg-muted'}"
-        title="Stacked view"
+        title="Stacked View"
         aria-pressed={viewMode === 'stacked'}
         onclick={() => pane.diffPanel.setViewMode('stacked')}
       >
@@ -232,7 +232,7 @@
       </button>
       <button
         class="rounded p-1.5 hover:bg-surface-2 {viewMode === 'split' ? 'bg-surface-2 text-fg' : 'text-fg-muted'}"
-        title="Split view"
+        title="Split View"
         aria-pressed={viewMode === 'split'}
         onclick={() => pane.diffPanel.setViewMode('split')}
       >
@@ -240,13 +240,13 @@
       </button>
       <button
         class="rounded p-1.5 hover:bg-surface-2 {wordWrap ? 'bg-surface-2 text-fg' : 'text-fg-muted'}"
-        title="Wrap lines"
+        title="Wrap Lines"
         aria-pressed={wordWrap}
         onclick={() => updateSetting('diffWordWrap', !wordWrap)}
       >
         <Icon icon={WrapText} size={15} />
       </button>
-      <button class="rounded p-1.5 text-fg-muted hover:bg-surface-2" aria-label="Close diff panel" data-testid="diff-panel-close" onclick={() => pane.setDiffPanelOpen(false)}>
+      <button class="rounded p-1.5 text-fg-muted hover:bg-surface-2" aria-label="Close Diff Panel" data-testid="diff-panel-close" onclick={() => pane.setDiffPanelOpen(false)}>
         <Icon icon={X} size={15} />
       </button>
     </div>

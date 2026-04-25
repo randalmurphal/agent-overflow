@@ -37,7 +37,7 @@
   bind:this={buttonEl}
   type="button"
   class="relative inline-flex items-center bg-transparent border-none p-0 cursor-help focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 rounded-full"
-  aria-label="Context window: {displayPct}% used"
+  aria-label="Context Window: {displayPct}% used"
   onmouseenter={() => (showPopover = true)}
   onmouseleave={() => (showPopover = false)}
   onfocus={() => (showPopover = true)}

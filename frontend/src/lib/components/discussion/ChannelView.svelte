@@ -239,7 +239,7 @@
     class="flex-1 min-h-0 overflow-y-auto px-5 py-4 space-y-3"
     role="log"
     aria-live="polite"
-    aria-label="Discussion channel messages"
+    aria-label="Discussion Channel Messages"
     data-testid="channel-message-list"
   >
     {#if loadingInitial}
@@ -278,7 +278,7 @@
           onkeydown={handleKeydown}
           disabled={concluded || posting}
           placeholder="Post to the channel (Shift+Enter for newline)"
-          aria-label="Channel message input"
+          aria-label="Channel Message Input"
           rows={1}
           class="flex-1 resize-none rounded-[var(--radius-control)] border border-border-subtle bg-surface-0 px-3 py-2 text-[13px] text-fg placeholder:text-fg-hint focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/40 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
         ></textarea>

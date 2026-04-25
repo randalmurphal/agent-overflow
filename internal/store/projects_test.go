@@ -209,3 +209,127 @@ func TestDeleteProjectCascadesThreads(t *testing.T) {
 		t.Fatalf("GetThread after DeleteProject = %v, want sql.ErrNoRows", err)
 	}
 }
+
+// TestUpdateProjectSortPositionsAssignsDensePositions covers the
+// happy path: dense 0..N-1 positions assigned in slice order, regardless
+// of prior values.
+func TestUpdateProjectSortPositionsAssignsDensePositions(t *testing.T) {
+	s := newTestStore(t)
+
+	a := newProject("p-a", "/tmp/a", "A")
+	a.SortPosition = 17
+	b := newProject("p-b", "/tmp/b", "B")
+	b.SortPosition = 3
+	c := newProject("p-c", "/tmp/c", "C")
+	c.SortPosition = 99
+	for _, p := range []Project{a, b, c} {
+		if err := s.CreateProject(p); err != nil {
+			t.Fatalf("CreateProject(%s): %v", p.ID, err)
+		}
+	}
+
+	if err := s.UpdateProjectSortPositions([]string{"p-c", "p-a", "p-b"}); err != nil {
+		t.Fatalf("UpdateProjectSortPositions: %v", err)
+	}
+
+	for _, want := range []struct {
+		id  string
+		pos int
+	}{
+		{"p-c", 0},
+		{"p-a", 1},
+		{"p-b", 2},
+	} {
+		got, err := s.GetProject(want.id)
+		if err != nil {
+			t.Fatalf("GetProject(%s): %v", want.id, err)
+		}
+		if got.SortPosition != want.pos {
+			t.Errorf("%s sort_position = %d, want %d", want.id, got.SortPosition, want.pos)
+		}
+	}
+}
+
+// TestUpdateProjectSortPositionsEmptySliceIsNoop pins the documented
+// "empty input is a no-op" semantics — important because callers might
+// emit an empty list when the user cancels a drag mid-flight.
+func TestUpdateProjectSortPositionsEmptySliceIsNoop(t *testing.T) {
+	s := newTestStore(t)
+
+	p := newProject("p-only", "/tmp/only", "Only")
+	p.SortPosition = 42
+	if err := s.CreateProject(p); err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+
+	if err := s.UpdateProjectSortPositions(nil); err != nil {
+		t.Fatalf("UpdateProjectSortPositions(nil): %v", err)
+	}
+	if err := s.UpdateProjectSortPositions([]string{}); err != nil {
+		t.Fatalf("UpdateProjectSortPositions([]): %v", err)
+	}
+
+	got, err := s.GetProject(p.ID)
+	if err != nil {
+		t.Fatalf("GetProject: %v", err)
+	}
+	if got.SortPosition != 42 {
+		t.Errorf("sort_position = %d, want 42 (untouched)", got.SortPosition)
+	}
+}
+
+// TestUpdateProjectSortPositionsOmittedIdsKeepPosition pins the
+// documented "ids not in the supplied slice keep their existing
+// positions" semantics — partial reorders should not zero out other
+// projects.
+func TestUpdateProjectSortPositionsOmittedIdsKeepPosition(t *testing.T) {
+	s := newTestStore(t)
+
+	a := newProject("p-a", "/tmp/a", "A")
+	a.SortPosition = 17
+	b := newProject("p-b", "/tmp/b", "B")
+	b.SortPosition = 99
+	for _, p := range []Project{a, b} {
+		if err := s.CreateProject(p); err != nil {
+			t.Fatalf("CreateProject(%s): %v", p.ID, err)
+		}
+	}
+
+	if err := s.UpdateProjectSortPositions([]string{"p-a"}); err != nil {
+		t.Fatalf("UpdateProjectSortPositions: %v", err)
+	}
+
+	gotA, _ := s.GetProject("p-a")
+	if gotA.SortPosition != 0 {
+		t.Errorf("p-a sort_position = %d, want 0", gotA.SortPosition)
+	}
+	gotB, _ := s.GetProject("p-b")
+	if gotB.SortPosition != 99 {
+		t.Errorf("p-b sort_position = %d, want 99 (omitted, untouched)", gotB.SortPosition)
+	}
+}
+
+// TestUpdateProjectSortPositionsBumpsUpdatedAt confirms reorder counts
+// as project activity (the project's row should re-surface on the next
+// "by latest activity" sort if a thread under it was active).
+func TestUpdateProjectSortPositionsBumpsUpdatedAt(t *testing.T) {
+	s := newTestStore(t)
+
+	p := newProject("p-bump", "/tmp/bump", "Bump")
+	p.UpdatedAt = 1
+	if err := s.CreateProject(p); err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+
+	if err := s.UpdateProjectSortPositions([]string{"p-bump"}); err != nil {
+		t.Fatalf("UpdateProjectSortPositions: %v", err)
+	}
+
+	got, err := s.GetProject(p.ID)
+	if err != nil {
+		t.Fatalf("GetProject: %v", err)
+	}
+	if got.UpdatedAt <= 1 {
+		t.Errorf("updated_at = %d, want > 1 (bumped to nowMillis)", got.UpdatedAt)
+	}
+}

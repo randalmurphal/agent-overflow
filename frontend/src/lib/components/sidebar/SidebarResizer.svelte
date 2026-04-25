@@ -90,7 +90,7 @@
 <div
   role="separator"
   aria-orientation="vertical"
-  aria-label="Resize sidebar"
+  aria-label="Resize Sidebar"
   aria-valuenow={width}
   aria-valuemin={SIDEBAR_MIN_WIDTH}
   class={[

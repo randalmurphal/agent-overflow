@@ -64,9 +64,9 @@
       onclick={onStopAll}
       disabled={stopAllInFlight}
       data-testid="background-task-tray-stop-all"
-      aria-label="Stop all running background tasks"
+      aria-label="Stop All Running Background Tasks"
     >
-      {stopAllInFlight ? 'Stopping…' : 'Stop all'}
+      {stopAllInFlight ? 'Stopping…' : 'Stop All'}
     </button>
   {/if}
 </div>

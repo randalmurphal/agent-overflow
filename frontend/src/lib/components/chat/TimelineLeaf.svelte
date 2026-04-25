@@ -35,7 +35,7 @@
     <div
       class="mb-1 flex items-center gap-2 text-xs text-warning"
       role="status"
-      aria-label="Orphan subagent item"
+      aria-label="Orphan Subagent Item"
     >
       <span aria-hidden="true">⚠</span>
       <span>Orphan subagent entry — parent tool call not found.</span>

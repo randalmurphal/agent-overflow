@@ -70,13 +70,13 @@
     class="h-6 px-2 rounded hover:bg-surface-2 text-text-secondary hover:text-text-primary mx-1"
     data-testid="terminal-open"
     onclick={onOpen}
-    aria-label="Open new terminal"
+    aria-label="Open New Terminal"
   >+</button>
   <button
     type="button"
     class="h-6 px-2 rounded hover:bg-surface-2 text-text-secondary hover:text-text-primary mr-1"
     data-testid="terminal-collapse"
     onclick={onCollapse}
-    aria-label="Hide terminal drawer"
+    aria-label="Hide Terminal Drawer"
   >▾</button>
 </div>

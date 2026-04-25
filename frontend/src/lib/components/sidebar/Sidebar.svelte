@@ -4,9 +4,11 @@
   // Keep this file a layout-only file — if you're tempted to add a
   // handler here, it probably belongs in the relevant child.
 
+  import { onDestroy } from 'svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { refreshProjects } from '../../stores/projects.svelte';
   import { expandProjectsForActiveThread } from '../../stores/sidebar.svelte';
+  import { subscribeJumpHints } from '../../stores/keyboardModifiers.svelte';
   import {
     getSidebarWidth,
     persistSidebarWidth,
@@ -58,6 +60,12 @@
   $effect(() => {
     void refreshProjects();
   });
+
+  // Install the global Cmd/Ctrl modifier listener for the Cmd+1..9 jump
+  // hints. The store refcounts subscribers so multiple sidebar mounts
+  // (HMR, tests) don't duplicate listeners.
+  const releaseJumpHints = subscribeJumpHints();
+  onDestroy(releaseJumpHints);
 </script>
 
 <aside

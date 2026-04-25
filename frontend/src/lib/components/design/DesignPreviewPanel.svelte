@@ -177,7 +177,7 @@
       </span>
       {#if pane.designArtifacts.length > 1}
         <select
-          aria-label="Select design artifact"
+          aria-label="Select Design Artifact"
           class="text-[12px] bg-surface-0 border border-border-subtle rounded-[var(--radius-field)] px-2 py-1 text-fg max-w-48 truncate focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 transition-colors"
           value={resolvedArtifactId ?? ''}
           onchange={onSelectArtifact}
@@ -191,7 +191,7 @@
           {activeArtifact.title}
         </span>
       {:else}
-        <span class="text-[13px] text-fg-muted">Design preview</span>
+        <span class="text-[13px] text-fg-muted">Design Preview</span>
       {/if}
       {#if activeArtifact?.description}
         <span class="text-[12px] text-fg-muted truncate" title={activeArtifact.description}>
@@ -222,7 +222,7 @@
           onclick={exportToNewThread}
           disabled={!fetchedHtml}
           loading={exporting}
-          ariaLabel="Export to new thread"
+          ariaLabel="Export to New Thread"
           title="Capture a screenshot and open a new thread with this design attached"
           testId="design-export-to-thread"
           class="ml-2"
@@ -236,7 +236,7 @@
   <div class="flex-1 min-h-0 overflow-auto bg-surface-0/60 flex items-start justify-center p-2">
     {#if fetchError}
       <div class="text-center text-error text-[13px] p-4">
-        <p class="font-medium">Failed to load design</p>
+        <p class="font-medium">Failed to Load Design</p>
         <p class="text-[11px] text-error/80 mt-1">{fetchError}</p>
       </div>
     {:else if !activeArtifact}
@@ -248,7 +248,7 @@
           <circle cx="6.5" cy="12.5" r=".5" fill="currentColor" />
           <path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.926 0 1.648-.746 1.648-1.688 0-.437-.18-.835-.437-1.125-.29-.289-.438-.652-.438-1.125a1.64 1.64 0 0 1 1.668-1.668h1.996c3.051 0 5.555-2.503 5.555-5.554C21.965 6.012 17.461 2 12 2z" />
         </svg>
-        <p class="text-[13px]">No design preview yet</p>
+        <p class="text-[13px]">No Design Preview Yet</p>
         <p class="text-[11px] text-fg-hint mt-1">
           Rendered artifacts will appear here when the agent produces a mockup.
         </p>

@@ -43,7 +43,7 @@ describe('<ComposerTerminalChip>', () => {
     const { getByLabelText } = render(ComposerTerminalChip, {
       props: { chip: makeChip(), onRemove },
     });
-    await fireEvent.click(getByLabelText('Remove terminal context'));
+    await fireEvent.click(getByLabelText('Remove Terminal Context'));
     expect(onRemove).toHaveBeenCalledWith('chip-1');
   });
 });

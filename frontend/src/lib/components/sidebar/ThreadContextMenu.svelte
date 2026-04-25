@@ -21,12 +21,21 @@
   import MenuItem from '../primitives/MenuItem.svelte';
   import MenuDivider from '../primitives/MenuDivider.svelte';
   import {
+    archiveThreadAction,
     copyThreadIdAction,
     copyThreadPathAction,
     deleteThreadAction,
     markThreadUnreadAction,
+    pinThreadAction,
+    unpinThreadAction,
     type ThreadActionCtx,
   } from './threadRowActions';
+  import {
+    clearThreadSelection,
+    getSelectedThreadIds,
+    isThreadSelected,
+  } from '../../stores/threadFilter.svelte';
+  import { getThreadById } from '../../stores/threads.svelte';
 
   interface Props {
     thread: Thread;
@@ -53,6 +62,7 @@
   }: Props = $props();
 
   let showDeleteConfirm = $state(false);
+  let showBulkDeleteConfirm = $state(false);
 
   function ctx(): ThreadActionCtx {
     return {
@@ -63,6 +73,71 @@
       reportError: (msg) => pane.setGeneralError(msg),
     };
   }
+
+  // Multi-select context: when the row that opened this menu is part of
+  // a multi-thread selection (N>1), the menu swaps to bulk actions so a
+  // single right-click can archive / delete every selected thread at
+  // once. Falls back to the single-row menu when the right-clicked row
+  // is not in the selection.
+  let selectedIds = $derived(getSelectedThreadIds());
+  let inBulkContext = $derived(
+    selectedIds.size > 1 && isThreadSelected(thread.id),
+  );
+  let selectedThreads = $derived.by(() => {
+    if (!inBulkContext) return [] as Thread[];
+    const out: Thread[] = [];
+    for (const id of selectedIds) {
+      const t = getThreadById(id);
+      if (t) out.push(t);
+    }
+    return out;
+  });
+
+  /**
+   * Run an async per-thread action across the selection sequentially —
+   * a Promise.all() would race writes against the same SQLite store and
+   * the toast pile-up on errors would mask the underlying failure. The
+   * sequential walk also makes the optimistic-removal animation read as
+   * an intentional cascade.
+   *
+   * Selection is cleared AFTER the loop, not before — if a mid-batch
+   * failure throws, the user keeps the selection and can retry the
+   * unaffected rows. Per-action error reporting is owned by each
+   * individual action (toast + `pane.setGeneralError`); we surface a
+   * lightweight aggregate signal via the action's own `reportError`
+   * channel by counting failures.
+   */
+  async function runBulk(
+    action: (perThreadCtx: ThreadActionCtx) => Promise<void>,
+  ): Promise<void> {
+    const targets = selectedThreads.slice();
+    let failures = 0;
+    let lastError: string | null = null;
+    for (const t of targets) {
+      try {
+        await action({
+          thread: t,
+          isActive: pane.threadId === t.id,
+          clearPane: () => pane.clear(),
+          switchPane: (next) => pane.switchThread(next),
+          reportError: (msg) => {
+            lastError = msg;
+          },
+        });
+      } catch (err) {
+        failures += 1;
+        lastError = err instanceof Error ? err.message : String(err);
+      }
+    }
+    if (failures === 0) {
+      clearThreadSelection();
+    } else {
+      pane.setGeneralError(
+        `${targets.length - failures}/${targets.length} succeeded` +
+          (lastError ? ` — ${lastError}` : ''),
+      );
+    }
+  }
 </script>
 
 <Popover
@@ -71,48 +146,94 @@
   {onClose}
   placement="bottom-start"
   role="menu"
-  ariaLabel="Thread actions"
+  ariaLabel="Thread Actions"
 >
   {#snippet children()}
-    <Menu ariaLabel="Thread actions" {onClose}>
+    <Menu
+      ariaLabel={inBulkContext ? `Actions for ${selectedIds.size} Threads` : 'Thread Actions'}
+      {onClose}
+    >
       {#snippet children()}
-        <MenuItem
-          label="Rename thread"
-          onSelect={() => {
-            onClose();
-            onRename();
-          }}
-        />
-        <MenuItem
-          label="Mark unread"
-          onSelect={() => {
-            onClose();
-            void markThreadUnreadAction(ctx());
-          }}
-        />
-        <MenuItem
-          label="Copy path"
-          onSelect={() => {
-            onClose();
-            void copyThreadPathAction(ctx());
-          }}
-        />
-        <MenuItem
-          label="Copy thread ID"
-          onSelect={() => {
-            onClose();
-            void copyThreadIdAction(ctx());
-          }}
-        />
-        <MenuDivider />
-        <MenuItem
-          label="Delete"
-          variant="danger"
-          onSelect={() => {
-            onClose();
-            showDeleteConfirm = true;
-          }}
-        />
+        {#if inBulkContext}
+          <MenuItem
+            label={`Mark unread (${selectedIds.size})`}
+            onSelect={() => {
+              onClose();
+              void runBulk(markThreadUnreadAction);
+            }}
+          />
+          <MenuItem
+            label={`Archive (${selectedIds.size})`}
+            onSelect={() => {
+              onClose();
+              void runBulk(archiveThreadAction);
+            }}
+          />
+          <MenuDivider />
+          <MenuItem
+            label={`Delete (${selectedIds.size})`}
+            variant="danger"
+            onSelect={() => {
+              onClose();
+              showBulkDeleteConfirm = true;
+            }}
+          />
+        {:else}
+          <MenuItem
+            label="Rename Thread"
+            onSelect={() => {
+              onClose();
+              onRename();
+            }}
+          />
+          {#if thread.pinnedAt != null}
+            <MenuItem
+              label="Unpin"
+              onSelect={() => {
+                onClose();
+                void unpinThreadAction(ctx());
+              }}
+            />
+          {:else}
+            <MenuItem
+              label="Pin"
+              onSelect={() => {
+                onClose();
+                void pinThreadAction(ctx());
+              }}
+            />
+          {/if}
+          <MenuItem
+            label="Mark Unread"
+            onSelect={() => {
+              onClose();
+              void markThreadUnreadAction(ctx());
+            }}
+          />
+          <MenuItem
+            label="Copy Path"
+            onSelect={() => {
+              onClose();
+              void copyThreadPathAction(ctx());
+            }}
+          />
+          <MenuItem
+            label="Copy Thread ID"
+            onSelect={() => {
+              onClose();
+              void copyThreadIdAction(ctx());
+            }}
+          />
+          <MenuDivider />
+          <MenuItem
+            label="Delete"
+            variant="danger"
+            onSelect={() => {
+              onClose();
+              showDeleteConfirm = true;
+            }}
+          />
+        {/if}
       {/snippet}
     </Menu>
   {/snippet}
@@ -120,7 +241,7 @@
 
 <ConfirmDialog
   open={showDeleteConfirm}
-  title="Delete thread"
+  title="Delete Thread"
   description="This will permanently delete this thread and all its messages. This action cannot be undone."
   confirmLabel="Delete"
   destructive={true}
@@ -130,5 +251,20 @@
   }}
   onCancel={() => {
     showDeleteConfirm = false;
+  }}
+/>
+
+<ConfirmDialog
+  open={showBulkDeleteConfirm}
+  title={`Delete ${selectedIds.size} Threads`}
+  description={`This will permanently delete ${selectedIds.size} threads and all their messages. This action cannot be undone.`}
+  confirmLabel="Delete"
+  destructive={true}
+  onConfirm={() => {
+    showBulkDeleteConfirm = false;
+    void runBulk(deleteThreadAction);
+  }}
+  onCancel={() => {
+    showBulkDeleteConfirm = false;
   }}
 />

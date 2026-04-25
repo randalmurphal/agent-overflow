@@ -191,7 +191,7 @@
 
 <Modal
   open={saveDialogOpen}
-  title="Save plan to workspace"
+  title="Save Plan to Workspace"
   onClose={closeSaveDialog}
   width="lg"
   padding="comfortable"
@@ -202,7 +202,7 @@
     </p>
 
     <label class="block">
-      <span class="mb-1 block text-[12px] text-fg-muted font-medium">Workspace path</span>
+      <span class="mb-1 block text-[12px] text-fg-muted font-medium">Workspace Path</span>
       <input
         data-autofocus
         bind:value={savePath}

@@ -85,14 +85,14 @@ describe('resolveThreadStatusPill', () => {
 
   it('pending-approval wins over the running/mode branch', () => {
     const pill = resolveThreadStatusPill(t({ mode: 'plan' }), 'pending-approval');
-    expect(pill?.label).toBe('Pending approval');
+    expect(pill?.label).toBe('Pending Approval');
     expect(pill?.pulse).toBe(true);
     expect(pill?.dotClass).toContain('bg-warning');
   });
 
   it('awaiting-input renders a pulsing accent pill with accent glow', () => {
     const pill = resolveThreadStatusPill(t(), 'awaiting-input');
-    expect(pill?.label).toBe('Awaiting input');
+    expect(pill?.label).toBe('Awaiting Input');
     expect(pill?.pulse).toBe(true);
     expect(pill?.dotClass).toContain('bg-accent');
     expect(pill?.labelClass).toContain('text-accent');
@@ -114,7 +114,7 @@ describe('resolveThreadStatusPill', () => {
 
   it('plan-ready renders a non-pulsing accent pill', () => {
     const pill = resolveThreadStatusPill(t(), 'plan-ready');
-    expect(pill?.label).toBe('Plan ready');
+    expect(pill?.label).toBe('Plan Ready');
     expect(pill?.pulse).toBe(false);
     expect(pill?.dotClass).toContain('bg-accent');
   });

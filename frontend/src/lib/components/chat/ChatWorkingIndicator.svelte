@@ -88,8 +88,8 @@
       onclick={interrupt}
       disabled={interrupting}
       data-testid="chat-working-indicator-interrupt"
-      aria-label="Interrupt current turn"
-      title="Interrupt current turn"
+      aria-label="Interrupt Current Turn"
+      title="Interrupt Current Turn"
     >
       <Icon icon={Square} size={10} strokeWidth={2.5} class={interrupting ? 'animate-pulse' : ''} />
     </button>

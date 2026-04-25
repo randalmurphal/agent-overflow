@@ -156,7 +156,7 @@ describe('<BranchPicker>', () => {
     await fireEvent.click(getByTestId('branch-picker-trigger'));
     await findByRole('menuitem', { name: /feature\/searchable/ });
 
-    await fireEvent.input(getByPlaceholderText('Search branches'), { target: { value: 'searchable' } });
+    await fireEvent.input(getByPlaceholderText('Search Branches'), { target: { value: 'searchable' } });
 
     expect(queryByRole('menuitem', { name: /^main/ })).toBeNull();
     expect(await findByRole('menuitem', { name: /feature\/searchable/ })).toBeTruthy();

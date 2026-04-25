@@ -262,7 +262,7 @@ describe('<ChatView>', () => {
       scroll.scrollTop = 400;
       await fireEvent.scroll(scroll);
 
-      const textarea = getByLabelText('Message input') as HTMLTextAreaElement;
+      const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
       Object.defineProperty(textarea, 'scrollHeight', {
         configurable: true,
         get: () => 120,

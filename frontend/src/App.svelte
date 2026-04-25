@@ -25,7 +25,6 @@
   } from './lib/stores/keybindings.svelte';
   import { clearCommandRegistry } from './lib/stores/commandRegistry.svelte';
   import { registerBuiltinCommands, makeCommandContext } from './lib/stores/builtinCommands.svelte';
-  import { filterThreads } from './lib/stores/threadFilter.svelte';
   import { installUiRenderTraceApi } from './lib/utils/uiRenderTrace';
   import DiagramInteractionHost from './lib/components/chat/DiagramInteractionHost.svelte';
 
@@ -93,22 +92,42 @@
     window.dispatchEvent(new CustomEvent('agent-overflow:rename-thread', { detail: thread }));
   }
 
+  /**
+   * Visible-thread order in the sidebar. We read it from the DOM rather
+   * than reconstructing the same sort + truncation + tree-flatten that
+   * ProjectThreadList runs — it's authoritative, includes the active-
+   * thread inline pin under collapsed projects, and skips truncated-out
+   * rows automatically.
+   */
+  function visibleSidebarThreadIds(): string[] {
+    if (typeof document === 'undefined') return [];
+    // Sidebar-only attribute. ChatView's root carries `data-thread-id`
+    // for the active pane; we deliberately diverge so the DOM scan can
+    // distinguish "sidebar row" from "chat surface" without scoping by
+    // ancestor.
+    return Array.from(document.querySelectorAll<HTMLElement>('[data-sidebar-thread-id]'))
+      .map((el) => el.dataset.sidebarThreadId)
+      .filter((id): id is string => !!id);
+  }
+
   function requestThreadJump(index: number): void {
-    const threads = filterThreads(getThreads());
-    const target = threads[index - 1];
-    if (!target) return;
-    void pane.switchThread(target);
+    const ids = visibleSidebarThreadIds();
+    const targetId = ids[index - 1];
+    if (!targetId) return;
+    const thread = getThreads().find((t) => t.id === targetId);
+    if (thread) void pane.switchThread(thread);
   }
 
   function requestThreadStep(delta: number): void {
-    const threads = filterThreads(getThreads());
-    if (threads.length === 0) return;
+    const ids = visibleSidebarThreadIds();
+    if (ids.length === 0) return;
     const currentId = pane.threadId;
-    const currentIndex = currentId ? threads.findIndex((t) => t.id === currentId) : -1;
+    const currentIndex = currentId ? ids.indexOf(currentId) : -1;
     const nextIndex = currentIndex === -1
-      ? (delta > 0 ? 0 : threads.length - 1)
-      : (currentIndex + delta + threads.length) % threads.length;
-    void pane.switchThread(threads[nextIndex]);
+      ? (delta > 0 ? 0 : ids.length - 1)
+      : (currentIndex + delta + ids.length) % ids.length;
+    const thread = getThreads().find((t) => t.id === ids[nextIndex]);
+    if (thread) void pane.switchThread(thread);
   }
 
   $effect(() => {

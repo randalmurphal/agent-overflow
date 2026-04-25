@@ -218,7 +218,7 @@
     <div class="mb-3 flex items-center justify-between gap-3">
       <div>
         <p class="text-[11px] font-semibold uppercase tracking-[0.22em] text-text-secondary/70">Participants</p>
-        <h3 class="mt-1 text-base font-semibold text-text-primary">Who is in the room</h3>
+        <h3 class="mt-1 text-base font-semibold text-text-primary">Who Is in the Room</h3>
       </div>
       <button
         type="button"
@@ -287,7 +287,7 @@
 
 <ConfirmDialog
   open={showDeleteConfirm}
-  title="Delete discussion"
+  title="Delete Discussion"
   description={`This permanently removes the discussion "${initial.name}" from this ${initial.scope === 'project' ? 'project' : 'workstation'}. Running threads that referenced it keep working, but you can no longer start it.`}
   confirmLabel="Delete"
   destructive={true}

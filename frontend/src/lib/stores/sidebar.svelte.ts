@@ -11,14 +11,29 @@ import { getThreads } from './threads.svelte';
 import { getProjects } from './projects.svelte';
 
 const EXPANDED_STORAGE_KEY = 'agent-overflow:sidebar:expandedProjects';
-const SORT_STORAGE_KEY = 'agent-overflow:sidebar:sortDirection';
+const SORT_MODE_KEY = 'agent-overflow:sidebar:projectSortMode';
+const EXPANDED_DISCUSSIONS_KEY = 'agent-overflow:sidebar:expandedDiscussions';
+const EXPANDED_THREAD_LISTS_KEY = 'agent-overflow:sidebar:expandedThreadLists';
 
-export type SortDirection = 'asc' | 'desc';
+/**
+ * Project sort mode. Three discrete strategies with no per-mode tuning
+ * (forge / t3-code parity). Mode persists across sessions; manual order
+ * lives in `Project.sortPosition` and is set by the DnD reorder handler.
+ */
+export type ProjectSortMode = 'lastActivity' | 'createdAt' | 'manual';
 
-function readExpanded(): Set<string> {
+const DEFAULT_PROJECT_SORT_MODE: ProjectSortMode = 'lastActivity';
+
+const PROJECT_SORT_MODES: readonly ProjectSortMode[] = [
+  'lastActivity',
+  'createdAt',
+  'manual',
+];
+
+function readStringSet(key: string): Set<string> {
   if (typeof localStorage === 'undefined') return new Set();
   try {
-    const raw = localStorage.getItem(EXPANDED_STORAGE_KEY);
+    const raw = localStorage.getItem(key);
     if (!raw) return new Set();
     const parsed: unknown = JSON.parse(raw);
     if (!Array.isArray(parsed)) return new Set();
@@ -28,41 +43,53 @@ function readExpanded(): Set<string> {
     }
     return out;
   } catch {
-    // Corrupt JSON — treat as empty and let the next write overwrite it.
     return new Set();
   }
 }
 
-function readSortDirection(): SortDirection {
-  if (typeof localStorage === 'undefined') return 'desc';
+function readExpanded(): Set<string> {
+  return readStringSet(EXPANDED_STORAGE_KEY);
+}
+
+function readProjectSortMode(): ProjectSortMode {
+  if (typeof localStorage === 'undefined') return DEFAULT_PROJECT_SORT_MODE;
   try {
-    const raw = localStorage.getItem(SORT_STORAGE_KEY);
-    return raw === 'asc' ? 'asc' : 'desc';
+    const raw = localStorage.getItem(SORT_MODE_KEY);
+    if (raw && PROJECT_SORT_MODES.includes(raw as ProjectSortMode)) {
+      return raw as ProjectSortMode;
+    }
+    return DEFAULT_PROJECT_SORT_MODE;
   } catch {
-    return 'desc';
+    return DEFAULT_PROJECT_SORT_MODE;
   }
 }
 
-function writeExpanded(set: Set<string>): void {
+function writeStringSet(key: string, set: Set<string>): void {
   if (typeof localStorage === 'undefined') return;
   try {
-    localStorage.setItem(EXPANDED_STORAGE_KEY, JSON.stringify([...set]));
+    localStorage.setItem(key, JSON.stringify([...set]));
   } catch {
     // Ignore quota / access errors — in-memory state stays consistent.
   }
 }
 
-function writeSortDirection(direction: SortDirection): void {
+function writeExpanded(set: Set<string>): void {
+  writeStringSet(EXPANDED_STORAGE_KEY, set);
+}
+
+function writeProjectSortMode(mode: ProjectSortMode): void {
   if (typeof localStorage === 'undefined') return;
   try {
-    localStorage.setItem(SORT_STORAGE_KEY, direction);
+    localStorage.setItem(SORT_MODE_KEY, mode);
   } catch {
-    // Same rationale as writeExpanded: best-effort persistence.
+    // ignore
   }
 }
 
 let expandedProjects: Set<string> = $state(readExpanded());
-let sortDirection: SortDirection = $state(readSortDirection());
+let expandedDiscussions: Set<string> = $state(readStringSet(EXPANDED_DISCUSSIONS_KEY));
+let expandedThreadLists: Set<string> = $state(readStringSet(EXPANDED_THREAD_LISTS_KEY));
+let projectSortMode: ProjectSortMode = $state(readProjectSortMode());
 
 export function isProjectExpanded(id: string): boolean {
   return expandedProjects.has(id);
@@ -108,23 +135,99 @@ export function expandProjectsForActiveThread(threadId: string | null): void {
   }
 }
 
-export function getSortDirection(): SortDirection {
-  return sortDirection;
+export function getProjectSortMode(): ProjectSortMode {
+  return projectSortMode;
 }
 
-export function toggleSortDirection(): void {
-  sortDirection = sortDirection === 'asc' ? 'desc' : 'asc';
-  writeSortDirection(sortDirection);
+export function setProjectSortMode(mode: ProjectSortMode): void {
+  if (projectSortMode === mode) return;
+  projectSortMode = mode;
+  writeProjectSortMode(mode);
+}
+
+/**
+ * Discussion-tree expansion state — a flat set of thread ids whose
+ * children should be visible. Persisted so reopening the app keeps the
+ * user's reading context. Distinct from `expandedProjects` because a
+ * collapsed project hides its discussions wholesale; this controls
+ * which discussion *roots* show their participants when their parent
+ * project is open.
+ */
+export function isDiscussionExpanded(id: string): boolean {
+  return expandedDiscussions.has(id);
+}
+
+export function getExpandedDiscussions(): ReadonlySet<string> {
+  return expandedDiscussions;
+}
+
+export function toggleDiscussion(id: string): void {
+  const next = new Set(expandedDiscussions);
+  if (next.has(id)) next.delete(id);
+  else next.add(id);
+  expandedDiscussions = next;
+  writeStringSet(EXPANDED_DISCUSSIONS_KEY, next);
+}
+
+/**
+ * Replace the entire expanded-discussions set. Used by the auto-expand
+ * effect that keeps an active thread's ancestors visible — we compute
+ * the next set from the tree and swap it in atomically.
+ */
+export function setExpandedDiscussions(next: ReadonlySet<string>): void {
+  // Cheap equality check so we don't write storage on every keystroke.
+  if (next.size === expandedDiscussions.size) {
+    let same = true;
+    for (const id of next) {
+      if (!expandedDiscussions.has(id)) {
+        same = false;
+        break;
+      }
+    }
+    if (same) return;
+  }
+  const copy = new Set(next);
+  expandedDiscussions = copy;
+  writeStringSet(EXPANDED_DISCUSSIONS_KEY, copy);
+}
+
+/**
+ * Per-project "show all threads" state. When a project's id is in this
+ * set, ProjectThreadList renders the full sorted list; otherwise it
+ * truncates at THREAD_PREVIEW_LIMIT (with the active thread always
+ * pinned in). Persisted so reopening keeps the user's chosen view.
+ */
+export function isThreadListExpanded(id: string): boolean {
+  return expandedThreadLists.has(id);
+}
+
+export function expandThreadList(id: string): void {
+  if (expandedThreadLists.has(id)) return;
+  const next = new Set(expandedThreadLists).add(id);
+  expandedThreadLists = next;
+  writeStringSet(EXPANDED_THREAD_LISTS_KEY, next);
+}
+
+export function collapseThreadList(id: string): void {
+  if (!expandedThreadLists.has(id)) return;
+  const next = new Set(expandedThreadLists);
+  next.delete(id);
+  expandedThreadLists = next;
+  writeStringSet(EXPANDED_THREAD_LISTS_KEY, next);
 }
 
 /** Test helper: clears in-memory + storage between tests. */
 export function resetSidebarForTest(): void {
   expandedProjects = new Set();
-  sortDirection = 'desc';
+  expandedDiscussions = new Set();
+  expandedThreadLists = new Set();
+  projectSortMode = DEFAULT_PROJECT_SORT_MODE;
   if (typeof localStorage !== 'undefined') {
     try {
       localStorage.removeItem(EXPANDED_STORAGE_KEY);
-      localStorage.removeItem(SORT_STORAGE_KEY);
+      localStorage.removeItem(EXPANDED_DISCUSSIONS_KEY);
+      localStorage.removeItem(EXPANDED_THREAD_LISTS_KEY);
+      localStorage.removeItem(SORT_MODE_KEY);
     } catch {
       // ignore
     }
