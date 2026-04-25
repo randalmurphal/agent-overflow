@@ -79,40 +79,12 @@ describe('<ProjectsSection>', () => {
     expect(heading?.textContent).toBe('Add Project');
   });
 
-  it('empty-state primary action opens the Add Project modal', async () => {
-    setBindingMock('BrowseDirectory', async () => ({
-      path: '/Users/me',
-      parent: '/Users',
-      separator: '/',
-      entries: [],
-      truncated: false,
-    }));
+  it('shows a minimal hint when there are no projects', async () => {
     const pane = createThreadPane();
-    const { getByTestId, queryByRole } = render(ProjectsSection, {
-      props: { pane },
-    });
-    expect(queryByRole('dialog')).toBeNull();
-    await fireEvent.click(getByTestId('sidebar-projects-empty-add'));
+    const { getByTestId } = render(ProjectsSection, { props: { pane } });
     await tick();
-    await Promise.resolve();
-    expect(queryByRole('dialog')).not.toBeNull();
-  });
-
-  it('listens for the agent-overflow:open-add-project window event', async () => {
-    setBindingMock('BrowseDirectory', async () => ({
-      path: '/Users/me',
-      parent: '/Users',
-      separator: '/',
-      entries: [],
-      truncated: false,
-    }));
-    const pane = createThreadPane();
-    const { queryByRole } = render(ProjectsSection, { props: { pane } });
-    expect(queryByRole('dialog')).toBeNull();
-    window.dispatchEvent(new CustomEvent('agent-overflow:open-add-project'));
-    await tick();
-    await Promise.resolve();
-    expect(queryByRole('dialog')).not.toBeNull();
+    const hint = getByTestId('sidebar-projects-empty');
+    expect(hint.textContent).toMatch(/No projects yet\..*Click \+ to add one\./);
   });
 
   it('defaults to lastActivity sort mode', async () => {
