@@ -130,6 +130,11 @@ the project to confirm the behavior, then port the learning in. See
 - **forge** (`/Users/randy/repos/forge`) — the Node/Effect project this one
   rewrites. UX and provider-handling reference. See
   [docs/references/forge.md](docs/references/forge.md).
+- **Claude Code source** (`/Users/randy/repos/claude-code-source-code`) —
+  TypeScript source of an older Claude Code release. Use when binary
+  behavior is unclear; cross-check against the installed binary because
+  the local copy can lag. See
+  [docs/references/claude.md](docs/references/claude.md).
 - **Codex source** (`/Users/randy/repos/codex-source`, upstream
   https://github.com/openai/codex) — authoritative Codex CLI and
   app-server behavior.
@@ -137,7 +142,8 @@ the project to confirm the behavior, then port the learning in. See
   feature-complete reference implementation of a Codex app-server client.
 
 See [docs/references/codex.md](docs/references/codex.md) for how to use
-these when touching Codex code.
+these when touching Codex code, and
+[docs/references/claude.md](docs/references/claude.md) for Claude.
 
 **Known upstream constraint (Codex):** `exec_command` can yield back to
 the model while the PTY keeps running; `source: "unifiedExecStartup"` is

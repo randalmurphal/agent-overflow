@@ -203,7 +203,7 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 		Binary:      binary,
 		Args:        args,
 		Dir:         cfg.WorkDir,
-		Env:         cfg.Env,
+		Env:         withClaudeCodeEntrypoint(cfg.Env),
 		EventLogger: cfg.EventLogger,
 		ThreadID:    threadID,
 		Provider:    string(provider.Claude),
@@ -234,6 +234,36 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 	go s.readLoop()
 
 	return s, nil
+}
+
+// claudeCodeEntrypointEnv tags spawned `claude` processes so the
+// resulting session JSONL header records `entrypoint: agent-overflow`
+// instead of the auto-detected `sdk-cli` (which the CLI's resume
+// picker filters out — see [docs/references/claude.md](../../../docs/references/claude.md)).
+//
+// The CLI's `initializeEntrypoint` only rewrites the env value when it
+// equals the literal string `"cli"`; any other preset value (including
+// custom strings) survives the early return. Setting `agent-overflow`
+// keeps the session resumable from a normal `claude --resume` while
+// cleanly identifying our client in telemetry.
+const (
+	claudeCodeEntrypointEnvVar = "CLAUDE_CODE_ENTRYPOINT"
+	claudeCodeEntrypointValue  = "agent-overflow"
+)
+
+// withClaudeCodeEntrypoint returns a copy of env with
+// CLAUDE_CODE_ENTRYPOINT set to "agent-overflow", unless the caller
+// already provided an explicit value (tests can opt out).
+func withClaudeCodeEntrypoint(env map[string]string) map[string]string {
+	if _, ok := env[claudeCodeEntrypointEnvVar]; ok {
+		return env
+	}
+	merged := make(map[string]string, len(env)+1)
+	for k, v := range env {
+		merged[k] = v
+	}
+	merged[claudeCodeEntrypointEnvVar] = claudeCodeEntrypointValue
+	return merged
 }
 
 // buildArgs constructs CLI flags from Config.

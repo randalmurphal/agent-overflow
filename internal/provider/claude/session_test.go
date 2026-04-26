@@ -2472,3 +2472,46 @@ func TestSession_StopTask_ConcurrentSameTaskIDDistinctRequestIDs(t *testing.T) {
 		t.Errorf("controlRequestSeq = %d after two concurrent StopTasks, want >= 2 (each call must allocate)", seq)
 	}
 }
+
+// TestWithClaudeCodeEntrypoint pins the env-merge helper that tags every
+// spawned `claude` subprocess with `CLAUDE_CODE_ENTRYPOINT=agent-overflow`.
+//
+// The CLI's resume picker filters sessions whose entrypoint is `sdk-cli`
+// (the auto-detected default for stream-json invocations); setting our
+// own value keeps agent-overflow's threads resumable from a normal
+// `claude --resume`. See docs/references/claude.md and the `Ka8(H)`
+// override in the binary that rewrites the literal string `"cli"` to
+// `"sdk-cli"` — any other preset value survives.
+func TestWithClaudeCodeEntrypoint(t *testing.T) {
+	t.Run("nil env gets entrypoint set", func(t *testing.T) {
+		got := withClaudeCodeEntrypoint(nil)
+		if got["CLAUDE_CODE_ENTRYPOINT"] != "agent-overflow" {
+			t.Fatalf("CLAUDE_CODE_ENTRYPOINT = %q, want agent-overflow", got["CLAUDE_CODE_ENTRYPOINT"])
+		}
+	})
+
+	t.Run("preserves caller-provided keys", func(t *testing.T) {
+		got := withClaudeCodeEntrypoint(map[string]string{"FOO": "bar"})
+		if got["FOO"] != "bar" {
+			t.Errorf("FOO clobbered: got %q, want bar", got["FOO"])
+		}
+		if got["CLAUDE_CODE_ENTRYPOINT"] != "agent-overflow" {
+			t.Errorf("CLAUDE_CODE_ENTRYPOINT not added: got %q", got["CLAUDE_CODE_ENTRYPOINT"])
+		}
+	})
+
+	t.Run("respects caller-provided entrypoint override", func(t *testing.T) {
+		got := withClaudeCodeEntrypoint(map[string]string{"CLAUDE_CODE_ENTRYPOINT": "test-override"})
+		if got["CLAUDE_CODE_ENTRYPOINT"] != "test-override" {
+			t.Errorf("override clobbered: got %q, want test-override", got["CLAUDE_CODE_ENTRYPOINT"])
+		}
+	})
+
+	t.Run("does not mutate caller's map", func(t *testing.T) {
+		input := map[string]string{"FOO": "bar"}
+		_ = withClaudeCodeEntrypoint(input)
+		if _, ok := input["CLAUDE_CODE_ENTRYPOINT"]; ok {
+			t.Errorf("input map was mutated; helper must return a copy")
+		}
+	})
+}
