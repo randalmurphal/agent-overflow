@@ -7,9 +7,29 @@ import {
   proposedPlanTitle,
   stripDisplayedPlanMarkdown,
   buildProposedPlanMarkdownFilename,
+  latestProposedPlanItem,
   normalizePlanMarkdownForExport,
   splitProposedPlanMarkdownBlocks,
 } from './proposedPlan';
+import type { Item } from '../types/models';
+
+function planItem(overrides: Partial<Item> = {}): Item {
+  return {
+    id: 'plan-1',
+    threadId: 'thread-1',
+    turnIndex: 0,
+    itemIndex: 0,
+    kind: 'tool_call',
+    role: 'assistant',
+    status: 'completed',
+    summary: 'ExitPlanMode',
+    payloadKind: 'proposed_plan',
+    payloadId: 'payload-1',
+    createdAt: 1,
+    updatedAt: 1,
+    ...overrides,
+  };
+}
 
 describe('proposedPlanTitle', () => {
   it('returns the first heading as the title', () => {
@@ -109,6 +129,55 @@ describe('normalizePlanMarkdownForExport', () => {
 
   it('preserves interior blank lines', () => {
     expect(normalizePlanMarkdownForExport('a\n\nb')).toBe('a\n\nb\n');
+  });
+});
+
+describe('latestProposedPlanItem', () => {
+  it('returns the latest plan even when later assistant text exists', () => {
+    const olderPlan = planItem({ id: 'plan-1', turnIndex: 2, itemIndex: 0 });
+    const newerText = planItem({
+      id: 'text-1',
+      kind: 'assistant_text',
+      payloadKind: undefined,
+      payloadId: undefined,
+      turnIndex: 2,
+      itemIndex: 1,
+    });
+
+    expect(latestProposedPlanItem('thread-1', [olderPlan, newerText])?.id).toBe('plan-1');
+  });
+
+  it('returns the latest plan even when it has already been implemented', () => {
+    const oldPlan = planItem({ id: 'plan-1', turnIndex: 1, itemIndex: 0 });
+    const implementedPlan = planItem({
+      id: 'plan-2',
+      turnIndex: 2,
+      itemIndex: 0,
+      meta: JSON.stringify({ planImplementedAt: 123 }),
+    });
+
+    expect(latestProposedPlanItem('thread-1', [oldPlan, implementedPlan])?.id).toBe('plan-2');
+  });
+
+  it('uses the first visible copy of a plan id so stale cache entries do not override it', () => {
+    const visibleImplementedPlan = planItem({
+      id: 'plan-2',
+      turnIndex: 2,
+      itemIndex: 0,
+      meta: JSON.stringify({ planImplementedAt: 123 }),
+    });
+    const staleCachedPlan = planItem({
+      id: 'plan-2',
+      turnIndex: 2,
+      itemIndex: 0,
+      meta: '',
+    });
+
+    expect(latestProposedPlanItem(
+      'thread-1',
+      [visibleImplementedPlan],
+      [staleCachedPlan],
+    )?.meta).toBe(JSON.stringify({ planImplementedAt: 123 }));
   });
 });
 

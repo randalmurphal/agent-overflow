@@ -212,7 +212,12 @@
       {#snippet children()}
         <span class="inline-flex items-center gap-1">
           <Icon icon={Send} size={12} />
-          Send {draftCommentIds.length || ''}
+          Send
+          {#if draftCommentIds.length > 0}
+            <span class="inline-flex min-w-4 items-center justify-center rounded-full bg-accent/20 px-1 text-[10px] font-semibold leading-4 text-accent">
+              {draftCommentIds.length}
+            </span>
+          {/if}
         </span>
       {/snippet}
     </Button>

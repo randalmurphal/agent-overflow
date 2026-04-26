@@ -9,10 +9,7 @@
   // to "chat" in that case, which is the right recovery for a stuck
   // mode.
 
-  import MessagesSquare from 'lucide-svelte/icons/messages-square';
-  import ListTodo from 'lucide-svelte/icons/list-todo';
-  import Palette from 'lucide-svelte/icons/palette';
-  import MessageCircle from 'lucide-svelte/icons/message-circle';
+  import Bot from 'lucide-svelte/icons/bot';
   import type { ThreadPane } from '../../../stores/thread.svelte';
   import type { Thread } from '../../../types/models';
   import { UpdateThreadMode } from '../../../stores/bindings';
@@ -21,9 +18,6 @@
   import { cycleMode, type CycleMode } from '../../../utils/modeCycle';
   import { errString } from '../../../utils/errors';
   import Icon from '../../primitives/Icon.svelte';
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  type IconComponent = any;
 
   interface Props {
     pane: ThreadPane;
@@ -41,19 +35,14 @@
     (pane.thread?.mode as CycleMode | 'discussion' | undefined) ?? 'chat',
   );
 
-  interface ModeMeta {
-    label: string;
-    icon: IconComponent;
-  }
-
-  const MODE_META: Record<CycleMode | 'discussion', ModeMeta> = {
-    chat: { label: 'Chat', icon: MessagesSquare },
-    plan: { label: 'Plan', icon: ListTodo },
-    design: { label: 'Design', icon: Palette },
-    discussion: { label: 'Discussion', icon: MessageCircle },
+  const MODE_LABELS: Record<CycleMode | 'discussion', string> = {
+    chat: 'Chat',
+    plan: 'Plan',
+    design: 'Design',
+    discussion: 'Discussion',
   };
 
-  let meta = $derived(MODE_META[currentMode] ?? MODE_META.chat);
+  let modeLabel = $derived(MODE_LABELS[currentMode] ?? MODE_LABELS.chat);
 
   async function handleClick(): Promise<void> {
     if (applying || !pane.thread) return;
@@ -78,7 +67,7 @@
   disabled={applying || !pane.thread}
   data-testid="composer-mode-cycle"
   aria-label="Cycle Interaction Mode (Shift+Tab)"
-  title={`Mode: ${meta.label} — Shift+Tab to cycle`}
+  title={`Mode: ${modeLabel} — Shift+Tab to cycle`}
   class={[
     'inline-flex items-center gap-1.5 rounded-[var(--radius-field)]',
     'px-1.5 py-1 text-[11px] text-fg-muted',
@@ -88,6 +77,6 @@
     'disabled:opacity-60 disabled:cursor-not-allowed',
   ].join(' ')}
 >
-  <Icon icon={meta.icon} size={13} strokeWidth={1.75} class="opacity-80" />
-  <span>{meta.label}</span>
+  <Icon icon={Bot} size={13} strokeWidth={1.75} class="opacity-80" />
+  <span>{modeLabel}</span>
 </button>

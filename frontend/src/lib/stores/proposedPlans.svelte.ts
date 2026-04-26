@@ -1,4 +1,5 @@
 import type { Item } from '../types/models';
+import { latestProposedPlanItem } from '../utils/proposedPlan';
 import { ListThreadProposedPlans } from './bindings';
 import { onItemUpsert } from './events';
 
@@ -34,6 +35,13 @@ export function getThreadProposedPlans(threadId: string | null | undefined): Ite
   if (!entry) return [];
   cacheAccess.set(threadId, Date.now());
   return entry.items;
+}
+
+export function getThreadCurrentProposedPlan(
+  threadId: string | null | undefined,
+  visibleItems: readonly Item[] | null | undefined = [],
+): Item | null {
+  return latestProposedPlanItem(threadId, visibleItems, getThreadProposedPlans(threadId));
 }
 
 export function hasLoadedThreadProposedPlans(threadId: string | null | undefined): boolean {

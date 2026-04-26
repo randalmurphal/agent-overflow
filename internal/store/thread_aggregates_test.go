@@ -5,16 +5,16 @@ import (
 	"testing"
 )
 
-func TestListThreadProposedPlans_OrderedDesc(t *testing.T) {
+func TestListThreadProposedPlans_ReturnsCurrentPlanOnly(t *testing.T) {
 	s := newTestStore(t)
 	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
 		t.Fatalf("create thread: %v", err)
 	}
 
 	// Three plans across two turns plus one non-plan item that must be
-	// excluded by the payload_kind filter. Item.kind stays within the
-	// CHECK-constrained set ('assistant_text' for the plans, 'tool_call'
-	// for the diff stub); payload.kind is what the query filters on.
+	// excluded by the payload_kind filter. The UI only presents the
+	// current plan, so the aggregate query returns the highest plan
+	// ordering row instead of the historical list.
 	seedPayloadItem(t, s, "t", "p1", 0, 0, "assistant_text", "proposed_plan", "{}")
 	seedPayloadItem(t, s, "t", "p2", 1, 0, "assistant_text", "proposed_plan", "{}")
 	seedPayloadItem(t, s, "t", "p3", 1, 2, "assistant_text", "proposed_plan", "{}")
@@ -30,12 +30,8 @@ func TestListThreadProposedPlans_OrderedDesc(t *testing.T) {
 		t.Fatalf("list plans: %v", err)
 	}
 
-	ids := collectIDs(got)
-	// Newest plan at turn 1 item 2 → p3; then p2 (turn 1 item 0); then p1
-	// (turn 0 item 0). DESC, DESC.
-	want := []string{"p3", "p2", "p1"}
-	if !equalStringSlice(ids, want) {
-		t.Errorf("ids: got %v, want %v", ids, want)
+	if len(got) != 1 || got[0].ID != "p3" {
+		t.Errorf("plans: got %v, want only current plan p3", collectIDs(got))
 	}
 }
 
@@ -75,8 +71,8 @@ func TestListThreadProposedPlans_DecoratesVersionAndCommentCounts(t *testing.T) 
 	if err != nil {
 		t.Fatalf("list plans: %v", err)
 	}
-	if len(got) != 2 {
-		t.Fatalf("plans = %d, want 2", len(got))
+	if len(got) != 1 {
+		t.Fatalf("plans = %d, want 1 current plan", len(got))
 	}
 	if got[0].ID != "p2" {
 		t.Fatalf("latest id = %q, want p2", got[0].ID)

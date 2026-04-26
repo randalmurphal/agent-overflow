@@ -16,11 +16,14 @@
   import Popover from '../../primitives/Popover.svelte';
   import Menu from '../../primitives/Menu.svelte';
   import MenuItem from '../../primitives/MenuItem.svelte';
+  import type { SendButtonAction } from './sendButtonTypes';
 
   interface Props {
     canSend: boolean;
     isTurnActive: boolean;
+    action?: SendButtonAction;
     label?: string;
+    planCommentCount?: number;
     onSend: () => void;
     onSendWithoutPlanComments?: () => void;
     onSendInNewThread?: () => void;
@@ -30,7 +33,9 @@
   let {
     canSend,
     isTurnActive,
+    action = 'send',
     label,
+    planCommentCount = 0,
     onSend,
     onSendWithoutPlanComments,
     onSendInNewThread,
@@ -51,15 +56,16 @@
   // the textarea is empty AND no turn is running. When a turn is active
   // the button becomes an interrupt trigger and stays enabled.
   let disabled = $derived(!isTurnActive && !canSend);
-  let idleLabel = $derived(label === 'Implement'
+  let idleLabel = $derived(action === 'implement'
     ? 'Implement proposed plan'
-    : label === 'Refine'
+    : action === 'refine'
       ? 'Refine proposed plan'
-      : label === 'Send with comments'
-        ? 'Send message with plan comments'
+      : action === 'send-comments'
+        ? 'Send plan comments'
         : 'Send message');
-  let showImplementMenu = $derived(label === 'Implement' && !isTurnActive && Boolean(onSendInNewThread));
-  let showCommentsMenu = $derived(label === 'Send with comments' && !isTurnActive && Boolean(onSendWithoutPlanComments));
+  let showImplementMenu = $derived(action === 'implement' && !isTurnActive && Boolean(onSendInNewThread));
+  let showCommentsMenu = $derived(action === 'send-comments' && !isTurnActive && Boolean(onSendWithoutPlanComments));
+  let showCommentCount = $derived(action === 'send-comments' && planCommentCount > 0);
 
   function closeMenu(): void {
     menuOpen = false;
@@ -100,6 +106,11 @@
         <Icon icon={ArrowUp} size={13} strokeWidth={2.5} class="opacity-100" />
       {/if}
       <span>{label}</span>
+      {#if showCommentCount}
+        <span class="inline-flex min-w-4 items-center justify-center rounded-full bg-surface-0/20 px-1 text-[10px] font-semibold leading-4 text-surface-0">
+          {planCommentCount}
+        </span>
+      {/if}
     </button>
     <button
       bind:this={menuTriggerEl}
@@ -160,11 +171,16 @@
   >
     {#if isTurnActive}
       <Icon icon={Square} size={12} strokeWidth={2.5} class="opacity-100" />
-    {:else if label === 'Implement'}
+    {:else if action === 'implement'}
       <Icon icon={Play} size={13} strokeWidth={2.5} class="opacity-100" />
       <span>{label}</span>
     {:else if label}
       <span>{label}</span>
+      {#if showCommentCount}
+        <span class="inline-flex min-w-4 items-center justify-center rounded-full bg-surface-0/20 px-1 text-[10px] font-semibold leading-4 text-surface-0">
+          {planCommentCount}
+        </span>
+      {/if}
       <Icon icon={ArrowUp} size={13} strokeWidth={2.5} class="opacity-100" />
     {:else}
       <Icon icon={ArrowUp} size={16} strokeWidth={2.5} class="opacity-100" />

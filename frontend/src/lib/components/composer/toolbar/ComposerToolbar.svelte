@@ -14,13 +14,18 @@
   import EffortMenu from './EffortMenu.svelte';
   import ModeCycleButton from './ModeCycleButton.svelte';
   import AccessToggle from './AccessToggle.svelte';
+  import PlanSidebarToggleButton from './PlanSidebarToggleButton.svelte';
   import SendButton from './SendButton.svelte';
+  import type { SendButtonAction } from './sendButtonTypes';
 
   interface Props {
     pane: ThreadPane;
     canSend: boolean;
     isTurnActive: boolean;
+    sendAction?: SendButtonAction;
     sendLabel?: string;
+    hasCurrentPlan?: boolean;
+    planCommentCount?: number;
     onSend: () => void;
     onSendWithoutPlanComments?: () => void;
     onSendInNewThread?: () => void;
@@ -31,7 +36,10 @@
     pane,
     canSend,
     isTurnActive,
+    sendAction,
     sendLabel,
+    hasCurrentPlan = false,
+    planCommentCount = 0,
     onSend,
     onSendWithoutPlanComments,
     onSendInNewThread,
@@ -48,11 +56,14 @@
   <Separator orientation="vertical" opacity={0.4} class="h-4 mx-1" />
   <ModeCycleButton {pane} />
   <AccessToggle {pane} />
+  <PlanSidebarToggleButton {pane} {hasCurrentPlan} />
   <div class="ml-auto flex items-center">
     <SendButton
       {canSend}
       {isTurnActive}
+      action={sendAction}
       label={sendLabel}
+      {planCommentCount}
       {onSend}
       {onSendWithoutPlanComments}
       {onSendInNewThread}

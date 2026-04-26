@@ -355,15 +355,13 @@ func (a *App) resolveSourceProposedPlan(threadID string, source *SourceProposedP
 	if item.PayloadKind != "proposed_plan" || item.PayloadID == "" || item.Role != "assistant" {
 		return nil, fmt.Errorf("source item %s is not an assistant proposed plan", source.ItemID)
 	}
-	state, err := a.store.EnsureProposedPlanState(sourceThreadID, item.ID, time.Now().UnixMilli())
-	if err != nil {
+	if _, err := a.store.EnsureProposedPlanState(sourceThreadID, item.ID, time.Now().UnixMilli()); err != nil {
 		return nil, fmt.Errorf("ensure source proposed plan state: %w", err)
 	}
 	resolved := &SourceProposedPlan{
 		ThreadID:  sourceThreadID,
 		ItemID:    item.ID,
 		PayloadID: item.PayloadID,
-		Version:   state.Version,
 	}
 	var payloadMeta struct {
 		Title string `json:"title"`

@@ -13,6 +13,9 @@ import {
   setRuntimeModeDraft,
 } from '../../stores/runtimeModeDraft.svelte';
 import {
+  resetProposedPlanCacheForTests,
+} from '../../stores/proposedPlans.svelte';
+import {
   resetForTest as resetWorktreeIntent,
   setThreadEnvMode,
   setWorktreeBaseBranch,
@@ -32,6 +35,8 @@ function installDraftMocks() {
   setBindingMock('ListAttachments', async () => []);
   setBindingMock('GetAttachmentData', async () => 'iVBORw0KGgo=');
   setBindingMock('ListLiveBackgroundTasks', async () => []);
+  setBindingMock('ListThreadProposedPlans', async () => []);
+  setBindingMock('ListProposedPlanComments', async () => []);
   setBindingMock('GetThreadSlashCommands', async () => []);
   setBindingMock('SearchWorkspaceFiles', async () => ({
     files: [],
@@ -76,6 +81,7 @@ describe('<Composer>', () => {
   beforeEach(() => {
     resetBindingMocks();
     resetRuntimeModeDraftsForTest();
+    resetProposedPlanCacheForTests();
     resetWorktreeIntent();
     installDraftMocks();
     setBindingMock('SendMessageWithOptions', async () => makeTestThread({ runtimeMode: 'full-access' }));
@@ -145,7 +151,7 @@ describe('<Composer>', () => {
 
     const { getByLabelText, getByTestId, findByText } = render(Composer, { props: { pane, draft } });
     await fireEvent.input(getByLabelText('Message Input'), { target: { value: 'Please revise.' } });
-    await findByText('Send with comments');
+    await findByText('Send comments');
     await fireEvent.click(getByTestId('composer-send'));
 
     expect(send).toHaveBeenCalledWith(
@@ -162,6 +168,50 @@ describe('<Composer>', () => {
         revisionSourceCommentIds: ['comment-1'],
       }),
     );
+  });
+
+  it('sends typed plan comments when Enter is pressed', async () => {
+    const pane = await buildPane(makeTestThread(), [
+      makeItem({
+        id: 'plan-1',
+        kind: 'tool_call',
+        payloadKind: 'proposed_plan',
+        payloadId: 'payload-1',
+        payloadMeta: JSON.stringify({ title: 'Plan', preview: '# Plan' }),
+        updatedAt: 1,
+      }),
+    ]);
+    const draft = await buildDraft();
+    setBindingMock('ListProposedPlanComments', async () => [{
+      id: 'comment-1',
+      threadId: 'thread-1',
+      planItemId: 'plan-1',
+      status: 'draft',
+      startLine: 1,
+      endLine: 1,
+      selectedText: 'Selected section',
+      body: 'Tighten this up.',
+      createdAt: 1,
+      updatedAt: 1,
+    }]);
+    const send = setBindingMock('SendMessageWithOptions', async () =>
+      makeTestThread({ runtimeMode: 'full-access' }));
+
+    const { getByLabelText, findByText } = render(Composer, { props: { pane, draft } });
+    const textarea = getByLabelText('Message Input');
+    await fireEvent.input(textarea, { target: { value: 'Please revise.' } });
+    await findByText('Send comments');
+    await fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+
+    await waitFor(() => {
+      expect(send).toHaveBeenCalledWith(
+        'thread-1',
+        'Please revise.',
+        expect.objectContaining({
+          revisionSourceCommentIds: ['comment-1'],
+        }),
+      );
+    });
   });
 
   it('can send a typed plan refinement without draft comments from the send menu', async () => {
@@ -193,7 +243,7 @@ describe('<Composer>', () => {
 
     const { getByLabelText, getByTestId, findByText } = render(Composer, { props: { pane, draft } });
     await fireEvent.input(getByLabelText('Message Input'), { target: { value: 'Please revise.' } });
-    await findByText('Send with comments');
+    await findByText('Send comments');
     await fireEvent.click(getByTestId('composer-send-menu'));
     await fireEvent.click(await findByText('Send without comments'));
 
@@ -206,6 +256,269 @@ describe('<Composer>', () => {
         title: 'Plan',
       }),
     }));
+  });
+
+  it('labels typed plan feedback without draft comments as refine', async () => {
+    const pane = await buildPane(makeTestThread(), [
+      makeItem({
+        id: 'plan-1',
+        kind: 'tool_call',
+        payloadKind: 'proposed_plan',
+        payloadId: 'payload-1',
+        payloadMeta: JSON.stringify({ title: 'Plan', preview: '# Plan' }),
+        updatedAt: 1,
+      }),
+    ]);
+    const draft = await buildDraft();
+    setBindingMock('ListProposedPlanComments', async () => []);
+    const send = setBindingMock('SendMessageWithOptions', async () =>
+      makeTestThread({ runtimeMode: 'full-access' }));
+
+    const { getByLabelText, getByTestId, findByText } = render(Composer, { props: { pane, draft } });
+    await fireEvent.input(getByLabelText('Message Input'), { target: { value: 'Revise this plan.' } });
+    await findByText('Refine');
+    await fireEvent.click(getByTestId('composer-send'));
+
+    expect(send).toHaveBeenCalledWith(
+      'thread-1',
+      'Revise this plan.',
+      expect.objectContaining({
+        attachmentIds: [],
+        revisionSourceProposedPlan: expect.objectContaining({ itemId: 'plan-1' }),
+      }),
+    );
+    const sendOptions = send.mock.calls[0]?.[2] as { revisionSourceCommentIds?: string[] };
+    expect(sendOptions.revisionSourceCommentIds).toBeUndefined();
+  });
+
+  it('sends draft plan comments without requiring typed text', async () => {
+    const pane = await buildPane(makeTestThread(), [
+      makeItem({
+        id: 'plan-1',
+        kind: 'tool_call',
+        payloadKind: 'proposed_plan',
+        payloadId: 'payload-1',
+        payloadMeta: JSON.stringify({ title: 'Plan', preview: '# Plan' }),
+        updatedAt: 1,
+      }),
+    ]);
+    const draft = await buildDraft();
+    setBindingMock('ListProposedPlanComments', async () => [{
+      id: 'comment-1',
+      threadId: 'thread-1',
+      planItemId: 'plan-1',
+      status: 'draft',
+      startLine: 1,
+      endLine: 1,
+      selectedText: 'Selected section',
+      body: 'Tighten this up.',
+      createdAt: 1,
+      updatedAt: 1,
+    }]);
+    const send = setBindingMock('SendMessageWithOptions', async () =>
+      makeTestThread({ runtimeMode: 'full-access' }));
+
+    const { getByTestId, findByText } = render(Composer, { props: { pane, draft } });
+    await findByText('Send comments');
+    await fireEvent.click(getByTestId('composer-send'));
+
+    expect(send).toHaveBeenCalledWith(
+      'thread-1',
+      '',
+      expect.objectContaining({
+        attachmentIds: [],
+        revisionSourceProposedPlan: expect.objectContaining({
+          threadId: 'thread-1',
+          itemId: 'plan-1',
+          payloadId: 'payload-1',
+          title: 'Plan',
+        }),
+        revisionSourceCommentIds: ['comment-1'],
+      }),
+    );
+  });
+
+  it('shows implement for the latest plan even when later assistant text exists', async () => {
+    const pane = await buildPane(makeTestThread(), [
+      makeItem({
+        id: 'plan-1',
+        kind: 'tool_call',
+        payloadKind: 'proposed_plan',
+        payloadId: 'payload-1',
+        payloadMeta: JSON.stringify({ title: 'Plan', preview: '# Plan' }),
+        turnIndex: 0,
+        itemIndex: 0,
+        updatedAt: 1,
+      }),
+      makeItem({
+        id: 'assistant-after-plan',
+        kind: 'assistant_text',
+        payloadKind: undefined,
+        payloadId: undefined,
+        turnIndex: 0,
+        itemIndex: 1,
+        summary: 'Plan created and ready.',
+        updatedAt: 2,
+      }),
+    ]);
+    const draft = await buildDraft();
+    setBindingMock('ListProposedPlanComments', async () => []);
+    const send = setBindingMock('SendMessageWithOptions', async () =>
+      makeTestThread({ runtimeMode: 'full-access' }));
+
+    const { getByTestId, findByText } = render(Composer, { props: { pane, draft } });
+    await findByText('Implement');
+    await fireEvent.click(getByTestId('composer-send'));
+
+    expect(send).toHaveBeenCalledWith('thread-1', 'Implement the plan.', {
+      attachmentIds: [],
+      sourceProposedPlan: expect.objectContaining({
+        itemId: 'plan-1',
+        payloadId: 'payload-1',
+      }),
+    });
+  });
+
+  it('returns to the normal send button after implementing the latest plan', async () => {
+    const pane = await buildPane(makeTestThread(), [
+      makeItem({
+        id: 'plan-1',
+        kind: 'tool_call',
+        payloadKind: 'proposed_plan',
+        payloadId: 'payload-1',
+        payloadMeta: JSON.stringify({ title: 'Plan', preview: '# Plan' }),
+        turnIndex: 0,
+        itemIndex: 0,
+        updatedAt: 1,
+      }),
+    ]);
+    const draft = await buildDraft();
+    setBindingMock('ListProposedPlanComments', async () => []);
+    setBindingMock('SendMessageWithOptions', async () =>
+      makeTestThread({ runtimeMode: 'full-access' }));
+
+    const { getByTestId, findByText, queryByText } = render(Composer, { props: { pane, draft } });
+    await findByText('Implement');
+    await fireEvent.click(getByTestId('composer-send'));
+
+    await waitFor(() => {
+      expect(queryByText('Implement')).toBeNull();
+    });
+    expect((getByTestId('composer-send') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('does not fall back to an older plan when the latest plan is implemented', async () => {
+    const pane = await buildPane(makeTestThread(), [
+      makeItem({
+        id: 'plan-1',
+        kind: 'tool_call',
+        payloadKind: 'proposed_plan',
+        payloadId: 'payload-1',
+        payloadMeta: JSON.stringify({ title: 'Old plan', preview: '# Old plan' }),
+        turnIndex: 0,
+        itemIndex: 0,
+        updatedAt: 1,
+      }),
+      makeItem({
+        id: 'plan-2',
+        kind: 'tool_call',
+        payloadKind: 'proposed_plan',
+        payloadId: 'payload-2',
+        payloadMeta: JSON.stringify({ title: 'Implemented plan', preview: '# Implemented plan' }),
+        meta: JSON.stringify({ planImplementedAt: 123 }),
+        turnIndex: 1,
+        itemIndex: 0,
+        updatedAt: 2,
+      }),
+    ]);
+    const draft = await buildDraft();
+    setBindingMock('ListProposedPlanComments', async () => []);
+
+    const { getByTestId, queryByText } = render(Composer, { props: { pane, draft } });
+
+    await waitFor(() => {
+      expect(queryByText('Implement')).toBeNull();
+    });
+    expect((getByTestId('composer-send') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('implements the latest plan in a new thread from the composer menu', async () => {
+    const pane = await buildPane(makeTestThread(), [
+      makeItem({
+        id: 'plan-1',
+        kind: 'tool_call',
+        payloadKind: 'proposed_plan',
+        payloadId: 'payload-1',
+        payloadMeta: JSON.stringify({ title: 'Plan', preview: '# Plan' }),
+        turnIndex: 0,
+        itemIndex: 0,
+        updatedAt: 1,
+      }),
+    ]);
+    const draft = await buildDraft();
+    setBindingMock('ListProposedPlanComments', async () => []);
+    const fork = setBindingMock('ForkThread', async () => makeTestThread({
+      id: 'thread-2',
+      mode: 'chat',
+    }));
+    const send = setBindingMock('SendMessageWithOptions', async () =>
+      makeTestThread({ id: 'thread-2', runtimeMode: 'full-access' }));
+
+    const { getByTestId, findByText } = render(Composer, { props: { pane, draft } });
+    await findByText('Implement');
+    await fireEvent.click(getByTestId('composer-send-menu'));
+    await fireEvent.click(await findByText('Implement in new thread'));
+
+    await waitFor(() => {
+      expect(fork).toHaveBeenCalledWith('thread-1');
+      expect(send).toHaveBeenCalledWith('thread-2', 'Implement the plan.', {
+        attachmentIds: [],
+        sourceProposedPlan: expect.objectContaining({
+          threadId: 'thread-1',
+          itemId: 'plan-1',
+        }),
+      });
+    });
+  });
+
+  it('opens the plan sidebar from the composer toolbar plan button', async () => {
+    const plan = makeItem({
+      id: 'plan-1',
+      kind: 'tool_call',
+      payloadKind: 'proposed_plan',
+      payloadId: 'payload-1',
+      payloadMeta: JSON.stringify({ title: 'Plan', preview: '# Plan' }),
+      updatedAt: 1,
+    });
+    const pane = await buildPane(makeTestThread(), [plan]);
+    const draft = await buildDraft();
+    setBindingMock('ListThreadProposedPlans', async () => []);
+
+    const { findByTestId } = render(Composer, { props: { pane, draft } });
+    const button = await findByTestId('composer-plan-sidebar-toggle');
+    expect(pane.showPlanSidebar).toBe(false);
+    await fireEvent.click(button);
+    expect(pane.showPlanSidebar).toBe(true);
+  });
+
+  it('keeps the plan sidebar button visible for implemented plan history', async () => {
+    const plan = makeItem({
+      id: 'plan-1',
+      kind: 'tool_call',
+      payloadKind: 'proposed_plan',
+      payloadId: 'payload-1',
+      payloadMeta: JSON.stringify({ title: 'Plan', preview: '# Plan' }),
+      meta: JSON.stringify({ planImplementedAt: 123 }),
+      updatedAt: 1,
+    });
+    const pane = await buildPane(makeTestThread(), [plan]);
+    const draft = await buildDraft();
+    setBindingMock('ListThreadProposedPlans', async () => []);
+
+    const { findByTestId } = render(Composer, { props: { pane, draft } });
+    const button = await findByTestId('composer-plan-sidebar-toggle');
+
+    expect(button.textContent?.trim()).toBe('Plan');
   });
 
   it('sends a staged runtime mode and clears the staged value on success', async () => {

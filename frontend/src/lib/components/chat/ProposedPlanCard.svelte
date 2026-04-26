@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { ThreadPane } from '../../stores/thread.svelte';
+  import { getThreadCurrentProposedPlan } from '../../stores/proposedPlans.svelte';
   import {
     GetPayloadData,
     ListProposedPlanComments,
@@ -48,8 +49,9 @@
 
   const title = $derived(meta.title || 'Proposed plan');
   const itemMeta = $derived(parseProposedPlanItemMeta(item));
-  const planVersion = $derived(itemMeta.planVersion ?? 0);
   const isImplemented = $derived(Boolean(itemMeta.planImplementedAt));
+  const currentPlan = $derived(getThreadCurrentProposedPlan(pane.threadId, pane.items));
+  const canOpenCurrentPlanSidebar = $derived(!fullPlan && Boolean(item?.id) && currentPlan?.id === item?.id);
   const previewOnly = $derived(!fullPlan && (meta.charCount > 900 || meta.lineCount > 20));
   const displayedMarkdown = $derived.by(() => {
     const source = planMarkdown ?? meta.preview;
@@ -169,8 +171,7 @@
   }
 
   function openInSidebar(): void {
-    if (!item?.id) return;
-    pane.openPlanSidebarForItem(item.id);
+    pane.setShowPlanSidebar(true);
   }
 
   $effect(() => {
@@ -195,7 +196,7 @@
   <div class="flex flex-wrap items-center justify-between gap-3">
     <div class="flex min-w-0 items-center gap-2">
       <span class="rounded bg-accent/15 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-accent">
-        {planVersion ? `Plan v${planVersion}` : 'Plan'}
+        Plan
       </span>
       <p class="truncate text-sm font-medium text-text-primary">{title}</p>
       {#if isImplemented}
@@ -208,7 +209,7 @@
       {copied}
       onCopy={handleCopy}
       onSave={openSaveDialog}
-      onOpenInSidebar={fullPlan ? undefined : openInSidebar}
+      onOpenInSidebar={canOpenCurrentPlanSidebar ? openInSidebar : undefined}
     />
   </div>
 

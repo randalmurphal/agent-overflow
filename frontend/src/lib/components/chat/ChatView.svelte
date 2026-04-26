@@ -212,7 +212,7 @@
         {/key}
       {/if}
     </div>
-    <PlanSidebar {pane} />
+    <PlanSidebar {pane} ownsPlanCache={false} />
     {#if pane.diffPanel.open && pane.thread}
       {#key pane.thread.id}
         <DiffPanelDrawer {pane} />

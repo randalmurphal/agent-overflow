@@ -65,9 +65,9 @@ func (a *App) ListItemsBeforeTurn(threadID string, beforeTurnIndex, turnLimit in
 	return normalizePagedItems(paged), nil
 }
 
-// ListThreadProposedPlans returns every proposed-plan item for a thread,
-// newest-first. Backs PlanSidebar, which needs the full plan history
-// regardless of the timeline window.
+// ListThreadProposedPlans returns the current proposed-plan item for a thread,
+// outside the timeline window. It keeps the historical slice return shape for
+// binding compatibility, but callers should treat it as 0-or-1 items.
 func (a *App) ListThreadProposedPlans(threadID string) ([]store.Item, error) {
 	items, err := a.store.ListThreadProposedPlans(threadID)
 	if err != nil {

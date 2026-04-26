@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { render } from '@testing-library/svelte';
 import ToolCallCard from './ToolCallCard.svelte';
-import { buildPane, makeItem } from '../../../test/helpers/chat';
+import { buildPane, makeItem, makeThread } from '../../../test/helpers/chat';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 
 beforeEach(() => {
@@ -289,6 +289,48 @@ describe('<ToolCallCard> header dispatcher', () => {
     expect(queryByTestId('tool-call-card')).toBeNull();
     // ProposedPlanCard puts the title in a heading; sanity-check a fragment.
     expect(container.textContent).toContain('Deploy thing');
+  });
+
+  it('does not show the plan-sidebar action on an older proposed plan', async () => {
+    const olderPlan = makeItem({
+      id: 'plan-old',
+      kind: 'tool_call',
+      status: 'completed',
+      toolName: 'ExitPlanMode',
+      payloadId: 'payload-old',
+      payloadKind: 'proposed_plan',
+      payloadMeta: JSON.stringify({
+        title: 'Older plan',
+        lineCount: 1,
+        charCount: 10,
+        preview: '# older',
+      }),
+      turnIndex: 0,
+      itemIndex: 0,
+      updatedAt: 1,
+    });
+    const currentPlan = makeItem({
+      id: 'plan-current',
+      kind: 'tool_call',
+      status: 'completed',
+      toolName: 'ExitPlanMode',
+      payloadId: 'payload-current',
+      payloadKind: 'proposed_plan',
+      payloadMeta: JSON.stringify({
+        title: 'Current plan',
+        lineCount: 1,
+        charCount: 12,
+        preview: '# current',
+      }),
+      turnIndex: 1,
+      itemIndex: 0,
+      updatedAt: 2,
+    });
+    const pane = await buildPane(makeThread(), [olderPlan, currentPlan]);
+
+    const { queryByLabelText } = render(ToolCallCard, { props: { pane, item: olderPlan } });
+
+    expect(queryByLabelText('Open in plan sidebar')).toBeNull();
   });
 
   it('delegates to CommandOutput when payloadKind=command_output', async () => {

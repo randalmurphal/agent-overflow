@@ -8,9 +8,9 @@
 //   2) MessageSearch hit with an out-of-window itemId — click triggers
 //      pane.switchThread followed by pane.requestScrollToItem, which
 //      MessageTimeline's $effect turns into loadUntilItem + scroll.
-//   3) PlanSidebar row click — publishes a requestScrollToItem nonce
-//      the live MessageTimeline picks up; the intent flows through
-//      loadUntilItem for plans that were authored in paged-out turns.
+//   3) PlanSidebar current plan — renders from the dedicated plan
+//      binding even when that plan was authored outside the visible
+//      timeline window.
 //
 // The component-level tests in MessageTimeline.test.ts /
 // MessageSearch.test.ts already cover the individual mechanics.
@@ -248,16 +248,12 @@ describe('App integration — windowed thread history', () => {
     expect(pane.items.some((it) => it.id === 'old-hit')).toBe(true);
   });
 
-  it('PlanSidebar row click publishes a scroll intent MessageTimeline can consume', async () => {
+  it('PlanSidebar renders the current plan from the dedicated plan list outside the timeline window', async () => {
     // The sidebar owns the plan list through a dedicated binding — it
-    // does NOT read from pane.items. A click calls
-    // pane.requestScrollToItem so the window can page the plan in if
-    // it's below the floor. MessageTimeline's scroll $effect turns the
-    // nonce into loadUntilItem → GetThreadItem; if the target isn't
-    // already in the window the timeline will fetch it. Stub
-    // GetThreadItem so that follow-up doesn't throw, then assert the
-    // scroll intent actually reached the pane with the right itemId.
-    const { findByTestId } = await mountAndActivateThread(
+    // does NOT read from pane.items. This pins the out-of-window case:
+    // a plan from turn 2 must still render while the visible timeline
+    // starts at turn 10.
+    const { findAllByText } = await mountAndActivateThread(
       makeThread({ title: 'Windowed Thread' }),
       () => {
         setBindingMock('ListRecentThreadItems', async () => ({
@@ -290,8 +286,9 @@ describe('App integration — windowed thread history', () => {
             }),
           }),
         ]);
-        // Timeline's scrollToItem path fires on nonce bump; keep it
-        // silent with an obvious stub.
+        setBindingMock('GetPayloadData', async () => ({
+          data: '# Deep plan\n\nold plan from early in the thread',
+        }));
         setBindingMock('GetThreadItem', async (_t: string, id: string) =>
           makeItem({
             id,
@@ -314,15 +311,6 @@ describe('App integration — windowed thread history', () => {
     pane.setShowPlanSidebar(true);
     await flush();
 
-    // The sidebar fetches plans on mount. Wait for the row to appear.
-    const row = await findByTestId('plan-sidebar-row');
-    expect(row.getAttribute('data-item-id')).toBe('plan-deep');
-
-    const nonceBefore = pane.scrollToItemRequest.nonce;
-    await fireEvent.click(row);
-    await flush();
-
-    expect(pane.scrollToItemRequest.itemId).toBe('plan-deep');
-    expect(pane.scrollToItemRequest.nonce).toBeGreaterThan(nonceBefore);
+    await findAllByText('Deep plan');
   });
 });

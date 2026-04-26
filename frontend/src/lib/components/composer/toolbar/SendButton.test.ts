@@ -43,4 +43,41 @@ describe('<SendButton>', () => {
     expect(onInterrupt).toHaveBeenCalledOnce();
     expect(onSend).not.toHaveBeenCalled();
   });
+
+  it('shows the send-without-comments menu for plan comment sends', async () => {
+    const onSendWithoutPlanComments = vi.fn();
+    const { getByTestId, findByText } = render(SendButton, {
+      props: {
+        canSend: true,
+        isTurnActive: false,
+        action: 'send-comments',
+        label: 'Send comments',
+        onSend: vi.fn(),
+        onSendWithoutPlanComments,
+        onInterrupt: vi.fn(),
+      },
+    });
+
+    await fireEvent.click(getByTestId('composer-send-menu'));
+    await fireEvent.click(await findByText('Send without comments'));
+
+    expect(onSendWithoutPlanComments).toHaveBeenCalledOnce();
+  });
+
+  it('shows a comment count badge for plan comment sends', () => {
+    const { getByTestId, getByText } = render(SendButton, {
+      props: {
+        canSend: true,
+        isTurnActive: false,
+        action: 'send-comments',
+        label: 'Send comments',
+        planCommentCount: 3,
+        onSend: vi.fn(),
+        onInterrupt: vi.fn(),
+      },
+    });
+
+    expect(getByTestId('composer-send')).toHaveTextContent('Send comments 3');
+    expect(getByText('3')).toBeInTheDocument();
+  });
 });

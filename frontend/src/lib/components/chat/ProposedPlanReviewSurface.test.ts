@@ -67,6 +67,46 @@ describe('<ProposedPlanReviewSurface>', () => {
     expect(queryByLabelText('Edit comment')).not.toBeInTheDocument();
   });
 
+  it('shows the draft comment count on the send button', () => {
+    const comments: ProposedPlanComment[] = [{
+      id: 'comment-1',
+      threadId: 'thread-1',
+      planItemId: 'plan-1',
+      status: 'draft',
+      startLine: 1,
+      endLine: 1,
+      selectedText: '# Plan',
+      body: 'First',
+      createdAt: 1,
+      updatedAt: 1,
+    }, {
+      id: 'comment-2',
+      threadId: 'thread-1',
+      planItemId: 'plan-1',
+      status: 'draft',
+      startLine: 1,
+      endLine: 1,
+      selectedText: '# Plan',
+      body: 'Second',
+      createdAt: 2,
+      updatedAt: 2,
+    }];
+
+    const { getByTestId, getByText } = render(ProposedPlanReviewSurface, {
+      props: {
+        threadId: 'thread-1',
+        planItemId: 'plan-1',
+        markdown: '# Plan',
+        comments,
+        onRefresh: vi.fn(),
+        onSendDrafts: vi.fn(),
+      },
+    });
+
+    expect(getByTestId('plan-comments-send')).toHaveTextContent('Send 2');
+    expect(getByText('2')).toBeInTheDocument();
+  });
+
   it('anchors a repeated-text comment to the selected rendered block', async () => {
     const createComment = setBindingMock('CreateProposedPlanComment', async () => ({}));
     const { findAllByText, findByTestId } = render(ProposedPlanReviewSurface, {

@@ -36,7 +36,6 @@ type ProposedPlanSourceRef struct {
 	ItemID    string `json:"itemId"`
 	PayloadID string `json:"payloadId,omitempty"`
 	Title     string `json:"title,omitempty"`
-	Version   int    `json:"version,omitempty"`
 }
 
 type proposedPlanUserMessageMeta struct {
@@ -60,7 +59,7 @@ type proposedPlanItemMeta struct {
 	PlanCommentCounts         proposedPlanCommentCounts `json:"planCommentCounts"`
 }
 
-// ProposedPlanComment is one inline review note anchored to a plan version.
+// ProposedPlanComment is one inline review note anchored to a proposed plan.
 type ProposedPlanComment struct {
 	ID           string `json:"id"`
 	ThreadID     string `json:"threadId"`

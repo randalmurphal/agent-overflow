@@ -11,7 +11,6 @@ describe('dispatchSend', () => {
       itemId: 'plan-1',
       payloadId: 'payload-1',
       title: 'Plan',
-      version: 1,
     };
     setBindingMock('SendMessageWithOptions', async () => thread);
 

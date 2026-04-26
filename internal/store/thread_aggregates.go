@@ -15,16 +15,14 @@ import (
 // loaded here (payload meta is carried via the standard LEFT JOIN, but
 // `data` stays in the on-demand expansion path).
 
-// ListThreadProposedPlans returns every assistant-authored item for the
-// thread whose joined payload_kind equals "proposed_plan", newest-first.
-// Ordering is (turn_index DESC, item_index DESC) so the PlanSidebar can
-// render the most recent plans at the top without an additional sort
-// pass in the frontend. Returns an empty slice (not nil) when no plans
-// exist so the JSON response always carries a stable shape.
+// ListThreadProposedPlans returns the current assistant-authored plan item for
+// the thread whose joined payload_kind equals "proposed_plan". The result is a
+// 0-or-1 item slice so the JSON response always carries a stable shape while
+// avoiding history payloads the UI no longer presents.
 //
 // The `role = 'assistant'` filter keeps a user-authored item whose
 // payload_kind happens to collide with 'proposed_plan' (possible via
-// forks / imports) out of the sidebar — only plans the agent actually
+// forks / imports) out of plan UI — only plans the agent actually
 // proposed should appear.
 func (s *Store) ListThreadProposedPlans(threadID string) ([]Item, error) {
 	rows, err := s.db.Query(
@@ -37,7 +35,8 @@ func (s *Store) ListThreadProposedPlans(threadID string) ([]Item, error) {
 		  WHERE proposed_plans.thread_id = ?
 		    AND items.role = 'assistant'
 		    AND payloads.kind = 'proposed_plan'
-		  ORDER BY proposed_plans.version DESC`,
+		  ORDER BY proposed_plans.version DESC
+		  LIMIT 1`,
 		threadID,
 	)
 	if err != nil {

@@ -169,8 +169,6 @@ export interface ProposedPlanMeta {
 }
 
 export interface ProposedPlanItemMeta {
-  planVersion?: number;
-  planRevisionParentItemId?: string;
   planImplementedAt?: number;
   planImplementedByThreadId?: string;
   planImplementedByItemId?: string;
@@ -186,7 +184,6 @@ export interface SourceProposedPlan {
   itemId: string;
   payloadId?: string;
   title?: string;
-  version?: number;
 }
 
 export interface ProposedPlanComment {

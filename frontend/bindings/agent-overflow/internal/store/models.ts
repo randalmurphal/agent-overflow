@@ -578,7 +578,7 @@ export class ProjectWithCounts {
 }
 
 /**
- * ProposedPlanComment is one inline review note anchored to a plan version.
+ * ProposedPlanComment is one inline review note anchored to a proposed plan.
  */
 export class ProposedPlanComment {
     "id": string;
@@ -706,7 +706,6 @@ export class ProposedPlanSourceRef {
     "itemId": string;
     "payloadId"?: string;
     "title"?: string;
-    "version"?: number;
 
     /** Creates a new ProposedPlanSourceRef instance. */
     constructor($$source: Partial<ProposedPlanSourceRef> = {}) {

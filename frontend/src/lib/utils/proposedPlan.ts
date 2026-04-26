@@ -80,8 +80,33 @@ export function sourceFromProposedPlanItem(threadId: string | null | undefined, 
     itemId: item.id,
     payloadId: item.payloadId,
     title: payloadMeta.title || 'Proposed plan',
-    version: itemMeta.planVersion || undefined,
   };
+}
+
+export function latestProposedPlanItem(
+  threadId: string | null | undefined,
+  ...itemGroups: Array<readonly Item[] | null | undefined>
+): Item | null {
+  if (!threadId) return null;
+  const seenItemIds = new Set<string>();
+  let latest: Item | null = null;
+  for (const group of itemGroups) {
+    for (const item of group ?? []) {
+      if (item.threadId !== threadId || seenItemIds.has(item.id)) continue;
+      seenItemIds.add(item.id);
+      if (item.payloadKind !== 'proposed_plan' || !item.payloadId) continue;
+      if (!latest || comparePlanItemPosition(item, latest) > 0) {
+        latest = item;
+      }
+    }
+  }
+  return latest;
+}
+
+function comparePlanItemPosition(a: Item, b: Item): number {
+  if (a.turnIndex !== b.turnIndex) return a.turnIndex - b.turnIndex;
+  if (a.itemIndex !== b.itemIndex) return a.itemIndex - b.itemIndex;
+  return a.updatedAt - b.updatedAt;
 }
 
 export function splitProposedPlanMarkdownBlocks(markdown: string): ProposedPlanMarkdownBlock[] {

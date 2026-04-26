@@ -1,6 +1,6 @@
 // ChatHeader tests cover the rewrite's contract: provider chip, title
 // (view + inline rename), project badge, git actions, and the two
-// toggles (Diffs + Plans). The old InteractionModeBadge +
+// Diffs toggle. The old InteractionModeBadge +
 // ModelPicker / RuntimeModePicker / BranchToolbar have been deleted;
 // those covers are carried in the composer/below-bar tests now.
 
@@ -15,7 +15,6 @@ import {
   resetProjectsForTest,
 } from '../../stores/projects.svelte';
 import { resetSidebarForTest, isProjectExpanded } from '../../stores/sidebar.svelte';
-import { resetProposedPlanCacheForTests } from '../../stores/proposedPlans.svelte';
 import type { Thread } from '../../types/models';
 
 beforeAll(() => {
@@ -77,8 +76,6 @@ async function buildPane(thread: Thread = makeThread()) {
 describe('<ChatHeader>', () => {
   beforeEach(() => {
     resetBindingMocks();
-    resetProposedPlanCacheForTests();
-    setBindingMock('ListThreadProposedPlans', async () => []);
     resetProjectsForTest();
     resetSidebarForTest();
   });
@@ -250,12 +247,4 @@ describe('<ChatHeader>', () => {
     expect(pane.diffPanel.open).toBe(true);
   });
 
-  it('toggles the plan sidebar via the Plans button', async () => {
-    const pane = await buildPane();
-    const { getByTestId } = render(ChatHeader, { props: { pane } });
-    await tick();
-    expect(pane.showPlanSidebar).toBe(false);
-    await fireEvent.click(getByTestId('plan-sidebar-toggle'));
-    expect(pane.showPlanSidebar).toBe(true);
-  });
 });

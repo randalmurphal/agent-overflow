@@ -135,14 +135,14 @@ async function buildPane(
 describe('<ChatView>', () => {
   it('renders the chat header with title + always-visible controls', async () => {
     const pane = await buildPane();
-    const { getByTestId } = render(ChatView, { props: { pane } });
+    const { getByTestId, queryByTestId } = render(ChatView, { props: { pane } });
     await tick();
 
     expect(getByTestId('chat-header')).toBeInTheDocument();
     expect(getByTestId('chat-header-title')).toBeInTheDocument();
     expect(getByTestId('chat-header-provider')).toBeInTheDocument();
     expect(getByTestId('diff-panel-toggle')).toBeInTheDocument();
-    expect(getByTestId('plan-sidebar-toggle')).toBeInTheDocument();
+    expect(queryByTestId('plan-sidebar-toggle')).toBeNull();
   });
 
   it('renders the below-composer bar', async () => {
