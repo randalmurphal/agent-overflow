@@ -81,9 +81,19 @@ Summary of what `ParseLine` dispatches:
   `include_partial_messages: true`).
 - `result` — **turn-complete signal**. Emits `EventTurnComplete`.
 - `control_request`: inbound from the CLI carries `CanUseTool` and
-  `exit_plan_mode`; outbound from us (not yet wired) carries
-  `interrupt` and `stop_task` (kill a backgrounded Bash / Task subagent
-  by `task_id`). See [`claude-wire.md §control_request`](../../../docs/references/claude-wire.md#control_request)
+  `exit_plan_mode`. Outbound from us carries `interrupt` (abort the
+  current turn — `Session.Interrupt`), `stop_task` (kill a
+  backgrounded Bash / Task subagent by `task_id` —
+  `Session.StopTask`), and `set_permission_mode`. All three share a
+  single `sendControlRequest` helper that owns the
+  allocate/register/marshal/write/await-response state machine; each
+  caller adds its own response interpretation (or per-success side
+  effect, in `setPermissionMode`'s case). Failure to ack within the
+  timeout surfaces as a wrapped error — we do NOT kill the session as
+  a fallback (a kill would also reap backgrounded tasks, inverting
+  the documented foreground-only interrupt behaviour and silently
+  masking a CLI bug). See
+  [`claude-wire.md §control_request`](../../../docs/references/claude-wire.md#control_request)
   for the full schema and the verified `stop_task` flow.
 - `rate_limit_event` — rate-limit state.
 

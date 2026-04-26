@@ -117,6 +117,12 @@ func MockClaudeStreamedThinking(msgID, thinking string) []string {
 // This is useful for multi-turn tests where the first Send() arrives (user
 // message), the mock emits the first batch, then a second Send() arrives and
 // the mock emits the second batch, etc.
+//
+// Interrupt control_requests are handled out-of-band: the script always
+// answers them with a synthetic success control_response (echoing the
+// request_id) and does NOT advance the index counter. This matches the
+// real CLI's wire behaviour and keeps the responses[] slot numbering
+// aligned to user-message turns rather than every stdin line.
 func WriteMockClaudeScript(t *testing.T, dir string, responses [][]string) string {
 	t.Helper()
 	path := filepath.Join(dir, "mock-claude-script.sh")
@@ -124,7 +130,17 @@ func WriteMockClaudeScript(t *testing.T, dir string, responses [][]string) strin
 	var b strings.Builder
 	b.WriteString("#!/bin/bash\n")
 	b.WriteString("idx=0\n")
-	b.WriteString("while IFS= read -r _; do\n")
+	b.WriteString("while IFS= read -r line; do\n")
+	b.WriteString("  case \"$line\" in\n")
+	// Case alternation accepts either field order — json.Marshal on
+	// map[string]any sorts keys alphabetically, so "subtype" can land
+	// before "type" depending on the surrounding keys.
+	b.WriteString("    *'\"type\":\"control_request\"'*'\"subtype\":\"interrupt\"'* | *'\"subtype\":\"interrupt\"'*'\"type\":\"control_request\"'*)\n")
+	b.WriteString("      reqid=$(printf '%s' \"$line\" | sed -n 's/.*\"request_id\":\"\\([^\"]*\\)\".*/\\1/p')\n")
+	b.WriteString("      printf '{\"type\":\"control_response\",\"response\":{\"subtype\":\"success\",\"request_id\":\"%s\",\"response\":{}}}\\n' \"$reqid\"\n")
+	b.WriteString("      continue\n")
+	b.WriteString("      ;;\n")
+	b.WriteString("  esac\n")
 	b.WriteString("  case $idx in\n")
 	for i, batch := range responses {
 		b.WriteString(fmt.Sprintf("    %d)\n", i))

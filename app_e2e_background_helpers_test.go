@@ -265,17 +265,29 @@ func assertStopTaskWireShape(t *testing.T, line, wantTaskID string) {
 }
 
 // writeSilentClaudeBinary emits a shell script that behaves like Claude
-// CLI for the interrupt test: it consumes stdin silently and exits
-// when stdin closes. The Interrupt() call path only needs a live
-// WriteLine target; we don't care about the response.
+// CLI for the interrupt tests: it consumes stdin silently and exits
+// when stdin closes. Interrupt control_requests are auto-acked with a
+// synthetic success control_response so the session takes the clean
+// round-trip path instead of falling through to the kill fallback (a
+// 10s timeout per test case).
 func writeSilentClaudeBinary(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "silent-claude.sh")
 	script := `#!/bin/bash
 # Emit a minimal init so the session's spawn handshake is happy,
-# then silently drain stdin until it closes.
+# then drain stdin until it closes. Auto-ack interrupt control_requests
+# so Interrupt() doesn't hit its kill-fallback timeout.
 printf '%s\n' '{"type":"system","subtype":"init","session_id":"silent","model":"claude-opus-4-7","cwd":"/tmp","tools":[],"claude_code_version":"1.0"}'
-while IFS= read -r _ignored; do :; done
+while IFS= read -r line; do
+  # Match either field order: json.Marshal on map[string]any sorts
+  # keys alphabetically, so "subtype" can land before "type".
+  case "$line" in
+    *'"type":"control_request"'*'"subtype":"interrupt"'* | *'"subtype":"interrupt"'*'"type":"control_request"'*)
+      reqid=$(printf '%s' "$line" | sed -n 's/.*"request_id":"\([^"]*\)".*/\1/p')
+      printf '{"type":"control_response","response":{"subtype":"success","request_id":"%s","response":{}}}\n' "$reqid"
+      ;;
+  esac
+done
 exit 0
 `
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {

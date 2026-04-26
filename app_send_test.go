@@ -809,11 +809,14 @@ func TestInterruptTurnHappyPathClaude(t *testing.T) {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
 
+	// Use the interrupt-responder binary so Interrupt takes the clean
+	// control_request → control_response round-trip instead of falling
+	// through to the 10s kill timeout.
 	sess, err := claude.NewSession(
 		context.Background(),
 		thread.ID,
 		claude.Config{
-			Binary:  writeClaudePassthroughBinary(t),
+			Binary:  writeClaudeInterruptResponderBinary(t),
 			WorkDir: thread.WorkspacePath,
 		},
 		func(provider.ProviderEvent) {},
@@ -829,10 +832,23 @@ func TestInterruptTurnHappyPathClaude(t *testing.T) {
 		claude:   sess,
 	}
 
-	// Interrupt writes to the process stdin; with the passthrough binary this succeeds.
+	start := time.Now()
 	err = app.InterruptTurn(thread.ID)
 	if err != nil {
 		t.Fatalf("InterruptTurn() error = %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Errorf("InterruptTurn took %s — should have completed quickly via the round-trip, not via the kill fallback", elapsed)
+	}
+	// Clean ack path keeps the session in the registry — only the
+	// timeout-fallback kill evicts it. Pin that behaviour so a future
+	// regression in the round-trip path doesn't silently force every
+	// interrupt onto the cold-start --resume path.
+	app.mu.Lock()
+	_, stillThere := app.sessions[thread.ID]
+	app.mu.Unlock()
+	if !stillThere {
+		t.Fatal("session was evicted from registry after a clean interrupt; should only happen on kill fallback")
 	}
 }
 
@@ -881,7 +897,7 @@ func TestInterruptCreatesStoppedSystemError(t *testing.T) {
 		context.Background(),
 		thread.ID,
 		claude.Config{
-			Binary:  writeClaudePassthroughBinary(t),
+			Binary:  writeClaudeInterruptResponderBinary(t),
 			WorkDir: thread.WorkspacePath,
 		},
 		func(provider.ProviderEvent) {},
@@ -1004,13 +1020,14 @@ func TestInterrupt_LeavesBackgroundTasksRunning(t *testing.T) {
 			// which is provider-agnostic. For the Codex case we install
 			// the claude session with a stubbed provider string so the
 			// App-level dispatch runs; the underlying Interrupt()
-			// primitive gets a harmless no-op from the passthrough
-			// binary.
+			// primitive gets a clean control_response ack from the
+			// interrupt-responder binary so we don't pay the kill-fallback
+			// timeout per case.
 			sess, err := claude.NewSession(
 				context.Background(),
 				thread.ID,
 				claude.Config{
-					Binary:  writeClaudePassthroughBinary(t),
+					Binary:  writeClaudeInterruptResponderBinary(t),
 					WorkDir: thread.WorkspacePath,
 				},
 				func(provider.ProviderEvent) {},

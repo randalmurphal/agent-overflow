@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -888,33 +889,165 @@ func TestRespondToApprovalDenyFormat(t *testing.T) {
 	}
 }
 
-func TestInterruptFormat(t *testing.T) {
-	msg := map[string]any{
-		"type": "control",
-		"control": map[string]string{
-			"type": "interrupt",
-		},
+// TestSession_Interrupt_SuccessRoundTrip drives the happy path end to
+// end: Interrupt writes an interrupt control_request, the fake CLI
+// matches the request_id and replies with subtype=success, and
+// Interrupt returns nil. Implicitly validates the wire envelope shape
+// because the fake CLI's stdin matcher only fires for
+// `"type":"control_request"` + `"subtype":"interrupt"` together (see
+// interruptResponderScript). Pre-fix the malformed envelope wouldn't
+// match and this test would time out into the kill fallback instead
+// of returning nil.
+func TestSession_Interrupt_SuccessRoundTrip(t *testing.T) {
+	s := newInterruptResponderSession(t, "success", 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := s.Interrupt(ctx); err != nil {
+		t.Fatalf("Interrupt: %v", err)
 	}
-	data, err := json.Marshal(msg)
+}
+
+// TestSession_Interrupt_WireEnvelopeShape captures the line written to
+// stdin and asserts the exact envelope shape the SDK protocol
+// requires: `{"type":"control_request","request_id":"so-N","request":{"subtype":"interrupt"}}`.
+// This is a stronger gate than the SuccessRoundTrip test — a future
+// regression that changed the envelope structure but happened to
+// still contain the magic substrings would slip past the responder
+// script but fail this assertion.
+func TestSession_Interrupt_WireEnvelopeShape(t *testing.T) {
+	capturePath := t.TempDir() + "/interrupt-line.json"
+	ctx, cancel := context.WithCancel(context.Background())
+	proc, err := provider.Spawn(ctx, provider.SpawnConfig{
+		Binary: "sh",
+		Args: []string{"-c", `
+			IFS= read -r line || exit 1
+			printf '%s\n' "$line" > "$CAPTURE_PATH"
+			reqid=$(printf '%s' "$line" | sed -n 's/.*"request_id":"\([^"]*\)".*/\1/p')
+			printf '{"type":"control_response","response":{"subtype":"success","request_id":"%s","response":{}}}\n' "$reqid"
+		`},
+		Env: map[string]string{"CAPTURE_PATH": capturePath},
+	})
 	if err != nil {
-		t.Fatalf("marshal: %v", err)
+		t.Fatalf("spawn: %v", err)
+	}
+	s := &Session{
+		proc:                  proc,
+		threadID:              testThread,
+		onEvent:               func(provider.ProviderEvent) {},
+		cancel:                cancel,
+		readDone:              make(chan struct{}),
+		controlRequestTimeout: 2 * time.Second,
+	}
+	go s.readLoop()
+	t.Cleanup(func() { _ = s.Close() })
+
+	if err := s.Interrupt(context.Background()); err != nil {
+		t.Fatalf("Interrupt: %v", err)
 	}
 
-	var parsed map[string]json.RawMessage
-	json.Unmarshal(data, &parsed)
-
-	var msgType string
-	json.Unmarshal(parsed["type"], &msgType)
-	if msgType != "control" {
-		t.Errorf("type: got %q, want %q", msgType, "control")
+	data, err := os.ReadFile(capturePath)
+	if err != nil {
+		t.Fatalf("read captured line: %v", err)
 	}
-
-	var control struct {
-		Type string `json:"type"`
+	var frame struct {
+		Type      string `json:"type"`
+		RequestID string `json:"request_id"`
+		Request   struct {
+			Subtype string `json:"subtype"`
+		} `json:"request"`
 	}
-	json.Unmarshal(parsed["control"], &control)
-	if control.Type != "interrupt" {
-		t.Errorf("control type: got %q, want %q", control.Type, "interrupt")
+	if err := json.Unmarshal(data, &frame); err != nil {
+		t.Fatalf("unmarshal captured envelope: %v", err)
+	}
+	if frame.Type != "control_request" {
+		t.Errorf("envelope type = %q, want control_request", frame.Type)
+	}
+	if frame.RequestID == "" {
+		t.Errorf("envelope request_id is empty (must be set so control_response can correlate)")
+	}
+	if frame.Request.Subtype != "interrupt" {
+		t.Errorf("envelope request.subtype = %q, want interrupt", frame.Request.Subtype)
+	}
+}
+
+// TestSession_Interrupt_ErrorResponse confirms that a subtype=error
+// response surfaces as a non-nil error whose message contains the
+// provider-supplied detail. Negative-asserts that the error is NOT
+// classified as a kill so the app layer doesn't accidentally evict
+// sessions on benign provider errors (e.g. interrupting between turns
+// when no turn is open).
+func TestSession_Interrupt_ErrorResponse(t *testing.T) {
+	s := newInterruptResponderSession(t, "error", 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	err := s.Interrupt(ctx)
+	if err == nil {
+		t.Fatal("Interrupt error: expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "no active turn") {
+		t.Errorf("error should surface provider detail, got: %v", err)
+	}
+}
+
+// TestSession_Interrupt_TimeoutSurfaces exercises the no-ack path:
+// the fake CLI consumes the request and goes silent, Interrupt must
+// return a timeout error within the configured window. We deliberately
+// do NOT escalate to a process kill — that would also kill backgrounded
+// tasks (inverting the documented foreground-only behaviour) and
+// silently mask a Claude Code CLI bug. The error surfaces to the user
+// as a toast.
+func TestSession_Interrupt_TimeoutSurfaces(t *testing.T) {
+	s := newInterruptResponderSession(t, "silent", 150*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	err := s.Interrupt(ctx)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("Interrupt timeout: expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "timeout") {
+		t.Errorf("error should mention timeout, got: %v", err)
+	}
+	if elapsed > 1*time.Second {
+		t.Errorf("Interrupt took %s, expected near 150ms (matches sibling StopTask test bound)", elapsed)
+	}
+	// Session must still be alive — no kill fallback. Backgrounded
+	// tasks the user spawned still need to keep running per the wire
+	// contract.
+	select {
+	case <-s.proc.Done():
+		t.Fatal("process was killed on Interrupt timeout — should only stop the model, not the session")
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+// TestSession_Interrupt_CtxCancelSurfaces confirms the ctx.Done branch
+// returns the ctx error to the caller without killing the session.
+func TestSession_Interrupt_CtxCancelSurfaces(t *testing.T) {
+	s := newInterruptResponderSession(t, "silent", 5*time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// Cancel after the request is in flight but before any response.
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		cancel()
+	}()
+
+	err := s.Interrupt(ctx)
+	if err == nil {
+		t.Fatal("Interrupt ctx-cancel: expected error, got nil")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("error chain should preserve ctx.Canceled, got: %v", err)
+	}
+	// Session stays alive — see TimeoutSurfaces for the rationale.
+	select {
+	case <-s.proc.Done():
+		t.Fatal("process was killed on ctx-cancel — should only release the request, not stop the session")
+	case <-time.After(100 * time.Millisecond):
 	}
 }
 
@@ -1287,11 +1420,72 @@ func TestFullAccessToolRequestLeavesInteractiveExceptionsPending(t *testing.T) {
 	}
 }
 
-func TestSessionInterrupt(t *testing.T) {
-	s, _ := newTestClaudeSession(t)
-	if err := s.Interrupt(context.Background()); err != nil {
-		t.Fatalf("Interrupt: %v", err)
+// interruptResponderScript is a bash fake-CLI that reads stdin line by
+// line and writes a canned control_response for every interrupt
+// request it sees. Mirrors stopTaskResponderScript:
+//   - "success": subtype=success, echoes back the request_id
+//   - "error":   subtype=error with a provider-side message
+//   - "silent":  drops the line; never responds (timeout/kill path)
+func interruptResponderScript(mode string) string {
+	// The case alternation accepts either field order because
+	// json.Marshal on a map[string]any sorts keys alphabetically — the
+	// "type" field can land either before or after "subtype" depending
+	// on what other keys are present.
+	const header = `#!/bin/sh
+set -u
+while IFS= read -r line; do
+    case "$line" in
+        *'"type":"control_request"'*'"subtype":"interrupt"'* | *'"subtype":"interrupt"'*'"type":"control_request"'*)
+            reqid=$(printf '%s' "$line" | sed -n 's/.*"request_id":"\([^"]*\)".*/\1/p')
+`
+	const footer = `
+            ;;
+    esac
+done
+`
+	var body string
+	switch mode {
+	case "success":
+		body = `            printf '{"type":"control_response","response":{"subtype":"success","request_id":"%s","response":{}}}\n' "$reqid"`
+	case "error":
+		body = `            printf '{"type":"control_response","response":{"subtype":"error","request_id":"%s","error":"no active turn"}}\n' "$reqid"`
+	case "silent":
+		body = `            : # drop the line deliberately to exercise the timeout fallback`
+	default:
+		body = `            : # unknown mode — never happens in tests`
 	}
+	return header + body + footer
+}
+
+// newInterruptResponderSession spawns a Session backed by the fake-CLI
+// script returned by interruptResponderScript. Wraps the boilerplate
+// shared by the Interrupt round-trip tests, mirroring
+// newStopTaskResponderSession.
+func newInterruptResponderSession(t *testing.T, mode string, interruptTimeout time.Duration) *Session {
+	t.Helper()
+	scriptDir := t.TempDir()
+	scriptPath := scriptDir + "/fake-claude"
+	if err := os.WriteFile(scriptPath, []byte(interruptResponderScript(mode)), 0755); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	proc, err := provider.Spawn(ctx, provider.SpawnConfig{Binary: scriptPath})
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+	s := &Session{
+		proc:                  proc,
+		threadID:              testThread,
+		onEvent:               func(evt provider.ProviderEvent) { _ = evt },
+		cancel:                cancel,
+		readDone:              make(chan struct{}),
+		controlRequestTimeout: interruptTimeout,
+	}
+	go s.readLoop()
+	t.Cleanup(func() {
+		_ = s.Close()
+	})
+	return s
 }
 
 func TestSessionRespondToApproval(t *testing.T) {

@@ -532,6 +532,10 @@ func TestE2E_InterruptMidTurn(t *testing.T) {
 		t.Fatalf("UpdateThreadRuntimeMode: %v", err)
 	}
 
+	// The mock script auto-acks interrupt control_requests with a
+	// success response and does not advance the index counter, so
+	// responses[i] tracks user-message turns 1:1 instead of every
+	// stdin line.
 	responses := [][]string{
 		{
 			`{"type":"system","subtype":"init","session_id":"sess-int","model":"claude-opus-4-7","cwd":"/tmp","tools":[],"claude_code_version":"1.0"}`,
@@ -540,9 +544,6 @@ func TestE2E_InterruptMidTurn(t *testing.T) {
 			`{"type":"stream_event","event":"content_block_stop","data":{"type":"content_block_stop","index":0}}`,
 			`{"type":"assistant","message":{"id":"m1","role":"assistant","content":[{"type":"text","text":"partial..."}]}}`,
 		},
-		// 2nd stdin line is the interrupt. We just consume it silently.
-		{},
-		// 3rd stdin line is the next user message; emit full reply.
 		{
 			`{"type":"stream_event","event":"content_block_start","data":{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}}`,
 			`{"type":"stream_event","event":"content_block_delta","data":{"type":"content_block_delta","delta":{"type":"text_delta","text":"after interrupt"}}}`,

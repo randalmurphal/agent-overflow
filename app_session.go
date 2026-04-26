@@ -265,8 +265,11 @@ func (a *App) SendMessageWithOptions(threadID string, content string, opts SendM
 }
 
 // InterruptTurn fires a provider-level interrupt on the thread's active
-// session. Returns an error when no session is active or the provider
-// surface isn't wired up.
+// session. Returns an error when no session is active, the provider
+// surface isn't wired up, or the provider's Interrupt call failed
+// (e.g. CLI never acked the control_request — surfaces as a toast so
+// a wedged Claude Code CLI is visible to the user rather than silently
+// masked).
 //
 // Spec: on user interrupt, any streaming items on the current turn are
 // flipped to errored with a " — stopped" suffix, and a system `error`
@@ -276,6 +279,9 @@ func (a *App) SendMessageWithOptions(threadID string, content string, opts SendM
 // bookkeeping fails we log — the provider interrupt already fired, so
 // the session state is correct even if the timeline marker is missing.
 func (a *App) InterruptTurn(threadID string) error {
+	if a.shuttingDown.Load() {
+		return ErrShuttingDown
+	}
 	a.mu.Lock()
 	sess, ok := a.sessions[threadID]
 	a.mu.Unlock()
@@ -292,7 +298,7 @@ func (a *App) InterruptTurn(threadID string) error {
 	}
 	if a.triage != nil {
 		if _, err := a.triage.MarkUserInterrupt(threadID); err != nil {
-			log.Printf("interrupt turn: mark user interrupt: %v", err)
+			log.Printf("app: interrupt turn: mark user interrupt: %v", err)
 		}
 	}
 	return nil

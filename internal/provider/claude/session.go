@@ -340,56 +340,19 @@ func (s *Session) setPermissionMode(ctx context.Context, mode string) error {
 	if mode == s.getCurrentPermissionMode() {
 		return nil
 	}
-	requestID := s.allocateControlRequestID()
-	ch := make(chan *controlResponseResult, 1)
-	if !s.registerControlRequest(requestID, ch) {
-		return fmt.Errorf("claude: set permission mode: session closing")
-	}
-
-	msg := map[string]any{
-		"type":       "control_request",
-		"request_id": requestID,
-		"request": map[string]any{
-			"subtype": "set_permission_mode",
-			"mode":    mode,
-		},
-	}
-	data, err := json.Marshal(msg)
+	opName := "set permission mode " + mode
+	res, err := s.sendControlRequest(ctx, opName, map[string]any{
+		"subtype": "set_permission_mode",
+		"mode":    mode,
+	})
 	if err != nil {
-		s.releaseControlRequest(requestID)
-		return fmt.Errorf("claude: marshal set_permission_mode: %w", err)
+		return err
 	}
-	if err := s.proc.WriteLine(data); err != nil {
-		s.releaseControlRequest(requestID)
-		return fmt.Errorf("claude: write set_permission_mode: %w", err)
+	if err := interpretControlResponse(res, opName); err != nil {
+		return err
 	}
-
-	timeout := s.controlRequestTimeout
-	if timeout <= 0 {
-		timeout = DefaultControlRequestTimeout
-	}
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		s.releaseControlRequest(requestID)
-		return fmt.Errorf("claude: set permission mode %s: %w", mode, ctx.Err())
-	case <-timer.C:
-		s.releaseControlRequest(requestID)
-		return fmt.Errorf("claude: set permission mode %s: timeout after %s", mode, timeout)
-	case res, ok := <-ch:
-		if !ok || res == nil {
-			return fmt.Errorf("claude: set permission mode %s: session closed before response", mode)
-		}
-		if res.ok {
-			s.setCurrentPermissionMode(mode)
-			return nil
-		}
-		if res.errMsg == "" {
-			return fmt.Errorf("claude: set permission mode %s: provider returned unspecified error", mode)
-		}
-		return fmt.Errorf("claude: set permission mode %s: %s", mode, res.errMsg)
-	}
+	s.setCurrentPermissionMode(mode)
+	return nil
 }
 
 // SetInteractionMode applies a chat/plan mode change to the live Claude
@@ -557,19 +520,27 @@ func (s *Session) disarmIdleWatchdog() {
 	s.pulseIdleWatchdog()
 }
 
-// Interrupt sends a control interrupt to the CLI.
+// Interrupt aborts the current turn by sending a control_request with
+// subtype "interrupt" and waiting for the CLI's control_response. Per
+// claude-wire.md §control_request, the CLI's interrupt handler stops
+// the model and reaps in-flight foreground tool subprocesses;
+// backgrounded tasks (Bash run_in_background:true, Task subagents)
+// survive by design and are stopped individually via stop_task.
+//
+// If the CLI never acks (timeout or caller-context cancellation), the
+// error surfaces to the caller — the failure is the CLI's to fix
+// (every Anthropic SDK uses the same control_request primitive). We
+// deliberately do NOT escalate to a process kill here: a kill would
+// take down backgrounded tasks too, inverting the documented
+// foreground-only behaviour and silently masking a Claude Code bug.
 func (s *Session) Interrupt(ctx context.Context) error {
-	msg := map[string]any{
-		"type": "control",
-		"control": map[string]string{
-			"type": "interrupt",
-		},
-	}
-	data, err := json.Marshal(msg)
+	res, err := s.sendControlRequest(ctx, "interrupt", map[string]any{
+		"subtype": "interrupt",
+	})
 	if err != nil {
-		return fmt.Errorf("claude: marshal interrupt: %w", err)
+		return err
 	}
-	return s.proc.WriteLine(data)
+	return interpretControlResponse(res, "interrupt")
 }
 
 // StopTask kills a backgrounded Claude task (Bash with
@@ -594,30 +565,48 @@ func (s *Session) StopTask(ctx context.Context, taskID string) error {
 	if taskID == "" {
 		return fmt.Errorf("claude: stop_task: empty task_id")
 	}
+	opName := "stop_task " + taskID
+	res, err := s.sendControlRequest(ctx, opName, map[string]any{
+		"subtype": "stop_task",
+		"task_id": taskID,
+	})
+	if err != nil {
+		return err
+	}
+	return interpretControlResponse(res, opName)
+}
 
+// sendControlRequest is the shared round-trip for every outbound
+// control_request the session originates (interrupt, stop_task,
+// set_permission_mode). It allocates a request_id, registers the
+// pending response channel, marshals + writes the envelope, and
+// blocks on either ctx.Done, the configured timeout, or the matching
+// control_response. Errors are wrapped with "claude: <opName>: ..."
+// so callers don't repeat the prefix; the raw result is returned for
+// the caller to interpret (success vs error subtype) — usually via
+// interpretControlResponse, except where the caller has additional
+// per-success side effects (e.g. setPermissionMode caching the new
+// mode).
+func (s *Session) sendControlRequest(ctx context.Context, opName string, request map[string]any) (*controlResponseResult, error) {
 	requestID := s.allocateControlRequestID()
 	ch := make(chan *controlResponseResult, 1)
 	if !s.registerControlRequest(requestID, ch) {
-		return fmt.Errorf("claude: stop_task: session closing")
+		return nil, fmt.Errorf("claude: %s: session closing", opName)
 	}
 
 	msg := map[string]any{
 		"type":       "control_request",
 		"request_id": requestID,
-		"request": map[string]any{
-			"subtype": "stop_task",
-			"task_id": taskID,
-		},
+		"request":    request,
 	}
 	data, err := json.Marshal(msg)
 	if err != nil {
 		s.releaseControlRequest(requestID)
-		return fmt.Errorf("claude: marshal stop_task: %w", err)
+		return nil, fmt.Errorf("claude: marshal %s: %w", opName, err)
 	}
-
 	if err := s.proc.WriteLine(data); err != nil {
 		s.releaseControlRequest(requestID)
-		return fmt.Errorf("claude: write stop_task: %w", err)
+		return nil, fmt.Errorf("claude: write %s: %w", opName, err)
 	}
 
 	timeout := s.controlRequestTimeout
@@ -630,22 +619,32 @@ func (s *Session) StopTask(ctx context.Context, taskID string) error {
 	select {
 	case <-ctx.Done():
 		s.releaseControlRequest(requestID)
-		return fmt.Errorf("claude: stop_task %s: %w", taskID, ctx.Err())
+		return nil, fmt.Errorf("claude: %s: %w", opName, ctx.Err())
 	case <-timer.C:
 		s.releaseControlRequest(requestID)
-		return fmt.Errorf("claude: stop_task %s: timeout after %s", taskID, timeout)
+		return nil, fmt.Errorf("claude: %s: timeout after %s", opName, timeout)
 	case res, ok := <-ch:
+		// deliverControlResponse already removed the entry under lock;
+		// nothing for us to release here.
 		if !ok || res == nil {
-			return fmt.Errorf("claude: stop_task %s: session closed before response", taskID)
+			return nil, fmt.Errorf("claude: %s: session closed before response", opName)
 		}
-		if res.ok {
-			return nil
-		}
-		if res.errMsg == "" {
-			return fmt.Errorf("claude: stop_task %s: provider returned unspecified error", taskID)
-		}
-		return fmt.Errorf("claude: stop_task %s: %s", taskID, res.errMsg)
+		return res, nil
 	}
+}
+
+// interpretControlResponse converts a delivered control_response into
+// the standard success-or-wrapped-error pair every caller needs. Used
+// directly by Interrupt and StopTask; setPermissionMode inlines the
+// equivalent logic because it has a per-success side effect to run.
+func interpretControlResponse(res *controlResponseResult, opName string) error {
+	if res.ok {
+		return nil
+	}
+	if res.errMsg == "" {
+		return fmt.Errorf("claude: %s: provider returned unspecified error", opName)
+	}
+	return fmt.Errorf("claude: %s: %s", opName, res.errMsg)
 }
 
 // allocateControlRequestID generates a request_id unique within the

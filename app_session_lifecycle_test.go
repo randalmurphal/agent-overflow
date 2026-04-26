@@ -238,6 +238,33 @@ func writeClaudePassthroughBinary(t *testing.T) string {
 	return path
 }
 
+// writeClaudeInterruptResponderBinary is a fake-CLI script that
+// acknowledges every interrupt control_request with a synthetic
+// success control_response. Use this in tests where InterruptTurn
+// must take the clean round-trip path — the passthrough binary
+// doesn't respond, so it would force the 10s default timeout per
+// test. Case alternation accepts either field order because
+// json.Marshal on map[string]any sorts keys alphabetically.
+func writeClaudeInterruptResponderBinary(t *testing.T) string {
+	t.Helper()
+	script := `#!/bin/sh
+set -u
+while IFS= read -r line; do
+    case "$line" in
+        *'"type":"control_request"'*'"subtype":"interrupt"'* | *'"subtype":"interrupt"'*'"type":"control_request"'*)
+            reqid=$(printf '%s' "$line" | sed -n 's/.*"request_id":"\([^"]*\)".*/\1/p')
+            printf '{"type":"control_response","response":{"subtype":"success","request_id":"%s","response":{}}}\n' "$reqid"
+            ;;
+    esac
+done
+`
+	path := filepath.Join(t.TempDir(), "claude-interrupt-responder.sh")
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	return path
+}
+
 func writeClaudeFailOnCloseBinary(t *testing.T) string {
 	t.Helper()
 
