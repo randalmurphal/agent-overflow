@@ -109,7 +109,7 @@ func TestComposer_DraftSaveLoadRoundTrip(t *testing.T) {
 			CreatedAt: 1700_000,
 		},
 	}
-	if err := app.SaveDraft("thr-rt", "hello @file please", []string{"att-1", "att-2"}, chips); err != nil {
+	if err := app.SaveDraft("thr-rt", "hello @file please", []string{"att-1", "att-2"}, chips, nil); err != nil {
 		t.Fatalf("SaveDraft: %v", err)
 	}
 
@@ -137,10 +137,10 @@ func TestComposer_DraftOverwritePreservesMostRecent(t *testing.T) {
 	app, _ := newComposerTestApp(t)
 	composerSeedThread(t, app, "thr-over", "")
 
-	if err := app.SaveDraft("thr-over", "v1", []string{"a"}, nil); err != nil {
+	if err := app.SaveDraft("thr-over", "v1", []string{"a"}, nil, nil); err != nil {
 		t.Fatalf("SaveDraft v1: %v", err)
 	}
-	if err := app.SaveDraft("thr-over", "v2", []string{"b"}, nil); err != nil {
+	if err := app.SaveDraft("thr-over", "v2", []string{"b"}, nil, nil); err != nil {
 		t.Fatalf("SaveDraft v2: %v", err)
 	}
 	got, err := app.GetDraft("thr-over")
@@ -161,7 +161,7 @@ func TestComposer_DraftClearRemovesRow(t *testing.T) {
 	app, _ := newComposerTestApp(t)
 	composerSeedThread(t, app, "thr-clear", "")
 
-	if err := app.SaveDraft("thr-clear", "to clear", []string{"a"}, nil); err != nil {
+	if err := app.SaveDraft("thr-clear", "to clear", []string{"a"}, nil, nil); err != nil {
 		t.Fatalf("SaveDraft: %v", err)
 	}
 	if err := app.ClearDraft("thr-clear"); err != nil {
@@ -196,11 +196,11 @@ func TestComposer_DraftStaleGenerationCounterRejected(t *testing.T) {
 	composerSeedThread(t, app, "thr-gen", "")
 
 	// "Newer" save with higher logical generation (gen=1, content "new").
-	if err := app.SaveDraft("thr-gen", "new", nil, nil); err != nil {
+	if err := app.SaveDraft("thr-gen", "new", nil, nil, nil); err != nil {
 		t.Fatalf("SaveDraft gen=1: %v", err)
 	}
 	// "Older" save arriving late (gen=0, content "old"). No counter → it wins.
-	if err := app.SaveDraft("thr-gen", "old", nil, nil); err != nil {
+	if err := app.SaveDraft("thr-gen", "old", nil, nil, nil); err != nil {
 		t.Fatalf("SaveDraft gen=0: %v", err)
 	}
 	got, err := app.GetDraft("thr-gen")
@@ -219,10 +219,10 @@ func TestComposer_DraftPerThreadIsolation(t *testing.T) {
 	composerSeedThread(t, app, "thr-iso-a", "")
 	composerSeedThread(t, app, "thr-iso-b", "")
 
-	if err := app.SaveDraft("thr-iso-a", "A content", nil, nil); err != nil {
+	if err := app.SaveDraft("thr-iso-a", "A content", nil, nil, nil); err != nil {
 		t.Fatalf("SaveDraft A: %v", err)
 	}
-	if err := app.SaveDraft("thr-iso-b", "B content", []string{"b-att"}, nil); err != nil {
+	if err := app.SaveDraft("thr-iso-b", "B content", []string{"b-att"}, nil, nil); err != nil {
 		t.Fatalf("SaveDraft B: %v", err)
 	}
 
@@ -248,7 +248,7 @@ func TestComposer_DraftCascadeOnThreadDelete(t *testing.T) {
 	app, _ := newComposerTestApp(t)
 	composerSeedThread(t, app, "thr-cascade", "")
 
-	if err := app.SaveDraft("thr-cascade", "doomed", nil, nil); err != nil {
+	if err := app.SaveDraft("thr-cascade", "doomed", nil, nil, nil); err != nil {
 		t.Fatalf("SaveDraft: %v", err)
 	}
 
@@ -282,7 +282,7 @@ func TestComposer_AttachmentReferenceInDraft(t *testing.T) {
 	}
 
 	if err := app.SaveDraft("thr-att-draft", "see: ",
-		[]string{first.ID, second.ID}, nil); err != nil {
+		[]string{first.ID, second.ID}, nil, nil); err != nil {
 		t.Fatalf("SaveDraft: %v", err)
 	}
 
@@ -523,10 +523,10 @@ func TestComposer_AttachmentNotLostOnDraftSave(t *testing.T) {
 		t.Fatalf("UploadAttachment: %v", err)
 	}
 
-	if err := app.SaveDraft("thr-att-save", "hi", []string{record.ID}, nil); err != nil {
+	if err := app.SaveDraft("thr-att-save", "hi", []string{record.ID}, nil, nil); err != nil {
 		t.Fatalf("SaveDraft with ref: %v", err)
 	}
-	if err := app.SaveDraft("thr-att-save", "hi again", nil, nil); err != nil {
+	if err := app.SaveDraft("thr-att-save", "hi again", nil, nil, nil); err != nil {
 		t.Fatalf("SaveDraft without ref: %v", err)
 	}
 
@@ -548,7 +548,7 @@ func TestComposer_SendMessageClearsDraft(t *testing.T) {
 	app, _ := newComposerTestApp(t)
 	thread := composerSeedThread(t, app, "thr-send-draft", "")
 
-	if err := app.SaveDraft(thread.ID, "draft text", nil, nil); err != nil {
+	if err := app.SaveDraft(thread.ID, "draft text", nil, nil, nil); err != nil {
 		t.Fatalf("SaveDraft: %v", err)
 	}
 
@@ -655,7 +655,7 @@ func TestComposer_LargeDraftHandled(t *testing.T) {
 		b.WriteByte(byte('a' + (i % 26)))
 	}
 	big := b.String()
-	if err := app.SaveDraft("thr-big", big, nil, nil); err != nil {
+	if err := app.SaveDraft("thr-big", big, nil, nil, nil); err != nil {
 		t.Fatalf("SaveDraft big: %v", err)
 	}
 	got, err := app.GetDraft("thr-big")
@@ -677,7 +677,7 @@ func TestComposer_EmptyDraftSaveIsNoOp(t *testing.T) {
 	app, _ := newComposerTestApp(t)
 	composerSeedThread(t, app, "thr-empty-save", "")
 
-	if err := app.SaveDraft("thr-empty-save", "", nil, nil); err != nil {
+	if err := app.SaveDraft("thr-empty-save", "", nil, nil, nil); err != nil {
 		t.Fatalf("SaveDraft empty: %v", err)
 	}
 	got, err := app.GetDraft("thr-empty-save")
@@ -729,7 +729,7 @@ func TestComposer_DraftSurvivesRestart(t *testing.T) {
 	if err := app1.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
-	if err := app1.SaveDraft(threadID, "survived", []string{"abc"}, []TerminalChip{{ID: "c1", Content: "body"}}); err != nil {
+	if err := app1.SaveDraft(threadID, "survived", []string{"abc"}, []TerminalChip{{ID: "c1", Content: "body"}}, nil); err != nil {
 		t.Fatalf("SaveDraft: %v", err)
 	}
 	if err := st1.Close(); err != nil {

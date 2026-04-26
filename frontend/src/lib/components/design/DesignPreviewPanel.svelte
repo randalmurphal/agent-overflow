@@ -76,7 +76,7 @@
       // 4. Seed the draft with a concise reference + the attachment.
       const prompt = `Design reference: ${artifact.title}\n\nImplement this design.`;
       try {
-        await SaveDraft(newThread.id, prompt, attachmentId ? [attachmentId] : [], []);
+        await SaveDraft(newThread.id, prompt, attachmentId ? [attachmentId] : [], [], null);
       } catch (err) {
         console.error('Draft seed failed:', err);
       }

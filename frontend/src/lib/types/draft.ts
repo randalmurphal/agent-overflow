@@ -1,3 +1,5 @@
+import type { SourceProposedPlan } from './models';
+
 export interface TerminalChip {
   id: string;
   label: string;
@@ -11,6 +13,7 @@ export interface Draft {
   content: string;
   attachmentIds: string[];
   terminalChips: TerminalChip[];
+  sourceProposedPlan?: SourceProposedPlan | null;
   updatedAt: number;
 }
 
@@ -20,6 +23,7 @@ export function emptyDraft(threadId = ''): Draft {
     content: '',
     attachmentIds: [],
     terminalChips: [],
+    sourceProposedPlan: null,
     updatedAt: 0,
   };
 }

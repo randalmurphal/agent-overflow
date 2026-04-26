@@ -166,11 +166,26 @@ func (s *Store) ListThreads() ([]Thread, error) {
 // are still included even before their first user turn because
 // StartDiscussion inserts the assistant's opening plan as an item, so the
 // EXISTS probe already considers them non-empty.
+//
+// One carve-out: drafts created by "Implement plan in new thread" carry a
+// non-null thread_drafts.pending_plan_implementation and should appear in
+// the sidebar immediately so the user can find them, pick settings, and
+// send. The carve-out uses a non-correlated `IN (SELECT ... WHERE ... IS
+// NOT NULL)` rather than a correlated EXISTS so SQLite picks the partial
+// index `idx_thread_drafts_pending_plan_impl` (v31) — the index covers
+// exactly the "drafts that are plan implementations" subset, so the
+// lookup is O(plan-impl drafts) rather than O(threads).
 func (s *Store) ListThreadsWithItems() ([]Thread, error) {
 	rows, err := s.db.Query(
 		`SELECT ` + threadColumns + ` FROM threads
 		 WHERE archived = 0
-		   AND EXISTS (SELECT 1 FROM items WHERE items.thread_id = threads.id)
+		   AND (
+		       EXISTS (SELECT 1 FROM items WHERE items.thread_id = threads.id)
+		    OR threads.id IN (
+		         SELECT thread_id FROM thread_drafts
+		          WHERE pending_plan_implementation IS NOT NULL
+		       )
+		   )
 		 ORDER BY updated_at DESC`,
 	)
 	if err != nil {

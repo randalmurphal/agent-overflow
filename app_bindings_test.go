@@ -110,6 +110,81 @@ func TestCreateThreadDefaultsMode(t *testing.T) {
 	}
 }
 
+// CreateThread inherits a sibling thread's worktree state when WorktreePath
+// is supplied (used by "Implement plan in new thread"). The path must
+// resolve to a real worktree of the project — bogus paths are rejected so
+// a future caller can't spawn a provider session inside an arbitrary
+// directory like ~/.ssh.
+func TestCreateThreadInheritsWorktreeAndBranch(t *testing.T) {
+	app := newTestAppWithStore(t)
+	repo := testutil.InitGitRepo(t)
+	worktreeDir := filepath.Join(t.TempDir(), "inherit-worktree")
+	testutil.RunGit(t, repo, "worktree", "add", "-b", "feat/foo", worktreeDir)
+
+	project, err := app.ensureProjectForWorkspace(repo)
+	if err != nil {
+		t.Fatalf("ensureProjectForWorkspace: %v", err)
+	}
+
+	thread, err := app.CreateThread(CreateThreadOptions{
+		ProjectID:    project.ID,
+		Provider:     string(provider.Codex),
+		Model:        "gpt-5.4",
+		Mode:         "chat",
+		Title:        "Implement Foo",
+		WorktreePath: worktreeDir,
+		// Branch left empty so the validation falls back to the worktree's
+		// own branch (proves we're reading from gitops.ListWorktrees).
+	})
+	if err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	if thread.Title != "Implement Foo" {
+		t.Errorf("Title = %q, want %q", thread.Title, "Implement Foo")
+	}
+	if !samePath(thread.WorkspacePath, worktreeDir) {
+		t.Errorf("WorkspacePath = %q, want %q", thread.WorkspacePath, worktreeDir)
+	}
+	if !samePath(thread.WorktreePath, worktreeDir) {
+		t.Errorf("WorktreePath = %q, want %q", thread.WorktreePath, worktreeDir)
+	}
+	if thread.Branch != "feat/foo" {
+		t.Errorf("Branch = %q, want feat/foo", thread.Branch)
+	}
+}
+
+// CreateThread rejects a WorktreePath that isn't actually a registered
+// worktree of the project. Without this check, a misbehaving (or future
+// careless) caller could spawn a provider session with WorkDir set to
+// any path on disk — directly under LocalOnlyMethods is enough for now,
+// but defense in depth is cheap.
+func TestCreateThreadRejectsUnknownWorktreePath(t *testing.T) {
+	app := newTestAppWithStore(t)
+	repo := testutil.InitGitRepo(t)
+	project, err := app.ensureProjectForWorkspace(repo)
+	if err != nil {
+		t.Fatalf("ensureProjectForWorkspace: %v", err)
+	}
+
+	bogus := filepath.Join(t.TempDir(), "not-a-worktree")
+	if err := os.MkdirAll(bogus, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	_, err = app.CreateThread(CreateThreadOptions{
+		ProjectID:    project.ID,
+		Provider:     string(provider.Codex),
+		Model:        "gpt-5.4",
+		Mode:         "chat",
+		WorktreePath: bogus,
+	})
+	if err == nil {
+		t.Fatal("CreateThread accepted a non-worktree path; expected rejection")
+	}
+	if !strings.Contains(err.Error(), "not a worktree") {
+		t.Fatalf("error = %q, want substring 'not a worktree'", err)
+	}
+}
+
 func TestCreateThreadDetectsGitProjectPath(t *testing.T) {
 	app := newTestAppWithStore(t)
 	repo := testutil.InitGitRepo(t)

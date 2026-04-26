@@ -33,6 +33,24 @@ export function stripDisplayedPlanMarkdown(planMarkdown: string): string {
   return sourceLines.join('\n');
 }
 
+/**
+ * Wrap plan markdown into the prompt body the agent sees when the user
+ * implements a plan. Stable string literal — referenced from tests too.
+ */
+export function buildPlanImplementationPrompt(planMarkdown: string): string {
+  return `PLEASE IMPLEMENT THIS PLAN:\n${planMarkdown.trim()}`;
+}
+
+/**
+ * Title used for the new thread spawned by "Implement plan in new thread".
+ * Falls back to a generic label when the plan has no leading heading.
+ */
+export function buildPlanImplementationThreadTitle(planMarkdown: string): string {
+  const title = proposedPlanTitle(planMarkdown);
+  if (!title) return 'Implement plan';
+  return `Implement ${title}`;
+}
+
 function sanitizePlanFileSegment(input: string): string {
   const sanitized = input
     .toLowerCase()

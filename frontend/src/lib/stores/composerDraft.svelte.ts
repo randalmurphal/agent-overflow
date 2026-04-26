@@ -1,5 +1,6 @@
 import type { Attachment } from '../types/attachment';
 import type { Draft, TerminalChip } from '../types/draft';
+import type { SourceProposedPlan } from '../types/models';
 import {
   ClearDraft,
   GetDraft,
@@ -29,6 +30,11 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
   let content: string = $state('');
   let attachments: Attachment[] = $state([]);
   let terminalChips: TerminalChip[] = $state([]);
+  // sourceProposedPlan links the draft back to a proposed-plan item when the
+  // draft was seeded by "Implement plan in new thread". The send path reads
+  // it so the original plan is marked Accepted on first send; cleared
+  // afterwards so subsequent turns in this thread don't re-mark.
+  let sourceProposedPlan: SourceProposedPlan | null = $state(null);
   let hydrating: boolean = $state(false);
   let error: string | null = $state(null);
 
@@ -60,6 +66,7 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
       const attachmentIds = new Set(draft.attachmentIds ?? []);
       attachments = records.filter((rec) => attachmentIds.has(rec.id));
       terminalChips = draft.terminalChips ?? [];
+      sourceProposedPlan = draft.sourceProposedPlan ?? null;
       content = ensureImagePlaceholders(draft.content ?? '', attachments);
     } catch (err) {
       error = `Failed to load draft: ${errString(err)}`;
@@ -84,6 +91,7 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
           content,
           attachments.map((a) => a.id),
           terminalChips,
+          sourceProposedPlan,
         );
       } catch (err) {
         error = `Failed to save draft: ${errString(err)}`;
@@ -101,6 +109,7 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
         content,
         attachments.map((a) => a.id),
         terminalChips,
+        sourceProposedPlan,
       );
     } catch (err) {
       error = `Failed to save draft: ${errString(err)}`;
@@ -115,6 +124,7 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
     content = '';
     attachments = [];
     terminalChips = [];
+    sourceProposedPlan = null;
     error = null;
     if (id) {
       await hydrate(id);
@@ -127,6 +137,7 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
     get content() { return content; },
     get attachments() { return attachments; },
     get terminalChips() { return terminalChips; },
+    get sourceProposedPlan() { return sourceProposedPlan; },
     get hydrating() { return hydrating; },
     get error() { return error; },
     get hasDraft() {
@@ -175,7 +186,10 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
 
     /**
      * Called after a successful Send. Clears local state and the backend
-     * row so the thread re-loads empty next time.
+     * row so the thread re-loads empty next time. The source-plan ref is
+     * cleared too — the linkage was consumed by the send and any future
+     * turn in this thread should be a regular turn, not "implementing the
+     * plan again."
      */
     async clearAfterSend(): Promise<void> {
       const id = threadId;
@@ -184,6 +198,7 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
       content = '';
       attachments = [];
       terminalChips = [];
+      sourceProposedPlan = null;
       if (!id) return;
       try {
         await ClearDraft(id);
@@ -202,7 +217,12 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
      */
     async restoreDraftFor(
       id: string,
-      snapshot: { content: string; attachments: Attachment[]; terminalChips: TerminalChip[] },
+      snapshot: {
+        content: string;
+        attachments: Attachment[];
+        terminalChips: TerminalChip[];
+        sourceProposedPlan?: SourceProposedPlan | null;
+      },
     ): Promise<void> {
       // Persist the snapshot back to the backend regardless of active thread
       // so the draft lives across thread switches.
@@ -212,6 +232,7 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
           snapshot.content,
           snapshot.attachments.map((a) => a.id),
           snapshot.terminalChips,
+          snapshot.sourceProposedPlan ?? null,
         );
       } catch (err) {
         error = `Failed to restore draft: ${errString(err)}`;
@@ -225,6 +246,7 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
         content = snapshot.content;
         attachments = [...snapshot.attachments];
         terminalChips = [...snapshot.terminalChips];
+        sourceProposedPlan = snapshot.sourceProposedPlan ?? null;
       }
     },
 

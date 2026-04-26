@@ -836,6 +836,26 @@ CREATE INDEX IF NOT EXISTS idx_proposed_plan_comments_plan
 	ON proposed_plan_comments(thread_id, plan_item_id, status, start_line, created_at);
 `,
 	},
+	{
+		Version: 31,
+		Name:    "thread_drafts_pending_plan_implementation",
+		// "Implement plan in new thread" creates a fresh thread whose draft
+		// carries the plan markdown and a JSON-encoded reference back to the
+		// originating proposed-plan item. The column is named for its role
+		// (this draft is preparing to implement a plan), not its payload
+		// shape, because the sidebar visibility carve-out in
+		// ListThreadsWithItems keys on column non-null. Naming it generically
+		// would invite future callers to write source-plan refs for unrelated
+		// reasons and silently change sidebar behavior. The partial index
+		// keeps the visibility lookup O(plan-impl drafts).
+		SQL: `
+ALTER TABLE thread_drafts ADD COLUMN pending_plan_implementation TEXT;
+
+CREATE INDEX IF NOT EXISTS idx_thread_drafts_pending_plan_impl
+  ON thread_drafts(thread_id)
+  WHERE pending_plan_implementation IS NOT NULL;
+`,
+	},
 }
 
 // v13SQL is the DROP-and-rebuild payload for migration v13. Extracted so

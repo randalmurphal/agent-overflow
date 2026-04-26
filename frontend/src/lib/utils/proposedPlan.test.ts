@@ -4,12 +4,14 @@
 
 import { describe, expect, it } from 'vitest';
 import {
-  proposedPlanTitle,
-  stripDisplayedPlanMarkdown,
+  buildPlanImplementationPrompt,
+  buildPlanImplementationThreadTitle,
   buildProposedPlanMarkdownFilename,
   latestProposedPlanItem,
   normalizePlanMarkdownForExport,
+  proposedPlanTitle,
   splitProposedPlanMarkdownBlocks,
+  stripDisplayedPlanMarkdown,
 } from './proposedPlan';
 import type { Item } from '../types/models';
 
@@ -201,5 +203,29 @@ describe('splitProposedPlanMarkdownBlocks', () => {
       { id: '1-5', markdown: '```ts\nconst a = 1;\n\nconst b = 2;\n```', startLine: 1, endLine: 5 },
       { id: '7-7', markdown: 'After', startLine: 7, endLine: 7 },
     ]);
+  });
+});
+
+describe('buildPlanImplementationPrompt', () => {
+  it('prefixes the trimmed plan with PLEASE IMPLEMENT THIS PLAN', () => {
+    expect(buildPlanImplementationPrompt('# Ship feature\n\n- step\n')).toBe(
+      'PLEASE IMPLEMENT THIS PLAN:\n# Ship feature\n\n- step',
+    );
+  });
+
+  it('handles plans without a heading', () => {
+    expect(buildPlanImplementationPrompt('just steps')).toBe(
+      'PLEASE IMPLEMENT THIS PLAN:\njust steps',
+    );
+  });
+});
+
+describe('buildPlanImplementationThreadTitle', () => {
+  it('uses the plan title as the implementation thread title', () => {
+    expect(buildPlanImplementationThreadTitle('# Ship feature\n\nbody')).toBe('Implement Ship feature');
+  });
+
+  it('falls back to a generic label when there is no heading', () => {
+    expect(buildPlanImplementationThreadTitle('- step one\n- step two')).toBe('Implement plan');
   });
 });

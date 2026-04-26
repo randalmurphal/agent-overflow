@@ -21,17 +21,21 @@ type TerminalChip struct {
 
 // Draft is the composer draft state. AttachmentIDs reference rows inserted
 // by UploadAttachment; terminal chips are snippets captured from the
-// terminal drawer.
+// terminal drawer. SourceProposedPlan, when non-nil, links the draft to a
+// proposed plan in another thread — set by "Implement plan in new thread"
+// so the eventual send carries the linkage that marks the original plan
+// Accepted.
 type Draft struct {
-	ThreadID      string         `json:"threadId"`
-	Content       string         `json:"content"`
-	AttachmentIDs []string       `json:"attachmentIds"`
-	TerminalChips []TerminalChip `json:"terminalChips"`
-	UpdatedAt     int64          `json:"updatedAt"`
+	ThreadID           string              `json:"threadId"`
+	Content            string              `json:"content"`
+	AttachmentIDs      []string            `json:"attachmentIds"`
+	TerminalChips      []TerminalChip      `json:"terminalChips"`
+	SourceProposedPlan *SourceProposedPlan `json:"sourceProposedPlan,omitempty"`
+	UpdatedAt          int64               `json:"updatedAt"`
 }
 
 // SaveDraft replaces the draft row for a thread.
-func (a *App) SaveDraft(threadID string, content string, attachmentIDs []string, terminalChips []TerminalChip) error {
+func (a *App) SaveDraft(threadID string, content string, attachmentIDs []string, terminalChips []TerminalChip, sourceProposedPlan *SourceProposedPlan) error {
 	if a.store == nil {
 		return fmt.Errorf("draft store not initialized")
 	}
@@ -43,12 +47,17 @@ func (a *App) SaveDraft(threadID string, content string, attachmentIDs []string,
 	if err != nil {
 		return fmt.Errorf("save draft: encode terminal chips: %w", err)
 	}
+	sourcePlanJSON, err := encodeDraftSourceProposedPlan(sourceProposedPlan)
+	if err != nil {
+		return fmt.Errorf("save draft: encode source proposed plan: %w", err)
+	}
 	return a.store.UpsertThreadDraft(store.ThreadDraft{
-		ThreadID:      threadID,
-		Content:       content,
-		Attachments:   string(attachmentsJSON),
-		TerminalChips: string(chipsJSON),
-		UpdatedAt:     time.Now().UnixMilli(),
+		ThreadID:                  threadID,
+		Content:                   content,
+		Attachments:               string(attachmentsJSON),
+		TerminalChips:             string(chipsJSON),
+		PendingPlanImplementation: sourcePlanJSON,
+		UpdatedAt:                 time.Now().UnixMilli(),
 	})
 }
 
@@ -86,6 +95,13 @@ func (a *App) GetDraft(threadID string) (Draft, error) {
 	if draft.TerminalChips == nil {
 		draft.TerminalChips = []TerminalChip{}
 	}
+	if row.PendingPlanImplementation != "" {
+		var src SourceProposedPlan
+		if err := json.Unmarshal([]byte(row.PendingPlanImplementation), &src); err != nil {
+			return Draft{}, fmt.Errorf("get draft: decode source proposed plan: %w", err)
+		}
+		draft.SourceProposedPlan = &src
+	}
 	return draft, nil
 }
 
@@ -111,4 +127,18 @@ func normalizeTerminalChips(chips []TerminalChip) []TerminalChip {
 		return []TerminalChip{}
 	}
 	return chips
+}
+
+// encodeDraftSourceProposedPlan returns "" for a nil ref so UpsertThreadDraft
+// stores SQL NULL (and the partial index in v31 stays selective). A
+// zero-itemId ref is treated as nil — no item to link to.
+func encodeDraftSourceProposedPlan(ref *SourceProposedPlan) (string, error) {
+	if ref == nil || ref.ItemID == "" {
+		return "", nil
+	}
+	b, err := json.Marshal(ref)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
 }

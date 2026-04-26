@@ -169,6 +169,59 @@ func TestThreadDraftRequiresThreadID(t *testing.T) {
 	}
 }
 
+// PendingPlanImplementation is a nullable JSON column added in v31. The
+// store-level round-trip pins down the SQL NULL <-> "" round-trip semantics
+// that the partial index `idx_thread_drafts_pending_plan_impl` and the
+// sidebar visibility carve-out both depend on.
+func TestThreadDraftPendingPlanImplementationRoundTrip(t *testing.T) {
+	s := newTestStore(t)
+
+	thread := makeThread("plan-impl-thread", "claude")
+	if err := s.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+
+	// Populated case: column round-trips verbatim.
+	populated := `{"threadId":"src","itemId":"plan-1","payloadId":"pl-1"}`
+	if err := s.UpsertThreadDraft(ThreadDraft{
+		ThreadID:                  thread.ID,
+		Content:                   "PLEASE IMPLEMENT THIS PLAN:",
+		Attachments:               "[]",
+		TerminalChips:             "[]",
+		PendingPlanImplementation: populated,
+		UpdatedAt:                 1,
+	}); err != nil {
+		t.Fatalf("UpsertThreadDraft (populated): %v", err)
+	}
+	got, _, err := s.GetThreadDraft(thread.ID)
+	if err != nil {
+		t.Fatalf("GetThreadDraft: %v", err)
+	}
+	if got.PendingPlanImplementation != populated {
+		t.Fatalf("PendingPlanImplementation: got %q, want %q", got.PendingPlanImplementation, populated)
+	}
+
+	// Nil case: passing "" must round-trip back as "" (column stored as
+	// SQL NULL — the partial index keeps that subset selective).
+	if err := s.UpsertThreadDraft(ThreadDraft{
+		ThreadID:                  thread.ID,
+		Content:                   "post-clear",
+		Attachments:               "[]",
+		TerminalChips:             "[]",
+		PendingPlanImplementation: "",
+		UpdatedAt:                 2,
+	}); err != nil {
+		t.Fatalf("UpsertThreadDraft (cleared): %v", err)
+	}
+	got, _, err = s.GetThreadDraft(thread.ID)
+	if err != nil {
+		t.Fatalf("GetThreadDraft after clear: %v", err)
+	}
+	if got.PendingPlanImplementation != "" {
+		t.Fatalf("PendingPlanImplementation after clear: got %q, want \"\"", got.PendingPlanImplementation)
+	}
+}
+
 func TestThreadDraftNormalisesEmptyJSONFields(t *testing.T) {
 	s := newTestStore(t)
 

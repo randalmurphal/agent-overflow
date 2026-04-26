@@ -203,6 +203,11 @@
       ? latestPlanDraftComments
       : [];
     const message = hasDraftContentForSend ? composedMessage : '';
+    // Drafts seeded by "Implement plan in new thread" carry a persisted
+    // sourceProposedPlan ref. dispatchSend applies the revision-vs-source
+    // precedence rule, so we forward both fields and let composerSend
+    // pick the winner.
+    const draftSourcePlan = draft.sourceProposedPlan ?? null;
     sending = true;
 
     const threadId = pane.threadId;
@@ -214,6 +219,7 @@
       content: draft.content,
       attachments: draft.attachments.slice(),
       terminalChips: draft.terminalChips.slice(),
+      sourceProposedPlan: draftSourcePlan,
     };
 
     draft.setContent('');
@@ -225,6 +231,7 @@
         threadId,
         message,
         attachmentIds: snapshot.attachments.map((attachment) => attachment.id),
+        sourceProposedPlan: draftSourcePlan ?? undefined,
         revisionSourceProposedPlan: sourceForSend && (hasDraftContentForSend || commentsForSend.length > 0)
           ? sourceForSend
           : undefined,

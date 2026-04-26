@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 
@@ -19,8 +20,15 @@ import (
 // Using a struct (not 10 positional args) means a future field doesn't
 // break callers. ProjectID is required; every thread must belong to a
 // project as of v13.
+//
+// Title / WorktreePath / Branch are direct overrides used by paths that
+// inherit a sibling thread's workspace (notably "Implement plan in new
+// thread"). Setting WorktreePath skips the WorktreeBranch git operation
+// entirely — the new thread reuses the existing worktree and the supplied
+// Branch verbatim, with no git lookups.
 type CreateThreadOptions struct {
 	ProjectID         string `json:"projectId"`
+	Title             string `json:"title,omitempty"`             // empty = "New Thread"
 	Provider          string `json:"provider,omitempty"`          // defaults to settings.DefaultProvider
 	Model             string `json:"model,omitempty"`             // defaults to settings.DefaultModelClaude/Codex
 	Mode              string `json:"mode,omitempty"`              // defaults to chat
@@ -30,6 +38,8 @@ type CreateThreadOptions struct {
 	RuntimeMode       string `json:"runtimeMode,omitempty"`       // defaults to settings.DefaultRuntimeMode
 	WorktreeBranch    string `json:"worktreeBranch,omitempty"`    // empty = no worktree
 	WorkspaceOverride string `json:"workspaceOverride,omitempty"` // empty = project.path
+	WorktreePath      string `json:"worktreePath,omitempty"`      // non-empty = inherit existing worktree, skip git ops
+	Branch            string `json:"branch,omitempty"`            // non-empty = use directly, skip currentGitBranch lookup
 }
 
 // CreateThread persists a new thread rooted at a project. The options
@@ -97,20 +107,56 @@ func (a *App) CreateThread(opts CreateThreadOptions) (store.Thread, error) {
 		workspace = project.Path
 	}
 	var branch, worktreePath string
-	if trimmed := strings.TrimSpace(opts.WorktreeBranch); trimmed != "" {
+	inheritWorktree := strings.TrimSpace(opts.WorktreePath)
+	switch {
+	case inheritWorktree != "":
+		// Inherit a sibling thread's existing worktree. We deliberately
+		// skip git creation/lookup, but the path itself is validated
+		// against the project's known worktrees so the caller can't spawn
+		// a provider session inside an arbitrary directory like ~/.ssh
+		// or /etc. Used by "Implement plan in new thread".
+		worktree, ok, err := a.findWorktree(project.Path, inheritWorktree)
+		if err != nil {
+			return store.Thread{}, fmt.Errorf("create thread: validate inherited worktree: %w", err)
+		}
+		if !ok {
+			return store.Thread{}, fmt.Errorf("create thread: %q is not a worktree of project %s", inheritWorktree, project.Path)
+		}
+		workspace = worktree.Path
+		worktreePath = worktree.Path
+		branch = strings.TrimSpace(opts.Branch)
+		if branch == "" {
+			branch = worktree.Branch
+		} else {
+			branch = gitops.SanitizeBranchNamePreservingSlashes(branch)
+		}
+	case strings.TrimSpace(opts.WorktreeBranch) != "":
 		// Worktree creation runs through the git core with the project
 		// path as the repo root. On success the thread's workspace
 		// becomes the worktree directory.
-		wtPath, wtBranch, err := a.createWorktreeForNewThread(project.Path, trimmed)
+		wtPath, wtBranch, err := a.createWorktreeForNewThread(project.Path, strings.TrimSpace(opts.WorktreeBranch))
 		if err != nil {
 			return store.Thread{}, fmt.Errorf("create thread: worktree: %w", err)
 		}
 		workspace = wtPath
 		worktreePath = wtPath
 		branch = wtBranch
+	default:
+		// No worktree path supplied. If the caller passes an explicit
+		// branch (e.g. for the project root), sanitize it the same way
+		// we'd sanitize user-typed branch names elsewhere — preserves
+		// `feature/login` while collapsing shell-meta and weird casing.
+		if explicit := strings.TrimSpace(opts.Branch); explicit != "" {
+			branch = gitops.SanitizeBranchNamePreservingSlashes(explicit)
+		}
 	}
 	if branch == "" {
 		branch = currentGitBranch(a.gitCore(), workspace)
+	}
+
+	title := strings.TrimSpace(opts.Title)
+	if title == "" {
+		title = "New Thread"
 	}
 
 	now := time.Now().UnixMilli()
@@ -118,7 +164,7 @@ func (a *App) CreateThread(opts CreateThreadOptions) (store.Thread, error) {
 		ID:              uuid.New().String(),
 		ProjectID:       project.ID,
 		ProjectPath:     project.Path,
-		Title:           "New Thread",
+		Title:           title,
 		Provider:        providerName,
 		WorkspacePath:   workspace,
 		WorktreePath:    worktreePath,

@@ -442,8 +442,68 @@ describe('<Composer>', () => {
     expect((getByTestId('composer-send') as HTMLButtonElement).disabled).toBe(true);
   });
 
-  it('implements the latest plan in a new thread from the composer menu', async () => {
-    const pane = await buildPane(makeTestThread(), [
+  it('seeds a fresh thread with the plan markdown when "Implement in new thread" is chosen', async () => {
+    const pane = await buildPane(makeTestThread({ projectId: 'project-1', workspacePath: '/repo' }), [
+      makeItem({
+        id: 'plan-1',
+        kind: 'tool_call',
+        payloadKind: 'proposed_plan',
+        payloadId: 'payload-1',
+        payloadMeta: JSON.stringify({ title: 'Ship feature', preview: '# Ship feature' }),
+        turnIndex: 0,
+        itemIndex: 0,
+        updatedAt: 1,
+      }),
+    ]);
+    const draft = await buildDraft();
+    setBindingMock('ListProposedPlanComments', async () => []);
+    setBindingMock('GetPayloadData', async () => ({
+      data: '# Ship feature\n\n- step one\n- step two\n',
+      kind: 'proposed_plan',
+    }));
+    const create = setBindingMock(
+      'CreateThread',
+      async () => makeTestThread({ id: 'thread-2', projectId: 'project-1', workspacePath: '/repo' }),
+    );
+    const save = setBindingMock('SaveDraft', async () => {});
+    const send = setBindingMock('SendMessageWithOptions', async () =>
+      makeTestThread({ id: 'thread-2', runtimeMode: 'full-access' }));
+
+    const { getByTestId, findByText } = render(Composer, { props: { pane, draft } });
+    await findByText('Implement');
+    await fireEvent.click(getByTestId('composer-send-menu'));
+    await fireEvent.click(await findByText('Implement in new thread'));
+
+    await waitFor(() => {
+      expect(create).toHaveBeenCalled();
+      expect(save).toHaveBeenCalled();
+    });
+
+    // CreateThread is called with the inherited workspace + plan-derived title.
+    const createArg = create.mock.calls[0]?.[0];
+    expect(createArg).toMatchObject({
+      projectId: 'project-1',
+      workspaceOverride: '/repo',
+      title: 'Implement Ship feature',
+      mode: 'chat',
+    });
+
+    // SaveDraft seeds the wrapped plan prompt + the source-plan link so a
+    // later send marks the original plan Accepted.
+    expect(save).toHaveBeenCalledWith(
+      'thread-2',
+      expect.stringContaining('PLEASE IMPLEMENT THIS PLAN:'),
+      [],
+      [],
+      expect.objectContaining({ threadId: 'thread-1', itemId: 'plan-1', payloadId: 'payload-1' }),
+    );
+
+    // No turn is started — the user is expected to send when ready.
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it('cleans up the orphan thread when seeding the implementation draft fails', async () => {
+    const pane = await buildPane(makeTestThread({ projectId: 'project-1', workspacePath: '/repo' }), [
       makeItem({
         id: 'plan-1',
         kind: 'tool_call',
@@ -457,28 +517,58 @@ describe('<Composer>', () => {
     ]);
     const draft = await buildDraft();
     setBindingMock('ListProposedPlanComments', async () => []);
-    const fork = setBindingMock('ForkThread', async () => makeTestThread({
-      id: 'thread-2',
-      mode: 'chat',
-    }));
-    const send = setBindingMock('SendMessageWithOptions', async () =>
-      makeTestThread({ id: 'thread-2', runtimeMode: 'full-access' }));
+    setBindingMock('GetPayloadData', async () => ({ data: '# Plan\n\n- step', kind: 'proposed_plan' }));
+    setBindingMock('CreateThread', async () => makeTestThread({ id: 'thread-2', projectId: 'project-1' }));
+    setBindingMock('SaveDraft', async () => {
+      throw new Error('disk full');
+    });
+    const deleted = setBindingMock('DeleteThread', async () => {});
 
     const { getByTestId, findByText } = render(Composer, { props: { pane, draft } });
     await findByText('Implement');
     await fireEvent.click(getByTestId('composer-send-menu'));
     await fireEvent.click(await findByText('Implement in new thread'));
 
+    // The orphan thread row must be torn down so it doesn't accumulate
+    // an invisible draft (sidebar carve-out keys on the column we just
+    // failed to write).
     await waitFor(() => {
-      expect(fork).toHaveBeenCalledWith('thread-1');
-      expect(send).toHaveBeenCalledWith('thread-2', 'Implement the plan.', {
-        attachmentIds: [],
-        sourceProposedPlan: expect.objectContaining({
-          threadId: 'thread-1',
-          itemId: 'plan-1',
-        }),
-      });
+      expect(deleted).toHaveBeenCalledWith('thread-2');
     });
+  });
+
+  it('forwards the draft sourceProposedPlan on send when no in-thread plan is active', async () => {
+    const pane = await buildPane(makeTestThread({ id: 'thread-2', projectId: 'project-1' }));
+    const draft = await buildDraft('thread-2');
+    // Hydrate the draft with a sourceProposedPlan (e.g. the user just
+    // landed on a new thread seeded by Implement-in-new-thread).
+    setBindingMock('GetDraft', async () => ({
+      threadId: 'thread-2',
+      content: 'PLEASE IMPLEMENT THIS PLAN:\n# Plan',
+      attachmentIds: [],
+      terminalChips: [],
+      sourceProposedPlan: { threadId: 'src-thread', itemId: 'plan-1', payloadId: 'payload-1' },
+      updatedAt: 1,
+    }));
+    await draft.setThread(null);
+    await draft.setThread('thread-2');
+
+    const send = setBindingMock('SendMessageWithOptions', async () =>
+      makeTestThread({ id: 'thread-2', runtimeMode: 'full-access' }));
+
+    const { getByTestId } = render(Composer, { props: { pane, draft } });
+    await fireEvent.click(getByTestId('composer-send'));
+
+    await waitFor(() => {
+      expect(send).toHaveBeenCalled();
+    });
+    const call = send.mock.calls[0];
+    expect(call?.[2]).toMatchObject({
+      sourceProposedPlan: expect.objectContaining({ threadId: 'src-thread', itemId: 'plan-1' }),
+    });
+    // The draft's source-plan ref is consumed on send so subsequent
+    // turns are regular turns.
+    expect(draft.sourceProposedPlan).toBeNull();
   });
 
   it('opens the plan sidebar from the composer toolbar plan button', async () => {

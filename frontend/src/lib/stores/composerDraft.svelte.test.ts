@@ -172,4 +172,98 @@ describe('composerDraft store', () => {
     store.setContent('');
     expect(store.hasDraft).toBe(false);
   });
+
+  // --- sourceProposedPlan lifecycle ---
+  //
+  // Drafts seeded by "Implement plan in new thread" persist a back-reference
+  // to the source plan so the eventual send marks the original plan
+  // Accepted. The store must hydrate it, persist it, surface it, clear it
+  // on send, and restore it on a failed send.
+
+  it('hydrates sourceProposedPlan from the backend draft and surfaces it', async () => {
+    setBindingMock('GetDraft', async (id: string) => ({
+      threadId: id,
+      content: 'PLEASE IMPLEMENT THIS PLAN:\n# Plan',
+      attachmentIds: [],
+      terminalChips: [],
+      sourceProposedPlan: { threadId: 'src', itemId: 'plan-1', payloadId: 'pl-1' },
+      updatedAt: 1,
+    }));
+    setBindingMock('ListAttachments', async () => []);
+
+    const store = createComposerDraftStore({ debounceMs: 0 });
+    await store.setThread('thread-impl');
+    expect(store.sourceProposedPlan).toEqual({
+      threadId: 'src',
+      itemId: 'plan-1',
+      payloadId: 'pl-1',
+    });
+  });
+
+  it('clearAfterSend resets sourceProposedPlan so subsequent turns are regular turns', async () => {
+    setBindingMock('GetDraft', async (id: string) => ({
+      threadId: id,
+      content: 'seed',
+      attachmentIds: [],
+      terminalChips: [],
+      sourceProposedPlan: { threadId: 'src', itemId: 'plan-1' },
+      updatedAt: 1,
+    }));
+    setBindingMock('ListAttachments', async () => []);
+
+    const store = createComposerDraftStore({ debounceMs: 0 });
+    await store.setThread('thread-impl');
+    expect(store.sourceProposedPlan).not.toBeNull();
+
+    await store.clearAfterSend();
+    expect(store.sourceProposedPlan).toBeNull();
+  });
+
+  it('restoreDraftFor preserves sourceProposedPlan from the snapshot', async () => {
+    setBindingMock('ListAttachments', async () => []);
+
+    const store = createComposerDraftStore({ debounceMs: 0 });
+    await store.setThread('thread-impl');
+
+    await store.restoreDraftFor('thread-impl', {
+      content: 'seed',
+      attachments: [],
+      terminalChips: [],
+      sourceProposedPlan: { threadId: 'src', itemId: 'plan-1' },
+    });
+    expect(store.sourceProposedPlan).toEqual({ threadId: 'src', itemId: 'plan-1' });
+  });
+
+  it('persists sourceProposedPlan via SaveDraft and resets on thread switch', async () => {
+    setBindingMock('GetDraft', async (id: string) => ({
+      threadId: id,
+      content: 'seed',
+      attachmentIds: [],
+      terminalChips: [],
+      sourceProposedPlan: { threadId: 'src', itemId: 'plan-1' },
+      updatedAt: 1,
+    }));
+    setBindingMock('ListAttachments', async () => []);
+    const saveMock = setBindingMock('SaveDraft', async () => {});
+
+    const store = createComposerDraftStore({ debounceMs: 0 });
+    await store.setThread('thread-impl');
+    store.setContent('typing more');
+    await store.flush();
+
+    const lastSaveArgs = saveMock.mock.calls.at(-1);
+    expect(lastSaveArgs?.[4]).toMatchObject({ threadId: 'src', itemId: 'plan-1' });
+
+    // Switching thread away resets the in-memory ref so the next pane's
+    // composer doesn't inherit the previous one's link.
+    setBindingMock('GetDraft', async (id: string) => ({
+      threadId: id,
+      content: '',
+      attachmentIds: [],
+      terminalChips: [],
+      updatedAt: 1,
+    }));
+    await store.setThread('thread-other');
+    expect(store.sourceProposedPlan).toBeNull();
+  });
 });

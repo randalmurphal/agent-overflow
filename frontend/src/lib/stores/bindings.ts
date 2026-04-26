@@ -226,6 +226,7 @@ import type { SourceProposedPlan, Thread } from '../types/models';
 
 export interface CreateThreadOptions {
   projectId: string;
+  title?: string;
   provider?: 'claude' | 'codex' | string;
   model?: string;
   mode?: 'chat' | 'plan' | 'design' | 'discussion' | string;
@@ -235,6 +236,8 @@ export interface CreateThreadOptions {
   runtimeMode?: string;
   worktreeBranch?: string;
   workspaceOverride?: string;
+  worktreePath?: string;
+  branch?: string;
 }
 
 export function CreateThread(opts: CreateThreadOptions): Promise<Thread> {

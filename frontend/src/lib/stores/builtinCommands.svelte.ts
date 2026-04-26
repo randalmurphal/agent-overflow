@@ -15,6 +15,7 @@ import { closePalette, openPalette } from './palette.svelte';
 import { closeThreadPicker, openThreadPicker } from './threadPicker.svelte';
 import { addToast } from './toast.svelte';
 import { removeThread, prependThread, replaceThread } from './threads.svelte';
+import { expandProject } from './sidebar.svelte';
 import { userFacingError } from '../utils/userFacingError';
 import { getTerminalFocused } from '../components/terminal/terminalStore.svelte';
 import {
@@ -219,6 +220,10 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
         try {
           const forked = (await ForkThread(t.id)) as Thread;
           prependThread(forked);
+          // Make sure the parent project is expanded so the fork is
+          // visible inline rather than relying on the collapsed-project
+          // active-pin (which only renders one row).
+          if (forked.projectId) expandProject(forked.projectId);
           await pane.switchThread(forked);
           addToast('info', `Forked "${t.title}" into a new thread.`);
         } catch (err) {

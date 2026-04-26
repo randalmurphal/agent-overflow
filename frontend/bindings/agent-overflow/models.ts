@@ -21,9 +21,20 @@ import * as workspacefiles$0 from "./internal/workspacefiles/models.js";
  * Using a struct (not 10 positional args) means a future field doesn't
  * break callers. ProjectID is required; every thread must belong to a
  * project as of v13.
+ * 
+ * Title / WorktreePath / Branch are direct overrides used by paths that
+ * inherit a sibling thread's workspace (notably "Implement plan in new
+ * thread"). Setting WorktreePath skips the WorktreeBranch git operation
+ * entirely — the new thread reuses the existing worktree and the supplied
+ * Branch verbatim, with no git lookups.
  */
 export class CreateThreadOptions {
     "projectId": string;
+
+    /**
+     * empty = "New Thread"
+     */
+    "title"?: string;
 
     /**
      * defaults to settings.DefaultProvider
@@ -69,6 +80,16 @@ export class CreateThreadOptions {
      * empty = project.path
      */
     "workspaceOverride"?: string;
+
+    /**
+     * non-empty = inherit existing worktree, skip git ops
+     */
+    "worktreePath"?: string;
+
+    /**
+     * non-empty = use directly, skip currentGitBranch lookup
+     */
+    "branch"?: string;
 
     /** Creates a new CreateThreadOptions instance. */
     constructor($$source: Partial<CreateThreadOptions> = {}) {
@@ -222,13 +243,17 @@ export class DirectoryListing {
 /**
  * Draft is the composer draft state. AttachmentIDs reference rows inserted
  * by UploadAttachment; terminal chips are snippets captured from the
- * terminal drawer.
+ * terminal drawer. SourceProposedPlan, when non-nil, links the draft to a
+ * proposed plan in another thread — set by "Implement plan in new thread"
+ * so the eventual send carries the linkage that marks the original plan
+ * Accepted.
  */
 export class Draft {
     "threadId": string;
     "content": string;
     "attachmentIds": string[];
     "terminalChips": TerminalChip[];
+    "sourceProposedPlan"?: SourceProposedPlan | null;
     "updatedAt": number;
 
     /** Creates a new Draft instance. */
@@ -258,12 +283,16 @@ export class Draft {
     static createFrom($$source: any = {}): Draft {
         const $$createField2_0 = $$createType2;
         const $$createField3_0 = $$createType4;
+        const $$createField4_0 = $$createType6;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("attachmentIds" in $$parsedSource) {
             $$parsedSource["attachmentIds"] = $$createField2_0($$parsedSource["attachmentIds"]);
         }
         if ("terminalChips" in $$parsedSource) {
             $$parsedSource["terminalChips"] = $$createField3_0($$parsedSource["terminalChips"]);
+        }
+        if ("sourceProposedPlan" in $$parsedSource) {
+            $$parsedSource["sourceProposedPlan"] = $$createField4_0($$parsedSource["sourceProposedPlan"]);
         }
         return new Draft($$parsedSource as Partial<Draft>);
     }

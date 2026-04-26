@@ -43,6 +43,20 @@ export interface SendOptions {
   threadId: string;
   message: string;
   attachmentIds: string[];
+  /**
+   * "This turn implements the named plan." Used by the
+   * implement-in-new-thread flow: the draft carries the source-plan
+   * reference, the send forwards it, the backend marks the original plan
+   * Accepted. Distinct from revisionSourceProposedPlan, which means
+   * "this turn is a revision based on the plan + comments."
+   *
+   * Precedence rule: if BOTH revisionSourceProposedPlan and
+   * sourceProposedPlan are passed, the revision takes precedence and the
+   * source-plan ref is dropped — a turn cannot simultaneously revise and
+   * implement the same plan. Owned here (not at the call site) so every
+   * caller of dispatchSend gets the same resolution.
+   */
+  sourceProposedPlan?: SourceProposedPlan;
   revisionSourceProposedPlan?: SourceProposedPlan;
   revisionSourceCommentIds?: string[];
   /** Draft snapshot used to restore the composer on send failure. */
@@ -50,6 +64,7 @@ export interface SendOptions {
     content: string;
     attachments: Attachment[];
     terminalChips: TerminalChip[];
+    sourceProposedPlan?: SourceProposedPlan | null;
   };
   /** Currently-focused Thread object — needed to promote a draft thread. */
   currentThread: Thread | null;
@@ -118,14 +133,20 @@ export async function dispatchSend(opts: SendOptions): Promise<void> {
     const sendOptions: {
       attachmentIds: string[];
       runtimeMode?: string;
+      sourceProposedPlan?: SourceProposedPlan;
       revisionSourceProposedPlan?: SourceProposedPlan;
       revisionSourceCommentIds?: string[];
     } = {
       attachmentIds: opts.attachmentIds,
     };
     if (runtimeMode) sendOptions.runtimeMode = runtimeMode;
+    // Apply the precedence rule documented on SendOptions: revision wins
+    // over source-plan when both arrive, so a turn never simultaneously
+    // revises and implements the same plan.
     if (opts.revisionSourceProposedPlan) {
       sendOptions.revisionSourceProposedPlan = opts.revisionSourceProposedPlan;
+    } else if (opts.sourceProposedPlan) {
+      sendOptions.sourceProposedPlan = opts.sourceProposedPlan;
     }
     if (opts.revisionSourceCommentIds && opts.revisionSourceCommentIds.length > 0) {
       sendOptions.revisionSourceCommentIds = opts.revisionSourceCommentIds;

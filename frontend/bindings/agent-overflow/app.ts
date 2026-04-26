@@ -1071,8 +1071,8 @@ export function RevertToCheckpoint(threadID: string, checkpointTurnCount: number
 /**
  * SaveDraft replaces the draft row for a thread.
  */
-export function SaveDraft(threadID: string, content: string, attachmentIDs: string[], terminalChips: $models.TerminalChip[]): $CancellablePromise<void> {
-    return $Call.ByID(3025273299, threadID, content, attachmentIDs, terminalChips);
+export function SaveDraft(threadID: string, content: string, attachmentIDs: string[], terminalChips: $models.TerminalChip[], sourceProposedPlan: $models.SourceProposedPlan | null): $CancellablePromise<void> {
+    return $Call.ByID(3025273299, threadID, content, attachmentIDs, terminalChips, sourceProposedPlan);
 }
 
 export function SavePayloadToFile(threadID: string, payloadID: string): $CancellablePromise<string> {

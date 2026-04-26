@@ -326,3 +326,66 @@ describe('sidebar.focus-search command', () => {
     expect(focusCount).toBe(1);
   });
 });
+
+// --- thread.fork wiring ---
+//
+// Regression for the user-reported bug: forking via the slash command
+// produced a thread that didn't surface in the sidebar. Forks now
+// expand the parent project so the new row is visible inline rather
+// than only via the collapsed-project active-pin slot, which renders
+// at most one thread.
+
+describe('thread.fork command', () => {
+  beforeEach(() => {
+    clearCommandRegistry();
+  });
+
+  it('expands the fork parent project so the new thread is visible', async () => {
+    // Reset the persisted "expanded projects" set so the assertion
+    // proves the command did the expansion (not a leftover from an
+    // earlier test).
+    const sidebar = await import('./sidebar.svelte');
+    sidebar.collapseProject('project-fork');
+
+    setBindingMock('ListItems', async () => []);
+    setBindingMock('ListPayloadMetas', async () => []);
+    setBindingMock('SwitchThread', async () => ({
+      id: 'fork-1',
+      title: 'Test thread (fork)',
+      provider: 'claude',
+      projectId: 'project-fork',
+      workspacePath: '/tmp',
+      projectPath: '/tmp',
+      mode: 'chat',
+      model: 'claude-sonnet-4-6',
+      createdAt: 1,
+      updatedAt: 1,
+      archived: false,
+    }));
+
+    const pane = readyPane({ projectId: 'project-fork' });
+    pane.setActiveTurn({ turnId: 'turn-1', turnIndex: 0, startedAt: 123 });
+    setBindingMock('ForkThread', async () => ({
+      id: 'fork-1',
+      title: 'Test thread (fork)',
+      provider: 'claude',
+      projectId: 'project-fork',
+      workspacePath: '/tmp',
+      projectPath: '/tmp',
+      mode: 'chat',
+      model: 'claude-sonnet-4-6',
+      createdAt: 1,
+      updatedAt: 1,
+      archived: false,
+    }));
+
+    registerFixtureCommands(pane);
+    const command = getCommand('thread.fork');
+    if (!command) throw new Error('thread.fork was not registered');
+
+    await command.run(makeCommandContext(pane, {}));
+
+    const isExpanded = sidebar.isProjectExpanded('project-fork');
+    expect(isExpanded).toBe(true);
+  });
+});

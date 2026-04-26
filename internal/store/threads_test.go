@@ -776,6 +776,77 @@ func TestListThreadsWithItemsHidesEmptyDrafts(t *testing.T) {
 	}
 }
 
+func TestListThreadsWithItemsSurfacesPlanImplementationDrafts(t *testing.T) {
+	// "Implement plan in new thread" creates a thread with no items, but
+	// its draft carries source_proposed_plan. ListThreadsWithItems must
+	// surface it so the user can find their seeded composer in the sidebar.
+	s := newTestStore(t)
+	proj := newTestProject(t, s, "proj-impl-draft", "/tmp/i")
+
+	now := time.Now().UnixMilli()
+	implDraft := Thread{
+		ID:            "thread-impl-draft",
+		ProjectID:     proj.ID,
+		Title:         "Implement Foo",
+		Provider:      "claude",
+		WorkspacePath: "/tmp/i",
+		Model:         "claude-sonnet-4-6",
+		Mode:          "chat",
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}
+	emptyDraft := Thread{
+		ID:            "thread-empty-draft",
+		ProjectID:     proj.ID,
+		Title:         "Empty Draft",
+		Provider:      "claude",
+		WorkspacePath: "/tmp/i",
+		Model:         "claude-sonnet-4-6",
+		Mode:          "chat",
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}
+	for _, t2 := range []Thread{implDraft, emptyDraft} {
+		if err := s.CreateThread(t2); err != nil {
+			t.Fatalf("CreateThread(%s): %v", t2.ID, err)
+		}
+	}
+
+	if err := s.UpsertThreadDraft(ThreadDraft{
+		ThreadID:                  implDraft.ID,
+		Content:                   "PLEASE IMPLEMENT THIS PLAN:\n# Foo",
+		Attachments:               "[]",
+		TerminalChips:             "[]",
+		PendingPlanImplementation: `{"threadId":"src","itemId":"plan-1","payloadId":"pl-1"}`,
+		UpdatedAt:                 now,
+	}); err != nil {
+		t.Fatalf("UpsertThreadDraft(implDraft): %v", err)
+	}
+	// emptyDraft gets a content-only draft with no source-plan link — it
+	// must remain hidden.
+	if err := s.UpsertThreadDraft(ThreadDraft{
+		ThreadID:      emptyDraft.ID,
+		Content:       "typed but never sent",
+		Attachments:   "[]",
+		TerminalChips: "[]",
+		UpdatedAt:     now,
+	}); err != nil {
+		t.Fatalf("UpsertThreadDraft(emptyDraft): %v", err)
+	}
+
+	got, err := s.ListThreadsWithItems()
+	if err != nil {
+		t.Fatalf("ListThreadsWithItems: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != implDraft.ID {
+		ids := make([]string, len(got))
+		for i, th := range got {
+			ids[i] = th.ID
+		}
+		t.Fatalf("got %v, want only [%s] (impl draft visible, plain draft hidden)", ids, implDraft.ID)
+	}
+}
+
 func TestThreadMutationsReturnNotFoundForMissingRows(t *testing.T) {
 	s := newTestStore(t)
 	proj := newTestProject(t, s, "proj-missing", "/tmp/m")
