@@ -1223,7 +1223,7 @@ func (s *Session) handleExitPlanModeRequest(raw controlRequestEnvelope) (bool, e
 			"request_id": raw.RequestID,
 			"response": map[string]any{
 				"behavior": "deny",
-				"message":  "The client captured your proposed plan. Stop here and wait for follow-up.",
+				"message":  "The client captured your proposed plan. Stop here and wait for the user's feedback or implementation request in a later turn.",
 			},
 		},
 	}

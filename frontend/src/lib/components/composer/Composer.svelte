@@ -21,12 +21,12 @@
   import { createComposerMentions } from './composerMentions.svelte';
   import { createComposerUploads } from './composerUploads.svelte';
   import { dispatchInterrupt, dispatchSend } from './composerSend';
-  import { RespondToApproval, RespondToUserInput, type ApprovalResponse, type UserInputResponse } from '../../stores/bindings';
+  import { ListProposedPlanComments, RespondToApproval, RespondToUserInput, type ApprovalResponse, type UserInputResponse } from '../../stores/bindings';
   import { addToast } from '../../stores/toast.svelte';
   import type { ExpandedImagePreview } from '../../utils/attachmentPreview.svelte';
-  import { implementProposedPlan } from '../../utils/proposedPlanImplementation';
+  import { implementProposedPlan, implementProposedPlanInNewThread } from '../../utils/proposedPlanImplementation';
   import { sourceFromProposedPlanItem } from '../../utils/proposedPlan';
-  import type { SourceProposedPlan } from '../../types/models';
+  import type { ProposedPlanComment, SourceProposedPlan } from '../../types/models';
 
   interface Props {
     pane: ThreadPane;
@@ -81,6 +81,8 @@
   let userInputCustomAnswer = $state('');
   let sending = $state(false);
   let preparingWorktree = $state(false);
+  let latestPlanDraftComments: ProposedPlanComment[] = $state([]);
+  let planCommentLoadSeq = 0;
   let hasDraftContent = $derived(
     draft.content.trim().length > 0 ||
       draft.attachments.length > 0 ||
@@ -90,11 +92,14 @@
   let latestPlanSource = $derived.by<SourceProposedPlan | null>(() => {
     return sourceFromProposedPlanItem(pane.threadId, latestItem);
   });
+  let latestPlanCommentRefreshKey = $derived(latestItem ? `${latestItem.id}:${latestItem.updatedAt}:${latestItem.meta ?? ''}` : '');
   let hasPlanImplementAction = $derived(Boolean(latestPlanSource) && !hasDraftContent);
+  let hasDraftPlanComments = $derived(latestPlanSource !== null && latestPlanDraftComments.length > 0);
   let canSend = $derived(!isDisabled && !isTurnActive && !sending && !hasBlockingPrompt && !hasUserInputPrompt && (hasDraftContent || hasPlanImplementAction));
   let sendLabel = $derived.by(() => {
     if (!latestPlanSource || isTurnActive) return undefined;
-    return hasDraftContent ? 'Refine' : 'Implement';
+    if (!hasDraftContent) return 'Implement';
+    return hasDraftPlanComments ? 'Send with comments' : 'Refine';
   });
   let inputDisabled = $derived(isDisabled || hasBlockingPrompt);
   let inputValue = $derived(hasUserInputPrompt ? userInputCustomAnswer : draft.content);
@@ -118,13 +123,32 @@
     userInputCustomAnswer = '';
   });
 
+  $effect(() => {
+    const source = latestPlanSource;
+    latestPlanCommentRefreshKey;
+    const seq = ++planCommentLoadSeq;
+    latestPlanDraftComments = [];
+    if (!source?.threadId || !source.itemId) return;
+    ListProposedPlanComments(source.threadId, source.itemId)
+      .then((comments) => {
+        if (seq !== planCommentLoadSeq) return;
+        latestPlanDraftComments = ((comments ?? []) as ProposedPlanComment[])
+          .filter((comment) => comment.status === 'draft');
+      })
+      .catch((err) => {
+        if (seq !== planCommentLoadSeq) return;
+        console.error('Failed to load draft plan comments:', err);
+        latestPlanDraftComments = [];
+      });
+  });
+
   // Reset slash cache when the pane's thread changes. Pane-scoped state lives
   // inside the mentions module; this $effect is the single hook.
   $effect(() => {
     mentions.onThreadChanged(pane.thread?.id ?? null);
   });
 
-  async function send() {
+  async function send(includePlanComments = true) {
     if (!pane.threadId || !canSend) return;
     midTurnBlockMessage = '';
     if (latestPlanSource && !hasDraftContent) {
@@ -137,7 +161,12 @@
       return;
     }
 
+    const sourceForSend = latestPlanSource;
+    const hasDraftContentForSend = hasDraftContent;
     const composedMessage = draft.composeOutgoingMessage();
+    const commentsForSend = sourceForSend && hasDraftContentForSend && includePlanComments
+      ? latestPlanDraftComments
+      : [];
     const message = composedMessage;
     sending = true;
 
@@ -161,7 +190,8 @@
         threadId,
         message,
         attachmentIds: snapshot.attachments.map((attachment) => attachment.id),
-        revisionSourceProposedPlan: latestPlanSource && hasDraftContent ? latestPlanSource : undefined,
+        revisionSourceProposedPlan: sourceForSend && hasDraftContentForSend ? sourceForSend : undefined,
+        revisionSourceCommentIds: commentsForSend.length > 0 ? commentsForSend.map((comment) => comment.id) : undefined,
         snapshot,
         currentThread: thread,
         replaceCurrentThread: (updated) => {
@@ -181,6 +211,16 @@
       });
     } finally {
       preparingWorktree = false;
+      sending = false;
+    }
+  }
+
+  async function sendPlanToNewThread() {
+    if (!latestPlanSource || sending || isTurnActive) return;
+    sending = true;
+    try {
+      await implementProposedPlanInNewThread(pane, latestPlanSource);
+    } finally {
       sending = false;
     }
   }
@@ -464,7 +504,9 @@
         {canSend}
         {isTurnActive}
         {sendLabel}
-        onSend={send}
+        onSend={() => send()}
+        onSendWithoutPlanComments={hasDraftPlanComments && hasDraftContent ? () => send(false) : undefined}
+        onSendInNewThread={hasPlanImplementAction ? sendPlanToNewThread : undefined}
         onInterrupt={interrupt}
       />
     {/if}

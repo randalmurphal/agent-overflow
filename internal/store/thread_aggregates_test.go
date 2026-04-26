@@ -157,7 +157,7 @@ func TestReconcileProposedPlanImplementationsFromAcceptedTurns(t *testing.T) {
 	}
 }
 
-func TestReconcileProposedPlanStateRefusesCrossThreadSource(t *testing.T) {
+func TestReconcileProposedPlanStateAllowsCrossThreadImplementationSource(t *testing.T) {
 	s := newTestStore(t)
 	for _, threadID := range []string{"source", "impl"} {
 		if err := s.CreateThread(makeThread(threadID, "claude")); err != nil {
@@ -193,8 +193,8 @@ func TestReconcileProposedPlanStateRefusesCrossThreadSource(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get state: %v", err)
 	}
-	if !found || state.ImplementedAt != 0 {
-		t.Fatalf("state = %+v, want unimplemented cross-thread source", state)
+	if !found || state.ImplementedAt != 200 || state.ImplementedByThreadID != "impl" || state.ImplementedByItemID != "user:1" {
+		t.Fatalf("state = %+v, want implemented by impl/user:1", state)
 	}
 }
 

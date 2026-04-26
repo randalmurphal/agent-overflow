@@ -361,9 +361,6 @@ func (s *Store) markAcceptedProposedPlanImplemented(implementationThreadID, impl
 	if source.ItemID == "" {
 		return nil
 	}
-	if source.ThreadID != implementationThreadID {
-		return nil
-	}
 	item, found, err := s.GetThreadItem(source.ThreadID, source.ItemID)
 	if err != nil {
 		return fmt.Errorf("store: validate accepted proposed plan %s/%s: %w", source.ThreadID, source.ItemID, err)

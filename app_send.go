@@ -128,7 +128,7 @@ func (a *App) sendMessageWithOptions(threadID string, content string, opts sendM
 		}
 	}
 
-	sourcePlan, err := a.resolveSourceProposedPlan(threadID, opts.SourceProposedPlan)
+	sourcePlan, err := a.resolveSourceProposedPlan(threadID, opts.SourceProposedPlan, true)
 	if err != nil {
 		return store.Item{}, fmt.Errorf("send message: source proposed plan: %w", err)
 	}
@@ -141,9 +141,20 @@ func (a *App) sendMessageWithOptions(threadID string, content string, opts sendM
 			return store.Item{}, fmt.Errorf("send message: source proposed plan: %w", store.ErrProposedPlanAlreadyImplemented)
 		}
 	}
-	revisionSourcePlan, err := a.resolveSourceProposedPlan(threadID, opts.RevisionSourceProposedPlan)
+	revisionSourcePlan, err := a.resolveSourceProposedPlan(threadID, opts.RevisionSourceProposedPlan, false)
 	if err != nil {
 		return store.Item{}, fmt.Errorf("send message: revision source proposed plan: %w", err)
+	}
+	if revisionSourcePlan == nil && len(opts.RevisionSourceCommentIDs) > 0 {
+		return store.Item{}, fmt.Errorf("send message: revision comments require a source proposed plan")
+	}
+	if revisionSourcePlan != nil && len(opts.RevisionSourceCommentIDs) > 0 {
+		nextContent, commentIDs, err := a.appendPlanRevisionCommentsToContent(threadID, content, revisionSourcePlan.ItemID, opts.RevisionSourceCommentIDs)
+		if err != nil {
+			return store.Item{}, fmt.Errorf("send message: revision comments: %w", err)
+		}
+		content = nextContent
+		opts.RevisionSourceCommentIDs = commentIDs
 	}
 
 	userMeta, err := marshalUserMessageMeta(persistedAttachments, sourcePlan, revisionSourcePlan, opts.RevisionSourceCommentIDs)
@@ -323,7 +334,7 @@ func marshalUserMessageMeta(attachments []store.Attachment, sourcePlan, revision
 	return string(data), nil
 }
 
-func (a *App) resolveSourceProposedPlan(threadID string, source *SourceProposedPlan) (*SourceProposedPlan, error) {
+func (a *App) resolveSourceProposedPlan(threadID string, source *SourceProposedPlan, allowCrossThread bool) (*SourceProposedPlan, error) {
 	if source == nil || strings.TrimSpace(source.ItemID) == "" {
 		return nil, nil
 	}
@@ -331,7 +342,7 @@ func (a *App) resolveSourceProposedPlan(threadID string, source *SourceProposedP
 	if sourceThreadID == "" {
 		sourceThreadID = threadID
 	}
-	if sourceThreadID != threadID {
+	if !allowCrossThread && sourceThreadID != threadID {
 		return nil, fmt.Errorf("source plan thread %s does not match target thread %s", sourceThreadID, threadID)
 	}
 	item, found, err := a.store.GetThreadItem(sourceThreadID, strings.TrimSpace(source.ItemID))
@@ -360,6 +371,24 @@ func (a *App) resolveSourceProposedPlan(threadID string, source *SourceProposedP
 	_ = json.Unmarshal([]byte(item.PayloadMeta), &payloadMeta)
 	resolved.Title = strings.TrimSpace(payloadMeta.Title)
 	return resolved, nil
+}
+
+func (a *App) appendPlanRevisionCommentsToContent(threadID, content, planItemID string, commentIDs []string) (string, []string, error) {
+	if len(store.UniqueNonEmptyStringsForApp(commentIDs)) > store.MaxProposedPlanRevisionCommentIDs {
+		return "", nil, fmt.Errorf("too many comments selected")
+	}
+	comments, err := a.store.ListDraftProposedPlanCommentsByID(threadID, planItemID, commentIDs)
+	if err != nil {
+		return "", nil, err
+	}
+	if len(comments) == 0 {
+		return "", nil, fmt.Errorf("no draft comments selected")
+	}
+	prompt := buildPlanRevisionPrompt(comments)
+	if strings.TrimSpace(content) == "" {
+		return prompt, idsFromProposedPlanComments(comments), nil
+	}
+	return strings.TrimSpace(content) + "\n\n" + prompt, idsFromProposedPlanComments(comments), nil
 }
 
 // sendToProvider forwards the user content to the active provider

@@ -44,6 +44,7 @@ export interface SendOptions {
   message: string;
   attachmentIds: string[];
   revisionSourceProposedPlan?: SourceProposedPlan;
+  revisionSourceCommentIds?: string[];
   /** Draft snapshot used to restore the composer on send failure. */
   snapshot: {
     content: string;
@@ -118,12 +119,16 @@ export async function dispatchSend(opts: SendOptions): Promise<void> {
       attachmentIds: string[];
       runtimeMode?: string;
       revisionSourceProposedPlan?: SourceProposedPlan;
+      revisionSourceCommentIds?: string[];
     } = {
       attachmentIds: opts.attachmentIds,
     };
     if (runtimeMode) sendOptions.runtimeMode = runtimeMode;
     if (opts.revisionSourceProposedPlan) {
       sendOptions.revisionSourceProposedPlan = opts.revisionSourceProposedPlan;
+    }
+    if (opts.revisionSourceCommentIds && opts.revisionSourceCommentIds.length > 0) {
+      sendOptions.revisionSourceCommentIds = opts.revisionSourceCommentIds;
     }
     const updated = (await SendMessageWithOptions(opts.threadId, opts.message, sendOptions)) as Thread;
     opts.replaceCurrentThread(updated);

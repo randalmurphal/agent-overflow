@@ -240,6 +240,74 @@ func TestSendMessageWithOptionsPersistsSourceProposedPlan(t *testing.T) {
 	}
 }
 
+func TestSendMessageWithOptionsPersistsCrossThreadSourceProposedPlan(t *testing.T) {
+	app := newTestAppWithStore(t)
+	sourceThread := testThread("thread-source-plan")
+	sourceThread.Provider = string(provider.Claude)
+	targetThread := testThread("thread-implement-plan")
+	targetThread.Provider = string(provider.Claude)
+	targetThread.WorkspacePath = t.TempDir()
+	for _, thread := range []store.Thread{sourceThread, targetThread} {
+		if err := app.store.CreateThread(thread); err != nil {
+			t.Fatalf("CreateThread(%s) error = %v", thread.ID, err)
+		}
+	}
+
+	now := time.Now().UnixMilli()
+	if err := app.store.InsertItemWithPayload(store.Item{
+		ID:        "plan-item",
+		ThreadID:  sourceThread.ID,
+		TurnIndex: 0,
+		ItemIndex: 0,
+		Kind:      "tool_call",
+		Role:      "assistant",
+		Status:    "completed",
+		Summary:   "Plan",
+		PayloadID: "plan-payload",
+		ToolName:  "plan",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}, store.Payload{
+		ID:        "plan-payload",
+		Kind:      "proposed_plan",
+		Meta:      `{"title":"Fix plan","preview":"do it","lineCount":1,"charCount":5}`,
+		Data:      []byte("# Fix plan\n\nDo it."),
+		CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed plan: %v", err)
+	}
+	if _, err := app.store.EnsureProposedPlanState(sourceThread.ID, "plan-item", now); err != nil {
+		t.Fatalf("ensure plan state: %v", err)
+	}
+
+	sess, err := claude.NewSession(
+		context.Background(),
+		targetThread.ID,
+		claude.Config{Binary: writeClaudePassthroughBinary(t), WorkDir: targetThread.WorkspacePath},
+		func(provider.ProviderEvent) {},
+	)
+	if err != nil {
+		t.Fatalf("NewSession() error = %v", err)
+	}
+	t.Cleanup(func() { _ = sess.Close() })
+	app.sessions[targetThread.ID] = session{provider: string(provider.Claude), token: "test-token", claude: sess}
+
+	_, err = app.SendMessageWithOptions(targetThread.ID, "Implement the plan.", SendMessageOptions{
+		SourceProposedPlan: &SourceProposedPlan{ThreadID: sourceThread.ID, ItemID: "plan-item"},
+	})
+	if err != nil {
+		t.Fatalf("SendMessageWithOptions() error = %v", err)
+	}
+
+	state, found, err := app.store.GetProposedPlanState(sourceThread.ID, "plan-item")
+	if err != nil {
+		t.Fatalf("GetProposedPlanState() error = %v", err)
+	}
+	if !found || state.ImplementedByThreadID != targetThread.ID || state.ImplementedByItemID != "user:0" {
+		t.Fatalf("state = %+v, want implemented by target user turn", state)
+	}
+}
+
 func TestSendMessageWithSourcePlanDoesNotImplementWhenProviderSendFails(t *testing.T) {
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-send-source-plan-failure")

@@ -110,10 +110,6 @@ func (r *Router) markAcceptedSourceProposedPlan(threadID string, turnIndex int, 
 	if !found {
 		return
 	}
-	if source.ThreadID != threadID {
-		log.Printf("triage: refusing cross-thread source proposed plan %s/%s from turn %s/%d", source.ThreadID, source.ItemID, threadID, turnIndex)
-		return
-	}
 	item, itemFound, err := r.store.GetThreadItem(source.ThreadID, source.ItemID)
 	if err != nil {
 		log.Printf("triage: validate source proposed plan %s/%s: %v", source.ThreadID, source.ItemID, err)

@@ -84,13 +84,16 @@ func TestSendPlanRevisionCommentsSendsDraftsAndMarksSent(t *testing.T) {
 	}
 	var userItem store.Item
 	for _, item := range items {
-		if item.Role == "user" && strings.Contains(item.Summary, "Please revise the plan") {
+		if item.Role == "user" && strings.Contains(item.Summary, "comment: Make this more concrete.") {
 			userItem = item
 			break
 		}
 	}
-	if !strings.Contains(userItem.Summary, `"startLine": 2`) || !strings.Contains(userItem.Summary, "Make this more concrete.") {
-		t.Fatalf("revision prompt = %q, want line range and comment", userItem.Summary)
+	if !strings.Contains(userItem.Summary, "Old text\ncomment: Make this more concrete.") {
+		t.Fatalf("revision prompt = %q, want selected text and comment", userItem.Summary)
+	}
+	if strings.Contains(userItem.Summary, "startLine") || strings.Contains(userItem.Summary, "```json") {
+		t.Fatalf("revision prompt = %q, should not include line metadata or JSON", userItem.Summary)
 	}
 	var userMeta userMessageMeta
 	if err := json.Unmarshal([]byte(userItem.Meta), &userMeta); err != nil {
@@ -107,6 +110,84 @@ func TestSendPlanRevisionCommentsSendsDraftsAndMarksSent(t *testing.T) {
 	wantTurnID := fmt.Sprintf("%s:%d", thread.ID, userItem.TurnIndex)
 	if len(comments) != 1 || comments[0].Status != "sent" || comments[0].SentAt == 0 || comments[0].SentTurnID != wantTurnID {
 		t.Fatalf("comments after send = %+v, want sent marker linked to %s", comments, wantTurnID)
+	}
+}
+
+func TestSendMessageWithOptionsAppendsDraftPlanComments(t *testing.T) {
+	app := newTestAppWithStore(t)
+	thread := testThread("thread-plan-revision-message-comments")
+	thread.Provider = string(provider.Claude)
+	thread.Mode = "plan"
+	thread.WorkspacePath = t.TempDir()
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+	now := time.Now().UnixMilli()
+	if err := app.store.InsertItemWithPayload(store.Item{
+		ID:        "plan-item",
+		ThreadID:  thread.ID,
+		TurnIndex: 0,
+		ItemIndex: 0,
+		Kind:      "tool_call",
+		Role:      "assistant",
+		Status:    "completed",
+		Summary:   "Plan",
+		PayloadID: "plan-payload",
+		ToolName:  "plan",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}, store.Payload{
+		ID:        "plan-payload",
+		Kind:      "proposed_plan",
+		Meta:      `{"title":"Plan","preview":"one","lineCount":1,"charCount":3}`,
+		Data:      []byte("# Plan\n\nOne"),
+		CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed plan: %v", err)
+	}
+	if _, err := app.store.EnsureProposedPlanState(thread.ID, "plan-item", now); err != nil {
+		t.Fatalf("ensure plan state: %v", err)
+	}
+	comment, err := app.store.CreateProposedPlanComment(store.ProposedPlanComment{
+		ID: "comment-1", ThreadID: thread.ID, PlanItemID: "plan-item", StartLine: 3, EndLine: 3,
+		SelectedText: "One", Body: "Make this concrete.", CreatedAt: now, UpdatedAt: now,
+	})
+	if err != nil {
+		t.Fatalf("create comment: %v", err)
+	}
+	sess, err := claude.NewSession(
+		context.Background(),
+		thread.ID,
+		claude.Config{Binary: writeClaudeControlPassthroughBinary(t), WorkDir: thread.WorkspacePath},
+		func(provider.ProviderEvent) {},
+	)
+	if err != nil {
+		t.Fatalf("NewSession() error = %v", err)
+	}
+	t.Cleanup(func() { _ = sess.Close() })
+	app.sessions[thread.ID] = session{provider: string(provider.Claude), token: "test-token", claude: sess}
+
+	_, err = app.SendMessageWithOptions(thread.ID, "Please revise.", SendMessageOptions{
+		RevisionSourceProposedPlan: &SourceProposedPlan{ThreadID: thread.ID, ItemID: "plan-item"},
+		RevisionSourceCommentIDs:   []string{comment.ID},
+	})
+	if err != nil {
+		t.Fatalf("SendMessageWithOptions() error = %v", err)
+	}
+
+	items, err := app.store.ListItems(thread.ID)
+	if err != nil {
+		t.Fatalf("ListItems: %v", err)
+	}
+	var userItem store.Item
+	for _, item := range items {
+		if item.Role == "user" && strings.Contains(item.Summary, "Please revise.") {
+			userItem = item
+			break
+		}
+	}
+	if !strings.Contains(userItem.Summary, "Please revise.\n\nOne\ncomment: Make this concrete.") {
+		t.Fatalf("user summary = %q, want message plus formatted comment", userItem.Summary)
 	}
 }
 

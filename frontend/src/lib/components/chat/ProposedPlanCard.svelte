@@ -9,13 +9,11 @@
   import { replaceThread } from '../../stores/threads.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import { copyToClipboard } from '../../utils/clipboard';
-  import { implementProposedPlan } from '../../utils/proposedPlanImplementation';
-  import type { Item, ProposedPlanComment, ProposedPlanMeta, SourceProposedPlan, Thread } from '../../types/models';
+  import type { Item, ProposedPlanComment, ProposedPlanMeta, Thread } from '../../types/models';
   import {
     buildProposedPlanMarkdownFilename,
     normalizePlanMarkdownForExport,
     parseProposedPlanItemMeta,
-    sourceFromProposedPlanItem,
     stripDisplayedPlanMarkdown,
   } from '../../utils/proposedPlan';
   import ProposedPlanActions from './ProposedPlanActions.svelte';
@@ -40,8 +38,6 @@
   } = $props();
 
   let planMarkdown = $state<string | null>(null);
-  let loading = $state(false);
-  let implementing = $state(false);
   let saveDialogOpen = $state(false);
   let savePath = $state('');
   let saving = $state(false);
@@ -70,7 +66,6 @@
       addToast('error', 'Failed to load proposed plan');
       return '';
     }
-    loading = true;
     planMarkdownRequest = (async () => {
       try {
         const content = await GetPayloadData(threadId, payloadId);
@@ -81,7 +76,6 @@
         addToast('error', 'Failed to load proposed plan');
         return '';
       } finally {
-        loading = false;
         planMarkdownRequest = null;
       }
     })();
@@ -114,22 +108,6 @@
     copyTimer = setTimeout(() => {
       copied = false;
     }, 2000);
-  }
-
-  function sourceProposedPlan(): SourceProposedPlan | undefined {
-    return sourceFromProposedPlanItem(pane.threadId, item) ?? undefined;
-  }
-
-  async function handleImplement() {
-    if (!pane.threadId || implementing) return;
-    const source = sourceProposedPlan();
-    if (!source) return;
-    implementing = true;
-    try {
-      await implementProposedPlan(pane, source, 'Failed to send implementation request');
-    } finally {
-      implementing = false;
-    }
   }
 
   async function handleSendDraftComments(commentIds: string[]): Promise<void> {
@@ -228,31 +206,26 @@
     </div>
     <ProposedPlanActions
       {copied}
-      implemented={isImplemented}
-      {implementing}
-      onImplement={handleImplement}
       onCopy={handleCopy}
       onSave={openSaveDialog}
       onOpenInSidebar={fullPlan ? undefined : openInSidebar}
     />
   </div>
 
-  <ProposedPlanBody
-    markdown={displayedMarkdown}
-    {previewOnly}
-  />
-
   {#if showReview && planMarkdown}
-    <div class="mt-4">
-      <ProposedPlanReviewSurface
-        threadId={pane.threadId ?? ''}
-        planItemId={item?.id ?? ''}
-        markdown={normalizePlanMarkdownForExport(planMarkdown)}
-        {comments}
-        onRefresh={refreshComments}
-        onSendDrafts={handleSendDraftComments}
-      />
-    </div>
+    <ProposedPlanReviewSurface
+      threadId={pane.threadId ?? ''}
+      planItemId={item?.id ?? ''}
+      markdown={normalizePlanMarkdownForExport(planMarkdown)}
+      {comments}
+      onRefresh={refreshComments}
+      onSendDrafts={handleSendDraftComments}
+    />
+  {:else}
+    <ProposedPlanBody
+      markdown={displayedMarkdown}
+      {previewOnly}
+    />
   {/if}
 </div>
 

@@ -22,10 +22,21 @@
     isTurnActive: boolean;
     sendLabel?: string;
     onSend: () => void;
+    onSendWithoutPlanComments?: () => void;
+    onSendInNewThread?: () => void;
     onInterrupt: () => void;
   }
 
-  let { pane, canSend, isTurnActive, sendLabel, onSend, onInterrupt }: Props = $props();
+  let {
+    pane,
+    canSend,
+    isTurnActive,
+    sendLabel,
+    onSend,
+    onSendWithoutPlanComments,
+    onSendInNewThread,
+    onInterrupt,
+  }: Props = $props();
 </script>
 
 <div
@@ -38,6 +49,14 @@
   <ModeCycleButton {pane} />
   <AccessToggle {pane} />
   <div class="ml-auto flex items-center">
-    <SendButton {canSend} {isTurnActive} label={sendLabel} {onSend} {onInterrupt} />
+    <SendButton
+      {canSend}
+      {isTurnActive}
+      label={sendLabel}
+      {onSend}
+      {onSendWithoutPlanComments}
+      {onSendInNewThread}
+      {onInterrupt}
+    />
   </div>
 </div>

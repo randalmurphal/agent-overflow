@@ -24,7 +24,7 @@ describe('<ProposedPlanReviewSurface>', () => {
     return null;
   }
 
-  it('keeps resolved comments visible without edit controls', () => {
+  it('keeps resolved and sent comments visible without edit controls', () => {
     const comments: ProposedPlanComment[] = [{
       id: 'comment-1',
       threadId: 'thread-1',
@@ -36,6 +36,17 @@ describe('<ProposedPlanReviewSurface>', () => {
       body: 'Already handled',
       createdAt: 1,
       updatedAt: 2,
+    }, {
+      id: 'comment-2',
+      threadId: 'thread-1',
+      planItemId: 'plan-1',
+      status: 'sent',
+      startLine: 1,
+      endLine: 1,
+      selectedText: '# Plan',
+      body: 'Already sent',
+      createdAt: 3,
+      updatedAt: 4,
     }];
 
     const { getByText, queryByLabelText } = render(ProposedPlanReviewSurface, {
@@ -50,7 +61,9 @@ describe('<ProposedPlanReviewSurface>', () => {
     });
 
     expect(getByText('Already handled')).toBeInTheDocument();
+    expect(getByText('Already sent')).toBeInTheDocument();
     expect(getByText('Resolved')).toBeInTheDocument();
+    expect(getByText('Sent')).toBeInTheDocument();
     expect(queryByLabelText('Edit comment')).not.toBeInTheDocument();
   });
 
@@ -76,6 +89,7 @@ describe('<ProposedPlanReviewSurface>', () => {
     window.getSelection()?.addRange(range);
     await fireEvent.mouseUp(document);
 
+    await fireEvent.click(await findByTestId('plan-comment-trigger'));
     const composer = await findByTestId('plan-comment-composer');
     const textarea = composer.querySelector('textarea');
     if (!textarea) throw new Error('comment textarea not found');
