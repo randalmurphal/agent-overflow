@@ -3,6 +3,8 @@ import { ListThreads } from './bindings';
 import { clearThreadStatus } from './threadStatuses.svelte';
 import { addToast } from './toast.svelte';
 
+type ThreadReadStatePatch = Partial<Pick<Thread, 'lastReadAt' | 'hasIncompleteTurn'>>;
+
 let threads: Thread[] = $state([]);
 
 export function getThreads(): Thread[] {
@@ -42,15 +44,28 @@ export function replaceThread(thread: Thread): void {
 }
 
 /**
+ * Patches local sidebar read state immediately after a MarkThreadRead /
+ * MarkThreadUnread request. `hasIncompleteTurn` is included because
+ * Interrupted is also unseen read-state; opening the thread clears it
+ * before the next refreshThreads() round-trip.
+ */
+export function updateThreadReadState(
+  id: string,
+  patch: ThreadReadStatePatch,
+): void {
+  threads = threads.map((t) =>
+    t.id === id ? { ...t, ...patch } : t,
+  );
+}
+
+/**
  * Patches the thread's lastReadAt locally so the sidebar reflects a
  * Mark-read / Mark-unread action immediately, without waiting for the
  * next refreshThreads() round-trip. `undefined` encodes "never tracked";
  * explicit unread uses `0`.
  */
 export function updateThreadLastRead(id: string, lastReadAt: number | undefined): void {
-  threads = threads.map((t) =>
-    t.id === id ? { ...t, lastReadAt } : t,
-  );
+  updateThreadReadState(id, { lastReadAt });
 }
 
 /**

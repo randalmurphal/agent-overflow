@@ -217,6 +217,29 @@ describe('<ChatView>', () => {
     }
   });
 
+  it('clears interrupted read state locally when the interrupted thread is opened', async () => {
+    vi.useFakeTimers();
+    try {
+      const thread = { ...seedThread(), hasIncompleteTurn: true };
+      setBindingMock('ListThreads', async () => [thread]);
+      await refreshThreads();
+      const pane = await buildPane(thread);
+      const markRead = setBindingMock('MarkThreadRead', async () => {});
+
+      vi.setSystemTime(1_000);
+      render(ChatView, { props: { pane } });
+      await tick();
+
+      expect(markRead).toHaveBeenCalledTimes(1);
+      expect(markRead).toHaveBeenLastCalledWith('thread-1');
+      expect(getThreads()[0]?.lastReadAt).toBe(1_000);
+      expect(getThreads()[0]?.hasIncompleteTurn).toBe(false);
+      expect(pane.thread?.hasIncompleteTurn).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('clamps the local read marker to the latest completed turn', async () => {
     vi.useFakeTimers();
     try {

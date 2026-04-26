@@ -116,7 +116,7 @@ describe('<ThreadRow> unarchive', () => {
   });
 });
 
-describe('<ThreadRow> fork lineage badge', () => {
+describe('<ThreadRow> fork lineage affordance', () => {
   beforeEach(async () => {
     await primeSettings();
     setBindingMock('ListThreads', async () => []);
@@ -138,7 +138,24 @@ describe('<ThreadRow> fork lineage badge', () => {
 
     const pane = createThreadPane();
     const { getByTestId } = render(ThreadRow, { props: { thread: forked, pane } });
-    expect(getByTestId('thread-row-fork-lineage')).toBeInTheDocument();
+    const forkIndicator = getByTestId('thread-row-fork-lineage');
+    expect(forkIndicator).toBeInTheDocument();
+    expect(forkIndicator.querySelector('svg')).not.toBeNull();
+    expect(forkIndicator.textContent).not.toContain('F');
+  });
+
+  it('renders the fork indicator before the title like the left-side row icons', async () => {
+    const parent = makeThread({ id: 'parent', title: 'Original' });
+    const forked = makeThread({ id: 'fork', title: 'Derived', forkedFromThreadId: 'parent' });
+    setBindingMock('ListThreads', async () => [parent, forked]);
+    await refreshThreads();
+
+    const pane = createThreadPane();
+    const { getByTestId } = render(ThreadRow, { props: { thread: forked, pane } });
+    const forkIndicator = getByTestId('thread-row-fork-lineage');
+    const title = getByTestId('thread-row-title');
+
+    expect(forkIndicator.compareDocumentPosition(title) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
   });
 
   it('surfaces the parent title in the tooltip when the parent is loaded', async () => {
@@ -149,9 +166,9 @@ describe('<ThreadRow> fork lineage badge', () => {
 
     const pane = createThreadPane();
     const { getByTestId } = render(ThreadRow, { props: { thread: forked, pane } });
-    const badge = getByTestId('thread-row-fork-lineage') as HTMLButtonElement;
-    expect(badge.title).toMatch(/"Original"/);
-    expect(badge.disabled).toBe(false);
+    const forkIndicator = getByTestId('thread-row-fork-lineage') as HTMLButtonElement;
+    expect(forkIndicator.title).toMatch(/"Original"/);
+    expect(forkIndicator.disabled).toBe(false);
   });
 
   it('is disabled (with explanatory tooltip) when the parent is not in the sidebar view', async () => {
@@ -162,12 +179,12 @@ describe('<ThreadRow> fork lineage badge', () => {
 
     const pane = createThreadPane();
     const { getByTestId } = render(ThreadRow, { props: { thread: forked, pane } });
-    const badge = getByTestId('thread-row-fork-lineage') as HTMLButtonElement;
-    expect(badge.disabled).toBe(true);
-    expect(badge.title).toMatch(/not loaded/i);
+    const forkIndicator = getByTestId('thread-row-fork-lineage') as HTMLButtonElement;
+    expect(forkIndicator.disabled).toBe(true);
+    expect(forkIndicator.title).toMatch(/not loaded/i);
   });
 
-  it('clicking the badge switches the pane to the parent thread', async () => {
+  it('clicking the affordance switches the pane to the parent thread', async () => {
     const parent = makeThread({ id: 'parent', title: 'Original' });
     const forked = makeThread({ id: 'fork', forkedFromThreadId: 'parent' });
     setBindingMock('ListThreads', async () => [parent, forked]);
@@ -183,7 +200,7 @@ describe('<ThreadRow> fork lineage badge', () => {
     expect(pane.threadId).toBe('parent');
   });
 
-  it('badge click does not trigger the row-level thread switch', async () => {
+  it('affordance click does not trigger the row-level thread switch', async () => {
     const parent = makeThread({ id: 'parent', title: 'Original' });
     const forked = makeThread({ id: 'fork', forkedFromThreadId: 'parent' });
     setBindingMock('ListThreads', async () => [parent, forked]);

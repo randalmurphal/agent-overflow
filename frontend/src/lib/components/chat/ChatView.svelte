@@ -15,7 +15,7 @@
   import type { ExpandedImagePreview } from '../../utils/attachmentPreview.svelte';
   import { createComposerDraftStore } from '../../stores/composerDraft.svelte';
   import { MarkThreadRead } from '../../stores/bindings';
-  import { updateThreadLastRead } from '../../stores/threads.svelte';
+  import { updateThreadReadState } from '../../stores/threads.svelte';
   import { getThreadStatus, projectThreadViewed } from '../../stores/threadStatuses.svelte';
   import {
     isUiRenderTraceEnabled,
@@ -97,7 +97,7 @@
   // Fire-and-forget: a failed mark-read is a latent sidebar pill, not
   // a user-blocking error.
   //
-  // `untrack` around the store writes is load-bearing: updateThreadLastRead
+  // `untrack` around the store writes is load-bearing: updateThreadReadState
   // reads the threads array in order to map-replace the matching row, so
   // without untrack Svelte would register `threads` as a dependency of
   // this effect and loop forever (read → write → re-run).
@@ -107,21 +107,31 @@
     const marker = [
       thread.id,
       thread.latestTurnCompletedAt ?? '',
+      thread.hasIncompleteTurn ? 'interrupted' : '',
       pane.timelineRevision,
       pane.latestSettledTurn?.turnId ?? '',
     ].join(':');
     if (marker === lastReadMarker) return;
     lastReadMarker = marker;
-    const readTarget = thread.latestTurnCompletedAt ?? pane.latestSettledTurn?.completedAt;
+    const shouldClearInterrupted = thread.hasIncompleteTurn === true;
+    const readTarget = thread.latestTurnCompletedAt
+      ?? pane.latestSettledTurn?.completedAt
+      ?? (shouldClearInterrupted ? Date.now() : undefined);
     if (readTarget === undefined) {
       return;
     }
-    if (thread.lastReadAt !== undefined && thread.lastReadAt >= readTarget) {
+    if (!shouldClearInterrupted && thread.lastReadAt !== undefined && thread.lastReadAt >= readTarget) {
       return;
     }
     const readAt = Math.max(Date.now(), readTarget);
+    const readPatch = shouldClearInterrupted
+      ? { lastReadAt: readAt, hasIncompleteTurn: false }
+      : { lastReadAt: readAt };
     untrack(() => {
-      updateThreadLastRead(thread.id, readAt);
+      updateThreadReadState(thread.id, readPatch);
+      if (shouldClearInterrupted) {
+        pane.replaceThread({ ...thread, ...readPatch });
+      }
     });
     schedulePersistThreadRead(thread.id);
   });

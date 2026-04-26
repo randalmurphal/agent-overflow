@@ -949,6 +949,41 @@ func TestListThreadsWithItemsDerivesIncompleteNewestTurn(t *testing.T) {
 	}
 }
 
+func TestListThreadsWithItemsClearsIncompleteNewestTurnAfterRead(t *testing.T) {
+	s := newTestStore(t)
+	thread := makeThread("thread-interrupted-read", "claude")
+	if err := s.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread(): %v", err)
+	}
+	seedItem(t, s, thread.ID, "item-1", 0, 0, "")
+	if err := s.InsertTurn(Turn{
+		TurnID:    "turn-1",
+		ThreadID:  thread.ID,
+		TurnIndex: 0,
+		StartedAt: 100,
+	}); err != nil {
+		t.Fatalf("InsertTurn(): %v", err)
+	}
+
+	lastReadAt := int64(99)
+	if err := s.setThreadLastRead(thread.ID, &lastReadAt); err != nil {
+		t.Fatalf("setThreadLastRead(before): %v", err)
+	}
+	got := mustListSingleThreadWithItems(t, s)
+	if !got.HasIncompleteTurn {
+		t.Fatal("HasIncompleteTurn = false before read, want true")
+	}
+
+	lastReadAt = 100
+	if err := s.setThreadLastRead(thread.ID, &lastReadAt); err != nil {
+		t.Fatalf("setThreadLastRead(equal): %v", err)
+	}
+	got = mustListSingleThreadWithItems(t, s)
+	if got.HasIncompleteTurn {
+		t.Fatal("HasIncompleteTurn = true after read at turn start, want false")
+	}
+}
+
 func TestListThreadsWithItemsDerivesIncompleteOnlyForNewestTurn(t *testing.T) {
 	s := newTestStore(t)
 	thread := makeThread("thread-old-interrupted", "claude")
@@ -1138,6 +1173,41 @@ func TestMarkThreadReadNowClampsToLatestCompletedTurn(t *testing.T) {
 	}
 	if *got.LastReadAt != completedAt {
 		t.Fatalf("LastReadAt = %d, want latest completed turn %d", *got.LastReadAt, completedAt)
+	}
+}
+
+func TestMarkThreadReadNowClearsIncompleteNewestTurn(t *testing.T) {
+	s := newTestStore(t)
+
+	thr := makeThread("thread-read-incomplete", "claude")
+	if err := s.CreateThread(thr); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	startedAt := time.Now().UnixMilli() + 60_000
+	if err := s.InsertTurn(Turn{
+		TurnID:    "turn-read-incomplete",
+		ThreadID:  thr.ID,
+		TurnIndex: 0,
+		StartedAt: startedAt,
+	}); err != nil {
+		t.Fatalf("InsertTurn: %v", err)
+	}
+
+	if err := s.MarkThreadReadNow(thr.ID); err != nil {
+		t.Fatalf("MarkThreadReadNow: %v", err)
+	}
+	got, err := s.GetThread(thr.ID)
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+	if got.LastReadAt == nil {
+		t.Fatalf("LastReadAt = nil, want %d", startedAt)
+	}
+	if *got.LastReadAt != startedAt {
+		t.Fatalf("LastReadAt = %d, want latest incomplete turn start %d", *got.LastReadAt, startedAt)
+	}
+	if got.HasIncompleteTurn {
+		t.Fatal("HasIncompleteTurn = true after MarkThreadReadNow, want false")
 	}
 }
 

@@ -77,9 +77,9 @@ export interface Thread {
    */
   hasActionableProposedPlan?: boolean;
   /**
-   * Derived by ListThreads from the newest turn row. True means the prior app
-   * process closed or crashed while that turn was active; it is historical
-   * Interrupted state, not live Working state.
+   * Derived by ListThreads from the newest unseen turn row. True means the
+   * prior app process closed or crashed while that turn was active; it is
+   * historical Interrupted state, not live Working state.
    */
   hasIncompleteTurn?: boolean;
 }

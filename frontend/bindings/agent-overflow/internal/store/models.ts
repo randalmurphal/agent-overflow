@@ -799,10 +799,11 @@ export class Thread {
     "hasActionableProposedPlan": boolean;
 
     /**
-     * HasIncompleteTurn is derived from the newest turn row. A newest
-     * turn with completed_at=NULL means the prior provider process died
-     * or was closed mid-turn, so the sidebar should show Interrupted,
-     * not live Working. It is not a persisted threads column.
+     * HasIncompleteTurn is derived from the newest unseen turn row. A
+     * newest turn with completed_at=NULL and started_at newer than
+     * last_read_at means the prior provider process died or was closed
+     * mid-turn, so the sidebar should show Interrupted, not live Working.
+     * It is not a persisted threads column.
      */
     "hasIncompleteTurn": boolean;
 

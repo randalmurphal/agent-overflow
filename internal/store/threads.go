@@ -46,6 +46,7 @@ const threadColumns = `id, project_id,
     ),
     COALESCE((
       SELECT turns.completed_at IS NULL
+         AND (threads.last_read_at IS NULL OR threads.last_read_at < turns.started_at)
         FROM turns
        WHERE turns.thread_id = threads.id
        ORDER BY turns.turn_index DESC
@@ -360,10 +361,12 @@ func (s *Store) UnarchiveThread(id string) error {
 }
 
 // MarkThreadReadNow stamps last_read_at with the current unix-ms, clamped to
-// the latest completed turn. The clamp is load-bearing: a read marker only
-// resolves the sidebar's completed/unread pill when last_read_at >= the
-// latest settled turn, and provider timestamps can occasionally be ahead of
-// wall-clock now when the frontend asks to mark the thread read.
+// the latest sidebar read target. Completed turns key off completed_at; an
+// interrupted newest turn keys off started_at so opening it clears the
+// durable Interrupted pill just like opening a completed thread clears
+// Completed. The clamp is load-bearing because provider timestamps can
+// occasionally be ahead of wall-clock now when the frontend asks to mark the
+// thread read.
 //
 // Does NOT bump updated_at: read-state is UI bookkeeping, not a thread
 // mutation, and bumping would thrash the sidebar ordering.
@@ -375,16 +378,21 @@ func (s *Store) MarkThreadReadNow(id string) error {
 	}
 	defer tx.Rollback()
 
-	var latestTurnCompletedAt, lastReadAt sql.NullInt64
+	var latestTurnCompletedAt, latestIncompleteStartedAt, lastReadAt sql.NullInt64
 	err = tx.QueryRow(
 		`SELECT
 		    (SELECT MAX(completed_at) FROM turns
 		      WHERE thread_id = threads.id AND completed_at IS NOT NULL),
+		    (SELECT CASE WHEN completed_at IS NULL THEN started_at END
+		       FROM turns
+		      WHERE thread_id = threads.id
+		      ORDER BY turn_index DESC
+		      LIMIT 1),
 		    last_read_at
 		   FROM threads
 		  WHERE id = ?`,
 		id,
-	).Scan(&latestTurnCompletedAt, &lastReadAt)
+	).Scan(&latestTurnCompletedAt, &latestIncompleteStartedAt, &lastReadAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("store: mark thread read %s: %w", id, sql.ErrNoRows)
@@ -392,8 +400,21 @@ func (s *Store) MarkThreadReadNow(id string) error {
 		return fmt.Errorf("store: read thread read-state %s: %w", id, err)
 	}
 
+	readTarget := int64(0)
+	hasReadTarget := false
+	if latestTurnCompletedAt.Valid {
+		hasReadTarget = true
+		readTarget = latestTurnCompletedAt.Int64
+	}
+	if latestIncompleteStartedAt.Valid {
+		hasReadTarget = true
+		if latestIncompleteStartedAt.Int64 > readTarget {
+			readTarget = latestIncompleteStartedAt.Int64
+		}
+	}
+
 	if lastReadAt.Valid {
-		if !latestTurnCompletedAt.Valid || lastReadAt.Int64 >= latestTurnCompletedAt.Int64 {
+		if !hasReadTarget || lastReadAt.Int64 >= readTarget {
 			if err := tx.Commit(); err != nil {
 				return fmt.Errorf("store: commit mark thread read no-op %s: %w", id, err)
 			}
@@ -402,8 +423,8 @@ func (s *Store) MarkThreadReadNow(id string) error {
 	}
 
 	readAt := now
-	if latestTurnCompletedAt.Valid && latestTurnCompletedAt.Int64 > readAt {
-		readAt = latestTurnCompletedAt.Int64
+	if hasReadTarget && readTarget > readAt {
+		readAt = readTarget
 	}
 	result, err := tx.Exec(`UPDATE threads SET last_read_at = ? WHERE id = ?`, readAt, id)
 	if err != nil {

@@ -14,6 +14,7 @@
   import { relativeTime } from '../../utils/format';
   import ThreadRowActions from './ThreadRowActions.svelte';
   import ThreadRowBadges from './ThreadRowBadges.svelte';
+  import ThreadRowForkAffordance from './ThreadRowForkAffordance.svelte';
   import ThreadContextMenu from './ThreadContextMenu.svelte';
   import ThreadRowPinButton from './ThreadRowPinButton.svelte';
   import {
@@ -256,6 +257,10 @@
     </button>
   {/if}
 
+  {#if thread.forkedFromThreadId}
+    <ThreadRowForkAffordance {forkParent} onJumpToParent={handleJumpToParent} />
+  {/if}
+
   {#if pill}
     <span
       class="w-1.5 h-1.5 rounded-full shrink-0 {pill.dotClass} {pill.pulse ? 'animate-pulse' : ''}"
@@ -287,11 +292,12 @@
     />
   {:else}
     <span
+      data-testid="thread-row-title"
       class="text-xs truncate flex-1 min-w-0 {unread ? 'font-semibold text-fg' : ''}"
     >
       {thread.title || 'Untitled'}
     </span>
-    <ThreadRowBadges {thread} {forkParent} onJumpToParent={handleJumpToParent} />
+    <ThreadRowBadges {thread} />
 
     <!--
       Right-side slot. A fixed min-w-12 keeps the layout stable when the

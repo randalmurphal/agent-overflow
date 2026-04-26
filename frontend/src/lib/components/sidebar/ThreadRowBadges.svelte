@@ -1,18 +1,14 @@
 <script lang="ts">
   // Trailing badges for a non-editing thread row: discussion / design /
-  // worktree / fork-lineage indicators. Extracted from ThreadRow.svelte
-  // to keep the shell under 300 lines.
+  // worktree indicators. Fork lineage lives in ThreadRow's left metadata
+  // cluster because it behaves like a navigation affordance, not a badge.
 
   import type { Thread } from '../../types/models';
 
   let {
     thread,
-    forkParent,
-    onJumpToParent,
   }: {
     thread: Thread;
-    forkParent: Thread | undefined;
-    onJumpToParent: (e: MouseEvent) => void;
   } = $props();
 </script>
 
@@ -25,19 +21,4 @@
 {/if}
 {#if thread.worktreePath}
   <span class="text-[8.5px] px-1 py-[1px] rounded-[4px] bg-accent/10 text-accent/80 shrink-0" title="Worktree: {thread.worktreePath}">WT</span>
-{/if}
-{#if thread.forkedFromThreadId}
-  <button
-    type="button"
-    data-testid="thread-row-fork-lineage"
-    onclick={onJumpToParent}
-    disabled={!forkParent}
-    class="text-[8.5px] px-1 py-[1px] rounded-[4px] bg-provider-codex/10 text-provider-codex shrink-0 cursor-pointer disabled:cursor-not-allowed disabled:opacity-60 hover:bg-provider-codex/20 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 transition-colors"
-    title={forkParent
-      ? `Forked from "${forkParent.title || 'Untitled'}" — click to open parent`
-      : 'Forked thread (parent not loaded in sidebar)'}
-    aria-label="Fork Lineage"
-  >
-    F↩
-  </button>
 {/if}
