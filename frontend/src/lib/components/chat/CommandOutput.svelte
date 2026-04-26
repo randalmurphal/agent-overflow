@@ -2,6 +2,7 @@
   import { slide } from 'svelte/transition';
   import ChevronRight from 'lucide-svelte/icons/chevron-right';
   import Icon from '../primitives/Icon.svelte';
+  import CopyFooter from './CopyFooter.svelte';
   import CompletionBadge from './CompletionBadge.svelte';
   import type { CommandOutputMeta, Item } from '../../types/models';
   import { deriveCompletionStatus } from '../../utils/toolCompletionStatus';
@@ -82,27 +83,32 @@
 
   <!-- Output content -->
   {#if expansion.expanded}
-    <div id="cmd-output-{payloadId}" transition:slide={{ duration: 150 }} class="ml-5 border-l border-border-subtle bg-surface-0/35 px-3 py-2 overflow-x-auto">
-      {#if expansion.loading}
-        <p class="text-[11px] text-fg-subtle" role="status" aria-live="polite">Loading full output…</p>
-      {:else if expansion.error}
-        <p class="text-[11px] text-error" role="alert">Failed to load output: {expansion.error}</p>
-      {:else}
-        <AnsiText source={expansion.displayData ?? ''} class="text-[11px] whitespace-pre text-fg-muted leading-relaxed" />
-        {#if expansion.hasMore && allowShowFull}
-          <button
-            type="button"
-            class="mt-2 text-[11px] text-accent hover:underline cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 rounded"
-            onclick={() => expansion.showFull()}
-            data-testid="command-output-show-full"
-          >
-            Load more output ({formatPayloadSize(expansion.totalSize)}) ↓
-          </button>
-        {:else if expansion.hasMore}
-          <p class="mt-2 text-[11px] text-fg-subtle">
-            Preview truncated ({formatPayloadSize(expansion.totalSize)})
-          </p>
+    <div id="cmd-output-{payloadId}" transition:slide={{ duration: 150 }} class="ml-5 border-l border-border-subtle bg-surface-0/35">
+      <div class="px-3 py-2 overflow-x-auto">
+        {#if expansion.loading}
+          <p class="text-[11px] text-fg-subtle" role="status" aria-live="polite">Loading full output…</p>
+        {:else if expansion.error}
+          <p class="text-[11px] text-error" role="alert">Failed to load output: {expansion.error}</p>
+        {:else}
+          <AnsiText source={expansion.displayData ?? ''} class="text-[11px] whitespace-pre text-fg-muted leading-relaxed" />
+          {#if expansion.hasMore && allowShowFull}
+            <button
+              type="button"
+              class="mt-2 text-[11px] text-accent hover:underline cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 rounded"
+              onclick={() => expansion.showFull()}
+              data-testid="command-output-show-full"
+            >
+              Load more output ({formatPayloadSize(expansion.totalSize)}) ↓
+            </button>
+          {:else if expansion.hasMore}
+            <p class="mt-2 text-[11px] text-fg-subtle">
+              Preview truncated ({formatPayloadSize(expansion.totalSize)})
+            </p>
+          {/if}
         {/if}
+      </div>
+      {#if !expansion.loading && !expansion.error && expansion.displayData}
+        <CopyFooter text={expansion.displayData} label="Copy output" />
       {/if}
     </div>
   {/if}

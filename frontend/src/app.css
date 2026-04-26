@@ -337,23 +337,19 @@ pre, code, kbd, samp, .ansi-body {
 }
 
 .markdown-body pre { position: relative; }
-.markdown-body .code-copy-button {
+/* Wrapper for the mounted <CopyButton> primitive. The button itself
+   owns its visual chrome via Tailwind classes — this rule only handles
+   absolute positioning + hover-reveal. */
+.markdown-body .code-copy-mount {
   position: absolute;
-  top: 0.4rem;
-  right: 0.4rem;
-  font-size: 0.7rem;
-  line-height: 1;
-  padding: 0.25rem 0.5rem;
-  border-radius: 0.25rem;
-  border: 1px solid var(--border);
-  background: var(--surface-0);
-  color: var(--text-secondary);
-  cursor: pointer;
+  top: 0.25rem;
+  right: 0.25rem;
+  z-index: 1;
   opacity: 0;
   transition: opacity 0.12s ease-out;
 }
-.markdown-body pre:hover .code-copy-button,
-.markdown-body .code-copy-button:focus-visible {
+.markdown-body pre:hover .code-copy-mount,
+.markdown-body .code-copy-mount:focus-within {
   opacity: 1;
 }
 

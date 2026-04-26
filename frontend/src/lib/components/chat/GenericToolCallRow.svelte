@@ -2,6 +2,7 @@
   import { slide } from 'svelte/transition';
   import ChevronRight from 'lucide-svelte/icons/chevron-right';
   import Icon from '../primitives/Icon.svelte';
+  import CopyFooter from './CopyFooter.svelte';
   import CompletionBadge from './CompletionBadge.svelte';
   import type { Item } from '../../types/models';
   import { deriveCompletionStatus } from '../../utils/toolCompletionStatus';
@@ -224,6 +225,9 @@
           >
             Load more output ({formatPayloadSize(expansion.totalSize)}) ↓
           </button>
+        {/if}
+        {#if expansion.displayData}
+          <CopyFooter text={expansion.displayData} label="Copy output" />
         {/if}
       {:else if deferredOutputState === 'loading'}
         <p class="px-3 py-2 text-[11px] text-fg-subtle animate-pulse" role="status" aria-live="polite">

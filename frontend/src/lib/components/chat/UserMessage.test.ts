@@ -35,6 +35,54 @@ describe('<UserMessage>', () => {
     expect(time?.className).not.toContain('group-hover:opacity-100');
   });
 
+  it('renders a copy button when there is visible text', () => {
+    const { getByLabelText } = render(UserMessage, {
+      props: {
+        item: makeItem({
+          kind: 'user_text',
+          role: 'user',
+          summary: 'copy me',
+        }),
+      },
+    });
+    expect(getByLabelText('Copy message')).toBeInTheDocument();
+  });
+
+  it('does not render a copy button when summary is only a stripped attachment marker', () => {
+    const { container } = render(UserMessage, {
+      props: {
+        item: makeItem({
+          kind: 'user_text',
+          role: 'user',
+          summary: '\n\n![](attachment://thread-1/att-1.png)',
+        }),
+      },
+    });
+    expect(container.querySelector('[aria-label="Copy message"]')).toBeNull();
+  });
+
+  it('writes the visible summary to the clipboard on click', async () => {
+    const writeText = vi.fn(async () => {});
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText },
+      configurable: true,
+      writable: true,
+    });
+
+    const { getByLabelText } = render(UserMessage, {
+      props: {
+        item: makeItem({
+          kind: 'user_text',
+          role: 'user',
+          summary: 'visible body\n\n![](attachment://thread-1/att-1.png)',
+        }),
+      },
+    });
+
+    await fireEvent.click(getByLabelText('Copy message'));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('visible body'));
+  });
+
   it('renders image attachments from item metadata and expands them', async () => {
     const onImageExpand = vi.fn();
     const { getByLabelText, getByText } = render(UserMessage, {

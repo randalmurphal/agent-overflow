@@ -34,7 +34,7 @@ describe('enhanceMarkdown', () => {
       isCurrent: () => true,
     });
 
-    expect(container.querySelector('[data-code-copy]')).toBeNull();
+    expect(container.querySelector('[data-code-copy-mount]')).toBeNull();
   });
 
   it('attaches copy buttons after a row settles', async () => {
@@ -47,7 +47,32 @@ describe('enhanceMarkdown', () => {
       isCurrent: () => true,
     });
 
-    expect(container.querySelector('[data-code-copy]')?.textContent).toBe('Copy');
+    const wrapper = container.querySelector<HTMLElement>('[data-code-copy-mount]');
+    expect(wrapper).not.toBeNull();
+    const button = wrapper?.querySelector('button');
+    expect(button?.getAttribute('aria-label')).toBe('Copy code');
+    expect(button?.querySelector('svg')).not.toBeNull();
+  });
+
+  it('writes the raw code to the clipboard when the copy button is clicked', async () => {
+    const writeText = vi.fn(async () => {});
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText },
+      configurable: true,
+      writable: true,
+    });
+    const container = codeContainer();
+
+    await enhanceMarkdown(container, {
+      generation: 1,
+      renderScope: 'test',
+      streaming: false,
+      isCurrent: () => true,
+    });
+
+    const button = container.querySelector<HTMLButtonElement>('[data-code-copy-mount] button');
+    button?.click();
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('console.log("ok")'));
   });
 
   it('renders Mermaid with SVG text labels that survive sanitization', async () => {
@@ -114,7 +139,7 @@ describe('enhanceMarkdown', () => {
     expect(Array.from(container.children).map((child) => child.tagName)).toEqual(['P', 'PRE', 'P']);
   });
 
-  it('does not attach throwaway copy buttons before preparing Mermaid placeholders', async () => {
+  it('attaches a single copy-source button to a rendered Mermaid block', async () => {
     const container = document.createElement('div');
     container.innerHTML = `
       <pre><code class="language-mermaid">flowchart TD
@@ -129,7 +154,41 @@ describe('enhanceMarkdown', () => {
       isCurrent: () => true,
     });
 
-    expect(container.querySelector('[data-code-copy]')).toBeNull();
+    const wrappers = container.querySelectorAll('[data-code-copy-mount]');
+    expect(wrappers).toHaveLength(1);
+    expect(wrappers[0]?.querySelector('button')?.getAttribute('aria-label')).toBe(
+      'Copy diagram source',
+    );
+  });
+
+  it('writes the original Mermaid source to the clipboard on click', async () => {
+    const writeText = vi.fn(async () => {});
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText },
+      configurable: true,
+      writable: true,
+    });
+    const source = 'flowchart LR\nX-->Y';
+    const container = document.createElement('div');
+    const code = document.createElement('code');
+    code.className = 'language-mermaid';
+    code.textContent = source;
+    const pre = document.createElement('pre');
+    pre.appendChild(code);
+    container.appendChild(pre);
+
+    await enhanceMarkdown(container, {
+      generation: 1,
+      renderScope: 'test',
+      streaming: false,
+      isCurrent: () => true,
+    });
+
+    const button = container.querySelector<HTMLButtonElement>('[data-code-copy-mount] button');
+    button?.click();
+    // The button copies the original code text — proves it's not pulling
+    // from the rendered SVG textContent.
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(source));
   });
 
   it('restores the Mermaid source when initialization fails', async () => {
@@ -154,7 +213,7 @@ describe('enhanceMarkdown', () => {
     expect(pre?.classList.contains('mermaid-pending')).toBe(false);
     expect(pre?.classList.contains('mermaid-error')).toBe(true);
     expect(pre?.querySelector('code.language-mermaid')?.textContent).toContain('flowchart TD');
-    expect(pre?.querySelector('[data-code-copy]')).not.toBeNull();
+    expect(pre?.querySelector('[data-code-copy-mount]')).not.toBeNull();
   });
 });
 

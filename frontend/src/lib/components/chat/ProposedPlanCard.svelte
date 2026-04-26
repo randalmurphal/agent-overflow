@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { onDestroy } from 'svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { getThreadCurrentProposedPlan } from '../../stores/proposedPlans.svelte';
   import { GetPayloadData } from '../../stores/bindings';
@@ -9,7 +8,7 @@
     parseProposedPlanItemMeta,
     stripDisplayedPlanMarkdown,
   } from '../../utils/proposedPlan';
-  import { createProposedPlanExport } from '../../utils/proposedPlanExport.svelte';
+  import { createPlanSaveDialog } from '../../utils/planSaveDialog.svelte';
   import ProposedPlanActions from './ProposedPlanActions.svelte';
   import ProposedPlanBody from './ProposedPlanBody.svelte';
   import ProposedPlanSaveModal from './ProposedPlanSaveModal.svelte';
@@ -40,11 +39,7 @@
     return planMarkdown ? stripDisplayedPlanMarkdown(source) : source;
   });
 
-  const planExport = createProposedPlanExport(ensurePlanMarkdown, () => pane.threadId);
-
-  onDestroy(() => {
-    planExport.dispose();
-  });
+  const planExport = createPlanSaveDialog(ensurePlanMarkdown, () => pane.threadId);
 
   async function ensurePlanMarkdown(): Promise<string> {
     const threadId = pane.threadId;
@@ -85,8 +80,7 @@
     </div>
     <div class="opacity-50 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
       <ProposedPlanActions
-        copied={planExport.copied}
-        onCopy={planExport.handleCopy}
+        getCopyText={planExport.getCopyableMarkdown}
         onSave={planExport.openSaveDialog}
         onOpenInSidebar={canOpenCurrentPlanSidebar ? openInSidebar : undefined}
       />

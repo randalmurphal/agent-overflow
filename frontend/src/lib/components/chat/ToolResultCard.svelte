@@ -5,6 +5,7 @@
   import { parseDiffLines, type DiffLine } from '../../utils/diff';
   import { deriveCompletionStatus } from '../../utils/toolCompletionStatus';
   import CompletionBadge from './CompletionBadge.svelte';
+  import CopyFooter from './CopyFooter.svelte';
   import LazyContentBlock from './LazyContentBlock.svelte';
   import ToolDecisionChip from './ToolDecisionChip.svelte';
   import EditorLink from '../common/EditorLink.svelte';
@@ -124,32 +125,37 @@
       </button>
 
       {#if expansion.expanded}
-        <div id="tool-result-patch-{item.id}" transition:slide={{ duration: 150 }} class="overflow-x-auto border-t border-border bg-surface-0 px-3 py-2">
-          {#if expansion.loading}
-            <p class="text-xs text-text-secondary" role="status" aria-live="polite">Loading patch…</p>
-          {:else if expansion.error}
-            <p class="text-xs text-error" role="alert">Failed to load patch: {expansion.error}</p>
-          {:else if patchLines}
-            <pre class="font-mono text-xs leading-tight {wrapClass}">{#each patchLines as line}<span
-                class={line.type === 'added'
-                  ? 'bg-success/10 text-success'
-                  : line.type === 'removed'
-                    ? 'bg-error/10 text-error'
-                    : line.type === 'header'
-                      ? 'text-accent/70'
-                      : 'text-text-secondary'}
-              >{line.content}
+        <div id="tool-result-patch-{item.id}" transition:slide={{ duration: 150 }} class="border-t border-border bg-surface-0">
+          <div class="overflow-x-auto px-3 py-2">
+            {#if expansion.loading}
+              <p class="text-xs text-text-secondary" role="status" aria-live="polite">Loading patch…</p>
+            {:else if expansion.error}
+              <p class="text-xs text-error" role="alert">Failed to load patch: {expansion.error}</p>
+            {:else if patchLines}
+              <pre class="font-mono text-xs leading-tight {wrapClass}">{#each patchLines as line}<span
+                  class={line.type === 'added'
+                    ? 'bg-success/10 text-success'
+                    : line.type === 'removed'
+                      ? 'bg-error/10 text-error'
+                      : line.type === 'header'
+                        ? 'text-accent/70'
+                        : 'text-text-secondary'}
+                >{line.content}
 </span>{/each}</pre>
-            {#if expansion.hasMore}
-              <button
-                type="button"
-                class="mt-2 text-xs text-accent hover:underline cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 rounded"
-                onclick={() => expansion.showFull()}
-                data-testid="tool-result-patch-show-full"
-              >
-                Show full output ({formatPayloadSize(expansion.totalSize)}) ↓
-              </button>
+              {#if expansion.hasMore}
+                <button
+                  type="button"
+                  class="mt-2 text-xs text-accent hover:underline cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 rounded"
+                  onclick={() => expansion.showFull()}
+                  data-testid="tool-result-patch-show-full"
+                >
+                  Show full output ({formatPayloadSize(expansion.totalSize)}) ↓
+                </button>
+              {/if}
             {/if}
+          </div>
+          {#if !expansion.loading && !expansion.error && expansion.displayData}
+            <CopyFooter text={expansion.displayData} label="Copy patch" />
           {/if}
         </div>
       {/if}

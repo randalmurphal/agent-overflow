@@ -29,7 +29,7 @@
     parseProposedPlanItemMeta,
     parseProposedPlanPayloadMeta,
   } from '../../utils/proposedPlan';
-  import { createProposedPlanExport } from '../../utils/proposedPlanExport.svelte';
+  import { createPlanSaveDialog } from '../../utils/planSaveDialog.svelte';
   import { isUiRenderTraceEnabled, recordUiTrace, scheduleDomUiTrace } from '../../utils/uiRenderTrace';
   import Button from '../primitives/Button.svelte';
   import Icon from '../primitives/Icon.svelte';
@@ -73,7 +73,7 @@
   // doesn't re-split on every comment add/edit.
   const normalizedMarkdown = $derived(planMarkdown !== null ? normalizePlanMarkdownForExport(planMarkdown) : '');
 
-  const planExport = createProposedPlanExport(ensurePlanMarkdown, () => pane.threadId);
+  const planExport = createPlanSaveDialog(ensurePlanMarkdown, () => pane.threadId);
 
   $effect(() => {
     const id = threadId;
@@ -124,7 +124,6 @@
 
   onDestroy(() => {
     releasePlanEvents?.();
-    planExport.dispose();
   });
 
   async function loadPlanMarkdown(tid: string, payloadId: string, planId: string): Promise<string> {
@@ -218,8 +217,7 @@
       <div class="flex items-center gap-1">
         {#if currentPlan}
           <ProposedPlanActions
-            copied={planExport.copied}
-            onCopy={planExport.handleCopy}
+            getCopyText={planExport.getCopyableMarkdown}
             onSave={planExport.openSaveDialog}
           />
         {/if}

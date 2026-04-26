@@ -1,48 +1,40 @@
-// Shared copy/save controller for proposed plans. Both the inline
-// ProposedPlanCard and the PlanSidebar mount their own copy/save buttons
+// Save-dialog controller for proposed plans. Both the inline
+// ProposedPlanCard and the PlanSidebar mount their own save buttons
 // (each with its own modal lifetime), so each gets its own controller
-// instance via this factory — runes inside the factory back the per-instance
-// reactive state.
+// instance via this factory — runes inside the factory back the
+// per-instance reactive state.
+//
+// Copy is handled by <CopyButton>, which manages its own copied/timer
+// state. The factory exposes `getCopyableMarkdown` so the button can
+// fetch + normalize on click.
 
 import { addToast } from '../stores/toast.svelte';
-import { copyToClipboard } from './clipboard';
 import { WriteThreadWorkspaceFile } from '../stores/bindings';
 import { buildProposedPlanMarkdownFilename, normalizePlanMarkdownForExport } from './proposedPlan';
 
-export interface ProposedPlanExport {
-  readonly copied: boolean;
+export interface PlanSaveDialog {
   readonly savePath: string;
   readonly saving: boolean;
   readonly saveDialogOpen: boolean;
-  handleCopy(): Promise<void>;
+  getCopyableMarkdown(): Promise<string>;
   openSaveDialog(): Promise<void>;
   handleSave(): Promise<void>;
   closeSaveDialog(): void;
   setSavePath(value: string): void;
-  dispose(): void;
 }
 
-export function createProposedPlanExport(
+export function createPlanSaveDialog(
   getMarkdown: () => Promise<string>,
   getThreadId: () => string | null,
-): ProposedPlanExport {
-  let copied = $state(false);
+): PlanSaveDialog {
   let savePath = $state('');
   let saving = $state(false);
   let saveDialogOpen = $state(false);
-  let copyTimer: ReturnType<typeof setTimeout> | undefined;
 
-  async function handleCopy(): Promise<void> {
+  async function getCopyableMarkdown(): Promise<string> {
     const markdown = await getMarkdown();
-    if (!markdown) return;
-    const ok = await copyToClipboard(normalizePlanMarkdownForExport(markdown));
-    if (!ok) {
-      addToast('error', 'Failed to copy plan');
-      return;
-    }
-    copied = true;
-    clearTimeout(copyTimer);
-    copyTimer = setTimeout(() => { copied = false; }, 2000);
+    if (!markdown) return '';
+    return normalizePlanMarkdownForExport(markdown);
   }
 
   async function openSaveDialog(): Promise<void> {
@@ -91,20 +83,14 @@ export function createProposedPlanExport(
     savePath = value;
   }
 
-  function dispose(): void {
-    clearTimeout(copyTimer);
-  }
-
   return {
-    get copied() { return copied; },
     get savePath() { return savePath; },
     get saving() { return saving; },
     get saveDialogOpen() { return saveDialogOpen; },
-    handleCopy,
+    getCopyableMarkdown,
     openSaveDialog,
     handleSave,
     closeSaveDialog,
     setSavePath,
-    dispose,
   };
 }

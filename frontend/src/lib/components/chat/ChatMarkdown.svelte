@@ -4,7 +4,7 @@
 
 <script lang="ts">
   import { onDestroy, tick } from 'svelte';
-  import { enhanceMarkdown } from '../../utils/markdownEnhance';
+  import { disposeMarkdownEnhancements, enhanceMarkdown } from '../../utils/markdownEnhance';
   import { renderMarkdown } from '../../utils/markdownRender';
 
   let {
@@ -54,6 +54,7 @@
     if (renderFrame !== null) {
       cancelAnimationFrame(renderFrame);
     }
+    if (root) disposeMarkdownEnhancements(root);
   });
 
   $effect(() => {
@@ -81,6 +82,11 @@
 
     return () => {
       disposed = true;
+      // Unmount the prior generation's CopyButtons before {@html}
+      // replaces their host nodes. enhanceMarkdown will also dispose
+      // at the start of the next pass — this cleanup additionally
+      // covers the unmount path.
+      if (root) disposeMarkdownEnhancements(root);
     };
   });
 

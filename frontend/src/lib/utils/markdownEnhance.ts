@@ -1,3 +1,5 @@
+import { mount, unmount } from 'svelte';
+import CopyButton from '../components/primitives/CopyButton.svelte';
 import { rememberDiagramSource } from './diagramSourceCache';
 import { escapeHtml, sanitizeRenderedSvg } from './markdownRender';
 import { findPathRanges } from './pathLinkify';
@@ -22,10 +24,14 @@ export async function enhanceMarkdown(container: HTMLElement, options: EnhanceOp
   if (options.streaming) {
     return;
   }
+  // {@html} replaces the rendered tree on every settled re-projection,
+  // so any CopyButtons mounted on the prior pass are now orphans whose
+  // host nodes are gone. Dispose them before mounting a new generation.
+  disposeMarkdownEnhancements(container);
   const mermaidBlocks = prepareMermaidBlocks(container, options);
   attachCopyButtons(container);
   await enhanceMath(container, options);
-  await enhanceMermaid(mermaidBlocks, options);
+  await enhanceMermaid(container, mermaidBlocks, options);
   await enhanceCode(container, options);
   // Run path-link enrichment last: enhanceCode replaces <pre> nodes
   // when Shiki succeeds, so deferring keeps us from walking and
@@ -35,29 +41,74 @@ export async function enhanceMarkdown(container: HTMLElement, options: EnhanceOp
   enhancePathLinks(container);
 }
 
-function attachCopyButtons(container: HTMLElement) {
-  for (const pre of container.querySelectorAll('pre')) {
-    if (!pre.querySelector(':scope > code')) {
-      continue;
-    }
-    if (pre.querySelector(':scope > button[data-code-copy]')) {
-      continue;
-    }
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.dataset.codeCopy = 'true';
-    button.className = 'code-copy-button';
-    button.textContent = 'Copy';
-    button.addEventListener('click', async () => {
-      const code = pre.querySelector('code');
-      await navigator.clipboard.writeText(code?.textContent ?? pre.textContent ?? '');
-      button.textContent = 'Copied';
-      window.setTimeout(() => {
-        button.textContent = 'Copy';
-      }, 900);
-    });
-    pre.prepend(button);
+// CopyButton instances live as Svelte components mounted directly into
+// the rendered markdown DOM (the same primitive used elsewhere in the
+// app). We track them per markdown-root so re-enhancement and parent
+// unmount can dispose them all in one shot — Svelte 5's `mount()` does
+// not tie the mounted component to its caller's lifecycle.
+const containerMounts = new WeakMap<HTMLElement, Set<MountedRecord>>();
+type MountedRecord = ReturnType<typeof mount>;
+
+function trackMount(container: HTMLElement, instance: MountedRecord): void {
+  let set = containerMounts.get(container);
+  if (!set) {
+    set = new Set();
+    containerMounts.set(container, set);
   }
+  set.add(instance);
+}
+
+export function disposeMarkdownEnhancements(container: HTMLElement): void {
+  const set = containerMounts.get(container);
+  if (!set) return;
+  for (const instance of set) {
+    unmount(instance);
+  }
+  set.clear();
+}
+
+function attachCopyControl(
+  container: HTMLElement,
+  host: HTMLElement,
+  text: string | (() => string),
+  label: string,
+): void {
+  // Idempotent within a single enhancement pass. Cross-pass cleanup
+  // happens via `disposeMarkdownEnhancements` at the top of enhanceMarkdown.
+  if (host.querySelector(':scope > [data-code-copy-mount]')) return;
+  const wrapper = document.createElement('div');
+  wrapper.className = 'code-copy-mount';
+  wrapper.dataset.codeCopyMount = 'true';
+  host.appendChild(wrapper);
+  const instance = mount(CopyButton, {
+    target: wrapper,
+    props: {
+      text,
+      label,
+      onError: () => addToast('error', 'Failed to copy'),
+    },
+  });
+  trackMount(container, instance);
+}
+
+function attachCopyButtons(container: HTMLElement): void {
+  for (const pre of container.querySelectorAll<HTMLElement>('pre')) {
+    if (!pre.querySelector(':scope > code')) continue;
+    attachCopyButtonToPre(container, pre);
+  }
+}
+
+function attachCopyButtonToPre(container: HTMLElement, pre: HTMLElement): void {
+  attachCopyControl(
+    container,
+    pre,
+    () => pre.querySelector('code')?.textContent ?? pre.textContent ?? '',
+    'Copy code',
+  );
+}
+
+function attachMermaidCopyButton(container: HTMLElement, pre: HTMLElement, sourceText: string): void {
+  attachCopyControl(container, pre, sourceText, 'Copy diagram source');
 }
 
 async function enhanceMath(container: HTMLElement, options: EnhanceOptions) {
@@ -80,10 +131,10 @@ async function enhanceMath(container: HTMLElement, options: EnhanceOptions) {
   }
 }
 
-async function enhanceMermaid(mermaidBlocks: PendingMermaidBlock[], options: EnhanceOptions) {
+async function enhanceMermaid(container: HTMLElement, mermaidBlocks: PendingMermaidBlock[], options: EnhanceOptions) {
   if (mermaidBlocks.length === 0) return;
 
-  const mermaid = await loadMermaidRenderer(mermaidBlocks, options);
+  const mermaid = await loadMermaidRenderer(container, mermaidBlocks, options);
   if (!mermaid) return;
 
   for (const block of mermaidBlocks) {
@@ -99,9 +150,10 @@ async function enhanceMermaid(mermaidBlocks: PendingMermaidBlock[], options: Enh
         block.pre.dataset.renderedMermaid = block.id;
         rememberDiagramSource(block.pre, block.sourceText);
         block.pre.innerHTML = sanitizedSvg;
+        attachMermaidCopyButton(container, block.pre, block.sourceText);
       }
     } catch {
-      restoreMermaidSource(block, options);
+      restoreMermaidSource(container, block, options);
     }
   }
 }
@@ -117,6 +169,7 @@ type MermaidRenderer = {
 };
 
 async function loadMermaidRenderer(
+  container: HTMLElement,
   mermaidBlocks: PendingMermaidBlock[],
   options: EnhanceOptions,
 ): Promise<MermaidRenderer | null> {
@@ -131,7 +184,7 @@ async function loadMermaidRenderer(
     return mermaid;
   } catch {
     for (const block of mermaidBlocks) {
-      restoreMermaidSource(block, options);
+      restoreMermaidSource(container, block, options);
     }
     return null;
   }
@@ -167,14 +220,14 @@ function estimateMermaidPlaceholderHeight(sourceText: string): number {
   return Math.min(520, Math.max(180, lineCount * 34));
 }
 
-function restoreMermaidSource(block: PendingMermaidBlock, options: EnhanceOptions) {
+function restoreMermaidSource(container: HTMLElement, block: PendingMermaidBlock, options: EnhanceOptions) {
   if (!options.isCurrent(options.generation)) return;
 
   block.pre.classList.remove('mermaid-pending');
   block.pre.classList.add('mermaid-error');
   block.pre.style.minHeight = '';
   block.pre.innerHTML = `<code class="language-mermaid">${escapeHtml(block.sourceText)}</code>`;
-  attachCopyButtons(block.pre.parentElement ?? block.pre);
+  attachCopyButtonToPre(container, block.pre);
 }
 
 async function enhanceCode(container: HTMLElement, options: EnhanceOptions) {
@@ -203,7 +256,10 @@ async function enhanceCode(container: HTMLElement, options: EnhanceOptions) {
       const pre = code.parentElement;
       if (pre && highlightedPre && options.isCurrent(options.generation)) {
         pre.replaceWith(highlightedPre);
-        attachCopyButtons(highlightedPre);
+        // The Shiki-emitted <pre> is a brand-new node — attach
+        // directly. (`attachCopyButtons` only walks descendants, so
+        // passing a single <pre> would be a no-op.)
+        attachCopyButtonToPre(container, highlightedPre as HTMLElement);
       }
     } catch {
       // Unknown languages stay as plain code.

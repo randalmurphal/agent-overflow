@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { render, waitFor } from '@testing-library/svelte';
+import { describe, expect, it, vi } from 'vitest';
+import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { makeItem } from '../../../test/helpers/chat';
 import AssistantMessage from './AssistantMessage.svelte';
 
@@ -64,5 +64,41 @@ describe('<AssistantMessage>', () => {
     expect(time?.getAttribute('datetime')).toBe(new Date(createdAt).toISOString());
     expect(time?.className).not.toContain('opacity-0');
     expect(time?.className).not.toContain('group-hover:opacity-100');
+  });
+
+  it('renders a copy button on a settled message with text', () => {
+    const { getByLabelText } = render(AssistantMessage, {
+      props: { item: makeItem({ status: 'completed', summary: 'done' }) },
+    });
+    expect(getByLabelText('Copy message')).toBeInTheDocument();
+  });
+
+  it('hides the copy button while the message is streaming', () => {
+    const { container } = render(AssistantMessage, {
+      props: { item: makeItem({ status: 'streaming', summary: 'streaming text' }) },
+    });
+    expect(container.querySelector('[aria-label="Copy message"]')).toBeNull();
+  });
+
+  it('hides the copy button when summary is whitespace-only', () => {
+    const { container } = render(AssistantMessage, {
+      props: { item: makeItem({ status: 'completed', summary: '   \n  ' }) },
+    });
+    expect(container.querySelector('[aria-label="Copy message"]')).toBeNull();
+  });
+
+  it('writes the raw summary to the clipboard on click', async () => {
+    const writeText = vi.fn(async () => {});
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText },
+      configurable: true,
+      writable: true,
+    });
+    const summary = '## Heading\n\n```ts\nconst x = 1;\n```';
+    const { getByLabelText } = render(AssistantMessage, {
+      props: { item: makeItem({ status: 'completed', summary }) },
+    });
+    await fireEvent.click(getByLabelText('Copy message'));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(summary));
   });
 });
