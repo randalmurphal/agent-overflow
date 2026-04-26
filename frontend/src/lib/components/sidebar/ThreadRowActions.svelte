@@ -3,10 +3,10 @@
   // relative time out and this button in via group-hover on the parent
   // row; see ThreadRow.svelte for the fade mechanics.
   //
-  // Fork, Start-discussion, and Delete moved into ThreadContextMenu —
-  // the row's hover affordance is intentionally reduced to a single
-  // archive/unarchive icon so the compact layout stays unambiguous at
-  // 200px sidebar widths.
+  // Other row actions (Rename, Fork, Mark Unread, Copy Path, Copy ID,
+  // Delete) live in ThreadContextMenu so the hover affordance stays a
+  // single archive icon — keeps the compact layout legible at the
+  // narrow ~200px sidebar widths.
 
   import Archive from 'lucide-svelte/icons/archive';
   import ArchiveRestore from 'lucide-svelte/icons/archive-restore';

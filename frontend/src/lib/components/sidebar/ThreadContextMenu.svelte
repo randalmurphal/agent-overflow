@@ -25,10 +25,8 @@
     copyThreadIdAction,
     copyThreadPathAction,
     deleteThreadAction,
+    forkThreadAction,
     markThreadUnreadAction,
-    openThreadWorkspaceInEditorAction,
-    pinThreadAction,
-    unpinThreadAction,
     type ThreadActionCtx,
   } from './threadRowActions';
   import {
@@ -84,6 +82,15 @@
   let inBulkContext = $derived(
     selectedIds.size > 1 && isThreadSelected(thread.id),
   );
+
+  // Fork is gated on the same predicate the palette command uses
+  // (canForkActiveThread) — sessionRef is the cheap stand-in for "this
+  // thread has at least one turn and the provider has been started."
+  let canFork = $derived(Boolean(thread.sessionRef));
+  // Discussion children (threads with a parentThreadId) cannot be
+  // deleted in isolation — the parent thread owns the subtree's
+  // lifecycle. Matches forge's right-click visibility.
+  let canDelete = $derived(!thread.parentThreadId);
   let selectedThreads = $derived.by(() => {
     if (!inBulkContext) return [] as Thread[];
     const out: Thread[] = [];
@@ -187,20 +194,12 @@
               onRename();
             }}
           />
-          {#if thread.pinnedAt != null}
+          {#if canFork}
             <MenuItem
-              label="Unpin"
+              label="Fork Thread"
               onSelect={() => {
                 onClose();
-                void unpinThreadAction(ctx());
-              }}
-            />
-          {:else}
-            <MenuItem
-              label="Pin"
-              onSelect={() => {
-                onClose();
-                void pinThreadAction(ctx());
+                void forkThreadAction(ctx());
               }}
             />
           {/if}
@@ -219,28 +218,23 @@
             }}
           />
           <MenuItem
-            label="Open Workspace in Editor"
-            onSelect={() => {
-              onClose();
-              void openThreadWorkspaceInEditorAction(ctx());
-            }}
-          />
-          <MenuItem
             label="Copy Thread ID"
             onSelect={() => {
               onClose();
               void copyThreadIdAction(ctx());
             }}
           />
-          <MenuDivider />
-          <MenuItem
-            label="Delete"
-            variant="danger"
-            onSelect={() => {
-              onClose();
-              showDeleteConfirm = true;
-            }}
-          />
+          {#if canDelete}
+            <MenuDivider />
+            <MenuItem
+              label="Delete"
+              variant="danger"
+              onSelect={() => {
+                onClose();
+                showDeleteConfirm = true;
+              }}
+            />
+          {/if}
         {/if}
       {/snippet}
     </Menu>

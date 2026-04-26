@@ -15,9 +15,9 @@
 import {
   ArchiveThread,
   DeleteThread,
+  ForkThread,
   GitRemoveWorktree,
   MarkThreadUnread,
-  OpenInEditor,
   PinThread,
   RenameThread,
   StopSession,
@@ -25,12 +25,14 @@ import {
   UnpinThread,
 } from '../../stores/bindings';
 import {
+  prependThread,
   removeThread,
   replaceThread,
   updateThreadLastRead,
   updateThreadPinnedAt,
   updateThreadTitle,
 } from '../../stores/threads.svelte';
+import { expandProject } from '../../stores/sidebar.svelte';
 import { addToast } from '../../stores/toast.svelte';
 import { copyToClipboard } from '../../utils/clipboard';
 import { userFacingError } from '../../utils/userFacingError';
@@ -110,6 +112,25 @@ export async function unarchiveThreadAction(ctx: ThreadActionCtx): Promise<void>
   }
 }
 
+/**
+ * Fork the thread and surface the new copy in the sidebar. Also called by
+ * the `Thread: Fork` palette command so both entry points share one
+ * code path — the sidebar visibility (prepend + expand parent project)
+ * is intentionally part of the shared action, not the caller's concern.
+ */
+export async function forkThreadAction(ctx: ThreadActionCtx): Promise<void> {
+  try {
+    const forked = (await ForkThread(ctx.thread.id)) as Thread;
+    prependThread(forked);
+    if (forked.projectId) expandProject(forked.projectId);
+    await ctx.switchPane(forked);
+    addToast('info', `Forked "${ctx.thread.title}" into a new thread.`);
+  } catch (err) {
+    console.error('Failed to fork thread:', err);
+    ctx.reportError(userFacingError(err));
+  }
+}
+
 export async function deleteThreadAction(ctx: ThreadActionCtx): Promise<void> {
   try {
     await StopSession(ctx.thread.id).catch((err) => {
@@ -145,20 +166,6 @@ export async function markThreadUnreadAction(ctx: ThreadActionCtx): Promise<void
 export async function copyThreadPathAction(ctx: ThreadActionCtx): Promise<void> {
   const ok = await copyToClipboard(ctx.thread.workspacePath);
   addToast(ok ? 'info' : 'error', ok ? 'Copied workspace path.' : 'Copy failed.');
-}
-
-export async function openThreadWorkspaceInEditorAction(
-  ctx: ThreadActionCtx,
-): Promise<void> {
-  // The thread's workspace is the worktree path when present, the
-  // project root otherwise — the same value the rest of the UI uses
-  // when "this thread's workspace" is the right unit. OpenInEditor's
-  // (0, 0) couple skips cursor placement.
-  try {
-    await OpenInEditor(ctx.thread.workspacePath, 0, 0);
-  } catch (err) {
-    addToast('error', userFacingError(err));
-  }
 }
 
 export async function copyThreadIdAction(ctx: ThreadActionCtx): Promise<void> {

@@ -1,20 +1,31 @@
 import { describe, expect, it, beforeEach, vi } from 'vitest';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
-import { openThreadWorkspaceInEditorAction, type ThreadActionCtx } from './threadRowActions';
+import { forkThreadAction, type ThreadActionCtx } from './threadRowActions';
 import { getToasts, removeToast } from '../../stores/toast.svelte';
+import {
+  getThreads,
+  prependThread,
+  removeThread,
+} from '../../stores/threads.svelte';
+import {
+  collapseProject,
+  isProjectExpanded,
+} from '../../stores/sidebar.svelte';
 import type { Thread } from '../../types/models';
 
 function makeCtx(thread: Partial<Thread>): ThreadActionCtx {
   const t: Thread = {
     id: 'thread-1',
-    title: 'Test',
+    title: 'Source thread',
     provider: 'claude',
+    projectId: 'project-1',
     workspacePath: '/tmp/work',
     projectPath: '/tmp/work',
     model: 'claude-sonnet-4-6',
     createdAt: 0,
     updatedAt: 0,
     archived: false,
+    sessionRef: 'session-1',
     ...thread,
   };
   return {
@@ -26,27 +37,59 @@ function makeCtx(thread: Partial<Thread>): ThreadActionCtx {
   };
 }
 
-describe('openThreadWorkspaceInEditorAction', () => {
+function clearThreadsForTest(): void {
+  for (const t of [...getThreads()]) removeThread(t.id);
+}
+
+describe('forkThreadAction', () => {
   beforeEach(() => {
     resetBindingMocks();
+    clearThreadsForTest();
+    collapseProject('project-1');
     for (const toast of [...getToasts()]) removeToast(toast.id);
   });
 
-  it('calls OpenInEditor with the thread workspace path and (0,0)', async () => {
-    const mock = setBindingMock('OpenInEditor', vi.fn(async () => undefined));
-    await openThreadWorkspaceInEditorAction(makeCtx({ workspacePath: '/Users/me/repo' }));
-    expect(mock).toHaveBeenCalledTimes(1);
-    expect(mock.mock.calls[0]).toEqual(['/Users/me/repo', 0, 0]);
+  it('forks the source, prepends the new thread, expands the parent project, and switches the pane', async () => {
+    const forked: Thread = {
+      id: 'fork-1',
+      title: 'Source thread (fork)',
+      provider: 'claude',
+      projectId: 'project-1',
+      workspacePath: '/tmp/work',
+      projectPath: '/tmp/work',
+      model: 'claude-sonnet-4-6',
+      createdAt: 1,
+      updatedAt: 1,
+      archived: false,
+      sessionRef: 'session-1',
+    };
+    const fork = setBindingMock('ForkThread', vi.fn(async () => forked));
+    const ctx = makeCtx({});
+    // Source thread already in the sidebar so we can confirm prepend
+    // ordering: fork lands before source.
+    prependThread(ctx.thread);
+
+    await forkThreadAction(ctx);
+
+    expect(fork).toHaveBeenCalledWith('thread-1');
+    const ids = getThreads().map((t) => t.id);
+    expect(ids[0]).toBe('fork-1');
+    expect(isProjectExpanded('project-1')).toBe(true);
+    expect(ctx.switchPane).toHaveBeenCalledTimes(1);
+    expect((ctx.switchPane as ReturnType<typeof vi.fn>).mock.calls[0][0]).toEqual(forked);
+
+    const toast = getToasts().find((t) => t.message.includes('Forked'));
+    expect(toast?.type).toBe('info');
   });
 
-  it('toasts the user-facing form of the binding error on failure', async () => {
-    setBindingMock('OpenInEditor', vi.fn(async () => {
-      throw new Error('no editor available');
+  it('reports the user-facing error on fork failure', async () => {
+    setBindingMock('ForkThread', vi.fn(async () => {
+      throw new Error('source thread is missing a session reference');
     }));
-    await openThreadWorkspaceInEditorAction(makeCtx({ workspacePath: '/x' }));
-    // userFacingError capitalises and ensures terminal punctuation; the
-    // toast carries the polished form, never the verbatim Go wrap text.
-    const match = getToasts().find((t) => t.message === 'No editor available.');
-    expect(match?.type).toBe('error');
+    const ctx = makeCtx({});
+    await forkThreadAction(ctx);
+    expect(ctx.reportError).toHaveBeenCalledTimes(1);
+    expect((ctx.reportError as ReturnType<typeof vi.fn>).mock.calls[0][0]).toMatch(/missing a session/);
+    expect(ctx.switchPane).not.toHaveBeenCalled();
   });
 });

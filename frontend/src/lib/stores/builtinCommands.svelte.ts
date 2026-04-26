@@ -14,14 +14,13 @@ import { closeMessageSearch, openMessageSearch } from './messageSearch.svelte';
 import { closePalette, openPalette } from './palette.svelte';
 import { closeThreadPicker, openThreadPicker } from './threadPicker.svelte';
 import { addToast } from './toast.svelte';
-import { removeThread, prependThread, replaceThread } from './threads.svelte';
-import { expandProject } from './sidebar.svelte';
+import { removeThread, replaceThread } from './threads.svelte';
+import { forkThreadAction } from '../components/sidebar/threadRowActions';
 import { userFacingError } from '../utils/userFacingError';
 import { getTerminalFocused } from '../components/terminal/terminalStore.svelte';
 import {
   ArchiveThread,
   DeleteThread,
-  ForkThread,
   StopSession,
   GitCommit,
   GitPull,
@@ -217,18 +216,13 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     when: 'canForkActiveThread',
     run: (ctx) =>
       withActiveThread(ctx, pane, async (t) => {
-        try {
-          const forked = (await ForkThread(t.id)) as Thread;
-          prependThread(forked);
-          // Make sure the parent project is expanded so the fork is
-          // visible inline rather than relying on the collapsed-project
-          // active-pin (which only renders one row).
-          if (forked.projectId) expandProject(forked.projectId);
-          await pane.switchThread(forked);
-          addToast('info', `Forked "${t.title}" into a new thread.`);
-        } catch (err) {
-          addToast('error', userFacingError(err));
-        }
+        await forkThreadAction({
+          thread: t,
+          isActive: pane.threadId === t.id,
+          clearPane: () => pane.clear(),
+          switchPane: (next) => pane.switchThread(next),
+          reportError: (msg) => pane.setGeneralError(msg),
+        });
       }),
   });
 
