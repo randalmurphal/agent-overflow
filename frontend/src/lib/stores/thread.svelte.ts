@@ -226,6 +226,7 @@ export function createThreadPane() {
   // own sidebar independently. Reset on thread switch so a new thread
   // never "remembers" whether the prior thread had the sidebar open.
   let showPlanSidebar: boolean = $state(false);
+  let requestedPlanSidebarItemId: string | null = $state(null);
 
   // Turn-lifecycle state. `activeTurn` is set exclusively from live
   // `provider:turn_started` wire events (invariant 22) and cleared on
@@ -665,6 +666,7 @@ export function createThreadPane() {
     get pendingDesignOptions() { return pendingDesignOptions; },
     get designViewport() { return designViewport; },
     get showPlanSidebar() { return showPlanSidebar; },
+    get requestedPlanSidebarItemId() { return requestedPlanSidebarItemId; },
 
     // --- Thread switching ---
 
@@ -689,6 +691,7 @@ export function createThreadPane() {
       // Plan-sidebar UI is pane-scoped too: never carry its open state across
       // threads.
       showPlanSidebar = false;
+      requestedPlanSidebarItemId = null;
       // Turn-lifecycle reset. activeTurn goes to null on every switch — a
       // crashed thread's in-flight row is historical and must not light up
       // the indicator (invariant 22). latestSettledTurn gets rehydrated
@@ -1215,10 +1218,21 @@ export function createThreadPane() {
 
     togglePlanSidebar(): void {
       showPlanSidebar = !showPlanSidebar;
+      if (!showPlanSidebar) requestedPlanSidebarItemId = null;
     },
 
     setShowPlanSidebar(value: boolean): void {
       showPlanSidebar = value;
+      if (!value) requestedPlanSidebarItemId = null;
+    },
+
+    openPlanSidebarForItem(itemId: string): void {
+      requestedPlanSidebarItemId = itemId;
+      showPlanSidebar = true;
+    },
+
+    clearRequestedPlanSidebarItem(): void {
+      requestedPlanSidebarItemId = null;
     },
 
     setDiffPanelOpen(value: boolean): void {

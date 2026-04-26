@@ -24,6 +24,9 @@
   import { RespondToApproval, RespondToUserInput, type ApprovalResponse, type UserInputResponse } from '../../stores/bindings';
   import { addToast } from '../../stores/toast.svelte';
   import type { ExpandedImagePreview } from '../../utils/attachmentPreview.svelte';
+  import { implementProposedPlan } from '../../utils/proposedPlanImplementation';
+  import { sourceFromProposedPlanItem } from '../../utils/proposedPlan';
+  import type { SourceProposedPlan } from '../../types/models';
 
   interface Props {
     pane: ThreadPane;
@@ -83,7 +86,16 @@
       draft.attachments.length > 0 ||
       draft.terminalChips.length > 0,
   );
-  let canSend = $derived(!isDisabled && !isTurnActive && !sending && !hasBlockingPrompt && !hasUserInputPrompt && hasDraftContent);
+  let latestItem = $derived(pane.items.length > 0 ? pane.items[pane.items.length - 1] : null);
+  let latestPlanSource = $derived.by<SourceProposedPlan | null>(() => {
+    return sourceFromProposedPlanItem(pane.threadId, latestItem);
+  });
+  let hasPlanImplementAction = $derived(Boolean(latestPlanSource) && !hasDraftContent);
+  let canSend = $derived(!isDisabled && !isTurnActive && !sending && !hasBlockingPrompt && !hasUserInputPrompt && (hasDraftContent || hasPlanImplementAction));
+  let sendLabel = $derived.by(() => {
+    if (!latestPlanSource || isTurnActive) return undefined;
+    return hasDraftContent ? 'Refine' : 'Implement';
+  });
   let inputDisabled = $derived(isDisabled || hasBlockingPrompt);
   let inputValue = $derived(hasUserInputPrompt ? userInputCustomAnswer : draft.content);
   let placeholder = $derived.by(() => {
@@ -115,6 +127,16 @@
   async function send() {
     if (!pane.threadId || !canSend) return;
     midTurnBlockMessage = '';
+    if (latestPlanSource && !hasDraftContent) {
+      sending = true;
+      try {
+        await implementProposedPlan(pane, latestPlanSource);
+      } finally {
+        sending = false;
+      }
+      return;
+    }
+
     const composedMessage = draft.composeOutgoingMessage();
     const message = composedMessage;
     sending = true;
@@ -139,6 +161,7 @@
         threadId,
         message,
         attachmentIds: snapshot.attachments.map((attachment) => attachment.id),
+        revisionSourceProposedPlan: latestPlanSource && hasDraftContent ? latestPlanSource : undefined,
         snapshot,
         currentThread: thread,
         replaceCurrentThread: (updated) => {
@@ -440,6 +463,7 @@
         {pane}
         {canSend}
         {isTurnActive}
+        {sendLabel}
         onSend={send}
         onInterrupt={interrupt}
       />

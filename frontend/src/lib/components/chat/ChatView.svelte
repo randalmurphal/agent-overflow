@@ -10,7 +10,6 @@
   import DesignView from '../design/DesignView.svelte';
   import DiffPanelDrawer from './DiffPanelDrawer.svelte';
   import PlanSidebar from './PlanSidebar.svelte';
-  import PlanFollowUpBanner from './PlanFollowUpBanner.svelte';
   import ChatHeader from './ChatHeader.svelte';
   import ExpandedImageDialog from './ExpandedImageDialog.svelte';
   import type { ExpandedImagePreview } from '../../utils/attachmentPreview.svelte';
@@ -205,7 +204,6 @@
       <ProviderStatusBanner {pane} />
 
       <MessageTimeline {pane} onImageExpand={openImagePreview} />
-      <PlanFollowUpBanner {pane} {draft} />
       <Composer {pane} {draft} onImageExpand={openImagePreview} />
       <BelowComposerBar {pane} />
       {#if pane.showTerminal && pane.thread}

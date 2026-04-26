@@ -245,6 +245,8 @@ export interface SendMessageOptions {
   attachmentIds?: string[];
   runtimeMode?: string;
   sourceProposedPlan?: SourceProposedPlan;
+  revisionSourceProposedPlan?: SourceProposedPlan;
+  revisionSourceCommentIds?: string[];
 }
 
 export function SendMessageWithOptions(

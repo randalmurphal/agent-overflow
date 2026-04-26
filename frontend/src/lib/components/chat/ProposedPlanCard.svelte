@@ -10,18 +10,12 @@
   import { addToast } from '../../stores/toast.svelte';
   import { copyToClipboard } from '../../utils/clipboard';
   import { implementProposedPlan } from '../../utils/proposedPlanImplementation';
-  import type {
-    Item,
-    ProposedPlanComment,
-    ProposedPlanItemMeta,
-    ProposedPlanMeta,
-    SourceProposedPlan,
-    Thread,
-  } from '../../types/models';
+  import type { Item, ProposedPlanComment, ProposedPlanMeta, SourceProposedPlan, Thread } from '../../types/models';
   import {
     buildProposedPlanMarkdownFilename,
-    downloadPlanAsTextFile,
     normalizePlanMarkdownForExport,
+    parseProposedPlanItemMeta,
+    sourceFromProposedPlanItem,
     stripDisplayedPlanMarkdown,
   } from '../../utils/proposedPlan';
   import ProposedPlanActions from './ProposedPlanActions.svelte';
@@ -35,15 +29,16 @@
     payloadId,
     meta,
     showReview = false,
+    fullPlan = false,
   }: {
     pane: ThreadPane;
     item?: Item;
     payloadId: string;
     meta: ProposedPlanMeta;
     showReview?: boolean;
+    fullPlan?: boolean;
   } = $props();
 
-  let expanded = $state(false);
   let planMarkdown = $state<string | null>(null);
   let loading = $state(false);
   let implementing = $state(false);
@@ -56,17 +51,10 @@
   let copyTimer: ReturnType<typeof setTimeout> | undefined;
 
   const title = $derived(meta.title || 'Proposed plan');
-  const itemMeta = $derived.by(() => {
-    if (!item?.meta) return {} as ProposedPlanItemMeta;
-    try {
-      return JSON.parse(item.meta) as ProposedPlanItemMeta;
-    } catch {
-      return {} as ProposedPlanItemMeta;
-    }
-  });
+  const itemMeta = $derived(parseProposedPlanItemMeta(item));
   const planVersion = $derived(itemMeta.planVersion ?? 0);
   const isImplemented = $derived(Boolean(itemMeta.planImplementedAt));
-  const canCollapse = $derived(meta.charCount > 900 || meta.lineCount > 20);
+  const previewOnly = $derived(!fullPlan && (meta.charCount > 900 || meta.lineCount > 20));
   const displayedMarkdown = $derived.by(() => {
     const source = planMarkdown ?? meta.preview;
     return planMarkdown ? stripDisplayedPlanMarkdown(source) : source;
@@ -113,14 +101,6 @@
     }
   }
 
-  async function handleToggleExpanded() {
-    if (!expanded) {
-      const fullPlan = await ensurePlanMarkdown();
-      if (!fullPlan) return;
-    }
-    expanded = !expanded;
-  }
-
   async function handleCopy() {
     const fullPlan = await ensurePlanMarkdown();
     if (!fullPlan) return;
@@ -137,14 +117,7 @@
   }
 
   function sourceProposedPlan(): SourceProposedPlan | undefined {
-    if (!item?.id) return undefined;
-    return {
-      threadId: pane.threadId ?? undefined,
-      itemId: item.id,
-      payloadId,
-      title,
-      version: planVersion || undefined,
-    };
+    return sourceFromProposedPlanItem(pane.threadId, item) ?? undefined;
   }
 
   async function handleImplement() {
@@ -169,15 +142,6 @@
       console.error('Failed to send plan comments:', err);
       addToast('error', 'Failed to send comments');
     }
-  }
-
-  async function handleDownload() {
-    const fullPlan = await ensurePlanMarkdown();
-    if (!fullPlan) return;
-    downloadPlanAsTextFile(
-      buildProposedPlanMarkdownFilename(fullPlan),
-      normalizePlanMarkdownForExport(fullPlan)
-    );
   }
 
   async function openSaveDialog() {
@@ -226,8 +190,13 @@
     savePath = value;
   }
 
+  function openInSidebar(): void {
+    if (!item?.id) return;
+    pane.openPlanSidebarForItem(item.id);
+  }
+
   $effect(() => {
-    if (showReview && planMarkdown === null) {
+    if ((showReview || fullPlan) && planMarkdown === null) {
       void ensurePlanMarkdown();
     }
   });
@@ -263,16 +232,14 @@
       {implementing}
       onImplement={handleImplement}
       onCopy={handleCopy}
-      onDownload={handleDownload}
       onSave={openSaveDialog}
+      onOpenInSidebar={fullPlan ? undefined : openInSidebar}
     />
   </div>
 
   <ProposedPlanBody
     markdown={displayedMarkdown}
-    {canCollapse}
-    {expanded}
-    onToggleExpanded={handleToggleExpanded}
+    {previewOnly}
   />
 
   {#if showReview && planMarkdown}

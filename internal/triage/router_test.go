@@ -1897,6 +1897,96 @@ func TestProposedPlanPersistsHeavy(t *testing.T) {
 	}
 }
 
+func TestProposedPlanDedupesMatchingContentWithinTurn(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	first := provider.ProviderEvent{
+		Kind:      provider.EventProposedPlan,
+		ThreadID:  "t1",
+		ItemID:    "permission-request-1",
+		Content:   "# Ship it\n\n- one",
+		Timestamp: time.Now(),
+	}
+	if err := router.Handle(first); err != nil {
+		t.Fatalf("handle first: %v", err)
+	}
+	second := provider.ProviderEvent{
+		Kind:      provider.EventProposedPlan,
+		ThreadID:  "t1",
+		ItemID:    "assistant-tool-use-1",
+		Content:   "# Ship it\n\n- one",
+		Timestamp: time.Now(),
+	}
+	if err := router.Handle(second); err != nil {
+		t.Fatalf("handle duplicate: %v", err)
+	}
+
+	items, err := st.ListItems("t1")
+	if err != nil {
+		t.Fatalf("list items: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("items = %d, want 1", len(items))
+	}
+	if items[0].ID != "permission-request-1" {
+		t.Fatalf("deduped item id = %q, want first observed id", items[0].ID)
+	}
+}
+
+func TestProposedPlanDuplicateContentInLaterTurnCreatesNewVersion(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	content := "# Ship it\n\n- one"
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventProposedPlan,
+		ThreadID:  "t1",
+		ItemID:    "plan-turn-1",
+		Content:   content,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle first plan: %v", err)
+	}
+	if err := st.InsertItem(store.Item{
+		ID:        "user:1",
+		ThreadID:  "t1",
+		TurnIndex: 1,
+		ItemIndex: 0,
+		Kind:      "user_text",
+		Role:      "user",
+		Status:    "completed",
+		Summary:   "same plan again",
+		CreatedAt: time.Now().UnixMilli(),
+		UpdatedAt: time.Now().UnixMilli(),
+	}); err != nil {
+		t.Fatalf("insert next turn user item: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventProposedPlan,
+		ThreadID:  "t1",
+		ItemID:    "plan-turn-2",
+		Content:   content,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle second plan: %v", err)
+	}
+
+	items, err := st.ListItems("t1")
+	if err != nil {
+		t.Fatalf("list items: %v", err)
+	}
+	var planCount int
+	for _, item := range items {
+		if item.PayloadKind == "proposed_plan" {
+			planCount++
+		}
+	}
+	if planCount != 2 {
+		t.Fatalf("plan items = %d, want 2", planCount)
+	}
+}
+
 func TestTurnCompleteExtractsProposedPlanFromAssistantText(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")

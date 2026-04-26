@@ -28,7 +28,7 @@ import {
   projectSendResolved,
   projectSendStarted,
 } from '../../stores/threadStatuses.svelte';
-import type { Thread } from '../../types/models';
+import type { SourceProposedPlan, Thread } from '../../types/models';
 import {
   clearRuntimeModeDraft,
   hasRuntimeModeDraft,
@@ -43,6 +43,7 @@ export interface SendOptions {
   threadId: string;
   message: string;
   attachmentIds: string[];
+  revisionSourceProposedPlan?: SourceProposedPlan;
   /** Draft snapshot used to restore the composer on send failure. */
   snapshot: {
     content: string;
@@ -113,10 +114,17 @@ export async function dispatchSend(opts: SendOptions): Promise<void> {
     const runtimeMode = threadForSend?.id === opts.threadId && hasRuntimeModeDraft(threadForSend)
       ? runtimeModeForThread(threadForSend)
       : undefined;
-    const sendOptions: { attachmentIds: string[]; runtimeMode?: string } = {
+    const sendOptions: {
+      attachmentIds: string[];
+      runtimeMode?: string;
+      revisionSourceProposedPlan?: SourceProposedPlan;
+    } = {
       attachmentIds: opts.attachmentIds,
     };
     if (runtimeMode) sendOptions.runtimeMode = runtimeMode;
+    if (opts.revisionSourceProposedPlan) {
+      sendOptions.revisionSourceProposedPlan = opts.revisionSourceProposedPlan;
+    }
     const updated = (await SendMessageWithOptions(opts.threadId, opts.message, sendOptions)) as Thread;
     opts.replaceCurrentThread(updated);
     replaceThread(updated);

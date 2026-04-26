@@ -501,6 +501,31 @@ func (s *Store) ListItems(threadID string) ([]Item, error) {
 	return items, rows.Err()
 }
 
+func (s *Store) ListItemsForTurn(threadID string, turnIndex int) ([]Item, error) {
+	rows, err := s.db.Query(
+		`SELECT `+itemColumns+`
+		   FROM items
+		   LEFT JOIN payloads ON payloads.id = items.payload_id
+		  WHERE items.thread_id = ? AND items.turn_index = ?
+		  ORDER BY items.item_index`,
+		threadID, turnIndex,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: list items for thread %s turn %d: %w", threadID, turnIndex, err)
+	}
+	defer rows.Close()
+
+	var items []Item
+	for rows.Next() {
+		it, err := scanItemRow(rows)
+		if err != nil {
+			return nil, fmt.Errorf("store: scan item row: %w", err)
+		}
+		items = append(items, it)
+	}
+	return items, rows.Err()
+}
+
 // NextItemIndex returns the next available item_index for the given
 // (thread, turn). Prefer AppendItem for anything that follows the read
 // with an insert: NextItemIndex + InsertItem is a read-then-write pair

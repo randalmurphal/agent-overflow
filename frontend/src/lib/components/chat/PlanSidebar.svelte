@@ -7,7 +7,11 @@
     retainProposedPlanEventListener,
   } from '../../stores/proposedPlans.svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
-  import type { Item, ProposedPlanItemMeta, ProposedPlanMeta } from '../../types/models';
+  import type { Item, ProposedPlanMeta } from '../../types/models';
+  import {
+    parseProposedPlanItemMeta,
+    parseProposedPlanPayloadMeta,
+  } from '../../utils/proposedPlan';
   import { isUiRenderTraceEnabled, recordUiTrace, scheduleDomUiTrace } from '../../utils/uiRenderTrace';
   import ProposedPlanCard from './ProposedPlanCard.svelte';
 
@@ -27,24 +31,6 @@
     meta: ProposedPlanMeta;
   }
 
-  function parsePlanMeta(item: Item): ProposedPlanMeta | null {
-    if (!item.payloadMeta) return null;
-    try {
-      return JSON.parse(item.payloadMeta) as ProposedPlanMeta;
-    } catch {
-      return null;
-    }
-  }
-
-  function parseItemMeta(item: Item): ProposedPlanItemMeta {
-    if (!item.meta) return {};
-    try {
-      return JSON.parse(item.meta) as ProposedPlanItemMeta;
-    } catch {
-      return {};
-    }
-  }
-
   function itemsToRows(items: Item[]): PlanRow[] {
     // Backend returns newest-first ordered by (turn_index, item_index)
     // DESC, so no re-sort is necessary. A defensive filter keeps us
@@ -52,8 +38,8 @@
     return items
       .filter((item) => item.payloadKind === 'proposed_plan' && !!item.payloadId)
       .map((item) => {
-        const meta = parsePlanMeta(item);
-        const itemMeta = parseItemMeta(item);
+        const meta = parseProposedPlanPayloadMeta(item);
+        const itemMeta = parseProposedPlanItemMeta(item);
         return {
           item,
           itemId: item.id,
@@ -61,7 +47,7 @@
           title: meta?.title?.trim() || 'Proposed plan',
           version: itemMeta.planVersion ?? 0,
           implemented: Boolean(itemMeta.planImplementedAt),
-          meta: meta ?? { title: 'Proposed plan', preview: '', lineCount: 0, charCount: 0 },
+          meta,
         };
       });
   }
@@ -85,8 +71,14 @@
       return;
     }
     const nextRows = itemsToRows(getThreadProposedPlans(id));
+    const requestedSelection = untrack(() => pane.requestedPlanSidebarItemId);
     const previousSelection = untrack(() => selectedPlanId);
     planRows = nextRows;
+    if (requestedSelection && nextRows.some((row) => row.itemId === requestedSelection)) {
+      selectedPlanId = requestedSelection;
+      pane.clearRequestedPlanSidebarItem();
+      return;
+    }
     if (previousSelection && nextRows.some((row) => row.itemId === previousSelection)) {
       selectedPlanId = previousSelection;
       return;
@@ -104,6 +96,7 @@
 
   $effect(() => {
     threadId;
+    pane.requestedPlanSidebarItemId;
     getThreadProposedPlans(threadId);
     syncPlansFromCache();
   });
@@ -160,6 +153,7 @@
 
   function handleSelect(event: Event) {
     selectedPlanId = (event.target as HTMLSelectElement).value;
+    pane.clearRequestedPlanSidebarItem();
   }
 </script>
 
@@ -234,6 +228,7 @@
               item={selectedPlan.item}
               payloadId={selectedPlan.item.payloadId ?? ''}
               meta={selectedPlan.meta}
+              fullPlan
               showReview
             />
           {/key}

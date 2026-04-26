@@ -581,6 +581,8 @@ export class SendMessageOptions {
     "attachmentIds": string[];
     "runtimeMode"?: string;
     "sourceProposedPlan"?: SourceProposedPlan | null;
+    "revisionSourceProposedPlan"?: SourceProposedPlan | null;
+    "revisionSourceCommentIds"?: string[];
 
     /** Creates a new SendMessageOptions instance. */
     constructor($$source: Partial<SendMessageOptions> = {}) {
@@ -597,12 +599,20 @@ export class SendMessageOptions {
     static createFrom($$source: any = {}): SendMessageOptions {
         const $$createField0_0 = $$createType2;
         const $$createField2_0 = $$createType6;
+        const $$createField3_0 = $$createType6;
+        const $$createField4_0 = $$createType2;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("attachmentIds" in $$parsedSource) {
             $$parsedSource["attachmentIds"] = $$createField0_0($$parsedSource["attachmentIds"]);
         }
         if ("sourceProposedPlan" in $$parsedSource) {
             $$parsedSource["sourceProposedPlan"] = $$createField2_0($$parsedSource["sourceProposedPlan"]);
+        }
+        if ("revisionSourceProposedPlan" in $$parsedSource) {
+            $$parsedSource["revisionSourceProposedPlan"] = $$createField3_0($$parsedSource["revisionSourceProposedPlan"]);
+        }
+        if ("revisionSourceCommentIds" in $$parsedSource) {
+            $$parsedSource["revisionSourceCommentIds"] = $$createField4_0($$parsedSource["revisionSourceCommentIds"]);
         }
         return new SendMessageOptions($$parsedSource as Partial<SendMessageOptions>);
     }

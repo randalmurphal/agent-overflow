@@ -121,6 +121,10 @@ func (r *Router) handleProposedPlan(evt provider.ProviderEvent) error {
 			return fmt.Errorf("plan turn index: %w", err)
 		}
 		itemID = fmt.Sprintf("plan:%d", turnIndex)
+	} else if existing, found, err := r.findMatchingProposedPlanItemInCurrentTurn(evt); err != nil {
+		return err
+	} else if found {
+		itemID = existing.ID
 	}
 
 	item, found, err := r.store.GetThreadItem(evt.ThreadID, itemID)
@@ -165,6 +169,30 @@ func (r *Router) handleProposedPlan(evt provider.ProviderEvent) error {
 		r.emit("provider:item_event", NewItemStreamUpsert(plan))
 	}
 	return nil
+}
+
+func (r *Router) findMatchingProposedPlanItemInCurrentTurn(evt provider.ProviderEvent) (store.Item, bool, error) {
+	turnIndex, err := r.currentTurnIndex(evt.ThreadID)
+	if err != nil {
+		return store.Item{}, false, fmt.Errorf("plan turn index: %w", err)
+	}
+	items, err := r.store.ListItemsForTurn(evt.ThreadID, turnIndex)
+	if err != nil {
+		return store.Item{}, false, fmt.Errorf("plan matching items for turn %d: %w", turnIndex, err)
+	}
+	for _, item := range items {
+		if item.PayloadKind != "proposed_plan" || item.PayloadID == "" {
+			continue
+		}
+		data, err := r.store.GetPayloadData(item.PayloadID)
+		if err != nil {
+			return store.Item{}, false, fmt.Errorf("plan matching payload %s: %w", item.PayloadID, err)
+		}
+		if strings.TrimSpace(string(data)) == strings.TrimSpace(evt.Content) {
+			return item, true, nil
+		}
+	}
+	return store.Item{}, false, nil
 }
 
 func eventTimestampMillis(evt provider.ProviderEvent) int64 {

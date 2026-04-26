@@ -136,11 +136,11 @@ describe('<PlanSidebar>', () => {
     pane.setShowPlanSidebar(true);
 
     const { findByText, getByTestId } = await renderSidebar(pane);
-    await findByText('# Second body');
+    await findByText('Second body');
 
     await fireEvent.change(getByTestId('plan-version-select'), { target: { value: 'plan-1' } });
 
-    await findByText('# First body');
+    await findByText('First body');
   });
 
   it('preserves an explicitly selected older plan when the list refreshes', async () => {
@@ -170,10 +170,10 @@ describe('<PlanSidebar>', () => {
     pane.setShowPlanSidebar(true);
 
     const { findByText, getByTestId } = await renderSidebar(pane);
-    await findByText('# Second body');
+    await findByText('Second body');
 
     await fireEvent.change(getByTestId('plan-version-select'), { target: { value: 'plan-1' } });
-    await findByText('# First body');
+    await findByText('First body');
 
     plansForRefresh = [...plansForRefresh];
     emitItemEventUpsert({
@@ -193,6 +193,52 @@ describe('<PlanSidebar>', () => {
     await new Promise((r) => setTimeout(r, 150));
     const select = getByTestId('plan-version-select') as HTMLSelectElement;
     expect(select.value).toBe('plan-1');
+  });
+
+  it('treats open-for-item as a one-shot selection request', async () => {
+    const plans = [
+      makeItem({
+        id: 'plan-2',
+        turnIndex: 1,
+        kind: 'tool_call',
+        payloadId: 'payload-2',
+        payloadKind: 'proposed_plan',
+        payloadMeta: JSON.stringify({ title: 'Second plan', preview: 'second', lineCount: 1, charCount: 6 }),
+      }),
+      makeItem({
+        id: 'plan-1',
+        turnIndex: 0,
+        kind: 'tool_call',
+        payloadId: 'payload-1',
+        payloadKind: 'proposed_plan',
+        payloadMeta: JSON.stringify({ title: 'First plan', preview: 'first', lineCount: 1, charCount: 5 }),
+      }),
+    ];
+    setBindingMock('ListThreadProposedPlans', async () => plans);
+    const pane = await buildPane();
+    pane.openPlanSidebarForItem('plan-1');
+
+    const { getByTestId } = await renderSidebar(pane);
+    const select = getByTestId('plan-version-select') as HTMLSelectElement;
+    expect(select.value).toBe('plan-1');
+
+    await fireEvent.change(select, { target: { value: 'plan-2' } });
+    emitItemEventUpsert({
+      id: 'plan-2',
+      threadId: pane.thread!.id,
+      turnIndex: 1,
+      itemIndex: 0,
+      kind: 'tool_call',
+      role: 'assistant',
+      status: 'completed',
+      summary: '',
+      payloadKind: 'proposed_plan',
+      createdAt: 0,
+      updatedAt: 0,
+    });
+    await new Promise((r) => setTimeout(r, 150));
+
+    expect(select.value).toBe('plan-2');
   });
 
   it('closes when the close button is clicked', async () => {

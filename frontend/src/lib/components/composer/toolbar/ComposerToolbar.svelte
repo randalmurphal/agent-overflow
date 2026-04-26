@@ -20,11 +20,12 @@
     pane: ThreadPane;
     canSend: boolean;
     isTurnActive: boolean;
+    sendLabel?: string;
     onSend: () => void;
     onInterrupt: () => void;
   }
 
-  let { pane, canSend, isTurnActive, onSend, onInterrupt }: Props = $props();
+  let { pane, canSend, isTurnActive, sendLabel, onSend, onInterrupt }: Props = $props();
 </script>
 
 <div
@@ -37,6 +38,6 @@
   <ModeCycleButton {pane} />
   <AccessToggle {pane} />
   <div class="ml-auto flex items-center">
-    <SendButton {canSend} {isTurnActive} {onSend} {onInterrupt} />
+    <SendButton {canSend} {isTurnActive} label={sendLabel} {onSend} {onInterrupt} />
   </div>
 </div>

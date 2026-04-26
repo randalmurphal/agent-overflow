@@ -1,3 +1,17 @@
+import type {
+  Item,
+  ProposedPlanItemMeta,
+  ProposedPlanMeta,
+  SourceProposedPlan,
+} from '../types/models';
+
+export interface ProposedPlanMarkdownBlock {
+  id: string;
+  markdown: string;
+  startLine: number;
+  endLine: number;
+}
+
 export function proposedPlanTitle(planMarkdown: string): string | null {
   const heading = planMarkdown.match(/^\s{0,3}#{1,6}\s+(.+)$/m)?.[1]?.trim();
   return heading && heading.length > 0 ? heading : null;
@@ -36,14 +50,86 @@ export function normalizePlanMarkdownForExport(planMarkdown: string): string {
   return `${planMarkdown.trimEnd()}\n`;
 }
 
-export function downloadPlanAsTextFile(filename: string, contents: string): void {
-  const blob = new Blob([contents], { type: 'text/markdown;charset=utf-8' });
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement('a');
-  anchor.href = url;
-  anchor.download = filename;
-  anchor.click();
-  window.setTimeout(() => {
-    URL.revokeObjectURL(url);
-  }, 0);
+export function parseProposedPlanItemMeta(item?: Pick<Item, 'meta'> | null): ProposedPlanItemMeta {
+  if (!item?.meta) return {};
+  try {
+    return JSON.parse(item.meta) as ProposedPlanItemMeta;
+  } catch {
+    return {};
+  }
+}
+
+export function parseProposedPlanPayloadMeta(item?: Pick<Item, 'payloadMeta'> | null): ProposedPlanMeta {
+  if (!item?.payloadMeta) {
+    return { title: 'Proposed plan', preview: '', lineCount: 0, charCount: 0 };
+  }
+  try {
+    return JSON.parse(item.payloadMeta) as ProposedPlanMeta;
+  } catch {
+    return { title: 'Proposed plan', preview: '', lineCount: 0, charCount: 0 };
+  }
+}
+
+export function sourceFromProposedPlanItem(threadId: string | null | undefined, item: Item | null | undefined): SourceProposedPlan | null {
+  if (!threadId || !item || item.payloadKind !== 'proposed_plan') return null;
+  const itemMeta = parseProposedPlanItemMeta(item);
+  if (itemMeta.planImplementedAt) return null;
+  const payloadMeta = parseProposedPlanPayloadMeta(item);
+  return {
+    threadId,
+    itemId: item.id,
+    payloadId: item.payloadId,
+    title: payloadMeta.title || 'Proposed plan',
+    version: itemMeta.planVersion || undefined,
+  };
+}
+
+export function splitProposedPlanMarkdownBlocks(markdown: string): ProposedPlanMarkdownBlock[] {
+  const lines = markdown.trimEnd().split(/\r?\n/);
+  if (lines.length === 1 && lines[0] === '') return [];
+
+  const blocks: ProposedPlanMarkdownBlock[] = [];
+  let blockStart = 0;
+  let inFence = false;
+  let fenceChar = '';
+  let fenceLength = 0;
+
+  function pushBlock(endIndex: number): void {
+    while (blockStart <= endIndex && lines[blockStart]?.trim() === '') {
+      blockStart += 1;
+    }
+    while (endIndex >= blockStart && lines[endIndex]?.trim() === '') {
+      endIndex -= 1;
+    }
+    if (blockStart > endIndex) return;
+    blocks.push({
+      id: `${blockStart + 1}-${endIndex + 1}`,
+      markdown: lines.slice(blockStart, endIndex + 1).join('\n'),
+      startLine: blockStart + 1,
+      endLine: endIndex + 1,
+    });
+  }
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] ?? '';
+    const fence = line.match(/^\s*(`{3,}|~{3,})/);
+    if (fence) {
+      const marker = fence[1] ?? '';
+      if (!inFence) {
+        inFence = true;
+        fenceChar = marker[0] ?? '';
+        fenceLength = marker.length;
+      } else if ((marker[0] ?? '') === fenceChar && marker.length >= fenceLength) {
+        inFence = false;
+      }
+      continue;
+    }
+
+    if (!inFence && line.trim() === '') {
+      pushBlock(index - 1);
+      blockStart = index + 1;
+    }
+  }
+  pushBlock(lines.length - 1);
+  return blocks;
 }

@@ -658,7 +658,7 @@
    * Scroll the timeline to the inline row for `id`. Invoked only by
    * the `scrollToItemRequest` $effect below — external callers publish
    * the intent through `pane.requestScrollToItem` (search hits, plan
-   * sidebar rows, tray rows, plan follow-up banners) so the DOM
+   * sidebar rows, tray rows) so the DOM
    * operation stays inside the component that owns the scroll
    * container. The target may live below the loaded window; we ask
    * the pane to page back until it's in view before querying the DOM.

@@ -8,6 +8,7 @@ import {
   stripDisplayedPlanMarkdown,
   buildProposedPlanMarkdownFilename,
   normalizePlanMarkdownForExport,
+  splitProposedPlanMarkdownBlocks,
 } from './proposedPlan';
 
 describe('proposedPlanTitle', () => {
@@ -108,5 +109,28 @@ describe('normalizePlanMarkdownForExport', () => {
 
   it('preserves interior blank lines', () => {
     expect(normalizePlanMarkdownForExport('a\n\nb')).toBe('a\n\nb\n');
+  });
+});
+
+describe('splitProposedPlanMarkdownBlocks', () => {
+  it('keeps source line ranges for repeated rendered text', () => {
+    expect(splitProposedPlanMarkdownBlocks('Repeat\n\nRepeat')).toEqual([
+      { id: '1-1', markdown: 'Repeat', startLine: 1, endLine: 1 },
+      { id: '3-3', markdown: 'Repeat', startLine: 3, endLine: 3 },
+    ]);
+  });
+
+  it('keeps multi-line list selections in one source block', () => {
+    expect(splitProposedPlanMarkdownBlocks('- first\n- second\n\nNext')).toEqual([
+      { id: '1-2', markdown: '- first\n- second', startLine: 1, endLine: 2 },
+      { id: '4-4', markdown: 'Next', startLine: 4, endLine: 4 },
+    ]);
+  });
+
+  it('does not split fenced code blocks on blank lines', () => {
+    expect(splitProposedPlanMarkdownBlocks('```ts\nconst a = 1;\n\nconst b = 2;\n```\n\nAfter')).toEqual([
+      { id: '1-5', markdown: '```ts\nconst a = 1;\n\nconst b = 2;\n```', startLine: 1, endLine: 5 },
+      { id: '7-7', markdown: 'After', startLine: 7, endLine: 7 },
+    ]);
   });
 });
