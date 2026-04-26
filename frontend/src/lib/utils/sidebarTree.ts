@@ -10,7 +10,7 @@
 //
 // Sort order (highest first):
 //   1. Pinned tier (Thread.pinnedAt set) — within tier: pinnedAt desc.
-//   2. needs-attention (error / pending-approval / awaiting-input / plan-ready).
+//   2. needs-attention (error / pending-approval / awaiting-input / plan-ready / interrupted).
 //   3. running (any mode — Working / Planning / Designing / Discussing).
 //   4. paused (reserved for future; no current source emits it).
 //   5. completed (idle + unread).
@@ -30,6 +30,7 @@
 import type { ThreadLiveStatus } from '../stores/threadStatuses.svelte';
 import type { Thread } from '../types/models';
 import {
+  resolveEffectiveThreadStatus,
   resolveThreadStatusPill,
   type ThreadStatusPill,
 } from '../components/sidebar/threadStatusPill';
@@ -68,6 +69,7 @@ const STATUS_PRIORITY: Record<ThreadLiveStatus, number> = {
   'awaiting-input': 80,
   'plan-ready': 60,
   running: 50,
+  interrupted: 40,
   idle: 0,
 };
 
@@ -126,6 +128,7 @@ function getStatusSortGroup(thread: Thread, liveStatus: ThreadLiveStatus): Threa
     case 'pending-approval':
     case 'awaiting-input':
     case 'plan-ready':
+    case 'interrupted':
       return 'needs-attention';
     case 'running':
       return 'running';
@@ -249,7 +252,7 @@ export function buildSidebarThreadTree(input: BuildSidebarThreadTreeInput): Side
             .map((child) => buildNode(child, depth + 1))
             .sort(compareTreeNodes);
 
-    const ownLiveStatus = input.liveStatusOf(thread.id);
+    const ownLiveStatus = resolveEffectiveThreadStatus(thread, input.liveStatusOf(thread.id));
     const ownPill = resolveThreadStatusPill(thread, ownLiveStatus);
     const ownGroup = getStatusSortGroup(thread, ownLiveStatus);
     const display = resolveDisplay(ownLiveStatus, ownPill, ownGroup, children);

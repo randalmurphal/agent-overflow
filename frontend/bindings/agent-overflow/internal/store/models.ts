@@ -791,6 +791,21 @@ export class Thread {
      */
     "pinnedAt"?: number | null;
 
+    /**
+     * HasActionableProposedPlan is derived for sidebar boot state. It is
+     * true when the latest assistant proposed plan is completed and has
+     * not been implemented yet. It is not a persisted threads column.
+     */
+    "hasActionableProposedPlan": boolean;
+
+    /**
+     * HasIncompleteTurn is derived from the newest turn row. A newest
+     * turn with completed_at=NULL means the prior provider process died
+     * or was closed mid-turn, so the sidebar should show Interrupted,
+     * not live Working. It is not a persisted threads column.
+     */
+    "hasIncompleteTurn": boolean;
+
     /** Creates a new Thread instance. */
     constructor($$source: Partial<Thread> = {}) {
         if (!("id" in $$source)) {
@@ -837,6 +852,12 @@ export class Thread {
         }
         if (!("archived" in $$source)) {
             this["archived"] = false;
+        }
+        if (!("hasActionableProposedPlan" in $$source)) {
+            this["hasActionableProposedPlan"] = false;
+        }
+        if (!("hasIncompleteTurn" in $$source)) {
+            this["hasIncompleteTurn"] = false;
         }
 
         Object.assign(this, $$source);

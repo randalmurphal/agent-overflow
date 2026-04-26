@@ -214,6 +214,54 @@ describe('setupEventListeners', () => {
     expect(getThreadStatus('thread-1')).toBe('error');
   });
 
+  it('clears cached durable Plan Ready when a proposed plan is implemented', async () => {
+    const cached = makeThread({
+      id: 'thread-1',
+      hasActionableProposedPlan: true,
+    });
+    setBindingMock('ListThreads', async () => [cached]);
+    await refreshThreads();
+    const pane = await buildPane(cached);
+    getAllPanes().set('main', pane);
+
+    const item = makeItem({
+      id: 'plan-1',
+      threadId: 'thread-1',
+      kind: 'tool_call',
+      role: 'assistant',
+      payloadKind: 'proposed_plan',
+      status: 'completed',
+      meta: '{"planImplementedAt":123}',
+    });
+    emitWailsEvent('provider:item_event', { action: 'upsert', threadId: item.threadId, item });
+    await nextFrame();
+
+    expect(getThreads()[0]?.hasActionableProposedPlan).toBe(false);
+    expect(pane.thread?.hasActionableProposedPlan).toBe(false);
+  });
+
+  it('ignores user-authored proposed-plan payloads when patching durable Plan Ready', async () => {
+    const cached = makeThread({
+      id: 'thread-1',
+      hasActionableProposedPlan: false,
+    });
+    setBindingMock('ListThreads', async () => [cached]);
+    await refreshThreads();
+
+    const item = makeItem({
+      id: 'user-plan',
+      threadId: 'thread-1',
+      kind: 'user_text',
+      role: 'user',
+      payloadKind: 'proposed_plan',
+      status: 'completed',
+    });
+    emitWailsEvent('provider:item_event', { action: 'upsert', threadId: item.threadId, item });
+    await nextFrame();
+
+    expect(getThreads()[0]?.hasActionableProposedPlan).toBe(false);
+  });
+
   it('projects running -> idle from ordered item_event upserts', async () => {
     const pane = await buildPane();
     getAllPanes().set('main', pane);

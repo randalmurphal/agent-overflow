@@ -342,6 +342,59 @@ describe('<UnifiedThreadPicker> — status dots', () => {
     // The idle row doesn't.
     expect(idleRow.querySelector('[data-testid="thread-picker-status-dot"]')).toBeNull();
   });
+
+  it('uses the shared sidebar pill presentation for running discussion threads', async () => {
+    await seedThreads([
+      makeThread({ id: 'discussion', title: 'Roundtable', mode: 'discussion' }),
+    ]);
+    setThreadStatus('discussion', 'running');
+    const pane = makePane();
+    const { getByTestId } = render(UnifiedThreadPicker, {
+      open: true,
+      pane,
+      onClose: vi.fn(),
+    });
+
+    const dot = getByTestId('thread-picker-status-dot');
+    expect(dot.getAttribute('aria-label')).toBe('Discussing');
+    expect(dot.classList.contains('border-info')).toBe(true);
+    expect(dot.classList.contains('bg-transparent')).toBe(true);
+    expect(dot.classList.contains('animate-pulse')).toBe(false);
+  });
+
+  it('renders durable Interrupted from the thread row without a live event', async () => {
+    await seedThreads([
+      makeThread({ id: 'interrupted', title: 'Stopped', hasIncompleteTurn: true }),
+    ]);
+    const pane = makePane();
+    const { getByTestId } = render(UnifiedThreadPicker, {
+      open: true,
+      pane,
+      onClose: vi.fn(),
+    });
+
+    const dot = getByTestId('thread-picker-status-dot');
+    expect(dot.getAttribute('data-status')).toBe('interrupted');
+    expect(dot.getAttribute('aria-label')).toBe('Interrupted');
+    expect(dot.classList.contains('bg-warning')).toBe(true);
+  });
+
+  it('lets live status override durable Interrupted', async () => {
+    await seedThreads([
+      makeThread({ id: 'interrupted', title: 'Stopped', hasIncompleteTurn: true }),
+    ]);
+    setThreadStatus('interrupted', 'running');
+    const pane = makePane();
+    const { getByTestId } = render(UnifiedThreadPicker, {
+      open: true,
+      pane,
+      onClose: vi.fn(),
+    });
+
+    const dot = getByTestId('thread-picker-status-dot');
+    expect(dot.getAttribute('data-status')).toBe('running');
+    expect(dot.getAttribute('aria-label')).toBe('Working');
+  });
 });
 
 // ---- Project basename + worktree badge ----

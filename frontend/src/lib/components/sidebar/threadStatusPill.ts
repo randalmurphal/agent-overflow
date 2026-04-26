@@ -4,7 +4,7 @@
 // This version produces a richer {label, dotClass, labelClass, pulse}
 // record so the sidebar can show the mode-aware forge-style pill
 // ("Planning", "Designing", "Working", "Discussing", "Pending approval",
-// "Error", "Completed") next to the title.
+// "Interrupted", "Failed", "Completed") next to the title.
 //
 // Keep this file free of Svelte imports so its behaviour stays
 // table-drivable from unit tests.
@@ -26,10 +26,16 @@ export interface ThreadStatusPill {
    * for the pulsing glow-ring around pending-approval / awaiting-input
    * rows so the sidebar can catch the user's attention when the
    * provider is blocked on them. `null` / undefined → no glow.
-   * Defined in app.css (`.status-glow-warning`, `.status-glow-accent`).
+   * Defined in app.css (`.status-glow-warning`, `.status-glow-info`).
    */
   glowClass?: string;
 }
+
+const RUNNING_SUCCESS = {
+  dotClass: 'bg-success',
+  labelClass: 'text-success',
+  pulse: true,
+} as const;
 
 /**
  * hasUnread returns true when the thread has activity the user hasn't
@@ -45,23 +51,36 @@ export function hasUnread(thread: Pick<Thread, 'lastReadAt' | 'latestTurnComplet
 }
 
 /**
+ * Live events win first. When no live event is present, durable Thread-row
+ * projections restore boot-time status for prior interrupted turns and
+ * actionable plans.
+ */
+export function resolveEffectiveThreadStatus(
+  thread: Pick<Thread, 'hasIncompleteTurn' | 'hasActionableProposedPlan'>,
+  liveStatus: ThreadLiveStatus,
+): ThreadLiveStatus {
+  if (liveStatus !== 'idle') return liveStatus;
+  if (thread.hasIncompleteTurn) return 'interrupted';
+  if (thread.hasActionableProposedPlan) return 'plan-ready';
+  return 'idle';
+}
+
+/**
  * resolveThreadStatusPill picks the right pill for a row. Returns
  * `null` when the row should show nothing more than its title + time
  * (the common idle case). Resolution order:
- *   1. error            → "Error"
+ *   1. error            → "Failed"
  *   2. pending-approval → "Pending approval" (blocking tool permission)
  *   3. awaiting-input   → "Awaiting input" (agent asking a question)
  *   4. running          → mode-aware (Planning / Designing / Discussing / Working)
  *   5. plan-ready       → "Plan ready" (settled plan awaiting accept/edit/reject)
- *   6. idle + unread    → "Completed"
- *   7. idle + read      → null (no pill)
+ *   6. interrupted      → "Interrupted" (prior app closed mid-turn)
+ *   7. idle + unread    → "Completed"
+ *   8. idle + read      → null (no pill)
  *
- * Priority matches forge's `Sidebar.logic.ts`. Colors — pending-approval
- * shares the running amber because both are "agent pausing on an action
- * the user needs to resolve"; awaiting-input and plan-ready use accent
- * violet to read as calmer user-prompts. Plan-ready doesn't pulse — the
- * plan isn't actively working; awaiting-input does pulse because the
- * agent is actively stuck.
+ * Priority and colors match forge's `Sidebar.logic.ts`: running / completed
+ * states use success green, discussion uses the running-blue outline,
+ * awaiting-input uses info blue, and plan-ready uses the app primary accent.
  */
 export function resolveThreadStatusPill(
   thread: Pick<Thread, 'mode' | 'lastReadAt' | 'latestTurnCompletedAt'>,
@@ -69,7 +88,7 @@ export function resolveThreadStatusPill(
 ): ThreadStatusPill | null {
   if (liveStatus === 'error') {
     return {
-      label: 'Error',
+      label: 'Failed',
       dotClass: 'bg-error',
       labelClass: 'text-error',
       pulse: false,
@@ -87,27 +106,27 @@ export function resolveThreadStatusPill(
   if (liveStatus === 'awaiting-input') {
     return {
       label: 'Awaiting Input',
-      dotClass: 'bg-accent',
-      labelClass: 'text-accent',
+      dotClass: 'bg-info',
+      labelClass: 'text-info',
       pulse: true,
-      glowClass: 'status-glow-accent',
+      glowClass: 'status-glow-info',
     };
   }
   if (liveStatus === 'running') {
-    const running = {
-      dotClass: 'bg-warning',
-      labelClass: 'text-warning',
-      pulse: true,
-    };
     switch (thread.mode) {
       case 'plan':
-        return { label: 'Planning', ...running };
+        return { label: 'Planning', ...RUNNING_SUCCESS };
       case 'design':
-        return { label: 'Designing', ...running };
+        return { label: 'Designing', ...RUNNING_SUCCESS };
       case 'discussion':
-        return { label: 'Discussing', ...running };
+        return {
+          label: 'Discussing',
+          dotClass: 'border border-info bg-transparent',
+          labelClass: 'text-info',
+          pulse: false,
+        };
       default:
-        return { label: 'Working', ...running };
+        return { label: 'Working', ...RUNNING_SUCCESS };
     }
   }
   if (liveStatus === 'plan-ready') {
@@ -115,6 +134,14 @@ export function resolveThreadStatusPill(
       label: 'Plan Ready',
       dotClass: 'bg-accent',
       labelClass: 'text-accent',
+      pulse: false,
+    };
+  }
+  if (liveStatus === 'interrupted') {
+    return {
+      label: 'Interrupted',
+      dotClass: 'bg-warning',
+      labelClass: 'text-warning',
       pulse: false,
     };
   }

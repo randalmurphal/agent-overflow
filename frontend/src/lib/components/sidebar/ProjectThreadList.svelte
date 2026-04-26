@@ -146,6 +146,8 @@
           indent={node.depth + 1}
           hasChildren={node.isExpandable}
           expanded={node.isExpanded}
+          displayLiveStatus={node.displayLiveStatus}
+          displayStatus={node.displayStatus}
           onToggleExpand={() => toggleDiscussion(node.thread.id)}
           selected={isThreadSelected(node.thread.id)}
           onSelectClick={(modifier) => handleSelectClick(node.thread.id, modifier)}

@@ -3,8 +3,9 @@
   import type { ThreadPane } from '../../stores/thread.svelte';
   import type { Thread } from '../../types/models';
   import { getThreads } from '../../stores/threads.svelte';
-  import { getThreadStatus, type ThreadLiveStatus } from '../../stores/threadStatuses.svelte';
+  import { getThreadStatus } from '../../stores/threadStatuses.svelte';
   import { computeHighlightSegments } from '../../utils/highlight';
+  import { resolveEffectiveThreadStatus, resolveThreadStatusPill } from '../sidebar/threadStatusPill';
 
   interface Props {
     open: boolean;
@@ -83,26 +84,6 @@
     return parts[parts.length - 1] ?? '';
   }
 
-  // Status dot styling is identical to ThreadRow so the picker stays
-  // visually consistent with the sidebar. Keep in sync with
-  // resolveThreadStatusPill in components/sidebar/threadStatusPill.ts.
-  const STATUS_CLASS: Record<ThreadLiveStatus, string> = {
-    idle: '',
-    running: 'bg-warning animate-pulse',
-    'awaiting-input': 'bg-accent animate-pulse',
-    'pending-approval': 'bg-warning animate-pulse',
-    'plan-ready': 'bg-accent',
-    error: 'bg-error',
-  };
-  const STATUS_LABEL: Record<ThreadLiveStatus, string> = {
-    idle: '',
-    running: 'Running',
-    'awaiting-input': 'Awaiting Input',
-    'pending-approval': 'Pending Approval',
-    'plan-ready': 'Plan Ready',
-    error: 'Error',
-  };
-
   // Escape is handled by Modal. Enter / Arrow keys are caught at the
   // body level so the search input keeps getting keystrokes it cares
   // about (letters) while navigation / activation are intercepted.
@@ -154,7 +135,9 @@
       {:else}
         <ul class="py-1 -mx-1" data-testid="thread-picker-results">
           {#each hits as hit, i (hit.thread.id)}
-            {@const status = getThreadStatus(hit.thread.id)}
+            {@const liveStatus = getThreadStatus(hit.thread.id)}
+            {@const status = resolveEffectiveThreadStatus(hit.thread, liveStatus)}
+            {@const statusPill = resolveThreadStatusPill(hit.thread, status)}
             {@const basename = projectBasename(hit.thread.projectPath)}
             <li>
               <button
@@ -171,14 +154,14 @@
                     {hit.thread.provider === 'claude' ? 'bg-accent/10 text-accent' : 'bg-provider-codex/10 text-provider-codex'}" aria-hidden="true">
                   {hit.thread.provider === 'claude' ? 'C' : 'X'}
                 </span>
-                {#if status === 'idle'}
+                {#if !statusPill}
                   <span class="w-2 h-2 shrink-0" aria-hidden="true"></span>
                 {:else}
                   <span
-                    class="w-2 h-2 rounded-full shrink-0 {STATUS_CLASS[status]}"
+                    class="w-2 h-2 rounded-full shrink-0 {statusPill.dotClass} {statusPill.pulse ? 'animate-pulse' : ''}"
                     role="status"
-                    aria-label={STATUS_LABEL[status]}
-                    title={STATUS_LABEL[status]}
+                    aria-label={statusPill.label}
+                    title={statusPill.label}
                     data-testid="thread-picker-status-dot"
                     data-status={status}
                   ></span>

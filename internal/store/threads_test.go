@@ -847,6 +847,187 @@ func TestListThreadsWithItemsSurfacesPlanImplementationDrafts(t *testing.T) {
 	}
 }
 
+func TestListThreadsWithItemsDerivesActionableProposedPlan(t *testing.T) {
+	s := newTestStore(t)
+	thread := makeThread("thread-plan-ready", "claude")
+	if err := s.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread(): %v", err)
+	}
+	seedPlanItemForThreadList(t, s, thread.ID, "plan-1", 0, "completed", "assistant")
+	if _, err := s.EnsureProposedPlanState(thread.ID, "plan-1", 100); err != nil {
+		t.Fatalf("EnsureProposedPlanState(): %v", err)
+	}
+
+	got := mustListSingleThreadWithItems(t, s)
+	if !got.HasActionableProposedPlan {
+		t.Fatal("HasActionableProposedPlan = false, want true")
+	}
+}
+
+func TestListThreadsWithItemsDerivesActionableProposedPlanFromLatestPlanOnly(t *testing.T) {
+	s := newTestStore(t)
+	thread := makeThread("thread-plan-implemented", "claude")
+	if err := s.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread(): %v", err)
+	}
+	seedPlanItemForThreadList(t, s, thread.ID, "plan-1", 0, "completed", "assistant")
+	seedPlanItemForThreadList(t, s, thread.ID, "plan-2", 1, "completed", "assistant")
+	if _, err := s.EnsureProposedPlanState(thread.ID, "plan-1", 100); err != nil {
+		t.Fatalf("EnsureProposedPlanState(plan-1): %v", err)
+	}
+	if _, err := s.EnsureProposedPlanState(thread.ID, "plan-2", 200); err != nil {
+		t.Fatalf("EnsureProposedPlanState(plan-2): %v", err)
+	}
+	if err := s.MarkProposedPlanImplemented(thread.ID, "plan-2", "impl-thread", "impl-item", 300); err != nil {
+		t.Fatalf("MarkProposedPlanImplemented(): %v", err)
+	}
+
+	got := mustListSingleThreadWithItems(t, s)
+	if got.HasActionableProposedPlan {
+		t.Fatal("HasActionableProposedPlan = true, want false for implemented latest plan")
+	}
+}
+
+func TestListThreadsWithItemsDoesNotDeriveActionablePlanForNonActionableRows(t *testing.T) {
+	tests := []struct {
+		name   string
+		status string
+		role   string
+	}{
+		{name: "streaming", status: "streaming", role: "assistant"},
+		{name: "errored", status: "errored", role: "assistant"},
+		{name: "user-authored", status: "completed", role: "user"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := newTestStore(t)
+			thread := makeThread("thread-"+tt.name, "claude")
+			if err := s.CreateThread(thread); err != nil {
+				t.Fatalf("CreateThread(): %v", err)
+			}
+			seedPlanItemForThreadList(t, s, thread.ID, "plan-1", 0, tt.status, tt.role)
+			if _, err := s.EnsureProposedPlanState(thread.ID, "plan-1", 100); err != nil {
+				t.Fatalf("EnsureProposedPlanState(): %v", err)
+			}
+
+			got := mustListSingleThreadWithItems(t, s)
+			if got.HasActionableProposedPlan {
+				t.Fatal("HasActionableProposedPlan = true, want false")
+			}
+		})
+	}
+}
+
+func TestListThreadsWithItemsDerivesIncompleteNewestTurn(t *testing.T) {
+	s := newTestStore(t)
+	thread := makeThread("thread-interrupted", "claude")
+	if err := s.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread(): %v", err)
+	}
+	seedItem(t, s, thread.ID, "item-1", 0, 0, "")
+	if err := s.InsertTurn(Turn{
+		TurnID:    "turn-1",
+		ThreadID:  thread.ID,
+		TurnIndex: 0,
+		StartedAt: 100,
+	}); err != nil {
+		t.Fatalf("InsertTurn(): %v", err)
+	}
+
+	got := mustListSingleThreadWithItems(t, s)
+	if !got.HasIncompleteTurn {
+		t.Fatal("HasIncompleteTurn = false, want true")
+	}
+
+	if err := s.UpdateTurnCompleted("turn-1", 200, "end_turn", "", "", ""); err != nil {
+		t.Fatalf("UpdateTurnCompleted(): %v", err)
+	}
+	got = mustListSingleThreadWithItems(t, s)
+	if got.HasIncompleteTurn {
+		t.Fatal("HasIncompleteTurn = true after completion, want false")
+	}
+}
+
+func TestListThreadsWithItemsDerivesIncompleteOnlyForNewestTurn(t *testing.T) {
+	s := newTestStore(t)
+	thread := makeThread("thread-old-interrupted", "claude")
+	if err := s.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread(): %v", err)
+	}
+	seedItem(t, s, thread.ID, "item-1", 0, 0, "")
+	if err := s.InsertTurn(Turn{
+		TurnID:    "turn-old",
+		ThreadID:  thread.ID,
+		TurnIndex: 0,
+		StartedAt: 100,
+	}); err != nil {
+		t.Fatalf("InsertTurn(old): %v", err)
+	}
+	if err := s.InsertTurn(Turn{
+		TurnID:    "turn-new",
+		ThreadID:  thread.ID,
+		TurnIndex: 1,
+		StartedAt: 300,
+	}); err != nil {
+		t.Fatalf("InsertTurn(new): %v", err)
+	}
+	if err := s.UpdateTurnCompleted("turn-new", 400, "end_turn", "", "", ""); err != nil {
+		t.Fatalf("UpdateTurnCompleted(new): %v", err)
+	}
+
+	got := mustListSingleThreadWithItems(t, s)
+	if got.HasIncompleteTurn {
+		t.Fatal("HasIncompleteTurn = true for old incomplete turn, want false")
+	}
+}
+
+func seedPlanItemForThreadList(
+	t *testing.T,
+	s *Store,
+	threadID, id string,
+	turnIndex int,
+	status, role string,
+) {
+	t.Helper()
+	payloadID := "payload-" + id
+	item := Item{
+		ID:        id,
+		ThreadID:  threadID,
+		TurnIndex: turnIndex,
+		ItemIndex: 0,
+		Kind:      "assistant_text",
+		Role:      role,
+		Status:    status,
+		Summary:   id,
+		PayloadID: payloadID,
+		CreatedAt: int64(100 + turnIndex),
+		UpdatedAt: int64(100 + turnIndex),
+	}
+	payload := Payload{
+		ID:        payloadID,
+		Kind:      "proposed_plan",
+		Meta:      "{}",
+		Data:      []byte("# Plan"),
+		CreatedAt: int64(100 + turnIndex),
+	}
+	if err := s.InsertItemWithPayload(item, payload); err != nil {
+		t.Fatalf("InsertItemWithPayload(%s): %v", id, err)
+	}
+}
+
+func mustListSingleThreadWithItems(t *testing.T, s *Store) Thread {
+	t.Helper()
+	got, err := s.ListThreadsWithItems()
+	if err != nil {
+		t.Fatalf("ListThreadsWithItems(): %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("ListThreadsWithItems() returned %d rows, want 1", len(got))
+	}
+	return got[0]
+}
+
 func TestThreadMutationsReturnNotFoundForMissingRows(t *testing.T) {
 	s := newTestStore(t)
 	proj := newTestProject(t, s, "proj-missing", "/tmp/m")

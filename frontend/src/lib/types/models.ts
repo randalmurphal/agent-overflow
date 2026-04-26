@@ -70,6 +70,18 @@ export interface Thread {
    * Set by PinThread / cleared by UnpinThread.
    */
   pinnedAt?: number;
+  /**
+   * Derived by ListThreads from the latest assistant proposed plan. True when
+   * the latest plan is completed and has not been implemented yet, so sidebar
+   * boot state can show Plan Ready before any live event arrives.
+   */
+  hasActionableProposedPlan?: boolean;
+  /**
+   * Derived by ListThreads from the newest turn row. True means the prior app
+   * process closed or crashed while that turn was active; it is historical
+   * Interrupted state, not live Working state.
+   */
+  hasIncompleteTurn?: boolean;
 }
 
 /**

@@ -243,6 +243,42 @@ function updateThreadUsageCache(threadId: string, raw: string): void {
   }
 }
 
+function patchThreadDurableStatus(
+  threadId: string,
+  patch: Pick<Partial<Thread>, 'hasActionableProposedPlan' | 'hasIncompleteTurn'>,
+): void {
+  const existing = getThreads().find((thread) => thread.id === threadId);
+  if (existing) {
+    replaceThread({ ...existing, ...patch });
+  }
+  for (const pane of getAllPanes().values()) {
+    if (pane.threadId !== threadId || !pane.thread) continue;
+    pane.replaceThread({ ...pane.thread, ...patch });
+  }
+}
+
+function isImplementedProposedPlan(item: Item): boolean {
+  if (item.payloadKind !== 'proposed_plan' || item.role !== 'assistant' || item.status !== 'completed') {
+    return false;
+  }
+  if (!item.meta) return false;
+  try {
+    const parsed = JSON.parse(item.meta) as { planImplementedAt?: number };
+    return Number(parsed.planImplementedAt ?? 0) > 0;
+  } catch {
+    return false;
+  }
+}
+
+function syncProposedPlanStatus(item: Item): void {
+  if (item.payloadKind !== 'proposed_plan' || item.role !== 'assistant' || item.status !== 'completed') {
+    return;
+  }
+  patchThreadDurableStatus(item.threadId, {
+    hasActionableProposedPlan: !isImplementedProposedPlan(item),
+  });
+}
+
 function applyApprovalEvent(evt: ApprovalEvent): void {
   if (!evt) return;
 
@@ -380,6 +416,7 @@ function applyItemStreamEvent(evt: ItemStreamEvent): void {
   if (evt.action === 'upsert' && evt.item) {
     if (!isValidItemForThread(evt.item, evt.threadId)) return;
     projectThreadItem(evt.item);
+    syncProposedPlanStatus(evt.item);
   } else if (evt.action === 'delta') {
     if (!isBoundedString(evt.threadId, 512)) return;
     if (!isBoundedString(evt.itemId, 512) || evt.itemId.trim() === '') return;
@@ -569,6 +606,10 @@ function applyTurnStarted(evt: TurnStartedEvent): void {
   // before we wait on any streaming item deltas. Matches forge's
   // behavior and fixes the "idle during thinking" gap.
   projectTurnStarted(evt.threadId, evt.turnId);
+  patchThreadDurableStatus(evt.threadId, {
+    hasActionableProposedPlan: false,
+    hasIncompleteTurn: false,
+  });
   for (const pane of getAllPanes().values()) {
     if (pane.threadId !== evt.threadId) continue;
     pane.setActiveTurn({
@@ -604,13 +645,13 @@ function applyTurnCompleted(evt: TurnCompletedEvent): void {
     aborted: Boolean(evt.aborted),
     errorMessage: evt.errorMessage ?? '',
   };
-  // Clear the turn from the sidebar projection. Aborted / errored
-  // turns flip the pill to Error so the row surfaces the failure
-  // without the user having to open the thread.
+  // Clear the turn from the sidebar projection. Errored turns flip the
+  // pill to Failed; clean aborts flip it to Interrupted.
   projectTurnCompleted(evt.threadId, evt.turnId, {
     aborted: settled.aborted,
     errorMessage: settled.errorMessage,
   });
+  patchThreadDurableStatus(evt.threadId, { hasIncompleteTurn: false });
   for (const pane of getAllPanes().values()) {
     if (pane.threadId !== evt.threadId) continue;
     pane.settleTurn(settled);

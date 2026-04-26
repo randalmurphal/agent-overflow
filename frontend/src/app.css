@@ -11,6 +11,7 @@
   /* Cobalt-violet primary. Replaces the prior generic dev-tool blue so
      the app reads as a chosen color, not the default Tailwind accent. */
   --accent: oklch(0.58 0.19 276);
+  --info: oklch(0.62 0.17 250);
   --success: oklch(0.7 0.17 150);
   --error: oklch(0.63 0.2 25);
   --warning: oklch(0.75 0.15 75);
@@ -31,6 +32,7 @@ html.light {
   --text-primary: oklch(0.23 0.014 255);
   --text-secondary: oklch(0.48 0.018 255);
   --accent: oklch(0.55 0.18 276);
+  --info: oklch(0.55 0.17 250);
   --success: oklch(0.66 0.16 155);
   --error: oklch(0.61 0.19 27);
   --warning: oklch(0.78 0.16 78);
@@ -53,6 +55,7 @@ html.light {
   --color-text-primary: var(--text-primary);
   --color-text-secondary: var(--text-secondary);
   --color-accent: var(--accent);
+  --color-info: var(--info);
   --color-success: var(--success);
   --color-error: var(--error);
   --color-warning: var(--warning);
@@ -377,7 +380,7 @@ pre, code, kbd, samp, .ansi-body {
 
 /*
  * Sidebar status glow. When a thread is pending user action — either
- * a blocking approval (amber) or an input/elicitation prompt (accent)
+ * a blocking approval (amber) or an input/elicitation prompt (info blue)
  * — the row paints a thin 1px border that pulses its inner glow. The
  * ::before overlay respects the row's border-radius, disables pointer
  * events so it never blocks the click target, and sits behind the
@@ -389,11 +392,11 @@ pre, code, kbd, samp, .ansi-body {
  * (no animation) via the @media block below.
  */
 .status-glow-warning,
-.status-glow-accent {
+.status-glow-info {
   position: relative;
 }
 .status-glow-warning::before,
-.status-glow-accent::before {
+.status-glow-info::before {
   content: '';
   position: absolute;
   inset: 0;
@@ -405,8 +408,8 @@ pre, code, kbd, samp, .ansi-body {
 .status-glow-warning::before {
   color: var(--warning);
 }
-.status-glow-accent::before {
-  color: var(--accent);
+.status-glow-info::before {
+  color: var(--info);
 }
 @keyframes status-glow-pulse {
   0%, 100% {

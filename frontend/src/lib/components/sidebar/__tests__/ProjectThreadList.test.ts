@@ -1,8 +1,10 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { render } from '@testing-library/svelte';
 import ProjectThreadList from '../ProjectThreadList.svelte';
 import { createThreadPane } from '../../../stores/thread.svelte';
 import type { Thread } from '../../../types/models';
+import { resetSidebarForTest } from '../../../stores/sidebar.svelte';
+import { resetForTest as resetThreadStatuses } from '../../../stores/threadStatuses.svelte';
 
 function mkThread(id: string, overrides: Partial<Thread> = {}): Thread {
   return {
@@ -21,6 +23,11 @@ function mkThread(id: string, overrides: Partial<Thread> = {}): Thread {
 }
 
 describe('<ProjectThreadList>', () => {
+  beforeEach(() => {
+    resetSidebarForTest();
+    resetThreadStatuses();
+  });
+
   it('shows a "+ New Thread" empty-state button when threads is empty', () => {
     const pane = createThreadPane();
     const { getByTestId } = render(ProjectThreadList, {
@@ -61,5 +68,27 @@ describe('<ProjectThreadList>', () => {
     expect(getByText('Alpha')).toBeInTheDocument();
     expect(getByText('Beta')).toBeInTheDocument();
     expect(queryByTestId('project-thread-list-empty')).toBeNull();
+  });
+
+  it('renders a child durable Interrupted status on the collapsed parent row', () => {
+    const pane = createThreadPane();
+    const parent = mkThread('parent', { title: 'Parent' });
+    const child = mkThread('child', {
+      parentThreadId: 'parent',
+      title: 'Child',
+      hasIncompleteTurn: true,
+    });
+    const { getByTestId, queryByText } = render(ProjectThreadList, {
+      props: {
+        projectId: 'p1',
+        threads: [parent, child],
+        pane,
+      },
+    });
+
+    expect(queryByText('Child')).toBeNull();
+    const dot = getByTestId('thread-row-status-dot');
+    expect(dot.getAttribute('data-status')).toBe('interrupted');
+    expect(dot.getAttribute('aria-label')).toBe('Interrupted');
   });
 });

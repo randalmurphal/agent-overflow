@@ -157,7 +157,7 @@ export async function dispatchSend(opts: SendOptions): Promise<void> {
     clearRuntimeModeDraft(opts.threadId);
   } catch (err) {
     console.error('Failed to send message:', err);
-    // Flip to error so the sidebar pill reads "Error" — the user
+    // Flip to error so the sidebar pill reads "Failed" — the user
     // should see the failure without having to open the thread.
     if (sendStarted) {
       projectSendResolved(opts.threadId, { error: true });

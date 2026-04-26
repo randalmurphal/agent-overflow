@@ -89,6 +89,15 @@ type Thread struct {
 	// dedicated tier above needs-attention in the sidebar. Set by
 	// PinThread; cleared by UnpinThread.
 	PinnedAt *int64 `json:"pinnedAt,omitempty"`
+	// HasActionableProposedPlan is derived for sidebar boot state. It is
+	// true when the latest assistant proposed plan is completed and has
+	// not been implemented yet. It is not a persisted threads column.
+	HasActionableProposedPlan bool `json:"hasActionableProposedPlan"`
+	// HasIncompleteTurn is derived from the newest turn row. A newest
+	// turn with completed_at=NULL means the prior provider process died
+	// or was closed mid-turn, so the sidebar should show Interrupted,
+	// not live Working. It is not a persisted threads column.
+	HasIncompleteTurn bool `json:"hasIncompleteTurn"`
 }
 
 // ThreadWorkspaceRef is the narrow thread shape needed for workspace/worktree

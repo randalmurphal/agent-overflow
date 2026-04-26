@@ -16,6 +16,7 @@
   import { createComposerDraftStore } from '../../stores/composerDraft.svelte';
   import { MarkThreadRead } from '../../stores/bindings';
   import { updateThreadLastRead } from '../../stores/threads.svelte';
+  import { getThreadStatus, projectThreadViewed } from '../../stores/threadStatuses.svelte';
   import {
     isUiRenderTraceEnabled,
     recordUiTrace,
@@ -123,6 +124,19 @@
       updateThreadLastRead(thread.id, readAt);
     });
     schedulePersistThreadRead(thread.id);
+  });
+
+  // Error pills are attention state, like Completed. Once the user is
+  // looking at the thread, the timeline/banner carries the failure and the
+  // sidebar should stop advertising it as unseen. Pending approvals, user
+  // input, and plan-ready remain until the user resolves those actions.
+  $effect(() => {
+    const threadId = pane.thread?.id;
+    if (!threadId) return;
+    if (getThreadStatus(threadId) !== 'error') return;
+    untrack(() => {
+      projectThreadViewed(threadId);
+    });
   });
 
   $effect(() => {

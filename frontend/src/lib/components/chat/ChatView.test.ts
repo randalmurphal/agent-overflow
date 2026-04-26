@@ -5,12 +5,17 @@
 // is "does ChatView wire the right children?". This file asserts the
 // visible contract that's still meaningful after the rewrite.
 
-import { describe, expect, it, beforeAll, vi } from 'vitest';
+import { describe, expect, it, beforeAll, beforeEach, vi } from 'vitest';
 import { fireEvent, render } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import ChatView from './ChatView.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
 import { getThreads, refreshThreads } from '../../stores/threads.svelte';
+import {
+  getThreadStatus,
+  projectThreadItem,
+  resetForTest as resetThreadStatuses,
+} from '../../stores/threadStatuses.svelte';
 import type { Item, Thread } from '../../types/models';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { makeItem } from '../../../test/helpers/chat';
@@ -44,6 +49,10 @@ beforeAll(() => {
         };
       };
   }
+});
+
+beforeEach(() => {
+  resetThreadStatuses();
 });
 
 function seedThread(): Thread {
@@ -240,6 +249,24 @@ describe('<ChatView>', () => {
 
     expect(getThreads()[0]?.lastReadAt).toBe(1_500);
     expect(markRead).not.toHaveBeenCalled();
+  });
+
+  it('clears a stale sidebar error status once the thread is open', async () => {
+    const thread = seedThread();
+    setBindingMock('ListThreads', async () => [thread]);
+    await refreshThreads();
+    const pane = await buildPane(thread);
+    projectThreadItem(makeItem({
+      id: 'error-1',
+      kind: 'error',
+      role: 'system',
+      status: 'completed',
+    }));
+
+    render(ChatView, { props: { pane } });
+    await tick();
+
+    expect(getThreadStatus('thread-1')).toBe('idle');
   });
 
   it('keeps the timeline pinned when multiline composer input shrinks the viewport', async () => {

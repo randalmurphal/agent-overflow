@@ -4,8 +4,8 @@ import type { Item } from '../types/models';
 // Global per-thread live-status projection for the sidebar. Chat state is
 // authoritative in the unified item stream; this store keeps the minimal
 // derived signal the thread list needs for off-pane rows (running, pending
-// approval, error). No persistence: an empty map at boot is acceptable and
-// rehydrates from the next live event.
+// approval, error). Durable boot status such as interrupted turns and
+// actionable proposed plans is derived from Thread rows instead.
 //
 // Running is derived from three orthogonal sources, OR'd together:
 //
@@ -24,8 +24,8 @@ import type { Item } from '../types/models';
 //      running work outside a turn (e.g. a background tool outliving the
 //      turn on Claude).
 //
-// Any of the three → `running`. All three clear → step through
-// pending-approval → error → idle.
+// Recalculation priority is: pending approval, awaiting input, running,
+// error, plan-ready, interrupted, idle.
 
 export type ThreadLiveStatus =
   | 'idle'
@@ -33,7 +33,8 @@ export type ThreadLiveStatus =
   | 'awaiting-input'
   | 'pending-approval'
   | 'plan-ready'
-  | 'error';
+  | 'error'
+  | 'interrupted';
 
 let statuses: Map<string, ThreadLiveStatus> = $state(new Map());
 const activeItemIDsByThread = new Map<string, Set<string>>();
@@ -44,6 +45,7 @@ const activeTurnIDsByThread = new Map<string, Set<string>>();
 const pendingSendThreads = new Set<string>();
 const planReadyThreads = new Set<string>();
 const errorThreads = new Set<string>();
+const interruptedThreads = new Set<string>();
 
 function trackedIDsFor(map: Map<string, Set<string>>, threadId: string): Set<string> {
   let ids = map.get(threadId);
@@ -93,16 +95,20 @@ function recalculateThreadStatus(threadId: string): void {
     setThreadStatus(threadId, 'running');
     return;
   }
-  // Plan-ready sits below running because while a plan exists, the
-  // turn that produced it has settled and the user's next decision
+  if (errorThreads.has(threadId)) {
+    setThreadStatus(threadId, 'error');
+    return;
+  }
+  // Plan-ready sits below running/error because while a plan exists,
+  // the turn that produced it has settled and the user's next decision
   // drives the next turn. A fresh turn clears the plan-ready flag
   // (see projectTurnStarted).
   if (planReadyThreads.has(threadId)) {
     setThreadStatus(threadId, 'plan-ready');
     return;
   }
-  if (errorThreads.has(threadId)) {
-    setThreadStatus(threadId, 'error');
+  if (interruptedThreads.has(threadId)) {
+    setThreadStatus(threadId, 'interrupted');
     return;
   }
   setThreadStatus(threadId, 'idle');
@@ -156,6 +162,7 @@ export function clearThreadStatus(threadId: string): void {
   approvalIDsByThread.delete(threadId);
   awaitingInputIDsByThread.delete(threadId);
   errorThreads.delete(threadId);
+  interruptedThreads.delete(threadId);
   if (!statuses.has(threadId)) return;
   const next = new Map(statuses);
   next.delete(threadId);
@@ -168,27 +175,29 @@ export function clearThreadStatus(threadId: string): void {
  * threads where the provider session takes multiple seconds to spawn
  * before emitting its first `provider:turn_started` — without this the
  * sidebar row would sit idle while the user is clearly waiting on the
- * provider. Paired with projectSendFailed / turn lifecycle events to
+ * provider. Paired with projectSendResolved / turn lifecycle events to
  * clear the flag.
  */
 export function projectSendStarted(threadId: string): void {
   if (!threadId) return;
   // A fresh send clears any prior error so the pill stops reading
-  // "Error" — the user has moved past that failure.
+  // "Failed" — the user has moved past that failure.
   errorThreads.delete(threadId);
+  interruptedThreads.delete(threadId);
   pendingSendThreads.add(threadId);
   recalculateThreadStatus(threadId);
 }
 
 /**
  * Clear the pending-send flag. Called by composerSend when SendMessage
- * rejects (with `error: true` so the pill flips to Error rather than
+ * rejects (with `error: true` so the pill flips to Failed rather than
  * idle) or when turn lifecycle events arrive and take over ownership
  * of the running signal.
  */
 export function projectSendResolved(threadId: string, opts: { error?: boolean } = {}): void {
   if (!threadId) return;
   pendingSendThreads.delete(threadId);
+  interruptedThreads.delete(threadId);
   if (opts.error) {
     errorThreads.add(threadId);
   }
@@ -213,14 +222,15 @@ export function projectTurnStarted(threadId: string, turnId: string): void {
   pendingSendThreads.delete(threadId);
   planReadyThreads.delete(threadId);
   errorThreads.delete(threadId);
+  interruptedThreads.delete(threadId);
   trackedIDsFor(activeTurnIDsByThread, threadId).add(turnId);
   recalculateThreadStatus(threadId);
 }
 
 /**
- * Clear an in-flight turn. `aborted` / `errorMessage` flip the thread
- * to the error state so the sidebar pill reads "Error" until the next
- * send or turn.
+ * Clear an in-flight turn. Provider errors flip the thread to Failed;
+ * clean interrupts flip it to Interrupted so user-cancelled or killed
+ * work does not read as a provider failure.
  */
 export function projectTurnCompleted(
   threadId: string,
@@ -229,8 +239,12 @@ export function projectTurnCompleted(
 ): void {
   if (!threadId || !turnId) return;
   removeTrackedID(activeTurnIDsByThread, threadId, turnId);
-  if (opts.aborted || (opts.errorMessage && opts.errorMessage.length > 0)) {
+  if (opts.errorMessage && opts.errorMessage.length > 0) {
     errorThreads.add(threadId);
+    interruptedThreads.delete(threadId);
+  } else if (opts.aborted) {
+    interruptedThreads.add(threadId);
+    errorThreads.delete(threadId);
   }
   recalculateThreadStatus(threadId);
 }
@@ -239,7 +253,8 @@ export function projectTurnCompleted(
  * Feed a live item upsert into the sidebar-status projection. This is the
  * canonical chat-state path: running rows keep the dot hot, terminal rows
  * clear their own ids, and inline error rows leave the thread in an error
- * state until a new active item or user turn supersedes it.
+ * state until the user views the thread or a new active item / turn
+ * supersedes it.
  */
 export function projectThreadItem(item: Item): void {
   if (!item?.threadId || !item.id) return;
@@ -248,6 +263,7 @@ export function projectThreadItem(item: Item): void {
     errorThreads.add(item.threadId);
   } else if (item.kind === 'user_text' || isActiveTimelineItem(item)) {
     errorThreads.delete(item.threadId);
+    interruptedThreads.delete(item.threadId);
   }
 
   if (isActiveTimelineItem(item)) {
@@ -262,7 +278,7 @@ export function projectThreadItem(item: Item): void {
   // to open the thread to discover the plan is sitting there. Status
   // 'errored' / 'declined' don't set plan-ready — those are terminal
   // failures, not actionable plans.
-  if (item.payloadKind === 'proposed_plan' && item.status === 'completed') {
+  if (item.payloadKind === 'proposed_plan' && item.role === 'assistant' && item.status === 'completed') {
     if (isImplementedProposedPlan(item.meta)) {
       planReadyThreads.delete(item.threadId);
     } else {
@@ -300,6 +316,7 @@ export function projectApprovalRequest(
   void kind;
   trackedIDsFor(approvalIDsByThread, threadId).add(requestId);
   errorThreads.delete(threadId);
+  interruptedThreads.delete(threadId);
   recalculateThreadStatus(threadId);
 }
 
@@ -328,6 +345,7 @@ export function projectUserInputRequest(threadId: string, requestId: string): vo
   approvalThreadByID.set(requestId, threadId);
   trackedIDsFor(awaitingInputIDsByThread, threadId).add(requestId);
   errorThreads.delete(threadId);
+  interruptedThreads.delete(threadId);
   recalculateThreadStatus(threadId);
 }
 
@@ -341,6 +359,20 @@ export function projectUserInputResolution(
   approvalThreadByID.delete(requestId);
   removeTrackedID(awaitingInputIDsByThread, ownerThreadId, requestId);
   recalculateThreadStatus(ownerThreadId);
+}
+
+/**
+ * Clear statuses whose only purpose is to get the user's attention for
+ * unseen activity. Completed is handled by lastReadAt on the Thread row;
+ * this store owns transient live-status state, so it clears stale errors
+ * once the user is viewing the thread. Blocking states stay until their
+ * underlying request is actually resolved.
+ */
+export function projectThreadViewed(threadId: string): void {
+  if (!threadId) return;
+  if (!errorThreads.has(threadId)) return;
+  errorThreads.delete(threadId);
+  recalculateThreadStatus(threadId);
 }
 
 /**
@@ -399,6 +431,7 @@ export function resetForTest(): void {
   awaitingInputIDsByThread.clear();
   approvalThreadByID.clear();
   errorThreads.clear();
+  interruptedThreads.clear();
   if (statuses.size === 0) return;
   statuses = new Map();
 }

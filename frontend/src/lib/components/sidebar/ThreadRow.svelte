@@ -6,7 +6,7 @@
   import { getSettings } from '../../stores/settings.svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { getThreadById } from '../../stores/threads.svelte';
-  import { getThreadStatus } from '../../stores/threadStatuses.svelte';
+  import { getThreadStatus, type ThreadLiveStatus } from '../../stores/threadStatuses.svelte';
   import type { Thread } from '../../types/models';
   import ChevronRight from 'lucide-svelte/icons/chevron-right';
   import Icon from '../primitives/Icon.svelte';
@@ -24,7 +24,9 @@
   } from './threadRowActions';
   import {
     hasUnread,
+    resolveEffectiveThreadStatus,
     resolveThreadStatusPill,
+    type ThreadStatusPill,
   } from './threadStatusPill';
 
   let {
@@ -36,6 +38,8 @@
     hasChildren = false,
     expanded = false,
     onToggleExpand,
+    displayLiveStatus,
+    displayStatus,
   }: {
     thread: Thread;
     pane: ThreadPane;
@@ -55,12 +59,20 @@
     expanded?: boolean;
     /** Fires on chevron click; caller toggles the expansion store. */
     onToggleExpand?: () => void;
+    /**
+     * Optional discussion-tree rollup status. When present, the row renders
+     * the most important child status while retaining the contributing
+     * child's pill label/color.
+     */
+    displayLiveStatus?: ThreadLiveStatus;
+    displayStatus?: ThreadStatusPill | null;
   } = $props();
 
   let isActive = $derived(pane.threadId === thread.id);
 
   let liveStatus = $derived(getThreadStatus(thread.id));
-  let pill = $derived(resolveThreadStatusPill(thread, liveStatus));
+  let effectiveStatus = $derived(displayLiveStatus ?? resolveEffectiveThreadStatus(thread, liveStatus));
+  let pill = $derived(displayStatus !== undefined ? displayStatus : resolveThreadStatusPill(thread, effectiveStatus));
   let unread = $derived(hasUnread(thread));
 
   let forkParent = $derived.by<Thread | undefined>(() => {
@@ -221,6 +233,7 @@
   data-testid="thread-row"
   data-sidebar-thread-id={thread.id}
   data-live-status={liveStatus}
+  data-effective-status={effectiveStatus}
 >
   {#if showPinAffordance}
     <ThreadRowPinButton {isPinned} buildCtx={ctx} />
@@ -250,7 +263,7 @@
       aria-label={pill.label}
       title={pill.label}
       data-testid="thread-row-status-dot"
-      data-status={liveStatus}
+      data-status={effectiveStatus}
     ></span>
     <span
       class="text-[10px] font-medium whitespace-nowrap shrink-0 hidden min-[260px]:inline {pill.labelClass}"

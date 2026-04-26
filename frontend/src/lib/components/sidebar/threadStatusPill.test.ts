@@ -1,14 +1,23 @@
 import { describe, expect, it } from 'vitest';
 import type { Thread } from '../../types/models';
-import { hasUnread, resolveThreadStatusPill } from './threadStatusPill';
+import { hasUnread, resolveEffectiveThreadStatus, resolveThreadStatusPill } from './threadStatusPill';
 
-type MinimalThread = Pick<Thread, 'mode' | 'lastReadAt' | 'latestTurnCompletedAt'>;
+type MinimalThread = Pick<
+  Thread,
+  | 'mode'
+  | 'lastReadAt'
+  | 'latestTurnCompletedAt'
+  | 'hasIncompleteTurn'
+  | 'hasActionableProposedPlan'
+>;
 
 function t(overrides: Partial<MinimalThread> = {}): MinimalThread {
   return {
     mode: 'chat',
     lastReadAt: undefined,
     latestTurnCompletedAt: 1_000,
+    hasIncompleteTurn: false,
+    hasActionableProposedPlan: false,
     ...overrides,
   };
 }
@@ -37,6 +46,30 @@ describe('hasUnread', () => {
 
   it('ignores metadata-only updatedAt changes', () => {
     expect(hasUnread(t({ lastReadAt: 1_000, latestTurnCompletedAt: 1_000 }))).toBe(false);
+  });
+});
+
+describe('resolveEffectiveThreadStatus', () => {
+  it('keeps live status above durable boot status', () => {
+    expect(resolveEffectiveThreadStatus(t({ hasIncompleteTurn: true }), 'running')).toBe('running');
+    expect(resolveEffectiveThreadStatus(t({ hasActionableProposedPlan: true }), 'error')).toBe('error');
+  });
+
+  it('restores interrupted from an incomplete latest turn when idle', () => {
+    expect(resolveEffectiveThreadStatus(t({ hasIncompleteTurn: true }), 'idle')).toBe('interrupted');
+  });
+
+  it('restores plan-ready from an actionable proposed plan when idle', () => {
+    expect(resolveEffectiveThreadStatus(t({ hasActionableProposedPlan: true }), 'idle')).toBe('plan-ready');
+  });
+
+  it('prefers interrupted over plan-ready when both durable flags are present', () => {
+    expect(
+      resolveEffectiveThreadStatus(t({
+        hasIncompleteTurn: true,
+        hasActionableProposedPlan: true,
+      }), 'idle'),
+    ).toBe('interrupted');
   });
 });
 
@@ -73,7 +106,14 @@ describe('resolveThreadStatusPill', () => {
     (mode, expectedLabel) => {
       const pill = resolveThreadStatusPill(t({ mode }), 'running');
       expect(pill?.label).toBe(expectedLabel);
-      expect(pill?.dotClass).toContain('bg-warning');
+      if (mode === 'discussion') {
+        expect(pill?.dotClass).toContain('border-info');
+        expect(pill?.dotClass).toContain('bg-transparent');
+        expect(pill?.labelClass).toContain('text-info');
+        expect(pill?.pulse).toBe(false);
+        return;
+      }
+      expect(pill?.dotClass).toContain('bg-success');
       expect(pill?.pulse).toBe(true);
     },
   );
@@ -90,13 +130,13 @@ describe('resolveThreadStatusPill', () => {
     expect(pill?.dotClass).toContain('bg-warning');
   });
 
-  it('awaiting-input renders a pulsing accent pill with accent glow', () => {
+  it('awaiting-input renders a pulsing info pill with info glow', () => {
     const pill = resolveThreadStatusPill(t(), 'awaiting-input');
     expect(pill?.label).toBe('Awaiting Input');
     expect(pill?.pulse).toBe(true);
-    expect(pill?.dotClass).toContain('bg-accent');
-    expect(pill?.labelClass).toContain('text-accent');
-    expect(pill?.glowClass).toBe('status-glow-accent');
+    expect(pill?.dotClass).toContain('bg-info');
+    expect(pill?.labelClass).toContain('text-info');
+    expect(pill?.glowClass).toBe('status-glow-info');
   });
 
   it('pending-approval carries the warning glow', () => {
@@ -104,7 +144,7 @@ describe('resolveThreadStatusPill', () => {
     expect(pill?.glowClass).toBe('status-glow-warning');
   });
 
-  it.each(['error', 'running', 'plan-ready', 'idle'] as const)(
+  it.each(['error', 'running', 'plan-ready', 'interrupted', 'idle'] as const)(
     '%s state carries no glow',
     (status) => {
       const pill = resolveThreadStatusPill(t({ lastReadAt: 1, latestTurnCompletedAt: 2 }), status);
@@ -119,12 +159,19 @@ describe('resolveThreadStatusPill', () => {
     expect(pill?.dotClass).toContain('bg-accent');
   });
 
+  it('interrupted renders a non-pulsing warning pill', () => {
+    const pill = resolveThreadStatusPill(t(), 'interrupted');
+    expect(pill?.label).toBe('Interrupted');
+    expect(pill?.pulse).toBe(false);
+    expect(pill?.dotClass).toContain('bg-warning');
+  });
+
   it('error wins over everything', () => {
     const pill = resolveThreadStatusPill(
       t({ mode: 'plan', lastReadAt: 1_000, latestTurnCompletedAt: 2_000 }),
       'error',
     );
-    expect(pill?.label).toBe('Error');
+    expect(pill?.label).toBe('Failed');
     expect(pill?.dotClass).toContain('bg-error');
     expect(pill?.pulse).toBe(false);
   });

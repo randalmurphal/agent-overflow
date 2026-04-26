@@ -12,7 +12,8 @@ import (
 // last_read_at and pinned_at are deliberately NOT coalesced — scanThread
 // keeps the NULL / non-NULL distinction via *int64 pointers so the
 // frontend can tell "never tracked" / "unpinned" apart from a zero
-// timestamp.
+// timestamp. The two boolean tail columns are derived sidebar state:
+// they are cheap scalar probes over indexed tables, not threads columns.
 const threadColumns = `id, project_id,
     COALESCE((SELECT path FROM projects WHERE projects.id = threads.project_id), ''),
     title, provider, model,
@@ -24,7 +25,32 @@ const threadColumns = `id, project_id,
     created_at, updated_at,
     (SELECT MAX(completed_at) FROM turns
       WHERE turns.thread_id = threads.id AND completed_at IS NOT NULL),
-    archived, last_read_at, pinned_at`
+    archived, last_read_at, pinned_at,
+    EXISTS (
+      SELECT 1
+        FROM proposed_plans
+        JOIN items
+          ON items.thread_id = proposed_plans.thread_id
+         AND items.id = proposed_plans.item_id
+        JOIN payloads ON payloads.id = items.payload_id
+       WHERE proposed_plans.thread_id = threads.id
+         AND proposed_plans.version = (
+           SELECT MAX(latest.version)
+             FROM proposed_plans AS latest
+            WHERE latest.thread_id = threads.id
+         )
+         AND proposed_plans.implemented_at = 0
+         AND items.role = 'assistant'
+         AND items.status = 'completed'
+         AND payloads.kind = 'proposed_plan'
+    ),
+    COALESCE((
+      SELECT turns.completed_at IS NULL
+        FROM turns
+       WHERE turns.thread_id = threads.id
+       ORDER BY turns.turn_index DESC
+       LIMIT 1
+    ), 0)`
 
 // -- Validation errors for enum fields. Each binding checks against the
 // -- list before hitting SQLite so the caller sees a typed error instead
@@ -72,7 +98,7 @@ var legalProviders = map[string]struct{}{
 
 func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
 	var t Thread
-	var archived, fastMode int
+	var archived, fastMode, hasActionableProposedPlan, hasIncompleteTurn int
 	var latestTurnCompletedAt, lastReadAt, pinnedAt sql.NullInt64
 	if err := scanner.Scan(
 		&t.ID, &t.ProjectID, &t.ProjectPath, &t.Title, &t.Provider, &t.Model,
@@ -81,11 +107,14 @@ func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
 		&t.Mode, &t.ReasoningEffort, &fastMode, &t.ContextWindow, &t.RuntimeMode,
 		&t.DiscussionID, &t.ParentThreadID, &t.ForkedFromThreadID, &t.LastTokenUsage,
 		&t.CreatedAt, &t.UpdatedAt, &latestTurnCompletedAt, &archived, &lastReadAt, &pinnedAt,
+		&hasActionableProposedPlan, &hasIncompleteTurn,
 	); err != nil {
 		return Thread{}, err
 	}
 	t.FastMode = fastMode != 0
 	t.Archived = archived != 0
+	t.HasActionableProposedPlan = hasActionableProposedPlan != 0
+	t.HasIncompleteTurn = hasIncompleteTurn != 0
 	if latestTurnCompletedAt.Valid {
 		v := latestTurnCompletedAt.Int64
 		t.LatestTurnCompletedAt = &v

@@ -226,7 +226,7 @@ describe('<ThreadRow> live status dot', () => {
     expect(queryByTestId('thread-row-status-dot')).toBeNull();
   });
 
-  it('renders an amber pulsing dot labelled Working when running in chat mode', () => {
+  it('renders a success pulsing dot labelled Working when running in chat mode', () => {
     setThreadStatus('t-run', 'running');
     const pane = createThreadPane();
     const { getByTestId } = render(ThreadRow, {
@@ -236,7 +236,7 @@ describe('<ThreadRow> live status dot', () => {
     expect(dot.getAttribute('data-status')).toBe('running');
     expect(dot.getAttribute('aria-label')).toBe('Working');
     expect(dot.getAttribute('title')).toBe('Working');
-    expect(dot.classList.contains('bg-warning')).toBe(true);
+    expect(dot.classList.contains('bg-success')).toBe(true);
     expect(dot.classList.contains('animate-pulse')).toBe(true);
   });
 
@@ -372,13 +372,10 @@ describe('<ThreadRow> live status dot', () => {
     const dot = getByTestId('thread-row-status-dot');
     expect(dot.getAttribute('data-status')).toBe('pending-approval');
     expect(dot.getAttribute('aria-label')).toBe('Pending Approval');
-    // Amber warning — pending-approval guards a destructive action,
-    // so it shares the running/amber palette. Awaiting-input uses
-    // accent violet instead. See threadStatusPill.ts.
     expect(dot.classList.contains('bg-warning')).toBe(true);
   });
 
-  it('renders an accent dot labelled Awaiting input for user-input requests', () => {
+  it('renders an info dot labelled Awaiting input for user-input requests', () => {
     setThreadStatus('t-input', 'awaiting-input');
     const pane = createThreadPane();
     const { getByTestId } = render(ThreadRow, {
@@ -387,7 +384,7 @@ describe('<ThreadRow> live status dot', () => {
     const dot = getByTestId('thread-row-status-dot');
     expect(dot.getAttribute('data-status')).toBe('awaiting-input');
     expect(dot.getAttribute('aria-label')).toBe('Awaiting Input');
-    expect(dot.classList.contains('bg-accent')).toBe(true);
+    expect(dot.classList.contains('bg-info')).toBe(true);
   });
 
   it('applies the pulsing warning glow class to the row when pending approval', () => {
@@ -398,17 +395,17 @@ describe('<ThreadRow> live status dot', () => {
     });
     const row = getByTestId('thread-row');
     expect(row.classList.contains('status-glow-warning')).toBe(true);
-    expect(row.classList.contains('status-glow-accent')).toBe(false);
+    expect(row.classList.contains('status-glow-info')).toBe(false);
   });
 
-  it('applies the pulsing accent glow class to the row when awaiting input', () => {
+  it('applies the pulsing info glow class to the row when awaiting input', () => {
     setThreadStatus('t-glow-input', 'awaiting-input');
     const pane = createThreadPane();
     const { getByTestId } = render(ThreadRow, {
       props: { thread: makeThread({ id: 't-glow-input' }), pane },
     });
     const row = getByTestId('thread-row');
-    expect(row.classList.contains('status-glow-accent')).toBe(true);
+    expect(row.classList.contains('status-glow-info')).toBe(true);
     expect(row.classList.contains('status-glow-warning')).toBe(false);
   });
 
@@ -420,7 +417,7 @@ describe('<ThreadRow> live status dot', () => {
     });
     const row = getByTestId('thread-row');
     expect(row.classList.contains('status-glow-warning')).toBe(false);
-    expect(row.classList.contains('status-glow-accent')).toBe(false);
+    expect(row.classList.contains('status-glow-info')).toBe(false);
   });
 
   it('renders a non-pulsing accent dot labelled Plan ready when a plan is waiting', () => {
@@ -436,7 +433,49 @@ describe('<ThreadRow> live status dot', () => {
     expect(dot.classList.contains('animate-pulse')).toBe(false);
   });
 
-  it('renders an error dot labelled Error when the thread has errored', () => {
+  it('renders durable Plan ready from the thread row without a live event', () => {
+    const pane = createThreadPane();
+    const { getByTestId } = render(ThreadRow, {
+      props: {
+        thread: makeThread({ id: 't-durable-plan', hasActionableProposedPlan: true }),
+        pane,
+      },
+    });
+    const dot = getByTestId('thread-row-status-dot');
+    expect(dot.getAttribute('data-status')).toBe('plan-ready');
+    expect(dot.getAttribute('aria-label')).toBe('Plan Ready');
+  });
+
+  it('renders durable Interrupted from the thread row without a live event', () => {
+    const pane = createThreadPane();
+    const { getByTestId } = render(ThreadRow, {
+      props: {
+        thread: makeThread({ id: 't-interrupted', hasIncompleteTurn: true }),
+        pane,
+      },
+    });
+    const dot = getByTestId('thread-row-status-dot');
+    expect(dot.getAttribute('data-status')).toBe('interrupted');
+    expect(dot.getAttribute('aria-label')).toBe('Interrupted');
+    expect(dot.classList.contains('bg-warning')).toBe(true);
+    expect(dot.classList.contains('animate-pulse')).toBe(false);
+  });
+
+  it('live running overrides durable Interrupted', () => {
+    setThreadStatus('t-live-over-durable', 'running');
+    const pane = createThreadPane();
+    const { getByTestId } = render(ThreadRow, {
+      props: {
+        thread: makeThread({ id: 't-live-over-durable', hasIncompleteTurn: true }),
+        pane,
+      },
+    });
+    const dot = getByTestId('thread-row-status-dot');
+    expect(dot.getAttribute('data-status')).toBe('running');
+    expect(dot.getAttribute('aria-label')).toBe('Working');
+  });
+
+  it('renders an error dot labelled Failed when the thread has errored', () => {
     setThreadStatus('t-err', 'error');
     const pane = createThreadPane();
     const { getByTestId } = render(ThreadRow, {
@@ -444,7 +483,7 @@ describe('<ThreadRow> live status dot', () => {
     });
     const dot = getByTestId('thread-row-status-dot');
     expect(dot.getAttribute('data-status')).toBe('error');
-    expect(dot.getAttribute('aria-label')).toBe('Error');
+    expect(dot.getAttribute('aria-label')).toBe('Failed');
     expect(dot.classList.contains('bg-error')).toBe(true);
   });
 

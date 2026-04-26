@@ -51,6 +51,22 @@ describe('buildSidebarThreadTree', () => {
     expect(tree.map((n) => n.thread.id)).toEqual(['newer', 'older']);
   });
 
+  it('puts durable interrupted and plan-ready rows in the needs-attention tier', () => {
+    const interrupted = mkThread('interrupted', { updatedAt: 1000, hasIncompleteTurn: true });
+    const planReady = mkThread('plan-ready', { updatedAt: 2000, hasActionableProposedPlan: true });
+    const running = mkThread('running', { updatedAt: 9000 });
+    const tree = buildSidebarThreadTree({
+      threads: [running, interrupted, planReady],
+      liveStatusOf: liveStatusMap({ running: 'running' }),
+    });
+
+    expect(tree.map((n) => n.thread.id)).toEqual(['plan-ready', 'interrupted', 'running']);
+    expect(tree[0].sortGroup).toBe('needs-attention');
+    expect(tree[0].displayLiveStatus).toBe('plan-ready');
+    expect(tree[1].sortGroup).toBe('needs-attention');
+    expect(tree[1].displayLiveStatus).toBe('interrupted');
+  });
+
   it('puts pinned threads above needs-attention regardless of status', () => {
     const pinned = mkThread('pinned', { updatedAt: 1, pinnedAt: 100 });
     const blocking = mkThread('blocking', { updatedAt: 9000 });
@@ -104,6 +120,22 @@ describe('buildSidebarThreadTree', () => {
     });
     expect(tree[0].displayLiveStatus).toBe('running');
     expect(tree[0].sortGroup).toBe('running');
+  });
+
+  it("bubbles a child's durable interrupted status to a passive parent", () => {
+    const parent = mkThread('parent', { updatedAt: 9000 });
+    const child = mkThread('child', {
+      parentThreadId: 'parent',
+      updatedAt: 5000,
+      hasIncompleteTurn: true,
+    });
+    const tree = buildSidebarThreadTree({
+      threads: [parent, child],
+      liveStatusOf: liveStatusMap({}),
+    });
+
+    expect(tree[0].displayLiveStatus).toBe('interrupted');
+    expect(tree[0].displayStatus?.label).toBe('Interrupted');
   });
 
   it("uses the child's pill when bubbling so mode-specific labels reach the parent row", () => {
@@ -297,6 +329,16 @@ describe('rollupDisplayStatus', () => {
     const rollup = rollupDisplayStatus(tree);
     expect(rollup?.liveStatus).toBe('pending-approval');
     expect(rollup?.pill.label).toBe('Pending Approval');
+  });
+
+  it('picks durable interrupted when it is the strongest hidden status', () => {
+    const tree = buildAt([
+      mkThread('interrupted', { hasIncompleteTurn: true }),
+      mkThread('read'),
+    ]);
+    const rollup = rollupDisplayStatus(tree);
+    expect(rollup?.liveStatus).toBe('interrupted');
+    expect(rollup?.pill.label).toBe('Interrupted');
   });
 
   it("picks a child's bubbled status when it dominates the parent's own status", () => {

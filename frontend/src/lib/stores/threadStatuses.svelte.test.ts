@@ -7,6 +7,7 @@ import {
   projectPlanResolved,
   projectSendResolved,
   projectSendStarted,
+  projectThreadViewed,
   projectThreadItem,
   projectTurnCompleted,
   projectTurnStarted,
@@ -100,6 +101,38 @@ describe('threadStatuses store', () => {
     expect(getThreadStatus('thread-1')).toBe('running');
   });
 
+  it('clears an error when the thread is viewed', () => {
+    projectThreadItem(makeItem({
+      id: 'error-1',
+      kind: 'error',
+      role: 'system',
+      status: 'completed',
+    }));
+    expect(getThreadStatus('thread-1')).toBe('error');
+
+    projectThreadViewed('thread-1');
+
+    expect(getThreadStatus('thread-1')).toBe('idle');
+  });
+
+  it('viewing a thread does not clear blocking action states', () => {
+    projectTurnStarted('thread-1', 'turn-1');
+    projectApprovalRequest('thread-1', 'req-1', 'command');
+    projectThreadViewed('thread-1');
+    expect(getThreadStatus('thread-1')).toBe('pending-approval');
+
+    projectApprovalResolution('thread-1', 'req-1');
+    projectUserInputRequest('thread-1', 'req-2');
+    projectThreadViewed('thread-1');
+    expect(getThreadStatus('thread-1')).toBe('awaiting-input');
+
+    projectUserInputResolution('thread-1', 'req-2');
+    projectTurnCompleted('thread-1', 'turn-1');
+    projectPlanReady('thread-1');
+    projectThreadViewed('thread-1');
+    expect(getThreadStatus('thread-1')).toBe('plan-ready');
+  });
+
   describe('optimistic send', () => {
     it('flips to running on projectSendStarted before any turn events', () => {
       projectSendStarted('thread-1');
@@ -140,10 +173,10 @@ describe('threadStatuses store', () => {
       expect(getThreadStatus('thread-1')).toBe('idle');
     });
 
-    it('aborted turn flips to error', () => {
+    it('aborted turn flips to interrupted', () => {
       projectTurnStarted('thread-1', 'turn-1');
       projectTurnCompleted('thread-1', 'turn-1', { aborted: true });
-      expect(getThreadStatus('thread-1')).toBe('error');
+      expect(getThreadStatus('thread-1')).toBe('interrupted');
     });
 
     it('turn with errorMessage flips to error', () => {
@@ -152,13 +185,23 @@ describe('threadStatuses store', () => {
       expect(getThreadStatus('thread-1')).toBe('error');
     });
 
-    it('starting a fresh turn clears a prior error', () => {
+    it('starting a fresh turn clears a prior interrupted state', () => {
       projectTurnStarted('thread-1', 'turn-1');
       projectTurnCompleted('thread-1', 'turn-1', { aborted: true });
-      expect(getThreadStatus('thread-1')).toBe('error');
+      expect(getThreadStatus('thread-1')).toBe('interrupted');
 
       projectTurnStarted('thread-1', 'turn-2');
       expect(getThreadStatus('thread-1')).toBe('running');
+    });
+
+    it('a provider error supersedes interrupted', () => {
+      projectTurnStarted('thread-1', 'turn-1');
+      projectTurnCompleted('thread-1', 'turn-1', { aborted: true });
+      expect(getThreadStatus('thread-1')).toBe('interrupted');
+
+      projectTurnStarted('thread-1', 'turn-2');
+      projectTurnCompleted('thread-1', 'turn-2', { errorMessage: 'boom' });
+      expect(getThreadStatus('thread-1')).toBe('error');
     });
 
     it('multiple concurrent turns keep running until both complete', () => {
@@ -265,6 +308,17 @@ describe('threadStatuses store', () => {
       expect(getThreadStatus('thread-1')).toBe('idle');
     });
 
+    it('does NOT flip on a user-authored proposed_plan payload', () => {
+      projectThreadItem(makeItem({
+        id: 'plan-1',
+        kind: 'user_text',
+        role: 'user',
+        payloadKind: 'proposed_plan',
+        status: 'completed',
+      }));
+      expect(getThreadStatus('thread-1')).toBe('idle');
+    });
+
     it('does NOT flip on a streaming (in-progress) proposed_plan', () => {
       projectThreadItem(makeItem({
         id: 'plan-1',
@@ -311,6 +365,22 @@ describe('threadStatuses store', () => {
 
       projectApprovalRequest('thread-1', 'req-2', 'command');
       expect(getThreadStatus('thread-1')).toBe('pending-approval');
+    });
+
+    it('error trumps plan-ready until the thread is viewed', () => {
+      projectPlanReady('thread-1');
+      expect(getThreadStatus('thread-1')).toBe('plan-ready');
+
+      projectThreadItem(makeItem({
+        id: 'error-1',
+        kind: 'error',
+        role: 'system',
+        status: 'completed',
+      }));
+      expect(getThreadStatus('thread-1')).toBe('error');
+
+      projectThreadViewed('thread-1');
+      expect(getThreadStatus('thread-1')).toBe('plan-ready');
     });
   });
 });
