@@ -102,8 +102,6 @@
     >
       {#if showImplementMenu}
         <Icon icon={Play} size={13} strokeWidth={2.5} class="opacity-100" />
-      {:else}
-        <Icon icon={ArrowUp} size={13} strokeWidth={2.5} class="opacity-100" />
       {/if}
       <span>{label}</span>
       {#if showCommentCount}
@@ -181,7 +179,6 @@
           {planCommentCount}
         </span>
       {/if}
-      <Icon icon={ArrowUp} size={13} strokeWidth={2.5} class="opacity-100" />
     {:else}
       <Icon icon={ArrowUp} size={16} strokeWidth={2.5} class="opacity-100" />
     {/if}
