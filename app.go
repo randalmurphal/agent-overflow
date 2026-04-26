@@ -324,6 +324,9 @@ func (a *App) initSubsystems(dbDir string, st *store.Store) error {
 		ItemsPersisted:    telemetryMetrics.ItemsPersisted,
 		PayloadsPersisted: telemetryMetrics.PayloadsPersisted,
 	})
+	if err := st.ReconcileProposedPlanStateFromAcceptedTurns(time.Now().UnixMilli()); err != nil {
+		log.Printf("app: reconcile proposed plan state: %v", err)
+	}
 	a.checkpoints = checkpoint.NewStore()
 	a.triage.SetCheckpointStore(a.checkpoints)
 	a.registry = discussion.NewRegistry(st)

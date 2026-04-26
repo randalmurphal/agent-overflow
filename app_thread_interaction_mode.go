@@ -1,10 +1,13 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"strings"
+	"time"
 
+	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 )
 
@@ -73,12 +76,10 @@ func validateSetMode(mode string) (string, error) {
 // row. Rejects unknown modes with a clear error message so the frontend
 // can surface it verbatim.
 //
-// When the thread has an active provider session at the time of the
-// change we emit a "thread:mode_changed" event with NeedsReconnect=true
-// so the frontend can prompt the user to reconnect — the running
-// session was started under the previous mode and will not pick up the
-// new one until a new session is spawned. The persisted row is always
-// updated regardless.
+// Active Claude sessions apply chat/plan changes immediately through
+// set_permission_mode. Codex reads the persisted mode on the next turn/start.
+// Modes that cannot be applied to the live session emit NeedsReconnect=true.
+// The persisted row is always updated regardless.
 func (a *App) UpdateThreadMode(threadID string, mode string) (store.Thread, error) {
 	normalized, err := validateSetMode(mode)
 	if err != nil {
@@ -91,17 +92,38 @@ func (a *App) UpdateThreadMode(threadID string, mode string) (store.Thread, erro
 		return store.Thread{}, err
 	}
 
+	needsReconnect := false
 	a.mu.Lock()
-	_, sessionActive := a.sessions[threadID]
+	sess, sessionActive := a.sessions[threadID]
 	a.mu.Unlock()
 	if sessionActive {
-		log.Printf("thread %s: mode changed to %q while session is active; reconnect required", threadID, normalized)
+		needsReconnect = a.applyActiveModeChange(threadID, sess, provider.NormalizeInteractionMode(normalized))
 	}
 	a.emitEvent("thread:mode_changed", ThreadModeChangedEvent{
 		ThreadID:       threadID,
 		Mode:           normalized,
-		NeedsReconnect: sessionActive,
+		NeedsReconnect: needsReconnect,
 	})
 
 	return a.store.GetThread(threadID)
+}
+
+func (a *App) applyActiveModeChange(threadID string, sess session, mode provider.InteractionMode) bool {
+	switch mode {
+	case provider.ModeChat, provider.ModePlan:
+		if sess.claude != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := sess.claude.SetInteractionMode(ctx, mode); err != nil {
+				log.Printf("thread %s: apply active Claude mode %q failed: %v", threadID, mode, err)
+				return true
+			}
+		}
+		// Codex cannot mutate the active turn's collaboration mode, but the
+		// persisted mode is read on the next turn/start. No reconnect is needed.
+		return false
+	default:
+		log.Printf("thread %s: mode changed to %q while session is active; reconnect required", threadID, mode)
+		return true
+	}
 }

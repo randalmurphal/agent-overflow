@@ -13,10 +13,15 @@
   // ChatView.svelte header used: click the title to switch to an input,
   // Enter to submit (RenameThread), Escape / blur to cancel.
 
-  import { tick } from 'svelte';
+  import { onDestroy, onMount, tick, untrack } from 'svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
-  import type { Thread } from '../../types/models';
+  import type { Item, ProposedPlanItemMeta, Thread } from '../../types/models';
   import { RenameThread, GetThread } from '../../stores/bindings';
+  import {
+    getThreadProposedPlans,
+    refreshThreadProposedPlans,
+    retainProposedPlanEventListener,
+  } from '../../stores/proposedPlans.svelte';
   import { replaceThread } from '../../stores/threads.svelte';
   import { errString } from '../../utils/errors';
   import { getProject } from '../../stores/projects.svelte';
@@ -39,6 +44,21 @@
   let draftTitle = $state('');
   let inputEl: HTMLInputElement | undefined = $state(undefined);
   let renamePending = $state(false);
+  let releasePlanEvents: (() => void) | null = null;
+
+  function planIsActionable(item: Item): boolean {
+    if (item.payloadKind !== 'proposed_plan') return false;
+    if (!item.meta) return true;
+    try {
+      const meta = JSON.parse(item.meta) as ProposedPlanItemMeta;
+      return !meta.planImplementedAt;
+    } catch {
+      return true;
+    }
+  }
+
+  const proposedPlans = $derived(getThreadProposedPlans(pane.thread?.id));
+  const actionablePlanCount = $derived(proposedPlans.filter(planIsActionable).length);
 
   // Whenever the thread id changes, bail out of any in-flight rename —
   // otherwise a user-switched-thread-mid-edit scenario would silently
@@ -49,6 +69,15 @@
     editing = false;
     draftTitle = '';
     renamePending = false;
+    untrack(() => { void refreshThreadProposedPlans(id); });
+  });
+
+  onMount(() => {
+    releasePlanEvents = retainProposedPlanEventListener(() => pane.thread?.id);
+  });
+
+  onDestroy(() => {
+    releasePlanEvents?.();
   });
 
   // Project lookup for the badge. The projects store is a singleton;
@@ -220,7 +249,16 @@
         testId="plan-sidebar-toggle"
         class="shrink-0"
       >
-        {#snippet children()}Plans{/snippet}
+        {#snippet children()}
+          <span class="inline-flex items-center gap-1">
+            Plans
+            {#if actionablePlanCount > 0}
+              <span class="rounded bg-accent/15 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-accent">
+                {actionablePlanCount}
+              </span>
+            {/if}
+          </span>
+        {/snippet}
       </Button>
 
       <GitActionsControl {pane} />

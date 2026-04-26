@@ -759,6 +759,83 @@ CREATE INDEX IF NOT EXISTS idx_threads_pinned_at
   WHERE pinned_at IS NOT NULL;
 `,
 	},
+	{
+		Version: 30,
+		Name:    "proposed_plan_review",
+		SQL: `
+CREATE TABLE IF NOT EXISTS proposed_plans (
+	item_id                  TEXT    NOT NULL,
+	thread_id                TEXT    NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+	revision_parent_item_id  TEXT    NOT NULL DEFAULT '',
+	version                  INTEGER NOT NULL CHECK(version > 0),
+	implemented_at           INTEGER NOT NULL DEFAULT 0,
+	implemented_by_thread_id TEXT    NOT NULL DEFAULT '',
+	implemented_by_item_id   TEXT    NOT NULL DEFAULT '',
+	created_at               INTEGER NOT NULL,
+	updated_at               INTEGER NOT NULL,
+	PRIMARY KEY(thread_id, item_id),
+	UNIQUE(thread_id, version)
+);
+
+CREATE INDEX IF NOT EXISTS idx_proposed_plans_thread_version
+	ON proposed_plans(thread_id, version DESC);
+
+CREATE TRIGGER IF NOT EXISTS trg_items_gc_proposed_plan
+AFTER DELETE ON items
+BEGIN
+	DELETE FROM proposed_plans
+	 WHERE item_id = OLD.id
+	   AND thread_id = OLD.thread_id;
+END;
+
+INSERT OR IGNORE INTO proposed_plans (
+	item_id,
+	thread_id,
+	revision_parent_item_id,
+	version,
+	created_at,
+	updated_at
+)
+WITH ordered AS (
+	SELECT
+		items.id AS item_id,
+		items.thread_id AS thread_id,
+		'' AS revision_parent_item_id,
+		ROW_NUMBER() OVER (
+			PARTITION BY items.thread_id
+			ORDER BY items.turn_index ASC, items.item_index ASC
+		) AS version,
+		items.created_at AS created_at,
+		items.updated_at AS updated_at
+	  FROM items
+	  JOIN payloads ON payloads.id = items.payload_id
+	 WHERE items.role = 'assistant'
+	   AND payloads.kind = 'proposed_plan'
+)
+SELECT item_id, thread_id, revision_parent_item_id, version, created_at, updated_at
+  FROM ordered;
+
+CREATE TABLE IF NOT EXISTS proposed_plan_comments (
+	id            TEXT    PRIMARY KEY,
+	thread_id     TEXT    NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+	plan_item_id  TEXT    NOT NULL,
+	status        TEXT    NOT NULL DEFAULT 'draft' CHECK(status IN ('draft', 'sent', 'resolved')),
+	start_line    INTEGER NOT NULL CHECK(start_line > 0),
+	end_line      INTEGER NOT NULL CHECK(end_line > 0),
+	selected_text TEXT    NOT NULL DEFAULT '',
+	body          TEXT    NOT NULL,
+	sent_at       INTEGER NOT NULL DEFAULT 0,
+	sent_turn_id  TEXT    NOT NULL DEFAULT '',
+	created_at    INTEGER NOT NULL,
+	updated_at    INTEGER NOT NULL,
+	CHECK(end_line >= start_line),
+	FOREIGN KEY(thread_id, plan_item_id) REFERENCES proposed_plans(thread_id, item_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_proposed_plan_comments_plan
+	ON proposed_plan_comments(thread_id, plan_item_id, status, start_line, created_at);
+`,
+	},
 }
 
 // v13SQL is the DROP-and-rebuild payload for migration v13. Extracted so

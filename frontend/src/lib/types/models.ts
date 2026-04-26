@@ -168,6 +168,53 @@ export interface ProposedPlanMeta {
   preview: string;
 }
 
+export interface ProposedPlanItemMeta {
+  planVersion?: number;
+  planRevisionParentItemId?: string;
+  planImplementedAt?: number;
+  planImplementedByThreadId?: string;
+  planImplementedByItemId?: string;
+  planCommentCounts?: {
+    draft?: number;
+    sent?: number;
+    resolved?: number;
+  };
+}
+
+export interface SourceProposedPlan {
+  threadId?: string;
+  itemId: string;
+  payloadId?: string;
+  title?: string;
+  version?: number;
+}
+
+export interface ProposedPlanComment {
+  id: string;
+  threadId: string;
+  planItemId: string;
+  status: 'draft' | 'sent' | 'resolved';
+  startLine: number;
+  endLine: number;
+  selectedText: string;
+  body: string;
+  sentAt?: number;
+  sentTurnId?: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface ProposedPlanCommentInput {
+  planItemId: string;
+  startLine: number;
+  endLine: number;
+  body: string;
+}
+
+export interface ProposedPlanCommentUpdate {
+  body: string;
+}
+
 export interface ChangedFile {
   path: string;
   insertions: number;

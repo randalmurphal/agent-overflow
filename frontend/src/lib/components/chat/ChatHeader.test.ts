@@ -15,6 +15,7 @@ import {
   resetProjectsForTest,
 } from '../../stores/projects.svelte';
 import { resetSidebarForTest, isProjectExpanded } from '../../stores/sidebar.svelte';
+import { resetProposedPlanCacheForTests } from '../../stores/proposedPlans.svelte';
 import type { Thread } from '../../types/models';
 
 beforeAll(() => {
@@ -76,6 +77,8 @@ async function buildPane(thread: Thread = makeThread()) {
 describe('<ChatHeader>', () => {
   beforeEach(() => {
     resetBindingMocks();
+    resetProposedPlanCacheForTests();
+    setBindingMock('ListThreadProposedPlans', async () => []);
     resetProjectsForTest();
     resetSidebarForTest();
   });

@@ -2,11 +2,8 @@
   import { slide } from 'svelte/transition';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import type { ComposerDraftStore } from '../../stores/composerDraft.svelte';
-  import type { Thread } from '../../types/models';
-  import { UpdateThreadMode } from '../../stores/bindings';
-  import { replaceThread } from '../../stores/threads.svelte';
-  import { addToast } from '../../stores/toast.svelte';
-  import { errString } from '../../utils/errors';
+  import type { ProposedPlanItemMeta, ProposedPlanMeta, SourceProposedPlan } from '../../types/models';
+  import { implementProposedPlan } from '../../utils/proposedPlanImplementation';
   import Button from '../primitives/Button.svelte';
 
   interface Props {
@@ -16,8 +13,8 @@
 
   let { pane, draft }: Props = $props();
 
-  const IMPLEMENT_PROMPT = 'Please implement the plan above.';
   let dismissedPlanItemId = $state<string | null>(null);
+  let implementing = $state(false);
 
   // The banner surfaces when the latest item in the timeline is a
   // plan-bearing tool row — i.e. the agent has finished proposing and is
@@ -38,24 +35,36 @@
     latestPlanItemId !== null && dismissedPlanItemId !== latestPlanItemId,
   );
 
-  async function switchPlanThreadToChat(): Promise<void> {
-    if (!pane.thread || pane.thread.mode !== 'plan') return;
-    try {
-      const updated = (await UpdateThreadMode(pane.thread.id, 'chat')) as Thread;
-      pane.replaceThread(updated);
-      replaceThread(updated);
-    } catch (err) {
-      console.error('PlanFollowUpBanner: UpdateThreadMode failed:', err);
-      addToast('error', `Failed to switch to chat mode: ${errString(err)}`);
-    }
-  }
-
   async function handleImplement() {
-    // Pre-fill without auto-send so the user can still edit before firing.
-    const current = draft.content.trim();
-    const next = current.length > 0 ? `${draft.content}\n\n${IMPLEMENT_PROMPT}` : IMPLEMENT_PROMPT;
-    draft.setContent(next);
-    await switchPlanThreadToChat();
+    if (implementing || !pane.threadId || !latestItem || latestItem.payloadKind !== 'proposed_plan') return;
+    let version = 0;
+    try {
+      version = ((JSON.parse(latestItem.meta || '{}') as ProposedPlanItemMeta).planVersion) ?? 0;
+    } catch {
+      version = 0;
+    }
+    let title = 'Proposed plan';
+    try {
+      title = ((JSON.parse(latestItem.payloadMeta || '{}') as ProposedPlanMeta).title) || title;
+    } catch {
+      title = 'Proposed plan';
+    }
+    const source: SourceProposedPlan = {
+      threadId: pane.threadId,
+      itemId: latestItem.id,
+      payloadId: latestItem.payloadId,
+      title,
+      version: version || undefined,
+    };
+    if (draft.content.trim().length > 0) {
+      draft.setContent(draft.content.trim());
+    }
+    implementing = true;
+    try {
+      await implementProposedPlan(pane, source);
+    } finally {
+      implementing = false;
+    }
   }
 
   function handleReview() {
@@ -92,6 +101,8 @@
       variant="tinted"
       size="xs"
       onclick={() => void handleImplement()}
+      disabled={implementing}
+      loading={implementing}
       testId="plan-followup-implement"
     >
       {#snippet children()}Implement{/snippet}

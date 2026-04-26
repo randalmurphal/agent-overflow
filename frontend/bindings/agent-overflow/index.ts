@@ -20,6 +20,7 @@ export {
     PayloadPreview,
     RemoteEndpointSummary,
     SendMessageOptions,
+    SourceProposedPlan,
     TerminalChip,
     TerminalHandle,
     TerminalOpenOptions,

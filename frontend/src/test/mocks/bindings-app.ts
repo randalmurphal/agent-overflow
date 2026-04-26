@@ -89,6 +89,7 @@ export const SendMessageWithOptions = dispatch('SendMessageWithOptions');
 export const InterruptTurn = dispatch('InterruptTurn');
 export const RespondToApproval = dispatch('RespondToApproval');
 export const RespondToUserInput = dispatch('RespondToUserInput');
+export const SendPlanRevisionComments = dispatch('SendPlanRevisionComments');
 
 // Background tasks (per-item + thread-wide stop primitives)
 export const StopClaudeTask = dispatch('StopClaudeTask');
@@ -256,5 +257,9 @@ export const ListRecentTurns = dispatch('ListRecentTurns');
 export const ListRecentThreadItems = dispatch('ListRecentThreadItems');
 export const ListItemsBeforeTurn = dispatch('ListItemsBeforeTurn');
 export const ListThreadProposedPlans = dispatch('ListThreadProposedPlans');
+export const ListProposedPlanComments = dispatch('ListProposedPlanComments');
+export const CreateProposedPlanComment = dispatch('CreateProposedPlanComment');
+export const UpdateProposedPlanComment = dispatch('UpdateProposedPlanComment');
+export const DeleteProposedPlanComment = dispatch('DeleteProposedPlanComment');
 export const ListLiveBackgroundTasks = dispatch('ListLiveBackgroundTasks');
 export const GetThreadItem = dispatch('GetThreadItem');

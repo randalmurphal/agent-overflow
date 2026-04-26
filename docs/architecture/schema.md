@@ -19,6 +19,14 @@ the migrations win.
 | `attachments` | Message attachments. `mime_type`, `size`, `relative_path` on disk. |
 | `turns` | Per-turn records (one row per user → assistant round-trip). `turn_id` PK, `thread_id` FK, `turn_index`, `started_at`, nullable `completed_at` (NULL = in-flight or crashed), `stop_reason`, `assistant_message_id`, `token_usage_json`, `error_message`. |
 | `thread_checkpoints` | Git checkpoint metadata per thread. `checkpoint_turn_count` is the canonical boundary: `0` is before the first turn, `N` is after completed turn `N`. Rows also carry `turn_id`, `status`, compact `files` JSON, `assistant_message_id`, `completed_at`, `captured_at`, `ref_name`, and `workspace_path`. |
+| `proposed_plans` | Per-plan state layered over proposed-plan payload items. Tracks immutable plan item id, thread id, revision parent item id, version, implementation marker, implementation thread/item ids, and timestamps. |
+| `proposed_plan_comments` | Inline review comments anchored to one proposed-plan version. Tracks draft/sent/resolved status, line range, selected text, body, sent turn id, and timestamps. |
+
+Plan implementation and revision source references are stored on the user
+message `items.meta` as `sourceProposedPlan` and
+`revisionSourceProposedPlan`. The proposed-plan tables stay as durable
+per-plan state, while accepted turns reconcile those metadata references into
+implementation markers and revision parent links.
 
 ## Always-Loaded vs On-Demand
 
@@ -41,6 +49,8 @@ the migrations win.
 - `idx_turns_thread_completed` on `turns(thread_id, completed_at DESC) WHERE completed_at IS NOT NULL` — backs sidebar read-state checks against the newest completed turn.
 - `idx_thread_checkpoints_thread_count_unique` on `thread_checkpoints(thread_id, checkpoint_turn_count)` — enforces one checkpoint per thread boundary.
 - `idx_thread_checkpoints_thread_count` on `thread_checkpoints(thread_id, checkpoint_turn_count)` — backs checkpoint drawer listing, range diff, and revert lookups.
+- `idx_proposed_plans_thread_version` on `proposed_plans(thread_id, version DESC)` — backs newest-first plan sidebar/history queries.
+- `idx_proposed_plan_comments_plan` on `proposed_plan_comments(thread_id, plan_item_id, status, start_line, created_at)` — backs per-plan review comment listing and draft/sent counts.
 
 ## Migration Policy
 

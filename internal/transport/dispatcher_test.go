@@ -595,18 +595,20 @@ func (p *privilegedApp) PrepareThreadWorktree() string    { return "ok" }
 func (p *privilegedApp) RevertToCheckpoint() string       { return "ok" }
 
 // 2. Session control.
-func (p *privilegedApp) StartSession() string                 { return "ok" }
-func (p *privilegedApp) StopSession() string                  { return "ok" }
-func (p *privilegedApp) ReconnectSession() string             { return "ok" }
-func (p *privilegedApp) SendMessage() string                  { return "ok" }
-func (p *privilegedApp) SendMessageWithOptions() string       { return "ok" }
-func (p *privilegedApp) InterruptTurn() string                { return "ok" }
-func (p *privilegedApp) RespondToApproval() string            { return "ok" }
-func (p *privilegedApp) RespondToUserInput() string           { return "ok" }
-func (p *privilegedApp) CreateThread() string                 { return "ok" }
-func (p *privilegedApp) CreateThreadFromPR() string           { return "ok" }
-func (p *privilegedApp) ForkThread() string                   { return "ok" }
-func (p *privilegedApp) StopClaudeTask() string               { return "ok" }
+func (p *privilegedApp) StartSession() string                  { return "ok" }
+func (p *privilegedApp) StopSession() string                   { return "ok" }
+func (p *privilegedApp) ReconnectSession() string              { return "ok" }
+func (p *privilegedApp) SendMessage() string                   { return "ok" }
+func (p *privilegedApp) SendMessageWithOptions() string        { return "ok" }
+func (p *privilegedApp) SendPlanRevisionComments() string      { return "ok" }
+func (p *privilegedApp) UpdateThreadMode() string              { return "ok" }
+func (p *privilegedApp) InterruptTurn() string                 { return "ok" }
+func (p *privilegedApp) RespondToApproval() string             { return "ok" }
+func (p *privilegedApp) RespondToUserInput() string            { return "ok" }
+func (p *privilegedApp) CreateThread() string                  { return "ok" }
+func (p *privilegedApp) CreateThreadFromPR() string            { return "ok" }
+func (p *privilegedApp) ForkThread() string                    { return "ok" }
+func (p *privilegedApp) StopClaudeTask() string                { return "ok" }
 func (p *privilegedApp) CleanCodexBackgroundTerminals() string { return "ok" }
 
 // 3. Settings mutation.

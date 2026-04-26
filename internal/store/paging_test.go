@@ -2,6 +2,7 @@ package store
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -75,7 +76,7 @@ func seedPayloadItem(
 	kind, payloadKind, payloadMeta string,
 ) {
 	t.Helper()
-	payloadID := "p-" + id
+	payloadID := "p-" + threadID + "-" + id
 	payload := Payload{
 		ID:        payloadID,
 		Kind:      payloadKind,
@@ -126,6 +127,44 @@ func TestListRecentItemsWithAncestors_NoAncestors(t *testing.T) {
 	}
 	if !paged.HasMore {
 		t.Error("expected HasMore=true with turn 0 below the floor")
+	}
+}
+
+func TestListRecentItemsDecoratesProposedPlans(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	seedPayloadItem(t, s, "t", "plan-1", 0, 0, "tool_call", "proposed_plan", "{}")
+	if _, err := s.EnsureProposedPlanState("t", "plan-1", 100); err != nil {
+		t.Fatalf("ensure plan: %v", err)
+	}
+	if _, err := s.CreateProposedPlanComment(ProposedPlanComment{
+		ID:         "comment-1",
+		ThreadID:   "t",
+		PlanItemID: "plan-1",
+		StartLine:  1,
+		EndLine:    1,
+		Body:       "tighten this",
+		CreatedAt:  101,
+		UpdatedAt:  101,
+	}); err != nil {
+		t.Fatalf("create comment: %v", err)
+	}
+
+	page, err := s.ListRecentItemsWithAncestors("t", 0)
+	if err != nil {
+		t.Fatalf("list recent items: %v", err)
+	}
+	if len(page.Items) != 1 {
+		t.Fatalf("items = %d, want 1", len(page.Items))
+	}
+	meta := page.Items[0].Meta
+	if !strings.Contains(meta, `"planVersion":1`) {
+		t.Fatalf("meta = %s, want plan version", meta)
+	}
+	if !strings.Contains(meta, `"draft":1`) {
+		t.Fatalf("meta = %s, want draft comment count", meta)
 	}
 }
 

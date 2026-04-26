@@ -578,6 +578,155 @@ export class ProjectWithCounts {
 }
 
 /**
+ * ProposedPlanComment is one inline review note anchored to a plan version.
+ */
+export class ProposedPlanComment {
+    "id": string;
+    "threadId": string;
+    "planItemId": string;
+    "status": string;
+    "startLine": number;
+    "endLine": number;
+    "selectedText": string;
+    "body": string;
+    "sentAt"?: number;
+    "sentTurnId"?: string;
+    "createdAt": number;
+    "updatedAt": number;
+
+    /** Creates a new ProposedPlanComment instance. */
+    constructor($$source: Partial<ProposedPlanComment> = {}) {
+        if (!("id" in $$source)) {
+            this["id"] = "";
+        }
+        if (!("threadId" in $$source)) {
+            this["threadId"] = "";
+        }
+        if (!("planItemId" in $$source)) {
+            this["planItemId"] = "";
+        }
+        if (!("status" in $$source)) {
+            this["status"] = "";
+        }
+        if (!("startLine" in $$source)) {
+            this["startLine"] = 0;
+        }
+        if (!("endLine" in $$source)) {
+            this["endLine"] = 0;
+        }
+        if (!("selectedText" in $$source)) {
+            this["selectedText"] = "";
+        }
+        if (!("body" in $$source)) {
+            this["body"] = "";
+        }
+        if (!("createdAt" in $$source)) {
+            this["createdAt"] = 0;
+        }
+        if (!("updatedAt" in $$source)) {
+            this["updatedAt"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ProposedPlanComment instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ProposedPlanComment {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ProposedPlanComment($$parsedSource as Partial<ProposedPlanComment>);
+    }
+}
+
+/**
+ * ProposedPlanCommentInput carries the editable comment fields from the UI.
+ */
+export class ProposedPlanCommentInput {
+    "planItemId": string;
+    "startLine": number;
+    "endLine": number;
+    "body": string;
+
+    /** Creates a new ProposedPlanCommentInput instance. */
+    constructor($$source: Partial<ProposedPlanCommentInput> = {}) {
+        if (!("planItemId" in $$source)) {
+            this["planItemId"] = "";
+        }
+        if (!("startLine" in $$source)) {
+            this["startLine"] = 0;
+        }
+        if (!("endLine" in $$source)) {
+            this["endLine"] = 0;
+        }
+        if (!("body" in $$source)) {
+            this["body"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ProposedPlanCommentInput instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ProposedPlanCommentInput {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ProposedPlanCommentInput($$parsedSource as Partial<ProposedPlanCommentInput>);
+    }
+}
+
+/**
+ * ProposedPlanCommentUpdate carries the fields that can be changed after a
+ * comment exists. Editing a sent comment makes it draft again so it can be sent
+ * as a fresh revision request.
+ */
+export class ProposedPlanCommentUpdate {
+    "body": string;
+
+    /** Creates a new ProposedPlanCommentUpdate instance. */
+    constructor($$source: Partial<ProposedPlanCommentUpdate> = {}) {
+        if (!("body" in $$source)) {
+            this["body"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ProposedPlanCommentUpdate instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ProposedPlanCommentUpdate {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ProposedPlanCommentUpdate($$parsedSource as Partial<ProposedPlanCommentUpdate>);
+    }
+}
+
+export class ProposedPlanSourceRef {
+    "threadId"?: string;
+    "itemId": string;
+    "payloadId"?: string;
+    "title"?: string;
+    "version"?: number;
+
+    /** Creates a new ProposedPlanSourceRef instance. */
+    constructor($$source: Partial<ProposedPlanSourceRef> = {}) {
+        if (!("itemId" in $$source)) {
+            this["itemId"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ProposedPlanSourceRef instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ProposedPlanSourceRef {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ProposedPlanSourceRef($$parsedSource as Partial<ProposedPlanSourceRef>);
+    }
+}
+
+/**
  * Thread represents a conversation thread.
  * 
  * The shape changed at migration v13: ProjectPath is no longer persisted on

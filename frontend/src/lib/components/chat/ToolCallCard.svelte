@@ -46,7 +46,7 @@
 </script>
 
 {#if planMeta && payloadId}
-  <ProposedPlanCard {pane} {payloadId} meta={planMeta} />
+  <ProposedPlanCard {pane} {item} {payloadId} meta={planMeta} />
 {:else if diffMeta && payloadId}
   <DiffPreview {item} meta={diffMeta} {payloadId} />
 {:else if cmdMeta && payloadId}

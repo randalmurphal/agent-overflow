@@ -7,6 +7,9 @@ import { Create as $Create } from "@wailsio/runtime";
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
+import * as store$0 from "./internal/store/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
 import * as terminal$0 from "./internal/terminal/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
@@ -577,6 +580,7 @@ export class RemoteEndpointSummary {
 export class SendMessageOptions {
     "attachmentIds": string[];
     "runtimeMode"?: string;
+    "sourceProposedPlan"?: SourceProposedPlan | null;
 
     /** Creates a new SendMessageOptions instance. */
     constructor($$source: Partial<SendMessageOptions> = {}) {
@@ -592,13 +596,29 @@ export class SendMessageOptions {
      */
     static createFrom($$source: any = {}): SendMessageOptions {
         const $$createField0_0 = $$createType2;
+        const $$createField2_0 = $$createType6;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("attachmentIds" in $$parsedSource) {
             $$parsedSource["attachmentIds"] = $$createField0_0($$parsedSource["attachmentIds"]);
         }
+        if ("sourceProposedPlan" in $$parsedSource) {
+            $$parsedSource["sourceProposedPlan"] = $$createField2_0($$parsedSource["sourceProposedPlan"]);
+        }
         return new SendMessageOptions($$parsedSource as Partial<SendMessageOptions>);
     }
 }
+
+/**
+ * SourceProposedPlan records that a user follow-up is acting on a specific
+ * immutable proposed-plan item. It is traceability metadata, not prompt text.
+ */
+export const SourceProposedPlan = store$0.ProposedPlanSourceRef;
+
+/**
+ * SourceProposedPlan records that a user follow-up is acting on a specific
+ * immutable proposed-plan item. It is traceability metadata, not prompt text.
+ */
+export type SourceProposedPlan = store$0.ProposedPlanSourceRef;
 
 /**
  * TerminalChip is the frontend-owned shape of a "terminal context" snippet
@@ -669,7 +689,7 @@ export class TerminalHandle {
      * Creates a new TerminalHandle instance from a string or object.
      */
     static createFrom($$source: any = {}): TerminalHandle {
-        const $$createField2_0 = $$createType5;
+        const $$createField2_0 = $$createType7;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("summary" in $$parsedSource) {
             $$parsedSource["summary"] = $$createField2_0($$parsedSource["summary"]);
@@ -769,7 +789,7 @@ export class WorkspaceFileSearchResult {
      * Creates a new WorkspaceFileSearchResult instance from a string or object.
      */
     static createFrom($$source: any = {}): WorkspaceFileSearchResult {
-        const $$createField0_0 = $$createType7;
+        const $$createField0_0 = $$createType9;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("files" in $$parsedSource) {
             $$parsedSource["files"] = $$createField0_0($$parsedSource["files"]);
@@ -784,6 +804,8 @@ const $$createType1 = $Create.Array($$createType0);
 const $$createType2 = $Create.Array($Create.Any);
 const $$createType3 = TerminalChip.createFrom;
 const $$createType4 = $Create.Array($$createType3);
-const $$createType5 = terminal$0.SessionSummary.createFrom;
-const $$createType6 = workspacefiles$0.WorkspaceFile.createFrom;
-const $$createType7 = $Create.Array($$createType6);
+const $$createType5 = store$0.ProposedPlanSourceRef.createFrom;
+const $$createType6 = $Create.Nullable($$createType5);
+const $$createType7 = terminal$0.SessionSummary.createFrom;
+const $$createType8 = workspacefiles$0.WorkspaceFile.createFrom;
+const $$createType9 = $Create.Array($$createType8);

@@ -1,32 +1,71 @@
 <script lang="ts">
   import type { ThreadPane } from '../../stores/thread.svelte';
-  import { GetPayloadData, WriteThreadWorkspaceFile } from '../../stores/bindings';
+  import {
+    GetPayloadData,
+    ListProposedPlanComments,
+    SendPlanRevisionComments,
+    WriteThreadWorkspaceFile,
+  } from '../../stores/bindings';
+  import { replaceThread } from '../../stores/threads.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import { copyToClipboard } from '../../utils/clipboard';
-  import Modal from '../primitives/Modal.svelte';
-  import Button from '../primitives/Button.svelte';
-  import EditorLink from '../common/EditorLink.svelte';
-  import type { ProposedPlanMeta } from '../../types/models';
+  import { implementProposedPlan } from '../../utils/proposedPlanImplementation';
+  import type {
+    Item,
+    ProposedPlanComment,
+    ProposedPlanItemMeta,
+    ProposedPlanMeta,
+    SourceProposedPlan,
+    Thread,
+  } from '../../types/models';
   import {
     buildProposedPlanMarkdownFilename,
     downloadPlanAsTextFile,
     normalizePlanMarkdownForExport,
     stripDisplayedPlanMarkdown,
   } from '../../utils/proposedPlan';
-  import ChatMarkdown from './ChatMarkdown.svelte';
+  import ProposedPlanActions from './ProposedPlanActions.svelte';
+  import ProposedPlanBody from './ProposedPlanBody.svelte';
+  import ProposedPlanReviewSurface from './ProposedPlanReviewSurface.svelte';
+  import ProposedPlanSaveModal from './ProposedPlanSaveModal.svelte';
 
-  let { pane, payloadId, meta }: { pane: ThreadPane; payloadId: string; meta: ProposedPlanMeta } = $props();
+  let {
+    pane,
+    item,
+    payloadId,
+    meta,
+    showReview = false,
+  }: {
+    pane: ThreadPane;
+    item?: Item;
+    payloadId: string;
+    meta: ProposedPlanMeta;
+    showReview?: boolean;
+  } = $props();
 
   let expanded = $state(false);
   let planMarkdown = $state<string | null>(null);
   let loading = $state(false);
+  let implementing = $state(false);
   let saveDialogOpen = $state(false);
   let savePath = $state('');
   let saving = $state(false);
   let copied = $state(false);
+  let comments: ProposedPlanComment[] = $state([]);
+  let planMarkdownRequest: Promise<string> | null = null;
   let copyTimer: ReturnType<typeof setTimeout> | undefined;
 
   const title = $derived(meta.title || 'Proposed plan');
+  const itemMeta = $derived.by(() => {
+    if (!item?.meta) return {} as ProposedPlanItemMeta;
+    try {
+      return JSON.parse(item.meta) as ProposedPlanItemMeta;
+    } catch {
+      return {} as ProposedPlanItemMeta;
+    }
+  });
+  const planVersion = $derived(itemMeta.planVersion ?? 0);
+  const isImplemented = $derived(Boolean(itemMeta.planImplementedAt));
   const canCollapse = $derived(meta.charCount > 900 || meta.lineCount > 20);
   const displayedMarkdown = $derived.by(() => {
     const source = planMarkdown ?? meta.preview;
@@ -38,24 +77,39 @@
     if (planMarkdown !== null) {
       return planMarkdown;
     }
-    if (loading) {
-      return '';
-    }
+    if (planMarkdownRequest) return planMarkdownRequest;
     if (!threadId) {
       addToast('error', 'Failed to load proposed plan');
       return '';
     }
     loading = true;
+    planMarkdownRequest = (async () => {
+      try {
+        const content = await GetPayloadData(threadId, payloadId);
+        planMarkdown = content.data;
+        return content.data;
+      } catch (err) {
+        console.error('Failed to load proposed plan:', err);
+        addToast('error', 'Failed to load proposed plan');
+        return '';
+      } finally {
+        loading = false;
+        planMarkdownRequest = null;
+      }
+    })();
+    return planMarkdownRequest;
+  }
+
+  async function refreshComments(): Promise<void> {
+    if (!pane.threadId || !item?.id) {
+      comments = [];
+      return;
+    }
     try {
-      const content = await GetPayloadData(threadId, payloadId);
-      planMarkdown = content.data;
-      return content.data;
+      comments = ((await ListProposedPlanComments(pane.threadId, item.id)) as ProposedPlanComment[] | null) ?? [];
     } catch (err) {
-      console.error('Failed to load proposed plan:', err);
-      addToast('error', 'Failed to load proposed plan');
-      return '';
-    } finally {
-      loading = false;
+      console.error('Failed to load plan comments:', err);
+      comments = [];
     }
   }
 
@@ -80,6 +134,41 @@
     copyTimer = setTimeout(() => {
       copied = false;
     }, 2000);
+  }
+
+  function sourceProposedPlan(): SourceProposedPlan | undefined {
+    if (!item?.id) return undefined;
+    return {
+      threadId: pane.threadId ?? undefined,
+      itemId: item.id,
+      payloadId,
+      title,
+      version: planVersion || undefined,
+    };
+  }
+
+  async function handleImplement() {
+    if (!pane.threadId || implementing) return;
+    const source = sourceProposedPlan();
+    if (!source) return;
+    implementing = true;
+    try {
+      await implementProposedPlan(pane, source, 'Failed to send implementation request');
+    } finally {
+      implementing = false;
+    }
+  }
+
+  async function handleSendDraftComments(commentIds: string[]): Promise<void> {
+    if (!pane.threadId || !item?.id) return;
+    try {
+      const updated = (await SendPlanRevisionComments(pane.threadId, item.id, commentIds)) as Thread;
+      pane.replaceThread(updated);
+      replaceThread(updated);
+    } catch (err) {
+      console.error('Failed to send plan comments:', err);
+      addToast('error', 'Failed to send comments');
+    }
   }
 
   async function handleDownload() {
@@ -133,111 +222,79 @@
     saveDialogOpen = false;
   }
 
+  function updateSavePath(value: string) {
+    savePath = value;
+  }
+
   $effect(() => {
-    if (!canCollapse && planMarkdown === null) {
+    if (showReview && planMarkdown === null) {
       void ensurePlanMarkdown();
+    }
+  });
+
+  $effect(() => {
+    pane.threadId;
+    item?.id;
+    showReview;
+    if (showReview) {
+      void refreshComments();
+    } else {
+      comments = [];
     }
   });
 </script>
 
-<div class="mb-3 rounded-[24px] border border-border bg-surface-1/90 p-4 sm:p-5">
+<div class="mb-3 rounded-md border border-border bg-surface-1/90 p-4 sm:p-5">
   <div class="flex flex-wrap items-center justify-between gap-3">
     <div class="flex min-w-0 items-center gap-2">
-      <span class="rounded-full bg-accent/15 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-accent">
-        Plan
+      <span class="rounded bg-accent/15 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-accent">
+        {planVersion ? `Plan v${planVersion}` : 'Plan'}
       </span>
       <p class="truncate text-sm font-medium text-text-primary">{title}</p>
-    </div>
-    <div class="flex items-center gap-1.5 text-xs text-text-secondary">
-      <button
-        onclick={handleCopy}
-        class="rounded-md border border-border px-2.5 py-1 hover:text-text-primary hover:border-text-secondary cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
-      >
-        {copied ? 'Copied!' : 'Copy'}
-      </button>
-      <button
-        onclick={handleDownload}
-        class="rounded-md border border-border px-2.5 py-1 hover:text-text-primary hover:border-text-secondary cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
-      >
-        Download
-      </button>
-      <button
-        onclick={openSaveDialog}
-        class="rounded-md border border-border px-2.5 py-1 hover:text-text-primary hover:border-text-secondary cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
-      >
-        Save
-      </button>
-    </div>
-  </div>
-
-  <div class="mt-4">
-    <div class:overflow-hidden={canCollapse && !expanded} class:max-h-104={canCollapse && !expanded} class="relative">
-      <ChatMarkdown source={displayedMarkdown} />
-      {#if canCollapse && !expanded}
-        <div class="pointer-events-none absolute inset-x-0 bottom-0 h-24 bg-linear-to-t from-surface-1 via-surface-1/80 to-transparent"></div>
+      {#if isImplemented}
+        <span class="rounded bg-success/12 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-success">
+          Implemented
+        </span>
       {/if}
     </div>
-    {#if canCollapse}
-      <div class="mt-4 flex justify-center">
-        <button
-          onclick={handleToggleExpanded}
-          class="rounded-md border border-border px-3 py-1.5 text-sm text-text-secondary hover:text-text-primary hover:border-text-secondary cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
-        >
-          {expanded ? 'Collapse plan' : 'Expand plan'}
-        </button>
-      </div>
-    {/if}
+    <ProposedPlanActions
+      {copied}
+      implemented={isImplemented}
+      {implementing}
+      onImplement={handleImplement}
+      onCopy={handleCopy}
+      onDownload={handleDownload}
+      onSave={openSaveDialog}
+    />
   </div>
+
+  <ProposedPlanBody
+    markdown={displayedMarkdown}
+    {canCollapse}
+    {expanded}
+    onToggleExpanded={handleToggleExpanded}
+  />
+
+  {#if showReview && planMarkdown}
+    <div class="mt-4">
+      <ProposedPlanReviewSurface
+        threadId={pane.threadId ?? ''}
+        planItemId={item?.id ?? ''}
+        markdown={normalizePlanMarkdownForExport(planMarkdown)}
+        {comments}
+        onRefresh={refreshComments}
+        onSendDrafts={handleSendDraftComments}
+      />
+    </div>
+  {/if}
 </div>
 
-<Modal
+<ProposedPlanSaveModal
   open={saveDialogOpen}
-  title="Save Plan to Workspace"
+  workspacePath={pane.thread?.workspacePath}
+  {savePath}
+  {saving}
+  onPathChange={updateSavePath}
   onClose={closeSaveDialog}
-  width="lg"
-  padding="comfortable"
->
-  {#snippet children()}
-    <p class="text-[13px] text-fg-muted mb-4 leading-relaxed">
-      Enter a path relative to
-      {#if pane.thread?.workspacePath}
-        <span class="inline-flex items-center gap-1 align-baseline">
-          <code class="font-mono text-[12px] bg-surface-2/50 px-1 rounded">{pane.thread.workspacePath}</code>
-          <EditorLink path={pane.thread.workspacePath} asIcon class="opacity-70 hover:opacity-100" />
-        </span>
-      {:else}
-        <code class="font-mono text-[12px] bg-surface-2/50 px-1 rounded">the workspace</code>
-      {/if}.
-    </p>
-
-    <label class="block">
-      <span class="mb-1 block text-[12px] text-fg-muted font-medium">Workspace Path</span>
-      <input
-        data-autofocus
-        bind:value={savePath}
-        disabled={saving}
-        spellcheck={false}
-        placeholder="plans/my-plan.md"
-        class="w-full text-[13px] rounded-[var(--radius-control)] border border-border-subtle bg-surface-0 px-3 py-1.5 text-fg placeholder:text-fg-hint focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/40 transition-colors"
-      />
-    </label>
-  {/snippet}
-  {#snippet footer()}
-    <Button
-      variant="secondary"
-      size="sm"
-      onclick={closeSaveDialog}
-      disabled={saving}
-    >
-      {#snippet children()}Cancel{/snippet}
-    </Button>
-    <Button
-      variant="primary"
-      size="sm"
-      onclick={handleSave}
-      loading={saving}
-    >
-      {#snippet children()}{saving ? 'Saving…' : 'Save'}{/snippet}
-    </Button>
-  {/snippet}
-</Modal>
+  onSave={handleSave}
+/>

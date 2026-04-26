@@ -408,9 +408,8 @@ func TestMode_ConcurrentSetModeRace(t *testing.T) {
 // an active provider session:
 //   - persists the new mode to the DB
 //   - leaves the active session map untouched (the running session keeps its
-//     captured-at-startup config; reconnect is required to pick up the new mode)
-//   - emits a thread:mode_changed event with NeedsReconnect=true
-//     so the frontend can surface the requirement to the user.
+//     process; chat/plan are applied on the next turn without reconnect)
+//   - emits a thread:mode_changed event with NeedsReconnect=false for chat/plan.
 func TestMode_SetModeDuringActiveSession(t *testing.T) {
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
@@ -457,7 +456,7 @@ func TestMode_SetModeDuringActiveSession(t *testing.T) {
 		t.Fatal("active session was evicted by UpdateThreadMode (unexpected)")
 	}
 
-	// An event must have fired signalling the active session needs reconnect.
+	// An event must have fired so the frontend can refresh cached mode state.
 	var modeChange *ThreadModeChangedEvent
 	for _, e := range capturedEvents {
 		if e.name != "thread:mode_changed" {
@@ -478,8 +477,8 @@ func TestMode_SetModeDuringActiveSession(t *testing.T) {
 	if modeChange.Mode != "plan" {
 		t.Fatalf("event Mode = %q, want plan", modeChange.Mode)
 	}
-	if !modeChange.NeedsReconnect {
-		t.Fatalf("event NeedsReconnect = false, want true (session is active)")
+	if modeChange.NeedsReconnect {
+		t.Fatalf("event NeedsReconnect = true, want false for active chat/plan mode change")
 	}
 }
 

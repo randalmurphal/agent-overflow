@@ -141,7 +141,30 @@ func (r *Router) handleProposedPlan(evt provider.ProviderEvent) error {
 		item.UpdatedAt = now
 	}
 
-	return r.attachPayloadToItem(item, evt, "proposed_plan", item.Summary, true)
+	if err := r.attachPayloadToItemQuiet(item, evt, "proposed_plan", item.Summary, true); err != nil {
+		return err
+	}
+	parentItemID := ""
+	turnIndex := item.TurnIndex
+	if turnIndex == 0 {
+		if current, err := r.currentTurnIndex(evt.ThreadID); err == nil {
+			turnIndex = current
+		}
+	}
+	if source, found, err := r.store.RevisionSourceProposedPlanForTurn(evt.ThreadID, turnIndex); err != nil {
+		return fmt.Errorf("plan revision source %s: %w", item.ID, err)
+	} else if found && source.ThreadID == evt.ThreadID {
+		parentItemID = source.ItemID
+	}
+	if _, err := r.store.EnsureProposedPlanStateWithParent(evt.ThreadID, item.ID, parentItemID, now); err != nil {
+		return fmt.Errorf("plan state %s: %w", item.ID, err)
+	}
+	if plan, found, err := r.store.GetThreadProposedPlanItem(evt.ThreadID, item.ID); err != nil {
+		return fmt.Errorf("plan decorated item %s: %w", item.ID, err)
+	} else if found {
+		r.emit("provider:item_event", NewItemStreamUpsert(plan))
+	}
+	return nil
 }
 
 func eventTimestampMillis(evt provider.ProviderEvent) int64 {
@@ -243,6 +266,27 @@ func (r *Router) attachPayloadToItem(
 	summary string,
 	replace bool,
 ) error {
+	return r.attachPayloadToItemWithEmit(item, evt, payloadKind, summary, replace, true)
+}
+
+func (r *Router) attachPayloadToItemQuiet(
+	item store.Item,
+	evt provider.ProviderEvent,
+	payloadKind string,
+	summary string,
+	replace bool,
+) error {
+	return r.attachPayloadToItemWithEmit(item, evt, payloadKind, summary, replace, false)
+}
+
+func (r *Router) attachPayloadToItemWithEmit(
+	item store.Item,
+	evt provider.ProviderEvent,
+	payloadKind string,
+	summary string,
+	replace bool,
+	emit bool,
+) error {
 	now := eventTimestampMillis(evt)
 	payloadID := item.PayloadID
 	data := []byte(evt.Content)
@@ -274,7 +318,10 @@ func (r *Router) attachPayloadToItem(
 		if item.CreatedAt == 0 {
 			item.CreatedAt = now
 		}
-		return r.persistItem(item, nil)
+		if emit {
+			return r.persistItem(item, nil)
+		}
+		return r.persistItemQuiet(item, nil)
 	}
 
 	if !linked {
@@ -299,7 +346,10 @@ func (r *Router) attachPayloadToItem(
 	if item.CreatedAt == 0 {
 		item.CreatedAt = now
 	}
-	return r.persistItem(item, &payload)
+	if emit {
+		return r.persistItem(item, &payload)
+	}
+	return r.persistItemQuiet(item, &payload)
 }
 
 func buildPayloadMeta(payloadKind string, evt provider.ProviderEvent) string {

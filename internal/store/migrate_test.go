@@ -32,6 +32,7 @@ func TestMigrationFreshDB(t *testing.T) {
 		"migration_versions", "threads", "items", "payloads",
 		"channels", "channel_messages", "discussion_definitions", "design_artifacts",
 		"attachments", "thread_drafts", "thread_checkpoints", "turns",
+		"proposed_plans", "proposed_plan_comments",
 	}
 	for _, table := range tables {
 		var name string
@@ -158,6 +159,9 @@ func TestMigrationVersionTracking(t *testing.T) {
 	}
 	if versions[28].version != 29 || versions[28].name != "thread_pinned_at" {
 		t.Errorf("v29: got %d/%s", versions[28].version, versions[28].name)
+	}
+	if versions[29].version != 30 || versions[29].name != "proposed_plan_review" {
+		t.Errorf("v30: got %d/%s", versions[29].version, versions[29].name)
 	}
 }
 

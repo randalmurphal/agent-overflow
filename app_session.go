@@ -229,8 +229,9 @@ func (a *App) spawnProviderSession(
 // current attachment payload; RuntimeMode is an optional draft override applied
 // immediately before the provider turn starts.
 type SendMessageOptions struct {
-	AttachmentIDs []string `json:"attachmentIds"`
-	RuntimeMode   string   `json:"runtimeMode,omitempty"`
+	AttachmentIDs      []string            `json:"attachmentIds"`
+	RuntimeMode        string              `json:"runtimeMode,omitempty"`
+	SourceProposedPlan *SourceProposedPlan `json:"sourceProposedPlan,omitempty"`
 }
 
 // SendMessage is the Wails-bound compatibility entry point for user-typed
@@ -249,7 +250,11 @@ func (a *App) SendMessageWithOptions(threadID string, content string, opts SendM
 	if a.shuttingDown.Load() {
 		return store.Thread{}, ErrShuttingDown
 	}
-	if err := a.sendMessageWithOptions(threadID, content, sendMessageOptions(opts)); err != nil {
+	if _, err := a.sendMessageWithOptions(threadID, content, sendMessageOptions{
+		AttachmentIDs:      opts.AttachmentIDs,
+		RuntimeMode:        opts.RuntimeMode,
+		SourceProposedPlan: opts.SourceProposedPlan,
+	}); err != nil {
 		return store.Thread{}, err
 	}
 	return a.store.GetThread(threadID)

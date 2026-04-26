@@ -1304,6 +1304,61 @@ func TestTurnStartOnlyNotificationStillEmits(t *testing.T) {
 	}
 }
 
+func TestSessionBuffersPlanDeltaUntilCompletion(t *testing.T) {
+	s, eventCh := newTestCodexSession(t)
+
+	lines := []string{
+		`{"jsonrpc":"2.0","method":"item/plan/delta","params":{"turnId":"turn-plan","itemId":"plan-1","delta":"# Plan\n\n"}}`,
+		`{"jsonrpc":"2.0","method":"item/plan/delta","params":{"turnId":"turn-plan","itemId":"plan-1","delta":"- first\n- second"}}`,
+		`{"jsonrpc":"2.0","method":"item/completed","params":{"turnId":"turn-plan","item":{"id":"plan-1","type":"plan"}}}`,
+	}
+	for _, line := range lines {
+		if err := s.proc.WriteLine([]byte(line)); err != nil {
+			t.Fatalf("write line: %v", err)
+		}
+	}
+
+	var got provider.ProviderEvent
+	select {
+	case got = <-eventCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("no proposed plan event emitted")
+	}
+	if got.Kind != provider.EventProposedPlan {
+		t.Fatalf("kind: got %q, want EventProposedPlan", got.Kind)
+	}
+	if got.ItemID != "plan-1" {
+		t.Fatalf("itemID: got %q, want plan-1", got.ItemID)
+	}
+	if got.Content != "# Plan\n\n- first\n- second" {
+		t.Fatalf("content: got %q", got.Content)
+	}
+}
+
+func TestSessionPrefersCompletedPlanContentOverBufferedDelta(t *testing.T) {
+	s, eventCh := newTestCodexSession(t)
+
+	lines := []string{
+		`{"jsonrpc":"2.0","method":"item/plan/delta","params":{"turnId":"turn-plan","itemId":"plan-1","delta":"# Draft plan"}}`,
+		`{"jsonrpc":"2.0","method":"item/completed","params":{"turnId":"turn-plan","item":{"id":"plan-1","type":"plan","text":"# Final plan"}}}`,
+	}
+	for _, line := range lines {
+		if err := s.proc.WriteLine([]byte(line)); err != nil {
+			t.Fatalf("write line: %v", err)
+		}
+	}
+
+	var got provider.ProviderEvent
+	select {
+	case got = <-eventCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("no proposed plan event emitted")
+	}
+	if got.Content != "# Final plan" {
+		t.Fatalf("content = %q, want completed item text", got.Content)
+	}
+}
+
 // TestTurnStartIdempotentOnDuplicateNotification covers the rarer case
 // where the provider re-sends turn/started (e.g. recovery). The second
 // emission must be suppressed so the router still sees one turn.
@@ -2956,6 +3011,90 @@ done
 			sandboxPolicy := params["sandboxPolicy"].(map[string]any)
 			if sandboxPolicy["type"] != tc.wantSandboxType {
 				t.Fatalf("sandboxPolicy.type = %v, want %s", sandboxPolicy["type"], tc.wantSandboxType)
+			}
+		})
+	}
+}
+
+func TestSessionSendIncludesCollaborationMode(t *testing.T) {
+	cases := []struct {
+		name     string
+		mode     provider.InteractionMode
+		wantMode string
+	}{
+		{name: "plan", mode: provider.ModePlan, wantMode: "plan"},
+		{name: "chat clears plan mode", mode: provider.ModeChat, wantMode: "default"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			capturePath := filepath.Join(t.TempDir(), "codex-stdin.log")
+			script := fmt.Sprintf(`#!/bin/bash
+while IFS= read -r line; do
+    printf '%%s\n' "$line" >> %q
+    id=$(echo "$line" | grep -o '"id":[0-9]*' | head -1 | grep -o '[0-9]*')
+    if [ -z "$id" ]; then
+        continue
+    fi
+    if echo "$line" | grep -q '"method":"turn/start"'; then
+        echo "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"turn\":{\"id\":\"turn-collab\"}}}"
+    else
+        echo "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"thread\":{\"id\":\"mock-thread-123\"}}}"
+    fi
+done
+`, capturePath)
+			scriptPath := filepath.Join(t.TempDir(), "codex")
+			if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+				t.Fatalf("write mock script: %v", err)
+			}
+
+			s, err := NewSession(context.Background(), testThread, Config{
+				Binary:          scriptPath,
+				Model:           "test-model",
+				WorkDir:         "/tmp",
+				ReasoningEffort: "high",
+			}, func(provider.ProviderEvent) {})
+			if err != nil {
+				t.Fatalf("NewSession: %v", err)
+			}
+			t.Cleanup(func() { _ = s.Close() })
+
+			if err := s.Send(context.Background(), "hello", provider.SendOptions{InteractionMode: tc.mode}); err != nil {
+				t.Fatalf("Send: %v", err)
+			}
+			_ = s.Close()
+
+			captured, err := os.ReadFile(capturePath)
+			if err != nil {
+				t.Fatalf("read capture: %v", err)
+			}
+			var turnStart map[string]any
+			for _, line := range strings.Split(string(captured), "\n") {
+				if !strings.Contains(line, `"method":"turn/start"`) {
+					continue
+				}
+				if err := json.Unmarshal([]byte(line), &turnStart); err != nil {
+					t.Fatalf("unmarshal turn/start: %v", err)
+				}
+				break
+			}
+			if turnStart == nil {
+				t.Fatalf("captured no turn/start request: %s", string(captured))
+			}
+			params := turnStart["params"].(map[string]any)
+			collaborationMode := params["collaborationMode"].(map[string]any)
+			if collaborationMode["mode"] != tc.wantMode {
+				t.Fatalf("collaborationMode.mode = %v, want %s", collaborationMode["mode"], tc.wantMode)
+			}
+			settings := collaborationMode["settings"].(map[string]any)
+			if settings["model"] != "test-model" {
+				t.Fatalf("settings.model = %v, want test-model", settings["model"])
+			}
+			if settings["reasoning_effort"] != "high" {
+				t.Fatalf("settings.reasoning_effort = %v, want high", settings["reasoning_effort"])
+			}
+			if settings["developer_instructions"] != nil {
+				t.Fatalf("settings.developer_instructions = %v, want nil built-in preset", settings["developer_instructions"])
 			}
 		})
 	}

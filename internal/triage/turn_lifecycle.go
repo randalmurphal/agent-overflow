@@ -3,6 +3,7 @@ package triage
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -41,12 +42,16 @@ func (r *Router) handleTurnStart(evt provider.ProviderEvent) error {
 
 	startedAt := eventTimestampMillis(evt)
 	turnID := resolveTurnID(evt, turnIndex)
-	r.upsertTurnRow(store.Turn{
+	inserted := r.upsertTurnRow(store.Turn{
 		TurnID:    turnID,
 		ThreadID:  evt.ThreadID,
 		TurnIndex: turnIndex,
 		StartedAt: startedAt,
 	})
+	if inserted {
+		r.markAcceptedSourceProposedPlan(evt.ThreadID, turnIndex, startedAt)
+		r.markAcceptedRevisionComments(evt.ThreadID, turnIndex, turnID, startedAt)
+	}
 
 	r.emit("provider:turn_started", TurnStartedEvent{
 		ThreadID:  evt.ThreadID,
@@ -55,6 +60,84 @@ func (r *Router) handleTurnStart(evt provider.ProviderEvent) error {
 		StartedAt: startedAt,
 	})
 	return nil
+}
+
+func (r *Router) markAcceptedRevisionComments(threadID string, turnIndex int, turnID string, startedAt int64) {
+	commentIDs, found, err := r.store.RevisionSourceCommentIDsForTurn(threadID, turnIndex)
+	if err != nil {
+		log.Printf("triage: revision source comments for turn %s/%d: %v", threadID, turnIndex, err)
+		return
+	}
+	if !found {
+		return
+	}
+	source, sourceFound, err := r.store.RevisionSourceProposedPlanForTurn(threadID, turnIndex)
+	if err != nil {
+		log.Printf("triage: revision source plan for turn %s/%d: %v", threadID, turnIndex, err)
+		return
+	}
+	if !sourceFound || source.ThreadID != threadID {
+		return
+	}
+	plan, planFound, err := r.store.GetThreadProposedPlanItem(threadID, source.ItemID)
+	if err != nil {
+		log.Printf("triage: validate revision source proposed plan %s/%s: %v", threadID, source.ItemID, err)
+		return
+	}
+	if !planFound {
+		return
+	}
+	if err := r.store.MarkProposedPlanCommentsSent(threadID, source.ItemID, commentIDs, startedAt, turnID); err != nil {
+		log.Printf("triage: mark revision comments sent for turn %s/%d: %v", threadID, turnIndex, err)
+		return
+	}
+	plan, planFound, err = r.store.GetThreadProposedPlanItem(threadID, source.ItemID)
+	if err != nil {
+		log.Printf("triage: refresh revision source proposed plan %s/%s: %v", threadID, source.ItemID, err)
+		return
+	}
+	if planFound {
+		r.emit("provider:item_event", NewItemStreamUpsert(plan))
+	}
+}
+
+func (r *Router) markAcceptedSourceProposedPlan(threadID string, turnIndex int, startedAt int64) {
+	source, found, err := r.store.SourceProposedPlanForTurn(threadID, turnIndex)
+	if err != nil {
+		log.Printf("triage: source proposed plan for turn %s/%d: %v", threadID, turnIndex, err)
+		return
+	}
+	if !found {
+		return
+	}
+	if source.ThreadID != threadID {
+		log.Printf("triage: refusing cross-thread source proposed plan %s/%s from turn %s/%d", source.ThreadID, source.ItemID, threadID, turnIndex)
+		return
+	}
+	item, itemFound, err := r.store.GetThreadItem(source.ThreadID, source.ItemID)
+	if err != nil {
+		log.Printf("triage: validate source proposed plan %s/%s: %v", source.ThreadID, source.ItemID, err)
+		return
+	}
+	if !itemFound || item.Role != "assistant" || item.PayloadKind != "proposed_plan" {
+		log.Printf("triage: refusing invalid source proposed plan %s/%s", source.ThreadID, source.ItemID)
+		return
+	}
+	implementationItemID := fmt.Sprintf("user:%d", turnIndex)
+	if err := r.store.MarkProposedPlanImplemented(source.ThreadID, source.ItemID, threadID, implementationItemID, startedAt); err != nil {
+		if !errors.Is(err, store.ErrProposedPlanAlreadyImplemented) {
+			log.Printf("triage: mark proposed plan implemented %s/%s: %v", source.ThreadID, source.ItemID, err)
+		}
+		return
+	}
+	plan, found, err := r.store.GetThreadProposedPlanItem(source.ThreadID, source.ItemID)
+	if err != nil {
+		log.Printf("triage: refresh implemented proposed plan %s/%s: %v", source.ThreadID, source.ItemID, err)
+		return
+	}
+	if found {
+		r.emit("provider:item_event", NewItemStreamUpsert(plan))
+	}
 }
 
 // resolveTurnID builds the `turns` table primary key for the incoming
@@ -79,7 +162,7 @@ func resolveTurnID(evt provider.ProviderEvent, turnIndex int) string {
 // Errors are logged but not propagated: turn-start emission must fire
 // even if persistence hiccups, so the frontend's working indicator
 // still tracks the wire signal.
-func (r *Router) upsertTurnRow(turn store.Turn) {
+func (r *Router) upsertTurnRow(turn store.Turn) bool {
 	_, found, err := r.store.GetTurn(turn.TurnID)
 	if err != nil {
 		log.Printf("triage: turn start get %s: %v", turn.TurnID, err)
@@ -90,11 +173,13 @@ func (r *Router) upsertTurnRow(turn store.Turn) {
 		// and completed_at. Refreshing started_at would show a
 		// later clock on the working indicator each time the
 		// provider re-initialises.
-		return
+		return false
 	}
 	if err := r.store.InsertTurn(turn); err != nil {
 		log.Printf("triage: turn start insert %s: %v", turn.TurnID, err)
+		return false
 	}
+	return true
 }
 
 // openTurnSpan begins a turn.lifecycle span for the incoming turn. Any

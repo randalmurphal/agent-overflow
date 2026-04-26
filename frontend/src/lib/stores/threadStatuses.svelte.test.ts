@@ -233,16 +233,33 @@ describe('threadStatuses store', () => {
     it('flips to plan-ready on a completed proposed_plan item', () => {
       projectThreadItem(makeItem({
         id: 'plan-1',
-        kind: 'proposed_plan',
+        kind: 'tool_call',
+        payloadKind: 'proposed_plan',
         status: 'completed',
       }));
       expect(getThreadStatus('thread-1')).toBe('plan-ready');
     });
 
+    it('does NOT flip back to plan-ready on implemented proposed_plan upsert', () => {
+      projectPlanReady('thread-1');
+      projectTurnStarted('thread-1', 'turn-1');
+      projectThreadItem(makeItem({
+        id: 'plan-1',
+        kind: 'tool_call',
+        payloadKind: 'proposed_plan',
+        status: 'completed',
+        meta: '{"planImplementedAt":123}',
+      }));
+      projectTurnCompleted('thread-1', 'turn-1');
+
+      expect(getThreadStatus('thread-1')).toBe('idle');
+    });
+
     it('does NOT flip on an errored proposed_plan', () => {
       projectThreadItem(makeItem({
         id: 'plan-1',
-        kind: 'proposed_plan',
+        kind: 'tool_call',
+        payloadKind: 'proposed_plan',
         status: 'errored',
       }));
       expect(getThreadStatus('thread-1')).toBe('idle');
@@ -251,7 +268,8 @@ describe('threadStatuses store', () => {
     it('does NOT flip on a streaming (in-progress) proposed_plan', () => {
       projectThreadItem(makeItem({
         id: 'plan-1',
-        kind: 'proposed_plan',
+        kind: 'tool_call',
+        payloadKind: 'proposed_plan',
         status: 'streaming',
       }));
       // Streaming items land as active-item → running, not plan-ready.

@@ -14,6 +14,10 @@ export {
     PayloadMeta,
     Project,
     ProjectWithCounts,
+    ProposedPlanComment,
+    ProposedPlanCommentInput,
+    ProposedPlanCommentUpdate,
+    ProposedPlanSourceRef,
     Thread,
     ThreadMessageHit,
     Turn

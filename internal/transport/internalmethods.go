@@ -109,14 +109,16 @@ var LocalOnlyMethods = map[string]bool{
 	"RevertToCheckpoint": true,
 
 	// 2. Session control (provider subprocess spawn / steer).
-	"StartSession":           true,
-	"StopSession":            true,
-	"ReconnectSession":       true,
-	"SendMessage":            true,
-	"SendMessageWithOptions": true,
-	"InterruptTurn":          true,
-	"RespondToApproval":      true,
-	"RespondToUserInput":     true,
+	"StartSession":             true,
+	"StopSession":              true,
+	"ReconnectSession":         true,
+	"SendMessage":              true,
+	"SendMessageWithOptions":   true,
+	"SendPlanRevisionComments": true,
+	"UpdateThreadMode":         true,
+	"InterruptTurn":            true,
+	"RespondToApproval":        true,
+	"RespondToUserInput":       true,
 	// Thread creation can spawn a worktree / probe the provider; the
 	// branch fork variant runs git ops, and the PR variant shells `gh`.
 	"CreateThread":       true,

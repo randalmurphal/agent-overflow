@@ -16,9 +16,21 @@ describe('<PlanFollowUpBanner>', () => {
     setBindingMock('SaveDraft', async () => {});
     setBindingMock('ClearDraft', async () => {});
     setBindingMock('UpdateThreadMode', async () => ({}));
+    setBindingMock('SendMessageWithOptions', async () => ({
+      id: 'thread-1',
+      title: 'Test thread',
+      provider: 'claude',
+      workspacePath: '/tmp/workspace',
+      projectPath: '/tmp/workspace',
+      mode: 'chat',
+      model: 'claude-sonnet-4-6',
+      createdAt: 0,
+      updatedAt: 0,
+      archived: false,
+    }));
   });
 
-  it('shows for the latest proposed-plan payload item and seeds the implement prompt', async () => {
+  it('shows for the latest proposed-plan payload item and sends the implement prompt', async () => {
     const pane = await buildPane(undefined, [
       makeItem({
         id: 'plan-1',
@@ -38,7 +50,20 @@ describe('<PlanFollowUpBanner>', () => {
     const { getByTestId } = render(PlanFollowUpBanner, { props: { pane, draft } });
     await fireEvent.click(getByTestId('plan-followup-implement'));
 
-    expect(draft.content).toBe('Please implement the plan above.');
+    expect(draft.content).toBe('');
+    expect(getBindingMock('SendMessageWithOptions')!.mock.calls[0]).toEqual([
+      'thread-1',
+      'Implement the plan.',
+      expect.objectContaining({
+        attachmentIds: [],
+        sourceProposedPlan: expect.objectContaining({
+          threadId: 'thread-1',
+          itemId: 'plan-1',
+          payloadId: 'plan-payload',
+          title: 'Plan',
+        }),
+      }),
+    ]);
   });
 
   it('switches plan-mode threads back to chat when implementing', async () => {

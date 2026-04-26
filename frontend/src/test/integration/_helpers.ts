@@ -132,6 +132,8 @@ export function installThreadViewDefaults(): void {
   // Default to empty lists so tests that don't assert on those
   // surfaces don't have to stub each one themselves.
   setBindingMock('ListThreadProposedPlans', async () => []);
+  setBindingMock('ListProposedPlanComments', async () => []);
+  setBindingMock('GetPayloadData', async () => ({ data: '# Plan\n\nBody' }));
   setBindingMock('ListLiveBackgroundTasks', async () => []);
 }
 

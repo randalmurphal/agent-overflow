@@ -1888,8 +1888,12 @@ func TestProposedPlanPersistsHeavy(t *testing.T) {
 		t.Fatalf("item summary: got %q, want %q", items[0].Summary, "Ship it")
 	}
 
-	if len(filterItemEventUpserts(*emissions)) == 0 {
+	upserts := filterItemEventUpserts(*emissions)
+	if len(upserts) == 0 {
 		t.Fatalf("expected provider:item_event upsert, got %+v", *emissions)
+	}
+	if !strings.Contains(upserts[len(upserts)-1].Meta, `"planVersion":1`) {
+		t.Fatalf("final plan upsert meta = %s, want decorated plan state", upserts[len(upserts)-1].Meta)
 	}
 }
 
@@ -3024,6 +3028,118 @@ func TestCleanupThreadDropsLateEvents(t *testing.T) {
 	}
 	if len(items) != 1 {
 		t.Fatalf("post-stop items = %d, want 1 (late event persisted under stopped thread)", len(items))
+	}
+}
+
+func TestProposedPlanUsesRevisionSourceParentFromTurnMetadata(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventProposedPlan,
+		ThreadID:  "t1",
+		ItemID:    "plan-1",
+		Content:   "# Plan 1\n\n- one",
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle first plan: %v", err)
+	}
+	if err := st.InsertItem(store.Item{
+		ID:        "user:1",
+		ThreadID:  "t1",
+		TurnIndex: 1,
+		ItemIndex: 0,
+		Kind:      "user_text",
+		Role:      "user",
+		Summary:   "Please revise the plan.",
+		Meta:      `{"revisionSourceProposedPlan":{"threadId":"t1","itemId":"plan-1"}}`,
+		CreatedAt: time.Now().UnixMilli(),
+		UpdatedAt: time.Now().UnixMilli(),
+	}); err != nil {
+		t.Fatalf("insert revision user item: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTurnStart,
+		ThreadID:  "t1",
+		TurnIndex: 1,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle turn start: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventProposedPlan,
+		ThreadID:  "t1",
+		ItemID:    "plan-2",
+		Content:   "# Plan 2\n\n- two",
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle revised plan: %v", err)
+	}
+
+	state, found, err := st.GetProposedPlanState("t1", "plan-2")
+	if err != nil {
+		t.Fatalf("GetProposedPlanState: %v", err)
+	}
+	if !found || state.RevisionParentItemID != "plan-1" {
+		t.Fatalf("revision parent = %+v, want plan-1", state)
+	}
+}
+
+func TestDuplicateTurnStartDoesNotReacceptRevisionComments(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	now := time.Now().UnixMilli()
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventProposedPlan,
+		ThreadID:  "t1",
+		ItemID:    "plan-1",
+		Content:   "# Plan\n\n- one",
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle plan: %v", err)
+	}
+	if _, err := st.CreateProposedPlanComment(store.ProposedPlanComment{
+		ID: "comment-1", ThreadID: "t1", PlanItemID: "plan-1", StartLine: 1, EndLine: 1,
+		Body: "revise", CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("create comment: %v", err)
+	}
+	if err := st.InsertItem(store.Item{
+		ID:        "user:1",
+		ThreadID:  "t1",
+		TurnIndex: 1,
+		ItemIndex: 0,
+		Kind:      "user_text",
+		Role:      "user",
+		Summary:   "Please revise the plan.",
+		Meta:      `{"revisionSourceProposedPlan":{"threadId":"t1","itemId":"plan-1"},"revisionSourceCommentIds":["comment-1"]}`,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("insert revision user item: %v", err)
+	}
+	turnStart := provider.ProviderEvent{
+		Kind:      provider.EventTurnStart,
+		ThreadID:  "t1",
+		TurnIndex: 1,
+		Timestamp: time.Now(),
+	}
+	if err := router.Handle(turnStart); err != nil {
+		t.Fatalf("handle first turn start: %v", err)
+	}
+	if _, err := st.UpdateProposedPlanComment("t1", "comment-1", store.ProposedPlanCommentUpdate{Body: "new draft"}, now+1); err != nil {
+		t.Fatalf("update comment back to draft: %v", err)
+	}
+	if err := router.Handle(turnStart); err != nil {
+		t.Fatalf("handle duplicate turn start: %v", err)
+	}
+	comment, err := st.GetProposedPlanComment("t1", "comment-1")
+	if err != nil {
+		t.Fatalf("get comment: %v", err)
+	}
+	if comment.Status != "draft" {
+		t.Fatalf("comment status = %q, want draft after duplicate turn start", comment.Status)
 	}
 }
 

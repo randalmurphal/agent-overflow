@@ -33,11 +33,13 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "CloseTerminal", ID: 2702963191}, // main.App.CloseTerminal
 	{Name: "CreateDiscussion", ID: 757689265}, // main.App.CreateDiscussion
 	{Name: "CreateProject", ID: 969543070}, // main.App.CreateProject
+	{Name: "CreateProposedPlanComment", ID: 4246792665}, // main.App.CreateProposedPlanComment
 	{Name: "CreateThread", ID: 2579322833}, // main.App.CreateThread
 	{Name: "CreateThreadFromPR", ID: 1716017387}, // main.App.CreateThreadFromPR
 	{Name: "DeleteAttachment", ID: 2428457759}, // main.App.DeleteAttachment
 	{Name: "DeleteDiscussion", ID: 302062730}, // main.App.DeleteDiscussion
 	{Name: "DeleteProject", ID: 3379369923}, // main.App.DeleteProject
+	{Name: "DeleteProposedPlanComment", ID: 554913120}, // main.App.DeleteProposedPlanComment
 	{Name: "DeleteRemoteEndpoint", ID: 3667944297}, // main.App.DeleteRemoteEndpoint
 	{Name: "DeleteThread", ID: 1186337974}, // main.App.DeleteThread
 	{Name: "ForkThread", ID: 4063914461}, // main.App.ForkThread
@@ -87,6 +89,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "ListLiveBackgroundTasks", ID: 320784263}, // main.App.ListLiveBackgroundTasks
 	{Name: "ListPayloadMetas", ID: 1007133701}, // main.App.ListPayloadMetas
 	{Name: "ListProjects", ID: 2721360259}, // main.App.ListProjects
+	{Name: "ListProposedPlanComments", ID: 2030403250}, // main.App.ListProposedPlanComments
 	{Name: "ListRecentThreadItems", ID: 2604956482}, // main.App.ListRecentThreadItems
 	{Name: "ListRecentTurns", ID: 1083162294}, // main.App.ListRecentTurns
 	{Name: "ListRemoteEndpoints", ID: 3443007043}, // main.App.ListRemoteEndpoints
@@ -119,6 +122,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "SearchWorkspaceFiles", ID: 3852272821}, // main.App.SearchWorkspaceFiles
 	{Name: "SendMessage", ID: 1496882310}, // main.App.SendMessage
 	{Name: "SendMessageWithOptions", ID: 3632185196}, // main.App.SendMessageWithOptions
+	{Name: "SendPlanRevisionComments", ID: 1407159655}, // main.App.SendPlanRevisionComments
 	{Name: "SetEditorSettings", ID: 3655340267}, // main.App.SetEditorSettings
 	{Name: "SetNetworkSettings", ID: 3915514446}, // main.App.SetNetworkSettings
 	{Name: "SetThreadRuntimeMode", ID: 1115610690}, // main.App.SetThreadRuntimeMode
@@ -135,6 +139,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "UpdateDiscussion", ID: 1706395020}, // main.App.UpdateDiscussion
 	{Name: "UpdateKeybindings", ID: 3490094229}, // main.App.UpdateKeybindings
 	{Name: "UpdateProjectSortPositions", ID: 3717363955}, // main.App.UpdateProjectSortPositions
+	{Name: "UpdateProposedPlanComment", ID: 2747956806}, // main.App.UpdateProposedPlanComment
 	{Name: "UpdateRemoteEndpoint", ID: 4268476031}, // main.App.UpdateRemoteEndpoint
 	{Name: "UpdateSettings", ID: 2894041249}, // main.App.UpdateSettings
 	{Name: "UpdateThreadBranch", ID: 2929723500}, // main.App.UpdateThreadBranch

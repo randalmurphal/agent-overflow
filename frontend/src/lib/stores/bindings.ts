@@ -36,6 +36,7 @@ export {
   InterruptTurn,
   RespondToApproval,
   RespondToUserInput,
+  SendPlanRevisionComments,
 
   // Background tasks (per-item + thread-wide stop primitives)
   StopClaudeTask,
@@ -164,6 +165,10 @@ export {
   ListRecentThreadItems,
   ListItemsBeforeTurn,
   ListThreadProposedPlans,
+  ListProposedPlanComments,
+  CreateProposedPlanComment,
+  UpdateProposedPlanComment,
+  DeleteProposedPlanComment,
   ListLiveBackgroundTasks,
   GetThreadItem,
 
@@ -217,7 +222,7 @@ import {
   CreateThreadOptions as CreateThreadOptionsClass,
   SendMessageOptions as SendMessageOptionsClass,
 } from '../../../bindings/agent-overflow/models.js';
-import type { Thread } from '../types/models';
+import type { SourceProposedPlan, Thread } from '../types/models';
 
 export interface CreateThreadOptions {
   projectId: string;
@@ -239,6 +244,7 @@ export function CreateThread(opts: CreateThreadOptions): Promise<Thread> {
 export interface SendMessageOptions {
   attachmentIds?: string[];
   runtimeMode?: string;
+  sourceProposedPlan?: SourceProposedPlan;
 }
 
 export function SendMessageWithOptions(

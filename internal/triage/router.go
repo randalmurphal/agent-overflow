@@ -686,6 +686,14 @@ func (r *Router) emitThreadUpdated(threadID string) {
 }
 
 func (r *Router) persistItem(item store.Item, payload *store.Payload) error {
+	return r.persistItemWithEmit(item, payload, true)
+}
+
+func (r *Router) persistItemQuiet(item store.Item, payload *store.Payload) error {
+	return r.persistItemWithEmit(item, payload, false)
+}
+
+func (r *Router) persistItemWithEmit(item store.Item, payload *store.Payload, emit bool) error {
 	// parent_id invariant (spec invariant 7): items.parent_id must point
 	// to an existing tool_call row. Drop invalid / cyclic refs here rather
 	// than rejecting the whole persistence — a dangling parent would only
@@ -701,7 +709,9 @@ func (r *Router) persistItem(item store.Item, payload *store.Payload) error {
 	if err != nil {
 		return err
 	}
-	r.emitItemUpsert(persisted)
+	if emit {
+		r.emitItemUpsert(persisted)
+	}
 	r.metrics.ItemsPersisted.Add(context.Background(), 1,
 		metric.WithAttributes(attribute.String("kind", persisted.Kind)))
 	if payload != nil {

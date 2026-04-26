@@ -6,6 +6,7 @@ import { buildPane, emitItemEventUpsert, makeItem } from '../../../test/helpers/
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { resetWailsMocks } from '../../../test/mocks/wailsio-runtime';
 import { setupEventListeners } from '../../stores/events';
+import { resetProposedPlanCacheForTests } from '../../stores/proposedPlans.svelte';
 import { installAnimateShim } from '../../../test/integration/_helpers';
 
 beforeAll(installAnimateShim);
@@ -16,13 +17,17 @@ describe('<PlanSidebar>', () => {
   beforeEach(() => {
     resetWailsMocks();
     resetBindingMocks();
+    resetProposedPlanCacheForTests();
     // Default: no plans. Individual tests override this before render.
     setBindingMock('ListThreadProposedPlans', async () => []);
+    setBindingMock('ListProposedPlanComments', async () => []);
+    setBindingMock('GetPayloadData', async () => ({ data: '# Plan\n\nBody' }));
     cleanupEvents = setupEventListeners();
   });
 
   afterEach(() => {
     cleanup();
+    resetProposedPlanCacheForTests();
     cleanupEvents?.();
   });
 
@@ -73,8 +78,8 @@ describe('<PlanSidebar>', () => {
     const { getAllByTestId, getByText } = await renderSidebar(pane);
 
     expect(getByText('Latest plan')).toBeInTheDocument();
-    expect(getByText('First plan')).toBeInTheDocument();
-    expect(getAllByTestId('plan-sidebar-row')[0]?.textContent).toContain('Latest plan');
+    expect(getByText(/First plan/)).toBeInTheDocument();
+    expect(getAllByTestId('plan-sidebar-row')[0]?.textContent).toContain('Turn 2');
   });
 
   it('renders the empty state when the backend returns no plans', async () => {
@@ -103,6 +108,91 @@ describe('<PlanSidebar>', () => {
     await fireEvent.click(getByTestId('plan-sidebar-row'));
 
     expect(spy).toHaveBeenCalledWith('plan-xyz');
+  });
+
+  it('reloads plan body when switching between versions', async () => {
+    setBindingMock('ListThreadProposedPlans', async () => [
+      makeItem({
+        id: 'plan-2',
+        turnIndex: 1,
+        kind: 'tool_call',
+        payloadId: 'payload-2',
+        payloadKind: 'proposed_plan',
+        payloadMeta: JSON.stringify({ title: 'Second plan', preview: 'second', lineCount: 1, charCount: 6 }),
+      }),
+      makeItem({
+        id: 'plan-1',
+        turnIndex: 0,
+        kind: 'tool_call',
+        payloadId: 'payload-1',
+        payloadKind: 'proposed_plan',
+        payloadMeta: JSON.stringify({ title: 'First plan', preview: 'first', lineCount: 1, charCount: 5 }),
+      }),
+    ]);
+    setBindingMock('GetPayloadData', async (_threadId: string, payloadId: string) => ({
+      data: payloadId === 'payload-1' ? '# First body' : '# Second body',
+    }));
+    const pane = await buildPane();
+    pane.setShowPlanSidebar(true);
+
+    const { findByText, getByTestId } = await renderSidebar(pane);
+    await findByText('# Second body');
+
+    await fireEvent.change(getByTestId('plan-version-select'), { target: { value: 'plan-1' } });
+
+    await findByText('# First body');
+  });
+
+  it('preserves an explicitly selected older plan when the list refreshes', async () => {
+    let plansForRefresh = [
+      makeItem({
+        id: 'plan-2',
+        turnIndex: 1,
+        kind: 'tool_call',
+        payloadId: 'payload-2',
+        payloadKind: 'proposed_plan',
+        payloadMeta: JSON.stringify({ title: 'Second plan', preview: 'second', lineCount: 1, charCount: 6 }),
+      }),
+      makeItem({
+        id: 'plan-1',
+        turnIndex: 0,
+        kind: 'tool_call',
+        payloadId: 'payload-1',
+        payloadKind: 'proposed_plan',
+        payloadMeta: JSON.stringify({ title: 'First plan', preview: 'first', lineCount: 1, charCount: 5 }),
+      }),
+    ];
+    setBindingMock('ListThreadProposedPlans', async () => plansForRefresh);
+    setBindingMock('GetPayloadData', async (_threadId: string, payloadId: string) => ({
+      data: payloadId === 'payload-1' ? '# First body' : '# Second body',
+    }));
+    const pane = await buildPane();
+    pane.setShowPlanSidebar(true);
+
+    const { findByText, getByTestId } = await renderSidebar(pane);
+    await findByText('# Second body');
+
+    await fireEvent.change(getByTestId('plan-version-select'), { target: { value: 'plan-1' } });
+    await findByText('# First body');
+
+    plansForRefresh = [...plansForRefresh];
+    emitItemEventUpsert({
+      id: 'plan-2',
+      threadId: pane.thread!.id,
+      turnIndex: 1,
+      itemIndex: 0,
+      kind: 'tool_call',
+      role: 'assistant',
+      status: 'completed',
+      summary: '',
+      payloadKind: 'proposed_plan',
+      createdAt: 0,
+      updatedAt: 0,
+    });
+
+    await new Promise((r) => setTimeout(r, 150));
+    const select = getByTestId('plan-version-select') as HTMLSelectElement;
+    expect(select.value).toBe('plan-1');
   });
 
   it('closes when the close button is clicked', async () => {
@@ -218,9 +308,9 @@ describe('<PlanSidebar>', () => {
   });
 
   it('discards a stale refresh whose promise resolves after a newer one', async () => {
-    // The refreshPlans cancellation uses a per-call `fetchSeq`. If
+    // The proposed-plan cache uses a per-call `fetchSeq`. If
     // two refreshes are in flight and the OLDER one resolves LAST,
-    // its result must not overwrite the newer fetch's `planRows`.
+    // its result must not overwrite the newer cached rows.
     // Without the guard, a slow initial fetch could overwrite a fast
     // post-upsert fetch with stale rows.
     let releaseFirst!: (rows: ReturnType<typeof makeItem>[]) => void;

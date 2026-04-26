@@ -144,6 +144,155 @@ func TestSendMessageWithOptionsAppliesRuntimeModeBeforeLazyStart(t *testing.T) {
 	}
 }
 
+func TestSendMessageWithOptionsPersistsSourceProposedPlan(t *testing.T) {
+	app := newTestAppWithStore(t)
+	thread := testThread("thread-send-source-plan")
+	thread.Provider = string(provider.Claude)
+	thread.WorkspacePath = t.TempDir()
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+
+	now := time.Now().UnixMilli()
+	if err := app.store.InsertItemWithPayload(store.Item{
+		ID:        "plan-item",
+		ThreadID:  thread.ID,
+		TurnIndex: 0,
+		ItemIndex: 0,
+		Kind:      "tool_call",
+		Role:      "assistant",
+		Status:    "completed",
+		Summary:   "Plan",
+		PayloadID: "plan-payload",
+		ToolName:  "plan",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}, store.Payload{
+		ID:        "plan-payload",
+		Kind:      "proposed_plan",
+		Meta:      `{"title":"Fix plan","preview":"do it","lineCount":1,"charCount":5}`,
+		Data:      []byte("# Fix plan\n\nDo it."),
+		CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed plan: %v", err)
+	}
+	if _, err := app.store.EnsureProposedPlanState(thread.ID, "plan-item", now); err != nil {
+		t.Fatalf("ensure plan state: %v", err)
+	}
+
+	sess, err := claude.NewSession(
+		context.Background(),
+		thread.ID,
+		claude.Config{Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
+		func(provider.ProviderEvent) {},
+	)
+	if err != nil {
+		t.Fatalf("NewSession() error = %v", err)
+	}
+	t.Cleanup(func() { _ = sess.Close() })
+	app.sessions[thread.ID] = session{provider: string(provider.Claude), token: "test-token", claude: sess}
+
+	_, err = app.SendMessageWithOptions(thread.ID, "Implement the plan.", SendMessageOptions{
+		SourceProposedPlan: &SourceProposedPlan{ItemID: "plan-item"},
+	})
+	if err != nil {
+		t.Fatalf("SendMessageWithOptions() error = %v", err)
+	}
+
+	items, err := app.store.ListItems(thread.ID)
+	if err != nil {
+		t.Fatalf("ListItems: %v", err)
+	}
+	var userItem store.Item
+	for _, item := range items {
+		if item.Role == "user" {
+			userItem = item
+			break
+		}
+	}
+	if userItem.Meta == "" {
+		t.Fatal("user item meta is empty")
+	}
+	var meta userMessageMeta
+	if err := json.Unmarshal([]byte(userItem.Meta), &meta); err != nil {
+		t.Fatalf("unmarshal user meta: %v", err)
+	}
+	if meta.SourceProposedPlan == nil {
+		t.Fatal("sourceProposedPlan missing")
+	}
+	if meta.SourceProposedPlan.ItemID != "plan-item" || meta.SourceProposedPlan.PayloadID != "plan-payload" {
+		t.Fatalf("sourceProposedPlan = %+v, want plan item/payload", meta.SourceProposedPlan)
+	}
+
+	plans, err := app.store.ListThreadProposedPlans(thread.ID)
+	if err != nil {
+		t.Fatalf("ListThreadProposedPlans: %v", err)
+	}
+	if len(plans) != 1 || !strings.Contains(plans[0].Meta, `"planImplementedByItemId":"`+userItem.ID+`"`) {
+		t.Fatalf("plan meta = %v, want implemented by %s", plans, userItem.ID)
+	}
+
+	_, err = app.SendMessageWithOptions(thread.ID, "Implement the plan again.", SendMessageOptions{
+		SourceProposedPlan: &SourceProposedPlan{ItemID: "plan-item"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "proposed plan already implemented") {
+		t.Fatalf("second SendMessageWithOptions() error = %v, want already implemented", err)
+	}
+}
+
+func TestSendMessageWithSourcePlanDoesNotImplementWhenProviderSendFails(t *testing.T) {
+	app := newTestAppWithStore(t)
+	thread := testThread("thread-send-source-plan-failure")
+	thread.Provider = string(provider.Codex)
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+	now := time.Now().UnixMilli()
+	if err := app.store.InsertItemWithPayload(store.Item{
+		ID:        "plan-item",
+		ThreadID:  thread.ID,
+		TurnIndex: 0,
+		ItemIndex: 0,
+		Kind:      "tool_call",
+		Role:      "assistant",
+		Status:    "completed",
+		Summary:   "Plan",
+		PayloadID: "plan-payload",
+		ToolName:  "plan",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}, store.Payload{
+		ID:        "plan-payload",
+		Kind:      "proposed_plan",
+		Meta:      `{"title":"Plan","preview":"do it","lineCount":1,"charCount":5}`,
+		Data:      []byte("# Plan\n\nDo it."),
+		CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed plan: %v", err)
+	}
+	if _, err := app.store.EnsureProposedPlanState(thread.ID, "plan-item", now); err != nil {
+		t.Fatalf("ensure plan state: %v", err)
+	}
+	app.sessions[thread.ID] = session{provider: string(provider.Codex), token: "broken"}
+
+	_, err := app.SendMessageWithOptions(thread.ID, "Implement the plan.", SendMessageOptions{
+		SourceProposedPlan: &SourceProposedPlan{ItemID: "plan-item"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "session has no provider") {
+		t.Fatalf("SendMessageWithOptions() error = %v, want provider send failure", err)
+	}
+	state, found, err := app.store.GetProposedPlanState(thread.ID, "plan-item")
+	if err != nil {
+		t.Fatalf("GetProposedPlanState() error = %v", err)
+	}
+	if !found {
+		t.Fatal("plan state missing")
+	}
+	if state.ImplementedAt != 0 {
+		t.Fatalf("ImplementedAt = %d, want 0 after send failure", state.ImplementedAt)
+	}
+}
+
 func TestSendMessageReturnsLazyStartError(t *testing.T) {
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-send-lazy-start-fail")

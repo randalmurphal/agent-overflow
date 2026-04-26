@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -26,7 +27,10 @@ var sendThreadMuRegistry = &threadMutexRegistry{
 }
 
 type userMessageMeta struct {
-	Attachments []userMessageAttachmentMeta `json:"attachments,omitempty"`
+	Attachments                []userMessageAttachmentMeta `json:"attachments,omitempty"`
+	SourceProposedPlan         *SourceProposedPlan         `json:"sourceProposedPlan,omitempty"`
+	RevisionSourceProposedPlan *SourceProposedPlan         `json:"revisionSourceProposedPlan,omitempty"`
+	RevisionSourceCommentIDs   []string                    `json:"revisionSourceCommentIds,omitempty"`
 }
 
 type userMessageAttachmentMeta struct {
@@ -36,6 +40,10 @@ type userMessageAttachmentMeta struct {
 	MimeType string `json:"mimeType"`
 	Size     int64  `json:"size"`
 }
+
+// SourceProposedPlan records that a user follow-up is acting on a specific
+// immutable proposed-plan item. It is traceability metadata, not prompt text.
+type SourceProposedPlan = store.ProposedPlanSourceRef
 
 type threadMutexRegistry struct {
 	mu  sync.Mutex
@@ -75,34 +83,34 @@ func (r *threadMutexRegistry) ForgetThread(threadID string) {
 }
 
 type sendMessageOptions struct {
-	AttachmentIDs []string
-	RuntimeMode   string
+	AttachmentIDs              []string
+	RuntimeMode                string
+	SourceProposedPlan         *SourceProposedPlan
+	RevisionSourceProposedPlan *SourceProposedPlan
+	RevisionSourceCommentIDs   []string
 }
 
 func (a *App) sendMessage(threadID string, content string, attachmentIDs []string) error {
-	return a.sendMessageWithOptions(threadID, content, sendMessageOptions{AttachmentIDs: attachmentIDs})
+	_, err := a.sendMessageWithOptions(threadID, content, sendMessageOptions{AttachmentIDs: attachmentIDs})
+	return err
 }
 
-func (a *App) sendMessageWithOptions(threadID string, content string, opts sendMessageOptions) error {
+func (a *App) sendMessageWithOptions(threadID string, content string, opts sendMessageOptions) (store.Item, error) {
 	if a.shuttingDown.Load() {
-		return ErrShuttingDown
+		return store.Item{}, ErrShuttingDown
 	}
 	if a.sendMessageFn != nil {
-		return a.sendMessageFn(threadID, content, opts.AttachmentIDs)
+		return store.Item{}, a.sendMessageFn(threadID, content, opts.AttachmentIDs)
 	}
 
 	runtimeMode, hasRuntimeMode, err := parseOptionalRuntimeMode(opts.RuntimeMode)
 	if err != nil {
-		return fmt.Errorf("send message: %w", err)
+		return store.Item{}, fmt.Errorf("send message: %w", err)
 	}
 
 	providerAttachments, persistedAttachments, err := a.resolveSendMessageAttachments(threadID, opts.AttachmentIDs)
 	if err != nil {
-		return fmt.Errorf("send message: attachments: %w", err)
-	}
-	userMeta, err := marshalUserMessageMeta(persistedAttachments)
-	if err != nil {
-		return fmt.Errorf("send message: attachments meta: %w", err)
+		return store.Item{}, fmt.Errorf("send message: attachments: %w", err)
 	}
 
 	// Per-thread critical section: only one Send per thread at a time.
@@ -116,8 +124,31 @@ func (a *App) sendMessageWithOptions(threadID string, content string, opts sendM
 
 	if hasRuntimeMode {
 		if err := a.applyRuntimeModeLocked(threadID, runtimeMode); err != nil {
-			return fmt.Errorf("send message: runtime mode: %w", err)
+			return store.Item{}, fmt.Errorf("send message: runtime mode: %w", err)
 		}
+	}
+
+	sourcePlan, err := a.resolveSourceProposedPlan(threadID, opts.SourceProposedPlan)
+	if err != nil {
+		return store.Item{}, fmt.Errorf("send message: source proposed plan: %w", err)
+	}
+	if sourcePlan != nil {
+		state, found, err := a.store.GetProposedPlanState(sourcePlan.ThreadID, sourcePlan.ItemID)
+		if err != nil {
+			return store.Item{}, fmt.Errorf("send message: source proposed plan state: %w", err)
+		}
+		if found && state.ImplementedAt > 0 {
+			return store.Item{}, fmt.Errorf("send message: source proposed plan: %w", store.ErrProposedPlanAlreadyImplemented)
+		}
+	}
+	revisionSourcePlan, err := a.resolveSourceProposedPlan(threadID, opts.RevisionSourceProposedPlan)
+	if err != nil {
+		return store.Item{}, fmt.Errorf("send message: revision source proposed plan: %w", err)
+	}
+
+	userMeta, err := marshalUserMessageMeta(persistedAttachments, sourcePlan, revisionSourcePlan, opts.RevisionSourceCommentIDs)
+	if err != nil {
+		return store.Item{}, fmt.Errorf("send message: user meta: %w", err)
 	}
 
 	// A thread is session-less until the first message is sent — we don't
@@ -130,30 +161,30 @@ func (a *App) sendMessageWithOptions(threadID string, content string, opts sendM
 	a.mu.Unlock()
 	if !ok {
 		if err := a.startSession(threadID); err != nil {
-			return fmt.Errorf("send message: start session: %w", err)
+			return store.Item{}, fmt.Errorf("send message: start session: %w", err)
 		}
 		a.mu.Lock()
 		sess, ok = a.sessions[threadID]
 		a.mu.Unlock()
 		if !ok {
-			return fmt.Errorf("send message: session unavailable after start for thread %s", threadID)
+			return store.Item{}, fmt.Errorf("send message: session unavailable after start for thread %s", threadID)
 		}
 	}
 
 	thread, err := a.store.GetThread(threadID)
 	if err != nil {
-		return fmt.Errorf("send message: get thread: %w", err)
+		return store.Item{}, fmt.Errorf("send message: get thread: %w", err)
 	}
 	if a.triage == nil {
 		a.triage = triage.NewRouter(a.store, a.emitWithReplay())
 	}
 	hasPriorItems, err := a.store.HasItems(threadID)
 	if err != nil {
-		return fmt.Errorf("send message: check prior items: %w", err)
+		return store.Item{}, fmt.Errorf("send message: check prior items: %w", err)
 	}
 	turnIndex, err := a.store.LastTurnIndex(threadID)
 	if err != nil {
-		return fmt.Errorf("send message: get turn index: %w", err)
+		return store.Item{}, fmt.Errorf("send message: get turn index: %w", err)
 	}
 	if hasPriorItems {
 		turnIndex++
@@ -161,24 +192,6 @@ func (a *App) sendMessageWithOptions(threadID string, content string, opts sendM
 	a.maybeRenameTemporaryWorktreeBranch(threadID, content)
 
 	now := time.Now().UnixMilli()
-	// Synthesize EventTurnStart only for providers that don't emit their
-	// own turn/started wire notification. Codex emits `turn/started` with
-	// the authoritative provider-assigned turn_id — synthesizing a second
-	// EventTurnStart here would collide with that row on the UNIQUE
-	// (thread_id, turn_index) constraint and fan out duplicate
-	// `provider:turn_started` events to the frontend. Claude has no
-	// equivalent wire event, so we carry the synthesized one.
-	if thread.Provider != "codex" {
-		if err := a.triage.Handle(provider.ProviderEvent{
-			Kind:      provider.EventTurnStart,
-			ThreadID:  threadID,
-			TurnIndex: turnIndex,
-			Timestamp: time.Now(),
-		}); err != nil {
-			return fmt.Errorf("send message: turn start: %w", err)
-		}
-	}
-
 	userItem := store.Item{
 		ID:        fmt.Sprintf("user:%d", turnIndex),
 		ThreadID:  threadID,
@@ -195,7 +208,7 @@ func (a *App) sendMessageWithOptions(threadID string, content string, opts sendM
 	// emit order, and ItemsPersisted metric stay consistent with
 	// provider-sourced items.
 	if err := a.triage.PersistItem(userItem, nil); err != nil {
-		return fmt.Errorf("send message: persist user message: %w", err)
+		return store.Item{}, fmt.Errorf("send message: persist user message: %w", err)
 	}
 
 	if err := sendToProvider(sess, threadID, content, provider.NormalizeInteractionMode(thread.Mode), providerAttachments); err != nil {
@@ -230,11 +243,25 @@ func (a *App) sendMessageWithOptions(threadID string, content string, opts sendM
 			// original send error.
 			log.Printf("send message: turn complete after send failure: %v", completeErr)
 		}
-		return err
+		return store.Item{}, err
+	}
+
+	// Synthesize EventTurnStart only after a successful provider write for
+	// providers that don't emit their own turn/started wire notification.
+	// Codex emits the authoritative provider-assigned turn_id itself.
+	if thread.Provider != "codex" {
+		if err := a.triage.Handle(provider.ProviderEvent{
+			Kind:      provider.EventTurnStart,
+			ThreadID:  threadID,
+			TurnIndex: turnIndex,
+			Timestamp: time.Now(),
+		}); err != nil {
+			return store.Item{}, fmt.Errorf("send message: turn start: %w", err)
+		}
 	}
 
 	a.maybeGenerateThreadTitleWithAttachments(thread, content, hasPriorItems, persistedAttachments)
-	return nil
+	return userItem, nil
 }
 
 // resolveSendMessageAttachments validates the requested attachment IDs,
@@ -269,8 +296,8 @@ func (a *App) resolveSendMessageAttachments(threadID string, attachmentIDs []str
 	return providerAttachments, persistedAttachments, nil
 }
 
-func marshalUserMessageMeta(attachments []store.Attachment) (string, error) {
-	if len(attachments) == 0 {
+func marshalUserMessageMeta(attachments []store.Attachment, sourcePlan, revisionSourcePlan *SourceProposedPlan, revisionCommentIDs []string) (string, error) {
+	if len(attachments) == 0 && sourcePlan == nil && revisionSourcePlan == nil && len(revisionCommentIDs) == 0 {
 		return "", nil
 	}
 	metaAttachments := make([]userMessageAttachmentMeta, 0, len(attachments))
@@ -283,11 +310,56 @@ func marshalUserMessageMeta(attachments []store.Attachment) (string, error) {
 			Size:     attachment.Size,
 		})
 	}
-	data, err := json.Marshal(userMessageMeta{Attachments: metaAttachments})
+	meta := userMessageMeta{
+		Attachments:                metaAttachments,
+		SourceProposedPlan:         sourcePlan,
+		RevisionSourceProposedPlan: revisionSourcePlan,
+		RevisionSourceCommentIDs:   revisionCommentIDs,
+	}
+	data, err := json.Marshal(meta)
 	if err != nil {
 		return "", err
 	}
 	return string(data), nil
+}
+
+func (a *App) resolveSourceProposedPlan(threadID string, source *SourceProposedPlan) (*SourceProposedPlan, error) {
+	if source == nil || strings.TrimSpace(source.ItemID) == "" {
+		return nil, nil
+	}
+	sourceThreadID := strings.TrimSpace(source.ThreadID)
+	if sourceThreadID == "" {
+		sourceThreadID = threadID
+	}
+	if sourceThreadID != threadID {
+		return nil, fmt.Errorf("source plan thread %s does not match target thread %s", sourceThreadID, threadID)
+	}
+	item, found, err := a.store.GetThreadItem(sourceThreadID, strings.TrimSpace(source.ItemID))
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		return nil, fmt.Errorf("source proposed plan %s not found", source.ItemID)
+	}
+	if item.PayloadKind != "proposed_plan" || item.PayloadID == "" || item.Role != "assistant" {
+		return nil, fmt.Errorf("source item %s is not an assistant proposed plan", source.ItemID)
+	}
+	state, err := a.store.EnsureProposedPlanState(sourceThreadID, item.ID, time.Now().UnixMilli())
+	if err != nil {
+		return nil, fmt.Errorf("ensure source proposed plan state: %w", err)
+	}
+	resolved := &SourceProposedPlan{
+		ThreadID:  sourceThreadID,
+		ItemID:    item.ID,
+		PayloadID: item.PayloadID,
+		Version:   state.Version,
+	}
+	var payloadMeta struct {
+		Title string `json:"title"`
+	}
+	_ = json.Unmarshal([]byte(item.PayloadMeta), &payloadMeta)
+	resolved.Title = strings.TrimSpace(payloadMeta.Title)
+	return resolved, nil
 }
 
 // sendToProvider forwards the user content to the active provider

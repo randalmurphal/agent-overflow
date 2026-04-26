@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"fmt"
 )
 
@@ -27,18 +28,16 @@ import (
 // proposed should appear.
 func (s *Store) ListThreadProposedPlans(threadID string) ([]Item, error) {
 	rows, err := s.db.Query(
-		// INNER JOIN matches reader intent: the WHERE clause already
-		// requires payloads.kind='proposed_plan', so a row with no
-		// payload can never survive a LEFT JOIN here. Using JOIN
-		// signals that correlation explicitly and lets SQLite's
-		// planner skip the outer-join rewrite pass.
 		`SELECT `+itemColumns+`
-		   FROM items
+		   FROM proposed_plans
+		   JOIN items
+		     ON items.thread_id = proposed_plans.thread_id
+		    AND items.id = proposed_plans.item_id
 		   JOIN payloads ON payloads.id = items.payload_id
-		  WHERE items.thread_id = ?
+		  WHERE proposed_plans.thread_id = ?
 		    AND items.role = 'assistant'
 		    AND payloads.kind = 'proposed_plan'
-		  ORDER BY items.turn_index DESC, items.item_index DESC`,
+		  ORDER BY proposed_plans.version DESC`,
 		threadID,
 	)
 	if err != nil {
@@ -57,7 +56,37 @@ func (s *Store) ListThreadProposedPlans(threadID string) ([]Item, error) {
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("store: iterate proposed plans for %s: %w", threadID, err)
 	}
-	return out, nil
+	decorated, err := s.decorateProposedPlanItems(threadID, out)
+	if err != nil {
+		return nil, fmt.Errorf("store: decorate proposed plans for %s: %w", threadID, err)
+	}
+	return decorated, nil
+}
+
+func (s *Store) GetThreadProposedPlanItem(threadID, itemID string) (Item, bool, error) {
+	row := s.db.QueryRow(
+		`SELECT `+itemColumns+`
+		   FROM items
+		   JOIN payloads ON payloads.id = items.payload_id
+		  WHERE items.thread_id = ?
+		    AND items.id = ?
+		    AND items.role = 'assistant'
+		    AND payloads.kind = 'proposed_plan'
+		  LIMIT 1`,
+		threadID, itemID,
+	)
+	item, err := scanItemRow(row)
+	if err == sql.ErrNoRows {
+		return Item{}, false, nil
+	}
+	if err != nil {
+		return Item{}, false, fmt.Errorf("store: get proposed plan item %s/%s: %w", threadID, itemID, err)
+	}
+	decorated, err := s.decorateProposedPlanItems(threadID, []Item{item})
+	if err != nil {
+		return Item{}, false, fmt.Errorf("store: decorate proposed plan item %s/%s: %w", threadID, itemID, err)
+	}
+	return decorated[0], true, nil
 }
 
 // ListLiveBackgroundTasks returns the tray's item set: live background

@@ -1,6 +1,7 @@
 package store
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -18,6 +19,11 @@ func TestListThreadProposedPlans_OrderedDesc(t *testing.T) {
 	seedPayloadItem(t, s, "t", "p2", 1, 0, "assistant_text", "proposed_plan", "{}")
 	seedPayloadItem(t, s, "t", "p3", 1, 2, "assistant_text", "proposed_plan", "{}")
 	seedPayloadItem(t, s, "t", "diff", 1, 1, "tool_call", "diff", "{}")
+	for _, id := range []string{"p1", "p2", "p3"} {
+		if _, err := s.EnsureProposedPlanState("t", id, 100); err != nil {
+			t.Fatalf("ensure %s: %v", id, err)
+		}
+	}
 
 	got, err := s.ListThreadProposedPlans("t")
 	if err != nil {
@@ -33,6 +39,210 @@ func TestListThreadProposedPlans_OrderedDesc(t *testing.T) {
 	}
 }
 
+func TestProposedPlanStateAllowsSameItemIDAcrossThreads(t *testing.T) {
+	s := newTestStore(t)
+	for _, threadID := range []string{"t1", "t2"} {
+		if err := s.CreateThread(makeThread(threadID, "claude")); err != nil {
+			t.Fatalf("create thread %s: %v", threadID, err)
+		}
+		seedPayloadItem(t, s, threadID, "plan:0", 0, 0, "assistant_text", "proposed_plan", "{}")
+		if _, err := s.EnsureProposedPlanState(threadID, "plan:0", 100); err != nil {
+			t.Fatalf("ensure plan state for %s: %v", threadID, err)
+		}
+	}
+}
+
+func TestListThreadProposedPlans_DecoratesVersionAndCommentCounts(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	seedPayloadItem(t, s, "t", "p1", 0, 0, "assistant_text", "proposed_plan", "{}")
+	seedPayloadItem(t, s, "t", "p2", 1, 0, "assistant_text", "proposed_plan", "{}")
+	if _, err := s.EnsureProposedPlanState("t", "p1", 100); err != nil {
+		t.Fatalf("ensure p1: %v", err)
+	}
+	if _, err := s.EnsureProposedPlanStateWithParent("t", "p2", "p1", 200); err != nil {
+		t.Fatalf("ensure p2: %v", err)
+	}
+	if _, err := s.CreateProposedPlanComment(ProposedPlanComment{
+		ID: "c1", ThreadID: "t", PlanItemID: "p2", StartLine: 1, EndLine: 1, Body: "tighten this", CreatedAt: 300, UpdatedAt: 300,
+	}); err != nil {
+		t.Fatalf("create comment: %v", err)
+	}
+
+	got, err := s.ListThreadProposedPlans("t")
+	if err != nil {
+		t.Fatalf("list plans: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("plans = %d, want 2", len(got))
+	}
+	if got[0].ID != "p2" {
+		t.Fatalf("latest id = %q, want p2", got[0].ID)
+	}
+	if got[0].Meta == "" {
+		t.Fatal("latest plan meta is empty")
+	}
+	if !strings.Contains(got[0].Meta, `"planVersion":2`) {
+		t.Fatalf("latest plan meta = %s, want version 2", got[0].Meta)
+	}
+	if !strings.Contains(got[0].Meta, `"draft":1`) {
+		t.Fatalf("latest plan meta = %s, want one draft comment", got[0].Meta)
+	}
+	if !strings.Contains(got[0].Meta, `"planRevisionParentItemId":"p1"`) {
+		t.Fatalf("latest plan meta = %s, want p1 parent", got[0].Meta)
+	}
+}
+
+func TestEnsureProposedPlanStateWithParentUsesExplicitRevisionSource(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	seedPayloadItem(t, s, "t", "p1", 0, 0, "assistant_text", "proposed_plan", "{}")
+	seedPayloadItem(t, s, "t", "p2", 1, 0, "assistant_text", "proposed_plan", "{}")
+	seedPayloadItem(t, s, "t", "p3", 2, 0, "assistant_text", "proposed_plan", "{}")
+	if _, err := s.EnsureProposedPlanState("t", "p1", 100); err != nil {
+		t.Fatalf("ensure p1: %v", err)
+	}
+	if _, err := s.EnsureProposedPlanState("t", "p2", 200); err != nil {
+		t.Fatalf("ensure p2: %v", err)
+	}
+	state, err := s.EnsureProposedPlanStateWithParent("t", "p3", "p1", 300)
+	if err != nil {
+		t.Fatalf("ensure p3: %v", err)
+	}
+	if state.RevisionParentItemID != "p1" {
+		t.Fatalf("parent = %q, want explicit p1", state.RevisionParentItemID)
+	}
+}
+
+func TestReconcileProposedPlanImplementationsFromAcceptedTurns(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	seedPayloadItem(t, s, "t", "plan-1", 0, 0, "assistant_text", "proposed_plan", "{}")
+	if _, err := s.EnsureProposedPlanState("t", "plan-1", 100); err != nil {
+		t.Fatalf("ensure plan: %v", err)
+	}
+	if err := s.InsertTurn(Turn{TurnID: "turn-1", ThreadID: "t", TurnIndex: 1, StartedAt: 200}); err != nil {
+		t.Fatalf("insert turn: %v", err)
+	}
+	if err := s.InsertItem(Item{
+		ID:        "user:1",
+		ThreadID:  "t",
+		TurnIndex: 1,
+		ItemIndex: 0,
+		Kind:      "user_text",
+		Role:      "user",
+		Summary:   "Implement the plan.",
+		Meta:      `{"sourceProposedPlan":{"threadId":"t","itemId":"plan-1"}}`,
+		CreatedAt: 200,
+		UpdatedAt: 200,
+	}); err != nil {
+		t.Fatalf("insert user item: %v", err)
+	}
+
+	if err := s.ReconcileProposedPlanImplementationsFromAcceptedTurns(300); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	state, found, err := s.GetProposedPlanState("t", "plan-1")
+	if err != nil {
+		t.Fatalf("get state: %v", err)
+	}
+	if !found || state.ImplementedByItemID != "user:1" || state.ImplementedAt != 200 {
+		t.Fatalf("state = %+v, want implemented by user:1 at accepted turn time", state)
+	}
+}
+
+func TestReconcileProposedPlanStateRefusesCrossThreadSource(t *testing.T) {
+	s := newTestStore(t)
+	for _, threadID := range []string{"source", "impl"} {
+		if err := s.CreateThread(makeThread(threadID, "claude")); err != nil {
+			t.Fatalf("create thread %s: %v", threadID, err)
+		}
+	}
+	seedPayloadItem(t, s, "source", "plan-1", 0, 0, "assistant_text", "proposed_plan", "{}")
+	if _, err := s.EnsureProposedPlanState("source", "plan-1", 100); err != nil {
+		t.Fatalf("ensure plan: %v", err)
+	}
+	if err := s.InsertTurn(Turn{TurnID: "turn-1", ThreadID: "impl", TurnIndex: 1, StartedAt: 200}); err != nil {
+		t.Fatalf("insert turn: %v", err)
+	}
+	if err := s.InsertItem(Item{
+		ID:        "user:1",
+		ThreadID:  "impl",
+		TurnIndex: 1,
+		ItemIndex: 0,
+		Kind:      "user_text",
+		Role:      "user",
+		Summary:   "Implement the plan.",
+		Meta:      `{"sourceProposedPlan":{"threadId":"source","itemId":"plan-1"}}`,
+		CreatedAt: 200,
+		UpdatedAt: 200,
+	}); err != nil {
+		t.Fatalf("insert user item: %v", err)
+	}
+
+	if err := s.ReconcileProposedPlanStateFromAcceptedTurns(300); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	state, found, err := s.GetProposedPlanState("source", "plan-1")
+	if err != nil {
+		t.Fatalf("get state: %v", err)
+	}
+	if !found || state.ImplementedAt != 0 {
+		t.Fatalf("state = %+v, want unimplemented cross-thread source", state)
+	}
+}
+
+func TestReconcileProposedPlanStateMarksRevisionCommentsSent(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	seedPayloadItem(t, s, "t", "plan-1", 0, 0, "assistant_text", "proposed_plan", "{}")
+	if _, err := s.EnsureProposedPlanState("t", "plan-1", 100); err != nil {
+		t.Fatalf("ensure plan: %v", err)
+	}
+	if _, err := s.CreateProposedPlanComment(ProposedPlanComment{
+		ID: "comment-1", ThreadID: "t", PlanItemID: "plan-1", StartLine: 1, EndLine: 1,
+		Body: "revise", CreatedAt: 150, UpdatedAt: 150,
+	}); err != nil {
+		t.Fatalf("create comment: %v", err)
+	}
+	if err := s.InsertTurn(Turn{TurnID: "turn-1", ThreadID: "t", TurnIndex: 1, StartedAt: 200}); err != nil {
+		t.Fatalf("insert turn: %v", err)
+	}
+	if err := s.InsertItem(Item{
+		ID:        "user:1",
+		ThreadID:  "t",
+		TurnIndex: 1,
+		ItemIndex: 0,
+		Kind:      "user_text",
+		Role:      "user",
+		Summary:   "Revise the plan.",
+		Meta:      `{"revisionSourceProposedPlan":{"threadId":"t","itemId":"plan-1"},"revisionSourceCommentIds":["comment-1"]}`,
+		CreatedAt: 200,
+		UpdatedAt: 200,
+	}); err != nil {
+		t.Fatalf("insert user item: %v", err)
+	}
+
+	if err := s.ReconcileProposedPlanStateFromAcceptedTurns(300); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	comment, err := s.GetProposedPlanComment("t", "comment-1")
+	if err != nil {
+		t.Fatalf("get comment: %v", err)
+	}
+	if comment.Status != "sent" || comment.SentTurnID != "turn-1" || comment.SentAt != 200 {
+		t.Fatalf("comment = %+v, want sent by accepted turn", comment)
+	}
+}
+
 func TestListThreadProposedPlans_ExcludesUserAuthored(t *testing.T) {
 	// Regression guard for the `role = 'assistant'` filter: a
 	// user-authored item whose payload.kind happens to be
@@ -45,6 +255,9 @@ func TestListThreadProposedPlans_ExcludesUserAuthored(t *testing.T) {
 	}
 	seedPayloadItem(t, s, "t", "agent-plan", 0, 0, "assistant_text", "proposed_plan", "{}")
 	seedUserPlan(t, s, "t", "user-plan", 0, 1, "proposed_plan", "{}")
+	if _, err := s.EnsureProposedPlanState("t", "agent-plan", 100); err != nil {
+		t.Fatalf("ensure agent plan: %v", err)
+	}
 
 	got, err := s.ListThreadProposedPlans("t")
 	if err != nil {

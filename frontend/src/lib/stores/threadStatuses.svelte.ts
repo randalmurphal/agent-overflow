@@ -262,11 +262,25 @@ export function projectThreadItem(item: Item): void {
   // to open the thread to discover the plan is sitting there. Status
   // 'errored' / 'declined' don't set plan-ready — those are terminal
   // failures, not actionable plans.
-  if (item.kind === 'proposed_plan' && item.status === 'completed') {
-    planReadyThreads.add(item.threadId);
+  if (item.payloadKind === 'proposed_plan' && item.status === 'completed') {
+    if (isImplementedProposedPlan(item.meta)) {
+      planReadyThreads.delete(item.threadId);
+    } else {
+      planReadyThreads.add(item.threadId);
+    }
   }
 
   recalculateThreadStatus(item.threadId);
+}
+
+function isImplementedProposedPlan(meta: string | undefined): boolean {
+  if (!meta) return false;
+  try {
+    const parsed = JSON.parse(meta) as { planImplementedAt?: number };
+    return Number(parsed.planImplementedAt ?? 0) > 0;
+  } catch {
+    return false;
+  }
 }
 
 /**

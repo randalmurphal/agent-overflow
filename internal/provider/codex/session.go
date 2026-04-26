@@ -22,6 +22,11 @@ import (
 // user's perspective.
 const DefaultApprovalTimeout = 10 * time.Minute
 
+const (
+	maxPlanDeltaBufferBytes = 256 * 1024
+	maxPlanDeltaBuffers     = 16
+)
+
 // ErrApprovalAlreadyResolved is returned by RespondToApproval when the
 // request ID has already been answered (either by an earlier response or
 // by the auto-deny timeout). Prevents a second write landing at the
@@ -107,6 +112,8 @@ type Session struct {
 	childParentByThread    map[string]string
 	childParentByAgentPath map[string]string
 	agentPathByThread      map[string]string
+	planBuffersByItemID    map[string]*planBuffer
+	planBuffersByTurnID    map[string]*planBuffer
 	// probeFn is a test-only override for Probe(). When non-nil, Probe
 	// skips the wire call and returns the result from this function.
 	// Production Session construction (NewSession) never sets it.
@@ -121,6 +128,13 @@ type Session struct {
 	// verify the binding wires through to a Codex session without
 	// spinning up a real app-server. Production NewSession never sets it.
 	cleanBackgroundTerminalsFn func(ctx context.Context) error
+}
+
+type planBuffer struct {
+	itemID    string
+	turnID    string
+	text      strings.Builder
+	truncated bool
 }
 
 // pendingApproval tracks one in-flight approval so the timer can be
@@ -187,6 +201,8 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 		childParentByThread:    make(map[string]string),
 		childParentByAgentPath: make(map[string]string),
 		agentPathByThread:      make(map[string]string),
+		planBuffersByItemID:    make(map[string]*planBuffer),
+		planBuffersByTurnID:    make(map[string]*planBuffer),
 	}
 
 	// Start stdout reader goroutine before sending any requests.
@@ -284,8 +300,9 @@ func (s *Session) Send(ctx context.Context, content string, opts provider.SendOp
 	}
 
 	params := map[string]any{
-		"threadId": s.codexThreadID,
-		"input":    input,
+		"threadId":          s.codexThreadID,
+		"input":             input,
+		"collaborationMode": codexCollaborationMode(opts.InteractionMode, s.model, s.reasoningEffort),
 	}
 	// Per-turn effort override — Codex's TurnStartParams takes `effort` at
 	// the top level. Threading it here (rather than only at thread-start)
@@ -683,7 +700,10 @@ func (s *Session) dispatchLine(line []byte) {
 			return
 		}
 
-		events := ClassifyNotification(s.threadID, msg.Method, msg.Params)
+		if msg.Method == "item/plan/delta" {
+			s.appendPlanDelta(msg.Params)
+		}
+		events := s.classifyNotificationWithBufferedPlan(msg.Method, msg.Params)
 
 		// Detect <subagent_notification> tags injected by Codex core
 		// into the next user-message item after a detached child agent
@@ -736,6 +756,7 @@ func (s *Session) dispatchLine(line []byte) {
 				s.mu.Lock()
 				s.activeTurnID = ""
 				s.mu.Unlock()
+				s.clearPlanBufferForTurn(evt.TurnID)
 				s.clearTurnStart(evt.TurnID)
 			}
 			// No heuristic background classification here (invariant 25).
@@ -750,6 +771,155 @@ func (s *Session) dispatchLine(line []byte) {
 		}
 		return
 	}
+}
+
+func (s *Session) classifyNotificationWithBufferedPlan(method string, params json.RawMessage) []provider.ProviderEvent {
+	events := ClassifyNotification(s.threadID, method, params)
+	if method != "item/completed" || classifyCodexItemType(params) != "plan" {
+		return events
+	}
+	itemID := readNestedString(params, "item", "id")
+	turnID := readTopLevelString(params, "turnId")
+	buffered := s.takePlanBuffer(itemID, turnID)
+	if buffered == "" {
+		return events
+	}
+	for i := range events {
+		if events[i].Kind == provider.EventProposedPlan {
+			if events[i].Content == "" {
+				events[i].Content = buffered
+			}
+			return events
+		}
+	}
+	return []provider.ProviderEvent{{
+		Kind:      provider.EventProposedPlan,
+		ThreadID:  s.threadID,
+		TurnID:    turnID,
+		ItemID:    itemID,
+		ItemType:  "plan",
+		Content:   buffered,
+		Meta:      params,
+		Timestamp: time.Now(),
+	}}
+}
+
+func (s *Session) appendPlanDelta(params json.RawMessage) {
+	delta := readTopLevelString(params, "delta")
+	if delta == "" {
+		delta = readTopLevelString(params, "textDelta")
+	}
+	if delta == "" {
+		return
+	}
+	itemID := readTopLevelString(params, "itemId")
+	turnID := readTopLevelString(params, "turnId")
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	buf := s.planBufferLocked(itemID, turnID)
+	if buf.truncated {
+		return
+	}
+	if buf.text.Len()+len(delta) > maxPlanDeltaBufferBytes {
+		remaining := maxPlanDeltaBufferBytes - buf.text.Len()
+		if remaining > 0 {
+			buf.text.WriteString(delta[:remaining])
+		}
+		buf.truncated = true
+		log.Printf("codex: proposed plan delta buffer exceeded %d bytes; truncating buffered fallback for thread %s", maxPlanDeltaBufferBytes, s.threadID)
+		return
+	}
+	buf.text.WriteString(delta)
+}
+
+func (s *Session) planBufferLocked(itemID, turnID string) *planBuffer {
+	if s.planBuffersByItemID == nil {
+		s.planBuffersByItemID = make(map[string]*planBuffer)
+	}
+	if s.planBuffersByTurnID == nil {
+		s.planBuffersByTurnID = make(map[string]*planBuffer)
+	}
+	if itemID != "" {
+		if buf := s.planBuffersByItemID[itemID]; buf != nil {
+			return buf
+		}
+	}
+	if turnID != "" {
+		if buf := s.planBuffersByTurnID[turnID]; buf != nil {
+			if itemID != "" {
+				if buf.itemID != "" && buf.itemID != itemID {
+					delete(s.planBuffersByItemID, buf.itemID)
+				}
+				buf.itemID = itemID
+				s.planBuffersByItemID[itemID] = buf
+			}
+			return buf
+		}
+	}
+	if len(s.planBuffersByTurnID) >= maxPlanDeltaBuffers && turnID != "" {
+		for existingTurnID, existing := range s.planBuffersByTurnID {
+			if existing.itemID != "" {
+				delete(s.planBuffersByItemID, existing.itemID)
+			}
+			delete(s.planBuffersByTurnID, existingTurnID)
+			break
+		}
+	}
+	if len(s.planBuffersByItemID) >= maxPlanDeltaBuffers && itemID != "" {
+		for existingItemID, existing := range s.planBuffersByItemID {
+			if existing.turnID != "" {
+				delete(s.planBuffersByTurnID, existing.turnID)
+			}
+			delete(s.planBuffersByItemID, existingItemID)
+			break
+		}
+	}
+	buf := &planBuffer{itemID: itemID, turnID: turnID}
+	if itemID != "" {
+		s.planBuffersByItemID[itemID] = buf
+	}
+	if turnID != "" {
+		s.planBuffersByTurnID[turnID] = buf
+	}
+	return buf
+}
+
+func (s *Session) takePlanBuffer(itemID, turnID string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var buf *planBuffer
+	if itemID != "" {
+		buf = s.planBuffersByItemID[itemID]
+	}
+	if buf == nil && turnID != "" {
+		buf = s.planBuffersByTurnID[turnID]
+	}
+	if buf == nil {
+		return ""
+	}
+	if buf.itemID != "" {
+		delete(s.planBuffersByItemID, buf.itemID)
+	}
+	if buf.turnID != "" {
+		delete(s.planBuffersByTurnID, buf.turnID)
+	}
+	return buf.text.String()
+}
+
+func (s *Session) clearPlanBufferForTurn(turnID string) {
+	if turnID == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	buf := s.planBuffersByTurnID[turnID]
+	if buf == nil {
+		return
+	}
+	if buf.itemID != "" {
+		delete(s.planBuffersByItemID, buf.itemID)
+	}
+	delete(s.planBuffersByTurnID, turnID)
 }
 
 func isChildTurnLifecycleNotification(method string) bool {

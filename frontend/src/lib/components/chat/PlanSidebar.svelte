@@ -1,12 +1,15 @@
 <script lang="ts">
-  import { onMount, onDestroy } from 'svelte';
+  import { onMount, onDestroy, untrack } from 'svelte';
   import { fly } from 'svelte/transition';
-  import { ListThreadProposedPlans } from '../../stores/bindings';
-  import { onItemUpsert } from '../../stores/events';
+  import {
+    getThreadProposedPlans,
+    refreshThreadProposedPlans,
+    retainProposedPlanEventListener,
+  } from '../../stores/proposedPlans.svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
-  import type { Item, ProposedPlanMeta } from '../../types/models';
-  import { debounce } from '../../utils/debounce';
+  import type { Item, ProposedPlanItemMeta, ProposedPlanMeta } from '../../types/models';
   import { isUiRenderTraceEnabled, recordUiTrace, scheduleDomUiTrace } from '../../utils/uiRenderTrace';
+  import ProposedPlanCard from './ProposedPlanCard.svelte';
 
   interface Props {
     pane: ThreadPane;
@@ -14,14 +17,14 @@
 
   let { pane }: Props = $props();
 
-  const PREVIEW_CHAR_LIMIT = 120;
-  const REFRESH_DEBOUNCE_MS = 100;
-
   interface PlanRow {
+    item: Item;
     itemId: string;
     turnIndex: number;
     title: string;
-    previewSnippet: string;
+    version: number;
+    implemented: boolean;
+    meta: ProposedPlanMeta;
   }
 
   function parsePlanMeta(item: Item): ProposedPlanMeta | null {
@@ -33,10 +36,13 @@
     }
   }
 
-  function trimPreview(preview: string): string {
-    const oneLine = preview.replace(/\s+/g, ' ').trim();
-    if (oneLine.length <= PREVIEW_CHAR_LIMIT) return oneLine;
-    return `${oneLine.slice(0, PREVIEW_CHAR_LIMIT - 1).trimEnd()}…`;
+  function parseItemMeta(item: Item): ProposedPlanItemMeta {
+    if (!item.meta) return {};
+    try {
+      return JSON.parse(item.meta) as ProposedPlanItemMeta;
+    } catch {
+      return {};
+    }
   }
 
   function itemsToRows(items: Item[]): PlanRow[] {
@@ -47,11 +53,15 @@
       .filter((item) => item.payloadKind === 'proposed_plan' && !!item.payloadId)
       .map((item) => {
         const meta = parsePlanMeta(item);
+        const itemMeta = parseItemMeta(item);
         return {
+          item,
           itemId: item.id,
           turnIndex: item.turnIndex,
           title: meta?.title?.trim() || 'Proposed plan',
-          previewSnippet: meta ? trimPreview(meta.preview ?? '') : '',
+          version: itemMeta.planVersion ?? 0,
+          implemented: Boolean(itemMeta.planImplementedAt),
+          meta: meta ?? { title: 'Proposed plan', preview: '', lineCount: 0, charCount: 0 },
         };
       });
   }
@@ -61,38 +71,41 @@
   // turns ago must still show up in the sidebar even when it's been
   // paged out of the timeline window.
   let planRows: PlanRow[] = $state([]);
+  let selectedPlanId: string | null = $state(null);
   let sidebarRoot: HTMLElement | undefined = $state(undefined);
   let visible = $derived(pane.showPlanSidebar);
   let threadId = $derived(pane.thread?.id ?? null);
+  let selectedPlan = $derived(planRows.find((row) => row.itemId === selectedPlanId) ?? planRows[0] ?? null);
 
-  let fetchSeq = 0;
-  async function refreshPlans(): Promise<void> {
+  function syncPlansFromCache(): void {
     const id = threadId;
-    const seq = ++fetchSeq;
     if (!id) {
       planRows = [];
+      selectedPlanId = null;
       return;
     }
-    try {
-      const items = (await ListThreadProposedPlans(id)) as Item[] | null;
-      if (seq !== fetchSeq) return;
-      if (id !== threadId) return;
-      planRows = itemsToRows((items ?? []).filter((item) => item.threadId === id));
-    } catch (err) {
-      if (seq !== fetchSeq) return;
-      if (id !== threadId) return;
-      console.error('PlanSidebar: ListThreadProposedPlans failed:', err);
-      planRows = [];
+    const nextRows = itemsToRows(getThreadProposedPlans(id));
+    const previousSelection = untrack(() => selectedPlanId);
+    planRows = nextRows;
+    if (previousSelection && nextRows.some((row) => row.itemId === previousSelection)) {
+      selectedPlanId = previousSelection;
+      return;
     }
+    selectedPlanId = nextRows[0]?.itemId ?? null;
   }
-
-  const debouncedRefresh = debounce(() => { void refreshPlans(); }, REFRESH_DEBOUNCE_MS);
 
   // Initial + on-thread-switch fetch.
   $effect(() => {
     // Track the thread id so a switch retriggers the effect.
+    const id = threadId;
+    selectedPlanId = null;
+    untrack(() => { void refreshThreadProposedPlans(id); });
+  });
+
+  $effect(() => {
     threadId;
-    void refreshPlans();
+    getThreadProposedPlans(threadId);
+    syncPlansFromCache();
   });
 
   $effect(() => {
@@ -108,6 +121,7 @@
         itemId: row.itemId,
         turnIndex: row.turnIndex,
         title: row.title,
+        version: row.version,
       })),
     });
     scheduleDomUiTrace('plan-sidebar', 'plan-sidebar.dom', () => ({
@@ -121,19 +135,13 @@
     }));
   });
 
-  let cancelItemUpsert: (() => void) | null = null;
+  let releasePlanEvents: (() => void) | null = null;
   onMount(() => {
-    cancelItemUpsert = onItemUpsert((item) => {
-      if (!item.threadId) return;
-      if (item.threadId !== threadId) return;
-      if (item.payloadKind !== 'proposed_plan') return;
-      debouncedRefresh();
-    });
+    releasePlanEvents = retainProposedPlanEventListener(() => threadId);
   });
 
   onDestroy(() => {
-    cancelItemUpsert?.();
-    debouncedRefresh.cancel();
+    releasePlanEvents?.();
   });
 
   function handleRowClick(itemId: string) {
@@ -149,6 +157,10 @@
       handleRowClick(itemId);
     }
   }
+
+  function handleSelect(event: Event) {
+    selectedPlanId = (event.target as HTMLSelectElement).value;
+  }
 </script>
 
 {#if visible}
@@ -157,10 +169,26 @@
     transition:fly={{ x: 280, duration: 150 }}
     aria-label="Proposed Plans"
     data-testid="plan-sidebar"
-    class="flex w-[280px] shrink-0 flex-col border-l border-border bg-surface-1"
+    class="flex w-[440px] shrink-0 flex-col border-l border-border bg-surface-1"
   >
     <div class="flex items-center justify-between gap-2 border-b border-border px-3 py-2">
-      <h3 class="text-xs font-semibold uppercase tracking-wide text-text-secondary">Proposed Plans</h3>
+      {#if planRows.length > 1}
+        <select
+          aria-label="Select Plan Version"
+          value={selectedPlan?.itemId ?? ''}
+          onchange={handleSelect}
+          class="h-7 min-w-0 rounded-md border border-border-subtle bg-surface-0 px-2 text-xs font-medium text-fg outline-none focus:border-accent focus:ring-2 focus:ring-accent/30"
+          data-testid="plan-version-select"
+        >
+          {#each planRows as row (row.itemId)}
+            <option value={row.itemId}>
+              {row.version ? `Plan v${row.version}` : `Turn ${row.turnIndex + 1}`} - {row.title}
+            </option>
+          {/each}
+        </select>
+      {:else}
+        <h3 class="text-xs font-semibold uppercase tracking-wide text-text-secondary">Proposed Plan</h3>
+      {/if}
       <button
         type="button"
         onclick={() => pane.setShowPlanSidebar(false)}
@@ -179,33 +207,37 @@
         <p class="px-3 py-4 text-xs text-text-secondary" data-testid="plan-sidebar-empty">
           No plans yet.
         </p>
-      {:else}
-        <ul class="divide-y divide-border">
-          {#each planRows as row (row.itemId)}
-            <li>
-              <button
-                type="button"
-                onclick={() => handleRowClick(row.itemId)}
-                onkeydown={(e) => handleKeydown(e, row.itemId)}
-                data-testid="plan-sidebar-row"
-                data-item-id={row.itemId}
-                class="w-full px-3 py-2 text-left text-xs text-text-secondary hover:bg-surface-2/60 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
-              >
-                <div class="flex items-start justify-between gap-2">
-                  <p class="truncate text-sm font-medium text-text-primary">{row.title}</p>
-                  <span class="shrink-0 rounded bg-accent/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-accent">
-                    Turn {row.turnIndex + 1}
-                  </span>
-                </div>
-                {#if row.previewSnippet.length > 0}
-                  <p class="mt-1 line-clamp-2 text-text-secondary/80">
-                    {row.previewSnippet}
-                  </p>
-                {/if}
-              </button>
-            </li>
-          {/each}
-        </ul>
+      {:else if selectedPlan}
+        <div class="border-b border-border-subtle px-3 py-2">
+          <button
+            type="button"
+            onclick={() => handleRowClick(selectedPlan.itemId)}
+            onkeydown={(e) => handleKeydown(e, selectedPlan.itemId)}
+            data-testid="plan-sidebar-row"
+            data-item-id={selectedPlan.itemId}
+            class="flex w-full items-center justify-between gap-2 rounded-md px-2 py-1.5 text-left text-xs text-text-secondary hover:bg-surface-2/60 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+          >
+            <span class="truncate">
+              {selectedPlan.version ? `Plan v${selectedPlan.version}` : 'Plan'} - Turn {selectedPlan.turnIndex + 1}
+            </span>
+            {#if selectedPlan.implemented}
+              <span class="shrink-0 rounded bg-success/12 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-success">
+                Implemented
+              </span>
+            {/if}
+          </button>
+        </div>
+        <div class="p-3">
+          {#key selectedPlan.itemId}
+            <ProposedPlanCard
+              {pane}
+              item={selectedPlan.item}
+              payloadId={selectedPlan.item.payloadId ?? ''}
+              meta={selectedPlan.meta}
+              showReview
+            />
+          {/key}
+        </div>
       {/if}
     </div>
   </aside>

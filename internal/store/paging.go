@@ -27,11 +27,11 @@ type PagedItems struct {
 // preserves ids across threads can't leak ancestors from another thread.
 // Both hops are index-driven. Placeholders in order:
 //
-//	1. thread_id       (seed)
-//	2. floorTurnIndex  (seed: turn_index >= floor)
-//	3. upperBound      (seed: turn_index < upper) — when the caller wants
-//	   a bounded range; pass openUpperBound for open-ended initial loads.
-//	4. thread_id       (recursive step) — the id-join gate.
+//  1. thread_id       (seed)
+//  2. floorTurnIndex  (seed: turn_index >= floor)
+//  3. upperBound      (seed: turn_index < upper) — when the caller wants
+//     a bounded range; pass openUpperBound for open-ended initial loads.
+//  4. thread_id       (recursive step) — the id-join gate.
 //
 // UNION (not UNION ALL) is load-bearing here: it dedups during recursion
 // so a cycle (pathological parent_id pointing at itself or back to a
@@ -166,7 +166,11 @@ func (s *Store) queryPagedItems(threadID string, floor, upper int64, ancestorCut
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("store: iterate paged items for %s: %w", threadID, err)
 	}
-	return items, nil
+	decorated, err := s.decorateProposedPlanItems(threadID, items)
+	if err != nil {
+		return nil, fmt.Errorf("store: decorate paged proposed plans for %s: %w", threadID, err)
+	}
+	return decorated, nil
 }
 
 // finalizePagedItems attaches OldestTurnIndex + HasMore to an items

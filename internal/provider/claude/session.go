@@ -362,6 +362,19 @@ func (s *Session) setPermissionMode(ctx context.Context, mode string) error {
 	}
 }
 
+// SetInteractionMode applies a chat/plan mode change to the live Claude
+// permission mode. The next Send also sets this defensively, but exposing the
+// operation lets the app reflect a user toggling Plan Mode while the session is
+// already running.
+func (s *Session) SetInteractionMode(ctx context.Context, mode provider.InteractionMode) error {
+	normalized := provider.NormalizeInteractionMode(string(mode))
+	if err := s.setPermissionMode(ctx, s.desiredPermissionModeForTurn(normalized)); err != nil {
+		return err
+	}
+	s.interactionMode = normalized
+	return nil
+}
+
 // Send sends a user message. The message is written as a JSON object to stdin.
 // Send also arms the idle watchdog: if no stdout line arrives within the
 // configured idle window, the watchdog closes the session and emits a
