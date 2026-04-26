@@ -12,6 +12,11 @@
     retainProposedPlanEventListener,
   } from '../../stores/proposedPlans.svelte';
   import {
+    getPlanSidebarWidth,
+    persistPlanSidebarWidth,
+    setPlanSidebarWidthLive,
+  } from '../../stores/planSidebarLayout.svelte';
+  import {
     GetPayloadData,
     SendPlanRevisionComments,
   } from '../../stores/bindings';
@@ -28,6 +33,7 @@
   import { isUiRenderTraceEnabled, recordUiTrace, scheduleDomUiTrace } from '../../utils/uiRenderTrace';
   import Button from '../primitives/Button.svelte';
   import Icon from '../primitives/Icon.svelte';
+  import PlanSidebarResizer from './PlanSidebarResizer.svelte';
   import ProposedPlanActions from './ProposedPlanActions.svelte';
   import ProposedPlanReviewSurface from './ProposedPlanReviewSurface.svelte';
   import ProposedPlanSaveModal from './ProposedPlanSaveModal.svelte';
@@ -44,7 +50,7 @@
   let currentPlan = $derived(getThreadCurrentProposedPlan(threadId, pane.items));
   let currentPlanMeta = $derived(parseProposedPlanPayloadMeta(currentPlan));
   let currentPlanItemMeta = $derived(parseProposedPlanItemMeta(currentPlan));
-  let isImplemented = $derived(Boolean(currentPlanItemMeta.planImplementedAt));
+  let isAccepted = $derived(Boolean(currentPlanItemMeta.planImplementedAt));
   let title = $derived(currentPlanMeta.title || 'Proposed plan');
   // Depend the reset $effect on these primitives, not on `currentPlan` itself.
   // Otherwise an unrelated `pane.items` upsert (every streaming tick) re-fires
@@ -199,13 +205,14 @@
     transition:fly={{ x: 280, duration: 150 }}
     aria-label="Proposed Plan"
     data-testid="plan-sidebar"
-    class="flex w-[440px] shrink-0 flex-col border-l border-border bg-surface-1"
+    style="width: {getPlanSidebarWidth()}px"
+    class="relative flex shrink-0 flex-col border-l border-border bg-surface-1"
   >
     <div class="flex items-center justify-between gap-2 px-3 pt-3 pb-2">
       <div class="flex min-w-0 items-center gap-1.5">
         <h3 class="truncate text-sm font-medium text-text-primary">{title}</h3>
-        {#if isImplemented}
-          <span class="shrink-0 text-[12px] font-medium text-success">· Implemented</span>
+        {#if isAccepted}
+          <span class="shrink-0 text-[12px] font-medium text-success">· Accepted</span>
         {/if}
       </div>
       <div class="flex items-center gap-1">
@@ -279,6 +286,12 @@
         </Button>
       </div>
     {/if}
+
+    <PlanSidebarResizer
+      width={getPlanSidebarWidth()}
+      onResizeLive={setPlanSidebarWidthLive}
+      onResizeEnd={persistPlanSidebarWidth}
+    />
   </aside>
 {/if}
 

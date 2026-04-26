@@ -31,7 +31,7 @@
 
   const title = $derived(meta.title || 'Proposed plan');
   const itemMeta = $derived(parseProposedPlanItemMeta(item));
-  const isImplemented = $derived(Boolean(itemMeta.planImplementedAt));
+  const isAccepted = $derived(Boolean(itemMeta.planImplementedAt));
   const currentPlan = $derived(getThreadCurrentProposedPlan(pane.threadId, pane.items));
   const canOpenCurrentPlanSidebar = $derived(Boolean(item?.id) && currentPlan?.id === item?.id);
   const previewOnly = $derived(meta.charCount > 900 || meta.lineCount > 20);
@@ -79,8 +79,8 @@
   <div class="flex flex-wrap items-center justify-between gap-3">
     <div class="flex min-w-0 items-center gap-1.5">
       <p class="truncate text-sm font-medium text-text-primary">{title}</p>
-      {#if isImplemented}
-        <span class="text-[12px] font-medium text-success">· Implemented</span>
+      {#if isAccepted}
+        <span class="text-[12px] font-medium text-success">· Accepted</span>
       {/if}
     </div>
     <div class="opacity-50 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
