@@ -268,17 +268,38 @@ func (s *Store) MarkProposedPlanImplemented(threadID, itemID, implementationThre
 }
 
 func (s *Store) ReconcileProposedPlanStateFromAcceptedTurns(now int64) error {
+	// LEFT JOIN, not INNER, so a successful implement that crashed
+	// after PersistItem but before EventTurnStart still recovers on
+	// restart. The send-failure path (sendToProvider returns error)
+	// also leaves a user_text with sourceProposedPlan + no turns row,
+	// so we must additionally exclude rows that have a sibling
+	// kind='error' on the same (thread_id, turn_index): those represent
+	// the "implement send failed, user must retry" case where the plan
+	// must stay unimplemented. ORDER BY pins attribution to the
+	// earliest accepted item for a given plan when multiple retries
+	// landed across turns.
 	rows, err := s.db.Query(
-		`SELECT items.id, items.thread_id, items.meta, turns.turn_id, turns.started_at
+		`SELECT items.id, items.thread_id, items.turn_index, items.meta,
+		        items.created_at,
+		        COALESCE(turns.turn_id, ''),
+		        COALESCE(turns.started_at, 0)
 		   FROM items
-		   JOIN turns
+		   LEFT JOIN turns
 		     ON turns.thread_id = items.thread_id
 		    AND turns.turn_index = items.turn_index
 		  WHERE items.kind = 'user_text'
 		    AND (
 		      items.meta LIKE '%"sourceProposedPlan"%'
 		      OR items.meta LIKE '%"revisionSourceCommentIds"%'
-		    )`,
+		    )
+		    AND NOT EXISTS (
+		      SELECT 1
+		        FROM items err
+		       WHERE err.thread_id  = items.thread_id
+		         AND err.turn_index = items.turn_index
+		         AND err.kind       = 'error'
+		    )
+		  ORDER BY items.thread_id, items.turn_index ASC, items.created_at ASC`,
 	)
 	if err != nil {
 		return fmt.Errorf("store: reconcile proposed plan state: %w", err)
@@ -288,18 +309,22 @@ func (s *Store) ReconcileProposedPlanStateFromAcceptedTurns(now int64) error {
 	type acceptedTurn struct {
 		userItemID string
 		threadID   string
+		turnIndex  int
 		turnID     string
 		startedAt  int64
+		createdAt  int64
 		meta       proposedPlanUserMessageMeta
 	}
 	var turns []acceptedTurn
 	for rows.Next() {
 		var userItemID string
 		var implementationThreadID string
+		var turnIndex int
 		var metaJSON string
+		var createdAt int64
 		var turnID string
 		var startedAt int64
-		if err := rows.Scan(&userItemID, &implementationThreadID, &metaJSON, &turnID, &startedAt); err != nil {
+		if err := rows.Scan(&userItemID, &implementationThreadID, &turnIndex, &metaJSON, &createdAt, &turnID, &startedAt); err != nil {
 			return fmt.Errorf("store: scan proposed plan accepted turn source: %w", err)
 		}
 		meta, ok := parseProposedPlanUserMessageMeta(metaJSON)
@@ -309,8 +334,10 @@ func (s *Store) ReconcileProposedPlanStateFromAcceptedTurns(now int64) error {
 		turns = append(turns, acceptedTurn{
 			userItemID: userItemID,
 			threadID:   implementationThreadID,
+			turnIndex:  turnIndex,
 			turnID:     turnID,
 			startedAt:  startedAt,
+			createdAt:  createdAt,
 			meta:       meta,
 		})
 	}
@@ -321,7 +348,16 @@ func (s *Store) ReconcileProposedPlanStateFromAcceptedTurns(now int64) error {
 	for _, accepted := range turns {
 		acceptedAt := accepted.startedAt
 		if acceptedAt == 0 {
+			acceptedAt = accepted.createdAt
+		}
+		if acceptedAt == 0 {
 			acceptedAt = now
+		}
+		// Mirror resolveTurnID's Claude fallback so revision-comment
+		// sent_turn_id is stable across reconcile and live-event paths.
+		turnID := accepted.turnID
+		if turnID == "" {
+			turnID = fmt.Sprintf("%s:%d", accepted.threadID, accepted.turnIndex)
 		}
 		if sourceRef := accepted.meta.SourceProposedPlan; sourceRef != nil {
 			source := normalizeProposedPlanSourceRef(*sourceRef, accepted.threadID)
@@ -332,7 +368,7 @@ func (s *Store) ReconcileProposedPlanStateFromAcceptedTurns(now int64) error {
 		if sourceRef := accepted.meta.RevisionSourceProposedPlan; sourceRef != nil && len(accepted.meta.RevisionSourceCommentIDs) > 0 {
 			source := normalizeProposedPlanSourceRef(*sourceRef, accepted.threadID)
 			ids := limitStringIDs(uniqueNonEmptyStrings(accepted.meta.RevisionSourceCommentIDs), MaxProposedPlanRevisionCommentIDs)
-			if err := s.markAcceptedProposedPlanCommentsSent(accepted.threadID, source, ids, acceptedAt, accepted.turnID); err != nil {
+			if err := s.markAcceptedProposedPlanCommentsSent(accepted.threadID, source, ids, acceptedAt, turnID); err != nil {
 				return err
 			}
 		}

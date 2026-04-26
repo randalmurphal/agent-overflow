@@ -239,6 +239,176 @@ func TestReconcileProposedPlanStateMarksRevisionCommentsSent(t *testing.T) {
 	}
 }
 
+// TestReconcileProposedPlanStateMarksImplementedWithoutTurnsRow guards
+// the LEFT JOIN in ReconcileProposedPlanStateFromAcceptedTurns:
+// when the user message landed but the matching turns row never did
+// (crash between PersistItem and EventTurnStart, or older data from
+// before the send-time mark), reconcile must still mark the source
+// plan implemented using the item's created_at as the timestamp.
+func TestReconcileProposedPlanStateMarksImplementedWithoutTurnsRow(t *testing.T) {
+	s := newTestStore(t)
+	for _, threadID := range []string{"source", "impl"} {
+		if err := s.CreateThread(makeThread(threadID, "claude")); err != nil {
+			t.Fatalf("create thread %s: %v", threadID, err)
+		}
+	}
+	seedPayloadItem(t, s, "source", "plan-1", 0, 0, "assistant_text", "proposed_plan", "{}")
+	if _, err := s.EnsureProposedPlanState("source", "plan-1", 100); err != nil {
+		t.Fatalf("ensure plan: %v", err)
+	}
+	// Deliberately skip InsertTurn — this is the "user message persisted,
+	// turn row never written" scenario. Without the LEFT JOIN, the
+	// reconcile's INNER JOIN drops this row entirely.
+	if err := s.InsertItem(Item{
+		ID:        "user:1",
+		ThreadID:  "impl",
+		TurnIndex: 1,
+		ItemIndex: 0,
+		Kind:      "user_text",
+		Role:      "user",
+		Summary:   "Implement the plan.",
+		Meta:      `{"sourceProposedPlan":{"threadId":"source","itemId":"plan-1"}}`,
+		CreatedAt: 250,
+		UpdatedAt: 250,
+	}); err != nil {
+		t.Fatalf("insert user item: %v", err)
+	}
+
+	if err := s.ReconcileProposedPlanStateFromAcceptedTurns(900); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	state, found, err := s.GetProposedPlanState("source", "plan-1")
+	if err != nil {
+		t.Fatalf("get state: %v", err)
+	}
+	if !found {
+		t.Fatal("plan state missing after reconcile")
+	}
+	// Without a turns row, reconcile must fall back to the item's
+	// created_at (250), not the now sentinel (900) or zero. The latter
+	// would falsely advertise an unimplemented plan; the former would
+	// retroactively claim the plan landed long after it actually did.
+	if state.ImplementedAt != 250 {
+		t.Errorf("ImplementedAt = %d, want 250 (item's created_at)", state.ImplementedAt)
+	}
+	if state.ImplementedByThreadID != "impl" || state.ImplementedByItemID != "user:1" {
+		t.Errorf("attribution = %s/%s, want impl/user:1", state.ImplementedByThreadID, state.ImplementedByItemID)
+	}
+}
+
+// TestReconcileProposedPlanStateSkipsFailedSendUserMessages pins the
+// "no turns row + sibling error item = send failed, keep plan
+// retryable" rule. Without this exclusion the LEFT JOIN reconcile
+// would mark the plan implemented at restart even though the
+// implementation never actually ran, hiding the Implement button and
+// stranding the user.
+func TestReconcileProposedPlanStateSkipsFailedSendUserMessages(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	seedPayloadItem(t, s, "t", "plan-1", 0, 0, "assistant_text", "proposed_plan", "{}")
+	if _, err := s.EnsureProposedPlanState("t", "plan-1", 100); err != nil {
+		t.Fatalf("ensure plan: %v", err)
+	}
+	// Failed-send shape: user_text with sourceProposedPlan + sibling
+	// error item, no turns row (EventTurnStart never fired).
+	if err := s.InsertItem(Item{
+		ID:        "user:1",
+		ThreadID:  "t",
+		TurnIndex: 1,
+		ItemIndex: 0,
+		Kind:      "user_text",
+		Role:      "user",
+		Summary:   "Implement the plan.",
+		Meta:      `{"sourceProposedPlan":{"threadId":"t","itemId":"plan-1"}}`,
+		CreatedAt: 250,
+		UpdatedAt: 250,
+	}); err != nil {
+		t.Fatalf("insert user item: %v", err)
+	}
+	if err := s.InsertItem(Item{
+		ID:        "error:1:0",
+		ThreadID:  "t",
+		TurnIndex: 1,
+		ItemIndex: 1,
+		Kind:      "error",
+		Role:      "system",
+		Status:    "completed",
+		Summary:   "Failed to send: session has no provider",
+		CreatedAt: 251,
+		UpdatedAt: 251,
+	}); err != nil {
+		t.Fatalf("insert error item: %v", err)
+	}
+
+	if err := s.ReconcileProposedPlanStateFromAcceptedTurns(900); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	state, _, err := s.GetProposedPlanState("t", "plan-1")
+	if err != nil {
+		t.Fatalf("get state: %v", err)
+	}
+	if state.ImplementedAt != 0 {
+		t.Errorf("ImplementedAt = %d, want 0 (failed-send shape must stay retryable across reconcile)", state.ImplementedAt)
+	}
+}
+
+// TestReconcileProposedPlanStateMarksRevisionCommentsSentWithoutTurnsRow
+// is the revision-comment counterpart to the implemented-plan test
+// above. Same scenario: user revision message persisted, no turns row.
+// Without the LEFT JOIN + synthesized turn_id, the comment would stay
+// "draft" forever even though the user has already sent it.
+func TestReconcileProposedPlanStateMarksRevisionCommentsSentWithoutTurnsRow(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	seedPayloadItem(t, s, "t", "plan-1", 0, 0, "assistant_text", "proposed_plan", "{}")
+	if _, err := s.EnsureProposedPlanState("t", "plan-1", 100); err != nil {
+		t.Fatalf("ensure plan: %v", err)
+	}
+	if _, err := s.CreateProposedPlanComment(ProposedPlanComment{
+		ID: "comment-1", ThreadID: "t", PlanItemID: "plan-1", StartLine: 1, EndLine: 1,
+		Body: "revise", CreatedAt: 150, UpdatedAt: 150,
+	}); err != nil {
+		t.Fatalf("create comment: %v", err)
+	}
+	// No InsertTurn for turn 1.
+	if err := s.InsertItem(Item{
+		ID:        "user:1",
+		ThreadID:  "t",
+		TurnIndex: 1,
+		ItemIndex: 0,
+		Kind:      "user_text",
+		Role:      "user",
+		Summary:   "Revise the plan.",
+		Meta:      `{"revisionSourceProposedPlan":{"threadId":"t","itemId":"plan-1"},"revisionSourceCommentIds":["comment-1"]}`,
+		CreatedAt: 250,
+		UpdatedAt: 250,
+	}); err != nil {
+		t.Fatalf("insert user item: %v", err)
+	}
+
+	if err := s.ReconcileProposedPlanStateFromAcceptedTurns(900); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	comment, err := s.GetProposedPlanComment("t", "comment-1")
+	if err != nil {
+		t.Fatalf("get comment: %v", err)
+	}
+	if comment.Status != "sent" {
+		t.Errorf("status = %q, want sent", comment.Status)
+	}
+	if comment.SentAt != 250 {
+		t.Errorf("SentAt = %d, want 250 (item's created_at)", comment.SentAt)
+	}
+	// resolveTurnID's Claude fallback: <threadID>:<turnIndex>.
+	if comment.SentTurnID != "t:1" {
+		t.Errorf("SentTurnID = %q, want %q (synthesized from thread+turn)", comment.SentTurnID, "t:1")
+	}
+}
+
 func TestListThreadProposedPlans_ExcludesUserAuthored(t *testing.T) {
 	// Regression guard for the `role = 'assistant'` filter: a
 	// user-authored item whose payload.kind happens to be

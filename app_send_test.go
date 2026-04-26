@@ -144,6 +144,180 @@ func TestSendMessageWithOptionsAppliesRuntimeModeBeforeLazyStart(t *testing.T) {
 	}
 }
 
+// Regression: implement-time plan→chat flip must be atomic with
+// persisting the user message. Splitting the two on the frontend used
+// to leave plan-mode threads stuck reading "chat" when send failed.
+func TestSendMessageWithOptionsImplementSwitchesPlanModeToChat(t *testing.T) {
+	app := newTestAppWithStore(t)
+	thread := testThread("thread-implement-plan-mode")
+	thread.Provider = string(provider.Claude)
+	thread.Mode = "plan"
+	thread.WorkspacePath = t.TempDir()
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+
+	now := time.Now().UnixMilli()
+	if err := app.store.InsertItemWithPayload(store.Item{
+		ID:        "plan-item",
+		ThreadID:  thread.ID,
+		TurnIndex: 0,
+		ItemIndex: 0,
+		Kind:      "tool_call",
+		Role:      "assistant",
+		Status:    "completed",
+		Summary:   "Plan",
+		PayloadID: "plan-payload",
+		ToolName:  "plan",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}, store.Payload{
+		ID:        "plan-payload",
+		Kind:      "proposed_plan",
+		Meta:      `{"title":"Fix plan","preview":"do it","lineCount":1,"charCount":5}`,
+		Data:      []byte("# Fix plan\n\nDo it."),
+		CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed plan: %v", err)
+	}
+	if _, err := app.store.EnsureProposedPlanState(thread.ID, "plan-item", now); err != nil {
+		t.Fatalf("ensure plan state: %v", err)
+	}
+
+	sess, err := claude.NewSession(
+		context.Background(),
+		thread.ID,
+		claude.Config{Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
+		func(provider.ProviderEvent) {},
+	)
+	if err != nil {
+		t.Fatalf("NewSession() error = %v", err)
+	}
+	t.Cleanup(func() { _ = sess.Close() })
+	app.sessions[thread.ID] = session{provider: string(provider.Claude), token: "test-token", claude: sess}
+
+	updated, err := app.SendMessageWithOptions(thread.ID, "Implement the plan.", SendMessageOptions{
+		SourceProposedPlan: &SourceProposedPlan{ItemID: "plan-item"},
+	})
+	if err != nil {
+		t.Fatalf("SendMessageWithOptions() error = %v", err)
+	}
+	if updated.Mode != "chat" {
+		t.Errorf("returned thread mode = %q, want chat", updated.Mode)
+	}
+	if updated.HasActionableProposedPlan {
+		t.Error("returned thread.HasActionableProposedPlan = true, want false (plan was just implemented)")
+	}
+
+	// Re-read from DB so we know the chat-mode flip is durable, not just
+	// in the returned struct.
+	stored, err := app.store.GetThread(thread.ID)
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+	if stored.Mode != "chat" {
+		t.Errorf("stored thread mode = %q, want chat", stored.Mode)
+	}
+	state, found, err := app.store.GetProposedPlanState(thread.ID, "plan-item")
+	if err != nil {
+		t.Fatalf("GetProposedPlanState: %v", err)
+	}
+	if !found || state.ImplementedAt == 0 {
+		t.Errorf("plan state = %+v, want implemented_at > 0", state)
+	}
+}
+
+// Pins two invariants for a transient provider error after the user
+// message has already landed: (1) plan stays unmarked so the user can
+// retry, (2) mode flip stays committed since the timeline records the
+// implement intent. Also re-asserts (1) after running reconcile so the
+// invariant survives across restart.
+func TestSendMessageWithOptionsImplementSendFailureKeepsPlanRetryable(t *testing.T) {
+	app := newTestAppWithStore(t)
+	thread := testThread("thread-implement-mode-revert")
+	thread.Provider = string(provider.Codex)
+	thread.Mode = "plan"
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+
+	now := time.Now().UnixMilli()
+	if err := app.store.InsertItemWithPayload(store.Item{
+		ID:        "plan-item",
+		ThreadID:  thread.ID,
+		TurnIndex: 0,
+		ItemIndex: 0,
+		Kind:      "tool_call",
+		Role:      "assistant",
+		Status:    "completed",
+		Summary:   "Plan",
+		PayloadID: "plan-payload",
+		ToolName:  "plan",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}, store.Payload{
+		ID:        "plan-payload",
+		Kind:      "proposed_plan",
+		Meta:      `{"title":"Plan","preview":"x","lineCount":1,"charCount":1}`,
+		Data:      []byte("# Plan"),
+		CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed plan: %v", err)
+	}
+	if _, err := app.store.EnsureProposedPlanState(thread.ID, "plan-item", now); err != nil {
+		t.Fatalf("ensure plan state: %v", err)
+	}
+
+	// Codex session with no provider: sendToProvider trips
+	// "session has no provider" without a synthesized EventTurnStart,
+	// so this is the exact "send failed, plan must stay retryable"
+	// scenario the old guard (TestSendMessageWithSourcePlanDoesNot
+	// ImplementWhenProviderSendFails) covers — we re-cover it here
+	// alongside the mode-flip assertion to keep both invariants pinned
+	// in one place.
+	app.sessions[thread.ID] = session{provider: string(provider.Codex), token: "no-provider"}
+
+	_, err := app.SendMessageWithOptions(thread.ID, "Implement the plan.", SendMessageOptions{
+		SourceProposedPlan: &SourceProposedPlan{ItemID: "plan-item"},
+	})
+	if err == nil {
+		t.Fatal("SendMessageWithOptions() error = nil, want session-has-no-provider failure")
+	}
+
+	stored, err := app.store.GetThread(thread.ID)
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+	if stored.Mode != "chat" {
+		t.Errorf("stored mode = %q, want chat (mode flip stays committed once user message persists)", stored.Mode)
+	}
+	state, found, err := app.store.GetProposedPlanState(thread.ID, "plan-item")
+	if err != nil {
+		t.Fatalf("GetProposedPlanState: %v", err)
+	}
+	if !found {
+		t.Fatal("plan state missing")
+	}
+	if state.ImplementedAt != 0 {
+		t.Errorf("ImplementedAt = %d, want 0 (send failure must keep plan retryable)", state.ImplementedAt)
+	}
+
+	// Post-restart simulation: the failed-send path persists a sibling
+	// error item alongside the orphan user_text. The reconcile's
+	// error-sibling exclusion has to keep the plan unmarked here, or
+	// the user can't click Implement again after closing the app.
+	if err := app.store.ReconcileProposedPlanStateFromAcceptedTurns(time.Now().UnixMilli()); err != nil {
+		t.Fatalf("ReconcileProposedPlanStateFromAcceptedTurns: %v", err)
+	}
+	stateAfter, _, err := app.store.GetProposedPlanState(thread.ID, "plan-item")
+	if err != nil {
+		t.Fatalf("GetProposedPlanState (post reconcile): %v", err)
+	}
+	if stateAfter.ImplementedAt != 0 {
+		t.Errorf("ImplementedAt after reconcile = %d, want 0 (failed-send sibling error must keep plan retryable across restart)", stateAfter.ImplementedAt)
+	}
+}
+
 func TestSendMessageWithOptionsPersistsSourceProposedPlan(t *testing.T) {
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-send-source-plan")
@@ -358,6 +532,20 @@ func TestSendMessageWithSourcePlanDoesNotImplementWhenProviderSendFails(t *testi
 	}
 	if state.ImplementedAt != 0 {
 		t.Fatalf("ImplementedAt = %d, want 0 after send failure", state.ImplementedAt)
+	}
+
+	// Pin the post-restart contract: the orphan user_text + sibling
+	// error item must NOT cause reconcile to mark the plan implemented,
+	// or the user can't click Implement again after closing the app.
+	if err := app.store.ReconcileProposedPlanStateFromAcceptedTurns(time.Now().UnixMilli()); err != nil {
+		t.Fatalf("ReconcileProposedPlanStateFromAcceptedTurns: %v", err)
+	}
+	stateAfter, _, err := app.store.GetProposedPlanState(thread.ID, "plan-item")
+	if err != nil {
+		t.Fatalf("GetProposedPlanState (post reconcile): %v", err)
+	}
+	if stateAfter.ImplementedAt != 0 {
+		t.Fatalf("ImplementedAt after reconcile = %d, want 0 (failed-send sibling error must keep plan retryable across restart)", stateAfter.ImplementedAt)
 	}
 }
 

@@ -95,7 +95,7 @@ func (a *App) sendMessage(threadID string, content string, attachmentIDs []strin
 	return err
 }
 
-func (a *App) sendMessageWithOptions(threadID string, content string, opts sendMessageOptions) (store.Item, error) {
+func (a *App) sendMessageWithOptions(threadID string, content string, opts sendMessageOptions) (item store.Item, err error) {
 	if a.shuttingDown.Load() {
 		return store.Item{}, ErrShuttingDown
 	}
@@ -182,10 +182,16 @@ func (a *App) sendMessageWithOptions(threadID string, content string, opts sendM
 		}
 	}
 
-	thread, err := a.store.GetThread(threadID)
+	thread, restoreImplementMode, err := a.beginImplementModeSwitch(threadID, sourcePlan)
 	if err != nil {
-		return store.Item{}, fmt.Errorf("send message: get thread: %w", err)
+		return store.Item{}, fmt.Errorf("send message: %w", err)
 	}
+	userMsgKept := false
+	defer func() {
+		if err != nil && !userMsgKept {
+			restoreImplementMode()
+		}
+	}()
 	if a.triage == nil {
 		a.triage = triage.NewRouter(a.store, a.emitWithReplay())
 	}
@@ -218,9 +224,19 @@ func (a *App) sendMessageWithOptions(threadID string, content string, opts sendM
 	// Route through the triage chokepoint so parent_id validation,
 	// emit order, and ItemsPersisted metric stay consistent with
 	// provider-sourced items.
-	if err := a.triage.PersistItem(userItem, nil); err != nil {
+	if err = a.triage.PersistItem(userItem, nil); err != nil {
 		return store.Item{}, fmt.Errorf("send message: persist user message: %w", err)
 	}
+	userMsgKept = true
+
+	// Plan-implemented marking happens via EventTurnStart (synthesized
+	// for Claude below; native for Codex on turn/started). Pre-send
+	// marking would hide the Implement button before sendToProvider's
+	// outcome is known, so a transient send failure could not be
+	// retried. Restart durability comes from
+	// ReconcileProposedPlanStateFromAcceptedTurns, which LEFT-JOINs
+	// turns and excludes user_text rows with sibling kind='error' so a
+	// failed-send remains retryable across restarts too.
 
 	if err := sendToProvider(sess, threadID, content, provider.NormalizeInteractionMode(thread.Mode), providerAttachments); err != nil {
 		// Allocate an error id from the same per-turn counter the
@@ -387,6 +403,38 @@ func (a *App) appendPlanRevisionCommentsToContent(threadID, content, planItemID 
 		return prompt, idsFromProposedPlanComments(comments), nil
 	}
 	return strings.TrimSpace(content) + "\n\n" + prompt, idsFromProposedPlanComments(comments), nil
+}
+
+// beginImplementModeSwitch loads the current thread row and, when
+// this is an implement send (sourcePlan != nil) on a plan-mode
+// thread, flips the mode to chat. The returned restore function
+// rolls the flip back; the caller defers it for the
+// pre-PersistItem failure window. When no flip happens the restore
+// is a no-op so the call site doesn't need to branch on whether
+// the saga actually ran.
+//
+// Keeping the flip+restore here and out of sendMessageWithOptions
+// means the send pipe stays single-purpose: it persists, sends,
+// and synthesizes; it does not own transactional mode coordination.
+func (a *App) beginImplementModeSwitch(threadID string, sourcePlan *SourceProposedPlan) (store.Thread, func(), error) {
+	thread, err := a.store.GetThread(threadID)
+	if err != nil {
+		return store.Thread{}, func() {}, fmt.Errorf("get thread: %w", err)
+	}
+	if sourcePlan == nil || thread.Mode != "plan" {
+		return thread, func() {}, nil
+	}
+	prevMode := thread.Mode
+	if _, err := a.UpdateThreadMode(threadID, "chat"); err != nil {
+		return store.Thread{}, func() {}, fmt.Errorf("switch mode for plan implementation: %w", err)
+	}
+	thread.Mode = "chat"
+	restore := func() {
+		if _, err := a.UpdateThreadMode(threadID, prevMode); err != nil {
+			log.Printf("send message: revert mode after implement failure for thread %s: %v", threadID, err)
+		}
+	}
+	return thread, restore, nil
 }
 
 // sendToProvider forwards the user content to the active provider

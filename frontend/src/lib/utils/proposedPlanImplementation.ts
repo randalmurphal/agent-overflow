@@ -5,7 +5,6 @@ import {
   GetPayloadData,
   SaveDraft,
   SendMessageWithOptions,
-  UpdateThreadMode,
 } from '../stores/bindings';
 import { prependThread, replaceThread } from '../stores/threads.svelte';
 import { expandProject } from '../stores/sidebar.svelte';
@@ -28,11 +27,12 @@ export async function implementProposedPlan(
   if (!pane.threadId) return false;
   projectSendStarted(pane.threadId);
   try {
-    if (pane.thread?.mode === 'plan') {
-      const modeThread = (await UpdateThreadMode(pane.threadId, 'chat')) as Thread;
-      pane.replaceThread(modeThread);
-      replaceThread(modeThread);
-    }
+    // The backend flips mode plan→chat atomically with persisting the
+    // implement message, so the frontend must not pre-call
+    // UpdateThreadMode here. Splitting the two used to leave the thread
+    // stuck in chat mode if the send half failed (e.g. session-start
+    // error), and after restart the plan still showed "ready" because
+    // proposed_plans.implemented_at never moved off zero.
     const updated = (await SendMessageWithOptions(pane.threadId, IMPLEMENT_PROMPT, {
       attachmentIds: [],
       sourceProposedPlan: source,

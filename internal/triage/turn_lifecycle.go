@@ -79,26 +79,7 @@ func (r *Router) markAcceptedRevisionComments(threadID string, turnIndex int, tu
 	if !sourceFound || source.ThreadID != threadID {
 		return
 	}
-	plan, planFound, err := r.store.GetThreadProposedPlanItem(threadID, source.ItemID)
-	if err != nil {
-		log.Printf("triage: validate revision source proposed plan %s/%s: %v", threadID, source.ItemID, err)
-		return
-	}
-	if !planFound {
-		return
-	}
-	if err := r.store.MarkProposedPlanCommentsSent(threadID, source.ItemID, commentIDs, startedAt, turnID); err != nil {
-		log.Printf("triage: mark revision comments sent for turn %s/%d: %v", threadID, turnIndex, err)
-		return
-	}
-	plan, planFound, err = r.store.GetThreadProposedPlanItem(threadID, source.ItemID)
-	if err != nil {
-		log.Printf("triage: refresh revision source proposed plan %s/%s: %v", threadID, source.ItemID, err)
-		return
-	}
-	if planFound {
-		r.emit("provider:item_event", NewItemStreamUpsert(plan))
-	}
+	r.markAcceptedRevisionCommentsForItem(threadID, source.ItemID, commentIDs, startedAt, turnID)
 }
 
 func (r *Router) markAcceptedSourceProposedPlan(threadID string, turnIndex int, startedAt int64) {
@@ -110,25 +91,74 @@ func (r *Router) markAcceptedSourceProposedPlan(threadID string, turnIndex int, 
 	if !found {
 		return
 	}
-	item, itemFound, err := r.store.GetThreadItem(source.ThreadID, source.ItemID)
-	if err != nil {
-		log.Printf("triage: validate source proposed plan %s/%s: %v", source.ThreadID, source.ItemID, err)
-		return
-	}
-	if !itemFound || item.Role != "assistant" || item.PayloadKind != "proposed_plan" {
-		log.Printf("triage: refusing invalid source proposed plan %s/%s", source.ThreadID, source.ItemID)
-		return
-	}
 	implementationItemID := fmt.Sprintf("user:%d", turnIndex)
-	if err := r.store.MarkProposedPlanImplemented(source.ThreadID, source.ItemID, threadID, implementationItemID, startedAt); err != nil {
+	r.markAcceptedSourceProposedPlanForItem(source.ThreadID, source.ItemID, threadID, implementationItemID, startedAt)
+}
+
+// markAcceptedSourceProposedPlanForItem marks the source plan implemented
+// and emits the refreshed plan item. Idempotent against re-fired
+// EventTurnStart — the store dedupes via ErrProposedPlanAlreadyImplemented.
+func (r *Router) markAcceptedSourceProposedPlanForItem(
+	sourceThreadID, sourceItemID,
+	implementationThreadID, implementationItemID string,
+	implementedAt int64,
+) {
+	if sourceItemID == "" {
+		return
+	}
+	item, found, err := r.store.GetThreadItem(sourceThreadID, sourceItemID)
+	if err != nil {
+		log.Printf("triage: validate source proposed plan %s/%s: %v", sourceThreadID, sourceItemID, err)
+		return
+	}
+	if !found || item.Role != "assistant" || item.PayloadKind != "proposed_plan" {
+		log.Printf("triage: refusing invalid source proposed plan %s/%s", sourceThreadID, sourceItemID)
+		return
+	}
+	if err := r.store.MarkProposedPlanImplemented(sourceThreadID, sourceItemID, implementationThreadID, implementationItemID, implementedAt); err != nil {
 		if !errors.Is(err, store.ErrProposedPlanAlreadyImplemented) {
-			log.Printf("triage: mark proposed plan implemented %s/%s: %v", source.ThreadID, source.ItemID, err)
+			log.Printf("triage: mark proposed plan implemented %s/%s: %v", sourceThreadID, sourceItemID, err)
 		}
 		return
 	}
-	plan, found, err := r.store.GetThreadProposedPlanItem(source.ThreadID, source.ItemID)
+	plan, found, err := r.store.GetThreadProposedPlanItem(sourceThreadID, sourceItemID)
 	if err != nil {
-		log.Printf("triage: refresh implemented proposed plan %s/%s: %v", source.ThreadID, source.ItemID, err)
+		log.Printf("triage: refresh implemented proposed plan %s/%s: %v", sourceThreadID, sourceItemID, err)
+		return
+	}
+	if found {
+		r.emit("provider:item_event", NewItemStreamUpsert(plan))
+	}
+}
+
+// markAcceptedRevisionCommentsForItem stamps the supplied comment
+// IDs as sent against the source plan and emits the refreshed plan item
+// so the frontend's draft/sent counters update. Counterpart helper to
+// markAcceptedSourceProposedPlanForItem.
+func (r *Router) markAcceptedRevisionCommentsForItem(
+	sourceThreadID, sourceItemID string,
+	commentIDs []string,
+	sentAt int64,
+	sentTurnID string,
+) {
+	if sourceItemID == "" || len(commentIDs) == 0 {
+		return
+	}
+	plan, found, err := r.store.GetThreadProposedPlanItem(sourceThreadID, sourceItemID)
+	if err != nil {
+		log.Printf("triage: validate source plan for revision comments %s/%s: %v", sourceThreadID, sourceItemID, err)
+		return
+	}
+	if !found {
+		return
+	}
+	if err := r.store.MarkProposedPlanCommentsSent(sourceThreadID, sourceItemID, commentIDs, sentAt, sentTurnID); err != nil {
+		log.Printf("triage: mark proposed plan comments sent %s/%s: %v", sourceThreadID, sourceItemID, err)
+		return
+	}
+	plan, found, err = r.store.GetThreadProposedPlanItem(sourceThreadID, sourceItemID)
+	if err != nil {
+		log.Printf("triage: refresh proposed plan after comments sent %s/%s: %v", sourceThreadID, sourceItemID, err)
 		return
 	}
 	if found {
