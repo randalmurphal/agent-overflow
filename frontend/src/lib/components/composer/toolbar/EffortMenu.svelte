@@ -19,6 +19,7 @@
   import { addToast } from '../../../stores/toast.svelte';
   import { errString } from '../../../utils/errors';
   import ChevronDown from 'lucide-svelte/icons/chevron-down';
+  import Gauge from 'lucide-svelte/icons/gauge';
   import Popover from '../../primitives/Popover.svelte';
   import Menu from '../../primitives/Menu.svelte';
   import MenuItem from '../../primitives/MenuItem.svelte';
@@ -158,7 +159,8 @@
     'disabled:opacity-60 disabled:cursor-not-allowed',
   ].join(' ')}
 >
-  <span>{triggerLabel}</span>
+  <Icon icon={Gauge} size={13} strokeWidth={1.75} class="opacity-80" />
+  <span class="@max-[519px]:hidden">{triggerLabel}</span>
   <Icon icon={ChevronDown} size={12} strokeWidth={2} class="opacity-60" />
 </button>
 

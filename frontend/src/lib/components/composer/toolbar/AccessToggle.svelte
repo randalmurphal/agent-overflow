@@ -108,7 +108,7 @@
   ].join(' ')}
 >
   <Icon icon={currentMeta.icon} size={13} strokeWidth={1.75} class="opacity-80" />
-  <span>{currentMeta.label}</span>
+  <span class="@max-[519px]:hidden">{currentMeta.label}</span>
   <Icon icon={ChevronDown} size={12} strokeWidth={2} class="opacity-60" />
 </button>
 

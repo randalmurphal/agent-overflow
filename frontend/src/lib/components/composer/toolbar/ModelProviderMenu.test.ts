@@ -70,8 +70,11 @@ describe('<ModelProviderMenu>', () => {
     const { getByTestId } = render(ModelProviderMenu, { props: { pane } });
     const trigger = getByTestId('composer-model-menu-trigger');
     // Provider identification lives in the brand glyph (lucide-claude /
-    // lucide-openai); the label is the model slug only.
-    expect(trigger.textContent ?? '').toMatch(/claude-haiku-4-6/);
+    // lucide-openai); the label is the aliased model slug (the redundant
+    // `claude-` prefix is dropped to give back toolbar room at narrow
+    // composer widths).
+    expect(trigger.textContent ?? '').toMatch(/\bhaiku-4-6\b/);
+    expect(trigger.textContent ?? '').not.toMatch(/claude-haiku-4-6/);
     expect(trigger.textContent ?? '').not.toMatch(/\bClaude\b/);
     expect(trigger.textContent ?? '').not.toMatch(/\bCodex\b/);
   });

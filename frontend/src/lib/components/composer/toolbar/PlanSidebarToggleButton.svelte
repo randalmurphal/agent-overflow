@@ -31,6 +31,6 @@
     ].join(' ')}
   >
     <Icon icon={ListTodo} size={13} strokeWidth={1.75} class="opacity-80" />
-    <span>Plan</span>
+    <span class="@max-[519px]:hidden">Plan</span>
   </button>
 {/if}

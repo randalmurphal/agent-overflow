@@ -140,7 +140,15 @@
   // so we inline them as dedicated Svelte components under
   // primitives/brand/.
   let isCodex = $derived(pane.thread?.provider === 'codex');
-  let modelLabel = $derived(pane.thread?.model ?? 'No model');
+  // Drop the redundant `claude-` prefix on Anthropic models — the brand
+  // glyph already identifies the provider, and the prefix is the longest
+  // expendable run in the toolbar at narrow widths. Codex names already
+  // ship in their natural shorthand (`gpt-5`, etc.) so they pass through.
+  let modelLabel = $derived.by(() => {
+    const raw = pane.thread?.model ?? 'No model';
+    if (!isCodex && raw.startsWith('claude-')) return raw.slice('claude-'.length);
+    return raw;
+  });
 
   // Once any item lands, the thread has picked a lane: a specific
   // provider (Claude or Codex), or — after StartDiscussion — a specific

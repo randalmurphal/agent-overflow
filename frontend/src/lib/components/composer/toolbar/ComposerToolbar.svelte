@@ -48,7 +48,7 @@
 </script>
 
 <div
-  class="flex items-center gap-0.5 px-2.5 pb-2 pt-1"
+  class="@container flex items-center gap-0.5 px-2.5 pb-2 pt-1"
   data-testid="composer-toolbar"
 >
   <ModelProviderMenu {pane} />
