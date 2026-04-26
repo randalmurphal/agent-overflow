@@ -652,8 +652,11 @@ export function GitStageAll(threadID: string): $CancellablePromise<void> {
 
 /**
  * InterruptTurn fires a provider-level interrupt on the thread's active
- * session. Returns an error when no session is active or the provider
- * surface isn't wired up.
+ * session. Returns an error when no session is active, the provider
+ * surface isn't wired up, or the provider's Interrupt call failed
+ * (e.g. CLI never acked the control_request — surfaces as a toast so
+ * a wedged Claude Code CLI is visible to the user rather than silently
+ * masked).
  * 
  * Spec: on user interrupt, any streaming items on the current turn are
  * flipped to errored with a " — stopped" suffix, and a system `error`
