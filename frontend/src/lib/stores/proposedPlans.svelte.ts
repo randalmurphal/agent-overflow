@@ -1,13 +1,20 @@
-import type { Item } from '../types/models';
+import type { Item, ProposedPlanComment } from '../types/models';
 import { latestProposedPlanItem } from '../utils/proposedPlan';
-import { ListThreadProposedPlans } from './bindings';
+import { ListProposedPlanComments, ListThreadProposedPlans } from './bindings';
 import { onItemUpsert } from './events';
 
 const REFRESH_DEBOUNCE_MS = 100;
 const MAX_CACHED_THREADS = 64;
+const MAX_CACHED_PLAN_COMMENTS = 32;
 
 interface ProposedPlanCacheEntry {
   items: Item[];
+  fetchSeq: number;
+  loaded: boolean;
+}
+
+interface ProposedPlanCommentCacheEntry {
+  comments: ProposedPlanComment[];
   fetchSeq: number;
   loaded: boolean;
 }
@@ -19,6 +26,9 @@ let listenerRefCount = 0;
 let cancelItemUpsert: (() => void) | null = null;
 const listenerThreadScopes = new Set<() => string | null | undefined>();
 
+const commentCache = $state<Record<string, ProposedPlanCommentCacheEntry>>({});
+const commentCacheAccess = new Map<string, number>();
+
 function entryForThread(threadId: string): ProposedPlanCacheEntry {
   cache[threadId] ??= {
     items: [],
@@ -27,6 +37,21 @@ function entryForThread(threadId: string): ProposedPlanCacheEntry {
   };
   cacheAccess.set(threadId, Date.now());
   return cache[threadId];
+}
+
+function commentCacheKey(threadId: string, planItemId: string): string {
+  return `${threadId}:${planItemId}`;
+}
+
+function entryForPlanComments(threadId: string, planItemId: string): ProposedPlanCommentCacheEntry {
+  const key = commentCacheKey(threadId, planItemId);
+  commentCache[key] ??= {
+    comments: [],
+    fetchSeq: 0,
+    loaded: false,
+  };
+  commentCacheAccess.set(key, Date.now());
+  return commentCache[key];
 }
 
 export function getThreadProposedPlans(threadId: string | null | undefined): Item[] {
@@ -49,6 +74,22 @@ export function hasLoadedThreadProposedPlans(threadId: string | null | undefined
   return cache[threadId]?.loaded ?? false;
 }
 
+export function getPlanComments(
+  threadId: string | null | undefined,
+  planItemId: string | null | undefined,
+): ProposedPlanComment[] {
+  if (!threadId || !planItemId) return [];
+  const key = commentCacheKey(threadId, planItemId);
+  const entry = commentCache[key];
+  if (!entry) return [];
+  commentCacheAccess.set(key, Date.now());
+  return entry.comments;
+}
+
+// Each call starts its own fetch and uses `fetchSeq` to discard stale
+// resolutions. With both Composer and PlanSidebar registering refresh on
+// thread-switch, the worst case is one redundant fetch per switch — the
+// `fetchSeq` guard ensures the latest result wins.
 export async function refreshThreadProposedPlans(threadId: string | null | undefined): Promise<void> {
   if (!threadId) return;
   const entry = entryForThread(threadId);
@@ -70,6 +111,31 @@ export async function refreshThreadProposedPlans(threadId: string | null | undef
   }
 }
 
+export async function refreshPlanComments(
+  threadId: string | null | undefined,
+  planItemId: string | null | undefined,
+): Promise<void> {
+  if (!threadId || !planItemId) return;
+  const key = commentCacheKey(threadId, planItemId);
+  const entry = entryForPlanComments(threadId, planItemId);
+  const seq = entry.fetchSeq + 1;
+  entry.fetchSeq = seq;
+  try {
+    const next = ((await ListProposedPlanComments(threadId, planItemId)) as ProposedPlanComment[] | null) ?? [];
+    if (entry.fetchSeq !== seq) return;
+    entry.comments = next;
+    entry.loaded = true;
+    commentCacheAccess.set(key, Date.now());
+    evictOldPlanCommentCacheEntries();
+  } catch (err) {
+    if (entry.fetchSeq !== seq) return;
+    console.error('proposedPlans: ListProposedPlanComments failed:', err);
+    entry.comments = [];
+    entry.loaded = true;
+    commentCacheAccess.set(key, Date.now());
+  }
+}
+
 function evictOldPlanCacheEntries(): void {
   const entries = Object.entries(cache);
   if (entries.length <= MAX_CACHED_THREADS) return;
@@ -84,6 +150,17 @@ function evictOldPlanCacheEntries(): void {
   for (const [threadId] of evictionCandidates.slice(0, entries.length - MAX_CACHED_THREADS)) {
     delete cache[threadId];
     cacheAccess.delete(threadId);
+  }
+}
+
+function evictOldPlanCommentCacheEntries(): void {
+  const entries = Object.entries(commentCache);
+  if (entries.length <= MAX_CACHED_PLAN_COMMENTS) return;
+  const evictionCandidates = entries
+    .sort(([a], [b]) => (commentCacheAccess.get(a) ?? 0) - (commentCacheAccess.get(b) ?? 0));
+  for (const [key] of evictionCandidates.slice(0, entries.length - MAX_CACHED_PLAN_COMMENTS)) {
+    delete commentCache[key];
+    commentCacheAccess.delete(key);
   }
 }
 
@@ -142,7 +219,11 @@ export function resetProposedPlanCacheForTests(): void {
   for (const key of Object.keys(cache)) {
     delete cache[key];
   }
+  for (const key of Object.keys(commentCache)) {
+    delete commentCache[key];
+  }
   cacheAccess.clear();
+  commentCacheAccess.clear();
   cancelItemUpsert?.();
   cancelItemUpsert = null;
   listenerThreadScopes.clear();

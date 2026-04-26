@@ -2,7 +2,6 @@
   import MessageSquarePlus from 'lucide-svelte/icons/message-square-plus';
   import X from 'lucide-svelte/icons/x';
   import Pencil from 'lucide-svelte/icons/pencil';
-  import Send from 'lucide-svelte/icons/send';
   import Check from 'lucide-svelte/icons/check';
   import Icon from '../primitives/Icon.svelte';
   import IconButton from '../primitives/IconButton.svelte';
@@ -23,7 +22,6 @@
     markdown: string;
     comments: ProposedPlanComment[];
     onRefresh: () => Promise<void> | void;
-    onSendDrafts: (commentIds: string[]) => Promise<void>;
   }
 
   interface PendingSelection {
@@ -40,19 +38,17 @@
     highlighted: boolean;
   }
 
-  let { threadId, planItemId, markdown, comments, onRefresh, onSendDrafts }: Props = $props();
+  let { threadId, planItemId, markdown, comments, onRefresh }: Props = $props();
 
   let surfaceRoot: HTMLDivElement | undefined = $state(undefined);
   let pendingSelection: PendingSelection | null = $state(null);
   let commentBody = $state('');
   let saving = $state(false);
-  let sending = $state(false);
   let composerOpen = $state(false);
   let editingCommentId = $state<string | null>(null);
   let editBody = $state('');
 
   const sourceBlocks = $derived(splitProposedPlanMarkdownBlocks(markdown));
-  const draftCommentIds = $derived(comments.filter((c) => c.status === 'draft').map((c) => c.id));
   const blockCommentViews = $derived.by<BlockCommentView[]>(() => {
     return sourceBlocks.map((block) => ({
       block,
@@ -171,17 +167,6 @@
     }
   }
 
-  async function sendDrafts(): Promise<void> {
-    if (draftCommentIds.length === 0 || sending) return;
-    sending = true;
-    try {
-      await onSendDrafts(draftCommentIds);
-      await onRefresh();
-    } finally {
-      sending = false;
-    }
-  }
-
   function handleDocumentPointerDown(event: PointerEvent): void {
     if (!pendingSelection || !surfaceRoot) return;
     if (surfaceRoot.contains(event.target as Node)) return;
@@ -199,148 +184,125 @@
 
 </script>
 
-<div class="mt-4">
-  <div class="mb-3 flex items-center justify-end">
-    <Button
-      variant="tinted"
-      size="xs"
-      disabled={draftCommentIds.length === 0 || sending}
-      loading={sending}
-      onclick={() => void sendDrafts()}
-      testId="plan-comments-send"
-    >
-      {#snippet children()}
-        <span class="inline-flex items-center gap-1">
-          <Icon icon={Send} size={12} />
-          Send
-          {#if draftCommentIds.length > 0}
-            <span class="inline-flex min-w-4 items-center justify-center rounded-full bg-accent/20 px-1 text-[10px] font-semibold leading-4 text-accent">
-              {draftCommentIds.length}
-            </span>
-          {/if}
-        </span>
-      {/snippet}
-    </Button>
-  </div>
-
-  <div
-    bind:this={surfaceRoot}
-    class="relative"
-    role="region"
-    aria-label="Selectable proposed plan"
-  >
-    <div class="space-y-3">
-      {#each blockCommentViews as view (view.block.id)}
-        {@const block = view.block}
-        <div>
-          <div
-            data-plan-source-block
-            data-line-start={block.startLine}
-            data-line-end={block.endLine}
-            class={[
-              'rounded-md px-2 py-1 -mx-2 transition-colors',
-              view.highlighted ? 'bg-accent/8 ring-1 ring-accent/20' : '',
-            ].join(' ')}
-          >
-            <ChatMarkdown source={block.markdown} class="select-text" />
-          </div>
-          {#if view.anchoredComments.length > 0}
-            <div class="mt-2 space-y-2 pl-3">
-              {#each view.anchoredComments as comment (comment.id)}
-                <div
-                  class={[
-                    'rounded-md border p-2.5 text-[12px]',
-                    comment.status === 'draft'
-                      ? 'border-accent/30 bg-accent/8'
-                      : 'border-border-subtle bg-surface-0/70',
-                  ].join(' ')}
-                  data-testid="plan-comment"
-                >
-                  <div class="mb-1.5 flex items-center justify-between gap-2">
-                    <span class={[
-                      'text-[10px] font-semibold uppercase tracking-wide',
-                      comment.status === 'resolved'
-                        ? 'text-fg-hint'
-                        : comment.status === 'sent'
-                          ? 'text-success'
-                          : 'text-accent',
-                    ].join(' ')}>
-                      {comment.status === 'resolved' ? 'Resolved' : comment.status === 'sent' ? 'Sent' : 'Draft'}
-                    </span>
-                    {#if comment.status === 'draft'}
-                      <div class="flex items-center gap-1">
-                        <IconButton label="Edit comment" size="sm" onClick={() => beginEdit(comment)}>
-                          {#snippet children()}<Icon icon={Pencil} size={12} />{/snippet}
-                        </IconButton>
-                        <IconButton label="Delete comment" size="sm" onClick={() => void deleteComment(comment)}>
-                          {#snippet children()}<Icon icon={X} size={12} />{/snippet}
-                        </IconButton>
-                      </div>
-                    {/if}
-                  </div>
-                  <p class="mb-2 line-clamp-2 border-l border-border-subtle pl-2 text-[11px] text-fg-muted">
-                    {comment.selectedText}
-                  </p>
-                  {#if editingCommentId === comment.id && comment.status === 'draft'}
-                    <textarea
-                      bind:value={editBody}
-                      rows="3"
-                      class="w-full resize-y rounded-md border border-border-subtle bg-surface-0 px-2 py-1.5 text-[12px] text-fg outline-none focus:border-accent focus:ring-2 focus:ring-accent/30"
-                    ></textarea>
-                    <div class="mt-1 flex justify-end gap-1">
-                      <Button variant="ghost" size="xs" onclick={() => { editingCommentId = null; editBody = ''; }}>
-                        {#snippet children()}Cancel{/snippet}
-                      </Button>
-                      <Button variant="tinted" size="xs" onclick={() => void saveEdit(comment)}>
-                        {#snippet children()}
-                          <span class="inline-flex items-center gap-1"><Icon icon={Check} size={12} />Save</span>
-                        {/snippet}
-                      </Button>
+<div
+  bind:this={surfaceRoot}
+  class="relative"
+  role="region"
+  aria-label="Selectable proposed plan"
+>
+  <div class="space-y-3">
+    {#each blockCommentViews as view (view.block.id)}
+      {@const block = view.block}
+      <div>
+        <div
+          data-plan-source-block
+          data-line-start={block.startLine}
+          data-line-end={block.endLine}
+          class={[
+            'rounded-md px-2 py-1 -mx-2 transition-colors',
+            view.highlighted ? 'bg-accent/5' : '',
+          ].join(' ')}
+        >
+          <ChatMarkdown source={block.markdown} class="select-text" />
+        </div>
+        {#if view.anchoredComments.length > 0}
+          <div class="mt-2 space-y-2 pl-3">
+            {#each view.anchoredComments as comment (comment.id)}
+              <div
+                class={[
+                  'border-l-2 pl-3 py-0.5 text-[12px]',
+                  comment.status === 'draft'
+                    ? 'border-accent/60'
+                    : comment.status === 'sent'
+                      ? 'border-success/40'
+                      : 'border-border-subtle',
+                ].join(' ')}
+                data-testid="plan-comment"
+              >
+                <div class="mb-1 flex items-center justify-between gap-2">
+                  <span class={[
+                    'text-[10px] font-medium uppercase tracking-wide',
+                    comment.status === 'resolved'
+                      ? 'text-fg-hint'
+                      : comment.status === 'sent'
+                        ? 'text-success'
+                        : 'text-accent',
+                  ].join(' ')}>
+                    {comment.status === 'resolved' ? 'Resolved' : comment.status === 'sent' ? 'Sent' : 'Draft'}
+                  </span>
+                  {#if comment.status === 'draft'}
+                    <div class="flex items-center gap-0.5">
+                      <IconButton label="Edit comment" size="sm" onClick={() => beginEdit(comment)}>
+                        {#snippet children()}<Icon icon={Pencil} size={12} />{/snippet}
+                      </IconButton>
+                      <IconButton label="Delete comment" size="sm" onClick={() => void deleteComment(comment)}>
+                        {#snippet children()}<Icon icon={X} size={12} />{/snippet}
+                      </IconButton>
                     </div>
-                  {:else}
-                    <p class="whitespace-pre-wrap text-fg-muted">{comment.body}</p>
                   {/if}
                 </div>
-              {/each}
-            </div>
-          {/if}
-        </div>
-      {/each}
-    </div>
-
-    {#if pendingSelection && !composerOpen}
-      <button
-        type="button"
-        class="absolute z-10 inline-flex items-center gap-1.5 rounded-full border border-border bg-surface-1 px-2.5 py-1 text-[12px] font-medium text-fg shadow-menu hover:border-accent/50 hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
-        style={`top: ${pendingSelection.top}px; left: ${pendingSelection.left}px;`}
-        onclick={() => (composerOpen = true)}
-        data-testid="plan-comment-trigger"
-      >
-        <Icon icon={MessageSquarePlus} size={13} />
-        Comment
-      </button>
-    {:else if pendingSelection}
-      <div
-        class="absolute z-10 w-[18rem] rounded-md border border-border bg-surface-1 p-2.5 shadow-menu"
-        style={`top: ${pendingSelection.top}px; left: ${pendingSelection.left}px;`}
-        data-testid="plan-comment-composer"
-      >
-        <p class="mb-1 line-clamp-2 text-[11px] text-fg-muted">"{pendingSelection.text}"</p>
-        <textarea
-          bind:value={commentBody}
-          rows="3"
-          placeholder="Leave a revision note..."
-          class="w-full resize-y rounded-md border border-border-subtle bg-surface-0 px-2 py-1.5 text-[12px] text-fg outline-none placeholder:text-fg-hint focus:border-accent focus:ring-2 focus:ring-accent/30"
-        ></textarea>
-        <div class="mt-2 flex justify-end gap-1.5">
-          <Button variant="ghost" size="xs" onclick={clearSelection}>
-            {#snippet children()}Cancel{/snippet}
-          </Button>
-          <Button variant="tinted" size="xs" loading={saving} onclick={() => void saveComment()} testId="plan-comment-save">
-            {#snippet children()}Comment{/snippet}
-          </Button>
-        </div>
+                <p class="mb-1.5 line-clamp-2 italic text-[11px] text-fg-muted">
+                  "{comment.selectedText}"
+                </p>
+                {#if editingCommentId === comment.id && comment.status === 'draft'}
+                  <textarea
+                    bind:value={editBody}
+                    rows="3"
+                    class="w-full resize-y rounded-md border border-border-subtle bg-surface-0 px-2 py-1.5 text-[12px] text-fg outline-none focus:border-accent focus:ring-2 focus:ring-accent/30"
+                  ></textarea>
+                  <div class="mt-1 flex justify-end gap-1">
+                    <Button variant="ghost" size="xs" onclick={() => { editingCommentId = null; editBody = ''; }}>
+                      {#snippet children()}Cancel{/snippet}
+                    </Button>
+                    <Button variant="tinted" size="xs" onclick={() => void saveEdit(comment)}>
+                      {#snippet children()}
+                        <span class="inline-flex items-center gap-1"><Icon icon={Check} size={12} />Save</span>
+                      {/snippet}
+                    </Button>
+                  </div>
+                {:else}
+                  <p class="whitespace-pre-wrap text-fg-muted">{comment.body}</p>
+                {/if}
+              </div>
+            {/each}
+          </div>
+        {/if}
       </div>
-    {/if}
+    {/each}
   </div>
+
+  {#if pendingSelection && !composerOpen}
+    <button
+      type="button"
+      class="absolute z-10 inline-flex items-center gap-1.5 rounded-md bg-surface-1 px-2.5 py-1 text-[12px] font-medium text-fg shadow-menu hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+      style={`top: ${pendingSelection.top}px; left: ${pendingSelection.left}px;`}
+      onclick={() => (composerOpen = true)}
+      data-testid="plan-comment-trigger"
+    >
+      <Icon icon={MessageSquarePlus} size={13} />
+      Comment
+    </button>
+  {:else if pendingSelection}
+    <div
+      class="absolute z-10 w-[18rem] rounded-md border border-border bg-surface-1 p-2.5 shadow-menu"
+      style={`top: ${pendingSelection.top}px; left: ${pendingSelection.left}px;`}
+      data-testid="plan-comment-composer"
+    >
+      <p class="mb-1 line-clamp-2 italic text-[11px] text-fg-muted">"{pendingSelection.text}"</p>
+      <textarea
+        bind:value={commentBody}
+        rows="3"
+        placeholder="Leave a revision note..."
+        class="w-full resize-y rounded-md border border-border-subtle bg-surface-0 px-2 py-1.5 text-[12px] text-fg outline-none placeholder:text-fg-hint focus:border-accent focus:ring-2 focus:ring-accent/30"
+      ></textarea>
+      <div class="mt-2 flex justify-end gap-1.5">
+        <Button variant="ghost" size="xs" onclick={clearSelection}>
+          {#snippet children()}Cancel{/snippet}
+        </Button>
+        <Button variant="tinted" size="xs" loading={saving} onclick={() => void saveComment()} testId="plan-comment-save">
+          {#snippet children()}Comment{/snippet}
+        </Button>
+      </div>
+    </div>
+  {/if}
 </div>

@@ -2,7 +2,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import PlanSidebar from './PlanSidebar.svelte';
-import { buildPane, emitItemEventUpsert, makeItem } from '../../../test/helpers/chat';
+import { buildPane, emitItemEventUpsert, makeItem, makeThread } from '../../../test/helpers/chat';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { resetWailsMocks } from '../../../test/mocks/wailsio-runtime';
 import { setupEventListeners } from '../../stores/events';
@@ -97,6 +97,172 @@ describe('<PlanSidebar>', () => {
     await fireEvent.click(getByTestId('plan-sidebar-close'));
 
     expect(pane.showPlanSidebar).toBe(false);
+  });
+
+  it('shows the Send N drafts button only when there are draft comments', async () => {
+    setBindingMock('ListThreadProposedPlans', async () => [
+      makeItem({
+        id: 'plan-1',
+        turnIndex: 0,
+        itemIndex: 0,
+        kind: 'tool_call',
+        payloadId: 'payload-1',
+        payloadKind: 'proposed_plan',
+        payloadMeta: JSON.stringify({
+          title: 'A plan',
+          preview: 'preview',
+          lineCount: 1,
+          charCount: 6,
+        }),
+      }),
+    ]);
+    setBindingMock('ListProposedPlanComments', async () => [
+      {
+        id: 'c1',
+        threadId: 't',
+        planItemId: 'plan-1',
+        status: 'draft',
+        startLine: 1,
+        endLine: 1,
+        selectedText: '# A plan',
+        body: 'first',
+        createdAt: 1,
+        updatedAt: 1,
+      },
+      {
+        id: 'c2',
+        threadId: 't',
+        planItemId: 'plan-1',
+        status: 'draft',
+        startLine: 1,
+        endLine: 1,
+        selectedText: '# A plan',
+        body: 'second',
+        createdAt: 2,
+        updatedAt: 2,
+      },
+      {
+        id: 'c3',
+        threadId: 't',
+        planItemId: 'plan-1',
+        status: 'sent',
+        startLine: 1,
+        endLine: 1,
+        selectedText: '# A plan',
+        body: 'sent already',
+        createdAt: 3,
+        updatedAt: 3,
+      },
+    ]);
+    const pane = await buildPane();
+    pane.setShowPlanSidebar(true);
+
+    const { findByTestId } = await renderSidebar(pane);
+
+    const send = await findByTestId('plan-comments-send');
+    expect(send).toHaveTextContent('Send 2 comments');
+  });
+
+  it('hides the Send button when no drafts exist', async () => {
+    setBindingMock('ListThreadProposedPlans', async () => [
+      makeItem({
+        id: 'plan-1',
+        turnIndex: 0,
+        itemIndex: 0,
+        kind: 'tool_call',
+        payloadId: 'payload-1',
+        payloadKind: 'proposed_plan',
+        payloadMeta: JSON.stringify({
+          title: 'A plan',
+          preview: 'preview',
+          lineCount: 1,
+          charCount: 6,
+        }),
+      }),
+    ]);
+    setBindingMock('ListProposedPlanComments', async () => [
+      {
+        id: 'c1',
+        threadId: 't',
+        planItemId: 'plan-1',
+        status: 'sent',
+        startLine: 1,
+        endLine: 1,
+        selectedText: '# A plan',
+        body: 'sent already',
+        createdAt: 1,
+        updatedAt: 1,
+      },
+    ]);
+    const pane = await buildPane();
+    pane.setShowPlanSidebar(true);
+
+    // Wait for the comment body to render so we know ListProposedPlanComments
+    // resolved — without this gate, the Send-button assertion could pass
+    // simply because the comments fetch hadn't returned yet.
+    const { queryByTestId, findByText } = await renderSidebar(pane);
+    await findByText('sent already');
+
+    expect(queryByTestId('plan-comments-send')).toBeNull();
+  });
+
+  it('sends draft comments and hides the Send button after they flip to sent', async () => {
+    setBindingMock('ListThreadProposedPlans', async () => [
+      makeItem({
+        id: 'plan-1',
+        turnIndex: 0,
+        itemIndex: 0,
+        kind: 'tool_call',
+        payloadId: 'payload-1',
+        payloadKind: 'proposed_plan',
+        payloadMeta: JSON.stringify({
+          title: 'A plan',
+          preview: 'preview',
+          lineCount: 1,
+          charCount: 6,
+        }),
+      }),
+    ]);
+    let listCallCount = 0;
+    setBindingMock('ListProposedPlanComments', async () => {
+      listCallCount += 1;
+      const status = listCallCount === 1 ? 'draft' : 'sent';
+      return [
+        {
+          id: 'c1',
+          threadId: 't',
+          planItemId: 'plan-1',
+          status,
+          startLine: 1,
+          endLine: 1,
+          selectedText: '# A plan',
+          body: 'first',
+          createdAt: 1,
+          updatedAt: 1,
+        },
+      ];
+    });
+    const sendBinding = setBindingMock(
+      'SendPlanRevisionComments',
+      async () => makeThread({ id: 'thread-1' }),
+    );
+
+    const pane = await buildPane(makeThread({ id: 'thread-1' }));
+    pane.setShowPlanSidebar(true);
+
+    const { findByTestId, queryByTestId } = await renderSidebar(pane);
+
+    const send = await findByTestId('plan-comments-send');
+    expect(send).toHaveTextContent('Send 1 comment');
+
+    await fireEvent.click(send);
+
+    await waitFor(() => {
+      expect(sendBinding).toHaveBeenCalledWith('thread-1', 'plan-1', ['c1']);
+    });
+    await waitFor(() => {
+      expect(queryByTestId('plan-comments-send')).toBeNull();
+    });
   });
 
   it('re-fetches the current plan when a proposed_plan upsert lands for this thread', async () => {

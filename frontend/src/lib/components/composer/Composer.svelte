@@ -21,9 +21,11 @@
   import { createComposerMentions } from './composerMentions.svelte';
   import { createComposerUploads } from './composerUploads.svelte';
   import { dispatchInterrupt, dispatchSend } from './composerSend';
-  import { ListProposedPlanComments, RespondToApproval, RespondToUserInput, type ApprovalResponse, type UserInputResponse } from '../../stores/bindings';
+  import { RespondToApproval, RespondToUserInput, type ApprovalResponse, type UserInputResponse } from '../../stores/bindings';
   import {
+    getPlanComments,
     getThreadCurrentProposedPlan,
+    refreshPlanComments,
     refreshThreadProposedPlans,
     retainProposedPlanEventListener,
   } from '../../stores/proposedPlans.svelte';
@@ -86,8 +88,6 @@
   let userInputCustomAnswer = $state('');
   let sending = $state(false);
   let preparingWorktree = $state(false);
-  let latestPlanDraftComments: ProposedPlanComment[] = $state([]);
-  let planCommentLoadSeq = 0;
   let releasePlanEvents: (() => void) | null = null;
   let locallyImplementedPlanIds = $state<Set<string>>(new Set());
   let hasDraftContent = $derived(
@@ -101,6 +101,15 @@
     return sourceFromProposedPlanItem(pane.threadId, latestPlanItem);
   });
   let latestPlanCommentRefreshKey = $derived(latestPlanItem ? `${latestPlanItem.id}:${latestPlanItem.updatedAt}:${latestPlanItem.meta ?? ''}` : '');
+  // Comments live in the per-(threadId, planItemId) store cache so the
+  // Composer's "Send N comments" / "Implement" / "Refine" label and the
+  // PlanSidebar's footer Send button observe the same source after CRUD or
+  // a sendDrafts call.
+  let latestPlanDraftComments: ProposedPlanComment[] = $derived(
+    latestPlanSource
+      ? getPlanComments(latestPlanSource.threadId, latestPlanSource.itemId).filter((c) => c.status === 'draft')
+      : [],
+  );
   let hasDraftPlanComments = $derived(latestPlanSource !== null && latestPlanDraftComments.length > 0);
   let hasPlanImplementAction = $derived(Boolean(latestPlanSource) && !hasDraftContent && !hasDraftPlanComments);
   let hasPlanCommentAction = $derived(Boolean(latestPlanSource) && hasDraftPlanComments);
@@ -161,20 +170,8 @@
   $effect(() => {
     const source = latestPlanSource;
     latestPlanCommentRefreshKey;
-    const seq = ++planCommentLoadSeq;
-    latestPlanDraftComments = [];
     if (!source?.threadId || !source.itemId) return;
-    ListProposedPlanComments(source.threadId, source.itemId)
-      .then((comments) => {
-        if (seq !== planCommentLoadSeq) return;
-        latestPlanDraftComments = ((comments ?? []) as ProposedPlanComment[])
-          .filter((comment) => comment.status === 'draft');
-      })
-      .catch((err) => {
-        if (seq !== planCommentLoadSeq) return;
-        console.error('Failed to load draft plan comments:', err);
-        latestPlanDraftComments = [];
-      });
+    untrack(() => { void refreshPlanComments(source.threadId, source.itemId); });
   });
 
   // Reset slash cache when the pane's thread changes. Pane-scoped state lives
