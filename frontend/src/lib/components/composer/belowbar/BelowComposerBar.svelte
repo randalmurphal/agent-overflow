@@ -19,14 +19,16 @@
 </script>
 
 {#if pane.thread}
-  <div
-    class="flex items-center justify-between gap-2 px-4 py-1.5 text-[11px] text-text-secondary"
-    data-testid="below-composer-bar"
-  >
-    <div class="flex min-w-0 items-center gap-2">
-      <EnvPicker {pane} {workspaceLock} />
-      <WorktreeNameInput {pane} />
+  <div class="px-6">
+    <div
+      class="mx-auto flex w-full max-w-[52rem] items-center justify-between gap-2 py-1.5 text-[11px] text-text-secondary"
+      data-testid="below-composer-bar"
+    >
+      <div class="flex min-w-0 items-center gap-2">
+        <EnvPicker {pane} {workspaceLock} />
+        <WorktreeNameInput {pane} />
+      </div>
+      <BranchPicker {pane} {workspaceLock} />
     </div>
-    <BranchPicker {pane} {workspaceLock} />
   </div>
 {/if}
