@@ -180,10 +180,14 @@
     <!--
       The Wails app server hosts its JS bridge at /wails/runtime.js;
       without it window.wails is undefined and pick() can't reach the
-      bound PickDistro method. Loaded ahead of the inline script below
-      so the bridge is ready by the time the user clicks a row.
+      bound PickDistro method. The bundled runtime is an ES module
+      (it ends with `export { ... }`), so it MUST load with
+      type="module" — a plain script tag triggers a SyntaxError and
+      window.wails never gets assigned. Module load is deferred, but
+      pick() doesn't run until the user clicks a row, so the bridge
+      is ready by then.
     -->
-    <script src="/wails/runtime.js"></script>
+    <script type="module" src="/wails/runtime.js"></script>
   </head>
   <body>
     <div class="container">

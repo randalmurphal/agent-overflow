@@ -76,6 +76,18 @@ func TestRenderPicker_EmptyDistros(t *testing.T) {
 	}
 }
 
+// TestPickerHTML_RuntimeJSLoadedAsModule pins the type="module" attribute
+// on the runtime.js script tag. The Wails v3 bundled runtime ends with a
+// top-level `export { ... }` declaration; loading it via a plain <script>
+// tag throws a SyntaxError and never assigns window.wails, which surfaces
+// as the "Wails bridge unavailable" picker error. Stripping the attribute
+// silently re-breaks the picker — the test guards that seam.
+func TestPickerHTML_RuntimeJSLoadedAsModule(t *testing.T) {
+	if !strings.Contains(pickerHTML, `<script type="module" src="/wails/runtime.js"></script>`) {
+		t.Errorf("picker.html must load /wails/runtime.js with type=\"module\"; runtime is an ES module and a plain <script> tag triggers a SyntaxError that leaves window.wails undefined")
+	}
+}
+
 func injectionExcerpt(body string) string {
 	i := strings.Index(body, "<script>window.__AO_")
 	if i < 0 {
