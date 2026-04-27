@@ -4,6 +4,13 @@ import { tick } from 'svelte';
 import { loadSettings } from '../../stores/settings.svelte';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { buildPane, makeItem, makeThread } from '../../../test/helpers/chat';
+import {
+  installControllableResizeObserver,
+  nextFrame,
+  rect,
+  setElementRect,
+  setScrollGeometry,
+} from '../../../test/helpers/scrollDom';
 import { createThreadPane, type SettledTurn } from '../../stores/thread.svelte';
 import { getToasts } from '../../stores/toast.svelte';
 import MessageTimeline, { clearMessageTimelineScrollSnapshotsForTest } from './MessageTimeline.svelte';
@@ -20,75 +27,6 @@ function makeSettledTurn(overrides: Partial<SettledTurn> = {}): SettledTurn {
     aborted: false,
     errorMessage: '',
     ...overrides,
-  };
-}
-
-function rect(partial: Partial<DOMRect>): DOMRect {
-  return {
-    bottom: 0,
-    height: 0,
-    left: 0,
-    right: 0,
-    top: 0,
-    width: 0,
-    x: 0,
-    y: 0,
-    toJSON: () => ({}),
-    ...partial,
-  };
-}
-
-function setElementRect(el: Element, partial: Partial<DOMRect>): void {
-  Object.defineProperty(el, 'getBoundingClientRect', {
-    configurable: true,
-    value: () => rect(partial),
-  });
-}
-
-function setScrollGeometry(
-  el: HTMLElement,
-  geometry: { scrollHeight: () => number; clientHeight: () => number; top?: number },
-): void {
-  Object.defineProperty(el, 'scrollHeight', {
-    configurable: true,
-    get: geometry.scrollHeight,
-  });
-  Object.defineProperty(el, 'clientHeight', {
-    configurable: true,
-    get: geometry.clientHeight,
-  });
-  setElementRect(el, {
-    top: geometry.top ?? 0,
-    bottom: (geometry.top ?? 0) + geometry.clientHeight(),
-    height: geometry.clientHeight(),
-  });
-}
-
-async function nextFrame(): Promise<void> {
-  await new Promise((resolve) => requestAnimationFrame(resolve));
-}
-
-function installControllableResizeObserver() {
-  const previous = globalThis.ResizeObserver;
-  const callbacks: ResizeObserverCallback[] = [];
-  class StubResizeObserver {
-    constructor(callback: ResizeObserverCallback) {
-      callbacks.push(callback);
-    }
-    observe() {}
-    unobserve() {}
-    disconnect() {}
-  }
-  globalThis.ResizeObserver = StubResizeObserver as unknown as typeof ResizeObserver;
-  return {
-    trigger() {
-      for (const callback of callbacks) {
-        callback([], {} as ResizeObserver);
-      }
-    },
-    restore() {
-      globalThis.ResizeObserver = previous;
-    },
   };
 }
 
@@ -973,6 +911,11 @@ describe('<MessageTimeline>', () => {
         });
       });
 
+      // Wheel-up flips intent to free; the live-anchor effect would
+      // otherwise consider the timeline pinned and skip anchor work.
+      // The test then asserts that without a timelineRevision change,
+      // no anchor restoration runs (the user's scroll position holds).
+      await fireEvent.wheel(scroll, { deltaY: -100 });
       scroll.scrollTop = 350;
       await fireEvent.scroll(scroll);
       await tick();
@@ -981,7 +924,7 @@ describe('<MessageTimeline>', () => {
       expect(scroll.scrollTop).toBe(350);
     });
 
-    it('cancels a scheduled bottom stick frame when the user scrolls away before it runs', async () => {
+    it('flipping intent to free with a wheel-up cancels a pending stick rAF and stays free across subsequent growth', async () => {
       const pane = await buildWindowedPane({
         items: [makeItem({ id: 'tail', turnIndex: 10, summary: 'tail' })],
       });
@@ -1010,12 +953,64 @@ describe('<MessageTimeline>', () => {
       await rerender({ pane });
       await tick();
 
+      // Real user gesture: wheel-up flips intent free synchronously.
+      // The scheduled stick rAF re-checks intent at the top and bails.
+      await fireEvent.wheel(scroll, { deltaY: -100 });
       scroll.scrollTop = 350;
       await fireEvent.scroll(scroll);
       await tick();
       await new Promise((resolve) => requestAnimationFrame(resolve));
 
       expect(scroll.scrollTop).toBe(350);
+
+      // Durability: a SECOND content-grow after the wheel-up must not
+      // resurrect the pending stick. If intent flipped back on its own,
+      // the upsert below would auto-scroll to the new bottom.
+      pane.upsertItem(makeItem({
+        id: 'newer-tail',
+        turnIndex: 12,
+        itemIndex: 0,
+        summary: 'newer tail',
+      }));
+      scrollHeightValue = 1300;
+      await rerender({ pane });
+      await tick();
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+
+      expect(scroll.scrollTop).toBe(350);
+    });
+
+    it('shows the scroll-to-bottom button when intent flips free and clicking it re-sticks', async () => {
+      const pane = await buildWindowedPane({
+        items: [makeItem({ id: 'tail', turnIndex: 10, summary: 'tail' })],
+      });
+
+      const { container, queryByTestId, getByTestId } = render(MessageTimeline, { props: { pane } });
+      const scroll = container.querySelector('[role="log"]') as HTMLElement;
+      Object.defineProperty(scroll, 'scrollHeight', {
+        configurable: true,
+        get: () => 1000,
+      });
+      Object.defineProperty(scroll, 'clientHeight', {
+        configurable: true,
+        get: () => 600,
+      });
+      scroll.scrollTop = 400;
+      await fireEvent.scroll(scroll);
+
+      // Sticky on initial render → button hidden.
+      expect(queryByTestId('scroll-to-bottom')).toBeNull();
+
+      // Wheel up flips intent → button appears.
+      await fireEvent.wheel(scroll, { deltaY: -100 });
+      await tick();
+      const button = getByTestId('scroll-to-bottom');
+      expect(button).toBeInTheDocument();
+
+      // Click re-sticks (forceStick) → button hides again.
+      await fireEvent.click(button);
+      await tick();
+      expect(queryByTestId('scroll-to-bottom')).toBeNull();
     });
   });
 

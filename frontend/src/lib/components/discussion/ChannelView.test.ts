@@ -184,7 +184,14 @@ describe('<ChannelView>', () => {
     expect(pane.channelMessages.map((m) => m.sequence)).toEqual([1, 2, 3]);
   });
 
-  it('cancels a scheduled bottom stick frame when the user scrolls away before it runs', async () => {
+  it('stays put when a wheel-up gesture flips intent to free, durably across subsequent message arrivals', async () => {
+    // The intent model deliberately ignores "scrollTop changed without a
+    // user gesture" — only real gestures (wheel/key/touch/drag) flip
+    // intent away from sticky. Here we simulate a wheel-up gesture
+    // before the auto-scroll rAF fires; the controller flips to free
+    // and the rAF re-checks intent at the top, bailing out. The second
+    // assertion exercises durability: a later message arrival must NOT
+    // resurrect stickiness — the floating button is the only re-arm.
     const pane = await buildPane();
     let callCount = 0;
     setBindingMock('GetChannelMessages', async () => {
@@ -192,7 +199,10 @@ describe('<ChannelView>', () => {
       if (callCount === 1) {
         return [makeMsg({ id: 'a', sequence: 1, content: 'first' })];
       }
-      return [makeMsg({ id: 'b', sequence: 2, content: 'second' })];
+      if (callCount === 2) {
+        return [makeMsg({ id: 'b', sequence: 2, content: 'second' })];
+      }
+      return [makeMsg({ id: 'c', sequence: 3, content: 'third' })];
     });
 
     const { getByTestId } = render(ChannelView, { props: { pane, channelId: 'channel-1' } });
@@ -215,8 +225,21 @@ describe('<ChannelView>', () => {
     scrollHeightValue = 1100;
     await vi.advanceTimersByTimeAsync(2500);
     for (let i = 0; i < 5; i++) await Promise.resolve();
+
+    // Real user gesture: wheel up. Sets intent='free' synchronously.
+    await fireEvent.wheel(scroll, { deltaY: -100 });
     scroll.scrollTop = 350;
     await fireEvent.scroll(scroll);
+    await vi.advanceTimersByTimeAsync(16);
+    for (let i = 0; i < 3; i++) await Promise.resolve();
+
+    expect(scroll.scrollTop).toBe(350);
+
+    // Durability: another poll cycle delivers a new message and grows
+    // scrollHeight. Intent must stay free; scrollTop must not move.
+    scrollHeightValue = 1250;
+    await vi.advanceTimersByTimeAsync(2500);
+    for (let i = 0; i < 5; i++) await Promise.resolve();
     await vi.advanceTimersByTimeAsync(16);
     for (let i = 0; i < 3; i++) await Promise.resolve();
 

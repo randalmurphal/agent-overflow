@@ -8,7 +8,6 @@ describe('scrollDeltaForMeasuredRowChange', () => {
       nextHeight: 260,
       rowBottom: 40,
       viewportTop: 100,
-      userPinnedToBottom: false,
     })).toBe(160);
   });
 
@@ -18,7 +17,6 @@ describe('scrollDeltaForMeasuredRowChange', () => {
       nextHeight: 260,
       rowBottom: 140,
       viewportTop: 100,
-      userPinnedToBottom: false,
     })).toBe(160);
   });
 
@@ -28,18 +26,7 @@ describe('scrollDeltaForMeasuredRowChange', () => {
       nextHeight: 100,
       rowBottom: -120,
       viewportTop: 100,
-      userPinnedToBottom: false,
     })).toBe(-160);
-  });
-
-  it('does not adjust while the user is pinned to the bottom', () => {
-    expect(scrollDeltaForMeasuredRowChange({
-      previousHeight: 100,
-      nextHeight: 260,
-      rowBottom: 40,
-      viewportTop: 100,
-      userPinnedToBottom: true,
-    })).toBe(0);
   });
 
   it('does not adjust the initial measurement or rows that were inside the viewport', () => {
@@ -48,7 +35,6 @@ describe('scrollDeltaForMeasuredRowChange', () => {
       nextHeight: 260,
       rowBottom: 40,
       viewportTop: 100,
-      userPinnedToBottom: false,
     })).toBe(0);
 
     expect(scrollDeltaForMeasuredRowChange({
@@ -56,7 +42,6 @@ describe('scrollDeltaForMeasuredRowChange', () => {
       nextHeight: 260,
       rowBottom: 280,
       viewportTop: 100,
-      userPinnedToBottom: false,
     })).toBe(0);
   });
 });

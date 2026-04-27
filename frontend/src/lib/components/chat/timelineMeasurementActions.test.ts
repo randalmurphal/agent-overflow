@@ -1,20 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createTimelineMeasurementActions } from './timelineMeasurementActions';
-
-function rect(partial: Partial<DOMRect>): DOMRect {
-  return {
-    bottom: 0,
-    height: 0,
-    left: 0,
-    right: 0,
-    top: 0,
-    width: 0,
-    x: 0,
-    y: 0,
-    toJSON: () => ({}),
-    ...partial,
-  };
-}
+import { installControllableResizeObserver, rect } from '../../../test/helpers/scrollDom';
 
 describe('createTimelineMeasurementActions', () => {
   it('anchors the viewport when an initially estimated row above the viewport is first measured', () => {
@@ -33,7 +19,7 @@ describe('createTimelineMeasurementActions', () => {
       estimatedRowHeight: 140,
       getRowHeight: (key) => rowHeights.get(key),
       getScrollContainer: () => scrollContainer,
-      getUserPinnedToBottom: () => false,
+      getIsSticky: () => false,
       onRowHeightChanged: () => {
         revisionCount += 1;
       },
@@ -70,7 +56,7 @@ describe('createTimelineMeasurementActions', () => {
       estimatedRowHeight: 140,
       getRowHeight: (key) => rowHeights.get(key),
       getScrollContainer: () => scrollContainer,
-      getUserPinnedToBottom: () => false,
+      getIsSticky: () => false,
       onRowHeightChanged: () => {},
       setRowHeight: (key, height) => {
         rowHeights.set(key, height);
@@ -107,7 +93,7 @@ describe('createTimelineMeasurementActions', () => {
       estimatedRowHeight: 140,
       getRowHeight: (key) => rowHeights.get(key),
       getScrollContainer: () => scrollContainer,
-      getUserPinnedToBottom: () => true,
+      getIsSticky: () => true,
       onRowHeightChanged: () => {},
       setRowHeight: (key, height) => {
         rowHeights.set(key, height);
@@ -127,23 +113,13 @@ describe('createTimelineMeasurementActions', () => {
 
   it('syncs viewport state on scroll container resize without touching bottom intent', () => {
     let synced = 0;
-    const previous = globalThis.ResizeObserver;
-    const callbacks: ResizeObserverCallback[] = [];
-    class StubResizeObserver {
-      constructor(cb: ResizeObserverCallback) {
-        callbacks.push(cb);
-      }
-      observe() {}
-      unobserve() {}
-      disconnect() {}
-    }
-    globalThis.ResizeObserver = StubResizeObserver as unknown as typeof ResizeObserver;
+    const resize = installControllableResizeObserver();
     try {
       const actions = createTimelineMeasurementActions({
         estimatedRowHeight: 140,
         getRowHeight: () => undefined,
         getScrollContainer: () => undefined,
-        getUserPinnedToBottom: () => {
+        getIsSticky: () => {
           throw new Error('container resize must not inspect bottom intent');
         },
         onRowHeightChanged: () => {},
@@ -155,13 +131,16 @@ describe('createTimelineMeasurementActions', () => {
       });
 
       const action = actions.measureScrollContainer({} as HTMLElement);
-      expect(callbacks).toHaveLength(1);
-      callbacks[0]([], {} as ResizeObserver);
+      // Trigger the registered ResizeObserver callback once. We expect
+      // `synced` to be exactly 2 (one from measureScrollContainer's
+      // initial sync, one from the trigger). If multiple callbacks were
+      // registered, synced would jump higher.
+      resize.trigger();
 
       expect(synced).toBe(2);
       action.destroy();
     } finally {
-      globalThis.ResizeObserver = previous;
+      resize.restore();
     }
   });
 });

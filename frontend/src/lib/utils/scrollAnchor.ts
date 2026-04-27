@@ -3,11 +3,9 @@ type MeasuredRowChange = {
   nextHeight: number;
   rowBottom: number;
   viewportTop: number;
-  userPinnedToBottom: boolean;
 };
 
 export function scrollDeltaForMeasuredRowChange(change: MeasuredRowChange): number {
-  if (change.userPinnedToBottom) return 0;
   if (change.previousHeight <= 0) return 0;
 
   const delta = Math.ceil(change.nextHeight) - Math.ceil(change.previousHeight);

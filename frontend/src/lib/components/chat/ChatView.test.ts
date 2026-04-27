@@ -19,6 +19,7 @@ import {
 import type { Item, Thread } from '../../types/models';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { makeItem } from '../../../test/helpers/chat';
+import { installControllableResizeObserver } from '../../../test/helpers/scrollDom';
 
 beforeAll(() => {
   // Svelte transitions used by children call element.animate; happy-dom
@@ -67,30 +68,6 @@ function seedThread(): Thread {
     createdAt: 0,
     updatedAt: 0,
     archived: false,
-  };
-}
-
-function installControllableResizeObserver() {
-  const previous = globalThis.ResizeObserver;
-  const callbacks: ResizeObserverCallback[] = [];
-  class StubResizeObserver {
-    constructor(callback: ResizeObserverCallback) {
-      callbacks.push(callback);
-    }
-    observe() {}
-    unobserve() {}
-    disconnect() {}
-  }
-  globalThis.ResizeObserver = StubResizeObserver as unknown as typeof ResizeObserver;
-  return {
-    trigger() {
-      for (const callback of callbacks) {
-        callback([], {} as ResizeObserver);
-      }
-    },
-    restore() {
-      globalThis.ResizeObserver = previous;
-    },
   };
 }
 

@@ -1,26 +1,8 @@
 <script lang="ts" module>
-  type ScrollSnapshot =
-    | { kind: 'bottom' }
-    | { kind: 'anchor'; itemId: string; offsetTop: number };
-
-  const threadScrollSnapshots = new Map<string, ScrollSnapshot>();
-  const MAX_THREAD_SCROLL_SNAPSHOTS = 100;
-
-  function setThreadScrollSnapshot(threadId: string, snapshot: ScrollSnapshot): void {
-    if (threadScrollSnapshots.has(threadId)) {
-      threadScrollSnapshots.delete(threadId);
-    }
-    threadScrollSnapshots.set(threadId, snapshot);
-    while (threadScrollSnapshots.size > MAX_THREAD_SCROLL_SNAPSHOTS) {
-      const oldestThreadId = threadScrollSnapshots.keys().next().value;
-      if (oldestThreadId === undefined) break;
-      threadScrollSnapshots.delete(oldestThreadId);
-    }
-  }
-
-  export function clearMessageTimelineScrollSnapshotsForTest(): void {
-    threadScrollSnapshots.clear();
-  }
+  // The snapshot store + helpers live in `utils/threadScrollSnapshots`.
+  // Re-export the test helper so existing tests keep working without
+  // chasing the new path.
+  export { clearThreadScrollSnapshotsForTest as clearMessageTimelineScrollSnapshotsForTest } from '../../utils/threadScrollSnapshots';
 </script>
 
 <script lang="ts">
@@ -29,7 +11,12 @@
   import type { Item } from '../../types/models';
   import { addToast } from '../../stores/toast.svelte';
   import { getSettings } from '../../stores/settings.svelte';
-  import { isScrollPinnedToBottom } from '../../utils/scrollPosition';
+  import { createStickToBottomController } from '../../utils/stickToBottom.svelte';
+  import {
+    getThreadScrollSnapshot,
+    setThreadScrollSnapshot,
+    type ScrollSnapshot,
+  } from '../../utils/threadScrollSnapshots';
   import { groupItemsBySubagent, type TimelineNode } from '../../utils/subagentGrouping';
   import {
     buildVirtualLayout,
@@ -48,6 +35,7 @@
   import ChangedFilesTree from './ChangedFilesTree.svelte';
   import ChatWorkingIndicator from './ChatWorkingIndicator.svelte';
   import CompletionDivider from './CompletionDivider.svelte';
+  import ScrollToBottomButton from './ScrollToBottomButton.svelte';
   import SubagentGroup from './SubagentGroup.svelte';
   import { createTimelineMeasurementActions } from './timelineMeasurementActions';
   import TimelineLeaf from './TimelineLeaf.svelte';
@@ -101,10 +89,21 @@
   const rowHeightSignatures = new Map<string, string>();
   const OVERSCAN_PX = 900;
 
-  let userPinnedToBottom = $state(true);
   let restoredThreadId: string | null = $state(null);
   let scrollSnapshotThreadId: string | null = $state(null);
   let restoringScroll = false;
+
+  // Intent-based stick-to-bottom controller. Replaces the previous
+  // geometry-derived `userPinnedToBottom` state. Listeners attach via
+  // the $effect below once `scrollContainer` is bound.
+  const stickToBottom = createStickToBottomController({
+    getContainer: () => scrollContainer,
+  });
+
+  $effect(() => {
+    void scrollContainer;
+    stickToBottom.attach();
+  });
 
   function syncViewportState(): void {
     if (!scrollContainer) return;
@@ -113,14 +112,12 @@
     viewportHeight = clientHeight;
   }
 
-  function syncUserScrollState(): void {
-    if (!scrollContainer) return;
-    const { scrollTop, scrollHeight, clientHeight } = scrollContainer;
-    syncViewportState();
-    userPinnedToBottom = isScrollPinnedToBottom(scrollTop, scrollHeight, clientHeight);
-  }
-
-  function handleScroll(): void {
+  // Bound to the scroll container's `scroll` event purely to maintain
+  // the virtual-layout viewport state and to invalidate pending
+  // anchor-restore tokens. The controller's own scroll listener handles
+  // the intent transitions; this handler intentionally does NOT touch
+  // stickiness.
+  function handleViewportScroll(): void {
     liveAnchorRestoreToken += 1;
     initialScrollRestoreToken += 1;
     loadOlderRestoreToken += 1;
@@ -131,12 +128,8 @@
       initialRestoreFrame = null;
       restoringScroll = false;
     }
-    syncUserScrollState();
+    syncViewportState();
     saveScrollSnapshot();
-    if (!userPinnedToBottom && bottomScrollFrame !== null) {
-      cancelAnimationFrame(bottomScrollFrame);
-      bottomScrollFrame = null;
-    }
   }
 
   /**
@@ -274,7 +267,7 @@
     estimatedRowHeight: DEFAULT_TIMELINE_ROW_HEIGHT,
     getRowHeight: (key) => rowHeights.get(key),
     getScrollContainer: () => scrollContainer,
-    getUserPinnedToBottom: () => userPinnedToBottom,
+    getIsSticky: () => stickToBottom.isSticky,
     onRowHeightChanged: () => {
       rowHeightRevision += 1;
     },
@@ -295,17 +288,6 @@
     return node.parent.id === itemId || node.children.some((child) => nodeContainsItem(child, itemId));
   }
 
-  /**
-   * Suppress bottom stickiness while a Load Older round-trip is in
-   * flight. Without this, a short thread whose whole window fits in the
-   * viewport keeps `userPinnedToBottom` true throughout the prepend.
-   * When items.length grows, the effect would scroll the container to
-   * the new bottom a frame after our handleLoadOlder delta-apply —
-   * snapping the user past the newly revealed history.
-   */
-  let suppressBottomAutoScroll = $state(false);
-  let bottomAutoScrollSuppressionDepth = 0;
-  let bottomScrollFrame: number | null = null;
   let initialRestoreFrame: number | null = null;
   let pendingLiveAnchor: Extract<ScrollSnapshot, { kind: 'anchor' }> | null = null;
   let pendingLiveAnchorRevision = -1;
@@ -315,28 +297,13 @@
   let initialScrollRestoreToken = 0;
   let loadOlderRestoreToken = 0;
 
-  function suppressBottomAutoScrollUntilReleased(): () => void {
-    let released = false;
-    bottomAutoScrollSuppressionDepth += 1;
-    suppressBottomAutoScroll = true;
-    return () => {
-      if (released) return;
-      released = true;
-      bottomAutoScrollSuppressionDepth = Math.max(0, bottomAutoScrollSuppressionDepth - 1);
-      suppressBottomAutoScroll = bottomAutoScrollSuppressionDepth > 0;
-    };
-  }
-
   onDestroy(() => {
     saveScrollSnapshot();
     if (initialRestoreFrame !== null) {
       cancelAnimationFrame(initialRestoreFrame);
       initialRestoreFrame = null;
     }
-    if (bottomScrollFrame !== null) {
-      cancelAnimationFrame(bottomScrollFrame);
-      bottomScrollFrame = null;
-    }
+    stickToBottom.destroy();
   });
 
   function snapshotThreadId(): string | null {
@@ -351,7 +318,11 @@
 
   function saveScrollSnapshotForThread(threadId: string, ignoreLoading: boolean): void {
     if (!scrollContainer || (!ignoreLoading && pane.loading) || restoredThreadId !== threadId) return;
-    if (userPinnedToBottom) {
+    // Snapshot is geometric — we record "user was at the bottom" iff
+    // the container is geometrically at the bottom, regardless of the
+    // controller's intent state. This way, switching threads while in
+    // free state preserves the user's reading position correctly.
+    if (stickToBottom.isAtBottom()) {
       setThreadScrollSnapshot(threadId, { kind: 'bottom' });
       return;
     }
@@ -383,32 +354,10 @@
     return null;
   }
 
-  function scrollToBottom(): void {
-    if (!scrollContainer) return;
-    scrollContainer.scrollTop = Math.max(
-      0,
-      scrollContainer.scrollHeight - scrollContainer.clientHeight,
-    );
-    syncViewportState();
-    userPinnedToBottom = true;
-    saveScrollSnapshot();
-  }
-
-  function scheduleScrollToBottom(): void {
-    if (!scrollContainer || bottomScrollFrame !== null) return;
-    const targetThreadId = pane.threadId;
-    bottomScrollFrame = requestAnimationFrame(() => {
-      bottomScrollFrame = null;
-      if (!scrollContainer || pane.threadId !== targetThreadId) return;
-      if (!userPinnedToBottom) return;
-      scrollToBottom();
-    });
-  }
-
   async function restoreInitialScroll(threadId: string, restoreToken: number): Promise<void> {
     if (!scrollContainer) return;
-    const snapshot = threadScrollSnapshots.get(threadId);
-    const releaseBottomAutoScroll = suppressBottomAutoScrollUntilReleased();
+    const snapshot = getThreadScrollSnapshot(threadId);
+    const releaseBottomAutoScroll = stickToBottom.pauseAutoScroll();
     const shouldContinue = () => (
       initialScrollRestoreToken === restoreToken
       && pane.threadId === threadId
@@ -419,13 +368,20 @@
       if (snapshot?.kind === 'anchor') {
         const restored = await restoreAnchorSnapshot(snapshot, shouldContinue);
         if (restored) {
-          syncUserScrollState();
+          syncViewportState();
           saveScrollSnapshot();
           return;
         }
       }
       if (!shouldContinue()) return;
-      scrollToBottom();
+      // Bottom snapshot (or no snapshot at all): scroll to the bottom
+      // immediately and re-arm stickiness. forceStick performs the
+      // synchronous scroll AND schedules the rAF + 200ms settle so any
+      // async layout that lands afterwards (Shiki, KaTeX) still leaves
+      // us at the bottom.
+      stickToBottom.forceStick();
+      syncViewportState();
+      saveScrollSnapshot();
     } finally {
       restoringScroll = false;
       releaseBottomAutoScroll();
@@ -544,7 +500,7 @@
     liveAnchorRestoreToken += 1;
     observedLiveAnchorRevision = revision;
     if (restoredThreadId !== threadId || restoringScroll) return;
-    if (userPinnedToBottom) {
+    if (stickToBottom.isSticky) {
       pendingLiveAnchor = null;
       pendingLiveAnchorRevision = -1;
       return;
@@ -563,30 +519,32 @@
 
     if (!threadId || !containerReady || !anchor) return;
     if (pendingLiveAnchorRevision !== revision) return;
-    if (restoredThreadId !== threadId || restoringScroll || userPinnedToBottom) return;
+    if (restoredThreadId !== threadId || restoringScroll || stickToBottom.isSticky) return;
 
     pendingLiveAnchor = null;
     pendingLiveAnchorRevision = -1;
     const restoreThreadId = threadId;
     const restoreRevision = revision;
     const restoreToken = ++liveAnchorRestoreToken;
-    const releaseBottomAutoScroll = suppressBottomAutoScrollUntilReleased();
+    const releaseBottomAutoScroll = stickToBottom.pauseAutoScroll();
     const shouldContinue = () => (
       liveAnchorRestoreToken === restoreToken
       && pane.threadId === restoreThreadId
       && pane.timelineRevision === restoreRevision
-      && !userPinnedToBottom
+      && !stickToBottom.isSticky
       && !restoringScroll
     );
     void restoreLoadedAnchorSnapshot(anchor, shouldContinue).finally(() => {
       releaseBottomAutoScroll();
       if (!shouldContinue()) return;
-      syncUserScrollState();
+      syncViewportState();
       saveScrollSnapshot();
     });
   });
 
-  // Stick to bottom only when the user is already pinned to the bottom.
+  // Notify the controller whenever the timeline grows or rows resize.
+  // The controller decides whether to actually scroll (sticky vs free)
+  // and absorbs async layout via its rAF + 200ms settle re-check.
   $effect(() => {
     const threadId = pane.threadId;
     const loading = pane.loading;
@@ -599,10 +557,7 @@
 
     if (!threadId || loading || !containerReady) return;
     if (restoredThreadId !== threadId || restoringScroll) return;
-    if (suppressBottomAutoScroll) return;
-    untrack(() => {
-      if (userPinnedToBottom) scheduleScrollToBottom();
-    });
+    untrack(() => stickToBottom.notifyContentMaybeGrew());
   });
 
   /**
@@ -618,7 +573,7 @@
     const anchor = firstVisibleItemAnchor();
     const restoreThreadId = pane.threadId;
     const restoreToken = ++loadOlderRestoreToken;
-    const releaseBottomAutoScroll = suppressBottomAutoScrollUntilReleased();
+    const releaseBottomAutoScroll = stickToBottom.pauseAutoScroll();
     const shouldContinue = () => (
       loadOlderRestoreToken === restoreToken
       && pane.threadId === restoreThreadId
@@ -631,7 +586,7 @@
       if (anchor?.kind === 'anchor' && shouldContinue()) {
         const restored = await restoreLoadedAnchorSnapshot(anchor, shouldContinue);
         if (restored) {
-          handleScroll();
+          handleViewportScroll();
           return;
         }
       }
@@ -639,16 +594,10 @@
         const delta = scrollContainer.scrollHeight - prevScrollHeight;
         scrollContainer.scrollTop = prevScrollTop + delta;
       }
-      // Sync `userPinnedToBottom` from the post-prepend scroll position
-      // BEFORE we release the suppress flag. Svelte re-runs the
-      // auto-scroll effect the moment `suppressBottomAutoScroll`
-      // flips false; if userPinnedToBottom is still stale-`true` from
-      // before the load (short thread whose window fit the viewport),
-      // the effect would snap to the new bottom and stomp the row
-      // the user was anchored on. Programmatic scrollTop assignment
-      // queues a `scroll` event asynchronously — too late for this
-      // effect run — so we recompute inline.
-      handleScroll();
+      // Resync viewport state and snapshot the new position. The
+      // controller's pause lease is still held — nothing auto-scrolls
+      // until the finally block releases it.
+      handleViewportScroll();
     } finally {
       releaseBottomAutoScroll();
     }
@@ -682,7 +631,7 @@
         0,
         offsetForIndex(targetIndex) - Math.round(scrollContainer.clientHeight / 2),
       );
-      handleScroll();
+      handleViewportScroll();
       await tick();
     }
     const el = scrollContainer.querySelector(`[data-item-id="${CSS.escape(id)}"]`);
@@ -709,8 +658,9 @@
   });
 </script>
 
-<div bind:this={scrollContainer} use:measureScrollContainer onscroll={handleScroll} class="flex-1 min-h-0 overflow-y-auto" role="log" aria-label="Message History" data-testid="message-timeline-scroll">
-  <div class="mx-auto w-full max-w-3xl px-6 py-8">
+<div class="relative flex-1 min-h-0 flex flex-col">
+  <div bind:this={scrollContainer} use:measureScrollContainer onscroll={handleViewportScroll} class="flex-1 min-h-0 overflow-y-auto" role="log" aria-label="Message History" data-testid="message-timeline-scroll">
+    <div class="mx-auto w-full max-w-3xl px-6 py-8">
   {#if pane.loading}
     <div class="flex items-center justify-center h-full text-fg-subtle text-sm" role="status" aria-live="polite">
       <span class="animate-pulse">Loading thread...</span>
@@ -788,5 +738,7 @@
       </div>
     {/if}
   {/if}
+    </div>
   </div>
+  <ScrollToBottomButton visible={!stickToBottom.isSticky} onClick={() => stickToBottom.forceStick()} />
 </div>

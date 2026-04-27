@@ -6,10 +6,11 @@
   import { getSettings } from '../../stores/settings.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import { errString } from '../../utils/errors';
-  import { isScrollPinnedToBottom } from '../../utils/scrollPosition';
+  import { createStickToBottomController } from '../../utils/stickToBottom.svelte';
   import { relativeTime } from '../../utils/format';
   import Button from '../primitives/Button.svelte';
   import ChatMarkdown from '../chat/ChatMarkdown.svelte';
+  import ScrollToBottomButton from '../chat/ScrollToBottomButton.svelte';
 
   let {
     pane,
@@ -36,8 +37,9 @@
   let pollError = $state<string | null>(null);
   let loadingInitial = $state(true);
   let scrollContainer: HTMLDivElement | undefined = $state(undefined);
-  let userPinnedToBottom = $state(true);
-  let bottomScrollFrame: number | null = null;
+  const stickToBottom = createStickToBottomController({
+    getContainer: () => scrollContainer,
+  });
 
   let messages = $derived(pane.channelMessages);
   let status = $derived(pane.channelStatus ?? 'open');
@@ -78,10 +80,7 @@
       clearTimeout(pollTimer);
       pollTimer = null;
     }
-    if (bottomScrollFrame !== null) {
-      cancelAnimationFrame(bottomScrollFrame);
-      bottomScrollFrame = null;
-    }
+    stickToBottom.destroy();
   });
 
   async function pollOnce(generation: number, initial: boolean): Promise<void> {
@@ -130,40 +129,22 @@
     }
   }
 
+  // Attach the controller's listeners once the scroll container is bound.
+  // `void` makes the reactive read explicit so the compiler tracks the
+  // dependency reliably across Svelte versions.
   $effect(() => {
-    // Stick to bottom on new messages only when the user is already pinned.
-    // Only track `messages.length` here — reading `userPinnedToBottom` tracked would cause
-    // the scroll-triggered handler to re-invalidate this effect in a loop.
-    const len = messages.length;
-    if (len === 0) return;
-    untrack(() => {
-      if (scrollContainer && userPinnedToBottom) {
-        if (bottomScrollFrame !== null) return;
-        bottomScrollFrame = requestAnimationFrame(() => {
-          bottomScrollFrame = null;
-          if (!scrollContainer) return;
-          if (!isScrollPinnedToBottom(
-            scrollContainer.scrollTop,
-            scrollContainer.scrollHeight,
-            scrollContainer.clientHeight,
-          )) {
-            return;
-          }
-          scrollContainer.scrollTop = scrollContainer.scrollHeight;
-        });
-      }
-    });
+    void scrollContainer;
+    stickToBottom.attach();
   });
 
-  function handleScroll(): void {
-    if (!scrollContainer) return;
-    const { scrollTop, scrollHeight, clientHeight } = scrollContainer;
-    userPinnedToBottom = isScrollPinnedToBottom(scrollTop, scrollHeight, clientHeight);
-    if (!userPinnedToBottom && bottomScrollFrame !== null) {
-      cancelAnimationFrame(bottomScrollFrame);
-      bottomScrollFrame = null;
-    }
-  }
+  $effect(() => {
+    // Notify the controller whenever the message list grows. The
+    // controller decides whether to actually scroll based on intent
+    // (sticky vs free), pause leases, and pointer state.
+    const len = messages.length;
+    if (len === 0) return;
+    untrack(() => stickToBottom.notifyContentMaybeGrew());
+  });
 
   async function handlePost(): Promise<void> {
     const content = composing.trim();
@@ -171,6 +152,9 @@
     posting = true;
     const savedText = composing;
     composing = '';
+    // Posting is an explicit "I want to follow this conversation" signal —
+    // re-arm stickiness even if the user had scrolled up.
+    stickToBottom.forceStick();
     try {
       await PostChannelMessage(channelId, content);
       // Immediate poll to surface our message rather than wait for interval.
@@ -233,37 +217,39 @@
     {/if}
   </div>
 
-  <div
-    bind:this={scrollContainer}
-    onscroll={handleScroll}
-    class="flex-1 min-h-0 overflow-y-auto px-5 py-4 space-y-3"
-    role="log"
-    aria-live="polite"
-    aria-label="Discussion Channel Messages"
-    data-testid="channel-message-list"
-  >
-    {#if loadingInitial}
-      <div class="text-[12px] text-fg-subtle">Loading channel messages…</div>
-    {:else if messages.length === 0}
-      <div class="text-[12px] text-fg-subtle">
-        No messages yet. Participants will begin speaking as their turns complete.
-      </div>
-    {:else}
-      {#each messages as msg (msg.id || msg.sequence)}
-        <div class="rounded-[var(--radius-card)] border {messageAccentClass(msg)} px-3.5 py-2.5">
-          <div class="flex items-center gap-2 mb-1.5">
-            <span class="rounded-[var(--radius-field)] border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.14em] {roleBadgeClass(msg)}">
-              {roleLabel(msg)}
-            </span>
-            <span class="text-[11px] text-fg-hint tabular-nums">#{msg.sequence}</span>
-            <span class="ml-auto text-[11px] text-fg-hint">
-              {relativeTime(msg.createdAt, getSettings().timestampFormat)}
-            </span>
-          </div>
-          <ChatMarkdown source={msg.content} class="text-[13px] text-fg break-words" />
+  <div class="relative flex-1 min-h-0 flex flex-col">
+    <div
+      bind:this={scrollContainer}
+      class="flex-1 min-h-0 overflow-y-auto px-5 py-4 space-y-3"
+      role="log"
+      aria-live="polite"
+      aria-label="Discussion Channel Messages"
+      data-testid="channel-message-list"
+    >
+      {#if loadingInitial}
+        <div class="text-[12px] text-fg-subtle">Loading channel messages…</div>
+      {:else if messages.length === 0}
+        <div class="text-[12px] text-fg-subtle">
+          No messages yet. Participants will begin speaking as their turns complete.
         </div>
-      {/each}
-    {/if}
+      {:else}
+        {#each messages as msg (msg.id || msg.sequence)}
+          <div class="rounded-[var(--radius-card)] border {messageAccentClass(msg)} px-3.5 py-2.5">
+            <div class="flex items-center gap-2 mb-1.5">
+              <span class="rounded-[var(--radius-field)] border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.14em] {roleBadgeClass(msg)}">
+                {roleLabel(msg)}
+              </span>
+              <span class="text-[11px] text-fg-hint tabular-nums">#{msg.sequence}</span>
+              <span class="ml-auto text-[11px] text-fg-hint">
+                {relativeTime(msg.createdAt, getSettings().timestampFormat)}
+              </span>
+            </div>
+            <ChatMarkdown source={msg.content} class="text-[13px] text-fg break-words" />
+          </div>
+        {/each}
+      {/if}
+    </div>
+    <ScrollToBottomButton visible={!stickToBottom.isSticky} onClick={() => stickToBottom.forceStick()} />
   </div>
 
   <div class="border-t border-border-subtle px-5 py-3 shrink-0">
