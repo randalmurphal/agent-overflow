@@ -5,6 +5,7 @@
   import GeneralSettings from './GeneralSettings.svelte';
   import NetworkSection from './NetworkSection.svelte';
   import RemoteEndpointsSection from './RemoteEndpointsSection.svelte';
+  import WSLSection from './WSLSection.svelte';
   import ProviderSettings from './ProviderSettings.svelte';
   import ArchivedThreads from './ArchivedThreads.svelte';
   import DiscussionsSettings from './DiscussionsSettings.svelte';
@@ -121,6 +122,17 @@
           <EditorSection />
         {:else if activeSection === 'network'}
           <NetworkSection />
+          <!--
+            WSLSection self-hides on non-WSL hosts and in --connect
+            mode, so the "extra" composition under Network is a no-op
+            on macOS and native Linux. Mounting it on the Network tab
+            (rather than its own tab) keeps the sidebar list stable
+            across platforms — adding a tab that's empty on most hosts
+            would clutter the UX without buying anything.
+          -->
+          <div class="mt-10">
+            <WSLSection />
+          </div>
           <div class="mt-10">
             <RemoteEndpointsSection />
           </div>

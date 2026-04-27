@@ -37,6 +37,50 @@ const loadingPage = `<!doctype html>
 <body><div class="card"><div class="spinner"></div><div class="label">Booting backend in WSL...</div></div></body>
 </html>`
 
+// wslNotInstalledPage is shown when ListDistros returns an empty
+// slice — either wsl.exe isn't on PATH (WSL not installed at all) or
+// it ran but reported no distros. Both have the same actionable
+// mitigation: `wsl --install -d <name>` from PowerShell, which
+// installs WSL itself if missing AND a Linux distro on top. Naming
+// the command explicitly gives the user a copyable string instead of
+// a search-engine-distance-of-one hop.
+//
+// We deliberately do NOT fall through to the picker's empty state
+// here. The picker page is a "pick from these" UI; pointing it at an
+// empty list invites confusion ("which one of nothing should I
+// click?"). A dedicated error page with the install command is the
+// honest signal.
+const wslNotInstalledPage = `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Agent Overflow — WSL required</title>
+  <style>
+    html, body { margin: 0; padding: 0; height: 100%; background: #16161e; color: #fff; }
+    body { display: flex; align-items: center; justify-content: center; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; padding: 32px; box-sizing: border-box; }
+    .card { max-width: 640px; }
+    .title { font-size: 18px; font-weight: 600; color: #f7768e; margin-bottom: 16px; }
+    .body { font-size: 14px; line-height: 1.6; color: #c0caf5; }
+    code { background: #1a1b26; color: #7dcfff; padding: 1px 6px; border-radius: 4px; font-size: 13px; }
+    pre { background: #1a1b26; color: #c0caf5; padding: 12px 16px; border-radius: 6px; font-size: 12px; line-height: 1.5; overflow-x: auto; }
+    a { color: #7aa2f7; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="title">WSL is required, and no distro was found.</div>
+    <div class="body">
+      <p>Agent Overflow runs its backend inside a WSL distribution. The launcher couldn't find one — either WSL2 isn't installed, or it's installed but no Linux distro is registered.</p>
+      <p>From an elevated PowerShell, run:</p>
+      <pre>wsl --install -d Ubuntu</pre>
+      <p>This installs WSL2 itself if it's missing and a default Ubuntu distro on top. Reboot if prompted, then relaunch Agent Overflow.</p>
+      <p>Already have WSL but want a different distro? <code>wsl --list --online</code> shows the available images; pick one and pass it to <code>wsl --install -d &lt;name&gt;</code>.</p>
+      <p>See the <a href="https://learn.microsoft.com/en-us/windows/wsl/install">WSL install docs</a> for more.</p>
+    </div>
+  </div>
+</body>
+</html>`
+
 // connectivityErrorPage is shown when the WSL backend booted (we got
 // the bootstrap line back) but the Windows host can't reach
 // localhost:<port> over the WSL2 vEthernet bridge. The actionable
@@ -74,7 +118,8 @@ localhostForwarding=true</pre>
 </html>`
 
 // pickerAssetHandler serves the static picker HTML for /picker, the
-// loading HTML for /loading, and the connectivity error page for
+// loading HTML for /loading, the WSL-not-installed page for
+// /wsl-not-installed, and the connectivity error page for
 // /connectivity-error. Anything else falls back to the picker so a
 // stale URL doesn't blank-screen the WebView. The distro list is
 // template-injected into a global JS variable so the page renders
@@ -90,6 +135,7 @@ func pickerAssetHandler(distros []wsllauncher.Distro) http.Handler {
 	}
 	loadingHTML := []byte(loadingPage)
 	connectivityHTML := []byte(connectivityErrorPage)
+	wslMissingHTML := []byte(wslNotInstalledPage)
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -99,6 +145,8 @@ func pickerAssetHandler(distros []wsllauncher.Distro) http.Handler {
 			_, _ = w.Write(loadingHTML)
 		case "/connectivity-error":
 			_, _ = w.Write(connectivityHTML)
+		case "/wsl-not-installed":
+			_, _ = w.Write(wslMissingHTML)
 		default:
 			_, _ = w.Write(rendered)
 		}

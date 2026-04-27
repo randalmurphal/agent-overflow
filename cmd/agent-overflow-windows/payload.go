@@ -15,6 +15,7 @@ import (
 	"strings"
 	"syscall"
 
+	"agent-overflow/internal/wsldistro"
 	"agent-overflow/internal/wsllauncher"
 )
 
@@ -33,7 +34,7 @@ import (
 func (a *launcherApp) ensurePayloadInstalled(ctx context.Context, distro string) error {
 	cfg, _ := loadConfig()
 	if cfg == nil {
-		cfg = &config{}
+		cfg = &wsldistro.Config{}
 	}
 	if cfg.InstalledVer == payloadVersion && cfg.InstalledDistro == distro {
 		return nil

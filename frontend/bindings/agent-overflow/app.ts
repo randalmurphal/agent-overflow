@@ -34,6 +34,9 @@ import * as store$0 from "./internal/store/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
 import * as terminal$0 from "./internal/terminal/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as wsllauncher$0 from "./internal/wsllauncher/models.js";
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
@@ -560,6 +563,19 @@ export function GetUIRenderTracePath(): $CancellablePromise<string> {
 }
 
 /**
+ * GetWSLDistroPreference returns the distro the Windows launcher is
+ * configured to boot into on next launch. Returns "" when:
+ *   - The backend isn't running under WSL.
+ *   - The launcher didn't set AGENT_OVERFLOW_WIN_APPDATA (the backend
+ *     was started by something other than the Windows launcher,
+ *     e.g. a manual `go run` from inside a WSL shell).
+ *   - The wsl.json file doesn't exist yet (first launch).
+ */
+export function GetWSLDistroPreference(): $CancellablePromise<string> {
+    return $Call.ByID(294719565);
+}
+
+/**
  * GetWorkingTreeDiff returns the current combined staged and unstaged diff.
  */
 export function GetWorkingTreeDiff(threadID: string): $CancellablePromise<string> {
@@ -709,6 +725,21 @@ export function GitStatusUnsubscribe(subscriptionID: string): $CancellablePromis
  */
 export function InterruptTurn(threadID: string): $CancellablePromise<void> {
     return $Call.ByID(850013031, threadID);
+}
+
+/**
+ * IsWSL reports whether the backend is running inside a WSL
+ * distribution. The frontend uses this to decide whether to render
+ * the WSL distro switcher in Settings — on macOS / native Linux the
+ * switcher is meaningless because there's no Windows launcher writing
+ * wsl.json to mutate.
+ * 
+ * Returns (T, error) for binding consistency with the rest of the
+ * App surface even though the WSL detection itself can't fail
+ * (sync.Once-cached read of /proc/sys/kernel/osrelease).
+ */
+export function IsWSL(): $CancellablePromise<boolean> {
+    return $Call.ByID(2789068977);
 }
 
 /**
@@ -913,6 +944,22 @@ export function ListThreads(): $CancellablePromise<store$0.Thread[]> {
 }
 
 /**
+ * ListWSLDistros returns the WSL distros the host has registered, as
+ * reported by `wsl.exe -l -v` over WSL interop. Returns nil + nil on
+ * non-WSL hosts (macOS, native Linux) — the Settings UI hides the
+ * switcher in that case.
+ * 
+ * We re-query wsl.exe rather than caching the launcher's startup
+ * list: a user installing a new distro mid-session shouldn't have to
+ * restart Agent Overflow to see it appear in the picker.
+ */
+export function ListWSLDistros(): $CancellablePromise<wsllauncher$0.Distro[]> {
+    return $Call.ByID(2332614075).then(($result: any) => {
+        return $$createType54($result);
+    });
+}
+
+/**
  * MarkThreadRead stamps the thread's last_read_at to at least its latest
  * completed turn so the sidebar stops showing a Completed pill. The timestamp
  * is owned by the store so the App layer stays free of nowMillis() calls,
@@ -959,7 +1006,7 @@ export function OpenInEditor(path: string, line: number, col: number): $Cancella
  */
 export function OpenTerminal(threadID: string, opts: $models.TerminalOpenOptions): $CancellablePromise<$models.TerminalHandle> {
     return $Call.ByID(2247958725, threadID, opts).then(($result: any) => {
-        return $$createType53($result);
+        return $$createType55($result);
     });
 }
 
@@ -1008,7 +1055,7 @@ export function PrepareThreadWorktree(threadID: string, baseBranch: string, requ
  */
 export function ProbeClaudeAccount(): $CancellablePromise<provider$0.AccountInfo> {
     return $Call.ByID(1313986574).then(($result: any) => {
-        return $$createType54($result);
+        return $$createType56($result);
     });
 }
 
@@ -1058,7 +1105,7 @@ export function RenameThread(id: string, title: string): $CancellablePromise<voi
  */
 export function ReplayManager(): $CancellablePromise<replay$0.Manager | null> {
     return $Call.ByID(3320777729).then(($result: any) => {
-        return $$createType56($result);
+        return $$createType58($result);
     });
 }
 
@@ -1096,7 +1143,7 @@ export function RespondToUserInput(threadID: string, response: provider$0.UserIn
  */
 export function RestartTerminal(terminalID: string): $CancellablePromise<$models.TerminalHandle> {
     return $Call.ByID(4152403588, terminalID).then(($result: any) => {
-        return $$createType53($result);
+        return $$createType55($result);
     });
 }
 
@@ -1132,7 +1179,7 @@ export function SavePayloadToFile(threadID: string, payloadID: string): $Cancell
  */
 export function SearchThreadMessages(query: string, limit: number): $CancellablePromise<store$0.ThreadMessageHit[]> {
     return $Call.ByID(3644945077, query, limit).then(($result: any) => {
-        return $$createType58($result);
+        return $$createType60($result);
     });
 }
 
@@ -1142,7 +1189,7 @@ export function SearchThreadMessages(query: string, limit: number): $Cancellable
  */
 export function SearchWorkspaceFiles(threadID: string, query: string, limit: number): $CancellablePromise<$models.WorkspaceFileSearchResult> {
     return $Call.ByID(3852272821, threadID, query, limit).then(($result: any) => {
-        return $$createType59($result);
+        return $$createType61($result);
     });
 }
 
@@ -1228,8 +1275,30 @@ export function SetNetworkSettings(s: $models.NetworkSettings): $CancellableProm
  */
 export function SetThreadRuntimeMode(threadID: string, mode: string): $CancellablePromise<$models.ThreadRuntimeModeChangedEvent> {
     return $Call.ByID(1115610690, threadID, mode).then(($result: any) => {
-        return $$createType60($result);
+        return $$createType62($result);
     });
+}
+
+/**
+ * SetWSLDistroPreference persists the new distro pick to the
+ * launcher's wsl.json. The change applies on the next Windows-side
+ * launch — the running backend stays in its current distro for the
+ * remainder of this session, so the UI should communicate "active on
+ * next launch" semantics.
+ * 
+ * Validates `name` against the live wsl.exe distro list so a typo or
+ * stale reference can't trap the user with an unbootable saved pick
+ * on next launch. InstalledVer / InstalledDistro are preserved by the
+ * load-mutate-save round trip — those fields are owned by the
+ * launcher's install path, not the user's preference.
+ * 
+ * LocalOnlyMethods classification: this is settings mutation. A LAN
+ * peer with the launch token must not be able to reconfigure which
+ * distro the local user's launcher boots into. Refused at the
+ * transport layer for non-loopback peers.
+ */
+export function SetWSLDistroPreference(name: string): $CancellablePromise<string> {
+    return $Call.ByID(3978807241, name);
 }
 
 /**
@@ -1299,7 +1368,7 @@ export function SwitchThread(threadID: string): $CancellablePromise<store$0.Thre
  */
 export function Telemetry(): $CancellablePromise<otel$0.Provider | null> {
     return $Call.ByID(669486408).then(($result: any) => {
-        return $$createType62($result);
+        return $$createType64($result);
     });
 }
 
@@ -1604,13 +1673,15 @@ const $$createType49 = $Create.Array($$createType48);
 const $$createType50 = store$0.Checkpoint.createFrom;
 const $$createType51 = $Create.Array($$createType50);
 const $$createType52 = $Create.Array($$createType4);
-const $$createType53 = $models.TerminalHandle.createFrom;
-const $$createType54 = provider$0.AccountInfo.createFrom;
-const $$createType55 = replay$0.Manager.createFrom;
-const $$createType56 = $Create.Nullable($$createType55);
-const $$createType57 = store$0.ThreadMessageHit.createFrom;
-const $$createType58 = $Create.Array($$createType57);
-const $$createType59 = $models.WorkspaceFileSearchResult.createFrom;
-const $$createType60 = $models.ThreadRuntimeModeChangedEvent.createFrom;
-const $$createType61 = otel$0.Provider.createFrom;
-const $$createType62 = $Create.Nullable($$createType61);
+const $$createType53 = wsllauncher$0.Distro.createFrom;
+const $$createType54 = $Create.Array($$createType53);
+const $$createType55 = $models.TerminalHandle.createFrom;
+const $$createType56 = provider$0.AccountInfo.createFrom;
+const $$createType57 = replay$0.Manager.createFrom;
+const $$createType58 = $Create.Nullable($$createType57);
+const $$createType59 = store$0.ThreadMessageHit.createFrom;
+const $$createType60 = $Create.Array($$createType59);
+const $$createType61 = $models.WorkspaceFileSearchResult.createFrom;
+const $$createType62 = $models.ThreadRuntimeModeChangedEvent.createFrom;
+const $$createType63 = otel$0.Provider.createFrom;
+const $$createType64 = $Create.Nullable($$createType63);

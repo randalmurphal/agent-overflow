@@ -3,25 +3,16 @@
 package wsllauncher
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"log"
 	"os/exec"
-	"strings"
 	"syscall"
-	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
-
-// listDistrosTimeout caps how long ListDistros waits for wsl.exe to
-// emit its inventory. The picker UI presents an error if WSL is
-// installed but the call hangs (a known failure mode when the WSL VM
-// is in a broken state).
-const listDistrosTimeout = 5 * time.Second
 
 // ListDistros runs `wsl.exe -l -v` and parses the output. Returns an
 // empty slice and nil error when wsl.exe isn't on PATH or WSL itself
@@ -46,59 +37,7 @@ func ListDistros(ctx context.Context) ([]Distro, error) {
 	// Without this, every list call flashes a black box on screen.
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-
-	out, err := cmd.Output()
-	if err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
-			// wsl.exe writes its diagnostic messages in UTF-16 LE on
-			// most modern Windows builds. Decode best-effort so we can
-			// differentiate "no distros installed" from a structural
-			// failure (vmcompute down, kernel update needed, etc).
-			text, _ := decodeUTF16LE(stderr.Bytes())
-			if text == "" {
-				text = stderr.String()
-			}
-			if isNoDistrosMessage(text) {
-				return nil, nil
-			}
-			// Non-empty distros expected but wsl.exe exited non-zero
-			// with an unrecognised stderr — surface so the picker UI
-			// can show the user something actionable instead of a
-			// blank "no distros" empty state.
-			return nil, fmt.Errorf("wsllauncher: wsl.exe -l -v failed: %w (stderr: %s)", err, strings.TrimSpace(text))
-		}
-		return nil, fmt.Errorf("wsllauncher: run wsl.exe -l -v: %w", err)
-	}
-	return parseDistroList(out)
-}
-
-// isNoDistrosMessage returns true when wsl.exe's stderr indicates the
-// "WSL is installed but no distros" path. The English string is the
-// most common; we match a few localised forms loosely so French /
-// German / Japanese hosts don't fall into the unrecognised-failure
-// branch.
-//
-// Matched substrings:
-//   - "no installed distributions" (en-US)
-//   - "There are no" + "distributions" (loose for localized "There are no <X> distributions...")
-//   - "WSL_E_DEFAULT_DISTRO_NOT_FOUND" (raw error code wsl.exe sometimes emits)
-func isNoDistrosMessage(s string) bool {
-	lower := strings.ToLower(strings.TrimSpace(s))
-	if lower == "" {
-		return false
-	}
-	switch {
-	case strings.Contains(lower, "no installed distributions"):
-		return true
-	case strings.Contains(lower, "wsl_e_default_distro_not_found"):
-		return true
-	case strings.Contains(lower, "there are no") && strings.Contains(lower, "distribut"):
-		return true
-	}
-	return false
+	return runListDistrosCmd(cmd)
 }
 
 // Launch spawns the WSL-side backend.

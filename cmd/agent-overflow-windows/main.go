@@ -37,6 +37,7 @@ import (
 	"context"
 	_ "embed"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -46,6 +47,7 @@ import (
 	"sync"
 	"time"
 
+	"agent-overflow/internal/wsldistro"
 	"agent-overflow/internal/wsllauncher"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
@@ -84,35 +86,60 @@ func main() {
 		defer logFile.Close()
 	}
 
+	flags, err := parseLauncherFlags(os.Args[1:])
+	if err != nil {
+		// flag.ErrHelp means the user passed -h/-help and the flag
+		// package already wrote the usage to stderr. Exit cleanly so
+		// the launcher doesn't log a phantom "flags: flag: help requested"
+		// to launcher.log on every help invocation.
+		if errors.Is(err, flag.ErrHelp) {
+			os.Exit(0)
+		}
+		log.Fatalf("flags: %v", err)
+	}
+
 	cfg, err := loadConfig()
 	if err != nil {
 		log.Printf("warning: load config: %v", err)
 	}
+
+	// Plumb the Windows-side AppData path into the WSL backend so the
+	// Settings UI can read / mutate the same wsl.json the launcher
+	// uses. WSLENV's /p flag translates the Windows path to its
+	// /mnt/c form on the Linux side, so the backend reads the env var
+	// as a Linux path it can stat directly. Best-effort: a missing
+	// APPDATA just means the WSL Settings UI hides itself (the
+	// backend's WSLConfigDir() returns ok=false), which is preferable
+	// to silently writing into a phantom path.
+	exportAppDataToWSL()
 
 	distros, err := wsllauncher.ListDistros(context.Background())
 	if err != nil {
 		log.Printf("list distros: %v", err)
 	}
 
-	// If we have a known-good distro from a previous launch, verify
-	// it still exists. If it doesn't, fall through to the picker.
-	chosen := ""
-	if cfg != nil && cfg.Distro != "" {
-		for _, d := range distros {
-			if d.Name == cfg.Distro {
-				chosen = d.Name
-				break
-			}
-		}
-	}
+	// Pick precedence: --distro override beats saved config beats
+	// single-distro auto-pick. A matched override is "transient" — we
+	// use it for this run but don't persist to wsl.json, so the
+	// developer's `make dev-wsl --distro Foo` doesn't overwrite the
+	// user's "real" pick from double-clicking the .exe earlier.
+	chosen, transient := resolveChosenDistro(flags, cfg, distros)
 
 	// initialURL controls the page the WebView2 shows during the
 	// brief gap between window creation and the WSL backend coming
-	// online. With a saved distro we land on /loading (no actionable
-	// picker rows) and SetURL flips us over once Launch returns;
-	// without one, we land on /picker so the user can choose.
+	// online. Three cases:
+	//   - no distros installed → dedicated /wsl-not-installed page
+	//     with the `wsl --install` mitigation. Trumps everything;
+	//     there's nothing to launch and no picker to render.
+	//   - chosen distro (override / saved / single auto-pick) →
+	//     /loading interstitial; SetURL flips to the WSL backend
+	//     once Launch returns.
+	//   - otherwise → /picker so the user can choose.
 	initialURL := "/picker"
-	if chosen != "" {
+	switch {
+	case len(distros) == 0:
+		initialURL = "/wsl-not-installed"
+	case chosen != "":
 		initialURL = "/loading"
 	}
 
@@ -128,7 +155,7 @@ func main() {
 		// can choose a different distro; pairs with the
 		// non-persist-on-failure rule in launchAndShow.
 		go func() {
-			if err := app.launchAndShow(chosen); err != nil {
+			if err := app.launchAndShow(chosen, transient); err != nil {
 				log.Printf("launch backend: %v", err)
 				app.window.SetURL("/picker")
 			}
@@ -138,14 +165,104 @@ func main() {
 	app.run()
 }
 
+// exportAppDataToWSL sets AGENT_OVERFLOW_WIN_APPDATA + WSLENV in the
+// launcher's process environment so the wsl.exe child (and the Linux
+// backend it spawns) sees the Windows AppData directory translated to
+// its /mnt/c form. WSLENV is the documented mechanism for this; the
+// /p flag is the per-variable rule for path translation.
+//
+// We append AGENT_OVERFLOW_WIN_APPDATA/p to any existing WSLENV the
+// user already has set rather than overwriting — a developer with
+// PYTHONPATH/p:GOPATH/p in WSLENV shouldn't lose those just because
+// they launched the Windows app.
+//
+// A missing APPDATA is logged and ignored; the WSL backend's
+// WSLConfigDir() returns ok=false in that case, the Settings UI
+// hides the WSL section, and the launcher falls back to the saved
+// config in %APPDATA%\agent-overflow\wsl.json on next launch (or the
+// picker, if nothing is saved). This is a defense-in-depth path —
+// %APPDATA% is set by Windows for every interactive user.
+func exportAppDataToWSL() {
+	appdata := os.Getenv("APPDATA")
+	if appdata == "" {
+		log.Printf("APPDATA unset; WSL Settings UI distro switcher will be unavailable")
+		return
+	}
+	if err := os.Setenv(wsldistro.AppDataEnv, appdata); err != nil {
+		log.Printf("set %s: %v", wsldistro.AppDataEnv, err)
+		return
+	}
+	rule := wsldistro.AppDataEnv + "/p"
+	existing := os.Getenv("WSLENV")
+	merged := rule
+	if existing != "" {
+		merged = rule + ":" + existing
+	}
+	if err := os.Setenv("WSLENV", merged); err != nil {
+		log.Printf("set WSLENV: %v", err)
+	}
+}
+
+// resolveChosenDistro picks the distro to launch in based on (in
+// order) the --distro override, then the saved wsl.json config, then
+// a single-distro auto-pick. Returns ("", false) when none matched
+// and the picker (or the WSL-missing page, if zero distros) should
+// run instead.
+//
+// The returned bool is the "transient" flag — true when an override
+// supplied the choice and the launcher should NOT persist it after a
+// successful boot. Picker selections, saved-config rehydrations, and
+// single-distro auto-picks are non-transient (the auto-pick is
+// effectively a "first-time setup" pick and should persist so the
+// next launch isn't asked again if the user later installs more
+// distros).
+func resolveChosenDistro(flags launcherFlags, cfg *wsldistro.Config, distros []wsllauncher.Distro) (string, bool) {
+	if flags.Distro != "" {
+		for _, d := range distros {
+			if d.Name == flags.Distro {
+				return d.Name, true
+			}
+		}
+		// --distro pointed at a distro that wsl.exe doesn't know
+		// about (typo, distro uninstalled since the env var was set).
+		// Fall through to the picker so the user sees the real list
+		// rather than silently dropping back to a saved choice that
+		// might be the wrong dev environment entirely.
+		names := make([]string, 0, len(distros))
+		for _, d := range distros {
+			names = append(names, d.Name)
+		}
+		log.Printf(
+			"warning: --distro %q not found among installed distros (%v); showing picker",
+			flags.Distro, names,
+		)
+		return "", false
+	}
+	if cfg != nil && cfg.Distro != "" {
+		for _, d := range distros {
+			if d.Name == cfg.Distro {
+				return d.Name, false
+			}
+		}
+	}
+	// Single-distro auto-pick: nothing to choose between, so don't
+	// make the user click. Persist on success so a later install of
+	// a second distro doesn't surprise the user with a picker on
+	// next launch — they explicitly own their pick now.
+	if len(distros) == 1 {
+		return distros[0].Name, false
+	}
+	return "", false
+}
+
 // openLog opens %APPDATA%\agent-overflow\launcher.log for append. The
 // file is best-effort; if AppData isn't writable we fall back to
 // stderr only. Logging is essential here because the Windows binary
 // has no console UI for surfacing errors before the WebView opens.
 func openLog() (*os.File, error) {
-	dir, err := configDir()
-	if err != nil {
-		return nil, err
+	dir, ok := wsldistro.WSLConfigDir()
+	if !ok {
+		return nil, fmt.Errorf("openLog: AppData unresolvable")
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
@@ -190,7 +307,8 @@ func (a *launcherApp) PickDistro(name string) error {
 		return err
 	}
 
-	if err := a.launchAndShow(name); err != nil {
+	// Picker selections are user intent — persist on success.
+	if err := a.launchAndShow(name, false); err != nil {
 		// Pre-launch failure: route the WebView back to the picker so
 		// the user can pick a different distro or surface the error.
 		// We intentionally do not persist cfg.Distro here.
@@ -220,12 +338,17 @@ func (a *launcherApp) validateDistroName(name string) error {
 // launchAndShow runs the install + launch pipeline and then points
 // the visible window at the WSL backend.
 //
+// transient suppresses persisting the chosen distro to wsl.json on
+// success. Used by the --distro override path so a dev-mode run
+// doesn't overwrite the user's saved pick from double-clicking the
+// .exe earlier.
+//
 // Outer timeout removed — cold WSL2 boot can exceed any single budget
 // (the WSL VM itself can take 20+ seconds, then 9P startup, then SQLite
 // migrations). Inner phase timeouts (install, bootstrap) bound the
 // user-visible wait per step. If the user wants to abort they close
 // the window; the Wails OnShutdown hook tears the WSL child down.
-func (a *launcherApp) launchAndShow(distro string) error {
+func (a *launcherApp) launchAndShow(distro string, transient bool) error {
 	ctx := context.Background()
 
 	if err := a.ensurePayloadInstalled(ctx, distro); err != nil {
@@ -269,8 +392,16 @@ func (a *launcherApp) launchAndShow(distro string) error {
 	// deliberate non-persistence on failure: a saved distro short-
 	// circuits the picker on next launch, so we only commit it after
 	// we've proven the install + launch path works end-to-end.
-	if err := a.persistSuccessfulLaunch(distro); err != nil {
-		log.Printf("save config after launch: %v", err)
+	//
+	// transient runs (the --distro override) skip persistence so a dev
+	// invocation doesn't redirect the user's saved pick. The install
+	// step still runs and the next non-override launch reuses the
+	// freshly-installed binary in that distro — we just don't change
+	// which distro the launcher boots into by default.
+	if !transient {
+		if err := a.persistSuccessfulLaunch(distro); err != nil {
+			log.Printf("save config after launch: %v", err)
+		}
 	}
 
 	url := fmt.Sprintf("http://localhost:%d/?t=%s", bs.Port, bs.Token)
@@ -318,10 +449,16 @@ func probeBootstrap(port int, token string) error {
 // to wsl.json once the backend has booted. Called only after a
 // successful Launch so a half-broken launcher doesn't trap the user
 // on the next boot with a saved-but-broken distro choice.
+//
+// We re-read wsl.json before mutating so any field the WSL backend
+// wrote during the previous session (notably Distro, when the user
+// switched via the Settings UI) doesn't get clobbered. The launcher
+// owns InstalledVer + InstalledDistro; the backend owns Distro from
+// the moment the user picks a different one.
 func (a *launcherApp) persistSuccessfulLaunch(distro string) error {
 	cfg, _ := loadConfig()
 	if cfg == nil {
-		cfg = &config{}
+		cfg = &wsldistro.Config{}
 	}
 	cfg.Distro = distro
 	cfg.InstalledVer = payloadVersion

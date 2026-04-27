@@ -141,6 +141,12 @@ var LocalOnlyMethods = map[string]bool{
 	"SetEditorSettings":    true,
 	"UpdateKeybindings":    true,
 	"ResetKeybindings":     true,
+	// SetWSLDistroPreference rewrites the Windows launcher's
+	// wsl.json — the next launch will boot whatever distro a LAN
+	// peer talked the user's backend into saving. Same threat shape
+	// as the rest of the settings-mutation block: a token leak must
+	// not let a remote peer reconfigure the local user's launcher.
+	"SetWSLDistroPreference": true,
 
 	// 4. Attachment / payload writes (local-FS mutation).
 	"UploadAttachment": true,
@@ -155,4 +161,14 @@ var LocalOnlyMethods = map[string]bool{
 	// the wire shape. Defense-in-depth: keep both off the LAN.
 	"GetRemoteEndpointToken": true,
 	"ListRemoteEndpoints":    true,
+
+	// 7. WSL inventory / preference. ListWSLDistros spawns wsl.exe per
+	// invocation — that's an external-process invocation under category 1
+	// even though the argv is fixed. GetWSLDistroPreference reads the
+	// launcher's wsl.json from disk (local-FS read under the user config
+	// dir). A LAN-attached token-holder shouldn't be able to fingerprint
+	// the host's WSL inventory or its persisted distro choice; both pair
+	// with the SetWSLDistroPreference mutation on a single host surface.
+	"ListWSLDistros":          true,
+	"GetWSLDistroPreference":  true,
 }

@@ -1,78 +1,40 @@
 //go:build windows
 
-// config.go owns the on-disk picker state under
-// %APPDATA%\agent-overflow\wsl.json. The file records the user's
-// distro pick plus the payload version we last installed, so a
-// subsequent launch can skip the install step when nothing changed.
+// config.go is the launcher's thin Windows-side wrapper over the
+// shared wsl.json schema in internal/wsldistro. The launcher reads
+// the file from %APPDATA%\agent-overflow\ before deciding which
+// distro to boot, and writes back after a successful launch. The
+// WSL-side backend reads + writes the same file through the /mnt/c
+// mount when the Settings UI's distro switcher is used; centralising
+// the schema and the I/O primitives in internal/wsldistro keeps the
+// two sides from drifting.
 package main
 
 import (
-	"encoding/json"
-	"errors"
-	"fmt"
-	"os"
-	"path/filepath"
+	"agent-overflow/internal/wsldistro"
 )
 
-// configFileName is the name of the on-disk config under
-// %APPDATA%\agent-overflow\.
-const configFileName = "wsl.json"
-
-// config is the on-disk picker state. We store the chosen distro
-// and the payload version we last installed so a subsequent launch
-// can skip the install step when the embedded payload hasn't changed.
-type config struct {
-	Distro          string `json:"distro"`
-	InstalledVer    string `json:"installed_version,omitempty"`
-	InstalledDistro string `json:"installed_distro,omitempty"`
+// loadConfig reads the launcher's wsl.json from %APPDATA%\agent-overflow.
+// Returns (nil, nil) when the file doesn't exist (first launch / never
+// picked a distro yet).
+func loadConfig() (*wsldistro.Config, error) {
+	dir, ok := wsldistro.WSLConfigDir()
+	if !ok {
+		// %APPDATA% unresolvable; treat as "no saved config" rather
+		// than erroring so the picker still runs on a stripped env.
+		return nil, nil
+	}
+	return wsldistro.Load(dir)
 }
 
-func configDir() (string, error) {
-	roaming := os.Getenv("APPDATA")
-	if roaming == "" {
-		// Fall back to the user home if APPDATA isn't in the
-		// environment (rare but possible in headless service contexts).
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("locate config dir: %w", err)
-		}
-		roaming = filepath.Join(home, "AppData", "Roaming")
+// saveConfig writes the launcher's wsl.json into %APPDATA%\agent-overflow.
+func saveConfig(c *wsldistro.Config) error {
+	dir, ok := wsldistro.WSLConfigDir()
+	if !ok {
+		// Without %APPDATA% we have nowhere to persist; the launcher
+		// continues but the next launch won't remember the pick. The
+		// picker will run again — same UX as a fresh install.
+		return nil
 	}
-	return filepath.Join(roaming, "agent-overflow"), nil
-}
-
-func loadConfig() (*config, error) {
-	dir, err := configDir()
-	if err != nil {
-		return nil, err
-	}
-	path := filepath.Join(dir, configFileName)
-	b, err := os.ReadFile(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("read config %s: %w", path, err)
-	}
-	var c config
-	if err := json.Unmarshal(b, &c); err != nil {
-		return nil, fmt.Errorf("decode config %s: %w", path, err)
-	}
-	return &c, nil
-}
-
-func saveConfig(c *config) error {
-	dir, err := configDir()
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
-	path := filepath.Join(dir, configFileName)
-	b, err := json.MarshalIndent(c, "", "  ")
-	if err != nil {
-		return fmt.Errorf("encode config: %w", err)
-	}
-	return os.WriteFile(path, b, 0o644)
+	return wsldistro.Save(dir, c)
 }

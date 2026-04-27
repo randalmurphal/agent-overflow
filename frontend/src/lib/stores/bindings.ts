@@ -57,6 +57,15 @@ export {
   GetNetworkSettings,
   SetNetworkSettings,
 
+  // WSL distro switcher — exposed only when the backend is running
+  // inside a WSL distribution spawned by the Windows launcher. The
+  // setter mutates %APPDATA%\agent-overflow\wsl.json so the next
+  // launcher boot picks the new distro.
+  IsWSL,
+  ListWSLDistros,
+  GetWSLDistroPreference,
+  SetWSLDistroPreference,
+
   // Open-in-editor: catalog + persistence + user-facing entry point.
   OpenInEditor,
   ListAvailableEditors,
@@ -210,6 +219,9 @@ export {
   RemoteEndpointSummary,
   TerminalOpenOptions,
 } from '../../../bindings/agent-overflow/models.js';
+export {
+  Distro as WSLDistro,
+} from '../../../bindings/agent-overflow/internal/wsllauncher/models.js';
 
 // CreateThread wrapper. The generated `CreateThread(opts: CreateThreadOptions)`
 // types `opts` as a class instance; callers pass partial literals like

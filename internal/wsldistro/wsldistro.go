@@ -1,0 +1,113 @@
+package wsldistro
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+)
+
+// FileName is the on-disk name of the launcher config under
+// %APPDATA%\agent-overflow\ (Windows) or its /mnt/c mirror (WSL).
+const FileName = "wsl.json"
+
+// Config is the on-disk picker state. The schema is shared between
+// the launcher (which writes Distro / InstalledVer / InstalledDistro
+// after a successful boot) and the WSL backend (which mutates only
+// Distro to honor a Settings UI distro switch — InstalledVer and
+// InstalledDistro are owned by the launcher's install path).
+type Config struct {
+	// Distro is the WSL distribution name the launcher should boot
+	// into on the next launch.
+	Distro string `json:"distro"`
+
+	// InstalledVer is the payloadVersion stamped onto the launcher
+	// at build time, recorded after a successful install + boot. The
+	// launcher uses this to decide whether to reinstall the Linux
+	// payload on the next launch.
+	InstalledVer string `json:"installed_version,omitempty"`
+
+	// InstalledDistro is the distro the most recent payload landed
+	// in. Switching distros forces a reinstall in the new distro
+	// even when InstalledVer hasn't changed.
+	InstalledDistro string `json:"installed_distro,omitempty"`
+}
+
+// Load reads and decodes wsl.json from dir. Returns (nil, nil) when
+// the file doesn't exist — first launch / no preference yet.
+func Load(dir string) (*Config, error) {
+	if dir == "" {
+		return nil, errors.New("wsldistro: empty directory path")
+	}
+	path := filepath.Join(dir, FileName)
+	b, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read %s: %w", path, err)
+	}
+	var c Config
+	if err := json.Unmarshal(b, &c); err != nil {
+		return nil, fmt.Errorf("decode %s: %w", path, err)
+	}
+	return &c, nil
+}
+
+// Save writes the encoded wsl.json under dir, creating dir when
+// missing. Returns an error rather than silently no-op'ing on a nil
+// Config so a typo at the call site doesn't quietly clobber the file
+// with a zero-value config.
+//
+// Write is atomic via tempfile + Rename so a crash between truncate
+// and flush can't leave a partial wsl.json that the next launch fails
+// to decode. The launcher and the WSL backend both write this file
+// (the launcher after a successful boot, the backend on a Settings
+// change), so torn-write protection is load-bearing.
+func Save(dir string, c *Config) error {
+	if dir == "" {
+		return errors.New("wsldistro: empty directory path")
+	}
+	if c == nil {
+		return errors.New("wsldistro: nil config")
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("mkdir %s: %w", dir, err)
+	}
+	b, err := json.MarshalIndent(c, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode: %w", err)
+	}
+	path := filepath.Join(dir, FileName)
+	tmp, err := os.CreateTemp(dir, FileName+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("create tempfile in %s: %w", dir, err)
+	}
+	tmpPath := tmp.Name()
+	cleanup := func() { _ = os.Remove(tmpPath) }
+	if err := os.Chmod(tmpPath, 0o600); err != nil {
+		_ = tmp.Close()
+		cleanup()
+		return fmt.Errorf("chmod %s: %w", tmpPath, err)
+	}
+	if _, err := tmp.Write(b); err != nil {
+		_ = tmp.Close()
+		cleanup()
+		return fmt.Errorf("write %s: %w", tmpPath, err)
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		cleanup()
+		return fmt.Errorf("sync %s: %w", tmpPath, err)
+	}
+	if err := tmp.Close(); err != nil {
+		cleanup()
+		return fmt.Errorf("close %s: %w", tmpPath, err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		cleanup()
+		return fmt.Errorf("rename %s -> %s: %w", tmpPath, path, err)
+	}
+	return nil
+}

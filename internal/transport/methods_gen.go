@@ -67,6 +67,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "GetThreadRuntimeMode", ID: 2573491630}, // main.App.GetThreadRuntimeMode
 	{Name: "GetThreadSlashCommands", ID: 520969054}, // main.App.GetThreadSlashCommands
 	{Name: "GetUIRenderTracePath", ID: 1009213933}, // main.App.GetUIRenderTracePath
+	{Name: "GetWSLDistroPreference", ID: 294719565}, // main.App.GetWSLDistroPreference
 	{Name: "GetWorkingTreeDiff", ID: 1858968113}, // main.App.GetWorkingTreeDiff
 	{Name: "GitCheckout", ID: 1598126927}, // main.App.GitCheckout
 	{Name: "GitCommit", ID: 1971060042}, // main.App.GitCommit
@@ -82,6 +83,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "GitStatusSubscribe", ID: 3282404643}, // main.App.GitStatusSubscribe
 	{Name: "GitStatusUnsubscribe", ID: 3263989430}, // main.App.GitStatusUnsubscribe
 	{Name: "InterruptTurn", ID: 850013031}, // main.App.InterruptTurn
+	{Name: "IsWSL", ID: 2789068977}, // main.App.IsWSL
 	{Name: "ListAttachments", ID: 1730798413}, // main.App.ListAttachments
 	{Name: "ListAvailableEditors", ID: 2556802234}, // main.App.ListAvailableEditors
 	{Name: "ListDesignArtifacts", ID: 4255572490}, // main.App.ListDesignArtifacts
@@ -99,6 +101,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "ListThreadCheckpoints", ID: 1853132444}, // main.App.ListThreadCheckpoints
 	{Name: "ListThreadProposedPlans", ID: 2485050629}, // main.App.ListThreadProposedPlans
 	{Name: "ListThreads", ID: 1090132042}, // main.App.ListThreads
+	{Name: "ListWSLDistros", ID: 2332614075}, // main.App.ListWSLDistros
 	{Name: "MarkThreadRead", ID: 1480646012}, // main.App.MarkThreadRead
 	{Name: "MarkThreadUnread", ID: 236597375}, // main.App.MarkThreadUnread
 	{Name: "OpenInEditor", ID: 3994295523}, // main.App.OpenInEditor
@@ -128,6 +131,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "SetEditorSettings", ID: 3655340267}, // main.App.SetEditorSettings
 	{Name: "SetNetworkSettings", ID: 3915514446}, // main.App.SetNetworkSettings
 	{Name: "SetThreadRuntimeMode", ID: 1115610690}, // main.App.SetThreadRuntimeMode
+	{Name: "SetWSLDistroPreference", ID: 3978807241}, // main.App.SetWSLDistroPreference
 	{Name: "StartDiscussion", ID: 3188309099}, // main.App.StartDiscussion
 	{Name: "StartSession", ID: 2850159713}, // main.App.StartSession
 	{Name: "StopClaudeTask", ID: 536320598}, // main.App.StopClaudeTask

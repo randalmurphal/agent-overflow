@@ -20,6 +20,26 @@ make dev        # dev mode with hot reload (wails3 dev)
 make build      # production build (wails3 build)
 ```
 
+### Developing the Windows + WSL path
+
+The native Windows backend isn't fully supported (terminals and
+provider lifecycle are stubs); production Windows runs the WSL launcher
+under `cmd/agent-overflow-windows/`. To dev the Windows path from
+inside a WSL shell:
+
+```sh
+make dev-wsl    # cross-compile Linux ELF + Windows .exe, then launch
+                # the .exe with --distro $WSL_DISTRO_NAME so the picker
+                # is skipped (you're already shelled into your distro).
+                # The .exe opens on the Windows desktop via WSL interop.
+make build-wsl  # build only; hand the .exe off without launching.
+```
+
+`make dev-wsl` is non-persistent — it doesn't overwrite the saved
+distro choice in `%APPDATA%\agent-overflow\wsl.json`, so a dev session
+won't change which distro a production double-click of the .exe lands
+in.
+
 ## Check
 
 ```sh

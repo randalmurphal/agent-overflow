@@ -1,8 +1,18 @@
 # internal/wsllauncher/
 
 Detects WSL distros and orchestrates spawning the agent-overflow Linux
-backend inside one. Used by `cmd/agent-overflow-windows` (the Windows
-entry point) and nothing else.
+backend inside one.
+
+Two callers:
+
+- `cmd/agent-overflow-windows` (the Windows entry point) — uses the
+  full surface (`ListDistros`, `Launch`, `InstallPayload`, etc).
+- The WSL-side backend (root `main.go`) — calls `ListDistros` only,
+  via the `app_wsl.go` bindings, so the Settings UI can enumerate
+  installed distros and let the user switch which one the launcher
+  resumes into. The WSL host has wsl.exe on `$PATH` via the standard
+  Windows interop shim; on non-WSL Linux/macOS hosts the call is a
+  no-op (returns `nil, nil`) so the Settings section self-hides.
 
 ## Layout
 
@@ -15,10 +25,14 @@ entry point) and nothing else.
 - `launcher_windows.go` — real implementation: `wsl.exe -l -v` exec,
   spawn with `CREATE_SUSPENDED` + Job Object adoption, payload install
   via `cp /mnt/c/<host-temp> ~/.local/bin/agent-overflow`.
-- `launcher_other.go` — non-Windows stub; returns "not supported on
-  Windows" for `Launch` / `InstallPayload`, returns empty slice from
-  `ListDistros` so the picker UI's empty-state branch is exercisable
-  off-platform.
+- `launcher_other.go` — non-Windows implementation. `Launch` /
+  `InstallPayload` return "not supported on Windows" (these only run
+  from the host-side launcher binary). `ListDistros` is a real
+  implementation: when running inside WSL (detected via
+  `WSL_DISTRO_NAME` + `wsl.exe` on `$PATH` via Windows interop), it
+  shells out and parses the same UTF-16 LE output as the Windows
+  caller. On native Linux/macOS it returns `nil, nil` so the picker
+  UI's empty-state branch is exercisable off-platform.
 - `distro_test.go`, `launcher_test.go` — table-driven against fixture
   bytes (`testdata/`) and stubbed readers.
 
@@ -96,4 +110,7 @@ no kill-on-close coverage.
   https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects
 - WSL automount behaviour:
   https://learn.microsoft.com/en-us/windows/wsl/wsl-config#automount-settings
-- `cmd/agent-overflow-windows/main.go` — sole consumer of this package.
+- `cmd/agent-overflow-windows/main.go` — primary consumer (full
+  launcher surface).
+- `app_wsl.go` — secondary consumer (calls `ListDistros` only, from
+  the WSL-side backend, for the Settings UI distro picker).

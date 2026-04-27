@@ -122,6 +122,30 @@ export const UpdateSettings = dispatch('UpdateSettings');
 export const GetNetworkSettings = dispatch('GetNetworkSettings');
 export const SetNetworkSettings = dispatch('SetNetworkSettings');
 
+// WSL distro switcher (Settings → Network → WSL Distro section).
+// IsWSL gates whether the section renders at all; the other three
+// drive the dropdown + persist on change.
+export const IsWSL = dispatch('IsWSL');
+export const ListWSLDistros = dispatch('ListWSLDistros');
+export const GetWSLDistroPreference = dispatch('GetWSLDistroPreference');
+export const SetWSLDistroPreference = dispatch('SetWSLDistroPreference');
+// WSLDistro mirrors the generated Distro class from
+// internal/wsllauncher/models — tests pass plain object literals to
+// the mocks, but the class shape is needed so `import type { WSLDistro }`
+// in components compiles against the test mock.
+export class WSLDistro {
+  name: string;
+  default: boolean;
+  version: number;
+  state: string;
+  constructor(d: Partial<WSLDistro> = {}) {
+    this.name = d.name ?? '';
+    this.default = d.default ?? false;
+    this.version = d.version ?? 2;
+    this.state = d.state ?? '';
+  }
+}
+
 // Editor (Phase G/H). OpenInEditor is the user-facing launcher; the
 // catalog + persistence pair powers the settings picker. The
 // EditorInfo / EditorSettings classes are re-exported from

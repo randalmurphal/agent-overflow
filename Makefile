@@ -1,4 +1,4 @@
-.PHONY: install dev build test check go-build go-test test-race
+.PHONY: install dev dev-wsl build build-wsl test check go-build go-test test-race
 
 # `make dev DEBUG=1` enables lightweight frontend UI render tracing.
 # `UI_TRACE=1` is the explicit form; DEBUG=1 is the short dev-mode alias.
@@ -55,6 +55,32 @@ install:
 
 dev:
 	VITE_AGENT_OVERFLOW_UI_TRACE=$(UI_TRACE) wails3 dev
+
+# dev-wsl: cross-compiles the Linux ELF + Windows .exe launcher inside
+# this WSL distro, then invokes the .exe via WSL's Windows interop.
+# The --distro flag is set from $WSL_DISTRO_NAME so the launcher skips
+# the picker and runs the backend in the same distro you're shelled
+# into. The override is non-persistent — it doesn't overwrite a
+# user-saved choice in %APPDATA%\agent-overflow\wsl.json.
+#
+# Run this from inside a WSL shell. WSL's interop layer launches the
+# .exe as a Windows process; the WebView2 window opens on the Windows
+# desktop and connects back to the Linux backend via WSL2's localhost
+# forwarding.
+dev-wsl: build-wsl
+	@if [ -z "$$WSL_DISTRO_NAME" ]; then \
+		echo "ERROR: WSL_DISTRO_NAME is unset. Run this target from inside a WSL shell."; \
+		exit 1; \
+	fi
+	@echo "Launching bin/agent-overflow.exe --distro $$WSL_DISTRO_NAME"
+	./bin/agent-overflow.exe --distro "$$WSL_DISTRO_NAME"
+
+# build-wsl: cross-compiles the Linux ELF backend + Windows .exe launcher
+# without running. Use this when you want to hand the .exe off (e.g.
+# copy to the Windows desktop, double-click later) instead of launching
+# in place.
+build-wsl:
+	wails3 task windows:build:wsl
 
 build:
 	wails3 build

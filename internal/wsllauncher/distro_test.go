@@ -124,6 +124,35 @@ func TestSplitColumns(t *testing.T) {
 	}
 }
 
+func TestIsNoDistrosMessage(t *testing.T) {
+	// "no distros installed" must surface as empty-slice + nil; an
+	// arbitrary wsl.exe failure (vmcompute down, kernel out of date)
+	// must NOT be misclassified as "no distros" because that would
+	// land the user on the picker's empty-state without a useful
+	// error.
+	cases := []struct {
+		name string
+		in   string
+		want bool
+	}{
+		{name: "empty", in: "", want: false},
+		{name: "english_no_installed", in: "Windows Subsystem for Linux has no installed distributions.", want: true},
+		{name: "english_caps", in: "NO INSTALLED DISTRIBUTIONS.", want: true},
+		{name: "raw_error_code", in: "WSL_E_DEFAULT_DISTRO_NOT_FOUND\r\n", want: true},
+		{name: "loose_localized", in: "There are no Linux distributions installed.", want: true},
+		{name: "vmcompute_broken", in: "Error code: WSL_E_VM_MODE_INVALID_STATE", want: false},
+		{name: "kernel_outdated", in: "Please update the WSL kernel by running 'wsl --update'.", want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := isNoDistrosMessage(tc.in)
+			if got != tc.want {
+				t.Errorf("isNoDistrosMessage(%q) = %v; want %v", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestParseInt(t *testing.T) {
 	cases := []struct {
 		in  string

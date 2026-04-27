@@ -18,9 +18,79 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"os/exec"
 	"strings"
+	"time"
 	"unicode/utf16"
 )
+
+// listDistrosTimeout caps how long ListDistros waits for wsl.exe to
+// emit its inventory. The picker UI presents an error if WSL is
+// installed but the call hangs (a known failure mode when the WSL VM
+// is in a broken state).
+const listDistrosTimeout = 5 * time.Second
+
+// runListDistrosCmd executes a pre-configured `wsl.exe -l -v` cmd
+// and returns the parsed distro list. Both the Windows-host
+// ListDistros (HideWindow SysProcAttr) and the WSL-side ListDistros
+// (no SysProcAttr — it's a Linux child of a Linux backend) build
+// their own *exec.Cmd to keep platform-specific options visible at
+// the call site, then hand the cmd off here for the run + parse.
+//
+// Returns ([], nil) when wsl.exe reports the localized "no installed
+// distributions" message in stderr; the picker UI uses the empty
+// slice as the cue to show install instructions.
+func runListDistrosCmd(cmd *exec.Cmd) ([]Distro, error) {
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			// wsl.exe writes its diagnostic messages in UTF-16 LE on
+			// most modern Windows builds. Decode best-effort so we
+			// can differentiate "no distros installed" from a
+			// structural failure (vmcompute down, kernel update
+			// needed, etc).
+			text, _ := decodeUTF16LE(stderr.Bytes())
+			if text == "" {
+				text = stderr.String()
+			}
+			if isNoDistrosMessage(text) {
+				return nil, nil
+			}
+			return nil, fmt.Errorf("wsllauncher: wsl.exe -l -v failed: %w (stderr: %s)", err, strings.TrimSpace(text))
+		}
+		return nil, fmt.Errorf("wsllauncher: run wsl.exe -l -v: %w", err)
+	}
+	return parseDistroList(out)
+}
+
+// isNoDistrosMessage returns true when wsl.exe's stderr indicates the
+// "WSL is installed but no distros" path. The English string is the
+// most common; we match a few localised forms loosely so French /
+// German / Japanese hosts don't fall into the unrecognised-failure
+// branch.
+//
+// Matched substrings:
+//   - "no installed distributions" (en-US)
+//   - "There are no" + "distributions" (loose for localized "There are no <X> distributions...")
+//   - "WSL_E_DEFAULT_DISTRO_NOT_FOUND" (raw error code wsl.exe sometimes emits)
+func isNoDistrosMessage(s string) bool {
+	lower := strings.ToLower(strings.TrimSpace(s))
+	if lower == "" {
+		return false
+	}
+	switch {
+	case strings.Contains(lower, "no installed distributions"):
+		return true
+	case strings.Contains(lower, "wsl_e_default_distro_not_found"):
+		return true
+	case strings.Contains(lower, "there are no") && strings.Contains(lower, "distribut"):
+		return true
+	}
+	return false
+}
 
 // Distro describes one WSL distribution as reported by wsl.exe -l -v.
 //
@@ -30,11 +100,16 @@ import (
 // raw column ("Running", "Stopped", "Installing", etc) — we don't
 // normalise it because WSL has added new states over time and a literal
 // pass-through is robust to that.
+//
+// JSON tags: lowercased to match the rest of the wire-bound types in
+// this codebase (see settings.NetworkSettings, store.Item, etc). The
+// App method ListWSLDistros returns []Distro, which the Wails binding
+// generator surfaces to TypeScript using these tag names.
 type Distro struct {
-	Name    string
-	Default bool
-	Version int
-	State   string
+	Name    string `json:"name"`
+	Default bool   `json:"default"`
+	Version int    `json:"version"`
+	State   string `json:"state"`
 }
 
 // ErrMalformedUTF16 is returned by parseDistroList when the input is

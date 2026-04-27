@@ -16,20 +16,6 @@ import (
 // verify here is parsing, error shape, and the cross-platform
 // interface contracts.
 
-func TestListDistros_NoWSLNoError(t *testing.T) {
-	// On macOS / Linux the package's ListDistros returns (nil, nil) —
-	// the picker UI's empty-list branch is what triggers install
-	// guidance. We verify the contract here so a future refactor on
-	// Windows that accidentally errors when WSL is absent is caught
-	// by this test on the macOS CI pass.
-	got, err := ListDistros(context.Background())
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(got) != 0 {
-		t.Fatalf("want empty slice on non-Windows host, got %d distros", len(got))
-	}
-}
 
 func TestLaunch_ErrorsOnNonWindows(t *testing.T) {
 	if runtime.GOOS == "windows" {

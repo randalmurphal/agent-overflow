@@ -614,15 +614,16 @@ func (p *privilegedApp) StopClaudeTask() string                { return "ok" }
 func (p *privilegedApp) CleanCodexBackgroundTerminals() string { return "ok" }
 
 // 3. Settings mutation.
-func (p *privilegedApp) UpdateSettings() string       { return "ok" }
-func (p *privilegedApp) SetNetworkSettings() string   { return "ok" }
-func (p *privilegedApp) AddRemoteEndpoint() string    { return "ok" }
-func (p *privilegedApp) UpdateRemoteEndpoint() string { return "ok" }
-func (p *privilegedApp) DeleteRemoteEndpoint() string { return "ok" }
-func (p *privilegedApp) TouchRemoteEndpoint() string  { return "ok" }
-func (p *privilegedApp) SetEditorSettings() string    { return "ok" }
-func (p *privilegedApp) UpdateKeybindings() string    { return "ok" }
-func (p *privilegedApp) ResetKeybindings() string     { return "ok" }
+func (p *privilegedApp) UpdateSettings() string         { return "ok" }
+func (p *privilegedApp) SetNetworkSettings() string     { return "ok" }
+func (p *privilegedApp) AddRemoteEndpoint() string      { return "ok" }
+func (p *privilegedApp) UpdateRemoteEndpoint() string   { return "ok" }
+func (p *privilegedApp) DeleteRemoteEndpoint() string   { return "ok" }
+func (p *privilegedApp) TouchRemoteEndpoint() string    { return "ok" }
+func (p *privilegedApp) SetEditorSettings() string      { return "ok" }
+func (p *privilegedApp) UpdateKeybindings() string      { return "ok" }
+func (p *privilegedApp) ResetKeybindings() string       { return "ok" }
+func (p *privilegedApp) SetWSLDistroPreference() string { return "ok" }
 
 // 4. Attachment / payload writes.
 func (p *privilegedApp) UploadAttachment() string { return "ok" }
@@ -634,6 +635,10 @@ func (p *privilegedApp) AppendUIRenderTraceBatch() string { return "ok" }
 // 6. Credential retrieval / endpoint enumeration.
 func (p *privilegedApp) GetRemoteEndpointToken() string { return "ok" }
 func (p *privilegedApp) ListRemoteEndpoints() string    { return "ok" }
+
+// 7. WSL inventory / preference.
+func (p *privilegedApp) ListWSLDistros() string         { return "ok" }
+func (p *privilegedApp) GetWSLDistroPreference() string { return "ok" }
 
 // TestDispatcher_LocalOnlyRefusedFromNonLoopback pins the LAN-bind
 // safety contract on the dispatcher itself. ResolveForOrigin must
