@@ -12,6 +12,8 @@
     retainProposedPlanEventListener,
   } from '../../stores/proposedPlans.svelte';
   import {
+    PLAN_SIDEBAR_MIN_WIDTH,
+    getPlanSidebarMaxWidth,
     getPlanSidebarWidth,
     persistPlanSidebarWidth,
     setPlanSidebarWidthLive,
@@ -33,7 +35,7 @@
   import { isUiRenderTraceEnabled, recordUiTrace, scheduleDomUiTrace } from '../../utils/uiRenderTrace';
   import Button from '../primitives/Button.svelte';
   import Icon from '../primitives/Icon.svelte';
-  import PlanSidebarResizer from './PlanSidebarResizer.svelte';
+  import RhsSidebarResizer from './RhsSidebarResizer.svelte';
   import ProposedPlanActions from './ProposedPlanActions.svelte';
   import ProposedPlanReviewSurface from './ProposedPlanReviewSurface.svelte';
   import ProposedPlanSaveModal from './ProposedPlanSaveModal.svelte';
@@ -285,10 +287,14 @@
       </div>
     {/if}
 
-    <PlanSidebarResizer
+    <RhsSidebarResizer
       width={getPlanSidebarWidth()}
+      minWidth={PLAN_SIDEBAR_MIN_WIDTH}
+      getMaxWidth={getPlanSidebarMaxWidth}
       onResizeLive={setPlanSidebarWidthLive}
       onResizeEnd={persistPlanSidebarWidth}
+      ariaLabel="Resize Plan Sidebar"
+      testId="plan-sidebar-resizer"
     />
   </aside>
 {/if}

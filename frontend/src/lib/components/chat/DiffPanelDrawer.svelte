@@ -8,10 +8,18 @@
   import ChevronDown from 'lucide-svelte/icons/chevron-down';
   import Icon from '../primitives/Icon.svelte';
   import EditorLink from '../common/EditorLink.svelte';
+  import RhsSidebarResizer from './RhsSidebarResizer.svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { getSettings, updateSetting } from '../../stores/settings.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import { wailsEventOn } from '../../stores/events';
+  import {
+    DIFF_PANEL_MIN_WIDTH,
+    getDiffPanelMaxWidth,
+    getDiffPanelWidth,
+    persistDiffPanelWidth,
+    setDiffPanelWidthLive,
+  } from '../../stores/diffPanelLayout.svelte';
   import {
     GetCheckpointRangeDiff,
     ListThreadCheckpoints,
@@ -209,7 +217,8 @@
 <aside
   aria-label="Diff Panel"
   data-testid="diff-panel-drawer"
-  class="flex h-full w-[min(48vw,620px)] min-w-[380px] shrink-0 flex-col border-l border-border bg-surface-0"
+  style="width: {getDiffPanelWidth()}px"
+  class="relative flex h-full shrink-0 flex-col border-l border-border bg-surface-0"
 >
   <header class="border-b border-border bg-surface-1/70">
     <div class="flex items-center gap-2 px-3 py-2">
@@ -312,6 +321,16 @@
       {/if}
     </div>
   </div>
+
+  <RhsSidebarResizer
+    width={getDiffPanelWidth()}
+    minWidth={DIFF_PANEL_MIN_WIDTH}
+    getMaxWidth={getDiffPanelMaxWidth}
+    onResizeLive={setDiffPanelWidthLive}
+    onResizeEnd={persistDiffPanelWidth}
+    ariaLabel="Resize Diff Panel"
+    testId="diff-panel-resizer"
+  />
 </aside>
 
 <RevertDialog

@@ -20,6 +20,8 @@
   import type { ThreadPane } from '../../stores/thread.svelte';
   import type { DiffViewMode } from '../../stores/diffPanel.svelte';
   import {
+    DIFF_SIDEBAR_MIN_WIDTH,
+    getDiffSidebarMaxWidth,
     getDiffSidebarWidth,
     persistDiffSidebarWidth,
     setDiffSidebarWidthLive,
@@ -28,7 +30,7 @@
   import { createPayloadExpansion, formatPayloadSize } from './payloadExpansion.svelte';
   import DiffSidebarBody from './DiffSidebarBody.svelte';
   import DiffSidebarHeader from './DiffSidebarHeader.svelte';
-  import DiffSidebarResizer from './DiffSidebarResizer.svelte';
+  import RhsSidebarResizer from './RhsSidebarResizer.svelte';
 
   interface Props {
     pane: ThreadPane;
@@ -295,9 +297,13 @@
     {/if}
   {/if}
 
-  <DiffSidebarResizer
+  <RhsSidebarResizer
     width={getDiffSidebarWidth()}
+    minWidth={DIFF_SIDEBAR_MIN_WIDTH}
+    getMaxWidth={getDiffSidebarMaxWidth}
     onResizeLive={setDiffSidebarWidthLive}
     onResizeEnd={persistDiffSidebarWidth}
+    ariaLabel="Resize Diff Sidebar"
+    testId="diff-sidebar-resizer"
   />
 </aside>
