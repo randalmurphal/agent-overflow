@@ -66,6 +66,16 @@ func TestIntegration_AppEmitReachesWSClient(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = conn.Close(websocket.StatusNormalClosure, "") })
 
+	// websocket.Dial returns once the upgrade handshake completes, but
+	// the server-side subscription happens after that — runConnHandler
+	// calls bus.Subscribe in its body, scheduled separately from the
+	// upgrade. If we emit before that runs, the events are dropped on
+	// the floor with no subscriber. Wait for the bus to see the live
+	// subscription so the assertions are deterministic.
+	if !waitForSubscriber(bus, 1, time.Second) {
+		t.Fatalf("server never registered WS subscriber")
+	}
+
 	// Emit twice on the same channel via App.emit. The first payload
 	// MUST land as seq=1, the second as seq=2 — the bus owns the
 	// per-channel counter and must be the one assigning these.
@@ -135,4 +145,21 @@ type eventFrame struct {
 	Channel string          `json:"channel"`
 	Seq     uint64          `json:"seq"`
 	Data    json.RawMessage `json:"data"`
+}
+
+// waitForSubscriber polls bus.SubscriberCount until it reaches at least
+// `min` or the timeout expires. websocket.Dial returns when the upgrade
+// completes, but the server-side runConnHandler — which is what calls
+// bus.Subscribe — runs on its own goroutine and may not have attached
+// the subscriber yet. Polling via the public accessor avoids reaching
+// into transport package internals.
+func waitForSubscriber(bus *transport.EventBus, min int, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if bus.SubscriberCount() >= min {
+			return true
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	return bus.SubscriberCount() >= min
 }

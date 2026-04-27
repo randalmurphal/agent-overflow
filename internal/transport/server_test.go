@@ -841,6 +841,132 @@ func TestRebind_InvalidAddrLeavesStateIntact(t *testing.T) {
 	}
 }
 
+// TestSamePort verifies the port-comparison helper used by
+// bindRebindListener to scope the EADDRINUSE recovery. Both addrs must
+// parse cleanly with net.SplitHostPort; either malformed yields false
+// (better to skip recovery than guess on a partially-parsed addr).
+func TestSamePort(t *testing.T) {
+	cases := []struct {
+		a, b string
+		want bool
+	}{
+		{"127.0.0.1:8080", "0.0.0.0:8080", true},
+		{"[::]:8080", "127.0.0.1:8080", true},
+		{"127.0.0.1:8080", "127.0.0.1:9090", false},
+		{"127.0.0.1:8080", "", false},
+		{"", "127.0.0.1:8080", false},
+		{"not-an-addr", "127.0.0.1:8080", false},
+	}
+	for _, c := range cases {
+		if got := samePort(c.a, c.b); got != c.want {
+			t.Errorf("samePort(%q, %q) = %v, want %v", c.a, c.b, got, c.want)
+		}
+	}
+}
+
+// TestRebind_ForeignHolderDifferentPortLeavesStateIntact pins the
+// scoping rule on the EADDRINUSE recovery path: when the rebind target
+// is on a different port from the live listener, the kernel's
+// "address already in use" must be a foreign holder, not Linux's
+// self-overlap rule. Closing our own listener wouldn't help — so the
+// error propagates directly and the existing listener stays exactly
+// as it was.
+func TestRebind_ForeignHolderDifferentPortLeavesStateIntact(t *testing.T) {
+	f := newServerFixture(t)
+	preAddr := f.srv.Addr()
+	conn := f.dial(t)
+
+	// Pre-rebind RPC must work.
+	resp := f.rpc(t, conn, 0, "Greet", "before")
+	if resp.Error != nil {
+		t.Fatalf("rpc pre-rebind: %+v", resp.Error)
+	}
+
+	// Stage a foreign holder on a fresh ephemeral port (different from
+	// f.srv's port). The first net.Listen will return EADDRINUSE
+	// because the foreign listener owns it; the recovery path's
+	// samePort check sees the port mismatch and propagates without
+	// touching our listener.
+	foreign, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("stage foreign listener: %v", err)
+	}
+	defer foreign.Close()
+	foreignAddr := foreign.Addr().String()
+
+	err = f.srv.Rebind(foreignAddr, nil)
+	if err == nil {
+		t.Fatalf("expected rebind to fail when target addr is held by a foreign listener")
+	}
+
+	// Addr unchanged — recovery never fired.
+	if got := f.srv.Addr(); got != preAddr {
+		t.Fatalf("Addr changed after failed rebind: pre=%q post=%q", preAddr, got)
+	}
+
+	// Pre-rebind hijacked WS connection still works.
+	resp = f.rpc(t, conn, 0, "Greet", "still-alive")
+	if resp.Error != nil {
+		t.Fatalf("rpc on pre-rebind conn after failed rebind: %+v", resp.Error)
+	}
+	if string(resp.Result) != `"hello, still-alive"` {
+		t.Fatalf("unexpected result: %s", string(resp.Result))
+	}
+}
+
+// TestRebind_SamePortHostFlip pins the Linux self-overlap recovery
+// path: rebinding from 127.0.0.1:N to 0.0.0.0:N (the LAN-bind toggle's
+// shape) must succeed even though Linux refuses to bind 0.0.0.0:N
+// while 127.0.0.1:N is still held by the same process. macOS allows
+// the overlap and would have succeeded with the optimistic
+// "bind new before retiring old" pattern; Linux requires us to release
+// the old listener first. The recovery path closes the old listener,
+// retries, and only fails for genuinely-foreign holders. Pre-fix this
+// test failed on Linux with "bind: address already in use".
+func TestRebind_SamePortHostFlip(t *testing.T) {
+	f := newServerFixture(t)
+	conn := f.dial(t)
+
+	// Confirm the pre-rebind connection works.
+	resp := f.rpc(t, conn, 0, "Greet", "before")
+	if resp.Error != nil {
+		t.Fatalf("rpc pre-rebind: %+v", resp.Error)
+	}
+
+	// Capture the live port and rebind to 0.0.0.0:<same-port>. This is
+	// the exact shape SetNetworkSettings uses for the LAN-bind toggle:
+	// the port is preserved across the host flip so any URL the user
+	// already shared keeps working.
+	_, port, err := net.SplitHostPort(f.srv.Addr())
+	if err != nil {
+		t.Fatalf("split addr: %v", err)
+	}
+
+	if err := f.srv.Rebind("0.0.0.0:"+port, nil); err != nil {
+		t.Fatalf("rebind 127.0.0.1:%s -> 0.0.0.0:%s: %v", port, port, err)
+	}
+
+	// Existing WS connection survives — hijacked goroutines don't depend
+	// on the listener.
+	resp = f.rpc(t, conn, 0, "Greet", "after")
+	if resp.Error != nil {
+		t.Fatalf("rpc post-rebind: %+v", resp.Error)
+	}
+	if string(resp.Result) != `"hello, after"` {
+		t.Fatalf("unexpected post-rebind result: %s", string(resp.Result))
+	}
+
+	// Flip back to loopback on the same port — the reverse direction
+	// also works without leaking listeners.
+	if err := f.srv.Rebind("127.0.0.1:"+port, nil); err != nil {
+		t.Fatalf("rebind 0.0.0.0:%s -> 127.0.0.1:%s: %v", port, port, err)
+	}
+	resp = f.rpc(t, conn, 0, "Greet", "after-back")
+	if resp.Error != nil {
+		t.Fatalf("rpc post-second-rebind: %+v", resp.Error)
+	}
+}
+
 // TestRebind_SameAddrIsNoOp documents the no-op shortcut: passing the
 // current addr with no opts changes returns nil without churning the
 // listener. Callers can fire Rebind blindly when settings change
