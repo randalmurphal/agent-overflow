@@ -126,7 +126,6 @@ describe('<ChatView>', () => {
 
     expect(getByTestId('chat-header')).toBeInTheDocument();
     expect(getByTestId('chat-header-title')).toBeInTheDocument();
-    expect(getByTestId('chat-header-provider')).toBeInTheDocument();
     expect(getByTestId('diff-panel-toggle')).toBeInTheDocument();
     expect(queryByTestId('plan-sidebar-toggle')).toBeNull();
   });

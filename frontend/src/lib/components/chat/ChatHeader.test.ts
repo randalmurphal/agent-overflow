@@ -1,8 +1,8 @@
-// ChatHeader tests cover the rewrite's contract: provider chip, title
-// (view + inline rename), project badge, git actions, and the two
-// Diffs toggle. The old InteractionModeBadge +
-// ModelPicker / RuntimeModePicker / BranchToolbar have been deleted;
-// those covers are carried in the composer/below-bar tests now.
+// ChatHeader tests cover the rewrite's contract: title (view + inline
+// rename), project badge, git actions, and the Diffs toggle. The old
+// InteractionModeBadge + ModelPicker / RuntimeModePicker / BranchToolbar
+// have been deleted; those covers are carried in the composer/below-bar
+// tests now.
 
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, fireEvent } from '@testing-library/svelte';
@@ -78,24 +78,6 @@ describe('<ChatHeader>', () => {
     resetBindingMocks();
     resetProjectsForTest();
     resetSidebarForTest();
-  });
-
-  it('renders the provider chip with the right letter + tint for Claude', async () => {
-    const pane = await buildPane(makeThread({ provider: 'claude' }));
-    const { getByTestId } = render(ChatHeader, { props: { pane } });
-    await tick();
-    const chip = getByTestId('chat-header-provider');
-    expect(chip.textContent?.trim()).toBe('C');
-    expect(chip.className).toContain('text-accent');
-  });
-
-  it('renders the provider chip with X + codex tint for Codex threads', async () => {
-    const pane = await buildPane(makeThread({ provider: 'codex' }));
-    const { getByTestId } = render(ChatHeader, { props: { pane } });
-    await tick();
-    const chip = getByTestId('chat-header-provider');
-    expect(chip.textContent?.trim()).toBe('X');
-    expect(chip.className).toContain('provider-codex');
   });
 
   it('shows the thread title as a button in view mode', async () => {

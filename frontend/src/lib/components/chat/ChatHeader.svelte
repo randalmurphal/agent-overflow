@@ -1,6 +1,6 @@
 <script lang="ts">
-  // Chat header: thread title + provider chip on the left, project badge
-  // + meters + diff toggle + git actions on the right.
+  // Chat header: thread title on the left, project badge + meters +
+  // diff toggle + git actions on the right.
   //
   // The interaction-mode badge is gone (ModeCycleButton on the composer
   // toolbar owns it now), and so is the ModelPicker / RuntimeModePicker
@@ -130,20 +130,6 @@
     data-testid="chat-header"
     class="flex items-center gap-2 border-b border-border-subtle bg-transparent px-5 py-2 shrink-0 min-w-0 flex-nowrap"
   >
-    <!-- Provider chip: single letter pill, accent for Claude, provider-codex for Codex. -->
-    <span
-      data-testid="chat-header-provider"
-      class={[
-        'text-[10px] font-semibold px-1.5 py-0.5 rounded-[var(--radius-field)] shrink-0 tracking-wide',
-        pane.thread.provider === 'claude'
-          ? 'bg-accent/15 text-accent'
-          : 'bg-provider-codex/15 text-provider-codex',
-      ].join(' ')}
-      aria-label={`Provider: ${pane.thread.provider}`}
-    >
-      {pane.thread.provider === 'claude' ? 'C' : 'X'}
-    </span>
-
     <!-- Title — double-click to rename, or single-click the inline button. -->
     {#if editing}
       <input
