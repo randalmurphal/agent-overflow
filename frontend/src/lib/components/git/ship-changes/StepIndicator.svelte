@@ -5,8 +5,9 @@
   // state machine exactly — no duplicated state.
 
   import type { ShipChangesPhase } from '../../../stores/shipChanges.svelte';
+  import { forgeLabels } from '../../../utils/forgeLabels';
 
-  let { phase }: { phase: ShipChangesPhase } = $props();
+  let { phase, forge }: { phase: ShipChangesPhase; forge?: string } = $props();
 
   type StepState = 'pending' | 'active' | 'busy' | 'error' | 'done';
   interface Step {
@@ -14,11 +15,16 @@
     label: string;
   }
 
-  const steps: Step[] = [
+  // Step 3 label adapts to the detected forge ("Open PR" / "Open MR").
+  // Internal stage keys stay `pr.*` regardless of forge — split on `.`
+  // below depends on it, and renaming would cascade through the whole
+  // state machine for cosmetic gain only.
+  let labels = $derived(forgeLabels(forge));
+  let steps = $derived<Step[]>([
     { key: 'commit', label: 'Commit' },
     { key: 'push', label: 'Push' },
-    { key: 'pr', label: 'Open PR' },
-  ];
+    { key: 'pr', label: labels.openAction },
+  ]);
 
   function stepState(stepKey: 'commit' | 'push' | 'pr', current: ShipChangesPhase): StepState {
     // The phases are prefixed with the step name, so a simple prefix match

@@ -132,6 +132,49 @@ describe('<ThreadFromPRDialog>', () => {
     expect(binding.mock.calls.length).toBe(1);
     expect(binding.mock.calls[0][0]).toBe('owner/repo');
     expect(binding.mock.calls[0][1]).toBe(42);
+    // forge id propagates as the 5th positional arg.
+    expect(binding.mock.calls[0][4]).toBe('github');
+    expect(closed).toBe(1);
+  });
+
+  it('passes forge=gitlab and the full subgroup namespace when a GitLab MR URL is submitted', async () => {
+    const pane = await buildPane();
+    const created: Thread = {
+      id: 't-mr',
+      title: 'MR !9 demo',
+      provider: 'claude',
+      workspacePath: '',
+      projectPath: 'pr://gitlab/group/sub/repo',
+      model: 'claude-sonnet-4-6',
+      mode: 'chat',
+      createdAt: 0,
+      updatedAt: 0,
+      archived: false,
+    };
+    const binding = setBindingMock('CreateThreadFromPR', async () => created);
+
+    let closed = 0;
+    const { getByTestId } = render(ThreadFromPRDialog, {
+      props: {
+        open: true,
+        pane,
+        onClose: () => { closed += 1; },
+      },
+    });
+    await flush();
+
+    const input = getByTestId('thread-from-pr-url') as HTMLInputElement;
+    await fireEvent.input(input, {
+      target: { value: 'https://gitlab.com/group/sub/repo/-/merge_requests/9' },
+    });
+    await flush();
+    await fireEvent.click(getByTestId('thread-from-pr-submit'));
+    await flush(10);
+
+    expect(binding.mock.calls.length).toBe(1);
+    expect(binding.mock.calls[0][0]).toBe('group/sub/repo');
+    expect(binding.mock.calls[0][1]).toBe(9);
+    expect(binding.mock.calls[0][4]).toBe('gitlab');
     expect(closed).toBe(1);
   });
 

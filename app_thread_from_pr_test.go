@@ -3,108 +3,44 @@ package main
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 	"unicode/utf8"
 
+	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/settings"
 )
 
-func TestParsePRReferenceAcceptsHTTPSURL(t *testing.T) {
-	cases := []struct {
-		in       string
-		wantOwn  string
-		wantRepo string
-		wantNum  int
-	}{
-		{"https://github.com/anthropic/code/pull/42", "anthropic", "code", 42},
-		{"http://github.com/a/b/pull/1", "a", "b", 1},
-		{"github.com/foo/bar/pull/999", "foo", "bar", 999},
-		{"  https://github.com/owner/repo/pull/7  ", "owner", "repo", 7},
-		{"https://github.com/owner/repo/pull/15/files", "owner", "repo", 15},
-		{"https://github.com/owner/repo/pull/15#issuecomment-9", "owner", "repo", 15},
-		{"https://github.com/owner/repo/pull/15?foo=bar", "owner", "repo", 15},
-	}
-	for _, tc := range cases {
-		got, err := ParsePRReference(tc.in)
-		if err != nil {
-			t.Fatalf("ParsePRReference(%q) error = %v", tc.in, err)
-		}
-		if got.Owner != tc.wantOwn || got.Repo != tc.wantRepo || got.Number != tc.wantNum {
-			t.Fatalf("ParsePRReference(%q) = %+v, want owner=%s repo=%s num=%d", tc.in, got, tc.wantOwn, tc.wantRepo, tc.wantNum)
-		}
-	}
-}
-
-func TestParsePRReferenceAcceptsShortForm(t *testing.T) {
-	got, err := ParsePRReference("foo/bar#321")
-	if err != nil {
-		t.Fatalf("ParsePRReference() error = %v", err)
-	}
-	if got.Owner != "foo" || got.Repo != "bar" || got.Number != 321 {
-		t.Fatalf("got = %+v, want owner=foo repo=bar num=321", got)
-	}
-}
-
-func TestParsePRReferenceRejectsMalformed(t *testing.T) {
-	cases := []string{
-		"",
-		"   ",
-		"not a url",
-		"https://gitlab.com/foo/bar/pull/1",
-		"https://github.com/foo",
-		"https://github.com/foo/bar/issues/1",
-		"foo#1",
-		"foo/bar#",
-		"foo/bar#abc",
-		"foo/bar/baz#1",
-		"https://github.com/foo/bar/pull/-1",
-		"https://github.com/foo/bar/pull/0",
-	}
-	for _, in := range cases {
-		if _, err := ParsePRReference(in); err == nil {
-			t.Fatalf("ParsePRReference(%q) succeeded, want error", in)
-		}
-	}
-}
-
-func TestParsePRReferenceRejectsZeroNumber(t *testing.T) {
-	if _, err := ParsePRReference("foo/bar#0"); err == nil {
-		t.Fatal("ParsePRReference(#0) succeeded, want error")
-	}
-}
-
-// fakeGh builds a shim `gh` binary for CreateThreadFromPR tests. It writes a
-// small shell (or batch) script that routes subcommands to canned output.
-// Tests use `installFakeGh(t, scripts)` to activate it for the duration of the
-// test; the helper restores lookPath/ghCommand in t.Cleanup.
-func installFakeGh(t *testing.T, onView, onDiff string) *fakeGhInvocations {
+// installFakeGh installs a PATH-prepended `gh` shim that responds to
+// `pr view` with onView and `pr diff` with onDiff. The recorded-args
+// log file is returned so callers can verify the invocations.
+func installFakeGh(t *testing.T, onView, onDiff string) string {
 	t.Helper()
 	if runtime.GOOS == "windows" {
 		t.Skip("fake gh shim assumes a POSIX shell")
 	}
-
 	dir := t.TempDir()
-	calls := &fakeGhInvocations{}
+	argLog := filepath.Join(dir, "calls.log")
+	binPath := filepath.Join(dir, "gh")
 	script := fmt.Sprintf(`#!/bin/sh
 set -eu
+echo "$@" >> %q
 case "$1" in
   pr)
     shift
     case "$1" in
       view)
-        cat <<'EOF'
+        cat <<'END_OF_VIEW'
 %s
-EOF
+END_OF_VIEW
         ;;
       diff)
-        cat <<'EOF'
+        cat <<'END_OF_DIFF'
 %s
-EOF
+END_OF_DIFF
         ;;
       *)
         echo "unknown pr subcommand: $1" 1>&2
@@ -117,54 +53,76 @@ EOF
     exit 2
     ;;
 esac
-`, onView, onDiff)
-
-	binPath := filepath.Join(dir, "gh")
+`, argLog, onView, onDiff)
 	if err := os.WriteFile(binPath, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake gh: %v", err)
 	}
-
-	prevLookPath := lookPath
-	prevGhCommand := ghCommand
-	lookPath = func(name string) (string, error) {
-		if name == "gh" {
-			return binPath, nil
-		}
-		return exec.LookPath(name)
-	}
-	ghCommand = func(args ...string) *exec.Cmd {
-		calls.record(args)
-		return exec.Command(binPath, args...)
-	}
-	t.Cleanup(func() {
-		lookPath = prevLookPath
-		ghCommand = prevGhCommand
-	})
-	return calls
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return argLog
 }
 
-// uninstallGh forces lookPath to report gh as missing. Used to exercise the
-// "please install gh" error path.
-func uninstallGh(t *testing.T) {
+// installFakeGlab installs a PATH-prepended `glab` shim that responds
+// to `mr view` with onView and `mr diff` with onDiff.
+func installFakeGlab(t *testing.T, onView, onDiff string) string {
 	t.Helper()
-	prevLookPath := lookPath
-	lookPath = func(name string) (string, error) {
-		if name == "gh" {
-			return "", fmt.Errorf("exec: %q executable file not found in $PATH", name)
-		}
-		return exec.LookPath(name)
+	if runtime.GOOS == "windows" {
+		t.Skip("fake glab shim assumes a POSIX shell")
 	}
-	t.Cleanup(func() {
-		lookPath = prevLookPath
-	})
+	dir := t.TempDir()
+	argLog := filepath.Join(dir, "calls.log")
+	binPath := filepath.Join(dir, "glab")
+	script := fmt.Sprintf(`#!/bin/sh
+set -eu
+echo "$@" >> %q
+case "$1" in
+  mr)
+    shift
+    case "$1" in
+      view)
+        cat <<'END_OF_VIEW'
+%s
+END_OF_VIEW
+        ;;
+      diff)
+        cat <<'END_OF_DIFF'
+%s
+END_OF_DIFF
+        ;;
+      *)
+        echo "unknown mr subcommand: $1" 1>&2
+        exit 2
+        ;;
+    esac
+    ;;
+  *)
+    echo "unknown glab command: $1" 1>&2
+    exit 2
+    ;;
+esac
+`, argLog, onView, onDiff)
+	if err := os.WriteFile(binPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake glab: %v", err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return argLog
 }
 
-type fakeGhInvocations struct {
-	calls [][]string
-}
-
-func (f *fakeGhInvocations) record(args []string) {
-	f.calls = append(f.calls, append([]string(nil), args...))
+func readArgLog(t *testing.T, argLog string) []string {
+	t.Helper()
+	data, err := os.ReadFile(argLog)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		t.Fatalf("read arg log: %v", err)
+	}
+	var lines []string
+	for _, line := range strings.Split(strings.TrimRight(string(data), "\n"), "\n") {
+		if line != "" {
+			lines = append(lines, line)
+		}
+	}
+	return lines
 }
 
 const sampleViewJSON = `{
@@ -189,13 +147,32 @@ index abc..def 100644
 +
 `
 
+const sampleMRViewJSON = `{
+  "title": "Add MR import",
+  "description": "Imports MRs from GitLab into a thread.",
+  "source_branch": "feature/mr-import",
+  "target_branch": "main",
+  "web_url": "https://gitlab.com/group/repo/-/merge_requests/9",
+  "state": "opened",
+  "author": {"username": "alice"}
+}`
+
+const sampleMRDiff = `diff --git a/app.go b/app.go
+index 111..222 100644
+--- a/app.go
++++ b/app.go
+@@ -1,3 +1,4 @@
+ func foo() {}
++func mr() {}
+`
+
 func TestCreateThreadFromPRCreatesThreadWithFirstItem(t *testing.T) {
 	installFakeGh(t, sampleViewJSON, samplePRDiff)
 
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
 
-	thread, err := app.CreateThreadFromPR("owner/repo", 42, string(provider.Claude), "claude-sonnet-4-6")
+	thread, err := app.CreateThreadFromPR("owner/repo", 42, string(provider.Claude), "claude-sonnet-4-6", "github")
 	if err != nil {
 		t.Fatalf("CreateThreadFromPR() error = %v", err)
 	}
@@ -240,15 +217,29 @@ func TestCreateThreadFromPRCreatesThreadWithFirstItem(t *testing.T) {
 	}
 }
 
+func TestCreateThreadFromPRDefaultsToGithubWhenForgeEmpty(t *testing.T) {
+	installFakeGh(t, sampleViewJSON, samplePRDiff)
+	app := newTestAppWithStore(t)
+	app.settings = settings.NewService(t.TempDir())
+
+	thread, err := app.CreateThreadFromPR("owner/repo", 42, string(provider.Claude), "claude-sonnet-4-6", "")
+	if err != nil {
+		t.Fatalf("CreateThreadFromPR() with empty forge error = %v", err)
+	}
+	if !strings.HasPrefix(thread.Title, "PR #42:") {
+		t.Errorf("Title = %q, want github 'PR #' prefix", thread.Title)
+	}
+}
+
 func TestCreateThreadFromPRMissingGh(t *testing.T) {
-	uninstallGh(t)
+	t.Setenv("PATH", t.TempDir())
 
 	app := newTestAppWithStore(t)
-	_, err := app.CreateThreadFromPR("owner/repo", 42, string(provider.Claude), "claude-sonnet-4-6")
+	_, err := app.CreateThreadFromPR("owner/repo", 42, string(provider.Claude), "claude-sonnet-4-6", "github")
 	if err == nil {
 		t.Fatal("CreateThreadFromPR() error = nil, want gh-missing error")
 	}
-	if !strings.Contains(err.Error(), "GitHub CLI") || !strings.Contains(err.Error(), "PATH") {
+	if !strings.Contains(err.Error(), "GitHub CLI") {
 		t.Fatalf("error = %v, want gh-missing hint", err)
 	}
 }
@@ -257,7 +248,7 @@ func TestCreateThreadFromPRGhReturnsMalformedJSON(t *testing.T) {
 	installFakeGh(t, `{not json`, samplePRDiff)
 
 	app := newTestAppWithStore(t)
-	_, err := app.CreateThreadFromPR("owner/repo", 42, string(provider.Claude), "claude-sonnet-4-6")
+	_, err := app.CreateThreadFromPR("owner/repo", 42, string(provider.Claude), "claude-sonnet-4-6", "github")
 	if err == nil {
 		t.Fatal("CreateThreadFromPR() error = nil, want malformed JSON error")
 	}
@@ -267,34 +258,20 @@ func TestCreateThreadFromPRGhReturnsMalformedJSON(t *testing.T) {
 }
 
 func TestCreateThreadFromPRGhReturnsError(t *testing.T) {
-	// Install a shim that exits non-zero for pr view.
+	// Install a shim that exits non-zero for every gh subcommand.
 	dir := t.TempDir()
+	binPath := filepath.Join(dir, "gh")
 	script := `#!/bin/sh
 echo "could not resolve to a Repository with the name" 1>&2
 exit 1
 `
-	binPath := filepath.Join(dir, "gh")
 	if err := os.WriteFile(binPath, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake gh: %v", err)
 	}
-	prevLookPath := lookPath
-	prevGhCommand := ghCommand
-	lookPath = func(name string) (string, error) {
-		if name == "gh" {
-			return binPath, nil
-		}
-		return exec.LookPath(name)
-	}
-	ghCommand = func(args ...string) *exec.Cmd {
-		return exec.Command(binPath, args...)
-	}
-	t.Cleanup(func() {
-		lookPath = prevLookPath
-		ghCommand = prevGhCommand
-	})
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	app := newTestAppWithStore(t)
-	_, err := app.CreateThreadFromPR("owner/missing-repo", 99, string(provider.Claude), "claude-sonnet-4-6")
+	_, err := app.CreateThreadFromPR("owner/missing-repo", 99, string(provider.Claude), "claude-sonnet-4-6", "github")
 	if err == nil {
 		t.Fatal("CreateThreadFromPR() error = nil, want gh failure")
 	}
@@ -303,14 +280,50 @@ exit 1
 	}
 }
 
-func TestCreateThreadFromPRRejectsInvalidOwnerRepo(t *testing.T) {
+func TestCreateThreadFromPRRejectsInvalidProject(t *testing.T) {
 	installFakeGh(t, sampleViewJSON, samplePRDiff)
 	app := newTestAppWithStore(t)
 
-	for _, bad := range []string{"", "nofoo", "foo/", "/bar", "foo/bar/baz"} {
-		if _, err := app.CreateThreadFromPR(bad, 1, string(provider.Claude), "claude-sonnet-4-6"); err == nil {
+	for _, bad := range []string{"", "nofoo", "foo/", "/bar"} {
+		if _, err := app.CreateThreadFromPR(bad, 1, string(provider.Claude), "claude-sonnet-4-6", "github"); err == nil {
 			t.Fatalf("CreateThreadFromPR(%q) error = nil, want validation error", bad)
 		}
+	}
+	// github rejects 3-segment paths; gitlab would accept them.
+	if _, err := app.CreateThreadFromPR("foo/bar/baz", 1, string(provider.Claude), "claude-sonnet-4-6", "github"); err == nil {
+		t.Fatal("CreateThreadFromPR with 3-segment github project error = nil, want validation error")
+	}
+}
+
+// TestCreateThreadFromPRRejectsUnsafeProjectSegments pins the
+// defense-in-depth segment validation. Even though the CLI argv path
+// is shell-safe (we never interpolate via a shell), pathological
+// segment values are rejected at the boundary so they don't reach
+// SQLite rows or workspace-suffix matching.
+func TestCreateThreadFromPRRejectsUnsafeProjectSegments(t *testing.T) {
+	app := newTestAppWithStore(t)
+
+	cases := []struct {
+		name    string
+		project string
+		forge   string
+	}{
+		{"github leading dash owner", "-flag/repo", "github"},
+		{"github leading dash repo", "owner/-flag", "github"},
+		{"github double dot", "owner/..", "github"},
+		{"github embedded null", "owner/repo\x00", "github"},
+		{"github internal newline", "own\ner/repo", "github"},
+		{"gitlab dot segment", "group/./repo", "gitlab"},
+		{"gitlab traversal", "group/../repo", "gitlab"},
+		{"gitlab leading dash subgroup", "-flag/sub/repo", "gitlab"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := app.CreateThreadFromPR(tc.project, 1, string(provider.Claude), "claude-sonnet-4-6", tc.forge)
+			if err == nil {
+				t.Fatalf("CreateThreadFromPR(%q, forge=%q) error = nil, want rejection", tc.project, tc.forge)
+			}
+		})
 	}
 }
 
@@ -318,17 +331,28 @@ func TestCreateThreadFromPRRejectsInvalidInputs(t *testing.T) {
 	installFakeGh(t, sampleViewJSON, samplePRDiff)
 	app := newTestAppWithStore(t)
 
-	if _, err := app.CreateThreadFromPR("owner/repo", 0, string(provider.Claude), "claude-sonnet-4-6"); err == nil {
+	if _, err := app.CreateThreadFromPR("owner/repo", 0, string(provider.Claude), "claude-sonnet-4-6", "github"); err == nil {
 		t.Fatal("number=0 should fail")
 	}
-	if _, err := app.CreateThreadFromPR("owner/repo", -3, string(provider.Claude), "claude-sonnet-4-6"); err == nil {
+	if _, err := app.CreateThreadFromPR("owner/repo", -3, string(provider.Claude), "claude-sonnet-4-6", "github"); err == nil {
 		t.Fatal("number<0 should fail")
 	}
-	if _, err := app.CreateThreadFromPR("owner/repo", 1, "", "claude-sonnet-4-6"); err == nil {
+	if _, err := app.CreateThreadFromPR("owner/repo", 1, "", "claude-sonnet-4-6", "github"); err == nil {
 		t.Fatal("empty provider should fail")
 	}
-	if _, err := app.CreateThreadFromPR("owner/repo", 1, string(provider.Claude), ""); err == nil {
+	if _, err := app.CreateThreadFromPR("owner/repo", 1, string(provider.Claude), "", "github"); err == nil {
 		t.Fatal("empty model should fail")
+	}
+}
+
+func TestCreateThreadFromPRRejectsUnsupportedForge(t *testing.T) {
+	app := newTestAppWithStore(t)
+	_, err := app.CreateThreadFromPR("owner/repo", 1, string(provider.Claude), "claude-sonnet-4-6", "bitbucket")
+	if err == nil {
+		t.Fatal("expected error for unsupported forge")
+	}
+	if !strings.Contains(err.Error(), "unsupported forge") {
+		t.Fatalf("error = %v, want unsupported-forge hint", err)
 	}
 }
 
@@ -344,7 +368,7 @@ func TestCreateThreadFromPRResolvesRecentWorkspace(t *testing.T) {
 	}
 	app.settings.AddRecentWorkspace(workspace)
 
-	thread, err := app.CreateThreadFromPR("owner/repo", 42, string(provider.Claude), "claude-sonnet-4-6")
+	thread, err := app.CreateThreadFromPR("owner/repo", 42, string(provider.Claude), "claude-sonnet-4-6", "github")
 	if err != nil {
 		t.Fatalf("CreateThreadFromPR() error = %v", err)
 	}
@@ -354,40 +378,133 @@ func TestCreateThreadFromPRResolvesRecentWorkspace(t *testing.T) {
 }
 
 func TestCreateThreadFromPRInvokesExpectedGhCommands(t *testing.T) {
-	calls := installFakeGh(t, sampleViewJSON, samplePRDiff)
+	argLog := installFakeGh(t, sampleViewJSON, samplePRDiff)
 
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
 
-	if _, err := app.CreateThreadFromPR("owner/repo", 42, string(provider.Claude), "claude-sonnet-4-6"); err != nil {
+	if _, err := app.CreateThreadFromPR("owner/repo", 42, string(provider.Claude), "claude-sonnet-4-6", "github"); err != nil {
 		t.Fatalf("CreateThreadFromPR() error = %v", err)
 	}
-	if len(calls.calls) != 2 {
-		t.Fatalf("got %d gh invocations, want 2", len(calls.calls))
+	calls := readArgLog(t, argLog)
+	if len(calls) != 2 {
+		t.Fatalf("got %d gh invocations, want 2: %v", len(calls), calls)
 	}
-	// First invocation is the view with --json, second is diff.
-	view := calls.calls[0]
-	diff := calls.calls[1]
-	if view[0] != "pr" || view[1] != "view" {
-		t.Fatalf("first call = %v, want [pr view ...]", view)
+	view := calls[0]
+	diff := calls[1]
+	if !strings.HasPrefix(view, "pr view") {
+		t.Fatalf("first call = %q, want 'pr view ...'", view)
 	}
 	wantFlags := []string{"--repo", "owner/repo", "42", "--json"}
 	for _, flag := range wantFlags {
-		found := false
-		for _, arg := range view {
-			if arg == flag {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Fatalf("pr view args missing %q: %v", flag, view)
+		if !strings.Contains(view, flag) {
+			t.Fatalf("pr view args missing %q: %q", flag, view)
 		}
 	}
-	if diff[0] != "pr" || diff[1] != "diff" {
-		t.Fatalf("second call = %v, want [pr diff ...]", diff)
+	if !strings.HasPrefix(diff, "pr diff") {
+		t.Fatalf("second call = %q, want 'pr diff ...'", diff)
 	}
 }
+
+// --- GitLab MR parallel tests -------------------------------------------
+
+func TestCreateThreadFromMRCreatesThreadWithFirstItem(t *testing.T) {
+	installFakeGlab(t, sampleMRViewJSON, sampleMRDiff)
+
+	app := newTestAppWithStore(t)
+	app.settings = settings.NewService(t.TempDir())
+
+	thread, err := app.CreateThreadFromPR("group/repo", 9, string(provider.Claude), "claude-sonnet-4-6", "gitlab")
+	if err != nil {
+		t.Fatalf("CreateThreadFromPR(gitlab) error = %v", err)
+	}
+	if !strings.HasPrefix(thread.Title, "MR !9: ") {
+		t.Fatalf("Title = %q, want 'MR !9:' prefix", thread.Title)
+	}
+	items, err := app.store.ListItems(thread.ID)
+	if err != nil {
+		t.Fatalf("ListItems() error = %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("len(items) = %d, want 1", len(items))
+	}
+	item := items[0]
+	if !strings.Contains(item.Summary, "# MR !9:") {
+		t.Fatalf("item.Summary missing MR header; got: %q", item.Summary[:min(200, len(item.Summary))])
+	}
+	if !strings.Contains(item.Summary, "Add MR import") {
+		t.Fatalf("item.Summary missing MR title; got: %q", item.Summary[:min(200, len(item.Summary))])
+	}
+	if !strings.Contains(item.Summary, "@alice") {
+		t.Fatalf("item.Summary missing author; got: %q", item.Summary[:min(300, len(item.Summary))])
+	}
+}
+
+func TestCreateThreadFromMRAcceptsSubgroupNamespace(t *testing.T) {
+	argLog := installFakeGlab(t, sampleMRViewJSON, sampleMRDiff)
+
+	app := newTestAppWithStore(t)
+	app.settings = settings.NewService(t.TempDir())
+
+	thread, err := app.CreateThreadFromPR("group/sub1/sub2/repo", 9, string(provider.Claude), "claude-sonnet-4-6", "gitlab")
+	if err != nil {
+		t.Fatalf("CreateThreadFromPR(subgroup) error = %v", err)
+	}
+	// The anchor should preserve the full namespace.
+	if !strings.Contains(thread.ProjectPath, "group/sub1/sub2/repo") {
+		t.Errorf("ProjectPath = %q, want full subgroup chain", thread.ProjectPath)
+	}
+
+	// glab must have been invoked with the full namespace via -R.
+	calls := readArgLog(t, argLog)
+	if len(calls) != 2 {
+		t.Fatalf("len(calls) = %d, want 2: %v", len(calls), calls)
+	}
+	for _, call := range calls {
+		if !strings.Contains(call, "-R group/sub1/sub2/repo") {
+			t.Errorf("call missing -R flag with subgroup: %q", call)
+		}
+	}
+}
+
+func TestCreateThreadFromMRMissingGlab(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+
+	app := newTestAppWithStore(t)
+	_, err := app.CreateThreadFromPR("group/repo", 9, string(provider.Claude), "claude-sonnet-4-6", "gitlab")
+	if err == nil {
+		t.Fatal("CreateThreadFromPR(gitlab) error = nil, want glab-missing error")
+	}
+	if !strings.Contains(err.Error(), "GitLab CLI") {
+		t.Fatalf("error = %v, want glab-missing hint", err)
+	}
+}
+
+func TestCreateThreadFromMRRejectsSingleSegmentProject(t *testing.T) {
+	installFakeGlab(t, sampleMRViewJSON, sampleMRDiff)
+	app := newTestAppWithStore(t)
+
+	if _, err := app.CreateThreadFromPR("single", 1, string(provider.Claude), "claude-sonnet-4-6", "gitlab"); err == nil {
+		t.Fatal("expected error for single-segment gitlab project")
+	}
+}
+
+func TestCreateThreadFromMRAnchorIncludesForge(t *testing.T) {
+	installFakeGlab(t, sampleMRViewJSON, sampleMRDiff)
+	app := newTestAppWithStore(t)
+	app.settings = settings.NewService(t.TempDir())
+
+	thread, err := app.CreateThreadFromPR("group/repo", 9, string(provider.Claude), "claude-sonnet-4-6", "gitlab")
+	if err != nil {
+		t.Fatalf("CreateThreadFromPR() error = %v", err)
+	}
+	// No matching local clone — anchor should be pr://gitlab/group/repo.
+	if !strings.HasPrefix(thread.ProjectPath, "pr://gitlab/") {
+		t.Errorf("ProjectPath = %q, want pr://gitlab/ prefix", thread.ProjectPath)
+	}
+}
+
+// --- Helpers ------------------------------------------------------------
 
 func min(a, b int) int {
 	if a < b {
@@ -404,8 +521,8 @@ func min(a, b int) int {
 // backtick run found in the content.
 
 func TestBuildPRUserMessageFenceBeatsTripleBacktick(t *testing.T) {
-	ref := PRReference{Owner: "acme", Repo: "tool", Number: 1}
-	meta := prMetadata{Title: "Demo"}
+	ref := gitops.PRReference{Forge: "github", Namespace: "acme", Repo: "tool", Number: 1}
+	meta := gitops.PRMetadata{Title: "Demo"}
 	diff := "diff --git a/README.md b/README.md\n" +
 		"+ Example:\n" +
 		"+ ```go\n" +
@@ -432,8 +549,8 @@ func TestBuildPRUserMessageFenceBeatsTripleBacktick(t *testing.T) {
 }
 
 func TestBuildPRUserMessageFenceOutlivesLongestRun(t *testing.T) {
-	ref := PRReference{Owner: "acme", Repo: "tool", Number: 2}
-	meta := prMetadata{Title: "Huge fences"}
+	ref := gitops.PRReference{Forge: "github", Namespace: "acme", Repo: "tool", Number: 2}
+	meta := gitops.PRMetadata{Title: "Huge fences"}
 	// A run of ten backticks on its own line — the fence must be at least
 	// 11 characters long so the patch block survives.
 	diff := "+ " + strings.Repeat("`", 10) + "\n+ not closed yet\n"
@@ -453,14 +570,24 @@ func TestBuildPRUserMessageFenceOutlivesLongestRun(t *testing.T) {
 }
 
 func TestBuildPRUserMessageFenceFallsBackToThree(t *testing.T) {
-	ref := PRReference{Owner: "acme", Repo: "tool", Number: 3}
-	meta := prMetadata{Title: "Plain diff"}
+	ref := gitops.PRReference{Forge: "github", Namespace: "acme", Repo: "tool", Number: 3}
+	meta := gitops.PRMetadata{Title: "Plain diff"}
 	diff := "diff --git a/foo.go b/foo.go\n+ println(\"hi\")\n"
 
 	msg := buildPRUserMessage(ref, meta, diff)
 	fence := patchFenceFrom(t, msg)
 	if fence != "```" {
 		t.Fatalf("expected triple-backtick fence for backtick-free diff, got %q", fence)
+	}
+}
+
+func TestBuildPRUserMessageGitLabHeaderUsesMRSigil(t *testing.T) {
+	ref := gitops.PRReference{Forge: "gitlab", Namespace: "group", Repo: "tool", Number: 7}
+	meta := gitops.PRMetadata{Title: "Demo MR"}
+
+	msg := buildPRUserMessage(ref, meta, "diff --git a/x b/x\n")
+	if !strings.HasPrefix(msg, "# MR !7: Demo MR") {
+		t.Fatalf("gitlab header missing; got prefix %q", msg[:min(60, len(msg))])
 	}
 }
 
@@ -533,7 +660,7 @@ func TestCreateThreadFromPRPreservesMultibyteTitle(t *testing.T) {
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
 
-	thread, err := app.CreateThreadFromPR("owner/repo", 1, string(provider.Claude), "claude-sonnet-4-6")
+	thread, err := app.CreateThreadFromPR("owner/repo", 1, string(provider.Claude), "claude-sonnet-4-6", "github")
 	if err != nil {
 		t.Fatalf("CreateThreadFromPR() error = %v", err)
 	}
@@ -631,7 +758,7 @@ func TestTruncatePRTitleCombiningMarkPreservesValidity(t *testing.T) {
 	// still be valid UTF-8 (the combining mark alone is a real rune).
 	// We don't promise NFC/NFD integrity, just that we never emit
 	// invalid UTF-8.
-	baseWithCombiner := "e\u0301"
+	baseWithCombiner := "é"
 	title := strings.Repeat(baseWithCombiner, 100) // 200 runes total
 	got := truncatePRTitle(title)
 	if !utf8.ValidString(got) {

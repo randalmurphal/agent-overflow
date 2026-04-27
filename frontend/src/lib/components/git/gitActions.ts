@@ -16,6 +16,7 @@ import {
 import { replaceThread } from '../../stores/threads.svelte';
 import { addToast } from '../../stores/toast.svelte';
 import { errString } from '../../utils/errors';
+import { forgeLabels } from '../../utils/forgeLabels';
 import type { GitActionResult, GitStatus } from '../../types/git';
 import type { Thread } from '../../types/models';
 
@@ -64,6 +65,11 @@ export interface GitActionCtx {
   reportError: (message: string) => void;
   refreshStatus: () => Promise<void>;
   replacePaneThread: (thread: Thread) => void;
+  /**
+   * Forge id (`status.forge`) for label adaptation in toasts and errors.
+   * Optional — when omitted, falls back to GitHub strings via forgeLabels.
+   */
+  forge?: string;
 }
 
 export async function runPushAction(ctx: GitActionCtx): Promise<void> {
@@ -99,18 +105,22 @@ export async function runPullAction(ctx: GitActionCtx): Promise<void> {
 }
 
 export async function runCreatePRAction(ctx: GitActionCtx): Promise<void> {
+  const labels = forgeLabels(ctx.forge);
   try {
     const result = (await GitCreatePR(ctx.threadId, '', '', false)) as GitActionResult;
     if (result.error) {
-      console.error('Create PR failed:', result.error);
-      ctx.reportError(`Create PR failed: ${result.error}`);
+      console.error(`${labels.createAction} failed:`, result.error);
+      ctx.reportError(`${labels.createAction} failed: ${result.error}`);
       return;
     }
-    addToast('success', result.prUrl ? `PR created: ${result.prUrl}` : 'PR created');
+    addToast(
+      'success',
+      result.prUrl ? `${labels.noun} created: ${result.prUrl}` : `${labels.noun} created`,
+    );
     await ctx.refreshStatus();
   } catch (err) {
-    console.error('Create PR failed:', err);
-    ctx.reportError(`Create PR failed: ${errString(err)}`);
+    console.error(`${labels.createAction} failed:`, err);
+    ctx.reportError(`${labels.createAction} failed: ${errString(err)}`);
   }
 }
 

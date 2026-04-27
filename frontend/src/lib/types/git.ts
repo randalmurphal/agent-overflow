@@ -10,6 +10,12 @@ export interface GitStatus {
   aheadCount: number;
   behindCount: number;
   hasOriginRemote: boolean;
+  /**
+   * Canonical id of the origin remote's forge. Drives PR/MR label
+   * adaptation and gates the "Create PR" action.
+   * Values: "github" | "gitlab" | "" (unknown / no origin).
+   */
+  forge?: string;
   openPrUrl?: string;
   openPrNumber?: number;
   /**

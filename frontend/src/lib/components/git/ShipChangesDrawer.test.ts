@@ -35,6 +35,7 @@ function status(overrides: Partial<GitStatus> = {}): GitStatus {
     aheadCount: 0,
     behindCount: 0,
     hasOriginRemote: true,
+    forge: 'github',
     ...overrides,
   };
 }
@@ -560,5 +561,36 @@ describe('<ShipChangesDrawer>', () => {
 
     const fresh = await findByTestId('ship-changes-commit-subject') as HTMLInputElement;
     expect(fresh.value).toBe('');
+  });
+
+  it('renders MR labels and "Open MR" step when forge is gitlab', async () => {
+    const pane = await buildPane();
+    setBindingMock('GetGitStatus', async () => status({
+      forge: 'gitlab',
+      hasChanges: false,
+      aheadCount: 0,
+    }));
+    const { findByTestId, getByText } = render(ShipChangesDrawer, {
+      props: { open: true, pane, onClose: () => {} },
+    });
+    await findByTestId('ship-changes-step-pr');
+    await flush();
+    expect(getByText('Open Merge Request')).toBeTruthy();
+    const submit = await findByTestId('ship-changes-pr-submit');
+    expect(submit.textContent).toMatch(/Create MR/);
+  });
+
+  it('renders self-hosted notice when forge is unknown', async () => {
+    const pane = await buildPane();
+    setBindingMock('GetGitStatus', async () => status({
+      forge: '',
+      hasChanges: false,
+      aheadCount: 0,
+    }));
+    const { findByTestId } = render(ShipChangesDrawer, {
+      props: { open: true, pane, onClose: () => {} },
+    });
+    const note = await findByTestId('ship-changes-pr-unsupported');
+    expect(note.textContent).toMatch(/not GitHub or GitLab/);
   });
 });

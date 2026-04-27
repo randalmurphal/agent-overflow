@@ -88,8 +88,12 @@ func TestShip_FullWizardFlow(t *testing.T) {
 	}
 	workspace := stored.WorkspacePath
 
-	// Wire the remote.
-	testutil.RunGit(t, workspace, "remote", "add", "origin", remote)
+	// Wire the remote: fetch URL classifies as github (so the forge
+	// dispatcher routes Create PR through the github forge / gh mock),
+	// while the push URL points at the bare local repo so push tests
+	// land commits without a network round-trip.
+	testutil.RunGit(t, workspace, "remote", "add", "origin", "https://github.com/test/test.git")
+	testutil.RunGit(t, workspace, "remote", "set-url", "--push", "origin", remote)
 
 	// Stage a new file via the filesystem (simulating uncommitted changes).
 	feature := filepath.Join(workspace, "feature.txt")
@@ -175,7 +179,8 @@ func TestShip_CommitAndPushNoPR(t *testing.T) {
 		t.Fatalf("GetThread() error = %v", err)
 	}
 
-	testutil.RunGit(t, stored.WorkspacePath, "remote", "add", "origin", remote)
+	testutil.RunGit(t, stored.WorkspacePath, "remote", "add", "origin", "https://github.com/test/test.git")
+	testutil.RunGit(t, stored.WorkspacePath, "remote", "set-url", "--push", "origin", remote)
 
 	extra := filepath.Join(stored.WorkspacePath, "extra.txt")
 	if err := os.WriteFile(extra, []byte("extra\n"), 0o644); err != nil {
@@ -239,9 +244,16 @@ func TestShip_PushFailsOnNoUpstream(t *testing.T) {
 // upstream / no PR can be created), the wrapper must surface the error.
 func TestShip_CreatePRFailsWhenNotPushed(t *testing.T) {
 	app, threadID, _ := shipTestSetup(t)
+	stored, err := app.store.GetThread(threadID)
+	if err != nil {
+		t.Fatalf("GetThread() error = %v", err)
+	}
+	// Forge dispatch needs a classifiable origin to route to gh.
+	testutil.RunGit(t, stored.WorkspacePath, "remote", "add", "origin", "https://github.com/test/test.git")
+
 	installMockGhShip(t, "", "must push first", 1)
 
-	_, err := app.GitCreatePR(threadID, "PR title", "body", false)
+	_, err = app.GitCreatePR(threadID, "PR title", "body", false)
 	if err == nil {
 		t.Fatal("GitCreatePR() with failing gh error = nil, want failure")
 	}
@@ -337,6 +349,12 @@ func TestShip_StackedActionsIdempotent(t *testing.T) {
 // false the flag is absent; when true it's present.
 func TestShip_CreatePRWithDraftFlag(t *testing.T) {
 	app, threadID, _ := shipTestSetup(t)
+	stored, err := app.store.GetThread(threadID)
+	if err != nil {
+		t.Fatalf("GetThread() error = %v", err)
+	}
+	// Forge dispatch needs a classifiable origin to route to gh.
+	testutil.RunGit(t, stored.WorkspacePath, "remote", "add", "origin", "https://github.com/test/test.git")
 
 	// Write a mock gh that records whether --draft was present. We emit the
 	// flag state to stdout so the caller can observe it.

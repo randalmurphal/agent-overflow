@@ -21,8 +21,13 @@ type GitStatus struct {
 	AheadCount      int    `json:"aheadCount"`
 	BehindCount     int    `json:"behindCount"`
 	HasOriginRemote bool   `json:"hasOriginRemote"`
-	OpenPRURL       string `json:"openPrUrl,omitempty"`
-	OpenPRNumber    int    `json:"openPrNumber,omitempty"`
+	// Forge is the canonical id of the origin remote's forge:
+	// "github", "gitlab", or "" when the host is unknown / no origin
+	// is configured. Drives the UI's PR/MR label adaptation and gates
+	// the "Create PR" action.
+	Forge        string `json:"forge,omitempty"`
+	OpenPRURL    string `json:"openPrUrl,omitempty"`
+	OpenPRNumber int    `json:"openPrNumber,omitempty"`
 	// PendingOperation surfaces any in-progress multi-step operation that
 	// blocks new commits. Values: "merge", "rebase", "bisect", or "" when
 	// the repo is clean. Callers gate Ship Changes on this being empty.
@@ -47,6 +52,7 @@ func (s GitStatus) Equal(other GitStatus) bool {
 		s.AheadCount == other.AheadCount &&
 		s.BehindCount == other.BehindCount &&
 		s.HasOriginRemote == other.HasOriginRemote &&
+		s.Forge == other.Forge &&
 		s.OpenPRURL == other.OpenPRURL &&
 		s.OpenPRNumber == other.OpenPRNumber &&
 		s.PendingOperation == other.PendingOperation
@@ -84,10 +90,20 @@ func (c *Core) Status(cwd string) (GitStatus, error) {
 	}
 
 	defaultBranch, _ := c.defaultBranchName(cwd)
-	hasOriginRemote := c.originRemoteExists(cwd)
+	originURL, hasOriginRemote := c.originURL(cwd)
+	forge := ""
+	if hasOriginRemote {
+		forge = classifyOriginURL(originURL)
+	}
+	// Populate the forge cache so any concurrent DetectForge call
+	// (e.g. through forgeFor → ListOpenPRs below) reuses the same
+	// classification rather than re-shelling `git remote get-url`.
+	c.storeForgeCache(cwd, forge, c.nowFn())
+
 	status := parseStatusOutput(result.stdout, unstagedNumstat.stdout, stagedNumstat.stdout)
 	status.IsRepo = true
 	status.HasOriginRemote = hasOriginRemote
+	status.Forge = forge
 	status.IsDefaultBranch = isDefaultBranchName(status.Branch, defaultBranch)
 	status.PendingOperation = c.pendingOperation(cwd)
 
@@ -391,11 +407,8 @@ func (c *Core) defaultBranchName(cwd string) (string, error) {
 }
 
 func (c *Core) originRemoteExists(cwd string) bool {
-	result, err := c.run(cwd, "remote", "get-url", "origin")
-	if err != nil {
-		return false
-	}
-	return result.exitCode == 0
+	_, ok := c.originURL(cwd)
+	return ok
 }
 
 func (c *Core) listRemoteNames(cwd string) []string {
@@ -430,12 +443,12 @@ func (c *Core) lookupOpenPR(cwd, branch string) (string, int) {
 	key := prCacheKey(cwd, branch)
 	now := c.nowFn()
 
-	c.prCacheMu.Lock()
+	c.prCacheMu.RLock()
 	if entry, ok := c.prCache[key]; ok && entry.expiresAt.After(now) {
-		c.prCacheMu.Unlock()
+		c.prCacheMu.RUnlock()
 		return entry.url, entry.number
 	}
-	c.prCacheMu.Unlock()
+	c.prCacheMu.RUnlock()
 
 	// Slow path: shell out. Done outside the lock — `gh pr list` is a
 	// network call and we don't want to serialise unrelated lookups
@@ -454,6 +467,14 @@ func (c *Core) lookupOpenPR(cwd, branch string) (string, int) {
 		url:       url,
 		number:    number,
 		expiresAt: now.Add(prLookupTTL),
+	}
+	// Sweep expired sibling entries on each write so the map stays
+	// bounded by the number of recently-active (cwd, branch) pairs
+	// rather than the lifetime total.
+	for k, entry := range c.prCache {
+		if entry.expiresAt.Before(now) {
+			delete(c.prCache, k)
+		}
 	}
 	c.prCacheMu.Unlock()
 	return url, number

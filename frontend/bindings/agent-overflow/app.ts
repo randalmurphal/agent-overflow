@@ -203,22 +203,23 @@ export function CreateThread(opts: $models.CreateThreadOptions): $CancellablePro
 }
 
 /**
- * CreateThreadFromPR creates a new thread seeded with a GitHub PR's metadata +
- * diff as the first user message. Relies on the `gh` CLI being available on
- * PATH; returns a structured error with installation hint if it isn't.
+ * CreateThreadFromPR creates a new thread seeded with a PR/MR's metadata +
+ * diff as the first user message. Routes through the appropriate forge CLI
+ * (`gh` for GitHub, `glab` for GitLab) detected from the `forge` parameter.
  * 
  * Parameters:
- *   - ownerRepo: OWNER/REPO pair (e.g. "agent-overflow/agent-overflow")
- *   - number:    PR number
+ *   - project:       "owner/repo" for GitHub, "namespace/.../repo" for GitLab
+ *   - number:        PR / MR number
  *   - providerName + model: provider + model for the new thread
+ *   - forge:         "github" (default for empty) or "gitlab"
  * 
  * If the user has a local clone of the target repo registered in
  * settings.RecentWorkspaces, that path is auto-selected as the workspace.
  * Otherwise the caller is expected to pick a workspace; we still create the
  * thread but WorkspacePath is left empty and the UI can prompt.
  */
-export function CreateThreadFromPR(ownerRepo: string, $number: number, providerName: string, model: string): $CancellablePromise<store$0.Thread> {
-    return $Call.ByID(1716017387, ownerRepo, $number, providerName, model).then(($result: any) => {
+export function CreateThreadFromPR(project: string, $number: number, providerName: string, model: string, forge: string): $CancellablePromise<store$0.Thread> {
+    return $Call.ByID(1716017387, project, $number, providerName, model, forge).then(($result: any) => {
         return $$createType4($result);
     });
 }

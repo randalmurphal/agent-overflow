@@ -59,6 +59,7 @@ function status(overrides: Partial<GitStatus> = {}): GitStatus {
     aheadCount: 0,
     behindCount: 0,
     hasOriginRemote: true,
+    forge: 'github',
     ...overrides,
   };
 }
@@ -270,4 +271,55 @@ describe('<GitActionsControl> subscribe model', () => {
   // is that the $effect tracks `transportConnected`, which the
   // existing tests indirectly cover by passing 'connected' at mount
   // time and observing subscribe/unsubscribe behavior.
+});
+
+describe('<GitActionsControl> forge labels', () => {
+  beforeEach(async () => {
+    setBindingMock('GetSettings', async () => null);
+    setBindingMock('GetProviderStatuses', async () => []);
+    await loadSettings();
+  });
+
+  it('renders "Create PR" for github forge', async () => {
+    const pane = await buildPane();
+    installSubscribeMock(status({
+      forge: 'github',
+      branch: 'feature',
+      isDefaultBranch: false,
+    }));
+    const { findByLabelText, getByText } = render(GitActionsControl, { props: { pane } });
+    const more = await findByLabelText('More git actions');
+    await fireEvent.click(more);
+    await flush();
+    expect(getByText('Create PR')).toBeTruthy();
+  });
+
+  it('renders "Create MR" for gitlab forge', async () => {
+    const pane = await buildPane();
+    installSubscribeMock(status({
+      forge: 'gitlab',
+      branch: 'feature',
+      isDefaultBranch: false,
+    }));
+    const { findByLabelText, getByText } = render(GitActionsControl, { props: { pane } });
+    const more = await findByLabelText('More git actions');
+    await fireEvent.click(more);
+    await flush();
+    expect(getByText('Create MR')).toBeTruthy();
+  });
+
+  it('disables Create PR menu item when forge is unsupported', async () => {
+    const pane = await buildPane();
+    installSubscribeMock(status({
+      forge: '',
+      branch: 'feature',
+      isDefaultBranch: false,
+    }));
+    const { findByLabelText, getByText } = render(GitActionsControl, { props: { pane } });
+    const more = await findByLabelText('More git actions');
+    await fireEvent.click(more);
+    await flush();
+    const item = getByText('Create PR').closest('[role="menuitem"]');
+    expect(item?.getAttribute('aria-disabled')).toBe('true');
+  });
 });

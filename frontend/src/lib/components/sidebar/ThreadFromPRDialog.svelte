@@ -3,6 +3,7 @@
   import Button from '../primitives/Button.svelte';
   import { CreateThreadFromPR } from '../../stores/bindings';
   import { parsePRReference, type ParsedPRReference } from '../../utils/prReference';
+  import { forgeLabels } from '../../utils/forgeLabels';
   import { getSettings } from '../../stores/settings.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import { prependThread } from '../../stores/threads.svelte';
@@ -74,25 +75,30 @@
     const effectiveModel = model.trim() || defaultModel;
     const startGeneration = submitGeneration;
     const prNumber = parsed.value.number;
+    const labels = forgeLabels(parsed.value.forge);
+    const refSigil = `${labels.noun} ${labels.numberSigil}`;
     try {
-      const ownerRepo = `${parsed.value.owner}/${parsed.value.repo}`;
+      const project = parsed.value.namespace
+        ? `${parsed.value.namespace}/${parsed.value.repo}`
+        : parsed.value.repo;
       const thread = (await CreateThreadFromPR(
-        ownerRepo,
+        project,
         prNumber,
         provider,
         effectiveModel,
+        parsed.value.forge,
       )) as Thread;
       if (submitGeneration !== startGeneration) {
         // User closed the dialog before the backend finished. The thread
         // exists server-side but we must not navigate away or pollute
         // the already-dismissed dialog's state. Keep them informed with
         // a non-disruptive toast so they know where the thread went.
-        addToast('info', `Thread from PR #${prNumber} was created in the background`);
+        addToast('info', `Thread from ${refSigil}${prNumber} was created in the background`);
         return;
       }
       prependThread(thread);
       await pane.switchThread(thread);
-      addToast('success', `Thread created from PR #${prNumber}`);
+      addToast('success', `Thread created from ${refSigil}${prNumber}`);
       onClose();
     } catch (err) {
       if (submitGeneration !== startGeneration) {
@@ -117,7 +123,7 @@
 
 <Modal
   {open}
-  title="Start Thread From PR"
+  title="Start Thread From Pull/Merge Request"
   onClose={onClose}
   width="lg"
   padding="comfortable"
@@ -131,7 +137,7 @@
     >
       <div class="space-y-2">
         <label for="pr-url-input" class="text-[12px] text-fg-muted block font-medium">
-          GitHub PR URL or <code class="text-[10px] bg-surface-2/60 px-1 rounded font-mono">OWNER/REPO#N</code>
+          Pull request / merge request URL or short ref
         </label>
         <input
           id="pr-url-input"
@@ -142,6 +148,13 @@
           placeholder="https://github.com/owner/repo/pull/123"
           class={FIELD_CLASS}
         />
+        <p class="text-[10px] text-fg-hint">
+          Accepts:
+          <code class="font-mono">github.com/OWNER/REPO/pull/N</code>,
+          <code class="font-mono">gitlab.com/NAMESPACE/REPO/-/merge_requests/N</code>,
+          <code class="font-mono">OWNER/REPO#N</code>,
+          or <code class="font-mono">NAMESPACE/REPO!N</code>.
+        </p>
         {#if parseErrorMessage}
           <p class="text-[12px] text-error" role="alert" data-testid="thread-from-pr-parse-error">{parseErrorMessage}</p>
         {/if}

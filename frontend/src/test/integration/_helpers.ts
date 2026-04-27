@@ -198,6 +198,11 @@ export function makeGitStatus(overrides: Partial<GitStatus> = {}): GitStatus {
     aheadCount: 0,
     behindCount: 0,
     hasOriginRemote: true,
+    // Default to a github-classified origin so tests that exercise the
+    // PR creation flow don't trip over the unsupported-forge gate. Tests
+    // that specifically want to exercise the unsupported case can pass
+    // `{ forge: '' }` via overrides.
+    forge: 'github',
     ...overrides,
   };
 }

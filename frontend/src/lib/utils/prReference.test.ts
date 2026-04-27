@@ -1,17 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import { parsePRReference } from './prReference';
 
-describe('parsePRReference', () => {
+describe('parsePRReference — GitHub', () => {
   it('parses https://github.com/OWNER/REPO/pull/N', () => {
     const r = parsePRReference('https://github.com/foo/bar/pull/42');
     if (!r.ok) throw new Error('expected ok');
-    expect(r.value).toEqual({ owner: 'foo', repo: 'bar', number: 42 });
+    expect(r.value).toEqual({ forge: 'github', namespace: 'foo', repo: 'bar', number: 42 });
   });
 
   it('parses without a scheme', () => {
     const r = parsePRReference('github.com/foo/bar/pull/42');
     if (!r.ok) throw new Error('expected ok');
-    expect(r.value).toEqual({ owner: 'foo', repo: 'bar', number: 42 });
+    expect(r.value).toEqual({ forge: 'github', namespace: 'foo', repo: 'bar', number: 42 });
   });
 
   it('parses http:// (not just https)', () => {
@@ -23,7 +23,7 @@ describe('parsePRReference', () => {
   it('parses short-form OWNER/REPO#N', () => {
     const r = parsePRReference('foo/bar#321');
     if (!r.ok) throw new Error('expected ok');
-    expect(r.value).toEqual({ owner: 'foo', repo: 'bar', number: 321 });
+    expect(r.value).toEqual({ forge: 'github', namespace: 'foo', repo: 'bar', number: 321 });
   });
 
   it('tolerates trailing path segments after the number', () => {
@@ -49,7 +49,49 @@ describe('parsePRReference', () => {
     if (!r.ok) throw new Error('expected ok');
     expect(r.value.number).toBe(7);
   });
+});
 
+describe('parsePRReference — GitLab', () => {
+  it('parses https://gitlab.com/NAMESPACE/REPO/-/merge_requests/N', () => {
+    const r = parsePRReference('https://gitlab.com/group/repo/-/merge_requests/45');
+    if (!r.ok) throw new Error('expected ok');
+    expect(r.value).toEqual({ forge: 'gitlab', namespace: 'group', repo: 'repo', number: 45 });
+  });
+
+  it('parses gitlab subgroup paths', () => {
+    const r = parsePRReference('https://gitlab.com/group/sub/repo/-/merge_requests/3');
+    if (!r.ok) throw new Error('expected ok');
+    expect(r.value).toEqual({ forge: 'gitlab', namespace: 'group/sub', repo: 'repo', number: 3 });
+  });
+
+  it('parses deeply-nested gitlab subgroups', () => {
+    const r = parsePRReference('https://gitlab.com/group/sub1/sub2/repo/-/merge_requests/9');
+    if (!r.ok) throw new Error('expected ok');
+    expect(r.value.namespace).toBe('group/sub1/sub2');
+    expect(r.value.repo).toBe('repo');
+  });
+
+  it('parses gitlab short form NAMESPACE/REPO!N', () => {
+    const r = parsePRReference('group/repo!42');
+    if (!r.ok) throw new Error('expected ok');
+    expect(r.value).toEqual({ forge: 'gitlab', namespace: 'group', repo: 'repo', number: 42 });
+  });
+
+  it('parses gitlab subgroup short form', () => {
+    const r = parsePRReference('group/sub/repo!7');
+    if (!r.ok) throw new Error('expected ok');
+    expect(r.value).toEqual({ forge: 'gitlab', namespace: 'group/sub', repo: 'repo', number: 7 });
+  });
+
+  it('parses gitlab without scheme', () => {
+    const r = parsePRReference('gitlab.com/group/repo/-/merge_requests/1');
+    if (!r.ok) throw new Error('expected ok');
+    expect(r.value.forge).toBe('gitlab');
+    expect(r.value.number).toBe(1);
+  });
+});
+
+describe('parsePRReference — rejection', () => {
   it('rejects empty input', () => {
     const r = parsePRReference('');
     expect(r.ok).toBe(false);
@@ -62,7 +104,24 @@ describe('parsePRReference', () => {
     expect(r.ok).toBe(false);
   });
 
-  it('rejects non-github URLs', () => {
+  it('rejects unsupported hosts (bitbucket, self-hosted)', () => {
+    expect(parsePRReference('https://bitbucket.org/foo/bar/pull-requests/1').ok).toBe(false);
+    expect(parsePRReference('https://git.example.com/foo/bar/pull/1').ok).toBe(false);
+  });
+
+  it('rejects lookalike github / gitlab hosts (regex anchor regression guards)', () => {
+    expect(parsePRReference('https://evilgithub.com/owner/repo/pull/1').ok).toBe(false);
+    expect(parsePRReference('http://github.com.attacker.com/owner/repo/pull/1').ok).toBe(false);
+    expect(parsePRReference('https://evilgitlab.com/group/repo/-/merge_requests/1').ok).toBe(false);
+    expect(parsePRReference('https://gitlab.com.attacker.com/group/repo/-/merge_requests/1').ok).toBe(false);
+  });
+
+  it('rejects malformed gitlab URL with missing repo segment', () => {
+    const r = parsePRReference('https://gitlab.com/foo/-/merge_requests/1');
+    expect(r.ok).toBe(false);
+  });
+
+  it('rejects gitlab path that uses pull instead of merge_requests', () => {
     const r = parsePRReference('https://gitlab.com/foo/bar/pull/1');
     expect(r.ok).toBe(false);
   });
@@ -73,24 +132,24 @@ describe('parsePRReference', () => {
   });
 
   it('rejects references missing a number', () => {
-    const r = parsePRReference('foo/bar#');
-    expect(r.ok).toBe(false);
+    expect(parsePRReference('foo/bar#').ok).toBe(false);
+    expect(parsePRReference('foo/bar!').ok).toBe(false);
   });
 
-  it('rejects non-integer PR numbers', () => {
-    const r = parsePRReference('foo/bar#abc');
-    expect(r.ok).toBe(false);
+  it('rejects non-integer PR/MR numbers', () => {
+    expect(parsePRReference('foo/bar#abc').ok).toBe(false);
+    expect(parsePRReference('group/repo!abc').ok).toBe(false);
   });
 
-  it('rejects zero and negative PR numbers', () => {
+  it('rejects zero and negative PR/MR numbers', () => {
     expect(parsePRReference('foo/bar#0').ok).toBe(false);
     expect(parsePRReference('foo/bar#-3').ok).toBe(false);
     expect(parsePRReference('https://github.com/foo/bar/pull/0').ok).toBe(false);
+    expect(parsePRReference('group/repo!0').ok).toBe(false);
   });
 
-  it('rejects owner/repo with extra path segments', () => {
-    const r = parsePRReference('foo/bar/baz#1');
-    expect(r.ok).toBe(false);
+  it('rejects single-segment gitlab short form', () => {
+    expect(parsePRReference('single!1').ok).toBe(false);
   });
 
   it('rejects plain text', () => {

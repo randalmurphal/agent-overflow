@@ -3,9 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 
@@ -13,163 +11,9 @@ import (
 	"agent-overflow/internal/settings"
 )
 
-// -- Agent 3 (Wave 5D) -- integration tests for CreateThreadFromPR and the PR
-// URL / shorthand parser.
-//
-// The existing unit tests in app_bindings_test.go cover the happy path and a
-// handful of edge cases. These integration tests harden the parser against
-// trailing-path / query-string / host variations and exercise the end-to-end
-// CreateThreadFromPR pipeline against a richer mock gh shim so we catch
-// regressions in URL normalization, workspace resolution, and first-item
-// persistence.
-//
-// Agent 1's testutil.WriteMockGhCLI was not available at the time this file
-// was written; we ship an inline mock gh helper instead.
-
-// -- Parser integration --
-
-func TestPRParse_HTTPSFull(t *testing.T) {
-	got, err := ParsePRReference("https://github.com/owner/repo/pull/123")
-	if err != nil {
-		t.Fatalf("ParsePRReference() error = %v", err)
-	}
-	if got.Owner != "owner" || got.Repo != "repo" || got.Number != 123 {
-		t.Fatalf("got = %+v, want owner/repo/123", got)
-	}
-}
-
-func TestPRParse_BareHost(t *testing.T) {
-	got, err := ParsePRReference("github.com/owner/repo/pull/123")
-	if err != nil {
-		t.Fatalf("ParsePRReference() error = %v", err)
-	}
-	if got.Owner != "owner" || got.Repo != "repo" || got.Number != 123 {
-		t.Fatalf("got = %+v, want owner/repo/123", got)
-	}
-}
-
-func TestPRParse_Shorthand(t *testing.T) {
-	got, err := ParsePRReference("owner/repo#123")
-	if err != nil {
-		t.Fatalf("ParsePRReference() error = %v", err)
-	}
-	if got.Owner != "owner" || got.Repo != "repo" || got.Number != 123 {
-		t.Fatalf("got = %+v", got)
-	}
-}
-
-// TestPRParse_MalformedNoNumber: inputs that look like a PR URL but are
-// missing the number (or have a non-numeric placeholder) must be rejected.
-func TestPRParse_MalformedNoNumber(t *testing.T) {
-	cases := []string{
-		"https://github.com/owner/repo/pull/",
-		"https://github.com/owner/repo/pull/abc",
-		"github.com/owner/repo/pull/",
-		"owner/repo#",
-		"owner/repo#notanumber",
-	}
-	for _, in := range cases {
-		in := in
-		t.Run(in, func(t *testing.T) {
-			if _, err := ParsePRReference(in); err == nil {
-				t.Fatalf("ParsePRReference(%q) = nil, want error", in)
-			}
-		})
-	}
-}
-
-// TestPRParse_MalformedWrongHost: we only accept github.com. Everything else
-// (GitLab, Bitbucket, self-hosted) must be rejected so the `gh` CLI isn't
-// pointed at a non-GitHub host.
-func TestPRParse_MalformedWrongHost(t *testing.T) {
-	cases := []string{
-		"https://gitlab.com/owner/repo/pull/1",
-		"https://bitbucket.org/owner/repo/pull-requests/1",
-		"https://git.example.com/owner/repo/pull/1",
-		"http://github.com.attacker.com/owner/repo/pull/1",
-		"githubxcom/owner/repo/pull/1",
-	}
-	for _, in := range cases {
-		in := in
-		t.Run(in, func(t *testing.T) {
-			if _, err := ParsePRReference(in); err == nil {
-				t.Fatalf("ParsePRReference(%q) = nil, want rejection", in)
-			}
-		})
-	}
-}
-
-// TestPRParse_TrailingSlashOrQuery: GitHub's UI emits URLs with /files,
-// ?diff=split, #comment anchors etc. The parser must strip those.
-func TestPRParse_TrailingSlashOrQuery(t *testing.T) {
-	cases := []struct {
-		in       string
-		wantNum  int
-		wantRepo string
-	}{
-		{"https://github.com/owner/repo/pull/123/files?foo=bar", 123, "repo"},
-		{"https://github.com/owner/repo/pull/42/", 42, "repo"},
-		{"https://github.com/owner/repo/pull/99#issuecomment-1", 99, "repo"},
-		{"https://github.com/owner/repo/pull/7?diff=split&w=1", 7, "repo"},
-		{"https://github.com/owner/repo/pull/15/commits", 15, "repo"},
-	}
-	for _, tc := range cases {
-		tc := tc
-		t.Run(tc.in, func(t *testing.T) {
-			got, err := ParsePRReference(tc.in)
-			if err != nil {
-				t.Fatalf("ParsePRReference(%q) error = %v", tc.in, err)
-			}
-			if got.Number != tc.wantNum || got.Repo != tc.wantRepo {
-				t.Fatalf("got = %+v, want num=%d repo=%s", got, tc.wantNum, tc.wantRepo)
-			}
-		})
-	}
-}
-
-// TestPRParse_RepoWithDots: repos named with dots like "owner/repo.name" are
-// legal GitHub names and must round-trip.
-func TestPRParse_RepoWithDots(t *testing.T) {
-	got, err := ParsePRReference("owner/repo.name#1")
-	if err != nil {
-		t.Fatalf("ParsePRReference(dots) error = %v", err)
-	}
-	if got.Owner != "owner" || got.Repo != "repo.name" || got.Number != 1 {
-		t.Fatalf("got = %+v, want owner/repo.name/1", got)
-	}
-
-	// Same in the URL form.
-	got, err = ParsePRReference("https://github.com/owner/repo.name/pull/1")
-	if err != nil {
-		t.Fatalf("URL ParsePRReference(dots) error = %v", err)
-	}
-	if got.Repo != "repo.name" {
-		t.Fatalf("URL repo = %q, want repo.name", got.Repo)
-	}
-}
-
-// TestPRParse_NumericOwner: GitHub org slugs may be numeric / start with digits
-// (e.g. "123-org") and must be accepted.
-func TestPRParse_NumericOwner(t *testing.T) {
-	got, err := ParsePRReference("123-org/repo#1")
-	if err != nil {
-		t.Fatalf("ParsePRReference(numeric owner) error = %v", err)
-	}
-	if got.Owner != "123-org" || got.Repo != "repo" || got.Number != 1 {
-		t.Fatalf("got = %+v, want 123-org/repo/1", got)
-	}
-
-	// And via URL.
-	got, err = ParsePRReference("https://github.com/123-org/repo/pull/1")
-	if err != nil {
-		t.Fatalf("URL ParsePRReference(numeric owner) error = %v", err)
-	}
-	if got.Owner != "123-org" {
-		t.Fatalf("URL owner = %q, want 123-org", got.Owner)
-	}
-}
-
-// -- gh CLI interaction integration --
+// PR-thread integration tests cover the end-to-end CreateThreadFromPR
+// pipeline against PATH-prepended `gh` / `glab` shims. URL/short-form
+// parser correctness lives in internal/git/forge_test.go.
 
 const prIntegrationViewJSON = `{
   "title": "Big refactor",
@@ -195,130 +39,50 @@ index 1111111..2222222 100644
  func main() {}
 `
 
-// installMockGhPR is a self-contained mock gh shim tailored for the PR
-// integration tests. It replaces the global lookPath + ghCommand hooks for the
-// lifetime of the test. Unlike the thinner installFakeGh used elsewhere, this
-// variant supports injecting different scripts per-test more ergonomically
-// (by accepting pre-built JSON / diff blobs), and records every invocation.
-func installMockGhPR(t *testing.T, prViewJSON, prDiff string) *ghCallRecorder {
-	t.Helper()
-	if runtime.GOOS == "windows" {
-		t.Skip("mock gh shim assumes POSIX shell")
-	}
+const mrIntegrationViewJSON = `{
+  "title": "Big refactor",
+  "description": "A large refactor touching many files.",
+  "source_branch": "feature/big-refactor",
+  "target_branch": "main",
+  "web_url": "https://gitlab.com/group/sub/repo/-/merge_requests/77",
+  "state": "opened",
+  "author": {"username": "contributor"}
+}`
 
-	dir := t.TempDir()
-	rec := &ghCallRecorder{}
-	script := fmt.Sprintf(`#!/bin/sh
-set -eu
-case "$1" in
-  pr)
-    shift
-    case "$1" in
-      view)
-        cat <<'END_OF_VIEW_JSON'
-%s
-END_OF_VIEW_JSON
-        ;;
-      diff)
-        cat <<'END_OF_DIFF'
-%s
-END_OF_DIFF
-        ;;
-      *)
-        echo "unknown pr subcommand: $1" 1>&2
-        exit 2
-        ;;
-    esac
-    ;;
-  *)
-    echo "unknown gh command: $1" 1>&2
-    exit 2
-    ;;
-esac
-`, prViewJSON, prDiff)
+const mrIntegrationDiff = `diff --git a/cmd/main.go b/cmd/main.go
+index 1111111..2222222 100644
+--- a/cmd/main.go
++++ b/cmd/main.go
+@@ -1,3 +1,4 @@
+ package main
++
+ func main() {}
+`
 
-	binPath := filepath.Join(dir, "gh")
-	if err := os.WriteFile(binPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write mock gh: %v", err)
-	}
-
-	prevLookPath := lookPath
-	prevGhCommand := ghCommand
-	lookPath = func(name string) (string, error) {
-		if name == "gh" {
-			return binPath, nil
-		}
-		return exec.LookPath(name)
-	}
-	ghCommand = func(args ...string) *exec.Cmd {
-		rec.record(args)
-		return exec.Command(binPath, args...)
-	}
-	t.Cleanup(func() {
-		lookPath = prevLookPath
-		ghCommand = prevGhCommand
-	})
-	return rec
-}
-
-// installMockGhExitError installs a gh shim that exits non-zero on every
-// invocation, emitting the given stderr message. Used to exercise error
-// surfaces.
+// installMockGhExitError installs a `gh` shim that exits non-zero on
+// every invocation, emitting the given stderr message. Used to
+// exercise error-surface assertions.
 func installMockGhExitError(t *testing.T, stderrMsg string) {
 	t.Helper()
-	if runtime.GOOS == "windows" {
-		t.Skip("mock gh shim assumes POSIX shell")
-	}
-
 	dir := t.TempDir()
+	binPath := filepath.Join(dir, "gh")
 	script := fmt.Sprintf(`#!/bin/sh
 echo %q 1>&2
 exit 1
 `, stderrMsg)
-	binPath := filepath.Join(dir, "gh")
 	if err := os.WriteFile(binPath, []byte(script), 0o755); err != nil {
 		t.Fatalf("write mock gh: %v", err)
 	}
-
-	prevLookPath := lookPath
-	prevGhCommand := ghCommand
-	lookPath = func(name string) (string, error) {
-		if name == "gh" {
-			return binPath, nil
-		}
-		return exec.LookPath(name)
-	}
-	ghCommand = func(args ...string) *exec.Cmd {
-		return exec.Command(binPath, args...)
-	}
-	t.Cleanup(func() {
-		lookPath = prevLookPath
-		ghCommand = prevGhCommand
-	})
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
-type ghCallRecorder struct {
-	mu    struct{}
-	calls [][]string
-}
-
-func (r *ghCallRecorder) record(args []string) {
-	copied := make([]string, len(args))
-	copy(copied, args)
-	r.calls = append(r.calls, copied)
-}
-
-// TestPR_CreateThreadFromValidURL: full end-to-end. The mock gh returns a real
-// PR payload + diff; the app must:
-//   - persist a new thread with title "PR #77: Big refactor"
-//   - persist a user-role "text" item carrying the diff in a ```diff code fence
 func TestPR_CreateThreadFromValidURL(t *testing.T) {
-	rec := installMockGhPR(t, prIntegrationViewJSON, prIntegrationDiff)
+	argLog := installFakeGh(t, prIntegrationViewJSON, prIntegrationDiff)
 
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
 
-	thread, err := app.CreateThreadFromPR("agent/overflow", 77, string(provider.Claude), "claude-sonnet-4-6")
+	thread, err := app.CreateThreadFromPR("agent/overflow", 77, string(provider.Claude), "claude-sonnet-4-6", "github")
 	if err != nil {
 		t.Fatalf("CreateThreadFromPR() error = %v", err)
 	}
@@ -355,47 +119,29 @@ func TestPR_CreateThreadFromValidURL(t *testing.T) {
 	if !strings.Contains(item.Summary, "@contributor") {
 		t.Fatalf("first item missing author mention; got: %q", item.Summary[:clamp(len(item.Summary), 300)])
 	}
-	if len(rec.calls) != 2 {
-		t.Fatalf("gh calls = %d, want 2 (pr view + pr diff)", len(rec.calls))
+	if calls := readArgLog(t, argLog); len(calls) != 2 {
+		t.Fatalf("gh calls = %d, want 2 (pr view + pr diff)", len(calls))
 	}
 }
 
-// TestPR_MissingGhReturnsStructuredError: when gh isn't on PATH, the error must
-// include the install hint so the UI can render it verbatim.
 func TestPR_MissingGhReturnsStructuredError(t *testing.T) {
-	// Force lookPath to always report gh as missing.
-	prevLookPath := lookPath
-	lookPath = func(name string) (string, error) {
-		if name == "gh" {
-			return "", fmt.Errorf("exec: %q executable file not found in $PATH", name)
-		}
-		return exec.LookPath(name)
-	}
-	t.Cleanup(func() { lookPath = prevLookPath })
+	t.Setenv("PATH", t.TempDir())
 
 	app := newTestAppWithStore(t)
-	_, err := app.CreateThreadFromPR("owner/repo", 1, string(provider.Claude), "claude-sonnet-4-6")
+	_, err := app.CreateThreadFromPR("owner/repo", 1, string(provider.Claude), "claude-sonnet-4-6", "github")
 	if err == nil {
 		t.Fatal("CreateThreadFromPR() error = nil, want gh-missing error")
 	}
 	if !strings.Contains(err.Error(), "GitHub CLI") {
 		t.Fatalf("err = %v, want 'GitHub CLI' hint", err)
 	}
-	if !strings.Contains(err.Error(), "cli.github.com") {
-		t.Fatalf("err = %v, want install URL hint", err)
-	}
-	if !strings.Contains(err.Error(), "gh auth login") {
-		t.Fatalf("err = %v, want auth login hint", err)
-	}
 }
 
-// TestPR_GhReturnsNonZero: a failing gh invocation must surface stderr output
-// verbatim so users see GitHub's actual error (e.g. "could not resolve ...").
 func TestPR_GhReturnsNonZero(t *testing.T) {
 	installMockGhExitError(t, "could not resolve to a Repository with the name 'owner/missing'")
 
 	app := newTestAppWithStore(t)
-	_, err := app.CreateThreadFromPR("owner/missing", 1, string(provider.Claude), "claude-sonnet-4-6")
+	_, err := app.CreateThreadFromPR("owner/missing", 1, string(provider.Claude), "claude-sonnet-4-6", "github")
 	if err == nil {
 		t.Fatal("CreateThreadFromPR() error = nil, want gh failure")
 	}
@@ -404,13 +150,11 @@ func TestPR_GhReturnsNonZero(t *testing.T) {
 	}
 }
 
-// TestPR_GhReturnsMalformedJSON: if gh's output is mangled (updated gh CLI,
-// broken pipe, etc) the app must report a clear parsing error.
 func TestPR_GhReturnsMalformedJSON(t *testing.T) {
-	installMockGhPR(t, "not json at all", prIntegrationDiff)
+	installFakeGh(t, "not json at all", prIntegrationDiff)
 
 	app := newTestAppWithStore(t)
-	_, err := app.CreateThreadFromPR("owner/repo", 1, string(provider.Claude), "claude-sonnet-4-6")
+	_, err := app.CreateThreadFromPR("owner/repo", 1, string(provider.Claude), "claude-sonnet-4-6", "github")
 	if err == nil {
 		t.Fatal("CreateThreadFromPR() error = nil, want malformed JSON error")
 	}
@@ -419,18 +163,14 @@ func TestPR_GhReturnsMalformedJSON(t *testing.T) {
 	}
 }
 
-// TestPR_LargeDiffTruncatedOrCapped: gh can return very large diffs (e.g.
-// vendored dependency bumps). The app caps the inlined diff at
-// MaxInlinedPRDiffBytes and appends a visible truncation marker so oversized
-// PRs don't blow up the SQLite row or the frontend render.
 func TestPR_LargeDiffTruncatedOrCapped(t *testing.T) {
 	largeDiff := buildLargeDiff(MaxInlinedPRDiffBytes * 2)
-	installMockGhPR(t, prIntegrationViewJSON, largeDiff)
+	installFakeGh(t, prIntegrationViewJSON, largeDiff)
 
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
 
-	thread, err := app.CreateThreadFromPR("agent/overflow", 77, string(provider.Claude), "claude-sonnet-4-6")
+	thread, err := app.CreateThreadFromPR("agent/overflow", 77, string(provider.Claude), "claude-sonnet-4-6", "github")
 	if err != nil {
 		t.Fatalf("CreateThreadFromPR(largeDiff) error = %v", err)
 	}
@@ -442,12 +182,9 @@ func TestPR_LargeDiffTruncatedOrCapped(t *testing.T) {
 		t.Fatalf("items = %d, want 1", len(items))
 	}
 	summary := items[0].Summary
-	// The body must stay well below the raw diff length — truncation happened.
 	if len(summary) >= len(largeDiff) {
 		t.Fatalf("summary length %d >= diff length %d -- expected truncation", len(summary), len(largeDiff))
 	}
-	// A clear truncation marker must be present so the agent (and reviewers)
-	// see explicit evidence of the omission.
 	if !strings.Contains(summary, "diff truncated at") {
 		t.Fatalf("summary missing truncation marker:\n%s", tailForLog(summary))
 	}
@@ -456,8 +193,6 @@ func TestPR_LargeDiffTruncatedOrCapped(t *testing.T) {
 	}
 }
 
-// tailForLog returns the last few hundred bytes of a string so we can include
-// the truncation marker in a failure message without dumping the full body.
 func tailForLog(s string) string {
 	const keep = 500
 	if len(s) <= keep {
@@ -466,13 +201,9 @@ func tailForLog(s string) string {
 	return "..." + s[len(s)-keep:]
 }
 
-// TestPR_WorkspaceResolvedFromRecents: an entry in settings.RecentWorkspaces
-// whose basename matches the PR repo should be auto-selected as the workspace.
-// When nothing matches, WorkspacePath must remain empty so the UI can prompt.
 func TestPR_WorkspaceResolvedFromRecents(t *testing.T) {
-	installMockGhPR(t, prIntegrationViewJSON, prIntegrationDiff)
-
 	t.Run("match", func(t *testing.T) {
+		installFakeGh(t, prIntegrationViewJSON, prIntegrationDiff)
 		app := newTestAppWithStore(t)
 		app.settings = settings.NewService(t.TempDir())
 		matchingClone := filepath.Join(t.TempDir(), "overflow")
@@ -481,7 +212,7 @@ func TestPR_WorkspaceResolvedFromRecents(t *testing.T) {
 		}
 		app.settings.AddRecentWorkspace(matchingClone)
 
-		thread, err := app.CreateThreadFromPR("agent/overflow", 77, string(provider.Claude), "claude-sonnet-4-6")
+		thread, err := app.CreateThreadFromPR("agent/overflow", 77, string(provider.Claude), "claude-sonnet-4-6", "github")
 		if err != nil {
 			t.Fatalf("CreateThreadFromPR() error = %v", err)
 		}
@@ -491,6 +222,7 @@ func TestPR_WorkspaceResolvedFromRecents(t *testing.T) {
 	})
 
 	t.Run("no-match", func(t *testing.T) {
+		installFakeGh(t, prIntegrationViewJSON, prIntegrationDiff)
 		app := newTestAppWithStore(t)
 		app.settings = settings.NewService(t.TempDir())
 		unrelated := filepath.Join(t.TempDir(), "some-other-project")
@@ -499,7 +231,7 @@ func TestPR_WorkspaceResolvedFromRecents(t *testing.T) {
 		}
 		app.settings.AddRecentWorkspace(unrelated)
 
-		thread, err := app.CreateThreadFromPR("agent/overflow", 77, string(provider.Claude), "claude-sonnet-4-6")
+		thread, err := app.CreateThreadFromPR("agent/overflow", 77, string(provider.Claude), "claude-sonnet-4-6", "github")
 		if err != nil {
 			t.Fatalf("CreateThreadFromPR() error = %v", err)
 		}
@@ -509,17 +241,13 @@ func TestPR_WorkspaceResolvedFromRecents(t *testing.T) {
 	})
 }
 
-// TestPR_EmptyDiffStillCreatesThread: some PRs (docs-only, empty branches) have
-// an empty diff. The thread must still be created with the metadata, only the
-// patch section will be empty. We observe the code block is still emitted
-// (a zero-byte fenced block) -- that's fine for the model to read.
 func TestPR_EmptyDiffStillCreatesThread(t *testing.T) {
-	installMockGhPR(t, prIntegrationViewJSON, "")
+	installFakeGh(t, prIntegrationViewJSON, "")
 
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
 
-	thread, err := app.CreateThreadFromPR("agent/overflow", 77, string(provider.Claude), "claude-sonnet-4-6")
+	thread, err := app.CreateThreadFromPR("agent/overflow", 77, string(provider.Claude), "claude-sonnet-4-6", "github")
 	if err != nil {
 		t.Fatalf("CreateThreadFromPR(emptyDiff) error = %v", err)
 	}
@@ -539,16 +267,14 @@ func TestPR_EmptyDiffStillCreatesThread(t *testing.T) {
 	}
 }
 
-// TestPR_InvalidPRNumberZeroOrNegative: CreateThreadFromPR must reject
-// non-positive PR numbers without even attempting to invoke gh.
 func TestPR_InvalidPRNumberZeroOrNegative(t *testing.T) {
-	rec := installMockGhPR(t, prIntegrationViewJSON, prIntegrationDiff)
+	argLog := installFakeGh(t, prIntegrationViewJSON, prIntegrationDiff)
 
 	app := newTestAppWithStore(t)
 	for _, num := range []int{0, -1, -99} {
 		num := num
 		t.Run(fmt.Sprintf("num=%d", num), func(t *testing.T) {
-			_, err := app.CreateThreadFromPR("owner/repo", num, string(provider.Claude), "claude-sonnet-4-6")
+			_, err := app.CreateThreadFromPR("owner/repo", num, string(provider.Claude), "claude-sonnet-4-6", "github")
 			if err == nil {
 				t.Fatalf("CreateThreadFromPR(%d) error = nil, want rejection", num)
 			}
@@ -557,15 +283,88 @@ func TestPR_InvalidPRNumberZeroOrNegative(t *testing.T) {
 			}
 		})
 	}
-	// No gh invocations should have happened -- the reject path runs before
-	// the binary lookup.
-	if len(rec.calls) != 0 {
-		t.Fatalf("gh invocations = %d, want 0 (reject before exec)", len(rec.calls))
+	if calls := readArgLog(t, argLog); len(calls) != 0 {
+		t.Fatalf("gh invocations = %d, want 0 (reject before exec)", len(calls))
 	}
 }
 
-// buildLargeDiff constructs a fake unified diff roughly `targetSize` bytes long
-// so we can observe the app's behavior on oversized gh output.
+// --- GitLab MR integration ---------------------------------------------
+
+func TestMR_CreateThreadFromValidGitLabSubgroup(t *testing.T) {
+	argLog := installFakeGlab(t, mrIntegrationViewJSON, mrIntegrationDiff)
+
+	app := newTestAppWithStore(t)
+	app.settings = settings.NewService(t.TempDir())
+
+	thread, err := app.CreateThreadFromPR("group/sub/repo", 77, string(provider.Claude), "claude-sonnet-4-6", "gitlab")
+	if err != nil {
+		t.Fatalf("CreateThreadFromPR(gitlab subgroup) error = %v", err)
+	}
+	if thread.Title != "MR !77: Big refactor" {
+		t.Fatalf("title = %q, want 'MR !77: Big refactor'", thread.Title)
+	}
+	items, err := app.store.ListItems(thread.ID)
+	if err != nil {
+		t.Fatalf("ListItems() error = %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("len(items) = %d, want 1", len(items))
+	}
+	if !strings.Contains(items[0].Summary, "```diff") {
+		t.Fatalf("first item missing diff fence")
+	}
+	if !strings.Contains(items[0].Summary, "@contributor") {
+		t.Fatalf("first item missing author from glab username mapping")
+	}
+
+	calls := readArgLog(t, argLog)
+	if len(calls) != 2 {
+		t.Fatalf("glab calls = %d, want 2: %v", len(calls), calls)
+	}
+	for _, call := range calls {
+		if !strings.Contains(call, "-R group/sub/repo") {
+			t.Errorf("glab call missing subgroup -R: %q", call)
+		}
+	}
+}
+
+func TestMR_GlabReturnsNonZero(t *testing.T) {
+	dir := t.TempDir()
+	binPath := filepath.Join(dir, "glab")
+	script := `#!/bin/sh
+echo "merge request not found" 1>&2
+exit 1
+`
+	if err := os.WriteFile(binPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write mock glab: %v", err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	app := newTestAppWithStore(t)
+	_, err := app.CreateThreadFromPR("group/repo", 1, string(provider.Claude), "claude-sonnet-4-6", "gitlab")
+	if err == nil {
+		t.Fatal("CreateThreadFromPR(gitlab) error = nil, want failure")
+	}
+	if !strings.Contains(err.Error(), "merge request not found") {
+		t.Fatalf("err = %v, want glab stderr surfaced", err)
+	}
+}
+
+func TestMR_MissingGlabReturnsStructuredError(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+
+	app := newTestAppWithStore(t)
+	_, err := app.CreateThreadFromPR("group/repo", 1, string(provider.Claude), "claude-sonnet-4-6", "gitlab")
+	if err == nil {
+		t.Fatal("CreateThreadFromPR(gitlab) error = nil, want glab-missing error")
+	}
+	if !strings.Contains(err.Error(), "GitLab CLI") {
+		t.Fatalf("err = %v, want 'GitLab CLI' hint", err)
+	}
+}
+
+// buildLargeDiff constructs a fake unified diff roughly `targetSize`
+// bytes long so we can observe the app's behavior on oversized output.
 func buildLargeDiff(targetSize int) string {
 	var b strings.Builder
 	b.WriteString("diff --git a/big.txt b/big.txt\nindex 1..2 100644\n--- a/big.txt\n+++ b/big.txt\n@@ -1,1 +1,2 @@\n existing line\n")

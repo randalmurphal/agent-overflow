@@ -86,6 +86,14 @@ export class GitStatus {
     "aheadCount": number;
     "behindCount": number;
     "hasOriginRemote": boolean;
+
+    /**
+     * Forge is the canonical id of the origin remote's forge:
+     * "github", "gitlab", or "" when the host is unknown / no origin
+     * is configured. Drives the UI's PR/MR label adaptation and gates
+     * the "Create PR" action.
+     */
+    "forge"?: string;
     "openPrUrl"?: string;
     "openPrNumber"?: number;
 

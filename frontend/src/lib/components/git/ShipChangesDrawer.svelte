@@ -20,6 +20,7 @@
   } from '../../stores/bindings';
   import { addToast } from '../../stores/toast.svelte';
   import { errString } from '../../utils/errors';
+  import { forgeLabels } from '../../utils/forgeLabels';
   import type { GitActionResult, GitStatus } from '../../types/git';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import {
@@ -169,7 +170,7 @@
         return;
       }
       wizard.completeCreatePR(result.prUrl ?? '');
-      addToast('success', 'Pull request opened');
+      addToast('success', `${forgeLabels(wizard.status?.forge).longSingular} opened`);
       await refreshStatus(pane.threadId);
     } catch (err) {
       if (wizard.generation !== startGeneration) return;
@@ -190,7 +191,7 @@
   padding="comfortable"
 >
   {#snippet headerActions()}
-    <StepIndicator phase={wizard.phase} />
+    <StepIndicator phase={wizard.phase} forge={wizard.status?.forge} />
   {/snippet}
   {#snippet children()}
     <div data-testid="ship-changes-drawer" class="space-y-4">

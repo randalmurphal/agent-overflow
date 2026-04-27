@@ -94,7 +94,7 @@ describe('App integration — thread creation', () => {
     await flush();
 
     const input = (await findByTestId('command-palette-input')) as HTMLInputElement;
-    await fireEvent.input(input, { target: { value: 'new from github' } });
+    await fireEvent.input(input, { target: { value: 'new from pull/merge' } });
     await flush();
     await fireEvent.keyDown(input, { key: 'Enter' });
     await flush(10);

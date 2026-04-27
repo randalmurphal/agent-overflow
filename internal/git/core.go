@@ -48,8 +48,24 @@ type Core struct {
 	// list` storm. Keyed on (cwd, branch); cleared per-cwd on
 	// CreatePR. A process-global TTL'd cache is the documented
 	// carve-out in internal/CLAUDE.md anti-patterns.
-	prCacheMu sync.Mutex
+	//
+	// RWMutex: the hot path (gitwatch refresh → lookupOpenPR) hits the
+	// cache as a read most of the time; only cache misses + explicit
+	// invalidation take the writer lock.
+	prCacheMu sync.RWMutex
 	prCache   map[string]prCacheEntry
+
+	// forgeCache memoizes origin-URL classification per cwd. TTL'd via
+	// forgeDetectionTTL (5 min); written by Core.Status each refresh
+	// and Core.DetectForge on cache miss so both paths share warmup.
+	// RWMutex for the same hot-read reason as prCacheMu.
+	forgeCacheMu sync.RWMutex
+	forgeCache   map[string]forgeCacheEntry
+
+	// forges is the registered set of forge implementations indexed by
+	// id ("github", "gitlab"). Populated in NewCore; not mutated after
+	// construction so reads are lock-free.
+	forges map[string]Forge
 
 	// nowFn returns the current time. Production uses time.Now; tests
 	// override to drive TTL expiry deterministically.
@@ -68,12 +84,44 @@ func prCacheKey(cwd, branch string) string {
 
 // NewCore returns a Core configured with the default timeout and output limit.
 func NewCore() *Core {
-	return &Core{
+	core := &Core{
 		timeout:        defaultTimeout,
 		maxOutputBytes: defaultMaxOutputBytes,
 		prCache:        make(map[string]prCacheEntry),
+		forgeCache:     make(map[string]forgeCacheEntry),
 		nowFn:          time.Now,
 	}
+	core.forges = map[string]Forge{
+		"github": &githubForge{core: core},
+		"gitlab": &gitlabForge{core: core},
+	}
+	return core
+}
+
+// forgeFor returns the Forge for cwd's detected origin remote. Returns
+// nullForge when the origin is missing or the host is not a supported
+// forge — every nullForge operation returns ErrUnsupportedForge so
+// the caller can surface a single "not supported" message.
+func (c *Core) forgeFor(cwd string) Forge {
+	id := c.DetectForge(cwd)
+	if id == "" {
+		return nullForge{}
+	}
+	if f, ok := c.forges[id]; ok {
+		return f
+	}
+	return nullForge{}
+}
+
+// ForgeByID returns the registered Forge with the given id, or
+// nullForge if no such forge is registered. Used by callers that
+// already know the forge id (e.g., a frontend-supplied "github" /
+// "gitlab" string from a parsed PR/MR URL) so they can skip detection.
+func (c *Core) ForgeByID(id string) Forge {
+	if f, ok := c.forges[id]; ok {
+		return f
+	}
+	return nullForge{}
 }
 
 // Execute runs git with the provided arguments. Non-zero exits are returned as errors.

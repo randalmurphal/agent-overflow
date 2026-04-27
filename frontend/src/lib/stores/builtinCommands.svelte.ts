@@ -111,7 +111,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
 
   registerCommand({
     id: 'thread.new.fromPR',
-    label: 'Thread: New from GitHub PR',
+    label: 'Thread: New from Pull/Merge Request',
     icon: '⇠',
     run: () => openThreadFromPR(),
   });
@@ -457,16 +457,16 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
 
   registerCommand({
     id: 'git.openPR',
-    label: 'Git: Open Pull Request',
+    label: 'Git: Open Pull/Merge Request',
     icon: '⇥',
     when: 'hasActiveThread',
     run: (ctx) =>
       withActiveThread(ctx, pane, async (t) => {
-        const title = window.prompt('PR title', t.title);
+        const title = window.prompt('Pull/merge request title', t.title);
         if (!title) return;
         try {
           await GitCreatePR(t.id, title, '', false);
-          addToast('success', 'Pull request opened.');
+          addToast('success', 'Request opened.');
         } catch (err) {
           addToast('error', userFacingError(err));
         }
@@ -475,7 +475,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
 
   registerCommand({
     id: 'git.ship',
-    label: 'Git: Ship Changes (commit → push → PR)',
+    label: 'Git: Ship Changes (commit → push → PR/MR)',
     icon: '⇪',
     when: 'hasActiveThread',
     run: (ctx) =>

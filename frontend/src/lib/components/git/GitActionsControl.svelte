@@ -20,6 +20,7 @@
   import type { ThreadPane } from '../../stores/thread.svelte';
   import type { GitStatus } from '../../types/git';
   import { errString } from '../../utils/errors';
+  import { forgeLabels } from '../../utils/forgeLabels';
   import { wailsEventOn } from '../../stores/events';
   import { getTransportStatus } from '../../stores/transportStatus.svelte';
   import {
@@ -103,8 +104,19 @@
   });
 
   let isWorktree = $derived(!!pane.thread?.worktreePath);
+  // Forge-aware labels for the menu item. Falls back to GitHub strings
+  // when status.forge is empty (no origin or unsupported host) — the
+  // canCreatePR gate keeps the action disabled in that case.
+  let labels = $derived(forgeLabels(status?.forge));
+  let createPRLabel = $derived(labels.createAction);
   let canCreatePR = $derived(
-    status !== null && status.hasUpstream && !status.openPrUrl && !status.isDefaultBranch,
+    status !== null &&
+      status.hasUpstream &&
+      !status.openPrUrl &&
+      !status.isDefaultBranch &&
+      // Disable when no recognised forge — we have nothing to dispatch to.
+      status.forge !== '' &&
+      status.forge !== undefined,
   );
 
   // Manual one-shot refresh used after git actions (commit/push/pull/PR).
@@ -190,6 +202,7 @@
       reportError: (msg) => pane.setGeneralError(msg),
       refreshStatus: () => refreshStatusNow(),
       replacePaneThread: (t) => pane.replaceThread(t),
+      forge: status?.forge,
     };
   }
 
@@ -296,7 +309,7 @@
           }}
         />
         <MenuItem
-          label="Create PR"
+          label={createPRLabel}
           disabled={!canCreatePR}
           onSelect={() => {
             showDropdown = false;

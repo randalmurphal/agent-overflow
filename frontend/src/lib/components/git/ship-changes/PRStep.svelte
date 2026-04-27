@@ -1,9 +1,11 @@
 <script lang="ts">
-  // Step 3: open a pull request. Success path renders a clickable URL; the
-  // drawer stays mounted so the user can copy the link before closing.
+  // Step 3: open a pull/merge request. Success path renders a clickable
+  // URL; the drawer stays mounted so the user can copy the link before
+  // closing. Labels adapt to the detected forge (PR ↔ MR).
 
   import type { ShipChangesState } from '../../../stores/shipChanges.svelte';
   import type { GitStatus } from '../../../types/git';
+  import { forgeLabels } from '../../../utils/forgeLabels';
   import Button from '../../primitives/Button.svelte';
 
   let { state, onCreate }: {
@@ -16,14 +18,20 @@
   let hasError = $derived(state.phase === 'pr.error');
   let done = $derived(state.phase === 'pr.done');
   let alreadyHasPR = $derived(!!status?.openPrUrl);
+  let labels = $derived(forgeLabels(status?.forge));
+  let unsupportedForge = $derived(status !== null && !status.forge);
 </script>
 
 <div class="space-y-3" data-testid="ship-changes-step-pr">
   <header class="space-y-1">
-    <h3 class="text-sm font-semibold text-text-primary">Open Pull Request</h3>
-    {#if alreadyHasPR}
+    <h3 class="text-sm font-semibold text-text-primary">Open {labels.longSingularTitleCase}</h3>
+    {#if unsupportedForge}
+      <p class="text-[11px] text-text-secondary" data-testid="ship-changes-pr-unsupported">
+        This remote is not GitHub or GitLab — pull/merge request creation is not supported.
+      </p>
+    {:else if alreadyHasPR}
       <p class="text-[11px] text-text-secondary">
-        A PR is already open for this branch:
+        A {labels.noun} is already open for this branch:
         <a
           href={status?.openPrUrl}
           target="_blank"
@@ -35,7 +43,7 @@
       </p>
     {:else if status}
       <p class="text-[11px] text-text-secondary">
-        Create a PR for <code class="text-[10px] bg-surface-2/60 px-1 rounded">{status.branch}</code>
+        Create a {labels.noun} for <code class="text-[10px] bg-surface-2/60 px-1 rounded">{status.branch}</code>
         against the default branch.
       </p>
     {/if}
@@ -43,7 +51,7 @@
 
   {#if done}
     <div class="space-y-1" data-testid="ship-changes-pr-done">
-      <p class="text-xs text-text-secondary">Pull request opened:</p>
+      <p class="text-xs text-text-secondary">{labels.longSingular} opened:</p>
       <a
         href={state.prUrl ?? ''}
         target="_blank"
@@ -54,7 +62,7 @@
         {state.prUrl}
       </a>
     </div>
-  {:else if !alreadyHasPR}
+  {:else if !alreadyHasPR && !unsupportedForge}
     <div class="space-y-2">
       <label class="text-xs text-text-secondary block" for="ship-pr-title">Title</label>
       <input
@@ -64,7 +72,7 @@
         value={state.prTitle}
         oninput={(e) => state.setPRTitle((e.currentTarget as HTMLInputElement).value)}
         disabled={busy}
-        placeholder="PR title"
+        placeholder="{labels.noun} title"
         class="w-full text-sm rounded border border-border bg-surface-0 px-3 py-2 text-text-primary placeholder:text-text-secondary/40 focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/50 disabled:opacity-60 transition-colors"
       />
     </div>
@@ -102,7 +110,7 @@
     </p>
   {/if}
 
-  {#if !done && !alreadyHasPR}
+  {#if !done && !alreadyHasPR && !unsupportedForge}
     <div class="flex justify-end gap-2 pt-1">
       <Button
         variant="primary"
@@ -112,7 +120,7 @@
         loading={busy}
         testId="ship-changes-pr-submit"
       >
-        {#snippet children()}{busy ? 'Opening PR…' : 'Create PR'}{/snippet}
+        {#snippet children()}{busy ? `Opening ${labels.noun}…` : labels.createAction}{/snippet}
       </Button>
     </div>
   {/if}

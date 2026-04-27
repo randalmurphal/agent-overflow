@@ -175,6 +175,45 @@ func TestStatusOnRepositoryWithOrigin(t *testing.T) {
 	}
 }
 
+// TestStatusReportsForge verifies Status populates GitStatus.Forge
+// from the origin URL classification. Covers the three v1 cases:
+// github (recognised), gitlab (recognised), self-hosted (unsupported).
+func TestStatusReportsForge(t *testing.T) {
+	cases := []struct {
+		name      string
+		originURL string
+		want      string
+	}{
+		{"github https", "https://github.com/owner/repo.git", "github"},
+		{"github ssh alias", "git@github.com:owner/repo.git", "github"},
+		{"gitlab https", "https://gitlab.com/group/repo.git", "gitlab"},
+		{"gitlab ssh alias", "git@gitlab.com:group/repo.git", "gitlab"},
+		{"self-hosted", "https://git.example.com/owner/repo.git", ""},
+		{"no remote", "", ""},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := testutil.InitGitRepo(t)
+			if tc.originURL != "" {
+				testutil.RunGit(t, repo, "remote", "add", "origin", tc.originURL)
+			}
+
+			core := NewCore()
+			status, err := core.Status(repo)
+			if err != nil {
+				t.Fatalf("Status returned error: %v", err)
+			}
+			if status.Forge != tc.want {
+				t.Errorf("Forge = %q, want %q", status.Forge, tc.want)
+			}
+			if (tc.originURL != "") != status.HasOriginRemote {
+				t.Errorf("HasOriginRemote = %v, want %v", status.HasOriginRemote, tc.originURL != "")
+			}
+		})
+	}
+}
+
 func TestWorkingTreeDiff(t *testing.T) {
 	repo := testutil.InitGitRepo(t)
 	readmePath := filepath.Join(repo, "README.txt")
@@ -197,6 +236,16 @@ func TestWorkingTreeDiff(t *testing.T) {
 	}
 }
 
+// seedForgeCacheGitHub is a test-only helper that populates the forge
+// classification cache so Core.lookupOpenPR's dispatch resolves to the
+// github forge without requiring the test to set up a real origin URL.
+// The Core.forgeFor call would otherwise return nullForge for a bare
+// t.TempDir() (no origin remote) and short-circuit gh invocation.
+func seedForgeCacheGitHub(t *testing.T, core *Core, cwd string) {
+	t.Helper()
+	core.storeForgeCache(cwd, "github", core.nowFn())
+}
+
 func TestLookupOpenPRUsesGHWhenAvailable(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping PATH override in short mode")
@@ -212,7 +261,10 @@ func TestLookupOpenPRUsesGHWhenAvailable(t *testing.T) {
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	core := NewCore()
-	url, number := core.lookupOpenPR(t.TempDir(), "main")
+	cwd := t.TempDir()
+	seedForgeCacheGitHub(t, core, cwd)
+
+	url, number := core.lookupOpenPR(cwd, "main")
 	if url != "https://example.com/pr/7" {
 		t.Fatalf("url = %q, want https://example.com/pr/7", url)
 	}
@@ -241,6 +293,7 @@ func TestLookupOpenPRCachesResults(t *testing.T) {
 
 	core := NewCore()
 	cwd := t.TempDir()
+	seedForgeCacheGitHub(t, core, cwd)
 
 	// First call: cold cache → shell out.
 	if url, _ := core.lookupOpenPR(cwd, "feat-a"); url == "" {
@@ -300,6 +353,8 @@ func TestInvalidatePRCacheClearsCwdEntries(t *testing.T) {
 	core := NewCore()
 	cwdA := t.TempDir()
 	cwdB := t.TempDir()
+	seedForgeCacheGitHub(t, core, cwdA)
+	seedForgeCacheGitHub(t, core, cwdB)
 
 	// Seed the cache with a "no PR" answer for two cwds.
 	core.lookupOpenPR(cwdA, "main")

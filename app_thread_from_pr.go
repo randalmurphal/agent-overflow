@@ -1,16 +1,13 @@
 package main
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
-	"os/exec"
-	"regexp"
-	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
 
+	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/store"
 
 	"github.com/google/uuid"
@@ -24,108 +21,36 @@ import (
 // silently-cut patch.
 const MaxInlinedPRDiffBytes = 256 * 1024
 
-// PRReference identifies a GitHub pull request by owner/repo/number.
-type PRReference struct {
-	Owner  string
-	Repo   string
-	Number int
-}
-
-// OwnerRepo returns "owner/repo" for passing to gh subcommands.
-func (r PRReference) OwnerRepo() string {
-	return r.Owner + "/" + r.Repo
-}
-
-// prMetadata mirrors the fields we request from `gh pr view --json`.
-type prMetadata struct {
-	Title       string     `json:"title"`
-	Body        string     `json:"body"`
-	HeadRefName string     `json:"headRefName"`
-	BaseRefName string     `json:"baseRefName"`
-	URL         string     `json:"url"`
-	Files       []prFile   `json:"files"`
-	Author      prAuthor   `json:"author"`
-	State       string     `json:"state"`
-	AdditionalJSON map[string]any `json:"-"`
-}
-
-type prFile struct {
-	Path      string `json:"path"`
-	Additions int    `json:"additions"`
-	Deletions int    `json:"deletions"`
-}
-
-type prAuthor struct {
-	Login string `json:"login"`
-}
-
-var (
-	// Matches:
-	//   https://github.com/owner/repo/pull/123
-	//   http://github.com/owner/repo/pull/123
-	//   github.com/owner/repo/pull/123
-	prURLPattern = regexp.MustCompile(`^(?:https?://)?github\.com/([^/]+)/([^/]+)/pull/(\d+)(?:[/?#].*)?$`)
-	// Matches: owner/repo#123
-	prShortPattern = regexp.MustCompile(`^([^/\s]+)/([^/\s#]+)#(\d+)$`)
-)
-
-// ParsePRReference accepts any of the supported PR input shapes. Whitespace is
-// trimmed; otherwise the input is rejected with a structured error so the UI
-// can show it verbatim.
-func ParsePRReference(input string) (PRReference, error) {
-	trimmed := strings.TrimSpace(input)
-	if trimmed == "" {
-		return PRReference{}, errors.New("PR reference is empty")
-	}
-
-	if m := prURLPattern.FindStringSubmatch(trimmed); m != nil {
-		num, err := strconv.Atoi(m[3])
-		if err != nil {
-			return PRReference{}, fmt.Errorf("PR number %q is not an integer: %w", m[3], err)
-		}
-		if num <= 0 {
-			return PRReference{}, fmt.Errorf("PR number must be positive, got %d", num)
-		}
-		return PRReference{Owner: m[1], Repo: m[2], Number: num}, nil
-	}
-
-	if m := prShortPattern.FindStringSubmatch(trimmed); m != nil {
-		num, err := strconv.Atoi(m[3])
-		if err != nil {
-			return PRReference{}, fmt.Errorf("PR number %q is not an integer: %w", m[3], err)
-		}
-		if num <= 0 {
-			return PRReference{}, fmt.Errorf("PR number must be positive, got %d", num)
-		}
-		return PRReference{Owner: m[1], Repo: m[2], Number: num}, nil
-	}
-
-	return PRReference{}, fmt.Errorf(
-		"unrecognised PR reference %q: expected https://github.com/OWNER/REPO/pull/N or OWNER/REPO#N",
-		trimmed,
-	)
-}
-
-// CreateThreadFromPR creates a new thread seeded with a GitHub PR's metadata +
-// diff as the first user message. Relies on the `gh` CLI being available on
-// PATH; returns a structured error with installation hint if it isn't.
+// CreateThreadFromPR creates a new thread seeded with a PR/MR's metadata +
+// diff as the first user message. Routes through the appropriate forge CLI
+// (`gh` for GitHub, `glab` for GitLab) detected from the `forge` parameter.
 //
 // Parameters:
-//   - ownerRepo: OWNER/REPO pair (e.g. "agent-overflow/agent-overflow")
-//   - number:    PR number
+//   - project:       "owner/repo" for GitHub, "namespace/.../repo" for GitLab
+//   - number:        PR / MR number
 //   - providerName + model: provider + model for the new thread
+//   - forge:         "github" (default for empty) or "gitlab"
 //
 // If the user has a local clone of the target repo registered in
 // settings.RecentWorkspaces, that path is auto-selected as the workspace.
 // Otherwise the caller is expected to pick a workspace; we still create the
 // thread but WorkspacePath is left empty and the UI can prompt.
 func (a *App) CreateThreadFromPR(
-	ownerRepo string,
+	project string,
 	number int,
 	providerName string,
 	model string,
+	forge string,
 ) (store.Thread, error) {
-	owner, repo, err := splitOwnerRepo(ownerRepo)
+	forgeID := strings.TrimSpace(forge)
+	if forgeID == "" {
+		forgeID = "github"
+	}
+	if forgeID != "github" && forgeID != "gitlab" {
+		return store.Thread{}, fmt.Errorf("unsupported forge %q (expected github or gitlab)", forgeID)
+	}
+
+	namespace, repo, err := gitops.SplitProjectForForge(forgeID, project)
 	if err != nil {
 		return store.Thread{}, err
 	}
@@ -141,41 +66,47 @@ func (a *App) CreateThreadFromPR(
 		return store.Thread{}, errors.New("model is required")
 	}
 
-	if err := ensureGhAvailable(); err != nil {
-		return store.Thread{}, err
+	ref := gitops.PRReference{
+		Forge:     forgeID,
+		Namespace: namespace,
+		Repo:      repo,
+		Number:    number,
 	}
-
-	ref := PRReference{Owner: owner, Repo: repo, Number: number}
-	meta, err := fetchPRMetadata(ref)
-	if err != nil {
-		return store.Thread{}, err
-	}
-	diff, err := fetchPRDiff(ref)
-	if err != nil {
-		return store.Thread{}, err
-	}
-
+	forgeImpl := a.gitCore().ForgeByID(forgeID)
+	// The view + diff calls don't need a local clone — gh --repo and
+	// glab -R both query authenticated state directly. Pass the
+	// resolved workspace as cwd when available so any forge CLI that
+	// reads local config (e.g. glab's project resolution) finds it.
 	workspace := a.resolveRepoWorkspace(ref)
-	// When the user has no local clone of OWNER/REPO in their recent-
-	// workspace list, fall back to a pseudo path derived from the ref
-	// so every thread still belongs to a project row. The frontend can
-	// later prompt the user to pick a real workspace.
+	meta, err := forgeImpl.ViewPR(workspace, ref.Project(), ref.Number)
+	if err != nil {
+		return store.Thread{}, err
+	}
+	diff, err := forgeImpl.Diff(workspace, ref.Project(), ref.Number)
+	if err != nil {
+		return store.Thread{}, err
+	}
+
+	// When the user has no local clone, fall back to a forge-prefixed
+	// pseudo anchor derived from the ref so every thread still belongs
+	// to a project row. The frontend can later prompt the user to pick
+	// a real workspace.
 	projectAnchor := workspace
 	if strings.TrimSpace(projectAnchor) == "" {
-		projectAnchor = fmt.Sprintf("pr://%s/%s", ref.Owner, ref.Repo)
+		projectAnchor = gitops.BuildPRAnchor(forgeID, namespace, repo)
 	}
-	project, err := a.ensureProjectForWorkspace(projectAnchor)
+	projectRow, err := a.ensureProjectForWorkspace(projectAnchor)
 	if err != nil {
 		return store.Thread{}, err
 	}
 	now := time.Now().UnixMilli()
 
-	title := truncatePRTitle(fmt.Sprintf("PR #%d: %s", number, strings.TrimSpace(meta.Title)))
+	title := truncatePRTitle(formatPRThreadTitle(forgeID, number, meta.Title))
 
 	thread := store.Thread{
 		ID:            uuid.NewString(),
-		ProjectID:     project.ID,
-		ProjectPath:   project.Path,
+		ProjectID:     projectRow.ID,
+		ProjectPath:   projectRow.Path,
 		Title:         title,
 		Provider:      providerName,
 		WorkspacePath: workspace,
@@ -216,112 +147,57 @@ func (a *App) CreateThreadFromPR(
 	return refreshed, nil
 }
 
-// splitOwnerRepo parses "owner/repo" into its parts, rejecting malformed input.
-func splitOwnerRepo(ownerRepo string) (string, string, error) {
-	ownerRepo = strings.TrimSpace(ownerRepo)
-	parts := strings.Split(ownerRepo, "/")
-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-		return "", "", fmt.Errorf("ownerRepo must be in the form OWNER/REPO, got %q", ownerRepo)
+// formatPRThreadTitle renders the sidebar title prefix per forge:
+// "PR #N" for GitHub, "MR !N" for GitLab — matching each forge's
+// native conventions for referencing change requests.
+func formatPRThreadTitle(forgeID string, number int, prTitle string) string {
+	prTitle = strings.TrimSpace(prTitle)
+	if forgeID == "gitlab" {
+		return fmt.Sprintf("MR !%d: %s", number, prTitle)
 	}
-	return parts[0], parts[1], nil
+	return fmt.Sprintf("PR #%d: %s", number, prTitle)
 }
 
-// ensureGhAvailable surfaces a helpful error when `gh` is not installed rather
-// than letting the user see a generic exec failure.
-func ensureGhAvailable() error {
-	if _, err := lookPath("gh"); err != nil {
-		return fmt.Errorf(
-			"GitHub CLI (gh) is not on PATH. Install it from https://cli.github.com and run 'gh auth login' to continue: %w",
-			err,
-		)
-	}
-	return nil
-}
-
-// lookPath is a package-level function reference so tests can inject a fake gh
-// without depending on shell PATH lookup order.
-var lookPath = exec.LookPath
-
-// ghCommand is a package-level function reference that returns a *exec.Cmd for
-// the given gh subcommand + args. Tests override this to capture the invocation
-// and produce canned output.
-var ghCommand = func(args ...string) *exec.Cmd {
-	return exec.Command("gh", args...)
-}
-
-func fetchPRMetadata(ref PRReference) (prMetadata, error) {
-	cmd := ghCommand(
-		"pr", "view",
-		"--repo", ref.OwnerRepo(),
-		strconv.Itoa(ref.Number),
-		"--json", "title,body,headRefName,baseRefName,files,url,author,state",
-	)
-	out, err := cmd.Output()
-	if err != nil {
-		return prMetadata{}, wrapGhError("gh pr view", err)
-	}
-	var meta prMetadata
-	if err := json.Unmarshal(out, &meta); err != nil {
-		return prMetadata{}, fmt.Errorf("gh pr view returned malformed JSON: %w", err)
-	}
-	return meta, nil
-}
-
-func fetchPRDiff(ref PRReference) (string, error) {
-	cmd := ghCommand(
-		"pr", "diff",
-		"--repo", ref.OwnerRepo(),
-		strconv.Itoa(ref.Number),
-	)
-	out, err := cmd.Output()
-	if err != nil {
-		return "", wrapGhError("gh pr diff", err)
-	}
-	return string(out), nil
-}
-
-// wrapGhError preserves stderr output from gh so the user sees actionable
-// messages (e.g. "could not resolve to a Repository with the name").
-func wrapGhError(subcommand string, err error) error {
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) && len(exitErr.Stderr) > 0 {
-		return fmt.Errorf("%s failed: %s", subcommand, strings.TrimSpace(string(exitErr.Stderr)))
-	}
-	return fmt.Errorf("%s failed: %w", subcommand, err)
-}
-
-// resolveRepoWorkspace looks for a local clone of OWNER/REPO in the user's
-// recent workspaces. Returns the first matching path, or "" if nothing matches.
-// We match on the basename (`/.../repo`) to survive users putting checkouts in
-// non-canonical locations.
-func (a *App) resolveRepoWorkspace(ref PRReference) string {
+// resolveRepoWorkspace looks for a local clone of the PR/MR's repo in
+// the user's recent workspaces. Returns the first matching path, or ""
+// if nothing matches. Match is on basename (`/.../repo`) to survive
+// users putting checkouts in non-canonical locations.
+func (a *App) resolveRepoWorkspace(ref gitops.PRReference) string {
 	if a.settings == nil {
 		return ""
 	}
 	suffix := "/" + ref.Repo
+	fullSuffix := "/" + ref.Project()
 	for _, ws := range a.settings.Get().RecentWorkspaces {
 		ws = strings.TrimSpace(strings.TrimRight(ws, "/"))
 		if ws == "" {
 			continue
 		}
-		if strings.HasSuffix(ws, suffix) || strings.HasSuffix(ws, "/"+ref.Owner+"/"+ref.Repo) {
+		if strings.HasSuffix(ws, suffix) || strings.HasSuffix(ws, fullSuffix) {
 			return ws
 		}
 	}
 	return ""
 }
 
-// buildPRUserMessage composes the first user message we persist on the new
-// thread. Keeps the PR title + author + bodies compact, then dumps the patch
-// into a fenced code block so providers can reason about the actual changes.
-func buildPRUserMessage(ref PRReference, meta prMetadata, diff string) string {
+// buildPRUserMessage composes the first user message we persist on the
+// new thread. Keeps the PR title + author + bodies compact, then dumps
+// the patch into a fenced code block so providers can reason about the
+// actual changes.
+func buildPRUserMessage(ref gitops.PRReference, meta gitops.PRMetadata, diff string) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "# PR #%d: %s\n\n", ref.Number, strings.TrimSpace(meta.Title))
+	header := "PR"
+	numberSigil := "#"
+	if ref.Forge == "gitlab" {
+		header = "MR"
+		numberSigil = "!"
+	}
+	fmt.Fprintf(&b, "# %s %s%d: %s\n\n", header, numberSigil, ref.Number, strings.TrimSpace(meta.Title))
 	if meta.URL != "" {
 		fmt.Fprintf(&b, "Link: %s\n", meta.URL)
 	}
-	if meta.Author.Login != "" {
-		fmt.Fprintf(&b, "Author: @%s\n", meta.Author.Login)
+	if meta.AuthorLogin != "" {
+		fmt.Fprintf(&b, "Author: @%s\n", meta.AuthorLogin)
 	}
 	if meta.BaseRefName != "" || meta.HeadRefName != "" {
 		fmt.Fprintf(&b, "Branches: %s → %s\n", meta.HeadRefName, meta.BaseRefName)
