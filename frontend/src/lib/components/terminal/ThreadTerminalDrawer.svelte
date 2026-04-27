@@ -61,6 +61,12 @@
       console.error('terminal: CloseTerminal failed', err);
     }
     handle.removeTab(terminalID);
+    // Closing the last tab leaves the drawer with nothing to render —
+    // collapse it instead of showing the "No active terminal" empty
+    // state. The user can re-open via the header button or ⌘J.
+    if (handle.tabs.length === 0) {
+      collapseDrawer();
+    }
   }
 
   function selectTerminal(terminalID: string) {

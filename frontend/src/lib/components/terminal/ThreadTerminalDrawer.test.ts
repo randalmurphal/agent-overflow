@@ -169,6 +169,72 @@ describe('ThreadTerminalDrawer', () => {
     expect(pane.setShowTerminal).toHaveBeenCalledWith(false);
   });
 
+  it('auto-collapses when the last tab is closed', async () => {
+    const pane = makePane();
+    const { getByTestId } = render(ThreadTerminalDrawer, { pane: pane as never, manual: true });
+    await tick();
+
+    // Open one terminal, then close it — that's the last tab.
+    getByTestId('terminal-open').click();
+    await Promise.resolve();
+    await Promise.resolve();
+    await tick();
+
+    getByTestId('terminal-tab-close-t1').click();
+    await Promise.resolve();
+    await tick();
+
+    expect(pane.setShowTerminal).toHaveBeenCalledWith(false);
+  });
+
+  it('does not auto-collapse when a non-last tab is closed', async () => {
+    const pane = makePane();
+    // Override OpenTerminal so each call returns a fresh ID.
+    let nextId = 1;
+    const bindings = await import('../../stores/bindings');
+    (bindings.OpenTerminal as unknown as { mockImplementation: (fn: unknown) => void }).mockImplementation(
+      async (threadID: string) => {
+        const terminalID = `t${nextId++}`;
+        return {
+          terminalID,
+          threadID,
+          summary: {
+            terminalID,
+            threadID,
+            shell: '/bin/bash',
+            cwd: '/tmp',
+            rows: 24,
+            cols: 80,
+            pid: 1,
+            startedAt: 0,
+            running: true,
+            exitCode: 0,
+            exitReason: '',
+          },
+        };
+      },
+    );
+
+    const { getByTestId } = render(ThreadTerminalDrawer, { pane: pane as never, manual: true });
+    await tick();
+
+    getByTestId('terminal-open').click();
+    await Promise.resolve();
+    await Promise.resolve();
+    await tick();
+    getByTestId('terminal-open').click();
+    await Promise.resolve();
+    await Promise.resolve();
+    await tick();
+
+    // Two tabs open. Close one — the drawer must NOT collapse.
+    getByTestId('terminal-tab-close-t1').click();
+    await Promise.resolve();
+    await tick();
+
+    expect(pane.setShowTerminal).not.toHaveBeenCalled();
+  });
+
   it('routes terminal:output events to the active tab', async () => {
     const pane = makePane();
     const { getByTestId } = render(ThreadTerminalDrawer, { pane: pane as never, manual: true });
