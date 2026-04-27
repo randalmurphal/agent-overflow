@@ -55,6 +55,12 @@ tasks:
       - task: build:wsl:windows-launcher
         vars:
           ARCH: '{{.ARCH | default "amd64"}}'
+      # Restore the placeholder so the working tree returns to clean
+      # after a build. The real ELF lives in bin/ for distribution; the
+      # embed dir only needs the real bytes during the .exe link, which
+      # has completed by this point. Keeps `git status` quiet across
+      # repeated dev builds.
+      - task: build:wsl:restore-payload-placeholder
 
   build:wsl:linux-payload:
     summary: |
@@ -72,7 +78,7 @@ tasks:
       is not a real binary. Document this constraint in the release runbook.
     internal: true
     cmds:
-      - mkdir -p cmd/agent-overflow-windows/payload
+      - mkdir -p cmd/agent-overflow-windows/payload {{.BIN_DIR | default "bin"}}
       - cmd: GOOS=linux GOARCH=amd64 CGO_ENABLED=1 CC=x86_64-linux-gnu-gcc go build -o cmd/agent-overflow-windows/payload/agent-overflow-linux ./
         platforms: [linux]
       - cmd: |
@@ -84,6 +90,10 @@ tasks:
             echo "         The existing cmd/agent-overflow-windows/payload/agent-overflow-linux placeholder is unchanged."
           fi
         platforms: [darwin]
+      # Stash a copy in bin/ (gitignored) so package:wsl:zip and any
+      # follow-on consumer can read the real ELF after the build:wsl
+      # task restores the embed-dir placeholder.
+      - cp cmd/agent-overflow-windows/payload/agent-overflow-linux {{.BIN_DIR | default "bin"}}/agent-overflow-linux
     sources:
       - "main.go"
       - "app*.go"
@@ -92,6 +102,25 @@ tasks:
       - "go.sum"
     generates:
       - cmd/agent-overflow-windows/payload/agent-overflow-linux
+      - "{{.BIN_DIR | default \"bin\"}}/agent-overflow-linux"
+
+  build:wsl:restore-payload-placeholder:
+    desc: |
+      Rewrites cmd/agent-overflow-windows/payload/agent-overflow-linux
+      back to its committed placeholder content. Called at the tail of
+      build:wsl so the working tree stays clean — the real ELF is
+      already in the linked .exe (and copied to bin/ for downstream
+      packagers). The embed dir's only role is to satisfy //go:embed at
+      compile time; once the link is done, the bytes on disk there are
+      dead weight and shouldn't show up in `git status`.
+    internal: true
+    cmds:
+      - cmd: printf 'PLACEHOLDER - replace with cross-compiled Linux ELF before shipping\n' > cmd/agent-overflow-windows/payload/agent-overflow-linux
+      # `go build` writes the ELF with mode 0755; `printf >` preserves
+      # whatever mode bits were on the file before. Force 0644 so the
+      # restored placeholder matches the committed file mode and `git
+      # diff` doesn't surface a mode-only change.
+      - chmod 644 cmd/agent-overflow-windows/payload/agent-overflow-linux
 
   build:wsl:windows-launcher:
     summary: Cross-compile the Windows .exe launcher
@@ -117,7 +146,10 @@ tasks:
     cmds:
       - mkdir -p {{.BIN_DIR | default "bin"}}/wsl-zip
       - cp {{.BIN_DIR | default "bin"}}/agent-overflow.exe {{.BIN_DIR | default "bin"}}/wsl-zip/
-      - cp cmd/agent-overflow-windows/payload/agent-overflow-linux {{.BIN_DIR | default "bin"}}/wsl-zip/
+      # Read from bin/ (where build:wsl:linux-payload also stashes the
+      # ELF) rather than the embed dir, which build:wsl restores to a
+      # placeholder right after the .exe link.
+      - cp {{.BIN_DIR | default "bin"}}/agent-overflow-linux {{.BIN_DIR | default "bin"}}/wsl-zip/
       - cd {{.BIN_DIR | default "bin"}}/wsl-zip && zip -r ../agent-overflow-wsl.zip ./*
       - rm -rf {{.BIN_DIR | default "bin"}}/wsl-zip
 
