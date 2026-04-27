@@ -2,10 +2,10 @@
 set -e
 
 # Build configuration
-APP_NAME="scaffold"
-BUNDLE_ID="com.example.scaffold"
-VERSION="0.1.0"
-BUILD_NUMBER="0.1.0"
+APP_NAME="agent-overflow"
+BUNDLE_ID="com.agentoverflow.app"
+VERSION="0.0.1"
+BUILD_NUMBER="0.0.1"
 BUILD_DIR="build/ios"
 TARGET="simulator"
 

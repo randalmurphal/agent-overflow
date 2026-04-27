@@ -3,26 +3,26 @@
 #
 # The lines below are called `modelines`. See `:help modeline`
 
-name: "scaffold"
+name: "agent-overflow"
 arch: ${GOARCH}
 platform: "linux"
-version: "0.1.0"
+version: "0.0.1"
 section: "default"
 priority: "extra"
 maintainer: ${GIT_COMMITTER_NAME} <${GIT_COMMITTER_EMAIL}>
-description: "A scaffold application"
-vendor: "My Company"
+description: "Desktop app for using coding agents with a shared UX"
+vendor: "Agent Overflow"
 homepage: "https://wails.io"
 license: "MIT"
 release: "1"
 
 contents:
-  - src: "./bin/scaffold"
-    dst: "/usr/local/bin/scaffold"
+  - src: "./bin/agent-overflow"
+    dst: "/usr/local/bin/agent-overflow"
   - src: "./build/appicon.png"
-    dst: "/usr/share/icons/hicolor/128x128/apps/scaffold.png"
-  - src: "./build/linux/scaffold.desktop"
-    dst: "/usr/share/applications/scaffold.desktop"
+    dst: "/usr/share/icons/hicolor/128x128/apps/agent-overflow.png"
+  - src: "./build/linux/agent-overflow.desktop"
+    dst: "/usr/share/applications/agent-overflow.desktop"
 
 # Default dependencies for Debian 12/Ubuntu 22.04+ with WebKit 4.1
 depends:

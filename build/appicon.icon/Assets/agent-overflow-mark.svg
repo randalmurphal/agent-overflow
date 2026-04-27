@@ -1,0 +1,10 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <title>Agent Overflow Mark</title>
+
+  <g fill="none" stroke="#F8FAFC" stroke-width="44" stroke-linecap="round" stroke-linejoin="round">
+    <!-- A: clean chevron, softly-rounded apex, no crossbar -->
+    <path d="M 258 636 L 378 388 L 498 636"/>
+    <!-- O -->
+    <circle cx="654" cy="512" r="124"/>
+  </g>
+</svg>
