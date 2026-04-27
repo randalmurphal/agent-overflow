@@ -13,9 +13,14 @@
   import { getSettings } from '../../stores/settings.svelte';
   import { createStickToBottomController } from '../../utils/stickToBottom.svelte';
   import {
+    firstVisibleItemAnchor,
+    restoreAnchorSnapshot,
+    restoreLoadedAnchorSnapshot,
+    type AnchorSnapshot,
+  } from '../../utils/scrollAnchorRestore';
+  import {
     getThreadScrollSnapshot,
     setThreadScrollSnapshot,
-    type ScrollSnapshot,
   } from '../../utils/threadScrollSnapshots';
   import { groupItemsBySubagent, type TimelineNode } from '../../utils/subagentGrouping';
   import {
@@ -289,7 +294,7 @@
   }
 
   let initialRestoreFrame: number | null = null;
-  let pendingLiveAnchor: Extract<ScrollSnapshot, { kind: 'anchor' }> | null = null;
+  let pendingLiveAnchor: AnchorSnapshot | null = null;
   let pendingLiveAnchorRevision = -1;
   let observedLiveAnchorThreadId: string | null = null;
   let observedLiveAnchorRevision = -1;
@@ -327,31 +332,14 @@
       return;
     }
 
-    const anchor = firstVisibleItemAnchor();
+    const anchor = firstVisibleItemAnchor(scrollContainer);
     if (anchor) {
       setThreadScrollSnapshot(threadId, anchor);
     }
   }
 
-  function firstVisibleItemAnchor(): ScrollSnapshot | null {
-    if (!scrollContainer) return null;
-    const viewport = scrollContainer.getBoundingClientRect();
-    const itemElements = Array.from(
-      scrollContainer.querySelectorAll<HTMLElement>('[data-item-id]'),
-    );
-    for (const el of itemElements) {
-      const rect = el.getBoundingClientRect();
-      if (rect.height <= 0) continue;
-      if (rect.bottom < viewport.top) continue;
-      const itemId = el.dataset.itemId ?? '';
-      if (!itemId) continue;
-      return {
-        kind: 'anchor',
-        itemId,
-        offsetTop: rect.top - viewport.top,
-      };
-    }
-    return null;
+  function findTimelineNodeIndex(itemId: string): number {
+    return groupedNodes.findIndex((node) => nodeContainsItem(node, itemId));
   }
 
   async function restoreInitialScroll(threadId: string, restoreToken: number): Promise<void> {
@@ -365,8 +353,16 @@
       && scrollContainer !== undefined
     );
     try {
-      if (snapshot?.kind === 'anchor') {
-        const restored = await restoreAnchorSnapshot(snapshot, shouldContinue);
+      if (snapshot?.kind === 'anchor' && scrollContainer) {
+        const restored = await restoreAnchorSnapshot({
+          container: scrollContainer,
+          snapshot,
+          loadUntilItem: (id) => pane.loadUntilItem(id),
+          findNodeIndex: findTimelineNodeIndex,
+          offsetForIndex,
+          syncViewportState,
+          shouldContinue,
+        });
         if (restored) {
           syncViewportState();
           saveScrollSnapshot();
@@ -386,63 +382,6 @@
       restoringScroll = false;
       releaseBottomAutoScroll();
     }
-  }
-
-  async function restoreAnchorSnapshot(
-    snapshot: Extract<ScrollSnapshot, { kind: 'anchor' }>,
-    shouldContinue: () => boolean = () => true,
-  ): Promise<boolean> {
-    if (!scrollContainer || !snapshot.itemId || !shouldContinue()) return false;
-    const found = await pane.loadUntilItem(snapshot.itemId);
-    if (!found || !scrollContainer || !shouldContinue()) return false;
-    return restoreLoadedAnchorSnapshot(snapshot, shouldContinue);
-  }
-
-  async function restoreLoadedAnchorSnapshot(
-    snapshot: Extract<ScrollSnapshot, { kind: 'anchor' }>,
-    shouldContinue: () => boolean = () => true,
-  ): Promise<boolean> {
-    if (!scrollContainer || !snapshot.itemId) return false;
-    await tick();
-    if (!scrollContainer || !shouldContinue()) return false;
-
-    const targetIndex = groupedNodes.findIndex((node) => nodeContainsItem(node, snapshot.itemId));
-    if (targetIndex < 0) return false;
-
-    const previousScrollTop = scrollContainer.scrollTop;
-    scrollContainer.scrollTop = Math.max(0, offsetForIndex(targetIndex) - snapshot.offsetTop);
-    const approximatedScrollTop = scrollContainer.scrollTop;
-    syncViewportState();
-    await tick();
-    if (!scrollContainer || !shouldContinue()) {
-      if (scrollContainer && scrollContainer.scrollTop === approximatedScrollTop) {
-        scrollContainer.scrollTop = previousScrollTop;
-        syncViewportState();
-      }
-      return false;
-    }
-
-    const el = scrollContainer.querySelector(`[data-item-id="${CSS.escape(snapshot.itemId)}"]`);
-    if (!(el instanceof HTMLElement)) {
-      if (scrollContainer.scrollTop === approximatedScrollTop) {
-        scrollContainer.scrollTop = previousScrollTop;
-        syncViewportState();
-      }
-      return false;
-    }
-
-    const viewport = scrollContainer.getBoundingClientRect();
-    const rect = el.getBoundingClientRect();
-    if (!shouldContinue()) {
-      if (scrollContainer.scrollTop === approximatedScrollTop) {
-        scrollContainer.scrollTop = previousScrollTop;
-        syncViewportState();
-      }
-      return false;
-    }
-    scrollContainer.scrollTop += rect.top - viewport.top - snapshot.offsetTop;
-    syncViewportState();
-    return true;
   }
 
   $effect(() => {
@@ -506,7 +445,7 @@
       return;
     }
 
-    const anchor = firstVisibleItemAnchor();
+    const anchor = scrollContainer ? firstVisibleItemAnchor(scrollContainer) : null;
     pendingLiveAnchor = anchor?.kind === 'anchor' ? anchor : null;
     pendingLiveAnchorRevision = pendingLiveAnchor ? revision : -1;
   });
@@ -534,7 +473,18 @@
       && !stickToBottom.isSticky
       && !restoringScroll
     );
-    void restoreLoadedAnchorSnapshot(anchor, shouldContinue).finally(() => {
+    if (!scrollContainer) {
+      releaseBottomAutoScroll();
+      return;
+    }
+    void restoreLoadedAnchorSnapshot({
+      container: scrollContainer,
+      snapshot: anchor,
+      findNodeIndex: findTimelineNodeIndex,
+      offsetForIndex,
+      syncViewportState,
+      shouldContinue,
+    }).finally(() => {
       releaseBottomAutoScroll();
       if (!shouldContinue()) return;
       syncViewportState();
@@ -570,7 +520,7 @@
     if (!scrollContainer) return;
     const prevScrollHeight = scrollContainer.scrollHeight;
     const prevScrollTop = scrollContainer.scrollTop;
-    const anchor = firstVisibleItemAnchor();
+    const anchor = firstVisibleItemAnchor(scrollContainer);
     const restoreThreadId = pane.threadId;
     const restoreToken = ++loadOlderRestoreToken;
     const releaseBottomAutoScroll = stickToBottom.pauseAutoScroll();
@@ -584,7 +534,14 @@
       await tick();
       if (!scrollContainer) return;
       if (anchor?.kind === 'anchor' && shouldContinue()) {
-        const restored = await restoreLoadedAnchorSnapshot(anchor, shouldContinue);
+        const restored = await restoreLoadedAnchorSnapshot({
+          container: scrollContainer,
+          snapshot: anchor,
+          findNodeIndex: findTimelineNodeIndex,
+          offsetForIndex,
+          syncViewportState,
+          shouldContinue,
+        });
         if (restored) {
           handleViewportScroll();
           return;
