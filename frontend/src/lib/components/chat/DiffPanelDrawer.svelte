@@ -25,6 +25,7 @@
     RevertMode,
   } from '../../types/checkpoint';
   import { buildSplitRows, parsePatchFiles, type PatchFile, type SplitDiffRow } from '../../utils/patchFiles';
+  import { lineTintClass } from '../../utils/diffLineTint';
   import RevertDialog from './diff-panel/RevertDialog.svelte';
 
   interface Props {
@@ -134,10 +135,7 @@
 
   function splitCellClass(line: PatchFile['lines'][number] | null): string {
     if (!line) return 'text-fg-muted/40';
-    if (line.type === 'add') return 'bg-success/10 text-success';
-    if (line.type === 'del') return 'bg-error/10 text-error';
-    if (line.type === 'meta') return 'text-accent/75';
-    return 'text-fg-muted';
+    return lineTintClass(line.type);
   }
 
   function splitRowsFor(file: PatchFile): SplitDiffRow[] {
@@ -365,15 +363,7 @@
           {/each}
         </div>
       {:else}
-      <pre class="max-h-[42rem] overflow-auto border-t border-border-subtle bg-surface-0 p-3 font-mono text-[12px] leading-relaxed {wordWrap ? 'whitespace-pre-wrap break-all' : 'whitespace-pre'}">{#each file.lines as line}<span class={
-          line.type === 'add'
-            ? 'block bg-success/10 text-success'
-            : line.type === 'del'
-              ? 'block bg-error/10 text-error'
-              : line.type === 'meta'
-                ? 'block text-accent/75'
-                : 'block text-fg-muted'
-        }>{line.content}
+      <pre class="max-h-[42rem] overflow-auto border-t border-border-subtle bg-surface-0 p-3 font-mono text-[12px] leading-relaxed {wordWrap ? 'whitespace-pre-wrap break-all' : 'whitespace-pre'}">{#each file.lines as line}<span class="block {lineTintClass(line.type)}">{line.content}
 </span>{/each}</pre>
       {/if}
     {/if}

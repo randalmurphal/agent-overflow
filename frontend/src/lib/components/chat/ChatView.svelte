@@ -9,6 +9,7 @@
   import DiscussionView from '../discussion/DiscussionView.svelte';
   import DesignView from '../design/DesignView.svelte';
   import DiffPanelDrawer from './DiffPanelDrawer.svelte';
+  import LazyDiffSidebar from './LazyDiffSidebar.svelte';
   import PlanSidebar from './PlanSidebar.svelte';
   import ChatHeader from './ChatHeader.svelte';
   import ExpandedImageDialog from './ExpandedImageDialog.svelte';
@@ -160,6 +161,7 @@
     pane.showTerminal;
     pane.showPlanSidebar;
     pane.diffPanel.open;
+    pane.activeDiffPayload;
 
     if (!isUiRenderTraceEnabled()) return;
     recordUiTrace('chat.state', summarizePaneForTrace(pane));
@@ -240,6 +242,11 @@
     {#if pane.diffPanel.open && pane.thread}
       {#key pane.thread.id}
         <DiffPanelDrawer {pane} />
+      {/key}
+    {/if}
+    {#if pane.activeDiffPayload && pane.thread}
+      {#key pane.thread.id}
+        <LazyDiffSidebar {pane} />
       {/key}
     {/if}
     {#if inDesignMode}

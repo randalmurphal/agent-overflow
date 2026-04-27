@@ -48,7 +48,7 @@
 {#if planMeta && payloadId}
   <ProposedPlanCard {pane} {item} {payloadId} meta={planMeta} />
 {:else if diffMeta && payloadId}
-  <DiffPreview {item} meta={diffMeta} {payloadId} />
+  <DiffPreview {pane} {item} meta={diffMeta} {payloadId} />
 {:else if cmdMeta && payloadId}
   <CommandOutput {item} meta={cmdMeta} {payloadId} />
 {:else if toolResultMeta && payloadId}
@@ -57,7 +57,7 @@
        their existing visual weight. Gating on payloadKind (not just a
        successful JSON parse) avoids tool_call_result payloads coincidentally
        matching the ToolResultMeta shape and rendering as an empty card. -->
-  <ToolResultCard {item} meta={toolResultMeta} {payloadId} />
+  <ToolResultCard {pane} {item} meta={toolResultMeta} {payloadId} />
 {:else}
   <GenericToolCallRow {item} />
 {/if}

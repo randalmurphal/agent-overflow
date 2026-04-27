@@ -1,22 +1,32 @@
 <script lang="ts">
   import { slide } from 'svelte/transition';
   import ChevronRight from 'lucide-svelte/icons/chevron-right';
+  import PanelRightOpen from 'lucide-svelte/icons/panel-right-open';
   import Icon from '../primitives/Icon.svelte';
   import EditorLink from '../common/EditorLink.svelte';
   import type { DiffMeta, Item } from '../../types/models';
+  import type { ThreadPane } from '../../stores/thread.svelte';
   import { parseDiffLines, type DiffLine } from '../../utils/diff';
+  import { lineTintClass } from '../../utils/diffLineTint';
   import { extractPatchFile } from '../../utils/patchFiles';
   import { getSettings } from '../../stores/settings.svelte';
   import ToolDecisionChip from './ToolDecisionChip.svelte';
   import { createPayloadExpansion, formatPayloadSize } from './payloadExpansion.svelte';
+  import { isPromoteModifier, openDiffSidebar } from './diffSidebarTrigger';
 
   let {
+    pane,
     item,
     meta,
     payloadId,
     threadId,
     filePathFilter,
   }: {
+    // `pane` is optional because DiffPreview is also rendered from
+    // ChangedFilesTree (the end-of-turn directory tree), which doesn't
+    // route to the per-tool sidebar. The "open in sidebar" affordance
+    // only renders when `pane` is provided.
+    pane?: ThreadPane;
     item?: Item;
     meta: DiffMeta;
     payloadId: string;
@@ -56,6 +66,27 @@
       case 'renamed': return 'bg-accent/30 text-accent';
     }
   });
+
+  // Whether the per-tool DiffSidebar trigger should render. Hidden in
+  // the ChangedFilesTree path (no `pane`) and in the filtered slice
+  // path (the file is just one slice of a cumulative turn diff — the
+  // sidebar is for inspecting a single tool call's full payload).
+  let showSidebarTrigger = $derived(pane !== undefined && filePathFilter === undefined);
+
+  function onHeaderClick(event: MouseEvent) {
+    if (pane && isPromoteModifier(event)) {
+      event.preventDefault();
+      openDiffSidebar(pane, { payloadId, filePath: meta.filePath });
+      return;
+    }
+    void expansion.toggle();
+  }
+
+  function onSidebarTriggerClick(event: MouseEvent) {
+    event.stopPropagation();
+    if (!pane) return;
+    openDiffSidebar(pane, { payloadId, filePath: meta.filePath });
+  }
 </script>
 
 <div class="group/diff mb-1.5 rounded-[var(--radius-control)] border border-border-subtle bg-card/25 overflow-hidden">
@@ -73,7 +104,7 @@
     <button
       type="button"
       class="flex flex-1 min-w-0 items-center gap-2 text-left cursor-pointer bg-transparent border-0 p-0"
-      onclick={() => expansion.toggle()}
+      onclick={onHeaderClick}
       aria-expanded={expansion.expanded}
       aria-controls="diff-content-{payloadId}"
       aria-label="Toggle Diff: {meta.filePath}"
@@ -98,6 +129,18 @@
         {/if}
       </span>
     </button>
+    {#if showSidebarTrigger}
+      <button
+        type="button"
+        onclick={onSidebarTriggerClick}
+        title="Open in side panel (⌘-click header)"
+        aria-label="Open Diff in Side Panel: {meta.filePath}"
+        data-testid="diff-preview-open-sidebar"
+        class="opacity-0 group-hover/diff:opacity-100 focus-visible:opacity-100 rounded p-1 text-text-secondary hover:text-text-primary cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+      >
+        <Icon icon={PanelRightOpen} size={14} />
+      </button>
+    {/if}
     <EditorLink
       path={meta.filePath}
       asIcon
@@ -108,20 +151,14 @@
 
   <!-- Diff content -->
   {#if expansion.expanded}
-    <div id="diff-content-{payloadId}" transition:slide={{ duration: 150 }} class="border-t border-border-subtle bg-surface-0/50 px-3 py-2 overflow-x-auto">
+    <div id="diff-content-{payloadId}" transition:slide={{ duration: 150 }} class="border-t border-border-subtle bg-surface-0/50 px-3 py-2">
       {#if expansion.loading}
         <p class="text-xs text-text-secondary" role="status" aria-live="polite">Loading full diff…</p>
       {:else if expansion.error}
         <p class="text-xs text-error" role="alert">Failed to load diff: {expansion.error}</p>
       {:else}
-        <pre class="font-mono text-xs leading-tight {wrapClass}">{#each displayLines as line}<span
-            class={line.type === 'added'
-              ? 'bg-success/10 text-success'
-              : line.type === 'removed'
-                ? 'bg-error/10 text-error'
-                : line.type === 'header'
-                  ? 'text-accent/70'
-                  : 'text-text-secondary'}
+        <pre class="max-h-[32em] overflow-auto font-mono text-xs leading-tight {wrapClass}">{#each displayLines as line}<span
+            class={lineTintClass(line.type)}
           >{line.content}
 </span>{/each}</pre>
         {#if expansion.hasMore}

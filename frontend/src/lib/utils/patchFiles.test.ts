@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildSplitRows, extractPatchFile, parsePatchFiles } from './patchFiles';
+import { buildSplitRows, extractPatchFile, parsePatchFiles, stripPatchLinePrefix } from './patchFiles';
 
 describe('parsePatchFiles', () => {
   it('builds aligned split rows for replacement hunks', () => {
@@ -52,5 +52,28 @@ diff --git a/second.ts b/second.ts
     expect(extracted).toContain('diff --git a/second.ts b/second.ts');
     expect(extracted).toContain('+after');
     expect(extracted).not.toContain('first.ts');
+  });
+});
+
+describe('stripPatchLinePrefix', () => {
+  it('strips the leading + from add lines', () => {
+    expect(stripPatchLinePrefix({ type: 'add', content: '+const x = 1;' })).toBe('const x = 1;');
+  });
+
+  it('strips the leading - from del lines', () => {
+    expect(stripPatchLinePrefix({ type: 'del', content: '-const x = 1;' })).toBe('const x = 1;');
+  });
+
+  it('returns meta lines unchanged', () => {
+    expect(stripPatchLinePrefix({ type: 'meta', content: '@@ -1,3 +1,4 @@' })).toBe('@@ -1,3 +1,4 @@');
+  });
+
+  it('returns context lines unchanged including the leading space', () => {
+    expect(stripPatchLinePrefix({ type: 'context', content: ' unchanged' })).toBe(' unchanged');
+  });
+
+  it('handles a bare "+" or "-" (empty source line)', () => {
+    expect(stripPatchLinePrefix({ type: 'add', content: '+' })).toBe('');
+    expect(stripPatchLinePrefix({ type: 'del', content: '-' })).toBe('');
   });
 });

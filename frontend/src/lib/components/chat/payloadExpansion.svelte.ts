@@ -37,13 +37,25 @@ export function createPayloadExpansion(
   let loadingPreview = $state(false);
   let loadingFull = $state(false);
   let error = $state<string | null>(null);
-  let previewData = $state<string | null>(null);
-  let fullData = $state<string | null>(null);
+  // String accumulator. The first segment is the preview; further
+  // segments are appended by `showFull`. Joining is deferred to
+  // `displayData` (a $derived) so multi-chunk fetches don't pay the
+  // O(N²) cost of re-concatenating the cumulative string per fetch.
+  let chunks: string[] = $state([]);
+  let hasFullChunks = $state(false);
   let totalSize = $state(0);
   let isComplete = $state(true);
   let loadedBytes = $state(0);
 
   let requestGeneration = 0;
+
+  // $derived caches the join — re-runs only when `chunks` actually
+  // changes (Svelte 5's reactivity, not on every read).
+  const displayData = $derived.by<string | null>(() => {
+    if (chunks.length === 0) return null;
+    if (chunks.length === 1) return chunks[0] ?? null;
+    return chunks.join('');
+  });
 
   function currentPayloadID(): string | undefined {
     return typeof payloadID === 'function' ? payloadID() : payloadID;
@@ -60,8 +72,8 @@ export function createPayloadExpansion(
 
   function clearLoadedData(): void {
     error = null;
-    previewData = null;
-    fullData = null;
+    chunks = [];
+    hasFullChunks = false;
     totalSize = 0;
     isComplete = true;
     loadedBytes = 0;
@@ -70,7 +82,7 @@ export function createPayloadExpansion(
   async function loadPreview(): Promise<void> {
     const id = currentPayloadID();
     const ownerThreadID = currentThreadID();
-    if (!id || previewData !== null || fullData !== null) return;
+    if (!id || chunks.length > 0) return;
     if (!ownerThreadID) {
       error = 'Missing thread context for payload read';
       return;
@@ -84,7 +96,8 @@ export function createPayloadExpansion(
     try {
       const result = await GetPayloadPreview(ownerThreadID, id, previewBytes);
       if (generation !== requestGeneration || !expanded) return;
-      previewData = result.data;
+      chunks = [result.data];
+      hasFullChunks = false;
       totalSize = result.totalSize;
       isComplete = result.isComplete;
       loadedBytes = result.nextOffset;
@@ -138,8 +151,11 @@ export function createPayloadExpansion(
       const offset = loadedBytes;
       const content = await GetPayloadChunk(ownerThreadID, id, offset, chunkBytes);
       if (generation !== requestGeneration || !expanded) return;
-      fullData = (fullData ?? previewData ?? '') + content.data;
-      previewData = null;
+      // Append the chunk to the buffer instead of re-allocating a
+      // cumulative string. Writing `[...chunks, ...]` produces a
+      // new array reference so $derived re-evaluates `displayData`.
+      chunks = [...chunks, content.data];
+      hasFullChunks = true;
       totalSize = content.totalSize;
       loadedBytes = content.nextOffset;
       isComplete = content.isComplete;
@@ -161,14 +177,23 @@ export function createPayloadExpansion(
     get expanded() { return expanded; },
     get loading() { return loadingPreview || loadingFull; },
     get error() { return error; },
-    get previewData() { return previewData; },
-    get fullData() { return fullData; },
+    // previewData/fullData are exposed for callers that distinguish
+    // "preview-only" from "fully loaded" (e.g. testid switching in
+    // LazyContentBlock). They derive directly from the chunk buffer
+    // so tests + components can tell which state we're in without
+    // needing a separate flag.
+    get previewData() {
+      return hasFullChunks ? null : (chunks[0] ?? null);
+    },
+    get fullData() {
+      return hasFullChunks ? displayData : null;
+    },
     get totalSize() { return totalSize; },
     get isComplete() { return isComplete; },
     get hasMore() {
-      return expanded && (fullData !== null || previewData !== null) && !isComplete;
+      return expanded && chunks.length > 0 && !isComplete;
     },
-    get displayData() { return fullData ?? previewData; },
+    get displayData() { return displayData; },
     toggle,
     expand,
     collapse,

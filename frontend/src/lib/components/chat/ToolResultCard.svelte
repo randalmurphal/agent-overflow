@@ -1,17 +1,34 @@
 <script lang="ts">
   import { slide } from 'svelte/transition';
+  import PanelRightOpen from 'lucide-svelte/icons/panel-right-open';
   import { getSettings } from '../../stores/settings.svelte';
   import type { Item, ToolInlineDiffFile, ToolResultMeta } from '../../types/models';
+  import type { ThreadPane } from '../../stores/thread.svelte';
   import { parseDiffLines, type DiffLine } from '../../utils/diff';
+  import { lineTintClass } from '../../utils/diffLineTint';
   import { deriveCompletionStatus } from '../../utils/toolCompletionStatus';
   import CompletionBadge from './CompletionBadge.svelte';
   import CopyFooter from './CopyFooter.svelte';
+  import Icon from '../primitives/Icon.svelte';
   import LazyContentBlock from './LazyContentBlock.svelte';
   import ToolDecisionChip from './ToolDecisionChip.svelte';
   import EditorLink from '../common/EditorLink.svelte';
   import { createPayloadExpansion, formatPayloadSize } from './payloadExpansion.svelte';
+  import { openDiffSidebar } from './diffSidebarTrigger';
 
-  let { item, meta, payloadId }: { item: Item; meta: ToolResultMeta; payloadId?: string } = $props();
+  let { pane, item, meta, payloadId }: { pane?: ThreadPane; item: Item; meta: ToolResultMeta; payloadId?: string } = $props();
+
+  function openSidebarForFile(filePath: string) {
+    if (!pane || !payloadId) return;
+    openDiffSidebar(pane, { payloadId, filePath });
+  }
+
+  function openSidebarForPatch() {
+    if (!pane || !payloadId) return;
+    openDiffSidebar(pane, { payloadId });
+  }
+
+  let canOpenSidebar = $derived(pane !== undefined && payloadId !== undefined);
 
   // detail/preview are unbounded provider text; LazyContentBlock caps
   // display length. The stored payload is the diff (Exact patch toggle),
@@ -87,10 +104,23 @@
               rest because the chip otherwise has no affordance for
               opening the file.
             -->
-            <span class="inline-flex items-center gap-2 rounded-full px-2 py-1 text-[11px] {kindClasses(file)}">
+            <span class="group/chip inline-flex items-center gap-2 rounded-full px-2 py-1 text-[11px] {kindClasses(file)}">
               <span class="font-mono">{file.path}</span>
               {#if file.insertions || file.deletions}
                 <span class="text-text-secondary">{fileStats(file)}</span>
+              {/if}
+              {#if canOpenSidebar}
+                <button
+                  type="button"
+                  onclick={(e) => { e.stopPropagation(); openSidebarForFile(file.path); }}
+                  title="Open in side panel"
+                  aria-label={`Open Diff in Side Panel: ${file.path}`}
+                  data-testid="tool-result-chip-open-sidebar"
+                  data-file-path={file.path}
+                  class="opacity-70 group-hover/chip:opacity-100 hover:text-text-primary cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 rounded p-0.5"
+                >
+                  <Icon icon={PanelRightOpen} size={12} />
+                </button>
               {/if}
               <EditorLink
                 path={file.path}
@@ -106,40 +136,48 @@
   </div>
 
   {#if hasExactPatch}
-    <div class="border-t border-border">
-      <button
-        class="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-text-secondary hover:bg-surface-2/40"
-        onclick={() => expansion.toggle()}
-        aria-expanded={expansion.expanded}
-        aria-controls="tool-result-patch-{item.id}"
-      >
-        <span>{expansion.expanded ? '▼' : '▶'}</span>
-        <span>Exact patch</span>
-        {#if meta.inlineDiff?.insertions || meta.inlineDiff?.deletions}
-          <span class="ml-auto">
-            {#if meta.inlineDiff?.insertions}<span class="text-success">+{meta.inlineDiff.insertions}</span>{/if}
-            {#if meta.inlineDiff?.insertions && meta.inlineDiff?.deletions}<span> </span>{/if}
-            {#if meta.inlineDiff?.deletions}<span class="text-error">-{meta.inlineDiff.deletions}</span>{/if}
-          </span>
+    <div class="group/patch border-t border-border">
+      <div class="flex w-full items-center gap-2 px-3 py-2 text-xs text-text-secondary hover:bg-surface-2/40">
+        <button
+          class="flex flex-1 min-w-0 items-center gap-2 text-left bg-transparent border-0 p-0 cursor-pointer"
+          onclick={() => expansion.toggle()}
+          aria-expanded={expansion.expanded}
+          aria-controls="tool-result-patch-{item.id}"
+        >
+          <span>{expansion.expanded ? '▼' : '▶'}</span>
+          <span>Exact patch</span>
+          {#if meta.inlineDiff?.insertions || meta.inlineDiff?.deletions}
+            <span class="ml-auto">
+              {#if meta.inlineDiff?.insertions}<span class="text-success">+{meta.inlineDiff.insertions}</span>{/if}
+              {#if meta.inlineDiff?.insertions && meta.inlineDiff?.deletions}<span> </span>{/if}
+              {#if meta.inlineDiff?.deletions}<span class="text-error">-{meta.inlineDiff.deletions}</span>{/if}
+            </span>
+          {/if}
+        </button>
+        {#if canOpenSidebar}
+          <button
+            type="button"
+            onclick={(e) => { e.stopPropagation(); openSidebarForPatch(); }}
+            title="Open in side panel"
+            aria-label="Open Patch in Side Panel"
+            data-testid="tool-result-patch-open-sidebar"
+            class="opacity-0 group-hover/patch:opacity-100 focus-visible:opacity-100 rounded p-1 text-text-secondary hover:text-text-primary cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+          >
+            <Icon icon={PanelRightOpen} size={14} />
+          </button>
         {/if}
-      </button>
+      </div>
 
       {#if expansion.expanded}
         <div id="tool-result-patch-{item.id}" transition:slide={{ duration: 150 }} class="border-t border-border bg-surface-0">
-          <div class="overflow-x-auto px-3 py-2">
+          <div class="px-3 py-2">
             {#if expansion.loading}
               <p class="text-xs text-text-secondary" role="status" aria-live="polite">Loading patch…</p>
             {:else if expansion.error}
               <p class="text-xs text-error" role="alert">Failed to load patch: {expansion.error}</p>
             {:else if patchLines}
-              <pre class="font-mono text-xs leading-tight {wrapClass}">{#each patchLines as line}<span
-                  class={line.type === 'added'
-                    ? 'bg-success/10 text-success'
-                    : line.type === 'removed'
-                      ? 'bg-error/10 text-error'
-                      : line.type === 'header'
-                        ? 'text-accent/70'
-                        : 'text-text-secondary'}
+              <pre class="max-h-[32em] overflow-auto font-mono text-xs leading-tight {wrapClass}">{#each patchLines as line}<span
+                  class={lineTintClass(line.type)}
                 >{line.content}
 </span>{/each}</pre>
               {#if expansion.hasMore}

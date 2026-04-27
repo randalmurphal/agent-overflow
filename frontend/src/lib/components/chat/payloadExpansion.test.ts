@@ -76,4 +76,56 @@ describe('payloadExpansion', () => {
     expect(formatPayloadSize(2_048)).toBe('2.0 KB');
     expect(formatPayloadSize(2_097_152)).toBe('2.0 MB');
   });
+
+  it('concatenates correctly across multiple showFull() calls (chunk-buffer regression test)', async () => {
+    // Pin the chunk-buffer refactor: showFull() called repeatedly
+    // should accumulate chunks via a `chunks: string[]` buffer and
+    // join lazily, not via O(N²) cumulative string concat. The
+    // wire-correctness lives in the join order.
+    setBindingMock('GetPayloadPreview', async () => ({
+      data: 'P',
+      nextOffset: 1,
+      totalSize: 4,
+      isComplete: false,
+    }));
+    let chunkCall = 0;
+    setBindingMock('GetPayloadChunk', async (_thread: string, _payload: string, offset: number) => {
+      chunkCall += 1;
+      // Three sequential chunks: A at 1, B at 2, C at 3.
+      const data = chunkCall === 1 ? 'A' : chunkCall === 2 ? 'B' : 'C';
+      return {
+        data,
+        offset,
+        nextOffset: offset + 1,
+        totalSize: 4,
+        isComplete: chunkCall === 3,
+      };
+    });
+
+    const expansion = createPayloadExpansion('payload-multi', 'thread-multi');
+    await expansion.expand();
+    expect(expansion.previewData).toBe('P');
+    expect(expansion.fullData).toBeNull();
+
+    await expansion.showFull();
+    expect(expansion.displayData).toBe('PA');
+    expect(expansion.previewData).toBeNull();
+    expect(expansion.fullData).toBe('PA');
+    expect(expansion.hasMore).toBe(true);
+
+    await expansion.showFull();
+    expect(expansion.displayData).toBe('PAB');
+    expect(expansion.hasMore).toBe(true);
+
+    await expansion.showFull();
+    expect(expansion.displayData).toBe('PABC');
+    expect(expansion.hasMore).toBe(false);
+    expect(expansion.fullData).toBe('PABC');
+
+    // Collapse drops the buffer entirely.
+    expansion.collapse();
+    expect(expansion.displayData).toBeNull();
+    expect(expansion.previewData).toBeNull();
+    expect(expansion.fullData).toBeNull();
+  });
 });

@@ -6,24 +6,24 @@ describe('parseDiffLines', () => {
     expect(parseDiffLines('')).toEqual([]);
   });
 
-  it('classifies @@ hunk headers as header', () => {
+  it('classifies @@ hunk headers as meta', () => {
     expect(parseDiffLines('@@ -1,3 +1,4 @@')).toEqual([
-      { type: 'header', content: '@@ -1,3 +1,4 @@' },
+      { type: 'meta', content: '@@ -1,3 +1,4 @@' },
     ]);
   });
 
-  it('classifies + lines as added (but not +++ file header)', () => {
+  it('classifies + lines as add (but not +++ file header)', () => {
     const out = parseDiffLines('+foo\n+++ b/file.ts');
-    expect(out[0]).toEqual({ type: 'added', content: '+foo' });
+    expect(out[0]).toEqual({ type: 'add', content: '+foo' });
     // +++ is a file header, not an added line — classified as context
     // so callers can style it the same way they style --- without
     // special cases.
     expect(out[1]).toEqual({ type: 'context', content: '+++ b/file.ts' });
   });
 
-  it('classifies - lines as removed (but not --- file header)', () => {
+  it('classifies - lines as del (but not --- file header)', () => {
     const out = parseDiffLines('-bar\n--- a/file.ts');
-    expect(out[0]).toEqual({ type: 'removed', content: '-bar' });
+    expect(out[0]).toEqual({ type: 'del', content: '-bar' });
     expect(out[1]).toEqual({ type: 'context', content: '--- a/file.ts' });
   });
 
@@ -35,7 +35,7 @@ describe('parseDiffLines', () => {
 
   it('preserves the full line content including leading prefix', () => {
     const out = parseDiffLines('+hello');
-    expect(out[0].content).toBe('+hello');
+    expect(out[0]?.content).toBe('+hello');
   });
 
   it('handles a realistic mixed hunk', () => {
@@ -51,10 +51,10 @@ describe('parseDiffLines', () => {
     expect(types).toEqual([
       'context', // ---
       'context', // +++
-      'header', // @@
+      'meta', // @@
       'context', //  import foo;
-      'removed', // -const a = 1;
-      'added', // +const a = 2;
+      'del', // -const a = 1;
+      'add', // +const a = 2;
       'context', //  const b = 3;
     ]);
   });

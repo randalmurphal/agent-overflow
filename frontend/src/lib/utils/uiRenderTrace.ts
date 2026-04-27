@@ -220,6 +220,8 @@ export function summarizePaneForTrace(pane: ThreadPane): Record<string, unknown>
     showTerminal: pane.showTerminal,
     showPlanSidebar: pane.showPlanSidebar,
     diffPanelOpen: pane.diffPanel.open,
+    diffSidebarPayloadId: pane.activeDiffPayload?.payloadId ?? null,
+    diffSidebarFilePath: pane.activeDiffPayload?.filePath ?? null,
     items: summarizeItemsForTrace(pane.items),
   };
 }

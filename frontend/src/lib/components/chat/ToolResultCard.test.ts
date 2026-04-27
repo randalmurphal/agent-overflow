@@ -152,3 +152,107 @@ describe('<ToolResultCard> editor-link wiring', () => {
     expect(openMock.mock.calls[0][0]).toBe('src/lib/foo.ts');
   });
 });
+
+describe('<ToolResultCard> open-in-sidebar triggers', () => {
+  beforeEach(() => {
+    resetBindingMocks();
+    setBindingMock('GetPayloadPreview', vi.fn(async () => ({ data: '', size: 0, isComplete: true })));
+  });
+
+  it('does not render chip / patch sidebar triggers when no pane prop is supplied', () => {
+    const item = makeItem({
+      kind: 'tool_completion',
+      status: 'completed',
+      payloadKind: 'tool_result',
+      payloadMeta: JSON.stringify({ itemType: 'file_change' }),
+    });
+    const m: ToolResultMeta = {
+      itemType: 'file_change',
+      title: 'Edit applied',
+      inlineDiff: {
+        availability: 'exact_patch',
+        files: [{ path: 'a.ts', insertions: 1, deletions: 0, kind: 'modified' }],
+      },
+    };
+    const { queryAllByTestId } = render(ToolResultCard, { props: { item, meta: m, payloadId: 'p-1' } });
+    expect(queryAllByTestId('tool-result-chip-open-sidebar')).toHaveLength(0);
+    expect(queryAllByTestId('tool-result-patch-open-sidebar')).toHaveLength(0);
+  });
+
+  it('routes a chip-button click to pane.openDiffSidebar with the chip\'s file path', async () => {
+    const captures: Array<{ payloadId: string; filePath?: string }> = [];
+    const fakePane = {
+      openDiffSidebar(p: { payloadId: string; filePath?: string }) {
+        captures.push(p);
+      },
+    } as unknown as import('../../stores/thread.svelte').ThreadPane;
+
+    const item = makeItem({
+      kind: 'tool_completion',
+      status: 'completed',
+      payloadKind: 'tool_result',
+      payloadMeta: JSON.stringify({ itemType: 'file_change' }),
+    });
+    const m: ToolResultMeta = {
+      itemType: 'file_change',
+      title: 'Edit applied',
+      inlineDiff: {
+        availability: 'summary_only',
+        files: [
+          { path: 'src/a.ts', insertions: 1, deletions: 0, kind: 'modified' },
+          { path: 'src/b.ts', insertions: 0, deletions: 1, kind: 'modified' },
+        ],
+      },
+    };
+    const { container } = render(ToolResultCard, {
+      props: { item, meta: m, payloadId: 'p-1', pane: fakePane },
+    });
+
+    const triggers = container.querySelectorAll('[data-testid="tool-result-chip-open-sidebar"]');
+    expect(triggers.length).toBe(2);
+    // Each chip's button carries `data-file-path` so we can pick the right one.
+    const second = Array.from(triggers).find((t) => t.getAttribute('data-file-path') === 'src/b.ts');
+    expect(second).toBeTruthy();
+    await fireEvent.click(second as Element);
+
+    expect(captures).toEqual([{ payloadId: 'p-1', filePath: 'src/b.ts' }]);
+  });
+
+  it('clicking the patch sidebar trigger does NOT toggle the exact-patch expander', async () => {
+    const captures: Array<{ payloadId: string; filePath?: string }> = [];
+    const fakePane = {
+      openDiffSidebar(p: { payloadId: string; filePath?: string }) {
+        captures.push(p);
+      },
+    } as unknown as import('../../stores/thread.svelte').ThreadPane;
+
+    const item = makeItem({
+      kind: 'tool_completion',
+      status: 'completed',
+      payloadKind: 'tool_result',
+      payloadMeta: JSON.stringify({ itemType: 'file_change' }),
+    });
+    const m: ToolResultMeta = {
+      itemType: 'file_change',
+      title: 'Edit applied',
+      inlineDiff: {
+        availability: 'exact_patch',
+        insertions: 2,
+        deletions: 1,
+        files: [{ path: 'src/a.ts', insertions: 2, deletions: 1, kind: 'modified' }],
+      },
+    };
+    const { getByTestId, queryByText } = render(ToolResultCard, {
+      props: { item, meta: m, payloadId: 'p-1', pane: fakePane },
+    });
+
+    expect(queryByText('Exact patch')).toBeTruthy();
+    const trigger = getByTestId('tool-result-patch-open-sidebar');
+    await fireEvent.click(trigger);
+
+    expect(captures).toEqual([{ payloadId: 'p-1' }]);
+    // The "Exact patch" toggle marker stays at ▶ (collapsed) because
+    // stopPropagation prevented the parent button from firing.
+    expect(queryByText('▼')).toBeNull();
+  });
+});

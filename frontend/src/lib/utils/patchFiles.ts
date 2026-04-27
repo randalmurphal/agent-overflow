@@ -1,6 +1,8 @@
+import type { LineTintType } from './diffLineTint';
+
 export interface PatchLine {
   content: string;
-  type: 'add' | 'del' | 'meta' | 'context';
+  type: LineTintType;
 }
 
 export interface SplitDiffRow {
@@ -139,4 +141,14 @@ export function buildSplitRows(lines: PatchLine[]): SplitDiffRow[] {
 
 function cleanPath(raw: string): string {
   return raw.replace(/^"|"$/g, '').replace(/^[ab]\//, '');
+}
+
+/**
+ * Strip the diff-format `+`/`-` prefix character off an `add`/`del`
+ * line so the source-text-only string can be passed to a syntax
+ * tokenizer. `meta` and `context` lines pass through unchanged.
+ */
+export function stripPatchLinePrefix(line: PatchLine): string {
+  if (line.type === 'add' || line.type === 'del') return line.content.slice(1);
+  return line.content;
 }

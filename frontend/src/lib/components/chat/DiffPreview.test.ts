@@ -79,4 +79,72 @@ describe('<DiffPreview> editor-link wiring', () => {
     // The parent's toggle did NOT fire — diff stays collapsed.
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
   });
+
+  it('does not render the open-in-sidebar button when no pane prop is supplied', () => {
+    const { queryByTestId } = render(DiffPreview, {
+      props: { meta: META, payloadId: 'p-1', item: ITEM },
+    });
+    expect(queryByTestId('diff-preview-open-sidebar')).toBeNull();
+  });
+
+  it('renders the open-in-sidebar button when pane is supplied and routes clicks to pane.openDiffSidebar', async () => {
+    const captures: Array<{ payloadId: string; filePath?: string }> = [];
+    const fakePane = {
+      openDiffSidebar(p: { payloadId: string; filePath?: string }) {
+        captures.push(p);
+      },
+    } as unknown as import('../../stores/thread.svelte').ThreadPane;
+
+    const { getByTestId } = render(DiffPreview, {
+      props: { meta: META, payloadId: 'p-1', item: ITEM, pane: fakePane },
+    });
+    const trigger = getByTestId('diff-preview-open-sidebar');
+    await fireEvent.click(trigger);
+    expect(captures).toEqual([{ payloadId: 'p-1', filePath: 'src/lib/foo.ts' }]);
+  });
+
+  it('Cmd-click on the header opens the sidebar instead of toggling inline', async () => {
+    const captures: Array<{ payloadId: string; filePath?: string }> = [];
+    const fakePane = {
+      openDiffSidebar(p: { payloadId: string; filePath?: string }) {
+        captures.push(p);
+      },
+    } as unknown as import('../../stores/thread.svelte').ThreadPane;
+
+    const { getByTestId } = render(DiffPreview, {
+      props: { meta: META, payloadId: 'p-1', item: ITEM, pane: fakePane },
+    });
+    const toggle = getByTestId('diff-preview-toggle');
+    await fireEvent.click(toggle, { metaKey: true });
+    expect(captures).toEqual([{ payloadId: 'p-1', filePath: 'src/lib/foo.ts' }]);
+    // The chevron stays collapsed because Cmd-click routed to the sidebar.
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+  });
+
+  it('does not render the open-in-sidebar button when filePathFilter is set (changed-files-tree mode)', () => {
+    const fakePane = { openDiffSidebar() {} } as unknown as import('../../stores/thread.svelte').ThreadPane;
+    const { queryByTestId } = render(DiffPreview, {
+      props: { meta: META, payloadId: 'p-1', item: ITEM, pane: fakePane, filePathFilter: 'src/lib/foo.ts' },
+    });
+    // Filtered-slice context (rendered from ChangedFilesTree) — sidebar
+    // promotion isn't meaningful for a slice of a cumulative turn diff.
+    expect(queryByTestId('diff-preview-open-sidebar')).toBeNull();
+  });
+
+  it('caps the expanded body height with internal scroll', async () => {
+    // Long preview content (300 lines) so the cap actually engages.
+    const longPreview = Array.from({ length: 300 }, (_, i) => ` line ${i}`).join('\n');
+    setBindingMock('GetPayloadPreview', vi.fn(async () => ({ data: longPreview, size: longPreview.length, isComplete: true })));
+    const { getByTestId, container } = render(DiffPreview, {
+      props: { meta: META, payloadId: 'p-1', item: ITEM },
+    });
+    const toggle = getByTestId('diff-preview-toggle');
+    await fireEvent.click(toggle);
+    await waitFor(() => {
+      const pre = container.querySelector('pre');
+      // cap class is "max-h-[32em] overflow-auto"
+      expect(pre?.className).toMatch(/max-h-\[32em\]/);
+      expect(pre?.className).toMatch(/overflow-auto/);
+    });
+  });
 });
