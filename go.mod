@@ -6,7 +6,7 @@ require (
 	github.com/coder/websocket v1.8.14
 	github.com/creack/pty v1.1.24
 	github.com/google/uuid v1.6.0
-	github.com/wailsapp/wails/v3 v3.0.0-alpha.76
+	github.com/wailsapp/wails/v3 v3.0.0-alpha.78
 	go.opentelemetry.io/otel v1.43.0
 	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc v1.43.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.43.0
