@@ -7,6 +7,9 @@ import { Create as $Create } from "@wailsio/runtime";
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
+import * as git$0 from "./internal/git/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
 import * as store$0 from "./internal/store/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
@@ -364,6 +367,40 @@ export class GeneratedCommitMessage {
     static createFrom($$source: any = {}): GeneratedCommitMessage {
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         return new GeneratedCommitMessage($$parsedSource as Partial<GeneratedCommitMessage>);
+    }
+}
+
+/**
+ * GitStatusSubscriptionResult is the wire shape returned by
+ * GitStatusSubscribe. ID is the handle the frontend uses to filter
+ * "git:status" events and to call GitStatusUnsubscribe.
+ */
+export class GitStatusSubscriptionResult {
+    "id": string;
+    "status": git$0.GitStatus;
+
+    /** Creates a new GitStatusSubscriptionResult instance. */
+    constructor($$source: Partial<GitStatusSubscriptionResult> = {}) {
+        if (!("id" in $$source)) {
+            this["id"] = "";
+        }
+        if (!("status" in $$source)) {
+            this["status"] = (new git$0.GitStatus());
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new GitStatusSubscriptionResult instance from a string or object.
+     */
+    static createFrom($$source: any = {}): GitStatusSubscriptionResult {
+        const $$createField1_0 = $$createType7;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("status" in $$parsedSource) {
+            $$parsedSource["status"] = $$createField1_0($$parsedSource["status"]);
+        }
+        return new GitStatusSubscriptionResult($$parsedSource as Partial<GitStatusSubscriptionResult>);
     }
 }
 
@@ -728,7 +765,7 @@ export class TerminalHandle {
      * Creates a new TerminalHandle instance from a string or object.
      */
     static createFrom($$source: any = {}): TerminalHandle {
-        const $$createField2_0 = $$createType7;
+        const $$createField2_0 = $$createType8;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("summary" in $$parsedSource) {
             $$parsedSource["summary"] = $$createField2_0($$parsedSource["summary"]);
@@ -828,7 +865,7 @@ export class WorkspaceFileSearchResult {
      * Creates a new WorkspaceFileSearchResult instance from a string or object.
      */
     static createFrom($$source: any = {}): WorkspaceFileSearchResult {
-        const $$createField0_0 = $$createType9;
+        const $$createField0_0 = $$createType10;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("files" in $$parsedSource) {
             $$parsedSource["files"] = $$createField0_0($$parsedSource["files"]);
@@ -845,6 +882,7 @@ const $$createType3 = TerminalChip.createFrom;
 const $$createType4 = $Create.Array($$createType3);
 const $$createType5 = store$0.ProposedPlanSourceRef.createFrom;
 const $$createType6 = $Create.Nullable($$createType5);
-const $$createType7 = terminal$0.SessionSummary.createFrom;
-const $$createType8 = workspacefiles$0.WorkspaceFile.createFrom;
-const $$createType9 = $Create.Array($$createType8);
+const $$createType7 = git$0.GitStatus.createFrom;
+const $$createType8 = terminal$0.SessionSummary.createFrom;
+const $$createType9 = workspacefiles$0.WorkspaceFile.createFrom;
+const $$createType10 = $Create.Array($$createType9);

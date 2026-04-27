@@ -81,6 +81,8 @@ export {
   // Git operations
   GenerateCommitMessage,
   GetGitStatus,
+  GitStatusSubscribe,
+  GitStatusUnsubscribe,
   GitListBranches,
   GitListWorktrees,
   GitCommit,
@@ -202,6 +204,7 @@ export {
 export {
   EditorInfo,
   GeneratedCommitMessage,
+  GitStatusSubscriptionResult,
   Keybinding,
   NetworkSettings,
   RemoteEndpointSummary,

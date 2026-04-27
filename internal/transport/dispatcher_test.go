@@ -583,6 +583,8 @@ func (p *privilegedApp) BrowseDirectory() string          { return "ok" }
 func (p *privilegedApp) SavePayloadToFile() string        { return "ok" }
 func (p *privilegedApp) WriteThreadWorkspaceFile() string { return "ok" }
 func (p *privilegedApp) GitPush() string                  { return "ok" }
+func (p *privilegedApp) GitStatusSubscribe() string       { return "ok" }
+func (p *privilegedApp) GitStatusUnsubscribe() string     { return "ok" }
 func (p *privilegedApp) GitCheckout() string              { return "ok" }
 func (p *privilegedApp) GitCreateBranch() string          { return "ok" }
 func (p *privilegedApp) GitCreateWorktree() string        { return "ok" }

@@ -79,6 +79,8 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "GitPush", ID: 4036251239}, // main.App.GitPush
 	{Name: "GitRemoveWorktree", ID: 4002429606}, // main.App.GitRemoveWorktree
 	{Name: "GitStageAll", ID: 548906954}, // main.App.GitStageAll
+	{Name: "GitStatusSubscribe", ID: 3282404643}, // main.App.GitStatusSubscribe
+	{Name: "GitStatusUnsubscribe", ID: 3263989430}, // main.App.GitStatusUnsubscribe
 	{Name: "InterruptTurn", ID: 850013031}, // main.App.InterruptTurn
 	{Name: "ListAttachments", ID: 1730798413}, // main.App.ListAttachments
 	{Name: "ListAvailableEditors", ID: 2556802234}, // main.App.ListAvailableEditors

@@ -29,6 +29,29 @@ type GitStatus struct {
 	PendingOperation string `json:"pendingOperation,omitempty"`
 }
 
+// Equal reports whether two GitStatus values are field-by-field
+// identical. Used on hot paths (gitwatch dedup at 250ms cadence) where
+// reflect.DeepEqual would add reflection overhead — and would silently
+// keep working if the struct grew a pointer/map/slice field that the
+// caller forgot to consider. A typed Equal forces every new field to
+// be added here too.
+func (s GitStatus) Equal(other GitStatus) bool {
+	return s.IsRepo == other.IsRepo &&
+		s.Branch == other.Branch &&
+		s.IsDefaultBranch == other.IsDefaultBranch &&
+		s.HasChanges == other.HasChanges &&
+		s.Insertions == other.Insertions &&
+		s.Deletions == other.Deletions &&
+		s.FileCount == other.FileCount &&
+		s.HasUpstream == other.HasUpstream &&
+		s.AheadCount == other.AheadCount &&
+		s.BehindCount == other.BehindCount &&
+		s.HasOriginRemote == other.HasOriginRemote &&
+		s.OpenPRURL == other.OpenPRURL &&
+		s.OpenPRNumber == other.OpenPRNumber &&
+		s.PendingOperation == other.PendingOperation
+}
+
 // GitBranch represents a local or remote branch entry.
 type GitBranch struct {
 	Name         string `json:"name"`
@@ -401,9 +424,52 @@ func isRemoteBranchName(name string, remoteNames []string) bool {
 }
 
 func (c *Core) lookupOpenPR(cwd, branch string) (string, int) {
-	pulls, err := c.ListOpenPRs(cwd, branch)
-	if err != nil || len(pulls) == 0 {
+	if branch == "" {
 		return "", 0
 	}
-	return pulls[0].URL, pulls[0].Number
+	key := prCacheKey(cwd, branch)
+	now := c.nowFn()
+
+	c.prCacheMu.Lock()
+	if entry, ok := c.prCache[key]; ok && entry.expiresAt.After(now) {
+		c.prCacheMu.Unlock()
+		return entry.url, entry.number
+	}
+	c.prCacheMu.Unlock()
+
+	// Slow path: shell out. Done outside the lock — `gh pr list` is a
+	// network call and we don't want to serialise unrelated lookups
+	// behind it. A concurrent caller may double-fetch in the rare
+	// race window; the second writer wins and both end up with the
+	// same value.
+	url, number := "", 0
+	pulls, err := c.ListOpenPRs(cwd, branch)
+	if err == nil && len(pulls) > 0 {
+		url = pulls[0].URL
+		number = pulls[0].Number
+	}
+
+	c.prCacheMu.Lock()
+	c.prCache[key] = prCacheEntry{
+		url:       url,
+		number:    number,
+		expiresAt: now.Add(prLookupTTL),
+	}
+	c.prCacheMu.Unlock()
+	return url, number
+}
+
+// InvalidatePRCache drops every cached open-PR entry for cwd. Call
+// after a successful CreatePR (or any action that materially changes
+// PR state) so the next status refresh sees the new PR immediately
+// rather than waiting up to prLookupTTL.
+func (c *Core) InvalidatePRCache(cwd string) {
+	prefix := cwd + "\x00"
+	c.prCacheMu.Lock()
+	defer c.prCacheMu.Unlock()
+	for key := range c.prCache {
+		if strings.HasPrefix(key, prefix) {
+			delete(c.prCache, key)
+		}
+	}
 }

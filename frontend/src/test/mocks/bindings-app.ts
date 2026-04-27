@@ -176,6 +176,19 @@ export const GetModelsForProvider = dispatch('GetModelsForProvider');
 export const ProbeClaudeAccount = dispatch('ProbeClaudeAccount');
 
 export const GetGitStatus = dispatch('GetGitStatus');
+export const GitStatusSubscribe = dispatch('GitStatusSubscribe');
+export const GitStatusUnsubscribe = dispatch('GitStatusUnsubscribe');
+// Class re-export mirroring the generated GitStatusSubscriptionResult.
+// Tests stub GitStatusSubscribe to return a plain object literal; we
+// only need the type to satisfy `import type` consumers.
+export class GitStatusSubscriptionResult {
+  id: string;
+  status: import('../../lib/types/git').GitStatus;
+  constructor(s: Partial<GitStatusSubscriptionResult> = {}) {
+    this.id = s.id ?? '';
+    this.status = s.status ?? ({} as import('../../lib/types/git').GitStatus);
+  }
+}
 export const GitListBranches = dispatch('GitListBranches');
 export const GitListWorktrees = dispatch('GitListWorktrees');
 export const GitCommit = dispatch('GitCommit');

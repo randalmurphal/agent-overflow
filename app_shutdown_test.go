@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"agent-overflow/internal/design"
+	gitops "agent-overflow/internal/git"
+	"agent-overflow/internal/gitwatch"
 	obsotel "agent-overflow/internal/observability/otel"
 	"agent-overflow/internal/observability/replay"
 	"agent-overflow/internal/store"
@@ -167,6 +169,12 @@ func newFullyWiredTestApp(t *testing.T) (*App, *shutdownRecorder) {
 	// A design reactor without artifact storage is fine for teardown —
 	// TeardownThread is a no-op when no pending choices exist.
 	app.reactor = design.NewReactor(nil, func(string, any) {})
+	// gitwatch.Manager has no real watchers in this test (no Subscribe
+	// calls), but Close() still records the "close gitwatch" step, so
+	// we wire it for parity with production.
+	app.gitWatch = gitwatch.NewManager(func(string) (gitops.GitStatus, error) {
+		return gitops.GitStatus{}, nil
+	})
 
 	// Force logger on so every step in Shutdown fires — the debug env
 	// gate makes it nil by default which would hide the "close logger"
@@ -231,6 +239,7 @@ func TestShutdownWalksDocumentedOrder(t *testing.T) {
 		"shutdown telemetry",
 		"close provider sessions",
 		"close design reactor",
+		"close gitwatch manager",
 		"close terminal sessions",
 		"close logger",
 		"close store",

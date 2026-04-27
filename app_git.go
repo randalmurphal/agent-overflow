@@ -221,6 +221,12 @@ func (a *App) GitCreatePR(threadID, title, body string, draft bool) (gitops.GitA
 	if err != nil {
 		return gitops.GitActionResult{}, err
 	}
+	// Drop any stale "no open PR for this branch" cache entry so the
+	// next status refresh (the watcher's debounce will fire ~250ms
+	// after the gh write touches .git/refs) reflects the new PR
+	// immediately instead of showing "Create PR available" for up to
+	// prLookupTTL.
+	core.InvalidatePRCache(workspace)
 
 	return gitops.GitActionResult{
 		Action:  "pr",

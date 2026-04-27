@@ -6,6 +6,7 @@ require (
 	github.com/coder/websocket v1.8.14
 	github.com/creack/pty v1.1.24
 	github.com/google/uuid v1.6.0
+	github.com/rjeczalik/notify v0.9.3
 	github.com/wailsapp/wails/v3 v3.0.0-alpha.78
 	go.opentelemetry.io/otel v1.43.0
 	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc v1.43.0
@@ -135,7 +136,6 @@ require (
 	github.com/radovskyb/watcher v1.0.7 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
-	github.com/rjeczalik/notify v0.9.3 // indirect
 	github.com/sajari/fuzzy v1.0.0 // indirect
 	github.com/samber/lo v1.52.0 // indirect
 	github.com/sergi/go-diff v1.4.0 // indirect

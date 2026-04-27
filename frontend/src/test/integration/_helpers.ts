@@ -125,6 +125,14 @@ export function installThreadViewDefaults(): void {
   setBindingMock('ListRecentTurns', async () => []);
   setBindingMock('ListPayloadMetas', async () => []);
   setBindingMock('GetGitStatus', async () => makeGitStatus());
+  // GitActionsControl now subscribes to backend gitwatch instead of
+  // polling. Default to a successful subscribe returning the same
+  // status as GetGitStatus so the header renders the split-button.
+  setBindingMock('GitStatusSubscribe', async () => ({
+    id: 'integration-sub',
+    status: makeGitStatus(),
+  }));
+  setBindingMock('GitStatusUnsubscribe', async () => {});
   setBindingMock('GitListBranches', async () => []);
   setBindingMock('ListThreadCheckpoints', async () => []);
   // Thread-wide aggregate surfaces (PlanSidebar / BackgroundTaskTray) fetch

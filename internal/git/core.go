@@ -7,12 +7,22 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 )
 
 const (
 	defaultTimeout        = 30 * time.Second
 	defaultMaxOutputBytes = int64(1_000_000)
+
+	// prLookupTTL is how long an open-PR lookup result stays cached.
+	// PR state changes slowly (the user creates / closes / merges via
+	// explicit actions), and our hot path (gitwatch refresh on every
+	// fs-event-debounce) would otherwise shell `gh pr list` 4×/sec
+	// during continuous file activity. A 30s ceiling caps that at ≤1
+	// network round-trip per branch per 30s; explicit invalidation
+	// after CreatePR keeps the freshly-opened PR visible immediately.
+	prLookupTTL = 30 * time.Second
 )
 
 type commandResult struct {
@@ -32,6 +42,28 @@ type Worktree struct {
 type Core struct {
 	timeout        time.Duration
 	maxOutputBytes int64
+
+	// prCache memoizes lookupOpenPR results so a refresh storm (gitwatch
+	// firing every fs-event-debounce) doesn't translate into a `gh pr
+	// list` storm. Keyed on (cwd, branch); cleared per-cwd on
+	// CreatePR. A process-global TTL'd cache is the documented
+	// carve-out in internal/CLAUDE.md anti-patterns.
+	prCacheMu sync.Mutex
+	prCache   map[string]prCacheEntry
+
+	// nowFn returns the current time. Production uses time.Now; tests
+	// override to drive TTL expiry deterministically.
+	nowFn func() time.Time
+}
+
+type prCacheEntry struct {
+	url       string
+	number    int
+	expiresAt time.Time
+}
+
+func prCacheKey(cwd, branch string) string {
+	return cwd + "\x00" + branch
 }
 
 // NewCore returns a Core configured with the default timeout and output limit.
@@ -39,6 +71,8 @@ func NewCore() *Core {
 	return &Core{
 		timeout:        defaultTimeout,
 		maxOutputBytes: defaultMaxOutputBytes,
+		prCache:        make(map[string]prCacheEntry),
+		nowFn:          time.Now,
 	}
 }
 

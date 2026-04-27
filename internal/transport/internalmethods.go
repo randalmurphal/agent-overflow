@@ -91,6 +91,8 @@ var LocalOnlyMethods = map[string]bool{
 	"SavePayloadToFile":        true,
 	"WriteThreadWorkspaceFile": true,
 	"GitPush":                  true,
+	"GitStatusSubscribe":       true,
+	"GitStatusUnsubscribe":     true,
 	"GitCheckout":              true,
 	"GitCreateBranch":          true,
 	"GitCreateWorktree":        true,

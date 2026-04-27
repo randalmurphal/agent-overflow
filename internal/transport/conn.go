@@ -88,6 +88,14 @@ func runConnHandler(ctx context.Context, ws *websocket.Conn, d *Dispatcher, bus 
 	connCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
+	// Per-connection scratch space. Handlers (e.g. GitStatusSubscribe)
+	// register cleanup callbacks here so a dropped WS releases their
+	// long-lived server-side resources without waiting for the App to
+	// shut down. runCleanups runs in LIFO order after the read loop
+	// exits and after in-flight RPC goroutines drain.
+	connCtx, state := WithConnState(connCtx)
+	defer state.RunCleanups()
+
 	// Event pump: deliver every event the bus produces to the wire.
 	// Lives on its own goroutine so a slow read doesn't backpressure
 	// the publisher (the EventBus already drops on full subscriber

@@ -13,6 +13,7 @@ export {
     Draft,
     EditorInfo,
     GeneratedCommitMessage,
+    GitStatusSubscriptionResult,
     Keybinding,
     NetworkSettings,
     PayloadChunk,

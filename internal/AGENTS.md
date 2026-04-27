@@ -13,6 +13,7 @@ one closest to what you're touching.
 | `store/` | SQLite access, migrations, schema. |
 | `checkpoint/` | Per-turn git-ref snapshots, turn diffs, fork/restore modes. |
 | `git/` | Git and `gh` operations (branches, worktrees, commit, push, PR). |
+| `gitwatch/` | Live git status streams per workspace (recursive fs watch + polling fallback). |
 | `terminal/` | PTY session manager with ring-buffer replay. |
 | `discussion/` | Multi-agent deliberation coordination. |
 | `design/` | Design-mode artifact storage and reactor. |

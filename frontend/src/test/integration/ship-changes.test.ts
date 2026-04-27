@@ -2,8 +2,20 @@
 // through Commit -> Push -> Create PR; this suite mounts the full App,
 // opens the drawer via the git actions menu, and drives each step.
 
-import { describe, expect, it, beforeAll, beforeEach } from 'vitest';
+import { describe, expect, it, beforeAll, beforeEach, vi } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
+
+// GitActionsControl now subscribes through the backend gitwatch stream
+// and gates on the WS being live. Tests mount under happy-dom where no
+// WS is brought up, so we force the transport mirror to "connected" —
+// otherwise the subscribe $effect bails and the split-button never
+// renders, masking what these tests are trying to exercise.
+vi.mock('../../lib/stores/transportStatus.svelte', () => ({
+  getTransportStatus: () => ({ status: 'connected', nextAttemptAt: null }),
+  retryTransport: () => {},
+  resetTransportStatusForTest: () => {},
+}));
+
 import App from '../../App.svelte';
 import type { GitActionResult, GitStatus } from '../../lib/types/git';
 import { setBindingMock } from '../mocks/bindings-app';

@@ -16,6 +16,7 @@ import (
 	"agent-overflow/internal/design"
 	"agent-overflow/internal/discussion"
 	gitops "agent-overflow/internal/git"
+	"agent-overflow/internal/gitwatch"
 	"agent-overflow/internal/logging"
 	obsotel "agent-overflow/internal/observability/otel"
 	"agent-overflow/internal/observability/replay"
@@ -42,6 +43,7 @@ type App struct {
 	app            *application.App
 	store          *store.Store
 	git            *gitops.Core
+	gitWatch       *gitwatch.Manager
 	settings       *settings.Service
 	triage         *triage.Router
 	checkpoints    *checkpoint.Store
@@ -94,6 +96,15 @@ type App struct {
 	threadSlashCommands map[string][]string
 	// channelID → active deliberation state
 	deliberations map[string]*discussion.Deliberation
+	// gitWatchPumpsMu / gitWatchPumps index every active
+	// GitStatusSubscribe by its wire-visible subscription ID.
+	// gitwatch.Manager itself refcounts the underlying watchers per
+	// cwd; this map is the App's view of "which id maps to which
+	// pump goroutine + Subscription handle". gitWatchPumpWG tracks
+	// pump goroutines so Shutdown drains them before returning.
+	gitWatchPumpsMu sync.Mutex
+	gitWatchPumps   map[string]*gitWatchPump
+	gitWatchPumpWG  sync.WaitGroup
 	// Test-only injection points for binding helpers that need to observe start/stop.
 	startSessionFn        func(string) error
 	stopSessionFn         func(string) error
@@ -169,6 +180,7 @@ func NewApp() *App {
 		threadSystemPrompts: make(map[string]string),
 		threadSlashCommands: make(map[string][]string),
 		deliberations:       make(map[string]*discussion.Deliberation),
+		gitWatchPumps:       make(map[string]*gitWatchPump),
 	}
 }
 
@@ -260,6 +272,7 @@ func (a *App) initStores() (string, *store.Store, error) {
 
 	a.store = st
 	a.git = gitops.NewCore()
+	a.gitWatch = gitwatch.NewManager(a.git.Status)
 	a.settings = settings.NewService(dbDir)
 	a.logger, err = newProviderEventLogger(dbDir)
 	if err != nil {
@@ -493,6 +506,23 @@ func (a *App) Shutdown(ctx context.Context) error {
 			a.reactor.TeardownThread(threadID)
 		}
 		record("close design reactor", nil)
+	}
+
+	// Step 5b: stop gitwatch subscriptions. Connection-tied subs were
+	// already drained at Step 0 (transport drain runs ConnState
+	// cleanups via runConnHandler's defer, which call our internal
+	// unsubscribeGitWatch). Manager.Close tears down any leftover
+	// watchers — primarily the case when shutdown is initiated
+	// without an open WS client (tests, headless quit). Pump
+	// goroutines exit when their Subscription channels close
+	// (Manager.Close blocks on watcher run-loops exiting, which fires
+	// broadcastClose, which closes Updates() channels). The pump
+	// WaitGroup adds a hard guarantee that no pump can still emit on
+	// the wire after this step returns.
+	if a.gitWatch != nil {
+		a.gitWatch.Close()
+		a.gitWatchPumpWG.Wait()
+		record("close gitwatch manager", nil)
 	}
 
 	// Step 6: close PTYs. Must happen after provider sessions because

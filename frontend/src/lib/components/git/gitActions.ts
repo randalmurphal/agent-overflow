@@ -7,7 +7,6 @@
 // so it can be unit-tested without mounting the component.
 
 import {
-  GetGitStatus,
   GetThread,
   GitCreatePR,
   GitPull,
@@ -65,10 +64,6 @@ export interface GitActionCtx {
   reportError: (message: string) => void;
   refreshStatus: () => Promise<void>;
   replacePaneThread: (thread: Thread) => void;
-}
-
-export async function loadGitStatus(threadId: string): Promise<GitStatus> {
-  return (await GetGitStatus(threadId)) as GitStatus;
 }
 
 export async function runPushAction(ctx: GitActionCtx): Promise<void> {

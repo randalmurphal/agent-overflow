@@ -711,6 +711,7 @@ func newTestAppWithStore(t *testing.T) *App {
 		threadSystemPrompts: make(map[string]string),
 		threadSlashCommands: make(map[string][]string),
 		deliberations:       make(map[string]*discussion.Deliberation),
+		gitWatchPumps:       make(map[string]*gitWatchPump),
 	}
 	ensureDefaultTestProject(t, app)
 	return app
