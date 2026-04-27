@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
 	"agent-overflow/internal/checkpoint"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/claude/sessionfork"
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/store"
 
@@ -122,6 +124,14 @@ func (a *App) RevertToCheckpoint(threadID string, checkpointTurnCount int, mode 
 		if err := a.checkpointStore().RestoreWorktree(context.Background(), workspace, record.RefName); err != nil {
 			return fmt.Errorf("revert checkpoint: restore worktree: %w", err)
 		}
+		// Bust the workspace file cache so the @-mention picker reflects
+		// the post-restore tree on the next composer interaction.
+		// Mirrors t3-code's `workspaceEntries.invalidate(cwd)` after
+		// checkpoint restore (CheckpointReactor.ts:670). Skipped on the
+		// conversation-only path because files are unchanged.
+		if a.workspaceFiles != nil {
+			a.workspaceFiles.Invalidate(workspace)
+		}
 	}
 
 	lastKeptTurnIndex := checkpointTurnCount - 1
@@ -168,17 +178,75 @@ func (a *App) revertProviderConversation(thread store.Thread, checkpointTurnCoun
 	case string(provider.Codex):
 		return a.rollbackCodexThread(thread, numTurns)
 	case string(provider.Claude):
-		// Claude has no wire-level rollback. Clear the session ref so the
-		// next turn starts a fresh session with no provider-side context.
-		// The old session file on disk is left in place — callers can
-		// surface it later via a "previous session" list if desired.
+		return a.revertClaudeThread(thread, lastKeptTurnIndex)
+	default:
+		return fmt.Errorf("unsupported provider %q", thread.Provider)
+	}
+}
+
+// revertClaudeThread truncates a Claude session in place by slicing the
+// source JSONL at the end of lastKeptTurnIndex's turn and pointing the
+// thread's SessionRef at the new <newID>.jsonl. The next session start
+// resumes from the truncated transcript with full prior context intact —
+// matching how t3-code's adapter does in-memory truncation, just at the
+// JSONL level since we use the CLI subprocess and don't own the
+// conversation array.
+//
+// lastKeptTurnIndex < 0 (i.e. revert all the way to baseline) clears the
+// session refs entirely; the next turn starts a fresh session.
+//
+// The old JSONL is left on disk so the discarded conversation is
+// recoverable via Claude's own session picker. Disk growth is bounded
+// by user behavior; no GC is needed for v1.
+func (a *App) revertClaudeThread(thread store.Thread, lastKeptTurnIndex int) error {
+	if lastKeptTurnIndex < 0 {
+		// Nothing to keep — fresh session on next turn.
 		thread.SessionRef = ""
 		thread.PendingForkRef = ""
 		thread.UpdatedAt = time.Now().UnixMilli()
 		return a.store.UpdateThread(thread)
-	default:
-		return fmt.Errorf("unsupported provider %q", thread.Provider)
 	}
+
+	if thread.SessionRef == "" {
+		// No session to truncate; treat as already-cleared.
+		return nil
+	}
+
+	srcPath, err := sessionfork.LocateSessionFile(thread.SessionRef, thread.WorkspacePath)
+	if err != nil {
+		// Session file isn't on disk (deleted, moved, or workspace
+		// rearranged). Fall back to the old "clear refs" behavior so the
+		// timeline-truncation half of the revert still succeeds — the
+		// next turn just won't have prior context, which matches what
+		// the user got before this code path landed.
+		if errors.Is(err, sessionfork.ErrSessionFileNotFound) {
+			thread.SessionRef = ""
+			thread.PendingForkRef = ""
+			thread.UpdatedAt = time.Now().UnixMilli()
+			return a.store.UpdateThread(thread)
+		}
+		return fmt.Errorf("locate claude session: %w", err)
+	}
+
+	// Single-pass: open the source JSONL once and combine slice-point
+	// computation with the write. Avoids the double-open TOCTOU
+	// window. lastKeptTurnIndex < 0 (revert all the way to baseline)
+	// would have been short-circuited above to the clear-refs branch.
+	newID, newPath, err := sessionfork.WriteForkFileForLastKeptTurn(srcPath, lastKeptTurnIndex, "")
+	if err != nil {
+		return fmt.Errorf("write reverted session: %w", err)
+	}
+
+	thread.SessionRef = newID
+	thread.PendingForkRef = ""
+	thread.UpdatedAt = time.Now().UnixMilli()
+	if err := a.store.UpdateThread(thread); err != nil {
+		// Roll back the JSONL we just wrote so disk and SQLite stay
+		// in lockstep — either both reflect the new session, or neither.
+		_ = os.Remove(newPath)
+		return fmt.Errorf("persist reverted claude state: %w", err)
+	}
+	return nil
 }
 
 func (a *App) rebaseCheckpointToCurrentWorkspace(thread store.Thread, previous store.Checkpoint) error {

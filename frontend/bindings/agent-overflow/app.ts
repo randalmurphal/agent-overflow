@@ -275,18 +275,26 @@ export function DeleteThread(id: string): $CancellablePromise<void> {
  * the caller's point of view: if any step fails, the partially-created
  * fork is torn down so no half-forked rows linger.
  * 
+ * When atTurnIndex is non-nil, the fork is sliced at that turn (0-indexed):
+ * items with turn_index > *atTurnIndex are dropped, the provider session
+ * is forked + truncated to match, and the fork's checkpoint baseline is
+ * captured at checkpointTurnCount = *atTurnIndex + 1. atTurnIndex == nil
+ * preserves the existing fork-at-tail behavior (clone everything, fork
+ * provider state at the latest message).
+ * 
  * The "atomic unit" is emulated in the app layer rather than a single
  * SQLite transaction because the fork flow crosses a boundary — it has
- * to talk to the Codex provider to fork a live session, which can fail
- * independently of the DB. Wrapping the whole sequence in sql.Tx would
- * hold a DB transaction open across a network-speed operation and break
- * the rest of the store's single-connection model. Instead, we compose
- * with a best-effort rollback: cleanupForkThread removes the fork row
- * (CASCADE drops cloned items + drafts), and cleanup errors are joined
- * to the primary error so the caller sees both.
+ * to talk to the Codex provider to fork a live session, can write a
+ * new Claude session JSONL on disk, and can capture a git ref. Wrapping
+ * the whole sequence in sql.Tx would hold a DB transaction open across
+ * a network-speed operation and break the rest of the store's
+ * single-connection model. Instead, we compose with a best-effort
+ * rollback: each step that has a side-effect appends an undo to a LIFO
+ * `cleanups` slice; on later failure the chain runs in reverse order
+ * and any cleanup errors are joined with the primary error.
  */
-export function ForkThread(sourceThreadID: string): $CancellablePromise<store$0.Thread> {
-    return $Call.ByID(4063914461, sourceThreadID).then(($result: any) => {
+export function ForkThread(sourceThreadID: string, atTurnIndex: number | null): $CancellablePromise<store$0.Thread> {
+    return $Call.ByID(4063914461, sourceThreadID, atTurnIndex).then(($result: any) => {
         return $$createType4($result);
     });
 }

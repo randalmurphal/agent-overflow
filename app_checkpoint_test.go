@@ -132,6 +132,11 @@ func TestGetCheckpointRangeDiffMissingCheckpointErrors(t *testing.T) {
 }
 
 func TestRevertToCheckpointConversationOnlyOnClaudeClearsSessionRef(t *testing.T) {
+	// Isolate from the developer's real ~/.claude/projects so the
+	// LocateSessionFile fallback scan can't accidentally match a real
+	// session UUID. The test exercises the file-not-found fallback path
+	// in revertClaudeThread.
+	t.Setenv("HOME", t.TempDir())
 	app, workspace := newCheckpointTestApp(t)
 	thread := seedCheckpointThread(t, app, "t-claude", workspace, string(provider.Claude))
 	thread.SessionRef = "claude-session-old"
@@ -174,6 +179,7 @@ func TestRevertToCheckpointConversationOnlyOnClaudeClearsSessionRef(t *testing.T
 }
 
 func TestRevertToCheckpointKeepsConversationThroughCheckpointTurn(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	app, workspace := newCheckpointTestApp(t)
 	thread := seedCheckpointThread(t, app, "t-claude", workspace, string(provider.Claude))
 	thread.SessionRef = "claude-session-old"
@@ -209,6 +215,7 @@ func TestRevertToCheckpointKeepsConversationThroughCheckpointTurn(t *testing.T) 
 }
 
 func TestRevertToCheckpointConversationAndFilesOnClaudeRestoresWorktreeAndClearsSession(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	app, workspace := newCheckpointTestApp(t)
 	thread := seedCheckpointThread(t, app, "t-claude", workspace, string(provider.Claude))
 	thread.SessionRef = "claude-session-old"
@@ -241,6 +248,89 @@ func TestRevertToCheckpointConversationAndFilesOnClaudeRestoresWorktreeAndClears
 	items, _ := app.store.ListItems("t-claude")
 	if len(items) != 0 {
 		t.Errorf("revert to turn 0 should drop all items, got %d", len(items))
+	}
+}
+
+// TestRevertToCheckpointConversationOnlyOnClaudeWithJSONLSlicesAndKeepsContext
+// pins the new in-place revert behavior for Claude: when the source
+// session JSONL is on disk, the revert slices it and points SessionRef
+// at a new <newID>.jsonl, preserving prior context. The old JSONL is
+// left in place for user recovery.
+func TestRevertToCheckpointConversationOnlyOnClaudeWithJSONLSlicesAndKeepsContext(t *testing.T) {
+	app, workspace := newCheckpointTestApp(t)
+
+	// Build a fake ~/.claude/projects layout.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	canonical, _ := filepath.EvalSymlinks(workspace)
+	abs, _ := filepath.Abs(canonical)
+	slug := "-" + filepath.ToSlash(abs)[1:]
+	for i, c := range slug {
+		if c == '/' {
+			slug = slug[:i] + "-" + slug[i+1:]
+		}
+	}
+	projectDir := filepath.Join(home, ".claude", "projects", slug)
+	if err := os.MkdirAll(projectDir, 0o700); err != nil {
+		t.Fatalf("mkdir project: %v", err)
+	}
+	sessionID := "src-revert-uuid"
+	jsonlPath := filepath.Join(projectDir, sessionID+".jsonl")
+	jsonl := `{"type":"user","uuid":"u0","parentUuid":null,"sessionId":"src-revert-uuid","message":{"role":"user","content":"first"}}
+{"type":"assistant","uuid":"a0","parentUuid":"u0","sessionId":"src-revert-uuid","message":{"role":"assistant","content":[{"type":"text","text":"r0"}]}}
+{"type":"user","uuid":"u1","parentUuid":"a0","sessionId":"src-revert-uuid","message":{"role":"user","content":"second"}}
+{"type":"assistant","uuid":"a1","parentUuid":"u1","sessionId":"src-revert-uuid","message":{"role":"assistant","content":[{"type":"text","text":"r1"}]}}
+{"type":"user","uuid":"u2","parentUuid":"a1","sessionId":"src-revert-uuid","message":{"role":"user","content":"third"}}
+{"type":"assistant","uuid":"a2","parentUuid":"u2","sessionId":"src-revert-uuid","message":{"role":"assistant","content":[{"type":"text","text":"r2"}]}}
+`
+	if err := os.WriteFile(jsonlPath, []byte(jsonl), 0o600); err != nil {
+		t.Fatalf("write source jsonl: %v", err)
+	}
+
+	thread := seedCheckpointThread(t, app, "t-claude-revert", workspace, string(provider.Claude))
+	thread.SessionRef = sessionID
+	if err := app.store.UpdateThread(thread); err != nil {
+		t.Fatalf("update thread: %v", err)
+	}
+	for _, turn := range []int{0, 1, 2} {
+		if err := app.store.InsertItem(store.Item{
+			ID: "rv-" + string(rune('0'+turn)), ThreadID: "t-claude-revert",
+			TurnIndex: turn, ItemIndex: 0, Kind: "user_text", Role: "user",
+			Summary: "x", CreatedAt: time.Now().UnixMilli(),
+		}); err != nil {
+			t.Fatalf("insert item: %v", err)
+		}
+	}
+	captureForTest(t, app, "t-claude-revert", workspace, 1)
+
+	if err := app.RevertToCheckpoint("t-claude-revert", 1, RevertModeConversationOnly); err != nil {
+		t.Fatalf("revert: %v", err)
+	}
+
+	got, err := app.store.GetThread("t-claude-revert")
+	if err != nil {
+		t.Fatalf("get thread: %v", err)
+	}
+	if got.SessionRef == "" || got.SessionRef == sessionID {
+		t.Errorf("SessionRef should be a fresh UUID after slice, got %q (source was %q)", got.SessionRef, sessionID)
+	}
+
+	// New <newID>.jsonl exists in the project dir.
+	newPath := filepath.Join(projectDir, got.SessionRef+".jsonl")
+	if _, err := os.Stat(newPath); err != nil {
+		t.Errorf("new sliced JSONL missing at %s: %v", newPath, err)
+	}
+
+	// Source JSONL must be byte-stable (user recovery).
+	srcAfter, _ := os.ReadFile(jsonlPath)
+	if string(srcAfter) != jsonl {
+		t.Errorf("source JSONL was mutated by revert; should be untouched")
+	}
+
+	// Items truncated to turn 0 only.
+	items, _ := app.store.ListItems("t-claude-revert")
+	if len(items) != 1 {
+		t.Errorf("expected 1 item (turn 0), got %d", len(items))
 	}
 }
 

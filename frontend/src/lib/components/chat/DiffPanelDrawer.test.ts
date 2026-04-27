@@ -33,7 +33,13 @@ function checkpoint(turnCount: number): Checkpoint {
     checkpointTurnCount: turnCount,
     refName: `refs/ao/thread-a/${turnCount}`,
     status: 'ready',
-    files: [],
+    // Non-baseline checkpoints carry at least one file so the empty-turn
+    // filter (DiffPanelDrawer hides chips for turns with zero changes)
+    // doesn't drop them. Baseline (count=0) is always kept as the
+    // reference point regardless of file count.
+    files: turnCount === 0
+      ? []
+      : [{ path: `turn-${turnCount}.ts`, kind: 'modified', additions: 1, deletions: 0 }],
     capturedAt: Date.UTC(2026, 0, 1, 0, turnCount),
     workspacePath: '/tmp/workspace',
   };

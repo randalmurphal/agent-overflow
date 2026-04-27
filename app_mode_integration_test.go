@@ -244,7 +244,7 @@ func TestMode_ForkInheritsInteractionMode(t *testing.T) {
 	}
 	insertForkTestItems(t, app.store, source.ID)
 
-	forked, err := app.ForkThread(source.ID)
+	forked, err := app.ForkThread(source.ID, nil)
 	if err != nil {
 		t.Fatalf("ForkThread() error = %v", err)
 	}

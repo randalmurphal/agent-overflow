@@ -120,7 +120,7 @@ export async function unarchiveThreadAction(ctx: ThreadActionCtx): Promise<void>
  */
 export async function forkThreadAction(ctx: ThreadActionCtx): Promise<void> {
   try {
-    const forked = (await ForkThread(ctx.thread.id)) as Thread;
+    const forked = (await ForkThread(ctx.thread.id, null)) as Thread;
     prependThread(forked);
     if (forked.projectId) expandProject(forked.projectId);
     await ctx.switchPane(forked);

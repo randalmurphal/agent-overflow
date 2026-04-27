@@ -4,6 +4,68 @@ import (
 	"testing"
 )
 
+// TestCloneThreadItemsRespectsThroughTurnIndex pins the fork-at-point
+// store-level contract: only items whose turn_index <= *throughTurnIndex
+// are copied. nil clones every turn (matches existing fork-at-tail).
+func TestCloneThreadItemsRespectsThroughTurnIndex(t *testing.T) {
+	s := newTestStore(t)
+	now := int64(1)
+	for _, id := range []string{"t-slice-src", "t-slice-dst", "t-slice-dst-full"} {
+		if err := s.CreateThread(Thread{
+			ID: id, ProjectID: defaultTestProjectID, Title: "T",
+			Provider: "claude", WorkspacePath: "/tmp",
+			CreatedAt: now, UpdatedAt: now,
+		}); err != nil {
+			t.Fatalf("create thread %s: %v", id, err)
+		}
+	}
+
+	// 3 turns, 2 items per turn (user + assistant).
+	items := []Item{
+		{ID: "u0", ThreadID: "t-slice-src", TurnIndex: 0, ItemIndex: 0, Kind: "user_text", Role: "user", Summary: "t0", CreatedAt: now, UpdatedAt: now},
+		{ID: "a0", ThreadID: "t-slice-src", TurnIndex: 0, ItemIndex: 1, Kind: "assistant_text", Role: "assistant", Summary: "r0", Status: "completed", CreatedAt: now, UpdatedAt: now},
+		{ID: "u1", ThreadID: "t-slice-src", TurnIndex: 1, ItemIndex: 0, Kind: "user_text", Role: "user", Summary: "t1", CreatedAt: now, UpdatedAt: now},
+		{ID: "a1", ThreadID: "t-slice-src", TurnIndex: 1, ItemIndex: 1, Kind: "assistant_text", Role: "assistant", Summary: "r1", Status: "completed", CreatedAt: now, UpdatedAt: now},
+		{ID: "u2", ThreadID: "t-slice-src", TurnIndex: 2, ItemIndex: 0, Kind: "user_text", Role: "user", Summary: "t2", CreatedAt: now, UpdatedAt: now},
+		{ID: "a2", ThreadID: "t-slice-src", TurnIndex: 2, ItemIndex: 1, Kind: "assistant_text", Role: "assistant", Summary: "r2", Status: "completed", CreatedAt: now, UpdatedAt: now},
+	}
+	for _, it := range items {
+		if err := s.InsertItem(it); err != nil {
+			t.Fatalf("InsertItem %s: %v", it.ID, err)
+		}
+	}
+
+	// Slice through turn 1 — should get items from turns 0 and 1 only (4 rows).
+	throughOne := 1
+	if err := s.CloneThreadItems("t-slice-src", "t-slice-dst", &throughOne); err != nil {
+		t.Fatalf("CloneThreadItems sliced: %v", err)
+	}
+	dst, err := s.ListItems("t-slice-dst")
+	if err != nil {
+		t.Fatalf("ListItems sliced dst: %v", err)
+	}
+	if got, want := len(dst), 4; got != want {
+		t.Errorf("sliced dst items = %d, want %d (turns 0+1 only)", got, want)
+	}
+	for _, it := range dst {
+		if it.TurnIndex > throughOne {
+			t.Errorf("sliced dst leaked turn_index %d (cap was %d)", it.TurnIndex, throughOne)
+		}
+	}
+
+	// nil throughTurnIndex clones every turn (full clone fallback).
+	if err := s.CloneThreadItems("t-slice-src", "t-slice-dst-full", nil); err != nil {
+		t.Fatalf("CloneThreadItems full: %v", err)
+	}
+	dstFull, err := s.ListItems("t-slice-dst-full")
+	if err != nil {
+		t.Fatalf("ListItems full dst: %v", err)
+	}
+	if got, want := len(dstFull), len(items); got != want {
+		t.Errorf("full dst items = %d, want %d", got, want)
+	}
+}
+
 // TestCloneThreadItemsExcludesRunningBackgroundRows pins Phase-4's
 // fork-exclusion contract at the store level: the clone skips rows
 // whose `IsBackground && status='running'` combination implicates the
@@ -39,7 +101,7 @@ func TestCloneThreadItemsExcludesRunningBackgroundRows(t *testing.T) {
 		}
 	}
 
-	if err := s.CloneThreadItems("t-fork-src", "t-fork-dst"); err != nil {
+	if err := s.CloneThreadItems("t-fork-src", "t-fork-dst", nil); err != nil {
 		t.Fatalf("CloneThreadItems: %v", err)
 	}
 
@@ -116,7 +178,7 @@ func TestCloneThreadItemsNoBackgroundRowsCopiesEverything(t *testing.T) {
 		}
 	}
 
-	if err := s.CloneThreadItems("t-fork-nobg-src", "t-fork-nobg-dst"); err != nil {
+	if err := s.CloneThreadItems("t-fork-nobg-src", "t-fork-nobg-dst", nil); err != nil {
 		t.Fatalf("CloneThreadItems: %v", err)
 	}
 

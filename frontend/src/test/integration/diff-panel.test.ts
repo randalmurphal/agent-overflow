@@ -26,7 +26,11 @@ function checkpoint(turnCount: number, overrides: Partial<Checkpoint> = {}): Che
     checkpointTurnCount: turnCount,
     refName: `refs/ao/thread-1/${turnCount}`,
     status: 'ready',
-    files: [],
+    // Non-baseline turns carry at least one file so DiffPanelDrawer's
+    // empty-turn filter keeps the chip. Baseline is always shown.
+    files: turnCount === 0
+      ? []
+      : [{ path: `turn-${turnCount}.ts`, kind: 'modified', additions: 1, deletions: 0 }],
     capturedAt: Date.UTC(2026, 0, 1, 0, turnCount),
     workspacePath: '/tmp/ws',
     ...overrides,

@@ -355,7 +355,7 @@ func TestCascade_ForkPreservesOriginalState(t *testing.T) {
 		t.Fatalf("UpsertThreadDraft: %v", err)
 	}
 
-	forked, err := app.ForkThread(source.ID)
+	forked, err := app.ForkThread(source.ID, nil)
 	if err != nil {
 		t.Fatalf("ForkThread: %v", err)
 	}

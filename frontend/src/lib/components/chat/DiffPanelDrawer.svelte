@@ -29,6 +29,7 @@
     Checkpoint,
     CheckpointCapturedEvent,
     CheckpointErrorEvent,
+    CheckpointRevertedEvent,
     CheckpointUnavailableEvent,
     RevertMode,
   } from '../../types/checkpoint';
@@ -43,6 +44,15 @@
   let { pane }: Props = $props();
 
   const checkpoints = $derived(pane.diffPanel.checkpoints);
+  // Chip strip shows the baseline (count=0) plus turns that produced
+  // file changes. Empty turns add visual noise without giving the user
+  // anything to inspect — the inline TurnDiffBadge already follows the
+  // same rule via buildTurnDiffView's null-return.
+  const visibleCheckpoints = $derived(
+    checkpoints.filter(
+      (c) => c.checkpointTurnCount === 0 || (c.files?.length ?? 0) > 0,
+    ),
+  );
   const selectedTurnCount = $derived(pane.diffPanel.selectedCheckpointTurnCount);
   const error = $derived(pane.diffPanel.error);
   const viewMode = $derived(pane.diffPanel.viewMode);
@@ -173,6 +183,7 @@
   let cancelUpdated: (() => void) | null = null;
   let cancelUnavailable: (() => void) | null = null;
   let cancelError: (() => void) | null = null;
+  let cancelReverted: (() => void) | null = null;
 
   onMount(() => {
     cancelCaptured = wailsEventOn<CheckpointCapturedEvent | null>('checkpoint:captured', (payload) => {
@@ -192,6 +203,12 @@
       if (!payload || payload.threadId !== threadId) return;
       pane.diffPanel.setError(`Checkpoint failed: ${payload.error}`);
     });
+    // Refresh after a successful revert so chips reflect the truncated
+    // checkpoint history (post-revert refs are deleted by the backend).
+    cancelReverted = wailsEventOn<CheckpointRevertedEvent | null>('checkpoint:reverted', (payload) => {
+      if (!payload || payload.threadId !== threadId) return;
+      void refreshCheckpoints();
+    });
   });
 
   onDestroy(() => {
@@ -199,6 +216,7 @@
     cancelUpdated?.();
     cancelUnavailable?.();
     cancelError?.();
+    cancelReverted?.();
   });
 
   $effect(() => {
@@ -267,7 +285,7 @@
       >
         All turns
       </button>
-      {#each checkpoints as checkpoint (checkpoint.id)}
+      {#each visibleCheckpoints as checkpoint (checkpoint.id)}
         <button
           class="shrink-0 rounded border px-2.5 py-1 text-[12px] {selectedTurnCount === checkpointTurnCount(checkpoint) ? 'border-accent/60 bg-accent/15 text-accent' : 'border-border-subtle text-fg-muted hover:bg-surface-2'}"
           onclick={() => selectCheckpoint(checkpointTurnCount(checkpoint))}

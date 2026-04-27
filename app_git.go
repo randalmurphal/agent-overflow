@@ -144,6 +144,12 @@ func (a *App) GitPull(threadID string) (gitops.GitActionResult, error) {
 		return gitops.GitActionResult{}, err
 	}
 
+	// Pull mutates the working tree — bust the @-mention picker cache so
+	// it reflects pulled additions/removals on the next composer query.
+	if a.workspaceFiles != nil {
+		a.workspaceFiles.Invalidate(workspace)
+	}
+
 	return gitops.GitActionResult{
 		Action:  "pull",
 		Branch:  currentGitBranch(core, workspace),
@@ -181,6 +187,12 @@ func (a *App) GitCheckout(threadID, branch string) error {
 	}
 	if err := core.Checkout(workspace, branch); err != nil {
 		return err
+	}
+
+	// Checkout swaps the working tree to a different branch — bust the
+	// @-mention picker cache so it reflects the new tree.
+	if a.workspaceFiles != nil {
+		a.workspaceFiles.Invalidate(workspace)
 	}
 
 	thread.Branch = currentGitBranch(core, workspace)

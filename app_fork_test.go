@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,6 +16,8 @@ import (
 )
 
 func TestForkThreadClaudePersistsPendingForkStateAndClonesTimeline(t *testing.T) {
+	// Isolate from the developer's real ~/.claude/projects.
+	t.Setenv("HOME", t.TempDir())
 	app := newTestAppWithStore(t)
 
 	source := testThread("thread-claude-fork-source")
@@ -25,7 +28,7 @@ func TestForkThreadClaudePersistsPendingForkStateAndClonesTimeline(t *testing.T)
 	}
 	insertForkTestItems(t, app.store, source.ID)
 
-	forked, err := app.ForkThread(source.ID)
+	forked, err := app.ForkThread(source.ID, nil)
 	if err != nil {
 		t.Fatalf("ForkThread() error = %v", err)
 	}
@@ -76,7 +79,7 @@ func TestForkThreadCodexUsesStoredResumeStateWhenSessionInactive(t *testing.T) {
 	}
 	insertForkTestItems(t, app.store, source.ID)
 
-	forked, err := app.ForkThread(source.ID)
+	forked, err := app.ForkThread(source.ID, nil)
 	if err != nil {
 		t.Fatalf("ForkThread() error = %v", err)
 	}
@@ -93,6 +96,7 @@ func TestForkThreadCodexUsesStoredResumeStateWhenSessionInactive(t *testing.T) {
 }
 
 func TestForkThreadRejectsThreadsWithoutMessages(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	app := newTestAppWithStore(t)
 
 	source := testThread("thread-empty-fork-source")
@@ -102,7 +106,7 @@ func TestForkThreadRejectsThreadsWithoutMessages(t *testing.T) {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
 
-	_, err := app.ForkThread(source.ID)
+	_, err := app.ForkThread(source.ID, nil)
 	if err == nil {
 		t.Fatal("ForkThread() error = nil, want empty-thread failure")
 	}
@@ -165,12 +169,262 @@ func TestForkThreadUsesActiveCodexSession(t *testing.T) {
 
 	app.sessions[source.ID] = sessionStateForCodex(session)
 
-	forked, err := app.ForkThread(source.ID)
+	forked, err := app.ForkThread(source.ID, nil)
 	if err != nil {
 		t.Fatalf("ForkThread() error = %v", err)
 	}
 	if forked.SessionRef != "fork-from-active-session" {
 		t.Fatalf("fork session ref = %q, want %q", forked.SessionRef, "fork-from-active-session")
+	}
+}
+
+// TestForkThreadClaudeAtTurnSlicesSessionJSONL exercises the fork-at-point
+// path: a Claude source with a real on-disk session JSONL, forked at a
+// specific user-prompt UUID. The new fork must:
+//   - have its SessionRef set to a fresh UUID (not PendingForkRef)
+//   - have a new <newID>.jsonl in the same project dir
+//   - have items truncated through *atTurnIndex
+func TestForkThreadClaudeAtTurnSlicesSessionJSONL(t *testing.T) {
+	app := newTestAppWithStore(t)
+
+	// Build a fake ~/.claude/projects layout under TempDir.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	workspace := filepath.Join(home, "ws")
+	if err := os.MkdirAll(workspace, 0o700); err != nil {
+		t.Fatalf("mkdir workspace: %v", err)
+	}
+	canonical, _ := filepath.EvalSymlinks(workspace)
+	abs, _ := filepath.Abs(canonical)
+	slug := "-" + filepath.ToSlash(abs)[1:]
+	for i, c := range slug {
+		if c == '/' {
+			slug = slug[:i] + "-" + slug[i+1:]
+		}
+	}
+	projectDir := filepath.Join(home, ".claude", "projects", slug)
+	if err := os.MkdirAll(projectDir, 0o700); err != nil {
+		t.Fatalf("mkdir project: %v", err)
+	}
+	sessionID := "src-session-uuid"
+	jsonlPath := filepath.Join(projectDir, sessionID+".jsonl")
+	jsonl := `{"type":"user","uuid":"u0","parentUuid":null,"sessionId":"src-session-uuid","message":{"role":"user","content":"first prompt"}}
+{"type":"assistant","uuid":"a0","parentUuid":"u0","sessionId":"src-session-uuid","message":{"role":"assistant","content":[{"type":"text","text":"reply 0"}]}}
+{"type":"user","uuid":"u1","parentUuid":"a0","sessionId":"src-session-uuid","message":{"role":"user","content":"second prompt"}}
+{"type":"assistant","uuid":"a1","parentUuid":"u1","sessionId":"src-session-uuid","message":{"role":"assistant","content":[{"type":"text","text":"reply 1"}]}}
+{"type":"user","uuid":"u2","parentUuid":"a1","sessionId":"src-session-uuid","message":{"role":"user","content":"third prompt"}}
+{"type":"assistant","uuid":"a2","parentUuid":"u2","sessionId":"src-session-uuid","message":{"role":"assistant","content":[{"type":"text","text":"reply 2"}]}}
+`
+	if err := os.WriteFile(jsonlPath, []byte(jsonl), 0o600); err != nil {
+		t.Fatalf("write source jsonl: %v", err)
+	}
+
+	source := testThread("thread-claude-fork-at-turn")
+	source.Provider = string(provider.Claude)
+	source.SessionRef = sessionID
+	source.WorkspacePath = workspace
+	if err := app.store.CreateThread(source); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+
+	// Insert items at turn_index 0, 1, 2 — matching the JSONL prompts.
+	now := time.Now().UnixMilli()
+	for i := 0; i < 3; i++ {
+		items := []store.Item{
+			{ID: fmt.Sprintf("u%d", i), ThreadID: source.ID, TurnIndex: i, ItemIndex: 0, Kind: "user_text", Role: "user", Summary: fmt.Sprintf("prompt %d", i), CreatedAt: now},
+			{ID: fmt.Sprintf("a%d", i), ThreadID: source.ID, TurnIndex: i, ItemIndex: 1, Kind: "assistant_text", Role: "assistant", Summary: fmt.Sprintf("reply %d", i), Status: "completed", CreatedAt: now + 1},
+		}
+		for _, it := range items {
+			if err := app.store.InsertItem(it); err != nil {
+				t.Fatalf("InsertItem(%s): %v", it.ID, err)
+			}
+		}
+	}
+
+	// Fork at turn 1 — should clone items from turns 0 and 1, slice the
+	// JSONL up through u1's UUID, set fork.SessionRef to a fresh ID.
+	atTurn := 1
+	forked, err := app.ForkThread(source.ID, &atTurn)
+	if err != nil {
+		t.Fatalf("ForkThread(at=1): %v", err)
+	}
+	if forked.SessionRef == "" || forked.SessionRef == sessionID {
+		t.Fatalf("fork SessionRef should be a fresh UUID, got %q (source was %q)", forked.SessionRef, sessionID)
+	}
+	if forked.PendingForkRef != "" {
+		t.Errorf("fork PendingForkRef should be empty when SessionRef is set, got %q", forked.PendingForkRef)
+	}
+
+	// Cloned items: 2 turns × 2 items = 4 (turn 2 dropped).
+	items, err := app.store.ListItems(forked.ID)
+	if err != nil {
+		t.Fatalf("ListItems(fork): %v", err)
+	}
+	if got, want := len(items), 4; got != want {
+		t.Errorf("fork items = %d, want %d (turns 0+1 only)", got, want)
+	}
+	for _, it := range items {
+		if it.TurnIndex > atTurn {
+			t.Errorf("fork leaked item at turn_index %d (cap was %d)", it.TurnIndex, atTurn)
+		}
+	}
+
+	// Forked JSONL must exist on disk.
+	forkedPath := filepath.Join(projectDir, forked.SessionRef+".jsonl")
+	if _, err := os.Stat(forkedPath); err != nil {
+		t.Errorf("forked JSONL not created at %s: %v", forkedPath, err)
+	}
+
+	// Source JSONL must be byte-stable.
+	srcAfter, err := os.ReadFile(jsonlPath)
+	if err != nil {
+		t.Fatalf("re-read source: %v", err)
+	}
+	if string(srcAfter) != jsonl {
+		t.Errorf("source JSONL mutated by fork — should be untouched")
+	}
+}
+
+// TestForkThreadCapturesFreshBaselineCheckpointWhenWorkspaceIsGitRepo
+// pins the contract that fork-at-point captures a baseline checkpoint
+// at `checkpointTurnCount = atTurnIndex + 1` when the workspace is a
+// git repo. This is what makes the new fork's diff drawer functional
+// from its first new turn — without the baseline, the next turn-end
+// capture has no predecessor to diff against.
+func TestForkThreadCapturesFreshBaselineCheckpointWhenWorkspaceIsGitRepo(t *testing.T) {
+	// newCheckpointTestApp initializes the workspace as a real git repo
+	// so captureForkBaseline can actually CaptureRef + SaveCheckpoint.
+	// HOME is repointed at TempDir before any Claude path resolution.
+	t.Setenv("HOME", t.TempDir())
+	app, workspace := newCheckpointTestApp(t)
+
+	// Set up the Claude session JSONL under HOME's .claude/projects.
+	canonical, _ := filepath.EvalSymlinks(workspace)
+	abs, _ := filepath.Abs(canonical)
+	slug := "-" + filepath.ToSlash(abs)[1:]
+	for i, c := range slug {
+		if c == '/' {
+			slug = slug[:i] + "-" + slug[i+1:]
+		}
+	}
+	projectDir := filepath.Join(os.Getenv("HOME"), ".claude", "projects", slug)
+	if err := os.MkdirAll(projectDir, 0o700); err != nil {
+		t.Fatalf("mkdir project: %v", err)
+	}
+	sessionID := "src-baseline-uuid"
+	jsonlPath := filepath.Join(projectDir, sessionID+".jsonl")
+	jsonl := `{"type":"user","uuid":"u0","parentUuid":null,"sessionId":"src-baseline-uuid","message":{"role":"user","content":"first"}}
+{"type":"assistant","uuid":"a0","parentUuid":"u0","sessionId":"src-baseline-uuid","message":{"role":"assistant","content":[{"type":"text","text":"r0"}]}}
+{"type":"user","uuid":"u1","parentUuid":"a0","sessionId":"src-baseline-uuid","message":{"role":"user","content":"second"}}
+{"type":"assistant","uuid":"a1","parentUuid":"u1","sessionId":"src-baseline-uuid","message":{"role":"assistant","content":[{"type":"text","text":"r1"}]}}
+{"type":"user","uuid":"u2","parentUuid":"a1","sessionId":"src-baseline-uuid","message":{"role":"user","content":"third"}}
+{"type":"assistant","uuid":"a2","parentUuid":"u2","sessionId":"src-baseline-uuid","message":{"role":"assistant","content":[{"type":"text","text":"r2"}]}}
+`
+	if err := os.WriteFile(jsonlPath, []byte(jsonl), 0o600); err != nil {
+		t.Fatalf("write source jsonl: %v", err)
+	}
+
+	source := seedCheckpointThread(t, app, "t-fork-baseline-src", workspace, string(provider.Claude))
+	source.SessionRef = sessionID
+	if err := app.store.UpdateThread(source); err != nil {
+		t.Fatalf("update thread: %v", err)
+	}
+	now := time.Now().UnixMilli()
+	for i := 0; i < 3; i++ {
+		items := []store.Item{
+			{ID: fmt.Sprintf("baseline-u%d", i), ThreadID: source.ID, TurnIndex: i, ItemIndex: 0, Kind: "user_text", Role: "user", Summary: "p", CreatedAt: now},
+			{ID: fmt.Sprintf("baseline-a%d", i), ThreadID: source.ID, TurnIndex: i, ItemIndex: 1, Kind: "assistant_text", Role: "assistant", Summary: "r", Status: "completed", CreatedAt: now + 1},
+		}
+		for _, it := range items {
+			if err := app.store.InsertItem(it); err != nil {
+				t.Fatalf("InsertItem: %v", err)
+			}
+		}
+	}
+
+	atTurn := 1
+	forked, err := app.ForkThread(source.ID, &atTurn)
+	if err != nil {
+		t.Fatalf("ForkThread(at=1): %v", err)
+	}
+
+	checkpoints, err := app.store.ListCheckpoints(forked.ID)
+	if err != nil {
+		t.Fatalf("ListCheckpoints: %v", err)
+	}
+	if len(checkpoints) != 1 {
+		t.Fatalf("fork checkpoints = %d, want 1 (baseline at atTurn+1)", len(checkpoints))
+	}
+	got := checkpoints[0]
+	if got.CheckpointTurnCount != atTurn+1 {
+		t.Errorf("baseline CheckpointTurnCount = %d, want %d", got.CheckpointTurnCount, atTurn+1)
+	}
+	if got.Status != "ready" {
+		t.Errorf("baseline status = %q, want ready", got.Status)
+	}
+	if got.WorkspacePath != workspace {
+		t.Errorf("baseline workspace = %q, want %q", got.WorkspacePath, workspace)
+	}
+	if got.RefName == "" {
+		t.Errorf("baseline ref name is empty")
+	}
+}
+
+// TestForkThreadRejectsWhenSourceHasActiveTurn pins the defense-in-depth
+// guard against forking while the source's provider is still writing
+// its session log. Frontend hides the popover during active turns;
+// this test ensures script callers also get a clean rejection rather
+// than a fork of in-flight bytes.
+func TestForkThreadRejectsWhenSourceHasActiveTurn(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	app := newTestAppWithStore(t)
+	source := testThread("thread-fork-active")
+	source.Provider = string(provider.Claude)
+	source.SessionRef = "claude-active"
+	if err := app.store.CreateThread(source); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	insertForkTestItems(t, app.store, source.ID)
+
+	// Open a turn record without setting completed_at — that's what
+	// GetActiveTurn checks.
+	now := time.Now().UnixMilli()
+	if err := app.store.InsertTurn(store.Turn{
+		TurnID:    "in-flight-turn",
+		ThreadID:  source.ID,
+		TurnIndex: 2,
+		StartedAt: now,
+	}); err != nil {
+		t.Fatalf("InsertTurn: %v", err)
+	}
+
+	_, err := app.ForkThread(source.ID, nil)
+	if err == nil {
+		t.Fatal("ForkThread should reject when source has active turn")
+	}
+	if got := err.Error(); !strings.Contains(got, "turn is in progress") {
+		t.Errorf("error = %q, want message about active turn", got)
+	}
+}
+
+// TestForkThreadAtTurnRejectsOutOfRange pins the validation guard.
+func TestForkThreadAtTurnRejectsOutOfRange(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	app := newTestAppWithStore(t)
+	source := testThread("thread-fork-bounds")
+	source.Provider = string(provider.Claude)
+	source.SessionRef = "claude-session-x"
+	if err := app.store.CreateThread(source); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	insertForkTestItems(t, app.store, source.ID)
+	// insertForkTestItems puts 2 items at turn_index=1, so lastTurn=1.
+
+	for _, n := range []int{-1, 5, 99} {
+		atTurn := n
+		if _, err := app.ForkThread(source.ID, &atTurn); err == nil {
+			t.Errorf("ForkThread(at=%d): expected error, got nil", n)
+		}
 	}
 }
 
@@ -265,7 +519,7 @@ func TestForkThreadRollsBackOnResumeFailure(t *testing.T) {
 	}
 	insertForkTestItems(t, app.store, source.ID)
 
-	_, err := app.ForkThread(source.ID)
+	_, err := app.ForkThread(source.ID, nil)
 	if err == nil {
 		t.Fatal("expected ForkThread to fail when source is missing SessionRef")
 	}
@@ -314,7 +568,7 @@ func TestForkThreadPropagatesResumeAndCleanupErrors(t *testing.T) {
 	}
 	insertForkTestItems(t, app.store, source.ID)
 
-	_, err := app.ForkThread(source.ID)
+	_, err := app.ForkThread(source.ID, nil)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -409,7 +663,7 @@ func TestForkThread_ExcludesBackgroundRunningRows(t *testing.T) {
 		}
 	}
 
-	forked, err := app.ForkThread(source.ID)
+	forked, err := app.ForkThread(source.ID, nil)
 	if err != nil {
 		t.Fatalf("ForkThread: %v", err)
 	}

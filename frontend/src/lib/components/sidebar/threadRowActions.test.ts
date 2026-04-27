@@ -71,7 +71,7 @@ describe('forkThreadAction', () => {
 
     await forkThreadAction(ctx);
 
-    expect(fork).toHaveBeenCalledWith('thread-1');
+    expect(fork).toHaveBeenCalledWith('thread-1', null);
     const ids = getThreads().map((t) => t.id);
     expect(ids[0]).toBe('fork-1');
     expect(isProjectExpanded('project-1')).toBe(true);

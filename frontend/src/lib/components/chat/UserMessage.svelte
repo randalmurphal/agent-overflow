@@ -1,5 +1,7 @@
 <script lang="ts">
+  import Undo2 from 'lucide-svelte/icons/undo-2';
   import type { Item } from '../../types/models';
+  import type { ThreadPane } from '../../stores/thread.svelte';
   import {
     createAttachmentPreviews,
     parseUserMessageAttachments,
@@ -7,14 +9,34 @@
     type ExpandedImagePreview,
   } from '../../utils/attachmentPreview.svelte';
   import CopyButton from '../primitives/CopyButton.svelte';
+  import Icon from '../primitives/Icon.svelte';
+  import UserMessageActionsPopover from './UserMessageActionsPopover.svelte';
   import { addToast } from '../../stores/toast.svelte';
 
   interface Props {
     item: Item;
+    pane?: ThreadPane;
     onImageExpand?: (preview: ExpandedImagePreview) => void;
   }
 
-  let { item, onImageExpand }: Props = $props();
+  let { item, pane, onImageExpand }: Props = $props();
+
+  // Trigger button for the actions popover. Visibility gating ensures
+  // the button is only present when at least one option is actionable:
+  //   - we have a pane to act on
+  //   - no turn currently in flight (revert/fork would race with active state)
+  //   - checkpoint history is loaded and available (not a non-git workspace)
+  //   - this isn't an in-flight message that hasn't landed yet
+  const showActionsTrigger = $derived(
+    pane !== undefined
+      && pane.activeTurn === null
+      && pane.diffPanel.checkpointsLoaded
+      && !pane.diffPanel.checkpointsUnavailable
+      && !item.id.startsWith('local-pending-'),
+  );
+
+  let actionsAnchor: HTMLButtonElement | undefined = $state(undefined);
+  let actionsOpen = $state(false);
 
   let attachmentRoot: HTMLDivElement | undefined = $state(undefined);
   let shouldLoadPreviews = $state(false);
@@ -108,6 +130,22 @@
       <p class="whitespace-pre-wrap">{visibleSummary}</p>
     {/if}
     <div class="mt-1.5 flex items-center justify-end gap-1.5 text-[10px] text-fg-hint">
+      {#if showActionsTrigger && pane}
+        <span class="opacity-0 transition-opacity duration-150 group-hover:opacity-100 focus-within:opacity-100">
+          <button
+            bind:this={actionsAnchor}
+            type="button"
+            class="flex h-5 w-5 items-center justify-center rounded text-fg-hint transition-colors hover:bg-surface-2/60 hover:text-fg focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
+            aria-label="Revert or fork from this message"
+            aria-haspopup="menu"
+            aria-expanded={actionsOpen}
+            title="Revert or fork from this message"
+            onclick={() => (actionsOpen = !actionsOpen)}
+          >
+            <Icon icon={Undo2} size={12} strokeWidth={2.2} />
+          </button>
+        </span>
+      {/if}
       {#if visibleSummary}
         <span class="opacity-0 transition-opacity duration-150 group-hover:opacity-100 focus-within:opacity-100">
           <CopyButton
@@ -123,3 +161,13 @@
     </div>
   </div>
 </div>
+
+{#if pane && showActionsTrigger}
+  <UserMessageActionsPopover
+    {pane}
+    userTurnIndex={item.turnIndex}
+    anchor={actionsAnchor}
+    open={actionsOpen}
+    onClose={() => (actionsOpen = false)}
+  />
+{/if}

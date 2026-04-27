@@ -54,3 +54,15 @@ export interface CheckpointErrorEvent {
   checkpointTurnCount: number;
   error: string;
 }
+
+/**
+ * Activity event emitted via `checkpoint:reverted` after a successful
+ * revert (either mode). The chip strip needs to refresh because the
+ * post-revert turn count has stale entries removed.
+ */
+export interface CheckpointRevertedEvent {
+  threadId: string;
+  turnIndex: number;
+  checkpointTurnCount: number;
+  mode: RevertMode;
+}

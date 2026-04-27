@@ -42,7 +42,7 @@
     </div>
   {/if}
   {#if displayItem.kind === 'user_text'}
-    <UserMessage item={displayItem} {onImageExpand} />
+    <UserMessage {pane} item={displayItem} {onImageExpand} />
   {:else if displayItem.kind === 'tool_call' || displayItem.kind === 'tool_completion'}
     <ToolCallCard {pane} item={displayItem} />
   {:else if displayItem.kind === 'thinking'}
