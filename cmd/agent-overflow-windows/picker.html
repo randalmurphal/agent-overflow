@@ -177,6 +177,13 @@
         to { transform: rotate(360deg); }
       }
     </style>
+    <!--
+      The Wails app server hosts its JS bridge at /wails/runtime.js;
+      without it window.wails is undefined and pick() can't reach the
+      bound PickDistro method. Loaded ahead of the inline script below
+      so the bridge is ready by the time the user clicks a row.
+    -->
+    <script src="/wails/runtime.js"></script>
   </head>
   <body>
     <div class="container">
@@ -205,12 +212,14 @@
       }
 
       function pick(name) {
-        // The Wails binding generator exports
-        // window.wails.Call('App.PickDistro', name) for our
-        // PickDistro(name string) Go method. Fall back to the alpha
-        // bridge name (window._wails) seen in some Wails v3 builds.
-        const target = window.wails || window._wails;
-        if (!target || typeof target.Call !== "function") {
+        // The Wails v3 runtime exposes call-by-FQN as
+        // wails.Call.ByName('<pkgPath>.<Type>.<Method>', ...args). The
+        // FQN itself is rendered in by picker.go via reflect so we don't
+        // hard-code the package/type names here.
+        const callByName =
+          window.wails && window.wails.Call && window.wails.Call.ByName;
+        const fqn = window.__AO_PICK_DISTRO_FQN__;
+        if (typeof callByName !== "function" || !fqn) {
           showError("Internal error: Wails bridge unavailable. Reopen the app.");
           return;
         }
@@ -219,13 +228,11 @@
         // the WSL backend (can take 5-15 seconds on cold boot).
         document.getElementById("distros").style.display = "none";
         document.getElementById("loading").dataset.active = "1";
-        target
-          .Call({ methodName: "App.PickDistro", args: [name] })
-          .catch((err) => {
-            document.getElementById("loading").dataset.active = "0";
-            document.getElementById("distros").style.display = "";
-            showError("Picker error: " + (err && err.message ? err.message : err));
-          });
+        callByName(fqn, name).catch((err) => {
+          document.getElementById("loading").dataset.active = "0";
+          document.getElementById("distros").style.display = "";
+          showError("Picker error: " + (err && err.message ? err.message : err));
+        });
       }
 
       if (!distros.length) {

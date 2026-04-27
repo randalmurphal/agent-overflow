@@ -11,6 +11,7 @@ import (
 	"html/template"
 	"log"
 	"net/http"
+	"reflect"
 	"strings"
 
 	"agent-overflow/internal/wsllauncher"
@@ -176,9 +177,25 @@ func renderPicker(distros []wsllauncher.Distro) ([]byte, error) {
 		return nil, err
 	}
 
+	// Wails v3 registers bound methods under the FQN
+	// `<pkgPath>.<TypeName>.<MethodName>` (see Bindings.Add in
+	// pkg/application/bindings.go). The picker JS needs that exact
+	// string to reach PickDistro via wails.Call.ByName — derive it from
+	// reflect so a rename of launcherApp doesn't silently break the
+	// picker click handler.
+	t := reflect.TypeOf((*launcherApp)(nil)).Elem()
+	fqn := fmt.Sprintf("%s.%s.PickDistro", t.PkgPath(), t.Name())
+	fqnJSON, err := json.Marshal(fqn)
+	if err != nil {
+		return nil, err
+	}
+
 	// Place the inline script before any other <script> in the page so
 	// the consumer-side script reads __AO_DISTROS__ already populated.
-	inj := fmt.Sprintf("<script>window.__AO_DISTROS__ = %s;</script>", string(payload))
+	inj := fmt.Sprintf(
+		"<script>window.__AO_DISTROS__ = %s; window.__AO_PICK_DISTRO_FQN__ = %s;</script>",
+		string(payload), string(fqnJSON),
+	)
 	out := strings.Replace(pickerHTML, "</head>", inj+"</head>", 1)
 	return []byte(out), nil
 }
