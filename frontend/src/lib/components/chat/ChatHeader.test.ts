@@ -229,4 +229,42 @@ describe('<ChatHeader>', () => {
     expect(pane.diffPanel.open).toBe(true);
   });
 
+  it('toggles the terminal drawer via the terminal button', async () => {
+    const pane = await buildPane();
+    const { getByTestId } = render(ChatHeader, { props: { pane } });
+    await tick();
+    expect(pane.showTerminal).toBe(false);
+    await fireEvent.click(getByTestId('terminal-toggle'));
+    expect(pane.showTerminal).toBe(true);
+    await fireEvent.click(getByTestId('terminal-toggle'));
+    expect(pane.showTerminal).toBe(false);
+  });
+
+  it('opens the project root in the editor via the Open button', async () => {
+    const now = Date.now();
+    addProjectLocal({
+      id: 'project-1',
+      path: '/tmp/proj',
+      name: 'Alpha',
+      sortPosition: 0,
+      createdAt: now,
+      updatedAt: now,
+      archived: false,
+    });
+    const open = setBindingMock('OpenInEditor', async () => undefined);
+    const pane = await buildPane();
+    const { getByTestId } = render(ChatHeader, { props: { pane } });
+    await tick();
+    await fireEvent.click(getByTestId('chat-header-open-editor'));
+    await tick();
+    expect(open.mock.calls[0]).toEqual(['/tmp/proj', 0, 0]);
+  });
+
+  it('hides the Open button when the thread has no project', async () => {
+    const pane = await buildPane(makeThread({ projectId: undefined }));
+    const { queryByTestId } = render(ChatHeader, { props: { pane } });
+    await tick();
+    expect(queryByTestId('chat-header-open-editor')).toBeNull();
+  });
+
 });

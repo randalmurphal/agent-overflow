@@ -1,31 +1,42 @@
 <script lang="ts">
-  // Chat header: thread title on the left, project badge + meters +
-  // diff toggle + git actions on the right.
+  // Chat header: thread title + project chip on the left; action
+  // cluster on the right (context meter, Open-in-editor, git actions,
+  // terminal toggle, diff toggle). Layout mirrors t3-code so the chip
+  // travels with the title rather than the actions.
   //
   // The interaction-mode badge is gone (ModeCycleButton on the composer
   // toolbar owns it now), and so is the ModelPicker / RuntimeModePicker
   // / BranchToolbar cluster (composer toolbar + below-composer bar).
   // What remains is the chrome that's either thread-scoped metadata
   // (title, project, workspace stats) or actions users want near the
-  // thread title (diffs, commit/push/PR). Plan review lives in the
-  // composer toolbar next to the mode/access controls.
+  // thread title (open-in-editor, commit/push/PR, terminal, diffs).
+  // Plan review lives in the composer toolbar next to the mode/access
+  // controls.
   //
   // The inline-rename flow below mirrors the behavior the old
   // ChatView.svelte header used: click the title to switch to an input,
   // Enter to submit (RenameThread), Escape / blur to cancel.
 
   import { tick } from 'svelte';
+  import FolderClosed from 'lucide-svelte/icons/folder-closed';
+  import SquareTerminal from 'lucide-svelte/icons/square-terminal';
+  import Diff from 'lucide-svelte/icons/diff';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import type { Thread } from '../../types/models';
-  import { RenameThread, GetThread } from '../../stores/bindings';
+  import {
+    RenameThread,
+    GetThread,
+    OpenInEditor,
+  } from '../../stores/bindings';
   import { replaceThread } from '../../stores/threads.svelte';
   import { errString } from '../../utils/errors';
   import { getProject } from '../../stores/projects.svelte';
   import { expandProject } from '../../stores/sidebar.svelte';
+  import { addToast } from '../../stores/toast.svelte';
   import ContextWindowMeter from './ContextWindowMeter.svelte';
   import GitActionsControl from '../git/GitActionsControl.svelte';
   import Button from '../primitives/Button.svelte';
-  import EditorLink from '../common/EditorLink.svelte';
+  import Icon from '../primitives/Icon.svelte';
 
   interface Props {
     pane: ThreadPane;
@@ -123,6 +134,15 @@
     if (!projectBadge) return;
     expandProject(projectBadge.id);
   }
+
+  async function openProjectInEditor(): Promise<void> {
+    if (!projectBadge) return;
+    try {
+      await OpenInEditor(projectBadge.path, 0, 0);
+    } catch (err) {
+      addToast('error', errString(err));
+    }
+  }
 </script>
 
 {#if pane.thread}
@@ -155,49 +175,77 @@
       </button>
     {/if}
 
+    <!-- Project chip sits inline with the title (matches t3-code's
+         layout: thread name + project pill on the left, action cluster
+         on the right). Click focuses the project in the sidebar. -->
+    {#if projectBadge}
+      <button
+        type="button"
+        onclick={focusProjectInSidebar}
+        data-testid="chat-header-project"
+        title={`Project: ${projectBadge.name}`}
+        class="rounded-[var(--radius-field)] border border-border-subtle px-1.5 py-0.5 text-[11px] text-fg-muted hover:text-fg hover:border-border transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 max-w-[160px] truncate shrink-0"
+      >
+        {projectBadge.name}
+      </button>
+    {/if}
+
     <!-- Right cluster: wraps, doesn't disappear, at narrow widths. -->
     <div class="ml-auto flex items-center gap-1.5 shrink-0 flex-wrap justify-end">
-      {#if projectBadge}
-        <button
-          type="button"
-          onclick={focusProjectInSidebar}
-          data-testid="chat-header-project"
-          title={`Project: ${projectBadge.name}`}
-          class="rounded-[var(--radius-field)] border border-border-subtle px-1.5 py-0.5 text-[11px] text-fg-muted hover:text-fg hover:border-border transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 max-w-[160px] truncate"
-        >
-          {projectBadge.name}
-        </button>
-        <!-- Open the project root in the user's editor. Stays adjacent
-             to the badge it acts on; the icon-only button keeps the
-             header dense at narrow widths. -->
-        <EditorLink
-          path={projectBadge.path}
-          asIcon
-          label={`Open ${projectBadge.name} in editor`}
-          class="shrink-0"
-        />
-      {/if}
-
       {#if pane.contextWindow}
         <div class="shrink-0" data-testid="chat-header-context-meter">
           <ContextWindowMeter data={pane.contextWindow} />
         </div>
       {/if}
 
+      {#if projectBadge}
+        <Button
+          variant="secondary"
+          size="xs"
+          onclick={openProjectInEditor}
+          ariaLabel={`Open ${projectBadge.name} in editor`}
+          title={`Open ${projectBadge.name} in editor`}
+          testId="chat-header-open-editor"
+          class="shrink-0"
+        >
+          {#snippet leading()}
+            <Icon icon={FolderClosed} size={12} strokeWidth={2} class="opacity-90" />
+          {/snippet}
+          {#snippet children()}Open{/snippet}
+        </Button>
+      {/if}
+
+      <GitActionsControl {pane} />
+
       <Button
-        variant="ghost"
+        variant="secondary"
+        size="xs"
+        pressed={pane.showTerminal}
+        ariaLabel="Toggle Terminal"
+        title="Toggle Terminal (⌘J)"
+        onclick={() => pane.toggleTerminal()}
+        testId="terminal-toggle"
+        class="shrink-0 w-6 px-0"
+      >
+        {#snippet children()}
+          <Icon icon={SquareTerminal} size={12} strokeWidth={2} class="opacity-90" />
+        {/snippet}
+      </Button>
+
+      <Button
+        variant="secondary"
         size="xs"
         pressed={pane.diffPanel.open}
         ariaLabel="Toggle Diff Panel"
         title="Toggle Diff Panel (⇧⌘G)"
         onclick={() => pane.toggleDiffPanel()}
         testId="diff-panel-toggle"
-        class="shrink-0"
+        class="shrink-0 w-6 px-0"
       >
-        {#snippet children()}Diffs{/snippet}
+        {#snippet children()}
+          <Icon icon={Diff} size={12} strokeWidth={2} class="opacity-90" />
+        {/snippet}
       </Button>
-
-      <GitActionsControl {pane} />
     </div>
   </div>
 {/if}
