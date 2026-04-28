@@ -26,6 +26,8 @@ export interface KeybindingRule {
   key: string;
   command: string;
   when?: string;
+  defaultId?: string;
+  defaultKey?: string;
 }
 
 export interface ResolvedKeybinding {
@@ -117,17 +119,24 @@ export async function loadKeybindings(): Promise<void> {
   }
 }
 
-/**
- * Replace the persisted user overrides with the provided rules (pass only
- * rules that differ from defaults — the backend re-merges on the next read).
- */
+function isUnchangedDefaultRule(rule: KeybindingRule): boolean {
+  return Boolean(rule.defaultKey) && rule.key === rule.defaultKey;
+}
+
+/** Replace the persisted keybinding overrides with the provided effective rules. */
 export async function saveKeybindings(next: KeybindingRule[]): Promise<void> {
   // The Wails-generated Keybinding class treats optional `when` as
   // `string | undefined` (required-but-maybe-absent) rather than `?:`, so we
   // normalize through the constructor to satisfy the binding's parameter type.
-  const payload = next.map(
+  const payload = next.filter((rule) => !isUnchangedDefaultRule(rule)).map(
     (rule) =>
-      new Keybinding({ key: rule.key, command: rule.command, when: rule.when }),
+      new Keybinding({
+        key: rule.key,
+        command: rule.command,
+        when: rule.when,
+        defaultId: rule.defaultId,
+        defaultKey: rule.defaultKey,
+      }),
   );
   await UpdateKeybindings(payload);
   await loadKeybindings();

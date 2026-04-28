@@ -41,18 +41,24 @@
     rebind(capturingFor, chord);
   }
 
+  function keybindingIdentity(rule: KeybindingRule): string {
+    const identityKey = rule.defaultId ?? rule.defaultKey ?? rule.key;
+    return [rule.command, rule.when ?? '', identityKey].join('\0');
+  }
+
   async function rebind(index: number, newKey: string): Promise<void> {
     if (saving) return;
     saving = true;
     try {
       const rule = rules[index];
       if (!rule) return;
-      // Collapse user overrides into a single list, replacing/adding the
-      // requested binding. The backend re-merges with defaults on read.
+      const selectedIdentity = keybindingIdentity(rule.rule);
+      // Preserve the full effective list while replacing only the selected
+      // default identity. The backend re-merges by defaultId on read.
       const next: KeybindingRule[] = [];
       let replaced = false;
       for (const u of userRules) {
-        if (u.command === rule.rule.command && (u.when ?? '') === (rule.rule.when ?? '')) {
+        if (keybindingIdentity(u) === selectedIdentity) {
           next.push({ ...u, key: newKey });
           replaced = true;
           continue;
@@ -60,7 +66,13 @@
         next.push(u);
       }
       if (!replaced) {
-        next.push({ key: newKey, command: rule.rule.command, when: rule.rule.when });
+        next.push({
+          key: newKey,
+          command: rule.rule.command,
+          when: rule.rule.when,
+          defaultId: rule.rule.defaultId,
+          defaultKey: rule.rule.defaultKey,
+        });
       }
       await saveKeybindings(next);
       addToast('success', `Rebound ${rule.rule.command} to ${newKey}`);
@@ -118,7 +130,7 @@
         </tr>
       </thead>
       <tbody>
-        {#each rules as rule, i (rule.rule.command + ':' + (rule.rule.when ?? ''))}
+        {#each rules as rule, i (keybindingIdentity(rule.rule))}
           <tr class="border-t border-border/50">
             <td class="px-4 py-2 font-mono text-xs text-text-primary">{rule.rule.command}</td>
             <td class="px-4 py-2">

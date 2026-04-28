@@ -146,6 +146,40 @@ describe('keybindings store — loading', () => {
     expect(keybindingForCommand('palette.open')).toBe('mod+o');
   });
 
+  it('saveKeybindings preserves default binding identity', async () => {
+    const update = setBindingMock('UpdateKeybindings', vi.fn(async () => {}));
+    setBindingMock('GetKeybindings', async () => [
+      {
+        key: 'mod+x',
+        command: 'thread.new',
+        when: '!terminalFocus',
+        defaultId: 'thread.new.alternate',
+        defaultKey: 'mod+shift+o',
+      },
+    ]);
+
+    await saveKeybindings([
+      {
+        key: 'mod+x',
+        command: 'thread.new',
+        when: '!terminalFocus',
+        defaultId: 'thread.new.alternate',
+        defaultKey: 'mod+shift+o',
+      },
+    ]);
+
+    expect(update).toHaveBeenCalledTimes(1);
+    expect(update.mock.calls[0]?.[0]).toMatchObject([
+      {
+        key: 'mod+x',
+        command: 'thread.new',
+        when: '!terminalFocus',
+        defaultId: 'thread.new.alternate',
+        defaultKey: 'mod+shift+o',
+      },
+    ]);
+  });
+
   it('resetKeybindingsToDefaults triggers ResetKeybindings then reloads', async () => {
     const reset = vi.fn(async () => {});
     setBindingMock('ResetKeybindings', reset);

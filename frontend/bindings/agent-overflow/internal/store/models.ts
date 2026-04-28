@@ -129,9 +129,10 @@ export class Checkpoint {
     /**
      * ToolPaths records the workspace-relative paths the agent's
      * file-mutating tools wrote during the turn this checkpoint closes.
-     * Bash side effects are intentionally NOT tracked. Pre-v32 rows have
-     * an empty slice and trigger the legacy full-workspace restore in
-     * RevertToCheckpoint.
+     * Bash side effects are intentionally NOT tracked. An empty slice
+     * means the agent did no file-mutating tool calls during the turn
+     * (or the row predates v32) — a conversation-and-files revert
+     * targeting such a row is a no-op on the worktree.
      */
     "toolPaths": string[];
     "assistantMessageId"?: string;

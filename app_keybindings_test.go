@@ -25,6 +25,12 @@ func TestGetKeybindingsReturnsDefaultsWhenNoFile(t *testing.T) {
 	wantPalette := false
 	wantSidebar := false
 	for _, b := range kb {
+		if b.DefaultID == "" {
+			t.Fatalf("default %s returned empty DefaultID", b.Command)
+		}
+		if b.DefaultKey != b.Key {
+			t.Fatalf("default %s returned DefaultKey = %q, want %q", b.Command, b.DefaultKey, b.Key)
+		}
 		if b.Command == "palette.open" && b.Key == "mod+shift+k" {
 			wantPalette = true
 		}
@@ -83,6 +89,19 @@ func TestDefaultKeybindingsHaveUniqueKeyWhenTuples(t *testing.T) {
 	}
 }
 
+func TestDefaultKeybindingsHaveUniqueDefaultIDs(t *testing.T) {
+	seen := make(map[string]bool)
+	for i, b := range DefaultKeybindings {
+		if b.DefaultID == "" {
+			t.Fatalf("DefaultKeybindings[%d] has empty DefaultID", i)
+		}
+		if seen[b.DefaultID] {
+			t.Fatalf("DefaultKeybindings[%d] duplicates DefaultID %q", i, b.DefaultID)
+		}
+		seen[b.DefaultID] = true
+	}
+}
+
 // TestDefaultKeybindingsUseValidChordSyntax is a smoke test guarding
 // against typos like "mod+/ " or empty keys making it into defaults.
 // The frontend's tryParseChord is the authoritative validator, but we
@@ -131,7 +150,7 @@ func TestUpdateKeybindingsPersistsAndMergesOverDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetKeybindings() error = %v", err)
 	}
-	// Palette should be rebound to mod+shift+p (override by command+when).
+	// Palette should be rebound to mod+shift+p (legacy override by command+when).
 	var palette Keybinding
 	var termToggle Keybinding
 	for _, b := range merged {
@@ -144,6 +163,12 @@ func TestUpdateKeybindingsPersistsAndMergesOverDefaults(t *testing.T) {
 	}
 	if palette.Key != "mod+shift+p" {
 		t.Fatalf("palette.open key = %q, want mod+shift+p", palette.Key)
+	}
+	if palette.DefaultKey != "mod+shift+k" {
+		t.Fatalf("palette.open defaultKey = %q, want mod+shift+k", palette.DefaultKey)
+	}
+	if palette.DefaultID != "palette.open" {
+		t.Fatalf("palette.open defaultID = %q, want palette.open", palette.DefaultID)
 	}
 	if termToggle.Key != "mod+l" {
 		t.Fatalf("terminal.toggle key = %q, want mod+l", termToggle.Key)
@@ -271,5 +296,88 @@ func TestMergeKeybindingsPreservesOverriddenAndRetainsDefaults(t *testing.T) {
 	}
 	if paletteKey != "mod+p" {
 		t.Fatalf("palette key = %q, want mod+p", paletteKey)
+	}
+}
+
+func TestMergeKeybindingsUsesDefaultKeyForDuplicateCommandContexts(t *testing.T) {
+	defaults := []Keybinding{
+		{Key: "mod+n", Command: "thread.new", When: "!terminalFocus", DefaultID: "thread.new.primary"},
+		{Key: "mod+shift+o", Command: "thread.new", When: "!terminalFocus", DefaultID: "thread.new.alternate"},
+	}
+	user := []Keybinding{
+		{
+			Key:       "mod+x",
+			Command:   "thread.new",
+			When:      "!terminalFocus",
+			DefaultID: "thread.new.alternate",
+		},
+	}
+
+	out := mergeKeybindings(defaults, user)
+
+	seenOriginal := false
+	seenRebound := false
+	for _, b := range out {
+		if b.Command != "thread.new" || b.When != "!terminalFocus" {
+			continue
+		}
+		switch {
+		case b.Key == "mod+n" && b.DefaultID == "thread.new.primary" && b.DefaultKey == "mod+n":
+			seenOriginal = true
+		case b.Key == "mod+x" && b.DefaultID == "thread.new.alternate" && b.DefaultKey == "mod+shift+o":
+			seenRebound = true
+		}
+	}
+	if !seenOriginal {
+		t.Fatal("original mod+n thread.new binding missing")
+	}
+	if !seenRebound {
+		t.Fatal("rebound mod+shift+o thread.new binding missing")
+	}
+}
+
+func TestMergeKeybindingsMigratesLegacyDefaultKeyIdentity(t *testing.T) {
+	defaults := []Keybinding{
+		{Key: "mod+n", Command: "thread.new", When: "!terminalFocus", DefaultID: "thread.new.primary"},
+		{Key: "mod+shift+o", Command: "thread.new", When: "!terminalFocus", DefaultID: "thread.new.alternate"},
+	}
+	user := []Keybinding{
+		{
+			Key:        "mod+x",
+			Command:    "thread.new",
+			When:       "!terminalFocus",
+			DefaultKey: "mod+shift+o",
+		},
+	}
+
+	out := mergeKeybindings(defaults, user)
+
+	for _, b := range out {
+		if b.Key == "mod+x" {
+			if b.DefaultID != "thread.new.alternate" {
+				t.Fatalf("migrated override DefaultID = %q, want thread.new.alternate", b.DefaultID)
+			}
+			return
+		}
+	}
+	t.Fatal("migrated override missing")
+}
+
+func TestMergeKeybindingsAppendsOverridesAfterDefaultsForRuntimePrecedence(t *testing.T) {
+	defaults := []Keybinding{
+		{Key: "mod+x", Command: "command.a", DefaultID: "command.a"},
+		{Key: "mod+y", Command: "command.b", DefaultID: "command.b"},
+	}
+	user := []Keybinding{
+		{Key: "mod+y", Command: "command.a", DefaultID: "command.a"},
+	}
+
+	out := mergeKeybindings(defaults, user)
+
+	if len(out) != 2 {
+		t.Fatalf("merged len = %d, want 2", len(out))
+	}
+	if out[0].Command != "command.b" || out[1].Command != "command.a" {
+		t.Fatalf("merged order = [%s, %s], want defaults before override", out[0].Command, out[1].Command)
 	}
 }

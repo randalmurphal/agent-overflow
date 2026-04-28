@@ -405,15 +405,21 @@ export class GitStatusSubscriptionResult {
 }
 
 /**
- * Keybinding is the on-disk / over-the-wire shape of a single user keybinding.
+ * Keybinding is the on-disk / over-the-wire shape of a single keybinding.
  * `When` is an optional VS Code-style context expression (e.g. "!terminalFocus"
- * or "terminalOpen && !approvalPending"). It is validated at parse-time on the
- * frontend; the backend persists the string verbatim.
+ * or "terminalOpen && !approvalPending"). `DefaultID` identifies the shipped
+ * default row that a user entry overrides, so multiple default chords can target
+ * the same command under the same context and still be rebound independently.
+ * `DefaultKey` is retained as a legacy fallback for configs written before
+ * stable IDs existed. The frontend validates key and when syntax; the backend
+ * persists the strings verbatim after checking required fields are present.
  */
 export class Keybinding {
     "key": string;
     "command": string;
     "when"?: string;
+    "defaultId"?: string;
+    "defaultKey"?: string;
 
     /** Creates a new Keybinding instance. */
     constructor($$source: Partial<Keybinding> = {}) {
