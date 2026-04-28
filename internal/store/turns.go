@@ -130,6 +130,27 @@ func (s *Store) GetTurn(turnID string) (Turn, bool, error) {
 	return turn, true, nil
 }
 
+// GetTurnByThreadIndex returns a single turn by (thread, turn_index).
+// Used by triage at the next-turn-start checkpoint re-capture path,
+// where the prior turn's row needs to be reconstructed into a
+// TurnCompletedEvent so cumulative-state checkpoints can be issued for
+// the multi-result-per-turn case (two `result` envelopes for one
+// logical turn). Returns (Turn{}, false, nil) when no row exists.
+func (s *Store) GetTurnByThreadIndex(threadID string, turnIndex int) (Turn, bool, error) {
+	row := s.db.QueryRow(
+		`SELECT `+turnColumns+` FROM turns WHERE thread_id = ? AND turn_index = ?`,
+		threadID, turnIndex,
+	)
+	turn, err := scanTurnRow(row)
+	if err == sql.ErrNoRows {
+		return Turn{}, false, nil
+	}
+	if err != nil {
+		return Turn{}, false, fmt.Errorf("store: get turn %s/%d: %w", threadID, turnIndex, err)
+	}
+	return turn, true, nil
+}
+
 // ListRecentTurns returns the N most recent turns for a thread, newest
 // first (turn_index DESC). Used by the frontend on thread-switch to
 // hydrate latestSettledTurn. A non-positive limit returns an empty

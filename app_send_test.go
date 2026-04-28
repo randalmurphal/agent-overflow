@@ -710,8 +710,16 @@ func TestSendMessageFirstTurnCapturesInitialAndCompletedCheckpoints(t *testing.T
 	}); err != nil {
 		t.Fatalf("handle turn complete: %v", err)
 	}
+	// Capture for turn 0 happens at the NEXT user-send (matching Claude
+	// Code's fileHistoryMakeSnapshot at user-prompt-submit). Send a
+	// second message to trigger it. Checkpoint #1 then reflects the
+	// working tree at the moment the user committed to turn 1 —
+	// including the agent-output.txt written during turn 0.
+	if err := app.SendMessage(thread.ID, "second turn", nil); err != nil {
+		t.Fatalf("SendMessage(second) error = %v", err)
+	}
 	if _, ok, err := app.store.GetCheckpointByTurnCount(thread.ID, 1); err != nil || !ok {
-		t.Fatalf("checkpoint turn 1 missing after first completion: ok=%v err=%v", ok, err)
+		t.Fatalf("checkpoint turn 1 missing after second user-send: ok=%v err=%v", ok, err)
 	}
 }
 

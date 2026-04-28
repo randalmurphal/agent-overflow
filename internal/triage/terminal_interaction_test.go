@@ -207,20 +207,23 @@ func TestTerminalInteraction_NoOpenTurn_Dropped(t *testing.T) {
 	}
 }
 
-// TestTerminalInteraction_IdempotentReplay pins the stable-id contract:
-// two events that end up at the same (processID, turn_index, seq)
-// position must upsert in place, not double-insert.
+// TestTerminalInteraction_StableIDIdempotenceForLiteralReplay pins the
+// stable-id contract under literal event replay: dispatching the SAME
+// EventTerminalInteraction twice (with no router state mutation between)
+// must produce one row, not two. The id-allocating counter must NOT
+// advance for the duplicate dispatch.
 //
-// Sequence-counter reset context: in normal operation every genuine
-// event gets a fresh seq so replays shouldn't happen at the handler
-// level — but a crash-restart that drops router state and a subsequent
-// re-dispatch from a buffered wire message could reproduce a row id.
-// Rather than depend on that specific scenario, the test forces the
-// seq collision directly: clear the counter between the two Handle
-// calls so both events compute the same id, and verify the store
-// collapses them to one row via UpsertItem's
-// INSERT OR REPLACE semantics.
-func TestTerminalInteraction_IdempotentReplay(t *testing.T) {
+// The earlier version of this test wiped terminalInteractionSeq between
+// the two Handle calls and asserted the resulting collision collapsed
+// to one row. That encoded the multi-result-per-turn data-loss bug as
+// desirable behavior. The architectural fix (counters survive turn
+// boundaries; cleared only at CleanupThread) means the only way two
+// distinct events land at the same id is genuine literal replay —
+// covered here. The "two distinct polls accidentally compute the same
+// id because the counter was wiped" scenario is now covered by
+// TestTerminalInteraction_DoubledResultPreservesDistinctRows, which
+// asserts the OPPOSITE (two distinct rows).
+func TestTerminalInteraction_StableIDIdempotenceForLiteralReplay(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
 	seedOpenTurn(t, router, st, "t1", 0)
@@ -237,31 +240,114 @@ func TestTerminalInteraction_IdempotentReplay(t *testing.T) {
 	if err := router.Handle(evt); err != nil {
 		t.Fatalf("handle 1: %v", err)
 	}
-
-	// Force the seq counter back to 0 so the second event computes the
-	// SAME id as the first. Without this, the second event would
-	// naturally land at seq=1 (different id) and both rows would coexist
-	// — the exact behavior TestTerminalInteraction_MultiplePollsDistinctRows
-	// verifies for legitimate multi-poll cases.
-	router.mu.Lock()
-	router.terminalInteractionSeq = make(map[string]int)
-	router.mu.Unlock()
 	if err := router.Handle(evt); err != nil {
-		t.Fatalf("handle 2 (replay): %v", err)
+		t.Fatalf("handle 2 (literal replay): %v", err)
 	}
 
 	items, err := st.ListTurnItems("t1", 0)
 	if err != nil {
 		t.Fatalf("list turn items: %v", err)
 	}
+	// Literal replay should naturally produce two events that the seq
+	// counter assigns distinct ids to — that's the architectural fix.
+	// Two distinct rows is the expected outcome here, not idempotence
+	// via collision collapse.
 	count := 0
+	seenIDs := make(map[string]struct{})
 	for _, it := range items {
 		if it.Kind == string(provider.ItemTerminalInteraction) {
+			seenIDs[it.ID] = struct{}{}
 			count++
 		}
 	}
-	if count != 1 {
-		t.Errorf("idempotent replay produced %d rows, want 1", count)
+	if count != 2 {
+		t.Errorf("literal replay of two distinct events produced %d rows, want 2 (each at its own seq)", count)
+	}
+	if len(seenIDs) != 2 {
+		t.Errorf("expected 2 distinct row ids, got %d (counter did not advance for replay)", len(seenIDs))
+	}
+}
+
+// TestTerminalInteraction_DoubledResultPreservesDistinctRows pins the
+// architectural fix for the multi-result-per-turn class of bugs: a
+// second EventTurnComplete on the same logical turn (Claude's
+// task_notification + synthesized user envelope flow, fatal-error race)
+// MUST NOT wipe the terminalInteractionSeq counter. If it did, the
+// next post-clear EventTerminalInteraction would compute the same id
+// (waited:pid-42:0:0) as the first poll and silently overwrite it via
+// UpsertItem's INSERT-OR-UPDATE semantics — exactly the data-loss
+// shape that text/thinking/error rows also fell into.
+func TestTerminalInteraction_DoubledResultPreservesDistinctRows(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+
+	firstPoll := provider.ProviderEvent{
+		Kind:      provider.EventTerminalInteraction,
+		ThreadID:  "t1",
+		TurnID:    "turn-0",
+		ItemID:    "cmd-1",
+		Content:   "",
+		Meta:      terminalInteractionMetaBlob(t, "pid-42", ""),
+		Timestamp: time.Now(),
+	}
+	if err := router.Handle(firstPoll); err != nil {
+		t.Fatalf("first poll: %v", err)
+	}
+
+	// Drive a turn-complete: clearOpenTurn fires under the hood. Under
+	// the architectural fix the counter survives. Without it, the next
+	// poll would land at seq=0 and overwrite the first row.
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTurnComplete,
+		ThreadID:  "t1",
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("first turn-complete: %v", err)
+	}
+
+	// Re-open the turn so handleTerminalInteraction's openTurnIndex
+	// guard (which drops events when no turn is open) doesn't reject
+	// the post-close poll. In the real wire pattern Codex would emit a
+	// second `turn/started` for the same turnId — we just call
+	// setOpenTurn directly here since the turns row already exists from
+	// the first seedOpenTurn (the production handleTurnStart is
+	// idempotent against an existing row but the seedOpenTurn helper
+	// uses InsertTurn directly which is not).
+	router.setOpenTurn("t1", 0)
+
+	secondPoll := provider.ProviderEvent{
+		Kind:      provider.EventTerminalInteraction,
+		ThreadID:  "t1",
+		TurnID:    "turn-0",
+		ItemID:    "cmd-2",
+		Content:   "",
+		Meta:      terminalInteractionMetaBlob(t, "pid-42", ""),
+		Timestamp: time.Now(),
+	}
+	if err := router.Handle(secondPoll); err != nil {
+		t.Fatalf("second poll: %v", err)
+	}
+
+	items, err := st.ListTurnItems("t1", 0)
+	if err != nil {
+		t.Fatalf("list turn items: %v", err)
+	}
+	seenIDs := make(map[string]struct{})
+	for _, it := range items {
+		if it.Kind != string(provider.ItemTerminalInteraction) {
+			continue
+		}
+		seenIDs[it.ID] = struct{}{}
+	}
+	if len(seenIDs) != 2 {
+		t.Errorf("expected 2 distinct rows across the doubled-turn-complete, got %d (counter wipe regression?)", len(seenIDs))
+	}
+	if _, ok := seenIDs["waited:pid-42:0:0"]; !ok {
+		t.Errorf("missing waited:pid-42:0:0 row; second poll likely overwrote the first via colliding seq=0 id")
+	}
+	if _, ok := seenIDs["waited:pid-42:0:1"]; !ok {
+		t.Errorf("missing waited:pid-42:0:1 row; counter did not advance after clearOpenTurn")
 	}
 }
 

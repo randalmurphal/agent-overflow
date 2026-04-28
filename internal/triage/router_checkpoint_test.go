@@ -235,44 +235,75 @@ func TestHandleTurnStartDoubleFiresAreDedupedPerTurn(t *testing.T) {
 	}
 }
 
-func TestHandleTurnStartOnlyCapturesInitialBaseline(t *testing.T) {
+// TestHandleTurnStartCapturesPriorTurnCheckpoint pins the user-send-time
+// capture pattern (matches Claude Code's QueryEngine.ts:641-655 behavior:
+// fileHistoryMakeSnapshot fires at user-prompt-submit, not at turn end).
+//
+// Turn 0 start → baseline (checkpoint #0).
+// Turn 0 events stream + complete → NO capture at turn end.
+// Turn 1 start → captures the PRIOR turn's completion checkpoint (#1)
+//                with the working tree state at the moment of user-send.
+//
+// Two captures total: baseline + prior-turn-completion.
+func TestHandleTurnStartCapturesPriorTurnCheckpoint(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
 
 	fake := &fakeCheckpointStore{isRepo: true}
 	router.SetCheckpointStore(fake)
 
-	for _, turnIndex := range []int{0, 1} {
-		if err := router.Handle(provider.ProviderEvent{
-			Kind:      provider.EventTurnStart,
-			ThreadID:  "t1",
-			TurnIndex: turnIndex,
-			Timestamp: time.Now(),
-		}); err != nil {
-			t.Fatalf("handle turn %d: %v", turnIndex, err)
-		}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnStart, ThreadID: "t1", TurnIndex: 0,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle turn 0 start: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnComplete, ThreadID: "t1", TurnIndex: 0,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle turn 0 complete: %v", err)
 	}
 
+	// Mid-stream snapshot: only the baseline checkpoint exists. Capture
+	// for turn 0 is deliberately deferred until the user submits the
+	// next prompt.
 	if len(fake.capturedCalls) != 1 {
-		t.Fatalf("capture calls = %d, want initial baseline only", len(fake.capturedCalls))
+		t.Fatalf("after turn 0 complete: capture calls = %d, want 1 (baseline only)", len(fake.capturedCalls))
 	}
-	if fake.capturedCalls[0].TurnIndex != 0 {
-		t.Fatalf("first checkpoint turn = %d, want 0", fake.capturedCalls[0].TurnIndex)
+	if rows, err := st.ListCheckpoints("t1"); err != nil {
+		t.Fatalf("list checkpoints after turn 0 complete: %v", err)
+	} else if len(rows) != 1 || rows[0].CheckpointTurnCount != 0 {
+		t.Fatalf("checkpoints after turn 0 complete = %+v, want only baseline", rows)
 	}
 
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnStart, ThreadID: "t1", TurnIndex: 1,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle turn 1 start: %v", err)
+	}
+
+	if len(fake.capturedCalls) != 2 {
+		t.Fatalf("after turn 1 start: capture calls = %d, want 2 (baseline + prior-turn capture)", len(fake.capturedCalls))
+	}
+	if fake.capturedCalls[1].TurnIndex != 1 {
+		t.Fatalf("prior-turn checkpoint turn count = %d, want 1", fake.capturedCalls[1].TurnIndex)
+	}
 	rows, err := st.ListCheckpoints("t1")
 	if err != nil {
 		t.Fatalf("list checkpoints: %v", err)
 	}
-	if len(rows) != 1 {
-		t.Fatalf("checkpoint rows = %d, want 1", len(rows))
-	}
-	if rows[0].CheckpointTurnCount != 0 {
-		t.Fatalf("checkpoint turn = %d, want 0", rows[0].CheckpointTurnCount)
+	if len(rows) != 2 {
+		t.Fatalf("checkpoint rows = %d, want 2", len(rows))
 	}
 }
 
-func TestHandleTurnCompleteCapturesErroredTurnCheckpoint(t *testing.T) {
+// Errored turn metadata (from EventTurnComplete.Meta.error) is preserved
+// in the turns row at turn-end; capture happens at the NEXT turn-start
+// and reads the prior turn's row to derive the checkpoint status. The
+// "error" status flows through end-to-end.
+func TestErroredTurnCheckpointAtNextTurnStart(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
 
@@ -280,30 +311,31 @@ func TestHandleTurnCompleteCapturesErroredTurnCheckpoint(t *testing.T) {
 	router.SetCheckpointStore(fake)
 
 	if err := router.Handle(provider.ProviderEvent{
-		Kind:      provider.EventTurnStart,
-		ThreadID:  "t1",
-		TurnID:    "turn-1",
-		TurnIndex: 0,
-		Timestamp: time.Now(),
+		Kind: provider.EventTurnStart, ThreadID: "t1",
+		TurnID: "turn-0", TurnIndex: 0, Timestamp: time.Now(),
 	}); err != nil {
-		t.Fatalf("handle start: %v", err)
+		t.Fatalf("turn 0 start: %v", err)
 	}
 	if err := router.Handle(provider.ProviderEvent{
-		Kind:      provider.EventTurnComplete,
-		ThreadID:  "t1",
-		TurnID:    "turn-1",
-		TurnIndex: 0,
+		Kind: provider.EventTurnComplete, ThreadID: "t1",
+		TurnID: "turn-0", TurnIndex: 0,
 		Meta:      json.RawMessage(`{"error":"tool failed"}`),
 		Timestamp: time.Now(),
 	}); err != nil {
-		t.Fatalf("handle complete: %v", err)
+		t.Fatalf("turn 0 complete: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnStart, ThreadID: "t1",
+		TurnID: "turn-1", TurnIndex: 1, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn 1 start (triggers prior-turn capture): %v", err)
 	}
 
 	if len(fake.capturedCalls) != 2 {
-		t.Fatalf("capture calls = %d, want baseline + completed checkpoint", len(fake.capturedCalls))
+		t.Fatalf("capture calls = %d, want baseline + prior-turn capture", len(fake.capturedCalls))
 	}
 	if fake.capturedCalls[1].TurnIndex != 1 {
-		t.Fatalf("completed checkpoint turn = %d, want 1", fake.capturedCalls[1].TurnIndex)
+		t.Fatalf("prior-turn checkpoint turn = %d, want 1", fake.capturedCalls[1].TurnIndex)
 	}
 	got, ok, err := st.GetCheckpointByTurnCount("t1", 1)
 	if err != nil || !ok {
@@ -314,7 +346,11 @@ func TestHandleTurnCompleteCapturesErroredTurnCheckpoint(t *testing.T) {
 	}
 }
 
-func TestHandleTurnCompleteCapturesInterruptedTurnCheckpoint(t *testing.T) {
+// Interrupted turn metadata (from EventTurnComplete.Meta.turn_status:
+// "interrupted") is preserved on the turns row and surfaced in the
+// next-turn-start capture. The Aborted flag derives from
+// turn.StopReason == "interrupted" in capturePriorTurnCheckpoint.
+func TestInterruptedTurnCheckpointAtNextTurnStart(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
 
@@ -322,23 +358,24 @@ func TestHandleTurnCompleteCapturesInterruptedTurnCheckpoint(t *testing.T) {
 	router.SetCheckpointStore(fake)
 
 	if err := router.Handle(provider.ProviderEvent{
-		Kind:      provider.EventTurnStart,
-		ThreadID:  "t1",
-		TurnID:    "turn-1",
-		TurnIndex: 0,
-		Timestamp: time.Now(),
+		Kind: provider.EventTurnStart, ThreadID: "t1",
+		TurnID: "turn-0", TurnIndex: 0, Timestamp: time.Now(),
 	}); err != nil {
-		t.Fatalf("handle start: %v", err)
+		t.Fatalf("turn 0 start: %v", err)
 	}
 	if err := router.Handle(provider.ProviderEvent{
-		Kind:      provider.EventTurnComplete,
-		ThreadID:  "t1",
-		TurnID:    "turn-1",
-		TurnIndex: 0,
+		Kind: provider.EventTurnComplete, ThreadID: "t1",
+		TurnID: "turn-0", TurnIndex: 0,
 		Meta:      json.RawMessage(`{"turn_status":"interrupted"}`),
 		Timestamp: time.Now(),
 	}); err != nil {
-		t.Fatalf("handle complete: %v", err)
+		t.Fatalf("turn 0 complete: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnStart, ThreadID: "t1",
+		TurnID: "turn-1", TurnIndex: 1, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn 1 start (triggers prior-turn capture): %v", err)
 	}
 
 	got, ok, err := st.GetCheckpointByTurnCount("t1", 1)
@@ -350,78 +387,98 @@ func TestHandleTurnCompleteCapturesInterruptedTurnCheckpoint(t *testing.T) {
 	}
 }
 
-func TestHandleTurnStartDoesNotReplaceCompletedCheckpoint(t *testing.T) {
+// TestThirdTurnStartDoesNotReplacePriorCheckpoint pins that re-issuing
+// EventTurnStart for an already-captured prior turn does NOT trigger a
+// duplicate capture. Specifically: if turn 1 already started (which
+// captured turn 0's checkpoint) and turn 2 starts (which captures turn
+// 1's checkpoint), the turn 0 checkpoint is left alone — only the
+// turn 1 capture is freshly fired.
+func TestThirdTurnStartDoesNotReplacePriorCheckpoint(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
 
 	fake := &fakeCheckpointStore{isRepo: true}
 	router.SetCheckpointStore(fake)
 
-	if err := router.Handle(provider.ProviderEvent{
-		Kind:      provider.EventTurnStart,
-		ThreadID:  "t1",
-		TurnID:    "turn-0",
-		TurnIndex: 0,
-		Timestamp: time.Now(),
-	}); err != nil {
-		t.Fatalf("handle start turn 0: %v", err)
-	}
-	if err := router.Handle(provider.ProviderEvent{
-		Kind:      provider.EventTurnComplete,
-		ThreadID:  "t1",
-		TurnID:    "turn-0",
-		TurnIndex: 0,
-		Timestamp: time.Now(),
-	}); err != nil {
-		t.Fatalf("handle complete turn 0: %v", err)
-	}
-	before, ok, err := st.GetCheckpointByTurnCount("t1", 1)
-	if err != nil || !ok {
-		t.Fatalf("checkpoint turn 1 missing before next start: ok=%v err=%v", ok, err)
+	for _, idx := range []int{0, 1, 2} {
+		if err := router.Handle(provider.ProviderEvent{
+			Kind: provider.EventTurnStart, ThreadID: "t1",
+			TurnID: fmt.Sprintf("turn-%d", idx), TurnIndex: idx,
+			Timestamp: time.Now(),
+		}); err != nil {
+			t.Fatalf("turn %d start: %v", idx, err)
+		}
+		if err := router.Handle(provider.ProviderEvent{
+			Kind: provider.EventTurnComplete, ThreadID: "t1",
+			TurnID: fmt.Sprintf("turn-%d", idx), TurnIndex: idx,
+			Timestamp: time.Now(),
+		}); err != nil {
+			t.Fatalf("turn %d complete: %v", idx, err)
+		}
 	}
 
-	if err := router.Handle(provider.ProviderEvent{
-		Kind:      provider.EventTurnStart,
-		ThreadID:  "t1",
-		TurnID:    "turn-1",
-		TurnIndex: 1,
-		Timestamp: time.Now(),
-	}); err != nil {
-		t.Fatalf("handle start turn 1: %v", err)
+	beforeCount := len(fake.capturedCalls)
+	beforeTurn1, ok, err := st.GetCheckpointByTurnCount("t1", 1)
+	if err != nil || !ok {
+		t.Fatalf("checkpoint turn 1 missing: ok=%v err=%v", ok, err)
 	}
 
-	after, ok, err := st.GetCheckpointByTurnCount("t1", 1)
+	// One more TurnStart (turn 3) — should re-capture for turn 2 only,
+	// not turn 1 again.
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnStart, ThreadID: "t1",
+		TurnID: "turn-3", TurnIndex: 3, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn 3 start: %v", err)
+	}
+
+	if got := len(fake.capturedCalls); got != beforeCount+1 {
+		t.Fatalf("capture calls = %d, want %d (one prior-turn capture per turn-start)", got, beforeCount+1)
+	}
+	afterTurn1, ok, err := st.GetCheckpointByTurnCount("t1", 1)
 	if err != nil || !ok {
-		t.Fatalf("checkpoint turn 1 missing after next start: ok=%v err=%v", ok, err)
+		t.Fatalf("checkpoint turn 1 missing after turn 3 start: ok=%v err=%v", ok, err)
 	}
-	if after.RefName != before.RefName || after.CapturedAt != before.CapturedAt {
-		t.Fatalf("checkpoint turn 1 changed after next turn start: before=%+v after=%+v", before, after)
-	}
-	if len(fake.capturedCalls) != 2 {
-		t.Fatalf("capture calls = %d, want baseline + completed checkpoint only", len(fake.capturedCalls))
+	if afterTurn1.RefName != beforeTurn1.RefName || afterTurn1.CapturedAt != beforeTurn1.CapturedAt {
+		t.Fatalf("checkpoint turn 1 mutated when turn 3 started: before=%+v after=%+v", beforeTurn1, afterTurn1)
 	}
 }
 
-func TestHandleTurnCompleteCapturesCheckpointWhenPreviousMissing(t *testing.T) {
+// TestPriorTurnCheckpointAtNextStartWhenBaselineMissing exercises the
+// crash-recovery shape: a thread is resumed on turn 1 with no
+// pre-existing baseline (turn 0's start was never observed). The
+// captureCompletedTurnCheckpoint code path must still fire at the next
+// turn-start, even though the previous (baseline) checkpoint is
+// missing — the diff-against-previous step degrades gracefully to
+// `files=nil` rather than aborting the capture.
+func TestPriorTurnCheckpointAtNextStartWhenBaselineMissing(t *testing.T) {
 	router, st, emissions := newTestRouter(t)
 	createTestThread(t, st, "t1")
 
 	fake := &fakeCheckpointStore{isRepo: true}
 	router.SetCheckpointStore(fake)
-	router.setOpenTurn("t1", 1)
+
+	// Seed a turns row at index 1 directly (skip turn 0 entirely so the
+	// baseline checkpoint is missing). Then drive turn 2 start, which
+	// must capture for the prior turn 1.
+	if err := st.InsertTurn(store.Turn{
+		TurnID:    "turn-1",
+		ThreadID:  "t1",
+		TurnIndex: 1,
+		StartedAt: time.Now().UnixMilli(),
+	}); err != nil {
+		t.Fatalf("seed turn 1 row: %v", err)
+	}
 
 	if err := router.Handle(provider.ProviderEvent{
-		Kind:      provider.EventTurnComplete,
-		ThreadID:  "t1",
-		TurnID:    "turn-1",
-		TurnIndex: 1,
-		Timestamp: time.Now(),
+		Kind: provider.EventTurnStart, ThreadID: "t1",
+		TurnID: "turn-2", TurnIndex: 2, Timestamp: time.Now(),
 	}); err != nil {
-		t.Fatalf("handle complete: %v", err)
+		t.Fatalf("handle turn 2 start: %v", err)
 	}
 
 	if len(fake.capturedCalls) != 1 {
-		t.Fatalf("capture calls = %+v, want completed checkpoint even when prior checkpoint is missing", fake.capturedCalls)
+		t.Fatalf("capture calls = %+v, want prior-turn capture even when baseline is missing", fake.capturedCalls)
 	}
 	if fake.capturedCalls[0].TurnIndex != 2 {
 		t.Fatalf("captured checkpoint turn = %d, want 2", fake.capturedCalls[0].TurnIndex)
@@ -521,8 +578,14 @@ func TestCleanupThreadClearsCheckpointTrackingState(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("handle second turn: %v", err)
 	}
-	if len(fake.capturedCalls) != 1 {
-		t.Errorf("expected only the initial baseline capture, got %d", len(fake.capturedCalls))
+	// First TurnStart fires the baseline capture (turn 0). Second
+	// TurnStart resolves to turn_index=1 (LastTurnIndex from the
+	// inserted item) and fires capturePriorTurnCheckpoint(0), which
+	// looks up the turns row inserted by the FIRST TurnStart and
+	// captures checkpoint #1. Two captures total — that's the
+	// expected behavior under the user-send-time capture model.
+	if len(fake.capturedCalls) != 2 {
+		t.Errorf("expected baseline + prior-turn capture (2), got %d", len(fake.capturedCalls))
 	}
 }
 
@@ -800,6 +863,16 @@ func TestToolPathsRecordedPerTurnAcrossMultipleTurns(t *testing.T) {
 	turn(0, "tool-0", "a.txt")
 	turn(1, "tool-1", "b.txt")
 
+	// Capture for each prior turn now happens at the NEXT TurnStart
+	// (Claude Code parity). To exercise both checkpoints in this test,
+	// fire one more TurnStart so turn 1's checkpoint is captured.
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnStart, ThreadID: "t1",
+		TurnID: "turn-2", TurnIndex: 2, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn 2 start (triggers capture for turn 1): %v", err)
+	}
+
 	// Turn count = TurnIndex + 1; the per-turn checkpoints land at
 	// counts 1 and 2.
 	c1, ok, err := st.GetCheckpointByTurnCount("t1", 1)
@@ -859,11 +932,224 @@ func TestToolPathsDroppedOnFailedToolCompletion(t *testing.T) {
 		t.Fatalf("turn complete: %v", err)
 	}
 
+	// Trigger the prior-turn capture by firing the next TurnStart.
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnStart, ThreadID: "t1",
+		TurnID: "turn-1", TurnIndex: 1, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn 1 start (triggers capture for turn 0): %v", err)
+	}
+
 	c, ok, err := st.GetCheckpointByTurnCount("t1", 1)
 	if err != nil || !ok {
 		t.Fatalf("checkpoint missing: ok=%v err=%v", ok, err)
 	}
 	if len(c.ToolPaths) != 0 {
 		t.Errorf("failed tool should not record paths, got %v", c.ToolPaths)
+	}
+}
+
+// TestMultiResultCheckpointCumulativeToolPaths pins the multi-result
+// fix end-to-end at the checkpoint layer: two `result` envelopes for
+// one logical user prompt produce ONE checkpoint at the next user-send
+// containing the cumulative tool paths from both halves.
+//
+// The wire pattern (Claude task_notification → CLI synthesizes a
+// `type:"user"` envelope → second `result`) results in:
+//   1. First half: tool completes write a.txt → committedToolPaths[t1|0]=[a.txt].
+//   2. First EventTurnComplete fires → handleTurnComplete runs but does
+//      NOT capture (capture-at-next-user-send model). markTurnSettled
+//      marks (t1, 0) as settled. clearOpenTurn clears open-turn pointer.
+//   3. Second half: the wire keeps emitting tool events. settleToolPaths
+//      falls back to LastTurnIndex (B5 fix) so paths attribute to turn
+//      0, not a stale or wrong turn. committedToolPaths[t1|0]=[a.txt,b.txt].
+//   4. Second EventTurnComplete fires → handleTurnComplete sees
+//      settledTurns[t1|0] already set → returns early. Still no capture.
+//   5. User sends turn 1 → handleTurnStart for turn 1 →
+//      capturePriorTurnCheckpoint(t1, 0) → drains
+//      committedToolPaths[t1|0]=[a.txt,b.txt] → captures checkpoint #1
+//      with cumulative tool paths.
+//
+// Without the architectural fix, (a) the first capture would land at
+// turn-end with only first-half paths, (b) second-half tool completes
+// would drop their paths because openTurns was cleared, and (c) the
+// final checkpoint would be missing b.txt — breaking path-scoped revert.
+func TestMultiResultCheckpointCumulativeToolPaths(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	fake := &fakeCheckpointStore{isRepo: true}
+	router.SetCheckpointStore(fake)
+
+	editMeta := func(filePath string) json.RawMessage {
+		raw, err := json.Marshal(map[string]any{
+			"toolName": "Edit",
+			"input":    map[string]any{"file_path": filePath},
+		})
+		if err != nil {
+			t.Fatalf("marshal edit meta: %v", err)
+		}
+		return raw
+	}
+	completeMeta := func() json.RawMessage {
+		raw, _ := json.Marshal(map[string]any{"is_error": false})
+		return raw
+	}
+
+	// Turn 0 starts.
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnStart, ThreadID: "t1",
+		TurnID: "turn-0", TurnIndex: 0, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn 0 start: %v", err)
+	}
+
+	// First half: Edit a.txt.
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1",
+		ItemID: "tool-a", ItemType: "Edit", Meta: editMeta("a.txt"),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("tool a start: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolComplete, ThreadID: "t1",
+		ItemID: "tool-a", ItemType: "Edit", Meta: completeMeta(),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("tool a complete: %v", err)
+	}
+
+	// First `result`. clearOpenTurn fires; settledTurns marks (t1,0).
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnComplete, ThreadID: "t1",
+		TurnID: "turn-0", TurnIndex: 0, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("first turn complete: %v", err)
+	}
+
+	// Second half — same logical turn, no fresh EventTurnStart.
+	// settleToolPaths must fall back to LastTurnIndex so b.txt
+	// attributes to turn 0 even though openTurns is empty.
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1",
+		ItemID: "tool-b", ItemType: "Edit", Meta: editMeta("b.txt"),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("tool b start: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolComplete, ThreadID: "t1",
+		ItemID: "tool-b", ItemType: "Edit", Meta: completeMeta(),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("tool b complete: %v", err)
+	}
+
+	// Second `result` for the same turn — idempotent guard returns early.
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnComplete, ThreadID: "t1",
+		TurnID: "turn-0", TurnIndex: 0, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("second turn complete: %v", err)
+	}
+
+	// Up to this point NO completion checkpoint should exist — only the
+	// baseline. This is the user-send-time capture model.
+	if _, ok, err := st.GetCheckpointByTurnCount("t1", 1); err != nil {
+		t.Fatalf("get checkpoint #1 mid-stream: %v", err)
+	} else if ok {
+		t.Fatal("checkpoint #1 should not exist before next user-send")
+	}
+
+	// User sends turn 1. capturePriorTurnCheckpoint drains the
+	// cumulative paths and captures checkpoint #1.
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnStart, ThreadID: "t1",
+		TurnID: "turn-1", TurnIndex: 1, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn 1 start (triggers prior-turn capture): %v", err)
+	}
+
+	c1, ok, err := st.GetCheckpointByTurnCount("t1", 1)
+	if err != nil || !ok {
+		t.Fatalf("checkpoint #1 missing after next user-send: ok=%v err=%v", ok, err)
+	}
+	if len(c1.ToolPaths) != 2 {
+		t.Fatalf("checkpoint #1 tool paths = %v, want 2 entries (a.txt + b.txt cumulative)", c1.ToolPaths)
+	}
+	gotPaths := map[string]bool{}
+	for _, p := range c1.ToolPaths {
+		gotPaths[p] = true
+	}
+	if !gotPaths["a.txt"] {
+		t.Errorf("checkpoint #1 missing a.txt: got %v", c1.ToolPaths)
+	}
+	if !gotPaths["b.txt"] {
+		t.Errorf("checkpoint #1 missing b.txt (second-half write): got %v", c1.ToolPaths)
+	}
+}
+
+// TestPriorTurnCheckpointFailureUnmarksDedup pins the rollback path
+// of the capturePriorTurnCheckpoint dedup guard: when the underlying
+// capture fails (CaptureBaseline returns error, SaveCheckpoint fails,
+// etc.), the markTurnCaptured entry must be removed so a subsequent
+// re-fired EventTurnStart can retry. Without the rollback the failed
+// checkpoint would never be retried — silent permanent loss.
+func TestPriorTurnCheckpointFailureUnmarksDedup(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	// Fake that fails CaptureBaseline. The first capturePriorTurnCheckpoint
+	// call should fail, unmark the dedup entry, and a second call should
+	// retry rather than no-op.
+	fake := &fakeCheckpointStore{isRepo: true, captureErr: errors.New("boom")}
+	router.SetCheckpointStore(fake)
+
+	// Drive turn 0 start + complete so a turns row exists for turn 0.
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnStart, ThreadID: "t1", TurnIndex: 0,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn 0 start: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnComplete, ThreadID: "t1", TurnIndex: 0,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn 0 complete: %v", err)
+	}
+	baselineCalls := len(fake.capturedCalls)
+
+	// First turn 1 start: prior-turn capture for turn 0 fails. The
+	// dedup mark for (t1, checkpointTurnCount=1) should be rolled back.
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnStart, ThreadID: "t1", TurnIndex: 1,
+		TurnID: "turn-1-a", Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("first turn 1 start: %v", err)
+	}
+	if got := len(fake.capturedCalls); got != baselineCalls+1 {
+		t.Fatalf("first turn 1 start: capture calls = %d, want %d (one failed attempt)", got, baselineCalls+1)
+	}
+
+	router.mu.Lock()
+	_, hasMark := router.capturedTurns["t1|1"]
+	router.mu.Unlock()
+	if hasMark {
+		t.Errorf("capturedTurns[t1|1] still set after failure; rollback regressed — re-fired EventTurnStart will silently skip the retry")
+	}
+
+	// Drive another turn 1 start (re-fired EventTurnStart, e.g. Claude
+	// system.init resend). The capture should retry — not no-op on the
+	// stale dedup mark.
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnStart, ThreadID: "t1", TurnIndex: 1,
+		TurnID: "turn-1-b", Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("second turn 1 start: %v", err)
+	}
+	if got := len(fake.capturedCalls); got != baselineCalls+2 {
+		t.Errorf("second turn 1 start: capture calls = %d, want %d (retry after failure unmark)", got, baselineCalls+2)
 	}
 }

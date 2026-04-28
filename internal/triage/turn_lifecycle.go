@@ -40,6 +40,40 @@ func (r *Router) handleTurnStart(evt provider.ProviderEvent) error {
 	r.openTurnSpan(evt)
 	r.captureBaselineForTurn(context.Background(), evt.ThreadID, turnIndex)
 
+	// Capture the PRIOR turn's completion checkpoint at the moment the
+	// user sends the next message. This matches Claude Code's behavior
+	// (fileHistoryMakeSnapshot fires at user-prompt-submit, not at turn
+	// end — see QueryEngine.ts:641-655 and handlePromptSubmit.ts:528).
+	//
+	// Why user-send-time is the right boundary:
+	//
+	//   1. The captured state = working tree at the moment the user
+	//      committed to the new prompt. "Revert to before this prompt"
+	//      maps directly to this checkpoint.
+	//   2. It naturally captures the multi-result-per-turn case (Claude's
+	//      task_notification → CLI-synthesized `type:"user"` envelope →
+	//      second `result`). Both halves' writes have settled by the
+	//      time the next user-send arrives, so the capture is
+	//      cumulative without any merge gymnastics.
+	//   3. It naturally captures any manual edits the user made between
+	//      turns — those are part of the user's state at send-time.
+	//
+	// Only fires for turnIndex > 0 because turn 0's pre-state is the
+	// baseline checkpoint already captured above.
+	//
+	// Runs synchronously rather than in a goroutine: the captured state
+	// MUST reflect the working tree as it existed BEFORE any new-turn
+	// tools start writing. An async capture races against tool_use
+	// blocks the model emits as soon as the provider write returns, and
+	// could include early new-turn writes in what's supposed to be the
+	// prior-turn checkpoint. The latency cost (hundreds of ms of git
+	// commands) is the price of correctness; if this becomes a UX
+	// problem we'll need a different mechanism (e.g. shadow-clone of
+	// the workspace) rather than racing the model.
+	if turnIndex > 0 {
+		r.capturePriorTurnCheckpoint(context.Background(), evt.ThreadID, turnIndex-1)
+	}
+
 	startedAt := eventTimestampMillis(evt)
 	turnID := resolveTurnID(evt, turnIndex)
 	inserted := r.upsertTurnRow(store.Turn{
@@ -343,35 +377,107 @@ func (r *Router) captureBaselineForTurn(ctx context.Context, threadID string, cu
 	})
 }
 
-func (r *Router) captureCompletedTurnCheckpoint(ctx context.Context, settled TurnCompletedEvent) {
+// capturePriorTurnCheckpoint reconstructs a TurnCompletedEvent from the
+// stored prior-turn row and runs the completion checkpoint capture
+// against it. Called from handleTurnStart at user-send time so the
+// captured state reflects the working tree at the moment the user
+// committed to a new prompt — including any post-turn-end writes from
+// the multi-result-per-turn case and any manual edits between turns.
+//
+// A missing prior turn row (e.g. crash recovery resuming on a thread
+// whose first turn never wrote a turns row) is non-fatal: skip the
+// capture, leave the prior-turn checkpoint as whatever already exists
+// (typically the baseline). The next user-send still captures whatever
+// state exists at that moment for the next prior turn.
+//
+// Idempotent against re-fired EventTurnStart for the same turnIndex
+// (Claude `system.init` resend after interrupt). The first call marks
+// the prior turn captured; subsequent calls for the same prior turn
+// no-op rather than re-running multiple sequential git commands and
+// wastefully replacing an already-correct checkpoint. The marker
+// clears at CleanupThread.
+func (r *Router) capturePriorTurnCheckpoint(ctx context.Context, threadID string, priorTurnIndex int) {
+	if priorTurnIndex < 0 {
+		return
+	}
+	// Guard on (priorTurnIndex+1) — capturedTurns is keyed by
+	// checkpointTurnCount (= priorTurnIndex+1), matching the keying
+	// already used for baseline (turnCount=0).
+	if r.markTurnCaptured(threadID, priorTurnIndex+1) {
+		return
+	}
+	turn, found, err := r.store.GetTurnByThreadIndex(threadID, priorTurnIndex)
+	if err != nil {
+		log.Printf("triage: prior-turn checkpoint lookup thread=%s turn=%d: %v", threadID, priorTurnIndex, err)
+		r.unmarkTurnCaptured(threadID, priorTurnIndex+1)
+		return
+	}
+	if !found {
+		r.unmarkTurnCaptured(threadID, priorTurnIndex+1)
+		return
+	}
+	completedAt := int64(0)
+	if turn.CompletedAt != nil {
+		completedAt = *turn.CompletedAt
+	}
+	settled := TurnCompletedEvent{
+		ThreadID:           threadID,
+		TurnID:             turn.TurnID,
+		TurnIndex:          priorTurnIndex,
+		StartedAt:          turn.StartedAt,
+		CompletedAt:        completedAt,
+		StopReason:         turn.StopReason,
+		AssistantMessageID: turn.AssistantMessageID,
+		ErrorMessage:       turn.ErrorMessage,
+		Aborted:            turn.StopReason == "interrupted",
+	}
+	if err := r.captureCompletedTurnCheckpoint(ctx, settled); err != nil {
+		// Roll back the dedup mark on failure so a subsequent re-fired
+		// EventTurnStart can retry the capture instead of being silently
+		// skipped. This matches captureBaselineForTurn's per-failure
+		// unmark pattern and preserves the prior behavior where every
+		// EventTurnComplete would retry the checkpoint.
+		r.unmarkTurnCaptured(threadID, priorTurnIndex+1)
+	}
+}
+
+// captureCompletedTurnCheckpoint persists the post-turn checkpoint
+// for `settled`. Returns nil on success (including the soft-skip cases
+// where there's no checkpoint store, no workspace, or the workspace
+// isn't a git repo — those are intentional no-ops, not failures).
+// Returns a non-nil error when capture was attempted and failed; the
+// caller (capturePriorTurnCheckpoint) uses that to roll back its
+// dedup mark so a subsequent re-fired EventTurnStart can retry the
+// capture instead of being silently skipped.
+func (r *Router) captureCompletedTurnCheckpoint(ctx context.Context, settled TurnCompletedEvent) error {
 	cap := r.checkpointStore()
 	if cap == nil {
-		return
+		return nil
 	}
 	thread, err := r.store.GetThread(settled.ThreadID)
 	if err != nil {
 		log.Printf("triage: checkpoint complete load thread %s: %v", settled.ThreadID, err)
-		return
+		return fmt.Errorf("checkpoint complete load thread: %w", err)
 	}
 	workspace := checkpointWorkspacePath(thread)
 	if workspace == "" || !cap.IsGitRepository(ctx, workspace) {
-		return
+		return nil
 	}
 
 	turnCount := settled.TurnIndex + 1
 	if turnCount < 1 {
-		return
+		return nil
 	}
 	previous, ok, err := r.store.GetCheckpointByTurnCount(settled.ThreadID, turnCount-1)
 	if err != nil {
 		log.Printf("triage: checkpoint complete previous thread=%s turn=%d: %v", settled.ThreadID, turnCount-1, err)
-		return
+		return fmt.Errorf("checkpoint complete previous: %w", err)
 	}
 	hasPrevious := ok
 
 	if staleRef, hadRow, err := r.store.DeleteCheckpointByThreadTurnCount(settled.ThreadID, turnCount); err != nil {
 		log.Printf("triage: checkpoint complete stale row thread=%s turn=%d: %v", settled.ThreadID, turnCount, err)
-		return
+		return fmt.Errorf("checkpoint complete stale row: %w", err)
 	} else if hadRow && staleRef.RefName != "" {
 		if err := cap.DeleteRef(ctx, staleRef.WorkspacePath, staleRef.RefName); err != nil {
 			log.Printf("triage: checkpoint complete delete stale ref %s: %v", staleRef.RefName, err)
@@ -387,7 +493,7 @@ func (r *Router) captureCompletedTurnCheckpoint(ctx context.Context, settled Tur
 			"error":               err.Error(),
 		})
 		log.Printf("triage: checkpoint complete capture thread=%s turn=%d: %v", settled.ThreadID, turnCount, err)
-		return
+		return fmt.Errorf("checkpoint complete capture: %w", err)
 	}
 	var files []diffsummary.File
 	if hasPrevious {
@@ -399,8 +505,13 @@ func (r *Router) captureCompletedTurnCheckpoint(ctx context.Context, settled Tur
 	}
 	// Drain the per-turn committed-paths set and normalize against the
 	// workspace. Deduped + sorted so the persisted JSON is deterministic.
-	// Use settled.TurnIndex (the original index from the provider) because
-	// path tracking keys on that, not on turnCount which is settled+1.
+	// Use settled.TurnIndex (the original index from the provider)
+	// because path tracking keys on that, not on turnCount which is
+	// settled+1. The accumulator carries the cumulative paths
+	// (including any from the multi-result-per-turn second half — the
+	// settleToolPaths fallback in router.go keeps them flowing into
+	// committedToolPaths after openTurns is cleared) because
+	// committedToolPaths is intentionally NOT swept by clearOpenTurn.
 	rawPaths := r.drainCommittedToolPaths(settled.ThreadID, settled.TurnIndex)
 	toolPaths := normalizeWorkspaceRelativePaths(rawPaths, workspace)
 	now := time.Now().UnixMilli()
@@ -424,7 +535,7 @@ func (r *Router) captureCompletedTurnCheckpoint(ctx context.Context, settled Tur
 		if derr := cap.DeleteRef(ctx, workspace, ref); derr != nil {
 			log.Printf("triage: checkpoint complete rollback ref %s: %v", ref, derr)
 		}
-		return
+		return fmt.Errorf("checkpoint complete persist: %w", err)
 	}
 	r.emit("checkpoint:updated", map[string]any{
 		"threadId":            settled.ThreadID,
@@ -434,6 +545,7 @@ func (r *Router) captureCompletedTurnCheckpoint(ctx context.Context, settled Tur
 		"files":               files,
 		"capturedAt":          now,
 	})
+	return nil
 }
 
 func checkpointStatusForTurn(settled TurnCompletedEvent) string {
@@ -478,11 +590,47 @@ func checkpointWorkspacePath(t store.Thread) string {
 }
 
 func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
+	// Idempotent guard: a second EventTurnComplete on a turn that was
+	// ALREADY settled (provider:turn_completed already emitted, checkpoint
+	// already captured) is a wire-level artifact. Known sources:
+	//
+	//   1. Claude task_notification → CLI synthesizes a `type:"user"`
+	//      envelope → model emits another response → second `result`
+	//      envelope. Both `result`s belong to one logical agent-overflow
+	//      turn from the user's perspective; the first close already
+	//      drained streaming items, captured the per-turn checkpoint,
+	//      and emitted provider:turn_completed.
+	//   2. handleError synthesizes a EventTurnComplete{truncated:true},
+	//      then a real wire EventTurnComplete arrives anyway because the
+	//      subprocess kept streaming.
+	//
+	// We can't gate on "openTurns is empty" alone because handleError's
+	// fatal-error branch deliberately clears the open turn BEFORE
+	// synthesizing — that synthesized complete is the FIRST settle for
+	// the turn and must run in full. So we track per-turn settled
+	// markers separately from openTurns; this guard only fires for the
+	// SECOND complete on the same (threadID, turnIndex).
+	//
+	// Token usage from the dropped second result still reaches
+	// handleTokenUsage as a separate EventTokenUsage event (see
+	// parse_result.go), so cost data isn't lost.
+	turnIndex, err := r.currentTurnIndex(evt.ThreadID)
+	if err == nil {
+		// markTurnSettled is sticky on partial failure (same trade-off as
+		// markTurnCaptured): once the FIRST handleTurnComplete reaches
+		// here, subsequent invocations for the same (thread, turn) bail
+		// even if downstream persistence later errors. Token usage from
+		// the dropped second result still arrives via EventTokenUsage on
+		// its own dispatch (see parse_result.go), so cost data isn't
+		// lost.
+		if r.markTurnSettled(evt.ThreadID, turnIndex) {
+			return nil
+		}
+	}
 	var persistErr error
 	now := eventTimestampMillis(evt)
 	meta := decodeTurnCompleteMeta(evt.Meta)
 	truncated := turnCompleteIsTruncated(meta)
-	turnIndex, err := r.currentTurnIndex(evt.ThreadID)
 	if err != nil {
 		persistErr = err
 	} else {
@@ -569,18 +717,17 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 	// Persistence failures are logged inside settleTurnRow; we keep
 	// persistErr as the return so upstream (observability, error
 	// reporting) sees the real failure.
+	//
+	// Checkpoint capture for THIS turn does NOT happen here. It runs at
+	// the next handleTurnStart (capturePriorTurnCheckpoint), matching
+	// Claude Code's user-prompt-submit snapshot pattern. The turn-end
+	// emission still fires so the frontend can flip its working
+	// indicator off; the diff panel surfaces "what changed in this
+	// turn" by diffing the prior baseline against the current working
+	// tree until the next user-send commits a checkpoint.
 	settled := r.settleTurnRow(evt, turnIndex, now, meta, persistErr)
 	r.emit("provider:turn_completed", settled)
-	r.captureCompletedTurnCheckpoint(context.Background(), settled)
 
-	// The captured-turn guard only needs to hold for the duration of
-	// this turn — once the turn is complete the baseline checkpoint is
-	// already persisted and no further EventTurnStart can re-fire for
-	// the same (thread, turn). Dropping the entry here keeps
-	// capturedTurns bounded by concurrency rather than by session
-	// lifetime, which mattered for long-running sessions that would
-	// otherwise accumulate one entry per turn until CleanupThread.
-	r.unmarkTurnCaptured(evt.ThreadID, max(0, turnIndex-1))
 	r.clearOpenTurn(evt.ThreadID)
 	r.closeTurnSpan(evt.ThreadID, persistErr)
 	return persistErr
@@ -739,26 +886,79 @@ func (r *Router) setOpenTurn(threadID string, turnIndex int) {
 	delete(r.activeTextBlocks, key)
 	delete(r.activeThinkingBlocks, key)
 	delete(r.errorSeqByScope, key)
+	// Clear the settled marker so a re-init (Claude resend system.init
+	// after an interrupt; Codex resend turn/started) can settle the
+	// same turn again. The multi-result-per-turn case does NOT re-fire
+	// EventTurnStart between the two completes, so the marker survives
+	// there and the second complete returns early.
+	delete(r.settledTurns, settledTurnKey(threadID, turnIndex))
 	r.mu.Unlock()
 }
 
+// markTurnSettled records that handleTurnComplete has already run to
+// completion for (threadID, turnIndex). Returns true if the turn was
+// ALREADY settled (caller should bail early), false if this is the
+// first settle (caller proceeds with the full handler).
+func (r *Router) markTurnSettled(threadID string, turnIndex int) bool {
+	key := settledTurnKey(threadID, turnIndex)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.settledTurns[key] {
+		return true
+	}
+	r.settledTurns[key] = true
+	return false
+}
+
+func settledTurnKey(threadID string, turnIndex int) string {
+	return fmt.Sprintf("%s|%d", threadID, turnIndex)
+}
+
+// clearOpenTurn drops per-turn flow-control state at EventTurnComplete.
+//
+// Three distinct lifecycles intersect here and MUST stay separate (see
+// internal/triage/AGENTS.md "Correlation state" for the full taxonomy):
+//
+//   - **Per-turn flow-control state** swept HERE: openTurns,
+//     interruptQueue, streamingItemCounts, activeTextBlocks/Thinking,
+//     pendingCommandDiffs, pendingToolPaths, pendingApprovals (and
+//     siblings). These maps answer "what's mid-turn right now."
+//   - **Id-allocating counters** (segmentIndexByScope, blockIndexByScope,
+//     errorSeqByScope, terminalInteractionSeq): cleared at CleanupThread,
+//     with a selective re-init reset in setOpenTurn. Wiping HERE would
+//     cause id collisions when the wire emits two `result` envelopes
+//     for one logical turn (Claude task_notification → CLI-synthesized
+//     `user` envelope → second result, fatal-error synthetic-truncate
+//     then real wire complete) — see the regression coverage in
+//     multi_result_test.go.
+//   - **User-send-time carry-over state** (committedToolPaths,
+//     settledTurns, capturedTurns): survives turn-end by design.
+//     committedToolPaths drains at the next user-send when
+//     capturePriorTurnCheckpoint runs (matching Claude Code's
+//     fileHistoryMakeSnapshot at user-prompt-submit). settledTurns
+//     clears in setOpenTurn (so a re-init can re-settle) and
+//     CleanupThread.
+//
+// activeTextBlocks/Thinking ARE per-turn flow-control (they guard
+// against re-creating a row mid-stream), so they stay swept here as a
+// safety net for any block that didn't settle through the normal close
+// path.
 func (r *Router) clearOpenTurn(threadID string) {
 	r.mu.Lock()
 	turnIndex, ok := r.openTurns[threadID]
 	if ok {
 		prefix := fmt.Sprintf("%s|%d|", threadID, turnIndex)
-		deleteByPrefix(r.segmentIndexByScope, prefix)
-		deleteByPrefix(r.blockIndexByScope, prefix)
 		deleteByPrefix(r.activeTextBlocks, prefix)
 		deleteByPrefix(r.activeThinkingBlocks, prefix)
-		deleteByPrefix(r.errorSeqByScope, prefix)
-		deleteByPrefix(r.terminalInteractionSeq, prefix)
-		// committedToolPaths is keyed by `<threadID>|<turnIndex>` (no
-		// trailing `|`), so an exact-match delete is the right primitive.
-		// Any captureCompletedTurnCheckpoint already drained this entry;
-		// the delete is defensive against a turn that closed without the
-		// checkpoint capture firing.
-		delete(r.committedToolPaths, fmt.Sprintf("%s|%d", threadID, turnIndex))
+		// committedToolPaths is NOT swept here. It survives turn-end
+		// because the prior-turn capture happens at the NEXT turn-start
+		// (capturePriorTurnCheckpoint, called from handleTurnStart) —
+		// matching Claude Code's user-prompt-submit snapshot pattern.
+		// The drain happens inside captureCompletedTurnCheckpoint when
+		// the next user-send commits the prior turn's checkpoint;
+		// CleanupThread sweeps the whole thread's entries when the
+		// session ends without another user-send.
+		//
 		// pendingToolPaths is keyed by `<threadID>|<itemID>` — no turn
 		// component — so a per-thread prefix-sweep is the correct
 		// primitive. Any tool that started in this turn but didn't fire
@@ -767,6 +967,28 @@ func (r *Router) clearOpenTurn(threadID string) {
 		// thread, so a tool from a future turn cannot have entered the
 		// map yet.
 		deleteByPrefix(r.pendingToolPaths, threadID+"|")
+		// pendingCommandDiffs is keyed by `<threadID>:<itemID>` and
+		// stages an inline-diff preview between EventToolStart and
+		// EventToolComplete for command_execution rows. If the matching
+		// completion never arrived in this turn (interrupted, crashed),
+		// the entry would otherwise leak until CleanupThread.
+		for key, pending := range r.pendingCommandDiffs {
+			if pending.ThreadID == threadID {
+				delete(r.pendingCommandDiffs, key)
+			}
+		}
+		// pendingApprovals / pendingApprovalItems / pendingUserInputs
+		// are keyed by `<threadID>:<requestID-or-itemID>`. Approvals are
+		// inherently mid-turn — the model issues a control_request, the
+		// user resolves, the model continues. If EventTurnComplete fires
+		// while one of these is still pending, the turn ended without
+		// resolution (subprocess died, fatal error, model declined to
+		// emit the resolved meta). Sweep them so the next turn doesn't
+		// inherit a stale request id.
+		approvalPrefix := threadID + ":"
+		deleteByPrefix(r.pendingApprovals, approvalPrefix)
+		deleteByPrefix(r.pendingApprovalItems, approvalPrefix)
+		deleteByPrefix(r.pendingUserInputs, approvalPrefix)
 	}
 	delete(r.openTurns, threadID)
 	delete(r.interruptQueue, threadID)
@@ -955,6 +1177,7 @@ func (r *Router) CleanupThread(threadID string) {
 		}
 	}
 	deleteByPrefix(r.terminalInteractionSeq, prefix)
+	deleteByPrefix(r.settledTurns, prefix)
 	// Drop tool-path tracking for the thread. pendingToolPaths is
 	// keyed by `<threadID>|<itemID>` and committedToolPaths by
 	// `<threadID>|<turnIndex>` — both share the same `<threadID>|`

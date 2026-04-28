@@ -7,29 +7,35 @@ import (
 	"agent-overflow/internal/provider"
 )
 
-// TestCapturedTurnsClearOnTurnComplete pins the cleanup behaviour added
-// alongside the `capturedTurns` bounded-growth fix: the per-turn guard
-// that stops checkpoint double-capture when a provider re-sends
-// EventTurnStart must be dropped at turn-complete time instead of
-// lingering until CleanupThread. Before the fix a long-running session
-// would accumulate one entry per turn for the life of the thread.
-func TestCapturedTurnsClearOnTurnComplete(t *testing.T) {
+// TestCapturedTurnsLifecycle pins the new lifecycle for capturedTurns
+// under the user-send-time capture model. capturedTurns is now used by
+// TWO sites: captureBaselineForTurn (dedups baseline at turn 0 against
+// re-fired EventTurnStart) and capturePriorTurnCheckpoint (dedups the
+// prior-turn capture at next-user-send against re-init resends). Both
+// marks survive turn-complete; only CleanupThread clears them. This is
+// a deliberate trade — the map grows linearly with turns within a
+// thread but the entries are tiny and CleanupThread bounds the
+// session. The earlier "drop the (turnIndex-1) entry on every
+// turn-complete" optimization was tied to the old turn-end capture
+// model and would now silently allow re-fired EventTurnStart to
+// re-capture, defeating the dedup guard.
+func TestCapturedTurnsLifecycle(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
 
-	// Prime the guard the same way a real checkpoint capture would:
-	// mark (thread, turn 0) as captured, then trigger handleTurnComplete
-	// and assert the map entry is gone.
+	// Prime the guard the same way a real checkpoint capture would.
 	if router.markTurnCaptured("t1", 0) {
 		t.Fatal("markTurnCaptured on an empty guard should return false (fresh mark)")
 	}
 	router.mu.Lock()
 	primedLen := len(router.capturedTurns)
 	router.mu.Unlock()
-	if primedLen == 0 {
-		t.Fatal("capturedTurns not primed after markTurnCaptured")
+	if primedLen != 1 {
+		t.Fatalf("capturedTurns after prime = %d, want 1", primedLen)
 	}
 
+	// Turn-complete must NOT clear the mark — the dedup needs to hold
+	// through any re-fired EventTurnStart that targets the same turn.
 	if err := router.Handle(provider.ProviderEvent{
 		Kind:      provider.EventTurnComplete,
 		ThreadID:  "t1",
@@ -37,12 +43,20 @@ func TestCapturedTurnsClearOnTurnComplete(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("turn complete: %v", err)
 	}
-
 	router.mu.Lock()
-	remaining := len(router.capturedTurns)
+	afterComplete := len(router.capturedTurns)
 	router.mu.Unlock()
-	if remaining != 0 {
-		t.Errorf("capturedTurns after turn-complete = %d, want 0 (cleanup regressed)", remaining)
+	if afterComplete != 1 {
+		t.Errorf("capturedTurns after turn-complete = %d, want 1 (mark must survive turn-end so re-fired EventTurnStart still dedups)", afterComplete)
+	}
+
+	// CleanupThread is the authoritative cleanup point.
+	router.CleanupThread("t1")
+	router.mu.Lock()
+	afterCleanup := len(router.capturedTurns)
+	router.mu.Unlock()
+	if afterCleanup != 0 {
+		t.Errorf("capturedTurns after CleanupThread = %d, want 0", afterCleanup)
 	}
 }
 

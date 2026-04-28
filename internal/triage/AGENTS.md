@@ -159,7 +159,67 @@ pending approvals / approval decisions, pending command inline diffs,
 captured-turn guard, turn spans, stopped-thread markers, streaming
 render throttle) that exist purely to correlate one event to the next
 within a turn — not to duplicate the store or the provider session.
-All of these are bounded and have an explicit cleanup path:
+All of these are bounded and have an explicit cleanup path.
+
+⚠ **Three distinct lifecycles intersect in this package and MUST stay
+separate**:
+
+- **Per-turn flow-control state** — `openTurns`, `interruptQueue`,
+  `streamingItemCounts`, `activeTextBlocks`, `activeThinkingBlocks`,
+  `pendingCommandDiffs`, `pendingToolPaths`, `pendingApprovals`,
+  `pendingApprovalItems`, `pendingUserInputs`. Cleared at turn end via
+  `clearOpenTurn` (which fires from `handleTurnComplete`). These maps
+  answer "is this turn live right now / what's queued behind a
+  streaming row / what's mid-resolution."
+- **Id-allocating counters** — `segmentIndexByScope`, `blockIndexByScope`,
+  `errorSeqByScope`, `terminalInteractionSeq`. Cleared at
+  `CleanupThread` only — except `setOpenTurn` resets the per-scope key
+  to seed a fresh re-init (Claude `system.init` resend after interrupt
+  is a deliberate from-scratch re-stream). They allocate primary keys
+  (`text:N:S`, `think:N:B`, `error:N:S`, `waited:pid:N:S`) for `items`
+  rows whose lifetime is the **thread**, not the turn. Wiping them at
+  turn boundaries (which is what `clearOpenTurn` MUST NOT do) causes id
+  collisions when the wire emits two `result` envelopes for one
+  logical turn (Claude's `task_notification` → CLI-synthesized
+  `type:"user"` envelope → second `result`, and the fatal-error
+  synthetic-truncate then real-wire-complete race). The `LastTurnIndex`
+  fallback in `currentTurnIndex` re-attaches post-`clearOpenTurn`
+  events to the same turn so the surviving counter advances correctly
+  and the next id never collides with rows already persisted under
+  this turn. See `multi_result_test.go` for the regression coverage.
+- **User-send-time carry-over state** — `committedToolPaths`,
+  `settledTurns`, `capturedTurns`. Survive turn boundaries by design.
+  `committedToolPaths` is drained at the NEXT user-send (when
+  `capturePriorTurnCheckpoint` builds the prior turn's checkpoint —
+  matching Claude Code's `fileHistoryMakeSnapshot` pattern; see
+  QueryEngine.ts:641-655). `settledTurns` is reset by `setOpenTurn`
+  (so a re-init can re-settle the same turn) and swept by
+  `CleanupThread`. `capturedTurns` is reset on its own boundary by
+  `unmarkTurnCaptured`. All three are also fully swept by
+  `CleanupThread` as the session-end safety net.
+
+When adding a new map, ask **two** questions:
+
+1. Do the values written here become primary keys of persisted rows? If
+   yes, it's an id-allocating counter — clean it in `CleanupThread` (and
+   selectively in `setOpenTurn` for re-init), never in `clearOpenTurn`.
+2. Does its data need to survive the wire-level turn boundary because
+   it represents work spanning into the next user-send? If yes, it's
+   user-send-time carry-over — drain at next-turn-start, sweep at
+   `CleanupThread`. Otherwise, it's per-turn flow-control — clean it
+   in `clearOpenTurn`.
+
+`handleTurnComplete` is **idempotent** against a second invocation for
+the same `(threadID, turnIndex)` via `markTurnSettled`. The first
+complete settles the turn (drains streaming, emits
+`provider:turn_completed`, captures the checkpoint). A second wire
+complete on the already-settled turn returns early — token usage
+arrives separately on `EventTokenUsage` so cost data isn't lost.
+`setOpenTurn` clears the settled marker so a re-init (Claude
+`system.init` resend after interrupt; Codex `turn/started` resend) can
+re-settle the same turn.
+
+Cleanup paths:
 
 - Per-turn state clears on `EventTurnComplete` (and on a matching
   error branch for errored turns).

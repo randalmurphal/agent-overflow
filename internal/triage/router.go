@@ -81,6 +81,18 @@ type Router struct {
 	// multiple EventTurnStart events for the same (thread, turn) — which
 	// happens when Claude re-sends a system.init after an interrupt.
 	capturedTurns map[string]bool // key = threadID|turnIndex
+	// settledTurns marks turns whose handleTurnComplete has already run
+	// to completion (provider:turn_completed emitted, checkpoint
+	// captured, streaming items settled). A second EventTurnComplete for
+	// a settled turn is the multi-result-per-turn wire pattern (Claude
+	// CLI synthesizes a `type:"user"` envelope from a task_notification
+	// → second `result` envelope) or the synthetic-truncate-then-real
+	// race; in either case the second handler invocation is a no-op so
+	// the frontend doesn't see a duplicate provider:turn_completed and
+	// the checkpoint isn't captured twice. Cleared by setOpenTurn (so a
+	// re-init can re-settle the same turn) and CleanupThread (session
+	// teardown). Key = threadID|turnIndex.
+	settledTurns map[string]bool
 	// turnSpans holds the active span for each in-flight turn so we can
 	// close it when the matching EventTurnComplete arrives. Keyed by
 	// threadID since the provider treats each thread as its own turn
@@ -178,6 +190,7 @@ func NewRouter(st *store.Store, emit func(eventName string, data any)) *Router {
 		errorSeqByScope:            make(map[string]int),
 		streamPersistBuffers:       make(map[string]*streamPersistBuffer),
 		capturedTurns:              make(map[string]bool),
+		settledTurns:               make(map[string]bool),
 		turnSpans:                  make(map[string]trace.Span),
 		stoppedThreads:             make(map[string]struct{}),
 		unknownSessionStatusLogged: make(map[string]struct{}),
@@ -425,11 +438,21 @@ func (r *Router) stageToolPaths(evt provider.ProviderEvent) {
 // unrelated user edits.
 //
 // Provider parsers don't populate `evt.TurnIndex` (only `TurnID`), so
-// the turn key has to come from the router-tracked open-turn map under
-// the same lock that guards the committed-paths set. Without an open
-// turn we drop — the matching tool start either fired before
-// EventTurnStart (impossible per the wire contract) or after the turn
-// was torn down (drop is correct).
+// the turn key normally comes from the router-tracked open-turn map.
+// When no open turn is tracked (clearOpenTurn already fired for the
+// prior turn but the wire kept emitting events — the multi-result-per-
+// turn case where Claude's CLI synthesizes a `type:"user"` envelope
+// from a task_notification), fall back to LastTurnIndex so second-half
+// tool completes still accumulate paths for the same turn. The next
+// user-send drains the cumulative paths into the prior turn's
+// checkpoint via capturePriorTurnCheckpoint.
+//
+// The lock is released for the LastTurnIndex SQL call (matching the
+// `currentTurnIndex` convention at turn_lifecycle.go:710 — never hold
+// r.mu through a store call, since r.mu serializes ALL Handle dispatch
+// across threads). After re-acquiring, we re-check stoppedThreads so a
+// concurrent CleanupThread between the unlock and relock cannot leave
+// stale path entries on a torn-down thread.
 func (r *Router) settleToolPaths(evt provider.ProviderEvent) {
 	if evt.ItemID == "" {
 		return
@@ -447,13 +470,34 @@ func (r *Router) settleToolPaths(evt provider.ProviderEvent) {
 		return
 	}
 	turnIndex, hasTurn := r.openTurns[evt.ThreadID]
+	r.mu.Unlock()
 	if !hasTurn {
-		r.mu.Unlock()
-		return
+		// Post-clearOpenTurn fallback: attribute the paths to whichever
+		// turn the items table is already pinned to. Done outside the
+		// lock — r.mu serializes Handle dispatch and we don't want to
+		// block other threads' events on a SQL roundtrip.
+		idx, err := r.store.LastTurnIndex(evt.ThreadID)
+		if err != nil {
+			// Lookup error — drop the paths rather than attribute them
+			// to the wrong turn. Better to lose a single tool's revert
+			// granularity than to corrupt the per-turn revert set.
+			return
+		}
+		turnIndex = idx
 	}
 	turnKey := fmt.Sprintf("%s|%d", evt.ThreadID, turnIndex)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	// Re-check stoppedThreads after re-acquiring: a concurrent
+	// CleanupThread between the previous unlock and now will have
+	// stamped this thread, swept committedToolPaths, and the write
+	// below would re-introduce a stale entry that no future
+	// CleanupThread is going to clean (CleanupThread is idempotent but
+	// only fires once per session).
+	if _, stopped := r.stoppedThreads[evt.ThreadID]; stopped {
+		return
+	}
 	r.committedToolPaths[turnKey] = append(r.committedToolPaths[turnKey], staged...)
-	r.mu.Unlock()
 }
 
 // drainCommittedToolPaths returns and removes the committed-paths slice
