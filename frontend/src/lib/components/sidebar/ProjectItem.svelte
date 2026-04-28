@@ -335,7 +335,7 @@
       is collapsed. Render the row inline so they don't lose context.
       Indent=1 matches a top-level row under an expanded project.
     -->
-    <div class="flex flex-col gap-px px-1" data-testid="project-item-active-pin">
+    <div class="flex flex-col gap-px ml-2 pl-2 border-l border-border-subtle/60" data-testid="project-item-active-pin">
       <ThreadRow thread={activeWhenCollapsed} {pane} indent={1} />
     </div>
   {/if}

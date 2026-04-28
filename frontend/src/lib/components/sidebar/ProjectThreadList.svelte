@@ -125,14 +125,14 @@
     type="button"
     onclick={() => onNewThread?.(projectId)}
     data-testid="project-thread-list-empty"
-    class="ml-6 mr-2 my-1 inline-flex items-center gap-1 rounded-[var(--radius-field)] px-2 py-1 text-[11px] text-fg-hint hover:bg-surface-2/30 hover:text-fg cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+    class="ml-4 mr-2 my-1 inline-flex items-center gap-1 rounded-[var(--radius-field)] px-2 py-1 text-[11px] text-fg-hint hover:bg-surface-2/30 hover:text-fg cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
   >
     <Icon icon={Plus} size={11} strokeWidth={2.2} class="opacity-80" />
     <span>New Thread</span>
   </button>
 {:else}
   <div
-    class="flex flex-col gap-px px-1"
+    class="flex flex-col gap-px ml-2 pl-2 border-l border-border-subtle/60"
     role="list"
     aria-label="Project Threads"
     data-testid="project-thread-list"
@@ -160,7 +160,7 @@
         type="button"
         onclick={handleShowMore}
         data-testid="project-thread-list-show-more"
-        class="group/more flex items-center gap-1.5 h-6 ml-3 mr-1 px-2 rounded-[var(--radius-field)] text-[10px] text-fg-hint hover:bg-surface-2/30 hover:text-fg cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+        class="group/more flex items-center gap-1.5 h-6 mr-1 px-2 rounded-[var(--radius-field)] text-[10px] text-fg-hint hover:bg-surface-2/30 hover:text-fg cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
       >
         {#if hiddenStatus}
           <span
@@ -181,7 +181,7 @@
         type="button"
         onclick={handleShowLess}
         data-testid="project-thread-list-show-less"
-        class="flex items-center h-6 ml-3 mr-1 px-2 rounded-[var(--radius-field)] text-[10px] text-fg-hint hover:bg-surface-2/30 hover:text-fg cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+        class="flex items-center h-6 mr-1 px-2 rounded-[var(--radius-field)] text-[10px] text-fg-hint hover:bg-surface-2/30 hover:text-fg cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
       >
         Show Less
       </button>

@@ -594,10 +594,11 @@ describe('<ThreadRow> nested row chrome', () => {
   it('applies indent via padding-left on the outer container', () => {
     const pane = createThreadPane();
     const { container } = render(ThreadRow, {
-      props: { thread: makeThread(), pane, indent: 1 },
+      props: { thread: makeThread(), pane, indent: 2 },
     });
     const outer = container.querySelector('[role="button"]') as HTMLElement;
-    // Compact layout: 8px base + 12px per indent level; indent=1 → 20px.
-    expect(outer.style.paddingLeft).toBe('20px');
+    // Compact layout: depth 1 sits flush against the rail; depth 2+
+    // steps 8px per level. indent=2 → 8px.
+    expect(outer.style.paddingLeft).toBe('8px');
   });
 });

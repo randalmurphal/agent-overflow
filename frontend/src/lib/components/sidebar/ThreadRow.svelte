@@ -210,10 +210,12 @@
     ctxOpen = false;
   }
 
-  // Indent scale for discussion children. Cap matches the tree's
-  // maxDepth (2 grandchildren below a top-level row → indent 3) plus a
-  // safety clamp so deeper malformed chains don't push titles off-screen.
-  const INDENT_PX = [0, 12, 22, 32];
+  // Indent scale for discussion children. Depth 1 (top-level threads
+  // under a project) sits flush against the rail container's padding —
+  // the rail itself provides the visual nesting cue. Depths 2-3 step
+  // 8px per level, with a clamp at depth 3 so malformed deep chains
+  // can't push titles off-screen.
+  const INDENT_PX = [0, 0, 8, 16];
   let indentPx = $derived(INDENT_PX[Math.min(indent, INDENT_PX.length - 1)]);
 </script>
 
@@ -230,7 +232,7 @@
   class="group/thread-row relative flex items-center gap-1.5 h-7 pr-1 rounded-[var(--radius-field)] cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40
     {selected ? 'bg-accent/15 text-fg' : isActive ? 'bg-accent/10 text-fg' : 'text-fg-muted hover:bg-surface-2/30 hover:text-fg'}
     {pill?.glowClass ?? ''}"
-  style="padding-left: {8 + indentPx}px"
+  style="padding-left: {indentPx}px"
   data-testid="thread-row"
   data-sidebar-thread-id={thread.id}
   data-live-status={liveStatus}
