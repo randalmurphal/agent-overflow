@@ -562,22 +562,49 @@ export function createThreadPane() {
 
   function seedContextWindow(nextThread: Thread | null): ContextWindow | null {
     const raw = nextThread?.lastTokenUsage?.trim();
-    if (!raw) return null;
+    if (!raw) {
+      if (!nextThread?.contextWindow) return null;
+      const percent = activeAutoCompactPercent(nextThread);
+      return {
+        usedTokens: 0,
+        maxTokens: nextThread.contextWindow,
+        usedPercentage: 0,
+        ...(percent > 0 ? {
+          autoCompactPercent: percent,
+          autoCompactTokenLimit: Math.floor(nextThread.contextWindow * percent / 100),
+        } : {}),
+      };
+    }
     try {
       const parsed = JSON.parse(raw) as {
         usedTokens?: number;
         maxTokens?: number;
         contextPercent?: number;
+        autoCompactPercent?: number;
+        autoCompactTokenLimit?: number;
       };
       if (typeof parsed.usedTokens !== 'number') return null;
+      const maxTokens = nextThread?.contextWindow || parsed.maxTokens;
+      const percent = nextThread ? activeAutoCompactPercent(nextThread) : (parsed.autoCompactPercent ?? 0);
       return {
         usedTokens: parsed.usedTokens,
-        maxTokens: parsed.maxTokens,
-        usedPercentage: parsed.contextPercent,
+        maxTokens,
+        usedPercentage: maxTokens ? (parsed.usedTokens / maxTokens) * 100 : parsed.contextPercent,
+        ...(percent > 0 ? {
+          autoCompactPercent: percent,
+          autoCompactTokenLimit: maxTokens ? Math.floor(maxTokens * percent / 100) : parsed.autoCompactTokenLimit,
+        } : {}),
       };
     } catch {
       return null;
     }
+  }
+
+  function activeAutoCompactPercent(nextThread: Thread): number {
+    const standard = nextThread.autoCompactStandardPercent ?? 0;
+    const extended = nextThread.autoCompactExtendedPercent ?? 0;
+    const configured = (nextThread.contextWindow ?? 0) >= 1_000_000 ? extended : standard;
+    return configured > 0 ? configured : 90;
   }
 
   function upsertItemsBatch(incoming: Item[]): void {
@@ -1293,6 +1320,7 @@ export function createThreadPane() {
 
     replaceThread(nextThread: Thread): void {
       thread = nextThread;
+      contextWindow = seedContextWindow(nextThread);
     },
 
     toggleTerminal(): void {

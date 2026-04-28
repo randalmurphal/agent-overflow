@@ -107,6 +107,38 @@ export class ApprovalResponse {
 }
 
 /**
+ * ContextWindowOption describes one selectable context tier for a model.
+ */
+export class ContextWindowOption {
+    "tokens": number;
+    "label": string;
+    "tier": string;
+
+    /** Creates a new ContextWindowOption instance. */
+    constructor($$source: Partial<ContextWindowOption> = {}) {
+        if (!("tokens" in $$source)) {
+            this["tokens"] = 0;
+        }
+        if (!("label" in $$source)) {
+            this["label"] = "";
+        }
+        if (!("tier" in $$source)) {
+            this["tier"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ContextWindowOption instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ContextWindowOption {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ContextWindowOption($$parsedSource as Partial<ContextWindowOption>);
+    }
+}
+
+/**
  * ElicitationResolution carries the MCP elicitation response fields.
  */
 export class ElicitationResolution {
@@ -170,6 +202,7 @@ export class ModelInfo {
     "name": string;
     "provider": string;
     "capabilities"?: string[];
+    "contextWindows"?: ContextWindowOption[];
 
     /** Creates a new ModelInfo instance. */
     constructor($$source: Partial<ModelInfo> = {}) {
@@ -191,9 +224,13 @@ export class ModelInfo {
      */
     static createFrom($$source: any = {}): ModelInfo {
         const $$createField3_0 = $$createType4;
+        const $$createField4_0 = $$createType6;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("capabilities" in $$parsedSource) {
             $$parsedSource["capabilities"] = $$createField3_0($$parsedSource["capabilities"]);
+        }
+        if ("contextWindows" in $$parsedSource) {
+            $$parsedSource["contextWindows"] = $$createField4_0($$parsedSource["contextWindows"]);
         }
         return new ModelInfo($$parsedSource as Partial<ModelInfo>);
     }
@@ -237,8 +274,8 @@ export class PermissionProfile {
      * Creates a new PermissionProfile instance from a string or object.
      */
     static createFrom($$source: any = {}): PermissionProfile {
-        const $$createField0_0 = $$createType6;
-        const $$createField1_0 = $$createType8;
+        const $$createField0_0 = $$createType8;
+        const $$createField1_0 = $$createType10;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("network" in $$parsedSource) {
             $$parsedSource["network"] = $$createField0_0($$parsedSource["network"]);
@@ -334,7 +371,7 @@ export class UserInputResponse {
      * Creates a new UserInputResponse instance from a string or object.
      */
     static createFrom($$source: any = {}): UserInputResponse {
-        const $$createField2_0 = $$createType9;
+        const $$createField2_0 = $$createType11;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("answers" in $$parsedSource) {
             $$parsedSource["answers"] = $$createField2_0($$parsedSource["answers"]);
@@ -349,8 +386,10 @@ const $$createType1 = $Create.Nullable($$createType0);
 const $$createType2 = ElicitationResolution.createFrom;
 const $$createType3 = $Create.Nullable($$createType2);
 const $$createType4 = $Create.Array($Create.Any);
-const $$createType5 = NetworkPermissions.createFrom;
-const $$createType6 = $Create.Nullable($$createType5);
-const $$createType7 = FileSystemPermissions.createFrom;
+const $$createType5 = ContextWindowOption.createFrom;
+const $$createType6 = $Create.Array($$createType5);
+const $$createType7 = NetworkPermissions.createFrom;
 const $$createType8 = $Create.Nullable($$createType7);
-const $$createType9 = $Create.Map($Create.Any, $Create.Any);
+const $$createType9 = FileSystemPermissions.createFrom;
+const $$createType10 = $Create.Nullable($$createType9);
+const $$createType11 = $Create.Map($Create.Any, $Create.Any);

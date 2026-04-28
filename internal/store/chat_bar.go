@@ -138,8 +138,14 @@ func normalizeChatModelProfile(profile ChatModelProfile) (ChatModelProfile, erro
 	if profile.ContextWindow == 0 {
 		profile.ContextWindow = 1000000
 	}
-	if _, ok := legalContextWindows[profile.ContextWindow]; !ok {
+	if !validContextWindow(profile.ContextWindow) {
 		return ChatModelProfile{}, fmt.Errorf("%w: %d", ErrInvalidContextWindow, profile.ContextWindow)
+	}
+	if !validAutoCompactPercent(profile.AutoCompactStandardPercent) {
+		return ChatModelProfile{}, fmt.Errorf("%w: %d", ErrInvalidAutoCompactPercent, profile.AutoCompactStandardPercent)
+	}
+	if !validAutoCompactPercent(profile.AutoCompactExtendedPercent) {
+		return ChatModelProfile{}, fmt.Errorf("%w: %d", ErrInvalidAutoCompactPercent, profile.AutoCompactExtendedPercent)
 	}
 	profile.RuntimeMode = normalizeRuntimeMode(strings.TrimSpace(profile.RuntimeMode))
 	if profile.UpdatedAt == 0 {
@@ -157,16 +163,20 @@ func (s *Store) UpsertChatModelProfile(profile ChatModelProfile) error {
 	}
 	_, err = s.db.Exec(
 		`INSERT INTO chat_model_profiles (
-			provider, model, reasoning_effort, fast_mode, context_window, runtime_mode, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?)
+			provider, model, reasoning_effort, fast_mode, context_window,
+			auto_compact_standard_percent, auto_compact_extended_percent, runtime_mode, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(provider, model) DO UPDATE SET
 			reasoning_effort = excluded.reasoning_effort,
 			fast_mode = excluded.fast_mode,
 			context_window = excluded.context_window,
+			auto_compact_standard_percent = excluded.auto_compact_standard_percent,
+			auto_compact_extended_percent = excluded.auto_compact_extended_percent,
 			runtime_mode = excluded.runtime_mode,
 			updated_at = excluded.updated_at`,
 		normalized.Provider, normalized.Model, normalized.ReasoningEffort, boolToInt(normalized.FastMode),
-		normalized.ContextWindow, normalized.RuntimeMode, normalized.UpdatedAt,
+		normalized.ContextWindow, normalized.AutoCompactStandardPercent, normalized.AutoCompactExtendedPercent,
+		normalized.RuntimeMode, normalized.UpdatedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("store: upsert chat model profile %s/%s: %w", normalized.Provider, normalized.Model, err)
@@ -177,7 +187,8 @@ func (s *Store) UpsertChatModelProfile(profile ChatModelProfile) error {
 // GetChatModelProfile returns a remembered provider/model profile.
 func (s *Store) GetChatModelProfile(providerName, model string) (ChatModelProfile, error) {
 	row := s.db.QueryRow(
-		`SELECT provider, model, reasoning_effort, fast_mode, context_window, runtime_mode, updated_at
+		`SELECT provider, model, reasoning_effort, fast_mode, context_window,
+		        auto_compact_standard_percent, auto_compact_extended_percent, runtime_mode, updated_at
 		   FROM chat_model_profiles
 		  WHERE provider = ? AND model = ?`,
 		strings.TrimSpace(providerName), strings.TrimSpace(model),
@@ -188,7 +199,8 @@ func (s *Store) GetChatModelProfile(providerName, model string) (ChatModelProfil
 // LatestChatModelProfile returns the most recently observed chat profile.
 func (s *Store) LatestChatModelProfile() (ChatModelProfile, error) {
 	row := s.db.QueryRow(
-		`SELECT provider, model, reasoning_effort, fast_mode, context_window, runtime_mode, updated_at
+		`SELECT provider, model, reasoning_effort, fast_mode, context_window,
+		        auto_compact_standard_percent, auto_compact_extended_percent, runtime_mode, updated_at
 		   FROM chat_model_profiles
 		  ORDER BY updated_at DESC
 		  LIMIT 1`,
@@ -199,7 +211,8 @@ func (s *Store) LatestChatModelProfile() (ChatModelProfile, error) {
 // LatestChatModelProfileForProvider returns the newest profile for one provider.
 func (s *Store) LatestChatModelProfileForProvider(providerName string) (ChatModelProfile, error) {
 	row := s.db.QueryRow(
-		`SELECT provider, model, reasoning_effort, fast_mode, context_window, runtime_mode, updated_at
+		`SELECT provider, model, reasoning_effort, fast_mode, context_window,
+		        auto_compact_standard_percent, auto_compact_extended_percent, runtime_mode, updated_at
 		   FROM chat_model_profiles
 		  WHERE provider = ?
 		  ORDER BY updated_at DESC
@@ -218,6 +231,8 @@ func scanChatModelProfile(scanner interface{ Scan(...any) error }) (ChatModelPro
 		&profile.ReasoningEffort,
 		&fastMode,
 		&profile.ContextWindow,
+		&profile.AutoCompactStandardPercent,
+		&profile.AutoCompactExtendedPercent,
 		&profile.RuntimeMode,
 		&profile.UpdatedAt,
 	); err != nil {

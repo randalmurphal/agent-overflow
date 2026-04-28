@@ -168,10 +168,20 @@ func TestChatModelProfileValidation(t *testing.T) {
 	err := s.UpsertChatModelProfile(ChatModelProfile{
 		Provider:      "claude",
 		Model:         "opus",
-		ContextWindow: 123,
+		ContextWindow: -1,
 	})
 	if !errors.Is(err, ErrInvalidContextWindow) {
 		t.Fatalf("invalid context error = %v, want ErrInvalidContextWindow", err)
+	}
+
+	err = s.UpsertChatModelProfile(ChatModelProfile{
+		Provider:                   "claude",
+		Model:                      "opus",
+		ContextWindow:              1000000,
+		AutoCompactExtendedPercent: 91,
+	})
+	if !errors.Is(err, ErrInvalidAutoCompactPercent) {
+		t.Fatalf("invalid auto-compact error = %v, want ErrInvalidAutoCompactPercent", err)
 	}
 
 	_, err = s.LatestChatModelProfile()

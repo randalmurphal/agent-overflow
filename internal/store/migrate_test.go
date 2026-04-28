@@ -1018,20 +1018,21 @@ func TestEffortCheckConstraintRejectsBogusValue(t *testing.T) {
 	}
 }
 
-// TestContextWindowCheckConstraintRejectsBogusValue confirms only the
-// two schema-legal context-window sizes are accepted.
-func TestContextWindowCheckConstraintRejectsBogusValue(t *testing.T) {
+// TestContextWindowCheckConstraintAcceptsPositiveValues confirms dynamic
+// provider/model context windows are accepted while nonsensical windows are
+// still rejected at the schema boundary.
+func TestContextWindowCheckConstraintAcceptsPositiveValues(t *testing.T) {
 	s := newTestStore(t)
 
 	if _, err := s.db.Exec(`
 		INSERT INTO threads (id, project_id, title, provider, workspace_path, model,
 			created_at, updated_at, archived, mode, context_window)
-		VALUES ('t-cw-bad', ?, 'Bad', 'claude', '/tmp', '', 1, 1, 0, 'chat', 500000)
+		VALUES ('t-cw-bad', ?, 'Bad', 'claude', '/tmp', '', 1, 1, 0, 'chat', -1)
 	`, defaultTestProjectID); err == nil {
-		t.Fatal("INSERT with context_window=500000 must violate CHECK constraint")
+		t.Fatal("INSERT with context_window=-1 must violate CHECK constraint")
 	}
 
-	for _, cw := range []int{200000, 1000000} {
+	for _, cw := range []int{200000, 272000, 500000, 1000000, 1050000} {
 		if _, err := s.db.Exec(`
 			INSERT INTO threads (id, project_id, title, provider, workspace_path, model,
 				created_at, updated_at, archived, mode, context_window)

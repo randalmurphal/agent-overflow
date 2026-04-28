@@ -10,6 +10,9 @@ import { Create as $Create } from "@wailsio/runtime";
 import * as git$0 from "./internal/git/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
+import * as provider$0 from "./internal/provider/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
 import * as store$0 from "./internal/store/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
@@ -17,6 +20,88 @@ import * as terminal$0 from "./internal/terminal/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
 import * as workspacefiles$0 from "./internal/workspacefiles/models.js";
+
+export class ContextSettingsProfile {
+    "provider": string;
+    "model": string;
+    "contextWindows": provider$0.ContextWindowOption[];
+    "contextWindow": number;
+    "autoCompactStandardPercent": number;
+    "autoCompactExtendedPercent": number;
+
+    /** Creates a new ContextSettingsProfile instance. */
+    constructor($$source: Partial<ContextSettingsProfile> = {}) {
+        if (!("provider" in $$source)) {
+            this["provider"] = "";
+        }
+        if (!("model" in $$source)) {
+            this["model"] = "";
+        }
+        if (!("contextWindows" in $$source)) {
+            this["contextWindows"] = [];
+        }
+        if (!("contextWindow" in $$source)) {
+            this["contextWindow"] = 0;
+        }
+        if (!("autoCompactStandardPercent" in $$source)) {
+            this["autoCompactStandardPercent"] = 0;
+        }
+        if (!("autoCompactExtendedPercent" in $$source)) {
+            this["autoCompactExtendedPercent"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ContextSettingsProfile instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ContextSettingsProfile {
+        const $$createField2_0 = $$createType1;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("contextWindows" in $$parsedSource) {
+            $$parsedSource["contextWindows"] = $$createField2_0($$parsedSource["contextWindows"]);
+        }
+        return new ContextSettingsProfile($$parsedSource as Partial<ContextSettingsProfile>);
+    }
+}
+
+export class ContextSettingsUpdate {
+    "provider": string;
+    "model": string;
+    "contextWindow": number;
+    "autoCompactStandardPercent": number;
+    "autoCompactExtendedPercent": number;
+
+    /** Creates a new ContextSettingsUpdate instance. */
+    constructor($$source: Partial<ContextSettingsUpdate> = {}) {
+        if (!("provider" in $$source)) {
+            this["provider"] = "";
+        }
+        if (!("model" in $$source)) {
+            this["model"] = "";
+        }
+        if (!("contextWindow" in $$source)) {
+            this["contextWindow"] = 0;
+        }
+        if (!("autoCompactStandardPercent" in $$source)) {
+            this["autoCompactStandardPercent"] = 0;
+        }
+        if (!("autoCompactExtendedPercent" in $$source)) {
+            this["autoCompactExtendedPercent"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ContextSettingsUpdate instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ContextSettingsUpdate {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ContextSettingsUpdate($$parsedSource as Partial<ContextSettingsUpdate>);
+    }
+}
 
 /**
  * CreateThreadOptions carries the minimum a caller MUST specify plus an
@@ -68,6 +153,16 @@ export class CreateThreadOptions {
      * 0 = latest model profile context
      */
     "contextWindow"?: number;
+
+    /**
+     * nil = latest model profile compact setting
+     */
+    "autoCompactStandardPercent"?: number | null;
+
+    /**
+     * nil = latest model profile compact setting
+     */
+    "autoCompactExtendedPercent"?: number | null;
 
     /**
      * empty = latest model profile runtime mode
@@ -234,7 +329,7 @@ export class DirectoryListing {
      * Creates a new DirectoryListing instance from a string or object.
      */
     static createFrom($$source: any = {}): DirectoryListing {
-        const $$createField3_0 = $$createType1;
+        const $$createField3_0 = $$createType3;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("entries" in $$parsedSource) {
             $$parsedSource["entries"] = $$createField3_0($$parsedSource["entries"]);
@@ -284,9 +379,9 @@ export class Draft {
      * Creates a new Draft instance from a string or object.
      */
     static createFrom($$source: any = {}): Draft {
-        const $$createField2_0 = $$createType2;
-        const $$createField3_0 = $$createType4;
-        const $$createField4_0 = $$createType6;
+        const $$createField2_0 = $$createType4;
+        const $$createField3_0 = $$createType6;
+        const $$createField4_0 = $$createType8;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("attachmentIds" in $$parsedSource) {
             $$parsedSource["attachmentIds"] = $$createField2_0($$parsedSource["attachmentIds"]);
@@ -395,7 +490,7 @@ export class GitStatusSubscriptionResult {
      * Creates a new GitStatusSubscriptionResult instance from a string or object.
      */
     static createFrom($$source: any = {}): GitStatusSubscriptionResult {
-        const $$createField1_0 = $$createType7;
+        const $$createField1_0 = $$createType9;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("status" in $$parsedSource) {
             $$parsedSource["status"] = $$createField1_0($$parsedSource["status"]);
@@ -669,10 +764,10 @@ export class SendMessageOptions {
      * Creates a new SendMessageOptions instance from a string or object.
      */
     static createFrom($$source: any = {}): SendMessageOptions {
-        const $$createField0_0 = $$createType2;
-        const $$createField2_0 = $$createType6;
-        const $$createField3_0 = $$createType6;
-        const $$createField4_0 = $$createType2;
+        const $$createField0_0 = $$createType4;
+        const $$createField2_0 = $$createType8;
+        const $$createField3_0 = $$createType8;
+        const $$createField4_0 = $$createType4;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("attachmentIds" in $$parsedSource) {
             $$parsedSource["attachmentIds"] = $$createField0_0($$parsedSource["attachmentIds"]);
@@ -771,7 +866,7 @@ export class TerminalHandle {
      * Creates a new TerminalHandle instance from a string or object.
      */
     static createFrom($$source: any = {}): TerminalHandle {
-        const $$createField2_0 = $$createType8;
+        const $$createField2_0 = $$createType10;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("summary" in $$parsedSource) {
             $$parsedSource["summary"] = $$createField2_0($$parsedSource["summary"]);
@@ -871,7 +966,7 @@ export class WorkspaceFileSearchResult {
      * Creates a new WorkspaceFileSearchResult instance from a string or object.
      */
     static createFrom($$source: any = {}): WorkspaceFileSearchResult {
-        const $$createField0_0 = $$createType10;
+        const $$createField0_0 = $$createType12;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("files" in $$parsedSource) {
             $$parsedSource["files"] = $$createField0_0($$parsedSource["files"]);
@@ -881,14 +976,16 @@ export class WorkspaceFileSearchResult {
 }
 
 // Private type creation functions
-const $$createType0 = DirectoryEntry.createFrom;
+const $$createType0 = provider$0.ContextWindowOption.createFrom;
 const $$createType1 = $Create.Array($$createType0);
-const $$createType2 = $Create.Array($Create.Any);
-const $$createType3 = TerminalChip.createFrom;
-const $$createType4 = $Create.Array($$createType3);
-const $$createType5 = store$0.ProposedPlanSourceRef.createFrom;
-const $$createType6 = $Create.Nullable($$createType5);
-const $$createType7 = git$0.GitStatus.createFrom;
-const $$createType8 = terminal$0.SessionSummary.createFrom;
-const $$createType9 = workspacefiles$0.WorkspaceFile.createFrom;
-const $$createType10 = $Create.Array($$createType9);
+const $$createType2 = DirectoryEntry.createFrom;
+const $$createType3 = $Create.Array($$createType2);
+const $$createType4 = $Create.Array($Create.Any);
+const $$createType5 = TerminalChip.createFrom;
+const $$createType6 = $Create.Array($$createType5);
+const $$createType7 = store$0.ProposedPlanSourceRef.createFrom;
+const $$createType8 = $Create.Nullable($$createType7);
+const $$createType9 = git$0.GitStatus.createFrom;
+const $$createType10 = terminal$0.SessionSummary.createFrom;
+const $$createType11 = workspacefiles$0.WorkspaceFile.createFrom;
+const $$createType12 = $Create.Array($$createType11);

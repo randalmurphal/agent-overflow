@@ -19,7 +19,8 @@ const threadColumns = `id, project_id,
     title, provider, model,
     workspace_path, COALESCE(worktree_path, ''), COALESCE(branch, ''),
     COALESCE(session_ref, ''), COALESCE(pending_fork_session_ref, ''),
-    mode, reasoning_effort, fast_mode, context_window, runtime_mode,
+    mode, reasoning_effort, fast_mode, context_window,
+    auto_compact_standard_percent, auto_compact_extended_percent, runtime_mode,
     COALESCE(discussion_id, ''), COALESCE(parent_thread_id, ''),
     COALESCE(forked_from_thread_id, ''), last_token_usage,
     created_at, updated_at,
@@ -65,6 +66,9 @@ var (
 	// ErrInvalidContextWindow is returned when the caller requests a
 	// context window size the schema's CHECK constraint does not allow.
 	ErrInvalidContextWindow = errors.New("store: invalid context window")
+	// ErrInvalidAutoCompactPercent is returned when a caller passes an
+	// auto-compact percent outside 0..90. Zero means provider default.
+	ErrInvalidAutoCompactPercent = errors.New("store: invalid auto-compact percent")
 	// ErrInvalidProvider is returned for a bad provider value.
 	ErrInvalidProvider = errors.New("store: invalid provider")
 )
@@ -87,14 +91,17 @@ var legalEfforts = map[string]struct{}{
 	"max":    {},
 }
 
-var legalContextWindows = map[int]struct{}{
-	200000:  {},
-	1000000: {},
-}
-
 var legalProviders = map[string]struct{}{
 	"claude": {},
 	"codex":  {},
+}
+
+func validContextWindow(tokens int) bool {
+	return tokens > 0
+}
+
+func validAutoCompactPercent(percent int) bool {
+	return percent >= 0 && percent <= 90
 }
 
 func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
@@ -105,7 +112,8 @@ func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
 		&t.ID, &t.ProjectID, &t.ProjectPath, &t.Title, &t.Provider, &t.Model,
 		&t.WorkspacePath, &t.WorktreePath, &t.Branch,
 		&t.SessionRef, &t.PendingForkRef,
-		&t.Mode, &t.ReasoningEffort, &fastMode, &t.ContextWindow, &t.RuntimeMode,
+		&t.Mode, &t.ReasoningEffort, &fastMode, &t.ContextWindow,
+		&t.AutoCompactStandardPercent, &t.AutoCompactExtendedPercent, &t.RuntimeMode,
 		&t.DiscussionID, &t.ParentThreadID, &t.ForkedFromThreadID, &t.LastTokenUsage,
 		&t.CreatedAt, &t.UpdatedAt, &latestTurnCompletedAt, &archived, &lastReadAt, &pinnedAt,
 		&hasActionableProposedPlan, &hasIncompleteTurn,
@@ -138,17 +146,28 @@ func (s *Store) CreateThread(t Thread) error {
 	if t.ContextWindow == 0 {
 		t.ContextWindow = 1000000
 	}
+	if !validContextWindow(t.ContextWindow) {
+		return fmt.Errorf("%w: %d", ErrInvalidContextWindow, t.ContextWindow)
+	}
+	if !validAutoCompactPercent(t.AutoCompactStandardPercent) {
+		return fmt.Errorf("%w: %d", ErrInvalidAutoCompactPercent, t.AutoCompactStandardPercent)
+	}
+	if !validAutoCompactPercent(t.AutoCompactExtendedPercent) {
+		return fmt.Errorf("%w: %d", ErrInvalidAutoCompactPercent, t.AutoCompactExtendedPercent)
+	}
 	_, err := s.db.Exec(
 		`INSERT INTO threads (id, project_id, title, provider, model,
 		    workspace_path, worktree_path, branch, session_ref, pending_fork_session_ref,
-		    mode, reasoning_effort, fast_mode, context_window, runtime_mode,
+		    mode, reasoning_effort, fast_mode, context_window,
+		    auto_compact_standard_percent, auto_compact_extended_percent, runtime_mode,
 		    discussion_id, parent_thread_id, forked_from_thread_id, last_token_usage,
 		    created_at, updated_at, archived)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		t.ID, t.ProjectID, t.Title, t.Provider, t.Model,
 		t.WorkspacePath, nilIfEmpty(t.WorktreePath), nilIfEmpty(t.Branch),
 		nilIfEmpty(t.SessionRef), nilIfEmpty(t.PendingForkRef),
-		t.Mode, t.ReasoningEffort, boolToInt(t.FastMode), t.ContextWindow, t.RuntimeMode,
+		t.Mode, t.ReasoningEffort, boolToInt(t.FastMode), t.ContextWindow,
+		t.AutoCompactStandardPercent, t.AutoCompactExtendedPercent, t.RuntimeMode,
 		nilIfEmpty(t.DiscussionID), nilIfEmpty(t.ParentThreadID), nilIfEmpty(t.ForkedFromThreadID), t.LastTokenUsage,
 		t.CreatedAt, t.UpdatedAt, boolToInt(t.Archived),
 	)
@@ -323,17 +342,28 @@ func (s *Store) UpdateThread(t Thread) error {
 	if t.ContextWindow == 0 {
 		t.ContextWindow = 1000000
 	}
+	if !validContextWindow(t.ContextWindow) {
+		return fmt.Errorf("%w: %d", ErrInvalidContextWindow, t.ContextWindow)
+	}
+	if !validAutoCompactPercent(t.AutoCompactStandardPercent) {
+		return fmt.Errorf("%w: %d", ErrInvalidAutoCompactPercent, t.AutoCompactStandardPercent)
+	}
+	if !validAutoCompactPercent(t.AutoCompactExtendedPercent) {
+		return fmt.Errorf("%w: %d", ErrInvalidAutoCompactPercent, t.AutoCompactExtendedPercent)
+	}
 	result, err := s.db.Exec(
 		`UPDATE threads SET project_id=?, title=?, provider=?, model=?,
 		    workspace_path=?, worktree_path=?, branch=?, session_ref=?, pending_fork_session_ref=?,
-		    mode=?, reasoning_effort=?, fast_mode=?, context_window=?, runtime_mode=?,
+		    mode=?, reasoning_effort=?, fast_mode=?, context_window=?,
+		    auto_compact_standard_percent=?, auto_compact_extended_percent=?, runtime_mode=?,
 		    discussion_id=?, parent_thread_id=?, forked_from_thread_id=?, last_token_usage=?,
 		    updated_at=?, archived=?
 		 WHERE id=?`,
 		t.ProjectID, t.Title, t.Provider, t.Model,
 		t.WorkspacePath, nilIfEmpty(t.WorktreePath), nilIfEmpty(t.Branch),
 		nilIfEmpty(t.SessionRef), nilIfEmpty(t.PendingForkRef),
-		t.Mode, t.ReasoningEffort, boolToInt(t.FastMode), t.ContextWindow, t.RuntimeMode,
+		t.Mode, t.ReasoningEffort, boolToInt(t.FastMode), t.ContextWindow,
+		t.AutoCompactStandardPercent, t.AutoCompactExtendedPercent, t.RuntimeMode,
 		nilIfEmpty(t.DiscussionID), nilIfEmpty(t.ParentThreadID), nilIfEmpty(t.ForkedFromThreadID), t.LastTokenUsage,
 		t.UpdatedAt, boolToInt(t.Archived), t.ID,
 	)
@@ -561,7 +591,7 @@ func (s *Store) UpdateModel(threadID, model string) error {
 }
 
 func (s *Store) UpdateModelAndContextWindow(threadID, model string, tokens int) error {
-	if _, ok := legalContextWindows[tokens]; !ok {
+	if !validContextWindow(tokens) {
 		return fmt.Errorf("%w: %d", ErrInvalidContextWindow, tokens)
 	}
 	result, err := s.db.Exec(
@@ -645,12 +675,9 @@ func (s *Store) UpdateFastMode(threadID string, on bool) error {
 	return requireRowsAffected(result, fmt.Sprintf("store: update fast mode for %s", threadID))
 }
 
-// UpdateContextWindow overwrites the context_window column. The schema
-// CHECK constraint restricts values to {200000, 1000000}; we mirror that
-// here so the binding surfaces ErrInvalidContextWindow instead of a raw
-// SQLite error.
+// UpdateContextWindow overwrites the context_window column.
 func (s *Store) UpdateContextWindow(threadID string, tokens int) error {
-	if _, ok := legalContextWindows[tokens]; !ok {
+	if !validContextWindow(tokens) {
 		return fmt.Errorf("%w: %d", ErrInvalidContextWindow, tokens)
 	}
 	result, err := s.db.Exec(`UPDATE threads SET context_window = ?, updated_at = ? WHERE id = ?`,
@@ -659,6 +686,54 @@ func (s *Store) UpdateContextWindow(threadID string, tokens int) error {
 		return fmt.Errorf("store: update context window for %s: %w", threadID, err)
 	}
 	return requireRowsAffected(result, fmt.Sprintf("store: update context window for %s", threadID))
+}
+
+func (s *Store) GetThreadContextSettings(threadID string) (ThreadContextSettings, error) {
+	var settings ThreadContextSettings
+	err := s.db.QueryRow(
+		`SELECT provider, model, context_window,
+		        auto_compact_standard_percent, auto_compact_extended_percent
+		   FROM threads
+		  WHERE id = ?`,
+		threadID,
+	).Scan(
+		&settings.Provider,
+		&settings.Model,
+		&settings.ContextWindow,
+		&settings.AutoCompactStandardPercent,
+		&settings.AutoCompactExtendedPercent,
+	)
+	if err != nil {
+		return ThreadContextSettings{}, err
+	}
+	return settings, nil
+}
+
+// UpdateContextSettings overwrites the context window and both compaction
+// threshold overrides. Percent zero means provider default/inherit.
+func (s *Store) UpdateContextSettings(threadID string, tokens, standardPercent, extendedPercent int) error {
+	if !validContextWindow(tokens) {
+		return fmt.Errorf("%w: %d", ErrInvalidContextWindow, tokens)
+	}
+	if !validAutoCompactPercent(standardPercent) {
+		return fmt.Errorf("%w: %d", ErrInvalidAutoCompactPercent, standardPercent)
+	}
+	if !validAutoCompactPercent(extendedPercent) {
+		return fmt.Errorf("%w: %d", ErrInvalidAutoCompactPercent, extendedPercent)
+	}
+	result, err := s.db.Exec(
+		`UPDATE threads
+		    SET context_window = ?,
+		        auto_compact_standard_percent = ?,
+		        auto_compact_extended_percent = ?,
+		        updated_at = ?
+		  WHERE id = ?`,
+		tokens, standardPercent, extendedPercent, nowMillis(), threadID,
+	)
+	if err != nil {
+		return fmt.Errorf("store: update context settings for %s: %w", threadID, err)
+	}
+	return requireRowsAffected(result, fmt.Sprintf("store: update context settings for %s", threadID))
 }
 
 // UpdateBranch persists a new branch string without touching the git

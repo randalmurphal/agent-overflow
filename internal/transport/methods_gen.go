@@ -47,6 +47,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "GetAttachmentData", ID: 71154490}, // main.App.GetAttachmentData
 	{Name: "GetChannelMessages", ID: 3595031866}, // main.App.GetChannelMessages
 	{Name: "GetCheckpointRangeDiff", ID: 3292511153}, // main.App.GetCheckpointRangeDiff
+	{Name: "GetContextSettings", ID: 3416004963}, // main.App.GetContextSettings
 	{Name: "GetDesignArtifactHTML", ID: 2043420102}, // main.App.GetDesignArtifactHTML
 	{Name: "GetDiscussion", ID: 1924583939}, // main.App.GetDiscussion
 	{Name: "GetDraft", ID: 875977146}, // main.App.GetDraft
@@ -148,6 +149,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "UnarchiveProject", ID: 2561521885}, // main.App.UnarchiveProject
 	{Name: "UnarchiveThread", ID: 3655125512}, // main.App.UnarchiveThread
 	{Name: "UnpinThread", ID: 3175043037}, // main.App.UnpinThread
+	{Name: "UpdateContextSettingsProfile", ID: 1472386383}, // main.App.UpdateContextSettingsProfile
 	{Name: "UpdateDiscussion", ID: 1706395020}, // main.App.UpdateDiscussion
 	{Name: "UpdateKeybindings", ID: 3490094229}, // main.App.UpdateKeybindings
 	{Name: "UpdateProjectSortPositions", ID: 3717363955}, // main.App.UpdateProjectSortPositions
@@ -155,6 +157,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "UpdateRemoteEndpoint", ID: 4268476031}, // main.App.UpdateRemoteEndpoint
 	{Name: "UpdateSettings", ID: 2894041249}, // main.App.UpdateSettings
 	{Name: "UpdateThreadBranch", ID: 2929723500}, // main.App.UpdateThreadBranch
+	{Name: "UpdateThreadContextSettings", ID: 2621473242}, // main.App.UpdateThreadContextSettings
 	{Name: "UpdateThreadContextWindow", ID: 2456875639}, // main.App.UpdateThreadContextWindow
 	{Name: "UpdateThreadFastMode", ID: 4175109385}, // main.App.UpdateThreadFastMode
 	{Name: "UpdateThreadMode", ID: 3609479719}, // main.App.UpdateThreadMode

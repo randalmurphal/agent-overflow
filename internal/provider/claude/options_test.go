@@ -92,6 +92,26 @@ func TestFastModelForClaude(t *testing.T) {
 	}
 }
 
+func TestConfigFromOptionsFastModeFallsBackToHaikuContext(t *testing.T) {
+	cfg := ConfigFromOptions(provider.SessionOptions{
+		Provider:                   "claude",
+		Model:                      "claude-opus-4-7",
+		FastMode:                   true,
+		ContextWindow:              1000000,
+		AutoCompactStandardPercent: 70,
+		AutoCompactExtendedPercent: 80,
+	})
+	if cfg.Model != "claude-haiku-4-5" {
+		t.Fatalf("Model = %q, want claude-haiku-4-5", cfg.Model)
+	}
+	if cfg.Env["ANTHROPIC_BETAS"] != "" {
+		t.Errorf("ANTHROPIC_BETAS = %q, want empty after Haiku context fallback", cfg.Env["ANTHROPIC_BETAS"])
+	}
+	if cfg.Env["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"] != "70" {
+		t.Errorf("CLAUDE_AUTOCOMPACT_PCT_OVERRIDE = %q, want 70", cfg.Env["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"])
+	}
+}
+
 // TestConfigFromOptionsEffortPrefixPrepended validates that the effort
 // prefix lands BEFORE the caller-composed system prompt, with the expected
 // blank-line separator. This is the property the prompt-prefix contract

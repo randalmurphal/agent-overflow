@@ -164,31 +164,38 @@ func TestConfigFromOptionsFastModeMiniPassesThrough(t *testing.T) {
 	}
 }
 
-// TestConfigFromOptionsContextWindowNoOp — Codex has no user-facing context
-// window knob today; the field is persisted for UI parity but must NOT
-// produce a spurious launch parameter. This guards against a future caller
-// accidentally adding a Codex-specific ContextWindow flag without updating
-// the helper.
-func TestConfigFromOptionsContextWindowNoOp(t *testing.T) {
-	cfg200k := ConfigFromOptions(provider.SessionOptions{
-		Provider:      "codex",
-		ContextWindow: 200000,
+func TestConfigFromOptionsContextWindowAndAutoCompact(t *testing.T) {
+	cfg := ConfigFromOptions(provider.SessionOptions{
+		Provider:                   "codex",
+		Model:                      "gpt-5.5",
+		ContextWindow:              1050000,
+		AutoCompactExtendedPercent: 80,
 	})
-	cfg1m := ConfigFromOptions(provider.SessionOptions{
-		Provider:      "codex",
-		ContextWindow: 1000000,
+	if cfg.ContextWindow != 1050000 {
+		t.Errorf("ContextWindow = %d, want 1050000", cfg.ContextWindow)
+	}
+	if cfg.AutoCompactTokenLimit != 840000 {
+		t.Errorf("AutoCompactTokenLimit = %d, want 840000", cfg.AutoCompactTokenLimit)
+	}
+}
+
+func TestConfigFromOptionsFastModeFallsBackToEffectiveModelContext(t *testing.T) {
+	cfg := ConfigFromOptions(provider.SessionOptions{
+		Provider:                   "codex",
+		Model:                      "gpt-5.5",
+		FastMode:                   true,
+		ContextWindow:              1050000,
+		AutoCompactStandardPercent: 70,
+		AutoCompactExtendedPercent: 80,
 	})
-	// Config contains a map (MCPServers) so direct struct equality is not
-	// supported. Compare the field-wise content that ContextWindow might
-	// plausibly have touched.
-	if cfg200k.Model != cfg1m.Model ||
-		cfg200k.WorkDir != cfg1m.WorkDir ||
-		cfg200k.ApprovalPolicy != cfg1m.ApprovalPolicy ||
-		cfg200k.Sandbox != cfg1m.Sandbox ||
-		cfg200k.ResumeThreadID != cfg1m.ResumeThreadID ||
-		cfg200k.SystemPrompt != cfg1m.SystemPrompt ||
-		cfg200k.ReasoningEffort != cfg1m.ReasoningEffort {
-		t.Errorf("ContextWindow should be a no-op for codex; 200k=%+v 1M=%+v", cfg200k, cfg1m)
+	if cfg.Model != "gpt-5.4-mini" {
+		t.Fatalf("Model = %q, want gpt-5.4-mini", cfg.Model)
+	}
+	if cfg.ContextWindow != 272000 {
+		t.Errorf("ContextWindow = %d, want gpt-5.4-mini standard 272000", cfg.ContextWindow)
+	}
+	if cfg.AutoCompactTokenLimit != 190400 {
+		t.Errorf("AutoCompactTokenLimit = %d, want 190400", cfg.AutoCompactTokenLimit)
 	}
 }
 
@@ -246,6 +253,23 @@ func TestBuildThreadParamsThreadsReasoningEffort(t *testing.T) {
 	}
 	if cfg["model_reasoning_effort"] != "xhigh" {
 		t.Errorf("config.model_reasoning_effort = %v, want xhigh", cfg["model_reasoning_effort"])
+	}
+}
+
+func TestBuildThreadParamsThreadsContextOverrides(t *testing.T) {
+	params := buildThreadParams(Config{
+		ContextWindow:         1050000,
+		AutoCompactTokenLimit: 840000,
+	})
+	cfg, ok := params["config"].(map[string]any)
+	if !ok {
+		t.Fatalf("config override bag missing: %+v", params)
+	}
+	if cfg["model_context_window"] != 1050000 {
+		t.Errorf("config.model_context_window = %v, want 1050000", cfg["model_context_window"])
+	}
+	if cfg["model_auto_compact_token_limit"] != 840000 {
+		t.Errorf("config.model_auto_compact_token_limit = %v, want 840000", cfg["model_auto_compact_token_limit"])
 	}
 }
 

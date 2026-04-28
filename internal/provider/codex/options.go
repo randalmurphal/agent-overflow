@@ -127,10 +127,6 @@ func fastModelForCodex(current string) string {
 //   - opts.ForkSession: Codex's fork flow is a separate `thread/fork`
 //     app-server call and is NOT triggered by ForkSession. The field is a
 //     no-op for Codex and we don't pretend otherwise.
-//   - opts.ContextWindow: Codex has no user-facing context window parameter
-//     today. The thread persists the field for UI parity across providers
-//     but no Codex launch flag reflects it. Revisit when/if codex-source
-//     exposes a knob.
 func ConfigFromOptions(opts provider.SessionOptions) Config {
 	runtime := runtimeModeToCodex(opts.RuntimeMode)
 
@@ -138,14 +134,35 @@ func ConfigFromOptions(opts provider.SessionOptions) Config {
 	if opts.FastMode {
 		model = fastModelForCodex(model)
 	}
+	contextWindow := provider.ResolveContextWindowForModel(string(provider.Codex), model, opts.ContextWindow)
+	autoCompactPercent := provider.AutoCompactPercentForContextTier(
+		provider.ContextTierForModelWindow(string(provider.Codex), model, contextWindow),
+		opts.AutoCompactStandardPercent,
+		opts.AutoCompactExtendedPercent,
+	)
+	if autoCompactPercent == 0 {
+		autoCompactPercent = opts.AutoCompactPercent
+	}
 
 	return Config{
-		Model:           model,
-		WorkDir:         opts.WorkDir,
-		ApprovalPolicy:  runtime.ApprovalPolicy,
-		Sandbox:         runtime.Sandbox,
-		ResumeThreadID:  opts.Resume,
-		SystemPrompt:    opts.SystemPrompt,
-		ReasoningEffort: codexEffortFromOption(opts.ReasoningEffort),
+		Model:                 model,
+		WorkDir:               opts.WorkDir,
+		ApprovalPolicy:        runtime.ApprovalPolicy,
+		Sandbox:               runtime.Sandbox,
+		ResumeThreadID:        opts.Resume,
+		SystemPrompt:          opts.SystemPrompt,
+		ReasoningEffort:       codexEffortFromOption(opts.ReasoningEffort),
+		ContextWindow:         contextWindow,
+		AutoCompactTokenLimit: autoCompactTokenLimit(contextWindow, autoCompactPercent),
 	}
+}
+
+func autoCompactTokenLimit(contextWindow, percent int) int {
+	if contextWindow <= 0 || percent <= 0 {
+		return 0
+	}
+	if percent > 90 {
+		percent = 90
+	}
+	return contextWindow * percent / 100
 }

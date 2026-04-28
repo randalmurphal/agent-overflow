@@ -13,8 +13,6 @@
   import KeybindingsSettings from './KeybindingsSettings.svelte';
   import ObservabilitySettings from './ObservabilitySettings.svelte';
 
-  let { onClose }: { onClose: () => void } = $props();
-
   type Section =
     | 'general'
     | 'providers'
@@ -24,6 +22,25 @@
     | 'keybindings'
     | 'observability'
     | 'archived';
+  type ContextSettingsTarget = {
+    threadId?: string;
+    provider: string;
+    model: string;
+    contextWindow?: number;
+    autoCompactStandardPercent?: number;
+    autoCompactExtendedPercent?: number;
+  } | null;
+
+  let {
+    onClose,
+    initialSection = 'general',
+    contextTarget = null,
+  }: {
+    onClose: () => void;
+    initialSection?: Section;
+    contextTarget?: ContextSettingsTarget;
+  } = $props();
+
   let activeSection: Section = $state('general');
 
   const sections: Array<{ id: Section; label: string }> = [
@@ -36,6 +53,10 @@
     { id: 'observability', label: 'Observability' },
     { id: 'archived', label: 'Archived' },
   ];
+
+  $effect(() => {
+    activeSection = initialSection;
+  });
 
   function handleTabKeydown(e: KeyboardEvent) {
     const ids = sections.map((s) => s.id);
@@ -117,7 +138,7 @@
         {#if activeSection === 'general'}
           <GeneralSettings />
         {:else if activeSection === 'providers'}
-          <ProviderSettings />
+          <ProviderSettings contextTarget={contextTarget} />
         {:else if activeSection === 'editor'}
           <EditorSection />
         {:else if activeSection === 'network'}

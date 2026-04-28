@@ -907,6 +907,104 @@ CREATE INDEX IF NOT EXISTS idx_chat_model_profiles_updated
 	ON chat_model_profiles(updated_at DESC);
 `,
 	},
+	{
+		Version: 34,
+		Name:    "context_settings_per_tier",
+		SQL: `
+CREATE TABLE threads_v34 (
+    id                       TEXT    PRIMARY KEY,
+    project_id               TEXT    NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    title                    TEXT    NOT NULL DEFAULT 'New Thread',
+    provider                 TEXT    NOT NULL CHECK(provider IN ('claude','codex')),
+    model                    TEXT    NOT NULL DEFAULT '',
+    workspace_path           TEXT    NOT NULL,
+    worktree_path            TEXT,
+    branch                   TEXT,
+    session_ref              TEXT,
+    pending_fork_session_ref TEXT,
+    mode                     TEXT    NOT NULL DEFAULT 'chat'
+        CHECK(mode IN ('chat','plan','design','discussion')),
+    reasoning_effort         TEXT    NOT NULL DEFAULT 'high'
+        CHECK(reasoning_effort IN ('low','medium','high','xhigh','max')),
+    fast_mode                INTEGER NOT NULL DEFAULT 0 CHECK(fast_mode IN (0,1)),
+    context_window           INTEGER NOT NULL DEFAULT 1000000 CHECK(context_window > 0),
+    auto_compact_standard_percent INTEGER NOT NULL DEFAULT 0
+        CHECK(auto_compact_standard_percent BETWEEN 0 AND 90),
+    auto_compact_extended_percent INTEGER NOT NULL DEFAULT 0
+        CHECK(auto_compact_extended_percent BETWEEN 0 AND 90),
+    runtime_mode             TEXT    NOT NULL DEFAULT 'full-access'
+        CHECK(runtime_mode IN ('approval-required','auto-accept-edits','full-access')),
+    discussion_id            TEXT,
+    parent_thread_id         TEXT    REFERENCES threads(id) ON DELETE SET NULL,
+    forked_from_thread_id    TEXT    REFERENCES threads(id) ON DELETE SET NULL,
+    last_token_usage         TEXT    NOT NULL DEFAULT '',
+    last_read_at             INTEGER,
+    pinned_at                INTEGER,
+    created_at               INTEGER NOT NULL,
+    updated_at               INTEGER NOT NULL,
+    archived                 INTEGER NOT NULL DEFAULT 0 CHECK(archived IN (0,1))
+);
+
+INSERT INTO threads_v34 (
+    id, project_id, title, provider, model, workspace_path, worktree_path,
+    branch, session_ref, pending_fork_session_ref, mode, reasoning_effort,
+    fast_mode, context_window, auto_compact_standard_percent,
+    auto_compact_extended_percent, runtime_mode, discussion_id,
+    parent_thread_id, forked_from_thread_id, last_token_usage, last_read_at,
+    pinned_at, created_at, updated_at, archived
+)
+SELECT
+    id, project_id, title, provider, model, workspace_path, worktree_path,
+    branch, session_ref, pending_fork_session_ref, mode, reasoning_effort,
+    fast_mode, context_window, 0, 0, runtime_mode, discussion_id,
+    parent_thread_id, forked_from_thread_id, last_token_usage, last_read_at,
+    pinned_at, created_at, updated_at, archived
+FROM threads;
+
+DROP TABLE threads;
+ALTER TABLE threads_v34 RENAME TO threads;
+
+CREATE INDEX idx_threads_project     ON threads(project_id, updated_at DESC);
+CREATE INDEX idx_threads_updated     ON threads(updated_at DESC);
+CREATE INDEX idx_threads_parent      ON threads(parent_thread_id);
+CREATE INDEX idx_threads_forked_from ON threads(forked_from_thread_id);
+CREATE INDEX IF NOT EXISTS idx_threads_pinned_at
+  ON threads(pinned_at)
+  WHERE pinned_at IS NOT NULL;
+
+CREATE TABLE chat_model_profiles_v34 (
+	provider         TEXT    NOT NULL CHECK(provider IN ('claude','codex')),
+	model            TEXT    NOT NULL,
+	reasoning_effort TEXT    NOT NULL DEFAULT 'high'
+		CHECK(reasoning_effort IN ('low','medium','high','xhigh','max')),
+	fast_mode        INTEGER NOT NULL DEFAULT 0 CHECK(fast_mode IN (0,1)),
+	context_window   INTEGER NOT NULL DEFAULT 1000000 CHECK(context_window > 0),
+	auto_compact_standard_percent INTEGER NOT NULL DEFAULT 0
+		CHECK(auto_compact_standard_percent BETWEEN 0 AND 90),
+	auto_compact_extended_percent INTEGER NOT NULL DEFAULT 0
+		CHECK(auto_compact_extended_percent BETWEEN 0 AND 90),
+	runtime_mode     TEXT    NOT NULL DEFAULT 'full-access'
+		CHECK(runtime_mode IN ('approval-required','auto-accept-edits','full-access')),
+	updated_at       INTEGER NOT NULL,
+	PRIMARY KEY(provider, model)
+);
+
+INSERT INTO chat_model_profiles_v34 (
+	provider, model, reasoning_effort, fast_mode, context_window,
+	auto_compact_standard_percent, auto_compact_extended_percent,
+	runtime_mode, updated_at
+)
+SELECT
+	provider, model, reasoning_effort, fast_mode, context_window, 0, 0,
+	runtime_mode, updated_at
+FROM chat_model_profiles;
+
+DROP TABLE chat_model_profiles;
+ALTER TABLE chat_model_profiles_v34 RENAME TO chat_model_profiles;
+CREATE INDEX IF NOT EXISTS idx_chat_model_profiles_updated
+	ON chat_model_profiles(updated_at DESC);
+`,
+	},
 }
 
 // v13SQL is the DROP-and-rebuild payload for migration v13. Extracted so
@@ -1795,6 +1893,17 @@ func applyMigration(db *sql.DB, m Migration) error {
 		// data-loss side effect loud enough that a user skimming the
 		// log sees it before their first launch on the new binary.
 		log.Printf("store: applying breaking migration v13 (data reset)")
+	}
+	disableForeignKeys := m.Version == 34
+	if disableForeignKeys {
+		if _, err := db.Exec("PRAGMA foreign_keys=OFF"); err != nil {
+			return fmt.Errorf("disable foreign keys for migration v%d: %w", m.Version, err)
+		}
+		defer func() {
+			if _, err := db.Exec("PRAGMA foreign_keys=ON"); err != nil {
+				log.Printf("store: re-enable foreign keys after migration v%d failed: %v", m.Version, err)
+			}
+		}()
 	}
 
 	tx, err := db.Begin()

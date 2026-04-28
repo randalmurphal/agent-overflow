@@ -52,6 +52,7 @@ export {
   // Settings
   GetSettings,
   UpdateSettings,
+  GetContextSettings,
 
   // Network bindings (LAN-bind toggle for the embedded transport).
   GetNetworkSettings,
@@ -218,6 +219,7 @@ export {
   RemoteEndpoint,
 } from '../../../bindings/agent-overflow/internal/settings/models.js';
 export {
+  ContextSettingsProfile,
   EditorInfo,
   GeneratedCommitMessage,
   GitStatusSubscriptionResult,
@@ -239,9 +241,12 @@ export {
 import {
   CreateThread as CreateThreadRaw,
   SendMessageWithOptions as SendMessageWithOptionsRaw,
+  UpdateContextSettingsProfile as UpdateContextSettingsProfileRaw,
+  UpdateThreadContextSettings as UpdateThreadContextSettingsRaw,
 } from '../../../bindings/agent-overflow/app.js';
 import {
   CreateThreadOptions as CreateThreadOptionsClass,
+  ContextSettingsUpdate as ContextSettingsUpdateClass,
   SendMessageOptions as SendMessageOptionsClass,
 } from '../../../bindings/agent-overflow/models.js';
 import type { SourceProposedPlan, Thread } from '../types/models';
@@ -255,11 +260,28 @@ export interface CreateThreadOptions {
   reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max' | string;
   fastMode?: boolean | null;
   contextWindow?: number;
+  autoCompactStandardPercent?: number | null;
+  autoCompactExtendedPercent?: number | null;
   runtimeMode?: string;
   worktreeBranch?: string;
   workspaceOverride?: string;
   worktreePath?: string;
   branch?: string;
+}
+
+export type ContextSettingsUpdateInput = ConstructorParameters<
+  typeof ContextSettingsUpdateClass
+>[0];
+
+export function UpdateContextSettingsProfile(update: ContextSettingsUpdateInput) {
+  return UpdateContextSettingsProfileRaw(new ContextSettingsUpdateClass(update));
+}
+
+export function UpdateThreadContextSettings(
+  threadId: string,
+  update: ContextSettingsUpdateInput,
+) {
+  return UpdateThreadContextSettingsRaw(threadId, new ContextSettingsUpdateClass(update));
 }
 
 export function CreateThread(opts: CreateThreadOptions): Promise<Thread> {

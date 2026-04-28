@@ -596,6 +596,8 @@ describe('setupEventListeners', () => {
       usedTokens: 2048,
       maxTokens: 200000,
       usedPercentage: 1.024,
+      autoCompactPercent: 90,
+      autoCompactTokenLimit: 180000,
     });
 
     emitWailsEvent('provider:usage', {

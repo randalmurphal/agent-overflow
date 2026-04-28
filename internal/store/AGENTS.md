@@ -56,9 +56,16 @@ session already has the answer.
   the same migration; older values are normalised in place.
 - Composer-context columns landed on the threads table:
   `reasoning_effort` (low/medium/high/xhigh/max), `fast_mode` (bool),
-  `context_window` (200000 or 1000000). The per-thread row is the
-  source of truth; `SessionOptions` in `thread_view.go` translates it
-  for the provider.
+  `context_window`. The per-thread row is the source of truth;
+  `SessionOptions` in `thread_view.go` translates it for the provider.
+
+## Recent schema changes (v34) — context settings
+
+- `context_window` now accepts any positive provider/model-supported token
+  count instead of a fixed 200k/1m check.
+- `threads` and `chat_model_profiles` carry
+  `auto_compact_standard_percent` and `auto_compact_extended_percent`
+  (0 = provider default/inherited setting, otherwise 1..90).
 
 ## Recent schema changes (v25) — raw chat content
 

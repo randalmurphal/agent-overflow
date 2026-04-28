@@ -46,21 +46,23 @@ func (s *Store) Close() error {
 // (ReasoningEffort, FastMode, ContextWindow) are persisted so two threads
 // sharing a project can diverge on these axes.
 type Thread struct {
-	ID              string `json:"id"`
-	ProjectID       string `json:"projectId"`
-	ProjectPath     string `json:"projectPath"`
-	Title           string `json:"title"`
-	Provider        string `json:"provider"`
-	Model           string `json:"model"`
-	WorkspacePath   string `json:"workspacePath"`
-	WorktreePath    string `json:"worktreePath,omitempty"`
-	Branch          string `json:"branch,omitempty"`
-	SessionRef      string `json:"sessionRef,omitempty"`
-	PendingForkRef  string `json:"pendingForkRef,omitempty"`
-	Mode            string `json:"mode"`
-	ReasoningEffort string `json:"reasoningEffort"`
-	FastMode        bool   `json:"fastMode"`
-	ContextWindow   int    `json:"contextWindow"`
+	ID                         string `json:"id"`
+	ProjectID                  string `json:"projectId"`
+	ProjectPath                string `json:"projectPath"`
+	Title                      string `json:"title"`
+	Provider                   string `json:"provider"`
+	Model                      string `json:"model"`
+	WorkspacePath              string `json:"workspacePath"`
+	WorktreePath               string `json:"worktreePath,omitempty"`
+	Branch                     string `json:"branch,omitempty"`
+	SessionRef                 string `json:"sessionRef,omitempty"`
+	PendingForkRef             string `json:"pendingForkRef,omitempty"`
+	Mode                       string `json:"mode"`
+	ReasoningEffort            string `json:"reasoningEffort"`
+	FastMode                   bool   `json:"fastMode"`
+	ContextWindow              int    `json:"contextWindow"`
+	AutoCompactStandardPercent int    `json:"autoCompactStandardPercent"`
+	AutoCompactExtendedPercent int    `json:"autoCompactExtendedPercent"`
 	// RuntimeMode is one of provider.RuntimeMode's three values. Kept as
 	// a plain string on the struct so store/ doesn't import provider/
 	// (which would create a cycle) — provider.NormalizeRuntimeMode is the
@@ -99,6 +101,14 @@ type Thread struct {
 	// mid-turn, so the sidebar should show Interrupted, not live Working.
 	// It is not a persisted threads column.
 	HasIncompleteTurn bool `json:"hasIncompleteTurn"`
+}
+
+type ThreadContextSettings struct {
+	Provider                   string
+	Model                      string
+	ContextWindow              int
+	AutoCompactStandardPercent int
+	AutoCompactExtendedPercent int
 }
 
 // ThreadWorkspaceRef is the narrow thread shape needed for workspace/worktree
@@ -180,13 +190,15 @@ type ChatBarFavorite struct {
 // provider/model pair. New draft threads seed from the most recently
 // updated profile, and model switches restore that model's profile.
 type ChatModelProfile struct {
-	Provider        string `json:"provider"`
-	Model           string `json:"model"`
-	ReasoningEffort string `json:"reasoningEffort"`
-	FastMode        bool   `json:"fastMode"`
-	ContextWindow   int    `json:"contextWindow"`
-	RuntimeMode     string `json:"runtimeMode"`
-	UpdatedAt       int64  `json:"updatedAt"`
+	Provider                   string `json:"provider"`
+	Model                      string `json:"model"`
+	ReasoningEffort            string `json:"reasoningEffort"`
+	FastMode                   bool   `json:"fastMode"`
+	ContextWindow              int    `json:"contextWindow"`
+	AutoCompactStandardPercent int    `json:"autoCompactStandardPercent"`
+	AutoCompactExtendedPercent int    `json:"autoCompactExtendedPercent"`
+	RuntimeMode                string `json:"runtimeMode"`
+	UpdatedAt                  int64  `json:"updatedAt"`
 }
 
 // -- helpers --

@@ -145,6 +145,7 @@ var LocalOnlyMethods = map[string]bool{
 	"UpdateThreadReasoningEffort": true,
 	"UpdateThreadFastMode":        true,
 	"UpdateThreadContextWindow":   true,
+	"UpdateThreadContextSettings": true,
 	"UpdateThreadRuntimeMode":     true,
 	"InterruptTurn":               true,
 	"RespondToApproval":           true,
@@ -160,17 +161,18 @@ var LocalOnlyMethods = map[string]bool{
 
 	// 3. Settings mutation. A LAN-attached token-holder must not be
 	// able to reconfigure the server they're attached to.
-	"UpdateSettings":       true,
-	"SetNetworkSettings":   true,
-	"AddRemoteEndpoint":    true,
-	"UpdateRemoteEndpoint": true,
-	"DeleteRemoteEndpoint": true,
-	"TouchRemoteEndpoint":  true,
-	"SetEditorSettings":    true,
-	"UpdateKeybindings":    true,
-	"ResetKeybindings":     true,
-	"SetChatBarFavorite":   true,
-	"SetThreadRuntimeMode": true,
+	"UpdateSettings":               true,
+	"UpdateContextSettingsProfile": true,
+	"SetNetworkSettings":           true,
+	"AddRemoteEndpoint":            true,
+	"UpdateRemoteEndpoint":         true,
+	"DeleteRemoteEndpoint":         true,
+	"TouchRemoteEndpoint":          true,
+	"SetEditorSettings":            true,
+	"UpdateKeybindings":            true,
+	"ResetKeybindings":             true,
+	"SetChatBarFavorite":           true,
+	"SetThreadRuntimeMode":         true,
 	// SetWSLDistroPreference rewrites the Windows launcher's
 	// wsl.json — the next launch will boot whatever distro a LAN
 	// peer talked the user's backend into saving. Same threat shape

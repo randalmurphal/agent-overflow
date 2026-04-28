@@ -4,6 +4,7 @@
 export {
     AccountInfo,
     ApprovalResponse,
+    ContextWindowOption,
     ElicitationResolution,
     FileSystemPermissions,
     ModelInfo,

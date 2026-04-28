@@ -615,6 +615,7 @@ func (p *privilegedApp) UpdateThreadModel() string             { return "ok" }
 func (p *privilegedApp) UpdateThreadReasoningEffort() string   { return "ok" }
 func (p *privilegedApp) UpdateThreadFastMode() string          { return "ok" }
 func (p *privilegedApp) UpdateThreadContextWindow() string     { return "ok" }
+func (p *privilegedApp) UpdateThreadContextSettings() string   { return "ok" }
 func (p *privilegedApp) UpdateThreadRuntimeMode() string       { return "ok" }
 func (p *privilegedApp) InterruptTurn() string                 { return "ok" }
 func (p *privilegedApp) RespondToApproval() string             { return "ok" }
@@ -626,18 +627,19 @@ func (p *privilegedApp) StopClaudeTask() string                { return "ok" }
 func (p *privilegedApp) CleanCodexBackgroundTerminals() string { return "ok" }
 
 // 3. Settings mutation.
-func (p *privilegedApp) UpdateSettings() string         { return "ok" }
-func (p *privilegedApp) SetNetworkSettings() string     { return "ok" }
-func (p *privilegedApp) AddRemoteEndpoint() string      { return "ok" }
-func (p *privilegedApp) UpdateRemoteEndpoint() string   { return "ok" }
-func (p *privilegedApp) DeleteRemoteEndpoint() string   { return "ok" }
-func (p *privilegedApp) TouchRemoteEndpoint() string    { return "ok" }
-func (p *privilegedApp) SetEditorSettings() string      { return "ok" }
-func (p *privilegedApp) UpdateKeybindings() string      { return "ok" }
-func (p *privilegedApp) ResetKeybindings() string       { return "ok" }
-func (p *privilegedApp) SetChatBarFavorite() string     { return "ok" }
-func (p *privilegedApp) SetThreadRuntimeMode() string   { return "ok" }
-func (p *privilegedApp) SetWSLDistroPreference() string { return "ok" }
+func (p *privilegedApp) UpdateSettings() string               { return "ok" }
+func (p *privilegedApp) UpdateContextSettingsProfile() string { return "ok" }
+func (p *privilegedApp) SetNetworkSettings() string           { return "ok" }
+func (p *privilegedApp) AddRemoteEndpoint() string            { return "ok" }
+func (p *privilegedApp) UpdateRemoteEndpoint() string         { return "ok" }
+func (p *privilegedApp) DeleteRemoteEndpoint() string         { return "ok" }
+func (p *privilegedApp) TouchRemoteEndpoint() string          { return "ok" }
+func (p *privilegedApp) SetEditorSettings() string            { return "ok" }
+func (p *privilegedApp) UpdateKeybindings() string            { return "ok" }
+func (p *privilegedApp) ResetKeybindings() string             { return "ok" }
+func (p *privilegedApp) SetChatBarFavorite() string           { return "ok" }
+func (p *privilegedApp) SetThreadRuntimeMode() string         { return "ok" }
+func (p *privilegedApp) SetWSLDistroPreference() string       { return "ok" }
 
 // 4. Attachment / payload writes.
 func (p *privilegedApp) UploadAttachment() string { return "ok" }

@@ -281,12 +281,14 @@ type UserInputEvent struct {
 // (the meter popover surfaces this alongside token usage per the chat-rewrite
 // spec — see docs/architecture/chat-rewrite.md "Channels").
 type UsageEvent struct {
-	Action         string              `json:"action"` // "usage" | "reset" | "rate_limits"
-	ThreadID       string              `json:"threadId"`
-	UsedTokens     int                 `json:"usedTokens,omitempty"`
-	MaxTokens      int                 `json:"maxTokens,omitempty"`
-	ContextPercent float64             `json:"contextPercent,omitempty"`
-	RateLimits     *RateLimitsSnapshot `json:"rateLimits,omitempty"`
+	Action                string              `json:"action"` // "usage" | "reset" | "rate_limits"
+	ThreadID              string              `json:"threadId"`
+	UsedTokens            int                 `json:"usedTokens,omitempty"`
+	MaxTokens             int                 `json:"maxTokens,omitempty"`
+	ContextPercent        float64             `json:"contextPercent,omitempty"`
+	AutoCompactPercent    int                 `json:"autoCompactPercent,omitempty"`
+	AutoCompactTokenLimit int                 `json:"autoCompactTokenLimit,omitempty"`
+	RateLimits            *RateLimitsSnapshot `json:"rateLimits,omitempty"`
 }
 
 // ProviderStatusEventKind enumerates the persistent provider-status banner
@@ -550,10 +552,12 @@ type TokenUsage struct {
 
 // ContextWindow describes provider context window usage.
 type ContextWindow struct {
-	UsedTokens     int     `json:"usedTokens"`
-	MaxTokens      int     `json:"maxTokens,omitempty"`
-	UsedPercentage float64 `json:"usedPercentage,omitempty"`
-	TotalProcessed int     `json:"totalProcessed,omitempty"`
+	UsedTokens            int     `json:"usedTokens"`
+	MaxTokens             int     `json:"maxTokens,omitempty"`
+	UsedPercentage        float64 `json:"usedPercentage,omitempty"`
+	TotalProcessed        int     `json:"totalProcessed,omitempty"`
+	AutoCompactPercent    int     `json:"autoCompactPercent,omitempty"`
+	AutoCompactTokenLimit int     `json:"autoCompactTokenLimit,omitempty"`
 }
 
 // RateLimitEntry represents a single rate limit window.

@@ -164,6 +164,24 @@ func TestUpdateThreadContextWindowValidates(t *testing.T) {
 	}
 }
 
+func TestCreateThreadRejectsUnsupportedContextWindow(t *testing.T) {
+	app := newTestAppWithStore(t)
+	project, err := app.ensureProjectForWorkspace("/tmp/create-context")
+	if err != nil {
+		t.Fatalf("ensureProjectForWorkspace: %v", err)
+	}
+
+	_, err = app.CreateThread(CreateThreadOptions{
+		ProjectID:     project.ID,
+		Provider:      "codex",
+		Model:         "gpt-5.4-mini",
+		ContextWindow: 1050000,
+	})
+	if err == nil || !strings.Contains(err.Error(), "unsupported context window") {
+		t.Fatalf("CreateThread unsupported context error = %v, want unsupported context window", err)
+	}
+}
+
 func TestUpdateThreadRuntimeModeValidates(t *testing.T) {
 	app := newTestAppWithStore(t)
 	thread, err := createTestThread(t, app, "claude", "/tmp/trm", "claude-sonnet-4-6", "")

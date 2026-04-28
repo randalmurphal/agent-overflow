@@ -806,6 +806,8 @@ export class Thread {
     "reasoningEffort": string;
     "fastMode": boolean;
     "contextWindow": number;
+    "autoCompactStandardPercent": number;
+    "autoCompactExtendedPercent": number;
 
     /**
      * RuntimeMode is one of provider.RuntimeMode's three values. Kept as
@@ -897,6 +899,12 @@ export class Thread {
         }
         if (!("contextWindow" in $$source)) {
             this["contextWindow"] = 0;
+        }
+        if (!("autoCompactStandardPercent" in $$source)) {
+            this["autoCompactStandardPercent"] = 0;
+        }
+        if (!("autoCompactExtendedPercent" in $$source)) {
+            this["autoCompactExtendedPercent"] = 0;
         }
         if (!("runtimeMode" in $$source)) {
             this["runtimeMode"] = "";

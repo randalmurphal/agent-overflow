@@ -357,6 +357,8 @@ function applyUsageEvent(evt: UsageEvent): void {
         usedTokens: evt.usedTokens ?? 0,
         maxTokens: evt.maxTokens,
         usedPercentage: evt.contextPercent,
+        ...(evt.autoCompactPercent ? { autoCompactPercent: evt.autoCompactPercent } : {}),
+        ...(evt.autoCompactTokenLimit ? { autoCompactTokenLimit: evt.autoCompactTokenLimit } : {}),
       }
     : null;
 
@@ -376,6 +378,8 @@ function applyUsageEvent(evt: UsageEvent): void {
           usedTokens: payload.usedTokens,
           maxTokens: payload.maxTokens,
           contextPercent: payload.usedPercentage,
+          autoCompactPercent: payload.autoCompactPercent,
+          autoCompactTokenLimit: payload.autoCompactTokenLimit,
         })
       : '',
   );

@@ -38,14 +38,18 @@ func (a *App) UpdateThreadModel(threadID string, model string) (threadResult sto
 		thread.ReasoningEffort = profile.ReasoningEffort
 		thread.FastMode = profile.FastMode
 		thread.ContextWindow = profile.ContextWindow
+		thread.AutoCompactStandardPercent = profile.AutoCompactStandardPercent
+		thread.AutoCompactExtendedPercent = profile.AutoCompactExtendedPercent
 		thread.RuntimeMode = string(provider.NormalizeRuntimeMode(profile.RuntimeMode))
 	} else {
 		if !errors.Is(profileErr, sql.ErrNoRows) {
 			return store.Thread{}, fmt.Errorf("load chat model profile: %w", profileErr)
 		}
 		thread.ContextWindow = a.defaultContextWindowForModel(thread.Provider, normalizedModel)
+		thread.AutoCompactStandardPercent = 0
+		thread.AutoCompactExtendedPercent = 0
 		if thread.Provider != "claude" && !isValidContextWindow(thread.ContextWindow) {
-			thread.ContextWindow = 1000000
+			thread.ContextWindow = provider.CodexStandardContextWindow
 		}
 	}
 

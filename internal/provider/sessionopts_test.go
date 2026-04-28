@@ -5,16 +5,18 @@ import "testing"
 // fakeThreadView is a minimal ThreadView stub used to exercise the
 // translation logic without dragging in internal/store/.
 type fakeThreadView struct {
-	provider        string
-	model           string
-	workspacePath   string
-	reasoningEffort string
-	fastMode        bool
-	contextWindow   int
-	mode            string
-	runtimeMode     string
-	sessionRef      string
-	pendingForkRef  string
+	provider                   string
+	model                      string
+	workspacePath              string
+	reasoningEffort            string
+	fastMode                   bool
+	contextWindow              int
+	autoCompactStandardPercent int
+	autoCompactExtendedPercent int
+	mode                       string
+	runtimeMode                string
+	sessionRef                 string
+	pendingForkRef             string
 }
 
 func (f fakeThreadView) GetProvider() string        { return f.provider }
@@ -23,22 +25,29 @@ func (f fakeThreadView) GetWorkspacePath() string   { return f.workspacePath }
 func (f fakeThreadView) GetReasoningEffort() string { return f.reasoningEffort }
 func (f fakeThreadView) GetFastMode() bool          { return f.fastMode }
 func (f fakeThreadView) GetContextWindow() int      { return f.contextWindow }
-func (f fakeThreadView) GetMode() string            { return f.mode }
-func (f fakeThreadView) GetRuntimeMode() string     { return f.runtimeMode }
-func (f fakeThreadView) GetSessionRef() string      { return f.sessionRef }
-func (f fakeThreadView) GetPendingForkRef() string  { return f.pendingForkRef }
+func (f fakeThreadView) GetAutoCompactStandardPercent() int {
+	return f.autoCompactStandardPercent
+}
+func (f fakeThreadView) GetAutoCompactExtendedPercent() int {
+	return f.autoCompactExtendedPercent
+}
+func (f fakeThreadView) GetMode() string           { return f.mode }
+func (f fakeThreadView) GetRuntimeMode() string    { return f.runtimeMode }
+func (f fakeThreadView) GetSessionRef() string     { return f.sessionRef }
+func (f fakeThreadView) GetPendingForkRef() string { return f.pendingForkRef }
 
 func TestSessionOptionsFromThreadCopiesEveryField(t *testing.T) {
 	view := fakeThreadView{
-		provider:        "claude",
-		model:           "claude-sonnet-4-6",
-		workspacePath:   "/tmp/workspace",
-		reasoningEffort: "xhigh",
-		fastMode:        true,
-		contextWindow:   1000000,
-		mode:            "plan",
-		runtimeMode:     "auto-accept-edits",
-		sessionRef:      "session-abc",
+		provider:                   "claude",
+		model:                      "claude-sonnet-4-6",
+		workspacePath:              "/tmp/workspace",
+		reasoningEffort:            "xhigh",
+		fastMode:                   true,
+		contextWindow:              1000000,
+		autoCompactExtendedPercent: 80,
+		mode:                       "plan",
+		runtimeMode:                "auto-accept-edits",
+		sessionRef:                 "session-abc",
 	}
 
 	opts := SessionOptionsFromThread(view, "system prompt", false)
@@ -60,6 +69,9 @@ func TestSessionOptionsFromThreadCopiesEveryField(t *testing.T) {
 	}
 	if opts.ContextWindow != 1000000 {
 		t.Errorf("ContextWindow = %d, want 1000000", opts.ContextWindow)
+	}
+	if opts.AutoCompactPercent != 80 {
+		t.Errorf("AutoCompactPercent = %d, want 80", opts.AutoCompactPercent)
 	}
 	if opts.Mode != ModePlan {
 		t.Errorf("Mode = %q, want plan", opts.Mode)

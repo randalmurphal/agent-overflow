@@ -7,6 +7,8 @@ export {
 };
 
 export {
+    ContextSettingsProfile,
+    ContextSettingsUpdate,
     CreateThreadOptions,
     DirectoryEntry,
     DirectoryListing,

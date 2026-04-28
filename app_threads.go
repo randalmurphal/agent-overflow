@@ -27,19 +27,21 @@ import (
 // entirely — the new thread reuses the existing worktree and the supplied
 // Branch verbatim, with no git lookups.
 type CreateThreadOptions struct {
-	ProjectID         string `json:"projectId"`
-	Title             string `json:"title,omitempty"`             // empty = "New Thread"
-	Provider          string `json:"provider,omitempty"`          // empty = latest chat profile provider
-	Model             string `json:"model,omitempty"`             // empty = latest provider/model profile
-	Mode              string `json:"mode,omitempty"`              // defaults to chat
-	ReasoningEffort   string `json:"reasoningEffort,omitempty"`   // empty = latest model profile effort
-	FastMode          *bool  `json:"fastMode,omitempty"`          // nil = latest model profile fast-mode
-	ContextWindow     int    `json:"contextWindow,omitempty"`     // 0 = latest model profile context
-	RuntimeMode       string `json:"runtimeMode,omitempty"`       // empty = latest model profile runtime mode
-	WorktreeBranch    string `json:"worktreeBranch,omitempty"`    // empty = no worktree
-	WorkspaceOverride string `json:"workspaceOverride,omitempty"` // empty = project.path
-	WorktreePath      string `json:"worktreePath,omitempty"`      // non-empty = inherit existing worktree, skip git ops
-	Branch            string `json:"branch,omitempty"`            // non-empty = use directly, skip currentGitBranch lookup
+	ProjectID                  string `json:"projectId"`
+	Title                      string `json:"title,omitempty"`                      // empty = "New Thread"
+	Provider                   string `json:"provider,omitempty"`                   // empty = latest chat profile provider
+	Model                      string `json:"model,omitempty"`                      // empty = latest provider/model profile
+	Mode                       string `json:"mode,omitempty"`                       // defaults to chat
+	ReasoningEffort            string `json:"reasoningEffort,omitempty"`            // empty = latest model profile effort
+	FastMode                   *bool  `json:"fastMode,omitempty"`                   // nil = latest model profile fast-mode
+	ContextWindow              int    `json:"contextWindow,omitempty"`              // 0 = latest model profile context
+	AutoCompactStandardPercent *int   `json:"autoCompactStandardPercent,omitempty"` // nil = latest model profile compact setting
+	AutoCompactExtendedPercent *int   `json:"autoCompactExtendedPercent,omitempty"` // nil = latest model profile compact setting
+	RuntimeMode                string `json:"runtimeMode,omitempty"`                // empty = latest model profile runtime mode
+	WorktreeBranch             string `json:"worktreeBranch,omitempty"`             // empty = no worktree
+	WorkspaceOverride          string `json:"workspaceOverride,omitempty"`          // empty = project.path
+	WorktreePath               string `json:"worktreePath,omitempty"`               // non-empty = inherit existing worktree, skip git ops
+	Branch                     string `json:"branch,omitempty"`                     // non-empty = use directly, skip currentGitBranch lookup
 }
 
 // CreateThread persists a new thread rooted at a project. The options
@@ -73,6 +75,8 @@ func (a *App) CreateThread(opts CreateThreadOptions) (store.Thread, error) {
 	effort := seed.ReasoningEffort
 	fastMode := seed.FastMode
 	contextWindow := seed.ContextWindow
+	autoCompactStandardPercent := seed.AutoCompactStandardPercent
+	autoCompactExtendedPercent := seed.AutoCompactExtendedPercent
 	runtimeMode := seed.RuntimeMode
 
 	if trimmed := strings.TrimSpace(opts.Provider); trimmed != "" {
@@ -90,12 +94,31 @@ func (a *App) CreateThread(opts CreateThreadOptions) (store.Thread, error) {
 	if opts.ContextWindow != 0 {
 		contextWindow = opts.ContextWindow
 	}
+	if opts.AutoCompactStandardPercent != nil {
+		autoCompactStandardPercent = *opts.AutoCompactStandardPercent
+	}
+	if opts.AutoCompactExtendedPercent != nil {
+		autoCompactExtendedPercent = *opts.AutoCompactExtendedPercent
+	}
 	if trimmed := strings.TrimSpace(opts.RuntimeMode); trimmed != "" {
 		parsedRuntimeMode, err := parseRuntimeMode(trimmed)
 		if err != nil {
 			return store.Thread{}, fmt.Errorf("create thread: %w", err)
 		}
 		runtimeMode = string(parsedRuntimeMode)
+	}
+	options := contextWindowOptionsForProviderModel(providerName, model)
+	if opts.ContextWindow != 0 && len(options) > 0 && !contextWindowSupported(options, contextWindow) {
+		return store.Thread{}, fmt.Errorf("create thread: unsupported context window %d for %s/%s", contextWindow, providerName, model)
+	}
+	if len(options) > 0 && !contextWindowSupported(options, contextWindow) {
+		contextWindow = provider.DefaultContextWindowForModel(providerName, model, options[0].Tokens)
+	}
+	if !isValidAutoCompactPercent(autoCompactStandardPercent) {
+		return store.Thread{}, fmt.Errorf("create thread: auto-compact standard percent must be between 0 and 90")
+	}
+	if !isValidAutoCompactPercent(autoCompactExtendedPercent) {
+		return store.Thread{}, fmt.Errorf("create thread: auto-compact extended percent must be between 0 and 90")
 	}
 
 	workspace := strings.TrimSpace(opts.WorkspaceOverride)
@@ -157,22 +180,24 @@ func (a *App) CreateThread(opts CreateThreadOptions) (store.Thread, error) {
 
 	now := time.Now().UnixMilli()
 	t := store.Thread{
-		ID:              uuid.New().String(),
-		ProjectID:       project.ID,
-		ProjectPath:     project.Path,
-		Title:           title,
-		Provider:        providerName,
-		WorkspacePath:   workspace,
-		WorktreePath:    worktreePath,
-		Branch:          branch,
-		Model:           model,
-		Mode:            mode,
-		ReasoningEffort: effort,
-		FastMode:        fastMode,
-		ContextWindow:   contextWindow,
-		RuntimeMode:     runtimeMode,
-		CreatedAt:       now,
-		UpdatedAt:       now,
+		ID:                         uuid.New().String(),
+		ProjectID:                  project.ID,
+		ProjectPath:                project.Path,
+		Title:                      title,
+		Provider:                   providerName,
+		WorkspacePath:              workspace,
+		WorktreePath:               worktreePath,
+		Branch:                     branch,
+		Model:                      model,
+		Mode:                       mode,
+		ReasoningEffort:            effort,
+		FastMode:                   fastMode,
+		ContextWindow:              contextWindow,
+		AutoCompactStandardPercent: autoCompactStandardPercent,
+		AutoCompactExtendedPercent: autoCompactExtendedPercent,
+		RuntimeMode:                runtimeMode,
+		CreatedAt:                  now,
+		UpdatedAt:                  now,
 	}
 	if err := a.store.CreateThread(t); err != nil {
 		return store.Thread{}, err
@@ -211,21 +236,15 @@ func (a *App) defaultContextWindowForModel(providerName, model string) int {
 }
 
 func defaultContextWindowForProviderModel(providerName, model string, fallback int) int {
-	if providerName == string(provider.Claude) {
-		lowered := strings.ToLower(strings.TrimSpace(model))
-		if strings.Contains(lowered, "opus") {
-			return 1000000
-		}
-		return 200000
-	}
-	if isValidContextWindow(fallback) {
-		return fallback
-	}
-	return 1000000
+	return provider.DefaultContextWindowForModel(providerName, strings.TrimSpace(model), fallback)
 }
 
 func isValidContextWindow(tokens int) bool {
-	return tokens == 200000 || tokens == 1000000
+	return tokens > 0
+}
+
+func isValidAutoCompactPercent(percent int) bool {
+	return percent >= 0 && percent <= 90
 }
 
 // ListThreads backs the frontend sidebar. It deliberately excludes
@@ -324,13 +343,14 @@ func (a *App) UnpinThread(id string) (store.Thread, error) {
 // centralized restartSessionIfAffected helper consults this list so
 // every per-field binding participates in the same restart policy.
 var sessionAffectingFields = map[string]struct{}{
-	"provider":      {},
-	"model":         {},
-	"mode":          {},
-	"effort":        {},
-	"fastMode":      {},
-	"contextWindow": {},
-	"workspace":     {},
+	"provider":        {},
+	"model":           {},
+	"mode":            {},
+	"effort":          {},
+	"fastMode":        {},
+	"contextWindow":   {},
+	"contextSettings": {},
+	"workspace":       {},
 }
 
 // restartSessionIfAffected emits the refreshed thread and, when the
@@ -448,15 +468,17 @@ func (a *App) UpdateThreadContextWindow(id string, tokens int) (store.Thread, er
 	if a.store == nil {
 		return store.Thread{}, fmt.Errorf("update context window: store unavailable")
 	}
-	if err := a.store.UpdateContextWindow(id, tokens); err != nil {
-		return store.Thread{}, err
-	}
-	refreshed, err := a.restartSessionIfAffected(id, "contextWindow")
+	thread, err := a.store.GetThread(id)
 	if err != nil {
 		return store.Thread{}, err
 	}
-	a.rememberChatModelProfile(refreshed)
-	return refreshed, nil
+	return a.UpdateThreadContextSettings(id, ContextSettingsUpdate{
+		Provider:                   thread.Provider,
+		Model:                      thread.Model,
+		ContextWindow:              tokens,
+		AutoCompactStandardPercent: thread.AutoCompactStandardPercent,
+		AutoCompactExtendedPercent: thread.AutoCompactExtendedPercent,
+	})
 }
 
 // UpdateThreadRuntimeMode persists the runtime mode and restarts the

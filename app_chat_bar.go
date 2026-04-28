@@ -33,23 +33,27 @@ func fallbackChatModelProfile(providerName, model string) store.ChatModelProfile
 		model = fallbackChatModelForProvider(providerName)
 	}
 	return store.ChatModelProfile{
-		Provider:        providerName,
-		Model:           model,
-		ReasoningEffort: string(provider.DefaultReasoningEffort),
-		FastMode:        false,
-		ContextWindow:   defaultContextWindowForProviderModel(providerName, model, 1000000),
-		RuntimeMode:     string(provider.DefaultRuntimeMode),
+		Provider:                   providerName,
+		Model:                      model,
+		ReasoningEffort:            string(provider.DefaultReasoningEffort),
+		FastMode:                   false,
+		ContextWindow:              defaultContextWindowForProviderModel(providerName, model, 1000000),
+		AutoCompactStandardPercent: 0,
+		AutoCompactExtendedPercent: 0,
+		RuntimeMode:                string(provider.DefaultRuntimeMode),
 	}
 }
 
 func chatModelProfileFromThread(thread store.Thread) store.ChatModelProfile {
 	return store.ChatModelProfile{
-		Provider:        thread.Provider,
-		Model:           thread.Model,
-		ReasoningEffort: thread.ReasoningEffort,
-		FastMode:        thread.FastMode,
-		ContextWindow:   thread.ContextWindow,
-		RuntimeMode:     string(provider.NormalizeRuntimeMode(thread.RuntimeMode)),
+		Provider:                   thread.Provider,
+		Model:                      thread.Model,
+		ReasoningEffort:            thread.ReasoningEffort,
+		FastMode:                   thread.FastMode,
+		ContextWindow:              thread.ContextWindow,
+		AutoCompactStandardPercent: thread.AutoCompactStandardPercent,
+		AutoCompactExtendedPercent: thread.AutoCompactExtendedPercent,
+		RuntimeMode:                string(provider.NormalizeRuntimeMode(thread.RuntimeMode)),
 	}
 }
 
@@ -79,6 +83,8 @@ func sameChatModelProfile(a, b store.ChatModelProfile) bool {
 		a.ReasoningEffort == b.ReasoningEffort &&
 		a.FastMode == b.FastMode &&
 		a.ContextWindow == b.ContextWindow &&
+		a.AutoCompactStandardPercent == b.AutoCompactStandardPercent &&
+		a.AutoCompactExtendedPercent == b.AutoCompactExtendedPercent &&
 		provider.NormalizeRuntimeMode(a.RuntimeMode) == provider.NormalizeRuntimeMode(b.RuntimeMode)
 }
 

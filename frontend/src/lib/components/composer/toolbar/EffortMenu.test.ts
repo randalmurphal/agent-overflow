@@ -30,9 +30,15 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
 }
 
 async function buildPane(thread: Thread) {
-  setBindingMock('SwitchThread', async () => {});
-  setBindingMock('ListItems', async () => []);
+  setBindingMock('SwitchThread', async () => thread);
+  setBindingMock('ListRecentThreadItems', async () => ({
+    items: [],
+    oldestTurnIndex: -1,
+    hasMore: false,
+  }));
+  setBindingMock('ListRecentTurns', async () => []);
   setBindingMock('ListPayloadMetas', async () => []);
+  setBindingMock('GetModelsForProvider', async () => []);
   const pane = createThreadPane();
   await pane.switchThread(thread);
   return pane;
@@ -41,7 +47,7 @@ async function buildPane(thread: Thread) {
 describe('<EffortMenu>', () => {
   beforeEach(() => resetBindingMocks());
 
-  it('renders effort + context on Claude threads', async () => {
+  it('renders effort and context on Claude threads', async () => {
     const pane = await buildPane(makeThread({ provider: 'claude' }));
     const { getByTestId } = render(EffortMenu, { props: { pane } });
     const label = getByTestId('composer-effort-trigger').textContent ?? '';
@@ -49,12 +55,12 @@ describe('<EffortMenu>', () => {
     expect(label).toMatch(/1M/);
   });
 
-  it('hides context on Codex threads', async () => {
-    const pane = await buildPane(makeThread({ provider: 'codex' }));
+  it('renders effort and context on Codex threads', async () => {
+    const pane = await buildPane(makeThread({ provider: 'codex', contextWindow: 272000 }));
     const { getByTestId } = render(EffortMenu, { props: { pane } });
     const label = getByTestId('composer-effort-trigger').textContent ?? '';
     expect(label).toMatch(/High/);
-    expect(label).not.toMatch(/1M|200k/);
+    expect(label).toMatch(/272k/);
   });
 
   it('opens the menu and calls UpdateThreadReasoningEffort on row click', async () => {
@@ -92,14 +98,38 @@ describe('<EffortMenu>', () => {
     ]);
   });
 
-  it('disables the 200k/1M rows when provider=codex', async () => {
-    const pane = await buildPane(makeThread({ provider: 'codex' }));
-    const { getByTestId, findAllByRole } = render(EffortMenu, { props: { pane } });
+  it('renders available context rows and updates the thread context window', async () => {
+    const pane = await buildPane(makeThread({
+      provider: 'codex',
+      model: 'gpt-5.5',
+      contextWindow: 272000,
+    }));
+    setBindingMock('GetModelsForProvider', async () => [{
+      slug: 'gpt-5.5',
+      name: 'GPT-5.5',
+      provider: 'codex',
+      capabilities: [],
+      contextWindows: [
+        { tokens: 272000, label: '272k', tier: 'standard' },
+        { tokens: 1050000, label: '1m', tier: 'extended' },
+      ],
+    }]);
+    setBindingMock('UpdateThreadContextWindow', async () => makeThread({
+      provider: 'codex',
+      model: 'gpt-5.5',
+      contextWindow: 1050000,
+    }));
+    const { getByTestId, findByRole } = render(EffortMenu, { props: { pane } });
+
     await fireEvent.click(getByTestId('composer-effort-trigger'));
-    const rows = await findAllByRole('menuitem', { name: /^(200k|1M)$/ });
-    expect(rows.length).toBeGreaterThan(0);
-    for (const row of rows) {
-      expect(row.getAttribute('aria-disabled')).toBe('true');
-    }
+    const extended = await findByRole('menuitem', { name: /^1M$/ });
+    await fireEvent.click(extended);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(getBindingMock('UpdateThreadContextWindow')!.mock.calls[0]).toEqual([
+      'thread-1',
+      1050000,
+    ]);
   });
 });

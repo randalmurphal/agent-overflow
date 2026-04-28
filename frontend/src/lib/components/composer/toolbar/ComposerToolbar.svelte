@@ -16,6 +16,7 @@
   import AccessToggle from './AccessToggle.svelte';
   import PlanSidebarToggleButton from './PlanSidebarToggleButton.svelte';
   import SendButton from './SendButton.svelte';
+  import ContextWindowMeter from '../../chat/ContextWindowMeter.svelte';
   import type { SendButtonAction } from './sendButtonTypes';
 
   interface Props {
@@ -57,7 +58,12 @@
   <ModeCycleButton {pane} />
   <AccessToggle {pane} />
   <PlanSidebarToggleButton {pane} {hasCurrentPlan} />
-  <div class="ml-auto flex items-center">
+  <div class="ml-auto flex items-center gap-1.5">
+    {#if pane.contextWindow}
+      <div class="shrink-0" data-testid="composer-context-meter">
+        <ContextWindowMeter data={pane.contextWindow} thread={pane.thread} />
+      </div>
+    {/if}
     <SendButton
       {canSend}
       {isTurnActive}

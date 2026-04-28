@@ -22,9 +22,16 @@ func (t Thread) GetReasoningEffort() string { return t.ReasoningEffort }
 // GetFastMode returns the fast-mode boolean.
 func (t Thread) GetFastMode() bool { return t.FastMode }
 
-// GetContextWindow returns the requested context window size in tokens
-// (200000 or 1000000).
+// GetContextWindow returns the requested context window size in tokens.
 func (t Thread) GetContextWindow() int { return t.ContextWindow }
+
+// GetAutoCompactStandardPercent returns the standard-window compaction
+// threshold override. Zero means provider default/inherit.
+func (t Thread) GetAutoCompactStandardPercent() int { return t.AutoCompactStandardPercent }
+
+// GetAutoCompactExtendedPercent returns the extended-window compaction
+// threshold override. Zero means provider default/inherit.
+func (t Thread) GetAutoCompactExtendedPercent() int { return t.AutoCompactExtendedPercent }
 
 // GetMode returns the interaction mode (chat / plan / design /
 // discussion).

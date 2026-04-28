@@ -67,6 +67,8 @@ describe('createThreadPane', () => {
       usedTokens: 1200,
       maxTokens: 200000,
       usedPercentage: 0.6,
+      autoCompactPercent: 90,
+      autoCompactTokenLimit: 180000,
     });
   });
 

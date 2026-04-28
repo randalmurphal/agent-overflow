@@ -40,6 +40,12 @@ func buildThreadParams(cfg Config) map[string]any {
 	if cfg.ReasoningEffort != "" {
 		configOverrides["model_reasoning_effort"] = cfg.ReasoningEffort
 	}
+	if cfg.ContextWindow > 0 {
+		configOverrides["model_context_window"] = cfg.ContextWindow
+	}
+	if cfg.AutoCompactTokenLimit > 0 {
+		configOverrides["model_auto_compact_token_limit"] = cfg.AutoCompactTokenLimit
+	}
 	if len(configOverrides) > 0 {
 		params["config"] = configOverrides
 	}

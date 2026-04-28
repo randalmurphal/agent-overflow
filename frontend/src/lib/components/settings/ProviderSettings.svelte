@@ -14,6 +14,11 @@
   import type { ModelInfo, ProviderStatus, ReasoningEffort } from '../../types/settings';
   import MicroLabel from '../primitives/MicroLabel.svelte';
   import ToggleSwitch from '../shared/ToggleSwitch.svelte';
+  import ContextSettingsSection from './ContextSettingsSection.svelte';
+
+  type ContextTarget = { threadId?: string; provider: string; model: string } | null;
+
+  let { contextTarget = null }: { contextTarget?: ContextTarget } = $props();
 
   // Mirror of internal/settings text-generation defaults so the model-input
   // placeholder tracks the per-provider recommendation without a round-trip.
@@ -237,4 +242,10 @@
       </div>
     </div>
   </section>
+
+  <ContextSettingsSection
+    {contextTarget}
+    {claudeModels}
+    {codexModels}
+  />
 </div>

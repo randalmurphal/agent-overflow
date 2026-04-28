@@ -29,7 +29,19 @@
   import { installUiRenderTraceApi } from './lib/utils/uiRenderTrace';
   import DiagramInteractionHost from './lib/components/chat/DiagramInteractionHost.svelte';
 
+  type SettingsSection = 'general' | 'providers' | 'editor' | 'network' | 'discussions' | 'keybindings' | 'observability' | 'archived';
+  type SettingsContextTarget = {
+    threadId?: string;
+    provider: string;
+    model: string;
+    contextWindow?: number;
+    autoCompactStandardPercent?: number;
+    autoCompactExtendedPercent?: number;
+  } | null;
+
   let showSettings = $state(false);
+  let settingsSection = $state<SettingsSection>('general');
+  let settingsContextTarget = $state<SettingsContextTarget>(null);
   let discussionStartFor = $state<Thread | null>(null);
   let searchFocuser = $state<(() => void) | null>(null);
   let openFromPR = $state<(() => void) | null>(null);
@@ -42,6 +54,12 @@
 
   function closeDiscussionStart(): void {
     discussionStartFor = null;
+  }
+
+  function openSettings(section: SettingsSection = settingsSection, contextTarget: SettingsContextTarget = null): void {
+    settingsSection = section;
+    settingsContextTarget = contextTarget;
+    showSettings = true;
   }
 
   let paletteContext = $derived(
@@ -146,7 +164,7 @@
     clearCommandRegistry();
     registerBuiltinCommands({
       pane,
-      openSettings: () => (showSettings = true),
+      openSettings: () => openSettings('general'),
       openThreadForm: () => {
         // The sidebar's "+ New Thread" button owns the form today. Firing a
         // CustomEvent keeps the contract loose; the sidebar can listen for
@@ -173,10 +191,19 @@
     });
 
     void loadKeybindings();
+    const handleOpenSettings = (event: Event) => {
+      const detail = (event as CustomEvent).detail as {
+        section?: SettingsSection;
+        contextTarget?: NonNullable<SettingsContextTarget>;
+      } | undefined;
+      openSettings(detail?.section ?? 'general', detail?.contextTarget ?? null);
+    };
+    window.addEventListener('agent-overflow:open-settings', handleOpenSettings);
     window.addEventListener('keydown', handleGlobalKeydown);
 
     return () => {
       cleanupEvents();
+      window.removeEventListener('agent-overflow:open-settings', handleOpenSettings);
     };
   });
 
@@ -193,13 +220,17 @@
   <div class="relative flex flex-1 min-h-0 w-full">
     <Sidebar
       {pane}
-      onOpenSettings={() => showSettings = true}
+      onOpenSettings={() => openSettings('general')}
       registerFocusSearch={(focus) => (searchFocuser = focus)}
       registerOpenFromPR={(cb) => (openFromPR = cb)}
     />
     <div class="flex-1 flex flex-col min-w-0">
       {#if showSettings}
-        <SettingsView onClose={() => showSettings = false} />
+        <SettingsView
+          initialSection={settingsSection}
+          contextTarget={settingsContextTarget}
+          onClose={() => showSettings = false}
+        />
       {:else}
         {#key pane.threadId}
           <ChatView {pane} />

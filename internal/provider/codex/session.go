@@ -147,14 +147,16 @@ type pendingApproval struct {
 
 // Config for creating a Codex session.
 type Config struct {
-	Binary         string // default: "codex"
-	Model          string
-	WorkDir        string
-	ApprovalPolicy string // "never", "on-failure", "on-request", "untrusted"
-	Sandbox        string // "read-only", "workspace-write", "danger-full-access"
-	ResumeThreadID string // thread ID to resume, empty for new
-	SystemPrompt   string
-	MCPServers     map[string]any
+	Binary                string // default: "codex"
+	Model                 string
+	WorkDir               string
+	ApprovalPolicy        string // "never", "on-failure", "on-request", "untrusted"
+	Sandbox               string // "read-only", "workspace-write", "danger-full-access"
+	ResumeThreadID        string // thread ID to resume, empty for new
+	SystemPrompt          string
+	MCPServers            map[string]any
+	ContextWindow         int
+	AutoCompactTokenLimit int
 	// ReasoningEffort is the Codex-native reasoning_effort enum value
 	// (none|minimal|low|medium|high|xhigh). Applied to the thread start
 	// handshake under `config.model_reasoning_effort`, and re-applied to

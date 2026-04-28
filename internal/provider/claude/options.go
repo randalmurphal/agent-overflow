@@ -1,6 +1,7 @@
 package claude
 
 import (
+	"fmt"
 	"strings"
 
 	"agent-overflow/internal/provider"
@@ -66,6 +67,21 @@ func envForContextWindow(contextWindow int) map[string]string {
 	return nil
 }
 
+func envForContextWindowAndAutoCompact(contextWindow, autoCompactPercent int) map[string]string {
+	env := envForContextWindow(contextWindow)
+	if autoCompactPercent <= 0 {
+		return env
+	}
+	if autoCompactPercent > 90 {
+		autoCompactPercent = 90
+	}
+	if env == nil {
+		env = map[string]string{}
+	}
+	env["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"] = fmt.Sprintf("%d", autoCompactPercent)
+	return env
+}
+
 // fastModelForClaude swaps a heavyweight Claude model for the Haiku tier when
 // Fast Mode is on. The rules:
 //
@@ -98,6 +114,15 @@ func ConfigFromOptions(opts provider.SessionOptions) Config {
 	if opts.FastMode {
 		model = fastModelForClaude(model)
 	}
+	contextWindow := provider.ResolveContextWindowForModel(string(provider.Claude), model, opts.ContextWindow)
+	autoCompactPercent := provider.AutoCompactPercentForContextTier(
+		provider.ContextTierForModelWindow(string(provider.Claude), model, contextWindow),
+		opts.AutoCompactStandardPercent,
+		opts.AutoCompactExtendedPercent,
+	)
+	if autoCompactPercent == 0 {
+		autoCompactPercent = opts.AutoCompactPercent
+	}
 
 	systemPrompt := composeSystemPrompt(effortSystemPrefix(opts.ReasoningEffort), opts.SystemPrompt)
 
@@ -110,7 +135,7 @@ func ConfigFromOptions(opts provider.SessionOptions) Config {
 		PermissionFlags:    claudePermissionFlags(opts.RuntimeMode),
 		BasePermissionMode: claudeBasePermissionMode(opts.RuntimeMode),
 		InteractionMode:    opts.Mode,
-		Env:                envForContextWindow(opts.ContextWindow),
+		Env:                envForContextWindowAndAutoCompact(contextWindow, autoCompactPercent),
 	}
 }
 

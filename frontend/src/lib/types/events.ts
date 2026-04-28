@@ -85,6 +85,8 @@ export interface ContextWindow {
   maxTokens?: number;
   usedPercentage?: number;
   totalProcessed?: number;
+  autoCompactPercent?: number;
+  autoCompactTokenLimit?: number;
 }
 
 export interface ApprovalEvent {
@@ -149,6 +151,8 @@ export interface UsageEvent {
   usedTokens?: number;
   maxTokens?: number;
   contextPercent?: number;
+  autoCompactPercent?: number;
+  autoCompactTokenLimit?: number;
   rateLimits?: RateLimitsSnapshot;
 }
 

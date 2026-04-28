@@ -89,14 +89,17 @@ type SessionOptions struct {
 	// at the right bundle.
 	Provider string
 
-	Model           string
-	WorkDir         string
-	ReasoningEffort ReasoningEffort
-	FastMode        bool
-	ContextWindow   int
-	Mode            InteractionMode
-	RuntimeMode     RuntimeMode
-	SystemPrompt    string
+	Model                      string
+	WorkDir                    string
+	ReasoningEffort            ReasoningEffort
+	FastMode                   bool
+	ContextWindow              int
+	AutoCompactPercent         int
+	AutoCompactStandardPercent int
+	AutoCompactExtendedPercent int
+	Mode                       InteractionMode
+	RuntimeMode                RuntimeMode
+	SystemPrompt               string
 
 	// Resume carries the provider's resume reference. Claude: prior
 	// session uuid. Codex: prior thread id. Empty for brand-new starts.
@@ -119,6 +122,8 @@ type ThreadView interface {
 	GetReasoningEffort() string
 	GetFastMode() bool
 	GetContextWindow() int
+	GetAutoCompactStandardPercent() int
+	GetAutoCompactExtendedPercent() int
 	GetMode() string
 	GetRuntimeMode() string
 	GetSessionRef() string
@@ -148,10 +153,44 @@ func SessionOptionsFromThread(t ThreadView, systemPrompt string, forkSession boo
 		ReasoningEffort: NormalizeReasoningEffort(t.GetReasoningEffort()),
 		FastMode:        t.GetFastMode(),
 		ContextWindow:   t.GetContextWindow(),
-		Mode:            NormalizeInteractionMode(t.GetMode()),
-		RuntimeMode:     NormalizeRuntimeMode(t.GetRuntimeMode()),
-		SystemPrompt:    systemPrompt,
-		Resume:          resume,
-		ForkSession:     forkSession,
+		AutoCompactPercent: AutoCompactPercentForContextTier(
+			ContextTierForModelWindow(t.GetProvider(), t.GetModel(), t.GetContextWindow()),
+			t.GetAutoCompactStandardPercent(),
+			t.GetAutoCompactExtendedPercent(),
+		),
+		AutoCompactStandardPercent: t.GetAutoCompactStandardPercent(),
+		AutoCompactExtendedPercent: t.GetAutoCompactExtendedPercent(),
+		Mode:                       NormalizeInteractionMode(t.GetMode()),
+		RuntimeMode:                NormalizeRuntimeMode(t.GetRuntimeMode()),
+		SystemPrompt:               systemPrompt,
+		Resume:                     resume,
+		ForkSession:                forkSession,
+	}
+}
+
+// AutoCompactPercentForContextTier chooses the compact threshold tied to the
+// selected context tier. Zero means provider default/inherit.
+func AutoCompactPercentForContextTier(tier string, standardPercent, extendedPercent int) int {
+	if tier == ContextTierExtended {
+		return normalizeAutoCompactPercent(extendedPercent)
+	}
+	return normalizeAutoCompactPercent(standardPercent)
+}
+
+func AutoCompactPercentForContextWindow(contextWindow, standardPercent, extendedPercent int) int {
+	if contextWindow >= 1000000 {
+		return normalizeAutoCompactPercent(extendedPercent)
+	}
+	return normalizeAutoCompactPercent(standardPercent)
+}
+
+func normalizeAutoCompactPercent(percent int) int {
+	switch {
+	case percent <= 0:
+		return 0
+	case percent > 90:
+		return 90
+	default:
+		return percent
 	}
 }

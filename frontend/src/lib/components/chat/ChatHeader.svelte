@@ -1,6 +1,6 @@
 <script lang="ts">
   // Chat header: thread title + project chip on the left; action
-  // cluster on the right (context meter, Open-in-editor, git actions,
+  // cluster on the right (Open-in-editor, git actions,
   // terminal toggle, diff toggle). Layout mirrors t3-code so the chip
   // travels with the title rather than the actions.
   //
@@ -33,7 +33,6 @@
   import { getProject } from '../../stores/projects.svelte';
   import { expandProject } from '../../stores/sidebar.svelte';
   import { addToast } from '../../stores/toast.svelte';
-  import ContextWindowMeter from './ContextWindowMeter.svelte';
   import GitActionsControl from '../git/GitActionsControl.svelte';
   import Button from '../primitives/Button.svelte';
   import Icon from '../primitives/Icon.svelte';
@@ -192,12 +191,6 @@
 
     <!-- Right cluster: wraps, doesn't disappear, at narrow widths. -->
     <div class="ml-auto flex items-center gap-1.5 shrink-0 flex-wrap justify-end">
-      {#if pane.contextWindow}
-        <div class="shrink-0" data-testid="chat-header-context-meter">
-          <ContextWindowMeter data={pane.contextWindow} />
-        </div>
-      {/if}
-
       {#if projectBadge}
         <Button
           variant="secondary"

@@ -32,11 +32,9 @@ export interface Thread {
    * claude-haiku, gpt-5.4-mini). Rendered as the "Fast Mode" toggle.
    */
   fastMode?: boolean;
-  /**
-   * Context window in tokens. 200000 or 1000000 for Claude; Codex uses
-   * per-model defaults and this field is ignored.
-   */
   contextWindow?: number;
+  autoCompactStandardPercent?: number;
+  autoCompactExtendedPercent?: number;
   // Backend always populates this (CHECK constraint + default in v12),
   // but it's optional at the TS layer so test fixtures and hand-built
   // thread stubs from external callers don't have to set it. Consumers

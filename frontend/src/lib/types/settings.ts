@@ -7,11 +7,11 @@
 export type ReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
 /**
- * ContextWindow mirrors the schema-legal per-thread context-window
- * values. 200000 is Claude's default; 1000000 is the extended-beta
- * tier. Codex ignores the field at the translation layer.
+ * ContextWindow mirrors the per-thread context-window token count.
+ * Supported values come from the active provider/model metadata because
+ * Claude and Codex expose different standard and extended tiers.
  */
-export type ContextWindow = 200000 | 1000000;
+export type ContextWindow = number;
 
 /**
  * ThreadMode mirrors the canonical mode column on thread rows. Discussion
@@ -106,4 +106,11 @@ export interface ModelInfo {
   name: string;
   provider: string;
   capabilities: string[];
+  contextWindows?: ContextWindowOption[];
+}
+
+export interface ContextWindowOption {
+  tokens: number;
+  label: string;
+  tier: 'standard' | 'extended' | string;
 }
