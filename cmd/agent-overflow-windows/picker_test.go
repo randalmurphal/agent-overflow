@@ -76,15 +76,38 @@ func TestRenderPicker_EmptyDistros(t *testing.T) {
 	}
 }
 
-// TestPickerHTML_RuntimeJSLoadedAsModule pins the type="module" attribute
-// on the runtime.js script tag. The Wails v3 bundled runtime ends with a
-// top-level `export { ... }` declaration; loading it via a plain <script>
-// tag throws a SyntaxError and never assigns window.wails, which surfaces
-// as the "Wails bridge unavailable" picker error. Stripping the attribute
-// silently re-breaks the picker — the test guards that seam.
-func TestPickerHTML_RuntimeJSLoadedAsModule(t *testing.T) {
-	if !strings.Contains(pickerHTML, `<script type="module" src="/wails/runtime.js"></script>`) {
-		t.Errorf("picker.html must load /wails/runtime.js with type=\"module\"; runtime is an ES module and a plain <script> tag triggers a SyntaxError that leaves window.wails undefined")
+// TestPickerHTML_DoesNotLoadRuntimeJS pins the deliberate choice to
+// skip /wails/runtime.js and call Wails' wire endpoint directly. The
+// bundled runtime is an ES module (top-level `export { ... }`) — every
+// way of pulling it in we tried (plain <script>, <script type="module">)
+// failed in this WebView2 launcher: plain script throws a SyntaxError on
+// the export, and the module form was either cached stale or somehow not
+// applied, leaving window.wails undefined. Reintroducing the script tag
+// silently regresses; the test guards that seam.
+func TestPickerHTML_DoesNotLoadRuntimeJS(t *testing.T) {
+	if strings.Contains(pickerHTML, `src="/wails/runtime.js"`) {
+		t.Errorf("picker.html must not include a <script src=\"/wails/runtime.js\"> tag; the picker calls /wails/runtime directly to bypass runtime.js's module-loading footguns in WebView2")
+	}
+}
+
+// TestPickerHTML_DirectWireCallShape pins the inline pick() handler
+// against the wire format defined in
+// pkg/application/messageprocessor.go (callRequest=0) and
+// messageprocessor_call.go (CallBinding=0). If those constants ever
+// change, this test surfaces the mismatch at build time rather than a
+// runtime "unknown object N" error from the Wails server.
+func TestPickerHTML_DirectWireCallShape(t *testing.T) {
+	mustContain := []string{
+		`fetch("/wails/runtime"`,
+		`object: 0`,
+		`method: 0`,
+		`"call-id": callId`,
+		`methodName: fqn`,
+	}
+	for _, frag := range mustContain {
+		if !strings.Contains(pickerHTML, frag) {
+			t.Errorf("picker.html missing wire-call fragment %q; pick() must POST {object:0, method:0, args:{call-id, methodName, args}} to /wails/runtime", frag)
+		}
 	}
 }
 

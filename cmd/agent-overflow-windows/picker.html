@@ -178,16 +178,16 @@
       }
     </style>
     <!--
-      The Wails app server hosts its JS bridge at /wails/runtime.js;
-      without it window.wails is undefined and pick() can't reach the
-      bound PickDistro method. The bundled runtime is an ES module
-      (it ends with `export { ... }`), so it MUST load with
-      type="module" — a plain script tag triggers a SyntaxError and
-      window.wails never gets assigned. Module load is deferred, but
-      pick() doesn't run until the user clicks a row, so the bridge
-      is ready by then.
+      The picker deliberately skips loading /wails/runtime.js and
+      talks to Wails' /wails/runtime endpoint directly via fetch (see
+      pick() below). The runtime JS is a sizeable ES module that we
+      only need for one method on this page; bypassing it removes a
+      whole class of failure modes (module-load errors, ES-module
+      script-tag mismatches, WebView2 caching the wrong runtime
+      version) for a 20-line wire call. The shape (object=0,
+      method=0, args.{call-id,methodName,args}) matches Wails v3
+      messageprocessor_call.go::CallBinding.
     -->
-    <script type="module" src="/wails/runtime.js"></script>
   </head>
   <body>
     <div class="container">
@@ -215,16 +215,19 @@
         errEl.hidden = false;
       }
 
+      function randomId() {
+        return (
+          Math.random().toString(36).slice(2) +
+          Math.random().toString(36).slice(2)
+        );
+      }
+
       function pick(name) {
-        // The Wails v3 runtime exposes call-by-FQN as
-        // wails.Call.ByName('<pkgPath>.<Type>.<Method>', ...args). The
-        // FQN itself is rendered in by picker.go via reflect so we don't
-        // hard-code the package/type names here.
-        const callByName =
-          window.wails && window.wails.Call && window.wails.Call.ByName;
+        // FQN is "<pkgPath>.<TypeName>.PickDistro" — picker.go renders
+        // it via reflect so a rename of launcherApp doesn't drift.
         const fqn = window.__AO_PICK_DISTRO_FQN__;
-        if (typeof callByName !== "function" || !fqn) {
-          showError("Internal error: Wails bridge unavailable. Reopen the app.");
+        if (!fqn) {
+          showError("Internal error: PickDistro target missing. Reopen the app.");
           return;
         }
         // Hide the picker rows + show the loading spinner so the user
@@ -232,11 +235,46 @@
         // the WSL backend (can take 5-15 seconds on cold boot).
         document.getElementById("distros").style.display = "none";
         document.getElementById("loading").dataset.active = "1";
-        callByName(fqn, name).catch((err) => {
-          document.getElementById("loading").dataset.active = "0";
-          document.getElementById("distros").style.display = "";
-          showError("Picker error: " + (err && err.message ? err.message : err));
-        });
+
+        // Wails wire shape: object=0 (Call), method=0 (CallBinding),
+        // args is the CallOptions struct extended with a call-id used
+        // by the cancel-call path. We don't cancel, but the server
+        // requires the field. See pkg/application/messageprocessor_call.go.
+        const callId = randomId();
+        const body = {
+          object: 0,
+          method: 0,
+          args: { "call-id": callId, methodName: fqn, args: [name] },
+        };
+        fetch("/wails/runtime", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-wails-client-id": "ao-picker-" + callId,
+          },
+          body: JSON.stringify(body),
+        })
+          .then(async (res) => {
+            if (res.ok) {
+              // Success: the launcher will SetURL the WebView away
+              // from /picker once the WSL backend is reachable, so
+              // there's nothing more to do on this page.
+              return;
+            }
+            // 422 + JSON CallError on bound-method failure;
+            // text/plain on framing errors.
+            const text = await res.text();
+            throw new Error(
+              text || "PickDistro call returned status " + res.status
+            );
+          })
+          .catch((err) => {
+            document.getElementById("loading").dataset.active = "0";
+            document.getElementById("distros").style.display = "";
+            showError(
+              "Picker error: " + (err && err.message ? err.message : err)
+            );
+          });
       }
 
       if (!distros.length) {
