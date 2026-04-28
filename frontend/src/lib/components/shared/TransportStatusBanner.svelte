@@ -27,7 +27,41 @@
   let timer: ReturnType<typeof setInterval> | null = null;
 
   let snapshot = $derived(getTransportStatus());
-  let visible = $derived(snapshot.status !== 'connected');
+
+  // Boot-time flash suppression. The wsClient starts in `disconnected`
+  // (see transport/wsClient.ts), so on every SPA mount the banner would
+  // briefly render a red "Disconnected from the agent backend." card
+  // for the few hundred ms between this component mounting and the
+  // initial WebSocket handshake completing. That looks like an error,
+  // not a normal boot. Track two state flags to gate visibility:
+  //
+  //   - hasEverConnected — flips true once the WS has connected at
+  //     least once. Subsequent disconnects in the same session are
+  //     real and worth showing immediately, with no grace.
+  //   - bootGraceExpired — flips true 1 s after mount if we haven't
+  //     connected yet. Catches the legitimate failure case where the
+  //     initial handshake never lands and the user would otherwise
+  //     stare at a UI with no feedback.
+  let hasEverConnected = $state(false);
+  let bootGraceExpired = $state(false);
+
+  $effect(() => {
+    if (snapshot.status === 'connected') {
+      hasEverConnected = true;
+    }
+  });
+
+  $effect(() => {
+    if (hasEverConnected) return;
+    const t = setTimeout(() => {
+      bootGraceExpired = true;
+    }, 1000);
+    return () => clearTimeout(t);
+  });
+
+  let visible = $derived(
+    snapshot.status !== 'connected' && (hasEverConnected || bootGraceExpired),
+  );
 
   $effect(() => {
     if (!visible) {

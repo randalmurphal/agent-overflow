@@ -100,6 +100,11 @@ tasks:
       - "internal/**/*.go"
       - "go.mod"
       - "go.sum"
+      # frontend/dist is `//go:embed`-ed by main.go, so a stale embed
+      # links into the .exe even when SPA source changed. Watching the
+      # built artifacts (not src/) keeps this cheap — Vite produces
+      # exactly the files this rebuild needs as input.
+      - "frontend/dist/**/*"
     generates:
       - cmd/agent-overflow-windows/payload/agent-overflow-linux
       - "{{.BIN_DIR | default \"bin\"}}/agent-overflow-linux"
