@@ -86,7 +86,7 @@ func TestModelsForProviderReturnsCopy(t *testing.T) {
 func TestModelInfoJSONRoundTrip(t *testing.T) {
 	original := ModelInfo{
 		Slug:         "claude-sonnet-4-6",
-		Name:         "Claude Sonnet 4.6",
+		Name:         "Sonnet 4.6",
 		Provider:     "claude",
 		Capabilities: []string{"code", "reasoning"},
 	}

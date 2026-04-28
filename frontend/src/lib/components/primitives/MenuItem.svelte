@@ -25,6 +25,7 @@
     action?: Snippet;
     actionLabel?: string;
     actionPressed?: boolean;
+    actionPosition?: 'start' | 'end';
     onAction?: () => void;
     variant?: 'default' | 'danger';
   }
@@ -42,6 +43,7 @@
     action,
     actionLabel,
     actionPressed,
+    actionPosition = 'end',
     onAction,
     variant = 'default',
   }: Props = $props();
@@ -112,6 +114,23 @@
     disabled ? 'opacity-50 cursor-not-allowed hover:bg-transparent focus:bg-transparent' : '',
   ].join(' ')}
 >
+  {#if action && onAction && actionPosition === 'start'}
+    <button
+      type="button"
+      aria-label={actionLabel}
+      aria-pressed={actionPressed}
+      tabindex={-1}
+      onclick={handleActionClick}
+      class={[
+        'inline-flex h-5 w-5 items-center justify-center rounded-[var(--radius-field)]',
+        'text-fg-hint transition-colors',
+        'hover:bg-surface-2/70 hover:text-fg',
+        actionPressed ? 'text-warning' : '',
+      ].join(' ')}
+    >
+      {@render action()}
+    </button>
+  {/if}
   {#if icon}
     <span class="flex h-4 w-4 items-center justify-center text-fg-subtle" aria-hidden="true">
       {@render icon()}
@@ -139,7 +158,7 @@
       {suffix}
     </span>
   {/if}
-  {#if action && onAction}
+  {#if action && onAction && actionPosition === 'end'}
     <button
       type="button"
       aria-label={actionLabel}

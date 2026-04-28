@@ -17,16 +17,16 @@ type ModelInfo struct {
 
 // ClaudeModels lists models available through the Claude provider.
 var ClaudeModels = []ModelInfo{
-	{Slug: "claude-sonnet-4-6", Name: "Claude Sonnet 4.6", Provider: "claude"},
+	{Slug: "claude-sonnet-4-6", Name: "Sonnet 4.6", Provider: "claude"},
 	{
 		Slug:         "claude-opus-4-7",
-		Name:         "Claude Opus 4.7",
+		Name:         "Opus 4.7",
 		Provider:     "claude",
 		Capabilities: []string{ModelCapabilityFastMode},
 	},
 	{
 		Slug:         "claude-haiku-4-5",
-		Name:         "Claude Haiku 4.5",
+		Name:         "Haiku 4.5",
 		Provider:     "claude",
 		Capabilities: []string{ModelCapabilityThinking},
 	},

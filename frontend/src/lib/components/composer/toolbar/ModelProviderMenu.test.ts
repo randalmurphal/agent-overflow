@@ -43,7 +43,7 @@ function makeItem(overrides: Partial<Item> = {}): Item {
 }
 
 async function buildPane(thread: Thread, items: Item[] = []) {
-  setBindingMock('SwitchThread', async () => {});
+  setBindingMock('SwitchThread', async () => thread);
   // ListRecentThreadItems is the binding switchThread actually calls;
   // returning a populated `items` array is how we simulate a "used" thread
   // (one with persisted history) without spinning a backend.
@@ -68,15 +68,11 @@ describe('<ModelProviderMenu>', () => {
     setBindingMock('SetChatBarFavorite', async () => []);
   });
 
-  it('renders the active model slug on the trigger (brand is the glyph; no provider word)', async () => {
+  it('renders the active Claude model as a provider-free display label', async () => {
     const pane = await buildPane(makeThread({ provider: 'claude', model: 'claude-haiku-4-6' }));
     const { getByTestId } = render(ModelProviderMenu, { props: { pane } });
     const trigger = getByTestId('composer-model-menu-trigger');
-    // Provider identification lives in the brand glyph (lucide-claude /
-    // lucide-openai); the label is the aliased model slug (the redundant
-    // `claude-` prefix is dropped to give back toolbar room at narrow
-    // composer widths).
-    expect(trigger.textContent ?? '').toMatch(/\bhaiku-4-6\b/);
+    expect(trigger.textContent ?? '').toMatch(/\bHaiku 4\.6\b/);
     expect(trigger.textContent ?? '').not.toMatch(/claude-haiku-4-6/);
     expect(trigger.textContent ?? '').not.toMatch(/\bClaude\b/);
     expect(trigger.textContent ?? '').not.toMatch(/\bCodex\b/);
@@ -124,7 +120,7 @@ describe('<ModelProviderMenu>', () => {
   it('warms the active provider cache on open', async () => {
     const pane = await buildPane(makeThread({ provider: 'claude' }));
     const modelsMock = setBindingMock('GetModelsForProvider', async () => [
-      { slug: 'claude-opus-4-5', name: 'Claude Opus 4.5', provider: 'claude', capabilities: [] },
+      { slug: 'claude-opus-4-5', name: 'Opus 4.5', provider: 'claude', capabilities: [] },
     ]);
     const { getByTestId } = render(ModelProviderMenu, { props: { pane } });
     await fireEvent.click(getByTestId('composer-model-menu-trigger'));
@@ -134,7 +130,7 @@ describe('<ModelProviderMenu>', () => {
     expect(modelsMock.mock.calls.some((c) => c[0] === 'claude')).toBe(true);
   });
 
-  it('renders DB-backed favorites above provider sections with provider icons', async () => {
+  it('renders DB-backed favorites above provider sections with normalized provider icons', async () => {
     const pane = await buildPane(makeThread({ provider: 'claude', model: 'claude-opus-4-7' }));
     setBindingMock('GetModelsForProvider', async () => []);
     setBindingMock('ListChatBarFavorites', async () => [
@@ -157,9 +153,46 @@ describe('<ModelProviderMenu>', () => {
     const { getByTestId, findByRole } = render(ModelProviderMenu, { props: { pane } });
     await fireEvent.click(getByTestId('composer-model-menu-trigger'));
 
-    const favorite = await findByRole('menuitem', { name: /Claude Opus 4.7/i });
+    const favorite = await findByRole('menuitem', { name: /Opus 4.7/i });
     expect(favorite.querySelector('svg.lucide-claude')).not.toBeNull();
+    expect(favorite.textContent ?? '').not.toMatch(/\bClaude\b/);
     await findByRole('menuitem', { name: /Architects/i });
+  });
+
+  it('renders provider model rows with the favorite star before the label', async () => {
+    const pane = await buildPane(makeThread({ provider: 'claude', model: 'claude-sonnet-4-6' }));
+    setBindingMock('GetModelsForProvider', async () => [
+      { slug: 'claude-opus-4-7', name: 'Claude Opus 4.7', provider: 'claude', capabilities: [] },
+    ]);
+    setBindingMock('ListChatBarFavorites', async () => [
+      {
+        kind: 'model',
+        provider: 'claude',
+        value: 'claude-opus-4-7',
+        label: 'Claude Opus 4.7',
+        createdAt: 1,
+      },
+    ]);
+
+    const { getByTestId, findByRole } = render(ModelProviderMenu, { props: { pane } });
+    await fireEvent.click(getByTestId('composer-model-menu-trigger'));
+    const claudeRow = await findByRole('menuitem', { name: /Claude/i });
+    await fireEvent.click(claudeRow);
+
+    await waitFor(() => {
+      expect(document.querySelector(
+        '[role="menuitem"] button[aria-label="Remove Opus 4.7 from favorites"]',
+      )).not.toBeNull();
+    });
+    const option = document.querySelector(
+      '[role="menuitem"] button[aria-label="Remove Opus 4.7 from favorites"]',
+    )!.closest('[role="menuitem"]')!;
+    const star = option.querySelector('button[aria-label="Remove Opus 4.7 from favorites"]');
+    expect(star).not.toBeNull();
+    expect(option.textContent?.trim().startsWith('Opus 4.7')).toBe(true);
+    expect(star!.compareDocumentPosition(option.querySelector('span.min-w-0')!)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
   });
 
   it('calls UpdateThreadProvider + UpdateThreadModel when switching providers', async () => {

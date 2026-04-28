@@ -7,6 +7,7 @@
 
   import type { ThreadPane } from '../../../stores/thread.svelte';
   import type { ModelInfo } from '../../../types/settings';
+  import { displayModelLabel } from '../../../utils/modelLabels';
   import MenuItem from '../../primitives/MenuItem.svelte';
   import Icon from '../../primitives/Icon.svelte';
   import Star from 'lucide-svelte/icons/star';
@@ -75,12 +76,14 @@
 {:else}
   {#each models as model (model.slug)}
     {@const favorite = isFavorite(provider, model.slug)}
+    {@const label = displayModelLabel(provider, model.slug, model.name)}
     <MenuItem
-      label={model.name || model.slug}
+      {label}
       checked={isActiveProvider && currentModel === model.slug}
       onSelect={() => onSelect(model.slug)}
-      actionLabel={favorite ? `Remove ${model.name || model.slug} from favorites` : `Add ${model.name || model.slug} to favorites`}
+      actionLabel={favorite ? `Remove ${label} from favorites` : `Add ${label} to favorites`}
       actionPressed={favorite}
+      actionPosition="start"
       onAction={onToggleFavorite ? () => onToggleFavorite(model) : undefined}
     >
       {#snippet action()}

@@ -16,6 +16,7 @@
   import { replaceThread } from '../../../stores/threads.svelte';
   import { addToast } from '../../../stores/toast.svelte';
   import { errString } from '../../../utils/errors';
+  import { displayModelLabel } from '../../../utils/modelLabels';
   import MessagesSquare from 'lucide-svelte/icons/messages-square';
   import Popover from '../../primitives/Popover.svelte';
   import Menu from '../../primitives/Menu.svelte';
@@ -159,7 +160,7 @@
       kind: 'model',
       provider,
       value: model.slug,
-      label: model.name || model.slug,
+      label: displayModelLabel(provider, model.slug, model.name),
       createdAt: 0,
     }, starred);
   }
@@ -196,11 +197,7 @@
   }
 
   let isCodex = $derived(pane.thread?.provider === 'codex');
-  let modelLabel = $derived.by(() => {
-    const raw = pane.thread?.model ?? 'No model';
-    if (!isCodex && raw.startsWith('claude-')) return raw.slice('claude-'.length);
-    return raw;
-  });
+  let modelLabel = $derived(displayModelLabel(pane.thread?.provider ?? '', pane.thread?.model ?? 'No model'));
 
   let isLocked = $derived(pane.items.length > 0);
   let isDiscussion = $derived(pane.thread?.mode === 'discussion');

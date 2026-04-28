@@ -151,6 +151,7 @@
         onSelect={() => startDiscussion(def)}
         actionLabel={favorite ? `Remove ${def.name} from favorites` : `Add ${def.name} to favorites`}
         actionPressed={favorite}
+        actionPosition="start"
         onAction={onToggleFavorite ? () => onToggleFavorite(def) : undefined}
       >
         {#snippet action()}
@@ -168,6 +169,7 @@
         onSelect={() => startDiscussion(def)}
         actionLabel={favorite ? `Remove ${def.name} from favorites` : `Add ${def.name} to favorites`}
         actionPressed={favorite}
+        actionPosition="start"
         onAction={onToggleFavorite ? () => onToggleFavorite(def) : undefined}
       >
         {#snippet action()}

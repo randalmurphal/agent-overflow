@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { ChatBarFavorite } from '../../../stores/bindings';
+  import { displayModelLabel } from '../../../utils/modelLabels';
   import MenuDivider from '../../primitives/MenuDivider.svelte';
   import MenuItem from '../../primitives/MenuItem.svelte';
   import MenuSectionHeader from '../../primitives/MenuSectionHeader.svelte';
@@ -28,8 +29,9 @@
 {#if favorites.length > 0}
   <MenuSectionHeader label="Favorites" />
   {#each favorites as fav (`${fav.kind}:${fav.provider ?? ''}:${fav.value}`)}
+    {@const label = fav.kind === 'model' ? displayModelLabel(fav.provider ?? '', fav.value, fav.label) : fav.label}
     <MenuItem
-      label={fav.label}
+      {label}
       checked={fav.kind === 'model' && fav.provider === activeProvider && fav.value === currentModel}
       onSelect={() => {
         if (fav.kind === 'model' && (fav.provider === 'claude' || fav.provider === 'codex')) {
