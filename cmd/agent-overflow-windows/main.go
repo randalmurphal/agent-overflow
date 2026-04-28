@@ -70,14 +70,33 @@ var payloadVersion = "dev"
 // backend to drain before tearing the Job Object down.
 const shutdownTimeout = 5 * time.Second
 
-// bootstrapProbeTimeout caps the connectivity probe that validates the
-// WSL-side bootstrap is actually reachable from the Windows host.
-// Generous enough that a normal cold boot doesn't false-positive, short
-// enough that a localhostForwarding-disabled distro surfaces an error
-// quickly. The Launch step has already waited for the bootstrap line,
-// so by the time we probe the backend has bound its listener — failure
-// here points at the Windows ⇄ WSL2 networking path, not the backend.
-const bootstrapProbeTimeout = 5 * time.Second
+// bootstrapProbeAttemptTimeout caps a single HTTP attempt against the
+// WSL-side /bootstrap.json. RST / connection-refused arrives in
+// milliseconds; a real timeout means the request reached the kernel
+// but the server didn't respond, which is rare and recoverable. 1 s
+// is long enough for either to surface and short enough that we burn
+// budget on retrying, not waiting.
+const bootstrapProbeAttemptTimeout = 1 * time.Second
+
+// bootstrapProbeDeadline is the total time we'll spend polling. WSL2
+// in NAT mode (the default — see %USERPROFILE%/.wslconfig with no
+// `networkingMode` line) installs a Windows-side forward rule for the
+// WSL listener AFTER the listener binds; the rule shows up sub-second,
+// but the launcher's first probe lands inside that window and gets
+// "actively refused" by Windows even though the backend is healthy.
+// Polling past the install bumps every cold boot through the race
+// without flapping. 15 s matches the upper bound we've seen on slow
+// WSL2 hosts (faster than forge's 30 s daemon-readiness window because
+// our backend has already finished bootstrap by the time we probe —
+// only the forwarder is potentially still pending).
+const bootstrapProbeDeadline = 15 * time.Second
+
+// bootstrapProbePollInterval is the gap between failed-probe retries.
+// 250 ms matches forge/apps/desktop/src/main.ts's connectViaWsl loop
+// — fast enough that the WSL2 forwarder install almost never costs us
+// more than one extra hop, slow enough that we don't melt the CPU when
+// the backend genuinely never comes up.
+const bootstrapProbePollInterval = 250 * time.Millisecond
 
 func main() {
 	logFile, err := openLog()
@@ -475,24 +494,52 @@ func probeBootstrap(port int, token string) error {
 	// debug "is the WSL backend actually listening?".
 	redacted := fmt.Sprintf("http://127.0.0.1:%d/bootstrap.json", port)
 	log.Printf("probe: GET %s (token=%d bytes)", redacted, len(token))
-	client := &http.Client{Timeout: bootstrapProbeTimeout}
-	resp, err := client.Get(url)
-	if err != nil {
-		return fmt.Errorf("GET %s: %w", redacted, err)
+
+	// Poll, don't one-shot. WSL2 NAT mode installs the Windows-side
+	// forward rule for a fresh WSL listener AFTER the listener binds,
+	// and the launcher's first probe usually lands inside that race —
+	// Windows returns RST and we'd surface a misleading
+	// connectivity-error page even though the backend is healthy and
+	// the forwarder is about to catch up. forge's connectViaWsl
+	// (apps/desktop/src/main.ts) handles this with a 250 ms / 30 s
+	// loop; we use the same shape, tighter total budget because our
+	// backend has already finished its own bootstrap before we probe.
+	//
+	// Transport errors (refused / timeout / DNS failure) are
+	// transient and trigger a retry. An HTTP-level response (any
+	// status code) means the request reached our handler and we
+	// decide right there: 200 = ready, anything else (token mismatch,
+	// host guard reject) is terminal — retrying won't change the
+	// answer.
+	client := &http.Client{Timeout: bootstrapProbeAttemptTimeout}
+	deadline := time.Now().Add(bootstrapProbeDeadline)
+	var lastErr error
+	attempt := 0
+	for {
+		attempt++
+		resp, err := client.Get(url)
+		if err == nil {
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
+			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				if attempt > 1 {
+					log.Printf("probe: ok after %d attempts", attempt)
+				}
+				return nil
+			}
+			// Server is reachable but rejected. Surface the response
+			// shape (status + first bytes of body) so a future
+			// regression in handleBootstrap shows up clearly.
+			log.Printf("probe: status=%d host-resp=%q", resp.StatusCode, string(body))
+			return fmt.Errorf("GET %s: status %d", redacted, resp.StatusCode)
+		}
+		lastErr = err
+		if time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(bootstrapProbePollInterval)
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 400 {
-		// Surface response body on failure: handleBootstrap returns
-		// "404 page not found" for token mismatch AND for the loopback
-		// host guard reject. The body text is identical, but seeing
-		// the Content-Length / first bytes confirms we got a real
-		// handler response (vs. a captive portal / proxy / firewall
-		// rewrite).
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
-		log.Printf("probe: status=%d host-resp=%q", resp.StatusCode, string(body))
-		return fmt.Errorf("GET %s: status %d", redacted, resp.StatusCode)
-	}
-	return nil
+	return fmt.Errorf("GET %s: timed out after %d attempts: %w", redacted, attempt, lastErr)
 }
 
 // persistSuccessfulLaunch writes the {distro, installed_version} pair
