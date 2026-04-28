@@ -564,16 +564,11 @@ export function createThreadPane() {
     const raw = nextThread?.lastTokenUsage?.trim();
     if (!raw) {
       if (!nextThread?.contextWindow) return null;
-      const percent = activeAutoCompactPercent(nextThread);
-      return {
+      return normalizeContextWindowForThread({
         usedTokens: 0,
         maxTokens: nextThread.contextWindow,
         usedPercentage: 0,
-        ...(percent > 0 ? {
-          autoCompactPercent: percent,
-          autoCompactTokenLimit: Math.floor(nextThread.contextWindow * percent / 100),
-        } : {}),
-      };
+      }, nextThread);
     }
     try {
       const parsed = JSON.parse(raw) as {
@@ -584,20 +579,30 @@ export function createThreadPane() {
         autoCompactTokenLimit?: number;
       };
       if (typeof parsed.usedTokens !== 'number') return null;
-      const maxTokens = nextThread?.contextWindow || parsed.maxTokens;
-      const percent = nextThread ? activeAutoCompactPercent(nextThread) : (parsed.autoCompactPercent ?? 0);
-      return {
+      return normalizeContextWindowForThread({
         usedTokens: parsed.usedTokens,
-        maxTokens,
-        usedPercentage: maxTokens ? (parsed.usedTokens / maxTokens) * 100 : parsed.contextPercent,
-        ...(percent > 0 ? {
-          autoCompactPercent: percent,
-          autoCompactTokenLimit: maxTokens ? Math.floor(maxTokens * percent / 100) : parsed.autoCompactTokenLimit,
-        } : {}),
-      };
+        maxTokens: parsed.maxTokens,
+        usedPercentage: parsed.contextPercent,
+        autoCompactPercent: parsed.autoCompactPercent,
+        autoCompactTokenLimit: parsed.autoCompactTokenLimit,
+      }, nextThread);
     } catch {
       return null;
     }
+  }
+
+  function normalizeContextWindowForThread(data: ContextWindow, nextThread: Thread | null): ContextWindow {
+    const maxTokens = nextThread?.contextWindow || data.maxTokens || 0;
+    const percent = nextThread ? activeAutoCompactPercent(nextThread) : (data.autoCompactPercent ?? 0);
+    return {
+      usedTokens: data.usedTokens,
+      maxTokens,
+      usedPercentage: maxTokens > 0 ? (data.usedTokens / maxTokens) * 100 : data.usedPercentage,
+      ...(percent > 0 ? {
+        autoCompactPercent: percent,
+        autoCompactTokenLimit: maxTokens > 0 ? Math.floor(maxTokens * percent / 100) : data.autoCompactTokenLimit,
+      } : {}),
+    };
   }
 
   function activeAutoCompactPercent(nextThread: Thread): number {
@@ -849,8 +854,11 @@ export function createThreadPane() {
         const switched = await SwitchThread(newThread.id) as Thread;
         if (gen !== switchGeneration) return;
         if (switched.id === newThread.id) {
+          const currentContextWindow = contextWindow;
           thread = switched;
-          replaceThread(switched);
+          contextWindow = currentContextWindow
+            ? normalizeContextWindowForThread(currentContextWindow, switched)
+            : seedContextWindow(switched);
         }
       } catch (err) {
         console.error('Failed to notify backend of thread switch:', err);
@@ -1248,7 +1256,7 @@ export function createThreadPane() {
     },
 
     setContextWindow(data: ContextWindow): void {
-      contextWindow = data;
+      contextWindow = normalizeContextWindowForThread(data, thread);
     },
 
     clearContextWindow(): void {

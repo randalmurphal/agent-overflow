@@ -9,6 +9,7 @@ import (
 	"log"
 	"os/exec"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -170,17 +171,7 @@ func InstallPayload(ctx context.Context, distro, hostPath, wslPath string) error
 		return fmt.Errorf("translate host path: %w", err)
 	}
 
-	// `mkdir -p` + `cp` + `chmod +x` in a single shell invocation so a
-	// partial failure (parent dir missing, permissions wrong) surfaces
-	// as a single non-zero exit code with a useful stderr.
-	wslDir := parentDir(wslPath)
-	script := fmt.Sprintf(
-		"mkdir -p %s && cp %s %s && chmod +x %s",
-		shellQuote(wslDir),
-		shellQuote(wslHostPath),
-		shellQuote(wslPath),
-		shellQuote(wslPath),
-	)
+	script := installPayloadScript(wslHostPath, wslPath, uniqueInstallTempPath(wslPath))
 
 	cmd := exec.CommandContext(ctx, "wsl.exe", "-d", distro, "--", "/bin/sh", "-c", script)
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
@@ -189,6 +180,24 @@ func InstallPayload(ctx context.Context, distro, hostPath, wslPath string) error
 		return fmt.Errorf("install payload into %s:%s: %w (output: %s)", distro, wslPath, err, string(out))
 	}
 	return nil
+}
+
+func installPayloadScript(wslHostPath, wslPath, tmpPath string) string {
+	return fmt.Sprintf(
+		"set -e; mkdir -p %s; rm -f %s; trap %s EXIT; cp %s %s; chmod +x %s; mv -f %s %s; trap - EXIT",
+		shellQuote(parentDir(wslPath)),
+		shellQuote(tmpPath),
+		shellQuote("rm -f "+tmpPath),
+		shellQuote(wslHostPath),
+		shellQuote(tmpPath),
+		shellQuote(tmpPath),
+		shellQuote(tmpPath),
+		shellQuote(wslPath),
+	)
+}
+
+func uniqueInstallTempPath(wslPath string) string {
+	return fmt.Sprintf("%s.tmp.%d", wslPath, time.Now().UnixNano())
 }
 
 // windowsToWSLPath rewrites C:\foo\bar to /mnt/c/foo/bar. WSL2's
@@ -233,8 +242,8 @@ func parentDir(p string) string {
 	return "."
 }
 
-// shellQuote wraps a path in single quotes and escapes embedded
-// quotes the POSIX way ('' -> '"'"'). Sufficient for paths from the
+// shellQuote wraps a path in single quotes and escapes embedded single
+// quotes the POSIX way (' -> '"'"'). Sufficient for paths from the
 // embedded payload (no special chars expected) but robust against the
 // user installing into a directory with spaces.
 func shellQuote(s string) string {
@@ -329,7 +338,7 @@ func (j *jobObjectLauncher) close() error {
 // resume every thread of a process started with CREATE_SUSPENDED.
 // It's the same primitive a debugger uses on detach.
 var (
-	ntdll              = windows.NewLazySystemDLL("ntdll.dll")
+	ntdll               = windows.NewLazySystemDLL("ntdll.dll")
 	procNtResumeProcess = ntdll.NewProc("NtResumeProcess")
 )
 

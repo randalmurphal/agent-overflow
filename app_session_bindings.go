@@ -18,7 +18,6 @@ func (a *App) SwitchThread(threadID string) (store.Thread, error) {
 	if err != nil {
 		return store.Thread{}, err
 	}
-	a.rememberChatModelProfile(thread)
 
 	a.mu.Lock()
 	_, hasSession := a.sessions[threadID]

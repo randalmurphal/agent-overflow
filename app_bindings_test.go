@@ -606,6 +606,43 @@ func TestCreateThreadUsesRememberedClaudeModelAndContext(t *testing.T) {
 	}
 }
 
+func TestSwitchThreadDoesNotChangeRememberedContext(t *testing.T) {
+	app := newTestAppWithStore(t)
+	app.settings = settings.NewService(t.TempDir())
+
+	if err := app.store.UpsertChatModelProfile(store.ChatModelProfile{
+		Provider:        "claude",
+		Model:           "claude-sonnet-4-6",
+		ReasoningEffort: "high",
+		ContextWindow:   200000,
+		RuntimeMode:     "default",
+	}); err != nil {
+		t.Fatalf("UpsertChatModelProfile: %v", err)
+	}
+	opened, err := createTestThread(t, app, "claude", "/tmp/open-1m", "claude-sonnet-4-6", "")
+	if err != nil {
+		t.Fatalf("create opened thread: %v", err)
+	}
+	if err := app.store.UpdateContextSettings(opened.ID, 1000000, 0, 0); err != nil {
+		t.Fatalf("UpdateContextSettings(opened): %v", err)
+	}
+
+	if _, err := app.SwitchThread(opened.ID); err != nil {
+		t.Fatalf("SwitchThread(opened): %v", err)
+	}
+
+	next, err := createTestThread(t, app, "", "/tmp/new-after-open-1m", "", "")
+	if err != nil {
+		t.Fatalf("create next thread: %v", err)
+	}
+	if next.Model != "claude-sonnet-4-6" {
+		t.Fatalf("next model = %q, want claude-sonnet-4-6", next.Model)
+	}
+	if next.ContextWindow != 200000 {
+		t.Fatalf("next context = %d, want remembered 200000", next.ContextWindow)
+	}
+}
+
 func TestUpdateThreadModelRestartsActiveSession(t *testing.T) {
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-model-active")

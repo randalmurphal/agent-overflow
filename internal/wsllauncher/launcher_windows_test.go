@@ -135,6 +135,31 @@ func TestParentDir(t *testing.T) {
 	}
 }
 
+func TestInstallPayloadScriptUsesAtomicRename(t *testing.T) {
+	tmpPath := "/home/randy/.local/bin/agent-overflow.tmp.123"
+	script := installPayloadScript("/mnt/c/tmp/payload", "/home/randy/.local/bin/agent-overflow", tmpPath)
+
+	required := []string{
+		"mkdir -p '/home/randy/.local/bin'",
+		"rm -f '/home/randy/.local/bin/agent-overflow.tmp.123'",
+		"cp '/mnt/c/tmp/payload' '/home/randy/.local/bin/agent-overflow.tmp.123'",
+		"chmod +x '/home/randy/.local/bin/agent-overflow.tmp.123'",
+		"mv -f '/home/randy/.local/bin/agent-overflow.tmp.123' '/home/randy/.local/bin/agent-overflow'",
+		"trap 'rm -f /home/randy/.local/bin/agent-overflow.tmp.123' EXIT",
+	}
+	for _, fragment := range required {
+		if !strings.Contains(script, fragment) {
+			t.Fatalf("install payload script missing %q in %q", fragment, script)
+		}
+	}
+	if strings.Contains(script, "cp '/mnt/c/tmp/payload' '/home/randy/.local/bin/agent-overflow'") {
+		t.Fatalf("install payload script copies directly over destination: %q", script)
+	}
+	if strings.Contains(script, "$") {
+		t.Fatalf("install payload script should not rely on shell expansion: %q", script)
+	}
+}
+
 func TestListDistros_PathMiss(t *testing.T) {
 	// On a Windows host without wsl.exe on PATH, ListDistros must
 	// return (nil, nil) so the picker UI's empty-state branch fires.
@@ -152,4 +177,3 @@ func TestListDistros_PathMiss(t *testing.T) {
 	}
 	_ = got
 }
-

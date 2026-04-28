@@ -86,6 +86,67 @@ describe('createThreadPane', () => {
     expect(pane.thread?.lastReadAt).toBe(300);
   });
 
+  it('re-normalizes the context meter against the backend-returned thread', async () => {
+    const pane = createThreadPane();
+    const selected = makeThread({
+      id: 'thread-a',
+      provider: 'codex',
+      model: 'gpt-5.5',
+      contextWindow: 1050000,
+      lastTokenUsage: JSON.stringify({
+        usedTokens: 136000,
+        maxTokens: 1050000,
+        contextPercent: 12.95,
+      }),
+    });
+    setBindingMock('SwitchThread', async () => ({
+      ...selected,
+      contextWindow: 272000,
+      autoCompactStandardPercent: 80,
+      autoCompactExtendedPercent: 88,
+    }));
+
+    await pane.switchThread(selected);
+
+    expect(pane.contextWindow).toEqual({
+      usedTokens: 136000,
+      maxTokens: 272000,
+      usedPercentage: 50,
+      autoCompactPercent: 80,
+      autoCompactTokenLimit: 217600,
+    });
+  });
+
+  it('normalizes live context snapshots to the active thread context window', async () => {
+    const pane = createThreadPane();
+    const selected = makeThread({
+      id: 'thread-a',
+      provider: 'codex',
+      model: 'gpt-5.5',
+      contextWindow: 272000,
+      autoCompactStandardPercent: 80,
+      autoCompactExtendedPercent: 88,
+    });
+    setBindingMock('SwitchThread', async () => selected);
+
+    await pane.switchThread(selected);
+    pane.setContextWindow({
+      usedTokens: 136000,
+      maxTokens: 1050000,
+      usedPercentage: 12.95,
+      autoCompactPercent: 88,
+      autoCompactTokenLimit: 924000,
+    });
+
+    expect(pane.contextWindow).toEqual({
+      usedTokens: 136000,
+      maxTokens: 272000,
+      usedPercentage: 50,
+      autoCompactPercent: 80,
+      autoCompactTokenLimit: 217600,
+    });
+  });
+
   it('drops wrong-thread rows from initial history hydration', async () => {
     const pane = createThreadPane();
     setBindingMock('ListRecentThreadItems', async () => ({

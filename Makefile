@@ -57,8 +57,8 @@ dev:
 	VITE_AGENT_OVERFLOW_UI_TRACE=$(UI_TRACE) wails3 dev
 
 # dev-wsl: cross-compiles the Linux ELF + Windows .exe launcher inside
-# this WSL distro, copies the .exe to a Windows-native path, and
-# invokes it via Windows's loader. The --distro flag is set from
+# this WSL distro, copies the .exe to a versioned Windows-native path,
+# and invokes it via Windows's loader. The --distro flag is set from
 # $WSL_DISTRO_NAME so the launcher skips the picker and runs the
 # backend in the same distro you're shelled into. The override is
 # non-persistent — it doesn't overwrite a user-saved choice in
@@ -73,8 +73,11 @@ dev:
 # we hit: connectivity-error page from a probeBootstrap variant we'd
 # already removed in source. Copying to %LOCALAPPDATA% (a true
 # NTFS path on the C: drive) bypasses the redirector and Windows
-# loads the actual current bytes. forge avoids this by installing
-# into Program Files; we do the dev-mode equivalent.
+# loads the actual current bytes. Each dev launch uses a versioned
+# filename because Windows keeps the running .exe locked; overwriting a
+# fixed staging path fails with "Permission denied" and would otherwise
+# relaunch the old image. forge avoids this by installing into Program
+# Files; we do the dev-mode equivalent.
 #
 # %LOCALAPPDATA% is resolved at recipe-execution time via cmd.exe
 # interop, not from $$LOCALAPPDATA in our Linux shell. WSLENV in
@@ -92,15 +95,18 @@ dev-wsl:
 		echo "ERROR: WSL_DISTRO_NAME is unset. Run this target from inside a WSL shell."; \
 		exit 1; \
 	fi
-	@$(MAKE) build-wsl WSL_VERSION=dev-$$(date +%Y%m%d%H%M%S) WSL_FORCE_RELINK=1
-	@WIN_LAD=$$(/mnt/c/Windows/System32/cmd.exe /c 'echo %LOCALAPPDATA%' 2>/dev/null | tr -d '\r\n'); \
+	@set -e; \
+	DEV_VERSION=dev-$$(date +%Y%m%d%H%M%S)-$$$$; \
+	$(MAKE) build-wsl WSL_VERSION=$$DEV_VERSION WSL_FORCE_RELINK=1; \
+	WIN_LAD=$$(/mnt/c/Windows/System32/cmd.exe /c 'echo %LOCALAPPDATA%' 2>/dev/null | tr -d '\r\n'); \
 	if [ -z "$$WIN_LAD" ]; then \
 		echo "ERROR: could not resolve %LOCALAPPDATA% via cmd.exe interop."; \
 		exit 1; \
 	fi; \
 	WIN_DEV_DIR_LINUX=$$(wslpath -u "$$WIN_LAD")/agent-overflow/dev; \
-	WIN_DEV_EXE_LINUX="$$WIN_DEV_DIR_LINUX/agent-overflow.exe"; \
+	WIN_DEV_EXE_LINUX="$$WIN_DEV_DIR_LINUX/agent-overflow-$$DEV_VERSION.exe"; \
 	mkdir -p "$$WIN_DEV_DIR_LINUX"; \
+	find "$$WIN_DEV_DIR_LINUX" -maxdepth 1 -name 'agent-overflow-dev-*.exe' ! -name "agent-overflow-$$DEV_VERSION.exe" -delete 2>/dev/null || true; \
 	cp bin/agent-overflow.exe "$$WIN_DEV_EXE_LINUX"; \
 	echo "Launching $$WIN_DEV_EXE_LINUX --distro $$WSL_DISTRO_NAME"; \
 	"$$WIN_DEV_EXE_LINUX" --distro "$$WSL_DISTRO_NAME"
