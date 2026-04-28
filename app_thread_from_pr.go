@@ -62,8 +62,9 @@ func (a *App) CreateThreadFromPR(
 		return store.Thread{}, errors.New("provider is required")
 	}
 	model = strings.TrimSpace(model)
+	seed := a.seedChatModelProfile(providerName, model)
 	if model == "" {
-		return store.Thread{}, errors.New("model is required")
+		model = seed.Model
 	}
 
 	ref := gitops.PRReference{
@@ -104,21 +105,26 @@ func (a *App) CreateThreadFromPR(
 	title := truncatePRTitle(formatPRThreadTitle(forgeID, number, meta.Title))
 
 	thread := store.Thread{
-		ID:            uuid.NewString(),
-		ProjectID:     projectRow.ID,
-		ProjectPath:   projectRow.Path,
-		Title:         title,
-		Provider:      providerName,
-		WorkspacePath: workspace,
-		Model:         model,
-		Mode:          "chat",
-		CreatedAt:     now,
-		UpdatedAt:     now,
+		ID:              uuid.NewString(),
+		ProjectID:       projectRow.ID,
+		ProjectPath:     projectRow.Path,
+		Title:           title,
+		Provider:        providerName,
+		WorkspacePath:   workspace,
+		Model:           model,
+		Mode:            "chat",
+		ReasoningEffort: seed.ReasoningEffort,
+		FastMode:        seed.FastMode,
+		ContextWindow:   seed.ContextWindow,
+		RuntimeMode:     seed.RuntimeMode,
+		CreatedAt:       now,
+		UpdatedAt:       now,
 	}
 
 	if err := a.store.CreateThread(thread); err != nil {
 		return store.Thread{}, fmt.Errorf("create thread from PR: %w", err)
 	}
+	a.rememberChatModelProfile(thread)
 	if a.settings != nil && workspace != "" {
 		a.settings.AddRecentWorkspace(workspace)
 	}

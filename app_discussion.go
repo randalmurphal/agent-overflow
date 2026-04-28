@@ -18,6 +18,35 @@ func (a *App) ListDiscussions(scope string) ([]store.DiscussionDefinition, error
 	return a.registry.List(scope)
 }
 
+func (a *App) ListDiscussionsForThread(threadID string) ([]store.DiscussionDefinition, error) {
+	if a.store == nil {
+		return nil, fmt.Errorf("discussion store unavailable")
+	}
+	thread, err := a.store.GetThread(threadID)
+	if err != nil {
+		return nil, err
+	}
+
+	var defs []store.DiscussionDefinition
+	projectPath, err := a.projectPathForThread(thread)
+	if err == nil && projectPath != "" {
+		projectDefs, err := a.store.ListDiscussionDefs("project", projectPath)
+		if err != nil {
+			return nil, err
+		}
+		defs = append(defs, projectDefs...)
+	} else if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return nil, err
+	}
+
+	globalDefs, err := a.store.ListDiscussionDefs("global", "")
+	if err != nil {
+		return nil, err
+	}
+	defs = append(defs, globalDefs...)
+	return defs, nil
+}
+
 // GetDiscussion returns a persisted discussion definition by name and scope.
 func (a *App) GetDiscussion(name, scope string) (store.DiscussionDefinition, error) {
 	if a.registry == nil {
@@ -107,4 +136,3 @@ func (a *App) resolveDiscussionDefinition(thread store.Thread, discussionName st
 	}
 	return a.registry.Get(discussionName, "global")
 }
-

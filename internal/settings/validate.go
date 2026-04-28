@@ -18,10 +18,6 @@ var (
 		"12-hour": {},
 		"24-hour": {},
 	}
-	allowedProviders = map[string]struct{}{
-		"claude": {},
-		"codex":  {},
-	}
 	// allowedTextGenerationProviders enumerates the commit-message /
 	// text-generation backend. Mirrors t3-code's RoutingTextGeneration —
 	// only the Claude and Codex CLIs have the structured-output flags
@@ -39,27 +35,9 @@ var (
 		"xhigh":  {},
 		"max":    {},
 	}
-	allowedRuntimeModes = map[string]struct{}{
-		"approval-required": {},
-		"auto-accept-edits": {},
-		"full-access":       {},
-	}
 	allowedThreadEnvModes = map[string]struct{}{
 		"local":    {},
 		"worktree": {},
-	}
-	// allowedModes mirrors provider.AllInteractionModes.
-	allowedModes = map[string]struct{}{
-		"chat":       {},
-		"plan":       {},
-		"design":     {},
-		"discussion": {},
-	}
-	// allowedContextWindows mirrors the CHECK constraint on
-	// threads.context_window (see store/migrate.go::v13SQL).
-	allowedContextWindows = map[int]struct{}{
-		200000:  {},
-		1000000: {},
 	}
 )
 
@@ -74,38 +52,10 @@ func validateSettings(current Settings) (Settings, error) {
 		return Settings{}, err
 	}
 
-	current.DefaultProvider = strings.TrimSpace(current.DefaultProvider)
-	if err := validateOption("defaultProvider", current.DefaultProvider, allowedProviders); err != nil {
-		return Settings{}, err
-	}
-
-	var err error
-	current.DefaultModelClaude, err = validateRequiredString("defaultModelClaude", current.DefaultModelClaude)
-	if err != nil {
-		return Settings{}, err
-	}
-	current.DefaultModelCodex, err = validateRequiredString("defaultModelCodex", current.DefaultModelCodex)
-	if err != nil {
-		return Settings{}, err
-	}
-
 	current.ClaudeBinaryPath = normalizeBinaryPath(current.ClaudeBinaryPath, DefaultSettings.ClaudeBinaryPath)
 	current.CodexBinaryPath = normalizeBinaryPath(current.CodexBinaryPath, DefaultSettings.CodexBinaryPath)
 	current.RecentWorkspaces = normalizeRecentWorkspaces(current.RecentWorkspaces)
-	current.ModelContextWindows, err = validateModelContextWindows(current.ModelContextWindows)
-	if err != nil {
-		return Settings{}, err
-	}
 	current.ObservabilityOtlpEndpoint = strings.TrimSpace(current.ObservabilityOtlpEndpoint)
-
-	current.DefaultRuntimeMode = strings.TrimSpace(current.DefaultRuntimeMode)
-	if err := validateOption(
-		"defaultRuntimeMode",
-		current.DefaultRuntimeMode,
-		allowedRuntimeModes,
-	); err != nil {
-		return Settings{}, err
-	}
 
 	current.DefaultThreadEnvMode = strings.TrimSpace(current.DefaultThreadEnvMode)
 	if err := validateOption(
@@ -116,27 +66,10 @@ func validateSettings(current Settings) (Settings, error) {
 		return Settings{}, err
 	}
 
+	var err error
 	current.WorktreeBranchPrefix, err = validateWorktreeBranchPrefix(current.WorktreeBranchPrefix)
 	if err != nil {
 		return Settings{}, err
-	}
-
-	current.DefaultReasoningEffort = strings.TrimSpace(current.DefaultReasoningEffort)
-	if err := validateOption(
-		"defaultReasoningEffort",
-		current.DefaultReasoningEffort,
-		allowedReasoningEfforts,
-	); err != nil {
-		return Settings{}, err
-	}
-
-	current.DefaultMode = strings.TrimSpace(current.DefaultMode)
-	if err := validateOption("defaultMode", current.DefaultMode, allowedModes); err != nil {
-		return Settings{}, err
-	}
-
-	if _, ok := allowedContextWindows[current.DefaultContextWindow]; !ok {
-		return Settings{}, fmt.Errorf("defaultContextWindow must be one of 200000, 1000000")
 	}
 
 	current.TextGenerationProvider = strings.TrimSpace(current.TextGenerationProvider)
@@ -178,22 +111,6 @@ func sanitizeLoadedSettings(current Settings) Settings {
 		DefaultSettings.TimestampFormat,
 		allowedTimestampFormats,
 	)
-	current.DefaultProvider = sanitizeOption(
-		"defaultProvider",
-		current.DefaultProvider,
-		DefaultSettings.DefaultProvider,
-		allowedProviders,
-	)
-	current.DefaultModelClaude = sanitizeRequiredString(
-		"defaultModelClaude",
-		current.DefaultModelClaude,
-		DefaultSettings.DefaultModelClaude,
-	)
-	current.DefaultModelCodex = sanitizeRequiredString(
-		"defaultModelCodex",
-		current.DefaultModelCodex,
-		DefaultSettings.DefaultModelCodex,
-	)
 	current.ClaudeBinaryPath = sanitizeBinaryPath(
 		"claudeBinaryPath",
 		current.ClaudeBinaryPath,
@@ -205,15 +122,8 @@ func sanitizeLoadedSettings(current Settings) Settings {
 		DefaultSettings.CodexBinaryPath,
 	)
 	current.RecentWorkspaces = normalizeRecentWorkspaces(current.RecentWorkspaces)
-	current.ModelContextWindows = sanitizeModelContextWindows(current.ModelContextWindows)
 	current.ObservabilityOtlpEndpoint = strings.TrimSpace(current.ObservabilityOtlpEndpoint)
 
-	current.DefaultRuntimeMode = sanitizeOption(
-		"defaultRuntimeMode",
-		current.DefaultRuntimeMode,
-		DefaultSettings.DefaultRuntimeMode,
-		allowedRuntimeModes,
-	)
 	current.DefaultThreadEnvMode = sanitizeOption(
 		"defaultThreadEnvMode",
 		current.DefaultThreadEnvMode,
@@ -221,26 +131,6 @@ func sanitizeLoadedSettings(current Settings) Settings {
 		allowedThreadEnvModes,
 	)
 	current.WorktreeBranchPrefix = sanitizeWorktreeBranchPrefix(current.WorktreeBranchPrefix)
-	current.DefaultReasoningEffort = sanitizeOption(
-		"defaultReasoningEffort",
-		current.DefaultReasoningEffort,
-		DefaultSettings.DefaultReasoningEffort,
-		allowedReasoningEfforts,
-	)
-	current.DefaultMode = sanitizeOption(
-		"defaultMode",
-		current.DefaultMode,
-		DefaultSettings.DefaultMode,
-		allowedModes,
-	)
-	if _, ok := allowedContextWindows[current.DefaultContextWindow]; !ok {
-		log.Printf(
-			"settings: invalid defaultContextWindow %d, using default %d",
-			current.DefaultContextWindow,
-			DefaultSettings.DefaultContextWindow,
-		)
-		current.DefaultContextWindow = DefaultSettings.DefaultContextWindow
-	}
 
 	current.TextGenerationProvider = sanitizeOption(
 		"textGenerationProvider",
@@ -308,29 +198,12 @@ func sanitizeWorktreeBranchPrefix(value string) string {
 	return DefaultSettings.WorktreeBranchPrefix
 }
 
-func validateRequiredString(field, value string) (string, error) {
-	trimmed := strings.TrimSpace(value)
-	if trimmed == "" {
-		return "", fmt.Errorf("%s cannot be empty", field)
-	}
-	return trimmed, nil
-}
-
 func sanitizeOption(field, value, fallback string, allowed map[string]struct{}) string {
 	trimmed := strings.TrimSpace(value)
 	if _, ok := allowed[trimmed]; ok {
 		return trimmed
 	}
 	log.Printf("settings: invalid %s %q, using default %q", field, value, fallback)
-	return fallback
-}
-
-func sanitizeRequiredString(field, value, fallback string) string {
-	trimmed := strings.TrimSpace(value)
-	if trimmed != "" {
-		return trimmed
-	}
-	log.Printf("settings: empty %s, using default %q", field, fallback)
 	return fallback
 }
 
@@ -378,52 +251,6 @@ func normalizeRecentWorkspaces(paths []string) []string {
 	return recent
 }
 
-func validateModelContextWindows(values map[string]int) (map[string]int, error) {
-	if len(values) == 0 {
-		return nil, nil
-	}
-
-	normalized := make(map[string]int, len(values))
-	for rawModel, tokens := range values {
-		model := strings.TrimSpace(rawModel)
-		if model == "" {
-			return nil, fmt.Errorf("modelContextWindows contains an empty model")
-		}
-		if _, ok := allowedContextWindows[tokens]; !ok {
-			return nil, fmt.Errorf("modelContextWindows[%q] must be one of 200000, 1000000", model)
-		}
-		normalized[model] = tokens
-	}
-	if len(normalized) == 0 {
-		return nil, nil
-	}
-	return normalized, nil
-}
-
-func sanitizeModelContextWindows(values map[string]int) map[string]int {
-	if len(values) == 0 {
-		return nil
-	}
-
-	normalized := make(map[string]int, len(values))
-	for rawModel, tokens := range values {
-		model := strings.TrimSpace(rawModel)
-		if model == "" {
-			log.Printf("settings: ignoring empty modelContextWindows key")
-			continue
-		}
-		if _, ok := allowedContextWindows[tokens]; !ok {
-			log.Printf("settings: invalid modelContextWindows[%q] %d, ignoring", model, tokens)
-			continue
-		}
-		normalized[model] = tokens
-	}
-	if len(normalized) == 0 {
-		return nil
-	}
-	return normalized
-}
-
 func joinAllowedValues(values map[string]struct{}) string {
 	options := make([]string, 0, len(values))
 	// Ordered candidate list so error messages render deterministically.
@@ -434,7 +261,6 @@ func joinAllowedValues(values map[string]struct{}) string {
 		"locale", "12-hour", "24-hour",
 		"claude", "codex",
 		"low", "medium", "high", "xhigh", "max",
-		"chat", "plan", "design", "discussion",
 		"local", "worktree",
 	}
 	for _, candidate := range candidates {

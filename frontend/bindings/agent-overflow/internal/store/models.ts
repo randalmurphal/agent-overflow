@@ -107,6 +107,45 @@ export class ChannelMessage {
 }
 
 /**
+ * ChatBarFavorite is one starred entry in the composer model menu.
+ * Kind is "model" or "discussion". Provider is set only for model
+ * favorites; Value is the model slug or discussion definition id.
+ */
+export class ChatBarFavorite {
+    "kind": string;
+    "provider"?: string;
+    "value": string;
+    "label": string;
+    "createdAt": number;
+
+    /** Creates a new ChatBarFavorite instance. */
+    constructor($$source: Partial<ChatBarFavorite> = {}) {
+        if (!("kind" in $$source)) {
+            this["kind"] = "";
+        }
+        if (!("value" in $$source)) {
+            this["value"] = "";
+        }
+        if (!("label" in $$source)) {
+            this["label"] = "";
+        }
+        if (!("createdAt" in $$source)) {
+            this["createdAt"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ChatBarFavorite instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ChatBarFavorite {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ChatBarFavorite($$parsedSource as Partial<ChatBarFavorite>);
+    }
+}
+
+/**
  * Checkpoint is the persisted bookkeeping row for a single per-turn snapshot.
  * The heavy data lives in Git (keyed by RefName); this table lets us look up
  * the ref for a given (thread, turn) and clean everything up on thread delete.

@@ -55,18 +55,11 @@ type Settings struct {
 	// CurrentSchemaVersion on any save via writeSparse.
 	SchemaVersion int `json:"$schemaVersion,omitempty"`
 
-	Theme              string `json:"theme"`
-	TimestampFormat    string `json:"timestampFormat"`
-	DefaultProvider    string `json:"defaultProvider"`
-	DefaultModelClaude string `json:"defaultModelClaude"`
-	DefaultModelCodex  string `json:"defaultModelCodex"`
-	// ModelContextWindows remembers the context-window preference per
-	// model slug. It lets Claude Sonnet stay on 200k while Opus stays on
-	// 1M, and preserves user overrides independently for each model.
-	ModelContextWindows map[string]int `json:"modelContextWindows"`
-	RecentWorkspaces    []string       `json:"recentWorkspaces"`
-	DiffWordWrap        bool           `json:"diffWordWrap"`
-	ShowEndOfTurnDiffs  bool           `json:"showEndOfTurnDiffs"`
+	Theme              string   `json:"theme"`
+	TimestampFormat    string   `json:"timestampFormat"`
+	RecentWorkspaces   []string `json:"recentWorkspaces"`
+	DiffWordWrap       bool     `json:"diffWordWrap"`
+	ShowEndOfTurnDiffs bool     `json:"showEndOfTurnDiffs"`
 	// BackgroundTrayExpanded remembers the user's global background-task
 	// tray preference. False keeps fresh installs collapsed; opening the
 	// tray persists across thread switches and app restarts.
@@ -79,14 +72,6 @@ type Settings struct {
 	ClaudeEnabled          bool   `json:"claudeEnabled"`
 	CodexEnabled           bool   `json:"codexEnabled"`
 
-	// DefaultRuntimeMode is the three-tier approval axis applied to every
-	// new thread when the user hasn't picked a different mode at creation
-	// time. Accepts "approval-required", "auto-accept-edits", or
-	// "full-access"; unknown values are coerced to "full-access" at the
-	// provider-mode chokepoint so a stale settings file can't lock the
-	// app into an invalid mode.
-	DefaultRuntimeMode string `json:"defaultRuntimeMode"`
-
 	// DefaultThreadEnvMode seeds the workspace mode for new draft threads.
 	// Accepts "local" or "worktree"; unknown values fall back to "local"
 	// when settings are loaded.
@@ -97,27 +82,6 @@ type Settings struct {
 	// "ao-") rather than namespace-like ("ao/") so generated branches
 	// read like normal feature branches.
 	WorktreeBranchPrefix string `json:"worktreeBranchPrefix"`
-
-	// DefaultReasoningEffort is the effort tier seeded on every new
-	// thread. Accepts the five values the provider package exposes
-	// (low / medium / high / xhigh / max); unknown values coerce to
-	// "high".
-	DefaultReasoningEffort string `json:"defaultReasoningEffort"`
-
-	// DefaultFastMode seeds the per-thread fast-mode toggle.
-	DefaultFastMode bool `json:"defaultFastMode"`
-
-	// DefaultContextWindow seeds the per-thread context-window pref.
-	// 200000 and 1000000 are the only schema-legal values; unknown
-	// values fall back to 1000000 at the validation layer.
-	DefaultContextWindow int `json:"defaultContextWindow"`
-
-	// DefaultMode seeds the per-thread interaction mode (chat / plan /
-	// design / discussion). Discussion is reached via a separate flow,
-	// but is included in the enum for symmetry with provider.ModeDiscussion.
-	// New thread creation intentionally ignores this legacy field and
-	// starts in chat mode unless a caller explicitly passes a mode.
-	DefaultMode string `json:"defaultMode"`
 
 	// TextGenerationProvider selects which CLI drives non-chat text
 	// generation (commit messages today; PR bodies and thread titles
@@ -190,9 +154,6 @@ type Settings struct {
 var DefaultSettings = Settings{
 	Theme:                  "system",
 	TimestampFormat:        "locale",
-	DefaultProvider:        "claude",
-	DefaultModelClaude:     "claude-opus-4-7",
-	DefaultModelCodex:      "gpt-5.5",
 	DiffWordWrap:           false,
 	ShowEndOfTurnDiffs:     true,
 	BackgroundTrayExpanded: false,
@@ -203,22 +164,8 @@ var DefaultSettings = Settings{
 	CodexBinaryPath:        "codex",
 	ClaudeEnabled:          true,
 	CodexEnabled:           true,
-	// DefaultRuntimeMode mirrors provider.DefaultRuntimeMode. Duplicated as
-	// a string literal rather than imported so internal/settings doesn't
-	// pull in the provider package (tiny leaf package, kept leaf).
-	DefaultRuntimeMode:   "full-access",
-	DefaultThreadEnvMode: "local",
-	WorktreeBranchPrefix: "ao-",
-	// DefaultReasoningEffort mirrors provider.DefaultReasoningEffort.
-	DefaultReasoningEffort: "high",
-	// DefaultFastMode defaults to off — power users opt in per thread.
-	DefaultFastMode: false,
-	// DefaultContextWindow defaults to the 1M-token tier (Claude's
-	// extended beta). Codex ignores the field at the translation
-	// boundary.
-	DefaultContextWindow: 1000000,
-	// DefaultMode mirrors provider.DefaultInteractionMode.
-	DefaultMode: "chat",
+	DefaultThreadEnvMode:   "local",
+	WorktreeBranchPrefix:   "ao-",
 	// Text-generation defaults: Codex is cheap + fast for short JSON
 	// responses, so it's the sensible default. The model stays empty
 	// so the call site picks the per-provider default; if the user
@@ -419,9 +366,13 @@ func captureUnknownFields(raw []byte) map[string]json.RawMessage {
 		return nil
 	}
 	known := knownSettingsFieldNames()
+	retired := retiredSettingsFieldNames()
 	unknown := make(map[string]json.RawMessage)
 	for k, v := range fileMap {
 		if _, ok := known[k]; ok {
+			continue
+		}
+		if _, ok := retired[k]; ok {
 			continue
 		}
 		unknown[k] = v
@@ -461,6 +412,20 @@ func knownSettingsFieldNames() map[string]struct{} {
 		known[name] = struct{}{}
 	}
 	return known
+}
+
+func retiredSettingsFieldNames() map[string]struct{} {
+	return map[string]struct{}{
+		"defaultProvider":        {},
+		"defaultModelClaude":     {},
+		"defaultModelCodex":      {},
+		"modelContextWindows":    {},
+		"defaultMode":            {},
+		"defaultRuntimeMode":     {},
+		"defaultReasoningEffort": {},
+		"defaultFastMode":        {},
+		"defaultContextWindow":   {},
+	}
 }
 
 // writeSparse persists only the fields that differ from DefaultSettings.

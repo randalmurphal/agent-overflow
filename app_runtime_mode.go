@@ -160,15 +160,3 @@ func (a *App) waitForStartingSession(threadID string) (bool, error) {
 	<-startState.done
 	return true, startState.err
 }
-
-// defaultRuntimeModeForNewThread reads the settings file's default (or
-// falls back to provider.DefaultRuntimeMode when settings are unavailable
-// or hold an invalid value). Used by CreateThread so every new thread
-// lands on a valid value without the settings panel being open.
-func (a *App) defaultRuntimeModeForNewThread() string {
-	if a.settings == nil {
-		return string(provider.DefaultRuntimeMode)
-	}
-	s := a.settings.Get()
-	return string(provider.NormalizeRuntimeMode(s.DefaultRuntimeMode))
-}

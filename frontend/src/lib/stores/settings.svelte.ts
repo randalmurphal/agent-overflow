@@ -5,10 +5,6 @@ import { addToast } from './toast.svelte';
 const DEFAULT_SETTINGS: Settings = {
   theme: 'system',
   timestampFormat: 'locale',
-  defaultProvider: 'claude',
-  defaultModelClaude: 'claude-opus-4-7',
-  defaultModelCodex: 'gpt-5.5',
-  modelContextWindows: {},
   recentWorkspaces: [],
   diffWordWrap: false,
   showEndOfTurnDiffs: true,
@@ -20,17 +16,8 @@ const DEFAULT_SETTINGS: Settings = {
   codexBinaryPath: 'codex',
   claudeEnabled: true,
   codexEnabled: true,
-  // Thread defaults mirror internal/settings.DefaultSettings so a fresh
-  // frontend seeing no backend response still picks the correct seed.
-  // defaultMode is legacy; CreateThread starts in chat unless explicitly
-  // overridden by a caller.
-  defaultMode: 'chat',
-  defaultRuntimeMode: 'full-access',
   defaultThreadEnvMode: 'local',
   worktreeBranchPrefix: 'ao-',
-  defaultReasoningEffort: 'high',
-  defaultFastMode: false,
-  defaultContextWindow: 1000000,
   // Text generation defaults mirror internal/settings.DefaultSettings.
   textGenerationProvider: 'codex',
   textGenerationModel: '',
@@ -57,7 +44,6 @@ export async function loadSettings(): Promise<void> {
       settings = {
         ...DEFAULT_SETTINGS,
         ...result,
-        modelContextWindows: result.modelContextWindows ?? {},
       } as Settings;
     }
   } catch (err) {
@@ -78,7 +64,6 @@ export async function updateSetting<K extends keyof Settings>(
       settings = {
         ...DEFAULT_SETTINGS,
         ...result,
-        modelContextWindows: result.modelContextWindows ?? {},
       } as Settings;
     }
   } catch (err) {

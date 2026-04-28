@@ -340,8 +340,12 @@ func TestCreateThreadFromPRRejectsInvalidInputs(t *testing.T) {
 	if _, err := app.CreateThreadFromPR("owner/repo", 1, "", "claude-sonnet-4-6", "github"); err == nil {
 		t.Fatal("empty provider should fail")
 	}
-	if _, err := app.CreateThreadFromPR("owner/repo", 1, string(provider.Claude), "", "github"); err == nil {
-		t.Fatal("empty model should fail")
+	thread, err := app.CreateThreadFromPR("owner/repo", 1, string(provider.Claude), "", "github")
+	if err != nil {
+		t.Fatalf("empty model should seed provider fallback: %v", err)
+	}
+	if thread.Model == "" {
+		t.Fatal("empty model produced blank thread model")
 	}
 }
 

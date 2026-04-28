@@ -9,7 +9,6 @@ import type { Settings } from '../types/settings';
 const BASE_SETTINGS: Partial<Settings> = {
   theme: 'system',
   timestampFormat: 'locale',
-  defaultProvider: 'claude',
   network: { bindAll: false },
 };
 

@@ -607,7 +607,15 @@ func (p *privilegedApp) ReconnectSession() string              { return "ok" }
 func (p *privilegedApp) SendMessage() string                   { return "ok" }
 func (p *privilegedApp) SendMessageWithOptions() string        { return "ok" }
 func (p *privilegedApp) SendPlanRevisionComments() string      { return "ok" }
+func (p *privilegedApp) StartDiscussion() string               { return "ok" }
+func (p *privilegedApp) StartDiscussionByID() string           { return "ok" }
 func (p *privilegedApp) UpdateThreadMode() string              { return "ok" }
+func (p *privilegedApp) UpdateThreadProvider() string          { return "ok" }
+func (p *privilegedApp) UpdateThreadModel() string             { return "ok" }
+func (p *privilegedApp) UpdateThreadReasoningEffort() string   { return "ok" }
+func (p *privilegedApp) UpdateThreadFastMode() string          { return "ok" }
+func (p *privilegedApp) UpdateThreadContextWindow() string     { return "ok" }
+func (p *privilegedApp) UpdateThreadRuntimeMode() string       { return "ok" }
 func (p *privilegedApp) InterruptTurn() string                 { return "ok" }
 func (p *privilegedApp) RespondToApproval() string             { return "ok" }
 func (p *privilegedApp) RespondToUserInput() string            { return "ok" }
@@ -627,6 +635,8 @@ func (p *privilegedApp) TouchRemoteEndpoint() string    { return "ok" }
 func (p *privilegedApp) SetEditorSettings() string      { return "ok" }
 func (p *privilegedApp) UpdateKeybindings() string      { return "ok" }
 func (p *privilegedApp) ResetKeybindings() string       { return "ok" }
+func (p *privilegedApp) SetChatBarFavorite() string     { return "ok" }
+func (p *privilegedApp) SetThreadRuntimeMode() string   { return "ok" }
 func (p *privilegedApp) SetWSLDistroPreference() string { return "ok" }
 
 // 4. Attachment / payload writes.

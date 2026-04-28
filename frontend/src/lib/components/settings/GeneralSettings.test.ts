@@ -8,10 +8,6 @@ import type { Settings } from '../../types/settings';
 const BASE_SETTINGS: Settings = {
   theme: 'system',
   timestampFormat: 'locale',
-  defaultProvider: 'claude',
-  defaultModelClaude: 'claude-opus-4-7',
-  defaultModelCodex: 'gpt-5.5',
-  modelContextWindows: {},
   recentWorkspaces: [],
   diffWordWrap: false,
   showEndOfTurnDiffs: true,
@@ -23,13 +19,8 @@ const BASE_SETTINGS: Settings = {
   codexBinaryPath: 'codex',
   claudeEnabled: true,
   codexEnabled: true,
-  defaultMode: 'chat',
-  defaultRuntimeMode: 'full-access',
   defaultThreadEnvMode: 'local',
   worktreeBranchPrefix: 'ao-',
-  defaultReasoningEffort: 'high',
-  defaultFastMode: false,
-  defaultContextWindow: 1000000,
   textGenerationProvider: 'codex',
   textGenerationModel: '',
   textGenerationReasoningEffort: 'low',
@@ -55,30 +46,11 @@ describe('<GeneralSettings> — Thread defaults section', () => {
     await seed();
   });
 
-  it('renders the thread-defaults section with persistent defaults', async () => {
+  it('renders the workspace seed settings without chat default controls', async () => {
     const { getByTestId } = render(GeneralSettings);
     expect(getByTestId('settings-thread-defaults')).toBeTruthy();
-    expect(getByTestId('settings-default-runtime-mode')).toBeTruthy();
     expect(getByTestId('settings-default-thread-env-mode')).toBeTruthy();
     expect(getByTestId('settings-worktree-branch-prefix')).toBeTruthy();
-  });
-
-  it('offers the three runtime permission modes', async () => {
-    const { getByTestId } = render(GeneralSettings);
-    const select = getByTestId('settings-default-runtime-mode') as HTMLSelectElement;
-    const values = Array.from(select.options).map((o) => o.value);
-    expect(values).toEqual(['full-access', 'auto-accept-edits', 'approval-required']);
-  });
-
-  it('dispatches defaultRuntimeMode patch on change', async () => {
-    const { getByTestId } = render(GeneralSettings);
-    const select = getByTestId('settings-default-runtime-mode') as HTMLSelectElement;
-    select.value = 'approval-required';
-    await fireEvent.change(select);
-
-    const mock = getBindingMock('UpdateSettings');
-    expect(mock).toBeDefined();
-    expect(mock!.mock.calls[0][0]).toEqual({ defaultRuntimeMode: 'approval-required' });
   });
 
   it('dispatches defaultThreadEnvMode patch on change', async () => {

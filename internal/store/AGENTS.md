@@ -24,6 +24,7 @@ root `CLAUDE.md` principle 3.
 - `checkpoints.go` — turn-checkpoint row/ref bookkeeping; the ref-level
   mechanics live in `internal/checkpoint`.
 - `drafts.go` — composer drafts per thread.
+- `chat_bar.go` — composer favorites and last-used model profile seeds.
 - `search.go` — FTS across items/threads.
 - `sqlutil.go` — shared SQL helpers.
 
@@ -32,7 +33,7 @@ root `CLAUDE.md` principle 3.
 - What BELONGS here:
   - Timeline items, payloads, thread metadata, channels / messages,
     discussion templates, design-artifact metadata, attachment
-    metadata, projects.
+    metadata, projects, composer favorites, last-used model profile seeds.
   - Migrations, indices, CHECK constraints.
   - Query helpers that return typed rows.
 - What does NOT belong here:

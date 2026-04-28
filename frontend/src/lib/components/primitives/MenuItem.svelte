@@ -22,6 +22,10 @@
     disabled?: boolean;
     title?: string;
     onSelect?: () => void;
+    action?: Snippet;
+    actionLabel?: string;
+    actionPressed?: boolean;
+    onAction?: () => void;
     variant?: 'default' | 'danger';
   }
 
@@ -35,10 +39,14 @@
     disabled = false,
     title,
     onSelect,
+    action,
+    actionLabel,
+    actionPressed,
+    onAction,
     variant = 'default',
   }: Props = $props();
 
-  let buttonEl: HTMLButtonElement | undefined = $state(undefined);
+  let buttonEl: HTMLElement | undefined = $state(undefined);
 
   function activate(): void {
     if (disabled) return;
@@ -55,6 +63,13 @@
 
   function handleClick(): void {
     activate();
+  }
+
+  function handleActionClick(e: MouseEvent): void {
+    e.preventDefault();
+    e.stopPropagation();
+    if (disabled) return;
+    onAction?.();
   }
 
   function handleKeydown(e: KeyboardEvent): void {
@@ -76,9 +91,10 @@
 </script>
 
 <!-- svelte-ignore a11y_click_events_have_key_events — onkeydown is handled -->
-<button
+<svelte:element
+  this={action && onAction ? 'div' : 'button'}
   bind:this={buttonEl}
-  type="button"
+  type={action && onAction ? undefined : 'button'}
   role="menuitem"
   aria-disabled={disabled ? 'true' : undefined}
   data-menuitem
@@ -123,4 +139,21 @@
       {suffix}
     </span>
   {/if}
-</button>
+  {#if action && onAction}
+    <button
+      type="button"
+      aria-label={actionLabel}
+      aria-pressed={actionPressed}
+      tabindex={-1}
+      onclick={handleActionClick}
+      class={[
+        'ml-1 inline-flex h-5 w-5 items-center justify-center rounded-[var(--radius-field)]',
+        'text-fg-hint transition-colors',
+        'hover:bg-surface-2/70 hover:text-fg',
+        actionPressed ? 'text-warning' : '',
+      ].join(' ')}
+    >
+      {@render action()}
+    </button>
+  {/if}
+</svelte:element>

@@ -36,6 +36,10 @@ func (a *App) startDiscussion(threadID, discussionName string) error {
 		return err
 	}
 
+	return a.startDiscussionWithDefinition(parent, def)
+}
+
+func (a *App) startDiscussionWithDefinition(parent store.Thread, def store.DiscussionDefinition) error {
 	plans, err := buildDiscussionParticipantPlans(parent, def)
 	if err != nil {
 		return err
@@ -66,14 +70,12 @@ func (a *App) ensureDiscussionCanStart(parent store.Thread) error {
 		return fmt.Errorf("thread %s has chat history; start a new thread to begin a discussion", parent.ID)
 	}
 
-	threads, err := a.store.ListThreads()
+	hasChildren, err := a.store.HasChildThreads(parent.ID)
 	if err != nil {
 		return err
 	}
-	for _, thread := range threads {
-		if thread.ParentThreadID == parent.ID {
-			return fmt.Errorf("thread %s already has discussion participants", parent.ID)
-		}
+	if hasChildren {
+		return fmt.Errorf("thread %s already has discussion participants", parent.ID)
 	}
 	return nil
 }

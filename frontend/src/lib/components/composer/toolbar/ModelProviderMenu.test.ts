@@ -63,6 +63,9 @@ describe('<ModelProviderMenu>', () => {
   beforeEach(() => {
     resetBindingMocks();
     setBindingMock('ListDiscussions', async () => []);
+    setBindingMock('ListDiscussionsForThread', async () => []);
+    setBindingMock('ListChatBarFavorites', async () => []);
+    setBindingMock('SetChatBarFavorite', async () => []);
   });
 
   it('renders the active model slug on the trigger (brand is the glyph; no provider word)', async () => {
@@ -129,6 +132,34 @@ describe('<ModelProviderMenu>', () => {
       expect(modelsMock).toHaveBeenCalled();
     });
     expect(modelsMock.mock.calls.some((c) => c[0] === 'claude')).toBe(true);
+  });
+
+  it('renders DB-backed favorites above provider sections with provider icons', async () => {
+    const pane = await buildPane(makeThread({ provider: 'claude', model: 'claude-opus-4-7' }));
+    setBindingMock('GetModelsForProvider', async () => []);
+    setBindingMock('ListChatBarFavorites', async () => [
+      {
+        kind: 'model',
+        provider: 'claude',
+        value: 'claude-opus-4-7',
+        label: 'Claude Opus 4.7',
+        createdAt: 1,
+      },
+      {
+        kind: 'discussion',
+        provider: '',
+        value: 'architects',
+        label: 'Architects',
+        createdAt: 2,
+      },
+    ]);
+
+    const { getByTestId, findByRole } = render(ModelProviderMenu, { props: { pane } });
+    await fireEvent.click(getByTestId('composer-model-menu-trigger'));
+
+    const favorite = await findByRole('menuitem', { name: /Claude Opus 4.7/i });
+    expect(favorite.querySelector('svg.lucide-claude')).not.toBeNull();
+    await findByRole('menuitem', { name: /Architects/i });
   });
 
   it('calls UpdateThreadProvider + UpdateThreadModel when switching providers', async () => {

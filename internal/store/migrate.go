@@ -870,6 +870,43 @@ CREATE INDEX IF NOT EXISTS idx_thread_drafts_pending_plan_impl
 ALTER TABLE thread_checkpoints ADD COLUMN tool_paths TEXT NOT NULL DEFAULT '[]';
 `,
 	},
+	{
+		Version: 33,
+		Name:    "chat_bar_favorites_and_profiles",
+		SQL: `
+CREATE TABLE IF NOT EXISTS chat_bar_favorites (
+	kind       TEXT    NOT NULL CHECK(kind IN ('model','discussion')),
+	provider   TEXT    NOT NULL DEFAULT '',
+	value      TEXT    NOT NULL,
+	label      TEXT    NOT NULL,
+	created_at INTEGER NOT NULL,
+	PRIMARY KEY(kind, provider, value),
+	CHECK (
+		(kind = 'model' AND provider IN ('claude','codex'))
+		OR
+		(kind = 'discussion' AND provider = '')
+	)
+);
+CREATE INDEX IF NOT EXISTS idx_chat_bar_favorites_created
+	ON chat_bar_favorites(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS chat_model_profiles (
+	provider         TEXT    NOT NULL CHECK(provider IN ('claude','codex')),
+	model            TEXT    NOT NULL,
+	reasoning_effort TEXT    NOT NULL DEFAULT 'high'
+		CHECK(reasoning_effort IN ('low','medium','high','xhigh','max')),
+	fast_mode        INTEGER NOT NULL DEFAULT 0 CHECK(fast_mode IN (0,1)),
+	context_window   INTEGER NOT NULL DEFAULT 1000000
+		CHECK(context_window IN (200000,1000000)),
+	runtime_mode     TEXT    NOT NULL DEFAULT 'full-access'
+		CHECK(runtime_mode IN ('approval-required','auto-accept-edits','full-access')),
+	updated_at       INTEGER NOT NULL,
+	PRIMARY KEY(provider, model)
+);
+CREATE INDEX IF NOT EXISTS idx_chat_model_profiles_updated
+	ON chat_model_profiles(updated_at DESC);
+`,
+	},
 }
 
 // v13SQL is the DROP-and-rebuild payload for migration v13. Extracted so

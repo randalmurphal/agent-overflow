@@ -1,22 +1,14 @@
 <script lang="ts">
-  // Primary toolbar menu: picks provider + model, or opens the
-  // Discussions sub-flow. Composed from the Menu / Popover primitives;
-  // the submenu layout is hand-written (not driven by a tree-of-items
-  // prop) because Codex and Claude have different capability
-  // conventions and Discussions is its own flow.
-  //
-  // Model list caching: `GetModelsForProvider` is cheap but not free,
-  // and the menu is expected to reopen often during a debugging
-  // session. We cache by provider at module scope so re-opening the
-  // menu doesn't retrigger a round-trip. The cache is cleared on
-  // `provider:status` Wails events because a newly-authenticated
-  // provider may report a different model set.
-
   import type { ThreadPane } from '../../../stores/thread.svelte';
   import type { Thread } from '../../../types/models';
   import type { ModelInfo } from '../../../types/settings';
+  import type { ChatBarFavorite } from '../../../stores/bindings';
   import {
     GetModelsForProvider,
+    ListChatBarFavorites,
+    SetChatBarFavorite,
+    StartDiscussionByID,
+    GetThread,
     UpdateThreadModel,
     UpdateThreadProvider,
   } from '../../../stores/bindings';
@@ -24,7 +16,7 @@
   import { replaceThread } from '../../../stores/threads.svelte';
   import { addToast } from '../../../stores/toast.svelte';
   import { errString } from '../../../utils/errors';
-  import ChevronDown from 'lucide-svelte/icons/chevron-down';
+  import MessagesSquare from 'lucide-svelte/icons/messages-square';
   import Popover from '../../primitives/Popover.svelte';
   import Menu from '../../primitives/Menu.svelte';
   import MenuDivider from '../../primitives/MenuDivider.svelte';
@@ -32,6 +24,8 @@
   import Icon from '../../primitives/Icon.svelte';
   import ClaudeIcon from '../../primitives/brand/ClaudeIcon.svelte';
   import OpenAIIcon from '../../primitives/brand/OpenAIIcon.svelte';
+  import ChatBarFavoritesSection from './ChatBarFavoritesSection.svelte';
+  import ModelProviderTrigger from './ModelProviderTrigger.svelte';
   import ProviderModelsSubmenu from './ProviderModelsSubmenu.svelte';
   import DiscussionsSubmenu from './DiscussionsSubmenu.svelte';
 
@@ -41,18 +35,15 @@
 
   let { pane }: Props = $props();
 
-  // Module-level cache shared across every ModelProviderMenu instance.
-  // Clearing per-provider on provider:status avoids a global wipe when
-  // only one backend flips state.
   const MODEL_CACHE: Map<string, ModelInfo[]> = new Map();
-  let cacheVersion = $state(0); // bumped to re-run the derived submenu content
+  let cacheVersion = $state(0);
 
   let triggerEl: HTMLButtonElement | undefined = $state(undefined);
   let open = $state(false);
   let applying = $state(false);
+  let favorites: ChatBarFavorite[] = $state([]);
+  let favoritesLoaded = $state(false);
 
-  // Invalidate the cache entry when a provider's detection status changes
-  // (the model list often changes with auth state).
   $effect(() => {
     const cleanup = wailsEventOn<{ provider?: string }>('provider:status', (evt) => {
       const p = evt?.provider;
@@ -73,10 +64,22 @@
     } catch (err) {
       console.error('GetModelsForProvider failed:', err);
       addToast('error', `Failed to load ${provider} models`);
-      // Seed an empty array so we don't refetch on every hover; the
-      // provider:status listener clears it when state improves.
       MODEL_CACHE.set(provider, []);
       cacheVersion += 1;
+    }
+  }
+
+  async function ensureFavorites(): Promise<void> {
+    if (favoritesLoaded) return;
+    try {
+      const res = (await ListChatBarFavorites()) as ChatBarFavorite[] | null;
+      favorites = Array.isArray(res) ? res : [];
+      favoritesLoaded = true;
+    } catch (err) {
+      console.error('ListChatBarFavorites failed:', err);
+      addToast('error', 'Failed to load favorites');
+      favorites = [];
+      favoritesLoaded = true;
     }
   }
 
@@ -88,10 +91,9 @@
   function handleTrigger(): void {
     open = !open;
     if (open) {
-      // Warm the cache for the currently-active provider so the first
-      // submenu hover doesn't flash an empty list.
       const p = pane.thread?.provider;
       if (p === 'claude' || p === 'codex') void ensureModels(p);
+      void ensureFavorites();
     }
   }
 
@@ -116,8 +118,6 @@
     applying = true;
     try {
       if (provider !== currentProvider) {
-        // Provider first so the subsequent model update writes against
-        // the right provider's validation surface.
         const afterProvider = (await UpdateThreadProvider(threadId, provider)) as Thread;
         pane.replaceThread(afterProvider);
         replaceThread(afterProvider);
@@ -134,75 +134,96 @@
     }
   }
 
-  // Trigger label: brand glyph + active model name (no provider word —
-  // the glyph already identifies the provider, and doubling up the
-  // text made the button verbose). lucide doesn't ship these marks,
-  // so we inline them as dedicated Svelte components under
-  // primitives/brand/.
+  function isModelFavorite(provider: 'claude' | 'codex', slug: string): boolean {
+    return favorites.some((fav) => fav.kind === 'model' && fav.provider === provider && fav.value === slug);
+  }
+
+  function isDiscussionFavorite(id: string): boolean {
+    return favorites.some((fav) => fav.kind === 'discussion' && fav.value === id);
+  }
+
+  async function setFavorite(fav: ChatBarFavorite, starred: boolean): Promise<void> {
+    try {
+      const updated = (await SetChatBarFavorite(fav, starred)) as ChatBarFavorite[] | null;
+      favorites = Array.isArray(updated) ? updated : [];
+      favoritesLoaded = true;
+    } catch (err) {
+      console.error('SetChatBarFavorite failed:', err);
+      addToast('error', `Failed to update favorites: ${errString(err)}`);
+    }
+  }
+
+  function toggleModelFavorite(provider: 'claude' | 'codex', model: ModelInfo): void {
+    const starred = !isModelFavorite(provider, model.slug);
+    void setFavorite({
+      kind: 'model',
+      provider,
+      value: model.slug,
+      label: model.name || model.slug,
+      createdAt: 0,
+    }, starred);
+  }
+
+  function toggleDiscussionFavorite(def: { id: string; name: string }): void {
+    const starred = !isDiscussionFavorite(def.id);
+    void setFavorite({
+      kind: 'discussion',
+      provider: '',
+      value: def.id,
+      label: def.name,
+      createdAt: 0,
+    }, starred);
+  }
+
+  async function startFavoriteDiscussion(fav: ChatBarFavorite): Promise<void> {
+    if (!pane.thread) return;
+    const threadId = pane.thread.id;
+    closeMenu();
+    try {
+      await StartDiscussionByID(threadId, fav.value);
+      try {
+        const refreshed = (await GetThread(threadId)) as Thread;
+        pane.replaceThread(refreshed);
+        replaceThread(refreshed);
+      } catch (refreshErr) {
+        console.error('Failed to refresh thread after StartDiscussionByID:', refreshErr);
+      }
+      addToast('info', `Started discussion "${fav.label}"`);
+    } catch (err) {
+      console.error('StartDiscussionByID failed:', err);
+      addToast('error', `Failed to start discussion: ${errString(err)}`);
+    }
+  }
+
   let isCodex = $derived(pane.thread?.provider === 'codex');
-  // Drop the redundant `claude-` prefix on Anthropic models — the brand
-  // glyph already identifies the provider, and the prefix is the longest
-  // expendable run in the toolbar at narrow widths. Codex names already
-  // ship in their natural shorthand (`gpt-5`, etc.) so they pass through.
   let modelLabel = $derived.by(() => {
     const raw = pane.thread?.model ?? 'No model';
     if (!isCodex && raw.startsWith('claude-')) return raw.slice('claude-'.length);
     return raw;
   });
 
-  // Once any item lands, the thread has picked a lane: a specific
-  // provider (Claude or Codex), or — after StartDiscussion — a specific
-  // discussion definition. Provider sessions and discussion runtimes
-  // aren't interchangeable; both transitions are rejected server-side
-  // (see UpdateThreadProvider and ensureDiscussionCanStart). Mirror
-  // that here so the picker doesn't offer doomed options: on a locked
-  // chat only the active provider's models are reachable, and on a
-  // discussion nothing in this menu applies — its runtime is driven by
-  // the child participant threads, each with their own provider.
   let isLocked = $derived(pane.items.length > 0);
   let isDiscussion = $derived(pane.thread?.mode === 'discussion');
   let activeProvider = $derived(pane.thread?.provider ?? null);
-  let showCodexSubmenu = $derived(
-    !isDiscussion && (!isLocked || activeProvider === 'codex'),
-  );
-  let showClaudeSubmenu = $derived(
-    !isDiscussion && (!isLocked || activeProvider === 'claude'),
-  );
+  let showCodexSubmenu = $derived(!isDiscussion && (!isLocked || activeProvider === 'codex'));
+  let showClaudeSubmenu = $derived(!isDiscussion && (!isLocked || activeProvider === 'claude'));
   let showDiscussions = $derived(!isDiscussion && !isLocked);
+  let visibleFavorites = $derived(favorites.filter((fav) => {
+    if (fav.kind === 'discussion') return showDiscussions;
+    if (fav.provider !== 'claude' && fav.provider !== 'codex') return false;
+    return !isDiscussion && (!isLocked || activeProvider === fav.provider);
+  }));
 </script>
 
-<button
-  bind:this={triggerEl}
-  type="button"
-  onclick={handleTrigger}
+<ModelProviderTrigger
+  bind:buttonEl={triggerEl}
+  {open}
   disabled={!pane.thread || applying}
-  aria-haspopup="menu"
-  aria-expanded={open}
-  data-provider={pane.thread?.provider ?? ''}
-  data-testid="composer-model-menu-trigger"
-  class={[
-    'inline-flex items-center gap-1.5 rounded-[var(--radius-field)]',
-    'px-1.5 py-1 text-[11px] text-fg-muted',
-    'transition-colors cursor-pointer',
-    'hover:text-fg hover:bg-surface-2/30',
-    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40',
-    'disabled:opacity-60 disabled:cursor-not-allowed',
-  ].join(' ')}
->
-  {#if isCodex}
-    <!-- OpenAI/Codex picks up the trigger's muted foreground so the
-         glyph + label read as one piece; t3-code uses the same pattern
-         (see apps/web/src/components/chat/ProviderModelPicker.tsx
-         providerIconClassName). -->
-    <OpenAIIcon size={13} class="opacity-95" />
-  {:else}
-    <!-- Claude is painted in Anthropic's signature coral (#d97757),
-         again matching t3-code's providerIconClassName. -->
-    <ClaudeIcon size={13} class="text-[#d97757] opacity-95" />
-  {/if}
-  <span class="truncate max-w-[200px] text-fg">{modelLabel}</span>
-  <Icon icon={ChevronDown} size={12} strokeWidth={2} class="opacity-60" />
-</button>
+  {isCodex}
+  provider={pane.thread?.provider ?? ''}
+  {modelLabel}
+  onClick={handleTrigger}
+/>
 
 <Popover
   anchor={triggerEl}
@@ -212,8 +233,19 @@
   role="none"
 >
   <Menu ariaLabel="Model and Provider" onClose={closeMenu}>
+    <ChatBarFavoritesSection
+      favorites={visibleFavorites}
+      {activeProvider}
+      currentModel={pane.thread?.model}
+      onSelectModel={(provider, model) => void handleSelectModel(provider, model)}
+      onSelectDiscussion={(favorite) => void startFavoriteDiscussion(favorite)}
+    />
+
     {#if showCodexSubmenu}
       <MenuSubmenuItem label="Codex">
+        {#snippet icon()}
+          <OpenAIIcon size={13} class="opacity-95" />
+        {/snippet}
         {#snippet children()}
           <ProviderModelsSubmenu
             {pane}
@@ -221,6 +253,8 @@
             {getModels}
             {ensureModels}
             onSelect={(slug) => handleSelectModel('codex', slug)}
+            isFavorite={isModelFavorite}
+            onToggleFavorite={(model) => toggleModelFavorite('codex', model)}
           />
         {/snippet}
       </MenuSubmenuItem>
@@ -228,6 +262,9 @@
 
     {#if showClaudeSubmenu}
       <MenuSubmenuItem label="Claude">
+        {#snippet icon()}
+          <ClaudeIcon size={13} class="text-[#d97757] opacity-95" />
+        {/snippet}
         {#snippet children()}
           <ProviderModelsSubmenu
             {pane}
@@ -235,6 +272,8 @@
             {getModels}
             {ensureModels}
             onSelect={(slug) => handleSelectModel('claude', slug)}
+            isFavorite={isModelFavorite}
+            onToggleFavorite={(model) => toggleModelFavorite('claude', model)}
           />
         {/snippet}
       </MenuSubmenuItem>
@@ -242,10 +281,17 @@
 
     {#if showDiscussions}
       <MenuDivider />
-
       <MenuSubmenuItem label="Discussions">
+        {#snippet icon()}
+          <Icon icon={MessagesSquare} size={13} strokeWidth={1.75} />
+        {/snippet}
         {#snippet children()}
-          <DiscussionsSubmenu {pane} onSelect={closeMenu} />
+          <DiscussionsSubmenu
+            {pane}
+            onSelect={closeMenu}
+            isFavorite={isDiscussionFavorite}
+            onToggleFavorite={toggleDiscussionFavorite}
+          />
         {/snippet}
       </MenuSubmenuItem>
     {/if}

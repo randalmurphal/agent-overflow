@@ -1,6 +1,8 @@
 package main
 
 import (
+	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -36,17 +38,17 @@ func TestUpdateSettingsPersistsPatch(t *testing.T) {
 	dir := t.TempDir()
 	app := &App{settings: settings.NewService(dir)}
 
-	got, err := app.UpdateSettings(map[string]any{"defaultProvider": "codex"})
+	got, err := app.UpdateSettings(map[string]any{"theme": "dark"})
 	if err != nil {
 		t.Fatalf("UpdateSettings() error = %v", err)
 	}
-	if got.DefaultProvider != "codex" {
-		t.Fatalf("DefaultProvider = %q, want codex", got.DefaultProvider)
+	if got.Theme != "dark" {
+		t.Fatalf("Theme = %q, want dark", got.Theme)
 	}
 
 	reloaded := settings.NewService(dir).Get()
-	if reloaded.DefaultProvider != "codex" {
-		t.Fatalf("reloaded DefaultProvider = %q, want codex", reloaded.DefaultProvider)
+	if reloaded.Theme != "dark" {
+		t.Fatalf("reloaded Theme = %q, want dark", reloaded.Theme)
 	}
 }
 
@@ -543,15 +545,37 @@ func TestUpdateThreadModelRemembersClaudeModelAndContextDefaults(t *testing.T) {
 		t.Fatalf("remembered sonnet context = %d, want 200000", sonnet.ContextWindow)
 	}
 
-	cfg := app.settings.Get()
-	if cfg.DefaultModelClaude != "claude-sonnet-4-6" {
-		t.Fatalf("DefaultModelClaude = %q, want claude-sonnet-4-6", cfg.DefaultModelClaude)
+	opusProfile, err := app.store.GetChatModelProfile("claude", "claude-opus-4-7")
+	if err != nil {
+		t.Fatalf("GetChatModelProfile(opus): %v", err)
 	}
-	if cfg.ModelContextWindows["claude-opus-4-7"] != 1000000 {
-		t.Fatalf("stored opus context = %d, want 1000000", cfg.ModelContextWindows["claude-opus-4-7"])
+	if opusProfile.ContextWindow != 1000000 {
+		t.Fatalf("stored opus context = %d, want 1000000", opusProfile.ContextWindow)
 	}
-	if cfg.ModelContextWindows["claude-sonnet-4-6"] != 200000 {
-		t.Fatalf("stored sonnet context = %d, want 200000", cfg.ModelContextWindows["claude-sonnet-4-6"])
+
+	sonnetProfile, err := app.store.GetChatModelProfile("claude", "claude-sonnet-4-6")
+	if err != nil {
+		t.Fatalf("GetChatModelProfile(sonnet): %v", err)
+	}
+	if sonnetProfile.ContextWindow != 200000 {
+		t.Fatalf("stored sonnet context = %d, want 200000", sonnetProfile.ContextWindow)
+	}
+}
+
+func TestUpdateThreadProviderDoesNotRememberTransientProviderModelPair(t *testing.T) {
+	app := newTestAppWithStore(t)
+
+	thread, err := createTestThread(t, app, "claude", "/tmp/provider-transient", "claude-sonnet-4-6", "")
+	if err != nil {
+		t.Fatalf("createTestThread: %v", err)
+	}
+	if _, err := app.UpdateThreadProvider(thread.ID, "codex"); err != nil {
+		t.Fatalf("UpdateThreadProvider: %v", err)
+	}
+
+	_, profileErr := app.store.GetChatModelProfile("codex", "claude-sonnet-4-6")
+	if !errors.Is(profileErr, sql.ErrNoRows) {
+		t.Fatalf("transient profile error = %v, want sql.ErrNoRows", profileErr)
 	}
 }
 
@@ -635,6 +659,10 @@ func TestUpdateThreadModelRollsBackOnRestartFailure(t *testing.T) {
 	}
 	if stored.Model != thread.Model {
 		t.Fatalf("stored model = %q, want rollback to %q", stored.Model, thread.Model)
+	}
+	_, profileErr := app.store.GetChatModelProfile(thread.Provider, "gpt-5.4-mini")
+	if !errors.Is(profileErr, sql.ErrNoRows) {
+		t.Fatalf("failed model profile error = %v, want sql.ErrNoRows", profileErr)
 	}
 }
 

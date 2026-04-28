@@ -88,8 +88,10 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "IsWSL", ID: 2789068977}, // main.App.IsWSL
 	{Name: "ListAttachments", ID: 1730798413}, // main.App.ListAttachments
 	{Name: "ListAvailableEditors", ID: 2556802234}, // main.App.ListAvailableEditors
+	{Name: "ListChatBarFavorites", ID: 2114948965}, // main.App.ListChatBarFavorites
 	{Name: "ListDesignArtifacts", ID: 4255572490}, // main.App.ListDesignArtifacts
 	{Name: "ListDiscussions", ID: 942288562}, // main.App.ListDiscussions
+	{Name: "ListDiscussionsForThread", ID: 2502562885}, // main.App.ListDiscussionsForThread
 	{Name: "ListItems", ID: 2158085763}, // main.App.ListItems
 	{Name: "ListItemsBeforeTurn", ID: 2147361923}, // main.App.ListItemsBeforeTurn
 	{Name: "ListLiveBackgroundTasks", ID: 320784263}, // main.App.ListLiveBackgroundTasks
@@ -130,11 +132,13 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "SendMessage", ID: 1496882310}, // main.App.SendMessage
 	{Name: "SendMessageWithOptions", ID: 3632185196}, // main.App.SendMessageWithOptions
 	{Name: "SendPlanRevisionComments", ID: 1407159655}, // main.App.SendPlanRevisionComments
+	{Name: "SetChatBarFavorite", ID: 2813580982}, // main.App.SetChatBarFavorite
 	{Name: "SetEditorSettings", ID: 3655340267}, // main.App.SetEditorSettings
 	{Name: "SetNetworkSettings", ID: 3915514446}, // main.App.SetNetworkSettings
 	{Name: "SetThreadRuntimeMode", ID: 1115610690}, // main.App.SetThreadRuntimeMode
 	{Name: "SetWSLDistroPreference", ID: 3978807241}, // main.App.SetWSLDistroPreference
 	{Name: "StartDiscussion", ID: 3188309099}, // main.App.StartDiscussion
+	{Name: "StartDiscussionByID", ID: 2336869067}, // main.App.StartDiscussionByID
 	{Name: "StartSession", ID: 2850159713}, // main.App.StartSession
 	{Name: "StopClaudeTask", ID: 536320598}, // main.App.StopClaudeTask
 	{Name: "StopSession", ID: 3838500111}, // main.App.StopSession

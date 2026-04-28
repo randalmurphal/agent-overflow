@@ -743,6 +743,46 @@ func TestStartDiscussionRejectsThreadWithChatHistory(t *testing.T) {
 	}
 }
 
+func TestStartDiscussionByIDRejectsProjectDefinitionFromAnotherProject(t *testing.T) {
+	app := newTestAppWithStore(t)
+	app.registry = discussion.NewRegistry(app.store)
+	app.channels = discussion.NewChannelService(app.store)
+
+	source, err := createTestThread(t, app, "claude", "/tmp/discussion-source-project", "claude-opus-4-7", "chat")
+	if err != nil {
+		t.Fatalf("create source thread: %v", err)
+	}
+	target, err := createTestThread(t, app, "claude", "/tmp/discussion-target-project", "claude-opus-4-7", "chat")
+	if err != nil {
+		t.Fatalf("create target thread: %v", err)
+	}
+
+	def := store.DiscussionDefinition{
+		ID:        "source-project-def",
+		Name:      "Project Architects",
+		Scope:     "project",
+		ProjectID: projectPathForThread(t, app, source),
+		Participants: []store.DiscussionParticipant{
+			{Role: "architect", System: "Design the change"},
+			{Role: "reviewer", System: "Review the change"},
+		},
+		Settings:  store.DiscussionSettings{MaxTurns: 3},
+		CreatedAt: time.Now().UnixMilli(),
+		UpdatedAt: time.Now().UnixMilli(),
+	}
+	if err := app.store.CreateDiscussionDef(def); err != nil {
+		t.Fatalf("CreateDiscussionDef: %v", err)
+	}
+
+	err = app.StartDiscussionByID(target.ID, def.ID)
+	if err == nil {
+		t.Fatal("StartDiscussionByID cross-project error = nil, want rejection")
+	}
+	if !strings.Contains(err.Error(), "different project") {
+		t.Fatalf("StartDiscussionByID error = %v, want different project context", err)
+	}
+}
+
 func TestStartDiscussionRejectsEmptyName(t *testing.T) {
 	app := newTestAppWithStore(t)
 	app.registry = discussion.NewRegistry(app.store)

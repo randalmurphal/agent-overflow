@@ -13,12 +13,14 @@
   import type { ThreadPane } from '../../../stores/thread.svelte';
   import type { DiscussionDefinition } from '../../../types/discussion';
   import type { Thread } from '../../../types/models';
-  import { GetThread, ListDiscussions, StartDiscussion } from '../../../stores/bindings';
+  import { GetThread, ListDiscussionsForThread, StartDiscussionByID } from '../../../stores/bindings';
   import { replaceThread as replaceThreadList } from '../../../stores/threads.svelte';
   import { addToast } from '../../../stores/toast.svelte';
   import { errString } from '../../../utils/errors';
   import MenuItem from '../../primitives/MenuItem.svelte';
   import MenuSectionHeader from '../../primitives/MenuSectionHeader.svelte';
+  import Icon from '../../primitives/Icon.svelte';
+  import Star from 'lucide-svelte/icons/star';
 
   interface Props {
     pane: ThreadPane;
@@ -31,9 +33,11 @@
      * an outside click).
      */
     onSelect?: () => void;
+    isFavorite?: (id: string) => boolean;
+    onToggleFavorite?: (definition: DiscussionDefinition) => void;
   }
 
-  let { pane, onSelect }: Props = $props();
+  let { pane, onSelect, isFavorite = () => false, onToggleFavorite }: Props = $props();
 
   let definitions: DiscussionDefinition[] = $state([]);
   let loading = $state(false);
@@ -45,23 +49,25 @@
   // Load on first mount AND whenever the pane's project path changes so
   // the project-scoped bucket reflects the active thread.
   $effect(() => {
-    // Track the dep explicitly so Svelte re-runs on project changes.
+    const threadID = pane.thread?.id ?? '';
+    if (threadID === '') {
+      definitions = [];
+      loading = false;
+      error = null;
+      return;
+    }
+    // Track deps explicitly so Svelte re-runs on thread/project changes.
     const _ = projectPath;
     const generation = ++loadGeneration;
     loading = true;
     error = null;
     void (async () => {
       try {
-        const [project, global] = await Promise.all([
-          projectPath
-            ? (ListDiscussions('project') as Promise<DiscussionDefinition[] | null>)
-            : Promise.resolve<DiscussionDefinition[]>([]),
-          ListDiscussions('global') as Promise<DiscussionDefinition[] | null>,
-        ]);
+        const scoped = (await ListDiscussionsForThread(threadID)) as DiscussionDefinition[] | null;
         if (generation !== loadGeneration) return;
         // Merge + dedupe by id — the backend may surface the same row in
         // both scopes depending on how the user seeded it.
-        const merged: DiscussionDefinition[] = [...(project ?? []), ...(global ?? [])];
+        const merged: DiscussionDefinition[] = scoped ?? [];
         const byId = new Map<string, DiscussionDefinition>();
         for (const d of merged) {
           if (!byId.has(d.id)) byId.set(d.id, d);
@@ -82,7 +88,7 @@
   );
   let globalDefs = $derived(definitions.filter((d) => d.scope !== 'project'));
 
-  async function startDiscussion(name: string): Promise<void> {
+  async function startDiscussion(def: DiscussionDefinition): Promise<void> {
     if (!pane.thread) return;
     const threadId = pane.thread.id;
     // Collapse the menu immediately on click. The async StartDiscussion
@@ -91,7 +97,7 @@
     // toast/state update lands a moment later.
     onSelect?.();
     try {
-      await StartDiscussion(threadId, name);
+      await StartDiscussionByID(threadId, def.id);
       // StartDiscussion does NOT emit `thread:updated`, so we refresh the
       // thread manually — matching DiscussionStartFlow. Without this the
       // ChatHeader, ModeCycleButton, and DiscussionView all keep showing
@@ -103,7 +109,7 @@
       } catch (refreshErr) {
         console.error('Failed to refresh thread after StartDiscussion:', refreshErr);
       }
-      addToast('info', `Started discussion "${name}"`);
+      addToast('info', `Started discussion "${def.name}"`);
     } catch (err) {
       console.error('StartDiscussion failed:', err);
       addToast('error', `Failed to start discussion: ${errString(err)}`);
@@ -139,13 +145,35 @@
   {#if projectDefs.length > 0}
     <MenuSectionHeader label="Project" />
     {#each projectDefs as def (def.id)}
-      <MenuItem label={def.name} onSelect={() => startDiscussion(def.name)} />
+      {@const favorite = isFavorite(def.id)}
+      <MenuItem
+        label={def.name}
+        onSelect={() => startDiscussion(def)}
+        actionLabel={favorite ? `Remove ${def.name} from favorites` : `Add ${def.name} to favorites`}
+        actionPressed={favorite}
+        onAction={onToggleFavorite ? () => onToggleFavorite(def) : undefined}
+      >
+        {#snippet action()}
+          <Icon icon={Star} size={13} strokeWidth={1.8} class={favorite ? 'fill-current' : ''} />
+        {/snippet}
+      </MenuItem>
     {/each}
   {/if}
   {#if globalDefs.length > 0}
     <MenuSectionHeader label="Global" />
     {#each globalDefs as def (def.id)}
-      <MenuItem label={def.name} onSelect={() => startDiscussion(def.name)} />
+      {@const favorite = isFavorite(def.id)}
+      <MenuItem
+        label={def.name}
+        onSelect={() => startDiscussion(def)}
+        actionLabel={favorite ? `Remove ${def.name} from favorites` : `Add ${def.name} to favorites`}
+        actionPressed={favorite}
+        onAction={onToggleFavorite ? () => onToggleFavorite(def) : undefined}
+      >
+        {#snippet action()}
+          <Icon icon={Star} size={13} strokeWidth={1.8} class={favorite ? 'fill-current' : ''} />
+        {/snippet}
+      </MenuItem>
     {/each}
   {/if}
 {/if}

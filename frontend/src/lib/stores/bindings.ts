@@ -115,11 +115,13 @@ export {
 
   // Discussion operations
   ListDiscussions,
+  ListDiscussionsForThread,
   GetDiscussion,
   CreateDiscussion,
   UpdateDiscussion,
   DeleteDiscussion,
   StartDiscussion,
+  StartDiscussionByID,
   GetChannelMessages,
   PostChannelMessage,
 
@@ -138,6 +140,8 @@ export {
   ClearDraft,
   SearchWorkspaceFiles,
   WriteThreadWorkspaceFile,
+  ListChatBarFavorites,
+  SetChatBarFavorite,
 
   // Message search
   SearchThreadMessages,
@@ -206,6 +210,7 @@ export {
 
 // Structured response types surfaced to components.
 export {
+  ChatBarFavorite,
   ThreadMessageHit,
 } from '../../../bindings/agent-overflow/internal/store/models.js';
 export {

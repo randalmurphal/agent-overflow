@@ -8,6 +8,8 @@
   import type { ThreadPane } from '../../../stores/thread.svelte';
   import type { ModelInfo } from '../../../types/settings';
   import MenuItem from '../../primitives/MenuItem.svelte';
+  import Icon from '../../primitives/Icon.svelte';
+  import Star from 'lucide-svelte/icons/star';
 
   interface Props {
     pane: ThreadPane;
@@ -22,9 +24,19 @@
     ensureModels: (provider: 'claude' | 'codex') => Promise<void>;
     /** Called with the slug the user selected. */
     onSelect: (slug: string) => void;
+    isFavorite?: (provider: 'claude' | 'codex', slug: string) => boolean;
+    onToggleFavorite?: (model: ModelInfo) => void;
   }
 
-  let { pane, provider, getModels, ensureModels, onSelect }: Props = $props();
+  let {
+    pane,
+    provider,
+    getModels,
+    ensureModels,
+    onSelect,
+    isFavorite = () => false,
+    onToggleFavorite,
+  }: Props = $props();
 
   let loading = $state(false);
 
@@ -62,10 +74,23 @@
   </div>
 {:else}
   {#each models as model (model.slug)}
+    {@const favorite = isFavorite(provider, model.slug)}
     <MenuItem
       label={model.name || model.slug}
       checked={isActiveProvider && currentModel === model.slug}
       onSelect={() => onSelect(model.slug)}
-    />
+      actionLabel={favorite ? `Remove ${model.name || model.slug} from favorites` : `Add ${model.name || model.slug} to favorites`}
+      actionPressed={favorite}
+      onAction={onToggleFavorite ? () => onToggleFavorite(model) : undefined}
+    >
+      {#snippet action()}
+        <Icon
+          icon={Star}
+          size={13}
+          strokeWidth={1.8}
+          class={favorite ? 'fill-current' : ''}
+        />
+      {/snippet}
+    </MenuItem>
   {/each}
 {/if}

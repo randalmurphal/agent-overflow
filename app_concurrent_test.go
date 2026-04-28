@@ -287,8 +287,7 @@ func TestConcurrent_SettingsUpdateDuringStartup(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			if _, err := app.UpdateSettings(map[string]any{
-				"defaultProvider": "claude",
-				"theme":           themes[i%len(themes)],
+				"theme": themes[i%len(themes)],
 			}); err != nil {
 				t.Errorf("UpdateSettings[%d]: %v", i, err)
 			}

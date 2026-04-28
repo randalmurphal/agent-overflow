@@ -34,6 +34,7 @@ func TestMigrationFreshDB(t *testing.T) {
 		"channels", "channel_messages", "discussion_definitions", "design_artifacts",
 		"attachments", "thread_drafts", "thread_checkpoints", "turns",
 		"proposed_plans", "proposed_plan_comments",
+		"chat_bar_favorites", "chat_model_profiles",
 	}
 	for _, table := range tables {
 		var name string
@@ -163,6 +164,43 @@ func TestMigrationVersionTracking(t *testing.T) {
 	}
 	if versions[29].version != 30 || versions[29].name != "proposed_plan_review" {
 		t.Errorf("v30: got %d/%s", versions[29].version, versions[29].name)
+	}
+	if versions[30].version != 31 || versions[30].name != "thread_drafts_pending_plan_implementation" {
+		t.Errorf("v31: got %d/%s", versions[30].version, versions[30].name)
+	}
+	if versions[31].version != 32 || versions[31].name != "thread_checkpoints_tool_paths" {
+		t.Errorf("v32: got %d/%s", versions[31].version, versions[31].name)
+	}
+	if versions[32].version != 33 || versions[32].name != "chat_bar_favorites_and_profiles" {
+		t.Errorf("v33: got %d/%s", versions[32].version, versions[32].name)
+	}
+}
+
+func TestMigrationV33ChatBarFavoritesAndProfiles(t *testing.T) {
+	s := newTestStore(t)
+
+	for _, table := range []string{"chat_bar_favorites", "chat_model_profiles"} {
+		var name string
+		if err := s.db.QueryRow(
+			`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`,
+			table,
+		).Scan(&name); err != nil {
+			t.Fatalf("%s table missing: %v", table, err)
+		}
+	}
+
+	if _, err := s.db.Exec(
+		`INSERT INTO chat_bar_favorites (kind, provider, value, label, created_at)
+		 VALUES ('model', '', 'gpt-5.5', 'GPT 5.5', 1)`,
+	); err == nil {
+		t.Fatal("model favorite without provider inserted; want CHECK failure")
+	}
+	if _, err := s.db.Exec(
+		`INSERT INTO chat_model_profiles (
+			provider, model, reasoning_effort, fast_mode, context_window, runtime_mode, updated_at
+		) VALUES ('claude', 'claude-opus-4-7', 'bogus', 0, 1000000, 'full-access', 1)`,
+	); err == nil {
+		t.Fatal("profile with invalid effort inserted; want CHECK failure")
 	}
 }
 

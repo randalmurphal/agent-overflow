@@ -4,7 +4,6 @@
   import { CreateThreadFromPR } from '../../stores/bindings';
   import { parsePRReference, type ParsedPRReference } from '../../utils/prReference';
   import { forgeLabels } from '../../utils/forgeLabels';
-  import { getSettings } from '../../stores/settings.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import { prependThread } from '../../stores/threads.svelte';
   import type { Thread } from '../../types/models';
@@ -17,7 +16,7 @@
   } = $props();
 
   let url = $state('');
-  let provider = $state<'claude' | 'codex'>(getSettings().defaultProvider as 'claude' | 'codex');
+  let provider = $state<'claude' | 'codex'>('claude');
   let model = $state('');
   let submitting = $state(false);
   let error = $state<string | null>(null);
@@ -37,10 +36,6 @@
   let canSubmit = $derived(
     !submitting && parsed !== null && parsed.ok && provider !== null,
   );
-  let defaultModel = $derived(
-    provider === 'claude' ? getSettings().defaultModelClaude : getSettings().defaultModelCodex,
-  );
-
   $effect(() => {
     if (!open) {
       // Dialog was closed; bump so any in-flight submission bails.
@@ -54,7 +49,7 @@
     model = '';
     error = null;
     submitting = false;
-    provider = getSettings().defaultProvider as 'claude' | 'codex';
+    provider = 'claude';
     // Focus routing is handled by Modal's focusTrap action; [data-autofocus]
     // on the URL input picks it as the initial focus target.
   });
@@ -72,7 +67,7 @@
     if (!canSubmit || parsed === null || !parsed.ok) return;
     submitting = true;
     error = null;
-    const effectiveModel = model.trim() || defaultModel;
+    const effectiveModel = model.trim();
     const startGeneration = submitGeneration;
     const prNumber = parsed.value.number;
     const labels = forgeLabels(parsed.value.forge);
@@ -187,9 +182,10 @@
         <label for="pr-model-input" class="text-[12px] text-fg-muted block font-medium">Model (optional)</label>
         <input
           id="pr-model-input"
+          data-testid="thread-from-pr-model"
           type="text"
           bind:value={model}
-          placeholder={defaultModel ? `Model (default: ${defaultModel})` : 'Model (optional)'}
+          placeholder="Model (optional)"
           class={FIELD_CLASS}
         />
       </div>

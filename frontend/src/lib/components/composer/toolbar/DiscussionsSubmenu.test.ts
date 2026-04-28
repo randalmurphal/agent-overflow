@@ -60,16 +60,13 @@ const architects: DiscussionDefinition = {
 describe('<DiscussionsSubmenu>', () => {
   beforeEach(() => {
     resetBindingMocks();
-    setBindingMock('ListDiscussions', async (scope: unknown) => {
-      if (scope === 'global') return [architects];
-      return [];
-    });
+    setBindingMock('ListDiscussionsForThread', async () => [architects]);
   });
 
   it('refreshes the thread after StartDiscussion so the UI flips mode', async () => {
     const pane = await buildPane(makeThread({ mode: 'chat' }));
 
-    const start = setBindingMock('StartDiscussion', async () => {});
+    const start = setBindingMock('StartDiscussionByID', async () => {});
     const refreshed = makeThread({ mode: 'discussion', discussionId: architects.id });
     const getThread = setBindingMock('GetThread', async () => refreshed);
 
@@ -80,7 +77,7 @@ describe('<DiscussionsSubmenu>', () => {
     await fireEvent.click(row);
 
     await waitFor(() => {
-      expect(start).toHaveBeenCalledWith('thread-1', 'Architects');
+      expect(start).toHaveBeenCalledWith('thread-1', architects.id);
     });
     await waitFor(() => {
       expect(getThread).toHaveBeenCalledWith('thread-1');
@@ -95,7 +92,7 @@ describe('<DiscussionsSubmenu>', () => {
   it('still toasts + logs when the post-start refresh fails, without crashing', async () => {
     const pane = await buildPane(makeThread({ mode: 'chat' }));
 
-    const start = setBindingMock('StartDiscussion', async () => {});
+    const start = setBindingMock('StartDiscussionByID', async () => {});
     setBindingMock('GetThread', async () => {
       throw new Error('db offline');
     });
@@ -120,7 +117,7 @@ describe('<DiscussionsSubmenu>', () => {
   // open until the user clicks elsewhere.
   it('invokes onSelect synchronously when a discussion row is picked', async () => {
     const pane = await buildPane(makeThread({ mode: 'chat' }));
-    setBindingMock('StartDiscussion', async () => {});
+    setBindingMock('StartDiscussionByID', async () => {});
     setBindingMock('GetThread', async () =>
       makeThread({ mode: 'discussion', discussionId: architects.id }),
     );
@@ -141,7 +138,7 @@ describe('<DiscussionsSubmenu>', () => {
   it('does nothing when StartDiscussion rejects (no refresh, no pane mutation)', async () => {
     const pane = await buildPane(makeThread({ mode: 'chat' }));
 
-    setBindingMock('StartDiscussion', async () => {
+    setBindingMock('StartDiscussionByID', async () => {
       throw new Error('already running');
     });
     const getThread = setBindingMock('GetThread', async () =>
@@ -153,7 +150,7 @@ describe('<DiscussionsSubmenu>', () => {
     await fireEvent.click(row);
 
     await waitFor(() => {
-      expect(getBindingMock('StartDiscussion')!).toHaveBeenCalled();
+      expect(getBindingMock('StartDiscussionByID')!).toHaveBeenCalled();
     });
     // StartDiscussion threw before the refresh branch — GetThread must
     // NOT have been invoked.

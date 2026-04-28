@@ -22,18 +22,6 @@ func TestUpdateRejectsInvalidEnumeratedValues(t *testing.T) {
 			patch: map[string]any{"timestampFormat": "iso8601"},
 		},
 		{
-			name:  "defaultProvider",
-			patch: map[string]any{"defaultProvider": "openai"},
-		},
-		{
-			name:  "defaultModelClaude",
-			patch: map[string]any{"defaultModelClaude": "   "},
-		},
-		{
-			name:  "defaultModelCodex",
-			patch: map[string]any{"defaultModelCodex": ""},
-		},
-		{
 			name:  "textGenerationProvider",
 			patch: map[string]any{"textGenerationProvider": "anthropic"},
 		},
@@ -74,9 +62,6 @@ func TestGetSanitizesInvalidLoadedValues(t *testing.T) {
 	data := []byte(`{
   "theme": "solarized",
   "timestampFormat": "iso8601",
-  "defaultProvider": "openai",
-  "defaultModelClaude": "   ",
-  "defaultModelCodex": "",
   "claudeBinaryPath": " /custom/claude ",
   "codexBinaryPath": "   ",
   "defaultThreadEnvMode": "remote",
@@ -95,15 +80,6 @@ func TestGetSanitizesInvalidLoadedValues(t *testing.T) {
 	}
 	if got.TimestampFormat != DefaultSettings.TimestampFormat {
 		t.Fatalf("TimestampFormat = %q, want %q", got.TimestampFormat, DefaultSettings.TimestampFormat)
-	}
-	if got.DefaultProvider != DefaultSettings.DefaultProvider {
-		t.Fatalf("DefaultProvider = %q, want %q", got.DefaultProvider, DefaultSettings.DefaultProvider)
-	}
-	if got.DefaultModelClaude != DefaultSettings.DefaultModelClaude {
-		t.Fatalf("DefaultModelClaude = %q, want %q", got.DefaultModelClaude, DefaultSettings.DefaultModelClaude)
-	}
-	if got.DefaultModelCodex != DefaultSettings.DefaultModelCodex {
-		t.Fatalf("DefaultModelCodex = %q, want %q", got.DefaultModelCodex, DefaultSettings.DefaultModelCodex)
 	}
 	if got.ClaudeBinaryPath != "/custom/claude" {
 		t.Fatalf("ClaudeBinaryPath = %q, want /custom/claude", got.ClaudeBinaryPath)

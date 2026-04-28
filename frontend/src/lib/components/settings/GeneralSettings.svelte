@@ -1,16 +1,10 @@
 <script lang="ts">
   import { getSettings, updateSetting } from '../../stores/settings.svelte';
-  import type { RuntimeMode, ThreadEnvMode } from '../../types/settings';
+  import type { ThreadEnvMode } from '../../types/settings';
   import ToggleSwitch from '../shared/ToggleSwitch.svelte';
   import MicroLabel from '../primitives/MicroLabel.svelte';
 
   let settings = $derived(getSettings());
-
-  const RUNTIME_OPTIONS: Array<{ value: RuntimeMode; label: string }> = [
-    { value: 'full-access', label: 'Full access' },
-    { value: 'auto-accept-edits', label: 'Auto-edits' },
-    { value: 'approval-required', label: 'Approval required' },
-  ];
 
   const ENV_OPTIONS: Array<{ value: ThreadEnvMode; label: string }> = [
     { value: 'local', label: 'Current checkout' },
@@ -69,25 +63,9 @@
 
   <section>
     <MicroLabel as="p">Behavior</MicroLabel>
-    <h3 class="mt-1 text-[15px] font-semibold text-fg">Defaults and Live Updates</h3>
-    <p class="mt-1 text-[12px] text-fg-muted">Tune how new sessions start and how provider output is rendered.</p>
+    <h3 class="mt-1 text-[15px] font-semibold text-fg">Live Updates</h3>
+    <p class="mt-1 text-[12px] text-fg-muted">Tune how provider output is rendered.</p>
     <div class="mt-3 divide-y divide-border-subtle">
-      <div class={ROW_CLASS}>
-        <div>
-          <label for="provider-select" class="text-[13px] text-fg block font-medium">Default provider</label>
-          <p class="text-[12px] text-fg-muted">Provider selected when creating new threads</p>
-        </div>
-        <select
-          id="provider-select"
-          value={settings.defaultProvider}
-          onchange={(e) => updateSetting('defaultProvider', (e.target as HTMLSelectElement).value as 'claude' | 'codex')}
-          class={SELECT_CLASS}
-        >
-          <option value="claude">Claude</option>
-          <option value="codex">Codex</option>
-        </select>
-      </div>
-
       <div class={ROW_CLASS}>
         <div>
           <p class="text-[13px] text-fg font-medium">Diff Word Wrap</p>
@@ -128,30 +106,12 @@
 
   <section data-testid="settings-thread-defaults">
     <MicroLabel as="p">Thread Defaults</MicroLabel>
-    <h3 class="mt-1 text-[15px] font-semibold text-fg">New-Thread Seeds</h3>
+    <h3 class="mt-1 text-[15px] font-semibold text-fg">Workspace Seeds</h3>
     <p class="mt-1 text-[12px] text-fg-muted">
-      New threads always start in chat mode. Chat model, effort, and context
-      defaults are remembered from the composer controls.
+      New threads start in chat mode. Provider, model, effort, permissions,
+      and context are remembered from the composer controls.
     </p>
     <div class="mt-3 divide-y divide-border-subtle">
-      <div class={ROW_CLASS}>
-        <div>
-          <label for="default-runtime-mode" class="text-[13px] text-fg block font-medium">Default Permissions</label>
-          <p class="text-[12px] text-fg-muted">Access mode seeded on new threads</p>
-        </div>
-        <select
-          id="default-runtime-mode"
-          data-testid="settings-default-runtime-mode"
-          value={settings.defaultRuntimeMode}
-          onchange={(e) => updateSetting('defaultRuntimeMode', (e.target as HTMLSelectElement).value as RuntimeMode)}
-          class={SELECT_CLASS}
-        >
-          {#each RUNTIME_OPTIONS as opt}
-            <option value={opt.value}>{opt.label}</option>
-          {/each}
-        </select>
-      </div>
-
       <div class={ROW_CLASS}>
         <div>
           <label for="default-thread-env-mode" class="text-[13px] text-fg block font-medium">Default Environment</label>

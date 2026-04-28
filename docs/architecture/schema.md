@@ -21,6 +21,8 @@ the migrations win.
 | `thread_checkpoints` | Git checkpoint metadata per thread. `checkpoint_turn_count` is the canonical boundary: `0` is before the first turn, `N` is after completed turn `N`. Rows also carry `turn_id`, `status`, compact `files` JSON, `assistant_message_id`, `completed_at`, `captured_at`, `ref_name`, and `workspace_path`. |
 | `proposed_plans` | Per-plan state layered over proposed-plan payload items. Tracks immutable plan item id, thread id, revision parent item id, version, implementation marker, implementation thread/item ids, and timestamps. |
 | `proposed_plan_comments` | Inline review comments anchored to one proposed-plan version. Tracks draft/sent/resolved status, line range, selected text, body, sent turn id, and timestamps. |
+| `chat_bar_favorites` | Starred composer menu entries for models and discussion templates. Model favorites include provider + model id; discussion favorites store the discussion definition id. |
+| `chat_model_profiles` | Last-used composer settings per provider/model: reasoning effort, fast mode, context window, runtime mode, and `updated_at` for seeding new chats. |
 
 Plan implementation and revision source references are stored on the user
 message `items.meta` as `sourceProposedPlan` and
@@ -51,6 +53,8 @@ implementation markers and revision parent links.
 - `idx_thread_checkpoints_thread_count` on `thread_checkpoints(thread_id, checkpoint_turn_count)` — backs checkpoint drawer listing, range diff, and revert lookups.
 - `idx_proposed_plans_thread_version` on `proposed_plans(thread_id, version DESC)` — backs newest-first plan sidebar/history queries.
 - `idx_proposed_plan_comments_plan` on `proposed_plan_comments(thread_id, plan_item_id, status, start_line, created_at)` — backs per-plan review comment listing and draft/sent counts.
+- `idx_chat_bar_favorites_created` on `chat_bar_favorites(created_at DESC)` — backs newest-first favorite listing in the composer menu.
+- `idx_chat_model_profiles_updated` on `chat_model_profiles(updated_at DESC)` — backs latest-profile seeding for new chats.
 
 ## Migration Policy
 
@@ -68,7 +72,8 @@ implementation markers and revision parent links.
 ## What Goes in SQLite vs What Doesn't
 
 - **In**: timeline items, payloads, thread metadata, projects, channels/messages,
-  discussion templates, design artifact metadata, attachment metadata.
+  discussion templates, design artifact metadata, attachment metadata, composer
+  favorites, and last-used model profile seeds.
 - **Not in**: live per-turn provider state (the provider owns it),
   transient UI state (frontend $state), logs (observability package has
   its own NDJSON logger).

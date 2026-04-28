@@ -165,6 +165,30 @@ type PayloadMeta struct {
 	CreatedAt int64  `json:"createdAt"`
 }
 
+// ChatBarFavorite is one starred entry in the composer model menu.
+// Kind is "model" or "discussion". Provider is set only for model
+// favorites; Value is the model slug or discussion definition id.
+type ChatBarFavorite struct {
+	Kind      string `json:"kind"`
+	Provider  string `json:"provider,omitempty"`
+	Value     string `json:"value"`
+	Label     string `json:"label"`
+	CreatedAt int64  `json:"createdAt"`
+}
+
+// ChatModelProfile remembers the last selected chat-bar settings for a
+// provider/model pair. New draft threads seed from the most recently
+// updated profile, and model switches restore that model's profile.
+type ChatModelProfile struct {
+	Provider        string `json:"provider"`
+	Model           string `json:"model"`
+	ReasoningEffort string `json:"reasoningEffort"`
+	FastMode        bool   `json:"fastMode"`
+	ContextWindow   int    `json:"contextWindow"`
+	RuntimeMode     string `json:"runtimeMode"`
+	UpdatedAt       int64  `json:"updatedAt"`
+}
+
 // -- helpers --
 
 func nilIfEmpty(s string) interface{} {

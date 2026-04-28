@@ -131,16 +131,24 @@ var LocalOnlyMethods = map[string]bool{
 	"GetWorkspaceCurrentDiff": true,
 
 	// 2. Session control (provider subprocess spawn / steer).
-	"StartSession":             true,
-	"StopSession":              true,
-	"ReconnectSession":         true,
-	"SendMessage":              true,
-	"SendMessageWithOptions":   true,
-	"SendPlanRevisionComments": true,
-	"UpdateThreadMode":         true,
-	"InterruptTurn":            true,
-	"RespondToApproval":        true,
-	"RespondToUserInput":       true,
+	"StartSession":                true,
+	"StopSession":                 true,
+	"ReconnectSession":            true,
+	"SendMessage":                 true,
+	"SendMessageWithOptions":      true,
+	"SendPlanRevisionComments":    true,
+	"StartDiscussion":             true,
+	"StartDiscussionByID":         true,
+	"UpdateThreadMode":            true,
+	"UpdateThreadProvider":        true,
+	"UpdateThreadModel":           true,
+	"UpdateThreadReasoningEffort": true,
+	"UpdateThreadFastMode":        true,
+	"UpdateThreadContextWindow":   true,
+	"UpdateThreadRuntimeMode":     true,
+	"InterruptTurn":               true,
+	"RespondToApproval":           true,
+	"RespondToUserInput":          true,
 	// Thread creation can spawn a worktree / probe the provider; the
 	// branch fork variant runs git ops, and the PR variant shells `gh`.
 	"CreateThread":       true,
@@ -161,6 +169,8 @@ var LocalOnlyMethods = map[string]bool{
 	"SetEditorSettings":    true,
 	"UpdateKeybindings":    true,
 	"ResetKeybindings":     true,
+	"SetChatBarFavorite":   true,
+	"SetThreadRuntimeMode": true,
 	// SetWSLDistroPreference rewrites the Windows launcher's
 	// wsl.json — the next launch will boot whatever distro a LAN
 	// peer talked the user's backend into saving. Same threat shape
@@ -189,6 +199,6 @@ var LocalOnlyMethods = map[string]bool{
 	// dir). A LAN-attached token-holder shouldn't be able to fingerprint
 	// the host's WSL inventory or its persisted distro choice; both pair
 	// with the SetWSLDistroPreference mutation on a single host surface.
-	"ListWSLDistros":          true,
-	"GetWSLDistroPreference":  true,
+	"ListWSLDistros":         true,
+	"GetWSLDistroPreference": true,
 }

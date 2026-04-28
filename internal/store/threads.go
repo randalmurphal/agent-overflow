@@ -281,6 +281,18 @@ func (s *Store) ListChildThreads(parentID string) ([]Thread, error) {
 	return threads, rows.Err()
 }
 
+func (s *Store) HasChildThreads(parentID string) (bool, error) {
+	var exists int
+	err := s.db.QueryRow(
+		`SELECT EXISTS(SELECT 1 FROM threads WHERE parent_thread_id = ? LIMIT 1)`,
+		parentID,
+	).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("store: check child threads for %s: %w", parentID, err)
+	}
+	return exists != 0, nil
+}
+
 // ListThreadWorkspaceRefs returns workspace/worktree pointers for all thread
 // rows, including archived ones. Worktree removal uses this to avoid deleting a
 // checkout that an archived thread would reference if restored.

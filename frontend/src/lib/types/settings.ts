@@ -26,10 +26,6 @@ export type ThreadEnvMode = 'local' | 'worktree';
 export interface Settings {
   theme: 'system' | 'light' | 'dark';
   timestampFormat: 'locale' | '12-hour' | '24-hour';
-  defaultProvider: 'claude' | 'codex';
-  defaultModelClaude: string;
-  defaultModelCodex: string;
-  modelContextWindows: Record<string, ContextWindow>;
   recentWorkspaces: string[];
   diffWordWrap: boolean;
   showEndOfTurnDiffs: boolean;
@@ -41,20 +37,10 @@ export interface Settings {
   codexBinaryPath: string;
   claudeEnabled: boolean;
   codexEnabled: boolean;
-  /** Legacy setting kept for old settings files; normal new threads start in chat mode. */
-  defaultMode: ThreadMode;
-  /** Seeds the per-thread runtime permissions mode. */
-  defaultRuntimeMode: RuntimeMode;
   /** Seeds whether new draft threads start on the current checkout or a new worktree. */
   defaultThreadEnvMode: ThreadEnvMode;
   /** Prefix used for auto-generated worktree branch names. */
   worktreeBranchPrefix: string;
-  /** Seeds the per-thread reasoning-effort tier. */
-  defaultReasoningEffort: ReasoningEffort;
-  /** Seeds the per-thread fast-mode toggle. */
-  defaultFastMode: boolean;
-  /** Seeds the per-thread context-window preference. */
-  defaultContextWindow: ContextWindow;
   /**
    * Text generation: which CLI writes commit messages / PR bodies /
    * thread titles. Independent of the chat provider so a user on Claude

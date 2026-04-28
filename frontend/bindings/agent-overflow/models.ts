@@ -40,12 +40,12 @@ export class CreateThreadOptions {
     "title"?: string;
 
     /**
-     * defaults to settings.DefaultProvider
+     * empty = latest chat profile provider
      */
     "provider"?: string;
 
     /**
-     * defaults to settings.DefaultModelClaude/Codex
+     * empty = latest provider/model profile
      */
     "model"?: string;
 
@@ -55,22 +55,22 @@ export class CreateThreadOptions {
     "mode"?: string;
 
     /**
-     * defaults to settings.DefaultReasoningEffort
+     * empty = latest model profile effort
      */
     "reasoningEffort"?: string;
 
     /**
-     * nil = use setting default
+     * nil = latest model profile fast-mode
      */
     "fastMode"?: boolean | null;
 
     /**
-     * 0 = setting default
+     * 0 = latest model profile context
      */
     "contextWindow"?: number;
 
     /**
-     * defaults to settings.DefaultRuntimeMode
+     * empty = latest model profile runtime mode
      */
     "runtimeMode"?: string;
 

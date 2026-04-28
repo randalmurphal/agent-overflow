@@ -47,6 +47,16 @@ func (s *Store) GetDiscussionDef(name, scope, projectID string) (DiscussionDefin
 	return scanDiscussionDefinition(row)
 }
 
+func (s *Store) GetDiscussionDefByID(id string) (DiscussionDefinition, error) {
+	row := s.db.QueryRow(
+		fmt.Sprintf(`SELECT id, name, description, scope, %s, definition, created_at, updated_at
+			FROM discussion_definitions
+			WHERE id = ?`, discussionProjectIDExpr),
+		id,
+	)
+	return scanDiscussionDefinition(row)
+}
+
 func (s *Store) ListDiscussionDefs(scope, projectID string) ([]DiscussionDefinition, error) {
 	query := fmt.Sprintf(`SELECT id, name, description, scope, %s, definition, created_at, updated_at
 		FROM discussion_definitions`, discussionProjectIDExpr)

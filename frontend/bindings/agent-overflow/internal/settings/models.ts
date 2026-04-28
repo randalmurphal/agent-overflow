@@ -140,16 +140,6 @@ export class Settings {
     "$schemaVersion"?: number;
     "theme": string;
     "timestampFormat": string;
-    "defaultProvider": string;
-    "defaultModelClaude": string;
-    "defaultModelCodex": string;
-
-    /**
-     * ModelContextWindows remembers the context-window preference per
-     * model slug. It lets Claude Sonnet stay on 200k while Opus stays on
-     * 1M, and preserves user overrides independently for each model.
-     */
-    "modelContextWindows": { [_ in string]?: number };
     "recentWorkspaces": string[];
     "diffWordWrap": boolean;
     "showEndOfTurnDiffs": boolean;
@@ -169,16 +159,6 @@ export class Settings {
     "codexEnabled": boolean;
 
     /**
-     * DefaultRuntimeMode is the three-tier approval axis applied to every
-     * new thread when the user hasn't picked a different mode at creation
-     * time. Accepts "approval-required", "auto-accept-edits", or
-     * "full-access"; unknown values are coerced to "full-access" at the
-     * provider-mode chokepoint so a stale settings file can't lock the
-     * app into an invalid mode.
-     */
-    "defaultRuntimeMode": string;
-
-    /**
      * DefaultThreadEnvMode seeds the workspace mode for new draft threads.
      * Accepts "local" or "worktree"; unknown values fall back to "local"
      * when settings are loaded.
@@ -192,35 +172,6 @@ export class Settings {
      * read like normal feature branches.
      */
     "worktreeBranchPrefix": string;
-
-    /**
-     * DefaultReasoningEffort is the effort tier seeded on every new
-     * thread. Accepts the five values the provider package exposes
-     * (low / medium / high / xhigh / max); unknown values coerce to
-     * "high".
-     */
-    "defaultReasoningEffort": string;
-
-    /**
-     * DefaultFastMode seeds the per-thread fast-mode toggle.
-     */
-    "defaultFastMode": boolean;
-
-    /**
-     * DefaultContextWindow seeds the per-thread context-window pref.
-     * 200000 and 1000000 are the only schema-legal values; unknown
-     * values fall back to 1000000 at the validation layer.
-     */
-    "defaultContextWindow": number;
-
-    /**
-     * DefaultMode seeds the per-thread interaction mode (chat / plan /
-     * design / discussion). Discussion is reached via a separate flow,
-     * but is included in the enum for symmetry with provider.ModeDiscussion.
-     * New thread creation intentionally ignores this legacy field and
-     * starts in chat mode unless a caller explicitly passes a mode.
-     */
-    "defaultMode": string;
 
     /**
      * TextGenerationProvider selects which CLI drives non-chat text
@@ -310,18 +261,6 @@ export class Settings {
         if (!("timestampFormat" in $$source)) {
             this["timestampFormat"] = "";
         }
-        if (!("defaultProvider" in $$source)) {
-            this["defaultProvider"] = "";
-        }
-        if (!("defaultModelClaude" in $$source)) {
-            this["defaultModelClaude"] = "";
-        }
-        if (!("defaultModelCodex" in $$source)) {
-            this["defaultModelCodex"] = "";
-        }
-        if (!("modelContextWindows" in $$source)) {
-            this["modelContextWindows"] = {};
-        }
         if (!("recentWorkspaces" in $$source)) {
             this["recentWorkspaces"] = [];
         }
@@ -355,26 +294,11 @@ export class Settings {
         if (!("codexEnabled" in $$source)) {
             this["codexEnabled"] = false;
         }
-        if (!("defaultRuntimeMode" in $$source)) {
-            this["defaultRuntimeMode"] = "";
-        }
         if (!("defaultThreadEnvMode" in $$source)) {
             this["defaultThreadEnvMode"] = "";
         }
         if (!("worktreeBranchPrefix" in $$source)) {
             this["worktreeBranchPrefix"] = "";
-        }
-        if (!("defaultReasoningEffort" in $$source)) {
-            this["defaultReasoningEffort"] = "";
-        }
-        if (!("defaultFastMode" in $$source)) {
-            this["defaultFastMode"] = false;
-        }
-        if (!("defaultContextWindow" in $$source)) {
-            this["defaultContextWindow"] = 0;
-        }
-        if (!("defaultMode" in $$source)) {
-            this["defaultMode"] = "";
         }
         if (!("textGenerationProvider" in $$source)) {
             this["textGenerationProvider"] = "";
@@ -408,35 +332,30 @@ export class Settings {
      * Creates a new Settings instance from a string or object.
      */
     static createFrom($$source: any = {}): Settings {
-        const $$createField6_0 = $$createType0;
-        const $$createField7_0 = $$createType1;
-        const $$createField31_0 = $$createType2;
-        const $$createField32_0 = $$createType3;
-        const $$createField33_0 = $$createType5;
+        const $$createField3_0 = $$createType0;
+        const $$createField22_0 = $$createType1;
+        const $$createField23_0 = $$createType2;
+        const $$createField24_0 = $$createType4;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
-        if ("modelContextWindows" in $$parsedSource) {
-            $$parsedSource["modelContextWindows"] = $$createField6_0($$parsedSource["modelContextWindows"]);
-        }
         if ("recentWorkspaces" in $$parsedSource) {
-            $$parsedSource["recentWorkspaces"] = $$createField7_0($$parsedSource["recentWorkspaces"]);
+            $$parsedSource["recentWorkspaces"] = $$createField3_0($$parsedSource["recentWorkspaces"]);
         }
         if ("network" in $$parsedSource) {
-            $$parsedSource["network"] = $$createField31_0($$parsedSource["network"]);
+            $$parsedSource["network"] = $$createField22_0($$parsedSource["network"]);
         }
         if ("editor" in $$parsedSource) {
-            $$parsedSource["editor"] = $$createField32_0($$parsedSource["editor"]);
+            $$parsedSource["editor"] = $$createField23_0($$parsedSource["editor"]);
         }
         if ("remoteEndpoints" in $$parsedSource) {
-            $$parsedSource["remoteEndpoints"] = $$createField33_0($$parsedSource["remoteEndpoints"]);
+            $$parsedSource["remoteEndpoints"] = $$createField24_0($$parsedSource["remoteEndpoints"]);
         }
         return new Settings($$parsedSource as Partial<Settings>);
     }
 }
 
 // Private type creation functions
-const $$createType0 = $Create.Map($Create.Any, $Create.Any);
-const $$createType1 = $Create.Array($Create.Any);
-const $$createType2 = NetworkSettings.createFrom;
-const $$createType3 = EditorSettings.createFrom;
-const $$createType4 = RemoteEndpoint.createFrom;
-const $$createType5 = $Create.Array($$createType4);
+const $$createType0 = $Create.Array($Create.Any);
+const $$createType1 = NetworkSettings.createFrom;
+const $$createType2 = EditorSettings.createFrom;
+const $$createType3 = RemoteEndpoint.createFrom;
+const $$createType4 = $Create.Array($$createType3);

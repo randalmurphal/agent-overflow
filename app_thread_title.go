@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"agent-overflow/internal/provider"
-	"agent-overflow/internal/settings"
 	"agent-overflow/internal/store"
 )
 
@@ -199,15 +198,7 @@ func (a *App) applyGeneratedThreadTitle(threadID, title string) error {
 }
 
 func (a *App) defaultModelForProvider(providerName string) string {
-	cfg := a.currentSettings()
-	switch providerName {
-	case string(provider.Claude):
-		return firstNonEmpty(cfg.DefaultModelClaude, settings.DefaultSettings.DefaultModelClaude)
-	case string(provider.Codex):
-		return firstNonEmpty(cfg.DefaultModelCodex, settings.DefaultSettings.DefaultModelCodex)
-	default:
-		return ""
-	}
+	return fallbackChatModelForProvider(providerName)
 }
 
 const threadTitleCodexSchemaJSON = `{"type":"object","properties":{"title":{"type":"string","maxLength":50}},"required":["title"],"additionalProperties":false}`

@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"agent-overflow/internal/provider"
-	"agent-overflow/internal/settings"
 	"agent-overflow/internal/store"
 )
 
@@ -413,14 +412,9 @@ func TestGetThreadRuntimeModeRoundTrips(t *testing.T) {
 	}
 }
 
-// TestCreateThreadUsesSettingsDefault: a new thread with no explicit
-// runtime mode inherits settings.DefaultRuntimeMode.
-func TestCreateThreadUsesSettingsDefault(t *testing.T) {
+func TestCreateThreadUsesFallbackRuntimeMode(t *testing.T) {
 	app := newTestAppWithStore(t)
 
-	// App created by the test helper doesn't have a settings service
-	// wired. CreateThread's fallback reaches provider.DefaultRuntimeMode
-	// directly; verify it lands on 'full-access'.
 	thread, err := createTestThread(t, app, "claude", "/tmp", "claude-sonnet-4-6", "chat")
 	if err != nil {
 		t.Fatalf("CreateThread: %v", err)
@@ -446,9 +440,8 @@ func TestCreateThreadRejectsInvalidRuntimeMode(t *testing.T) {
 	}
 }
 
-func TestUpdateThreadRuntimeModeDoesNotMutateDefaultForNewThreads(t *testing.T) {
+func TestUpdateThreadRuntimeModeSeedsNextNewThreadForSameModel(t *testing.T) {
 	app := newTestAppWithStore(t)
-	app.settings = settings.NewService(t.TempDir())
 
 	source, err := createTestThread(t, app, "claude", "/tmp/runtime-source", "claude-sonnet-4-6", "chat")
 	if err != nil {
@@ -462,7 +455,7 @@ func TestUpdateThreadRuntimeModeDoesNotMutateDefaultForNewThreads(t *testing.T) 
 	if err != nil {
 		t.Fatalf("create next thread: %v", err)
 	}
-	if next.RuntimeMode != string(provider.DefaultRuntimeMode) {
-		t.Fatalf("new thread runtime_mode = %q, want %q", next.RuntimeMode, provider.DefaultRuntimeMode)
+	if next.RuntimeMode != string(provider.RuntimeApprovalRequired) {
+		t.Fatalf("new thread runtime_mode = %q, want %q", next.RuntimeMode, provider.RuntimeApprovalRequired)
 	}
 }

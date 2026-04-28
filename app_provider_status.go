@@ -1,10 +1,6 @@
 package main
 
-import (
-	"log"
-
-	"agent-overflow/internal/provider"
-)
+import "agent-overflow/internal/provider"
 
 // ProviderStatusEvent is the payload for the `provider:status` Wails
 // event. It surfaces provider-level health (install / version / auth)
@@ -119,101 +115,11 @@ func (a *App) emitProviderStatusesFromDetect(statuses []provider.ProviderStatus)
 // GetProviderStatuses already emits; we use it as the single entry
 // point so every code path (settings refresh, startup probe, manual
 // trigger) shares the same emit behavior.
-//
-// Auto-flip: if defaultProvider points at a not_found provider AND the
-// other provider is ready, swap the default to the ready one. Common
-// case is "user installed Codex but the saved default is Claude" or
-// vice versa — without the auto-flip, every new thread fails until the
-// user finds the dropdown in Settings. We surface a status event for
-// the now-default provider so the UI can render a toast / banner
-// explaining the swap.
 func (a *App) probeStartupProviderStatuses() {
 	if a.settings == nil {
 		return
 	}
-	statuses, err := a.GetProviderStatuses()
-	if err != nil {
-		return
-	}
-	a.maybeAutoFlipDefaultProvider(statuses)
-}
-
-// maybeAutoFlipDefaultProvider swaps DefaultProvider when the current
-// default is missing and exactly one other provider is ready. The
-// helper is exported via test wiring rather than directly so callers
-// can validate by passing curated ProviderStatus slices.
-//
-// We never auto-flip when the current default is already ready, even
-// if the other provider is also ready — that path doesn't help the
-// user. We never auto-flip back: once swapped to the ready provider,
-// a future restart with both unhealthy leaves the user's swapped
-// default alone so the auto-flip can't loop between configurations.
-func (a *App) maybeAutoFlipDefaultProvider(statuses []provider.ProviderStatus) {
-	if a.settings == nil {
-		return
-	}
-	cfg := a.settings.Get()
-	current := cfg.DefaultProvider
-	if current == "" {
-		return
-	}
-	currentStatus, otherStatus := pickProviderStatuses(statuses, current)
-	if currentStatus == nil || otherStatus == nil {
-		return
-	}
-	if currentStatus.Status == "ready" {
-		return
-	}
-	if currentStatus.Status != "not_found" {
-		return
-	}
-	if otherStatus.Status != "ready" {
-		return
-	}
-	patch := map[string]any{"defaultProvider": otherStatus.Provider}
-	if _, err := a.settings.Update(patch); err != nil {
-		log.Printf("provider auto-flip: update settings failed: %v", err)
-		return
-	}
-	log.Printf("provider auto-flip: defaultProvider %q -> %q (current not_found, other ready)", current, otherStatus.Provider)
-	a.emitEvent("provider:default_swapped", map[string]any{
-		"from":     current,
-		"to":       otherStatus.Provider,
-		"reason":   "not_found",
-		"otherCli": providerDisplayName(otherStatus.Provider),
-		"fromCli":  providerDisplayName(current),
-	})
-}
-
-// pickProviderStatuses returns the (current, other) pair from the
-// detect slice. The "other" is whichever provider isn't `current`. If
-// statuses contains zero or one entry the helper returns nil for the
-// missing slots.
-func pickProviderStatuses(statuses []provider.ProviderStatus, current string) (*provider.ProviderStatus, *provider.ProviderStatus) {
-	var cur, other *provider.ProviderStatus
-	for i := range statuses {
-		s := &statuses[i]
-		if s.Provider == current {
-			cur = s
-		} else {
-			other = s
-		}
-	}
-	return cur, other
-}
-
-// providerDisplayName returns the user-facing label for a provider
-// id. Kept as a tiny lookup so log + event payloads stay consistent
-// with the welcome-panel pill copy.
-func providerDisplayName(name string) string {
-	switch name {
-	case string(provider.Claude):
-		return "Claude"
-	case string(provider.Codex):
-		return "Codex"
-	default:
-		return name
-	}
+	_, _ = a.GetProviderStatuses()
 }
 
 // claudeUnauthenticatedStatus reports whether a ProbeAccount result

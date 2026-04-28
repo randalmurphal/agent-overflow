@@ -29,13 +29,13 @@ import (
 type CreateThreadOptions struct {
 	ProjectID         string `json:"projectId"`
 	Title             string `json:"title,omitempty"`             // empty = "New Thread"
-	Provider          string `json:"provider,omitempty"`          // defaults to settings.DefaultProvider
-	Model             string `json:"model,omitempty"`             // defaults to settings.DefaultModelClaude/Codex
+	Provider          string `json:"provider,omitempty"`          // empty = latest chat profile provider
+	Model             string `json:"model,omitempty"`             // empty = latest provider/model profile
 	Mode              string `json:"mode,omitempty"`              // defaults to chat
-	ReasoningEffort   string `json:"reasoningEffort,omitempty"`   // defaults to settings.DefaultReasoningEffort
-	FastMode          *bool  `json:"fastMode,omitempty"`          // nil = use setting default
-	ContextWindow     int    `json:"contextWindow,omitempty"`     // 0 = setting default
-	RuntimeMode       string `json:"runtimeMode,omitempty"`       // defaults to settings.DefaultRuntimeMode
+	ReasoningEffort   string `json:"reasoningEffort,omitempty"`   // empty = latest model profile effort
+	FastMode          *bool  `json:"fastMode,omitempty"`          // nil = latest model profile fast-mode
+	ContextWindow     int    `json:"contextWindow,omitempty"`     // 0 = latest model profile context
+	RuntimeMode       string `json:"runtimeMode,omitempty"`       // empty = latest model profile runtime mode
 	WorktreeBranch    string `json:"worktreeBranch,omitempty"`    // empty = no worktree
 	WorkspaceOverride string `json:"workspaceOverride,omitempty"` // empty = project.path
 	WorktreePath      string `json:"worktreePath,omitempty"`      // non-empty = inherit existing worktree, skip git ops
@@ -43,11 +43,12 @@ type CreateThreadOptions struct {
 }
 
 // CreateThread persists a new thread rooted at a project. The options
-// struct carries every knob; any empty field except Mode is resolved via
-// settings defaults. Mode defaults to chat so every normal new thread starts
-// as a chat thread. "discussion" is rejected as a mode value because
-// discussion threads must come through StartDiscussion (which wires the
-// deliberation channel).
+// struct carries every knob. Empty chat-bar fields are resolved from the
+// most recently used persisted chat model profile; if no profile exists yet,
+// built-in provider defaults seed the first draft. Mode defaults to chat so
+// every normal new thread starts as a chat thread. "discussion" is rejected
+// as a mode value because discussion threads must come through
+// StartDiscussion (which wires the deliberation channel).
 func (a *App) CreateThread(opts CreateThreadOptions) (store.Thread, error) {
 	if a.store == nil {
 		return store.Thread{}, fmt.Errorf("create thread: store unavailable")
@@ -66,36 +67,31 @@ func (a *App) CreateThread(opts CreateThreadOptions) (store.Thread, error) {
 		return store.Thread{}, err
 	}
 
-	providerName := strings.TrimSpace(opts.Provider)
-	if providerName == "" {
-		providerName = a.defaultProviderFromSettings()
-	}
+	seed := a.seedChatModelProfile(opts.Provider, opts.Model)
+	providerName := seed.Provider
+	model := seed.Model
+	effort := seed.ReasoningEffort
+	fastMode := seed.FastMode
+	contextWindow := seed.ContextWindow
+	runtimeMode := seed.RuntimeMode
 
-	model := strings.TrimSpace(opts.Model)
-	if model == "" {
-		model = a.defaultModelForProvider(providerName)
+	if trimmed := strings.TrimSpace(opts.Provider); trimmed != "" {
+		providerName = trimmed
 	}
-
-	effort := strings.TrimSpace(opts.ReasoningEffort)
-	if effort == "" {
-		effort = a.defaultReasoningEffort()
+	if trimmed := strings.TrimSpace(opts.Model); trimmed != "" {
+		model = trimmed
 	}
-
-	fastMode := a.defaultFastMode()
+	if trimmed := strings.TrimSpace(opts.ReasoningEffort); trimmed != "" {
+		effort = trimmed
+	}
 	if opts.FastMode != nil {
 		fastMode = *opts.FastMode
 	}
-
-	contextWindow := opts.ContextWindow
-	if contextWindow == 0 {
-		contextWindow = a.defaultContextWindowForModel(providerName, model)
+	if opts.ContextWindow != 0 {
+		contextWindow = opts.ContextWindow
 	}
-
-	runtimeMode := strings.TrimSpace(opts.RuntimeMode)
-	if runtimeMode == "" {
-		runtimeMode = a.defaultRuntimeModeForNewThread()
-	} else {
-		parsedRuntimeMode, err := parseRuntimeMode(runtimeMode)
+	if trimmed := strings.TrimSpace(opts.RuntimeMode); trimmed != "" {
+		parsedRuntimeMode, err := parseRuntimeMode(trimmed)
 		if err != nil {
 			return store.Thread{}, fmt.Errorf("create thread: %w", err)
 		}
@@ -181,6 +177,7 @@ func (a *App) CreateThread(opts CreateThreadOptions) (store.Thread, error) {
 	if err := a.store.CreateThread(t); err != nil {
 		return store.Thread{}, err
 	}
+	a.rememberChatModelProfile(t)
 	if a.settings != nil {
 		a.settings.AddRecentWorkspace(workspace)
 	}
@@ -203,63 +200,14 @@ func (a *App) createWorktreeForNewThread(projectPath, branch string) (string, st
 	return worktreePath, resolvedBranch, nil
 }
 
-// defaultProviderFromSettings returns the provider name to seed new
-// threads with. Falls back to "claude" when settings are unavailable or
-// hold an unexpected value.
-func (a *App) defaultProviderFromSettings() string {
-	if a.settings == nil {
-		return "claude"
-	}
-	name := strings.TrimSpace(a.settings.Get().DefaultProvider)
-	switch name {
-	case "claude", "codex":
-		return name
-	default:
-		return "claude"
-	}
-}
-
-// defaultReasoningEffort returns the seed effort tier for new threads.
-func (a *App) defaultReasoningEffort() string {
-	if a.settings == nil {
-		return "high"
-	}
-	effort := strings.TrimSpace(a.settings.Get().DefaultReasoningEffort)
-	switch effort {
-	case "low", "medium", "high", "xhigh", "max":
-		return effort
-	default:
-		return "high"
-	}
-}
-
-// defaultFastMode returns the seed fast-mode flag for new threads.
-func (a *App) defaultFastMode() bool {
-	if a.settings == nil {
-		return false
-	}
-	return a.settings.Get().DefaultFastMode
-}
-
-// defaultContextWindow returns the seed context-window size in tokens.
-func (a *App) defaultContextWindow() int {
-	if a.settings == nil {
-		return 1000000
-	}
-	switch a.settings.Get().DefaultContextWindow {
-	case 200000, 1000000:
-		return a.settings.Get().DefaultContextWindow
-	default:
-		return 1000000
-	}
-}
-
 func (a *App) defaultContextWindowForModel(providerName, model string) int {
-	cfg := a.currentSettings()
-	if tokens, ok := cfg.ModelContextWindows[strings.TrimSpace(model)]; ok && isValidContextWindow(tokens) {
-		return tokens
+	if a.store != nil {
+		profile, err := a.store.GetChatModelProfile(providerName, strings.TrimSpace(model))
+		if err == nil && isValidContextWindow(profile.ContextWindow) {
+			return profile.ContextWindow
+		}
 	}
-	return defaultContextWindowForProviderModel(providerName, model, cfg.DefaultContextWindow)
+	return defaultContextWindowForProviderModel(providerName, model, 1000000)
 }
 
 func defaultContextWindowForProviderModel(providerName, model string, fallback int) int {
@@ -448,23 +396,11 @@ func (a *App) UpdateThreadProvider(id, providerName string) (store.Thread, error
 		return store.Thread{}, fmt.Errorf("update provider: thread is locked to %s (start a new thread to use %s)", current.Provider, normalized)
 	}
 
-	rollbackSettings, err := a.applySettingsPatchWithRollback(map[string]any{
-		"defaultProvider": normalized,
-	})
-	if err != nil {
-		return store.Thread{}, fmt.Errorf("update provider default: %w", err)
-	}
 	if err := a.store.UpdateProvider(id, normalized); err != nil {
-		if rollbackErr := rollbackSettings(); rollbackErr != nil {
-			return store.Thread{}, fmt.Errorf("update provider: %w (settings rollback failed: %v)", err, rollbackErr)
-		}
 		return store.Thread{}, err
 	}
 	refreshed, err := a.restartSessionIfAffected(id, "provider")
 	if err != nil {
-		if rollbackErr := rollbackSettings(); rollbackErr != nil {
-			return store.Thread{}, fmt.Errorf("update provider: %w (settings rollback failed: %v)", err, rollbackErr)
-		}
 		return store.Thread{}, err
 	}
 	return refreshed, nil
@@ -476,25 +412,14 @@ func (a *App) UpdateThreadReasoningEffort(id, effort string) (store.Thread, erro
 	if a.store == nil {
 		return store.Thread{}, fmt.Errorf("update effort: store unavailable")
 	}
-	rollbackSettings, err := a.applySettingsPatchWithRollback(map[string]any{
-		"defaultReasoningEffort": strings.TrimSpace(effort),
-	})
-	if err != nil {
-		return store.Thread{}, fmt.Errorf("update effort default: %w", err)
-	}
 	if err := a.store.UpdateReasoningEffort(id, effort); err != nil {
-		if rollbackErr := rollbackSettings(); rollbackErr != nil {
-			return store.Thread{}, fmt.Errorf("update effort: %w (settings rollback failed: %v)", err, rollbackErr)
-		}
 		return store.Thread{}, err
 	}
 	refreshed, err := a.restartSessionIfAffected(id, "effort")
 	if err != nil {
-		if rollbackErr := rollbackSettings(); rollbackErr != nil {
-			return store.Thread{}, fmt.Errorf("update effort: %w (settings rollback failed: %v)", err, rollbackErr)
-		}
 		return store.Thread{}, err
 	}
+	a.rememberChatModelProfile(refreshed)
 	return refreshed, nil
 }
 
@@ -506,25 +431,14 @@ func (a *App) UpdateThreadFastMode(id string, on bool) (store.Thread, error) {
 	if a.store == nil {
 		return store.Thread{}, fmt.Errorf("update fast mode: store unavailable")
 	}
-	rollbackSettings, err := a.applySettingsPatchWithRollback(map[string]any{
-		"defaultFastMode": on,
-	})
-	if err != nil {
-		return store.Thread{}, fmt.Errorf("update fast-mode default: %w", err)
-	}
 	if err := a.store.UpdateFastMode(id, on); err != nil {
-		if rollbackErr := rollbackSettings(); rollbackErr != nil {
-			return store.Thread{}, fmt.Errorf("update fast mode: %w (settings rollback failed: %v)", err, rollbackErr)
-		}
 		return store.Thread{}, err
 	}
 	refreshed, err := a.restartSessionIfAffected(id, "fastMode")
 	if err != nil {
-		if rollbackErr := rollbackSettings(); rollbackErr != nil {
-			return store.Thread{}, fmt.Errorf("update fast mode: %w (settings rollback failed: %v)", err, rollbackErr)
-		}
 		return store.Thread{}, err
 	}
+	a.rememberChatModelProfile(refreshed)
 	return refreshed, nil
 }
 
@@ -534,38 +448,14 @@ func (a *App) UpdateThreadContextWindow(id string, tokens int) (store.Thread, er
 	if a.store == nil {
 		return store.Thread{}, fmt.Errorf("update context window: store unavailable")
 	}
-	thread, err := a.store.GetThread(id)
-	if err != nil {
-		return store.Thread{}, err
-	}
-	patch := map[string]any{
-		"defaultContextWindow": tokens,
-	}
-	if strings.TrimSpace(thread.Model) != "" {
-		modelContexts := cloneModelContextWindows(a.currentSettings().ModelContextWindows)
-		if modelContexts == nil {
-			modelContexts = map[string]int{}
-		}
-		modelContexts[strings.TrimSpace(thread.Model)] = tokens
-		patch["modelContextWindows"] = modelContexts
-	}
-	rollbackSettings, err := a.applySettingsPatchWithRollback(patch)
-	if err != nil {
-		return store.Thread{}, fmt.Errorf("update context-window default: %w", err)
-	}
 	if err := a.store.UpdateContextWindow(id, tokens); err != nil {
-		if rollbackErr := rollbackSettings(); rollbackErr != nil {
-			return store.Thread{}, fmt.Errorf("update context window: %w (settings rollback failed: %v)", err, rollbackErr)
-		}
 		return store.Thread{}, err
 	}
 	refreshed, err := a.restartSessionIfAffected(id, "contextWindow")
 	if err != nil {
-		if rollbackErr := rollbackSettings(); rollbackErr != nil {
-			return store.Thread{}, fmt.Errorf("update context window: %w (settings rollback failed: %v)", err, rollbackErr)
-		}
 		return store.Thread{}, err
 	}
+	a.rememberChatModelProfile(refreshed)
 	return refreshed, nil
 }
 
@@ -583,7 +473,12 @@ func (a *App) UpdateThreadRuntimeMode(id, mode string) (store.Thread, error) {
 	if err := a.applyRuntimeMode(id, normalized); err != nil {
 		return store.Thread{}, fmt.Errorf("update runtime mode: %w", err)
 	}
-	return a.store.GetThread(id)
+	thread, err := a.store.GetThread(id)
+	if err != nil {
+		return store.Thread{}, err
+	}
+	a.rememberChatModelProfile(thread)
+	return thread, nil
 }
 
 // UpdateThreadBranch persists the branch column. Does NOT perform the

@@ -132,9 +132,45 @@ describe('<ThreadFromPRDialog>', () => {
     expect(binding.mock.calls.length).toBe(1);
     expect(binding.mock.calls[0][0]).toBe('owner/repo');
     expect(binding.mock.calls[0][1]).toBe(42);
+    expect(binding.mock.calls[0][2]).toBe('claude');
+    expect(binding.mock.calls[0][3]).toBe('');
     // forge id propagates as the 5th positional arg.
     expect(binding.mock.calls[0][4]).toBe('github');
     expect(closed).toBe(1);
+  });
+
+  it('passes an explicit model when the optional model field is filled', async () => {
+    const pane = await buildPane();
+    const created: Thread = {
+      id: 'pr-thread-model',
+      title: 'PR #12: demo',
+      provider: 'claude',
+      workspacePath: '',
+      projectPath: '',
+      model: 'claude-opus-4-7',
+      mode: 'chat',
+      createdAt: 0,
+      updatedAt: 0,
+      archived: false,
+    };
+    const binding = setBindingMock('CreateThreadFromPR', async () => created);
+    const { getByTestId } = render(ThreadFromPRDialog, {
+      props: { open: true, pane, onClose: () => {} },
+    });
+    await flush();
+
+    await fireEvent.input(getByTestId('thread-from-pr-url'), {
+      target: { value: 'owner/repo#12' },
+    });
+    await fireEvent.input(getByTestId('thread-from-pr-model'), {
+      target: { value: ' claude-opus-4-7 ' },
+    });
+    await flush();
+    await fireEvent.click(getByTestId('thread-from-pr-submit'));
+    await flush(10);
+
+    expect(binding.mock.calls.length).toBe(1);
+    expect(binding.mock.calls[0][3]).toBe('claude-opus-4-7');
   });
 
   it('passes forge=gitlab and the full subgroup namespace when a GitLab MR URL is submitted', async () => {
