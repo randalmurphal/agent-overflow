@@ -17,9 +17,8 @@
   const CIRCUMFERENCE = 2 * Math.PI * RADIUS;
 
   let maxTokens = $derived(data.maxTokens ?? 0);
-  let availableTokens = $derived(data.autoCompactTokenLimit ?? maxTokens);
   let percentage = $derived(
-    availableTokens > 0 ? (data.usedTokens / availableTokens) * 100 : (data.usedPercentage ?? 0),
+    maxTokens > 0 ? (data.usedTokens / maxTokens) * 100 : (data.usedPercentage ?? 0),
   );
 
   let dashOffset = $derived(CIRCUMFERENCE - (percentage / 100) * CIRCUMFERENCE);
@@ -72,7 +71,7 @@
 <button
   bind:this={buttonEl}
   type="button"
-  class="relative inline-flex h-7 w-7 items-center justify-center bg-transparent border-none p-0 cursor-help focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 rounded-full hover:bg-surface-2/30 transition-colors"
+  class="relative inline-flex h-8 w-8 items-center justify-center bg-transparent border-none p-0 cursor-help focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 rounded-full hover:bg-surface-2/30 transition-colors"
   aria-label="Context Window: {displayPct}% used"
   onmouseenter={openPopover}
   onmouseleave={scheduleClose}
@@ -96,7 +95,7 @@
       class={strokeColor}
     />
   </svg>
-  <span class="absolute inset-0 grid place-items-center text-[8px] leading-none font-semibold tabular-nums text-text-secondary rotate-0 translate-y-px" aria-hidden="true">
+  <span class="absolute left-1/2 top-1/2 block -translate-x-1/2 -translate-y-1/2 text-center text-[8.5px] leading-none font-semibold tabular-nums text-text-secondary" aria-hidden="true">
     {displayPct}
   </span>
 </button>
@@ -129,7 +128,7 @@
       <p class="mb-1.5 pr-7 text-[10px] font-semibold text-fg-subtle uppercase tracking-wider">Context window</p>
       <div class="space-y-0.5 text-xs text-fg-muted">
         <p>{displayPct}% used</p>
-        <p>{formatTokens(data.usedTokens)}{availableTokens > 0 ? ` / ${formatTokens(availableTokens)}` : ''} tokens</p>
+        <p>{formatTokens(data.usedTokens)}{maxTokens > 0 ? ` / ${formatTokens(maxTokens)}` : ''} tokens</p>
         {#if data.autoCompactPercent}
           <p class="text-fg-hint">
             Compact at {data.autoCompactPercent}%{data.autoCompactTokenLimit ? ` (${formatTokens(data.autoCompactTokenLimit)})` : ''}

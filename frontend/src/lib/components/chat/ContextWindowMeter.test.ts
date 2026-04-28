@@ -4,7 +4,7 @@ import { fireEvent, render, screen } from '@testing-library/svelte';
 import ContextWindowMeter from './ContextWindowMeter.svelte';
 
 describe('<ContextWindowMeter>', () => {
-  it('displays usage against the compact-available token limit when present', async () => {
+  it('displays usage against the full context window when compact limit is present', async () => {
     const { getByLabelText } = render(ContextWindowMeter, {
       props: {
         data: {
@@ -33,8 +33,9 @@ describe('<ContextWindowMeter>', () => {
 
     await fireEvent.mouseEnter(getByLabelText(/Context Window/));
 
-    expect(await screen.findByText('65% used')).toBeTruthy();
-    expect(screen.getByText('650 / 1.0k tokens')).toBeTruthy();
+    expect(await screen.findByText('33% used')).toBeTruthy();
+    expect(screen.getByText('650 / 2.0k tokens')).toBeTruthy();
+    expect(screen.getByText('Compact at 50% (1.0k)')).toBeTruthy();
     expect(screen.getByLabelText('Context settings')).toBeTruthy();
   });
 
