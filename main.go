@@ -22,6 +22,7 @@ import (
 
 	"agent-overflow/internal/clientmode"
 	"agent-overflow/internal/settings"
+	"agent-overflow/internal/shellenv"
 	"agent-overflow/internal/transport"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
@@ -54,6 +55,18 @@ func main() {
 	flags, err := parseFlags(os.Args[1:])
 	if err != nil {
 		fatalf("%v", err)
+	}
+
+	// Sync PATH from the user's login shell before any subsystem
+	// resolves a binary. Without this, the WSL backend (spawned by
+	// `wsl.exe -d <distro> -- <bin>`, no shell init) and a Finder-
+	// launched .app on macOS both see only the OS's default PATH —
+	// missing nvm / asdf / ~/.local/bin / ~/.npm-global/bin and
+	// everything else the user's rc files put on PATH. The probe is
+	// best-effort: a failure here just leaves PATH untouched and the
+	// downstream "binary not found" status banner takes over.
+	if err := shellenv.Sync(context.Background()); err != nil {
+		log.Printf("shellenv: %v", err)
 	}
 
 	switch {

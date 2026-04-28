@@ -29,6 +29,7 @@ one closest to what you're touching.
 | `editor/` | Open-in-editor detection (catalog + WSL bridge) and detached-spawn helper. Backs the `OpenInEditor` and `ListAvailableEditors` bindings. |
 | `wsllauncher/` | Detects WSL distros and spawns the Linux backend pinned to a Win32 Job Object. The Windows launcher uses the full surface; the WSL backend uses `ListDistros` for the Settings UI distro picker. |
 | `wsldistro/` | Cross-process schema for `%APPDATA%\agent-overflow\wsl.json` — atomic Load/Save and the WSL-side path resolver fed by the launcher's WSLENV-injected env var. Shared between `cmd/agent-overflow-windows` and the WSL backend. |
+| `shellenv/` | Probes the user's login shell for PATH at startup and merges it into `os.Environ()`. Lets `exec.LookPath("claude")` etc. find binaries installed via nvm/asdf/`~/.local/bin` when launched outside a terminal (WSL backend, Finder-launched `.app`). |
 
 ## Responsibility boundary
 
