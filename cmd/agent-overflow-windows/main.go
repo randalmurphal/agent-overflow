@@ -415,7 +415,13 @@ func (a *launcherApp) launchAndShow(distro string, transient bool) error {
 		}
 	}
 
-	url := fmt.Sprintf("http://localhost:%d/?t=%s", bs.Port, bs.Token)
+	// 127.0.0.1, not "localhost": Windows resolves "localhost" to both
+	// ::1 and 127.0.0.1, and which the OS hands the dialer first is
+	// non-deterministic. WSL2's localhostForwarding only proxies IPv4,
+	// so a ::1 attempt hits Windows-loopback directly and is refused.
+	// Hard-coding the IPv4 literal makes the WebView navigation
+	// race-free against the OS resolver and the dual-stack hosts file.
+	url := fmt.Sprintf("http://127.0.0.1:%d/?t=%s", bs.Port, bs.Token)
 	log.Printf("backend ready at %s", url)
 	a.window.SetURL(url)
 	return nil
@@ -455,13 +461,19 @@ func (t tolerantWriters) Write(p []byte) (int, error) {
 // surface as failure so the user sees actionable feedback rather than
 // a blank WebView.
 func probeBootstrap(port int, token string) error {
-	url := fmt.Sprintf("http://localhost:%d/bootstrap.json?t=%s", port, token)
+	// 127.0.0.1, not "localhost": Windows resolves "localhost" to both
+	// ::1 and 127.0.0.1, and Go's dialer races them. WSL2's
+	// localhostForwarding only proxies IPv4, so a ::1 attempt hits
+	// Windows-loopback directly and is refused — surfacing a misleading
+	// connectivity-error page even though the backend is fine on
+	// 127.0.0.1. Pinning the IPv4 literal removes the race.
+	url := fmt.Sprintf("http://127.0.0.1:%d/bootstrap.json?t=%s", port, token)
 	// Errors include the host:path but redact the token. The token is
 	// the launch credential — leaking it through a log line that gets
 	// surfaced anywhere (launcher.log, bug-report scrape, screenshot)
 	// is a credential leak. The host:port is what an operator needs to
 	// debug "is the WSL backend actually listening?".
-	redacted := fmt.Sprintf("http://localhost:%d/bootstrap.json", port)
+	redacted := fmt.Sprintf("http://127.0.0.1:%d/bootstrap.json", port)
 	log.Printf("probe: GET %s (token=%d bytes)", redacted, len(token))
 	client := &http.Client{Timeout: bootstrapProbeTimeout}
 	resp, err := client.Get(url)
