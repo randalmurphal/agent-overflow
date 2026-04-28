@@ -50,6 +50,12 @@ type Parser struct {
 	// (task_started/task_updated/TaskOutput) back to the originating
 	// tool_use id so we can target the right timeline row.
 	taskToolUses map[string]string
+	// subagentModelStamped dedupes per-parent_tool_use_id meta-update
+	// emissions of `subagent_model`. Subagent assistant messages all
+	// carry the same `message.model`, so we only emit the meta merge
+	// once per parent rather than on every assistant envelope inside
+	// the subagent's lifetime.
+	subagentModelStamped map[string]bool
 	// streamBlockTypes tracks partial-message content block types by
 	// (parent_tool_use_id,index) so a later content_block_stop can identify
 	// which streaming block closed.
@@ -110,8 +116,35 @@ func (p *Parser) Close() {
 	p.backgroundToolUses = nil
 	p.userInputToolUses = nil
 	p.taskToolUses = nil
+	p.subagentModelStamped = nil
 	p.streamBlockTypes = nil
 	p.lastAssistantMessageID = ""
+}
+
+// markSubagentModelStamped records that we've already emitted a
+// `subagent_model` meta-update for the given parent tool_use_id, so the
+// parser can drop duplicates on every subsequent subagent assistant
+// envelope. The map is bounded by parserTaskMapCap; on overflow we
+// reset wholesale (benign — only costs at most one duplicate emit per
+// stale parent).
+func (p *Parser) markSubagentModelStamped(parentToolUseID string) {
+	if p == nil || parentToolUseID == "" {
+		return
+	}
+	if p.subagentModelStamped == nil {
+		p.subagentModelStamped = make(map[string]bool)
+	}
+	if len(p.subagentModelStamped) >= parserTaskMapCap {
+		p.subagentModelStamped = make(map[string]bool)
+	}
+	p.subagentModelStamped[parentToolUseID] = true
+}
+
+func (p *Parser) hasStampedSubagentModel(parentToolUseID string) bool {
+	if p == nil || parentToolUseID == "" || p.subagentModelStamped == nil {
+		return false
+	}
+	return p.subagentModelStamped[parentToolUseID]
 }
 
 // ParseLine parses a single NDJSON line from Claude CLI stdout and returns

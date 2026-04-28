@@ -33,8 +33,7 @@ describe('timelineVirtualization', () => {
       parent: item('same-id', { threadId: 'thread-b' }),
       children: [],
       descendantCount: 0,
-      preview: '',
-      truncated: false,
+      latestChildSummary: '',
     };
 
     expect(timelineNodeKey(leaf)).toBe('l:thread-a:same-id');

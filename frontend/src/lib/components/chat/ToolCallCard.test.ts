@@ -130,9 +130,9 @@ describe('<ToolCallCard> header dispatcher', () => {
     expect(queryByTestId('tool-call-card-body')).toBeNull();
   });
 
-  it('renders a robot icon + "Subagent" label for Task and collab_agent', async () => {
+  it('renders a robot icon + "Subagent" label for Agent and collab_agent', async () => {
     const pane = await buildPane();
-    for (const toolName of ['Task', 'collab_agent']) {
+    for (const toolName of ['Agent', 'collab_agent']) {
       const item = makeItem({ id: toolName, kind: 'tool_call', status: 'running', toolName });
       const { getByTestId, unmount } = render(ToolCallCard, { props: { pane, item } });
       expect(getByTestId('tool-call-card').getAttribute('data-tool-kind')).toBe('robot');

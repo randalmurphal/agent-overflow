@@ -34,10 +34,11 @@ const (
 )
 
 type toolStartMeta struct {
-	ToolName     string          `json:"toolName"`
-	Input        json.RawMessage `json:"input"`
-	IsBackground bool            `json:"is_background"`
-	TaskID       string          `json:"task_id"`
+	ToolName      string          `json:"toolName"`
+	Input         json.RawMessage `json:"input"`
+	IsBackground  bool            `json:"is_background"`
+	TaskID        string          `json:"task_id"`
+	SubagentModel string          `json:"subagent_model"`
 }
 
 type toolCompleteMeta struct {
@@ -59,15 +60,22 @@ func (r *Router) persistToolCallLaunch(evt provider.ProviderEvent) error {
 	meta := decodeToolStartMeta(evt.Meta)
 	now := eventTimestampMillis(evt)
 
-	// A "meta update" EventToolStart carries only task_id (no toolName,
-	// no input) — Claude's `system/task_started` uses it to attach the
-	// task_id ↔ tool_use_id mapping to an existing tool_call row so
-	// reconnect recovery can correlate later task_updated / task_notification
-	// events via items.meta.task_id. Treat this as a targeted meta merge
-	// that preserves the existing summary and tool_name.
+	// A "meta update" EventToolStart carries only correlation fields
+	// (no toolName, no input). Two emit sites today:
+	//   - Claude's `system/task_started` attaches the task_id ↔
+	//     tool_use_id mapping so reconnect recovery can correlate
+	//     later task_updated / task_notification events via
+	//     items.meta.task_id.
+	//   - Subagent assistant envelopes attach `subagent_model` to the
+	//     parent Task/Agent tool_call so the UI can render
+	//     `<agent_type> (<Model>)` in the card header without
+	//     plumbing a separate event kind. The model is taken from
+	//     `message.model` on the first subagent assistant envelope.
+	// Either (or both) field is treated as a targeted merge that
+	// preserves the existing summary, tool_name, and status.
 	metaUpdateOnly := strings.TrimSpace(meta.ToolName) == "" &&
 		len(meta.Input) == 0 &&
-		meta.TaskID != ""
+		(meta.TaskID != "" || meta.SubagentModel != "")
 
 	existing, found, err := r.store.GetThreadItem(evt.ThreadID, itemID)
 	if err != nil {
@@ -84,9 +92,9 @@ func (r *Router) persistToolCallLaunch(evt provider.ProviderEvent) error {
 			// than fabricate a ghost tool_call row.
 			return nil
 		}
-		mergedMeta, err := mergeItemMetaTaskID(existing.Meta, meta.TaskID)
+		mergedMeta, err := mergeItemMetaCorrelationFields(existing.Meta, meta.TaskID, meta.SubagentModel)
 		if err != nil {
-			log.Printf("triage: merge task_id into item meta %s: %v", itemID, err)
+			log.Printf("triage: merge correlation fields into item meta %s: %v", itemID, err)
 			return nil
 		}
 		if mergedMeta == existing.Meta {
@@ -799,12 +807,14 @@ func (r *Router) findToolCallByTaskID(threadID, taskID string) (store.Item, bool
 	return item, true, nil
 }
 
-// mergeItemMetaTaskID merges a task_id value into an existing
-// items.meta JSON blob. Returns the original string unchanged when
-// task_id is already present with the same value (so the caller can
-// skip an unnecessary upsert). Other meta fields are preserved.
-func mergeItemMetaTaskID(existing, taskID string) (string, error) {
-	if taskID == "" {
+// mergeItemMetaCorrelationFields merges optional correlation fields
+// (task_id, subagent_model) into an existing items.meta JSON blob,
+// preserving every other field. Returns the original string unchanged
+// when none of the supplied values would change the blob, so callers
+// can skip an unnecessary upsert. Empty arguments are treated as "no
+// change for that field" — pass "" to leave the existing value alone.
+func mergeItemMetaCorrelationFields(existing, taskID, subagentModel string) (string, error) {
+	if taskID == "" && subagentModel == "" {
 		return existing, nil
 	}
 	if existing == "" {
@@ -812,24 +822,57 @@ func mergeItemMetaTaskID(existing, taskID string) (string, error) {
 	}
 	var parsed map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(existing), &parsed); err != nil {
-		// Malformed meta — rebuild with just the task_id rather than
-		// silently carry the broken payload forward.
+		// Malformed meta — rebuild from scratch rather than silently
+		// carry the broken payload forward.
 		parsed = map[string]json.RawMessage{}
 	}
-	if raw, ok := parsed["task_id"]; ok {
-		var current string
-		if json.Unmarshal(raw, &current) == nil && current == taskID {
-			return existing, nil
+	changed := false
+	if taskID != "" {
+		next, ok, err := setStringFieldIfChanged(parsed, "task_id", taskID)
+		if err != nil {
+			return existing, err
+		}
+		if ok {
+			parsed = next
+			changed = true
 		}
 	}
-	encoded, err := json.Marshal(taskID)
-	if err != nil {
-		return existing, err
+	if subagentModel != "" {
+		next, ok, err := setStringFieldIfChanged(parsed, "subagent_model", subagentModel)
+		if err != nil {
+			return existing, err
+		}
+		if ok {
+			parsed = next
+			changed = true
+		}
 	}
-	parsed["task_id"] = encoded
+	if !changed {
+		return existing, nil
+	}
 	out, err := json.Marshal(parsed)
 	if err != nil {
 		return existing, err
 	}
 	return string(out), nil
+}
+
+// setStringFieldIfChanged writes value into parsed[key] when the
+// existing value differs (or is absent / non-string). Returns the
+// (possibly mutated in-place) map, a `changed` flag, and any
+// json.Marshal error. Encapsulates the "skip upsert when nothing
+// changed" check so each correlation field stays a one-liner above.
+func setStringFieldIfChanged(parsed map[string]json.RawMessage, key, value string) (map[string]json.RawMessage, bool, error) {
+	if raw, ok := parsed[key]; ok {
+		var current string
+		if json.Unmarshal(raw, &current) == nil && current == value {
+			return parsed, false, nil
+		}
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return parsed, false, err
+	}
+	parsed[key] = encoded
+	return parsed, true, nil
 }

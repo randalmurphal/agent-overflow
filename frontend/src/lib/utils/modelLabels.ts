@@ -13,10 +13,16 @@ function displayClaudeModelLabel(slug: string, name?: string): string {
     return trimmedName.replace(/^Claude\s+/i, '');
   }
 
+  // Strip the wire prefix and any trailing release-stamp suffixes —
+  // both `[1m]` (long-context tier marker) and `-YYYYMMDD` (point
+  // release datestamp). Datestamps appear on canonical Claude model
+  // ids (e.g. `claude-haiku-4-5-20251001`) and we want the version
+  // number to read "Haiku 4.5", not "Haiku 4.5 20251001".
   const cleanedSlug = slug
     .trim()
     .replace(/^claude-/i, '')
-    .replace(/\[[^\]]+\]$/, '');
+    .replace(/\[[^\]]+\]$/, '')
+    .replace(/-\d{8}$/, '');
   if (cleanedSlug === '') return slug;
 
   const parts = cleanedSlug.split('-').filter(Boolean);

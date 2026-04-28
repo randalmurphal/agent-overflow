@@ -89,8 +89,8 @@ export function classifyToolName(toolName: string | undefined | null): ToolKindV
     case 'ViewImage':
     case 'ImageGeneration':
       return { icon: 'eye', label: 'Image', displayName: raw, isSubagent: false };
-    case 'Task':
-      return { icon: 'robot', label: 'Subagent', displayName: 'Task', isSubagent: true };
+    case 'Agent':
+      return { icon: 'robot', label: 'Subagent', displayName: 'Agent', isSubagent: true };
     case 'collab_agent':
       return {
         icon: 'robot',

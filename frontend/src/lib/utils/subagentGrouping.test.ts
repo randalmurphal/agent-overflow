@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 import {
   groupItemsBySubagent,
   MAX_DEPTH,
-  MAX_PREVIEW_CHARS,
   type SubagentGroupNode,
   type TimelineLeaf,
   type TimelineNode,
@@ -75,10 +74,9 @@ describe('groupItemsBySubagent', () => {
     expect(group.children.map((c) => expectLeaf(c).item.id)).toEqual([
       'child-1', 'child-2', 'child-3',
     ]);
-    // Preview aggregates text from the children.
-    expect(group.preview).toContain('reading file');
-    expect(group.preview).toContain('final reply');
-    expect(group.truncated).toBe(false);
+    // All three children are completed; latestChildSummary picks the
+    // highest-(turnIndex,itemIndex) one — child-3.
+    expect(group.latestChildSummary).toBe('final reply');
   });
 
   it('preserves chronological order within a group', () => {
@@ -178,15 +176,128 @@ describe('groupItemsBySubagent', () => {
     expect(l2.descendantCount).toBe(2);
   });
 
-  it('bounds the aggregate preview at MAX_PREVIEW_CHARS', () => {
-    const bigText = 'x'.repeat(MAX_PREVIEW_CHARS * 4);
+  it('latestChildSummary prefers an active descendant over a more recent terminal one', () => {
     const items = [
-      mkItem({ id: 'parent', itemIndex: 0, kind: 'tool_call', summary: 'Task' }),
-      mkItem({ id: 'child', itemIndex: 1, parentId: 'parent', summary: bigText }),
+      mkItem({ id: 'parent', itemIndex: 0, kind: 'tool_call', summary: 'Agent: explore' }),
+      // Earlier-arriving running tool_call — should win the preview
+      // because it's still active, even though the terminal sibling
+      // below has a higher itemIndex.
+      mkItem({
+        id: 'running-bash',
+        itemIndex: 1,
+        parentId: 'parent',
+        kind: 'tool_call',
+        status: 'running',
+        toolName: 'Bash',
+        summary: 'Bash: pwd',
+      }),
+      mkItem({
+        id: 'completed-text',
+        itemIndex: 2,
+        parentId: 'parent',
+        kind: 'assistant_text',
+        status: 'completed',
+        summary: 'pondering...',
+      }),
     ];
     const group = expectGroup(groupItemsBySubagent(items)[0]);
-    expect(group.preview.length).toBeLessThanOrEqual(MAX_PREVIEW_CHARS + 10);
-    expect(group.truncated).toBe(true);
+    expect(group.latestChildSummary).toBe('Bash: pwd');
+  });
+
+  it('latestChildSummary treats streaming descendants as active too', () => {
+    // `streaming` and `running` both signal "subagent is doing work
+    // right now" — pickLatestChildSummary biases toward either over
+    // a more-recent terminal sibling.
+    const items = [
+      mkItem({ id: 'parent', itemIndex: 0, kind: 'tool_call', summary: 'Agent: think out loud' }),
+      mkItem({
+        id: 'streaming-text',
+        itemIndex: 1,
+        parentId: 'parent',
+        kind: 'assistant_text',
+        status: 'streaming',
+        summary: 'thinking through options...',
+      }),
+      mkItem({
+        id: 'completed-tool',
+        itemIndex: 2,
+        parentId: 'parent',
+        kind: 'tool_call',
+        status: 'completed',
+        toolName: 'Read',
+        summary: 'Read: foo.ts',
+      }),
+    ];
+    const group = expectGroup(groupItemsBySubagent(items)[0]);
+    expect(group.latestChildSummary).toBe('thinking through options...');
+  });
+
+  it('latestChildSummary falls back to the most recent terminal descendant when none are active', () => {
+    const items = [
+      mkItem({ id: 'parent', itemIndex: 0, kind: 'tool_call', summary: 'Agent: explore' }),
+      mkItem({
+        id: 'first',
+        itemIndex: 1,
+        parentId: 'parent',
+        kind: 'tool_call',
+        status: 'completed',
+        toolName: 'Bash',
+        summary: 'Bash: ls',
+      }),
+      mkItem({
+        id: 'second',
+        itemIndex: 2,
+        parentId: 'parent',
+        kind: 'tool_call',
+        status: 'completed',
+        toolName: 'Read',
+        summary: 'Read: foo.ts',
+      }),
+    ];
+    const group = expectGroup(groupItemsBySubagent(items)[0]);
+    expect(group.latestChildSummary).toBe('Read: foo.ts');
+  });
+
+  it('latestChildSummary is empty when no descendant carries a usable summary', () => {
+    const items = [
+      mkItem({ id: 'parent', itemIndex: 0, kind: 'tool_call', summary: 'Agent: idle' }),
+      mkItem({
+        id: 'silent-child',
+        itemIndex: 1,
+        parentId: 'parent',
+        kind: 'tool_call',
+        status: 'running',
+        summary: '',
+      }),
+    ];
+    const group = expectGroup(groupItemsBySubagent(items)[0]);
+    expect(group.latestChildSummary).toBe('');
+  });
+
+  it('latestChildSummary walks into nested subagent groups', () => {
+    const items = [
+      mkItem({ id: 'root', itemIndex: 0, kind: 'tool_call', summary: 'Agent: outer' }),
+      mkItem({
+        id: 'inner-parent',
+        itemIndex: 1,
+        parentId: 'root',
+        kind: 'tool_call',
+        status: 'running',
+        toolName: 'Agent',
+        summary: 'Agent: inner',
+      }),
+      mkItem({
+        id: 'inner-child',
+        itemIndex: 2,
+        parentId: 'inner-parent',
+        kind: 'tool_call',
+        status: 'running',
+        toolName: 'Bash',
+        summary: 'Bash: inner work',
+      }),
+    ];
+    const root = expectGroup(groupItemsBySubagent(items)[0]);
+    expect(root.latestChildSummary).toBe('Bash: inner work');
   });
 
   it('handles two unrelated subagents in the same turn without interference', () => {

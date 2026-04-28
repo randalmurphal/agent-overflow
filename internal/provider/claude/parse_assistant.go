@@ -9,6 +9,7 @@ package claude
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"agent-overflow/internal/provider"
@@ -41,6 +42,7 @@ type assistantUsage struct {
 
 type assistantMessage struct {
 	ID      string                  `json:"id"`
+	Model   string                  `json:"model"`
 	Content []assistantContentBlock `json:"content"`
 	Role    string                  `json:"role"`
 	Usage   *assistantUsage         `json:"usage,omitempty"`
@@ -86,6 +88,28 @@ func (p *Parser) parseAssistant(threadID string, raw map[string]json.RawMessage,
 	}
 
 	var events []provider.ProviderEvent
+
+	// Subagent assistant messages carry the model id the spawned agent
+	// is actually running (which can differ from the parent's model
+	// when the spawn requested a specific tier — e.g. opus / haiku).
+	// Emit a meta-only EventToolStart targeting the parent tool_use_id
+	// so triage merges `subagent_model` onto the parent's items.meta
+	// without clobbering its summary or tool_name. Dedupe per parent;
+	// the model never changes mid-subagent.
+	model := strings.TrimSpace(msg.Model)
+	if parentToolUseID != "" && model != "" && !p.hasStampedSubagentModel(parentToolUseID) {
+		modelMeta, _ := json.Marshal(map[string]any{
+			"subagent_model": model,
+		})
+		events = append(events, provider.ProviderEvent{
+			Kind:      provider.EventToolStart,
+			ThreadID:  threadID,
+			ItemID:    parentToolUseID,
+			Meta:      modelMeta,
+			Timestamp: now,
+		})
+		p.markSubagentModelStamped(parentToolUseID)
+	}
 
 	for _, block := range msg.Content {
 		switch block.Type {

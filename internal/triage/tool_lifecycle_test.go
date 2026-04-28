@@ -860,6 +860,101 @@ func TestTaskStartedMergesTaskIDIntoItemMeta(t *testing.T) {
 	}
 }
 
+// TestSubagentModelMergesIntoItemMetaWithoutClobber verifies that the
+// claude parser's per-subagent model meta-update — an EventToolStart
+// carrying ONLY `subagent_model` in Meta — merges onto the parent
+// Agent tool_call row. The launch row's summary / tool_name / status
+// are preserved; only items.meta.subagent_model is added. This is the
+// signal the SubagentGroup card reads to render `<agent_type>
+// (<Model>)` in the header.
+func TestSubagentModelMergesIntoItemMetaWithoutClobber(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	startMeta, _ := json.Marshal(map[string]any{
+		"toolName": "Agent",
+		"input": map[string]any{
+			"description":   "Find foo",
+			"subagent_type": "Explore",
+		},
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "agent-tool-1",
+		ItemType: "Agent", Meta: startMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("tool start: %v", err)
+	}
+
+	subagentModelMeta, _ := json.Marshal(map[string]any{"subagent_model": "claude-opus-4-7"})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "agent-tool-1",
+		Meta: subagentModelMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("subagent_model meta update: %v", err)
+	}
+
+	item, _, err := st.GetItem("agent-tool-1")
+	if err != nil {
+		t.Fatalf("get item: %v", err)
+	}
+	if item.Status != statusRunning {
+		t.Errorf("status = %q, want running (meta merge must not stall lifecycle)", item.Status)
+	}
+	if item.ToolName != "Agent" {
+		t.Errorf("ToolName overwritten by meta merge: %q", item.ToolName)
+	}
+	if !strings.Contains(item.Summary, "Agent") || !strings.Contains(item.Summary, "Find foo") {
+		t.Errorf("summary overwritten by meta merge: %q", item.Summary)
+	}
+	var persistedMeta map[string]any
+	if err := json.Unmarshal([]byte(item.Meta), &persistedMeta); err != nil {
+		t.Fatalf("unmarshal persisted meta: %v", err)
+	}
+	if persistedMeta["subagent_model"] != "claude-opus-4-7" {
+		t.Errorf("items.meta.subagent_model = %v, want claude-opus-4-7", persistedMeta["subagent_model"])
+	}
+
+	// A redundant second meta update with the same value must be a
+	// no-op (no new persisted_at bumps, same status).
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "agent-tool-1",
+		Meta: subagentModelMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("redundant subagent_model meta update: %v", err)
+	}
+	item2, _, _ := st.GetItem("agent-tool-1")
+	if item2.UpdatedAt != item.UpdatedAt {
+		t.Errorf("redundant meta update bumped UpdatedAt: was=%d now=%d", item.UpdatedAt, item2.UpdatedAt)
+	}
+}
+
+// TestMergeItemMetaCorrelationFieldsRebuildsMalformedExisting verifies
+// that a corrupt items.meta blob (e.g. truncated JSON from a prior
+// crash) does not block the merge — the helper rebuilds the meta
+// around the requested correlation fields rather than carrying the
+// malformed payload forward. SQLite's CHECK(json_valid(meta))
+// constraint guarantees we never see garbage on the integration path,
+// but the helper has to be safe regardless because the parsed map is
+// the only structured handle to existing fields. Tested directly
+// because the persistence layer rejects malformed JSON at insert time.
+func TestMergeItemMetaCorrelationFieldsRebuildsMalformedExisting(t *testing.T) {
+	out, err := mergeItemMetaCorrelationFields(`{"toolName":"Agent","input":{`, "", "claude-opus-4-7")
+	if err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
+		t.Fatalf("rebuilt meta still malformed: %v (%s)", err, out)
+	}
+	if parsed["subagent_model"] != "claude-opus-4-7" {
+		t.Errorf("subagent_model not on rebuilt meta: %v", parsed["subagent_model"])
+	}
+	// The malformed fragment is dropped on rebuild — no carry-forward.
+	if _, lingering := parsed["toolName"]; lingering {
+		t.Errorf("malformed meta carried partial fields forward: %v", parsed)
+	}
+}
+
 // TestTaskStartedMetaMergeNoopsWhenItemMissing covers the reconnect
 // edge case where task_started fires for a tool_use that was never
 // observed (crash-replay lost the launch). Triage drops the meta-only

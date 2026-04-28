@@ -9,6 +9,21 @@ describe('displayModelLabel', () => {
     expect(displayModelLabel('claude', 'claude-haiku-4-5')).toBe('Haiku 4.5');
   });
 
+  it('strips trailing 8-digit release datestamps from Claude slugs', () => {
+    // Canonical wire ids carry a release stamp the picker should not
+    // display — surface "Haiku 4.5", not "Haiku 4.5 20251001".
+    expect(displayModelLabel('claude', 'claude-haiku-4-5-20251001')).toBe('Haiku 4.5');
+  });
+
+  it('handles bare tier aliases the SDK forwards verbatim', () => {
+    // run_in_background tasks accept short aliases like "opus"; the
+    // resolver downstream picks a concrete model id, but the
+    // immediate launch row carries the alias as-is.
+    expect(displayModelLabel('claude', 'opus')).toBe('Opus');
+    expect(displayModelLabel('claude', 'sonnet')).toBe('Sonnet');
+    expect(displayModelLabel('claude', 'haiku')).toBe('Haiku');
+  });
+
   it('removes Claude from registry names and old favorite labels', () => {
     expect(displayModelLabel('claude', 'claude-opus-4-7', 'Claude Opus 4.7')).toBe('Opus 4.7');
   });

@@ -100,11 +100,18 @@ describe('classifyToolName', () => {
     expect(out.displayName).toBe('MCP tool');
   });
 
-  it('Task classifies as subagent and uses robot icon', () => {
-    const out = classifyToolName('Task');
+  it('Agent classifies as subagent and uses robot icon', () => {
+    const out = classifyToolName('Agent');
     expect(out.icon).toBe('robot');
     expect(out.label).toBe('Subagent');
+    expect(out.displayName).toBe('Agent');
     expect(out.isSubagent).toBe(true);
+  });
+
+  it('Task no longer carries a special classification (Claude renamed the tool)', () => {
+    const out = classifyToolName('Task');
+    expect(out.icon).toBe('generic');
+    expect(out.isSubagent).toBe(false);
   });
 
   it('collab_agent classifies as subagent', () => {

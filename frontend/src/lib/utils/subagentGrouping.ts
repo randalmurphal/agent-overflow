@@ -21,17 +21,17 @@
 //   - Nesting is capped at MAX_DEPTH (3, matching forge). Descendants
 //     beyond that depth collapse upward into their deepest allowed group
 //     as leaf siblings.
-//   - Aggregate text preview is capped at MAX_PREVIEW_CHARS (320) so large
-//     subagents don't blow memory on initial render.
+//   - Each group surfaces the most recent (turnIndex, itemIndex) descendant
+//     summary as `latestChildSummary` — the SubagentGroup card uses this
+//     for its collapsed-header preview so the UI tracks "what the subagent
+//     is doing right now" rather than concatenating completed history.
+//     Running/streaming descendants win over terminal ones.
 //
 // The grouping function is pure — no mutation of inputs, no side effects.
 
 import type { Item } from '../types/models';
 
 export const MAX_DEPTH = 3;
-export const MAX_PREVIEW_CHARS = 320;
-// Internal cap — only referenced from within this module.
-const MAX_PREVIEW_ITEMS = 24;
 
 /**
  * A node in the timeline tree returned by `groupItemsBySubagent`.
@@ -57,10 +57,19 @@ export interface SubagentGroupNode {
   children: TimelineNode[];
   /** Total child count (counts *all* descendants, not just immediate children). */
   descendantCount: number;
-  /** Aggregated assistant-text preview drawn from descendant text items. */
-  preview: string;
-  /** True if the aggregate preview was truncated (memory-bounded). */
-  truncated: boolean;
+  /**
+   * Most recent descendant summary — drives the collapsed-header
+   * preview on `SubagentGroup`. Selection rule:
+   *   1. Highest-(turnIndex, itemIndex) descendant whose status is
+   *      `running` or `streaming`. This keeps the preview locked to
+   *      whatever the subagent is actively working on.
+   *   2. Highest-(turnIndex, itemIndex) terminal descendant (any
+   *      status) when nothing is currently running.
+   *   3. Empty string when no descendant carries any summary.
+   *
+   * Empty when the group has no children with usable summaries yet.
+   */
+  latestChildSummary: string;
 }
 
 /**
@@ -89,57 +98,58 @@ function itemPreviewText(item: Item): string {
 }
 
 /**
- * Walk a tree and collect the first N text fragments from descendants.
- * Used to build a collapsed-card preview without loading any payload data.
+ * True when an item is in the middle of doing work — running tool
+ * calls and actively-streaming text/thinking blocks both qualify.
+ * Used by `pickLatestChildSummary` to bias the preview toward the
+ * subagent's current activity.
  */
-function collectPreview(nodes: TimelineNode[]): { text: string; truncated: boolean } {
-  const fragments: string[] = [];
-  let total = 0;
-  let truncated = false;
+function isItemActive(item: Item): boolean {
+  return item.status === 'running' || item.status === 'streaming';
+}
 
-  function visit(node: TimelineNode): void {
-    if (total >= MAX_PREVIEW_CHARS || fragments.length >= MAX_PREVIEW_ITEMS) {
-      truncated = true;
-      return;
-    }
+/**
+ * Walk every descendant Item under `nodes` (depth-first, preserving
+ * arrival order) and yield it. Only the leaves' Items and group
+ * parents' Items are surfaced — group nodes themselves are
+ * structural, not items.
+ */
+function* descendantItems(nodes: TimelineNode[]): Generator<Item> {
+  for (const node of nodes) {
     if (node.kind === 'leaf') {
-      const text = itemPreviewText(node.item);
-      if (!text) return;
-      const remaining = MAX_PREVIEW_CHARS - total;
-      if (text.length > remaining) {
-        fragments.push(text.slice(0, remaining));
-        total = MAX_PREVIEW_CHARS;
-        truncated = true;
-        return;
-      }
-      fragments.push(text);
-      total += text.length + 1;
-      return;
+      yield node.item;
+      continue;
     }
-    // group: flatten parent description + children
-    const parentText = itemPreviewText(node.parent);
-    if (parentText) {
-      const remaining = MAX_PREVIEW_CHARS - total;
-      if (parentText.length > remaining) {
-        fragments.push(parentText.slice(0, remaining));
-        total = MAX_PREVIEW_CHARS;
-        truncated = true;
-        return;
-      }
-      fragments.push(parentText);
-      total += parentText.length + 1;
-    }
-    for (const child of node.children) {
-      visit(child);
-      if (total >= MAX_PREVIEW_CHARS || fragments.length >= MAX_PREVIEW_ITEMS) {
-        truncated = true;
-        return;
-      }
+    yield node.parent;
+    yield* descendantItems(node.children);
+  }
+}
+
+/**
+ * Pick the descendant whose summary should appear in the collapsed
+ * SubagentGroup header. Prefers active (running/streaming) descendants
+ * so the preview tracks what the subagent is doing now; falls back to
+ * the most recent terminal descendant only when nothing is active.
+ *
+ * Comparison key is `(turnIndex, itemIndex)` — the same canonical
+ * ordering the timeline uses everywhere else.
+ */
+function pickLatestChildSummary(children: TimelineNode[]): string {
+  let bestActive: Item | null = null;
+  let bestTerminal: Item | null = null;
+  for (const item of descendantItems(children)) {
+    if (!itemPreviewText(item)) continue;
+    if (isItemActive(item)) {
+      if (!bestActive || compareItems(item, bestActive) > 0) bestActive = item;
+    } else if (!bestActive) {
+      // Only track terminals while no active descendant is in the
+      // running. Once an active candidate appears we stop bothering
+      // with terminals — they can't beat an active winner regardless
+      // of order.
+      if (!bestTerminal || compareItems(item, bestTerminal) > 0) bestTerminal = item;
     }
   }
-
-  for (const node of nodes) visit(node);
-  return { text: fragments.join(' / '), truncated };
+  const winner = bestActive ?? bestTerminal;
+  return winner ? itemPreviewText(winner) : '';
 }
 
 /**
@@ -248,26 +258,22 @@ export function groupItemsBySubagent(items: readonly Item[]): TimelineNode[] {
         const grand = childrenByParent.get(next.id);
         if (grand) stack.push(...grand);
       }
-      const preview = collectPreview(flatChildren);
       return {
         kind: 'group',
         parent: item,
         children: flatChildren,
         descendantCount: flatChildren.length,
-        preview: preview.text,
-        truncated: preview.truncated,
+        latestChildSummary: pickLatestChildSummary(flatChildren),
       };
     }
 
     const children = childItems.map((child) => buildNode(child, depth + 1));
-    const preview = collectPreview(children);
     return {
       kind: 'group',
       parent: item,
       children,
       descendantCount: countDescendants(children),
-      preview: preview.text,
-      truncated: preview.truncated,
+      latestChildSummary: pickLatestChildSummary(children),
     };
   }
 
