@@ -102,9 +102,36 @@ function makePane() {
   };
 }
 
-beforeEach(() => {
+// Default OpenTerminal stub. Re-applied in beforeEach so tests that
+// override with a counter-mock don't leak state into later tests.
+async function defaultOpenTerminalImpl(threadID: string, opts: unknown) {
+  callLog.push({ fn: 'OpenTerminal', args: [threadID, opts] });
+  return {
+    terminalID: 't1',
+    threadID,
+    summary: {
+      terminalID: 't1',
+      threadID,
+      shell: '/bin/bash',
+      cwd: '/tmp',
+      rows: 24,
+      cols: 80,
+      pid: 1,
+      startedAt: 0,
+      running: true,
+      exitCode: 0,
+      exitReason: '',
+    },
+  };
+}
+
+beforeEach(async () => {
   callLog.length = 0;
   for (const key of Object.keys(eventListeners)) delete eventListeners[key];
+  const bindings = await import('../../stores/bindings');
+  (bindings.OpenTerminal as unknown as { mockImplementation: (fn: unknown) => void }).mockImplementation(
+    defaultOpenTerminalImpl,
+  );
 });
 
 afterEach(() => {
@@ -167,6 +194,106 @@ describe('ThreadTerminalDrawer', () => {
     await Promise.resolve();
     getByTestId('terminal-collapse').click();
     expect(pane.setShowTerminal).toHaveBeenCalledWith(false);
+  });
+
+  it('auto-removes a tab when terminal:exit fires for it', async () => {
+    const pane = makePane();
+    const { getByTestId, queryByTestId } = render(ThreadTerminalDrawer, { pane: pane as never, manual: true });
+    await tick();
+
+    getByTestId('terminal-open').click();
+    await Promise.resolve();
+    await Promise.resolve();
+    await tick();
+    expect(getByTestId('terminal-tab-t1')).toBeDefined();
+
+    // PTY exited (Ctrl+D, kill, process death). Backend already cleaned
+    // up — frontend must just drop the tab.
+    emitEvent('terminal:exit', {
+      terminalID: 't1',
+      threadID: 'thread-A',
+      code: 0,
+      reason: '',
+    });
+    await tick();
+
+    expect(queryByTestId('terminal-tab-t1')).toBeNull();
+    // Last tab gone → drawer collapses.
+    expect(pane.setShowTerminal).toHaveBeenCalledWith(false);
+  });
+
+  it('does not auto-collapse on terminal:exit when other tabs remain', async () => {
+    const pane = makePane();
+    let nextId = 1;
+    const bindings = await import('../../stores/bindings');
+    (bindings.OpenTerminal as unknown as { mockImplementation: (fn: unknown) => void }).mockImplementation(
+      async (threadID: string) => {
+        const terminalID = `t${nextId++}`;
+        return {
+          terminalID,
+          threadID,
+          summary: {
+            terminalID,
+            threadID,
+            shell: '/bin/bash',
+            cwd: '/tmp',
+            rows: 24,
+            cols: 80,
+            pid: 1,
+            startedAt: 0,
+            running: true,
+            exitCode: 0,
+            exitReason: '',
+          },
+        };
+      },
+    );
+
+    const { getByTestId, queryByTestId } = render(ThreadTerminalDrawer, { pane: pane as never, manual: true });
+    await tick();
+
+    getByTestId('terminal-open').click();
+    await Promise.resolve();
+    await Promise.resolve();
+    await tick();
+    getByTestId('terminal-open').click();
+    await Promise.resolve();
+    await Promise.resolve();
+    await tick();
+
+    emitEvent('terminal:exit', {
+      terminalID: 't1',
+      threadID: 'thread-A',
+      code: 0,
+      reason: '',
+    });
+    await tick();
+
+    expect(queryByTestId('terminal-tab-t1')).toBeNull();
+    expect(getByTestId('terminal-tab-t2')).toBeDefined();
+    expect(pane.setShowTerminal).not.toHaveBeenCalled();
+  });
+
+  it('ignores terminal:exit for other threads', async () => {
+    const pane = makePane();
+    const { getByTestId } = render(ThreadTerminalDrawer, { pane: pane as never, manual: true });
+    await tick();
+
+    getByTestId('terminal-open').click();
+    await Promise.resolve();
+    await Promise.resolve();
+    await tick();
+
+    emitEvent('terminal:exit', {
+      terminalID: 't1',
+      threadID: 'thread-OTHER',
+      code: 0,
+      reason: '',
+    });
+    await tick();
+
+    expect(getByTestId('terminal-tab-t1')).toBeDefined();
+    expect(pane.setShowTerminal).not.toHaveBeenCalled();
   });
 
   it('auto-collapses when the last tab is closed', async () => {

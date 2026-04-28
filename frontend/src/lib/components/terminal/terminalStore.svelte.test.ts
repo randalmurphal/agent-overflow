@@ -75,16 +75,6 @@ describe('ThreadTerminalState', () => {
     expect(s.activeTerminalID).toBe('a');
   });
 
-  it('marks a tab as exited and mirrors the exit code into the summary', () => {
-    const s = createThreadTerminalState();
-    s.addTab(makeSummary({ terminalID: 'a' }));
-    s.markExit('a', 137, 'signal:SIGKILL');
-    expect(s.tabs[0]!.exitCode).toBe(137);
-    expect(s.tabs[0]!.exitReason).toBe('signal:SIGKILL');
-    expect(s.tabs[0]!.summary.running).toBe(false);
-    expect(s.tabs[0]!.summary.exitCode).toBe(137);
-  });
-
   it('clamps the drawer height between min and max', () => {
     const s = createThreadTerminalState();
     s.setDrawerHeight(-100);

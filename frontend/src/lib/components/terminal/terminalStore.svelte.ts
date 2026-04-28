@@ -7,9 +7,6 @@ export interface TerminalTabState {
   summary: TerminalSessionSummary;
   /** Incoming output events queue while the xterm instance is mounting. */
   pendingOutput: string[];
-  /** Non-zero after a terminal:exit event landed. */
-  exitCode: number | null;
-  exitReason: string | null;
 }
 
 export interface ThreadTerminalState {
@@ -93,8 +90,6 @@ export function createThreadTerminalState(): ThreadTerminalStateHandle {
           terminalID: summary.terminalID,
           summary,
           pendingOutput: [],
-          exitCode: null,
-          exitReason: null,
         },
       ];
       activeTerminalID = summary.terminalID;
@@ -132,19 +127,6 @@ export function createThreadTerminalState(): ThreadTerminalStateHandle {
       return drained;
     },
 
-    markExit(terminalID: string, code: number, reason: string): void {
-      tabs = tabs.map((t) =>
-        t.terminalID === terminalID
-          ? {
-              ...t,
-              exitCode: code,
-              exitReason: reason,
-              summary: { ...t.summary, running: false, exitCode: code, exitReason: reason },
-            }
-          : t,
-      );
-    },
-
     updateSummary(summary: TerminalSessionSummary): void {
       tabs = tabs.map((t) =>
         t.terminalID === summary.terminalID ? { ...t, summary } : t,
@@ -171,7 +153,6 @@ export interface ThreadTerminalStateHandle {
   setActive(terminalID: string): void;
   appendOutput(terminalID: string, data: string): void;
   drainOutput(terminalID: string): string[];
-  markExit(terminalID: string, code: number, reason: string): void;
   updateSummary(summary: TerminalSessionSummary): void;
   setDrawerHeight(height: number): void;
   clear(): void;

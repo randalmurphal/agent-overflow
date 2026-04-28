@@ -90,7 +90,12 @@
     });
     cancelExit = wailsEventOn<TerminalExitEventPayload>('terminal:exit', (payload) => {
       if (pane.thread && payload.threadID !== pane.thread.id) return;
-      handle.markExit(payload.terminalID, payload.code, payload.reason);
+      // PTY-initiated exit (Ctrl+D, exit, kill, process death). The
+      // backend has already cleaned up its session, so we just drop the
+      // tab. Collapse the drawer if that was the last one — same shape
+      // as the manual close path above.
+      handle.removeTab(payload.terminalID);
+      if (handle.tabs.length === 0) collapseDrawer();
     });
 
     if (manual || !pane.thread) return;
