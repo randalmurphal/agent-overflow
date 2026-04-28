@@ -82,7 +82,16 @@ const bootstrapProbeTimeout = 5 * time.Second
 func main() {
 	logFile, err := openLog()
 	if err == nil {
-		log.SetOutput(io.MultiWriter(os.Stderr, logFile))
+		// io.MultiWriter aborts the whole chain on the first writer's
+		// error, and stderr in a `-H windowsgui` app is connected to
+		// nothing — its first Write returns an error and the file
+		// writer never sees the bytes. tolerantMultiWriter swallows
+		// per-writer errors so launcher.log captures every log line
+		// regardless of stderr's state. Stderr is still tried first
+		// so a `make dev-wsl` invocation (which DOES have a connected
+		// stderr) gets live output as before.
+		log.SetOutput(tolerantMultiWriter(os.Stderr, logFile))
+		log.Printf("launcher: started, log=%s", logFile.Name())
 		defer logFile.Close()
 	}
 
@@ -412,6 +421,24 @@ func (a *launcherApp) launchAndShow(distro string, transient bool) error {
 	return nil
 }
 
+// tolerantMultiWriter is io.MultiWriter without abort-on-first-error.
+// Per-writer Write errors are dropped so a closed/disconnected writer
+// (notably os.Stderr in a `windowsgui` app) doesn't suppress writes
+// to the remaining writers. Always reports len(p) bytes written so
+// the log package doesn't see a short-write error and stop logging.
+func tolerantMultiWriter(writers ...io.Writer) io.Writer {
+	return tolerantWriters(writers)
+}
+
+type tolerantWriters []io.Writer
+
+func (t tolerantWriters) Write(p []byte) (int, error) {
+	for _, w := range t {
+		_, _ = w.Write(p)
+	}
+	return len(p), nil
+}
+
 // probeBootstrap performs a deadline-bounded HTTP GET against the WSL
 // backend's /bootstrap.json over localhost. A successful response
 // proves the WSL2 localhostForwarding path is functional; a timeout or
@@ -435,6 +462,7 @@ func probeBootstrap(port int, token string) error {
 	// is a credential leak. The host:port is what an operator needs to
 	// debug "is the WSL backend actually listening?".
 	redacted := fmt.Sprintf("http://localhost:%d/bootstrap.json", port)
+	log.Printf("probe: GET %s (token=%d bytes)", redacted, len(token))
 	client := &http.Client{Timeout: bootstrapProbeTimeout}
 	resp, err := client.Get(url)
 	if err != nil {
@@ -442,6 +470,14 @@ func probeBootstrap(port int, token string) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
+		// Surface response body on failure: handleBootstrap returns
+		// "404 page not found" for token mismatch AND for the loopback
+		// host guard reject. The body text is identical, but seeing
+		// the Content-Length / first bytes confirms we got a real
+		// handler response (vs. a captive portal / proxy / firewall
+		// rewrite).
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
+		log.Printf("probe: status=%d host-resp=%q", resp.StatusCode, string(body))
 		return fmt.Errorf("GET %s: status %d", redacted, resp.StatusCode)
 	}
 	return nil
