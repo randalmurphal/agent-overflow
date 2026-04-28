@@ -151,13 +151,14 @@ func main() {
 		// 5-15 seconds on cold boot, so we run it on a goroutine and
 		// the window's /loading state covers the gap.
 		//
-		// On failure we route the WebView back to /picker so the user
-		// can choose a different distro; pairs with the
-		// non-persist-on-failure rule in launchAndShow.
+		// launchAndShow owns the WebView URL on every exit path: on
+		// success it points at the WSL backend, on connectivity
+		// failure at /connectivity-error (with the actionable
+		// .wslconfig fix), on any other failure at /picker. Don't
+		// override here — the goroutine just logs.
 		go func() {
 			if err := app.launchAndShow(chosen, transient); err != nil {
 				log.Printf("launch backend: %v", err)
-				app.window.SetURL("/picker")
 			}
 		}()
 	}
@@ -308,11 +309,9 @@ func (a *launcherApp) PickDistro(name string) error {
 	}
 
 	// Picker selections are user intent — persist on success.
+	// launchAndShow owns the WebView URL on every exit path (picker,
+	// connectivity-error, or backend URL), so we don't override it here.
 	if err := a.launchAndShow(name, false); err != nil {
-		// Pre-launch failure: route the WebView back to the picker so
-		// the user can pick a different distro or surface the error.
-		// We intentionally do not persist cfg.Distro here.
-		a.window.SetURL("/picker")
 		return err
 	}
 	return nil
@@ -352,11 +351,13 @@ func (a *launcherApp) launchAndShow(distro string, transient bool) error {
 	ctx := context.Background()
 
 	if err := a.ensurePayloadInstalled(ctx, distro); err != nil {
+		a.window.SetURL("/picker")
 		return fmt.Errorf("install payload: %w", err)
 	}
 
 	binPath, err := wslHomePath(ctx, distro)
 	if err != nil {
+		a.window.SetURL("/picker")
 		return fmt.Errorf("resolve WSL home: %w", err)
 	}
 
@@ -365,6 +366,7 @@ func (a *launcherApp) launchAndShow(distro string, transient bool) error {
 		BinaryPath: binPath,
 	})
 	if err != nil {
+		a.window.SetURL("/picker")
 		return fmt.Errorf("launch backend: %w", err)
 	}
 
