@@ -81,11 +81,18 @@ dev:
 # this repo's typical setup doesn't propagate Windows env vars,
 # so $$LOCALAPPDATA is empty here even though the Windows host has
 # it. The cmd.exe call always works inside an interop-capable shell.
-dev-wsl: build-wsl
+#
+# dev-wsl also stamps a unique payload version so the Windows launcher
+# reinstalls ~/.local/bin/agent-overflow inside WSL on every dev run.
+# The normal package path may use a stable VERSION; dev mode cannot,
+# or the launcher will correctly skip reinstalling what it thinks is
+# the same embedded payload.
+dev-wsl:
 	@if [ -z "$$WSL_DISTRO_NAME" ]; then \
 		echo "ERROR: WSL_DISTRO_NAME is unset. Run this target from inside a WSL shell."; \
 		exit 1; \
 	fi
+	@$(MAKE) build-wsl WSL_VERSION=dev-$$(date +%Y%m%d%H%M%S) WSL_FORCE_RELINK=1
 	@WIN_LAD=$$(/mnt/c/Windows/System32/cmd.exe /c 'echo %LOCALAPPDATA%' 2>/dev/null | tr -d '\r\n'); \
 	if [ -z "$$WIN_LAD" ]; then \
 		echo "ERROR: could not resolve %LOCALAPPDATA% via cmd.exe interop."; \
@@ -103,7 +110,9 @@ dev-wsl: build-wsl
 # copy to the Windows desktop, double-click later) instead of launching
 # in place.
 build-wsl:
-	wails3 task windows:build:wsl
+	cd frontend && npm run build
+	@if [ -n "$(WSL_FORCE_RELINK)" ]; then rm -f bin/agent-overflow.exe bin/agent-overflow-linux; fi
+	VERSION="$(WSL_VERSION)" wails3 task windows:build:wsl
 
 build:
 	wails3 build
