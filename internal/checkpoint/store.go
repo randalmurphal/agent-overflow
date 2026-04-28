@@ -235,13 +235,21 @@ func (s *Store) DiffRefToWorktree(ctx context.Context, workspace, ref string) ([
 	return []byte(strings.Join(parts, "\n\n")), nil
 }
 
-// RestoreWorktree overwrites the working tree + index from the checkpoint
-// ref, then cleans untracked files not in the checkpoint. This is destructive:
-// callers must have warned the user before invoking it.
+// RestoreWorktreePaths restores only the listed paths from the checkpoint
+// ref, leaving every other file in the worktree alone. Paths that exist at
+// the ref are restored from it; paths that don't exist (i.e. files the
+// agent created and we want gone after a revert) are unlinked from disk
+// and their index entry cleared. Workspace-relative paths only; absolute
+// paths must already be normalized via
+// `triage.normalizeWorkspaceRelativePath` before reaching this function.
 //
-// On a fresh-init repo (no HEAD) the final `git reset` is skipped because it
-// has nothing to reset against; `restore` and `clean` still apply.
-func (s *Store) RestoreWorktree(ctx context.Context, workspace, ref string) error {
+// Unlike the wholesale-restore approach this replaced, no `git clean` and
+// no `git reset` runs — both would touch files outside the listed paths
+// and clobber unrelated user edits between turns.
+func (s *Store) RestoreWorktreePaths(ctx context.Context, workspace, ref string, paths []string) error {
+	if len(paths) == 0 {
+		return nil
+	}
 	oid, err := s.resolveRefCommit(ctx, workspace, ref)
 	if err != nil {
 		return err
@@ -249,25 +257,164 @@ func (s *Store) RestoreWorktree(ctx context.Context, workspace, ref string) erro
 	if oid == "" {
 		return fmt.Errorf("checkpoint: ref %q is unavailable", ref)
 	}
-
-	if _, _, _, err := runGit(ctx, workspace, nil, false,
-		"restore", "--source", oid, "--worktree", "--staged", "--", "."); err != nil {
-		return fmt.Errorf("checkpoint: restore from %s: %w", ref, err)
-	}
-	if _, _, _, err := runGit(ctx, workspace, nil, false, "clean", "-fd", "--", "."); err != nil {
-		return fmt.Errorf("checkpoint: clean: %w", err)
-	}
-
-	hasHead, err := s.HasHeadCommit(ctx, workspace)
+	existing, missing, err := s.partitionPathsAtRef(ctx, workspace, oid, paths)
 	if err != nil {
-		return fmt.Errorf("checkpoint: probe HEAD after restore: %w", err)
+		return err
 	}
-	if hasHead {
-		if _, _, _, err := runGit(ctx, workspace, nil, false, "reset", "--quiet", "--", "."); err != nil {
-			return fmt.Errorf("checkpoint: reset after restore: %w", err)
+	if len(existing) > 0 {
+		args := append([]string{"restore", "--source", oid, "--worktree", "--staged", "--"}, existing...)
+		if _, _, _, err := runGit(ctx, workspace, nil, false, args...); err != nil {
+			return fmt.Errorf("checkpoint: restore paths from %s: %w", ref, err)
+		}
+	}
+	for _, p := range missing {
+		// File didn't exist at the checkpoint; agent created it after.
+		// Remove the working-tree copy if present and drop its index
+		// entry so `git status` matches the checkpoint state. ENOENT on
+		// the worktree side is fine — the file may already be gone.
+		abs := filepath.Join(workspace, p)
+		if err := os.Remove(abs); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("checkpoint: remove %s: %w", p, err)
+		}
+		// `git rm --cached --ignore-unmatch` clears the index entry if
+		// staged, no-ops if absent. Important for the case where the
+		// agent created a file and `git add`-ed it via the checkpoint
+		// capture; without this the file would reappear at the next
+		// `git status` even though the worktree copy is gone.
+		if _, _, _, err := runGit(ctx, workspace, nil, true,
+			"rm", "--cached", "--quiet", "--ignore-unmatch", "--", p); err != nil {
+			return fmt.Errorf("checkpoint: rm cached %s: %w", p, err)
 		}
 	}
 	return nil
+}
+
+// partitionPathsAtRef splits paths into the set that exists at the
+// checkpoint ref vs. the set that does not. Used by RestoreWorktreePaths
+// to decide between `git restore --source <ref>` (existing) and `os.Remove`
+// (missing). One `git ls-tree` per ref is cheaper than N `git cat-file -e`
+// invocations.
+func (s *Store) partitionPathsAtRef(ctx context.Context, workspace, oid string, paths []string) (existing, missing []string, err error) {
+	if len(paths) == 0 {
+		return nil, nil, nil
+	}
+	args := append([]string{"ls-tree", "--name-only", "-z", oid, "--"}, paths...)
+	stdout, _, _, err := runGit(ctx, workspace, nil, false, args...)
+	if err != nil {
+		return nil, nil, fmt.Errorf("checkpoint: ls-tree %s: %w", oid, err)
+	}
+	present := make(map[string]struct{})
+	for _, p := range strings.Split(stdout, "\x00") {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			present[p] = struct{}{}
+		}
+	}
+	for _, p := range paths {
+		if _, ok := present[p]; ok {
+			existing = append(existing, p)
+		} else {
+			missing = append(missing, p)
+		}
+	}
+	return existing, missing, nil
+}
+
+// DiffRefToRefScoped is DiffRefToRef constrained to a pathspec. Empty
+// `paths` returns an empty patch — the caller's path filter is the
+// authority on what's worth diffing.
+func (s *Store) DiffRefToRefScoped(ctx context.Context, workspace, fromRef, toRef string, paths []string) ([]byte, error) {
+	if len(paths) == 0 {
+		return nil, nil
+	}
+	from, err := s.resolveRefCommit(ctx, workspace, fromRef)
+	if err != nil {
+		return nil, err
+	}
+	to, err := s.resolveRefCommit(ctx, workspace, toRef)
+	if err != nil {
+		return nil, err
+	}
+	if from == "" || to == "" {
+		return nil, fmt.Errorf("checkpoint: diff refs unavailable: from=%q to=%q", fromRef, toRef)
+	}
+	args := append([]string{
+		"diff", "--patch", "--minimal", "--no-color", "--no-ext-diff", "--no-textconv",
+		from, to, "--",
+	}, paths...)
+	stdout, _, _, err := runGitWithStdoutLimit(ctx, workspace, nil, false, maxDiffOutputBytes, args...)
+	if errors.Is(err, errGitOutputTooLarge) {
+		return nil, fmt.Errorf("checkpoint: diff %s..%s exceeds %d byte limit", fromRef, toRef, maxDiffOutputBytes)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("checkpoint: diff %s..%s scoped: %w", fromRef, toRef, err)
+	}
+	return []byte(stdout), nil
+}
+
+// DiffWorkspaceVsHead returns the unified patch for everything currently
+// uncommitted in the workspace: tracked changes against HEAD plus
+// untracked-not-ignored files. Mirrors `git status` semantics rather
+// than checkpoint semantics — the caller wants to see manual edits
+// alongside any post-checkpoint agent work. Returns an empty slice on
+// fresh-init repos that have no HEAD to diff against (no commits yet, so
+// "uncommitted" doesn't apply).
+func (s *Store) DiffWorkspaceVsHead(ctx context.Context, workspace string) ([]byte, error) {
+	hasHead, err := s.HasHeadCommit(ctx, workspace)
+	if err != nil {
+		return nil, fmt.Errorf("checkpoint: probe HEAD: %w", err)
+	}
+
+	remainingBytes := maxDiffOutputBytes
+	var parts []string
+	if hasHead {
+		tracked, _, _, err := runGitWithStdoutLimit(ctx, workspace, nil, false, remainingBytes,
+			"diff", "--patch", "--minimal", "--no-color", "--no-ext-diff", "--no-textconv", "HEAD", "--")
+		if errors.Is(err, errGitOutputTooLarge) {
+			return nil, fmt.Errorf("checkpoint: workspace diff exceeds %d byte limit", maxDiffOutputBytes)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("checkpoint: diff HEAD: %w", err)
+		}
+		if t := strings.TrimSpace(tracked); t != "" {
+			parts = append(parts, t)
+		}
+		remainingBytes -= int64(len(tracked))
+	}
+
+	untracked, _, code, err := runGit(ctx, workspace, nil, true,
+		"ls-files", "--others", "--exclude-standard", "-z")
+	if err != nil {
+		return nil, fmt.Errorf("checkpoint: ls-files others: %w", err)
+	}
+	if code == 0 {
+		for _, p := range strings.Split(untracked, "\x00") {
+			p = strings.TrimSpace(p)
+			if p == "" {
+				continue
+			}
+			if remainingBytes <= 0 {
+				return nil, fmt.Errorf("checkpoint: workspace diff exceeds %d byte limit", maxDiffOutputBytes)
+			}
+			patch, _, exit, err := runGitWithStdoutLimit(ctx, workspace, nil, true, remainingBytes,
+				"diff", "--no-index", "--patch", "--minimal", "--no-color", "--no-ext-diff", "--no-textconv", "--",
+				"/dev/null", p)
+			if errors.Is(err, errGitOutputTooLarge) {
+				return nil, fmt.Errorf("checkpoint: workspace diff exceeds %d byte limit", maxDiffOutputBytes)
+			}
+			if err != nil {
+				return nil, fmt.Errorf("checkpoint: diff new file %s: %w", p, err)
+			}
+			if exit != 0 && exit != 1 {
+				return nil, fmt.Errorf("checkpoint: diff new file %s exited %d", p, exit)
+			}
+			if t := strings.TrimSpace(patch); t != "" {
+				parts = append(parts, t)
+			}
+			remainingBytes -= int64(len(patch))
+		}
+	}
+	return []byte(strings.Join(parts, "\n\n")), nil
 }
 
 // CleanupThread deletes every checkpoint ref owned by threadID. Idempotent.

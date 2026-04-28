@@ -1,13 +1,5 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
-  import X from 'lucide-svelte/icons/x';
-  import Columns2 from 'lucide-svelte/icons/columns-2';
-  import Rows3 from 'lucide-svelte/icons/rows-3';
-  import WrapText from 'lucide-svelte/icons/wrap-text';
-  import RotateCcw from 'lucide-svelte/icons/rotate-ccw';
-  import ChevronDown from 'lucide-svelte/icons/chevron-down';
-  import Icon from '../primitives/Icon.svelte';
-  import EditorLink from '../common/EditorLink.svelte';
   import RhsSidebarResizer from './RhsSidebarResizer.svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { getSettings, updateSetting } from '../../stores/settings.svelte';
@@ -22,6 +14,8 @@
   } from '../../stores/diffPanelLayout.svelte';
   import {
     GetCheckpointRangeDiff,
+    GetSessionAgentDiff,
+    GetWorkspaceCurrentDiff,
     ListThreadCheckpoints,
     RevertToCheckpoint,
   } from '../../stores/bindings';
@@ -33,9 +27,12 @@
     CheckpointUnavailableEvent,
     RevertMode,
   } from '../../types/checkpoint';
-  import { buildSplitRows, parsePatchFiles, type PatchFile, type SplitDiffRow } from '../../utils/patchFiles';
-  import { lineTintClass } from '../../utils/diffLineTint';
+  import { parsePatchFiles } from '../../utils/patchFiles';
+  import { buildRevertAffectedFiles } from '../../utils/checkpointRevertPreview';
   import RevertDialog from './diff-panel/RevertDialog.svelte';
+  import DiffPanelHeaderBar from './diff-panel/DiffPanelHeaderBar.svelte';
+  import DiffPanelChipStrip from './diff-panel/DiffPanelChipStrip.svelte';
+  import DiffPanelFileCard from './diff-panel/DiffPanelFileCard.svelte';
 
   interface Props {
     pane: ThreadPane;
@@ -56,10 +53,10 @@
   const selectedTurnCount = $derived(pane.diffPanel.selectedCheckpointTurnCount);
   const error = $derived(pane.diffPanel.error);
   const viewMode = $derived(pane.diffPanel.viewMode);
+  const tabMode = $derived(pane.diffPanel.tabMode);
   let diffText = $state('');
   let loading = $state(false);
   let expanded = $state<Set<string>>(new Set());
-  let splitRowsCache = $state<Map<string, SplitDiffRow[]>>(new Map());
   let revertOpen = $state(false);
   let reverting = $state(false);
   let checkpointRequestID = 0;
@@ -68,13 +65,34 @@
   const threadId = $derived(pane.thread?.id ?? null);
   const latestTurnCount = $derived.by(() => {
     const latest = checkpoints.at(-1);
-    return latest ? checkpointTurnCount(latest) : 0;
+    return latest ? latest.checkpointTurnCount : 0;
   });
   const selectedRange = $derived.by(() => {
     if (selectedTurnCount === null) return { from: 0, to: latestTurnCount };
     return { from: Math.max(0, selectedTurnCount - 1), to: selectedTurnCount };
   });
-  const files = $derived(parsePatchFiles(diffText));
+  const selectedCheckpoint = $derived(
+    selectedTurnCount === null
+      ? null
+      : checkpoints.find((c) => c.checkpointTurnCount === selectedTurnCount) ?? null,
+  );
+  // Per-turn tab filters the parsed PatchFile[] to the selected turn's
+  // tool_paths so manual edits to unrelated files don't leak into the
+  // "what did the agent do this turn?" view. Session and Workspace tabs
+  // bypass the filter — the backend already constrains Session by
+  // cumulative tool_paths, and Workspace is intentionally unfiltered.
+  const filterPaths = $derived.by(() => {
+    if (tabMode !== 'per-turn') return null;
+    if (!selectedCheckpoint) return null;
+    const paths = selectedCheckpoint.toolPaths ?? [];
+    if (paths.length === 0) return null;
+    return new Set(paths);
+  });
+  const allFiles = $derived(parsePatchFiles(diffText));
+  const files = $derived.by(() => {
+    if (!filterPaths) return allFiles;
+    return allFiles.filter((file) => filterPaths.has(file.path));
+  });
   const totals = $derived.by(() => files.reduce(
     (acc, file) => ({
       files: acc.files + 1,
@@ -84,6 +102,9 @@
     { files: 0, additions: 0, deletions: 0 },
   ));
   const wordWrap = $derived(getSettings().diffWordWrap);
+  const showChipStrip = $derived(tabMode === 'per-turn');
+  const showRevert = $derived(tabMode === 'per-turn' && selectedTurnCount !== null);
+  const revertAffectedFiles = $derived(buildRevertAffectedFiles(checkpoints, selectedTurnCount));
 
   async function refreshCheckpoints(): Promise<void> {
     const requestID = ++checkpointRequestID;
@@ -94,9 +115,9 @@
     try {
       const next = ((await ListThreadCheckpoints(threadId)) ?? []) as Checkpoint[];
       if (requestID !== checkpointRequestID) return;
-      const sorted = [...next].sort((a, b) => checkpointTurnCount(a) - checkpointTurnCount(b));
+      const sorted = [...next].sort((a, b) => a.checkpointTurnCount - b.checkpointTurnCount);
       pane.diffPanel.setCheckpoints(sorted);
-      if (selectedTurnCount !== null && !sorted.some((c) => checkpointTurnCount(c) === selectedTurnCount)) {
+      if (selectedTurnCount !== null && !sorted.some((c) => c.checkpointTurnCount === selectedTurnCount)) {
         pane.diffPanel.selectCheckpointTurnCount(null);
       }
     } catch (err) {
@@ -107,19 +128,32 @@
 
   async function loadDiff(): Promise<void> {
     const requestID = ++diffRequestID;
-    if (!threadId || checkpoints.length === 0) {
+    if (!threadId) {
+      if (requestID === diffRequestID) diffText = '';
+      return;
+    }
+    // Per-turn and session views need a checkpoint history to anchor the
+    // diff; workspace view is checkpoint-independent and just wants a
+    // current `git diff HEAD`.
+    if (tabMode !== 'workspace' && checkpoints.length === 0) {
       if (requestID === diffRequestID) diffText = '';
       return;
     }
     loading = true;
     pane.diffPanel.setError(null);
     try {
-      const range = selectedRange;
-      const nextDiff = ((await GetCheckpointRangeDiff(threadId, range.from, range.to)) ?? '') as string;
+      let nextDiff = '';
+      if (tabMode === 'per-turn') {
+        const range = selectedRange;
+        nextDiff = ((await GetCheckpointRangeDiff(threadId, range.from, range.to)) ?? '') as string;
+      } else if (tabMode === 'session') {
+        nextDiff = ((await GetSessionAgentDiff(threadId)) ?? '') as string;
+      } else {
+        nextDiff = ((await GetWorkspaceCurrentDiff(threadId)) ?? '') as string;
+      }
       if (requestID !== diffRequestID) return;
       diffText = nextDiff;
       expanded = new Set();
-      splitRowsCache = new Map();
     } catch (err) {
       if (requestID !== diffRequestID) return;
       diffText = '';
@@ -131,10 +165,6 @@
 
   function selectCheckpoint(turnCount: number | null): void {
     pane.diffPanel.selectCheckpointTurnCount(turnCount);
-  }
-
-  function checkpointTurnCount(checkpoint: Checkpoint): number {
-    return checkpoint.checkpointTurnCount;
   }
 
   function toggleFile(path: string): void {
@@ -149,19 +179,6 @@
       return;
     }
     expanded = open ? new Set(files.map((file) => file.path)) : new Set();
-  }
-
-  function splitCellClass(line: PatchFile['lines'][number] | null): string {
-    if (!line) return 'text-fg-muted/40';
-    return lineTintClass(line.type);
-  }
-
-  function splitRowsFor(file: PatchFile): SplitDiffRow[] {
-    const cached = splitRowsCache.get(file.path);
-    if (cached) return cached;
-    const rows = buildSplitRows(file.lines);
-    splitRowsCache = new Map(splitRowsCache).set(file.path, rows);
-    return rows;
   }
 
   async function handleRevert(mode: RevertMode): Promise<void> {
@@ -228,6 +245,7 @@
     threadId;
     selectedTurnCount;
     latestTurnCount;
+    tabMode;
     void loadDiff();
   });
 </script>
@@ -239,76 +257,26 @@
   class="relative flex h-full shrink-0 flex-col border-l border-border bg-surface-0"
 >
   <header class="border-b border-border bg-surface-1/70">
-    <div class="flex items-center gap-2 px-3 py-2">
-      <div class="min-w-0 flex-1">
-        <div class="text-[12px] font-semibold uppercase tracking-[0.08em] text-fg-muted">Checkpoint Diff</div>
-        <div class="mt-0.5 flex items-center gap-2 text-[12px] text-fg-muted">
-          <span>{totals.files} files</span>
-          <span class="text-success">+{totals.additions}</span>
-          <span class="text-error">-{totals.deletions}</span>
-        </div>
-      </div>
-      <button
-        class="rounded p-1.5 hover:bg-surface-2 {viewMode === 'stacked' ? 'bg-surface-2 text-fg' : 'text-fg-muted'}"
-        title="Stacked View"
-        aria-pressed={viewMode === 'stacked'}
-        onclick={() => pane.diffPanel.setViewMode('stacked')}
-      >
-        <Icon icon={Rows3} size={15} />
-      </button>
-      <button
-        class="rounded p-1.5 hover:bg-surface-2 {viewMode === 'split' ? 'bg-surface-2 text-fg' : 'text-fg-muted'}"
-        title="Split View"
-        aria-pressed={viewMode === 'split'}
-        onclick={() => pane.diffPanel.setViewMode('split')}
-      >
-        <Icon icon={Columns2} size={15} />
-      </button>
-      <button
-        class="rounded p-1.5 hover:bg-surface-2 {wordWrap ? 'bg-surface-2 text-fg' : 'text-fg-muted'}"
-        title="Wrap Lines"
-        aria-pressed={wordWrap}
-        onclick={() => updateSetting('diffWordWrap', !wordWrap)}
-      >
-        <Icon icon={WrapText} size={15} />
-      </button>
-      <button class="rounded p-1.5 text-fg-muted hover:bg-surface-2" aria-label="Close Diff Panel" data-testid="diff-panel-close" onclick={() => pane.setDiffPanelOpen(false)}>
-        <Icon icon={X} size={15} />
-      </button>
-    </div>
-
-    <div class="flex gap-1 overflow-x-auto border-t border-border-subtle px-3 py-2">
-      <button
-        class="shrink-0 rounded border px-2.5 py-1 text-[12px] {selectedTurnCount === null ? 'border-accent/60 bg-accent/15 text-accent' : 'border-border-subtle text-fg-muted hover:bg-surface-2'}"
-        onclick={() => selectCheckpoint(null)}
-        data-testid="diff-all-turns"
-      >
-        All turns
-      </button>
-      {#each visibleCheckpoints as checkpoint (checkpoint.id)}
-        <button
-          class="shrink-0 rounded border px-2.5 py-1 text-[12px] {selectedTurnCount === checkpointTurnCount(checkpoint) ? 'border-accent/60 bg-accent/15 text-accent' : 'border-border-subtle text-fg-muted hover:bg-surface-2'}"
-          onclick={() => selectCheckpoint(checkpointTurnCount(checkpoint))}
-          data-testid={`diff-turn-${checkpointTurnCount(checkpoint)}`}
-        >
-          {checkpointTurnCount(checkpoint) === 0 ? 'Baseline' : `Turn ${checkpointTurnCount(checkpoint)}`}
-          {#if checkpoint.status && checkpoint.status !== 'ready'}
-            <span class="ml-1 text-[10px] text-warning">{checkpoint.status}</span>
-          {/if}
-        </button>
-      {/each}
-      {#if selectedTurnCount !== null}
-        <button
-          class="ml-auto inline-flex shrink-0 items-center gap-1 rounded border border-error/40 px-2.5 py-1 text-[12px] text-error hover:bg-error/10"
-          onclick={() => (revertOpen = true)}
-          disabled={reverting}
-          data-testid="diff-turn-revert"
-        >
-          <Icon icon={RotateCcw} size={13} />
-          Revert
-        </button>
-      {/if}
-    </div>
+    <DiffPanelHeaderBar
+      {totals}
+      {viewMode}
+      setViewMode={(mode) => pane.diffPanel.setViewMode(mode)}
+      {wordWrap}
+      setWordWrap={(next) => updateSetting('diffWordWrap', next)}
+      {tabMode}
+      setTabMode={(mode) => pane.diffPanel.setTabMode(mode)}
+      onClose={() => pane.setDiffPanelOpen(false)}
+    />
+    {#if showChipStrip}
+      <DiffPanelChipStrip
+        {visibleCheckpoints}
+        {selectedTurnCount}
+        onSelectTurn={selectCheckpoint}
+        {showRevert}
+        {reverting}
+        onRevertClick={() => (revertOpen = true)}
+      />
+    {/if}
   </header>
 
   <div class="flex min-h-0 flex-1 flex-col">
@@ -319,7 +287,13 @@
       <button class="rounded border border-border-subtle px-2 py-1 text-[11px] text-fg-muted hover:bg-surface-2" onclick={() => setAllFiles(true)}>Expand all</button>
       <button class="rounded border border-border-subtle px-2 py-1 text-[11px] text-fg-muted hover:bg-surface-2" onclick={() => setAllFiles(false)}>Collapse all</button>
       <span class="ml-auto text-[11px] text-fg-muted">
-        {selectedRange.from} → {selectedRange.to}
+        {#if tabMode === 'per-turn'}
+          {selectedRange.from} → {selectedRange.to}
+        {:else if tabMode === 'session'}
+          Agent edits since baseline
+        {:else}
+          Uncommitted vs HEAD
+        {/if}
       </span>
     </div>
 
@@ -333,7 +307,13 @@
       {:else}
         <div class="space-y-2" data-testid="diff-viewer">
           {#each files as file (file.path)}
-            {@render FileCard(file, expanded.has(file.path), viewMode, wordWrap, () => toggleFile(file.path))}
+            <DiffPanelFileCard
+              {file}
+              open={expanded.has(file.path)}
+              {viewMode}
+              {wordWrap}
+              onToggle={() => toggleFile(file.path)}
+            />
           {/each}
         </div>
       {/if}
@@ -355,6 +335,7 @@
   open={revertOpen}
   checkpointTurnCount={selectedTurnCount ?? 0}
   provider={(pane.thread?.provider ?? '').toLowerCase()}
+  affectedFiles={revertAffectedFiles}
   reverting={reverting}
   onRevert={handleRevert}
   onCancel={() => {
@@ -362,47 +343,3 @@
   }}
 />
 
-{#snippet FileCard(file: PatchFile, open: boolean, viewMode: 'stacked' | 'split', wordWrap: boolean, onToggle: () => void)}
-  <section class="overflow-hidden rounded-[var(--radius-control)] border border-border-subtle bg-card/30">
-    <!--
-      Header: button toggles open/closed, EditorLink sibling opens the
-      file in the user's editor. Same dual-control layout used by
-      DiffPreview to avoid nested interactives.
-    -->
-    <div class="group/diff-panel-file flex w-full items-center gap-2 px-3 py-2 hover:bg-surface-2/40">
-      <button
-        class="flex flex-1 min-w-0 items-center gap-2 text-left bg-transparent border-0 p-0 cursor-pointer"
-        onclick={onToggle}
-        data-testid="diff-panel-file-toggle"
-        data-path={file.path}
-      >
-        <Icon icon={ChevronDown} size={14} class={open ? '' : '-rotate-90'} />
-        <span class="rounded bg-accent/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-accent">FileChange</span>
-        <span class="min-w-0 flex-1 truncate font-mono text-[12px] text-fg">{file.path}</span>
-        <span class="text-[11px] text-success">+{file.additions}</span>
-        <span class="text-[11px] text-error">-{file.deletions}</span>
-      </button>
-      <EditorLink
-        path={file.path}
-        asIcon
-        stopPropagation
-        class="opacity-0 group-hover/diff-panel-file:opacity-100 focus-visible:opacity-100"
-      />
-    </div>
-    {#if open}
-      {#if viewMode === 'split'}
-        <div class="max-h-[42rem] overflow-auto border-t border-border-subtle bg-surface-0 font-mono text-[12px] leading-relaxed">
-          {#each splitRowsFor(file) as row}
-            <div class="grid grid-cols-2 border-b border-border-subtle/40 last:border-b-0">
-              <pre class="min-w-0 border-r border-border-subtle/50 px-3 py-0.5 {wordWrap ? 'whitespace-pre-wrap break-all' : 'whitespace-pre'} {splitCellClass(row.left)}">{row.left?.content ?? ''}</pre>
-              <pre class="min-w-0 px-3 py-0.5 {wordWrap ? 'whitespace-pre-wrap break-all' : 'whitespace-pre'} {splitCellClass(row.right)}">{row.right?.content ?? ''}</pre>
-            </div>
-          {/each}
-        </div>
-      {:else}
-      <pre class="max-h-[42rem] overflow-auto border-t border-border-subtle bg-surface-0 p-3 font-mono text-[12px] leading-relaxed {wordWrap ? 'whitespace-pre-wrap break-all' : 'whitespace-pre'}">{#each file.lines as line}<span class="block {lineTintClass(line.type)}">{line.content}
-</span>{/each}</pre>
-      {/if}
-    {/if}
-  </section>
-{/snippet}

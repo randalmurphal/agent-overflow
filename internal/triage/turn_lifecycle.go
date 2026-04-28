@@ -397,6 +397,12 @@ func (r *Router) captureCompletedTurnCheckpoint(ctx context.Context, settled Tur
 			files = nil
 		}
 	}
+	// Drain the per-turn committed-paths set and normalize against the
+	// workspace. Deduped + sorted so the persisted JSON is deterministic.
+	// Use settled.TurnIndex (the original index from the provider) because
+	// path tracking keys on that, not on turnCount which is settled+1.
+	rawPaths := r.drainCommittedToolPaths(settled.ThreadID, settled.TurnIndex)
+	toolPaths := normalizeWorkspaceRelativePaths(rawPaths, workspace)
 	now := time.Now().UnixMilli()
 	record := store.Checkpoint{
 		ID:                  uuid.NewString(),
@@ -407,6 +413,7 @@ func (r *Router) captureCompletedTurnCheckpoint(ctx context.Context, settled Tur
 		RefName:             ref,
 		Status:              checkpointStatusForTurn(settled),
 		Files:               files,
+		ToolPaths:           toolPaths,
 		AssistantMessageID:  settled.AssistantMessageID,
 		CompletedAt:         settled.CompletedAt,
 		CapturedAt:          now,
@@ -733,6 +740,20 @@ func (r *Router) clearOpenTurn(threadID string) {
 		deleteByPrefix(r.activeThinkingBlocks, prefix)
 		deleteByPrefix(r.errorSeqByScope, prefix)
 		deleteByPrefix(r.terminalInteractionSeq, prefix)
+		// committedToolPaths is keyed by `<threadID>|<turnIndex>` (no
+		// trailing `|`), so an exact-match delete is the right primitive.
+		// Any captureCompletedTurnCheckpoint already drained this entry;
+		// the delete is defensive against a turn that closed without the
+		// checkpoint capture firing.
+		delete(r.committedToolPaths, fmt.Sprintf("%s|%d", threadID, turnIndex))
+		// pendingToolPaths is keyed by `<threadID>|<itemID>` — no turn
+		// component — so a per-thread prefix-sweep is the correct
+		// primitive. Any tool that started in this turn but didn't fire
+		// EventToolComplete (interrupted turn, crashed provider) leaks
+		// here without this sweep. Provider events are serialized per
+		// thread, so a tool from a future turn cannot have entered the
+		// map yet.
+		deleteByPrefix(r.pendingToolPaths, threadID+"|")
 	}
 	delete(r.openTurns, threadID)
 	delete(r.interruptQueue, threadID)
@@ -921,6 +942,12 @@ func (r *Router) CleanupThread(threadID string) {
 		}
 	}
 	deleteByPrefix(r.terminalInteractionSeq, prefix)
+	// Drop tool-path tracking for the thread. pendingToolPaths is
+	// keyed by `<threadID>|<itemID>` and committedToolPaths by
+	// `<threadID>|<turnIndex>` — both share the same `<threadID>|`
+	// prefix.
+	deleteByPrefix(r.pendingToolPaths, prefix)
+	deleteByPrefix(r.committedToolPaths, prefix)
 	// Drop the Codex background projector's per-thread trackers. A
 	// restarted session never inherits trackers from a prior session —
 	// the wire replays item/started for still-inProgress items and the

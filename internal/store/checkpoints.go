@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"sort"
 
 	"agent-overflow/internal/diffsummary"
 )
@@ -21,10 +22,17 @@ type Checkpoint struct {
 	BaselineSHA         string             `json:"baselineSha,omitempty"`
 	Status              string             `json:"status"`
 	Files               []diffsummary.File `json:"files"`
-	AssistantMessageID  string             `json:"assistantMessageId,omitempty"`
-	CompletedAt         int64              `json:"completedAt,omitempty"`
-	CapturedAt          int64              `json:"capturedAt"`
-	WorkspacePath       string             `json:"workspacePath"`
+	// ToolPaths records the workspace-relative paths the agent's
+	// file-mutating tools wrote during the turn this checkpoint closes.
+	// Bash side effects are intentionally NOT tracked. An empty slice
+	// means the agent did no file-mutating tool calls during the turn
+	// (or the row predates v32) — a conversation-and-files revert
+	// targeting such a row is a no-op on the worktree.
+	ToolPaths          []string `json:"toolPaths"`
+	AssistantMessageID string   `json:"assistantMessageId,omitempty"`
+	CompletedAt        int64    `json:"completedAt,omitempty"`
+	CapturedAt         int64    `json:"capturedAt"`
+	WorkspacePath      string   `json:"workspacePath"`
 }
 
 // CheckpointRef identifies the Git ref backing a checkpoint row and the
@@ -34,14 +42,14 @@ type CheckpointRef struct {
 	WorkspacePath string
 }
 
-const checkpointColumns = `id, thread_id, turn_index, checkpoint_turn_count, turn_id, ref_name, baseline_sha, status, files, assistant_message_id, completed_at, captured_at, workspace_path`
+const checkpointColumns = `id, thread_id, turn_index, checkpoint_turn_count, turn_id, ref_name, baseline_sha, status, files, tool_paths, assistant_message_id, completed_at, captured_at, workspace_path`
 
 func scanCheckpoint(scanner interface{ Scan(...any) error }) (Checkpoint, error) {
 	var c Checkpoint
-	var filesJSON string
+	var filesJSON, toolPathsJSON string
 	if err := scanner.Scan(
 		&c.ID, &c.ThreadID, &c.TurnIndex, &c.CheckpointTurnCount, &c.TurnID, &c.RefName, &c.BaselineSHA,
-		&c.Status, &filesJSON, &c.AssistantMessageID, &c.CompletedAt,
+		&c.Status, &filesJSON, &toolPathsJSON, &c.AssistantMessageID, &c.CompletedAt,
 		&c.CapturedAt, &c.WorkspacePath,
 	); err != nil {
 		return Checkpoint{}, err
@@ -58,6 +66,11 @@ func scanCheckpoint(scanner interface{ Scan(...any) error }) (Checkpoint, error)
 	if filesJSON != "" {
 		if err := json.Unmarshal([]byte(filesJSON), &c.Files); err != nil {
 			return Checkpoint{}, fmt.Errorf("store: unmarshal checkpoint files for %s: %w", c.ID, err)
+		}
+	}
+	if toolPathsJSON != "" {
+		if err := json.Unmarshal([]byte(toolPathsJSON), &c.ToolPaths); err != nil {
+			return Checkpoint{}, fmt.Errorf("store: unmarshal checkpoint tool_paths for %s: %w", c.ID, err)
 		}
 	}
 	return c, nil
@@ -81,15 +94,19 @@ func (s *Store) SaveCheckpoint(c Checkpoint) error {
 	if err != nil {
 		return fmt.Errorf("store: marshal checkpoint files: %w", err)
 	}
+	toolPathsJSON, err := json.Marshal(c.ToolPaths)
+	if err != nil {
+		return fmt.Errorf("store: marshal checkpoint tool_paths: %w", err)
+	}
 	_, err = s.db.Exec(
 		`INSERT INTO thread_checkpoints (
 			id, thread_id, turn_index, checkpoint_turn_count, turn_id, ref_name,
-			baseline_sha, status, files, assistant_message_id, completed_at,
+			baseline_sha, status, files, tool_paths, assistant_message_id, completed_at,
 			captured_at, workspace_path
-		 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		c.ID, c.ThreadID, c.TurnIndex, c.CheckpointTurnCount, c.TurnID, c.RefName,
-		c.BaselineSHA, c.Status, string(filesJSON), c.AssistantMessageID, c.CompletedAt,
-		c.CapturedAt, c.WorkspacePath,
+		c.BaselineSHA, c.Status, string(filesJSON), string(toolPathsJSON),
+		c.AssistantMessageID, c.CompletedAt, c.CapturedAt, c.WorkspacePath,
 	)
 	if err != nil {
 		return fmt.Errorf("store: insert checkpoint %s: %w", c.ID, err)
@@ -114,6 +131,10 @@ func (s *Store) ReplaceCheckpointByTurnCount(c Checkpoint) (CheckpointRef, error
 	filesJSON, err := json.Marshal(c.Files)
 	if err != nil {
 		return CheckpointRef{}, fmt.Errorf("store: marshal replacement checkpoint files: %w", err)
+	}
+	toolPathsJSON, err := json.Marshal(c.ToolPaths)
+	if err != nil {
+		return CheckpointRef{}, fmt.Errorf("store: marshal replacement checkpoint tool_paths: %w", err)
 	}
 
 	tx, err := s.db.Begin()
@@ -145,12 +166,12 @@ func (s *Store) ReplaceCheckpointByTurnCount(c Checkpoint) (CheckpointRef, error
 	if _, err := tx.Exec(
 		`INSERT INTO thread_checkpoints (
 			id, thread_id, turn_index, checkpoint_turn_count, turn_id, ref_name,
-			baseline_sha, status, files, assistant_message_id, completed_at,
+			baseline_sha, status, files, tool_paths, assistant_message_id, completed_at,
 			captured_at, workspace_path
-		 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		c.ID, c.ThreadID, c.TurnIndex, c.CheckpointTurnCount, c.TurnID, c.RefName,
-		c.BaselineSHA, c.Status, string(filesJSON), c.AssistantMessageID, c.CompletedAt,
-		c.CapturedAt, c.WorkspacePath,
+		c.BaselineSHA, c.Status, string(filesJSON), string(toolPathsJSON),
+		c.AssistantMessageID, c.CompletedAt, c.CapturedAt, c.WorkspacePath,
 	); err != nil {
 		return CheckpointRef{}, fmt.Errorf("store: insert replacement checkpoint %s: %w", c.ID, err)
 	}
@@ -171,6 +192,9 @@ func normalizeCheckpoint(c Checkpoint) Checkpoint {
 	}
 	if c.Files == nil {
 		c.Files = []diffsummary.File{}
+	}
+	if c.ToolPaths == nil {
+		c.ToolPaths = []string{}
 	}
 	return c
 }
@@ -277,6 +301,59 @@ func (s *Store) DeleteCheckpointsAfterTurn(threadID string, keepThroughTurn int)
 		return nil, fmt.Errorf("store: delete checkpoints after turn for thread %s: %w", threadID, err)
 	}
 	return refs, nil
+}
+
+// GetCumulativeToolPaths returns the deduped union of `tool_paths` across
+// every checkpoint row for the thread with checkpoint_turn_count strictly
+// greater than fromTurnCountExclusive. Used by RevertToCheckpoint to find
+// every workspace path the agent touched after the target checkpoint, so
+// the path-scoped restore can roll exactly those paths back. Order is
+// stable (sorted ascending) for deterministic git invocations.
+func (s *Store) GetCumulativeToolPaths(threadID string, fromTurnCountExclusive int) ([]string, error) {
+	rows, err := s.db.Query(
+		`SELECT tool_paths FROM thread_checkpoints
+		 WHERE thread_id = ? AND checkpoint_turn_count > ?
+		 ORDER BY checkpoint_turn_count`,
+		threadID, fromTurnCountExclusive,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: list cumulative tool paths thread=%s after=%d: %w",
+			threadID, fromTurnCountExclusive, err)
+	}
+	defer rows.Close()
+
+	seen := make(map[string]struct{})
+	for rows.Next() {
+		var raw string
+		if err := rows.Scan(&raw); err != nil {
+			return nil, fmt.Errorf("store: scan cumulative tool paths: %w", err)
+		}
+		if raw == "" {
+			continue
+		}
+		var paths []string
+		if err := json.Unmarshal([]byte(raw), &paths); err != nil {
+			return nil, fmt.Errorf("store: unmarshal cumulative tool paths thread=%s: %w", threadID, err)
+		}
+		for _, p := range paths {
+			if p == "" {
+				continue
+			}
+			seen[p] = struct{}{}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate cumulative tool paths: %w", err)
+	}
+	if len(seen) == 0 {
+		return nil, nil
+	}
+	out := make([]string, 0, len(seen))
+	for p := range seen {
+		out = append(out, p)
+	}
+	sort.Strings(out)
+	return out, nil
 }
 
 // DeleteCheckpointByThreadTurnCount removes the checkpoint row for

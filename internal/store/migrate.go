@@ -856,6 +856,20 @@ CREATE INDEX IF NOT EXISTS idx_thread_drafts_pending_plan_impl
   WHERE pending_plan_implementation IS NOT NULL;
 `,
 	},
+	{
+		Version: 32,
+		Name:    "thread_checkpoints_tool_paths",
+		// tool_paths records the workspace-relative paths that the agent's
+		// file-mutating tools wrote during the turn this checkpoint closes.
+		// Used by RevertToCheckpoint's "conversation-and-files" mode to
+		// restore only paths the agent touched, leaving manual edits to
+		// unrelated files alone. Pre-migration rows default to '[]'
+		// (empty); reverting against such a row is a no-op on the
+		// worktree — the conversation truncation half still runs.
+		SQL: `
+ALTER TABLE thread_checkpoints ADD COLUMN tool_paths TEXT NOT NULL DEFAULT '[]';
+`,
+	},
 }
 
 // v13SQL is the DROP-and-rebuild payload for migration v13. Extracted so

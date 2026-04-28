@@ -60,6 +60,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "GetPayloadPreview", ID: 4070214921}, // main.App.GetPayloadPreview
 	{Name: "GetProviderStatuses", ID: 3829328996}, // main.App.GetProviderStatuses
 	{Name: "GetRemoteEndpointToken", ID: 3604571249}, // main.App.GetRemoteEndpointToken
+	{Name: "GetSessionAgentDiff", ID: 2631559849}, // main.App.GetSessionAgentDiff
 	{Name: "GetSettings", ID: 2554697378}, // main.App.GetSettings
 	{Name: "GetTerminalReplay", ID: 2329592604}, // main.App.GetTerminalReplay
 	{Name: "GetThread", ID: 1098302047}, // main.App.GetThread
@@ -69,6 +70,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "GetUIRenderTracePath", ID: 1009213933}, // main.App.GetUIRenderTracePath
 	{Name: "GetWSLDistroPreference", ID: 294719565}, // main.App.GetWSLDistroPreference
 	{Name: "GetWorkingTreeDiff", ID: 1858968113}, // main.App.GetWorkingTreeDiff
+	{Name: "GetWorkspaceCurrentDiff", ID: 736820142}, // main.App.GetWorkspaceCurrentDiff
 	{Name: "GitCheckout", ID: 1598126927}, // main.App.GitCheckout
 	{Name: "GitCommit", ID: 1971060042}, // main.App.GitCommit
 	{Name: "GitCreateBranch", ID: 2582897723}, // main.App.GitCreateBranch

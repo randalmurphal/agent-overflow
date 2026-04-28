@@ -130,7 +130,7 @@ func seedE2EThread(t *testing.T, app *App, id, workspace string, p provider.Prov
 // captureE2E runs a real CaptureBaseline through the App's store and
 // persists the bookkeeping row, mirroring what the triage router does on
 // EventTurnStart. Used by tests that don't drive the router directly.
-func captureE2E(t *testing.T, app *App, threadID, workspace string, turn int) store.Checkpoint {
+func captureE2E(t *testing.T, app *App, threadID, workspace string, turn int, toolPaths ...string) store.Checkpoint {
 	t.Helper()
 	ref, err := app.checkpoints.CaptureBaseline(context.Background(), workspace, threadID, turn)
 	if err != nil {
@@ -142,6 +142,7 @@ func captureE2E(t *testing.T, app *App, threadID, workspace string, turn int) st
 		TurnIndex:           turn,
 		CheckpointTurnCount: turn,
 		RefName:             ref,
+		ToolPaths:           toolPaths,
 		CapturedAt:          time.Now().UnixMilli(),
 		WorkspacePath:       workspace,
 	}
@@ -361,7 +362,11 @@ func TestAppE2E_RevertToCheckpointConversationAndFilesOnClaudeClearsSessionAndRe
 	if err := e.app.store.UpdateThread(thread); err != nil {
 		t.Fatalf("update thread: %v", err)
 	}
+	// Turn 0 = baseline; turn 1 = agent edits README. The path-scoped
+	// restore consults turn-1's tool_paths to decide what to roll back.
 	captureE2E(t, e.app, "t-claude", workspace, 0)
+	writeE2EFile(t, workspace, "README", "agent-edited\n")
+	captureE2E(t, e.app, "t-claude", workspace, 1, "README")
 	writeE2EFile(t, workspace, "README", "dirty\n")
 
 	if err := e.app.RevertToCheckpoint("t-claude", 0, RevertModeConversationAndFiles); err != nil {
@@ -381,7 +386,7 @@ func TestAppE2E_RevertToCheckpointConversationAndFilesOnClaudeClearsSessionAndRe
 // #30 — revert-both on a Codex thread restores the worktree. The
 // conversation rollback against the live provider is covered by the
 // tests in internal/provider/codex; this test verifies the app-layer
-// plumbing calls RestoreWorktree after the provider call.
+// plumbing calls RestoreWorktreePaths after the provider call.
 //
 // Because the test doesn't spin up a real codex binary, the provider
 // call is skipped by having no active session and no SessionRef — the
@@ -572,9 +577,15 @@ func TestAppE2E_RevertToCheckpointConversationAndFilesOnCodexFullRoundTrip(t *te
 		t.Fatalf("update thread: %v", err)
 	}
 	seedCodexItems(t, e.app, "t-codex", 0, 1)
+	// Turn 0 = baseline. Turn 1's tool_paths records README and junk.txt
+	// — the agent's two edits — so the path-scoped restore knows what to
+	// roll back. Turn 2 (the last seeded item turn) has no checkpoint
+	// row in this test setup; numTurns rolls all the way to baseline.
 	captureE2E(t, e.app, "t-codex", workspace, 0)
-	writeE2EFile(t, workspace, "README", "dirty-tree\n")
+	writeE2EFile(t, workspace, "README", "agent-modified\n")
 	writeE2EFile(t, workspace, "junk.txt", "agent-added\n")
+	captureE2E(t, e.app, "t-codex", workspace, 1, "README", "junk.txt")
+	writeE2EFile(t, workspace, "README", "dirty-tree\n")
 
 	if err := e.app.RevertToCheckpoint("t-codex", 0, RevertModeConversationAndFiles); err != nil {
 		t.Fatalf("revert checkpoint: %v", err)
@@ -893,3 +904,75 @@ func TestAppE2E_CheckpointCaptureWithActiveProvider(t *testing.T) {
 		t.Errorf("expected %d checkpoint:captured emissions, got %d", threadCount, captured)
 	}
 }
+
+// Headline test for the path-scoped revert. The agent edits one file in
+// turn 1 and another in turn 2; the user manually edits an unrelated
+// file between turns. After reverting to turn 0, the agent edits are
+// rolled back but the manual edit survives. Mirrors the design intent:
+// the revert is bounded to the agent.tool_paths set so manual workspace
+// activity is preserved across turn boundaries.
+func TestAppE2E_RevertConversationAndFilesPreservesManualEditsToOtherFiles(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	e := newE2EApp(t)
+	workspace := t.TempDir()
+	initE2ERepo(t, workspace)
+
+	thread := seedE2EThread(t, e.app, "t-paths", workspace, provider.Claude)
+	thread.SessionRef = ""
+	if err := e.app.store.UpdateThread(thread); err != nil {
+		t.Fatalf("update thread: %v", err)
+	}
+	for _, turn := range []int{0, 1, 2} {
+		if err := e.app.store.InsertItem(store.Item{
+			ID: "it-" + string(rune('0'+turn)), ThreadID: "t-paths",
+			TurnIndex: turn, ItemIndex: 0, Kind: "user_text", Role: "user",
+			Summary: "x", CreatedAt: time.Now().UnixMilli(),
+		}); err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+	}
+
+	// Seed three pre-existing tracked files at baseline so each can be
+	// edited and tracked independently. README ships with initE2ERepo.
+	writeE2EFile(t, workspace, "a.txt", "a-baseline\n")
+	writeE2EFile(t, workspace, "b.txt", "b-baseline\n")
+	writeE2EFile(t, workspace, "c.txt", "c-baseline\n")
+	runE2EGit(t, workspace, "add", "-A")
+	runE2EGit(t, workspace,
+		"-c", "user.email=tester@test", "-c", "user.name=Tester",
+		"commit", "-q", "-m", "seed")
+
+	// Turn 0 baseline.
+	captureE2E(t, e.app, "t-paths", workspace, 0)
+
+	// Turn 1: agent rewrites a.txt.
+	writeE2EFile(t, workspace, "a.txt", "agent-modified-a\n")
+	captureE2E(t, e.app, "t-paths", workspace, 1, "a.txt")
+
+	// User manually edits b.txt between turns. Not tracked in any
+	// tool_paths because the agent did not write it.
+	writeE2EFile(t, workspace, "b.txt", "user-manual-b\n")
+
+	// Turn 2: agent rewrites c.txt.
+	writeE2EFile(t, workspace, "c.txt", "agent-modified-c\n")
+	captureE2E(t, e.app, "t-paths", workspace, 2, "c.txt")
+
+	if err := e.app.RevertToCheckpoint("t-paths", 0, RevertModeConversationAndFiles); err != nil {
+		t.Fatalf("revert: %v", err)
+	}
+
+	got := func(name string) string {
+		data, _ := os.ReadFile(filepath.Join(workspace, name))
+		return string(data)
+	}
+	if got("a.txt") != "a-baseline\n" {
+		t.Errorf("a.txt should be rolled back to baseline; got %q", got("a.txt"))
+	}
+	if got("c.txt") != "c-baseline\n" {
+		t.Errorf("c.txt should be rolled back to baseline; got %q", got("c.txt"))
+	}
+	if got("b.txt") != "user-manual-b\n" {
+		t.Errorf("b.txt should retain the user manual edit; got %q", got("b.txt"))
+	}
+}
+

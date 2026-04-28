@@ -40,6 +40,7 @@ function checkpoint(turnCount: number): Checkpoint {
     files: turnCount === 0
       ? []
       : [{ path: `turn-${turnCount}.ts`, kind: 'modified', additions: 1, deletions: 0 }],
+    toolPaths: turnCount === 0 ? [] : [`turn-${turnCount}.ts`],
     capturedAt: Date.UTC(2026, 0, 1, 0, turnCount),
     workspacePath: '/tmp/workspace',
   };
@@ -99,8 +100,12 @@ describe('<DiffPanelDrawer>', () => {
   });
 
   it('loads an adjacent checkpoint range when a turn chip is selected', async () => {
-    const getRange = setBindingMock('GetCheckpointRangeDiff', async (_threadId: string, from: number, to: number) =>
-      patch(`range-${from}-${to}.ts`),
+    // Patch path matches the selected checkpoint's toolPaths so the
+    // per-turn filter keeps the file. Per-turn tab drops paths the
+    // agent didn't write — mismatched paths would render an empty
+    // viewer.
+    const getRange = setBindingMock('GetCheckpointRangeDiff', async (_threadId: string, _from: number, to: number) =>
+      patch(`turn-${to}.ts`),
     );
     const pane = await buildPane(makeThread({ id: 'thread-a' }));
     const { getByTestId, findByTestId } = render(DiffPanelDrawer, { props: { pane } });
@@ -110,7 +115,7 @@ describe('<DiffPanelDrawer>', () => {
     await fireEvent.click(getByTestId('diff-turn-1'));
 
     await waitFor(() => expect(getRange).toHaveBeenCalledWith('thread-a', 0, 1));
-    expect((await findByTestId('diff-viewer')).textContent).toContain('range-0-1.ts');
+    expect((await findByTestId('diff-viewer')).textContent).toContain('turn-1.ts');
     expect(getByTestId('diff-turn-revert')).toBeInTheDocument();
   });
 

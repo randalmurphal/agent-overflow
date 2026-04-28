@@ -12,6 +12,7 @@ function checkpoint(overrides: Partial<Checkpoint> = {}): Checkpoint {
     refName: `refs/agent-overflow/checkpoints/t-1/${checkpointTurnCount}`,
     status: 'ready',
     files: [],
+    toolPaths: [],
     capturedAt: 0,
     workspacePath: '/workspace',
     ...overrides,

@@ -81,7 +81,7 @@ func seedCheckpointThread(t *testing.T, app *App, threadID, workspace string, pr
 	return thread
 }
 
-func captureForTest(t *testing.T, app *App, threadID, workspace string, turnIndex int) store.Checkpoint {
+func captureForTest(t *testing.T, app *App, threadID, workspace string, turnIndex int, toolPaths ...string) store.Checkpoint {
 	t.Helper()
 	ref, err := app.checkpoints.CaptureBaseline(context.Background(), workspace, threadID, turnIndex)
 	if err != nil {
@@ -93,6 +93,7 @@ func captureForTest(t *testing.T, app *App, threadID, workspace string, turnInde
 		TurnIndex:           turnIndex,
 		CheckpointTurnCount: turnIndex,
 		RefName:             ref,
+		ToolPaths:           toolPaths,
 		CapturedAt:          time.Now().UnixMilli(),
 		WorkspacePath:       workspace,
 	}
@@ -231,7 +232,13 @@ func TestRevertToCheckpointConversationAndFilesOnClaudeRestoresWorktreeAndClears
 			t.Fatalf("insert item: %v", err)
 		}
 	}
+	// Turn 0 is the baseline; turn 1 captures the agent's edit to
+	// README. The path-scoped restore looks at tool_paths from
+	// post-target rows, so the turn-1 row tells the revert "README is in
+	// scope".
 	captureForTest(t, app, "t-claude", workspace, 0)
+	writeCheckpointFile(t, workspace, "README", "agent-edited\n")
+	captureForTest(t, app, "t-claude", workspace, 1, "README")
 	writeCheckpointFile(t, workspace, "README", "dirty\n")
 
 	if err := app.RevertToCheckpoint("t-claude", 0, RevertModeConversationAndFiles); err != nil {

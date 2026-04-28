@@ -556,13 +556,14 @@ func countIntegCheckpointTemp(t *testing.T, tmp string) int {
 	return n
 }
 
-// #12 — RestoreWorktree applies the captured state on top of worktree drift.
-func TestIntegration_RestoreWorktreeAppliesCheckpoint(t *testing.T) {
+// #12 — RestoreWorktreePaths applies the captured state for listed paths
+// only and leaves everything else alone.
+func TestIntegration_RestoreWorktreePathsAppliesCheckpoint(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 	integInitRepo(t, dir)
-	// Capture content as it exists at baseline.
 	integWrite(t, dir, "to-restore.txt", "pristine content\n")
+	integWrite(t, dir, "untouched.txt", "stays as-is\n")
 
 	s := NewStore()
 	ref, err := s.CaptureBaseline(ctx, dir, "restore", 0)
@@ -570,37 +571,33 @@ func TestIntegration_RestoreWorktreeAppliesCheckpoint(t *testing.T) {
 		t.Fatalf("capture: %v", err)
 	}
 
-	// Modify the captured file; confirm the worktree has drifted.
+	// Drift both files. The restore call lists only one path; the other
+	// must survive untouched.
 	integWrite(t, dir, "to-restore.txt", "DRIFTED CONTENT\n")
+	integWrite(t, dir, "untouched.txt", "user manually changed\n")
 	got, _ := os.ReadFile(filepath.Join(dir, "to-restore.txt"))
 	if string(got) != "DRIFTED CONTENT\n" {
 		t.Fatalf("precondition: expected drifted content, got %q", got)
 	}
 
-	if err := s.RestoreWorktree(ctx, dir, ref); err != nil {
-		t.Fatalf("restore: %v", err)
+	if err := s.RestoreWorktreePaths(ctx, dir, ref, []string{"to-restore.txt"}); err != nil {
+		t.Fatalf("restore paths: %v", err)
 	}
 
 	got, _ = os.ReadFile(filepath.Join(dir, "to-restore.txt"))
 	if string(got) != "pristine content\n" {
-		t.Errorf("restore did not apply captured content; got %q", got)
+		t.Errorf("listed path not restored; got %q", got)
 	}
-
-	// Flip-verification: write the drifted content again and confirm it
-	// deviates. Proves the restore assertion above isn't a no-op — if restore
-	// silently did nothing, this second comparison would still pass with
-	// pristine content.
-	integWrite(t, dir, "to-restore.txt", "DRIFTED AGAIN\n")
-	got, _ = os.ReadFile(filepath.Join(dir, "to-restore.txt"))
-	if string(got) == "pristine content\n" {
-		t.Errorf("flip-verification failed: file didn't actually change")
+	got, _ = os.ReadFile(filepath.Join(dir, "untouched.txt"))
+	if string(got) != "user manually changed\n" {
+		t.Errorf("unlisted path should be untouched; got %q", got)
 	}
 }
 
-// #13 — Files added after capture are destroyed by restore (`git clean -fd`).
-// Documents the contract; existing unit test covers the same behavior at a
-// higher level, but we verify it here against a deeper file tree.
-func TestIntegration_RestoreWorktreeRemovesAddedFiles(t *testing.T) {
+// #13 — Files added after capture are unlinked by RestoreWorktreePaths only
+// when their path is listed. Files outside the list — including
+// untracked-not-ignored ones — survive.
+func TestIntegration_RestoreWorktreePathsRemovesListedAdded(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 	integInitRepo(t, dir)
@@ -613,9 +610,13 @@ func TestIntegration_RestoreWorktreeRemovesAddedFiles(t *testing.T) {
 
 	integWrite(t, dir, "deep/nested/added.txt", "should be removed\n")
 	integWrite(t, dir, "added-top.txt", "also removed\n")
+	integWrite(t, dir, "user-kept.txt", "user added this; not in list\n")
 
-	if err := s.RestoreWorktree(ctx, dir, ref); err != nil {
-		t.Fatalf("restore: %v", err)
+	if err := s.RestoreWorktreePaths(ctx, dir, ref, []string{
+		"deep/nested/added.txt",
+		"added-top.txt",
+	}); err != nil {
+		t.Fatalf("restore paths: %v", err)
 	}
 
 	for _, p := range []string{
@@ -623,8 +624,11 @@ func TestIntegration_RestoreWorktreeRemovesAddedFiles(t *testing.T) {
 		filepath.Join(dir, "added-top.txt"),
 	} {
 		if _, err := os.Stat(p); err == nil {
-			t.Errorf("expected %s to be removed by restore", p)
+			t.Errorf("expected %s to be removed", p)
 		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, "user-kept.txt")); err != nil {
+		t.Errorf("user-kept.txt should survive restore: %v", err)
 	}
 }
 

@@ -1,4 +1,4 @@
-import type { Checkpoint } from '../types/checkpoint';
+import type { Checkpoint, DiffPanelTab } from '../types/checkpoint';
 
 /** Visual mode for diff rendering. */
 export type DiffViewMode = 'stacked' | 'split';
@@ -6,6 +6,7 @@ export type DiffViewMode = 'stacked' | 'split';
 export interface DiffPanelState {
   readonly open: boolean;
   readonly viewMode: DiffViewMode;
+  readonly tabMode: DiffPanelTab;
   readonly selectedCheckpointTurnCount: number | null;
   readonly checkpoints: Checkpoint[];
   readonly checkpointsLoaded: boolean;
@@ -17,6 +18,7 @@ export interface DiffPanelState {
   close(): void;
   toggle(): void;
   setViewMode(mode: DiffViewMode): void;
+  setTabMode(mode: DiffPanelTab): void;
   selectCheckpointTurnCount(turnCount: number | null): void;
   setCheckpoints(checkpoints: Checkpoint[]): void;
   markCheckpointsUnavailable(reason: string): void;
@@ -35,6 +37,7 @@ export interface DiffPanelState {
 export function createDiffPanelState(): DiffPanelState {
   let open = $state(false);
   let viewMode: DiffViewMode = $state('stacked');
+  let tabMode: DiffPanelTab = $state('per-turn');
   let selectedCheckpointTurnCount: number | null = $state(null);
   let checkpoints: Checkpoint[] = $state([]);
   let checkpointsLoaded = $state(false);
@@ -45,6 +48,7 @@ export function createDiffPanelState(): DiffPanelState {
   return {
     get open() { return open; },
     get viewMode() { return viewMode; },
+    get tabMode() { return tabMode; },
     get selectedCheckpointTurnCount() { return selectedCheckpointTurnCount; },
     get checkpoints() { return checkpoints; },
     get checkpointsLoaded() { return checkpointsLoaded; },
@@ -56,6 +60,7 @@ export function createDiffPanelState(): DiffPanelState {
     close() { open = false; },
     toggle() { open = !open; },
     setViewMode(mode) { viewMode = mode; },
+    setTabMode(mode) { tabMode = mode; },
     selectCheckpointTurnCount(turnCount) { selectedCheckpointTurnCount = turnCount; },
 
     setCheckpoints(next) {
@@ -79,6 +84,7 @@ export function createDiffPanelState(): DiffPanelState {
     clearForThread() {
       open = false;
       viewMode = 'stacked';
+      tabMode = 'per-turn';
       selectedCheckpointTurnCount = null;
       checkpoints = [];
       checkpointsLoaded = false;

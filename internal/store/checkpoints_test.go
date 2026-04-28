@@ -24,6 +24,7 @@ func TestSaveAndGetCheckpointRoundTrip(t *testing.T) {
 		TurnIndex:     0,
 		RefName:       "refs/agent-overflow/checkpoints/dDE/turn/0",
 		BaselineSHA:   "deadbeef",
+		ToolPaths:     []string{"src/foo.go", "src/bar.go"},
 		CapturedAt:    time.Now().UnixMilli(),
 		WorkspacePath: "/tmp/workspace",
 	}
@@ -40,6 +41,108 @@ func TestSaveAndGetCheckpointRoundTrip(t *testing.T) {
 	}
 	if got.ID != c.ID || got.RefName != c.RefName || got.BaselineSHA != c.BaselineSHA {
 		t.Errorf("round-trip mismatch: got %+v want %+v", got, c)
+	}
+	if len(got.ToolPaths) != 2 || got.ToolPaths[0] != "src/foo.go" || got.ToolPaths[1] != "src/bar.go" {
+		t.Errorf("ToolPaths round-trip mismatch: got %v", got.ToolPaths)
+	}
+}
+
+func TestGetCumulativeToolPathsUnionsAcrossPostTargetRows(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThreadForCheckpoint(t, s, "t1")
+
+	rows := []Checkpoint{
+		{ID: "chk-0", ThreadID: "t1", TurnIndex: 0, RefName: "r0", ToolPaths: []string{"baseline-only.go"}, CapturedAt: 0, WorkspacePath: "/w"},
+		{ID: "chk-1", ThreadID: "t1", TurnIndex: 1, RefName: "r1", ToolPaths: []string{"a.go", "b.go"}, CapturedAt: 1, WorkspacePath: "/w"},
+		{ID: "chk-2", ThreadID: "t1", TurnIndex: 2, RefName: "r2", ToolPaths: []string{"b.go", "c.go"}, CapturedAt: 2, WorkspacePath: "/w"},
+		{ID: "chk-3", ThreadID: "t1", TurnIndex: 3, RefName: "r3", ToolPaths: []string{}, CapturedAt: 3, WorkspacePath: "/w"},
+	}
+	for _, c := range rows {
+		if err := s.SaveCheckpoint(c); err != nil {
+			t.Fatalf("save %s: %v", c.ID, err)
+		}
+	}
+
+	got, err := s.GetCumulativeToolPaths("t1", 0)
+	if err != nil {
+		t.Fatalf("cumulative: %v", err)
+	}
+	want := []string{"a.go", "b.go", "c.go"}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			t.Errorf("entry %d: got %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+func TestGetCumulativeToolPathsRespectsThreadIsolation(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThreadForCheckpoint(t, s, "t1")
+	mustCreateThreadForCheckpoint(t, s, "t2")
+
+	if err := s.SaveCheckpoint(Checkpoint{
+		ID: "t1-1", ThreadID: "t1", TurnIndex: 1, RefName: "t1-r1",
+		ToolPaths: []string{"t1.go"}, CapturedAt: 0, WorkspacePath: "/w",
+	}); err != nil {
+		t.Fatalf("t1: %v", err)
+	}
+	if err := s.SaveCheckpoint(Checkpoint{
+		ID: "t2-1", ThreadID: "t2", TurnIndex: 1, RefName: "t2-r1",
+		ToolPaths: []string{"t2.go"}, CapturedAt: 0, WorkspacePath: "/w",
+	}); err != nil {
+		t.Fatalf("t2: %v", err)
+	}
+
+	got, err := s.GetCumulativeToolPaths("t1", 0)
+	if err != nil {
+		t.Fatalf("cumulative: %v", err)
+	}
+	if len(got) != 1 || got[0] != "t1.go" {
+		t.Errorf("cross-thread leak: got %v, want [t1.go]", got)
+	}
+}
+
+func TestGetCumulativeToolPathsExclusiveLowerBound(t *testing.T) {
+	// fromTurnCountExclusive=N must include rows where turnCount > N, NOT
+	// the row at N itself. Used by RevertToCheckpoint(target=N) to find
+	// what was written AFTER target without rolling back target's own
+	// agent edits.
+	s := newTestStore(t)
+	mustCreateThreadForCheckpoint(t, s, "t1")
+
+	for i, paths := range [][]string{{"turn-0.go"}, {"turn-1.go"}, {"turn-2.go"}} {
+		if err := s.SaveCheckpoint(Checkpoint{
+			ID: fmt.Sprintf("chk-%d", i), ThreadID: "t1", TurnIndex: i,
+			RefName: fmt.Sprintf("r%d", i), ToolPaths: paths,
+			CapturedAt: int64(i), WorkspacePath: "/w",
+		}); err != nil {
+			t.Fatalf("save %d: %v", i, err)
+		}
+	}
+
+	got, err := s.GetCumulativeToolPaths("t1", 1)
+	if err != nil {
+		t.Fatalf("cumulative: %v", err)
+	}
+	want := []string{"turn-2.go"}
+	if len(got) != len(want) || got[0] != want[0] {
+		t.Errorf("exclusive lower bound broken: got %v, want %v", got, want)
+	}
+}
+
+func TestGetCumulativeToolPathsEmptyResultIsNil(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThreadForCheckpoint(t, s, "t1")
+
+	got, err := s.GetCumulativeToolPaths("t1", 0)
+	if err != nil {
+		t.Fatalf("cumulative: %v", err)
+	}
+	if got != nil {
+		t.Errorf("empty result should be nil, got %v", got)
 	}
 }
 

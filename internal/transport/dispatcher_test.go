@@ -595,6 +595,10 @@ func (p *privilegedApp) GitStageAll() string              { return "ok" }
 func (p *privilegedApp) GitCreatePR() string              { return "ok" }
 func (p *privilegedApp) PrepareThreadWorktree() string    { return "ok" }
 func (p *privilegedApp) RevertToCheckpoint() string       { return "ok" }
+func (p *privilegedApp) GetCheckpointRangeDiff() string   { return "ok" }
+func (p *privilegedApp) GetSessionAgentDiff() string      { return "ok" }
+func (p *privilegedApp) GetWorkingTreeDiff() string       { return "ok" }
+func (p *privilegedApp) GetWorkspaceCurrentDiff() string  { return "ok" }
 
 // 2. Session control.
 func (p *privilegedApp) StartSession() string                  { return "ok" }

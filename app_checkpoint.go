@@ -70,6 +70,76 @@ func (a *App) GetCheckpointRangeDiff(threadID string, fromTurnCount int, toTurnC
 	return string(patch), nil
 }
 
+// GetSessionAgentDiff returns the unified diff between the thread's
+// baseline checkpoint (turn count 0) and the latest checkpoint, restricted
+// to the cumulative set of paths the agent's file-mutating tools wrote
+// across the session. Empty result when no checkpoints exist or no agent
+// writes have been recorded.
+func (a *App) GetSessionAgentDiff(threadID string) (string, error) {
+	if _, err := a.store.GetThread(threadID); err != nil {
+		return "", fmt.Errorf("get session agent diff: %w", err)
+	}
+	checkpoints, err := a.store.ListCheckpoints(threadID)
+	if err != nil {
+		return "", fmt.Errorf("get session agent diff: %w", err)
+	}
+	if len(checkpoints) == 0 {
+		return "", nil
+	}
+	baseline := checkpoints[0]
+	latest := checkpoints[len(checkpoints)-1]
+	if baseline.CheckpointTurnCount == latest.CheckpointTurnCount {
+		// Only the baseline exists — nothing to diff against.
+		return "", nil
+	}
+	if err := validateCheckpointRecordForThread("get session agent diff", threadID, baseline); err != nil {
+		return "", err
+	}
+	if err := validateCheckpointRecordForThread("get session agent diff", threadID, latest); err != nil {
+		return "", err
+	}
+	if baseline.WorkspacePath != latest.WorkspacePath {
+		return "", fmt.Errorf("get session agent diff: checkpoint workspaces differ: %q != %q", baseline.WorkspacePath, latest.WorkspacePath)
+	}
+	paths, err := a.store.GetCumulativeToolPaths(threadID, baseline.CheckpointTurnCount)
+	if err != nil {
+		return "", fmt.Errorf("get session agent diff: %w", err)
+	}
+	if len(paths) == 0 {
+		return "", nil
+	}
+	patch, err := a.checkpointStore().DiffRefToRefScoped(
+		context.Background(), baseline.WorkspacePath, baseline.RefName, latest.RefName, paths,
+	)
+	if err != nil {
+		return "", fmt.Errorf("get session agent diff: %w", err)
+	}
+	return string(patch), nil
+}
+
+// GetWorkspaceCurrentDiff returns the full uncommitted diff in the
+// thread's workspace — `git diff HEAD` plus untracked-not-ignored files —
+// without filtering by tool_paths. Surfaces manual user edits alongside
+// any post-checkpoint agent activity.
+func (a *App) GetWorkspaceCurrentDiff(threadID string) (string, error) {
+	thread, err := a.store.GetThread(threadID)
+	if err != nil {
+		return "", fmt.Errorf("get workspace current diff: %w", err)
+	}
+	workspace := checkpointWorkspaceForThread(thread)
+	if workspace == "" {
+		return "", errors.New("get workspace current diff: thread has no workspace path")
+	}
+	if !a.checkpointStore().IsGitRepository(context.Background(), workspace) {
+		return "", nil
+	}
+	patch, err := a.checkpointStore().DiffWorkspaceVsHead(context.Background(), workspace)
+	if err != nil {
+		return "", fmt.Errorf("get workspace current diff: %w", err)
+	}
+	return string(patch), nil
+}
+
 // RevertToCheckpoint rolls a thread back to a checkpoint turn count. The
 // conversation-only mode keeps the current worktree and recaptures that kept
 // state as the new checkpoint baseline.
@@ -121,8 +191,16 @@ func (a *App) RevertToCheckpoint(threadID string, checkpointTurnCount int, mode 
 		if record.WorkspacePath != workspace {
 			return fmt.Errorf("revert checkpoint: checkpoint workspace %q does not match thread workspace %q", record.WorkspacePath, workspace)
 		}
-		if err := a.checkpointStore().RestoreWorktree(context.Background(), workspace, record.RefName); err != nil {
-			return fmt.Errorf("revert checkpoint: restore worktree: %w", err)
+		// Path-scoped restore: only the paths the agent's tools wrote
+		// after this checkpoint get rolled back. Manual edits to other
+		// files survive. The cumulative set is the union of every
+		// post-checkpoint row's tool_paths (deduped + sorted).
+		cumulative, err := a.store.GetCumulativeToolPaths(threadID, checkpointTurnCount)
+		if err != nil {
+			return fmt.Errorf("revert checkpoint: cumulative paths: %w", err)
+		}
+		if err := a.checkpointStore().RestoreWorktreePaths(context.Background(), workspace, record.RefName, cumulative); err != nil {
+			return fmt.Errorf("revert checkpoint: restore paths: %w", err)
 		}
 		// Bust the workspace file cache so the @-mention picker reflects
 		// the post-restore tree on the next composer interaction.

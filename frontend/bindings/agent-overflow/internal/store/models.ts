@@ -125,6 +125,15 @@ export class Checkpoint {
     "baselineSha"?: string;
     "status": string;
     "files": diffsummary$0.File[];
+
+    /**
+     * ToolPaths records the workspace-relative paths the agent's
+     * file-mutating tools wrote during the turn this checkpoint closes.
+     * Bash side effects are intentionally NOT tracked. Pre-v32 rows have
+     * an empty slice and trigger the legacy full-workspace restore in
+     * RevertToCheckpoint.
+     */
+    "toolPaths": string[];
     "assistantMessageId"?: string;
     "completedAt"?: number;
     "capturedAt": number;
@@ -153,6 +162,9 @@ export class Checkpoint {
         if (!("files" in $$source)) {
             this["files"] = [];
         }
+        if (!("toolPaths" in $$source)) {
+            this["toolPaths"] = [];
+        }
         if (!("capturedAt" in $$source)) {
             this["capturedAt"] = 0;
         }
@@ -168,9 +180,13 @@ export class Checkpoint {
      */
     static createFrom($$source: any = {}): Checkpoint {
         const $$createField8_0 = $$createType1;
+        const $$createField9_0 = $$createType2;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("files" in $$parsedSource) {
             $$parsedSource["files"] = $$createField8_0($$parsedSource["files"]);
+        }
+        if ("toolPaths" in $$parsedSource) {
+            $$parsedSource["toolPaths"] = $$createField9_0($$parsedSource["toolPaths"]);
         }
         return new Checkpoint($$parsedSource as Partial<Checkpoint>);
     }
@@ -272,8 +288,8 @@ export class DiscussionDefinition {
      * Creates a new DiscussionDefinition instance from a string or object.
      */
     static createFrom($$source: any = {}): DiscussionDefinition {
-        const $$createField5_0 = $$createType3;
-        const $$createField6_0 = $$createType4;
+        const $$createField5_0 = $$createType4;
+        const $$createField6_0 = $$createType5;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("participants" in $$parsedSource) {
             $$parsedSource["participants"] = $$createField5_0($$parsedSource["participants"]);
@@ -445,7 +461,7 @@ export class PagedItems {
      * Creates a new PagedItems instance from a string or object.
      */
     static createFrom($$source: any = {}): PagedItems {
-        const $$createField0_0 = $$createType6;
+        const $$createField0_0 = $$createType7;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("items" in $$parsedSource) {
             $$parsedSource["items"] = $$createField0_0($$parsedSource["items"]);
@@ -568,7 +584,7 @@ export class ProjectWithCounts {
      * Creates a new ProjectWithCounts instance from a string or object.
      */
     static createFrom($$source: any = {}): ProjectWithCounts {
-        const $$createField0_0 = $$createType7;
+        const $$createField0_0 = $$createType8;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("project" in $$parsedSource) {
             $$parsedSource["project"] = $$createField0_0($$parsedSource["project"]);
@@ -999,9 +1015,10 @@ export class Turn {
 // Private type creation functions
 const $$createType0 = diffsummary$0.File.createFrom;
 const $$createType1 = $Create.Array($$createType0);
-const $$createType2 = DiscussionParticipant.createFrom;
-const $$createType3 = $Create.Array($$createType2);
-const $$createType4 = DiscussionSettings.createFrom;
-const $$createType5 = Item.createFrom;
-const $$createType6 = $Create.Array($$createType5);
-const $$createType7 = Project.createFrom;
+const $$createType2 = $Create.Array($Create.Any);
+const $$createType3 = DiscussionParticipant.createFrom;
+const $$createType4 = $Create.Array($$createType3);
+const $$createType5 = DiscussionSettings.createFrom;
+const $$createType6 = Item.createFrom;
+const $$createType7 = $Create.Array($$createType6);
+const $$createType8 = Project.createFrom;

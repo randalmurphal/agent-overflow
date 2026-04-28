@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -216,6 +217,71 @@ func TestMigrationV29ThreadPinnedAt(t *testing.T) {
 	}
 	if !strings.Contains(indexSQL.String, "WHERE pinned_at IS NOT NULL") {
 		t.Errorf("expected partial index predicate; got %q", indexSQL.String)
+	}
+}
+
+// V32 adds tool_paths to thread_checkpoints. Verifies the column has the
+// expected default and that round-tripping the new struct field through
+// SaveCheckpoint/GetCheckpointByTurnCount preserves the slice.
+func TestMigrationV32ThreadCheckpointsToolPaths(t *testing.T) {
+	s := newTestStore(t)
+
+	rows, err := s.db.Query(`PRAGMA table_info(thread_checkpoints)`)
+	if err != nil {
+		t.Fatalf("PRAGMA table_info: %v", err)
+	}
+	defer rows.Close()
+	var (
+		found       bool
+		columnType  string
+		columnDflt  sql.NullString
+		columnNotNN int
+	)
+	for rows.Next() {
+		var (
+			cid       int
+			name, typ string
+			notnull   int
+			dflt      sql.NullString
+			pk        int
+		)
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
+			t.Fatalf("scan column: %v", err)
+		}
+		if name == "tool_paths" {
+			found = true
+			columnType = typ
+			columnDflt = dflt
+			columnNotNN = notnull
+		}
+	}
+	if !found {
+		t.Fatalf("tool_paths column missing from thread_checkpoints")
+	}
+	if columnType != "TEXT" {
+		t.Errorf("tool_paths type = %q, want TEXT", columnType)
+	}
+	if columnNotNN != 1 {
+		t.Errorf("tool_paths NOT NULL = %d, want 1", columnNotNN)
+	}
+	if !columnDflt.Valid || strings.TrimSpace(columnDflt.String) != "'[]'" {
+		t.Errorf("tool_paths default = %v, want '[]'", columnDflt.String)
+	}
+
+	mustCreateThreadForCheckpoint(t, s, "t-mig-v32")
+	if err := s.SaveCheckpoint(Checkpoint{
+		ID: "chk-v32", ThreadID: "t-mig-v32", TurnIndex: 1,
+		RefName: "refs/v32-test", ToolPaths: []string{"x.go", "y.go"},
+		CapturedAt: time.Now().UnixMilli(), WorkspacePath: "/w",
+	}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	got, ok, err := s.GetCheckpointByTurnCount("t-mig-v32", 1)
+	if err != nil || !ok {
+		t.Fatalf("get: %v ok=%v", err, ok)
+	}
+	if len(got.ToolPaths) != 2 || got.ToolPaths[0] != "x.go" || got.ToolPaths[1] != "y.go" {
+		t.Errorf("ToolPaths round-trip: got %v", got.ToolPaths)
 	}
 }
 

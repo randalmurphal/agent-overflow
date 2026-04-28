@@ -15,11 +15,22 @@ export interface Checkpoint {
     additions: number;
     deletions: number;
   }>;
+  /**
+   * Workspace-relative paths the agent's file-mutating tools wrote during
+   * the turn this checkpoint closes. Empty for the baseline (turn count 0)
+   * and for any turn where the agent didn't run an Edit / Write /
+   * MultiEdit / NotebookEdit (Claude) or a fileChange tool (Codex). Bash
+   * side effects are intentionally not tracked.
+   */
+  toolPaths: string[];
   assistantMessageId?: string;
   completedAt?: number;
   capturedAt: number;
   workspacePath: string;
 }
+
+/** Diff panel view mode. */
+export type DiffPanelTab = 'per-turn' | 'session' | 'workspace';
 
 export type RevertMode = 'conversation-and-files' | 'conversation-only';
 

@@ -109,6 +109,26 @@ var LocalOnlyMethods = map[string]bool{
 	// RevertToCheckpoint mutates the local working tree (git reset /
 	// checkout into the workspace). Same class.
 	"RevertToCheckpoint": true,
+	// Diff-returning bindings expose bulk file content in a single wire
+	// call. The threat shape matches the credential / endpoint
+	// enumeration class below: a token-holder gets the user's
+	// agent-edited code, in-progress work, and any non-gitignored config
+	// (e.g. a forgotten `secrets.local`, an `.env.example` the agent
+	// touched while iterating) in one call.
+	//
+	// Storage in a hidden git ref is NOT a security boundary — checkpoint
+	// captures stage everything tracked-at-HEAD plus untracked-not-ignored,
+	// so anything not gitignored ends up in the ref namespace. Working-tree
+	// and workspace-current diffs additionally include uncommitted edits.
+	//
+	// Lock all four down loopback-only. UX cost is "diff panels don't
+	// render from a remote browser"; that's a feature nobody currently
+	// depends on, and locking down later (after a remote workflow grows
+	// to need them) would be a breaking change.
+	"GetCheckpointRangeDiff":  true,
+	"GetSessionAgentDiff":     true,
+	"GetWorkingTreeDiff":      true,
+	"GetWorkspaceCurrentDiff": true,
 
 	// 2. Session control (provider subprocess spawn / steer).
 	"StartSession":             true,

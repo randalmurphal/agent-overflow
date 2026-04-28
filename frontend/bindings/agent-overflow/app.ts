@@ -480,6 +480,17 @@ export function GetRemoteEndpointToken(id: string): $CancellablePromise<string> 
 }
 
 /**
+ * GetSessionAgentDiff returns the unified diff between the thread's
+ * baseline checkpoint (turn count 0) and the latest checkpoint, restricted
+ * to the cumulative set of paths the agent's file-mutating tools wrote
+ * across the session. Empty result when no checkpoints exist or no agent
+ * writes have been recorded.
+ */
+export function GetSessionAgentDiff(threadID: string): $CancellablePromise<string> {
+    return $Call.ByID(2631559849, threadID);
+}
+
+/**
  * GetSettings returns the current persisted settings merged over defaults.
  * 
  * SECURITY: RemoteEndpoints[*].Token is redacted to the empty string
@@ -564,12 +575,9 @@ export function GetUIRenderTracePath(): $CancellablePromise<string> {
 
 /**
  * GetWSLDistroPreference returns the distro the Windows launcher is
- * configured to boot into on next launch. Returns "" when:
- *   - The backend isn't running under WSL.
- *   - The launcher didn't set AGENT_OVERFLOW_WIN_APPDATA (the backend
- *     was started by something other than the Windows launcher,
- *     e.g. a manual `go run` from inside a WSL shell).
- *   - The wsl.json file doesn't exist yet (first launch).
+ * configured to boot into on next launch, or "" when the preference
+ * isn't readable: not running under WSL, the launcher didn't inject
+ * AGENT_OVERFLOW_WIN_APPDATA, or the wsl.json file doesn't exist yet.
  */
 export function GetWSLDistroPreference(): $CancellablePromise<string> {
     return $Call.ByID(294719565);
@@ -580,6 +588,16 @@ export function GetWSLDistroPreference(): $CancellablePromise<string> {
  */
 export function GetWorkingTreeDiff(threadID: string): $CancellablePromise<string> {
     return $Call.ByID(1858968113, threadID);
+}
+
+/**
+ * GetWorkspaceCurrentDiff returns the full uncommitted diff in the
+ * thread's workspace — `git diff HEAD` plus untracked-not-ignored files —
+ * without filtering by tool_paths. Surfaces manual user edits alongside
+ * any post-checkpoint agent activity.
+ */
+export function GetWorkspaceCurrentDiff(threadID: string): $CancellablePromise<string> {
+    return $Call.ByID(736820142, threadID);
 }
 
 /**
@@ -729,14 +747,7 @@ export function InterruptTurn(threadID: string): $CancellablePromise<void> {
 
 /**
  * IsWSL reports whether the backend is running inside a WSL
- * distribution. The frontend uses this to decide whether to render
- * the WSL distro switcher in Settings — on macOS / native Linux the
- * switcher is meaningless because there's no Windows launcher writing
- * wsl.json to mutate.
- * 
- * Returns (T, error) for binding consistency with the rest of the
- * App surface even though the WSL detection itself can't fail
- * (sync.Once-cached read of /proc/sys/kernel/osrelease).
+ * distribution.
  */
 export function IsWSL(): $CancellablePromise<boolean> {
     return $Call.ByID(2789068977);
@@ -944,14 +955,9 @@ export function ListThreads(): $CancellablePromise<store$0.Thread[]> {
 }
 
 /**
- * ListWSLDistros returns the WSL distros the host has registered, as
- * reported by `wsl.exe -l -v` over WSL interop. Returns nil + nil on
- * non-WSL hosts (macOS, native Linux) — the Settings UI hides the
- * switcher in that case.
- * 
- * We re-query wsl.exe rather than caching the launcher's startup
- * list: a user installing a new distro mid-session shouldn't have to
- * restart Agent Overflow to see it appear in the picker.
+ * ListWSLDistros returns the WSL distros reported by `wsl.exe -l -v`
+ * over WSL interop, or nil + nil on non-WSL hosts. Re-queries each
+ * call so a distro installed mid-session shows up without a restart.
  */
 export function ListWSLDistros(): $CancellablePromise<wsllauncher$0.Distro[]> {
     return $Call.ByID(2332614075).then(($result: any) => {
@@ -1282,20 +1288,13 @@ export function SetThreadRuntimeMode(threadID: string, mode: string): $Cancellab
 /**
  * SetWSLDistroPreference persists the new distro pick to the
  * launcher's wsl.json. The change applies on the next Windows-side
- * launch — the running backend stays in its current distro for the
- * remainder of this session, so the UI should communicate "active on
- * next launch" semantics.
+ * launch; the running backend stays in its current distro for the
+ * remainder of this session.
  * 
  * Validates `name` against the live wsl.exe distro list so a typo or
- * stale reference can't trap the user with an unbootable saved pick
- * on next launch. InstalledVer / InstalledDistro are preserved by the
- * load-mutate-save round trip — those fields are owned by the
- * launcher's install path, not the user's preference.
- * 
- * LocalOnlyMethods classification: this is settings mutation. A LAN
- * peer with the launch token must not be able to reconfigure which
- * distro the local user's launcher boots into. Refused at the
- * transport layer for non-loopback peers.
+ * stale reference can't trap the user with an unbootable saved pick.
+ * InstalledVer / InstalledDistro are preserved by load-mutate-save —
+ * those fields are owned by the launcher's install path.
  */
 export function SetWSLDistroPreference(name: string): $CancellablePromise<string> {
     return $Call.ByID(3978807241, name);

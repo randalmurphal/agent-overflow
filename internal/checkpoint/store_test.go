@@ -67,6 +67,19 @@ func readTestFile(t *testing.T, dir, name string) string {
 	return string(data)
 }
 
+// commitAll stages everything in dir and commits it under the test
+// author. Used by RestoreWorktreePaths tests that need files tracked at
+// HEAD before they can drift.
+func commitAll(t *testing.T, dir, message string) {
+	t.Helper()
+	runCommand(t, dir, "git", "add", "-A")
+	runCommand(t, dir,
+		"git",
+		"-c", "user.email=tester@test",
+		"-c", "user.name=Tester",
+		"commit", "-q", "-m", message)
+}
+
 // -- tests --
 
 func TestCaptureBaselineAndDiffHappyPath(t *testing.T) {
@@ -341,37 +354,38 @@ func TestCaptureOnDetachedHEAD(t *testing.T) {
 	}
 }
 
-func TestRestoreWorktreeRestoresFiles(t *testing.T) {
+func TestRestoreWorktreePathsRestoresOnlyListedPaths(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 	initRepo(t, dir)
-	s := NewStore()
+	writeTestFile(t, dir, "agent.txt", "pristine\n")
+	writeTestFile(t, dir, "user.txt", "pristine user content\n")
+	commitAll(t, dir, "seed both files")
 
+	s := NewStore()
 	ref, err := s.CaptureBaseline(ctx, dir, "t1", 0)
 	if err != nil {
 		t.Fatalf("capture: %v", err)
 	}
 
-	// Agent corrupts README and writes a new junk file.
-	writeTestFile(t, dir, "README", "corrupted\n")
-	writeTestFile(t, dir, "agent-junk.txt", "junk\n")
+	// Agent rewrites agent.txt; user manually edits user.txt. Only the
+	// agent's path is in the toolPaths list.
+	writeTestFile(t, dir, "agent.txt", "agent corrupted\n")
+	writeTestFile(t, dir, "user.txt", "user manually edited\n")
 
-	if err := s.RestoreWorktree(ctx, dir, ref); err != nil {
-		t.Fatalf("restore: %v", err)
+	if err := s.RestoreWorktreePaths(ctx, dir, ref, []string{"agent.txt"}); err != nil {
+		t.Fatalf("restore paths: %v", err)
 	}
 
-	if got := readTestFile(t, dir, "README"); got != "initial\n" {
-		t.Errorf("README not restored: %q", got)
+	if got := readTestFile(t, dir, "agent.txt"); got != "pristine\n" {
+		t.Errorf("agent.txt not restored: %q", got)
 	}
-	if readTestFile(t, dir, "agent-junk.txt") != "" {
-		t.Errorf("agent-junk.txt should have been removed by `git clean`")
+	if got := readTestFile(t, dir, "user.txt"); got != "user manually edited\n" {
+		t.Errorf("user.txt should be untouched: %q", got)
 	}
 }
 
-func TestRestoreWorktreeDestroysUserEditsDocumented(t *testing.T) {
-	// This documents the intentional behavior: restoring to a checkpoint is
-	// destructive. User edits made after the checkpoint are lost. We preserve
-	// this behavior because forge does the same, and the UI warns the user.
+func TestRestoreWorktreePathsRemovesAgentCreatedFiles(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 	initRepo(t, dir)
@@ -382,12 +396,39 @@ func TestRestoreWorktreeDestroysUserEditsDocumented(t *testing.T) {
 		t.Fatalf("capture: %v", err)
 	}
 
-	writeTestFile(t, dir, "user-after.txt", "user edit made AFTER checkpoint\n")
-	if err := s.RestoreWorktree(ctx, dir, ref); err != nil {
-		t.Fatalf("restore: %v", err)
+	// Agent created a brand-new file after the checkpoint; user added an
+	// unrelated brand-new file. Only the agent's path is listed.
+	writeTestFile(t, dir, "agent-junk.txt", "junk\n")
+	writeTestFile(t, dir, "user-note.txt", "user kept this\n")
+
+	if err := s.RestoreWorktreePaths(ctx, dir, ref, []string{"agent-junk.txt"}); err != nil {
+		t.Fatalf("restore paths: %v", err)
 	}
-	if readTestFile(t, dir, "user-after.txt") != "" {
-		t.Errorf("user-after.txt should have been removed by restore (destructive)")
+	if readTestFile(t, dir, "agent-junk.txt") != "" {
+		t.Errorf("agent-junk.txt should have been unlinked")
+	}
+	if got := readTestFile(t, dir, "user-note.txt"); got != "user kept this\n" {
+		t.Errorf("user-note.txt should be untouched: %q", got)
+	}
+}
+
+func TestRestoreWorktreePathsEmptyListIsNoop(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	initRepo(t, dir)
+	s := NewStore()
+
+	ref, err := s.CaptureBaseline(ctx, dir, "t1", 0)
+	if err != nil {
+		t.Fatalf("capture: %v", err)
+	}
+
+	writeTestFile(t, dir, "drifted.txt", "user edit\n")
+	if err := s.RestoreWorktreePaths(ctx, dir, ref, nil); err != nil {
+		t.Fatalf("restore empty: %v", err)
+	}
+	if got := readTestFile(t, dir, "drifted.txt"); got != "user edit\n" {
+		t.Errorf("empty restore should leave files alone: %q", got)
 	}
 }
 
@@ -586,7 +627,9 @@ func TestRestoreMissingRefErrors(t *testing.T) {
 	initRepo(t, dir)
 	s := NewStore()
 
-	err := s.RestoreWorktree(ctx, dir, RefForThreadTurn("ghost", 0))
+	// Empty path list short-circuits before ref lookup; pass a non-empty
+	// list so the missing-ref branch fires.
+	err := s.RestoreWorktreePaths(ctx, dir, RefForThreadTurn("ghost", 0), []string{"any.txt"})
 	if err == nil {
 		t.Errorf("expected error when restoring from missing ref")
 	}

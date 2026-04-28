@@ -47,6 +47,14 @@ none fits.
   without a parser change.
 - `tool_result_file_change.go` — `file_change` tool-result normalisation
   (inline diff projection, unified patch assembly).
+- `tool_paths.go` — per-turn agent-touched-path tracking. Extracts paths
+  from Claude `Edit`/`Write`/`MultiEdit`/`NotebookEdit` tool args and
+  Codex `fileChange` items, normalises to workspace-relative form, and
+  feeds the pendingToolPaths/committedToolPaths Router maps that the
+  checkpoint capture serialises onto the turn's checkpoint row. Drives
+  the path-scoped revert in `RevertToCheckpoint` and the agent-only
+  filters in the diff panel. Bash side effects are intentionally
+  untracked.
 - `tool_result_diff_upgrade.go` — late-arriving diff upgrades that
   attach a richer payload onto a previously persisted tool result.
 - `command_inline_diff_capture.go` / `command_inline_diff_parser.go` /

@@ -742,3 +742,128 @@ func TestCaptureBaselineIdempotentAcrossReCaptures(t *testing.T) {
 		t.Errorf("expected exactly 1 live ref after recapture, got %d", live)
 	}
 }
+
+// Drives the full stage→commit→drain pipeline across two consecutive
+// turns: tool start in turn 0 with file_path=a.txt, tool complete with
+// is_error=false, turn complete; then tool start in turn 1 with
+// file_path=b.txt, tool complete, turn complete. Both checkpoint rows
+// must record the per-turn path. Provider parsers don't populate
+// `evt.TurnIndex` on tool events (only TurnID is set), so this test
+// guards against the regression of keying the per-turn set by the
+// always-zero `evt.TurnIndex` rather than the router-tracked open turn.
+func TestToolPathsRecordedPerTurnAcrossMultipleTurns(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	fake := &fakeCheckpointStore{isRepo: true}
+	router.SetCheckpointStore(fake)
+
+	turn := func(idx int, itemID, filePath string) {
+		t.Helper()
+		if err := router.Handle(provider.ProviderEvent{
+			Kind: provider.EventTurnStart, ThreadID: "t1",
+			TurnID: fmt.Sprintf("turn-%d", idx), TurnIndex: idx,
+			Timestamp: time.Now(),
+		}); err != nil {
+			t.Fatalf("turn %d start: %v", idx, err)
+		}
+		toolMeta, _ := json.Marshal(map[string]any{
+			"toolName": "Edit",
+			"input":    map[string]any{"file_path": filePath},
+		})
+		if err := router.Handle(provider.ProviderEvent{
+			Kind: provider.EventToolStart, ThreadID: "t1",
+			ItemID: itemID, ItemType: "Edit",
+			Meta:      toolMeta,
+			Timestamp: time.Now(),
+		}); err != nil {
+			t.Fatalf("turn %d tool start: %v", idx, err)
+		}
+		completeMeta, _ := json.Marshal(map[string]any{"is_error": false})
+		if err := router.Handle(provider.ProviderEvent{
+			Kind: provider.EventToolComplete, ThreadID: "t1",
+			ItemID: itemID, ItemType: "Edit",
+			Meta:      completeMeta,
+			Timestamp: time.Now(),
+		}); err != nil {
+			t.Fatalf("turn %d tool complete: %v", idx, err)
+		}
+		if err := router.Handle(provider.ProviderEvent{
+			Kind: provider.EventTurnComplete, ThreadID: "t1",
+			TurnID: fmt.Sprintf("turn-%d", idx), TurnIndex: idx,
+			Timestamp: time.Now(),
+		}); err != nil {
+			t.Fatalf("turn %d complete: %v", idx, err)
+		}
+	}
+
+	turn(0, "tool-0", "a.txt")
+	turn(1, "tool-1", "b.txt")
+
+	// Turn count = TurnIndex + 1; the per-turn checkpoints land at
+	// counts 1 and 2.
+	c1, ok, err := st.GetCheckpointByTurnCount("t1", 1)
+	if err != nil || !ok {
+		t.Fatalf("checkpoint 1 missing: ok=%v err=%v", ok, err)
+	}
+	if len(c1.ToolPaths) != 1 || c1.ToolPaths[0] != "a.txt" {
+		t.Errorf("checkpoint 1 tool paths = %v, want [a.txt]", c1.ToolPaths)
+	}
+	c2, ok, err := st.GetCheckpointByTurnCount("t1", 2)
+	if err != nil || !ok {
+		t.Fatalf("checkpoint 2 missing: ok=%v err=%v", ok, err)
+	}
+	if len(c2.ToolPaths) != 1 || c2.ToolPaths[0] != "b.txt" {
+		t.Errorf("checkpoint 2 tool paths = %v, want [b.txt]", c2.ToolPaths)
+	}
+}
+
+// Same shape as the multi-turn test above, but the tool completes with
+// is_error=true. Failed tools must NOT contribute to the per-turn path
+// set (the file may or may not have been written, and the user may
+// later edit the path manually — restoring it would silently overwrite).
+func TestToolPathsDroppedOnFailedToolCompletion(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	fake := &fakeCheckpointStore{isRepo: true}
+	router.SetCheckpointStore(fake)
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnStart, ThreadID: "t1",
+		TurnID: "turn-0", TurnIndex: 0, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn start: %v", err)
+	}
+	toolMeta, _ := json.Marshal(map[string]any{
+		"toolName": "Edit",
+		"input":    map[string]any{"file_path": "rejected.txt"},
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1",
+		ItemID: "tool-0", ItemType: "Edit", Meta: toolMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("tool start: %v", err)
+	}
+	failedMeta, _ := json.Marshal(map[string]any{"is_error": true})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolComplete, ThreadID: "t1",
+		ItemID: "tool-0", ItemType: "Edit", Meta: failedMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("tool complete: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnComplete, ThreadID: "t1",
+		TurnID: "turn-0", TurnIndex: 0, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn complete: %v", err)
+	}
+
+	c, ok, err := st.GetCheckpointByTurnCount("t1", 1)
+	if err != nil || !ok {
+		t.Fatalf("checkpoint missing: ok=%v err=%v", ok, err)
+	}
+	if len(c.ToolPaths) != 0 {
+		t.Errorf("failed tool should not record paths, got %v", c.ToolPaths)
+	}
+}

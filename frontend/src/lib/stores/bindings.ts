@@ -149,6 +149,8 @@ export {
 
   // Checkpoints (per-turn git-ref snapshots for diff panel + revert UX)
   GetCheckpointRangeDiff,
+  GetSessionAgentDiff,
+  GetWorkspaceCurrentDiff,
   RevertToCheckpoint,
   ListThreadCheckpoints,
 

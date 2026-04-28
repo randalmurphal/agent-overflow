@@ -116,6 +116,18 @@ type Router struct {
 	// CleanupThread so a long-lived session doesn't accumulate stale
 	// entries. See terminal_interaction.go for the handler.
 	terminalInteractionSeq map[string]int
+	// pendingToolPaths stages the workspace paths a tool will write
+	// between EventToolStart and EventToolComplete. Keyed by
+	// `<threadID>|<itemID>`. On a successful complete we move the
+	// staged paths into committedToolPaths; on failure we drop them so
+	// rejected tools don't poison the per-turn revert set.
+	pendingToolPaths map[string][]string
+	// committedToolPaths accumulates workspace paths the agent
+	// successfully wrote during a turn. Keyed by
+	// `<threadID>|<turnIndex>`. Drained by captureCompletedTurnCheckpoint
+	// when the per-turn checkpoint persists, then cleared in
+	// clearOpenTurn / CleanupThread.
+	committedToolPaths map[string][]string
 	// eventHook is a test-only seam: when set, the Router invokes it for
 	// every Handle call AFTER the routing switch runs. Production code
 	// never sets a hook (the call site in Handle is nil-checked so the
@@ -171,6 +183,8 @@ func NewRouter(st *store.Store, emit func(eventName string, data any)) *Router {
 		unknownSessionStatusLogged: make(map[string]struct{}),
 		codexBackground:            make(map[string]*codexBackgroundState),
 		terminalInteractionSeq:     make(map[string]int),
+		pendingToolPaths:           make(map[string][]string),
+		committedToolPaths:         make(map[string][]string),
 	}
 }
 
@@ -337,6 +351,7 @@ func (r *Router) handleToolStart(evt provider.ProviderEvent) error {
 	r.settleStreamingBeforeTimelineBoundary(evt, "tool start")
 	r.observeCodexTopLevelToolBoundary(evt)
 	if r.observeCodexToolStart(evt) {
+		r.stageToolPaths(evt)
 		return r.emitInline(evt)
 	}
 	// Lifecycle row first so the file-change / command-mutation helpers
@@ -352,11 +367,13 @@ func (r *Router) handleToolStart(evt provider.ProviderEvent) error {
 	if err := r.capturePendingCommandInlineDiff(evt); err != nil {
 		return err
 	}
+	r.stageToolPaths(evt)
 	return r.emitInline(evt)
 }
 
 func (r *Router) handleToolComplete(evt provider.ProviderEvent) error {
 	if handled, err := r.observeCodexUnifiedExecComplete(evt); handled || err != nil {
+		r.settleToolPaths(evt)
 		return err
 	}
 	// Same ordering rationale as handleToolStart: keep the lifecycle row
@@ -380,7 +397,82 @@ func (r *Router) handleToolComplete(evt provider.ProviderEvent) error {
 	if err := r.observeCodexToolComplete(evt); err != nil {
 		return err
 	}
+	r.settleToolPaths(evt)
 	return r.emitInline(evt)
+}
+
+// stageToolPaths records the paths a tool is about to write in
+// pendingToolPaths. Out-of-scope tools (Bash, Read, anything else without
+// a recognized file_path / changes payload) are no-ops.
+func (r *Router) stageToolPaths(evt provider.ProviderEvent) {
+	paths := extractToolPaths(evt)
+	if len(paths) == 0 {
+		return
+	}
+	if evt.ItemID == "" {
+		return
+	}
+	key := evt.ThreadID + "|" + evt.ItemID
+	r.mu.Lock()
+	r.pendingToolPaths[key] = paths
+	r.mu.Unlock()
+}
+
+// settleToolPaths transfers staged paths into the per-turn committed
+// set on a successful completion, or drops them on a failed/cancelled
+// completion. Failed tools didn't write the file (or the write was
+// aborted), so reverting their paths later would silently overwrite
+// unrelated user edits.
+//
+// Provider parsers don't populate `evt.TurnIndex` (only `TurnID`), so
+// the turn key has to come from the router-tracked open-turn map under
+// the same lock that guards the committed-paths set. Without an open
+// turn we drop — the matching tool start either fired before
+// EventTurnStart (impossible per the wire contract) or after the turn
+// was torn down (drop is correct).
+func (r *Router) settleToolPaths(evt provider.ProviderEvent) {
+	if evt.ItemID == "" {
+		return
+	}
+	key := evt.ThreadID + "|" + evt.ItemID
+	r.mu.Lock()
+	staged, ok := r.pendingToolPaths[key]
+	delete(r.pendingToolPaths, key)
+	if !ok || len(staged) == 0 {
+		r.mu.Unlock()
+		return
+	}
+	if !toolCallSucceeded(evt) {
+		r.mu.Unlock()
+		return
+	}
+	turnIndex, hasTurn := r.openTurns[evt.ThreadID]
+	if !hasTurn {
+		r.mu.Unlock()
+		return
+	}
+	turnKey := fmt.Sprintf("%s|%d", evt.ThreadID, turnIndex)
+	r.committedToolPaths[turnKey] = append(r.committedToolPaths[turnKey], staged...)
+	r.mu.Unlock()
+}
+
+// drainCommittedToolPaths returns and removes the committed-paths slice
+// for (threadID, turnIndex). Called by captureCompletedTurnCheckpoint at
+// the moment the checkpoint row is being built, so the per-turn
+// accumulator always drains in lockstep with the checkpoint write.
+//
+// pendingToolPaths cleanup is intentionally not done here — clearOpenTurn
+// owns it (called from handleTurnComplete after the capture). That keeps
+// the staging/committed cleanup symmetric across the early-return paths
+// in captureCompletedTurnCheckpoint (no checkpoint store, non-git
+// workspace, capture failure) where this drain never fires.
+func (r *Router) drainCommittedToolPaths(threadID string, turnIndex int) []string {
+	turnKey := fmt.Sprintf("%s|%d", threadID, turnIndex)
+	r.mu.Lock()
+	paths := r.committedToolPaths[turnKey]
+	delete(r.committedToolPaths, turnKey)
+	r.mu.Unlock()
+	return paths
 }
 
 func (r *Router) handleInit(evt provider.ProviderEvent) error {

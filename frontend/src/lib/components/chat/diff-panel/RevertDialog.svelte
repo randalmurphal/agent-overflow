@@ -3,19 +3,43 @@
   import Button from '../../primitives/Button.svelte';
   import type { RevertMode } from '../../../types/checkpoint';
 
+  /**
+   * One-row summary for the affected-files preview. Shape mirrors
+   * `Checkpoint.files[]` (`path`, `additions`, `deletions`) plus the
+   * change kind so the preview can render `M` / `+` / `-` glyphs in the
+   * same style as the diff sidebar.
+   */
+  export interface AffectedFile {
+    path: string;
+    kind: string;
+    additions: number;
+    deletions: number;
+  }
+
   interface Props {
     open: boolean;
     checkpointTurnCount: number;
     provider: string;
+    /**
+     * Files the agent wrote across every turn AFTER the target
+     * checkpoint. Driving the conversation-and-files preview so the user
+     * sees what the workspace will look like after the restore.
+     * Pass [] when no agent edits are recorded; the preview hides itself
+     * to avoid suggesting "nothing will happen".
+     */
+    affectedFiles?: AffectedFile[];
     reverting?: boolean;
     onRevert: (mode: RevertMode) => void;
     onCancel: () => void;
   }
 
-  let { open, checkpointTurnCount, provider, reverting = false, onRevert, onCancel }: Props = $props();
+  let { open, checkpointTurnCount, provider, affectedFiles = [], reverting = false, onRevert, onCancel }: Props = $props();
 
   let selected: RevertMode = $state('conversation-and-files');
   const isClaude = $derived(provider === 'claude');
+  const showAffectedFiles = $derived(
+    selected === 'conversation-and-files' && affectedFiles.length > 0,
+  );
 
   $effect(() => {
     if (open) selected = 'conversation-and-files';
@@ -80,6 +104,33 @@
           </span>
         </label>
       </fieldset>
+
+      {#if showAffectedFiles}
+        <div class="mt-3" data-testid="revert-affected-files">
+          <div class="mb-1.5 text-[11px] font-semibold uppercase tracking-[0.08em] text-fg-muted">
+            Files the agent wrote ({affectedFiles.length})
+          </div>
+          <ul class="max-h-44 overflow-auto rounded-[var(--radius-control)] border border-border-subtle bg-surface-0">
+            {#each affectedFiles as file (file.path)}
+              <li
+                class="flex items-center gap-2 border-b border-border-subtle/50 px-3 py-1.5 last:border-b-0"
+                data-testid="revert-affected-file"
+              >
+                <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-fg-muted">
+                  {file.kind || 'modified'}
+                </span>
+                <span class="min-w-0 flex-1 truncate font-mono text-[12px] text-fg">{file.path}</span>
+                {#if file.additions > 0}
+                  <span class="text-[11px] text-success">+{file.additions}</span>
+                {/if}
+                {#if file.deletions > 0}
+                  <span class="text-[11px] text-error">-{file.deletions}</span>
+                {/if}
+              </li>
+            {/each}
+          </ul>
+        </div>
+      {/if}
     </div>
   {/snippet}
   {#snippet footer()}
