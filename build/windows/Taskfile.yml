@@ -128,10 +128,23 @@ tasks:
     deps:
       - task: build:wsl:linux-payload
     cmds:
+      # Restore the real Linux ELF into the embed dir before linking.
+      # build:wsl:linux-payload's up-to-date check sees the placeholder
+      # file (written by build:wsl:restore-payload-placeholder at the
+      # tail of the prior build) and skips the cross-compile, so the
+      # embed dir would otherwise still hold the 68-byte placeholder
+      # when only cmd/agent-overflow-windows/**/* changed. //go:embed
+      # would then bake the placeholder into the .exe and the WSL-side
+      # spawn fails with "child closed" (exec format error). Copying
+      # from the bin/ stash, which linux-payload writes alongside the
+      # embed-dir copy and which never gets clobbered, is the cheap
+      # always-correct restore.
+      - cp {{.BIN_DIR | default "bin"}}/agent-overflow-linux cmd/agent-overflow-windows/payload/agent-overflow-linux
       - GOOS=windows GOARCH={{.ARCH}} CGO_ENABLED=0 go build -trimpath -ldflags "-H windowsgui -X main.payloadVersion={{.VERSION | default "dev"}}" -o {{.BIN_DIR | default "bin"}}/{{.APP_NAME | default "agent-overflow"}}.exe ./cmd/agent-overflow-windows
     sources:
       - "cmd/agent-overflow-windows/**/*"
       - "internal/wsllauncher/**/*"
+      - "{{.BIN_DIR | default \"bin\"}}/agent-overflow-linux"
     generates:
       - "{{.BIN_DIR | default \"bin\"}}/{{.APP_NAME | default \"agent-overflow\"}}.exe"
 
