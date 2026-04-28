@@ -116,16 +116,18 @@ tasks:
       - wails3 generate bindings -f '{{.BUILD_FLAGS}}' -clean=true -ts
 
   generate:icons:
-    summary: Generates Windows `.ico` and Mac `.icns` from an image; on macOS, `-iconcomposerinput appicon.icon -macassetdir darwin` also produces `Assets.car` from a `.icon` file (skipped on other platforms).
+    summary: Generates Windows `.ico` and Mac `.icns` from per-platform sources. macOS uses the rounded-tile `appicon.png` (and on macOS hosts the `appicon.icon` Asset Catalog, which yields `Assets.car`). Windows uses `appicon-square.png` — a square, fully-opaque tile — because pre-baked rounded corners with transparent edges render as white on Windows surfaces that don't honor alpha; modern Windows shells apply their own corner mask.
     dir: build
     sources:
       - "appicon.png"
+      - "appicon-square.png"
       - "appicon.icon"
     generates:
       - "darwin/icons.icns"
       - "windows/icon.ico"
     cmds:
-      - wails3 generate icons -input appicon.png -macfilename darwin/icons.icns -windowsfilename windows/icon.ico -iconcomposerinput appicon.icon -macassetdir darwin
+      - wails3 generate icons -input appicon.png -macfilename darwin/icons.icns -iconcomposerinput appicon.icon -macassetdir darwin
+      - wails3 generate icons -input appicon-square.png -windowsfilename windows/icon.ico
 
   dev:frontend:
     summary: Runs the frontend in development mode

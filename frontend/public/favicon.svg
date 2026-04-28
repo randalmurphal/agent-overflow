@@ -6,10 +6,10 @@
   <rect x="0" y="0" width="1024" height="1024" rx="228" fill="#0B0E14"/>
 
   <!-- AO monogram -->
-  <g fill="none" stroke="#F8FAFC" stroke-width="44" stroke-linecap="round" stroke-linejoin="round">
+  <g fill="none" stroke="#F8FAFC" stroke-width="62" stroke-linecap="round" stroke-linejoin="round">
     <!-- A: clean chevron, softly-rounded apex, no crossbar -->
-    <path d="M 258 636 L 378 388 L 498 636"/>
+    <path d="M 156 686 L 324 338 L 492 686"/>
     <!-- O -->
-    <circle cx="654" cy="512" r="124"/>
+    <circle cx="710" cy="512" r="174"/>
   </g>
 </svg>

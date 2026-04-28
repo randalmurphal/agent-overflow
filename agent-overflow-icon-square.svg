@@ -1,9 +1,9 @@
 <svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
-  <title>Agent Overflow App Icon</title>
-  <desc>AO monogram on a flat near-black rounded tile.</desc>
+  <title>Agent Overflow App Icon (Square)</title>
+  <desc>AO monogram on a flat near-black square tile. Used for Windows where the OS shell applies its own rounded-corner mask; pre-baked corners would render as white on surfaces that don't honor alpha.</desc>
 
   <!-- Tile -->
-  <rect x="0" y="0" width="1024" height="1024" rx="228" fill="#0B0E14"/>
+  <rect x="0" y="0" width="1024" height="1024" fill="#0B0E14"/>
 
   <!-- AO monogram -->
   <g fill="none" stroke="#F8FAFC" stroke-width="62" stroke-linecap="round" stroke-linejoin="round">
