@@ -13,6 +13,9 @@ vars:
 
   # Docker image for cross-compilation with CGO (used when CGO_ENABLED=1 on non-Windows)
   CROSS_IMAGE: wails-cross
+  WINDOWS_ICON: build/windows/icon.ico
+  WINDOWS_MANIFEST: build/windows/wails.exe.manifest
+  WINDOWS_INFO: build/windows/info.json
 
 tasks:
   build:
@@ -132,7 +135,16 @@ tasks:
     internal: true
     deps:
       - task: build:wsl:linux-payload
+      - task: common:generate:icons
     cmds:
+      - task: validate:wsl-launcher-arch
+        vars:
+          ARCH: '{{.ARCH}}'
+      - defer: rm -f "{{.WSL_LAUNCHER_SYSO}}"
+      - task: generate:wsl-launcher-syso
+        vars:
+          ARCH: '{{.ARCH}}'
+          WSL_LAUNCHER_SYSO: '{{.WSL_LAUNCHER_SYSO}}'
       # Restore the real Linux ELF into the embed dir before linking.
       # build:wsl:linux-payload's up-to-date check sees the placeholder
       # file (written by build:wsl:restore-payload-placeholder at the
@@ -150,8 +162,49 @@ tasks:
       - "cmd/agent-overflow-windows/**/*"
       - "internal/wsllauncher/**/*"
       - "{{.BIN_DIR | default \"bin\"}}/agent-overflow-linux"
+      - "{{.WINDOWS_ICON}}"
+      - "{{.WINDOWS_MANIFEST}}"
+      - "{{.WINDOWS_INFO}}"
+      - "build/appicon.png"
+      - "build/appicon.icon/**/*"
+      - "build/windows/Taskfile.yml"
     generates:
       - "{{.BIN_DIR | default \"bin\"}}/{{.APP_NAME | default \"agent-overflow\"}}.exe"
+    vars:
+      ARCH: '{{.ARCH | default "amd64"}}'
+      WSL_LAUNCHER_SYSO: 'cmd/agent-overflow-windows/wails_windows_{{.ARCH}}.syso'
+
+  validate:wsl-launcher-arch:
+    summary: Validates the Windows launcher target architecture
+    internal: true
+    cmds:
+      - |
+        case "$AO_ARCH" in
+          amd64|arm64) ;;
+          *) echo "ERROR: unsupported WSL launcher ARCH: $AO_ARCH" >&2; exit 1 ;;
+        esac
+    env:
+      AO_ARCH: '{{.ARCH | default "amd64"}}'
+
+  generate:wsl-launcher-syso:
+    summary: Generates the Windows resource file for the WSL launcher package
+    internal: true
+    cmds:
+      # Go only links .syso files from the package directory being built.
+      # The WSL entry point builds ./cmd/agent-overflow-windows, so the
+      # normal repo-root syso would not attach the app icon to the launcher.
+      - |
+        case "$AO_ARCH" in
+          amd64|arm64) ;;
+          *) echo "ERROR: unsupported WSL launcher ARCH: $AO_ARCH" >&2; exit 1 ;;
+        esac
+        wails3 generate syso -arch "$AO_ARCH" -icon "{{.WINDOWS_ICON}}" -manifest "{{.WINDOWS_MANIFEST}}" -info "{{.WINDOWS_INFO}}" -out "$AO_WSL_LAUNCHER_SYSO"
+    vars:
+      ARCH: '{{.ARCH | default "amd64"}}'
+      WSL_LAUNCHER_SYSO: 'cmd/agent-overflow-windows/wails_windows_{{.ARCH}}.syso'
+    env:
+      AO_ARCH: '{{.ARCH}}'
+      AO_WSL_LAUNCHER_SYSO: '{{.WSL_LAUNCHER_SYSO}}'
 
   package:wsl:zip:
     summary: |
@@ -244,9 +297,8 @@ tasks:
 
   generate:syso:
     summary: Generates Windows `.syso` file
-    dir: build
     cmds:
-      - wails3 generate syso -arch {{.ARCH}} -icon windows/icon.ico -manifest windows/wails.exe.manifest -info windows/info.json -out ../wails_windows_{{.ARCH}}.syso
+      - wails3 generate syso -arch {{.ARCH}} -icon "{{.WINDOWS_ICON}}" -manifest "{{.WINDOWS_MANIFEST}}" -info "{{.WINDOWS_INFO}}" -out wails_windows_{{.ARCH}}.syso
     vars:
       ARCH: '{{.ARCH | default ARCH}}'
 
