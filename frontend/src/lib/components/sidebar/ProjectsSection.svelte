@@ -15,6 +15,7 @@
   import {
     expandProject,
     collapseProject,
+    isProjectExpanded,
     getProjectSortMode,
   } from '../../stores/sidebar.svelte';
   import { getThreadFilterQuery } from '../../stores/threadFilter.svelte';
@@ -114,6 +115,12 @@
   // so we can collapse them again when the search clears — otherwise
   // clearing the query left every matched project expanded, which
   // isn't what the user asked for.
+  //
+  // Only track ids we actually flipped from collapsed → expanded.
+  // Projects that were already expanded (the default, or the user
+  // expanded them manually) stay untouched — we don't own their state,
+  // so we mustn't re-collapse them on search clear.
+  //
   // Plain `let`, NOT $state — the $effect below reads AND writes this
   // set. If it were reactive, every assignment would re-trigger the
   // effect on the same `query` value and loop infinitely. The set
@@ -130,13 +137,20 @@
     const next = new Set<string>();
     for (const [projectId, threads] of threadsByProject.entries()) {
       if (threads.length === 0) continue;
-      expandProject(projectId);
-      next.add(projectId);
+      if (searchAutoExpanded.has(projectId)) {
+        // Already auto-expanded earlier in this search session — keep
+        // tracking so we still own the rollback.
+        next.add(projectId);
+      } else if (!isProjectExpanded(projectId)) {
+        // Was collapsed before search — flip and remember.
+        expandProject(projectId);
+        next.add(projectId);
+      }
+      // else: user/default-expanded — leave alone, don't track.
     }
     // Collapse projects we previously auto-expanded that no longer
     // match the refined query (user typed more characters, matches
-    // shrank). Leave ones the user had expanded manually before the
-    // search alone — we only touch ids we own.
+    // shrank).
     for (const id of searchAutoExpanded) {
       if (!next.has(id)) collapseProject(id);
     }

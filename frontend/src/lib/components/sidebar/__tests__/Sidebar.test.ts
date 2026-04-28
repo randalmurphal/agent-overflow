@@ -3,6 +3,7 @@ import { render, waitFor } from '@testing-library/svelte';
 import Sidebar from '../Sidebar.svelte';
 import { createThreadPane } from '../../../stores/thread.svelte';
 import {
+  collapseProject,
   isProjectExpanded,
   resetSidebarForTest,
 } from '../../../stores/sidebar.svelte';
@@ -71,6 +72,10 @@ describe('<Sidebar>', () => {
   });
 
   it('does not auto-expand the collapsed project containing the active running thread', async () => {
+    // Projects default to expanded — we explicitly collapse so the test
+    // exercises the collapsed-render path (status dot + active pin
+    // surfacing the running work without requiring the user to expand).
+    collapseProject('p1');
     const runningThread = thread('t-running', { title: 'Active work' });
     const projectRow = project('p1', { name: 'Project One' });
     setBindingMock('ListThreads', async () => [runningThread]);

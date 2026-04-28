@@ -14,7 +14,7 @@ import {
   addProjectLocal,
   resetProjectsForTest,
 } from '../../stores/projects.svelte';
-import { resetSidebarForTest, isProjectExpanded } from '../../stores/sidebar.svelte';
+import { collapseProject, resetSidebarForTest, isProjectExpanded } from '../../stores/sidebar.svelte';
 import type { Thread } from '../../types/models';
 
 beforeAll(() => {
@@ -212,6 +212,9 @@ describe('<ChatHeader>', () => {
       updatedAt: now,
       archived: false,
     });
+    // Projects default to expanded — collapse explicitly so the badge
+    // click has something to expand.
+    collapseProject('project-1');
     const pane = await buildPane();
     const { getByTestId } = render(ChatHeader, { props: { pane } });
     await tick();

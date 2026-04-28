@@ -2,12 +2,19 @@
 // the projects list is sorted. Both persist to localStorage so reopening
 // the app doesn't lose the user's reading context.
 //
+// Project expansion uses an inverted set: we persist explicit *collapses*
+// rather than expansions, so an unseen project defaults to expanded
+// (t3-code parity). The public API (isProjectExpanded / expandProject /
+// collapseProject / toggleProject) keeps "expanded" semantics — only the
+// underlying storage flips.
+//
 // We deliberately keep this separate from projects.svelte.ts — that store
 // is about data, this one is about view state. They live together on
 // screen but have different lifecycles (data refreshes; view state
 // persists across refreshes).
 
-const EXPANDED_STORAGE_KEY = 'agent-overflow:sidebar:expandedProjects';
+const COLLAPSED_STORAGE_KEY = 'agent-overflow:sidebar:collapsedProjects';
+const LEGACY_EXPANDED_STORAGE_KEY = 'agent-overflow:sidebar:expandedProjects';
 const SORT_MODE_KEY = 'agent-overflow:sidebar:projectSortMode';
 const EXPANDED_DISCUSSIONS_KEY = 'agent-overflow:sidebar:expandedDiscussions';
 const EXPANDED_THREAD_LISTS_KEY = 'agent-overflow:sidebar:expandedThreadLists';
@@ -44,8 +51,19 @@ function readStringSet(key: string): Set<string> {
   }
 }
 
-function readExpanded(): Set<string> {
-  return readStringSet(EXPANDED_STORAGE_KEY);
+function readCollapsed(): Set<string> {
+  // Drop the legacy "expanded" key on first read so old data doesn't
+  // linger forever. Old persisted state can't be migrated meaningfully:
+  // the old set listed user-expanded ids, but we'd need the full project
+  // list to compute the inverse — and that list isn't loaded here.
+  if (typeof localStorage !== 'undefined') {
+    try {
+      localStorage.removeItem(LEGACY_EXPANDED_STORAGE_KEY);
+    } catch {
+      // ignore
+    }
+  }
+  return readStringSet(COLLAPSED_STORAGE_KEY);
 }
 
 function readProjectSortMode(): ProjectSortMode {
@@ -70,8 +88,8 @@ function writeStringSet(key: string, set: Set<string>): void {
   }
 }
 
-function writeExpanded(set: Set<string>): void {
-  writeStringSet(EXPANDED_STORAGE_KEY, set);
+function writeCollapsed(set: Set<string>): void {
+  writeStringSet(COLLAPSED_STORAGE_KEY, set);
 }
 
 function writeProjectSortMode(mode: ProjectSortMode): void {
@@ -83,36 +101,36 @@ function writeProjectSortMode(mode: ProjectSortMode): void {
   }
 }
 
-let expandedProjects: Set<string> = $state(readExpanded());
+let collapsedProjects: Set<string> = $state(readCollapsed());
 let expandedDiscussions: Set<string> = $state(readStringSet(EXPANDED_DISCUSSIONS_KEY));
 let expandedThreadLists: Set<string> = $state(readStringSet(EXPANDED_THREAD_LISTS_KEY));
 let projectSortMode: ProjectSortMode = $state(readProjectSortMode());
 
 export function isProjectExpanded(id: string): boolean {
-  return expandedProjects.has(id);
+  return !collapsedProjects.has(id);
 }
 
 export function toggleProject(id: string): void {
-  const next = new Set(expandedProjects);
+  const next = new Set(collapsedProjects);
   if (next.has(id)) next.delete(id);
   else next.add(id);
-  expandedProjects = next;
-  writeExpanded(next);
+  collapsedProjects = next;
+  writeCollapsed(next);
 }
 
 export function expandProject(id: string): void {
-  if (expandedProjects.has(id)) return;
-  const next = new Set(expandedProjects).add(id);
-  expandedProjects = next;
-  writeExpanded(next);
+  if (!collapsedProjects.has(id)) return;
+  const next = new Set(collapsedProjects);
+  next.delete(id);
+  collapsedProjects = next;
+  writeCollapsed(next);
 }
 
 export function collapseProject(id: string): void {
-  if (!expandedProjects.has(id)) return;
-  const next = new Set(expandedProjects);
-  next.delete(id);
-  expandedProjects = next;
-  writeExpanded(next);
+  if (collapsedProjects.has(id)) return;
+  const next = new Set(collapsedProjects).add(id);
+  collapsedProjects = next;
+  writeCollapsed(next);
 }
 
 export function getProjectSortMode(): ProjectSortMode {
@@ -128,7 +146,7 @@ export function setProjectSortMode(mode: ProjectSortMode): void {
 /**
  * Discussion-tree expansion state — a flat set of thread ids whose
  * children should be visible. Persisted so reopening the app keeps the
- * user's reading context. Distinct from `expandedProjects` because a
+ * user's reading context. Distinct from project expansion because a
  * collapsed project hides its discussions wholesale; this controls
  * which discussion *roots* show their participants when their parent
  * project is open.
@@ -198,13 +216,14 @@ export function collapseThreadList(id: string): void {
 
 /** Test helper: clears in-memory + storage between tests. */
 export function resetSidebarForTest(): void {
-  expandedProjects = new Set();
+  collapsedProjects = new Set();
   expandedDiscussions = new Set();
   expandedThreadLists = new Set();
   projectSortMode = DEFAULT_PROJECT_SORT_MODE;
   if (typeof localStorage !== 'undefined') {
     try {
-      localStorage.removeItem(EXPANDED_STORAGE_KEY);
+      localStorage.removeItem(COLLAPSED_STORAGE_KEY);
+      localStorage.removeItem(LEGACY_EXPANDED_STORAGE_KEY);
       localStorage.removeItem(EXPANDED_DISCUSSIONS_KEY);
       localStorage.removeItem(EXPANDED_THREAD_LISTS_KEY);
       localStorage.removeItem(SORT_MODE_KEY);

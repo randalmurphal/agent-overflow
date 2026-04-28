@@ -15,18 +15,21 @@ describe('sidebar store', () => {
   });
 
   describe('expansion', () => {
-    it('toggleProject flips the flag and persists', () => {
-      expect(isProjectExpanded('p1')).toBe(false);
-      toggleProject('p1');
+    it('projects default to expanded and toggleProject persists explicit collapses', () => {
+      // Inverted storage: the persisted set lists explicit *collapses*,
+      // so an unseen id reads as expanded. Toggling adds it to the
+      // collapsed set; toggling again removes it.
       expect(isProjectExpanded('p1')).toBe(true);
+      toggleProject('p1');
+      expect(isProjectExpanded('p1')).toBe(false);
 
-      const raw = localStorage.getItem('agent-overflow:sidebar:expandedProjects');
+      const raw = localStorage.getItem('agent-overflow:sidebar:collapsedProjects');
       expect(raw).not.toBeNull();
       expect(JSON.parse(raw as string)).toContain('p1');
 
       toggleProject('p1');
-      expect(isProjectExpanded('p1')).toBe(false);
-      const raw2 = localStorage.getItem('agent-overflow:sidebar:expandedProjects');
+      expect(isProjectExpanded('p1')).toBe(true);
+      const raw2 = localStorage.getItem('agent-overflow:sidebar:collapsedProjects');
       expect(JSON.parse(raw2 as string)).not.toContain('p1');
     });
 
@@ -39,12 +42,12 @@ describe('sidebar store', () => {
       expect(isProjectExpanded('p1')).toBe(false);
     });
 
-    it('corrupt stored JSON resets to empty without crashing', () => {
-      localStorage.setItem('agent-overflow:sidebar:expandedProjects', '{not json');
-      // Import triggered the initial read already; round-trip through a
-      // toggle which serializes over the garbage.
+    it('corrupt stored JSON does not crash subsequent operations', () => {
+      localStorage.setItem('agent-overflow:sidebar:collapsedProjects', '{not json');
+      // Module init already read storage once; this just verifies that
+      // a write/read round-trip serializes over the garbage cleanly.
       toggleProject('p1');
-      expect(isProjectExpanded('p1')).toBe(true);
+      expect(isProjectExpanded('p1')).toBe(false);
     });
   });
 

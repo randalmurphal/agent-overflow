@@ -4,6 +4,7 @@ import { tick } from 'svelte';
 import ProjectItem from '../ProjectItem.svelte';
 import { createThreadPane } from '../../../stores/thread.svelte';
 import {
+  collapseProject,
   expandProject,
   isProjectExpanded,
   resetSidebarForTest,
@@ -66,7 +67,7 @@ describe('<ProjectItem>', () => {
     setBindingMock('ListRecentTurns', async () => []);
   });
 
-  it('renders collapsed by default and exposes an aria-expanded chevron', () => {
+  it('renders expanded by default and exposes an aria-expanded chevron', () => {
     const pane = createThreadPane();
     const { getByTestId } = render(ProjectItem, {
       props: {
@@ -76,11 +77,11 @@ describe('<ProjectItem>', () => {
       },
     });
     const chevron = getByTestId('project-item-chevron') as HTMLButtonElement;
-    expect(chevron.getAttribute('aria-expanded')).toBe('false');
-    expect(isProjectExpanded('p1')).toBe(false);
+    expect(chevron.getAttribute('aria-expanded')).toBe('true');
+    expect(isProjectExpanded('p1')).toBe(true);
   });
 
-  it('clicking the chevron expands the project', async () => {
+  it('clicking the chevron toggles the project', async () => {
     const pane = createThreadPane();
     const { getByTestId } = render(ProjectItem, {
       props: {
@@ -89,6 +90,10 @@ describe('<ProjectItem>', () => {
         pane,
       },
     });
+    // Default-expanded → click collapses → click again expands.
+    await fireEvent.click(getByTestId('project-item-chevron'));
+    await tick();
+    expect(isProjectExpanded('p1')).toBe(false);
     await fireEvent.click(getByTestId('project-item-chevron'));
     await tick();
     expect(isProjectExpanded('p1')).toBe(true);
@@ -140,11 +145,16 @@ describe('<ProjectItem>', () => {
     });
     await fireEvent.click(getByTestId('project-item-new-thread'));
     // The click should not have toggled expansion — only onNewThread fires.
-    expect(isProjectExpanded('p1')).toBe(false);
+    // Default is expanded, so it stays expanded after the pencil click.
+    expect(isProjectExpanded('p1')).toBe(true);
     expect(onNewThread).toHaveBeenCalledTimes(1);
   });
 
-  it('keeps an active running project collapsed and shows status plus active thread pin', async () => {
+  it('keeps an explicitly-collapsed running project collapsed and shows status plus active thread pin', async () => {
+    // The collapsed-state render path: status dot + active-thread pin
+    // surface the running work without the user needing to expand. We
+    // collapse explicitly because projects default to expanded.
+    collapseProject('p1');
     const pane = createThreadPane();
     const runningThread = thread('t-running', { title: 'Active work' });
     await pane.switchThread(runningThread);
