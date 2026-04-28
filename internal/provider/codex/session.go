@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -340,21 +341,36 @@ func (s *Session) Send(ctx context.Context, content string, opts provider.SendOp
 	return nil
 }
 
-// Interrupt sends turn/interrupt for the active turn.
-// Returns an error if no turn is currently active.
+// Interrupt sends turn/interrupt to abort whatever the thread is
+// currently doing. We pass `turnId: activeTurnID` when a turn is in
+// flight and `turnId: ""` (the empty string) when the user pressed
+// stop during the dispatch window before `turn/started` arrived —
+// the upstream app-server treats an empty turn_id as a "startup
+// interrupt" and submits Op::Interrupt to the core anyway, then
+// responds immediately with `{}` because startup cancellation has
+// no TurnAborted event to wait on. See
+// codex-rs/app-server/src/codex_message_processor.rs:7790-7849
+// (`is_startup_interrupt = turn_id.is_empty()`) and the README
+// summary at codex-rs/app-server/README.md:167.
+//
+// On success, drains pending approvals and user-input requests so
+// the frontend clears its prompt panel and Codex's pending JSON-RPC
+// requests resolve. Drain on failure too: the user pressed stop and
+// expects the prompt to disappear even if the JSON-RPC errored.
+// This is a deliberate fix beyond t3-code's
+// CodexSessionRuntime.interruptTurn (CodexSessionRuntime.ts:1238–1250),
+// which only sends the JSON-RPC and leaks the local Deferreds.
 func (s *Session) Interrupt(ctx context.Context) error {
 	s.mu.Lock()
 	turnID := s.activeTurnID
 	s.mu.Unlock()
 
-	if turnID == "" {
-		return fmt.Errorf("codex: no active turn to interrupt")
-	}
-
 	_, err := s.sendRequest(ctx, "turn/interrupt", map[string]any{
 		"threadId": s.codexThreadID,
 		"turnId":   turnID,
 	})
+
+	s.drainPendingApprovals("cancel", false)
 	return err
 }
 
@@ -564,20 +580,50 @@ func (s *Session) writeNotification(method string, params any) error {
 
 // writeErrorResponse sends a JSON-RPC error response with the given code and message.
 func (s *Session) writeErrorResponse(id int64, code int, message string) error {
+	return s.writeErrorResponseWithData(id, code, message, nil)
+}
+
+// writeErrorResponseWithData sends a JSON-RPC error response with an
+// optional `data` payload. Codex's app-server inspects `data.reason`
+// to decide how to handle in-flight server requests when the turn is
+// transitioning — see `is_turn_transition_server_request_error` at
+// codex-rs/app-server/src/server_request_error.rs and the early-return
+// branches in bespoke_event_handling.rs (line 2390 for patch approval,
+// 2447 for exec approval, 2494 for user input, 2603 for MCP
+// elicitation, 2680 for permissions).
+func (s *Session) writeErrorResponseWithData(id int64, code int, message string, data any) error {
+	errFields := map[string]any{
+		"code":    code,
+		"message": message,
+	}
+	if data != nil {
+		errFields["data"] = data
+	}
 	msg := map[string]any{
 		"jsonrpc": "2.0",
 		"id":      id,
-		"error": map[string]any{
-			"code":    code,
-			"message": message,
-		},
+		"error":   errFields,
 	}
-	data, err := json.Marshal(msg)
+	encoded, err := json.Marshal(msg)
 	if err != nil {
 		return fmt.Errorf("codex: marshal error response: %w", err)
 	}
-	return s.proc.WriteLine(data)
+	return s.proc.WriteLine(encoded)
 }
+
+// codexTurnTransitionReason is the magic string Codex's app-server
+// uses to recognize a JSON-RPC error as "the turn already ended,
+// drop this request silently". See
+// codex-rs/app-server/src/server_request_error.rs's
+// `TURN_TRANSITION_PENDING_REQUEST_ERROR_REASON` constant. Sending
+// this in the error `data.reason` makes drain-on-interrupt and
+// drain-on-close clean up without falling through to "request failed
+// with client error" log noise on Codex's side, AND for MCP
+// elicitations, it specifically maps the response to
+// `McpServerElicitationAction::Cancel` (the right semantics for
+// "user aborted") rather than `Decline` (which means "user said no
+// to this specific action").
+const codexTurnTransitionReason = "turnTransition"
 
 // writeResponse sends a JSON-RPC response (to server requests like approvals).
 func (s *Session) writeResponse(id int64, result any) error {
@@ -1294,23 +1340,56 @@ func (s *Session) claimApproval(requestID string, expectedKind provider.EventKin
 	return true
 }
 
-// clearPendingApprovals cancels every outstanding auto-deny timer. Called
-// by Close so the goroutines exit cleanly instead of racing the teardown.
-// Also drops the resolvedApprovals dedup set — once Close has been
-// called, no duplicate response can reach the provider anyway.
+// clearPendingApprovals is the Close-path drain. Sets approvalsClosed so
+// late approvals are refused after teardown and emits resolved events
+// with `decision: "lost"` (the session-died-mid-prompt signal triage
+// uses to flip rows to errored).
 func (s *Session) clearPendingApprovals() {
+	s.drainPendingApprovals("lost", true)
+}
+
+// drainPendingApprovals resolves every outstanding approval and
+// user-input request. For each one we:
+//
+//  1. Cancel the auto-deny timer so its goroutine exits.
+//  2. Write a JSON-RPC response (decline / error) to the provider so
+//     the in-flight server request unblocks. Skipped silently when the
+//     request ID is malformed (defensive only — startApprovalTimer
+//     formats it from int64).
+//  3. Emit the matching EventApprovalResolved / EventUserInputResolved
+//     so the frontend clears its prompt panel. User-input variants
+//     additionally carry an empty `answers: {}` map to satisfy the
+//     frontend type contract.
+//
+// closeSession=true is the Close path — set approvalsClosed so late
+// approval requests can't schedule fresh timers, and drop the
+// resolvedApprovals dedup set since no duplicate response can reach
+// the provider after Close. closeSession=false is the Interrupt path —
+// the session keeps running and may receive new approval requests.
+func (s *Session) drainPendingApprovals(decisionWord string, closeSession bool) {
 	s.approvalsMu.Lock()
-	s.approvalsClosed = true
+	if closeSession {
+		s.approvalsClosed = true
+	}
 	pending := s.pendingApprovals
 	s.pendingApprovals = nil
-	s.resolvedApprovals = nil
+	if closeSession {
+		s.resolvedApprovals = nil
+	}
 	s.approvalsMu.Unlock()
+
 	for requestID, p := range pending {
 		close(p.cancel)
-		meta, _ := json.Marshal(map[string]any{
+		s.writeDrainResponse(requestID, p, decisionWord)
+
+		metaFields := map[string]any{
 			"requestId": requestID,
-			"decision":  "lost",
-		})
+			"decision":  decisionWord,
+		}
+		if p.resolveKind == provider.EventUserInputResolved {
+			metaFields["answers"] = map[string]any{}
+		}
+		meta, _ := json.Marshal(metaFields)
 		s.onEvent(provider.ProviderEvent{
 			Kind:      p.resolveKind,
 			ThreadID:  s.threadID,
@@ -1318,6 +1397,31 @@ func (s *Session) clearPendingApprovals() {
 			Meta:      meta,
 			Timestamp: time.Now(),
 		})
+	}
+}
+
+// writeDrainResponse releases Codex from a pending server request by
+// sending a JSON-RPC error with `data.reason = "turnTransition"`. This
+// is the wire-correct way to abandon any kind of pending request
+// (command-execution approval, file-change approval, permissions,
+// user-input, MCP elicitation): Codex's app-server early-returns on
+// this exact error shape via `is_turn_transition_server_request_error`
+// (codex-rs/app-server/src/server_request_error.rs). Sending the
+// success-shape decline instead works by accident — Codex falls
+// through to a per-handler "client error" branch that logs noise and,
+// for MCP elicitation specifically, picks `Decline` instead of the
+// semantically-correct `Cancel`. Best-effort: a write failure during
+// Close is logged, not surfaced.
+func (s *Session) writeDrainResponse(requestID string, p *pendingApproval, decisionWord string) {
+	rpcID, err := strconv.ParseInt(requestID, 10, 64)
+	if err != nil {
+		return
+	}
+	message := fmt.Sprintf("client request resolved because the turn state was changed (%s)", decisionWord)
+	if err := s.writeErrorResponseWithData(rpcID, -1, message, map[string]any{
+		"reason": codexTurnTransitionReason,
+	}); err != nil {
+		log.Printf("codex: drain response for %s (kind=%v): %v", requestID, p.resolveKind, err)
 	}
 }
 

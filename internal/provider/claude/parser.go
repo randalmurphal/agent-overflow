@@ -38,6 +38,14 @@ type Parser struct {
 	// `run_in_background: true` so the matching tool_result event can be
 	// tagged the same way.
 	backgroundToolUses map[string]bool
+	// userInputToolUses flags tool_use IDs whose tool name is
+	// `AskUserQuestion`. Those tool_use blocks are surfaced to the UI via
+	// the `can_use_tool` control_request path (EventUserInputRequest),
+	// not the timeline tool-call lifecycle. The flag lets the matching
+	// `tool_result` echo skip emitting EventToolComplete so the row never
+	// appears in the chat. ExitPlanMode does not need the same treatment —
+	// it emits EventProposedPlan as a one-shot, no result echo is rendered.
+	userInputToolUses map[string]bool
 	// taskToolUses correlates Claude background task lifecycle messages
 	// (task_started/task_updated/TaskOutput) back to the originating
 	// tool_use id so we can target the right timeline row.
@@ -100,6 +108,7 @@ func (p *Parser) Close() {
 		return
 	}
 	p.backgroundToolUses = nil
+	p.userInputToolUses = nil
 	p.taskToolUses = nil
 	p.streamBlockTypes = nil
 	p.lastAssistantMessageID = ""
@@ -191,6 +200,39 @@ func (p *Parser) clearBackground(toolUseID string) {
 		return
 	}
 	delete(p.backgroundToolUses, toolUseID)
+}
+
+// markUserInputTool records that the given tool_use ID corresponds to a
+// `tool_name=AskUserQuestion` block. The matching `tool_result` echo is
+// then suppressed so the chat timeline never shows a generic tool-call
+// row for the question — the UI signal is the EventUserInputRequest
+// emitted via the parallel can_use_tool control_request path.
+func (p *Parser) markUserInputTool(toolUseID string) {
+	if toolUseID == "" {
+		return
+	}
+	if p.userInputToolUses == nil {
+		p.userInputToolUses = make(map[string]bool)
+	}
+	p.userInputToolUses[toolUseID] = true
+}
+
+// isUserInputTool reports whether the given tool_use ID was an
+// AskUserQuestion call. Callers that consume the matching tool_result
+// should also call clearUserInputTool so the per-session map doesn't
+// leak.
+func (p *Parser) isUserInputTool(toolUseID string) bool {
+	if toolUseID == "" || p.userInputToolUses == nil {
+		return false
+	}
+	return p.userInputToolUses[toolUseID]
+}
+
+func (p *Parser) clearUserInputTool(toolUseID string) {
+	if toolUseID == "" || p.userInputToolUses == nil {
+		return
+	}
+	delete(p.userInputToolUses, toolUseID)
 }
 
 // parserTaskMapCap bounds the taskToolUses map so an abandoned task —

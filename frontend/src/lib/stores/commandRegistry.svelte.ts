@@ -29,6 +29,20 @@ export interface CommandContext {
   hasActiveThread: boolean;
   /** True while the active thread has a live provider turn. */
   turnActive: boolean;
+  /**
+   * True between the moment the user clicks Send and the moment
+   * SendMessage resolves. Lets the interrupt keybinding fire
+   * during the dispatch window before `provider:turn_started`
+   * lands.
+   */
+  sendInFlight: boolean;
+  /**
+   * True while the active pane has at least one pending approval or
+   * structured user-input request. Lets Esc clear the prompt panel
+   * even when no turn is technically active (e.g. AskUserQuestion
+   * pause windows).
+   */
+  hasPendingPrompt: boolean;
   /** Thread metadata fields used by fork / discussion commands. */
   canForkActiveThread: boolean;
   canStartDiscussion: boolean;

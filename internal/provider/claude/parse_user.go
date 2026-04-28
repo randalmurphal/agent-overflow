@@ -99,6 +99,18 @@ func (p *Parser) appendToolResultBlock(
 		return events
 	}
 
+	// AskUserQuestion does not have a generic timeline row (the
+	// matching tool_use was suppressed in appendToolUseEvent so the
+	// EventUserInputRequest from the can_use_tool path is the only UI
+	// signal). Drop the tool_result echo too — emitting an orphan
+	// EventToolComplete would create a phantom completed-tool row in
+	// the chat. Clear the correlation entry so the parser map stays
+	// flat across the session.
+	if p.isUserInputTool(toolUseID) {
+		p.clearUserInputTool(toolUseID)
+		return events
+	}
+
 	content := extractToolResultText(block["content"])
 
 	taskOutputMeta := toolUseResults[toolUseID]

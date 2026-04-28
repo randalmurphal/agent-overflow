@@ -23,6 +23,13 @@
     pane: ThreadPane;
     canSend: boolean;
     isTurnActive: boolean;
+    /**
+     * Optimistic stop-button gate: true while the SendMessage RPC is
+     * pending, before `provider:turn_started` arrives. Composer flips
+     * it via `pane.setSendInFlight(true)` at the top of send() and
+     * clears it in finally.
+     */
+    sendInFlight?: boolean;
     sendAction?: SendButtonAction;
     sendLabel?: string;
     hasCurrentPlan?: boolean;
@@ -37,6 +44,7 @@
     pane,
     canSend,
     isTurnActive,
+    sendInFlight = false,
     sendAction,
     sendLabel,
     hasCurrentPlan = false,
@@ -67,6 +75,7 @@
     <SendButton
       {canSend}
       {isTurnActive}
+      {sendInFlight}
       action={sendAction}
       label={sendLabel}
       {planCommentCount}

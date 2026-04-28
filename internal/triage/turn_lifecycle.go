@@ -531,11 +531,24 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 	// here. Must run BEFORE forceCloseOrphanToolCalls so the invariant-24
 	// exemption (background rows skip force-close) kicks in on the
 	// newly-stamped rows — otherwise forceClose would flip them to
-	// errored a moment before we mark them backgrounded. Truncated turns
-	// skip this path: an interrupted turn is not a yield, it's a
-	// termination, and markTurnItemsErrored has already handled the
-	// non-background rows.
-	if persistErr == nil && err == nil && !truncated {
+	// errored a moment before we mark them backgrounded.
+	//
+	// Truncated turns (user-Esc) run this too, even though it looks like
+	// a "termination not a yield". Reason: Codex's process model says
+	// `Op::Interrupt` does NOT kill unifiedExec PTYs or spawn_agent
+	// collab threads. `core/src/tasks/mod.rs:632-637` — terminating
+	// PTYs is a separate `Op::CleanBackgroundTerminals` that
+	// `abort_all_tasks` deliberately does not invoke (mirrors the
+	// Codex TUI's Esc behaviour, which fires only `Op::Interrupt`).
+	// So a pre-yield unifiedExec started this turn is genuinely still
+	// running on disk after Esc; stamping it backgrounded here keeps
+	// the tray accurate and lets the user kill it via the Stop All
+	// button (which calls `thread/backgroundTerminals/clean`, the
+	// only Codex per-thread primitive — there's no per-row stop for
+	// unifiedExec until upstream adds one). spawn_agent rows already
+	// stamp at item/completed (codex_background.go:884-886), so this
+	// catchall only does work for unifiedExec items.
+	if persistErr == nil && err == nil {
 		r.observeCodexTurnComplete(evt.ThreadID)
 	}
 

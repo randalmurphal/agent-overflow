@@ -209,6 +209,7 @@
     // pick the winner.
     const draftSourcePlan = draft.sourceProposedPlan ?? null;
     sending = true;
+    pane.setSendInFlight(true);
 
     const threadId = pane.threadId;
     const thread = pane.thread;
@@ -256,6 +257,7 @@
     } finally {
       preparingWorktree = false;
       sending = false;
+      pane.setSendInFlight(false);
     }
   }
 
@@ -552,6 +554,7 @@
         {pane}
         {canSend}
         {isTurnActive}
+        sendInFlight={pane.sendInFlight}
         {sendAction}
         {sendLabel}
         hasCurrentPlan={Boolean(latestPlanItem)}

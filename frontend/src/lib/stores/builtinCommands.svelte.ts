@@ -19,6 +19,7 @@ import { forkThreadAction } from '../components/sidebar/threadRowActions';
 import { userFacingError } from '../utils/userFacingError';
 import { getTerminalFocused } from '../components/terminal/terminalStore.svelte';
 import {
+  ApprovalResponse,
   ArchiveThread,
   DeleteThread,
   StopSession,
@@ -27,9 +28,13 @@ import {
   GitPush,
   GitCreatePR,
   InterruptTurn,
+  RespondToApproval,
+  RespondToUserInput,
   UnarchiveThread,
   UpdateThreadMode,
+  UserInputResponse,
 } from './bindings';
+import { errString } from '../utils/errors';
 import { cycleMode } from '../utils/modeCycle';
 
 export interface BuiltinCommandHooks {
@@ -43,6 +48,43 @@ export interface BuiltinCommandHooks {
   focusThreadSearch: () => void;
   requestThreadJump: (index: number) => void;
   requestThreadStep: (delta: number) => void;
+}
+
+/**
+ * Errors we treat as no-ops on the interrupt path. Two cases:
+ *
+ *  1. "no active turn" — fired during the optimistic dispatch window
+ *     (sendInFlight=true, but backend hasn't seen `turn/started` yet)
+ *     when the user presses Esc.
+ *  2. "already resolved" — race between our explicit cancel and the
+ *     CLI's own `control_cancel_request`. The backend short-circuits
+ *     the duplicate via ErrApprovalAlreadyResolved (which wraps
+ *     provider.ErrStaleInteractiveRequest); the wire string we see
+ *     here ends with "stale interactive request" or includes
+ *     "already resolved".
+ *
+ * Anything else surfaces as a banner so a real failure doesn't get
+ * swallowed.
+ */
+function isBenignInterruptError(err: unknown): boolean {
+  const message = errString(err).toLowerCase();
+  return (
+    message.includes('no active turn') ||
+    message.includes('already resolved') ||
+    message.includes('stale interactive request')
+  );
+}
+
+/**
+ * Standard `.catch` for the fire-and-forget interrupt RPCs. Benign
+ * races (no-active-turn, already-resolved) are dropped silently;
+ * everything else surfaces on the pane banner so a real provider
+ * crash doesn't get swallowed by the optimistic UI path.
+ */
+function reportNonBenignInterruptError(pane: ThreadPane, err: unknown): void {
+  if (isBenignInterruptError(err)) return;
+  console.error('Failed to interrupt turn:', err);
+  pane.setGeneralError(userFacingError(err));
 }
 
 function withActiveThread(
@@ -70,7 +112,6 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     requestThreadJump,
     requestThreadStep,
   } = hooks;
-  let interruptInFlight = false;
 
   registerCommand({
     id: 'palette.open',
@@ -230,19 +271,60 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     id: 'thread.interrupt',
     label: 'Thread: Interrupt Turn',
     icon: '■',
-    when: 'hasActiveThread && turnActive && !anyModalOpen',
-    run: async () => {
+    when: 'hasActiveThread && (turnActive || sendInFlight || hasPendingPrompt) && !anyModalOpen',
+    run: () => {
+      // Industry-pattern interrupt: clear UI state synchronously,
+      // dispatch every backend RPC fire-and-forget, let the natural
+      // turn_completed event reconcile state when it lands. The user
+      // perceives the stop in the same render tick as the keystroke;
+      // backend abort propagation runs in parallel.
+      //
+      // References:
+      //   - claude-code-source-code/src/screens/REPL.tsx:2106-2163
+      //     `onCancel`: runs `resetLoadingState()` synchronously,
+      //     fires `abortController.abort('user-cancel')` without
+      //     awaiting, calls `mrOnTurnComplete(messages, true)` to
+      //     synthesize completion locally.
+      //   - codex/codex-rs/tui/src/chatwidget.rs:5435-5446 +
+      //     submit_op at 10964-10985: Esc → `submit_op(Op::Interrupt)`
+      //     is non-blocking (`codex_op_tx.send(...)` then `return true`).
+      //     Spinner clears when `EventMsg::TurnAborted` arrives.
+      //
+      // Errors from the RPCs are absorbed via isBenignInterruptError
+      // (no-active-turn / already-resolved races against
+      // control_cancel_request from the CLI). Pathological failures
+      // surface as a banner so a real provider crash doesn't get
+      // swallowed.
       const threadID = pane.threadId;
-      if (!threadID || !pane.activeTurn || interruptInFlight) return;
-      interruptInFlight = true;
-      try {
-        await InterruptTurn(threadID);
-      } catch (err) {
-        console.error('Failed to interrupt turn:', err);
-        pane.setGeneralError(userFacingError(err));
-      } finally {
-        interruptInFlight = false;
+      if (!threadID) return;
+      const userInput = pane.pendingUserInputs[0];
+      const approval = pane.pendingApprovals[0];
+
+      if (userInput) {
+        pane.removeUserInput(userInput.requestId);
+        void RespondToUserInput(threadID, new UserInputResponse({
+          requestId: userInput.requestId,
+          decision: 'decline',
+          answers: {},
+        })).catch((err) => reportNonBenignInterruptError(pane, err));
+      } else if (approval) {
+        pane.removeApproval(approval.requestId);
+        void RespondToApproval(threadID, new ApprovalResponse({
+          requestId: approval.requestId,
+          decision: 'cancel',
+        })).catch((err) => reportNonBenignInterruptError(pane, err));
       }
+
+      void InterruptTurn(threadID).catch((err) =>
+        reportNonBenignInterruptError(pane, err),
+      );
+
+      // Optimistic clear — spinner / Stop button / mid-turn input
+      // gate all flip in this render tick. The real
+      // provider:turn_completed arrives shortly and is idempotent
+      // on null activeTurn (settleTurn just re-clears).
+      pane.clearActiveTurn();
+      pane.setSendInFlight(false);
     },
   });
 
@@ -501,6 +583,8 @@ export function makeCommandContext(pane: ThreadPane, extra: Partial<CommandConte
     anyModalOpen: false,
     hasActiveThread: thread !== null,
     turnActive: pane.isTurnActive,
+    sendInFlight: pane.sendInFlight,
+    hasPendingPrompt: pane.pendingApprovals.length > 0 || pane.pendingUserInputs.length > 0,
     canForkActiveThread: !!thread?.sessionRef,
     canStartDiscussion:
       !!thread && thread.mode !== 'discussion' && !thread.discussionId && !thread.parentThreadId,

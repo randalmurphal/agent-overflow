@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy, untrack } from 'svelte';
+  import { fade } from 'svelte/transition';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import MessageTimeline from './MessageTimeline.svelte';
   import Composer from '../composer/Composer.svelte';
@@ -27,6 +28,14 @@
   } from '../../utils/uiRenderTrace';
 
   let { pane }: { pane: ThreadPane } = $props();
+
+  // Wire-side prompts (approval / user-input) draw a backdrop scrim over
+  // the timeline so the actionable panel above the composer is the
+  // unmissable focal point. Mirrors the ComposerPendingApprovalPanel /
+  // ComposerPendingUserInputPanel render gate inside Composer.svelte.
+  const hasPendingPrompt = $derived(
+    pane.pendingApprovals.length > 0 || pane.pendingUserInputs.length > 0,
+  );
 
   const draft = createComposerDraftStore();
   let chatRoot: HTMLDivElement | undefined = $state(undefined);
@@ -229,7 +238,17 @@
 
       <ProviderStatusBanner {pane} />
 
-      <MessageTimeline {pane} onImageExpand={openImagePreview} />
+      <div class="relative flex-1 min-h-0 flex flex-col">
+        <MessageTimeline {pane} onImageExpand={openImagePreview} />
+        {#if hasPendingPrompt}
+          <div
+            class="pointer-events-none absolute inset-0 z-10 bg-surface-0/40 backdrop-blur-[1px]"
+            transition:fade={{ duration: 150 }}
+            aria-hidden="true"
+            data-testid="pending-prompt-scrim"
+          ></div>
+        {/if}
+      </div>
       <Composer {pane} {draft} onImageExpand={openImagePreview} />
       <BelowComposerBar {pane} />
       {#if pane.showTerminal && pane.thread}

@@ -21,6 +21,14 @@
   interface Props {
     canSend: boolean;
     isTurnActive: boolean;
+    /**
+     * Optimistic stop-button gate. True between the moment the user
+     * clicks Send and the moment SendMessage resolves (i.e. before
+     * `provider:turn_started` arrives). Treated as equivalent to
+     * `isTurnActive` for rendering the stop variant so Esc / click
+     * shows the stop affordance immediately on Enter.
+     */
+    sendInFlight?: boolean;
     action?: SendButtonAction;
     label?: string;
     planCommentCount?: number;
@@ -33,6 +41,7 @@
   let {
     canSend,
     isTurnActive,
+    sendInFlight = false,
     action = 'send',
     label,
     planCommentCount = 0,
@@ -44,8 +53,14 @@
   let menuTriggerEl: HTMLButtonElement | undefined = $state(undefined);
   let menuOpen = $state(false);
 
+  // Treat the optimistic dispatch window the same as a wire-active turn
+  // for everything button-related. This is the single seam — the rest
+  // of the component reads `showStop` rather than branching on either
+  // input directly.
+  let showStop = $derived(isTurnActive || sendInFlight);
+
   function handleClick(): void {
-    if (isTurnActive) {
+    if (showStop) {
       onInterrupt();
       return;
     }
@@ -55,7 +70,7 @@
   // The button is only disabled when we genuinely can't do anything:
   // the textarea is empty AND no turn is running. When a turn is active
   // the button becomes an interrupt trigger and stays enabled.
-  let disabled = $derived(!isTurnActive && !canSend);
+  let disabled = $derived(!showStop && !canSend);
   let idleLabel = $derived(action === 'implement'
     ? 'Implement proposed plan'
     : action === 'refine'
@@ -63,8 +78,8 @@
       : action === 'send-comments'
         ? 'Send plan comments'
         : 'Send message');
-  let showImplementMenu = $derived(action === 'implement' && !isTurnActive && Boolean(onSendInNewThread));
-  let showCommentsMenu = $derived(action === 'send-comments' && !isTurnActive && Boolean(onSendWithoutPlanComments));
+  let showImplementMenu = $derived(action === 'implement' && !showStop && Boolean(onSendInNewThread));
+  let showCommentsMenu = $derived(action === 'send-comments' && !showStop && Boolean(onSendWithoutPlanComments));
   let showCommentCount = $derived(action === 'send-comments' && planCommentCount > 0);
 
   function closeMenu(): void {
@@ -152,22 +167,22 @@
     type="button"
     onclick={handleClick}
     {disabled}
-    data-testid={isTurnActive ? 'composer-interrupt' : 'composer-send'}
-    aria-label={isTurnActive ? 'Interrupt current turn' : idleLabel}
-    title={isTurnActive ? 'Interrupt current turn' : idleLabel}
+    data-testid={showStop ? 'composer-interrupt' : 'composer-send'}
+    aria-label={showStop ? 'Interrupt current turn' : idleLabel}
+    title={showStop ? 'Interrupt current turn' : idleLabel}
     class={[
       'inline-flex h-8 items-center justify-center rounded-full shrink-0',
-      label && !isTurnActive ? 'gap-1.5 px-3 text-xs font-medium' : 'w-8',
+      label && !showStop ? 'gap-1.5 px-3 text-xs font-medium' : 'w-8',
       'transition-[background-color,transform,opacity] duration-150 cursor-pointer',
       'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-0 focus-visible:ring-accent/50',
       'hover:scale-105 active:scale-95',
-      isTurnActive
+      showStop
         ? 'bg-error text-surface-0 hover:bg-error/85'
         : 'bg-accent text-surface-0 hover:bg-accent/85',
       'disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:scale-100',
     ].join(' ')}
   >
-    {#if isTurnActive}
+    {#if showStop}
       <Icon icon={Square} size={12} strokeWidth={2.5} class="opacity-100" />
     {:else if action === 'implement'}
       <Icon icon={Play} size={13} strokeWidth={2.5} class="opacity-100" />

@@ -830,6 +830,71 @@ func TestCodexSubagentNotificationCarriesFinalOutputPayload(t *testing.T) {
 	}
 }
 
+// TestCodexUnifiedExecBackgroundedOnUserInterrupt pins the truncation
+// branch of observeCodexTurnComplete. A pre-yield unifiedExec PTY survives
+// `Op::Interrupt` on the Codex side (`core/src/tasks/mod.rs:632-637` —
+// `close_unified_exec_processes` is a separate Op `abort_all_tasks`
+// doesn't invoke). Our triage must mirror that truth: stamp the tracker
+// `backgrounded=true` so the tray's Stop-All button enables and the user
+// can fire `thread/backgroundTerminals/clean` against it. Without the
+// stamp the tracker stays `backgrounded=false`, the row renders as
+// non-stoppable in the tray, and the user has no UI path to kill a
+// process Codex says is still running.
+func TestCodexUnifiedExecBackgroundedOnUserInterrupt(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+
+	// Start a unifiedExec command — pre-yield (no text/reasoning delta
+	// followed it). The tracker is registered with backgrounded=false.
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "cmd-preyield",
+		ItemType: "commandExecution", TurnID: "turn-0",
+		Meta:      buildUnifiedExecStartMeta(t, "pid-preyield", "sleep 30"),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("tool start: %v", err)
+	}
+
+	// Pre-fix: Stop-All would be disabled because no tasks are
+	// `IsBackground=true` yet.
+	beforeInterrupt := router.ListLiveCodexBackgroundTasks("t1", time.Now().UnixMilli(), 0)
+	if len(beforeInterrupt) != 1 {
+		t.Fatalf("live tray = %d, want 1 launch row before interrupt", len(beforeInterrupt))
+	}
+	if beforeInterrupt[0].IsBackground {
+		t.Fatalf("pre-yield tracker should be IsBackground=false before turn-close (no yield signal yet)")
+	}
+
+	// User-Esc → backend emits EventTurnComplete with status=interrupted
+	// (the wire shape Codex's app-server uses — see
+	// `bespoke_event_handling.rs:2307-2317` emit_turn_completed_with_status
+	// (status: TurnStatus::Interrupted)).
+	truncMeta, _ := json.Marshal(map[string]any{"turn_status": "interrupted"})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTurnComplete,
+		ThreadID:  "t1",
+		TurnID:    "turn-0",
+		Meta:      truncMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn complete truncated: %v", err)
+	}
+
+	// Post-fix: the catchall ran on the truncated path, stamping the
+	// pre-yield tracker `backgrounded=true`.
+	afterInterrupt := router.ListLiveCodexBackgroundTasks("t1", time.Now().UnixMilli(), 0)
+	if len(afterInterrupt) != 1 {
+		t.Fatalf("live tray = %d, want 1 launch row after interrupt", len(afterInterrupt))
+	}
+	if !afterInterrupt[0].IsBackground {
+		t.Fatalf("user-Esc on pre-yield unifiedExec must stamp IsBackground=true (Codex PTY survives Op::Interrupt; tray needs it stoppable). Got: %+v", afterInterrupt[0])
+	}
+	if afterInterrupt[0].Status != statusRunning {
+		t.Errorf("backgrounded launch status = %q, want running (invariant 24)", afterInterrupt[0].Status)
+	}
+}
+
 func TestCodexBackgroundProjectorCleanupDropsLiveState(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")

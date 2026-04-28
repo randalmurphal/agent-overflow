@@ -44,6 +44,23 @@ describe('<SendButton>', () => {
     expect(onSend).not.toHaveBeenCalled();
   });
 
+  it('shows the stop variant during the optimistic sendInFlight window', async () => {
+    const onSend = vi.fn();
+    const onInterrupt = vi.fn();
+    // sendInFlight=true with isTurnActive=false simulates the dispatch
+    // window between user-Send and `provider:turn_started`. The stop
+    // button must already be visible so Esc / click can abort.
+    const { getByTestId, queryByTestId } = render(SendButton, {
+      props: { canSend: false, isTurnActive: false, sendInFlight: true, onSend, onInterrupt },
+    });
+    expect(queryByTestId('composer-send')).toBeNull();
+    const btn = getByTestId('composer-interrupt') as HTMLButtonElement;
+    expect(btn.disabled).toBe(false);
+    await fireEvent.click(btn);
+    expect(onInterrupt).toHaveBeenCalledOnce();
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
   it('shows the send-without-comments menu for plan comment sends', async () => {
     const onSendWithoutPlanComments = vi.fn();
     const { getByTestId, findByText } = render(SendButton, {

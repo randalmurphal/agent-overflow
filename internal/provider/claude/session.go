@@ -31,6 +31,16 @@ var controlRequestPrefix = []byte(`{"type":"control_request"`)
 // the secondary json.Unmarshal path.
 var controlResponsePrefix = []byte(`{"type":"control_response"`)
 
+// controlCancelRequestPrefix matches the CLI's "abandon this prior
+// control_request" notification. The CLI emits this for any in-flight
+// can_use_tool callback that an interrupt aborts (the SDK fires the
+// AbortSignal on the pending callback; the CLI side wires that to a
+// control_cancel_request on stdout — see Python SDK
+// _internal/query.py:272-278). We must NOT write a control_response
+// for these — the CLI has already given up on the request — so the
+// prefix gate routes them to a separate cleanup-only handler.
+var controlCancelRequestPrefix = []byte(`{"type":"control_cancel_request"`)
+
 type controlRequestEnvelope struct {
 	Type      string `json:"type"`
 	RequestID string `json:"request_id"`
@@ -48,16 +58,19 @@ type controlRequestEnvelope struct {
 // loudly if the CLI is wedged.
 const DefaultControlRequestTimeout = 10 * time.Second
 
-// DefaultIdleTimeout is how long the watchdog waits for ANY stdout line
-// after a Send before declaring the provider wedged. Claude streaming
-// responses emit partial-message deltas frequently, so two minutes is
-// generous — the intent is to catch provider hangs, not impatient users.
-const DefaultIdleTimeout = 120 * time.Second
-
 // DefaultApprovalTimeout is how long we wait for the user to answer a
 // tool-use approval prompt before auto-denying so the subprocess does
 // not wedge forever. Ten minutes is a pragmatic ceiling — most users
 // respond in seconds; anything longer is likely an abandoned session.
+//
+// Note: there is intentionally no idle watchdog on the streaming
+// channel. Claude can sit idle for arbitrarily long while waiting on a
+// pending can_use_tool / AskUserQuestion response from us, or while
+// thinking on a hard prompt. Killing the subprocess at a fixed cadence
+// would pre-empt those legitimate waits — the user-facing Stop button
+// is the authoritative way to abort. This matches t3-code, which also
+// has no per-turn watchdog (only a 30-minute reaper that skips
+// sessions with an active turn).
 const DefaultApprovalTimeout = 10 * time.Minute
 
 // Compile-time guarantee that *Session satisfies the provider.Session
@@ -86,29 +99,6 @@ type Session struct {
 	// pairs can share metadata (e.g. the `is_background` flag) across the
 	// two messages that carry them.
 	parser *Parser
-	// idleTimeout is the per-turn watchdog window. Zero means use
-	// DefaultIdleTimeout. The watchdog is armed by Send and disarmed by
-	// EventTurnComplete or read errors.
-	idleTimeout time.Duration
-	// inFlight indicates whether a turn is currently mid-flight. The
-	// watchdog only fires while inFlight is true — idle-between-turns is
-	// not a hang.
-	inFlight atomic.Bool
-	// watchdogMu guards assignments to watchdogReset/watchdogDone so
-	// pulseIdleWatchdog and armIdleWatchdog never race on the channel
-	// reference.
-	watchdogMu sync.Mutex
-	// watchdogReset is a buffered channel the readLoop pulses on every
-	// incoming line so the watchdog timer can restart. A nil channel
-	// means the watchdog goroutine is not running.
-	watchdogReset chan struct{}
-	// watchdogDone is closed by the watchdog goroutine when it exits so
-	// Close can wait for it deterministically.
-	watchdogDone chan struct{}
-	// watchdogFired flags that the watchdog decided the session was wedged.
-	// Inspected by Close to suppress the noisy close-related error events
-	// we would otherwise emit on top of the timeout error.
-	watchdogFired atomic.Bool
 	// approvalTimeout overrides DefaultApprovalTimeout when non-zero. Kept
 	// here so tests can inject a short window without racing on package
 	// globals.
@@ -369,9 +359,10 @@ func (s *Session) SetInteractionMode(ctx context.Context, mode provider.Interact
 }
 
 // Send sends a user message. The message is written as a JSON object to stdin.
-// Send also arms the idle watchdog: if no stdout line arrives within the
-// configured idle window, the watchdog closes the session and emits a
-// timeout error so the UI is never left waiting on a wedged subprocess.
+// There is intentionally no idle watchdog on the response channel — Claude
+// may legitimately sit silent for long periods while waiting on a pending
+// can_use_tool prompt or thinking through a hard request. The user-facing
+// Stop button is the authoritative way to abort.
 func (s *Session) Send(ctx context.Context, content string, opts provider.SendOptions) error {
 	interactionMode := opts.InteractionMode
 	if interactionMode == "" {
@@ -422,102 +413,7 @@ func (s *Session) Send(ctx context.Context, content string, opts provider.SendOp
 	if err := s.proc.WriteLine(data); err != nil {
 		return err
 	}
-	s.armIdleWatchdog()
 	return nil
-}
-
-// armIdleWatchdog starts the idle watchdog goroutine if one is not already
-// running. Subsequent calls after the turn completes are no-ops until the
-// previous watchdog observes EventTurnComplete and exits.
-func (s *Session) armIdleWatchdog() {
-	if s.inFlight.Swap(true) {
-		// Already armed for the current turn.
-		return
-	}
-	timeout := s.idleTimeout
-	if timeout <= 0 {
-		timeout = DefaultIdleTimeout
-	}
-	resetCh := make(chan struct{}, 1)
-	doneCh := make(chan struct{})
-	s.watchdogMu.Lock()
-	s.watchdogReset = resetCh
-	s.watchdogDone = doneCh
-	s.watchdogMu.Unlock()
-	go s.runIdleWatchdog(timeout, resetCh, doneCh)
-}
-
-// runIdleWatchdog fires when no line has been received within `timeout`.
-// On expiry it marks the watchdog as fired, emits EventError, and kills the
-// subprocess so the readLoop observes EOF and completes its disconnect
-// routine. The goroutine exits cleanly when (a) it observes the inFlight
-// flag flip back to false (turn complete or session closed), or (b) it
-// fires the timeout itself.
-func (s *Session) runIdleWatchdog(timeout time.Duration, resetCh <-chan struct{}, doneCh chan<- struct{}) {
-	defer close(doneCh)
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
-	for {
-		select {
-		case <-resetCh:
-			if !timer.Stop() {
-				select {
-				case <-timer.C:
-				default:
-				}
-			}
-			if !s.inFlight.Load() {
-				return
-			}
-			timer.Reset(timeout)
-		case <-timer.C:
-			if !s.inFlight.Load() {
-				return
-			}
-			s.watchdogFired.Store(true)
-			meta, _ := json.Marshal(map[string]any{"fatal": true})
-			s.onEvent(provider.ProviderEvent{
-				Kind:      provider.EventError,
-				ThreadID:  s.threadID,
-				Content:   fmt.Sprintf("claude: provider idle timeout after %s — no output received", timeout),
-				Meta:      meta,
-				Timestamp: time.Now(),
-			})
-			// Kill the subprocess so readLoop exits and emits the
-			// disconnected terminal state. We use Kill rather than
-			// Close to avoid waiting the shutdown grace period on a
-			// subprocess that is already non-responsive.
-			_ = s.proc.Kill()
-			return
-		}
-	}
-}
-
-// pulseIdleWatchdog is called from readLoop on every received line so the
-// watchdog timer restarts. Safe when the watchdog is not armed — the nil
-// channel simply makes the select a no-op for this pulse.
-func (s *Session) pulseIdleWatchdog() {
-	s.watchdogMu.Lock()
-	reset := s.watchdogReset
-	s.watchdogMu.Unlock()
-	if reset == nil {
-		return
-	}
-	select {
-	case reset <- struct{}{}:
-	default:
-	}
-}
-
-// disarmIdleWatchdog is called when EventTurnComplete is observed so the
-// watchdog exits cleanly; flipping inFlight first ensures the watchdog's
-// next wakeup sees a stopped turn even if the reset-channel pulse loses
-// the race.
-func (s *Session) disarmIdleWatchdog() {
-	if !s.inFlight.Swap(false) {
-		return
-	}
-	s.pulseIdleWatchdog()
 }
 
 // Interrupt aborts the current turn by sending a control_request with
@@ -952,10 +848,23 @@ func (s *Session) clearPendingApprovals() {
 	s.approvalsMu.Unlock()
 	for requestID, p := range pending {
 		close(p.cancel)
-		meta, _ := json.Marshal(map[string]any{
+		// Decision "lost" signals session-ended-mid-prompt to triage
+		// (internal/triage/approvals.go:198 maps it to status=errored
+		// in the store). Different from the user-driven "cancel" the
+		// control_cancel_request handler emits — that one means the
+		// CLI itself abandoned the request after an interrupt; this
+		// one means the session is going away.
+		metaFields := map[string]any{
 			"requestId": requestID,
 			"decision":  "lost",
-		})
+		}
+		if p.resolveKind == provider.EventUserInputResolved {
+			// Frontend expects answers on UserInputResolved events; empty
+			// map keeps the type contract clean even when no user reply
+			// was ever submitted.
+			metaFields["answers"] = map[string]any{}
+		}
+		meta, _ := json.Marshal(metaFields)
 		s.onEvent(provider.ProviderEvent{
 			Kind:      p.resolveKind,
 			ThreadID:  s.threadID,
@@ -986,19 +895,12 @@ func (s *Session) SessionID() string {
 // Closes stdin first for graceful shutdown, then cancels the context as fallback.
 func (s *Session) Close() error {
 	s.closing.Store(true)
-	s.disarmIdleWatchdog()
 	s.clearPendingApprovals()
 	s.clearPendingControlRequests()
 	err := s.proc.Close()
 	s.cancel()
 	if s.readDone != nil {
 		<-s.readDone
-	}
-	s.watchdogMu.Lock()
-	watchdogDone := s.watchdogDone
-	s.watchdogMu.Unlock()
-	if watchdogDone != nil {
-		<-watchdogDone
 	}
 	// Release parser-owned state so the dedup sets
 	// (completedToolUseIDs, completedTasks, backgroundToolUses, etc.)
@@ -1014,21 +916,15 @@ func (s *Session) readLoop() {
 			defer close(s.readDone)
 		}
 
-		// Tear the watchdog down so the goroutine exits; if it had
-		// already fired we let the original error stand and skip the
-		// generic close-error event.
-		s.disarmIdleWatchdog()
-
 		// Release any control_request callers still parked on a pending
 		// control_response. If the subprocess died on its own (io.EOF,
-		// crash, watchdog kill) Close won't be the path that drains
-		// the map, so the caller would otherwise sit idle until its
-		// own timeout fires. Signalling here surfaces "session closed
-		// before response" within a handful of milliseconds of the
-		// subprocess exit.
+		// crash) Close won't be the path that drains the map, so the
+		// caller would otherwise sit idle until its own timeout fires.
+		// Signalling here surfaces "session closed before response"
+		// within a handful of milliseconds of the subprocess exit.
 		s.clearPendingControlRequests()
 
-		if !s.closing.Load() && !s.watchdogFired.Load() {
+		if !s.closing.Load() {
 			exitErr := provider.WaitProcessExitErr(s.proc)
 			if exitErr != nil {
 				s.onEvent(provider.ProviderEvent{
@@ -1052,7 +948,7 @@ func (s *Session) readLoop() {
 	for {
 		line, err := s.proc.ReadLine()
 		if err != nil {
-			if err != io.EOF && !s.watchdogFired.Load() {
+			if err != io.EOF {
 				meta, _ := json.Marshal(map[string]any{"fatal": true})
 				s.onEvent(provider.ProviderEvent{
 					Kind:      provider.EventError,
@@ -1064,8 +960,6 @@ func (s *Session) readLoop() {
 			}
 			return
 		}
-		// Any output keeps the watchdog happy — even lines we drop below.
-		s.pulseIdleWatchdog()
 
 		// Gate control_request pre-handling on a byte-prefix check so
 		// every streaming text_delta line doesn't pay an extra
@@ -1107,6 +1001,16 @@ func (s *Session) readLoop() {
 			continue
 		}
 
+		// control_cancel_request: the CLI is abandoning a prior
+		// can_use_tool callback (typically because of an interrupt).
+		// Drain our pending approval / user-input state so the
+		// frontend panel clears immediately. We DO NOT write a
+		// response — the CLI is not waiting for one.
+		if bytes.HasPrefix(line, controlCancelRequestPrefix) {
+			s.handleControlCancelRequestLine(line)
+			continue
+		}
+
 		events, err := s.parser.ParseLine(s.threadID, line)
 		if err != nil {
 			log.Printf("claude: parse error: %v (line: %s)", err, string(line[:min(len(line), 200)]))
@@ -1119,9 +1023,6 @@ func (s *Session) readLoop() {
 				if json.Unmarshal(evt.Meta, &info) == nil && info.SessionID != "" {
 					s.sessionID = info.SessionID
 				}
-			}
-			if evt.Kind == provider.EventTurnComplete {
-				s.disarmIdleWatchdog()
 			}
 			if evt.Kind == provider.EventApprovalRequest && evt.ItemID != "" {
 				s.startApprovalTimer(evt.ItemID, provider.EventApprovalResolved)
@@ -1291,4 +1192,86 @@ func (s *Session) handleControlResponseLine(line []byte) {
 	if !s.deliverControlResponse(requestID, res) {
 		log.Printf("claude: control_response with no pending request_id %q (subtype=%s)", requestID, raw.Response.Subtype)
 	}
+}
+
+// handleControlCancelRequestLine processes a CLI-originated
+// `control_cancel_request` envelope. The CLI emits these when an
+// interrupt aborts an in-flight `can_use_tool` callback — the request
+// is no longer being awaited on the CLI side, so we must clear the
+// matching pending approval / user-input state without writing a
+// control_response.
+//
+// The cancellation payload mirrors t3-code's AbortSignal handlers:
+// pending approvals resolve as `decision: "cancel"` (matching
+// ClaudeAdapter.ts:2764 — "User cancelled tool execution."), pending
+// user-inputs resolve with empty `answers: {}` (matching
+// ClaudeAdapter.ts:2612). The frontend panel listens for the matching
+// EventApprovalResolved / EventUserInputResolved kind and clears.
+func (s *Session) handleControlCancelRequestLine(line []byte) {
+	var raw struct {
+		Type      string `json:"type"`
+		RequestID string `json:"request_id"`
+	}
+	if err := json.Unmarshal(line, &raw); err != nil {
+		log.Printf("claude: malformed control_cancel_request line: %v", err)
+		return
+	}
+	if raw.Type != "control_cancel_request" {
+		// Prefix-only false positive. Cheap to verify; cheap to drop.
+		return
+	}
+	requestID := raw.RequestID
+	if requestID == "" {
+		log.Printf("claude: control_cancel_request missing request_id: %s", string(line[:min(len(line), 200)]))
+		return
+	}
+	s.cancelPendingApproval(requestID)
+}
+
+// cancelPendingApproval clears the pending approval / user-input entry
+// for requestID and emits the matching resolved event so the frontend
+// panel disappears. Idempotent: if the request is already resolved or
+// unknown, the call is a no-op.
+func (s *Session) cancelPendingApproval(requestID string) {
+	s.approvalsMu.Lock()
+	if _, already := s.resolvedApprovals[requestID]; already {
+		s.approvalsMu.Unlock()
+		return
+	}
+	pending, ok := s.pendingApprovals[requestID]
+	if !ok {
+		s.approvalsMu.Unlock()
+		return
+	}
+	delete(s.pendingApprovals, requestID)
+	if s.resolvedApprovals == nil {
+		s.resolvedApprovals = make(map[string]struct{})
+	}
+	if len(s.resolvedApprovals) >= resolvedApprovalsSoftCap {
+		s.resolvedApprovals = make(map[string]struct{})
+	}
+	s.resolvedApprovals[requestID] = struct{}{}
+	resolveKind := pending.resolveKind
+	s.approvalsMu.Unlock()
+
+	close(pending.cancel)
+
+	metaFields := map[string]any{
+		"requestId": requestID,
+	}
+	switch resolveKind {
+	case provider.EventUserInputResolved:
+		metaFields["answers"] = map[string]any{}
+		metaFields["decision"] = "cancel"
+	default:
+		metaFields["decision"] = "cancel"
+	}
+	meta, _ := json.Marshal(metaFields)
+	s.onEvent(provider.ProviderEvent{
+		Kind:      resolveKind,
+		ThreadID:  s.threadID,
+		ItemID:    requestID,
+		Meta:      meta,
+		Timestamp: time.Now(),
+	})
 }

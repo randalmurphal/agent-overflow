@@ -59,7 +59,7 @@ var DefaultKeybindings = []Keybinding{
 	{Key: "mod+,", Command: "settings.open", DefaultID: "settings.open"},
 	{Key: "mod+shift+[", Command: "thread.previous", DefaultID: "thread.previous"},
 	{Key: "mod+shift+]", Command: "thread.next", DefaultID: "thread.next"},
-	{Key: "esc", Command: "thread.interrupt", When: "hasActiveThread && turnActive && !anyModalOpen", DefaultID: "thread.interrupt"},
+	{Key: "esc", Command: "thread.interrupt", When: "hasActiveThread && (turnActive || sendInFlight || hasPendingPrompt) && !anyModalOpen", DefaultID: "thread.interrupt"},
 	{Key: "mod+1", Command: "thread.jump.1", DefaultID: "thread.jump.1"},
 	{Key: "mod+2", Command: "thread.jump.2", DefaultID: "thread.jump.2"},
 	{Key: "mod+3", Command: "thread.jump.3", DefaultID: "thread.jump.3"},

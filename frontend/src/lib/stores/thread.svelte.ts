@@ -218,6 +218,14 @@ export function createThreadPane() {
   // them as two independent reasons to show the top-of-pane banner.
   let generalError: string | null = $state(null);
   let loading: boolean = $state(false);
+  // sendInFlight is the optimistic stop-button gate. The composer flips
+  // it true the moment the user clicks Send and clears it in `finally`.
+  // Used by SendButton to render the stop variant before
+  // `provider:turn_started` arrives, and by the thread.interrupt
+  // keybinding's `when` clause so Esc clears the prompt during the
+  // dispatch window. Cleared on thread switch in clear() so the pane
+  // doesn't carry sending state into the next thread.
+  let sendInFlight: boolean = $state(false);
   let showTerminal: boolean = $state(false);
   // Diff panel is per-pane; created once and reset on thread switch so its
   // caches don't leak between threads.
@@ -722,6 +730,14 @@ export function createThreadPane() {
     get providerBanner() { return providerBanner; },
     get generalError() { return generalError; },
     get loading() { return loading; },
+    /**
+     * True between the moment the user clicks Send and the moment
+     * SendMessage resolves (success or failure). The composer uses
+     * this to render the optimistic stop button before
+     * `provider:turn_started` lands; the keybindings dispatcher uses
+     * it to enable Esc → thread.interrupt during the same window.
+     */
+    get sendInFlight() { return sendInFlight; },
     get showTerminal() { return showTerminal; },
     get diffPanel() { return diffPanel; },
     /**
@@ -798,6 +814,7 @@ export function createThreadPane() {
       contextWindow = seedContextWindow(newThread);
       providerBanner = null;
       generalError = null;
+      sendInFlight = false;
       channelMessages = [];
       channelStatus = null;
       designArtifacts = [];
@@ -993,6 +1010,7 @@ export function createThreadPane() {
       providerBanner = null;
       generalError = null;
       loading = false;
+      sendInFlight = false;
       showTerminal = false;
       showPlanSidebar = false;
       diffSidebarSlot.reset();
@@ -1270,6 +1288,10 @@ export function createThreadPane() {
       generalError = null;
     },
 
+    setSendInFlight(value: boolean): void {
+      sendInFlight = value;
+    },
+
     setContextWindow(data: ContextWindow): void {
       contextWindow = normalizeContextWindowForThread(data, thread);
     },
@@ -1313,6 +1335,21 @@ export function createThreadPane() {
     settleTurn(settled: SettledTurn): void {
       activeTurn = null;
       latestSettledTurn = settled;
+    },
+
+    /**
+     * Optimistic clear used by the Esc / Stop interrupt path. Drops the
+     * live `activeTurn` synchronously so the spinner / Stop button
+     * flip to idle in the same render tick as the keystroke — matching
+     * Claude Code's `resetLoadingState()` (REPL.tsx:2106-2163) and the
+     * Codex TUI's spinner clear on `EventMsg::TurnAborted`. The real
+     * `provider:turn_completed` arrives shortly after and re-runs
+     * settleTurn (idempotent on already-null activeTurn). Does NOT
+     * clear `latestSettledTurn` so the previous turn's completion
+     * divider stays visible.
+     */
+    clearActiveTurn(): void {
+      activeTurn = null;
     },
 
     /**

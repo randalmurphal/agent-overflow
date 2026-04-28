@@ -1555,6 +1555,271 @@ closeNow:
 	}
 }
 
+// TestCodexInterruptDrainsPendingApproval covers the Interrupt-drain
+// path: when the user clicks stop while a sandbox approval is pending,
+// the session must emit EventApprovalResolved with decision="cancel" so
+// the frontend's approval panel clears immediately. This is the bug-fix
+// beyond t3-code's CodexSessionRuntime.interruptTurn, which leaves the
+// local Deferred parked.
+func TestCodexInterruptDrainsPendingApproval(t *testing.T) {
+	s, eventCh := newTestCodexSessionWithApprovalTimeout(t, 5*time.Second)
+
+	// Need an active turn for Interrupt to attempt the RPC at all —
+	// before that gate the function returns "no active turn".
+	s.mu.Lock()
+	s.activeTurnID = "turn-1"
+	s.mu.Unlock()
+
+	line := []byte(`{"jsonrpc":"2.0","id":11,"method":"item/commandExecution/requestApproval","params":{"command":"ls"}}`)
+	s.dispatchLine(line)
+
+	// Drain incoming events until we see the approval request.
+	for {
+		select {
+		case evt := <-eventCh:
+			if evt.Kind == provider.EventApprovalRequest {
+				goto interrupt
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("no approval event")
+		}
+	}
+interrupt:
+	// Interrupt itself returns an error (cat echoes our request back
+	// as a server-request shape, which falls to the default error case
+	// — fine for this test). The drain runs regardless.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_ = s.Interrupt(ctx)
+
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case evt := <-eventCh:
+			if evt.Kind != provider.EventApprovalResolved {
+				continue
+			}
+			var meta struct {
+				RequestID string `json:"requestId"`
+				Decision  string `json:"decision"`
+			}
+			if err := json.Unmarshal(evt.Meta, &meta); err != nil {
+				t.Fatalf("unmarshal resolved meta: %v", err)
+			}
+			if meta.RequestID != "11" {
+				t.Fatalf("requestId = %q, want 11", meta.RequestID)
+			}
+			if meta.Decision != "cancel" {
+				t.Fatalf("decision = %q, want cancel", meta.Decision)
+			}
+			return
+		case <-deadline:
+			t.Fatal("no EventApprovalResolved after Interrupt")
+		}
+	}
+}
+
+// TestCodexInterruptDrainsPendingUserInput is the user-input twin of
+// TestCodexInterruptDrainsPendingApproval. The resolved event must
+// carry decision="cancel" AND answers={} so the frontend's user-input
+// panel clears with a well-formed payload.
+func TestCodexInterruptDrainsPendingUserInput(t *testing.T) {
+	s, eventCh := newTestCodexSessionWithApprovalTimeout(t, 5*time.Second)
+
+	s.mu.Lock()
+	s.activeTurnID = "turn-1"
+	s.mu.Unlock()
+
+	line := []byte(`{"jsonrpc":"2.0","id":12,"method":"item/tool/requestUserInput","params":{"questions":[{"id":"scope","header":"Scope","question":"Choose","options":[{"label":"turn","description":"This turn"}]}]}}`)
+	s.dispatchLine(line)
+
+	for {
+		select {
+		case evt := <-eventCh:
+			if evt.Kind == provider.EventUserInputRequest {
+				goto interrupt
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("no user-input request event")
+		}
+	}
+interrupt:
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_ = s.Interrupt(ctx)
+
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case evt := <-eventCh:
+			if evt.Kind != provider.EventUserInputResolved {
+				continue
+			}
+			var meta struct {
+				RequestID string         `json:"requestId"`
+				Decision  string         `json:"decision"`
+				Answers   map[string]any `json:"answers"`
+			}
+			if err := json.Unmarshal(evt.Meta, &meta); err != nil {
+				t.Fatalf("unmarshal resolved meta: %v", err)
+			}
+			if meta.RequestID != "12" {
+				t.Fatalf("requestId = %q, want 12", meta.RequestID)
+			}
+			if meta.Decision != "cancel" {
+				t.Fatalf("decision = %q, want cancel", meta.Decision)
+			}
+			if meta.Answers == nil {
+				t.Fatalf("answers field absent; want empty map for user-input variant")
+			}
+			if len(meta.Answers) != 0 {
+				t.Fatalf("answers = %v, want empty map", meta.Answers)
+			}
+			return
+		case <-deadline:
+			t.Fatal("no EventUserInputResolved after Interrupt")
+		}
+	}
+}
+
+// TestCodexCloseDrainsPendingUserInputWithAnswers verifies the Close
+// drain emits an EventUserInputResolved that carries the empty
+// `answers` map alongside the historic decision="lost". The frontend
+// type contract requires the field on every UserInputResolved meta.
+func TestCodexCloseDrainsPendingUserInputWithAnswers(t *testing.T) {
+	s, eventCh := newTestCodexSessionWithApprovalTimeout(t, 5*time.Second)
+
+	line := []byte(`{"jsonrpc":"2.0","id":13,"method":"item/tool/requestUserInput","params":{"questions":[{"id":"scope","header":"Scope","question":"Choose","options":[{"label":"turn","description":"This turn"}]}]}}`)
+	s.dispatchLine(line)
+
+	for {
+		select {
+		case evt := <-eventCh:
+			if evt.Kind == provider.EventUserInputRequest {
+				goto closeNow
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("no user-input request event")
+		}
+	}
+closeNow:
+	if err := s.Close(); err != nil {
+		t.Logf("close returned %v (acceptable)", err)
+	}
+
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case evt, ok := <-eventCh:
+			if !ok {
+				t.Fatal("event channel closed before resolved event")
+			}
+			if evt.Kind != provider.EventUserInputResolved {
+				continue
+			}
+			var meta struct {
+				RequestID string         `json:"requestId"`
+				Decision  string         `json:"decision"`
+				Answers   map[string]any `json:"answers"`
+			}
+			if err := json.Unmarshal(evt.Meta, &meta); err != nil {
+				t.Fatalf("unmarshal resolved meta: %v", err)
+			}
+			if meta.RequestID != "13" {
+				t.Fatalf("requestId = %q, want 13", meta.RequestID)
+			}
+			if meta.Decision != "lost" {
+				t.Fatalf("decision = %q, want lost (Close path)", meta.Decision)
+			}
+			if meta.Answers == nil {
+				t.Fatalf("answers field absent; want empty map")
+			}
+			return
+		case <-deadline:
+			t.Fatal("no EventUserInputResolved after Close")
+		}
+	}
+}
+
+// TestCodexDrainWritesTurnTransitionError verifies the wire shape of
+// the JSON-RPC error our drain writes to the Codex app-server. The
+// `data.reason = "turnTransition"` field is the magic value Codex uses
+// to early-return cleanly on `is_turn_transition_server_request_error`
+// (codex-rs/app-server/src/server_request_error.rs) — without it,
+// Codex's per-handler fallback paths log "request failed with client
+// error" and (for MCP elicitation) pick the wrong action.
+func TestCodexDrainWritesTurnTransitionError(t *testing.T) {
+	capturePath := t.TempDir() + "/wire.jsonl"
+	ctx, cancel := context.WithCancel(context.Background())
+	proc, err := provider.Spawn(ctx, provider.SpawnConfig{
+		Binary: "sh",
+		Args: []string{"-c", `
+			while IFS= read -r line; do
+				printf '%s\n' "$line" >> "$CAPTURE_PATH"
+			done
+		`},
+		Env: map[string]string{"CAPTURE_PATH": capturePath},
+	})
+	if err != nil {
+		t.Fatalf("spawn capture sh: %v", err)
+	}
+	s := &Session{
+		proc:          proc,
+		threadID:      testThread,
+		codexThreadID: "codex-thread-1",
+		pending:       make(map[int64]chan json.RawMessage),
+		onEvent:       func(provider.ProviderEvent) {},
+		cancel:        cancel,
+	}
+	go s.readLoop()
+	t.Cleanup(func() {
+		cancel()
+		_ = proc.Close()
+	})
+
+	// Seed a pending approval (rpcID 99) so the drain has something
+	// to write a response for.
+	s.startApprovalTimer(99, provider.EventApprovalResolved)
+
+	s.drainPendingApprovals("cancel", false)
+
+	// Give the capture script a moment to flush, then read.
+	deadline := time.Now().Add(2 * time.Second)
+	var data []byte
+	for time.Now().Before(deadline) {
+		data, _ = os.ReadFile(capturePath)
+		if len(data) > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(data) == 0 {
+		t.Fatalf("no wire bytes captured")
+	}
+	var frame struct {
+		ID    int64 `json:"id"`
+		Error struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+			Data    struct {
+				Reason string `json:"reason"`
+			} `json:"data"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(data, &frame); err != nil {
+		t.Fatalf("unmarshal captured frame %q: %v", string(data), err)
+	}
+	if frame.ID != 99 {
+		t.Fatalf("frame.id = %d, want 99", frame.ID)
+	}
+	if frame.Error.Data.Reason != "turnTransition" {
+		t.Fatalf("error.data.reason = %q, want \"turnTransition\"", frame.Error.Data.Reason)
+	}
+	if frame.Error.Code == 0 {
+		t.Fatalf("error.code is zero — JSON-RPC error frames must carry a non-zero code")
+	}
+}
+
 func codexWaitEvent(t *testing.T, ch <-chan provider.ProviderEvent) provider.ProviderEvent {
 	t.Helper()
 	select {
@@ -2129,15 +2394,71 @@ func TestCodexSend(t *testing.T) {
 	}
 }
 
-func TestCodexInterruptNoActiveTurn(t *testing.T) {
-	s, _ := newTestCodexSession(t)
+func TestCodexInterruptStartupSendsEmptyTurnID(t *testing.T) {
+	// Codex's wire protocol treats an empty turn_id as a "startup
+	// interrupt" — the app-server submits Op::Interrupt to the core
+	// and responds immediately with `{}`. We must NOT gate on a
+	// non-empty activeTurnID; just send the RPC and let upstream
+	// handle the dispatch-window case. See
+	// codex-rs/app-server/src/codex_message_processor.rs:7790-7849.
+	capturePath := t.TempDir() + "/request.json"
+	ctx, cancel := context.WithCancel(context.Background())
+	proc, err := provider.Spawn(ctx, provider.SpawnConfig{
+		Binary: "sh",
+		Args: []string{"-c", `
+			IFS= read -r line || exit 1
+			printf '%s\n' "$line" > "$CAPTURE_PATH"
+			printf '{"jsonrpc":"2.0","id":1,"result":{}}\n'
+		`},
+		Env: map[string]string{"CAPTURE_PATH": capturePath},
+	})
+	if err != nil {
+		t.Fatalf("spawn recorder: %v", err)
+	}
+	s := &Session{
+		proc:          proc,
+		threadID:      testThread,
+		codexThreadID: "codex-thread-1",
+		// activeTurnID intentionally left empty — this is the
+		// dispatch window case.
+		pending: make(map[int64]chan json.RawMessage),
+		onEvent: func(provider.ProviderEvent) {},
+		cancel:  cancel,
+	}
+	go s.readLoop()
+	t.Cleanup(func() {
+		cancel()
+		_ = proc.Close()
+	})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	interruptCtx, interruptCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer interruptCancel()
+	if err := s.Interrupt(interruptCtx); err != nil {
+		t.Fatalf("Interrupt during dispatch window: %v", err)
+	}
 
-	err := s.Interrupt(ctx)
-	if err == nil {
-		t.Fatal("expected error when no active turn")
+	data, err := os.ReadFile(capturePath)
+	if err != nil {
+		t.Fatalf("read captured request: %v", err)
+	}
+	var frame struct {
+		Method string `json:"method"`
+		Params struct {
+			ThreadID string `json:"threadId"`
+			TurnID   string `json:"turnId"`
+		} `json:"params"`
+	}
+	if err := json.Unmarshal(data, &frame); err != nil {
+		t.Fatalf("unmarshal captured request: %v", err)
+	}
+	if frame.Method != "turn/interrupt" {
+		t.Fatalf("method = %q, want turn/interrupt", frame.Method)
+	}
+	if frame.Params.ThreadID != "codex-thread-1" {
+		t.Fatalf("threadId = %q, want codex-thread-1", frame.Params.ThreadID)
+	}
+	if frame.Params.TurnID != "" {
+		t.Fatalf("turnId = %q, want empty (startup interrupt sentinel)", frame.Params.TurnID)
 	}
 }
 
@@ -2152,12 +2473,10 @@ func TestCodexInterruptWithActiveTurn(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	err := s.Interrupt(ctx)
-	// Expected to fail because cat echo + handleServerRequest produces error response,
-	// but it should NOT fail with "no active turn".
-	if err != nil && err.Error() == "codex: no active turn to interrupt" {
-		t.Fatal("should have attempted RPC, not returned no-active-turn error")
-	}
+	// Just verify Interrupt attempts the RPC — actual response is
+	// noise from cat's echo behaviour. The startup-interrupt path is
+	// covered separately by TestCodexInterruptStartupSendsEmptyTurnID.
+	_ = s.Interrupt(ctx)
 }
 
 func TestCodexInterruptSendsThreadAndTurnID(t *testing.T) {

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { scale } from 'svelte/transition';
   import type { ApprovalRequest } from '../../types/events';
   import { ApprovalResponse } from '../../stores/bindings';
   import { errString } from '../../utils/errors';
@@ -32,23 +33,24 @@
 </script>
 
 <section
-  class="border-b border-border-subtle bg-surface-1/70 px-4 py-3"
+  class="border-b-2 border-accent/60 bg-surface-1 px-4 py-4 shadow-[inset_0_2px_0_oklch(from_var(--accent)_l_c_h/0.18)]"
   data-testid="composer-pending-approval"
-  aria-live="polite"
+  aria-live="assertive"
+  in:scale={{ duration: 200, start: 0.96, opacity: 0 }}
 >
   <div class="flex items-start justify-between gap-3">
     <div class="min-w-0">
       <div class="flex items-center gap-2">
-        <p class="text-[10px] font-semibold uppercase tracking-[0.08em] text-fg-muted">
+        <p class="text-[11px] font-bold uppercase tracking-[0.08em] text-accent">
           Pending Approval
         </p>
         {#if count > 1}
-          <span class="rounded-full border border-border-subtle px-1.5 py-0.5 text-[10px] text-fg-muted">
+          <span class="rounded-full border border-accent/40 bg-accent/10 px-1.5 py-0.5 text-[10px] font-semibold text-accent">
             1/{count}
           </span>
         {/if}
       </div>
-      <p class="mt-1 truncate text-[13px] font-medium text-fg">{approval.toolName || approval.title}</p>
+      <p class="mt-1 truncate text-sm font-semibold text-fg">{approval.toolName || approval.title}</p>
       <p class="mt-0.5 line-clamp-2 text-xs text-fg-muted">{summary}</p>
     </div>
   </div>

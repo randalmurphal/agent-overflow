@@ -1908,6 +1908,143 @@ func TestApprovalTimeoutClearedOnCloseClaude(t *testing.T) {
 	}
 }
 
+// TestControlCancelRequestClearsPendingApproval exercises the
+// `control_cancel_request` cleanup path. When an interrupt aborts an
+// in-flight can_use_tool callback, the CLI emits this envelope to
+// abandon the prior request. We must:
+//   - clear the pending approval / user-input state (so the panel
+//     disappears),
+//   - emit the matching resolved event with cancel semantics,
+//   - NOT write a control_response (the CLI is no longer waiting),
+//   - cancel the auto-deny timer so it doesn't fire later.
+//
+// Mirror tests for both the approval and user-input flavours. Bug-fix
+// tracker: agent-overflow merry-wirth plan, step 3.
+func TestControlCancelRequestClearsPendingApproval(t *testing.T) {
+	s, eventCh := newTestClaudeSessionWithApprovalTimeout(t, 1500*time.Millisecond)
+
+	// 1. CLI emits an approval request.
+	approvalLine := []byte(`{"type":"control_request","request_id":"req-cancel","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"ls"}}}`)
+	if err := s.proc.WriteLine(approvalLine); err != nil {
+		t.Fatalf("write approval: %v", err)
+	}
+
+	var gotApproval bool
+	for !gotApproval {
+		select {
+		case evt := <-eventCh:
+			if evt.Kind == provider.EventApprovalRequest && evt.ItemID == "req-cancel" {
+				gotApproval = true
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("no approval event")
+		}
+	}
+
+	// 2. CLI later abandons it via control_cancel_request (e.g. user
+	// interrupt fired, SDK-side AbortSignal).
+	cancelLine := []byte(`{"type":"control_cancel_request","request_id":"req-cancel"}`)
+	if err := s.proc.WriteLine(cancelLine); err != nil {
+		t.Fatalf("write cancel: %v", err)
+	}
+
+	// 3. Expect EventApprovalResolved with decision:"cancel".
+	deadline := time.After(2 * time.Second)
+	var gotResolved bool
+	for !gotResolved {
+		select {
+		case evt := <-eventCh:
+			if evt.Kind == provider.EventApprovalResolved && evt.ItemID == "req-cancel" {
+				var meta map[string]any
+				if err := json.Unmarshal(evt.Meta, &meta); err != nil {
+					t.Fatalf("unmarshal resolved meta: %v", err)
+				}
+				if meta["decision"] != "cancel" {
+					t.Fatalf("resolved decision: got %v, want cancel", meta["decision"])
+				}
+				gotResolved = true
+			}
+			if evt.Kind == provider.EventError && containsAny(evt.Content, "approval timed out", "approval timeout") {
+				t.Fatalf("unexpected auto-deny error after cancel: %v", evt.Content)
+			}
+		case <-deadline:
+			t.Fatal("never saw EventApprovalResolved for cancelled request")
+		}
+	}
+
+	// 4. A subsequent RespondToApproval for the same id must short-
+	// circuit: the request is already resolved.
+	respErr := s.RespondToApproval(context.Background(), provider.ApprovalResponse{
+		RequestID: "req-cancel",
+		Decision:  "allow",
+	})
+	if respErr == nil {
+		t.Fatalf("RespondToApproval after cancel: expected error, got nil")
+	}
+	if !errors.Is(respErr, provider.ErrStaleInteractiveRequest) {
+		t.Fatalf("RespondToApproval after cancel: got %v, want ErrStaleInteractiveRequest", respErr)
+	}
+}
+
+// TestControlCancelRequestClearsPendingUserInput is the AskUserQuestion
+// flavour: when the CLI cancels a pending user-input prompt, the
+// resolved event must carry empty answers and decision="cancel" so
+// the panel above the composer clears.
+func TestControlCancelRequestClearsPendingUserInput(t *testing.T) {
+	s, eventCh := newTestClaudeSessionWithApprovalTimeout(t, 1500*time.Millisecond)
+
+	uqLine := []byte(`{"type":"control_request","request_id":"uq-cancel","request":{"subtype":"can_use_tool","tool_name":"AskUserQuestion","input":{"questions":[{"id":"q","header":"Pick","question":"a or b?","options":[{"label":"a","description":"opt a"},{"label":"b","description":"opt b"}]}]}}}`)
+	if err := s.proc.WriteLine(uqLine); err != nil {
+		t.Fatalf("write user-input request: %v", err)
+	}
+
+	var gotRequest bool
+	for !gotRequest {
+		select {
+		case evt := <-eventCh:
+			if evt.Kind == provider.EventUserInputRequest && evt.ItemID == "uq-cancel" {
+				gotRequest = true
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("no user-input request event")
+		}
+	}
+
+	cancelLine := []byte(`{"type":"control_cancel_request","request_id":"uq-cancel"}`)
+	if err := s.proc.WriteLine(cancelLine); err != nil {
+		t.Fatalf("write cancel: %v", err)
+	}
+
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case evt := <-eventCh:
+			if evt.Kind == provider.EventUserInputResolved && evt.ItemID == "uq-cancel" {
+				var meta map[string]any
+				if err := json.Unmarshal(evt.Meta, &meta); err != nil {
+					t.Fatalf("unmarshal resolved meta: %v", err)
+				}
+				if meta["decision"] != "cancel" {
+					t.Fatalf("resolved decision: got %v, want cancel", meta["decision"])
+				}
+				answers, ok := meta["answers"].(map[string]any)
+				if !ok {
+					t.Fatalf("answers missing or wrong type: %v", meta["answers"])
+				}
+				if len(answers) != 0 {
+					t.Fatalf("answers: got %v, want empty map", answers)
+				}
+				return
+			}
+			if evt.Kind == provider.EventError && containsAny(evt.Content, "user input timed out", "user input timeout") {
+				t.Fatalf("unexpected auto-deny error after cancel: %v", evt.Content)
+			}
+		case <-deadline:
+			t.Fatal("never saw EventUserInputResolved for cancelled request")
+		}
+	}
+}
+
 // newTestClaudeSessionWithApprovalTimeout wires up a cat-backed session
 // with a custom approval watchdog window for Bug B3 tests.
 func newTestClaudeSessionWithApprovalTimeout(t *testing.T, timeout time.Duration) (*Session, <-chan provider.ProviderEvent) {
@@ -2040,204 +2177,12 @@ func TestExitPlanModeWritesDenyOnHappyPath(t *testing.T) {
 	}
 }
 
-// TestIdleWatchdogFiresAfterSilence exercises Bug B2: once Send is called
-// we expect the subprocess to produce at least one stdout line within the
-// configured idle timeout. If it stays silent, the watchdog must close the
-// session, emit an EventError mentioning the timeout, and reach the
-// disconnected terminal state. A regression that disabled the watchdog
-// would leave the user waiting forever.
-func TestIdleWatchdogFiresAfterSilence(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+// (TestIdleWatchdog* deleted; the per-turn idle watchdog was removed
+// because it incorrectly killed the subprocess while waiting for a
+// pending can_use_tool / AskUserQuestion response. See plan: t3-code
+// has no equivalent watchdog and the user-facing Stop button is the
+// authoritative way to abort a stuck turn.)
 
-	// Subprocess reads from stdin (so Send succeeds) but never writes to
-	// stdout — exactly the provider-hang scenario.
-	proc, err := provider.Spawn(ctx, provider.SpawnConfig{
-		Binary: "sh",
-		Args:   []string{"-c", "cat > /dev/null; sleep 60"},
-	})
-	if err != nil {
-		t.Fatalf("spawn: %v", err)
-	}
-
-	eventCh := make(chan provider.ProviderEvent, 100)
-	s := &Session{
-		proc:     proc,
-		threadID: testThread,
-		onEvent: func(evt provider.ProviderEvent) {
-			eventCh <- evt
-		},
-		cancel:      cancel,
-		readDone:    make(chan struct{}),
-		idleTimeout: 100 * time.Millisecond,
-	}
-	go s.readLoop()
-
-	if err := s.Send(context.Background(), "hello", provider.SendOptions{}); err != nil {
-		t.Fatalf("Send: %v", err)
-	}
-
-	var gotTimeout, gotDisconnected bool
-	deadline := time.After(5 * time.Second)
-	for !(gotTimeout && gotDisconnected) {
-		select {
-		case evt := <-eventCh:
-			if evt.Kind == provider.EventError && containsAny(evt.Content, "timeout", "idle", "no output") {
-				gotTimeout = true
-			}
-			if evt.Kind == provider.EventSessionStatus && evt.Content == "disconnected" {
-				gotDisconnected = true
-			}
-		case <-deadline:
-			t.Fatalf("timeout waiting for idle-timeout error + disconnected (timeout=%v disconnected=%v)", gotTimeout, gotDisconnected)
-		}
-	}
-
-	select {
-	case <-proc.Done():
-	case <-time.After(3 * time.Second):
-		t.Fatal("process not reaped after idle watchdog fired")
-	}
-}
-
-// TestIdleWatchdogResetByOutput confirms the watchdog is heartbeat-based:
-// as long as the subprocess emits any line within the window, the session
-// stays alive.
-func TestIdleWatchdogResetByOutput(t *testing.T) {
-	s, eventCh := newTestClaudeSessionWithIdleTimeout(t, 200*time.Millisecond)
-
-	if err := s.Send(context.Background(), "ping", provider.SendOptions{}); err != nil {
-		t.Fatalf("Send: %v", err)
-	}
-
-	// Emit a line every 80 ms for 1 second — well under the 200 ms cap.
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		ticker := time.NewTicker(80 * time.Millisecond)
-		defer ticker.Stop()
-		for i := 0; i < 12; i++ {
-			<-ticker.C
-			line := []byte(`{"type":"assistant","message":{"id":"m","role":"assistant","content":[{"type":"text","text":"chunk"}]}}`)
-			if err := s.proc.WriteLine(line); err != nil {
-				return
-			}
-		}
-	}()
-
-	// Drain events for 1.1 s; no EventError from the watchdog should arrive.
-	deadline := time.After(1100 * time.Millisecond)
-	for {
-		select {
-		case evt := <-eventCh:
-			if evt.Kind == provider.EventError && containsAny(evt.Content, "timeout", "idle") {
-				t.Fatalf("idle watchdog fired despite continuous output: %v", evt.Content)
-			}
-		case <-deadline:
-			<-done
-			return
-		}
-	}
-}
-
-// TestIdleWatchdogDoesNotRunBetweenTurns verifies the watchdog only arms
-// while a turn is mid-flight. An idle session awaiting the next user
-// message must NOT be killed for inactivity.
-func TestIdleWatchdogDoesNotRunBetweenTurns(t *testing.T) {
-	_, eventCh := newTestClaudeSessionWithIdleTimeout(t, 50*time.Millisecond)
-
-	// Wait past the idle window without ever calling Send. If the
-	// watchdog ran unconditionally it would close the session.
-	deadline := time.After(300 * time.Millisecond)
-	for {
-		select {
-		case evt := <-eventCh:
-			if evt.Kind == provider.EventError {
-				t.Fatalf("idle watchdog fired without Send being called: %v", evt.Content)
-			}
-			if evt.Kind == provider.EventSessionStatus && evt.Content == "disconnected" {
-				t.Fatalf("session disconnected without Send being called")
-			}
-		case <-deadline:
-			return
-		}
-	}
-}
-
-// TestIdleWatchdogStopsAtTurnComplete confirms the watchdog is disarmed
-// when EventTurnComplete is observed. After that, the session should sit
-// idle without being killed.
-func TestIdleWatchdogStopsAtTurnComplete(t *testing.T) {
-	s, eventCh := newTestClaudeSessionWithIdleTimeout(t, 80*time.Millisecond)
-
-	if err := s.Send(context.Background(), "hello", provider.SendOptions{}); err != nil {
-		t.Fatalf("Send: %v", err)
-	}
-	// Feed a terminal result line immediately so the session observes
-	// EventTurnComplete before the idle window expires.
-	line := []byte(`{"type":"result","subtype":"success","is_error":false}`)
-	if err := s.proc.WriteLine(line); err != nil {
-		t.Fatalf("write result: %v", err)
-	}
-
-	// Drain until we see EventTurnComplete.
-	gotComplete := false
-	turnDeadline := time.After(500 * time.Millisecond)
-	for !gotComplete {
-		select {
-		case evt := <-eventCh:
-			if evt.Kind == provider.EventTurnComplete {
-				gotComplete = true
-			}
-		case <-turnDeadline:
-			t.Fatal("never saw EventTurnComplete")
-		}
-	}
-
-	// Sleep past the idle window. The watchdog must stay disarmed.
-	idleDeadline := time.After(300 * time.Millisecond)
-	for {
-		select {
-		case evt := <-eventCh:
-			if evt.Kind == provider.EventError {
-				t.Fatalf("watchdog fired after turn complete: %v", evt.Content)
-			}
-			if evt.Kind == provider.EventSessionStatus && evt.Content == "disconnected" {
-				t.Fatal("session disconnected after turn complete")
-			}
-		case <-idleDeadline:
-			return
-		}
-	}
-}
-
-// newTestClaudeSessionWithIdleTimeout mirrors newTestClaudeSession but
-// plumbs a custom idle watchdog window for Bug B2 tests.
-func newTestClaudeSessionWithIdleTimeout(t *testing.T, idleTimeout time.Duration) (*Session, <-chan provider.ProviderEvent) {
-	t.Helper()
-	ctx, cancel := context.WithCancel(context.Background())
-	proc, err := provider.Spawn(ctx, provider.SpawnConfig{Binary: "cat"})
-	if err != nil {
-		t.Fatalf("spawn cat: %v", err)
-	}
-	eventCh := make(chan provider.ProviderEvent, 100)
-	s := &Session{
-		proc:     proc,
-		threadID: testThread,
-		onEvent: func(evt provider.ProviderEvent) {
-			eventCh <- evt
-		},
-		cancel:      cancel,
-		readDone:    make(chan struct{}),
-		idleTimeout: idleTimeout,
-	}
-	go s.readLoop()
-	t.Cleanup(func() {
-		cancel()
-		proc.Close()
-	})
-	return s, eventCh
-}
 
 // TestReadLoopEmitsErrorOnOversizedLine exercises Bug B1 at the readLoop
 // layer: when the subprocess writes a single line past the cap, we expect

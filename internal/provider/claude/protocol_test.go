@@ -168,6 +168,56 @@ func TestParseLine_AssistantToolUse(t *testing.T) {
 	}
 }
 
+// TestParseLine_AssistantAskUserQuestionSuppressesToolStart pins the
+// behaviour that AskUserQuestion's tool_use block does NOT emit a
+// generic EventToolStart timeline row. The chat surfaces it via the
+// parallel can_use_tool control_request as EventUserInputRequest, and
+// the panel above the composer is the user-facing UI signal. Emitting
+// a tool-call row alongside would create a duplicate "running" item
+// that never resolves into a completion the user can read.
+func TestParseLine_AssistantAskUserQuestionSuppressesToolStart(t *testing.T) {
+	parser := NewParser()
+	line := []byte(`{"type":"assistant","message":{"id":"msg-1","role":"assistant","content":[{"type":"tool_use","id":"tool-uq","name":"AskUserQuestion","input":{"questions":[{"id":"q","header":"Pick","question":"a or b?","options":[{"label":"a","description":"opt a"},{"label":"b","description":"opt b"}]}]}}]}}`)
+	events, err := parser.ParseLine(testThreadProto, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	for _, evt := range events {
+		if evt.Kind == provider.EventToolStart {
+			t.Fatalf("AskUserQuestion emitted EventToolStart: %+v", evt)
+		}
+	}
+	if !parser.isUserInputTool("tool-uq") {
+		t.Fatalf("expected parser to mark tool-uq as a user-input tool_use")
+	}
+}
+
+// TestParseLine_UserToolResultForAskUserQuestionSuppressed pairs with
+// the assistant-side suppression: when the model later echoes the
+// AskUserQuestion answers as a tool_result, that block must NOT emit
+// EventToolComplete either. The completion would surface a phantom
+// "completed tool" row whose start was never rendered.
+func TestParseLine_UserToolResultForAskUserQuestionSuppressed(t *testing.T) {
+	parser := NewParser()
+	startLine := []byte(`{"type":"assistant","message":{"id":"msg-1","role":"assistant","content":[{"type":"tool_use","id":"tool-uq","name":"AskUserQuestion","input":{"questions":[{"id":"q","header":"Pick","question":"a or b?","options":[{"label":"a","description":"opt a"},{"label":"b","description":"opt b"}]}]}}]}}`)
+	if _, err := parser.ParseLine(testThreadProto, startLine); err != nil {
+		t.Fatalf("parse start: %v", err)
+	}
+	resultLine := []byte(`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-uq","content":"User answered: a"}]}}`)
+	events, err := parser.ParseLine(testThreadProto, resultLine)
+	if err != nil {
+		t.Fatalf("parse result: %v", err)
+	}
+	for _, evt := range events {
+		if evt.Kind == provider.EventToolComplete {
+			t.Fatalf("AskUserQuestion tool_result emitted EventToolComplete: %+v", evt)
+		}
+	}
+	if parser.isUserInputTool("tool-uq") {
+		t.Fatalf("expected parser to clear tool-uq mark after consuming tool_result")
+	}
+}
+
 func TestParseLine_AssistantWithUsage(t *testing.T) {
 	line := []byte(`{"type":"assistant","message":{"id":"msg-1","content":[],"role":"assistant","usage":{"input_tokens":100,"output_tokens":50,"cache_read_input_tokens":200,"cache_creation_input_tokens":30}}}`)
 	events, err := ParseLine(testThreadProto, line)
