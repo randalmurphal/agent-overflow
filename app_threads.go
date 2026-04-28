@@ -75,8 +75,12 @@ func (a *App) CreateThread(opts CreateThreadOptions) (store.Thread, error) {
 	effort := seed.ReasoningEffort
 	fastMode := seed.FastMode
 	contextWindow := seed.ContextWindow
-	autoCompactStandardPercent := seed.AutoCompactStandardPercent
-	autoCompactExtendedPercent := seed.AutoCompactExtendedPercent
+	// Compact thresholds are per-provider settings, not per-(provider,model)
+	// remembered defaults. New threads start without a per-thread override
+	// (0) so the session-start resolution path reads the live Settings
+	// value. Explicit caller overrides via opts.AutoCompact* still apply.
+	autoCompactStandardPercent := 0
+	autoCompactExtendedPercent := 0
 	runtimeMode := seed.RuntimeMode
 
 	if trimmed := strings.TrimSpace(opts.Provider); trimmed != "" {

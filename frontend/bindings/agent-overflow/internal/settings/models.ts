@@ -201,6 +201,22 @@ export class Settings {
     "textGenerationReasoningEffort": string;
 
     /**
+     * Auto-compact thresholds, percent-of-window. Per provider per tier;
+     * model-agnostic by design (the user picks model + active window via
+     * the composer's pickers, not via Settings). At session start the
+     * resolved threshold is `thread.AutoCompactPercent || settings.<...>`,
+     * so editing the slider applies live to the next turn on existing
+     * threads unless the user has set a per-thread override.
+     * 
+     * Range 1..90; load-time sanitization clamps out-of-range values to
+     * the default (90) rather than rejecting the file.
+     */
+    "claudeAutoCompactStandardPercent": number;
+    "claudeAutoCompactExtendedPercent": number;
+    "codexAutoCompactStandardPercent": number;
+    "codexAutoCompactExtendedPercent": number;
+
+    /**
      * Observability — all opt-in. Empty/false defaults leave the app quiet.
      * 
      * SECURITY NOTE: this file is stored on disk in plaintext and is
@@ -309,6 +325,18 @@ export class Settings {
         if (!("textGenerationReasoningEffort" in $$source)) {
             this["textGenerationReasoningEffort"] = "";
         }
+        if (!("claudeAutoCompactStandardPercent" in $$source)) {
+            this["claudeAutoCompactStandardPercent"] = 0;
+        }
+        if (!("claudeAutoCompactExtendedPercent" in $$source)) {
+            this["claudeAutoCompactExtendedPercent"] = 0;
+        }
+        if (!("codexAutoCompactStandardPercent" in $$source)) {
+            this["codexAutoCompactStandardPercent"] = 0;
+        }
+        if (!("codexAutoCompactExtendedPercent" in $$source)) {
+            this["codexAutoCompactExtendedPercent"] = 0;
+        }
         if (!("observabilityTracingEnabled" in $$source)) {
             this["observabilityTracingEnabled"] = false;
         }
@@ -333,21 +361,21 @@ export class Settings {
      */
     static createFrom($$source: any = {}): Settings {
         const $$createField3_0 = $$createType0;
-        const $$createField22_0 = $$createType1;
-        const $$createField23_0 = $$createType2;
-        const $$createField24_0 = $$createType4;
+        const $$createField26_0 = $$createType1;
+        const $$createField27_0 = $$createType2;
+        const $$createField28_0 = $$createType4;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("recentWorkspaces" in $$parsedSource) {
             $$parsedSource["recentWorkspaces"] = $$createField3_0($$parsedSource["recentWorkspaces"]);
         }
         if ("network" in $$parsedSource) {
-            $$parsedSource["network"] = $$createField22_0($$parsedSource["network"]);
+            $$parsedSource["network"] = $$createField26_0($$parsedSource["network"]);
         }
         if ("editor" in $$parsedSource) {
-            $$parsedSource["editor"] = $$createField23_0($$parsedSource["editor"]);
+            $$parsedSource["editor"] = $$createField27_0($$parsedSource["editor"]);
         }
         if ("remoteEndpoints" in $$parsedSource) {
-            $$parsedSource["remoteEndpoints"] = $$createField24_0($$parsedSource["remoteEndpoints"]);
+            $$parsedSource["remoteEndpoints"] = $$createField28_0($$parsedSource["remoteEndpoints"]);
         }
         return new Settings($$parsedSource as Partial<Settings>);
     }

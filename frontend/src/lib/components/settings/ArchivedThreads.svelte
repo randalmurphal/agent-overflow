@@ -3,40 +3,43 @@
   // UnarchiveThread is wired end-to-end. The sidebar owns the actual
   // list rendering (toggle "Include archived" in the sidebar filter
   // to see them); this panel just documents what the toggle does.
+  import SettingsHeader from './SettingsHeader.svelte';
 </script>
 
-<section class="rounded-[var(--radius-control)] border border-border-subtle bg-card/30 p-5">
-  <div class="flex flex-wrap items-start justify-between gap-3">
-    <div>
-      <p class="text-[11px] font-semibold uppercase tracking-[0.22em] text-text-secondary/70">Archive</p>
-      <h3 class="mt-1 text-base font-semibold text-text-primary">Archived Threads</h3>
-      <p class="mt-1 max-w-2xl text-sm text-text-secondary">
-        Archived threads are hidden from the default sidebar. Toggle
-        <span class="font-medium text-text-primary">Archived</span> in the sidebar filter row to see them, then use
-        each row's Unarchive action to bring one back.
-      </p>
-    </div>
-    <span class="rounded-full border border-accent/35 bg-accent/12 px-3 py-1 text-[11px] font-medium text-accent">
-      Two-way
-    </span>
-  </div>
-</section>
+<div class="flex flex-col gap-6">
+  <section>
+    <SettingsHeader
+      eyebrow="Archive"
+      title="Archived Threads"
+      description="Archived threads are hidden from the default sidebar. Toggle Archived in the sidebar filter row to see them, then use each row's Unarchive action to bring one back."
+    >
+      {#snippet badge()}
+        <span
+          class="rounded-full border border-accent/35 bg-accent/10 px-2.5 py-0.5 text-[11px] font-medium text-accent"
+        >
+          Two-way
+        </span>
+      {/snippet}
+    </SettingsHeader>
+  </section>
 
-<div class="rounded-[var(--radius-control)] border border-border-subtle bg-card/20 px-5 py-5">
-  <div class="flex items-start gap-3">
-    <div class="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl border border-border/60 bg-surface-0/70 text-text-secondary">
-      <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-        <path d="M21 8v13H3V8" />
-        <path d="M1 3h22v5H1z" />
-      </svg>
-    </div>
-    <div class="min-w-0">
-      <p class="text-sm font-medium text-text-primary">Workflow</p>
-      <ul class="mt-2 space-y-2 text-sm text-text-secondary" role="list">
-        <li>Archiving stops the active provider session and hides the thread from the default list.</li>
-        <li>The Command Palette entry "Thread: Unarchive (restore)" runs on the selected archived thread.</li>
-        <li>Deletion is still permanent. Use it only when the conversation is no longer needed.</li>
-      </ul>
-    </div>
-  </div>
+  <section>
+    <p class="text-[10.5px] font-medium uppercase tracking-[0.16em] text-fg-hint">
+      Workflow
+    </p>
+    <ul class="mt-3 flex flex-col gap-2 text-[13px] leading-relaxed text-fg-muted" role="list">
+      <li class="flex gap-2">
+        <span aria-hidden="true" class="mt-1.5 h-1 w-1 shrink-0 rounded-full bg-fg-hint"></span>
+        <span>Archiving stops the active provider session and hides the thread from the default list.</span>
+      </li>
+      <li class="flex gap-2">
+        <span aria-hidden="true" class="mt-1.5 h-1 w-1 shrink-0 rounded-full bg-fg-hint"></span>
+        <span>The Command Palette entry "Thread: Unarchive (restore)" runs on the selected archived thread.</span>
+      </li>
+      <li class="flex gap-2">
+        <span aria-hidden="true" class="mt-1.5 h-1 w-1 shrink-0 rounded-full bg-fg-hint"></span>
+        <span>Deletion is still permanent. Use it only when the conversation is no longer needed.</span>
+      </li>
+    </ul>
+  </section>
 </div>

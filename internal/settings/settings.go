@@ -104,6 +104,20 @@ type Settings struct {
 	// more from speed than from heavy reasoning.
 	TextGenerationReasoningEffort string `json:"textGenerationReasoningEffort"`
 
+	// Auto-compact thresholds, percent-of-window. Per provider per tier;
+	// model-agnostic by design (the user picks model + active window via
+	// the composer's pickers, not via Settings). At session start the
+	// resolved threshold is `thread.AutoCompactPercent || settings.<...>`,
+	// so editing the slider applies live to the next turn on existing
+	// threads unless the user has set a per-thread override.
+	//
+	// Range 1..90; load-time sanitization clamps out-of-range values to
+	// the default (90) rather than rejecting the file.
+	ClaudeAutoCompactStandardPercent int `json:"claudeAutoCompactStandardPercent"`
+	ClaudeAutoCompactExtendedPercent int `json:"claudeAutoCompactExtendedPercent"`
+	CodexAutoCompactStandardPercent  int `json:"codexAutoCompactStandardPercent"`
+	CodexAutoCompactExtendedPercent  int `json:"codexAutoCompactExtendedPercent"`
+
 	// Observability — all opt-in. Empty/false defaults leave the app quiet.
 	//
 	// SECURITY NOTE: this file is stored on disk in plaintext and is
@@ -173,6 +187,14 @@ var DefaultSettings = Settings{
 	TextGenerationProvider:        "codex",
 	TextGenerationModel:           "",
 	TextGenerationReasoningEffort: "low",
+	// Both providers ship a 90% default — aggressive enough that the
+	// user notices auto-compact when it triggers, conservative enough
+	// to leave headroom for the final response. The percent applies to
+	// whichever tier matches the live context window.
+	ClaudeAutoCompactStandardPercent: 90,
+	ClaudeAutoCompactExtendedPercent: 90,
+	CodexAutoCompactStandardPercent:  90,
+	CodexAutoCompactExtendedPercent:  90,
 	// Observability defaults to off so there is zero runtime cost for users
 	// who don't opt in. The OTLP endpoint is only meaningful when tracing
 	// is enabled; we leave it blank so a misconfigured endpoint can't cause
@@ -180,6 +202,19 @@ var DefaultSettings = Settings{
 	ObservabilityTracingEnabled:  false,
 	ObservabilityOtlpEndpoint:    "",
 	ObservabilityEventLogEnabled: false,
+}
+
+// AutoCompactPercents returns the per-tier compact thresholds for the
+// given provider as (standard, extended). Unknown providers fall back
+// to the Claude pair so a stale provider string can't strand a session
+// with 0/0 (which would disable auto-compact entirely).
+func (s Settings) AutoCompactPercents(provider string) (standard, extended int) {
+	switch provider {
+	case "codex":
+		return s.CodexAutoCompactStandardPercent, s.CodexAutoCompactExtendedPercent
+	default:
+		return s.ClaudeAutoCompactStandardPercent, s.ClaudeAutoCompactExtendedPercent
+	}
 }
 
 // Service manages reading and writing the settings JSON file.

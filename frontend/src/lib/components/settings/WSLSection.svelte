@@ -55,7 +55,7 @@
   import { addToast } from '../../stores/toast.svelte';
   import { errString } from '../../utils/errors';
   import { isClientMode } from '../../transport/runMode';
-  import MicroLabel from '../primitives/MicroLabel.svelte';
+  import SettingsHeader from './SettingsHeader.svelte';
 
   const clientMode = isClientMode();
 
@@ -114,9 +114,8 @@
   <!-- Hidden in --connect mode entirely; nothing to render. -->
 {:else if loading}
   <section data-testid="wsl-section-loading">
-    <MicroLabel as="p">Windows host</MicroLabel>
-    <h3 class="mt-1 text-[15px] font-semibold text-fg">WSL Distro</h3>
-    <p class="mt-3 text-[12px] text-fg-subtle" role="status" aria-live="polite">
+    <SettingsHeader eyebrow="Windows host" title="WSL Distro" />
+    <p class="mt-3 text-[12px] text-fg-hint" role="status" aria-live="polite">
       Detecting WSL…
     </p>
   </section>
@@ -124,24 +123,26 @@
   <!-- Not running under WSL — nothing to render. -->
 {:else}
   <section data-testid="wsl-section">
-    <MicroLabel as="p">Windows host</MicroLabel>
-    <h3 class="mt-1 text-[15px] font-semibold text-fg">WSL Distro</h3>
-    <p class="mt-1 max-w-2xl text-[12px] text-fg-muted">
-      Pick which WSL distribution the launcher boots into the next time you
-      open Agent Overflow. The change takes effect on next launch — this
-      session keeps running in its current distro until you close and
-      reopen the app.
-    </p>
+    <SettingsHeader
+      eyebrow="Windows host"
+      title="WSL Distro"
+      description="Pick which WSL distribution the launcher boots into the next time you open Agent Overflow. The change takes effect on next launch — this session keeps running in its current distro until you close and reopen the app."
+    />
 
     {#if distros.length === 0}
-      <p class="mt-3 text-[12px] text-fg-subtle" data-testid="wsl-section-no-distros">
-        No WSL distros reported by <code class="font-mono text-[11px]">wsl.exe</code>.
-        Install one from PowerShell with <code class="font-mono text-[11px]">wsl --install -d Ubuntu</code>
-        and reopen Settings to refresh the list.
+      <p
+        class="mt-4 text-[12px] text-fg-hint"
+        data-testid="wsl-section-no-distros"
+      >
+        No WSL distros reported by
+        <code class="font-mono text-[11px]">wsl.exe</code>. Install one from
+        PowerShell with
+        <code class="font-mono text-[11px]">wsl --install -d Ubuntu</code> and
+        reopen Settings to refresh the list.
       </p>
     {:else}
       <fieldset
-        class="mt-3 space-y-1"
+        class="mt-4 flex flex-col gap-0.5"
         role="radiogroup"
         aria-label="Preferred WSL distro"
         data-testid="wsl-section-radiogroup"
@@ -160,12 +161,12 @@
               onchange={() => void selectDistro(distro.name)}
               class="accent-accent"
             />
-            <span class="text-[13px] text-fg font-medium">{distro.name}</span>
+            <span class="text-[13px] font-medium text-fg">{distro.name}</span>
             {#if distro.default}
-              <span class="text-[11px] text-fg-subtle">(default)</span>
+              <span class="text-[11px] text-fg-hint">(default)</span>
             {/if}
             {#if distro.state && distro.state !== 'Running'}
-              <span class="text-[11px] text-fg-subtle italic">({distro.state})</span>
+              <span class="text-[11px] italic text-fg-hint">({distro.state})</span>
             {/if}
             {#if distro.version === 1}
               <span class="text-[11px] text-warning">(WSL1 — agent-overflow needs WSL2)</span>
@@ -176,7 +177,7 @@
 
       {#if saved && selected !== saved}
         <p
-          class="mt-2 text-[11px] text-fg-subtle"
+          class="mt-2 text-[11px] text-fg-hint"
           aria-live="polite"
           data-testid="wsl-section-pending-hint"
         >

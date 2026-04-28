@@ -1,10 +1,17 @@
 <script lang="ts">
-  import { GetNetworkSettings, SetNetworkSettings, NetworkSettings } from '../../stores/bindings';
+  import {
+    GetNetworkSettings,
+    SetNetworkSettings,
+    NetworkSettings,
+  } from '../../stores/bindings';
   import { addToast } from '../../stores/toast.svelte';
   import { errString } from '../../utils/errors';
   import { isClientMode } from '../../transport/runMode';
   import ToggleSwitch from '../shared/ToggleSwitch.svelte';
-  import MicroLabel from '../primitives/MicroLabel.svelte';
+  import SettingsCallout from './SettingsCallout.svelte';
+  import SettingsField from './SettingsField.svelte';
+  import SettingsHeader from './SettingsHeader.svelte';
+  import { INPUT_CLASS, SECONDARY_BUTTON_CLASS } from './styles';
 
   // In `--connect` mode the SPA is attached to a remote backend.
   // GetNetworkSettings / SetNetworkSettings would query and mutate the
@@ -71,72 +78,68 @@
   });
 </script>
 
-<div class="flex flex-col gap-8">
+<div class="flex flex-col gap-10">
   <section>
-    <MicroLabel as="p">Remote Access</MicroLabel>
-    <h3 class="mt-1 text-[15px] font-semibold text-fg">Network Binding</h3>
+    <SettingsHeader
+      eyebrow="Remote access"
+      title="Network Binding"
+    />
     {#if clientMode}
-      <p class="mt-1 max-w-2xl text-[12px] text-fg-muted">
-        Network binding can only be edited from your local install. This window is attached to a
-        remote backend, so changes here would update the remote machine's bind preference, not
-        yours.
+      <p class="mt-1 max-w-2xl text-[12px] leading-relaxed text-fg-muted">
+        Network binding can only be edited from your local install. This window is
+        attached to a remote backend, so changes here would update the remote
+        machine's bind preference, not yours.
       </p>
     {:else}
-      <p class="mt-1 max-w-2xl text-[12px] text-fg-muted">
-        By default the server binds to <code class="font-mono text-[11px]">127.0.0.1</code> so only this
-        machine can reach it. Toggle on to listen on every network interface — other devices on your
-        LAN can then open the URL below in a browser. The traffic is plain <code class="font-mono text-[11px]">ws://</code>;
-        for exposure beyond a trusted LAN, route through Tailscale Serve or an SSH tunnel.
+      <p class="mt-1 max-w-2xl text-[12px] leading-relaxed text-fg-muted">
+        By default the server binds to
+        <code class="font-mono text-[11px]">127.0.0.1</code> so only this machine can
+        reach it. Toggle on to listen on every network interface — other devices on
+        your LAN can then open the URL below in a browser. The traffic is plain
+        <code class="font-mono text-[11px]">ws://</code>; for exposure beyond a
+        trusted LAN, route through Tailscale Serve or an SSH tunnel.
       </p>
 
-      <div class="mt-3 divide-y divide-border-subtle">
-        <div class="flex items-center justify-between gap-4 py-2.5">
-          <div>
-            <p class="text-[13px] text-fg font-medium">Allow remote access</p>
-            <p class="text-[12px] text-fg-muted">
-              Listen on all interfaces (<code class="font-mono text-[11px]">0.0.0.0</code>) so devices on your network can connect.
-            </p>
-            <p class="mt-1 text-[11px] text-fg-muted">
-              Toggling off stops new LAN connections but does <em>not</em> invalidate the token. Restart the app to rotate the token.
-            </p>
-          </div>
+      <div class="mt-4 flex flex-col gap-1">
+        <SettingsField
+          label="Allow remote access"
+          hint="Listen on all interfaces (0.0.0.0) so devices on your network can connect. Toggling off stops new LAN connections but does not invalidate the token — restart the app to rotate it."
+          align="start"
+        >
           <ToggleSwitch
             checked={settings?.bindAll ?? false}
             disabled={!settings || saving}
             ariaLabel="Toggle remote access"
             onToggle={toggleBindAll}
           />
-        </div>
+        </SettingsField>
       </div>
     {/if}
   </section>
 
   {#if !clientMode && settings}
     <section>
-      <MicroLabel as="p">Connection</MicroLabel>
-      <h3 class="mt-1 text-[15px] font-semibold text-fg">Share URL</h3>
-      <p class="mt-1 text-[12px] text-fg-muted">
-        Copy this URL into a browser on another device to open Agent Overflow remotely.
-        {#if settings.bindAll}
-          When LAN binding is on, the URL points at this machine's private IP.
-        {:else}
-          When the server is on loopback, only this machine resolves the URL.
-        {/if}
-      </p>
+      <SettingsHeader
+        eyebrow="Connection"
+        title="Share URL"
+        description={settings.bindAll
+          ? "Copy this URL into a browser on another device to open Agent Overflow remotely. With LAN binding on, the URL points at this machine's private IP."
+          : 'Copy this URL into a browser on another device. While the server is on loopback, only this machine resolves the URL.'}
+      />
 
-      <div class="mt-3 flex items-center gap-2">
+      <div class="mt-4 flex items-center gap-2">
         <input
           type="text"
           readonly
           value={settings.url}
           aria-label="Application URL"
-          class="flex-1 min-w-0 text-[12px] font-mono rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 px-2.5 py-1.5 text-fg focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/40"
+          class="{INPUT_CLASS} flex-1 min-w-0 font-mono"
         />
         <button
           type="button"
           onclick={copyURL}
           disabled={!settings.url}
-          class="text-[12px] font-medium rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 px-3 py-1.5 text-fg hover:border-accent/40 disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 transition-colors cursor-pointer"
+          class={SECONDARY_BUTTON_CLASS}
         >
           {#if copyState === 'copied'}
             Copied
@@ -149,15 +152,14 @@
       </div>
 
       {#if settings.insecure}
-        <p
-          role="alert"
-          data-testid="insecure-url-warning"
-          class="mt-3 rounded-[var(--radius-field)] border border-warning/40 bg-warning/10 px-3 py-2 text-[12px] text-fg"
-        >
-          The URL above is plaintext over LAN — the token in the query string travels in the
-          clear and any device on this network can read it. Front the bind with Tailscale Serve,
-          an SSH tunnel, or a reverse proxy with TLS before sharing on an untrusted network.
-        </p>
+        <div class="mt-3" data-testid="insecure-url-warning">
+          <SettingsCallout tone="warn">
+            The URL above is plaintext over LAN — the token in the query string
+            travels in the clear and any device on this network can read it. Front
+            the bind with Tailscale Serve, an SSH tunnel, or a reverse proxy with
+            TLS before sharing on an untrusted network.
+          </SettingsCallout>
+        </div>
       {/if}
     </section>
   {/if}

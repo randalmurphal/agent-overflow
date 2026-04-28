@@ -14,7 +14,9 @@
   } from '../../stores/keybindings.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import { errString } from '../../utils/errors';
-  import Button from '../primitives/Button.svelte';
+  import SettingsCallout from './SettingsCallout.svelte';
+  import SettingsHeader from './SettingsHeader.svelte';
+  import { SECONDARY_BUTTON_CLASS } from './styles';
 
   let loaded = $derived(isKeybindingsLoaded());
   let rules = $derived(getResolvedKeybindings());
@@ -98,75 +100,90 @@
   }
 </script>
 
-<div class="space-y-6">
-  <div>
-    <h3 class="text-base font-semibold text-text-primary">Keybindings</h3>
-    <p class="mt-1 text-sm text-text-secondary/80">
-      Customize keyboard shortcuts. Click a chord to re-bind; press the desired key combination
-      or Escape to cancel. Shortcuts use <code class="font-mono">mod</code> as <kbd>⌘</kbd> on macOS and <kbd>Ctrl</kbd> elsewhere.
-    </p>
-  </div>
+<div class="flex flex-col gap-6">
+  <SettingsHeader
+    eyebrow="Shortcuts"
+    title="Keybindings"
+    description="Customize keyboard shortcuts. Click a chord to re-bind; press the desired key combination or Escape to cancel. Shortcuts use mod as ⌘ on macOS and Ctrl elsewhere."
+  />
 
   {#if issues.length > 0}
-    <div class="rounded-lg border border-error/60 bg-error/10 p-3 text-xs text-error" role="alert">
+    <SettingsCallout tone="error">
       <p class="font-semibold">Configuration issues</p>
-      <ul class="mt-2 space-y-1 list-disc pl-5">
+      <ul class="mt-1.5 ml-4 list-disc space-y-0.5">
         {#each issues as issue (issue.index)}
           <li>
-            <span class="font-mono">{issue.rule.command}</span> — {issue.reason}
+            <span class="font-mono text-[11.5px]">{issue.rule.command}</span>
+            — {issue.reason}
           </li>
         {/each}
       </ul>
-    </div>
+    </SettingsCallout>
   {/if}
 
-  <div class="rounded-2xl border border-border/70 bg-surface-1/70 overflow-hidden">
-    <table class="w-full text-sm">
-      <thead class="bg-surface-0/60 text-text-secondary/80 text-[11px] uppercase tracking-wider">
+  <div
+    class="overflow-hidden rounded-[var(--radius-control)] border border-border-subtle"
+  >
+    <table class="w-full text-[12.5px]">
+      <thead
+        class="bg-surface-1/40 text-[10.5px] uppercase tracking-[0.14em] text-fg-hint"
+      >
         <tr>
-          <th class="text-left px-4 py-2 font-semibold">Command</th>
-          <th class="text-left px-4 py-2 font-semibold">Chord</th>
-          <th class="text-left px-4 py-2 font-semibold">When</th>
+          <th class="px-3 py-2 text-left font-medium">Command</th>
+          <th class="px-3 py-2 text-left font-medium">Chord</th>
+          <th class="px-3 py-2 text-left font-medium">When</th>
         </tr>
       </thead>
       <tbody>
         {#each rules as rule, i (keybindingIdentity(rule.rule))}
-          <tr class="border-t border-border/50">
-            <td class="px-4 py-2 font-mono text-xs text-text-primary">{rule.rule.command}</td>
-            <td class="px-4 py-2">
+          <tr class="border-t border-border-subtle/60">
+            <td class="px-3 py-2 font-mono text-[11.5px] text-fg">
+              {rule.rule.command}
+            </td>
+            <td class="px-3 py-2">
               {#if capturingFor === i}
                 <!-- svelte-ignore a11y_autofocus -->
                 <button
                   type="button"
                   autofocus
                   onkeydown={handleCaptureKeydown}
-                  onblur={() => { if (capturingFor === i) capturingFor = null; }}
-                  class="rounded border border-accent bg-accent/15 px-3 py-1 text-xs font-mono text-accent"
+                  onblur={() => {
+                    if (capturingFor === i) capturingFor = null;
+                  }}
+                  class="rounded-[var(--radius-field)] border border-accent bg-accent/15 px-2.5 py-1 text-[11.5px] font-mono text-accent"
                 >
                   Press keys... (Esc to cancel)
                 </button>
               {:else}
                 <button
                   type="button"
-                  onclick={() => { capturingFor = i; }}
+                  onclick={() => {
+                    capturingFor = i;
+                  }}
                   disabled={saving}
-                  class="rounded border border-border/60 bg-surface-0/60 px-3 py-1 text-xs font-mono text-text-primary hover:border-accent hover:text-accent cursor-pointer disabled:cursor-not-allowed"
+                  class="rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 px-2.5 py-1 text-[11.5px] font-mono text-fg hover:border-accent/40 hover:text-accent cursor-pointer disabled:cursor-not-allowed transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
                 >
                   {formatChord(rule.rule.key)}
                 </button>
               {/if}
             </td>
-            <td class="px-4 py-2 text-xs text-text-secondary font-mono">{rule.rule.when ?? ''}</td>
+            <td class="px-3 py-2 font-mono text-[11px] text-fg-muted">
+              {rule.rule.when ?? ''}
+            </td>
           </tr>
         {/each}
       </tbody>
     </table>
   </div>
 
-  <div class="flex gap-2">
-    <Button variant="secondary" size="sm" onclick={handleReset} disabled={saving}>
-      {#snippet children()}Reset all to defaults{/snippet}
-    </Button>
+  <div>
+    <button
+      type="button"
+      onclick={handleReset}
+      disabled={saving}
+      class={SECONDARY_BUTTON_CLASS}
+    >
+      Reset all to defaults
+    </button>
   </div>
-
 </div>

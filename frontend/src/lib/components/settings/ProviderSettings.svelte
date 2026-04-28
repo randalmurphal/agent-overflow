@@ -1,24 +1,30 @@
 <script lang="ts">
-  // ProviderSettings: provider health, binary paths, and the
-  // text-generation routing knobs.
-  //
-  // Layout aligns with GeneralSettings / EditorSection / NetworkSection
-  // — section header (MicroLabel + heading + sentence intro) followed
-  // by `divide-y divide-border-subtle` rows. The previous card-heavy
-  // styling read as a different app when the user tabbed across
-  // sections; the row pattern keeps the visual rhythm consistent.
+  // ProviderSettings: per-provider provisioning + context window. Each
+  // provider (Claude, Codex) renders as its own visually-grouped block
+  // containing the binary path, status, model catalog, AND the
+  // context-window/auto-compact controls scoped to that provider's
+  // models. The text-generation routing controls live below as a
+  // separate section since they apply across providers.
 
   import { GetProviderStatuses, GetModelsForProvider } from '../../stores/bindings';
   import { getSettings, updateSetting } from '../../stores/settings.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import type { ModelInfo, ProviderStatus, ReasoningEffort } from '../../types/settings';
-  import MicroLabel from '../primitives/MicroLabel.svelte';
   import ToggleSwitch from '../shared/ToggleSwitch.svelte';
-  import ContextSettingsSection from './ContextSettingsSection.svelte';
+  import ProviderContextSettings from './ProviderContextSettings.svelte';
+  import SettingsField from './SettingsField.svelte';
+  import SettingsHeader from './SettingsHeader.svelte';
+  import { INPUT_CLASS, SELECT_CLASS } from './styles';
 
-  type ContextTarget = { threadId?: string; provider: string; model: string } | null;
-
-  let { contextTarget = null }: { contextTarget?: ContextTarget } = $props();
+  // contextTarget previously plumbed a per-thread compact override into
+  // the settings page when the chat-meter "Configure context" button
+  // was clicked. The new design treats compact thresholds as
+  // per-provider settings (no per-thread mode in this UI), so the prop
+  // is intentionally ignored — kept on the Wails dispatch surface so
+  // the meter button can still navigate to the providers tab without
+  // breaking older clients.
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  let { contextTarget: _ = null }: { contextTarget?: unknown } = $props();
 
   // Mirror of internal/settings text-generation defaults so the model-input
   // placeholder tracks the per-provider recommendation without a round-trip.
@@ -80,172 +86,204 @@
 
   function statusDotColor(status: string): string {
     switch (status) {
-      case 'ready': return 'bg-success';
-      case 'error': return 'bg-error';
-      case 'not_found': return 'bg-error';
-      case 'version_too_old': return 'bg-warning';
-      case 'unauthenticated': return 'bg-warning';
-      default: return 'bg-fg-subtle';
+      case 'ready':
+        return 'bg-success';
+      case 'error':
+      case 'not_found':
+        return 'bg-error';
+      case 'version_too_old':
+      case 'unauthenticated':
+        return 'bg-warning';
+      default:
+        return 'bg-fg-hint';
     }
   }
 
-  const SELECT_CLASS =
-    'min-w-[8rem] text-[12px] rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 ' +
-    'px-2.5 py-1 text-fg focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/40 ' +
-    'transition-colors cursor-pointer';
-
-  const INPUT_CLASS =
-    'w-full text-[12px] rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 ' +
-    'px-2.5 py-1.5 text-fg placeholder:text-fg-muted focus:outline-none focus:border-accent ' +
-    'focus-visible:ring-2 focus-visible:ring-accent/40 transition-colors';
-
-  const ROW_CLASS = 'flex items-center justify-between gap-4 py-2.5';
+  const PROVIDERS = [
+    {
+      id: 'claude' as const,
+      label: 'Claude',
+      enabledKey: 'claudeEnabled' as const,
+      pathKey: 'claudeBinaryPath' as const,
+    },
+    {
+      id: 'codex' as const,
+      label: 'Codex',
+      enabledKey: 'codexEnabled' as const,
+      pathKey: 'codexBinaryPath' as const,
+    },
+  ];
 </script>
 
-<div class="flex flex-col gap-8">
-  {#each [
-    { id: 'claude' as const, label: 'Claude', enabledKey: 'claudeEnabled' as const, pathKey: 'claudeBinaryPath' as const, models: claudeModels },
-    { id: 'codex' as const, label: 'Codex', enabledKey: 'codexEnabled' as const, pathKey: 'codexBinaryPath' as const, models: codexModels },
-  ] as provider}
+<div class="flex flex-col gap-10">
+  {#each PROVIDERS as provider (provider.id)}
     {@const status = getStatus(provider.id)}
-    <section data-testid="settings-provider-{provider.id}">
-      <MicroLabel as="p">Provider</MicroLabel>
-      <div class="mt-1 flex items-center gap-2">
-        <h3 class="text-[15px] font-semibold text-fg">{provider.label}</h3>
+    {@const models = provider.id === 'claude' ? claudeModels : codexModels}
+    <section
+      class="rounded-[var(--radius-card)] border border-border-subtle bg-surface-1/30 p-5"
+      data-testid="settings-provider-{provider.id}"
+    >
+      <header class="flex flex-wrap items-start justify-between gap-3">
+        <div class="min-w-0">
+          <span
+            class="text-[10.5px] font-medium uppercase tracking-[0.16em] text-fg-hint"
+          >
+            Provider
+          </span>
+          <h3 class="mt-1 text-[16px] font-semibold text-fg leading-tight">
+            {provider.label}
+          </h3>
+          <p class="mt-1 max-w-xl text-[12px] leading-relaxed text-fg-muted">
+            {status?.message ||
+              `Configure ${provider.label} availability for thread creation, sessions, and context budgets.`}
+          </p>
+        </div>
         <span
-          class="inline-flex items-center gap-1 rounded-full border border-border-subtle bg-surface-0 px-2 py-0.5 text-[11px] text-fg-muted"
+          class="inline-flex items-center gap-1.5 rounded-full border border-border-subtle bg-surface-0 px-2.5 py-0.5 text-[11px] text-fg-muted"
           data-testid="settings-provider-status-pill"
           data-status={status?.status ?? 'checking'}
         >
-          <span class="h-1.5 w-1.5 rounded-full {statusDotColor(status?.status ?? 'unknown')}" aria-hidden="true"></span>
+          <span
+            class="h-1.5 w-1.5 rounded-full {statusDotColor(status?.status ?? 'unknown')}"
+            aria-hidden="true"
+          ></span>
           {status?.status ?? 'checking'}
+          {#if status?.version}
+            <span class="text-fg-hint">·</span>
+            <span class="font-mono text-[10.5px] text-fg-muted">{status.version}</span>
+          {/if}
         </span>
-      </div>
-      <p class="mt-1 max-w-2xl text-[12px] text-fg-muted">
-        {status?.message || `Configure ${provider.label} availability for thread creation and session reconnects.`}
-      </p>
-      <div class="mt-3 divide-y divide-border-subtle">
-        <div class={ROW_CLASS}>
-          <div>
-            <p class="text-[13px] text-fg font-medium">Enabled</p>
-            <p class="text-[12px] text-fg-muted">Allow new threads to use this provider.</p>
-          </div>
+      </header>
+
+      <div class="mt-4 flex flex-col gap-1">
+        <SettingsField
+          label="Enabled"
+          hint="Allow new threads to use this provider."
+        >
           <ToggleSwitch
             checked={settings[provider.enabledKey]}
             ariaLabel={`Toggle ${provider.label}`}
             onToggle={(value) => updateSetting(provider.enabledKey, value)}
           />
-        </div>
+        </SettingsField>
 
-        <div class={ROW_CLASS}>
-          <div class="flex-1 min-w-0">
-            <label for="{provider.id}-path" class="text-[13px] text-fg block font-medium">Binary path</label>
-            <p class="text-[12px] text-fg-muted">Override the auto-detected CLI binary.</p>
-          </div>
+        <SettingsField
+          label="Binary path"
+          hint="Override the auto-detected CLI binary."
+          htmlFor="{provider.id}-path"
+        >
           <input
             id="{provider.id}-path"
             type="text"
             value={settings[provider.pathKey]}
-            onchange={(e) => updateSetting(provider.pathKey, (e.target as HTMLInputElement).value)}
+            onchange={(e) =>
+              updateSetting(provider.pathKey, (e.target as HTMLInputElement).value)}
             placeholder="Auto-detect"
             class="{INPUT_CLASS} max-w-[16rem]"
           />
-        </div>
+        </SettingsField>
 
-        <div class={ROW_CLASS}>
-          <div>
-            <p class="text-[13px] text-fg font-medium">Version</p>
-            <p class="text-[12px] text-fg-muted">Reported by the resolved binary.</p>
-          </div>
-          <span class="text-[12px] text-fg" data-testid="settings-provider-version">
-            {status?.version || 'Unavailable'}
-          </span>
-        </div>
-
-        <div class="py-2.5">
-          <p class="text-[13px] text-fg font-medium">Known models</p>
-          <p class="text-[12px] text-fg-muted">Models exposed by the provider's catalog.</p>
-          {#if provider.models.length > 0}
-            <div class="mt-2 flex flex-wrap gap-1.5" data-testid="settings-provider-models">
-              {#each provider.models as model}
-                <span class="rounded-full border border-border-subtle bg-surface-1 px-2.5 py-0.5 text-[11px] text-fg-muted">
+        <SettingsField
+          label="Available models"
+          hint="Models exposed by the provider's catalog."
+          align="start"
+          stacked={models.length > 3}
+        >
+          {#if models.length > 0}
+            <div
+              class="flex flex-wrap gap-1.5"
+              data-testid="settings-provider-models"
+            >
+              {#each models as model (model.slug)}
+                <span
+                  class="rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 px-2 py-0.5 text-[11px] text-fg-muted"
+                >
                   {model.name || model.slug}
                 </span>
               {/each}
             </div>
           {:else}
-            <p class="mt-2 text-[12px] text-fg-muted">No models available.</p>
+            <span class="text-[12px] text-fg-muted">No models available.</span>
           {/if}
-        </div>
+        </SettingsField>
+      </div>
+
+      <div class="mt-5">
+        <ProviderContextSettings provider={provider.id} />
       </div>
     </section>
   {/each}
 
   <section data-testid="settings-text-generation">
-    <MicroLabel as="p">Text generation</MicroLabel>
-    <h3 class="mt-1 text-[15px] font-semibold text-fg">Commit and PR Message CLI</h3>
-    <p class="mt-1 max-w-2xl text-[12px] text-fg-muted">
-      Which CLI writes commit messages, PR bodies, and generated thread titles.
-      Independent of the chat provider so Claude users can still spend Codex
-      cycles on short text.
-    </p>
-    <div class="mt-3 divide-y divide-border-subtle">
-      <div class={ROW_CLASS}>
-        <div>
-          <label for="textgen-provider" class="text-[13px] text-fg block font-medium">Provider</label>
-          <p class="text-[12px] text-fg-muted">CLI that generates non-chat text.</p>
-        </div>
+    <SettingsHeader
+      eyebrow="Text generation"
+      title="Commit and PR Message CLI"
+      description="Which CLI writes commit messages, PR bodies, and generated thread titles. Independent of the chat provider so Claude users can still spend Codex cycles on short text."
+    />
+
+    <div class="mt-4 flex flex-col gap-1">
+      <SettingsField
+        label="Provider"
+        hint="CLI that generates non-chat text."
+        htmlFor="textgen-provider"
+      >
         <select
           id="textgen-provider"
           data-testid="settings-textgen-provider"
           value={settings.textGenerationProvider}
-          onchange={(e) => updateSetting('textGenerationProvider', (e.target as HTMLSelectElement).value as 'claude' | 'codex')}
+          onchange={(e) =>
+            updateSetting(
+              'textGenerationProvider',
+              (e.target as HTMLSelectElement).value as 'claude' | 'codex',
+            )}
           class={SELECT_CLASS}
         >
           <option value="codex">Codex</option>
           <option value="claude">Claude</option>
         </select>
-      </div>
+      </SettingsField>
 
-      <div class={ROW_CLASS}>
-        <div class="flex-1 min-w-0">
-          <label for="textgen-model" class="text-[13px] text-fg block font-medium">Model</label>
-          <p class="text-[12px] text-fg-muted">Leave empty to use the provider's default small-text model.</p>
-        </div>
+      <SettingsField
+        label="Model"
+        hint="Leave empty to use the provider's default small-text model."
+        htmlFor="textgen-model"
+      >
         <input
           id="textgen-model"
           type="text"
           data-testid="settings-textgen-model"
           value={settings.textGenerationModel}
-          onchange={(e) => updateSetting('textGenerationModel', (e.target as HTMLInputElement).value)}
+          onchange={(e) =>
+            updateSetting(
+              'textGenerationModel',
+              (e.target as HTMLInputElement).value,
+            )}
           placeholder={`Default: ${TEXTGEN_DEFAULT_MODEL[settings.textGenerationProvider]}`}
           class="{INPUT_CLASS} max-w-[16rem]"
         />
-      </div>
+      </SettingsField>
 
-      <div class={ROW_CLASS}>
-        <div>
-          <label for="textgen-effort" class="text-[13px] text-fg block font-medium">Reasoning effort</label>
-          <p class="text-[12px] text-fg-muted">Budget for commit/PR text generation.</p>
-        </div>
+      <SettingsField
+        label="Reasoning effort"
+        hint="Budget for commit/PR text generation."
+        htmlFor="textgen-effort"
+      >
         <select
           id="textgen-effort"
           data-testid="settings-textgen-effort"
           value={settings.textGenerationReasoningEffort}
-          onchange={(e) => updateSetting('textGenerationReasoningEffort', (e.target as HTMLSelectElement).value as ReasoningEffort)}
+          onchange={(e) =>
+            updateSetting(
+              'textGenerationReasoningEffort',
+              (e.target as HTMLSelectElement).value as ReasoningEffort,
+            )}
           class={SELECT_CLASS}
         >
-          {#each TEXTGEN_EFFORT_OPTIONS as opt}
+          {#each TEXTGEN_EFFORT_OPTIONS as opt (opt.value)}
             <option value={opt.value}>{opt.label}</option>
           {/each}
         </select>
-      </div>
+      </SettingsField>
     </div>
   </section>
-
-  <ContextSettingsSection
-    {contextTarget}
-    {claudeModels}
-    {codexModels}
-  />
 </div>

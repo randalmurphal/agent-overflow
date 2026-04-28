@@ -6,6 +6,8 @@
   import { errString } from '../../utils/errors';
   import DiscussionListPanel from '../discussion/DiscussionListPanel.svelte';
   import DiscussionEditor from '../discussion/DiscussionEditor.svelte';
+  import SettingsCallout from './SettingsCallout.svelte';
+  import SettingsHeader from './SettingsHeader.svelte';
 
   type Mode =
     | { kind: 'new' }
@@ -81,50 +83,45 @@
   );
 </script>
 
-<section class="rounded-[var(--radius-control)] border border-border-subtle bg-card/30 p-5">
-  <div class="flex flex-wrap items-start justify-between gap-3">
-    <div>
-      <p class="text-[11px] font-semibold uppercase tracking-[0.22em] text-text-secondary/70">Discussions</p>
-      <h3 class="mt-1 text-base font-semibold text-text-primary">Manage Discussion Definitions</h3>
-      <p class="mt-1 max-w-2xl text-sm text-text-secondary">
-        Configure multi-participant deliberations. Global definitions are available everywhere;
-        project-scoped definitions take precedence for threads inside their project path.
-      </p>
+<div class="flex flex-col gap-6">
+  <SettingsHeader
+    eyebrow="Discussions"
+    title="Manage Discussion Definitions"
+    description="Configure multi-participant deliberations. Global definitions are available everywhere; project-scoped definitions take precedence for threads inside their project path."
+  />
+
+  {#if loadError}
+    <SettingsCallout tone="error">{loadError}</SettingsCallout>
+  {/if}
+
+  <div class="grid grid-cols-1 gap-5 lg:grid-cols-[minmax(0,280px)_minmax(0,1fr)]">
+    <aside
+      class="lg:max-h-[70vh] rounded-[var(--radius-control)] border border-border-subtle bg-surface-1/40 p-4"
+    >
+      <DiscussionListPanel
+        {discussions}
+        {selectedKey}
+        onSelect={handleSelect}
+        onNew={handleNew}
+        {loading}
+      />
+    </aside>
+
+    <div class="min-w-0">
+      {#if mode.kind === 'new'}
+        <DiscussionEditor
+          initial={draftForNew}
+          isNew={true}
+          onSaved={handleSaved}
+        />
+      {:else}
+        <DiscussionEditor
+          initial={mode.original}
+          isNew={false}
+          onSaved={handleSaved}
+          onDeleted={handleDeleted}
+        />
+      {/if}
     </div>
-  </div>
-</section>
-
-{#if loadError}
-  <div role="alert" class="mt-4 rounded-xl border border-error/40 bg-error/12 px-3 py-2 text-xs text-error">
-    {loadError}
-  </div>
-{/if}
-
-<div class="mt-5 grid grid-cols-1 gap-5 lg:grid-cols-[minmax(0,280px)_minmax(0,1fr)]">
-  <aside class="lg:max-h-[70vh] rounded-2xl border border-border/60 bg-surface-1/55 p-4 backdrop-blur-sm">
-    <DiscussionListPanel
-      discussions={discussions}
-      selectedKey={selectedKey}
-      onSelect={handleSelect}
-      onNew={handleNew}
-      loading={loading}
-    />
-  </aside>
-
-  <div class="min-w-0">
-    {#if mode.kind === 'new'}
-      <DiscussionEditor
-        initial={draftForNew}
-        isNew={true}
-        onSaved={handleSaved}
-      />
-    {:else}
-      <DiscussionEditor
-        initial={mode.original}
-        isNew={false}
-        onSaved={handleSaved}
-        onDeleted={handleDeleted}
-      />
-    {/if}
   </div>
 </div>

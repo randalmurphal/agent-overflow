@@ -130,6 +130,18 @@ type ThreadView interface {
 	GetPendingForkRef() string
 }
 
+// AutoCompactDefaults carries the live per-provider compact thresholds
+// the user has configured in Settings. Passed into SessionOptionsFromThread
+// so the resolved percent reflects the current setting on every session
+// start — not a value frozen into the thread row at creation time. A
+// per-thread override (Thread.AutoCompactStandardPercent /
+// AutoCompactExtendedPercent > 0) still wins so the chat-meter override
+// flow keeps working.
+type AutoCompactDefaults struct {
+	StandardPercent int
+	ExtendedPercent int
+}
+
 // SessionOptionsFromThread assembles SessionOptions from a ThreadView +
 // the caller-composed system prompt (which itself may depend on mode —
 // that composition is the caller's job, because it reaches into design/
@@ -138,13 +150,31 @@ type ThreadView interface {
 // forkSession is an explicit arg instead of being read from the thread
 // because it's a per-start decision (the fork is consumed on the next
 // start; it isn't durable state).
-func SessionOptionsFromThread(t ThreadView, systemPrompt string, forkSession bool) SessionOptions {
+//
+// defaults holds the live per-provider compact thresholds from Settings;
+// any zero per-thread percent falls back to the matching default so a
+// settings change on the slider applies on the next turn without
+// rewriting every thread row.
+func SessionOptionsFromThread(
+	t ThreadView,
+	defaults AutoCompactDefaults,
+	systemPrompt string,
+	forkSession bool,
+) SessionOptions {
 	resume := t.GetSessionRef()
 	if forkSession && t.GetPendingForkRef() != "" {
 		// Claude's pending-fork flow: the next start should resume
 		// PendingForkRef (not the live SessionRef), and the act of
 		// starting consumes the pending ref.
 		resume = t.GetPendingForkRef()
+	}
+	standardPercent := t.GetAutoCompactStandardPercent()
+	if standardPercent <= 0 {
+		standardPercent = defaults.StandardPercent
+	}
+	extendedPercent := t.GetAutoCompactExtendedPercent()
+	if extendedPercent <= 0 {
+		extendedPercent = defaults.ExtendedPercent
 	}
 	return SessionOptions{
 		Provider:        t.GetProvider(),
@@ -155,11 +185,11 @@ func SessionOptionsFromThread(t ThreadView, systemPrompt string, forkSession boo
 		ContextWindow:   t.GetContextWindow(),
 		AutoCompactPercent: AutoCompactPercentForContextTier(
 			ContextTierForModelWindow(t.GetProvider(), t.GetModel(), t.GetContextWindow()),
-			t.GetAutoCompactStandardPercent(),
-			t.GetAutoCompactExtendedPercent(),
+			standardPercent,
+			extendedPercent,
 		),
-		AutoCompactStandardPercent: t.GetAutoCompactStandardPercent(),
-		AutoCompactExtendedPercent: t.GetAutoCompactExtendedPercent(),
+		AutoCompactStandardPercent: standardPercent,
+		AutoCompactExtendedPercent: extendedPercent,
 		Mode:                       NormalizeInteractionMode(t.GetMode()),
 		RuntimeMode:                NormalizeRuntimeMode(t.GetRuntimeMode()),
 		SystemPrompt:               systemPrompt,

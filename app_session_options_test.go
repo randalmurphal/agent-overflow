@@ -28,7 +28,7 @@ func TestSessionOptionsFromThreadToClaudeConfigXHigh(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetThread: %v", err)
 	}
-	opts := provider.SessionOptionsFromThread(stored, "You are the agent.", false)
+	opts := provider.SessionOptionsFromThread(stored, provider.AutoCompactDefaults{}, "You are the agent.", false)
 	cfg := claude.ConfigFromOptions(opts)
 
 	if !strings.HasPrefix(cfg.SystemPrompt, "think harder\n\n") {
@@ -61,7 +61,7 @@ func TestSessionOptionsFromThreadToCodexConfigMaxFloors(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetThread: %v", err)
 	}
-	opts := provider.SessionOptionsFromThread(stored, "codex system prompt", false)
+	opts := provider.SessionOptionsFromThread(stored, provider.AutoCompactDefaults{}, "codex system prompt", false)
 	cfg := codex.ConfigFromOptions(opts)
 
 	if cfg.ReasoningEffort != "xhigh" {
@@ -92,7 +92,7 @@ func TestSessionOptionsFastModeSwapsClaudeOpus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetThread: %v", err)
 	}
-	opts := provider.SessionOptionsFromThread(stored, "sys", false)
+	opts := provider.SessionOptionsFromThread(stored, provider.AutoCompactDefaults{}, "sys", false)
 	cfg := claude.ConfigFromOptions(opts)
 	if cfg.Model != "claude-haiku-4-5" {
 		t.Errorf("Model = %q, want claude-haiku-4-5 (fast mode swap)", cfg.Model)
@@ -114,7 +114,7 @@ func TestSessionOptionsFastModeSwapsCodexGpt5(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetThread: %v", err)
 	}
-	opts := provider.SessionOptionsFromThread(stored, "sys", false)
+	opts := provider.SessionOptionsFromThread(stored, provider.AutoCompactDefaults{}, "sys", false)
 	cfg := codex.ConfigFromOptions(opts)
 	if cfg.Model != "gpt-5.4-mini" {
 		t.Errorf("Model = %q, want gpt-5.4-mini (fast mode swap)", cfg.Model)
@@ -138,7 +138,7 @@ func TestClaudeConfigBuildsArgsWithDangerousSkipFromFullAccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetThread: %v", err)
 	}
-	opts := provider.SessionOptionsFromThread(stored, "", false)
+	opts := provider.SessionOptionsFromThread(stored, provider.AutoCompactDefaults{}, "", false)
 	cfg := claude.ConfigFromOptions(opts)
 
 	foundMode := false

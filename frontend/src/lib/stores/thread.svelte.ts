@@ -28,6 +28,7 @@ import { replaceThread } from './threads.svelte';
  */
 const LOAD_OLDER_TURN_BATCH = 50;
 import { addToast } from './toast.svelte';
+import { getSettings } from './settings.svelte';
 import { createDiffPanelState, type DiffPanelState } from './diffPanel.svelte';
 import {
   createDiffSidebarSlot,
@@ -606,10 +607,24 @@ export function createThreadPane() {
   }
 
   function activeAutoCompactPercent(nextThread: Thread): number {
-    const standard = nextThread.autoCompactStandardPercent ?? 0;
-    const extended = nextThread.autoCompactExtendedPercent ?? 0;
-    const configured = (nextThread.contextWindow ?? 0) >= 1_000_000 ? extended : standard;
-    return configured > 0 ? configured : 90;
+    // Per-thread override wins when set (chat-meter edit flow). Otherwise
+    // fall back to the per-provider Settings value, then the absolute 90%
+    // safety default if Settings hasn't been loaded yet.
+    const isExtended = (nextThread.contextWindow ?? 0) >= 1_000_000;
+    const override = isExtended
+      ? nextThread.autoCompactExtendedPercent ?? 0
+      : nextThread.autoCompactStandardPercent ?? 0;
+    if (override > 0) return override;
+    const settings = getSettings();
+    const providerSetting =
+      nextThread.provider === 'codex'
+        ? isExtended
+          ? settings.codexAutoCompactExtendedPercent
+          : settings.codexAutoCompactStandardPercent
+        : isExtended
+          ? settings.claudeAutoCompactExtendedPercent
+          : settings.claudeAutoCompactStandardPercent;
+    return providerSetting > 0 ? providerSetting : 90;
   }
 
   function upsertItemsBatch(incoming: Item[]): void {

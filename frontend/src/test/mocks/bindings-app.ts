@@ -119,6 +119,14 @@ export const ListPayloadMetas = dispatch('ListPayloadMetas');
 
 export const GetSettings = dispatch('GetSettings');
 export const UpdateSettings = dispatch('UpdateSettings');
+
+// Per-provider/model context window + auto-compact thresholds.
+// GetContextSettings hydrates the form; the two updates persist either
+// the model default (UpdateContextSettingsProfile) or a thread-scoped
+// override (UpdateThreadContextSettings).
+export const GetContextSettings = dispatch('GetContextSettings');
+export const UpdateContextSettingsProfile = dispatch('UpdateContextSettingsProfile');
+export const UpdateThreadContextSettings = dispatch('UpdateThreadContextSettings');
 export const GetNetworkSettings = dispatch('GetNetworkSettings');
 export const SetNetworkSettings = dispatch('SetNetworkSettings');
 

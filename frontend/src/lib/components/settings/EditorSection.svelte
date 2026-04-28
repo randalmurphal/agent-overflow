@@ -25,7 +25,7 @@
   import { addToast } from '../../stores/toast.svelte';
   import { errString } from '../../utils/errors';
   import { isClientMode } from '../../transport/runMode';
-  import MicroLabel from '../primitives/MicroLabel.svelte';
+  import SettingsHeader from './SettingsHeader.svelte';
 
   const clientMode = isClientMode();
 
@@ -89,33 +89,38 @@
 
 {#if clientMode}
   <section data-testid="editor-section-clientmode">
-    <MicroLabel as="p">Open-in-editor</MicroLabel>
-    <h3 class="mt-1 text-[15px] font-semibold text-fg">Editor</h3>
-    <p class="mt-1 max-w-2xl text-[12px] text-fg-muted">
-      Editor preferences are local to your install. This window is attached to a
-      remote backend, so changes here would update the remote machine's catalog,
-      not yours. Edit your editor preference from your local install.
-    </p>
+    <SettingsHeader
+      eyebrow="Open-in-editor"
+      title="Editor"
+      description="Editor preferences are local to your install. This window is attached to a remote backend, so changes here would update the remote machine's catalog, not yours. Edit your editor preference from your local install."
+    />
   </section>
 {:else}
   <section>
-    <MicroLabel as="p">Open-in-editor</MicroLabel>
-    <h3 class="mt-1 text-[15px] font-semibold text-fg">Editor</h3>
-    <p class="mt-1 max-w-2xl text-[12px] text-fg-muted">
+    <SettingsHeader
+      eyebrow="Open-in-editor"
+      title="Editor"
+    />
+    <p class="mt-1 max-w-2xl text-[12px] leading-relaxed text-fg-muted">
       Choose which editor opens when you click a file path in the chat.
       "Auto" follows the catalog priority order (VS Code, Cursor, Zed, …)
-      with <code class="font-mono text-[11px]">$EDITOR</code> / <code class="font-mono text-[11px]">$VISUAL</code>
-      as the final fallback. Editors that aren't installed are listed for
-      reference but can't be selected.
+      with <code class="font-mono text-[11px]">$EDITOR</code> /
+      <code class="font-mono text-[11px]">$VISUAL</code> as the final
+      fallback. Editors that aren't installed are listed for reference but
+      can't be selected.
     </p>
 
     {#if loading}
-      <p class="mt-3 text-[12px] text-fg-subtle" role="status" aria-live="polite">
+      <p
+        class="mt-4 text-[12px] text-fg-subtle"
+        role="status"
+        aria-live="polite"
+      >
         Loading editors…
       </p>
     {:else}
       <fieldset
-        class="mt-3 space-y-1"
+        class="mt-4 flex flex-col gap-0.5"
         role="radiogroup"
         aria-label="Preferred editor"
         data-testid="editor-section-radiogroup"
@@ -133,7 +138,7 @@
             onchange={() => void selectEditor('')}
             class="accent-accent"
           />
-          <span class="text-[13px] text-fg font-medium">Auto</span>
+          <span class="text-[13px] font-medium text-fg">Auto</span>
           <span class="text-[12px] text-fg-muted">Use the best available editor.</span>
         </label>
 
@@ -150,15 +155,15 @@
               name="editor-preference"
               value={editor.id}
               checked={preference === editor.id}
-              disabled={disabled}
+              {disabled}
               onchange={() => void selectEditor(editor.id)}
               class="accent-accent"
             />
-            <span class="text-[13px] text-fg font-medium">{editor.name}</span>
+            <span class="text-[13px] font-medium text-fg">{editor.name}</span>
             {#if !editor.available}
-              <span class="text-[11px] text-fg-subtle italic">(not installed)</span>
+              <span class="text-[11px] italic text-fg-hint">(not installed)</span>
             {:else if editor.envFallback}
-              <span class="text-[11px] text-fg-subtle">($EDITOR / $VISUAL)</span>
+              <span class="text-[11px] text-fg-hint">($EDITOR / $VISUAL)</span>
             {/if}
           </label>
         {/each}

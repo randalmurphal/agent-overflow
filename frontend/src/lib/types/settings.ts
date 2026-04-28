@@ -55,6 +55,16 @@ export interface Settings {
   /** Text generation reasoning-effort tier. Defaults to "low" — these
    * calls prioritise speed over depth. */
   textGenerationReasoningEffort: ReasoningEffort;
+  /**
+   * Per-provider auto-compact thresholds (percent of the active context
+   * window). Each provider has a standard and extended tier; the slider
+   * never produces 0, so the value is always 1..90. Per-thread overrides
+   * (Thread.autoCompactStandardPercent / …Extended) win when set.
+   */
+  claudeAutoCompactStandardPercent: number;
+  claudeAutoCompactExtendedPercent: number;
+  codexAutoCompactStandardPercent: number;
+  codexAutoCompactExtendedPercent: number;
   observabilityTracingEnabled: boolean;
   observabilityOtlpEndpoint: string;
   observabilityEventLogEnabled: boolean;

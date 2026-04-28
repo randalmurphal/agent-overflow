@@ -25,9 +25,10 @@
   import { addToast } from '../../stores/toast.svelte';
   import { errString } from '../../utils/errors';
   import { isClientMode } from '../../transport/runMode';
-  import MicroLabel from '../primitives/MicroLabel.svelte';
   import RemoteEndpointRow from './RemoteEndpointRow.svelte';
   import RemoteEndpointForm from './RemoteEndpointForm.svelte';
+  import SettingsHeader from './SettingsHeader.svelte';
+  import { SECONDARY_BUTTON_CLASS } from './styles';
 
   // In `--connect` mode the SPA is talking to a remote backend. Every
   // RPC this panel issues (List/Add/Update/Delete/TouchRemoteEndpoint)
@@ -183,33 +184,36 @@
 
 <div class="flex flex-col gap-8">
   <section>
-    <MicroLabel as="p">Remote endpoints</MicroLabel>
-    <h3 class="mt-1 text-[15px] font-semibold text-fg">Saved <code class="font-mono text-[11px]">--connect</code> targets</h3>
-    {#if clientMode}
-      <p class="mt-1 max-w-2xl text-[12px] text-fg-muted">
-        Remote endpoints can only be edited from your local install. This window is attached to a
-        remote backend, so changes here would update the remote machine's settings instead of yours.
-      </p>
-    {:else}
-      <p class="mt-1 max-w-2xl text-[12px] text-fg-muted">
-        Store the URL + token for a remote agent-overflow backend so you can launch the desktop app
-        against it without retyping. These endpoints are used with
+    <SettingsHeader
+      eyebrow="Remote endpoints"
+      title="Saved --connect targets"
+      description={clientMode
+        ? "Remote endpoints can only be edited from your local install. This window is attached to a remote backend, so changes here would update the remote machine's settings instead of yours."
+        : 'Store the URL + token for a remote agent-overflow backend so you can launch the desktop app against it without retyping. Tokens are stored in plaintext alongside the rest of settings.'}
+    />
+
+    {#if !clientMode}
+      <p class="mt-1 max-w-2xl text-[11.5px] leading-relaxed text-fg-hint">
+        These endpoints power
         <code class="font-mono text-[11px]">agent-overflow --connect ws://host:port?token=&lt;value&gt;</code>;
-        the desktop binary opens a window that talks to the remote backend instead of booting a
-        local one. Tokens are stored in plaintext alongside the rest of settings.
+        the desktop binary opens a window attached to the remote backend instead
+        of booting a local one.
       </p>
     {/if}
 
     {#if !clientMode}
       {#if loading}
-        <p class="mt-3 text-[12px] text-fg-muted">Loading...</p>
+        <p class="mt-4 text-[12px] text-fg-muted">Loading…</p>
       {:else if endpoints.length === 0 && editingId === null}
-        <p class="mt-3 text-[12px] text-fg-muted">No remote endpoints saved.</p>
+        <p class="mt-4 text-[12px] text-fg-muted">No remote endpoints saved.</p>
       {/if}
     {/if}
 
     {#if !clientMode && !loading && endpoints.length > 0}
-      <ul class="mt-3 divide-y divide-border-subtle" data-testid="remote-endpoints-list">
+      <ul
+        class="mt-4 divide-y divide-border-subtle/60 overflow-hidden rounded-[var(--radius-control)] border border-border-subtle"
+        data-testid="remote-endpoints-list"
+      >
         {#each endpoints as endpoint (endpoint.id)}
           <RemoteEndpointRow
             {endpoint}
@@ -224,11 +228,7 @@
     {#if !clientMode}
       <div class="mt-4">
         {#if editingId === null}
-          <button
-            type="button"
-            onclick={startNew}
-            class="text-[12px] font-medium rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 px-3 py-1.5 text-fg hover:border-accent/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 transition-colors cursor-pointer"
-          >
+          <button type="button" onclick={startNew} class={SECONDARY_BUTTON_CLASS}>
             Add remote endpoint
           </button>
         {:else}

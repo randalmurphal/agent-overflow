@@ -100,6 +100,33 @@ func validateSettings(current Settings) (Settings, error) {
 	// just falls through to the catalog priority at resolve time, no
 	// schema migration required when a new editor lands.
 	current.Editor.Preference = strings.TrimSpace(current.Editor.Preference)
+
+	// Auto-compact thresholds. Range 1..90 with the slider — values
+	// outside that range are caller error.
+	if err := validateAutoCompactPercent(
+		"claudeAutoCompactStandardPercent",
+		current.ClaudeAutoCompactStandardPercent,
+	); err != nil {
+		return Settings{}, err
+	}
+	if err := validateAutoCompactPercent(
+		"claudeAutoCompactExtendedPercent",
+		current.ClaudeAutoCompactExtendedPercent,
+	); err != nil {
+		return Settings{}, err
+	}
+	if err := validateAutoCompactPercent(
+		"codexAutoCompactStandardPercent",
+		current.CodexAutoCompactStandardPercent,
+	); err != nil {
+		return Settings{}, err
+	}
+	if err := validateAutoCompactPercent(
+		"codexAutoCompactExtendedPercent",
+		current.CodexAutoCompactExtendedPercent,
+	); err != nil {
+		return Settings{}, err
+	}
 	return current, nil
 }
 
@@ -148,7 +175,47 @@ func sanitizeLoadedSettings(current Settings) Settings {
 		allowedReasoningEfforts,
 	)
 	current.Editor.Preference = strings.TrimSpace(current.Editor.Preference)
+
+	// Auto-compact thresholds: clamp on load so a hand-edited file with
+	// an out-of-range value doesn't strand sessions on a degenerate
+	// percent. The slider can't produce these values; this is a
+	// belt-and-suspenders pass for the manual-edit path.
+	current.ClaudeAutoCompactStandardPercent = sanitizeAutoCompactPercent(
+		"claudeAutoCompactStandardPercent",
+		current.ClaudeAutoCompactStandardPercent,
+		DefaultSettings.ClaudeAutoCompactStandardPercent,
+	)
+	current.ClaudeAutoCompactExtendedPercent = sanitizeAutoCompactPercent(
+		"claudeAutoCompactExtendedPercent",
+		current.ClaudeAutoCompactExtendedPercent,
+		DefaultSettings.ClaudeAutoCompactExtendedPercent,
+	)
+	current.CodexAutoCompactStandardPercent = sanitizeAutoCompactPercent(
+		"codexAutoCompactStandardPercent",
+		current.CodexAutoCompactStandardPercent,
+		DefaultSettings.CodexAutoCompactStandardPercent,
+	)
+	current.CodexAutoCompactExtendedPercent = sanitizeAutoCompactPercent(
+		"codexAutoCompactExtendedPercent",
+		current.CodexAutoCompactExtendedPercent,
+		DefaultSettings.CodexAutoCompactExtendedPercent,
+	)
 	return current
+}
+
+func validateAutoCompactPercent(field string, value int) error {
+	if value < 1 || value > 90 {
+		return fmt.Errorf("%s must be between 1 and 90", field)
+	}
+	return nil
+}
+
+func sanitizeAutoCompactPercent(field string, value, fallback int) int {
+	if value >= 1 && value <= 90 {
+		return value
+	}
+	log.Printf("settings: invalid %s %d, using default %d", field, value, fallback)
+	return fallback
 }
 
 func validateOption(field, value string, allowed map[string]struct{}) error {

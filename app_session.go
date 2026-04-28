@@ -67,7 +67,17 @@ func (a *App) startSessionNow(threadID string) error {
 	// PendingForkRef originally.
 	forkSession := t.PendingForkRef != ""
 
-	opts := provider.SessionOptionsFromThread(t, systemPrompt, forkSession)
+	settings := a.settings.Get()
+	standardDefault, extendedDefault := settings.AutoCompactPercents(t.Provider)
+	opts := provider.SessionOptionsFromThread(
+		t,
+		provider.AutoCompactDefaults{
+			StandardPercent: standardDefault,
+			ExtendedPercent: extendedDefault,
+		},
+		systemPrompt,
+		forkSession,
+	)
 
 	if err := a.stopExistingSessionLocked(threadID); err != nil {
 		return fmt.Errorf("start session: %w", err)

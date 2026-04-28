@@ -2,7 +2,9 @@
   import { getSettings, updateSetting } from '../../stores/settings.svelte';
   import type { ThreadEnvMode } from '../../types/settings';
   import ToggleSwitch from '../shared/ToggleSwitch.svelte';
-  import MicroLabel from '../primitives/MicroLabel.svelte';
+  import SettingsField from './SettingsField.svelte';
+  import SettingsHeader from './SettingsHeader.svelte';
+  import { INPUT_CLASS, SELECT_CLASS } from './styles';
 
   let settings = $derived(getSettings());
 
@@ -10,171 +12,180 @@
     { value: 'local', label: 'Current checkout' },
     { value: 'worktree', label: 'New worktree' },
   ];
-
-  const SELECT_CLASS =
-    'min-w-[8rem] text-[12px] rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 ' +
-    'px-2.5 py-1 text-fg focus:outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent/40 ' +
-    'transition-colors cursor-pointer';
-
-  const ROW_CLASS = 'flex items-center justify-between gap-4 py-2.5';
 </script>
 
-<div class="flex flex-col gap-8">
+<div class="flex flex-col gap-10">
   <section>
-    <MicroLabel as="p">Appearance</MicroLabel>
-    <h3 class="mt-1 text-[15px] font-semibold text-fg">Theme and Display</h3>
-    <p class="mt-1 text-[12px] text-fg-muted">Choose how Agent Overflow should look across chat, settings, and git views.</p>
-    <div class="mt-3 divide-y divide-border-subtle">
-      <div class={ROW_CLASS}>
-        <div>
-          <label for="theme-select" class="text-[13px] text-fg block font-medium">Theme</label>
-          <p class="text-[12px] text-fg-muted">Choose your preferred color scheme</p>
-        </div>
+    <SettingsHeader
+      eyebrow="Appearance"
+      title="Theme and Display"
+      description="Choose how Agent Overflow should look across chat, settings, and git views."
+    />
+    <div class="mt-4 flex flex-col gap-1">
+      <SettingsField
+        label="Theme"
+        hint="Choose your preferred color scheme."
+        htmlFor="theme-select"
+      >
         <select
           id="theme-select"
           value={settings.theme}
-          onchange={(e) => updateSetting('theme', (e.target as HTMLSelectElement).value as 'system' | 'light' | 'dark')}
+          onchange={(e) =>
+            updateSetting(
+              'theme',
+              (e.target as HTMLSelectElement).value as 'system' | 'light' | 'dark',
+            )}
           class={SELECT_CLASS}
         >
           <option value="system">System</option>
           <option value="light">Light</option>
           <option value="dark">Dark</option>
         </select>
-      </div>
+      </SettingsField>
 
-      <div class={ROW_CLASS}>
-        <div>
-          <label for="timestamp-select" class="text-[13px] text-fg block font-medium">Timestamp format</label>
-          <p class="text-[12px] text-fg-muted">How timestamps appear in the chat</p>
-        </div>
+      <SettingsField
+        label="Timestamp format"
+        hint="How timestamps appear in the chat."
+        htmlFor="timestamp-select"
+      >
         <select
           id="timestamp-select"
           value={settings.timestampFormat}
-          onchange={(e) => updateSetting('timestampFormat', (e.target as HTMLSelectElement).value as 'locale' | '12-hour' | '24-hour')}
+          onchange={(e) =>
+            updateSetting(
+              'timestampFormat',
+              (e.target as HTMLSelectElement).value as 'locale' | '12-hour' | '24-hour',
+            )}
           class={SELECT_CLASS}
         >
           <option value="locale">System locale</option>
           <option value="12-hour">12-hour</option>
           <option value="24-hour">24-hour</option>
         </select>
-      </div>
+      </SettingsField>
     </div>
   </section>
 
   <section>
-    <MicroLabel as="p">Behavior</MicroLabel>
-    <h3 class="mt-1 text-[15px] font-semibold text-fg">Live Updates</h3>
-    <p class="mt-1 text-[12px] text-fg-muted">Tune how provider output is rendered.</p>
-    <div class="mt-3 divide-y divide-border-subtle">
-      <div class={ROW_CLASS}>
-        <div>
-          <p class="text-[13px] text-fg font-medium">Diff Word Wrap</p>
-          <p class="text-[12px] text-fg-muted">Wrap long lines in diff views</p>
-        </div>
+    <SettingsHeader
+      eyebrow="Behavior"
+      title="Live Updates"
+      description="Tune how provider output is rendered."
+    />
+    <div class="mt-4 flex flex-col gap-1">
+      <SettingsField
+        label="Diff word wrap"
+        hint="Wrap long lines in diff views."
+      >
         <ToggleSwitch
           checked={settings.diffWordWrap}
           ariaLabel="Toggle Diff Word Wrap"
           onToggle={(value) => updateSetting('diffWordWrap', value)}
         />
-      </div>
+      </SettingsField>
 
-      <div class={ROW_CLASS}>
-        <div>
-          <p class="text-[13px] text-fg font-medium">End-of-Turn Diffs</p>
-          <p class="text-[12px] text-fg-muted">Show a compact diff card when an agent turn completes</p>
-        </div>
+      <SettingsField
+        label="End-of-turn diffs"
+        hint="Show a compact diff card when an agent turn completes."
+      >
         <ToggleSwitch
           checked={settings.showEndOfTurnDiffs}
           ariaLabel="Toggle End-of-Turn Diffs"
           onToggle={(value) => updateSetting('showEndOfTurnDiffs', value)}
         />
-      </div>
+      </SettingsField>
 
-      <div class={ROW_CLASS}>
-        <div>
-          <p class="text-[13px] text-fg font-medium">Streaming Enabled</p>
-          <p class="text-[12px] text-fg-muted">Show text as it arrives from the provider</p>
-        </div>
+      <SettingsField
+        label="Streaming enabled"
+        hint="Show text as it arrives from the provider."
+      >
         <ToggleSwitch
           checked={settings.streamingEnabled}
           ariaLabel="Toggle Streaming"
           onToggle={(value) => updateSetting('streamingEnabled', value)}
         />
-      </div>
+      </SettingsField>
     </div>
   </section>
 
   <section data-testid="settings-thread-defaults">
-    <MicroLabel as="p">Thread Defaults</MicroLabel>
-    <h3 class="mt-1 text-[15px] font-semibold text-fg">Workspace Seeds</h3>
-    <p class="mt-1 text-[12px] text-fg-muted">
-      New threads start in chat mode. Provider, model, effort, permissions,
-      and context are remembered from the composer controls.
-    </p>
-    <div class="mt-3 divide-y divide-border-subtle">
-      <div class={ROW_CLASS}>
-        <div>
-          <label for="default-thread-env-mode" class="text-[13px] text-fg block font-medium">Default Environment</label>
-          <p class="text-[12px] text-fg-muted">Workspace mode seeded on new draft threads</p>
-        </div>
+    <SettingsHeader
+      eyebrow="Thread defaults"
+      title="Workspace Seeds"
+      description="New threads start in chat mode. Provider, model, effort, permissions, and context are remembered from the composer controls."
+    />
+    <div class="mt-4 flex flex-col gap-1">
+      <SettingsField
+        label="Default environment"
+        hint="Workspace mode seeded on new draft threads."
+        htmlFor="default-thread-env-mode"
+      >
         <select
           id="default-thread-env-mode"
           data-testid="settings-default-thread-env-mode"
           value={settings.defaultThreadEnvMode}
-          onchange={(e) => updateSetting('defaultThreadEnvMode', (e.target as HTMLSelectElement).value as ThreadEnvMode)}
+          onchange={(e) =>
+            updateSetting(
+              'defaultThreadEnvMode',
+              (e.target as HTMLSelectElement).value as ThreadEnvMode,
+            )}
           class={SELECT_CLASS}
         >
-          {#each ENV_OPTIONS as opt}
+          {#each ENV_OPTIONS as opt (opt.value)}
             <option value={opt.value}>{opt.label}</option>
           {/each}
         </select>
-      </div>
+      </SettingsField>
 
-      <div class={ROW_CLASS}>
-        <div>
-          <label for="worktree-branch-prefix" class="text-[13px] text-fg block font-medium">Worktree Branch Prefix</label>
-          <p class="text-[12px] text-fg-muted">Prefix for generated worktree branches</p>
-        </div>
+      <SettingsField
+        label="Worktree branch prefix"
+        hint="Prefix for generated worktree branches."
+        htmlFor="worktree-branch-prefix"
+      >
         <input
           id="worktree-branch-prefix"
           data-testid="settings-worktree-branch-prefix"
           type="text"
           value={settings.worktreeBranchPrefix}
-          onblur={(e) => updateSetting('worktreeBranchPrefix', (e.target as HTMLInputElement).value)}
-          class={SELECT_CLASS}
+          onblur={(e) =>
+            updateSetting(
+              'worktreeBranchPrefix',
+              (e.target as HTMLInputElement).value,
+            )}
+          class="{INPUT_CLASS} max-w-[12rem]"
         />
-      </div>
+      </SettingsField>
     </div>
   </section>
 
   <section>
-    <MicroLabel as="p">Confirmations</MicroLabel>
-    <h3 class="mt-1 text-[15px] font-semibold text-fg">Safety Checks</h3>
-    <p class="mt-1 text-[12px] text-fg-muted">Choose which destructive sidebar actions should stop for confirmation.</p>
-    <div class="mt-3 divide-y divide-border-subtle">
-      <div class={ROW_CLASS}>
-        <div>
-          <p class="text-[13px] text-fg font-medium">Confirm Before Archive</p>
-          <p class="text-[12px] text-fg-muted">Show a confirmation dialog when archiving threads</p>
-        </div>
+    <SettingsHeader
+      eyebrow="Confirmations"
+      title="Safety Checks"
+      description="Choose which destructive sidebar actions should stop for confirmation."
+    />
+    <div class="mt-4 flex flex-col gap-1">
+      <SettingsField
+        label="Confirm before archive"
+        hint="Show a confirmation dialog when archiving threads."
+      >
         <ToggleSwitch
           checked={settings.confirmArchive}
           ariaLabel="Toggle Archive Confirmation"
           onToggle={(value) => updateSetting('confirmArchive', value)}
         />
-      </div>
+      </SettingsField>
 
-      <div class={ROW_CLASS}>
-        <div>
-          <p class="text-[13px] text-fg font-medium">Confirm Before Delete</p>
-          <p class="text-[12px] text-fg-muted">Show a confirmation dialog when deleting threads</p>
-        </div>
+      <SettingsField
+        label="Confirm before delete"
+        hint="Show a confirmation dialog when deleting threads."
+      >
         <ToggleSwitch
           checked={settings.confirmDelete}
           ariaLabel="Toggle Delete Confirmation"
           onToggle={(value) => updateSetting('confirmDelete', value)}
         />
-      </div>
+      </SettingsField>
     </div>
   </section>
 </div>
