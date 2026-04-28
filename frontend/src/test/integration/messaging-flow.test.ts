@@ -545,8 +545,11 @@ describe('App integration — messaging flow', () => {
     // BackgroundTaskTray pairs launch + completion by completionOf;
     // the tray count stays at 1 (one logical task), and the row
     // status flips to completed. Use waitFor so the 100 ms debounced
-    // tray refresh has time to pick up the completion.
+    // tray refresh has time to pick up the completion. The tray
+    // defaults to collapsed in production, so expand it before
+    // inspecting the row.
     expect((await findByTestId('background-task-tray-count')).textContent).toBe('1');
+    await fireEvent.click(await findByTestId('background-task-tray-header'));
     await waitFor(async () => {
       const rowStatus = await findByTestId('background-task-tray-row-status');
       expect(rowStatus.getAttribute('data-status')).toBe('completed');

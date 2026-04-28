@@ -31,19 +31,9 @@
 
   const COMPLETION_RETENTION_MS = 2_000;
   const REFRESH_DEBOUNCE_MS = 100;
-  const AUTO_COLLAPSE_TASK_COUNT = 5;
 
   let now = $state(Date.now());
   let trayRoot: HTMLDivElement | undefined = $state(undefined);
-
-  $effect(() => {
-    if (backgroundItems.length === 0) return;
-    now = Date.now();
-    const id = setInterval(() => {
-      now = Date.now();
-    }, 1_000);
-    return () => clearInterval(id);
-  });
 
   let backgroundItems: Item[] = $state([]);
   let threadId = $derived(pane.thread?.id ?? null);
@@ -113,6 +103,11 @@
 
   const count = $derived(tasks.length);
   const anyRunning = $derived(tasks.some((t) => t.status === 'running'));
+  // Drives the 1Hz `now` clock: the only consumers of `now` are the
+  // expanded body's elapsed-time labels and the retention-window prune
+  // inside `deriveTrayTasks`. When neither applies (collapsed tray with
+  // only running tasks), the clock can stay idle.
+  const hasPendingCompletion = $derived(tasks.some((t) => t.completion !== null));
 
   const claudeStoppableTaskIDs = $derived.by<string[]>(() => {
     if (provider !== 'claude') return [];
@@ -133,9 +128,29 @@
   let stoppingRows = $state<Set<string>>(new Set());
   let stopAllInFlight = $state(false);
 
-  let expanded = $state(true);
+  let expanded = $state(false);
+  // The inner `{#if count > 0}` only hides DOM — the component instance
+  // and its `expanded` state survive count transitions and thread
+  // switches, so we re-default to collapsed explicitly when (a) tasks
+  // return after the tray drained or (b) the user moves to a different
+  // thread. `previousCount` carries the prior-render task count; the
+  // 0→non-zero edge fires the re-default.
   let previousCount = $state(0);
   let previousThreadId: string | null = $state(null);
+
+  $effect(() => {
+    // Read both deps unconditionally so the effect re-runs on either
+    // change even when the early returns skip the body.
+    const isExpanded = expanded;
+    const hasCompletion = hasPendingCompletion;
+    if (backgroundItems.length === 0) return;
+    if (!isExpanded && !hasCompletion) return;
+    now = Date.now();
+    const id = setInterval(() => {
+      now = Date.now();
+    }, 1_000);
+    return () => clearInterval(id);
+  });
 
   $effect(() => {
     const isNewThread = previousThreadId !== threadId;
@@ -148,7 +163,7 @@
     if (loadedThreadId !== threadId) return;
 
     if (previousCount === 0) {
-      expanded = count < AUTO_COLLAPSE_TASK_COUNT;
+      expanded = false;
     }
     previousCount = count;
   });
@@ -241,9 +256,11 @@
 </script>
 
 {#if count > 0}
+  <!-- Renders inside the composer surface card; relies on the parent for
+       background, rounded corners, and overflow clipping. -->
   <div
     bind:this={trayRoot}
-    class="overflow-hidden border-b border-border-subtle bg-card transition-[opacity,transform] duration-200"
+    class="overflow-hidden border-b border-border-subtle transition-[opacity,transform] duration-200"
     role="region"
     aria-label="Running Tasks"
     data-testid="background-task-tray"

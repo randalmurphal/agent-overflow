@@ -33,7 +33,7 @@
 </script>
 
 <section
-  class="border-b-2 border-accent/60 bg-surface-1 px-4 py-4 shadow-[inset_0_2px_0_oklch(from_var(--accent)_l_c_h/0.18)]"
+  class="border-b-2 border-accent/60 px-4 py-4 shadow-[inset_0_2px_0_oklch(from_var(--accent)_l_c_h/0.18)]"
   data-testid="composer-pending-approval"
   aria-live="assertive"
   in:scale={{ duration: 200, start: 0.96, opacity: 0 }}

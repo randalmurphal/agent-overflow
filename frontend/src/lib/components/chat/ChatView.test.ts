@@ -340,6 +340,11 @@ describe('<ChatView>', () => {
       await tick();
       await tick();
 
+      // Tray defaults to collapsed in production — expand it before
+      // reaching for the row.
+      await fireEvent.click(getByTestId('background-task-tray-header'));
+      await tick();
+
       const row = getByTestId('background-task-tray-row');
       expect(row.getAttribute('data-row-id')).toBe('launch-a');
       expect(row.tagName).not.toBe('BUTTON');
