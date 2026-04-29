@@ -209,7 +209,7 @@ pre, code, kbd, samp, .ansi-body {
 .markdown-body code {
   font-family: var(--font-mono);
   font-size: 0.9em;
-  background: var(--surface-0);
+  background: var(--surface-2);
   padding: 0.05rem 0.3rem;
   border-radius: 0.25rem;
 }
