@@ -383,7 +383,7 @@
     <!-- Active turn but no items yet (just-sent prompt with the assistant
          not having streamed a single chunk). Render the working indicator
          standalone so the user sees feedback. -->
-    <div class="mx-auto w-full max-w-3xl px-6 pt-8" style:padding-bottom={`calc(var(--composer-height, 0px) + ${BOTTOM_PAD_PX}px)`}>
+    <div class="mx-auto w-full max-w-[62rem] px-6 pt-8" style:padding-bottom={`calc(var(--composer-height, 0px) + ${BOTTOM_PAD_PX}px)`}>
       <ChatWorkingIndicator {pane} />
     </div>
   {:else}
@@ -421,7 +421,7 @@
                  the first thing they see. After load-older completes,
                  the explicit scrollToIndex re-anchors them to where they
                  were reading — the button moves up out of view. -->
-            <div class="pt-6 mx-auto w-full max-w-3xl px-6">
+            <div class="pt-6 mx-auto w-full max-w-[62rem] px-6">
               {#if pane.hasMoreHistory}
                 <div class="mb-3 flex justify-center">
                   <Button
@@ -440,7 +440,7 @@
             </div>
           {/if}
 
-          <div class="mx-auto w-full max-w-3xl px-6">
+          <div class="mx-auto w-full max-w-[62rem] px-6">
             {#if pane.latestSettledTurn && shouldRenderDividerBefore(node, pane.latestSettledTurn)}
               <CompletionDivider turn={pane.latestSettledTurn} />
             {/if}

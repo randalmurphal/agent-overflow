@@ -21,7 +21,7 @@
 {#if pane.thread}
   <div class="px-6">
     <div
-      class="mx-auto flex w-full max-w-[52rem] items-center justify-between gap-2 py-1.5 text-[11px] text-text-secondary"
+      class="mx-auto flex w-full max-w-[68rem] items-center justify-between gap-2 py-1.5 text-[11px] text-text-secondary"
       data-testid="below-composer-bar"
     >
       <div class="flex min-w-0 items-center gap-2">
