@@ -161,9 +161,10 @@ export function createAttachmentPreviews(
     const load = loadAttachmentPreview(attachment)
       .then((preview) => {
         if (generation !== loadGeneration) {
-          // Stale request — only revoke if we own the blob. Cache-owned
-          // blobs are managed by the cache provider's dispose path.
-          if (!options.cache) revokePreview(preview);
+          // Stale request — always revoke. Even when a cache is provided
+          // the blob never made it into the cache, so the cache owner
+          // can't dispose it; not revoking here orphans the blob URL.
+          revokePreview(preview);
           return null;
         }
         previews = { ...previews, [attachment.id]: preview };

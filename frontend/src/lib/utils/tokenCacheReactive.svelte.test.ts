@@ -96,6 +96,19 @@ describe('tokenCacheReactive', () => {
     expect(inner.get(bThreadKey)).toBeDefined();
   });
 
+  it('clearTokensForThread does NOT bump the generation counter', () => {
+    // Pin: the documented contract says no generation bump, because the
+    // outgoing thread's tokens have no live reactive consumers (the
+    // sidebar moves to the new thread's namespace). A future refactor
+    // that bumped here would silently invalidate every reactive consumer
+    // on every thread switch — wasted re-renders.
+    const cache = getSharedReactiveTokenCache();
+    cache.set(tokenCacheKey('thread-a', 'github-dark', 'typescript', 'x'), [{ content: 'a' }]);
+    const before = getSharedTokenCacheGeneration();
+    clearTokensForThread('thread-a');
+    expect(getSharedTokenCacheGeneration()).toBe(before);
+  });
+
   it('clearTokensForThread is a no-op for an empty cache', () => {
     expect(() => clearTokensForThread('thread-x')).not.toThrow();
   });

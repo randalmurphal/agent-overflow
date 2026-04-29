@@ -9,6 +9,14 @@ package's problem.
 - `store.go` — `Store` type plus the `Upload` / `Read` / `Delete`
   lifecycle. Owns the `tmp → insert-row → atomic rename` sequence so a
   crash at any point leaves a consistent view.
+- `thumbnail.go` — `Store.Thumbnail` lazy thumbnail generator. Decodes
+  PNG/JPEG/GIF/WEBP at request time, resizes to 256px, persists the
+  result on the attachments row (`thumbnail_data`, `thumbnail_mime`)
+  via the SQLite store. Carries the decode-bomb guard
+  (`image.DecodeConfig` pre-check before full decode), per-id
+  `singleflight.Group` to dedupe concurrent same-id calls, and a small
+  global semaphore (`thumbnailGenSem`) so a remote `--connect` burst
+  can't pin RAM with parallel CatmullRom decodes.
 
 ## Responsibility boundary
 
@@ -16,6 +24,7 @@ package's problem.
   - MIME / size / extension validation.
   - Tmp-then-rename commit flow paired with the metadata INSERT.
   - Per-thread directory layout on disk.
+  - Thumbnail generation pipeline (decode → resize → encode → cache).
 - What does NOT belong here:
   - Attachment metadata queries — those live on `store.Store`.
   - Rendering or serving — the frontend reads via bindings.

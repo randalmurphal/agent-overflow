@@ -72,6 +72,42 @@ describe('tokenCache', () => {
     expect(cache.get(b)).toBeDefined();
   });
 
+  it('evictThread does not disturb other threads when the cache is full', () => {
+    // Pin: a full cache (at the LRU cap) plus an evictThread on one
+    // thread should free up slots WITHOUT triggering further LRU
+    // evictions on the surviving threads. Without this guarantee the
+    // full-cache + thread-switch flow would over-evict.
+    const cache = createTokenCache(4);
+    const a1 = tokenCacheKey('thread-a', 'github-dark', 'typescript', 'a1');
+    const a2 = tokenCacheKey('thread-a', 'github-dark', 'typescript', 'a2');
+    const b1 = tokenCacheKey('thread-b', 'github-dark', 'typescript', 'b1');
+    const b2 = tokenCacheKey('thread-b', 'github-dark', 'typescript', 'b2');
+    cache.set(a1, [{ content: 'a1' }]);
+    cache.set(a2, [{ content: 'a2' }]);
+    cache.set(b1, [{ content: 'b1' }]);
+    cache.set(b2, [{ content: 'b2' }]);
+    expect(cache.size).toBe(4);
+
+    const evicted = cache.evictThread('thread-a');
+    expect(evicted).toBe(2);
+    expect(cache.size).toBe(2);
+    expect(cache.get(b1)).toBeDefined();
+    expect(cache.get(b2)).toBeDefined();
+  });
+
+  it('evictThread skips keys whose layout is malformed', () => {
+    // Defensive: keys are in a fixed format but a future bug could write
+    // a single-segment key. evictThread should leave such entries alone
+    // rather than mass-evict.
+    const cache = createTokenCache(10);
+    cache.set('malformed', [{ content: 'x' }]);
+    cache.set(tokenCacheKey('thread-a', 'github-dark', 'typescript', 'foo'), [{ content: 'a' }]);
+
+    const evicted = cache.evictThread('thread-a');
+    expect(evicted).toBe(1);
+    expect(cache.get('malformed')).toBeDefined();
+  });
+
   it('different threads keep the same line under independent cache entries', () => {
     const cache = createTokenCache(10);
     const a = tokenCacheKey('thread-a', 'github-dark', 'typescript', 'foo');

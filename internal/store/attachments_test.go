@@ -184,11 +184,15 @@ func TestAttachmentThumbnailRoundTrip(t *testing.T) {
 		t.Fatalf("InsertAttachment: %v", err)
 	}
 
-	// Fresh row → no thumbnail cached yet.
-	if data, mime, hit, err := s.GetAttachmentThumbnail(a.ID); err != nil {
-		t.Fatalf("GetAttachmentThumbnail (fresh): %v", err)
-	} else if hit || data != nil || mime != "" {
-		t.Fatalf("expected uncached miss, got data=%d mime=%q hit=%v", len(data), mime, hit)
+	// Fresh row → no thumbnail cached yet, but the metadata still loads.
+	if got, ok, err := s.GetAttachmentWithThumbnail(a.ID); err != nil {
+		t.Fatalf("GetAttachmentWithThumbnail (fresh): %v", err)
+	} else if !ok {
+		t.Fatal("expected attachment row to exist")
+	} else if got.ThumbnailData != nil || got.ThumbnailMime != "" {
+		t.Fatalf("expected uncached miss, got data=%d mime=%q", len(got.ThumbnailData), got.ThumbnailMime)
+	} else if got.ThreadID != thread.ID || got.RelativePath != a.RelativePath {
+		t.Fatalf("metadata mismatch: %+v", got.Attachment)
 	}
 
 	// SetAttachmentThumbnail persists both columns together.
@@ -196,18 +200,33 @@ func TestAttachmentThumbnailRoundTrip(t *testing.T) {
 	if err := s.SetAttachmentThumbnail(a.ID, thumb, "image/jpeg"); err != nil {
 		t.Fatalf("SetAttachmentThumbnail: %v", err)
 	}
-	gotData, gotMime, hit, err := s.GetAttachmentThumbnail(a.ID)
+	got, ok, err := s.GetAttachmentWithThumbnail(a.ID)
 	if err != nil {
-		t.Fatalf("GetAttachmentThumbnail: %v", err)
+		t.Fatalf("GetAttachmentWithThumbnail: %v", err)
 	}
-	if !hit {
-		t.Fatal("expected thumbnail to be present after Set")
+	if !ok {
+		t.Fatal("expected attachment row to exist")
 	}
-	if string(gotData) != string(thumb) {
+	if string(got.ThumbnailData) != string(thumb) {
 		t.Fatalf("thumbnail bytes round-trip mismatch")
 	}
-	if gotMime != "image/jpeg" {
-		t.Fatalf("thumbnail mime = %q, want image/jpeg", gotMime)
+	if got.ThumbnailMime != "image/jpeg" {
+		t.Fatalf("thumbnail mime = %q, want image/jpeg", got.ThumbnailMime)
+	}
+}
+
+func TestGetAttachmentWithThumbnailMissing(t *testing.T) {
+	// The combined SELECT must return (zero, false, nil) when the row
+	// doesn't exist — Thumbnail()'s "not found" guard reads from this
+	// false result, so an accidental error return would surface as a
+	// 500-class wire failure instead of a clean 404-class one.
+	s := newTestStore(t)
+	got, ok, err := s.GetAttachmentWithThumbnail("no-such-id")
+	if err != nil {
+		t.Fatalf("GetAttachmentWithThumbnail (missing): %v", err)
+	}
+	if ok {
+		t.Fatalf("expected ok=false for missing id, got %+v", got)
 	}
 }
 

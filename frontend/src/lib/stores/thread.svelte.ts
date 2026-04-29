@@ -28,6 +28,22 @@ import type {
 } from '../utils/attachmentPreview.svelte';
 import { leaseDuringSettle } from '../utils/scrollLeaseDuringTransition';
 
+import { addToast } from './toast.svelte';
+import { getSettings } from './settings.svelte';
+import { createDiffPanelState, type DiffPanelState } from './diffPanel.svelte';
+import {
+  createDiffSidebarSlot,
+  type DiffSidebarSlot,
+  type DiffSidebarUIState,
+} from './diffSidebarSlot.svelte';
+import {
+  buildDiffViewForItems,
+  itemMayAffectDiffView,
+  type TurnDiffView,
+} from '../utils/turnDiffSummary';
+import { errString } from '../utils/errors';
+import { clearTokensForThread } from '../utils/tokenCacheReactive.svelte';
+
 /**
  * Default batch size for "Load older" fetches. Matches the initial window
  * size so a single paging click approximately doubles the loaded history.
@@ -50,28 +66,12 @@ let expansionBudgetBytes = DEFAULT_EXPANSION_BUDGET_BYTES;
 function getExpansionBudgetBytes(): number {
   return expansionBudgetBytes;
 }
-export function __setExpansionBudgetForTest(bytes: number): void {
+export function setExpansionBudgetForTest(bytes: number): void {
   expansionBudgetBytes = bytes;
 }
-export function __resetExpansionBudgetForTest(): void {
+export function resetExpansionBudgetForTest(): void {
   expansionBudgetBytes = DEFAULT_EXPANSION_BUDGET_BYTES;
 }
-
-import { addToast } from './toast.svelte';
-import { getSettings } from './settings.svelte';
-import { createDiffPanelState, type DiffPanelState } from './diffPanel.svelte';
-import {
-  createDiffSidebarSlot,
-  type DiffSidebarSlot,
-  type DiffSidebarUIState,
-} from './diffSidebarSlot.svelte';
-import {
-  buildDiffViewForItems,
-  itemMayAffectDiffView,
-  type TurnDiffView,
-} from '../utils/turnDiffSummary';
-import { errString } from '../utils/errors';
-import { clearTokensForThread } from '../utils/tokenCacheReactive.svelte';
 
 /**
  * ActiveTurn is the live in-flight turn for the pane. Populated exclusively
@@ -595,12 +595,23 @@ export function createThreadPane() {
   }
 
   function enforceExpansionBudget(skipKey: string): void {
-    if (computeExpansionBytes() <= getExpansionBudgetBytes()) return;
+    // Compute the total once, then maintain it incrementally as we
+    // collapse handles. The previous approach re-summed every entry's
+    // displayData on every loop iteration (O(n²) in the number of
+    // expanded handles). With LRU touches keeping the touched key at
+    // the tail, the iterator hits oldest-first; subtracting on collapse
+    // is correct without a recompute.
+    let total = computeExpansionBytes();
+    const cap = getExpansionBudgetBytes();
+    if (total <= cap) return;
     for (const [iterKey, handle] of expansionStates) {
       if (iterKey === skipKey) continue;
-      if (!handle.expanded || !handle.displayData) continue;
+      const data = handle.displayData;
+      if (!handle.expanded || !data) continue;
+      const droppedBytes = data.length;
       handle.collapse();
-      if (computeExpansionBytes() <= getExpansionBudgetBytes()) break;
+      total -= droppedBytes;
+      if (total <= cap) break;
     }
   }
 

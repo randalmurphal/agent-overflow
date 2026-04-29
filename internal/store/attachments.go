@@ -83,27 +83,41 @@ func (s *Store) ListAttachments(threadID string) ([]Attachment, error) {
 	return attachments, nil
 }
 
-// GetAttachmentThumbnail returns the cached thumbnail bytes + mime type for an
-// attachment. The third return value is false when no thumbnail has been
-// generated yet (NULL columns); callers should generate-and-cache via
-// SetAttachmentThumbnail in that case. Kept off the standard attachmentColumns
-// SELECT so list reads don't pull large blobs they won't use.
-func (s *Store) GetAttachmentThumbnail(id string) ([]byte, string, bool, error) {
+// AttachmentWithThumbnail bundles attachment metadata with any cached
+// thumbnail bytes so a single SELECT covers both the authz check and the
+// cache-hit fast path. ThumbnailData is nil and ThumbnailMime is "" when
+// no thumbnail has been generated yet.
+type AttachmentWithThumbnail struct {
+	Attachment
+	ThumbnailData []byte
+	ThumbnailMime string
+}
+
+// GetAttachmentWithThumbnail returns metadata + any cached thumbnail in one
+// indexed point lookup. Used by the thumbnail generator's hot path so the
+// cache hit is one SELECT, not two.
+func (s *Store) GetAttachmentWithThumbnail(id string) (AttachmentWithThumbnail, bool, error) {
 	row := s.db.QueryRow(
-		`SELECT thumbnail_data, thumbnail_mime FROM attachments WHERE id = ?`, id,
+		`SELECT `+attachmentColumns+`, thumbnail_data, thumbnail_mime FROM attachments WHERE id = ?`, id,
 	)
-	var data []byte
-	var mime sql.NullString
-	if err := row.Scan(&data, &mime); err != nil {
+	var out AttachmentWithThumbnail
+	var thumbMime sql.NullString
+	if err := row.Scan(
+		&out.ID, &out.ThreadID, &out.Filename, &out.MimeType, &out.Size, &out.RelativePath, &out.CreatedAt,
+		&out.ThumbnailData, &thumbMime,
+	); err != nil {
 		if err == sql.ErrNoRows {
-			return nil, "", false, nil
+			return AttachmentWithThumbnail{}, false, nil
 		}
-		return nil, "", false, fmt.Errorf("store: get attachment thumbnail %s: %w", id, err)
+		return AttachmentWithThumbnail{}, false, fmt.Errorf("store: get attachment+thumbnail %s: %w", id, err)
 	}
-	if data == nil || !mime.Valid {
-		return nil, "", false, nil
+	if out.ThumbnailData != nil && thumbMime.Valid {
+		out.ThumbnailMime = thumbMime.String
+	} else {
+		out.ThumbnailData = nil
+		out.ThumbnailMime = ""
 	}
-	return data, mime.String, true, nil
+	return out, true, nil
 }
 
 // SetAttachmentThumbnail caches the generated thumbnail bytes + mime type on
