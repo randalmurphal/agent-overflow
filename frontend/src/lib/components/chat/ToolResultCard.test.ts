@@ -9,7 +9,35 @@ import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import ToolResultCard from './ToolResultCard.svelte';
 import { makeItem } from '../../../test/helpers/chat';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
-import type { ToolResultMeta } from '../../types/models';
+import { createPayloadExpansion } from './payloadExpansion.svelte';
+import type { Item, ToolResultMeta } from '../../types/models';
+
+/** Minimal pane fake satisfying the expansion-registry surface
+ * `<ToolResultCard>` reads from. */
+function makeFakePane(extra: Partial<import('../../stores/thread.svelte').ThreadPane> = {}): import('../../stores/thread.svelte').ThreadPane {
+  const cache = new Map<string, ReturnType<typeof createPayloadExpansion>>();
+  return {
+    expansionStateFor(item: Item) {
+      const key = 'i:' + item.id;
+      let h = cache.get(key);
+      if (!h) {
+        h = createPayloadExpansion(() => item.payloadId, () => item.threadId);
+        cache.set(key, h);
+      }
+      return h;
+    },
+    expansionStateForPayload(payloadId: string, threadId: string) {
+      const key = 'p:' + payloadId;
+      let h = cache.get(key);
+      if (!h) {
+        h = createPayloadExpansion(() => payloadId, () => threadId);
+        cache.set(key, h);
+      }
+      return h;
+    },
+    ...extra,
+  } as unknown as import('../../stores/thread.svelte').ThreadPane;
+}
 
 function meta(overrides: Partial<ToolResultMeta> = {}): ToolResultMeta {
   return {
@@ -181,11 +209,11 @@ describe('<ToolResultCard> open-in-sidebar triggers', () => {
 
   it('routes a chip-button click to pane.openDiffSidebar with the chip\'s file path', async () => {
     const captures: Array<{ payloadId: string; filePath?: string }> = [];
-    const fakePane = {
+    const fakePane = makeFakePane({
       openDiffSidebar(p: { payloadId: string; filePath?: string }) {
         captures.push(p);
       },
-    } as unknown as import('../../stores/thread.svelte').ThreadPane;
+    } as unknown as Partial<import('../../stores/thread.svelte').ThreadPane>);
 
     const item = makeItem({
       kind: 'tool_completion',
@@ -220,11 +248,11 @@ describe('<ToolResultCard> open-in-sidebar triggers', () => {
 
   it('clicking the patch sidebar trigger does NOT toggle the exact-patch expander', async () => {
     const captures: Array<{ payloadId: string; filePath?: string }> = [];
-    const fakePane = {
+    const fakePane = makeFakePane({
       openDiffSidebar(p: { payloadId: string; filePath?: string }) {
         captures.push(p);
       },
-    } as unknown as import('../../stores/thread.svelte').ThreadPane;
+    } as unknown as Partial<import('../../stores/thread.svelte').ThreadPane>);
 
     const item = makeItem({
       kind: 'tool_completion',

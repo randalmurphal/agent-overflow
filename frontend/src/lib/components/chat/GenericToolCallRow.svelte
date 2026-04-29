@@ -1,10 +1,12 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import { slide } from 'svelte/transition';
   import ChevronRight from 'lucide-svelte/icons/chevron-right';
   import Icon from '../primitives/Icon.svelte';
   import CopyFooter from './CopyFooter.svelte';
   import CompletionBadge from './CompletionBadge.svelte';
   import type { Item } from '../../types/models';
+  import type { ThreadPane } from '../../stores/thread.svelte';
   import { deriveCompletionStatus } from '../../utils/toolCompletionStatus';
   import ToolDecisionChip from './ToolDecisionChip.svelte';
   import ToolKindIcon from './ToolKindIcon.svelte';
@@ -15,16 +17,20 @@
   import AnsiText from './AnsiText.svelte';
   import EditorLink from '../common/EditorLink.svelte';
 
-  let { item }: { item: Item } = $props();
+  let { pane, item }: { pane?: ThreadPane; item: Item } = $props();
 
   let classification = $derived(classifyToolName(item.toolName ?? item.summary));
-  const expansion = createPayloadExpansion(() => item.payloadId, () => item.threadId);
-
-  $effect(() => {
-    item.id;
-    item.payloadId;
-    expansion.reset();
-  });
+  // Use the pane's per-itemId registry when available so expand/collapse
+  // and loaded chunks survive virtua's overscan eviction. Falls back to
+  // local state when rendered outside a pane (e.g. unit tests or surfaces
+  // that haven't been plumbed yet). The registry reads through to the
+  // live Item, so payload_id enrichment is picked up without a reset.
+  // pane is stable across a row's lifetime; intentionally read once via
+  // `untrack` so the local fallback is created exactly when needed.
+  const localFallback = untrack(() =>
+    pane ? null : createPayloadExpansion(() => item.payloadId, () => item.threadId),
+  );
+  const expansion = $derived(pane ? pane.expansionStateFor(item) : localFallback!);
 
   let summaryMeta = $derived(parseJsonObject(item.payloadMeta));
   let itemMeta = $derived(parseJsonObject(item.meta));

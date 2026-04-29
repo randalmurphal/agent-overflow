@@ -4,19 +4,23 @@
   import Icon from '../primitives/Icon.svelte';
   import CopyFooter from './CopyFooter.svelte';
   import CompletionBadge from './CompletionBadge.svelte';
+  import { untrack } from 'svelte';
   import type { CommandOutputMeta, Item } from '../../types/models';
+  import type { ThreadPane } from '../../stores/thread.svelte';
   import { deriveCompletionStatus } from '../../utils/toolCompletionStatus';
   import ToolDecisionChip from './ToolDecisionChip.svelte';
   import { createPayloadExpansion, formatPayloadSize } from './payloadExpansion.svelte';
   import AnsiText from './AnsiText.svelte';
 
   let {
+    pane,
     item,
     meta,
     payloadId,
     allowShowFull = true,
     showCompletionBadge = true,
   }: {
+    pane?: ThreadPane;
     item: Item;
     meta: CommandOutputMeta;
     payloadId: string;
@@ -28,13 +32,11 @@
     showCompletionBadge?: boolean;
   } = $props();
 
-  const expansion = createPayloadExpansion(() => payloadId, () => item.threadId);
-
-  $effect(() => {
-    item.threadId;
-    payloadId;
-    expansion.reset();
-  });
+  // pane is stable across a row's lifetime; read once via `untrack`.
+  const localFallback = untrack(() =>
+    pane ? null : createPayloadExpansion(() => payloadId, () => item.threadId),
+  );
+  const expansion = $derived(pane ? pane.expansionStateFor(item) : localFallback!);
 
   let time = $derived(
     new Date(item.createdAt).toLocaleTimeString(undefined, {

@@ -37,13 +37,19 @@
   import { deriveCompletionStatus } from '../../utils/toolCompletionStatus';
   import { parseJsonObject } from '../../utils/parseJsonObject';
   import { displayModelLabel } from '../../utils/modelLabels';
+  import type { ThreadPane } from '../../stores/thread.svelte';
   import type { SubagentGroupNode, TimelineNode } from '../../utils/subagentGrouping';
 
   let {
+    pane,
     group,
     depth = 0,
     renderNode,
   }: {
+    /** Pane for the per-parentId subagent expansion registry. When omitted,
+     * falls back to local state — expand state then resets on virtua remount.
+     * Real chat surfaces always pass `pane`. */
+    pane?: ThreadPane;
     group: SubagentGroupNode;
     /**
      * Nesting depth of THIS group in the timeline tree:
@@ -74,11 +80,20 @@
   const indentRem = $derived(Math.min(depth, 3) * 0.75);
 
   // Collapsed by default so large subagents don't dominate the
-  // initial view.
-  let expanded = $state(false);
+  // initial view. Persisted on the pane (keyed by parent.id) so the
+  // user's expand state survives virtua's overscan eviction. Local
+  // fallback used only when `pane` is omitted (unit tests).
+  let localExpanded = $state(false);
+  const expanded = $derived(
+    pane ? pane.isSubagentGroupExpanded(group.parent.id) : localExpanded,
+  );
 
   function toggle(): void {
-    expanded = !expanded;
+    if (pane) {
+      pane.toggleSubagentGroupExpanded(group.parent.id);
+    } else {
+      localExpanded = !localExpanded;
+    }
   }
 
   function onKeyDown(evt: KeyboardEvent): void {

@@ -696,6 +696,62 @@ describe('createThreadPane', () => {
     expect(pane.items.find((item) => item.id === 'text:0:0')?.summary).toBe('yield timeouts');
   });
 
+  it('expansionStateFor returns the same handle across calls (survives row remount)', () => {
+    // Why: virtua's overscan eviction unmounts a row component when it
+    // scrolls past the buffer; remounting reconstructs the snippet's
+    // closure-scoped $state from scratch. The pane registry returns
+    // the SAME handle reference for the same itemId, so toggle state
+    // and loaded chunks survive the round-trip.
+    const pane = createThreadPane();
+    const item = makeItem({ id: 'tool:5:0', kind: 'tool_call', payloadId: 'p-foo' });
+    pane.upsertItem(item);
+
+    const h1 = pane.expansionStateFor(item);
+    const h2 = pane.expansionStateFor(item);
+    expect(h2).toBe(h1);
+
+    // Even when the Item reference is replaced (e.g. enrichment), the
+    // handle stays stable because the cache key is item.id.
+    const itemRefBumped = { ...pane.items[0], updatedAt: 999 } as Item;
+    const h3 = pane.expansionStateFor(itemRefBumped);
+    expect(h3).toBe(h1);
+  });
+
+  it('expansionStateForPayload returns the same handle for the same payloadId', () => {
+    const pane = createThreadPane();
+    const h1 = pane.expansionStateForPayload('p-foo', 'thread-1');
+    const h2 = pane.expansionStateForPayload('p-foo', 'thread-1');
+    expect(h2).toBe(h1);
+  });
+
+  it('subagent group expansion state is keyed by parent.id and survives lookup', () => {
+    const pane = createThreadPane();
+    expect(pane.isSubagentGroupExpanded('parent-1')).toBe(false);
+    pane.toggleSubagentGroupExpanded('parent-1');
+    expect(pane.isSubagentGroupExpanded('parent-1')).toBe(true);
+    expect(pane.isSubagentGroupExpanded('parent-2')).toBe(false);
+    pane.toggleSubagentGroupExpanded('parent-1');
+    expect(pane.isSubagentGroupExpanded('parent-1')).toBe(false);
+  });
+
+  it('clears row UI state on switchThread', async () => {
+    const pane = createThreadPane();
+    await pane.switchThread(makeThread({ id: 'thread-a' }));
+    pane.upsertItem(makeItem({ id: 'tool:0:0', kind: 'tool_call', payloadId: 'p-1', threadId: 'thread-a' }));
+    expect(pane.items.length).toBe(1);
+    const h1 = pane.expansionStateFor(pane.items[0]);
+    pane.toggleSubagentGroupExpanded('parent-x');
+    expect(pane.isSubagentGroupExpanded('parent-x')).toBe(true);
+
+    await pane.switchThread(makeThread({ id: 'thread-b' }));
+    pane.upsertItem(makeItem({ id: 'tool:0:0', kind: 'tool_call', payloadId: 'p-2', threadId: 'thread-b' }));
+    const h2 = pane.expansionStateFor(pane.items[0]);
+    // Different thread → different handle (the previous one was cleared).
+    expect(h2).not.toBe(h1);
+    // SubagentGroup state was cleared too.
+    expect(pane.isSubagentGroupExpanded('parent-x')).toBe(false);
+  });
+
   it('merges deltas that arrive before the initial streaming row', async () => {
     const pane = createThreadPane();
 

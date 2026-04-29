@@ -1,28 +1,27 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import { slide } from 'svelte/transition';
   import ChevronRight from 'lucide-svelte/icons/chevron-right';
   import Icon from '../primitives/Icon.svelte';
   import CopyFooter from './CopyFooter.svelte';
   import type { Item } from '../../types/models';
+  import type { ThreadPane } from '../../stores/thread.svelte';
   import { createPayloadExpansion, formatPayloadSize } from './payloadExpansion.svelte';
   import AnsiText from './AnsiText.svelte';
 
-  let { item }: { item: Item } = $props();
+  let { pane, item }: { pane?: ThreadPane; item: Item } = $props();
 
-  const expansion = createPayloadExpansion(() => item.payloadId, () => item.threadId);
+  // pane is stable across a row's lifetime; read once via `untrack`.
+  const localFallback = untrack(() =>
+    pane ? null : createPayloadExpansion(() => item.payloadId, () => item.threadId),
+  );
+  const expansion = $derived(pane ? pane.expansionStateFor(item) : localFallback!);
 
   let preview = $derived(
     item.summary.length > 200 ? item.summary.slice(0, 200) + '...' : item.summary,
   );
 
   const copyText = $derived(expansion.displayData ?? item.summary);
-
-  $effect(() => {
-    item.id;
-    item.threadId;
-    item.payloadId;
-    expansion.reset();
-  });
 </script>
 
 <div class="mb-1.5 rounded-[var(--radius-control)] border border-border-subtle bg-card/20 overflow-hidden">

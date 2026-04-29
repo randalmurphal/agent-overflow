@@ -2,7 +2,38 @@ import { describe, expect, it, beforeEach, vi } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import DiffPreview from './DiffPreview.svelte';
 import { setBindingMock, resetBindingMocks } from '../../../test/mocks/bindings-app';
+import { createPayloadExpansion } from './payloadExpansion.svelte';
 import type { DiffMeta, Item } from '../../types/models';
+
+/** Minimal pane fake that satisfies the expansion-registry surface
+ * `<DiffPreview>` reads from. The registry methods are local-only —
+ * each test starts with a fresh map, so cache survival across remount
+ * is not exercised here (covered by `scroll.test.ts` and the
+ * `thread.svelte.test.ts` registry tests). */
+function makeFakePane(extra: Partial<import('../../stores/thread.svelte').ThreadPane> = {}): import('../../stores/thread.svelte').ThreadPane {
+  const cache = new Map<string, ReturnType<typeof createPayloadExpansion>>();
+  return {
+    expansionStateFor(item: Item) {
+      const key = 'i:' + item.id;
+      let h = cache.get(key);
+      if (!h) {
+        h = createPayloadExpansion(() => item.payloadId, () => item.threadId);
+        cache.set(key, h);
+      }
+      return h;
+    },
+    expansionStateForPayload(payloadId: string, threadId: string) {
+      const key = 'p:' + payloadId;
+      let h = cache.get(key);
+      if (!h) {
+        h = createPayloadExpansion(() => payloadId, () => threadId);
+        cache.set(key, h);
+      }
+      return h;
+    },
+    ...extra,
+  } as unknown as import('../../stores/thread.svelte').ThreadPane;
+}
 
 const META: DiffMeta = {
   filePath: 'src/lib/foo.ts',
@@ -89,11 +120,11 @@ describe('<DiffPreview> editor-link wiring', () => {
 
   it('renders the open-in-sidebar button when pane is supplied and routes clicks to pane.openDiffSidebar', async () => {
     const captures: Array<{ payloadId: string; filePath?: string }> = [];
-    const fakePane = {
+    const fakePane = makeFakePane({
       openDiffSidebar(p: { payloadId: string; filePath?: string }) {
         captures.push(p);
       },
-    } as unknown as import('../../stores/thread.svelte').ThreadPane;
+    } as unknown as Partial<import('../../stores/thread.svelte').ThreadPane>);
 
     const { getByTestId } = render(DiffPreview, {
       props: { meta: META, payloadId: 'p-1', item: ITEM, pane: fakePane },
@@ -105,11 +136,11 @@ describe('<DiffPreview> editor-link wiring', () => {
 
   it('Cmd-click on the header opens the sidebar instead of toggling inline', async () => {
     const captures: Array<{ payloadId: string; filePath?: string }> = [];
-    const fakePane = {
+    const fakePane = makeFakePane({
       openDiffSidebar(p: { payloadId: string; filePath?: string }) {
         captures.push(p);
       },
-    } as unknown as import('../../stores/thread.svelte').ThreadPane;
+    } as unknown as Partial<import('../../stores/thread.svelte').ThreadPane>);
 
     const { getByTestId } = render(DiffPreview, {
       props: { meta: META, payloadId: 'p-1', item: ITEM, pane: fakePane },
@@ -122,7 +153,7 @@ describe('<DiffPreview> editor-link wiring', () => {
   });
 
   it('does not render the open-in-sidebar button when filePathFilter is set (changed-files-tree mode)', () => {
-    const fakePane = { openDiffSidebar() {} } as unknown as import('../../stores/thread.svelte').ThreadPane;
+    const fakePane = makeFakePane({ openDiffSidebar() {} } as unknown as Partial<import('../../stores/thread.svelte').ThreadPane>);
     const { queryByTestId } = render(DiffPreview, {
       props: { meta: META, payloadId: 'p-1', item: ITEM, pane: fakePane, filePathFilter: 'src/lib/foo.ts' },
     });

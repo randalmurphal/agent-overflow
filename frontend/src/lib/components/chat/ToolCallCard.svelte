@@ -50,7 +50,7 @@
 {:else if diffMeta && payloadId}
   <DiffPreview {pane} {item} meta={diffMeta} {payloadId} />
 {:else if cmdMeta && payloadId}
-  <CommandOutput {item} meta={cmdMeta} {payloadId} />
+  <CommandOutput {pane} {item} meta={cmdMeta} {payloadId} />
 {:else if toolResultMeta && payloadId}
   <!-- File-change / command-mutation helpers attach a tool_result payload
        to the lifecycle row; render the rich diff card so file edits keep
@@ -59,5 +59,5 @@
        matching the ToolResultMeta shape and rendering as an empty card. -->
   <ToolResultCard {pane} {item} meta={toolResultMeta} {payloadId} />
 {:else}
-  <GenericToolCallRow {item} />
+  <GenericToolCallRow {pane} {item} />
 {/if}

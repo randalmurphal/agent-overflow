@@ -56,9 +56,9 @@
   {:else if displayItem.kind === 'tool_call' || displayItem.kind === 'tool_completion'}
     <ToolCallCard {pane} item={displayItem} />
   {:else if displayItem.kind === 'thinking'}
-    <ThinkingBlock item={displayItem} />
+    <ThinkingBlock {pane} item={displayItem} />
   {:else if displayItem.kind === 'terminal_interaction'}
-    <TerminalInteractionRow item={displayItem} />
+    <TerminalInteractionRow {pane} item={displayItem} />
   {:else if displayItem.kind === 'notification'}
     <NotificationRow item={displayItem} />
   {:else if displayItem.kind === 'error'}

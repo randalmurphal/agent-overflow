@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import { slide } from 'svelte/transition';
   import ChevronRight from 'lucide-svelte/icons/chevron-right';
   import PanelRightOpen from 'lucide-svelte/icons/panel-right-open';
@@ -34,13 +35,19 @@
     filePathFilter?: string;
   } = $props();
 
-  const expansion = createPayloadExpansion(() => payloadId, () => item?.threadId ?? threadId);
-
-  $effect(() => {
-    item?.threadId;
-    threadId;
-    payloadId;
-    expansion.reset();
+  // Use the pane registry when both pane and a stable cache key are
+  // available. When `item` is provided (called from a tool row), key by
+  // item.id so the row's expansion survives virtua remount. When only
+  // `payloadId` is available (called from ChangedFilesTree), key by
+  // payloadId. Falls back to local state when no pane (unit tests).
+  // pane is stable across a row's lifetime; read once via `untrack`.
+  const localFallback = untrack(() =>
+    pane ? null : createPayloadExpansion(() => payloadId, () => item?.threadId ?? threadId),
+  );
+  const expansion = $derived.by(() => {
+    if (pane && item) return pane.expansionStateFor(item);
+    if (pane) return pane.expansionStateForPayload(payloadId, threadId ?? '');
+    return localFallback!;
   });
 
   let previewLines = $derived(parseDiffLines(meta.preview));

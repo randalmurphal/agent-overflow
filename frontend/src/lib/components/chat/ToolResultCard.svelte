@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import { slide } from 'svelte/transition';
   import PanelRightOpen from 'lucide-svelte/icons/panel-right-open';
   import { getSettings } from '../../stores/settings.svelte';
@@ -35,7 +36,11 @@
   // so detailText doesn't get a payloadId — it's truncate-only.
   const detailText = $derived(meta.detail || meta.preview || '');
 
-  const expansion = createPayloadExpansion(() => payloadId, () => item.threadId);
+  // pane is stable across a row's lifetime; read once via `untrack`.
+  const localFallback = untrack(() =>
+    pane ? null : createPayloadExpansion(() => payloadId, () => item.threadId),
+  );
+  const expansion = $derived(pane ? pane.expansionStateFor(item) : localFallback!);
 
   const hasInlineDiff = $derived(Boolean(meta.inlineDiff && meta.inlineDiff.files.length > 0));
   const hasExactPatch = $derived(meta.inlineDiff?.availability === 'exact_patch' && Boolean(payloadId));
@@ -48,12 +53,6 @@
   const patchLines = $derived.by<DiffLine[] | null>(() => {
     if (expansion.displayData === null) return null;
     return parseDiffLines(expansion.displayData);
-  });
-
-  $effect(() => {
-    item.threadId;
-    payloadId;
-    expansion.reset();
   });
 
   function kindClasses(file: ToolInlineDiffFile): string {
@@ -90,7 +89,7 @@
       </div>
       {#if detailText}
         <div class="mt-1">
-          <LazyContentBlock payloadId={undefined} preview={detailText} />
+          <LazyContentBlock {pane} payloadId={undefined} preview={detailText} />
         </div>
       {/if}
       {#if hasInlineDiff}

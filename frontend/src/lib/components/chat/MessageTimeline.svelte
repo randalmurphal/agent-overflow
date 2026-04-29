@@ -391,7 +391,7 @@
       {#if node.kind === 'leaf'}
         <TimelineLeaf {pane} item={node.item} orphan={node.orphan === true} {onImageExpand} />
       {:else}
-        <SubagentGroup group={node} {depth} {renderNode} />
+        <SubagentGroup {pane} group={node} {depth} {renderNode} />
       {/if}
     {/snippet}
 

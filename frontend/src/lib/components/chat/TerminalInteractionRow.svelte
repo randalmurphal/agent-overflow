@@ -2,10 +2,11 @@
   import Timer from 'lucide-svelte/icons/timer';
   import Icon from '../primitives/Icon.svelte';
   import type { CommandOutputMeta, Item } from '../../types/models';
+  import type { ThreadPane } from '../../stores/thread.svelte';
   import { parseJsonObject } from '../../utils/parseJsonObject';
   import CommandOutput from './CommandOutput.svelte';
 
-  let { item }: { item: Item } = $props();
+  let { pane, item }: { pane?: ThreadPane; item: Item } = $props();
 
   let commandOutputMeta = $derived<CommandOutputMeta | null>(
     item.payloadKind === 'command_output' && item.payloadId
@@ -32,7 +33,7 @@
   </div>
   {#if commandOutputMeta && item.payloadId}
     <div class="ml-5">
-      <CommandOutput item={item} meta={commandOutputMeta} payloadId={item.payloadId} />
+      <CommandOutput {pane} item={item} meta={commandOutputMeta} payloadId={item.payloadId} />
     </div>
   {/if}
 </div>

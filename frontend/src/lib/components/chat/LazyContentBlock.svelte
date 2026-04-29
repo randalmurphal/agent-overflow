@@ -1,9 +1,16 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import { MAX_INLINE_BYTES, shouldLazyLoad, truncateForPreview } from '../../utils/inlineThreshold';
+  import type { ThreadPane } from '../../stores/thread.svelte';
   import { createPayloadExpansion, formatPayloadSize } from './payloadExpansion.svelte';
   import AnsiText from './AnsiText.svelte';
 
   interface Props {
+    /** Pane for the per-payload expansion registry. When omitted, falls
+     * back to local state — fine for unit tests, but in chat surfaces
+     * the registry preserves expand state and loaded chunks across
+     * virtua's overscan eviction. */
+    pane?: ThreadPane;
     threadId?: string;
     /**
      * Payload id the full body lives under, or undefined if only `preview`
@@ -23,9 +30,19 @@
     label?: string;
   }
 
-  let { threadId, payloadId, preview, label = 'Show all' }: Props = $props();
+  let { pane, threadId, payloadId, preview, label = 'Show all' }: Props = $props();
 
-  const expansion = createPayloadExpansion(() => payloadId, () => threadId);
+  // Use the pane's payload-keyed registry when payloadId is defined and
+  // pane is available. When payloadId is undefined the expand button is
+  // suppressed entirely, so caching doesn't matter — local state is fine.
+  // pane + payloadId stable across a row's lifetime; read once via `untrack`.
+  const localFallback = untrack(() =>
+    (pane && payloadId) ? null : createPayloadExpansion(() => payloadId, () => threadId),
+  );
+  const expansion = $derived.by(() => {
+    if (pane && payloadId) return pane.expansionStateForPayload(payloadId, threadId ?? '');
+    return localFallback!;
+  });
 
   // Threshold check is on the preview text itself. A caller that already
   // knows the preview is short but still wants the button can pass any
@@ -33,13 +50,6 @@
   const previewIsLarge = $derived(shouldLazyLoad(preview));
   const canExpand = $derived(Boolean(payloadId) && (previewIsLarge || expansion.expanded));
   const displayPreview = $derived(truncateForPreview(preview, MAX_INLINE_BYTES));
-
-  $effect(() => {
-    threadId;
-    payloadId;
-    preview;
-    expansion.reset();
-  });
 
   async function toggle() {
     if (!payloadId) return;

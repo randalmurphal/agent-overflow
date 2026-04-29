@@ -18,6 +18,10 @@ import {
   SwitchThread,
 } from './bindings';
 import { replaceThread } from './threads.svelte';
+import {
+  createPayloadExpansion,
+  type PayloadExpansionHandle,
+} from '../components/chat/payloadExpansion.svelte';
 
 /**
  * Default batch size for "Load older" fetches. Matches the initial window
@@ -212,6 +216,15 @@ export function createThreadPane() {
   // timelineRevision tick) still re-pins to bottom while sticky.
   let liveDeltaRevision = $state(0);
   const liveDeltaChunks: Map<string, string[]> = new Map();
+  // Per-itemId expansion state. Survives row remount (virtua's overscan
+  // eviction would otherwise reset toggle + drop loaded chunks, forcing
+  // a re-fetch from Go on every back-scroll). Cleared on thread switch.
+  const expansionStates: Map<string, PayloadExpansionHandle> = new Map();
+  // Per-parent-itemId subagent group expand state. ChangedFilesTree and
+  // ProposedPlanCard expansion state are deliberately NOT lifted — they
+  // appear at end-of-turn / rare item types and the back-scroll
+  // remount frequency is low in practice. Lift if profiling proves it.
+  let subagentGroupExpanded: Set<string> = $state(new Set());
   const itemStatusById: Map<string, Item['status']> = new Map();
   const itemIndexById: Map<string, number> = new Map();
   const itemSummaryById: Map<string, string> = new Map();
@@ -489,6 +502,84 @@ export function createThreadPane() {
     }
     liveDeltaChunks.clear();
     liveItemSummaries = {};
+  }
+
+  // ---- Per-row UI state registries ----------------------------------
+  //
+  // virtua's overscan eviction unmounts row components when they scroll
+  // far past the viewport; remounting reconstructs the snippet's local
+  // state from scratch. For state the user expects to survive scrolling
+  // (expand/collapse, loaded payload chunks, expanded directories), we
+  // hoist it into pane-scoped registries here so the same record is
+  // returned on every remount of the same itemId.
+  //
+  // Registries are cleared on thread switch (this is per-pane state and
+  // there's no global LRU need; a single pane's max thread is bounded
+  // by the thread's item count, which has its own loose memory ceiling
+  // via the thread-windowing floor).
+
+  /**
+   * Look up or lazily construct the PayloadExpansion handle for an
+   * item. The handle's payload-id and thread-id sources read through
+   * to the live `Item` reference each time, so post-mount enrichment
+   * (a tool_completion gaining its `output_file` after the fact) is
+   * picked up automatically without a reset.
+   */
+  function expansionStateFor(item: Item): PayloadExpansionHandle {
+    const key = 'i:' + item.id;
+    let cached = expansionStates.get(key);
+    if (cached) return cached;
+    const id = item.id;
+    const getCurrentItem = (): Item | undefined => {
+      const idx = itemIndexById.get(id);
+      return idx === undefined ? undefined : items[idx];
+    };
+    cached = createPayloadExpansion(
+      () => getCurrentItem()?.payloadId,
+      () => getCurrentItem()?.threadId,
+    );
+    expansionStates.set(key, cached);
+    return cached;
+  }
+
+  /**
+   * Payload-keyed expansion handle. Used by sub-row components like
+   * `LazyContentBlock` that operate on a payload reference without
+   * needing a parent Item context. Returns a stable handle for the
+   * same `(payloadId, threadId)` pair across remounts.
+   */
+  function expansionStateForPayload(payloadId: string, threadId: string): PayloadExpansionHandle {
+    const key = 'p:' + payloadId;
+    let cached = expansionStates.get(key);
+    if (cached) return cached;
+    cached = createPayloadExpansion(
+      () => payloadId,
+      () => threadId,
+    );
+    expansionStates.set(key, cached);
+    return cached;
+  }
+
+  function isSubagentGroupExpanded(parentId: string): boolean {
+    return subagentGroupExpanded.has(parentId);
+  }
+
+  function toggleSubagentGroupExpanded(parentId: string): boolean {
+    const next = new Set(subagentGroupExpanded);
+    const willExpand = !next.has(parentId);
+    if (willExpand) next.add(parentId); else next.delete(parentId);
+    subagentGroupExpanded = next;
+    return willExpand;
+  }
+
+  /**
+   * Clears all per-row UI state registries. Called from `switchThread`.
+   * Individual entries don't need explicit disposal — they hold no
+   * external resources (no DOM refs, no observers, no timers).
+   */
+  function clearRowUiState(): void {
+    expansionStates.clear();
+    subagentGroupExpanded = new Set();
   }
 
   function rebuildItemIndexes(nextItems: Item[]): void {
@@ -890,6 +981,7 @@ export function createThreadPane() {
       items = [];
       resetLiveBuffers();
       rebuildItemIndexes(items);
+      clearRowUiState();
       turnDiffViews = new Map();
       // Windowed-history reset. A null floor disables the upsert floor
       // check until the backend tells us otherwise, which is correct:
@@ -1340,6 +1432,12 @@ export function createThreadPane() {
       }
       flushLiveDeltaChunks();
     },
+
+    // ---- Per-row UI state (survives virtua remount) ----
+    expansionStateFor,
+    expansionStateForPayload,
+    isSubagentGroupExpanded,
+    toggleSubagentGroupExpanded,
 
     setGeneralError(message: string | null): void {
       generalError = message;
