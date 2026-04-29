@@ -9,10 +9,8 @@
    * the LEFT edge of a RIGHT-anchored panel, so a leftward drag
    * (negative delta) GROWS the panel.
    *
-   * Width bounds are passed in: the parent typically sources them
-   * from a layout store created via `createRhsSidebarLayout`. The
-   * parent owns the live width + persistence; this component only
-   * emits move/end callbacks.
+   * Width bounds are passed in by the shell. The parent owns the live
+   * width + persistence; this component only emits move/end callbacks.
    */
   import { onDestroy } from 'svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';

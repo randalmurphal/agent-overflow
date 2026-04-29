@@ -1,6 +1,5 @@
 <script lang="ts">
   import { onDestroy, onMount, untrack } from 'svelte';
-  import { fly } from 'svelte/transition';
   import Send from 'lucide-svelte/icons/send';
   import X from 'lucide-svelte/icons/x';
   import RefreshCw from 'lucide-svelte/icons/refresh-cw';
@@ -11,13 +10,6 @@
     refreshThreadProposedPlans,
     retainProposedPlanEventListener,
   } from '../../stores/proposedPlans.svelte';
-  import {
-    PLAN_SIDEBAR_MIN_WIDTH,
-    getPlanSidebarMaxWidth,
-    getPlanSidebarWidth,
-    persistPlanSidebarWidth,
-    setPlanSidebarWidthLive,
-  } from '../../stores/planSidebarLayout.svelte';
   import {
     GetPayloadData,
     SendPlanRevisionComments,
@@ -35,7 +27,6 @@
   import { isUiRenderTraceEnabled, recordUiTrace, scheduleDomUiTrace } from '../../utils/uiRenderTrace';
   import Button from '../primitives/Button.svelte';
   import Icon from '../primitives/Icon.svelte';
-  import RhsSidebarResizer from './RhsSidebarResizer.svelte';
   import ProposedPlanActions from './ProposedPlanActions.svelte';
   import ProposedPlanReviewSurface from './ProposedPlanReviewSurface.svelte';
   import ProposedPlanSaveModal from './ProposedPlanSaveModal.svelte';
@@ -47,7 +38,6 @@
   let { pane }: Props = $props();
 
   let sidebarRoot: HTMLElement | undefined = $state(undefined);
-  let visible = $derived(pane.showPlanSidebar);
   let threadId = $derived(pane.thread?.id ?? null);
   let currentPlan = $derived(getThreadCurrentProposedPlan(threadId, pane.items));
   let currentPlanMeta = $derived(parseProposedPlanPayloadMeta(currentPlan));
@@ -102,18 +92,18 @@
   $effect(() => {
     threadId;
     currentPlan?.id;
-    visible;
+    pane.showPlanSidebar;
 
     if (!isUiRenderTraceEnabled()) return;
     recordUiTrace('plan-sidebar.state', {
       threadId,
-      visible,
+      visible: pane.showPlanSidebar,
       currentPlanId: currentPlan?.id ?? null,
       currentPlanTitle: currentPlanMeta.title,
     });
     scheduleDomUiTrace('plan-sidebar', 'plan-sidebar.dom', () => ({
       threadId,
-      visible,
+      visible: pane.showPlanSidebar,
       currentPlanId: currentPlan?.id ?? null,
       textPreview: (sidebarRoot?.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, 200),
     }));
@@ -200,15 +190,12 @@
   }
 </script>
 
-{#if visible}
-  <aside
-    bind:this={sidebarRoot}
-    transition:fly={{ x: 280, duration: 150 }}
-    aria-label="Proposed Plan"
-    data-testid="plan-sidebar"
-    style="width: {getPlanSidebarWidth()}px"
-    class="relative flex shrink-0 flex-col border-l border-border bg-surface-1"
-  >
+<section
+  bind:this={sidebarRoot}
+  aria-label="Proposed Plan"
+  data-testid="plan-sidebar"
+  class="flex min-h-0 flex-1 flex-col"
+>
     <div class="flex items-center justify-between gap-2 px-4 pt-3 pb-2">
       <div class="flex min-w-0 items-center gap-1.5">
         <h3 class="truncate text-sm font-medium text-text-primary">{title}</h3>
@@ -287,18 +274,7 @@
       </div>
     {/if}
 
-    <RhsSidebarResizer
-      width={getPlanSidebarWidth()}
-      minWidth={PLAN_SIDEBAR_MIN_WIDTH}
-      getMaxWidth={getPlanSidebarMaxWidth}
-      onResizeLive={setPlanSidebarWidthLive}
-      onResizeEnd={persistPlanSidebarWidth}
-      ariaLabel="Resize Plan Sidebar"
-      testId="plan-sidebar-resizer"
-      {pane}
-    />
-  </aside>
-{/if}
+  </section>
 
 <ProposedPlanSaveModal
   open={planExport.saveDialogOpen}

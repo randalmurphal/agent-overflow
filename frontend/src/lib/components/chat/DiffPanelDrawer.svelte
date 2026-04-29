@@ -1,17 +1,9 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
-  import RhsSidebarResizer from './RhsSidebarResizer.svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { getSettings, updateSetting } from '../../stores/settings.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import { wailsEventOn } from '../../stores/events';
-  import {
-    DIFF_PANEL_MIN_WIDTH,
-    getDiffPanelMaxWidth,
-    getDiffPanelWidth,
-    persistDiffPanelWidth,
-    setDiffPanelWidthLive,
-  } from '../../stores/diffPanelLayout.svelte';
   import {
     GetCheckpointRangeDiff,
     GetSessionAgentDiff,
@@ -250,11 +242,10 @@
   });
 </script>
 
-<aside
+<section
   aria-label="Diff Panel"
   data-testid="diff-panel-drawer"
-  style="width: {getDiffPanelWidth()}px"
-  class="relative flex h-full shrink-0 flex-col border-l border-border bg-surface-0"
+  class="flex min-h-0 flex-1 flex-col bg-surface-0"
 >
   <header class="border-b border-border bg-surface-1/70">
     <DiffPanelHeaderBar
@@ -320,17 +311,7 @@
     </div>
   </div>
 
-  <RhsSidebarResizer
-    width={getDiffPanelWidth()}
-    minWidth={DIFF_PANEL_MIN_WIDTH}
-    getMaxWidth={getDiffPanelMaxWidth}
-    onResizeLive={setDiffPanelWidthLive}
-    onResizeEnd={persistDiffPanelWidth}
-    ariaLabel="Resize Diff Panel"
-    testId="diff-panel-resizer"
-    {pane}
-  />
-</aside>
+</section>
 
 <RevertDialog
   open={revertOpen}
@@ -343,4 +324,3 @@
     if (!reverting) revertOpen = false;
   }}
 />
-

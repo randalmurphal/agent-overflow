@@ -31,7 +31,6 @@
 
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { getDiffSidebarWidth } from '../../stores/diffSidebarLayout.svelte';
 
   let { pane }: DiffSidebarProps = $props();
 
@@ -61,19 +60,17 @@
 {#if Sidebar}
   <Sidebar {pane} />
 {:else if loadError}
-  <aside
-    style="width: {getDiffSidebarWidth()}px"
-    class="flex shrink-0 flex-col border-l border-border bg-surface-1 px-3 py-3 text-xs text-error"
+  <div
+    class="flex min-h-0 flex-1 flex-col px-3 py-3 text-xs text-error"
     data-testid="diff-sidebar-load-error"
   >
     Failed to load diff sidebar: {loadError}
-  </aside>
+  </div>
 {:else}
-  <aside
-    style="width: {getDiffSidebarWidth()}px"
-    class="flex shrink-0 flex-col border-l border-border bg-surface-1 px-3 py-3 text-xs text-fg-muted"
+  <div
+    class="flex min-h-0 flex-1 flex-col px-3 py-3 text-xs text-fg-muted"
     data-testid="diff-sidebar-loading-shell"
   >
     Loading diff sidebar…
-  </aside>
+  </div>
 {/if}

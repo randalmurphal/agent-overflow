@@ -1,9 +1,8 @@
 <script lang="ts">
   /*
-   * Per-tool diff sidebar. Mounted by ChatView whenever
-   * `pane.activeDiffPayload !== null`. The sibling RHS panels
-   * (PlanSidebar, DiffPanelDrawer) are mutex'd via the pane setters,
-   * so we don't fight them for the slot.
+   * Per-tool diff sidebar body. RhsSidebarShell owns the outer pane,
+   * width, and resizer; ThreadPane's shared RHS slot guarantees this
+   * body is mutex'd against PlanSidebar and DiffPanelDrawer.
    *
    * Patch text comes from the existing `createPayloadExpansion`
    * helper — same lazy fetch as inline DiffPreview (32 KiB preview
@@ -15,22 +14,13 @@
    * arrive from the Shiki worker pool they fade in as colored
    * spans. Pre-tokenize render is always usable.
    */
-  import { fly } from 'svelte/transition';
   import { onDestroy, onMount, untrack } from 'svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import type { DiffViewMode } from '../../stores/diffPanel.svelte';
-  import {
-    DIFF_SIDEBAR_MIN_WIDTH,
-    getDiffSidebarMaxWidth,
-    getDiffSidebarWidth,
-    persistDiffSidebarWidth,
-    setDiffSidebarWidthLive,
-  } from '../../stores/diffSidebarLayout.svelte';
   import { parsePatchFiles, type PatchFile } from '../../utils/patchFiles';
   import { createPayloadExpansion, formatPayloadSize } from './payloadExpansion.svelte';
   import DiffSidebarBody from './DiffSidebarBody.svelte';
   import DiffSidebarHeader from './DiffSidebarHeader.svelte';
-  import RhsSidebarResizer from './RhsSidebarResizer.svelte';
 
   interface Props {
     pane: ThreadPane;
@@ -225,13 +215,11 @@
   }
 </script>
 
-<aside
+<section
   bind:this={asideEl}
-  transition:fly={{ x: 320, duration: 150 }}
   aria-label="Diff Sidebar"
   data-testid="diff-sidebar"
-  style="width: {getDiffSidebarWidth()}px"
-  class="relative flex shrink-0 flex-col border-l border-border bg-surface-1"
+  class="flex min-h-0 flex-1 flex-col"
 >
   <DiffSidebarHeader
     {title}
@@ -298,14 +286,4 @@
     {/if}
   {/if}
 
-  <RhsSidebarResizer
-    width={getDiffSidebarWidth()}
-    minWidth={DIFF_SIDEBAR_MIN_WIDTH}
-    getMaxWidth={getDiffSidebarMaxWidth}
-    onResizeLive={setDiffSidebarWidthLive}
-    onResizeEnd={persistDiffSidebarWidth}
-    ariaLabel="Resize Diff Sidebar"
-    testId="diff-sidebar-resizer"
-    {pane}
-  />
-</aside>
+</section>

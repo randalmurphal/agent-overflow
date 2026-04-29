@@ -107,8 +107,8 @@ describe('App integration - diff panel', () => {
 
     await fireEvent.click(getByTestId('diff-panel-toggle'));
 
-    const drawer = await findByTestId('diff-panel-drawer');
-    expect(drawer.className).toContain('border-l');
+    await findByTestId('diff-panel-drawer');
+    expect(getByTestId('rhs-sidebar-shell').className).toContain('border-l');
     await waitFor(() => expect(getRange).toHaveBeenCalledWith('thread-1', 0, 2));
     expect((await findByTestId('diff-viewer')).textContent).toContain('range-0-2.ts');
     expect(getByTestId('diff-turn-1')).toBeInTheDocument();

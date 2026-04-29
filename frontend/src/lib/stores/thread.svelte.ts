@@ -32,10 +32,11 @@ import { addToast } from './toast.svelte';
 import { getSettings } from './settings.svelte';
 import { createDiffPanelState, type DiffPanelState } from './diffPanel.svelte';
 import {
-  createDiffSidebarSlot,
-  type DiffSidebarSlot,
+  createRhsPanelSlot,
   type DiffSidebarUIState,
-} from './diffSidebarSlot.svelte';
+  type RhsPanel,
+  type RhsPanelSlot,
+} from './rhsPanelSlot.svelte';
 import {
   buildDiffViewForItems,
   itemMayAffectDiffView,
@@ -73,6 +74,13 @@ export function resetExpansionBudgetForTest(): void {
   expansionBudgetBytes = DEFAULT_EXPANSION_BUDGET_BYTES;
 }
 
+function sameRhsPanel(left: RhsPanel | null, right: RhsPanel | null): boolean {
+  if (left === null || right === null) return left === right;
+  if (left.kind !== right.kind) return false;
+  if (left.kind !== 'diff-payload' || right.kind !== 'diff-payload') return true;
+  return left.payloadId === right.payloadId && left.filePath === right.filePath;
+}
+
 /**
  * ActiveTurn is the live in-flight turn for the pane. Populated exclusively
  * from the `provider:turn_started` wire event; cleared on
@@ -107,14 +115,13 @@ export interface SettledTurn {
   errorMessage: string;
 }
 
-// Diff-sidebar UI types are owned by stores/diffSidebarSlot.svelte.ts.
+// Diff-sidebar UI types are owned by stores/rhsPanelSlot.svelte.ts.
 // Re-exported here so callers that import from this module
 // continue to find them at the same path.
 export type {
   DiffSidebarUIState,
-  DiffSidebarSnapshot,
-  DiffSidebarPayload,
-} from './diffSidebarSlot.svelte';
+  RhsPanel,
+} from './rhsPanelSlot.svelte';
 
 export type LoadOlderResult = {
   insertedBeforeWindow: boolean;
@@ -318,81 +325,46 @@ export function createThreadPane() {
   let pendingDesignOptions: DesignOptionsRequest | null = $state(null);
   let designViewport: DesignViewport = $state('desktop');
 
-  // PlanSidebar toggle state. Per-pane so each pane can open/close its
-  // own sidebar independently. Reset on thread switch so a new thread
-  // never "remembers" whether the prior thread had the sidebar open.
-  let showPlanSidebar: boolean = $state(false);
-
-  // Per-tool diff sidebar slot. Owns the active payload pointer +
-  // per-thread snapshot LRU + restore-on-switch-back mechanic.
-  // Composed alongside diffPanel so each new RHS panel feature can
-  // follow the same pattern (a focused state module, plumbed in
-  // through the pane). The three right-side panels (PlanSidebar,
-  // DiffPanelDrawer, DiffSidebar) are mutex'd via `activatePanel`
-  // below.
-  const diffSidebarSlot: DiffSidebarSlot = createDiffSidebarSlot();
+  // Shared right-side panel slot. The shell width and the active panel are
+  // saved per thread so plan/diff/payload views swap inside one stable pane
+  // instead of mounting separate sidebars with separate width stores.
+  const rhsPanelSlot: RhsPanelSlot = createRhsPanelSlot();
 
   /**
-   * Discriminated target for the right-side panel slot. `null` means
-   * "close everything." The `activatePanel` reducer enforces the
-   * mutex (at most one open) so individual setters don't have to
-   * remember to close siblings.
-   */
-  type ActivePanel =
-    | { kind: 'plan' }
-    | { kind: 'diff-checkpoint' }
-    | { kind: 'diff-payload'; payload: { payloadId: string; filePath?: string } }
-    | null;
-
-  /**
-   * Single source of truth for which RHS panel is open. Closes any
-   * non-target panel (mutex closes preserve the diff-sidebar
-   * snapshot — that's a "different panel won the slot," not "user
-   * dismissed this view"), then opens the target.
+   * Single source of truth for which RHS panel is open. The store is the
+   * durable-for-session thread snapshot; diffPanel.open is kept in sync as a
+   * compatibility flag for existing commands/tests.
    *
-   * Adding a fourth panel later: extend `ActivePanel`, add a close
-   * branch + an open branch here. Callers just need a thin wrapper
-   * around `activatePanel({ kind: 'newPanel', ... })`.
+   * Adding another RHS feature later should mean extending RhsPanel and adding
+   * one render branch in the shell, not adding another full-width sidebar.
    */
-  function activatePanel(target: ActivePanel): void {
+  function activatePanel(target: RhsPanel | null): void {
     // Right-edge sidebars (plan / diff / diff-payload) reflow the chat
     // column when they open or close. Hold a brief lease so the
     // auto-follow $effect doesn't yank the timeline mid-transition.
-    // PlanSidebar and DiffSidebar use `transition:fly` (200ms default);
-    // 250ms covers the worst case + a settle frame.
-    const willChange =
-      (target?.kind !== 'plan' && showPlanSidebar) ||
-      (target?.kind !== 'diff-checkpoint' && diffPanel.open) ||
-      (target?.kind !== 'diff-payload' && diffSidebarSlot.activePayload) ||
-      target?.kind === 'plan' ||
-      target?.kind === 'diff-checkpoint' ||
-      target?.kind === 'diff-payload';
-    if (willChange) leaseDuringSettle(scrollController, 250);
-
-    if (target?.kind !== 'plan' && showPlanSidebar) {
-      showPlanSidebar = false;
+    const current = rhsPanelSlot.activePanel;
+    const willChange = !sameRhsPanel(current, target);
+    if (!willChange) {
+      if (target?.kind !== 'diff-checkpoint' && diffPanel.open) {
+        diffPanel.close();
+      }
+      if (target?.kind === 'diff-checkpoint' && !diffPanel.open) {
+        diffPanel.open_();
+      }
+      return;
     }
+    leaseDuringSettle(scrollController, 250);
+
     if (target?.kind !== 'diff-checkpoint' && diffPanel.open) {
       diffPanel.close();
     }
-    if (target?.kind !== 'diff-payload' && diffSidebarSlot.activePayload) {
-      // Mutex close — preserve the snapshot; this isn't an explicit
-      // dismiss, the user is just opening something else.
-      diffSidebarSlot.close();
+    if (!target) {
+      rhsPanelSlot.closeForThread(thread?.id);
+      return;
     }
-    switch (target?.kind) {
-      case 'plan':
-        showPlanSidebar = true;
-        break;
-      case 'diff-checkpoint':
-        diffPanel.open_();
-        break;
-      case 'diff-payload':
-        diffSidebarSlot.open(target.payload);
-        break;
-      default:
-        // null — nothing to open
-        break;
+    rhsPanelSlot.open(target);
+    if (target.kind === 'diff-checkpoint') {
+      diffPanel.open_();
     }
   }
 
@@ -1098,11 +1070,18 @@ export function createThreadPane() {
     get activeArtifactId() { return activeArtifactId; },
     get pendingDesignOptions() { return pendingDesignOptions; },
     get designViewport() { return designViewport; },
-    get showPlanSidebar() { return showPlanSidebar; },
-    get activeDiffPayload() { return diffSidebarSlot.activePayload; },
-    get diffSidebarRestoreState() { return diffSidebarSlot.restoreState; },
-    /** Diagnostic — total snapshots held by the diff sidebar slot. */
-    get diffSidebarSnapshotCount() { return diffSidebarSlot.snapshotCount; },
+    get activeRhsPanel() { return rhsPanelSlot.activePanel; },
+    get rhsSidebarWidth() { return rhsPanelSlot.width; },
+    get showPlanSidebar() { return rhsPanelSlot.activePanel?.kind === 'plan'; },
+    get activeDiffPayload() {
+      const panel = rhsPanelSlot.activePanel;
+      if (panel?.kind !== 'diff-payload') return null;
+      if (panel.filePath === undefined) return { payloadId: panel.payloadId };
+      return { payloadId: panel.payloadId, filePath: panel.filePath };
+    },
+    get diffSidebarRestoreState() { return rhsPanelSlot.diffPayloadRestoreState; },
+    /** Diagnostic — total snapshots held by the RHS panel slot. */
+    get rhsPanelSnapshotCount() { return rhsPanelSlot.snapshotCount; },
 
     // --- Thread switching ---
 
@@ -1119,22 +1098,13 @@ export function createThreadPane() {
       activeArtifactId = null;
       pendingDesignOptions = null;
       designViewport = 'desktop';
-      // Every drawer / pane-scoped UI flag should reset so switching threads
-      // never "remembers" the previous thread's open drawers. diffPanel owns
-      // its own reset via clearForThread (which closes the panel); showTerminal
-      // is reset here so opening the terminal on thread A does not spill over
-      // into thread B.
+      // Bottom-drawer state is pane-scoped: opening the terminal on thread A
+      // should not spill into thread B. The RHS sidebar is different: its
+      // active panel + width are snapshotted per thread below.
       showTerminal = false;
-      // Plan-sidebar UI is pane-scoped too: never carry its open state across
-      // threads.
-      showPlanSidebar = false;
-      // Per-tool diff sidebar: snapshot the outgoing thread's state
-      // (so switching back restores it) and reset for the incoming
-      // thread. Restoration happens at the bottom of switchThread,
-      // once `thread = newThread` is committed.
       const outgoingThreadId = thread?.id ?? null;
       if (outgoingThreadId) {
-        diffSidebarSlot.snapshotForThread(outgoingThreadId);
+        rhsPanelSlot.snapshotForThread(outgoingThreadId);
         // Free Shiki tokens cached against the outgoing thread. The
         // shared cache is partitioned by threadId so this is a clean
         // segmental drop; new lines tokenized for the incoming thread
@@ -1142,7 +1112,7 @@ export function createThreadPane() {
         clearTokensForThread(outgoingThreadId);
       } else {
         // No outgoing thread to snapshot under — just reset.
-        diffSidebarSlot.close();
+        rhsPanelSlot.closeForThread();
       }
       // Turn-lifecycle reset. activeTurn goes to null on every switch — a
       // crashed thread's in-flight row is historical and must not light up
@@ -1175,11 +1145,10 @@ export function createThreadPane() {
       // reordered.
 
       thread = newThread;
-      // Diff-sidebar restore: ask the slot whether it has a snapshot
-      // for the incoming thread. When it does, the slot re-arms
-      // activePayload + seeds restoreState (consumed by the sidebar
-      // on first mount via consumeDiffSidebarRestoreState).
-      diffSidebarSlot.restoreForThread(newThread.id);
+      rhsPanelSlot.restoreForThread(newThread.id);
+      if (rhsPanelSlot.activePanel?.kind === 'diff-checkpoint') {
+        diffPanel.open_();
+      }
       // Capture the switch generation at the top so every await below can bail
       // out if the user has already switched away (or back).
       const gen = ++switchGeneration;
@@ -1316,8 +1285,7 @@ export function createThreadPane() {
       loading = false;
       sendInFlight = false;
       showTerminal = false;
-      showPlanSidebar = false;
-      diffSidebarSlot.reset();
+      rhsPanelSlot.reset();
       channelMessages = [];
       channelStatus = null;
       designArtifacts = [];
@@ -1738,13 +1706,13 @@ export function createThreadPane() {
     },
 
     togglePlanSidebar(): void {
-      if (showPlanSidebar) activatePanel(null);
+      if (rhsPanelSlot.activePanel?.kind === 'plan') activatePanel(null);
       else activatePanel({ kind: 'plan' });
     },
 
     setShowPlanSidebar(value: boolean): void {
       if (value) activatePanel({ kind: 'plan' });
-      else if (showPlanSidebar) activatePanel(null);
+      else if (rhsPanelSlot.activePanel?.kind === 'plan') activatePanel(null);
     },
 
     setDiffPanelOpen(value: boolean): void {
@@ -1760,14 +1728,23 @@ export function createThreadPane() {
      * with several files).
      */
     openDiffSidebar(payload: { payloadId: string; filePath?: string }): void {
-      activatePanel({ kind: 'diff-payload', payload });
+      activatePanel({ kind: 'diff-payload', payloadId: payload.payloadId, filePath: payload.filePath });
     },
 
     closeDiffSidebar(): void {
-      // Explicit close = "I don't want to see this on switch-back."
-      // Drop the current thread's snapshot so the next visit doesn't
-      // restore. (Any other thread's snapshot is untouched.)
-      diffSidebarSlot.close(thread?.id);
+      activatePanel(null);
+    },
+
+    setRhsSidebarWidthLive(next: number): void {
+      rhsPanelSlot.setWidthLive(next);
+    },
+
+    persistRhsSidebarWidth(): void {
+      rhsPanelSlot.persistWidthForThread(thread?.id);
+    },
+
+    getRhsSidebarMaxWidth(): number {
+      return rhsPanelSlot.getMaxWidth();
     },
 
     /**
@@ -1777,7 +1754,7 @@ export function createThreadPane() {
      * per-thread map on the next thread switch.
      */
     recordDiffSidebarUI(state: DiffSidebarUIState): void {
-      diffSidebarSlot.recordUI(state);
+      rhsPanelSlot.recordDiffPayloadUI(state);
     },
 
     /**
@@ -1786,24 +1763,15 @@ export function createThreadPane() {
      * exactly once on mount.
      */
     consumeDiffSidebarRestoreState(): DiffSidebarUIState | null {
-      return diffSidebarSlot.consumeRestore();
+      return rhsPanelSlot.consumeDiffPayloadRestore();
     },
 
     /**
      * Close whichever right-side panel is currently open. Idempotent —
-     * safe to call when nothing is open. Only drops the diff-sidebar
-     * snapshot when the diff sidebar was the open panel; closing
-     * Plan or the checkpoint drawer leaves the diff snapshot intact
-     * for switch-back restore.
+     * safe to call when nothing is open. Explicit close keeps the
+     * thread-specific width but removes the restore target.
      */
     closeActivePanel(): void {
-      // Drop the diff-sidebar snapshot first if it was the active
-      // panel (explicit-close semantics). Then route plan + checkpoint
-      // through the same reducer the open-paths use, so adding a
-      // fourth panel to `activatePanel` automatically reaches here.
-      if (diffSidebarSlot.activePayload) {
-        diffSidebarSlot.close(thread?.id);
-      }
       activatePanel(null);
     },
 

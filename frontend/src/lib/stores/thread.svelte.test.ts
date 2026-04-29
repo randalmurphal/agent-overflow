@@ -16,6 +16,11 @@ function nextFrame(): Promise<void> {
 
 describe('createThreadPane', () => {
   beforeEach(() => {
+    Object.defineProperty(window, 'innerWidth', {
+      configurable: true,
+      writable: true,
+      value: 1400,
+    });
     resetBindingMocks();
     setBindingMock('SwitchThread', async (threadId: unknown) =>
       makeThread({ id: typeof threadId === 'string' ? threadId : 'thread-1' }));
@@ -296,14 +301,11 @@ describe('createThreadPane', () => {
       expect(pane.consumeDiffSidebarRestoreState()).toBeNull();
     });
 
-    it('closeActivePanel preserves the diff-sidebar snapshot when a different panel was open', async () => {
-      // Open the diff sidebar in thread A and record state, switch
-      // away (so the snapshot lands in the LRU), come back, open
-      // PlanSidebar instead, and call closeActivePanel. The diff
-      // snapshot for A must still survive.
+    it('closeActivePanel keeps the thread width but clears the restore target', async () => {
       const pane = createThreadPane();
       await pane.switchThread(makeThread({ id: 'thread-a' }));
       pane.openDiffSidebar({ payloadId: 'pa', filePath: 'src/foo.ts' });
+      pane.setRhsSidebarWidthLive(620);
       pane.recordDiffSidebarUI({
         viewMode: 'split',
         wordWrap: false,
@@ -313,37 +315,62 @@ describe('createThreadPane', () => {
       await pane.switchThread(makeThread({ id: 'thread-b' }));
       await pane.switchThread(makeThread({ id: 'thread-a' }));
 
-      // Close the restore signal without opening it; then open Plan
-      // and use closeActivePanel.
-      pane.consumeDiffSidebarRestoreState();
-      pane.closeDiffSidebar(); // user hasn't actually viewed it yet on switch-back
-      // Re-establish snapshot via another open + record
-      pane.openDiffSidebar({ payloadId: 'pa', filePath: 'src/foo.ts' });
-      pane.recordDiffSidebarUI({
-        viewMode: 'split',
-        wordWrap: false,
-        expandedFiles: ['src/foo.ts'],
-        scrollTop: 50,
-      });
-      await pane.switchThread(makeThread({ id: 'thread-b' }));
-      await pane.switchThread(makeThread({ id: 'thread-a' }));
-      // Now close the restore flag and open Plan instead.
-      pane.consumeDiffSidebarRestoreState();
-      pane.setShowPlanSidebar(true); // closes the restored sidebar via mutex
-      pane.closeActivePanel(); // closing Plan — should NOT delete the snapshot
+      pane.closeActivePanel();
 
-      // Switch away and back — the snapshot should still restore.
       await pane.switchThread(makeThread({ id: 'thread-b' }));
       await pane.switchThread(makeThread({ id: 'thread-a' }));
-      // Snapshot was kept because Plan was the open panel when
-      // closeActivePanel fired.
-      // (Setting Plan via setShowPlanSidebar nulled activeDiffPayload
-      // through the mutex but didn't drop the snapshot.)
-      expect(pane.activeDiffPayload).toEqual({ payloadId: 'pa', filePath: 'src/foo.ts' });
+      expect(pane.activeDiffPayload).toBeNull();
+      expect(pane.showPlanSidebar).toBe(false);
+      expect(pane.rhsSidebarWidth).toBe(620);
     });
   });
 
-  describe('diff sidebar per-thread persistence', () => {
+  describe('right-side panel per-thread persistence', () => {
+    it('restores the plan sidebar when switching back to its thread', async () => {
+      const pane = createThreadPane();
+      await pane.switchThread(makeThread({ id: 'thread-a' }));
+      pane.setShowPlanSidebar(true);
+
+      await pane.switchThread(makeThread({ id: 'thread-b' }));
+      expect(pane.showPlanSidebar).toBe(false);
+
+      await pane.switchThread(makeThread({ id: 'thread-a' }));
+      expect(pane.showPlanSidebar).toBe(true);
+      expect(pane.activeRhsPanel).toEqual({ kind: 'plan' });
+    });
+
+    it('restores the checkpoint diff panel when switching back to its thread', async () => {
+      const pane = createThreadPane();
+      await pane.switchThread(makeThread({ id: 'thread-a' }));
+      pane.setDiffPanelOpen(true);
+
+      await pane.switchThread(makeThread({ id: 'thread-b' }));
+      expect(pane.diffPanel.open).toBe(false);
+
+      await pane.switchThread(makeThread({ id: 'thread-a' }));
+      expect(pane.diffPanel.open).toBe(true);
+      expect(pane.activeRhsPanel).toEqual({ kind: 'diff-checkpoint' });
+    });
+
+    it('restores right-sidebar width per thread', async () => {
+      const pane = createThreadPane();
+      await pane.switchThread(makeThread({ id: 'thread-a' }));
+      pane.setShowPlanSidebar(true);
+      pane.setRhsSidebarWidthLive(620);
+      await pane.switchThread(makeThread({ id: 'thread-b' }));
+
+      pane.setDiffPanelOpen(true);
+      pane.setRhsSidebarWidthLive(590);
+
+      await pane.switchThread(makeThread({ id: 'thread-a' }));
+      expect(pane.rhsSidebarWidth).toBe(620);
+      expect(pane.showPlanSidebar).toBe(true);
+
+      await pane.switchThread(makeThread({ id: 'thread-b' }));
+      expect(pane.rhsSidebarWidth).toBe(590);
+      expect(pane.diffPanel.open).toBe(true);
+    });
+
     it('restores activeDiffPayload when switching back to a previously-open thread', async () => {
       const pane = createThreadPane();
       await pane.switchThread(makeThread({ id: 'thread-a' }));
@@ -372,6 +399,30 @@ describe('createThreadPane', () => {
       });
       // Consume is one-shot — second call returns null.
       expect(pane.consumeDiffSidebarRestoreState()).toBeNull();
+    });
+
+    it('reopening the active payload preserves recorded UI for switch-back restore', async () => {
+      const pane = createThreadPane();
+      await pane.switchThread(makeThread({ id: 'thread-a' }));
+      pane.openDiffSidebar({ payloadId: 'pa', filePath: 'src/foo.ts' });
+      pane.recordDiffSidebarUI({
+        viewMode: 'split',
+        wordWrap: true,
+        expandedFiles: ['src/foo.ts'],
+        scrollTop: 180,
+      });
+
+      pane.openDiffSidebar({ payloadId: 'pa', filePath: 'src/foo.ts' });
+      await pane.switchThread(makeThread({ id: 'thread-b' }));
+      await pane.switchThread(makeThread({ id: 'thread-a' }));
+
+      expect(pane.activeDiffPayload).toEqual({ payloadId: 'pa', filePath: 'src/foo.ts' });
+      expect(pane.consumeDiffSidebarRestoreState()).toEqual({
+        viewMode: 'split',
+        wordWrap: true,
+        expandedFiles: ['src/foo.ts'],
+        scrollTop: 180,
+      });
     });
 
     it('does not restore on switch-back if user explicitly closed the sidebar', async () => {
@@ -416,15 +467,13 @@ describe('createThreadPane', () => {
       // Switch one more time to flush the last open into the map.
       await pane.switchThread(makeThread({ id: 'flush' }));
 
-      // Earliest two threads should be evicted; latest 20 retained.
+      // Switching away from the flush thread records it too, so t2 is evicted
+      // before restore. t3 is still retained.
+      await pane.switchThread(threads[3]!);
+      expect(pane.activeDiffPayload).toEqual({ payloadId: 'p3' });
+
       await pane.switchThread(threads[0]!);
       expect(pane.activeDiffPayload).toBeNull();
-
-      await pane.switchThread(threads[1]!);
-      expect(pane.activeDiffPayload).toBeNull();
-
-      await pane.switchThread(threads[2]!);
-      expect(pane.activeDiffPayload).toEqual({ payloadId: 'p2', filePath: undefined });
     });
 
     it('clear() wipes the per-thread snapshot map', async () => {

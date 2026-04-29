@@ -53,6 +53,11 @@ beforeAll(() => {
 });
 
 beforeEach(() => {
+  Object.defineProperty(window, 'innerWidth', {
+    configurable: true,
+    writable: true,
+    value: 1400,
+  });
   resetThreadStatuses();
   resetComposerDraftSnapshotsForTest();
 });
@@ -136,6 +141,38 @@ describe('<ChatView>', () => {
     const { getByTestId } = render(ChatView, { props: { pane } });
     await tick();
     expect(getByTestId('below-composer-bar')).toBeInTheDocument();
+  });
+
+  it('keeps one stable right-sidebar shell while swapping panel content', async () => {
+    setBindingMock('ListThreadCheckpoints', async () => []);
+    setBindingMock('GetPayloadPreview', async () => ({
+      data: '',
+      nextOffset: 0,
+      totalSize: 0,
+      isComplete: true,
+    }));
+    const pane = await buildPane();
+    pane.setShowPlanSidebar(true);
+    pane.setRhsSidebarWidthLive(620);
+
+    const { getByTestId, queryAllByTestId, findByTestId } = render(ChatView, { props: { pane } });
+    await tick();
+
+    expect(queryAllByTestId('rhs-sidebar-shell')).toHaveLength(1);
+    expect(getByTestId('rhs-sidebar-shell')).toHaveStyle({ width: '620px' });
+    expect(getByTestId('plan-sidebar')).toBeInTheDocument();
+
+    pane.setDiffPanelOpen(true);
+    await tick();
+    expect(queryAllByTestId('rhs-sidebar-shell')).toHaveLength(1);
+    expect(getByTestId('rhs-sidebar-shell')).toHaveStyle({ width: '620px' });
+    expect(getByTestId('diff-panel-drawer')).toBeInTheDocument();
+
+    pane.openDiffSidebar({ payloadId: 'payload-1' });
+    await tick();
+    expect(queryAllByTestId('rhs-sidebar-shell')).toHaveLength(1);
+    expect(getByTestId('rhs-sidebar-shell')).toHaveStyle({ width: '620px' });
+    expect(await findByTestId('diff-sidebar')).toBeInTheDocument();
   });
 
   it('does not render interaction-mode / runtime-mode / branch pickers in the header', async () => {

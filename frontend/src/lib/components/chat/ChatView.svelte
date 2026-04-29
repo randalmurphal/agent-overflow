@@ -9,9 +9,7 @@
   import LazyThreadTerminalDrawer from '../terminal/LazyThreadTerminalDrawer.svelte';
   import DiscussionView from '../discussion/DiscussionView.svelte';
   import DesignView from '../design/DesignView.svelte';
-  import DiffPanelDrawer from './DiffPanelDrawer.svelte';
-  import LazyDiffSidebar from './LazyDiffSidebar.svelte';
-  import PlanSidebar from './PlanSidebar.svelte';
+  import RhsSidebarShell from './RhsSidebarShell.svelte';
   import ChatHeader from './ChatHeader.svelte';
   import ExpandedImageDialog from './ExpandedImageDialog.svelte';
   import type { ExpandedImagePreview } from '../../utils/attachmentPreview.svelte';
@@ -325,17 +323,7 @@
         {/key}
       {/if}
     </div>
-    <PlanSidebar {pane} />
-    {#if pane.diffPanel.open && pane.thread}
-      {#key pane.thread.id}
-        <DiffPanelDrawer {pane} />
-      {/key}
-    {/if}
-    {#if pane.activeDiffPayload && pane.thread}
-      {#key pane.thread.id}
-        <LazyDiffSidebar {pane} />
-      {/key}
-    {/if}
+    <RhsSidebarShell {pane} />
     {#if inDesignMode}
       <div class="flex-1 min-w-0">
         <DesignView {pane} />
