@@ -734,6 +734,23 @@ describe('createThreadPane', () => {
     expect(pane.isSubagentGroupExpanded('parent-1')).toBe(false);
   });
 
+  it('attachmentCacheFor returns a stable view per itemId; survives lookup', () => {
+    // Why: pre-rebuild, UserMessage.svelte allocated blob URLs in its
+    // own onDestroy-revoking factory. virtua's overscan eviction would
+    // unmount + remount the row on a back-scroll, refetching every
+    // attachment from Go. The pane-owned cache survives remount; the
+    // factory seeds from it and writes loaded previews back.
+    const pane = createThreadPane();
+    const cacheA = pane.attachmentCacheFor('item-1');
+    cacheA.set('att-1', { id: 'att-1', filename: 'a.png', mimeType: 'image/png', size: 1, url: 'data:img' });
+    const cacheA2 = pane.attachmentCacheFor('item-1');
+    expect(cacheA2.get('att-1')).toBeTruthy();
+    expect(cacheA2.get('att-1')?.url).toBe('data:img');
+    // Different itemId = isolated cache.
+    const cacheB = pane.attachmentCacheFor('item-2');
+    expect(cacheB.get('att-1')).toBeUndefined();
+  });
+
   it('clears row UI state on switchThread', async () => {
     const pane = createThreadPane();
     await pane.switchThread(makeThread({ id: 'thread-a' }));

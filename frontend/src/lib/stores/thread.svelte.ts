@@ -22,6 +22,10 @@ import {
   createPayloadExpansion,
   type PayloadExpansionHandle,
 } from '../components/chat/payloadExpansion.svelte';
+import type {
+  AttachmentPreviewCache,
+  ImagePreviewItem,
+} from '../utils/attachmentPreview.svelte';
 
 /**
  * Default batch size for "Load older" fetches. Matches the initial window
@@ -225,6 +229,11 @@ export function createThreadPane() {
   // appear at end-of-turn / rare item types and the back-scroll
   // remount frequency is low in practice. Lift if profiling proves it.
   let subagentGroupExpanded: Set<string> = $state(new Set());
+  // Per-itemId attachment blob cache: outer key=itemId, inner key=attachmentId.
+  // The pane owns the blob URLs so they survive virtua's overscan eviction
+  // (which would otherwise revoke them in UserMessage's onDestroy and force
+  // a re-fetch+re-allocate on the next back-scroll). Revoked on thread switch.
+  const attachmentBlobs: Map<string, Map<string, ImagePreviewItem>> = new Map();
   const itemStatusById: Map<string, Item['status']> = new Map();
   const itemIndexById: Map<string, number> = new Map();
   const itemSummaryById: Map<string, string> = new Map();
@@ -564,6 +573,37 @@ export function createThreadPane() {
     return subagentGroupExpanded.has(parentId);
   }
 
+  /**
+   * Cache view scoped to a single user-message item. UserMessage uses this
+   * via `createAttachmentPreviews({ cache: pane.attachmentCacheFor(item.id) })`
+   * so blob URLs persist through virtua remount.
+   */
+  function attachmentCacheFor(itemId: string): AttachmentPreviewCache {
+    let inner = attachmentBlobs.get(itemId);
+    if (!inner) {
+      inner = new Map<string, ImagePreviewItem>();
+      attachmentBlobs.set(itemId, inner);
+    }
+    const innerRef = inner;
+    return {
+      get(attachmentId: string): ImagePreviewItem | undefined {
+        return innerRef.get(attachmentId);
+      },
+      set(attachmentId: string, preview: ImagePreviewItem): void {
+        innerRef.set(attachmentId, preview);
+      },
+    };
+  }
+
+  function disposeAttachmentBlobs(): void {
+    for (const inner of attachmentBlobs.values()) {
+      for (const preview of inner.values()) {
+        if (preview.url.startsWith('blob:')) URL.revokeObjectURL(preview.url);
+      }
+    }
+    attachmentBlobs.clear();
+  }
+
   function toggleSubagentGroupExpanded(parentId: string): boolean {
     const next = new Set(subagentGroupExpanded);
     const willExpand = !next.has(parentId);
@@ -574,12 +614,14 @@ export function createThreadPane() {
 
   /**
    * Clears all per-row UI state registries. Called from `switchThread`.
-   * Individual entries don't need explicit disposal — they hold no
-   * external resources (no DOM refs, no observers, no timers).
+   * Attachment blobs are explicitly revoked because they hold external
+   * resources (object URLs); the other registries hold no external
+   * resources and just drop their entries.
    */
   function clearRowUiState(): void {
     expansionStates.clear();
     subagentGroupExpanded = new Set();
+    disposeAttachmentBlobs();
   }
 
   function rebuildItemIndexes(nextItems: Item[]): void {
@@ -1438,6 +1480,7 @@ export function createThreadPane() {
     expansionStateForPayload,
     isSubagentGroupExpanded,
     toggleSubagentGroupExpanded,
+    attachmentCacheFor,
 
     setGeneralError(message: string | null): void {
       generalError = message;

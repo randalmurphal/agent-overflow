@@ -1,5 +1,6 @@
 <script lang="ts">
   import Undo2 from 'lucide-svelte/icons/undo-2';
+  import { untrack } from 'svelte';
   import type { Item } from '../../types/models';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import {
@@ -38,35 +39,22 @@
   let actionsAnchor: HTMLButtonElement | undefined = $state(undefined);
   let actionsOpen = $state(false);
 
-  let attachmentRoot: HTMLDivElement | undefined = $state(undefined);
-  let shouldLoadPreviews = $state(false);
   const attachments = $derived<AttachmentPreviewSource[]>(parseUserMessageAttachments(item.meta));
+  // Pane-owned blob cache: blob URLs survive virtua's overscan eviction,
+  // so back-scrolling to a previously-mounted UserMessage doesn't refetch
+  // attachments from Go or re-allocate object URLs. The IntersectionObserver
+  // gate has been dropped — virtua's bufferSize=900 already bounds which
+  // rows are mounted to "near the visible viewport"; loading on mount
+  // costs at most a small read-ahead and the cache de-dupes across remounts.
+  // pane + item.id stable per row instance; capture the cache once via untrack.
+  const cache = untrack(() => (pane ? pane.attachmentCacheFor(item.id) : undefined));
   const attachmentPreviews = createAttachmentPreviews(
     () => attachments,
-    { shouldLoad: () => shouldLoadPreviews },
+    { cache },
   );
   const visibleSummary = $derived(
     item.summary.replace(/\n\n!\[[^\]]*]\(attachment:\/\/[^\s)]+\)/g, '').trimEnd(),
   );
-
-  $effect(() => {
-    if (attachments.length === 0) return;
-    const root = attachmentRoot;
-    if (!root) return;
-
-    if (typeof IntersectionObserver !== 'function') {
-      shouldLoadPreviews = true;
-      return;
-    }
-
-    const observer = new IntersectionObserver((entries) => {
-      if (!entries.some((entry) => entry.isIntersecting)) return;
-      shouldLoadPreviews = true;
-      observer.disconnect();
-    }, { rootMargin: '240px' });
-    observer.observe(root);
-    return () => observer.disconnect();
-  });
 
   async function expandAttachment(id: string): Promise<void> {
     if (!onImageExpand) return;
@@ -93,7 +81,6 @@
   >
     {#if attachments.length > 0}
       <div
-        bind:this={attachmentRoot}
         class="mb-2 grid max-w-[420px] grid-cols-2 gap-2"
         data-testid="user-message-attachments"
       >

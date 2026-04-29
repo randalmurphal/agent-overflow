@@ -70,31 +70,68 @@ export function buildExpandedImagePreview(images: ImagePreviewItem[], selectedId
   return { images, index: selectedIndex };
 }
 
+/**
+ * External cache for attachment previews. When provided, the factory:
+ *   - seeds `previews` from `cache.get(id)` on first read,
+ *   - writes loaded previews back via `cache.set(id, preview)`,
+ *   - delegates blob-URL revocation to the cache owner (does NOT revoke
+ *     on component destroy).
+ * In chat surfaces, the pane owns the cache so blob URLs survive virtua
+ * remount and only get revoked on thread switch or pane disposal.
+ */
+export interface AttachmentPreviewCache {
+  get(attachmentId: string): ImagePreviewItem | undefined;
+  set(attachmentId: string, preview: ImagePreviewItem): void;
+}
+
 interface AttachmentPreviewOptions {
   shouldLoad?: () => boolean;
+  cache?: AttachmentPreviewCache;
 }
 
 export function createAttachmentPreviews(
   getAttachments: () => AttachmentPreviewSource[],
   options: AttachmentPreviewOptions = {},
 ) {
-  let previews = $state<Record<string, ImagePreviewItem>>({});
+  // Seed local state from the cache so cache hits render synchronously
+  // (no flash of placeholder on remount). Attachments not in the cache
+  // are populated by the load $effect below.
+  const initialSeed: Record<string, ImagePreviewItem> = {};
+  if (options.cache) {
+    for (const attachment of getAttachments()) {
+      const cached = options.cache.get(attachment.id);
+      if (cached) initialSeed[attachment.id] = cached;
+    }
+  }
+  let previews = $state<Record<string, ImagePreviewItem>>(initialSeed);
   const loading = new Map<string, Promise<ImagePreviewItem | null>>();
   let loadGeneration = 0;
 
   function loadPreview(attachment: AttachmentPreviewSource, generation: number): Promise<ImagePreviewItem | null> {
     const existing = untrack(() => previews[attachment.id]);
     if (existing) return Promise.resolve(existing);
+    // Re-check cache here in case another factory instance loaded the
+    // same attachment after our initial seed.
+    if (options.cache) {
+      const cached = options.cache.get(attachment.id);
+      if (cached) {
+        previews = { ...previews, [attachment.id]: cached };
+        return Promise.resolve(cached);
+      }
+    }
     const pending = loading.get(attachment.id);
     if (pending) return pending;
 
     const load = loadAttachmentPreview(attachment)
       .then((preview) => {
         if (generation !== loadGeneration) {
-          revokePreview(preview);
+          // Stale request — only revoke if we own the blob. Cache-owned
+          // blobs are managed by the cache provider's dispose path.
+          if (!options.cache) revokePreview(preview);
           return null;
         }
         previews = { ...previews, [attachment.id]: preview };
+        options.cache?.set(attachment.id, preview);
         return preview;
       })
       .catch((err) => {
@@ -113,8 +150,13 @@ export function createAttachmentPreviews(
     const generation = ++loadGeneration;
     const nextIds = new Set(attachments.map((attachment) => attachment.id));
     const currentPreviews = untrack(() => previews);
-    for (const [id, preview] of Object.entries(currentPreviews)) {
-      if (!nextIds.has(id)) revokePreview(preview);
+    // Only revoke blobs we own. Cache-owned blobs survive attachment
+    // turnover (the row's attachments shouldn't change in practice; this
+    // is just defensive cleanup for the local-state path).
+    if (!options.cache) {
+      for (const [id, preview] of Object.entries(currentPreviews)) {
+        if (!nextIds.has(id)) revokePreview(preview);
+      }
     }
     const retainedPreviews = Object.fromEntries(
       Object.entries(currentPreviews).filter(([id]) => nextIds.has(id)),
@@ -131,6 +173,9 @@ export function createAttachmentPreviews(
   });
 
   onDestroy(() => {
+    // When a cache is provided the pane owns the blob lifecycle; do not
+    // revoke here or remount-and-back would render broken thumbnails.
+    if (options.cache) return;
     for (const preview of Object.values(previews)) {
       revokePreview(preview);
     }

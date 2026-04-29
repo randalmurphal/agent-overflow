@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
-import { tick } from 'svelte';
 import { makeItem } from '../../../test/helpers/chat';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import UserMessage from './UserMessage.svelte';
@@ -124,29 +123,12 @@ describe('<UserMessage>', () => {
     expect(onImageExpand.mock.calls[0]?.[0].images[0]?.url).toMatch(/^(blob:|data:image\/png;base64,)/);
   });
 
-  it('defers history attachment preview loading until the message is near the viewport', async () => {
-    const observers: Array<{ trigger: () => void }> = [];
-    vi.stubGlobal('IntersectionObserver', class {
-      private callback: IntersectionObserverCallback;
-
-      constructor(callback: IntersectionObserverCallback) {
-        this.callback = callback;
-        observers.push({
-          trigger: () => this.callback(
-            [{ isIntersecting: true } as IntersectionObserverEntry],
-            this as unknown as IntersectionObserver,
-          ),
-        });
-      }
-
-      observe = vi.fn();
-      disconnect = vi.fn();
-      unobserve = vi.fn();
-      takeRecords = vi.fn(() => []);
-      root = null;
-      rootMargin = '';
-      thresholds = [];
-    });
+  it('loads history attachment previews on mount (virtua bufferSize bounds the mount window)', async () => {
+    // Pre-rebuild this was gated by an IntersectionObserver inside the
+    // row. After the rebuild, virtua's `bufferSize=900` already restricts
+    // mount to rows near the viewport, and the per-pane attachment cache
+    // de-dupes across remounts — so a separate IO observer was redundant
+    // and got removed. Loading happens immediately on mount.
     const getAttachmentData = setBindingMock('GetAttachmentData', async () => 'iVBORw0KGgo=');
 
     render(UserMessage, {
@@ -169,10 +151,6 @@ describe('<UserMessage>', () => {
         }),
       },
     });
-    await tick();
-
-    expect(getAttachmentData).not.toHaveBeenCalled();
-    observers[0]?.trigger();
 
     await waitFor(() => {
       expect(getAttachmentData).toHaveBeenCalledWith('thread-1', 'att-1');
