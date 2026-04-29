@@ -13,6 +13,16 @@
   // jump-correction handles the same case generically — so on
   // MessageTimeline this attribute is a no-op. Kept for consistency
   // because the chip is shared across both surfaces.
+  //
+  // Positioning: the chip floats just above the composer overlay. The
+  // composer is absolutely positioned at `bottom-0` of the timeline's
+  // relative parent and grows upward with content (attachment tray,
+  // multi-line input, approval panel). Without lifting the chip by
+  // `--composer-height`, the chip would sit *behind* the composer
+  // (composer is z-20 with `pointer-events-auto` children) and clicks
+  // would land on the composer instead. Putting the chip at z-30 +
+  // bottom = composer-height + 1rem keeps it visible and clickable
+  // regardless of composer growth.
 
   import ChevronDown from 'lucide-svelte/icons/chevron-down';
   import { fade } from 'svelte/transition';
@@ -35,8 +45,9 @@
     data-scroll-anchor-ignore
     data-testid="scroll-to-bottom"
     transition:fade={{ duration: 120 }}
+    style="bottom: calc(var(--composer-height, 0px) + 1rem);"
     class={[
-      'absolute bottom-4 right-4 z-10',
+      'absolute right-4 z-30',
       'inline-flex h-9 w-9 items-center justify-center',
       'rounded-full border border-border-subtle bg-card text-text-secondary',
       'shadow-sheet transition-[background-color,transform,color]',
