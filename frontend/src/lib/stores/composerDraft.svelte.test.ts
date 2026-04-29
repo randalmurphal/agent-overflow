@@ -1,7 +1,10 @@
 import { describe, expect, it, beforeEach } from 'vitest';
-import { createComposerDraftStore } from './composerDraft.svelte';
+import {
+  createComposerDraftStore,
+  resetComposerDraftSnapshotsForTest,
+} from './composerDraft.svelte';
 import type { Attachment } from '../types/attachment';
-import { getBindingMock, setBindingMock } from '../../test/mocks/bindings-app';
+import { setBindingMock } from '../../test/mocks/bindings-app';
 
 function installMocks(draft: {
   content: string;
@@ -37,6 +40,7 @@ function sampleAttachment(id: string): Attachment {
 
 describe('composerDraft store', () => {
   beforeEach(() => {
+    resetComposerDraftSnapshotsForTest();
     installMocks({ content: '', attachmentIds: [], terminalChips: [] });
   });
 
@@ -123,19 +127,130 @@ describe('composerDraft store', () => {
     expect(store.attachments.map((attachment) => attachment.id)).toEqual(['att-1']);
   });
 
-  it('switching threads discards pending saves from the previous thread', async () => {
+  it('persists pending saves when switching threads', async () => {
+    const saveMock = setBindingMock('SaveDraft', async () => {});
     const store = createComposerDraftStore({ debounceMs: 50 });
     await store.setThread('thread-A');
     store.setContent('A-typed');
-    // Before the debounce fires, switch threads.
+
     await store.setThread('thread-B');
-    await new Promise((r) => setTimeout(r, 80));
-    const saveMock = getBindingMock('SaveDraft');
-    if (saveMock) {
-      for (const call of saveMock.mock.calls) {
-        expect(call[0]).not.toBe('thread-A');
+
+    expect(saveMock).toHaveBeenCalledWith('thread-A', 'A-typed', [], [], null);
+  });
+
+  it('switches local thread state immediately even when saving the previous draft is slow', async () => {
+    let resolveSave: (() => void) | undefined;
+    const saveStarted = new Promise<void>((resolve) => {
+      setBindingMock('SaveDraft', async () => {
+        resolve();
+        await new Promise<void>((finish) => {
+          resolveSave = finish;
+        });
+      });
+    });
+    const store = createComposerDraftStore({ debounceMs: 50 });
+    await store.setThread('thread-A');
+    store.setContent('A-typed');
+
+    const switchResult = await Promise.race([
+      store.setThread('thread-B').then(() => 'switched'),
+      new Promise<'blocked'>((resolve) => setTimeout(() => resolve('blocked'), 50)),
+    ]);
+    await saveStarted;
+
+    expect(switchResult).toBe('switched');
+    expect(store.threadId).toBe('thread-B');
+    expect(store.content).toBe('');
+
+    resolveSave?.();
+  });
+
+  it('uses backend draft state after a local draft has saved cleanly', async () => {
+    const store = createComposerDraftStore({ debounceMs: 0 });
+    const saveMock = setBindingMock('SaveDraft', async () => {});
+    await store.setThread('thread-A');
+    store.setContent('saved draft');
+    await store.flush();
+    expect(saveMock).toHaveBeenCalledWith('thread-A', 'saved draft', [], [], null);
+
+    setBindingMock('GetDraft', async (id: string) => ({
+      threadId: id,
+      content: 'backend changed',
+      attachmentIds: [],
+      terminalChips: [],
+      updatedAt: 2,
+    }));
+
+    await store.setThread(null);
+    await store.setThread('thread-A');
+
+    expect(store.content).toBe('backend changed');
+  });
+
+  it('ignores stale hydrate responses from superseded thread switches', async () => {
+    const pendingA: Array<(draft: {
+      threadId: string;
+      content: string;
+      attachmentIds: string[];
+      terminalChips: [];
+      updatedAt: number;
+    }) => void> = [];
+    setBindingMock('GetDraft', async (id: string) => {
+      if (id !== 'thread-A') {
+        return {
+          threadId: id,
+          content: '',
+          attachmentIds: [],
+          terminalChips: [],
+          updatedAt: 1,
+        };
       }
-    }
+      return await new Promise((resolve) => {
+        pendingA.push(resolve);
+      });
+    });
+    setBindingMock('ListAttachments', async () => []);
+    const store = createComposerDraftStore({ debounceMs: 0 });
+
+    const firstSwitch = store.setThread('thread-A');
+    await store.setThread('thread-B');
+    const secondSwitch = store.setThread('thread-A');
+
+    pendingA[1]?.({
+      threadId: 'thread-A',
+      content: 'current A',
+      attachmentIds: [],
+      terminalChips: [],
+      updatedAt: 2,
+    });
+    await secondSwitch;
+    expect(store.content).toBe('current A');
+
+    pendingA[0]?.({
+      threadId: 'thread-A',
+      content: 'stale A',
+      attachmentIds: [],
+      terminalChips: [],
+      updatedAt: 1,
+    });
+    await firstSwitch;
+
+    expect(store.content).toBe('current A');
+  });
+
+  it('restores a pending draft from memory before the debounce save completes', async () => {
+    const saveMock = setBindingMock('SaveDraft', async () => {});
+    const firstStore = createComposerDraftStore({ debounceMs: 10_000 });
+    await firstStore.setThread('thread-A');
+    firstStore.setContent('fast switch draft');
+
+    const secondStore = createComposerDraftStore({ debounceMs: 10_000 });
+    await secondStore.setThread('thread-A');
+
+    expect(secondStore.content).toBe('fast switch draft');
+    expect(saveMock).not.toHaveBeenCalled();
+
+    await firstStore.flushPending();
   });
 
   it('flush writes current state immediately (bypassing debounce)', async () => {

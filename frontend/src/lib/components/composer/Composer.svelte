@@ -46,6 +46,8 @@
   let textarea: HTMLTextAreaElement | undefined = $state(undefined);
   let expandedChips = new Set<string>();
   let expandedVersion = $state(0);
+  let lastAutosizedTextarea: HTMLTextAreaElement | undefined;
+  let lastAutosizedValue = '';
 
   const mentions = createComposerMentions({
     getTextarea: () => textarea,
@@ -155,6 +157,18 @@
   $effect(() => {
     activeUserInput?.requestId;
     userInputCustomAnswer = '';
+  });
+
+  $effect(() => {
+    const value = inputValue;
+    const node = textarea;
+    if (!node) return;
+    if (lastAutosizedTextarea === node && lastAutosizedValue === value) return;
+    queueMicrotask(() => {
+      if (textarea === node && inputValue === value) {
+        autosizeTextarea();
+      }
+    });
   });
 
   $effect(() => {
@@ -285,7 +299,12 @@
   function autosizeTextarea() {
     if (!textarea) return;
     textarea.style.height = 'auto';
-    textarea.style.height = Math.min(textarea.scrollHeight, 200) + 'px';
+    const measuredHeight = textarea.scrollHeight;
+    if (measuredHeight > 0) {
+      textarea.style.height = Math.min(measuredHeight, 200) + 'px';
+    }
+    lastAutosizedTextarea = textarea;
+    lastAutosizedValue = inputValue;
   }
 
   async function handleKeydown(e: KeyboardEvent) {

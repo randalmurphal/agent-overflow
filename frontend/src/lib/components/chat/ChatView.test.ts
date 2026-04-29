@@ -6,10 +6,11 @@
 // visible contract that's still meaningful after the rewrite.
 
 import { describe, expect, it, beforeAll, beforeEach, vi } from 'vitest';
-import { fireEvent, render } from '@testing-library/svelte';
+import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import ChatView from './ChatView.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
+import { resetComposerDraftSnapshotsForTest } from '../../stores/composerDraft.svelte';
 import { getThreads, refreshThreads } from '../../stores/threads.svelte';
 import {
   getThreadStatus,
@@ -53,6 +54,7 @@ beforeAll(() => {
 
 beforeEach(() => {
   resetThreadStatuses();
+  resetComposerDraftSnapshotsForTest();
 });
 
 function seedThread(): Thread {
@@ -265,6 +267,22 @@ describe('<ChatView>', () => {
     await tick();
 
     expect(getThreadStatus('thread-1')).toBe('idle');
+  });
+
+  it('flushes a pending composer draft when the chat view unmounts', async () => {
+    const pane = await buildPane();
+    const saveDraft = setBindingMock('SaveDraft', async () => {});
+    const { getByLabelText, unmount } = render(ChatView, { props: { pane } });
+    await tick();
+
+    const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
+    await fireEvent.input(textarea, { target: { value: 'pending draft' } });
+
+    unmount();
+
+    await waitFor(() => {
+      expect(saveDraft).toHaveBeenCalledWith('thread-1', 'pending draft', [], [], null);
+    });
   });
 
   it('clicking a background tray row does NOT scroll the timeline (rows are informational)', async () => {

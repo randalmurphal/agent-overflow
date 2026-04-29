@@ -261,6 +261,7 @@
   });
 
   onDestroy(() => {
+    void draft.flushPending();
     window.removeEventListener('keydown', handleKeydown);
     if (queuedReadTimer !== null) {
       clearTimeout(queuedReadTimer);

@@ -2,7 +2,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import Composer from './Composer.svelte';
-import { createComposerDraftStore } from '../../stores/composerDraft.svelte';
+import {
+  createComposerDraftStore,
+  resetComposerDraftSnapshotsForTest,
+} from '../../stores/composerDraft.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
 import { buildPane, makeItem, makeThread as makeTestThread } from '../../../test/helpers/chat';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
@@ -81,6 +84,7 @@ describe('<Composer>', () => {
   beforeEach(() => {
     resetBindingMocks();
     resetRuntimeModeDraftsForTest();
+    resetComposerDraftSnapshotsForTest();
     resetProposedPlanCacheForTests();
     resetWorktreeIntent();
     installDraftMocks();
@@ -947,6 +951,23 @@ describe('<Composer>', () => {
     await fireEvent.input(textarea, { target: { value: 'one\ntwo' } });
 
     expect(textarea.style.height).toBe('96px');
+  });
+
+  it('autosizes restored draft content without waiting for a new input event', async () => {
+    const pane = await buildPane();
+    const draft = await buildDraft();
+    draft.setContent('one\ntwo\nthree');
+
+    const { getByLabelText } = render(Composer, { props: { pane, draft } });
+    const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
+    Object.defineProperty(textarea, 'scrollHeight', {
+      configurable: true,
+      get: () => 144,
+    });
+
+    await waitFor(() => {
+      expect(textarea.style.height).toBe('144px');
+    });
   });
 
   it('restores the draft and surfaces an error when send fails', async () => {
