@@ -452,6 +452,43 @@ describe('enhanceMarkdown — copy delegate', () => {
     );
   });
 
+  it('still serializes as markdown when the selection overshoots into adjacent chrome', async () => {
+    // Real-world repro: the user drag-selects an assistant message
+    // body and lets the cursor settle one char past the end, into
+    // the timestamp row below. The commonAncestorContainer in that
+    // case is an outer wrapper that has no `.markdown-body`
+    // ancestor — but the start endpoint is still inside markdown,
+    // so the user's intent is clearly "copy this message as
+    // markdown".
+    await installDelegate();
+    const wrapper = document.createElement('div');
+    const body = document.createElement('div');
+    body.className = 'markdown-body';
+    body.innerHTML = '<ol><li>foo</li><li>bar</li></ol>';
+    const meta = document.createElement('div');
+    meta.textContent = '12:34 PM';
+    wrapper.appendChild(body);
+    wrapper.appendChild(meta);
+    document.body.appendChild(wrapper);
+
+    const startText = body.querySelector('li')!.firstChild as Text;
+    const endText = meta.firstChild as Text;
+    const range = document.createRange();
+    range.setStart(startText, 0);
+    range.setEnd(endText, '12:34'.length);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+
+    const event = dispatchCopy(wrapper);
+
+    expect(event.defaultPrevented).toBe(true);
+    // The list-marker prefix proves the markdown serializer ran;
+    // the trailing chrome text comes through as plain text from
+    // cloneContents.
+    expect(event.clipboardData?.getData('text/plain')).toContain('1. foo');
+  });
+
   it('installs the delegate even when the row is still streaming', async () => {
     // The delegate should arm before the streaming early-return — a
     // user can copy from a settled surface elsewhere in the app while

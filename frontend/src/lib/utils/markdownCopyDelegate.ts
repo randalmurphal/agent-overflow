@@ -31,17 +31,37 @@ function handleMarkdownCopy(event: ClipboardEvent): void {
   const selection = window.getSelection();
   if (!selection || selection.rangeCount === 0 || selection.isCollapsed) return;
   const range = selection.getRangeAt(0);
-  const ancestor = range.commonAncestorContainer;
-  const ancestorEl = ancestor.nodeType === Node.ELEMENT_NODE
-    ? (ancestor as Element)
-    : ancestor.parentElement;
-  if (!ancestorEl?.closest('.markdown-body')) return;
+  if (!rangeTouchesMarkdownBody(range)) return;
 
   const md = serializeRangeToMarkdown(range);
   if (md === null) return;
 
   event.preventDefault();
   event.clipboardData.setData('text/plain', md);
+}
+
+function rangeTouchesMarkdownBody(range: Range): boolean {
+  // Checking the commonAncestorContainer alone is too strict: a
+  // drag-select that overshoots an assistant message by even one
+  // character (into the timestamp row below, or whitespace in a
+  // wrapper div) lands the LCA on a node that has no `.markdown-body`
+  // ancestor, so the delegate bails and browser-default copy wins —
+  // exactly the case people hit when copy/pasting a chat reply.
+  // Both endpoints are checked so a selection that starts or ends
+  // inside a markdown surface still gets markdown-aware copy. The
+  // serializer's cloneContents will only walk what was actually
+  // selected, so the non-markdown chrome at the edge becomes plain
+  // text in the result, which is the same thing the browser would
+  // have produced for that span.
+  return endpointInMarkdownBody(range.startContainer)
+    || endpointInMarkdownBody(range.endContainer);
+}
+
+function endpointInMarkdownBody(node: Node): boolean {
+  const el = node.nodeType === Node.ELEMENT_NODE
+    ? (node as Element)
+    : node.parentElement;
+  return el?.closest('.markdown-body') != null;
 }
 
 /** Test-only export: lets specs reset delegate state so installation
