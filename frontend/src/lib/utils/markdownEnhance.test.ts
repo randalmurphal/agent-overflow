@@ -1,6 +1,11 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { waitFor } from '@testing-library/svelte';
-import { enhanceMarkdown, __resetPathLinkDelegateForTest, __resetMermaidSvgCacheForTest } from './markdownEnhance';
+import {
+  enhanceMarkdown,
+  __resetPathLinkDelegateForTest,
+  __resetMermaidSvgCacheForTest,
+} from './markdownEnhance';
+import { __resetMarkdownCopyDelegateForTest } from './markdownCopyDelegate';
 import mermaid from 'mermaid';
 import { setBindingMock, getBindingMock } from '../../test/mocks/bindings-app';
 
@@ -335,5 +340,166 @@ describe('enhanceMarkdown — path linkify', () => {
     expect(mock.mock.calls[0]).toEqual(['src/lib/foo.ts', 12, 0]);
     container.remove();
     void getBindingMock; // keep helper reachable for future cases
+  });
+});
+
+describe('enhanceMarkdown — copy delegate', () => {
+  beforeEach(() => {
+    __resetMarkdownCopyDelegateForTest();
+  });
+
+  afterEach(() => {
+    document.body.innerHTML = '';
+    __resetMarkdownCopyDelegateForTest();
+  });
+
+  async function installDelegate(): Promise<void> {
+    // The delegate installs lazily inside enhanceMarkdown, ahead of
+    // the streaming early-return — pass an empty container so the
+    // rest of the pipeline is a no-op.
+    const probe = document.createElement('div');
+    await enhanceMarkdown(probe, {
+      generation: 1,
+      renderScope: 'test',
+      streaming: false,
+      isCurrent: () => true,
+    });
+  }
+
+  function dispatchCopy(target: Node): ClipboardEvent {
+    const clipboardData = new DataTransfer();
+    const event = new ClipboardEvent('copy', {
+      bubbles: true,
+      cancelable: true,
+      clipboardData,
+    });
+    // happy-dom dispatches via the target so the document-level
+    // listener sees a bubbling event the same way a real copy would.
+    target.dispatchEvent(event);
+    return event;
+  }
+
+  it('replaces clipboard text with markdown when the selection is inside .markdown-body', async () => {
+    await installDelegate();
+    const host = document.createElement('div');
+    host.className = 'markdown-body';
+    host.innerHTML = '<ol><li>foo</li><li>bar</li></ol>';
+    document.body.appendChild(host);
+
+    const range = document.createRange();
+    range.selectNodeContents(host);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+
+    const event = dispatchCopy(host);
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(event.clipboardData?.getData('text/plain')).toBe('1. foo\n2. bar');
+  });
+
+  it('leaves the clipboard alone when the selection is outside .markdown-body', async () => {
+    await installDelegate();
+    const outside = document.createElement('div');
+    outside.innerHTML = '<p>plain prose, no markdown surface</p>';
+    document.body.appendChild(outside);
+
+    const range = document.createRange();
+    range.selectNodeContents(outside);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+
+    const event = dispatchCopy(outside);
+
+    expect(event.defaultPrevented).toBe(false);
+    expect(event.clipboardData?.getData('text/plain')).toBe('');
+  });
+
+  it('does not interfere with a collapsed selection', async () => {
+    await installDelegate();
+    const host = document.createElement('div');
+    host.className = 'markdown-body';
+    host.innerHTML = '<p>foo</p>';
+    document.body.appendChild(host);
+
+    window.getSelection()?.removeAllRanges();
+
+    const event = dispatchCopy(host);
+
+    expect(event.defaultPrevented).toBe(false);
+    expect(event.clipboardData?.getData('text/plain')).toBe('');
+  });
+
+  it('rewrites bold/italic/inline-code as markdown markers', async () => {
+    await installDelegate();
+    const host = document.createElement('div');
+    host.className = 'markdown-body';
+    host.innerHTML =
+      '<p>see <strong>bold</strong> and <em>italic</em> plus <code>code()</code></p>';
+    document.body.appendChild(host);
+
+    const range = document.createRange();
+    range.selectNodeContents(host);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+
+    const event = dispatchCopy(host);
+
+    expect(event.clipboardData?.getData('text/plain')).toBe(
+      'see **bold** and *italic* plus `code()`',
+    );
+  });
+
+  it('installs the delegate even when the row is still streaming', async () => {
+    // The delegate should arm before the streaming early-return — a
+    // user can copy from a settled surface elsewhere in the app while
+    // some other row is still streaming.
+    const probe = document.createElement('div');
+    await enhanceMarkdown(probe, {
+      generation: 1,
+      renderScope: 'test',
+      streaming: true,
+      isCurrent: () => true,
+    });
+
+    const host = document.createElement('div');
+    host.className = 'markdown-body';
+    host.innerHTML = '<p>hi</p>';
+    document.body.appendChild(host);
+
+    const range = document.createRange();
+    range.selectNodeContents(host);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+
+    const event = dispatchCopy(host);
+    expect(event.defaultPrevented).toBe(true);
+    expect(event.clipboardData?.getData('text/plain')).toBe('hi');
+  });
+
+  it('bails when the clipboard event has no clipboardData', async () => {
+    // Synthetic copy events from extensions / automation can present
+    // a null `clipboardData`. The handler should bail without
+    // calling preventDefault, leaving the browser default in place.
+    await installDelegate();
+    const host = document.createElement('div');
+    host.className = 'markdown-body';
+    host.innerHTML = '<p>hi</p>';
+    document.body.appendChild(host);
+
+    const range = document.createRange();
+    range.selectNodeContents(host);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+
+    const event = new Event('copy', { bubbles: true, cancelable: true }) as ClipboardEvent;
+    Object.defineProperty(event, 'clipboardData', { value: null });
+    host.dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(false);
   });
 });

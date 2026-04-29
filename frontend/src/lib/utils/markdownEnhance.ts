@@ -1,6 +1,6 @@
 import { mount, unmount } from 'svelte';
 import CopyButton from '../components/primitives/CopyButton.svelte';
-import { rememberDiagramSource } from './diagramSourceCache';
+import { ensureMarkdownCopyDelegate } from './markdownCopyDelegate';
 import { escapeHtml, sanitizeRenderedSvg } from './markdownRender';
 import { findPathRanges } from './pathLinkify';
 import { OpenInEditor } from '../stores/bindings';
@@ -21,6 +21,10 @@ type EnhanceOptions = {
 let highlighterPromise: Promise<CodeHighlighter> | null = null;
 
 export async function enhanceMarkdown(container: HTMLElement, options: EnhanceOptions): Promise<void> {
+  // Install the copy delegate before the streaming early-return so a
+  // user copying mid-stream still gets markdown-aware copy on already-
+  // settled surfaces elsewhere in the app.
+  ensureMarkdownCopyDelegate();
   if (options.streaming) {
     return;
   }
@@ -121,7 +125,12 @@ async function enhanceMath(container: HTMLElement, options: EnhanceOptions) {
 
   for (const node of mathNodes) {
     const displayMode = node.classList.contains('math-display');
-    katex.render(node.textContent ?? '', node, {
+    // Stash the LaTeX source before KaTeX rewrites the inner DOM —
+    // the copy serializer reads this attribute (textContent after
+    // render is the typeset output, not the source).
+    const source = node.textContent ?? '';
+    node.dataset.mathSource = source;
+    katex.render(source, node, {
       displayMode,
       throwOnError: false,
       strict: 'warn',
@@ -225,7 +234,11 @@ async function applyMermaidSvg(
   block.pre.classList.add('mermaid-rendered');
   block.pre.style.minHeight = '';
   block.pre.dataset.renderedMermaid = block.id;
-  rememberDiagramSource(block.pre, block.sourceText);
+  // The copy serializer and the inline context-menu both read the
+  // source off this attribute after the SVG replaces the inner DOM.
+  // A WeakMap lookup wouldn't survive cloneContents on a Range, so
+  // the data attribute is the canonical place.
+  block.pre.dataset.mermaidSource = block.sourceText;
   block.pre.innerHTML = sanitizedSvg;
   attachMermaidCopyButton(container, block.pre, block.sourceText);
 }

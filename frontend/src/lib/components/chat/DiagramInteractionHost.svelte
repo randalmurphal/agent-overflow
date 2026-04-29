@@ -24,7 +24,6 @@
     copySource,
     type CopyResult,
   } from '../../utils/diagramClipboard';
-  import { readDiagramSource } from '../../utils/diagramSourceCache';
 
   type MenuState = {
     x: number;
@@ -73,11 +72,11 @@
         result = await copyAsSVG(current.svg);
         break;
       case 'copy-source': {
-        // The inline block carries the original Mermaid source while
-        // it is mounted. The modal copy does not, so copying from the
-        // modal falls back to SVG.
+        // The inline block carries the original Mermaid source on a
+        // data attribute while it is mounted. The modal copy does
+        // not, so copying from the modal falls back to SVG.
         const pre = current.svg.closest<HTMLElement>('pre.mermaid[data-rendered-mermaid]');
-        const raw = pre ? readDiagramSource(pre) : null;
+        const raw = pre?.dataset.mermaidSource ?? null;
         if (raw) {
           result = await copySource(raw);
         } else {

@@ -77,11 +77,12 @@ remount cheap and bound the cost of repeated content:
   first render reuses the same in-flight render rather than starting
   a parallel one. Module exposes `__resetMermaidSvgCacheForTest()`
   for unit tests; production code never calls it.
-- **Diagram source cache** (`diagramSourceCache.ts`) — separate from
-  the SVG cache. A `WeakMap<HTMLElement, string>` that remembers the
-  Mermaid source the enhancer already rendered into a given element,
-  so re-enhancement of the same element with the same source is a
-  no-op.
+- **Mermaid source data attribute** — `enhanceMarkdown` writes the
+  raw diagram source to `pre.dataset.mermaidSource` after rendering
+  the SVG. Both the copy-as-markdown serializer and
+  `DiagramInteractionHost`'s `copy-source` action read from there;
+  a data attribute survives `Range.cloneContents`, where a WeakMap
+  lookup keyed on the original element wouldn't.
 
 ## Test environment notes
 
