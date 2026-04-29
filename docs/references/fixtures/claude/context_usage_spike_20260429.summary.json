@@ -1,0 +1,142 @@
+{
+  "capturedAt": "2026-04-29T05:18:00Z",
+  "claudeCodeVersion": "2.1.118",
+  "purpose": "Compare Claude Code context-window usage signals during a streamed turn with Bash plus an Agent subagent.",
+  "rawLog": {
+    "checkedIn": false,
+    "reason": "The raw NDJSON includes local memory paths, MCP server names, signatures, and full context-usage category payloads. This sanitized summary keeps the durable protocol facts without personal machine details."
+  },
+  "commandShape": [
+    "claude",
+    "--input-format",
+    "stream-json",
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--include-partial-messages",
+    "--permission-prompt-tool",
+    "stdio",
+    "--permission-mode",
+    "bypassPermissions",
+    "--allow-dangerously-skip-permissions",
+    "--tools",
+    "Bash,Task",
+    "--model",
+    "claude-sonnet-4-6"
+  ],
+  "turnShape": {
+    "prompt": "Run a Bash printf, run an Agent subagent that replies AO_SPIKE_SUBAGENT_DONE, then answer AO_SPIKE_DONE.",
+    "topLevelToolUses": [
+      {
+        "name": "Bash",
+        "parent_tool_use_id": null
+      },
+      {
+        "name": "Agent",
+        "parent_tool_use_id": null
+      }
+    ],
+    "subagentCompletionSignals": [
+      {
+        "source": "system.task_notification.usage",
+        "total_tokens": 13534
+      },
+      {
+        "source": "user.tool_use_result.usage",
+        "input_tokens": 6,
+        "cache_creation_input_tokens": 13527,
+        "cache_read_input_tokens": 0,
+        "output_tokens": 24
+      }
+    ]
+  },
+  "signals": {
+    "ctxBefore": {
+      "source": "control_request get_context_usage",
+      "totalTokens": 14377,
+      "maxTokens": 200000,
+      "percentage": 7,
+      "apiUsage": null
+    },
+    "firstTopLevelMessageDelta": {
+      "source": "stream_event.event.message_delta.usage",
+      "stopReason": "tool_use",
+      "parent_tool_use_id": null,
+      "input_tokens": 10,
+      "cache_creation_input_tokens": 14711,
+      "cache_read_input_tokens": 0,
+      "output_tokens": 279,
+      "inputCacheWindow": 14721,
+      "inputCacheOutputTotal": 15000
+    },
+    "finalTopLevelMessageDelta": {
+      "source": "stream_event.event.message_delta.usage",
+      "stopReason": "end_turn",
+      "parent_tool_use_id": null,
+      "input_tokens": 8,
+      "cache_creation_input_tokens": 448,
+      "cache_read_input_tokens": 14711,
+      "output_tokens": 30,
+      "inputCacheWindow": 15167,
+      "inputCacheOutputTotal": 15197
+    },
+    "ctxAfter": {
+      "source": "control_request get_context_usage",
+      "totalTokens": 15167,
+      "maxTokens": 200000,
+      "rawMaxTokens": 200000,
+      "percentage": 8,
+      "apiUsage": {
+        "input_tokens": 8,
+        "cache_creation_input_tokens": 448,
+        "cache_read_input_tokens": 14711,
+        "output_tokens": 30
+      },
+      "apiInputCacheWindow": 15167,
+      "apiInputCacheOutputTotal": 15197
+    },
+    "resultUsage": {
+      "source": "result.usage",
+      "input_tokens": 18,
+      "cache_creation_input_tokens": 15159,
+      "cache_read_input_tokens": 14711,
+      "output_tokens": 309,
+      "inputCacheWindow": 29888,
+      "inputCacheOutputTotal": 30197,
+      "iterationsLast": {
+        "input_tokens": 8,
+        "cache_creation_input_tokens": 448,
+        "cache_read_input_tokens": 14711,
+        "output_tokens": 30
+      }
+    },
+    "resultModelUsage": {
+      "claude-sonnet-4-6": {
+        "inputTokens": 18,
+        "outputTokens": 309,
+        "cacheReadInputTokens": 14711,
+        "cacheCreationInputTokens": 15159,
+        "contextWindow": 200000
+      },
+      "claude-opus-4-7[1m]": {
+        "inputTokens": 6,
+        "outputTokens": 24,
+        "cacheReadInputTokens": 0,
+        "cacheCreationInputTokens": 13527,
+        "contextWindow": 1000000
+      }
+    }
+  },
+  "conclusion": {
+    "contextWindowUsed": "For Claude Code 2.1.118, get_context_usage.totalTokens equals the latest top-level message_delta usage input_tokens + cache_creation_input_tokens + cache_read_input_tokens. It excludes output_tokens.",
+    "passiveSignal": "Use the latest top-level stream_event.event.type=message_delta usage where parent_tool_use_id is null. Compute usedTokens from input/cache fields, not output.",
+    "activeSignal": "control_request subtype=get_context_usage gives the canonical /context-style totalTokens and category breakdown but requires an explicit request/response round trip.",
+    "doNotUseForMeter": [
+      "result.usage input/cache totals",
+      "result.modelUsage token totals",
+      "system.task_notification.usage total_tokens",
+      "user.tool_use_result.usage from Agent subagents"
+    ],
+    "maxTokens": "get_context_usage.maxTokens/rawMaxTokens or result.modelUsage[current-model].contextWindow are valid max-window hints."
+  }
+}

@@ -107,11 +107,64 @@ Mirrors the Anthropic API. Observed: `"end_turn"`, `"max_tokens"`,
 
 ### Fields the SDK exposes that we should capture
 - `total_cost_usd` (NOT `cost_usd`)
-- `usage` — cache breakdown for context-window display
+- `usage` — cumulative turn token/cost accounting; do not use its
+  aggregate token counts as current context-window occupancy
 - `modelUsage[model].contextWindow` — authoritative max context, use
   this instead of assuming `200_000`
 - `permission_denials: []` — list of declined tool calls
 - `errors: []` — present when `is_error` or on interrupt
+
+### Context-window usage
+
+Claude exposes two distinct context-related surfaces:
+
+- Passive stream usage on top-level assistant API responses:
+  `assistant.message.usage` and, with partial messages enabled,
+  `stream_event.event.type == "message_delta"` `usage`.
+- Active `/context` parity via an inbound `control_request` with
+  `request.subtype == "get_context_usage"`.
+
+For the chat context meter, the verified Claude Code 2.1.118 signal is
+the latest **top-level** `message_delta.usage` with no
+`parent_tool_use_id`, using:
+
+```text
+input_tokens + cache_creation_input_tokens + cache_read_input_tokens
+```
+
+Do not include `output_tokens` for current context occupancy. In the
+2026-04-29 spike, this value was `15167`, exactly matching
+`get_context_usage.totalTokens`. Adding output produced `15197`, while
+`result.usage` input/cache totals produced `29888` because `result.usage`
+accumulated multiple API calls in the turn.
+
+Do not update the parent chat meter from Agent/Task side signals:
+`system.task_notification.usage`, `user.tool_use_result.usage`, or any
+assistant/stream event carrying `parent_tool_use_id`. Those belong to
+the subagent's private context/cost accounting.
+
+`get_context_usage` is the canonical `/context` breakdown and returns
+`totalTokens`, `maxTokens`, `rawMaxTokens`, categories, and `apiUsage`.
+Use it when exact category parity is needed; otherwise the passive
+top-level `message_delta.usage` is enough for the live meter.
+
+Captured reference:
+`fixtures/claude/context_usage_spike_20260429.summary.json`.
+
+Other captured usage-adjacent signals worth preserving for future UI:
+
+| Signal | Future use | Context-meter rule |
+| --- | --- | --- |
+| `assistant.message.usage` | Fallback if partial `message_delta` events are unavailable; useful for showing per-response usage once an assistant envelope arrives. | Top-level only, and prefer `message_delta` because assistant envelopes can be earlier snapshots. |
+| `stream_event.event.type == "message_start"` `message.usage` | Early API-response usage snapshot, useful for diagnostics or "request started" telemetry. | Do not treat as settled context usage. |
+| `stream_event.event.type == "message_delta"` `usage` | Best passive live/settled top-level context signal; use latest top-level delta for the chat meter. | Use input + cache creation + cache read, excluding output. |
+| `result.usage.iterations[-1]` | Completion-time fallback if stream deltas were missed; mirrored the final top-level `message_delta.usage` in the spike. | Fallback only; do not use aggregate `result.usage` totals. |
+| `result.usage` | Per-turn API-call/cost accounting. Good for "tokens spent this turn" or billing diagnostics. | Never use aggregate totals for current context occupancy. |
+| `result.modelUsage[model]` | Per-model accounting across top-level and subagent/internal calls; `contextWindow` is a useful max-window hint. | Token totals are spend/accounting, not used context. |
+| `system.task_notification.usage` | Subagent/background-task progress or row-level token display. | Subagent-private accounting; do not update parent meter. |
+| `user.tool_use_result.usage` and `tool_use_result.totalTokens` | Completed Agent/Task details and subagent cost display. | Subagent-private accounting; do not update parent meter. |
+| `control_response` for `get_context_usage` | Canonical `/context` parity: exact `totalTokens`, `maxTokens`, category breakdown, and `apiUsage`; useful on resume/start or for audits. | Use `totalTokens` directly when actively requested. |
+| `context_management.applied_edits` | Potential future compaction/context-edit visualization; observed as empty in this spike. | Bookkeeping only. |
 
 ### ⚠ No `assistant_message_id` on this envelope
 
