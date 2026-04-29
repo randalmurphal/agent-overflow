@@ -28,9 +28,17 @@
     text: string;
     startLine: number;
     endLine: number;
-    top: number;
-    left: number;
+    // Trigger button anchors above the selection: its bottom-center
+    // lands at (triggerLeft, triggerTop) so the downward arrow points
+    // at the selected text. Composer drops below the selection.
+    triggerTop: number;
+    triggerLeft: number;
+    composerTop: number;
+    composerLeft: number;
   }
+
+  const COMPOSER_WIDTH = 288;
+  const TRIGGER_GAP = 8;
 
   interface BlockCommentView {
     block: ReturnType<typeof splitProposedPlanMarkdownBlocks>[number];
@@ -92,15 +100,27 @@
 
     const selectionRect = selectedRange.getBoundingClientRect();
     const rootRect = surfaceRoot.getBoundingClientRect();
+    const selTop = selectionRect.top - rootRect.top + surfaceRoot.scrollTop;
+    const selBottom = selectionRect.bottom - rootRect.top + surfaceRoot.scrollTop;
+    const selCenterX = selectionRect.left + selectionRect.width / 2 - rootRect.left + surfaceRoot.scrollLeft;
+    const triggerLeft = Math.min(
+      Math.max(selCenterX, 24),
+      Math.max(rootRect.width - 24, 24),
+    );
+    const composerHalf = COMPOSER_WIDTH / 2;
+    const minComposerX = composerHalf + 12;
+    const maxComposerX = Math.max(rootRect.width - composerHalf - 12, minComposerX);
     pendingSelection = {
       text: selectedText,
       startLine: lineRange.startLine,
       endLine: lineRange.endLine,
-      top: selectionRect.bottom - rootRect.top + surfaceRoot.scrollTop + 8,
-      left: Math.min(
-        Math.max(selectionRect.left - rootRect.left + surfaceRoot.scrollLeft, 12),
-        Math.max(rootRect.width - 300, 12),
-      ),
+      // Clamp trigger to keep it on-screen if the selection sits near
+      // the top: the button is anchored bottom-center, so a triggerTop
+      // below ~40px guarantees the icon + arrow stay visible.
+      triggerTop: Math.max(selTop - TRIGGER_GAP, 40),
+      triggerLeft,
+      composerTop: selBottom + TRIGGER_GAP,
+      composerLeft: Math.min(Math.max(selCenterX, minComposerX), maxComposerX),
     };
     composerOpen = false;
   }
@@ -173,12 +193,25 @@
     clearSelection();
   }
 
+  function handleSelectionChange(): void {
+    // Once the user has committed to commenting, the textarea takes
+    // focus and the body selection naturally collapses — leave the
+    // composer alone in that case.
+    if (composerOpen || !pendingSelection) return;
+    const selection = window.getSelection();
+    if (!selection || selection.isCollapsed) {
+      pendingSelection = null;
+    }
+  }
+
   $effect(() => {
     document.addEventListener('pointerdown', handleDocumentPointerDown);
     document.addEventListener('mouseup', handleMouseUp);
+    document.addEventListener('selectionchange', handleSelectionChange);
     return () => {
       document.removeEventListener('pointerdown', handleDocumentPointerDown);
       document.removeEventListener('mouseup', handleMouseUp);
+      document.removeEventListener('selectionchange', handleSelectionChange);
     };
   });
 
@@ -274,18 +307,34 @@
   {#if pendingSelection && !composerOpen}
     <button
       type="button"
-      class="absolute z-10 inline-flex items-center gap-1.5 rounded-md bg-surface-1 px-2.5 py-1 text-[12px] font-medium text-fg shadow-menu hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
-      style={`top: ${pendingSelection.top}px; left: ${pendingSelection.left}px;`}
+      aria-label="Comment on selection"
+      title="Comment on selection"
+      class="absolute z-10 inline-flex items-center justify-center rounded-md border border-border bg-surface-2 p-2 text-text-secondary shadow-menu transition-colors cursor-pointer hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+      style={`top: ${pendingSelection.triggerTop}px; left: ${pendingSelection.triggerLeft}px; transform: translate(-50%, -100%);`}
+      onpointerdown={(e) => e.preventDefault()}
       onclick={() => (composerOpen = true)}
       data-testid="plan-comment-trigger"
     >
-      <Icon icon={MessageSquarePlus} size={13} />
-      Comment
+      <Icon icon={MessageSquarePlus} size={14} />
+      <!-- Border arrow: slightly larger triangle in the border color
+           sits behind the fill to give the popup's bottom edge a
+           continuous outline. -->
+      <span
+        class="pointer-events-none absolute left-1/2 top-full h-0 w-0 -translate-x-1/2 border-x-[7px] border-t-[7px] border-x-transparent border-t-border"
+        aria-hidden="true"
+      ></span>
+      <!-- Fill arrow: matches the popup background and sits 1px above
+           the border arrow so the seam between popup and arrow is
+           covered. -->
+      <span
+        class="pointer-events-none absolute left-1/2 top-full h-0 w-0 -translate-x-1/2 -translate-y-px border-x-[6px] border-t-[6px] border-x-transparent border-t-surface-2"
+        aria-hidden="true"
+      ></span>
     </button>
   {:else if pendingSelection}
     <div
       class="absolute z-10 w-[18rem] rounded-md border border-border bg-surface-1 p-2.5 shadow-menu"
-      style={`top: ${pendingSelection.top}px; left: ${pendingSelection.left}px;`}
+      style={`top: ${pendingSelection.composerTop}px; left: ${pendingSelection.composerLeft}px; transform: translate(-50%, 0);`}
       data-testid="plan-comment-composer"
     >
       <p class="mb-1 line-clamp-2 italic text-[11px] text-fg-muted">"{pendingSelection.text}"</p>
