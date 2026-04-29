@@ -5,6 +5,7 @@
   --surface-0: oklch(0.145 0.014 285.82);
   --surface-1: oklch(0.178 0.014 285.82);
   --surface-2: oklch(0.215 0.014 285.82);
+  --code-inline-bg: oklch(0.275 0.014 285.82);
   --border: oklch(0.3 0.014 285.82);
   --text-primary: oklch(0.95 0.006 285.82);
   --text-secondary: oklch(0.7 0.006 285.82);
@@ -28,6 +29,7 @@ html.light {
   --surface-0: oklch(0.985 0.004 255);
   --surface-1: oklch(0.968 0.008 255);
   --surface-2: oklch(0.935 0.012 255);
+  --code-inline-bg: oklch(0.9 0.012 255);
   --border: oklch(0.86 0.014 255);
   --text-primary: oklch(0.23 0.014 255);
   --text-secondary: oklch(0.48 0.018 255);
@@ -209,7 +211,7 @@ pre, code, kbd, samp, .ansi-body {
 .markdown-body code {
   font-family: var(--font-mono);
   font-size: 0.9em;
-  background: var(--surface-2);
+  background: var(--code-inline-bg);
   padding: 0.05rem 0.3rem;
   border-radius: 0.25rem;
 }
