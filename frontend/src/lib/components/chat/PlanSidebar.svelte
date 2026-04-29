@@ -209,7 +209,7 @@
     style="width: {getPlanSidebarWidth()}px"
     class="relative flex shrink-0 flex-col border-l border-border bg-surface-1"
   >
-    <div class="flex items-center justify-between gap-2 px-3 pt-3 pb-2">
+    <div class="flex items-center justify-between gap-2 px-4 pt-3 pb-2">
       <div class="flex min-w-0 items-center gap-1.5">
         <h3 class="truncate text-sm font-medium text-text-primary">{title}</h3>
         {#if isAccepted}
@@ -235,7 +235,7 @@
       </div>
     </div>
 
-    <div class="flex-1 overflow-y-auto px-3 pb-2">
+    <div class="flex-1 overflow-y-auto px-4 pb-2">
       {#if currentPlan}
         {#if planLoadError}
           <div class="flex flex-col items-start gap-2 py-3 text-xs text-text-secondary" data-testid="plan-sidebar-error">
@@ -269,7 +269,7 @@
     </div>
 
     {#if currentPlan && draftCommentCount > 0}
-      <div class="flex items-center justify-end px-3 pt-2 pb-3">
+      <div class="flex items-center justify-end px-4 pt-2 pb-3">
         <Button
           variant="tinted"
           size="sm"
