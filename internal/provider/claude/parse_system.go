@@ -21,11 +21,10 @@ func (p *Parser) parseSystem(threadID string, raw map[string]json.RawMessage, no
 	switch subtype {
 	case "init":
 		info := extractSessionInfo(raw)
-		// Remember the model id so subsequent assistant usage events can
-		// be priced without a round-trip to the store. Cost lands on
-		// EventTokenUsage meta via appendUsageEvent. p is nil only in
-		// the package-level ParseLine helper's test-only fast path; in
-		// that path we can't price anyway, so skip the assignment.
+		// Remember the model id so result usage can be priced without a
+		// round-trip to the store. p is nil only in the package-level
+		// ParseLine helper's test-only fast path; in that path we can't
+		// price anyway, so skip the assignment.
 		if p != nil {
 			p.model = strings.TrimSpace(info.Model)
 		}

@@ -518,8 +518,8 @@ func TestInsertAndListItems(t *testing.T) {
 
 	now := time.Now().UnixMilli()
 	items := []Item{
-		{ID: "i1", ThreadID: "t1", TurnIndex: 0, ItemIndex: 0, Kind:      "user_text", Role: "user", Summary: "hello", CreatedAt: now},
-		{ID: "i2", ThreadID: "t1", TurnIndex: 0, ItemIndex: 1, Kind:      "assistant_text", Role: "assistant", Summary: "hi", CreatedAt: now + 1},
+		{ID: "i1", ThreadID: "t1", TurnIndex: 0, ItemIndex: 0, Kind: "user_text", Role: "user", Summary: "hello", CreatedAt: now},
+		{ID: "i2", ThreadID: "t1", TurnIndex: 0, ItemIndex: 1, Kind: "assistant_text", Role: "assistant", Summary: "hi", CreatedAt: now + 1},
 		{ID: "i3", ThreadID: "t1", TurnIndex: 1, ItemIndex: 0, Kind: "tool_call", Role: "assistant", Summary: "bash", CreatedAt: now + 2},
 	}
 
@@ -838,6 +838,17 @@ func TestLastTurnIndex(t *testing.T) {
 	}
 
 	now := time.Now().UnixMilli()
+	if err := s.InsertTurn(makeInflightTurn("turn-2", "t1", 2, now)); err != nil {
+		t.Fatalf("insert turn row: %v", err)
+	}
+	idx, err = s.LastTurnIndex("t1")
+	if err != nil {
+		t.Fatalf("last turn (turn row only): %v", err)
+	}
+	if idx != 2 {
+		t.Errorf("expected 2 from turn row without items, got %d", idx)
+	}
+
 	for _, turnIdx := range []int{0, 1, 5} {
 		item := Item{
 			ID:        "i-turn-" + string(rune('0'+turnIdx)),
@@ -1363,7 +1374,7 @@ func TestUpdateItemPayloadAtomicThreadTouch(t *testing.T) {
 	}
 	if err := s.InsertItem(Item{
 		ID: "i-1", ThreadID: "t-atomic", TurnIndex: 0, ItemIndex: 0,
-		Kind:      "tool_call", Role: "assistant", PayloadID: "p-1", CreatedAt: 100,
+		Kind: "tool_call", Role: "assistant", PayloadID: "p-1", CreatedAt: 100,
 	}); err != nil {
 		t.Fatalf("item: %v", err)
 	}
@@ -1410,7 +1421,7 @@ func TestUpdateItemPayloadConcurrentCallsSerialise(t *testing.T) {
 	}
 	if err := s.InsertItem(Item{
 		ID: "i-1", ThreadID: "t-conc", TurnIndex: 0, ItemIndex: 0,
-		Kind:      "tool_call", Role: "assistant", PayloadID: "p-1", CreatedAt: 100,
+		Kind: "tool_call", Role: "assistant", PayloadID: "p-1", CreatedAt: 100,
 	}); err != nil {
 		t.Fatalf("item: %v", err)
 	}
@@ -1485,9 +1496,9 @@ func TestListPayloadMetas(t *testing.T) {
 
 	// Insert items linking payloads to threads.
 	items := []Item{
-		{ID: "i1", ThreadID: "t1", TurnIndex: 0, ItemIndex: 0, Kind:      "tool_call", Role: "assistant", PayloadID: "p1", CreatedAt: now},
-		{ID: "i2", ThreadID: "t1", TurnIndex: 0, ItemIndex: 1, Kind:      "tool_call", Role: "assistant", PayloadID: "p2", CreatedAt: now},
-		{ID: "i3", ThreadID: "t2", TurnIndex: 0, ItemIndex: 0, Kind:      "tool_call", Role: "assistant", PayloadID: "p3", CreatedAt: now},
+		{ID: "i1", ThreadID: "t1", TurnIndex: 0, ItemIndex: 0, Kind: "tool_call", Role: "assistant", PayloadID: "p1", CreatedAt: now},
+		{ID: "i2", ThreadID: "t1", TurnIndex: 0, ItemIndex: 1, Kind: "tool_call", Role: "assistant", PayloadID: "p2", CreatedAt: now},
+		{ID: "i3", ThreadID: "t2", TurnIndex: 0, ItemIndex: 0, Kind: "tool_call", Role: "assistant", PayloadID: "p3", CreatedAt: now},
 	}
 	for _, it := range items {
 		if err := s.InsertItem(it); err != nil {
@@ -1574,13 +1585,13 @@ func TestDeleteThreadCascadesPayloadGC(t *testing.T) {
 	if err := s.InsertPayload(Payload{ID: "p3", Kind: "diff", Meta: "{}", Data: []byte("c"), CreatedAt: 3}); err != nil {
 		t.Fatalf("p3: %v", err)
 	}
-	if err := s.InsertItem(Item{ID: "i1", ThreadID: "t1", TurnIndex: 0, ItemIndex: 0, Kind:      "tool_call", Role: "assistant", PayloadID: "p1", CreatedAt: 1}); err != nil {
+	if err := s.InsertItem(Item{ID: "i1", ThreadID: "t1", TurnIndex: 0, ItemIndex: 0, Kind: "tool_call", Role: "assistant", PayloadID: "p1", CreatedAt: 1}); err != nil {
 		t.Fatalf("i1: %v", err)
 	}
-	if err := s.InsertItem(Item{ID: "i2", ThreadID: "t1", TurnIndex: 0, ItemIndex: 1, Kind:      "tool_call", Role: "assistant", PayloadID: "p2", CreatedAt: 2}); err != nil {
+	if err := s.InsertItem(Item{ID: "i2", ThreadID: "t1", TurnIndex: 0, ItemIndex: 1, Kind: "tool_call", Role: "assistant", PayloadID: "p2", CreatedAt: 2}); err != nil {
 		t.Fatalf("i2: %v", err)
 	}
-	if err := s.InsertItem(Item{ID: "i-keep", ThreadID: "t-survivor", TurnIndex: 0, ItemIndex: 0, Kind:      "tool_call", Role: "assistant", PayloadID: "p3", CreatedAt: 3}); err != nil {
+	if err := s.InsertItem(Item{ID: "i-keep", ThreadID: "t-survivor", TurnIndex: 0, ItemIndex: 0, Kind: "tool_call", Role: "assistant", PayloadID: "p3", CreatedAt: 3}); err != nil {
 		t.Fatalf("i-keep: %v", err)
 	}
 
@@ -1630,7 +1641,7 @@ func TestDeleteThreadCascadesPayloadGCScale(t *testing.T) {
 		if err := s.InsertItem(Item{
 			ID: iid, ThreadID: "t1",
 			TurnIndex: i / 10, ItemIndex: i % 10,
-			Kind:      "tool_call", Role: "assistant",
+			Kind: "tool_call", Role: "assistant",
 			PayloadID: pid, CreatedAt: int64(i),
 		}); err != nil {
 			t.Fatalf("item %d: %v", i, err)
@@ -1663,10 +1674,10 @@ func TestPayloadGCIgnoresSharedPayload(t *testing.T) {
 	if err := s.InsertPayload(Payload{ID: "shared", Kind: "diff", Meta: "{}", Data: []byte("x"), CreatedAt: 1}); err != nil {
 		t.Fatalf("payload: %v", err)
 	}
-	if err := s.InsertItem(Item{ID: "a", ThreadID: "t1", TurnIndex: 0, ItemIndex: 0, Kind:      "tool_call", Role: "assistant", PayloadID: "shared", CreatedAt: 1}); err != nil {
+	if err := s.InsertItem(Item{ID: "a", ThreadID: "t1", TurnIndex: 0, ItemIndex: 0, Kind: "tool_call", Role: "assistant", PayloadID: "shared", CreatedAt: 1}); err != nil {
 		t.Fatalf("a: %v", err)
 	}
-	if err := s.InsertItem(Item{ID: "b", ThreadID: "t1", TurnIndex: 0, ItemIndex: 1, Kind:      "tool_call", Role: "assistant", PayloadID: "shared", CreatedAt: 2}); err != nil {
+	if err := s.InsertItem(Item{ID: "b", ThreadID: "t1", TurnIndex: 0, ItemIndex: 1, Kind: "tool_call", Role: "assistant", PayloadID: "shared", CreatedAt: 2}); err != nil {
 		t.Fatalf("b: %v", err)
 	}
 

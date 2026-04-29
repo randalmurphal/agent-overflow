@@ -18,9 +18,9 @@ Every normalized `ProviderEvent` flows through `Router.Handle` in
 | `approval_request` | `handleApprovalRequest` — record pending, emit `provider:approval` (request). |
 | `approval_resolved` | `handleApprovalResolved` — fold decision onto the row, emit `provider:approval` (resolve). |
 | `session_status` | `handleSessionStatus` — precise mapping to `ProviderStatusEventKind`, emit `provider:status` when persistent. |
-| `token_usage` | `handleTokenUsage` — emit `provider:usage` (cost pre-computed in the provider adapter). |
+| `token_usage` | `handleTokenUsage` — persist and emit a provider-normalized context-window snapshot. Generic token-spend totals are ignored here. |
 | `error` | `handleError` — persist error row, mark turn items errored on fatal, emit `provider:item_event` upsert. |
-| `compact_boundary` | `handleCompaction` — persist compaction marker, emit `provider:usage` (reset). |
+| `compact_boundary` | `handleCompaction` — persist compaction marker; emit an included context-window snapshot when present, otherwise emit `provider:usage` reset. |
 | `rate_limits` | `handleRateLimits` — emit `provider:usage` (rate_limits). |
 | `content_block_start` / `content_block_stop` | Streaming text/thinking block markers; settle streaming rows on stop. |
 | `model_rerouted` | `handleThreadModelUpdate` — persist new model, emit `thread:updated`. |

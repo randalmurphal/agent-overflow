@@ -558,7 +558,13 @@ func (s *Store) NextItemIndex(threadID string, turnIndex int) (int, error) {
 func (s *Store) LastTurnIndex(threadID string) (int, error) {
 	var maxIndex sql.NullInt64
 	err := s.db.QueryRow(
-		`SELECT MAX(turn_index) FROM items WHERE thread_id = ?`, threadID,
+		`SELECT MAX(turn_index)
+		   FROM (
+		         SELECT turn_index FROM items WHERE thread_id = ?
+		         UNION ALL
+		         SELECT turn_index FROM turns WHERE thread_id = ?
+		        )`,
+		threadID, threadID,
 	).Scan(&maxIndex)
 	if err != nil {
 		return 0, fmt.Errorf("store: last turn index: %w", err)

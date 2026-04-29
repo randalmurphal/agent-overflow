@@ -31,8 +31,8 @@ type assistantContentBlock struct {
 
 // assistantUsage mirrors the usage object Claude attaches to
 // `assistant.message` lines. Split out so the usage branch of
-// parseAssistant can rewrite it into a provider.TokenUsage without the
-// rest of the message struct leaking into the helper.
+// parseAssistant can turn it into a context-window snapshot without
+// the rest of the message struct leaking into the helper.
 type assistantUsage struct {
 	InputTokens              int `json:"input_tokens"`
 	OutputTokens             int `json:"output_tokens"`
@@ -130,7 +130,7 @@ func (p *Parser) parseAssistant(threadID string, raw map[string]json.RawMessage,
 		}
 	}
 
-	events = appendUsageEvent(events, threadID, parentToolUseID, now, msg.Usage, p.currentModel())
+	events = p.appendAssistantUsageEvent(events, threadID, parentToolUseID, now, msg.Usage)
 	return events, nil
 }
 
@@ -247,40 +247,51 @@ func appendThinkingEvent(
 	})
 }
 
-// appendUsageEvent emits an EventTokenUsage when the assistant message
-// carries a usage object. Nil usage (the common mid-stream case) drops
-// through without touching the event slice. When `model` is non-empty
-// we price the usage via provider.CalculateCost and stamp the result on
-// TotalCostUSD before marshaling — the triage router trusts the meta
-// verbatim, so the cost is attached at the provider boundary where the
-// model is authoritatively known.
-func appendUsageEvent(
+// appendAssistantUsageEvent emits a context-window snapshot from a top-level
+// assistant usage object. Subagent assistant envelopes carry
+// parent_tool_use_id and belong to the subagent's private accounting, not the
+// parent chat meter.
+func (p *Parser) appendAssistantUsageEvent(
 	events []provider.ProviderEvent,
 	threadID, parentToolUseID string,
 	now time.Time,
 	usage *assistantUsage,
-	model string,
 ) []provider.ProviderEvent {
 	if usage == nil {
 		return events
 	}
-	tokenUsage := provider.TokenUsage{
-		InputTokens:              usage.InputTokens,
-		OutputTokens:             usage.OutputTokens,
-		CacheReadInputTokens:     usage.CacheReadInputTokens,
-		CacheCreationInputTokens: usage.CacheCreationInputTokens,
+	return p.appendContextUsageEvent(events, threadID, parentToolUseID, now, *usage)
+}
+
+func (p *Parser) appendContextUsageEvent(
+	events []provider.ProviderEvent,
+	threadID, parentToolUseID string,
+	now time.Time,
+	usage assistantUsage,
+) []provider.ProviderEvent {
+	if parentToolUseID != "" {
+		return events
 	}
-	if model != "" {
-		tokenUsage.TotalCostUSD = provider.CalculateCost(model, tokenUsage)
+	window, ok := contextWindowFromClaudeUsage(usage)
+	if !ok {
+		return events
 	}
-	usageMeta, _ := json.Marshal(tokenUsage)
+	p.markTopLevelContextUsageSeen()
+	usageMeta, _ := json.Marshal(window)
 	return append(events, provider.ProviderEvent{
-		Kind:            provider.EventTokenUsage,
-		ThreadID:        threadID,
-		Meta:            usageMeta,
-		ParentToolUseID: parentToolUseID,
-		Timestamp:       now,
+		Kind:      provider.EventTokenUsage,
+		ThreadID:  threadID,
+		Meta:      usageMeta,
+		Timestamp: now,
 	})
+}
+
+func contextWindowFromClaudeUsage(usage assistantUsage) (provider.ContextWindow, bool) {
+	used := usage.InputTokens + usage.CacheCreationInputTokens + usage.CacheReadInputTokens
+	if used <= 0 {
+		return provider.ContextWindow{}, false
+	}
+	return provider.ContextWindow{UsedTokens: used}, true
 }
 
 // hasRunInBackground returns true when the tool input JSON contains

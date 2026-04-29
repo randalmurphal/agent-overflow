@@ -294,7 +294,7 @@ func TestFileChangeOutputDelta(t *testing.T) {
 }
 
 func TestTokenUsageUpdated(t *testing.T) {
-	params := json.RawMessage(`{"inputTokens":100,"outputTokens":50}`)
+	params := json.RawMessage(`{"tokenUsage":{"last":{"inputTokens":100,"outputTokens":20,"cachedInputTokens":6,"totalTokens":126},"total":{"inputTokens":9000,"outputTokens":2000,"cachedInputTokens":839,"totalTokens":11839},"modelContextWindow":258400}}`)
 	events := ClassifyNotification(testThread, "thread/tokenUsage/updated", params)
 
 	if len(events) != 1 {
@@ -302,6 +302,16 @@ func TestTokenUsageUpdated(t *testing.T) {
 	}
 	if events[0].Kind != provider.EventTokenUsage {
 		t.Errorf("kind: got %q, want %q", events[0].Kind, provider.EventTokenUsage)
+	}
+	var window provider.ContextWindow
+	if err := json.Unmarshal(events[0].Meta, &window); err != nil {
+		t.Fatalf("unmarshal context window: %v", err)
+	}
+	if window.UsedTokens != 126 {
+		t.Fatalf("usedTokens: got %d, want 126", window.UsedTokens)
+	}
+	if window.MaxTokens != 258400 {
+		t.Fatalf("maxTokens: got %d, want 258400", window.MaxTokens)
 	}
 }
 

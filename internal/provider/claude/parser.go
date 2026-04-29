@@ -60,9 +60,14 @@ type Parser struct {
 	// (parent_tool_use_id,index) so a later content_block_stop can identify
 	// which streaming block closed.
 	streamBlockTypes map[string]string
+	// topLevelContextUsageSeen tracks whether the current turn has already
+	// emitted a context-window-accurate top-level usage snapshot. Claude's
+	// result.usage is cumulative spend across API calls, so parseResult only
+	// uses result.usage.iterations[-1] as a fallback when this flag is false.
+	topLevelContextUsageSeen bool
 	// model is the latest model id observed on this session. Seeded from
-	// the system/init line and used to price assistant usage events so
-	// triage doesn't have to reach back into the store for pricing. When
+	// the system/init line and used to price result usage so triage
+	// doesn't have to reach back into the store for pricing. When
 	// the CLI rewrites the model mid-session (e.g. Sonnet → Opus auto-
 	// upgrade), the next init echo updates this field.
 	model string
@@ -79,8 +84,8 @@ type Parser struct {
 
 // SetModel primes the parser with the model id the session was started
 // with. Init messages still overwrite the field when they arrive, but
-// seeding from Session.Start lets the first assistant usage event carry
-// a priced TokenUsage even if the init line is late or absent.
+// seeding from Session.Start lets the first result usage snapshot carry
+// priced usage metadata even if the init line is late or absent.
 func (p *Parser) SetModel(model string) {
 	if p == nil {
 		return
@@ -118,6 +123,7 @@ func (p *Parser) Close() {
 	p.taskToolUses = nil
 	p.subagentModelStamped = nil
 	p.streamBlockTypes = nil
+	p.topLevelContextUsageSeen = false
 	p.lastAssistantMessageID = ""
 }
 
@@ -327,6 +333,22 @@ func (p *Parser) takeLastAssistantMessageID() string {
 	id := p.lastAssistantMessageID
 	p.lastAssistantMessageID = ""
 	return id
+}
+
+func (p *Parser) markTopLevelContextUsageSeen() {
+	if p == nil {
+		return
+	}
+	p.topLevelContextUsageSeen = true
+}
+
+func (p *Parser) takeTopLevelContextUsageSeen() bool {
+	if p == nil {
+		return false
+	}
+	seen := p.topLevelContextUsageSeen
+	p.topLevelContextUsageSeen = false
+	return seen
 }
 
 func (p *Parser) rememberStreamBlock(parentToolUseID string, index int, blockType string) {

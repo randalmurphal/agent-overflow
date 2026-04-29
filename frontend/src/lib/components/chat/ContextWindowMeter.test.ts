@@ -54,4 +54,21 @@ describe('<ContextWindowMeter>', () => {
     expect(await screen.findByText('25% used')).toBeTruthy();
     expect(screen.getByText('500 / 2.0k tokens')).toBeTruthy();
   });
+
+  it('does not display aggregate processed tokens in the context popover', async () => {
+    const { getByLabelText } = render(ContextWindowMeter, {
+      props: {
+        data: {
+          usedTokens: 126,
+          maxTokens: 258400,
+        },
+      },
+    });
+
+    await fireEvent.mouseEnter(getByLabelText(/Context Window/));
+
+    expect(await screen.findByText('126 / 258.4k tokens')).toBeTruthy();
+    expect(screen.queryByText(/Total processed/i)).toBeNull();
+    expect(screen.queryByText(/11.8k/)).toBeNull();
+  });
 });

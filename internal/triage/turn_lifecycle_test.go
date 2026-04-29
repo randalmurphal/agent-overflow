@@ -341,6 +341,49 @@ func TestHandleEventTurnComplete_UpdatesTurnRow(t *testing.T) {
 	}
 }
 
+func TestHandleEventTurnCompleteDuplicatePersistsLateUsage(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	startedAt := time.UnixMilli(1_700_000_000_000)
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTurnStart,
+		ThreadID:  "t1",
+		TurnIndex: 3,
+		Timestamp: startedAt,
+	}); err != nil {
+		t.Fatalf("turn start: %v", err)
+	}
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTurnComplete,
+		ThreadID:  "t1",
+		Timestamp: startedAt.Add(time.Second),
+	}); err != nil {
+		t.Fatalf("first complete: %v", err)
+	}
+
+	lateMeta, _ := json.Marshal(map[string]any{
+		"usage": map[string]any{"input_tokens": 123, "output_tokens": 45},
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTurnComplete,
+		ThreadID:  "t1",
+		Meta:      lateMeta,
+		Timestamp: startedAt.Add(2 * time.Second),
+	}); err != nil {
+		t.Fatalf("duplicate complete: %v", err)
+	}
+
+	turn, found, err := st.GetTurn("t1:3")
+	if err != nil || !found {
+		t.Fatalf("get turn: found=%v err=%v", found, err)
+	}
+	if !strings.Contains(turn.TokenUsageJSON, "input_tokens") {
+		t.Fatalf("late token_usage_json not persisted: %q", turn.TokenUsageJSON)
+	}
+}
+
 // TestHandleEventTurnComplete_ForceClosesOrphans pins invariant 23:
 // at turn-complete, any status=running + is_background=false
 // tool_call rows on the turn must flip to errored with a synthesized

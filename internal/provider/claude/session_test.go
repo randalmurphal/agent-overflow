@@ -156,15 +156,12 @@ func TestParseAssistantWithUsage(t *testing.T) {
 	if events[0].Kind != provider.EventTokenUsage {
 		t.Errorf("kind: got %q, want token_usage", events[0].Kind)
 	}
-	var usage provider.TokenUsage
+	var usage provider.ContextWindow
 	if err := json.Unmarshal(events[0].Meta, &usage); err != nil {
 		t.Fatalf("unmarshal usage: %v", err)
 	}
-	if usage.InputTokens != 100 {
-		t.Errorf("input tokens: got %d, want 100", usage.InputTokens)
-	}
-	if usage.OutputTokens != 50 {
-		t.Errorf("output tokens: got %d, want 50", usage.OutputTokens)
+	if usage.UsedTokens != 200 {
+		t.Errorf("used tokens: got %d, want 200", usage.UsedTokens)
 	}
 }
 
@@ -259,9 +256,6 @@ func TestParseCompactBoundary(t *testing.T) {
 	}
 	if meta.UsedPercentage != 25 {
 		t.Errorf("UsedPercentage: got %f, want 25", meta.UsedPercentage)
-	}
-	if meta.TotalProcessed != 120000 {
-		t.Errorf("TotalProcessed: got %d, want 120000", meta.TotalProcessed)
 	}
 }
 
@@ -2182,7 +2176,6 @@ func TestExitPlanModeWritesDenyOnHappyPath(t *testing.T) {
 // pending can_use_tool / AskUserQuestion response. See plan: t3-code
 // has no equivalent watchdog and the user-facing Stop button is the
 // authoritative way to abort a stuck turn.)
-
 
 // TestReadLoopEmitsErrorOnOversizedLine exercises Bug B1 at the readLoop
 // layer: when the subprocess writes a single line past the cap, we expect

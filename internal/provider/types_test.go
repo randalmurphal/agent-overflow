@@ -555,7 +555,6 @@ func TestContextWindowJSON(t *testing.T) {
 		UsedTokens:     50000,
 		MaxTokens:      200000,
 		UsedPercentage: 25.0,
-		TotalProcessed: 120000,
 	}
 
 	data, err := json.Marshal(cw)

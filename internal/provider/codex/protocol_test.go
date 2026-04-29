@@ -49,11 +49,10 @@ func TestClassifyNotification_TurnStarted(t *testing.T) {
 	}
 }
 
-func TestClassifyNotification_TurnCompleted_WithUsage(t *testing.T) {
+func TestClassifyNotification_TurnCompleted_DoesNotEmitUsage(t *testing.T) {
 	params := `{"turn":{"id":"t1","status":"completed","usage":{"inputTokens":100,"outputTokens":50},"model":"claude-sonnet-4-6"},"model":"claude-sonnet-4-6"}`
 	events := ClassifyNotification("thread-1", "turn/completed", json.RawMessage(params))
 
-	// Should emit usage event + turn complete.
 	hasUsage := false
 	hasComplete := false
 	for _, evt := range events {
@@ -65,8 +64,8 @@ func TestClassifyNotification_TurnCompleted_WithUsage(t *testing.T) {
 		}
 	}
 
-	if !hasUsage {
-		t.Error("expected a token usage event")
+	if hasUsage {
+		t.Error("turn/completed must not emit token usage; thread/tokenUsage/updated is the context signal")
 	}
 	if !hasComplete {
 		t.Error("expected a turn complete event")
@@ -95,6 +94,48 @@ func TestClassifyNotification_TurnAborted(t *testing.T) {
 	}
 	if !meta["aborted"] {
 		t.Error("expected meta.aborted to be true")
+	}
+}
+
+func TestClassifyNotification_ThreadTokenUsageUpdatedNormalizesContextWindow(t *testing.T) {
+	params := json.RawMessage(`{"tokenUsage":{"last":{"inputTokens":100,"outputTokens":20,"cachedInputTokens":6,"totalTokens":126},"total":{"inputTokens":9000,"outputTokens":2000,"cachedInputTokens":839,"totalTokens":11839},"modelContextWindow":258400}}`)
+	events := ClassifyNotification("thread-1", "thread/tokenUsage/updated", params)
+
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if events[0].Kind != provider.EventTokenUsage {
+		t.Fatalf("kind: got %q, want %q", events[0].Kind, provider.EventTokenUsage)
+	}
+
+	var window provider.ContextWindow
+	if err := json.Unmarshal(events[0].Meta, &window); err != nil {
+		t.Fatalf("unmarshal context window: %v", err)
+	}
+	if window.UsedTokens != 126 {
+		t.Fatalf("usedTokens: got %d, want 126", window.UsedTokens)
+	}
+	if window.MaxTokens != 258400 {
+		t.Fatalf("maxTokens: got %d, want 258400", window.MaxTokens)
+	}
+}
+
+func TestClassifyNotification_ThreadTokenUsageUpdatedDoesNotSumBreakdowns(t *testing.T) {
+	params := json.RawMessage(`{"tokenUsage":{"last":{"inputTokens":100,"outputTokens":20,"cachedInputTokens":6,"reasoningOutputTokens":4},"total":{"inputTokens":9000,"outputTokens":2000,"cachedInputTokens":839},"modelContextWindow":258400}}`)
+	events := ClassifyNotification("thread-1", "thread/tokenUsage/updated", params)
+
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event because max window is still useful, got %d", len(events))
+	}
+	var window provider.ContextWindow
+	if err := json.Unmarshal(events[0].Meta, &window); err != nil {
+		t.Fatalf("unmarshal context window: %v", err)
+	}
+	if window.UsedTokens != 0 {
+		t.Fatalf("usedTokens: got %d, want 0; Codex totalTokens is the context signal", window.UsedTokens)
+	}
+	if window.MaxTokens != 258400 {
+		t.Fatalf("maxTokens: got %d, want 258400", window.MaxTokens)
 	}
 }
 
@@ -224,57 +265,6 @@ func TestReadTopLevelBool(t *testing.T) {
 				t.Errorf("readTopLevelBool(%s, %q) = %v, want %v", tt.data, tt.key, got, tt.want)
 			}
 		})
-	}
-}
-
-// -- extractUsageFromTurn tests --
-
-func TestExtractUsageFromTurn_TopLevel(t *testing.T) {
-	params := json.RawMessage(`{"usage":{"inputTokens":100,"outputTokens":50}}`)
-	result := extractUsageFromTurn(params)
-	if result == nil {
-		t.Fatal("expected non-nil usage data")
-	}
-}
-
-func TestExtractUsageFromTurn_NestedTurn(t *testing.T) {
-	params := json.RawMessage(`{"turn":{"usage":{"inputTokens":200,"outputTokens":100}}}`)
-	result := extractUsageFromTurn(params)
-	if result == nil {
-		t.Fatal("expected non-nil usage data")
-	}
-}
-
-func TestExtractUsageFromTurn_NoUsage(t *testing.T) {
-	params := json.RawMessage(`{"turn":{"id":"t1","status":"completed"}}`)
-	result := extractUsageFromTurn(params)
-	if result != nil {
-		t.Errorf("expected nil for missing usage, got %s", string(result))
-	}
-}
-
-func TestExtractUsageFromTurn_WithModelComputesCost(t *testing.T) {
-	params := json.RawMessage(`{"usage":{"inputTokens":1000000,"outputTokens":500000},"model":"claude-sonnet-4-6"}`)
-	result := extractUsageFromTurn(params)
-	if result == nil {
-		t.Fatal("expected non-nil result")
-	}
-
-	var usage provider.TokenUsage
-	if err := json.Unmarshal(result, &usage); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-
-	// claude-sonnet: $3.00/M input + $15.00/M output = $3.00 + $7.50 = $10.50
-	if usage.TotalCostUSD < 10.0 || usage.TotalCostUSD > 11.0 {
-		t.Errorf("TotalCostUSD: got %f, want ~10.50", usage.TotalCostUSD)
-	}
-}
-
-func TestExtractUsageFromTurn_InvalidJSON(t *testing.T) {
-	result := extractUsageFromTurn(json.RawMessage(`not json`))
-	if result != nil {
-		t.Error("expected nil for invalid JSON")
 	}
 }
 

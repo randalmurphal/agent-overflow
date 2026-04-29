@@ -550,6 +550,74 @@ func TestCompactBoundaryAndRateLimitsEmit(t *testing.T) {
 	}
 }
 
+func TestCompactBoundaryWithContextWindowEmitsUsageSnapshot(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	meta, err := json.Marshal(provider.ContextWindow{
+		UsedTokens:     50000,
+		MaxTokens:      200000,
+		UsedPercentage: 25,
+	})
+	if err != nil {
+		t.Fatalf("marshal context window: %v", err)
+	}
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventCompactBoundary,
+		ThreadID:  "t1",
+		Meta:      meta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle: %v", err)
+	}
+
+	usageEmits := filterEmissions(*emissions, "provider:usage")
+	if len(usageEmits) != 1 {
+		t.Fatalf("expected 1 provider:usage emission, got %+v", *emissions)
+	}
+	usage := usageEmits[0].data.(provider.UsageEvent)
+	if usage.Action != "usage" {
+		t.Fatalf("usage action: got %q, want usage", usage.Action)
+	}
+	if usage.UsedTokens != 50000 {
+		t.Fatalf("usedTokens: got %d, want 50000", usage.UsedTokens)
+	}
+	if usage.MaxTokens != 200000 {
+		t.Fatalf("maxTokens: got %d, want 200000", usage.MaxTokens)
+	}
+
+	thread, err := st.GetThread("t1")
+	if err != nil {
+		t.Fatalf("get thread: %v", err)
+	}
+	if !strings.Contains(thread.LastTokenUsage, "\"usedTokens\":50000") {
+		t.Fatalf("last token usage not persisted: %q", thread.LastTokenUsage)
+	}
+}
+
+func TestCompactBoundaryWithAggregateOnlyUsageMetaResets(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventCompactBoundary,
+		ThreadID:  "t1",
+		Meta:      json.RawMessage(`{"totalProcessed":120000}`),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle: %v", err)
+	}
+
+	usageEmits := filterEmissions(*emissions, "provider:usage")
+	if len(usageEmits) != 1 {
+		t.Fatalf("expected 1 provider:usage emission, got %+v", *emissions)
+	}
+	usage := usageEmits[0].data.(provider.UsageEvent)
+	if usage.Action != "reset" {
+		t.Fatalf("usage action: got %q, want reset", usage.Action)
+	}
+}
+
 // TestRateLimitsRoutedToUsageChannel verifies EventRateLimits emits on the
 // provider:usage channel with action=rate_limits and the snapshot carried
 // through in the RateLimits field (chat-rewrite spec, Channels section).
@@ -969,7 +1037,7 @@ func TestThreadRenamedUpdatesThread(t *testing.T) {
 	}
 }
 
-func TestTokenUsageEmitsContextMeterUpdate(t *testing.T) {
+func TestContextWindowUsageEmitsContextMeterUpdate(t *testing.T) {
 	router, st, emissions := newTestRouter(t)
 	ensureTriageProject(t, st)
 	now := time.Now().UnixMilli()
@@ -986,12 +1054,9 @@ func TestTokenUsageEmitsContextMeterUpdate(t *testing.T) {
 		t.Fatalf("create thread: %v", err)
 	}
 
-	// Provider-side cost pricing is the adapter's job. Triage trusts the
-	// incoming meta verbatim and emits a provider:usage update.
-	meta, err := json.Marshal(provider.TokenUsage{
-		InputTokens:  2_000_000,
-		OutputTokens: 1_000_000,
-		TotalCostUSD: 5.25, // pre-priced by provider adapter
+	meta, err := json.Marshal(provider.ContextWindow{
+		UsedTokens: 126,
+		MaxTokens:  258_400,
 	})
 	if err != nil {
 		t.Fatalf("marshal usage: %v", err)
@@ -1014,22 +1079,19 @@ func TestTokenUsageEmitsContextMeterUpdate(t *testing.T) {
 	if !ok {
 		t.Fatalf("usage emission type = %T, want provider.UsageEvent", usageEvents[0].data)
 	}
-	if usage.UsedTokens != 3_000_000 {
-		t.Fatalf("usedTokens: got %d, want 3000000", usage.UsedTokens)
+	if usage.UsedTokens != 126 {
+		t.Fatalf("usedTokens: got %d, want 126", usage.UsedTokens)
 	}
 	thread, err := st.GetThread("t1")
 	if err != nil {
 		t.Fatalf("get thread: %v", err)
 	}
-	if !strings.Contains(thread.LastTokenUsage, "\"usedTokens\":3000000") {
+	if !strings.Contains(thread.LastTokenUsage, "\"usedTokens\":126") {
 		t.Fatalf("last token usage not persisted: %q", thread.LastTokenUsage)
 	}
 }
 
-func TestTokenUsageEmitsWithoutProviderCost(t *testing.T) {
-	// When the provider adapter didn't attach TotalCostUSD (empty or
-	// unknown model), triage should still emit the context-meter update.
-	// Cost is nice-to-have; the meter must fire regardless.
+func TestGenericTokenUsageDoesNotEmitContextMeterUpdate(t *testing.T) {
 	router, st, emissions := newTestRouter(t)
 	ensureTriageProject(t, st)
 	now := time.Now().UnixMilli()
@@ -1046,8 +1108,7 @@ func TestTokenUsageEmitsWithoutProviderCost(t *testing.T) {
 		t.Fatalf("create thread: %v", err)
 	}
 
-	original := provider.TokenUsage{InputTokens: 123, OutputTokens: 456}
-	meta, err := json.Marshal(original)
+	meta, err := json.Marshal(provider.TokenUsage{InputTokens: 123, OutputTokens: 456})
 	if err != nil {
 		t.Fatalf("marshal usage: %v", err)
 	}
@@ -1062,15 +1123,8 @@ func TestTokenUsageEmitsWithoutProviderCost(t *testing.T) {
 	}
 
 	usageEvents := filterEmissions(*emissions, "provider:usage")
-	if len(usageEvents) != 1 {
-		t.Fatalf("expected 1 provider:usage emission, got %+v", *emissions)
-	}
-	usage, ok := usageEvents[0].data.(provider.UsageEvent)
-	if !ok {
-		t.Fatalf("usage emission type = %T, want provider.UsageEvent", usageEvents[0].data)
-	}
-	if usage.UsedTokens != 579 {
-		t.Fatalf("usedTokens: got %d, want 579", usage.UsedTokens)
+	if len(usageEvents) != 0 {
+		t.Fatalf("expected no provider:usage emission, got %+v", usageEvents)
 	}
 }
 

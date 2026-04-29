@@ -41,8 +41,7 @@ func ClassifyNotification(threadID, method string, params json.RawMessage) []pro
 	return nil
 }
 
-// classifyTurnNotification handles `turn/*` methods plus the closely
-// related `thread/tokenUsage/updated` (per-turn usage signal).
+// classifyTurnNotification handles `turn/*` methods.
 func classifyTurnNotification(threadID, method string, params json.RawMessage, now time.Time) ([]provider.ProviderEvent, bool) {
 	switch method {
 	case "turn/started":
@@ -82,22 +81,13 @@ func classifyTurnNotification(threadID, method string, params json.RawMessage, n
 		// Incremental plan updates are intentionally dropped. The finalized
 		// plan still lands via item/completed(item.type=plan).
 		return nil, true
-
-	case "thread/tokenUsage/updated":
-		return []provider.ProviderEvent{{
-			Kind:      provider.EventTokenUsage,
-			ThreadID:  threadID,
-			Meta:      params,
-			Timestamp: now,
-		}}, true
 	}
 	return nil, false
 }
 
-// classifyTurnCompleted breaks out the multi-event turn/completed shape.
-// A single notification can produce up to three events: error (if the turn
-// failed), token-usage (if usage was reported), and a turn-complete with the
-// status surfaced into meta.
+// classifyTurnCompleted breaks out the turn/completed shape. Codex's
+// context-window signal is thread/tokenUsage/updated; turn/completed is only
+// the lifecycle boundary plus any terminal error state.
 func classifyTurnCompleted(threadID string, params json.RawMessage, now time.Time) []provider.ProviderEvent {
 	turnID := readNestedString(params, "turn", "id")
 	status := readNestedString(params, "turn", "status")
@@ -108,13 +98,6 @@ func classifyTurnCompleted(threadID string, params json.RawMessage, now time.Tim
 	if status == "failed" && errorMsg != "" {
 		events = append(events, provider.ProviderEvent{
 			Kind: provider.EventError, ThreadID: threadID, TurnID: turnID, Content: errorMsg, Timestamp: now,
-		})
-	}
-
-	// Extract usage data if present in the turn/completed notification.
-	if usageData := extractUsageFromTurn(params); usageData != nil {
-		events = append(events, provider.ProviderEvent{
-			Kind: provider.EventTokenUsage, ThreadID: threadID, TurnID: turnID, Meta: usageData, Timestamp: now,
 		})
 	}
 
@@ -411,6 +394,18 @@ func classifyThreadNotification(threadID, method string, params json.RawMessage,
 			Timestamp: now,
 		}}, true
 
+	case "thread/tokenUsage/updated":
+		meta := normalizeThreadTokenUsage(params)
+		if len(meta) == 0 {
+			return nil, true
+		}
+		return []provider.ProviderEvent{{
+			Kind:      provider.EventTokenUsage,
+			ThreadID:  threadID,
+			Meta:      meta,
+			Timestamp: now,
+		}}, true
+
 	case "thread/started",
 		"thread/status/changed",
 		"thread/archived",
@@ -419,6 +414,43 @@ func classifyThreadNotification(threadID, method string, params json.RawMessage,
 		return nil, true
 	}
 	return nil, false
+}
+
+type codexThreadTokenUsageNotification struct {
+	TokenUsage codexThreadTokenUsage `json:"tokenUsage"`
+}
+
+type codexThreadTokenUsage struct {
+	Last               codexTokenBreakdown `json:"last"`
+	ModelContextWindow int                 `json:"modelContextWindow"`
+}
+
+type codexTokenBreakdown struct {
+	TotalTokens int `json:"totalTokens"`
+}
+
+func normalizeThreadTokenUsage(params json.RawMessage) json.RawMessage {
+	var payload codexThreadTokenUsageNotification
+	if json.Unmarshal(params, &payload) != nil {
+		return nil
+	}
+	used := payload.TokenUsage.Last.TotalTokens
+	maxTokens := payload.TokenUsage.ModelContextWindow
+	if used == 0 && maxTokens == 0 {
+		return nil
+	}
+	window := provider.ContextWindow{
+		UsedTokens: used,
+		MaxTokens:  maxTokens,
+	}
+	if maxTokens > 0 {
+		window.UsedPercentage = float64(used) / float64(maxTokens) * 100
+	}
+	meta, err := json.Marshal(window)
+	if err != nil {
+		return nil
+	}
+	return meta
 }
 
 // classifyAccountNotification handles `account/*` and `model/*` methods —
@@ -536,62 +568,6 @@ func readTopLevelIDString(data json.RawMessage, key string) string {
 		return num.String()
 	}
 	return ""
-}
-
-// extractUsageFromTurn checks for usage/cost data in a turn/completed notification.
-// It looks for turn.usage or top-level usage fields.
-// When usage is found, it computes cost using the model from the turn metadata.
-// Returns nil if no usage data is found.
-func extractUsageFromTurn(params json.RawMessage) json.RawMessage {
-	var m map[string]json.RawMessage
-	if json.Unmarshal(params, &m) != nil {
-		return nil
-	}
-
-	var usageRaw json.RawMessage
-	var model string
-
-	// Check top-level "usage" field.
-	if raw, ok := m["usage"]; ok {
-		usageRaw = raw
-	}
-
-	// Check nested turn.usage field.
-	if usageRaw == nil {
-		if turnRaw, ok := m["turn"]; ok {
-			var turn map[string]json.RawMessage
-			if json.Unmarshal(turnRaw, &turn) == nil {
-				if raw, ok := turn["usage"]; ok {
-					usageRaw = raw
-				}
-			}
-		}
-	}
-
-	if usageRaw == nil {
-		return nil
-	}
-
-	// Extract model name for cost calculation.
-	model = readTopLevelString(params, "model")
-	if model == "" {
-		model = readNestedString(params, "turn", "model")
-	}
-
-	// Parse usage, compute cost, and enrich the data.
-	var usage provider.TokenUsage
-	if json.Unmarshal(usageRaw, &usage) == nil && model != "" {
-		cost := provider.CalculateCost(model, usage)
-		if cost > 0 {
-			usage.TotalCostUSD = cost
-			enriched, err := json.Marshal(usage)
-			if err == nil {
-				return enriched
-			}
-		}
-	}
-
-	return usageRaw
 }
 
 // readTopLevelBool reads a boolean from the top level of a JSON object.

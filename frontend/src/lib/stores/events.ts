@@ -341,9 +341,8 @@ function applyUsageEvent(evt: UsageEvent): void {
   if (!evt?.threadId) return;
 
   // `rate_limits` piggybacks on the same channel but doesn't touch the
-  // context-window ring — the popover renders it as a separate row. Bail
-  // before the ring-update path so a rate-limit refresh never clobbers
-  // the last known token-window snapshot.
+  // context-window ring. Bail before the ring-update path so a rate-limit
+  // refresh never clobbers the last known token-window snapshot.
   if (evt.action === 'rate_limits') {
     // Future work: thread this onto a pane-level rateLimits state so the
     // popover can render the snapshot. For v1 the backend just keeps

@@ -278,8 +278,7 @@ type UserInputEvent struct {
 // UsageEvent is the frontend-facing channel payload for the context-window
 // meter. `usage` updates the ring; `reset` clears it after compaction;
 // `rate_limits` carries a rate-limits snapshot folded onto the same channel
-// (the meter popover surfaces this alongside token usage per the chat-rewrite
-// spec — see docs/architecture/chat-rewrite.md "Channels").
+// for future UI, but does not change the context ring.
 type UsageEvent struct {
 	Action                string              `json:"action"` // "usage" | "reset" | "rate_limits"
 	ThreadID              string              `json:"threadId"`
@@ -541,7 +540,7 @@ type AccountInfo struct {
 	Version          string `json:"version,omitempty"`
 }
 
-// TokenUsage tracks token consumption for display.
+// TokenUsage tracks turn token/cost accounting.
 type TokenUsage struct {
 	InputTokens              int     `json:"inputTokens"`
 	OutputTokens             int     `json:"outputTokens"`
@@ -555,7 +554,6 @@ type ContextWindow struct {
 	UsedTokens            int     `json:"usedTokens"`
 	MaxTokens             int     `json:"maxTokens,omitempty"`
 	UsedPercentage        float64 `json:"usedPercentage,omitempty"`
-	TotalProcessed        int     `json:"totalProcessed,omitempty"`
 	AutoCompactPercent    int     `json:"autoCompactPercent,omitempty"`
 	AutoCompactTokenLimit int     `json:"autoCompactTokenLimit,omitempty"`
 }

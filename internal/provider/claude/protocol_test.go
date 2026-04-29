@@ -228,15 +228,12 @@ func TestParseLine_AssistantWithUsage(t *testing.T) {
 	for _, evt := range events {
 		if evt.Kind == provider.EventTokenUsage {
 			hasUsage = true
-			var usage provider.TokenUsage
+			var usage provider.ContextWindow
 			if err := json.Unmarshal(evt.Meta, &usage); err != nil {
 				t.Fatalf("unmarshal usage: %v", err)
 			}
-			if usage.InputTokens != 100 {
-				t.Errorf("InputTokens: got %d, want 100", usage.InputTokens)
-			}
-			if usage.CacheCreationInputTokens != 30 {
-				t.Errorf("CacheCreationInputTokens: got %d, want 30", usage.CacheCreationInputTokens)
+			if usage.UsedTokens != 330 {
+				t.Errorf("UsedTokens: got %d, want 330", usage.UsedTokens)
 			}
 		}
 	}
@@ -245,13 +242,7 @@ func TestParseLine_AssistantWithUsage(t *testing.T) {
 	}
 }
 
-// TestParseLine_AssistantUsagePricedFromInit verifies that the parser
-// remembers the model reported in system/init and uses it to price
-// subsequent assistant-message usage events. Before this, cost was
-// computed in triage via a store round-trip — this test pins the
-// provider-side annotation to the wire emission so triage can stay
-// provider-agnostic.
-func TestParseLine_AssistantUsagePricedFromInit(t *testing.T) {
+func TestParseLine_AssistantUsageExcludesOutputFromContextWindow(t *testing.T) {
 	p := NewParser()
 
 	initLine := []byte(`{"type":"system","subtype":"init","session_id":"s1","model":"claude-sonnet-4-6","cwd":"/tmp","tools":[],"claude_code_version":"1.0"}`)
@@ -271,15 +262,12 @@ func TestParseLine_AssistantUsagePricedFromInit(t *testing.T) {
 			continue
 		}
 		found = true
-		var usage provider.TokenUsage
+		var usage provider.ContextWindow
 		if err := json.Unmarshal(evt.Meta, &usage); err != nil {
 			t.Fatalf("unmarshal usage: %v", err)
 		}
-		if usage.InputTokens != 1000 || usage.OutputTokens != 500 {
-			t.Errorf("tokens: got input=%d output=%d", usage.InputTokens, usage.OutputTokens)
-		}
-		if usage.TotalCostUSD == 0 {
-			t.Errorf("TotalCostUSD = 0, want priced value from CalculateCost(claude-sonnet-4-6)")
+		if usage.UsedTokens != 1000 {
+			t.Errorf("UsedTokens: got %d, want 1000", usage.UsedTokens)
 		}
 	}
 	if !found {
@@ -287,26 +275,15 @@ func TestParseLine_AssistantUsagePricedFromInit(t *testing.T) {
 	}
 }
 
-// TestParseLine_AssistantUsageNoModelNoCost guards the unpriced path:
-// when the parser has never seen an init (e.g. fresh session, the
-// package-level ParseLine helper) the usage event still fires but with
-// TotalCostUSD == 0 rather than a bogus pricing against an empty model.
-func TestParseLine_AssistantUsageNoModelNoCost(t *testing.T) {
-	line := []byte(`{"type":"assistant","message":{"id":"msg-1","content":[],"role":"assistant","usage":{"input_tokens":1000,"output_tokens":500}}}`)
+func TestParseLine_SubagentAssistantUsageDoesNotUpdateParentContext(t *testing.T) {
+	line := []byte(`{"type":"assistant","parent_tool_use_id":"toolu-parent","message":{"id":"msg-1","content":[],"role":"assistant","usage":{"input_tokens":1000,"output_tokens":500}}}`)
 	events, err := ParseLine(testThreadProto, line)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
 	for _, evt := range events {
-		if evt.Kind != provider.EventTokenUsage {
-			continue
-		}
-		var usage provider.TokenUsage
-		if err := json.Unmarshal(evt.Meta, &usage); err != nil {
-			t.Fatalf("unmarshal usage: %v", err)
-		}
-		if usage.TotalCostUSD != 0 {
-			t.Errorf("TotalCostUSD = %f, want 0 for unpriced (no init seen)", usage.TotalCostUSD)
+		if evt.Kind == provider.EventTokenUsage {
+			t.Fatalf("subagent assistant usage emitted parent context update: %+v", evt)
 		}
 	}
 }

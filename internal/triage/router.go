@@ -555,51 +555,15 @@ func (r *Router) handleThreadRename(evt provider.ProviderEvent) error {
 	return nil
 }
 
-// handleTokenUsage is provider-agnostic by design: the provider adapter
-// prices the usage (see provider/claude and provider/codex CalculateCost
-// callsites) and hands triage a fully-populated TokenUsage in Meta.
-// Triage only decodes the context window from that meta, persists it as
-// the thread's last_token_usage snapshot, and emits the `provider:usage`
-// update so the meter popover refreshes.
+// handleTokenUsage accepts provider-normalized context-window snapshots only.
+// Per-turn token/cost accounting lives on turn-complete metadata; summing those
+// totals here would over-count multi-call turns and subagent work.
 func (r *Router) handleTokenUsage(evt provider.ProviderEvent) error {
 	window, ok := decodeContextWindow(evt.Meta)
 	if !ok {
 		return nil
 	}
-	autoCompactPercent := 0
-	if settings, err := r.store.GetThreadContextSettings(evt.ThreadID); err == nil {
-		if window.MaxTokens == 0 && settings.ContextWindow > 0 {
-			window.MaxTokens = settings.ContextWindow
-		}
-		if window.MaxTokens > 0 {
-			window.UsedPercentage = float64(window.UsedTokens) / float64(window.MaxTokens) * 100
-		}
-		autoCompactPercent = provider.AutoCompactPercentForContextTier(
-			provider.ContextTierForModelWindow(settings.Provider, settings.Model, settings.ContextWindow),
-			settings.AutoCompactStandardPercent,
-			settings.AutoCompactExtendedPercent,
-		)
-	}
-	if autoCompactPercent == 0 {
-		autoCompactPercent = 90
-	}
-	window.AutoCompactPercent = autoCompactPercent
-	if autoCompactPercent > 0 && window.MaxTokens > 0 {
-		window.AutoCompactTokenLimit = window.MaxTokens * autoCompactPercent / 100
-	}
-	if err := r.store.UpdateLastTokenUsage(evt.ThreadID, encodeContextWindow(window)); err != nil {
-		return fmt.Errorf("token usage persist: %w", err)
-	}
-	r.emit("provider:usage", provider.UsageEvent{
-		Action:                "usage",
-		ThreadID:              evt.ThreadID,
-		UsedTokens:            window.UsedTokens,
-		MaxTokens:             window.MaxTokens,
-		ContextPercent:        window.UsedPercentage,
-		AutoCompactPercent:    window.AutoCompactPercent,
-		AutoCompactTokenLimit: window.AutoCompactTokenLimit,
-	})
-	return nil
+	return r.persistAndEmitContextWindow(evt.ThreadID, window)
 }
 
 // handleRateLimits folds EventRateLimits onto the provider:usage channel so

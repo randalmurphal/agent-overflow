@@ -1,6 +1,7 @@
 package claude
 
 import (
+	"encoding/json"
 	"testing"
 
 	"agent-overflow/internal/provider"
@@ -201,6 +202,43 @@ func TestParseStreamEventThinkingDeltaCarriesParentToolUseID(t *testing.T) {
 	if events[0].ParentToolUseID != "task_tool_sub" {
 		t.Errorf("parentToolUseID: got %q, want %q",
 			events[0].ParentToolUseID, "task_tool_sub")
+	}
+}
+
+func TestParseStreamEventMessageDeltaUsageUpdatesContextWindow(t *testing.T) {
+	line := []byte(`{"type":"stream_event","event":"message_delta","data":{"type":"message_delta","usage":{"input_tokens":100,"output_tokens":50,"cache_read_input_tokens":20,"cache_creation_input_tokens":3}}}`)
+
+	events, err := ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if events[0].Kind != provider.EventTokenUsage {
+		t.Fatalf("kind: got %q, want %q", events[0].Kind, provider.EventTokenUsage)
+	}
+
+	var window provider.ContextWindow
+	if err := json.Unmarshal(events[0].Meta, &window); err != nil {
+		t.Fatalf("unmarshal context window: %v", err)
+	}
+	if window.UsedTokens != 123 {
+		t.Fatalf("UsedTokens: got %d, want 123", window.UsedTokens)
+	}
+}
+
+func TestParseStreamEventSubagentMessageDeltaUsageDoesNotUpdateParentContext(t *testing.T) {
+	line := []byte(`{"type":"stream_event","event":"message_delta","parent_tool_use_id":"task_tool_sub","data":{"type":"message_delta","usage":{"input_tokens":100,"output_tokens":50,"cache_read_input_tokens":20}}}`)
+
+	events, err := ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	for _, evt := range events {
+		if evt.Kind == provider.EventTokenUsage {
+			t.Fatalf("subagent message_delta emitted parent context update: %+v", evt)
+		}
 	}
 }
 

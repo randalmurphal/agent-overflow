@@ -66,8 +66,8 @@ none fits.
 - `stream_items.go` / `stream_state.go` / `block_events.go` —
   streaming text / thinking block lifecycle and the content-block
   index bookkeeping they depend on.
-- `usage_compaction.go` — token-usage normalisation and compaction
-  boundary persistence.
+- `usage_compaction.go` — context-window usage normalisation and
+  compaction boundary persistence.
 - `turn_events.go` — frontend-facing payload shapes for
   `provider:turn_started` / `provider:turn_completed` /
   `provider:subagent_notification`, plus the canonical stop-reason
@@ -85,7 +85,8 @@ none fits.
 | Diff | SQLite payload + meta to frontend. Full diff is on-demand. |
 | Command output | SQLite payload + meta to frontend. |
 | Thinking block | SQLite payload + preview to frontend. |
-| Turn metadata (cost, tokens, context) | Inline to frontend, persist on `threads`. |
+| Turn metadata (cost/tokens) | Persist on turn completion. |
+| Context-window usage | Frontend context meter + `threads.last_token_usage`. |
 | Background task terminal (Claude) | `tool_completion` sibling row upsert (idempotent). See `turn-lifecycle.md`. |
 | Codex unifiedExec / spawn_agent | unifiedExec starts are transient running-tray state; quick completions persist as normal command rows; yielded/background output attaches to the explicit wait row. Spawn-agent rows are persisted and use sibling `tool_completion` rows. See `codex_background.go` + invariant 25. |
 | Codex terminal interaction (empty stdin) | `terminal_interaction` row on the current open turn. Non-empty stdin dropped. See `terminal_interaction.go`. |
@@ -213,8 +214,9 @@ When adding a new map, ask **two** questions:
 the same `(threadID, turnIndex)` via `markTurnSettled`. The first
 complete settles the turn (drains streaming, emits
 `provider:turn_completed`, captures the checkpoint). A second wire
-complete on the already-settled turn returns early — token usage
-arrives separately on `EventTokenUsage` so cost data isn't lost.
+complete on the already-settled turn returns early. Turn token/cost
+accounting is captured on the first completion, while context-window
+meter updates arrive separately on `EventTokenUsage`.
 `setOpenTurn` clears the settled marker so a re-init (Claude
 `system.init` resend after interrupt; Codex `turn/started` resend) can
 re-settle the same turn.

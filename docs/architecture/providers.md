@@ -53,8 +53,9 @@ branches cause a silent dead-end.
 
 - Rate limit events surface through the provider package's normalizer and
   become a single event shape the frontend renders in the status bar.
-- Cost and token counts update on turn completion and are persisted per
-  thread.
+- Turn cost/token accounting is persisted on turn completion.
+  Context-window occupancy updates separately from provider context
+  snapshots.
 - Claude emits `compact_boundary` markers when it compacts context. These
   are preserved as timeline items so forked threads can re-derive state.
 

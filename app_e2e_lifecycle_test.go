@@ -1084,9 +1084,9 @@ func TestE2E_StopSessionWithoutStartIsClean(t *testing.T) {
 	}
 }
 
-// TestE2E_TokenUsagePersists: a result with token usage should flow through
-// the triage router and be emitted with cost attached (when the model is
-// known).
+// TestE2E_TokenUsagePersists: assistant usage should flow through the triage
+// router as a context-window snapshot. Output tokens are turn spend, not
+// current context occupancy, so they are excluded from the meter value.
 func TestE2E_TokenUsagePersists(t *testing.T) {
 	app, bus := setupE2EApp(t)
 	workspace := t.TempDir()
@@ -1113,8 +1113,8 @@ func TestE2E_TokenUsagePersists(t *testing.T) {
 	}
 
 	usage := bus.nextUsageEvent(t, "usage", 5*time.Second)
-	if usage.UsedTokens != 150 {
-		t.Fatalf("usage = %+v, want usedTokens=150", usage)
+	if usage.UsedTokens != 100 {
+		t.Fatalf("usage = %+v, want usedTokens=100", usage)
 	}
 	_ = app.StopSession(thread.ID)
 }

@@ -611,25 +611,21 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 	// markers separately from openTurns; this guard only fires for the
 	// SECOND complete on the same (threadID, turnIndex).
 	//
-	// Token usage from the dropped second result still reaches
-	// handleTokenUsage as a separate EventTokenUsage event (see
-	// parse_result.go), so cost data isn't lost.
 	turnIndex, err := r.currentTurnIndex(evt.ThreadID)
+	meta := decodeTurnCompleteMeta(evt.Meta)
 	if err == nil {
 		// markTurnSettled is sticky on partial failure (same trade-off as
 		// markTurnCaptured): once the FIRST handleTurnComplete reaches
-		// here, subsequent invocations for the same (thread, turn) bail
-		// even if downstream persistence later errors. Token usage from
-		// the dropped second result still arrives via EventTokenUsage on
-		// its own dispatch (see parse_result.go), so cost data isn't
-		// lost.
+		// here, subsequent invocations for the same (thread, turn) skip
+		// lifecycle settlement. Late usage on a duplicate is still folded
+		// into the existing turn row below so accounting is not lost.
 		if r.markTurnSettled(evt.ThreadID, turnIndex) {
+			r.persistLateTurnUsage(evt, turnIndex, meta)
 			return nil
 		}
 	}
 	var persistErr error
 	now := eventTimestampMillis(evt)
-	meta := decodeTurnCompleteMeta(evt.Meta)
 	truncated := turnCompleteIsTruncated(meta)
 	if err != nil {
 		persistErr = err
@@ -830,6 +826,16 @@ func (r *Router) settleTurnRow(evt provider.ProviderEvent, turnIndex int, now in
 		TokenUsage:         meta.Usage,
 		ErrorMessage:       errorMessage,
 		Aborted:            meta.Aborted || meta.Truncated || meta.TurnStatus == "interrupted",
+	}
+}
+
+func (r *Router) persistLateTurnUsage(evt provider.ProviderEvent, turnIndex int, meta turnCompleteMeta) {
+	if len(meta.Usage) == 0 {
+		return
+	}
+	turnID := resolveTurnID(evt, turnIndex)
+	if err := r.store.UpdateTurnTokenUsageIfEmpty(turnID, string(meta.Usage)); err != nil {
+		log.Printf("triage: update turn %s late token usage: %v", turnID, err)
 	}
 }
 

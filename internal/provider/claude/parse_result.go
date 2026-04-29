@@ -1,8 +1,9 @@
 // Package claude — parser for `result`-type NDJSON lines. The `result`
 // envelope is Claude's authoritative turn-complete signal (see
 // docs/references/claude-wire.md §result). This file owns the mapping
-// from the envelope into `EventTurnComplete` (with a token-usage side
-// event when usage is present) and the interrupted-turn heuristic.
+// from the envelope into `EventTurnComplete`; context-meter updates come
+// from top-level assistant/message_delta usage snapshots, with
+// result.usage.iterations[-1] only as a fallback when those were missed.
 
 package claude
 
@@ -15,8 +16,7 @@ import (
 )
 
 // parseResult converts a Claude `result` envelope into an
-// `EventTurnComplete` (and a paired `EventTokenUsage` when usage data
-// is present). The turn-complete event's Meta carries the final
+// `EventTurnComplete`. The turn-complete event's Meta carries the final
 // assistant_message_id (tracked in-stream from the last `assistant`
 // envelope), the observed `stop_reason`, the duration, total cost, the
 // usage snapshot, and an `aborted: true` flag when the envelope shape
@@ -34,23 +34,29 @@ import (
 func (p *Parser) parseResult(threadID string, raw map[string]json.RawMessage, now time.Time, line []byte) ([]provider.ProviderEvent, error) {
 	model := p.currentModel()
 
-	var events []provider.ProviderEvent
-
 	// Extract usage/cost data from the result summary. If the wire
 	// didn't include a cost and we know the model, price the usage
-	// here — triage is provider-agnostic and cannot compute cost.
+	// here for turn-complete accounting only. Do not emit this as a
+	// context-meter update; Claude's result.usage is cumulative across
+	// API calls in the turn.
 	usage := extractResultUsage(raw)
 	if usage.InputTokens > 0 || usage.OutputTokens > 0 {
 		if usage.TotalCostUSD == 0 && model != "" {
 			usage.TotalCostUSD = provider.CalculateCost(model, usage)
 		}
-		usageMeta, _ := json.Marshal(usage)
-		events = append(events, provider.ProviderEvent{
-			Kind:      provider.EventTokenUsage,
-			ThreadID:  threadID,
-			Meta:      usageMeta,
-			Timestamp: now,
-		})
+	}
+
+	var events []provider.ProviderEvent
+	if !p.takeTopLevelContextUsageSeen() {
+		if window, ok := extractResultContextFallback(raw); ok {
+			meta, _ := json.Marshal(window)
+			events = append(events, provider.ProviderEvent{
+				Kind:      provider.EventTokenUsage,
+				ThreadID:  threadID,
+				Meta:      meta,
+				Timestamp: now,
+			})
+		}
 	}
 
 	// Build the turn-complete meta. Every field is optional from the
@@ -102,6 +108,24 @@ func (p *Parser) parseResult(threadID string, raw map[string]json.RawMessage, no
 	})
 
 	return events, nil
+}
+
+func extractResultContextFallback(raw map[string]json.RawMessage) (provider.ContextWindow, bool) {
+	usageRaw, ok := raw["usage"]
+	if !ok {
+		return provider.ContextWindow{}, false
+	}
+	var payload struct {
+		Iterations []assistantUsage `json:"iterations"`
+	}
+	if json.Unmarshal(usageRaw, &payload) != nil || len(payload.Iterations) == 0 {
+		return provider.ContextWindow{}, false
+	}
+	window, ok := contextWindowFromClaudeUsage(payload.Iterations[len(payload.Iterations)-1])
+	if !ok {
+		return provider.ContextWindow{}, false
+	}
+	return window, true
 }
 
 // detectInterrupted tests whether a non-error `result` envelope is

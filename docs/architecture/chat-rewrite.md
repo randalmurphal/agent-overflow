@@ -986,14 +986,14 @@ forge / t3-code's `ContextWindowMeter`). Displays:
 
 - Used % as the ring fill
 - Tooltip / popover with: used tokens, max tokens, "compacts
-  automatically" hint, recent token usage stats
+  automatically" hint
 
 **Subscribed to its own channel** (`provider:usage`) — backend keeps
 emitting `EventTokenUsage` and `EventCompactBoundary` events; the
 meter listens.
 
 **Payload shapes on `provider:usage`:**
-- Token update: `{action: 'usage', threadId, usedTokens, maxTokens, contextPercent}`
+- Context update: `{action: 'usage', threadId, usedTokens, maxTokens, contextPercent}`
 - Compaction reset: `{action: 'reset', threadId}`
 
 **Seed on thread switch:** we need the meter to show something
@@ -1004,8 +1004,11 @@ that thread). Router updates it on every EventTokenUsage. On
 switchThread, the frontend reads this directly from the thread row —
 no separate binding.
 
-Compaction resets `last_token_usage` to an empty string (cleared
-column) at the same transaction as the compaction item upsert.
+Compaction with no context snapshot resets `last_token_usage` to an
+empty string (cleared column) at the same transaction as the compaction
+item upsert. If the provider includes a fresh context-window snapshot
+on the compaction boundary, the router persists and emits that snapshot
+instead.
 
 NOT in the chat history. Pure ambient indicator.
 
@@ -1050,11 +1053,14 @@ type ApprovalEvent struct {
 **`UsageEvent`** — discriminated union on `action`:
 ```go
 type UsageEvent struct {
-    Action         string  `json:"action"` // "usage" | "reset"
-    ThreadID       string  `json:"threadId"`
-    UsedTokens     int     `json:"usedTokens,omitempty"`
-    MaxTokens      int     `json:"maxTokens,omitempty"`
-    ContextPercent float64 `json:"contextPercent,omitempty"`
+    Action                string              `json:"action"` // "usage" | "reset" | "rate_limits"
+    ThreadID              string              `json:"threadId"`
+    UsedTokens            int                 `json:"usedTokens,omitempty"`
+    MaxTokens             int                 `json:"maxTokens,omitempty"`
+    ContextPercent        float64             `json:"contextPercent,omitempty"`
+    AutoCompactPercent    int                 `json:"autoCompactPercent,omitempty"`
+    AutoCompactTokenLimit int                 `json:"autoCompactTokenLimit,omitempty"`
+    RateLimits            *RateLimitsSnapshot `json:"rateLimits,omitempty"`
 }
 ```
 
@@ -1291,7 +1297,7 @@ On `truncated: true`, the router additionally:
 | `EventCommandOutput`        | find/create the related `tool_call`, attach command output as its payload                             |
 | `EventProposedPlan`         | upsert a `tool_call` with tool_name="plan"; payload carries the plan markdown                        |
 | `EventError`                | upsert `error` item; id = uuid; summary = error message. ALSO: flip any `streaming`/`running` items in this turn to `errored` (live-crash flip) |
-| `EventCompactBoundary`      | upsert `compaction` item; id = uuid; summary = compaction note. ALSO: emit `provider:usage` reset    |
+| `EventCompactBoundary`      | upsert `compaction` item; id = uuid; summary = compaction note. ALSO: emit included context snapshot if present, otherwise emit `provider:usage` reset |
 | `EventTurnStart`            | synthesized by triage on `sendMessage` (see Turn lifecycle synthesis); reset `segmentIndexByScope[threadID][turn_index][""]` and `blockIndexByScope[threadID][turn_index][""]`; open turn span; capture checkpoint; mark turn open; no item |
 | `EventTurnComplete`         | from wire signal or synthesis (see Turn lifecycle synthesis); flip `streaming` items in this turn to `completed`; drain `interruptQueue`; close turn span; clear open-turn marker; if `truncated`, flip streaming to `errored` and drain queue as `errored` |
 | `EventApprovalRequest`      | emit `provider:approval` `{action:request, request}`                                                  |

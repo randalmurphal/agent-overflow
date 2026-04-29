@@ -5,24 +5,26 @@ Date: 2026-04-18
 
 ## Context
 
-Provider events carry token usage (`input_tokens`, `output_tokens`,
-`cache_creation_input_tokens`, `cache_read_input_tokens`) but not USD
-cost. Cost is computed from a per-model pricing table — different for
-each provider, each model, and sometimes each pricing tier.
+Provider turn-complete events can carry token usage
+(`input_tokens`, `output_tokens`, `cache_creation_input_tokens`,
+`cache_read_input_tokens`) but not USD cost. Cost is computed from a
+per-model pricing table — different for each provider, each model, and
+sometimes each pricing tier.
 
 The question: where does `CalculateCost` get called?
 
-- **In the provider adapter**, before producing the
-  `EventTokenUsage`.
+- **In the provider adapter**, before attaching turn usage/cost
+  accounting to the normalized event stream.
 - **In triage**, inside `handleTokenUsage`.
-- **In the frontend**, from the usage event's raw token counts.
+- **In the frontend**, from the turn metadata's raw token counts.
 
 ## Decision
 
 Cost computation lives in the provider adapter. `CalculateCost` in
-`internal/provider/cost.go` is the pure function; the adapter calls
-it when constructing the `EventTokenUsage` payload. Triage's
-`handleTokenUsage` emits the event as-is; it does not recompute.
+`internal/provider/cost.go` is the pure function; the adapter calls it
+when attaching turn usage/cost accounting to turn completion metadata.
+Triage does not recompute cost. Context-window `EventTokenUsage` events
+are a separate meter signal and are not cost events.
 
 ## Rationale
 
@@ -33,16 +35,16 @@ it when constructing the `EventTokenUsage` payload. Triage's
 - **Model rerouting.** Claude and Codex both occasionally reroute a
   turn to a different model (rate limits, availability). The
   adapter sees the reroute notification and knows which model's
-  pricing to apply to the resulting usage event. Triage would need
-  parallel tracking to catch the reroute.
+  pricing to apply to the resulting turn usage/cost metadata. Triage
+  would need parallel tracking to catch the reroute.
 - **Frontend display, not computation.** The frontend should render
   the cost number it receives, not recompute from token counts.
   Recomputing in the frontend would mean shipping the pricing table
   to the webview, updating it on every new model, and keeping it in
   sync with Go.
-- **Cost field is stable output.** Persisted usage events carry the
-  cost computed at the time of emission. Future pricing changes
-  don't rewrite historical events.
+- **Cost field is stable output.** Persisted turn usage/cost metadata
+  carries the cost computed at the time of emission. Future pricing
+  changes don't rewrite historical turns.
 
 Considered alternatives:
 
@@ -61,5 +63,5 @@ Considered alternatives:
 - Adding a new model to an existing provider requires updating the
   pricing table. `cost_test.go` covers the table with fixtures —
   add a case when the table changes.
-- The `UsageEvent.Cost` field flows through triage and the replay
-  log unchanged, making it stable for historical analysis.
+- Turn usage/cost metadata flows through triage and the replay log
+  unchanged, making it stable for historical analysis.

@@ -112,6 +112,29 @@ func (s *Store) UpdateTurnCompleted(
 	return nil
 }
 
+// UpdateTurnTokenUsageIfEmpty records late-arriving token accounting on an
+// already-settled turn without disturbing the lifecycle fields written by the
+// first completion event. If the turn already has usage, this is a no-op.
+func (s *Store) UpdateTurnTokenUsageIfEmpty(turnID, tokenUsageJSON string) error {
+	if turnID == "" {
+		return fmt.Errorf("store: update turn token usage: turn id is required")
+	}
+	if tokenUsageJSON == "" {
+		return nil
+	}
+	_, err := s.db.Exec(
+		`UPDATE turns
+		    SET token_usage_json = ?
+		  WHERE turn_id = ?
+		    AND token_usage_json = ''`,
+		tokenUsageJSON, turnID,
+	)
+	if err != nil {
+		return fmt.Errorf("store: update turn %s token usage: %w", turnID, err)
+	}
+	return nil
+}
+
 // GetTurn returns a single turn by its provider-assigned id. Returns
 // (Turn{}, false, nil) when no row exists — the miss is not an error,
 // so callers can use the bool to branch cleanly.

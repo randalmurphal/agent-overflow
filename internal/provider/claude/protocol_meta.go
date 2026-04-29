@@ -70,11 +70,6 @@ func parseContextWindow(payload map[string]json.RawMessage) (provider.ContextWin
 		window.UsedPercentage = value
 		found = true
 	}
-	if value, ok := readIntValue(payload, "totalProcessed", "total_processed"); ok {
-		window.TotalProcessed = value
-		found = true
-	}
-
 	return window, found
 }
 

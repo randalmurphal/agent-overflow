@@ -72,19 +72,10 @@ export interface ApprovalRequest {
   elicitation?: ElicitationRequest;
 }
 
-export interface TokenUsage {
-  inputTokens: number;
-  outputTokens: number;
-  cacheReadInputTokens?: number;
-  cacheCreationInputTokens?: number;
-  totalCostUsd?: number;
-}
-
 export interface ContextWindow {
   usedTokens: number;
   maxTokens?: number;
   usedPercentage?: number;
-  totalProcessed?: number;
   autoCompactPercent?: number;
   autoCompactTokenLimit?: number;
 }

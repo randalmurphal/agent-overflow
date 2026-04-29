@@ -138,6 +138,29 @@ Detailed param shapes live in
 adding handlers; the TypeScript schema is the canonical shape
 reference.
 
+### `thread/tokenUsage/updated`
+
+This is the Codex context-meter signal. Treat `tokenUsage.last` as the
+current context-window occupancy and `tokenUsage.modelContextWindow` as
+the max window:
+
+```json
+{
+  "tokenUsage": {
+    "last": {"inputTokens": 100, "outputTokens": 20, "cachedInputTokens": 6, "totalTokens": 126},
+    "total": {"inputTokens": 9000, "outputTokens": 2000, "cachedInputTokens": 839, "totalTokens": 11839},
+    "modelContextWindow": 258400
+  }
+}
+```
+
+`last.totalTokens` is what occupies the visible context window. The
+rolling `total.totalTokens` value is aggregate processed/spend-style
+accounting across messages and must not be shown as context used in the
+meter. Keep that aggregate out of the context-meter payload; if future
+diagnostics need it, carry it on an explicitly diagnostic or turn
+accounting path.
+
 ### Server requests (approvals, tool-user-input, elicitation)
 
 Approvals arrive as **server requests** (with a JSON-RPC `id`), not as

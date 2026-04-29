@@ -344,9 +344,10 @@ provider-specific types." Reviews enforce.
 ## 15. Cost computation lives in provider adapters, not triage
 
 **Rule.** `CalculateCost` (in `internal/provider/cost.go`) is called
-by the provider adapter when it produces an `EventTokenUsage`.
-Triage's `handleTokenUsage` emits the event as-is; it does not
-recompute cost.
+by the provider adapter when it attaches turn usage/cost accounting to
+turn completion metadata. Triage does not recompute cost.
+Context-window `EventTokenUsage` events are meter snapshots, not cost
+events.
 
 **Rationale.** Model pricing is provider knowledge (per-provider
 pricing tables); putting the calculation in triage would leak model
@@ -354,8 +355,8 @@ awareness into the provider-agnostic layer. See the
 [`triage-routing.md`](triage-routing.md) entry for `token_usage`.
 
 **Enforcement.** `handleTokenUsage` in `internal/triage/router.go`
-passes the event through untouched; the cost field arrives
-populated.
+only accepts provider-normalized context-window snapshots. Turn
+usage/cost accounting is carried on turn completion metadata.
 
 **Test.** `internal/provider/cost_test.go`.
 

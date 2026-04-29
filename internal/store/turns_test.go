@@ -237,6 +237,36 @@ func TestUpdateTurnCompletedWithErrorMessage(t *testing.T) {
 	}
 }
 
+func TestUpdateTurnTokenUsageIfEmpty(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThreadForTurn(t, s, "thread-1")
+	if err := s.InsertTurn(Turn{
+		TurnID:    "turn-usage",
+		ThreadID:  "thread-1",
+		TurnIndex: 0,
+		StartedAt: 100,
+	}); err != nil {
+		t.Fatalf("insert turn: %v", err)
+	}
+	if err := s.UpdateTurnCompleted("turn-usage", 200, "end_turn", "", "", ""); err != nil {
+		t.Fatalf("update completed: %v", err)
+	}
+	if err := s.UpdateTurnTokenUsageIfEmpty("turn-usage", `{"inputTokens":1}`); err != nil {
+		t.Fatalf("late usage: %v", err)
+	}
+	if err := s.UpdateTurnTokenUsageIfEmpty("turn-usage", `{"inputTokens":2}`); err != nil {
+		t.Fatalf("second late usage: %v", err)
+	}
+
+	got, ok, err := s.GetTurn("turn-usage")
+	if err != nil || !ok {
+		t.Fatalf("get turn: ok=%v err=%v", ok, err)
+	}
+	if got.TokenUsageJSON != `{"inputTokens":1}` {
+		t.Fatalf("token_usage_json = %q, want first late usage", got.TokenUsageJSON)
+	}
+}
+
 func TestUpdateTurnCompletedRejectsUnknownTurn(t *testing.T) {
 	s := newTestStore(t)
 
