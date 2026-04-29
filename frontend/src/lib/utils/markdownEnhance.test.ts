@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { waitFor } from '@testing-library/svelte';
-import { enhanceMarkdown, __resetPathLinkDelegateForTest } from './markdownEnhance';
+import { enhanceMarkdown, __resetPathLinkDelegateForTest, __resetMermaidSvgCacheForTest } from './markdownEnhance';
 import mermaid from 'mermaid';
 import { setBindingMock, getBindingMock } from '../../test/mocks/bindings-app';
 
@@ -22,6 +22,7 @@ function codeContainer(): HTMLElement {
 describe('enhanceMarkdown', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    __resetMermaidSvgCacheForTest();
   });
 
   it('skips copy-button DOM work while the markdown row is streaming', async () => {
@@ -189,6 +190,31 @@ describe('enhanceMarkdown', () => {
     // The button copies the original code text — proves it's not pulling
     // from the rendered SVG textContent.
     await waitFor(() => expect(writeText).toHaveBeenCalledWith(source));
+  });
+
+  it('reuses the cached SVG when the same Mermaid source is rendered twice', async () => {
+    // Why: virtua's overscan eviction unmounts assistant-message rows;
+    // re-mounting would otherwise re-invoke `mermaid.render` (50–500ms)
+    // and the row would mount-at-estimate-then-pop. The module-level
+    // SVG cache deduplicates by source-text hash so a remount paints
+    // synchronously from cache.
+    const source = 'flowchart TD\nA[Idea] --> B[Build it]';
+    function buildContainer(): HTMLElement {
+      const container = document.createElement('div');
+      container.innerHTML = `<pre><code class="language-mermaid">${source}</code></pre>`;
+      return container;
+    }
+
+    const a = buildContainer();
+    const b = buildContainer();
+
+    await enhanceMarkdown(a, { generation: 1, renderScope: 'test', streaming: false, isCurrent: () => true });
+    const callsAfterFirst = vi.mocked(mermaid.render).mock.calls.length;
+    await enhanceMarkdown(b, { generation: 1, renderScope: 'test', streaming: false, isCurrent: () => true });
+    const callsAfterSecond = vi.mocked(mermaid.render).mock.calls.length;
+
+    expect(callsAfterSecond).toBe(callsAfterFirst);
+    expect(b.querySelector('pre')?.classList.contains('mermaid-rendered')).toBe(true);
   });
 
   it('restores the Mermaid source when initialization fails', async () => {

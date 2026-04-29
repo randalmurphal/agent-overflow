@@ -131,31 +131,103 @@ async function enhanceMath(container: HTMLElement, options: EnhanceOptions) {
   }
 }
 
+// Cache rendered Mermaid SVGs by source-text hash. virtua's overscan
+// eviction unmounts assistant-message rows that scroll past the buffer,
+// so re-mounting would otherwise re-invoke `mermaid.render` for every
+// diagram (50–500ms per call). The cache stores the sanitized SVG so a
+// remount paints synchronously from cache. Cache stores the in-flight
+// promise too, so two simultaneous remounts of the same source dedupe
+// instead of racing the renderer.
+const MERMAID_SVG_CACHE_MAX = 50;
+const mermaidSvgCache = new Map<string, Promise<string>>();
+
+function rememberMermaidSvg(sourceText: string, svgPromise: Promise<string>): void {
+  const key = hashString(sourceText);
+  // Touch / refresh insertion order so LRU eviction keeps recently-used.
+  if (mermaidSvgCache.has(key)) mermaidSvgCache.delete(key);
+  mermaidSvgCache.set(key, svgPromise);
+  if (mermaidSvgCache.size > MERMAID_SVG_CACHE_MAX) {
+    const oldest = mermaidSvgCache.keys().next().value;
+    if (oldest !== undefined) mermaidSvgCache.delete(oldest);
+  }
+}
+
+function lookupMermaidSvg(sourceText: string): Promise<string> | undefined {
+  const key = hashString(sourceText);
+  const cached = mermaidSvgCache.get(key);
+  // LRU touch on hit.
+  if (cached) {
+    mermaidSvgCache.delete(key);
+    mermaidSvgCache.set(key, cached);
+  }
+  return cached;
+}
+
+/** Test helper: drops the SVG cache so tests that rely on a cold render
+ * path don't see hits from earlier tests. Not part of the public API. */
+export function __resetMermaidSvgCacheForTest(): void {
+  mermaidSvgCache.clear();
+}
+
 async function enhanceMermaid(container: HTMLElement, mermaidBlocks: PendingMermaidBlock[], options: EnhanceOptions) {
   if (mermaidBlocks.length === 0) return;
 
-  const mermaid = await loadMermaidRenderer(container, mermaidBlocks, options);
-  if (!mermaid) return;
+  // Determine which blocks are cache hits up front; only load the
+  // renderer if we have at least one cache miss.
+  const hits = new Map<PendingMermaidBlock, Promise<string>>();
+  const misses: PendingMermaidBlock[] = [];
+  for (const block of mermaidBlocks) {
+    const cached = lookupMermaidSvg(block.sourceText);
+    if (cached) hits.set(block, cached);
+    else misses.push(block);
+  }
+
+  let mermaid: MermaidRenderer | null = null;
+  if (misses.length > 0) {
+    mermaid = await loadMermaidRenderer(container, misses, options);
+    if (!mermaid) {
+      // Renderer failed — pure-cache hits can still paint.
+      for (const [block, svgPromise] of hits) {
+        await applyMermaidSvg(container, block, svgPromise, options);
+      }
+      return;
+    }
+  }
 
   for (const block of mermaidBlocks) {
     if (!options.isCurrent(options.generation)) return;
 
     try {
-      const rendered = await mermaid.render(block.id, block.sourceText);
-      const sanitizedSvg = sanitizeRenderedSvg(rendered.svg);
-      if (options.isCurrent(options.generation)) {
-        block.pre.classList.remove('mermaid-pending');
-        block.pre.classList.add('mermaid-rendered');
-        block.pre.style.minHeight = '';
-        block.pre.dataset.renderedMermaid = block.id;
-        rememberDiagramSource(block.pre, block.sourceText);
-        block.pre.innerHTML = sanitizedSvg;
-        attachMermaidCopyButton(container, block.pre, block.sourceText);
+      let svgPromise = hits.get(block);
+      if (!svgPromise) {
+        // Cache the in-flight promise so a parallel render of the same
+        // source dedupes onto this single mermaid.render call.
+        svgPromise = mermaid!.render(block.id, block.sourceText)
+          .then((rendered) => sanitizeRenderedSvg(rendered.svg));
+        rememberMermaidSvg(block.sourceText, svgPromise);
       }
+      await applyMermaidSvg(container, block, svgPromise, options);
     } catch {
       restoreMermaidSource(container, block, options);
     }
   }
+}
+
+async function applyMermaidSvg(
+  container: HTMLElement,
+  block: PendingMermaidBlock,
+  svgPromise: Promise<string>,
+  options: EnhanceOptions,
+): Promise<void> {
+  const sanitizedSvg = await svgPromise;
+  if (!options.isCurrent(options.generation)) return;
+  block.pre.classList.remove('mermaid-pending');
+  block.pre.classList.add('mermaid-rendered');
+  block.pre.style.minHeight = '';
+  block.pre.dataset.renderedMermaid = block.id;
+  rememberDiagramSource(block.pre, block.sourceText);
+  block.pre.innerHTML = sanitizedSvg;
+  attachMermaidCopyButton(container, block.pre, block.sourceText);
 }
 
 type MermaidRenderer = {
