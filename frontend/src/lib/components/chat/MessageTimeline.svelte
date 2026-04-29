@@ -287,11 +287,14 @@
   // ============================================================
   // virtua's per-row ResizeObserver absorbs above-viewport height changes
   // silently. For below-viewport / append growth, the controller decides
-  // whether to follow based on intent. Tracks length, revision, and the
-  // active turn so streaming chunks keep the bottom in view.
+  // whether to follow based on intent. Tracks length, revision, the
+  // active turn, AND liveDeltaRevision so streaming chunks (which grow an
+  // existing row in place without bumping items.length or timelineRevision)
+  // still re-pin to the new bottom while sticky.
   $effect(() => {
     pane.items.length;
     pane.timelineRevision;
+    pane.liveDeltaRevision;
     pane.activeTurn?.turnId;
     if (pane.threadId !== restoredThreadId) return;
     stick.notifyContentMaybeGrew();

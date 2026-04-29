@@ -99,6 +99,15 @@ export function createStickyBottomController(
   let lastObservedScrollSize = -1;
   let pointerDownOffsetAtStart = -1;
 
+  // Coalesced rAF token for deferred scrollToLast. notifyContentMaybeGrew
+  // can fire many times per frame during streaming (each delta flush
+  // bumps liveDeltaRevision); we want at most one scrollToLast per
+  // frame, scheduled AFTER virtua's per-row ResizeObserver has updated
+  // its cache from the just-rendered DOM. Without the deferral, the
+  // controller reads stale geometry and the scroll lands at the
+  // pre-grow bottom.
+  let pendingScrollFrame: number | null = null;
+
   let attachedEl: HTMLElement | null = null;
   let detachGestureListeners: (() => void) | null = null;
   let detachPointerListeners: (() => void) | null = null;
@@ -128,9 +137,13 @@ export function createStickyBottomController(
 
   function notifyContentMaybeGrew(): void {
     if (!core.canAutoScroll()) return;
-    const handle = options.getListHandle();
-    if (!handle) return;
-    scrollToLast(handle);
+    if (pendingScrollFrame !== null) return;
+    pendingScrollFrame = requestAnimationFrame(() => {
+      pendingScrollFrame = null;
+      if (!core.canAutoScroll()) return;
+      const handle = options.getListHandle();
+      if (handle) scrollToLast(handle);
+    });
   }
 
   function forceStick(): void {
@@ -249,6 +262,10 @@ export function createStickyBottomController(
     core.resetTransientState();
     pointerDownOffsetAtStart = -1;
     lastObservedScrollSize = -1;
+    if (pendingScrollFrame !== null) {
+      cancelAnimationFrame(pendingScrollFrame);
+      pendingScrollFrame = null;
+    }
   }
 
   return {

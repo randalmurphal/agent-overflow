@@ -207,6 +207,10 @@ export function createThreadPane() {
   let items: Item[] = $state([]);
   let timelineRevision = $state(0);
   let liveItemSummaries: Record<string, string> = $state({});
+  // Bumps once per coalesced delta flush. Auto-follow consumers depend
+  // on this so a streaming row that grows in viewport (no new items, no
+  // timelineRevision tick) still re-pins to bottom while sticky.
+  let liveDeltaRevision = $state(0);
   const liveDeltaChunks: Map<string, string[]> = new Map();
   const itemStatusById: Map<string, Item['status']> = new Map();
   const itemIndexById: Map<string, number> = new Map();
@@ -470,6 +474,7 @@ export function createThreadPane() {
     }
     liveDeltaChunks.clear();
     liveItemSummaries = next;
+    liveDeltaRevision++;
   }
 
   function scheduleLiveDeltaFlush(): void {
@@ -742,6 +747,13 @@ export function createThreadPane() {
     get items() { return items; },
     get timelineRevision() { return timelineRevision; },
     get liveItemSummaries() { return liveItemSummaries; },
+    /**
+     * Bumps once per coalesced live-delta flush (~rAF cadence). Auto-follow
+     * effects watch this so a streaming row that grows in viewport while
+     * sticky still re-pins to the new bottom — `timelineRevision` only
+     * ticks on item-array changes, which deltas don't trigger.
+     */
+    get liveDeltaRevision() { return liveDeltaRevision; },
     /**
      * Per-turn diff view. Keyed by `turnIndex`. Incrementally maintained by
      * `upsertItem` so MessageTimeline can render the ChangedFilesTree and

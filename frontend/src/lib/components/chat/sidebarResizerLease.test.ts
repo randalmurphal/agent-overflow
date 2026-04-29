@@ -229,20 +229,31 @@ describe('Pause-lease integration with the real controller', () => {
     controller.attach();
     pane.attachScrollController(controller);
 
+    // notifyContentMaybeGrew is rAF-deferred so virtua's per-row
+    // ResizeObserver has time to update its cache before the controller
+    // reads geometry. Tests that observe the resulting scroll need to
+    // flush an animation frame.
+    const nextFrame = () =>
+      new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+
     try {
-      // Sticky baseline: notifyContentMaybeGrew calls scrollToIndex.
+      // Sticky baseline: notifyContentMaybeGrew schedules a deferred
+      // scrollToIndex via rAF.
       controller.notifyContentMaybeGrew();
+      await nextFrame();
       expect(scrollToIndex).toHaveBeenCalledTimes(1);
 
       // Acquire the lease. Notifications during the drag are no-ops.
       const release = pane.scrollController!.pauseAutoScroll();
       controller.notifyContentMaybeGrew();
       controller.notifyContentMaybeGrew();
+      await nextFrame();
       expect(scrollToIndex).toHaveBeenCalledTimes(1);
 
       // Releasing resumes auto-follow.
       release();
       controller.notifyContentMaybeGrew();
+      await nextFrame();
       expect(scrollToIndex).toHaveBeenCalledTimes(2);
     } finally {
       pane.detachScrollController(controller);

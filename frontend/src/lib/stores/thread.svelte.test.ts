@@ -591,6 +591,61 @@ describe('createThreadPane', () => {
     expect(pane.liveItemSummaries['text:0:0']).toBe('hello world!');
   });
 
+  it('bumps liveDeltaRevision once per coalesced delta flush so auto-follow re-fires while streaming', async () => {
+    // Why: auto-follow (`MessageTimeline.svelte`) tracks length /
+    // timelineRevision / activeTurn. None of those tick during a pure
+    // streaming row growing in place — only `liveItemSummaries` does.
+    // Without `liveDeltaRevision`, the controller never re-pins to the
+    // new bottom and the user drifts off-screen until the row settles.
+    const pane = createThreadPane();
+    pane.upsertItem(makeItem({
+      id: 'text:0:0',
+      kind: 'assistant_text',
+      status: 'streaming',
+      summary: 'hello',
+    }));
+    const initialDeltaRevision = pane.liveDeltaRevision;
+
+    // Two deltas in the same frame coalesce into one flush → one bump.
+    pane.applyItemDelta({
+      threadId: 'thread-1',
+      itemId: 'text:0:0',
+      kind: 'assistant_text',
+      delta: ' world',
+      updatedAt: 123,
+    });
+    pane.applyItemDelta({
+      threadId: 'thread-1',
+      itemId: 'text:0:0',
+      kind: 'assistant_text',
+      delta: '!',
+      updatedAt: 124,
+    });
+    await nextFrame();
+
+    expect(pane.liveDeltaRevision).toBe(initialDeltaRevision + 1);
+
+    // A second flush in a later frame bumps again.
+    pane.applyItemDelta({
+      threadId: 'thread-1',
+      itemId: 'text:0:0',
+      kind: 'assistant_text',
+      delta: ' more',
+      updatedAt: 125,
+    });
+    await nextFrame();
+    expect(pane.liveDeltaRevision).toBe(initialDeltaRevision + 2);
+  });
+
+  it('does not bump liveDeltaRevision when no chunks are pending', async () => {
+    const pane = createThreadPane();
+    const initial = pane.liveDeltaRevision;
+    // flushLiveDeltaChunks short-circuits when liveDeltaChunks is empty;
+    // no bump should happen on a fresh pane that hasn't received deltas.
+    await nextFrame();
+    expect(pane.liveDeltaRevision).toBe(initial);
+  });
+
   it('clears live summary buffers when a streaming item settles', async () => {
     const pane = createThreadPane();
     pane.upsertItem(makeItem({

@@ -63,6 +63,16 @@ function fireTouchMove(el: HTMLElement, clientY: number): void {
   el.dispatchEvent(new TouchEvent('touchmove', { bubbles: true, touches: [{ clientY } as Touch] }));
 }
 
+/**
+ * Wait for the next animation frame. notifyContentMaybeGrew defers
+ * scrollToLast to rAF (so virtua's per-row ResizeObserver has a chance
+ * to update its cache before the controller reads geometry); tests that
+ * assert on the scroll having happened need to await this.
+ */
+function nextFrame(): Promise<void> {
+  return new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+}
+
 describe('createStickyBottomController', () => {
   let scrollEl: HTMLDivElement;
   let handle: MockHandle;
@@ -220,7 +230,7 @@ describe('createStickyBottomController', () => {
       expect(handle.scrollToIndex).toHaveBeenCalledWith(lastIndex, { align: 'end' });
     });
 
-    it('defers scrollToIndex while a pointer is down', () => {
+    it('defers scrollToIndex while a pointer is down', async () => {
       firePointerDown(scrollEl);
       fireWheel(scrollEl, -50);
 
@@ -229,7 +239,9 @@ describe('createStickyBottomController', () => {
       expect(handle.scrollToIndex).not.toHaveBeenCalled();
 
       firePointerUp(scrollEl);
-      // pointerUp triggers notifyContentMaybeGrew on auto-scroll resume.
+      // pointerUp triggers notifyContentMaybeGrew on auto-scroll resume —
+      // which is rAF-deferred, so flush a frame before asserting.
+      await nextFrame();
       expect(handle.scrollToIndex).toHaveBeenCalledWith(lastIndex, { align: 'end' });
     });
 
@@ -243,48 +255,77 @@ describe('createStickyBottomController', () => {
   });
 
   describe('notifyContentMaybeGrew', () => {
-    it('scrolls to last when sticky', () => {
+    it('scrolls to last when sticky (after rAF)', async () => {
       controller.notifyContentMaybeGrew();
+      // Deferred: not called synchronously.
+      expect(handle.scrollToIndex).not.toHaveBeenCalled();
+      await nextFrame();
       expect(handle.scrollToIndex).toHaveBeenCalledWith(lastIndex, { align: 'end' });
     });
 
-    it('does nothing when free', () => {
+    it('coalesces multiple calls in the same frame into one scroll', async () => {
+      controller.notifyContentMaybeGrew();
+      controller.notifyContentMaybeGrew();
+      controller.notifyContentMaybeGrew();
+      await nextFrame();
+      expect(handle.scrollToIndex).toHaveBeenCalledTimes(1);
+    });
+
+    it('does nothing when free', async () => {
       fireWheel(scrollEl, -50);
       controller.notifyContentMaybeGrew();
+      await nextFrame();
       expect(handle.scrollToIndex).not.toHaveBeenCalled();
     });
 
-    it('does nothing when pause-lease is held', () => {
+    it('does nothing when pause-lease is held', async () => {
       const release = controller.pauseAutoScroll();
       controller.notifyContentMaybeGrew();
+      await nextFrame();
       expect(handle.scrollToIndex).not.toHaveBeenCalled();
       release();
       controller.notifyContentMaybeGrew();
+      await nextFrame();
       expect(handle.scrollToIndex).toHaveBeenCalled();
     });
 
-    it('does nothing when a pointer is held', () => {
+    it('does nothing when a pointer is held', async () => {
       firePointerDown(scrollEl);
       controller.notifyContentMaybeGrew();
+      await nextFrame();
       expect(handle.scrollToIndex).not.toHaveBeenCalled();
       firePointerUp(scrollEl);
+    });
+
+    it('re-checks lease at the deferred rAF callback (released between schedule and fire)', async () => {
+      // Schedule the deferred scroll while sticky-with-no-lease.
+      controller.notifyContentMaybeGrew();
+      // Acquire a lease before the rAF fires.
+      const release = controller.pauseAutoScroll();
+      await nextFrame();
+      // Lease was held when the rAF callback ran → no scroll.
+      expect(handle.scrollToIndex).not.toHaveBeenCalled();
+      release();
     });
   });
 
   describe('pauseAutoScroll', () => {
-    it('lease is depth-counted and idempotent', () => {
+    it('lease is depth-counted and idempotent', async () => {
       const r1 = controller.pauseAutoScroll();
       const r2 = controller.pauseAutoScroll();
       controller.notifyContentMaybeGrew();
+      await nextFrame();
       expect(handle.scrollToIndex).not.toHaveBeenCalled();
 
       r1();
       r1(); // idempotent — second call is no-op
       controller.notifyContentMaybeGrew();
+      await nextFrame();
       expect(handle.scrollToIndex).not.toHaveBeenCalled();
 
       r2();
       controller.notifyContentMaybeGrew();
+      await nextFrame();
       expect(handle.scrollToIndex).toHaveBeenCalled();
     });
   });
