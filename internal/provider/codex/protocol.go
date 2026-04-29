@@ -35,10 +35,35 @@ func ClassifyNotification(threadID, method string, params json.RawMessage) []pro
 	if events, ok := classifyAccountNotification(threadID, method, params, now); ok {
 		return events
 	}
+	if events, ok := classifyHookNotification(threadID, method, params, now); ok {
+		return events
+	}
 	if events, ok := classifyMiscNotification(threadID, method, params, now); ok {
 		return events
 	}
 	return nil
+}
+
+func classifyHookNotification(threadID, method string, params json.RawMessage, now time.Time) ([]provider.ProviderEvent, bool) {
+	switch method {
+	case "hook/started":
+		return []provider.ProviderEvent{codexNotificationEvent(threadID, "hook", hookSummary(params, "started"), params, now)}, true
+	case "hook/completed":
+		return []provider.ProviderEvent{codexNotificationEvent(threadID, "hook", hookSummary(params, "completed"), params, now)}, true
+	}
+	return nil, false
+}
+
+func hookSummary(params json.RawMessage, fallbackStatus string) string {
+	eventName := readNestedString(params, "run", "eventName")
+	status := readNestedString(params, "run", "status")
+	if status == "" {
+		status = fallbackStatus
+	}
+	if eventName == "" {
+		return "Hook " + status
+	}
+	return eventName + " hook (" + status + ")"
 }
 
 // classifyTurnNotification handles `turn/*` methods.
@@ -78,9 +103,13 @@ func classifyTurnNotification(threadID, method string, params json.RawMessage, n
 		}}, true
 
 	case "turn/plan/updated":
-		// Incremental plan updates are intentionally dropped. The finalized
-		// plan still lands via item/completed(item.type=plan).
-		return nil, true
+		return []provider.ProviderEvent{{
+			Kind:      provider.EventPlanUpdate,
+			ThreadID:  threadID,
+			Content:   "Updated Plan",
+			Meta:      mergeMetaKeys(params, map[string]any{"kind": "plan_update", "title": "Updated Plan"}),
+			Timestamp: now,
+		}}, true
 	}
 	return nil, false
 }
@@ -141,12 +170,16 @@ func classifyTurnCompleted(threadID string, params json.RawMessage, now time.Tim
 //
 // Codex wire reference: docs/references/codex-wire.md §Item lifecycle.
 var nonToolItemTypes = map[string]struct{}{
-	"userMessage":      {},
-	"agentMessage":     {},
-	"assistantMessage": {},
-	"reasoning":        {},
-	"plan":             {},
-	"todoList":         {},
+	"userMessage":       {},
+	"agentMessage":      {},
+	"assistantMessage":  {},
+	"reasoning":         {},
+	"plan":              {},
+	"todoList":          {},
+	"hookPrompt":        {},
+	"contextCompaction": {},
+	"enteredReviewMode": {},
+	"exitedReviewMode":  {},
 }
 
 func isNonToolCodexItemType(itemType string) bool {
@@ -162,6 +195,22 @@ func classifyItemNotification(threadID, method string, params json.RawMessage, n
 	case "item/started":
 		itemID := readNestedString(params, "item", "id")
 		itemType := classifyCodexItemType(params)
+		switch itemType {
+		case "enteredReviewMode":
+			review := readNestedString(params, "item", "review")
+			return []provider.ProviderEvent{{
+				Kind:      provider.EventNotification,
+				ThreadID:  threadID,
+				TurnID:    readTopLevelString(params, "turnId"),
+				ItemID:    itemID,
+				ItemType:  itemType,
+				Content:   reviewStatusSummary("Code review started", review),
+				Meta:      mergeMetaKeys(params, map[string]any{"kind": "review_status", "title": "Code review started"}),
+				Timestamp: now,
+			}}, true
+		case "send_input", "close_agent", "exitedReviewMode", "contextCompaction", "hookPrompt":
+			return nil, true
+		}
 		if itemType == "" || isNonToolCodexItemType(itemType) {
 			// Drop non-tool item/started events; they have their own
 			// triage channels (see nonToolItemTypes doc above).
@@ -314,6 +363,33 @@ func classifyItemCompleted(threadID string, params json.RawMessage, now time.Tim
 	itemType := classifyCodexItemTypeFromItem(item)
 	turnID := readTopLevelString(params, "turnId")
 	if itemType == "" {
+		return nil
+	}
+	switch itemType {
+	case "contextCompaction":
+		return []provider.ProviderEvent{{
+			Kind:      provider.EventCompactBoundary,
+			ThreadID:  threadID,
+			TurnID:    turnID,
+			ItemID:    itemID,
+			ItemType:  itemType,
+			Content:   "Context compacted",
+			Meta:      params,
+			Timestamp: now,
+		}}
+	case "exitedReviewMode":
+		review := readRawString(item, "review")
+		return []provider.ProviderEvent{{
+			Kind:      provider.EventNotification,
+			ThreadID:  threadID,
+			TurnID:    turnID,
+			ItemID:    itemID,
+			ItemType:  itemType,
+			Content:   reviewStatusSummary("Code review finished", review),
+			Meta:      mergeMetaKeys(params, map[string]any{"kind": "review_status", "title": "Code review finished"}),
+			Timestamp: now,
+		}}
+	case "enteredReviewMode", "hookPrompt":
 		return nil
 	}
 	// Plan is the one non-tool type we DO route here — as a proposed-plan
@@ -478,6 +554,9 @@ func classifyAccountNotification(threadID, method string, params json.RawMessage
 			Timestamp: now,
 		}}, true
 
+	case "model/verification":
+		return []provider.ProviderEvent{codexNotificationEvent(threadID, "model_verification", "Model verification warning", params, now)}, true
+
 	case "account/updated", "account/login/completed":
 		return nil, true
 	}
@@ -525,10 +604,48 @@ func classifyMiscNotification(threadID, method string, params json.RawMessage, n
 			Timestamp: now,
 		}}, true
 
-	case "configWarning", "deprecationNotice":
-		return nil, true
+	case "warning":
+		return []provider.ProviderEvent{codexNotificationEvent(threadID, "warning", readTopLevelString(params, "message"), params, now)}, true
+
+	case "guardianWarning":
+		return []provider.ProviderEvent{codexNotificationEvent(threadID, "warning", readTopLevelString(params, "message"), params, now)}, true
+
+	case "configWarning":
+		summary := readTopLevelString(params, "summary")
+		if details := readTopLevelString(params, "details"); details != "" {
+			summary = strings.TrimSpace(summary + ": " + details)
+		}
+		return []provider.ProviderEvent{codexNotificationEvent(threadID, "warning", summary, params, now)}, true
+
+	case "deprecationNotice":
+		summary := readTopLevelString(params, "summary")
+		if details := readTopLevelString(params, "details"); details != "" {
+			summary = strings.TrimSpace(summary + ": " + details)
+		}
+		return []provider.ProviderEvent{codexNotificationEvent(threadID, "deprecation_notice", summary, params, now)}, true
 	}
 	return nil, false
+}
+
+func codexNotificationEvent(threadID, kind, summary string, params json.RawMessage, now time.Time) provider.ProviderEvent {
+	if strings.TrimSpace(summary) == "" {
+		summary = "Provider notification"
+	}
+	return provider.ProviderEvent{
+		Kind:      provider.EventNotification,
+		ThreadID:  threadID,
+		Content:   summary,
+		Meta:      mergeMetaKeys(params, map[string]any{"kind": kind, "title": summary}),
+		Timestamp: now,
+	}
+}
+
+func reviewStatusSummary(prefix, review string) string {
+	review = strings.TrimSpace(review)
+	if review == "" {
+		return prefix
+	}
+	return prefix + ": " + review
 }
 
 // -- JSON helpers --
@@ -840,10 +957,17 @@ func commandExecutionMetaExtras(item map[string]json.RawMessage) map[string]any 
 	}
 	if cwd := readRawString(item, "cwd"); cwd != "" {
 		input["cwd"] = cwd
+		extras["cwd"] = cwd
 	}
 	if exitCode, ok := readRawInt(item, "exitCode"); ok {
 		extras["exitCode"] = exitCode
 		extras["exit_code"] = exitCode
+	}
+	if durationMs, ok := readRawInt(item, "durationMs"); ok {
+		extras["durationMs"] = durationMs
+	}
+	if actions := firstRaw(item, "commandActions", "command_actions"); len(actions) > 0 {
+		extras["commandActions"] = actions
 	}
 	if len(input) > 0 {
 		extras["input"] = input
@@ -861,6 +985,10 @@ func collabAgentMetaExtras(item map[string]json.RawMessage) map[string]any {
 		toolName = "send_input"
 	case "wait_agent":
 		toolName = "wait_agent"
+	case "close_agent":
+		toolName = "close_agent"
+	case "resume_agent":
+		toolName = "resume_agent"
 	}
 	input := map[string]any{"tool": tool}
 	if prompt := readRawString(item, "prompt"); prompt != "" {
@@ -964,7 +1092,7 @@ func toolDescriptionInput(scope, tool string) map[string]any {
 
 func codexToolResultContent(item map[string]json.RawMessage, itemType string) string {
 	switch itemType {
-	case "collab_agent", "send_input", "wait_agent":
+	case "collab_agent", "send_input", "wait_agent", "close_agent", "resume_agent":
 		return collabAgentContent(item)
 	case "mcpToolCall", "mcp_tool_call":
 		return mcpToolCallContent(item)
@@ -1139,6 +1267,10 @@ func classifyCodexItemTypeFromItem(item map[string]json.RawMessage) string {
 		return "wait_agent"
 	case "send_input":
 		return "send_input"
+	case "close_agent":
+		return "close_agent"
+	case "resume_agent":
+		return "resume_agent"
 	default:
 		return "collab_agent"
 	}

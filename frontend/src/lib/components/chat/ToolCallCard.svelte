@@ -12,11 +12,13 @@
   } from '../../types/models';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { parseJsonObject } from '../../utils/parseJsonObject';
+  import CollabToolRow from './CollabToolRow.svelte';
   import CommandOutput from './CommandOutput.svelte';
   import DiffPreview from './DiffPreview.svelte';
   import GenericToolCallRow from './GenericToolCallRow.svelte';
   import ProposedPlanCard from './ProposedPlanCard.svelte';
   import ToolResultCard from './ToolResultCard.svelte';
+  import { isCodexCollabControlToolName } from './codexCollabControls';
   import { commandTextForItem, isCommandToolName } from './commandDisplay';
 
   let { pane, item }: { pane: ThreadPane; item: Item } = $props();
@@ -69,9 +71,14 @@
         }
       : null,
   );
+  let isCollabControlRow = $derived(
+    pane.thread?.provider === 'codex' && isCodexCollabControlToolName(item.toolName),
+  );
 </script>
 
-{#if planMeta && payloadId}
+{#if isCollabControlRow}
+  <CollabToolRow {item} />
+{:else if planMeta && payloadId}
   <ProposedPlanCard {pane} {item} {payloadId} meta={planMeta} />
 {:else if diffMeta && payloadId}
   <DiffPreview {pane} {item} meta={diffMeta} {payloadId} />

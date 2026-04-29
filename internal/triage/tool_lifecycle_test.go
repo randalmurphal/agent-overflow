@@ -667,6 +667,9 @@ func TestToolCompletionWithoutContentDoesNotAttachEmptyPayload(t *testing.T) {
 func TestToolCompletionMergesCodexWaitAgentMeta(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
+	if err := st.UpdateProvider("t1", "codex"); err != nil {
+		t.Fatalf("set provider: %v", err)
+	}
 
 	startMeta, _ := json.Marshal(map[string]any{
 		"toolName": "wait_agent",

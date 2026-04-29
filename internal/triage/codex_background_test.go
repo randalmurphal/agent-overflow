@@ -724,6 +724,9 @@ func TestCodexSubagentCompletionSignalsCreateTranscriptSibling(t *testing.T) {
 func TestCodexSubagentWaitCompletionCarriesFinalOutputPayload(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
+	if err := st.UpdateProvider("t1", "codex"); err != nil {
+		t.Fatalf("set provider: %v", err)
+	}
 	seedOpenTurn(t, router, st, "t1", 0)
 
 	spawnMeta := buildSpawnAgentMeta(t, "child-wait", "running")
@@ -759,20 +762,26 @@ func TestCodexSubagentWaitCompletionCarriesFinalOutputPayload(t *testing.T) {
 	}
 
 	siblings := findItemsByKind(t, st, "t1", itemKindBackgroundDone)
-	if len(siblings) != 1 {
-		t.Fatalf("expected 1 subagent sibling, got %d", len(siblings))
+	var subagentSibling *store.Item
+	for i := range siblings {
+		if siblings[i].CompletionOf == "spawn-wait" {
+			subagentSibling = &siblings[i]
+		}
 	}
-	if siblings[0].PayloadKind != payloadKindToolCallResult {
-		t.Fatalf("payload kind = %q, want %s", siblings[0].PayloadKind, payloadKindToolCallResult)
+	if subagentSibling == nil {
+		t.Fatalf("expected subagent sibling for spawn-wait, got %+v", siblings)
 	}
-	waitRow, found, err := st.GetThreadItem("t1", "wait-child")
+	if subagentSibling.PayloadKind != payloadKindToolCallResult {
+		t.Fatalf("payload kind = %q, want %s", subagentSibling.PayloadKind, payloadKindToolCallResult)
+	}
+	waitRow, found, err := st.GetThreadItem("t1", nextToolCompletionID("wait-child"))
 	if err != nil || !found {
 		t.Fatalf("wait row missing: found=%v err=%v", found, err)
 	}
-	if siblings[0].PayloadID != waitRow.PayloadID {
-		t.Fatalf("sibling payload id = %q, want shared wait payload %q", siblings[0].PayloadID, waitRow.PayloadID)
+	if subagentSibling.PayloadID != waitRow.PayloadID {
+		t.Fatalf("sibling payload id = %q, want shared wait payload %q", subagentSibling.PayloadID, waitRow.PayloadID)
 	}
-	data, err := st.GetPayloadData(siblings[0].PayloadID)
+	data, err := st.GetPayloadData(subagentSibling.PayloadID)
 	if err != nil {
 		t.Fatalf("payload data: %v", err)
 	}

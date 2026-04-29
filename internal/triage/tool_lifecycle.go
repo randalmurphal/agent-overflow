@@ -162,7 +162,17 @@ func (r *Router) persistToolCallCompletion(evt provider.ProviderEvent) error {
 	if err != nil {
 		return fmt.Errorf("tool completion lookup %s: %w", itemID, err)
 	}
-	if !found || launch.Kind != itemKindToolCall {
+	if !found {
+		codexThread, err := r.isCodexThread(evt.ThreadID)
+		if err != nil {
+			return err
+		}
+		if !codexThread || !shouldPersistCodexCompletionWithoutLaunch(meta.ToolName) {
+			return nil
+		}
+		return r.persistToolCallCompletedWithoutLaunch(evt, meta)
+	}
+	if launch.Kind != itemKindToolCall {
 		return nil
 	}
 
@@ -182,6 +192,13 @@ func (r *Router) persistToolCallCompletion(evt provider.ProviderEvent) error {
 	}
 
 	now := eventTimestampMillis(evt)
+	codexThread, err := r.isCodexThread(evt.ThreadID)
+	if err != nil {
+		return err
+	}
+	if codexThread && shouldSplitCodexToolCompletion(launch.ToolName) {
+		return r.persistSplitToolCompletion(launch, evt, meta, now)
+	}
 
 	// Backgrounded tool_result is a placeholder — Claude sends it to
 	// close the wire-level tool_use block (universal tool-lifecycle
@@ -244,6 +261,84 @@ func (r *Router) persistToolCallCompletion(evt provider.ProviderEvent) error {
 	default:
 		return r.persistItem(launch, nil)
 	}
+}
+
+func (r *Router) persistToolCallCompletedWithoutLaunch(evt provider.ProviderEvent, meta toolCompleteMeta) error {
+	toolName := stringsx.FirstNonEmptyTrimmed(meta.ToolName, evt.ItemType, "tool")
+	now := eventTimestampMillis(evt)
+	turnIndex, err := r.turnIndexForEvent(evt)
+	if err != nil {
+		return fmt.Errorf("tool completion turn index %s: %w", eventItemID(evt), err)
+	}
+	item := store.Item{
+		ID:        eventItemID(evt),
+		ThreadID:  evt.ThreadID,
+		TurnIndex: turnIndex,
+		Kind:      itemKindToolCall,
+		Role:      "assistant",
+		Status:    completionStatus(meta),
+		Summary:   buildCompletionSummary(buildToolCallSummary(toolStartMeta{ToolName: toolName, Input: meta.Input}, evt.ItemType), meta),
+		ParentID:  eventParentID(evt),
+		ToolName:  toolName,
+		Meta:      validJSONObjectString(evt.Meta),
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	payload := completionPayload(item.ID, evt, meta, now)
+	return r.persistItem(item, payload)
+}
+
+func shouldSplitCodexToolCompletion(toolName string) bool {
+	switch strings.TrimSpace(toolName) {
+	case "wait_agent", "resume_agent":
+		return true
+	default:
+		return false
+	}
+}
+
+func shouldPersistCodexCompletionWithoutLaunch(toolName string) bool {
+	switch strings.TrimSpace(toolName) {
+	case "send_input", "close_agent":
+		return true
+	default:
+		return false
+	}
+}
+
+func (r *Router) persistSplitToolCompletion(launch store.Item, evt provider.ProviderEvent, meta toolCompleteMeta, now int64) error {
+	launch.Status = statusCompleted
+	launch.UpdatedAt = now
+	launch.Meta = mergeItemMetaJSON(launch.Meta, evt.Meta)
+	if err := r.persistItem(launch, nil); err != nil {
+		return err
+	}
+	completionID := nextToolCompletionID(launch.ID)
+	completion := store.Item{
+		ID:           completionID,
+		ThreadID:     evt.ThreadID,
+		TurnIndex:    launch.TurnIndex,
+		Kind:         itemKindBackgroundDone,
+		Role:         "assistant",
+		Status:       completionStatus(meta),
+		Summary:      buildCompletionSummary(completionBaseSummary(launch, meta, evt.ItemType), meta),
+		ParentID:     launch.ParentID,
+		CompletionOf: launch.ID,
+		ToolName:     launch.ToolName,
+		Meta:         validJSONObjectString(evt.Meta),
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+	payload := completionPayload(completion.ID, evt, meta, now)
+	return r.persistItem(completion, payload)
+}
+
+func (r *Router) isCodexThread(threadID string) (bool, error) {
+	thread, err := r.store.GetThread(threadID)
+	if err != nil {
+		return false, fmt.Errorf("lookup thread provider %s: %w", threadID, err)
+	}
+	return thread.Provider == "codex", nil
 }
 
 // backgroundTaskTerminalMeta is the decoded view of
@@ -640,27 +735,34 @@ func mergeItemMetaJSON(existing string, incoming json.RawMessage) string {
 	if len(incoming) == 0 {
 		return existing
 	}
-	var merged map[string]json.RawMessage
-	if strings.TrimSpace(existing) != "" {
-		if json.Unmarshal([]byte(existing), &merged) != nil {
-			merged = map[string]json.RawMessage{}
-		}
-	}
-	if merged == nil {
-		merged = map[string]json.RawMessage{}
-	}
-	var next map[string]json.RawMessage
-	if json.Unmarshal(incoming, &next) != nil || next == nil {
-		return existing
-	}
-	for key, value := range next {
-		merged[key] = value
-	}
-	out, err := json.Marshal(merged)
-	if err != nil {
+	out, ok := mergeJSONObjectBytes(json.RawMessage(existing), incoming)
+	if !ok {
 		return existing
 	}
 	return string(out)
+}
+
+func mergeJSONObjectBytes(existing, incoming json.RawMessage) (json.RawMessage, bool) {
+	merged := map[string]json.RawMessage{}
+	if strings.TrimSpace(string(existing)) != "" {
+		if json.Unmarshal(existing, &merged) != nil || merged == nil {
+			merged = map[string]json.RawMessage{}
+		}
+	}
+	if len(incoming) > 0 {
+		var next map[string]json.RawMessage
+		if json.Unmarshal(incoming, &next) != nil || next == nil {
+			return nil, false
+		}
+		for key, value := range next {
+			merged[key] = value
+		}
+	}
+	out, err := json.Marshal(merged)
+	if err != nil {
+		return nil, false
+	}
+	return out, true
 }
 
 func buildToolCallSummary(meta toolStartMeta, itemType string) string {

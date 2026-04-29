@@ -154,6 +154,11 @@
   {/if}
 
   <!-- Output content -->
+  {#if hasBody && !expansion.expanded && meta?.preview}
+    <div class="ml-5 border-l border-border-subtle px-3 py-1">
+      <AnsiText source={meta.preview} class="line-clamp-5 whitespace-pre-wrap break-words text-[11px] leading-relaxed text-fg-subtle" />
+    </div>
+  {/if}
   {#if hasBody && expansion.expanded}
     <div id="cmd-output-{payloadId || item.id}" transition:slide={{ duration: 150 }} class="ml-5 border-l border-border-subtle bg-surface-0/35">
       <div class="px-3 py-2 overflow-x-auto">

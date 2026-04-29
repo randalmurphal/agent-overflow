@@ -142,12 +142,7 @@ func TestTerminalInteraction_SplitsScopedAssistantTextAroundWait(t *testing.T) {
 	}
 }
 
-// TestTerminalInteraction_NonEmptyStdinDropped pins Phase 6 scope: the
-// non-empty-stdin (keystrokes-forwarded) variant is parsed by the Codex
-// protocol but MUST NOT persist a row. The event is observable on the
-// event hook; persistence is deferred to a future phase that decides
-// how to render an "Interacted" cell.
-func TestTerminalInteraction_NonEmptyStdinDropped(t *testing.T) {
+func TestTerminalInteraction_NonEmptyStdinPersistsInteractedRow(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
 	seedOpenTurn(t, router, st, "t1", 0)
@@ -169,10 +164,21 @@ func TestTerminalInteraction_NonEmptyStdinDropped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list turn items: %v", err)
 	}
-	for _, it := range items {
-		if it.Kind == string(provider.ItemTerminalInteraction) {
-			t.Errorf("unexpected terminal_interaction row on non-empty stdin: %+v", it)
-		}
+	if len(items) != 1 {
+		t.Fatalf("items = %d, want 1", len(items))
+	}
+	if items[0].Kind != string(provider.ItemTerminalInteraction) {
+		t.Fatalf("kind = %q, want terminal_interaction", items[0].Kind)
+	}
+	if !strings.Contains(items[0].Summary, "Interacted with background terminal") {
+		t.Fatalf("summary = %q, want interacted row", items[0].Summary)
+	}
+	if strings.Contains(items[0].Meta, "password") {
+		t.Fatalf("meta persisted stdin bytes: %s", items[0].Meta)
+	}
+	meta := decodeItemMetaMap(t, items[0].Meta)
+	if meta["has_stdin"] != true {
+		t.Fatalf("meta has_stdin = %v, want true", meta["has_stdin"])
 	}
 }
 

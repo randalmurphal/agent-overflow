@@ -1174,6 +1174,7 @@ func (r *Router) CleanupThread(threadID string) {
 	deleteByPrefix(r.activeTextBlocks, prefix)
 	deleteByPrefix(r.activeThinkingBlocks, prefix)
 	deleteByPrefix(r.errorSeqByScope, prefix)
+	deleteByPrefix(r.notificationSeqByScope, prefix)
 	for key := range r.streamPersistBuffers {
 		if strings.HasPrefix(key, prefix) {
 			if buffer := r.streamPersistBuffers[key]; buffer != nil && buffer.timer != nil {

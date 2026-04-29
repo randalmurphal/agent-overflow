@@ -4,13 +4,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 )
 
-// terminal_interaction.go — Codex-only "Waited for background terminal"
-// row persistence.
+// terminal_interaction.go — Codex-only background terminal interaction row
+// persistence.
 //
 // Codex emits `TerminalInteractionNotification` whenever the model calls
 // `write_stdin` against a backgrounded unified-exec PTY. The signal has
@@ -18,16 +19,12 @@ import (
 //
 //   - `stdin == ""`: the model polled the PTY without sending input.
 //     Codex's own TUI renders a "Waited for background terminal" cell
-//     (chatwidget.rs:618). This is the variant Phase 6 persists.
-//   - `stdin != ""`: keystrokes were forwarded. Phase 6 drops these —
-//     a future phase can render "Interacted with background terminal"
-//     without a parser change.
+//     (chatwidget.rs:618). Pending polls reuse one row until output lands.
+//   - `stdin != ""`: keystrokes were forwarded. We persist an
+//     "Interacted with background terminal" marker, but never persist
+//     stdin bytes because interactive input can contain secrets.
 //
-// Each empty-stdin event persists one row. If Codex polls ten times we
-// show ten cells; matching Codex's TUI behavior (the
-// `unified_exec_wait_streak` tracker only collapses runs visually, not
-// at the event level). Preemptive grouping / deduplication is a
-// separate UX decision.
+// Completed command output can attach to either marker as a payload.
 
 // terminalInteractionMeta is the Meta shape populated by
 // buildTerminalInteractionMeta in the Codex parser. Only the fields we
@@ -47,10 +44,8 @@ func decodeTerminalInteractionMeta(raw json.RawMessage) terminalInteractionMeta 
 }
 
 // handleTerminalInteraction routes Codex's `TerminalInteractionNotification`
-// events. Only the empty-stdin (polling) variant persists a timeline row
-// — the non-empty variant stays observable via the event stream but
-// doesn't leave a persisted marker until a future phase decides what to
-// render for it.
+// events. Both polling and interactive variants persist timeline rows; the
+// interactive variant records only `has_stdin` and never stores stdin text.
 //
 // Correlation rules:
 //
@@ -63,25 +58,12 @@ func decodeTerminalInteractionMeta(raw json.RawMessage) terminalInteractionMeta 
 //     fall back to store.LastTurnIndex: attaching a live
 //     terminal_interaction to a CLOSED turn would make the completion
 //     divider appear below a row that happened AFTER it.
-//   - Stable id `waited:<processID>:<turn_index>:<seq>` so replay of
-//     the same notification at the same position upserts in place
-//     instead of double-inserting. `seq` starts at 0 and increments
-//     per event — within a turn, multiple polls on the SAME processId
-//     produce distinct ids so each one is its own row.
+//   - Stable ids use `waited:<processID>:<turn_index>:<seq>` for polls and
+//     `interacted:<processID>:<turn_index>:<seq>` for forwarded stdin.
+//     Pending polls can reuse their prior id so repeated empty polls update
+//     the same visible row until output arrives.
 func (r *Router) handleTerminalInteraction(evt provider.ProviderEvent) error {
 	meta := decodeTerminalInteractionMeta(evt.Meta)
-
-	// Phase 6 only renders the polling variant. Drop anything with
-	// non-empty stdin — the event itself has been observed (via
-	// SetEventHook in tests, or a future frontend subscriber) but no
-	// row is persisted. Strict empty-check (no TrimSpace) matches
-	// Codex's own wire-level classifier (see
-	// codex-rs/tui/src/chatwidget.rs: `stdin.as_deref().map(str::is_empty)`).
-	// Whitespace-only stdin means the model genuinely forwarded those
-	// bytes; that's an interaction, not a poll.
-	if evt.Content != "" || meta.Stdin != "" {
-		return nil
-	}
 
 	turnIndex, ok := r.openTurnIndex(evt.ThreadID)
 	if !ok {
@@ -96,22 +78,36 @@ func (r *Router) handleTerminalInteraction(evt provider.ProviderEvent) error {
 	r.settleStreamingBeforeTimelineBoundary(evt, "terminal interaction")
 
 	now := eventTimestampMillis(evt)
-	seq := r.nextTerminalInteractionSequence(evt.ThreadID, turnIndex, meta.ProcessID)
-	itemID := terminalInteractionID(meta.ProcessID, turnIndex, seq)
+	isPoll := evt.Content == "" && meta.Stdin == ""
+	itemID := ""
+	if isPoll {
+		itemID = r.pendingCodexTerminalWaitItemID(evt.ThreadID, meta.ProcessID)
+	}
+	if itemID == "" {
+		seq := r.nextTerminalInteractionSequence(evt.ThreadID, turnIndex, meta.ProcessID)
+		itemID = terminalInteractionID(meta.ProcessID, turnIndex, seq, isPoll)
+	}
 
-	// Store only process_id in the persisted meta. The raw stdin bytes
-	// from the wire event MUST NOT land in SQLite — Phase 6 only
-	// persists the empty-stdin variant anyway, but being explicit about
-	// what goes to the store prevents a future change here from
-	// accidentally writing keystrokes that could contain credentials or
-	// other sensitive input.
-	metaBlob, err := json.Marshal(map[string]any{
+	metaMap := map[string]any{
 		"process_id": meta.ProcessID,
-	})
+		"kind":       "terminal_interaction",
+	}
+	if !isPoll {
+		metaMap["has_stdin"] = true
+	}
+	metaBlob, err := json.Marshal(metaMap)
 	if err != nil {
 		// Unreachable — we're marshaling a literal map — but fall back
 		// to a bare default rather than drop the row.
 		metaBlob = json.RawMessage(`{}`)
+	}
+
+	summary := "Waited for background terminal"
+	if !isPoll {
+		summary = "Interacted with background terminal"
+	}
+	if commandSummary := r.codexTerminalSummaryForProcess(evt.ThreadID, meta.ProcessID); commandSummary != "" {
+		summary += ": " + commandSummary
 	}
 
 	item := store.Item{
@@ -121,7 +117,7 @@ func (r *Router) handleTerminalInteraction(evt provider.ProviderEvent) error {
 		Kind:      string(provider.ItemTerminalInteraction),
 		Role:      "assistant",
 		Status:    statusCompleted,
-		Summary:   "Waited for background terminal",
+		Summary:   summary,
 		ParentID:  eventParentID(evt),
 		Meta:      string(metaBlob),
 		CreatedAt: now,
@@ -136,6 +132,9 @@ func (r *Router) handleTerminalInteraction(evt provider.ProviderEvent) error {
 	}
 	payload, outputSummary := r.codexCompletedOutputPayloadForProcess(evt.ThreadID, meta.ProcessID, item.ID, evt.Meta, now)
 	if outputSummary != "" {
+		if !isPoll {
+			outputSummary = strings.Replace(outputSummary, "Waited for background terminal", "Interacted with background terminal", 1)
+		}
 		item.Summary = outputSummary
 	}
 	if err := r.persistItem(item, payload); err != nil {
@@ -143,14 +142,14 @@ func (r *Router) handleTerminalInteraction(evt provider.ProviderEvent) error {
 	}
 	if payload != nil {
 		r.clearCodexCompletedOutputTracker(evt.ThreadID, meta.ProcessID)
-	} else {
+	} else if isPoll {
 		r.trackCodexPendingTerminalWait(evt.ThreadID, meta.ProcessID, item.ID, turnIndex, now)
 	}
 	return nil
 }
 
-// terminalInteractionID builds the stable id for a persisted "waited"
-// row. Shape: `waited:<processID>:<turn_index>:<seq>`. Encoding
+// terminalInteractionID builds the stable id for a persisted terminal
+// interaction row. Shape: `<kind>:<processID>:<turn_index>:<seq>`. Encoding
 // turn_index and seq in the id keeps replays idempotent — the same
 // (processID, turn_index, seq) always maps to the same row, so an
 // accidental double-dispatch (session reconnect, event bus fan-out)
@@ -160,11 +159,15 @@ func (r *Router) handleTerminalInteraction(evt provider.ProviderEvent) error {
 // from some builds). In that case we substitute the literal "-" so the
 // id stays well-formed; multiple waits in the same turn with empty
 // processIDs still differentiate by seq.
-func terminalInteractionID(processID string, turnIndex, seq int) string {
+func terminalInteractionID(processID string, turnIndex, seq int, poll bool) string {
 	if processID == "" {
 		processID = "-"
 	}
-	return fmt.Sprintf("waited:%s:%d:%d", processID, turnIndex, seq)
+	prefix := "interacted"
+	if poll {
+		prefix = "waited"
+	}
+	return fmt.Sprintf("%s:%s:%d:%d", prefix, processID, turnIndex, seq)
 }
 
 // nextTerminalInteractionSequence returns a monotonically-increasing

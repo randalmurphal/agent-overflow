@@ -136,7 +136,7 @@
       return titleCase(readString(inputObject, 'subagent_type') || 'Agent');
     }
     if (toolName === 'collab_agent') {
-      return titleCase(readString(inputObject, 'tool') || 'Subagent');
+      return 'Spawned';
     }
     // Defensive: any other tool that nonetheless declared children
     // (rare but possible if the provider tags parent_tool_use_id
@@ -156,10 +156,7 @@
     return tokens.map((t) => t.charAt(0).toUpperCase() + t.slice(1)).join(' ');
   }
 
-  // Subagent model affix — Claude `Agent` only. Codex `collab_agent`
-  // children share the parent's session model and have no per-spawn
-  // override on the wire, so the affix stays empty there.
-  // Resolution order for Claude:
+  // Subagent model affix. Resolution order for Claude:
   //   1. parent.meta.subagent_model — stamped by the parser on the
   //      first subagent assistant envelope (most authoritative).
   //   2. payloadMeta.input.model — the user-supplied alias on the
@@ -167,6 +164,11 @@
   //      window before the first subagent assistant message lands.
   //   3. omitted otherwise.
   let modelLabel = $derived.by<string>(() => {
+    if ((parent.toolName ?? '') === 'collab_agent') {
+      const requested = readString(inputObject, 'model');
+      const effort = readString(inputObject, 'reasoningEffort');
+      return [requested, effort].filter(Boolean).join(' ');
+    }
     if ((parent.toolName ?? '') !== 'Agent') return '';
     const stamped = typeof parentMeta?.subagent_model === 'string' ? parentMeta.subagent_model : '';
     if (stamped) return displayModelLabel('claude', stamped);

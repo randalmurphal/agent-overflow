@@ -54,24 +54,25 @@ type TurnMetrics struct {
 
 // Router classifies provider events and routes them.
 type Router struct {
-	store                *store.Store
-	emit                 func(eventName string, data any) // wraps app.Event.Emit
-	checkpoints          CheckpointCapture                // nil-safe; no-op when nil
-	tracer               trace.Tracer
-	metrics              TurnMetrics
-	mu                   sync.Mutex
-	pendingCommandDiffs  map[string]pendingCommandInlineDiff
-	pendingApprovals     map[string]pendingApprovalState
-	pendingApprovalItems map[string]string
-	pendingUserInputs    map[string]provider.UserInputRequest
-	interruptQueue       map[string][]queuedPersistence
-	openTurns            map[string]int
-	segmentIndexByScope  map[string]int
-	blockIndexByScope    map[string]int
-	activeTextBlocks     map[string]bool
-	activeThinkingBlocks map[string]bool
-	streamingItemCounts  map[string]int
-	errorSeqByScope      map[string]int
+	store                  *store.Store
+	emit                   func(eventName string, data any) // wraps app.Event.Emit
+	checkpoints            CheckpointCapture                // nil-safe; no-op when nil
+	tracer                 trace.Tracer
+	metrics                TurnMetrics
+	mu                     sync.Mutex
+	pendingCommandDiffs    map[string]pendingCommandInlineDiff
+	pendingApprovals       map[string]pendingApprovalState
+	pendingApprovalItems   map[string]string
+	pendingUserInputs      map[string]provider.UserInputRequest
+	interruptQueue         map[string][]queuedPersistence
+	openTurns              map[string]int
+	segmentIndexByScope    map[string]int
+	blockIndexByScope      map[string]int
+	activeTextBlocks       map[string]bool
+	activeThinkingBlocks   map[string]bool
+	streamingItemCounts    map[string]int
+	errorSeqByScope        map[string]int
+	notificationSeqByScope map[string]int
 	// streamPersistBuffers decouple the live UI stream from durable
 	// history writes. Text/thinking deltas emit immediately on ordered
 	// provider:item_event deltas, then flush to SQLite by interval, byte
@@ -188,6 +189,7 @@ func NewRouter(st *store.Store, emit func(eventName string, data any)) *Router {
 		activeThinkingBlocks:       make(map[string]bool),
 		streamingItemCounts:        make(map[string]int),
 		errorSeqByScope:            make(map[string]int),
+		notificationSeqByScope:     make(map[string]int),
 		streamPersistBuffers:       make(map[string]*streamPersistBuffer),
 		capturedTurns:              make(map[string]bool),
 		settledTurns:               make(map[string]bool),
@@ -295,6 +297,10 @@ func (r *Router) Handle(evt provider.ProviderEvent) error {
 		return r.handleRateLimits(evt)
 	case provider.EventError:
 		return r.handleError(evt)
+	case provider.EventPlanUpdate:
+		return r.handlePlanUpdate(evt)
+	case provider.EventNotification:
+		return r.handleTimelineNotification(evt)
 	case provider.EventTokenUsage:
 		return r.handleTokenUsage(evt)
 	case provider.EventInit:

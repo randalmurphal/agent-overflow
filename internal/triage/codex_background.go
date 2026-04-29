@@ -70,6 +70,7 @@ type unifiedExecTracker struct {
 	parentID     string
 	status       string
 	exitCode     int
+	meta         json.RawMessage
 	output       cappedCommandOutput
 	createdAt    int64
 	updatedAt    int64
@@ -196,6 +197,14 @@ func codexExitCodeFromMeta(raw json.RawMessage) int {
 		return parsed.ExitCode
 	}
 	return parsed.ExitCodeSnake
+}
+
+func mergeRawJSONObject(left, right json.RawMessage) json.RawMessage {
+	out, ok := mergeJSONObjectBytes(left, right)
+	if !ok {
+		return right
+	}
+	return out
 }
 
 func (o *cappedCommandOutput) Append(delta string) {
@@ -409,6 +418,7 @@ func (r *Router) observeCodexToolStart(evt provider.ProviderEvent) bool {
 			summary:   summary,
 			parentID:  eventParentID(evt),
 			status:    statusRunning,
+			meta:      evt.Meta,
 			createdAt: now,
 			updatedAt: now,
 		}
@@ -488,6 +498,39 @@ func (r *Router) trackCodexPendingTerminalWait(threadID, processID, itemID strin
 	r.mu.Unlock()
 }
 
+func (r *Router) pendingCodexTerminalWaitItemID(threadID, processID string) string {
+	processID = strings.TrimSpace(processID)
+	if processID == "" {
+		return ""
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	state := r.codexBackground[threadID]
+	if state == nil {
+		return ""
+	}
+	return state.pendingWaitByProcess[processID].itemID
+}
+
+func (r *Router) codexTerminalSummaryForProcess(threadID, processID string) string {
+	processID = strings.TrimSpace(processID)
+	if processID == "" {
+		return ""
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	state := r.codexBackground[threadID]
+	if state == nil {
+		return ""
+	}
+	launchID := state.unifiedExecByProcess[processID]
+	tracker := state.unifiedExec[launchID]
+	if tracker == nil {
+		return ""
+	}
+	return tracker.summary
+}
+
 func rebindCodexUnifiedExecProcessLocked(state *codexBackgroundState, tracker *unifiedExecTracker, processID string) {
 	processID = strings.TrimSpace(processID)
 	if state == nil || tracker == nil || processID == "" || tracker.processID == processID {
@@ -509,6 +552,8 @@ func (r *Router) observeCodexCommandOutput(evt provider.ProviderEvent) bool {
 	if itemID == "" {
 		return false
 	}
+	meta := decodeCodexItemMeta(evt.Meta)
+	command := codexCommandFromMeta(evt.Meta)
 	r.mu.Lock()
 	state := r.codexBackground[evt.ThreadID]
 	if state == nil {
@@ -525,16 +570,16 @@ func (r *Router) observeCodexCommandOutput(evt provider.ProviderEvent) bool {
 		}
 		return false
 	}
-	meta := decodeCodexItemMeta(evt.Meta)
 	rebindCodexUnifiedExecProcessLocked(state, tracker, meta.ProcessID)
 	if evt.Replace {
 		tracker.output.Replace(evt.Content)
 	} else {
 		tracker.output.Append(evt.Content)
 	}
-	if command := codexCommandFromMeta(evt.Meta); strings.TrimSpace(command) != "" {
+	if strings.TrimSpace(command) != "" {
 		tracker.command = command
 	}
+	tracker.meta = mergeRawJSONObject(tracker.meta, evt.Meta)
 	tracker.updatedAt = now
 	r.mu.Unlock()
 	if pruned {
@@ -564,6 +609,11 @@ func (r *Router) observeCodexUnifiedExecComplete(evt provider.ProviderEvent) (bo
 		return false, nil
 	}
 
+	meta := decodeCodexItemMeta(evt.Meta)
+	command := codexCommandFromMeta(evt.Meta)
+	status := codexBackgroundCompletionStatus(evt.Meta)
+	exitCode := codexExitCodeFromMeta(evt.Meta)
+
 	var tracker unifiedExecTracker
 	var pendingWait pendingTerminalWait
 	handled := false
@@ -581,14 +631,14 @@ func (r *Router) observeCodexUnifiedExecComplete(evt provider.ProviderEvent) (bo
 		handled = true
 		backgrounded = live.backgrounded
 		live.completed = true
-		live.status = codexBackgroundCompletionStatus(evt.Meta)
-		live.exitCode = codexExitCodeFromMeta(evt.Meta)
+		live.status = status
+		live.exitCode = exitCode
 		live.completedAt = now
 		live.updatedAt = now
-		if command := codexCommandFromMeta(evt.Meta); strings.TrimSpace(command) != "" {
+		if strings.TrimSpace(command) != "" {
 			live.command = command
 		}
-		meta := decodeCodexItemMeta(evt.Meta)
+		live.meta = mergeRawJSONObject(live.meta, evt.Meta)
 		rebindCodexUnifiedExecProcessLocked(state, live, meta.ProcessID)
 		if evt.Content != "" {
 			live.output.Replace(evt.Content)
@@ -656,6 +706,7 @@ func (r *Router) persistQuickCodexCommand(evt provider.ProviderEvent, tracker un
 		Summary:   buildCompletionSummary(summary, decodeToolCompleteMeta(evt.Meta)),
 		ParentID:  tracker.parentID,
 		ToolName:  "command_execution",
+		Meta:      validJSONObjectString(mergeRawJSONObject(tracker.meta, evt.Meta)),
 		CreatedAt: tracker.createdAt,
 		UpdatedAt: now,
 	}
@@ -1268,10 +1319,17 @@ func (r *Router) reusableCodexWaitPayloadID(evt provider.ProviderEvent, content 
 	if strings.TrimSpace(content) == "" || strings.TrimSpace(content) != strings.TrimSpace(evt.Content) {
 		return ""
 	}
-	waitRow, found, err := r.store.GetThreadItem(evt.ThreadID, evt.ItemID)
+	waitRow, found, err := r.store.GetThreadItem(evt.ThreadID, nextToolCompletionID(evt.ItemID))
 	if err != nil {
 		log.Printf("triage: codex-background wait payload lookup %s: %v", evt.ItemID, err)
 		return ""
+	}
+	if !found {
+		waitRow, found, err = r.store.GetThreadItem(evt.ThreadID, evt.ItemID)
+		if err != nil {
+			log.Printf("triage: codex-background wait payload lookup %s: %v", evt.ItemID, err)
+			return ""
+		}
 	}
 	if !found || waitRow.PayloadKind != payloadKindToolCallResult {
 		return ""

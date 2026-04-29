@@ -330,12 +330,15 @@ func TestErrorNotification(t *testing.T) {
 	}
 }
 
-func TestTurnPlanUpdatedDropped(t *testing.T) {
+func TestTurnPlanUpdatedEmitsPlanUpdate(t *testing.T) {
 	params := json.RawMessage(`{"plan":"step 1, step 2"}`)
 	events := ClassifyNotification(testThread, "turn/plan/updated", params)
 
-	if len(events) != 0 {
-		t.Fatalf("expected turn/plan/updated to be dropped, got %d event(s)", len(events))
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if events[0].Kind != provider.EventPlanUpdate {
+		t.Fatalf("kind = %q, want %q", events[0].Kind, provider.EventPlanUpdate)
 	}
 }
 
@@ -583,8 +586,6 @@ func TestSkippedMethods(t *testing.T) {
 		"item/autoApprovalReview/completed",
 		"account/updated",
 		"account/login/completed",
-		"configWarning",
-		"deprecationNotice",
 	}
 
 	for _, method := range skipped {
@@ -1029,7 +1030,7 @@ func TestDispatchLineSubagentNotificationUsesAgentPathMapping(t *testing.T) {
 	t.Fatalf("expected EventSubagentNotification, got %+v", events)
 }
 
-func TestDispatchLineCloseAgentRewritesToParentCardID(t *testing.T) {
+func TestDispatchLineCloseAgentKeepsOwnItemID(t *testing.T) {
 	var events []provider.ProviderEvent
 	s := &Session{
 		threadID:            "parent-thread",
@@ -1045,8 +1046,8 @@ func TestDispatchLineCloseAgentRewritesToParentCardID(t *testing.T) {
 	if len(events) != 1 {
 		t.Fatalf("expected 1 event, got %d", len(events))
 	}
-	if events[0].ItemID != "call-collab-1" {
-		t.Fatalf("ItemID: got %q, want %q", events[0].ItemID, "call-collab-1")
+	if events[0].ItemID != "close-call-1" {
+		t.Fatalf("ItemID: got %q, want %q", events[0].ItemID, "close-call-1")
 	}
 }
 

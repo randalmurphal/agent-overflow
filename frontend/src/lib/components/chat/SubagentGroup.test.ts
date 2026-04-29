@@ -398,7 +398,7 @@ describe('<SubagentGroup>', () => {
       }),
     });
     const { getByTestId } = render(SubagentGroupTestHarness, { props: { group } });
-    expect(getByTestId('subagent-group-label').textContent).toContain('Spawn Agent');
+    expect(getByTestId('subagent-group-label').textContent).toContain('Spawned');
     expect(getByTestId('subagent-group-preview').textContent).toContain('Audit the new feature flags rollout');
   });
 });
