@@ -2,7 +2,6 @@
   import ListTodo from 'lucide-svelte/icons/list-todo';
   import type { ThreadPane } from '../../../stores/thread.svelte';
   import Icon from '../../primitives/Icon.svelte';
-  import Separator from '../../primitives/Separator.svelte';
 
   interface Props {
     pane: ThreadPane;
@@ -13,7 +12,6 @@
 </script>
 
 {#if hasCurrentPlan}
-  <Separator orientation="vertical" opacity={0.4} class="h-4 mx-1" />
   <button
     type="button"
     onclick={() => pane.togglePlanSidebar()}

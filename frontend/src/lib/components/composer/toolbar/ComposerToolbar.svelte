@@ -5,11 +5,11 @@
   //
   // The toolbar now sits inside the composer card (no border-t, no
   // bg-surface-1 of its own) so the whole composer reads as one
-  // continuous surface. Thin vertical separators mark logical groups:
-  // model/effort (agent config) | mode/access (execution config) | send.
+  // continuous surface. Left-side controls share one compact spacing
+  // rule so the model, effort, mode, access, and plan actions read as
+  // one stable control cluster.
 
   import type { ThreadPane } from '../../../stores/thread.svelte';
-  import Separator from '../../primitives/Separator.svelte';
   import ModelProviderMenu from './ModelProviderMenu.svelte';
   import EffortMenu from './EffortMenu.svelte';
   import ModeCycleButton from './ModeCycleButton.svelte';
@@ -62,7 +62,6 @@
 >
   <ModelProviderMenu {pane} />
   <EffortMenu {pane} />
-  <Separator orientation="vertical" opacity={0.4} class="h-4 mx-1" />
   <ModeCycleButton {pane} />
   <AccessToggle {pane} />
   <PlanSidebarToggleButton {pane} {hasCurrentPlan} />
