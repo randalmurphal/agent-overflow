@@ -19,6 +19,9 @@ function makeAttachment(id: string, filename = `${id}.png`, size = 512): Attachm
 describe('<ComposerAttachmentRow>', () => {
   beforeEach(() => {
     resetBindingMocks();
+    // Inline grid loads thumbnails; lightbox modal reloads full-size on click.
+    // Stub both so any test path produces a usable preview.
+    setBindingMock('GetAttachmentThumbnail', async () => ({ data: 'iVBORw0KGgo=', mimeType: 'image/png' }));
     setBindingMock('GetAttachmentData', async () => 'iVBORw0KGgo=');
   });
 

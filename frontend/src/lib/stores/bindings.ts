@@ -136,6 +136,7 @@ export {
   ListAttachments,
   DeleteAttachment,
   GetAttachmentData,
+  GetAttachmentThumbnail,
   SaveDraft,
   GetDraft,
   ClearDraft,

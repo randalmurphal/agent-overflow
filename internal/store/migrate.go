@@ -1005,6 +1005,14 @@ CREATE INDEX IF NOT EXISTS idx_chat_model_profiles_updated
 	ON chat_model_profiles(updated_at DESC);
 `,
 	},
+	{
+		Version: 35,
+		Name:    "attachment_thumbnails",
+		SQL: `
+ALTER TABLE attachments ADD COLUMN thumbnail_data BLOB;
+ALTER TABLE attachments ADD COLUMN thumbnail_mime TEXT;
+`,
+	},
 }
 
 // v13SQL is the DROP-and-rebuild payload for migration v13. Extracted so

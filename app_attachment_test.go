@@ -1,7 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"encoding/base64"
+	"image"
+	"image/color"
+	"image/png"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -10,6 +14,25 @@ import (
 	"agent-overflow/internal/attachment"
 	"agent-overflow/internal/store"
 )
+
+// realPNGBytes returns a small (8x8) but fully-decodable PNG. The
+// thumbnail generator needs an image it can actually decode; the
+// pngBase64 helper above just hands back the PNG signature bytes,
+// which works for upload validation but not for image.Decode.
+func realPNGBytes(t *testing.T) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, 8, 8))
+	for y := 0; y < 8; y++ {
+		for x := 0; x < 8; x++ {
+			img.Set(x, y, color.RGBA{R: uint8(x * 32), G: uint8(y * 32), B: 0x80, A: 0xff})
+		}
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatalf("encode test png: %v", err)
+	}
+	return buf.Bytes()
+}
 
 func newAttachmentTestApp(t *testing.T) *App {
 	t.Helper()
@@ -107,6 +130,63 @@ func TestGetAttachmentDataRejectsCrossThreadID(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "belongs to thread") {
 		t.Fatalf("GetAttachmentData error = %v, want ownership rejection", err)
+	}
+}
+
+func TestGetAttachmentThumbnailReturnsThumb(t *testing.T) {
+	app := newAttachmentTestApp(t)
+	// Use a real (decodable) PNG so the generator can read it.
+	pngBytes := realPNGBytes(t)
+	record, err := app.UploadAttachment("thr-a", "shot.png", "image/png", base64.StdEncoding.EncodeToString(pngBytes))
+	if err != nil {
+		t.Fatalf("UploadAttachment: %v", err)
+	}
+	got, err := app.GetAttachmentThumbnail(record.ThreadID, record.ID)
+	if err != nil {
+		t.Fatalf("GetAttachmentThumbnail: %v", err)
+	}
+	if got.MimeType != "image/png" {
+		t.Fatalf("thumbnail mime = %q, want image/png", got.MimeType)
+	}
+	if got.Data == "" {
+		t.Fatal("expected non-empty base64 thumbnail")
+	}
+	// The cached thumbnail should be identical on a second call (no
+	// regeneration). Compare the raw decoded bytes for stability across
+	// platforms — base64 representation is canonical so this is a tight
+	// check.
+	again, err := app.GetAttachmentThumbnail(record.ThreadID, record.ID)
+	if err != nil {
+		t.Fatalf("GetAttachmentThumbnail (cached): %v", err)
+	}
+	if again.Data != got.Data || again.MimeType != got.MimeType {
+		t.Fatal("expected cached thumbnail to round-trip identically")
+	}
+}
+
+func TestGetAttachmentThumbnailRejectsCrossThread(t *testing.T) {
+	app := newAttachmentTestApp(t)
+	thread := store.Thread{
+		ID:            "thr-b",
+		ProjectID:     defaultTestProjectID,
+		Title:         "Thread B",
+		Provider:      "claude",
+		WorkspacePath: "/tmp/work-b",
+		Model:         "claude",
+		Mode:          "chat",
+		CreatedAt:     time.Now().UnixMilli(),
+		UpdatedAt:     time.Now().UnixMilli(),
+	}
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread thr-b: %v", err)
+	}
+	pngBytes := realPNGBytes(t)
+	record, err := app.UploadAttachment("thr-a", "shot.png", "image/png", base64.StdEncoding.EncodeToString(pngBytes))
+	if err != nil {
+		t.Fatalf("UploadAttachment: %v", err)
+	}
+	if _, err := app.GetAttachmentThumbnail("thr-b", record.ID); err == nil {
+		t.Fatal("expected cross-thread thumbnail rejection")
 	}
 }
 

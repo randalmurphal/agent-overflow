@@ -58,8 +58,9 @@
 
   async function expandAttachment(id: string): Promise<void> {
     if (!onImageExpand) return;
-    const expanded = attachmentPreviews.expandedPreview(id)
-      ?? await attachmentPreviews.loadExpandedPreview(id);
+    // Always refetches full bytes; the per-pane attachment cache holds
+    // thumbnails, not full-size pixels, so there's no synchronous shortcut.
+    const expanded = await attachmentPreviews.loadExpandedPreview(id);
     if (expanded) onImageExpand(expanded);
   }
 

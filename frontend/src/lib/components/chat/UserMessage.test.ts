@@ -7,6 +7,11 @@ import UserMessage from './UserMessage.svelte';
 describe('<UserMessage>', () => {
   beforeEach(() => {
     resetBindingMocks();
+    // GetAttachmentThumbnail is the inline-grid path (small bytes from the
+    // SQLite thumbnail cache); GetAttachmentData is the modal lightbox path
+    // (original-resolution refetch). Mock both so tests exercising either
+    // path don't blow up on an unstubbed binding.
+    setBindingMock('GetAttachmentThumbnail', async () => ({ data: 'iVBORw0KGgo=', mimeType: 'image/png' }));
     setBindingMock('GetAttachmentData', async () => 'iVBORw0KGgo=');
   });
 
@@ -123,13 +128,18 @@ describe('<UserMessage>', () => {
     expect(onImageExpand.mock.calls[0]?.[0].images[0]?.url).toMatch(/^(blob:|data:image\/png;base64,)/);
   });
 
-  it('loads history attachment previews on mount (virtua bufferSize bounds the mount window)', async () => {
+  it('loads history attachment thumbnails on mount (virtua bufferSize bounds the mount window)', async () => {
     // Pre-rebuild this was gated by an IntersectionObserver inside the
     // row. After the rebuild, virtua's `bufferSize=900` already restricts
     // mount to rows near the viewport, and the per-pane attachment cache
     // de-dupes across remounts — so a separate IO observer was redundant
-    // and got removed. Loading happens immediately on mount.
-    const getAttachmentData = setBindingMock('GetAttachmentData', async () => 'iVBORw0KGgo=');
+    // and got removed. Loading happens immediately on mount, and goes
+    // through GetAttachmentThumbnail (not the full-size GetAttachmentData
+    // which is reserved for the lightbox modal).
+    const getAttachmentThumbnail = setBindingMock(
+      'GetAttachmentThumbnail',
+      async () => ({ data: 'iVBORw0KGgo=', mimeType: 'image/png' }),
+    );
 
     render(UserMessage, {
       props: {
@@ -153,7 +163,7 @@ describe('<UserMessage>', () => {
     });
 
     await waitFor(() => {
-      expect(getAttachmentData).toHaveBeenCalledWith('thread-1', 'att-1');
+      expect(getAttachmentThumbnail).toHaveBeenCalledWith('thread-1', 'att-1');
     });
   });
 });

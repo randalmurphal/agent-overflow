@@ -21,6 +21,38 @@ import * as terminal$0 from "./internal/terminal/models.js";
 // @ts-ignore: Unused imports
 import * as workspacefiles$0 from "./internal/workspacefiles/models.js";
 
+/**
+ * AttachmentThumbnail is the wire shape returned by GetAttachmentThumbnail.
+ * Carries the encoded thumbnail bytes (base64) plus the actual output mime
+ * type so the frontend can build a Blob without trusting the original
+ * attachment's mime — the thumbnailer may downconvert (e.g. WEBP source →
+ * JPEG output) and the consumer needs to know.
+ */
+export class AttachmentThumbnail {
+    "data": string;
+    "mimeType": string;
+
+    /** Creates a new AttachmentThumbnail instance. */
+    constructor($$source: Partial<AttachmentThumbnail> = {}) {
+        if (!("data" in $$source)) {
+            this["data"] = "";
+        }
+        if (!("mimeType" in $$source)) {
+            this["mimeType"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new AttachmentThumbnail instance from a string or object.
+     */
+    static createFrom($$source: any = {}): AttachmentThumbnail {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new AttachmentThumbnail($$parsedSource as Partial<AttachmentThumbnail>);
+    }
+}
+
 export class ContextSettingsProfile {
     "provider": string;
     "model": string;

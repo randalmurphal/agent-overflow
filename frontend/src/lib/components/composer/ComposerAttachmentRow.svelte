@@ -18,9 +18,12 @@
   let { attachments, onRemove, onExpand, dragActive = false }: Props = $props();
   const attachmentPreviews = createAttachmentPreviews(() => attachments);
 
-  function expandAttachment(id: string): void {
+  async function expandAttachment(id: string): Promise<void> {
     if (!onExpand) return;
-    const expanded = attachmentPreviews.expandedPreview(id);
+    // The composer row's preview cache holds thumbnails; the lightbox
+    // wants the original-resolution image. Always go through the
+    // load-full-size path.
+    const expanded = await attachmentPreviews.loadExpandedPreview(id);
     if (expanded) onExpand(expanded);
   }
 </script>

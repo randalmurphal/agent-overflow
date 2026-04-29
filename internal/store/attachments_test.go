@@ -164,6 +164,86 @@ func TestAttachmentCascadesOnThreadDelete(t *testing.T) {
 	}
 }
 
+func TestAttachmentThumbnailRoundTrip(t *testing.T) {
+	s := newTestStore(t)
+
+	thread := makeThread("thread-thumb", "claude")
+	if err := s.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	a := Attachment{
+		ID:           "att-thumb",
+		ThreadID:     thread.ID,
+		Filename:     "shot.png",
+		MimeType:     "image/png",
+		Size:         123,
+		RelativePath: "thread-thumb/att-thumb.png",
+		CreatedAt:    time.Now().UnixMilli(),
+	}
+	if err := s.InsertAttachment(a); err != nil {
+		t.Fatalf("InsertAttachment: %v", err)
+	}
+
+	// Fresh row → no thumbnail cached yet.
+	if data, mime, hit, err := s.GetAttachmentThumbnail(a.ID); err != nil {
+		t.Fatalf("GetAttachmentThumbnail (fresh): %v", err)
+	} else if hit || data != nil || mime != "" {
+		t.Fatalf("expected uncached miss, got data=%d mime=%q hit=%v", len(data), mime, hit)
+	}
+
+	// SetAttachmentThumbnail persists both columns together.
+	thumb := []byte{0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 'J', 'F', 'I', 'F'} // bogus JPEG header is fine for round-trip
+	if err := s.SetAttachmentThumbnail(a.ID, thumb, "image/jpeg"); err != nil {
+		t.Fatalf("SetAttachmentThumbnail: %v", err)
+	}
+	gotData, gotMime, hit, err := s.GetAttachmentThumbnail(a.ID)
+	if err != nil {
+		t.Fatalf("GetAttachmentThumbnail: %v", err)
+	}
+	if !hit {
+		t.Fatal("expected thumbnail to be present after Set")
+	}
+	if string(gotData) != string(thumb) {
+		t.Fatalf("thumbnail bytes round-trip mismatch")
+	}
+	if gotMime != "image/jpeg" {
+		t.Fatalf("thumbnail mime = %q, want image/jpeg", gotMime)
+	}
+}
+
+func TestAttachmentThumbnailRequiresAttachment(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.SetAttachmentThumbnail("missing-id", []byte{0xff, 0xd8}, "image/jpeg"); err == nil {
+		t.Fatal("expected error setting thumbnail on missing attachment")
+	}
+}
+
+func TestAttachmentThumbnailRejectsEmpty(t *testing.T) {
+	s := newTestStore(t)
+	thread := makeThread("thread-thumb-empty", "claude")
+	if err := s.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	a := Attachment{
+		ID:           "att-empty",
+		ThreadID:     thread.ID,
+		Filename:     "shot.png",
+		MimeType:     "image/png",
+		Size:         1,
+		RelativePath: "thread-thumb-empty/att-empty.png",
+		CreatedAt:    time.Now().UnixMilli(),
+	}
+	if err := s.InsertAttachment(a); err != nil {
+		t.Fatalf("InsertAttachment: %v", err)
+	}
+	if err := s.SetAttachmentThumbnail(a.ID, nil, "image/jpeg"); err == nil {
+		t.Fatal("expected error on empty data")
+	}
+	if err := s.SetAttachmentThumbnail(a.ID, []byte{1}, ""); err == nil {
+		t.Fatal("expected error on empty mime")
+	}
+}
+
 func TestAttachmentInsertRequiresThread(t *testing.T) {
 	s := newTestStore(t)
 

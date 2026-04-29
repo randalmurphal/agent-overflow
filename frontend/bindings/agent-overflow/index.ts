@@ -7,6 +7,7 @@ export {
 };
 
 export {
+    AttachmentThumbnail,
     ContextSettingsProfile,
     ContextSettingsUpdate,
     CreateThreadOptions,

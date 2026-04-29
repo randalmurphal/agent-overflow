@@ -83,6 +83,49 @@ func (s *Store) ListAttachments(threadID string) ([]Attachment, error) {
 	return attachments, nil
 }
 
+// GetAttachmentThumbnail returns the cached thumbnail bytes + mime type for an
+// attachment. The third return value is false when no thumbnail has been
+// generated yet (NULL columns); callers should generate-and-cache via
+// SetAttachmentThumbnail in that case. Kept off the standard attachmentColumns
+// SELECT so list reads don't pull large blobs they won't use.
+func (s *Store) GetAttachmentThumbnail(id string) ([]byte, string, bool, error) {
+	row := s.db.QueryRow(
+		`SELECT thumbnail_data, thumbnail_mime FROM attachments WHERE id = ?`, id,
+	)
+	var data []byte
+	var mime sql.NullString
+	if err := row.Scan(&data, &mime); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, "", false, nil
+		}
+		return nil, "", false, fmt.Errorf("store: get attachment thumbnail %s: %w", id, err)
+	}
+	if data == nil || !mime.Valid {
+		return nil, "", false, nil
+	}
+	return data, mime.String, true, nil
+}
+
+// SetAttachmentThumbnail caches the generated thumbnail bytes + mime type on
+// the attachments row. Idempotent: repeated calls overwrite. The two columns
+// are written together so a partial state never appears.
+func (s *Store) SetAttachmentThumbnail(id string, data []byte, mime string) error {
+	if len(data) == 0 {
+		return fmt.Errorf("store: set attachment thumbnail %s: empty data", id)
+	}
+	if mime == "" {
+		return fmt.Errorf("store: set attachment thumbnail %s: empty mime", id)
+	}
+	result, err := s.db.Exec(
+		`UPDATE attachments SET thumbnail_data = ?, thumbnail_mime = ? WHERE id = ?`,
+		data, mime, id,
+	)
+	if err != nil {
+		return fmt.Errorf("store: set attachment thumbnail %s: %w", id, err)
+	}
+	return requireRowsAffected(result, fmt.Sprintf("store: set attachment thumbnail %s", id))
+}
+
 // DeleteAttachment removes a single attachment row. The caller is responsible
 // for deleting the on-disk file.
 func (s *Store) DeleteAttachment(id string) error {

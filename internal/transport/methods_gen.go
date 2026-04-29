@@ -45,6 +45,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "ForkThread", ID: 4063914461}, // main.App.ForkThread
 	{Name: "GenerateCommitMessage", ID: 1669373286}, // main.App.GenerateCommitMessage
 	{Name: "GetAttachmentData", ID: 71154490}, // main.App.GetAttachmentData
+	{Name: "GetAttachmentThumbnail", ID: 3414107538}, // main.App.GetAttachmentThumbnail
 	{Name: "GetChannelMessages", ID: 3595031866}, // main.App.GetChannelMessages
 	{Name: "GetCheckpointRangeDiff", ID: 3292511153}, // main.App.GetCheckpointRangeDiff
 	{Name: "GetContextSettings", ID: 3416004963}, // main.App.GetContextSettings

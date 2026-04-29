@@ -1,5 +1,5 @@
 import { onDestroy, untrack } from 'svelte';
-import { GetAttachmentData } from '../stores/bindings';
+import { GetAttachmentData, GetAttachmentThumbnail } from '../stores/bindings';
 
 export interface AttachmentPreviewSource {
   id: string;
@@ -20,6 +20,13 @@ export interface ImagePreviewItem {
 export interface ExpandedImagePreview {
   images: ImagePreviewItem[];
   index: number;
+  /**
+   * Called by the lightbox host (ChatView) when the modal closes.
+   * Revokes any blob URLs created specifically for the modal's
+   * full-size images so they don't pin decoded bytes after the dialog
+   * is dismissed.
+   */
+  dispose?: () => void;
 }
 
 export interface UserMessageMeta {
@@ -36,7 +43,36 @@ export function parseUserMessageAttachments(meta: string | undefined): Attachmen
   }
 }
 
+/**
+ * Loads the small inline-grid thumbnail for an attachment. Hits the Go
+ * `GetAttachmentThumbnail` binding, which generates the thumb on first
+ * request and caches the bytes on the attachments row in SQLite. The
+ * returned `ImagePreviewItem.url` is a blob: URL of the thumbnail bytes,
+ * NOT the full image. For the lightbox modal, call
+ * `loadAttachmentFullSize` instead.
+ */
 export async function loadAttachmentPreview(attachment: AttachmentPreviewSource): Promise<ImagePreviewItem> {
+  const result = await GetAttachmentThumbnail(attachment.threadId, attachment.id);
+  return {
+    id: attachment.id,
+    filename: attachment.filename,
+    mimeType: result.mimeType,
+    size: attachment.size,
+    url: imagePreviewUrl(result.mimeType, result.data),
+  };
+}
+
+/**
+ * Loads the original-resolution image bytes for the lightbox modal.
+ * Always refetches — the inline-display cache holds thumbnails, not
+ * full-size pixels, and full bytes are too expensive to keep around
+ * after the modal closes (blob URLs pin decoded image data).
+ *
+ * Callers are responsible for revoking the returned blob: URL when the
+ * modal closes; `loadExpandedPreview` wires that up via
+ * `ExpandedImagePreview.dispose`.
+ */
+export async function loadAttachmentFullSize(attachment: AttachmentPreviewSource): Promise<ImagePreviewItem> {
   const data = await GetAttachmentData(attachment.threadId, attachment.id);
   return {
     id: attachment.id,
@@ -186,21 +222,38 @@ export function createAttachmentPreviews(
       return previews[id];
     },
 
-    expandedPreview(selectedId: string): ExpandedImagePreview | null {
-      const orderedPreviews = getAttachments()
-        .map((attachment) => previews[attachment.id])
-        .filter((preview): preview is ImagePreviewItem => Boolean(preview));
-      return buildExpandedImagePreview(orderedPreviews, selectedId);
-    },
-
+    /**
+     * Loads original-resolution images for the lightbox modal. Always
+     * refetches the full bytes (the inline cache holds thumbnails). The
+     * returned `dispose` revokes every full-size blob URL so the modal
+     * doesn't leak decoded image bytes after closing.
+     *
+     * Loads all images in the message in parallel — the modal supports
+     * arrow-key navigation between siblings, and a per-swipe load would
+     * pop visible flashes between images.
+     */
     async loadExpandedPreview(selectedId: string): Promise<ExpandedImagePreview | null> {
       const attachments = getAttachments();
-      const generation = loadGeneration;
-      await Promise.all(attachments.map((attachment) => loadPreview(attachment, generation)));
-      const orderedPreviews = attachments
-        .map((attachment) => previews[attachment.id])
-        .filter((preview): preview is ImagePreviewItem => Boolean(preview));
-      return buildExpandedImagePreview(orderedPreviews, selectedId);
+      const fullPreviews = await Promise.all(
+        attachments.map((attachment) =>
+          loadAttachmentFullSize(attachment).catch((err) => {
+            console.error('Failed to load full-size attachment:', err);
+            return null;
+          }),
+        ),
+      );
+      const ordered = fullPreviews.filter(
+        (preview): preview is ImagePreviewItem => preview !== null,
+      );
+      const built = buildExpandedImagePreview(ordered, selectedId);
+      if (!built) {
+        for (const preview of ordered) revokePreview(preview);
+        return null;
+      }
+      built.dispose = () => {
+        for (const preview of ordered) revokePreview(preview);
+      };
+      return built;
     },
   };
 }
