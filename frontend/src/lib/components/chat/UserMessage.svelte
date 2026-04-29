@@ -117,7 +117,7 @@
     {#if visibleSummary}
       <p class="whitespace-pre-wrap">{visibleSummary}</p>
     {/if}
-    <div class="mt-1.5 flex items-center justify-end gap-1.5 text-[10px] text-fg-hint">
+    <div class="mt-1.5 flex items-center justify-end gap-1.5 text-[10px] text-fg-hint/70">
       {#if showActionsTrigger && pane}
         <span class="opacity-0 transition-opacity duration-150 group-hover:opacity-100 focus-within:opacity-100">
           <button

@@ -28,7 +28,10 @@
   >
     <ChatMarkdown source={item.summary} streaming={item.status === 'streaming'} />
   </div>
-  <div class="mt-1.5 flex items-center gap-1.5 text-[10px] text-fg-hint">
+  <div class="mt-1.5 flex items-center gap-1.5 text-[10px] text-fg-hint/70">
+    <time class="tabular-nums" datetime={isoTime}>
+      {time}
+    </time>
     {#if canCopy}
       <span class="opacity-0 transition-opacity duration-150 group-hover:opacity-100 focus-within:opacity-100">
         <CopyButton
@@ -38,8 +41,5 @@
         />
       </span>
     {/if}
-    <time class="tabular-nums" datetime={isoTime}>
-      {time}
-    </time>
   </div>
 </div>

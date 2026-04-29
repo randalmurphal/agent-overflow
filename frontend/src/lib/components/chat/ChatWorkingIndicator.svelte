@@ -67,7 +67,7 @@
 
 {#if isWorking}
   <div
-    class="group mb-6 flex items-center gap-2 py-0.5 pl-1.5 text-[11px] text-fg-hint"
+    class="group mb-6 flex items-center gap-2 py-0.5 pl-1.5 text-[11px] text-fg-hint/70"
     role="status"
     aria-live="polite"
     data-testid="chat-working-indicator"
