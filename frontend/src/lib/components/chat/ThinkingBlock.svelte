@@ -6,16 +6,30 @@
   import CopyFooter from './CopyFooter.svelte';
   import type { Item } from '../../types/models';
   import type { ThreadPane } from '../../stores/thread.svelte';
-  import { createPayloadExpansion, formatPayloadSize } from './payloadExpansion.svelte';
+  import {
+    createPayloadExpansion,
+    formatPayloadSize,
+    keepExpandedPayloadFresh,
+  } from './payloadExpansion.svelte';
   import AnsiText from './AnsiText.svelte';
 
   let { pane, item }: { pane?: ThreadPane; item: Item } = $props();
 
   // pane is stable across a row's lifetime; read once via `untrack`.
   const localFallback = untrack(() =>
-    pane ? null : createPayloadExpansion(() => item.payloadId, () => item.threadId),
+    pane
+      ? null
+      : createPayloadExpansion(
+          () => item.payloadId,
+          () => item.threadId,
+          { payloadVersion: () => item.updatedAt },
+        ),
   );
   const expansion = $derived(pane ? pane.expansionStateFor(item) : localFallback!);
+  keepExpandedPayloadFresh(
+    () => expansion,
+    () => Boolean(item.payloadId),
+  );
 
   let preview = $derived(
     item.summary.length > 200 ? item.summary.slice(0, 200) + '...' : item.summary,

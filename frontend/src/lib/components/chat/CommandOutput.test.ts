@@ -137,6 +137,52 @@ describe('<CommandOutput>', () => {
     expect(chunkMock).not.toHaveBeenCalled();
   });
 
+  it('loads output when an already-expanded deferred row gains a payload id', async () => {
+    const previewMock = setBindingMock('GetPayloadPreview', async () => ({
+      data: 'arrived later',
+      nextOffset: 13,
+      totalSize: 13,
+      isComplete: true,
+    }));
+    const itemWithoutPayload = makeItem({
+      id: 'tool-deferred-output',
+      kind: 'tool_completion',
+      status: 'completed',
+      meta: JSON.stringify({ output_file_state: 'loading' }),
+    });
+
+    const { getByRole, findByText, rerender } = render(CommandOutput, {
+      props: {
+        item: itemWithoutPayload,
+        meta: commandMeta({ command: 'git log' }),
+        payloadId: undefined,
+      },
+    });
+
+    await fireEvent.click(getByRole('button', { name: /Toggle command output/i }));
+    expect(await findByText('Loading…')).toBeInTheDocument();
+    expect(previewMock).not.toHaveBeenCalled();
+
+    const itemWithPayload = {
+      ...itemWithoutPayload,
+      payloadId: 'payload-deferred-output',
+      payloadKind: 'command_output',
+      updatedAt: itemWithoutPayload.updatedAt + 1,
+    };
+    await rerender({
+      item: itemWithPayload,
+      meta: commandMeta({ command: 'git log' }),
+      payloadId: 'payload-deferred-output',
+    });
+
+    expect(await findByText('arrived later')).toBeInTheDocument();
+    expect(previewMock).toHaveBeenCalledWith(
+      'thread-1',
+      'payload-deferred-output',
+      DEFAULT_PAYLOAD_PREVIEW_BYTES,
+    );
+  });
+
   it('renders the success badge for an exitCode=0 command', () => {
     const { getByTestId } = render(CommandOutput, {
       props: {

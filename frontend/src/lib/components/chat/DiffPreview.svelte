@@ -12,7 +12,12 @@
   import { extractPatchFile } from '../../utils/patchFiles';
   import { getSettings } from '../../stores/settings.svelte';
   import ToolDecisionChip from './ToolDecisionChip.svelte';
-  import { createPayloadExpansion, formatPayloadSize } from './payloadExpansion.svelte';
+  import {
+    createPayloadExpansion,
+    compactPayloadVersion,
+    formatPayloadSize,
+    keepExpandedPayloadFresh,
+  } from './payloadExpansion.svelte';
   import { isPromoteModifier, openDiffSidebar } from './diffSidebarTrigger';
 
   let {
@@ -42,13 +47,32 @@
   // payloadId. Falls back to local state when no pane (unit tests).
   // pane is stable across a row's lifetime; read once via `untrack`.
   const localFallback = untrack(() =>
-    pane ? null : createPayloadExpansion(() => payloadId, () => item?.threadId ?? threadId),
+    pane
+      ? null
+      : createPayloadExpansion(
+          () => payloadId,
+          () => item?.threadId ?? threadId,
+          {
+            payloadVersion: () => item ? item.updatedAt : compactPayloadVersion(meta.preview),
+          },
+        ),
   );
   const expansion = $derived.by(() => {
     if (pane && item) return pane.expansionStateFor(item);
-    if (pane) return pane.expansionStateForPayload(payloadId, threadId ?? '');
+    if (pane) {
+      return pane.expansionStateForPayload(
+        payloadId,
+        threadId ?? '',
+        compactPayloadVersion(meta.preview),
+      );
+    }
     return localFallback!;
   });
+
+  keepExpandedPayloadFresh(
+    () => expansion,
+    () => Boolean(payloadId),
+  );
 
   let previewLines = $derived(parseDiffLines(meta.preview));
   let displayLines = $derived.by<DiffLine[]>(() => {

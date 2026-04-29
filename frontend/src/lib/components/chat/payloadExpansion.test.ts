@@ -98,9 +98,7 @@ describe('payloadExpansion', () => {
     const expansion = createPayloadExpansion(
       'payload-timeout',
       'thread-timeout',
-      32 * 1024,
-      256 * 1024,
-      5,
+      { requestTimeoutMs: 5 },
     );
     const first = expansion.expand();
     await vi.advanceTimersByTimeAsync(5);
@@ -116,6 +114,60 @@ describe('payloadExpansion', () => {
     expect(getBindingMock('GetPayloadPreview')).toHaveBeenCalledTimes(2);
   });
 
+  it('loads when a payload id appears after the handle was expanded', async () => {
+    let payloadId: string | undefined;
+    setBindingMock('GetPayloadPreview', async () => ({
+      data: 'late payload',
+      nextOffset: 12,
+      totalSize: 12,
+      isComplete: true,
+    }));
+
+    const expansion = createPayloadExpansion(
+      () => payloadId,
+      'thread-late-payload',
+    );
+
+    await expansion.expand();
+    expect(expansion.expanded).toBe(true);
+    expect(expansion.displayData).toBeNull();
+    expect(getBindingMock('GetPayloadPreview')).not.toHaveBeenCalled();
+
+    payloadId = 'payload-late';
+    await expansion.expand();
+
+    expect(expansion.displayData).toBe('late payload');
+    expect(getBindingMock('GetPayloadPreview')).toHaveBeenCalledWith(
+      'thread-late-payload',
+      'payload-late',
+      32 * 1024,
+    );
+  });
+
+  it('reloads an expanded handle when the payload version changes', async () => {
+    let version = 1;
+    const preview = setBindingMock('GetPayloadPreview', async () => ({
+      data: version === 1 ? 'first snapshot' : 'second snapshot',
+      nextOffset: 14,
+      totalSize: 14,
+      isComplete: true,
+    }));
+
+    const expansion = createPayloadExpansion(
+      'payload-versioned',
+      'thread-versioned',
+      { payloadVersion: () => version },
+    );
+
+    await expansion.expand();
+    expect(expansion.displayData).toBe('first snapshot');
+
+    version = 2;
+    await expansion.ensureLoaded();
+
+    expect(expansion.displayData).toBe('second snapshot');
+    expect(preview).toHaveBeenCalledTimes(2);
+  });
 
   it('concatenates correctly across multiple showFull() calls (chunk-buffer regression test)', async () => {
     // Pin the chunk-buffer refactor: showFull() called repeatedly

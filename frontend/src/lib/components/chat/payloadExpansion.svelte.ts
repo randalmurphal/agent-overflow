@@ -13,6 +13,7 @@ export interface PayloadExpansionHandle {
   readonly totalSize: number;
   readonly isComplete: boolean;
   readonly hasMore: boolean;
+  readonly payloadVersion: unknown;
   /**
    * Raw payload bytes. Used for clipboard copy, save-to-file, and
    * any caller that needs to run a transform before rendering.
@@ -20,22 +21,37 @@ export interface PayloadExpansionHandle {
   readonly displayData: string | null;
   toggle(): Promise<void>;
   expand(): Promise<void>;
+  ensureLoaded(): Promise<boolean>;
   collapse(): void;
   showFull(): Promise<void>;
   retry(): Promise<void>;
   reset(): void;
+  setPayloadVersion(version: unknown): void;
 }
 
 type PayloadIDSource = string | undefined | (() => string | undefined);
 type ThreadIDSource = string | undefined | (() => string | undefined);
+type PayloadVersionSource = unknown | (() => unknown);
+type PayloadAvailableSource = boolean | (() => boolean);
+type PayloadExpansionSource = PayloadExpansionHandle | (() => PayloadExpansionHandle);
+
+export interface PayloadExpansionOptions {
+  previewBytes?: number;
+  chunkBytes?: number;
+  requestTimeoutMs?: number;
+  payloadVersion?: PayloadVersionSource;
+}
 
 export function createPayloadExpansion(
   payloadID: PayloadIDSource,
   threadID: ThreadIDSource,
-  previewBytes = DEFAULT_PAYLOAD_PREVIEW_BYTES,
-  chunkBytes = DEFAULT_PAYLOAD_CHUNK_BYTES,
-  requestTimeoutMs = DEFAULT_PAYLOAD_REQUEST_TIMEOUT_MS,
+  options: PayloadExpansionOptions = {},
 ): PayloadExpansionHandle {
+  const previewBytes = options.previewBytes ?? DEFAULT_PAYLOAD_PREVIEW_BYTES;
+  const chunkBytes = options.chunkBytes ?? DEFAULT_PAYLOAD_CHUNK_BYTES;
+  const requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_PAYLOAD_REQUEST_TIMEOUT_MS;
+  const payloadVersion = options.payloadVersion;
+
   let expanded = $state(false);
   let loadingPreview = $state(false);
   let loadingFull = $state(false);
@@ -51,6 +67,10 @@ export function createPayloadExpansion(
   let loadedBytes = $state(0);
 
   let requestGeneration = 0;
+  let loadedPayloadID: string | null = null;
+  let loadedPayloadVersion: unknown;
+  let overridePayloadVersion = $state<unknown>(undefined);
+  let hasOverridePayloadVersion = $state(false);
 
   // $derived caches the join — re-runs only when `chunks` actually
   // changes (Svelte 5's reactivity, not on every read).
@@ -68,6 +88,17 @@ export function createPayloadExpansion(
     return typeof threadID === 'function' ? threadID() : threadID;
   }
 
+  function currentPayloadVersion(): unknown {
+    if (hasOverridePayloadVersion) return overridePayloadVersion;
+    const version = typeof payloadVersion === 'function' ? payloadVersion() : payloadVersion;
+    return version;
+  }
+
+  function setPayloadVersion(version: unknown): void {
+    overridePayloadVersion = version;
+    hasOverridePayloadVersion = true;
+  }
+
   function cancelInflight(): number {
     requestGeneration += 1;
     return requestGeneration;
@@ -80,15 +111,22 @@ export function createPayloadExpansion(
     totalSize = 0;
     isComplete = true;
     loadedBytes = 0;
+    loadedPayloadID = null;
+    loadedPayloadVersion = undefined;
   }
 
-  async function loadPreview(): Promise<void> {
+  async function loadPreview(): Promise<boolean> {
     const id = currentPayloadID();
     const ownerThreadID = currentThreadID();
-    if (!id || chunks.length > 0) return;
+    if (!id) return false;
+    const version = currentPayloadVersion();
+    if (chunks.length > 0 && loadedPayloadID === id && Object.is(loadedPayloadVersion, version)) {
+      return false;
+    }
+    if (chunks.length > 0) clearLoadedData();
     if (!ownerThreadID) {
       error = 'Missing thread context for payload read';
-      return;
+      return false;
     }
 
     const generation = cancelInflight();
@@ -102,26 +140,34 @@ export function createPayloadExpansion(
         requestTimeoutMs,
         'Loading payload preview timed out',
       );
-      if (generation !== requestGeneration || !expanded) return;
+      if (generation !== requestGeneration || !expanded) return false;
       chunks = [result.data];
       hasFullChunks = false;
       totalSize = result.totalSize;
       isComplete = result.isComplete;
       loadedBytes = result.nextOffset;
+      loadedPayloadID = id;
+      loadedPayloadVersion = version;
+      return true;
     } catch (err) {
-      if (generation !== requestGeneration || !expanded) return;
+      if (generation !== requestGeneration || !expanded) return false;
       error = err instanceof Error ? err.message : String(err);
     } finally {
       if (generation === requestGeneration) {
         loadingPreview = false;
       }
     }
+    return false;
   }
 
   async function expand(): Promise<void> {
-    if (expanded) return;
-    expanded = true;
-    await loadPreview();
+    if (!expanded) expanded = true;
+    await ensureLoaded();
+  }
+
+  async function ensureLoaded(): Promise<boolean> {
+    if (!expanded || loadingPreview || loadingFull || error !== null) return false;
+    return loadPreview();
   }
 
   function collapse(): void {
@@ -210,17 +256,39 @@ export function createPayloadExpansion(
     },
     get totalSize() { return totalSize; },
     get isComplete() { return isComplete; },
+    get payloadVersion() { return currentPayloadVersion(); },
     get hasMore() {
       return expanded && chunks.length > 0 && !isComplete;
     },
     get displayData() { return displayData; },
     toggle,
     expand,
+    ensureLoaded,
     collapse,
     showFull,
     retry,
     reset,
+    setPayloadVersion,
   };
+}
+
+export function keepExpandedPayloadFresh(
+  expansion: PayloadExpansionSource,
+  hasPayload: PayloadAvailableSource,
+): void {
+  $effect(() => {
+    const handle = typeof expansion === 'function' ? expansion() : expansion;
+    const available = typeof hasPayload === 'function' ? hasPayload() : hasPayload;
+    void handle.payloadVersion;
+    if (!available || !handle.expanded || handle.loading || handle.error !== null) return;
+    void handle.ensureLoaded();
+  });
+}
+
+export function compactPayloadVersion(value: string | undefined): string {
+  if (!value) return '';
+  if (value.length <= 128) return value;
+  return `${value.length}:${value.slice(0, 64)}:${value.slice(-64)}`;
 }
 
 async function withTimeout<T>(

@@ -604,6 +604,7 @@ export function createThreadPane() {
       get fullData() { return inner.fullData; },
       get totalSize() { return inner.totalSize; },
       get isComplete() { return inner.isComplete; },
+      get payloadVersion() { return inner.payloadVersion; },
       get hasMore() { return inner.hasMore; },
       get displayData() { return inner.displayData; },
       toggle: async () => {
@@ -615,6 +616,12 @@ export function createThreadPane() {
         touchExpansion(key);
         await inner.expand();
         enforceExpansionBudget(key);
+      },
+      ensureLoaded: async () => {
+        touchExpansion(key);
+        const changed = await inner.ensureLoaded();
+        if (changed) enforceExpansionBudget(key);
+        return changed;
       },
       collapse: () => { inner.collapse(); },
       showFull: async () => {
@@ -628,6 +635,7 @@ export function createThreadPane() {
         enforceExpansionBudget(key);
       },
       reset: () => { inner.reset(); },
+      setPayloadVersion: (version: unknown) => { inner.setPayloadVersion(version); },
     };
   }
 
@@ -650,6 +658,9 @@ export function createThreadPane() {
     const inner = createPayloadExpansion(
       () => getCurrentItem()?.payloadId,
       () => getCurrentItem()?.threadId,
+      {
+        payloadVersion: () => getCurrentItem()?.updatedAt,
+      },
     );
     cached = withExpansionLRU(inner, key);
     expansionStates.set(key, cached);
@@ -662,14 +673,22 @@ export function createThreadPane() {
    * needing a parent Item context. Returns a stable handle for the
    * same `(payloadId, threadId)` pair across remounts.
    */
-  function expansionStateForPayload(payloadId: string, threadId: string): PayloadExpansionHandle {
+  function expansionStateForPayload(
+    payloadId: string,
+    threadId: string,
+    payloadVersion?: unknown,
+  ): PayloadExpansionHandle {
     const key = 'p:' + payloadId;
     let cached = expansionStates.get(key);
-    if (cached) return cached;
+    if (cached) {
+      cached.setPayloadVersion(payloadVersion);
+      return cached;
+    }
     const inner = createPayloadExpansion(
       () => payloadId,
       () => threadId,
     );
+    inner.setPayloadVersion(payloadVersion);
     cached = withExpansionLRU(inner, key);
     expansionStates.set(key, cached);
     return cached;

@@ -777,6 +777,29 @@ describe('createThreadPane', () => {
     expect(h2).toBe(h1);
   });
 
+  it('payload-keyed expansion handles reload when their version changes', async () => {
+    let version = 1;
+    const preview = setBindingMock('GetPayloadPreview', async () => ({
+      data: version === 1 ? 'payload v1' : 'payload v2',
+      nextOffset: 10,
+      totalSize: 10,
+      isComplete: true,
+    }));
+
+    const pane = createThreadPane();
+    const first = pane.expansionStateForPayload('p-versioned', 'thread-1', version);
+    await first.expand();
+    expect(first.displayData).toBe('payload v1');
+
+    version = 2;
+    const second = pane.expansionStateForPayload('p-versioned', 'thread-1', version);
+    expect(second).toBe(first);
+
+    await second.ensureLoaded();
+    expect(second.displayData).toBe('payload v2');
+    expect(preview).toHaveBeenCalledTimes(2);
+  });
+
   describe('expansion-state LRU budget', () => {
     afterEach(() => {
       resetExpansionBudgetForTest();

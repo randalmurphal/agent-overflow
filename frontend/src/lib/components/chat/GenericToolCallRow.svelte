@@ -13,7 +13,11 @@
   import { classifyToolName } from './toolCardHeader';
   import { parseJsonObject } from '../../utils/parseJsonObject';
   import { decodeToolCardPreview, toolCardInputPreview } from './toolCardPreview';
-  import { createPayloadExpansion, formatPayloadSize } from './payloadExpansion.svelte';
+  import {
+    createPayloadExpansion,
+    formatPayloadSize,
+    keepExpandedPayloadFresh,
+  } from './payloadExpansion.svelte';
   import AnsiText from './AnsiText.svelte';
   import EditorLink from '../common/EditorLink.svelte';
 
@@ -28,7 +32,13 @@
   // pane is stable across a row's lifetime; intentionally read once via
   // `untrack` so the local fallback is created exactly when needed.
   const localFallback = untrack(() =>
-    pane ? null : createPayloadExpansion(() => item.payloadId, () => item.threadId),
+    pane
+      ? null
+      : createPayloadExpansion(
+          () => item.payloadId,
+          () => item.threadId,
+          { payloadVersion: () => item.updatedAt },
+        ),
   );
   const expansion = $derived(pane ? pane.expansionStateFor(item) : localFallback!);
 
@@ -90,6 +100,11 @@
 
   let hasExpandableBody = $derived(
     Boolean(item.payloadId) || deferredOutputState === 'loading' || deferredOutputState === 'error',
+  );
+
+  keepExpandedPayloadFresh(
+    () => expansion,
+    () => Boolean(item.payloadId),
   );
 
   function formatDuration(ms: number): string {

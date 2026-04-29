@@ -2,7 +2,12 @@
   import { untrack } from 'svelte';
   import { MAX_INLINE_BYTES, shouldLazyLoad, truncateForPreview } from '../../utils/inlineThreshold';
   import type { ThreadPane } from '../../stores/thread.svelte';
-  import { createPayloadExpansion, formatPayloadSize } from './payloadExpansion.svelte';
+  import {
+    createPayloadExpansion,
+    compactPayloadVersion,
+    formatPayloadSize,
+    keepExpandedPayloadFresh,
+  } from './payloadExpansion.svelte';
   import AnsiText from './AnsiText.svelte';
 
   interface Props {
@@ -37,12 +42,25 @@
   // suppressed entirely, so caching doesn't matter — local state is fine.
   // pane + payloadId stable across a row's lifetime; read once via `untrack`.
   const localFallback = untrack(() =>
-    (pane && payloadId) ? null : createPayloadExpansion(() => payloadId, () => threadId),
+    (pane && payloadId)
+      ? null
+      : createPayloadExpansion(
+          () => payloadId,
+          () => threadId,
+          { payloadVersion: () => compactPayloadVersion(preview) },
+        ),
   );
   const expansion = $derived.by(() => {
-    if (pane && payloadId) return pane.expansionStateForPayload(payloadId, threadId ?? '');
+    if (pane && payloadId) {
+      return pane.expansionStateForPayload(
+        payloadId,
+        threadId ?? '',
+        compactPayloadVersion(preview),
+      );
+    }
     return localFallback!;
   });
+  keepExpandedPayloadFresh(() => expansion, () => Boolean(payloadId));
 
   // Threshold check is on the preview text itself. A caller that already
   // knows the preview is short but still wants the button can pass any

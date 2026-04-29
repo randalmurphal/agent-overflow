@@ -14,7 +14,11 @@
   import LazyContentBlock from './LazyContentBlock.svelte';
   import ToolDecisionChip from './ToolDecisionChip.svelte';
   import EditorLink from '../common/EditorLink.svelte';
-  import { createPayloadExpansion, formatPayloadSize } from './payloadExpansion.svelte';
+  import {
+    createPayloadExpansion,
+    formatPayloadSize,
+    keepExpandedPayloadFresh,
+  } from './payloadExpansion.svelte';
   import { openDiffSidebar } from './diffSidebarTrigger';
 
   let { pane, item, meta, payloadId }: { pane?: ThreadPane; item: Item; meta: ToolResultMeta; payloadId?: string } = $props();
@@ -38,9 +42,19 @@
 
   // pane is stable across a row's lifetime; read once via `untrack`.
   const localFallback = untrack(() =>
-    pane ? null : createPayloadExpansion(() => payloadId, () => item.threadId),
+    pane
+      ? null
+      : createPayloadExpansion(
+          () => payloadId,
+          () => item.threadId,
+          { payloadVersion: () => item.updatedAt },
+        ),
   );
   const expansion = $derived(pane ? pane.expansionStateFor(item) : localFallback!);
+  keepExpandedPayloadFresh(
+    () => expansion,
+    () => Boolean(payloadId),
+  );
 
   const hasInlineDiff = $derived(Boolean(meta.inlineDiff && meta.inlineDiff.files.length > 0));
   const hasExactPatch = $derived(meta.inlineDiff?.availability === 'exact_patch' && Boolean(payloadId));

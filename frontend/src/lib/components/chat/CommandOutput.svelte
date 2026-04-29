@@ -9,7 +9,11 @@
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { deriveCompletionStatus } from '../../utils/toolCompletionStatus';
   import ToolDecisionChip from './ToolDecisionChip.svelte';
-  import { createPayloadExpansion, formatPayloadSize } from './payloadExpansion.svelte';
+  import {
+    createPayloadExpansion,
+    formatPayloadSize,
+    keepExpandedPayloadFresh,
+  } from './payloadExpansion.svelte';
   import AnsiText from './AnsiText.svelte';
   import {
     commandLabelForStatus,
@@ -40,7 +44,13 @@
 
   // pane is stable across a row's lifetime; read once via `untrack`.
   const localFallback = untrack(() =>
-    pane ? null : createPayloadExpansion(() => payloadId, () => item.threadId),
+    pane
+      ? null
+      : createPayloadExpansion(
+          () => payloadId,
+          () => item.threadId,
+          { payloadVersion: () => item.updatedAt },
+        ),
   );
   let expansion = $derived(pane ? pane.expansionStateFor(item) : localFallback!);
   let hasPayload = $derived(Boolean(payloadId));
@@ -80,6 +90,8 @@
       meta: payloadMeta ?? (meta as unknown as Record<string, unknown> | undefined),
     }),
   );
+
+  keepExpandedPayloadFresh(() => expansion, () => hasPayload);
 </script>
 
 <div class="mb-1.5 overflow-hidden">
