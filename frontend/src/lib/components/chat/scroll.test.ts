@@ -210,20 +210,86 @@ describe('scroll integration — composer height + layout invariance', () => {
 });
 
 describe('scroll integration — banner reserved slot stability', () => {
-  it('reserves a fixed-height slot for ProviderStatusBanner regardless of banner state', async () => {
+  it('reserves provider-status and session-status slots regardless of banner state', async () => {
     const pane = await buildPane(makeThread(), [
       makeItem({ id: 'tail', summary: 'tail' }),
     ]);
 
-    const { container } = render(ChatView, { props: { pane } });
+    const { getByTestId } = render(ChatView, { props: { pane } });
     await tick();
 
-    // Two reserved slots from ProviderStatusBanner — both should have
-    // min-h-9 even when no banner content is mounted.
-    const slots = Array.from(container.querySelectorAll<HTMLElement>('div.relative.shrink-0.min-h-9'));
-    // At minimum we expect the two ProviderStatusBanner slots; ChatView
-    // and other ancestors may include additional matching wrappers, but
-    // we assert the lower bound.
-    expect(slots.length).toBeGreaterThanOrEqual(2);
+    // Reserved slots are always rendered, even when the banner content
+    // is empty, so the timeline geometry stays stable when a banner
+    // mounts/unmounts. Test ids let us assert the contract independent
+    // of the underlying CSS class names (Tailwind utility names can
+    // change with config without breaking the contract).
+    expect(getByTestId('provider-status-slot')).toBeInTheDocument();
+    expect(getByTestId('session-status-slot')).toBeInTheDocument();
+  });
+});
+
+describe('scroll integration — auto-follow + button', () => {
+  // virtua-internal scroll math isn't testable in happy-dom (zero
+  // viewport geometry). We verify integration seams: the gesture path
+  // surfaces the scroll-to-bottom chip, and clicking it flips intent
+  // back to sticky.
+
+  it('wheel-up on the wrapper surfaces the scroll-to-bottom chip', async () => {
+    const pane = await buildPane(undefined, [
+      makeItem({ id: 'a', summary: 'a' }),
+      makeItem({ id: 'b', itemIndex: 1, summary: 'b' }),
+      makeItem({ id: 'c', itemIndex: 2, summary: 'c' }),
+    ]);
+
+    const { container } = render(MessageTimeline, { props: { pane } });
+    // Two ticks: first lets the controller-attach $effect run (binding
+    // the wheel listener to the wrapper), second lets the snapshot
+    // restore $effect settle. Without this, the wheel event fires
+    // before the listener is attached.
+    await tick();
+    await tick();
+
+    const wrapper = container.querySelector('[data-testid="message-timeline-scroll"]') as HTMLElement;
+    expect(wrapper).not.toBeNull();
+    wrapper.dispatchEvent(new WheelEvent('wheel', { deltaY: -50, bubbles: true }));
+    await tick();
+    await tick();
+
+    // After the gesture the chip's button is in the DOM (it may still
+    // be in a fade-in transition; what matters is presence as a
+    // signal that intent flipped to free).
+    expect(container.querySelector('[data-testid="scroll-to-bottom"]')).not.toBeNull();
+  });
+});
+
+describe('scroll integration — load older noop / error paths', () => {
+  it('does not re-anchor when pane.loadOlder returns status:"noop"', async () => {
+    const { getToasts } = await import('../../stores/toast.svelte');
+    const items = Array.from({ length: 3 }, (_, i) =>
+      makeItem({ id: `m:${i}`, turnIndex: i, summary: `m${i}` }),
+    );
+    const pane = await buildPane(undefined, items);
+    Object.defineProperty(pane, 'hasMoreHistory', { configurable: true, get: () => true });
+    Object.defineProperty(pane, 'loadingOlder', { configurable: true, get: () => false });
+    const loadOlder = vi.spyOn(pane, 'loadOlder').mockResolvedValue({
+      status: 'noop',
+      insertedRows: false,
+      insertedBeforeWindow: false,
+    });
+    const toastsBefore = getToasts().length;
+
+    const { getByTestId } = render(MessageTimeline, { props: { pane } });
+    const button = getByTestId('load-older-messages');
+    await fireEvent.click(button);
+    await tick();
+    await tick();
+
+    // The contract: when status !== 'loaded', handleLoadOlder returns
+    // before re-anchoring. Observable proxy: pane.loadOlder fired and
+    // no warning toast was added (a missed scrollToIndex on a different
+    // branch would surface as a different observable, not this).
+    const newToasts = getToasts().slice(toastsBefore);
+    expect(loadOlder).toHaveBeenCalled();
+    expect(newToasts).toHaveLength(0);
   });
 });

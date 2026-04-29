@@ -176,6 +176,52 @@ export function timelineNodeKey(node: TimelineNode): string {
     : `l:${node.item.threadId}:${node.item.id}`;
 }
 
+/** Item id of the leaf or group root. */
+export function timelineNodeItemId(node: TimelineNode): string {
+  return node.kind === 'leaf' ? node.item.id : node.parent.id;
+}
+
+/**
+ * Turn index of the root of the rendered subtree. For groups, the parent
+ * tool-call's turnIndex is the canonical turn (children inherit it).
+ */
+export function rootTurnIndex(node: TimelineNode): number {
+  return node.kind === 'leaf' ? node.item.turnIndex : node.parent.turnIndex;
+}
+
+/**
+ * True iff `nodes[index]` is the last root in its turn — i.e. the next
+ * node belongs to a different turn, or there is no next node. Used to
+ * decide where end-of-turn diff summaries render.
+ */
+export function isLastRootInTurn(nodes: TimelineNode[], index: number): boolean {
+  const cur = nodes[index];
+  const next = nodes[index + 1];
+  if (!cur) return false;
+  if (!next) return true;
+  return rootTurnIndex(cur) !== rootTurnIndex(next);
+}
+
+/**
+ * Recursive containment check: does `node` (or any descendant of a group
+ * node) carry an item with this id?
+ */
+export function nodeContainsItem(node: TimelineNode, itemId: string): boolean {
+  if (node.kind === 'leaf') return node.item.id === itemId;
+  return node.parent.id === itemId
+    || node.children.some((child) => nodeContainsItem(child, itemId));
+}
+
+/**
+ * Find the index in a flat node list of the root that carries (or
+ * contains) `itemId`. Returns -1 when no node matches. The caller is
+ * responsible for paging back via pane.loadUntilItem if the item lives
+ * outside the loaded window.
+ */
+export function findTimelineNodeIndex(nodes: TimelineNode[], itemId: string): number {
+  return nodes.findIndex((node) => nodeContainsItem(node, itemId));
+}
+
 /**
  * Group items by subagent parentage. Pure function — does not mutate the
  * input and returns a fresh tree each call.

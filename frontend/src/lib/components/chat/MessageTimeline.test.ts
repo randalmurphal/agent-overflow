@@ -4,13 +4,6 @@ import { tick } from 'svelte';
 import { loadSettings } from '../../stores/settings.svelte';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { buildPane, makeItem, makeThread } from '../../../test/helpers/chat';
-import {
-  installControllableResizeObserver,
-  nextFrame,
-  rect,
-  setElementRect,
-  setScrollGeometry,
-} from '../../../test/helpers/scrollDom';
 import { createThreadPane, type SettledTurn } from '../../stores/thread.svelte';
 import { getToasts } from '../../stores/toast.svelte';
 import MessageTimeline, { clearMessageTimelineScrollSnapshotsForTest } from './MessageTimeline.svelte';

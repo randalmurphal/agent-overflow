@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
+  findTimelineNodeIndex,
   groupItemsBySubagent,
+  isLastRootInTurn,
   MAX_DEPTH,
+  nodeContainsItem,
+  rootTurnIndex,
+  timelineNodeItemId,
+  timelineNodeKey,
   type SubagentGroupNode,
   type TimelineLeaf,
   type TimelineNode,
@@ -413,5 +419,157 @@ describe('groupItemsBySubagent', () => {
       }
       expect(expectLeaf(nodes[1]).item.id).toBe('x');
     });
+  });
+});
+
+describe('timelineNodeKey', () => {
+  it('returns thread-prefixed l: key for leaves', () => {
+    const node: TimelineNode = { kind: 'leaf', item: mkItem({ id: 'i', threadId: 't' }) };
+    expect(timelineNodeKey(node)).toBe('l:t:i');
+  });
+
+  it('returns thread-prefixed g: key for groups', () => {
+    const node: TimelineNode = {
+      kind: 'group',
+      parent: mkItem({ id: 'p', threadId: 't' }),
+      children: [],
+      latestChildSummary: '',
+      descendantCount: 0,
+    };
+    expect(timelineNodeKey(node)).toBe('g:t:p');
+  });
+
+  it('namespaces by threadId so the same item id in two threads does not collide', () => {
+    const a: TimelineNode = { kind: 'leaf', item: mkItem({ id: 'x', threadId: 'A' }) };
+    const b: TimelineNode = { kind: 'leaf', item: mkItem({ id: 'x', threadId: 'B' }) };
+    expect(timelineNodeKey(a)).not.toBe(timelineNodeKey(b));
+  });
+});
+
+describe('timelineNodeItemId', () => {
+  it('returns the leaf item id', () => {
+    const node: TimelineNode = { kind: 'leaf', item: mkItem({ id: 'leaf-1' }) };
+    expect(timelineNodeItemId(node)).toBe('leaf-1');
+  });
+
+  it('returns the group parent id', () => {
+    const node: TimelineNode = {
+      kind: 'group',
+      parent: mkItem({ id: 'parent-1' }),
+      children: [],
+      latestChildSummary: '',
+      descendantCount: 0,
+    };
+    expect(timelineNodeItemId(node)).toBe('parent-1');
+  });
+});
+
+describe('rootTurnIndex', () => {
+  it('returns leaf turnIndex', () => {
+    const node: TimelineNode = { kind: 'leaf', item: mkItem({ id: 'a', turnIndex: 7 }) };
+    expect(rootTurnIndex(node)).toBe(7);
+  });
+
+  it('returns group parent turnIndex (children inherit)', () => {
+    const node: TimelineNode = {
+      kind: 'group',
+      parent: mkItem({ id: 'p', turnIndex: 3 }),
+      children: [
+        { kind: 'leaf', item: mkItem({ id: 'c1', turnIndex: 99 }) },
+      ],
+      latestChildSummary: '',
+      descendantCount: 1,
+    };
+    expect(rootTurnIndex(node)).toBe(3);
+  });
+});
+
+describe('isLastRootInTurn', () => {
+  function leaf(id: string, turnIndex: number): TimelineNode {
+    return { kind: 'leaf', item: mkItem({ id, turnIndex }) };
+  }
+
+  it('returns true for the last node in the list', () => {
+    const nodes = [leaf('a', 0), leaf('b', 0)];
+    expect(isLastRootInTurn(nodes, 1)).toBe(true);
+  });
+
+  it('returns true when the next node belongs to a different turn', () => {
+    const nodes = [leaf('a', 0), leaf('b', 1), leaf('c', 1)];
+    expect(isLastRootInTurn(nodes, 0)).toBe(true);
+  });
+
+  it('returns false when the next node is in the same turn', () => {
+    const nodes = [leaf('a', 0), leaf('b', 0)];
+    expect(isLastRootInTurn(nodes, 0)).toBe(false);
+  });
+
+  it('returns false for an out-of-range index', () => {
+    const nodes = [leaf('a', 0)];
+    expect(isLastRootInTurn(nodes, 99)).toBe(false);
+  });
+});
+
+describe('nodeContainsItem', () => {
+  it('matches leaves by item id', () => {
+    const node: TimelineNode = { kind: 'leaf', item: mkItem({ id: 'a' }) };
+    expect(nodeContainsItem(node, 'a')).toBe(true);
+    expect(nodeContainsItem(node, 'b')).toBe(false);
+  });
+
+  it('matches the group parent id', () => {
+    const node: TimelineNode = {
+      kind: 'group',
+      parent: mkItem({ id: 'p' }),
+      children: [],
+      latestChildSummary: '',
+      descendantCount: 0,
+    };
+    expect(nodeContainsItem(node, 'p')).toBe(true);
+  });
+
+  it('walks into nested children of a group', () => {
+    const grandchild: TimelineNode = { kind: 'leaf', item: mkItem({ id: 'gc' }) };
+    const child: TimelineNode = {
+      kind: 'group',
+      parent: mkItem({ id: 'c' }),
+      children: [grandchild],
+      latestChildSummary: '',
+      descendantCount: 1,
+    };
+    const node: TimelineNode = {
+      kind: 'group',
+      parent: mkItem({ id: 'p' }),
+      children: [child],
+      latestChildSummary: '',
+      descendantCount: 2,
+    };
+    expect(nodeContainsItem(node, 'gc')).toBe(true);
+    expect(nodeContainsItem(node, 'missing')).toBe(false);
+  });
+});
+
+describe('findTimelineNodeIndex', () => {
+  it('returns the index of the root that contains the item', () => {
+    const nodes: TimelineNode[] = [
+      { kind: 'leaf', item: mkItem({ id: 'a' }) },
+      {
+        kind: 'group',
+        parent: mkItem({ id: 'p' }),
+        children: [{ kind: 'leaf', item: mkItem({ id: 'gc' }) }],
+        latestChildSummary: '',
+        descendantCount: 1,
+      },
+      { kind: 'leaf', item: mkItem({ id: 'b' }) },
+    ];
+    expect(findTimelineNodeIndex(nodes, 'a')).toBe(0);
+    expect(findTimelineNodeIndex(nodes, 'p')).toBe(1);
+    expect(findTimelineNodeIndex(nodes, 'gc')).toBe(1); // returns root that contains it
+    expect(findTimelineNodeIndex(nodes, 'b')).toBe(2);
+  });
+
+  it('returns -1 when no root contains the item', () => {
+    const nodes: TimelineNode[] = [{ kind: 'leaf', item: mkItem({ id: 'a' }) }];
+    expect(findTimelineNodeIndex(nodes, 'missing')).toBe(-1);
   });
 });

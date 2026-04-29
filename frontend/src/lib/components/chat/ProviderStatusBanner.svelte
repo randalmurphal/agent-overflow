@@ -163,7 +163,7 @@
   location, and the alternative (height-animated mount) shifts every visible
   message under the user's cursor.
 -->
-<div class="relative shrink-0 min-h-9">
+<div class="relative shrink-0 min-h-9" data-testid="provider-status-slot">
   {#if providerStatus && pane.thread}
     <div
       transition:fade={{ duration: 150 }}
@@ -200,7 +200,7 @@
   {/if}
 </div>
 
-<div class="relative shrink-0 min-h-9">
+<div class="relative shrink-0 min-h-9" data-testid="session-status-slot">
   {#if sessionBannerVisible && pane.thread}
     <div transition:fade={{ duration: 150 }} role="alert" aria-live="assertive" class="border-b {sessionBannerClasses} px-4 py-2 flex items-center gap-2">
       <p class="text-xs flex-1 line-clamp-2" title={sessionMessage}>{sessionMessage}</p>

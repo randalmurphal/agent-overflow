@@ -19,7 +19,6 @@ import {
 import type { Item, Thread } from '../../types/models';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { makeItem } from '../../../test/helpers/chat';
-import { installControllableResizeObserver } from '../../../test/helpers/scrollDom';
 
 beforeAll(() => {
   // Svelte transitions used by children call element.animate; happy-dom

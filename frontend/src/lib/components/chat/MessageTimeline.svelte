@@ -17,7 +17,11 @@
     setThreadScrollSnapshot,
   } from '../../utils/threadScrollSnapshots';
   import {
+    findTimelineNodeIndex as findNodeIndexInList,
     groupItemsBySubagent,
+    isLastRootInTurn as isLastRootInTurnAt,
+    rootTurnIndex,
+    timelineNodeItemId,
     timelineNodeKey,
     type TimelineNode,
   } from '../../utils/subagentGrouping';
@@ -31,12 +35,7 @@
   import TimelineLeaf from './TimelineLeaf.svelte';
   import TurnDiffBadge from './TurnDiffBadge.svelte';
   import type { ExpandedImagePreview } from '../../utils/attachmentPreview.svelte';
-  import {
-    isUiRenderTraceEnabled,
-    recordUiTrace,
-    scheduleDomUiTrace,
-    summarizeItemsForTrace,
-  } from '../../utils/uiRenderTrace';
+  import { recordTimelineRenderTrace } from './messageTimelineTrace';
 
   // Initial item-size estimate for virtua. Real sizes come from the
   // per-item ResizeObserver virtua wraps each row in; this constant only
@@ -54,7 +53,7 @@
   // ssrCount so test assertions can find the rendered DOM. Production
   // (vite dev/build) always sees the default `undefined`, leaving virtua
   // free to virtualize.
-  const IS_TEST = (import.meta as { env?: { MODE?: string } }).env?.MODE === 'test';
+  const IS_TEST = import.meta.env.MODE === 'test';
 
   let {
     pane,
@@ -66,16 +65,18 @@
 
   /**
    * Decide whether the completion divider renders immediately before this
-   * node in the timeline flow. Pure, exported for unit-testing — checks:
+   * node in the timeline flow:
    *   - there's a settled turn to render for
    *   - that turn reported a terminal assistant message id
    *   - the current node is the leaf whose id matches that message
-   * Subagent-group nodes and non-matching leaves render nothing.
+   * Subagent-group nodes and non-matching leaves render nothing. Only
+   * leaves carry `data-item-id`, so the divider can only anchor before a
+   * leaf — group nodes are structural and never trigger a divider.
    *
    * Spec: docs/architecture/turn-lifecycle.md §UI components driven by
    * this state.
    */
-  export function shouldRenderDividerBefore(
+  function shouldRenderDividerBefore(
     node: TimelineNode,
     turn: SettledTurn | null,
   ): boolean {
@@ -118,80 +119,33 @@
     stick.attach();
   });
 
-  // ============================================================
-  // Diagnostic UI render trace — preserved from the previous shape.
-  // ============================================================
+  // Diagnostic UI render trace — extracted to messageTimelineTrace.ts.
+  // Production builds short-circuit at isUiRenderTraceEnabled() inside
+  // the helper, so this $effect's only steady-state cost is the reactive
+  // dep tracking.
   $effect(() => {
     pane.threadId;
     pane.items.length;
     pane.timelineRevision;
     groupedNodes.length;
-
-    if (!isUiRenderTraceEnabled()) return;
-    recordUiTrace('timeline.state', {
-      threadId: pane.threadId,
-      itemCount: pane.items.length,
-      timelineRevision: pane.timelineRevision,
-      groupedNodeCount: groupedNodes.length,
-      nodes: groupedNodes.slice(0, 120).map((node) => (
-        node.kind === 'leaf'
-          ? {
-              kind: 'leaf',
-              itemId: node.item.id,
-              itemThreadId: node.item.threadId,
-              itemKind: node.item.kind,
-              turnIndex: node.item.turnIndex,
-              orphan: node.orphan === true,
-            }
-          : {
-              kind: 'group',
-              parentId: node.parent.id,
-              parentThreadId: node.parent.threadId,
-              childCount: node.children.length,
-              turnIndex: node.parent.turnIndex,
-            }
-      )),
-      items: summarizeItemsForTrace(pane.items),
-    });
-    scheduleDomUiTrace('timeline', 'timeline.dom', () => ({
-      threadId: pane.threadId,
-      rowCount: scrollEl?.querySelectorAll('[data-item-id]').length ?? 0,
-      rows: Array.from(scrollEl?.querySelectorAll<HTMLElement>('[data-item-id]') ?? [])
-        .slice(0, 160)
-        .map((el) => ({
-          itemId: el.dataset.itemId ?? '',
-          textPreview: (el.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, 120),
-        })),
-      scrollOffset: listRef ? Math.round(listRef.getScrollOffset()) : 0,
-      scrollSize: listRef ? Math.round(listRef.getScrollSize()) : 0,
-      viewportSize: listRef ? Math.round(listRef.getViewportSize()) : 0,
-    }));
+    recordTimelineRenderTrace(pane, groupedNodes, scrollEl, listRef);
   });
 
   // ============================================================
   // Helpers
   // ============================================================
-
-  function rootTurnIndex(node: TimelineNode): number {
-    return node.kind === 'leaf' ? node.item.turnIndex : node.parent.turnIndex;
-  }
+  // Pure helpers (rootTurnIndex, isLastRootInTurn, findTimelineNodeIndex,
+  // timelineNodeItemId) live alongside the TimelineNode type in
+  // subagentGrouping.ts; the local thin wrappers below adapt them to the
+  // current groupedNodes array so the template doesn't have to thread
+  // `groupedNodes` into every call site.
 
   function isLastRootInTurn(index: number): boolean {
-    const cur = groupedNodes[index];
-    const next = groupedNodes[index + 1];
-    if (!cur) return false;
-    if (!next) return true;
-    return rootTurnIndex(cur) !== rootTurnIndex(next);
-  }
-
-  function nodeContainsItem(node: TimelineNode, itemId: string): boolean {
-    if (node.kind === 'leaf') return node.item.id === itemId;
-    return node.parent.id === itemId
-      || node.children.some((child) => nodeContainsItem(child, itemId));
+    return isLastRootInTurnAt(groupedNodes, index);
   }
 
   function findTimelineNodeIndex(itemId: string): number {
-    return groupedNodes.findIndex((node) => nodeContainsItem(node, itemId));
+    return findNodeIndexInList(groupedNodes, itemId);
   }
 
   // ============================================================
@@ -226,10 +180,9 @@
     if (!listRef || (!ignoreLoading && pane.loading) || restoredThreadId !== threadId) return;
     // virtua's internal ref can be in a teardown state where any geometry
     // read throws (the inner ref is null while our outer handle is still
-    // bound). Treat any read failure as "skip this save" — the next scroll
-    // will refresh the snapshot if the user keeps reading. Without this
-    // guard, component teardown during a thread switch raises a TypeError
-    // that bubbles into Svelte's effect-teardown machinery.
+    // bound). The TypeError is the documented teardown shape — swallow
+    // exactly that and re-throw anything else so a real regression in a
+    // future virtua version doesn't disappear silently.
     try {
       if (stick.isAtBottom()) {
         setThreadScrollSnapshot(threadId, { kind: 'bottom' });
@@ -240,14 +193,20 @@
       if (idx < 0) return;
       const node = groupedNodes[idx];
       if (!node) return;
-      const itemId = node.kind === 'leaf' ? node.item.id : node.parent.id;
+      const itemId = timelineNodeItemId(node);
       // Negative when the anchor row's top has scrolled above the viewport
       // top by `-offsetTop` pixels. Restoration recreates exactly this
       // relationship via scrollToIndex({ align:'start', offset: -offsetTop }).
       const offsetTop = listRef.getItemOffset(idx) - offset;
       setThreadScrollSnapshot(threadId, { kind: 'anchor', itemId, offsetTop });
-    } catch {
-      // Stale handle during teardown.
+    } catch (err) {
+      if (err instanceof TypeError) {
+        // Expected during teardown when virtua's inner ref is nulled
+        // while our outer handle is still bound. Skip this save; the
+        // next scroll will refresh the snapshot.
+        return;
+      }
+      throw err;
     }
   }
 
@@ -339,7 +298,7 @@
     const offsetBefore = listRef.getScrollOffset();
     const firstIdxBefore = listRef.findItemIndex(offsetBefore);
     const node = groupedNodes[firstIdxBefore];
-    const anchorId = node ? (node.kind === 'leaf' ? node.item.id : node.parent.id) : null;
+    const anchorId = node ? timelineNodeItemId(node) : null;
     const anchorOffsetTop = node ? listRef.getItemOffset(firstIdxBefore) - offsetBefore : 0;
 
     const release = stick.pauseAutoScroll();

@@ -6,8 +6,13 @@
   // existing precedent for "custom button when chrome diverges from the
   // primitive."
   //
-  // `data-scroll-anchor-ignore` opts the chip out of the controller's
-  // click-anchor handler so clicking it re-sticks rather than unsticks.
+  // `data-scroll-anchor-ignore` opts the chip out of the click-anchor
+  // pass on `stickToBottom.svelte.ts` (the controller used by ChannelView
+  // / Discussion mode). The chat timeline's `stickyBottomController`
+  // does not implement click-anchor compensation — virtua's per-row
+  // jump-correction handles the same case generically — so on
+  // MessageTimeline this attribute is a no-op. Kept for consistency
+  // because the chip is shared across both surfaces.
 
   import ChevronDown from 'lucide-svelte/icons/chevron-down';
   import { fade } from 'svelte/transition';

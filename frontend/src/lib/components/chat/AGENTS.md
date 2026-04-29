@@ -26,11 +26,14 @@ shape. Operational rules for code in this directory:
 Every row rendered inside `<VList>`'s children snippet:
 
 - Lives inside a `[data-row-index]` outer wrapper. The wrapper is
-  structural and intentionally has NO `data-item-id` — that attribute
-  belongs on the inner row component (`TimelineLeaf` for leaves,
-  `SubagentGroup` for subagent cards) so test queries and the
-  CompletionDivider's "render before [data-item-id]" sibling check land
-  on the right element.
+  structural and intentionally has NO `data-item-id`. Only `TimelineLeaf`
+  emits `data-item-id` on its root — that's what test queries, message
+  search, and the CompletionDivider's "render before [data-item-id]"
+  sibling check anchor on. `SubagentGroup` is structural and does not
+  carry `data-item-id`; the divider therefore can only ever sit before
+  a leaf, not before a subagent card. `shouldRenderDividerBefore` in
+  `MessageTimeline.svelte` enforces that contract by returning false
+  for non-leaf nodes.
 - Is safe to remount when virtua scrolls a row out of and back into the
   rendered window. Snippets re-receive `pane`, `item`, `depth` on
   remount; nothing inside should depend on `onMount` running exactly
