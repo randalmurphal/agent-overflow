@@ -41,6 +41,13 @@
 
   const planExport = createPlanSaveDialog(ensurePlanMarkdown, () => pane.threadId);
 
+  // The body's scrollable viewport (max-h-96 + overflow-y-auto) needs the
+  // full markdown to scroll. meta.preview caps at 10 visible lines, so
+  // load the payload eagerly; preview is the first-paint placeholder.
+  $effect(() => {
+    void ensurePlanMarkdown();
+  });
+
   async function ensurePlanMarkdown(): Promise<string> {
     const threadId = pane.threadId;
     if (planMarkdown !== null) return planMarkdown;
