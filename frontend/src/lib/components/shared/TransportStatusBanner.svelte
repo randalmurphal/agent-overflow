@@ -17,7 +17,7 @@
   // to force an attempt sooner. It calls wsClient.triggerReconnect via
   // the store, which resets the backoff counter.
 
-  import { slide } from 'svelte/transition';
+  import { fade } from 'svelte/transition';
   import { getTransportStatus, retryTransport } from '../../stores/transportStatus.svelte';
 
   // Tick once per second so the countdown stays in sync. We only mount
@@ -114,25 +114,33 @@
   }
 </script>
 
-{#if visible}
-  <div
-    transition:slide={{ duration: 150 }}
-    role="alert"
-    aria-live="polite"
-    data-testid="transport-status-banner"
-    data-status={snapshot.status}
-    class="border-b {bannerClasses} px-4 py-1.5 flex items-center gap-2 shrink-0 text-xs"
-  >
-    <p class="flex-1 line-clamp-1" title={message}>{message}</p>
-    {#if snapshot.status === 'disconnected' || snapshot.status === 'reconnecting'}
-      <button
-        type="button"
-        onclick={handleRetry}
-        data-testid="transport-status-retry"
-        class="text-xs px-2 py-0.5 rounded border border-current/30 hover:bg-white/5 cursor-pointer shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
-      >
-        Retry
-      </button>
-    {/if}
-  </div>
-{/if}
+<!-- Reserved-slot pattern: the wrapper always occupies a stable height so
+     mounting / unmounting the inner banner never animates the chat
+     column's clientHeight. Inner banner uses transition:fade so the visual
+     entrance/exit is smooth without changing surrounding layout. Same
+     pattern as ProviderStatusBanner.svelte. min-h-7 matches the inner
+     banner's natural height (px-4 py-1.5 + border-b + ~16px text). -->
+<div class="relative shrink-0 min-h-7" data-testid="transport-status-slot">
+  {#if visible}
+    <div
+      transition:fade={{ duration: 150 }}
+      role="alert"
+      aria-live="polite"
+      data-testid="transport-status-banner"
+      data-status={snapshot.status}
+      class="border-b {bannerClasses} px-4 py-1.5 flex items-center gap-2 shrink-0 text-xs"
+    >
+      <p class="flex-1 line-clamp-1" title={message}>{message}</p>
+      {#if snapshot.status === 'disconnected' || snapshot.status === 'reconnecting'}
+        <button
+          type="button"
+          onclick={handleRetry}
+          data-testid="transport-status-retry"
+          class="text-xs px-2 py-0.5 rounded border border-current/30 hover:bg-white/5 cursor-pointer shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+        >
+          Retry
+        </button>
+      {/if}
+    </div>
+  {/if}
+</div>
