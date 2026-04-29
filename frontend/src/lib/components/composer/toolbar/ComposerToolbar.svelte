@@ -67,7 +67,7 @@
   <PlanSidebarToggleButton {pane} {hasCurrentPlan} />
   <div class="ml-auto flex items-center gap-1.5">
     {#if pane.contextWindow}
-      <div class="shrink-0" data-testid="composer-context-meter">
+      <div class="shrink-0 flex items-center" data-testid="composer-context-meter">
         <ContextWindowMeter data={pane.contextWindow} thread={pane.thread} />
       </div>
     {/if}

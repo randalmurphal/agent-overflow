@@ -78,7 +78,7 @@
   onfocus={openPopover}
   onblur={scheduleClose}
 >
-  <svg class="w-7 h-7 -rotate-90" viewBox="0 0 24 24" aria-hidden="true">
+  <svg class="absolute inset-0 m-auto h-7 w-7 -rotate-90" viewBox="0 0 24 24" aria-hidden="true">
     <circle
       cx="12" cy="12" r={RADIUS}
       fill="none"
