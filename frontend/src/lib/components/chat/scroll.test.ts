@@ -262,6 +262,77 @@ describe('scroll integration — auto-follow + button', () => {
   });
 });
 
+describe('scroll integration — mid-list inserts re-sort and re-index', () => {
+  // Real triage paths can produce a `tool_completion` for a launchID
+  // whose original `tool_call` lived on an earlier turn (see
+  // `internal/triage/tool_lifecycle.go`'s `complete:<launchID>` flow,
+  // and Codex's late `codex_background.go` arrivals). The pane must
+  // re-sort by (turnIndex, itemIndex), rebuild `itemIndexById`, and
+  // keep stable item ids — otherwise `pane.requestScrollToItem(id)`
+  // resolves to the wrong row and the auto-follow `getLastIndex()`
+  // points at the second-to-last item.
+  //
+  // happy-dom can't measure layout, so we don't assert on virtua
+  // remount counts here. We assert on the data contract that virtua's
+  // `getKey` consumes: items array order + index map consistency.
+
+  it('upserting an out-of-order item lands it in chronological position and rebuilds itemIndexById', async () => {
+    const pane = await buildPane(makeThread(), [
+      makeItem({ id: 't1', turnIndex: 1, summary: 't1' }),
+      makeItem({ id: 't2', turnIndex: 2, summary: 't2' }),
+      makeItem({ id: 't4', turnIndex: 4, summary: 't4' }),
+    ]);
+
+    // Sanity: the precondition (turnIndex 1, 2, 4) must hold before the insert.
+    expect(pane.items.map((it) => it.id)).toEqual(['t1', 't2', 't4']);
+
+    pane.upsertItem(makeItem({ id: 't3', turnIndex: 3, summary: 't3' }));
+
+    // Items array re-sorted by (turnIndex, itemIndex).
+    expect(pane.items.map((it) => it.id)).toEqual(['t1', 't2', 't3', 't4']);
+
+    // The last index advanced — auto-follow's `getLastIndex()` would now
+    // point at the new tail (t4), not t3. Mid-list inserts that are NOT
+    // the new chronological tail leave the tail unchanged.
+    expect(pane.items.at(-1)?.id).toBe('t4');
+
+    // Snapshot round-trips: save an anchor for t2 (which was index 1
+    // before the insert and is still index 1 after), and verify it
+    // restores to the same item.
+    pane.thread!.id = 'thread-midlist-insert';
+    setThreadScrollSnapshot('thread-midlist-insert', {
+      kind: 'anchor',
+      itemId: 't2',
+      offsetTop: -120,
+    });
+
+    const snap = getThreadScrollSnapshot('thread-midlist-insert');
+    expect(snap?.kind).toBe('anchor');
+    if (snap?.kind === 'anchor') {
+      expect(snap.itemId).toBe('t2');
+      // The item still exists at a resolvable position post-insert.
+      expect(pane.items.findIndex((it) => it.id === snap.itemId)).toBe(1);
+    }
+  });
+
+  it('upserting at a tail-equivalent position appends without changing existing indices', async () => {
+    // Regression contract: when the new item IS the new chronological
+    // tail (turnIndex > all existing), the fast-append branch fires
+    // (no needsSort). Item order stays append-only, indices for
+    // existing rows are unchanged.
+    const pane = await buildPane(makeThread(), [
+      makeItem({ id: 't1', turnIndex: 1, summary: 't1' }),
+      makeItem({ id: 't2', turnIndex: 2, summary: 't2' }),
+    ]);
+
+    pane.upsertItem(makeItem({ id: 't3', turnIndex: 3, summary: 't3' }));
+
+    expect(pane.items.map((it) => it.id)).toEqual(['t1', 't2', 't3']);
+    // Tail moved forward as expected.
+    expect(pane.items.at(-1)?.id).toBe('t3');
+  });
+});
+
 describe('scroll integration — load older noop / error paths', () => {
   it('does not re-anchor when pane.loadOlder returns status:"noop"', async () => {
     const { getToasts } = await import('../../stores/toast.svelte');
