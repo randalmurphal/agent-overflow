@@ -43,11 +43,11 @@ go-test:
 # data-race regressions. The repo root (`.`) is included so the App
 # integration tests (transport server boot, multi-session shutdown,
 # event-emit fan-out) get the race detector too — that's the surface
-# most likely to hide a real-world race. The 240s timeout is the
-# documented cap; -race adds significant overhead and the App boot
-# tests are the slowest in the matrix.
+# most likely to hide a real-world race. The 600s timeout absorbs the
+# App boot suite, which runs ~380s under -race on slower hosts (WSL,
+# CI runners). Tighten only if you've measured headroom.
 test-race:
-	go test -race -timeout 240s ./internal/transport/... ./internal/wsllauncher/... ./internal/clientmode/... ./internal/editor/... .
+	go test -race -timeout 600s ./internal/transport/... ./internal/wsllauncher/... ./internal/clientmode/... ./internal/editor/... .
 
 install:
 	go install tool
