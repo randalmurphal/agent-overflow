@@ -70,13 +70,15 @@ export interface TokenCache {
   readonly size: number;
 }
 
-// 1000 lines × ~80 bytes/token × ~5 tokens/line ≈ 400 KB worst-case for
-// the cache itself; keys add another ~50 KB. Below 5000 (the previous
-// cap) the heuristic for "this looks like a one-time visit, drop it"
-// kicks in faster, which matches the actual usage shape — most diffs
-// are read once, and a hot path of frequently-revisited diffs fits
-// comfortably under 1000 unique lines.
-const DEFAULT_CAP = 1000;
+// 5000 entries × ~1 KB/entry (key + LineTokens array + Map overhead) ≈
+// 5 MB worst case. The per-thread partition + `evictThread` on switch
+// is what bounds long-session memory; the cap exists only to absorb
+// repeat-visit cache pressure within a single thread. Keep it large
+// enough that a multi-thousand-line diff doesn't self-evict during
+// initial render — re-tokenizing visible lines on scroll-back shows
+// as a brief flash of unstyled code, which is the worst case to
+// avoid.
+const DEFAULT_CAP = 5000;
 
 export function createTokenCache(cap = DEFAULT_CAP): TokenCache {
   const store = new Map<string, LineTokens>();

@@ -128,7 +128,11 @@ on top:
   every line tokenized under the outgoing thread without disturbing
   any other thread's tokens. `pane.switchThread` calls
   `clearTokensForThread(prevThreadId)` exactly once per switch; the
-  fixed-cap LRU (1000 entries) caps the per-pane cost in steady state.
+  partition + clear-on-switch is what bounds long-session memory.
+  The fixed-cap LRU (5000 entries, ~5 MB worst case) only exists to
+  absorb repeat-visit pressure within a single thread; it's
+  deliberately large enough that a multi-thousand-line diff doesn't
+  self-evict during initial render.
 
 `ChannelView.svelte` (Discussion mode) uses a different controller —
 `stickToBottom.svelte.ts` — because it scrolls a plain DOM container,
