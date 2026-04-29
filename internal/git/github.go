@@ -189,8 +189,7 @@ func (c *Core) ListOpenPRs(cwd, head string) ([]GitPR, error) {
 }
 
 func normalizeGitHubCLIError(err error) error {
-	var execErr *exec.Error
-	if errors.As(err, &execErr) || errors.Is(err, exec.ErrNotFound) {
+	if _, ok := errors.AsType[*exec.Error](err); ok || errors.Is(err, exec.ErrNotFound) {
 		return errors.New(
 			"GitHub CLI (`gh`) is not installed or not on PATH. Install from https://cli.github.com and run 'gh auth login' to continue",
 		)

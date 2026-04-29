@@ -134,9 +134,8 @@ func (m *Manager) startLoops() {
 	ctx, cancel := context.WithCancel(context.Background())
 	m.queue = make(chan Record, m.queueSize)
 	m.cancel = cancel
-	m.loopWG.Add(2)
-	go m.drain(ctx)
-	go m.reap(ctx)
+	m.loopWG.Go(func() { m.drain(ctx) })
+	m.loopWG.Go(func() { m.reap(ctx) })
 }
 
 // stopLoops cancels the background context, waits for drain + reap to
@@ -314,7 +313,6 @@ func (m *Manager) Shutdown(ctx context.Context) error {
 // out m.queue mid-loop: we always read from the channel we were handed
 // at startLoops time, even if the field has since been reset.
 func (m *Manager) drain(ctx context.Context) {
-	defer m.loopWG.Done()
 	queue := m.queue
 	for {
 		select {
@@ -369,7 +367,6 @@ func (m *Manager) writerFor(threadID string) (*Writer, error) {
 // reap closes writers that have been idle for IdleTimeout. Runs on its own
 // goroutine.
 func (m *Manager) reap(ctx context.Context) {
-	defer m.loopWG.Done()
 	ticker := time.NewTicker(reaperInterval)
 	defer ticker.Stop()
 	for {

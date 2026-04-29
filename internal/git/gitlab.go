@@ -214,8 +214,7 @@ func isURLLike(s string) bool {
 }
 
 func normalizeGitLabCLIError(err error) error {
-	var execErr *exec.Error
-	if errors.As(err, &execErr) || errors.Is(err, exec.ErrNotFound) {
+	if _, ok := errors.AsType[*exec.Error](err); ok || errors.Is(err, exec.ErrNotFound) {
 		return errors.New(
 			"GitLab CLI (`glab`) is not installed or not on PATH. Install from https://gitlab.com/gitlab-org/cli and run 'glab auth login' to continue",
 		)

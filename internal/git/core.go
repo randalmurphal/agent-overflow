@@ -267,8 +267,7 @@ func (c *Core) runBinary(binary, cwd string, args ...string) (commandResult, err
 		return result, nil
 	}
 
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) {
+	if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
 		result.exitCode = exitErr.ExitCode()
 		return result, nil
 	}

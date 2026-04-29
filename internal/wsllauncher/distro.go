@@ -45,8 +45,7 @@ func runListDistrosCmd(cmd *exec.Cmd) ([]Distro, error) {
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
+		if _, ok := errors.AsType[*exec.ExitError](err); ok {
 			// wsl.exe writes its diagnostic messages in UTF-16 LE on
 			// most modern Windows builds. Decode best-effort so we
 			// can differentiate "no distros installed" from a

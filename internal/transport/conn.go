@@ -168,14 +168,10 @@ func (h *connHandler) dispatchRPC(ctx context.Context, frame ClientFrame) {
 	case <-ctx.Done():
 		return
 	}
-	h.rpcWG.Add(1)
-	go func() {
-		defer func() {
-			<-h.rpcSem
-			h.rpcWG.Done()
-		}()
+	h.rpcWG.Go(func() {
+		defer func() { <-h.rpcSem }()
 		h.handleRPC(ctx, frame)
-	}()
+	})
 }
 
 // handleRPC invokes the registered method (by ID first, falling back to

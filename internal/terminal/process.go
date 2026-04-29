@@ -228,8 +228,7 @@ func (p *Process) awaitExit() {
 		status.Code = 0
 		status.Reason = "exit"
 	} else {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
+		if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
 			status.Code = exitErr.ExitCode()
 			if ws, ok := exitErr.Sys().(syscall.WaitStatus); ok {
 				if ws.Signaled() {

@@ -118,8 +118,7 @@ func execTextGenerationCLI(ctx context.Context, spec textGenerationCLISpec) (tex
 		return result, ctx.Err()
 	}
 
-	var exitErr *exec.ExitError
-	if err != nil && errors.As(err, &exitErr) {
+	if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
 		result.ExitCode = exitErr.ExitCode()
 		return result, nil
 	}
@@ -214,8 +213,7 @@ func translateCLINotFound(cliName string, timeout time.Duration, err error) erro
 	if errors.Is(err, context.DeadlineExceeded) {
 		return fmt.Errorf("%s CLI timed out after %s", cliName, timeout)
 	}
-	var pathErr *os.PathError
-	if errors.As(err, &pathErr) {
+	if pathErr, ok := errors.AsType[*os.PathError](err); ok {
 		return fmt.Errorf("%s CLI not found: %s", cliName, pathErr.Path)
 	}
 	return err

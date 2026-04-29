@@ -23,8 +23,7 @@ func MarshalProcessExitMeta(err error) json.RawMessage {
 		info.Reason = err.Error()
 	}
 
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) {
+	if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
 		if status, ok := exitErr.Sys().(syscall.WaitStatus); ok {
 			switch {
 			case status.Signaled():

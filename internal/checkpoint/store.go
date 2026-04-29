@@ -524,8 +524,7 @@ func runGit(
 	if runErr == nil {
 		return stdout, stderr, 0, nil
 	}
-	var exitErr *exec.ExitError
-	if errors.As(runErr, &exitErr) {
+	if exitErr, ok := errors.AsType[*exec.ExitError](runErr); ok {
 		code = exitErr.ExitCode()
 		if allowNonZero {
 			return stdout, stderr, code, nil
@@ -588,8 +587,7 @@ func runGitWithStdoutLimit(
 	if waitErr == nil {
 		return stdout, stderr, 0, nil
 	}
-	var exitErr *exec.ExitError
-	if errors.As(waitErr, &exitErr) {
+	if exitErr, ok := errors.AsType[*exec.ExitError](waitErr); ok {
 		code = exitErr.ExitCode()
 		if allowNonZero {
 			return stdout, stderr, code, nil

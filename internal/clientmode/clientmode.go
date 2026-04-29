@@ -196,13 +196,11 @@ func Serve(cfg Config) (*Server, error) {
 		WriteTimeout:      cfg.HTTPWriteTimeout,
 	}
 
-	s.wg.Add(1)
-	go func() {
-		defer s.wg.Done()
+	s.wg.Go(func() {
 		if err := s.httpSrv.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Printf("clientmode: http serve: %v", err)
 		}
-	}()
+	})
 
 	return s, nil
 }

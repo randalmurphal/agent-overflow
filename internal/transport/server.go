@@ -33,6 +33,11 @@ type Bootstrap struct {
 // drains the slice naturally on its 5s timeout.
 const MaxRetainedFormerSrvs = 4
 
+// errServerShutdown is the cancel-cause attached to rootCtx when
+// Shutdown begins. Lets per-connection handlers distinguish "we shut
+// down" from "client disconnected" via context.Cause. Internal only.
+var errServerShutdown = errors.New("transport: server shut down")
+
 // Config configures Server. Zero values default to safe choices —
 // loopback bind, ephemeral port, freshly-generated token.
 type Config struct {
@@ -133,7 +138,7 @@ type Server struct {
 	// reuses this context so a re-bind doesn't kill existing WS
 	// connections — only Shutdown should terminate them.
 	rootCtx    context.Context
-	rootCancel context.CancelFunc
+	rootCancel context.CancelCauseFunc
 
 	// serveErr surfaces async errors from the listener goroutine.
 	// Buffered 1 so a single failure can be observed without a
@@ -224,7 +229,7 @@ func (s *Server) start() error {
 	if err != nil {
 		return fmt.Errorf("transport: listen %s: %w", addr, err)
 	}
-	s.rootCtx, s.rootCancel = context.WithCancel(context.Background())
+	s.rootCtx, s.rootCancel = context.WithCancelCause(context.Background())
 
 	srv := s.buildHTTPServer()
 	s.mu.Lock()
@@ -308,9 +313,7 @@ func (s *Server) loopbackHostGuard(next http.HandlerFunc) http.HandlerFunc {
 // EADDRINUSE recovery path) are both expected lifecycles, not failures,
 // so they're silently dropped.
 func (s *Server) serve(srv *http.Server, listener net.Listener) {
-	s.wg.Add(1)
-	go func() {
-		defer s.wg.Done()
+	s.wg.Go(func() {
 		err := srv.Serve(listener)
 		if err == nil || errors.Is(err, http.ErrServerClosed) || errors.Is(err, net.ErrClosed) {
 			return
@@ -320,7 +323,7 @@ func (s *Server) serve(srv *http.Server, listener net.Listener) {
 		case s.serveErr <- err:
 		default:
 		}
-	}()
+	})
 }
 
 // ServeErr returns a channel that delivers async listener failures
@@ -341,7 +344,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	s.stopOnce.Do(func() {
 		s.shutDown.Store(true)
 		if s.rootCancel != nil {
-			s.rootCancel()
+			s.rootCancel(errServerShutdown)
 		}
 		s.mu.Lock()
 		current := s.srv

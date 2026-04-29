@@ -87,8 +87,7 @@ func (a *App) GitStatusSubscribe(ctx context.Context, threadID string) (GitStatu
 	a.gitWatchPumps[id] = entry
 	a.gitWatchPumpsMu.Unlock()
 
-	a.gitWatchPumpWG.Add(1)
-	go a.pumpGitWatch(id, entry)
+	a.gitWatchPumpWG.Go(func() { a.pumpGitWatch(id, entry) })
 
 	if state := transport.ConnStateFromContext(ctx); state != nil {
 		// If RegisterCleanup returns false the connection is already
@@ -122,7 +121,6 @@ func (a *App) GitStatusUnsubscribe(subscriptionID string) error {
 // value is received, so an Unsubscribe that closes done can't lose to
 // a buffered Updates() value sneaking through one final emit.
 func (a *App) pumpGitWatch(id string, entry *gitWatchPump) {
-	defer a.gitWatchPumpWG.Done()
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("gitwatch: pump panic for id=%s: %v", id, r)
