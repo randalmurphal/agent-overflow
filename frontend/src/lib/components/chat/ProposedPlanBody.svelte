@@ -10,10 +10,7 @@
 </script>
 
 <div class="mt-4">
-  <div class:overflow-hidden={previewOnly} class:max-h-80={previewOnly} class="relative">
+  <div class:overflow-y-auto={previewOnly} class:max-h-96={previewOnly} class="relative">
     <ChatMarkdown source={markdown} />
-    {#if previewOnly}
-      <div class="pointer-events-none absolute inset-x-0 bottom-0 h-24 bg-linear-to-t from-surface-0 via-surface-0/80 to-transparent"></div>
-    {/if}
   </div>
 </div>
