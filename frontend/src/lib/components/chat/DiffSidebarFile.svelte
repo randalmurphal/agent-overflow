@@ -34,6 +34,7 @@
   interface Props {
     file: PatchFile;
     expanded: boolean;
+    threadId: string;
     viewMode: DiffViewMode;
     wordWrap: boolean;
     /** Resolved Shiki theme name from the parent. */
@@ -42,7 +43,7 @@
     onToggle: (path: string) => void;
   }
 
-  let { file, expanded, viewMode, wordWrap, theme, virtualizer, onToggle }: Props = $props();
+  let { file, expanded, threadId, viewMode, wordWrap, theme, virtualizer, onToggle }: Props = $props();
 
   let containerEl: HTMLElement | undefined = $state(undefined);
 
@@ -96,7 +97,7 @@
     // (memoized) hash cost.
     const text = stripPatchLinePrefix(line);
     if (text.length === 0 || text.length > TOKENIZE_MAX_LINE_LENGTH) return null;
-    return cache.get(tokenCacheKeyFromSig(theme, lang, patchLineSourceKey(line))) ?? null;
+    return cache.get(tokenCacheKeyFromSig(threadId, theme, lang, patchLineSourceKey(line))) ?? null;
   }
 
   // HTML5 forbids whitespace in id values, and file paths can carry

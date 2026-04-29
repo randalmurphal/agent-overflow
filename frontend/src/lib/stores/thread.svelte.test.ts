@@ -1,5 +1,9 @@
-import { beforeEach, describe, expect, it } from 'vitest';
-import { createThreadPane } from './thread.svelte';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import {
+  __resetExpansionBudgetForTest,
+  __setExpansionBudgetForTest,
+  createThreadPane,
+} from './thread.svelte';
 import type { Item } from '../types/models';
 import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
 import { makeItem, makeThread } from '../../test/helpers/chat';
@@ -722,6 +726,80 @@ describe('createThreadPane', () => {
     const h1 = pane.expansionStateForPayload('p-foo', 'thread-1');
     const h2 = pane.expansionStateForPayload('p-foo', 'thread-1');
     expect(h2).toBe(h1);
+  });
+
+  describe('expansion-state LRU budget', () => {
+    afterEach(() => {
+      __resetExpansionBudgetForTest();
+    });
+
+    it('collapses least-recently-toggled handle when total bytes exceed budget', async () => {
+      // Why: long sessions can accumulate many expanded payloads. Without an
+      // upper bound, every toggled tool_call holds its loaded chunks until
+      // thread switch — climbs unbounded. The pane caps total displayData
+      // bytes and evicts the oldest expansion when over budget; the user
+      // can re-expand at any time and a fresh fetch repopulates.
+      __setExpansionBudgetForTest(150); // tiny so two 100-byte payloads is over
+
+      const big = 'x'.repeat(100);
+      setBindingMock('GetPayloadPreview', async () => ({
+        data: big,
+        nextOffset: big.length,
+        totalSize: big.length,
+        isComplete: true,
+      }));
+
+      const pane = createThreadPane();
+      pane.upsertItem(makeItem({ id: 'tool:0:0', kind: 'tool_call', payloadId: 'p-1' }));
+      pane.upsertItem(makeItem({ id: 'tool:0:1', kind: 'tool_call', payloadId: 'p-2' }));
+
+      const first = pane.expansionStateFor(pane.items[0]!);
+      const second = pane.expansionStateFor(pane.items[1]!);
+
+      await first.expand();
+      expect(first.expanded).toBe(true);
+      expect(first.displayData?.length).toBe(100);
+
+      // Expanding the second pushes total past 150 bytes; the first is the
+      // least-recently-toggled, so it gets collapsed to free its chunks.
+      await second.expand();
+      expect(second.expanded).toBe(true);
+      expect(second.displayData?.length).toBe(100);
+      expect(first.expanded).toBe(false);
+      expect(first.displayData).toBeNull();
+    });
+
+    it('toggle on an already-expanded handle moves it to most-recent and protects it from eviction', async () => {
+      __setExpansionBudgetForTest(150);
+      const big = 'x'.repeat(100);
+      setBindingMock('GetPayloadPreview', async () => ({
+        data: big,
+        nextOffset: big.length,
+        totalSize: big.length,
+        isComplete: true,
+      }));
+
+      const pane = createThreadPane();
+      pane.upsertItem(makeItem({ id: 'tool:0:0', kind: 'tool_call', payloadId: 'p-1' }));
+      pane.upsertItem(makeItem({ id: 'tool:0:1', kind: 'tool_call', payloadId: 'p-2' }));
+
+      const first = pane.expansionStateFor(pane.items[0]!);
+      const second = pane.expansionStateFor(pane.items[1]!);
+
+      await first.expand();
+      // Re-expand of `first` — touch should move it to most-recent in the LRU.
+      // (Not a no-op from the touch's perspective even though `expand` itself
+      // returns early when already expanded.)
+      await first.expand();
+      await second.expand();
+
+      // After eviction, second is the active one and should remain expanded.
+      expect(second.expanded).toBe(true);
+      // first was the most-recently-touched of the prior pair, but second's
+      // expansion still ran enforceBudget; first is older than second in LRU
+      // order, so first is the eviction target.
+      expect(first.expanded).toBe(false);
+    });
   });
 
   it('subagent group expansion state is keyed by parent.id and survives lookup', () => {

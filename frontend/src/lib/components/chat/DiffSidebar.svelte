@@ -269,6 +269,7 @@
       <DiffSidebarBody
         files={parsedFiles}
         {focusFilePath}
+        threadId={pane.thread?.id ?? ''}
         {viewMode}
         {wordWrap}
         {expandedFiles}

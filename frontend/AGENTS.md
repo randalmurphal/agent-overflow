@@ -114,6 +114,21 @@ on top:
   `bufferSize=900` window and back preserves "show full output"
   toggles, loaded payload chunks, and any image blobs. Registries are
   cleared on `switchThread` to bound memory.
+- **Expansion-state byte budget.** The expansion registry has a soft
+  cap on the sum of `displayData` bytes across all entries
+  (`DEFAULT_EXPANSION_BUDGET_BYTES` in `thread.svelte.ts`). When the
+  cap is exceeded, the least-recently-toggled handle is collapsed —
+  which drops its loaded chunks but keeps the handle in the registry
+  so the next toggle re-fetches. The LRU touch happens on
+  `toggle`/`expand`/`showFull`. The user can always re-expand a
+  collapsed row; the only visible effect of an eviction is that the
+  row reverts to its preview-load state.
+- **Shiki diff token cache.** `tokenCache.ts` partitions cached lines
+  by `${theme}:${threadId}:${lang}:…` so a thread switch can drop
+  every line tokenized under the outgoing thread without disturbing
+  any other thread's tokens. `pane.switchThread` calls
+  `clearTokensForThread(prevThreadId)` exactly once per switch; the
+  fixed-cap LRU (1000 entries) caps the per-pane cost in steady state.
 
 `ChannelView.svelte` (Discussion mode) uses a different controller —
 `stickToBottom.svelte.ts` — because it scrolls a plain DOM container,

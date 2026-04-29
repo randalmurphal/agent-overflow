@@ -1,13 +1,15 @@
-// Theme-keyed LRU cache for Shiki tokens. Pure data structure —
-// no Svelte runes here so this module stays unit-testable as plain
-// TypeScript. The reactive generation counter + shared instance live
-// in `tokenCacheReactive.svelte.ts`.
+// Theme + thread keyed LRU cache for Shiki tokens. Pure data
+// structure — no Svelte runes here so this module stays unit-testable
+// as plain TypeScript. The reactive generation counter + shared
+// instance live in `tokenCacheReactive.svelte.ts`.
 //
-// Keys are `${theme}:${lang}:${len}:${fnv1a(line)}` so:
+// Keys are `${theme}:${threadId}:${lang}:${len}:${fnv1a(line)}` so:
 //   - same line in different themes does not collide
+//   - same line in different threads does not collide
 //   - same line in different languages does not collide
-//   - the cache namespace is partitioned by theme so we can evict
-//     all entries of a previous theme on theme switch
+//   - the cache namespace is partitioned by theme AND thread so we
+//     can evict all entries of a previous theme on theme switch and
+//     all entries of a thread on thread switch
 
 export interface LineToken {
   content: string;
@@ -40,8 +42,8 @@ function fnv1a32(input: string): string {
   return hash.toString(36);
 }
 
-export function tokenCacheKey(theme: string, lang: string, line: string): string {
-  return `${theme}:${lang}:${line.length}:${fnv1a32(line)}`;
+export function tokenCacheKey(threadId: string, theme: string, lang: string, line: string): string {
+  return `${theme}:${threadId}:${lang}:${line.length}:${fnv1a32(line)}`;
 }
 
 /**
@@ -50,8 +52,8 @@ export function tokenCacheKey(theme: string, lang: string, line: string): string
  * object (see `patchLineSourceKey`) — avoids re-hashing on every
  * cache lookup.
  */
-export function tokenCacheKeyFromSig(theme: string, lang: string, sourceKey: string): string {
-  return `${theme}:${lang}:${sourceKey}`;
+export function tokenCacheKeyFromSig(threadId: string, theme: string, lang: string, sourceKey: string): string {
+  return `${theme}:${threadId}:${lang}:${sourceKey}`;
 }
 
 /**
@@ -63,11 +65,18 @@ export interface TokenCache {
   get(key: string): LineTokens | undefined;
   set(key: string, tokens: LineTokens): void;
   evictTheme(theme: string): number;
+  evictThread(threadId: string): number;
   clear(): void;
   readonly size: number;
 }
 
-const DEFAULT_CAP = 5000;
+// 1000 lines × ~80 bytes/token × ~5 tokens/line ≈ 400 KB worst-case for
+// the cache itself; keys add another ~50 KB. Below 5000 (the previous
+// cap) the heuristic for "this looks like a one-time visit, drop it"
+// kicks in faster, which matches the actual usage shape — most diffs
+// are read once, and a hot path of frequently-revisited diffs fits
+// comfortably under 1000 unique lines.
+const DEFAULT_CAP = 1000;
 
 export function createTokenCache(cap = DEFAULT_CAP): TokenCache {
   const store = new Map<string, LineTokens>();
@@ -100,6 +109,23 @@ export function createTokenCache(cap = DEFAULT_CAP): TokenCache {
       let evicted = 0;
       for (const key of store.keys()) {
         if (key.startsWith(prefix)) {
+          store.delete(key);
+          evicted += 1;
+        }
+      }
+      return evicted;
+    },
+    evictThread(threadId: string): number {
+      // Format: ${theme}:${threadId}:${lang}:${len}:${hash}. Match by
+      // the second segment — split limit avoids allocating the trailing
+      // segments when we only need the first two.
+      let evicted = 0;
+      for (const key of store.keys()) {
+        const firstColon = key.indexOf(':');
+        if (firstColon < 0) continue;
+        const secondColon = key.indexOf(':', firstColon + 1);
+        if (secondColon < 0) continue;
+        if (key.substring(firstColon + 1, secondColon) === threadId) {
           store.delete(key);
           evicted += 1;
         }

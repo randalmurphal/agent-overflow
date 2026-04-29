@@ -38,6 +38,7 @@
   interface Props {
     files: PatchFile[];
     focusFilePath: string | undefined;
+    threadId: string;
     viewMode: DiffViewMode;
     wordWrap: boolean;
     expandedFiles: string[];
@@ -51,6 +52,7 @@
   let {
     files,
     focusFilePath,
+    threadId,
     viewMode,
     wordWrap,
     expandedFiles,
@@ -185,7 +187,7 @@
         const text = stripPatchLinePrefix(line);
         if (text.length === 0 || text.length > TOKENIZE_MAX_LINE_LENGTH) continue;
         const sourceKey = patchLineSourceKey(line);
-        const cacheKey = tokenCacheKeyFromSig(targetTheme, lang, sourceKey);
+        const cacheKey = tokenCacheKeyFromSig(threadId, targetTheme, lang, sourceKey);
         if (cache.get(cacheKey) !== undefined) continue;
         if (inFlightKeys.has(cacheKey)) continue;
 
@@ -215,7 +217,7 @@
             const sk = sourceKeys[i];
             const lineTokens = tokens[i];
             if (sk !== undefined && lineTokens !== undefined) {
-              cache.set(tokenCacheKeyFromSig(targetTheme, lang, sk), lineTokens);
+              cache.set(tokenCacheKeyFromSig(threadId, targetTheme, lang, sk), lineTokens);
             }
           }
         } catch (err) {
@@ -262,6 +264,7 @@
     <DiffSidebarFile
       {file}
       expanded={expandedSet.has(file.path)}
+      {threadId}
       {viewMode}
       {wordWrap}
       {theme}

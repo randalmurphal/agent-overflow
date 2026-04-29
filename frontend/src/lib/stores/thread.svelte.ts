@@ -36,6 +36,27 @@ import { leaseDuringSettle } from '../utils/scrollLeaseDuringTransition';
  * are unusually large.
  */
 const LOAD_OLDER_TURN_BATCH = 50;
+
+/**
+ * Soft cap on total `displayData` bytes held across a pane's expansion
+ * registry. Tunable via `__setExpansionBudgetForTest` so tests can
+ * exercise the LRU path without allocating real-world-sized payloads.
+ * 16 MiB allows ~16 fully-expanded large tool outputs (or hundreds of
+ * smaller ones) — comfortably above any realistic working set, well
+ * below the point where the JS heap starts to feel it.
+ */
+const DEFAULT_EXPANSION_BUDGET_BYTES = 16 * 1024 * 1024;
+let expansionBudgetBytes = DEFAULT_EXPANSION_BUDGET_BYTES;
+function getExpansionBudgetBytes(): number {
+  return expansionBudgetBytes;
+}
+export function __setExpansionBudgetForTest(bytes: number): void {
+  expansionBudgetBytes = bytes;
+}
+export function __resetExpansionBudgetForTest(): void {
+  expansionBudgetBytes = DEFAULT_EXPANSION_BUDGET_BYTES;
+}
+
 import { addToast } from './toast.svelte';
 import { getSettings } from './settings.svelte';
 import { createDiffPanelState, type DiffPanelState } from './diffPanel.svelte';
@@ -50,6 +71,7 @@ import {
   type TurnDiffView,
 } from '../utils/turnDiffSummary';
 import { errString } from '../utils/errors';
+import { clearTokensForThread } from '../utils/tokenCacheReactive.svelte';
 
 /**
  * ActiveTurn is the live in-flight turn for the pane. Populated exclusively
@@ -553,6 +575,73 @@ export function createThreadPane() {
   // there's no global LRU need; a single pane's max thread is bounded
   // by the thread's item count, which has its own loose memory ceiling
   // via the thread-windowing floor).
+  //
+  // Within the lifetime of a single thread, however, the expansion
+  // registry IS unbounded: each toggled tool_call holds its loaded
+  // payload chunks until the user collapses it or switches threads.
+  // For long sessions where the user expands many heavy outputs, that
+  // can climb past sensible bounds. Cap total `displayData` bytes at
+  // EXPANSION_BUDGET_BYTES; when exceeded, collapse least-recently
+  // toggled handles (which drops their chunks). Map insertion order is
+  // the LRU — touch on toggle/expand/showFull by delete + re-set.
+
+  function computeExpansionBytes(): number {
+    let total = 0;
+    for (const handle of expansionStates.values()) {
+      const data = handle.displayData;
+      if (data) total += data.length;
+    }
+    return total;
+  }
+
+  function enforceExpansionBudget(skipKey: string): void {
+    if (computeExpansionBytes() <= getExpansionBudgetBytes()) return;
+    for (const [iterKey, handle] of expansionStates) {
+      if (iterKey === skipKey) continue;
+      if (!handle.expanded || !handle.displayData) continue;
+      handle.collapse();
+      if (computeExpansionBytes() <= getExpansionBudgetBytes()) break;
+    }
+  }
+
+  function touchExpansion(key: string): void {
+    const value = expansionStates.get(key);
+    if (value) {
+      expansionStates.delete(key);
+      expansionStates.set(key, value);
+    }
+  }
+
+  function withExpansionLRU(inner: PayloadExpansionHandle, key: string): PayloadExpansionHandle {
+    return {
+      get expanded() { return inner.expanded; },
+      get loading() { return inner.loading; },
+      get error() { return inner.error; },
+      get previewData() { return inner.previewData; },
+      get fullData() { return inner.fullData; },
+      get totalSize() { return inner.totalSize; },
+      get isComplete() { return inner.isComplete; },
+      get hasMore() { return inner.hasMore; },
+      get displayData() { return inner.displayData; },
+      toggle: async () => {
+        touchExpansion(key);
+        await inner.toggle();
+        enforceExpansionBudget(key);
+      },
+      expand: async () => {
+        touchExpansion(key);
+        await inner.expand();
+        enforceExpansionBudget(key);
+      },
+      collapse: () => { inner.collapse(); },
+      showFull: async () => {
+        touchExpansion(key);
+        await inner.showFull();
+        enforceExpansionBudget(key);
+      },
+      reset: () => { inner.reset(); },
+    };
+  }
 
   /**
    * Look up or lazily construct the PayloadExpansion handle for an
@@ -570,10 +659,11 @@ export function createThreadPane() {
       const idx = itemIndexById.get(id);
       return idx === undefined ? undefined : items[idx];
     };
-    cached = createPayloadExpansion(
+    const inner = createPayloadExpansion(
       () => getCurrentItem()?.payloadId,
       () => getCurrentItem()?.threadId,
     );
+    cached = withExpansionLRU(inner, key);
     expansionStates.set(key, cached);
     return cached;
   }
@@ -588,10 +678,11 @@ export function createThreadPane() {
     const key = 'p:' + payloadId;
     let cached = expansionStates.get(key);
     if (cached) return cached;
-    cached = createPayloadExpansion(
+    const inner = createPayloadExpansion(
       () => payloadId,
       () => threadId,
     );
+    cached = withExpansionLRU(inner, key);
     expansionStates.set(key, cached);
     return cached;
   }
@@ -1033,6 +1124,11 @@ export function createThreadPane() {
       const outgoingThreadId = thread?.id ?? null;
       if (outgoingThreadId) {
         diffSidebarSlot.snapshotForThread(outgoingThreadId);
+        // Free Shiki tokens cached against the outgoing thread. The
+        // shared cache is partitioned by threadId so this is a clean
+        // segmental drop; new lines tokenized for the incoming thread
+        // start from a fresh per-thread namespace.
+        clearTokensForThread(outgoingThreadId);
       } else {
         // No outgoing thread to snapshot under — just reset.
         diffSidebarSlot.close();

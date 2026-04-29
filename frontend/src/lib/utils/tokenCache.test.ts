@@ -4,7 +4,7 @@ import { createTokenCache, tokenCacheKey } from './tokenCache';
 describe('tokenCache', () => {
   it('round-trips tokens by key', () => {
     const cache = createTokenCache(10);
-    const key = tokenCacheKey('github-dark', 'typescript', 'const x = 1;');
+    const key = tokenCacheKey('thread-1', 'github-dark', 'typescript', 'const x = 1;');
     cache.set(key, [{ content: 'const', color: '#ff79c6' }]);
     expect(cache.get(key)).toEqual([{ content: 'const', color: '#ff79c6' }]);
   });
@@ -42,9 +42,9 @@ describe('tokenCache', () => {
 
   it('evictTheme drops only entries with matching theme prefix', () => {
     const cache = createTokenCache(100);
-    const dark = tokenCacheKey('github-dark', 'typescript', 'const x = 1;');
-    const dark2 = tokenCacheKey('github-dark', 'go', 'package main');
-    const light = tokenCacheKey('github-light', 'typescript', 'const x = 1;');
+    const dark = tokenCacheKey('thread-1', 'github-dark', 'typescript', 'const x = 1;');
+    const dark2 = tokenCacheKey('thread-1', 'github-dark', 'go', 'package main');
+    const light = tokenCacheKey('thread-1', 'github-light', 'typescript', 'const x = 1;');
     cache.set(dark, [{ content: 'const' }]);
     cache.set(dark2, [{ content: 'package' }]);
     cache.set(light, [{ content: 'const' }]);
@@ -56,10 +56,37 @@ describe('tokenCache', () => {
     expect(cache.get(light)).toBeDefined();
   });
 
+  it('evictThread drops only entries from the named thread', () => {
+    const cache = createTokenCache(100);
+    const a = tokenCacheKey('thread-a', 'github-dark', 'typescript', 'const x = 1;');
+    const a2 = tokenCacheKey('thread-a', 'github-dark', 'go', 'package main');
+    const b = tokenCacheKey('thread-b', 'github-dark', 'typescript', 'const x = 1;');
+    cache.set(a, [{ content: 'a-ts' }]);
+    cache.set(a2, [{ content: 'a-go' }]);
+    cache.set(b, [{ content: 'b-ts' }]);
+
+    const evicted = cache.evictThread('thread-a');
+    expect(evicted).toBe(2);
+    expect(cache.get(a)).toBeUndefined();
+    expect(cache.get(a2)).toBeUndefined();
+    expect(cache.get(b)).toBeDefined();
+  });
+
+  it('different threads keep the same line under independent cache entries', () => {
+    const cache = createTokenCache(10);
+    const a = tokenCacheKey('thread-a', 'github-dark', 'typescript', 'foo');
+    const b = tokenCacheKey('thread-b', 'github-dark', 'typescript', 'foo');
+    expect(a).not.toBe(b);
+    cache.set(a, [{ content: 'foo', color: '#fff' }]);
+    cache.set(b, [{ content: 'foo', color: '#000' }]);
+    expect(cache.get(a)?.[0]?.color).toBe('#fff');
+    expect(cache.get(b)?.[0]?.color).toBe('#000');
+  });
+
   it('different themes for the same line are independent cache entries', () => {
     const cache = createTokenCache(10);
-    const dark = tokenCacheKey('github-dark', 'typescript', 'foo');
-    const light = tokenCacheKey('github-light', 'typescript', 'foo');
+    const dark = tokenCacheKey('thread-1', 'github-dark', 'typescript', 'foo');
+    const light = tokenCacheKey('thread-1', 'github-light', 'typescript', 'foo');
     expect(dark).not.toBe(light);
     cache.set(dark, [{ content: 'foo', color: '#fff' }]);
     cache.set(light, [{ content: 'foo', color: '#000' }]);
@@ -77,9 +104,9 @@ describe('tokenCache', () => {
   });
 
   it('tokenCacheKey is deterministic and length-prefixed', () => {
-    const k1 = tokenCacheKey('github-dark', 'typescript', 'const');
-    const k2 = tokenCacheKey('github-dark', 'typescript', 'const');
+    const k1 = tokenCacheKey('thread-1', 'github-dark', 'typescript', 'const');
+    const k2 = tokenCacheKey('thread-1', 'github-dark', 'typescript', 'const');
     expect(k1).toBe(k2);
-    expect(k1.startsWith('github-dark:typescript:5:')).toBe(true);
+    expect(k1.startsWith('github-dark:thread-1:typescript:5:')).toBe(true);
   });
 });

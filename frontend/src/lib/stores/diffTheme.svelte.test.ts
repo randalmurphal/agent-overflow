@@ -106,10 +106,10 @@ describe('diffTheme', () => {
     // `$derived(getDiffTheme())`. Eviction lives in a sibling
     // `$effect` in DiffSidebarBody. This test pins the contract.
     const cache = getSharedTokenCache();
-    cache.set(tokenCacheKey('github-dark', 'typescript', 'const x = 1;'), [
+    cache.set(tokenCacheKey('thread-1', 'github-dark', 'typescript', 'const x = 1;'), [
       { content: 'const', color: '#ff79c6' },
     ]);
-    cache.set(tokenCacheKey('github-light', 'typescript', 'const x = 1;'), [
+    cache.set(tokenCacheKey('thread-1', 'github-light', 'typescript', 'const x = 1;'), [
       { content: 'const', color: '#000000' },
     ]);
     expect(cache.size).toBe(2);
@@ -120,7 +120,7 @@ describe('diffTheme', () => {
     expect(getDiffTheme()).toBe('github-light');
 
     // Both themes' entries survive — eviction isn't this function's job.
-    expect(cache.get(tokenCacheKey('github-dark', 'typescript', 'const x = 1;'))).toBeDefined();
-    expect(cache.get(tokenCacheKey('github-light', 'typescript', 'const x = 1;'))).toBeDefined();
+    expect(cache.get(tokenCacheKey('thread-1', 'github-dark', 'typescript', 'const x = 1;'))).toBeDefined();
+    expect(cache.get(tokenCacheKey('thread-1', 'github-light', 'typescript', 'const x = 1;'))).toBeDefined();
   });
 });

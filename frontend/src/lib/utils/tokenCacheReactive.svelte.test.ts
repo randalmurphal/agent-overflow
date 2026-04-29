@@ -1,5 +1,6 @@
 import { describe, expect, it, beforeEach } from 'vitest';
 import {
+  clearTokensForThread,
   getSharedTokenCache,
   getSharedReactiveTokenCache,
   getSharedTokenCacheGeneration,
@@ -7,8 +8,8 @@ import {
 } from './tokenCacheReactive.svelte';
 import { tokenCacheKey } from './tokenCache';
 
-const KEY = tokenCacheKey('github-dark', 'typescript', 'const x = 1;');
-const KEY2 = tokenCacheKey('github-light', 'typescript', 'const x = 1;');
+const KEY = tokenCacheKey('thread-1', 'github-dark', 'typescript', 'const x = 1;');
+const KEY2 = tokenCacheKey('thread-1', 'github-light', 'typescript', 'const x = 1;');
 
 describe('tokenCacheReactive', () => {
   beforeEach(() => {
@@ -79,5 +80,23 @@ describe('tokenCacheReactive', () => {
     expect(getSharedTokenCacheGeneration()).toBeGreaterThan(0);
     resetSharedTokenCacheForTest();
     expect(getSharedTokenCacheGeneration()).toBe(0);
+  });
+
+  it('clearTokensForThread evicts only entries from the named thread', () => {
+    const cache = getSharedReactiveTokenCache();
+    const aThreadKey = tokenCacheKey('thread-a', 'github-dark', 'typescript', 'const x = 1;');
+    const bThreadKey = tokenCacheKey('thread-b', 'github-dark', 'typescript', 'const x = 1;');
+    cache.set(aThreadKey, [{ content: 'a' }]);
+    cache.set(bThreadKey, [{ content: 'b' }]);
+
+    clearTokensForThread('thread-a');
+
+    const inner = getSharedTokenCache();
+    expect(inner.get(aThreadKey)).toBeUndefined();
+    expect(inner.get(bThreadKey)).toBeDefined();
+  });
+
+  it('clearTokensForThread is a no-op for an empty cache', () => {
+    expect(() => clearTokensForThread('thread-x')).not.toThrow();
   });
 });

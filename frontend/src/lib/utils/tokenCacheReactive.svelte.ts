@@ -56,12 +56,33 @@ export function getSharedReactiveTokenCache(): TokenCache {
       if (evicted > 0) bumpSharedGeneration();
       return evicted;
     },
+    evictThread(threadId) {
+      const evicted = inner.evictThread(threadId);
+      if (evicted > 0) bumpSharedGeneration();
+      return evicted;
+    },
     clear() {
       inner.clear();
       bumpSharedGeneration();
     },
   };
   return sharedReactiveCache;
+}
+
+/**
+ * Pane hook for thread switch: drops every cached token line that
+ * was tokenized while the named thread was the active diff target.
+ * Called from `pane.switchThread` so leaving thread A frees tokens
+ * before thread B's diff sidebar starts populating its own.
+ *
+ * No generation bump: nothing rendered against thread A's keys
+ * survives the switch (the sidebar moves to thread B's namespace),
+ * so the eviction has no visible reactive consumer.
+ */
+export function clearTokensForThread(threadId: string): void {
+  if (!threadId) return;
+  if (!sharedCache) return;
+  sharedCache.evictThread(threadId);
 }
 
 export function resetSharedTokenCacheForTest(): void {
