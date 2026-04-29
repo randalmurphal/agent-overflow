@@ -26,6 +26,7 @@ import type {
   AttachmentPreviewCache,
   ImagePreviewItem,
 } from '../utils/attachmentPreview.svelte';
+import { leaseDuringSettle } from '../utils/scrollLeaseDuringTransition';
 
 /**
  * Default batch size for "Load older" fetches. Matches the initial window
@@ -320,6 +321,20 @@ export function createThreadPane() {
    * around `activatePanel({ kind: 'newPanel', ... })`.
    */
   function activatePanel(target: ActivePanel): void {
+    // Right-edge sidebars (plan / diff / diff-payload) reflow the chat
+    // column when they open or close. Hold a brief lease so the
+    // auto-follow $effect doesn't yank the timeline mid-transition.
+    // PlanSidebar and DiffSidebar use `transition:fly` (200ms default);
+    // 250ms covers the worst case + a settle frame.
+    const willChange =
+      (target?.kind !== 'plan' && showPlanSidebar) ||
+      (target?.kind !== 'diff-checkpoint' && diffPanel.open) ||
+      (target?.kind !== 'diff-payload' && diffSidebarSlot.activePayload) ||
+      target?.kind === 'plan' ||
+      target?.kind === 'diff-checkpoint' ||
+      target?.kind === 'diff-payload';
+    if (willChange) leaseDuringSettle(scrollController, 250);
+
     if (target?.kind !== 'plan' && showPlanSidebar) {
       showPlanSidebar = false;
     }
@@ -1586,10 +1601,15 @@ export function createThreadPane() {
     },
 
     toggleTerminal(): void {
+      // Bottom drawer mount/unmount reflows the chat column. Hold a
+      // brief lease so the auto-follow $effect can't yank the viewport
+      // while the column's clientHeight is settling.
+      leaseDuringSettle(scrollController);
       showTerminal = !showTerminal;
     },
 
     setShowTerminal(value: boolean): void {
+      if (value !== showTerminal) leaseDuringSettle(scrollController);
       showTerminal = value;
     },
 

@@ -21,6 +21,14 @@
     class?: string;
     children: Snippet;
     onResize?: (size: number) => void;
+    /**
+     * Called on pointer-down at the resize handle. Should return a
+     * disposer that releases any acquired lease, or `null` for a no-op.
+     * The bottom (terminal) drawer threads the active pane's
+     * `pauseAutoScroll()` here so an in-flight chat stream doesn't
+     * yank the timeline as the drawer height changes.
+     */
+    acquireResizeLease?: () => (() => void) | null;
   }
 
   let {
@@ -32,11 +40,13 @@
     class: className = '',
     children,
     onResize,
+    acquireResizeLease,
   }: Props = $props();
 
   let dragging = $state(false);
   let startPointer = 0;
   let startSize = 0;
+  let releaseResizeLease: (() => void) | null = null;
 
   // Resolve the effective maximum size: explicit cap, or 85% of the
   // viewport on the relevant axis. Computed at drag-start so later
@@ -59,6 +69,7 @@
     startPointer = position === 'bottom' ? e.clientY : e.clientX;
     startSize = size;
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    releaseResizeLease = acquireResizeLease?.() ?? null;
   }
 
   function onPointerMove(e: PointerEvent): void {
@@ -75,6 +86,8 @@
     if (!dragging) return;
     dragging = false;
     (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
+    releaseResizeLease?.();
+    releaseResizeLease = null;
     onResize?.(size);
   }
 

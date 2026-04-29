@@ -129,6 +129,7 @@
     minSize={120}
     resizable={true}
     onResize={handleResize}
+    acquireResizeLease={() => pane.scrollController?.pauseAutoScroll() ?? null}
   >
     {#snippet children()}
       <TerminalTabStrip
