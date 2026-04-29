@@ -241,78 +241,52 @@ func TestParseResult_PopulatesAssistantMessageID(t *testing.T) {
 	}
 }
 
-func TestParseResultUsageIterationsFallbackEmitsContextWindow(t *testing.T) {
-	parser := NewParser()
-	line := []byte(`{"type":"result","subtype":"success","is_error":false,"usage":{"input_tokens":1000,"output_tokens":500,"cache_read_input_tokens":40,"cache_creation_input_tokens":10,"iterations":[{"input_tokens":700,"output_tokens":100},{"input_tokens":800,"output_tokens":200,"cache_read_input_tokens":30,"cache_creation_input_tokens":20}]}}`)
+func TestParseResultUsageNeverEmitsContextWindow(t *testing.T) {
+	tests := []struct {
+		name  string
+		prime []byte
+	}{
+		{
+			name: "no prior usage",
+		},
+		{
+			name:  "after assistant usage",
+			prime: []byte(`{"type":"assistant","message":{"id":"msg-1","role":"assistant","content":[],"usage":{"input_tokens":100,"output_tokens":50}}}`),
+		},
+		{
+			name:  "after message_delta usage",
+			prime: []byte(`{"type":"stream_event","event":"message_delta","data":{"type":"message_delta","usage":{"input_tokens":100,"output_tokens":50}}}`),
+		},
+	}
+	resultLine := []byte(`{"type":"result","subtype":"success","is_error":false,"usage":{"input_tokens":1000,"output_tokens":500,"cache_read_input_tokens":40,"cache_creation_input_tokens":10,"iterations":[{"input_tokens":700,"output_tokens":100},{"input_tokens":800,"output_tokens":200,"cache_read_input_tokens":30,"cache_creation_input_tokens":20}]}}`)
 
-	events, err := parser.ParseLine(testThread, line)
-	if err != nil {
-		t.Fatalf("result: %v", err)
-	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			parser := NewParser()
+			if len(tt.prime) > 0 {
+				if _, err := parser.ParseLine(testThread, tt.prime); err != nil {
+					t.Fatalf("prime: %v", err)
+				}
+			}
 
-	var usage provider.ProviderEvent
-	var complete provider.ProviderEvent
-	for _, evt := range events {
-		switch evt.Kind {
-		case provider.EventTokenUsage:
-			usage = evt
-		case provider.EventTurnComplete:
-			complete = evt
-		}
-	}
-	if usage.Kind != provider.EventTokenUsage {
-		t.Fatalf("expected EventTokenUsage fallback, got %+v", events)
-	}
-	if complete.Kind != provider.EventTurnComplete {
-		t.Fatalf("expected EventTurnComplete, got %+v", events)
-	}
+			events, err := parser.ParseLine(testThread, resultLine)
+			if err != nil {
+				t.Fatalf("result: %v", err)
+			}
 
-	var window provider.ContextWindow
-	if err := json.Unmarshal(usage.Meta, &window); err != nil {
-		t.Fatalf("unmarshal context window: %v", err)
-	}
-	if window.UsedTokens != 850 {
-		t.Fatalf("UsedTokens: got %d, want 850", window.UsedTokens)
-	}
-}
-
-func TestParseResultUsageDoesNotEmitContextWindowAfterTopLevelUsage(t *testing.T) {
-	parser := NewParser()
-	assistantLine := []byte(`{"type":"assistant","message":{"id":"msg-1","role":"assistant","content":[],"usage":{"input_tokens":100,"output_tokens":50}}}`)
-	if _, err := parser.ParseLine(testThread, assistantLine); err != nil {
-		t.Fatalf("assistant: %v", err)
-	}
-
-	resultLine := []byte(`{"type":"result","subtype":"success","is_error":false,"usage":{"input_tokens":1000,"output_tokens":500,"iterations":[{"input_tokens":900,"output_tokens":200}]}}`)
-	events, err := parser.ParseLine(testThread, resultLine)
-	if err != nil {
-		t.Fatalf("result: %v", err)
-	}
-
-	for _, evt := range events {
-		if evt.Kind == provider.EventTokenUsage {
-			t.Fatalf("result emitted duplicate context update after top-level usage: %+v", evt)
-		}
-	}
-}
-
-func TestParseResultUsageDoesNotEmitContextWindowAfterMessageDeltaUsage(t *testing.T) {
-	parser := NewParser()
-	streamLine := []byte(`{"type":"stream_event","event":"message_delta","data":{"type":"message_delta","usage":{"input_tokens":100,"output_tokens":50}}}`)
-	if _, err := parser.ParseLine(testThread, streamLine); err != nil {
-		t.Fatalf("message_delta: %v", err)
-	}
-
-	resultLine := []byte(`{"type":"result","subtype":"success","is_error":false,"usage":{"input_tokens":1000,"output_tokens":500,"iterations":[{"input_tokens":900,"output_tokens":200}]}}`)
-	events, err := parser.ParseLine(testThread, resultLine)
-	if err != nil {
-		t.Fatalf("result: %v", err)
-	}
-
-	for _, evt := range events {
-		if evt.Kind == provider.EventTokenUsage {
-			t.Fatalf("result emitted duplicate context update after message_delta usage: %+v", evt)
-		}
+			var complete provider.ProviderEvent
+			for _, evt := range events {
+				switch evt.Kind {
+				case provider.EventTokenUsage:
+					t.Fatalf("result.usage emitted context update: %+v", evt)
+				case provider.EventTurnComplete:
+					complete = evt
+				}
+			}
+			if complete.Kind != provider.EventTurnComplete {
+				t.Fatalf("expected EventTurnComplete, got %+v", events)
+			}
+		})
 	}
 }
 

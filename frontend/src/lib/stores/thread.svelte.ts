@@ -864,8 +864,8 @@ export function createThreadPane() {
   }
 
   function normalizeContextWindowForThread(data: ContextWindow, nextThread: Thread | null): ContextWindow {
-    const maxTokens = nextThread?.contextWindow || data.maxTokens || 0;
-    const percent = nextThread ? activeAutoCompactPercent(nextThread) : (data.autoCompactPercent ?? 0);
+    const maxTokens = data.maxTokens || nextThread?.contextWindow || 0;
+    const percent = nextThread ? activeAutoCompactPercent(nextThread, maxTokens) : (data.autoCompactPercent ?? 0);
     return {
       usedTokens: data.usedTokens,
       maxTokens,
@@ -877,11 +877,11 @@ export function createThreadPane() {
     };
   }
 
-  function activeAutoCompactPercent(nextThread: Thread): number {
+  function activeAutoCompactPercent(nextThread: Thread, effectiveContextWindow: number = nextThread.contextWindow ?? 0): number {
     // Per-thread override wins when set (chat-meter edit flow). Otherwise
     // fall back to the per-provider Settings value, then the absolute 90%
     // safety default if Settings hasn't been loaded yet.
-    const isExtended = (nextThread.contextWindow ?? 0) >= 1_000_000;
+    const isExtended = effectiveContextWindow >= 1_000_000;
     const override = isExtended
       ? nextThread.autoCompactExtendedPercent ?? 0
       : nextThread.autoCompactStandardPercent ?? 0;

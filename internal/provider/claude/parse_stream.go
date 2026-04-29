@@ -123,7 +123,7 @@ func (p *Parser) parseStreamEvent(threadID string, raw map[string]json.RawMessag
 		if json.Unmarshal(eventObj["usage"], &usage) != nil {
 			return nil, nil
 		}
-		return p.appendContextUsageEvent(nil, threadID, parentToolUseID, now, usage), nil
+		return appendContextUsageEvent(nil, threadID, parentToolUseID, now, usage), nil
 	default:
 		return nil, nil
 	}

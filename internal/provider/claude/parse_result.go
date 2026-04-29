@@ -2,8 +2,7 @@
 // envelope is Claude's authoritative turn-complete signal (see
 // docs/references/claude-wire.md §result). This file owns the mapping
 // from the envelope into `EventTurnComplete`; context-meter updates come
-// from top-level assistant/message_delta usage snapshots, with
-// result.usage.iterations[-1] only as a fallback when those were missed.
+// only from top-level assistant/message_delta usage snapshots.
 
 package claude
 
@@ -43,19 +42,6 @@ func (p *Parser) parseResult(threadID string, raw map[string]json.RawMessage, no
 	if usage.InputTokens > 0 || usage.OutputTokens > 0 {
 		if usage.TotalCostUSD == 0 && model != "" {
 			usage.TotalCostUSD = provider.CalculateCost(model, usage)
-		}
-	}
-
-	var events []provider.ProviderEvent
-	if !p.takeTopLevelContextUsageSeen() {
-		if window, ok := extractResultContextFallback(raw); ok {
-			meta, _ := json.Marshal(window)
-			events = append(events, provider.ProviderEvent{
-				Kind:      provider.EventTokenUsage,
-				ThreadID:  threadID,
-				Meta:      meta,
-				Timestamp: now,
-			})
 		}
 	}
 
@@ -99,33 +85,15 @@ func (p *Parser) parseResult(threadID string, raw map[string]json.RawMessage, no
 		}
 	}
 
-	events = append(events, provider.ProviderEvent{
+	events := []provider.ProviderEvent{{
 		Kind:      provider.EventTurnComplete,
 		ThreadID:  threadID,
 		Meta:      turnMeta,
 		Timestamp: now,
 		Raw:       line,
-	})
+	}}
 
 	return events, nil
-}
-
-func extractResultContextFallback(raw map[string]json.RawMessage) (provider.ContextWindow, bool) {
-	usageRaw, ok := raw["usage"]
-	if !ok {
-		return provider.ContextWindow{}, false
-	}
-	var payload struct {
-		Iterations []assistantUsage `json:"iterations"`
-	}
-	if json.Unmarshal(usageRaw, &payload) != nil || len(payload.Iterations) == 0 {
-		return provider.ContextWindow{}, false
-	}
-	window, ok := contextWindowFromClaudeUsage(payload.Iterations[len(payload.Iterations)-1])
-	if !ok {
-		return provider.ContextWindow{}, false
-	}
-	return window, true
 }
 
 // detectInterrupted tests whether a non-error `result` envelope is

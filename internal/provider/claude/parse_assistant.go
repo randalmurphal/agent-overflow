@@ -260,10 +260,10 @@ func (p *Parser) appendAssistantUsageEvent(
 	if usage == nil {
 		return events
 	}
-	return p.appendContextUsageEvent(events, threadID, parentToolUseID, now, *usage)
+	return appendContextUsageEvent(events, threadID, parentToolUseID, now, *usage)
 }
 
-func (p *Parser) appendContextUsageEvent(
+func appendContextUsageEvent(
 	events []provider.ProviderEvent,
 	threadID, parentToolUseID string,
 	now time.Time,
@@ -276,7 +276,6 @@ func (p *Parser) appendContextUsageEvent(
 	if !ok {
 		return events
 	}
-	p.markTopLevelContextUsageSeen()
 	usageMeta, _ := json.Marshal(window)
 	return append(events, provider.ProviderEvent{
 		Kind:      provider.EventTokenUsage,

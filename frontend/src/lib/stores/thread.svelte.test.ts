@@ -95,7 +95,7 @@ describe('createThreadPane', () => {
     expect(pane.thread?.lastReadAt).toBe(300);
   });
 
-  it('re-normalizes the context meter against the backend-returned thread', async () => {
+  it('preserves provider-emitted max tokens when rehydrating the context meter', async () => {
     const pane = createThreadPane();
     const selected = makeThread({
       id: 'thread-a',
@@ -119,14 +119,14 @@ describe('createThreadPane', () => {
 
     expect(pane.contextWindow).toEqual({
       usedTokens: 136000,
-      maxTokens: 272000,
-      usedPercentage: 50,
-      autoCompactPercent: 80,
-      autoCompactTokenLimit: 217600,
+      maxTokens: 1050000,
+      usedPercentage: 12.95238095238095,
+      autoCompactPercent: 88,
+      autoCompactTokenLimit: 924000,
     });
   });
 
-  it('normalizes live context snapshots to the active thread context window', async () => {
+  it('preserves provider-emitted max tokens for live context snapshots', async () => {
     const pane = createThreadPane();
     const selected = makeThread({
       id: 'thread-a',
@@ -149,10 +149,10 @@ describe('createThreadPane', () => {
 
     expect(pane.contextWindow).toEqual({
       usedTokens: 136000,
-      maxTokens: 272000,
-      usedPercentage: 50,
-      autoCompactPercent: 80,
-      autoCompactTokenLimit: 217600,
+      maxTokens: 1050000,
+      usedPercentage: 12.95238095238095,
+      autoCompactPercent: 88,
+      autoCompactTokenLimit: 924000,
     });
   });
 
