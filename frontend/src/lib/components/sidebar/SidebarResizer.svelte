@@ -15,19 +15,31 @@
     SIDEBAR_MIN_WIDTH,
     getSidebarMaxWidth,
   } from '../../stores/sidebarLayout.svelte';
+  import type { ThreadPane } from '../../stores/thread.svelte';
 
   interface Props {
     width: number;
     onResizeLive: (width: number) => void;
     onResizeEnd: () => void;
+    /**
+     * Active pane whose timeline scroll-controller should suspend
+     * auto-follow during the drag. Width changes here reflow every
+     * paragraph in the chat column, so without this lease a
+     * concurrent stream chunk could fire `scrollToIndex(last, 'end')`
+     * mid-drag and yank the user. Idempotent — when the pane has no
+     * registered controller (timeline not mounted yet, or pane is
+     * settings/empty), the lease is a no-op.
+     */
+    pane?: ThreadPane;
   }
 
-  let { width, onResizeLive, onResizeEnd }: Props = $props();
+  let { width, onResizeLive, onResizeEnd, pane }: Props = $props();
 
   let dragging = $state(false);
   let startPointer = 0;
   let startWidth = 0;
   let maxWidth = Number.POSITIVE_INFINITY;
+  let releasePause: (() => void) | null = null;
 
   function clamp(value: number): number {
     return Math.max(SIDEBAR_MIN_WIDTH, Math.min(maxWidth, value));
@@ -62,6 +74,10 @@
     // for the rest of the drag.
     document.body.style.cursor = 'col-resize';
     document.body.style.userSelect = 'none';
+    // Suspend auto-follow on the active pane's timeline so a streaming
+    // chunk arriving mid-drag does not call scrollToIndex and yank the
+    // user. Released in endDrag (and as a safety net in onDestroy).
+    releasePause = pane?.scrollController?.pauseAutoScroll() ?? null;
   }
 
   function onPointerMove(e: PointerEvent): void {
@@ -75,14 +91,19 @@
     dragging = false;
     (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
     restoreBodyStyles();
+    releasePause?.();
+    releasePause = null;
     onResizeEnd();
   }
 
   // If the resizer is torn down mid-drag (window close, sidebar swap,
   // HMR in dev) the body would otherwise stay stuck on col-resize +
-  // userSelect:none. Restore defensively.
+  // userSelect:none, AND the timeline's pause-lease would never release.
+  // Restore defensively.
   onDestroy(() => {
     if (dragging) restoreBodyStyles();
+    releasePause?.();
+    releasePause = null;
   });
 </script>
 

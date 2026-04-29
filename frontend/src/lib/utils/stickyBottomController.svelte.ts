@@ -17,13 +17,20 @@
 // resize) is virtua's job. This controller is the smallest layer above
 // it that decides "follow the bottom" vs "leave them alone".
 //
-// Replaces stickToBottom.svelte.ts. Drops the rAF coalescing, the 200ms
-// settle re-check, and the click-anchor compensation pass — none are
-// needed once virtua owns scroll geometry.
+// The intent state machine + gesture interpretation + pause-lease live
+// in scrollIntentCore.svelte.ts and are shared with stickToBottom (the
+// DOM-container variant used by Discussion-mode ChannelView). This file
+// is the virtua-specific glue: geometry adapter, pointer handlers, and
+// the onScroll/onScrollEnd hooks virtua's VList calls back into.
 
 import type { VListHandle } from 'virtua/svelte';
+import {
+  createScrollIntentCore,
+  type ScrollIntentCore,
+  type StickIntent,
+} from './scrollIntentCore.svelte';
 
-export type StickIntent = 'stick' | 'free';
+export type { StickIntent } from './scrollIntentCore.svelte';
 
 export interface StickyBottomOptions {
   /** Returns the wrapper around <VList> so we can attach gesture listeners. */
@@ -75,48 +82,28 @@ export interface StickyBottomController {
 }
 
 const DEFAULT_THRESHOLD = 8;
-const DEFAULT_GESTURE_WINDOW_MS = 250;
-
-const UP_KEYS: ReadonlySet<string> = new Set(['PageUp', 'ArrowUp', 'Home']);
-const DOWN_KEYS: ReadonlySet<string> = new Set(['PageDown', 'ArrowDown', 'End']);
-
-function nowMs(): number {
-  return typeof performance !== 'undefined' ? performance.now() : Date.now();
-}
 
 export function createStickyBottomController(
   options: StickyBottomOptions,
 ): StickyBottomController {
   const threshold = options.threshold ?? DEFAULT_THRESHOLD;
-  const gestureWindowMs = options.gestureWindowMs ?? DEFAULT_GESTURE_WINDOW_MS;
 
-  let intent = $state<StickIntent>('stick');
+  const core: ScrollIntentCore = createScrollIntentCore({
+    gestureWindowMs: options.gestureWindowMs,
+  });
 
-  // Non-reactive bookkeeping.
-  let pointerDown = false;
-  let pointerDownOffsetAtStart = -1;
-  let lastDownGestureAt = 0;
-  let touchStartY: number | null = null;
   // Last scroll size observed at a scroll event. Used to gate gesture
   // restick: a scroll event that coincided with content growth shouldn't
   // be interpreted as the user scrolling to the bottom — the bottom came
   // up to meet them.
   let lastObservedScrollSize = -1;
-
-  let pauseDepth = 0;
+  let pointerDownOffsetAtStart = -1;
 
   let attachedEl: HTMLElement | null = null;
-  let detachers: Array<() => void> = [];
+  let detachGestureListeners: (() => void) | null = null;
+  let detachPointerListeners: (() => void) | null = null;
 
-  // ===== Internal helpers =====
-
-  function setIntent(next: StickIntent): void {
-    if (intent !== next) intent = next;
-  }
-
-  function noteDownGesture(): void {
-    lastDownGestureAt = nowMs();
-  }
+  // ===== Geometry =====
 
   function isAtGeometricBottom(handle: VListHandle): boolean {
     const offset = handle.getScrollOffset();
@@ -130,10 +117,6 @@ export function createStickyBottomController(
     return handle ? isAtGeometricBottom(handle) : true;
   }
 
-  function canAutoScroll(): boolean {
-    return intent === 'stick' && !pointerDown && pauseDepth === 0;
-  }
-
   function scrollToLast(handle: VListHandle): void {
     const last = options.getLastIndex();
     if (last < 0) return;
@@ -141,31 +124,23 @@ export function createStickyBottomController(
     lastObservedScrollSize = handle.getScrollSize();
   }
 
+  // ===== Auto-follow / forceStick =====
+
   function notifyContentMaybeGrew(): void {
-    if (!canAutoScroll()) return;
+    if (!core.canAutoScroll()) return;
     const handle = options.getListHandle();
     if (!handle) return;
     scrollToLast(handle);
   }
 
   function forceStick(): void {
-    setIntent('stick');
+    core.setIntent('stick');
     // Defer when a pointer is held: yanking the user's scroll position
     // mid-drag would erase their drag work, and pointerup will resume
     // auto-scroll naturally.
-    if (pointerDown) return;
+    if (core.isPointerDown()) return;
     const handle = options.getListHandle();
     if (handle) scrollToLast(handle);
-  }
-
-  function pauseAutoScroll(): () => void {
-    pauseDepth += 1;
-    let released = false;
-    return () => {
-      if (released) return;
-      released = true;
-      pauseDepth = Math.max(0, pauseDepth - 1);
-    };
   }
 
   // ===== VList event hooks =====
@@ -173,7 +148,7 @@ export function createStickyBottomController(
   function onScroll(_offset: number): void {
     // Steady-state sticky: skip the geometry read. The grewThisFrame race
     // gate is only consulted for restick decisions in the free state.
-    if (intent !== 'free' || pointerDown || lastDownGestureAt === 0) {
+    if (core.intent !== 'free' || core.isPointerDown() || !core.inDownGestureWindow()) {
       // Still seed lastObservedScrollSize so the first relevant scroll
       // event has a valid baseline for the grewThisFrame gate below.
       const handle = options.getListHandle();
@@ -188,12 +163,11 @@ export function createStickyBottomController(
     const grewThisFrame = prevSize !== -1 && currentSize !== prevSize;
     lastObservedScrollSize = currentSize;
 
-    if (nowMs() - lastDownGestureAt >= gestureWindowMs) return;
     if (grewThisFrame) return;
     if (!isAtGeometricBottom(handle)) return;
 
-    setIntent('stick');
-    lastDownGestureAt = 0;
+    core.setIntent('stick');
+    core.clearDownGesture();
   }
 
   function onScrollEnd(): void {
@@ -202,55 +176,16 @@ export function createStickyBottomController(
     // callers don't have to wire it conditionally.
   }
 
-  // ===== Gesture handlers (DOM listeners on the wrapper) =====
-
-  function handleWheel(e: WheelEvent): void {
-    if (e.deltaY < 0) {
-      setIntent('free');
-    } else if (e.deltaY > 0) {
-      noteDownGesture();
-    }
-  }
-
-  function handleKeydown(e: KeyboardEvent): void {
-    if (UP_KEYS.has(e.key)) {
-      setIntent('free');
-    } else if (DOWN_KEYS.has(e.key)) {
-      noteDownGesture();
-    }
-  }
-
-  function handleTouchStart(e: TouchEvent): void {
-    touchStartY = e.touches[0]?.clientY ?? null;
-  }
-
-  function handleTouchMove(e: TouchEvent): void {
-    if (touchStartY === null) return;
-    const y = e.touches[0]?.clientY ?? touchStartY;
-    const dy = y - touchStartY;
-    touchStartY = y;
-    // Finger moves DOWN (dy > 0) → content moves DOWN visually → user
-    // wants to see content ABOVE → flip free. Finger moves UP → user
-    // is scrolling content up → mark down-gesture.
-    if (dy > 1) {
-      setIntent('free');
-    } else if (dy < -1) {
-      noteDownGesture();
-    }
-  }
-
-  function handleTouchEnd(): void {
-    touchStartY = null;
-  }
+  // ===== Pointer handlers (geometry-specific; gesture handlers live in core) =====
 
   function handlePointerDown(_e: PointerEvent): void {
-    pointerDown = true;
+    core.setPointerDown(true);
     const handle = options.getListHandle();
     pointerDownOffsetAtStart = handle?.getScrollOffset() ?? -1;
   }
 
   function handlePointerUp(_e: PointerEvent): void {
-    pointerDown = false;
+    core.setPointerDown(false);
     const handle = options.getListHandle();
     const startOffset = pointerDownOffsetAtStart;
     pointerDownOffsetAtStart = -1;
@@ -259,47 +194,36 @@ export function createStickyBottomController(
     const netScroll = handle.getScrollOffset() - startOffset;
     if (netScroll < -1) {
       // Drag scrolled UP — user clearly wants to be free.
-      setIntent('free');
+      core.setIntent('free');
     } else if (netScroll > 1) {
       // Drag scrolled DOWN — record as a down-gesture and re-evaluate
       // intent against the current geometry the same way a wheel/key
       // gesture would.
-      noteDownGesture();
+      core.noteDownGesture();
       onScroll(handle.getScrollOffset());
     }
     // If still sticky after the drag, resume any deferred auto-scroll.
-    if (canAutoScroll()) notifyContentMaybeGrew();
+    if (core.canAutoScroll()) notifyContentMaybeGrew();
+  }
+
+  function attachPointerListeners(el: HTMLElement): () => void {
+    el.addEventListener('pointerdown', handlePointerDown, { passive: true });
+    el.addEventListener('pointerup', handlePointerUp, { passive: true });
+    el.addEventListener('pointercancel', handlePointerUp, { passive: true });
+    return () => {
+      el.removeEventListener('pointerdown', handlePointerDown);
+      el.removeEventListener('pointerup', handlePointerUp);
+      el.removeEventListener('pointercancel', handlePointerUp);
+    };
   }
 
   // ===== Listener lifecycle =====
 
-  function attachListeners(el: HTMLElement): void {
-    el.addEventListener('wheel', handleWheel, { passive: true });
-    el.addEventListener('keydown', handleKeydown);
-    el.addEventListener('touchstart', handleTouchStart, { passive: true });
-    el.addEventListener('touchmove', handleTouchMove, { passive: true });
-    el.addEventListener('touchend', handleTouchEnd, { passive: true });
-    el.addEventListener('touchcancel', handleTouchEnd, { passive: true });
-    el.addEventListener('pointerdown', handlePointerDown, { passive: true });
-    el.addEventListener('pointerup', handlePointerUp, { passive: true });
-    el.addEventListener('pointercancel', handlePointerUp, { passive: true });
-
-    detachers = [
-      () => el.removeEventListener('wheel', handleWheel),
-      () => el.removeEventListener('keydown', handleKeydown),
-      () => el.removeEventListener('touchstart', handleTouchStart),
-      () => el.removeEventListener('touchmove', handleTouchMove),
-      () => el.removeEventListener('touchend', handleTouchEnd),
-      () => el.removeEventListener('touchcancel', handleTouchEnd),
-      () => el.removeEventListener('pointerdown', handlePointerDown),
-      () => el.removeEventListener('pointerup', handlePointerUp),
-      () => el.removeEventListener('pointercancel', handlePointerUp),
-    ];
-  }
-
   function detachListeners(): void {
-    for (const d of detachers) d();
-    detachers = [];
+    detachGestureListeners?.();
+    detachGestureListeners = null;
+    detachPointerListeners?.();
+    detachPointerListeners = null;
     attachedEl = null;
   }
 
@@ -311,7 +235,8 @@ export function createStickyBottomController(
     }
     if (attachedEl === el) return;
     if (attachedEl) detachListeners();
-    attachListeners(el);
+    detachGestureListeners = core.bindGestureListeners(el);
+    detachPointerListeners = attachPointerListeners(el);
     attachedEl = el;
     // Seed lastObservedScrollSize so the first onScroll event has a valid
     // baseline for the grewThisFrame race gate.
@@ -321,24 +246,22 @@ export function createStickyBottomController(
 
   function destroy(): void {
     detachListeners();
-    pointerDown = false;
+    core.resetTransientState();
     pointerDownOffsetAtStart = -1;
-    lastDownGestureAt = 0;
-    touchStartY = null;
     lastObservedScrollSize = -1;
   }
 
   return {
     get intent() {
-      return intent;
+      return core.intent;
     },
     get isSticky() {
-      return intent === 'stick';
+      return core.isSticky;
     },
     isAtBottom,
     forceStick,
     notifyContentMaybeGrew,
-    pauseAutoScroll,
+    pauseAutoScroll: core.pauseAutoScroll,
     onScroll,
     onScrollEnd,
     attach,

@@ -77,6 +77,18 @@ on top:
   virtua's internals. Programmatic scrolls go through
   `forceStick()` / `notifyContentMaybeGrew()` / `pauseAutoScroll()` or
   directly via `vlist.scrollToIndex(...)`. Never write `scrollTop`.
+- **`scrollIntentCore.svelte.ts`** — shared state machine (intent
+  transitions, gesture interpretation, pause-lease, down-gesture window)
+  used by both `stickyBottomController` (virtua) and `stickToBottom`
+  (DOM container, ChannelView). A change to "what counts as a down
+  gesture" or "how long the restick window is" lands in one file, not
+  both controllers.
+- **`pane.scrollController`** — registration slot. MessageTimeline
+  publishes its sticky controller on mount; external surfaces (sidebar
+  resizers, resizable drawers) acquire `pauseAutoScroll()` during their
+  drag to keep auto-follow from yanking the user mid-gesture. The lease
+  is depth-counted and idempotent. The pane only knows the minimal
+  `PaneScrollController` interface (`pauseAutoScroll(): () => void`).
 - **`threadScrollSnapshots.ts`** — per-thread LRU of
   `{kind:'bottom'} | {kind:'anchor', itemId, offsetTop}`. Snapshots are
   semantic (item id + offset), not virtua's internal cache shape, so

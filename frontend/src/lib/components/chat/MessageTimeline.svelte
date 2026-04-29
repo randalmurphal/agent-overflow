@@ -113,6 +113,17 @@
     getLastIndex: () => groupedNodes.length - 1,
   });
 
+  // Publish the controller on the pane so external surfaces (sidebar
+  // resizers, resizable drawers) can acquire a `pauseAutoScroll()` lease
+  // during gestures. The effect's return function detaches symmetrically
+  // when the pane reference changes (rare — ChatView re-keys on thread
+  // switch, which remounts the timeline) and on component teardown, so
+  // a stale pointer to a torn-down controller can't leak.
+  $effect(() => {
+    pane.attachScrollController(stick);
+    return () => pane.detachScrollController(stick);
+  });
+
   $effect(() => {
     void scrollEl;
     void listRef;
@@ -347,6 +358,8 @@
 
   onDestroy(() => {
     if (restoredThreadId) saveScrollSnapshotForThread(restoredThreadId, true);
+    // Controller detach is handled by the registration $effect's return
+    // function; we only need to dispose the controller's own listeners.
     stick.destroy();
   });
 </script>

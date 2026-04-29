@@ -91,6 +91,18 @@ export type LoadOlderResult = {
   status: 'loaded' | 'noop' | 'stale' | 'error';
 };
 
+/**
+ * Minimal surface a registered scroll controller exposes to the pane.
+ * Kept narrow on purpose: the pane brokers a `pauseAutoScroll()` lease
+ * for outside surfaces (resizers, drawers) and nothing else. The actual
+ * controller (stickyBottomController for virtua, stickToBottom for DOM)
+ * has more methods but they're consumed inside the timeline component
+ * directly, not via this seam.
+ */
+export interface PaneScrollController {
+  pauseAutoScroll(): () => void;
+}
+
 function loadOlderResult(
   status: LoadOlderResult['status'],
   insertedBeforeWindow = false,
@@ -375,6 +387,18 @@ export function createThreadPane() {
     itemId: '',
     nonce: 0,
   });
+
+  /**
+   * Live registration slot for the timeline's sticky-bottom controller.
+   * MessageTimeline registers its controller on mount so external surfaces
+   * (sidebar resizers, inspector panels, anything that opens a drawer over
+   * the chat column) can acquire a `pauseAutoScroll()` lease while a
+   * gesture is in flight, preventing auto-follow from yanking the view
+   * mid-drag. The factory only knows about the minimal surface
+   * (`PaneScrollController`) — it never depends on virtua or the DOM
+   * controller's full type, so the contract stays cheap to honour.
+   */
+  let scrollController: PaneScrollController | null = $state(null);
 
   /**
    * Rebuild the per-turn diff view for a single turnIndex from the current
@@ -1214,6 +1238,31 @@ export function createThreadPane() {
         itemId: itemID,
         nonce: scrollToItemRequest.nonce + 1,
       };
+    },
+
+    /**
+     * Registered scroll controller for this pane. Read by surfaces that
+     * need to suspend auto-follow during a gesture (sidebar resizers,
+     * resizable drawers). Call `pause = pane.scrollController?.pauseAutoScroll()`
+     * on pointerdown and `pause?.()` on pointerup/cancel — the lease is
+     * idempotent so a stray double-release is safe.
+     */
+    get scrollController(): PaneScrollController | null {
+      return scrollController;
+    },
+
+    /** MessageTimeline calls this on mount; clears on destroy. */
+    attachScrollController(controller: PaneScrollController): void {
+      scrollController = controller;
+    },
+
+    detachScrollController(controller: PaneScrollController): void {
+      // Only clear if the registered controller matches — protects
+      // against a stale teardown disposing a freshly remounted pane's
+      // controller during fast thread switches.
+      if (scrollController === controller) {
+        scrollController = null;
+      }
     },
 
     // --- Mutations (called by event router) ---

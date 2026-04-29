@@ -305,5 +305,6 @@
     onResizeEnd={persistDiffSidebarWidth}
     ariaLabel="Resize Diff Sidebar"
     testId="diff-sidebar-resizer"
+    {pane}
   />
 </aside>

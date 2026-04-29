@@ -328,6 +328,7 @@
     onResizeEnd={persistDiffPanelWidth}
     ariaLabel="Resize Diff Panel"
     testId="diff-panel-resizer"
+    {pane}
   />
 </aside>
 

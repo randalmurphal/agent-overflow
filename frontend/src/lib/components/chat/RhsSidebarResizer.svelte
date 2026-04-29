@@ -15,6 +15,7 @@
    * emits move/end callbacks.
    */
   import { onDestroy } from 'svelte';
+  import type { ThreadPane } from '../../stores/thread.svelte';
 
   interface Props {
     width: number;
@@ -26,6 +27,15 @@
     onResizeEnd: () => void;
     ariaLabel: string;
     testId?: string;
+    /**
+     * Active pane whose timeline scroll-controller should suspend
+     * auto-follow during the drag. RHS panel resize narrows/widens the
+     * chat column, reflowing every paragraph row. Without this lease a
+     * concurrent stream chunk could call `scrollToIndex(last, 'end')`
+     * mid-drag and yank the user. Idempotent — no-op when the pane has
+     * no registered controller.
+     */
+    pane?: ThreadPane;
   }
 
   let {
@@ -36,12 +46,14 @@
     onResizeEnd,
     ariaLabel,
     testId,
+    pane,
   }: Props = $props();
 
   let dragging = $state(false);
   let startPointer = 0;
   let startWidth = 0;
   let maxWidth = Number.POSITIVE_INFINITY;
+  let releasePause: (() => void) | null = null;
 
   function clamp(value: number): number {
     return Math.max(minWidth, Math.min(maxWidth, value));
@@ -62,6 +74,9 @@
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
     document.body.style.cursor = 'col-resize';
     document.body.style.userSelect = 'none';
+    // Suspend auto-follow on the active pane's timeline. Released in
+    // endDrag (and as a safety net in onDestroy).
+    releasePause = pane?.scrollController?.pauseAutoScroll() ?? null;
   }
 
   function onPointerMove(e: PointerEvent): void {
@@ -77,11 +92,15 @@
     dragging = false;
     (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
     restoreBodyStyles();
+    releasePause?.();
+    releasePause = null;
     onResizeEnd();
   }
 
   onDestroy(() => {
     if (dragging) restoreBodyStyles();
+    releasePause?.();
+    releasePause = null;
   });
 </script>
 

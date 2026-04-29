@@ -1,11 +1,28 @@
-// Intent-based scroll stickiness. Stickiness is mutated only by user
-// gestures or explicit forceStick() — pure content growth never sticks
-// and async layout never unsticks. Replaces the geometry-derived
-// userPinnedToBottom pattern, which raced async content (Shiki/KaTeX)
-// landing AFTER a programmatic scroll-to-bottom and silently lost the
-// pin every time.
+// Intent-based scroll stickiness for plain DOM scroll containers.
+// Used by Discussion-mode ChannelView which scrolls a regular div, not
+// a virtua VList. (The chat timeline uses stickyBottomController.svelte.ts
+// — a virtua-specific sibling — for the same purpose.)
+//
+// Stickiness is mutated only by user gestures or explicit forceStick() —
+// pure content growth never sticks and async layout never unsticks.
+// Replaces the geometry-derived userPinnedToBottom pattern, which raced
+// async content (Shiki/KaTeX) landing AFTER a programmatic scroll-to-
+// bottom and silently lost the pin every time.
+//
+// Intent state, gesture interpretation (wheel/key/touch), and the
+// pause-lease live in scrollIntentCore.svelte.ts and are shared with
+// stickyBottomController. This file is the DOM-container glue:
+// scrollHeight/scrollTop/clientHeight reads, the rAF + settle re-check
+// for async layout, the pointer handler that interprets net-scroll, and
+// the click-anchor compensation pass that keeps a clicked summary/
+// button pinned while expand/collapse changes layout.
 
-export type StickIntent = 'stick' | 'free';
+import {
+  createScrollIntentCore,
+  type ScrollIntentCore,
+} from './scrollIntentCore.svelte';
+
+export type { StickIntent } from './scrollIntentCore.svelte';
 
 export interface StickToBottomOptions {
   /** Returns the current scroll container element, or undefined if not yet mounted. */
@@ -43,24 +60,18 @@ export interface StickToBottomOptions {
 }
 
 export interface StickToBottomController {
-  /** Reactive intent state. Read in $derived / $effect / templates. */
-  readonly intent: StickIntent;
-  /** Reactive shorthand for `intent === 'stick'`. */
+  readonly intent: 'stick' | 'free';
   readonly isSticky: boolean;
-  /** True when the container's `scrollTop` is within `threshold` of geometric bottom. */
   isAtBottom(): boolean;
   forceStick(): void;
   notifyContentMaybeGrew(): void;
-  /** Depth-counted lease that suspends auto-scroll until released. */
   pauseAutoScroll(): () => void;
-  /** Idempotent and re-attachable: re-call from a `$effect` after the container is bound. */
   attach(): void;
   destroy(): void;
 }
 
 const DEFAULT_THRESHOLD = 8;
 const DEFAULT_SETTLE_TIMEOUT_MS = 200;
-const DEFAULT_GESTURE_WINDOW_MS = 250;
 const DEFAULT_CLICK_ANCHOR_TARGETS = "button, summary, [role='button']";
 const DEFAULT_CLICK_ANCHOR_MAX_DELTA = 2000;
 
@@ -69,52 +80,35 @@ export const SCROLL_ANCHOR_IGNORE_ATTR = 'data-scroll-anchor-ignore';
 /** CSS escape used inside the closest() lookup for the opt-out attribute. */
 const ANCHOR_IGNORE_SELECTOR = `[${SCROLL_ANCHOR_IGNORE_ATTR}]`;
 
-const UP_KEYS: ReadonlySet<string> = new Set(['PageUp', 'ArrowUp', 'Home']);
-const DOWN_KEYS: ReadonlySet<string> = new Set(['PageDown', 'ArrowDown', 'End']);
-
-function nowMs(): number {
-  return typeof performance !== 'undefined' ? performance.now() : Date.now();
-}
-
 export function createStickToBottomController(
   options: StickToBottomOptions,
 ): StickToBottomController {
   const threshold = options.threshold ?? DEFAULT_THRESHOLD;
   const settleTimeoutMs = options.settleTimeoutMs ?? DEFAULT_SETTLE_TIMEOUT_MS;
   const gestureRestick = options.gestureRestick ?? true;
-  const gestureWindowMs = options.gestureWindowMs ?? DEFAULT_GESTURE_WINDOW_MS;
   const clickAnchorTargets = options.clickAnchorTargets ?? DEFAULT_CLICK_ANCHOR_TARGETS;
   const clickAnchorMaxDelta = options.clickAnchorMaxDelta ?? DEFAULT_CLICK_ANCHOR_MAX_DELTA;
 
-  let intent = $state<StickIntent>('stick');
+  const core: ScrollIntentCore = createScrollIntentCore({
+    gestureWindowMs: options.gestureWindowMs,
+  });
 
-  // Non-reactive bookkeeping.
+  // Non-reactive DOM-side bookkeeping.
   // -1 sentinel means "not yet observed" — first scroll event seeds it
   // without falsely flagging "scrollHeight grew this frame".
   let lastObservedScrollHeight = -1;
-  let pointerDown = false;
   let pointerDownScrollTopAtStart = -1;
-  let lastDownGestureAt = 0;
-  let touchStartY: number | null = null;
 
-  let pauseDepth = 0;
   let pendingContentGrewRAF: number | null = null;
   let pendingSettleTimeout: ReturnType<typeof setTimeout> | null = null;
   let pendingClickAnchor: { element: HTMLElement; top: number } | null = null;
   let pendingClickAnchorRAF: number | null = null;
 
   let attachedContainer: HTMLElement | null = null;
-  let detachers: Array<() => void> = [];
+  let detachGestureListeners: (() => void) | null = null;
+  let detachContainerListeners: (() => void) | null = null;
 
-  // ===== Internal helpers =====
-
-  function setIntent(next: StickIntent): void {
-    if (intent !== next) intent = next;
-  }
-
-  function noteDownGesture(): void {
-    lastDownGestureAt = nowMs();
-  }
+  // ===== Geometry =====
 
   function isAtGeometricBottom(container: HTMLElement): boolean {
     return container.scrollHeight - container.scrollTop - container.clientHeight <= threshold;
@@ -124,6 +118,13 @@ export function createStickToBottomController(
     const container = options.getContainer();
     return container ? isAtGeometricBottom(container) : true;
   }
+
+  function performScrollToBottom(container: HTMLElement): void {
+    container.scrollTop = Math.max(0, container.scrollHeight - container.clientHeight);
+    lastObservedScrollHeight = container.scrollHeight;
+  }
+
+  // ===== Auto-follow / forceStick =====
 
   function clearPendingContentGrew(): void {
     if (pendingContentGrewRAF !== null) {
@@ -136,28 +137,11 @@ export function createStickToBottomController(
     }
   }
 
-  function clearPendingClickAnchor(): void {
-    if (pendingClickAnchorRAF !== null) {
-      cancelAnimationFrame(pendingClickAnchorRAF);
-      pendingClickAnchorRAF = null;
-    }
-    pendingClickAnchor = null;
-  }
-
-  function performScrollToBottom(container: HTMLElement): void {
-    container.scrollTop = Math.max(0, container.scrollHeight - container.clientHeight);
-    lastObservedScrollHeight = container.scrollHeight;
-  }
-
-  function canAutoScroll(): boolean {
-    return intent === 'stick' && !pointerDown && pauseDepth === 0;
-  }
-
   function scheduleSettleReCheck(): void {
     if (pendingSettleTimeout !== null) return;
     pendingSettleTimeout = setTimeout(() => {
       pendingSettleTimeout = null;
-      if (!canAutoScroll()) return;
+      if (!core.canAutoScroll()) return;
       const container = options.getContainer();
       if (!container) return;
       if (isAtGeometricBottom(container)) return;
@@ -166,12 +150,12 @@ export function createStickToBottomController(
   }
 
   function notifyContentMaybeGrew(): void {
-    if (!canAutoScroll()) return;
+    if (!core.canAutoScroll()) return;
     if (pendingContentGrewRAF !== null) return;
     pendingContentGrewRAF = requestAnimationFrame(() => {
       pendingContentGrewRAF = null;
       // Re-check: state may have changed between schedule and rAF firing.
-      if (!canAutoScroll()) return;
+      if (!core.canAutoScroll()) return;
       const container = options.getContainer();
       if (!container) return;
       performScrollToBottom(container);
@@ -180,18 +164,16 @@ export function createStickToBottomController(
   }
 
   function forceStick(): void {
-    setIntent('stick');
+    core.setIntent('stick');
     // forceStick is the explicit "user wants the bottom now" path. It
     // bypasses the pauseAutoScroll lease (the lease is for the
     // background loop only) but defers when a pointer is held: yanking
     // the user's scroll position mid-drag would erase their drag work,
     // and pointerup will resume auto-scroll naturally.
-    if (pointerDown) {
+    if (core.isPointerDown()) {
       scheduleSettleReCheck();
       return;
     }
-    // Cancel any in-flight rAF from a prior notifyContentMaybeGrew so
-    // we don't double-scroll on the same intent.
     if (pendingContentGrewRAF !== null) {
       cancelAnimationFrame(pendingContentGrewRAF);
       pendingContentGrewRAF = null;
@@ -203,25 +185,20 @@ export function createStickToBottomController(
     scheduleSettleReCheck();
   }
 
-  function pauseAutoScroll(): () => void {
-    pauseDepth += 1;
-    let released = false;
-    return () => {
-      if (released) return;
-      released = true;
-      pauseDepth = Math.max(0, pauseDepth - 1);
-    };
-  }
-
-  // ===== Event handlers =====
+  // ===== Container event handlers =====
 
   function handleScroll(): void {
     // Steady-state sticky: skip the scrollHeight read entirely. The
-    // grewThisFrame race gate is only consulted for restick decisions
-    // in the free state, so reading layout 60+ times/sec during a
-    // sticky stream just to update lastObservedScrollHeight is wasted
-    // work. We re-seed lastObservedScrollHeight inside the gate below.
-    if (intent !== 'free' || !gestureRestick || pointerDown || lastDownGestureAt === 0) {
+    // grewThisFrame race gate is only consulted for restick decisions in
+    // the free state; reading layout 60+ times/sec during a sticky
+    // stream just to update lastObservedScrollHeight is wasted work. We
+    // re-seed lastObservedScrollHeight inside the gate below.
+    if (
+      core.intent !== 'free'
+      || !gestureRestick
+      || core.isPointerDown()
+      || !core.inDownGestureWindow()
+    ) {
       return;
     }
     const container = options.getContainer();
@@ -232,61 +209,21 @@ export function createStickToBottomController(
     const grewThisFrame = prevScrollHeight !== -1 && currentScrollHeight !== prevScrollHeight;
     lastObservedScrollHeight = currentScrollHeight;
 
-    if (nowMs() - lastDownGestureAt >= gestureWindowMs) return;
     if (grewThisFrame) return;
     if (!isAtGeometricBottom(container)) return;
 
-    setIntent('stick');
-    lastDownGestureAt = 0;
-  }
-
-  function handleWheel(e: WheelEvent): void {
-    if (e.deltaY < 0) {
-      setIntent('free');
-    } else if (e.deltaY > 0) {
-      noteDownGesture();
-    }
-  }
-
-  function handleKeydown(e: KeyboardEvent): void {
-    if (UP_KEYS.has(e.key)) {
-      setIntent('free');
-    } else if (DOWN_KEYS.has(e.key)) {
-      noteDownGesture();
-    }
-  }
-
-  function handleTouchStart(e: TouchEvent): void {
-    touchStartY = e.touches[0]?.clientY ?? null;
-  }
-
-  function handleTouchMove(e: TouchEvent): void {
-    if (touchStartY === null) return;
-    const y = e.touches[0]?.clientY ?? touchStartY;
-    const dy = y - touchStartY;
-    touchStartY = y;
-    // Finger moves DOWN (dy > 0) → content moves DOWN visually → user
-    // wants to see content ABOVE → flip free. Finger moves UP → user
-    // is scrolling content up → mark down-gesture.
-    if (dy > 1) {
-      setIntent('free');
-    } else if (dy < -1) {
-      noteDownGesture();
-    }
-  }
-
-  function handleTouchEnd(): void {
-    touchStartY = null;
+    core.setIntent('stick');
+    core.clearDownGesture();
   }
 
   function handlePointerDown(_e: PointerEvent): void {
-    pointerDown = true;
+    core.setPointerDown(true);
     const container = options.getContainer();
     pointerDownScrollTopAtStart = container?.scrollTop ?? -1;
   }
 
   function handlePointerUp(_e: PointerEvent): void {
-    pointerDown = false;
+    core.setPointerDown(false);
     const container = options.getContainer();
     const startScrollTop = pointerDownScrollTopAtStart;
     pointerDownScrollTopAtStart = -1;
@@ -295,16 +232,26 @@ export function createStickToBottomController(
     const netScroll = container.scrollTop - startScrollTop;
     if (netScroll < -1) {
       // Drag scrolled UP — user clearly wants to be free.
-      setIntent('free');
+      core.setIntent('free');
     } else if (netScroll > 1) {
       // Drag scrolled DOWN — record as a down-gesture and re-evaluate
       // intent against the current geometry the same way a wheel/key
       // gesture would.
-      noteDownGesture();
+      core.noteDownGesture();
       handleScroll();
     }
-    // If we're still sticky, resume any deferred auto-scroll.
-    if (canAutoScroll()) notifyContentMaybeGrew();
+    // If still sticky after the drag, resume any deferred auto-scroll.
+    if (core.canAutoScroll()) notifyContentMaybeGrew();
+  }
+
+  // ===== Click-anchor preservation =====
+
+  function clearPendingClickAnchor(): void {
+    if (pendingClickAnchorRAF !== null) {
+      cancelAnimationFrame(pendingClickAnchorRAF);
+      pendingClickAnchorRAF = null;
+    }
+    pendingClickAnchor = null;
   }
 
   function handleClickCapture(e: Event): void {
@@ -323,9 +270,9 @@ export function createStickToBottomController(
     clearPendingClickAnchor();
     pendingClickAnchor = { element: trigger, top };
 
-    // Clicking an interactive control inside the timeline always means
+    // Clicking an interactive control inside the container always means
     // "I'm interacting here, don't auto-pull me away."
-    setIntent('free');
+    core.setIntent('free');
 
     pendingClickAnchorRAF = requestAnimationFrame(() => {
       pendingClickAnchorRAF = null;
@@ -349,37 +296,26 @@ export function createStickToBottomController(
 
   // ===== Listener lifecycle =====
 
-  function attachListeners(container: HTMLElement): void {
+  function attachContainerListeners(container: HTMLElement): () => void {
     container.addEventListener('scroll', handleScroll, { passive: true });
-    container.addEventListener('wheel', handleWheel, { passive: true });
-    container.addEventListener('keydown', handleKeydown);
-    container.addEventListener('touchstart', handleTouchStart, { passive: true });
-    container.addEventListener('touchmove', handleTouchMove, { passive: true });
-    container.addEventListener('touchend', handleTouchEnd, { passive: true });
-    container.addEventListener('touchcancel', handleTouchEnd, { passive: true });
     container.addEventListener('pointerdown', handlePointerDown, { passive: true });
     container.addEventListener('pointerup', handlePointerUp, { passive: true });
     container.addEventListener('pointercancel', handlePointerUp, { passive: true });
     container.addEventListener('click', handleClickCapture, { capture: true });
-
-    detachers = [
-      () => container.removeEventListener('scroll', handleScroll),
-      () => container.removeEventListener('wheel', handleWheel),
-      () => container.removeEventListener('keydown', handleKeydown),
-      () => container.removeEventListener('touchstart', handleTouchStart),
-      () => container.removeEventListener('touchmove', handleTouchMove),
-      () => container.removeEventListener('touchend', handleTouchEnd),
-      () => container.removeEventListener('touchcancel', handleTouchEnd),
-      () => container.removeEventListener('pointerdown', handlePointerDown),
-      () => container.removeEventListener('pointerup', handlePointerUp),
-      () => container.removeEventListener('pointercancel', handlePointerUp),
-      () => container.removeEventListener('click', handleClickCapture, true),
-    ];
+    return () => {
+      container.removeEventListener('scroll', handleScroll);
+      container.removeEventListener('pointerdown', handlePointerDown);
+      container.removeEventListener('pointerup', handlePointerUp);
+      container.removeEventListener('pointercancel', handlePointerUp);
+      container.removeEventListener('click', handleClickCapture, true);
+    };
   }
 
   function detachListeners(): void {
-    for (const d of detachers) d();
-    detachers = [];
+    detachGestureListeners?.();
+    detachGestureListeners = null;
+    detachContainerListeners?.();
+    detachContainerListeners = null;
     attachedContainer = null;
   }
 
@@ -391,7 +327,8 @@ export function createStickToBottomController(
     }
     if (attachedContainer === container) return;
     if (attachedContainer) detachListeners();
-    attachListeners(container);
+    detachGestureListeners = core.bindGestureListeners(container);
+    detachContainerListeners = attachContainerListeners(container);
     attachedContainer = container;
     // Seed the lastObservedScrollHeight so the first scroll event has a
     // valid baseline for the grewThisFrame race gate.
@@ -402,25 +339,22 @@ export function createStickToBottomController(
     detachListeners();
     clearPendingContentGrew();
     clearPendingClickAnchor();
-    // Reset transient gesture state so a future attach() starts clean.
-    pointerDown = false;
+    core.resetTransientState();
     pointerDownScrollTopAtStart = -1;
-    lastDownGestureAt = 0;
-    touchStartY = null;
     lastObservedScrollHeight = -1;
   }
 
   return {
     get intent() {
-      return intent;
+      return core.intent;
     },
     get isSticky() {
-      return intent === 'stick';
+      return core.isSticky;
     },
     isAtBottom,
     forceStick,
     notifyContentMaybeGrew,
-    pauseAutoScroll,
+    pauseAutoScroll: core.pauseAutoScroll,
     attach,
     destroy,
   };

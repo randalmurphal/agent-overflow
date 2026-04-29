@@ -295,6 +295,7 @@
       onResizeEnd={persistPlanSidebarWidth}
       ariaLabel="Resize Plan Sidebar"
       testId="plan-sidebar-resizer"
+      {pane}
     />
   </aside>
 {/if}

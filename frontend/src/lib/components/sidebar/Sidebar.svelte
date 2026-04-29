@@ -73,6 +73,7 @@
     width={getSidebarWidth()}
     onResizeLive={setSidebarWidthLive}
     onResizeEnd={persistSidebarWidth}
+    {pane}
   />
 </aside>
 
