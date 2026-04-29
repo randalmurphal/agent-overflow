@@ -38,11 +38,50 @@ Every row rendered inside `<VList>`'s children snippet:
   rendered window. Snippets re-receive `pane`, `item`, `depth` on
   remount; nothing inside should depend on `onMount` running exactly
   once per item lifetime.
+- Reads any "remembered" state (expansion toggles, loaded payload
+  chunks, attachment blob URLs) out of a per-pane registry on the
+  `ThreadPane`, NOT from local `let foo = $state(false)`. Local row
+  state is wiped when virtua remounts the row; the registries are
+  keyed on `item.id` / `payloadId` and survive remount. See:
+  - `pane.expansionStateFor(item)` — payload expansion handle
+    (preview/full toggle, loaded chunks). Used by
+    `GenericToolCallRow`, `CommandOutput`, `DiffPreview`,
+    `ToolResultCard`, `ThinkingBlock`, `LazyContentBlock`.
+  - `pane.attachmentCacheFor(itemId)` — image-attachment blob URL
+    cache. `UserMessage` threads this into `createAttachmentPreviews`
+    so a user-message row doesn't re-fetch `GetAttachmentData` on
+    every scroll-back.
+  - `pane.isSubagentGroupExpanded(parentId)` /
+    `toggleSubagentGroupExpanded(parentId)` — collapse state for
+    subagent cards.
+  Read pattern: `const handle = $derived(pane.expansionStateFor(item))`,
+  with any local fallback wrapped in `untrack(() => createPayloadExpansion(...))`
+  so the fallback doesn't bind to initial prop values.
 - Defers heavy work (Mermaid render, Shiki highlight, KaTeX typeset,
   attachment image load) to dynamic imports / IntersectionObserver
   triggered from the row itself. Module-level singletons in
   `markdownEnhance.ts` cache the underlying highlighter / mermaid
   instance so per-row remount is just DOM work.
+
+## Markdown enhancement caches
+
+`markdownEnhance.ts` carries module-level caches that make per-row
+remount cheap and bound the cost of repeated content:
+
+- **Shiki highlighter** — single instance constructed lazily on first
+  use, reused across every code block in every row. Languages and
+  themes are loaded once.
+- **Mermaid SVG cache** — `Map<sourceHash, Promise<string>>` keyed by
+  a fast hash of the diagram source. Bounded LRU (50 entries). The
+  cache holds **promises**, not strings, so a remount that races a
+  first render reuses the same in-flight render rather than starting
+  a parallel one. Module exposes `__resetMermaidSvgCacheForTest()`
+  for unit tests; production code never calls it.
+- **Diagram source cache** (`diagramSourceCache.ts`) — separate from
+  the SVG cache. A `WeakMap<HTMLElement, string>` that remembers the
+  Mermaid source the enhancer already rendered into a given element,
+  so re-enhancement of the same element with the same source is a
+  no-op.
 
 ## Test environment notes
 

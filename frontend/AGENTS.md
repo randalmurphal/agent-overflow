@@ -99,10 +99,21 @@ on top:
   ResizeObserver on the overlay, drives the timeline's bottom padding
   so composer growth (textarea autosize, attachment tray, approval
   panel) never alters the scroll surface's `clientHeight`.
-- **Reserved-slot banners** — `ProviderStatusBanner.svelte` uses
-  `min-h-9` wrappers + `transition:fade` so banner mount/unmount does
-  not animate adjacent height. Cost: ~72px of always-reserved chrome
-  for the two slots; banners appear in a stable location.
+- **Reserved-slot banners** — `ProviderStatusBanner.svelte` and
+  `TransportStatusBanner.svelte` both use `min-h-N` wrappers +
+  `transition:fade` so banner mount/unmount does not animate adjacent
+  height. Cost: ~100px of always-reserved chrome across the two
+  surfaces; banners appear in a stable location and never push the
+  scroll viewport.
+- **Row state survives virtua remount via pane-level registries.**
+  Expansion state for tool-call payloads, attachment-blob URLs, and
+  subagent-group expanded flag all live on the `ThreadPane` keyed by
+  `item.id` / `payloadId`. Row components read the handle out of the
+  pane on each mount (using `untrack` so reads don't bind the row to
+  its initial value). This means scrolling a row past the
+  `bufferSize=900` window and back preserves "show full output"
+  toggles, loaded payload chunks, and any image blobs. Registries are
+  cleared on `switchThread` to bound memory.
 
 `ChannelView.svelte` (Discussion mode) uses a different controller —
 `stickToBottom.svelte.ts` — because it scrolls a plain DOM container,
@@ -115,6 +126,43 @@ What NOT to add:
 - A second virtualizer over the same data.
 - `transition:slide` adjacent to the scroll area — animated height
   shifts visible content under the user's cursor.
+
+## Search
+
+- Full-thread message search uses the in-app `MessageSearch` palette
+  (Ctrl/Cmd+F, see `palette/MessageSearch.svelte`). The query goes
+  through the `SearchThreadMessages` Wails binding which reads SQLite
+  directly — coverage is independent of which rows are currently
+  mounted in virtua. This is the canonical search surface, not the
+  browser-native find which only sees mounted rows.
+- A search hit calls `pane.requestScrollToItem(itemId)`;
+  `MessageTimeline` reacts by paging older items in via
+  `pane.loadUntilItem(id)` and then `vlist.scrollToIndex(idx, { align:
+  'center', smooth: true })`. The two-step (load-then-scroll) is
+  necessary because virtua only knows about items present in
+  `pane.items`.
+
+## Accepted scroll-surface tradeoffs
+
+- **SubagentGroup inner overflow.** The expanded subagent body uses an
+  internal `max-h-[20rem] overflow-y-auto` instead of nesting a
+  virtualizer. Children are rendered eagerly when expanded, so a
+  subagent with 200 children pays full DOM cost on expand. In
+  practice subagents top out around 50 children (~100 KB DOM); the
+  dense overview UX wins over micro-optimizing a worst case we don't
+  see. Revisit only if a real thread shows DOM cost from a
+  200+-child subagent.
+- **Focus survival across virtua remount.** When the focused element
+  belongs to a row that scrolls past `bufferSize=900` and unmounts,
+  focus jumps to `<body>`. Tab through a long virtualized timeline
+  is therefore fragile. Industry chat surfaces (Slack, Discord, VS
+  Code chat) accept the same tradeoff. Revisit only if user
+  feedback surfaces real keyboard-navigation pain.
+- **`shiki` is still a dependency.** The Go-side SSR plan moved diff
+  highlighting off the client, but `markdownEnhance.ts` still
+  dynamically imports `shiki` for code blocks inside assistant
+  markdown (and a small set of payload expansions). Module-level
+  caches keep per-row remount cheap.
 
 ## Raw-content rendering
 
