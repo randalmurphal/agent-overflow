@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { slide } from 'svelte/transition';
+  import { fade } from 'svelte/transition';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import {
     GetProviderStatuses,
@@ -152,59 +152,74 @@
   }
 </script>
 
-{#if providerStatus && pane.thread}
-  <div
-    transition:slide={{ duration: 150 }}
-    role="alert"
-    aria-live="polite"
-    data-testid="provider-status-banner"
-    data-status={providerStatus.status}
-    class="border-b {providerBannerClasses} px-4 py-2 flex items-center gap-2 shrink-0"
-  >
-    <p class="text-xs flex-1 line-clamp-2" title={providerBannerMessage}>
-      {providerBannerMessage}
-    </p>
-    {#if providerStatus.status === 'not_found'}
-      <button
-        onclick={handleRecheckBinary}
-        disabled={rechecking}
-        data-testid="provider-status-recheck"
-        class="text-xs px-2 py-0.5 rounded border border-current/30 hover:bg-white/5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
-      >
-        {rechecking ? 'Checking…' : 'Recheck'}
-      </button>
-    {/if}
-    {#if providerStatus.actionable && primaryActionLabel}
-      <button
-        onclick={handlePrimaryAction}
-        disabled={rechecking}
-        data-testid="provider-status-action"
-        class="text-xs px-2 py-0.5 rounded border border-current/30 hover:bg-white/5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
-      >
-        {rechecking ? 'Checking…' : primaryActionLabel}
-      </button>
-    {/if}
-  </div>
-{/if}
+<!--
+  Reserved-slot pattern: each banner sits in a fixed-height wrapper so the
+  banner showing/hiding never animates the height of the chat column. The
+  scroll surface adjacent to the slots stays geometrically stable.
 
-{#if sessionBannerVisible && pane.thread}
-  <div transition:slide={{ duration: 150 }} role="alert" aria-live="assertive" class="border-b {sessionBannerClasses} px-4 py-2 flex items-center gap-2 shrink-0">
-    <p class="text-xs flex-1 line-clamp-2" title={sessionMessage}>{sessionMessage}</p>
-    {#if !reconnecting}
-      <button
-        onclick={handleReconnect}
-        disabled={reconnecting}
-        class="text-xs px-2 py-0.5 rounded border border-current/30 hover:bg-white/5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
-      >
-        {reconnecting ? 'Reconnecting...' : 'Reconnect'}
-      </button>
-    {/if}
-    <button
-      onclick={() => pane.clearGeneralError()}
-      class="text-xs hover:opacity-70 cursor-pointer shrink-0 px-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 rounded"
-      aria-label="Dismiss Banner"
+  Cost: ~36px reserved per slot whether or not a banner is shown. This is
+  the right trade-off — banners signal system state (auth expired, provider
+  missing, reconnecting) that the user benefits from seeing in a stable
+  location, and the alternative (height-animated mount) shifts every visible
+  message under the user's cursor.
+-->
+<div class="relative shrink-0 min-h-9">
+  {#if providerStatus && pane.thread}
+    <div
+      transition:fade={{ duration: 150 }}
+      role="alert"
+      aria-live="polite"
+      data-testid="provider-status-banner"
+      data-status={providerStatus.status}
+      class="border-b {providerBannerClasses} px-4 py-2 flex items-center gap-2"
     >
-      Dismiss
-    </button>
-  </div>
-{/if}
+      <p class="text-xs flex-1 line-clamp-2" title={providerBannerMessage}>
+        {providerBannerMessage}
+      </p>
+      {#if providerStatus.status === 'not_found'}
+        <button
+          onclick={handleRecheckBinary}
+          disabled={rechecking}
+          data-testid="provider-status-recheck"
+          class="text-xs px-2 py-0.5 rounded border border-current/30 hover:bg-white/5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+        >
+          {rechecking ? 'Checking…' : 'Recheck'}
+        </button>
+      {/if}
+      {#if providerStatus.actionable && primaryActionLabel}
+        <button
+          onclick={handlePrimaryAction}
+          disabled={rechecking}
+          data-testid="provider-status-action"
+          class="text-xs px-2 py-0.5 rounded border border-current/30 hover:bg-white/5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+        >
+          {rechecking ? 'Checking…' : primaryActionLabel}
+        </button>
+      {/if}
+    </div>
+  {/if}
+</div>
+
+<div class="relative shrink-0 min-h-9">
+  {#if sessionBannerVisible && pane.thread}
+    <div transition:fade={{ duration: 150 }} role="alert" aria-live="assertive" class="border-b {sessionBannerClasses} px-4 py-2 flex items-center gap-2">
+      <p class="text-xs flex-1 line-clamp-2" title={sessionMessage}>{sessionMessage}</p>
+      {#if !reconnecting}
+        <button
+          onclick={handleReconnect}
+          disabled={reconnecting}
+          class="text-xs px-2 py-0.5 rounded border border-current/30 hover:bg-white/5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+        >
+          {reconnecting ? 'Reconnecting...' : 'Reconnect'}
+        </button>
+      {/if}
+      <button
+        onclick={() => pane.clearGeneralError()}
+        class="text-xs hover:opacity-70 cursor-pointer shrink-0 px-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 rounded"
+        aria-label="Dismiss Banner"
+      >
+        Dismiss
+      </button>
+    </div>
+  {/if}
+</div>

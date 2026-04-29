@@ -1,6 +1,6 @@
 <script lang="ts" module>
   import type { TimelineNode as _TNode } from '../../utils/subagentGrouping';
-  import { timelineNodeKey } from '../../utils/timelineVirtualization';
+  import { timelineNodeKey } from '../../utils/subagentGrouping';
 
   /**
    * Deterministic key for the `{#each}` binding. Item ids are only unique

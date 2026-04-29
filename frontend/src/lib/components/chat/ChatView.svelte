@@ -39,7 +39,36 @@
 
   const draft = createComposerDraftStore();
   let chatRoot: HTMLDivElement | undefined = $state(undefined);
+  let chatColumn: HTMLDivElement | undefined = $state(undefined);
+  let composerOverlay: HTMLDivElement | undefined = $state(undefined);
+  // Initial value matches the typical resting composer height (textarea,
+  // toolbar, BelowComposerBar) so the first render does not place the last
+  // timeline row beneath an unmeasured composer. The ResizeObserver below
+  // refines this within one frame.
+  let composerHeight = $state(120);
   let expandedImagePreview: ExpandedImagePreview | null = $state(null);
+
+  // Compose-overlay ResizeObserver: publishes the composer's actual height
+  // to the chat column as a CSS variable. MessageTimeline reads it as the
+  // bottom padding of the rendered content so the last row always clears
+  // the composer overlay regardless of textarea autosize, attachment tray,
+  // approval panel, etc. Decoupled this way, composer growth never alters
+  // the scroll surface's geometry — it only changes how much trailing
+  // whitespace sits below the last message.
+  $effect(() => {
+    if (!composerOverlay) return;
+    const observed = composerOverlay;
+    const obs = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (!entry) return;
+      const next = Math.round(entry.contentRect.height);
+      if (next > 0 && next !== composerHeight) {
+        composerHeight = next;
+      }
+    });
+    obs.observe(observed);
+    return () => obs.disconnect();
+  });
   let lastHydratedThreadId: string | null = null;
   let lastReadMarker: string | null = null;
   let lastReadPersistStartedAt = 0;
@@ -233,12 +262,24 @@
   <DiscussionView {pane} />
 {:else if pane.thread}
   <div bind:this={chatRoot} data-ui-surface="chat" data-thread-id={pane.thread.id} class="flex h-full min-h-0">
-    <div class="flex flex-col min-h-0 {inDesignMode ? 'flex-1 min-w-0 border-r border-border' : 'flex-1 min-w-0'}">
+    <div
+      bind:this={chatColumn}
+      class="relative flex flex-col min-h-0 {inDesignMode ? 'flex-1 min-w-0 border-r border-border' : 'flex-1 min-w-0'}"
+      style="--composer-height: {composerHeight}px;"
+    >
       <ChatHeader {pane} />
 
       <ProviderStatusBanner {pane} />
 
-      <div class="relative flex-1 min-h-0 flex flex-col">
+      <!--
+        Single growing region: the timeline takes the entire remaining
+        vertical space, and the composer + below-bar float over its bottom.
+        Composer growth (textarea autosize, attachment tray, approval
+        panels) no longer steals timeline clientHeight — it only updates
+        --composer-height, which the timeline reads as bottom padding so
+        the last row clears the overlay.
+      -->
+      <div class="relative flex-1 min-h-0">
         <MessageTimeline {pane} onImageExpand={openImagePreview} />
         {#if hasPendingPrompt}
           <div
@@ -248,9 +289,19 @@
             data-testid="pending-prompt-scrim"
           ></div>
         {/if}
+        <div
+          bind:this={composerOverlay}
+          class="absolute inset-x-0 bottom-0 z-20 pointer-events-none"
+          data-testid="composer-overlay"
+        >
+          <div class="pointer-events-auto">
+            <Composer {pane} {draft} onImageExpand={openImagePreview} />
+          </div>
+          <div class="pointer-events-auto">
+            <BelowComposerBar {pane} />
+          </div>
+        </div>
       </div>
-      <Composer {pane} {draft} onImageExpand={openImagePreview} />
-      <BelowComposerBar {pane} />
       {#if pane.showTerminal && pane.thread}
         {#key pane.thread.id}
           <LazyThreadTerminalDrawer {pane} onSendToComposer={addTerminalChipToDraft} />

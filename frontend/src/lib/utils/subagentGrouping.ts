@@ -165,6 +165,18 @@ function countDescendants(children: TimelineNode[]): number {
 }
 
 /**
+ * Stable key for a timeline node, used by virtualization (VList getKey)
+ * and by anything else that needs to identify a node across renders. The
+ * key is unique within a thread; including the threadId guards against
+ * stale-thread collisions when a snapshot is restored after a switch.
+ */
+export function timelineNodeKey(node: TimelineNode): string {
+  return node.kind === 'group'
+    ? `g:${node.parent.threadId}:${node.parent.id}`
+    : `l:${node.item.threadId}:${node.item.id}`;
+}
+
+/**
  * Group items by subagent parentage. Pure function — does not mutate the
  * input and returns a fresh tree each call.
  */

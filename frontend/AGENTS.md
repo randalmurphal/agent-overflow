@@ -65,6 +65,45 @@ Svelte 5 + Vite 8 (Rolldown) + Tailwind 4 + TypeScript.
 - `app.Event.On('error', ...)` — toast + status bar.
 - Custom event names per feature are defined in `stores/events.ts`.
 
+## Chat scroll architecture
+
+The MessageTimeline scroll surface is built on **`virtua/svelte`**'s
+`<VList>`. Virtua owns geometry and per-row anchor preservation
+(ResizeObserver + binary-searched jump-correction). The frontend layers
+on top:
+
+- **`stickyBottomController.svelte.ts`** — single owner of intent
+  (`'stick' | 'free'`) and the only writer to scroll position outside
+  virtua's internals. Programmatic scrolls go through
+  `forceStick()` / `notifyContentMaybeGrew()` / `pauseAutoScroll()` or
+  directly via `vlist.scrollToIndex(...)`. Never write `scrollTop`.
+- **`threadScrollSnapshots.ts`** — per-thread LRU of
+  `{kind:'bottom'} | {kind:'anchor', itemId, offsetTop}`. Snapshots are
+  semantic (item id + offset), not virtua's internal cache shape, so
+  they survive virtua version bumps.
+- **Layout decoupling** — `ChatView.svelte` positions the composer +
+  below-bar as an absolute overlay inside the timeline's relative
+  container. A `--composer-height` CSS variable, written by a
+  ResizeObserver on the overlay, drives the timeline's bottom padding
+  so composer growth (textarea autosize, attachment tray, approval
+  panel) never alters the scroll surface's `clientHeight`.
+- **Reserved-slot banners** — `ProviderStatusBanner.svelte` uses
+  `min-h-9` wrappers + `transition:fade` so banner mount/unmount does
+  not animate adjacent height. Cost: ~72px of always-reserved chrome
+  for the two slots; banners appear in a stable location.
+
+`ChannelView.svelte` (Discussion mode) uses a different controller —
+`stickToBottom.svelte.ts` — because it scrolls a plain DOM container,
+not a virtua list. The two controllers serve different surfaces.
+
+What NOT to add:
+- Manual `scrollTop` writes outside the controller.
+- A row-height signature cache. virtua re-measures via ResizeObserver.
+- A scroll-anchor compensation pass on top of virtua's jump algorithm.
+- A second virtualizer over the same data.
+- `transition:slide` adjacent to the scroll area — animated height
+  shifts visible content under the user's cursor.
+
 ## Raw-content rendering
 
 Raw content is canonical. Go sends raw item summaries, channel message

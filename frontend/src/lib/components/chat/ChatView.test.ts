@@ -268,45 +268,6 @@ describe('<ChatView>', () => {
     expect(getThreadStatus('thread-1')).toBe('idle');
   });
 
-  it('keeps the timeline pinned when multiline composer input shrinks the viewport', async () => {
-    const resize = installControllableResizeObserver();
-    try {
-      const pane = await buildPane(seedThread(), [
-        makeItem({ id: 'tail', turnIndex: 10, summary: 'tail' }),
-      ]);
-
-      const { getByTestId, getByLabelText } = render(ChatView, { props: { pane } });
-      const scroll = getByTestId('message-timeline-scroll') as HTMLElement;
-      let clientHeightValue = 600;
-      Object.defineProperty(scroll, 'scrollHeight', {
-        configurable: true,
-        get: () => 1000,
-      });
-      Object.defineProperty(scroll, 'clientHeight', {
-        configurable: true,
-        get: () => clientHeightValue,
-      });
-      scroll.scrollTop = 400;
-      await fireEvent.scroll(scroll);
-
-      const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
-      Object.defineProperty(textarea, 'scrollHeight', {
-        configurable: true,
-        get: () => 120,
-      });
-      await fireEvent.input(textarea, { target: { value: 'one\ntwo\nthree\nfour' } });
-
-      clientHeightValue = 520;
-      resize.trigger();
-      await tick();
-      await new Promise((resolve) => requestAnimationFrame(resolve));
-
-      expect(scroll.scrollTop).toBe(480);
-    } finally {
-      resize.restore();
-    }
-  });
-
   it('clicking a background tray row does NOT scroll the timeline (rows are informational)', async () => {
     // Phase 5 of the background-tasks plan removed click-to-scroll on
     // tray rows: they are now purely informational, with per-row Stop

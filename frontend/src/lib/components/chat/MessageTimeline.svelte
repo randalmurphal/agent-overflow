@@ -6,43 +6,28 @@
 </script>
 
 <script lang="ts">
-  import { onDestroy, tick, untrack } from 'svelte';
+  import { onDestroy, tick } from 'svelte';
+  import { VList, type VListHandle } from 'virtua/svelte';
   import type { SettledTurn, ThreadPane } from '../../stores/thread.svelte';
-  import type { Item } from '../../types/models';
   import { addToast } from '../../stores/toast.svelte';
   import { getSettings } from '../../stores/settings.svelte';
-  import { createStickToBottomController } from '../../utils/stickToBottom.svelte';
-  import {
-    firstVisibleItemAnchor,
-    restoreAnchorSnapshot,
-    restoreLoadedAnchorSnapshot,
-    type AnchorSnapshot,
-  } from '../../utils/scrollAnchorRestore';
+  import { createStickyBottomController } from '../../utils/stickyBottomController.svelte';
   import {
     getThreadScrollSnapshot,
     setThreadScrollSnapshot,
   } from '../../utils/threadScrollSnapshots';
-  import { groupItemsBySubagent, type TimelineNode } from '../../utils/subagentGrouping';
   import {
-    buildVirtualLayout,
-    computeVirtualWindow,
+    groupItemsBySubagent,
     timelineNodeKey,
-  } from '../../utils/timelineVirtualization';
-  import {
-    DEFAULT_TIMELINE_ROW_HEIGHT,
-    estimateTimelineNodeHeight,
-    isLastRootInTurn as nodeIsLastRootInTurn,
-    rootTurnIndex,
-    timelineNodeHeightSignature,
-  } from '../../utils/timelineRowHeights';
+    type TimelineNode,
+  } from '../../utils/subagentGrouping';
   import Button from '../primitives/Button.svelte';
-  import { turnSummaryIsMeaningful, type TurnDiffView } from '../../utils/turnDiffSummary';
+  import { turnSummaryIsMeaningful } from '../../utils/turnDiffSummary';
   import ChangedFilesTree from './ChangedFilesTree.svelte';
   import ChatWorkingIndicator from './ChatWorkingIndicator.svelte';
   import CompletionDivider from './CompletionDivider.svelte';
   import ScrollToBottomButton from './ScrollToBottomButton.svelte';
   import SubagentGroup from './SubagentGroup.svelte';
-  import { createTimelineMeasurementActions } from './timelineMeasurementActions';
   import TimelineLeaf from './TimelineLeaf.svelte';
   import TurnDiffBadge from './TurnDiffBadge.svelte';
   import type { ExpandedImagePreview } from '../../utils/attachmentPreview.svelte';
@@ -52,6 +37,24 @@
     scheduleDomUiTrace,
     summarizeItemsForTrace,
   } from '../../utils/uiRenderTrace';
+
+  // Initial item-size estimate for virtua. Real sizes come from the
+  // per-item ResizeObserver virtua wraps each row in; this constant only
+  // matters for the first render before measurements stabilise.
+  const ESTIMATED_ROW_SIZE = 90;
+  // Extra buffer rendered above + below the viewport. Larger than virtua's
+  // default 200px so the row at the user's anchor position is reliably in
+  // the DOM during scroll, which keeps gesture-driven anchoring smooth.
+  const BUFFER_SIZE_PX = 900;
+  // Visual breathing room between the last message and the composer
+  // overlay; combined with the --composer-height variable from ChatView.
+  const BOTTOM_PAD_PX = 24;
+  // happy-dom returns 0 for clientHeight/clientWidth, which makes virtua
+  // mount zero rows. In test runs we ask virtua to mount everything via
+  // ssrCount so test assertions can find the rendered DOM. Production
+  // (vite dev/build) always sees the default `undefined`, leaving virtua
+  // free to virtualize.
+  const IS_TEST = (import.meta as { env?: { MODE?: string } }).env?.MODE === 'test';
 
   let {
     pane,
@@ -63,18 +66,14 @@
 
   /**
    * Decide whether the completion divider renders immediately before this
-   * node in the timeline flow. Pure, exported for unit-testing via the
-   * MessageTimeline test — checks:
+   * node in the timeline flow. Pure, exported for unit-testing — checks:
    *   - there's a settled turn to render for
    *   - that turn reported a terminal assistant message id
    *   - the current node is the leaf whose id matches that message
    * Subagent-group nodes and non-matching leaves render nothing.
    *
    * Spec: docs/architecture/turn-lifecycle.md §UI components driven by
-   * this state. See also t3-code's deriveCompletionDividerBeforeEntryId
-   * (apps/web/src/session-logic.ts) — we skip the time-range fallback
-   * since agent-overflow persists assistantMessageId directly on the
-   * turns row.
+   * this state.
    */
   export function shouldRenderDividerBefore(
     node: TimelineNode,
@@ -86,94 +85,42 @@
     return node.item.id === turn.assistantMessageId;
   }
 
-  let scrollContainer: HTMLDivElement | undefined = $state(undefined);
-  let viewportScrollTop = $state(0);
-  let viewportHeight = $state(0);
-  let rowHeightRevision = $state(0);
-  const rowHeights = new Map<string, number>();
-  const rowHeightSignatures = new Map<string, string>();
-  const OVERSCAN_PX = 900;
+  // The wrapper div around <VList> that catches gesture events for the
+  // sticky controller. virtua owns the inner scroll element; we attach
+  // listeners on the outer wrapper and let events bubble.
+  let scrollEl: HTMLDivElement | undefined = $state(undefined);
+  // Imperative handle into virtua. Set once VList mounts.
+  let listRef: VListHandle | undefined = $state(undefined);
 
   let restoredThreadId: string | null = $state(null);
+  // Tracks which thread we last persisted into the snapshot store via
+  // the thread-switch effect — separate from `restoredThreadId` so a
+  // thread switch can dispose the previous snapshot before the next
+  // restore completes.
   let scrollSnapshotThreadId: string | null = $state(null);
-  let restoringScroll = false;
+  // Token bumped on every external "interrupt" — thread switch, user
+  // scroll, programmatic scrollToItem — so async restore work can detect
+  // staleness and bail.
+  let restoreToken = 0;
 
-  // Intent-based stick-to-bottom controller. Replaces the previous
-  // geometry-derived `userPinnedToBottom` state. Listeners attach via
-  // the $effect below once `scrollContainer` is bound.
-  const stickToBottom = createStickToBottomController({
-    getContainer: () => scrollContainer,
+  let groupedNodes = $derived<TimelineNode[]>(groupItemsBySubagent(pane.items));
+  let turnDiffViews = $derived(pane.turnDiffViews);
+
+  const stick = createStickyBottomController({
+    getScrollEl: () => scrollEl,
+    getListHandle: () => listRef,
+    getLastIndex: () => groupedNodes.length - 1,
   });
 
   $effect(() => {
-    void scrollContainer;
-    stickToBottom.attach();
+    void scrollEl;
+    void listRef;
+    stick.attach();
   });
 
-  function syncViewportState(): void {
-    if (!scrollContainer) return;
-    const { scrollTop, clientHeight } = scrollContainer;
-    viewportScrollTop = scrollTop;
-    viewportHeight = clientHeight;
-  }
-
-  // Bound to the scroll container's `scroll` event purely to maintain
-  // the virtual-layout viewport state and to invalidate pending
-  // anchor-restore tokens. The controller's own scroll listener handles
-  // the intent transitions; this handler intentionally does NOT touch
-  // stickiness.
-  function handleViewportScroll(): void {
-    liveAnchorRestoreToken += 1;
-    initialScrollRestoreToken += 1;
-    loadOlderRestoreToken += 1;
-    pendingLiveAnchor = null;
-    pendingLiveAnchorRevision = -1;
-    if (initialRestoreFrame !== null) {
-      cancelAnimationFrame(initialRestoreFrame);
-      initialRestoreFrame = null;
-      restoringScroll = false;
-    }
-    syncViewportState();
-    saveScrollSnapshot();
-  }
-
-  /**
-   * Per-turn diff view lives on the pane and is incrementally maintained by
-   * upsertItem. MessageTimeline consumes it read-only: a turn with an entry
-   * renders the ChangedFilesTree; if the summary passes `isMeaningful` the
-   * TurnDiffBadge renders too.
-   */
-  let turnDiffViews = $derived(pane.turnDiffViews);
-
-  /**
-   * Build the subagent-aware render tree. Items are grouped into subagent
-   * cards when they declare a parentId matching a parent tool item;
-   * otherwise they pass through as leaves. The function is pure and
-   * deterministic, so `$derived` re-runs exactly when `pane.items` changes.
-   */
-  let groupedNodes = $derived<TimelineNode[]>(groupItemsBySubagent(pane.items));
-  $effect.pre(() => {
-    const showEndOfTurnDiffs = getSettings().showEndOfTurnDiffs;
-    const latestSettledTurn = pane.latestSettledTurn;
-    const diffViews = pane.turnDiffViews;
-    const changed = invalidateChangedRowHeights(
-      groupedNodes,
-      showEndOfTurnDiffs,
-      latestSettledTurn,
-      diffViews,
-    );
-    if (changed) {
-      rowHeightRevision += 1;
-    }
-  });
-  let virtualLayout = $derived.by(() => {
-    rowHeightRevision;
-    return buildVirtualLayout(groupedNodes, rowHeights, estimateTimelineNodeHeight);
-  });
-  let virtualWindow = $derived(
-    computeVirtualWindow(virtualLayout, viewportScrollTop, viewportHeight, OVERSCAN_PX),
-  );
-
+  // ============================================================
+  // Diagnostic UI render trace — preserved from the previous shape.
+  // ============================================================
   $effect(() => {
     pane.threadId;
     pane.items.length;
@@ -208,108 +155,62 @@
     });
     scheduleDomUiTrace('timeline', 'timeline.dom', () => ({
       threadId: pane.threadId,
-      rowCount: scrollContainer?.querySelectorAll('[data-item-id]').length ?? 0,
-      rows: Array.from(scrollContainer?.querySelectorAll<HTMLElement>('[data-item-id]') ?? [])
+      rowCount: scrollEl?.querySelectorAll('[data-item-id]').length ?? 0,
+      rows: Array.from(scrollEl?.querySelectorAll<HTMLElement>('[data-item-id]') ?? [])
         .slice(0, 160)
         .map((el) => ({
           itemId: el.dataset.itemId ?? '',
           textPreview: (el.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, 120),
         })),
-      scrollTop: scrollContainer ? Math.round(scrollContainer.scrollTop) : 0,
-      scrollHeight: scrollContainer ? Math.round(scrollContainer.scrollHeight) : 0,
-      clientHeight: scrollContainer ? Math.round(scrollContainer.clientHeight) : 0,
+      scrollOffset: listRef ? Math.round(listRef.getScrollOffset()) : 0,
+      scrollSize: listRef ? Math.round(listRef.getScrollSize()) : 0,
+      viewportSize: listRef ? Math.round(listRef.getViewportSize()) : 0,
     }));
   });
 
-  /**
-   * Turn boundaries on the root-node stream: we emit the ChangedFilesTree
-   * summary at the end of every turn that has diff activity. Subagent
-   * children share their parent's turnIndex (triage uses LastTurnIndex for
-   * child persistence), so the turn of a group node is the parent's turn.
-   */
+  // ============================================================
+  // Helpers
+  // ============================================================
+
+  function rootTurnIndex(node: TimelineNode): number {
+    return node.kind === 'leaf' ? node.item.turnIndex : node.parent.turnIndex;
+  }
+
   function isLastRootInTurn(index: number): boolean {
-    return nodeIsLastRootInTurn(index, groupedNodes);
+    const cur = groupedNodes[index];
+    const next = groupedNodes[index + 1];
+    if (!cur) return false;
+    if (!next) return true;
+    return rootTurnIndex(cur) !== rootTurnIndex(next);
   }
-
-  function offsetForIndex(index: number): number {
-    return virtualLayout.offsets[Math.min(Math.max(index, 0), virtualLayout.rows.length)] ?? 0;
-  }
-
-  function invalidateChangedRowHeights(
-    nodes: TimelineNode[],
-    showEndOfTurnDiffs: boolean,
-    latestSettledTurn: SettledTurn | null,
-    diffViews: ReadonlyMap<number, TurnDiffView>,
-  ): boolean {
-    const activeKeys = new Set<string>();
-    let changed = false;
-    for (let index = 0; index < nodes.length; index += 1) {
-      const node = nodes[index];
-      const key = timelineNodeKey(node);
-      const signature = timelineNodeHeightSignature(
-        node,
-        index,
-        nodes,
-        showEndOfTurnDiffs,
-        latestSettledTurn,
-        diffViews,
-      );
-      activeKeys.add(key);
-      if (rowHeightSignatures.get(key) === signature) continue;
-      rowHeightSignatures.set(key, signature);
-      if (rowHeights.delete(key)) changed = true;
-    }
-    for (const key of rowHeightSignatures.keys()) {
-      if (!activeKeys.has(key)) {
-        rowHeightSignatures.delete(key);
-        if (rowHeights.delete(key)) changed = true;
-      }
-    }
-    return changed;
-  }
-
-  const timelineMeasurementActions = createTimelineMeasurementActions({
-    estimatedRowHeight: DEFAULT_TIMELINE_ROW_HEIGHT,
-    getRowHeight: (key) => rowHeights.get(key),
-    getScrollContainer: () => scrollContainer,
-    getIsSticky: () => stickToBottom.isSticky,
-    onRowHeightChanged: () => {
-      rowHeightRevision += 1;
-    },
-    setRowHeight: (key, height) => {
-      rowHeights.set(key, height);
-    },
-    setScrollContainer: (node) => {
-      scrollContainer = node;
-    },
-    syncViewportState,
-  });
-  const { measureScrollContainer, measureTimelineRow } = timelineMeasurementActions;
 
   function nodeContainsItem(node: TimelineNode, itemId: string): boolean {
-    if (node.kind === 'leaf') {
-      return node.item.id === itemId;
-    }
-    return node.parent.id === itemId || node.children.some((child) => nodeContainsItem(child, itemId));
+    if (node.kind === 'leaf') return node.item.id === itemId;
+    return node.parent.id === itemId
+      || node.children.some((child) => nodeContainsItem(child, itemId));
   }
 
-  let initialRestoreFrame: number | null = null;
-  let pendingLiveAnchor: AnchorSnapshot | null = null;
-  let pendingLiveAnchorRevision = -1;
-  let observedLiveAnchorThreadId: string | null = null;
-  let observedLiveAnchorRevision = -1;
-  let liveAnchorRestoreToken = 0;
-  let initialScrollRestoreToken = 0;
-  let loadOlderRestoreToken = 0;
+  function findTimelineNodeIndex(itemId: string): number {
+    return groupedNodes.findIndex((node) => nodeContainsItem(node, itemId));
+  }
 
-  onDestroy(() => {
+  // ============================================================
+  // VList scroll callbacks → controller
+  // ============================================================
+
+  function handleListScroll(offset: number): void {
+    stick.onScroll(offset);
     saveScrollSnapshot();
-    if (initialRestoreFrame !== null) {
-      cancelAnimationFrame(initialRestoreFrame);
-      initialRestoreFrame = null;
-    }
-    stickToBottom.destroy();
-  });
+  }
+
+  function handleListScrollEnd(): void {
+    stick.onScrollEnd();
+    saveScrollSnapshot();
+  }
+
+  // ============================================================
+  // Snapshot save/restore (per-thread)
+  // ============================================================
 
   function snapshotThreadId(): string | null {
     return pane.threadId || null;
@@ -322,289 +223,160 @@
   }
 
   function saveScrollSnapshotForThread(threadId: string, ignoreLoading: boolean): void {
-    if (!scrollContainer || (!ignoreLoading && pane.loading) || restoredThreadId !== threadId) return;
-    // Snapshot is geometric — we record "user was at the bottom" iff
-    // the container is geometrically at the bottom, regardless of the
-    // controller's intent state. This way, switching threads while in
-    // free state preserves the user's reading position correctly.
-    if (stickToBottom.isAtBottom()) {
-      setThreadScrollSnapshot(threadId, { kind: 'bottom' });
-      return;
-    }
-
-    const anchor = firstVisibleItemAnchor(scrollContainer);
-    if (anchor) {
-      setThreadScrollSnapshot(threadId, anchor);
-    }
-  }
-
-  function findTimelineNodeIndex(itemId: string): number {
-    return groupedNodes.findIndex((node) => nodeContainsItem(node, itemId));
-  }
-
-  async function restoreInitialScroll(threadId: string, restoreToken: number): Promise<void> {
-    if (!scrollContainer) return;
-    const snapshot = getThreadScrollSnapshot(threadId);
-    const releaseBottomAutoScroll = stickToBottom.pauseAutoScroll();
-    const shouldContinue = () => (
-      initialScrollRestoreToken === restoreToken
-      && pane.threadId === threadId
-      && restoredThreadId === threadId
-      && scrollContainer !== undefined
-    );
+    if (!listRef || (!ignoreLoading && pane.loading) || restoredThreadId !== threadId) return;
+    // virtua's internal ref can be in a teardown state where any geometry
+    // read throws (the inner ref is null while our outer handle is still
+    // bound). Treat any read failure as "skip this save" — the next scroll
+    // will refresh the snapshot if the user keeps reading. Without this
+    // guard, component teardown during a thread switch raises a TypeError
+    // that bubbles into Svelte's effect-teardown machinery.
     try {
-      if (snapshot?.kind === 'anchor' && scrollContainer) {
-        const restored = await restoreAnchorSnapshot({
-          container: scrollContainer,
-          snapshot,
-          loadUntilItem: (id) => pane.loadUntilItem(id),
-          findNodeIndex: findTimelineNodeIndex,
-          offsetForIndex,
-          syncViewportState,
-          shouldContinue,
-        });
-        if (restored) {
-          syncViewportState();
-          saveScrollSnapshot();
-          return;
-        }
-      }
-      if (!shouldContinue()) return;
-      // Bottom snapshot (or no snapshot at all): scroll to the bottom
-      // immediately and re-arm stickiness. forceStick performs the
-      // synchronous scroll AND schedules the rAF + 200ms settle so any
-      // async layout that lands afterwards (Shiki, KaTeX) still leaves
-      // us at the bottom.
-      stickToBottom.forceStick();
-      syncViewportState();
-      saveScrollSnapshot();
-    } finally {
-      restoringScroll = false;
-      releaseBottomAutoScroll();
-    }
-  }
-
-  $effect(() => {
-    const threadId = pane.threadId;
-    const loading = pane.loading;
-    pane.items.length;
-    rowHeightRevision;
-    viewportHeight;
-    const containerReady = scrollContainer !== undefined;
-
-    if (!threadId || loading || !containerReady) return;
-    if (restoredThreadId === threadId) return;
-    restoredThreadId = threadId;
-    restoringScroll = true;
-    const restoreToken = ++initialScrollRestoreToken;
-    initialRestoreFrame = requestAnimationFrame(() => {
-      initialRestoreFrame = null;
-      if (initialScrollRestoreToken !== restoreToken || pane.threadId !== threadId) {
-        restoringScroll = false;
+      if (stick.isAtBottom()) {
+        setThreadScrollSnapshot(threadId, { kind: 'bottom' });
         return;
       }
-      void restoreInitialScroll(threadId, restoreToken);
-    });
-  });
+      const offset = listRef.getScrollOffset();
+      const idx = listRef.findItemIndex(offset);
+      if (idx < 0) return;
+      const node = groupedNodes[idx];
+      if (!node) return;
+      const itemId = node.kind === 'leaf' ? node.item.id : node.parent.id;
+      // Negative when the anchor row's top has scrolled above the viewport
+      // top by `-offsetTop` pixels. Restoration recreates exactly this
+      // relationship via scrollToIndex({ align:'start', offset: -offsetTop }).
+      const offsetTop = listRef.getItemOffset(idx) - offset;
+      setThreadScrollSnapshot(threadId, { kind: 'anchor', itemId, offsetTop });
+    } catch {
+      // Stale handle during teardown.
+    }
+  }
 
+  // Persist + reset state on thread change BEFORE the new thread's
+  // effects run. Mirrors the old thread-switch effect.pre.
   $effect.pre(() => {
     const nextThreadId = pane.threadId;
     if (scrollSnapshotThreadId && scrollSnapshotThreadId !== nextThreadId) {
       saveScrollSnapshotForThread(scrollSnapshotThreadId, true);
       restoredThreadId = null;
-      liveAnchorRestoreToken += 1;
-      initialScrollRestoreToken += 1;
-      loadOlderRestoreToken += 1;
-      pendingLiveAnchor = null;
-      pendingLiveAnchorRevision = -1;
+      restoreToken += 1;
     }
     scrollSnapshotThreadId = nextThreadId;
   });
 
-  $effect.pre(() => {
-    const revision = pane.timelineRevision;
-    const threadId = pane.threadId;
-    const containerReady = scrollContainer !== undefined;
-
-    if (!threadId || !containerReady) return;
-    if (observedLiveAnchorThreadId !== threadId) {
-      liveAnchorRestoreToken += 1;
-      observedLiveAnchorThreadId = threadId;
-      observedLiveAnchorRevision = revision;
-      pendingLiveAnchor = null;
-      pendingLiveAnchorRevision = -1;
-      return;
-    }
-    if (observedLiveAnchorRevision === revision) return;
-    liveAnchorRestoreToken += 1;
-    observedLiveAnchorRevision = revision;
-    if (restoredThreadId !== threadId || restoringScroll) return;
-    if (stickToBottom.isSticky) {
-      pendingLiveAnchor = null;
-      pendingLiveAnchorRevision = -1;
-      return;
-    }
-
-    const anchor = scrollContainer ? firstVisibleItemAnchor(scrollContainer) : null;
-    pendingLiveAnchor = anchor?.kind === 'anchor' ? anchor : null;
-    pendingLiveAnchorRevision = pendingLiveAnchor ? revision : -1;
-  });
-
-  $effect(() => {
-    const revision = pane.timelineRevision;
-    const threadId = pane.threadId;
-    const anchor = pendingLiveAnchor;
-    const containerReady = scrollContainer !== undefined;
-
-    if (!threadId || !containerReady || !anchor) return;
-    if (pendingLiveAnchorRevision !== revision) return;
-    if (restoredThreadId !== threadId || restoringScroll || stickToBottom.isSticky) return;
-
-    pendingLiveAnchor = null;
-    pendingLiveAnchorRevision = -1;
-    const restoreThreadId = threadId;
-    const restoreRevision = revision;
-    const restoreToken = ++liveAnchorRestoreToken;
-    const releaseBottomAutoScroll = stickToBottom.pauseAutoScroll();
-    const shouldContinue = () => (
-      liveAnchorRestoreToken === restoreToken
-      && pane.threadId === restoreThreadId
-      && pane.timelineRevision === restoreRevision
-      && !stickToBottom.isSticky
-      && !restoringScroll
-    );
-    if (!scrollContainer) {
-      releaseBottomAutoScroll();
-      return;
-    }
-    void restoreLoadedAnchorSnapshot({
-      container: scrollContainer,
-      snapshot: anchor,
-      findNodeIndex: findTimelineNodeIndex,
-      offsetForIndex,
-      syncViewportState,
-      shouldContinue,
-    }).finally(() => {
-      releaseBottomAutoScroll();
-      if (!shouldContinue()) return;
-      syncViewportState();
-      saveScrollSnapshot();
-    });
-  });
-
-  // Notify the controller whenever the timeline grows or rows resize.
-  // The controller decides whether to actually scroll (sticky vs free)
-  // and absorbs async layout via its rAF + 200ms settle re-check.
   $effect(() => {
     const threadId = pane.threadId;
     const loading = pane.loading;
-    pane.items.length;
-    pane.timelineRevision;
-    pane.activeTurn?.turnId;
-    rowHeightRevision;
-    viewportHeight;
-    const containerReady = scrollContainer !== undefined;
-
-    if (!threadId || loading || !containerReady) return;
-    if (restoredThreadId !== threadId || restoringScroll) return;
-    untrack(() => stickToBottom.notifyContentMaybeGrew());
+    if (!threadId || loading) return;
+    if (restoredThreadId === threadId) return;
+    restoredThreadId = threadId;
+    void restoreInitialPosition(threadId, ++restoreToken);
   });
 
-  /**
-   * Fetch older history and preserve the user's visual anchor row. We
-   * prefer restoring the actual first visible item because ancestor rows
-   * can sit above the loaded floor; "inserted before items[0]" is not the
-   * same thing as "inserted before what the user was reading".
-   */
-  async function handleLoadOlder(): Promise<void> {
-    if (!scrollContainer) return;
-    const prevScrollHeight = scrollContainer.scrollHeight;
-    const prevScrollTop = scrollContainer.scrollTop;
-    const anchor = firstVisibleItemAnchor(scrollContainer);
-    const restoreThreadId = pane.threadId;
-    const restoreToken = ++loadOlderRestoreToken;
-    const releaseBottomAutoScroll = stickToBottom.pauseAutoScroll();
-    const shouldContinue = () => (
-      loadOlderRestoreToken === restoreToken
-      && pane.threadId === restoreThreadId
-      && scrollContainer !== undefined
-    );
+  async function restoreInitialPosition(threadId: string, token: number): Promise<void> {
+    const release = stick.pauseAutoScroll();
     try {
-      const result = await pane.loadOlder();
+      // Let virtua mount with the current data so listRef is populated.
       await tick();
-      if (!scrollContainer) return;
-      if (anchor?.kind === 'anchor' && shouldContinue()) {
-        const restored = await restoreLoadedAnchorSnapshot({
-          container: scrollContainer,
-          snapshot: anchor,
-          findNodeIndex: findTimelineNodeIndex,
-          offsetForIndex,
-          syncViewportState,
-          shouldContinue,
-        });
-        if (restored) {
-          handleViewportScroll();
-          return;
-        }
+      if (token !== restoreToken || pane.threadId !== threadId || !listRef) return;
+
+      const snap = getThreadScrollSnapshot(threadId);
+      if (!snap || snap.kind === 'bottom') {
+        stick.forceStick();
+        saveScrollSnapshot();
+        return;
       }
-      if (result.insertedRows || result.insertedBeforeWindow) {
-        const delta = scrollContainer.scrollHeight - prevScrollHeight;
-        scrollContainer.scrollTop = prevScrollTop + delta;
+
+      // Anchor snapshot: ensure the target item is loaded, then scroll
+      // to it preserving the recorded offset within its row.
+      const found = await pane.loadUntilItem(snap.itemId);
+      if (token !== restoreToken || pane.threadId !== threadId || !listRef) return;
+      if (!found) {
+        stick.forceStick();
+        saveScrollSnapshot();
+        return;
       }
-      // Resync viewport state and snapshot the new position. The
-      // controller's pause lease is still held — nothing auto-scrolls
-      // until the finally block releases it.
-      handleViewportScroll();
+      await tick();
+      if (token !== restoreToken || pane.threadId !== threadId || !listRef) return;
+      const idx = findTimelineNodeIndex(snap.itemId);
+      if (idx < 0) {
+        stick.forceStick();
+        saveScrollSnapshot();
+        return;
+      }
+      listRef.scrollToIndex(idx, { align: 'start', offset: -snap.offsetTop });
+      // After programmatic scroll, intent should be 'free' since the user
+      // wasn't at the bottom when they left the thread. Don't force-stick.
+      saveScrollSnapshot();
     } finally {
-      releaseBottomAutoScroll();
+      release();
     }
   }
 
-  /**
-   * Scroll the timeline to the inline row for `id`. Invoked only by
-   * the `scrollToItemRequest` $effect below — external callers publish
-   * the intent through `pane.requestScrollToItem` (search hits, plan
-   * sidebar rows, tray rows) so the DOM
-   * operation stays inside the component that owns the scroll
-   * container. The target may live below the loaded window; we ask
-   * the pane to page back until it's in view before querying the DOM.
-   * A `false` return from `loadUntilItem` means the backend couldn't
-   * find the item on this thread — surface a toast instead of
-   * silently failing.
-   */
+  // ============================================================
+  // Auto-follow on growth
+  // ============================================================
+  // virtua's per-row ResizeObserver absorbs above-viewport height changes
+  // silently. For below-viewport / append growth, the controller decides
+  // whether to follow based on intent. Tracks length, revision, and the
+  // active turn so streaming chunks keep the bottom in view.
+  $effect(() => {
+    pane.items.length;
+    pane.timelineRevision;
+    pane.activeTurn?.turnId;
+    if (pane.threadId !== restoredThreadId) return;
+    stick.notifyContentMaybeGrew();
+  });
+
+  // ============================================================
+  // Load older
+  // ============================================================
+  // Capture the user's reading position BEFORE the await, then explicitly
+  // re-anchor after the items prepend. Avoids virtua's `shift` mode (which
+  // is documented as fragile across async boundaries) — explicit
+  // scrollToIndex is deterministic.
+  async function handleLoadOlder(): Promise<void> {
+    if (!listRef) return;
+    const offsetBefore = listRef.getScrollOffset();
+    const firstIdxBefore = listRef.findItemIndex(offsetBefore);
+    const node = groupedNodes[firstIdxBefore];
+    const anchorId = node ? (node.kind === 'leaf' ? node.item.id : node.parent.id) : null;
+    const anchorOffsetTop = node ? listRef.getItemOffset(firstIdxBefore) - offsetBefore : 0;
+
+    const release = stick.pauseAutoScroll();
+    const myToken = ++restoreToken;
+    try {
+      const result = await pane.loadOlder();
+      await tick();
+      if (myToken !== restoreToken || !listRef || result.status !== 'loaded') return;
+      if (!anchorId) return;
+      const newIdx = findTimelineNodeIndex(anchorId);
+      if (newIdx < 0) return;
+      listRef.scrollToIndex(newIdx, { align: 'start', offset: -anchorOffsetTop });
+      saveScrollSnapshot();
+    } finally {
+      release();
+    }
+  }
+
+  // ============================================================
+  // Scroll-to-item (search hits, plan rows, tray rows)
+  // ============================================================
+
   async function scrollToItem(id: string): Promise<void> {
-    if (!scrollContainer || !id) return;
+    if (!listRef || !id) return;
+    const myToken = ++restoreToken;
     const found = await pane.loadUntilItem(id);
-    if (!scrollContainer) return;
+    if (myToken !== restoreToken || !listRef) return;
     if (!found) {
       addToast('warning', 'Message is no longer in this thread');
       return;
     }
     await tick();
-    if (!scrollContainer) return;
-    const targetIndex = groupedNodes.findIndex((node) => nodeContainsItem(node, id));
-    if (targetIndex >= 0) {
-      scrollContainer.scrollTop = Math.max(
-        0,
-        offsetForIndex(targetIndex) - Math.round(scrollContainer.clientHeight / 2),
-      );
-      handleViewportScroll();
-      await tick();
-    }
-    const el = scrollContainer.querySelector(`[data-item-id="${CSS.escape(id)}"]`);
-    if (el instanceof HTMLElement) {
-      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    }
+    if (myToken !== restoreToken || !listRef) return;
+    const idx = findTimelineNodeIndex(id);
+    if (idx >= 0) listRef.scrollToIndex(idx, { align: 'center', smooth: true });
   }
 
-  /**
-   * Observe pane-published scroll-to-item intents. The pane exposes a
-   * `{itemId, nonce}` tuple; a bumped nonce is our cue to run
-   * scrollToItem. Tracked imperatively rather than via a $derived so a
-   * repeat publish (same id, new nonce) still triggers. Nonce 0 is the
-   * initial state and we deliberately ignore it so mounting a pane
-   * doesn't auto-scroll.
-   */
   let lastHandledScrollNonce = 0;
   $effect(() => {
     const req = pane.scrollToItemRequest;
@@ -613,89 +385,119 @@
     lastHandledScrollNonce = req.nonce;
     void scrollToItem(req.itemId);
   });
+
+  onDestroy(() => {
+    if (restoredThreadId) saveScrollSnapshotForThread(restoredThreadId, true);
+    stick.destroy();
+  });
 </script>
 
-<div class="relative flex-1 min-h-0 flex flex-col">
-  <div bind:this={scrollContainer} use:measureScrollContainer onscroll={handleViewportScroll} class="flex-1 min-h-0 overflow-y-auto" role="log" aria-label="Message History" data-testid="message-timeline-scroll">
-    <div class="mx-auto w-full max-w-3xl px-6 py-8">
+<!-- Outer wrapper: catches gesture events for the sticky controller and
+     carries the timeline test id stably across loading / empty / populated
+     states. The inner VList owns the actual scroll element. -->
+<div bind:this={scrollEl} class="relative h-full" tabindex="-1" data-testid="message-timeline-scroll">
   {#if pane.loading}
     <div class="flex items-center justify-center h-full text-fg-subtle text-sm" role="status" aria-live="polite">
       <span class="animate-pulse">Loading thread...</span>
     </div>
+  {:else if pane.items.length === 0 && !pane.activeTurn}
+    <div class="flex items-center justify-center h-full text-fg-subtle text-sm">
+      No messages yet. Send a message to get started.
+    </div>
+  {:else if pane.items.length === 0 && pane.activeTurn}
+    <!-- Active turn but no items yet (just-sent prompt with the assistant
+         not having streamed a single chunk). Render the working indicator
+         standalone so the user sees feedback. -->
+    <div class="mx-auto w-full max-w-3xl px-6 pt-8" style:padding-bottom={`calc(var(--composer-height, 0px) + ${BOTTOM_PAD_PX}px)`}>
+      <ChatWorkingIndicator {pane} />
+    </div>
   {:else}
-    {#snippet leafContent(item: Item, orphan: boolean)}
-      <TimelineLeaf {pane} {item} {orphan} {onImageExpand} />
-    {/snippet}
-
     {#snippet renderNode(node: TimelineNode, depth: number)}
       {#if node.kind === 'leaf'}
-        {@render leafContent(node.item, node.orphan === true)}
+        <TimelineLeaf {pane} item={node.item} orphan={node.orphan === true} {onImageExpand} />
       {:else}
-        <SubagentGroup group={node} depth={depth} renderNode={renderNode} />
+        <SubagentGroup group={node} {depth} {renderNode} />
       {/if}
     {/snippet}
 
-    {#if pane.hasMoreHistory}
-      <!-- Paged history control. Sits above the timeline so it's always
-           in view when the user scrolls to the top. Delta-based scroll
-           preservation lives in handleLoadOlder. -->
-      <div class="mb-3 flex justify-center">
-        <Button
-          variant="secondary"
-          size="xs"
-          onclick={handleLoadOlder}
-          loading={pane.loadingOlder}
-          testId="load-older-messages"
-        >
-          {#snippet children()}
-            {pane.loadingOlder ? 'Loading…' : 'Load older messages'}
-          {/snippet}
-        </Button>
-      </div>
-    {/if}
-
-    <div style:height={`${virtualWindow.before}px`} aria-hidden="true"></div>
-    {#each virtualWindow.rows as row (row.key)}
-      <div use:measureTimelineRow={{ key: row.key, estimatedHeight: row.estimatedHeight }}>
-        {#if pane.latestSettledTurn && shouldRenderDividerBefore(row.node, pane.latestSettledTurn)}
-          <!-- The divider renders BEFORE the assistant message that closed
-               the settled turn (t3-code pattern). The per-turn diff summary
-               + TurnDiffBadge render AFTER the turn's last root node below,
-               so the two don't conflict — the divider sits above the final
-               assistant message, the diff badge sits below it at the turn
-               boundary. -->
-          <CompletionDivider turn={pane.latestSettledTurn} />
-        {/if}
-        <!-- Root nodes feed in at depth=1 so SubagentGroup's GRANDCHILD
-             cap aligns with the spec numbering (first card=1, child=2,
-             grandchild=3 marker-only plateau). -->
-        <div data-testid="message-timeline-node">
-          {@render renderNode(row.node, 1)}
-        </div>
-
-        {#if isLastRootInTurn(row.index)}
-          {@const turnIndex = rootTurnIndex(row.node)}
-          {@const turnView = turnDiffViews.get(turnIndex)}
-          {#if turnView && getSettings().showEndOfTurnDiffs}
-            <ChangedFilesTree files={turnView.files} />
-            {#if turnSummaryIsMeaningful(turnView.summary)}
-              <TurnDiffBadge {pane} {turnIndex} summary={turnView.summary} />
-            {/if}
+    <VList
+      bind:this={listRef}
+      data={groupedNodes}
+      getKey={(node) => timelineNodeKey(node)}
+      itemSize={ESTIMATED_ROW_SIZE}
+      bufferSize={BUFFER_SIZE_PX}
+      ssrCount={IS_TEST ? 100_000 : undefined}
+      onscroll={handleListScroll}
+      onscrollend={handleListScrollEnd}
+      style="height: 100%; overflow-x: hidden; overscroll-behavior-y: contain;"
+      role="log"
+      aria-label="Message History"
+    >
+      {#snippet children(node: TimelineNode, index: number)}
+        <!-- Outer per-row wrapper. We do NOT set data-item-id here:
+             TimelineLeaf and SubagentGroup own that attribute on their
+             own roots, and tests rely on the divider rendering BEFORE
+             the [data-item-id] node, not containing it. -->
+        <div data-row-index={index}>
+          {#if index === 0}
+            <!-- Top of timeline. Load-older button (when applicable) and
+                 a small top breathing-room spacer ride inside the first
+                 row. When user scrolls to the very top, the button is
+                 the first thing they see. After load-older completes,
+                 the explicit scrollToIndex re-anchors them to where they
+                 were reading — the button moves up out of view. -->
+            <div class="pt-6 mx-auto w-full max-w-3xl px-6">
+              {#if pane.hasMoreHistory}
+                <div class="mb-3 flex justify-center">
+                  <Button
+                    variant="secondary"
+                    size="xs"
+                    onclick={handleLoadOlder}
+                    loading={pane.loadingOlder}
+                    testId="load-older-messages"
+                  >
+                    {#snippet children()}
+                      {pane.loadingOlder ? 'Loading…' : 'Load older messages'}
+                    {/snippet}
+                  </Button>
+                </div>
+              {/if}
+            </div>
           {/if}
-        {/if}
-      </div>
-    {/each}
-    <div style:height={`${virtualWindow.after}px`} aria-hidden="true"></div>
 
-    <ChatWorkingIndicator {pane} />
+          <div class="mx-auto w-full max-w-3xl px-6">
+            {#if pane.latestSettledTurn && shouldRenderDividerBefore(node, pane.latestSettledTurn)}
+              <CompletionDivider turn={pane.latestSettledTurn} />
+            {/if}
+            <div data-testid="message-timeline-node">
+              {@render renderNode(node, 1)}
+            </div>
+            {#if isLastRootInTurn(index)}
+              {@const turnIndex = rootTurnIndex(node)}
+              {@const turnView = turnDiffViews.get(turnIndex)}
+              {#if turnView && getSettings().showEndOfTurnDiffs}
+                <ChangedFilesTree files={turnView.files} />
+                {#if turnSummaryIsMeaningful(turnView.summary)}
+                  <TurnDiffBadge {pane} {turnIndex} summary={turnView.summary} />
+                {/if}
+              {/if}
+            {/if}
 
-    {#if pane.items.length === 0 && !pane.activeTurn}
-      <div class="flex items-center justify-center h-full text-fg-subtle text-sm">
-        No messages yet. Send a message to get started.
-      </div>
-    {/if}
+            {#if index === groupedNodes.length - 1}
+              <!-- Tail of timeline. Working indicator + bottom spacer
+                   that consumes --composer-height so the last visible
+                   row clears the absolute composer overlay above it. -->
+              <ChatWorkingIndicator {pane} />
+              <div
+                aria-hidden="true"
+                style:height={`calc(var(--composer-height, 0px) + ${BOTTOM_PAD_PX}px)`}
+              ></div>
+            {/if}
+          </div>
+        </div>
+      {/snippet}
+    </VList>
   {/if}
-    </div>
-  </div>
-  <ScrollToBottomButton visible={!stickToBottom.isSticky} onClick={() => stickToBottom.forceStick()} />
+
+  <ScrollToBottomButton visible={!stick.isSticky} onClick={() => stick.forceStick()} />
 </div>

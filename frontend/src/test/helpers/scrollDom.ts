@@ -1,7 +1,6 @@
 // Shared DOM helpers for scroll-related tests. Promoted out of inline
-// duplicates in MessageTimeline.test.ts, ChatView.test.ts, and
-// timelineMeasurementActions.test.ts so the controller test suite (and
-// any future scroll tests) get the same, single implementation.
+// duplicates in MessageTimeline.test.ts and ChatView.test.ts so the
+// scroll-test surface gets a single, shared implementation.
 
 /**
  * Build a complete DOMRect from a partial spec, defaulting all unspecified
