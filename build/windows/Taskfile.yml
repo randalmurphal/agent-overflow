@@ -82,10 +82,19 @@ tasks:
     internal: true
     cmds:
       - mkdir -p cmd/agent-overflow-windows/payload {{.BIN_DIR | default "bin"}}
+      # Pre-clean the output: build:wsl:restore-payload-placeholder
+      # leaves 68 bytes of ASCII placeholder text here at the tail of
+      # the prior build, and `go build -o` refuses to overwrite a file
+      # that isn't a recognized Go binary. The macOS-without-Docker
+      # branch below intentionally leaves the placeholder alone so
+      # //go:embed still has bytes to bind to.
+      - cmd: rm -f cmd/agent-overflow-windows/payload/agent-overflow-linux
+        platforms: [linux]
       - cmd: GOOS=linux GOARCH=amd64 CGO_ENABLED=1 CC=x86_64-linux-gnu-gcc go build -o cmd/agent-overflow-windows/payload/agent-overflow-linux ./
         platforms: [linux]
       - cmd: |
           if command -v docker > /dev/null 2>&1 && docker image inspect wails-cross > /dev/null 2>&1; then
+            rm -f cmd/agent-overflow-windows/payload/agent-overflow-linux
             docker run --rm -v "$(pwd):/app" -w /app wails-cross sh -c \
               'GOOS=linux GOARCH=amd64 CGO_ENABLED=1 go build -o cmd/agent-overflow-windows/payload/agent-overflow-linux ./'
           else
