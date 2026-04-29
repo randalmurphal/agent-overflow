@@ -15,16 +15,14 @@ import { GetThreadSlashCommands, SearchWorkspaceFiles } from '../../stores/bindi
 import { addToast } from '../../stores/toast.svelte';
 import { errString } from '../../utils/errors';
 import type { WorkspaceFile, WorkspaceFileSearchResult } from '../../types/workspaceFile';
-import { applyMention, detectMentionTrigger, type MentionTrigger } from './mentionHelpers';
-import { applySlashCommand, detectSlashTrigger, type SlashTrigger } from './slashHelpers';
+import { detectMentionTrigger, type MentionTrigger } from './mentionHelpers';
+import { detectSlashTrigger, type SlashTrigger } from './slashHelpers';
 
 export interface ComposerMentionsOptions {
   /** Returns the textarea DOM element. May be undefined before mount. */
   getTextarea: () => HTMLTextAreaElement | undefined;
   /** Thread-id getter — used to scope cache + search requests. */
   getThreadId: () => string | null;
-  /** Persist the new draft content into the ComposerDraftStore. */
-  setContent: (value: string) => void;
 }
 
 export interface ComposerMentionsHandle {
@@ -181,32 +179,25 @@ export function createComposerMentions(opts: ComposerMentionsOptions): ComposerM
   function insertMention(file: WorkspaceFile): void {
     const textarea = opts.getTextarea();
     if (!mentionTrigger || !textarea) return;
-    const current = textarea.value;
-    const { value, caret } = applyMention(current, mentionTrigger, file.path);
-    opts.setContent(value);
-    textarea.value = value;
-    requestAnimationFrame(() => {
-      const t = opts.getTextarea();
-      if (!t) return;
-      t.focus();
-      t.setSelectionRange(caret, caret);
-    });
+    // execCommand routes the replacement through the browser's input
+    // pipeline, which keeps it in the native undo stack. The synthetic
+    // `input` event drives `handleInput` in Composer.svelte, which calls
+    // `draft.setContent(textarea.value)` — store update is automatic.
+    const replacement = `@${file.path} `;
+    textarea.focus();
+    textarea.setSelectionRange(mentionTrigger.start, mentionTrigger.end);
+    document.execCommand('insertText', false, replacement);
     closeMention();
   }
 
   function insertSlashCommand(command: string): void {
     const textarea = opts.getTextarea();
     if (!slashTrigger || !textarea) return;
-    const current = textarea.value;
-    const { value, nextCaret } = applySlashCommand(current, slashTrigger, command);
-    opts.setContent(value);
-    textarea.value = value;
-    requestAnimationFrame(() => {
-      const t = opts.getTextarea();
-      if (!t) return;
-      t.focus();
-      t.setSelectionRange(nextCaret, nextCaret);
-    });
+    const triggerEnd = slashTrigger.start + 1 + slashTrigger.text.length;
+    const replacement = `/${command} `;
+    textarea.focus();
+    textarea.setSelectionRange(slashTrigger.start, triggerEnd);
+    document.execCommand('insertText', false, replacement);
     closeSlash();
   }
 

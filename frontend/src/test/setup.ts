@@ -69,6 +69,51 @@ if (typeof Element !== 'undefined' && typeof Element.prototype.animate !== 'func
     };
 }
 
+// happy-dom does not implement document.execCommand. The composer +
+// textEditing dispatcher rely on it for `insertText` / `delete` so that
+// programmatic edits participate in the browser's native undo stack.
+// Provide a lightweight polyfill that mutates the active editable target
+// and dispatches a synthetic `input` event so handlers downstream of
+// `oninput` observe the change. The polyfill is enough for tests; the
+// real browser implementation remains the source of truth for runtime
+// behavior.
+if (typeof document !== 'undefined' && typeof (document as { execCommand?: unknown }).execCommand !== 'function') {
+  (document as unknown as { execCommand: (cmd: string, showUI?: boolean, value?: string) => boolean }).execCommand =
+    (cmd: string, _showUI?: boolean, value?: string): boolean => {
+      const target = document.activeElement;
+      if (!(target instanceof HTMLTextAreaElement) && !(target instanceof HTMLInputElement)) return false;
+      const el = target as HTMLTextAreaElement | HTMLInputElement;
+      const current = el.value;
+      const start = el.selectionStart ?? current.length;
+      const end = el.selectionEnd ?? start;
+      let inputType: string;
+      let nextValue: string;
+      let nextCaret: number;
+      if (cmd === 'insertText') {
+        inputType = 'insertText';
+        nextValue = current.slice(0, start) + (value ?? '') + current.slice(end);
+        nextCaret = start + (value?.length ?? 0);
+      } else if (cmd === 'delete') {
+        inputType = 'deleteContentBackward';
+        if (start === end) {
+          if (start === 0) return true;
+          nextValue = current.slice(0, start - 1) + current.slice(end);
+          nextCaret = start - 1;
+        } else {
+          nextValue = current.slice(0, start) + current.slice(end);
+          nextCaret = start;
+        }
+      } else {
+        return false;
+      }
+      el.value = nextValue;
+      el.setSelectionRange(nextCaret, nextCaret);
+      el.dispatchEvent(new Event('input', { bubbles: true, cancelable: false }));
+      void inputType;
+      return true;
+    };
+}
+
 if (typeof globalThis.matchMedia === 'undefined') {
   globalThis.matchMedia = (() => ({
     matches: false,

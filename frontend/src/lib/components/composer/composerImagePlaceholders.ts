@@ -13,6 +13,7 @@ interface ComposerImagePlaceholderOptions {
   getContent: () => string;
   getAttachments: () => Attachment[];
   setContentAndAttachments: (content: string, attachments: Attachment[]) => void;
+  addAttachment: (attachment: Attachment) => void;
   removeAttachment: (id: string) => void;
   deleteAttachmentRecord: (id: string) => void;
   refreshTriggers: () => void;
@@ -29,6 +30,23 @@ export function createComposerImagePlaceholders(opts: ComposerImagePlaceholderOp
       opts.autosizeTextarea();
       opts.refreshTriggers();
     });
+  }
+
+  // Replace the entire textarea value via execCommand so the synthesized
+  // input event drives `handleInput`'s setContent path AND the change is
+  // recorded as one undo step. Direct assignment to textarea.value (or a
+  // controlled re-render that writes the value attribute) clears the
+  // browser's undo stack — execCommand keeps it intact.
+  function replaceTextareaContent(content: string, cursor: number): boolean {
+    const textarea = opts.getTextarea();
+    if (!textarea) return false;
+    textarea.focus();
+    textarea.setSelectionRange(0, textarea.value.length);
+    document.execCommand('insertText', false, content);
+    textarea.setSelectionRange(cursor, cursor);
+    opts.autosizeTextarea();
+    opts.refreshTriggers();
+    return true;
   }
 
   function currentUploadInsertion(): UploadInsertionPoint | null {
@@ -48,22 +66,44 @@ export function createComposerImagePlaceholders(opts: ComposerImagePlaceholderOp
     const start = uploadInsertion?.start ?? textarea?.selectionStart ?? opts.getContent().length;
     const end = uploadInsertion?.end ?? textarea?.selectionEnd ?? start;
     const insertion = insertImagePlaceholder(opts.getContent(), label, start, end);
-    opts.setContentAndAttachments(insertion.content, [...attachments, attachment]);
+
+    // Update the attachments list first so reconcileContent (called from
+    // the input event handler below) sees a consistent placeholder→
+    // attachment mapping for the new label.
+    opts.addAttachment(attachment);
+
+    if (!replaceTextareaContent(insertion.content, insertion.cursor)) {
+      // No DOM textarea available (composer unmounted mid-upload). Fall
+      // back to the bulk state update so the next mount hydrates the new
+      // placeholder + attachment.
+      opts.setContentAndAttachments(insertion.content, [...attachments, attachment]);
+      setTextareaCursor(insertion.cursor);
+    }
+
     if (uploadInsertion) {
       uploadInsertion.start = insertion.cursor;
       uploadInsertion.end = insertion.cursor;
     }
-    setTextareaCursor(insertion.cursor);
   }
 
   function applyAttachmentRemoval(
     result: { attachmentIds: string[]; content: string; cursor: number },
   ): void {
-    const removed = new Set(result.attachmentIds);
-    const nextAttachments = opts.getAttachments()
-      .filter((attachment) => !removed.has(attachment.id));
-    opts.setContentAndAttachments(result.content, nextAttachments);
-    setTextareaCursor(result.cursor);
+    // Same ordering as addUploadedAttachment: attachment state first so
+    // the input event from execCommand finds a self-consistent
+    // placeholder→attachment mapping.
+    for (const attachmentId of result.attachmentIds) {
+      opts.removeAttachment(attachmentId);
+    }
+
+    if (!replaceTextareaContent(result.content, result.cursor)) {
+      const removed = new Set(result.attachmentIds);
+      const nextAttachments = opts.getAttachments()
+        .filter((attachment) => !removed.has(attachment.id));
+      opts.setContentAndAttachments(result.content, nextAttachments);
+      setTextareaCursor(result.cursor);
+    }
+
     for (const attachmentId of result.attachmentIds) {
       opts.deleteAttachmentRecord(attachmentId);
     }

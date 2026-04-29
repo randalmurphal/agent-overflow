@@ -52,7 +52,6 @@
   const mentions = createComposerMentions({
     getTextarea: () => textarea,
     getThreadId: () => pane.threadId,
-    setContent: (value) => draft.setContent(value),
   });
 
   const uploads = createComposerUploads({
@@ -67,6 +66,7 @@
     getContent: () => draft.content,
     getAttachments: () => draft.attachments,
     setContentAndAttachments: (content, attachments) => draft.setContentAndAttachments(content, attachments),
+    addAttachment: (attachment) => draft.addAttachment(attachment),
     removeAttachment: (id) => draft.removeAttachment(id),
     deleteAttachmentRecord: (id) => void uploads.deleteAttachmentRecord(id),
     refreshTriggers: () => mentions.refreshTriggers(),

@@ -316,6 +316,13 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
       queueSave();
     },
 
+    addAttachment(attachment: Attachment): void {
+      if (attachments.some((a) => a.id === attachment.id)) return;
+      attachments = [...attachments, attachment];
+      rememberCurrentDraft();
+      queueSave();
+    },
+
     addTerminalChip(chip: TerminalChip): void {
       if (terminalChips.some((c) => c.id === chip.id)) return;
       terminalChips = [...terminalChips, chip];

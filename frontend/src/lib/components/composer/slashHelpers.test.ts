@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { applySlashCommand, detectSlashTrigger } from './slashHelpers';
+import { detectSlashTrigger } from './slashHelpers';
 
 describe('detectSlashTrigger', () => {
   it('returns null when the message is empty', () => {
@@ -50,35 +50,5 @@ describe('detectSlashTrigger', () => {
   it('rejects caret positions outside the value', () => {
     expect(detectSlashTrigger('/init', -1)).toBeNull();
     expect(detectSlashTrigger('/init', 99)).toBeNull();
-  });
-});
-
-describe('applySlashCommand', () => {
-  it('replaces the trigger span with /command and a trailing space', () => {
-    const result = applySlashCommand('/ini', { text: 'ini', start: 0 }, 'init');
-    expect(result.value).toBe('/init ');
-    expect(result.nextCaret).toBe('/init '.length);
-  });
-
-  it('handles an empty partial (bare /)', () => {
-    const result = applySlashCommand('/', { text: '', start: 0 }, 'review');
-    expect(result.value).toBe('/review ');
-    expect(result.nextCaret).toBe('/review '.length);
-  });
-
-  it('handles a full match (partial equals command)', () => {
-    const result = applySlashCommand('/review', { text: 'review', start: 0 }, 'review');
-    expect(result.value).toBe('/review ');
-    expect(result.nextCaret).toBe('/review '.length);
-  });
-
-  it('preserves content that follows the trigger span (trailing whitespace)', () => {
-    // Caret sits right after the partial; the trailing space is kept.
-    const result = applySlashCommand('/ini hello', { text: 'ini', start: 0 }, 'init');
-    // Replacement inserts "/init " and leaves the existing " hello" intact,
-    // so the total has a doubled separator — the common case is an empty
-    // tail, but if the user already typed a space we don't eat it.
-    expect(result.value).toBe('/init  hello');
-    expect(result.nextCaret).toBe('/init '.length);
   });
 });

@@ -27,6 +27,7 @@
   import { clearCommandRegistry } from './lib/stores/commandRegistry.svelte';
   import { registerBuiltinCommands, makeCommandContext } from './lib/stores/builtinCommands.svelte';
   import { installUiRenderTraceApi } from './lib/utils/uiRenderTrace';
+  import { dispatchTextEditing } from './lib/utils/textEditingKeymap';
   import DiagramInteractionHost from './lib/components/chat/DiagramInteractionHost.svelte';
 
   type SettingsSection = 'general' | 'providers' | 'editor' | 'network' | 'discussions' | 'keybindings' | 'observability' | 'archived';
@@ -79,6 +80,13 @@
 
   function handleGlobalKeydown(ev: KeyboardEvent): void {
     if (ev.defaultPrevented) return;
+    // Word-op keymap (Alt/Ctrl + Backspace/Delete/Arrows) for any text
+    // input. Cross-platform fill-in for the chord half each OS doesn't
+    // bind natively. Runs ahead of the editable bail-out below.
+    if (dispatchTextEditing(ev)) {
+      ev.preventDefault();
+      return;
+    }
     // Let free-text inputs keep their typing behaviour. The palette overlay
     // mounts its own input handler that bypasses this branch naturally.
     const target = ev.target as HTMLElement | null;

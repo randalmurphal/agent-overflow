@@ -40,20 +40,3 @@ export function detectSlashTrigger(value: string, caret: number): SlashTrigger |
 
   return { text: partial, start: 0 };
 }
-
-/**
- * Replace the active slash trigger with the chosen command and a trailing
- * space. Returns the new textarea value plus the caret position that should
- * follow (one past the trailing space).
- */
-export function applySlashCommand(
-  value: string,
-  trigger: SlashTrigger,
-  command: string,
-): { value: string; nextCaret: number } {
-  // End of the trigger span is `start + 1 (slash) + partial.length`.
-  const end = trigger.start + 1 + trigger.text.length;
-  const insertion = `/${command} `;
-  const next = value.slice(0, trigger.start) + insertion + value.slice(end);
-  return { value: next, nextCaret: trigger.start + insertion.length };
-}

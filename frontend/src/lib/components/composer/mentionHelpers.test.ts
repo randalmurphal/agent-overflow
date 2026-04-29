@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { applyMention, detectMentionTrigger } from './mentionHelpers';
+import { detectMentionTrigger } from './mentionHelpers';
 
 describe('detectMentionTrigger', () => {
   it('returns null when no @ before the caret', () => {
@@ -31,21 +31,5 @@ describe('detectMentionTrigger', () => {
   it('rejects invalid caret positions', () => {
     expect(detectMentionTrigger('@foo', 10)).toBeNull();
     expect(detectMentionTrigger('@foo', -1)).toBeNull();
-  });
-});
-
-describe('applyMention', () => {
-  it('replaces the trigger span with the file path and trailing space', () => {
-    const result = applyMention('hello @foo', { query: 'foo', start: 6, end: 10 }, 'src/foo.ts');
-    expect(result.value).toBe('hello @src/foo.ts ');
-    expect(result.caret).toBe(result.value.length);
-  });
-
-  it('keeps content after the caret intact', () => {
-    const value = '@fo and more';
-    const result = applyMention(value, { query: 'fo', start: 0, end: 3 }, 'foo.ts');
-    expect(result.value).toBe('@foo.ts  and more');
-    // caret sits right after the inserted token
-    expect(result.caret).toBe('@foo.ts '.length);
   });
 });

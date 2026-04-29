@@ -30,17 +30,3 @@ export function detectMentionTrigger(value: string, caret: number): MentionTrigg
   if (/\s/.test(query)) return null;
   return { query, start: atIndex, end: caret };
 }
-
-/**
- * Replace the active mention span with the chosen file's path.
- * Returns both the new value and the caret position that should follow.
- */
-export function applyMention(
-  value: string,
-  trigger: MentionTrigger,
-  replacement: string,
-): { value: string; caret: number } {
-  const insertion = `@${replacement} `;
-  const next = value.slice(0, trigger.start) + insertion + value.slice(trigger.end);
-  return { value: next, caret: trigger.start + insertion.length };
-}
