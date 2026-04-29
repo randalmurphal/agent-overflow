@@ -73,6 +73,53 @@ func TestExportAppDataToWSL_PrependsToExistingWSLENV(t *testing.T) {
 	}
 }
 
+// TestForwardDebugEnvToWSL_Unset_NoOp covers the production default:
+// AGENT_OVERFLOW_DEBUG unset, the function must not touch WSLENV.
+func TestForwardDebugEnvToWSL_Unset_NoOp(t *testing.T) {
+	t.Setenv("AGENT_OVERFLOW_DEBUG", "")
+	t.Setenv("WSLENV", "")
+
+	forwardDebugEnvToWSL()
+
+	if got := os.Getenv("WSLENV"); got != "" {
+		t.Errorf("WSLENV = %q, want empty (function should no-op when var unset)", got)
+	}
+}
+
+// TestForwardDebugEnvToWSL_Set_PrependsRule covers the dev-wsl path:
+// AGENT_OVERFLOW_DEBUG=provider lands as a string rule in WSLENV so
+// wsl.exe forwards it to the Linux backend.
+func TestForwardDebugEnvToWSL_Set_PrependsRule(t *testing.T) {
+	t.Setenv("AGENT_OVERFLOW_DEBUG", "provider")
+	t.Setenv("WSLENV", "")
+
+	forwardDebugEnvToWSL()
+
+	if got := os.Getenv("WSLENV"); got != "AGENT_OVERFLOW_DEBUG" {
+		t.Errorf("WSLENV = %q, want %q", got, "AGENT_OVERFLOW_DEBUG")
+	}
+}
+
+// TestForwardDebugEnvToWSL_PrependsToExistingWSLENV pins co-existence
+// with rules already added by exportAppDataToWSL (and any user rules).
+// In production main() runs both functions in sequence; this verifies
+// the second call doesn't drop the first's rule.
+func TestForwardDebugEnvToWSL_PrependsToExistingWSLENV(t *testing.T) {
+	const prior = "AGENT_OVERFLOW_WIN_APPDATA/p:PYTHONPATH/p"
+	t.Setenv("AGENT_OVERFLOW_DEBUG", "all")
+	t.Setenv("WSLENV", prior)
+
+	forwardDebugEnvToWSL()
+
+	got := os.Getenv("WSLENV")
+	if !strings.HasPrefix(got, "AGENT_OVERFLOW_DEBUG:") {
+		t.Errorf("WSLENV = %q, want prefix %q", got, "AGENT_OVERFLOW_DEBUG:")
+	}
+	if !strings.Contains(got, prior) {
+		t.Errorf("WSLENV = %q, lost prior rules %q", got, prior)
+	}
+}
+
 func TestResolveChosenDistro(t *testing.T) {
 	distros := []wsllauncher.Distro{
 		{Name: "Ubuntu-24.04", Default: true, Version: 2, State: "Running"},

@@ -2,6 +2,7 @@ import { GetPayloadChunk, GetPayloadPreview } from '../../stores/bindings';
 
 export const DEFAULT_PAYLOAD_PREVIEW_BYTES = 32 * 1024;
 export const DEFAULT_PAYLOAD_CHUNK_BYTES = 256 * 1024;
+export const DEFAULT_PAYLOAD_REQUEST_TIMEOUT_MS = 35_000;
 
 export interface PayloadExpansionHandle {
   readonly expanded: boolean;
@@ -21,6 +22,7 @@ export interface PayloadExpansionHandle {
   expand(): Promise<void>;
   collapse(): void;
   showFull(): Promise<void>;
+  retry(): Promise<void>;
   reset(): void;
 }
 
@@ -32,6 +34,7 @@ export function createPayloadExpansion(
   threadID: ThreadIDSource,
   previewBytes = DEFAULT_PAYLOAD_PREVIEW_BYTES,
   chunkBytes = DEFAULT_PAYLOAD_CHUNK_BYTES,
+  requestTimeoutMs = DEFAULT_PAYLOAD_REQUEST_TIMEOUT_MS,
 ): PayloadExpansionHandle {
   let expanded = $state(false);
   let loadingPreview = $state(false);
@@ -94,7 +97,11 @@ export function createPayloadExpansion(
     error = null;
 
     try {
-      const result = await GetPayloadPreview(ownerThreadID, id, previewBytes);
+      const result = await withTimeout(
+        GetPayloadPreview(ownerThreadID, id, previewBytes),
+        requestTimeoutMs,
+        'Loading payload preview timed out',
+      );
       if (generation !== requestGeneration || !expanded) return;
       chunks = [result.data];
       hasFullChunks = false;
@@ -149,7 +156,11 @@ export function createPayloadExpansion(
 
     try {
       const offset = loadedBytes;
-      const content = await GetPayloadChunk(ownerThreadID, id, offset, chunkBytes);
+      const content = await withTimeout(
+        GetPayloadChunk(ownerThreadID, id, offset, chunkBytes),
+        requestTimeoutMs,
+        'Loading payload chunk timed out',
+      );
       if (generation !== requestGeneration || !expanded) return;
       // Append the chunk to the buffer instead of re-allocating a
       // cumulative string. Writing `[...chunks, ...]` produces a
@@ -171,6 +182,15 @@ export function createPayloadExpansion(
 
   function reset(): void {
     collapse();
+  }
+
+  async function retry(): Promise<void> {
+    if (!expanded) {
+      await expand();
+      return;
+    }
+    clearLoadedData();
+    await loadPreview();
   }
 
   return {
@@ -198,8 +218,28 @@ export function createPayloadExpansion(
     expand,
     collapse,
     showFull,
+    retry,
     reset,
   };
+}
+
+async function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  message: string,
+): Promise<T> {
+  if (timeoutMs <= 0) return promise;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
 }
 
 export function formatPayloadSize(bytes: number): string {

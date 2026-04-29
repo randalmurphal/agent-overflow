@@ -3,6 +3,16 @@
 # `make dev DEBUG=1` enables lightweight frontend UI render tracing.
 # `UI_TRACE=1` is the explicit form; DEBUG=1 is the short dev-mode alias.
 UI_TRACE ?= $(DEBUG)
+
+# `make dev PROVIDER_DEBUG=1` enables raw provider stdio capture. Logs
+# land in <dbDir>/logs/provider-events-YYYY-MM-DD.ndjson (one JSON object
+# per line: {ts, threadId, direction, provider, data}). This is the
+# Makefile shorthand for AGENT_OVERFLOW_DEBUG=provider; if you've already
+# set that env var directly it passes through unchanged.
+ifeq ($(PROVIDER_DEBUG),1)
+AGENT_OVERFLOW_DEBUG := provider
+endif
+
 GO_PACKAGE_ROOTS := . ./internal/... ./build/...
 
 ifeq ($(shell uname -s),Darwin)
@@ -61,7 +71,7 @@ install:
 	cd frontend && corepack pnpm install --frozen-lockfile
 
 dev:
-	VITE_AGENT_OVERFLOW_UI_TRACE=$(UI_TRACE) wails3 dev
+	AGENT_OVERFLOW_DEBUG=$(AGENT_OVERFLOW_DEBUG) VITE_AGENT_OVERFLOW_UI_TRACE=$(UI_TRACE) wails3 dev
 
 # dev-wsl: cross-compiles the Linux ELF + Windows .exe launcher inside
 # this WSL distro, copies the .exe to a versioned Windows-native path,
@@ -104,7 +114,7 @@ dev-wsl:
 	fi
 	@set -e; \
 	DEV_VERSION=dev-$$(date +%Y%m%d%H%M%S)-$$$$; \
-	$(MAKE) build-wsl WSL_VERSION=$$DEV_VERSION WSL_FORCE_RELINK=1; \
+	$(MAKE) build-wsl WSL_VERSION=$$DEV_VERSION WSL_FORCE_RELINK=1 UI_TRACE=$(UI_TRACE); \
 	WIN_LAD=$$(/mnt/c/Windows/System32/cmd.exe /c 'echo %LOCALAPPDATA%' 2>/dev/null | tr -d '\r\n'); \
 	if [ -z "$$WIN_LAD" ]; then \
 		echo "ERROR: could not resolve %LOCALAPPDATA% via cmd.exe interop."; \
@@ -116,14 +126,14 @@ dev-wsl:
 	find "$$WIN_DEV_DIR_LINUX" -maxdepth 1 -name 'agent-overflow-dev-*.exe' ! -name "agent-overflow-$$DEV_VERSION.exe" -delete 2>/dev/null || true; \
 	cp bin/agent-overflow.exe "$$WIN_DEV_EXE_LINUX"; \
 	echo "Launching $$WIN_DEV_EXE_LINUX --distro $$WSL_DISTRO_NAME"; \
-	"$$WIN_DEV_EXE_LINUX" --distro "$$WSL_DISTRO_NAME"
+	AGENT_OVERFLOW_DEBUG="$(AGENT_OVERFLOW_DEBUG)" "$$WIN_DEV_EXE_LINUX" --distro "$$WSL_DISTRO_NAME"
 
 # build-wsl: cross-compiles the Linux ELF backend + Windows .exe launcher
 # without running. Use this when you want to hand the .exe off (e.g.
 # copy to the Windows desktop, double-click later) instead of launching
 # in place.
 build-wsl:
-	cd frontend && corepack pnpm run build
+	cd frontend && VITE_AGENT_OVERFLOW_UI_TRACE=$(UI_TRACE) corepack pnpm run build
 	@if [ -n "$(WSL_FORCE_RELINK)" ]; then rm -f bin/agent-overflow.exe bin/agent-overflow-linux; fi
 	VERSION="$(WSL_VERSION)" wails3 task windows:build:wsl
 

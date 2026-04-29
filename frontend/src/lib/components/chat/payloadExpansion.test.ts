@@ -1,10 +1,14 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getBindingMock, resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { createPayloadExpansion, formatPayloadSize } from './payloadExpansion.svelte';
 
 describe('payloadExpansion', () => {
   beforeEach(() => {
     resetBindingMocks();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it('loads preview before full payload and discards both on collapse', async () => {
@@ -76,6 +80,42 @@ describe('payloadExpansion', () => {
     expect(formatPayloadSize(2_048)).toBe('2.0 KB');
     expect(formatPayloadSize(2_097_152)).toBe('2.0 MB');
   });
+
+  it('times out a stuck preview request and can retry', async () => {
+    vi.useFakeTimers();
+    let call = 0;
+    setBindingMock('GetPayloadPreview', () => {
+      call += 1;
+      if (call === 1) return new Promise(() => {});
+      return Promise.resolve({
+        data: 'retry ok',
+        nextOffset: 8,
+        totalSize: 8,
+        isComplete: true,
+      });
+    });
+
+    const expansion = createPayloadExpansion(
+      'payload-timeout',
+      'thread-timeout',
+      32 * 1024,
+      256 * 1024,
+      5,
+    );
+    const first = expansion.expand();
+    await vi.advanceTimersByTimeAsync(5);
+    await first;
+
+    expect(expansion.expanded).toBe(true);
+    expect(expansion.loading).toBe(false);
+    expect(expansion.error).toContain('timed out');
+
+    await expansion.retry();
+    expect(expansion.error).toBeNull();
+    expect(expansion.displayData).toBe('retry ok');
+    expect(getBindingMock('GetPayloadPreview')).toHaveBeenCalledTimes(2);
+  });
+
 
   it('concatenates correctly across multiple showFull() calls (chunk-buffer regression test)', async () => {
     // Pin the chunk-buffer refactor: showFull() called repeatedly

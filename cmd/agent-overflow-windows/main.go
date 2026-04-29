@@ -141,6 +141,11 @@ func main() {
 	// to silently writing into a phantom path.
 	exportAppDataToWSL()
 
+	// Forward AGENT_OVERFLOW_DEBUG (if set) to the WSL backend so raw
+	// provider stdio capture works for `make dev-wsl PROVIDER_DEBUG=1`
+	// and for end users who set the env var in their Windows shell.
+	forwardDebugEnvToWSL()
+
 	distros, err := wsllauncher.ListDistros(context.Background())
 	if err != nil {
 		log.Printf("list distros: %v", err)
@@ -221,15 +226,41 @@ func exportAppDataToWSL() {
 		log.Printf("set %s: %v", wsldistro.AppDataEnv, err)
 		return
 	}
-	rule := wsldistro.AppDataEnv + "/p"
+	if err := prependWSLENVRule(wsldistro.AppDataEnv + "/p"); err != nil {
+		log.Printf("set WSLENV: %v", err)
+	}
+}
+
+// forwardDebugEnvToWSL forwards AGENT_OVERFLOW_DEBUG, when set in the
+// launcher's environment, to the WSL-side backend by adding it to
+// WSLENV. This lets `make dev-wsl PROVIDER_DEBUG=1` enable raw provider
+// stdio capture inside the WSL backend the same way `make dev` does for
+// the non-WSL path. End users can also set the env var in their Windows
+// shell (or System Properties) and it will reach the backend.
+//
+// No-op when the var is unset, which is the production default. The
+// var is forwarded as a plain string (no /p flag) — its value is a
+// comma-separated topic list, not a path.
+func forwardDebugEnvToWSL() {
+	if os.Getenv("AGENT_OVERFLOW_DEBUG") == "" {
+		return
+	}
+	if err := prependWSLENVRule("AGENT_OVERFLOW_DEBUG"); err != nil {
+		log.Printf("forward AGENT_OVERFLOW_DEBUG via WSLENV: %v", err)
+	}
+}
+
+// prependWSLENVRule prepends rule to WSLENV, preserving any rules a
+// developer or another tool has already set. WSLENV uses ":" as the
+// separator; wsl.exe processes entries left-to-right, so prepending
+// keeps our entries deterministic without dropping prior ones.
+func prependWSLENVRule(rule string) error {
 	existing := os.Getenv("WSLENV")
 	merged := rule
 	if existing != "" {
 		merged = rule + ":" + existing
 	}
-	if err := os.Setenv("WSLENV", merged); err != nil {
-		log.Printf("set WSLENV: %v", err)
-	}
+	return os.Setenv("WSLENV", merged)
 }
 
 // resolveChosenDistro picks the distro to launch in based on (in

@@ -11,6 +11,12 @@
   import ToolDecisionChip from './ToolDecisionChip.svelte';
   import { createPayloadExpansion, formatPayloadSize } from './payloadExpansion.svelte';
   import AnsiText from './AnsiText.svelte';
+  import {
+    commandLabelForStatus,
+    commandTextForItem,
+    displayCommandForItem,
+  } from './commandDisplay';
+  import { parseJsonObject } from '../../utils/parseJsonObject';
 
   let {
     pane,
@@ -22,8 +28,8 @@
   }: {
     pane?: ThreadPane;
     item: Item;
-    meta: CommandOutputMeta;
-    payloadId: string;
+    meta?: CommandOutputMeta | null;
+    payloadId?: string;
     allowShowFull?: boolean;
     /** Suppress the completion badge in surfaces where the parent
      * already renders a status icon (e.g. BackgroundTaskTrayRow's
@@ -36,7 +42,27 @@
   const localFallback = untrack(() =>
     pane ? null : createPayloadExpansion(() => payloadId, () => item.threadId),
   );
-  const expansion = $derived(pane ? pane.expansionStateFor(item) : localFallback!);
+  let expansion = $derived(pane ? pane.expansionStateFor(item) : localFallback!);
+  let hasPayload = $derived(Boolean(payloadId));
+  let itemMeta = $derived(parseJsonObject(item.meta));
+  let payloadMeta = $derived(parseJsonObject(item.payloadMeta));
+  let deferredOutputState = $derived.by(() => {
+    if (!itemMeta) return '';
+    const state = itemMeta.notification_output_state ?? itemMeta.output_file_state;
+    return typeof state === 'string' ? state : '';
+  });
+  let deferredOutputError = $derived.by(() => {
+    if (!itemMeta) return '';
+    const error = itemMeta.notification_output_error ?? itemMeta.output_file_error;
+    return typeof error === 'string' ? error : '';
+  });
+  let hasBody = $derived(
+    hasPayload || deferredOutputState === 'loading' || deferredOutputState === 'error',
+  );
+  let rawCommand = $derived(commandTextForItem(item, meta));
+  let displayCommand = $derived(displayCommandForItem(item, meta));
+  let commandLabel = $derived(commandLabelForStatus(item.status));
+  let isBackgroundedLaunch = $derived(item.kind === 'tool_call' && item.isBackground === true);
 
   let time = $derived(
     new Date(item.createdAt).toLocaleTimeString(undefined, {
@@ -45,34 +71,42 @@
     }),
   );
 
-  // Pass the parent's typed meta inline so the helper does not re-parse
-  // payloadMeta. The runtime object retains is_error / exit_code keys
-  // even when the typed view drops them.
+  // payloadMeta is the canonical status source. Callers may pass a
+  // normalized CommandOutputMeta that intentionally contains only the
+  // display fields, while raw payloadMeta can also carry snake-case
+  // exit/error fields from provider-specific paths.
   let completionStatus = $derived(
-    deriveCompletionStatus(item, { meta: meta as unknown as Record<string, unknown> }),
+    deriveCompletionStatus(item, {
+      meta: payloadMeta ?? (meta as unknown as Record<string, unknown> | undefined),
+    }),
   );
 </script>
 
 <div class="mb-1.5 overflow-hidden">
-  <!-- Header -->
-  <button
-    class="w-full rounded-[var(--radius-control)] px-1 py-1 flex items-center gap-2 text-[12px] cursor-pointer hover:bg-surface-2/20 transition-colors"
-    onclick={() => expansion.toggle()}
-    aria-expanded={expansion.expanded}
-    aria-controls="cmd-output-{payloadId}"
-    aria-label="Toggle Command Output: {meta.command}"
-  >
-    <span
-      class="flex size-3 shrink-0 items-center justify-center text-fg-subtle select-none transition-transform duration-150"
-      class:rotate-90={expansion.expanded}
-      aria-hidden="true"
-    >
-      <Icon icon={ChevronRight} size={12} strokeWidth={2} class="opacity-70" />
+  {#snippet headerContent(showChevron: boolean)}
+    {#if showChevron}
+      <span
+        class="flex size-3 shrink-0 items-center justify-center text-fg-subtle select-none transition-transform duration-150"
+        class:rotate-90={expansion.expanded}
+        aria-hidden="true"
+      >
+        <Icon icon={ChevronRight} size={12} strokeWidth={2} class="opacity-70" />
+      </span>
+    {/if}
+    <span class="shrink-0 text-[12px] font-medium text-fg-muted" data-testid="command-output-label">
+      {commandLabel}:
     </span>
-    <span class="font-mono text-[12px] text-fg-muted truncate">{meta.command}</span>
+    <span class="min-w-0 flex-1 truncate font-mono text-[12px] text-fg-muted" data-testid="command-output-command">{displayCommand}</span>
     <ToolDecisionChip decision={item.decision} />
-    {#if showCompletionBadge && completionStatus !== null}
-      <CompletionBadge status={completionStatus} />
+    {#if isBackgroundedLaunch}
+      <span
+        class="shrink-0 text-[10px] text-accent opacity-70 transition-opacity"
+        data-testid="command-output-status"
+        title="Running in background"
+        aria-label="Backgrounded"
+      >
+        …
+      </span>
     {/if}
     <time
       class="ml-auto text-[10px] text-fg-hint shrink-0 tabular-nums"
@@ -81,17 +115,51 @@
     >
       {time}
     </time>
-  </button>
+    {#if showCompletionBadge && !isBackgroundedLaunch && completionStatus !== null}
+      <CompletionBadge status={completionStatus} />
+    {/if}
+  {/snippet}
+
+  <!-- Header -->
+  {#if hasBody}
+    <button
+      class="w-full rounded-[var(--radius-control)] px-1 py-1 flex items-center gap-2 text-[12px] cursor-pointer hover:bg-surface-2/20 transition-colors"
+      onclick={() => expansion.toggle()}
+      aria-expanded={expansion.expanded}
+      aria-controls="cmd-output-{payloadId || item.id}"
+      aria-label="Toggle Command Output: {rawCommand}"
+      data-testid="command-output-toggle"
+    >
+      {@render headerContent(true)}
+    </button>
+  {:else}
+    <div
+      class="w-full rounded-[var(--radius-control)] px-1 py-1 flex items-center gap-2 text-[12px]"
+      data-testid="command-output-row"
+    >
+      {@render headerContent(false)}
+    </div>
+  {/if}
 
   <!-- Output content -->
-  {#if expansion.expanded}
-    <div id="cmd-output-{payloadId}" transition:slide={{ duration: 150 }} class="ml-5 border-l border-border-subtle bg-surface-0/35">
+  {#if hasBody && expansion.expanded}
+    <div id="cmd-output-{payloadId || item.id}" transition:slide={{ duration: 150 }} class="ml-5 border-l border-border-subtle bg-surface-0/35">
       <div class="px-3 py-2 overflow-x-auto">
-        {#if expansion.loading}
+        {#if hasPayload && expansion.loading}
           <p class="text-[11px] text-fg-subtle" role="status" aria-live="polite">Loading full output…</p>
-        {:else if expansion.error}
-          <p class="text-[11px] text-error" role="alert">Failed to load output: {expansion.error}</p>
-        {:else}
+        {:else if hasPayload && expansion.error}
+          <div class="space-y-2">
+            <p class="text-[11px] text-error" role="alert">Failed to load output: {expansion.error}</p>
+            <button
+              type="button"
+              class="text-[11px] text-accent hover:underline cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 rounded"
+              onclick={() => expansion.retry()}
+              data-testid="command-output-retry"
+            >
+              Retry
+            </button>
+          </div>
+        {:else if hasPayload}
           <AnsiText source={expansion.displayData ?? ''} class="text-[11px] whitespace-pre text-fg-muted leading-relaxed" />
           {#if expansion.hasMore && allowShowFull}
             <button
@@ -107,6 +175,14 @@
               Preview truncated ({formatPayloadSize(expansion.totalSize)})
             </p>
           {/if}
+        {:else if deferredOutputState === 'loading'}
+          <p class="text-[11px] text-fg-subtle animate-pulse" role="status" aria-live="polite">
+            Loading…
+          </p>
+        {:else if deferredOutputState === 'error'}
+          <p class="text-[11px] text-error" role="alert">
+            Failed to load: {deferredOutputError || 'Background output could not be loaded.'}
+          </p>
         {/if}
       </div>
       {#if !expansion.loading && !expansion.error && expansion.displayData}

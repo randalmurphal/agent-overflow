@@ -24,10 +24,12 @@ confirm against the Python SDK or captured samples before coding.
    authoritative for interpreting shapes the SDK leaves underspecified
    (`task_updated.patch`, TaskOutput `tool_use_result.task`).
 
-**Capturing fresh samples**: set `AGENT_OVERFLOW_DEBUG=provider` before
-launching the app. Raw stdio lines (pre-parse) land in
-`<dbDir>/logs/provider-events-YYYY-MM-DD.ndjson`. See
-`internal/logging/process.go:273-286`.
+**Capturing fresh samples**: run `make dev PROVIDER_DEBUG=1` (or
+`make dev-wsl PROVIDER_DEBUG=1` on the WSL launcher path), or set
+`AGENT_OVERFLOW_DEBUG=provider` directly before launching the app. Raw
+stdio lines (pre-parse) land in
+`<dbDir>/logs/provider-events-YYYY-MM-DD.ndjson` with RFC3339Nano
+timestamps. See `internal/provider/process.go:303-316`.
 
 ## Envelope types
 

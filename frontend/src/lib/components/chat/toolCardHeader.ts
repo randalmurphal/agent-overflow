@@ -12,6 +12,8 @@
 // record). Everything that renders the header reads from the returned
 // record, never peeks back at the raw tool name.
 
+import { isCommandToolName } from './commandDisplay';
+
 export type ToolKindIcon =
   | 'terminal'
   | 'file'
@@ -69,9 +71,11 @@ export function classifyToolName(toolName: string | undefined | null): ToolKindV
     };
   }
 
+  if (isCommandToolName(raw)) {
+    return { icon: 'terminal', label: 'Bash', displayName: 'Bash', isSubagent: false };
+  }
+
   switch (raw) {
-    case 'Bash':
-      return { icon: 'terminal', label: 'Bash', displayName: 'Bash', isSubagent: false };
     case 'Edit':
     case 'Write':
     case 'MultiEdit':

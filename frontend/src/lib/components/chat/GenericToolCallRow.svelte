@@ -151,11 +151,6 @@
     >
       {runningLabel}
     </span>
-  {:else if completionStatus !== null}
-    <CompletionBadge
-      status={completionStatus}
-      class="opacity-80 transition-opacity group-hover/tool:opacity-100"
-    />
   {/if}
   {#if durationMs !== null}
     <span
@@ -172,6 +167,12 @@
   >
     {time}
   </time>
+  {#if runningLabel === null && completionStatus !== null}
+    <CompletionBadge
+      status={completionStatus}
+      class="opacity-80 transition-opacity group-hover/tool:opacity-100"
+    />
+  {/if}
 {/snippet}
 
 <div
@@ -212,9 +213,19 @@
           Loading…
         </p>
       {:else if expansion.error}
-        <p class="px-3 py-2 text-[11px] text-error" role="alert">
-          Failed to load: {expansion.error}
-        </p>
+        <div class="space-y-2 px-3 py-2">
+          <p class="text-[11px] text-error" role="alert">
+            Failed to load: {expansion.error}
+          </p>
+          <button
+            type="button"
+            class="text-[11px] text-accent hover:underline cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 rounded"
+            onclick={() => expansion.retry()}
+            data-testid="tool-call-card-retry"
+          >
+            Retry
+          </button>
+        </div>
       {:else if expansion.displayData !== null}
         <div
           class="ansi-body max-h-60 overflow-auto whitespace-pre-wrap break-words px-3 py-2 text-[11px] leading-relaxed text-fg-muted"

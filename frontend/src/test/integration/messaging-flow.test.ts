@@ -194,7 +194,7 @@ describe('App integration — messaging flow', () => {
       createdAt: 1,
       updatedAt: 1,
     });
-    expect(await findByText(/Bash: ls -la/)).toBeInTheDocument();
+    expect(await findByText(/ls -la/)).toBeInTheDocument();
 
     // A second concurrent tool_call shows up as its own row — no
     // grouping chip, no relocation.
@@ -346,7 +346,7 @@ describe('App integration — messaging flow', () => {
       updatedAt: 10,
     });
     await flush();
-    expect(await findByText(/Bash: echo hello/)).toBeInTheDocument();
+    expect(await findByText(/echo hello/)).toBeInTheDocument();
 
     emitItemEventUpsert({
       id: 'tool-xyz',
@@ -483,12 +483,12 @@ describe('App integration — messaging flow', () => {
     emitItemEventUpsert(launchItem);
     await flush();
 
-    // The inline ToolCallCard renders "…" in the status chip while
+    // The inline command row renders "…" in the status chip while
     // status=running AND isBackground=true. This is the spec's sole
     // render signal for "work dispatched, waiting for sibling" —
     // invariant 24 + §UI components driven by this state. The chip
     // replaces "running"; no separate badge element is rendered.
-    const status = await findByTestId('tool-call-card-status');
+    const status = await findByTestId('command-output-status');
     expect(status.textContent?.trim()).toBe('…');
     expect(status.getAttribute('aria-label')).toBe('Backgrounded');
 
@@ -569,7 +569,7 @@ describe('App integration — messaging flow', () => {
     });
     // The launch row keeps `…` even after the sibling completes.
     const launchStatus = document.querySelector(
-      '[data-testid="tool-call-card-status"][data-status="running"]',
+      '[data-testid="command-output-status"]',
     );
     expect(launchStatus?.textContent?.trim()).toBe('…');
   });

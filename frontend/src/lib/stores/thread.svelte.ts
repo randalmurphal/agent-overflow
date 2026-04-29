@@ -622,6 +622,11 @@ export function createThreadPane() {
         await inner.showFull();
         enforceExpansionBudget(key);
       },
+      retry: async () => {
+        touchExpansion(key);
+        await inner.retry();
+        enforceExpansionBudget(key);
+      },
       reset: () => { inner.reset(); },
     };
   }

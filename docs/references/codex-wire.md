@@ -22,9 +22,12 @@ parser code.
    `eventHelpers.ts:676-681` is **dead code** (those fields don't
    exist on the Codex wire). Don't copy that path.
 
-**Capturing fresh samples**: set `AGENT_OVERFLOW_DEBUG=provider` before
-launching the app. Raw stdio lines (pre-parse, JSON-RPC framing
-included) land in `<dbDir>/logs/provider-events-YYYY-MM-DD.ndjson`.
+**Capturing fresh samples**: run `make dev PROVIDER_DEBUG=1` (or
+`make dev-wsl PROVIDER_DEBUG=1` on the WSL launcher path), or set
+`AGENT_OVERFLOW_DEBUG=provider` directly before launching the app. Raw
+stdio lines (pre-parse, JSON-RPC framing included) land in
+`<dbDir>/logs/provider-events-YYYY-MM-DD.ndjson` with RFC3339Nano
+timestamps.
 
 ## The two critical differences from Claude
 
