@@ -63,7 +63,7 @@ describe("classifyToolName", () => {
     expect(classifyToolName("Bash").icon).toBe("terminal");
   });
 
-  it.each(["Edit", "Write", "MultiEdit"])(
+  it.each(["Edit", "Write", "MultiEdit", "file_change", "fileChange"])(
     "%s maps to file icon with matching label",
     (name) => {
       const out = classifyToolName(name);

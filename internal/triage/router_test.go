@@ -1775,6 +1775,34 @@ func TestDiffWithoutReplaceAppendsPayloads(t *testing.T) {
 	}
 }
 
+func TestUpgradeOnlyDiffDoesNotCreateFallbackRow(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	meta, _ := json.Marshal(map[string]any{
+		"upgrade_only": true,
+		"source":       "turn/diff/updated",
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventDiff,
+		ThreadID:  "t1",
+		Content:   "diff --git a/main.go b/main.go\n--- a/main.go\n+++ b/main.go\n@@ -1 +1 @@\n-old\n+new\n",
+		Meta:      meta,
+		Replace:   true,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle: %v", err)
+	}
+
+	items, err := st.ListItems("t1")
+	if err != nil {
+		t.Fatalf("list items: %v", err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("upgrade-only diff created fallback rows: %+v", items)
+	}
+}
+
 func TestCommandOutputPersistsHeavy(t *testing.T) {
 	router, st, emissions := newTestRouter(t)
 	createTestThread(t, st, "t1")

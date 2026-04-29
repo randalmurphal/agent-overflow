@@ -14,6 +14,15 @@ import (
 )
 
 func (r *Router) handleDiff(evt provider.ProviderEvent) error {
+	if isUpgradeOnlyDiff(evt) {
+		turnIndex, err := r.currentTurnIndex(evt.ThreadID)
+		if err != nil {
+			return fmt.Errorf("diff turn index: %w", err)
+		}
+		_, err = r.upgradeSummaryOnlyToolResults(evt.ThreadID, turnIndex, evt.Content)
+		return err
+	}
+
 	if itemID := eventItemID(evt); itemID != "" {
 		item, found, err := r.store.GetThreadItem(evt.ThreadID, itemID)
 		if err != nil {
@@ -58,6 +67,17 @@ func (r *Router) handleDiff(evt provider.ProviderEvent) error {
 		}
 	}
 	return r.attachPayloadToItem(item, evt, "diff", item.Summary, evt.Replace)
+}
+
+func isUpgradeOnlyDiff(evt provider.ProviderEvent) bool {
+	var meta struct {
+		UpgradeOnly bool   `json:"upgrade_only"`
+		Source      string `json:"source"`
+	}
+	if len(evt.Meta) == 0 || json.Unmarshal(evt.Meta, &meta) != nil {
+		return false
+	}
+	return meta.UpgradeOnly && meta.Source == "turn/diff/updated"
 }
 
 func (r *Router) handleCommandOutput(evt provider.ProviderEvent) error {

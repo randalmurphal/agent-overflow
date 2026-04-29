@@ -226,6 +226,10 @@ func TestNormalizeWorkspaceRelativePaths(t *testing.T) {
 			}
 		})
 	}
+
+	if got := normalizeWorkspaceRelativePaths([]string{"/work/project/src/foo.go"}, ""); got != nil {
+		t.Fatalf("absolute path without workspace = %v, want nil", got)
+	}
 }
 
 func TestToolCallSucceeded(t *testing.T) {

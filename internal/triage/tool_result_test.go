@@ -114,6 +114,9 @@ func TestFileChangeToolResultUpgradesFromTurnDiff(t *testing.T) {
 	if toolItem.Summary == "" {
 		t.Fatalf("upgraded tool_result item summary was empty")
 	}
+	if toolItem.Summary != upgraded.Title {
+		t.Fatalf("tool item summary = %q, want title %q", toolItem.Summary, upgraded.Title)
+	}
 }
 
 func TestFileChangeToolResultDoesNotOverwriteExistingExactPatch(t *testing.T) {
@@ -223,6 +226,241 @@ func TestExtractFileChangeToolResultNormalizesAbsoluteWorkspacePaths(t *testing.
 	}
 	if meta.InlineDiff.Files[0].Path != "src/app.ts" {
 		t.Fatalf("expected normalized relative path, got %+v", meta.InlineDiff.Files[0])
+	}
+}
+
+func TestExtractFileChangeToolResultDropsUnsafePaths(t *testing.T) {
+	workspace := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "escape.ts")
+
+	raw, err := json.Marshal(map[string]any{
+		"item": map[string]any{
+			"type": "fileChange",
+			"changes": []map[string]any{
+				{"path": "src/app.ts", "kind": map[string]any{"type": "update", "move_path": nil}},
+				{"path": "../escape.ts", "kind": map[string]any{"type": "update", "move_path": nil}},
+				{"path": outside, "kind": map[string]any{"type": "update", "move_path": nil}},
+				{"path": ".git/config", "kind": map[string]any{"type": "update", "move_path": nil}},
+				{"path": ":(top)src/app.ts", "kind": map[string]any{"type": "update", "move_path": nil}},
+				{"path": "bad\u0000path.ts", "kind": map[string]any{"type": "update", "move_path": nil}},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal raw tool result: %v", err)
+	}
+
+	meta, _, ok := extractFileChangeToolResult(raw, workspace)
+	if !ok {
+		t.Fatal("expected valid fileChange entry to extract")
+	}
+	if meta.InlineDiff == nil || len(meta.InlineDiff.Files) != 1 {
+		t.Fatalf("unexpected inline diff meta: %+v", meta.InlineDiff)
+	}
+	if meta.InlineDiff.Files[0].Path != "src/app.ts" {
+		t.Fatalf("files = %+v, want only src/app.ts", meta.InlineDiff.Files)
+	}
+}
+
+func TestExtractFileChangeToolResultReadsCurrentCodexFileChangeShape(t *testing.T) {
+	raw := json.RawMessage(`{
+		"item": {
+			"id": "patch-1",
+			"type": "fileChange",
+			"changes": [
+				{
+					"path": "src/app.ts",
+					"kind": {"type": "update", "move_path": null},
+					"diff": "@@ -1 +1,2 @@\n const value = 1;\n+const next = 2;"
+				},
+				{
+					"path": "src/old.ts",
+					"kind": {"type": "update", "move_path": "src/new.ts"},
+					"diff": "@@ -1 +1 @@\n-old\n+new"
+				}
+			],
+			"status": "completed"
+		}
+	}`)
+
+	meta, diffData, ok := extractFileChangeToolResult(raw, "")
+	if !ok {
+		t.Fatal("expected current fileChange shape to extract")
+	}
+	if meta.Title != "Edited 2 files (+2 -1)" {
+		t.Fatalf("title = %q, want %q", meta.Title, "Edited 2 files (+2 -1)")
+	}
+	if meta.Preview != meta.Title {
+		t.Fatalf("preview = %q, want title %q", meta.Preview, meta.Title)
+	}
+	if meta.InlineDiff == nil || meta.InlineDiff.Availability != "exact_patch" {
+		t.Fatalf("inline diff = %+v, want exact_patch", meta.InlineDiff)
+	}
+	if len(meta.InlineDiff.Files) != 2 {
+		t.Fatalf("files = %+v, want 2", meta.InlineDiff.Files)
+	}
+	renamed := meta.InlineDiff.Files[1]
+	if renamed.Path != "src/new.ts" || renamed.PreviousPath != "src/old.ts" || renamed.Kind != "renamed" {
+		t.Fatalf("rename metadata = %+v", renamed)
+	}
+	diff := string(diffData)
+	if !strings.Contains(diff, "rename from src/old.ts") || !strings.Contains(diff, "rename to src/new.ts") {
+		t.Fatalf("expected rename headers in exact patch, got %q", diff)
+	}
+}
+
+func TestBuildExactInlineDiffPreservesRenamePreviousPath(t *testing.T) {
+	diff := strings.Join([]string{
+		"diff --git a/src/old.ts b/src/new.ts",
+		"rename from src/old.ts",
+		"rename to src/new.ts",
+		"--- a/src/old.ts",
+		"+++ b/src/new.ts",
+		"@@ -1 +1 @@",
+		"-old",
+		"+new",
+	}, "\n")
+
+	inlineDiff := buildExactInlineDiff(diff)
+	if inlineDiff == nil || len(inlineDiff.Files) != 1 {
+		t.Fatalf("inline diff = %+v, want one file", inlineDiff)
+	}
+	file := inlineDiff.Files[0]
+	if file.Path != "src/new.ts" || file.PreviousPath != "src/old.ts" || file.Kind != "renamed" {
+		t.Fatalf("rename metadata = %+v", file)
+	}
+}
+
+func TestExtractFileChangeToolResultPreservesPartialSummaryCounts(t *testing.T) {
+	raw := json.RawMessage(`{
+		"item": {
+			"id": "patch-1",
+			"type": "fileChange",
+			"changes": [
+				{
+					"path": "src/exact.ts",
+					"kind": {"type": "update", "move_path": null},
+					"diff": "@@ -1 +1,2 @@\n const value = 1;\n+const next = 2;"
+				},
+				{
+					"path": "src/summary.ts",
+					"kind": {"type": "update", "move_path": null}
+				}
+			]
+		}
+	}`)
+
+	meta, diffData, ok := extractFileChangeToolResult(raw, "")
+	if !ok {
+		t.Fatal("expected mixed fileChange extraction to succeed")
+	}
+	if meta.InlineDiff == nil || meta.InlineDiff.Availability != "summary_only" {
+		t.Fatalf("inline diff = %+v, want summary_only", meta.InlineDiff)
+	}
+	if meta.InlineDiff.Insertions != 1 || meta.InlineDiff.Deletions != 0 {
+		t.Fatalf("summary counts = +%d -%d, want +1 -0", meta.InlineDiff.Insertions, meta.InlineDiff.Deletions)
+	}
+	if meta.Title != "Edited 2 files (+1 -0)" {
+		t.Fatalf("title = %q, want %q", meta.Title, "Edited 2 files (+1 -0)")
+	}
+	if len(diffData) != 0 {
+		t.Fatalf("summary-only diff data = %q, want empty", string(diffData))
+	}
+}
+
+func TestExtractFileChangeToolResultBuildsAddAndDeleteContentPatches(t *testing.T) {
+	raw := json.RawMessage(`{
+		"item": {
+			"id": "patch-1",
+			"type": "fileChange",
+			"changes": [
+				{"path": "src/added.ts", "kind": {"type": "add"}, "diff": "one\ntwo\n"},
+				{"path": "src/deleted.ts", "kind": {"type": "delete"}, "diff": "gone\n"}
+			]
+		}
+	}`)
+
+	meta, diffData, ok := extractFileChangeToolResult(raw, "")
+	if !ok {
+		t.Fatal("expected add/delete fileChange extraction to succeed")
+	}
+	if meta.Title != "Edited 2 files (+2 -1)" {
+		t.Fatalf("title = %q, want %q", meta.Title, "Edited 2 files (+2 -1)")
+	}
+	files := meta.InlineDiff.Files
+	if len(files) != 2 {
+		t.Fatalf("files = %+v, want 2", files)
+	}
+	if files[0].Kind != "added" || files[0].Insertions != 2 || files[0].Deletions != 0 {
+		t.Fatalf("added file metadata = %+v", files[0])
+	}
+	if files[1].Kind != "deleted" || files[1].Insertions != 0 || files[1].Deletions != 1 {
+		t.Fatalf("deleted file metadata = %+v", files[1])
+	}
+	diff := string(diffData)
+	if !strings.Contains(diff, "+one\n+two") {
+		t.Fatalf("expected added content lines, got %q", diff)
+	}
+	if !strings.Contains(diff, "-gone") {
+		t.Fatalf("expected deleted content lines, got %q", diff)
+	}
+}
+
+func TestFileChangeCompletionWithoutLaunchPreservesTerminalStatus(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		itemStatus string
+		wantStatus string
+	}{
+		{name: "failed", itemStatus: "failed", wantStatus: statusErrored},
+		{name: "declined", itemStatus: "declined", wantStatus: "declined"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			router, st, _ := newTestRouter(t)
+			createToolResultThread(t, st, "t1", t.TempDir())
+
+			meta, err := json.Marshal(map[string]any{
+				"toolName":    "file_change",
+				"item_status": tc.itemStatus,
+				"item": map[string]any{
+					"id":   "fc-" + tc.name,
+					"type": "fileChange",
+					"changes": []map[string]any{{
+						"path": "src/app.ts",
+						"kind": map[string]any{"type": "update", "move_path": nil},
+						"diff": "@@ -1 +1 @@\n-old\n+new",
+					}},
+				},
+			})
+			if err != nil {
+				t.Fatalf("marshal meta: %v", err)
+			}
+
+			if err := router.Handle(provider.ProviderEvent{
+				Kind:      provider.EventToolComplete,
+				ThreadID:  "t1",
+				ItemID:    "fc-" + tc.name,
+				ItemType:  "file_change",
+				Meta:      meta,
+				Timestamp: time.Now(),
+			}); err != nil {
+				t.Fatalf("complete: %v", err)
+			}
+
+			item, found, err := st.GetItem("fc-" + tc.name)
+			if err != nil {
+				t.Fatalf("get item: %v", err)
+			}
+			if !found {
+				t.Fatal("expected no-launch fileChange completion to persist")
+			}
+			if item.Status != tc.wantStatus {
+				t.Fatalf("status = %q, want %q", item.Status, tc.wantStatus)
+			}
+			if item.PayloadID == "" {
+				t.Fatal("expected rich file-change payload")
+			}
+		})
 	}
 }
 

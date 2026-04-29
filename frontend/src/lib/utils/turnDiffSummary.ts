@@ -44,6 +44,7 @@ function isChangeKind(value: unknown): value is DiffMeta['changeKind'] {
 
 function normalizeChangedFile(file: {
   path: unknown;
+  previousPath?: unknown;
   insertions: unknown;
   deletions: unknown;
   kind: unknown;
@@ -52,13 +53,17 @@ function normalizeChangedFile(file: {
   if (!isNonEmptyString(file.path)) return null;
   if (!isFiniteNonNegativeNumber(file.insertions)) return null;
   if (!isFiniteNonNegativeNumber(file.deletions)) return null;
-  return {
+  const changedFile: ChangedFile = {
     path: file.path,
     insertions: file.insertions,
     deletions: file.deletions,
     kind: isChangeKind(file.kind) ? file.kind : 'modified',
     payloadId: file.payloadId,
   };
+  if (isNonEmptyString(file.previousPath)) {
+    changedFile.previousPath = file.previousPath;
+  }
+  return changedFile;
 }
 
 /**
@@ -118,6 +123,7 @@ export function changedFilesForItem(item: Item): ChangedFile[] {
     return (meta.inlineDiff?.files ?? []).flatMap((file) => {
       const changedFile = normalizeChangedFile({
         path: file.path,
+        previousPath: file.previousPath,
         insertions: file.insertions ?? 0,
         deletions: file.deletions ?? 0,
         kind: file.kind,

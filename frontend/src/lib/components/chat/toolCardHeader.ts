@@ -125,6 +125,8 @@ export function classifyToolName(
     case "Edit":
     case "Write":
     case "MultiEdit":
+    case "file_change":
+    case "fileChange":
       return { icon: "file", label: raw, displayName: raw, isSubagent: false };
     case "Read":
       return {

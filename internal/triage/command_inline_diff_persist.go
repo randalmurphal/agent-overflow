@@ -90,6 +90,10 @@ func (r *Router) persistToolResult(evt provider.ProviderEvent, meta ToolResultMe
 		item.UpdatedAt = now
 		return r.persistItem(item, &payload)
 	}
+	status := statusCompleted
+	if evt.Kind == provider.EventToolComplete {
+		status = completionStatus(decodeToolCompleteMeta(evt.Meta))
+	}
 
 	turnIndex, err := r.turnIndexForEvent(evt)
 	if err != nil {
@@ -101,7 +105,7 @@ func (r *Router) persistToolResult(evt provider.ProviderEvent, meta ToolResultMe
 		TurnIndex: turnIndex,
 		Kind:      itemKindToolCall,
 		Role:      "assistant",
-		Status:    statusCompleted,
+		Status:    status,
 		Summary:   summary,
 		PayloadID: payloadID,
 		ParentID:  eventParentID(evt),

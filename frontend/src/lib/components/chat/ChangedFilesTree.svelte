@@ -34,6 +34,12 @@
     return lastSlash === -1 ? path : path.slice(lastSlash + 1);
   }
 
+  function fileLabel(file: ChangedFile): string {
+    const current = fileName(file.path);
+    if (!file.previousPath) return current;
+    return `${fileName(file.previousPath)} -> ${current}`;
+  }
+
   function toggleDir(dir: string) {
     const next = new Set(expandedDirs);
     if (next.has(dir)) {
@@ -117,10 +123,10 @@
             class="flex flex-1 min-w-0 items-center gap-2 text-left cursor-pointer bg-transparent border-0 p-0"
             onclick={() => toggleFile(file.path)}
             aria-expanded={expandedFile === file.path}
-            aria-label="Toggle Diff: {fileName(file.path)}, {file.kind}, +{file.insertions} -{file.deletions}"
+            aria-label="Toggle Diff: {fileLabel(file)}, {file.kind}, +{file.insertions} -{file.deletions}"
             data-testid="changed-files-file-toggle"
           >
-            <span class="text-xs font-mono text-text-primary truncate flex-1">{fileName(file.path)}</span>
+            <span class="text-xs font-mono text-text-primary truncate flex-1">{fileLabel(file)}</span>
             <span class="px-1.5 py-0.5 rounded-full text-[10px] {kindBadge(file.kind)}">{file.kind}</span>
             <span class="flex gap-1.5 text-[10px] tabular-nums shrink-0">
               {#if file.insertions > 0}

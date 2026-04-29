@@ -151,6 +151,7 @@ export interface CommandOutputMeta {
 
 export interface ToolInlineDiffFile {
   path: string;
+  previousPath?: string;
   kind?: DiffMeta["changeKind"];
   insertions?: number;
   deletions?: number;
@@ -224,6 +225,7 @@ export interface ProposedPlanCommentUpdate {
 
 export interface ChangedFile {
   path: string;
+  previousPath?: string;
   insertions: number;
   deletions: number;
   kind: DiffMeta["changeKind"];

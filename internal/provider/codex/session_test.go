@@ -196,6 +196,41 @@ func TestItemStarted(t *testing.T) {
 	}
 }
 
+func TestItemStartedFileChangeNormalizesToInternalToolName(t *testing.T) {
+	params := json.RawMessage(`{"turnId":"turn-1","item":{"id":"patch-1","type":"fileChange","changes":[{"path":"src/old.go","kind":{"type":"update","move_path":"src/new.go"},"diff":"@@ -1 +1 @@\n-old\n+new"}],"status":"inProgress"}}`)
+	events := ClassifyNotification(testThread, "item/started", params)
+
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	evt := events[0]
+	if evt.Kind != provider.EventToolStart {
+		t.Fatalf("kind: got %q, want %q", evt.Kind, provider.EventToolStart)
+	}
+	if evt.ItemType != "file_change" {
+		t.Fatalf("itemType: got %q, want file_change", evt.ItemType)
+	}
+	var meta struct {
+		ToolName   string `json:"toolName"`
+		ItemStatus string `json:"item_status"`
+		Input      struct {
+			FilePath string `json:"file_path"`
+		} `json:"input"`
+	}
+	if err := json.Unmarshal(evt.Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if meta.ToolName != "file_change" {
+		t.Fatalf("toolName: got %q, want file_change", meta.ToolName)
+	}
+	if meta.ItemStatus != "inProgress" {
+		t.Fatalf("item_status: got %q, want inProgress", meta.ItemStatus)
+	}
+	if meta.Input.FilePath != "src/new.go" {
+		t.Fatalf("input.file_path: got %q, want src/new.go", meta.Input.FilePath)
+	}
+}
+
 func TestItemCompleted(t *testing.T) {
 	params := json.RawMessage(`{"item":{"id":"item-1","type":"command_execution"}}`)
 	events := ClassifyNotification(testThread, "item/completed", params)
@@ -268,16 +303,23 @@ func TestTurnDiffUpdated(t *testing.T) {
 	events := ClassifyNotification(testThread, "turn/diff/updated", params)
 
 	if len(events) != 1 {
-		t.Fatalf("expected 1 event, got %d", len(events))
+		t.Fatalf("expected 1 upgrade-only diff event, got %d: %+v", len(events), events)
 	}
 	if events[0].Kind != provider.EventDiff {
-		t.Errorf("kind: got %q, want %q", events[0].Kind, provider.EventDiff)
+		t.Fatalf("kind = %q, want %q", events[0].Kind, provider.EventDiff)
 	}
 	if events[0].Content != "--- a/main.go\n+++ b/main.go\n" {
-		t.Errorf("content: got %q", events[0].Content)
+		t.Fatalf("content = %q", events[0].Content)
 	}
-	if !events[0].Replace {
-		t.Fatal("expected turn/diff/updated to mark replace=true")
+	var meta struct {
+		UpgradeOnly bool   `json:"upgrade_only"`
+		Source      string `json:"source"`
+	}
+	if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if !meta.UpgradeOnly || meta.Source != "turn/diff/updated" {
+		t.Fatalf("meta = %+v, want upgrade-only turn diff marker", meta)
 	}
 }
 
@@ -285,11 +327,17 @@ func TestFileChangeOutputDelta(t *testing.T) {
 	params := json.RawMessage(`{"delta":"diff content"}`)
 	events := ClassifyNotification(testThread, "item/fileChange/outputDelta", params)
 
-	if len(events) != 1 {
-		t.Fatalf("expected 1 event, got %d", len(events))
+	if len(events) != 0 {
+		t.Fatalf("item/fileChange/outputDelta should not create transcript events, got %+v", events)
 	}
-	if events[0].Kind != provider.EventDiff {
-		t.Errorf("kind: got %q, want %q", events[0].Kind, provider.EventDiff)
+}
+
+func TestFileChangePatchUpdated(t *testing.T) {
+	params := json.RawMessage(`{"itemId":"patch-1","changes":[]}`)
+	events := ClassifyNotification(testThread, "item/fileChange/patchUpdated", params)
+
+	if len(events) != 0 {
+		t.Fatalf("item/fileChange/patchUpdated should not create transcript events, got %+v", events)
 	}
 }
 

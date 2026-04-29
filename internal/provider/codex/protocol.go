@@ -82,13 +82,21 @@ func classifyTurnNotification(threadID, method string, params json.RawMessage, n
 		return classifyTurnCompleted(threadID, params, now), true
 
 	case "turn/diff/updated":
+		// Codex uses this as an aggregate turn-level diff snapshot. The
+		// transcript edit row is the structured fileChange item; this snapshot is
+		// only available to fill summary-only expanded diff content.
+		diff := readNestedString(params, "diff")
+		if strings.TrimSpace(diff) == "" {
+			return nil, true
+		}
 		return []provider.ProviderEvent{{
 			Kind:      provider.EventDiff,
 			ThreadID:  threadID,
-			Content:   readTopLevelString(params, "diff"),
-			Meta:      params,
-			Replace:   true,
+			TurnID:    firstNonEmptyString(readNestedString(params, "turnId"), readNestedString(params, "turn", "id")),
+			Content:   diff,
+			Meta:      mergeMetaKeys(params, map[string]any{"upgrade_only": true, "source": "turn/diff/updated"}),
 			Timestamp: now,
+			Replace:   true,
 		}}, true
 
 	case "turn/aborted":
@@ -253,16 +261,12 @@ func classifyItemNotification(threadID, method string, params json.RawMessage, n
 			Timestamp: now,
 		}}, true
 
-	case "item/fileChange/outputDelta":
-		return []provider.ProviderEvent{{
-			Kind:      provider.EventDiff,
-			ThreadID:  threadID,
-			TurnID:    readTopLevelString(params, "turnId"),
-			ItemID:    readTopLevelString(params, "itemId"),
-			Content:   readTopLevelString(params, "delta"),
-			Meta:      params,
-			Timestamp: now,
-		}}, true
+	case "item/fileChange/outputDelta", "item/fileChange/patchUpdated":
+		// outputDelta is the underlying apply_patch tool response, and
+		// patchUpdated is a pre-apply structured snapshot. Codex TUI keeps
+		// both out of the transcript; the visible edit comes from the
+		// fileChange item itself.
+		return nil, true
 
 	// Reasoning deltas arrive via one of two mutually-exclusive channels
 	// depending on the model class (see
@@ -928,6 +932,8 @@ func stripImageGenerationResultFromMeta(params json.RawMessage, item map[string]
 func codexItemMetaExtras(item map[string]json.RawMessage) map[string]any {
 	itemType := readRawString(item, "type")
 	switch itemType {
+	case "fileChange", "file_change":
+		return fileChangeMetaExtras(item)
 	case "collabAgentToolCall":
 		return collabAgentMetaExtras(item)
 	case "webSearch", "web_search":
@@ -946,6 +952,40 @@ func codexItemMetaExtras(item map[string]json.RawMessage) map[string]any {
 		}
 		return nil
 	}
+}
+
+func fileChangeMetaExtras(item map[string]json.RawMessage) map[string]any {
+	extras := map[string]any{"toolName": "file_change"}
+	changesRaw, ok := item["changes"]
+	if !ok {
+		return extras
+	}
+	var changes []struct {
+		Path string `json:"path"`
+		Kind struct {
+			Type     string `json:"type"`
+			MovePath string `json:"move_path"`
+		} `json:"kind"`
+	}
+	if json.Unmarshal(changesRaw, &changes) != nil {
+		return extras
+	}
+	paths := make([]string, 0, len(changes))
+	for _, change := range changes {
+		if change.Kind.Type == "update" && change.Kind.MovePath != "" {
+			paths = append(paths, change.Kind.MovePath)
+			continue
+		}
+		if change.Path != "" {
+			paths = append(paths, change.Path)
+		}
+	}
+	if len(paths) == 1 {
+		extras["input"] = map[string]any{"file_path": paths[0]}
+	} else if len(paths) > 1 {
+		extras["input"] = map[string]any{"files": paths}
+	}
+	return extras
 }
 
 func commandExecutionMetaExtras(item map[string]json.RawMessage) map[string]any {
@@ -1256,6 +1296,9 @@ func classifyCodexItemType(params json.RawMessage) string {
 
 func classifyCodexItemTypeFromItem(item map[string]json.RawMessage) string {
 	itemType := readRawString(item, "type")
+	if itemType == "fileChange" {
+		return "file_change"
+	}
 	if itemType != "collabAgentToolCall" {
 		return itemType
 	}

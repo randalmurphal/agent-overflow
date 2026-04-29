@@ -88,6 +88,11 @@
     if (file.deletions) parts.push(`-${file.deletions}`);
     return parts.join(' ');
   }
+
+  function fileLabel(file: ToolInlineDiffFile): string {
+    if (!file.previousPath) return file.path;
+    return `${file.previousPath} -> ${file.path}`;
+  }
 </script>
 
 <div class="mb-1.5 rounded-[var(--radius-control)] border border-border-subtle bg-card/25">
@@ -118,7 +123,7 @@
               opening the file.
             -->
             <span class="group/chip inline-flex items-center gap-2 rounded-full px-2 py-1 text-[11px] {kindClasses(file)}">
-              <span class="font-mono">{file.path}</span>
+              <span class="font-mono">{fileLabel(file)}</span>
               {#if file.insertions || file.deletions}
                 <span class="text-text-secondary">{fileStats(file)}</span>
               {/if}

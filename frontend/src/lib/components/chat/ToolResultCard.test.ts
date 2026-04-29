@@ -143,11 +143,12 @@ describe('<ToolResultCard> editor-link wiring', () => {
       title: 'Edit applied',
       inlineDiff: {
         availability: 'summary_only',
-        files: [{ path: 'src/lib/foo.ts', insertions: 4, deletions: 1, kind: 'modified' }],
+        files: [{ path: 'src/lib/foo.ts', previousPath: 'src/lib/old.ts', insertions: 4, deletions: 1, kind: 'renamed' }],
       },
     };
     const { getByTestId } = render(ToolResultCard, { props: { item, meta: m } });
     const region = getByTestId('tool-result-inline-diffs');
+    expect(region.textContent).toContain('src/lib/old.ts -> src/lib/foo.ts');
     const links = region.querySelectorAll('[data-testid="editor-link-icon"]');
     expect(links.length).toBe(1);
     expect(links[0].getAttribute('data-path')).toBe('src/lib/foo.ts');

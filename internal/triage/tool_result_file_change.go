@@ -3,11 +3,9 @@ package triage
 import (
 	"encoding/json"
 	"fmt"
-	"path/filepath"
 	"strings"
 
 	"agent-overflow/internal/provider"
-	"agent-overflow/internal/stringsx"
 )
 
 const (
@@ -31,14 +29,15 @@ type ToolInlineDiff struct {
 }
 
 type ToolInlineDiffFile struct {
-	Path       string `json:"path"`
-	Kind       string `json:"kind,omitempty"`
-	Insertions int    `json:"insertions,omitempty"`
-	Deletions  int    `json:"deletions,omitempty"`
+	Path         string `json:"path"`
+	PreviousPath string `json:"previousPath,omitempty"`
+	Kind         string `json:"kind,omitempty"`
+	Insertions   int    `json:"insertions,omitempty"`
+	Deletions    int    `json:"deletions,omitempty"`
 }
 
 func (r *Router) persistFileChangeToolResult(evt provider.ProviderEvent) error {
-	if evt.ItemType != "file_change" || evt.ItemID == "" || len(evt.Meta) == 0 {
+	if !isFileChangeItemType(evt.ItemType) || evt.ItemID == "" || len(evt.Meta) == 0 {
 		return nil
 	}
 
@@ -98,51 +97,33 @@ func extractFileChangeToolResult(raw json.RawMessage, workspaceRoot string) (Too
 
 	meta := ToolResultMeta{
 		ItemType: "file_change",
-		Title:    stringsx.FirstNonEmptyTrimmed(rawString(item, "title"), "File change"),
-		Detail:   rawString(item, "detail"),
 	}
 	inlineDiff, unifiedDiff := buildInlineDiffFromChanges(changes)
 	if inlineDiff != nil {
 		meta.InlineDiff = inlineDiff
 	}
+	meta.Title = fileChangeTitle(inlineDiff)
 	meta.Preview = toolPreview(meta)
 	return meta, []byte(unifiedDiff), true
 }
 
 type fileChange struct {
-	Path string
-	Kind string
-	Diff string
+	Path         string
+	PreviousPath string
+	Kind         string
+	Diff         string
+}
+
+type fileChangePatch struct {
+	Content    string
+	ChangeKind string
+	Insertions int
+	Deletions  int
 }
 
 func extractFileChanges(item map[string]json.RawMessage, workspaceRoot string) []fileChange {
-	dataRaw, ok := item["data"]
+	rawChanges, ok := rawFileChanges(item)
 	if !ok {
-		return nil
-	}
-
-	var data map[string]json.RawMessage
-	if json.Unmarshal(dataRaw, &data) != nil {
-		return nil
-	}
-
-	itemDataRaw, ok := data["item"]
-	if !ok {
-		return nil
-	}
-
-	var itemData map[string]json.RawMessage
-	if json.Unmarshal(itemDataRaw, &itemData) != nil {
-		return nil
-	}
-
-	changesRaw, ok := itemData["changes"]
-	if !ok {
-		return nil
-	}
-
-	var rawChanges []map[string]json.RawMessage
-	if json.Unmarshal(changesRaw, &rawChanges) != nil {
 		return nil
 	}
 
@@ -152,32 +133,86 @@ func extractFileChanges(item map[string]json.RawMessage, workspaceRoot string) [
 		if path == "" {
 			continue
 		}
+		kind, movePath := normalizeChangeKind(change["kind"])
+		movePath = normalizeToolPath(movePath, workspaceRoot)
+		previousPath := ""
+		if movePath != "" {
+			previousPath = path
+			path = movePath
+			kind = "renamed"
+		}
 		changes = append(changes, fileChange{
-			Path: path,
-			Kind: normalizeChangeKind(change["kind"]),
-			Diff: rawString(change, "diff"),
+			Path:         path,
+			PreviousPath: previousPath,
+			Kind:         kind,
+			Diff:         rawString(change, "diff"),
 		})
 	}
 	return changes
 }
 
+func rawFileChanges(item map[string]json.RawMessage) ([]map[string]json.RawMessage, bool) {
+	if changes, ok := decodeFileChanges(item["changes"]); ok {
+		return changes, true
+	}
+
+	dataRaw, ok := item["data"]
+	if !ok {
+		return nil, false
+	}
+	var data map[string]json.RawMessage
+	if json.Unmarshal(dataRaw, &data) != nil {
+		return nil, false
+	}
+	itemDataRaw, ok := data["item"]
+	if !ok {
+		return nil, false
+	}
+	var itemData map[string]json.RawMessage
+	if json.Unmarshal(itemDataRaw, &itemData) != nil {
+		return nil, false
+	}
+	return decodeFileChanges(itemData["changes"])
+}
+
+func decodeFileChanges(raw json.RawMessage) ([]map[string]json.RawMessage, bool) {
+	if len(raw) == 0 {
+		return nil, false
+	}
+	var changes []map[string]json.RawMessage
+	if json.Unmarshal(raw, &changes) != nil || len(changes) == 0 {
+		return nil, false
+	}
+	return changes, true
+}
+
 func buildInlineDiffFromChanges(changes []fileChange) (*ToolInlineDiff, string) {
 	files := make([]ToolInlineDiffFile, 0, len(changes))
-	patches := make([]string, 0, len(changes))
+	var patchBuilder strings.Builder
 	exact := true
 	totalInsertions := 0
 	totalDeletions := 0
 
 	for _, change := range changes {
-		file := ToolInlineDiffFile{Path: change.Path, Kind: change.Kind}
+		file := ToolInlineDiffFile{
+			Path:         change.Path,
+			PreviousPath: change.PreviousPath,
+			Kind:         change.Kind,
+		}
 		if patch, ok := buildUnifiedPatch(change); ok {
-			diffMeta := ExtractDiffMeta(patch)
-			file.Kind = diffMeta.ChangeKind
-			file.Insertions = diffMeta.Insertions
-			file.Deletions = diffMeta.Deletions
-			totalInsertions += diffMeta.Insertions
-			totalDeletions += diffMeta.Deletions
-			patches = append(patches, patch)
+			if change.Kind == "renamed" {
+				file.Kind = "renamed"
+			} else {
+				file.Kind = patch.ChangeKind
+			}
+			file.Insertions = patch.Insertions
+			file.Deletions = patch.Deletions
+			totalInsertions += patch.Insertions
+			totalDeletions += patch.Deletions
+			if patchBuilder.Len() > 0 {
+				patchBuilder.WriteByte('\n')
+			}
+			patchBuilder.WriteString(patch.Content)
 		} else {
 			exact = false
 		}
@@ -187,10 +222,12 @@ func buildInlineDiffFromChanges(changes []fileChange) (*ToolInlineDiff, string) 
 	if len(files) == 0 {
 		return nil, ""
 	}
-	if !exact || len(patches) != len(files) {
+	if !exact {
 		return &ToolInlineDiff{
 			Availability: "summary_only",
 			Files:        files,
+			Insertions:   totalInsertions,
+			Deletions:    totalDeletions,
 		}, ""
 	}
 
@@ -200,34 +237,73 @@ func buildInlineDiffFromChanges(changes []fileChange) (*ToolInlineDiff, string) 
 			Insertions:   totalInsertions,
 			Deletions:    totalDeletions,
 		},
-		strings.Join(patches, "\n")
+		patchBuilder.String()
 }
 
-func buildUnifiedPatch(change fileChange) (string, bool) {
+func buildUnifiedPatch(change fileChange) (fileChangePatch, bool) {
 	hunk := strings.TrimSpace(change.Diff)
-	if hunk == "" {
-		return "", false
-	}
 
 	var header []string
 	switch change.Kind {
 	case "added":
-		header = []string{
+		var builder strings.Builder
+		writePatchHeader(&builder,
 			fmt.Sprintf("diff --git a/%s b/%s", change.Path, change.Path),
 			"new file mode 100644",
 			"--- /dev/null",
 			fmt.Sprintf("+++ b/%s", change.Path),
-		}
+		)
+		insertions := writeContentDiffLines(&builder, change.Diff, "added")
+		return fileChangePatch{
+			Content:    builder.String(),
+			ChangeKind: "added",
+			Insertions: insertions,
+		}, true
 	case "deleted":
-		header = []string{
+		var builder strings.Builder
+		writePatchHeader(&builder,
 			fmt.Sprintf("diff --git a/%s b/%s", change.Path, change.Path),
 			"deleted file mode 100644",
 			fmt.Sprintf("--- a/%s", change.Path),
 			"+++ /dev/null",
-		}
+		)
+		deletions := writeContentDiffLines(&builder, change.Diff, "deleted")
+		return fileChangePatch{
+			Content:    builder.String(),
+			ChangeKind: "deleted",
+			Deletions:  deletions,
+		}, true
 	case "renamed":
-		return "", false
+		if change.PreviousPath == "" {
+			return fileChangePatch{}, false
+		}
+		header = []string{
+			fmt.Sprintf("diff --git a/%s b/%s", change.PreviousPath, change.Path),
+			fmt.Sprintf("rename from %s", change.PreviousPath),
+			fmt.Sprintf("rename to %s", change.Path),
+			fmt.Sprintf("--- a/%s", change.PreviousPath),
+			fmt.Sprintf("+++ b/%s", change.Path),
+		}
+		if hunk == "" {
+			content := strings.Join(header, "\n")
+			return fileChangePatch{
+				Content:    content,
+				ChangeKind: "renamed",
+			}, true
+		}
 	default:
+		if hunk == "" {
+			return fileChangePatch{}, false
+		}
+		if strings.HasPrefix(hunk, "diff --git ") {
+			meta := ExtractDiffMeta(hunk)
+			return fileChangePatch{
+				Content:    hunk,
+				ChangeKind: meta.ChangeKind,
+				Insertions: meta.Insertions,
+				Deletions:  meta.Deletions,
+			}, true
+		}
 		header = []string{
 			fmt.Sprintf("diff --git a/%s b/%s", change.Path, change.Path),
 			fmt.Sprintf("--- a/%s", change.Path),
@@ -235,21 +311,77 @@ func buildUnifiedPatch(change fileChange) (string, bool) {
 		}
 	}
 
-	return strings.Join(append(header, hunk), "\n"), true
+	content := strings.Join(append(header, hunk), "\n")
+	meta := ExtractDiffMeta(content)
+	return fileChangePatch{
+		Content:    content,
+		ChangeKind: meta.ChangeKind,
+		Insertions: meta.Insertions,
+		Deletions:  meta.Deletions,
+	}, true
 }
 
-func normalizeChangeKind(raw json.RawMessage) string {
+func writePatchHeader(builder *strings.Builder, lines ...string) {
+	for i, line := range lines {
+		if i > 0 {
+			builder.WriteByte('\n')
+		}
+		builder.WriteString(line)
+	}
+}
+
+func writeContentDiffLines(builder *strings.Builder, content string, kind string) int {
+	content = strings.TrimSuffix(content, "\n")
+	if content == "" {
+		builder.WriteString("\n@@ -0,0 +0,0 @@")
+		return 0
+	}
+
+	lineCount := strings.Count(content, "\n") + 1
+	prefix := "-"
+	header := fmt.Sprintf("@@ -1,%d +0,0 @@", lineCount)
+	if kind == "added" {
+		prefix = "+"
+		header = fmt.Sprintf("@@ -0,0 +1,%d @@", lineCount)
+	}
+
+	builder.WriteByte('\n')
+	builder.WriteString(header)
+	for {
+		line := content
+		if index := strings.IndexByte(content, '\n'); index >= 0 {
+			line = content[:index]
+			content = content[index+1:]
+			builder.WriteByte('\n')
+			builder.WriteString(prefix)
+			builder.WriteString(line)
+			if content == "" {
+				builder.WriteByte('\n')
+				builder.WriteString(prefix)
+				break
+			}
+			continue
+		}
+		builder.WriteByte('\n')
+		builder.WriteString(prefix)
+		builder.WriteString(line)
+		break
+	}
+	return lineCount
+}
+
+func normalizeChangeKind(raw json.RawMessage) (string, string) {
 	var value string
 	if json.Unmarshal(raw, &value) == nil {
 		switch value {
 		case "added", "create":
-			return "added"
+			return "added", ""
 		case "deleted", "remove":
-			return "deleted"
+			return "deleted", ""
 		case "renamed", "move":
-			return "renamed"
+			return "renamed", ""
 		default:
-			return "modified"
+			return "modified", ""
 		}
 	}
 
@@ -259,17 +391,17 @@ func normalizeChangeKind(raw json.RawMessage) string {
 	}
 	if json.Unmarshal(raw, &object) == nil {
 		switch object.Type {
-		case "create":
-			return "added"
+		case "add", "create":
+			return "added", ""
 		case "delete":
-			return "deleted"
+			return "deleted", ""
 		case "move":
-			return "renamed"
+			return "renamed", object.MovePath
 		default:
-			return "modified"
+			return "modified", object.MovePath
 		}
 	}
-	return "modified"
+	return "modified", ""
 }
 
 func rawString(m map[string]json.RawMessage, key string) string {
@@ -285,6 +417,9 @@ func rawString(m map[string]json.RawMessage, key string) string {
 }
 
 func summarizeToolResult(meta ToolResultMeta) string {
+	if meta.ItemType == "file_change" && meta.Title != "" {
+		return meta.Title
+	}
 	switch {
 	case meta.Detail != "":
 		return meta.Detail
@@ -301,6 +436,9 @@ func toolPreview(meta ToolResultMeta) string {
 	if meta.Detail != "" {
 		return meta.Detail
 	}
+	if meta.ItemType == "file_change" {
+		return meta.Title
+	}
 	if meta.InlineDiff == nil || len(meta.InlineDiff.Files) == 0 {
 		return meta.Title
 	}
@@ -308,6 +446,39 @@ func toolPreview(meta ToolResultMeta) string {
 		return meta.InlineDiff.Files[0].Path
 	}
 	return fmt.Sprintf("%d files changed", len(meta.InlineDiff.Files))
+}
+
+func fileChangeTitle(inlineDiff *ToolInlineDiff) string {
+	if inlineDiff == nil || len(inlineDiff.Files) == 0 {
+		return "File change"
+	}
+	if len(inlineDiff.Files) == 1 {
+		file := inlineDiff.Files[0]
+		verb := "Edited"
+		switch file.Kind {
+		case "added":
+			verb = "Added"
+		case "deleted":
+			verb = "Deleted"
+		}
+		return fmt.Sprintf("%s %s %s", verb, displayInlineDiffPath(file), formatInlineDiffCounts(file.Insertions, file.Deletions))
+	}
+	return fmt.Sprintf("Edited %d files %s", len(inlineDiff.Files), formatInlineDiffCounts(inlineDiff.Insertions, inlineDiff.Deletions))
+}
+
+func displayInlineDiffPath(file ToolInlineDiffFile) string {
+	if file.PreviousPath == "" {
+		return file.Path
+	}
+	return file.PreviousPath + " -> " + file.Path
+}
+
+func formatInlineDiffCounts(insertions, deletions int) string {
+	return fmt.Sprintf("(+%d -%d)", insertions, deletions)
+}
+
+func isFileChangeItemType(itemType string) bool {
+	return isCodexFileChangeItem(itemType)
 }
 
 func toolResultPayloadID(itemID string) string {
@@ -319,20 +490,7 @@ func hasExactToolInlineDiff(inlineDiff *ToolInlineDiff) bool {
 }
 
 func normalizeToolPath(rawPath, workspaceRoot string) string {
-	rawPath = strings.TrimSpace(rawPath)
-	if rawPath == "" {
-		return ""
-	}
-
-	cleanPath := filepath.Clean(rawPath)
-	if workspaceRoot != "" && filepath.IsAbs(cleanPath) {
-		cleanRoot := filepath.Clean(workspaceRoot)
-		rel, err := filepath.Rel(cleanRoot, cleanPath)
-		if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			cleanPath = rel
-		}
-	}
-	return filepath.ToSlash(cleanPath)
+	return normalizeWorkspaceRelativePath(rawPath, workspaceRoot)
 }
 
 func uniqueNonEmpty(values []string) []string {
@@ -350,4 +508,3 @@ func uniqueNonEmpty(values []string) []string {
 	}
 	return result
 }
-

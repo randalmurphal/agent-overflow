@@ -211,7 +211,10 @@ func normalizeWorkspaceRelativePath(path, workspace string) string {
 			return ""
 		}
 	}
-	if filepath.IsAbs(path) && workspace != "" {
+	if filepath.IsAbs(path) {
+		if workspace == "" {
+			return ""
+		}
 		rel, err := filepath.Rel(workspace, path)
 		if err != nil {
 			return ""

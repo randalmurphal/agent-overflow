@@ -141,10 +141,11 @@ func buildExactInlineDiff(diff string) *ToolInlineDiff {
 			continue
 		}
 		files = append(files, ToolInlineDiffFile{
-			Path:       path,
-			Kind:       meta.ChangeKind,
-			Insertions: meta.Insertions,
-			Deletions:  meta.Deletions,
+			Path:         path,
+			PreviousPath: diffSectionPreviousPath(section),
+			Kind:         meta.ChangeKind,
+			Insertions:   meta.Insertions,
+			Deletions:    meta.Deletions,
 		})
 		insertions += meta.Insertions
 		deletions += meta.Deletions
@@ -182,6 +183,15 @@ func splitUnifiedDiffSections(diff string) []string {
 		sections = append(sections, strings.Join(current, "\n"))
 	}
 	return sections
+}
+
+func diffSectionPreviousPath(section string) string {
+	for _, line := range strings.Split(section, "\n") {
+		if strings.HasPrefix(line, "rename from ") {
+			return strings.TrimSpace(strings.TrimPrefix(line, "rename from "))
+		}
+	}
+	return ""
 }
 
 func filterUnifiedDiffByPaths(diff string, files []ToolInlineDiffFile, workspaceRoot string) string {

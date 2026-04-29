@@ -131,14 +131,14 @@ describe('changedFilesForItem', () => {
         inlineDiff: {
           files: [
             { path: 'x.ts', insertions: 1, deletions: 0, kind: 'added' },
-            { path: 'y.ts', insertions: 2, deletions: 1 },
+            { path: 'y.ts', previousPath: 'old-y.ts', insertions: 2, deletions: 1, kind: 'renamed' },
           ],
         },
       }),
     });
     expect(changedFilesForItem(item)).toEqual([
       { path: 'x.ts', insertions: 1, deletions: 0, kind: 'added', payloadId: 'p2' },
-      { path: 'y.ts', insertions: 2, deletions: 1, kind: 'modified', payloadId: 'p2' },
+      { path: 'y.ts', previousPath: 'old-y.ts', insertions: 2, deletions: 1, kind: 'renamed', payloadId: 'p2' },
     ]);
   });
 
