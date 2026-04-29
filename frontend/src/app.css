@@ -194,6 +194,15 @@ pre, code, kbd, samp, .ansi-body {
   margin: 0.25rem 0;
   padding-left: 1.25rem;
 }
+/* Tailwind v4's preflight resets list-style on ul/ol globally; restore
+   it inside .markdown-body so chat markdown bullets/numbers actually
+   render. Nesting follows the conventional disc/circle/square ladder. */
+.markdown-body ul { list-style-type: disc; }
+.markdown-body ol { list-style-type: decimal; }
+.markdown-body ul ul { list-style-type: circle; }
+.markdown-body ul ul ul { list-style-type: square; }
+.markdown-body ol ol { list-style-type: lower-alpha; }
+.markdown-body ol ol ol { list-style-type: lower-roman; }
 .markdown-body li { margin: 0.125rem 0; }
 .markdown-body a { color: var(--accent); }
 .markdown-body a:hover { text-decoration: underline; }

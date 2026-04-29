@@ -73,6 +73,24 @@ function nextFrame(): Promise<void> {
   return new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
 }
 
+/**
+ * Hoisted to module scope so Svelte's compiler doesn't warn about
+ * declaring a class inside a function (perf_avoid_nested_class).
+ * The `onCreate` static slot lets the surrounding test capture each
+ * instance's callback as it's constructed.
+ */
+class MockResizeObserver {
+  static onCreate: ((cb: ResizeObserverCallback) => void) | null = null;
+  callback: ResizeObserverCallback;
+  constructor(cb: ResizeObserverCallback) {
+    this.callback = cb;
+    MockResizeObserver.onCreate?.(cb);
+  }
+  observe(): void {}
+  unobserve(): void {}
+  disconnect(): void {}
+}
+
 describe('createStickyBottomController', () => {
   let scrollEl: HTMLDivElement;
   let handle: MockHandle;
@@ -327,6 +345,96 @@ describe('createStickyBottomController', () => {
       controller.notifyContentMaybeGrew();
       await nextFrame();
       expect(handle.scrollToIndex).toHaveBeenCalled();
+    });
+
+    it('release re-pins to the bottom when sticky (covers viewport-shrink-while-leased)', async () => {
+      // Layout-changing surfaces (terminal drawer toggle, sidebar
+      // fly-in transition, RHS resizer drag) hold a lease across the
+      // transition. While the lease is held, auto-follow can't fire,
+      // so a viewport that shrinks during that window leaves the user
+      // off the bottom. The release path must re-pin so they land
+      // back at the new last row instead of drifting away.
+      const release = controller.pauseAutoScroll();
+      // Notifications during the lease are no-ops.
+      controller.notifyContentMaybeGrew();
+      await nextFrame();
+      expect(handle.scrollToIndex).not.toHaveBeenCalled();
+
+      release();
+      await nextFrame();
+      // Release alone should have scheduled the re-pin — no extra
+      // notifyContentMaybeGrew call was made between release and frame.
+      expect(handle.scrollToIndex).toHaveBeenCalledTimes(1);
+    });
+
+    it('release does NOT re-pin when intent is free', async () => {
+      // User is reading older content (intent='free'). A lease release
+      // must not yank them back to the bottom — the lease's purpose was
+      // to suppress auto-follow, not to opt the user back in.
+      fireWheel(scrollEl, -50);
+      expect(controller.intent).toBe('free');
+
+      const release = controller.pauseAutoScroll();
+      release();
+      await nextFrame();
+      expect(handle.scrollToIndex).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('viewport ResizeObserver', () => {
+    // Install a controllable ResizeObserver mock so we can simulate a
+    // chat-column resize and assert the controller responds. happy-dom
+    // doesn't fire RO callbacks on actual element resize, so without
+    // this mock the wiring would be untested at the unit level.
+    let lastROCallback: ResizeObserverCallback | null = null;
+    let originalRO: typeof ResizeObserver | undefined;
+
+    beforeEach(() => {
+      lastROCallback = null;
+      originalRO = globalThis.ResizeObserver;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (globalThis as any).ResizeObserver = MockResizeObserver;
+      MockResizeObserver.onCreate = (cb) => {
+        lastROCallback = cb;
+      };
+
+      // Re-create the controller so it picks up the mocked RO.
+      controller.destroy();
+      controller = createStickyBottomController({
+        getScrollEl: () => scrollEl,
+        getListHandle: () => handle,
+        getLastIndex: () => lastIndex,
+      });
+      controller.attach();
+    });
+
+    afterEach(() => {
+      MockResizeObserver.onCreate = null;
+      if (originalRO) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (globalThis as any).ResizeObserver = originalRO;
+      }
+    });
+
+    it('re-pins to the bottom when the wrapper resizes while sticky', async () => {
+      expect(lastROCallback).not.toBeNull();
+      // Simulate the chat column shrinking (terminal drawer opens,
+      // window dragged smaller, sidebar fly-in narrows the column).
+      // The RO entries argument is unused by the controller — it just
+      // calls notifyContentMaybeGrew unconditionally and lets the
+      // controller decide whether to scroll based on intent + lease.
+      lastROCallback!([], {} as ResizeObserver);
+      await nextFrame();
+      expect(handle.scrollToIndex).toHaveBeenCalledTimes(1);
+    });
+
+    it('does NOT re-pin on resize when intent is free', async () => {
+      fireWheel(scrollEl, -50);
+      expect(controller.intent).toBe('free');
+
+      lastROCallback!([], {} as ResizeObserver);
+      await nextFrame();
+      expect(handle.scrollToIndex).not.toHaveBeenCalled();
     });
   });
 

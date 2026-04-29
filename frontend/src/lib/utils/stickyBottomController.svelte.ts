@@ -111,6 +111,12 @@ export function createStickyBottomController(
   let attachedEl: HTMLElement | null = null;
   let detachGestureListeners: (() => void) | null = null;
   let detachPointerListeners: (() => void) | null = null;
+  // ResizeObserver on the scroll wrapper. When the chat column's
+  // clientHeight shrinks (terminal drawer opens, window resized smaller,
+  // sidebar fly-in narrows the column) the auto-follow $effect doesn't
+  // fire because no data changed — we have to schedule a re-pin
+  // explicitly.
+  let viewportResizeObserver: ResizeObserver | null = null;
 
   // ===== Geometry =====
 
@@ -144,6 +150,23 @@ export function createStickyBottomController(
       const handle = options.getListHandle();
       if (handle) scrollToLast(handle);
     });
+  }
+
+  // Wraps the core lease so the release path can re-pin to the bottom
+  // when the user is still sticky. Layout-changing surfaces (terminal
+  // drawer toggle, sidebar fly-in/out, RHS resizer drag) hold a lease
+  // across the transition; during that window the auto-follow $effect
+  // is blocked. Without a post-release re-pin, a sticky user drifts off
+  // the bottom whenever any of those surfaces reflows the chat column.
+  function pauseAutoScroll(): () => void {
+    const releaseInner = core.pauseAutoScroll();
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      releaseInner();
+      if (core.canAutoScroll()) notifyContentMaybeGrew();
+    };
   }
 
   function forceStick(): void {
@@ -237,6 +260,8 @@ export function createStickyBottomController(
     detachGestureListeners = null;
     detachPointerListeners?.();
     detachPointerListeners = null;
+    viewportResizeObserver?.disconnect();
+    viewportResizeObserver = null;
     attachedEl = null;
   }
 
@@ -250,6 +275,12 @@ export function createStickyBottomController(
     if (attachedEl) detachListeners();
     detachGestureListeners = core.bindGestureListeners(el);
     detachPointerListeners = attachPointerListeners(el);
+    if (typeof ResizeObserver !== 'undefined') {
+      viewportResizeObserver = new ResizeObserver(() => {
+        notifyContentMaybeGrew();
+      });
+      viewportResizeObserver.observe(el);
+    }
     attachedEl = el;
     // Seed lastObservedScrollSize so the first onScroll event has a valid
     // baseline for the grewThisFrame race gate.
@@ -278,7 +309,7 @@ export function createStickyBottomController(
     isAtBottom,
     forceStick,
     notifyContentMaybeGrew,
-    pauseAutoScroll: core.pauseAutoScroll,
+    pauseAutoScroll,
     onScroll,
     onScrollEnd,
     attach,

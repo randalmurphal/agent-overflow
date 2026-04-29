@@ -103,13 +103,25 @@ export type LoadOlderResult = {
 /**
  * Minimal surface a registered scroll controller exposes to the pane.
  * Kept narrow on purpose: the pane brokers a `pauseAutoScroll()` lease
- * for outside surfaces (resizers, drawers) and nothing else. The actual
- * controller (stickyBottomController for virtua, stickToBottom for DOM)
- * has more methods but they're consumed inside the timeline component
- * directly, not via this seam.
+ * for outside surfaces (resizers, drawers) and a re-pin nudge for
+ * surfaces whose layout change isn't visible to virtua's geometry
+ * (e.g. composer growth changes the inner padding-bottom but not the
+ * scroll wrapper's clientHeight). The actual controller
+ * (stickyBottomController for virtua, stickToBottom for DOM) has more
+ * methods but they're consumed inside the timeline component directly,
+ * not via this seam.
  */
 export interface PaneScrollController {
   pauseAutoScroll(): () => void;
+  /**
+   * Nudge the controller to re-evaluate "should I scroll to the
+   * bottom?". A no-op unless the user is sticky and no lease is held.
+   * Use this from layout-changing surfaces outside the timeline whose
+   * change isn't observable to the controller's own ResizeObserver
+   * (composer overlay growth, anything that mutates inner scroll
+   * padding without changing the scroll wrapper's clientHeight).
+   */
+  notifyContentMaybeGrew(): void;
 }
 
 function loadOlderResult(

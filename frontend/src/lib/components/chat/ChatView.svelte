@@ -64,6 +64,14 @@
       const next = Math.round(entry.contentRect.height);
       if (next > 0 && next !== composerHeight) {
         composerHeight = next;
+        // The inner timeline content's padding-bottom tracks
+        // --composer-height, so composer growth (attachment tray,
+        // textarea autosize, approval panel) grows scrollSize without
+        // changing the scroll wrapper's clientHeight. The auto-follow
+        // $effect doesn't depend on composer height — nudge the
+        // controller so a sticky user stays pinned to the new bottom
+        // instead of having the last row slide behind the composer.
+        pane.scrollController?.notifyContentMaybeGrew();
       }
     });
     obs.observe(observed);
