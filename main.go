@@ -51,6 +51,24 @@ const headlessShutdownTimeout = 10 * time.Second
 // WebView2.
 const bootstrapStdoutPrefix = "__AO_BOOTSTRAP__:"
 
+func browserKeybindings() map[string]func(application.Window) {
+	zoomIn := func(window application.Window) { window.ZoomIn() }
+	zoomOut := func(window application.Window) { window.ZoomOut() }
+	reload := func(window application.Window) { window.Reload() }
+	forceReload := func(window application.Window) { window.ForceReload() }
+	toggleFullscreen := func(window application.Window) { window.ToggleFullscreen() }
+
+	return map[string]func(application.Window){
+		"CmdOrCtrl+plus":    zoomIn,
+		"CmdOrCtrl+=":       zoomIn,
+		"CmdOrCtrl+-":       zoomOut,
+		"CmdOrCtrl+r":       reload,
+		"CmdOrCtrl+Shift+r": forceReload,
+		"F11":               toggleFullscreen,
+		"Ctrl+Command+F":    toggleFullscreen,
+	}
+}
+
 func main() {
 	flags, err := parseFlags(os.Args[1:])
 	if err != nil {
@@ -187,6 +205,7 @@ func runClient(rawURL string) {
 		MinHeight:        600,
 		BackgroundColour: application.NewRGBA(22, 22, 30, 255),
 		URL:              stub.AppURL(),
+		KeyBindings:      browserKeybindings(),
 	})
 
 	runErr := app.Run()
@@ -305,6 +324,7 @@ func runDesktop(listenAddr string) {
 		MinHeight:        600,
 		BackgroundColour: application.NewRGBA(22, 22, 30, 255),
 		URL:              appURL,
+		KeyBindings:      browserKeybindings(),
 	})
 
 	runErr := app.Run()
