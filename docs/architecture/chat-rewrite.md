@@ -476,7 +476,7 @@ Backgrounded tool call:
   write head (or the latest persisted turn when no turn is open),
   deferred behind active streaming output when necessary.
 - `tool_completion.summary` **restates the original command** plus the
-  outcome — e.g. `"npm install → exit 0 in 12s"`. Without this the
+  outcome — e.g. `"pnpm install → exit 0 in 12s"`. Without this the
   late-arriving row is decontextualized.
 - `tool_completion.completion_of` = launch.id; `is_background=true`;
   status = `completed` / `errored`.
@@ -1863,7 +1863,7 @@ One sequential pass. Each step ends with green tests.
 - Bash exit codes don't flip status to errored. Only is_error does.
 - No `pane.activeToolCalls`, no `pane.streamingContent`, no
   `pendingMessage`, no `payloadMetas` map. Grep returns zero hits.
-- Frontend `npm run check` clean. `go test ./...` green.
+- Frontend `corepack pnpm run check` clean. `make go-test` green.
 - Integration test covers: send message → tool call → tool result →
   assistant text → turn complete → reload thread → verify identical
   render. Plus: backgrounded command → user sends new message →

@@ -26,7 +26,7 @@ beforeAll(() => {
 
 function commandMeta(overrides: Partial<CommandOutputMeta> = {}): CommandOutputMeta {
   return {
-    command: 'npm test',
+    command: 'pnpm test',
     exitCode: 0,
     lineCount: 1,
     preview: '',
@@ -188,7 +188,7 @@ describe('<CommandOutput>', () => {
     const { getByTestId, queryByText } = render(CommandOutput, {
       props: {
         item: makeItem({ id: 'tool-cmd', kind: 'tool_call', createdAt }),
-        meta: commandMeta({ command: 'npm test', lineCount: 87 }),
+        meta: commandMeta({ command: 'pnpm test', lineCount: 87 }),
         payloadId: 'cmd-payload',
       },
     });

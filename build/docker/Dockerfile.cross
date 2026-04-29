@@ -19,10 +19,25 @@ ARG TARGETARCH
 
 # Install base tools, GCC, and GTK/WebKit dev packages
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl xz-utils nodejs npm pkg-config gcc libc6-dev \
+    curl xz-utils pkg-config gcc libc6-dev \
     libgtk-3-dev libwebkit2gtk-4.1-dev \
     libgtk-4-dev libwebkitgtk-6.0-dev \
     && rm -rf /var/lib/apt/lists/*
+
+# Install Node directly so the cross image matches the repo's Node 24 floor
+# and has Corepack available for the pinned pnpm version.
+ARG NODE_VERSION=24.14.1
+RUN NODE_ARCH=$(case "${TARGETARCH}" in arm64) echo "arm64" ;; *) echo "x64" ;; esac) && \
+    NODE_TARBALL="node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz" && \
+    curl -fsSLO "https://nodejs.org/dist/v${NODE_VERSION}/${NODE_TARBALL}" && \
+    curl -fsSLO "https://nodejs.org/dist/v${NODE_VERSION}/SHASUMS256.txt" && \
+    grep " ${NODE_TARBALL}\$" SHASUMS256.txt | sha256sum -c - && \
+    tar -xJf "${NODE_TARBALL}" -C /opt && \
+    rm "${NODE_TARBALL}" SHASUMS256.txt \
+    && ln -s /opt/node-v${NODE_VERSION}-linux-${NODE_ARCH}/bin/node /usr/local/bin/node \
+    && ln -s /opt/node-v${NODE_VERSION}-linux-${NODE_ARCH}/bin/corepack /usr/local/bin/corepack \
+    && corepack enable \
+    && corepack prepare pnpm@10.33.2 --activate
 
 # Install Zig - automatically selects correct binary for host architecture
 ARG ZIG_VERSION=0.14.0
@@ -174,7 +189,7 @@ export CGO_CFLAGS="-w"
 
 # Build frontend if exists and not already built (host may have built it)
 if [ -d "frontend" ] && [ -f "frontend/package.json" ] && [ ! -d "frontend/dist" ]; then
-    (cd frontend && npm install --silent && npm run build --silent)
+    (cd frontend && pnpm install --frozen-lockfile --silent && pnpm --silent run build)
 fi
 
 # Build

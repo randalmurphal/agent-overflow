@@ -3,6 +3,7 @@
 # `make dev DEBUG=1` enables lightweight frontend UI render tracing.
 # `UI_TRACE=1` is the explicit form; DEBUG=1 is the short dev-mode alias.
 UI_TRACE ?= $(DEBUG)
+GO_PACKAGE_ROOTS := . ./internal/... ./build/...
 
 ifeq ($(shell uname -s),Darwin)
 HOST_ARCH := $(shell uname -m)
@@ -31,10 +32,16 @@ endif
 # On Darwin, the exported CGO flags keep Wails Objective-C objects and the final
 # binary on the same macOS deployment target, avoiding noisy linker warnings.
 go-build:
-	go build ./...
+	@set -e; \
+	packages=$$(go list -f '{{if or .GoFiles .CgoFiles}}{{.ImportPath}}{{end}}' $(GO_PACKAGE_ROOTS) | sed '/^$$/d'); \
+	if [ -z "$$packages" ]; then echo "ERROR: no Go packages found"; exit 1; fi; \
+	go build $$packages
 
 go-test:
-	go test ./...
+	@set -e; \
+	packages=$$(go list $(GO_PACKAGE_ROOTS)); \
+	if [ -z "$$packages" ]; then echo "ERROR: no Go packages found"; exit 1; fi; \
+	go test $$packages
 
 # test-race exercises the concurrency-sensitive packages under -race.
 # Scoped to packages with non-trivial goroutine wiring rather than the
@@ -51,7 +58,7 @@ test-race:
 
 install:
 	go install tool
-	cd frontend && npm install
+	cd frontend && corepack pnpm install --frozen-lockfile
 
 dev:
 	VITE_AGENT_OVERFLOW_UI_TRACE=$(UI_TRACE) wails3 dev
@@ -116,7 +123,7 @@ dev-wsl:
 # copy to the Windows desktop, double-click later) instead of launching
 # in place.
 build-wsl:
-	cd frontend && npm run build
+	cd frontend && corepack pnpm run build
 	@if [ -n "$(WSL_FORCE_RELINK)" ]; then rm -f bin/agent-overflow.exe bin/agent-overflow-linux; fi
 	VERSION="$(WSL_VERSION)" wails3 task windows:build:wsl
 
@@ -125,8 +132,8 @@ build:
 
 test:
 	$(MAKE) go-test
-	cd frontend && npm test
+	cd frontend && corepack pnpm test
 
 check:
 	$(MAKE) go-build
-	cd frontend && npm run check
+	cd frontend && corepack pnpm run check

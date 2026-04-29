@@ -209,10 +209,10 @@ happens through stable sibling ids in triage.
 
 Every task leaves these passing:
 
-- `go build ./...`
-- `go test ./...`
-- `cd frontend && npm run check`
-- `cd frontend && npm run build`
+- `make go-build`
+- `make go-test`
+- `cd frontend && corepack pnpm run check`
+- `cd frontend && corepack pnpm run build`
 
 If any are broken, fix them before the commit lands. "Out of scope" is
 not a valid reason to leave a check red — see the Ownership section of

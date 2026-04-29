@@ -90,7 +90,8 @@ one closest to what you're touching.
   workflow).
 - Tests must be deterministic. Use `t.TempDir()` for fixtures; never
   scan shared system state.
-- `go test ./... -count=1` must pass cleanly before any commit.
+- `make go-test` must pass cleanly before any commit. Use
+  `go test <pkg> -count=1` only for focused reruns.
 
 ## References
 

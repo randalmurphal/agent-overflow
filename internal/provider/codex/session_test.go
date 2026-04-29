@@ -3029,7 +3029,7 @@ func TestCodexHandleServerRequestApplyPatchApproval(t *testing.T) {
 func TestCodexHandleServerRequestExecCommandApproval(t *testing.T) {
 	s, eventCh := newTestCodexSession(t)
 
-	line := []byte(`{"jsonrpc":"2.0","id":7,"method":"execCommandApproval","params":{"command":"npm test"}}`)
+	line := []byte(`{"jsonrpc":"2.0","id":7,"method":"execCommandApproval","params":{"command":"pnpm test"}}`)
 	if err := s.proc.WriteLine(line); err != nil {
 		t.Fatalf("write: %v", err)
 	}

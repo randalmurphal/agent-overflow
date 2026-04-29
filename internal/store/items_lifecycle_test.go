@@ -369,7 +369,7 @@ func TestAppendCompletionItemPairsLaunchAndCompletion(t *testing.T) {
 
 	launch := Item{
 		ID: "launch", ThreadID: "t", TurnIndex: 0, ItemIndex: 0,
-		Kind: "tool_call", Role: "assistant", Summary: "npm build",
+		Kind: "tool_call", Role: "assistant", Summary: "pnpm build",
 		Status: "completed", IsBackground: true, CreatedAt: now,
 	}
 	if err := s.InsertItem(launch); err != nil {
@@ -603,7 +603,7 @@ func TestListItemsIncludesLifecycleFields(t *testing.T) {
 	}
 	launch := Item{
 		ID: "launch", ThreadID: "t", TurnIndex: 0, ItemIndex: 0,
-		Kind: "tool_call", Role: "assistant", Summary: "npm build",
+		Kind: "tool_call", Role: "assistant", Summary: "pnpm build",
 		Status: "completed", IsBackground: true, CreatedAt: now,
 	}
 	if err := s.InsertItem(launch); err != nil {

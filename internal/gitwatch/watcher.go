@@ -21,7 +21,7 @@ const (
 	// debounceMaxWait caps how long a continuous stream of fs events
 	// can keep deferring a refresh. Without this bound, a long-running
 	// process that writes a file every <250ms (e.g. an agent dumping
-	// many files, or `npm install` mid-turn) would reset the trailing
+	// many files, or a dependency install mid-turn) would reset the trailing
 	// edge forever and the UI would see stale git status until the
 	// activity stopped. Trade-off: a refresh during heavy activity is
 	// the price of liveness.

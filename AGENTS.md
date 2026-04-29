@@ -19,20 +19,20 @@ performance, memory efficiency, and minimal code.
 
 ## Commands
 
-Requires Go 1.25+ and Node 24+. On Linux, install
+Requires Go 1.25+ and Node 24+ with Corepack. On Linux, install
 `libgtk-3-dev`, `libwebkit2gtk-4.1-dev`, `pkg-config`, and `gcc`
 before `make install`.
 
-- `make install` — installs `wails3` CLI (via `go.mod` tool directive) + npm deps
+- `make install` — installs `wails3` CLI (via `go.mod` tool directive) + pnpm deps
 - `make dev` — dev mode, hot reload (`wails3 dev`)
 - `make build` — production build (`wails3 build`)
 - `make go-build` — `go build ./...` with repo-standard platform env
 - `make go-test` — `go test ./...` with repo-standard platform env
-- `make check` — `make go-build` + `npm run check`
-- `make test` — `make go-test` + `npm test`
+- `make check` — `make go-build` + `corepack pnpm run check`
+- `make test` — `make go-test` + `corepack pnpm test`
 
-Every task must leave `make go-build`, `make go-test`, `npm run check`, and
-`npm run build` passing. On macOS, use the Make targets rather than bare
+Every task must leave `make go-build`, `make go-test`, `corepack pnpm run check`, and
+`corepack pnpm run build` passing. On macOS, use the Make targets rather than bare
 `go build ./...` / `go test ./...`; the Makefile exports the cgo deployment
 target flags Wails needs to keep Objective-C objects and final binaries on the
 same minimum macOS version.

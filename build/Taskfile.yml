@@ -12,14 +12,14 @@ tasks:
     dir: frontend
     sources:
       - package.json
-      - package-lock.json
+      - pnpm-lock.yaml
     generates:
       - node_modules
     preconditions:
-      - sh: npm version
-        msg: "Looks like npm isn't installed. Npm is part of the Node installer: https://nodejs.org/en/download/"
+      - sh: corepack --version
+        msg: "Looks like Corepack isn't installed. Corepack is included with supported Node.js releases: https://nodejs.org/en/download/"
     cmds:
-      - npm install
+      - corepack pnpm install --frozen-lockfile
 
   build:frontend:
     label: build:frontend (DEV={{.DEV}})
@@ -37,7 +37,7 @@ tasks:
           BUILD_FLAGS:
             ref: .BUILD_FLAGS
     cmds:
-      - npm run {{.BUILD_COMMAND}} -q
+      - corepack pnpm --silent run {{.BUILD_COMMAND}}
     env:
       PRODUCTION: '{{if eq .DEV "true"}}false{{else}}true{{end}}'
     vars:
@@ -55,7 +55,7 @@ tasks:
     deps:
       - task: install:frontend:deps
     cmds:
-      - npm run {{.BUILD_COMMAND}} -q
+      - corepack pnpm --silent run {{.BUILD_COMMAND}}
     env:
       PRODUCTION: '{{if eq .DEV "true"}}false{{else}}true{{end}}'
     vars:
@@ -135,7 +135,7 @@ tasks:
     deps:
       - task: install:frontend:deps
     cmds:
-      - npm run dev -- --port {{.VITE_PORT}} --strictPort
+      - corepack pnpm run dev -- --port {{.VITE_PORT}} --strictPort
 
   update:build-assets:
     summary: Updates the build assets

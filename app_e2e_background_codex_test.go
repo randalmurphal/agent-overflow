@@ -60,7 +60,7 @@ func TestE2E_Codex_YieldingCommand_ProjectsAsBackgrounded(t *testing.T) {
 		"process_id":  "pid-777",
 		"toolName":    "command_execution",
 		"input": map[string]any{
-			"command": "npm run server",
+			"command": "pnpm run server",
 		},
 		"item": map[string]any{
 			"id":        "cmd-e2e",
@@ -68,7 +68,7 @@ func TestE2E_Codex_YieldingCommand_ProjectsAsBackgrounded(t *testing.T) {
 			"source":    "unifiedExecStartup",
 			"status":    "inProgress",
 			"processId": "pid-777",
-			"command":   "npm run server",
+			"command":   "pnpm run server",
 		},
 	})
 	if err := app.triage.Handle(provider.ProviderEvent{
@@ -148,7 +148,7 @@ func TestE2E_Codex_YieldingCommand_ProjectsAsBackgrounded(t *testing.T) {
 		"source":      "unifiedExecStartup",
 		"item_status": "completed",
 		"process_id":  "pid-777",
-		"command":     "npm run server",
+		"command":     "pnpm run server",
 	})
 	if err := app.triage.Handle(provider.ProviderEvent{
 		Kind: provider.EventToolComplete, ThreadID: thread.ID, ItemID: "cmd-e2e",
@@ -391,7 +391,7 @@ func TestE2E_Codex_AppRestart_GhostRowsFlipped(t *testing.T) {
 	// On the next app run this row must flip BEFORE any replay can
 	// re-upsert it as running — otherwise it would render as
 	// live-forever in the tray.
-	seedBackgroundLaunchRowE2E(t, app.store, thread.ID, "tool-ghost", "command_execution", "npm run watch")
+	seedBackgroundLaunchRowE2E(t, app.store, thread.ID, "tool-ghost", "command_execution", "pnpm run watch")
 
 	// Fire the pre-spawn flip — the same helper startSessionNow calls
 	// on every Codex session start. It's intentionally unconditional

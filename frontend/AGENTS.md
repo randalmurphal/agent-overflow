@@ -4,9 +4,9 @@ Svelte 5 + Vite 8 (Rolldown) + Tailwind 4 + TypeScript.
 
 ## Commands
 
-- `npm run check` — Svelte + TypeScript type check. Must pass.
-- `npm run build` — production build. Must pass.
-- `npm test` — Vitest unit tests.
+- `corepack pnpm run check` — Svelte + TypeScript type check. Must pass.
+- `corepack pnpm run build` — production build. Must pass.
+- `corepack pnpm test` — Vitest unit tests.
 
 ## Layout
 
@@ -234,7 +234,7 @@ Copy/download paths read raw `summary` / `content` / `data`.
 - Store logic: unit-test with Vitest under `src/lib/stores/*.test.ts`.
 - Component rendering: coverage is thin; when you add or change
   behavior, add a component test that would fail without the change.
-- A failing `npm run check` is a blocker, not a warning.
+- A failing `corepack pnpm run check` is a blocker, not a warning.
 
 ## References
 

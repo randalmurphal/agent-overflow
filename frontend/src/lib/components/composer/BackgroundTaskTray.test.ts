@@ -788,7 +788,7 @@ describe('<BackgroundTaskTray>', () => {
           id: 'launch-exec',
           isBackground: true,
           status: 'running',
-          summary: 'npm run server',
+          summary: 'pnpm run server',
           toolName: 'exec_command',
           createdAt: 1_000_000 - 1_000,
         }),

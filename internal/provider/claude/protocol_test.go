@@ -328,7 +328,7 @@ func TestParseLine_AssistantToolUseNoBackgroundMetaByDefault(t *testing.T) {
 // with `run_in_background: true` surfaces `is_background: true` on the
 // emitted EventToolStart's Meta.
 func TestParseLine_AssistantToolUseRunInBackground(t *testing.T) {
-	line := []byte(`{"type":"assistant","message":{"id":"msg-1","role":"assistant","content":[{"type":"tool_use","id":"tool-bg","name":"Bash","input":{"command":"npm run dev","run_in_background":true}}]}}`)
+	line := []byte(`{"type":"assistant","message":{"id":"msg-1","role":"assistant","content":[{"type":"tool_use","id":"tool-bg","name":"Bash","input":{"command":"pnpm run dev","run_in_background":true}}]}}`)
 	events, err := ParseLine(testThreadProto, line)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
@@ -460,7 +460,7 @@ func TestParseLine_UserToolResultStructuredContent(t *testing.T) {
 func TestParser_BackgroundToolUsePlaceholderCarriesIsBackgroundMeta(t *testing.T) {
 	parser := NewParser()
 
-	startLine := []byte(`{"type":"assistant","message":{"id":"msg-1","role":"assistant","content":[{"type":"tool_use","id":"tool-bg","name":"Bash","input":{"command":"npm run dev","run_in_background":true}}]}}`)
+	startLine := []byte(`{"type":"assistant","message":{"id":"msg-1","role":"assistant","content":[{"type":"tool_use","id":"tool-bg","name":"Bash","input":{"command":"pnpm run dev","run_in_background":true}}]}}`)
 	startEvents, err := parser.ParseLine(testThreadProto, startLine)
 	if err != nil {
 		t.Fatalf("parse start: %v", err)

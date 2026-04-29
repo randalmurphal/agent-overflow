@@ -818,7 +818,7 @@ func TestTaskStartedMergesTaskIDIntoItemMeta(t *testing.T) {
 	// Real tool_use block: Bash background command.
 	startMeta, _ := json.Marshal(map[string]any{
 		"toolName":      "Bash",
-		"input":         map[string]any{"command": "npm run dev"},
+		"input":         map[string]any{"command": "pnpm run dev"},
 		"is_background": true,
 	})
 	if err := router.Handle(provider.ProviderEvent{
@@ -847,7 +847,7 @@ func TestTaskStartedMergesTaskIDIntoItemMeta(t *testing.T) {
 	if !item.IsBackground {
 		t.Error("IsBackground lost during meta merge")
 	}
-	if !strings.Contains(item.Summary, "Bash") || !strings.Contains(item.Summary, "npm run dev") {
+	if !strings.Contains(item.Summary, "Bash") || !strings.Contains(item.Summary, "pnpm run dev") {
 		t.Errorf("summary overwritten by meta merge: %q", item.Summary)
 	}
 
