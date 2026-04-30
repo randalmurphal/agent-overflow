@@ -1,0 +1,27 @@
+# Cross-compile to Windows MSVC from Linux using xwin's downloaded
+# Microsoft SDK. Set up by `xwin --accept-license splat --output .xwin`.
+#
+# To build:
+#   cargo build --release --target x86_64-pc-windows-msvc
+#
+# Paths are absolute because cc-rs runs builds in each crate's source
+# directory (in the registry cache), not the workspace root, so a
+# relative `.xwin/...` would resolve to the wrong place. Path is
+# rmurphy-specific; future contributors should regenerate this with
+# their own xwin output dir.
+
+[target.x86_64-pc-windows-msvc]
+linker = "lld-link"
+rustflags = [
+    "-Lnative=/home/rmurphy/repos/agent-overflow-gpui/frontend-rs/.xwin/crt/lib/x86_64",
+    "-Lnative=/home/rmurphy/repos/agent-overflow-gpui/frontend-rs/.xwin/sdk/lib/um/x86_64",
+    "-Lnative=/home/rmurphy/repos/agent-overflow-gpui/frontend-rs/.xwin/sdk/lib/ucrt/x86_64",
+    "-Ctarget-feature=+crt-static",
+]
+
+[env]
+CC_x86_64_pc_windows_msvc = "clang-cl"
+CXX_x86_64_pc_windows_msvc = "clang-cl"
+AR_x86_64_pc_windows_msvc = "llvm-lib"
+CFLAGS_x86_64_pc_windows_msvc = "/imsvc/home/rmurphy/repos/agent-overflow-gpui/frontend-rs/.xwin/crt/include /imsvc/home/rmurphy/repos/agent-overflow-gpui/frontend-rs/.xwin/sdk/include/ucrt /imsvc/home/rmurphy/repos/agent-overflow-gpui/frontend-rs/.xwin/sdk/include/um /imsvc/home/rmurphy/repos/agent-overflow-gpui/frontend-rs/.xwin/sdk/include/shared"
+CXXFLAGS_x86_64_pc_windows_msvc = "/imsvc/home/rmurphy/repos/agent-overflow-gpui/frontend-rs/.xwin/crt/include /imsvc/home/rmurphy/repos/agent-overflow-gpui/frontend-rs/.xwin/sdk/include/ucrt /imsvc/home/rmurphy/repos/agent-overflow-gpui/frontend-rs/.xwin/sdk/include/um /imsvc/home/rmurphy/repos/agent-overflow-gpui/frontend-rs/.xwin/sdk/include/shared"

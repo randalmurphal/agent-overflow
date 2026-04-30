@@ -1,1 +1,6 @@
 target/
+
+# xwin's downloaded MSVC SDK splat (~660 MB). Each contributor regenerates
+# locally via `xwin --accept-license splat --output .xwin`; license is per
+# user.
+.xwin/

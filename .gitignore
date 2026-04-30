@@ -6,6 +6,10 @@ bin/
 # Task runner cache
 .task/
 
+# xwin's per-user MSVC SDK download cache (used by frontend-rs Windows
+# cross-compile setup).
+.xwin-cache/
+
 # Dependencies
 node_modules/
 
