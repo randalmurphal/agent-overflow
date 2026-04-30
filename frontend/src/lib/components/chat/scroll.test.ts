@@ -364,3 +364,263 @@ describe('scroll integration — load older noop / error paths', () => {
     expect(newToasts).toHaveLength(0);
   });
 });
+
+// Wait for stickyBottomController's deferred rAF + a microtask drain.
+// Mirrors the helper used in stickyBottomController.svelte.test.ts:72.
+function nextFrame(): Promise<void> {
+  return new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+}
+
+describe('scroll integration — visibility-mask flicker fix', () => {
+  // The fix: items appended to a sticky timeline render `visibility: hidden`
+  // for one frame so the browser doesn't paint a wrong-position flash before
+  // `stickyBottomController.scrollToLast` runs. The mask is cleared by the
+  // controller's `onScrollSettled` callback (success branch + bail branch +
+  // forceStick). These tests assert the registry contract end-to-end through
+  // a real MessageTimeline mount, since that's where the wiring lives.
+
+  it('marks an in-stream append while sticky and clears it after the rAF settles', async () => {
+    const pane = await buildPane(makeThread(), [
+      makeItem({ id: 'seed', summary: 'seed' }),
+    ]);
+
+    const { container } = render(MessageTimeline, { props: { pane } });
+    await tick();
+    await tick();
+
+    pane.upsertItem(makeItem({ id: 'fresh', itemIndex: 1, summary: 'fresh' }));
+    // Synchronous read — verify the registry update before yielding to the
+    // event loop. happy-dom's rAF can fire during `await tick()` and would
+    // otherwise race the controller's onScrollSettled clear against this
+    // assertion.
+    expect(pane.pendingScrollCatchupItems.has('fresh')).toBe(true);
+
+    // The items.length effect wired up in MessageTimeline calls
+    // notifyContentMaybeGrew, which schedules the deferred rAF. After that
+    // rAF fires, onScrollSettled runs pane.clearPendingScrollCatchup, the
+    // registry empties, and the row's wrapper drops the `invisible` class.
+    // The `class:invisible` lives on the outer `[data-row-index]` wrapper,
+    // not the `[data-item-id]` leaf root — `closest` below walks up to the
+    // wrapper that owns the masking class.
+    await tick();
+    await nextFrame();
+    await tick();
+
+    expect(pane.pendingScrollCatchupItems.has('fresh')).toBe(false);
+    const freshRowAfter = container
+      .querySelector('[data-item-id="fresh"]')
+      ?.closest('[data-row-index]') as HTMLElement | null;
+    expect(freshRowAfter?.classList.contains('invisible')).toBe(false);
+  });
+
+  it('does not mark items when the controller is in free intent', async () => {
+    const pane = await buildPane(makeThread(), [
+      makeItem({ id: 'seed', summary: 'seed' }),
+    ]);
+
+    const { container } = render(MessageTimeline, { props: { pane } });
+    await tick();
+    await tick();
+
+    // Flip to free via a wheel-up gesture on the timeline wrapper —
+    // matches the path that flips intent in real usage.
+    const wrapper = container.querySelector('[data-testid="message-timeline-scroll"]') as HTMLElement;
+    wrapper.dispatchEvent(new WheelEvent('wheel', { deltaY: -50, bubbles: true }));
+    await tick();
+
+    pane.upsertItem(makeItem({ id: 'fresh', itemIndex: 1, summary: 'fresh' }));
+    expect(pane.pendingScrollCatchupItems.has('fresh')).toBe(false);
+
+    await tick();
+    const freshRow = container
+      .querySelector('[data-item-id="fresh"]')
+      ?.closest('[data-row-index]') as HTMLElement | null;
+    expect(freshRow?.classList.contains('invisible')).toBe(false);
+  });
+
+  it('does not mark items in the initial-load batch (items.length === 0 before upsert)', async () => {
+    // buildPane runs switchThread which performs an initial mass-upsert.
+    // No controller is attached at that point, so the sticky-gate is moot —
+    // but the items.length-was-zero gate is the canonical guard. Explicitly
+    // upsert into a pane with zero items AFTER the controller is attached
+    // (by running through MessageTimeline's mount tick) and assert the gate
+    // holds. This protects against a future refactor that drops the gate.
+    const pane = await buildPane(makeThread(), []);
+
+    const { container } = render(MessageTimeline, { props: { pane } });
+    await tick();
+    await tick();
+    expect(pane.items).toHaveLength(0);
+
+    pane.upsertItem(makeItem({ id: 'first', summary: 'first' }));
+    expect(pane.pendingScrollCatchupItems.has('first')).toBe(false);
+
+    await tick();
+    const firstRow = container
+      .querySelector('[data-item-id="first"]')
+      ?.closest('[data-row-index]') as HTMLElement | null;
+    expect(firstRow?.classList.contains('invisible')).toBe(false);
+  });
+
+  it('marks every item when multiple appends arrive in rapid succession and clears them in a single rAF', async () => {
+    const pane = await buildPane(makeThread(), [
+      makeItem({ id: 'seed', summary: 'seed' }),
+    ]);
+
+    render(MessageTimeline, { props: { pane } });
+    await tick();
+    await tick();
+
+    pane.upsertItem(makeItem({ id: 'fresh-1', itemIndex: 1, summary: 'one' }));
+    pane.upsertItem(makeItem({ id: 'fresh-2', itemIndex: 2, summary: 'two' }));
+    expect(pane.pendingScrollCatchupItems.has('fresh-1')).toBe(true);
+    expect(pane.pendingScrollCatchupItems.has('fresh-2')).toBe(true);
+
+    await tick();
+    await nextFrame();
+    await tick();
+
+    expect(pane.pendingScrollCatchupItems.size).toBe(0);
+  });
+
+  it('clears pending items when the rAF bail branch fires after the user scrolls away', async () => {
+    const pane = await buildPane(makeThread(), [
+      makeItem({ id: 'seed', summary: 'seed' }),
+    ]);
+
+    const { container } = render(MessageTimeline, { props: { pane } });
+    await tick();
+    await tick();
+
+    pane.upsertItem(makeItem({ id: 'fresh', itemIndex: 1, summary: 'fresh' }));
+    expect(pane.pendingScrollCatchupItems.has('fresh')).toBe(true);
+
+    // Flip to free BEFORE the rAF fires. The rAF callback's
+    // `!core.canAutoScroll()` bail must still call onScrollSettled,
+    // otherwise the row stays hidden forever (until thread switch).
+    const wrapper = container.querySelector('[data-testid="message-timeline-scroll"]') as HTMLElement;
+    wrapper.dispatchEvent(new WheelEvent('wheel', { deltaY: -50, bubbles: true }));
+
+    await tick();
+    await nextFrame();
+    await tick();
+
+    expect(pane.pendingScrollCatchupItems.has('fresh')).toBe(false);
+  });
+
+  it('clearPendingScrollCatchup empties the registry directly', async () => {
+    // Registry-level contract test: independent of the controller
+    // wiring, the pane method must drop entries idempotently.
+    const pane = await buildPane(makeThread(), [
+      makeItem({ id: 'seed', summary: 'seed' }),
+    ]);
+    render(MessageTimeline, { props: { pane } });
+    await tick();
+    await tick();
+
+    pane.upsertItem(makeItem({ id: 'fresh', itemIndex: 1, summary: 'fresh' }));
+    expect(pane.pendingScrollCatchupItems.size).toBeGreaterThan(0);
+
+    pane.clearPendingScrollCatchup();
+    expect(pane.pendingScrollCatchupItems.size).toBe(0);
+
+    // Idempotent — calling on an empty registry is a no-op.
+    pane.clearPendingScrollCatchup();
+    expect(pane.pendingScrollCatchupItems.size).toBe(0);
+  });
+
+  it('thread switch wipes the pending registry alongside other per-row UI state', async () => {
+    // Note: makeThread()/makeItem() default to id='thread-1' / threadId='thread-1'.
+    // upsertItemsBatch filters incoming items whose threadId doesn't match
+    // the pane's current thread, so the seed/fresh items must use the same
+    // threadId as the thread the pane is currently on.
+    const pane = await buildPane(makeThread({ id: 'thread-a' }), [
+      makeItem({ id: 'seed', threadId: 'thread-a', summary: 'seed' }),
+    ]);
+    render(MessageTimeline, { props: { pane } });
+    await tick();
+    await tick();
+
+    pane.upsertItem(makeItem({ id: 'fresh', threadId: 'thread-a', itemIndex: 1, summary: 'fresh' }));
+    expect(pane.pendingScrollCatchupItems.size).toBeGreaterThan(0);
+
+    await pane.switchThread(makeThread({ id: 'thread-b' }));
+    expect(pane.pendingScrollCatchupItems.size).toBe(0);
+  });
+
+  it('forceStick clears pending items via the synchronous settle path', async () => {
+    // Race the controller's rAF: the user is sticky, items get marked,
+    // then the user clicks ScrollToBottomButton (which calls forceStick)
+    // before the rAF fires. forceStick's synchronous onScrollSettled must
+    // unmask, otherwise rows hang in `visibility: hidden` until the
+    // already-stale rAF hits its bail-branch settle. Tested through the
+    // real controller (not MessageTimeline) so we can drive forceStick
+    // synchronously without yielding to the rAF queue.
+    const { createStickyBottomController } = await import('../../utils/stickyBottomController.svelte');
+    const pane = await buildPane(makeThread(), [
+      makeItem({ id: 'seed', summary: 'seed' }),
+    ]);
+
+    let offset = 0;
+    const handle = {
+      getCache: vi.fn(() => ({}) as never),
+      getScrollOffset: () => offset,
+      getScrollSize: () => 1000,
+      getViewportSize: () => 600,
+      findItemIndex: vi.fn(() => 0),
+      getItemOffset: vi.fn(() => 0),
+      getItemSize: vi.fn(() => 90),
+      scrollToIndex: vi.fn(),
+      scrollTo: vi.fn((next: number) => { offset = next; }),
+      scrollBy: vi.fn(),
+    };
+    const wrapperEl = document.createElement('div');
+    document.body.appendChild(wrapperEl);
+
+    const controller = createStickyBottomController({
+      getScrollEl: () => wrapperEl,
+      getListHandle: () => handle,
+      getLastIndex: () => Math.max(0, pane.items.length - 1),
+      onScrollSettled: () => pane.clearPendingScrollCatchup(),
+    });
+    controller.attach();
+    pane.attachScrollController(controller);
+
+    try {
+      // Sticky by default; an in-stream append populates the registry.
+      pane.upsertItem(makeItem({ id: 'fresh', itemIndex: 1, summary: 'fresh' }));
+      expect(pane.pendingScrollCatchupItems.has('fresh')).toBe(true);
+
+      // forceStick fires synchronously — registry must clear without
+      // waiting for the rAF.
+      controller.forceStick();
+      expect(pane.pendingScrollCatchupItems.size).toBe(0);
+    } finally {
+      pane.detachScrollController(controller);
+      controller.destroy();
+      wrapperEl.remove();
+    }
+  });
+
+  it('does not mark items when an existing id is updated in place', async () => {
+    // The new-item branch of upsertItemsBatch is the only marking site;
+    // updates to already-tracked ids (delta-driven status changes,
+    // out-of-order tail corrections) take the existing-id branch and
+    // must not re-add the row to the pending registry — otherwise a
+    // mid-flight tool result update would re-hide a visible row.
+    const pane = await buildPane(makeThread(), [
+      makeItem({ id: 'seed', summary: 'seed' }),
+    ]);
+
+    render(MessageTimeline, { props: { pane } });
+    await tick();
+    await tick();
+
+    expect(pane.pendingScrollCatchupItems.has('seed')).toBe(false);
+
+    // Same id → existing-id branch in upsertItemsBatch.
+    pane.upsertItem(makeItem({ id: 'seed', summary: 'seed (updated)' }));
+    expect(pane.pendingScrollCatchupItems.has('seed')).toBe(false);
+    expect(pane.pendingScrollCatchupItems.size).toBe(0);
+  });
+});

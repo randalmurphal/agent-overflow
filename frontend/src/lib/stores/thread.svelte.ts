@@ -218,6 +218,12 @@ export interface PaneScrollController {
    * padding without changing the scroll wrapper's clientHeight).
    */
   notifyContentMaybeGrew(): void;
+  /**
+   * Read-only snapshot of whether the controller's intent is `'stick'`. Used
+   * by `upsertItemsBatch` to decide whether new items should be marked for
+   * the visibility-masking flicker fix — only auto-followed appends need it.
+   */
+  readonly isSticky: boolean;
 }
 
 function loadOlderResult(
@@ -343,6 +349,13 @@ export function createThreadPane() {
   // (which would otherwise revoke them in UserMessage's onDestroy and force
   // a re-fetch+re-allocate on the next back-scroll). Revoked on thread switch.
   const attachmentBlobs: Map<string, Map<string, ImagePreviewItem>> = new Map();
+  // Items appended while the user was sticky-at-bottom that haven't yet had
+  // their post-paint scroll catch-up rAF fire. The timeline renders these
+  // rows `visibility: hidden` so the browser doesn't paint a one-frame
+  // wrong-position flash before `stickyBottomController` runs `scrollToLast`.
+  // Cleared by `onScrollSettled` from the controller (success branch, bail
+  // branch, and `forceStick`) and by `clearRowUiState` on thread switch.
+  let pendingScrollCatchupItems: Set<string> = $state(new Set());
   const itemStatusById: Map<string, Item['status']> = new Map();
   const itemIndexById: Map<string, number> = new Map();
   const itemSummaryById: Map<string, string> = new Map();
@@ -833,6 +846,7 @@ export function createThreadPane() {
   function clearRowUiState(): void {
     expansionStates.clear();
     subagentGroupExpanded = new Set();
+    pendingScrollCatchupItems = new Set();
     disposeAttachmentBlobs();
   }
 
@@ -1021,6 +1035,21 @@ export function createThreadPane() {
     let liveChanged = false;
     let needsSort = false;
 
+    // Mark in-stream appends so the timeline can render them
+    // `visibility: hidden` until `stickyBottomController`'s deferred rAF
+    // runs `scrollToLast` and clears the registry via `onScrollSettled`.
+    // Two gates:
+    //   - `items.length > 0` excludes the initial-load batch (the first
+    //     mass-upsert of a freshly switched thread). Hiding the entire
+    //     timeline for one frame before `restoreInitialPosition` runs is a
+    //     worse UX than the original flicker.
+    //   - `scrollController?.isSticky` excludes free-intent appends — items
+    //     arriving while the user reads older content are off-screen anyway,
+    //     and marking them risks leaving rows hidden if the user never
+    //     re-sticks.
+    const shouldMaskNewItems = items.length > 0 && (scrollController?.isSticky ?? false);
+    const newlyAppendedItemIds: string[] = [];
+
     for (const item of incoming) {
       if (currentThreadId !== null && item.threadId !== currentThreadId) continue;
 
@@ -1066,6 +1095,9 @@ export function createThreadPane() {
       if (itemMayAffectDiffView(item)) {
         affectedTurns.add(item.turnIndex);
       }
+      if (shouldMaskNewItems) {
+        newlyAppendedItemIds.push(item.id);
+      }
       changed = true;
     }
 
@@ -1080,6 +1112,11 @@ export function createThreadPane() {
     }
     items = next;
     timelineRevision++;
+    if (newlyAppendedItemIds.length > 0) {
+      const nextSet = new Set(pendingScrollCatchupItems);
+      for (const id of newlyAppendedItemIds) nextSet.add(id);
+      pendingScrollCatchupItems = nextSet;
+    }
     for (const turnIndex of affectedTurns) {
       refreshTurnDiffView(turnIndex);
     }
@@ -1722,6 +1759,20 @@ export function createThreadPane() {
     isSubagentGroupExpanded,
     toggleSubagentGroupExpanded,
     attachmentCacheFor,
+    /**
+     * Reactive set of item ids whose row should render `visibility: hidden`
+     * until the next `stickyBottomController.onScrollSettled` fires. Populated
+     * by in-stream appends in `upsertItemsBatch` when the user is sticky;
+     * cleared by `clearPendingScrollCatchup` from the controller's settle
+     * callback (or by `clearRowUiState` on thread switch).
+     */
+    get pendingScrollCatchupItems(): ReadonlySet<string> {
+      return pendingScrollCatchupItems;
+    },
+    clearPendingScrollCatchup(): void {
+      if (pendingScrollCatchupItems.size === 0) return;
+      pendingScrollCatchupItems = new Set();
+    },
 
     setGeneralError(message: string | null): void {
       generalError = message;

@@ -49,6 +49,18 @@ export interface StickyBottomOptions {
    * confirm restick. Default 250ms.
    */
   gestureWindowMs?: number;
+  /**
+   * Fires after every settle of an auto-scroll path: the deferred
+   * `notifyContentMaybeGrew` rAF (both the success branch that ran
+   * `scrollToLast` and the early-bail branch where `canAutoScroll()` flipped
+   * to false during the rAF gap), and the synchronous `forceStick` path used
+   * by the scroll-to-bottom button. Used by the timeline to unmask rows that
+   * were rendered `visibility: hidden` to suppress the one-frame
+   * wrong-position flash between content paint and scroll catch-up. Always
+   * called after the scroll write so the unmask paints in the same frame as
+   * the corrected scroll position.
+   */
+  onScrollSettled?: () => void;
 }
 
 export interface StickyBottomController {
@@ -146,9 +158,19 @@ export function createStickyBottomController(
     if (pendingScrollFrame !== null) return;
     pendingScrollFrame = requestAnimationFrame(() => {
       pendingScrollFrame = null;
-      if (!core.canAutoScroll()) return;
+      // Both branches must invoke onScrollSettled — the bail path (user
+      // gestured to free during the rAF gap) still needs to release any
+      // visibility masks the timeline put in place when the rAF was
+      // scheduled, otherwise the rows stay hidden until the next thread
+      // switch wipes the registry. Order is scroll-first-then-settle so the
+      // unmask paints in the same frame as the corrected scroll position.
+      if (!core.canAutoScroll()) {
+        options.onScrollSettled?.();
+        return;
+      }
       const handle = options.getListHandle();
       if (handle) scrollToLast(handle);
+      options.onScrollSettled?.();
     });
   }
 
@@ -173,10 +195,17 @@ export function createStickyBottomController(
     core.setIntent('stick');
     // Defer when a pointer is held: yanking the user's scroll position
     // mid-drag would erase their drag work, and pointerup will resume
-    // auto-scroll naturally.
+    // auto-scroll naturally. Any pending visibility masks unmask via the
+    // pointerup handler's `notifyContentMaybeGrew` → rAF → onScrollSettled
+    // chain, so we don't need to settle here.
     if (core.isPointerDown()) return;
     const handle = options.getListHandle();
     if (handle) scrollToLast(handle);
+    // Bypass the deferred-rAF path entirely — `forceStick` is synchronous —
+    // so settle notification still has to fire here. Without it, items the
+    // timeline masked while free would never unmask after the user clicks
+    // scroll-to-bottom.
+    options.onScrollSettled?.();
   }
 
   // ===== VList event hooks =====
@@ -296,6 +325,10 @@ export function createStickyBottomController(
     if (pendingScrollFrame !== null) {
       cancelAnimationFrame(pendingScrollFrame);
       pendingScrollFrame = null;
+      // The pending rAF would have invoked onScrollSettled; firing it here
+      // keeps any visibility masks the timeline put in place from outliving
+      // the controller across HMR/remount.
+      options.onScrollSettled?.();
     }
   }
 

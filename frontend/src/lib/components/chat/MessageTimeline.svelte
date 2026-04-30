@@ -116,6 +116,11 @@
     getScrollEl: () => scrollEl,
     getListHandle: () => listRef,
     getLastIndex: () => groupedNodes.length - 1,
+    // Unmask rows that `upsertItemsBatch` flagged for visibility-masking
+    // while sticky. Fires from every settle path of the controller —
+    // success, bail, and the synchronous forceStick — so the registry can
+    // never strand rows hidden.
+    onScrollSettled: () => pane.clearPendingScrollCatchup(),
   });
 
   // Publish the controller on the pane so external surfaces (sidebar
@@ -422,8 +427,20 @@
         <!-- Outer per-row wrapper. We do NOT set data-item-id here:
              TimelineLeaf and SubagentGroup own that attribute on their
              own roots, and tests rely on the divider rendering BEFORE
-             the [data-item-id] node, not containing it. -->
-        <div data-row-index={index} class:mt-4={isToolTextBoundary(index)}>
+             the [data-item-id] node, not containing it.
+
+             `class:invisible` masks newly-appended rows for one frame
+             until `stickyBottomController` runs `scrollToLast`, which
+             clears `pendingScrollCatchupItems` via `onScrollSettled`.
+             The leaf + the trailing tail (working indicator + spacer
+             below) all sit inside this wrapper, so masking here hides
+             the entire freshly-mounted row as a unit and avoids the
+             working indicator flashing in the wrong position. -->
+        <div
+          data-row-index={index}
+          class:mt-4={isToolTextBoundary(index)}
+          class:invisible={pane.pendingScrollCatchupItems.has(timelineNodeItemId(node))}
+        >
           {#if index === 0}
             <!-- Top of timeline. Load-older button (when applicable) and
                  a small top breathing-room spacer ride inside the first
