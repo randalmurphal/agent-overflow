@@ -34,6 +34,10 @@ function commandMeta(overrides: Partial<CommandOutputMeta> = {}): CommandOutputM
   };
 }
 
+function expectBefore(left: Element, right: Element) {
+  expect(left.compareDocumentPosition(right) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+}
+
 describe('<CommandOutput>', () => {
   beforeEach(() => {
     resetBindingMocks();
@@ -194,6 +198,30 @@ describe('<CommandOutput>', () => {
     const badge = getByTestId('completion-badge');
     expect(badge.getAttribute('data-status')).toBe('success');
     expect(badge.className).toContain('text-success');
+  });
+
+  it('renders command rows with a terminal icon, Bash label, and command text', () => {
+    const { getByTestId } = render(CommandOutput, {
+      props: {
+        item: makeItem({ id: 'tool-cmd', kind: 'tool_call', status: 'running' }),
+        meta: commandMeta({ command: 'pnpm test' }),
+      },
+    });
+
+    expect(getByTestId('command-output-icon')).toBeInTheDocument();
+    expect(getByTestId('command-output-label').textContent?.trim()).toBe('Bash');
+    expect(getByTestId('command-output-command').textContent).toBe('pnpm test');
+  });
+
+  it('places the command completion badge before the timestamp', () => {
+    const { getByTestId } = render(CommandOutput, {
+      props: {
+        item: makeItem({ id: 'tool-cmd', kind: 'tool_completion', status: 'completed' }),
+        meta: commandMeta({ command: 'ls', exitCode: 0 }),
+      },
+    });
+
+    expectBefore(getByTestId('completion-badge'), getByTestId('command-output-time'));
   });
 
   it('renders the failure badge for a non-zero exit code', () => {

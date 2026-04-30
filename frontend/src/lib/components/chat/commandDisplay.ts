@@ -7,10 +7,6 @@ export function isCommandToolName(toolName: string | undefined | null): boolean 
   return COMMAND_TOOL_NAMES.has(raw);
 }
 
-export function commandLabelForStatus(status: string | undefined): string {
-  return status === 'running' || status === 'streaming' ? 'Running' : 'Ran';
-}
-
 export function commandTextForItem(
   item: Item,
   meta: CommandOutputMeta | null | undefined,

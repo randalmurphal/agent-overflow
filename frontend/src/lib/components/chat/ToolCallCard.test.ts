@@ -41,9 +41,8 @@ describe("<ToolCallCard> header dispatcher", () => {
     const { getByTestId } = render(ToolCallCard, { props: { pane, item } });
 
     expect(getByTestId("command-output-row")).toBeInTheDocument();
-    expect(getByTestId("command-output-label").textContent).toContain(
-      "Running:",
-    );
+    expect(getByTestId("command-output-icon")).toBeInTheDocument();
+    expect(getByTestId("command-output-label").textContent?.trim()).toBe("Bash");
     expect(getByTestId("command-output-command").textContent).toContain(
       "ls -la",
     );
@@ -65,7 +64,8 @@ describe("<ToolCallCard> header dispatcher", () => {
 
     expect(queryByTestId("tool-call-card")).toBeNull();
     expect(getByTestId("command-output-row")).toBeInTheDocument();
-    expect(getByTestId("command-output-label").textContent).toContain("Ran:");
+    expect(getByTestId("command-output-icon")).toBeInTheDocument();
+    expect(getByTestId("command-output-label").textContent?.trim()).toBe("Bash");
     expect(getByTestId("command-output-command").textContent).toBe(
       "git status --short",
     );
@@ -83,7 +83,7 @@ describe("<ToolCallCard> header dispatcher", () => {
 
     const { getByTestId } = render(ToolCallCard, { props: { pane, item } });
 
-    expect(getByTestId("command-output-label").textContent).toContain("Ran:");
+    expect(getByTestId("command-output-label").textContent?.trim()).toBe("Bash");
     expect(getByTestId("command-output-command").textContent).toBe("sleep 10");
   });
 
@@ -719,7 +719,7 @@ describe("<ToolCallCard> backgrounded status label", () => {
     expect(getByTestId("tool-call-card-status").textContent?.trim()).toBe("…");
   });
 
-  it('renders "running" (not "…") when !isBackground && status === "running"', async () => {
+  it('renders the Bash command label when !isBackground && status === "running"', async () => {
     const pane = await buildPane();
     const item = makeItem({
       id: "inline-run",
@@ -735,9 +735,7 @@ describe("<ToolCallCard> backgrounded status label", () => {
     });
 
     expect(queryByTestId("tool-call-card-status")).toBeNull();
-    expect(getByTestId("command-output-label").textContent).toContain(
-      "Running:",
-    );
+    expect(getByTestId("command-output-label").textContent?.trim()).toBe("Bash");
   });
 
   it('keeps "…" with no badge when a backgrounded launch row is somehow status=completed', async () => {
@@ -768,7 +766,7 @@ describe("<ToolCallCard> backgrounded status label", () => {
     expect(queryByTestId("completion-badge")).toBeNull();
   });
 
-  it('renders "running" (not "…") for tool_completion kind even when the flags match', async () => {
+  it('renders the Bash label for tool_completion kind even when the flags match', async () => {
     // tool_completion rows are terminal by definition — isBackground+running
     // should never fire on them in practice, but the template guards
     // against this corner. The sibling completion row must not claim
@@ -788,9 +786,7 @@ describe("<ToolCallCard> backgrounded status label", () => {
     });
 
     expect(queryByTestId("tool-call-card-status")).toBeNull();
-    expect(getByTestId("command-output-label").textContent).toContain(
-      "Running:",
-    );
+    expect(getByTestId("command-output-label").textContent?.trim()).toBe("Bash");
   });
 
   it("shows a loading body when background output ingestion is still in flight", async () => {
@@ -818,7 +814,7 @@ describe("<ToolCallCard> backgrounded status label", () => {
 });
 
 describe("<ToolCallCard> status dispatch", () => {
-  it('shows "running" for streaming/running tool calls', async () => {
+  it('shows the Bash label for streaming/running command tool calls', async () => {
     const pane = await buildPane();
     const item = makeItem({
       id: "t",
@@ -833,9 +829,7 @@ describe("<ToolCallCard> status dispatch", () => {
     });
 
     expect(queryByTestId("tool-call-card-status")).toBeNull();
-    expect(getByTestId("command-output-label").textContent).toContain(
-      "Running:",
-    );
+    expect(getByTestId("command-output-label").textContent?.trim()).toBe("Bash");
   });
 
   it("renders the success badge for an inline tool_call that completed (non-background)", async () => {

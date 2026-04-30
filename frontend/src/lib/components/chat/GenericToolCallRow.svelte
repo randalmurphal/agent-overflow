@@ -175,6 +175,12 @@
       {formatDuration(durationMs)}
     </span>
   {/if}
+  {#if runningLabel === null && completionStatus !== null}
+    <CompletionBadge
+      status={completionStatus}
+      class="opacity-80 transition-opacity group-hover/tool:opacity-100"
+    />
+  {/if}
   <time
     class="shrink-0 tabular-nums text-[10px] text-fg-hint"
     datetime={new Date(item.createdAt).toISOString()}
@@ -182,12 +188,6 @@
   >
     {time}
   </time>
-  {#if runningLabel === null && completionStatus !== null}
-    <CompletionBadge
-      status={completionStatus}
-      class="opacity-80 transition-opacity group-hover/tool:opacity-100"
-    />
-  {/if}
 {/snippet}
 
 <div

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { slide } from 'svelte/transition';
+  import Terminal from 'lucide-svelte/icons/terminal';
   import ChevronRight from 'lucide-svelte/icons/chevron-right';
   import Icon from '../primitives/Icon.svelte';
   import CopyFooter from './CopyFooter.svelte';
@@ -16,7 +17,6 @@
   } from './payloadExpansion.svelte';
   import AnsiText from './AnsiText.svelte';
   import {
-    commandLabelForStatus,
     commandTextForItem,
     displayCommandForItem,
   } from './commandDisplay';
@@ -71,7 +71,6 @@
   );
   let rawCommand = $derived(commandTextForItem(item, meta));
   let displayCommand = $derived(displayCommandForItem(item, meta));
-  let commandLabel = $derived(commandLabelForStatus(item.status));
   let isBackgroundedLaunch = $derived(item.kind === 'tool_call' && item.isBackground === true);
 
   let time = $derived(
@@ -105,31 +104,36 @@
         <Icon icon={ChevronRight} size={12} strokeWidth={2} class="opacity-70" />
       </span>
     {/if}
-    <span class="shrink-0 text-[12px] font-medium text-fg-muted" data-testid="command-output-label">
-      {commandLabel}:
+    <span class="flex size-3.5 shrink-0 items-center justify-center text-text-secondary" data-testid="command-output-icon" aria-hidden="true">
+      <Icon icon={Terminal} size={14} strokeWidth={2} class="opacity-75" />
+    </span>
+    <span class="shrink-0 text-[11px] font-medium text-fg-muted uppercase tracking-[0.04em]" data-testid="command-output-label">
+      Bash
     </span>
     <span class="min-w-0 flex-1 truncate font-mono text-[12px] text-fg-muted" data-testid="command-output-command">{displayCommand}</span>
-    <ToolDecisionChip decision={item.decision} />
-    {#if isBackgroundedLaunch}
-      <span
-        class="shrink-0 text-[10px] text-accent opacity-70 transition-opacity"
-        data-testid="command-output-status"
-        title="Running in background"
-        aria-label="Backgrounded"
+    <span class="ml-auto flex shrink-0 items-center gap-2">
+      <ToolDecisionChip decision={item.decision} />
+      {#if isBackgroundedLaunch}
+        <span
+          class="shrink-0 text-[10px] text-accent opacity-70 transition-opacity"
+          data-testid="command-output-status"
+          title="Running in background"
+          aria-label="Backgrounded"
+        >
+          …
+        </span>
+      {/if}
+      {#if showCompletionBadge && !isBackgroundedLaunch && completionStatus !== null}
+        <CompletionBadge status={completionStatus} />
+      {/if}
+      <time
+        class="text-[10px] text-fg-hint shrink-0 tabular-nums"
+        datetime={new Date(item.createdAt).toISOString()}
+        data-testid="command-output-time"
       >
-        …
-      </span>
-    {/if}
-    <time
-      class="ml-auto text-[10px] text-fg-hint shrink-0 tabular-nums"
-      datetime={new Date(item.createdAt).toISOString()}
-      data-testid="command-output-time"
-    >
-      {time}
-    </time>
-    {#if showCompletionBadge && !isBackgroundedLaunch && completionStatus !== null}
-      <CompletionBadge status={completionStatus} />
-    {/if}
+        {time}
+      </time>
+    </span>
   {/snippet}
 
   <!-- Header -->

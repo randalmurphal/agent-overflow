@@ -4,6 +4,10 @@ import GenericToolCallRow from './GenericToolCallRow.svelte';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { makeItem } from '../../../test/helpers/chat';
 
+function expectBefore(left: Element, right: Element) {
+  expect(left.compareDocumentPosition(right) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+}
+
 describe('<GenericToolCallRow> editor-link wiring', () => {
   beforeEach(() => {
     resetBindingMocks();
@@ -50,5 +54,18 @@ describe('<GenericToolCallRow> editor-link wiring', () => {
     // Body did NOT expand because stopPropagation prevented the
     // toggle's onclick from firing.
     expect(queryByTestId('tool-call-card-body')).toBeNull();
+  });
+
+  it('places the completion badge before the timestamp', () => {
+    const item = makeItem({
+      kind: 'tool_call',
+      status: 'completed',
+      toolName: 'Read',
+      summary: 'README.md',
+    });
+
+    const { getByTestId } = render(GenericToolCallRow, { props: { item } });
+
+    expectBefore(getByTestId('completion-badge'), getByTestId('tool-call-card-time'));
   });
 });
