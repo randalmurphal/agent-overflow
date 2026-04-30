@@ -268,15 +268,25 @@
         {entryCountLabel}
       </span>
       {#if runningLabel !== null}
-        <span
-          class="shrink-0 text-[10px] text-accent opacity-70 transition-opacity group-hover/tool:opacity-100"
-          data-testid="subagent-group-status"
-          data-status={parent.status}
-          title={isBackgroundedLaunch ? 'Running in background' : undefined}
-          aria-label={isBackgroundedLaunch ? 'Backgrounded' : undefined}
-        >
-          {runningLabel}
-        </span>
+        {#if isBackgroundedLaunch}
+          <span
+            class="shrink-0 text-[20px] leading-none text-accent opacity-90 transition-opacity group-hover/tool:opacity-100"
+            data-testid="subagent-group-status"
+            data-status={parent.status}
+            title="Running in background"
+            aria-label="Backgrounded"
+          >
+            …
+          </span>
+        {:else}
+          <span
+            class="shrink-0 text-[10px] text-accent opacity-70 transition-opacity group-hover/tool:opacity-100"
+            data-testid="subagent-group-status"
+            data-status={parent.status}
+          >
+            {runningLabel}
+          </span>
+        {/if}
       {:else if completionStatus !== null}
         <CompletionBadge
           status={completionStatus}

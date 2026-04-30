@@ -98,8 +98,18 @@
     return typeof error === 'string' ? error : '';
   });
 
+  // TaskOutput is Claude's "retrieve background-task output" tool. Its
+  // tool_result body is an XML envelope wrapping the same stdout/stderr
+  // already shown on the originating Bash row, so the dropdown is
+  // redundant noise. Render the row collapsed-only — the completion
+  // badge and timestamp still convey "model checked the output".
+  let suppressBodyExpansion = $derived(item.toolName === 'TaskOutput');
+
   let hasExpandableBody = $derived(
-    Boolean(item.payloadId) || deferredOutputState === 'loading' || deferredOutputState === 'error',
+    !suppressBodyExpansion &&
+      (Boolean(item.payloadId) ||
+        deferredOutputState === 'loading' ||
+        deferredOutputState === 'error'),
   );
 
   keepExpandedPayloadFresh(
@@ -157,15 +167,25 @@
   {/if}
   <ToolDecisionChip decision={item.decision} />
   {#if runningLabel !== null}
-    <span
-      class="shrink-0 text-[10px] text-accent opacity-70 transition-opacity group-hover/tool:opacity-100"
-      data-testid="tool-call-card-status"
-      data-status={item.status}
-      title={isBackgroundedLaunch ? 'Running in background' : undefined}
-      aria-label={isBackgroundedLaunch ? 'Backgrounded' : undefined}
-    >
-      {runningLabel}
-    </span>
+    {#if isBackgroundedLaunch}
+      <span
+        class="shrink-0 text-[20px] leading-none text-accent opacity-90 transition-opacity group-hover/tool:opacity-100"
+        data-testid="tool-call-card-status"
+        data-status={item.status}
+        title="Running in background"
+        aria-label="Backgrounded"
+      >
+        …
+      </span>
+    {:else}
+      <span
+        class="shrink-0 text-[10px] text-accent opacity-70 transition-opacity group-hover/tool:opacity-100"
+        data-testid="tool-call-card-status"
+        data-status={item.status}
+      >
+        {runningLabel}
+      </span>
+    {/if}
   {/if}
   {#if durationMs !== null}
     <span

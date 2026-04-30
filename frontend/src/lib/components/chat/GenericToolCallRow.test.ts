@@ -68,4 +68,39 @@ describe('<GenericToolCallRow> editor-link wiring', () => {
 
     expectBefore(getByTestId('completion-badge'), getByTestId('tool-call-card-time'));
   });
+
+  it('renders the backgrounded "…" badge larger than the inline running label', () => {
+    const item = makeItem({
+      kind: 'tool_call',
+      status: 'running',
+      isBackground: true,
+      toolName: 'Bash',
+      summary: 'long-running task',
+    });
+    const { getByTestId } = render(GenericToolCallRow, { props: { item } });
+    const status = getByTestId('tool-call-card-status');
+    expect(status.textContent?.trim()).toBe('…');
+    expect(status.getAttribute('aria-label')).toBe('Backgrounded');
+    // The backgrounded variant uses a much larger font so the affordance
+    // is visible without hover. The inline running label uses 10px.
+    expect(status.className).toContain('text-[20px]');
+    expect(status.className).not.toContain('text-[10px]');
+  });
+
+  it('suppresses the dropdown for TaskOutput rows even when a payload exists', () => {
+    // TaskOutput retrieves the same stdout already shown on the
+    // originating Bash row, so the row stays compact (no toggle button,
+    // no expandable body).
+    const item = makeItem({
+      kind: 'tool_completion',
+      status: 'completed',
+      toolName: 'TaskOutput',
+      summary: 'TaskOutput',
+      payloadId: 'p-task-output',
+    });
+    const { queryByTestId, getByTestId } = render(GenericToolCallRow, { props: { item } });
+    expect(queryByTestId('tool-call-card-toggle')).toBeNull();
+    expect(getByTestId('tool-call-card-row')).not.toBeNull();
+    expect(queryByTestId('tool-call-card-body')).toBeNull();
+  });
 });

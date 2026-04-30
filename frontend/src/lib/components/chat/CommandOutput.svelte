@@ -115,7 +115,7 @@
       <ToolDecisionChip decision={item.decision} />
       {#if isBackgroundedLaunch}
         <span
-          class="shrink-0 text-[10px] text-accent opacity-70 transition-opacity"
+          class="shrink-0 text-[20px] leading-none text-accent opacity-90 transition-opacity"
           data-testid="command-output-status"
           title="Running in background"
           aria-label="Backgrounded"
