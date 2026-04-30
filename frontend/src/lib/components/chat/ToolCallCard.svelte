@@ -12,6 +12,7 @@
   } from '../../types/models';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { parseJsonObject } from '../../utils/parseJsonObject';
+  import AskUserQuestionCard from './AskUserQuestionCard.svelte';
   import CollabToolRow from './CollabToolRow.svelte';
   import CommandOutput from './CommandOutput.svelte';
   import DiffPreview from './DiffPreview.svelte';
@@ -76,7 +77,15 @@
   );
 </script>
 
-{#if isCollabControlRow}
+{#if item.toolName === 'AskUserQuestion'}
+  <!-- AskUserQuestion is a UI tool with no real payload — questions live
+       on item.meta.input.questions, answers come back via the
+       tool_result echo on item.meta.tool_result.content. The dedicated
+       card renders both with check/X marks per option. Branch must come
+       BEFORE the generic payloadKind dispatch so the JSON-string
+       answers don't accidentally route to a wrong specialised renderer. -->
+  <AskUserQuestionCard {pane} {item} />
+{:else if isCollabControlRow}
   <CollabToolRow {item} />
 {:else if planMeta && payloadId}
   <ProposedPlanCard {pane} {item} {payloadId} meta={planMeta} />

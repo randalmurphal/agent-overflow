@@ -411,9 +411,13 @@ func NormalizeApprovalDecision(resp ApprovalResponse) string {
 }
 
 // UserInputQuestionOption is a selectable option in a user-input question.
+// Preview, when non-empty, is markdown-rendered alongside the option list as
+// a side-by-side mockup/code comparison aid. Preview is single-select only;
+// Claude Code's tool spec ignores it on multi-select questions.
 type UserInputQuestionOption struct {
 	Label       string `json:"label"`
 	Description string `json:"description"`
+	Preview     string `json:"preview,omitempty"`
 }
 
 // UserInputQuestion represents a question in a structured user-input request.

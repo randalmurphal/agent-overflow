@@ -10,6 +10,14 @@ export type ApprovalKind =
 export interface UserInputQuestionOption {
   label: string;
   description: string;
+  /**
+   * Optional markdown content rendered in a side-by-side preview pane next
+   * to the option list when any option in a single-select question carries
+   * a non-empty preview. Used for ASCII mockups, code-snippet comparisons,
+   * configuration variants. Ignored on multi-select questions per the
+   * upstream tool spec.
+   */
+  preview?: string;
 }
 
 export interface UserInputQuestion {

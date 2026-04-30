@@ -87,6 +87,44 @@ describe("<ToolCallCard> header dispatcher", () => {
     expect(getByTestId("command-output-command").textContent).toBe("sleep 10");
   });
 
+  it("dispatches AskUserQuestion items to AskUserQuestionCard", async () => {
+    // Branch must run BEFORE the generic payloadKind dispatch — the
+    // tool_result content for AskUserQuestion is a JSON-stringified
+    // answers blob, not a structured payload, so a wrong branch order
+    // would route to a renderer that doesn't know how to read it.
+    const pane = await buildPane();
+    const item = makeItem({
+      id: "ask-1",
+      kind: "tool_call",
+      status: "running",
+      toolName: "AskUserQuestion",
+      meta: JSON.stringify({
+        toolName: "AskUserQuestion",
+        input: {
+          questions: [
+            {
+              id: "q1",
+              header: "Q",
+              question: "Pick one?",
+              options: [
+                { label: "A", description: "" },
+                { label: "B", description: "" },
+              ],
+            },
+          ],
+        },
+      }),
+    });
+
+    const { getByTestId, queryByTestId } = render(ToolCallCard, {
+      props: { pane, item },
+    });
+
+    expect(getByTestId("ask-user-question-card")).toBeInTheDocument();
+    // Generic tool-call card chrome should not appear.
+    expect(queryByTestId("tool-call-card")).toBeNull();
+  });
+
   it("renders a file icon for Edit/Write/MultiEdit tools", async () => {
     const pane = await buildPane();
     for (const toolName of ["Edit", "Write", "MultiEdit"]) {

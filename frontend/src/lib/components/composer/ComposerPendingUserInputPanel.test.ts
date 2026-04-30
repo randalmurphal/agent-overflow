@@ -26,7 +26,11 @@ function request(overrides: Partial<UserInputRequest> = {}): UserInputRequest {
 }
 
 describe('<ComposerPendingUserInputPanel>', () => {
-  it('auto-submits the final single-select answer', async () => {
+  it('does not auto-submit when the user clicks an option', async () => {
+    // Mouse click should select only — auto-advance/auto-submit is the
+    // keyboard fast path. The user has to click the explicit submit
+    // button to send. Regression guard for "I clicked an option and
+    // the dialog jumped on me before I could change my mind."
     vi.useFakeTimers();
     const onResolve = vi.fn<(response: UserInputResponse) => Promise<void>>(async () => {});
     const { getByTestId } = render(ComposerPendingUserInputPanel, {
@@ -42,6 +46,54 @@ describe('<ComposerPendingUserInputPanel>', () => {
     });
 
     await fireEvent.click(getByTestId('user-input-option-2'));
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(onResolve).not.toHaveBeenCalled();
+    vi.useRealTimers();
+  });
+
+  it('submits via the explicit Submit button after a mouse click', async () => {
+    // The post-click commit path: select with mouse, then click
+    // "Submit answer(s)". The resolve carries the selected option.
+    const onResolve = vi.fn<(response: UserInputResponse) => Promise<void>>(async () => {});
+    const { getByTestId } = render(ComposerPendingUserInputPanel, {
+      props: {
+        request: request(),
+        customAnswer: '',
+        submitSignal: 0,
+        setCustomAnswerText: vi.fn(),
+        onResolve,
+        onResolved: vi.fn(),
+        onError: vi.fn(),
+      },
+    });
+
+    await fireEvent.click(getByTestId('user-input-option-2'));
+    await fireEvent.click(getByTestId('user-input-submit'));
+
+    expect(onResolve).toHaveBeenCalledTimes(1);
+    expect(onResolve.mock.calls[0][0].answers).toEqual({ framework: 'Svelte' });
+  });
+
+  it('auto-submits when the user picks an option via the keyboard number key', async () => {
+    // Keyboard fast path: number keys still auto-advance/auto-submit.
+    // This is the existing behavior we explicitly preserved when
+    // splitting click and keyboard into separate origins.
+    vi.useFakeTimers();
+    const onResolve = vi.fn<(response: UserInputResponse) => Promise<void>>(async () => {});
+    render(ComposerPendingUserInputPanel, {
+      props: {
+        request: request(),
+        customAnswer: '',
+        submitSignal: 0,
+        setCustomAnswerText: vi.fn(),
+        onResolve,
+        onResolved: vi.fn(),
+        onError: vi.fn(),
+      },
+    });
+
+    await fireEvent.keyDown(window, { key: '2' });
     await vi.advanceTimersByTimeAsync(200);
 
     expect(onResolve).toHaveBeenCalledTimes(1);
@@ -88,5 +140,127 @@ describe('<ComposerPendingUserInputPanel>', () => {
 
     expect(onResolve).toHaveBeenCalledTimes(1);
     expect(onResolve.mock.calls[0][0].answers).toEqual({ name: 'Randy' });
+  });
+
+  it('renders a side-by-side preview pane when an option carries preview', async () => {
+    // Side-by-side layout switches on the moment any option in a
+    // single-select question has non-empty `preview`. Multi-select
+    // questions never trigger the side-by-side per upstream spec.
+    const { getByTestId, queryByTestId } = render(ComposerPendingUserInputPanel, {
+      props: {
+        request: request({
+          questions: [
+            {
+              id: 'layout',
+              header: 'Layout',
+              question: 'Pick one',
+              options: [
+                { label: 'A', description: '', preview: 'first preview' },
+                { label: 'B', description: '', preview: 'second preview' },
+              ],
+            },
+          ],
+        }),
+        customAnswer: '',
+        submitSignal: 0,
+        setCustomAnswerText: vi.fn(),
+        onResolve: vi.fn(),
+        onResolved: vi.fn(),
+        onError: vi.fn(),
+      },
+    });
+
+    expect(getByTestId('user-input-preview')).toBeTruthy();
+    expect(queryByTestId('user-input-options')).toBeTruthy();
+  });
+
+  it('does not render the preview pane when no option has preview', async () => {
+    const { queryByTestId } = render(ComposerPendingUserInputPanel, {
+      props: {
+        request: request(),
+        customAnswer: '',
+        submitSignal: 0,
+        setCustomAnswerText: vi.fn(),
+        onResolve: vi.fn(),
+        onResolved: vi.fn(),
+        onError: vi.fn(),
+      },
+    });
+
+    expect(queryByTestId('user-input-preview')).toBeNull();
+  });
+
+  it('suppresses the preview pane on multi-select even when options carry preview', async () => {
+    // Per the upstream tool spec, the side-by-side preview layout is
+    // single-select only — multi-select questions ignore the
+    // `preview` field. Otherwise checkbox-style toggling against a
+    // single shared preview pane confuses "which option am I
+    // previewing right now."
+    const { queryByTestId, getByTestId } = render(ComposerPendingUserInputPanel, {
+      props: {
+        request: request({
+          questions: [
+            {
+              id: 'features',
+              header: 'Features',
+              question: 'Pick any',
+              multiSelect: true,
+              options: [
+                { label: 'A', description: '', preview: 'first preview' },
+                { label: 'B', description: '', preview: 'second preview' },
+              ],
+            },
+          ],
+        }),
+        customAnswer: '',
+        submitSignal: 0,
+        setCustomAnswerText: vi.fn(),
+        onResolve: vi.fn(),
+        onResolved: vi.fn(),
+        onError: vi.fn(),
+      },
+    });
+
+    // Options still render (single-column layout) — preview pane does not.
+    expect(getByTestId('user-input-options')).toBeTruthy();
+    expect(queryByTestId('user-input-preview')).toBeNull();
+  });
+
+  it('moves the focused option with ArrowDown / ArrowUp', async () => {
+    // Arrow keys drive which option's preview is shown in the
+    // side-by-side pane. Selection is unchanged — only focus moves —
+    // so the user can review previews without committing to one.
+    const { getByTestId } = render(ComposerPendingUserInputPanel, {
+      props: {
+        request: request({
+          questions: [
+            {
+              id: 'layout',
+              header: 'Layout',
+              question: 'Pick one',
+              options: [
+                { label: 'A', description: '', preview: 'first preview' },
+                { label: 'B', description: '', preview: 'second preview' },
+              ],
+            },
+          ],
+        }),
+        customAnswer: '',
+        submitSignal: 0,
+        setCustomAnswerText: vi.fn(),
+        onResolve: vi.fn(),
+        onResolved: vi.fn(),
+        onError: vi.fn(),
+      },
+    });
+
+    expect(getByTestId('user-input-preview').textContent ?? '').toContain('first preview');
+    await fireEvent.keyDown(window, { key: 'ArrowDown' });
+    expect(getByTestId('user-input-preview').textContent ?? '').toContain('second preview');
+    await fireEvent.keyDown(window, { key: 'ArrowUp' });
+    expect(getByTestId('user-input-preview').textContent ?? '').toContain('first preview');
+    // Clamps at top — does not wrap.
+    await fireEvent.keyDown(window, { key: 'ArrowUp' });
+    expect(getByTestId('user-input-preview').textContent ?? '').toContain('first preview');
   });
 });

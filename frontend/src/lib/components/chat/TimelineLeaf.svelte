@@ -41,17 +41,14 @@
       <span>Orphan subagent entry — parent tool call not found.</span>
     </div>
   {/if}
-  {#if (displayItem.kind === 'tool_call' || displayItem.kind === 'tool_completion') && displayItem.toolName === 'AskUserQuestion'}
-    <!-- AskUserQuestion is surfaced via the inline
-         ComposerPendingUserInputPanel above the composer, not the
-         timeline. The backend already suppresses EventToolStart /
-         EventToolComplete for this tool (see
-         internal/provider/claude/parse_assistant.go and parse_user.go),
-         but legacy items persisted before that fix could still flow
-         through here on a recovered turn — this defensive gate keeps
-         them out of the timeline so the UI never shows a stale
-         "running" or "completed" tool-call row for the question. -->
-  {:else if displayItem.kind === 'user_text'}
+  <!-- AskUserQuestion no longer suppressed: the backend now persists
+       it as a normal tool_call → tool_completion lifecycle. The
+       in-composer ComposerPendingUserInputPanel still drives the live
+       interaction; the timeline row (rendered by AskUserQuestionCard
+       inside ToolCallCard) is the persisted historical record that
+       survives reloads, forks, and restores. See
+       internal/provider/claude/parse_assistant.go and parse_user.go. -->
+  {#if displayItem.kind === 'user_text'}
     <UserMessage {pane} item={displayItem} {onImageExpand} />
   {:else if displayItem.kind === 'tool_call' || displayItem.kind === 'tool_completion'}
     <ToolCallCard {pane} item={displayItem} />

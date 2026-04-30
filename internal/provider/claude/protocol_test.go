@@ -168,36 +168,45 @@ func TestParseLine_AssistantToolUse(t *testing.T) {
 	}
 }
 
-// TestParseLine_AssistantAskUserQuestionSuppressesToolStart pins the
-// behaviour that AskUserQuestion's tool_use block does NOT emit a
-// generic EventToolStart timeline row. The chat surfaces it via the
-// parallel can_use_tool control_request as EventUserInputRequest, and
-// the panel above the composer is the user-facing UI signal. Emitting
-// a tool-call row alongside would create a duplicate "running" item
-// that never resolves into a completion the user can read.
-func TestParseLine_AssistantAskUserQuestionSuppressesToolStart(t *testing.T) {
+// TestParseLine_AssistantAskUserQuestionEmitsToolStart pins the
+// behaviour that AskUserQuestion's tool_use block emits a generic
+// EventToolStart timeline row. AskUserQuestion is also surfaced via
+// the parallel can_use_tool control_request as EventUserInputRequest
+// (driving the in-composer answer panel); the timeline row is the
+// persisted historical record that flips running → completed when the
+// user submits an answer.
+func TestParseLine_AssistantAskUserQuestionEmitsToolStart(t *testing.T) {
 	parser := NewParser()
 	line := []byte(`{"type":"assistant","message":{"id":"msg-1","role":"assistant","content":[{"type":"tool_use","id":"tool-uq","name":"AskUserQuestion","input":{"questions":[{"id":"q","header":"Pick","question":"a or b?","options":[{"label":"a","description":"opt a"},{"label":"b","description":"opt b"}]}]}}]}}`)
 	events, err := parser.ParseLine(testThreadProto, line)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	for _, evt := range events {
-		if evt.Kind == provider.EventToolStart {
-			t.Fatalf("AskUserQuestion emitted EventToolStart: %+v", evt)
+	var start *provider.ProviderEvent
+	for i := range events {
+		if events[i].Kind == provider.EventToolStart {
+			start = &events[i]
+			break
 		}
 	}
-	if !parser.isUserInputTool("tool-uq") {
-		t.Fatalf("expected parser to mark tool-uq as a user-input tool_use")
+	if start == nil {
+		t.Fatalf("AskUserQuestion did not emit EventToolStart: events=%+v", events)
+	}
+	if start.ItemType != "AskUserQuestion" {
+		t.Errorf("itemType: got %q, want %q", start.ItemType, "AskUserQuestion")
+	}
+	if start.ItemID != "tool-uq" {
+		t.Errorf("itemID: got %q, want %q", start.ItemID, "tool-uq")
 	}
 }
 
-// TestParseLine_UserToolResultForAskUserQuestionSuppressed pairs with
-// the assistant-side suppression: when the model later echoes the
-// AskUserQuestion answers as a tool_result, that block must NOT emit
-// EventToolComplete either. The completion would surface a phantom
-// "completed tool" row whose start was never rendered.
-func TestParseLine_UserToolResultForAskUserQuestionSuppressed(t *testing.T) {
+// TestParseLine_UserToolResultForAskUserQuestionEmitsCompletion pairs with
+// the assistant-side emission: when the model later echoes the
+// AskUserQuestion answers as a tool_result, that block emits an
+// EventToolComplete that flips the timeline row to completed. This is
+// what makes the asked-and-answered Q&A persist as part of the chat
+// history and survive forks.
+func TestParseLine_UserToolResultForAskUserQuestionEmitsCompletion(t *testing.T) {
 	parser := NewParser()
 	startLine := []byte(`{"type":"assistant","message":{"id":"msg-1","role":"assistant","content":[{"type":"tool_use","id":"tool-uq","name":"AskUserQuestion","input":{"questions":[{"id":"q","header":"Pick","question":"a or b?","options":[{"label":"a","description":"opt a"},{"label":"b","description":"opt b"}]}]}}]}}`)
 	if _, err := parser.ParseLine(testThreadProto, startLine); err != nil {
@@ -208,13 +217,39 @@ func TestParseLine_UserToolResultForAskUserQuestionSuppressed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse result: %v", err)
 	}
-	for _, evt := range events {
-		if evt.Kind == provider.EventToolComplete {
-			t.Fatalf("AskUserQuestion tool_result emitted EventToolComplete: %+v", evt)
+	var complete *provider.ProviderEvent
+	for i := range events {
+		if events[i].Kind == provider.EventToolComplete {
+			complete = &events[i]
+			break
 		}
 	}
-	if parser.isUserInputTool("tool-uq") {
-		t.Fatalf("expected parser to clear tool-uq mark after consuming tool_result")
+	if complete == nil {
+		t.Fatalf("AskUserQuestion tool_result did not emit EventToolComplete: events=%+v", events)
+	}
+	if complete.ItemID != "tool-uq" {
+		t.Errorf("itemID: got %q, want %q", complete.ItemID, "tool-uq")
+	}
+}
+
+// TestParseAskUserQuestions_PreservesPreview confirms the option preview
+// field round-trips through parseAskUserQuestions. Claude Code's tool
+// schema lets each option carry an optional `preview` for side-by-side
+// mockup/code comparison; the wire path must not silently drop it.
+func TestParseAskUserQuestions_PreservesPreview(t *testing.T) {
+	input := []byte(`{"questions":[{"id":"q","header":"Pick","question":"layout?","options":[{"label":"a","description":"opt a","preview":"# Option A\n\nlayout 1"},{"label":"b","description":"opt b","preview":"# Option B\n\nlayout 2"}]}]}`)
+	got := parseAskUserQuestions(input)
+	if len(got) != 1 {
+		t.Fatalf("questions: got %d, want 1", len(got))
+	}
+	if len(got[0].Options) != 2 {
+		t.Fatalf("options: got %d, want 2", len(got[0].Options))
+	}
+	if got[0].Options[0].Preview != "# Option A\n\nlayout 1" {
+		t.Errorf("option[0].Preview: got %q", got[0].Options[0].Preview)
+	}
+	if got[0].Options[1].Preview != "# Option B\n\nlayout 2" {
+		t.Errorf("option[1].Preview: got %q", got[0].Options[1].Preview)
 	}
 }
 

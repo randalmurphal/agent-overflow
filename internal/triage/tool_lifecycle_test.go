@@ -2037,3 +2037,234 @@ func TestBackgroundTerminalStatus_KilledMapping(t *testing.T) {
 		t.Errorf("statusKilled = %q, want %q", statusKilled, "killed")
 	}
 }
+
+// TestAskUserQuestionLifecycle_StartCompletedFlipsToCompleted exercises
+// the AskUserQuestion happy path: assistant emits a tool_use for
+// AskUserQuestion (parser un-suppressed → EventToolStart), the user
+// answers via the in-composer panel, the tool_result echoes back
+// (parser un-suppressed → EventToolComplete). The single tool_call row
+// flips running → completed in place, and the answer JSON is merged
+// into item.meta via the standard tool_result merge path.
+func TestAskUserQuestionLifecycle_StartCompletedFlipsToCompleted(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	startMeta, _ := json.Marshal(map[string]any{
+		"toolName": "AskUserQuestion",
+		"input": map[string]any{
+			"questions": []any{
+				map[string]any{
+					"id":       "framework",
+					"header":   "Framework",
+					"question": "Which framework do you want?",
+					"options": []any{
+						map[string]any{"label": "React", "description": ""},
+						map[string]any{"label": "Svelte", "description": ""},
+					},
+				},
+			},
+		},
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventToolStart,
+		ThreadID:  "t1",
+		ItemID:    "ask-1",
+		ItemType:  "AskUserQuestion",
+		Meta:      startMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle start: %v", err)
+	}
+
+	// Verify the launch row landed at status=running with the
+	// questions in item.meta.
+	items := findItemsByKind(t, st, "t1", itemKindToolCall)
+	if len(items) != 1 {
+		t.Fatalf("expected 1 tool_call after launch, got %d", len(items))
+	}
+	if items[0].Status != statusRunning {
+		t.Errorf("launch status = %q, want running", items[0].Status)
+	}
+	if items[0].ToolName != "AskUserQuestion" {
+		t.Errorf("launch toolName = %q, want AskUserQuestion", items[0].ToolName)
+	}
+
+	// User answered "Svelte"; CLI echoes back as a tool_result. The
+	// completion meta carries the full block including content.
+	completeMeta, _ := json.Marshal(map[string]any{
+		"is_error": false,
+		"tool_result": map[string]any{
+			"type":        "tool_result",
+			"tool_use_id": "ask-1",
+			"content":     `{"answers":{"framework":"Svelte"}}`,
+		},
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventToolComplete,
+		ThreadID:  "t1",
+		ItemID:    "ask-1",
+		Meta:      completeMeta,
+		Content:   `{"answers":{"framework":"Svelte"}}`,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle complete: %v", err)
+	}
+
+	items = findItemsByKind(t, st, "t1", itemKindToolCall)
+	if len(items) != 1 {
+		t.Fatalf("expected 1 tool_call (in-place mutation), got %d", len(items))
+	}
+	if items[0].Status != statusCompleted {
+		t.Errorf("completion status = %q, want completed", items[0].Status)
+	}
+
+	// Both questions (from launch) and answers (from completion)
+	// should be present in the merged item.meta — that's how the
+	// frontend AskUserQuestionCard renders the per-option check/X
+	// grid.
+	var meta map[string]any
+	if err := json.Unmarshal([]byte(items[0].Meta), &meta); err != nil {
+		t.Fatalf("item.meta unmarshal: %v", err)
+	}
+	if _, ok := meta["input"]; !ok {
+		t.Errorf("merged meta missing 'input' (questions): %v", meta)
+	}
+	if _, ok := meta["tool_result"]; !ok {
+		t.Errorf("merged meta missing 'tool_result' (answers): %v", meta)
+	}
+}
+
+// TestAskUserQuestionLifecycle_InterruptForceClosesToErrored covers
+// the stop-mid-question path: when the user clicks Stop while an
+// AskUserQuestion is awaiting an answer, the turn ends without a
+// matching tool_result. The existing forceCloseOrphanToolCalls safety
+// net (invariant 23) flips the orphan tool_call to errored with the
+// "turn ended with tool unresolved" summary suffix. Same behavior the
+// frontend renders as the failure CompletionBadge for any inline tool.
+func TestAskUserQuestionLifecycle_InterruptForceClosesToErrored(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTurnStart,
+		ThreadID:  "t1",
+		TurnIndex: 1,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn start: %v", err)
+	}
+
+	startMeta, _ := json.Marshal(map[string]any{
+		"toolName": "AskUserQuestion",
+		"input": map[string]any{
+			"questions": []any{
+				map[string]any{
+					"id":       "q",
+					"header":   "Q",
+					"question": "Pick?",
+					"options": []any{
+						map[string]any{"label": "a", "description": ""},
+						map[string]any{"label": "b", "description": ""},
+					},
+				},
+			},
+		},
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventToolStart,
+		ThreadID:  "t1",
+		ItemID:    "ask-interrupted",
+		ItemType:  "AskUserQuestion",
+		Meta:      startMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle start: %v", err)
+	}
+
+	// User stops the thread. Turn completes without a matching
+	// tool_result for AskUserQuestion.
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTurnComplete,
+		ThreadID:  "t1",
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn complete: %v", err)
+	}
+
+	item, ok, err := st.GetItem("ask-interrupted")
+	if err != nil || !ok {
+		t.Fatalf("missing ask-interrupted: found=%v err=%v", ok, err)
+	}
+	if item.Status != statusErrored {
+		t.Errorf("status = %q, want errored (force-close safety net)", item.Status)
+	}
+	if !strings.Contains(item.Summary, "turn ended with tool unresolved") {
+		t.Errorf("summary missing force-close marker: %q", item.Summary)
+	}
+}
+
+// TestAskUserQuestionLifecycle_PreservesPreviewInQuestions confirms
+// the option preview field (added on the wire path for the
+// side-by-side mockup-comparison UI) round-trips through the launch
+// meta. Without this, persisted rows would lose preview content on
+// fork/restore even though the in-composer panel rendered it during
+// live interaction.
+func TestAskUserQuestionLifecycle_PreservesPreviewInQuestions(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	// Preview bodies use markers that DON'T match their option labels
+	// or descriptions — otherwise a stripped `preview` field would
+	// still pass the assertions because the labels/descriptions
+	// already contain "Compact" / "Spacious".
+	startMeta, _ := json.Marshal(map[string]any{
+		"toolName": "AskUserQuestion",
+		"input": map[string]any{
+			"questions": []any{
+				map[string]any{
+					"id":       "layout",
+					"header":   "Layout",
+					"question": "Which layout?",
+					"options": []any{
+						map[string]any{
+							"label":       "Compact",
+							"description": "Tight rows.",
+							"preview":     "# COMPACT_PREVIEW_BODY\nRow 1\nRow 2",
+						},
+						map[string]any{
+							"label":       "Spacious",
+							"description": "Roomy rows.",
+							"preview":     "# SPACIOUS_PREVIEW_BODY\n\nRow 1\n\nRow 2",
+						},
+					},
+				},
+			},
+		},
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventToolStart,
+		ThreadID:  "t1",
+		ItemID:    "ask-preview",
+		ItemType:  "AskUserQuestion",
+		Meta:      startMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle start: %v", err)
+	}
+
+	items := findItemsByKind(t, st, "t1", itemKindToolCall)
+	if len(items) != 1 {
+		t.Fatalf("expected 1 tool_call, got %d", len(items))
+	}
+	// Distinguishing markers — appear ONLY inside the preview field.
+	// If the preview is silently stripped at any layer (parser,
+	// triage, persistence), these assertions fail even though the
+	// option labels and descriptions still contain the strings
+	// "Compact" / "Spacious".
+	if !strings.Contains(items[0].Meta, "COMPACT_PREVIEW_BODY") {
+		t.Errorf("meta missing first preview body marker: %q", items[0].Meta)
+	}
+	if !strings.Contains(items[0].Meta, "SPACIOUS_PREVIEW_BODY") {
+		t.Errorf("meta missing second preview body marker: %q", items[0].Meta)
+	}
+}

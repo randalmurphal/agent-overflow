@@ -154,11 +154,12 @@ func appendTextEvent(
 	})
 }
 
-// appendToolUseEvent handles `tool_use` blocks. ExitPlanMode and
-// AskUserQuestion both take different paths and do not emit a generic
-// EventToolStart row; every other tool call emits one and — when the
-// input says so — registers the tool as backgrounded so the later
-// user.tool_result echo can be suppressed.
+// appendToolUseEvent handles `tool_use` blocks. ExitPlanMode takes a
+// dedicated path (proposed-plan event); every other tool call — including
+// AskUserQuestion — emits a generic EventToolStart row. AskUserQuestion is
+// additionally surfaced via the parallel can_use_tool control_request path
+// as an EventUserInputRequest that drives the in-composer answer panel; the
+// timeline tool-call row is the persisted historical record.
 func (p *Parser) appendToolUseEvent(
 	events []provider.ProviderEvent,
 	threadID, parentToolUseID string,
@@ -167,16 +168,6 @@ func (p *Parser) appendToolUseEvent(
 ) []provider.ProviderEvent {
 	if block.Name == "ExitPlanMode" {
 		return appendExitPlanModeEvent(events, threadID, parentToolUseID, now, block)
-	}
-	// AskUserQuestion is surfaced via the parallel can_use_tool
-	// control_request path as an EventUserInputRequest. We track the
-	// tool_use_id so the matching tool_result echo can be skipped too —
-	// the chat timeline never renders the AskUserQuestion as a generic
-	// tool-call row. The questions panel above the composer is the
-	// canonical UI signal.
-	if block.Name == "AskUserQuestion" {
-		p.markUserInputTool(block.ID)
-		return events
 	}
 
 	isBackground := hasRunInBackground(block.Input)

@@ -1,12 +1,12 @@
 <script lang="ts">
   import { onDestroy, onMount, untrack } from 'svelte';
   import { scale } from 'svelte/transition';
-  import Check from 'lucide-svelte/icons/check';
   import type { UserInputQuestion, UserInputRequest } from '../../types/events';
   import { UserInputResponse } from '../../stores/bindings';
   import { errString } from '../../utils/errors';
-  import Icon from '../primitives/Icon.svelte';
   import Button from '../primitives/Button.svelte';
+  import ChatMarkdown from '../chat/ChatMarkdown.svelte';
+  import UserInputOptionButton from './UserInputOptionButton.svelte';
   import {
     createUserInputAnswers,
     firstUnansweredIndex,
@@ -40,6 +40,7 @@
   }: Props = $props();
 
   let index = $state(0);
+  let focusedOptionIndex = $state(0);
   let answers: UserInputAnswers = $state(createUserInputAnswers());
   let customAnswers: Record<string, string> = $state(Object.create(null));
   let responding = $state(false);
@@ -52,6 +53,16 @@
   const canGoPrevious = $derived(index > 0 && !responding);
   const canGoNext = $derived(Boolean(question) && index < request.questions.length - 1 && hasAnswer(answers, question) && !responding);
   const canSubmit = $derived(complete && !responding);
+
+  // Side-by-side preview pane is single-select only per the upstream tool
+  // spec. A multi-select question with previews still renders the option
+  // list in a single column — the preview field is silently ignored.
+  const hasPreviews = $derived(
+    !!question && !question.multiSelect && (question.options?.some((option) => option.preview?.trim()) ?? false),
+  );
+  const focusedPreview = $derived(
+    hasPreviews ? (question?.options?.[focusedOptionIndex]?.preview ?? '') : '',
+  );
 
   $effect(() => {
     if (!question) return;
@@ -85,27 +96,53 @@
   function showQuestion(nextIndex: number): void {
     clearAutoAdvanceTimer();
     index = Math.min(Math.max(nextIndex, 0), request.questions.length - 1);
+    focusedOptionIndex = 0;
     const nextQuestion = request.questions[index];
     setCustomAnswerText(nextQuestion ? customAnswers[nextQuestion.id] ?? '' : '');
   }
 
-  function selectOption(activeQuestion: UserInputQuestion, label: string): void {
+  /**
+   * Selects (or toggles) an option for the active question.
+   *
+   * `originHint` controls whether selection auto-advances:
+   * - `'keyboard'` (number key 1-9, fast path): single-select selection
+   *   schedules the 200ms auto-advance/auto-submit that keypress users
+   *   expect.
+   * - `'mouse'` (click): selection only — the user must click "Next
+   *   question" or "Submit answer(s)" to proceed. This is the fix for
+   *   the "I clicked an option and the dialog jumped on me" issue;
+   *   users need a chance to review their selection or change their
+   *   mind before committing.
+   *
+   * Multi-select questions never auto-advance regardless of origin; the
+   * user always uses the explicit submit/next button.
+   */
+  function selectOption(
+    activeQuestion: UserInputQuestion,
+    label: string,
+    originHint: 'mouse' | 'keyboard',
+  ): void {
     clearAutoAdvanceTimer();
     customAnswers = Object.assign(Object.create(null), customAnswers, { [activeQuestion.id]: '' });
     setCustomAnswerText('');
     const nextAnswers = toggleOptionAnswer(answers, activeQuestion, label);
     answers = nextAnswers;
-    if (!activeQuestion.multiSelect) {
-      autoAdvanceTimer = setTimeout(() => {
-        if (index < request.questions.length - 1) {
-          showQuestion(index + 1);
-          return;
-        }
-        if (isRequestComplete(request, nextAnswers)) {
-          void submit(nextAnswers);
-        }
-      }, 200);
+    const optionIndex = activeQuestion.options?.findIndex((option) => option.label === label) ?? -1;
+    if (optionIndex >= 0) {
+      focusedOptionIndex = optionIndex;
     }
+    if (activeQuestion.multiSelect || originHint !== 'keyboard') {
+      return;
+    }
+    autoAdvanceTimer = setTimeout(() => {
+      if (index < request.questions.length - 1) {
+        showQuestion(index + 1);
+        return;
+      }
+      if (isRequestComplete(request, nextAnswers)) {
+        void submit(nextAnswers);
+      }
+    }, 200);
   }
 
   async function submit(answersToSubmit: UserInputAnswers = answers): Promise<void> {
@@ -138,20 +175,43 @@
   function handleWindowKeydown(event: KeyboardEvent): void {
     if (!question || responding) return;
     if (event.metaKey || event.ctrlKey || event.altKey) return;
-    const target = event.target as HTMLElement | null;
-    if (target?.matches('textarea, input, select, [contenteditable="true"]')) return;
-    if (target?.closest('[contenteditable]:not([contenteditable="false"])')) return;
+    // event.target is `EventTarget`, not always `Element` (window-level
+    // dispatch in test environments leaves it as the Window object).
+    // Guard with `instanceof Element` before calling matches/closest so
+    // the focused-input bypass works in production without exploding in
+    // happy-dom.
+    const targetEl = event.target instanceof Element ? event.target : null;
+    if (targetEl?.matches('textarea, input, select, [contenteditable="true"]')) return;
+    if (targetEl?.closest('[contenteditable]:not([contenteditable="false"])')) return;
+
+    const optionCount = question.options?.length ?? 0;
+
+    // Arrow Up/Down moves the focused option (drives the side-by-side
+    // preview pane) without selecting it. Clamp to list boundaries; no
+    // wrap-around so the user gets a clear edge feel.
+    if (event.key === 'ArrowDown' && optionCount > 0) {
+      event.preventDefault();
+      focusedOptionIndex = Math.min(focusedOptionIndex + 1, optionCount - 1);
+      return;
+    }
+    if (event.key === 'ArrowUp' && optionCount > 0) {
+      event.preventDefault();
+      focusedOptionIndex = Math.max(focusedOptionIndex - 1, 0);
+      return;
+    }
+
     const optionIndex = Number.parseInt(event.key, 10) - 1;
     if (!Number.isInteger(optionIndex) || optionIndex < 0) return;
     const option = question.options?.[optionIndex];
     if (!option) return;
     event.preventDefault();
-    selectOption(question, option.label);
+    selectOption(question, option.label, 'keyboard');
   }
 
   onMount(() => {
     const first = firstUnansweredIndex(request, answers);
     index = first;
+    focusedOptionIndex = 0;
     window.addEventListener('keydown', handleWindowKeydown);
   });
 
@@ -187,39 +247,58 @@
   </div>
 
   {#if question?.options?.length}
-    <div class="mt-3 grid gap-1.5" data-testid="user-input-options">
-      {#each question.options as option, optionIndex (option.label)}
-        {@const selected = selectedAnswers(answers, question).includes(option.label)}
-        <button
-          type="button"
-          class={[
-            'flex w-full items-start gap-2 rounded-[var(--radius-control)] border px-2.5 py-2 text-left',
-            'transition-[background-color,border-color,color] duration-150',
-            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40',
-            selected
-              ? 'border-accent/50 bg-accent/10 text-fg'
-              : 'border-border-subtle bg-surface-0/40 text-fg-muted hover:border-border hover:text-fg',
-          ].join(' ')}
-          data-testid={`user-input-option-${optionIndex + 1}`}
-          aria-pressed={selected ? 'true' : 'false'}
-          disabled={responding}
-          onclick={() => selectOption(question, option.label)}
+    {#if hasPreviews}
+      <!-- Side-by-side: option list left, focused-option preview right.
+           Triggered when at least one option in a single-select question
+           carries a non-empty `preview` field. Multi-select questions
+           ignore previews per the upstream tool spec. -->
+      <div
+        class="mt-3 grid grid-cols-[minmax(0,2fr)_minmax(0,3fr)] gap-3"
+        data-testid="user-input-options"
+      >
+        <div class="grid gap-1.5">
+          {#each question.options as option, optionIndex (option.label)}
+            {@const selected = selectedAnswers(answers, question).includes(option.label)}
+            <UserInputOptionButton
+              label={option.label}
+              description={option.description}
+              {optionIndex}
+              {selected}
+              focused={focusedOptionIndex === optionIndex}
+              disabled={responding}
+              onSelect={() => selectOption(question, option.label, 'mouse')}
+              onFocus={() => (focusedOptionIndex = optionIndex)}
+            />
+          {/each}
+        </div>
+        <div
+          class="max-h-60 overflow-y-auto rounded border border-border-subtle bg-surface-0 px-2.5 py-1.5"
+          data-testid="user-input-preview"
         >
-          <span class="mt-0.5 inline-flex h-4 min-w-4 items-center justify-center rounded border border-border-subtle text-[10px] text-fg-muted">
-            {optionIndex + 1}
-          </span>
-          <span class="min-w-0 flex-1">
-            <span class="block text-xs font-medium">{option.label}</span>
-            {#if option.description}
-              <span class="mt-0.5 block text-[11px] leading-4 text-fg-muted">{option.description}</span>
-            {/if}
-          </span>
-          {#if selected}
-            <Icon icon={Check} size={14} class="mt-0.5 text-accent" />
+          {#if focusedPreview.trim()}
+            <ChatMarkdown source={focusedPreview} class="text-xs" />
+          {:else}
+            <p class="text-xs text-fg-muted italic">No preview for this option.</p>
           {/if}
-        </button>
-      {/each}
-    </div>
+        </div>
+      </div>
+    {:else}
+      <div class="mt-3 grid gap-1.5" data-testid="user-input-options">
+        {#each question.options as option, optionIndex (option.label)}
+          {@const selected = selectedAnswers(answers, question).includes(option.label)}
+          <UserInputOptionButton
+            label={option.label}
+            description={option.description}
+            {optionIndex}
+            {selected}
+            focused={focusedOptionIndex === optionIndex}
+            disabled={responding}
+            onSelect={() => selectOption(question, option.label, 'mouse')}
+            onFocus={() => (focusedOptionIndex = optionIndex)}
+          />
+        {/each}
+      </div>
+    {/if}
   {/if}
 
   <div class="mt-3 flex flex-wrap justify-end gap-2">
