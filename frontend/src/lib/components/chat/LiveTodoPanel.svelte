@@ -17,6 +17,11 @@
   let liveTodo = $derived(pane.liveTodo);
   let isExpanded = $derived(pane.liveTodoExpanded);
   let isShowingAll = $derived(pane.liveTodoShowAll);
+  // The working indicator above us has `mb-6`. When it's visible, we
+  // pull ourselves up so the gap reads as a line break rather than a
+  // paragraph break. When it's hidden (turn ended with todos still
+  // pending), the panel sits at normal flow with no offset.
+  let pulledUp = $derived(pane.activeTurn !== null);
 
   // Status order for the sorted list. Numbers map to the buckets the
   // user asked for: in-progress on top so the active task is the first
@@ -97,10 +102,10 @@
     return Circle;
   }
 
-  // Row text color. In-progress is bumped from accent (which the
-  // earlier draft used) to fg-default + bold — accent on a long line
-  // of text fights with the per-row accent bar; saving accent for the
-  // bar + the loader spinner gives the row a single focal point.
+  // Row text color. The loader-spinner accent on the in-progress row is
+  // the only chrome that calls it out — the row text is just bolder
+  // weight on fg-default so the accent doesn't have to fight a long
+  // line of text for the eye.
   function statusClass(status: TodoStepStatus): string {
     if (status === 'completed') return 'text-fg-hint/55 line-through decoration-fg-hint/40';
     if (status === 'inProgress') return 'font-medium text-fg-default';
@@ -112,26 +117,19 @@
     if (status === 'completed') return 'text-fg-hint/55';
     return 'text-fg-hint/65';
   }
-
-  // 2px accent left bar on the in-progress row anchors the eye on the
-  // active step. Other rows reserve the same 2px gutter (transparent)
-  // so the row text stays vertically aligned across status changes.
-  function rowBarClass(status: TodoStepStatus): string {
-    if (status === 'inProgress') return 'border-l-2 border-accent';
-    return 'border-l-2 border-transparent';
-  }
 </script>
 
 {#if liveTodo}
   <!--
-    The panel is anchored to the working indicator visually with a thin
-    left-border guide running the height of the block. Same indent as
-    the working indicator's text so the two read as one unit. The guide
-    also extends through the dropdown body when expanded so the panel
-    feels like a single hanging element rather than a stack.
+    Panel renders directly under the working indicator with no border or
+    extra indent — same `pl-1.5` as ChatWorkingIndicator so the two read
+    as adjacent lines of one block. The negative top margin (only when
+    the indicator is visible) neutralises its `mb-6` so the gap between
+    them matches normal line spacing rather than the larger paragraph
+    break the indicator uses when it stands alone.
   -->
   <div
-    class="mb-4 ml-1.5 flex flex-col gap-1 border-l border-fg-hint/15 pl-3 text-[11px]"
+    class={`mb-4 flex flex-col gap-0.5 pl-1.5 text-[11px] ${pulledUp ? '-mt-5' : ''}`}
     data-testid="live-todo-panel"
   >
     <button
@@ -169,9 +167,7 @@
     {#if isExpanded}
       <ul class="mt-0.5 flex flex-col gap-0.5" data-testid="live-todo-list">
         {#each visibleSteps as entry (entry.originalIndex)}
-          <li
-            class={`flex items-start gap-1.5 py-px pl-1.5 leading-snug ${rowBarClass(entry.step.status)}`}
-          >
+          <li class="flex items-start gap-1.5 py-px leading-snug">
             <Icon
               icon={statusIcon(entry.step.status)}
               size={11}
@@ -182,10 +178,10 @@
           </li>
         {/each}
         {#if hiddenCount > 0}
-          <li class="border-l-2 border-transparent">
+          <li>
             <button
               type="button"
-              class="ml-[14px] mt-0.5 inline-flex rounded px-1 py-0.5 text-fg-hint/65 transition-colors hover:bg-surface-2/40 hover:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/35"
+              class="ml-[18px] mt-0.5 inline-flex rounded px-1 py-0.5 text-fg-hint/65 transition-colors hover:bg-surface-2/40 hover:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/35"
               onclick={() => pane.toggleLiveTodoShowAll()}
               data-testid="live-todo-show-more"
             >
