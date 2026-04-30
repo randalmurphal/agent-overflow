@@ -130,6 +130,58 @@ func TestListRecentItemsWithAncestors_NoAncestors(t *testing.T) {
 	}
 }
 
+// TestListRecentItemsFiltersPlanUpdateNotifications guards the
+// timeline projection: pre-existing plan_update notification rows from
+// before the live-panel feature must not surface on read. Every other
+// notification kind currently in use (warning, hook, review_status,
+// model_verification, deprecation_notice) MUST still render — the
+// filter targets only `tool_name='plan_update'`.
+func TestListRecentItemsFiltersPlanUpdateNotifications(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+
+	mustInsert := func(id, kind, role, toolName string, turn, idx int) {
+		t.Helper()
+		if err := s.InsertItem(Item{
+			ID:        id,
+			ThreadID:  "t",
+			TurnIndex: turn,
+			ItemIndex: idx,
+			Kind:      kind,
+			Role:      role,
+			ToolName:  toolName,
+			Summary:   id,
+			CreatedAt: int64(turn*10 + idx),
+		}); err != nil {
+			t.Fatalf("insert %s: %v", id, err)
+		}
+	}
+
+	mustInsert("text-1", "assistant_text", "assistant", "", 0, 0)
+	mustInsert("plan-1", "notification", "system", "plan_update", 0, 1)
+	mustInsert("hook-1", "notification", "system", "hook", 0, 2)
+	mustInsert("review-1", "notification", "system", "review_status", 0, 3)
+	mustInsert("warn-1", "notification", "system", "warning", 0, 4)
+	mustInsert("modver-1", "notification", "system", "model_verification", 0, 5)
+	mustInsert("deprec-1", "notification", "system", "deprecation_notice", 0, 6)
+	mustInsert("text-2", "assistant_text", "assistant", "", 0, 7)
+
+	paged, err := s.ListRecentItemsWithAncestors("t", 0)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	got := collectIDs(paged.Items)
+	// Every kind except plan_update must survive the filter; the order
+	// matches insertion order since the projection sorts by
+	// (turn_index, item_index).
+	want := []string{"text-1", "hook-1", "review-1", "warn-1", "modver-1", "deprec-1", "text-2"}
+	if !equalStringSlice(got, want) {
+		t.Errorf("items: got %v, want %v (plan_update filtered, others kept)", got, want)
+	}
+}
+
 func TestListRecentItemsDecoratesProposedPlans(t *testing.T) {
 	s := newTestStore(t)
 	if err := s.CreateThread(makeThread("t", "claude")); err != nil {

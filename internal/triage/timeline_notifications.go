@@ -15,8 +15,64 @@ type timelineNotificationMeta struct {
 	Details string `json:"details"`
 }
 
+// handlePlanUpdate routes EventPlanUpdate (Claude TodoWrite reroute,
+// Codex turn/plan/updated) directly to the frontend without
+// persisting a timeline notification row. The live plan is session
+// state owned by ThreadPane; SQLite is not its source of truth. See
+// PlanUpdateEvent / LivePlanPanel.svelte for the rendering side.
+//
+// An empty plan is dropped: the parser already skips empty TodoWrite
+// inputs, but defensive normalisation here means a malformed wire
+// payload also can't render an empty panel.
 func (r *Router) handlePlanUpdate(evt provider.ProviderEvent) error {
-	return r.persistTimelineNotification(evt, "plan_update", "Updated Plan")
+	steps := decodePlanSteps(evt.Meta)
+	if len(steps) == 0 {
+		return nil
+	}
+	r.emit("provider:plan_update", PlanUpdateEvent{
+		ThreadID: evt.ThreadID,
+		Steps:    steps,
+	})
+	return nil
+}
+
+// decodePlanSteps reads the wire-shaped {plan: [{step, status}]}
+// payload off EventPlanUpdate.Meta. Empty steps and unmarshal failures
+// produce nil so callers can `if len(...) == 0 { drop }` uniformly.
+//
+// Bounds the wire input on two axes so a misbehaving provider can't
+// stuff the per-event WS payload (and the per-pane snapshot held in
+// frontend memory): step count is capped at maxPlanSteps; per-step
+// text is truncated via truncateRunes. Same shape as the
+// addHookNotificationMeta path that bounds hook entries / runes.
+func decodePlanSteps(raw json.RawMessage) []PlanStep {
+	if len(raw) == 0 {
+		return nil
+	}
+	var decoded struct {
+		Plan []struct {
+			Step   string `json:"step"`
+			Status string `json:"status"`
+		} `json:"plan"`
+	}
+	if json.Unmarshal(raw, &decoded) != nil {
+		return nil
+	}
+	steps := make([]PlanStep, 0, min(len(decoded.Plan), maxPlanSteps))
+	for _, item := range decoded.Plan {
+		if len(steps) >= maxPlanSteps {
+			break
+		}
+		step := truncateRunes(strings.TrimSpace(item.Step), maxPlanStepRunes)
+		if step == "" {
+			continue
+		}
+		steps = append(steps, PlanStep{
+			Step:   step,
+			Status: strings.TrimSpace(item.Status),
+		})
+	}
+	return steps
 }
 
 func (r *Router) handleTimelineNotification(evt provider.ProviderEvent) error {
@@ -107,8 +163,6 @@ func sanitizedTimelineNotificationMeta(notificationKind, summary string, raw jso
 	}
 
 	switch notificationKind {
-	case "plan_update":
-		addPlanNotificationMeta(meta, raw)
 	case "hook":
 		addHookNotificationMeta(meta, raw)
 	}
@@ -118,36 +172,6 @@ func sanitizedTimelineNotificationMeta(notificationKind, summary string, raw jso
 		return `{}`
 	}
 	return string(encoded)
-}
-
-func addPlanNotificationMeta(meta map[string]any, raw json.RawMessage) {
-	var decoded struct {
-		Explanation string `json:"explanation"`
-		Plan        []struct {
-			Step   string `json:"step"`
-			Status string `json:"status"`
-		} `json:"plan"`
-	}
-	if len(raw) == 0 || json.Unmarshal(raw, &decoded) != nil {
-		return
-	}
-	if explanation := strings.TrimSpace(decoded.Explanation); explanation != "" {
-		meta["explanation"] = explanation
-	}
-	steps := make([]map[string]string, 0, len(decoded.Plan))
-	for _, item := range decoded.Plan {
-		step := strings.TrimSpace(item.Step)
-		if step == "" {
-			continue
-		}
-		steps = append(steps, map[string]string{
-			"step":   step,
-			"status": strings.TrimSpace(item.Status),
-		})
-	}
-	if len(steps) > 0 {
-		meta["plan"] = steps
-	}
 }
 
 func addHookNotificationMeta(meta map[string]any, raw json.RawMessage) {
@@ -196,6 +220,12 @@ func addHookNotificationMeta(meta map[string]any, raw json.RawMessage) {
 const (
 	maxTimelineHookEntries    = 8
 	maxTimelineHookEntryRunes = 300
+	// Bounds on EventPlanUpdate inputs. The panel itself truncates the
+	// rendered list to 5 with a Show-more reveal; these caps are the
+	// outer safety net so a provider that ships a multi-MB plan can't
+	// blow up the WS payload or the pane snapshot.
+	maxPlanSteps     = 256
+	maxPlanStepRunes = 300
 )
 
 func truncateRunes(value string, maxRunes int) string {

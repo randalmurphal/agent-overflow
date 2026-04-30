@@ -289,6 +289,35 @@ export interface SubagentNotificationEvent {
 }
 
 /**
+ * PlanStepStatus is the canonical camelCase status enum shared by both
+ * providers. Codex emits this shape natively; Claude TodoWrite's
+ * snake_case `in_progress` is normalised to `inProgress` in the parser
+ * so the frontend sees one vocabulary.
+ */
+export type PlanStepStatus = 'pending' | 'inProgress' | 'completed';
+
+/**
+ * PlanStep is one item in a live plan snapshot.
+ */
+export interface PlanStep {
+  step: string;
+  status: PlanStepStatus;
+}
+
+/**
+ * PlanUpdateEvent is the payload for `provider:plan_update`. Carries
+ * the latest live-plan snapshot from either Claude TodoWrite or Codex
+ * update_plan. The listener writes it to `pane.livePlan`; the
+ * `LivePlanPanel` component renders the panel anchored to the working
+ * indicator. There is no timeline footprint — plans are session state,
+ * not history.
+ */
+export interface PlanUpdateEvent {
+  threadId: string;
+  steps: PlanStep[];
+}
+
+/**
  * TokenUsageSummary is the parsed shape the pane stores on
  * latestSettledTurn.tokenUsage. Built from the provider's `usage` JSON
  * snapshot (Claude's `result.usage` or Codex's token-usage payload). All

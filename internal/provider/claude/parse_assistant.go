@@ -155,10 +155,12 @@ func appendTextEvent(
 }
 
 // appendToolUseEvent handles `tool_use` blocks. ExitPlanMode takes a
-// dedicated path (proposed-plan event); every other tool call — including
-// AskUserQuestion — emits a generic EventToolStart row. AskUserQuestion is
-// additionally surfaced via the parallel can_use_tool control_request path
-// as an EventUserInputRequest that drives the in-composer answer panel; the
+// dedicated path (proposed-plan event); TodoWrite takes a dedicated
+// path (live-plan event, with NO timeline tool-call row); every other
+// tool call — including AskUserQuestion — emits a generic
+// EventToolStart row. AskUserQuestion is additionally surfaced via the
+// parallel can_use_tool control_request path as an
+// EventUserInputRequest that drives the in-composer answer panel; the
 // timeline tool-call row is the persisted historical record.
 func (p *Parser) appendToolUseEvent(
 	events []provider.ProviderEvent,
@@ -168,6 +170,9 @@ func (p *Parser) appendToolUseEvent(
 ) []provider.ProviderEvent {
 	if block.Name == "ExitPlanMode" {
 		return appendExitPlanModeEvent(events, threadID, parentToolUseID, now, block)
+	}
+	if block.Name == "TodoWrite" {
+		return p.appendTodoWriteEvent(events, threadID, parentToolUseID, now, block)
 	}
 
 	isBackground := hasRunInBackground(block.Input)
@@ -185,6 +190,114 @@ func (p *Parser) appendToolUseEvent(
 		ParentToolUseID: parentToolUseID,
 		Timestamp:       now,
 	})
+}
+
+// appendTodoWriteEvent converts a TodoWrite tool call into a single
+// EventPlanUpdate carrying the normalized plan snapshot. The tool_use
+// is also marked so its eventual tool_result can be dropped in
+// parse_user.go — TodoWrite never produces a timeline tool-call row.
+//
+// Wire shape (per claude-code-source-code/src/utils/todo/types.ts):
+//
+//	{ todos: [ { content: string, status: "pending" | "in_progress" | "completed", activeForm: string } ] }
+//
+// Status is normalized to camelCase (`inProgress`) at emit time so the
+// frontend sees the same enum regardless of provider — Codex already
+// emits camelCase per its Rust serde.
+//
+// An empty todos array drops the event rather than emit an empty plan
+// the frontend would render as "no plan".
+func (p *Parser) appendTodoWriteEvent(
+	events []provider.ProviderEvent,
+	threadID, parentToolUseID string,
+	now time.Time,
+	block assistantContentBlock,
+) []provider.ProviderEvent {
+	steps := extractTodoWriteSteps(block.Input)
+	if len(steps) == 0 {
+		return events
+	}
+	meta, err := json.Marshal(map[string]any{
+		"kind":  "plan_update",
+		"title": "Updated Plan",
+		"plan":  steps,
+	})
+	if err != nil {
+		return events
+	}
+	// Mark only after the marshal succeeds. Marking before would leak a
+	// stale entry if marshal ever failed and silently drop the matching
+	// tool_result via parse_user.go's TodoWrite carve-out. Marshal of a
+	// typed primitives map can't fail in practice; this ordering is the
+	// defensive belt.
+	p.markTodoWrite(block.ID)
+	return append(events, provider.ProviderEvent{
+		Kind:            provider.EventPlanUpdate,
+		ThreadID:        threadID,
+		ItemID:          block.ID,
+		ItemType:        block.Name,
+		Content:         "Updated Plan",
+		Meta:            meta,
+		ParentToolUseID: parentToolUseID,
+		Timestamp:       now,
+	})
+}
+
+// todoWriteStep is the typed wire shape we marshal into Meta.plan.
+// Keeping it a named struct (instead of map[string]string) preserves
+// type safety across the parse → marshal → triage decode round trip
+// and avoids per-step map allocation.
+type todoWriteStep struct {
+	Step   string `json:"step"`
+	Status string `json:"status"`
+}
+
+// extractTodoWriteSteps decodes a TodoWrite tool_use input into the
+// shared plan-step shape used by both providers ({step, status}). The
+// status enum is normalized from Claude's snake_case to the camelCase
+// shape Codex already emits, so triage and the frontend see one
+// vocabulary.
+func extractTodoWriteSteps(input json.RawMessage) []todoWriteStep {
+	var payload struct {
+		Todos []struct {
+			Content    string `json:"content"`
+			Status     string `json:"status"`
+			ActiveForm string `json:"activeForm"`
+		} `json:"todos"`
+	}
+	if err := json.Unmarshal(input, &payload); err != nil {
+		return nil
+	}
+	steps := make([]todoWriteStep, 0, len(payload.Todos))
+	for _, todo := range payload.Todos {
+		content := strings.TrimSpace(todo.Content)
+		if content == "" {
+			continue
+		}
+		steps = append(steps, todoWriteStep{
+			Step:   content,
+			Status: normalizeTodoWriteStatus(todo.Status),
+		})
+	}
+	return steps
+}
+
+// normalizeTodoWriteStatus converts Claude TodoWrite's snake_case
+// status enum into the camelCase form Codex's update_plan already
+// emits. Unknown values pass through as `pending` so the frontend can
+// render a sensible default if Claude ever ships a new status the
+// parser doesn't recognise.
+func normalizeTodoWriteStatus(raw string) string {
+	switch strings.TrimSpace(raw) {
+	case "in_progress":
+		return "inProgress"
+	case "completed":
+		return "completed"
+	case "pending", "":
+		return "pending"
+	default:
+		return "pending"
+	}
 }
 
 // appendExitPlanModeEvent converts an ExitPlanMode tool call into an

@@ -38,6 +38,12 @@ type Parser struct {
 	// `run_in_background: true` so the matching tool_result event can be
 	// tagged the same way.
 	backgroundToolUses map[string]bool
+	// todoWriteToolUses flags tool_use IDs for the `TodoWrite` tool. The
+	// tool_use itself emits an EventPlanUpdate (not a generic tool start)
+	// so the matching tool_result must be dropped — there is no tool-call
+	// row to complete. See parse_assistant.go appendTodoWriteEvent and
+	// parse_user.go appendToolResultCompletion.
+	todoWriteToolUses map[string]bool
 	// taskToolUses correlates Claude background task lifecycle messages
 	// (task_started/task_updated/TaskOutput) back to the originating
 	// tool_use id so we can target the right timeline row.
@@ -106,6 +112,7 @@ func (p *Parser) Close() {
 		return
 	}
 	p.backgroundToolUses = nil
+	p.todoWriteToolUses = nil
 	p.taskToolUses = nil
 	p.subagentModelStamped = nil
 	p.streamBlockTypes = nil
@@ -224,6 +231,43 @@ func (p *Parser) clearBackground(toolUseID string) {
 		return
 	}
 	delete(p.backgroundToolUses, toolUseID)
+}
+
+// markTodoWrite records that the given tool_use ID was a `TodoWrite`
+// invocation. Bounded by parserTaskMapCap on the same wholesale-reset
+// principle as taskToolUses / subagentModelStamped: a TodoWrite tool_use
+// without a matching tool_result is pathological (interrupt mid-call,
+// hostile provider) but should not let the per-session map grow without
+// bound. Wholesale reset is benign because the cap is well above any
+// realistic TodoWrite fan-out and the consequence of dropping a stale
+// entry is just one orphan tool_result rendered as a generic completion
+// row instead of being dropped silently — strictly less surprising than
+// an unbounded leak.
+func (p *Parser) markTodoWrite(toolUseID string) {
+	if toolUseID == "" {
+		return
+	}
+	if p.todoWriteToolUses == nil {
+		p.todoWriteToolUses = make(map[string]bool)
+	}
+	if len(p.todoWriteToolUses) >= parserTaskMapCap {
+		p.todoWriteToolUses = make(map[string]bool)
+	}
+	p.todoWriteToolUses[toolUseID] = true
+}
+
+func (p *Parser) isTodoWrite(toolUseID string) bool {
+	if toolUseID == "" || p.todoWriteToolUses == nil {
+		return false
+	}
+	return p.todoWriteToolUses[toolUseID]
+}
+
+func (p *Parser) clearTodoWrite(toolUseID string) {
+	if toolUseID == "" || p.todoWriteToolUses == nil {
+		return
+	}
+	delete(p.todoWriteToolUses, toolUseID)
 }
 
 // parserTaskMapCap bounds the taskToolUses map so an abandoned task —

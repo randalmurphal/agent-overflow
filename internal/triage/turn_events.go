@@ -43,6 +43,31 @@ type SubagentNotificationEvent struct {
 	Meta     json.RawMessage `json:"meta,omitempty"`
 }
 
+// PlanUpdateEvent is the frontend-facing payload for provider:plan_update.
+// Carries the latest live-plan snapshot from either Claude TodoWrite or
+// Codex update_plan. Both providers normalise to a shared step shape
+// before this point. The frontend renders this as a panel anchored to
+// the working indicator (LivePlanPanel.svelte) and intentionally does
+// NOT add a row to the chat timeline — plans are session state, not
+// history. Persistence is deliberately NOT a triage concern for this
+// kind; the latest snapshot lives in memory on ThreadPane and dies on
+// app restart.
+type PlanUpdateEvent struct {
+	ThreadID string     `json:"threadId"`
+	Steps    []PlanStep `json:"steps"`
+}
+
+// PlanStep is one item in a live plan. Status uses the camelCase enum
+// Codex emits on the wire (`pending` | `inProgress` | `completed`).
+// Claude TodoWrite's snake_case `in_progress` is normalised to
+// `inProgress` upstream in the parser so triage and the frontend see
+// one vocabulary. Unknown values pass through; the frontend renders
+// them as pending.
+type PlanStep struct {
+	Step   string `json:"step"`
+	Status string `json:"status"`
+}
+
 // BackgroundTaskStateEvent is the frontend-facing payload for
 // provider:background_task_state. Decouples the tray ("process state")
 // from the chat sibling row ("agent observation state"). Two states

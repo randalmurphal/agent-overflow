@@ -67,11 +67,15 @@ func (p *Parser) parseUser(threadID string, raw map[string]json.RawMessage, now 
 // The universal tool-lifecycle invariant (see
 // docs/architecture/invariants.md invariant 20) says every `tool_use_id`
 // on a `tool_result` emits exactly one `EventToolComplete` for its own
-// id. There are NO exceptions: backgrounded placeholders, TaskOutput
-// echoes, and standard inline results all emit that completion. The
-// background placeholder's completion just carries `is_background:true`
-// in meta so triage keeps the launch row at `status=running` per spec
-// (see docs/architecture/turn-lifecycle.md §Tool lifecycle).
+// id. The one carve-out is `TodoWrite`: the matching tool_use never
+// produced an `EventToolStart` (it was rerouted to `EventPlanUpdate`),
+// so emitting a completion here would be an orphan against a
+// non-existent timeline row. Backgrounded placeholders, TaskOutput
+// echoes, and every other standard inline result still emit the
+// completion. The background placeholder's completion just carries
+// `is_background:true` in meta so triage keeps the launch row at
+// `status=running` per spec (see
+// docs/architecture/turn-lifecycle.md §Tool lifecycle).
 //
 // TaskOutput (E3 in claude-wire.md) is additive: after the own-id
 // completion fires, if `tool_use_result.task.status` is terminal we
@@ -96,6 +100,16 @@ func (p *Parser) appendToolResultBlock(
 	if err := json.Unmarshal(block["tool_use_id"], &toolUseID); err != nil || toolUseID == "" {
 		// A tool_result without an ID can't be correlated back to a
 		// tool_use, so drop it rather than emit an orphan completion.
+		return events
+	}
+
+	// TodoWrite carve-out: the tool_use was rerouted to EventPlanUpdate
+	// in parse_assistant.go and never produced a tool-call row. Drop the
+	// matching tool_result so we don't emit an orphan completion against
+	// a non-existent item. Releasing the flag keeps the correlation map
+	// bounded across long sessions.
+	if p.isTodoWrite(toolUseID) {
+		p.clearTodoWrite(toolUseID)
 		return events
 	}
 

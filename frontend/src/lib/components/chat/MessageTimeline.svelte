@@ -31,6 +31,7 @@
   import { turnSummaryIsMeaningful } from '../../utils/turnDiffSummary';
   import ChangedFilesTree from './ChangedFilesTree.svelte';
   import ChatWorkingIndicator from './ChatWorkingIndicator.svelte';
+  import LivePlanPanel from './LivePlanPanel.svelte';
   import CompletionDivider from './CompletionDivider.svelte';
   import ScrollToBottomButton from './ScrollToBottomButton.svelte';
   import SubagentGroup from './SubagentGroup.svelte';
@@ -393,6 +394,7 @@
          standalone so the user sees feedback. -->
     <div class="mx-auto w-full max-w-[62rem] px-6 pt-8" style:padding-bottom={`calc(var(--composer-height, 0px) + ${BOTTOM_PAD_PX}px)`}>
       <ChatWorkingIndicator {pane} />
+      <LivePlanPanel {pane} />
     </div>
   {:else}
     {#snippet renderNode(node: TimelineNode, depth: number)}
@@ -467,10 +469,14 @@
             {/if}
 
             {#if index === groupedNodes.length - 1}
-              <!-- Tail of timeline. Working indicator + bottom spacer
-                   that consumes --composer-height so the last visible
-                   row clears the absolute composer overlay above it. -->
+              <!-- Tail of timeline. Working indicator + LivePlanPanel +
+                   bottom spacer that consumes --composer-height so the
+                   last visible row clears the absolute composer overlay
+                   above it. The plan panel renders independently of the
+                   working indicator (it persists past turn-end if items
+                   remain incomplete and auto-hides on all-complete). -->
               <ChatWorkingIndicator {pane} />
+              <LivePlanPanel {pane} />
               <div
                 aria-hidden="true"
                 style:height={`calc(var(--composer-height, 0px) + ${BOTTOM_PAD_PX}px)`}

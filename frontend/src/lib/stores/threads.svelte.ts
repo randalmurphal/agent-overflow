@@ -1,5 +1,6 @@
 import type { Thread } from '../types/models';
 import { ListThreads } from './bindings';
+import { dropLivePlanUiPrefs } from './thread.svelte';
 import { clearThreadStatus } from './threadStatuses.svelte';
 import { addToast } from './toast.svelte';
 
@@ -29,6 +30,9 @@ export function removeThread(id: string): void {
   // Drop any live-status entry so the sidebar doesn't keep painting a
   // dot for a thread that no longer exists in the list.
   clearThreadStatus(id);
+  // Drop the live-plan UI prefs entry too so the module-scoped map
+  // doesn't accumulate dead-thread keys across long sessions.
+  dropLivePlanUiPrefs(id);
 }
 
 export function updateThreadTitle(id: string, title: string): void {

@@ -3,6 +3,7 @@ import type {
   ApprovalEvent,
   ItemDeltaEvent,
   ItemStreamEvent,
+  PlanUpdateEvent,
   ProviderStatusEvent,
   SubagentNotificationEvent,
   TurnCompletedEvent,
@@ -676,6 +677,22 @@ function applySubagentNotification(evt: SubagentNotificationEvent): void {
 }
 
 /**
+ * Route `provider:plan_update` to the matching pane. Updates the
+ * live-plan panel that anchors under the working indicator. Empty step
+ * arrays clear the panel; an all-completed snapshot starts the
+ * auto-hide timer inside `setLivePlan`. Plan updates do NOT add a
+ * timeline row — the snapshot lives only in pane state.
+ */
+function applyPlanUpdate(evt: PlanUpdateEvent): void {
+  if (!evt?.threadId) return;
+  const steps = Array.isArray(evt.steps) ? evt.steps : [];
+  for (const pane of getAllPanes().values()) {
+    if (pane.threadId !== evt.threadId) continue;
+    pane.setLivePlan(steps);
+  }
+}
+
+/**
  * Set up the app's Wails event listeners.
  * Returns a cleanup function that removes all listeners.
  */
@@ -706,6 +723,14 @@ export function setupEventListeners(): () => void {
   const cancelSubagentNotification = wailsEventOn<SubagentNotificationEvent>(
     'provider:subagent_notification',
     applySubagentNotification,
+  );
+  // provider:plan_update — Claude TodoWrite + Codex update_plan funnel
+  // through here after parser normalisation. Drives the LivePlanPanel
+  // anchored to the working indicator. Has zero timeline footprint by
+  // design (see LivePlanPanel.svelte).
+  const cancelPlanUpdate = wailsEventOn<PlanUpdateEvent>(
+    'provider:plan_update',
+    applyPlanUpdate,
   );
 
   const cancelThreadUpdated = wailsEventOn<Thread>('thread:updated', applyThreadUpdated);
@@ -872,6 +897,7 @@ export function setupEventListeners(): () => void {
     cancelTurnStarted();
     cancelTurnCompleted();
     cancelSubagentNotification();
+    cancelPlanUpdate();
     cancelThreadUpdated();
     cancelDefaultSwapped();
     cancelTransportGap();

@@ -141,6 +141,7 @@ func (s *Store) queryPagedItems(threadID string, floor, upper int64, ancestorCut
 		  FROM items
 		  LEFT JOIN payloads ON payloads.id = items.payload_id
 		 WHERE items.thread_id = ?
+		   AND NOT (items.kind = 'notification' AND items.tool_name = 'plan_update')
 		   AND (
 		     (items.turn_index >= ? AND items.turn_index < ?)
 		     OR (items.id IN (SELECT id FROM ancestors)
