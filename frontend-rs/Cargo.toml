@@ -23,7 +23,12 @@ gpui-component = { version = "0.5", default-features = false }
 
 # Transport
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io-util", "sync", "time"] }
-tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
+# No TLS features — connection is always loopback ws://. The Go side
+# documents TLS termination as out-of-process (Tailscale Serve / SSH /
+# reverse proxy), so the client side speaks plaintext WS only. Dropping
+# rustls also removes `ring` from the dep graph, which is the usual
+# pain point for cross-compiling to Windows from Linux.
+tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 url = "2"
 http = "1"
