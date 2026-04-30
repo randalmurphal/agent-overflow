@@ -152,6 +152,27 @@ export interface BackgroundTasksChangedEvent {
 }
 
 /**
+ * Tray-state nudge fired when the host-side process state of a
+ * Claude background task changes. Two states emitted today:
+ *
+ *  - `exited`   — task_updated terminal observed (host process exit);
+ *                 stash row written, tray hides launch.
+ *  - `drained`  — agent observation arrived and the tool_completion
+ *                 sibling has been written; stash row removed.
+ *
+ * Pure UI nudge — the tray query is the source of truth. A frontend
+ * that misses the event still gets correct state on its next
+ * mount/query. See internal/triage/turn_events.go BackgroundTaskStateEvent.
+ */
+export interface BackgroundTaskStateEvent {
+  threadId: string;
+  taskId: string;
+  launchId?: string;
+  state: 'exited' | 'drained';
+  updatedAt: number;
+}
+
+/**
  * Persistent provider-status kinds carried on `provider:status` by the
  * chat-rewrite router (closed set — see docs/architecture/chat-rewrite.md
  * "Channels"). Surfacing a value outside this set in the banner is a bug,

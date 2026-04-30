@@ -294,3 +294,17 @@ func nextCompactionID(turnIndex int) string {
 func nextToolCompletionID(launchID string) string {
 	return "complete:" + launchID
 }
+
+// backgroundCompletionID returns the stable id for a backgrounded
+// task's tool_completion sibling. Prefers the launch tool_use_id; falls
+// back to the task_id when the launch was not persisted (rare data-loss
+// path — pre-`task_started` row, or a thread restored from an older
+// session that didn't persist the launch). The two id forms are kept
+// distinct so a future launch with the same tool_use_id can't collide
+// with a salvaged by-task entry.
+func backgroundCompletionID(launchID, taskID string) string {
+	if launchID != "" {
+		return "complete:" + launchID
+	}
+	return "complete:by-task:" + taskID
+}

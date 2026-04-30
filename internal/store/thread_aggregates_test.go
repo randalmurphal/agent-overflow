@@ -674,6 +674,100 @@ func TestListLiveBackgroundTasks_ErroredCompletionKeepsPairVisible(t *testing.T)
 	}
 }
 
+// TestListLiveBackgroundTasks_StashHidesLaunch is the Tray-A guard:
+// once Claude system/task_updated lands and triage stashes the
+// terminal in pending_background_task_terminals, the launch row must
+// drop out of the tray even though no completion sibling exists yet
+// (the agent has not observed). This is the core decoupling between
+// host-side process state (tray) and agent-observation state (chat).
+func TestListLiveBackgroundTasks_StashHidesLaunch(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+
+	// Two running background launches; only one has a stash entry
+	// (process exited but no observation yet). The launch with a stash
+	// must disappear; the other stays.
+	seedBackgroundItem(t, s, "t", "exited", 0, 0, "running", "", 100)
+	seedBackgroundItem(t, s, "t", "still-running", 0, 1, "running", "", 200)
+
+	if err := s.UpsertPendingBackgroundTerminal(PendingBackgroundTaskTerminal{
+		ThreadID:  "t",
+		TaskID:    "task-x",
+		ToolUseID: "exited",
+		Status:    "completed",
+		Source:    "task_updated",
+		CreatedAt: 500,
+	}); err != nil {
+		t.Fatalf("upsert stash: %v", err)
+	}
+
+	got, err := s.ListLiveBackgroundTasks("t", 0)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if !equalStringSlice(collectIDs(got), []string{"still-running"}) {
+		t.Errorf("ids: got %v, want [still-running] (exited launch hidden by stash)", collectIDs(got))
+	}
+
+	// Drain the stash: launch is still status=running with no
+	// completion sibling, so it surfaces again.
+	if _, _, err := s.TakePendingBackgroundTerminal("t", "task-x"); err != nil {
+		t.Fatalf("take stash: %v", err)
+	}
+	got, err = s.ListLiveBackgroundTasks("t", 0)
+	if err != nil {
+		t.Fatalf("list after drain: %v", err)
+	}
+	if !equalStringSlice(collectIDs(got), []string{"exited", "still-running"}) {
+		t.Errorf("ids after drain: got %v, want [exited still-running]", collectIDs(got))
+	}
+}
+
+// TestListLiveBackgroundTasks_StashScopedByThread guards the
+// thread_id binding on the new NOT EXISTS subquery — a stash on
+// thread A must not hide a same-id launch on thread B.
+func TestListLiveBackgroundTasks_StashScopedByThread(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("ta", "claude")); err != nil {
+		t.Fatalf("create thread ta: %v", err)
+	}
+	if err := s.CreateThread(makeThread("tb", "claude")); err != nil {
+		t.Fatalf("create thread tb: %v", err)
+	}
+
+	seedBackgroundItem(t, s, "ta", "launch", 0, 0, "running", "", 100)
+	seedBackgroundItem(t, s, "tb", "launch", 0, 0, "running", "", 100)
+
+	if err := s.UpsertPendingBackgroundTerminal(PendingBackgroundTaskTerminal{
+		ThreadID:  "ta",
+		TaskID:    "task-1",
+		ToolUseID: "launch",
+		Status:    "completed",
+		Source:    "task_updated",
+		CreatedAt: 500,
+	}); err != nil {
+		t.Fatalf("upsert stash: %v", err)
+	}
+
+	gotA, err := s.ListLiveBackgroundTasks("ta", 0)
+	if err != nil {
+		t.Fatalf("list ta: %v", err)
+	}
+	if len(gotA) != 0 {
+		t.Errorf("ta ids: got %v, want [] (launch hidden by stash)", collectIDs(gotA))
+	}
+
+	gotB, err := s.ListLiveBackgroundTasks("tb", 0)
+	if err != nil {
+		t.Fatalf("list tb: %v", err)
+	}
+	if !equalStringSlice(collectIDs(gotB), []string{"launch"}) {
+		t.Errorf("tb ids: got %v, want [launch] (stash on ta must not leak)", collectIDs(gotB))
+	}
+}
+
 func TestListLiveBackgroundTasks_IgnoresForeignCompletions(t *testing.T) {
 	s := newTestStore(t)
 	if err := s.CreateThread(makeThread("t", "claude")); err != nil {

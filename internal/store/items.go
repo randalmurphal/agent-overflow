@@ -977,6 +977,54 @@ func (s *Store) ListRunningBackgroundToolCalls(threadID string) ([]Item, error) 
 	return items, rows.Err()
 }
 
+// ListOrphanedBackgroundLaunches returns every backgrounded tool_call
+// row across all threads that is still running, has no completion
+// sibling, and has no pending_background_task_terminals stash entry.
+// Used by app startup to detect launches whose owning provider session
+// died with the previous app instance — the agent will never observe
+// completion, so the launch would otherwise hang forever in the tray
+// and chat.
+//
+// The triple "running + no sibling + no stash" predicate is the same
+// shape the tray query uses to decide visibility, just inverted: tray
+// hides when ANY of (sibling exists, stash exists, status != running)
+// is true; recovery acts when ALL three are false.
+func (s *Store) ListOrphanedBackgroundLaunches() ([]Item, error) {
+	rows, err := s.db.Query(
+		`SELECT ` + itemColumns + `
+		   FROM items
+		   LEFT JOIN payloads ON payloads.id = items.payload_id
+		  WHERE items.kind = 'tool_call'
+		    AND items.status = 'running'
+		    AND items.is_background = 1
+		    AND NOT EXISTS (
+		      SELECT 1 FROM items c
+		       WHERE c.thread_id = items.thread_id
+		         AND c.completion_of = items.id
+		    )
+		    AND NOT EXISTS (
+		      SELECT 1 FROM pending_background_task_terminals p
+		       WHERE p.thread_id = items.thread_id
+		         AND p.tool_use_id = items.id
+		    )
+		  ORDER BY items.thread_id, items.turn_index, items.item_index`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: list orphaned background launches: %w", err)
+	}
+	defer rows.Close()
+
+	var items []Item
+	for rows.Next() {
+		it, err := scanItemRow(rows)
+		if err != nil {
+			return nil, fmt.Errorf("store: scan orphaned bg launch row: %w", err)
+		}
+		items = append(items, it)
+	}
+	return items, rows.Err()
+}
+
 // FlipGhostBackgroundRowsOnStart flips every `status='running' +
 // is_background=1 + kind='tool_call'` row for the thread to
 // `status='errored'`, `decision='lost'`, and rewrites each row's summary

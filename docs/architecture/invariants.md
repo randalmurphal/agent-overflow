@@ -505,31 +505,48 @@ parser; assert TaskOutput's own `tool_use_id` receives an
 
 ---
 
-## 21. `task_notification` is not a completion source
+## 21. `task_notification` is not a completion source (but it can drain a stash)
 
 **Rule.** The Claude `system/task_notification` envelope is not a
-completion source — no `EventBackgroundTaskTerminal`, no
-`EventToolComplete`, no task state transition. If rendered, it must
-flow through a distinct notification event/row.
+completion **status** source — its arrival never decides whether a
+task ended in `completed` / `failed` / `killed`. Lifecycle status
+comes only from `system/task_updated` `patch.status` and TaskOutput
+`tool_use_result.task.status`.
+
+`task_notification` IS a valid timing trigger for the agent-observed
+half of the two-phase task terminal flow: when a stash row exists in
+`pending_background_task_terminals` for the same `task_id`, the
+notification's arrival means the agent has now observed the
+queued completion attachment, and triage drains the stash and writes
+the `tool_completion` sibling at the current write head (using the
+status from the stash, not from the notification).
 
 **Rationale.** `task_notification` is an "attention signal" that
 Claude fires so the next user turn's prompt includes the task's
 summary. It also fires for non-terminal foreground bash (with
-`output_file: ""`), so treating it as a completion source corrupts
-the task lifecycle. `system/task_updated` with terminal
-`patch.status` and TaskOutput `tool_use_result.task.status` are the
-only authoritative task-terminal sources.
+`output_file: ""`), so treating its arrival as the *status*
+authority would corrupt the lifecycle. The two-phase decoupling
+means the host-side process exit (the status authority) lands
+earlier in `task_updated`; the notification only chooses *when* the
+chat row appears.
 
 **Enforcement.** `parseTaskNotificationEvent` in `parse_system.go`
-emits `EventBackgroundTaskNotification`, never a lifecycle terminal or
-tool completion. Triage persists it as a notification row and may
-ingest `output_file` into SQLite, but lifecycle state still comes only
-from `task_updated` / TaskOutput.
+emits `EventBackgroundTaskNotification`, never a lifecycle terminal
+or tool completion. `triage/background_task_notifications.go`
+persists the notification row first, then drains any matching stash
+via `TakePendingBackgroundTerminal` and routes the merged data
+through the same `writeBackgroundCompletionSibling` helper used by
+the TaskOutput observation path. Status carried on the notification
+itself is ignored for lifecycle purposes (the stash + task_updated
+already settled it).
 
-**Test.** `parse_system_test.go` asserts `task_notification` emits one
-`EventBackgroundTaskNotification` and zero lifecycle events.
+**Test.** `parse_system_test.go` asserts `task_notification` emits
+one `EventBackgroundTaskNotification` and zero lifecycle events.
+`triage/background_task_notifications_test.go` asserts the stash
+drain + sibling write behaviour.
 
 **See also.** [`turn-lifecycle.md §Task lifecycle`](turn-lifecycle.md#2-task-lifecycle-claude-only);
+[`turn-lifecycle.md §Tray decoupling`](turn-lifecycle.md#tray-decoupling--process-state-vs-agent-observation-tray-a);
 [`claude-wire.md §task_notification`](../references/claude-wire.md#systemtask_notification).
 
 ---

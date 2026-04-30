@@ -983,16 +983,18 @@ func TestTaskStartedMetaMergeNoopsWhenItemMissing(t *testing.T) {
 }
 
 // TestTaskUpdatedResolvesItemViaMetaTaskID (Bug A reconnect-recovery
-// scenario) verifies that when a fresh adapter session emits
-// EventBackgroundTaskTerminal with empty tool_use_id and only task_id,
-// triage looks up the matching tool_call row via items.meta.task_id
-// and writes the sibling completion against IT — not some ghost row
-// keyed by empty string.
+// scenario) verifies that when a fresh adapter session emits a
+// task_updated EventBackgroundTaskTerminal with empty tool_use_id
+// and only task_id, triage looks up the matching tool_call row via
+// items.meta.task_id and stashes the terminal keyed by both task_id
+// and the resolved tool_use_id.
 //
-// Post-refactor: this routing moved from EventToolComplete to
-// EventBackgroundTaskTerminal. The tool-lifecycle placeholder no
-// longer fans out on task_id lookups — that's strictly the task
-// lifecycle's job now.
+// Post-stash refactor: task_updated NEVER writes the sibling — it
+// stashes the terminal in pending_background_task_terminals so the
+// tray query hides the launch. The sibling is written later when
+// the agent observes completion via TaskOutput or
+// task_notification. See
+// docs/architecture/turn-lifecycle.md §Task lifecycle.
 func TestTaskUpdatedResolvesItemViaMetaTaskID(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
@@ -1026,6 +1028,7 @@ func TestTaskUpdatedResolvesItemViaMetaTaskID(t *testing.T) {
 	terminalMeta, _ := json.Marshal(map[string]any{
 		"task_id": "recov-task",
 		"status":  "completed",
+		"source":  "task_updated",
 	})
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventBackgroundTaskTerminal, ThreadID: "t1", ItemID: "",
@@ -1034,8 +1037,8 @@ func TestTaskUpdatedResolvesItemViaMetaTaskID(t *testing.T) {
 		t.Fatalf("task_updated terminal: %v", err)
 	}
 
-	// Launch row stays frozen at running (per background lifecycle),
-	// and a tool_completion partner is appended.
+	// Launch stays as the only chat row; sibling NOT yet written
+	// (agent has not observed completion).
 	launches := findItemsByKind(t, st, "t1", itemKindToolCall)
 	if len(launches) != 1 {
 		t.Fatalf("expected 1 tool_call, got %+v", launches)
@@ -1044,11 +1047,27 @@ func TestTaskUpdatedResolvesItemViaMetaTaskID(t *testing.T) {
 		t.Errorf("unexpected launch id %q", launches[0].ID)
 	}
 	dones := findItemsByKind(t, st, "t1", itemKindBackgroundDone)
-	if len(dones) != 1 {
-		t.Fatalf("expected 1 tool_completion, got %+v", dones)
+	if len(dones) != 0 {
+		t.Fatalf("task_updated should not write a sibling; got %+v", dones)
 	}
-	if dones[0].CompletionOf != "bg-recov" {
-		t.Errorf("completion_of = %q, want %q", dones[0].CompletionOf, "bg-recov")
+
+	// Stash row exists, keyed by (thread_id, task_id), with
+	// tool_use_id resolved from the items.meta.task_id index.
+	stash, found, err := st.GetPendingBackgroundTerminal("t1", "recov-task")
+	if err != nil {
+		t.Fatalf("read stash: %v", err)
+	}
+	if !found {
+		t.Fatal("expected stash row for recov-task; reconnect resolution didn't write one")
+	}
+	if stash.ToolUseID != "bg-recov" {
+		t.Errorf("stash.ToolUseID = %q, want bg-recov (lookup via meta.task_id failed)", stash.ToolUseID)
+	}
+	if stash.Status != "completed" {
+		t.Errorf("stash.Status = %q, want completed", stash.Status)
+	}
+	if stash.Source != "task_updated" {
+		t.Errorf("stash.Source = %q, want task_updated", stash.Source)
 	}
 }
 
@@ -1081,13 +1100,15 @@ func TestTaskUpdatedUnmatchedMetaTaskIDIsDropped(t *testing.T) {
 	}
 }
 
-// TestHandleEventBackgroundTaskTerminal_InsertsSibling is the Wave 2
-// task-lifecycle contract. A backgrounded launch (is_background=true,
-// status=running) plus a single EventBackgroundTaskTerminal must
-// produce exactly one tool_completion sibling keyed by the launch id,
-// leaving the launch row frozen at running. This is how the timeline
-// renders "agent dispatched this background tool" and "the background
-// work actually finished" as two historically accurate rows.
+// TestHandleEventBackgroundTaskTerminal_InsertsSibling pins the
+// task-lifecycle observation contract. A backgrounded launch plus a
+// task_output-sourced EventBackgroundTaskTerminal (the agent observed
+// completion via TaskOutput tool_result) must produce exactly one
+// tool_completion sibling keyed by the launch id, leaving the launch
+// row frozen at running. The timeline renders "agent dispatched this
+// background tool" and "the background work actually finished" as two
+// historically accurate rows. Note: a task_updated-sourced terminal
+// alone only stashes — see TestHandleEventBackgroundTaskTerminal_TaskUpdatedStashesNoSibling.
 func TestHandleEventBackgroundTaskTerminal_InsertsSibling(t *testing.T) {
 	router, st, emissions := newTestRouter(t)
 	createTestThread(t, st, "t1")
@@ -1110,6 +1131,7 @@ func TestHandleEventBackgroundTaskTerminal_InsertsSibling(t *testing.T) {
 		"tool_use_id": "bg-insert",
 		"status":      "completed",
 		"exit_code":   exit,
+		"source":      "task_output",
 	})
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventBackgroundTaskTerminal, ThreadID: "t1", ItemID: "bg-insert",
@@ -1176,6 +1198,209 @@ func TestHandleEventBackgroundTaskTerminal_InsertsSibling(t *testing.T) {
 	}
 }
 
+// TestHandleEventBackgroundTaskTerminal_TaskUpdatedStashesNoSibling
+// pins the post-stash refactor invariant: source=task_updated is the
+// HOST process exit signal, NOT the agent observation. It must
+// stash a pending_background_task_terminals row (so the tray hides
+// the launch) but MUST NOT write the chat-side `tool_completion`
+// sibling — the agent has not yet seen the completion.
+//
+// The chat row is only written later when the agent observes via
+// TaskOutput (source=task_output) or task_notification.
+func TestHandleEventBackgroundTaskTerminal_TaskUpdatedStashesNoSibling(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	startMeta, _ := json.Marshal(map[string]any{
+		"toolName":      "Bash",
+		"is_background": true,
+		"input":         map[string]any{"command": "sleep 30"},
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "bg-stash",
+		ItemType: "Bash", Meta: startMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("seed launch: %v", err)
+	}
+
+	exit := 0
+	terminalMeta, _ := json.Marshal(map[string]any{
+		"task_id":     "tsk-stash",
+		"tool_use_id": "bg-stash",
+		"status":      "completed",
+		"exit_code":   exit,
+		"source":      "task_updated",
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventBackgroundTaskTerminal, ThreadID: "t1", ItemID: "bg-stash",
+		Meta: terminalMeta, Content: "ignored body", Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("bg terminal: %v", err)
+	}
+
+	// No sibling: agent has not observed completion.
+	dones := findItemsByKind(t, st, "t1", itemKindBackgroundDone)
+	if len(dones) != 0 {
+		t.Fatalf("task_updated must not write a sibling, got %+v", dones)
+	}
+
+	// Launch row is still the only chat row, frozen at running.
+	launches := findItemsByKind(t, st, "t1", itemKindToolCall)
+	if len(launches) != 1 || launches[0].Status != statusRunning {
+		t.Fatalf("launch missing or not running: %+v", launches)
+	}
+
+	// Stash row exists keyed by (thread_id, task_id).
+	stash, found, err := st.GetPendingBackgroundTerminal("t1", "tsk-stash")
+	if err != nil {
+		t.Fatalf("read stash: %v", err)
+	}
+	if !found {
+		t.Fatal("expected stash row, none persisted")
+	}
+	if stash.ToolUseID != "bg-stash" {
+		t.Errorf("stash.ToolUseID = %q, want bg-stash", stash.ToolUseID)
+	}
+	if stash.Status != "completed" {
+		t.Errorf("stash.Status = %q, want completed", stash.Status)
+	}
+	if stash.ExitCode == nil || *stash.ExitCode != 0 {
+		t.Errorf("stash.ExitCode = %v, want 0", stash.ExitCode)
+	}
+
+	// Tray query must hide the launch (stash NOT EXISTS predicate).
+	live, err := st.ListLiveBackgroundTasks("t1", 0)
+	if err != nil {
+		t.Fatalf("list live: %v", err)
+	}
+	for _, row := range live {
+		if row.ID == "bg-stash" {
+			t.Fatalf("tray still shows launch after task_updated stash: %+v", row)
+		}
+	}
+
+	// Frontend nudge: provider:background_task_state with state=exited.
+	sawExited := false
+	for _, e := range *emissions {
+		if e.eventName != "provider:background_task_state" {
+			continue
+		}
+		payload, ok := e.data.(BackgroundTaskStateEvent)
+		if !ok {
+			continue
+		}
+		if payload.TaskID == "tsk-stash" && payload.State == "exited" {
+			sawExited = true
+			if payload.LaunchID != "bg-stash" {
+				t.Errorf("background_task_state.LaunchID = %q, want bg-stash", payload.LaunchID)
+			}
+		}
+	}
+	if !sawExited {
+		t.Error("expected provider:background_task_state(state=exited) emission")
+	}
+}
+
+// TestHandleEventBackgroundTaskTerminal_StashThenObservationFlow
+// covers the canonical two-event flow: task_updated stashes the
+// host-side exit, then a later task_output enrichment drains the
+// stash and writes the sibling carrying the merged data
+// (status/exit_code from stash, output_file from observation).
+func TestHandleEventBackgroundTaskTerminal_StashThenObservationFlow(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	startMeta, _ := json.Marshal(map[string]any{
+		"toolName":      "Bash",
+		"is_background": true,
+		"input":         map[string]any{"command": "long job"},
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "bg-flow",
+		ItemType: "Bash", Meta: startMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("seed launch: %v", err)
+	}
+
+	// Phase 1: task_updated. Stash, no sibling.
+	exit := 0
+	stashMeta, _ := json.Marshal(map[string]any{
+		"task_id":     "tsk-flow",
+		"tool_use_id": "bg-flow",
+		"status":      "completed",
+		"exit_code":   exit,
+		"end_time":    int64(1700000000000),
+		"source":      "task_updated",
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventBackgroundTaskTerminal, ThreadID: "t1", ItemID: "bg-flow",
+		Meta: stashMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("stash phase: %v", err)
+	}
+	if dones := findItemsByKind(t, st, "t1", itemKindBackgroundDone); len(dones) != 0 {
+		t.Fatalf("phase 1 should not write a sibling, got %+v", dones)
+	}
+
+	// Phase 2: task_output observation arrives. Different (richer)
+	// fields — output_file present here, status/exit_code already in
+	// stash. Drains stash, writes sibling, emits state=drained.
+	*emissions = (*emissions)[:0]
+	observeMeta, _ := json.Marshal(map[string]any{
+		"task_id":     "tsk-flow",
+		"tool_use_id": "bg-flow",
+		"output_file": "/tmp/long-job.txt",
+		"source":      "task_output",
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventBackgroundTaskTerminal, ThreadID: "t1", ItemID: "bg-flow",
+		Meta: observeMeta, Content: "stdout body", Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("observe phase: %v", err)
+	}
+
+	dones := findItemsByKind(t, st, "t1", itemKindBackgroundDone)
+	if len(dones) != 1 {
+		t.Fatalf("expected 1 sibling after observation drain, got %+v", dones)
+	}
+	done := dones[0]
+	if done.CompletionOf != "bg-flow" {
+		t.Errorf("CompletionOf = %q, want bg-flow", done.CompletionOf)
+	}
+	if done.Status != statusCompleted {
+		t.Errorf("Status = %q, want completed (merged from stash)", done.Status)
+	}
+	doneMeta := decodeItemMetaMap(t, done.Meta)
+	if doneMeta["output_file"] != "/tmp/long-job.txt" {
+		t.Errorf("output_file = %v, want /tmp/long-job.txt (from observation)", doneMeta["output_file"])
+	}
+
+	// Stash drained — no longer present.
+	if _, found, err := st.GetPendingBackgroundTerminal("t1", "tsk-flow"); err != nil {
+		t.Fatalf("read stash post-drain: %v", err)
+	} else if found {
+		t.Error("stash row not drained after observation")
+	}
+
+	// Frontend nudge: provider:background_task_state(state=drained).
+	sawDrained := false
+	for _, e := range *emissions {
+		if e.eventName != "provider:background_task_state" {
+			continue
+		}
+		payload, ok := e.data.(BackgroundTaskStateEvent)
+		if !ok {
+			continue
+		}
+		if payload.TaskID == "tsk-flow" && payload.State == "drained" {
+			sawDrained = true
+		}
+	}
+	if !sawDrained {
+		t.Error("expected provider:background_task_state(state=drained) emission")
+	}
+}
+
 // TestHandleEventBackgroundTaskTerminal_AppendsAtCurrentTurn pins the
 // history model for background work: the launch row stays where the
 // agent dispatched it, but the terminal row lands where completion was
@@ -1205,6 +1430,7 @@ func TestHandleEventBackgroundTaskTerminal_AppendsAtCurrentTurn(t *testing.T) {
 		"task_id":     "tsk-late",
 		"tool_use_id": "bg-late",
 		"status":      "completed",
+		"source":      "task_output",
 	})
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventBackgroundTaskTerminal, ThreadID: "t1", ItemID: "bg-late",
@@ -1269,6 +1495,7 @@ func TestHandleEventBackgroundTaskTerminal_AppendsToLatestPersistedTurn(t *testi
 		"task_id":     "tsk-empty-turn",
 		"tool_use_id": "bg-empty-turn",
 		"status":      "completed",
+		"source":      "task_output",
 	})
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventBackgroundTaskTerminal, ThreadID: "t1", ItemID: "bg-empty-turn",
@@ -1307,12 +1534,15 @@ func TestHandleEventBackgroundTaskTerminal_Enriches(t *testing.T) {
 		t.Fatalf("seed launch: %v", err)
 	}
 
-	// First terminal from task_updated — basic shape (no exit_code /
-	// output_file yet).
+	// First terminal from TaskOutput — basic shape (no exit_code /
+	// output_file yet). Note: task_updated alone wouldn't create a
+	// sibling under the post-stash model — see
+	// TestHandleEventBackgroundTaskTerminal_TaskUpdatedStashesNoSibling.
 	basicMeta, _ := json.Marshal(map[string]any{
 		"task_id":     "tsk-enrich",
 		"tool_use_id": "bg-enrich",
 		"status":      "completed",
+		"source":      "task_output",
 	})
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventBackgroundTaskTerminal, ThreadID: "t1", ItemID: "bg-enrich",
@@ -1333,6 +1563,7 @@ func TestHandleEventBackgroundTaskTerminal_Enriches(t *testing.T) {
 		"status":      "completed",
 		"exit_code":   exit,
 		"output_file": "/tmp/bg-output.txt",
+		"source":      "task_output",
 	})
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventBackgroundTaskTerminal, ThreadID: "t1", ItemID: "bg-enrich",
@@ -1386,6 +1617,7 @@ func TestHandleEventBackgroundTaskTerminal_EnrichmentPreservesCompletionTurn(t *
 		"task_id":     "tsk-stable-turn",
 		"tool_use_id": "bg-stable-turn",
 		"status":      "completed",
+		"source":      "task_output",
 	})
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventBackgroundTaskTerminal, ThreadID: "t1", ItemID: "bg-stable-turn",
@@ -1409,6 +1641,7 @@ func TestHandleEventBackgroundTaskTerminal_EnrichmentPreservesCompletionTurn(t *
 		"status":      "completed",
 		"exit_code":   exit,
 		"output_file": "/tmp/bg-output.txt",
+		"source":      "task_output",
 	})
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventBackgroundTaskTerminal, ThreadID: "t1", ItemID: "bg-stable-turn",
@@ -1459,10 +1692,13 @@ func TestHandleEventBackgroundTaskTerminal_ResolvesByTaskIDWhenToolUseMissing(t 
 		t.Fatalf("task_started meta merge: %v", err)
 	}
 
-	// Reconnect: terminal arrives with no tool_use_id.
+	// Reconnect: terminal arrives with no tool_use_id. Carries
+	// source=task_output (TaskOutput drains the stash), since
+	// task_updated alone would only stash without writing the sibling.
 	terminalMeta, _ := json.Marshal(map[string]any{
 		"task_id": "tsk-resolve",
 		"status":  "completed",
+		"source":  "task_output",
 	})
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventBackgroundTaskTerminal, ThreadID: "t1", ItemID: "",
@@ -1505,6 +1741,142 @@ func TestHandleEventBackgroundTaskTerminal_DropsWhenNoLaunch(t *testing.T) {
 	}
 	if len(items) != 0 {
 		t.Errorf("expected no rows when launch is missing, got %+v", items)
+	}
+}
+
+// TestRecoverOrphanedBackgroundTasks pins the startup-recovery
+// contract: an orphaned background launch (running, no completion
+// sibling, no stash entry) gets a synthesized session_died stash plus
+// a `tool_completion` sibling so the tray clears and the chat row
+// shows `killed`. Re-running the recovery is idempotent: the second
+// pass sees the now-existing sibling and skips the launch.
+func TestRecoverOrphanedBackgroundTasks(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	// Seed a backgrounded launch with task_id meta — mimics the live
+	// flow where Claude task_started attached the task_id correlation.
+	startMeta, _ := json.Marshal(map[string]any{
+		"toolName":      "Bash",
+		"is_background": true,
+		"input":         map[string]any{"command": "long-running"},
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "bg-orphan",
+		ItemType: "Bash", Meta: startMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("seed launch: %v", err)
+	}
+	taskStartedMeta, _ := json.Marshal(map[string]any{"task_id": "tsk-orphan"})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "bg-orphan",
+		Meta: taskStartedMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("task_started meta merge: %v", err)
+	}
+
+	// Sanity: launch is the only row, no sibling yet.
+	if dones := findItemsByKind(t, st, "t1", itemKindBackgroundDone); len(dones) != 0 {
+		t.Fatalf("precondition: no sibling expected, got %+v", dones)
+	}
+
+	recovered, err := router.RecoverOrphanedBackgroundTasks()
+	if err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	if recovered != 1 {
+		t.Fatalf("recovered = %d, want 1", recovered)
+	}
+
+	// Sibling materialised with status=killed.
+	dones := findItemsByKind(t, st, "t1", itemKindBackgroundDone)
+	if len(dones) != 1 {
+		t.Fatalf("expected 1 recovery sibling, got %+v", dones)
+	}
+	if dones[0].CompletionOf != "bg-orphan" {
+		t.Errorf("CompletionOf = %q, want bg-orphan", dones[0].CompletionOf)
+	}
+	if dones[0].Status != statusKilled {
+		t.Errorf("Status = %q, want %q", dones[0].Status, statusKilled)
+	}
+
+	// Recovery never writes a stash row — it goes straight to the
+	// sibling, so a half-state crash leaves the launch re-discoverable
+	// by the next sweep.
+	if _, found, err := st.GetPendingBackgroundTerminal("t1", "tsk-orphan"); err != nil {
+		t.Fatalf("read stash: %v", err)
+	} else if found {
+		t.Error("recovery should not create a stash row")
+	}
+
+	// Live tasks query returns the launch + its sibling joined so the
+	// user sees "I started this, it ended killed" together until they
+	// age out via retention. The launch alone (without sibling) is the
+	// pre-recovery state that the stash predicate would have hidden.
+	live, err := st.ListLiveBackgroundTasks("t1", 0)
+	if err != nil {
+		t.Fatalf("list live: %v", err)
+	}
+	var sawLaunch, sawSibling bool
+	for _, row := range live {
+		switch row.ID {
+		case "bg-orphan":
+			sawLaunch = true
+		case backgroundCompletionID("bg-orphan", "tsk-orphan"):
+			sawSibling = true
+		}
+	}
+	if !sawLaunch {
+		t.Error("expected launch in tray after recovery (joined with sibling)")
+	}
+	if !sawSibling {
+		t.Error("expected recovery sibling in tray, joined to launch")
+	}
+
+	// Idempotent: second pass finds nothing to recover.
+	recovered2, err := router.RecoverOrphanedBackgroundTasks()
+	if err != nil {
+		t.Fatalf("recover (2nd): %v", err)
+	}
+	if recovered2 != 0 {
+		t.Errorf("idempotency broken: 2nd pass recovered %d rows, want 0", recovered2)
+	}
+	if dones := findItemsByKind(t, st, "t1", itemKindBackgroundDone); len(dones) != 1 {
+		t.Errorf("idempotency broken: sibling count after 2nd pass = %d, want 1", len(dones))
+	}
+}
+
+// TestRecoverOrphanedBackgroundTasksSkipsLaunchWithoutTaskID pins the
+// edge case for launches that never received their task_started meta
+// merge before the previous app instance died. Without a task_id we
+// have no idempotency key for the stash, so the row is logged and
+// left alone — better than synthesising a stash keyed by the empty
+// string and corrupting the index.
+func TestRecoverOrphanedBackgroundTasksSkipsLaunchWithoutTaskID(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	startMeta, _ := json.Marshal(map[string]any{
+		"toolName":      "Bash",
+		"is_background": true,
+		"input":         map[string]any{"command": "race"},
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "bg-no-task-id",
+		ItemType: "Bash", Meta: startMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("seed launch: %v", err)
+	}
+
+	recovered, err := router.RecoverOrphanedBackgroundTasks()
+	if err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	if recovered != 0 {
+		t.Errorf("recovered = %d, want 0 for no-task-id launch", recovered)
+	}
+	if dones := findItemsByKind(t, st, "t1", itemKindBackgroundDone); len(dones) != 0 {
+		t.Errorf("unexpected sibling for no-task-id launch: %+v", dones)
 	}
 }
 

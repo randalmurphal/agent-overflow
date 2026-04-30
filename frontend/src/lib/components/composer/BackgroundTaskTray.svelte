@@ -8,7 +8,7 @@
   import { onItemUpsert, wailsEventOn } from '../../stores/events';
   import { addToast } from '../../stores/toast.svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
-  import type { BackgroundTasksChangedEvent } from '../../types/events';
+  import type { BackgroundTaskStateEvent, BackgroundTasksChangedEvent } from '../../types/events';
   import type { Item } from '../../types/models';
   import {
     deriveTrayTasks,
@@ -75,6 +75,7 @@
 
   let cancelItemUpsert: (() => void) | null = null;
   let cancelBackgroundTasksChanged: (() => void) | null = null;
+  let cancelBackgroundTaskState: (() => void) | null = null;
   onMount(() => {
     cancelItemUpsert = onItemUpsert((item) => {
       if (item.threadId !== threadId) return;
@@ -89,11 +90,24 @@
         debouncedRefresh();
       },
     );
+    // Tray decoupling (Tray-A): the host-side process state of a
+    // backgrounded Claude task can change before the agent observes
+    // (task_updated stashes; agent observation drains). The Go side
+    // emits provider:background_task_state on either edge; we just
+    // refresh the tray query, which is the source of truth.
+    cancelBackgroundTaskState = wailsEventOn<BackgroundTaskStateEvent>(
+      'provider:background_task_state',
+      (evt) => {
+        if (!evt || evt.threadId !== threadId) return;
+        debouncedRefresh();
+      },
+    );
   });
 
   onDestroy(() => {
     cancelItemUpsert?.();
     cancelBackgroundTasksChanged?.();
+    cancelBackgroundTaskState?.();
     debouncedRefresh.cancel();
   });
 

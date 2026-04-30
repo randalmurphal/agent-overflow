@@ -64,12 +64,15 @@ func TestTurnCompleteTruncatedFlipsRunningAndDrainsQueueAsErrored(t *testing.T) 
 
 	// 3. EventBackgroundTaskTerminal for the background task — this
 	// fires the sibling-row upsert, which goes onto the interrupt queue
-	// because text is streaming.
+	// because text is streaming. source=task_output exercises the
+	// observation path that writes the sibling (task_updated alone
+	// would only stash).
 	bgTerminalMeta, _ := json.Marshal(map[string]any{
 		"task_id":     "tsk-1",
 		"tool_use_id": "bg-running",
 		"status":      "completed",
 		"exit_code":   0,
+		"source":      "task_output",
 	})
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventBackgroundTaskTerminal, ThreadID: "t1", ItemID: "bg-running",

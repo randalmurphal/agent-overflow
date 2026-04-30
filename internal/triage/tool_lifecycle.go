@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"time"
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
@@ -367,18 +368,36 @@ func decodeBackgroundTaskTerminalMeta(raw json.RawMessage) backgroundTaskTermina
 	return m
 }
 
-// handleBackgroundTaskTerminal writes the sibling tool_completion row
-// for a backgrounded Claude tool (Bash with run_in_background:true, or
-// Task subagent). The event fires twice in the wild — once on
-// system.task_updated and once on TaskOutput enrichment — and ordering
-// is undefined. The stable completion id (nextToolCompletionID) +
-// persistItem's INSERT-OR-UPDATE semantics coalesce the pair
-// idempotently; the second (typically richer) payload wins.
+// handleBackgroundTaskTerminal dispatches the additive Claude
+// task-lifecycle event by source.
 //
-// Launch resolution prefers the explicit tool_use_id on the event;
-// falls back to an items.meta.task_id lookup when the adapter's
-// in-memory map was flushed (fresh session after reconnect). A launch
-// that can't be resolved is logged and dropped.
+// Three phases of "background task ended" are deliberately
+// decoupled:
+//
+//   - source="task_updated", status in {completed, failed}: HOST
+//     signalled process exit but the agent has not observed yet.
+//     Triage stashes the terminal in
+//     pending_background_task_terminals (via
+//     stashBackgroundTaskTerminal) so the tray can hide the launch.
+//     Reconnect-replay is idempotent (PK is thread_id+task_id). The
+//     chat-side `tool_completion` sibling is NOT written here — it
+//     comes later via task_notification or TaskOutput drain.
+//
+//   - source="task_updated", status="killed": user-initiated stop
+//     (StopClaudeTask → stop_task control_request → CLI replies
+//     task_updated{killed}). The user already knows the process was
+//     stopped — there's nothing for the agent to "observe". Write
+//     the sibling immediately so chat shows the killed badge without
+//     waiting for the next turn's task_notification.
+//
+//   - source anything else (today: "task_output"): AGENT observed
+//     via TaskOutput tool_result. Triage drains the stash if present,
+//     merges stash data with the observation, and writes the sibling
+//     at the current write head (via writeBackgroundCompletionSibling).
+//
+// task_notification arrives via a separate event handler
+// (handleBackgroundTaskNotification); when its task has a stash it
+// drains and writes the sibling through the same shared helper.
 //
 // Persistence uses maybeDeferOrPersist so a mid-stream terminal queues
 // behind the active streaming block (invariant 11 — intended-order
@@ -389,17 +408,175 @@ func (r *Router) handleBackgroundTaskTerminal(evt provider.ProviderEvent) error 
 		meta.Source = "task_updated"
 	}
 
-	// Resolve launch: prefer the explicit tool_use_id the parser
-	// passed via evt.ItemID, else fall back to the task_id lookup.
-	launch, found, err := r.resolveBackgroundTaskLaunch(evt.ThreadID, evt.ItemID, meta.ToolUseID, meta.TaskID)
+	if meta.Source == "task_updated" && meta.Status != "killed" {
+		return r.stashBackgroundTaskTerminal(evt, meta)
+	}
+	return r.observeBackgroundTaskTerminal(evt, meta)
+}
+
+// stashBackgroundTaskTerminal records the host-side process exit
+// without writing a chat row. The stash row is what the tray query
+// joins against to hide the still-running-from-the-agent's-view
+// launch (Tray-A: tray reflects process state, not agent state).
+//
+// Launch resolution is best-effort. A missing launch is acceptable —
+// observation may still arrive later (carrying its own task_id) and
+// the stash will be drained by id alone.
+func (r *Router) stashBackgroundTaskTerminal(evt provider.ProviderEvent, meta backgroundTaskTerminalMeta) error {
+	if meta.TaskID == "" {
+		log.Printf("triage: task_updated stash dropped — no task_id (thread=%s)", evt.ThreadID)
+		return nil
+	}
+
+	toolUseID := strings.TrimSpace(evt.ItemID)
+	if toolUseID == "" {
+		toolUseID = strings.TrimSpace(meta.ToolUseID)
+	}
+	// Best-effort: if the parser's task_id ↔ tool_use_id map was lost
+	// across reconnect, look up the persisted launch via the
+	// items.meta.task_id index.
+	if toolUseID == "" {
+		if launch, found, err := r.findToolCallByTaskID(evt.ThreadID, meta.TaskID); err == nil && found {
+			toolUseID = launch.ID
+		}
+	}
+
+	now := eventTimestampMillis(evt)
+	stash := store.PendingBackgroundTaskTerminal{
+		ThreadID:   evt.ThreadID,
+		TaskID:     meta.TaskID,
+		ToolUseID:  toolUseID,
+		Status:     stringsxFirst(meta.Status, "completed"),
+		OutputFile: meta.OutputFile,
+		Source:     meta.Source,
+		CreatedAt:  now,
+	}
+	if meta.ExitCode != nil {
+		ec := int64(*meta.ExitCode)
+		stash.ExitCode = &ec
+	}
+	if meta.EndTime != 0 {
+		et := meta.EndTime
+		stash.EndTime = &et
+	}
+
+	if err := r.store.UpsertPendingBackgroundTerminal(stash); err != nil {
+		return fmt.Errorf("triage: stash background terminal %s/%s: %w", evt.ThreadID, meta.TaskID, err)
+	}
+
+	r.emit("provider:background_task_state", BackgroundTaskStateEvent{
+		ThreadID:  evt.ThreadID,
+		TaskID:    meta.TaskID,
+		LaunchID:  toolUseID,
+		State:     "exited",
+		UpdatedAt: now,
+	})
+	return nil
+}
+
+// RecoverOrphanedBackgroundTasks walks every persisted backgrounded
+// tool_call row that is still `running`, has no completion sibling,
+// and has no stash entry — these are launches whose owning provider
+// session died with the previous app instance. The agent will never
+// observe completion (the session is gone), so we synthesise the
+// observation here by writing the chat-side `tool_completion` sibling
+// directly with source="session_died" and status="killed".
+//
+// Called once during App.ServiceStartup, after the store is open and
+// before any provider session can spawn. Idempotent: running this twice
+// is a no-op because the second pass sees the existing sibling and
+// skips the launch via the NOT EXISTS predicate in
+// ListOrphanedBackgroundLaunches. Crash-safe: if the process dies
+// mid-loop before a sibling is written, the launch row is still
+// `running` with no sibling and no stash, so the next boot's sweep
+// finds it again — we never write a stash entry for the recovery path,
+// so there's no half-state to leak.
+//
+// Launches whose meta carries no task_id (rare race: tool_use block
+// persisted before the task_started envelope) skip the sibling write —
+// without a task_id we have no idempotency key.
+//
+// Returns the count of recovered launches; logs but does not propagate
+// per-launch errors so one bad row can't poison the whole sweep.
+func (r *Router) RecoverOrphanedBackgroundTasks() (int, error) {
+	launches, err := r.store.ListOrphanedBackgroundLaunches()
+	if err != nil {
+		return 0, fmt.Errorf("triage: list orphaned bg launches: %w", err)
+	}
+	now := time.Now().UnixMilli()
+	recovered := 0
+	for _, launch := range launches {
+		taskID := taskIDFromItemMeta(launch.Meta)
+		if taskID == "" {
+			log.Printf("triage: skip orphan recovery for %s/%s (no task_id meta)",
+				launch.ThreadID, launch.ID)
+			continue
+		}
+
+		syntheticEvt := provider.ProviderEvent{
+			ThreadID:  launch.ThreadID,
+			ItemID:    launch.ID,
+			Timestamp: time.UnixMilli(now),
+		}
+		meta := backgroundTaskTerminalMeta{
+			TaskID:    taskID,
+			ToolUseID: launch.ID,
+			Status:    "killed",
+			Source:    "session_died",
+		}
+		// Write the sibling directly — no stash dance. The orphan
+		// query already proved no stash exists for this launch, and
+		// writing the sibling is the same terminal step the steady-
+		// state observation path takes after draining a stash.
+		if err := r.writeBackgroundCompletionSibling(syntheticEvt, meta, false); err != nil {
+			log.Printf("triage: synthesise session_died sibling %s/%s: %v", launch.ThreadID, taskID, err)
+			continue
+		}
+		recovered++
+	}
+	return recovered, nil
+}
+
+// observeBackgroundTaskTerminal handles the agent-observation half
+// (TaskOutput tool_result enrichment). Drains the stash if any and
+// writes the sibling at the current write head.
+func (r *Router) observeBackgroundTaskTerminal(evt provider.ProviderEvent, meta backgroundTaskTerminalMeta) error {
+	stash, stashFound, err := r.store.TakePendingBackgroundTerminal(evt.ThreadID, meta.TaskID)
+	if err != nil {
+		log.Printf("triage: drain stash for %s/%s: %v", evt.ThreadID, meta.TaskID, err)
+	}
+	if stashFound {
+		mergeStashIntoTerminalMeta(&meta, stash)
+	}
+	return r.writeBackgroundCompletionSibling(evt, meta, stashFound)
+}
+
+// writeBackgroundCompletionSibling writes (or upserts) the
+// `tool_completion` sibling row at the current write head and emits
+// the tray-state drained event so the frontend can refresh.
+//
+// Used by:
+//   - observeBackgroundTaskTerminal (TaskOutput tool_result drain)
+//   - handleBackgroundTaskNotification (task_notification drain)
+//   - recoverOrphanedBackgroundTasks (startup synthesised drain)
+//
+// Launch resolution prefers the event's tool_use_id, then meta, then
+// the items.meta.task_id index. When no launch exists, the sibling is
+// written standalone with id `complete:by-task:<task_id>` and an empty
+// CompletionOf — the frontend renders these as standalone background
+// completion cards rather than folding them under a parent launch.
+func (r *Router) writeBackgroundCompletionSibling(evt provider.ProviderEvent, meta backgroundTaskTerminalMeta, stashWasDrained bool) error {
+	launch, launchFound, err := r.resolveBackgroundTaskLaunch(evt.ThreadID, evt.ItemID, meta.ToolUseID, meta.TaskID)
 	if err != nil {
 		return err
 	}
-	if !found || launch.Kind != itemKindToolCall {
-		log.Printf("triage: background task terminal with no matching tool_call on thread %s (task_id=%q tool_use_id=%q); dropping",
-			evt.ThreadID, meta.TaskID, meta.ToolUseID)
-		return nil
+	if launchFound && launch.Kind != itemKindToolCall {
+		// Defensive — task_id index already filters by kind, but a
+		// future kind that adopts task_id mustn't be folded in.
+		launchFound = false
+		launch = store.Item{}
 	}
+
 	var notification store.Item
 	var notificationFound bool
 	if meta.TaskID != "" {
@@ -417,10 +594,20 @@ func (r *Router) handleBackgroundTaskTerminal(evt provider.ProviderEvent) error 
 
 	now := eventTimestampMillis(evt)
 	status := backgroundTerminalStatus(meta)
-	completionID := nextToolCompletionID(launch.ID)
-	turnIndex, err := r.backgroundCompletionTurnIndex(evt.ThreadID, launch.TurnIndex)
+	completionID := backgroundCompletionID(launch.ID, meta.TaskID)
+	launchTurnIndex := 0
+	parentID := ""
+	toolName := ""
+	launchSummary := ""
+	if launchFound {
+		launchTurnIndex = launch.TurnIndex
+		parentID = launch.ParentID
+		toolName = launch.ToolName
+		launchSummary = launch.Summary
+	}
+	turnIndex, err := r.backgroundCompletionTurnIndex(evt.ThreadID, launchTurnIndex)
 	if err != nil {
-		log.Printf("triage: background task terminal turn index %s: %v", launch.ID, err)
+		log.Printf("triage: background task terminal turn index %s: %v", completionID, err)
 	}
 
 	completion := store.Item{
@@ -430,11 +617,11 @@ func (r *Router) handleBackgroundTaskTerminal(evt provider.ProviderEvent) error 
 		Kind:         itemKindBackgroundDone,
 		Role:         "assistant",
 		Status:       status,
-		Summary:      buildBackgroundTerminalSummary(launch.Summary, evt.Content, meta),
-		ParentID:     launch.ParentID,
+		Summary:      buildBackgroundTerminalSummary(launchSummary, evt.Content, meta),
+		ParentID:     parentID,
 		IsBackground: true,
-		CompletionOf: launch.ID,
-		ToolName:     launch.ToolName,
+		CompletionOf: launch.ID, // empty when launch missing — standalone row
+		ToolName:     toolName,
 		CreatedAt:    now,
 		UpdatedAt:    now,
 	}
@@ -475,16 +662,63 @@ func (r *Router) handleBackgroundTaskTerminal(evt provider.ProviderEvent) error 
 	}
 
 	var payload *store.Payload
+	payloadKey := launch.ID
+	if payloadKey == "" {
+		payloadKey = "by-task:" + meta.TaskID
+	}
 	if completion.PayloadID == "" && meta.OutputFile != "" {
-		payload = r.backgroundOutputFilePayload(launch.ID, meta.OutputFile, now)
+		payload = r.backgroundOutputFilePayload(payloadKey, meta.OutputFile, now)
 	}
 	if payload == nil && completion.PayloadID == "" {
-		payload = backgroundTerminalPayload(launch.ID, evt, meta, now)
+		payload = backgroundTerminalPayload(payloadKey, evt, meta, now)
 	}
 	if payload == nil && existing != nil && existing.PayloadID != "" {
 		completion.PayloadID = existing.PayloadID
 	}
-	return r.maybeDeferOrPersist(evt.ThreadID, completion, payload)
+
+	if err := r.maybeDeferOrPersist(evt.ThreadID, completion, payload); err != nil {
+		return err
+	}
+
+	if stashWasDrained {
+		r.emit("provider:background_task_state", BackgroundTaskStateEvent{
+			ThreadID:  evt.ThreadID,
+			TaskID:    meta.TaskID,
+			LaunchID:  launch.ID,
+			State:     "drained",
+			UpdatedAt: now,
+		})
+	}
+	return nil
+}
+
+// mergeStashIntoTerminalMeta folds the stashed terminal data (host
+// truth from task_updated) into the in-flight observation event meta.
+// The merge is monotonic and observation-wins: already-set observation
+// fields stay set; the stash fills only the gaps. The observation can
+// arrive with richer status/exit_code/output_file (e.g. TaskOutput
+// tool_result), so we never overwrite a populated field with stale
+// stash data.
+func mergeStashIntoTerminalMeta(meta *backgroundTaskTerminalMeta, stash store.PendingBackgroundTaskTerminal) {
+	if meta.TaskID == "" {
+		meta.TaskID = stash.TaskID
+	}
+	if meta.ToolUseID == "" {
+		meta.ToolUseID = stash.ToolUseID
+	}
+	if meta.Status == "" {
+		meta.Status = stash.Status
+	}
+	if meta.ExitCode == nil && stash.ExitCode != nil {
+		ec := int(*stash.ExitCode)
+		meta.ExitCode = &ec
+	}
+	if meta.OutputFile == "" {
+		meta.OutputFile = stash.OutputFile
+	}
+	if meta.EndTime == 0 && stash.EndTime != nil {
+		meta.EndTime = *stash.EndTime
+	}
 }
 
 // backgroundTerminalStatus maps the task-lifecycle status to the
@@ -881,6 +1115,25 @@ func completionPayload(itemID string, evt provider.ProviderEvent, meta toolCompl
 		Data:      []byte(evt.Content),
 		CreatedAt: now,
 	}
+}
+
+// taskIDFromItemMeta extracts the `task_id` field from a persisted
+// item's meta JSON. Returns "" when the meta is empty, malformed, or
+// missing the field. Used by orphan-recovery to key a synthesized
+// session_died stash by the same task_id the live wire path would
+// have produced.
+func taskIDFromItemMeta(metaJSON string) string {
+	if strings.TrimSpace(metaJSON) == "" {
+		return ""
+	}
+	var fields map[string]any
+	if json.Unmarshal([]byte(metaJSON), &fields) != nil {
+		return ""
+	}
+	if v, ok := fields["task_id"].(string); ok {
+		return strings.TrimSpace(v)
+	}
+	return ""
 }
 
 // findToolCallByTaskID resolves the tool_call row on the thread whose

@@ -1,7 +1,7 @@
 import type { ThreadPane } from './thread.svelte';
 import { ListLiveBackgroundTasks } from './bindings';
 import { onItemUpsert, wailsEventOn } from './events';
-import type { BackgroundTasksChangedEvent } from '../types/events';
+import type { BackgroundTaskStateEvent, BackgroundTasksChangedEvent } from '../types/events';
 import type { Item } from '../types/models';
 import { debounce } from '../utils/debounce';
 
@@ -89,10 +89,22 @@ export function createWorkspaceChangeLockState(getPane: () => ThreadPane): Works
         debouncedRefresh();
       },
     );
+    // Background-task state events fire on host-process exit
+    // (state=exited) and on agent-observation drain (state=drained).
+    // Both transitions can flip the workspace lock if a backgrounded
+    // task drops out of the live set.
+    const cancelBackgroundTaskState = wailsEventOn<BackgroundTaskStateEvent>(
+      'provider:background_task_state',
+      (evt) => {
+        if (!evt || evt.threadId !== threadId) return;
+        debouncedRefresh();
+      },
+    );
     return () => {
       debouncedRefresh.cancel();
       cancelItemUpsert();
       cancelBackgroundTasksChanged();
+      cancelBackgroundTaskState();
     };
   });
 

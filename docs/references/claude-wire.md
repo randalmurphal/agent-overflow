@@ -292,11 +292,26 @@ back to `items.meta.task_id` lookup at the triage layer.
 
 `task_updated` can arrive BEFORE, CONCURRENT WITH, or AFTER the
 owning turn's `result` envelope. A backgrounded task that runs longer
-than its launching turn will emit `task_updated` after `result`.
-Triage writes the `tool_completion` sibling row whenever it arrives,
-at the current thread write head when one exists; it is never blocked
-on the launch turn's state. See
+than its launching turn will emit `task_updated` after `result`. See
 [`turn-lifecycle.md`](../architecture/turn-lifecycle.md) for rules.
+
+### Stash on `task_updated` — sibling on agent observation
+
+For `patch.status` in `{completed, failed}`, triage stashes the
+terminal in `pending_background_task_terminals` (PK
+`(thread_id, task_id)`) and emits
+`provider:background_task_state{state:"exited"}`. The chat-side
+`tool_completion` sibling is **not** written here — it lands later
+when the agent observes via `task_notification` or a TaskOutput
+`tool_result` (the stash is drained at that point). This decouples
+the tray ("process state — is it still running?") from the chat
+("agent observation state — has the model seen it complete?"). See
+[`turn-lifecycle.md §Tray decoupling`](../architecture/turn-lifecycle.md#tray-decoupling--process-state-vs-agent-observation-tray-a).
+
+`patch.status="killed"` is the carve-out: it only appears as the CLI's
+reply to a user-initiated `stop_task` control_request. The user
+already knows the process was stopped, so triage skips the stash and
+writes the `tool_completion{status:"killed"}` sibling immediately.
 
 ---
 

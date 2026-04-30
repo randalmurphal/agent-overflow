@@ -43,6 +43,31 @@ type SubagentNotificationEvent struct {
 	Meta     json.RawMessage `json:"meta,omitempty"`
 }
 
+// BackgroundTaskStateEvent is the frontend-facing payload for
+// provider:background_task_state. Decouples the tray ("process state")
+// from the chat sibling row ("agent observation state"). Two states
+// today:
+//
+//   - "exited"  — host signalled process exit (Claude system/task_updated
+//     stashed; or startup recovery synthesised a session_died stash).
+//     Tray hides the launch row from this point on; no chat row yet.
+//   - "drained" — agent observation event consumed the stash and the
+//     tool_completion sibling has been written. Frontend re-queries the
+//     tray (the launch is already filtered out by the stash predicate;
+//     this event just nudges the UI to refresh).
+//
+// Pure UI nudge — the SQLite tray query is the source of truth (filters
+// on the pending_background_task_terminals table). Frontends that miss
+// the event still get correct state on their next mount/query; the
+// event just avoids a polling loop in the steady state.
+type BackgroundTaskStateEvent struct {
+	ThreadID  string `json:"threadId"`
+	TaskID    string `json:"taskId"`
+	LaunchID  string `json:"launchId,omitempty"`
+	State     string `json:"state"`
+	UpdatedAt int64  `json:"updatedAt"`
+}
+
 // turnCompleteMeta is the internal decode shape for
 // EventTurnComplete.Meta. Producers (Claude parse_result, Codex
 // protocol) build it as a map; we want a typed view here so the

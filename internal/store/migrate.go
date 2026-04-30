@@ -1013,6 +1013,42 @@ ALTER TABLE attachments ADD COLUMN thumbnail_data BLOB;
 ALTER TABLE attachments ADD COLUMN thumbnail_mime TEXT;
 `,
 	},
+	{
+		Version: 36,
+		Name:    "pending_background_task_terminals",
+		// Per-task stash for backgrounded-tool process exits that the agent
+		// has not yet observed. Inserted on Claude system/task_updated;
+		// removed when an observation event (task_notification or TaskOutput
+		// tool_result) drains it and the tool_completion sibling is written.
+		// Tray hides launches while a stash row exists for them. A startup
+		// sweep synthesises a killed sibling for orphaned launches whose
+		// owning session did not resume — see
+		// Router.RecoverOrphanedBackgroundTasks in internal/triage. Recovery
+		// writes the sibling directly without staging a stash row, so a
+		// crash mid-sweep leaves the launch re-discoverable.
+		//
+		// The (thread_id, task_id) PK plus INSERT OR REPLACE makes
+		// reconnect-replay idempotent. tool_use_id may be empty when the
+		// adapter's in-memory task_id ↔ tool_use_id map was lost; callers
+		// fall back to the items.meta.task_id index for launch resolution.
+		SQL: `
+CREATE TABLE pending_background_task_terminals (
+    thread_id    TEXT    NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+    task_id      TEXT    NOT NULL,
+    tool_use_id  TEXT    NOT NULL DEFAULT '',
+    status       TEXT    NOT NULL,
+    exit_code    INTEGER,
+    output_file  TEXT    NOT NULL DEFAULT '',
+    end_time     INTEGER,
+    source       TEXT    NOT NULL,
+    created_at   INTEGER NOT NULL,
+    PRIMARY KEY (thread_id, task_id)
+);
+CREATE INDEX idx_pending_terminals_tool_use
+    ON pending_background_task_terminals(thread_id, tool_use_id)
+    WHERE tool_use_id <> '';
+`,
+	},
 }
 
 // v13SQL is the DROP-and-rebuild payload for migration v13. Extracted so

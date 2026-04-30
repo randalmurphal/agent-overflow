@@ -79,6 +79,7 @@ func TestInterruptQueueDrainsInArrivalOrder(t *testing.T) {
 		"tool_use_id": "bg-A",
 		"status":      "completed",
 		"exit_code":   0,
+		"source":      "task_output",
 	})
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventBackgroundTaskTerminal, ThreadID: "t1", ItemID: "bg-A",
@@ -91,6 +92,7 @@ func TestInterruptQueueDrainsInArrivalOrder(t *testing.T) {
 		"tool_use_id": "bg-B",
 		"status":      "completed",
 		"exit_code":   0,
+		"source":      "task_output",
 	})
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventBackgroundTaskTerminal, ThreadID: "t1", ItemID: "bg-B",
@@ -214,6 +216,7 @@ func TestSettleNonStreamingRowStillDrainsQueue(t *testing.T) {
 		"tool_use_id": "bg-x",
 		"status":      "completed",
 		"exit_code":   0,
+		"source":      "task_output",
 	})
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventBackgroundTaskTerminal, ThreadID: "t1", ItemID: "bg-x",
@@ -304,6 +307,7 @@ func TestSettleStreamingThinkingNonStreamingRowStillDrainsQueue(t *testing.T) {
 		"tool_use_id": "bg-y",
 		"status":      "completed",
 		"exit_code":   0,
+		"source":      "task_output",
 	})
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventBackgroundTaskTerminal, ThreadID: "t1", ItemID: "bg-y",

@@ -98,6 +98,15 @@ func (s *Store) GetThreadProposedPlanItem(threadID, itemID string) (Item, bool, 
 // whose completion was pruned would re-render it as "running"
 // indefinitely. A launch with no completion yet still surfaces.
 //
+// Tray decoupling (Tray-A): a launch row also drops out of the tray
+// the moment its host-side process exits, even before the agent has
+// observed the completion. Process exit is signalled by an entry in
+// `pending_background_task_terminals` (inserted on Claude
+// system/task_updated, deleted on the agent observation drain). The
+// NOT EXISTS check against that table hides exited-but-unobserved
+// launches; the existing completion-sibling check still handles old
+// data and observed completions.
+//
 // Thread-scoped. Live launches surface regardless of turn_index.
 // Ordering is (turn_index, item_index) so launches precede completions.
 func (s *Store) ListLiveBackgroundTasks(threadID string, retentionCutoffMillis int64) ([]Item, error) {
@@ -110,6 +119,11 @@ func (s *Store) ListLiveBackgroundTasks(threadID string, retentionCutoffMillis i
 		      (
 		        items.is_background = 1
 		        AND items.status = 'running'
+		        AND NOT EXISTS (
+		          SELECT 1 FROM pending_background_task_terminals p
+		           WHERE p.thread_id = items.thread_id
+		             AND p.tool_use_id = items.id
+		        )
 		        AND (
 		          NOT EXISTS (
 		            SELECT 1 FROM items c

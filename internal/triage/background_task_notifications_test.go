@@ -156,6 +156,7 @@ func TestBackgroundTaskNotification_OutputFileFeedsLaterTerminal(t *testing.T) {
 		"task_id":     "task-output",
 		"tool_use_id": "bg-output",
 		"status":      "completed",
+		"source":      "task_output",
 	})
 	if err := router.Handle(provider.ProviderEvent{
 		Kind:      provider.EventBackgroundTaskTerminal,
@@ -214,6 +215,7 @@ func TestBackgroundTaskNotification_EnrichesExistingCompletionWithLoadingAndLoad
 		"task_id":     "task-enrich-notify",
 		"tool_use_id": "bg-enrich-notify",
 		"status":      "completed",
+		"source":      "task_output",
 	})
 	if err := router.Handle(provider.ProviderEvent{
 		Kind:      provider.EventBackgroundTaskTerminal,

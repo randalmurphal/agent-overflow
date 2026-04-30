@@ -103,12 +103,31 @@ Authoritative mental model:
   tool_use_id. Triage upserts `tool_call` rows. Per-spec backgrounded
   launches stay `status=running` (the `tool_completion` sibling is
   written by the task lifecycle).
-- **Task lifecycle (Claude only)** —
-  `EventBackgroundTaskTerminal` → idempotent sibling row upsert via
-  `persistItem` (stable `complete:<launchID>` id + `UpsertItem`'s
-  INSERT-OR-UPDATE semantics). Both `task_updated` terminal and
-  TaskOutput enrichment arrive via this event; the upsert coalesces
-  them in place, with the richer payload winning.
+- **Task lifecycle (Claude only)** — two-phase decoupling between
+  the host-side process exit and the agent-observation event:
+  - `EventBackgroundTaskTerminal` with `source="task_updated"` and
+    `status` in `{completed, failed}` → write a row to
+    `pending_background_task_terminals` (PK
+    `(thread_id, task_id)`); the tray query hides the launch via a
+    `NOT EXISTS` join. **No chat sibling yet.**
+  - `EventBackgroundTaskTerminal` with `source="task_output"` (agent
+    polled via TaskOutput) → drain the stash, merge stash data with
+    the observation, write the `tool_completion` sibling at the
+    current write head.
+  - `EventBackgroundTaskNotification` → persist the notification row;
+    if a stash exists for the same `task_id`, drain it through the
+    same shared helper (the agent saw the queued attachment now).
+  - `EventBackgroundTaskTerminal` with `source="task_updated"` and
+    `status="killed"` (user clicked Stop) is the carve-out: write
+    the sibling immediately because the user already knows the
+    process was stopped — there's no "agent will observe later"
+    phase to wait for.
+  - **Crash recovery** — `Router.RecoverOrphanedBackgroundTasks`
+    runs once at app boot for launches whose owning provider session
+    did not survive the previous app instance. It writes the
+    `tool_completion` sibling directly (with `source="session_died"`
+    on the sibling's meta) without staging a stash row, so a crash
+    mid-sweep leaves the launch re-discoverable on the next boot.
 - **Background-terminal projection (Codex only)** —
   `codex_background.go` tracks unifiedExec items as transient state and
   shows them in the running tray immediately. They only become

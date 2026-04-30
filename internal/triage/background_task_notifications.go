@@ -34,6 +34,31 @@ func decodeBackgroundTaskNotificationMeta(raw json.RawMessage) backgroundTaskNot
 	return m
 }
 
+// handleBackgroundTaskNotification processes Claude
+// `system/task_notification` envelopes. The notification row is the
+// "agent attention signal" surface (invariant 21 — kept distinct from
+// the lifecycle row); whether and where it leads to a tool_completion
+// sibling depends on the stash table.
+//
+// Three cases:
+//
+//  1. Stash present (launch is backgrounded, host saw task_updated): the
+//     agent is observing completion now (the queued attachment will
+//     surface to the model on the next iteration). Drain the stash and
+//     write the sibling at the current write head via
+//     writeBackgroundCompletionSibling. Tray gets the "drained" event.
+//
+//  2. Sibling already exists (TaskOutput drained first): upgrade its
+//     payload from output_file via
+//     enrichExistingBackgroundCompletionFromNotification. No new sibling
+//     is created; this is the "richer payload arriving second" path.
+//
+//  3. No stash, no sibling (foreground-stall task_notification with
+//     output_file=""): notification row only. Per invariant 21,
+//     task_notification is not a lifecycle source.
+//
+// The notification row write itself is unconditional and matches the
+// previous flow (loading → loaded / error transitions on output_file).
 func (r *Router) handleBackgroundTaskNotification(evt provider.ProviderEvent) error {
 	meta := decodeBackgroundTaskNotificationMeta(evt.Meta)
 	if meta.TaskID == "" {
@@ -85,36 +110,83 @@ func (r *Router) handleBackgroundTaskNotification(evt provider.ProviderEvent) er
 		}
 	}
 
-	if meta.OutputFile == "" {
+	var notificationPayload *store.Payload
+	outputState := "ready"
+	readErrorString := ""
+	if meta.OutputFile != "" {
+		notification.Meta = backgroundNotificationItemMeta(meta, "loading", "")
 		if err := r.maybeDeferOrPersist(evt.ThreadID, notification, nil); err != nil {
 			return err
 		}
-		return r.enrichExistingBackgroundCompletionFromNotification(evt, launch, found, meta, nil, "ready", "")
-	}
+		if err := r.enrichExistingBackgroundCompletionFromNotification(evt, launch, found, meta, nil, "loading", ""); err != nil {
+			return err
+		}
 
-	notification.Meta = backgroundNotificationItemMeta(meta, "loading", "")
-	if err := r.maybeDeferOrPersist(evt.ThreadID, notification, nil); err != nil {
-		return err
-	}
-	if err := r.enrichExistingBackgroundCompletionFromNotification(evt, launch, found, meta, nil, "loading", ""); err != nil {
-		return err
-	}
-
-	payload, readErr := buildBackgroundOutputFilePayload(payloadIDForBackgroundOutput(launch, found, meta), meta.OutputFile, now)
-	if readErr != nil {
-		notification.Meta = backgroundNotificationItemMeta(meta, "error", readErr.Error())
+		payload, readErr := buildBackgroundOutputFilePayload(payloadIDForBackgroundOutput(launch, found, meta), meta.OutputFile, now)
+		if readErr != nil {
+			outputState = "error"
+			readErrorString = readErr.Error()
+			notification.Meta = backgroundNotificationItemMeta(meta, outputState, readErrorString)
+			log.Printf("triage: read Claude task output file %q: %v", meta.OutputFile, readErr)
+			if err := r.maybeDeferOrPersist(evt.ThreadID, notification, nil); err != nil {
+				return err
+			}
+		} else {
+			outputState = "loaded"
+			notificationPayload = payload
+			notification.Meta = backgroundNotificationItemMeta(meta, outputState, "")
+			if err := r.maybeDeferOrPersist(evt.ThreadID, notification, notificationPayload); err != nil {
+				return err
+			}
+		}
+	} else {
 		if err := r.maybeDeferOrPersist(evt.ThreadID, notification, nil); err != nil {
 			return err
 		}
-		log.Printf("triage: read Claude task output file %q: %v", meta.OutputFile, readErr)
-		return r.enrichExistingBackgroundCompletionFromNotification(evt, launch, found, meta, nil, "error", readErr.Error())
 	}
 
-	notification.Meta = backgroundNotificationItemMeta(meta, "loaded", "")
-	if err := r.maybeDeferOrPersist(evt.ThreadID, notification, payload); err != nil {
+	if err := r.enrichExistingBackgroundCompletionFromNotification(evt, launch, found, meta, notificationPayload, outputState, readErrorString); err != nil {
 		return err
 	}
-	return r.enrichExistingBackgroundCompletionFromNotification(evt, launch, found, meta, payload, "loaded", "")
+
+	// Drain the stash: if task_updated stashed earlier and the sibling
+	// has not been written yet, this is the agent's first observation
+	// of the completion. Materialise the sibling at the current write
+	// head. If nothing is stashed (foreground stall, or sibling already
+	// exists from a TaskOutput drain), the notification row write above
+	// is the entire result.
+	stash, stashFound, err := r.store.TakePendingBackgroundTerminal(evt.ThreadID, meta.TaskID)
+	if err != nil {
+		log.Printf("triage: drain stash on task_notification %s: %v", meta.TaskID, err)
+		return nil
+	}
+	if !stashFound {
+		return nil
+	}
+
+	terminalMeta := terminalMetaFromNotification(meta)
+	mergeStashIntoTerminalMeta(&terminalMeta, stash)
+	terminalMeta.Source = "task_notification"
+
+	syntheticEvt := provider.ProviderEvent{
+		ThreadID:  evt.ThreadID,
+		ItemID:    stringsxFirst(evt.ItemID, terminalMeta.ToolUseID, launch.ID),
+		Content:   evt.Content,
+		Timestamp: evt.Timestamp,
+	}
+	return r.writeBackgroundCompletionSibling(syntheticEvt, terminalMeta, true)
+}
+
+// terminalMetaFromNotification lifts the notification's meta into the
+// terminal-event meta shape so writeBackgroundCompletionSibling can
+// merge it with stash data uniformly.
+func terminalMetaFromNotification(meta backgroundTaskNotificationMeta) backgroundTaskTerminalMeta {
+	return backgroundTaskTerminalMeta{
+		TaskID:     meta.TaskID,
+		ToolUseID:  meta.ToolUseID,
+		Status:     meta.Status,
+		OutputFile: meta.OutputFile,
+	}
 }
 
 func (r *Router) enrichExistingBackgroundCompletionFromNotification(

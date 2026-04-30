@@ -340,6 +340,17 @@ func (a *App) initSubsystems(dbDir string, st *store.Store) error {
 	if err := st.ReconcileProposedPlanStateFromAcceptedTurns(time.Now().UnixMilli()); err != nil {
 		log.Printf("app: reconcile proposed plan state: %v", err)
 	}
+	// Synthesize session_died terminals for backgrounded launches whose
+	// owning provider session did not survive the previous app instance.
+	// Without this sweep the launches would render as "running" forever
+	// in the chat and the tray, since no live agent will ever observe
+	// their completion. See docs/architecture/turn-lifecycle.md
+	// §Crash recovery.
+	if recovered, err := a.triage.RecoverOrphanedBackgroundTasks(); err != nil {
+		log.Printf("app: recover orphaned background tasks: %v", err)
+	} else if recovered > 0 {
+		log.Printf("app: recovered %d orphaned background launches as session_died", recovered)
+	}
 	a.checkpoints = checkpoint.NewStore()
 	a.triage.SetCheckpointStore(a.checkpoints)
 	a.registry = discussion.NewRegistry(st)

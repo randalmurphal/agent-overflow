@@ -145,6 +145,65 @@ dedup is required, but store-level merging must be monotonic: status
 can move to terminal, but output/exit-code/output-file data should not
 be erased by a later lifecycle-only event.
 
+### Tray decoupling — process state vs. agent observation (Tray-A)
+
+The tray reflects **process state** — "is this background process
+still running on the host?" — while the chat reflects **agent
+observation state** — "has the agent observed completion?". The two
+diverge when the host process exits but the agent hasn't yet noticed
+(e.g. a backgrounded `sleep 30` finishes mid-turn while the agent is
+still streaming text). Splitting the two prevents the chat from
+"lying" by showing a completion row at process-exit time, before the
+agent has actually seen it.
+
+Implementation:
+
+1. **`task_updated`** with status in `{completed, failed}` writes a
+   row to `pending_background_task_terminals` (PK
+   `(thread_id, task_id)`). The tray query `ListLiveBackgroundTasks`
+   joins against this table with `NOT EXISTS` on `tool_use_id`, so
+   the launch drops out of the tray immediately. **No chat row is
+   written yet.** Triage emits
+   `provider:background_task_state{state:"exited"}` so the frontend
+   can refresh.
+2. **Agent observation** — `system/task_notification` (the model
+   sees the queued attachment on the next iteration) or a
+   `TaskOutput` `tool_result` (the model explicitly polled) — drains
+   the stash via `TakePendingBackgroundTerminal` and writes the
+   `tool_completion` sibling at the current write head. Triage emits
+   `provider:background_task_state{state:"drained"}`. After this
+   point the tray surfaces both rows joined together until they age
+   out via retention.
+3. **`task_updated` with `status="killed"`** is a deliberate carve-out:
+   the `killed` status is only reached via the user's explicit
+   `stop_task` (the StopClaudeTask binding behind the tray's Stop
+   button). The user already knows the process was stopped — there's
+   nothing for the agent to "observe" — so triage skips the stash and
+   writes the sibling immediately so chat shows the killed badge
+   without waiting for a future turn.
+
+### Crash recovery — orphaned background launches
+
+If the previous app instance died while a backgrounded launch was
+still in `status='running'`, the agent will never observe its
+completion (the owning provider session is gone). Without intervention
+the launch would render as "running" forever in chat and tray.
+
+`Router.RecoverOrphanedBackgroundTasks` runs once during
+`App.ServiceStartup`. It queries
+`Store.ListOrphanedBackgroundLaunches` for every `tool_call` row
+that is `status='running'`, has no completion sibling, and has no
+stash entry. For each one with a `task_id` in its `items.meta`, it
+writes the `tool_completion` sibling directly with
+`source="session_died"`, `status="killed"` — no stash row is staged.
+Writing the sibling is the same terminal step the steady-state
+observation path takes after draining a stash, so the recovery path
+reuses `writeBackgroundCompletionSibling` end-to-end. Idempotent and
+crash-safe: if the process dies mid-sweep, the launch row is still
+`status='running'` with no sibling and no stash, so the next boot's
+sweep finds it again. Launches that never received their
+`task_started` meta merge are skipped (no `task_id` to key on).
+
 ### Output
 
 Triage writes a `tool_completion` row:

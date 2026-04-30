@@ -2803,6 +2803,7 @@ func TestFatalErrorOrderingMatchesSpec(t *testing.T) {
 		"tool_use_id": "bg-1",
 		"status":      "completed",
 		"exit_code":   0,
+		"source":      "task_output",
 	})
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventBackgroundTaskTerminal, ThreadID: "t1", ItemID: "bg-1",
