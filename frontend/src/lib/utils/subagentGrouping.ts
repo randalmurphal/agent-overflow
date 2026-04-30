@@ -203,6 +203,36 @@ export function isLastRootInTurn(nodes: TimelineNode[], index: number): boolean 
 }
 
 /**
+ * Visual-cadence bucket for the timeline. Tool rows pack tight; prose
+ * rows carry their own bottom margin; everything else (notifications,
+ * compaction, errors, thinking) is treated as transparent for boundary
+ * purposes so it neither triggers nor breaks a tool↔text transition.
+ */
+export type NodeRole = 'tool' | 'text' | 'other';
+
+export function nodeRole(node: TimelineNode): NodeRole {
+  if (node.kind === 'group') return 'tool';
+  const k = node.item.kind;
+  if (k === 'tool_call' || k === 'tool_completion' || k === 'terminal_interaction') return 'tool';
+  if (k === 'assistant_text' || k === 'user_text') return 'text';
+  return 'other';
+}
+
+/**
+ * True iff `nodes[index]` sits at a tool↔text boundary — the predecessor
+ * and current node are both `tool` or `text` and disagree. Drives the
+ * conditional `mt-4` on the per-row wrapper so prose visibly clears the
+ * adjacent tool block in either direction; tool↔tool stays tight.
+ */
+export function isToolTextBoundary(nodes: TimelineNode[], index: number): boolean {
+  if (index <= 0) return false;
+  const prev = nodeRole(nodes[index - 1]);
+  const curr = nodeRole(nodes[index]);
+  if (prev === 'other' || curr === 'other') return false;
+  return prev !== curr;
+}
+
+/**
  * Recursive containment check: does `node` (or any descendant of a group
  * node) carry an item with this id?
  */

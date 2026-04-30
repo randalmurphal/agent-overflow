@@ -535,4 +535,57 @@ describe('<MessageTimeline>', () => {
       expect(getByTestId('completion-divider-error').textContent).toBe('rate_limited');
     });
   });
+
+  describe('integration with utility helpers', () => {
+    // The pure contracts live in `notificationFilter.test.ts` and
+    // `subagentGrouping.test.ts`. The smoke tests below pin only the
+    // wiring — that the filter is plumbed into the grouped-nodes derived,
+    // and that the boundary classifier reaches the per-row wrapper class.
+
+    it('drops a redundant task_notification from the rendered timeline', async () => {
+      const pane = await buildPane(undefined, [
+        makeItem({
+          id: 'fg-1',
+          itemIndex: 0,
+          kind: 'tool_call',
+          status: 'completed',
+          toolName: 'Bash',
+          summary: 'Bash: ls',
+          meta: JSON.stringify({ task_id: 'T1' }),
+        }),
+        makeItem({
+          id: 'task-notification:T1',
+          itemIndex: 1,
+          kind: 'notification',
+          role: 'system',
+          summary: 'Bash command "ls" completed',
+          meta: JSON.stringify({ task_id: 'T1', source: 'task_notification' }),
+        }),
+      ]);
+
+      const { queryAllByTestId } = render(MessageTimeline, { props: { pane } });
+
+      expect(queryAllByTestId('notification-row')).toHaveLength(0);
+    });
+
+    it('applies the boundary mt-4 class to the per-row wrapper at a tool → text boundary', async () => {
+      const pane = await buildPane(undefined, [
+        makeItem({
+          id: 'tool-1',
+          itemIndex: 0,
+          kind: 'tool_call',
+          status: 'completed',
+          toolName: 'Bash',
+          summary: 'ls',
+        }),
+        makeItem({ id: 'text-1', itemIndex: 1, kind: 'assistant_text', summary: 'done' }),
+      ]);
+
+      const { container } = render(MessageTimeline, { props: { pane } });
+
+      const row = container.querySelector('[data-row-index="1"]');
+      if (!row) throw new Error('row 1 not found');
+      expect(row.classList.contains('mt-4')).toBe(true);
+    });
+  });
 });

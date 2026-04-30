@@ -20,11 +20,13 @@
     findTimelineNodeIndex as findNodeIndexInList,
     groupItemsBySubagent,
     isLastRootInTurn as isLastRootInTurnAt,
+    isToolTextBoundary as isToolTextBoundaryAt,
     rootTurnIndex,
     timelineNodeItemId,
     timelineNodeKey,
     type TimelineNode,
   } from '../../utils/subagentGrouping';
+  import { filterRedundantNotifications } from '../../utils/notificationFilter';
   import Button from '../primitives/Button.svelte';
   import { turnSummaryIsMeaningful } from '../../utils/turnDiffSummary';
   import ChangedFilesTree from './ChangedFilesTree.svelte';
@@ -104,7 +106,9 @@
   // staleness and bail.
   let restoreToken = 0;
 
-  let groupedNodes = $derived<TimelineNode[]>(groupItemsBySubagent(pane.items));
+  let groupedNodes = $derived<TimelineNode[]>(
+    groupItemsBySubagent(filterRedundantNotifications(pane.items)),
+  );
   let turnDiffViews = $derived(pane.turnDiffViews);
 
   const stick = createStickyBottomController({
@@ -157,6 +161,10 @@
 
   function findTimelineNodeIndex(itemId: string): number {
     return findNodeIndexInList(groupedNodes, itemId);
+  }
+
+  function isToolTextBoundary(index: number): boolean {
+    return isToolTextBoundaryAt(groupedNodes, index);
   }
 
   // ============================================================
@@ -413,7 +421,7 @@
              TimelineLeaf and SubagentGroup own that attribute on their
              own roots, and tests rely on the divider rendering BEFORE
              the [data-item-id] node, not containing it. -->
-        <div data-row-index={index}>
+        <div data-row-index={index} class:mt-4={isToolTextBoundary(index)}>
           {#if index === 0}
             <!-- Top of timeline. Load-older button (when applicable) and
                  a small top breathing-room spacer ride inside the first

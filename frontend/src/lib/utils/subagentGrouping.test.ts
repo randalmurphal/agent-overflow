@@ -3,8 +3,10 @@ import {
   findTimelineNodeIndex,
   groupItemsBySubagent,
   isLastRootInTurn,
+  isToolTextBoundary,
   MAX_DEPTH,
   nodeContainsItem,
+  nodeRole,
   rootTurnIndex,
   timelineNodeItemId,
   timelineNodeKey,
@@ -571,5 +573,86 @@ describe('findTimelineNodeIndex', () => {
   it('returns -1 when no root contains the item', () => {
     const nodes: TimelineNode[] = [{ kind: 'leaf', item: mkItem({ id: 'a' }) }];
     expect(findTimelineNodeIndex(nodes, 'missing')).toBe(-1);
+  });
+});
+
+describe('nodeRole', () => {
+  function leaf(item: Item): TimelineLeaf {
+    return { kind: 'leaf', item };
+  }
+  function group(parentId: string): SubagentGroupNode {
+    return {
+      kind: 'group',
+      parent: mkItem({ id: parentId, kind: 'tool_call' }),
+      children: [],
+      latestChildSummary: '',
+      descendantCount: 0,
+    };
+  }
+
+  it('classifies tool_call / tool_completion / terminal_interaction as tool', () => {
+    expect(nodeRole(leaf(mkItem({ id: 'a', kind: 'tool_call' })))).toBe('tool');
+    expect(nodeRole(leaf(mkItem({ id: 'a', kind: 'tool_completion' })))).toBe('tool');
+    expect(nodeRole(leaf(mkItem({ id: 'a', kind: 'terminal_interaction' })))).toBe('tool');
+  });
+
+  it('classifies SubagentGroup nodes as tool', () => {
+    expect(nodeRole(group('parent'))).toBe('tool');
+  });
+
+  it('classifies assistant_text / user_text as text', () => {
+    expect(nodeRole(leaf(mkItem({ id: 'a', kind: 'assistant_text' })))).toBe('text');
+    expect(nodeRole(leaf(mkItem({ id: 'a', kind: 'user_text' })))).toBe('text');
+  });
+
+  it('classifies notification / error / compaction / thinking as other', () => {
+    for (const kind of ['notification', 'error', 'compaction', 'thinking'] as const) {
+      expect(nodeRole(leaf(mkItem({ id: 'a', kind })))).toBe('other');
+    }
+  });
+});
+
+describe('isToolTextBoundary', () => {
+  function leaf(id: string, kind: Item['kind']): TimelineLeaf {
+    return { kind: 'leaf', item: mkItem({ id, kind }) };
+  }
+  function group(id: string): SubagentGroupNode {
+    return {
+      kind: 'group',
+      parent: mkItem({ id, kind: 'tool_call' }),
+      children: [],
+      latestChildSummary: '',
+      descendantCount: 0,
+    };
+  }
+
+  it('returns false at index 0 (no predecessor)', () => {
+    expect(isToolTextBoundary([leaf('a', 'tool_call')], 0)).toBe(false);
+  });
+
+  it('fires on tool → text', () => {
+    const nodes = [leaf('t', 'tool_call'), leaf('msg', 'assistant_text')];
+    expect(isToolTextBoundary(nodes, 1)).toBe(true);
+  });
+
+  it('fires on text → tool', () => {
+    const nodes = [leaf('msg', 'assistant_text'), leaf('t', 'tool_call')];
+    expect(isToolTextBoundary(nodes, 1)).toBe(true);
+  });
+
+  it('fires on SubagentGroup → text and text → SubagentGroup (group counts as tool)', () => {
+    expect(isToolTextBoundary([group('p'), leaf('msg', 'assistant_text')], 1)).toBe(true);
+    expect(isToolTextBoundary([leaf('msg', 'assistant_text'), group('p')], 1)).toBe(true);
+  });
+
+  it('does not fire on tool → tool or text → text', () => {
+    expect(isToolTextBoundary([leaf('a', 'tool_call'), leaf('b', 'tool_call')], 1)).toBe(false);
+    expect(isToolTextBoundary([leaf('a', 'assistant_text'), leaf('b', 'assistant_text')], 1)).toBe(false);
+  });
+
+  it('does not fire when either side is "other" (notification, compaction, error, thinking)', () => {
+    expect(isToolTextBoundary([leaf('n', 'notification'), leaf('t', 'tool_call')], 1)).toBe(false);
+    expect(isToolTextBoundary([leaf('t', 'tool_call'), leaf('n', 'notification')], 1)).toBe(false);
+    expect(isToolTextBoundary([leaf('c', 'compaction'), leaf('msg', 'assistant_text')], 1)).toBe(false);
   });
 });

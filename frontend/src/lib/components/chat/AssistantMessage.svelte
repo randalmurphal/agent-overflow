@@ -20,7 +20,7 @@
   const canCopy = $derived(item.status !== 'streaming' && /\S/.test(item.summary));
 </script>
 
-<div class="group mb-6" data-item-kind={item.kind}>
+<div class="group mb-3" data-item-kind={item.kind}>
   <div
     class="text-fg-muted"
     data-testid="assistant-message-body"
