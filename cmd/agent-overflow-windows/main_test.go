@@ -120,6 +120,34 @@ func TestForwardDebugEnvToWSL_PrependsToExistingWSLENV(t *testing.T) {
 	}
 }
 
+// TestBrowserArgs covers two invariants for the WebView2 flag set:
+//
+//  1. Dev is a strict superset of prod: dev mode only layers on top of
+//     the always-applied flags. If a flag should drop from dev, it must
+//     drop from prod first — otherwise dev users lose a safety net.
+//  2. Prod must never include --remote-debugging-*. That port is
+//     unauthenticated CDP and only belongs in developer builds.
+func TestBrowserArgs(t *testing.T) {
+	prod := browserArgs(false)
+	dev := browserArgs(true)
+
+	devSet := make(map[string]struct{}, len(dev))
+	for _, a := range dev {
+		devSet[a] = struct{}{}
+	}
+	for _, a := range prod {
+		if _, ok := devSet[a]; !ok {
+			t.Errorf("prod arg %q missing from dev — dev must be a strict superset", a)
+		}
+	}
+
+	for _, a := range prod {
+		if strings.HasPrefix(a, "--remote-debugging-") {
+			t.Errorf("prod must not include %q — CDP port is unauthenticated", a)
+		}
+	}
+}
+
 func TestResolveChosenDistro(t *testing.T) {
 	distros := []wsllauncher.Distro{
 		{Name: "Ubuntu-24.04", Default: true, Version: 2, State: "Running"},

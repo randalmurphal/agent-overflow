@@ -176,7 +176,7 @@ func main() {
 		initialURL = "/loading"
 	}
 
-	app := buildApp(distros, initialURL)
+	app := buildApp(distros, initialURL, transient)
 
 	if chosen != "" {
 		// We already know which distro; skip the picker and go
@@ -603,7 +603,11 @@ func (a *launcherApp) persistSuccessfulLaunch(distro string) error {
 // initialURL selects which static page the WebView2 lands on first.
 // "/picker" shows the distro picker; "/loading" shows a spinner
 // while we wait for SetURL to flip us over to the WSL backend.
-func buildApp(distros []wsllauncher.Distro, initialURL string) *launcherApp {
+//
+// devMode adds the remote-debugging port (so a developer can attach
+// Chrome DevTools / talk CDP from inside WSL) plus the staged
+// memory-reduction experiments described in browserArgs.
+func buildApp(distros []wsllauncher.Distro, initialURL string, devMode bool) *launcherApp {
 	a := &launcherApp{distros: distros}
 
 	app := application.New(application.Options{
@@ -613,6 +617,9 @@ func buildApp(distros []wsllauncher.Distro, initialURL string) *launcherApp {
 		},
 		Assets: application.AssetOptions{
 			Handler: pickerAssetHandler(distros),
+		},
+		Windows: application.WindowsOptions{
+			AdditionalBrowserArgs: browserArgs(devMode),
 		},
 		// Cancel app shutdown until the user explicitly closes the
 		// window. Without this, a transient WSL hiccup during launch
@@ -648,6 +655,52 @@ func buildApp(distros []wsllauncher.Distro, initialURL string) *launcherApp {
 	})
 
 	return a
+}
+
+// browserArgs returns the Chromium command-line flags forwarded to
+// the embedded WebView2 via Wails' AdditionalBrowserArgs.
+//
+// The unconditional set turns off browser-grade subsystems that don't
+// apply to a desktop shell pointing at a single trusted localhost
+// origin: telemetry, sync, translation, autofill, casting, phishing
+// detection, ping beacons, BFCache (we never navigate), prerendering,
+// and 3D APIs (no WebGL/WebGPU in the app). Each is pure overhead;
+// none affect rendering perf or correctness.
+//
+// devMode adds the loopback CDP attach point so a developer can talk
+// Chrome DevTools / wsjson to the WebView2 from inside WSL. The
+// protocol is unauthenticated, so it never ships.
+//
+// Memory experiments tried and pulled back: --single-process (~290 MB
+// savings, but couples all rendering work onto one thread pool and
+// removes the renderer-crash recovery boundary), --enable-low-end-
+// device-mode (smaller raster workers + image caches; perceptible
+// decode-time regression on strong machines), and
+// --js-flags=--max-old-space-size=128 (V8 cap; combined with
+// single-process turns any future big-memory feature — large diffs,
+// terminal log dumps — into a whole-window crash). Revisit if memory
+// becomes a real constraint.
+func browserArgs(devMode bool) []string {
+	args := []string{
+		"--disable-features=Translate,AutofillServerCommunication,MediaRouter,DialMediaRouteProvider,OptimizationHints,IsolateOrigins,site-per-process,BackForwardCache,Prerender2",
+		"--disable-background-networking",
+		"--disable-component-update",
+		"--disable-default-apps",
+		"--disable-sync",
+		"--disable-domain-reliability",
+		"--disable-client-side-phishing-detection",
+		"--disable-3d-apis",
+		"--no-pings",
+		"--no-experiments",
+		"--no-default-browser-check",
+	}
+	if devMode {
+		args = append(args,
+			"--remote-debugging-port=9223",
+			"--remote-debugging-address=127.0.0.1",
+		)
+	}
+	return args
 }
 
 // run drives the Wails app loop. Errors are logged but don't take
