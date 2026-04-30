@@ -46,6 +46,15 @@ type assistantMessage struct {
 	Content []assistantContentBlock `json:"content"`
 	Role    string                  `json:"role"`
 	Usage   *assistantUsage         `json:"usage,omitempty"`
+	// Error is the SDK's `assistant.error` enum. When set, the API
+	// rejected the prompt and the CLI emits a follow-up `result`
+	// envelope with `is_error:true`. We surface this as a fatal
+	// EventError tagged `expect_turn_complete:true` so the router
+	// closes the turn via the real `result`, not a synthesized one.
+	// Enum values per the agent SDK: `authentication_failed`,
+	// `billing_error`, `rate_limit`, `invalid_request`, `server_error`,
+	// `unknown`, `max_output_tokens`.
+	Error string `json:"error,omitempty"`
 }
 
 func (p *Parser) parseAssistant(threadID string, raw map[string]json.RawMessage, now time.Time, line []byte) ([]provider.ProviderEvent, error) {
@@ -131,7 +140,80 @@ func (p *Parser) parseAssistant(threadID string, raw map[string]json.RawMessage,
 	}
 
 	events = p.appendAssistantUsageEvent(events, threadID, parentToolUseID, now, msg.Usage)
+
+	// `assistant.error` (e.g. `rate_limit`, `authentication_failed`) is
+	// surfaced as a fatal EventError. Per the agent SDK, the CLI follows
+	// this with a real `result{is_error:true}` envelope which closes the
+	// turn through the wire path; the `expect_turn_complete:true` flag
+	// tells the triage router not to synthesize a duplicate TurnComplete.
+	// Subagent assistant errors (parent_tool_use_id != "") use the parent
+	// thread's open turn; the failure still closes the parent turn.
+	if msg.Error != "" {
+		errMeta, _ := json.Marshal(map[string]any{
+			"error":                msg.Error,
+			"fatal":                true,
+			"expect_turn_complete": true,
+		})
+		events = append(events, provider.ProviderEvent{
+			Kind:            provider.EventError,
+			ThreadID:        threadID,
+			Content:         errorEnumToHumanCopy(msg.Error),
+			Meta:            errMeta,
+			ParentToolUseID: parentToolUseID,
+			Timestamp:       now,
+		})
+	}
+
 	return events, nil
+}
+
+// errorEnumToHumanCopy maps an `assistant.error` enum value to a
+// human-readable summary the frontend renders verbatim on the
+// timeline error row. The strings mirror Claude Code's
+// `SystemAPIErrorMessage` copy where it carries one; for enum values
+// the TUI doesn't render explicitly we fall back to a short
+// description so the row never goes blank. The frontend can branch
+// on `meta.error` (the raw enum) for actionable affordances like
+// "Add credits" / "Run /login".
+//
+// The default branch concatenates the enum into the summary so
+// novel SDK values surface readable text. Cap the enum at
+// maxAssistantErrorEnumChars so a malformed/hostile envelope can't
+// push an arbitrary-length string onto the timeline row — Svelte
+// autoescapes content so this isn't an XSS path, but an unbounded
+// summary can still distort layout.
+func errorEnumToHumanCopy(enum string) string {
+	switch enum {
+	case "authentication_failed":
+		return "Authentication failed"
+	case "billing_error":
+		return "Billing error"
+	case "rate_limit":
+		return "Rate limit reached"
+	case "invalid_request":
+		return "Invalid request"
+	case "server_error":
+		return "Anthropic API server error"
+	case "max_output_tokens":
+		return "Reached max output tokens"
+	case "unknown":
+		return "API error"
+	default:
+		return "API error: " + truncate(enum, maxAssistantErrorEnumChars)
+	}
+}
+
+const maxAssistantErrorEnumChars = 64
+
+func truncate(s string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	return string(r[:max]) + "..."
 }
 
 // appendTextEvent emits a streaming text delta for a `text` block. The

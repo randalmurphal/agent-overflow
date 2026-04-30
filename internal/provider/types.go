@@ -86,6 +86,16 @@ const (
 	EventTodoUpdate        EventKind = "todo_update"
 	EventNotification      EventKind = "notification"
 
+	// EventAPIRetry surfaces transient-retry envelopes from both providers
+	// (Claude `system.api_retry` and Codex `error+willRetry:true`). Triage
+	// renders them as inline timeline rows (kind `api_retry`) hiding the
+	// first three attempts to mirror Claude Code's interactive UI; the row
+	// flips to completed on the next forward-progress event for the thread.
+	// There is no resolution-counterpart wire event from either SDK; the
+	// row is the historical record of the retry attempt itself, not a
+	// banner needing later clearing.
+	EventAPIRetry EventKind = "api_retry"
+
 	// Inline/system events that do not render as timeline rows.
 	EventCompactBoundary   EventKind = "compact_boundary"
 	EventRateLimits        EventKind = "rate_limits"
@@ -159,6 +169,7 @@ var AllEventKinds = []EventKind{
 	EventError,
 	EventTodoUpdate,
 	EventNotification,
+	EventAPIRetry,
 	EventCompactBoundary,
 	EventRateLimits,
 	EventModelRerouted,
@@ -187,6 +198,17 @@ const (
 	ItemError          ItemKind = "error"
 	ItemCompaction     ItemKind = "compaction"
 	ItemNotification   ItemKind = "notification"
+	// ItemAPIRetry is the live-updating retry indicator. Deterministic
+	// per-turn id (retry:N where N is turnIndex) so subsequent api_retry
+	// events upsert in place. Hidden until the 4th attempt to mirror
+	// Claude Code's SystemAPIErrorMessage hidden-until-attempt-4 behavior.
+	ItemAPIRetry ItemKind = "api_retry"
+	// ItemAPIError is a retry-exhausted assistant API error. Distinguished
+	// from ItemError so the renderer can branch on the assistant.error
+	// enum value (rate_limit, authentication_failed, billing_error, etc.)
+	// for kind-specific actionable copy. Generic ItemError stays for
+	// non-API errors and Codex provider errors.
+	ItemAPIError ItemKind = "api_error"
 	// ItemTerminalInteraction is the minimal "Waited for background
 	// terminal" marker persisted when the Codex model polled a
 	// backgrounded PTY via an empty-stdin `write_stdin` call. No
@@ -304,13 +326,6 @@ const (
 	ProviderStatusBinaryMissing       ProviderStatusEventKind = "binary_missing"
 	ProviderStatusUnauthenticated     ProviderStatusEventKind = "unauthenticated"
 	ProviderStatusVersionIncompatible ProviderStatusEventKind = "version_incompatible"
-	ProviderStatusRateLimitedRetrying ProviderStatusEventKind = "rate_limited_retrying"
-	// ProviderStatusTransientRetry covers retrying against a non-rate-limit
-	// cause: 5xx, invalid_request, server_error, etc. The banner copy is
-	// warning-styled and carries the upstream reason in Message so the
-	// user can distinguish "provider is busy" from "credentials expired".
-	ProviderStatusTransientRetry ProviderStatusEventKind = "transient_retry"
-	ProviderStatusOK             ProviderStatusEventKind = "ok"
 )
 
 // ProviderStatusEvent is the frontend-facing channel payload for the

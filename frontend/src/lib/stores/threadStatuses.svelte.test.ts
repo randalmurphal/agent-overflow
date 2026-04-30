@@ -116,7 +116,7 @@ describe('threadStatuses store', () => {
   });
 
   it('viewing a thread does not clear blocking action states', () => {
-    projectTurnStarted('thread-1', 'turn-1');
+    projectTurnStarted('thread-1', 'turn-1', 0, 0);
     projectApprovalRequest('thread-1', 'req-1', 'command');
     projectThreadViewed('thread-1');
     expect(getThreadStatus('thread-1')).toBe('pending-approval');
@@ -156,7 +156,7 @@ describe('threadStatuses store', () => {
 
     it('turn_started supersedes the optimistic send flag', () => {
       projectSendStarted('thread-1');
-      projectTurnStarted('thread-1', 'turn-1');
+      projectTurnStarted('thread-1', 'turn-1', 0, 0);
       // Even if the send flag is cleared later, the turn keeps running.
       projectSendResolved('thread-1');
       expect(getThreadStatus('thread-1')).toBe('running');
@@ -166,7 +166,7 @@ describe('threadStatuses store', () => {
   describe('turn lifecycle', () => {
     it('projectTurnStarted flips to running and turn_completed flips to idle', () => {
       expect(getThreadStatus('thread-1')).toBe('idle');
-      projectTurnStarted('thread-1', 'turn-1');
+      projectTurnStarted('thread-1', 'turn-1', 0, 0);
       expect(getThreadStatus('thread-1')).toBe('running');
 
       projectTurnCompleted('thread-1', 'turn-1');
@@ -174,39 +174,39 @@ describe('threadStatuses store', () => {
     });
 
     it('aborted turn flips to interrupted', () => {
-      projectTurnStarted('thread-1', 'turn-1');
+      projectTurnStarted('thread-1', 'turn-1', 0, 0);
       projectTurnCompleted('thread-1', 'turn-1', { aborted: true });
       expect(getThreadStatus('thread-1')).toBe('interrupted');
     });
 
     it('turn with errorMessage flips to error', () => {
-      projectTurnStarted('thread-1', 'turn-1');
+      projectTurnStarted('thread-1', 'turn-1', 0, 0);
       projectTurnCompleted('thread-1', 'turn-1', { errorMessage: 'boom' });
       expect(getThreadStatus('thread-1')).toBe('error');
     });
 
     it('starting a fresh turn clears a prior interrupted state', () => {
-      projectTurnStarted('thread-1', 'turn-1');
+      projectTurnStarted('thread-1', 'turn-1', 0, 0);
       projectTurnCompleted('thread-1', 'turn-1', { aborted: true });
       expect(getThreadStatus('thread-1')).toBe('interrupted');
 
-      projectTurnStarted('thread-1', 'turn-2');
+      projectTurnStarted('thread-1', 'turn-2', 0, 0);
       expect(getThreadStatus('thread-1')).toBe('running');
     });
 
     it('a provider error supersedes interrupted', () => {
-      projectTurnStarted('thread-1', 'turn-1');
+      projectTurnStarted('thread-1', 'turn-1', 0, 0);
       projectTurnCompleted('thread-1', 'turn-1', { aborted: true });
       expect(getThreadStatus('thread-1')).toBe('interrupted');
 
-      projectTurnStarted('thread-1', 'turn-2');
+      projectTurnStarted('thread-1', 'turn-2', 0, 0);
       projectTurnCompleted('thread-1', 'turn-2', { errorMessage: 'boom' });
       expect(getThreadStatus('thread-1')).toBe('error');
     });
 
     it('multiple concurrent turns keep running until both complete', () => {
-      projectTurnStarted('thread-1', 'turn-a');
-      projectTurnStarted('thread-1', 'turn-b');
+      projectTurnStarted('thread-1', 'turn-a', 0, 0);
+      projectTurnStarted('thread-1', 'turn-b', 0, 0);
       expect(getThreadStatus('thread-1')).toBe('running');
 
       projectTurnCompleted('thread-1', 'turn-a');
@@ -217,7 +217,7 @@ describe('threadStatuses store', () => {
     });
 
     it('pending approval dominates an in-flight turn', () => {
-      projectTurnStarted('thread-1', 'turn-1');
+      projectTurnStarted('thread-1', 'turn-1', 0, 0);
       projectApprovalRequest('thread-1', 'req-1');
       expect(getThreadStatus('thread-1')).toBe('pending-approval');
 
@@ -266,7 +266,7 @@ describe('threadStatuses store', () => {
     });
 
     it('awaiting-input dominates a running turn', () => {
-      projectTurnStarted('thread-1', 'turn-1');
+      projectTurnStarted('thread-1', 'turn-1', 0, 0);
       projectUserInputRequest('thread-1', 'req-1');
       expect(getThreadStatus('thread-1')).toBe('awaiting-input');
     });
@@ -285,7 +285,7 @@ describe('threadStatuses store', () => {
 
     it('does NOT flip back to plan-ready on implemented proposed_plan upsert', () => {
       projectPlanReady('thread-1');
-      projectTurnStarted('thread-1', 'turn-1');
+      projectTurnStarted('thread-1', 'turn-1', 0, 0);
       projectThreadItem(makeItem({
         id: 'plan-1',
         kind: 'tool_call',
@@ -335,7 +335,7 @@ describe('threadStatuses store', () => {
       projectPlanReady('thread-1');
       expect(getThreadStatus('thread-1')).toBe('plan-ready');
 
-      projectTurnStarted('thread-1', 'turn-1');
+      projectTurnStarted('thread-1', 'turn-1', 0, 0);
       expect(getThreadStatus('thread-1')).toBe('running');
     });
 

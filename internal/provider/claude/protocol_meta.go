@@ -102,3 +102,20 @@ func readFloatValue(payload map[string]json.RawMessage, keys ...string) (float64
 	}
 	return 0, false
 }
+
+// readBoolValue tries each key in order and returns the first non-error
+// boolean decode. Mirrors readIntValue / readFloatValue so both
+// snake_case and camelCase wire shapes are tolerated by callers.
+func readBoolValue(payload map[string]json.RawMessage, keys ...string) bool {
+	for _, key := range keys {
+		raw, ok := payload[key]
+		if !ok {
+			continue
+		}
+		var value bool
+		if err := json.Unmarshal(raw, &value); err == nil && value {
+			return true
+		}
+	}
+	return false
+}

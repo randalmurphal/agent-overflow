@@ -342,7 +342,8 @@ cases only — it must not feed turn detection.
 
 ## Frontend state shape
 
-`ThreadPane` carries two per-pane state objects:
+The frontend splits "live turn metadata" between a global registry
+and a per-pane settlement record:
 
 ```ts
 interface ActiveTurn {
@@ -362,9 +363,23 @@ interface SettledTurn {
   errorMessage: string;
 }
 
-activeTurn: ActiveTurn | null            // working indicator on iff non-null
-latestSettledTurn: SettledTurn | null    // completion divider on iff non-null
+// Global, keyed by threadId. Lives in
+// frontend/src/lib/stores/threadStatuses.svelte.ts. Both the
+// chat working indicator AND the sidebar pill read from here.
+getActiveTurn(threadId): ActiveTurn | null
+
+// Per-pane. Drives the completion divider for the visible thread.
+pane.latestSettledTurn: SettledTurn | null
 ```
+
+**Single source of truth.** `ActiveTurn` lives only in the global
+registry, never on `ThreadPane`. The pane exposes `pane.activeTurn`
+as a transparent shim onto `getActiveTurn(pane.threadId)` so existing
+readers don't change shape, but no per-pane copy of the data exists.
+This avoids the bug where switching threads cleared the per-pane
+`activeTurn` while the global store still held the live record —
+the chat working indicator would go dark on a thread the backend
+was actively working on.
 
 `aborted` and `errorMessage` on `SettledTurn` are live-read by the
 completion-divider label precedence — see
@@ -382,18 +397,65 @@ get isTurnActive() {
 
 // Post-refactor
 get isTurnActive() {
-  return activeTurn !== null;
+  return getActiveTurn(this.threadId) !== null;
 }
 ```
 
 ### Rehydration on thread switch
 
 On `SwitchThread`, the frontend calls `ListRecentTurns(threadId, 2)`
-to rehydrate `latestSettledTurn` from the DB. `activeTurn` is NOT
-rehydrated from persistence — it's only set on live
+to rehydrate `latestSettledTurn` from the DB. The global active-turn
+registry is NOT rehydrated from persistence — it's only set on live
 `provider:turn_started` events. A turn with `completed_at=null` in
 the DB renders as "turn was interrupted" not "turn is currently
-active."
+active." When the user switches AWAY from a thread with a live
+turn and back, the indicator returns because the global registry
+held the record across the switch — nothing in pane lifecycle
+clears it.
+
+## Error routing
+
+Every terminal failure mode lands on one of four paths so the
+working indicator clears and the user gets actionable copy:
+
+1. **API error mid-turn (session alive)** — Claude `assistant.error`
+   parses to a fatal `EventError` tagged `expect_turn_complete: true`.
+   The wire `result{is_error:true}` then arrives and settles the turn
+   normally; triage routes the error item as `kind: "api_error"`
+   with the SDK enum on Meta. The frontend renders an `APIErrorRow`
+   with branched CTA copy (rate_limit → "Add credits" link,
+   authentication_failed → "Run /login", etc).
+2. **Process exit during turn** —
+   `EventSessionStatus{Content:"error"}` → triage promotes to
+   `provider:session_died` event, persists a `notification` row with
+   `meta.kind = "session_died"`, and synthesizes a truncated
+   `EventTurnComplete{aborted:true}` if a turn is open. Three
+   loosely-coupled UI projections: the truncated turn-complete
+   clears the working indicator; the notification row shows in the
+   timeline as historical record; the typed event drives the
+   `ProviderStatusBanner`'s session-error slot with Reconnect
+   button.
+3. **Clean EOF mid-turn (no `EventSessionStatus{"error"}`)** —
+   `Router.CleanupThread` is the safety net: any open turn at
+   teardown synthesizes a truncated turn-complete before state is
+   torn down. Idempotent against the path above via
+   `markTurnSettled`.
+4. **Codex `error+willRetry:false`** — sets `meta.fatal:true` so the
+   triage `handleError` fatal branch closes the turn. No
+   `expect_turn_complete` opt-in (Codex doesn't follow up with a
+   `result` envelope), so the synthetic truncated turn-complete fires.
+
+### Retry envelopes
+
+Transient retries (Claude `system.api_retry`, Codex
+`error+willRetry:true`) land on `EventAPIRetry` and produce a
+single timeline row with deterministic id `retry:<turnIndex>` so
+re-attempts upsert in place. Mirroring Claude Code's
+`SystemAPIErrorMessage.tsx`, attempts < 4 are dropped silently —
+most retries succeed within three attempts. Forward-progress events
+(text, tool start/complete, turn complete) flip the row's status
+to `completed` so it reads as historical context. There is no
+counterpart "retry succeeded" wire signal from either provider.
 
 ## UI components driven by this state
 

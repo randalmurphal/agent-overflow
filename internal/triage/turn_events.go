@@ -33,6 +33,25 @@ type TurnCompletedEvent struct {
 	Aborted            bool            `json:"aborted,omitempty"`
 }
 
+// SessionDiedEvent is the frontend-facing payload for
+// `provider:session_died`. Emitted when a provider process exits
+// abnormally (non-zero code, killed by signal, or read-loop EOF
+// without a clean turn boundary). Drives the session-error banner with
+// the Reconnect call-to-action — the working indicator is cleared
+// separately via the synthesized `provider:turn_completed` and the
+// timeline row showing process-exit info is persisted as a
+// `notification`-kind item with `meta.kind = "session_died"`. Three
+// loosely-coupled observers, three jobs: turn-completed clears the
+// working indicator, item upsert persists history, this event lights
+// the banner with Reconnect.
+type SessionDiedEvent struct {
+	ThreadID   string `json:"threadId"`
+	Reason     string `json:"reason,omitempty"`
+	ExitCode   int    `json:"exitCode,omitempty"`
+	Signal     string `json:"signal,omitempty"`
+	OccurredAt int64  `json:"occurredAt"`
+}
+
 // SubagentNotificationEvent is the frontend-facing payload for
 // provider:subagent_notification. Carries the raw Meta from the
 // provider adapter's `<subagent_notification>` parse — the frontend

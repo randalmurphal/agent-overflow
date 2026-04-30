@@ -5,6 +5,7 @@ import type {
   ItemStreamEvent,
   TodoUpdateEvent,
   ProviderStatusEvent,
+  SessionDiedEvent,
   SubagentNotificationEvent,
   TurnCompletedEvent,
   TurnStartedEvent,
@@ -534,19 +535,14 @@ function flushItemEventQueue(): void {
 // banner component untouched while the router adopts the new vocabulary —
 // the two pipelines converge here rather than in the view.
 //
-// `rate_limited_retrying` and `transient_retry` both land on
-// `version_too_old` (the banner's warning-styled branch) rather than
-// `error` (red / terminal-failure styling). "Please wait, we're retrying"
-// is warning, not catastrophic. The banner copy still comes from the
-// event `message` so the UX is accurate without having to teach
-// ProviderStatusBanner a new branch.
+// Retry vocabulary lives on `provider:item_event` (`api_retry` row) now,
+// not on this banner channel; session-death drives `pane.generalError`
+// via `provider:session_died`. So the legacy mapping only needs to cover
+// the boot-time provider-presence states.
 const KIND_TO_LEGACY_STATUS: Record<NonNullable<ProviderStatusEvent['kind']>, ProviderStatusEvent['status']> = {
   binary_missing: 'not_found',
   unauthenticated: 'unauthenticated',
   version_incompatible: 'version_too_old',
-  rate_limited_retrying: 'version_too_old',
-  transient_retry: 'version_too_old',
-  ok: 'ready',
 };
 
 function applyProviderStatus(evt: ProviderStatusEvent): void {
@@ -598,30 +594,22 @@ function applyThreadUpdated(updated: Thread): void {
 }
 
 /**
- * Route `provider:turn_started` to the matching pane. Flips
- * `pane.activeTurn` on so the composer blocks sends and (Wave 3) the
- * working indicator lights up. Invariant 22: this is the only way
- * `activeTurn` can become non-null.
+ * Route `provider:turn_started` to the global active-turn registry
+ * (single source of truth — see threadStatuses.svelte.ts). Both the
+ * sidebar pill and the chat working indicator read from there. This
+ * is the only path that can record a live turn — invariant 22 (turn
+ * activity is wire-pushed, never derived from items).
  */
 function applyTurnStarted(evt: TurnStartedEvent): void {
   if (!evt?.threadId || !evt.turnId) return;
-  // Feed the sidebar live-status projection first so the pill flips to
-  // Working the moment the backend confirms the turn has started —
-  // before we wait on any streaming item deltas. Matches forge's
-  // behavior and fixes the "idle during thinking" gap.
-  projectTurnStarted(evt.threadId, evt.turnId);
+  // Pass the full {turnIndex, startedAt} into the global registry so
+  // the chat working indicator's self-ticking timer and the timeline
+  // boundary projection can read both without a separate write path.
+  projectTurnStarted(evt.threadId, evt.turnId, evt.turnIndex, evt.startedAt);
   patchThreadDurableStatus(evt.threadId, {
     hasActionableProposedPlan: false,
     hasIncompleteTurn: false,
   });
-  for (const pane of getAllPanes().values()) {
-    if (pane.threadId !== evt.threadId) continue;
-    pane.setActiveTurn({
-      turnId: evt.turnId,
-      turnIndex: evt.turnIndex,
-      startedAt: evt.startedAt,
-    });
-  }
 }
 
 /**
@@ -661,6 +649,34 @@ function applyTurnCompleted(evt: TurnCompletedEvent): void {
     pane.settleTurn(settled);
   }
   syncLatestTurnCompleted(evt);
+}
+
+/**
+ * Route `provider:session_died` to the matching pane's banner slot.
+ * The wire-side row in the timeline (kind `notification` with
+ * `meta.kind = "session_died"`) provides the historical trace; this
+ * listener flips `pane.generalError` so the existing
+ * `ProviderStatusBanner` Reconnect-button banner fires. The triage
+ * router synthesizes the truncated `provider:turn_completed` on its
+ * own — that path clears the working indicator independently, so this
+ * listener never has to touch turn state.
+ */
+function applySessionDied(evt: SessionDiedEvent): void {
+  if (!evt?.threadId) return;
+  const message = sessionDiedBannerMessage(evt);
+  for (const pane of getAllPanes().values()) {
+    if (pane.threadId !== evt.threadId) continue;
+    pane.setGeneralError(message);
+  }
+}
+
+function sessionDiedBannerMessage(evt: SessionDiedEvent): string {
+  const reason = (evt.reason ?? '').trim();
+  const signal = (evt.signal ?? '').trim();
+  if (reason) return reason;
+  if (signal) return `Provider session terminated by signal ${signal}`;
+  if (evt.exitCode) return `Provider session exited with code ${evt.exitCode}`;
+  return 'Provider session exited unexpectedly';
 }
 
 /**
@@ -717,6 +733,11 @@ export function setupEventListeners(): () => void {
   // docs/architecture/turn-lifecycle.md §Frontend state shape.
   const cancelTurnStarted = wailsEventOn<TurnStartedEvent>('provider:turn_started', applyTurnStarted);
   const cancelTurnCompleted = wailsEventOn<TurnCompletedEvent>('provider:turn_completed', applyTurnCompleted);
+  // provider:session_died — provider subprocess exited mid-turn. Drives
+  // the per-pane Reconnect banner (separately from the synthesized
+  // turn-completed event that clears the working indicator). The
+  // historical trace lives in the timeline as a `notification` row.
+  const cancelSessionDied = wailsEventOn<SessionDiedEvent>('provider:session_died', applySessionDied);
   // provider:subagent_notification — Codex passes subagent metadata
   // through; no UI renders this yet, but the pane records it so future
   // surfaces can subscribe without re-wiring.
@@ -896,6 +917,7 @@ export function setupEventListeners(): () => void {
     cancelItemEvent();
     cancelTurnStarted();
     cancelTurnCompleted();
+    cancelSessionDied();
     cancelSubagentNotification();
     cancelTodoUpdate();
     cancelThreadUpdated();

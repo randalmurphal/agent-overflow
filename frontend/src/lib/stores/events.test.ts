@@ -647,60 +647,49 @@ describe('setupEventListeners', () => {
   });
 
   // EventSessionStatus routing: persistent kinds surface on
-  // provider:status (banner update); transient kinds drop silently.
-  it('routes persistent EventSessionStatus to provider:status; drops transient', async () => {
+  // provider:status (banner update). Only boot-time presence kinds
+  // remain on this channel — retry vocabulary moved to the api_retry
+  // timeline row, and session-death drives provider:session_died →
+  // pane.generalError instead.
+  it('routes persistent EventSessionStatus to provider:status; drops unknown kinds', async () => {
     const pane = await buildPane(makeThread({ id: 'thread-1', provider: 'claude' }));
     getAllPanes().set('main', pane);
 
-    // Persistent kind → banner appears. The router emits the rewrite
-    // shape (`kind` + `threadId` + `provider`); the listener maps kind
-    // onto the legacy `status` vocabulary internally so the existing
-    // ProviderStatusBanner renders unchanged.
+    emitWailsEvent('provider:status', {
+      kind: 'unauthenticated',
+      provider: 'claude',
+      threadId: 'thread-1',
+      message: 'Re-authenticate',
+    } as unknown as ProviderStatusEvent);
+    expect(pane.providerBanner?.status).toBe('unauthenticated');
+    expect(pane.providerBanner?.message).toBe('Re-authenticate');
+
+    emitWailsEvent('provider:status', {
+      kind: 'version_incompatible',
+      provider: 'claude',
+      threadId: 'thread-1',
+      message: 'Update Claude CLI',
+    } as unknown as ProviderStatusEvent);
+    expect(pane.providerBanner?.status).toBe('version_too_old');
+
+    emitWailsEvent('provider:status', {
+      kind: 'binary_missing',
+      provider: 'claude',
+      threadId: 'thread-1',
+      message: 'Install Claude CLI',
+    } as unknown as ProviderStatusEvent);
+    expect(pane.providerBanner?.status).toBe('not_found');
+
+    // Unknown kind → dropped. Use a console.warn spy to confirm the
+    // emit landed on the "drop with warn" path rather than silently
+    // mutating banner state. Retry vocabulary (rate_limited_retrying,
+    // transient_retry, ok) is now in the closed unknown set.
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     emitWailsEvent('provider:status', {
       kind: 'rate_limited_retrying',
       provider: 'claude',
       threadId: 'thread-1',
-      message: 'Retrying — rate limited',
-      // `status` + `actionable` aren't populated by the router, but the
-      // existing type requires them. Cast to satisfy the shape; the
-      // handler derives `status` from `kind`.
     } as unknown as ProviderStatusEvent);
-
-    expect(pane.providerBanner).not.toBeNull();
-    // rate_limited_retrying folds onto the warning-styled `version_too_old`
-    // legacy status — see KIND_TO_LEGACY_STATUS in events.ts for why.
-    expect(pane.providerBanner?.status).toBe('version_too_old');
-
-    // transient_retry also folds onto `version_too_old` so the banner
-    // renders warning-styled regardless of the precise retry cause — the
-    // banner Message is where the cause is surfaced.
-    emitWailsEvent('provider:status', {
-      kind: 'transient_retry',
-      provider: 'claude',
-      threadId: 'thread-1',
-      message: 'server_error',
-    } as unknown as ProviderStatusEvent);
-    expect(pane.providerBanner?.status).toBe('version_too_old');
-    expect(pane.providerBanner?.message).toBe('server_error');
-
-    // Clear banner with kind=ok (spec: "ok" → clear signal).
-    emitWailsEvent('provider:status', {
-      kind: 'ok',
-      provider: 'claude',
-      threadId: 'thread-1',
-    } as unknown as ProviderStatusEvent);
-    expect(pane.providerBanner).toBeNull();
-
-    // Unknown kind → dropped. Use a console.warn spy to confirm the
-    // emit landed on the "drop with warn" path rather than silently
-    // mutating banner state.
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    emitWailsEvent('provider:status', {
-      kind: 'not_a_real_kind',
-      provider: 'claude',
-      threadId: 'thread-1',
-    } as unknown as ProviderStatusEvent);
-    expect(pane.providerBanner).toBeNull();
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('unknown kind'));
     warnSpy.mockRestore();
   });

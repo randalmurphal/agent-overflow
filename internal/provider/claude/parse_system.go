@@ -62,12 +62,16 @@ func (p *Parser) parseSystem(threadID string, raw map[string]json.RawMessage, no
 		}}, nil
 
 	case "api_retry":
-		meta := raw["data"]
+		// Normalize the SDK's `data` payload into a shape both providers
+		// share: `attempt` (1-indexed), `max_retries`, and an `error`
+		// string. Triage uses these to render the timeline retry row
+		// (hiding attempts < 4, mirroring Claude Code's TUI). The raw
+		// `data` is preserved under `wire` for forensics.
+		retryMeta := buildClaudeAPIRetryMeta(raw["data"])
 		return []provider.ProviderEvent{{
-			Kind:      provider.EventSessionStatus,
+			Kind:      provider.EventAPIRetry,
 			ThreadID:  threadID,
-			Content:   "retrying",
-			Meta:      meta,
+			Meta:      retryMeta,
 			Timestamp: now,
 		}}, nil
 
@@ -237,6 +241,63 @@ func normalizeTaskTerminalStatus(status string) string {
 	default:
 		return ""
 	}
+}
+
+// buildClaudeAPIRetryMeta normalizes a `system.api_retry.data` payload
+// into the shared {attempt, max_retries, error} EventAPIRetry meta
+// shape. The SDK's `data.error` is an object whose `.message` field
+// carries the human-readable copy; we pull the message string up so
+// triage can pass it to the row summary verbatim. Missing fields stay
+// zero-valued so the triage handler treats them as "unknown" rather
+// than fabricating a label.
+func buildClaudeAPIRetryMeta(rawData json.RawMessage) json.RawMessage {
+	fields := map[string]any{}
+	if len(rawData) == 0 {
+		return nil
+	}
+	var data map[string]json.RawMessage
+	if json.Unmarshal(rawData, &data) != nil {
+		return rawData
+	}
+	if attempt, ok := readIntValue(data, "attempt"); ok {
+		fields["attempt"] = attempt
+	}
+	if maxRetries, ok := readIntValue(data, "max_retries", "maxRetries"); ok {
+		fields["max_retries"] = maxRetries
+	}
+	if errMsg := readNestedErrorMessage(data); errMsg != "" {
+		fields["error"] = errMsg
+	}
+	if retryAfter, ok := readIntValue(data, "retry_after_ms", "retryAfterMs"); ok {
+		fields["retry_after_ms"] = retryAfter
+	}
+	fields["wire"] = rawData
+	out, err := json.Marshal(fields)
+	if err != nil {
+		return rawData
+	}
+	return out
+}
+
+// readNestedErrorMessage pulls the human copy out of a Claude
+// `system.api_retry.data.error` field. The wire shape we've observed
+// is `error: { message: string, name?: string }` — so we look for
+// `.message` first, then fall through to a flat string in case the
+// SDK ever switches to that shape.
+func readNestedErrorMessage(data map[string]json.RawMessage) string {
+	raw, ok := data["error"]
+	if !ok {
+		return ""
+	}
+	var asString string
+	if json.Unmarshal(raw, &asString) == nil && asString != "" {
+		return asString
+	}
+	var asObj map[string]json.RawMessage
+	if json.Unmarshal(raw, &asObj) != nil {
+		return ""
+	}
+	return readRawString(asObj["message"])
 }
 
 // extractSessionInfo reads fields from the init message top level.

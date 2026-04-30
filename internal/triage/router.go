@@ -129,6 +129,15 @@ type Router struct {
 	// CleanupThread so a long-lived session doesn't accumulate stale
 	// entries. See terminal_interaction.go for the handler.
 	terminalInteractionSeq map[string]int
+	// openAPIRetryRows flags threads whose current api_retry row is in
+	// status=running and therefore eligible to flip on the next
+	// forward-progress event. The hot streaming path
+	// (maybeMarkAPIRetryCompleted, called per text/thinking/tool event)
+	// short-circuits when the flag is unset so the common case avoids
+	// a SQLite GetThreadItem on every text delta. Set in handleAPIRetry
+	// when persisting a running row; cleared after the flip completes
+	// or when the turn closes via clearOpenTurn / CleanupThread.
+	openAPIRetryRows map[string]bool
 	// pendingToolPaths stages the workspace paths a tool will write
 	// between EventToolStart and EventToolComplete. Keyed by
 	// `<threadID>|<itemID>`. On a successful complete we move the
@@ -200,6 +209,7 @@ func NewRouter(st *store.Store, emit func(eventName string, data any)) *Router {
 		terminalInteractionSeq:     make(map[string]int),
 		pendingToolPaths:           make(map[string][]string),
 		committedToolPaths:         make(map[string][]string),
+		openAPIRetryRows:           make(map[string]bool),
 	}
 }
 
@@ -268,6 +278,16 @@ func (r *Router) Handle(evt provider.ProviderEvent) error {
 		log.Printf("triage: dropping %s event for stopped thread %s", evt.Kind, evt.ThreadID)
 		return nil
 	}
+	// Forward-progress for the api_retry row: any wire event that
+	// proves the provider went through with the next API call flips an
+	// open retry row from running to completed. The list excludes
+	// EventAPIRetry (would close the row it just opened) and
+	// EventError (the error closes the turn — the retry row's running
+	// state is correct context for the failure that followed). See
+	// api_retry.go:maybeMarkAPIRetryCompleted.
+	if isAPIRetryForwardProgress(evt.Kind) {
+		r.maybeMarkAPIRetryCompleted(evt.ThreadID)
+	}
 	switch evt.Kind {
 	case provider.EventTextDelta:
 		return r.handleTextDelta(evt)
@@ -301,6 +321,8 @@ func (r *Router) Handle(evt provider.ProviderEvent) error {
 		return r.handleTodoUpdate(evt)
 	case provider.EventNotification:
 		return r.handleTimelineNotification(evt)
+	case provider.EventAPIRetry:
+		return r.handleAPIRetry(evt)
 	case provider.EventTokenUsage:
 		return r.handleTokenUsage(evt)
 	case provider.EventInit:
@@ -594,55 +616,6 @@ func (r *Router) handleRateLimits(evt provider.ProviderEvent) error {
 	return nil
 }
 
-// handleSessionStatus routes EventSessionStatus onto the provider:status
-// banner channel. Retries are inspected for an upstream reason
-// (Claude's `data.error` string from api_retry, Codex's
-// `error.message`) and mapped to the most-specific ProviderStatusEventKind
-// we can justify: `unauthenticated` for auth failure, `rate_limited_retrying`
-// for rate-limit, and `transient_retry` as the catch-all for the rest.
-// Transient lifecycle signals (disconnected, session_state_changed) drop
-// silently; anything we don't recognize is logged once per distinct
-// content string so a new provider subtype surfaces without polluting
-// steady-state logs.
-func (r *Router) handleSessionStatus(evt provider.ProviderEvent) error {
-	content := strings.TrimSpace(evt.Content)
-	kind, message, known, persistent := classifySessionStatus(content, evt.Meta)
-	if !known {
-		r.logUnknownSessionStatusOnce(content)
-		return nil
-	}
-	if !persistent {
-		return nil
-	}
-
-	providerName, err := r.lookupThreadProvider(evt.ThreadID)
-	if err != nil {
-		// Non-fatal — the banner just won't be provider-scoped. Log so
-		// a missing thread row is still visible.
-		log.Printf("triage: lookup thread provider for session-status: %v", err)
-	}
-
-	r.emit("provider:status", provider.ProviderStatusEvent{
-		Kind:     kind,
-		Message:  message,
-		Provider: providerName,
-		ThreadID: evt.ThreadID,
-	})
-	return nil
-}
-
-// lookupThreadProvider returns the provider name for a thread, used to
-// scope banner events to the correct provider surface. See
-// session_status.go for the EventSessionStatus classifier this pairs
-// with at the handleSessionStatus call site.
-func (r *Router) lookupThreadProvider(threadID string) (string, error) {
-	thread, err := r.store.GetThread(threadID)
-	if err != nil {
-		return "", err
-	}
-	return thread.Provider, nil
-}
-
 func (r *Router) handleError(evt provider.ProviderEvent) error {
 	now := eventTimestampMillis(evt)
 	turnIndex, err := r.currentTurnIndex(evt.ThreadID)
@@ -676,14 +649,26 @@ func (r *Router) handleError(evt provider.ProviderEvent) error {
 	}
 
 	scope := strings.TrimSpace(evt.ParentToolUseID)
+	// `assistant.error` from Claude carries the SDK enum on `meta.error`
+	// (rate_limit, authentication_failed, ...). Persist as `api_error`
+	// kind so the frontend can render the actionable copy / link
+	// branch by enum (Add credits, Run /login, ...). Generic provider
+	// errors stay as the existing `error` kind.
+	itemKind := "error"
+	itemMeta := ""
+	if enum := apiErrorEnum(evt.Meta); enum != "" {
+		itemKind = itemKindAPIError
+		itemMeta = string(evt.Meta)
+	}
 	errorItem := store.Item{
 		ID:        nextErrorID(turnIndex, scope, r.nextErrorSequence(evt.ThreadID, turnIndex, scope)),
 		ThreadID:  evt.ThreadID,
 		TurnIndex: turnIndex,
-		Kind:      "error",
+		Kind:      itemKind,
 		Role:      "system",
 		Status:    statusCompleted,
 		Summary:   stringsx.FirstNonEmptyTrimmed(evt.Content, "Provider error"),
+		Meta:      itemMeta,
 		ParentID:  eventParentID(evt),
 		CreatedAt: now,
 		UpdatedAt: now,
@@ -708,13 +693,32 @@ func (r *Router) handleError(evt provider.ProviderEvent) error {
 		// and emit the synthetic TurnComplete so the frontend working
 		// indicator flips off even without a wire event.
 		if !fatalExpectsWireTurnComplete(evt.Meta) {
-			if err := r.synthesizeTruncatedTurnComplete(evt.ThreadID, turnIndex, now); err != nil {
+			if err := r.synthesizeTruncatedTurnComplete(evt.ThreadID, now); err != nil {
 				return err
 			}
 		}
 	}
 
 	return nil
+}
+
+// apiErrorEnum extracts the Claude `assistant.error` enum string from
+// an EventError's Meta. The enum is the wire-typed signal that this
+// error came from the SDK's documented closed set (rate_limit,
+// authentication_failed, billing_error, ...) and warrants the
+// `api_error` row kind. An empty return means the error came from a
+// generic source (read-loop EOF, Codex willRetry:false) and should
+// persist as the catch-all `error` kind.
+func apiErrorEnum(meta json.RawMessage) string {
+	if len(meta) == 0 {
+		return ""
+	}
+	var m map[string]any
+	if json.Unmarshal(meta, &m) != nil {
+		return ""
+	}
+	enum, _ := m["error"].(string)
+	return strings.TrimSpace(enum)
 }
 
 // fatalExpectsWireTurnComplete reports whether a fatal error carries
@@ -749,21 +753,22 @@ func fatalExpectsWireTurnComplete(meta json.RawMessage) bool {
 // TurnComplete arrives (subprocess exit, stream EOF). The synthetic
 // event reuses the turn-complete handler's idempotent plumbing — it
 // closes the span, clears the open turn, and emits any final
-// thread-updated the UI needs to settle state.
+// thread-updated the UI needs to settle state. The handler reads the
+// turn it should close from the router's openTurns map, so callers do
+// not pass a turnIndex; if no turn is open the handler is a no-op.
 //
 // Dispatched through the handler directly (not through Handle) to
 // avoid re-entering routing-layer guards such as the stopped-thread
 // marker check — the fatal path has already committed to closing the
 // turn. The test-only event hook is fired manually so synthesis
 // observers still see the event.
-func (r *Router) synthesizeTruncatedTurnComplete(threadID string, turnIndex int, now int64) error {
+func (r *Router) synthesizeTruncatedTurnComplete(threadID string, now int64) error {
 	synth := provider.ProviderEvent{
 		Kind:      provider.EventTurnComplete,
 		ThreadID:  threadID,
 		Meta:      json.RawMessage(`{"truncated":true,"synthetic":true}`),
 		Timestamp: time.UnixMilli(now),
 	}
-	_ = turnIndex // embedded in the router's open-turn map already
 	err := r.handleTurnComplete(synth)
 	r.fireEventHook(synth)
 	return err

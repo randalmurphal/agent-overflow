@@ -69,4 +69,38 @@ describe('<ChatWorkingIndicator>', () => {
     expect(interrupt).toHaveBeenCalledTimes(1);
     expect(interrupt).toHaveBeenCalledWith('thread-1');
   });
+
+  // Regression: previously the per-pane activeTurn was cleared on
+  // switchThread while the global active-turn registry survived. After
+  // switching back to the original thread the working indicator stayed
+  // dark even though the turn was still in flight backend-side. Now
+  // both surfaces read from the same global registry, so a switch
+  // away-and-back does not lose the indicator.
+  it('survives thread-switch when the global active-turn registry still has a record', async () => {
+    const { makeThread } = await import('../../../test/helpers/chat');
+    const otherThread = makeThread({ id: 'thread-other', title: 'Other' });
+    setBindingMock('SwitchThread', async () => otherThread);
+
+    const pane = await buildPane(makeThread({ id: 'thread-1' }));
+    pane.setActiveTurn({ turnId: 'turn-1', turnIndex: 0, startedAt: 7_000 });
+
+    const { getByTestId, queryByTestId, rerender } = render(ChatWorkingIndicator, { props: { pane } });
+    await tick();
+    expect(getByTestId('chat-working-indicator')).toBeInTheDocument();
+
+    // Switch away to a different thread — the indicator should hide.
+    await pane.switchThread(otherThread);
+    await rerender({ pane });
+    await tick();
+    expect(queryByTestId('chat-working-indicator')).toBeNull();
+
+    // Switch back to the original thread. Backend still has the turn
+    // open; the global registry remembers it, so the indicator must
+    // re-render even though the per-pane state was cleared on switch.
+    setBindingMock('SwitchThread', async () => makeThread({ id: 'thread-1' }));
+    await pane.switchThread(makeThread({ id: 'thread-1' }));
+    await rerender({ pane });
+    await tick();
+    expect(getByTestId('chat-working-indicator')).toBeInTheDocument();
+  });
 });

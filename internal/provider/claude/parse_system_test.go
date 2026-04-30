@@ -333,10 +333,12 @@ func TestParseResult_InterruptedMarksAbortedAndStopReason(t *testing.T) {
 	}
 }
 
-// TestParseResult_NonMatchingErrorNoAbort — the `error_during_execution`
-// subtype alone is not enough to flag interrupted; the errors[] must
-// contain "aborted" or "interrupted".
-func TestParseResult_NonMatchingErrorNoAbort(t *testing.T) {
+// TestParseResult_NonInterruptedErrorPopulatesMetaError — an
+// `error_during_execution` subtype whose errors[] does NOT match the
+// interrupt heuristic still produces a turn-complete error: meta.error
+// is populated from errors[], stop_reason flips to "error", and
+// meta.aborted stays unset. Hard failures and user aborts split here.
+func TestParseResult_NonInterruptedErrorPopulatesMetaError(t *testing.T) {
 	parser := NewParser()
 	line := []byte(`{"type":"result","subtype":"error_during_execution","is_error":false,"errors":["disk full"]}`)
 	events, err := parser.ParseLine(testThread, line)
@@ -358,18 +360,24 @@ func TestParseResult_NonMatchingErrorNoAbort(t *testing.T) {
 	if v, ok := meta["aborted"]; ok && v == true {
 		t.Fatalf("non-interrupt errors[] should not trigger aborted flag, got %v", v)
 	}
+	if meta["stop_reason"] != "error" {
+		t.Fatalf("meta.stop_reason: got %v, want error", meta["stop_reason"])
+	}
+	if meta["error"] != "disk full" {
+		t.Fatalf("meta.error: got %v, want \"disk full\"", meta["error"])
+	}
+	if meta["subtype"] != "error_during_execution" {
+		t.Fatalf("meta.subtype: got %v, want error_during_execution", meta["subtype"])
+	}
 }
 
-// TestParseResult_IsErrorTrueEmitsTurnComplete pins the post-cleanup
-// behaviour: an `is_error: true` result does NOT branch into an
-// EventError. The Python SDK's SDKResultError shape has no `error`
-// (singular) field — only `errors: string[]` — so the legacy branch
-// that read raw["error"] always produced an EventError with empty
-// content (dead code). Instead a result with is_error=true settles
-// through the normal path; interrupted detection still runs via
-// detectInterrupted (reads errors[]), and other error subtypes
-// render as a turn-complete whose shape reflects the wire.
-func TestParseResult_IsErrorTrueEmitsTurnComplete(t *testing.T) {
+// TestParseResult_IsErrorTrueWithoutSubtypeEmitsTurnComplete pins
+// behaviour for the bare `is_error:true` shape (no subtype). The
+// envelope settles the turn but does NOT populate meta.error: the
+// error-routing branches require either an error_* subtype or
+// `subtype:"success"`. Defensive — keeps the parser from inventing an
+// error message for an undocumented wire shape.
+func TestParseResult_IsErrorTrueWithoutSubtypeEmitsTurnComplete(t *testing.T) {
 	parser := NewParser()
 	line := []byte(`{"type":"result","is_error":true,"errors":["boom"]}`)
 	events, err := parser.ParseLine(testThread, line)
@@ -381,5 +389,118 @@ func TestParseResult_IsErrorTrueEmitsTurnComplete(t *testing.T) {
 	}
 	if events[0].Kind != provider.EventTurnComplete {
 		t.Fatalf("Kind: got %q, want %q", events[0].Kind, provider.EventTurnComplete)
+	}
+}
+
+// TestParseResult_AllErrorSubtypesPopulateMetaError covers the four
+// SDKResultError subtypes documented in the agent SDK. Each one must
+// produce stop_reason="error" + meta.error from errors[], so triage
+// can route the turn-complete to the same error-handling path
+// regardless of which limit/cause tripped.
+func TestParseResult_AllErrorSubtypesPopulateMetaError(t *testing.T) {
+	subtypes := []string{
+		"error_during_execution",
+		"error_max_turns",
+		"error_max_budget_usd",
+		"error_max_structured_output_retries",
+	}
+	for _, subtype := range subtypes {
+		t.Run(subtype, func(t *testing.T) {
+			parser := NewParser()
+			line := []byte(`{"type":"result","subtype":"` + subtype + `","is_error":false,"errors":["limit reached"]}`)
+			events, err := parser.ParseLine(testThread, line)
+			if err != nil {
+				t.Fatalf("result: %v", err)
+			}
+			var turn provider.ProviderEvent
+			for _, evt := range events {
+				if evt.Kind == provider.EventTurnComplete {
+					turn = evt
+					break
+				}
+			}
+			if turn.Kind != provider.EventTurnComplete {
+				t.Fatalf("expected EventTurnComplete, got %+v", events)
+			}
+			var meta map[string]any
+			_ = json.Unmarshal(turn.Meta, &meta)
+			if meta["stop_reason"] != "error" {
+				t.Fatalf("meta.stop_reason: got %v, want error", meta["stop_reason"])
+			}
+			if meta["error"] != "limit reached" {
+				t.Fatalf("meta.error: got %v, want \"limit reached\"", meta["error"])
+			}
+			if meta["subtype"] != subtype {
+				t.Fatalf("meta.subtype: got %v, want %s", meta["subtype"], subtype)
+			}
+			// Aborted must NOT be set — these are hard failures, not user
+			// interrupts. Only error_during_execution + matching errors[]
+			// flips aborted, and "limit reached" doesn't match.
+			if v, ok := meta["aborted"]; ok && v == true {
+				t.Fatalf("hard error should not set aborted, got %v", v)
+			}
+		})
+	}
+}
+
+// TestParseResult_SuccessSubtypeIsErrorTruePopulatesMetaError covers
+// the carve-out where Claude follows a fatal `assistant.error` with a
+// `result{subtype:"success", is_error:true}` envelope (the agent SDK's
+// documented shape — see parse_assistant.go for the producer). The
+// "success" label is the API call's transport status, but is_error
+// flags the turn outcome. We must populate meta.error from errors[]
+// so the working indicator clears as a failure, not a success.
+func TestParseResult_SuccessSubtypeIsErrorTruePopulatesMetaError(t *testing.T) {
+	parser := NewParser()
+	line := []byte(`{"type":"result","subtype":"success","is_error":true,"errors":["rate_limit"]}`)
+	events, err := parser.ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("result: %v", err)
+	}
+	var turn provider.ProviderEvent
+	for _, evt := range events {
+		if evt.Kind == provider.EventTurnComplete {
+			turn = evt
+			break
+		}
+	}
+	if turn.Kind != provider.EventTurnComplete {
+		t.Fatalf("expected EventTurnComplete, got %+v", events)
+	}
+	var meta map[string]any
+	_ = json.Unmarshal(turn.Meta, &meta)
+	if meta["stop_reason"] != "error" {
+		t.Fatalf("meta.stop_reason: got %v, want error", meta["stop_reason"])
+	}
+	if meta["error"] != "rate_limit" {
+		t.Fatalf("meta.error: got %v, want rate_limit", meta["error"])
+	}
+}
+
+// TestParseResult_TerminalReasonPassesThroughOnMeta — `terminal_reason`
+// is a 12-value enum we pass through on Meta for telemetry / forward
+// compat. Triage doesn't branch on it, but the field must not get
+// dropped on the round-trip.
+func TestParseResult_TerminalReasonPassesThroughOnMeta(t *testing.T) {
+	parser := NewParser()
+	line := []byte(`{"type":"result","subtype":"success","is_error":false,"terminal_reason":"end_turn"}`)
+	events, err := parser.ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("result: %v", err)
+	}
+	var turn provider.ProviderEvent
+	for _, evt := range events {
+		if evt.Kind == provider.EventTurnComplete {
+			turn = evt
+			break
+		}
+	}
+	if turn.Kind != provider.EventTurnComplete {
+		t.Fatalf("expected EventTurnComplete, got %+v", events)
+	}
+	var meta map[string]any
+	_ = json.Unmarshal(turn.Meta, &meta)
+	if meta["terminal_reason"] != "end_turn" {
+		t.Fatalf("meta.terminal_reason: got %v, want end_turn", meta["terminal_reason"])
 	}
 }

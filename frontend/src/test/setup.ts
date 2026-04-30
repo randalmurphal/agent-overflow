@@ -3,6 +3,7 @@ import { afterEach } from 'vitest';
 import { cleanup } from '@testing-library/svelte';
 import { resetWailsMocks } from './mocks/wailsio-runtime';
 import { resetBindingMocks } from './mocks/bindings-app';
+import { resetForTest as resetThreadStatusesForTest } from '../lib/stores/threadStatuses.svelte';
 
 if (typeof globalThis.ResizeObserver === 'undefined') {
   class StubResizeObserver {
@@ -164,6 +165,11 @@ afterEach(() => {
   cleanup();
   resetWailsMocks();
   resetBindingMocks();
+  // The thread-statuses store holds the global active-turn registry that
+  // backs ChatWorkingIndicator + sidebar pills. It's $state-backed and
+  // shared across all panes, so test-to-test leaks would surface as
+  // "this test sees a turn in flight from the previous test" failures.
+  resetThreadStatusesForTest();
   // Wipe the in-memory localStorage between tests so persistence-aware
   // stores don't leak state across suites.
   try {

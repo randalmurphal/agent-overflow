@@ -102,7 +102,9 @@ export type ItemKind =
   | "error"
   | "compaction"
   | "terminal_interaction"
-  | "notification";
+  | "notification"
+  | "api_retry"
+  | "api_error";
 
 export interface Item {
   id: string;

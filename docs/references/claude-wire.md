@@ -93,10 +93,18 @@ the final assistant message have settled.
 ```
 
 ### `subtype` values
-- `"success"` — turn ended normally
+
+Per the agent SDK's `SDKResultError` discriminated union the four
+documented error subtypes are:
+
+- `"success"` — turn ended normally (may still carry
+  `is_error: true` when a prior `assistant.error` flagged the turn —
+  see Error envelope shapes below)
 - `"error_during_execution"` — runtime error (see interrupted note)
 - `"error_max_turns"` — auto-turn cap reached
 - `"error_max_budget_usd"` — cost cap reached
+- `"error_max_structured_output_retries"` — structured-output
+  validator retry cap exhausted
 
 ### `stop_reason` values
 
@@ -571,6 +579,67 @@ input being streamed token-by-token, enable
 `CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING` — causes
 `stream_event` envelopes with `input_json_delta` deltas. Not
 currently handled in our parser.
+
+---
+
+## Error envelope shapes
+
+API failures land on three loosely-coupled shapes. Both providers
+must emit them in roughly this order; the parser pins the surfaces
+so a future SDK schema change is a visible code change rather than a
+silent UI freeze.
+
+### `assistant.error` — closed-set enum on the assistant envelope
+
+When the API rejects a prompt mid-turn, the SDK populates the
+top-level `error` field on the `assistant` envelope (alongside the
+existing `message` content). The string is a closed enum from the
+agent SDK:
+
+| Enum | Meaning |
+|---|---|
+| `authentication_failed` | OAuth/key invalid; user needs to `/login` |
+| `billing_error` | Payment / org-level billing problem |
+| `rate_limit` | Quota exhausted on the request's model |
+| `invalid_request` | Malformed request — usually a prompt-too-long carve-out |
+| `server_error` | 5xx from the Anthropic API |
+| `max_output_tokens` | The model emitted enough tokens to hit the cap |
+| `unknown` | SDK fallback for anything outside the closed set |
+
+Per the agent SDK source, `assistant.error` is followed by a
+`result{is_error:true}` envelope that closes the turn through the
+normal wire path. Parser emits the assistant.error as a fatal
+`EventError` tagged `expect_turn_complete:true` so triage waits for
+the wire turn-complete instead of synthesizing a duplicate.
+
+### `result` error subtypes — `SDKResultError`
+
+The Python agent SDK's `SDKResultError` discriminator names four
+subtypes the result envelope can carry:
+
+- `error_during_execution` — runtime error (also the carrier for
+  user-aborted turns; see `interrupted` heuristic below)
+- `error_max_turns` — auto-turn cap reached
+- `error_max_budget_usd` — cost cap reached
+- `error_max_structured_output_retries` — structured-output
+  validator retry cap exhausted
+
+`subtype:"success"` with `is_error:true` is the carve-out for "the
+API call succeeded as a transport but the assistant flagged the
+turn" — the assistant.error path produces this exact shape.
+
+### `terminal_reason` — telemetry-only enum (12 values)
+
+Some result envelopes carry an additional `terminal_reason` field
+naming the precise wire-level reason the SDK terminated the turn:
+
+`end_turn`, `max_tokens`, `tool_use`, `stop_sequence`, `pause_turn`,
+`refusal`, `cancelled`, `interrupted`, `aborted`, `timeout`,
+`network_error`, `unknown`.
+
+The parser passes this through verbatim on Meta for forward-compat
+and telemetry; triage does NOT branch on it. The actionable signals
+are `subtype` and `is_error`.
 
 ---
 

@@ -45,6 +45,12 @@ import {
 } from '../utils/turnDiffSummary';
 import { errString } from '../utils/errors';
 import { clearTokensForThread } from '../utils/tokenCacheReactive.svelte';
+import {
+  getActiveTurn,
+  projectTurnCompleted,
+  projectTurnStarted,
+  type ActiveTurn,
+} from './threadStatuses.svelte';
 
 /**
  * Default batch size for "Load older" fetches. Matches the initial window
@@ -82,18 +88,11 @@ function sameRhsPanel(left: RhsPanel | null, right: RhsPanel | null): boolean {
   return left.payloadId === right.payloadId && left.filePath === right.filePath;
 }
 
-/**
- * ActiveTurn is the live in-flight turn for the pane. Populated exclusively
- * from the `provider:turn_started` wire event; cleared on
- * `provider:turn_completed` or thread switch. Never hydrated from
- * persistence — see invariant 22 (turn activity is wire-pushed).
- */
-export interface ActiveTurn {
-  turnId: string;
-  turnIndex: number;
-  /** Unix-millis. Anchors the self-ticking working-indicator timer. */
-  startedAt: number;
-}
+// ActiveTurn now lives in threadStatuses.svelte.ts (single source of
+// truth for the global active-turn registry). Re-exported here so
+// downstream importers (events.ts, panes, tests) don't have to rewire
+// their imports for the move.
+export type { ActiveTurn } from './threadStatuses.svelte';
 
 /**
  * SettledTurn is the most recent completed turn's projection. Used by the
@@ -448,15 +447,17 @@ export function createThreadPane() {
     }
   }
 
-  // Turn-lifecycle state. `activeTurn` is set exclusively from live
-  // `provider:turn_started` wire events (invariant 22) and cleared on
-  // `provider:turn_completed` or thread switch. `latestSettledTurn` is
-  // populated from turn-complete events OR on thread-switch rehydration
-  // from the most recent `ListRecentTurns` row with a non-null
-  // `completedAt`. A crashed / in-flight historical turn is deliberately
-  // NOT promoted to `activeTurn` on rehydration — only the wire can turn
-  // the indicator on.
-  let activeTurn: ActiveTurn | null = $state(null);
+  // Turn-lifecycle state. `activeTurn` is no longer per-pane — the
+  // single source of truth is the global registry in
+  // threadStatuses.svelte.ts (read via `getActiveTurn`). The pane's
+  // `activeTurn` getter below is a transparent shim onto that
+  // registry so existing readers don't need a refactor; the load-
+  // bearing benefit is that switching threads no longer clears the
+  // working indicator for a turn that's still in flight on the
+  // departing thread. `latestSettledTurn` stays per-pane because
+  // it's used by the completion divider whose mount lives on the
+  // chat view; on thread switch we rehydrate it from the most recent
+  // `ListRecentTurns` row whose `completedAt` is non-null.
   let latestSettledTurn: SettledTurn | null = $state(null);
   // Live-todo panel state. Independent of activeTurn — the panel
   // persists past turn-end if items remain incomplete and only
@@ -1159,31 +1160,22 @@ export function createThreadPane() {
     get showTerminal() { return showTerminal; },
     get diffPanel() { return diffPanel; },
     /**
-     * True while a provider turn is in-flight for the current pane. The
-     * composer uses this to block sends and surface the interrupt
-     * affordance.
-     *
-     * Post-turn-lifecycle refactor: this is now strictly wire-pushed —
-     * `activeTurn !== null` is the single source of truth. Item-state
-     * derivations (streaming text, running tool_calls) no longer drive
-     * this flag; see invariant 22 (turn activity is wire-pushed).
-     *
-     * Pending approvals live within an active turn by construction — the
-     * provider emits turn_started before any approval request and
-     * turn_completed only after all approvals resolve — so they're
-     * covered implicitly via activeTurn being non-null during that
-     * window. If a future flow decouples approvals from turn spans,
-     * re-evaluate this invariant.
+     * True while a provider turn is in-flight for the current pane.
+     * Reads from the global active-turn registry (single source of
+     * truth — see threadStatuses.svelte.ts) so a thread switch
+     * doesn't lose the indicator on a turn that's still in flight on
+     * the other thread. Same wire-pushed contract as before
+     * (invariant 22), just consolidated to one store.
      */
     get isTurnActive() {
-      return activeTurn !== null;
+      return getActiveTurn(thread?.id ?? '') !== null;
     },
     /**
-     * Live in-flight turn (wire-pushed from `provider:turn_started`).
-     * Consumers drive the working indicator and the composer's mid-turn
-     * guard off this value.
+     * Live in-flight turn for this pane's thread, sourced from the
+     * global registry. Returns null when no turn is active. The
+     * registry survives thread switches by design.
      */
-    get activeTurn() { return activeTurn; },
+    get activeTurn() { return getActiveTurn(thread?.id ?? ''); },
     /**
      * Most recent completed turn, or null if the thread has no settled
      * turns yet. Populated from `provider:turn_completed` pushes and
@@ -1262,12 +1254,16 @@ export function createThreadPane() {
         // No outgoing thread to snapshot under — just reset.
         rhsPanelSlot.closeForThread();
       }
-      // Turn-lifecycle reset. activeTurn goes to null on every switch — a
-      // crashed thread's in-flight row is historical and must not light up
-      // the indicator (invariant 22). latestSettledTurn gets rehydrated
-      // below from ListRecentTurns; we clear it first so a rehydration
-      // failure leaves the pane in a consistent "no prior turn" state.
-      activeTurn = null;
+      // Turn-lifecycle reset. The active-turn registry lives in
+      // threadStatuses.svelte.ts and is keyed by threadId, so a thread
+      // switch does NOT clear it — a turn that's still in flight on
+      // another thread keeps lighting the working indicator when the
+      // user comes back. This is the load-bearing fix vs. the prior
+      // per-pane field which dropped state on switch. latestSettledTurn
+      // is per-pane (drives the completion divider mounted on the chat
+      // view); rehydrate it below from ListRecentTurns. Clear first so
+      // a rehydration failure leaves the pane in a consistent "no
+      // prior turn" state.
       latestSettledTurn = null;
       subagentNotifications = [];
       // Live-todo reset. The todo snapshot is per-thread session state
@@ -1456,7 +1452,11 @@ export function createThreadPane() {
       activeArtifactId = null;
       pendingDesignOptions = null;
       designViewport = 'desktop';
-      activeTurn = null;
+      // activeTurn lives in the global registry (threadStatuses) and is
+      // cleared by projectTurnCompleted; clearing it from a pane.clear()
+      // would race with an in-flight turn on the same thread that
+      // belongs to a different pane. The pane's getter just stops
+      // returning a value once thread is null below.
       latestSettledTurn = null;
       subagentNotifications = [];
       // Mirror the live-todo reset block in switchThread: clearing the
@@ -1808,52 +1808,70 @@ export function createThreadPane() {
      * Idempotent by turnId: a second call with the same id preserves the
      * existing startedAt so the on-screen counter doesn't reset mid-turn.
      */
+    /**
+     * Compatibility shim that records a live turn in the global
+     * registry. The applyTurnStarted listener in events.ts writes to
+     * the registry directly; tests and explicit-control sites call
+     * this to drive the same path.
+     */
     setActiveTurn(turn: ActiveTurn): void {
-      if (activeTurn !== null && activeTurn.turnId === turn.turnId) {
-        // Preserve the original startedAt so the working indicator's
-        // elapsed-seconds counter doesn't rewind. turnIndex can shift
-        // only if the caller changed turns entirely, which the guard
-        // above excludes.
-        return;
-      }
-      activeTurn = turn;
+      const tid = thread?.id ?? '';
+      if (!tid) return;
+      projectTurnStarted(tid, turn.turnId, turn.turnIndex, turn.startedAt);
     },
 
     /**
-     * Settle the current turn on `provider:turn_completed`. Clears the
-     * live `activeTurn` and writes `latestSettledTurn` so the completion
-     * divider can render above the assistant message this settled. Safe
-     * to call when `activeTurn` is already null (recovered turn that
-     * the backend re-settles).
+     * Settle the current turn on `provider:turn_completed`. Writes
+     * `latestSettledTurn` so the completion divider can render above
+     * the assistant message this settled. The active-turn registry
+     * is cleared separately in events.ts via projectTurnCompleted —
+     * this method is now a pane-local write only.
      */
     settleTurn(settled: SettledTurn): void {
-      activeTurn = null;
+      const tid = thread?.id ?? '';
+      if (tid) {
+        projectTurnCompleted(tid, settled.turnId, {
+          aborted: settled.aborted,
+          errorMessage: settled.errorMessage,
+        });
+      }
       latestSettledTurn = settled;
     },
 
     /**
-     * Optimistic clear used by the Esc / Stop interrupt path. Drops the
-     * live `activeTurn` synchronously so the spinner / Stop button
-     * flip to idle in the same render tick as the keystroke — matching
-     * Claude Code's `resetLoadingState()` (REPL.tsx:2106-2163) and the
-     * Codex TUI's spinner clear on `EventMsg::TurnAborted`. The real
-     * `provider:turn_completed` arrives shortly after and re-runs
-     * settleTurn (idempotent on already-null activeTurn). Does NOT
-     * clear `latestSettledTurn` so the previous turn's completion
-     * divider stays visible.
+     * Optimistic clear used by the Esc / Stop interrupt path. Drops
+     * the live turn from the global registry synchronously so the
+     * spinner / Stop button flip to idle in the same render tick as
+     * the keystroke — matching Claude Code's `resetLoadingState()`
+     * (REPL.tsx:2106-2163) and the Codex TUI's spinner clear on
+     * `EventMsg::TurnAborted`. The real `provider:turn_completed`
+     * arrives shortly after and re-runs the same path (idempotent on
+     * already-cleared registry). Does NOT clear `latestSettledTurn`
+     * so the previous turn's completion divider stays visible.
      */
     clearActiveTurn(): void {
-      activeTurn = null;
+      const tid = thread?.id ?? '';
+      if (!tid) return;
+      const current = getActiveTurn(tid);
+      if (current) {
+        projectTurnCompleted(tid, current.turnId, { aborted: true });
+      }
     },
 
     /**
-     * Reset both turn-lifecycle slots without rehydrating. Used by the
-     * frontend on explicit "clear this pane" paths that aren't a full
-     * switchThread — e.g. a user-triggered stop that leaves the pane in
-     * a known-quiet state until the next wire push.
+     * Reset both turn-lifecycle slots without rehydrating. Used by
+     * the frontend on explicit "clear this pane" paths that aren't a
+     * full switchThread — e.g. a user-triggered stop that leaves the
+     * pane in a known-quiet state until the next wire push.
      */
     clearTurnState(): void {
-      activeTurn = null;
+      const tid = thread?.id ?? '';
+      if (tid) {
+        const current = getActiveTurn(tid);
+        if (current) {
+          projectTurnCompleted(tid, current.turnId, { aborted: true });
+        }
+      }
       latestSettledTurn = null;
     },
 

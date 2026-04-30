@@ -575,23 +575,40 @@ func classifyMiscNotification(threadID, method string, params json.RawMessage, n
 		errorMsg := readNestedString(params, "error", "message")
 		willRetry := readTopLevelBool(params, "willRetry")
 		if willRetry {
+			// Codex doesn't structure attempt/max separately; the count
+			// is embedded in the message text ("Reconnecting... 2/5").
+			// Try to parse it for parity with Claude's `system.api_retry`
+			// shape (which carries `attempt`/`max_retries` directly).
+			// Failed parse leaves attempt=0 — triage's hide-first-three
+			// rule treats unknown counts as "show" so a one-off Codex
+			// reconnect still surfaces. Don't over-classify.
+			attempt, maxRetries := parseCodexRetryCounts(errorMsg)
 			meta, _ := json.Marshal(map[string]any{
-				"willRetry": true,
-				"error":     json.RawMessage(params),
+				"attempt":     attempt,
+				"max_retries": maxRetries,
+				"error":       errorMsg,
+				"wire":        json.RawMessage(params),
 			})
 			return []provider.ProviderEvent{{
-				Kind:      provider.EventSessionStatus,
+				Kind:      provider.EventAPIRetry,
 				ThreadID:  threadID,
-				Content:   "retrying",
 				Meta:      meta,
 				Timestamp: now,
 			}}, true
 		}
+		// willRetry:false — fatal. Tag meta.fatal so the triage router's
+		// fatal branch fires (closes the open turn, synthesizes
+		// TurnComplete since the subprocess EOF will follow).
+		fatalMeta, _ := json.Marshal(map[string]any{
+			"fatal": true,
+			"error": errorMsg,
+			"wire":  json.RawMessage(params),
+		})
 		return []provider.ProviderEvent{{
 			Kind:      provider.EventError,
 			ThreadID:  threadID,
 			Content:   errorMsg,
-			Meta:      params,
+			Meta:      fatalMeta,
 			Timestamp: now,
 		}}, true
 
@@ -803,6 +820,53 @@ func firstRaw(m map[string]json.RawMessage, keys ...string) json.RawMessage {
 		}
 	}
 	return nil
+}
+
+// parseCodexRetryCounts extracts an "N/M" attempt/total pair from a
+// Codex retry message ("Reconnecting... 2/5"). Returns zeros when no
+// pair is found — the caller treats unknown counts as "show on every
+// attempt" so a one-off reconnect surface stays visible. Codex doesn't
+// structure these counts, so this is the best-effort sibling of
+// Claude's wire-typed `attempt`/`max_retries` fields.
+func parseCodexRetryCounts(message string) (attempt int, maxRetries int) {
+	for i := 0; i < len(message); i++ {
+		if message[i] < '0' || message[i] > '9' {
+			continue
+		}
+		// Walk a leading digit run.
+		start := i
+		for i < len(message) && message[i] >= '0' && message[i] <= '9' {
+			i++
+		}
+		if i >= len(message) || message[i] != '/' {
+			continue
+		}
+		left := message[start:i]
+		i++
+		startRight := i
+		for i < len(message) && message[i] >= '0' && message[i] <= '9' {
+			i++
+		}
+		if i == startRight {
+			continue
+		}
+		right := message[startRight:i]
+		// `left` and `right` are guaranteed digit-only and non-empty by
+		// the loop above; guard against absurdly long runs by capping
+		// the slice length before parsing.
+		if len(left) > 5 || len(right) > 5 {
+			return 0, 0
+		}
+		var l, r int
+		for _, c := range left {
+			l = l*10 + int(c-'0')
+		}
+		for _, c := range right {
+			r = r*10 + int(c-'0')
+		}
+		return l, r
+	}
+	return 0, 0
 }
 
 func firstNonEmptyString(values ...string) string {

@@ -280,7 +280,7 @@ func TestParseCompactBoundaryNoData(t *testing.T) {
 }
 
 func TestParseApiRetry(t *testing.T) {
-	line := []byte(`{"type":"system","subtype":"api_retry","data":{"delay":5000,"attempt":2}}`)
+	line := []byte(`{"type":"system","subtype":"api_retry","data":{"attempt":2,"max_retries":10,"retry_after_ms":5000,"error":{"message":"server overloaded"}}}`)
 
 	events, err := ParseLine(testThread, line)
 	if err != nil {
@@ -291,11 +291,8 @@ func TestParseApiRetry(t *testing.T) {
 	}
 
 	evt := events[0]
-	if evt.Kind != provider.EventSessionStatus {
-		t.Errorf("kind: got %q, want %q", evt.Kind, provider.EventSessionStatus)
-	}
-	if evt.Content != "retrying" {
-		t.Errorf("content: got %q, want %q", evt.Content, "retrying")
+	if evt.Kind != provider.EventAPIRetry {
+		t.Errorf("kind: got %q, want %q", evt.Kind, provider.EventAPIRetry)
 	}
 	if evt.ThreadID != testThread {
 		t.Errorf("threadID: got %q, want %q", evt.ThreadID, testThread)
@@ -305,11 +302,17 @@ func TestParseApiRetry(t *testing.T) {
 	if err := json.Unmarshal(evt.Meta, &meta); err != nil {
 		t.Fatalf("unmarshal meta: %v", err)
 	}
-	if meta["delay"] != float64(5000) {
-		t.Errorf("delay: got %v, want 5000", meta["delay"])
-	}
 	if meta["attempt"] != float64(2) {
 		t.Errorf("attempt: got %v, want 2", meta["attempt"])
+	}
+	if meta["max_retries"] != float64(10) {
+		t.Errorf("max_retries: got %v, want 10", meta["max_retries"])
+	}
+	if meta["retry_after_ms"] != float64(5000) {
+		t.Errorf("retry_after_ms: got %v, want 5000", meta["retry_after_ms"])
+	}
+	if meta["error"] != "server overloaded" {
+		t.Errorf("error: got %v, want \"server overloaded\"", meta["error"])
 	}
 }
 

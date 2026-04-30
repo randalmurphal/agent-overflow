@@ -89,7 +89,7 @@ func TestParseLine_SystemSessionStateChanged(t *testing.T) {
 }
 
 func TestParseLine_SystemApiRetry(t *testing.T) {
-	line := []byte(`{"type":"system","subtype":"api_retry","data":{"attempt":2}}`)
+	line := []byte(`{"type":"system","subtype":"api_retry","data":{"attempt":4,"max_retries":10,"error":{"message":"rate limit exceeded"}}}`)
 	events, err := ParseLine(testThreadProto, line)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
@@ -97,11 +97,21 @@ func TestParseLine_SystemApiRetry(t *testing.T) {
 	if len(events) != 1 {
 		t.Fatalf("expected 1 event, got %d", len(events))
 	}
-	if events[0].Kind != provider.EventSessionStatus {
-		t.Errorf("kind: got %q, want %q", events[0].Kind, provider.EventSessionStatus)
+	if events[0].Kind != provider.EventAPIRetry {
+		t.Errorf("kind: got %q, want %q", events[0].Kind, provider.EventAPIRetry)
 	}
-	if events[0].Content != "retrying" {
-		t.Errorf("content: got %q, want %q", events[0].Content, "retrying")
+	var meta map[string]any
+	if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if got, want := int(meta["attempt"].(float64)), 4; got != want {
+		t.Errorf("meta.attempt: got %d, want %d", got, want)
+	}
+	if got, want := int(meta["max_retries"].(float64)), 10; got != want {
+		t.Errorf("meta.max_retries: got %d, want %d", got, want)
+	}
+	if got, want := meta["error"], "rate limit exceeded"; got != want {
+		t.Errorf("meta.error: got %q, want %q", got, want)
 	}
 }
 

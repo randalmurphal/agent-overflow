@@ -999,6 +999,11 @@ func (r *Router) clearOpenTurn(threadID string) {
 	delete(r.openTurns, threadID)
 	delete(r.interruptQueue, threadID)
 	delete(r.streamingItemCounts, threadID)
+	// openAPIRetryRows tracks "thread has a running api_retry row that
+	// still needs flipping". By turn-end the row was either flipped
+	// already or the turn closed without forward progress; either way
+	// the next turn starts with a clean flag.
+	delete(r.openAPIRetryRows, threadID)
 	r.mu.Unlock()
 }
 
@@ -1140,7 +1145,21 @@ func (r *Router) Wait(ctx context.Context) error {
 // thread as "stopped" so any event that arrives afterward — typically a
 // readLoop line that was already in-flight when StopSession returned — is
 // dropped instead of persisting under the torn-down session (Bug B5).
+//
+// As a safety net, any open turn at cleanup time gets a synthesized
+// truncated EventTurnComplete so the frontend working indicator clears
+// even when the session ends without a wire turn-complete (clean stdout
+// EOF, host-side StopSession during a turn, etc). This pairs with
+// session_status.go's handleSessionDied — which path runs first
+// depends on whether `EventSessionStatus{"error"}` arrives before
+// or after StopSession unwinds — and is idempotent in either order
+// thanks to markTurnSettled.
 func (r *Router) CleanupThread(threadID string) {
+	if _, ok := r.openTurnIndex(threadID); ok {
+		if err := r.synthesizeTruncatedTurnComplete(threadID, time.Now().UnixMilli()); err != nil {
+			log.Printf("triage: synthesize turn-complete on cleanup for thread %s: %v", threadID, err)
+		}
+	}
 	if err := r.flushStreamingThread(threadID); err != nil {
 		log.Printf("triage: cleanup flush stream buffers for thread %s: %v", threadID, err)
 	}
@@ -1191,6 +1210,7 @@ func (r *Router) CleanupThread(threadID string) {
 	// prefix.
 	deleteByPrefix(r.pendingToolPaths, prefix)
 	deleteByPrefix(r.committedToolPaths, prefix)
+	delete(r.openAPIRetryRows, threadID)
 	// Drop the Codex background projector's per-thread trackers. A
 	// restarted session never inherits trackers from a prior session —
 	// the wire replays item/started for still-inProgress items and the

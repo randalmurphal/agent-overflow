@@ -181,11 +181,22 @@ func TestClassifyNotification_ErrorWithWillRetry(t *testing.T) {
 		t.Fatalf("expected 1 event, got %d", len(events))
 	}
 	evt := events[0]
-	if evt.Kind != provider.EventSessionStatus {
-		t.Errorf("kind: got %q, want %q", evt.Kind, provider.EventSessionStatus)
+	if evt.Kind != provider.EventAPIRetry {
+		t.Errorf("kind: got %q, want %q", evt.Kind, provider.EventAPIRetry)
 	}
-	if evt.Content != "retrying" {
-		t.Errorf("content: got %q, want %q", evt.Content, "retrying")
+	var meta map[string]any
+	if err := json.Unmarshal(evt.Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	// The "2/5" embedded in the message text drives attempt/max_retries.
+	if got, want := int(meta["attempt"].(float64)), 2; got != want {
+		t.Errorf("meta.attempt: got %d, want %d", got, want)
+	}
+	if got, want := int(meta["max_retries"].(float64)), 5; got != want {
+		t.Errorf("meta.max_retries: got %d, want %d", got, want)
+	}
+	if got, want := meta["error"], "Reconnecting... 2/5"; got != want {
+		t.Errorf("meta.error: got %q, want %q", got, want)
 	}
 }
 
@@ -203,6 +214,14 @@ func TestClassifyNotification_ErrorWithoutWillRetry(t *testing.T) {
 	if evt.Content != "fatal error" {
 		t.Errorf("content: got %q, want %q", evt.Content, "fatal error")
 	}
+	// Absent willRetry treated identically to willRetry:false — fatal.
+	var meta map[string]any
+	if err := json.Unmarshal(evt.Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if fatal, _ := meta["fatal"].(bool); !fatal {
+		t.Errorf("meta.fatal: got %v, want true", meta["fatal"])
+	}
 }
 
 func TestClassifyNotification_ErrorWillRetryFalse(t *testing.T) {
@@ -212,8 +231,22 @@ func TestClassifyNotification_ErrorWillRetryFalse(t *testing.T) {
 	if len(events) != 1 {
 		t.Fatalf("expected 1 event, got %d", len(events))
 	}
-	if events[0].Kind != provider.EventError {
-		t.Errorf("kind: got %q, want %q", events[0].Kind, provider.EventError)
+	evt := events[0]
+	if evt.Kind != provider.EventError {
+		t.Errorf("kind: got %q, want %q", evt.Kind, provider.EventError)
+	}
+	// `willRetry:false` is fatal — meta.fatal:true so the triage router's
+	// fatal branch closes the open turn instead of treating the error as
+	// recoverable.
+	var meta map[string]any
+	if err := json.Unmarshal(evt.Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if fatal, _ := meta["fatal"].(bool); !fatal {
+		t.Errorf("meta.fatal: got %v, want true", meta["fatal"])
+	}
+	if got, want := meta["error"], "giving up"; got != want {
+		t.Errorf("meta.error: got %q, want %q", got, want)
 	}
 }
 

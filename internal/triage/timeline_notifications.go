@@ -88,15 +88,28 @@ func (r *Router) handleTimelineNotification(evt provider.ProviderEvent) error {
 }
 
 func (r *Router) persistTimelineNotification(evt provider.ProviderEvent, notificationKind, summary string) error {
-	notificationKind = strings.TrimSpace(notificationKind)
-	if notificationKind == "" {
-		notificationKind = "notification"
-	}
 	turnIndex := r.timelineNotificationTurnIndex(evt.ThreadID)
 	itemID := eventItemID(evt)
 	if strings.TrimSpace(itemID) == "" {
 		itemID = nextTimelineNotificationID(turnIndex, r.nextNotificationSequence(evt.ThreadID, turnIndex))
 	}
+	_, err := r.persistTimelineNotificationWithID(evt, itemID, notificationKind, summary)
+	return err
+}
+
+// persistTimelineNotificationWithID is the explicit-id variant. Used
+// by callers (handleSessionDied) that need a deterministic id rather
+// than the per-thread counter fallback so that re-emitted events
+// upsert in place instead of producing duplicate rows. Returns
+// wasNew=true on the row's first persistence; subsequent calls
+// upsert the same row but return false so callers can skip
+// already-fired side effects.
+func (r *Router) persistTimelineNotificationWithID(evt provider.ProviderEvent, itemID, notificationKind, summary string) (bool, error) {
+	notificationKind = strings.TrimSpace(notificationKind)
+	if notificationKind == "" {
+		notificationKind = "notification"
+	}
+	turnIndex := r.timelineNotificationTurnIndex(evt.ThreadID)
 	now := eventTimestampMillis(evt)
 	item := store.Item{
 		ID:        itemID,
@@ -112,14 +125,19 @@ func (r *Router) persistTimelineNotification(evt provider.ProviderEvent, notific
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
-	if existing, found, err := r.store.GetThreadItem(evt.ThreadID, item.ID); err == nil && found {
+	existing, found, err := r.store.GetThreadItem(evt.ThreadID, item.ID)
+	if err != nil {
+		return false, fmt.Errorf("timeline notification existing lookup %s: %w", item.ID, err)
+	}
+	if found {
 		item.CreatedAt = existing.CreatedAt
 		item.ItemIndex = existing.ItemIndex
 		item.PayloadID = existing.PayloadID
-	} else if err != nil {
-		return fmt.Errorf("timeline notification existing lookup %s: %w", item.ID, err)
 	}
-	return r.persistItem(item, nil)
+	if err := r.persistItem(item, nil); err != nil {
+		return false, err
+	}
+	return !found, nil
 }
 
 func (r *Router) timelineNotificationTurnIndex(threadID string) int {
@@ -165,6 +183,8 @@ func sanitizedTimelineNotificationMeta(notificationKind, summary string, raw jso
 	switch notificationKind {
 	case "hook":
 		addHookNotificationMeta(meta, raw)
+	case sessionDiedNotificationKind:
+		addSessionDiedNotificationMeta(meta, raw)
 	}
 
 	encoded, err := json.Marshal(meta)
@@ -172,6 +192,30 @@ func sanitizedTimelineNotificationMeta(notificationKind, summary string, raw jso
 		return `{}`
 	}
 	return string(encoded)
+}
+
+// addSessionDiedNotificationMeta forwards the wire ProcessExitInfo
+// (reason / exitCode / signal) onto the notification's meta so the
+// frontend's SessionDiedNotification component can render the exit
+// detail without a second decode hop. The wire shape comes from
+// provider.MarshalProcessExitMeta — keep the JSON tags aligned.
+func addSessionDiedNotificationMeta(meta map[string]any, raw json.RawMessage) {
+	if len(raw) == 0 {
+		return
+	}
+	var info provider.ProcessExitInfo
+	if json.Unmarshal(raw, &info) != nil {
+		return
+	}
+	if reason := strings.TrimSpace(info.Reason); reason != "" {
+		meta["reason"] = reason
+	}
+	if info.ExitCode != 0 {
+		meta["exitCode"] = info.ExitCode
+	}
+	if signal := strings.TrimSpace(info.Signal); signal != "" {
+		meta["signal"] = signal
+	}
 }
 
 func addHookNotificationMeta(meta map[string]any, raw json.RawMessage) {

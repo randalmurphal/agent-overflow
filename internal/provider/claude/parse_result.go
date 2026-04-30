@@ -18,15 +18,26 @@ import (
 // `EventTurnComplete`. The turn-complete event's Meta carries the final
 // assistant_message_id (tracked in-stream from the last `assistant`
 // envelope), the observed `stop_reason`, the duration, total cost, the
-// usage snapshot, and an `aborted: true` flag when the envelope shape
-// indicates an interrupted turn.
+// usage snapshot, an `aborted: true` flag when the envelope shape
+// indicates an interrupted turn, and an `error` string when the turn
+// ended in a non-interrupted error. The four `error_*` subtypes (per
+// SDKResultError: `error_during_execution`, `error_max_turns`,
+// `error_max_budget_usd`, `error_max_structured_output_retries`) are
+// the explicit error path; a `subtype=success` envelope with
+// `is_error:true` covers the case where an `assistant.error` flagged
+// the turn but the final summary type stayed `success`. `terminal_reason`
+// (12 enum values, see docs/references/claude-wire.md) is forwarded on
+// meta for telemetry and forward-compat — triage does not branch on it.
 //
 // Interrupted detection: Claude does not expose a `"interrupted"`
 // stop_reason. Interruption surfaces as `subtype=error_during_execution`
 // + `errors[]` containing "aborted" or "interrupted" (see forge's
 // sdkMessageParsing.ts reference and the Python SDK's SDKResultError
 // shape, which uses `errors: string[]` — there is no `error`
-// (singular) field on the wire).
+// (singular) field on the wire). Interrupt wins over error: a user
+// abort that surfaces through the same envelope still maps to
+// `stop_reason="interrupted"` (no `meta.error`), so the working
+// indicator clears as cancelled rather than as a hard failure.
 //
 // After emitting, the parser's lastAssistantMessageID is cleared so it
 // cannot leak into the next turn's result.
@@ -51,9 +62,21 @@ func (p *Parser) parseResult(threadID string, raw map[string]json.RawMessage, no
 	// zero-vs-unset.
 	subtype := readRawString(raw["subtype"])
 	stopReason := readRawString(raw["stop_reason"])
+	isError := readBoolValue(raw, "is_error", "isError")
 	aborted := detectInterrupted(subtype, raw["errors"])
+
+	// Resolve error message: any error_* subtype, or a `success` envelope
+	// flagged `is_error:true`. Interrupt always wins (the user explicitly
+	// asked for the abort) — leave the error path alone in that case.
+	var errorMessage string
+	if !aborted && (isErrorSubtype(subtype) || (subtype == "success" && isError)) {
+		errorMessage = joinErrors(raw["errors"])
+	}
+
 	if aborted {
 		stopReason = "interrupted"
+	} else if errorMessage != "" {
+		stopReason = "error"
 	}
 
 	assistantMessageID := p.takeLastAssistantMessageID()
@@ -77,6 +100,15 @@ func (p *Parser) parseResult(threadID string, raw map[string]json.RawMessage, no
 	if aborted {
 		metaFields["aborted"] = true
 	}
+	if errorMessage != "" {
+		metaFields["error"] = errorMessage
+	}
+	if subtype != "" {
+		metaFields["subtype"] = subtype
+	}
+	if terminalReason := readRawString(raw["terminal_reason"]); terminalReason != "" {
+		metaFields["terminal_reason"] = terminalReason
+	}
 
 	var turnMeta json.RawMessage
 	if len(metaFields) > 0 {
@@ -94,6 +126,76 @@ func (p *Parser) parseResult(threadID string, raw map[string]json.RawMessage, no
 	}}
 
 	return events, nil
+}
+
+// isErrorSubtype reports whether a `result` envelope's `subtype` is
+// one of the four documented error subtypes from the Python agent SDK
+// (SDKResultError). Keeping the list explicit (rather than a
+// `strings.HasPrefix("error_")` check) makes a new SDK error subtype a
+// visible parser change and keeps unrelated `error*` subtypes from
+// silently rerouting through this branch.
+func isErrorSubtype(subtype string) bool {
+	switch subtype {
+	case "error_during_execution",
+		"error_max_turns",
+		"error_max_budget_usd",
+		"error_max_structured_output_retries":
+		return true
+	}
+	return false
+}
+
+// joinErrors flattens the `errors[]` array on a `result` envelope into
+// a single human-readable message. The wire shape is normally an array
+// of strings, but tolerate an array of objects (just stringify the raw
+// JSON entry) so a future SDK schema change doesn't blank out the
+// error copy. Empty arrays return an empty string — callers should
+// fall back to a generic message in that case.
+//
+// The result is capped at maxJoinedErrorChars so a malformed envelope
+// with many or long entries can't produce a multi-KB summary string.
+// Triage rows render this verbatim; an unbounded length distorts
+// timeline layout even though Svelte autoescapes content.
+func joinErrors(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var joined string
+	var asStrings []string
+	if json.Unmarshal(raw, &asStrings) == nil {
+		joined = joinNonEmpty(asStrings, "; ")
+	} else {
+		var asAny []json.RawMessage
+		if json.Unmarshal(raw, &asAny) == nil {
+			out := make([]string, 0, len(asAny))
+			for _, entry := range asAny {
+				s := strings.TrimSpace(string(entry))
+				if s == "" {
+					continue
+				}
+				out = append(out, s)
+			}
+			joined = joinNonEmpty(out, "; ")
+		}
+	}
+	if r := []rune(joined); len(r) > maxJoinedErrorChars {
+		return string(r[:maxJoinedErrorChars]) + "..."
+	}
+	return joined
+}
+
+const maxJoinedErrorChars = 512
+
+func joinNonEmpty(parts []string, sep string) string {
+	out := make([]string, 0, len(parts))
+	for _, s := range parts {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+		out = append(out, s)
+	}
+	return strings.Join(out, sep)
 }
 
 // detectInterrupted tests whether a non-error `result` envelope is

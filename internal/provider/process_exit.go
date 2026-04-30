@@ -10,6 +10,13 @@ import (
 )
 
 // ProcessExitInfo describes an unexpected provider subprocess exit.
+//
+// Reason is rendered verbatim into chat-visible summaries and the
+// provider:session_died banner. Today MarshalProcessExitMeta populates
+// it from controlled Go-stdlib formats (`*exec.ExitError`, signal
+// names) — DO NOT pass raw stderr or any user-controlled text into
+// this field. A future caller that wraps stderr in here would let a
+// hostile provider binary inject text into the chat UI.
 type ProcessExitInfo struct {
 	Reason   string `json:"reason"`
 	ExitCode int    `json:"exitCode,omitempty"`

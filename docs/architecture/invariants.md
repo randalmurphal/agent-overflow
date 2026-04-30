@@ -557,24 +557,37 @@ drain + sibling write behaviour.
 signal come exclusively from provider-pushed `provider:turn_started`
 / `provider:turn_completed` events. Never derive turn state from
 item state (e.g., `items.some(running tool_call)`). Never compute
-"is working" from backend process liveness.
+"is working" from backend process liveness. The active-turn record
+lives in a single global registry keyed by threadId
+(`frontend/src/lib/stores/threadStatuses.svelte.ts`); panes do not
+hold a per-pane copy.
 
 **Rationale.** Deriving turn state from items means any parser bug
 that drops a completion freezes the UI. Deriving from process
 liveness means a legitimately backgrounded task makes the agent look
-like it's still working. Invariant 20 (force every tool_use to
-complete) addresses the parser-bug case; this invariant ensures the
-UI reads the authoritative wire signal even if a future parser bug
-resurfaces.
+like it's still working. The single-source-of-truth global registry
+(rather than a per-pane field) means the indicator survives a
+thread switch — switching away from and back to a thread that's
+still working preserves the live record because nothing in pane
+lifecycle clears the global map. Invariant 20 (force every tool_use
+to complete) addresses the parser-bug case; this invariant ensures
+the UI reads the authoritative wire signal even if a future parser
+bug resurfaces.
 
-**Enforcement.** `ThreadPane.isTurnActive` reads
-`activeTurn !== null`. The `activeTurn` object is only set from
-`provider:turn_started` and cleared by `provider:turn_completed`.
+**Enforcement.** `getActiveTurn(threadId)` reads from the global
+`activeTurnByThread` map in `threadStatuses.svelte.ts`. The map is
+populated only by `projectTurnStarted` (called from the
+`provider:turn_started` event listener) and cleared only by
+`projectTurnCompleted`. `ThreadPane.activeTurn` is a transparent
+shim onto `getActiveTurn(pane.threadId)`. No code path rehydrates
+the registry from SQLite or item state.
 
-**Test.** Frontend test: simulate a stuck `tool_call` row + live
-`activeTurn=null`; assert the working indicator is hidden.
+**Test.** Frontend test: simulate a stuck `tool_call` row + empty
+registry; assert the working indicator is hidden. Regression test
+in `ChatWorkingIndicator.test.ts`: switch away from a thread with
+a live turn and back; assert the indicator returns.
 
-**See also.** [`turn-lifecycle.md §Turn lifecycle`](turn-lifecycle.md#3-turn-lifecycle).
+**See also.** [`turn-lifecycle.md §Frontend state shape`](turn-lifecycle.md#frontend-state-shape).
 
 ---
 

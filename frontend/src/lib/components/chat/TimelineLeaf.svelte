@@ -1,12 +1,16 @@
 <script lang="ts">
   import type { ThreadPane } from '../../stores/thread.svelte';
   import type { Item } from '../../types/models';
+  import APIErrorRow from './APIErrorRow.svelte';
+  import APIRetryRow from './APIRetryRow.svelte';
   import AssistantMessage from './AssistantMessage.svelte';
   import NotificationRow from './NotificationRow.svelte';
+  import SessionDiedNotification from './SessionDiedNotification.svelte';
   import TerminalInteractionRow from './TerminalInteractionRow.svelte';
   import ThinkingBlock from './ThinkingBlock.svelte';
   import ToolCallCard from './ToolCallCard.svelte';
   import UserMessage from './UserMessage.svelte';
+  import { parseJsonObject } from '../../utils/parseJsonObject';
   import type { ExpandedImagePreview } from '../../utils/attachmentPreview.svelte';
 
   let {
@@ -27,6 +31,16 @@
       return item;
     }
     return { ...item, summary: liveSummary };
+  });
+
+  // Notification kind is encoded on meta.kind for sub-discrimination —
+  // session-died notifications carry their own renderer (the historical
+  // record of a process exit). Plain `notification` rows fall back to
+  // NotificationRow's generic shape.
+  const notificationKind = $derived.by(() => {
+    if (displayItem.kind !== 'notification') return '';
+    const meta = parseJsonObject(displayItem.meta);
+    return typeof meta?.kind === 'string' ? meta.kind : '';
   });
 </script>
 
@@ -57,7 +71,15 @@
   {:else if displayItem.kind === 'terminal_interaction'}
     <TerminalInteractionRow {pane} item={displayItem} />
   {:else if displayItem.kind === 'notification'}
-    <NotificationRow item={displayItem} />
+    {#if notificationKind === 'session_died'}
+      <SessionDiedNotification item={displayItem} />
+    {:else}
+      <NotificationRow item={displayItem} />
+    {/if}
+  {:else if displayItem.kind === 'api_retry'}
+    <APIRetryRow item={displayItem} />
+  {:else if displayItem.kind === 'api_error'}
+    <APIErrorRow item={displayItem} />
   {:else if displayItem.kind === 'error'}
     <div class="mb-4 rounded-[var(--radius-control)] border border-error/30 bg-error/10 px-3 py-2 text-sm text-error">
       {displayItem.summary}

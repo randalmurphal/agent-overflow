@@ -71,6 +71,7 @@ func TestAllEventKindsListIsComplete(t *testing.T) {
 		provider.EventError:                      true,
 		provider.EventTodoUpdate:                 true,
 		provider.EventNotification:               true,
+		provider.EventAPIRetry:                   true, // transient retry envelopes; rendered as inline timeline rows hiding attempts < 4
 		provider.EventCompactBoundary:            true,
 		provider.EventRateLimits:                 true,
 		provider.EventModelRerouted:              true,
@@ -715,225 +716,17 @@ func TestRateLimitsTolereatesMissingMeta(t *testing.T) {
 	}
 }
 
-// TestSessionStatusRoutesPersistentKinds covers the persistent → provider:status
-// path for EventSessionStatus. A rate-limit retry maps to
-// rate_limited_retrying and the banner carries the thread's provider so a
-// multi-provider UI can scope the banner correctly.
-func TestSessionStatusRoutesPersistentKinds(t *testing.T) {
-	router, st, emissions := newTestRouter(t)
-	createTestThread(t, st, "t1")
-
-	meta, _ := json.Marshal(map[string]any{
-		"error":        "rate_limit",
-		"error_status": 429,
-	})
-	evt := provider.ProviderEvent{
-		Kind:      provider.EventSessionStatus,
-		ThreadID:  "t1",
-		Content:   "retrying",
-		Meta:      meta,
-		Timestamp: time.Now(),
-	}
-	if err := router.Handle(evt); err != nil {
-		t.Fatalf("handle session-status: %v", err)
-	}
-
-	statusEmits := filterEmissions(*emissions, "provider:status")
-	if len(statusEmits) != 1 {
-		t.Fatalf("expected 1 provider:status emission, got %+v", *emissions)
-	}
-	payload, ok := statusEmits[0].data.(provider.ProviderStatusEvent)
-	if !ok {
-		t.Fatalf("provider:status payload type = %T, want provider.ProviderStatusEvent", statusEmits[0].data)
-	}
-	if payload.Kind != provider.ProviderStatusRateLimitedRetrying {
-		t.Fatalf("kind = %q, want %q", payload.Kind, provider.ProviderStatusRateLimitedRetrying)
-	}
-	if payload.Message != "rate_limit" {
-		t.Fatalf("message = %q, want %q", payload.Message, "rate_limit")
-	}
-	if payload.Provider != "claude" {
-		t.Fatalf("provider = %q, want claude (from seeded thread)", payload.Provider)
-	}
-	if payload.ThreadID != "t1" {
-		t.Fatalf("threadID = %q, want t1", payload.ThreadID)
-	}
-	if len(filterEmissions(*emissions, "provider:event")) != 0 {
-		t.Fatalf("expected no provider:event passthrough for persistent status, got %+v", *emissions)
-	}
-}
-
-// TestSessionStatusPrecisePerReason covers the kind-precision contract of
-// handleSessionStatus: when a retry event carries an upstream reason in
-// Meta, the banner Kind matches the reason (rate-limit, unauth, or
-// transient_retry as a catch-all) and the Message carries the raw reason
-// so the user can tell rate-limit from auth-failure. Empty Meta falls
-// through to transient_retry with a generic "Retrying..." message.
-func TestSessionStatusPrecisePerReason(t *testing.T) {
-	cases := []struct {
-		name        string
-		meta        map[string]any
-		wantKind    provider.ProviderStatusEventKind
-		wantMessage string
-	}{
-		{
-			name:        "claude_rate_limit",
-			meta:        map[string]any{"error": "rate_limit", "error_status": 429},
-			wantKind:    provider.ProviderStatusRateLimitedRetrying,
-			wantMessage: "rate_limit",
-		},
-		{
-			name:        "claude_auth_failed",
-			meta:        map[string]any{"error": "authentication_failed", "error_status": 401},
-			wantKind:    provider.ProviderStatusUnauthenticated,
-			wantMessage: "authentication_failed",
-		},
-		{
-			name:        "claude_server_error",
-			meta:        map[string]any{"error": "server_error", "error_status": 502},
-			wantKind:    provider.ProviderStatusTransientRetry,
-			wantMessage: "server_error",
-		},
-		{
-			name:        "claude_billing_error",
-			meta:        map[string]any{"error": "billing_error"},
-			wantKind:    provider.ProviderStatusTransientRetry,
-			wantMessage: "billing_error",
-		},
-		{
-			name:        "claude_max_output_tokens",
-			meta:        map[string]any{"error": "max_output_tokens"},
-			wantKind:    provider.ProviderStatusTransientRetry,
-			wantMessage: "max_output_tokens",
-		},
-		{
-			name: "codex_nested_rate_limit",
-			meta: map[string]any{
-				"willRetry": true,
-				"error":     map[string]any{"message": "Rate limit exceeded, retry after 30s"},
-			},
-			wantKind:    provider.ProviderStatusRateLimitedRetrying,
-			wantMessage: "Rate limit exceeded, retry after 30s",
-		},
-		{
-			name: "codex_nested_unknown",
-			meta: map[string]any{
-				"willRetry": true,
-				"error":     map[string]any{"message": "Reconnecting... 2/5"},
-			},
-			wantKind:    provider.ProviderStatusTransientRetry,
-			wantMessage: "Reconnecting... 2/5",
-		},
-		{
-			name:        "empty_meta",
-			meta:        nil,
-			wantKind:    provider.ProviderStatusTransientRetry,
-			wantMessage: "Retrying...",
-		},
-		// Negative cases — substring matching used to misclassify these.
-		// A Codex rate-limit message that quotes "401 requests/minute" must
-		// still land on rate_limited_retrying, not unauthenticated. The
-		// boundary-aware status-code matcher keeps "401" from winning here
-		// because it's glued to a digit run; the phrase "rate limit" wins
-		// via the rate-limit branch.
-		{
-			name: "codex_rate_limit_mentions_401_requests",
-			meta: map[string]any{
-				"willRetry": true,
-				"error":     map[string]any{"message": "Rate limit exceeded: 401 requests/minute"},
-			},
-			wantKind:    provider.ProviderStatusRateLimitedRetrying,
-			wantMessage: "Rate limit exceeded: 401 requests/minute",
-		},
-		{
-			// Claude's closed enum takes precedence over stray substrings.
-			// If the same "rate_limit" enum arrives with a confusing
-			// narrative message, we still land on rate_limited_retrying.
-			name: "claude_rate_limit_exact_wins_over_text",
-			meta: map[string]any{
-				"error":         "rate_limit",
-				"error_message": "Your 401 auth token expired — wait and retry.",
-			},
-			wantKind:    provider.ProviderStatusRateLimitedRetrying,
-			wantMessage: "rate_limit",
-		},
-		{
-			// 1401 must NOT match 401 as a status code. Free-form message
-			// with no phrase signals falls through to transient retry.
-			name: "codex_digit_glued_to_status_code_falls_through",
-			meta: map[string]any{
-				"willRetry": true,
-				"error":     map[string]any{"message": "Process 1401 restarted"},
-			},
-			wantKind:    provider.ProviderStatusTransientRetry,
-			wantMessage: "Process 1401 restarted",
-		},
-		{
-			// "authorization" alone (no "unauthorized", no 401/403) is NOT
-			// an auth error. We used to match "auth" as a prefix and flip
-			// to unauthenticated incorrectly — this guards the fix.
-			name: "message_mentions_authorization_header_only",
-			meta: map[string]any{
-				"willRetry": true,
-				"error":     map[string]any{"message": "Refreshing authorization header"},
-			},
-			wantKind:    provider.ProviderStatusTransientRetry,
-			wantMessage: "Refreshing authorization header",
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			router, st, emissions := newTestRouter(t)
-			createTestThread(t, st, "t1")
-
-			var meta json.RawMessage
-			if tc.meta != nil {
-				m, err := json.Marshal(tc.meta)
-				if err != nil {
-					t.Fatalf("marshal meta: %v", err)
-				}
-				meta = m
-			}
-
-			evt := provider.ProviderEvent{
-				Kind:      provider.EventSessionStatus,
-				ThreadID:  "t1",
-				Content:   "retrying",
-				Meta:      meta,
-				Timestamp: time.Now(),
-			}
-			if err := router.Handle(evt); err != nil {
-				t.Fatalf("handle session-status: %v", err)
-			}
-
-			statusEmits := filterEmissions(*emissions, "provider:status")
-			if len(statusEmits) != 1 {
-				t.Fatalf("expected 1 provider:status emission, got %+v", *emissions)
-			}
-			payload, ok := statusEmits[0].data.(provider.ProviderStatusEvent)
-			if !ok {
-				t.Fatalf("payload type = %T, want ProviderStatusEvent", statusEmits[0].data)
-			}
-			if payload.Kind != tc.wantKind {
-				t.Fatalf("kind = %q, want %q", payload.Kind, tc.wantKind)
-			}
-			if payload.Message != tc.wantMessage {
-				t.Fatalf("message = %q, want %q", payload.Message, tc.wantMessage)
-			}
-		})
-	}
-}
-
 // TestSessionStatusDropsTransientKinds verifies that transient lifecycle
-// signals ("disconnected", "session_state_changed", "error") don't reach
-// the banner channel — they're handled by working-indicator + EventError
-// flows elsewhere.
+// signals ("disconnected", "session_state_changed") don't reach any
+// frontend channel. The "error" content is no longer transient — it
+// promotes to a session_died notification + provider:session_died
+// emission and a synthesized truncated turn-complete; that path is
+// covered separately by the session_died tests.
 func TestSessionStatusDropsTransientKinds(t *testing.T) {
 	router, st, emissions := newTestRouter(t)
 	createTestThread(t, st, "t1")
 
-	transient := []string{"disconnected", "session_state_changed", "error"}
+	transient := []string{"disconnected", "session_state_changed"}
 	for _, content := range transient {
 		evt := provider.ProviderEvent{
 			Kind:      provider.EventSessionStatus,
@@ -948,6 +741,9 @@ func TestSessionStatusDropsTransientKinds(t *testing.T) {
 
 	if got := len(filterEmissions(*emissions, "provider:status")); got != 0 {
 		t.Fatalf("expected 0 provider:status emissions for transients, got %d (%+v)", got, *emissions)
+	}
+	if got := len(filterEmissions(*emissions, "provider:session_died")); got != 0 {
+		t.Fatalf("expected 0 provider:session_died emissions for transients, got %d (%+v)", got, *emissions)
 	}
 	if got := len(filterEmissions(*emissions, "provider:event")); got != 0 {
 		t.Fatalf("expected 0 provider:event emissions for transients, got %d (%+v)", got, *emissions)

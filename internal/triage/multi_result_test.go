@@ -542,3 +542,76 @@ func TestClearOpenTurnSweepsPendingApprovalsAndUserInputs(t *testing.T) {
 		t.Errorf("pendingUserInputs not swept: %d entries remain", got)
 	}
 }
+
+// TestAssistantErrorThenResultSettlesExactlyOnce pins the wire
+// ordering for an SDK API error mid-turn: an `assistant.error`
+// envelope is emitted as EventError{fatal:true,
+// expect_turn_complete:true}, FOLLOWED by a real `result{is_error:true}`
+// envelope as EventTurnComplete. Together they must:
+//
+//  1. Produce exactly one provider:turn_completed emission (the wire
+//     turn-complete settles the turn — no synthesis, since the fatal
+//     opted in to "wire complete will follow").
+//  2. Persist exactly one api_error row (the EventError handler routes
+//     enum-tagged errors to kind:api_error rather than the generic
+//     error kind).
+//
+// A regression here would re-introduce a race where the synthesis
+// fires before the wire complete and the handler runs twice.
+func TestAssistantErrorThenResultSettlesExactlyOnce(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnStart, ThreadID: "t1", TurnIndex: 0,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn start: %v", err)
+	}
+	*emissions = nil
+
+	// assistant.error envelope → EventError{fatal:true,
+	// expect_turn_complete:true, error: rate_limit}. The opt-in flag
+	// suppresses synthesis so the real wire result settles the turn.
+	errMeta, _ := json.Marshal(map[string]any{
+		"fatal":                true,
+		"expect_turn_complete": true,
+		"error":                "rate_limit",
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventError, ThreadID: "t1",
+		Content: "Rate limit reached", Meta: errMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("assistant.error: %v", err)
+	}
+
+	// Real wire result{is_error:true} arrives as EventTurnComplete,
+	// settling the turn for real. With expect_turn_complete:true on
+	// the prior fatal there is no synthesis to race against.
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnComplete, ThreadID: "t1",
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("real turn complete: %v", err)
+	}
+
+	completed := filterEmissions(*emissions, "provider:turn_completed")
+	if len(completed) != 1 {
+		t.Fatalf("expected exactly 1 provider:turn_completed, got %d", len(completed))
+	}
+
+	items, err := st.ListItems("t1")
+	if err != nil {
+		t.Fatalf("list items: %v", err)
+	}
+	var apiErrors int
+	for _, it := range items {
+		if it.Kind == itemKindAPIError {
+			apiErrors++
+		}
+	}
+	if apiErrors != 1 {
+		t.Fatalf("expected exactly 1 api_error row, got %d (%+v)", apiErrors, items)
+	}
+}

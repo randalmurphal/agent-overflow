@@ -103,16 +103,16 @@ describe('providerStatus store', () => {
       // the banner draws.
       emitWailsEvent('provider:status', {
         provider: 'claude',
-        kind: 'rate_limited_retrying',
-        actionable: false,
-        message: 'Rate limited — retrying',
+        kind: 'unauthenticated',
+        actionable: true,
+        message: 'Re-authenticate',
       } as unknown as ProviderStatusEvent);
 
       const stored = getProviderStatus('claude');
       expect(stored).not.toBeNull();
-      expect(stored?.kind).toBe('rate_limited_retrying');
-      // Normalization derived an effective status (warning-styled banner).
-      expect(stored?.status).toBe('version_too_old');
+      expect(stored?.kind).toBe('unauthenticated');
+      // Normalization derived an effective status that the banner draws.
+      expect(stored?.status).toBe('unauthenticated');
     });
 
     it('drops kind events whose value is outside the closed enum', () => {

@@ -189,10 +189,7 @@ export interface BackgroundTaskStateEvent {
 export type ProviderStatusKind =
   | 'binary_missing'
   | 'unauthenticated'
-  | 'version_incompatible'
-  | 'rate_limited_retrying'
-  | 'transient_retry'
-  | 'ok';
+  | 'version_incompatible';
 
 export interface ProviderStatusEvent {
   /**
@@ -286,6 +283,25 @@ export interface TurnCompletedEvent {
 export interface SubagentNotificationEvent {
   threadId: string;
   meta?: string;
+}
+
+/**
+ * SessionDiedEvent is the payload for `provider:session_died`. Emitted
+ * when a provider subprocess exits abnormally mid-turn (non-zero exit
+ * code, killed by signal, read-loop EOF). Drives the session-error
+ * banner with the Reconnect call-to-action. The working indicator is
+ * cleared separately via the synthesized `provider:turn_completed`,
+ * and the historical row lives in the timeline as a
+ * `notification`-kind item with `meta.kind = "session_died"` — three
+ * loosely-coupled observers, three jobs.
+ */
+export interface SessionDiedEvent {
+  threadId: string;
+  reason?: string;
+  exitCode?: number;
+  signal?: string;
+  /** Unix-millis when the exit was observed. */
+  occurredAt: number;
 }
 
 /**

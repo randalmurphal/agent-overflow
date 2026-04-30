@@ -1,6 +1,27 @@
 import type { ApprovalKind } from '../types/events';
 import type { Item } from '../types/models';
 
+/**
+ * ActiveTurn is the live in-flight turn for a thread. Populated
+ * exclusively from the `provider:turn_started` wire event; cleared on
+ * `provider:turn_completed`. Never hydrated from persistence —
+ * invariant 22 (turn activity is wire-pushed, never derived from
+ * items).
+ *
+ * The shape lives here because this store owns the per-thread active-
+ * turn map: both the sidebar pill and the chat working indicator read
+ * from it (single source of truth). Survives thread switches because
+ * nothing clears it on switch — that's the load-bearing fix for "I
+ * switched threads and lost the working indicator on a turn that's
+ * still in flight."
+ */
+export interface ActiveTurn {
+  turnId: string;
+  turnIndex: number;
+  /** Unix-millis. Anchors the self-ticking working-indicator timer. */
+  startedAt: number;
+}
+
 // Global per-thread live-status projection for the sidebar. Chat state is
 // authoritative in the unified item stream; this store keeps the minimal
 // derived signal the thread list needs for off-pane rows (running, pending
@@ -41,7 +62,11 @@ const activeItemIDsByThread = new Map<string, Set<string>>();
 const approvalIDsByThread = new Map<string, Set<string>>();
 const awaitingInputIDsByThread = new Map<string, Set<string>>();
 const approvalThreadByID = new Map<string, string>();
-const activeTurnIDsByThread = new Map<string, Set<string>>();
+// activeTurnByThread is the global per-thread ActiveTurn registry —
+// the single source of truth for "is a turn in flight on this
+// thread?". $state-backed so chat-side derivations
+// (ChatWorkingIndicator, MessageTimeline) react when it changes.
+let activeTurnByThread: Map<string, ActiveTurn> = $state(new Map());
 const pendingSendThreads = new Set<string>();
 const planReadyThreads = new Set<string>();
 const errorThreads = new Set<string>();
@@ -89,7 +114,7 @@ function recalculateThreadStatus(threadId: string): void {
   }
   if (
     pendingSendThreads.has(threadId)
-    || (activeTurnIDsByThread.get(threadId)?.size ?? 0) > 0
+    || activeTurnByThread.has(threadId)
     || (activeItemIDsByThread.get(threadId)?.size ?? 0) > 0
   ) {
     setThreadStatus(threadId, 'running');
@@ -147,7 +172,11 @@ export function setThreadStatus(threadId: string, status: ThreadLiveStatus): voi
  */
 export function clearThreadStatus(threadId: string): void {
   activeItemIDsByThread.delete(threadId);
-  activeTurnIDsByThread.delete(threadId);
+  if (activeTurnByThread.has(threadId)) {
+    const next = new Map(activeTurnByThread);
+    next.delete(threadId);
+    activeTurnByThread = next;
+  }
   pendingSendThreads.delete(threadId);
   planReadyThreads.delete(threadId);
   for (const requestIdSet of [
@@ -206,10 +235,18 @@ export function projectSendResolved(threadId: string, opts: { error?: boolean } 
 
 /**
  * Mark a turn as in-flight. Fired from applyTurnStarted, the only
- * place that can set activeTurn on a pane (invariant 22). A matching
- * projectTurnCompleted clears it.
+ * place that can record a live turn (invariant 22). A matching
+ * projectTurnCompleted clears it. The full {turnId, turnIndex,
+ * startedAt} triple lives in the global registry so off-pane
+ * surfaces (chat working indicator after thread switch, sidebar
+ * pill) all read the same record without each rebuilding it.
  */
-export function projectTurnStarted(threadId: string, turnId: string): void {
+export function projectTurnStarted(
+  threadId: string,
+  turnId: string,
+  turnIndex: number,
+  startedAt: number,
+): void {
   if (!threadId || !turnId) return;
   // Turn-started always supersedes a prior optimistic send flag (we
   // have real backend confirmation now) AND clears any prior error
@@ -223,14 +260,25 @@ export function projectTurnStarted(threadId: string, turnId: string): void {
   planReadyThreads.delete(threadId);
   errorThreads.delete(threadId);
   interruptedThreads.delete(threadId);
-  trackedIDsFor(activeTurnIDsByThread, threadId).add(turnId);
+  // Idempotent on (threadId, turnId): a Claude re-init / interrupt can
+  // re-emit EventTurnStart for the same turn. Preserving the original
+  // startedAt keeps the working-indicator's elapsed-seconds counter
+  // monotonically increasing instead of rewinding on each re-init.
+  const existing = activeTurnByThread.get(threadId);
+  if (existing && existing.turnId === turnId) return;
+  const next = new Map(activeTurnByThread);
+  next.set(threadId, { turnId, turnIndex, startedAt });
+  activeTurnByThread = next;
   recalculateThreadStatus(threadId);
 }
 
 /**
  * Clear an in-flight turn. Provider errors flip the thread to Failed;
  * clean interrupts flip it to Interrupted so user-cancelled or killed
- * work does not read as a provider failure.
+ * work does not read as a provider failure. A complete arriving for
+ * a turnId different from the current entry is a no-op against the
+ * registry (defensive — turnIndex+startedAt should match), but the
+ * status flags below still apply.
  */
 export function projectTurnCompleted(
   threadId: string,
@@ -238,7 +286,12 @@ export function projectTurnCompleted(
   opts: { aborted?: boolean; errorMessage?: string } = {},
 ): void {
   if (!threadId || !turnId) return;
-  removeTrackedID(activeTurnIDsByThread, threadId, turnId);
+  const current = activeTurnByThread.get(threadId);
+  if (current && current.turnId === turnId) {
+    const next = new Map(activeTurnByThread);
+    next.delete(threadId);
+    activeTurnByThread = next;
+  }
   if (opts.errorMessage && opts.errorMessage.length > 0) {
     errorThreads.add(threadId);
     interruptedThreads.delete(threadId);
@@ -247,6 +300,18 @@ export function projectTurnCompleted(
     errorThreads.delete(threadId);
   }
   recalculateThreadStatus(threadId);
+}
+
+/**
+ * Read the live in-flight turn for a thread. Returns null when no
+ * turn is active. The single source of truth for "is the working
+ * indicator on?" — both ChatWorkingIndicator (chat view) and the
+ * sidebar pill consume this. Survives thread switches because
+ * nothing in pane lifecycle clears it.
+ */
+export function getActiveTurn(threadId: string): ActiveTurn | null {
+  if (!threadId) return null;
+  return activeTurnByThread.get(threadId) ?? null;
 }
 
 /**
@@ -424,7 +489,7 @@ export function getAllThreadStatuses(): Map<string, ThreadLiveStatus> {
  */
 export function resetForTest(): void {
   activeItemIDsByThread.clear();
-  activeTurnIDsByThread.clear();
+  activeTurnByThread = new Map();
   pendingSendThreads.clear();
   planReadyThreads.clear();
   approvalIDsByThread.clear();

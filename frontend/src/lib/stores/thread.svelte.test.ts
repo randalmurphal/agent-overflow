@@ -1012,11 +1012,14 @@ describe('createThreadPane', () => {
     expect(pane.items.map((item) => item.id)).toEqual(['current']);
   });
 
-  it('derives isTurnActive strictly from activeTurn (invariant 22)', () => {
+  it('derives isTurnActive strictly from activeTurn (invariant 22)', async () => {
     // Post-refactor, isTurnActive comes solely from the wire-pushed
     // activeTurn slot. Item state (streaming text, running tool_calls,
-    // pending approvals) no longer leaks into the flag.
+    // pending approvals) no longer leaks into the flag. The active-
+    // turn registry is keyed by threadId, so the pane needs a thread
+    // loaded before set/clear can route through to the global store.
     const pane = createThreadPane();
+    await pane.switchThread(makeThread());
 
     expect(pane.isTurnActive).toBe(false);
 
@@ -1865,8 +1868,9 @@ describe('createThreadPane', () => {
 
   // --- Turn-lifecycle pane state (Wave 2) -----------------------------------
 
-  it('setActiveTurn populates activeTurn and flips isTurnActive on', () => {
+  it('setActiveTurn populates activeTurn and flips isTurnActive on', async () => {
     const pane = createThreadPane();
+    await pane.switchThread(makeThread());
     expect(pane.activeTurn).toBeNull();
     expect(pane.isTurnActive).toBe(false);
 
@@ -1876,12 +1880,13 @@ describe('createThreadPane', () => {
     expect(pane.isTurnActive).toBe(true);
   });
 
-  it('setActiveTurn is idempotent by turnId — preserves startedAt on re-emit', () => {
+  it('setActiveTurn is idempotent by turnId — preserves startedAt on re-emit', async () => {
     // A Claude re-init / interrupt can re-send EventTurnStart for the same
     // (thread, turn). The pane must not rewind startedAt — otherwise the
     // working indicator's elapsed-seconds counter would jump backward each
     // time the provider re-initialises.
     const pane = createThreadPane();
+    await pane.switchThread(makeThread());
     pane.setActiveTurn({ turnId: 'turn-1', turnIndex: 0, startedAt: 1000 });
     pane.setActiveTurn({ turnId: 'turn-1', turnIndex: 0, startedAt: 9999 });
     expect(pane.activeTurn?.startedAt).toBe(1000);

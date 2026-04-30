@@ -1,6 +1,7 @@
 package triage
 
 import (
+	"strconv"
 	"testing"
 	"time"
 
@@ -92,30 +93,5 @@ func TestUnknownSessionStatusLoggedStaysBounded(t *testing.T) {
 // uniqueTestStatus generates a distinct content string per index so
 // each logUnknownSessionStatusOnce call writes a new map key.
 func uniqueTestStatus(i int) string {
-	const prefix = "test-unknown-"
-	// strconv is heavier than needed for a single int; hand-roll to keep
-	// the test file import surface tight.
-	return prefix + itoaAscii(i)
-}
-
-func itoaAscii(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	neg := n < 0
-	if neg {
-		n = -n
-	}
-	var buf [20]byte
-	i := len(buf)
-	for n > 0 {
-		i--
-		buf[i] = byte('0' + n%10)
-		n /= 10
-	}
-	if neg {
-		i--
-		buf[i] = '-'
-	}
-	return string(buf[i:])
+	return "test-unknown-" + strconv.Itoa(i)
 }

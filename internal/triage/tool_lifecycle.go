@@ -18,6 +18,16 @@ const (
 	itemKindToolCall       = "tool_call"
 	itemKindBackgroundDone = "tool_completion"
 	itemKindNotification   = "notification"
+	// itemKindAPIRetry is the live-updating retry indicator. One row
+	// per turn, deterministic id `retry:<turnIndex>` so re-attempts
+	// upsert in place. Status flips from running to completed when a
+	// forward-progress event arrives for the thread.
+	itemKindAPIRetry = "api_retry"
+	// itemKindAPIError is a retry-exhausted assistant API error. The
+	// item.Meta carries the SDK error enum so the frontend can branch
+	// on `rate_limit` / `authentication_failed` / ... and render the
+	// matching actionable copy.
+	itemKindAPIError = "api_error"
 
 	payloadKindToolCallResult = "tool_call_result"
 
