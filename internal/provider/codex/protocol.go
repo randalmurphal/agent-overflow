@@ -2,12 +2,21 @@ package codex
 
 import (
 	"encoding/json"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"agent-overflow/internal/provider"
 )
+
+// codexRetryCountsRE captures the first "N/M" attempt/total pair embedded
+// in a Codex retry message. Both numbers are bounded to 5 digits so a stray
+// long digit run can't be parsed as a retry count; non-digit boundaries
+// stop us from picking up substrings of a longer number ("12345/67890" no
+// longer matches as "1234/6789", which would be misleading).
+var codexRetryCountsRE = regexp.MustCompile(`(?:^|[^0-9])(\d{1,5})/(\d{1,5})(?:[^0-9]|$)`)
 
 // ClassifyNotification converts a Codex app-server notification into zero or
 // more ProviderEvents. Parent/child linkage for CollabAgent children is
@@ -829,44 +838,13 @@ func firstRaw(m map[string]json.RawMessage, keys ...string) json.RawMessage {
 // structure these counts, so this is the best-effort sibling of
 // Claude's wire-typed `attempt`/`max_retries` fields.
 func parseCodexRetryCounts(message string) (attempt int, maxRetries int) {
-	for i := 0; i < len(message); i++ {
-		if message[i] < '0' || message[i] > '9' {
-			continue
-		}
-		// Walk a leading digit run.
-		start := i
-		for i < len(message) && message[i] >= '0' && message[i] <= '9' {
-			i++
-		}
-		if i >= len(message) || message[i] != '/' {
-			continue
-		}
-		left := message[start:i]
-		i++
-		startRight := i
-		for i < len(message) && message[i] >= '0' && message[i] <= '9' {
-			i++
-		}
-		if i == startRight {
-			continue
-		}
-		right := message[startRight:i]
-		// `left` and `right` are guaranteed digit-only and non-empty by
-		// the loop above; guard against absurdly long runs by capping
-		// the slice length before parsing.
-		if len(left) > 5 || len(right) > 5 {
-			return 0, 0
-		}
-		var l, r int
-		for _, c := range left {
-			l = l*10 + int(c-'0')
-		}
-		for _, c := range right {
-			r = r*10 + int(c-'0')
-		}
-		return l, r
+	m := codexRetryCountsRE.FindStringSubmatch(message)
+	if m == nil {
+		return 0, 0
 	}
-	return 0, 0
+	attempt, _ = strconv.Atoi(m[1])
+	maxRetries, _ = strconv.Atoi(m[2])
+	return attempt, maxRetries
 }
 
 func firstNonEmptyString(values ...string) string {

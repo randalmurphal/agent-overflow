@@ -26,32 +26,26 @@
   const errorEnum = $derived(typeof meta?.error === 'string' ? meta.error : '');
 
   type ActionLink = { href: string; label: string };
+  type ErrorPresentation = { action?: ActionLink; hint?: string };
 
-  const action = $derived.by<ActionLink | null>(() => {
-    switch (errorEnum) {
-      case 'rate_limit':
-      case 'billing_error':
-        return {
-          href: 'https://console.anthropic.com/settings/billing',
-          label: 'Add credits at console.anthropic.com',
-        };
-      default:
-        return null;
-    }
-  });
+  // Per-enum presentation table. Keep `action` and `hint` colocated so
+  // adding a new SDK error enum is a single-row edit, not two parallel
+  // switch arms.
+  const BILLING_ACTION: ActionLink = {
+    href: 'https://console.anthropic.com/settings/billing',
+    label: 'Add credits at console.anthropic.com',
+  };
+  const ERROR_PRESENTATIONS: Record<string, ErrorPresentation> = {
+    rate_limit: { action: BILLING_ACTION },
+    billing_error: { action: BILLING_ACTION },
+    authentication_failed: { hint: 'Run /login to reauthenticate.' },
+    server_error: { hint: 'Anthropic API server error — try again in a moment.' },
+    max_output_tokens: {
+      hint: 'The model hit its max-output-tokens cap. Re-prompt or split the request.',
+    },
+  };
 
-  const hint = $derived.by<string>(() => {
-    switch (errorEnum) {
-      case 'authentication_failed':
-        return 'Run /login to reauthenticate.';
-      case 'server_error':
-        return 'Anthropic API server error — try again in a moment.';
-      case 'max_output_tokens':
-        return 'The model hit its max-output-tokens cap. Re-prompt or split the request.';
-      default:
-        return '';
-    }
-  });
+  const presentation = $derived<ErrorPresentation>(ERROR_PRESENTATIONS[errorEnum] ?? {});
 </script>
 
 <div
@@ -64,18 +58,18 @@
     <Icon icon={AlertCircle} size={14} strokeWidth={2} class="mt-0.5 shrink-0 opacity-90" />
     <div class="flex-1 space-y-1">
       <div>{item.summary || 'API error'}</div>
-      {#if hint}
-        <div class="text-[12px] text-error/80">{hint}</div>
+      {#if presentation.hint}
+        <div class="text-[12px] text-error/80">{presentation.hint}</div>
       {/if}
-      {#if action}
+      {#if presentation.action}
         <div>
           <a
-            href={action.href}
+            href={presentation.action.href}
             class="text-[12px] underline hover:no-underline"
             target="_blank"
             rel="noopener noreferrer"
           >
-            {action.label}
+            {presentation.action.label}
           </a>
         </div>
       {/if}

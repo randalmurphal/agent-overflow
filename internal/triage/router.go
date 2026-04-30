@@ -735,16 +735,8 @@ func fatalExpectsWireTurnComplete(meta json.RawMessage) bool {
 	if json.Unmarshal(meta, &m) != nil {
 		return false
 	}
-	// Accept either key — callers can't agree and a false-negative here
-	// just synthesizes an extra TurnComplete (idempotent if the wire
-	// also delivers one).
-	if v, ok := m["expect_turn_complete"].(bool); ok {
-		return v
-	}
-	if v, ok := m["expectTurnComplete"].(bool); ok {
-		return v
-	}
-	return false
+	v, _ := m["expect_turn_complete"].(bool)
+	return v
 }
 
 // synthesizeTruncatedTurnComplete emits a synthetic

@@ -200,6 +200,30 @@ func TestClassifyNotification_ErrorWithWillRetry(t *testing.T) {
 	}
 }
 
+func TestParseCodexRetryCounts(t *testing.T) {
+	cases := []struct {
+		name        string
+		message     string
+		wantAttempt int
+		wantMax     int
+	}{
+		{"plain pair", "Reconnecting... 2/5", 2, 5},
+		{"no pair", "Reconnecting...", 0, 0},
+		{"empty string", "", 0, 0},
+		{"multi-digit", "attempt 123/500", 123, 500},
+		{"adjacent digits don't match", "id1234567/890done", 0, 0},
+		{"finds first valid after stray digits", "code 999999/0 then 2/5", 2, 5},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a, m := parseCodexRetryCounts(tc.message)
+			if a != tc.wantAttempt || m != tc.wantMax {
+				t.Errorf("got (%d, %d), want (%d, %d)", a, m, tc.wantAttempt, tc.wantMax)
+			}
+		})
+	}
+}
+
 func TestClassifyNotification_ErrorWithoutWillRetry(t *testing.T) {
 	params := `{"error":{"message":"fatal error"}}`
 	events := ClassifyNotification("t1", "error", json.RawMessage(params))
