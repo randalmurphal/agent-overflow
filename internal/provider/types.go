@@ -83,7 +83,7 @@ const (
 	EventSessionStatus     EventKind = "session_status"
 	EventTokenUsage        EventKind = "token_usage"
 	EventError             EventKind = "error"
-	EventPlanUpdate        EventKind = "plan_update"
+	EventTodoUpdate        EventKind = "todo_update"
 	EventNotification      EventKind = "notification"
 
 	// Inline/system events that do not render as timeline rows.
@@ -157,7 +157,7 @@ var AllEventKinds = []EventKind{
 	EventSessionStatus,
 	EventTokenUsage,
 	EventError,
-	EventPlanUpdate,
+	EventTodoUpdate,
 	EventNotification,
 	EventCompactBoundary,
 	EventRateLimits,

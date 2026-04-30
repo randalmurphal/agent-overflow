@@ -7,11 +7,11 @@ import (
 	"agent-overflow/internal/provider"
 )
 
-// TestParseAssistantTodoWriteEmitsPlanUpdate covers the parse-side
+// TestParseAssistantTodoWriteEmitsTodoUpdate covers the parse-side
 // reroute for TodoWrite: the tool_use must produce exactly one
-// EventPlanUpdate (no generic EventToolStart), with a normalized plan
+// EventTodoUpdate (no generic EventToolStart), with a normalized plan
 // payload on Meta and the camelCase status enum.
-func TestParseAssistantTodoWriteEmitsPlanUpdate(t *testing.T) {
+func TestParseAssistantTodoWriteEmitsTodoUpdate(t *testing.T) {
 	line := []byte(`{"type":"assistant","message":{"id":"msg-1","role":"assistant","content":[` +
 		`{"type":"tool_use","id":"tool-todo-1","name":"TodoWrite","input":{"todos":[` +
 		`{"content":"Refactor parser","status":"in_progress","activeForm":"Refactoring parser"},` +
@@ -30,8 +30,8 @@ func TestParseAssistantTodoWriteEmitsPlanUpdate(t *testing.T) {
 	}
 
 	evt := events[0]
-	if evt.Kind != provider.EventPlanUpdate {
-		t.Fatalf("kind: got %q, want %q", evt.Kind, provider.EventPlanUpdate)
+	if evt.Kind != provider.EventTodoUpdate {
+		t.Fatalf("kind: got %q, want %q", evt.Kind, provider.EventTodoUpdate)
 	}
 	if evt.ItemID != "tool-todo-1" {
 		t.Errorf("item id: got %q, want tool-todo-1", evt.ItemID)
@@ -51,11 +51,11 @@ func TestParseAssistantTodoWriteEmitsPlanUpdate(t *testing.T) {
 	if err := json.Unmarshal(evt.Meta, &meta); err != nil {
 		t.Fatalf("unmarshal meta: %v", err)
 	}
-	if meta.Kind != "plan_update" {
-		t.Errorf("meta.kind: got %q, want plan_update", meta.Kind)
+	if meta.Kind != "todo_update" {
+		t.Errorf("meta.kind: got %q, want todo_update", meta.Kind)
 	}
-	if meta.Title != "Updated Plan" {
-		t.Errorf("meta.title: got %q, want Updated Plan", meta.Title)
+	if meta.Title != "Updated Todos" {
+		t.Errorf("meta.title: got %q, want Updated Todos", meta.Title)
 	}
 	if len(meta.Plan) != 3 {
 		t.Fatalf("plan steps: got %d, want 3", len(meta.Plan))
@@ -96,7 +96,7 @@ func TestParseAssistantTodoWriteEmptyTodosDropsEvent(t *testing.T) {
 		t.Fatalf("parse: %v", err)
 	}
 	for _, e := range events {
-		if e.Kind == provider.EventPlanUpdate || e.Kind == provider.EventToolStart {
+		if e.Kind == provider.EventTodoUpdate || e.Kind == provider.EventToolStart {
 			t.Fatalf("expected no plan/tool events for empty todos, got %+v", e)
 		}
 	}

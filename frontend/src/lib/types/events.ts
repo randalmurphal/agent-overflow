@@ -289,32 +289,32 @@ export interface SubagentNotificationEvent {
 }
 
 /**
- * PlanStepStatus is the canonical camelCase status enum shared by both
+ * TodoStepStatus is the canonical camelCase status enum shared by both
  * providers. Codex emits this shape natively; Claude TodoWrite's
  * snake_case `in_progress` is normalised to `inProgress` in the parser
  * so the frontend sees one vocabulary.
  */
-export type PlanStepStatus = 'pending' | 'inProgress' | 'completed';
+export type TodoStepStatus = 'pending' | 'inProgress' | 'completed';
 
 /**
- * PlanStep is one item in a live plan snapshot.
+ * TodoStep is one item in a live todo list snapshot.
  */
-export interface PlanStep {
+export interface TodoStep {
   step: string;
-  status: PlanStepStatus;
+  status: TodoStepStatus;
 }
 
 /**
- * PlanUpdateEvent is the payload for `provider:plan_update`. Carries
- * the latest live-plan snapshot from either Claude TodoWrite or Codex
- * update_plan. The listener writes it to `pane.livePlan`; the
- * `LivePlanPanel` component renders the panel anchored to the working
- * indicator. There is no timeline footprint — plans are session state,
+ * TodoUpdateEvent is the payload for `provider:todo_update`. Carries
+ * the latest live-todo snapshot from either Claude TodoWrite or Codex
+ * update_plan. The listener writes it to `pane.liveTodo`; the
+ * `LiveTodoPanel` component renders the panel anchored to the working
+ * indicator. There is no timeline footprint — todos are session state,
  * not history.
  */
-export interface PlanUpdateEvent {
+export interface TodoUpdateEvent {
   threadId: string;
-  steps: PlanStep[];
+  steps: TodoStep[];
 }
 
 /**

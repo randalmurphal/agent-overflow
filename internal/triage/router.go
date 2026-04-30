@@ -297,8 +297,8 @@ func (r *Router) Handle(evt provider.ProviderEvent) error {
 		return r.handleRateLimits(evt)
 	case provider.EventError:
 		return r.handleError(evt)
-	case provider.EventPlanUpdate:
-		return r.handlePlanUpdate(evt)
+	case provider.EventTodoUpdate:
+		return r.handleTodoUpdate(evt)
 	case provider.EventNotification:
 		return r.handleTimelineNotification(evt)
 	case provider.EventTokenUsage:

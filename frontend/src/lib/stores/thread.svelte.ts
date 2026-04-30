@@ -3,7 +3,7 @@ import type {
   ApprovalRequest,
   ContextWindow,
   ItemDeltaEvent,
-  PlanStep,
+  TodoStep,
   ProviderStatusEvent,
   SubagentNotificationEvent,
   TokenUsageSummary,
@@ -117,69 +117,69 @@ export interface SettledTurn {
 }
 
 /**
- * LivePlan is the snapshot the working-indicator panel renders.
- * Populated from `provider:plan_update` events (Claude TodoWrite reroute
+ * LiveTodo is the snapshot the working-indicator panel renders.
+ * Populated from `provider:todo_update` events (Claude TodoWrite reroute
  * + Codex update_plan, both normalised in the parser). Survives turn
  * boundaries by design: the panel keeps showing while items remain
  * incomplete and auto-hides on a timer when every step is `completed`.
  */
-export interface LivePlan {
-  steps: PlanStep[];
+export interface LiveTodo {
+  steps: TodoStep[];
 }
 
 /**
- * LIVE_PLAN_AUTOHIDE_MS is how long the panel lingers after every step
+ * LIVE_TODO_AUTOHIDE_MS is how long the panel lingers after every step
  * is `completed` before the auto-hide timer clears it. Long enough for
  * the user to see the satisfying all-done state, short enough that the
  * panel doesn't squat on the working indicator slot indefinitely.
  */
-export const LIVE_PLAN_AUTOHIDE_MS = 5_000;
+export const LIVE_TODO_AUTOHIDE_MS = 5_000;
 
 /**
- * Per-thread live-plan dropdown UI preferences (expanded / show-all).
+ * Per-thread live-todo dropdown UI preferences (expanded / show-all).
  * Module-scoped so a thread switch can save the outgoing thread's
  * state and restore the incoming thread's. Lives in process memory by
  * design — survives thread switches within a session, dies on app
  * restart, no SQLite roundtrip.
  */
-interface LivePlanUiPrefs {
+interface LiveTodoUiPrefs {
   expanded: boolean;
   showAll: boolean;
 }
-const livePlanUiPrefs = new Map<string, LivePlanUiPrefs>();
+const liveTodoUiPrefs = new Map<string, LiveTodoUiPrefs>();
 
-function readLivePlanUiPrefs(threadID: string | null): LivePlanUiPrefs {
+function readLiveTodoUiPrefs(threadID: string | null): LiveTodoUiPrefs {
   if (!threadID) return { expanded: false, showAll: false };
-  return livePlanUiPrefs.get(threadID) ?? { expanded: false, showAll: false };
+  return liveTodoUiPrefs.get(threadID) ?? { expanded: false, showAll: false };
 }
 
-function writeLivePlanUiPrefs(threadID: string | null, prefs: LivePlanUiPrefs): void {
+function writeLiveTodoUiPrefs(threadID: string | null, prefs: LiveTodoUiPrefs): void {
   if (!threadID) return;
-  livePlanUiPrefs.set(threadID, prefs);
+  liveTodoUiPrefs.set(threadID, prefs);
 }
 
 /**
- * Drop a thread's live-plan UI prefs. Called from the thread-removal
+ * Drop a thread's live-todo UI prefs. Called from the thread-removal
  * path so a deleted thread doesn't leave a permanent entry in the
  * module-scoped prefs map. Bounded growth would otherwise be tied to
  * the count of distinct threads ever toggled in a session, which is
  * fine in practice but accumulates across long-running sessions.
  */
-export function dropLivePlanUiPrefs(threadID: string | null): void {
+export function dropLiveTodoUiPrefs(threadID: string | null): void {
   if (!threadID) return;
-  livePlanUiPrefs.delete(threadID);
+  liveTodoUiPrefs.delete(threadID);
 }
 
 /**
- * Test-only reset for the live-plan UI prefs map. The map is
+ * Test-only reset for the live-todo UI prefs map. The map is
  * intentionally module-scoped so per-thread open/closed state survives
  * thread switches in production; tests need to clear it between cases
  * so cross-test pollution doesn't flip a fresh pane's defaults.
  * Production code never calls this — same pattern as the markdown
  * enhancement caches in `markdownEnhance.ts`.
  */
-export function __resetLivePlanUiPrefsForTest(): void {
-  livePlanUiPrefs.clear();
+export function __resetLiveTodoUiPrefsForTest(): void {
+  liveTodoUiPrefs.clear();
 }
 
 // Diff-sidebar UI types are owned by stores/rhsPanelSlot.svelte.ts.
@@ -445,26 +445,26 @@ export function createThreadPane() {
   // the indicator on.
   let activeTurn: ActiveTurn | null = $state(null);
   let latestSettledTurn: SettledTurn | null = $state(null);
-  // Live-plan panel state. Independent of activeTurn — the panel
+  // Live-todo panel state. Independent of activeTurn — the panel
   // persists past turn-end if items remain incomplete and only
   // disappears when the agent marks every step completed (auto-hide
   // timer below) or the user switches threads. Sourced from
-  // `provider:plan_update` events; both Claude TodoWrite and Codex
+  // `provider:todo_update` events; both Claude TodoWrite and Codex
   // update_plan funnel through that channel after parser
   // normalisation. Lost on app restart by design.
-  let livePlan: LivePlan | null = $state(null);
-  let livePlanExpanded = $state(false);
-  let livePlanShowAll = $state(false);
-  let livePlanAutoHideTimer: ReturnType<typeof setTimeout> | null = null;
-  // Step texts that were on-screen when the previous all-completed plan
+  let liveTodo: LiveTodo | null = $state(null);
+  let liveTodoExpanded = $state(false);
+  let liveTodoShowAll = $state(false);
+  let liveTodoAutoHideTimer: ReturnType<typeof setTimeout> | null = null;
+  // Step texts that were on-screen when the previous all-completed todo list
   // auto-hid. The agent re-emits the FULL todo list on each update, so
   // without this set the next update would re-show the prior completed
   // items in the new panel. We subtract them from incoming snapshots so
-  // each "logical plan" cycle starts fresh from the user's viewpoint.
+  // each "logical todo cycle" cycle starts fresh from the user's viewpoint.
   // Bounded to keep long sessions with many cycles from leaking
   // memory; oldest entries drop first.
-  let livePlanCleared = new Set<string>();
-  const livePlanClearedCap = 1_000;
+  let liveTodoCleared = new Set<string>();
+  const liveTodoClearedCap = 1_000;
   // Subagent notification log. The backend emits
   // `provider:subagent_notification` as a pass-through; no UI consumes it
   // today, but keeping a bounded in-pane log lets future surfaces (tray,
@@ -1233,22 +1233,22 @@ export function createThreadPane() {
       activeTurn = null;
       latestSettledTurn = null;
       subagentNotifications = [];
-      // Live-plan reset. The plan snapshot is per-thread session state
+      // Live-todo reset. The todo snapshot is per-thread session state
       // and must not bleed into the incoming thread; the auto-hide timer
       // is cancelled to avoid a stale clear firing against the wrong
       // pane. The dropdown's open/show-all state survives per-thread via
-      // livePlanUiPrefs so the user's preference for the incoming thread
+      // liveTodoUiPrefs so the user's preference for the incoming thread
       // is restored on re-entry. Default for a thread the user has never
       // opened the panel in is closed.
-      if (livePlanAutoHideTimer !== null) {
-        clearTimeout(livePlanAutoHideTimer);
-        livePlanAutoHideTimer = null;
+      if (liveTodoAutoHideTimer !== null) {
+        clearTimeout(liveTodoAutoHideTimer);
+        liveTodoAutoHideTimer = null;
       }
-      livePlan = null;
-      livePlanCleared = new Set();
-      const incomingPrefs = readLivePlanUiPrefs(newThread.id);
-      livePlanExpanded = incomingPrefs.expanded;
-      livePlanShowAll = incomingPrefs.showAll;
+      liveTodo = null;
+      liveTodoCleared = new Set();
+      const incomingPrefs = readLiveTodoUiPrefs(newThread.id);
+      liveTodoExpanded = incomingPrefs.expanded;
+      liveTodoShowAll = incomingPrefs.showAll;
       diffPanel.clearForThread();
       loading = true;
       items = [];
@@ -1422,18 +1422,18 @@ export function createThreadPane() {
       activeTurn = null;
       latestSettledTurn = null;
       subagentNotifications = [];
-      // Mirror the live-plan reset block in switchThread: clearing the
-      // pane while a plan is mounted otherwise leaves a stale panel
+      // Mirror the live-todo reset block in switchThread: clearing the
+      // pane while a todo list is mounted otherwise leaves a stale panel
       // with a dangling auto-hide timer that can fire against an
       // unrelated subsequent thread.
-      if (livePlanAutoHideTimer !== null) {
-        clearTimeout(livePlanAutoHideTimer);
-        livePlanAutoHideTimer = null;
+      if (liveTodoAutoHideTimer !== null) {
+        clearTimeout(liveTodoAutoHideTimer);
+        liveTodoAutoHideTimer = null;
       }
-      livePlan = null;
-      livePlanCleared = new Set();
-      livePlanExpanded = false;
-      livePlanShowAll = false;
+      liveTodo = null;
+      liveTodoCleared = new Set();
+      liveTodoExpanded = false;
+      liveTodoShowAll = false;
       oldestLoadedTurnIndex = null;
       hasMoreHistory = false;
       loadingOlder = false;
@@ -1806,15 +1806,15 @@ export function createThreadPane() {
       latestSettledTurn = null;
     },
 
-    // --- Live plan (working-indicator panel) ---
+    // --- Live todo (working-indicator panel) ---
 
-    get livePlan() { return livePlan; },
-    get livePlanExpanded() { return livePlanExpanded; },
-    get livePlanShowAll() { return livePlanShowAll; },
+    get liveTodo() { return liveTodo; },
+    get liveTodoExpanded() { return liveTodoExpanded; },
+    get liveTodoShowAll() { return liveTodoShowAll; },
 
     /**
-     * Replace the live-plan snapshot. Called from the
-     * `provider:plan_update` listener for both Claude TodoWrite and
+     * Replace the live-todo snapshot. Called from the
+     * `provider:todo_update` listener for both Claude TodoWrite and
      * Codex update_plan. Empty step arrays clear the panel rather than
      * render an empty state. When every step is `completed`, schedule
      * the auto-hide timer; any subsequent update cancels the pending
@@ -1822,87 +1822,87 @@ export function createThreadPane() {
      * panel cleanly.
      *
      * Open/show-all state is intentionally NOT reset here — those are
-     * per-thread user preferences (livePlanUiPrefs) that should survive
-     * the plan briefly disappearing and reappearing within a thread.
+     * per-thread user preferences (liveTodoUiPrefs) that should survive
+     * the todo list briefly disappearing and reappearing within a thread.
      */
-    setLivePlan(steps: PlanStep[]): void {
-      if (livePlanAutoHideTimer !== null) {
-        clearTimeout(livePlanAutoHideTimer);
-        livePlanAutoHideTimer = null;
+    setLiveTodo(steps: TodoStep[]): void {
+      if (liveTodoAutoHideTimer !== null) {
+        clearTimeout(liveTodoAutoHideTimer);
+        liveTodoAutoHideTimer = null;
       }
-      // The provider:plan_update listener (events.ts:applyPlanUpdate) is
+      // The provider:todo_update listener (events.ts:applyTodoUpdate) is
       // the wire boundary and validates `steps` is an array before
       // calling here; trust the input from that point on.
       // Subtract steps that the previous all-completed cycle already
       // cleared so the agent's full-list re-emission doesn't repaint
-      // those rows under a new logical plan.
-      const filtered = livePlanCleared.size === 0
+      // those rows under a new logical todo cycle.
+      const filtered = liveTodoCleared.size === 0
         ? steps
         : steps.filter(
-            (s) => !(s.status === 'completed' && livePlanCleared.has(s.step)),
+            (s) => !(s.status === 'completed' && liveTodoCleared.has(s.step)),
           );
       if (filtered.length === 0) {
-        livePlan = null;
+        liveTodo = null;
         return;
       }
-      livePlan = { steps: filtered };
+      liveTodo = { steps: filtered };
       const allComplete = filtered.every((s) => s.status === 'completed');
       if (allComplete) {
-        livePlanAutoHideTimer = setTimeout(() => {
+        liveTodoAutoHideTimer = setTimeout(() => {
           // Snapshot the just-cleared step texts so the next update
           // starts the panel fresh. Cap the set to bound memory across
-          // long sessions with many plan cycles; insertion-ordered
+          // long sessions with many todo cycles; insertion-ordered
           // iteration drops the oldest entries first.
-          if (livePlan) {
-            for (const s of livePlan.steps) {
-              livePlanCleared.add(s.step);
+          if (liveTodo) {
+            for (const s of liveTodo.steps) {
+              liveTodoCleared.add(s.step);
             }
-            if (livePlanCleared.size > livePlanClearedCap) {
-              const arr = Array.from(livePlanCleared);
-              livePlanCleared = new Set(arr.slice(arr.length - livePlanClearedCap));
+            if (liveTodoCleared.size > liveTodoClearedCap) {
+              const arr = Array.from(liveTodoCleared);
+              liveTodoCleared = new Set(arr.slice(arr.length - liveTodoClearedCap));
             }
           }
-          livePlan = null;
-          livePlanAutoHideTimer = null;
-        }, LIVE_PLAN_AUTOHIDE_MS);
+          liveTodo = null;
+          liveTodoAutoHideTimer = null;
+        }, LIVE_TODO_AUTOHIDE_MS);
       }
     },
 
     /**
-     * Drop the live-plan snapshot without waiting for the auto-hide
+     * Drop the live-todo snapshot without waiting for the auto-hide
      * timer. Per-thread UI prefs are NOT cleared — the user's "I had
-     * this open" preference persists across plan-clear and across
+     * this open" preference persists across todo-clear and across
      * thread switches within the same session.
      *
      * Explicit clear also resets the "cleared cycle" set: the user's
-     * mental model is "no plan, fresh start", and any subsequent
+     * mental model is "no todos, fresh start", and any subsequent
      * snapshot should be shown verbatim rather than filtered against
      * a prior auto-hide cycle.
      */
-    clearLivePlan(): void {
-      if (livePlanAutoHideTimer !== null) {
-        clearTimeout(livePlanAutoHideTimer);
-        livePlanAutoHideTimer = null;
+    clearLiveTodo(): void {
+      if (liveTodoAutoHideTimer !== null) {
+        clearTimeout(liveTodoAutoHideTimer);
+        liveTodoAutoHideTimer = null;
       }
-      livePlan = null;
-      livePlanCleared = new Set();
+      liveTodo = null;
+      liveTodoCleared = new Set();
     },
 
     /** Toggle the dropdown between collapsed counts header and expanded list. */
-    toggleLivePlanExpanded(): void {
-      livePlanExpanded = !livePlanExpanded;
-      writeLivePlanUiPrefs(thread?.id ?? null, {
-        expanded: livePlanExpanded,
-        showAll: livePlanShowAll,
+    toggleLiveTodoExpanded(): void {
+      liveTodoExpanded = !liveTodoExpanded;
+      writeLiveTodoUiPrefs(thread?.id ?? null, {
+        expanded: liveTodoExpanded,
+        showAll: liveTodoShowAll,
       });
     },
 
     /** Toggle the "Show X more…" reveal under the truncated list. */
-    toggleLivePlanShowAll(): void {
-      livePlanShowAll = !livePlanShowAll;
-      writeLivePlanUiPrefs(thread?.id ?? null, {
-        expanded: livePlanExpanded,
-        showAll: livePlanShowAll,
+    toggleLiveTodoShowAll(): void {
+      liveTodoShowAll = !liveTodoShowAll;
+      writeLiveTodoUiPrefs(thread?.id ?? null, {
+        expanded: liveTodoExpanded,
+        showAll: liveTodoShowAll,
       });
     },
 

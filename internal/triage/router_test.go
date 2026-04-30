@@ -69,7 +69,7 @@ func TestAllEventKindsListIsComplete(t *testing.T) {
 		provider.EventSessionStatus:              true,
 		provider.EventTokenUsage:                 true,
 		provider.EventError:                      true,
-		provider.EventPlanUpdate:                 true,
+		provider.EventTodoUpdate:                 true,
 		provider.EventNotification:               true,
 		provider.EventCompactBoundary:            true,
 		provider.EventRateLimits:                 true,

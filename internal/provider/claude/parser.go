@@ -39,7 +39,7 @@ type Parser struct {
 	// tagged the same way.
 	backgroundToolUses map[string]bool
 	// todoWriteToolUses flags tool_use IDs for the `TodoWrite` tool. The
-	// tool_use itself emits an EventPlanUpdate (not a generic tool start)
+	// tool_use itself emits an EventTodoUpdate (not a generic tool start)
 	// so the matching tool_result must be dropped — there is no tool-call
 	// row to complete. See parse_assistant.go appendTodoWriteEvent and
 	// parse_user.go appendToolResultCompletion.

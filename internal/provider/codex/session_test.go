@@ -378,11 +378,11 @@ func TestErrorNotification(t *testing.T) {
 	}
 }
 
-func TestTurnPlanUpdatedEmitsPlanUpdate(t *testing.T) {
+func TestTurnPlanUpdatedEmitsTodoUpdate(t *testing.T) {
 	// Real Codex wire shape per app-server-protocol/v2.rs
 	// `TurnPlanUpdatedNotification.plan: Vec<TurnPlanStep>`. The previous
 	// fixture used `plan: "step 1, step 2"` (a string) which only happened
-	// to satisfy the `Kind` assertion; with the new triage `decodePlanSteps`
+	// to satisfy the `Kind` assertion; with the new triage `decodeTodoSteps`
 	// gating the frontend emit, that shape would be silently dropped. Pin
 	// the array shape here so a wire regression surfaces at parse time.
 	params := json.RawMessage(`{"plan":[{"step":"step 1","status":"inProgress"},{"step":"step 2","status":"pending"}]}`)
@@ -391,11 +391,11 @@ func TestTurnPlanUpdatedEmitsPlanUpdate(t *testing.T) {
 	if len(events) != 1 {
 		t.Fatalf("expected 1 event, got %d", len(events))
 	}
-	if events[0].Kind != provider.EventPlanUpdate {
-		t.Fatalf("kind = %q, want %q", events[0].Kind, provider.EventPlanUpdate)
+	if events[0].Kind != provider.EventTodoUpdate {
+		t.Fatalf("kind = %q, want %q", events[0].Kind, provider.EventTodoUpdate)
 	}
 	// Confirm the plan array survives onto Meta in a shape the triage
-	// decoder will accept (decodePlanSteps lives in internal/triage; we
+	// decoder will accept (decodeTodoSteps lives in internal/triage; we
 	// only assert the underlying JSON shape here so this package stays
 	// dependency-free).
 	var meta struct {

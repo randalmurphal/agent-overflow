@@ -13,7 +13,7 @@ func TestEventKindUniqueness(t *testing.T) {
 		EventTurnStart, EventTurnComplete, EventApprovalRequest,
 		EventApprovalResolved, EventUserInputRequest, EventUserInputResolved,
 		EventSessionStatus, EventTokenUsage,
-		EventError, EventPlanUpdate, EventNotification,
+		EventError, EventTodoUpdate, EventNotification,
 		EventCompactBoundary, EventRateLimits,
 		EventModelRerouted, EventThreadRenamed, EventDiff,
 		EventCommandOutput, EventThinking, EventProposedPlan,

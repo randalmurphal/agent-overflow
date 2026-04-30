@@ -16,9 +16,9 @@ func TestTimelineNotificationsUseTurnWideIDs(t *testing.T) {
 	seedOpenTurn(t, router, st, "t1", 0)
 
 	// Two distinct notification kinds (review_status + warning) so the
-	// turn-wide ID counter can be exercised. EventPlanUpdate used to
+	// turn-wide ID counter can be exercised. EventTodoUpdate used to
 	// land here too; it now bypasses persistence — see
-	// TestPlanUpdateEmitsWithoutPersistence.
+	// TestTodoUpdateEmitsWithoutPersistence.
 	if err := router.Handle(provider.ProviderEvent{
 		Kind:      provider.EventNotification,
 		ThreadID:  "t1",
@@ -50,17 +50,17 @@ func TestTimelineNotificationsUseTurnWideIDs(t *testing.T) {
 	}
 }
 
-// TestPlanUpdateEmitsWithoutPersistence pins the new contract:
-// EventPlanUpdate produces a provider:plan_update emission for the
+// TestTodoUpdateEmitsWithoutPersistence pins the new contract:
+// EventTodoUpdate produces a provider:todo_update emission for the
 // frontend live panel and writes nothing to the items table — the
 // snapshot lives only in pane state.
-func TestPlanUpdateEmitsWithoutPersistence(t *testing.T) {
+func TestTodoUpdateEmitsWithoutPersistence(t *testing.T) {
 	router, st, emissions := newTestRouter(t)
 	createTestThread(t, st, "t1")
 	seedOpenTurn(t, router, st, "t1", 0)
 
 	if err := router.Handle(provider.ProviderEvent{
-		Kind:      provider.EventPlanUpdate,
+		Kind:      provider.EventTodoUpdate,
 		ThreadID:  "t1",
 		Meta:      json.RawMessage(`{"plan":[{"step":"one","status":"inProgress"},{"step":"two","status":"pending"}]}`),
 		Timestamp: time.UnixMilli(1_700_000_000_000),
@@ -69,23 +69,23 @@ func TestPlanUpdateEmitsWithoutPersistence(t *testing.T) {
 	}
 
 	if notifications := findItemsByKind(t, st, "t1", itemKindNotification); len(notifications) != 0 {
-		t.Fatalf("plan_update must not persist a notification row; got %d", len(notifications))
+		t.Fatalf("todo_update must not persist a notification row; got %d", len(notifications))
 	}
 
-	var planEmits int
+	var todoEmits int
 	for _, e := range *emissions {
-		if e.eventName != "provider:plan_update" {
+		if e.eventName != "provider:todo_update" {
 			continue
 		}
-		planEmits++
-		payload, ok := e.data.(PlanUpdateEvent)
+		todoEmits++
+		payload, ok := e.data.(TodoUpdateEvent)
 		if !ok {
-			t.Fatalf("provider:plan_update payload type = %T, want PlanUpdateEvent", e.data)
+			t.Fatalf("provider:todo_update payload type = %T, want TodoUpdateEvent", e.data)
 		}
 		if payload.ThreadID != "t1" {
 			t.Errorf("ThreadID = %q, want t1", payload.ThreadID)
 		}
-		want := []PlanStep{
+		want := []TodoStep{
 			{Step: "one", Status: "inProgress"},
 			{Step: "two", Status: "pending"},
 		}
@@ -93,15 +93,15 @@ func TestPlanUpdateEmitsWithoutPersistence(t *testing.T) {
 			t.Errorf("Steps = %+v, want %+v", payload.Steps, want)
 		}
 	}
-	if planEmits != 1 {
-		t.Fatalf("expected exactly 1 provider:plan_update emit, got %d", planEmits)
+	if todoEmits != 1 {
+		t.Fatalf("expected exactly 1 provider:todo_update emit, got %d", todoEmits)
 	}
 }
 
-// TestPlanUpdateEmptyDropsSilently guards the defensive empty check —
+// TestTodoUpdateEmptyDropsSilently guards the defensive empty check —
 // a malformed or empty wire payload must not produce a no-op emission
-// the frontend would render as "no plan".
-func TestPlanUpdateEmptyDropsSilently(t *testing.T) {
+// the frontend would render as "no todos".
+func TestTodoUpdateEmptyDropsSilently(t *testing.T) {
 	router, st, emissions := newTestRouter(t)
 	createTestThread(t, st, "t1")
 	seedOpenTurn(t, router, st, "t1", 0)
@@ -113,18 +113,18 @@ func TestPlanUpdateEmptyDropsSilently(t *testing.T) {
 		`{"plan":[{"step":"","status":"pending"}]}`,
 	} {
 		if err := router.Handle(provider.ProviderEvent{
-			Kind:      provider.EventPlanUpdate,
+			Kind:      provider.EventTodoUpdate,
 			ThreadID:  "t1",
 			Meta:      json.RawMessage(raw),
 			Timestamp: time.Now(),
 		}); err != nil {
-			t.Fatalf("plan update %q: %v", raw, err)
+			t.Fatalf("todo update %q: %v", raw, err)
 		}
 	}
 
 	for _, e := range *emissions {
-		if e.eventName == "provider:plan_update" {
-			t.Fatalf("empty plan must not emit; got %+v", e)
+		if e.eventName == "provider:todo_update" {
+			t.Fatalf("empty todos must not emit; got %+v", e)
 		}
 	}
 }

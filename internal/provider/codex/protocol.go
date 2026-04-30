@@ -112,10 +112,10 @@ func classifyTurnNotification(threadID, method string, params json.RawMessage, n
 
 	case "turn/plan/updated":
 		return []provider.ProviderEvent{{
-			Kind:      provider.EventPlanUpdate,
+			Kind:      provider.EventTodoUpdate,
 			ThreadID:  threadID,
-			Content:   "Updated Plan",
-			Meta:      mergeMetaKeys(params, map[string]any{"kind": "plan_update", "title": "Updated Plan"}),
+			Content:   "Updated Todos",
+			Meta:      mergeMetaKeys(params, map[string]any{"kind": "todo_update", "title": "Updated Todos"}),
 			Timestamp: now,
 		}}, true
 	}

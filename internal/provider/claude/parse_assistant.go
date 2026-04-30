@@ -193,7 +193,7 @@ func (p *Parser) appendToolUseEvent(
 }
 
 // appendTodoWriteEvent converts a TodoWrite tool call into a single
-// EventPlanUpdate carrying the normalized plan snapshot. The tool_use
+// EventTodoUpdate carrying the normalized todo snapshot. The tool_use
 // is also marked so its eventual tool_result can be dropped in
 // parse_user.go — TodoWrite never produces a timeline tool-call row.
 //
@@ -205,8 +205,8 @@ func (p *Parser) appendToolUseEvent(
 // frontend sees the same enum regardless of provider — Codex already
 // emits camelCase per its Rust serde.
 //
-// An empty todos array drops the event rather than emit an empty plan
-// the frontend would render as "no plan".
+// An empty todos array drops the event rather than emit an empty list
+// the frontend would render as "no todos".
 func (p *Parser) appendTodoWriteEvent(
 	events []provider.ProviderEvent,
 	threadID, parentToolUseID string,
@@ -218,8 +218,8 @@ func (p *Parser) appendTodoWriteEvent(
 		return events
 	}
 	meta, err := json.Marshal(map[string]any{
-		"kind":  "plan_update",
-		"title": "Updated Plan",
+		"kind":  "todo_update",
+		"title": "Updated Todos",
 		"plan":  steps,
 	})
 	if err != nil {
@@ -232,11 +232,11 @@ func (p *Parser) appendTodoWriteEvent(
 	// defensive belt.
 	p.markTodoWrite(block.ID)
 	return append(events, provider.ProviderEvent{
-		Kind:            provider.EventPlanUpdate,
+		Kind:            provider.EventTodoUpdate,
 		ThreadID:        threadID,
 		ItemID:          block.ID,
 		ItemType:        block.Name,
-		Content:         "Updated Plan",
+		Content:         "Updated Todos",
 		Meta:            meta,
 		ParentToolUseID: parentToolUseID,
 		Timestamp:       now,

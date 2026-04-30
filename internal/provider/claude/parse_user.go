@@ -68,7 +68,7 @@ func (p *Parser) parseUser(threadID string, raw map[string]json.RawMessage, now 
 // docs/architecture/invariants.md invariant 20) says every `tool_use_id`
 // on a `tool_result` emits exactly one `EventToolComplete` for its own
 // id. The one carve-out is `TodoWrite`: the matching tool_use never
-// produced an `EventToolStart` (it was rerouted to `EventPlanUpdate`),
+// produced an `EventToolStart` (it was rerouted to `EventTodoUpdate`),
 // so emitting a completion here would be an orphan against a
 // non-existent timeline row. Backgrounded placeholders, TaskOutput
 // echoes, and every other standard inline result still emit the
@@ -103,7 +103,7 @@ func (p *Parser) appendToolResultBlock(
 		return events
 	}
 
-	// TodoWrite carve-out: the tool_use was rerouted to EventPlanUpdate
+	// TodoWrite carve-out: the tool_use was rerouted to EventTodoUpdate
 	// in parse_assistant.go and never produced a tool-call row. Drop the
 	// matching tool_result so we don't emit an orphan completion against
 	// a non-existent item. Releasing the flag keeps the correlation map
