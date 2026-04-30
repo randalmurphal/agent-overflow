@@ -13,6 +13,7 @@
   import Icon from '../primitives/Icon.svelte';
   import UserMessageActionsPopover from './UserMessageActionsPopover.svelte';
   import { addToast } from '../../stores/toast.svelte';
+  import { getActiveTurn } from '../../stores/threadStatuses.svelte';
 
   interface Props {
     item: Item;
@@ -30,7 +31,7 @@
   //   - this isn't an in-flight message that hasn't landed yet
   const showActionsTrigger = $derived(
     pane !== undefined
-      && pane.activeTurn === null
+      && getActiveTurn(pane.threadId) === null
       && pane.diffPanel.checkpointsLoaded
       && !pane.diffPanel.checkpointsUnavailable
       && !item.id.startsWith('local-pending-'),

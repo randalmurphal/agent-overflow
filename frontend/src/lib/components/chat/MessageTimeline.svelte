@@ -27,6 +27,7 @@
     type TimelineNode,
   } from '../../utils/subagentGrouping';
   import { filterRedundantNotifications } from '../../utils/notificationFilter';
+  import { getActiveTurn } from '../../stores/threadStatuses.svelte';
   import Button from '../primitives/Button.svelte';
   import { turnSummaryIsMeaningful } from '../../utils/turnDiffSummary';
   import ChangedFilesTree from './ChangedFilesTree.svelte';
@@ -309,7 +310,7 @@
     pane.items.length;
     pane.timelineRevision;
     pane.liveDeltaRevision;
-    pane.activeTurn?.turnId;
+    getActiveTurn(pane.threadId)?.turnId;
     if (pane.threadId !== restoredThreadId) return;
     stick.notifyContentMaybeGrew();
   });
@@ -389,11 +390,11 @@
     <div class="flex items-center justify-center h-full text-fg-subtle text-sm" role="status" aria-live="polite">
       <span class="animate-pulse">Loading thread...</span>
     </div>
-  {:else if pane.items.length === 0 && !pane.activeTurn}
+  {:else if pane.items.length === 0 && !getActiveTurn(pane.threadId)}
     <div class="flex items-center justify-center h-full text-fg-subtle text-sm">
       No messages yet. Send a message to get started.
     </div>
-  {:else if pane.items.length === 0 && pane.activeTurn}
+  {:else if pane.items.length === 0 && getActiveTurn(pane.threadId)}
     <!-- Active turn but no items yet (just-sent prompt with the assistant
          not having streamed a single chunk). Render the working indicator
          standalone so the user sees feedback. -->

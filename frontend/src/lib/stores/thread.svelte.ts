@@ -447,16 +447,14 @@ export function createThreadPane() {
     }
   }
 
-  // Turn-lifecycle state. `activeTurn` is no longer per-pane — the
-  // single source of truth is the global registry in
-  // threadStatuses.svelte.ts (read via `getActiveTurn`). The pane's
-  // `activeTurn` getter below is a transparent shim onto that
-  // registry so existing readers don't need a refactor; the load-
+  // Turn-lifecycle state. The active turn lives in the global registry
+  // in threadStatuses.svelte.ts (read directly via `getActiveTurn` at
+  // every call site so the source of truth is traceable); the load-
   // bearing benefit is that switching threads no longer clears the
   // working indicator for a turn that's still in flight on the
-  // departing thread. `latestSettledTurn` stays per-pane because
-  // it's used by the completion divider whose mount lives on the
-  // chat view; on thread switch we rehydrate it from the most recent
+  // departing thread. `latestSettledTurn` stays per-pane because it's
+  // used by the completion divider whose mount lives on the chat view;
+  // on thread switch we rehydrate it from the most recent
   // `ListRecentTurns` row whose `completedAt` is non-null.
   let latestSettledTurn: SettledTurn | null = $state(null);
   // Live-todo panel state. Independent of activeTurn — the panel
@@ -1160,23 +1158,6 @@ export function createThreadPane() {
     get showTerminal() { return showTerminal; },
     get diffPanel() { return diffPanel; },
     /**
-     * True while a provider turn is in-flight for the current pane.
-     * Reads from the global active-turn registry (single source of
-     * truth — see threadStatuses.svelte.ts) so a thread switch
-     * doesn't lose the indicator on a turn that's still in flight on
-     * the other thread. Same wire-pushed contract as before
-     * (invariant 22), just consolidated to one store.
-     */
-    get isTurnActive() {
-      return getActiveTurn(thread?.id ?? '') !== null;
-    },
-    /**
-     * Live in-flight turn for this pane's thread, sourced from the
-     * global registry. Returns null when no turn is active. The
-     * registry survives thread switches by design.
-     */
-    get activeTurn() { return getActiveTurn(thread?.id ?? ''); },
-    /**
      * Most recent completed turn, or null if the thread has no settled
      * turns yet. Populated from `provider:turn_completed` pushes and
      * from thread-switch rehydration.
@@ -1809,10 +1790,9 @@ export function createThreadPane() {
      * existing startedAt so the on-screen counter doesn't reset mid-turn.
      */
     /**
-     * Compatibility shim that records a live turn in the global
-     * registry. The applyTurnStarted listener in events.ts writes to
-     * the registry directly; tests and explicit-control sites call
-     * this to drive the same path.
+     * Pane facade for `provider:turn_started`. Production goes through
+     * the wire-push handler in events.ts → projectTurnStarted directly;
+     * this method is the test-and-explicit-control entry point.
      */
     setActiveTurn(turn: ActiveTurn): void {
       const tid = thread?.id ?? '';
@@ -1822,10 +1802,9 @@ export function createThreadPane() {
 
     /**
      * Settle the current turn on `provider:turn_completed`. Writes
-     * `latestSettledTurn` so the completion divider can render above
-     * the assistant message this settled. The active-turn registry
-     * is cleared separately in events.ts via projectTurnCompleted —
-     * this method is now a pane-local write only.
+     * `latestSettledTurn` (per-pane state used by the completion
+     * divider) and clears the global active-turn registry via
+     * projectTurnCompleted.
      */
     settleTurn(settled: SettledTurn): void {
       const tid = thread?.id ?? '';

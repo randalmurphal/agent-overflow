@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { ThreadPane } from '../../stores/thread.svelte';
+  import { getActiveTurn } from '../../stores/threadStatuses.svelte';
   import { formatElapsedSeconds } from '../../utils/format';
   import { isUiRenderTraceEnabled, recordUiTrace } from '../../utils/uiRenderTrace';
   import Icon from '../primitives/Icon.svelte';
@@ -15,7 +16,7 @@
   let now = $state(Date.now());
   let interrupting = $state(false);
 
-  let activeTurn = $derived(pane.activeTurn);
+  let activeTurn = $derived(getActiveTurn(pane.threadId));
   let isWorking = $derived(activeTurn !== null);
 
   $effect(() => {

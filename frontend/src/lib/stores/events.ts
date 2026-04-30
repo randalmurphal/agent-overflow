@@ -613,9 +613,10 @@ function applyTurnStarted(evt: TurnStartedEvent): void {
 }
 
 /**
- * Route `provider:turn_completed` to the matching pane. Clears
- * `pane.activeTurn` and writes the settled projection so (Wave 3) the
- * completion divider can render above the final assistant message.
+ * Route `provider:turn_completed` to the matching pane. Clears the
+ * global active-turn registry entry (threadStatuses) and writes the
+ * settled projection so (Wave 3) the completion divider can render
+ * above the final assistant message.
  *
  * `tokenUsage` arrives as a JSON-encoded string on the wire because
  * triage round-trips it through the DB's `token_usage_json` column. We
@@ -728,7 +729,8 @@ export function setupEventListeners(): () => void {
   const cancelItemEvent = wailsEventOn<ItemStreamEvent>('provider:item_event', applyItemStreamEvent);
 
   // provider:turn_{started,completed} — wire-pushed turn lifecycle.
-  // These are the sole drivers of `pane.activeTurn` /
+  // These are the sole drivers of the global active-turn registry
+  // (threadStatuses.svelte.ts → getActiveTurn) and
   // `pane.latestSettledTurn`. See invariant 22 and
   // docs/architecture/turn-lifecycle.md §Frontend state shape.
   const cancelTurnStarted = wailsEventOn<TurnStartedEvent>('provider:turn_started', applyTurnStarted);

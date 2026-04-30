@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { ThreadPane } from '../../stores/thread.svelte';
+  import { getActiveTurn } from '../../stores/threadStatuses.svelte';
   import type { TodoStep, TodoStepStatus } from '../../types/events';
   import Icon from '../primitives/Icon.svelte';
   import ChevronRight from 'lucide-svelte/icons/chevron-right';
@@ -21,7 +22,7 @@
   // pull ourselves up so the gap reads as a line break rather than a
   // paragraph break. When it's hidden (turn ended with todos still
   // pending), the panel sits at normal flow with no offset.
-  let pulledUp = $derived(pane.activeTurn !== null);
+  let pulledUp = $derived(getActiveTurn(pane.threadId) !== null);
 
   // Status order for the sorted list. Numbers map to the buckets the
   // user asked for: in-progress on top so the active task is the first

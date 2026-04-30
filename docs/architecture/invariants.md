@@ -553,14 +553,14 @@ drain + sibling write behaviour.
 
 ## 22. Turn activity is wire-pushed, never derived from items
 
-**Rule.** The frontend's "Working…" indicator and `isTurnActive`
-signal come exclusively from provider-pushed `provider:turn_started`
-/ `provider:turn_completed` events. Never derive turn state from
-item state (e.g., `items.some(running tool_call)`). Never compute
-"is working" from backend process liveness. The active-turn record
-lives in a single global registry keyed by threadId
-(`frontend/src/lib/stores/threadStatuses.svelte.ts`); panes do not
-hold a per-pane copy.
+**Rule.** The frontend's "Working…" indicator and any "is the agent
+busy?" gate come exclusively from provider-pushed
+`provider:turn_started` / `provider:turn_completed` events. Never
+derive turn state from item state (e.g., `items.some(running
+tool_call)`). Never compute "is working" from backend process
+liveness. The active-turn record lives in a single global registry
+keyed by threadId (`frontend/src/lib/stores/threadStatuses.svelte.ts
+→ getActiveTurn`); panes do not hold a per-pane copy.
 
 **Rationale.** Deriving turn state from items means any parser bug
 that drops a completion freezes the UI. Deriving from process
@@ -578,9 +578,12 @@ bug resurfaces.
 `activeTurnByThread` map in `threadStatuses.svelte.ts`. The map is
 populated only by `projectTurnStarted` (called from the
 `provider:turn_started` event listener) and cleared only by
-`projectTurnCompleted`. `ThreadPane.activeTurn` is a transparent
-shim onto `getActiveTurn(pane.threadId)`. No code path rehydrates
-the registry from SQLite or item state.
+`projectTurnCompleted`. Every reader (chat working indicator,
+sidebar pill, message timeline empty-state, composer mid-turn gate,
+LiveTodoPanel pull-up, workspace-change lock) calls
+`getActiveTurn(pane.threadId)` directly — no per-pane shim, no
+parallel state slice. No code path rehydrates the registry from
+SQLite or item state.
 
 **Test.** Frontend test: simulate a stuck `tool_call` row + empty
 registry; assert the working indicator is hidden. Regression test

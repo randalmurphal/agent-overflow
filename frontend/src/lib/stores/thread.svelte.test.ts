@@ -4,6 +4,7 @@ import {
   resetExpansionBudgetForTest,
   setExpansionBudgetForTest,
 } from './thread.svelte';
+import { getActiveTurn } from './threadStatuses.svelte';
 import type { Item } from '../types/models';
 import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
 import { makeItem, makeThread } from '../../test/helpers/chat';
@@ -48,7 +49,7 @@ describe('createThreadPane', () => {
     expect(pane.pendingApprovals).toEqual([]);
     expect(pane.contextWindow).toBeNull();
     expect(pane.generalError).toBeNull();
-    expect(pane.isTurnActive).toBe(false);
+    expect(getActiveTurn(pane.threadId) !== null).toBe(false);
   });
 
   it('loads items and seeds the context window from thread.lastTokenUsage', async () => {
@@ -1021,7 +1022,7 @@ describe('createThreadPane', () => {
     const pane = createThreadPane();
     await pane.switchThread(makeThread());
 
-    expect(pane.isTurnActive).toBe(false);
+    expect(getActiveTurn(pane.threadId) !== null).toBe(false);
 
     // A streaming assistant item alone doesn't flip the flag.
     pane.upsertItem(makeItem({
@@ -1029,7 +1030,7 @@ describe('createThreadPane', () => {
       kind: 'assistant_text',
       status: 'streaming',
     }));
-    expect(pane.isTurnActive).toBe(false);
+    expect(getActiveTurn(pane.threadId) !== null).toBe(false);
 
     // A running foreground tool_call alone doesn't flip the flag either.
     pane.upsertItem(makeItem({
@@ -1038,7 +1039,7 @@ describe('createThreadPane', () => {
       status: 'running',
       isBackground: false,
     }));
-    expect(pane.isTurnActive).toBe(false);
+    expect(getActiveTurn(pane.threadId) !== null).toBe(false);
 
     // Pending approvals no longer count on their own — they live INSIDE
     // an active turn (see invariant 22 rationale).
@@ -1050,11 +1051,11 @@ describe('createThreadPane', () => {
       input: null,
       title: 'Approve edit',
     });
-    expect(pane.isTurnActive).toBe(false);
+    expect(getActiveTurn(pane.threadId) !== null).toBe(false);
 
     // Wire-push flips it on.
     pane.setActiveTurn({ turnId: 't1', turnIndex: 0, startedAt: 1 });
-    expect(pane.isTurnActive).toBe(true);
+    expect(getActiveTurn(pane.threadId) !== null).toBe(true);
 
     // settleTurn clears it even if streaming items / approvals remain.
     pane.settleTurn({
@@ -1068,7 +1069,7 @@ describe('createThreadPane', () => {
       aborted: false,
       errorMessage: '',
     });
-    expect(pane.isTurnActive).toBe(false);
+    expect(getActiveTurn(pane.threadId) !== null).toBe(false);
   });
 
   it('clear resets the pane completely', async () => {
@@ -1871,13 +1872,13 @@ describe('createThreadPane', () => {
   it('setActiveTurn populates activeTurn and flips isTurnActive on', async () => {
     const pane = createThreadPane();
     await pane.switchThread(makeThread());
-    expect(pane.activeTurn).toBeNull();
-    expect(pane.isTurnActive).toBe(false);
+    expect(getActiveTurn(pane.threadId)).toBeNull();
+    expect(getActiveTurn(pane.threadId) !== null).toBe(false);
 
     pane.setActiveTurn({ turnId: 'turn-1', turnIndex: 0, startedAt: 1000 });
 
-    expect(pane.activeTurn).toEqual({ turnId: 'turn-1', turnIndex: 0, startedAt: 1000 });
-    expect(pane.isTurnActive).toBe(true);
+    expect(getActiveTurn(pane.threadId)).toEqual({ turnId: 'turn-1', turnIndex: 0, startedAt: 1000 });
+    expect(getActiveTurn(pane.threadId) !== null).toBe(true);
   });
 
   it('setActiveTurn is idempotent by turnId — preserves startedAt on re-emit', async () => {
@@ -1889,7 +1890,7 @@ describe('createThreadPane', () => {
     await pane.switchThread(makeThread());
     pane.setActiveTurn({ turnId: 'turn-1', turnIndex: 0, startedAt: 1000 });
     pane.setActiveTurn({ turnId: 'turn-1', turnIndex: 0, startedAt: 9999 });
-    expect(pane.activeTurn?.startedAt).toBe(1000);
+    expect(getActiveTurn(pane.threadId)?.startedAt).toBe(1000);
   });
 
   it('settleTurn clears activeTurn and writes latestSettledTurn', () => {
@@ -1908,8 +1909,8 @@ describe('createThreadPane', () => {
       errorMessage: '',
     });
 
-    expect(pane.activeTurn).toBeNull();
-    expect(pane.isTurnActive).toBe(false);
+    expect(getActiveTurn(pane.threadId)).toBeNull();
+    expect(getActiveTurn(pane.threadId) !== null).toBe(false);
     expect(pane.latestSettledTurn).toEqual({
       turnId: 'turn-1',
       turnIndex: 0,
@@ -1940,7 +1941,7 @@ describe('createThreadPane', () => {
     expect(pane.latestSettledTurn).not.toBeNull();
 
     pane.clearTurnState();
-    expect(pane.activeTurn).toBeNull();
+    expect(getActiveTurn(pane.threadId)).toBeNull();
     expect(pane.latestSettledTurn).toBeNull();
   });
 
@@ -1981,8 +1982,8 @@ describe('createThreadPane', () => {
       errorMessage: '',
     });
     // activeTurn stays null even though rehydration ran — invariant 22.
-    expect(pane.activeTurn).toBeNull();
-    expect(pane.isTurnActive).toBe(false);
+    expect(getActiveTurn(pane.threadId)).toBeNull();
+    expect(getActiveTurn(pane.threadId) !== null).toBe(false);
   });
 
   it('switchThread does NOT promote an in-flight historical turn to activeTurn', async () => {
@@ -2014,8 +2015,8 @@ describe('createThreadPane', () => {
     await pane.switchThread(makeThread({ id: 'thread-a' }));
 
     // Not lit up.
-    expect(pane.activeTurn).toBeNull();
-    expect(pane.isTurnActive).toBe(false);
+    expect(getActiveTurn(pane.threadId)).toBeNull();
+    expect(getActiveTurn(pane.threadId) !== null).toBe(false);
     // But the prior settled turn IS rehydrated so the completion divider
     // can still render.
     expect(pane.latestSettledTurn?.turnId).toBe('turn-settled');
@@ -2052,7 +2053,7 @@ describe('createThreadPane', () => {
     await pane.switchThread(makeThread({ id: 'thread-a' }));
 
     expect(pane.latestSettledTurn).toBeNull();
-    expect(pane.activeTurn).toBeNull();
+    expect(getActiveTurn(pane.threadId)).toBeNull();
     // Items path was not touched.
     expect(pane.thread?.id).toBe('thread-a');
   });
@@ -2076,7 +2077,7 @@ describe('createThreadPane', () => {
     // slots so the prior thread's state doesn't bleed over.
     await pane.switchThread(makeThread({ id: 'thread-b' }));
 
-    expect(pane.activeTurn).toBeNull();
+    expect(getActiveTurn(pane.threadId)).toBeNull();
     expect(pane.latestSettledTurn).toBeNull();
   });
 

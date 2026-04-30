@@ -229,13 +229,15 @@ export interface RateLimitEntry {
 // ---------------------------------------------------------------------------
 // Turn lifecycle events — shapes mirror internal/triage/turn_events.go. See
 // docs/architecture/turn-lifecycle.md §Frontend state shape for how these
-// feed into pane.activeTurn / pane.latestSettledTurn.
+// feed into the global active-turn registry (threadStatuses.svelte.ts) and
+// pane.latestSettledTurn.
 // ---------------------------------------------------------------------------
 
 /**
  * TurnStartedEvent is the payload the frontend receives on
- * `provider:turn_started`. When this arrives, events.ts flips
- * pane.activeTurn on so the working indicator lights up.
+ * `provider:turn_started`. When this arrives, events.ts writes the
+ * active-turn entry into the global registry (threadStatuses) so the
+ * working indicator lights up — readers call getActiveTurn(threadId).
  */
 export interface TurnStartedEvent {
   threadId: string;

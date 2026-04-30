@@ -304,12 +304,15 @@ export function projectTurnCompleted(
 
 /**
  * Read the live in-flight turn for a thread. Returns null when no
- * turn is active. The single source of truth for "is the working
- * indicator on?" — both ChatWorkingIndicator (chat view) and the
- * sidebar pill consume this. Survives thread switches because
- * nothing in pane lifecycle clears it.
+ * turn is active or the thread id is empty/null/undefined. The single
+ * source of truth for "is the working indicator on?" — both
+ * ChatWorkingIndicator (chat view) and the sidebar pill consume this.
+ * Survives thread switches because nothing in pane lifecycle clears
+ * it. Accepts null/undefined so callers can pass `pane.threadId`
+ * (which is `string | null` while the pane is empty) without a
+ * fallback dance at every call site.
  */
-export function getActiveTurn(threadId: string): ActiveTurn | null {
+export function getActiveTurn(threadId: string | null | undefined): ActiveTurn | null {
   if (!threadId) return null;
   return activeTurnByThread.get(threadId) ?? null;
 }

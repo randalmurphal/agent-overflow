@@ -30,6 +30,7 @@
     retainProposedPlanEventListener,
   } from '../../stores/proposedPlans.svelte';
   import { addToast } from '../../stores/toast.svelte';
+  import { getActiveTurn } from '../../stores/threadStatuses.svelte';
   import type { ExpandedImagePreview } from '../../utils/attachmentPreview.svelte';
   import { implementProposedPlan, implementProposedPlanInNewThread } from '../../utils/proposedPlanImplementation';
   import { sourceFromProposedPlanItem } from '../../utils/proposedPlan';
@@ -79,7 +80,7 @@
   // any running tool, or an optimistic pending message). The user must press
   // Interrupt first. Editing and uploading stay enabled so the next message can
   // be prepared in advance.
-  let isTurnActive = $derived(pane.isTurnActive);
+  let isTurnActive = $derived(getActiveTurn(pane.threadId) !== null);
   let blockingApprovals = $derived(pane.pendingApprovals);
   let activeApproval = $derived(blockingApprovals[0]);
   let activeUserInput = $derived(pane.pendingUserInputs[0]);

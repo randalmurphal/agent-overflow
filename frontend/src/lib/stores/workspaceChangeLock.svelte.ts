@@ -1,6 +1,7 @@
 import type { ThreadPane } from './thread.svelte';
 import { ListLiveBackgroundTasks } from './bindings';
 import { onItemUpsert, wailsEventOn } from './events';
+import { getActiveTurn } from './threadStatuses.svelte';
 import type { BackgroundTaskStateEvent, BackgroundTasksChangedEvent } from '../types/events';
 import type { Item } from '../types/models';
 import { debounce } from '../utils/debounce';
@@ -110,13 +111,13 @@ export function createWorkspaceChangeLockState(getPane: () => ThreadPane): Works
 
   return {
     get locked() {
-      return getPane().isTurnActive ||
+      return getActiveTurn(getPane().threadId) !== null ||
         backgroundCheckInFlight ||
         (threadId !== '' && checkedThreadId !== threadId) ||
         runningBackgroundCount > 0;
     },
     get reason() {
-      if (getPane().isTurnActive) return 'Workspace changes are unavailable while the agent is responding.';
+      if (getActiveTurn(getPane().threadId) !== null) return 'Workspace changes are unavailable while the agent is responding.';
       if (runningBackgroundCount > 0) return 'Workspace changes are unavailable while background tasks are running.';
       if (backgroundCheckInFlight || (threadId !== '' && checkedThreadId !== threadId)) {
         return 'Checking workspace availability...';

@@ -3,6 +3,7 @@
 
 import { describe, expect, it, beforeEach } from 'vitest';
 import { createThreadPane } from './thread.svelte';
+import { getActiveTurn } from './threadStatuses.svelte';
 import { makeCommandContext, registerBuiltinCommands } from './builtinCommands.svelte';
 import {
   clearCommandRegistry,
@@ -252,7 +253,7 @@ describe('thread.interrupt command', () => {
   it('clears activeTurn synchronously (optimistic stop, claude-code REPL.tsx:2106 pattern)', () => {
     const pane = readyPane();
     pane.setActiveTurn({ turnId: 'turn-1', turnIndex: 0, startedAt: 123 });
-    expect(pane.isTurnActive).toBe(true);
+    expect(getActiveTurn(pane.threadId) !== null).toBe(true);
 
     let interruptStarted = false;
     setBindingMock('InterruptTurn', () => {
@@ -272,7 +273,7 @@ describe('thread.interrupt command', () => {
     void command.run(makeCommandContext(pane, {}));
 
     // activeTurn must be cleared in the same tick as the keystroke.
-    expect(pane.isTurnActive).toBe(false);
+    expect(getActiveTurn(pane.threadId) !== null).toBe(false);
     // Yet the InterruptTurn RPC was still dispatched.
     expect(interruptStarted).toBe(true);
   });
@@ -299,7 +300,7 @@ describe('thread.interrupt command', () => {
 
     // Panel cleared without waiting for the backend.
     expect(pane.pendingUserInputs.length).toBe(0);
-    expect(pane.isTurnActive).toBe(false);
+    expect(getActiveTurn(pane.threadId) !== null).toBe(false);
   });
 
   it('treats "no active turn" from InterruptTurn as a benign no-op', async () => {

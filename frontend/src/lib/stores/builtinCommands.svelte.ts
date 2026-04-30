@@ -14,6 +14,7 @@ import { closeMessageSearch, openMessageSearch } from './messageSearch.svelte';
 import { closePalette, openPalette } from './palette.svelte';
 import { closeThreadPicker, openThreadPicker } from './threadPicker.svelte';
 import { addToast } from './toast.svelte';
+import { getActiveTurn } from './threadStatuses.svelte';
 import { removeThread, replaceThread } from './threads.svelte';
 import { forkThreadAction } from '../components/sidebar/threadRowActions';
 import { userFacingError } from '../utils/userFacingError';
@@ -582,7 +583,7 @@ export function makeCommandContext(pane: ThreadPane, extra: Partial<CommandConte
     approvalPending: pane.pendingApprovals.length > 0,
     anyModalOpen: false,
     hasActiveThread: thread !== null,
-    turnActive: pane.isTurnActive,
+    turnActive: getActiveTurn(pane.threadId) !== null,
     sendInFlight: pane.sendInFlight,
     hasPendingPrompt: pane.pendingApprovals.length > 0 || pane.pendingUserInputs.length > 0,
     canForkActiveThread: !!thread?.sessionRef,

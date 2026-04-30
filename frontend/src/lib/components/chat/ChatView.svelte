@@ -16,7 +16,7 @@
   import { createComposerDraftStore } from '../../stores/composerDraft.svelte';
   import { MarkThreadRead } from '../../stores/bindings';
   import { updateThreadReadState } from '../../stores/threads.svelte';
-  import { getThreadStatus, projectThreadViewed } from '../../stores/threadStatuses.svelte';
+  import { getActiveTurn, getThreadStatus, projectThreadViewed } from '../../stores/threadStatuses.svelte';
   import {
     isUiRenderTraceEnabled,
     recordUiTrace,
@@ -200,7 +200,7 @@
     pane.items.length;
     pane.timelineRevision;
     pane.pendingApprovals.length;
-    pane.activeTurn?.turnId;
+    getActiveTurn(pane.threadId)?.turnId;
     pane.latestSettledTurn?.turnId;
     pane.showTerminal;
     pane.showPlanSidebar;

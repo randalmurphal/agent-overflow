@@ -313,6 +313,8 @@ export function SendMessageWithOptions(
 // bindings. ListRecentTurns itself is re-exported in the main import
 // block above. The frontend treats `completedAt=null` as historical
 // in-flight (crash/interrupt); only a live `provider:turn_started`
-// push sets `pane.activeTurn`. See docs/architecture/invariants.md #22
-// and docs/architecture/turn-lifecycle.md §Frontend state shape.
+// push writes into the global active-turn registry
+// (threadStatuses.svelte.ts → getActiveTurn). See
+// docs/architecture/invariants.md #22 and turn-lifecycle.md §Frontend
+// state shape.
 export { Turn } from '../../../bindings/agent-overflow/internal/store/models.js';

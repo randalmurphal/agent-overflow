@@ -1,4 +1,5 @@
 import { AppendUIRenderTraceBatch } from '../stores/bindings';
+import { getActiveTurn } from '../stores/threadStatuses.svelte';
 import type { ThreadPane } from '../stores/thread.svelte';
 import type { Item } from '../types/models';
 
@@ -196,13 +197,12 @@ export function summarizePaneForTrace(pane: ThreadPane): Record<string, unknown>
     oldestLoadedTurnIndex: pane.oldestLoadedTurnIndex,
     hasMoreHistory: pane.hasMoreHistory,
     loadingOlder: pane.loadingOlder,
-    activeTurn: pane.activeTurn
-      ? {
-          turnId: pane.activeTurn.turnId,
-          turnIndex: pane.activeTurn.turnIndex,
-          startedAt: pane.activeTurn.startedAt,
-        }
-      : null,
+    activeTurn: ((): { turnId: string; turnIndex: number; startedAt: number } | null => {
+      const turn = getActiveTurn(pane.threadId);
+      return turn
+        ? { turnId: turn.turnId, turnIndex: turn.turnIndex, startedAt: turn.startedAt }
+        : null;
+    })(),
     latestSettledTurn: pane.latestSettledTurn
       ? {
           turnId: pane.latestSettledTurn.turnId,

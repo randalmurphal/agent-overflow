@@ -10,6 +10,7 @@ import type { Item, Thread } from '../../lib/types/models';
 import { setBindingMock } from '../mocks/bindings-app';
 import { emitWailsEvent } from '../mocks/wailsio-runtime';
 import { emitItemEventDelta, emitItemEventUpsert } from '../helpers/chat';
+import { getActiveTurn } from '../../lib/stores/threadStatuses.svelte';
 import {
   flush,
   installAnimateShim,
@@ -242,7 +243,7 @@ describe('App integration — messaging flow', () => {
 
   it('marks the pane idle once the streaming item completes', async () => {
     await mountWithActiveThread();
-    // Post-refactor pane.isTurnActive only clears on provider:turn_completed
+    // Post-refactor getActiveTurn(pane.threadId) !== null only clears on provider:turn_completed
     // (invariant 22). Drive the full turn lifecycle so the assertion is
     // exercising the real wire path.
     emitWailsEvent('provider:turn_started', {
@@ -287,14 +288,14 @@ describe('App integration — messaging flow', () => {
 
     const paneMod = await import('../../lib/stores/panes.svelte');
     const pane = paneMod.getMainPane();
-    await waitFor(() => expect(pane.isTurnActive).toBe(false));
+    await waitFor(() => expect(getActiveTurn(pane.threadId) !== null).toBe(false));
   });
 
   // End-to-end turn lifecycle — every stage on the real wire path:
   // turn_started → tool lifecycle → turn_completed → divider renders
   // above the assistant message. This test is intentionally broad: it
   // is the single integration test that proves all of the invariant-22
-  // pieces line up together (pane.activeTurn flip, pane.latestSettledTurn
+  // pieces line up together (getActiveTurn(pane.threadId) flip, pane.latestSettledTurn
   // write, CompletionDivider DOM render).
   //
   // We pick the ordering where turn_completed arrives BEFORE the final
@@ -314,7 +315,7 @@ describe('App integration — messaging flow', () => {
     const paneMod = await import('../../lib/stores/panes.svelte');
     const pane = paneMod.getMainPane();
 
-    // 1. Turn starts. pane.activeTurn is populated; pane has no
+    // 1. Turn starts. getActiveTurn(pane.threadId) is populated; pane has no
     // settled turn yet. The sidebar pill is the user-facing surface
     // for "turn is running" and is covered by its own tests.
     emitWailsEvent('provider:turn_started', {
@@ -324,9 +325,9 @@ describe('App integration — messaging flow', () => {
       startedAt: 1,
     });
     await waitFor(() => {
-      expect(pane.activeTurn).toEqual({ turnId: 't1', turnIndex: 0, startedAt: 1 });
+      expect(getActiveTurn(pane.threadId)).toEqual({ turnId: 't1', turnIndex: 0, startedAt: 1 });
     });
-    expect(pane.isTurnActive).toBe(true);
+    expect(getActiveTurn(pane.threadId) !== null).toBe(true);
     expect(pane.latestSettledTurn).toBeNull();
 
     // 2. Tool call upserts: running → completed. The row appears in
@@ -365,7 +366,7 @@ describe('App integration — messaging flow', () => {
 
     // 3. Turn completes. The provider sent turn_completed BEFORE the
     // final assistant_text item landed — this is the real-world
-    // race. pane.activeTurn MUST flip to null immediately; the
+    // race. getActiveTurn(pane.threadId) MUST flip to null immediately; the
     // working indicator disappears; latestSettledTurn is populated
     // with the assistant message id we're expecting to land next.
     emitWailsEvent('provider:turn_completed', {
@@ -384,9 +385,9 @@ describe('App integration — messaging flow', () => {
       }),
     });
     await waitFor(() => {
-      expect(pane.activeTurn).toBeNull();
+      expect(getActiveTurn(pane.threadId)).toBeNull();
     });
-    expect(pane.isTurnActive).toBe(false);
+    expect(getActiveTurn(pane.threadId) !== null).toBe(false);
     expect(pane.latestSettledTurn?.turnId).toBe('t1');
     expect(pane.latestSettledTurn?.assistantMessageId).toBe('assist1');
     expect(pane.latestSettledTurn?.tokenUsage).toEqual({
@@ -460,7 +461,7 @@ describe('App integration — messaging flow', () => {
       turnIndex: 0,
       startedAt,
     });
-    await waitFor(() => expect(pane.isTurnActive).toBe(true));
+    await waitFor(() => expect(getActiveTurn(pane.threadId) !== null).toBe(true));
 
     // 2. Backgrounded tool_call launch (run_in_background:true on the
     // Claude wire). The launch row stays status=running per invariant
@@ -493,7 +494,7 @@ describe('App integration — messaging flow', () => {
     expect(status.getAttribute('aria-label')).toBe('Backgrounded');
 
     // 3. Turn ends while the backgrounded work is still in flight.
-    // pane.activeTurn clears, the working indicator hides, and the
+    // getActiveTurn(pane.threadId) clears, the working indicator hides, and the
     // launch row is UNTOUCHED (no status flip, no sibling row yet).
     emitWailsEvent('provider:turn_completed', {
       threadId: 'thread-1',
@@ -503,7 +504,7 @@ describe('App integration — messaging flow', () => {
       completedAt: startedAt + 500,
       stopReason: 'end_turn',
     });
-    await waitFor(() => expect(pane.activeTurn).toBeNull());
+    await waitFor(() => expect(getActiveTurn(pane.threadId)).toBeNull());
     await waitFor(() => expect(queryByTestId('chat-working-indicator')).toBeNull());
 
     // The "…" label is still present — invariant 24. The launch row

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { setupEventListeners } from './events';
 import { getAllPanes } from './panes.svelte';
-import { getThreadStatus, resetForTest as resetThreadStatuses } from './threadStatuses.svelte';
+import { getActiveTurn, getThreadStatus, resetForTest as resetThreadStatuses } from './threadStatuses.svelte';
 import { getThreads, refreshThreads } from './threads.svelte';
 import { emitWailsEvent, resetWailsMocks, wailsListenerCount } from '../../test/mocks/wailsio-runtime';
 import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
@@ -709,10 +709,10 @@ describe('setupEventListeners', () => {
       startedAt: 1000,
     });
 
-    expect(paneA.activeTurn).toEqual({ turnId: 'turn-1', turnIndex: 0, startedAt: 1000 });
-    expect(paneA.isTurnActive).toBe(true);
-    expect(paneB.activeTurn).toBeNull();
-    expect(paneB.isTurnActive).toBe(false);
+    expect(getActiveTurn(paneA.threadId)).toEqual({ turnId: 'turn-1', turnIndex: 0, startedAt: 1000 });
+    expect(getActiveTurn(paneA.threadId) !== null).toBe(true);
+    expect(getActiveTurn(paneB.threadId)).toBeNull();
+    expect(getActiveTurn(paneB.threadId) !== null).toBe(false);
   });
 
   it('routes provider:turn_completed to pane.settleTurn and clears activeTurn', async () => {
@@ -727,7 +727,7 @@ describe('setupEventListeners', () => {
       turnIndex: 0,
       startedAt: 1000,
     });
-    expect(pane.isTurnActive).toBe(true);
+    expect(getActiveTurn(pane.threadId) !== null).toBe(true);
 
     emitWailsEvent('provider:turn_completed', {
       threadId: 'thread-1',
@@ -739,8 +739,8 @@ describe('setupEventListeners', () => {
       assistantMessageId: 'text:0:3',
     });
 
-    expect(pane.activeTurn).toBeNull();
-    expect(pane.isTurnActive).toBe(false);
+    expect(getActiveTurn(pane.threadId)).toBeNull();
+    expect(getActiveTurn(pane.threadId) !== null).toBe(false);
     expect(pane.latestSettledTurn?.turnId).toBe('turn-1');
     expect(pane.latestSettledTurn?.assistantMessageId).toBe('text:0:3');
     expect(pane.latestSettledTurn?.completedAt).toBe(2000);
@@ -842,7 +842,7 @@ describe('setupEventListeners', () => {
       startedAt: 1,
     });
 
-    expect(pane.activeTurn).toBeNull();
-    expect(pane.isTurnActive).toBe(false);
+    expect(getActiveTurn(pane.threadId)).toBeNull();
+    expect(getActiveTurn(pane.threadId) !== null).toBe(false);
   });
 });
