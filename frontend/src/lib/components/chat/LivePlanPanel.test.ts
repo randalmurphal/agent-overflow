@@ -237,4 +237,94 @@ describe('<LivePlanPanel>', () => {
 
     expect(queryByTestId('live-plan-panel')).toBeNull();
   });
+
+  it('shows the in-progress step preview in the collapsed header', async () => {
+    const pane = await buildPane();
+    pane.setLivePlan([
+      { step: 'one', status: 'completed' },
+      { step: 'two', status: 'inProgress' },
+      { step: 'three', status: 'pending' },
+    ]);
+
+    const { getByTestId } = render(LivePlanPanel, { props: { pane } });
+    await tick();
+
+    expect(getByTestId('live-plan-in-progress-preview').textContent?.trim()).toBe('two');
+  });
+
+  it('truncates a long in-progress step in the collapsed header', async () => {
+    const long = 'A'.repeat(120);
+    const pane = await buildPane();
+    pane.setLivePlan([{ step: long, status: 'inProgress' }]);
+
+    const { getByTestId } = render(LivePlanPanel, { props: { pane } });
+    await tick();
+
+    const preview = getByTestId('live-plan-in-progress-preview').textContent?.trim() ?? '';
+    expect(preview.endsWith('…')).toBe(true);
+    expect(preview.length).toBeLessThan(long.length);
+  });
+
+  it('drops completed steps the previous all-completed cycle already cleared', async () => {
+    // Simulates the agent re-emitting the full todo list on each
+    // update: after a cycle hits all-completed and auto-hides, the
+    // next snapshot still includes those same completed rows. The
+    // panel must filter them so the new logical plan starts fresh.
+    const pane = await buildPane();
+    pane.setLivePlan([
+      { step: 'old-1', status: 'completed' },
+      { step: 'old-2', status: 'completed' },
+    ]);
+
+    const { queryByTestId, getByTestId } = render(LivePlanPanel, { props: { pane } });
+    await tick();
+    expect(queryByTestId('live-plan-panel')).toBeInTheDocument();
+
+    // Wait past the auto-hide deadline so the cleared-cycle snapshot
+    // is taken and the panel unmounts.
+    vi.advanceTimersByTime(LIVE_PLAN_AUTOHIDE_MS + 1);
+    await tick();
+    expect(queryByTestId('live-plan-panel')).toBeNull();
+
+    // Agent re-emits with the prior two completed plus a new
+    // in-progress task. Only the new task should render.
+    pane.setLivePlan([
+      { step: 'old-1', status: 'completed' },
+      { step: 'old-2', status: 'completed' },
+      { step: 'new-1', status: 'inProgress' },
+    ]);
+    pane.toggleLivePlanExpanded();
+    await tick();
+
+    const list = getByTestId('live-plan-list');
+    const items = list.querySelectorAll('li');
+    expect(items.length).toBe(1);
+    expect(items[0].textContent).toContain('new-1');
+    // Counts header reflects the filtered plan, not the wire size.
+    expect(getByTestId('live-plan-counts').textContent).toBe(
+      '1 in progress, 0 pending, 0 completed',
+    );
+  });
+
+  it('clearLivePlan resets the cleared-cycle set so identical completed items can reappear', async () => {
+    const pane = await buildPane();
+    pane.setLivePlan([{ step: 'old-1', status: 'completed' }]);
+    const { queryByTestId } = render(LivePlanPanel, { props: { pane } });
+    await tick();
+
+    // Trigger the auto-hide cycle so 'old-1' lands in the cleared set.
+    vi.advanceTimersByTime(LIVE_PLAN_AUTOHIDE_MS + 1);
+    await tick();
+    expect(queryByTestId('live-plan-panel')).toBeNull();
+
+    // Explicit clear must wipe the cleared set so the SAME step text
+    // can render again as completed in a fresh cycle.
+    pane.clearLivePlan();
+    pane.setLivePlan([{ step: 'old-1', status: 'completed' }]);
+    await tick();
+
+    // The single completed step is back on screen (will auto-hide
+    // again, but the assertion captures the rendered frame).
+    expect(queryByTestId('live-plan-panel')).toBeInTheDocument();
+  });
 });

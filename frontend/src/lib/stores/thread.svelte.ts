@@ -456,6 +456,15 @@ export function createThreadPane() {
   let livePlanExpanded = $state(false);
   let livePlanShowAll = $state(false);
   let livePlanAutoHideTimer: ReturnType<typeof setTimeout> | null = null;
+  // Step texts that were on-screen when the previous all-completed plan
+  // auto-hid. The agent re-emits the FULL todo list on each update, so
+  // without this set the next update would re-show the prior completed
+  // items in the new panel. We subtract them from incoming snapshots so
+  // each "logical plan" cycle starts fresh from the user's viewpoint.
+  // Bounded to keep long sessions with many cycles from leaking
+  // memory; oldest entries drop first.
+  let livePlanCleared = new Set<string>();
+  const livePlanClearedCap = 1_000;
   // Subagent notification log. The backend emits
   // `provider:subagent_notification` as a pass-through; no UI consumes it
   // today, but keeping a bounded in-pane log lets future surfaces (tray,
@@ -1236,6 +1245,7 @@ export function createThreadPane() {
         livePlanAutoHideTimer = null;
       }
       livePlan = null;
+      livePlanCleared = new Set();
       const incomingPrefs = readLivePlanUiPrefs(newThread.id);
       livePlanExpanded = incomingPrefs.expanded;
       livePlanShowAll = incomingPrefs.showAll;
@@ -1421,6 +1431,7 @@ export function createThreadPane() {
         livePlanAutoHideTimer = null;
       }
       livePlan = null;
+      livePlanCleared = new Set();
       livePlanExpanded = false;
       livePlanShowAll = false;
       oldestLoadedTurnIndex = null;
@@ -1822,14 +1833,35 @@ export function createThreadPane() {
       // The provider:plan_update listener (events.ts:applyPlanUpdate) is
       // the wire boundary and validates `steps` is an array before
       // calling here; trust the input from that point on.
-      if (steps.length === 0) {
+      // Subtract steps that the previous all-completed cycle already
+      // cleared so the agent's full-list re-emission doesn't repaint
+      // those rows under a new logical plan.
+      const filtered = livePlanCleared.size === 0
+        ? steps
+        : steps.filter(
+            (s) => !(s.status === 'completed' && livePlanCleared.has(s.step)),
+          );
+      if (filtered.length === 0) {
         livePlan = null;
         return;
       }
-      livePlan = { steps };
-      const allComplete = steps.every((s) => s.status === 'completed');
+      livePlan = { steps: filtered };
+      const allComplete = filtered.every((s) => s.status === 'completed');
       if (allComplete) {
         livePlanAutoHideTimer = setTimeout(() => {
+          // Snapshot the just-cleared step texts so the next update
+          // starts the panel fresh. Cap the set to bound memory across
+          // long sessions with many plan cycles; insertion-ordered
+          // iteration drops the oldest entries first.
+          if (livePlan) {
+            for (const s of livePlan.steps) {
+              livePlanCleared.add(s.step);
+            }
+            if (livePlanCleared.size > livePlanClearedCap) {
+              const arr = Array.from(livePlanCleared);
+              livePlanCleared = new Set(arr.slice(arr.length - livePlanClearedCap));
+            }
+          }
           livePlan = null;
           livePlanAutoHideTimer = null;
         }, LIVE_PLAN_AUTOHIDE_MS);
@@ -1841,6 +1873,11 @@ export function createThreadPane() {
      * timer. Per-thread UI prefs are NOT cleared — the user's "I had
      * this open" preference persists across plan-clear and across
      * thread switches within the same session.
+     *
+     * Explicit clear also resets the "cleared cycle" set: the user's
+     * mental model is "no plan, fresh start", and any subsequent
+     * snapshot should be shown verbatim rather than filtered against
+     * a prior auto-hide cycle.
      */
     clearLivePlan(): void {
       if (livePlanAutoHideTimer !== null) {
@@ -1848,6 +1885,7 @@ export function createThreadPane() {
         livePlanAutoHideTimer = null;
       }
       livePlan = null;
+      livePlanCleared = new Set();
     },
 
     /** Toggle the dropdown between collapsed counts header and expanded list. */
