@@ -224,6 +224,18 @@ describe('<CommandOutput>', () => {
     expectBefore(getByTestId('completion-badge'), getByTestId('command-output-time'));
   });
 
+  it('left-aligns expandable command completion headers', () => {
+    const { getByTestId } = render(CommandOutput, {
+      props: {
+        item: makeItem({ id: 'tool-cmd', kind: 'tool_completion', status: 'completed' }),
+        meta: commandMeta({ command: 'echo done', exitCode: 0 }),
+        payloadId: 'cmd-payload',
+      },
+    });
+
+    expect(getByTestId('command-output-toggle').className).toContain('text-left');
+  });
+
   it('renders the failure badge for a non-zero exit code', () => {
     // Pre-unification this row carried an `exit 7` rose pill. Now the
     // failure verdict is conveyed by the unified badge alone — no

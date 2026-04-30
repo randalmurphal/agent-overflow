@@ -139,7 +139,7 @@
   <!-- Header -->
   {#if hasBody}
     <button
-      class="w-full rounded-[var(--radius-control)] px-1 py-1 flex items-center gap-2 text-[12px] cursor-pointer hover:bg-surface-2/20 transition-colors"
+      class="w-full rounded-[var(--radius-control)] px-1 py-1 flex items-center gap-2 text-left text-[12px] cursor-pointer hover:bg-surface-2/20 transition-colors"
       onclick={() => expansion.toggle()}
       aria-expanded={expansion.expanded}
       aria-controls="cmd-output-{payloadId || item.id}"
@@ -150,7 +150,7 @@
     </button>
   {:else}
     <div
-      class="w-full rounded-[var(--radius-control)] px-1 py-1 flex items-center gap-2 text-[12px]"
+      class="w-full rounded-[var(--radius-control)] px-1 py-1 flex items-center gap-2 text-left text-[12px]"
       data-testid="command-output-row"
     >
       {@render headerContent(false)}
