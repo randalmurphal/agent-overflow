@@ -7,7 +7,24 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
+
+// fastExitWindow caps how long Open waits for the spawned editor to
+// exit before deciding the launch was successful. A graphical editor
+// either runs indefinitely (we time out → success) or returns
+// immediately after handing the open request off to a running instance
+// (we observe exit code 0 → success). Anything that exits non-zero
+// inside this window is a launch failure (e.g. broken Microsoft VS
+// Code shim that fails on Cannot-find-module before showing a window).
+//
+// 750ms balances two concerns: long enough that VS Code's WSL Remote
+// handshake on a slow first launch usually completes before we time
+// out (so we observe the real exit code), short enough that a
+// successful click-to-open doesn't feel laggy. The Microsoft shim's
+// failure case typically exits in 100-300ms, comfortably inside this
+// window.
+const fastExitWindow = 750 * time.Millisecond
 
 // SpawnOptions describes one open-in-editor invocation.
 //
@@ -96,6 +113,14 @@ var startCmd = func(cmd *exec.Cmd) error {
 	return cmd.Start()
 }
 
+// observeFastExit is the indirection seam the post-spawn watcher
+// flows through. Tests that fake startCmd to skip the real fork+exec
+// also need a fake watcher: cmd.Wait on a never-started cmd returns
+// immediately with code -1, which would trip the broken-shim error
+// path. Production sets this to defaultObserveFastExit, which spawns
+// a goroutine that observes the real child's exit.
+var observeFastExit = defaultObserveFastExit
+
 // Open spawns the chosen editor with the supplied path and cursor
 // placement. The child runs in its own process group (POSIX) /
 // hidden-window (Windows) so it survives the parent process exiting
@@ -105,8 +130,17 @@ var startCmd = func(cmd *exec.Cmd) error {
 //   - opts.Editor nil or unavailable → ErrNoEditor.
 //   - the binary disappeared between detect and spawn → an error that
 //     wraps ErrCommandNotFound and includes the user-facing editor name.
-//   - spawn itself failed → an error that wraps the underlying exec
-//     error.
+//   - spawn itself failed (exec returned an error) → an error that
+//     wraps the underlying exec error.
+//   - the editor exited non-zero within fastExitWindow → an error that
+//     surfaces the editor name + exit code. Catches the broken-shim
+//     case where the spawn appears to succeed (Start returns nil) but
+//     the child immediately fails before opening anything. Defense in
+//     depth alongside detection-time validateWindowsCodeShim.
+//
+// A long-lived editor that's still running after fastExitWindow is
+// treated as success; the goroutine continues waiting for the eventual
+// exit so the child reaps cleanly.
 //
 // stdout / stderr are routed to /dev/null. Editors that bridge their
 // own logs (VS Code's `--verbose`, etc.) handle their own streams; we
@@ -150,7 +184,46 @@ func Open(ctx context.Context, opts SpawnOptions) error {
 	// can drop our own copy now. The child keeps the fd it was dup'd
 	// into via os/exec, so closing here doesn't break the editor.
 	_ = devNull.Close()
-	return nil
+
+	return observeFastExit(cmd, opts.Editor.Name)
+}
+
+// defaultObserveFastExit watches the spawned child for fastExitWindow
+// and surfaces a non-zero exit code as an error. Beyond the window the
+// editor is presumed running; the wait goroutine keeps running so the
+// child reaps cleanly when it eventually exits.
+//
+// Buffered channel + abandoned goroutine pattern: the goroutine always
+// writes its result and returns; if no one reads (the timeout branch
+// won), the buffered slot holds the result and the goroutine GCs at
+// process scope. No leak — long-lived editors keep one goroutine
+// blocked on Wait, which is what we'd need anyway to reap the child.
+func defaultObserveFastExit(cmd *exec.Cmd, editorName string) error {
+	type waitResult struct {
+		err  error
+		code int
+	}
+	done := make(chan waitResult, 1)
+	go func() {
+		err := cmd.Wait()
+		code := -1
+		if cmd.ProcessState != nil {
+			code = cmd.ProcessState.ExitCode()
+		}
+		done <- waitResult{err: err, code: code}
+	}()
+	select {
+	case res := <-done:
+		if res.code == 0 {
+			// Common for VS Code-family CLIs: hand off to the running
+			// instance, exit 0 immediately. Treat as success.
+			return nil
+		}
+		return fmt.Errorf("editor: %s exited with code %d before opening (likely a broken install — try running it from a terminal)", editorName, res.code)
+	case <-time.After(fastExitWindow):
+		// Editor still running — assume success.
+		return nil
+	}
 }
 
 // resolveSpawnBinary re-checks that the editor binary is still present

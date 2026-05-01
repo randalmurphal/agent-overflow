@@ -147,6 +147,53 @@ fi
 	t.Fatalf("code not in catalog output: %+v", got)
 }
 
+// TestDetectEditors_FallsThroughBrokenPathShimToFindWindowsInstall
+// pins the user-reported regression: PATH lists a stale /mnt/c install
+// (system VS Code, half-uninstalled) before a working user-install.
+// `lookPath("code")` returns the broken candidate; without validation
+// detection would accept it and the silently-failing spawn would leave
+// the click looking like a no-op. The fix walks /mnt/c after a broken
+// PATH hit and recovers the working install.
+func TestDetectEditors_FallsThroughBrokenPathShimToFindWindowsInstall(t *testing.T) {
+	brokenSystemShim := []byte(`#!/usr/bin/env sh
+VERSIONFOLDER="072586267e"
+ELECTRON="/mnt/c/Program Files/Microsoft VS Code/Code.exe"
+`)
+	workingUserShim := []byte(`#!/usr/bin/env sh
+VERSIONFOLDER="034f571df5"
+ELECTRON="/mnt/c/Users/alice/AppData/Local/Programs/Microsoft VS Code/Code.exe"
+`)
+	systemPath := "/mnt/c/Program Files/Microsoft VS Code/bin/code"
+	userPath := "/mnt/c/Users/alice/AppData/Local/Programs/Microsoft VS Code/bin/code"
+	fs := &fakeFS{
+		files: map[string][]byte{
+			wslOSReleasePath:                                                                                         []byte("5.15.146.1-microsoft-standard-WSL2"),
+			systemPath:                                                                                               brokenSystemShim,
+			// system cli.js intentionally absent — half-uninstalled
+			userPath:                                                                                                 workingUserShim,
+			"/mnt/c/Users/alice/AppData/Local/Programs/Microsoft VS Code/034f571df5/resources/app/out/cli.js":        []byte("// cli.js"),
+		},
+		dirs: map[string][]string{"/mnt/c/Users": {"alice"}},
+	}
+	paths := pathTable{"code": systemPath}
+	env := newDetectEnv(fs, paths, nil)
+
+	got := detectEditorsWithEnv(context.Background(), env)
+	for _, e := range got {
+		if e.ID != "code" {
+			continue
+		}
+		if !e.Available {
+			t.Fatalf("expected code available via /mnt/c fallback; got %+v", e)
+		}
+		if e.ResolvedPath != userPath {
+			t.Fatalf("expected ResolvedPath = %q (working user install); got %q", userPath, e.ResolvedPath)
+		}
+		return
+	}
+	t.Fatalf("code not in catalog output: %+v", got)
+}
+
 func TestDetectEditors_FallsBackToMntCUserInstall(t *testing.T) {
 	// Inside WSL with no PATH-resolved code, detection must walk
 	// /mnt/c/Users/<user>/AppData/Local/Programs/... and pick the

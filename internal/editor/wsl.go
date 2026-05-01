@@ -3,6 +3,7 @@ package editor
 import (
 	"bytes"
 	"path"
+	"regexp"
 	"strings"
 	"sync"
 )
@@ -112,6 +113,14 @@ func readWSLOSRelease(env detectEnv) bool {
 // miss. Per the WSL editor-bridge feedback memory, the user-install
 // path takes precedence over the system one — a per-user install
 // reflects the user's actual editor environment.
+//
+// Each candidate is run through validateWindowsCodeShim before being
+// returned: an incomplete Microsoft VS Code uninstall (the shape that
+// led to this validation existing) leaves the shim file at the
+// canonical `bin/code` location while removing the cli.js it points
+// at. Without the validation pass, findWindowsInstall would happily
+// hand back the first stat-able candidate and the spawn would silently
+// fail.
 func findWindowsInstall(editorID string, env detectEnv) string {
 	entry, ok := wslInstallTable[editorID]
 	if !ok {
@@ -126,14 +135,18 @@ func findWindowsInstall(editorID string, env detectEnv) string {
 			}
 			candidate := path.Join(usersDir, name, entry.userRelative)
 			if ok, err := env.stat(candidate); err == nil && ok {
-				return candidate
+				if validateWindowsCodeShim(candidate, env) {
+					return candidate
+				}
 			}
 		}
 	}
 
 	for _, sys := range entry.systemPaths {
 		if ok, err := env.stat(sys); err == nil && ok {
-			return sys
+			if validateWindowsCodeShim(sys, env) {
+				return sys
+			}
 		}
 	}
 	return ""
@@ -159,6 +172,56 @@ func pathTargetsWindows(resolved string, env detectEnv) bool {
 		return false
 	}
 	return bytes.Contains(data, []byte(wslMntCRoot))
+}
+
+// versionFolderPattern extracts the VERSIONFOLDER="..." line from the
+// Microsoft-family `code` shim. Used by validateWindowsCodeShim to
+// catch broken installs that left the shim behind without the
+// referenced cli.js (the typical incomplete-uninstall shape).
+var versionFolderPattern = regexp.MustCompile(`(?m)^VERSIONFOLDER="([^"]+)"`)
+
+// validateWindowsCodeShim reads the shim at `resolved` and verifies
+// the cli.js it points at actually exists. The Microsoft VS Code WSL
+// shim and its derivatives (Cursor, Windsurf, VSCodium, code-insiders)
+// hardcode a `VERSIONFOLDER="..."` line; cli.js sits at
+// `<install>/<VERSIONFOLDER>/resources/app/out/cli.js`. An incomplete
+// uninstall (or a Microsoft installer that fell over mid-update) can
+// leave the shim while removing the cli.js, and the shim's own
+// `--locate-extension` invocation suppresses stderr — so running the
+// broken shim looks successful from the spawn side, but the editor
+// never opens. Validating up front keeps the broken candidate out of
+// detection and lets us fall through to a working alternate install.
+//
+// Returns true when the shim is unrecognized (no VERSIONFOLDER line —
+// e.g. Sublime, Zed, a $EDITOR fallback). Those don't fit the pattern;
+// the spawn step is the right place to learn whether they work.
+//
+// Read errors collapse to false: if we can't even read the shim, we
+// can't trust it.
+func validateWindowsCodeShim(resolved string, env detectEnv) bool {
+	data, err := env.readFile(resolved)
+	if err != nil {
+		return false
+	}
+	match := versionFolderPattern.FindSubmatch(data)
+	if match == nil {
+		// Shim doesn't follow the Microsoft VERSIONFOLDER pattern —
+		// nothing to validate. Defer to the spawn step.
+		return true
+	}
+	versionFolder := string(match[1])
+	if versionFolder == "" {
+		return true
+	}
+	// Shim layout: <install>/bin/code → install root is the parent of
+	// the bin/ dir.
+	installRoot := path.Dir(path.Dir(resolved))
+	cliJsPath := path.Join(installRoot, versionFolder, "resources/app/out/cli.js")
+	ok, err := env.stat(cliJsPath)
+	if err != nil {
+		return false
+	}
+	return ok
 }
 
 // ToWSLUNCPath converts a Linux path to the Windows UNC form

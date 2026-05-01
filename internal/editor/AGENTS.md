@@ -61,6 +61,48 @@ WSLg and miss the user's actual editor environment; falling back to
 them silently is worse than reporting "no editor available" so the
 user sees the Remote-WSL setup hint.
 
+### Shim validation
+
+Every Microsoft-family `code` shim (VS Code, Code Insiders, Cursor,
+Windsurf, VSCodium) hardcodes `VERSIONFOLDER="..."` and dispatches
+through `<install>/<VERSIONFOLDER>/resources/app/out/cli.js`. An
+incomplete or stale uninstall can leave the `bin/code` script in
+place while removing the cli.js — the shim then exits non-zero on
+`Cannot find module .../cli.js`, but the shim's own
+`--locate-extension` invocation suppresses stderr to `/dev/null`, so
+the spawn looks successful while no editor window appears.
+
+`validateWindowsCodeShim` (in `wsl.go`) reads each candidate shim and
+stats the cli.js it points at. Broken candidates are skipped:
+
+- `detectOne`: a PATH-resolved /mnt/c shim that fails validation falls
+  through to `findWindowsInstall` instead of being accepted.
+- `findWindowsInstall`: each user/system candidate is validated before
+  being returned. The walk continues past broken installs.
+
+Shims without a `VERSIONFOLDER="..."` line (Sublime, Zed, custom
+`$EDITOR` targets) are passed through unchanged — there's no cheap
+content-based check for those, and the spawn step is the right place
+to learn whether they work. The fast-exit observer below catches their
+runtime failures.
+
+### Fast-exit observer
+
+After `cmd.Start()` succeeds, `Open` waits up to `fastExitWindow`
+(750ms) for the child to exit. Three branches:
+
+- Exit 0 inside the window → success (e.g. VS Code's CLI handing off
+  to a running window).
+- Non-zero exit inside the window → error returned with the editor
+  name and exit code. This is what surfaces `Cannot find module` and
+  similar shim failures that slipped past validation.
+- Still running at the timeout → success. The watcher goroutine
+  continues, reaping the eventual exit cleanly.
+
+The observer is the indirection seam `observeFastExit`; tests that
+fake `startCmd` also fake the observer to avoid waiting on a child
+process that was never actually started.
+
 ## Extension points
 
 - To add a new editor: append it to `editorCatalog` in `detect.go`,

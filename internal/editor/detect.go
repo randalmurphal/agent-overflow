@@ -305,17 +305,29 @@ func detectEditorsWithEnv(ctx context.Context, env detectEnv) []Editor {
 //     /Applications and ~/Applications.
 //   - Linux (non-WSL): walk well-known system + snap + flatpak +
 //     ~/.local/bin paths.
+//
+// On WSL, a PATH-resolved shim must additionally pass
+// validateWindowsCodeShim. PATH order on Windows-shadowed environments
+// often lists a stale system install ahead of a working user install;
+// without validation we'd accept the broken candidate, exec it, and
+// the editor would never appear (the shim suppresses its own stderr,
+// so the spawn looks successful).
 func detectOne(e Editor, wsl bool, env detectEnv) Editor {
 	resolved, ok := env.lookPath(e.Command)
 	if ok {
-		if !wsl || pathTargetsWindows(resolved, env) {
+		if !wsl {
 			e.Available = true
 			e.ResolvedPath = resolved
 			return e
 		}
-		// WSL + Linux-native install: deliberately fall through to
-		// /mnt/c discovery so we either find a real Windows editor or
-		// report "not available".
+		if pathTargetsWindows(resolved, env) && validateWindowsCodeShim(resolved, env) {
+			e.Available = true
+			e.ResolvedPath = resolved
+			return e
+		}
+		// WSL + Linux-native install OR a /mnt/c shim whose VERSIONFOLDER
+		// target is missing: fall through to /mnt/c discovery so we
+		// either find a real working editor or report "not available".
 	}
 	if wsl {
 		if winPath := findWindowsInstall(e.ID, env); winPath != "" {

@@ -3,10 +3,12 @@ package editor
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os/exec"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestBuildArgs_DirectPath(t *testing.T) {
@@ -149,9 +151,11 @@ func TestOpen_RejectsRelativePathWithoutWorkspace(t *testing.T) {
 func TestOpen_ResolvesRelativeAgainstWorkspace(t *testing.T) {
 	originalLookPath := lookPath
 	originalStart := startCmd
+	originalObserve := observeFastExit
 	t.Cleanup(func() {
 		lookPath = originalLookPath
 		startCmd = originalStart
+		observeFastExit = originalObserve
 	})
 
 	lookPath = func(string) (string, error) { return "/usr/bin/code", nil }
@@ -160,6 +164,7 @@ func TestOpen_ResolvesRelativeAgainstWorkspace(t *testing.T) {
 		captured = cmd
 		return nil
 	}
+	observeFastExit = func(*exec.Cmd, string) error { return nil }
 
 	ed := &Editor{
 		ID: "code", Name: "VS Code", Command: "code",
@@ -215,6 +220,108 @@ func TestOpen_RejectsWorkspaceEscape(t *testing.T) {
 	}
 }
 
+// TestDefaultObserveFastExit_NonZeroExitWithinWindow exercises the
+// real (non-stubbed) watcher against a fast-failing binary. /bin/false
+// exits 1 inside fastExitWindow → defaultObserveFastExit must surface
+// the exit code as an error so the frontend can toast it.
+func TestDefaultObserveFastExit_NonZeroExitWithinWindow(t *testing.T) {
+	cmd := exec.Command("/bin/false")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("Start /bin/false: %v", err)
+	}
+	err := defaultObserveFastExit(cmd, "VS Code")
+	if err == nil {
+		t.Fatal("expected error from non-zero fast exit")
+	}
+	if !strings.Contains(err.Error(), "exited with code 1") {
+		t.Fatalf("expected exit code in error; got %q", err.Error())
+	}
+}
+
+// TestDefaultObserveFastExit_ZeroExitWithinWindow covers the VS Code
+// CLI handoff case: the binary returns 0 immediately after sending the
+// open IPC to a running window. Treat as success — no error, no
+// noise.
+func TestDefaultObserveFastExit_ZeroExitWithinWindow(t *testing.T) {
+	cmd := exec.Command("/bin/true")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("Start /bin/true: %v", err)
+	}
+	if err := defaultObserveFastExit(cmd, "VS Code"); err != nil {
+		t.Fatalf("zero-exit must return nil; got %v", err)
+	}
+}
+
+// TestDefaultObserveFastExit_StillRunningAtWindow covers the
+// long-lived editor case: the window expires before the child has
+// exited. We treat that as a successful launch and let the goroutine
+// continue waiting for the eventual exit (the buffered channel keeps
+// the goroutine non-leaky).
+func TestDefaultObserveFastExit_StillRunningAtWindow(t *testing.T) {
+	// sleep 5s — way past the 750ms window.
+	cmd := exec.Command("/bin/sleep", "5")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("Start /bin/sleep: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	})
+	start := time.Now()
+	err := defaultObserveFastExit(cmd, "VS Code")
+	if err != nil {
+		t.Fatalf("long-lived child must produce nil; got %v", err)
+	}
+	elapsed := time.Since(start)
+	if elapsed < fastExitWindow {
+		t.Fatalf("watcher returned in %v, expected at least %v", elapsed, fastExitWindow)
+	}
+	// Generous upper bound — the watcher should return promptly after
+	// the window closes, not wait for the process to finish.
+	if elapsed > fastExitWindow+250*time.Millisecond {
+		t.Fatalf("watcher took %v, expected close to %v", elapsed, fastExitWindow)
+	}
+}
+
+// TestOpen_FastExitFailureSurfacesEditorName pins the defense-in-depth
+// layer: when startCmd succeeds but the spawned editor exits non-zero
+// inside fastExitWindow, Open returns an error rather than silently
+// returning nil. Catches the broken-shim case where the Microsoft
+// `code` shim prints "Cannot find module .../cli.js" and exits 1
+// before showing a window — the shim suppresses its own stderr, so
+// without this layer the click looks like a no-op.
+func TestOpen_FastExitFailureSurfacesEditorName(t *testing.T) {
+	originalLookPath := lookPath
+	originalStart := startCmd
+	originalObserve := observeFastExit
+	t.Cleanup(func() {
+		lookPath = originalLookPath
+		startCmd = originalStart
+		observeFastExit = originalObserve
+	})
+	lookPath = func(string) (string, error) { return "/usr/bin/code", nil }
+	startCmd = func(*exec.Cmd) error { return nil }
+	observeFastExit = func(_ *exec.Cmd, name string) error {
+		return fmt.Errorf("editor: %s exited with code 1 before opening (likely a broken install — try running it from a terminal)", name)
+	}
+
+	ed := &Editor{
+		ID: "code", Name: "VS Code", Command: "code",
+		Available: true, ResolvedPath: "/usr/bin/code",
+		LaunchStyle: LaunchStyleGoto,
+	}
+	err := Open(context.Background(), SpawnOptions{Editor: ed, Path: "/tmp/x"})
+	if err == nil {
+		t.Fatal("expected fast-exit failure to surface as an error")
+	}
+	if !strings.Contains(err.Error(), "VS Code") {
+		t.Fatalf("error should name the editor; got %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "exited with code 1") {
+		t.Fatalf("error should report exit code; got %q", err.Error())
+	}
+}
+
 // TestOpen_RejectsRelativeWorkspace confirms the workspacePath itself
 // must be absolute. A relative workspacePath would just shift the
 // cwd-relative attack vector up one level.
@@ -263,9 +370,11 @@ func TestOpen_RejectsTraversalPath(t *testing.T) {
 func TestOpen_AcceptsCleanAbsolute(t *testing.T) {
 	originalLookPath := lookPath
 	originalStart := startCmd
+	originalObserve := observeFastExit
 	t.Cleanup(func() {
 		lookPath = originalLookPath
 		startCmd = originalStart
+		observeFastExit = originalObserve
 	})
 
 	lookPath = func(string) (string, error) { return "/usr/bin/code", nil }
@@ -274,6 +383,7 @@ func TestOpen_AcceptsCleanAbsolute(t *testing.T) {
 		captured = cmd
 		return nil
 	}
+	observeFastExit = func(*exec.Cmd, string) error { return nil }
 
 	ed := &Editor{
 		ID: "code", Name: "VS Code", Command: "code",
@@ -310,9 +420,11 @@ func TestOpen_TOCTOUFailureWrapsErrCommandNotFound(t *testing.T) {
 func TestOpen_AssemblesArgsAndStartsCommand(t *testing.T) {
 	originalLookPath := lookPath
 	originalStart := startCmd
+	originalObserve := observeFastExit
 	t.Cleanup(func() {
 		lookPath = originalLookPath
 		startCmd = originalStart
+		observeFastExit = originalObserve
 	})
 
 	lookPath = func(name string) (string, error) {
@@ -321,6 +433,7 @@ func TestOpen_AssemblesArgsAndStartsCommand(t *testing.T) {
 		}
 		return "", exec.ErrNotFound
 	}
+	observeFastExit = func(*exec.Cmd, string) error { return nil }
 
 	var captured *exec.Cmd
 	startCmd = func(cmd *exec.Cmd) error {
