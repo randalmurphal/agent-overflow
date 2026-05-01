@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
@@ -309,22 +310,28 @@ func readClaudeTaskOutputFile(path string, maxBytes int64) ([]byte, map[string]a
 	if !filepath.IsAbs(path) {
 		return nil, nil, fmt.Errorf("output_file path must be absolute")
 	}
-	info, err := os.Lstat(path)
-	if err != nil {
-		return nil, nil, err
-	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return nil, nil, fmt.Errorf("output_file path is a symlink")
-	}
-	if !info.Mode().IsRegular() {
-		return nil, nil, fmt.Errorf("output_file path is not a regular file")
-	}
+	// Resolve symlinks BEFORE the regular-file check. Claude wraps each
+	// task output as `<task_id>.output → <subagent>.jsonl` inside
+	// `~/.claude/projects/...`, so an unconditional symlink rejection
+	// silently drops every Task subagent's payload. EvalSymlinks
+	// canonicalises both the link itself and any parent directories
+	// that are symlinks (common on macOS where /tmp → /private/tmp).
+	// The allow-list check then runs against the resolved path so the
+	// containment guard is enforced after symlink resolution rather
+	// than circumvented by it.
 	resolvedPath, err := filepath.EvalSymlinks(path)
 	if err != nil {
 		return nil, nil, err
 	}
+	info, err := os.Stat(resolvedPath)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, nil, fmt.Errorf("output_file path is not a regular file")
+	}
 	if !isAllowedClaudeOutputPath(resolvedPath) {
-		return nil, nil, fmt.Errorf("output_file path is outside allowed temp roots")
+		return nil, nil, fmt.Errorf("output_file path is outside allowed roots")
 	}
 	file, err := os.Open(resolvedPath)
 	if err != nil {
@@ -371,11 +378,60 @@ func isAllowedClaudeOutputPath(path string) bool {
 	return false
 }
 
+// allowedClaudeOutputRootsOnce memoises the resolved-roots list so we
+// don't re-stat the candidate paths on every notification. The roots
+// are stable for the process lifetime — `os.TempDir()` reads from the
+// initial environment, `/tmp` doesn't move, and `~/.claude/projects/`
+// is resolved against `os.UserHomeDir()` once at first use. Tests that
+// need to bypass the memoised list can call
+// `resetAllowedClaudeOutputRootsForTest` to force a recomputation.
+var (
+	allowedClaudeOutputRootsOnce  sync.Once
+	allowedClaudeOutputRootsCache []string
+)
+
 func allowedClaudeOutputRoots() []string {
+	allowedClaudeOutputRootsOnce.Do(func() {
+		allowedClaudeOutputRootsCache = computeAllowedClaudeOutputRoots()
+	})
+	return allowedClaudeOutputRootsCache
+}
+
+// resetAllowedClaudeOutputRootsForTest clears the memoised roots so
+// subsequent calls recompute them. Test-only — production code never
+// calls this.
+func resetAllowedClaudeOutputRootsForTest() {
+	allowedClaudeOutputRootsOnce = sync.Once{}
+	allowedClaudeOutputRootsCache = nil
+}
+
+// computeAllowedClaudeOutputRoots builds the resolved set of allowed
+// roots for `output_file` payloads. Two surfaces are valid:
+//
+//  1. The standard temp roots (`os.TempDir()`, `/tmp`, `/private/tmp`
+//     to handle the macOS `/tmp → /private/tmp` symlink). This is
+//     where ad-hoc `Bash run_in_background:true` output lands.
+//  2. `~/.claude/projects/`. Claude's Task subagent wraps each
+//     `<task_id>.output` as a symlink into this directory, so the
+//     allow-list MUST include it for the resolved-path check to
+//     accept the canonicalised target. Without it, every Task
+//     subagent's structured output would be silently dropped.
+//
+// Each candidate is symlink-resolved at startup (via EvalSymlinks) so
+// the comparison in `pathWithinRoot` runs against canonical paths on
+// both sides. A candidate that doesn't exist or isn't absolute after
+// resolution falls back to `filepath.Clean(candidate)` so the root
+// list stays stable even on machines where the directory hasn't been
+// created yet (a fresh user with no Claude subagents — the path will
+// exist by the time the first notification arrives).
+func computeAllowedClaudeOutputRoots() []string {
 	candidates := []string{
 		os.TempDir(),
 		"/tmp",
 		"/private/tmp",
+	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		candidates = append(candidates, filepath.Join(home, ".claude", "projects"))
 	}
 	seen := map[string]struct{}{}
 	roots := make([]string, 0, len(candidates))

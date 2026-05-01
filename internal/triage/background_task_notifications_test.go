@@ -374,3 +374,94 @@ func TestReadClaudeTaskOutputFileRejectsPathsOutsideAllowedTempRoots(t *testing.
 		t.Fatal("expected non-temp repo path to be rejected")
 	}
 }
+
+// TestReadClaudeTaskOutputFile_AcceptsSymlinkInsideAllowedRoot pins the
+// fix for the silently-dropped Task subagent payloads bug. Claude wraps
+// each task output as a symlink (`<task_id>.output → <subagent>.jsonl`)
+// inside the allowed roots; an unconditional symlink rejection
+// (the previous behaviour) lost every Task subagent's structured
+// output — confirmed in production via launcher.log spam of
+// "output_file path is a symlink".
+//
+// This test creates a regular file inside a temp dir, points a symlink
+// at it from the same temp dir, and asserts the read succeeds — the
+// resolved target lives in an allowed root, so the containment guard
+// is satisfied even when the path entered through a symlink.
+func TestReadClaudeTaskOutputFile_AcceptsSymlinkInsideAllowedRoot(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "task.jsonl")
+	contents := []byte(`{"hello":"world"}`)
+	if err := os.WriteFile(target, contents, 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	link := filepath.Join(dir, "task-id.output")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	data, _, err := readClaudeTaskOutputFile(link, int64(len(contents)*4))
+	if err != nil {
+		t.Fatalf("read symlink: %v", err)
+	}
+	if string(data) != string(contents) {
+		t.Errorf("read data = %q, want %q", string(data), string(contents))
+	}
+}
+
+// TestReadClaudeTaskOutputFile_RejectsSymlinkOutsideAllowedRoots pins
+// the containment guard: a symlink that resolves to a path OUTSIDE
+// the allowed roots (temp dirs + ~/.claude/projects/) is still
+// rejected. Without this assertion, dropping the unconditional
+// symlink rejection would let an attacker who plants a malicious
+// `output_file` entry escape the allow-list.
+func TestReadClaudeTaskOutputFile_RejectsSymlinkOutsideAllowedRoots(t *testing.T) {
+	// The target lives outside any allowed root. The repo's go.mod is
+	// a stable file we know we control inside this checkout.
+	target, err := filepath.Abs("../../go.mod")
+	if err != nil {
+		t.Fatalf("abs target: %v", err)
+	}
+	dir := t.TempDir()
+	link := filepath.Join(dir, "escape.output")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	if _, _, err := readClaudeTaskOutputFile(link, 1024); err == nil {
+		t.Fatal("expected symlink resolving outside allowed roots to be rejected")
+	}
+}
+
+// TestAllowedClaudeOutputRoots_IncludesClaudeProjectsDir asserts that
+// the resolved-roots list includes ~/.claude/projects/ when the
+// home directory is available. This is the canonical location Claude
+// puts subagent jsonl files; without it, the symlink-resolved target
+// in TestReadClaudeTaskOutputFile_AcceptsSymlinkInsideAllowedRoot
+// passes only because we control both the link and the target inside
+// the same temp dir, but production data points at a path under
+// ~/.claude/projects/ that the temp-only allow-list would reject.
+func TestAllowedClaudeOutputRoots_IncludesClaudeProjectsDir(t *testing.T) {
+	resetAllowedClaudeOutputRootsForTest()
+	t.Cleanup(resetAllowedClaudeOutputRootsForTest)
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skipf("no home dir resolvable: %v", err)
+	}
+	want := filepath.Join(home, ".claude", "projects")
+	resolved, err := filepath.EvalSymlinks(want)
+	if err != nil {
+		// Directory may not exist on a clean machine. Cleaned candidate
+		// is still added to the list for stability — verify against
+		// that form instead.
+		resolved = filepath.Clean(want)
+	}
+
+	roots := allowedClaudeOutputRoots()
+	for _, r := range roots {
+		if r == resolved {
+			return
+		}
+	}
+	t.Errorf("allowedClaudeOutputRoots() did not include %q; got %v", resolved, roots)
+}
