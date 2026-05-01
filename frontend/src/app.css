@@ -103,13 +103,6 @@ body {
 
 .chat-surface-ground {
   background-color: var(--surface-0);
-  background-image: repeating-linear-gradient(
-    to right,
-    transparent 0,
-    transparent 1px,
-    color-mix(in oklab, var(--text-primary) 2%, transparent) 1px,
-    color-mix(in oklab, var(--text-primary) 2%, transparent) 2px
-  );
 }
 
 body::selection {

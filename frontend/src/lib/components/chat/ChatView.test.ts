@@ -219,6 +219,7 @@ describe('<ChatView>', () => {
     expect(appCss).not.toMatch(/body::before/);
     expect(appCss).not.toMatch(/body::after/);
     expect(appCss).not.toMatch(/mix-blend-mode/);
+    expect(appCss).not.toMatch(/repeating-linear-gradient/);
   });
 
   it('marks the active thread read locally and coalesces persisted writes when completed turns arrive', async () => {
