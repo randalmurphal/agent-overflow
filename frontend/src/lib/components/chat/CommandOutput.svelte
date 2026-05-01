@@ -88,6 +88,12 @@
       meta: payloadMeta ?? (meta as unknown as Record<string, unknown> | undefined),
     }),
   );
+  let isForegroundRunning = $derived(
+    !isBackgroundedLaunch && (item.status === 'running' || item.status === 'streaming'),
+  );
+  let showStatusSlot = $derived(
+    isBackgroundedLaunch || isForegroundRunning || (showCompletionBadge && completionStatus !== null),
+  );
 
   keepExpandedPayloadFresh(() => expansion, () => hasPayload);
 </script>
@@ -106,18 +112,33 @@
   {#snippet headerActions()}
     <span class="ml-auto flex shrink-0 items-center gap-2">
       <ToolDecisionChip decision={item.decision} />
-      {#if isBackgroundedLaunch}
+      {#if showStatusSlot}
         <span
-          class="shrink-0 text-[20px] leading-none text-accent opacity-90 transition-opacity"
-          data-testid="command-output-status"
-          title="Running in background"
-          aria-label="Backgrounded"
+          class="flex w-12 shrink-0 items-center justify-center"
+          data-testid="command-output-status-slot"
         >
-          …
+          {#if isBackgroundedLaunch}
+            <span
+              class="shrink-0 text-[20px] leading-none text-accent opacity-90 transition-opacity"
+              data-testid="command-output-status"
+              title="Running in background"
+              aria-label="Backgrounded"
+            >
+              …
+            </span>
+          {:else if isForegroundRunning}
+            <span
+              class="shrink-0 text-[20px] leading-none text-accent opacity-90 animate-pulse"
+              data-testid="command-output-status"
+              title="Running"
+              aria-label="Running"
+            >
+              …
+            </span>
+          {:else if showCompletionBadge && completionStatus !== null}
+            <CompletionBadge status={completionStatus} />
+          {/if}
         </span>
-      {/if}
-      {#if showCompletionBadge && !isBackgroundedLaunch && completionStatus !== null}
-        <CompletionBadge status={completionStatus} />
       {/if}
       <time
         class="text-[10px] text-fg-hint shrink-0 tabular-nums"

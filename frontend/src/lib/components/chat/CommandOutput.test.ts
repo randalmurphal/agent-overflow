@@ -213,6 +213,61 @@ describe('<CommandOutput>', () => {
     expect(getByTestId('command-output-command').textContent).toBe('pnpm test');
   });
 
+  it('renders foreground running commands in the reserved status slot', () => {
+    const { getByTestId, queryByTestId } = render(CommandOutput, {
+      props: {
+        item: makeItem({ id: 'tool-cmd', kind: 'tool_call', status: 'running' }),
+        meta: commandMeta({ command: 'pnpm test' }),
+      },
+    });
+
+    const slot = getByTestId('command-output-status-slot');
+    const status = getByTestId('command-output-status');
+    expect(slot.className).toContain('w-12');
+    expect(status.textContent?.trim()).toBe('…');
+    expect(status.className).toContain('animate-pulse');
+    expect(status.getAttribute('aria-label')).toBe('Running');
+    expect(queryByTestId('completion-badge')).toBeNull();
+  });
+
+  it('keeps the running status slot when completion badges are suppressed', () => {
+    const { getByTestId, queryByTestId } = render(CommandOutput, {
+      props: {
+        item: makeItem({ id: 'tool-cmd', kind: 'tool_call', status: 'running' }),
+        meta: commandMeta({ command: 'pnpm test' }),
+        showCompletionBadge: false,
+      },
+    });
+
+    expect(getByTestId('command-output-status-slot').className).toContain('w-12');
+    expect(getByTestId('command-output-status').getAttribute('aria-label')).toBe('Running');
+    expect(queryByTestId('completion-badge')).toBeNull();
+  });
+
+  it('keeps the same status slot when a foreground command completes', async () => {
+    const running = makeItem({ id: 'tool-cmd', kind: 'tool_call', status: 'running' });
+    const completed = makeItem({ ...running, status: 'completed', updatedAt: running.updatedAt + 1 });
+    const { getByTestId, rerender } = render(CommandOutput, {
+      props: {
+        item: running,
+        meta: commandMeta({ command: 'pnpm test', exitCode: 0 }),
+      },
+    });
+
+    const runningSlot = getByTestId('command-output-status-slot');
+    expect(runningSlot.className).toContain('w-12');
+    expect(getByTestId('command-output-status').textContent?.trim()).toBe('…');
+
+    await rerender({
+      item: completed,
+      meta: commandMeta({ command: 'pnpm test', exitCode: 0 }),
+    });
+
+    const completedSlot = getByTestId('command-output-status-slot');
+    expect(completedSlot.className).toBe(runningSlot.className);
+    expect(getByTestId('completion-badge').getAttribute('data-status')).toBe('success');
+  });
+
   it('places the command completion badge before the timestamp', () => {
     const { getByTestId } = render(CommandOutput, {
       props: {
@@ -222,6 +277,7 @@ describe('<CommandOutput>', () => {
     });
 
     expectBefore(getByTestId('completion-badge'), getByTestId('command-output-time'));
+    expectBefore(getByTestId('command-output-status-slot'), getByTestId('command-output-time'));
   });
 
   it('left-aligns expandable command completion headers', () => {

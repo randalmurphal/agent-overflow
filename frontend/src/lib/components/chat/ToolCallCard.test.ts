@@ -808,6 +808,8 @@ describe("<ToolCallCard> backgrounded status label", () => {
     });
 
     expect(queryByTestId("tool-call-card-status")).toBeNull();
+    expect(getByTestId("command-output-status").textContent?.trim()).toBe("…");
+    expect(getByTestId("command-output-status").className).toContain("animate-pulse");
     expect(getByTestId("command-output-label").textContent?.trim()).toBe("Bash");
   });
 
@@ -859,6 +861,7 @@ describe("<ToolCallCard> backgrounded status label", () => {
     });
 
     expect(queryByTestId("tool-call-card-status")).toBeNull();
+    expect(getByTestId("command-output-status").textContent?.trim()).toBe("…");
     expect(getByTestId("command-output-label").textContent?.trim()).toBe("Bash");
   });
 
