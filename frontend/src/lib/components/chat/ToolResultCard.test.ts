@@ -178,7 +178,52 @@ describe('<ToolResultCard> editor-link wiring', () => {
     await waitFor(() => {
       expect(openMock).toHaveBeenCalledTimes(1);
     });
-    expect(openMock.mock.calls[0][0]).toBe('src/lib/foo.ts');
+    expect(openMock.mock.calls[0]).toEqual(['src/lib/foo.ts', 0, 0, '']);
+  });
+
+  // Regression for the original click-to-open bug: inline-diff file
+  // paths are repo-relative. The card threads `pane.thread.workspacePath`
+  // through to EditorLink so the backend can join. Pin that the prop
+  // wiring carries the value end-to-end.
+  it('forwards pane.thread.workspacePath to the OpenInEditor binding', async () => {
+    const openMock = setBindingMock('OpenInEditor', vi.fn(async () => undefined));
+    const item = makeItem({
+      kind: 'tool_completion',
+      status: 'completed',
+      payloadKind: 'tool_result',
+      payloadMeta: JSON.stringify({ itemType: 'file_change', title: 'Edit applied' }),
+    });
+    const m: ToolResultMeta = {
+      itemType: 'file_change',
+      title: 'Edit applied',
+      inlineDiff: {
+        availability: 'summary_only',
+        files: [{ path: 'src/lib/foo.ts', insertions: 4, deletions: 1, kind: 'modified' }],
+      },
+    };
+    // Minimal fake pane with the expansion-registry surface ToolResultCard
+    // reads from, plus the workspace anchor we want to verify.
+    const expansionCache = new Map<string, ReturnType<typeof createPayloadExpansion>>();
+    const pane = {
+      thread: { workspacePath: '/home/user/repo' },
+      expansionStateFor(it: Item) {
+        let h = expansionCache.get(it.id);
+        if (!h) {
+          h = createPayloadExpansion(() => it.payloadId, () => it.threadId);
+          expansionCache.set(it.id, h);
+        }
+        return h;
+      },
+    } as unknown as import('../../stores/thread.svelte').ThreadPane;
+    const { getByTestId } = render(ToolResultCard, { props: { pane, item, meta: m } });
+    const region = getByTestId('tool-result-inline-diffs');
+    const link = region.querySelector('[data-testid="editor-link-icon"]') as HTMLElement;
+
+    await fireEvent.click(link);
+    await waitFor(() => {
+      expect(openMock).toHaveBeenCalledTimes(1);
+    });
+    expect(openMock.mock.calls[0]).toEqual(['src/lib/foo.ts', 0, 0, '/home/user/repo']);
   });
 });
 

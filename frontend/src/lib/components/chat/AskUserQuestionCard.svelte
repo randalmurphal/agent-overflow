@@ -28,7 +28,7 @@
   import CompletionBadge from './CompletionBadge.svelte';
   import ChatMarkdown from './ChatMarkdown.svelte';
   import type { Item } from '../../types/models';
-  import type { ThreadPane } from '../../stores/thread.svelte';
+  import { paneWorkspacePath, type ThreadPane } from '../../stores/thread.svelte';
   import { deriveCompletionStatus } from '../../utils/toolCompletionStatus';
   import { parseJsonObject } from '../../utils/parseJsonObject';
   import { createPayloadExpansion } from './payloadExpansion.svelte';
@@ -305,7 +305,11 @@
                             class="mt-1 max-h-40 overflow-y-auto rounded border border-border-subtle bg-surface-0 px-2 py-1"
                             data-testid="ask-user-question-preview"
                           >
-                            <ChatMarkdown source={option.preview} class="text-[11px]" />
+                            <ChatMarkdown
+                              source={option.preview}
+                              workspacePath={paneWorkspacePath(pane)}
+                              class="text-[11px]"
+                            />
                           </div>
                         {/if}
                       </div>

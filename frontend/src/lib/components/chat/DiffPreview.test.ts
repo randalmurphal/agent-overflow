@@ -105,10 +105,32 @@ describe('<DiffPreview> editor-link wiring', () => {
     await waitFor(() => {
       expect(openMock).toHaveBeenCalledTimes(1);
     });
-    expect(openMock.mock.calls[0]).toEqual(['src/lib/foo.ts', 0, 0]);
+    expect(openMock.mock.calls[0]).toEqual(['src/lib/foo.ts', 0, 0, '']);
 
     // The parent's toggle did NOT fire — diff stays collapsed.
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
+  });
+
+  // Regression for the original click-to-open bug: diff cards emit
+  // repo-relative file paths (`src/lib/foo.ts`), which the backend used
+  // to reject because `editor.Open` required absolute paths. The fix
+  // threads `pane.thread.workspacePath` so the backend can join. Pin
+  // that the prop chain actually carries the value through to the
+  // binding — without this test, removing the workspacePath wiring
+  // anywhere along the path would silently re-introduce the bug.
+  it('forwards pane.thread.workspacePath to the OpenInEditor binding', async () => {
+    const openMock = setBindingMock('OpenInEditor', vi.fn(async () => undefined));
+    const pane = makeFakePane({
+      thread: { workspacePath: '/home/user/repo' },
+    } as Partial<import('../../stores/thread.svelte').ThreadPane>);
+    const { getByTestId } = render(DiffPreview, {
+      props: { pane, meta: META, payloadId: 'p-1', item: ITEM },
+    });
+    await fireEvent.click(getByTestId('editor-link-icon'));
+    await waitFor(() => {
+      expect(openMock).toHaveBeenCalledTimes(1);
+    });
+    expect(openMock.mock.calls[0]).toEqual(['src/lib/foo.ts', 0, 0, '/home/user/repo']);
   });
 
   it('does not render the open-in-sidebar button when no pane prop is supplied', () => {

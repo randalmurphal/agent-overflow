@@ -91,6 +91,6 @@
       <div class="h-px flex-1 bg-border-subtle"></div>
     </div>
   {:else}
-    <AssistantMessage item={displayItem} />
+    <AssistantMessage {pane} item={displayItem} />
   {/if}
 </div>

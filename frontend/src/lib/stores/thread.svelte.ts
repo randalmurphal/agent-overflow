@@ -294,6 +294,21 @@ export function parseTokenUsage(raw: string | null | undefined): TokenUsageSumma
 }
 
 /**
+ * Returns the absolute workspace path of a pane's active thread, or
+ * '' when the pane is undefined / has no thread / has an empty
+ * workspacePath. Lets every chat surface that drives `OpenInEditor`
+ * (or threads workspacePath into ChatMarkdown / EditorLink) read
+ * through one accessor instead of repeating `pane?.thread?.workspacePath ?? ''`.
+ *
+ * Centralising the lookup also gives us one place to teach the app
+ * about future workspace-source preferences (e.g. preferring
+ * thread.worktreePath when set).
+ */
+export function paneWorkspacePath(pane: ThreadPane | undefined): string {
+  return pane?.thread?.workspacePath ?? '';
+}
+
+/**
  * Creates a self-contained thread pane state instance.
  * Each pane tracks its own thread, unified timeline items, approvals,
  * context/banner state, and mode-specific UI. Components receive a

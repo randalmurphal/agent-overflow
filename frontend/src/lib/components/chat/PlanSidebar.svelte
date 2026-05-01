@@ -16,7 +16,7 @@
   } from '../../stores/bindings';
   import { replaceThread } from '../../stores/threads.svelte';
   import { addToast } from '../../stores/toast.svelte';
-  import type { ThreadPane } from '../../stores/thread.svelte';
+  import { paneWorkspacePath, type ThreadPane } from '../../stores/thread.svelte';
   import type { Thread } from '../../types/models';
   import {
     normalizePlanMarkdownForExport,
@@ -244,6 +244,7 @@
               planItemId={currentPlan.id}
               markdown={normalizedMarkdown}
               {comments}
+              workspacePath={paneWorkspacePath(pane)}
               onRefresh={() => refreshPlanComments(threadId, planKey)}
             />
           {/key}

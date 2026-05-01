@@ -10,10 +10,17 @@
   let {
     source,
     streaming = false,
+    workspacePath = '',
     class: className = '',
   }: {
     source: string;
     streaming?: boolean;
+    /** Absolute base directory for resolving relative file paths the
+     *  linkifier finds in the rendered text. Pass `pane.thread.workspacePath`
+     *  from per-thread surfaces; non-thread surfaces (design previews,
+     *  notebook cells) leave empty and accept that relative-path
+     *  click-to-open will surface a clear "requires workspacePath" error. */
+    workspacePath?: string;
     class?: string;
   } = $props();
 
@@ -61,6 +68,10 @@
     const currentGeneration = ++generation;
     const currentHtml = html;
     const currentStreaming = streaming;
+    // Capture synchronously so the dependency lands on the effect
+    // graph; the value is read again in the async `tick().then(...)`
+    // body, which runs outside the tracked scope.
+    const currentWorkspace = workspacePath;
     const node = root;
 
     if (!node || !currentHtml) {
@@ -77,6 +88,7 @@
         renderScope,
         streaming: currentStreaming,
         isCurrent: (candidate) => candidate === generation,
+        workspacePath: currentWorkspace,
       });
     });
 

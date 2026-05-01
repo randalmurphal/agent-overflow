@@ -20,8 +20,10 @@ editor reachable via the vendor's WSL Remote integration.
   settings preference onto the detection result, falling back through
   the catalog priority order and ultimately the env fallback.
 - `spawn.go` + `spawn_unix.go` / `spawn_windows.go` — argv assembly
-  per launch style and the OS-specific `SysProcAttr` shape that lets
-  the child outlive the parent.
+  per launch style, OS-specific `SysProcAttr` so the child outlives
+  the parent, and `ResolvePath` — the path-shape contract `Open`
+  enforces (absolute-canonical pass-through, relative-against-workspace
+  joining, traversal-escape rejection).
 
 ## Responsibility boundary
 
@@ -30,6 +32,11 @@ editor reachable via the vendor's WSL Remote integration.
   - The WSL bridge rule: a Linux-native install does NOT count as an
     available editor when running inside WSL, even if it is on PATH.
   - argv assembly for each launch style and the spawn primitives.
+  - The path-shape contract enforced before spawn: `ResolvePath` is
+    the LAN-bind safety floor — relative-input resolution against an
+    absolute, canonical `workspacePath` plus the traversal-escape
+    guard. Frontend callers supply the workspace; this package owns
+    the validation.
 - What does NOT belong here:
   - Settings persistence — `internal/settings` owns that.
   - Frontend toasts / error rendering — `app_editor.go` returns the

@@ -137,7 +137,8 @@
   async function openProjectInEditor(): Promise<void> {
     if (!projectBadge) return;
     try {
-      await OpenInEditor(projectBadge.path, 0, 0);
+      // projectBadge.path is already absolute; workspacePath is unused.
+      await OpenInEditor(projectBadge.path, 0, 0, '');
     } catch (err) {
       addToast('error', errString(err));
     }

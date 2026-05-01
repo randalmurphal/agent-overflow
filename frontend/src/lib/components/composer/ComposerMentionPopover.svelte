@@ -15,6 +15,9 @@
     results: WorkspaceFile[];
     activeIndex: number;
     loading?: boolean;
+    /** Absolute base for resolving the workspace-relative file.path when
+     *  the user hits the editor-link affordance. */
+    workspacePath?: string;
     onSelect: (file: WorkspaceFile) => void;
     onHover?: (index: number) => void;
     onClose?: () => void;
@@ -27,6 +30,7 @@
     results,
     activeIndex,
     loading = false,
+    workspacePath = '',
     onSelect,
     onHover,
     onClose = () => {},
@@ -79,7 +83,7 @@
                 stays the row click.
               -->
               <div class="absolute right-2 top-1/2 -translate-y-1/2 opacity-0 group-hover/mention:opacity-100 transition-opacity">
-                <EditorLink path={file.path} asIcon stopPropagation />
+                <EditorLink path={file.path} {workspacePath} asIcon stopPropagation />
               </div>
             </li>
           {/each}

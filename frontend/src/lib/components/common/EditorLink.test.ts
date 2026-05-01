@@ -37,26 +37,26 @@ describe('<EditorLink>', () => {
     expect(btn.tagName).toBe('BUTTON');
   });
 
-  it('invokes OpenInEditor with path/line/col on click', async () => {
+  it('invokes OpenInEditor with path/line/col/workspacePath on click', async () => {
     const mock = setBindingMock('OpenInEditor', vi.fn(async () => undefined));
     const { getByTestId } = render(EditorLink, {
-      props: { path: 'src/foo.ts', line: 12, col: 4 },
+      props: { path: 'src/foo.ts', line: 12, col: 4, workspacePath: '/work' },
     });
     await fireEvent.click(getByTestId('editor-link'));
     await waitFor(() => {
       expect(mock).toHaveBeenCalledTimes(1);
     });
-    expect(mock.mock.calls[0]).toEqual(['src/foo.ts', 12, 4]);
+    expect(mock.mock.calls[0]).toEqual(['src/foo.ts', 12, 4, '/work']);
   });
 
-  it('defaults line/col to 0 when not supplied', async () => {
+  it('defaults line/col/workspacePath when not supplied', async () => {
     const mock = setBindingMock('OpenInEditor', vi.fn(async () => undefined));
     const { getByTestId } = render(EditorLink, { props: { path: 'README.md' } });
     await fireEvent.click(getByTestId('editor-link'));
     await waitFor(() => {
       expect(mock).toHaveBeenCalledTimes(1);
     });
-    expect(mock.mock.calls[0]).toEqual(['README.md', 0, 0]);
+    expect(mock.mock.calls[0]).toEqual(['README.md', 0, 0, '']);
   });
 
   it('toasts the binding error message verbatim', async () => {

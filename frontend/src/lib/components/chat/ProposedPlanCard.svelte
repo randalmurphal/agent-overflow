@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { ThreadPane } from '../../stores/thread.svelte';
+  import { paneWorkspacePath, type ThreadPane } from '../../stores/thread.svelte';
   import { getThreadCurrentProposedPlan } from '../../stores/proposedPlans.svelte';
   import { GetPayloadData } from '../../stores/bindings';
   import { addToast } from '../../stores/toast.svelte';
@@ -97,12 +97,13 @@
   <ProposedPlanBody
     markdown={displayedMarkdown}
     {previewOnly}
+    workspacePath={paneWorkspacePath(pane)}
   />
 </div>
 
 <ProposedPlanSaveModal
   open={planExport.saveDialogOpen}
-  workspacePath={pane.thread?.workspacePath}
+  workspacePath={paneWorkspacePath(pane)}
   savePath={planExport.savePath}
   saving={planExport.saving}
   onPathChange={planExport.setSavePath}

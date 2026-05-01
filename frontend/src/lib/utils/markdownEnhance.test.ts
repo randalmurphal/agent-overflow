@@ -316,10 +316,37 @@ describe('enhanceMarkdown — path linkify', () => {
     expect(container.querySelector('a.editor-link')).toBeNull();
   });
 
-  it('invokes OpenInEditor when an editor-link is clicked', async () => {
+  it('invokes OpenInEditor with the workspacePath stamped at linkify time', async () => {
     const mock = setBindingMock('OpenInEditor', vi.fn(async () => undefined));
     const container = document.createElement('div');
     container.innerHTML = '<p>see src/lib/foo.ts:12 for context</p>';
+    document.body.appendChild(container);
+
+    await enhanceMarkdown(container, {
+      generation: 1,
+      renderScope: 'test',
+      streaming: false,
+      isCurrent: () => true,
+      workspacePath: '/home/user/repo',
+    });
+
+    const link = container.querySelector('a.editor-link') as HTMLAnchorElement;
+    link.click();
+    // The delegate dispatches the binding through a dynamic import, so
+    // assertion must wait for both the import resolution and the await
+    // chain inside the handler before the mock is observed.
+    await waitFor(() => {
+      expect(mock).toHaveBeenCalledTimes(1);
+    });
+    expect(mock.mock.calls[0]).toEqual(['src/lib/foo.ts', 12, 0, '/home/user/repo']);
+    container.remove();
+    void getBindingMock; // keep helper reachable for future cases
+  });
+
+  it('falls back to empty workspacePath when none was supplied to enhanceMarkdown', async () => {
+    const mock = setBindingMock('OpenInEditor', vi.fn(async () => undefined));
+    const container = document.createElement('div');
+    container.innerHTML = '<p>see src/lib/bar.ts for context</p>';
     document.body.appendChild(container);
 
     await enhanceMarkdown(container, {
@@ -331,15 +358,11 @@ describe('enhanceMarkdown — path linkify', () => {
 
     const link = container.querySelector('a.editor-link') as HTMLAnchorElement;
     link.click();
-    // The delegate dispatches the binding through a dynamic import, so
-    // assertion must wait for both the import resolution and the await
-    // chain inside the handler before the mock is observed.
     await waitFor(() => {
       expect(mock).toHaveBeenCalledTimes(1);
     });
-    expect(mock.mock.calls[0]).toEqual(['src/lib/foo.ts', 12, 0]);
+    expect(mock.mock.calls[0]).toEqual(['src/lib/bar.ts', 0, 0, '']);
     container.remove();
-    void getBindingMock; // keep helper reachable for future cases
   });
 });
 

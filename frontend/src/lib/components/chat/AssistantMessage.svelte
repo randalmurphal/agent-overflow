@@ -1,10 +1,11 @@
 <script lang="ts">
   import type { Item } from '../../types/models';
+  import { paneWorkspacePath, type ThreadPane } from '../../stores/thread.svelte';
   import ChatMarkdown from './ChatMarkdown.svelte';
   import CopyButton from '../primitives/CopyButton.svelte';
   import { addToast } from '../../stores/toast.svelte';
 
-  let { item }: { item: Item } = $props();
+  let { pane, item }: { pane?: ThreadPane; item: Item } = $props();
 
   const time = $derived(
     new Date(item.createdAt).toLocaleTimeString(undefined, {
@@ -26,7 +27,11 @@
     data-testid="assistant-message-body"
     data-render-mode="client-markdown"
   >
-    <ChatMarkdown source={item.summary} streaming={item.status === 'streaming'} />
+    <ChatMarkdown
+      source={item.summary}
+      streaming={item.status === 'streaming'}
+      workspacePath={paneWorkspacePath(pane)}
+    />
   </div>
   <div class="mt-1.5 flex items-center gap-1.5 text-[10px] text-fg-hint/70">
     <time class="tabular-nums" datetime={isoTime}>

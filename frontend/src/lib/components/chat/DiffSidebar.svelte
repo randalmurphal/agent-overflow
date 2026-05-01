@@ -15,7 +15,7 @@
    * spans. Pre-tokenize render is always usable.
    */
   import { onDestroy, onMount, untrack } from 'svelte';
-  import type { ThreadPane } from '../../stores/thread.svelte';
+  import { paneWorkspacePath, type ThreadPane } from '../../stores/thread.svelte';
   import type { DiffViewMode } from '../../stores/diffPanel.svelte';
   import { parsePatchFiles, type PatchFile } from '../../utils/patchFiles';
   import { createPayloadExpansion, formatPayloadSize } from './payloadExpansion.svelte';
@@ -258,6 +258,7 @@
         files={parsedFiles}
         {focusFilePath}
         threadId={pane.thread?.id ?? ''}
+        workspacePath={paneWorkspacePath(pane)}
         {viewMode}
         {wordWrap}
         {expandedFiles}

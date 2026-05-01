@@ -29,6 +29,11 @@
     line?: number;
     /** 1-indexed column; 0 means "no cursor placement". */
     col?: number;
+    /** Absolute base directory used to resolve a relative `path`.
+     *  Diff cards, tool result file paths, and per-thread surfaces
+     *  pass `pane.thread.workspacePath`. Project-root callers (sidebar,
+     *  chat header badge) pass an absolute path and can omit this. */
+    workspacePath?: string;
     /** When true, renders as a 16px icon button. Used in click-conflict
      *  surfaces where a parent button also handles clicks. */
     asIcon?: boolean;
@@ -45,6 +50,7 @@
     path,
     line = 0,
     col = 0,
+    workspacePath = '',
     asIcon = false,
     stopPropagation = false,
     label,
@@ -63,7 +69,7 @@
     e.preventDefault();
     if (stopPropagation) e.stopPropagation();
     try {
-      await OpenInEditor(path, line, col);
+      await OpenInEditor(path, line, col, workspacePath);
     } catch (err) {
       addToast('error', errString(err));
     }

@@ -16,6 +16,14 @@ type EnhanceOptions = {
   renderScope: string;
   isCurrent: (generation: number) => boolean;
   streaming: boolean;
+  /** Absolute base directory used to resolve relative file paths the
+   *  linkifier finds in the rendered text. Stamped onto each linkified
+   *  <a> as data-workspace-path so the global click delegate can hand
+   *  it to OpenInEditor. Empty when the rendering surface has no thread
+   *  context (e.g. design previews); relative paths in that surface
+   *  will fail OpenInEditor with a clear error rather than open the
+   *  wrong file. */
+  workspacePath?: string;
 };
 
 let highlighterPromise: Promise<CodeHighlighter> | null = null;
@@ -42,7 +50,7 @@ export async function enhanceMarkdown(container: HTMLElement, options: EnhanceOp
   // discarding ranges inside soon-to-be-replaced text. The linkifier
   // skips text inside <pre>/<code> ancestors anyway, but doing it
   // last avoids redundant work on a freshly-replaced subtree.
-  enhancePathLinks(container);
+  enhancePathLinks(container, options.workspacePath ?? '');
 }
 
 // CopyButton instances live as Svelte components mounted directly into
@@ -428,9 +436,23 @@ function hashString(sourceText: string): string {
 // NOT a <pre> (block code) but tolerates being inside an inline <code>
 // (so things like ``src/lib/foo.ts`` linkify, but anything inside a
 // fenced code block does not). Each matching text node is replaced
-// with a sequence of plain text + <a class="editor-link" data-path>...
+// with a sequence of plain text + <a class="editor-link" ...>
 // fragments. A single document-level click delegate (installed lazily
 // on first use) handles the actual binding call.
+//
+// Linkifier ↔ click-delegate contract — every <a class="editor-link">
+// the linkifier emits exposes:
+//   data-path           — required, the path token (relative or absolute).
+//   data-line           — optional, 1-indexed line number from `:N` suffix.
+//   data-col            — optional, 1-indexed column from `:N:M` suffix.
+//   data-workspace-path — optional, the absolute base used to resolve a
+//                         relative `data-path`. Stamped at render time
+//                         from the EnhanceOptions.workspacePath input so
+//                         a relative click survives the surface unmounting
+//                         between render and click. Empty / absent =
+//                         "treat data-path as absolute or fail server-side."
+// `handlePathLinkClick` reads these attributes and forwards them to the
+// `OpenInEditor` Go binding (path, line, col, workspacePath).
 
 const EDITOR_LINK_CLASS = 'editor-link';
 let pathLinkDelegateInstalled = false;
@@ -454,18 +476,27 @@ function handlePathLinkClick(event: MouseEvent): void {
   event.preventDefault();
   const line = Number(link.dataset.line ?? '0') || 0;
   const col = Number(link.dataset.col ?? '0') || 0;
-  void invokePathLink(path, line, col);
+  // workspacePath was stamped at linkify time so a relative path stays
+  // resolvable even if the rendering surface has unmounted between
+  // render and click.
+  const workspacePath = link.dataset.workspacePath ?? '';
+  void invokePathLink(path, line, col, workspacePath);
 }
 
-async function invokePathLink(path: string, line: number, col: number): Promise<void> {
+async function invokePathLink(
+  path: string,
+  line: number,
+  col: number,
+  workspacePath: string,
+): Promise<void> {
   try {
-    await OpenInEditor(path, line, col);
+    await OpenInEditor(path, line, col, workspacePath);
   } catch (err) {
     addToast('error', errString(err));
   }
 }
 
-function enhancePathLinks(container: HTMLElement): void {
+function enhancePathLinks(container: HTMLElement, workspacePath: string): void {
   ensurePathLinkDelegate();
   // Collect candidate text nodes first so the in-place replacement
   // doesn't disturb the iterator (replaceWith mutates the parent's
@@ -490,7 +521,7 @@ function enhancePathLinks(container: HTMLElement): void {
     current = walker.nextNode();
   }
   for (const text of textNodes) {
-    linkifyTextNode(text);
+    linkifyTextNode(text, workspacePath);
   }
 }
 
@@ -520,7 +551,7 @@ function insideEditorLink(node: Node): boolean {
   return false;
 }
 
-function linkifyTextNode(text: Text): void {
+function linkifyTextNode(text: Text, workspacePath: string): void {
   const value = text.nodeValue ?? '';
   const ranges = findPathRanges(value);
   if (ranges.length === 0) return;
@@ -540,6 +571,7 @@ function linkifyTextNode(text: Text): void {
     link.dataset.path = range.path;
     if (range.line) link.dataset.line = String(range.line);
     if (range.col) link.dataset.col = String(range.col);
+    if (workspacePath) link.dataset.workspacePath = workspacePath;
     link.textContent = value.slice(range.start, range.end);
     fragment.appendChild(link);
     cursor = range.end;

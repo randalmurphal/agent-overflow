@@ -39,6 +39,7 @@
     files: PatchFile[];
     focusFilePath: string | undefined;
     threadId: string;
+    workspacePath: string;
     viewMode: DiffViewMode;
     wordWrap: boolean;
     expandedFiles: string[];
@@ -53,6 +54,7 @@
     files,
     focusFilePath,
     threadId,
+    workspacePath,
     viewMode,
     wordWrap,
     expandedFiles,
@@ -265,6 +267,7 @@
       {file}
       expanded={expandedSet.has(file.path)}
       {threadId}
+      {workspacePath}
       {viewMode}
       {wordWrap}
       {theme}

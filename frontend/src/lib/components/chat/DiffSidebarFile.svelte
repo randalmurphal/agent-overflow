@@ -35,6 +35,10 @@
     file: PatchFile;
     expanded: boolean;
     threadId: string;
+    /** Absolute workspace dir used to resolve `file.path` (which is
+     *  repo-relative from git diff output) when the user clicks the
+     *  open-in-editor affordance. */
+    workspacePath: string;
     viewMode: DiffViewMode;
     wordWrap: boolean;
     /** Resolved Shiki theme name from the parent. */
@@ -43,7 +47,7 @@
     onToggle: (path: string) => void;
   }
 
-  let { file, expanded, threadId, viewMode, wordWrap, theme, virtualizer, onToggle }: Props = $props();
+  let { file, expanded, threadId, workspacePath, viewMode, wordWrap, theme, virtualizer, onToggle }: Props = $props();
 
   let containerEl: HTMLElement | undefined = $state(undefined);
 
@@ -133,6 +137,7 @@
     </button>
     <EditorLink
       path={file.path}
+      {workspacePath}
       asIcon
       stopPropagation
       class="opacity-0 group-hover/diff-sidebar-file:opacity-100 focus-visible:opacity-100"

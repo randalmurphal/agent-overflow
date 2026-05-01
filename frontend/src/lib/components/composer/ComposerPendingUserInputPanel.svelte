@@ -27,6 +27,9 @@
     onResolve: (response: UserInputResponse) => Promise<void>;
     onResolved: () => void;
     onError: (message: string) => void;
+    /** Absolute base directory for resolving relative file paths the
+     *  linkifier finds in option previews. */
+    workspacePath?: string;
   }
 
   let {
@@ -37,6 +40,7 @@
     onResolve,
     onResolved,
     onError,
+    workspacePath = '',
   }: Props = $props();
 
   let index = $state(0);
@@ -276,7 +280,7 @@
           data-testid="user-input-preview"
         >
           {#if focusedPreview.trim()}
-            <ChatMarkdown source={focusedPreview} class="text-xs" />
+            <ChatMarkdown source={focusedPreview} {workspacePath} class="text-xs" />
           {:else}
             <p class="text-xs text-fg-muted italic">No preview for this option.</p>
           {/if}

@@ -1027,6 +1027,15 @@ export function MarkThreadUnread(id: string): $CancellablePromise<void> {
  * optionally placing the cursor at (line, col). Both are 1-indexed;
  * pass 0 for either to open without cursor placement.
  * 
+ * `workspacePath`, when non-empty, is the absolute base directory used
+ * to resolve a relative `path`. Click sites in the SPA that hand us
+ * repo-relative paths (diff cards, tool-result file paths, markdown
+ * path links inside chat) pass the active thread's workspace so the
+ * path round-trips correctly. Empty workspacePath + relative path is
+ * an error — see editor.ResolvePath for the full contract, including
+ * the traversal-escape guard that keeps a token-holder over the
+ * network from opening files outside the workspace.
+ * 
  * Resolution order: settings.Editor.Preference → catalog priority →
  * $EDITOR / $VISUAL fallback. On WSL the editor must be the
  * Windows-installed app reachable via the vendor's WSL bridge; a
@@ -1040,8 +1049,8 @@ export function MarkThreadUnread(id: string): $CancellablePromise<void> {
  * install paths the user can act on rather than dumping the internal
  * sentinel error.
  */
-export function OpenInEditor(path: string, line: number, col: number): $CancellablePromise<void> {
-    return $Call.ByID(3994295523, path, line, col);
+export function OpenInEditor(path: string, line: number, col: number, workspacePath: string): $CancellablePromise<void> {
+    return $Call.ByID(3994295523, path, line, col, workspacePath);
 }
 
 /**

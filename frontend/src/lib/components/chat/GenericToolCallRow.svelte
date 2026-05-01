@@ -3,7 +3,7 @@
   import CopyFooter from './CopyFooter.svelte';
   import CompletionBadge from './CompletionBadge.svelte';
   import type { Item } from '../../types/models';
-  import type { ThreadPane } from '../../stores/thread.svelte';
+  import { paneWorkspacePath, type ThreadPane } from '../../stores/thread.svelte';
   import { deriveCompletionStatus } from '../../utils/toolCompletionStatus';
   import ToolDecisionChip from './ToolDecisionChip.svelte';
   import ToolKindIcon from './ToolKindIcon.svelte';
@@ -146,6 +146,7 @@
       path={previewDecoded.path.path}
       line={previewDecoded.path.line ?? 0}
       col={previewDecoded.path.col ?? 0}
+      workspacePath={paneWorkspacePath(pane)}
       asIcon
       stopPropagation
       class="opacity-0 group-hover/tool:opacity-100 focus-visible:opacity-100"

@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 )
 
 // SpawnOptions describes one open-in-editor invocation.
@@ -14,11 +15,69 @@ import (
 // cursor placement" sentinel — callers that want column 1 should pass
 // Column == 1 explicitly. The convention matches t3-code's
 // open-in-editor binding so the wire shape stays predictable.
+//
+// WorkspacePath, when non-empty, is the absolute base directory used
+// to resolve a relative Path. The frontend passes the active thread's
+// workspace so click sites that hand us a repo-relative path (diff
+// cards, tool result paths) round-trip correctly. Resolution must
+// stay below WorkspacePath — see ResolvePath for the traversal-escape
+// guard.
 type SpawnOptions struct {
-	Editor *Editor
-	Path   string
-	Line   int
-	Column int
+	Editor        *Editor
+	Path          string
+	Line          int
+	Column        int
+	WorkspacePath string
+}
+
+// ResolvePath enforces the path-shape contract Open requires and
+// returns the absolute path to spawn the editor against.
+//
+// Rules:
+//   - Absolute path → must already be canonical (filepath.Clean is a
+//     no-op). Returned unchanged. WorkspacePath is ignored.
+//   - Relative path → WorkspacePath must be supplied, absolute, and
+//     canonical. The result is filepath.Join(workspacePath, path).
+//     The joined result must remain a sub-path of WorkspacePath; a
+//     `..`-traversal that escapes the workspace is rejected.
+//
+// Why the escape guard is the load-bearing check: the LAN-bind threat
+// model lets a token-holder over the network call OpenInEditor. Without
+// the sub-path check, path = "../../../../etc/passwd" + workspace =
+// "/home/user/repo" Joins to "/etc/passwd" cleanly and the canonical
+// check passes. filepath.Rel surfaces the escape unambiguously.
+func ResolvePath(path, workspacePath string) (string, error) {
+	if path == "" {
+		return "", fmt.Errorf("editor: open: path is required")
+	}
+	if filepath.IsAbs(path) {
+		if filepath.Clean(path) != path {
+			return "", fmt.Errorf("editor: open: path must be canonical (no traversal), got %q", path)
+		}
+		return path, nil
+	}
+	if workspacePath == "" {
+		return "", fmt.Errorf("editor: open: relative path %q requires workspacePath", path)
+	}
+	if !filepath.IsAbs(workspacePath) {
+		return "", fmt.Errorf("editor: open: workspacePath must be absolute, got %q", workspacePath)
+	}
+	if filepath.Clean(workspacePath) != workspacePath {
+		return "", fmt.Errorf("editor: open: workspacePath must be canonical, got %q", workspacePath)
+	}
+	joined := filepath.Join(workspacePath, path)
+	rel, err := filepath.Rel(workspacePath, joined)
+	if err != nil {
+		return "", fmt.Errorf("editor: open: resolve %q against %q: %w", path, workspacePath, err)
+	}
+	// rel == ".." or starts with "..<sep>" means joined sits outside
+	// workspacePath. rel == "." means joined equals workspacePath
+	// itself, which is fine (opening the workspace dir). Anything else
+	// is a normal sub-path.
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("editor: open: path %q escapes workspace %q", path, workspacePath)
+	}
+	return joined, nil
 }
 
 // lookPath is the indirection seam exec.LookPath flows through. Tests
@@ -56,23 +115,17 @@ func Open(ctx context.Context, opts SpawnOptions) error {
 	if opts.Editor == nil || !opts.Editor.Available || opts.Editor.ResolvedPath == "" {
 		return ErrNoEditor
 	}
-	if opts.Path == "" {
-		return fmt.Errorf("editor: open: empty path")
-	}
 	// LAN-bind safety: a token-holder over the network can call
-	// OpenInEditor on the host. Without validation, anyone holding the
-	// token could ask the host's editor to open /etc/passwd or a
-	// traversal path that escapes the workspace. Enforce the floor:
-	// the path must be absolute AND already canonical (filepath.Clean
-	// returns the same value). The trust boundary above this is the
-	// token holder — anything stricter (allow-list of workspace roots)
-	// belongs in app-level authz and is tracked separately.
-	if !filepath.IsAbs(opts.Path) {
-		return fmt.Errorf("editor: open: path must be absolute, got %q", opts.Path)
+	// OpenInEditor on the host. ResolvePath enforces the floor — the
+	// final path must be absolute, canonical, and (when joined from a
+	// relative input) must not escape WorkspacePath. The trust boundary
+	// above this is the token holder; anything stricter (allow-list of
+	// workspace roots) belongs in app-level authz.
+	resolvedPath, err := ResolvePath(opts.Path, opts.WorkspacePath)
+	if err != nil {
+		return err
 	}
-	if filepath.Clean(opts.Path) != opts.Path {
-		return fmt.Errorf("editor: open: path must be canonical (no traversal), got %q", opts.Path)
-	}
+	opts.Path = resolvedPath
 
 	resolved, err := resolveSpawnBinary(opts.Editor)
 	if err != nil {

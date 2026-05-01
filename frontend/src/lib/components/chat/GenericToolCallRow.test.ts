@@ -3,6 +3,27 @@ import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import GenericToolCallRow from './GenericToolCallRow.svelte';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { makeItem } from '../../../test/helpers/chat';
+import { createPayloadExpansion } from './payloadExpansion.svelte';
+import type { Item } from '../../types/models';
+
+// Minimal fake pane that satisfies the expansion-registry surface
+// GenericToolCallRow reads from. Shared between tests that need a pane
+// reference (workspacePath, expansion state).
+function makeFakePane(extra: Partial<import('../../stores/thread.svelte').ThreadPane> = {}): import('../../stores/thread.svelte').ThreadPane {
+  const cache = new Map<string, ReturnType<typeof createPayloadExpansion>>();
+  return {
+    expansionStateFor(item: Item) {
+      const key = item.id;
+      let h = cache.get(key);
+      if (!h) {
+        h = createPayloadExpansion(() => item.payloadId, () => item.threadId);
+        cache.set(key, h);
+      }
+      return h;
+    },
+    ...extra,
+  } as unknown as import('../../stores/thread.svelte').ThreadPane;
+}
 
 function expectBefore(left: Element, right: Element) {
   expect(left.compareDocumentPosition(right) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
@@ -47,7 +68,7 @@ describe('<GenericToolCallRow> editor-link wiring', () => {
     await waitFor(() => {
       expect(openMock).toHaveBeenCalledTimes(1);
     });
-    expect(openMock.mock.calls[0]).toEqual(['src/lib/foo.ts', 12, 0]);
+    expect(openMock.mock.calls[0]).toEqual(['src/lib/foo.ts', 12, 0, '']);
   });
 
   it('clicking the editor-link does NOT toggle the row body', async () => {
@@ -68,11 +89,35 @@ describe('<GenericToolCallRow> editor-link wiring', () => {
     await waitFor(() => {
       expect(openMock).toHaveBeenCalledTimes(1);
     });
-    expect(openMock.mock.calls[0]).toEqual(['src/lib/foo.ts', 12, 0]);
+    expect(openMock.mock.calls[0]).toEqual(['src/lib/foo.ts', 12, 0, '']);
 
     // Body did NOT expand because stopPropagation prevented the
     // toggle's onclick from firing.
     expect(queryByTestId('tool-call-card-body')).toBeNull();
+  });
+
+  // Regression for the original click-to-open bug: tool-result paths
+  // are usually agent-emitted relative paths, which the backend used
+  // to reject. The row threads `pane.thread.workspacePath` through to
+  // EditorLink so the backend can join. Pin that the prop chain
+  // forwards the value so a future refactor that drops the prop
+  // wiring fails fast.
+  it('forwards pane.thread.workspacePath to the OpenInEditor binding', async () => {
+    const openMock = setBindingMock('OpenInEditor', vi.fn(async () => undefined));
+    const item = makeItem({
+      kind: 'tool_call',
+      toolName: 'Read',
+      summary: 'src/lib/foo.ts:12',
+    });
+    const pane = makeFakePane({
+      thread: { workspacePath: '/home/user/repo' },
+    } as Partial<import('../../stores/thread.svelte').ThreadPane>);
+    const { getByTestId } = render(GenericToolCallRow, { props: { pane, item } });
+    await fireEvent.click(getByTestId('editor-link-icon'));
+    await waitFor(() => {
+      expect(openMock).toHaveBeenCalledTimes(1);
+    });
+    expect(openMock.mock.calls[0]).toEqual(['src/lib/foo.ts', 12, 0, '/home/user/repo']);
   });
 
   it('places the completion badge before the timestamp', () => {

@@ -6,7 +6,7 @@
   // worktree picker — lives in the composer toolbar / below-composer bar.
 
   import { onDestroy, onMount, untrack } from 'svelte';
-  import type { ThreadPane } from '../../stores/thread.svelte';
+  import { paneWorkspacePath, type ThreadPane } from '../../stores/thread.svelte';
   import type { ComposerDraftStore } from '../../stores/composerDraft.svelte';
   import ComposerAttachmentRow from './ComposerAttachmentRow.svelte';
   import ComposerMentionPopover from './ComposerMentionPopover.svelte';
@@ -521,6 +521,7 @@
           onResolve={resolveUserInput}
           onResolved={handlePromptResolved}
           onError={handlePromptError}
+          workspacePath={paneWorkspacePath(pane)}
         />
       {/key}
     {/if}
@@ -559,6 +560,7 @@
           results={mentions.mentionResults}
           activeIndex={mentions.mentionActiveIndex}
           loading={mentions.mentionLoading}
+          workspacePath={paneWorkspacePath(pane)}
           onSelect={mentions.insertMention}
           onClose={mentions.closeMention}
           onHover={(idx) => mentions.setMentionActiveIndex(idx)}

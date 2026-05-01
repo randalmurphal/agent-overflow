@@ -8,12 +8,15 @@
   interface Props {
     file: PatchFile;
     open: boolean;
+    /** Absolute base directory for resolving the repo-relative
+     *  `file.path` when the user hits the editor-link affordance. */
+    workspacePath: string;
     viewMode: 'stacked' | 'split';
     wordWrap: boolean;
     onToggle: () => void;
   }
 
-  let { file, open, viewMode, wordWrap, onToggle }: Props = $props();
+  let { file, open, workspacePath, viewMode, wordWrap, onToggle }: Props = $props();
 
   // buildSplitRows is pure over file.lines, so $derived gives us a
   // per-instance cache that invalidates when the diff text changes.
@@ -46,6 +49,7 @@
     </button>
     <EditorLink
       path={file.path}
+      {workspacePath}
       asIcon
       stopPropagation
       class="opacity-0 group-hover/diff-panel-file:opacity-100 focus-visible:opacity-100"

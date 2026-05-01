@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os/exec"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -120,12 +121,12 @@ func TestOpen_RejectsEmptyPath(t *testing.T) {
 	}
 }
 
-// TestOpen_RejectsRelativePath pins the LAN-bind safety floor: a remote
-// token-holder asking the host's editor to open `./foo.ts` (which would
-// resolve relative to the server's cwd) gets a clear error rather than
-// a quiet open. The check fires before resolveSpawnBinary, so the test
-// doesn't need to stub lookPath.
-func TestOpen_RejectsRelativePath(t *testing.T) {
+// TestOpen_RejectsRelativePathWithoutWorkspace pins the LAN-bind safety
+// floor: a remote token-holder asking the host's editor to open
+// `./foo.ts` without a workspace anchor gets a clear error rather than
+// a quiet open against the server's cwd. The check fires before
+// resolveSpawnBinary, so the test doesn't need to stub lookPath.
+func TestOpen_RejectsRelativePathWithoutWorkspace(t *testing.T) {
 	ed := &Editor{
 		ID: "code", Name: "VS Code",
 		Available: true, ResolvedPath: "/usr/bin/code",
@@ -133,10 +134,106 @@ func TestOpen_RejectsRelativePath(t *testing.T) {
 	}
 	err := Open(context.Background(), SpawnOptions{Editor: ed, Path: "./foo.ts"})
 	if err == nil {
-		t.Fatal("expected error for relative path")
+		t.Fatal("expected error for relative path without workspace")
 	}
-	if !contains(err.Error(), "absolute") {
-		t.Fatalf("expected error to mention 'absolute', got %q", err.Error())
+	if !strings.Contains(err.Error(),"workspacePath") {
+		t.Fatalf("expected error to mention 'workspacePath', got %q", err.Error())
+	}
+}
+
+// TestOpen_ResolvesRelativeAgainstWorkspace covers the diff-card path:
+// the click site emits a repo-relative path (e.g. "internal/uikeys/keys.go")
+// and the active thread's workspacePath. The backend joins them and
+// spawns the editor against the absolute result. Without this, every
+// editor-link in a Diff card silently failed.
+func TestOpen_ResolvesRelativeAgainstWorkspace(t *testing.T) {
+	originalLookPath := lookPath
+	originalStart := startCmd
+	t.Cleanup(func() {
+		lookPath = originalLookPath
+		startCmd = originalStart
+	})
+
+	lookPath = func(string) (string, error) { return "/usr/bin/code", nil }
+	var captured *exec.Cmd
+	startCmd = func(cmd *exec.Cmd) error {
+		captured = cmd
+		return nil
+	}
+
+	ed := &Editor{
+		ID: "code", Name: "VS Code", Command: "code",
+		Available: true, ResolvedPath: "/usr/bin/code",
+		LaunchStyle: LaunchStyleGoto,
+	}
+	err := Open(context.Background(), SpawnOptions{
+		Editor:        ed,
+		Path:          "internal/uikeys/keys.go",
+		Line:          12,
+		WorkspacePath: "/home/user/repo",
+	})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if captured == nil {
+		t.Fatal("startCmd not invoked")
+	}
+	wantArg := "/home/user/repo/internal/uikeys/keys.go:12:1"
+	found := false
+	for _, a := range captured.Args {
+		if a == wantArg {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("editor argv missing resolved path %q; got %v", wantArg, captured.Args)
+	}
+}
+
+// TestOpen_RejectsWorkspaceEscape pins the traversal-escape guard: a
+// caller that supplies a workspacePath plus a `..`-laden relative path
+// must not be able to navigate outside the workspace. Without this,
+// "../../../etc/passwd" + "/home/user/repo" would Join to "/etc/passwd"
+// cleanly and pass the canonical check.
+func TestOpen_RejectsWorkspaceEscape(t *testing.T) {
+	ed := &Editor{
+		ID: "code", Name: "VS Code",
+		Available: true, ResolvedPath: "/usr/bin/code",
+		LaunchStyle: LaunchStyleGoto,
+	}
+	err := Open(context.Background(), SpawnOptions{
+		Editor:        ed,
+		Path:          "../../../etc/passwd",
+		WorkspacePath: "/home/user/repo",
+	})
+	if err == nil {
+		t.Fatal("expected error for path that escapes workspace")
+	}
+	if !strings.Contains(err.Error(),"escapes workspace") {
+		t.Fatalf("expected error to mention 'escapes workspace', got %q", err.Error())
+	}
+}
+
+// TestOpen_RejectsRelativeWorkspace confirms the workspacePath itself
+// must be absolute. A relative workspacePath would just shift the
+// cwd-relative attack vector up one level.
+func TestOpen_RejectsRelativeWorkspace(t *testing.T) {
+	ed := &Editor{
+		ID: "code", Name: "VS Code",
+		Available: true, ResolvedPath: "/usr/bin/code",
+		LaunchStyle: LaunchStyleGoto,
+	}
+	err := Open(context.Background(), SpawnOptions{
+		Editor:        ed,
+		Path:          "foo.go",
+		WorkspacePath: "relative/workspace",
+	})
+	if err == nil {
+		t.Fatal("expected error for relative workspacePath")
+	}
+	if !strings.Contains(err.Error(),"workspacePath must be absolute") {
+		t.Fatalf("expected workspacePath error, got %q", err.Error())
 	}
 }
 
@@ -155,7 +252,7 @@ func TestOpen_RejectsTraversalPath(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for traversal path")
 	}
-	if !contains(err.Error(), "canonical") {
+	if !strings.Contains(err.Error(),"canonical") {
 		t.Fatalf("expected error to mention 'canonical', got %q", err.Error())
 	}
 }
@@ -286,16 +383,8 @@ func TestOpen_StartCommandFailureSurfacesEditorName(t *testing.T) {
 	// Error text must include the human-readable editor name so the
 	// frontend toast can render "Failed to launch VS Code: boom".
 	want := "VS Code"
-	if !contains(err.Error(), want) {
+	if !strings.Contains(err.Error(),want) {
 		t.Fatalf("expected error text to include %q; got %q", want, err.Error())
 	}
 }
 
-func contains(haystack, needle string) bool {
-	for i := 0; i+len(needle) <= len(haystack); i++ {
-		if haystack[i:i+len(needle)] == needle {
-			return true
-		}
-	}
-	return false
-}

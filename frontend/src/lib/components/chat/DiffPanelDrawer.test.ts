@@ -184,7 +184,11 @@ describe('<DiffPanelDrawer>', () => {
 
     await fireEvent.click(link);
     await waitFor(() => {
-      expect(openMock).toHaveBeenCalledWith('src/lib/foo.ts', 0, 0);
+      // The pane's thread.workspacePath flows through DiffPanelDrawer
+      // → DiffPanelFileCard → EditorLink so the backend can join the
+      // repo-relative `src/lib/foo.ts` against it. /tmp/workspace is
+      // the value makeThread's fixture sets.
+      expect(openMock).toHaveBeenCalledWith('src/lib/foo.ts', 0, 0, '/tmp/workspace');
     });
   });
 });

@@ -51,7 +51,8 @@
 
   async function doOpenInEditor(): Promise<void> {
     try {
-      await OpenInEditor(project.project.path, 0, 0);
+      // Project path is already absolute; workspacePath is unused.
+      await OpenInEditor(project.project.path, 0, 0, '');
     } catch (err) {
       addToast('error', userFacingError(err));
     }

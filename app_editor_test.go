@@ -12,12 +12,12 @@ import (
 // rigs that wire App without a settings service: nil settings must not
 // nil-dereference deeper in the open flow.
 //
-// We pass a relative path so editor.Open's absolute-path guard fires
-// BEFORE the spawn step. This keeps the test from launching a real
-// editor on machines where one is installed (the catalog falls back
-// to whatever's available when preference is empty), while still
-// exercising the settings/editor resolution branch where the
-// nil-deref would land.
+// Pass a relative path with empty workspacePath so editor.ResolvePath's
+// "relative path requires workspacePath" guard fires before the spawn
+// step. This keeps the test from launching a real editor on machines
+// where one is installed (the catalog falls back to whatever's
+// available when preference is empty), while still exercising the
+// settings/editor resolution branch where the nil-deref would land.
 func TestOpenInEditor_NilSettingsDoesNotPanic(t *testing.T) {
 	app := &App{}
 
@@ -27,23 +27,24 @@ func TestOpenInEditor_NilSettingsDoesNotPanic(t *testing.T) {
 		}
 	}()
 
-	err := app.OpenInEditor("relative-path-does-not-spawn", 0, 0)
+	err := app.OpenInEditor("relative-path-does-not-spawn", 0, 0, "")
 	if err == nil {
-		t.Fatal("relative path should be rejected before spawn")
+		t.Fatal("relative path with empty workspacePath should be rejected before spawn")
 	}
-	if !strings.Contains(err.Error(), "absolute") {
-		t.Fatalf("expected absolute-path error, got: %v", err)
+	if !strings.Contains(err.Error(), "workspacePath") {
+		t.Fatalf("expected workspacePath-required error, got: %v", err)
 	}
 }
 
-// TestOpenInEditor_RejectsEmptyPath pins the boundary guard. Without
-// it, the catalog walk would still run and we'd get a less specific
-// downstream error when the spawn step fails on "" — better to refuse
-// up front.
+// TestOpenInEditor_RejectsEmptyPath pins the boundary guard. The
+// empty-path error originates in editor.ResolvePath; the binding wraps
+// it. Without the guard, the catalog walk would still run and we'd
+// get a less specific downstream error when the spawn step failed on
+// "".
 func TestOpenInEditor_RejectsEmptyPath(t *testing.T) {
 	app := &App{settings: settings.NewService(t.TempDir())}
 
-	err := app.OpenInEditor("", 1, 1)
+	err := app.OpenInEditor("", 1, 1, "")
 	if err == nil {
 		t.Fatal("expected error for empty path")
 	}

@@ -22,6 +22,10 @@
     markdown: string;
     comments: ProposedPlanComment[];
     onRefresh: () => Promise<void> | void;
+    /** Absolute base directory for resolving relative file paths the
+     *  linkifier finds in the plan markdown. Threaded down from the
+     *  caller so an in-thread plan review hits the editor correctly. */
+    workspacePath?: string;
   }
 
   interface PendingSelection {
@@ -46,7 +50,7 @@
     highlighted: boolean;
   }
 
-  let { threadId, planItemId, markdown, comments, onRefresh }: Props = $props();
+  let { threadId, planItemId, markdown, comments, onRefresh, workspacePath = '' }: Props = $props();
 
   let surfaceRoot: HTMLDivElement | undefined = $state(undefined);
   let pendingSelection: PendingSelection | null = $state(null);
@@ -236,7 +240,7 @@
             view.highlighted ? 'bg-accent/5' : '',
           ].join(' ')}
         >
-          <ChatMarkdown source={block.markdown} class="select-text" />
+          <ChatMarkdown source={block.markdown} {workspacePath} class="select-text" />
         </div>
         {#if view.anchoredComments.length > 0}
           <div class="mt-2 space-y-2 pl-3">

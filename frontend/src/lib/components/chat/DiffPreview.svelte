@@ -4,7 +4,7 @@
   import Icon from '../primitives/Icon.svelte';
   import EditorLink from '../common/EditorLink.svelte';
   import type { DiffMeta, Item } from '../../types/models';
-  import type { ThreadPane } from '../../stores/thread.svelte';
+  import { paneWorkspacePath, type ThreadPane } from '../../stores/thread.svelte';
   import { parseDiffLines, type DiffLine } from '../../utils/diff';
   import { lineTintClass } from '../../utils/diffLineTint';
   import { extractPatchFile } from '../../utils/patchFiles';
@@ -160,6 +160,7 @@
       {/if}
       <EditorLink
         path={meta.filePath}
+        workspacePath={paneWorkspacePath(pane)}
         asIcon
         stopPropagation
         class="opacity-0 group-hover/diff:opacity-100 focus-visible:opacity-100"

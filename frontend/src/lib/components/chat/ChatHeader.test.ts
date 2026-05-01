@@ -260,7 +260,7 @@ describe('<ChatHeader>', () => {
     await tick();
     await fireEvent.click(getByTestId('chat-header-open-editor'));
     await tick();
-    expect(open.mock.calls[0]).toEqual(['/tmp/proj', 0, 0]);
+    expect(open.mock.calls[0]).toEqual(['/tmp/proj', 0, 0, '']);
   });
 
   it('hides the Open button when the thread has no project', async () => {

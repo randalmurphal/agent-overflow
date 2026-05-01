@@ -3,7 +3,7 @@
   import PanelRightOpen from 'lucide-svelte/icons/panel-right-open';
   import { getSettings } from '../../stores/settings.svelte';
   import type { Item, ToolInlineDiffFile, ToolResultMeta } from '../../types/models';
-  import type { ThreadPane } from '../../stores/thread.svelte';
+  import { paneWorkspacePath, type ThreadPane } from '../../stores/thread.svelte';
   import { parseDiffLines, type DiffLine } from '../../utils/diff';
   import { lineTintClass } from '../../utils/diffLineTint';
   import { deriveCompletionStatus } from '../../utils/toolCompletionStatus';
@@ -143,6 +143,7 @@
               {/if}
               <EditorLink
                 path={file.path}
+                workspacePath={paneWorkspacePath(pane)}
                 asIcon
                 stopPropagation
                 class="opacity-70 hover:opacity-100"

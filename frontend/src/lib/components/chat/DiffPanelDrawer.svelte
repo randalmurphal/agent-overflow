@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
-  import type { ThreadPane } from '../../stores/thread.svelte';
+  import { paneWorkspacePath, type ThreadPane } from '../../stores/thread.svelte';
   import { getSettings, updateSetting } from '../../stores/settings.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import { wailsEventOn } from '../../stores/events';
@@ -300,6 +300,7 @@
             <DiffPanelFileCard
               {file}
               open={expanded.has(file.path)}
+              workspacePath={paneWorkspacePath(pane)}
               {viewMode}
               {wordWrap}
               onToggle={() => toggleFile(file.path)}

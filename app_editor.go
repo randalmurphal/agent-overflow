@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 
 	"agent-overflow/internal/editor"
 )
@@ -51,6 +50,15 @@ func (a *App) ListAvailableEditors() ([]EditorInfo, error) {
 // optionally placing the cursor at (line, col). Both are 1-indexed;
 // pass 0 for either to open without cursor placement.
 //
+// `workspacePath`, when non-empty, is the absolute base directory used
+// to resolve a relative `path`. Click sites in the SPA that hand us
+// repo-relative paths (diff cards, tool-result file paths, markdown
+// path links inside chat) pass the active thread's workspace so the
+// path round-trips correctly. Empty workspacePath + relative path is
+// an error — see editor.ResolvePath for the full contract, including
+// the traversal-escape guard that keeps a token-holder over the
+// network from opening files outside the workspace.
+//
 // Resolution order: settings.Editor.Preference → catalog priority →
 // $EDITOR / $VISUAL fallback. On WSL the editor must be the
 // Windows-installed app reachable via the vendor's WSL bridge; a
@@ -63,10 +71,11 @@ func (a *App) ListAvailableEditors() ([]EditorInfo, error) {
 // here are intentionally friendly — "no editor available" names
 // install paths the user can act on rather than dumping the internal
 // sentinel error.
-func (a *App) OpenInEditor(path string, line, col int) error {
-	if path == "" {
-		return fmt.Errorf("open-in-editor: path is required")
-	}
+func (a *App) OpenInEditor(path string, line, col int, workspacePath string) error {
+	// editor.ResolvePath (called inside editor.Open) is the single source
+	// of truth for the path-shape contract: empty / non-absolute / non-
+	// canonical / workspace-escaping inputs all surface as errors there.
+	// We don't pre-check here so the boundary stays in one place.
 
 	preference := ""
 	if a.settings != nil {
@@ -80,9 +89,10 @@ func (a *App) OpenInEditor(path string, line, col int) error {
 		return err
 	}
 	return editor.Open(ctx, editor.SpawnOptions{
-		Editor: chosen,
-		Path:   path,
-		Line:   line,
-		Column: col,
+		Editor:        chosen,
+		Path:          path,
+		Line:          line,
+		Column:        col,
+		WorkspacePath: workspacePath,
 	})
 }

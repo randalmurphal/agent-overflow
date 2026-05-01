@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onDestroy, untrack } from 'svelte';
   import type { ChannelMessage } from '../../types/discussion';
-  import type { ThreadPane } from '../../stores/thread.svelte';
+  import { paneWorkspacePath, type ThreadPane } from '../../stores/thread.svelte';
   import { GetChannelMessages, PostChannelMessage } from '../../stores/bindings';
   import { getSettings } from '../../stores/settings.svelte';
   import { addToast } from '../../stores/toast.svelte';
@@ -244,7 +244,11 @@
                 {relativeTime(msg.createdAt, getSettings().timestampFormat)}
               </span>
             </div>
-            <ChatMarkdown source={msg.content} class="text-[13px] text-fg break-words" />
+            <ChatMarkdown
+              source={msg.content}
+              workspacePath={paneWorkspacePath(pane)}
+              class="text-[13px] text-fg break-words"
+            />
           </div>
         {/each}
       {/if}
