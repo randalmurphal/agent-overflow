@@ -85,11 +85,11 @@ html,
 body,
 #app {
   height: 100%;
+  background: var(--surface-0);
 }
 
 body {
   margin: 0;
-  background: var(--surface-0);
   color: var(--text-primary);
   font-family: var(--font-sans);
   font-feature-settings: "ss01", "cv11";
@@ -97,41 +97,19 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
-/* Atmosphere layer 1 — vertical pinstripe. A 1px/1px alternating column
-   at 2% opacity gives the UI a fabric-like ground texture that reads
-   distinctly on retina without any cost at 1×. Positioned fixed so it
-   never scrolls, pointer-events none so it never catches clicks, and
-   mix-blend-mode overlay so it paints differently over light and dark
-   surfaces without needing two gradients. */
-body::before {
-  content: '';
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  z-index: 9998;
-  opacity: 0.018;
-  mix-blend-mode: overlay;
+.app-shell {
+  background: var(--surface-0);
+}
+
+.chat-surface-ground {
+  background-color: var(--surface-0);
   background-image: repeating-linear-gradient(
     to right,
     transparent 0,
     transparent 1px,
-    #ffffff 1px,
-    #ffffff 2px
+    color-mix(in oklab, var(--text-primary) 2%, transparent) 1px,
+    color-mix(in oklab, var(--text-primary) 2%, transparent) 2px
   );
-}
-
-/* Atmosphere layer 2 — fractal noise overlay. 3.5% opacity is the same
-   value t3-code lands on; higher makes the UI look dirty, lower and it
-   disappears. Encoded inline so there is no asset fetch. */
-body::after {
-  content: '';
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  z-index: 9999;
-  opacity: 0.035;
-  mix-blend-mode: overlay;
-  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='220' height='220'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.82' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.55 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
 }
 
 body::selection {

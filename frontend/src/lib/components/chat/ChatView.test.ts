@@ -8,6 +8,7 @@
 import { describe, expect, it, beforeAll, beforeEach, vi } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
+import appCss from '../../../app.css?raw';
 import ChatView from './ChatView.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
 import { resetComposerDraftSnapshotsForTest } from '../../stores/composerDraft.svelte';
@@ -196,6 +197,28 @@ describe('<ChatView>', () => {
     expect(queryByTestId('chat-header')).toBeNull();
     expect(queryByTestId('chat-empty')).not.toBeNull();
     expect(getByText('Select a thread or create a new one to get started.')).toBeInTheDocument();
+  });
+
+  it('keeps the bounded chat background on timeline and empty states', async () => {
+    const activePane = await buildPane();
+    const active = render(ChatView, { props: { pane: activePane } });
+    await tick();
+
+    expect(active.getByTestId('message-timeline-scroll').parentElement)
+      .toHaveClass('chat-surface-ground');
+    active.unmount();
+
+    const emptyPane = createThreadPane();
+    const empty = render(ChatView, { props: { pane: emptyPane } });
+    await tick();
+
+    expect(empty.getByTestId('chat-empty')).toHaveClass('chat-surface-ground');
+  });
+
+  it('does not reintroduce a global blended app overlay', () => {
+    expect(appCss).not.toMatch(/body::before/);
+    expect(appCss).not.toMatch(/body::after/);
+    expect(appCss).not.toMatch(/mix-blend-mode/);
   });
 
   it('marks the active thread read locally and coalesces persisted writes when completed turns arrive', async () => {

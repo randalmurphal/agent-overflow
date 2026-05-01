@@ -294,7 +294,7 @@
         --composer-height, which the timeline reads as bottom padding so
         the last row clears the overlay.
       -->
-      <div class="relative flex-1 min-h-0">
+      <div class="chat-surface-ground relative flex-1 min-h-0">
         <MessageTimeline {pane} onImageExpand={openImagePreview} />
         {#if hasPendingPrompt}
           <div
@@ -339,7 +339,7 @@
     data-ui-surface="chat-empty"
     data-thread-id=""
     data-testid="chat-empty"
-    class="flex h-full w-full items-center justify-center px-8"
+    class="chat-surface-ground flex h-full w-full items-center justify-center px-8"
   >
     <p class="text-sm text-fg-muted">Select a thread or create a new one to get started.</p>
   </div>
