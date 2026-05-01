@@ -94,11 +94,11 @@ on top:
   semantic (item id + offset), not virtua's internal cache shape, so
   they survive virtua version bumps.
 - **Layout decoupling** — `ChatView.svelte` positions the composer +
-  below-bar as an absolute overlay inside the timeline's relative
-  container. A `--composer-height` CSS variable, written by a
+  live-turn UI + below-bar as an absolute overlay inside the timeline's
+  relative container. A `--composer-height` CSS variable, written by a
   ResizeObserver on the overlay, drives the timeline's bottom padding
-  so composer growth (textarea autosize, attachment tray, approval
-  panel) never alters the scroll surface's `clientHeight`.
+  so composer growth, working/todo panels, attachment trays, and
+  approval panels never alter the scroll surface's `clientHeight`.
 - **Reserved-slot banners** — `ProviderStatusBanner.svelte` and
   `TransportStatusBanner.svelte` both use `min-h-N` wrappers +
   `transition:fade` so banner mount/unmount does not animate adjacent
@@ -114,15 +114,21 @@ on top:
   `bufferSize=900` window and back preserves "show full output"
   toggles, loaded payload chunks, and any image blobs. Registries are
   cleared on `switchThread` to bound memory.
-- **Expansion-state byte budget.** The expansion registry has a soft
-  cap on the sum of `displayData` bytes across all entries
-  (`DEFAULT_EXPANSION_BUDGET_BYTES` in `thread.svelte.ts`). When the
-  cap is exceeded, the least-recently-toggled handle is collapsed —
-  which drops its loaded chunks but keeps the handle in the registry
-  so the next toggle re-fetches. The LRU touch happens on
-  `toggle`/`expand`/`showFull`. The user can always re-expand a
-  collapsed row; the only visible effect of an eviction is that the
-  row reverts to its preview-load state.
+- **Expansion-state memory tradeoff.** The expansion registry keeps
+  loaded payload chunks until the user collapses a row or switches
+  thread. Open transcript rows are user-owned UI state; collapsing one
+  from an unrelated row's load changes timeline height outside the
+  user's interaction path and fights virtua.
+- **Stable transcript rows.** Anything rendered inside `<VList>` is a
+  stable history record. A row may update text/content in place, but it
+  should not change its outer shell after first render: no static
+  div-to-button swaps, no late chevron insertion, no completion-time
+  summary cards appended inside history, and no live working/todo UI in
+  the virtualized data. New transcript structures must decide their
+  shell from provider metadata available at first render and keep later
+  details inside reserved slots. Disclosure-style rows should compose
+  `TranscriptDisclosureHeader.svelte` so toggle chrome and trailing
+  actions keep the same DOM shape across loading/completion updates.
 - **Shiki diff token cache.** `tokenCache.ts` partitions cached lines
   by `${theme}:${threadId}:${lang}:…` so a thread switch can drop
   every line tokenized under the outgoing thread without disturbing
@@ -145,6 +151,10 @@ What NOT to add:
 - A second virtualizer over the same data.
 - `transition:slide` adjacent to the scroll area — animated height
   shifts visible content under the user's cursor.
+- Late transcript adornments on completion. If the UI needs a marker,
+  attach it to the row boundary when that row first appears; don't add
+  a separate end-of-turn row after the virtualizer has measured the
+  previous bottom.
 
 ## Search
 

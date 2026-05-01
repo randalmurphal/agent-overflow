@@ -46,9 +46,6 @@ func TestGetReturnsDefaultsOnMissingFile(t *testing.T) {
 	if got.ObservabilityOtlpEndpoint != "" {
 		t.Errorf("ObservabilityOtlpEndpoint = %q, want empty by default", got.ObservabilityOtlpEndpoint)
 	}
-	if !got.ShowEndOfTurnDiffs {
-		t.Error("ShowEndOfTurnDiffs = false, want true by default")
-	}
 }
 
 func TestGetReturnsDefaultsOnMalformedJSON(t *testing.T) {
@@ -536,56 +533,6 @@ func TestObservabilitySettingsRoundTrip(t *testing.T) {
 	}
 	if !reloaded.ObservabilityEventLogEnabled {
 		t.Error("After reload: event log enabled should persist")
-	}
-}
-
-func TestShowEndOfTurnDiffsRoundTripAndSparseDefault(t *testing.T) {
-	dir := t.TempDir()
-	svc := NewService(dir)
-
-	updated, err := svc.Update(map[string]any{"showEndOfTurnDiffs": false})
-	if err != nil {
-		t.Fatalf("Update(false) error = %v", err)
-	}
-	if updated.ShowEndOfTurnDiffs {
-		t.Fatal("ShowEndOfTurnDiffs = true, want false")
-	}
-
-	reloaded := NewService(dir).Get()
-	if reloaded.ShowEndOfTurnDiffs {
-		t.Fatal("reloaded ShowEndOfTurnDiffs = true, want false")
-	}
-
-	data, err := os.ReadFile(filepath.Join(dir, "settings.json"))
-	if err != nil {
-		t.Fatalf("ReadFile() error = %v", err)
-	}
-	var fileMap map[string]any
-	if err := json.Unmarshal(data, &fileMap); err != nil {
-		t.Fatalf("unmarshal settings file: %v", err)
-	}
-	if fileMap["showEndOfTurnDiffs"] != false {
-		t.Fatalf("settings file = %s, want showEndOfTurnDiffs false", string(data))
-	}
-
-	updated, err = svc.Update(map[string]any{"showEndOfTurnDiffs": true})
-	if err != nil {
-		t.Fatalf("Update(true) error = %v", err)
-	}
-	if !updated.ShowEndOfTurnDiffs {
-		t.Fatal("ShowEndOfTurnDiffs = false, want true")
-	}
-
-	data, err = os.ReadFile(filepath.Join(dir, "settings.json"))
-	if err != nil {
-		t.Fatalf("ReadFile() error = %v", err)
-	}
-	fileMap = map[string]any{}
-	if err := json.Unmarshal(data, &fileMap); err != nil {
-		t.Fatalf("unmarshal settings file: %v", err)
-	}
-	if _, ok := fileMap["showEndOfTurnDiffs"]; ok {
-		t.Fatalf("settings file = %s, want showEndOfTurnDiffs omitted when default true", string(data))
 	}
 }
 

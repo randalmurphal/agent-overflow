@@ -4,10 +4,9 @@ import SubagentGroupTestHarness from './SubagentGroupTestHarness.svelte';
 import type { Item } from '../../types/models';
 import type { SubagentGroupNode, TimelineLeaf, TimelineNode } from '../../utils/subagentGrouping';
 
-// happy-dom lacks Element.animate; Svelte's transition:slide hits it
-// when the region mounts/unmounts. Stub it with a fake Animation that
-// fires onfinish on the next microtask so Svelte processes the
-// transition end and removes the element from the DOM promptly.
+// happy-dom lacks Element.animate. Keep this stub for any child
+// components that use Svelte transitions while the group test harness
+// mounts/unmounts nested content.
 beforeAll(() => {
   if (typeof (Element.prototype as unknown as { animate?: unknown }).animate !== 'function') {
     (Element.prototype as unknown as { animate: (...args: unknown[]) => unknown }).animate =
@@ -103,6 +102,7 @@ function mkGroup(
   return {
     kind: 'group',
     parent: parentItem ?? mkAgentParent(parentId),
+    groupKey: parentId,
     children: [],
     descendantCount: 0,
     latestChildSummary: '',
@@ -124,13 +124,33 @@ describe('<SubagentGroup>', () => {
       props: { group },
     });
 
-    const toggle = getByRole('button');
+    const toggle = getByRole('button', { name: /Find the bell icon/ });
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
 
     expect(getByTestId('subagent-group').getAttribute('data-tool-kind')).toBe('robot');
     expect(getByTestId('subagent-group-label').textContent).toContain('Explore');
     expect(getByTestId('subagent-group-count').textContent).toContain('2 entries');
+    expect(getByTestId('subagent-group-count')).toHaveAttribute(
+      'aria-label',
+      '1 agent and 2 timeline entries inside this subagent group',
+    );
     expect(queryByTestId('leaf')).toBeNull();
+  });
+
+  it('describes coalesced multi-agent counts accurately', () => {
+    const group = mkGroup({
+      parentId: 'p1',
+      memberCount: 2,
+      children: [mkLeaf('c1', 'one')],
+      descendantCount: 1,
+    });
+    const { getByTestId } = render(SubagentGroupTestHarness, { props: { group } });
+
+    expect(getByTestId('subagent-group-count').textContent?.trim()).toBe('2 agents · 1 entry');
+    expect(getByTestId('subagent-group-count')).toHaveAttribute(
+      'aria-label',
+      '2 agents and 1 timeline entry inside this subagent group',
+    );
   });
 
   it('renders the title as `<agent_type> (<Model>)` and the description as preview', () => {
@@ -278,7 +298,7 @@ describe('<SubagentGroup>', () => {
     await waitFor(() => expect(queryAllByTestId('leaf')).toHaveLength(0));
   });
 
-  it('Space and Enter activate the toggle (keyboard accessible)', async () => {
+  it('uses native button activation for keyboard-accessible toggling', async () => {
     const group = mkGroup({
       parentId: 'p1',
       children: [mkLeaf('c1', 'reachable')],
@@ -287,11 +307,14 @@ describe('<SubagentGroup>', () => {
     const { getByRole, getAllByTestId } = render(SubagentGroupTestHarness, { props: { group } });
     const toggle = getByRole('button');
 
-    await fireEvent.keyDown(toggle, { key: ' ' });
+    // Testing-library's click event is the reliable stand-in for the
+    // native activation event browsers synthesize for Enter/Space on a
+    // focused button. The component intentionally does not add its own
+    // keydown handler because that can double-toggle on Space.
+    await fireEvent.click(toggle);
     expect(toggle.getAttribute('aria-expanded')).toBe('true');
     expect(getAllByTestId('leaf')).toHaveLength(1);
 
-    // Enter is the native button activation — fireEvent.click matches.
     await fireEvent.click(toggle);
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
   });

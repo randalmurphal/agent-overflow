@@ -21,13 +21,12 @@ function makeItem(overrides: Partial<Item> = {}): Item {
 
 describe('<TerminalInteractionRow>', () => {
   it('renders the "Waited for background terminal" label from item.summary', () => {
-    const { getByTestId, container } = render(TerminalInteractionRow, { props: { item: makeItem() } });
+    const { getByTestId, queryByRole, container } = render(TerminalInteractionRow, { props: { item: makeItem() } });
     const row = getByTestId('terminal-interaction-row');
     expect(row.textContent).toContain('Waited for background terminal');
     // Without an attached command_output payload there's no embedded
-    // CommandOutput card to render — and therefore no completion
-    // badge. Pin the negative so a refactor that always shows the
-    // badge here would fail this test.
+    // command summary and no embedded CommandOutput shell.
+    expect(queryByRole('button', { name: /Toggle command output/i })).toBeNull();
     expect(container.querySelector('[data-testid="completion-badge"]')).toBeNull();
   });
 
@@ -64,17 +63,38 @@ describe('<TerminalInteractionRow>', () => {
         preview: 'done\n',
       }),
     });
-    const { getByRole } = render(TerminalInteractionRow, { props: { item } });
+    const { getByRole, getByTestId } = render(TerminalInteractionRow, { props: { item } });
 
     const toggle = getByRole('button', { name: /Toggle command output: sleep 1; echo done/i });
     expect(toggle.textContent).toContain('sleep 1; echo done');
     // exit-code text is gone; the unified completion badge carries the
-    // success/failure signal now (success because exitCode === 0).
-    // Pin the badge's *location* inside the toggle subtree so a future
-    // refactor that hides the badge behind the disclosure body still
-    // fails this test.
-    const badge = toggle.querySelector('[data-testid="completion-badge"]');
-    expect(badge).not.toBeNull();
-    expect(badge!.getAttribute('data-status')).toBe('success');
+    // success/failure signal now (success because exitCode === 0). It
+    // sits in the stable header action slot, outside the toggle button
+    // so future interactive actions cannot become nested controls.
+    expect(getByTestId('completion-badge').getAttribute('data-status')).toBe('success');
+  });
+
+  it('renders a stable command-output shell before the payload attaches when the wait summary names a command', () => {
+    const item = makeItem({
+      summary: 'Waited for background terminal: sleep 1; echo done',
+    });
+    const { getByRole, getByTestId, queryByTestId } = render(TerminalInteractionRow, { props: { item } });
+
+    expect(getByTestId('terminal-interaction-row').textContent?.trim()).toBe('Waited for background terminal');
+    const toggle = getByRole('button', { name: /Toggle command output: sleep 1; echo done/i });
+    expect(toggle).toHaveAttribute('aria-disabled', 'true');
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(queryByTestId('completion-badge')).toBeNull();
+  });
+
+  it('uses structured terminal command metadata before falling back to summary parsing', () => {
+    const item = makeItem({
+      summary: 'Waited for background terminal',
+      meta: JSON.stringify({ kind: 'terminal_interaction', command: 'sleep 1; echo done' }),
+    });
+    const { getByRole, getByTestId } = render(TerminalInteractionRow, { props: { item } });
+
+    expect(getByTestId('terminal-interaction-row').textContent?.trim()).toBe('Waited for background terminal');
+    expect(getByRole('button', { name: /sleep 1; echo done/i })).toHaveAttribute('aria-disabled', 'true');
   });
 });

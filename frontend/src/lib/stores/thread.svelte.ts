@@ -38,11 +38,6 @@ import {
   type RhsPanel,
   type RhsPanelSlot,
 } from './rhsPanelSlot.svelte';
-import {
-  buildDiffViewForItems,
-  itemMayAffectDiffView,
-  type TurnDiffView,
-} from '../utils/turnDiffSummary';
 import { errString } from '../utils/errors';
 import { clearTokensForThread } from '../utils/tokenCacheReactive.svelte';
 import {
@@ -61,26 +56,6 @@ import {
  */
 const LOAD_OLDER_TURN_BATCH = 50;
 
-/**
- * Soft cap on total `displayData` bytes held across a pane's expansion
- * registry. Tunable via `__setExpansionBudgetForTest` so tests can
- * exercise the LRU path without allocating real-world-sized payloads.
- * 16 MiB allows ~16 fully-expanded large tool outputs (or hundreds of
- * smaller ones) — comfortably above any realistic working set, well
- * below the point where the JS heap starts to feel it.
- */
-const DEFAULT_EXPANSION_BUDGET_BYTES = 16 * 1024 * 1024;
-let expansionBudgetBytes = DEFAULT_EXPANSION_BUDGET_BYTES;
-function getExpansionBudgetBytes(): number {
-  return expansionBudgetBytes;
-}
-export function setExpansionBudgetForTest(bytes: number): void {
-  expansionBudgetBytes = bytes;
-}
-export function resetExpansionBudgetForTest(): void {
-  expansionBudgetBytes = DEFAULT_EXPANSION_BUDGET_BYTES;
-}
-
 function sameRhsPanel(left: RhsPanel | null, right: RhsPanel | null): boolean {
   if (left === null || right === null) return left === right;
   if (left.kind !== right.kind) return false;
@@ -95,11 +70,11 @@ function sameRhsPanel(left: RhsPanel | null, right: RhsPanel | null): boolean {
 export type { ActiveTurn } from './threadStatuses.svelte';
 
 /**
- * SettledTurn is the most recent completed turn's projection. Used by the
- * completion divider to render "Response · Worked for Xs · Yk tokens" above
- * the final assistant item. Populated from `provider:turn_completed` pushes
- * or, on thread switch, from the most recent `ListRecentTurns` row whose
- * `completedAt` is non-null.
+ * SettledTurn is the most recent completed turn's projection. ChatView uses
+ * it to keep the active thread read, and trace/debug surfaces use it to
+ * describe the current pane state. Populated from `provider:turn_completed`
+ * pushes or, on thread switch, from the most recent `ListRecentTurns` row
+ * whose `completedAt` is non-null.
  */
 export interface SettledTurn {
   turnId: string;
@@ -338,10 +313,10 @@ export function createThreadPane() {
   // eviction would otherwise reset toggle + drop loaded chunks, forcing
   // a re-fetch from Go on every back-scroll). Cleared on thread switch.
   const expansionStates: Map<string, PayloadExpansionHandle> = new Map();
-  // Per-parent-itemId subagent group expand state. ChangedFilesTree and
-  // ProposedPlanCard expansion state are deliberately NOT lifted — they
-  // appear at end-of-turn / rare item types and the back-scroll
-  // remount frequency is low in practice. Lift if profiling proves it.
+  // Per-groupKey subagent group expand state. ProposedPlanCard
+  // expansion state is deliberately NOT lifted — it appears on rare item
+  // types and the back-scroll remount frequency is low in practice. Lift
+  // if profiling proves it.
   let subagentGroupExpanded: Set<string> = $state(new Set());
   // Per-itemId attachment blob cache: outer key=itemId, inner key=attachmentId.
   // The pane owns the blob URLs so they survive virtua's overscan eviction
@@ -360,11 +335,6 @@ export function createThreadPane() {
   const itemSummaryById: Map<string, string> = new Map();
   const itemIdsByTurn: Map<number, string[]> = new Map();
   let liveSummaryFrame: number | null = null;
-  // Per-turn diff view index. Keyed by turnIndex. Incrementally updated on
-  // upsertItem rather than rebuilt from scratch — with hundreds of items the
-  // old $derived recomputation was O(turns · items) per upsert. Map presence
-  // is the render gate in MessageTimeline; absent turns skip the tree+badge.
-  let turnDiffViews: Map<number, TurnDiffView> = $state(new Map());
   let pendingApprovals: ApprovalRequest[] = $state([]);
   let pendingUserInputs: UserInputRequest[] = $state([]);
   let contextWindow: ContextWindow | null = $state(null);
@@ -452,10 +422,9 @@ export function createThreadPane() {
   // every call site so the source of truth is traceable); the load-
   // bearing benefit is that switching threads no longer clears the
   // working indicator for a turn that's still in flight on the
-  // departing thread. `latestSettledTurn` stays per-pane because it's
-  // used by the completion divider whose mount lives on the chat view;
-  // on thread switch we rehydrate it from the most recent
-  // `ListRecentTurns` row whose `completedAt` is non-null.
+  // departing thread. `latestSettledTurn` stays per-pane for read-state
+  // and trace/debug consumers; on thread switch we rehydrate it from the
+  // most recent `ListRecentTurns` row whose `completedAt` is non-null.
   let latestSettledTurn: SettledTurn | null = $state(null);
   // Live-todo panel state. Independent of activeTurn — the panel
   // persists past turn-end if items remain incomplete and only
@@ -546,51 +515,6 @@ export function createThreadPane() {
    */
   let scrollController: PaneScrollController | null = $state(null);
 
-  /**
-   * Rebuild the per-turn diff view for a single turnIndex from the current
-   * items snapshot. Mutates the reactive Map in place — Svelte 5 tracks Map
-   * mutations on $state values, so set/delete are reactive without having
-   * to allocate a fresh Map per upsert (which would be O(turns) alloc per
-   * mutation and defeat the point of moving this out of MessageTimeline).
-   */
-  function itemsForTurn(turnIndex: number): Item[] {
-    const ids = itemIdsByTurn.get(turnIndex);
-    if (!ids || ids.length === 0) return [];
-    const turnItems: Item[] = [];
-    for (const id of ids) {
-      const index = itemIndexById.get(id);
-      if (index === undefined) continue;
-      const item = items[index];
-      if (item && item.turnIndex === turnIndex) {
-        turnItems.push(item);
-      }
-    }
-    return turnItems;
-  }
-
-  function refreshTurnDiffView(turnIndex: number): void {
-    const view = buildDiffViewForItems(itemsForTurn(turnIndex));
-    if (view) {
-      turnDiffViews.set(turnIndex, view);
-    } else {
-      turnDiffViews.delete(turnIndex);
-    }
-  }
-
-  /**
-   * Rebuild the full per-turn diff view map from an items snapshot. Used on
-   * thread switch / bulk load where a single incremental pass isn't
-   * appropriate. Clears the reactive map in place for the same "no
-   * per-mutation alloc" reason.
-   */
-  function rebuildTurnDiffViews(): void {
-    turnDiffViews.clear();
-    for (const turnIndex of itemIdsByTurn.keys()) {
-      const view = buildDiffViewForItems(itemsForTurn(turnIndex));
-      if (view) turnDiffViews.set(turnIndex, view);
-    }
-  }
-
   function requestFrame(callback: () => void): number {
     if (typeof requestAnimationFrame === 'function') {
       return requestAnimationFrame(callback);
@@ -647,54 +571,14 @@ export function createThreadPane() {
   // by the thread's item count, which has its own loose memory ceiling
   // via the thread-windowing floor).
   //
-  // Within the lifetime of a single thread, however, the expansion
-  // registry IS unbounded: each toggled tool_call holds its loaded
-  // payload chunks until the user collapses it or switches threads.
-  // For long sessions where the user expands many heavy outputs, that
-  // can climb past sensible bounds. Cap total `displayData` bytes at
-  // EXPANSION_BUDGET_BYTES; when exceeded, collapse least-recently
-  // toggled handles (which drops their chunks). Map insertion order is
-  // the LRU — touch on toggle/expand/showFull by delete + re-set.
+  // Within the lifetime of a single thread, each expanded tool_call
+  // holds its loaded payload chunks until the user collapses it or
+  // switches threads. We deliberately do not auto-collapse open rows:
+  // collapsing an item the user is reading changes transcript geometry
+  // from outside the row's own interaction path, which fights the
+  // virtualizer and creates visible jumps/flashes.
 
-  function computeExpansionBytes(): number {
-    let total = 0;
-    for (const handle of expansionStates.values()) {
-      const data = handle.displayData;
-      if (data) total += data.length;
-    }
-    return total;
-  }
-
-  function enforceExpansionBudget(skipKey: string): void {
-    // Compute the total once, then maintain it incrementally as we
-    // collapse handles. The previous approach re-summed every entry's
-    // displayData on every loop iteration (O(n²) in the number of
-    // expanded handles). With LRU touches keeping the touched key at
-    // the tail, the iterator hits oldest-first; subtracting on collapse
-    // is correct without a recompute.
-    let total = computeExpansionBytes();
-    const cap = getExpansionBudgetBytes();
-    if (total <= cap) return;
-    for (const [iterKey, handle] of expansionStates) {
-      if (iterKey === skipKey) continue;
-      const data = handle.displayData;
-      if (!handle.expanded || !data) continue;
-      const droppedBytes = data.length;
-      handle.collapse();
-      total -= droppedBytes;
-      if (total <= cap) break;
-    }
-  }
-
-  function touchExpansion(key: string): void {
-    const value = expansionStates.get(key);
-    if (value) {
-      expansionStates.delete(key);
-      expansionStates.set(key, value);
-    }
-  }
-
-  function withExpansionLRU(inner: PayloadExpansionHandle, key: string): PayloadExpansionHandle {
+  function withExpansionRegistry(inner: PayloadExpansionHandle): PayloadExpansionHandle {
     return {
       get expanded() { return inner.expanded; },
       get loading() { return inner.loading; },
@@ -706,33 +590,12 @@ export function createThreadPane() {
       get payloadVersion() { return inner.payloadVersion; },
       get hasMore() { return inner.hasMore; },
       get displayData() { return inner.displayData; },
-      toggle: async () => {
-        touchExpansion(key);
-        await inner.toggle();
-        enforceExpansionBudget(key);
-      },
-      expand: async () => {
-        touchExpansion(key);
-        await inner.expand();
-        enforceExpansionBudget(key);
-      },
-      ensureLoaded: async () => {
-        touchExpansion(key);
-        const changed = await inner.ensureLoaded();
-        if (changed) enforceExpansionBudget(key);
-        return changed;
-      },
+      toggle: () => inner.toggle(),
+      expand: () => inner.expand(),
+      ensureLoaded: () => inner.ensureLoaded(),
       collapse: () => { inner.collapse(); },
-      showFull: async () => {
-        touchExpansion(key);
-        await inner.showFull();
-        enforceExpansionBudget(key);
-      },
-      retry: async () => {
-        touchExpansion(key);
-        await inner.retry();
-        enforceExpansionBudget(key);
-      },
+      showFull: () => inner.showFull(),
+      retry: () => inner.retry(),
       reset: () => { inner.reset(); },
       setPayloadVersion: (version: unknown) => { inner.setPayloadVersion(version); },
     };
@@ -761,7 +624,7 @@ export function createThreadPane() {
         payloadVersion: () => getCurrentItem()?.updatedAt,
       },
     );
-    cached = withExpansionLRU(inner, key);
+    cached = withExpansionRegistry(inner);
     expansionStates.set(key, cached);
     return cached;
   }
@@ -788,13 +651,13 @@ export function createThreadPane() {
       () => threadId,
     );
     inner.setPayloadVersion(payloadVersion);
-    cached = withExpansionLRU(inner, key);
+    cached = withExpansionRegistry(inner);
     expansionStates.set(key, cached);
     return cached;
   }
 
-  function isSubagentGroupExpanded(parentId: string): boolean {
-    return subagentGroupExpanded.has(parentId);
+  function isSubagentGroupExpanded(groupKey: string): boolean {
+    return subagentGroupExpanded.has(groupKey);
   }
 
   /**
@@ -828,10 +691,10 @@ export function createThreadPane() {
     attachmentBlobs.clear();
   }
 
-  function toggleSubagentGroupExpanded(parentId: string): boolean {
+  function toggleSubagentGroupExpanded(groupKey: string): boolean {
     const next = new Set(subagentGroupExpanded);
-    const willExpand = !next.has(parentId);
-    if (willExpand) next.add(parentId); else next.delete(parentId);
+    const willExpand = !next.has(groupKey);
+    if (willExpand) next.add(groupKey); else next.delete(groupKey);
     subagentGroupExpanded = next;
     return willExpand;
   }
@@ -1028,7 +891,6 @@ export function createThreadPane() {
     const currentThreadId = thread?.id ?? null;
     const next = items.slice();
 
-    const affectedTurns = new Set<number>();
     const nextLive = { ...liveItemSummaries };
     let changed = false;
     let liveChanged = false;
@@ -1063,10 +925,6 @@ export function createThreadPane() {
           removeItemIdFromTurn(previous.turnIndex, item.id);
           addUniqueItemIdToTurn(item.turnIndex, item.id);
         }
-        if (itemMayAffectDiffView(previous) || itemMayAffectDiffView(item)) {
-          affectedTurns.add(previous.turnIndex);
-          affectedTurns.add(item.turnIndex);
-        }
         if (compareItemsByTimelinePosition(previous, item) !== 0) {
           needsSort = true;
         }
@@ -1091,9 +949,6 @@ export function createThreadPane() {
       itemStatusById.set(item.id, item.status);
       itemSummaryById.set(item.id, item.summary);
       appendItemIdToTurn(item.turnIndex, item.id);
-      if (itemMayAffectDiffView(item)) {
-        affectedTurns.add(item.turnIndex);
-      }
       if (shouldMaskNewItems) {
         newlyAppendedItemIds.push(item.id);
       }
@@ -1116,9 +971,6 @@ export function createThreadPane() {
       for (const id of newlyAppendedItemIds) nextSet.add(id);
       pendingScrollCatchupItems = nextSet;
     }
-    for (const turnIndex of affectedTurns) {
-      refreshTurnDiffView(turnIndex);
-    }
   }
 
   return {
@@ -1135,12 +987,6 @@ export function createThreadPane() {
      * ticks on item-array changes, which deltas don't trigger.
      */
     get liveDeltaRevision() { return liveDeltaRevision; },
-    /**
-     * Per-turn diff view. Keyed by `turnIndex`. Incrementally maintained by
-     * `upsertItem` so MessageTimeline can render the ChangedFilesTree and
-     * TurnDiffBadge without re-scanning the full items array each upsert.
-     */
-    get turnDiffViews(): ReadonlyMap<number, TurnDiffView> { return turnDiffViews; },
     get pendingApprovals() { return pendingApprovals; },
     get pendingUserInputs() { return pendingUserInputs; },
     get contextWindow() { return contextWindow; },
@@ -1241,8 +1087,7 @@ export function createThreadPane() {
       // another thread keeps lighting the working indicator when the
       // user comes back. This is the load-bearing fix vs. the prior
       // per-pane field which dropped state on switch. latestSettledTurn
-      // is per-pane (drives the completion divider mounted on the chat
-      // view); rehydrate it below from ListRecentTurns. Clear first so
+      // is per-pane; rehydrate it below from ListRecentTurns. Clear first so
       // a rehydration failure leaves the pane in a consistent "no
       // prior turn" state.
       latestSettledTurn = null;
@@ -1269,7 +1114,6 @@ export function createThreadPane() {
       resetLiveBuffers();
       rebuildItemIndexes(items);
       clearRowUiState();
-      turnDiffViews = new Map();
       // Windowed-history reset. A null floor disables the upsert floor
       // check until the backend tells us otherwise, which is correct:
       // between thread clear and the ListRecentThreadItems response any
@@ -1322,13 +1166,11 @@ export function createThreadPane() {
         rebuildItemIndexes(items);
         oldestLoadedTurnIndex = paged.oldestTurnIndex >= 0 ? paged.oldestTurnIndex : null;
         hasMoreHistory = paged.hasMore ?? false;
-        rebuildTurnDiffViews();
       } catch (err) {
         if (gen !== switchGeneration) return;
         console.error('Failed to load items:', err);
         items = [];
         rebuildItemIndexes(items);
-        turnDiffViews = new Map();
         oldestLoadedTurnIndex = null;
         hasMoreHistory = false;
         generalError = `Failed to load thread items: ${errString(err)}`;
@@ -1357,8 +1199,7 @@ export function createThreadPane() {
         if (gen !== switchGeneration) return;
         // Rehydration is best-effort — a fetch failure shouldn't block the
         // thread from rendering items. Log and proceed with
-        // latestSettledTurn=null (the completion divider just won't appear
-        // for the prior turn).
+        // latestSettledTurn=null for the prior turn.
         console.error('Failed to rehydrate recent turns:', err);
       }
 
@@ -1389,7 +1230,6 @@ export function createThreadPane() {
         rebuildItemIndexes(items);
         oldestLoadedTurnIndex = paged.oldestTurnIndex >= 0 ? paged.oldestTurnIndex : null;
         hasMoreHistory = paged.hasMore ?? false;
-        rebuildTurnDiffViews();
       } catch (err) {
         if (gen !== switchGeneration) return;
         console.error('Failed to refresh thread items after gap:', err);
@@ -1417,7 +1257,6 @@ export function createThreadPane() {
       items = [];
       resetLiveBuffers();
       rebuildItemIndexes(items);
-      turnDiffViews = new Map();
       pendingApprovals = [];
       pendingUserInputs = [];
       contextWindow = null;
@@ -1468,13 +1307,10 @@ export function createThreadPane() {
      * Fetch the next batch of older turns and prepend them to the window.
      * Respects both the switch generation (thread swapped mid-flight) and
      * a paging-specific generation (concurrent invocations from double-
-     * clicks or keyboard repeats). On success the per-turn diff-view map
-     * is rebuilt to include the newly loaded turns; because paging is
-     * turn-boundary aligned the refresh is safe — no turn can straddle
-     * the window edge and produce a partial diff. The return value is for
-     * scroll anchoring: `insertedBeforeWindow` means at least one new row
-     * sorted before the current in-memory first row. Components that know
-     * the actual visible anchor still restore that anchor directly.
+     * clicks or keyboard repeats). The return value is for scroll
+     * anchoring: `insertedBeforeWindow` means at least one new row sorted
+     * before the current in-memory first row. Components that know the
+     * actual visible anchor still restore that anchor directly.
      */
     async loadOlder(): Promise<LoadOlderResult> {
       const currentThread = thread;
@@ -1503,7 +1339,6 @@ export function createThreadPane() {
         if (next !== items) {
           items = next;
           rebuildItemIndexes(items);
-          rebuildTurnDiffViews();
         }
         const nextFloor =
           paged.oldestTurnIndex >= 0 ? paged.oldestTurnIndex : floor;
@@ -1612,7 +1447,6 @@ export function createThreadPane() {
         if (next !== items) {
           items = next;
           rebuildItemIndexes(items);
-          rebuildTurnDiffViews();
         }
         oldestLoadedTurnIndex =
           paged.oldestTurnIndex >= 0 ? paged.oldestTurnIndex : currentFloor;
@@ -1802,9 +1636,8 @@ export function createThreadPane() {
 
     /**
      * Settle the current turn on `provider:turn_completed`. Writes
-     * `latestSettledTurn` (per-pane state used by the completion
-     * divider) and clears the global active-turn registry via
-     * projectTurnCompleted.
+     * `latestSettledTurn` for thread-switch rehydration/read state and
+     * clears the global active-turn registry via projectTurnCompleted.
      */
     settleTurn(settled: SettledTurn): void {
       const tid = thread?.id ?? '';
@@ -1826,7 +1659,7 @@ export function createThreadPane() {
      * `EventMsg::TurnAborted`. The real `provider:turn_completed`
      * arrives shortly after and re-runs the same path (idempotent on
      * already-cleared registry). Does NOT clear `latestSettledTurn`
-     * so the previous turn's completion divider stays visible.
+     * so read-state/trace surfaces keep the previous settled turn.
      */
     clearActiveTurn(): void {
       const tid = thread?.id ?? '';

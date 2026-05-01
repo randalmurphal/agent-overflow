@@ -1,21 +1,8 @@
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/svelte';
 import ThinkingBlock from './ThinkingBlock.svelte';
 import { makeItem } from '../../../test/helpers/chat';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
-
-// Element.animate is required for slide() transitions; setup.ts already
-// patches it, but the helper here keeps the test resilient if that ever
-// changes.
-beforeAll(() => {
-  if (typeof (Element.prototype as unknown as { animate?: unknown }).animate !== 'function') {
-    (Element.prototype as unknown as { animate: () => unknown }).animate = () => ({
-      finished: Promise.resolve(),
-      cancel() {}, finish() {}, play() {}, pause() {}, reverse() {},
-      addEventListener() {}, removeEventListener() {},
-    });
-  }
-});
 
 describe('<ThinkingBlock>', () => {
   beforeEach(() => {

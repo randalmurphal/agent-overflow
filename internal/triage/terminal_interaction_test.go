@@ -80,6 +80,61 @@ func TestTerminalInteraction_EmptyStdinPersistsRow(t *testing.T) {
 	}
 }
 
+func TestTerminalInteraction_StoresCommandMetadataWhenTrackerKnown(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 2)
+
+	router.mu.Lock()
+	state := router.codexBackgroundForThread("t1")
+	state.unifiedExecByProcess["pid-42"] = "cmd-1"
+	state.unifiedExec["cmd-1"] = &unifiedExecTracker{
+		launchID:  "cmd-1",
+		processID: "pid-42",
+		command:   "sleep 1; echo done",
+		summary:   "sleep 1; echo done",
+	}
+	router.mu.Unlock()
+
+	evt := provider.ProviderEvent{
+		Kind:      provider.EventTerminalInteraction,
+		ThreadID:  "t1",
+		TurnID:    "turn-2",
+		ItemID:    "cmd-1",
+		Content:   "",
+		Meta:      terminalInteractionMetaBlob(t, "pid-42", ""),
+		Timestamp: time.Now(),
+	}
+	if err := router.Handle(evt); err != nil {
+		t.Fatalf("handle empty-stdin terminal_interaction: %v", err)
+	}
+
+	items, err := st.ListTurnItems("t1", 2)
+	if err != nil {
+		t.Fatalf("list turn items: %v", err)
+	}
+	var matched *store.Item
+	for i := range items {
+		if items[i].Kind == string(provider.ItemTerminalInteraction) {
+			matched = &items[i]
+			break
+		}
+	}
+	if matched == nil {
+		t.Fatalf("expected terminal_interaction row, got %d items", len(items))
+	}
+	if matched.Summary != "Waited for background terminal: sleep 1; echo done" {
+		t.Fatalf("summary = %q", matched.Summary)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal([]byte(matched.Meta), &meta); err != nil {
+		t.Fatalf("unmarshal stored meta: %v", err)
+	}
+	if meta["command"] != "sleep 1; echo done" {
+		t.Errorf("meta.command = %v, want command", meta["command"])
+	}
+}
+
 func TestTerminalInteraction_SplitsScopedAssistantTextAroundWait(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")

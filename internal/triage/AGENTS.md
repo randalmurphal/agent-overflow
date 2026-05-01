@@ -156,7 +156,7 @@ agent-overflow turn — one user-typed prompt — can span multiple
 rounds when Claude's CLI synthesizes a `type:"user"` envelope from a
 `task_notification` and the model issues another response. The
 frontend uses these per-round emissions to drive its working
-indicator, Stop button, completion divider, and composer-block state
+indicator, Stop button, and composer-block state
 — all of which want "model is engaged right now" semantics rather
 than "user-typed prompt is in flight."
 

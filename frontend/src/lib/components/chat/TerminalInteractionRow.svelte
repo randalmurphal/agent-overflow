@@ -4,14 +4,22 @@
   import type { CommandOutputMeta, Item } from '../../types/models';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { parseJsonObject } from '../../utils/parseJsonObject';
+  import { commandTextForItem, terminalInteractionLabelFromSummary } from './commandDisplay';
   import CommandOutput from './CommandOutput.svelte';
 
   let { pane, item }: { pane?: ThreadPane; item: Item } = $props();
 
   let commandOutputMeta = $derived<CommandOutputMeta | null>(
-    item.payloadKind === 'command_output' && item.payloadId
+    item.payloadKind === 'command_output'
       ? (parseJsonObject(item.payloadMeta) as CommandOutputMeta | null)
       : null,
+  );
+  let commandText = $derived(commandTextForItem(item, commandOutputMeta));
+  let shouldRenderCommandShell = $derived(item.payloadKind === 'command_output' || commandText !== '');
+  let rowLabel = $derived(
+    shouldRenderCommandShell
+      ? terminalInteractionLabelFromSummary(item.summary)
+      : item.summary || 'Waited for background terminal',
   );
 
   /**
@@ -29,11 +37,17 @@
     data-testid="terminal-interaction-row"
   >
     <Icon icon={Timer} size={11} strokeWidth={2} class="opacity-70 shrink-0" />
-    <span>{item.summary || 'Waited for background terminal'}</span>
+    <span>{rowLabel}</span>
   </div>
-  {#if commandOutputMeta && item.payloadId}
+  {#if shouldRenderCommandShell}
     <div class="ml-5">
-      <CommandOutput {pane} item={item} meta={commandOutputMeta} payloadId={item.payloadId} />
+      <CommandOutput
+        {pane}
+        item={item}
+        meta={commandOutputMeta}
+        payloadId={item.payloadId}
+        showCompletionBadge={Boolean(item.payloadId)}
+      />
     </div>
   {/if}
 </div>

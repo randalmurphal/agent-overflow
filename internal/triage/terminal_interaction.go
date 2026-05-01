@@ -92,6 +92,9 @@ func (r *Router) handleTerminalInteraction(evt provider.ProviderEvent) error {
 		"process_id": meta.ProcessID,
 		"kind":       "terminal_interaction",
 	}
+	if command := r.codexTerminalCommandForProcess(evt.ThreadID, meta.ProcessID); command != "" {
+		metaMap["command"] = command
+	}
 	if !isPoll {
 		metaMap["has_stdin"] = true
 	}

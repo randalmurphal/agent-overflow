@@ -35,13 +35,13 @@ honoring:
 | `persistFoo` | Store write + event emission. Single chokepoint for persisted timeline rows. | `Router.persistItem` |
 | `parseFoo` | Wire-format parsing — turns bytes / JSON into a typed value. Never writes state. | `Parser.ParseLine`, `appendToolUseEvent` |
 | `emitFoo` | `app.Event.Emit` wrapper or frontend channel publish. | `Router.emitItemUpsert`, `App.emitErrorToThread` |
-| `buildFoo` | Pure construction — takes inputs, returns a value. No I/O, no side effects. | `buildDiscussionParticipantPlans`, `buildTurnDiffView` |
+| `buildFoo` | Pure construction — takes inputs, returns a value. No I/O, no side effects. | `buildDiscussionParticipantPlans`, `buildRevertAffectedFiles` |
 
 Svelte file suffix rules:
 
 - `.svelte.ts` — reactive state owner (`$state`, `$derived`, `$effect`).
   Example: `stores/thread.svelte.ts`, `stores/threads.svelte.ts`.
-- Plain `.ts` — pure helpers, no runes. Example: `utils/turnDiffSummary.ts`,
+- Plain `.ts` — pure helpers, no runes. Example: `utils/patchFiles.ts`,
   `utils/subagentGrouping.ts`.
 
 If you're unsure which suffix to use, ask: "does this file need to be
@@ -136,13 +136,11 @@ wrong place or a helper should own the logic that uses it. Don't grep-fix.
   preview/stats card, `payload.data` only when the user expands. The
   frontend `ListItems` path deliberately omits `data`; `ReadPayload`
   is the explicit on-demand fetch.
-- **Incremental derivation in Svelte.** `turnDiffViews` in
-  `stores/thread.svelte.ts` is a `Map<turnIndex, view>` that
-  `refreshTurnDiffView` updates on a single upsert — it does NOT rebuild
-  the whole map. Rebuilding is only allowed on thread switch / bulk
-  load. If you add a new derivation, derive per-unit (per turn, per
-  card) and update incrementally; rescanning the whole item list on
-  every upsert is a bug.
+- **Incremental derivation in Svelte.** If you add a derived index over
+  timeline data, derive per-unit (per turn, per card, per item) and
+  update only the affected unit on upsert. Rebuilding the whole item
+  list on every upsert is a bug unless the list is explicitly tiny and
+  bounded.
 - **No ad-hoc indexes.** If the frontend needs to look up items by
   parent_id, the store already has the partial index. Use it via a
   store query rather than scanning the full items array in Go.

@@ -249,7 +249,7 @@ export interface TurnStartedEvent {
 
 /**
  * TurnCompletedEvent is the payload for `provider:turn_completed`. Carries
- * the settled-turn projection the UI needs to render the completion divider
+ * the settled-turn projection the UI uses for read-state/trace surfaces
  * plus clear the working indicator. `tokenUsageJson` is a JSON-encoded
  * string because triage stores it that way for the DB round-trip — the
  * event listener parses it into TokenUsageSummary before writing pane state.

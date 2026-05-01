@@ -8,9 +8,8 @@
 <script lang="ts">
   import { onDestroy, tick } from 'svelte';
   import { VList, type VListHandle } from 'virtua/svelte';
-  import type { SettledTurn, ThreadPane } from '../../stores/thread.svelte';
+  import type { ThreadPane } from '../../stores/thread.svelte';
   import { addToast } from '../../stores/toast.svelte';
-  import { getSettings } from '../../stores/settings.svelte';
   import { createStickyBottomController } from '../../utils/stickyBottomController.svelte';
   import {
     getThreadScrollSnapshot,
@@ -19,9 +18,8 @@
   import {
     findTimelineNodeIndex as findNodeIndexInList,
     groupItemsBySubagent,
-    isLastRootInTurn as isLastRootInTurnAt,
     isToolTextBoundary as isToolTextBoundaryAt,
-    rootTurnIndex,
+    nodeRole,
     timelineNodeItemId,
     timelineNodeKey,
     type TimelineNode,
@@ -29,15 +27,9 @@
   import { filterRedundantNotifications } from '../../utils/notificationFilter';
   import { getActiveTurn } from '../../stores/threadStatuses.svelte';
   import Button from '../primitives/Button.svelte';
-  import { turnSummaryIsMeaningful } from '../../utils/turnDiffSummary';
-  import ChangedFilesTree from './ChangedFilesTree.svelte';
-  import ChatWorkingIndicator from './ChatWorkingIndicator.svelte';
-  import LiveTodoPanel from './LiveTodoPanel.svelte';
-  import CompletionDivider from './CompletionDivider.svelte';
   import ScrollToBottomButton from './ScrollToBottomButton.svelte';
   import SubagentGroup from './SubagentGroup.svelte';
   import TimelineLeaf from './TimelineLeaf.svelte';
-  import TurnDiffBadge from './TurnDiffBadge.svelte';
   import type { ExpandedImagePreview } from '../../utils/attachmentPreview.svelte';
   import { recordTimelineRenderTrace } from './messageTimelineTrace';
 
@@ -67,27 +59,18 @@
     onImageExpand?: (preview: ExpandedImagePreview) => void;
   } = $props();
 
-  /**
-   * Decide whether the completion divider renders immediately before this
-   * node in the timeline flow:
-   *   - there's a settled turn to render for
-   *   - that turn reported a terminal assistant message id
-   *   - the current node is the leaf whose id matches that message
-   * Subagent-group nodes and non-matching leaves render nothing. Only
-   * leaves carry `data-item-id`, so the divider can only anchor before a
-   * leaf — group nodes are structural and never trigger a divider.
-   *
-   * Spec: docs/architecture/turn-lifecycle.md §UI components driven by
-   * this state.
-   */
-  function shouldRenderDividerBefore(
-    node: TimelineNode,
-    turn: SettledTurn | null,
-  ): boolean {
-    if (!turn) return false;
-    if (!turn.assistantMessageId) return false;
-    if (node.kind !== 'leaf') return false;
-    return node.item.id === turn.assistantMessageId;
+  function shouldRenderResponseDividerBefore(index: number, node: TimelineNode): boolean {
+    if (node.kind !== 'leaf' || node.item.kind !== 'assistant_text') return false;
+    for (let i = index - 1; i >= 0; i -= 1) {
+      const previous = groupedNodes[i];
+      if (!previous) return false;
+      if (previous.kind === 'leaf' && previous.item.turnIndex !== node.item.turnIndex) return false;
+      if (previous.kind === 'group' && previous.parent.turnIndex !== node.item.turnIndex) return false;
+      const previousRole = nodeRole(previous);
+      if (previousRole === 'tool') return true;
+      if (previousRole === 'text') return false;
+    }
+    return false;
   }
 
   // The wrapper div around <VList> that catches gesture events for the
@@ -111,7 +94,6 @@
   let groupedNodes = $derived<TimelineNode[]>(
     groupItemsBySubagent(filterRedundantNotifications(pane.items)),
   );
-  let turnDiffViews = $derived(pane.turnDiffViews);
 
   const stick = createStickyBottomController({
     getScrollEl: () => scrollEl,
@@ -156,15 +138,10 @@
   // ============================================================
   // Helpers
   // ============================================================
-  // Pure helpers (rootTurnIndex, isLastRootInTurn, findTimelineNodeIndex,
-  // timelineNodeItemId) live alongside the TimelineNode type in
+  // Pure helpers live alongside the TimelineNode type in
   // subagentGrouping.ts; the local thin wrappers below adapt them to the
   // current groupedNodes array so the template doesn't have to thread
   // `groupedNodes` into every call site.
-
-  function isLastRootInTurn(index: number): boolean {
-    return isLastRootInTurnAt(groupedNodes, index);
-  }
 
   function findTimelineNodeIndex(itemId: string): number {
     return findNodeIndexInList(groupedNodes, itemId);
@@ -395,12 +372,9 @@
       No messages yet. Send a message to get started.
     </div>
   {:else if pane.items.length === 0 && getActiveTurn(pane.threadId)}
-    <!-- Active turn but no items yet (just-sent prompt with the assistant
-         not having streamed a single chunk). Render the working indicator
-         standalone so the user sees feedback. -->
+    <!-- Active turn but no items yet. The working/todo UI lives in the
+         ChatView bottom overlay, outside the virtualized history. -->
     <div class="mx-auto w-full max-w-[62rem] px-6 pt-8" style:padding-bottom={`calc(var(--composer-height, 0px) + ${BOTTOM_PAD_PX}px)`}>
-      <ChatWorkingIndicator {pane} />
-      <LiveTodoPanel {pane} />
     </div>
   {:else}
     {#snippet renderNode(node: TimelineNode, depth: number)}
@@ -433,10 +407,9 @@
              `class:invisible` masks newly-appended rows for one frame
              until `stickyBottomController` runs `scrollToLast`, which
              clears `pendingScrollCatchupItems` via `onScrollSettled`.
-             The leaf + the trailing tail (working indicator + spacer
-             below) all sit inside this wrapper, so masking here hides
-             the entire freshly-mounted row as a unit and avoids the
-             working indicator flashing in the wrong position. -->
+             Live working/todo UI lives outside VList; masking here
+             only hides the freshly-mounted transcript row while the
+             sticky controller catches up. -->
         <div
           data-row-index={index}
           class:mt-4={isToolTextBoundary(index)}
@@ -469,32 +442,24 @@
           {/if}
 
           <div class="mx-auto w-full max-w-[62rem] px-6">
-            {#if pane.latestSettledTurn && shouldRenderDividerBefore(node, pane.latestSettledTurn)}
-              <CompletionDivider turn={pane.latestSettledTurn} />
+            {#if shouldRenderResponseDividerBefore(index, node)}
+              <div data-testid="response-divider">
+                <div class="my-3 flex items-center gap-3">
+                  <span class="h-px flex-1 bg-border" aria-hidden="true"></span>
+                  <span class="rounded-full border border-border bg-surface-1 px-2.5 py-1 text-[10px] uppercase tracking-[0.14em] text-text-secondary">
+                    Response
+                  </span>
+                  <span class="h-px flex-1 bg-border" aria-hidden="true"></span>
+                </div>
+              </div>
             {/if}
             <div data-testid="message-timeline-node">
               {@render renderNode(node, 1)}
             </div>
-            {#if isLastRootInTurn(index)}
-              {@const turnIndex = rootTurnIndex(node)}
-              {@const turnView = turnDiffViews.get(turnIndex)}
-              {#if turnView && getSettings().showEndOfTurnDiffs}
-                <ChangedFilesTree files={turnView.files} />
-                {#if turnSummaryIsMeaningful(turnView.summary)}
-                  <TurnDiffBadge {pane} {turnIndex} summary={turnView.summary} />
-                {/if}
-              {/if}
-            {/if}
 
             {#if index === groupedNodes.length - 1}
-              <!-- Tail of timeline. Working indicator + LiveTodoPanel +
-                   bottom spacer that consumes --composer-height so the
-                   last visible row clears the absolute composer overlay
-                   above it. The todo panel renders independently of the
-                   working indicator (it persists past turn-end if items
-                   remain incomplete and auto-hides on all-complete). -->
-              <ChatWorkingIndicator {pane} />
-              <LiveTodoPanel {pane} />
+              <!-- Bottom spacer consumes the measured ChatView overlay
+                   height. Live turn UI is intentionally outside VList. -->
               <div
                 aria-hidden="true"
                 style:height={`calc(var(--composer-height, 0px) + ${BOTTOM_PAD_PX}px)`}

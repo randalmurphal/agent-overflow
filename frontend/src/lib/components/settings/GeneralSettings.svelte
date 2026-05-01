@@ -85,17 +85,6 @@
       </SettingsField>
 
       <SettingsField
-        label="End-of-turn diffs"
-        hint="Show a compact diff card when an agent turn completes."
-      >
-        <ToggleSwitch
-          checked={settings.showEndOfTurnDiffs}
-          ariaLabel="Toggle End-of-Turn Diffs"
-          onToggle={(value) => updateSetting('showEndOfTurnDiffs', value)}
-        />
-      </SettingsField>
-
-      <SettingsField
         label="Streaming enabled"
         hint="Show text as it arrives from the provider."
       >

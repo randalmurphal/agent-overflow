@@ -30,6 +30,12 @@ export function displayCommandForItem(
   return stripShellWrapper(commandTextForItem(item, meta));
 }
 
+export function terminalInteractionLabelFromSummary(summary: string | undefined): string {
+  const raw = (summary ?? '').trim();
+  if (!raw) return 'Waited for background terminal';
+  return splitTerminalInteractionSummary(raw)?.label ?? raw;
+}
+
 function commandFromJSON(raw: string | undefined): string {
   if (!raw) return '';
   try {
@@ -59,6 +65,10 @@ function commandFromRecord(record: Record<string, unknown>): string {
 function commandFromSummary(summary: string | undefined): string {
   const raw = (summary ?? '').trim();
   if (!raw) return '';
+  const terminal = splitTerminalInteractionSummary(raw);
+  if (terminal) {
+    return terminal.commandSummary ? commandFromSummary(terminal.commandSummary) : '';
+  }
   const colonIndex = raw.indexOf(':');
   const withoutToolPrefix =
     colonIndex >= 0 && isCommandToolName(raw.slice(0, colonIndex))
@@ -68,6 +78,24 @@ function commandFromSummary(summary: string | undefined): string {
     .replace(/\s+->\s+(?:done|failed|killed|interrupted|error|exit\s+-?\d+)$/i, '')
     .replace(/\s+\((?:exit\s+-?\d+|error|failed|killed|declined)\)$/i, '')
     .trim();
+}
+
+const TERMINAL_INTERACTION_PREFIXES = [
+  'Waited for background terminal',
+  'Interacted with background terminal',
+];
+
+function splitTerminalInteractionSummary(raw: string): { label: string; commandSummary: string } | null {
+  for (const prefix of TERMINAL_INTERACTION_PREFIXES) {
+    if (raw === prefix) return { label: prefix, commandSummary: '' };
+    if (raw.startsWith(`${prefix}:`)) {
+      return {
+        label: prefix,
+        commandSummary: raw.slice(prefix.length + 1).trimStart(),
+      };
+    }
+  }
+  return null;
 }
 
 export function stripShellWrapper(command: string): string {

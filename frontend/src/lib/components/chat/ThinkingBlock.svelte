@@ -1,8 +1,5 @@
 <script lang="ts">
   import { untrack } from 'svelte';
-  import { slide } from 'svelte/transition';
-  import ChevronRight from 'lucide-svelte/icons/chevron-right';
-  import Icon from '../primitives/Icon.svelte';
   import CopyFooter from './CopyFooter.svelte';
   import type { Item } from '../../types/models';
   import type { ThreadPane } from '../../stores/thread.svelte';
@@ -12,6 +9,7 @@
     keepExpandedPayloadFresh,
   } from './payloadExpansion.svelte';
   import AnsiText from './AnsiText.svelte';
+  import TranscriptDisclosureHeader from './TranscriptDisclosureHeader.svelte';
 
   let { pane, item }: { pane?: ThreadPane; item: Item } = $props();
 
@@ -39,28 +37,22 @@
 </script>
 
 <div class="mb-1.5 rounded-[var(--radius-control)] border border-border-subtle bg-card/20 overflow-hidden">
-  <button
-    class="w-full px-2.5 py-1.5 flex items-center gap-2 text-left cursor-pointer hover:bg-surface-2/20 transition-colors"
-    onclick={() => expansion.toggle()}
-    aria-expanded={expansion.expanded}
-    aria-controls="thinking-{item.id}"
-    aria-label="Toggle Thinking Block"
+  <TranscriptDisclosureHeader
+    expanded={expansion.expanded}
+    controls={`thinking-${item.id}`}
+    ariaLabel="Toggle Thinking Block"
+    testId="thinking-toggle"
+    class="px-2.5 py-1.5 hover:bg-surface-2/20"
+    onToggle={() => expansion.toggle()}
   >
-    <span
-      class="flex size-3 shrink-0 items-center justify-center text-fg-subtle select-none transition-transform duration-150"
-      class:rotate-90={expansion.expanded}
-      aria-hidden="true"
-    >
-      <Icon icon={ChevronRight} size={12} strokeWidth={2} class="opacity-70" />
-    </span>
     <span class="text-[11px] text-fg-subtle font-medium uppercase tracking-[0.04em]">Thinking</span>
     {#if !expansion.expanded}
       <span class="text-[12px] text-fg-muted/70 truncate flex-1 italic">{preview}</span>
     {/if}
-  </button>
+  </TranscriptDisclosureHeader>
 
   {#if expansion.expanded}
-    <div transition:slide={{ duration: 150 }} class="border-t border-border-subtle bg-surface-0/50">
+    <div class="border-t border-border-subtle bg-surface-0/50">
       <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
       <div id="thinking-{item.id}" class="px-3 py-2 max-h-80 overflow-y-auto" tabindex="0" role="region" aria-label="Thinking Content">
         {#if expansion.loading}

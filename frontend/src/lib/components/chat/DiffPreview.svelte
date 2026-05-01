@@ -1,7 +1,5 @@
 <script lang="ts">
   import { untrack } from 'svelte';
-  import { slide } from 'svelte/transition';
-  import ChevronRight from 'lucide-svelte/icons/chevron-right';
   import PanelRightOpen from 'lucide-svelte/icons/panel-right-open';
   import Icon from '../primitives/Icon.svelte';
   import EditorLink from '../common/EditorLink.svelte';
@@ -19,6 +17,7 @@
     keepExpandedPayloadFresh,
   } from './payloadExpansion.svelte';
   import { isPromoteModifier, openDiffSidebar } from './diffSidebarTrigger';
+  import TranscriptDisclosureHeader from './TranscriptDisclosureHeader.svelte';
 
   let {
     pane,
@@ -28,10 +27,8 @@
     threadId,
     filePathFilter,
   }: {
-    // `pane` is optional because DiffPreview is also rendered from
-    // ChangedFilesTree (the end-of-turn directory tree), which doesn't
-    // route to the per-tool sidebar. The "open in sidebar" affordance
-    // only renders when `pane` is provided.
+    // `pane` is optional for test and non-thread surfaces. The
+    // "open in sidebar" affordance only renders when `pane` is provided.
     pane?: ThreadPane;
     item?: Item;
     meta: DiffMeta;
@@ -43,8 +40,8 @@
   // Use the pane registry when both pane and a stable cache key are
   // available. When `item` is provided (called from a tool row), key by
   // item.id so the row's expansion survives virtua remount. When only
-  // `payloadId` is available (called from ChangedFilesTree), key by
-  // payloadId. Falls back to local state when no pane (unit tests).
+  // `payloadId` is available, key by payloadId. Falls back to local
+  // state when no pane (unit tests).
   // pane is stable across a row's lifetime; read once via `untrack`.
   const localFallback = untrack(() =>
     pane
@@ -98,10 +95,10 @@
     }
   });
 
-  // Whether the per-tool DiffSidebar trigger should render. Hidden in
-  // the ChangedFilesTree path (no `pane`) and in the filtered slice
-  // path (the file is just one slice of a cumulative turn diff — the
-  // sidebar is for inspecting a single tool call's full payload).
+  // Whether the per-tool DiffSidebar trigger should render. Hidden
+  // without a `pane` and in the filtered slice path (the file is just
+  // one slice of a cumulative turn diff — the sidebar is for inspecting
+  // a single tool call's full payload).
   let showSidebarTrigger = $derived(pane !== undefined && filePathFilter === undefined);
 
   function onHeaderClick(event: MouseEvent) {
@@ -128,61 +125,51 @@
     inline button that covers the same hit-area visually, and the
     EditorLink sits as a sibling on the right side.
   -->
-  <div
-    class="flex items-center gap-2 px-2.5 py-1.5 text-[13px] hover:bg-surface-2/25 transition-colors"
-    data-testid="diff-preview-header"
+  <TranscriptDisclosureHeader
+    expanded={expansion.expanded}
+    controls={`diff-content-${payloadId}`}
+    ariaLabel={`Toggle Diff: ${meta.filePath}`}
+    testId="diff-preview-toggle"
+    headerTestId="diff-preview-header"
+    class="px-2.5 py-1.5 text-[13px] hover:bg-surface-2/25"
+    onToggle={onHeaderClick}
   >
-    <button
-      type="button"
-      class="flex flex-1 min-w-0 items-center gap-2 text-left cursor-pointer bg-transparent border-0 p-0"
-      onclick={onHeaderClick}
-      aria-expanded={expansion.expanded}
-      aria-controls="diff-content-{payloadId}"
-      aria-label="Toggle Diff: {meta.filePath}"
-      data-testid="diff-preview-toggle"
-    >
-      <span
-        class="flex size-3 shrink-0 items-center justify-center text-fg-subtle select-none transition-transform duration-150"
-        class:rotate-90={expansion.expanded}
-        aria-hidden="true"
-      >
-        <Icon icon={ChevronRight} size={12} strokeWidth={2} class="opacity-70" />
-      </span>
-      <span class="font-mono text-[12px] text-fg-muted truncate">{meta.filePath}</span>
-      <span class="px-1.5 py-0.5 rounded-[var(--radius-field)] text-[10px] font-medium {badgeClasses}">{meta.changeKind}</span>
-      <ToolDecisionChip decision={item?.decision} />
-      <span class="ml-auto flex gap-2 text-[11px] shrink-0 tabular-nums">
-        {#if meta.insertions > 0}
-          <span class="text-success">+{meta.insertions}</span>
-        {/if}
-        {#if meta.deletions > 0}
-          <span class="text-error">-{meta.deletions}</span>
-        {/if}
-      </span>
-    </button>
-    {#if showSidebarTrigger}
-      <button
-        type="button"
-        onclick={onSidebarTriggerClick}
-        title="Open in side panel (⌘-click header)"
-        aria-label="Open Diff in Side Panel: {meta.filePath}"
-        data-testid="diff-preview-open-sidebar"
-        class="opacity-0 group-hover/diff:opacity-100 focus-visible:opacity-100 rounded p-1 text-text-secondary hover:text-text-primary cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
-      >
-        <Icon icon={PanelRightOpen} size={14} />
-      </button>
-    {/if}
-    <EditorLink
-      path={meta.filePath}
-      asIcon
-      stopPropagation
-      class="opacity-0 group-hover/diff:opacity-100 focus-visible:opacity-100"
-    />
-  </div>
+    <span class="font-mono text-[12px] text-fg-muted truncate">{meta.filePath}</span>
+    <span class="px-1.5 py-0.5 rounded-[var(--radius-field)] text-[10px] font-medium {badgeClasses}">{meta.changeKind}</span>
+    <ToolDecisionChip decision={item?.decision} />
+    <span class="ml-auto flex gap-2 text-[11px] shrink-0 tabular-nums">
+      {#if meta.insertions > 0}
+        <span class="text-success">+{meta.insertions}</span>
+      {/if}
+      {#if meta.deletions > 0}
+        <span class="text-error">-{meta.deletions}</span>
+      {/if}
+    </span>
+    {#snippet actions()}
+      {#if showSidebarTrigger}
+        <button
+          type="button"
+          onclick={onSidebarTriggerClick}
+          title="Open in side panel (⌘-click header)"
+          aria-label="Open Diff in Side Panel: {meta.filePath}"
+          data-testid="diff-preview-open-sidebar"
+          class="opacity-0 group-hover/diff:opacity-100 focus-visible:opacity-100 rounded p-1 text-text-secondary hover:text-text-primary cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+        >
+          <Icon icon={PanelRightOpen} size={14} />
+        </button>
+      {/if}
+      <EditorLink
+        path={meta.filePath}
+        asIcon
+        stopPropagation
+        class="opacity-0 group-hover/diff:opacity-100 focus-visible:opacity-100"
+      />
+    {/snippet}
+  </TranscriptDisclosureHeader>
 
   <!-- Diff content -->
   {#if expansion.expanded}
-    <div id="diff-content-{payloadId}" transition:slide={{ duration: 150 }} class="border-t border-border-subtle bg-surface-0/50 px-3 py-2">
+    <div id="diff-content-{payloadId}" class="border-t border-border-subtle bg-surface-0/50 px-3 py-2">
       {#if expansion.loading}
         <p class="text-xs text-text-secondary" role="status" aria-live="polite">Loading full diff…</p>
       {:else if expansion.error}

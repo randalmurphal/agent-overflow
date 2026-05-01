@@ -1,6 +1,5 @@
 <script lang="ts">
   import { untrack } from 'svelte';
-  import { slide } from 'svelte/transition';
   import PanelRightOpen from 'lucide-svelte/icons/panel-right-open';
   import { getSettings } from '../../stores/settings.svelte';
   import type { Item, ToolInlineDiffFile, ToolResultMeta } from '../../types/models';
@@ -20,6 +19,7 @@
     keepExpandedPayloadFresh,
   } from './payloadExpansion.svelte';
   import { openDiffSidebar } from './diffSidebarTrigger';
+  import TranscriptDisclosureHeader from './TranscriptDisclosureHeader.svelte';
 
   let { pane, item, meta, payloadId }: { pane?: ThreadPane; item: Item; meta: ToolResultMeta; payloadId?: string } = $props();
 
@@ -57,7 +57,8 @@
   );
 
   const hasInlineDiff = $derived(Boolean(meta.inlineDiff && meta.inlineDiff.files.length > 0));
-  const hasExactPatch = $derived(meta.inlineDiff?.availability === 'exact_patch' && Boolean(payloadId));
+  const hasExactPatch = $derived(meta.inlineDiff?.availability === 'exact_patch');
+  const canExpandExactPatch = $derived(hasExactPatch && Boolean(payloadId));
   const wrapClass = $derived(getSettings().diffWordWrap ? 'whitespace-pre-wrap break-all' : 'whitespace-pre');
   // Re-parse payloadMeta inside the helper rather than reusing the
   // `meta: ToolResultMeta` prop: ToolResultMeta does not declare
@@ -155,39 +156,41 @@
 
   {#if hasExactPatch}
     <div class="group/patch border-t border-border">
-      <div class="flex w-full items-center gap-2 px-3 py-2 text-xs text-text-secondary hover:bg-surface-2/40">
-        <button
-          class="flex flex-1 min-w-0 items-center gap-2 text-left bg-transparent border-0 p-0 cursor-pointer"
-          onclick={() => expansion.toggle()}
-          aria-expanded={expansion.expanded}
-          aria-controls="tool-result-patch-{item.id}"
-        >
-          <span>{expansion.expanded ? '▼' : '▶'}</span>
-          <span>Exact patch</span>
-          {#if meta.inlineDiff?.insertions || meta.inlineDiff?.deletions}
-            <span class="ml-auto">
-              {#if meta.inlineDiff?.insertions}<span class="text-success">+{meta.inlineDiff.insertions}</span>{/if}
-              {#if meta.inlineDiff?.insertions && meta.inlineDiff?.deletions}<span> </span>{/if}
-              {#if meta.inlineDiff?.deletions}<span class="text-error">-{meta.inlineDiff.deletions}</span>{/if}
-            </span>
-          {/if}
-        </button>
-        {#if canOpenSidebar}
-          <button
-            type="button"
-            onclick={(e) => { e.stopPropagation(); openSidebarForPatch(); }}
-            title="Open in side panel"
-            aria-label="Open Patch in Side Panel"
-            data-testid="tool-result-patch-open-sidebar"
-            class="opacity-0 group-hover/patch:opacity-100 focus-visible:opacity-100 rounded p-1 text-text-secondary hover:text-text-primary cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
-          >
-            <Icon icon={PanelRightOpen} size={14} />
-          </button>
+      <TranscriptDisclosureHeader
+        expanded={expansion.expanded}
+        expandable={canExpandExactPatch}
+        controls={canExpandExactPatch ? `tool-result-patch-${item.id}` : undefined}
+        ariaLabel="Toggle Exact Patch"
+        testId="tool-result-patch-toggle"
+        class="px-3 py-2 text-xs text-text-secondary {canExpandExactPatch ? 'hover:bg-surface-2/40' : ''}"
+        onToggle={() => expansion.toggle()}
+      >
+        <span>Exact patch</span>
+        {#if meta.inlineDiff?.insertions || meta.inlineDiff?.deletions}
+          <span class="ml-auto">
+            {#if meta.inlineDiff?.insertions}<span class="text-success">+{meta.inlineDiff.insertions}</span>{/if}
+            {#if meta.inlineDiff?.insertions && meta.inlineDiff?.deletions}<span> </span>{/if}
+            {#if meta.inlineDiff?.deletions}<span class="text-error">-{meta.inlineDiff.deletions}</span>{/if}
+          </span>
         {/if}
-      </div>
+        {#snippet actions()}
+          {#if canOpenSidebar}
+            <button
+              type="button"
+              onclick={(e) => { e.stopPropagation(); openSidebarForPatch(); }}
+              title="Open in side panel"
+              aria-label="Open Patch in Side Panel"
+              data-testid="tool-result-patch-open-sidebar"
+              class="opacity-0 group-hover/patch:opacity-100 focus-visible:opacity-100 rounded p-1 text-text-secondary hover:text-text-primary cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+            >
+              <Icon icon={PanelRightOpen} size={14} />
+            </button>
+          {/if}
+        {/snippet}
+      </TranscriptDisclosureHeader>
 
-      {#if expansion.expanded}
-        <div id="tool-result-patch-{item.id}" transition:slide={{ duration: 150 }} class="border-t border-border bg-surface-0">
+      {#if canExpandExactPatch && expansion.expanded}
+        <div id="tool-result-patch-{item.id}" class="border-t border-border bg-surface-0">
           <div class="px-3 py-2">
             {#if expansion.loading}
               <p class="text-xs text-text-secondary" role="status" aria-live="polite">Loading patch…</p>

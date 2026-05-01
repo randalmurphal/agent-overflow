@@ -4,24 +4,9 @@ import { tick } from 'svelte';
 import { loadSettings } from '../../stores/settings.svelte';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { buildPane, makeItem, makeThread } from '../../../test/helpers/chat';
-import { createThreadPane, type SettledTurn } from '../../stores/thread.svelte';
+import { createThreadPane } from '../../stores/thread.svelte';
 import { getToasts } from '../../stores/toast.svelte';
 import MessageTimeline, { clearMessageTimelineScrollSnapshotsForTest } from './MessageTimeline.svelte';
-
-function makeSettledTurn(overrides: Partial<SettledTurn> = {}): SettledTurn {
-  return {
-    turnId: 'turn-1',
-    turnIndex: 0,
-    startedAt: 0,
-    completedAt: 12_000,
-    stopReason: 'end_turn',
-    assistantMessageId: null,
-    tokenUsage: null,
-    aborted: false,
-    errorMessage: '',
-    ...overrides,
-  };
-}
 
 beforeAll(() => {
   if (typeof (Element.prototype as unknown as { animate?: unknown }).animate !== 'function') {
@@ -54,31 +39,26 @@ describe('<MessageTimeline>', () => {
     expect(getByText(/No messages yet/i)).toBeInTheDocument();
   });
 
-  it('renders the working indicator as the last timeline row while a turn is active', async () => {
+  it('keeps active-turn status out of the virtualized history', async () => {
     const pane = await buildPane(undefined, [
       makeItem({ id: 'user:0', kind: 'user_text', role: 'user', summary: 'hi' }),
     ]);
     pane.setActiveTurn({ turnId: 'turn-1', turnIndex: 0, startedAt: Date.now() - 3_000 });
 
-    const { getByTestId } = render(MessageTimeline, { props: { pane } });
+    const { getByTestId, queryByTestId } = render(MessageTimeline, { props: { pane } });
 
     const scroll = getByTestId('message-timeline-scroll');
-    const indicator = getByTestId('chat-working-indicator');
-    const rows = Array.from(
-      scroll.querySelectorAll('[data-testid="message-timeline-node"], [data-testid="chat-working-indicator"]'),
-    );
-    expect(scroll).toContainElement(indicator);
-    expect(indicator.textContent).toContain('Working for');
-    expect(rows.at(-1)).toBe(indicator);
+    expect(scroll.querySelectorAll('[data-testid="message-timeline-node"]')).toHaveLength(1);
+    expect(queryByTestId('chat-working-indicator')).toBeNull();
   });
 
-  it('hides the empty state while a blank thread is working', async () => {
+  it('hides the empty state while a blank thread is working without mounting live UI', async () => {
     const pane = await buildPane();
     pane.setActiveTurn({ turnId: 'turn-1', turnIndex: 0, startedAt: Date.now() - 3_000 });
 
-    const { getByTestId, queryByText } = render(MessageTimeline, { props: { pane } });
+    const { queryByTestId, queryByText } = render(MessageTimeline, { props: { pane } });
 
-    expect(getByTestId('chat-working-indicator')).toBeInTheDocument();
+    expect(queryByTestId('chat-working-indicator')).toBeNull();
     expect(queryByText(/No messages yet/i)).toBeNull();
   });
 
@@ -135,7 +115,7 @@ describe('<MessageTimeline>', () => {
     expect(queryByTestId('tool-call-card')).toBeNull();
   });
 
-  it('renders changed-files and turn-diff summaries from tool-result payloads', async () => {
+  it('renders inline tool-result diff chips without an end-of-turn diff summary', async () => {
     const pane = await buildPane(undefined, [
       makeItem({
         id: 'tool-1',
@@ -156,11 +136,11 @@ describe('<MessageTimeline>', () => {
       }),
     ]);
 
-    const { getByText, getByTestId } = render(MessageTimeline, { props: { pane } });
+    const { getByTestId, queryByTestId } = render(MessageTimeline, { props: { pane } });
 
-    expect(getByText(/2 files changed/i)).toBeInTheDocument();
-    expect(getByTestId('turn-diff-badge').textContent ?? '').toContain('+8');
-    expect(getByTestId('turn-diff-badge').textContent ?? '').toContain('−2');
+    expect(getByTestId('tool-result-inline-diffs').textContent ?? '').toContain('src/a.ts');
+    expect(getByTestId('tool-result-inline-diffs').textContent ?? '').toContain('src/b.ts');
+    expect(queryByTestId('turn-diff-badge')).toBeNull();
   });
 
   it('renders proposed plans from payload-bearing tool rows', async () => {
@@ -209,53 +189,6 @@ describe('<MessageTimeline>', () => {
 
     const wrappers = container.querySelectorAll('[data-testid="message-timeline-node"]');
     expect(wrappers.length).toBe(50);
-  });
-
-  it('rebuilds turn summaries incrementally via the pane (not per-upsert full scan)', async () => {
-    // Regression pin for the task-2 refactor: MessageTimeline must source
-    // turnDiffViews from the pane (pane.turnDiffViews) rather than a
-    // component-local $derived that rescans pane.items on every upsert.
-    // This test injects an item, then upserts a second diff into the same
-    // turn, and checks that both contributions land in the rendered badge.
-    const pane = await buildPane(undefined, [
-      makeItem({
-        id: 'tool-1',
-        turnIndex: 0,
-        itemIndex: 0,
-        kind: 'tool_call',
-        payloadId: 'payload-1',
-        payloadKind: 'diff',
-        payloadMeta: JSON.stringify({
-          filePath: 'src/a.ts',
-          changeKind: 'modified',
-          insertions: 3,
-          deletions: 1,
-          preview: '',
-        }),
-      }),
-    ]);
-    const { getByTestId, rerender } = render(MessageTimeline, { props: { pane } });
-
-    expect(getByTestId('turn-diff-badge').textContent ?? '').toContain('+3');
-
-    pane.upsertItem(makeItem({
-      id: 'tool-2',
-      turnIndex: 0,
-      itemIndex: 1,
-      kind: 'tool_call',
-      payloadId: 'payload-2',
-      payloadKind: 'diff',
-      payloadMeta: JSON.stringify({
-        filePath: 'src/b.ts',
-        changeKind: 'added',
-        insertions: 2,
-        deletions: 0,
-        preview: '',
-      }),
-    }));
-    await rerender({ pane });
-
-    expect(getByTestId('turn-diff-badge').textContent ?? '').toContain('+5');
   });
 
   describe('windowed history', () => {
@@ -423,28 +356,28 @@ describe('<MessageTimeline>', () => {
     });
   });
 
-  describe('completion divider integration', () => {
-    it('renders the divider before the matching assistant_text leaf', async () => {
+  describe('response divider integration', () => {
+    it('renders a response divider before assistant text that follows tool activity', async () => {
       const pane = await buildPane(undefined, [
         makeItem({ id: 'user:0', kind: 'user_text', role: 'user', summary: 'hi' }),
         makeItem({
-          id: 'text:0:0',
+          id: 'tool:0:0',
           itemIndex: 1,
+          kind: 'tool_call',
+          toolName: 'Bash',
+          summary: 'ls',
+        }),
+        makeItem({
+          id: 'text:0:0',
+          itemIndex: 2,
           kind: 'assistant_text',
           summary: 'final answer',
         }),
       ]);
-      pane.settleTurn(
-        makeSettledTurn({
-          assistantMessageId: 'text:0:0',
-          startedAt: 0,
-          completedAt: 12_000,
-        }),
-      );
 
       const { getByTestId, container } = render(MessageTimeline, { props: { pane } });
 
-      const divider = getByTestId('completion-divider');
+      const divider = getByTestId('response-divider');
       expect(divider).toBeInTheDocument();
 
       // Pin the reading order: divider sits BEFORE the assistant leaf.
@@ -458,81 +391,44 @@ describe('<MessageTimeline>', () => {
       expect(following).toBe(4);
     });
 
-    it('renders zero dividers when latestSettledTurn is null', async () => {
+    it('renders zero response dividers when assistant text follows user text directly', async () => {
       const pane = await buildPane(undefined, [
+        makeItem({ id: 'user:0', kind: 'user_text', role: 'user', summary: 'hi' }),
         makeItem({ id: 'text:0:0', kind: 'assistant_text', summary: 'hi' }),
       ]);
 
       const { queryAllByTestId } = render(MessageTimeline, { props: { pane } });
 
-      expect(queryAllByTestId('completion-divider')).toHaveLength(0);
+      expect(queryAllByTestId('response-divider')).toHaveLength(0);
     });
 
-    it('renders zero dividers when latestSettledTurn.assistantMessageId is null', async () => {
-      // A turn that aborted before any assistant_text was emitted carries
-      // assistantMessageId=null. The divider lookup must no-op rather
-      // than matching against a null and attaching itself to the first
-      // leaf it sees.
+    it('renders only one response divider for consecutive assistant text after tools', async () => {
       const pane = await buildPane(undefined, [
-        makeItem({ id: 'text:0:0', kind: 'assistant_text', summary: 'partial' }),
-      ]);
-      pane.settleTurn(makeSettledTurn({ assistantMessageId: null, aborted: true }));
-
-      const { queryAllByTestId } = render(MessageTimeline, { props: { pane } });
-
-      expect(queryAllByTestId('completion-divider')).toHaveLength(0);
-    });
-
-    it('does not render the divider when no leaf id matches assistantMessageId', async () => {
-      // Historical case: the turn projection has an assistantMessageId that
-      // isn't present in the items list yet (delayed load, or an id that
-      // got pruned). The divider stays hidden rather than attaching to
-      // the first / last assistant leaf it finds.
-      const pane = await buildPane(undefined, [
-        makeItem({ id: 'text:0:0', kind: 'assistant_text', summary: 'a' }),
-      ]);
-      pane.settleTurn(
-        makeSettledTurn({ assistantMessageId: 'text:9:9', startedAt: 0, completedAt: 1_000 }),
-      );
-
-      const { queryAllByTestId } = render(MessageTimeline, { props: { pane } });
-
-      expect(queryAllByTestId('completion-divider')).toHaveLength(0);
-    });
-
-    it('shows "Interrupted" label when the settled turn is aborted', async () => {
-      const pane = await buildPane(undefined, [
-        makeItem({ id: 'text:0:0', kind: 'assistant_text', summary: 'hi' }),
-      ]);
-      pane.settleTurn(
-        makeSettledTurn({
-          assistantMessageId: 'text:0:0',
-          aborted: true,
-          stopReason: 'interrupted',
+        makeItem({ id: 'user:0', kind: 'user_text', role: 'user', summary: 'hi' }),
+        makeItem({
+          id: 'tool:0:0',
+          itemIndex: 1,
+          kind: 'tool_call',
+          toolName: 'Bash',
+          summary: 'ls',
         }),
-      );
-
-      const { getByTestId } = render(MessageTimeline, { props: { pane } });
-
-      expect(getByTestId('completion-divider-label').textContent).toContain('Interrupted');
-    });
-
-    it('shows "Error" label with inline errorMessage for an errored turn', async () => {
-      const pane = await buildPane(undefined, [
-        makeItem({ id: 'text:0:0', kind: 'assistant_text', summary: 'hi' }),
-      ]);
-      pane.settleTurn(
-        makeSettledTurn({
-          assistantMessageId: 'text:0:0',
-          stopReason: 'error',
-          errorMessage: 'rate_limited',
+        makeItem({
+          id: 'text:0:0',
+          itemIndex: 2,
+          kind: 'assistant_text',
+          summary: 'first paragraph',
         }),
-      );
+        makeItem({
+          id: 'text:0:1',
+          itemIndex: 3,
+          kind: 'assistant_text',
+          summary: 'second paragraph',
+        }),
+      ]);
 
-      const { getByTestId } = render(MessageTimeline, { props: { pane } });
+      const { queryAllByTestId } = render(MessageTimeline, { props: { pane } });
 
-      expect(getByTestId('completion-divider-label').textContent).toContain('Error');
-      expect(getByTestId('completion-divider-error').textContent).toBe('rate_limited');
+      expect(queryAllByTestId('response-divider')).toHaveLength(1);
     });
   });
 

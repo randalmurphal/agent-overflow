@@ -557,8 +557,8 @@ CREATE INDEX IF NOT EXISTS idx_items_meta_task_id
 		// treats unknown values as "unknown error."
 		//
 		// The (thread_id, turn_index DESC) index backs ListRecentTurns,
-		// which the frontend calls on thread-switch to hydrate the
-		// completion divider from the most recent settled turn.
+		// which the frontend calls on thread-switch to hydrate the most
+		// recent settled-turn projection.
 		SQL: `
 CREATE TABLE turns (
     turn_id              TEXT    PRIMARY KEY,

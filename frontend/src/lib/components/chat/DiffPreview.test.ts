@@ -152,13 +152,13 @@ describe('<DiffPreview> editor-link wiring', () => {
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
   });
 
-  it('does not render the open-in-sidebar button when filePathFilter is set (changed-files-tree mode)', () => {
+  it('does not render the open-in-sidebar button when filePathFilter is set', () => {
     const fakePane = makeFakePane({ openDiffSidebar() {} } as unknown as Partial<import('../../stores/thread.svelte').ThreadPane>);
     const { queryByTestId } = render(DiffPreview, {
       props: { meta: META, payloadId: 'p-1', item: ITEM, pane: fakePane, filePathFilter: 'src/lib/foo.ts' },
     });
-    // Filtered-slice context (rendered from ChangedFilesTree) — sidebar
-    // promotion isn't meaningful for a slice of a cumulative turn diff.
+    // Sidebar promotion isn't meaningful for a slice of a cumulative
+    // turn diff.
     expect(queryByTestId('diff-preview-open-sidebar')).toBeNull();
   });
 

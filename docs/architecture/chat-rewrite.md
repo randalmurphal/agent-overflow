@@ -1544,43 +1544,47 @@ Nothing to clear on switch — there is no cache.
 ### MessageTimeline
 
 ```svelte
-{#each topLevelItems as item (item.id)}
-  {#if item.kind === 'user_text'}<UserMessage {item} />
-  {:else if item.kind === 'assistant_text'}<AssistantText {item} />
-  {:else if item.kind === 'thinking'}<Thinking {item} />
-  {:else if item.kind === 'tool_call'}
-    <ToolCallCard {item} children={childrenOf(item.id)} />
-  {:else if item.kind === 'tool_completion'}<ToolCompletion {item} />
-  {:else if item.kind === 'error'}<ErrorRow {item} />
-  {:else if item.kind === 'compaction'}<CompactionMarker {item} />
-  {/if}
-{/each}
+<VList data={groupItemsBySubagent(filterRedundantNotifications(pane.items))}>
+  {#snippet children(node, index)}
+    {#if node.kind === 'group'}
+      <SubagentGroup group={node} {pane} />
+    {:else}
+      <TimelineLeaf item={node.item} {pane} />
+    {/if}
+  {/snippet}
+</VList>
 ```
 
 Where:
-- `topLevelItems = items.filter(i => !i.parentId)`
-- `childrenOf(id) = items.filter(i => i.parentId === id)`
-- `ToolCallCard` recursively renders its children with the same switch.
+- `groupItemsBySubagent` only groups Claude inline Agent/Task rows that
+  carry provider-stamped inline-subagent metadata. Generic `parentId`
+  does not create frontend topology.
+- `TimelineLeaf` is the item-kind dispatcher for ordinary rows.
+- `SubagentGroup` owns only the grouped card presentation; its expanded
+  state is stored on `ThreadPane` by `SubagentGroupNode.groupKey`.
+- Disclosure rows compose `TranscriptDisclosureHeader` so the chevron,
+  toggle button, and trailing actions keep a stable DOM shape as payloads
+  and completion metadata arrive.
 
 ### ToolCallCard internals
 
-- Header line: per-tool-kind dispatcher on `tool_name`. Shows icon,
-  label, brief input preview, status badge, decision chip (if set),
-  exit code or duration on completion.
-- Chevron expand: fetch peek via `GetPayloadPreview(threadId, payloadId, 32768)`.
-  Render peek. If `!isComplete`, show a "Show full output (N KB) ↓"
-  footer button. Button click: load chunks with
-  `GetPayloadChunk(threadId, payloadId, nextOffset, maxBytes)` until
-  complete and replace the rendered body.
+- Header line: per-tool-kind dispatcher on `tool_name` / `payloadKind`.
+  Shows icon, label, brief input preview, status badge, decision chip
+  (if set), and stable trailing metadata.
+- Chevron expand: uses `pane.expansionStateFor(item)` /
+  `pane.expansionStateForPayload(...)` to fetch preview chunks via
+  `GetPayloadPreview(threadId, payloadId, 32768)`. If `!isComplete`,
+  show a "Show full output (N KB) ↓" footer button. Button click loads
+  chunks with `GetPayloadChunk(threadId, payloadId, nextOffset, maxBytes)`.
 - Body switch on `payload.kind`: command_output / diff / tool_result /
   proposed_plan / text. `command_output` and any text-style payload
   renders as raw text through the frontend ANSI renderer.
-- Expanded content held in component-local `$state`; discarded on
-  collapse. No cross-card cache.
-- Children (if subagent): rendered nested when the card is expanded,
-  showing the child's full conversation (text, thinking, tool_calls).
-  Default expanded while running (so you see live progress); default
-  collapsed when card status=completed.
+- Expanded payload content is held in pane-level expansion registries,
+  not component-local state, so virtua remounts do not reset toggles or
+  refetch loaded chunks. Collapse and thread switch clear the data.
+- Children (if inline subagent): rendered by `SubagentGroup` when the
+  card is expanded. Groups are collapsed by default and are only created
+  from explicit provider metadata.
 - **Grandchild depth cap**: a subagent card at depth 1 whose children
   include another subagent (grandchild at depth 2) renders the
   grandchild as a minimal marker — name + spawn prompt only, not
@@ -1727,8 +1731,10 @@ break the UI.
 - `frontend/src/lib/components/chat/ProviderStatusBanner.svelte`
   (rewrite to consume `pane.providerBanner` instead of session status)
 - `frontend/src/lib/components/chat/RateLimitsMeter.svelte`
-- `frontend/src/lib/components/chat/ChangedFilesTree.svelte` — KEEP
-- `frontend/src/lib/components/chat/TurnDiffBadge.svelte` — KEEP
+- `frontend/src/lib/components/chat/ChangedFilesTree.svelte` — REMOVED;
+  stable transcript rendering superseded inline end-of-turn diff cards.
+- `frontend/src/lib/components/chat/TurnDiffBadge.svelte` — REMOVED;
+  stable transcript rendering superseded inline end-of-turn diff cards.
 - `frontend/src/lib/components/chat/CommandOutput.svelte`,
   `DiffPreview.svelte`, `ProposedPlanCard.svelte`,
   `ThinkingBlock.svelte`, `ToolResultCard.svelte` — fold into

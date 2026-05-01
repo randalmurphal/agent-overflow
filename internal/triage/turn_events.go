@@ -16,10 +16,10 @@ type TurnStartedEvent struct {
 
 // TurnCompletedEvent is the frontend-facing payload for
 // provider:turn_completed. Carries the settled-turn projection the UI
-// needs to render the completion divider and the "Worked for Xs · Yk
-// tokens" label, plus clear the working indicator. Optional fields are
-// populated when the underlying provider surface carries them
-// (assistant_message_id, token usage, error message, aborted flag).
+// uses for read-state and trace/debug surfaces, plus clears the working
+// indicator. Optional fields are populated when the underlying provider
+// surface carries them (assistant_message_id, token usage, error message,
+// aborted flag).
 type TurnCompletedEvent struct {
 	ThreadID           string          `json:"threadId"`
 	TurnID             string          `json:"turnId"`

@@ -94,8 +94,8 @@ Columns:
 - `started_at` INTEGER (ms) — turn-start wire event timestamp
 - `completed_at` INTEGER (ms, nullable) — NULL = in-flight or crashed mid-turn
 - `stop_reason` TEXT — end_turn / max_tokens / tool_use / stop_sequence / refusal / error / interrupted
-- `assistant_message_id` TEXT — `items.id` of the final assistant_text for the turn (drives completion divider)
-- `token_usage_json` TEXT — snapshot of provider usage at turn-end for the "Worked for Xs · Yk tokens" label
+- `assistant_message_id` TEXT — `items.id` of the final assistant_text for the turn
+- `token_usage_json` TEXT — snapshot of provider usage at turn-end
 - `error_message` TEXT — populated when stop_reason indicates error
 
 Indexes:

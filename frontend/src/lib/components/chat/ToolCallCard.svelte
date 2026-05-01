@@ -53,7 +53,7 @@
       : null,
   );
   let toolResultMeta = $derived<ToolResultMeta | null>(
-    payloadKind === 'tool_result' && payloadId
+    payloadKind === 'tool_result'
       ? (parseJsonObject(item.payloadMeta) as ToolResultMeta | null)
       : null,
   );
@@ -91,12 +91,12 @@
   <ProposedPlanCard {pane} {item} {payloadId} meta={planMeta} />
 {:else if diffMeta && payloadId}
   <DiffPreview {pane} {item} meta={diffMeta} {payloadId} />
-{:else if toolResultMeta && payloadId}
-  <!-- File-change / command-mutation helpers attach a tool_result payload
-       to the lifecycle row; render the rich diff card so file edits keep
-       their existing visual weight. Gating on payloadKind (not just a
-       successful JSON parse) avoids tool_call_result payloads coincidentally
-       matching the ToolResultMeta shape and rendering as an empty card. -->
+{:else if toolResultMeta}
+  <!-- File-change / command-mutation helpers mark lifecycle rows as
+       tool_result; render the rich card even before a payload id exists so
+       exact-patch rows keep a stable disabled disclosure shell. Gating on
+       payloadKind (not just a successful JSON parse) avoids tool_call_result
+       payloads coincidentally matching the ToolResultMeta shape. -->
   <ToolResultCard {pane} {item} meta={toolResultMeta} {payloadId} />
 {:else if isCommandRow}
   <CommandOutput {pane} {item} meta={commandMeta} {payloadId} />

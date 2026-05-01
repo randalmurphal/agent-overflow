@@ -28,7 +28,6 @@ export interface Settings {
   timestampFormat: 'locale' | '12-hour' | '24-hour';
   recentWorkspaces: string[];
   diffWordWrap: boolean;
-  showEndOfTurnDiffs: boolean;
   backgroundTrayExpanded: boolean;
   streamingEnabled: boolean;
   confirmArchive: boolean;

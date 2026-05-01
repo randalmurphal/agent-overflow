@@ -208,6 +208,34 @@ describe('<ToolResultCard> open-in-sidebar triggers', () => {
     expect(queryAllByTestId('tool-result-patch-open-sidebar')).toHaveLength(0);
   });
 
+  it('renders a stable disabled exact-patch shell when the patch payload has not arrived yet', () => {
+    const item = makeItem({
+      kind: 'tool_completion',
+      status: 'completed',
+      payloadKind: 'tool_result',
+      payloadMeta: JSON.stringify({ itemType: 'file_change' }),
+    });
+    const m: ToolResultMeta = {
+      itemType: 'file_change',
+      title: 'Edit applied',
+      inlineDiff: {
+        availability: 'exact_patch',
+        insertions: 2,
+        deletions: 1,
+        files: [{ path: 'src/a.ts', insertions: 2, deletions: 1, kind: 'modified' }],
+      },
+    };
+
+    const { getByTestId, queryByTestId } = render(ToolResultCard, {
+      props: { item, meta: m },
+    });
+
+    const toggle = getByTestId('tool-result-patch-toggle');
+    expect(toggle).toHaveAttribute('aria-disabled', 'true');
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(queryByTestId('tool-result-patch-open-sidebar')).toBeNull();
+  });
+
   it('routes a chip-button click to pane.openDiffSidebar with the chip\'s file path', async () => {
     const captures: Array<{ payloadId: string; filePath?: string }> = [];
     const fakePane = makeFakePane({
@@ -280,8 +308,6 @@ describe('<ToolResultCard> open-in-sidebar triggers', () => {
     await fireEvent.click(trigger);
 
     expect(captures).toEqual([{ payloadId: 'p-1' }]);
-    // The "Exact patch" toggle marker stays at ▶ (collapsed) because
-    // stopPropagation prevented the parent button from firing.
-    expect(queryByText('▼')).toBeNull();
+    expect(getByTestId('tool-result-patch-toggle')).toHaveAttribute('aria-expanded', 'false');
   });
 });

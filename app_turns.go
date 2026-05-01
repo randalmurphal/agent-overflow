@@ -6,7 +6,7 @@ import (
 
 // ListRecentTurns returns the N most recent turn records for the given
 // thread, newest first. Used by the frontend on thread-switch to rehydrate
-// the completion divider from the latest settled turn row.
+// the latest settled-turn projection.
 //
 // The frontend MUST NOT light up the working indicator from these rows —
 // an in-flight (completed_at=NULL) row from a prior session/crash is

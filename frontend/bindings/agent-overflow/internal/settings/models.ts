@@ -142,7 +142,6 @@ export class Settings {
     "timestampFormat": string;
     "recentWorkspaces": string[];
     "diffWordWrap": boolean;
-    "showEndOfTurnDiffs": boolean;
 
     /**
      * BackgroundTrayExpanded remembers the user's global background-task
@@ -283,9 +282,6 @@ export class Settings {
         if (!("diffWordWrap" in $$source)) {
             this["diffWordWrap"] = false;
         }
-        if (!("showEndOfTurnDiffs" in $$source)) {
-            this["showEndOfTurnDiffs"] = false;
-        }
         if (!("backgroundTrayExpanded" in $$source)) {
             this["backgroundTrayExpanded"] = false;
         }
@@ -361,21 +357,21 @@ export class Settings {
      */
     static createFrom($$source: any = {}): Settings {
         const $$createField3_0 = $$createType0;
-        const $$createField26_0 = $$createType1;
-        const $$createField27_0 = $$createType2;
-        const $$createField28_0 = $$createType4;
+        const $$createField25_0 = $$createType1;
+        const $$createField26_0 = $$createType2;
+        const $$createField27_0 = $$createType4;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("recentWorkspaces" in $$parsedSource) {
             $$parsedSource["recentWorkspaces"] = $$createField3_0($$parsedSource["recentWorkspaces"]);
         }
         if ("network" in $$parsedSource) {
-            $$parsedSource["network"] = $$createField26_0($$parsedSource["network"]);
+            $$parsedSource["network"] = $$createField25_0($$parsedSource["network"]);
         }
         if ("editor" in $$parsedSource) {
-            $$parsedSource["editor"] = $$createField27_0($$parsedSource["editor"]);
+            $$parsedSource["editor"] = $$createField26_0($$parsedSource["editor"]);
         }
         if ("remoteEndpoints" in $$parsedSource) {
-            $$parsedSource["remoteEndpoints"] = $$createField28_0($$parsedSource["remoteEndpoints"]);
+            $$parsedSource["remoteEndpoints"] = $$createField27_0($$parsedSource["remoteEndpoints"]);
         }
         return new Settings($$parsedSource as Partial<Settings>);
     }

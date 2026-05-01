@@ -28,12 +28,21 @@ Every row rendered inside `<VList>`'s children snippet:
 - Lives inside a `[data-row-index]` outer wrapper. The wrapper is
   structural and intentionally has NO `data-item-id`. Only `TimelineLeaf`
   emits `data-item-id` on its root — that's what test queries, message
-  search, and the CompletionDivider's "render before [data-item-id]"
-  sibling check anchor on. `SubagentGroup` is structural and does not
-  carry `data-item-id`; the divider therefore can only ever sit before
-  a leaf, not before a subagent card. `shouldRenderDividerBefore` in
-  `MessageTimeline.svelte` enforces that contract by returning false
-  for non-leaf nodes.
+  search, and row-boundary markers anchor on. `SubagentGroup` is
+  structural and does not carry `data-item-id`; response dividers
+  therefore can only ever sit before a leaf, not before a subagent card.
+  `shouldRenderResponseDividerBefore` in `MessageTimeline.svelte`
+  enforces that contract by returning false for non-leaf nodes.
+- Keeps its outer shell stable after first render. If a tool row might
+  eventually have payload, render the header affordance from the start
+  and disable the action until the body exists. Do not swap static rows
+  into buttons, insert chevrons late, animate body height inside the
+  scroll surface, or append completion-only history rows.
+- Uses `TranscriptDisclosureHeader.svelte` for transcript disclosure
+  headers unless there is a specific reason not to. The primitive keeps
+  the chevron/button shell stable, uses `aria-disabled` for temporarily
+  inert disclosures, and renders trailing actions as siblings so editor
+  links / side-panel buttons are never nested inside another button.
 - Is safe to remount when virtua scrolls a row out of and back into the
   rendered window. Snippets re-receive `pane`, `item`, `depth` on
   remount; nothing inside should depend on `onMount` running exactly
@@ -51,9 +60,10 @@ Every row rendered inside `<VList>`'s children snippet:
     cache. `UserMessage` threads this into `createAttachmentPreviews`
     so a user-message row doesn't re-fetch `GetAttachmentData` on
     every scroll-back.
-  - `pane.isSubagentGroupExpanded(parentId)` /
-    `toggleSubagentGroupExpanded(parentId)` — collapse state for
-    subagent cards.
+  - `pane.isSubagentGroupExpanded(groupKey)` /
+    `toggleSubagentGroupExpanded(groupKey)` — collapse state for
+    subagent cards. Use `SubagentGroupNode.groupKey`, not a raw parent
+    item id.
   Read pattern: `const handle = $derived(pane.expansionStateFor(item))`,
   with any local fallback wrapped in `untrack(() => createPayloadExpansion(...))`
   so the fallback doesn't bind to initial prop values.

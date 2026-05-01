@@ -29,6 +29,25 @@ describe('<GenericToolCallRow> editor-link wiring', () => {
     const { getByTestId } = render(GenericToolCallRow, { props: { item } });
     const link = getByTestId('editor-link-icon');
     expect(link.getAttribute('data-path')).toBe('src/lib/foo.ts');
+    expect(getByTestId('tool-call-card-toggle')).toHaveAccessibleName(/src\/lib\/foo\.ts:12/);
+  });
+
+  it('keeps the editor-link usable on a non-expandable row', async () => {
+    const openMock = setBindingMock('OpenInEditor', vi.fn(async () => undefined));
+    const item = makeItem({
+      kind: 'tool_call',
+      toolName: 'Read',
+      summary: 'src/lib/foo.ts:12',
+    });
+    const { getByTestId } = render(GenericToolCallRow, { props: { item } });
+
+    expect(getByTestId('tool-call-card-toggle')).toHaveAttribute('aria-disabled', 'true');
+    await fireEvent.click(getByTestId('editor-link-icon'));
+
+    await waitFor(() => {
+      expect(openMock).toHaveBeenCalledTimes(1);
+    });
+    expect(openMock.mock.calls[0]).toEqual(['src/lib/foo.ts', 12, 0]);
   });
 
   it('clicking the editor-link does NOT toggle the row body', async () => {
@@ -87,10 +106,10 @@ describe('<GenericToolCallRow> editor-link wiring', () => {
     expect(status.className).not.toContain('text-[10px]');
   });
 
-  it('suppresses the dropdown for TaskOutput rows even when a payload exists', () => {
+  it('suppresses the dropdown for TaskOutput rows even when a payload exists', async () => {
     // TaskOutput retrieves the same stdout already shown on the
-    // originating Bash row, so the row stays compact (no toggle button,
-    // no expandable body).
+    // originating Bash row, so the row keeps the stable header shell but
+    // has no expandable body.
     const item = makeItem({
       kind: 'tool_completion',
       status: 'completed',
@@ -99,8 +118,10 @@ describe('<GenericToolCallRow> editor-link wiring', () => {
       payloadId: 'p-task-output',
     });
     const { queryByTestId, getByTestId } = render(GenericToolCallRow, { props: { item } });
-    expect(queryByTestId('tool-call-card-toggle')).toBeNull();
-    expect(getByTestId('tool-call-card-row')).not.toBeNull();
+    const toggle = getByTestId('tool-call-card-toggle');
+    expect(toggle).toHaveAttribute('aria-disabled', 'true');
+    expect(toggle).toHaveAttribute('tabindex', '-1');
+    await fireEvent.click(toggle);
     expect(queryByTestId('tool-call-card-body')).toBeNull();
   });
 });

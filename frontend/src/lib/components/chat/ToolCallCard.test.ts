@@ -229,7 +229,8 @@ describe("<ToolCallCard> header dispatcher", () => {
     expect(getByTestId("tool-call-card-time").getAttribute("datetime")).toBe(
       new Date(createdAt).toISOString(),
     );
-    expect(queryByTestId("tool-call-card-toggle")).toBeNull();
+    expect(getByTestId("tool-call-card-toggle")).toHaveClass("cursor-default");
+    expect(queryByTestId("tool-call-card-body")).toBeNull();
   });
 
   it("omits the dropdown control when a generic tool has no payload or deferred output", async () => {
@@ -246,8 +247,7 @@ describe("<ToolCallCard> header dispatcher", () => {
       props: { pane, item },
     });
 
-    expect(getByTestId("tool-call-card-row")).toBeInTheDocument();
-    expect(queryByTestId("tool-call-card-toggle")).toBeNull();
+    expect(getByTestId("tool-call-card-toggle")).toHaveClass("cursor-default");
     expect(queryByTestId("tool-call-card-body")).toBeNull();
   });
 
@@ -661,6 +661,41 @@ describe("<ToolCallCard> header dispatcher", () => {
 
     expect(queryByTestId("tool-call-card")).toBeNull();
     expect(container.textContent).toContain("Edit applied");
+  });
+
+  it("delegates exact-patch tool_result rows before the patch payload arrives", async () => {
+    const pane = await buildPane();
+    const item = makeItem({
+      id: "tool-result-pending-payload",
+      kind: "tool_completion",
+      status: "completed",
+      toolName: "Edit",
+      payloadKind: "tool_result",
+      payloadMeta: JSON.stringify({
+        itemType: "file_change",
+        title: "Edit applied",
+        inlineDiff: {
+          availability: "exact_patch",
+          insertions: 2,
+          deletions: 1,
+          files: [
+            {
+              path: "src/file.ts",
+              insertions: 2,
+              deletions: 1,
+              kind: "modified",
+            },
+          ],
+        },
+      }),
+    });
+
+    const { getByTestId, queryByTestId } = render(ToolCallCard, {
+      props: { pane, item },
+    });
+
+    expect(queryByTestId("tool-call-card")).toBeNull();
+    expect(getByTestId("tool-result-patch-toggle")).toHaveAttribute("aria-disabled", "true");
   });
 
   it("keeps rich tool_result rendering for command-named tool rows", async () => {

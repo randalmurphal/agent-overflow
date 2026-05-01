@@ -23,7 +23,6 @@
   import { untrack } from 'svelte';
   import Check from 'lucide-svelte/icons/check';
   import X from 'lucide-svelte/icons/x';
-  import ChevronRight from 'lucide-svelte/icons/chevron-right';
   import HelpCircle from 'lucide-svelte/icons/help-circle';
   import Icon from '../primitives/Icon.svelte';
   import CompletionBadge from './CompletionBadge.svelte';
@@ -33,6 +32,7 @@
   import { deriveCompletionStatus } from '../../utils/toolCompletionStatus';
   import { parseJsonObject } from '../../utils/parseJsonObject';
   import { createPayloadExpansion } from './payloadExpansion.svelte';
+  import TranscriptDisclosureHeader from './TranscriptDisclosureHeader.svelte';
 
   let { pane, item }: { pane?: ThreadPane; item: Item } = $props();
 
@@ -70,13 +70,6 @@
 
   async function toggle() {
     await expansion.toggle();
-  }
-
-  async function handleKeydown(evt: KeyboardEvent) {
-    if (evt.key === 'Enter' || evt.key === ' ') {
-      evt.preventDefault();
-      await toggle();
-    }
   }
 
   const itemMeta = $derived(parseJsonObject(item.meta));
@@ -209,22 +202,13 @@
   data-testid="ask-user-question-card"
   data-status={item.status}
 >
-  <button
-    type="button"
-    class="flex w-full items-center gap-2 rounded-[var(--radius-control)] px-1 py-1 text-left hover:bg-surface-2/20 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 transition-colors"
-    onclick={toggle}
-    onkeydown={handleKeydown}
-    aria-expanded={expansion.expanded}
-    aria-controls="ask-user-question-body-{item.id}"
-    data-testid="ask-user-question-toggle"
+  <TranscriptDisclosureHeader
+    expanded={expansion.expanded}
+    controls={`ask-user-question-body-${item.id}`}
+    testId="ask-user-question-toggle"
+    class="rounded-[var(--radius-control)] px-1 py-1 hover:bg-surface-2/20"
+    onToggle={() => toggle()}
   >
-    <span
-      class="flex size-3 shrink-0 items-center justify-center text-fg-subtle select-none transition-transform duration-150"
-      class:rotate-90={expansion.expanded}
-      aria-hidden="true"
-    >
-      <Icon icon={ChevronRight} size={12} strokeWidth={2} class="opacity-70" />
-    </span>
     <span class="text-fg-muted shrink-0" aria-label="Question">
       <Icon icon={HelpCircle} size={14} />
     </span>
@@ -240,29 +224,31 @@
     >
       {headerLabel}
     </span>
-    {#if showRunningPill}
-      <span
-        class="shrink-0 text-[10px] text-accent opacity-70 transition-opacity group-hover/tool:opacity-100"
-        data-testid="ask-user-question-status"
-        data-status={item.status}
+    {#snippet actions()}
+      {#if showRunningPill}
+        <span
+          class="shrink-0 text-[10px] text-accent opacity-70 transition-opacity group-hover/tool:opacity-100"
+          data-testid="ask-user-question-status"
+          data-status={item.status}
+        >
+          running
+        </span>
+      {/if}
+      {#if !showRunningPill && completionStatus !== null}
+        <CompletionBadge
+          status={completionStatus}
+          class="opacity-80 transition-opacity group-hover/tool:opacity-100"
+        />
+      {/if}
+      <time
+        class="shrink-0 tabular-nums text-[10px] text-fg-hint"
+        datetime={new Date(item.createdAt).toISOString()}
+        data-testid="ask-user-question-time"
       >
-        running
-      </span>
-    {/if}
-    {#if !showRunningPill && completionStatus !== null}
-      <CompletionBadge
-        status={completionStatus}
-        class="opacity-80 transition-opacity group-hover/tool:opacity-100"
-      />
-    {/if}
-    <time
-      class="shrink-0 tabular-nums text-[10px] text-fg-hint"
-      datetime={new Date(item.createdAt).toISOString()}
-      data-testid="ask-user-question-time"
-    >
-      {time}
-    </time>
-  </button>
+        {time}
+      </time>
+    {/snippet}
+  </TranscriptDisclosureHeader>
 
   {#if expansion.expanded}
     <!-- No transition: the timeline scroll surface forbids height-shifting

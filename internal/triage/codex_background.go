@@ -531,6 +531,25 @@ func (r *Router) codexTerminalSummaryForProcess(threadID, processID string) stri
 	return tracker.summary
 }
 
+func (r *Router) codexTerminalCommandForProcess(threadID, processID string) string {
+	processID = strings.TrimSpace(processID)
+	if processID == "" {
+		return ""
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	state := r.codexBackground[threadID]
+	if state == nil {
+		return ""
+	}
+	launchID := state.unifiedExecByProcess[processID]
+	tracker := state.unifiedExec[launchID]
+	if tracker == nil {
+		return ""
+	}
+	return strings.TrimSpace(tracker.command)
+}
+
 func rebindCodexUnifiedExecProcessLocked(state *codexBackgroundState, tracker *unifiedExecTracker, processID string) {
 	processID = strings.TrimSpace(processID)
 	if state == nil || tracker == nil || processID == "" || tracker.processID == processID {

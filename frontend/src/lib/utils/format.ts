@@ -59,8 +59,8 @@ export function formatCost(usd: number): string {
 
 /**
  * Format a duration in seconds as "Xs" (<60s) or "Xm Ys" (>=60s).
- * Used by the completion divider's "Worked for ..." suffix. Negative /
- * non-finite inputs clamp to zero; callers that want the section omitted
+ * Used by compact duration labels. Negative / non-finite inputs clamp
+ * to zero; callers that want the section omitted
  * should branch on the zero case themselves.
  *
  * Examples: 12 -> "12s", 60 -> "1m 0s", 90 -> "1m 30s", 3600 -> "60m 0s".

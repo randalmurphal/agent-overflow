@@ -10,9 +10,9 @@
  *   reflow, short enough that auto-scroll resumes before the next item
  *   arrives (~16ms in steady state).
  * - When `transitionMs` is supplied, the lease is held for that
- *   duration via `setTimeout`. Use this for explicit `transition:fly`
- *   / `transition:slide` durations so the lease covers the full
- *   animation rather than only the first frame.
+ *   duration via `setTimeout`. Use this for explicit layout-changing
+ *   transitions so the lease covers the full animation rather than
+ *   only the first frame.
  *
  * Returns a `release` function that the caller can invoke early (e.g.
  * on a corresponding `outroend` if the consumer wants exact framing).

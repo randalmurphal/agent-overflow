@@ -1,7 +1,5 @@
 <script lang="ts">
-  import { slide } from 'svelte/transition';
   import Terminal from 'lucide-svelte/icons/terminal';
-  import ChevronRight from 'lucide-svelte/icons/chevron-right';
   import Icon from '../primitives/Icon.svelte';
   import CopyFooter from './CopyFooter.svelte';
   import CompletionBadge from './CompletionBadge.svelte';
@@ -21,6 +19,7 @@
     displayCommandForItem,
   } from './commandDisplay';
   import { parseJsonObject } from '../../utils/parseJsonObject';
+  import TranscriptDisclosureHeader from './TranscriptDisclosureHeader.svelte';
 
   let {
     pane,
@@ -93,17 +92,8 @@
   keepExpandedPayloadFresh(() => expansion, () => hasPayload);
 </script>
 
-<div class="mb-1.5 overflow-hidden">
-  {#snippet headerContent(showChevron: boolean)}
-    {#if showChevron}
-      <span
-        class="flex size-3 shrink-0 items-center justify-center text-fg-subtle select-none transition-transform duration-150"
-        class:rotate-90={expansion.expanded}
-        aria-hidden="true"
-      >
-        <Icon icon={ChevronRight} size={12} strokeWidth={2} class="opacity-70" />
-      </span>
-    {/if}
+<div class="mb-1.5 overflow-hidden" data-testid="command-output-row">
+  {#snippet headerContent()}
     <span class="flex size-3.5 shrink-0 items-center justify-center text-text-secondary" data-testid="command-output-icon" aria-hidden="true">
       <Icon icon={Terminal} size={14} strokeWidth={2} class="opacity-75" />
     </span>
@@ -111,6 +101,9 @@
       Bash
     </span>
     <span class="min-w-0 flex-1 truncate font-mono text-[12px] text-fg-muted" data-testid="command-output-command">{displayCommand}</span>
+  {/snippet}
+
+  {#snippet headerActions()}
     <span class="ml-auto flex shrink-0 items-center gap-2">
       <ToolDecisionChip decision={item.decision} />
       {#if isBackgroundedLaunch}
@@ -137,25 +130,20 @@
   {/snippet}
 
   <!-- Header -->
-  {#if hasBody}
-    <button
-      class="w-full rounded-[var(--radius-control)] px-1 py-1 flex items-center gap-2 text-left text-[12px] cursor-pointer hover:bg-surface-2/20 transition-colors"
-      onclick={() => expansion.toggle()}
-      aria-expanded={expansion.expanded}
-      aria-controls="cmd-output-{payloadId || item.id}"
-      aria-label="Toggle Command Output: {rawCommand}"
-      data-testid="command-output-toggle"
-    >
-      {@render headerContent(true)}
-    </button>
-  {:else}
-    <div
-      class="w-full rounded-[var(--radius-control)] px-1 py-1 flex items-center gap-2 text-left text-[12px]"
-      data-testid="command-output-row"
-    >
-      {@render headerContent(false)}
-    </div>
-  {/if}
+  <TranscriptDisclosureHeader
+    expanded={expansion.expanded}
+    expandable={hasBody}
+    controls={hasBody ? `cmd-output-${payloadId || item.id}` : undefined}
+    ariaLabel={`Toggle Command Output: ${rawCommand}`}
+    testId="command-output-toggle"
+    class="rounded-[var(--radius-control)] px-1 py-1 text-[12px] {hasBody ? 'hover:bg-surface-2/20' : ''}"
+    onToggle={() => expansion.toggle()}
+  >
+    {@render headerContent()}
+    {#snippet actions()}
+      {@render headerActions()}
+    {/snippet}
+  </TranscriptDisclosureHeader>
 
   <!-- Output content -->
   {#if hasBody && !expansion.expanded && meta?.preview}
@@ -164,7 +152,7 @@
     </div>
   {/if}
   {#if hasBody && expansion.expanded}
-    <div id="cmd-output-{payloadId || item.id}" transition:slide={{ duration: 150 }} class="ml-5 border-l border-border-subtle bg-surface-0/35">
+    <div id="cmd-output-{payloadId || item.id}" class="ml-5 border-l border-border-subtle bg-surface-0/35">
       <div class="px-3 py-2 overflow-x-auto">
         {#if hasPayload && expansion.loading}
           <p class="text-[11px] text-fg-subtle" role="status" aria-live="polite">Loading full output…</p>

@@ -59,7 +59,6 @@ type Settings struct {
 	TimestampFormat    string   `json:"timestampFormat"`
 	RecentWorkspaces   []string `json:"recentWorkspaces"`
 	DiffWordWrap       bool     `json:"diffWordWrap"`
-	ShowEndOfTurnDiffs bool     `json:"showEndOfTurnDiffs"`
 	// BackgroundTrayExpanded remembers the user's global background-task
 	// tray preference. False keeps fresh installs collapsed; opening the
 	// tray persists across thread switches and app restarts.
@@ -169,7 +168,6 @@ var DefaultSettings = Settings{
 	Theme:                  "system",
 	TimestampFormat:        "locale",
 	DiffWordWrap:           false,
-	ShowEndOfTurnDiffs:     true,
 	BackgroundTrayExpanded: false,
 	StreamingEnabled:       true,
 	ConfirmArchive:         true,

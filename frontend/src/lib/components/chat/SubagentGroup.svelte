@@ -28,10 +28,7 @@
   // background chip) is byte-for-byte the same as a regular tool call —
   // we deliberately do not invent new badges.
 
-  import { slide } from 'svelte/transition';
   import type { Snippet } from 'svelte';
-  import ChevronRight from 'lucide-svelte/icons/chevron-right';
-  import Icon from '../primitives/Icon.svelte';
   import ToolKindIcon from './ToolKindIcon.svelte';
   import CompletionBadge from './CompletionBadge.svelte';
   import { deriveCompletionStatus } from '../../utils/toolCompletionStatus';
@@ -39,6 +36,7 @@
   import { displayModelLabel } from '../../utils/modelLabels';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import type { SubagentGroupNode, TimelineNode } from '../../utils/subagentGrouping';
+  import TranscriptDisclosureHeader from './TranscriptDisclosureHeader.svelte';
 
   let {
     pane,
@@ -46,7 +44,7 @@
     depth = 0,
     renderNode,
   }: {
-    /** Pane for the per-parentId subagent expansion registry. When omitted,
+    /** Pane for the per-groupKey subagent expansion registry. When omitted,
      * falls back to local state — expand state then resets on virtua remount.
      * Real chat surfaces always pass `pane`. */
     pane?: ThreadPane;
@@ -80,26 +78,19 @@
   const indentRem = $derived(Math.min(depth, 3) * 0.75);
 
   // Collapsed by default so large subagents don't dominate the
-  // initial view. Persisted on the pane (keyed by parent.id) so the
+  // initial view. Persisted on the pane (keyed by group.groupKey) so the
   // user's expand state survives virtua's overscan eviction. Local
   // fallback used only when `pane` is omitted (unit tests).
   let localExpanded = $state(false);
   const expanded = $derived(
-    pane ? pane.isSubagentGroupExpanded(group.parent.id) : localExpanded,
+    pane ? pane.isSubagentGroupExpanded(group.groupKey) : localExpanded,
   );
 
   function toggle(): void {
     if (pane) {
-      pane.toggleSubagentGroupExpanded(group.parent.id);
+      pane.toggleSubagentGroupExpanded(group.groupKey);
     } else {
       localExpanded = !localExpanded;
-    }
-  }
-
-  function onKeyDown(evt: KeyboardEvent): void {
-    if (evt.key === ' ' || evt.key === 'Spacebar') {
-      evt.preventDefault();
-      toggle();
     }
   }
 
@@ -113,7 +104,7 @@
   // (`marshalToolMeta` for Claude; Codex's `enrichItemMeta` puts the
   // collab_agent extras under the same key).
   let inputObject = $derived.by<Record<string, unknown> | null>(() => {
-    const raw = payloadMeta?.input;
+    const raw = payloadMeta?.input ?? parentMeta?.input;
     if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
       return raw as Record<string, unknown>;
     }
@@ -211,9 +202,19 @@
     deriveCompletionStatus(parent, { meta: payloadMeta }),
   );
 
-  let entryCountLabel = $derived(
-    `${group.descendantCount} ${group.descendantCount === 1 ? 'entry' : 'entries'}`,
-  );
+  let memberCount = $derived(group.memberCount ?? 1);
+  let entryCountLabel = $derived.by(() => {
+    const agentLabel = `${memberCount} ${memberCount === 1 ? 'agent' : 'agents'}`;
+    if (group.descendantCount === 0) return agentLabel;
+    const entryLabel = `${group.descendantCount} ${group.descendantCount === 1 ? 'entry' : 'entries'}`;
+    return `${agentLabel} · ${entryLabel}`;
+  });
+  let entryCountAriaLabel = $derived.by(() => {
+    const agentLabel = `${memberCount} ${memberCount === 1 ? 'agent' : 'agents'}`;
+    if (group.descendantCount === 0) return `${agentLabel} represented in this group`;
+    const entryLabel = `${group.descendantCount} ${group.descendantCount === 1 ? 'timeline entry' : 'timeline entries'}`;
+    return `${agentLabel} and ${entryLabel} inside this subagent group`;
+  });
 </script>
 
 {#if showMarkerOnly}
@@ -232,22 +233,13 @@
     data-testid="subagent-group"
     data-tool-kind="robot"
   >
-    <button
-      type="button"
-      class="flex w-full items-center gap-2 rounded-[var(--radius-control)] px-1 py-1 text-left hover:bg-surface-2/20 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 transition-colors"
-      onclick={toggle}
-      onkeydown={onKeyDown}
-      aria-expanded={expanded}
-      aria-controls="subagent-group-{parent.id}"
-      data-testid="subagent-group-toggle"
+    <TranscriptDisclosureHeader
+      expanded={expanded}
+      controls={`subagent-group-${parent.id}`}
+      testId="subagent-group-toggle"
+      class="rounded-[var(--radius-control)] px-1 py-1 hover:bg-surface-2/20"
+      onToggle={() => toggle()}
     >
-      <span
-        class="flex size-3 shrink-0 items-center justify-center text-fg-subtle select-none transition-transform duration-150"
-        class:rotate-90={expanded}
-        aria-hidden="true"
-      >
-        <Icon icon={ChevronRight} size={12} strokeWidth={2} class="opacity-70" />
-      </span>
       <ToolKindIcon kind="robot" ariaLabel="Subagent" />
       <span
         class="text-[11px] font-medium text-fg-muted shrink-0 uppercase tracking-[0.04em]"
@@ -260,45 +252,46 @@
           {previewText}
         {/if}
       </span>
-      <span
-        class="shrink-0 text-[10px] text-fg-hint opacity-70 transition-opacity group-hover/tool:opacity-100"
-        data-testid="subagent-group-count"
-        aria-label="{group.descendantCount} timeline entries inside this subagent"
-      >
-        {entryCountLabel}
-      </span>
-      {#if runningLabel !== null}
-        {#if isBackgroundedLaunch}
-          <span
-            class="shrink-0 text-[20px] leading-none text-accent opacity-90 transition-opacity group-hover/tool:opacity-100"
-            data-testid="subagent-group-status"
-            data-status={parent.status}
-            title="Running in background"
-            aria-label="Backgrounded"
-          >
-            …
-          </span>
-        {:else}
-          <span
-            class="shrink-0 text-[10px] text-accent opacity-70 transition-opacity group-hover/tool:opacity-100"
-            data-testid="subagent-group-status"
-            data-status={parent.status}
-          >
-            {runningLabel}
-          </span>
+      {#snippet actions()}
+        <span
+          class="shrink-0 text-[10px] text-fg-hint opacity-70 transition-opacity group-hover/tool:opacity-100"
+          data-testid="subagent-group-count"
+          aria-label={entryCountAriaLabel}
+        >
+          {entryCountLabel}
+        </span>
+        {#if runningLabel !== null}
+          {#if isBackgroundedLaunch}
+            <span
+              class="shrink-0 text-[20px] leading-none text-accent opacity-90 transition-opacity group-hover/tool:opacity-100"
+              data-testid="subagent-group-status"
+              data-status={parent.status}
+              title="Running in background"
+              aria-label="Backgrounded"
+            >
+              …
+            </span>
+          {:else}
+            <span
+              class="shrink-0 text-[10px] text-accent opacity-70 transition-opacity group-hover/tool:opacity-100"
+              data-testid="subagent-group-status"
+              data-status={parent.status}
+            >
+              {runningLabel}
+            </span>
+          {/if}
+        {:else if completionStatus !== null}
+          <CompletionBadge
+            status={completionStatus}
+            class="opacity-80 transition-opacity group-hover/tool:opacity-100"
+          />
         {/if}
-      {:else if completionStatus !== null}
-        <CompletionBadge
-          status={completionStatus}
-          class="opacity-80 transition-opacity group-hover/tool:opacity-100"
-        />
-      {/if}
-    </button>
+      {/snippet}
+    </TranscriptDisclosureHeader>
 
     {#if expanded}
       <div
         id="subagent-group-{parent.id}"
-        transition:slide={{ duration: 150 }}
         class="ml-5 max-h-[20rem] overflow-y-auto border-l border-border-subtle bg-surface-0/35 px-3 py-2"
         role="region"
         aria-label="Subagent Timeline"

@@ -35,8 +35,7 @@
   const checkpoints = $derived(pane.diffPanel.checkpoints);
   // Chip strip shows the baseline (count=0) plus turns that produced
   // file changes. Empty turns add visual noise without giving the user
-  // anything to inspect — the inline TurnDiffBadge already follows the
-  // same rule via buildTurnDiffView's null-return.
+  // anything to inspect.
   const visibleCheckpoints = $derived(
     checkpoints.filter(
       (c) => c.checkpointTurnCount === 0 || (c.files?.length ?? 0) > 0,

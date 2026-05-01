@@ -6,6 +6,7 @@ import {
   isCommandToolName,
   splitShellWords,
   stripShellWrapper,
+  terminalInteractionLabelFromSummary,
 } from './commandDisplay';
 
 describe('commandDisplay', () => {
@@ -61,5 +62,27 @@ describe('commandDisplay', () => {
 
     expect(commandTextForItem(item, null)).toBe('sleep 10');
     expect(displayCommandForItem(item, null)).toBe('sleep 10');
+  });
+
+  it('extracts commands from terminal-interaction summaries without treating the base label as a command', () => {
+    const waited = makeItem({
+      kind: 'terminal_interaction',
+      summary: 'Waited for background terminal: Bash: sleep 1; echo done',
+    });
+    const interacted = makeItem({
+      kind: 'terminal_interaction',
+      summary: 'Interacted with background terminal: Bash: cat <<EOF',
+    });
+    const empty = makeItem({
+      kind: 'terminal_interaction',
+      summary: 'Waited for background terminal',
+    });
+
+    expect(commandTextForItem(waited, null)).toBe('sleep 1; echo done');
+    expect(displayCommandForItem(waited, null)).toBe('sleep 1; echo done');
+    expect(commandTextForItem(interacted, null)).toBe('cat <<EOF');
+    expect(terminalInteractionLabelFromSummary(interacted.summary)).toBe('Interacted with background terminal');
+    expect(commandTextForItem(empty, null)).toBe('');
+    expect(displayCommandForItem(empty, null)).toBe('');
   });
 });

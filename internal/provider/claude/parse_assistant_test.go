@@ -112,6 +112,87 @@ func TestParseAssistant_NoErrorFieldEmitsNoEventError(t *testing.T) {
 	}
 }
 
+func TestParseAssistant_InlineSubagentToolUseMeta(t *testing.T) {
+	cases := []struct {
+		name                 string
+		toolName             string
+		input                string
+		wantInline           bool
+		wantInlineGroupID    string
+		wantAssistantMessage string
+	}{
+		{
+			name:                 "foreground Agent",
+			toolName:             "Agent",
+			input:                `{"description":"inspect"}`,
+			wantInline:           true,
+			wantInlineGroupID:    "msg-inline",
+			wantAssistantMessage: "msg-inline",
+		},
+		{
+			name:                 "foreground Task",
+			toolName:             "Task",
+			input:                `{"description":"inspect"}`,
+			wantInline:           true,
+			wantInlineGroupID:    "msg-inline",
+			wantAssistantMessage: "msg-inline",
+		},
+		{
+			name:                 "background Agent",
+			toolName:             "Agent",
+			input:                `{"description":"inspect","run_in_background":true}`,
+			wantInline:           false,
+			wantAssistantMessage: "msg-inline",
+		},
+		{
+			name:                 "non Agent tool",
+			toolName:             "Read",
+			input:                `{"file_path":"foo.ts"}`,
+			wantInline:           false,
+			wantAssistantMessage: "msg-inline",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			line := []byte(`{"type":"assistant","message":{"id":"msg-inline","role":"assistant","content":[{"type":"tool_use","id":"tool-1","name":"` + tc.toolName + `","input":` + tc.input + `}]}}`)
+			events, err := ParseLine(testThreadProto, line)
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			var toolEvent provider.ProviderEvent
+			for _, e := range events {
+				if e.Kind == provider.EventToolStart {
+					toolEvent = e
+					break
+				}
+			}
+			if toolEvent.Kind != provider.EventToolStart {
+				t.Fatalf("expected EventToolStart, got %+v", events)
+			}
+			var meta map[string]any
+			if err := json.Unmarshal(toolEvent.Meta, &meta); err != nil {
+				t.Fatalf("meta unmarshal: %v", err)
+			}
+			if got := meta["assistant_message_id"]; got != tc.wantAssistantMessage {
+				t.Fatalf("assistant_message_id: got %v, want %q", got, tc.wantAssistantMessage)
+			}
+			if got := meta["is_inline_subagent"] == true; got != tc.wantInline {
+				t.Fatalf("is_inline_subagent: got %v, want %v (meta=%v)", got, tc.wantInline, meta)
+			}
+			if tc.wantInlineGroupID == "" {
+				if _, ok := meta["inline_subagent_group_id"]; ok {
+					t.Fatalf("inline_subagent_group_id present for non-inline tool: %v", meta)
+				}
+				return
+			}
+			if got := meta["inline_subagent_group_id"]; got != tc.wantInlineGroupID {
+				t.Fatalf("inline_subagent_group_id: got %v, want %q", got, tc.wantInlineGroupID)
+			}
+		})
+	}
+}
+
 // TestParseAssistant_SubagentErrorCarriesParentToolUseID — when an
 // assistant.error fires inside a subagent envelope (parent_tool_use_id
 // set), the EventError must propagate the parent_tool_use_id so the

@@ -1,8 +1,5 @@
 <script lang="ts">
   import { untrack } from 'svelte';
-  import { slide } from 'svelte/transition';
-  import ChevronRight from 'lucide-svelte/icons/chevron-right';
-  import Icon from '../primitives/Icon.svelte';
   import CopyFooter from './CopyFooter.svelte';
   import CompletionBadge from './CompletionBadge.svelte';
   import type { Item } from '../../types/models';
@@ -20,6 +17,7 @@
   } from './payloadExpansion.svelte';
   import AnsiText from './AnsiText.svelte';
   import EditorLink from '../common/EditorLink.svelte';
+  import TranscriptDisclosureHeader from './TranscriptDisclosureHeader.svelte';
 
   let { pane, item }: { pane?: ThreadPane; item: Item } = $props();
 
@@ -130,24 +128,9 @@
     await expansion.toggle();
   }
 
-  function handleKeydown(evt: KeyboardEvent) {
-    if (evt.key === 'Enter' || evt.key === ' ') {
-      evt.preventDefault();
-      toggle();
-    }
-  }
 </script>
 
-{#snippet headerContent(showChevron: boolean)}
-  {#if showChevron}
-    <span
-      class="flex size-3 shrink-0 items-center justify-center text-fg-subtle select-none transition-transform duration-150"
-      class:rotate-90={expansion.expanded}
-      aria-hidden="true"
-    >
-      <Icon icon={ChevronRight} size={12} strokeWidth={2} class="opacity-70" />
-    </span>
-  {/if}
+{#snippet headerContent()}
   <ToolKindIcon kind={classification.icon} ariaLabel={classification.label} />
   <span class="text-[11px] font-medium text-fg-muted shrink-0 uppercase tracking-[0.04em]" data-testid="tool-call-card-label">
     {classification.label}
@@ -155,6 +138,9 @@
   <span class="min-w-0 flex-1 truncate text-[12px] text-fg-muted/75" data-testid="tool-call-card-preview">
     {inputPreview}
   </span>
+{/snippet}
+
+{#snippet headerActions()}
   {#if previewDecoded.path}
     <EditorLink
       path={previewDecoded.path.path}
@@ -215,31 +201,23 @@
   data-testid="tool-call-card"
   data-tool-kind={classification.icon}
 >
-  {#if hasExpandableBody}
-    <button
-      type="button"
-      class="flex w-full items-center gap-2 rounded-[var(--radius-control)] px-1 py-1 text-left hover:bg-surface-2/20 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 transition-colors"
-      onclick={toggle}
-      onkeydown={handleKeydown}
-      aria-expanded={expansion.expanded}
-      aria-controls="tool-call-card-body-{item.id}"
-      data-testid="tool-call-card-toggle"
-    >
-      {@render headerContent(true)}
-    </button>
-  {:else}
-    <div
-      class="flex w-full items-center gap-2 rounded-[var(--radius-control)] px-1 py-1 text-left"
-      data-testid="tool-call-card-row"
-    >
-      {@render headerContent(false)}
-    </div>
-  {/if}
+  <TranscriptDisclosureHeader
+    expanded={expansion.expanded}
+    expandable={hasExpandableBody}
+    controls={hasExpandableBody ? `tool-call-card-body-${item.id}` : undefined}
+    testId="tool-call-card-toggle"
+    class="rounded-[var(--radius-control)] px-1 py-1 {hasExpandableBody ? 'hover:bg-surface-2/20' : ''}"
+    onToggle={() => toggle()}
+  >
+    {@render headerContent()}
+    {#snippet actions()}
+      {@render headerActions()}
+    {/snippet}
+  </TranscriptDisclosureHeader>
 
   {#if hasExpandableBody && expansion.expanded}
     <div
       id="tool-call-card-body-{item.id}"
-      transition:slide={{ duration: 150 }}
       class="ml-5 border-l border-border-subtle bg-surface-0/35"
       data-testid="tool-call-card-body"
     >

@@ -112,7 +112,7 @@ type Router struct {
 	// rounds when Claude's CLI synthesizes a `type:"user"` envelope from
 	// a task_notification and the model issues another response. The
 	// per-round cadence is what drives the working indicator, Stop
-	// button, completion divider, and composer-block state — all of
+	// button, and composer-block state — all of
 	// which want "model is engaged right now" semantics rather than
 	// "user-typed prompt is in flight." Key = threadID. Cleared by
 	// takeOpenRound (every wire complete) and CleanupThread.

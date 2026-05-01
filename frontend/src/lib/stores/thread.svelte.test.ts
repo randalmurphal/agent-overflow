@@ -1,9 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import {
-  createThreadPane,
-  resetExpansionBudgetForTest,
-  setExpansionBudgetForTest,
-} from './thread.svelte';
+import { createThreadPane } from './thread.svelte';
 import { getActiveTurn } from './threadStatuses.svelte';
 import type { Item } from '../types/models';
 import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
@@ -801,150 +797,14 @@ describe('createThreadPane', () => {
     expect(preview).toHaveBeenCalledTimes(2);
   });
 
-  describe('expansion-state LRU budget', () => {
-    afterEach(() => {
-      resetExpansionBudgetForTest();
-    });
-
-    function stubFixedSizePayload(size: number): void {
-      const data = 'x'.repeat(size);
-      setBindingMock('GetPayloadPreview', async () => ({
-        data,
-        nextOffset: data.length,
-        totalSize: data.length,
-        isComplete: true,
-      }));
-    }
-
-    it('evicts the oldest expanded handle when an expand pushes total over budget', async () => {
-      // Why: long sessions can accumulate many expanded payloads. Without an
-      // upper bound, every toggled tool_call holds its loaded chunks until
-      // thread switch — climbs unbounded. The pane caps total displayData
-      // bytes and evicts the LRU-oldest expansion to make room for the
-      // newly-toggled one; the user can re-expand the evicted handle at
-      // any time and a fresh fetch repopulates.
-      setExpansionBudgetForTest(150); // tiny so two 100-byte payloads is over
-      stubFixedSizePayload(100);
-
-      const pane = createThreadPane();
-      pane.upsertItem(makeItem({ id: 'tool:0:0', kind: 'tool_call', payloadId: 'p-1' }));
-      pane.upsertItem(makeItem({ id: 'tool:0:1', kind: 'tool_call', payloadId: 'p-2' }));
-
-      const first = pane.expansionStateFor(pane.items[0]!);
-      const second = pane.expansionStateFor(pane.items[1]!);
-
-      await first.expand();
-      expect(first.expanded).toBe(true);
-      expect(first.displayData?.length).toBe(100);
-
-      // Expanding the second pushes total past 150 bytes; the first is the
-      // least-recently-toggled, so it gets collapsed to free its chunks.
-      // The second is protected because it's the active expansion (skipKey).
-      await second.expand();
-      expect(second.expanded).toBe(true);
-      expect(second.displayData?.length).toBe(100);
-      expect(first.expanded).toBe(false);
-      expect(first.displayData).toBeNull();
-    });
-
-    it('re-expanding an evicted handle re-fetches and repopulates displayData', async () => {
-      // The user-visible promise of the LRU: an eviction is recoverable.
-      // Re-expanding a handle that was collapsed to free its chunks must
-      // run a fresh fetch and land bytes again.
-      setExpansionBudgetForTest(150);
-      const fetched = setBindingMock('GetPayloadPreview', async () => ({
-        data: 'x'.repeat(100),
-        nextOffset: 100,
-        totalSize: 100,
-        isComplete: true,
-      }));
-
-      const pane = createThreadPane();
-      pane.upsertItem(makeItem({ id: 'tool:0:0', kind: 'tool_call', payloadId: 'p-1' }));
-      pane.upsertItem(makeItem({ id: 'tool:0:1', kind: 'tool_call', payloadId: 'p-2' }));
-      const first = pane.expansionStateFor(pane.items[0]!);
-      const second = pane.expansionStateFor(pane.items[1]!);
-
-      await first.expand();
-      await second.expand();
-      expect(first.expanded).toBe(false); // evicted
-
-      const callsBeforeReExpand = (fetched as ReturnType<typeof vi.fn>).mock.calls.length;
-      await first.expand();
-      expect(first.expanded).toBe(true);
-      expect(first.displayData?.length).toBe(100);
-      expect((fetched as ReturnType<typeof vi.fn>).mock.calls.length).toBe(callsBeforeReExpand + 1);
-    });
-
-    it('collapse() does not touch the LRU (only toggle/expand/showFull do)', async () => {
-      // Pin: a future refactor that accidentally adds touchExpansion() to
-      // collapse() would change LRU behavior in a subtle way (manual
-      // collapse would mark the handle as recently-used and protect it
-      // from later automatic eviction). Lock that contract here.
-      setExpansionBudgetForTest(150);
-      stubFixedSizePayload(100);
-
-      const pane = createThreadPane();
-      pane.upsertItem(makeItem({ id: 'tool:0:0', kind: 'tool_call', payloadId: 'p-1' }));
-      pane.upsertItem(makeItem({ id: 'tool:0:1', kind: 'tool_call', payloadId: 'p-2' }));
-      pane.upsertItem(makeItem({ id: 'tool:0:2', kind: 'tool_call', payloadId: 'p-3' }));
-      const first = pane.expansionStateFor(pane.items[0]!);
-      const second = pane.expansionStateFor(pane.items[1]!);
-      const third = pane.expansionStateFor(pane.items[2]!);
-
-      // Order of toggles establishes the LRU: first oldest, third newest.
-      await first.expand();
-      await second.expand(); // evicts first; map is [first(empty), third(?), second]
-      // Wait — with 3 entries Map order after expansions: [first, third, second]
-      // after `first.expand()` then `second.expand()` evicting first.
-      // Let's manually collapse first to a known empty state.
-      first.collapse(); // explicit collapse — should NOT touch LRU
-      // Now expand third — total goes to 200 (second + third); over 150.
-      // Eviction iterates from oldest: first (empty, skipped), then second.
-      // second collapses; total = 100. Done.
-      await third.expand();
-      expect(third.expanded).toBe(true);
-      expect(second.expanded).toBe(false);
-      // If collapse() had touched the LRU, first would have moved to tail
-      // and second would have been the oldest non-skipped — same result
-      // here, so this test pins by checking `second` was specifically the
-      // eviction target (not third or first).
-      expect(third.displayData?.length).toBe(100);
-    });
-
-    it('budget of 0 evicts everything except the active expansion', async () => {
-      // Edge case: the skipKey must always survive the budget pass even
-      // when the cap is so tight that nothing else fits. Otherwise the
-      // user's most-recent click would silently lose its payload.
-      setExpansionBudgetForTest(0);
-      stubFixedSizePayload(50);
-
-      const pane = createThreadPane();
-      pane.upsertItem(makeItem({ id: 'tool:0:0', kind: 'tool_call', payloadId: 'p-1' }));
-      pane.upsertItem(makeItem({ id: 'tool:0:1', kind: 'tool_call', payloadId: 'p-2' }));
-      const first = pane.expansionStateFor(pane.items[0]!);
-      const second = pane.expansionStateFor(pane.items[1]!);
-
-      await first.expand();
-      expect(first.expanded).toBe(true);
-
-      await second.expand();
-      // first should have been collapsed (oldest, not skipped).
-      expect(first.expanded).toBe(false);
-      // second is the active expansion; survives the budget pass.
-      expect(second.expanded).toBe(true);
-      expect(second.displayData?.length).toBe(50);
-    });
-  });
-
-  it('subagent group expansion state is keyed by parent.id and survives lookup', () => {
+  it('subagent group expansion state is keyed by groupKey and survives lookup', () => {
     const pane = createThreadPane();
-    expect(pane.isSubagentGroupExpanded('parent-1')).toBe(false);
-    pane.toggleSubagentGroupExpanded('parent-1');
-    expect(pane.isSubagentGroupExpanded('parent-1')).toBe(true);
-    expect(pane.isSubagentGroupExpanded('parent-2')).toBe(false);
-    pane.toggleSubagentGroupExpanded('parent-1');
-    expect(pane.isSubagentGroupExpanded('parent-1')).toBe(false);
+    expect(pane.isSubagentGroupExpanded('group-1')).toBe(false);
+    pane.toggleSubagentGroupExpanded('group-1');
+    expect(pane.isSubagentGroupExpanded('group-1')).toBe(true);
+    expect(pane.isSubagentGroupExpanded('group-2')).toBe(false);
+    pane.toggleSubagentGroupExpanded('group-1');
+    expect(pane.isSubagentGroupExpanded('group-1')).toBe(false);
   });
 
   it('attachmentCacheFor returns a stable view per itemId; survives lookup', () => {
@@ -1093,176 +953,6 @@ describe('createThreadPane', () => {
     expect(pane.pendingApprovals).toEqual([]);
     expect(pane.contextWindow).toBeNull();
     expect(pane.generalError).toBeNull();
-    expect(pane.turnDiffViews.size).toBe(0);
-  });
-
-  it('upsertItem builds turnDiffViews incrementally per affected turn', () => {
-    const pane = createThreadPane();
-
-    // Non-diff items don't seed a turn entry.
-    pane.upsertItem(makeItem({ id: 'user:0', turnIndex: 0, kind: 'user_text', summary: 'hi' }));
-    expect(pane.turnDiffViews.size).toBe(0);
-
-    pane.upsertItem(makeItem({
-      id: 'diff-0',
-      turnIndex: 0,
-      itemIndex: 1,
-      kind: 'tool_call',
-      payloadId: 'p0',
-      payloadKind: 'diff',
-      payloadMeta: JSON.stringify({
-        filePath: 'a.ts',
-        changeKind: 'modified',
-        insertions: 3,
-        deletions: 1,
-        preview: '',
-      }),
-    }));
-
-    expect(pane.turnDiffViews.get(0)).toEqual({
-      files: [{
-        path: 'a.ts',
-        insertions: 3,
-        deletions: 1,
-        kind: 'modified',
-        payloadId: 'p0',
-      }],
-      summary: { insertions: 3, deletions: 1, fileCount: 1 },
-    });
-
-    // Turn 1 entry is independent.
-    pane.upsertItem(makeItem({
-      id: 'tool-1',
-      turnIndex: 1,
-      itemIndex: 0,
-      kind: 'tool_call',
-      payloadId: 'p1',
-      payloadKind: 'tool_result',
-      payloadMeta: JSON.stringify({
-        inlineDiff: {
-          files: [
-            { path: 'b.ts', insertions: 5, deletions: 2, kind: 'modified' },
-          ],
-        },
-      }),
-    }));
-
-    expect(pane.turnDiffViews.get(1)?.summary).toEqual({
-      insertions: 5,
-      deletions: 2,
-      fileCount: 1,
-    });
-    // Turn 0 untouched by turn 1's upsert.
-    expect(pane.turnDiffViews.get(0)?.summary).toEqual({
-      insertions: 3,
-      deletions: 1,
-      fileCount: 1,
-    });
-  });
-
-  it('upsertItem refreshes the affected turn on replace', () => {
-    const pane = createThreadPane();
-
-    pane.upsertItem(makeItem({
-      id: 'diff-0',
-      turnIndex: 0,
-      kind: 'tool_call',
-      payloadId: 'p0',
-      payloadKind: 'diff',
-      payloadMeta: JSON.stringify({
-        filePath: 'a.ts',
-        changeKind: 'modified',
-        insertions: 1,
-        deletions: 0,
-        preview: '',
-      }),
-    }));
-    expect(pane.turnDiffViews.get(0)?.summary.insertions).toBe(1);
-
-    // Replace the same id with a new payload meta (e.g. completion swap).
-    pane.upsertItem(makeItem({
-      id: 'diff-0',
-      turnIndex: 0,
-      kind: 'tool_call',
-      payloadId: 'p0',
-      payloadKind: 'diff',
-      payloadMeta: JSON.stringify({
-        filePath: 'a.ts',
-        changeKind: 'modified',
-        insertions: 9,
-        deletions: 2,
-        preview: '',
-      }),
-    }));
-    expect(pane.turnDiffViews.get(0)?.summary).toEqual({
-      insertions: 9,
-      deletions: 2,
-      fileCount: 1,
-    });
-  });
-
-  it('clears the turnDiffViews entry when replace removes the turn\'s last diff', () => {
-    const pane = createThreadPane();
-
-    pane.upsertItem(makeItem({
-      id: 'diff-0',
-      turnIndex: 0,
-      kind: 'tool_call',
-      payloadId: 'p0',
-      payloadKind: 'diff',
-      payloadMeta: JSON.stringify({
-        filePath: 'a.ts',
-        changeKind: 'modified',
-        insertions: 3,
-        deletions: 1,
-        preview: '',
-      }),
-    }));
-    expect(pane.turnDiffViews.has(0)).toBe(true);
-
-    // Replace the diff with a plain non-diff item under the same id.
-    pane.upsertItem(makeItem({
-      id: 'diff-0',
-      turnIndex: 0,
-      kind: 'assistant_text',
-      summary: 'changed shape',
-    }));
-
-    expect(pane.turnDiffViews.has(0)).toBe(false);
-  });
-
-  it('switchThread seeds turnDiffViews from the loaded items', async () => {
-    const pane = createThreadPane();
-    const items = [
-      makeItem({
-        id: 'tool-0',
-        threadId: 'thread-a',
-        turnIndex: 0,
-        kind: 'tool_call',
-        payloadId: 'p0',
-        payloadKind: 'diff',
-        payloadMeta: JSON.stringify({
-          filePath: 'a.ts',
-          changeKind: 'modified',
-          insertions: 2,
-          deletions: 0,
-          preview: '',
-        }),
-      }),
-    ];
-    setBindingMock('ListRecentThreadItems', async () => ({
-      items,
-      oldestTurnIndex: 0,
-      hasMore: false,
-    }));
-
-    await pane.switchThread(makeThread({ id: 'thread-a' }));
-
-    expect(pane.turnDiffViews.get(0)?.summary).toEqual({
-      insertions: 2,
-      deletions: 0,
-      fileCount: 1,
-    });
   });
 
   describe('windowed history', () => {
@@ -2017,8 +1707,8 @@ describe('createThreadPane', () => {
     // Not lit up.
     expect(getActiveTurn(pane.threadId)).toBeNull();
     expect(getActiveTurn(pane.threadId) !== null).toBe(false);
-    // But the prior settled turn IS rehydrated so the completion divider
-    // can still render.
+    // But the prior settled turn IS rehydrated for read-state and trace/debug
+    // consumers.
     expect(pane.latestSettledTurn?.turnId).toBe('turn-settled');
   });
 

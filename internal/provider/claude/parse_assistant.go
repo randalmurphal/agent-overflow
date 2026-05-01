@@ -133,7 +133,7 @@ func (p *Parser) parseAssistant(threadID string, raw map[string]json.RawMessage,
 			// twice) after the closure gate started actually rendering
 			// their content.
 		case "tool_use":
-			events = p.appendToolUseEvent(events, threadID, parentToolUseID, now, block)
+			events = p.appendToolUseEvent(events, threadID, parentToolUseID, msg.ID, now, block)
 		case "thinking":
 			// Same as text: streamed via stream_event thinking_delta.
 		}
@@ -246,7 +246,7 @@ func appendTextEvent(
 // timeline tool-call row is the persisted historical record.
 func (p *Parser) appendToolUseEvent(
 	events []provider.ProviderEvent,
-	threadID, parentToolUseID string,
+	threadID, parentToolUseID, assistantMessageID string,
 	now time.Time,
 	block assistantContentBlock,
 ) []provider.ProviderEvent {
@@ -262,7 +262,7 @@ func (p *Parser) appendToolUseEvent(
 		p.markBackground(block.ID)
 	}
 
-	meta := marshalToolMeta(block.Name, block.Input, isBackground)
+	meta := marshalToolMeta(block.Name, block.Input, isBackground, assistantMessageID)
 	return append(events, provider.ProviderEvent{
 		Kind:            provider.EventToolStart,
 		ThreadID:        threadID,
@@ -499,13 +499,22 @@ func hasRunInBackground(input json.RawMessage) bool {
 // `is_background` when false so pipelines downstream don't have to
 // distinguish "explicitly foreground" from "unknown" — absence is the
 // default.
-func marshalToolMeta(toolName string, input json.RawMessage, isBackground bool) json.RawMessage {
+func marshalToolMeta(toolName string, input json.RawMessage, isBackground bool, assistantMessageID string) json.RawMessage {
 	fields := map[string]any{
 		"toolName": toolName,
 		"input":    input,
 	}
 	if isBackground {
 		fields["is_background"] = true
+	}
+	if assistantMessageID != "" {
+		fields["assistant_message_id"] = assistantMessageID
+	}
+	if !isBackground && (toolName == "Agent" || toolName == "Task") {
+		fields["is_inline_subagent"] = true
+		if assistantMessageID != "" {
+			fields["inline_subagent_group_id"] = assistantMessageID
+		}
 	}
 	out, _ := json.Marshal(fields)
 	return out

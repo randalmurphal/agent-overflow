@@ -47,11 +47,12 @@ describe('<AskUserQuestionCard>', () => {
       }),
     });
 
-    const { getByTestId } = render(AskUserQuestionCard, { props: { item } });
+    const { getByRole, getByTestId } = render(AskUserQuestionCard, { props: { item } });
 
     expect(getByTestId('ask-user-question-title').textContent).toContain(
       'Question: Which framework do you want?',
     );
+    expect(getByRole('button', { name: /Which framework do you want\?/ })).toBeInTheDocument();
   });
 
   it('summarises multi-question prompts as "Question: N questions"', () => {
