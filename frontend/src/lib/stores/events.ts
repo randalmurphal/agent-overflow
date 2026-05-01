@@ -15,6 +15,7 @@ import type {
 import type { Item, Thread } from '../types/models';
 import type { DesignArtifact, DesignChoiceResolved, DesignOptionsRequest } from '../types/design';
 import { transportGapChannel } from '../transport/wsClient';
+import { tryDrainNextQueued } from '../components/composer/composerSend';
 import { getAllPanes } from './panes.svelte';
 import { recordProviderStatus } from './providerStatus.svelte';
 import { addToast } from './toast.svelte';
@@ -615,8 +616,7 @@ function applyTurnStarted(evt: TurnStartedEvent): void {
 /**
  * Route `provider:turn_completed` to the matching pane. Clears the
  * global active-turn registry entry (threadStatuses) and writes the
- * settled projection so (Wave 3) the completion divider can render
- * above the final assistant message.
+ * settled projection for read-state and trace/debug consumers.
  *
  * `tokenUsage` arrives as a JSON-encoded string on the wire because
  * triage round-trips it through the DB's `token_usage_json` column. We
@@ -650,6 +650,15 @@ function applyTurnCompleted(evt: TurnCompletedEvent): void {
     pane.settleTurn(settled);
   }
   syncLatestTurnCompleted(evt);
+  // Drain the next queued user message — uniform across success, error,
+  // and abort. Stop-with-queue ("user hit Esc with messages queued") falls
+  // out of this rule: InterruptTurn → backend emits an aborted
+  // `turn_completed` → drain fires → first queued item is sent. No
+  // special-case wiring. Both reference UIs trigger drain at the same
+  // boundary (Claude Code's `useQueueProcessor` flips on `!isQueryActive`;
+  // Codex's `maybe_send_next_queued_input` is called from every
+  // state-clearing transition).
+  void tryDrainNextQueued(evt.threadId);
 }
 
 /**

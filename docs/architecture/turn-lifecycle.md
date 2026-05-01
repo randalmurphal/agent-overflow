@@ -292,7 +292,7 @@ Two cadences run in parallel:
 
 | Cadence | Driver | Granularity | What it controls |
 |---|---|---|---|
-| Frontend visibility | `currentRoundID` / `setOpenRound` / `takeOpenRound` | Per wire round | `provider:turn_started`/`provider:turn_completed` emissions — working indicator, Stop button, completion divider, composer block |
+| Frontend visibility | `currentRoundID` / `setOpenRound` / `takeOpenRound` | Per wire round | `provider:turn_started`/`provider:turn_completed` emissions — working indicator, Stop button, composer block, read-state projection |
 | Persistence | `markTurnSettled` / `settleTurnRow` | Per logical turn (turnIndex) | `turns` row UPDATE, checkpoint capture, streaming-item settlement |
 
 Round entry points:
@@ -340,9 +340,8 @@ The `turns` row carries:
 - `stop_reason` (text: `end_turn` / `max_tokens` / `tool_use` /
   `stop_sequence` / `refusal` / `error` / `interrupted`)
 - `assistant_message_id` (text, nullable) — the final assistant_text
-  item id, used by the frontend to render the completion divider.
-- `token_usage_json` — snapshot of `usage` for the "Worked for 12s"
-  label with token counts.
+  item id for the settled-turn projection.
+- `token_usage_json` — snapshot of `usage` for trace/debug surfaces.
 - `error_message` — populated when `stop_reason` indicates error.
 
 ### Crash behavior
@@ -413,7 +412,8 @@ interface SettledTurn {
 // chat working indicator AND the sidebar pill read from here.
 getActiveTurn(threadId): ActiveTurn | null
 
-// Per-pane. Drives the completion divider for the visible thread.
+// Per-pane. Carries the latest settled-turn projection for read-state
+// and trace/debug consumers.
 pane.latestSettledTurn: SettledTurn | null
 ```
 
@@ -426,11 +426,11 @@ This avoids the bug where switching threads cleared the per-pane
 the chat working indicator would go dark on a thread the backend
 was actively working on.
 
-`aborted` and `errorMessage` on `SettledTurn` are live-read by the
-completion-divider label precedence — see
-`frontend/src/lib/components/chat/CompletionDivider.svelte` (the
-`baseLabel` derivation picks `"Interrupted"` > `"Error"` > `"Response"`
-based on these fields).
+`aborted` and `errorMessage` on `SettledTurn` remain part of the
+settled-turn projection for read-state and trace/debug consumers. The
+chat transcript no longer renders a settled-turn divider from this state;
+the visible "Response" divider is structural and appears when assistant
+text first follows tool activity in the same turn.
 
 ### `isTurnActive` replacement
 
@@ -457,6 +457,90 @@ active." When the user switches AWAY from a thread with a live
 turn and back, the indicator returns because the global registry
 held the record across the switch — nothing in pane lifecycle
 clears it.
+
+### Per-thread send queue
+
+The composer is always-typeable. When the user submits a message
+mid-round (`getActiveTurn(threadId) !== null`), it lands in the
+per-thread send queue (`frontend/src/lib/stores/sendQueue.svelte.ts`)
+instead of dispatching `SendMessageWithOptions` immediately. The
+queue is in-memory only (`SvelteMap<threadId, QueueItem[]>`),
+keyed identically to the global active-turn registry, and survives
+thread switches.
+
+`QueueItem` captures everything needed to dispatch the message
+later: `message`, full `attachments` (not ids — click-to-edit
+needs to restore them into the composer without a backend
+round-trip), `terminalChips`, and plan-revision metadata
+(`sourceProposedPlan`, `revisionSourceProposedPlan`,
+`revisionSourceCommentIds`).
+
+**Drain trigger.** Every `provider:turn_completed` listener fires
+`tryDrainNextQueued(threadId)` after the existing
+`projectTurnCompleted` call. Drain is uniform across cause —
+success, error, or aborted — matching both reference UIs:
+
+- Claude Code's `useQueueProcessor` flips on every `!isQueryActive`
+  transition (`src/hooks/useQueueProcessor.ts`).
+- Codex's `maybe_send_next_queued_input` is called from 11 sites
+  (`codex-rs/tui/src/chatwidget.rs`), every state-clearing
+  transition.
+
+Stop-with-queue ("user hits Esc with messages queued") falls out of
+the same uniform rule: `InterruptTurn` → backend emits an aborted
+`turn_completed` → drain fires → first queued item is dispatched as
+the next user message. No special-case wiring.
+
+**Drain sequence.**
+
+1. `provider:turn_completed` arrives → `activeTurn` cleared.
+2. `popFront(threadId)` → head item lifted; if undefined, return.
+3. `projectSendStarted(threadId)` → `pendingSendThreads.add` —
+   the working-indicator bridge predicate keeps the spinner up
+   across the RPC roundtrip (see below).
+4. `await SendMessageWithOptions(...)` — typically 50–200ms.
+5. Success → backend emits `provider:turn_started` → existing
+   `projectTurnStarted` handler clears `pendingSendThreads`.
+6. Failure → `enqueueAtFront(threadId, item)` restores the popped
+   item, `clearPendingSend(threadId)` collapses the bridge, the
+   error fans out to matching panes via `pane.setGeneralError`.
+
+**Working-indicator bridge.** Without intervention,
+`activeTurn` would be null between steps (1) and (5). To prevent
+the spinner from flickering for ~200ms, the working indicator's
+`isWorking` predicate is
+
+```ts
+isWorking = activeTurn !== null
+  || hasQueueItems(threadId)
+  || hasPendingSend(threadId);
+```
+
+The elapsed-counter span is gated separately on `activeTurn !== null`
+so the bridge moment renders just `Working` (no `for 0s` flash);
+the next round's `provider:turn_started` arms a fresh `startedAt`
+and the counter ticks from `0s`.
+
+**Approval gate.** During a pending tool approval, the wire round
+hasn't completed (backend's `currentRoundID` stays set). No
+`turn_completed` fires until approval resolves. Drain naturally
+waits — there's no special-case approval-aware drain code.
+
+**Stdin race (Claude only, accepted).** When round N ends with
+both a queued user message AND a pending bg-subagent task
+notification: our `tryDrainNextQueued` writes the user message
+to stdin while the CLI may auto-inject the task_notification.
+Whichever reaches the CLI input handler first becomes round N+1.
+Claude Code's source resolves this deterministically via
+in-process priority (user `next` beats notification `later`); we
+cannot — stdin write order is non-deterministic. Accepted: the
+model handles both messages in arrival order, ordering is
+non-deterministic but the timeline reflects what the agent
+actually saw, not a presumed order.
+
+**Cleanup.** `clearThreadStatus(threadId)` (called when a thread
+is archived/deleted) calls `clearForThread` on the queue. Tests
+should call `resetSendQueueForTest()` in `beforeEach`.
 
 ## Error routing
 
@@ -507,7 +591,7 @@ counterpart "retry succeeded" wire signal from either provider.
 | Component | State read | Render rule |
 |---|---|---|
 | `ChatWorkingIndicator` | `pane.activeTurn.startedAt` | Self-ticking timer, appears iff `activeTurn !== null`. |
-| `MessageTimeline` (completion divider) | `pane.latestSettledTurn.{assistantMessageId, tokenUsage}` | Separator rendered before the item whose id matches `assistantMessageId`. Label `"Response • Worked for Xs · Yk tokens"`. |
+| `MessageTimeline` (response divider) | Ordered timeline nodes | Separator rendered before assistant text when tool activity immediately precedes the response in the same turn. |
 | `ToolCallCard` (backgrounded badge) | `item.isBackground && item.status === 'running'` | Renders a `…` status badge on the inline launch row. |
 | `BackgroundTaskTray` | `ListLiveBackgroundTasks(threadId)` | Shows running launches, pending Codex unifiedExec commands, and recent completion siblings; drops completed pairs on retention. |
 

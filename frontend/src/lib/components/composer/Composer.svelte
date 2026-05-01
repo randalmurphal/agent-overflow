@@ -30,6 +30,7 @@
     retainProposedPlanEventListener,
   } from '../../stores/proposedPlans.svelte';
   import { addToast } from '../../stores/toast.svelte';
+  import { enqueue as enqueueQueuedMessage } from '../../stores/sendQueue.svelte';
   import { getActiveTurn } from '../../stores/threadStatuses.svelte';
   import type { ExpandedImagePreview } from '../../utils/attachmentPreview.svelte';
   import { implementProposedPlan, implementProposedPlanInNewThread } from '../../utils/proposedPlanImplementation';
@@ -76,20 +77,21 @@
   });
 
   let isDisabled = $derived(!pane.threadId);
-  // Mid-round guard: block sends while a wire round is in flight (the
-  // model is currently streaming text/tool work). The user must press
-  // Interrupt first. Editing and uploading stay enabled so the next
-  // message can be prepared in advance.
+  // Mid-round signal: a wire round is currently in flight (the model
+  // is streaming text/tool work). The composer stays typeable during
+  // a round and Send routes through the per-thread send queue —
+  // matches both reference UIs (Claude Code's `commandQueue`, Codex's
+  // `VecDeque<QueuedUserMessage>`). Drain fires on the next
+  // `provider:turn_completed` (uniform across success, error, abort).
   //
   // BETWEEN rounds — Claude's multi-result-per-turn cascade emits the
   // first `result` envelope, then the model is idle while a backgrounded
   // task hasn't yet produced its notification — `getActiveTurn` returns
-  // null and `isTurnActive` is false, so the composer is enabled. The
-  // user can send a follow-up prompt during the gap, and the next round
-  // (provoked by the bg task notification or the user's new prompt)
-  // re-flips this on. This matches Claude Code's actual behaviour and
-  // is the canonical wire-round emission contract documented in
-  // internal/triage/AGENTS.md "Wire-round vs logical-turn".
+  // null and `isTurnActive` is false, so the composer dispatches
+  // directly. The next round (provoked by the bg task notification or
+  // the user's new prompt) re-flips this on. This matches Claude Code's
+  // actual behaviour and is the canonical wire-round emission contract
+  // documented in internal/triage/AGENTS.md "Wire-round vs logical-turn".
   let isTurnActive = $derived(getActiveTurn(pane.threadId) !== null);
   let blockingApprovals = $derived(pane.pendingApprovals);
   let activeApproval = $derived(blockingApprovals[0]);
@@ -126,13 +128,21 @@
   let hasDraftPlanComments = $derived(latestPlanSource !== null && latestPlanDraftComments.length > 0);
   let hasPlanImplementAction = $derived(Boolean(latestPlanSource) && !hasDraftContent && !hasDraftPlanComments);
   let hasPlanCommentAction = $derived(Boolean(latestPlanSource) && hasDraftPlanComments);
+  // Drop `!isTurnActive` for hasDraftContent and plan-comment paths —
+  // those are queueable mid-round. Implement-only (no draft, no
+  // comments) still requires an idle turn because it kicks off the
+  // implementProposedPlan helper which does work beyond a single
+  // SendMessage RPC; queueing it is a future enhancement.
   let canSend = $derived(
     !isDisabled &&
-      !isTurnActive &&
       !sending &&
       !hasBlockingPrompt &&
       !hasUserInputPrompt &&
-      (hasDraftContent || hasPlanImplementAction || hasPlanCommentAction),
+      (
+        hasDraftContent
+        || hasPlanCommentAction
+        || (!isTurnActive && hasPlanImplementAction)
+      ),
   );
   let sendLabel = $derived.by(() => {
     if (!latestPlanSource || isTurnActive) return undefined;
@@ -156,15 +166,6 @@
     if (latestPlanSource) return 'Add feedback to refine the plan, or leave blank to implement it';
     return 'Send a message… (Shift+Enter for newline, @ to mention a file)';
   });
-  // Polite aria-live error raised when the user hits Enter during an active
-  // turn. Cleared when the turn ends or the user types a new character so it
-  // doesn't re-announce on every subsequent keystroke.
-  let midTurnBlockMessage: string = $state('');
-
-  $effect(() => {
-    if (!isTurnActive) midTurnBlockMessage = '';
-  });
-
   $effect(() => {
     activeUserInput?.requestId;
     userInputCustomAnswer = '';
@@ -207,7 +208,6 @@
 
   async function send(includePlanComments = true) {
     if (!pane.threadId || !canSend) return;
-    midTurnBlockMessage = '';
     if (latestPlanSource && !hasDraftContent && !hasDraftPlanComments) {
       sending = true;
       try {
@@ -233,6 +233,35 @@
     // precedence rule, so we forward both fields and let composerSend
     // pick the winner.
     const draftSourcePlan = draft.sourceProposedPlan ?? null;
+
+    // Mid-round path: stash the message in the per-thread queue
+    // instead of dispatching. The drain trigger inside
+    // applyTurnCompleted (see frontend/src/lib/stores/events.ts) pops
+    // the head on every wire-round completion regardless of cause
+    // (success, error, abort). Stop-with-queue ("user hits Esc with
+    // a message queued") falls out of the same rule because
+    // InterruptTurn → backend emits an aborted `turn_completed` →
+    // drain fires → queued item is sent. The composer textarea
+    // clears immediately so the user can stack the next message.
+    if (isTurnActive) {
+      enqueueQueuedMessage(pane.threadId, {
+        message,
+        attachments: draft.attachments,
+        terminalChips: draft.terminalChips,
+        sourceProposedPlan: draftSourcePlan,
+        revisionSourceProposedPlan: sourceForSend && (hasDraftContentForSend || commentsForSend.length > 0)
+          ? sourceForSend
+          : undefined,
+        revisionSourceCommentIds: commentsForSend.length > 0
+          ? commentsForSend.map((comment) => comment.id)
+          : undefined,
+      });
+      draft.setContent('');
+      await draft.clearAfterSend();
+      resetTextareaHeight();
+      return;
+    }
+
     sending = true;
     pane.setSendInFlight(true);
 
@@ -299,7 +328,6 @@
   async function interrupt() {
     if (!pane.threadId) return;
     await dispatchInterrupt(pane.threadId, (msg) => pane.setGeneralError(msg));
-    midTurnBlockMessage = '';
   }
 
   function resetTextareaHeight() {
@@ -340,10 +368,10 @@
         return;
       }
       if (hasBlockingPrompt) return;
-      if (isTurnActive) {
-        midTurnBlockMessage = 'Cannot send during an active turn. Press Interrupt first.';
-        return;
-      }
+      // Mid-turn Enter routes through send() like a click; send() picks
+      // the enqueue path when `isTurnActive` is true. No mid-turn
+      // keyboard block — it would diverge from both reference UIs and
+      // from the click-to-queue affordance below.
       await send();
     }
   }
@@ -359,7 +387,6 @@
     }
     autosizeTextarea();
     mentions.refreshTriggers();
-    if (midTurnBlockMessage) midTurnBlockMessage = '';
   }
 
   function blockPromptAttachment(event: DragEvent | ClipboardEvent, notify = true): boolean {
@@ -551,23 +578,6 @@
         ></textarea>
       </div>
 
-      {#if midTurnBlockMessage}
-        <div
-          class="mt-1 text-[11px] text-error/90"
-          role="alert"
-          aria-live="polite"
-          data-testid="composer-midturn-error"
-        >
-          {midTurnBlockMessage}
-        </div>
-      {:else}
-        <div
-          class="sr-only"
-          role="alert"
-          aria-live="polite"
-          data-testid="composer-midturn-error"
-        ></div>
-      {/if}
     </div>
 
     {#if !hasInteractivePrompt}

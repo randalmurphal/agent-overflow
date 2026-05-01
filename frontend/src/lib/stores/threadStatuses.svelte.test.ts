@@ -1,7 +1,10 @@
 import { describe, expect, it, beforeEach } from 'vitest';
 import {
+  clearPendingSend,
+  clearThreadStatus,
   getActiveTurn,
   getThreadStatus,
+  hasPendingSend,
   projectApprovalRequest,
   projectApprovalResolution,
   projectPlanReady,
@@ -16,11 +19,17 @@ import {
   projectUserInputResolution,
   resetForTest,
 } from './threadStatuses.svelte';
+import {
+  enqueue as enqueueQueueItem,
+  getQueueForThread,
+  resetSendQueueForTest,
+} from './sendQueue.svelte';
 import { makeItem } from '../../test/helpers/chat';
 
 describe('threadStatuses store', () => {
   beforeEach(() => {
     resetForTest();
+    resetSendQueueForTest();
   });
 
   it('tracks multiple active items before returning to idle', () => {
@@ -448,6 +457,76 @@ describe('threadStatuses store', () => {
 
       projectThreadViewed('thread-1');
       expect(getThreadStatus('thread-1')).toBe('plan-ready');
+    });
+  });
+
+  describe('hasPendingSend / clearPendingSend', () => {
+    it('hasPendingSend mirrors projectSendStarted / projectSendResolved', () => {
+      expect(hasPendingSend('thread-1')).toBe(false);
+      projectSendStarted('thread-1');
+      expect(hasPendingSend('thread-1')).toBe(true);
+
+      projectSendResolved('thread-1');
+      expect(hasPendingSend('thread-1')).toBe(false);
+    });
+
+    it('hasPendingSend is false for null/undefined/empty thread ids', () => {
+      projectSendStarted('thread-1');
+      expect(hasPendingSend(null)).toBe(false);
+      expect(hasPendingSend(undefined)).toBe(false);
+      expect(hasPendingSend('')).toBe(false);
+    });
+
+    it('projectTurnStarted clears the pending-send flag (success drain path)', () => {
+      projectSendStarted('thread-1');
+      expect(hasPendingSend('thread-1')).toBe(true);
+
+      projectTurnStarted('thread-1', 'turn-1', 0, 100);
+      expect(hasPendingSend('thread-1')).toBe(false);
+    });
+
+    it('clearPendingSend drops the flag without flipping the thread to error', () => {
+      // Mirrors the drain failure path: SendMessageWithOptions threw,
+      // we want to stop advertising "running" but the thread should
+      // not be flipped to a Failed pill state — the queue preview
+      // still shows the user's restored item, and the error banner
+      // carries the failure context.
+      projectSendStarted('thread-1');
+      expect(getThreadStatus('thread-1')).toBe('running');
+
+      clearPendingSend('thread-1');
+      expect(hasPendingSend('thread-1')).toBe(false);
+      expect(getThreadStatus('thread-1')).toBe('idle');
+    });
+
+    it('clearPendingSend on a thread without the flag is a no-op', () => {
+      // No throw, no error pill — defensive call from the drain
+      // failure path even when projectTurnStarted may have already
+      // arrived first.
+      expect(() => clearPendingSend('thread-1')).not.toThrow();
+      expect(getThreadStatus('thread-1')).toBe('idle');
+    });
+  });
+
+  describe('clearThreadStatus sweeps the send queue', () => {
+    it('drops queued items for the cleared thread only', () => {
+      enqueueQueueItem('thread-1', {
+        message: 'queued for 1',
+        attachments: [],
+        terminalChips: [],
+        sourceProposedPlan: null,
+      });
+      enqueueQueueItem('thread-2', {
+        message: 'queued for 2',
+        attachments: [],
+        terminalChips: [],
+        sourceProposedPlan: null,
+      });
+
+      clearThreadStatus('thread-1');
+      expect(getQueueForThread('thread-1')).toEqual([]);
+      // thread-2's queue is untouched — the sweep is per-thread.
+      expect(getQueueForThread('thread-2').map((item) => item.message)).toEqual(['queued for 2']);
     });
   });
 });

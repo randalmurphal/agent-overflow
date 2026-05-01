@@ -1,6 +1,7 @@
 import { SvelteMap } from 'svelte/reactivity';
 import type { ApprovalKind } from '../types/events';
 import type { Item } from '../types/models';
+import { clearForThread as clearSendQueueForThread } from './sendQueue.svelte';
 
 /**
  * ActiveTurn is the live in-flight turn for a thread. Populated
@@ -182,7 +183,9 @@ export function setThreadStatus(threadId: string, status: ThreadLiveStatus): voi
 
 /**
  * Drop any status for this thread. Called when a thread is
- * archived/deleted so its dot doesn't linger in the sidebar.
+ * archived/deleted so its dot doesn't linger in the sidebar. Also
+ * sweeps the per-thread send queue: queued user messages are in-memory
+ * only and must not outlive their thread.
  */
 export function clearThreadStatus(threadId: string): void {
   activeItemIDsByThread.delete(threadId);
@@ -202,6 +205,7 @@ export function clearThreadStatus(threadId: string): void {
   awaitingInputIDsByThread.delete(threadId);
   errorThreads.delete(threadId);
   interruptedThreads.delete(threadId);
+  clearSendQueueForThread(threadId);
   if (!statuses.has(threadId)) return;
   const next = new Map(statuses);
   next.delete(threadId);
@@ -240,6 +244,37 @@ export function projectSendResolved(threadId: string, opts: { error?: boolean } 
   if (opts.error) {
     errorThreads.add(threadId);
   }
+  recalculateThreadStatus(threadId);
+}
+
+/**
+ * Read whether a `SendMessage` RPC is currently in flight for this
+ * thread. Set by `projectSendStarted`; cleared by `projectSendResolved`
+ * (failure path) or `projectTurnStarted` (success path: backend has
+ * confirmed the round). Used by the working-indicator bridge predicate
+ * to keep the spinner visible across the brief drain RPC roundtrip,
+ * when activeTurn is null (round just completed) and the queue may
+ * have just gone to 0 (the popped item is what's in flight).
+ */
+export function hasPendingSend(threadId: string | null | undefined): boolean {
+  if (!threadId) return false;
+  return pendingSendThreads.has(threadId);
+}
+
+/**
+ * Explicit clear for the pending-send flag without changing other
+ * status flags. The drain failure path uses this — `projectTurnStarted`
+ * clears the flag on a successful drain (the backend confirmed the new
+ * round), but on a thrown SendMessage the flag would otherwise leak
+ * forever. Distinct from `projectSendResolved({error:true})` because
+ * we don't want to flip the thread to a Failed status pill: the queue
+ * preview is still showing the user's restored item, the error banner
+ * carries the failure context, and another drain attempt should be
+ * possible from a clean state.
+ */
+export function clearPendingSend(threadId: string): void {
+  if (!threadId) return;
+  if (!pendingSendThreads.delete(threadId)) return;
   recalculateThreadStatus(threadId);
 }
 
@@ -498,7 +533,8 @@ export function getAllThreadStatuses(): Map<string, ThreadLiveStatus> {
 
 /**
  * Wipe the entire map. Only intended for test isolation — production
- * code should use clearThreadStatus per id.
+ * code should use clearThreadStatus per id. Also wipes the per-thread
+ * send queue so tests start from a clean slate.
  */
 export function resetForTest(): void {
   activeItemIDsByThread.clear();

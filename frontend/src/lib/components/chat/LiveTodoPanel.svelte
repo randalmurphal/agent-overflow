@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { ThreadPane } from '../../stores/thread.svelte';
+  import { hasQueueItems } from '../../stores/sendQueue.svelte';
   import { getActiveTurn } from '../../stores/threadStatuses.svelte';
   import type { TodoStep, TodoStepStatus } from '../../types/events';
   import Icon from '../primitives/Icon.svelte';
@@ -18,11 +19,15 @@
   let liveTodo = $derived(pane.liveTodo);
   let isExpanded = $derived(pane.liveTodoExpanded);
   let isShowingAll = $derived(pane.liveTodoShowAll);
-  // The working indicator above us has `mb-6`. When it's visible, we
-  // pull ourselves up so the gap reads as a line break rather than a
-  // paragraph break. When it's hidden (turn ended with todos still
-  // pending), the panel sits at normal flow with no offset.
-  let pulledUp = $derived(getActiveTurn(pane.threadId) !== null);
+  // The working indicator above us has `mb-6`. When it's visible AND
+  // nothing else sits between, we pull ourselves up so the gap reads
+  // as a line break rather than a paragraph break. When SendQueuePreview
+  // is rendering between the indicator and us we sit at normal flow so
+  // we don't visually overlap the queued items above. When the indicator
+  // is hidden (turn ended with todos still pending), normal flow too.
+  let pulledUp = $derived(
+    getActiveTurn(pane.threadId) !== null && !hasQueueItems(pane.threadId),
+  );
 
   // Status order for the sorted list. Numbers map to the buckets the
   // user asked for: in-progress on top so the active task is the first

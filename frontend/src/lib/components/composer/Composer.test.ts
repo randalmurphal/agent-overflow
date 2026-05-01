@@ -19,6 +19,11 @@ import {
   resetProposedPlanCacheForTests,
 } from '../../stores/proposedPlans.svelte';
 import {
+  getQueueForThread,
+  resetSendQueueForTest,
+} from '../../stores/sendQueue.svelte';
+import { resetForTest as resetThreadStatuses } from '../../stores/threadStatuses.svelte';
+import {
   resetForTest as resetWorktreeIntent,
   setThreadEnvMode,
   setWorktreeBaseBranch,
@@ -87,6 +92,8 @@ describe('<Composer>', () => {
     resetComposerDraftSnapshotsForTest();
     resetProposedPlanCacheForTests();
     resetWorktreeIntent();
+    resetSendQueueForTest();
+    resetThreadStatuses();
     installDraftMocks();
     setBindingMock('SendMessageWithOptions', async () => makeTestThread({ runtimeMode: 'full-access' }));
     setBindingMock('InterruptTurn', async () => {});
@@ -902,11 +909,13 @@ describe('<Composer>', () => {
     expect(tray.compareDocumentPosition(input) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
-  it('does not send while a turn is active', async () => {
+  it('enqueues mid-turn instead of dispatching SendMessage (Enter key)', async () => {
+    // Mid-round behaviour matches both reference UIs (Claude Code's
+    // commandQueue, Codex's VecDeque<QueuedUserMessage>): the user
+    // can keep typing and submit; the message lands in the per-thread
+    // queue and drains on the next provider:turn_completed. No more
+    // "Cannot send during an active turn" block.
     const pane = await buildPane();
-    // See note above — drive the active-turn state via the wire-push API
-    // rather than relying on the removed "streaming item = active turn"
-    // derivation.
     pane.setActiveTurn({ turnId: 't1', turnIndex: 0, startedAt: 0 });
     const draft = await buildDraft();
     const send = setBindingMock('SendMessageWithOptions', async () =>
@@ -915,10 +924,102 @@ describe('<Composer>', () => {
     const { getByLabelText } = render(Composer, { props: { pane, draft } });
     const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
 
-    await fireEvent.input(textarea, { target: { value: 'should not send' } });
+    await fireEvent.input(textarea, { target: { value: 'queue me' } });
     await fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+    await tick();
 
     expect(send).not.toHaveBeenCalled();
+    expect(getQueueForThread('thread-1').map((item) => item.message)).toEqual(['queue me']);
+    // Composer cleared after enqueue so the user can stack the next
+    // message immediately.
+    expect(draft.content).toBe('');
+  });
+
+  it('enqueues mid-turn when the Send button is clicked', async () => {
+    const pane = await buildPane();
+    pane.setActiveTurn({ turnId: 't1', turnIndex: 0, startedAt: 0 });
+    const draft = await buildDraft();
+    const send = setBindingMock('SendMessageWithOptions', async () =>
+      makeTestThread({ runtimeMode: 'full-access' }));
+
+    const { getByLabelText, getByTestId } = render(Composer, { props: { pane, draft } });
+    const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
+
+    await fireEvent.input(textarea, { target: { value: 'queue via click' } });
+    // With a draft typed during an active turn, the SendButton
+    // shows Send (not Stop) so the user can queue. Click it.
+    await fireEvent.click(getByTestId('composer-send'));
+    await tick();
+
+    expect(send).not.toHaveBeenCalled();
+    expect(getQueueForThread('thread-1').map((item) => item.message)).toEqual(['queue via click']);
+  });
+
+  it('captures attachments + plan-revision metadata on the queued item', async () => {
+    const pane = await buildPane(makeTestThread(), [
+      makeItem({
+        id: 'plan-1',
+        kind: 'tool_call',
+        payloadKind: 'proposed_plan',
+        payloadId: 'payload-1',
+        payloadMeta: JSON.stringify({ title: 'Plan', preview: '# Plan' }),
+        updatedAt: 1,
+      }),
+    ]);
+    const draft = await buildDraft();
+    setBindingMock('ListProposedPlanComments', async () => [{
+      id: 'comment-1',
+      threadId: 'thread-1',
+      planItemId: 'plan-1',
+      status: 'draft',
+      startLine: 1,
+      endLine: 1,
+      selectedText: 'Selected section',
+      body: 'Tighten this up.',
+      createdAt: 1,
+      updatedAt: 1,
+    }]);
+    draft.setContentAndAttachments('Refine the plan', [makeAttachment('att-1', 'hero.png')]);
+
+    const { findByText, getByTestId } = render(Composer, { props: { pane, draft } });
+    // Wait for plan + comments to hydrate (label appears while idle).
+    await findByText('Send comments');
+    // Now flip to active-turn — the SendButton stays in Send variant
+    // because canSend is true (draft + comments). Click queues with
+    // the plan-revision metadata captured.
+    pane.setActiveTurn({ turnId: 't1', turnIndex: 0, startedAt: 0 });
+    await tick();
+    await fireEvent.click(getByTestId('composer-send'));
+    await tick();
+
+    const queue = getQueueForThread('thread-1');
+    expect(queue).toHaveLength(1);
+    const item = queue[0];
+    // Image placeholders are appended by composeOutgoingMessage so the
+    // provider receives a textual marker for each attachment.
+    expect(item.message).toBe('Refine the plan [Image #1]');
+    expect(item.attachments.map((attachment) => attachment.id)).toEqual(['att-1']);
+    expect(item.revisionSourceProposedPlan).toMatchObject({
+      threadId: 'thread-1',
+      itemId: 'plan-1',
+      payloadId: 'payload-1',
+    });
+    expect(item.revisionSourceCommentIds).toEqual(['comment-1']);
+  });
+
+  it('still dispatches SendMessage when no turn is active', async () => {
+    const pane = await buildPane();
+    // No setActiveTurn — pane is idle.
+    const draft = await buildDraft();
+    const send = setBindingMock('SendMessageWithOptions', async () =>
+      makeTestThread({ runtimeMode: 'full-access' }));
+
+    const { getByLabelText, getByTestId } = render(Composer, { props: { pane, draft } });
+    await fireEvent.input(getByLabelText('Message Input'), { target: { value: 'idle send' } });
+    await fireEvent.click(getByTestId('composer-send'));
+
+    await waitFor(() => expect(send).toHaveBeenCalledWith('thread-1', 'idle send', { attachmentIds: [] }));
+    expect(getQueueForThread('thread-1')).toEqual([]);
   });
 
   it('autosizes multiline input and clamps at the maximum composer height', async () => {

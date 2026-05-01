@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { ThreadPane } from '../../stores/thread.svelte';
-  import { getActiveTurn } from '../../stores/threadStatuses.svelte';
+  import { getActiveTurn, hasPendingSend } from '../../stores/threadStatuses.svelte';
+  import { hasQueueItems } from '../../stores/sendQueue.svelte';
   import { formatElapsedSeconds } from '../../utils/format';
   import { isUiRenderTraceEnabled, recordUiTrace } from '../../utils/uiRenderTrace';
   import Icon from '../primitives/Icon.svelte';
@@ -28,7 +29,26 @@
   // turn_lifecycle.go). See internal/triage/AGENTS.md "Wire-round vs
   // logical-turn".
   let activeTurn = $derived(getActiveTurn(pane.threadId));
-  let isWorking = $derived(activeTurn !== null);
+  // Bridge predicate: keep the indicator visible across the gap
+  // between a round completing and the next one arming when a queued
+  // user message is about to drain.
+  //
+  // The drain sequence is:
+  //   1. provider:turn_completed → activeTurn cleared, queue popFront,
+  //      queue length may go 0→0 (if it was the only item).
+  //   2. projectSendStarted → pendingSendThreads.add(threadId).
+  //   3. await SendMessageWithOptions (RPC roundtrip ~50–200ms).
+  //   4. provider:turn_started → activeTurn set, pendingSend cleared.
+  //
+  // Without `hasPendingSend` in the predicate, the indicator would
+  // flicker between (1) and (4): activeTurn is null and the queue
+  // has just emptied. With it, the spinner stays through the bridge
+  // moment and the user sees continuity. Mirrors Claude Code's
+  // `getCommandQueueLength() > 0 || isQueryActive` predicate.
+  let bridgeActive = $derived(
+    hasQueueItems(pane.threadId) || hasPendingSend(pane.threadId),
+  );
+  let isWorking = $derived(activeTurn !== null || bridgeActive);
 
   $effect(() => {
     if (!activeTurn) return;
@@ -91,15 +111,24 @@
       <span class="h-1 w-1 rounded-full bg-fg-hint/65 animate-pulse [animation-delay:200ms]"></span>
       <span class="h-1 w-1 rounded-full bg-fg-hint/65 animate-pulse [animation-delay:400ms]"></span>
     </span>
-    <span>
-      Working for
-      <span class="tabular-nums" data-testid="chat-working-indicator-elapsed">{elapsedLabel}</span>
-    </span>
+    {#if activeTurn}
+      <span>
+        Working for
+        <span class="tabular-nums" data-testid="chat-working-indicator-elapsed">{elapsedLabel}</span>
+      </span>
+    {:else}
+      <!-- Bridge moment: a round just completed and the next is being
+           dispatched (queue drain or pendingSend RPC). The elapsed
+           counter would render "Working for 0s" because activeTurn is
+           null — show plain "Working" until the next provider:turn_started
+           anchors a fresh startedAt. -->
+      <span data-testid="chat-working-indicator-bridge">Working</span>
+    {/if}
     <button
       type="button"
       class="inline-flex h-5 w-5 items-center justify-center rounded-full text-fg-hint/65 opacity-0 transition-opacity hover:bg-surface-2/50 hover:text-fg-muted focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/35 disabled:cursor-not-allowed disabled:opacity-40 group-hover:opacity-100"
       onclick={interrupt}
-      disabled={interrupting}
+      disabled={interrupting || !activeTurn}
       data-testid="chat-working-indicator-interrupt"
       aria-label="Interrupt Current Turn"
       title="Interrupt Current Turn"

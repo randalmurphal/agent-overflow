@@ -54,10 +54,13 @@
   let menuOpen = $state(false);
 
   // Treat the optimistic dispatch window the same as a wire-active turn
-  // for everything button-related. This is the single seam — the rest
-  // of the component reads `showStop` rather than branching on either
-  // input directly.
-  let showStop = $derived(isTurnActive || sendInFlight);
+  // for the Stop affordance, but only when there's nothing meaningful
+  // to send. With a non-empty draft mid-round, the button stays in Send
+  // mode so the user can queue the message — `Composer.send()` picks
+  // the enqueue branch internally when `isTurnActive` is true.
+  // Interrupt is still reachable through the working-indicator's stop
+  // button, which is dedicated to interrupt regardless of draft state.
+  let showStop = $derived((isTurnActive || sendInFlight) && !canSend);
 
   function handleClick(): void {
     if (showStop) {

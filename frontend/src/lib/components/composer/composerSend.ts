@@ -19,12 +19,20 @@ import {
   findDraftProjectId,
   clearProjectDraft,
 } from '../../stores/draftThreads.svelte';
+import { getAllPanes } from '../../stores/panes.svelte';
+import {
+  enqueueAtFront,
+  popFront,
+  type QueueItem,
+} from '../../stores/sendQueue.svelte';
 import {
   getThreadById,
   prependThread,
   replaceThread,
 } from '../../stores/threads.svelte';
 import {
+  clearPendingSend,
+  getActiveTurn,
   projectSendResolved,
   projectSendStarted,
 } from '../../stores/threadStatuses.svelte';
@@ -191,5 +199,80 @@ export async function dispatchInterrupt(
   } catch (err) {
     console.error('Failed to interrupt turn:', err);
     reportError(`Failed to interrupt: ${errString(err)}`);
+  }
+}
+
+interface DrainSendOptions {
+  attachmentIds: string[];
+  sourceProposedPlan?: SourceProposedPlan;
+  revisionSourceProposedPlan?: SourceProposedPlan;
+  revisionSourceCommentIds?: string[];
+}
+
+/**
+ * Translate a queued item into the SendMessageWithOptions payload. Same
+ * precedence rule as `dispatchSend`: a revision wins over a plain
+ * source-plan ref, so a turn never simultaneously revises and
+ * implements the same plan.
+ */
+function toSendOptions(item: QueueItem): DrainSendOptions {
+  const options: DrainSendOptions = {
+    attachmentIds: item.attachments.map((attachment) => attachment.id),
+  };
+  if (item.revisionSourceProposedPlan) {
+    options.revisionSourceProposedPlan = item.revisionSourceProposedPlan;
+  } else if (item.sourceProposedPlan) {
+    options.sourceProposedPlan = item.sourceProposedPlan;
+  }
+  if (item.revisionSourceCommentIds && item.revisionSourceCommentIds.length > 0) {
+    options.revisionSourceCommentIds = [...item.revisionSourceCommentIds];
+  }
+  return options;
+}
+
+function reportThreadGeneralError(threadId: string, message: string): void {
+  for (const pane of getAllPanes().values()) {
+    if (pane.threadId !== threadId) continue;
+    pane.setGeneralError(message);
+  }
+}
+
+/**
+ * Pop the head-of-line queued message and dispatch it via
+ * SendMessageWithOptions. Triggered after every `provider:turn_completed`
+ * regardless of cause (success, error, abort) — that's the uniform rule
+ * both reference UIs follow. Skips worktree-prep and draft-thread
+ * promotion because drain only fires post-first-send when the thread is
+ * fully established (there's no provider session before the first send,
+ * so `isTurnActive` can never be true on a draft thread, so the
+ * composer's enqueue branch never runs and this drain helper never sees
+ * a queued item without a real backend session to send to).
+ *
+ * On failure, restores the item at the front so the user's queued work
+ * isn't lost, clears the pendingSend flag (which `projectTurnStarted`
+ * would otherwise have cleared on success), and surfaces the error
+ * through any matching pane's general-error banner.
+ *
+ * Defensive bail when `getActiveTurn` is non-null: the caller is
+ * `applyTurnCompleted`, which has already cleared the registry, so this
+ * path is normally a no-op. It only matters if a fresh `turn_started`
+ * for a follow-up round arrives between `projectTurnCompleted` and
+ * this listener firing.
+ */
+export async function tryDrainNextQueued(threadId: string): Promise<void> {
+  if (!threadId) return;
+  if (getActiveTurn(threadId) !== null) return;
+  const next = popFront(threadId);
+  if (!next) return;
+  projectSendStarted(threadId);
+  try {
+    await SendMessageWithOptions(threadId, next.message, toSendOptions(next));
+    // Success: `projectTurnStarted` clears the pendingSend flag when
+    // the backend confirms the new round arms. Nothing else to do here.
+  } catch (err) {
+    console.error('Failed to drain queued message:', err);
+    enqueueAtFront(threadId, next);
+    clearPendingSend(threadId);
+    reportThreadGeneralError(threadId, `Failed to send queued message: ${errString(err)}`);
   }
 }

@@ -10,6 +10,10 @@ import type { Item, Thread } from '../../lib/types/models';
 import { setBindingMock } from '../mocks/bindings-app';
 import { emitWailsEvent } from '../mocks/wailsio-runtime';
 import { emitItemEventDelta, emitItemEventUpsert } from '../helpers/chat';
+import {
+  getQueueForThread,
+  hasQueueItems,
+} from '../../lib/stores/sendQueue.svelte';
 import { getActiveTurn } from '../../lib/stores/threadStatuses.svelte';
 import {
   flush,
@@ -79,17 +83,18 @@ describe('App integration — messaging flow', () => {
     expect(textarea.value).toBe('');
   });
 
-  it('blocks Enter during an active turn and surfaces the mid-turn banner', async () => {
-    const { getByLabelText, getByTestId } = await mountWithActiveThread();
+  it('Enter during an active turn enqueues the message instead of dispatching', async () => {
+    // Replaces the older "Cannot send during active turn" block — the
+    // composer is always-typeable now and Enter routes mid-round
+    // submissions through the per-thread send queue. Drain fires on
+    // the next provider:turn_completed regardless of cause (success,
+    // error, abort) — that's the uniform rule both reference UIs use
+    // (Claude Code's commandQueue + useQueueProcessor; Codex's
+    // VecDeque<QueuedUserMessage> + maybe_send_next_queued_input).
+    const { getByLabelText } = await mountWithActiveThread();
     const sendMock = setBindingMock('SendMessageWithOptions', async () => makeThread({ id: 'thread-1' }));
     const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
-    await fireEvent.input(textarea, { target: { value: 'queued message' } });
-    await flush();
 
-    // Post-refactor isTurnActive is wire-pushed (invariant 22). Simulate
-    // the real Go → frontend path by emitting provider:turn_started. A
-    // streaming item no longer flips the composer's active-turn guard
-    // on its own.
     emitWailsEvent('provider:turn_started', {
       threadId: 'thread-1',
       turnId: 'turn-1',
@@ -110,14 +115,196 @@ describe('App integration — messaging flow', () => {
     });
     await flush();
 
-    // Enter must not fire SendMessageWithOptions while a turn is active — the
-    // interrupt button is the only path to cancellation. A polite
-    // mid-turn error is announced inline in the composer.
+    await fireEvent.input(textarea, { target: { value: 'queue this' } });
+    await flush();
     await fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
     await flush();
+
+    // Mid-round Enter never reaches SendMessageWithOptions — the
+    // message is in the per-thread queue waiting for the round to
+    // complete. The textarea clears so the user can stack the next
+    // message.
     expect(sendMock).not.toHaveBeenCalled();
-    const err = getByTestId('composer-midturn-error');
-    expect(err.textContent).toMatch(/Cannot send/);
+    expect(getQueueForThread('thread-1').map((item) => item.message)).toEqual(['queue this']);
+    expect(textarea.value).toBe('');
+  });
+
+  it('drains queued messages in FIFO order across successive turn_completes', async () => {
+    const { getByLabelText, getByTestId } = await mountWithActiveThread();
+    const sendMock = setBindingMock('SendMessageWithOptions', async () => makeThread({ id: 'thread-1' }));
+    const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
+
+    // First send while idle — dispatches normally and the backend
+    // would emit turn_started / turn_completed. We simulate just
+    // enough lifecycle for the queue tests below.
+    await fireEvent.input(textarea, { target: { value: 'first' } });
+    await flush();
+    await fireEvent.click(getByTestId('composer-send'));
+    await waitFor(() => expect(sendMock).toHaveBeenCalledTimes(1));
+
+    emitWailsEvent('provider:turn_started', {
+      threadId: 'thread-1',
+      turnId: 'round-1',
+      turnIndex: 0,
+      startedAt: 1,
+    });
+    await flush();
+
+    // Mid-round, queue two more messages.
+    await fireEvent.input(textarea, { target: { value: 'second' } });
+    await fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+    await flush();
+    await fireEvent.input(textarea, { target: { value: 'third' } });
+    await fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+    await flush();
+
+    expect(getQueueForThread('thread-1').map((item) => item.message)).toEqual(['second', 'third']);
+
+    // Round 1 ends → drain fires for 'second'.
+    emitWailsEvent('provider:turn_completed', {
+      threadId: 'thread-1',
+      turnId: 'round-1',
+      turnIndex: 0,
+      startedAt: 1,
+      completedAt: 100,
+      stopReason: 'end_turn',
+    });
+    await waitFor(() => expect(sendMock).toHaveBeenCalledTimes(2));
+    expect(sendMock.mock.calls[1][1]).toBe('second');
+    expect(getQueueForThread('thread-1').map((item) => item.message)).toEqual(['third']);
+
+    // Round 2 (the dispatched 'second') begins and ends → drain
+    // fires for 'third'.
+    emitWailsEvent('provider:turn_started', {
+      threadId: 'thread-1',
+      turnId: 'round-2',
+      turnIndex: 1,
+      startedAt: 200,
+    });
+    emitWailsEvent('provider:turn_completed', {
+      threadId: 'thread-1',
+      turnId: 'round-2',
+      turnIndex: 1,
+      startedAt: 200,
+      completedAt: 300,
+      stopReason: 'end_turn',
+    });
+    await waitFor(() => expect(sendMock).toHaveBeenCalledTimes(3));
+    expect(sendMock.mock.calls[2][1]).toBe('third');
+    expect(hasQueueItems('thread-1')).toBe(false);
+  });
+
+  it('Stop with a queued message drains it on the aborted turn_completed', async () => {
+    // The user hits Esc / Stop while a message is queued. Backend
+    // emits InterruptTurn → aborted turn_completed → drain fires
+    // (uniform rule). Both reference UIs have the same UX: the
+    // queued message is what the user wants to send next, even if
+    // they're cancelling the current round.
+    const { getByLabelText } = await mountWithActiveThread();
+    const sendMock = setBindingMock('SendMessageWithOptions', async () => makeThread({ id: 'thread-1' }));
+    const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
+
+    emitWailsEvent('provider:turn_started', {
+      threadId: 'thread-1',
+      turnId: 'long-running',
+      turnIndex: 0,
+      startedAt: 1,
+    });
+    await flush();
+
+    await fireEvent.input(textarea, { target: { value: 'queued before stop' } });
+    await fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+    await flush();
+    expect(getQueueForThread('thread-1').map((item) => item.message)).toEqual(['queued before stop']);
+
+    // Aborted turn_completed (the wire shape Stop produces).
+    emitWailsEvent('provider:turn_completed', {
+      threadId: 'thread-1',
+      turnId: 'long-running',
+      turnIndex: 0,
+      startedAt: 1,
+      completedAt: 10,
+      stopReason: 'interrupted',
+      aborted: true,
+    });
+    await waitFor(() => expect(sendMock).toHaveBeenCalled());
+    expect(sendMock.mock.calls[0][1]).toBe('queued before stop');
+  });
+
+  it('drain failure re-inserts the item at the front and surfaces an error', async () => {
+    const consoleErr = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { getByLabelText } = await mountWithActiveThread();
+    const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
+
+    emitWailsEvent('provider:turn_started', {
+      threadId: 'thread-1',
+      turnId: 'r-1',
+      turnIndex: 0,
+      startedAt: 1,
+    });
+    await flush();
+
+    await fireEvent.input(textarea, { target: { value: 'will fail to drain' } });
+    await fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+    await flush();
+
+    // Round ends → drain attempts to send; SendMessageWithOptions
+    // throws. The drain helper restores the popped item to the
+    // front so the user's work isn't lost.
+    setBindingMock('SendMessageWithOptions', async () => {
+      throw new Error('rpc down');
+    });
+    emitWailsEvent('provider:turn_completed', {
+      threadId: 'thread-1',
+      turnId: 'r-1',
+      turnIndex: 0,
+      startedAt: 1,
+      completedAt: 10,
+      stopReason: 'end_turn',
+    });
+    await waitFor(() => expect(consoleErr).toHaveBeenCalled());
+    expect(getQueueForThread('thread-1').map((item) => item.message)).toEqual(['will fail to drain']);
+    consoleErr.mockRestore();
+  });
+
+  it('queued items survive a thread switch A → B → A', async () => {
+    // Mount thread-1 first.
+    const { getByLabelText } = await mountWithActiveThread();
+    const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
+
+    // Queue an item on thread-1 mid-round.
+    emitWailsEvent('provider:turn_started', {
+      threadId: 'thread-1',
+      turnId: 'r-1',
+      turnIndex: 0,
+      startedAt: 1,
+    });
+    await flush();
+    await fireEvent.input(textarea, { target: { value: 'queued on A' } });
+    await fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+    await flush();
+    expect(getQueueForThread('thread-1').map((item) => item.message)).toEqual(['queued on A']);
+
+    // Switch panes by setting pane.threadId — reuse the pane store
+    // directly. The queue is keyed in a global SvelteMap, so the
+    // entries should still be there when we come back. Note: pane
+    // switch via UI would require a sidebar click flow that's out
+    // of scope for this micro-test; the key assertion is "the queue
+    // is keyed globally and survives".
+    const paneMod = await import('../../lib/stores/panes.svelte');
+    const pane = paneMod.getMainPane();
+    setBindingMock('SwitchThread', async () => makeThread({ id: 'thread-2', title: 'Other' }));
+    await pane.switchThread(makeThread({ id: 'thread-2', title: 'Other' }));
+    await flush();
+    // thread-1's queue is still intact even though we're now on thread-2.
+    expect(getQueueForThread('thread-1').map((item) => item.message)).toEqual(['queued on A']);
+    expect(getQueueForThread('thread-2')).toEqual([]);
+
+    // Switch back.
+    setBindingMock('SwitchThread', async () => makeThread({ id: 'thread-1' }));
+    await pane.switchThread(makeThread({ id: 'thread-1' }));
+    await flush();
+    expect(getQueueForThread('thread-1').map((item) => item.message)).toEqual(['queued on A']);
   });
 
   it('interrupts an active turn via the Interrupt button', async () => {
@@ -295,8 +482,8 @@ describe('App integration — messaging flow', () => {
   // turn_started → tool lifecycle → turn_completed → divider renders
   // above the assistant message. This test is intentionally broad: it
   // is the single integration test that proves all of the invariant-22
-  // pieces line up together (getActiveTurn(pane.threadId) flip, pane.latestSettledTurn
-  // write, CompletionDivider DOM render).
+  // pieces line up together (getActiveTurn(pane.threadId) flip,
+  // pane.latestSettledTurn write, response-divider DOM render).
   //
   // We pick the ordering where turn_completed arrives BEFORE the final
   // assistant_text upsert. That is the common real-wire ordering
@@ -396,13 +583,13 @@ describe('App integration — messaging flow', () => {
       cacheReadInputTokens: 0,
       totalCostUsd: 0.00123,
     });
-    // At this point the divider has nothing to render above because
-    // assist1 hasn't landed in pane.items yet.
-    expect(queryByTestId('completion-divider')).toBeNull();
+    // At this point the response divider has nothing to render above
+    // because the response text hasn't landed in pane.items yet.
+    expect(queryByTestId('response-divider')).toBeNull();
 
-    // 4. The final assistant_text arrives. CompletionDivider mounts
-    // immediately before it in the DOM because
-    // latestSettledTurn.assistantMessageId matches.
+    // 4. The final assistant_text arrives. The structural Response
+    // divider mounts immediately before it because tool activity
+    // preceded assistant prose in the same turn.
     emitItemEventUpsert({
       id: 'assist1',
       threadId: 'thread-1',
@@ -416,8 +603,8 @@ describe('App integration — messaging flow', () => {
       updatedAt: 6000,
     });
     await flush();
-    const divider = await findByTestId('completion-divider');
-    expect(divider.getAttribute('data-turn-id')).toBe('t1');
+    const divider = await findByTestId('response-divider');
+    expect(divider.textContent).toContain('Response');
 
     // No console errors throughout — if a later emit handler threw
     // or a listener swallowed an error, the divider would still

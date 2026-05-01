@@ -4,12 +4,33 @@ import { tick } from 'svelte';
 import ChatWorkingIndicator from './ChatWorkingIndicator.svelte';
 import { buildPane } from '../../../test/helpers/chat';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import {
+  enqueue as enqueueQueueItem,
+  popFront as popQueueFront,
+  resetSendQueueForTest,
+} from '../../stores/sendQueue.svelte';
+import {
+  clearPendingSend,
+  projectSendStarted,
+  resetForTest as resetThreadStatuses,
+} from '../../stores/threadStatuses.svelte';
+
+function enqueueSimple(threadId: string, message: string): void {
+  enqueueQueueItem(threadId, {
+    message,
+    attachments: [],
+    terminalChips: [],
+    sourceProposedPlan: null,
+  });
+}
 
 describe('<ChatWorkingIndicator>', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(10_000));
     resetBindingMocks();
+    resetSendQueueForTest();
+    resetThreadStatuses();
     setBindingMock('InterruptTurn', async () => {});
   });
 
@@ -147,5 +168,137 @@ describe('<ChatWorkingIndicator>', () => {
     await rerender({ pane });
     await tick();
     expect(getByTestId('chat-working-indicator')).toBeInTheDocument();
+  });
+
+  // Bridge predicate: keep the spinner up across the gap between a
+  // round completing and the next arming when a queued user message
+  // is about to drain. Without this, the indicator would flicker for
+  // 50–200ms (the SendMessageWithOptions RPC roundtrip).
+  describe('drain bridge', () => {
+    it('stays visible when a queue item is present and no turn is active', async () => {
+      const pane = await buildPane();
+      enqueueSimple(pane.threadId ?? 'thread-1', 'queued follow-up');
+
+      const { getByTestId, queryByTestId } = render(ChatWorkingIndicator, { props: { pane } });
+      await tick();
+
+      // Indicator still shows even though activeTurn is null.
+      expect(getByTestId('chat-working-indicator')).toBeInTheDocument();
+      // Elapsed-counter span is hidden during the bridge moment to
+      // avoid the "Working for 0s" flash.
+      expect(queryByTestId('chat-working-indicator-elapsed')).toBeNull();
+      expect(getByTestId('chat-working-indicator-bridge').textContent).toBe('Working');
+    });
+
+    it('stays visible when pendingSend is set during the drain RPC roundtrip', async () => {
+      // Simulates the moment between popFront and the next
+      // turn_started arriving: queue is empty (popped), pendingSend
+      // is true (we just dispatched), activeTurn is null.
+      const pane = await buildPane();
+      const tid = pane.threadId ?? 'thread-1';
+      enqueueSimple(tid, 'q1');
+      popQueueFront(tid);
+      projectSendStarted(tid);
+
+      const { getByTestId } = render(ChatWorkingIndicator, { props: { pane } });
+      await tick();
+
+      expect(getByTestId('chat-working-indicator')).toBeInTheDocument();
+      expect(getByTestId('chat-working-indicator-bridge')).toBeInTheDocument();
+    });
+
+    it('keeps the indicator visible after a drain failure (queue restored, pendingSend cleared)', async () => {
+      // The drain failure path: SendMessageWithOptions threw, the
+      // helper restored the popped item to the front and called
+      // clearPendingSend so the pill collapses to running-via-queue
+      // only. The indicator MUST stay visible because the queue is
+      // still non-empty.
+      const pane = await buildPane();
+      const tid = pane.threadId ?? 'thread-1';
+      enqueueSimple(tid, 'q1');
+      const popped = popQueueFront(tid);
+      projectSendStarted(tid);
+      // Failure: restore + clear pendingSend.
+      if (popped) {
+        const { enqueueAtFront } = await import('../../stores/sendQueue.svelte');
+        enqueueAtFront(tid, popped);
+      }
+      clearPendingSend(tid);
+
+      const { getByTestId } = render(ChatWorkingIndicator, { props: { pane } });
+      await tick();
+
+      expect(getByTestId('chat-working-indicator')).toBeInTheDocument();
+      expect(getByTestId('chat-working-indicator-bridge')).toBeInTheDocument();
+    });
+
+    it('elapsed counter resumes from the new round startedAt after the bridge', async () => {
+      const pane = await buildPane();
+      const tid = pane.threadId ?? 'thread-1';
+
+      // Round 1 in flight.
+      pane.setActiveTurn({ turnId: 'round-1', turnIndex: 0, startedAt: 9_000 });
+      const { getByTestId, queryByTestId } = render(ChatWorkingIndicator, { props: { pane } });
+      await tick();
+      expect(getByTestId('chat-working-indicator-elapsed').textContent).toBe('1s');
+
+      // Round 1 ends, we enqueue and popFront simulating drain start.
+      // pendingSend is the only signal still active.
+      pane.settleTurn({
+        turnId: 'round-1',
+        turnIndex: 0,
+        startedAt: 9_000,
+        completedAt: 10_000,
+        tokenUsage: null,
+        assistantMessageId: null,
+        aborted: false,
+        stopReason: '',
+        errorMessage: '',
+      });
+      enqueueSimple(tid, 'queued follow-up');
+      popQueueFront(tid);
+      projectSendStarted(tid);
+      await tick();
+      // Bridge moment: indicator visible but elapsed span replaced by
+      // plain "Working".
+      expect(queryByTestId('chat-working-indicator-elapsed')).toBeNull();
+      expect(getByTestId('chat-working-indicator-bridge').textContent).toBe('Working');
+
+      // Round 2 arms with a fresh startedAt (clock is at 10_000).
+      vi.advanceTimersByTime(2_000);
+      pane.setActiveTurn({ turnId: 'round-2', turnIndex: 0, startedAt: 12_000 });
+      await tick();
+      expect(getByTestId('chat-working-indicator-elapsed').textContent).toBe('0s');
+      expect(queryByTestId('chat-working-indicator-bridge')).toBeNull();
+    });
+
+    it('hides only after both activeTurn is null and the queue / pendingSend bridge clears', async () => {
+      const pane = await buildPane();
+      const tid = pane.threadId ?? 'thread-1';
+      enqueueSimple(tid, 'q1');
+
+      const { queryByTestId } = render(ChatWorkingIndicator, { props: { pane } });
+      await tick();
+      expect(queryByTestId('chat-working-indicator')).toBeInTheDocument();
+
+      // Queue empties (drain succeeded and round 2 hasn't armed yet,
+      // but pendingSend is also cleared, e.g. session terminated). At
+      // that point the indicator should hide — there's nothing to
+      // bridge against.
+      popQueueFront(tid);
+      await tick();
+      expect(queryByTestId('chat-working-indicator')).toBeNull();
+    });
+
+    it('disables the interrupt button during the bridge (no active turn to interrupt)', async () => {
+      const pane = await buildPane();
+      enqueueSimple(pane.threadId ?? 'thread-1', 'q1');
+
+      const { getByTestId } = render(ChatWorkingIndicator, { props: { pane } });
+      await tick();
+
+      const button = getByTestId('chat-working-indicator-interrupt') as HTMLButtonElement;
+      expect(button.disabled).toBe(true);
+    });
   });
 });

@@ -4,8 +4,11 @@
   import type { ThreadPane } from '../../stores/thread.svelte';
   import MessageTimeline from './MessageTimeline.svelte';
   import Composer from '../composer/Composer.svelte';
+  import SendQueuePreview from '../composer/SendQueuePreview.svelte';
   import BelowComposerBar from '../composer/belowbar/BelowComposerBar.svelte';
   import ProviderStatusBanner from './ProviderStatusBanner.svelte';
+  import ChatWorkingIndicator from './ChatWorkingIndicator.svelte';
+  import LiveTodoPanel from './LiveTodoPanel.svelte';
   import LazyThreadTerminalDrawer from '../terminal/LazyThreadTerminalDrawer.svelte';
   import DiscussionView from '../discussion/DiscussionView.svelte';
   import DesignView from '../design/DesignView.svelte';
@@ -309,6 +312,11 @@
           class="absolute inset-x-0 bottom-0 z-20 pointer-events-none"
           data-testid="composer-overlay"
         >
+          <div class="pointer-events-auto mx-auto w-full max-w-[62rem] px-6">
+            <ChatWorkingIndicator {pane} />
+            <SendQueuePreview {pane} {draft} />
+            <LiveTodoPanel {pane} />
+          </div>
           <div class="pointer-events-auto">
             <Composer {pane} {draft} onImageExpand={openImagePreview} />
           </div>
