@@ -3,13 +3,16 @@ package checkpoint
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // -- helpers --
@@ -67,6 +70,15 @@ func readTestFile(t *testing.T, dir, name string) string {
 	return string(data)
 }
 
+func writeFakeGit(t *testing.T, dir, script string) {
+	t.Helper()
+	path := filepath.Join(dir, "git")
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake git: %v", err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
 // commitAll stages everything in dir and commits it under the test
 // author. Used by RestoreWorktreePaths tests that need files tracked at
 // HEAD before they can drift.
@@ -81,6 +93,96 @@ func commitAll(t *testing.T, dir, message string) {
 }
 
 // -- tests --
+
+func TestRunGitWithStdoutLimitHandlesInheritedStderrWriters(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses a POSIX shell fake git")
+	}
+	ctx := context.Background()
+	dir := t.TempDir()
+	writeFakeGit(t, dir, `#!/bin/sh
+if [ "$1" = "stderr-open-after-exit" ]; then
+  (sleep 0.05) 1>&2 &
+  printf 'done\n'
+  exit 0
+fi
+echo "unsupported fake git invocation: $*" 1>&2
+exit 99
+`)
+
+	stdout, stderr, code, err := runGitWithStdoutLimit(ctx, dir, nil, false, 1024, "stderr-open-after-exit")
+	if err != nil {
+		t.Fatalf("runGitWithStdoutLimit: %v", err)
+	}
+	if stdout != "done\n" {
+		t.Fatalf("stdout = %q, want done newline", stdout)
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	if code != 0 {
+		t.Fatalf("code = %d, want 0", code)
+	}
+}
+
+func TestRunGitWithStdoutLimitDoesNotWaitForLongLivedStderrDescendant(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses a POSIX shell fake git")
+	}
+	ctx := context.Background()
+	dir := t.TempDir()
+	writeFakeGit(t, dir, `#!/bin/sh
+if [ "$1" = "stderr-held-open" ]; then
+  (sleep 1) 1>&2 &
+  printf 'done\n'
+  exit 0
+fi
+echo "unsupported fake git invocation: $*" 1>&2
+exit 99
+`)
+
+	start := time.Now()
+	stdout, _, _, err := runGitWithStdoutLimit(ctx, dir, nil, false, 1024, "stderr-held-open")
+	if err != nil {
+		t.Fatalf("runGitWithStdoutLimit: %v", err)
+	}
+	if stdout != "done\n" {
+		t.Fatalf("stdout = %q, want done newline", stdout)
+	}
+	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+		t.Fatalf("runGitWithStdoutLimit waited %s for descendant stderr writer", elapsed)
+	}
+}
+
+func TestRunGitWithStdoutLimitOversizeDoesNotDrainInheritedStdout(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses a POSIX shell fake git")
+	}
+	ctx := context.Background()
+	dir := t.TempDir()
+	writeFakeGit(t, dir, `#!/bin/sh
+if [ "$1" = "oversize-held-stdout" ]; then
+  (sleep 1) &
+  i=0
+  while [ "$i" -lt 2048 ]; do
+    printf x
+    i=$((i + 1))
+  done
+  exit 0
+fi
+echo "unsupported fake git invocation: $*" 1>&2
+exit 99
+`)
+
+	start := time.Now()
+	_, _, _, err := runGitWithStdoutLimit(ctx, dir, nil, false, 16, "oversize-held-stdout")
+	if !errors.Is(err, errGitOutputTooLarge) {
+		t.Fatalf("runGitWithStdoutLimit error = %v, want errGitOutputTooLarge", err)
+	}
+	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+		t.Fatalf("runGitWithStdoutLimit waited %s for descendant stdout writer after oversize", elapsed)
+	}
+}
 
 func TestCaptureBaselineAndDiffHappyPath(t *testing.T) {
 	ctx := context.Background()

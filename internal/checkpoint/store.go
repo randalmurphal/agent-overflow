@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"agent-overflow/internal/diffsummary"
 )
@@ -32,6 +33,8 @@ const (
 var maxDiffOutputBytes int64 = 10 * 1024 * 1024
 
 var errGitOutputTooLarge = errors.New("git output exceeded limit")
+
+var gitPipeWaitDelay = time.Second
 
 // CaptureBaseline snapshots the current worktree at (threadID, turnIndex). It
 // returns the ref name that was written so callers can persist it alongside
@@ -515,6 +518,7 @@ func runGit(
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = workspace
 	cmd.Env = gitEnv(extraEnv)
+	cmd.WaitDelay = gitPipeWaitDelay
 	var out, errBuf strings.Builder
 	cmd.Stdout = &out
 	cmd.Stderr = &errBuf
@@ -523,6 +527,10 @@ func runGit(
 	stderr = errBuf.String()
 	if runErr == nil {
 		return stdout, stderr, 0, nil
+	}
+	if errors.Is(runErr, exec.ErrWaitDelay) {
+		return stdout, stderr, 0, fmt.Errorf("git %s: output pipes did not close before wait delay: %w",
+			strings.Join(args, " "), runErr)
 	}
 	if exitErr, ok := errors.AsType[*exec.ExitError](runErr); ok {
 		code = exitErr.ExitCode()
@@ -548,44 +556,49 @@ func runGitWithStdoutLimit(
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = workspace
 	cmd.Env = gitEnv(extraEnv)
+	cmd.WaitDelay = gitPipeWaitDelay
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
 		return "", "", 0, fmt.Errorf("git %s: stdout pipe: %w", strings.Join(args, " "), err)
 	}
-	stderrPipe, err := cmd.StderrPipe()
+	stderrFile, err := os.CreateTemp("", "agent-overflow-git-stderr-*")
 	if err != nil {
-		return "", "", 0, fmt.Errorf("git %s: stderr pipe: %w", strings.Join(args, " "), err)
+		return "", "", 0, fmt.Errorf("git %s: stderr temp file: %w", strings.Join(args, " "), err)
 	}
+	stderrPath := stderrFile.Name()
+	defer os.Remove(stderrPath)
+	defer stderrFile.Close()
+	readStderr := func() string {
+		_ = stderrFile.Close()
+		data, err := os.ReadFile(stderrPath)
+		if err != nil {
+			return ""
+		}
+		return string(data)
+	}
+	cmd.Stderr = stderrFile
 	if err := cmd.Start(); err != nil {
 		return "", "", 0, fmt.Errorf("git %s: start: %w", strings.Join(args, " "), err)
 	}
-
-	var errBuf strings.Builder
-	stderrDone := make(chan error, 1)
-	go func() {
-		_, copyErr := io.Copy(&errBuf, stderrPipe)
-		stderrDone <- copyErr
-	}()
 
 	data, readErr := io.ReadAll(io.LimitReader(stdoutPipe, maxStdoutBytes+1))
 	if int64(len(data)) > maxStdoutBytes {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
-		<-stderrDone
-		return "", errBuf.String(), 0, errGitOutputTooLarge
+		return "", readStderr(), 0, errGitOutputTooLarge
 	}
 	waitErr := cmd.Wait()
-	stderrErr := <-stderrDone
 	stdout = string(data)
-	stderr = errBuf.String()
+	stderr = readStderr()
 	if readErr != nil {
 		return stdout, stderr, 0, fmt.Errorf("git %s: read stdout: %w", strings.Join(args, " "), readErr)
 	}
-	if stderrErr != nil {
-		return stdout, stderr, 0, fmt.Errorf("git %s: read stderr: %w", strings.Join(args, " "), stderrErr)
-	}
 	if waitErr == nil {
 		return stdout, stderr, 0, nil
+	}
+	if errors.Is(waitErr, exec.ErrWaitDelay) {
+		return stdout, stderr, 0, fmt.Errorf("git %s: output pipes did not close before wait delay: %w",
+			strings.Join(args, " "), waitErr)
 	}
 	if exitErr, ok := errors.AsType[*exec.ExitError](waitErr); ok {
 		code = exitErr.ExitCode()
