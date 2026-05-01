@@ -45,7 +45,12 @@ html.light {
 @theme {
   /* Fonts. Geist is self-hosted via @fontsource so the desktop build
      has no network dependency. The system fallbacks keep rendering
-     during the first paint before the woff2 is parsed. */
+     during the first paint before the woff2 is parsed.
+     These two variables are the cascade default for the Geist option
+     in Settings → Appearance. Other choices (Hack Nerd Font, System)
+     are applied at runtime by lib/utils/fonts.ts via setProperty on
+     <html>; selecting Geist removes that override and falls back to
+     these declarations. Edit the chain in this one place. */
   --font-sans: 'Geist Sans', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
   --font-mono: 'Geist Mono', ui-monospace, SFMono-Regular, Consolas, 'Liberation Mono', Menlo, monospace;
 

@@ -45,6 +45,14 @@ func TestUpdateRejectsInvalidEnumeratedValues(t *testing.T) {
 			name:  "worktreeBranchPrefixDot",
 			patch: map[string]any{"worktreeBranchPrefix": ".ao-"},
 		},
+		{
+			name:  "sansFont",
+			patch: map[string]any{"sansFont": "comicsans"},
+		},
+		{
+			name:  "monoFont",
+			patch: map[string]any{"monoFont": "wingdings"},
+		},
 	}
 
 	for _, tc := range testCases {
@@ -62,6 +70,8 @@ func TestGetSanitizesInvalidLoadedValues(t *testing.T) {
 	data := []byte(`{
   "theme": "solarized",
   "timestampFormat": "iso8601",
+  "sansFont": "comicsans",
+  "monoFont": "wingdings",
   "claudeBinaryPath": " /custom/claude ",
   "codexBinaryPath": "   ",
   "defaultThreadEnvMode": "remote",
@@ -80,6 +90,12 @@ func TestGetSanitizesInvalidLoadedValues(t *testing.T) {
 	}
 	if got.TimestampFormat != DefaultSettings.TimestampFormat {
 		t.Fatalf("TimestampFormat = %q, want %q", got.TimestampFormat, DefaultSettings.TimestampFormat)
+	}
+	if got.SansFont != DefaultSettings.SansFont {
+		t.Fatalf("SansFont = %q, want %q", got.SansFont, DefaultSettings.SansFont)
+	}
+	if got.MonoFont != DefaultSettings.MonoFont {
+		t.Fatalf("MonoFont = %q, want %q", got.MonoFont, DefaultSettings.MonoFont)
 	}
 	if got.ClaudeBinaryPath != "/custom/claude" {
 		t.Fatalf("ClaudeBinaryPath = %q, want /custom/claude", got.ClaudeBinaryPath)

@@ -39,6 +39,14 @@ var (
 		"local":    {},
 		"worktree": {},
 	}
+	// allowedFonts enumerates the typefaces selectable for --font-sans
+	// and --font-mono. "geist" is the eager default, "hack-nerd" lazy-
+	// loads, and "system" uses the OS fallback chain.
+	allowedFonts = map[string]struct{}{
+		"geist":     {},
+		"hack-nerd": {},
+		"system":    {},
+	}
 )
 
 func validateSettings(current Settings) (Settings, error) {
@@ -49,6 +57,16 @@ func validateSettings(current Settings) (Settings, error) {
 
 	current.TimestampFormat = strings.TrimSpace(current.TimestampFormat)
 	if err := validateOption("timestampFormat", current.TimestampFormat, allowedTimestampFormats); err != nil {
+		return Settings{}, err
+	}
+
+	current.SansFont = strings.TrimSpace(current.SansFont)
+	if err := validateOption("sansFont", current.SansFont, allowedFonts); err != nil {
+		return Settings{}, err
+	}
+
+	current.MonoFont = strings.TrimSpace(current.MonoFont)
+	if err := validateOption("monoFont", current.MonoFont, allowedFonts); err != nil {
 		return Settings{}, err
 	}
 
@@ -137,6 +155,18 @@ func sanitizeLoadedSettings(current Settings) Settings {
 		current.TimestampFormat,
 		DefaultSettings.TimestampFormat,
 		allowedTimestampFormats,
+	)
+	current.SansFont = sanitizeOption(
+		"sansFont",
+		current.SansFont,
+		DefaultSettings.SansFont,
+		allowedFonts,
+	)
+	current.MonoFont = sanitizeOption(
+		"monoFont",
+		current.MonoFont,
+		DefaultSettings.MonoFont,
+		allowedFonts,
 	)
 	current.ClaudeBinaryPath = sanitizeBinaryPath(
 		"claudeBinaryPath",
@@ -329,6 +359,7 @@ func joinAllowedValues(values map[string]struct{}) string {
 		"claude", "codex",
 		"low", "medium", "high", "xhigh", "max",
 		"local", "worktree",
+		"geist", "hack-nerd",
 	}
 	for _, candidate := range candidates {
 		if _, ok := values[candidate]; ok {

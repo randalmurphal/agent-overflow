@@ -140,6 +140,17 @@ export class Settings {
     "$schemaVersion"?: number;
     "theme": string;
     "timestampFormat": string;
+
+    /**
+     * SansFont and MonoFont select the typefaces wired into the
+     * `--font-sans` and `--font-mono` CSS variables on the frontend.
+     * Each is one of {"geist", "hack-nerd", "system"}. "geist" is the
+     * eagerly-bundled default; "hack-nerd" lazy-loads a separate woff2
+     * chunk so users on the default never pay its bundle cost; "system"
+     * falls through to the OS fallback chain and adds zero weight.
+     */
+    "sansFont": string;
+    "monoFont": string;
     "recentWorkspaces": string[];
     "diffWordWrap": boolean;
 
@@ -276,6 +287,12 @@ export class Settings {
         if (!("timestampFormat" in $$source)) {
             this["timestampFormat"] = "";
         }
+        if (!("sansFont" in $$source)) {
+            this["sansFont"] = "";
+        }
+        if (!("monoFont" in $$source)) {
+            this["monoFont"] = "";
+        }
         if (!("recentWorkspaces" in $$source)) {
             this["recentWorkspaces"] = [];
         }
@@ -356,22 +373,22 @@ export class Settings {
      * Creates a new Settings instance from a string or object.
      */
     static createFrom($$source: any = {}): Settings {
-        const $$createField3_0 = $$createType0;
-        const $$createField25_0 = $$createType1;
-        const $$createField26_0 = $$createType2;
-        const $$createField27_0 = $$createType4;
+        const $$createField5_0 = $$createType0;
+        const $$createField27_0 = $$createType1;
+        const $$createField28_0 = $$createType2;
+        const $$createField29_0 = $$createType4;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("recentWorkspaces" in $$parsedSource) {
-            $$parsedSource["recentWorkspaces"] = $$createField3_0($$parsedSource["recentWorkspaces"]);
+            $$parsedSource["recentWorkspaces"] = $$createField5_0($$parsedSource["recentWorkspaces"]);
         }
         if ("network" in $$parsedSource) {
-            $$parsedSource["network"] = $$createField25_0($$parsedSource["network"]);
+            $$parsedSource["network"] = $$createField27_0($$parsedSource["network"]);
         }
         if ("editor" in $$parsedSource) {
-            $$parsedSource["editor"] = $$createField26_0($$parsedSource["editor"]);
+            $$parsedSource["editor"] = $$createField28_0($$parsedSource["editor"]);
         }
         if ("remoteEndpoints" in $$parsedSource) {
-            $$parsedSource["remoteEndpoints"] = $$createField27_0($$parsedSource["remoteEndpoints"]);
+            $$parsedSource["remoteEndpoints"] = $$createField29_0($$parsedSource["remoteEndpoints"]);
         }
         return new Settings($$parsedSource as Partial<Settings>);
     }

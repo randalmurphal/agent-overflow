@@ -23,9 +23,23 @@ export type RuntimeMode = 'approval-required' | 'auto-accept-edits' | 'full-acce
 
 export type ThreadEnvMode = 'local' | 'worktree';
 
+export type SansFont = 'geist' | 'hack-nerd' | 'system';
+export type MonoFont = 'geist' | 'hack-nerd' | 'system';
+
 export interface Settings {
   theme: 'system' | 'light' | 'dark';
   timestampFormat: 'locale' | '12-hour' | '24-hour';
+  /**
+   * Sans typeface for the `--font-sans` CSS variable. Default `geist`
+   * is eagerly bundled; `hack-nerd` lazy-loads a separate woff2 chunk;
+   * `system` uses the OS fallback chain.
+   */
+  sansFont: SansFont;
+  /**
+   * Mono typeface for the `--font-mono` CSS variable. Same option set
+   * and load behaviour as `sansFont`.
+   */
+  monoFont: MonoFont;
   recentWorkspaces: string[];
   diffWordWrap: boolean;
   backgroundTrayExpanded: boolean;

@@ -8,6 +8,8 @@ import type { Settings } from '../../types/settings';
 const BASE_SETTINGS: Settings = {
   theme: 'system',
   timestampFormat: 'locale',
+  sansFont: 'geist',
+  monoFont: 'geist',
   recentWorkspaces: [],
   diffWordWrap: false,
   backgroundTrayExpanded: false,
@@ -76,5 +78,45 @@ describe('<GeneralSettings> — Thread defaults section', () => {
     const mock = getBindingMock('UpdateSettings');
     expect(mock).toBeDefined();
     expect(mock!.mock.calls[0][0]).toEqual({ worktreeBranchPrefix: 'task-' });
+  });
+});
+
+describe('<GeneralSettings> — Font selectors', () => {
+  beforeEach(async () => {
+    await seed();
+  });
+
+  it('renders both font selectors with the default values', async () => {
+    const { getByTestId } = render(GeneralSettings);
+    const sansSelect = getByTestId('settings-sans-font') as HTMLSelectElement;
+    const monoSelect = getByTestId('settings-mono-font') as HTMLSelectElement;
+    expect(sansSelect.value).toBe('geist');
+    expect(monoSelect.value).toBe('geist');
+    expect(sansSelect.querySelector('option[value="hack-nerd"]')).toBeTruthy();
+    expect(monoSelect.querySelector('option[value="hack-nerd"]')).toBeTruthy();
+    expect(sansSelect.querySelector('option[value="system"]')).toBeTruthy();
+    expect(monoSelect.querySelector('option[value="system"]')).toBeTruthy();
+  });
+
+  it('dispatches sansFont patch on change', async () => {
+    const { getByTestId } = render(GeneralSettings);
+    const select = getByTestId('settings-sans-font') as HTMLSelectElement;
+    select.value = 'hack-nerd';
+    await fireEvent.change(select);
+
+    const mock = getBindingMock('UpdateSettings');
+    expect(mock).toBeDefined();
+    expect(mock!.mock.calls[0][0]).toEqual({ sansFont: 'hack-nerd' });
+  });
+
+  it('dispatches monoFont patch on change', async () => {
+    const { getByTestId } = render(GeneralSettings);
+    const select = getByTestId('settings-mono-font') as HTMLSelectElement;
+    select.value = 'system';
+    await fireEvent.change(select);
+
+    const mock = getBindingMock('UpdateSettings');
+    expect(mock).toBeDefined();
+    expect(mock!.mock.calls[0][0]).toEqual({ monoFont: 'system' });
   });
 });

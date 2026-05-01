@@ -57,6 +57,14 @@ type Settings struct {
 
 	Theme              string   `json:"theme"`
 	TimestampFormat    string   `json:"timestampFormat"`
+	// SansFont and MonoFont select the typefaces wired into the
+	// `--font-sans` and `--font-mono` CSS variables on the frontend.
+	// Each is one of {"geist", "hack-nerd", "system"}. "geist" is the
+	// eagerly-bundled default; "hack-nerd" lazy-loads a separate woff2
+	// chunk so users on the default never pay its bundle cost; "system"
+	// falls through to the OS fallback chain and adds zero weight.
+	SansFont           string   `json:"sansFont"`
+	MonoFont           string   `json:"monoFont"`
 	RecentWorkspaces   []string `json:"recentWorkspaces"`
 	DiffWordWrap       bool     `json:"diffWordWrap"`
 	// BackgroundTrayExpanded remembers the user's global background-task
@@ -167,6 +175,8 @@ type Settings struct {
 var DefaultSettings = Settings{
 	Theme:                  "system",
 	TimestampFormat:        "locale",
+	SansFont:               "geist",
+	MonoFont:               "geist",
 	DiffWordWrap:           false,
 	BackgroundTrayExpanded: false,
 	StreamingEnabled:       true,

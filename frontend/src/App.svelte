@@ -5,6 +5,7 @@
   import { getThreads, refreshThreads } from './lib/stores/threads.svelte';
   import { loadSettings, getSettings } from './lib/stores/settings.svelte';
   import { applyTheme } from './lib/utils/theme';
+  import { applyFonts } from './lib/utils/fonts';
   import Sidebar from './lib/components/sidebar/Sidebar.svelte';
   import ChatView from './lib/components/chat/ChatView.svelte';
   import Toast from './lib/components/shared/Toast.svelte';
@@ -159,6 +160,11 @@
 
   $effect(() => {
     applyTheme(getSettings().theme);
+  });
+
+  $effect(() => {
+    const s = getSettings();
+    applyFonts(s.sansFont, s.monoFont);
   });
 
   onMount(() => {

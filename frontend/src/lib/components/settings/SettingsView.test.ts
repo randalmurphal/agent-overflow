@@ -9,6 +9,8 @@ import type { Settings } from '../../types/settings';
 const BASE_SETTINGS: Settings = {
   theme: 'system',
   timestampFormat: 'locale',
+  sansFont: 'geist',
+  monoFont: 'geist',
   recentWorkspaces: [],
   diffWordWrap: false,
   backgroundTrayExpanded: false,

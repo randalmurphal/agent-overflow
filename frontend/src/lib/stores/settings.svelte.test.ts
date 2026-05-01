@@ -6,6 +6,8 @@ import { setBindingMock, getBindingMock } from '../../test/mocks/bindings-app';
 const FULL_SETTINGS: Settings = {
   theme: 'light',
   timestampFormat: 'locale',
+  sansFont: 'geist',
+  monoFont: 'geist',
   recentWorkspaces: ['/tmp/a'],
   diffWordWrap: true,
   backgroundTrayExpanded: false,

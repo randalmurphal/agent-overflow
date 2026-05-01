@@ -1,6 +1,6 @@
 <script lang="ts">
   import { getSettings, updateSetting } from '../../stores/settings.svelte';
-  import type { ThreadEnvMode } from '../../types/settings';
+  import type { MonoFont, SansFont, ThreadEnvMode } from '../../types/settings';
   import ToggleSwitch from '../shared/ToggleSwitch.svelte';
   import SettingsField from './SettingsField.svelte';
   import SettingsHeader from './SettingsHeader.svelte';
@@ -61,6 +61,44 @@
           <option value="locale">System locale</option>
           <option value="12-hour">12-hour</option>
           <option value="24-hour">24-hour</option>
+        </select>
+      </SettingsField>
+
+      <SettingsField
+        label="UI font"
+        hint="Typeface for general UI text. Hack Nerd Font lazy-loads on first use."
+        htmlFor="sans-font-select"
+      >
+        <select
+          id="sans-font-select"
+          data-testid="settings-sans-font"
+          value={settings.sansFont}
+          onchange={(e) =>
+            updateSetting('sansFont', (e.target as HTMLSelectElement).value as SansFont)}
+          class={SELECT_CLASS}
+        >
+          <option value="geist">Geist Sans (default)</option>
+          <option value="hack-nerd">Hack Nerd Font</option>
+          <option value="system">System default</option>
+        </select>
+      </SettingsField>
+
+      <SettingsField
+        label="Code font"
+        hint="Typeface for code, diffs, and command output."
+        htmlFor="mono-font-select"
+      >
+        <select
+          id="mono-font-select"
+          data-testid="settings-mono-font"
+          value={settings.monoFont}
+          onchange={(e) =>
+            updateSetting('monoFont', (e.target as HTMLSelectElement).value as MonoFont)}
+          class={SELECT_CLASS}
+        >
+          <option value="geist">Geist Mono (default)</option>
+          <option value="hack-nerd">Hack Nerd Font</option>
+          <option value="system">System default</option>
         </select>
       </SettingsField>
     </div>

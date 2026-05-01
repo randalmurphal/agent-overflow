@@ -1,0 +1,36 @@
+/* Lazy-loaded via `import('./hack-nerd.css')` in fonts.ts.
+ * Hack ships only weights 400 + 700; 500/600 fall back to the
+ * nearest match. See ../../assets/fonts/hack-nerd/SOURCE.md for
+ * upstream version + license. */
+
+@font-face {
+  font-family: 'Hack Nerd Font';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('../../assets/fonts/hack-nerd/HackNerdFont-Regular.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Hack Nerd Font';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('../../assets/fonts/hack-nerd/HackNerdFont-Bold.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Hack Nerd Font';
+  font-style: italic;
+  font-weight: 400;
+  font-display: swap;
+  src: url('../../assets/fonts/hack-nerd/HackNerdFont-Italic.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Hack Nerd Font';
+  font-style: italic;
+  font-weight: 700;
+  font-display: swap;
+  src: url('../../assets/fonts/hack-nerd/HackNerdFont-BoldItalic.woff2') format('woff2');
+}
