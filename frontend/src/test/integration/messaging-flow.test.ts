@@ -267,6 +267,50 @@ describe('App integration — messaging flow', () => {
     consoleErr.mockRestore();
   });
 
+  it('drain failure restores the failed head at the FRONT, not the tail (multi-item)', async () => {
+    // Single-item failure tests can't distinguish front from tail.
+    // Pin the contract that a failed drain re-inserts at index 0 so
+    // a refactor swapping `enqueueAtFront` for `enqueue` (tail) gets
+    // caught. Without front insertion the user would end up with
+    // their queued items reordered after a transient RPC error.
+    const consoleErr = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { getByLabelText } = await mountWithActiveThread();
+    const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
+
+    emitWailsEvent('provider:turn_started', {
+      threadId: 'thread-1',
+      turnId: 'r-multi',
+      turnIndex: 0,
+      startedAt: 1,
+    });
+    await flush();
+
+    await fireEvent.input(textarea, { target: { value: 'failing' } });
+    await fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+    await flush();
+    await fireEvent.input(textarea, { target: { value: 'later' } });
+    await fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+    await flush();
+    expect(getQueueForThread('thread-1').map((item) => item.message)).toEqual(['failing', 'later']);
+
+    setBindingMock('SendMessageWithOptions', async () => {
+      throw new Error('rpc down');
+    });
+    emitWailsEvent('provider:turn_completed', {
+      threadId: 'thread-1',
+      turnId: 'r-multi',
+      turnIndex: 0,
+      startedAt: 1,
+      completedAt: 10,
+      stopReason: 'end_turn',
+    });
+    await waitFor(() => expect(consoleErr).toHaveBeenCalled());
+    // 'failing' restored at the front; 'later' stays in its original slot.
+    // If the drain pushed to the tail this would read ['later', 'failing'].
+    expect(getQueueForThread('thread-1').map((item) => item.message)).toEqual(['failing', 'later']);
+    consoleErr.mockRestore();
+  });
+
   it('queued items survive a thread switch A → B → A', async () => {
     // Mount thread-1 first.
     const { getByLabelText } = await mountWithActiveThread();

@@ -31,6 +31,10 @@
   } from '../../stores/proposedPlans.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import { enqueue as enqueueQueuedMessage } from '../../stores/sendQueue.svelte';
+  import {
+    hasRuntimeModeDraft,
+    runtimeModeForThread,
+  } from '../../stores/runtimeModeDraft.svelte';
   import { getActiveTurn } from '../../stores/threadStatuses.svelte';
   import type { ExpandedImagePreview } from '../../utils/attachmentPreview.svelte';
   import { implementProposedPlan, implementProposedPlanInNewThread } from '../../utils/proposedPlanImplementation';
@@ -244,6 +248,16 @@
     // drain fires → queued item is sent. The composer textarea
     // clears immediately so the user can stack the next message.
     if (isTurnActive) {
+      // Capture the staged runtime-mode override at enqueue time, not
+      // at drain time — by then the user could have toggled
+      // AccessToggle again or the draft could have moved on. The
+      // drain path replays this captured value via
+      // sendQueueDrain.svelte.ts and clears the draft on success;
+      // matches the dispatch-path behaviour in composerSend.ts.
+      const queuedThread = pane.thread;
+      const runtimeMode = queuedThread && hasRuntimeModeDraft(queuedThread)
+        ? runtimeModeForThread(queuedThread)
+        : undefined;
       enqueueQueuedMessage(pane.threadId, {
         message,
         attachments: draft.attachments,
@@ -255,6 +269,7 @@
         revisionSourceCommentIds: commentsForSend.length > 0
           ? commentsForSend.map((comment) => comment.id)
           : undefined,
+        runtimeMode,
       });
       draft.setContent('');
       await draft.clearAfterSend();

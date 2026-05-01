@@ -30,6 +30,13 @@ export interface QueueItem {
   sourceProposedPlan: SourceProposedPlan | null;
   revisionSourceProposedPlan?: SourceProposedPlan;
   revisionSourceCommentIds?: readonly string[];
+  // Snapshot of the user's staged AccessToggle override at enqueue
+  // time. The dispatch path reads `runtimeModeForThread` and clears
+  // the draft after success; the drain path replays this captured
+  // value so a staged mode change isn't silently dropped between
+  // enqueue and drain. Undefined means "no staged override" — the
+  // backend keeps the thread's persisted runtime mode.
+  runtimeMode?: string;
   enqueuedAt: number;
 }
 
@@ -58,16 +65,6 @@ const queueByThread = new SvelteMap<string, readonly QueueItem[]>();
 
 const EMPTY: readonly QueueItem[] = Object.freeze([]);
 
-function nextItemId(): string {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-    return crypto.randomUUID();
-  }
-  // Fallback for environments where crypto.randomUUID is unavailable
-  // (older happy-dom in the test runner). Random enough for a
-  // process-local in-memory key — never persisted, never wire-stable.
-  return `q-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-}
-
 /**
  * Read the current queue for a thread. Always returns a stable empty
  * array sentinel when the thread has no queue, so callers can safely
@@ -95,7 +92,7 @@ export function enqueue(
   draft: Omit<QueueItem, 'id' | 'enqueuedAt'>,
 ): string {
   if (!threadId) throw new Error('sendQueue.enqueue: threadId is required');
-  const id = nextItemId();
+  const id = crypto.randomUUID();
   const item: QueueItem = {
     id,
     enqueuedAt: Date.now(),
@@ -107,6 +104,7 @@ export function enqueue(
     revisionSourceCommentIds: draft.revisionSourceCommentIds
       ? [...draft.revisionSourceCommentIds]
       : undefined,
+    runtimeMode: draft.runtimeMode,
   };
   const current = queueByThread.get(threadId) ?? EMPTY;
   queueByThread.set(threadId, [...current, item]);

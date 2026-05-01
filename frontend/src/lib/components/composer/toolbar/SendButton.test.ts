@@ -61,6 +61,27 @@ describe('<SendButton>', () => {
     expect(onSend).not.toHaveBeenCalled();
   });
 
+  it('renders Send (not Stop) when a turn is active AND a draft is ready to queue', async () => {
+    // Pins the per-thread send queue UX: the Send button must stay
+    // in Send variant during an active turn whenever the user has
+    // typed something — so a click queues the message instead of
+    // interrupting. Stop stays accessible via the working-indicator
+    // chrome. Without this gate the button would flip to Stop the
+    // moment a turn arms, eating the user's typed-but-not-sent
+    // intent. See `showStop = (isTurnActive || sendInFlight) && !canSend`.
+    const onSend = vi.fn();
+    const onInterrupt = vi.fn();
+    const { getByTestId, queryByTestId } = render(SendButton, {
+      props: { canSend: true, isTurnActive: true, onSend, onInterrupt },
+    });
+    expect(queryByTestId('composer-interrupt')).toBeNull();
+    const btn = getByTestId('composer-send') as HTMLButtonElement;
+    expect(btn.disabled).toBe(false);
+    await fireEvent.click(btn);
+    expect(onSend).toHaveBeenCalledOnce();
+    expect(onInterrupt).not.toHaveBeenCalled();
+  });
+
   it('shows the send-without-comments menu for plan comment sends', async () => {
     const onSendWithoutPlanComments = vi.fn();
     const { getByTestId, findByText } = render(SendButton, {

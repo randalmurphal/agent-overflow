@@ -15,7 +15,7 @@ import type {
 import type { Item, Thread } from '../types/models';
 import type { DesignArtifact, DesignChoiceResolved, DesignOptionsRequest } from '../types/design';
 import { transportGapChannel } from '../transport/wsClient';
-import { tryDrainNextQueued } from '../components/composer/composerSend';
+import { tryDrainNextQueued } from './sendQueueDrain.svelte';
 import { getAllPanes } from './panes.svelte';
 import { recordProviderStatus } from './providerStatus.svelte';
 import { addToast } from './toast.svelte';

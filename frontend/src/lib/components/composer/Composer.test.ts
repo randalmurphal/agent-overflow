@@ -1022,6 +1022,59 @@ describe('<Composer>', () => {
     expect(getQueueForThread('thread-1')).toEqual([]);
   });
 
+  it('captures the staged runtimeMode on the queued item so drain replays it', async () => {
+    // Regression: dispatchSend reads runtimeModeForThread and clears
+    // the draft after success. The enqueue branch had been silently
+    // dropping the staged mode, so a user who toggled AccessToggle,
+    // typed mid-round, and let the queue drain would send with the
+    // OLD mode. Pin the capture-at-enqueue contract.
+    const pane = await buildPane(makeTestThread({ runtimeMode: 'approval-required' }));
+    pane.setActiveTurn({ turnId: 't1', turnIndex: 0, startedAt: 0 });
+    const draft = await buildDraft();
+    setRuntimeModeDraft('thread-1', 'auto-accept-edits');
+
+    const { getByLabelText, getByTestId } = render(Composer, { props: { pane, draft } });
+    await fireEvent.input(getByLabelText('Message Input'), { target: { value: 'queued mode change' } });
+    await fireEvent.click(getByTestId('composer-send'));
+    await tick();
+
+    const queue = getQueueForThread('thread-1');
+    expect(queue).toHaveLength(1);
+    expect(queue[0].runtimeMode).toBe('auto-accept-edits');
+  });
+
+  it('refuses to enqueue when a blocking approval is pending', async () => {
+    // canSend gates on `!hasBlockingPrompt`, so a click during a
+    // pending approval can't reach the enqueue branch. Pin this so
+    // a future loosening of canSend doesn't silently allow the user
+    // to stack messages while the agent is blocked on approval —
+    // the approval panel renders over the composer for a reason.
+    const pane = await buildPane();
+    pane.setActiveTurn({ turnId: 't1', turnIndex: 0, startedAt: 0 });
+    pane.addApproval({
+      requestId: 'req-1',
+      threadId: 'thread-1',
+      kind: 'command',
+      toolName: 'Bash',
+      title: 'Approve command',
+      description: 'rm -rf',
+      input: { command: 'rm -rf' },
+    });
+    const draft = await buildDraft();
+    const send = setBindingMock('SendMessageWithOptions', async () =>
+      makeTestThread({ runtimeMode: 'full-access' }));
+
+    const { getByLabelText } = render(Composer, { props: { pane, draft } });
+    // Approval panel hijacks the input — typing into the textarea
+    // is intercepted; we drive draft state directly.
+    draft.setContent('I want to queue this');
+    await fireEvent.keyDown(getByLabelText('Message Input'), { key: 'Enter', shiftKey: false });
+    await tick();
+
+    expect(send).not.toHaveBeenCalled();
+    expect(getQueueForThread('thread-1')).toEqual([]);
+  });
+
   it('autosizes multiline input and clamps at the maximum composer height', async () => {
     const pane = await buildPane();
     const draft = await buildDraft();

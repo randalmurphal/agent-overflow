@@ -68,6 +68,22 @@ describe('sendQueue store', () => {
     expect(() => enqueue('', baseDraft())).toThrow(/threadId/);
   });
 
+  it('enqueue captures runtimeMode so the drain path can replay a staged AccessToggle change', () => {
+    enqueue('thread-1', {
+      message: 'staged mode',
+      attachments: [],
+      terminalChips: [],
+      sourceProposedPlan: null,
+      runtimeMode: 'auto-accept-edits',
+    });
+    expect(getQueueForThread('thread-1')[0].runtimeMode).toBe('auto-accept-edits');
+  });
+
+  it('enqueue stores undefined runtimeMode when no override is staged', () => {
+    enqueue('thread-1', baseDraft());
+    expect(getQueueForThread('thread-1')[0].runtimeMode).toBeUndefined();
+  });
+
   it('enqueue clones attachments / terminalChips / comment ids so caller mutations are safe', () => {
     const attachments = [makeAttachment('a-1')];
     const chips = [{ id: 'chip-1', label: 'term', preview: 'p', content: 'c', createdAt: 1 }];
